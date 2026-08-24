@@ -1,7 +1,7 @@
 ---
 name: forge
 description: Dispatch a coding task to a "dwarf" model to implement it, then an independent "qa" model to review the dwarf's actual diff — routing either role to any model, at any reasoning effort, through any local agent CLI (codex, claude, openclaude, opencode, antigravity). Invoked as /forge "<goal>" --dwarf <alias>[:effort[:harness]] --qa <alias>[:effort[:harness]] [--yolo-dwarf] [--yolo-qa] [--decompose-level low|medium|high]. With --decompose-level it splits the goal into tasks, runs several dwarves in parallel in isolated git worktrees routed by task difficulty (--dwarf-high/--dwarf-medium/--dwarf-low), and reviews each task separately. With --planner it dispatches the planning stage to a named model instead of planning itself, and it keeps a small project memory in .forge/ of what its runs learned about the repo. Use this whenever the user runs /forge, or asks to hand a coding task to another model / another CLI to build while a second model reviews it — phrasings like "have sol implement this", "dispatch this to codex", "run it through openclaude", "send it to gemini/antigravity", "get a second model to review the diff", "split this across several models", "run these in parallel", or any mention of dwarf/qa roles.
-argument-hint: '"<goal>" --dwarf <alias>[:effort[:harness]] [--qa <alias>] [--planner <alias>] [--yolo-dwarf] [--yolo-qa] [--decompose-level low|medium|high] [--no-memory]'
+argument-hint: '"<goal>" --dwarf <alias>[:effort[:harness]] [--qa <alias>] [--planner <alias>] [--yolo-dwarf] [--yolo-qa] [--decompose-level low|medium|high] [--no-memory] [--timeout <seconds>]'
 allowed-tools: [Bash, Read]
 ---
 
@@ -39,7 +39,7 @@ blocks forever on stdin unless it is redirected. Do not hand-assemble these comm
                 [--qa <alias>[:<effort>[:<harness>]]]
                 [--planner <alias>[:<effort>[:<harness>]]]
                 [--yolo-dwarf] [--yolo-qa] [--repo <dir>] [--native-review]
-                [--no-memory]
+                [--no-memory] [--timeout <seconds>]
                 [--decompose-level low|medium|high] [--max-parallel <n>]
                 [--dwarf-high <spec>] [--dwarf-medium <spec>] [--dwarf-low <spec>]
                 [--qa-high <spec>] [--qa-medium <spec>] [--qa-low <spec>]
@@ -146,6 +146,14 @@ problem, which is worse than not routing at all.
 5. **Report.** Give the results table, then each failing task's QA findings. The integration
    branch holds the passing work; the user's branch and working tree are untouched. Merging it
    into their branch is `forge-parallel.sh integrate <dir> --approved`, and is never automatic.
+6. **Retry, if the user asks.** `forge-parallel.sh retry <dir> <task-id> [--dwarf <spec>]`
+   re-dispatches one failed task in the worktree it already has, with its reviewer's findings
+   in the prompt, and merges it if it passes this time. `--dwarf` escalates to a stronger
+   model, which is the usual reason a retry is worth spending on. Offer it; never run it
+   unasked — that would be the automatic repair loop forge deliberately does not have.
+
+A `run` that was interrupted can simply be run again: already-merged tasks are skipped
+rather than re-dispatched, so nobody's quota is spent twice on work that already landed.
 
 ### What makes it actually parallel
 
@@ -213,6 +221,12 @@ runs teach nothing durable and emit nothing — that is the normal outcome, not 
 
 `--no-memory` (or `FORGE_MEMORY=off`) disables all of it.
 
+Because the ledger already holds a row per dispatch, `forge-memory.sh spend <repo>` reports
+what forge has cost this repo in wall-clock and dispatch counts, grouped by model and role.
+Time only, never tokens or money: the five CLIs expose usage differently or not at all, and
+a number forge cannot actually measure would be worse than none. A decomposed run prints its
+own line at the end.
+
 Two things to tell the user rather than assume: forge **writes `.forge/` into their working
 tree**, which is the only thing it ever writes outside its own branches, and it does not
 commit it. Committing it is what makes the memory travel with the repo to their team.
@@ -232,113 +246,66 @@ there, silently.
 2. **State the plan in one sentence** before dispatching — which dwarf at which effort on
    which harness, what qa will do, and whether either is yolo. These runs cost real quota
    and can take minutes; a user who wanted a different model should find out now.
-3. **Dispatch the dwarf** (see below). Long runs are normal — run it in the background if
-   your harness supports that, otherwise let it block.
-4. **Capture the real diff.** `git diff` plus `git status --porcelain` for new untracked
-   files, written into the run directory — both excluding `.forge/`, which is forge's own
-   memory and not the dwarf's work. This is qa's input.
-5. **Dispatch qa** against that diff.
-6. **Report.** Summarize what the dwarf changed (files touched, one line on the substance),
+3. **Run it.** `scripts/forge-solo.sh` dispatches the dwarf, captures the real diff and
+   dispatches qa against it (see below). Long runs are normal — background it if your
+   harness supports that, otherwise let it block.
+4. **Report.** Summarize what the dwarf changed (files touched, one line on the substance),
    then pass qa's findings through faithfully. Ask whether to apply fixes, send it back for
    another pass, or stop. Do not auto-loop — one dwarf → qa pass is the run.
 
 ### Dispatching
 
-Create one run directory outside the repo and reuse it for both stages, so the prompts,
-logs and diff of a run stay together:
+`scripts/forge-solo.sh` owns the whole pipeline — memory injection, prompt assembly,
+both dispatches, the diff capture and the ledger writes. Drive it rather than
+reassembling those steps yourself: several of them fail silently rather than loudly
+when they are slightly wrong, and the one that matters most is the diff capture. It
+must exclude `.forge/` and it must diff new files against `/dev/null`, or the
+reviewer either reads forge's own memory as the dwarf's work or never sees the
+content of a file the dwarf created at all.
 
 ```bash
 FORGE_RUN="$(mktemp -d "${TMPDIR:-/tmp}/forge-XXXXXX")"
-```
+echo "<the goal, one line>" > "$FORGE_RUN/goal.txt"
 
-It must live outside the working tree. Anything forge writes inside the repo shows up in
-the dwarf's own diff and ends up in front of qa as if the dwarf had written it.
-
-**Dwarf:**
-
-```bash
-bash <skill_dir>/scripts/forge-memory.sh inject "$REPO" dwarf > "$FORGE_RUN/dwarf.prompt"
-
-cat >> "$FORGE_RUN/dwarf.prompt" <<'EOF'
-
+cat > "$FORGE_RUN/prompt.md" <<'EOF'
 <goal, restated as a direct implementation instruction>
-
 <the approach, if you or --planner produced one>
-
-Edit the files in this repository directly. When you are done, run whatever tests or
-checks the project already has and report the result.
-
-You are running headless: nobody is at the other end and no one can answer a question. If
-something is ambiguous, pick the most reasonable interpretation, proceed, and state the
-assumption in your final message.
 EOF
 
-bash <skill_dir>/scripts/forge-dispatch.sh dwarf <spec> \
-  --repo "$REPO" --run-dir "$FORGE_RUN" --prompt-file "$FORGE_RUN/dwarf.prompt" [--yolo]
+bash <skill_dir>/scripts/forge-solo.sh "$FORGE_RUN" --repo "$REPO" \
+  --dwarf <spec> [--qa <spec>] [--yolo-dwarf] [--yolo-qa] [--native-review] [--timeout <s>]
 ```
 
-That last paragraph is not boilerplate. Headless dwarves genuinely stop and ask a
-clarifying question, which nothing can answer — the run then ends with an empty diff and a
-question in the log, having spent the quota and changed nothing.
+The run directory must live outside the working tree — anything forge writes inside
+the repo shows up in the dwarf's own diff. The script refuses a run dir inside the
+repo rather than letting that happen quietly.
 
-Close both role prompts with the learning note, and record afterwards:
+What it writes, and what you read afterwards:
 
-```bash
-bash <skill_dir>/scripts/forge-memory.sh note dwarf >> "$FORGE_RUN/dwarf.prompt"
-# ... dispatch ...
-bash <skill_dir>/scripts/forge-memory.sh record "$REPO" --last "$FORGE_RUN/dwarf.last" \
-     --role dwarf --model <spec>
-```
+| File | Is |
+|---|---|
+| `dwarf.last` / `qa.last` | each role's final message — the two things to report |
+| `changes.diff` | exactly what qa reviewed |
+| `verdict` | `PASS`, `FAIL`, `UNKNOWN`, or `NOCHANGES` |
+| `<role>.log` | full transcript; read it when a dispatch fails |
 
-**QA:**
+Exit codes: `0` reviewed, `2` usage, `3` not a git repo, `4` a dispatch failed,
+`5` **the dwarf produced no changes**, `7` a dispatch hit its timeout.
 
-```bash
-cd "$REPO" && git diff -- . ':(exclude).forge' > "$FORGE_RUN/changes.diff"
-# new files too — and .forge/ excluded from both, or forge's own memory reaches qa
-# as if the dwarf had written it.
-git status --porcelain -- . ':(exclude).forge' >> "$FORGE_RUN/changes.diff"
+`5` is worth knowing on sight. Headless dwarves genuinely stop to ask a clarifying
+question that nothing can answer; the run then ends having spent the quota and
+changed nothing, and `dwarf.last` holds the question. Say that plainly rather than
+reporting a failure of unclear cause.
 
-{
-  bash <skill_dir>/scripts/forge-memory.sh inject "$REPO" qa
-  echo "The implementer was asked to: <goal>"
-  echo
-  echo "Review the diff below for correctness bugs: logic errors, broken edge cases,"
-  echo "wrong behavior versus what was asked. Also say if it solved a different problem"
-  echo "than the one stated, or changed files outside the goal's scope."
-  echo
-  echo "Report findings only — do not edit any file. For each finding give the file and"
-  echo "line, what breaks, and a concrete input that triggers it. Mark each CONFIRMED if"
-  echo "you traced it in the code, or PLAUSIBLE if you could not fully verify it. If the"
-  echo "diff is correct, say so plainly rather than inventing something to report."
-  echo
-  echo '```diff'
-  cat "$FORGE_RUN/changes.diff"
-  echo '```'
-  bash <skill_dir>/scripts/forge-memory.sh note qa
-} > "$FORGE_RUN/qa.prompt"
+For a large diff that would be unwieldy inline, `--native-review` switches codex to
+its purpose-built reviewer. Know the trade: codex refuses a custom prompt alongside
+its scope flags, so that reviewer never learns what the dwarf was *asked* to do and
+cannot emit a verdict. It can still judge whether the code is correct, but not
+whether it is the right change — mention that when you report its findings.
 
-bash <skill_dir>/scripts/forge-dispatch.sh qa <spec> \
-  --repo "$REPO" --run-dir "$FORGE_RUN" --prompt-file "$FORGE_RUN/qa.prompt" [--yolo]
-```
-
-Inlining the diff is what makes qa portable: it pins the review scope exactly, works the
-same on all four harnesses, and does not depend on the reviewer being able to reach a file
-outside the repo.
-
-For a large diff that would be unwieldy inline, `--native-review` switches codex to its
-purpose-built reviewer (`codex exec review --uncommitted`). Know the trade before using
-it: codex refuses a custom prompt alongside its scope flags, so the reviewer never learns
-what the dwarf was *asked* to do. It can still judge whether the code is correct, but not
-whether it is the right change — so mention that limitation when you report its findings.
-
-Each stage writes `<role>.resolved` (what the spec resolved to), `<role>.prompt`,
-`<role>.cmd`, `<role>.log` and `<role>.last` (the final message) into the run directory.
-Read `<role>.last` for the result and fall back to `<role>.log` when a run fails.
-
-Exit codes: `0` success, `2` a spec or usage error, `3` the harness is missing, `4` the
-backend ran and failed. On `3` or `4`, show the user the actual error from the log instead
-of substituting a different model — quietly swapping backends hides the fact that the one
-they picked is broken.
+Every dispatch has a 45-minute timeout (`--timeout <seconds>`, `0` disables). It is
+a backstop against a hung backend, not a budget; a role killed by it exits `7` and
+has usually left a partial edit, so say so rather than reporting a clean failure.
 
 ## Reporting findings
 
@@ -368,6 +335,8 @@ user reading only the summary.
   their branch is an explicit `integrate --approved` step.
 - Never delete a failed task's branch or worktree; they are the only record of what went
   wrong and the only thing to retry from.
+- Never delete a failed task's branch or worktree. They are the only record of what went
+  wrong, and they are what `forge-parallel.sh retry` acts on.
 - `.forge/` is the one thing forge writes into the user's working tree rather than onto a
   branch of its own. Say so when it appears, do not commit it for them, and never let it
   into a captured diff — a reviewer handed forge's own memory will report it as the dwarf's
@@ -384,8 +353,10 @@ user reading only the summary.
   capsule format and cleanup rules. Read this before running with `--decompose-level`.
 - `references/memory.md` — the `FORGE_LEARNING` grammar, promotion and pruning rules, and
   the ledger schema. Read this when memory looks wrong, empty or too large.
-- `scripts/forge-memory.sh` — `inject` / `note` / `record` / `show` / `prune`.
-- `scripts/forge-parallel.sh` — `plan` / `run` / `integrate` for decomposed runs.
+- `scripts/forge-solo.sh` — the whole single-task run: both dispatches, the diff capture
+  and the ledger writes.
+- `scripts/forge-memory.sh` — `inject` / `note` / `record` / `show` / `prune` / `spend`.
+- `scripts/forge-parallel.sh` — `plan` / `run` / `retry` / `integrate` for decomposed runs.
 - `scripts/forge-install.sh` — installs `/forge` into all five harnesses. Claude,
   OpenClaude, Codex and opencode reference this directory live, so edits take effect
   immediately; antigravity gets a copy and needs the installer re-run after any change.

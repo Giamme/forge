@@ -9,9 +9,10 @@
 #   forge-dispatch.sh dwarf <spec> --prompt-file <f> [--repo <dir>] [--run-dir <d>] [--yolo] [--dry-run]
 #   forge-dispatch.sh qa    <spec> --prompt-file <f> [--repo <dir>] [--run-dir <d>] [--yolo] [--dry-run]
 #                                  [--native-review [--review-base <ref>]]
+#   any role: [--timeout <seconds>]   0 disables; default 2700 (45m), FORGE_TIMEOUT
 #
 # Exit codes: 0 ok | 2 usage/resolution error | 3 harness missing or unusable
-#             4 backend ran but failed
+#             4 backend ran but failed | 7 backend exceeded --timeout and was killed
 set -uo pipefail
 
 SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -107,7 +108,7 @@ read_only_role() { case "$ROLE" in qa|planner) return 0 ;; *) return 1 ;; esac; 
 [ $# -ge 1 ] || die "role '$ROLE' needs a spec, e.g. sol:xhigh:openclaude"
 SPEC="$1"; shift
 
-REPO="$PWD"; RUN_DIR=""; PROMPT_FILE=""; YOLO=0; DRY=0; REVIEW_BASE=""; PROMPT_VIA_STDIN=0; NATIVE_REVIEW=0; AGY_TIMEOUT="30m"
+REPO="$PWD"; RUN_DIR=""; PROMPT_FILE=""; YOLO=0; DRY=0; REVIEW_BASE=""; PROMPT_VIA_STDIN=0; NATIVE_REVIEW=0; AGY_TIMEOUT="30m"; LIMIT="${FORGE_TIMEOUT:-2700}"
 while [ $# -gt 0 ]; do
   case "$1" in
     --repo)         REPO="${2:?--repo needs a value}"; shift 2 ;;
@@ -116,6 +117,7 @@ while [ $# -gt 0 ]; do
     --review-base)  REVIEW_BASE="${2:?--review-base needs a value}"; shift 2 ;;
     --native-review) NATIVE_REVIEW=1; shift ;;
     --agy-timeout)  AGY_TIMEOUT="${2:?--agy-timeout needs a value}"; shift 2 ;;
+    --timeout)      LIMIT="${2:?--timeout needs a value in seconds, 0 to disable}"; shift 2 ;;
     --yolo)         YOLO=1; shift ;;
     --dry-run)      DRY=1; shift ;;
     *)              die "unknown option '$1'" ;;
@@ -371,15 +373,69 @@ fi
 # Harnesses that take the prompt on argv get stdin redirected from /dev/null:
 # codex exec otherwise blocks waiting to append piped input to the prompt, which
 # headless reads as a silent hang rather than an error.
+#
+# The harness runs in the background rather than through `| tee` so that its pid is
+# knowable and therefore killable. `exec` matters: it replaces the subshell with the
+# harness itself, so $hpid IS the backend process and not a shell that merely owns
+# it — otherwise a timeout would kill the wrapper and leave the real process running.
+# The cost is that the log is no longer echoed incrementally; it is printed whole at
+# the end, so anything reading this script's stdout sees the same bytes as before.
+# Clear the previous dispatch's artifacts. Only codex writes $LAST itself (-o);
+# every other harness relies on the copy-from-log fallback below, which is a no-op
+# when a stale $LAST is already there. That is harmless when each run gets a fresh
+# run-dir, and silently wrong for `forge-parallel.sh retry`, which reuses the task
+# directory — it would read the first attempt's result and never notice.
+rm -f "$LAST" "$LOG" "$RUN_DIR/$ROLE.timedout"
+t0="$(date +%s)"
 if [ "$PROMPT_VIA_STDIN" = 1 ]; then
-  ( cd "$REPO" && "${CMD[@]}" < "$PROMPT_FILE" ) 2>&1 | tee "$LOG"
+  ( cd "$REPO" && exec "${CMD[@]}" < "$PROMPT_FILE" ) > "$LOG" 2>&1 &
 else
-  ( cd "$REPO" && "${CMD[@]}" </dev/null ) 2>&1 | tee "$LOG"
+  ( cd "$REPO" && exec "${CMD[@]}" </dev/null ) > "$LOG" 2>&1 &
 fi
-rc=${PIPESTATUS[0]}
+hpid=$!
+
+# Watchdog. Only antigravity has a time bound of its own, and `timeout` is not
+# present on stock macOS, so without this a hung backend blocks forever — and under
+# forge-parallel's `xargs -P` one hung task silently stalls its whole wave. The
+# default is deliberately generous: killing a slow-but-working dwarf is its own
+# failure, so this is a backstop, not a scheduler.
+wpid=""
+if [ "${LIMIT:-0}" != "0" ]; then
+  (
+    sleep "$LIMIT"
+    kill -0 "$hpid" 2>/dev/null || exit 0
+    : > "$RUN_DIR/$ROLE.timedout"
+    # Children first, then the process itself, then SIGKILL for a CLI that traps
+    # TERM and takes its time. macOS has no setsid, so there is no process group
+    # to signal as a unit.
+    pkill -TERM -P "$hpid" 2>/dev/null
+    kill -TERM "$hpid" 2>/dev/null
+    sleep 5
+    pkill -KILL -P "$hpid" 2>/dev/null
+    kill -KILL "$hpid" 2>/dev/null
+  ) 2>/dev/null &
+  wpid=$!
+fi
+
+wait "$hpid"; rc=$?
+if [ -n "$wpid" ]; then
+  # The watchdog is asleep in a child of its own; kill that too or it outlives the
+  # run as an orphan holding the timer.
+  pkill -P "$wpid" 2>/dev/null
+  kill "$wpid" 2>/dev/null
+  wait "$wpid" 2>/dev/null
+fi
+DURATION=$(( $(date +%s) - t0 ))
+echo "duration_s=$DURATION" >> "$RUN_DIR/$ROLE.resolved"
+cat "$LOG"
+
 [ -s "$LAST" ] || { [ -s "$LOG" ] && cp "$LOG" "$LAST"; }
+if [ -f "$RUN_DIR/$ROLE.timedout" ]; then
+  note "$HARNESS exceeded the ${LIMIT}s timeout and was killed after ${DURATION}s — see $LOG"
+  exit 7
+fi
 if [ "$rc" -ne 0 ]; then
   note "$HARNESS exited $rc — see $LOG"
   exit 4
 fi
-echo "forge: $ROLE done -> $LAST" >&2
+echo "forge: $ROLE done in ${DURATION}s -> $LAST" >&2

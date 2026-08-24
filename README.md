@@ -500,7 +500,7 @@ notes to itself is noise to a reviewer who does not use forge.
                 [--qa <alias>[:<effort>[:<harness>]]]
                 [--planner <alias>[:<effort>[:<harness>]]]
                 [--yolo-dwarf] [--yolo-qa] [--repo <dir>] [--native-review]
-                [--no-memory]
+                [--no-memory] [--timeout <seconds>]
                 [--decompose-level low|medium|high] [--max-parallel <n>]
                 [--dwarf-high <spec>] [--dwarf-medium <spec>] [--dwarf-low <spec>]
                 [--qa-high <spec>] [--qa-medium <spec>] [--qa-low <spec>]
@@ -512,6 +512,7 @@ notes to itself is noise to a reviewer who does not use forge.
 | `--qa <spec>` | `opus` at `xhigh` | the model that reviews the dwarf's diff |
 | `--planner <spec>` | orchestrator plans | dispatch planning to a model; one dispatch per run, effort defaults to `xhigh` |
 | `--no-memory` | memory on | write and inject nothing in `.forge/` |
+| `--timeout <s>` | `2700` (45m) | kill any single dispatch that runs longer. `0` disables |
 | `--yolo-dwarf` | off | drop the dwarf's sandbox and approval gates |
 | `--yolo-qa` | off | drop the reviewer's sandbox |
 | `--repo <dir>` | cwd | repository to work in |
@@ -564,6 +565,17 @@ whether the code is correct, but not whether it's the right change.
 /forge "implement the new billing rules across the codebase" \
   --decompose-level medium \
   --dwarf-high sol:xhigh,terra:xhigh --dwarf luna:high
+
+# a model that thinks for a long time; raise the per-dispatch backstop
+/forge "prove the scheduler cannot deadlock, and fix it if it can" \
+  --dwarf sol:ultra --timeout 7200
+```
+
+After a decomposed run, a task that failed review can be re-run on its own — with the
+findings that failed it, on a stronger model:
+
+```bash
+bash scripts/forge-parallel.sh retry /tmp/forge-billing pricing --dwarf sol:ultra
 ```
 
 ### `scripts/forge-dispatch.sh`
@@ -589,9 +601,16 @@ forge-dispatch.sh planner <spec> --prompt-file <f> [--repo <dir>] [--run-dir <d>
 | `--native-review` | qa only; use codex's built-in reviewer |
 | `--review-base <ref>` | qa only; base ref for the native review |
 | `--agy-timeout <s>` | antigravity `--print-timeout` (long runs need this raised) |
+| `--timeout <s>` | kill this dispatch after `<s>` seconds. Default `2700` (45m); `0` disables; `FORGE_TIMEOUT` sets it in the environment |
 
 **Exit codes:** `0` ok · `2` spec or usage error · `3` harness missing or unusable ·
-`4` the backend ran and failed.
+`4` the backend ran and failed · `7` the backend hit `--timeout` and was killed.
+
+Only antigravity bounds its own runtime, and stock macOS has no `timeout` binary to wrap the
+others in — so a hung backend used to block forever, and under a decomposed run's `xargs -P`
+one hung task silently stalled its whole wave. The default is deliberately generous: this is
+a backstop against a wedged process, not a budget. A role killed by it has usually left a
+partial edit behind, so `7` is worth reporting as such rather than as a clean failure.
 
 On `3` or `4`, forge shows you the actual error rather than substituting a different model —
 quietly swapping backends hides the fact that the one you picked is broken.
@@ -606,6 +625,60 @@ bash scripts/forge-dispatch.sh qa gemini-pro:medium --prompt-file /tmp/p --dry-r
 # clamped=medium -> low        (gemini-pro offers low and high, but no medium)
 ```
 
+### `scripts/forge-solo.sh`
+
+The whole single-task run: memory injection, prompt assembly, the dwarf dispatch, the diff
+capture, the QA dispatch, and the ledger writes.
+
+```
+forge-solo.sh <run-dir> --repo <dir> --dwarf <spec> [--qa <spec>]
+              [--approach <file>] [--yolo-dwarf] [--yolo-qa]
+              [--native-review] [--no-memory] [--timeout <s>] [--dry-run]
+```
+
+You write two files into the run directory; forge does the rest:
+
+| You write | Is |
+|---|---|
+| `prompt.md` | the implementation instruction (required) |
+| `goal.txt` | one line, what was asked — given to the reviewer as intent (optional) |
+
+| It writes | Is |
+|---|---|
+| `dwarf.last` / `qa.last` | each role's final message |
+| `changes.diff` | exactly what the reviewer read |
+| `verdict` | `PASS`, `FAIL`, `UNKNOWN` or `NOCHANGES` |
+| `<role>.{input,log,resolved,cmd}` | the prompt, the transcript, the resolution, the command |
+
+```bash
+RUN="$(mktemp -d /tmp/forge-XXXXXX)"
+echo "add retry with backoff to the HTTP client" > "$RUN/goal.txt"
+echo "Add exponential backoff to src/http.py, capped at 5 attempts." > "$RUN/prompt.md"
+
+bash scripts/forge-solo.sh "$RUN" --repo ~/dev/api --dwarf sol:high --qa opus
+```
+
+**Exit codes:** `0` reviewed · `2` usage · `3` not a git repository · `4` a dispatch failed ·
+`5` **the dwarf produced no changes** · `7` a dispatch timed out.
+
+`5` is the one worth recognising on sight. Headless dwarves genuinely stop to ask a
+clarifying question that nothing can answer; the run ends having spent the quota and changed
+nothing, with the question sitting in `dwarf.last`.
+
+Two things it gets right that are easy to get wrong by hand, and that fail *silently* rather
+than loudly:
+
+- **`.forge/` is excluded from the capture.** Forge rewrites its own memory in the working
+  tree at the end of every run, so left in, it reaches the reviewer as a file the dwarf
+  appears to have touched — which a good reviewer correctly flags as scope creep.
+- **New files are diffed against `/dev/null`.** A `git status` line says only `?? calc.py`.
+  A dwarf whose entire task was to add a file would have had its actual code reviewed by
+  nobody, while the run still reported a clean QA pass.
+
+The run directory must live outside the repository — anything forge writes inside the working
+tree shows up in the dwarf's own diff. `forge-solo.sh` refuses rather than letting that happen
+quietly.
+
 ### `scripts/forge-parallel.sh`
 
 Decomposed runs: many dwarves in isolated worktrees, per-task QA, only passing work merged.
@@ -615,6 +688,7 @@ concurrency rather than `wait -n`, and no associative arrays anywhere.
 ```
 forge-parallel.sh plan      <plan-dir> --repo <dir> [routing flags] [--planner <spec>] [--no-memory]
 forge-parallel.sh run       <plan-dir> [--max-parallel N] [--yolo-dwarf] [--yolo-qa] [--dry-run]
+forge-parallel.sh retry     <plan-dir> <task-id> [--dwarf <spec>]
 forge-parallel.sh integrate <plan-dir> --approved
 ```
 
@@ -622,6 +696,7 @@ forge-parallel.sh integrate <plan-dir> --approved
 |---|---|
 | `plan` | validate `tasks.tsv`, resolve difficulty → concrete dwarf/qa specs, compute waves, render the approval table |
 | `run` | execute waves; per task: worktree → dwarf → diff → QA → status; merge passing tasks onto the integration branch |
+| `retry` | re-run **one** failed task in the worktree it already has, with its reviewer's findings in the prompt |
 | `integrate` | **never automatic** — merge the integration branch into your branch |
 
 **Exit codes:** `0` ok · `2` usage or validation · `3` precondition (not a git repo, …) ·
@@ -645,6 +720,59 @@ bash scripts/forge-parallel.sh integrate "$PLAN" --approved
 ```
 
 `integrate` refuses without `--approved`, and refuses on a dirty working tree.
+
+#### Retrying a failed task
+
+```bash
+# re-run one task with the findings that failed it, on a stronger model
+bash scripts/forge-parallel.sh retry "$PLAN" middleware --dwarf sol:xhigh
+```
+
+The findings are the point. `retry` prepends the previous reviewer's report to the dwarf's
+prompt — "your last attempt was reviewed and these were the findings; fix them" — and reuses
+the worktree, so the dwarf continues from its own code rather than starting over. If the
+verdict comes back `PASS` the task merges like any other.
+
+`--dwarf` is written back into `tasks.tsv`, so the table shows the model that will actually
+be spent and the escalation survives a re-plan.
+
+Two things it deliberately does:
+
+- **Reviews the task's cumulative diff**, against the commit the task was originally branched
+  from — not just the fix. Reviewing the fix alone would let the first attempt's code through
+  unread.
+- **Refuses to re-review identical code.** If the retry produces a byte-identical diff, the
+  task fails again without spending a QA dispatch.
+
+`retry` is something you run. Forge never loops a dwarf against its own reviewer on its own
+initiative.
+
+#### Resuming an interrupted run
+
+Run `run` again. Tasks already `MERGED` are skipped rather than re-dispatched, worktrees are
+reused, and each wave re-bases on the integration branch as it now stands:
+
+```
+forge: wave 1: 3 task(s) already merged, resuming the rest
+forge: wave 1: dispatching 2 task(s), max 3 in parallel
+```
+
+A killed process, a hung harness or a closed laptop costs you the tasks that were in flight,
+not the ones that landed.
+
+#### Scope drift
+
+After each dwarf, the runner compares what the task **declared** in `files` against what it
+actually touched (a declared directory covers the paths beneath it). Undeclared paths appear
+in the summary and in the QA prompt:
+
+```
+scope drift (touched files the task did not declare):
+  auth           src/db.py
+```
+
+Never a failure — a dwarf that genuinely needed one more file did the right thing. What it
+buys is that a merge `CONFLICT` two waves later arrives with its cause already named.
 
 #### `tasks.tsv`
 
@@ -683,9 +811,10 @@ durable. (`UNASSIGNED` is treated as a leftover marker and re-resolved.)
 forge-memory.sh inject <repo> <planner|dwarf|qa>   # the block to prepend to a prompt
 forge-memory.sh note <planner|dwarf|qa>            # the instruction to append
 forge-memory.sh record <repo> --last <file> --role <r> [--run-id X] [--task T]
-                              [--model M] [--verdict V]
+                              [--model M] [--verdict V] [--duration S]
 forge-memory.sh show <repo>
 forge-memory.sh prune <repo>                       # re-apply staleness and the cap now
+forge-memory.sh spend <repo> [--run <run-id>]      # what forge has cost this repo
 ```
 
 `record` appends to the ledger and then rebuilds `memory.md` from the whole ledger — the
@@ -700,6 +829,36 @@ bash scripts/forge-memory.sh inject ~/dev/api dwarf
 # start over
 rm -rf ~/dev/api/.forge
 ```
+
+#### Spend
+
+The ledger already holds a row per dispatch and is never injected into a prompt, so
+accounting from it costs nothing:
+
+```bash
+bash scripts/forge-memory.sh spend ~/dev/api
+```
+```
+14 dispatch(es) across 3 run(s), 1h12m of model time
+Durations sum concurrent work, so they exceed the wall-clock of a parallel run.
+
+  by model                     disp     total      mean
+  sol:xhigh                       4     38m20s     9m35s
+  opus                            7     22m10s     3m10s
+  gemini:low:antigravity          3     11m30s     3m50s
+
+  by role                      disp     total
+  dwarf                           7     49m50s
+  qa                              7     22m10s
+```
+
+**Time and dispatch counts, never tokens or money.** The five CLIs expose usage differently
+or not at all, and a number forge cannot actually measure would be worse than no number.
+
+`duration_s` is the ledger's tenth column, appended at the end on purpose: a ledger written
+by an older forge — possibly already committed and shared — has nine fields, and awk yields
+an empty string for the missing one instead of shifting every column. Those rows are counted
+but not timed, and the output says so.
 
 ### `scripts/forge-install.sh`
 
@@ -831,10 +990,17 @@ pushed, so a temp root that gets cleaned takes the only copy of that work with i
 | dwarf produced no changes | usually an ambiguous prompt it couldn't resolve headlessly. Nobody can answer a question mid-run |
 | task status `ERROR` | worktree creation or a dispatch failed — read `tasks/<id>/dwarf.out` / `qa.out` |
 | task status `UNKNOWN` | QA never emitted a verdict line; read `tasks/<id>/qa.last` |
-| task status `CONFLICT` | QA passed but the merge conflicted — `files` was understated somewhere |
+| task status `CONFLICT` | QA passed but the merge conflicted — `files` was understated somewhere. Check the run's scope-drift list: it usually names the file |
+| task status `TIMEOUT` | that role exceeded the dispatch timeout and was killed. Raise `--timeout`, or `retry` — the partial edit is still in the worktree |
+| a dispatch never returns | it can't any more: every backend is killed at `--timeout` (45m default) |
+| a task won't re-run: "already exists" | a worktree directory was deleted by hand. `run` and `retry` prune stale registrations first, so re-run rather than deleting the branch |
+| a failed task is expensive to redo | it isn't — `forge-parallel.sh retry <dir> <id> [--dwarf <spec>]` re-runs that one task with its reviewer's findings, in the worktree it already has |
+| an interrupted run seems lost | run `run` again; merged tasks are skipped, not re-dispatched |
 | every wave has exactly one task | `files` sets overlap across most tasks; the decomposition isn't actually parallel |
 | dwarves reimplement already-merged work | `goal.txt` or `files` missing, so the capsule carries no useful status |
 | several tasks report "produced no changes" | the decomposition made tasks that weren't independently actionable — use a coarser `--decompose-level`, not more retries |
+| `retry` says "produced no new changes" | the dwarf returned a byte-identical diff, so no reviewer was paid to read the same code twice. Escalate with `--dwarf`, or fix the prompt |
+| a new file's code never reached QA | fixed: untracked files are diffed against `/dev/null`. A hand-built capture using only `git status --porcelain` shows the reviewer a filename and no content |
 | claude dwarf ends "I need your permission to edit" | a permission mode that prompts for Edit. forge uses `acceptEdits` plus an explicit Bash allowance, because `auto` allows shell but prompts for Edit, and `acceptEdits` alone allows Edit but prompts for real shell commands |
 | `.forge/` turns up in a review | a diff capture is missing `':(exclude).forge'` |
 | memory stays empty | nothing durable was learned — the common, correct case. The ledger still has a row per dispatch |
@@ -857,8 +1023,9 @@ forge/
 ├── README.md                    this file
 ├── scripts/
 │   ├── forge-dispatch.sh        resolve a spec → run one role on one harness
-│   ├── forge-parallel.sh        plan / run / integrate for decomposed runs
-│   ├── forge-memory.sh          inject / note / record project memory
+│   ├── forge-solo.sh            the whole single-task run: dwarf → diff → qa
+│   ├── forge-parallel.sh        plan / run / retry / integrate for decomposed runs
+│   ├── forge-memory.sh          inject / note / record / spend project memory
 │   └── forge-install.sh         install into all five harnesses
 └── references/
     ├── harnesses.md             per-harness invocation, ladders, failure modes

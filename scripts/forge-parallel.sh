@@ -8,6 +8,7 @@
 # Usage:
 #   forge-parallel.sh plan <plan-dir> --repo <dir> [routing flags]
 #   forge-parallel.sh run  <plan-dir> [--max-parallel N] [--yolo-dwarf] [--yolo-qa] [--dry-run]
+#   forge-parallel.sh retry <plan-dir> <task-id> [--dwarf <spec>]
 #   forge-parallel.sh integrate <plan-dir> --approved
 #   forge-parallel.sh _task <plan-dir> <task-id>     (internal; the xargs target)
 #
@@ -327,23 +328,88 @@ write_capsule() { # write_capsule <plan> <id> <role>
 }
 
 # --- one task -----------------------------------------------------------------
+# Idempotent by construction: it may be entered on a fresh task, on a resumed run
+# whose worktree already exists, or on a retry of a task that already failed once.
+# The original version created the worktree unconditionally, which made a
+# decomposed run a one-shot — a failed task's preserved branch had nothing that
+# could act on it, and an interrupted run could not be continued.
+ensure_worktree() { # ensure_worktree <repo> <wt> <br> <base> <tdir>
+  local REPO="$1" wt="$2" br="$3" base="$4" tdir="$5"
+  # A worktree directory deleted by hand leaves its registration behind, and that
+  # registration then blocks `worktree add` with "already exists". Prune first.
+  (cd "$REPO" && git worktree prune >/dev/null 2>&1)
+  if [ -e "$wt/.git" ]; then
+    return 0
+  elif (cd "$REPO" && git rev-parse --verify --quiet "$br" >/dev/null 2>&1); then
+    (cd "$REPO" && git worktree add "$wt" "$br") >"$tdir/worktree.out" 2>&1
+  else
+    (cd "$REPO" && git worktree add -b "$br" "$wt" "$base") >"$tdir/worktree.out" 2>&1
+  fi
+}
+
+dispatch_duration() { # dispatch_duration <tdir> <role>
+  sed -n 's/^duration_s=//p' "$1/$2.resolved" 2>/dev/null | tail -1
+}
+
+# `files` is documented as a promise, not a prediction: it decides which tasks may
+# run concurrently and what the capsule declares off limits. Nothing used to check
+# it, so an understated set surfaced much later as a merge CONFLICT with no stated
+# cause. The answer is free right after the diff capture, so take it there.
+#
+# A warning, never a failure: a dwarf that genuinely had to touch one more file did
+# the right thing, and failing the task for it would be worse than reporting it.
+check_drift() { # check_drift <declared-comma-list> <tdir> <wt> <base>
+  local declared="$1" tdir="$2" wt="$3" base="$4" touched f d covered
+  : > "$tdir/drift.txt"
+  touched="$(cd "$wt" && git diff --cached --name-only "$base" -- . ":(exclude).forge" 2>/dev/null)"
+  [ -n "$touched" ] || return 0
+  for f in $touched; do
+    covered=0
+    if [ "$declared" != "-" ] && [ -n "$declared" ]; then
+      for d in $(printf '%s' "$declared" | tr ',' ' '); do
+        # Exact match, or a declared directory prefix: declaring src/routes covers
+        # src/routes/api.py, which is how the column is normally written.
+        case "$f" in
+          "$d"|"$d"/*) covered=1 ;;
+        esac
+      done
+    fi
+    [ "$covered" = 0 ] && printf '%s\n' "$f" >> "$tdir/drift.txt"
+  done
+  [ -s "$tdir/drift.txt" ] || rm -f "$tdir/drift.txt"
+  return 0
+}
+
 do_task() {
   local PLAN="${1:?}" id="${2:?}"
-  local T="$PLAN/tasks.tsv" REPO run_id base wt br tdir
+  local T="$PLAN/tasks.tsv" REPO run_id base wt br tdir attempt
   REPO="$(cat "$PLAN/repo")"; run_id="$(cat "$PLAN/run_id")"
-  base="$(cat "$PLAN/base_ref")"
   tdir="$PLAN/tasks/$id"; mkdir -p "$tdir"
   [ -f "$PLAN/no_memory" ] && export FORGE_MEMORY=off
   wt="$(cat "$PLAN/wt_root")/$id"
   br="forge/$run_id/$id"
+  # Owned here rather than by `retry`, so a task re-dispatched by a resumed `run`
+  # is also numbered — otherwise two different attempts share a commit message.
+  attempt=$(( $(cat "$tdir/attempt" 2>/dev/null || echo 0) + 1 ))
+  echo "$attempt" > "$tdir/attempt"
 
-  local dw qa yd yq
+  # The base is pinned per task on first creation and reused by every retry. The
+  # integration branch moves as later waves land, so re-reading the run-level
+  # base_ref on a retry would pull other tasks' merged code into this task's diff
+  # and put it in front of its reviewer as if this dwarf had written it.
+  if [ -s "$tdir/base_ref" ]; then
+    base="$(cat "$tdir/base_ref")"
+  else
+    base="$(cat "$PLAN/base_ref")"; printf '%s\n' "$base" > "$tdir/base_ref"
+  fi
+
+  local dw qa yd yq rc
   dw="$(field "$T" "$id" dwarf)"; qa="$(field "$T" "$id" qa)"
   yd=""; yq=""
   [ -f "$PLAN/yolo_dwarf" ] && yd="--yolo"
   [ -f "$PLAN/yolo_qa" ] && yq="--yolo"
 
-  if ! (cd "$REPO" && git worktree add -b "$br" "$wt" "$base") >"$tdir/worktree.out" 2>&1; then
+  if ! ensure_worktree "$REPO" "$wt" "$br" "$base" "$tdir"; then
     echo ERROR > "$tdir/status"
     note "$id: could not create worktree — $(tail -1 "$tdir/worktree.out")"
     return 1
@@ -366,29 +432,62 @@ do_task() {
       echo; cat "$tdir/approach.md"; echo; echo "---"; echo
     fi
     cat "$tdir/prompt.md"
+    if [ -s "$tdir/retry_findings.md" ]; then
+      echo; echo "---"; echo
+      echo "## Your previous attempt was reviewed and rejected"
+      echo "Your earlier work on this task is already in the working tree. Fix the findings"
+      echo "below rather than starting over, and do not revert the parts that were not"
+      echo "criticised. If a finding is wrong, say so in your final message instead of"
+      echo "silently ignoring it."
+      echo; cat "$tdir/retry_findings.md"
+    fi
     echo; /bin/bash "$MEMORY" note dwarf
   } > "$tdir/dwarf.input"
-  if ! /bin/bash "$DISPATCH" dwarf "$dw" --repo "$wt" --run-dir "$tdir" \
-        --prompt-file "$tdir/dwarf.input" $yd >"$tdir/dwarf.out" 2>&1; then
-    echo ERROR > "$tdir/status"; note "$id: dwarf dispatch failed — see $tdir/dwarf.out"; return 1
+  /bin/bash "$DISPATCH" dwarf "$dw" --repo "$wt" --run-dir "$tdir" \
+        --prompt-file "$tdir/dwarf.input" $yd >"$tdir/dwarf.out" 2>&1
+  rc=$?
+  if [ "$rc" -ne 0 ]; then
+    if [ "$rc" = 7 ]; then
+      echo TIMEOUT > "$tdir/status"; note "$id: dwarf hit the dispatch timeout — see $tdir/dwarf.out"
+    else
+      echo ERROR > "$tdir/status"; note "$id: dwarf dispatch failed — see $tdir/dwarf.out"
+    fi
+    return 1
   fi
 
   /bin/bash "$MEMORY" record "$REPO" --last "$tdir/dwarf.last" --role dwarf \
-      --run-id "$run_id" --task "$id" --model "$dw" >/dev/null 2>&1
+      --run-id "$run_id" --task "$id" --model "$dw" \
+      --duration "$(dispatch_duration "$tdir" dwarf)" >/dev/null 2>&1
 
-  # capture the real diff, including new files, then commit on the task branch
+  # Capture the real diff, including new files, then commit on the task branch.
+  # Diffed against the task's pinned base rather than the branch head, so a retry
+  # hands QA the task's CUMULATIVE work. Reviewing only the fix would let the
+  # first attempt's code through unread.
   # .forge/ is forge's own memory, rewritten in the user's tree after every run.
   # Left in, it would reach QA as if a dwarf had written it, and any task whose
   # files touched it would collide with every other task in the wave planner.
+  [ -s "$tdir/changes.diff" ] && mv "$tdir/changes.diff" "$tdir/changes.prev.diff"
   (cd "$wt" && git add -A -- . ":(exclude).forge" \
-      && git diff --cached -- . ":(exclude).forge") > "$tdir/changes.diff" 2>/dev/null
+      && git diff --cached "$base" -- . ":(exclude).forge") > "$tdir/changes.diff" 2>/dev/null
   if [ ! -s "$tdir/changes.diff" ]; then
     echo FAIL > "$tdir/status"
     echo "The dwarf produced no changes at all." > "$tdir/qa.last"
     note "$id: dwarf produced an empty diff"; return 1
   fi
+  if [ -s "$tdir/changes.prev.diff" ] && cmp -s "$tdir/changes.diff" "$tdir/changes.prev.diff"; then
+    echo FAIL > "$tdir/status"
+    echo "The retry changed nothing: the diff is byte-identical to the previous attempt." \
+      > "$tdir/qa.last"
+    note "$id: retry produced no new changes — not re-reviewing identical code"; return 1
+  fi
+
+  check_drift "$(field "$T" "$id" files)" "$tdir" "$wt" "$base"
+  if [ -s "$tdir/drift.txt" ]; then
+    note "$id: touched undeclared file(s): $(tr '\n' ' ' < "$tdir/drift.txt")"
+  fi
+
   (cd "$wt" && git -c user.name=forge -c user.email=forge@local \
-      commit -q -m "forge($id): $(field "$T" "$id" title)") >/dev/null 2>&1
+      commit -q -m "forge($id) attempt $attempt: $(field "$T" "$id" title)") >/dev/null 2>&1
 
   # qa
   write_capsule "$PLAN" "$id" qa >/dev/null
@@ -407,6 +506,15 @@ do_task() {
     echo "bugs: logic errors, broken edge cases, behaviour that does not match what was asked."
     echo "Also say if it solved a different problem, or touched files outside the task's scope."
     echo
+    if [ -s "$tdir/drift.txt" ]; then
+      # The reviewer is already asked about scope and had no way to know the answer.
+      echo "Scope note: this task declared it would touch $(field "$T" "$id" files), and the"
+      echo "diff also changes files it did not declare:"
+      sed 's/^/  - /' "$tdir/drift.txt"
+      echo "That is not automatically wrong — judge whether each was actually necessary. It"
+      echo "matters because another task may own those files."
+      echo
+    fi
     echo "Report findings only — do not edit any file. For each finding give the file and line,"
     echo "what breaks, and a concrete input that triggers it. Mark each CONFIRMED if you traced"
     echo "it in the code, or PLAUSIBLE if you could not fully verify it."
@@ -418,15 +526,23 @@ do_task() {
     echo '```diff'; cat "$tdir/changes.diff"; echo '```'
     echo; /bin/bash "$MEMORY" note qa
   } > "$tdir/qa.input"
-  if ! /bin/bash "$DISPATCH" qa "$qa" --repo "$wt" --run-dir "$tdir" \
-        --prompt-file "$tdir/qa.input" $yq >"$tdir/qa.out" 2>&1; then
-    echo ERROR > "$tdir/status"; note "$id: qa dispatch failed — see $tdir/qa.out"; return 1
+  /bin/bash "$DISPATCH" qa "$qa" --repo "$wt" --run-dir "$tdir" \
+        --prompt-file "$tdir/qa.input" $yq >"$tdir/qa.out" 2>&1
+  rc=$?
+  if [ "$rc" -ne 0 ]; then
+    if [ "$rc" = 7 ]; then
+      echo TIMEOUT > "$tdir/status"; note "$id: qa hit the dispatch timeout — see $tdir/qa.out"
+    else
+      echo ERROR > "$tdir/status"; note "$id: qa dispatch failed — see $tdir/qa.out"
+    fi
+    return 1
   fi
 
   local verdict
   verdict="$(grep -o 'FORGE_VERDICT: *[A-Za-z]*' "$tdir/qa.last" 2>/dev/null | tail -1 | awk '{print $2}')"
   /bin/bash "$MEMORY" record "$REPO" --last "$tdir/qa.last" --role qa \
-      --run-id "$run_id" --task "$id" --model "$qa" --verdict "${verdict:-UNKNOWN}" >/dev/null 2>&1
+      --run-id "$run_id" --task "$id" --model "$qa" --verdict "${verdict:-UNKNOWN}" \
+      --duration "$(dispatch_duration "$tdir" qa)" >/dev/null 2>&1
 
   case "$verdict" in
     PASS) echo PASS > "$tdir/status" ;;
@@ -436,6 +552,94 @@ do_task() {
     *)    echo UNKNOWN > "$tdir/status" ;;
   esac
   return 0
+}
+
+# Merge one passing task onto the integration branch. Shared by `run` and `retry`
+# so a retried task lands exactly the way a first-attempt task does.
+merge_task() { # merge_task <plan> <id> -> 0 merged, 1 conflicted
+  local PLAN="$1" id="$2" REPO run_id int_wt
+  REPO="$(cat "$PLAN/repo")"; run_id="$(cat "$PLAN/run_id")"
+  int_wt="$(cat "$PLAN/wt_root")/_integration"
+  if (cd "$int_wt" && git merge --no-ff -m "forge: merge $id" "forge/$run_id/$id" >/dev/null 2>&1); then
+    touch "$PLAN/tasks/$id/merged"
+    return 0
+  fi
+  (cd "$int_wt" && git merge --abort >/dev/null 2>&1)
+  echo CONFLICT > "$PLAN/tasks/$id/status"
+  return 1
+}
+
+# --- retry --------------------------------------------------------------------
+# A failed task keeps its branch and worktree "so there is something to inspect and
+# retry from" — this is the retry. It is a command a human types, not an automatic
+# repair loop, which is what keeps forge's one-dwarf-then-QA rule intact.
+do_retry() {
+  local PLAN="${1:?retry needs a plan dir}" id="${2:?retry needs a task id}"; shift 2
+  local NEWDWARF=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --dwarf) NEWDWARF="${2:?--dwarf needs a spec}"; shift 2 ;;
+      --yolo-dwarf) touch "$PLAN/yolo_dwarf"; shift ;;
+      --yolo-qa)    touch "$PLAN/yolo_qa"; shift ;;
+      *) die "retry: unknown option '$1'" ;;
+    esac
+  done
+  local T="$PLAN/tasks.tsv" tdir="$PLAN/tasks/$id"
+  [ -s "$T" ] || die "no tasks.tsv in '$PLAN'"
+  all_ids "$T" | grep -qx "$id" || die "no task '$id' in this plan"
+  [ -s "$PLAN/wt_root" ] || die "this plan has never been run — use 'run', not 'retry'"
+  local st; st="$(task_status "$PLAN" "$id")"
+  [ "$st" = "MERGED" ] && die "task '$id' already merged — nothing to retry"
+
+  # The findings are the whole point of retrying rather than re-running: the dwarf
+  # gets told what was wrong with its own previous attempt.
+  # Only a real review replaces the findings. The runner also writes explanatory
+  # text into qa.last when it fails a task without dispatching QA ("produced no
+  # changes at all"), and copying that over would throw away the actual findings
+  # the previous reviewer gave — the one thing a retry exists to carry forward.
+  if grep -q 'FORGE_VERDICT' "$tdir/qa.last" 2>/dev/null; then
+    cp "$tdir/qa.last" "$tdir/retry_findings.md"
+  elif [ -s "$tdir/retry_findings.md" ]; then
+    note "$id: no new review since the last retry — reusing the previous findings"
+  else
+    note "$id: no previous QA findings to pass on (last status was $st)"
+    : > "$tdir/retry_findings.md"
+  fi
+  if [ -n "$NEWDWARF" ]; then
+    # Written into tasks.tsv rather than kept in a side file: the table then shows
+    # the model that will actually be spent, and plan's rule that an explicit
+    # column value survives a re-plan protects the escalation for free.
+    awk -F'\t' -v OFS='\t' -v id="$id" -v dw="$NEWDWARF" \
+      '$0 !~ /^#/ && $1==id { $5=dw } { print }' "$T" > "$PLAN/.tasks.tsv.retry" \
+      && mv "$PLAN/.tasks.tsv.retry" "$T"
+  fi
+  rm -f "$tdir/status"
+
+  note "retrying $id with dwarf $(field "$T" "$id" dwarf)"
+  do_task "$PLAN" "$id"
+  st="$(task_status "$PLAN" "$id")"
+  if [ "$st" = "PASS" ]; then
+    if merge_task "$PLAN" "$id"; then
+      note "$id PASS -> merged"
+    else
+      note "$id PASS but conflicted on merge — branch preserved"
+    fi
+  fi
+  write_results "$PLAN"
+  echo
+  printf '  %-14s %-9s %s\n' id status branch
+  awk -F'\t' '{printf "  %-14s %-9s %s\n", $1, $2, $3}' "$PLAN/results.tsv"
+  [ "$(task_status "$PLAN" "$id")" = "MERGED" ] || return 5
+  return 0
+}
+
+write_results() { # write_results <plan>
+  local PLAN="$1" T="$1/tasks.tsv" run_id id
+  run_id="$(cat "$PLAN/run_id")"
+  : > "$PLAN/results.tsv"
+  for id in $(all_ids "$T"); do
+    printf '%s\t%s\tforge/%s/%s\n' "$id" "$(task_status "$PLAN" "$id")" "$run_id" "$id" >> "$PLAN/results.tsv"
+  done
 }
 
 # --- run ----------------------------------------------------------------------
@@ -492,23 +696,36 @@ do_run() {
   [ -d "$int_wt" ] || (cd "$REPO" && git worktree add "$int_wt" "$int_br" >/dev/null 2>&1) \
     || die "could not create integration worktree" 3
 
-  local w id st failed=0
+  local w id st failed=0 todo skipped
   for w in $(awk -F'\t' '{print $1}' "$W" | sort -un); do
     # Every wave branches from the integration branch as it currently stands, so a
     # dependent task sees its dependencies' merged code.
     (cd "$int_wt" && git rev-parse HEAD) > "$PLAN/base_ref"
-    note "wave $w: dispatching $(awk -F'\t' -v w="$w" '$1==w' "$W" | wc -l | tr -d ' ') task(s), max $MAXP in parallel"
-    awk -F'\t' -v w="$w" '$1==w {print $2}' "$W" \
-      | xargs -P "$MAXP" -I{} /bin/bash "$SELF" _task "$PLAN" {}
+    # Already-merged tasks are skipped rather than re-dispatched, which is what
+    # makes an interrupted run continuable: the work that landed stays landed and
+    # nobody's quota is spent twice on it.
+    todo=""; skipped=0
     for id in $(awk -F'\t' -v w="$w" '$1==w {print $2}' "$W"); do
+      if [ "$(task_status "$PLAN" "$id")" = "MERGED" ]; then
+        skipped=$((skipped+1))
+      else
+        todo="$todo $id"
+      fi
+    done
+    if [ -z "${todo// /}" ]; then
+      note "wave $w: all $skipped task(s) already merged — skipping"
+      continue
+    fi
+    [ "$skipped" -gt 0 ] && note "wave $w: $skipped task(s) already merged, resuming the rest"
+    note "wave $w: dispatching $(printf '%s\n' $todo | wc -l | tr -d ' ') task(s), max $MAXP in parallel"
+    printf '%s\n' $todo \
+      | xargs -P "$MAXP" -I{} /bin/bash "$SELF" _task "$PLAN" {}
+    for id in $todo; do
       st="$(task_status "$PLAN" "$id")"
       if [ "$st" = "PASS" ]; then
-        if (cd "$int_wt" && git merge --no-ff -m "forge: merge $id" "forge/$run_id/$id" >/dev/null 2>&1); then
-          touch "$PLAN/tasks/$id/merged"
+        if merge_task "$PLAN" "$id"; then
           note "wave $w: $id PASS -> merged"
         else
-          (cd "$int_wt" && git merge --abort >/dev/null 2>&1)
-          echo CONFLICT > "$PLAN/tasks/$id/status"
           note "wave $w: $id PASS but conflicted on merge — branch preserved"
           failed=1
         fi
@@ -519,10 +736,7 @@ do_run() {
     done
   done
 
-  : > "$PLAN/results.tsv"
-  for id in $(all_ids "$T"); do
-    printf '%s\t%s\tforge/%s/%s\n' "$id" "$(task_status "$PLAN" "$id")" "$run_id" "$id" >> "$PLAN/results.tsv"
-  done
+  write_results "$PLAN"
   # Only prune worktrees for work that is safely merged, and only after the record
   # of it has been written and read back. A failed task keeps its worktree and
   # branch so there is something to inspect and retry from.
@@ -537,6 +751,29 @@ do_run() {
   printf '  %-14s %-9s %s\n' id status branch
   awk -F'\t' '{printf "  %-14s %-9s %s\n", $1, $2, $3}' "$PLAN/results.tsv"
   echo
+
+  # Undeclared files are reported here rather than buried in a task log, because
+  # this is the list that explains any CONFLICT above.
+  local drift=0
+  for id in $(all_ids "$T"); do
+    if [ -s "$PLAN/tasks/$id/drift.txt" ]; then
+      [ "$drift" = 0 ] && echo "scope drift (touched files the task did not declare):"
+      drift=1
+      printf '  %-14s %s\n' "$id" "$(tr '\n' ' ' < "$PLAN/tasks/$id/drift.txt")"
+    fi
+  done
+  [ "$drift" = 1 ] && echo
+
+  if [ "$failed" = 1 ]; then
+    echo "retry a failed task with its reviewer's findings:"
+    echo "  forge-parallel.sh retry $PLAN <task-id> [--dwarf <spec>]"
+    echo
+  fi
+
+  if [ ! -f "$PLAN/no_memory" ]; then
+    /bin/bash "$MEMORY" spend "$REPO" --run "$run_id" 2>/dev/null | sed 's/^/  /'
+    echo
+  fi
   if [ ! -f "$PLAN/no_memory" ] && [ -s "$REPO/.forge/memory.md" ]; then
     echo "project memory: $(grep -c '^- ' "$REPO/.forge/memory.md") fact(s) in .forge/ —"
     echo "  uncommitted, and the only thing forge wrote outside its own branches."
@@ -571,11 +808,12 @@ do_integrate() {
 }
 
 # --- main ---------------------------------------------------------------------
-[ $# -ge 1 ] || die "usage: forge-parallel.sh <plan|run|integrate|_task> <plan-dir> [...]"
+[ $# -ge 1 ] || die "usage: forge-parallel.sh <plan|run|retry|integrate|_task> <plan-dir> [...]"
 CMD="$1"; shift
 case "$CMD" in
   plan)      do_plan "$@" ;;
   run)       do_run "$@" ;;
+  retry)     do_retry "$@" ;;
   integrate) do_integrate "$@" ;;
   _task)     do_task "$@" ;;
   *) die "unknown subcommand '$CMD'" ;;

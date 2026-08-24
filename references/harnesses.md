@@ -26,6 +26,19 @@ implies.
 | `opencode` | `opencode run` | `-m provider/model` | `--variant` | `--auto` |
 | `antigravity` | `agy --print=...` | `--model` | `--effort` | `--dangerously-skip-permissions` |
 
+**Only antigravity bounds its own runtime.** The other four will sit on a hung request
+indefinitely, and stock macOS ships no `timeout` binary to wrap them in — so a hung dwarf
+used to stall its whole wave under `forge-parallel.sh`'s `xargs -P` with no output and no
+way to distinguish stuck from slow. `forge-dispatch.sh` therefore runs every backend in the
+background and kills it after `--timeout` seconds (default 2700; `0` disables; `FORGE_TIMEOUT`
+in the environment). A killed dispatch exits `7`.
+
+Two implementation notes worth keeping, because both were arrived at the hard way: the
+backend is started with `exec` inside its subshell, so the pid forge holds is the backend
+itself rather than a wrapper it would be useless to kill; and macOS has no `setsid`, so
+there is no process group to signal as a unit and the kill has to walk children explicitly
+(`pkill -P`, then TERM, then KILL for a CLI that traps TERM).
+
 Effort ladders, low to high:
 
 - codex — `low medium high xhigh max ultra`

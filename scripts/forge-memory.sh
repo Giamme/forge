@@ -21,9 +21,10 @@
 #   forge-memory.sh inject <repo> <planner|dwarf|qa>
 #   forge-memory.sh note   <planner|dwarf|qa>
 #   forge-memory.sh record <repo> --last <file> --role <r> [--run-id X] [--task T]
-#                                 [--model M] [--verdict V]
+#                                 [--model M] [--verdict V] [--duration S]
 #   forge-memory.sh show   <repo>
 #   forge-memory.sh prune  <repo>
+#   forge-memory.sh spend  <repo> [--run <run-id>]
 #
 # Exit codes: 0 ok | 2 usage error
 set -uo pipefail
@@ -267,7 +268,7 @@ do_note() {
 # --- record -------------------------------------------------------------------
 do_record() {
   local repo="${1:?record needs a repo}"; shift
-  local LAST="" ROLE="" RUN_ID="-" TASK="-" MODEL="-" VERDICT="-"
+  local LAST="" ROLE="" RUN_ID="-" TASK="-" MODEL="-" VERDICT="-" DURATION="-"
   while [ $# -gt 0 ]; do
     case "$1" in
       --last)    LAST="${2:?--last needs a value}"; shift 2 ;;
@@ -276,6 +277,7 @@ do_record() {
       --task)    TASK="${2:?--task needs a value}"; shift 2 ;;
       --model)   MODEL="${2:?--model needs a value}"; shift 2 ;;
       --verdict) VERDICT="${2:?--verdict needs a value}"; shift 2 ;;
+      --duration) DURATION="${2:?--duration needs a value}"; shift 2 ;;
       *) die "record: unknown option '$1'" ;;
     esac
   done
@@ -288,7 +290,7 @@ do_record() {
   ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   mkdir -p "$(dir_for "$repo")"
   if [ ! -f "$led" ]; then
-    printf '# ts\trun_id\ttask\trole\tmodel\tverdict\tcategory\tkey\ttext\n' > "$led"
+    printf '# ts\trun_id\ttask\trole\tmodel\tverdict\tcategory\tkey\ttext\tduration_s\n' > "$led"
   fi
 
   if [ -n "$LAST" ] && [ -r "$LAST" ]; then
@@ -301,9 +303,10 @@ do_record() {
       [ -n "$text" ] || continue
       key="$(norm_key "$(strip_anchor "$text")")"
       [ -n "$key" ] || continue
-      printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+      printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
         "$ts" "$(sanitize "$RUN_ID")" "$(sanitize "$TASK")" "$(sanitize "$ROLE")" \
-        "$(sanitize "$MODEL")" "$(sanitize "$VERDICT")" "$cat" "$key" "$text" >> "$led"
+        "$(sanitize "$MODEL")" "$(sanitize "$VERDICT")" "$cat" "$key" "$text" \
+        "$(sanitize "$DURATION")" >> "$led"
       n=$((n+1))
     done < <(grep -o 'FORGE_LEARNING:.*' "$LAST" 2>/dev/null)
   fi
@@ -311,9 +314,10 @@ do_record() {
   # A dispatch that emitted no learning is still worth a ledger row: it is how the
   # ledger can later answer "which model has worked on this repo, and how did it do".
   if [ "$n" -eq 0 ]; then
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
       "$ts" "$(sanitize "$RUN_ID")" "$(sanitize "$TASK")" "$(sanitize "$ROLE")" \
-      "$(sanitize "$MODEL")" "$(sanitize "$VERDICT")" "-" "-" "-" >> "$led"
+      "$(sanitize "$MODEL")" "$(sanitize "$VERDICT")" "-" "-" "-" \
+      "$(sanitize "$DURATION")" >> "$led"
   fi
 
   local out kept stale capped
@@ -326,14 +330,80 @@ do_record() {
   printf '\n'
 }
 
+# --- spend --------------------------------------------------------------------
+# The ledger already carries one row per dispatch, and it is never injected into a
+# prompt, so accounting from it costs nothing at all. Time and dispatch counts
+# only: token accounting is exposed differently (or not at all) by the five CLIs,
+# and a number forge cannot actually measure would be worse than no number.
+do_spend() {
+  local repo="${1:?spend needs a repo}"; shift
+  local ONLY_RUN=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --run) ONLY_RUN="${2:?--run needs a value}"; shift 2 ;;
+      *) die "spend: unknown option '$1'" ;;
+    esac
+  done
+  local led; led="$(ledger_for "$repo")"
+  [ -s "$led" ] || { echo "no ledger in $repo/.forge — nothing dispatched here yet"; return 0; }
+
+  awk -F'\t' -v only="$ONLY_RUN" '
+    function hms(x,   h,m,s) {
+      if (x == "") return "     -"
+      h=int(x/3600); m=int((x%3600)/60); s=x%60
+      if (h>0) return sprintf("%dh%02dm", h, m)
+      if (m>0) return sprintf("%dm%02ds", m, s)
+      return sprintf("%ds", s)
+    }
+    /^#/ || NF < 9 { next }
+    {
+      ts=$1; run=$2; task=$3; role=$4; model=$5
+      dur = (NF >= 10 ? $10 : "-")
+      if (only != "" && run != only) next
+      # One dispatch emitting two learnings writes two rows. Every row from one
+      # dispatch shares its timestamp, so this counts dispatches, not lines.
+      k = ts "\034" run "\034" task "\034" role
+      if (!(k in seen)) {
+        seen[k] = 1; n[model]++; rn[role]++; total++; runs[run] = 1
+      }
+      # Count the dispatch once, but take its duration from whichever of its rows
+      # carries one — a dispatch that straddles the schema change has both kinds.
+      if (dur ~ /^[0-9]+$/ && !(k in durof)) {
+        durof[k] = dur
+        t[model] += dur; timed[model]++
+        rt[role] += dur
+        tt += dur; ttn++
+      }
+    }
+    END {
+      if (total == 0) { print "no dispatches recorded" ; exit }
+      nruns = 0; for (r in runs) nruns++
+      printf "%d dispatch(es) across %d run(s), %s of model time\n", total, nruns, hms(tt)
+      if (ttn < total)
+        printf "(%d dispatch(es) predate duration recording and are counted but not timed)\n", total - ttn
+      print "Durations sum concurrent work, so they exceed the wall-clock of a parallel run."
+      print ""
+      printf "  %-26s %6s %9s %9s\n", "by model", "disp", "total", "mean"
+      for (m in n)
+        printf "  %-26s %6d %9s %9s\n", m, n[m], hms(t[m]), \
+               (timed[m] > 0 ? hms(int(t[m]/timed[m])) : "     -")
+      print ""
+      printf "  %-26s %6s %9s\n", "by role", "disp", "total"
+      for (r in rn)
+        printf "  %-26s %6d %9s\n", r, rn[r], hms(rt[r])
+    }
+  ' "$led"
+}
+
 # --- main ---------------------------------------------------------------------
-[ $# -ge 1 ] || die "usage: forge-memory.sh <inject|note|record|show|prune> [repo] [...]"
+[ $# -ge 1 ] || die "usage: forge-memory.sh <inject|note|record|show|prune|spend> [repo] [...]"
 CMD="$1"; shift
 case "$CMD" in
   inject) do_inject "$@" ;;
   note)   do_note "$@" ;;
   record) do_record "$@" ;;
   show)   mem="$(memory_for "${1:?show needs a repo}")"; [ -s "$mem" ] && cat "$mem" ;;
+  spend)  do_spend "$@" ;;
   prune)  rebuild "${1:?prune needs a repo}" >/dev/null; do_inject "${1}" dwarf ;;
   *) die "unknown subcommand '$CMD'" ;;
 esac

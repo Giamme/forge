@@ -16,6 +16,7 @@ Read this when memory looks empty, looks wrong, or has grown past its budget.
 - [Staleness and the cap](#staleness-and-the-cap)
 - [Injection slices](#injection-slices)
 - [The diff exclusion](#the-diff-exclusion)
+- [Spend accounting](#spend-accounting)
 - [Commands](#commands)
 - [Failure modes](#failure-modes)
 
@@ -173,15 +174,40 @@ Two distinct failures otherwise, both quiet:
 - if `.forge/` ever entered a task's `files`, every task would overlap every other task and
   the wave planner would serialize the entire run while reporting it as deferrals.
 
+## Spend accounting
+
+`forge-dispatch.sh` times every dispatch and `record` stores it, so the ledger answers what
+forge has cost this repo without any new bookkeeping and without a byte of prompt context:
+
+```bash
+forge-memory.sh spend <repo> [--run <run-id>]
+```
+
+Wall-clock and dispatch counts grouped by model and by role — **not** tokens and not money.
+The five CLIs expose usage differently or not at all, so a token number would be a number
+forge cannot actually measure, which is worse than none.
+
+Two things the output states rather than leaves the reader to work out: durations *sum*
+concurrent work, so a `--max-parallel 3` run reports more model time than it took in
+wall-clock; and dispatches recorded before `duration_s` existed are counted but not timed.
+
+`duration_s` is the ledger's tenth column, appended at the end on purpose. A ledger written
+by an older forge — and possibly already committed and shared — has nine fields, and awk
+yields `""` for the missing one instead of shifting every column, so old rows stay readable.
+
+Counting is by dispatch, not by row: one dispatch that emits two learnings writes two rows,
+and every row from a single dispatch shares its timestamp, which is what the counter keys on.
+
 ## Commands
 
 ```bash
 forge-memory.sh inject <repo> <planner|dwarf|qa>   # block to prepend; empty if no memory
 forge-memory.sh note <planner|dwarf|qa>            # the instruction to append
 forge-memory.sh record <repo> --last <file> --role <r> [--run-id X] [--task T]
-                              [--model M] [--verdict V]
+                              [--model M] [--verdict V] [--duration S]
 forge-memory.sh show <repo>
 forge-memory.sh prune <repo>                       # re-apply staleness and cap now
+forge-memory.sh spend <repo> [--run <run-id>]      # time and dispatch counts
 ```
 
 `--no-memory`, or `FORGE_MEMORY=off` in the environment, disables all of it: nothing is

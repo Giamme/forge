@@ -15,6 +15,7 @@ run leaves branches behind.
 - [The capsule](#the-capsule)
 - [Planning](#planning)
 - [QA verdicts](#qa-verdicts)
+- [Retrying, and resuming an interrupted run](#retrying-and-resuming-an-interrupted-run)
 - [Branches, worktrees, cleanup](#branches-worktrees-cleanup)
 - [Failure modes](#failure-modes)
 
@@ -79,6 +80,15 @@ matters when a sibling task was planned against that shape.
 `files` is a promise, not a prediction: it is what the wave planner trusts when deciding what
 may run concurrently, and it is what the capsule tells other dwarves not to touch. An
 understated `files` is how two dwarves end up in the same file and produce a conflict.
+
+The promise is checked. After each dwarf finishes, the runner compares what the task
+*declared* against what it actually touched (a declared directory covers the paths beneath
+it, so `src/routes` covers `src/routes/api.py`). Undeclared paths go into
+`tasks/<id>/drift.txt`, into the run summary, and into the QA prompt — which already asks
+whether the diff went outside the task's scope and previously had no way to know. It is a
+warning and never a failure: a dwarf that genuinely had to touch one more file did the right
+thing. What it buys is that a merge `CONFLICT` two waves later arrives with its cause
+already named, instead of leaving someone to diff two branches to find out.
 
 `plan` resolves difficulty into concrete specs and writes them back into the `dwarf`/`qa`
 columns, so `run` never consults the routing rules. This is also what makes a gate override
@@ -190,6 +200,40 @@ A failing task is excluded and its branch preserved; the rest of the run proceed
 no automatic repair pass, consistent with forge's rule that a dwarf → QA cycle does not loop
 on its own.
 
+## Retrying, and resuming an interrupted run
+
+A failed task keeps its branch and its worktree. `retry` is what acts on them:
+
+```bash
+forge-parallel.sh retry <plan-dir> <task-id> [--dwarf <spec>]
+```
+
+It re-dispatches that one task **in the worktree it already has**, with the previous
+reviewer's findings prepended to the prompt — that carry-forward is the whole difference
+between a retry and simply running the task again. It then re-reviews, and merges if the
+verdict is now `PASS`. `--dwarf` escalates to a stronger model and is written back into
+`tasks.tsv`, so the table shows the model that will actually be spent and the escalation
+survives a re-plan.
+
+Two details that are load-bearing rather than incidental:
+
+- **The base is pinned per task, not per run.** A retry diffs against the commit the task
+  was originally branched from, so its reviewer sees the task's *cumulative* work. Reviewing
+  only the fix would let the first attempt's code through unread, and re-basing onto the
+  integration branch as it now stands would put other tasks' merged code into this task's
+  diff.
+- **An identical retry is not re-reviewed.** If the diff comes back byte-identical to the
+  previous attempt, the task fails again without a QA dispatch. Paying a reviewer to read
+  the same code twice buys nothing.
+
+`retry` is a command a human types. Forge does not loop a dwarf against its own reviewer on
+its own initiative, and that rule is unchanged.
+
+**Resuming** needs no special command: run `run` again. Tasks already `MERGED` are skipped
+rather than re-dispatched, each wave re-bases on the integration branch as it now stands, and
+existing worktrees are reused. That is what makes an interrupted run — a killed process, a
+hung harness, a closed laptop — continuable instead of a total loss.
+
 ## Branches, worktrees, cleanup
 
 ```
@@ -220,6 +264,7 @@ The user's own branch and working tree are untouched for the whole run.
 | Symptom | Cause |
 |---------|-------|
 | task status `ERROR` | worktree creation or a dispatch failed; see `tasks/<id>/dwarf.out` / `qa.out` |
+| task status `TIMEOUT` | that role exceeded the dispatch timeout and was killed. It has usually left a partial edit in the worktree; `retry` continues from it |
 | task status `FAIL` with "produced no changes" | the dwarf ended without editing anything — usually an ambiguous prompt it could not resolve headlessly |
 | task status `UNKNOWN` | QA never emitted a verdict line; read `tasks/<id>/qa.last` |
 | task status `CONFLICT` | QA passed but the merge onto the integration branch conflicted — `files` was understated somewhere |
@@ -227,6 +272,9 @@ The user's own branch and working tree are untouched for the whole run.
 | dwarves ignore existing work | `goal.txt` or `files` missing, so the capsule carries no useful status |
 | `.forge/` appears in a task's diff | the capture is missing `':(exclude).forge'` — see `memory.md` |
 | dwarves build incompatible interfaces | no `approach.md`; the seam was never agreed. Plan it, or use `--planner` |
+| "scope drift" in the summary | the task touched files it did not declare. Not a failure — but if a later task conflicts on one of those files, this is why |
+| `retry` says "produced no new changes" | the dwarf returned a byte-identical diff. It has nothing to add; escalate with `--dwarf` or fix the prompt |
+| a task will not re-run: "already exists" | a worktree directory was deleted by hand. `run`/`retry` prune stale registrations first, so re-run rather than deleting the branch |
 
 A run where several tasks report "produced no changes" usually means the decomposition
 produced tasks that were not independently actionable — the fix is a coarser
