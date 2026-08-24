@@ -95,10 +95,15 @@ EOT
   return $rc
 }
 
-[ $# -ge 1 ] || die "usage: forge-dispatch.sh <doctor|dwarf|qa> [spec] [options]"
+[ $# -ge 1 ] || die "usage: forge-dispatch.sh <doctor|dwarf|qa|planner> [spec] [options]"
 ROLE="$1"; shift
 [ "$ROLE" = "doctor" ] && { doctor; exit $?; }
-case "$ROLE" in dwarf|qa) ;; *) die "unknown role '$ROLE' (expected dwarf, qa or doctor)" ;; esac
+case "$ROLE" in dwarf|qa|planner) ;; *) die "unknown role '$ROLE' (expected dwarf, qa, planner or doctor)" ;; esac
+
+# qa and planner both read the repo and write nothing to it: a reviewer that can
+# edit the diff is no longer an independent check of it, and a planner that edits
+# has quietly become the dwarf. They share one permission profile.
+read_only_role() { case "$ROLE" in qa|planner) return 0 ;; *) return 1 ;; esac; }
 [ $# -ge 1 ] || die "role '$ROLE' needs a spec, e.g. sol:xhigh:openclaude"
 SPEC="$1"; shift
 
@@ -170,7 +175,9 @@ else
   if [ -z "$EFFORT" ]; then
     # Build at medium, review high: a reviewer that thinks less than the
     # implementer tends to rubber-stamp, which defeats the point of a second model.
-    case "$ROLE" in dwarf) EFFORT="medium" ;; qa) EFFORT="xhigh" ;; esac
+    # Planning is the stage where thinking pays for itself most cheaply — a bad
+    # plan is executed at full cost by every dwarf downstream of it.
+    case "$ROLE" in dwarf) EFFORT="medium" ;; qa|planner) EFFORT="xhigh" ;; esac
     DEFAULTED=1
     [ -n "$LADDER" ] || EFFORT=""   # opencode: no ladder, let the provider choose
   else
@@ -279,16 +286,25 @@ case "$HARNESS" in
     if [ "$YOLO" = 1 ]; then
       CMD+=(--dangerously-skip-permissions)
     else
-      # `auto` rather than `acceptEdits`: acceptEdits lets the agent write files
-      # but still blocks shell commands, so a dwarf under it cannot run the tests
-      # that would tell it whether its own change works, and a reviewer under it
-      # cannot reproduce the bug it suspects. Verified against this machine's
-      # CLIs — acceptEdits and dontAsk both refuse Bash, auto allows it.
-      CMD+=(--permission-mode auto)
+      # `acceptEdits`, not `auto`. Re-measured against this machine's CLIs:
+      # acceptEdits allows both Edit and Bash, whereas `auto` allows Bash but
+      # still prompts for Edit — and a headless dwarf has nobody to answer that
+      # prompt, so it ends with "I need your permission to edit f.py" and an
+      # empty diff. The failure is silent: the harness exits 0 and forge sees a
+      # successful run that changed nothing.
+      CMD+=(--permission-mode acceptEdits)
+      # Neither mode alone is enough, and the gap is silent in both directions:
+      # `auto` allows shell but prompts for Edit, so a dwarf ends with "I need
+      # your permission to edit" and an empty diff; `acceptEdits` allows Edit but
+      # still prompts for any non-trivial shell command, so a dwarf writes code
+      # and then stalls on "awaiting approval to run pytest" without ever
+      # verifying it. acceptEdits plus an explicit Bash allowance gives both, and
+      # QA's --disallowed-tools below still overrides the edit permission.
+      CMD+=(--allowedTools "Bash")
       # QA must not be able to "fix" what it reviews — a reviewer that edits the
       # diff is no longer an independent check of it. It keeps read and shell
       # access so it can actually verify a finding before reporting it.
-      [ "$ROLE" = "qa" ] && CMD+=(--disallowed-tools "Edit,Write,NotebookEdit")
+      read_only_role && CMD+=(--disallowed-tools "Edit,Write,NotebookEdit")
     fi
     # The prompt goes on stdin, not argv. --disallowed-tools and friends are
     # variadic, so any positional after them is silently eaten as another tool
@@ -303,7 +319,7 @@ case "$HARNESS" in
     # opencode run exposes no sandbox tier — without --auto it blocks on a
     # permission prompt that nothing can answer headlessly, so it is always set.
     CMD+=(--auto)
-    [ "$ROLE" = "qa" ] && [ "$YOLO" != 1 ] && CMD+=(--agent plan)
+    read_only_role && [ "$YOLO" != 1 ] && CMD+=(--agent plan)
     CMD+=("$PROMPT")
     ;;
   antigravity)
@@ -318,7 +334,7 @@ case "$HARNESS" in
     # the run dies on "Find command timed out: context deadline exceeded".
     CMD+=(--add-dir "$REPO" --add-dir "$RUN_DIR")
     if [ "$YOLO" = 1 ]; then CMD+=(--dangerously-skip-permissions)
-    elif [ "$ROLE" = "qa" ]; then CMD+=(--mode plan)
+    elif read_only_role; then CMD+=(--mode plan)
     else CMD+=(--mode accept-edits); fi
     CMD+=(--print="$PROMPT")
     ;;

@@ -1,7 +1,7 @@
 ---
 name: forge
-description: Dispatch a coding task to a "dwarf" model to implement it, then an independent "qa" model to review the dwarf's actual diff — routing either role to any model, at any reasoning effort, through any local agent CLI (codex, claude, openclaude, opencode, antigravity). Invoked as /forge "<goal>" --dwarf <alias>[:effort[:harness]] --qa <alias>[:effort[:harness]] [--yolo-dwarf] [--yolo-qa] [--decompose-level low|medium|high]. With --decompose-level it splits the goal into tasks, runs several dwarves in parallel in isolated git worktrees routed by task difficulty (--dwarf-high/--dwarf-medium/--dwarf-low), and reviews each task separately. Use this whenever the user runs /forge, or asks to hand a coding task to another model / another CLI to build while a second model reviews it — phrasings like "have sol implement this", "dispatch this to codex", "run it through openclaude", "send it to gemini/antigravity", "get a second model to review the diff", "split this across several models", "run these in parallel", or any mention of dwarf/qa roles.
-argument-hint: '"<goal>" --dwarf <alias>[:effort[:harness]] [--qa <alias>[:effort[:harness]]] [--yolo-dwarf] [--yolo-qa]'
+description: Dispatch a coding task to a "dwarf" model to implement it, then an independent "qa" model to review the dwarf's actual diff — routing either role to any model, at any reasoning effort, through any local agent CLI (codex, claude, openclaude, opencode, antigravity). Invoked as /forge "<goal>" --dwarf <alias>[:effort[:harness]] --qa <alias>[:effort[:harness]] [--yolo-dwarf] [--yolo-qa] [--decompose-level low|medium|high]. With --decompose-level it splits the goal into tasks, runs several dwarves in parallel in isolated git worktrees routed by task difficulty (--dwarf-high/--dwarf-medium/--dwarf-low), and reviews each task separately. With --planner it dispatches the planning stage to a named model instead of planning itself, and it keeps a small project memory in .forge/ of what its runs learned about the repo. Use this whenever the user runs /forge, or asks to hand a coding task to another model / another CLI to build while a second model reviews it — phrasings like "have sol implement this", "dispatch this to codex", "run it through openclaude", "send it to gemini/antigravity", "get a second model to review the diff", "split this across several models", "run these in parallel", or any mention of dwarf/qa roles.
+argument-hint: '"<goal>" --dwarf <alias>[:effort[:harness]] [--qa <alias>] [--planner <alias>] [--yolo-dwarf] [--yolo-qa] [--decompose-level low|medium|high] [--no-memory]'
 allowed-tools: [Bash, Read]
 ---
 
@@ -37,7 +37,9 @@ blocks forever on stdin unless it is redirected. Do not hand-assemble these comm
 ```
 /forge "<goal>" --dwarf <alias>[:<effort>[:<harness>]]
                 [--qa <alias>[:<effort>[:<harness>]]]
+                [--planner <alias>[:<effort>[:<harness>]]]
                 [--yolo-dwarf] [--yolo-qa] [--repo <dir>] [--native-review]
+                [--no-memory]
                 [--decompose-level low|medium|high] [--max-parallel <n>]
                 [--dwarf-high <spec>] [--dwarf-medium <spec>] [--dwarf-low <spec>]
                 [--qa-high <spec>] [--qa-medium <spec>] [--qa-low <spec>]
@@ -158,6 +160,63 @@ cannot poison another. To stop clean slates making every dwarf blind to the run,
 and QA prompt. It is what keeps a dwarf from reimplementing an already-merged helper or
 editing a file another dwarf currently owns.
 
+## Planning
+
+By default **you** plan: before dispatching, decide the approach and put it in the prompt,
+so the dwarf builds the agreed thing rather than inventing a shape nobody has seen. In a
+decomposed run that matters more, because the capsule prevents two dwarves from touching
+one *file* but nothing stops them inventing incompatible *interfaces* at a seam they share.
+
+`--planner <spec>` hands that stage to a named model instead — one dispatch for the whole
+run, never one per task. A single planner is the point: one mind designs both sides of every
+seam, where N independent planners would recreate the problem. Effort defaults to `xhigh`,
+since a bad plan is executed at full price by every dwarf downstream of it.
+
+```bash
+bash <skill_dir>/scripts/forge-dispatch.sh planner <spec> \
+  --repo "$REPO" --run-dir "$FORGE_RUN" --prompt-file "$FORGE_RUN/planner.prompt"
+```
+
+The planner reads the repo and writes nothing to it — it runs with qa's permission profile.
+Ask it for the approach only: in a decomposed run, `tasks.tsv` rows plus a few lines of
+approach per task; in a single-task run, just the approach. Write each task's approach to
+`tasks/<id>/approach.md`, where the runner picks it up for both the dwarf and qa.
+
+Show the approach before dispatching and let the user change it. That gate is the last
+moment the plan is free; after it, changing the plan costs a whole run.
+
+## Project memory
+
+Forge keeps what its runs learned about a repo in `.forge/`, so the tenth run does not
+rediscover what the first one learned:
+
+- `.forge/memory.md` — small, capped, injected into every prompt.
+- `.forge/ledger.tsv` — append-only, one row per dispatch, **never** injected.
+
+That split is deliberate: the ledger remembers everything at no context cost, and only
+memory.md is paid for on every future dispatch. Never inline the ledger into a prompt.
+
+Everything is automatic and mechanical — `scripts/forge-memory.sh` does it:
+
+```bash
+bash <skill_dir>/scripts/forge-memory.sh inject "$REPO" dwarf   # prepend to the prompt
+bash <skill_dir>/scripts/forge-memory.sh note dwarf             # append to the prompt
+bash <skill_dir>/scripts/forge-memory.sh record "$REPO" --last "$FORGE_RUN/dwarf.last" \
+     --role dwarf --model <spec>                                # after the dispatch
+```
+
+`note` asks the role to end with `FORGE_LEARNING: <verify|trap|finding> | <fact>`, and
+`record` does the dedup, recurrence counting and pruning. A `verify` or `trap` is kept the
+first time; a `finding` only after it has recurred in two separate runs, because one
+occurrence is an incident and injecting it into every future prompt would be noise. Most
+runs teach nothing durable and emit nothing — that is the normal outcome, not a failure.
+
+`--no-memory` (or `FORGE_MEMORY=off`) disables all of it.
+
+Two things to tell the user rather than assume: forge **writes `.forge/` into their working
+tree**, which is the only thing it ever writes outside its own branches, and it does not
+commit it. Committing it is what makes the memory travel with the repo to their team.
+
 ## Orchestration
 
 1. **Check the tree.** Run `git status --porcelain` in the target repo. Pre-existing
@@ -169,7 +228,8 @@ editing a file another dwarf currently owns.
 3. **Dispatch the dwarf** (see below). Long runs are normal — run it in the background if
    your harness supports that, otherwise let it block.
 4. **Capture the real diff.** `git diff` plus `git status --porcelain` for new untracked
-   files, written into the run directory. This is qa's input.
+   files, written into the run directory — both excluding `.forge/`, which is forge's own
+   memory and not the dwarf's work. This is qa's input.
 5. **Dispatch qa** against that diff.
 6. **Report.** Summarize what the dwarf changed (files touched, one line on the substance),
    then pass qa's findings through faithfully. Ask whether to apply fixes, send it back for
@@ -190,8 +250,13 @@ the dwarf's own diff and ends up in front of qa as if the dwarf had written it.
 **Dwarf:**
 
 ```bash
-cat > "$FORGE_RUN/dwarf.prompt" <<'EOF'
+bash <skill_dir>/scripts/forge-memory.sh inject "$REPO" dwarf > "$FORGE_RUN/dwarf.prompt"
+
+cat >> "$FORGE_RUN/dwarf.prompt" <<'EOF'
+
 <goal, restated as a direct implementation instruction>
+
+<the approach, if you or --planner produced one>
 
 Edit the files in this repository directly. When you are done, run whatever tests or
 checks the project already has and report the result.
@@ -209,13 +274,25 @@ That last paragraph is not boilerplate. Headless dwarves genuinely stop and ask 
 clarifying question, which nothing can answer — the run then ends with an empty diff and a
 question in the log, having spent the quota and changed nothing.
 
+Close both role prompts with the learning note, and record afterwards:
+
+```bash
+bash <skill_dir>/scripts/forge-memory.sh note dwarf >> "$FORGE_RUN/dwarf.prompt"
+# ... dispatch ...
+bash <skill_dir>/scripts/forge-memory.sh record "$REPO" --last "$FORGE_RUN/dwarf.last" \
+     --role dwarf --model <spec>
+```
+
 **QA:**
 
 ```bash
-cd "$REPO" && git diff > "$FORGE_RUN/changes.diff"
-git status --porcelain >> "$FORGE_RUN/changes.diff"   # so new files are visible too
+cd "$REPO" && git diff -- . ':(exclude).forge' > "$FORGE_RUN/changes.diff"
+# new files too — and .forge/ excluded from both, or forge's own memory reaches qa
+# as if the dwarf had written it.
+git status --porcelain -- . ':(exclude).forge' >> "$FORGE_RUN/changes.diff"
 
 {
+  bash <skill_dir>/scripts/forge-memory.sh inject "$REPO" qa
   echo "The implementer was asked to: <goal>"
   echo
   echo "Review the diff below for correctness bugs: logic errors, broken edge cases,"
@@ -230,6 +307,7 @@ git status --porcelain >> "$FORGE_RUN/changes.diff"   # so new files are visible
   echo '```diff'
   cat "$FORGE_RUN/changes.diff"
   echo '```'
+  bash <skill_dir>/scripts/forge-memory.sh note qa
 } > "$FORGE_RUN/qa.prompt"
 
 bash <skill_dir>/scripts/forge-dispatch.sh qa <spec> \
@@ -283,6 +361,10 @@ user reading only the summary.
   their branch is an explicit `integrate --approved` step.
 - Never delete a failed task's branch or worktree; they are the only record of what went
   wrong and the only thing to retry from.
+- `.forge/` is the one thing forge writes into the user's working tree rather than onto a
+  branch of its own. Say so when it appears, do not commit it for them, and never let it
+  into a captured diff — a reviewer handed forge's own memory will report it as the dwarf's
+  unrelated change.
 
 ## References
 
@@ -293,6 +375,9 @@ user reading only the summary.
   for a new backend.
 - `references/decompose.md` — the `tasks.tsv` schema, difficulty criteria, wave algorithm,
   capsule format and cleanup rules. Read this before running with `--decompose-level`.
+- `references/memory.md` — the `FORGE_LEARNING` grammar, promotion and pruning rules, and
+  the ledger schema. Read this when memory looks wrong, empty or too large.
+- `scripts/forge-memory.sh` — `inject` / `note` / `record` / `show` / `prune`.
 - `scripts/forge-parallel.sh` — `plan` / `run` / `integrate` for decomposed runs.
 - `scripts/forge-install.sh` — installs `/forge` into all five harnesses. Claude,
   OpenClaude, Codex and opencode reference this directory live, so edits take effect

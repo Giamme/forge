@@ -30,6 +30,8 @@ the tasks that pass get merged.
 - [Effort, ceilings and clamping](#effort-ceilings-and-clamping)
 - [Yolo mode](#yolo-mode)
 - [Decomposed runs](#decomposed-runs)
+- [Planning](#planning)
+- [Project memory](#project-memory)
 - [Full command reference](#full-command-reference)
 - [Model registry](#model-registry)
 - [Run artifacts](#run-artifacts)
@@ -364,6 +366,97 @@ cycle does not loop on its own.
 
 ---
 
+## Planning
+
+A dwarf that is handed only an objective plans its own approach, silently, inside its own
+run. Usually fine — but in a decomposed run the capsule prevents two dwarves editing one
+*file* and does nothing about them inventing incompatible *interfaces* at a shared seam.
+Both stay in their lane, both pass their own QA, and the mismatch surfaces at integration.
+
+So forge plans before it dispatches. By default the orchestrator does it and writes the
+approach into each task's prompt — no extra dispatch. `--planner <spec>` hands that stage to
+a named model instead:
+
+```bash
+/forge "migrate the API layer to gRPC" --decompose-level medium \
+  --planner sol:xhigh --dwarf-high sol:high --dwarf luna:high
+```
+
+**One planner dispatch per run, never one per task.** That is the whole point: a single mind
+designs both sides of every seam, where N independent planners would recreate the problem.
+Effort defaults to `xhigh`, since a bad plan is executed at full price by every dwarf
+downstream of it. The planner runs with QA's permission profile — it reads the repo and
+writes nothing to it.
+
+The approach shows up in the approval table under each task, which is the last moment it can
+be changed for free, and it is handed to QA as the *intended* approach — so a review can
+finally say "this works, but it abandons the planned shape" rather than only judging against
+the objective.
+
+## Project memory
+
+Every forge dispatch is a clean slate, so without help the tenth run in a repo rediscovers
+what the first one learned. forge keeps that in the repo, in two files:
+
+```
+.forge/memory.md     small, capped, injected into every prompt
+.forge/ledger.tsv    append-only, one row per dispatch, never injected
+```
+
+The split is the design. Injected context is paid for on every dispatch of every future run,
+so "remember everything" and "stay small" pull against each other — the ledger remembers at
+zero context cost and is read only when asked, while `memory.md` is capped at 40 lines / 4 KB.
+
+```markdown
+## Verify
+- pytest -q runs the suite; make test also lints and is 4x slower
+
+## Known traps
+- tests/test_api.py::test_timeout is flaky under -n auto  [tests/test_api.py]
+
+## Recurring QA findings
+- 3x: route added without updating openapi.yaml  [src/routes]
+```
+
+### How a fact gets in
+
+The role that just did the work writes it down, in its final message, next to the verdict:
+
+```
+FORGE_LEARNING: trap | src/proto/*_pb2.py is generated, never hand-edit [src/proto]
+```
+
+No extra dispatch and no separate model guessing what mattered — the one that hit the
+landmine is the one that records it. Everything after that is deterministic bash.
+
+**What stops it becoming a junk drawer:**
+
+| Guard | Effect |
+|---|---|
+| recurrence threshold | a `finding` needs **two distinct runs** before it is injected. One occurrence is an incident, not a pattern |
+| stale anchors | an entry ending in `[path]` is dropped once that path stops existing, so memory stays true as code moves |
+| hard cap | over 40 lines / 4 KB, lowest-count and least-recent facts are trimmed; one entry is clamped to 180 chars |
+| bias to silence | the prompt says most runs teach nothing durable and emitting nothing is correct. A false fact costs every future run; a missing one costs a single rediscovery |
+
+Only `verify` and `trap` are kept on first sighting — those are facts, true the first time.
+
+### Slices, and what forge writes
+
+| Role | Gets |
+|---|---|
+| planner, dwarf | Verify + Known traps + Recurring findings |
+| qa | Known traps + Recurring findings |
+
+QA is not told the build command; it is not building anything. It *is* told the recurring
+findings, so it can notice this is the fourth time the same bug shipped.
+
+`.forge/` is the **only** thing forge writes into your working tree rather than onto a branch
+of its own, and it does not commit it — committing is what makes the memory travel with the
+repo to your team. It is excluded from every captured diff, so a reviewer never sees it as
+the dwarf's work.
+
+Turn it all off with `--no-memory` or `FORGE_MEMORY=off`.
+
 ## Full command reference
 
 ### The `/forge` slash command
@@ -371,7 +464,9 @@ cycle does not loop on its own.
 ```
 /forge "<goal>" --dwarf <alias>[:<effort>[:<harness>]]
                 [--qa <alias>[:<effort>[:<harness>]]]
+                [--planner <alias>[:<effort>[:<harness>]]]
                 [--yolo-dwarf] [--yolo-qa] [--repo <dir>] [--native-review]
+                [--no-memory]
                 [--decompose-level low|medium|high] [--max-parallel <n>]
                 [--dwarf-high <spec>] [--dwarf-medium <spec>] [--dwarf-low <spec>]
                 [--qa-high <spec>] [--qa-medium <spec>] [--qa-low <spec>]
@@ -381,6 +476,8 @@ cycle does not loop on its own.
 |---|---|---|
 | `--dwarf <spec>` | *asks* | the model that implements the change |
 | `--qa <spec>` | `opus` at `xhigh` | the model that reviews the dwarf's diff |
+| `--planner <spec>` | orchestrator plans | dispatch planning to a model; one dispatch per run, effort defaults to `xhigh` |
+| `--no-memory` | memory on | write and inject nothing in `.forge/` |
 | `--yolo-dwarf` | off | drop the dwarf's sandbox and approval gates |
 | `--yolo-qa` | off | drop the reviewer's sandbox |
 | `--repo <dir>` | cwd | repository to work in |
@@ -442,9 +539,10 @@ is the point: it behaves identically no matter which harness is orchestrating.
 
 ```
 forge-dispatch.sh doctor
-forge-dispatch.sh dwarf <spec> --prompt-file <f> [--repo <dir>] [--run-dir <d>] [--yolo] [--dry-run]
-forge-dispatch.sh qa    <spec> --prompt-file <f> [--repo <dir>] [--run-dir <d>] [--yolo] [--dry-run]
-                               [--native-review [--review-base <ref>]]
+forge-dispatch.sh dwarf   <spec> --prompt-file <f> [--repo <dir>] [--run-dir <d>] [--yolo] [--dry-run]
+forge-dispatch.sh qa      <spec> --prompt-file <f> [--repo <dir>] [--run-dir <d>] [--yolo] [--dry-run]
+                                 [--native-review [--review-base <ref>]]
+forge-dispatch.sh planner <spec> --prompt-file <f> [--repo <dir>] [--run-dir <d>] [--dry-run]
 ```
 
 | Option | Meaning |
@@ -481,7 +579,7 @@ bash 3.2 compatible, because that's what `/bin/bash` is on macOS — hence `xarg
 concurrency rather than `wait -n`, and no associative arrays anywhere.
 
 ```
-forge-parallel.sh plan      <plan-dir> --repo <dir> [routing flags]
+forge-parallel.sh plan      <plan-dir> --repo <dir> [routing flags] [--planner <spec>] [--no-memory]
 forge-parallel.sh run       <plan-dir> [--max-parallel N] [--yolo-dwarf] [--yolo-qa] [--dry-run]
 forge-parallel.sh integrate <plan-dir> --approved
 ```
@@ -545,6 +643,30 @@ understated `files` is how two dwarves end up in the same file.
 routing rules — and an explicit value survives a re-plan, which is what makes a gate override
 durable. (`UNASSIGNED` is treated as a leftover marker and re-resolved.)
 
+### `scripts/forge-memory.sh`
+
+```
+forge-memory.sh inject <repo> <planner|dwarf|qa>   # the block to prepend to a prompt
+forge-memory.sh note <planner|dwarf|qa>            # the instruction to append
+forge-memory.sh record <repo> --last <file> --role <r> [--run-id X] [--task T]
+                              [--model M] [--verdict V]
+forge-memory.sh show <repo>
+forge-memory.sh prune <repo>                       # re-apply staleness and the cap now
+```
+
+`record` appends to the ledger and then rebuilds `memory.md` from the whole ledger — the
+rebuild is idempotent, so a crashed run can leave the ledger a row short but can never leave
+memory half-written. Editing `memory.md` by hand therefore does not stick; remove the ledger
+rows instead.
+
+```bash
+# what would a dwarf actually be told about this repo?
+bash scripts/forge-memory.sh inject ~/dev/api dwarf
+
+# start over
+rm -rf ~/dev/api/.forge
+```
+
 ### `scripts/forge-install.sh`
 
 ```
@@ -600,6 +722,13 @@ as if the dwarf had written it.
   <role>.log          full transcript
   <role>.last         the final message — read this first
   changes.diff        the dwarf's real diff, which is qa's input
+```
+
+Plus, in the repo itself and surviving the run:
+
+```
+.forge/memory.md    what forge learned here, injected into future prompts
+.forge/ledger.tsv   one row per dispatch, ever; never injected
 ```
 
 A decomposed run adds:
@@ -672,10 +801,16 @@ pushed, so a temp root that gets cleaned takes the only copy of that work with i
 | every wave has exactly one task | `files` sets overlap across most tasks; the decomposition isn't actually parallel |
 | dwarves reimplement already-merged work | `goal.txt` or `files` missing, so the capsule carries no useful status |
 | several tasks report "produced no changes" | the decomposition made tasks that weren't independently actionable — use a coarser `--decompose-level`, not more retries |
+| claude dwarf ends "I need your permission to edit" | a permission mode that prompts for Edit. forge uses `acceptEdits` plus an explicit Bash allowance, because `auto` allows shell but prompts for Edit, and `acceptEdits` alone allows Edit but prompts for real shell commands |
+| `.forge/` turns up in a review | a diff capture is missing `':(exclude).forge'` |
+| memory stays empty | nothing durable was learned — the common, correct case. The ledger still has a row per dispatch |
+| a wrong fact keeps reappearing | `memory.md` is rebuilt from the ledger; delete the ledger rows, not the memory line |
+| dwarves build incompatible interfaces | the seam was never agreed — plan the approach, or use `--planner` |
 
 For per-harness invocation details, effort ladders and known CLI failure modes, see
 [`references/harnesses.md`](references/harnesses.md). For decomposition mechanics, see
-[`references/decompose.md`](references/decompose.md).
+[`references/decompose.md`](references/decompose.md). For memory internals, see
+[`references/memory.md`](references/memory.md).
 
 ---
 
@@ -689,8 +824,10 @@ forge/
 ├── scripts/
 │   ├── forge-dispatch.sh        resolve a spec → run one role on one harness
 │   ├── forge-parallel.sh        plan / run / integrate for decomposed runs
+│   ├── forge-memory.sh          inject / note / record project memory
 │   └── forge-install.sh         install into all five harnesses
 └── references/
     ├── harnesses.md             per-harness invocation, ladders, failure modes
-    └── decompose.md             tasks.tsv schema, difficulty criteria, wave algorithm
+    ├── decompose.md             tasks.tsv schema, difficulty criteria, wave algorithm
+    └── memory.md                FORGE_LEARNING grammar, promotion and pruning rules
 ```

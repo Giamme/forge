@@ -25,6 +25,7 @@ set -uo pipefail
 SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DISPATCH="$SKILL_DIR/scripts/forge-dispatch.sh"
+MEMORY="$SKILL_DIR/scripts/forge-memory.sh"
 
 die()  { printf 'forge: %s\n' "$1" >&2; exit "${2:-2}"; }
 note() { printf 'forge: %s\n' "$*" >&2; }
@@ -78,9 +79,12 @@ pool_pick() { # pool_pick <comma-list> <index>
 do_plan() {
   local PLAN="${1:?plan needs a plan dir}"; shift
   local REPO="" D_ANY="" D_HI="" D_MD="" D_LO="" Q_ANY="" Q_HI="" Q_MD="" Q_LO=""
+  local PLANNER="" NOMEM=0
   while [ $# -gt 0 ]; do
     case "$1" in
       --repo)         REPO="${2:?}"; shift 2 ;;
+      --planner)      PLANNER="${2:?}"; shift 2 ;;
+      --no-memory)    NOMEM=1; shift ;;
       --dwarf)        D_ANY="${2:?}"; shift 2 ;;
       --dwarf-high)   D_HI="${2:?}"; shift 2 ;;
       --dwarf-medium) D_MD="${2:?}"; shift 2 ;;
@@ -106,6 +110,10 @@ do_plan() {
   [ -s "$PLAN/repo" ] || die "plan needs --repo the first time"
   REPO="$(cat "$PLAN/repo")"
   [ -s "$PLAN/run_id" ] || basename "$PLAN" | sed 's/^forge-//' > "$PLAN/run_id"
+  # Markers rather than exported variables: do_task runs as a separate process
+  # under xargs and inherits nothing from here.
+  [ "$NOMEM" = 1 ] && : > "$PLAN/no_memory"
+  [ -n "$PLANNER" ] && printf '%s\n' "$PLANNER" > "$PLAN/planner"
 
   # Uncommitted work is invisible to every dwarf, because worktrees branch from a
   # commit. That is the likeliest way to get a confusingly wrong result, so it is
@@ -230,7 +238,11 @@ render_table() {
   local waves; waves="$(awk -F'\t' '{print $1}' "$W" | sort -u | wc -l | tr -d ' ')"
   echo "run forge/$run_id   repo $(cat "$PLAN/repo")"
   [ -s "$PLAN/goal.txt" ] && echo "goal: $(head -1 "$PLAN/goal.txt")"
-  echo "tasks: $n   waves: $waves   estimated dispatches: $((n*2)) ($n dwarf + $n qa)"
+  local est=$((n*2)) extra=""
+  if [ -s "$PLAN/planner" ]; then
+    est=$((est+1)); extra=" + 1 planner ($(cat "$PLAN/planner"))"
+  fi
+  echo "tasks: $n   waves: $waves   estimated dispatches: $est ($n dwarf + $n qa$extra)"
   echo
   local w id
   for w in $(awk -F'\t' '{print $1}' "$W" | sort -un); do
@@ -241,6 +253,11 @@ render_table() {
       printf '  %-14s %-7s %-24s %-14s %s\n' \
         "$id" "$(field "$T" "$id" difficulty)" "$(field "$T" "$id" dwarf)" \
         "$(field "$T" "$id" qa)" "$(field "$T" "$id" files)"
+      # The approach is shown here because this gate is the only moment a human can
+      # change the plan for free. After dispatch, changing it costs a whole run.
+      if [ -s "$PLAN/tasks/$id/approach.md" ]; then
+        sed 's/^/                 | /' "$PLAN/tasks/$id/approach.md"
+      fi
     done
     echo
   done
@@ -316,6 +333,7 @@ do_task() {
   REPO="$(cat "$PLAN/repo")"; run_id="$(cat "$PLAN/run_id")"
   base="$(cat "$PLAN/base_ref")"
   tdir="$PLAN/tasks/$id"; mkdir -p "$tdir"
+  [ -f "$PLAN/no_memory" ] && export FORGE_MEMORY=off
   wt="$(cat "$PLAN/wt_root")/$id"
   br="forge/$run_id/$id"
 
@@ -333,14 +351,37 @@ do_task() {
 
   # dwarf
   write_capsule "$PLAN" "$id" dwarf >/dev/null
-  { cat "$tdir/capsule.md"; echo; echo "---"; echo; cat "$tdir/prompt.md"; } > "$tdir/dwarf.input"
+  {
+    cat "$tdir/capsule.md"; echo
+    # Memory comes from the MAIN repo, not the worktree: on a repo's first forge
+    # run .forge/ is not committed yet, so a worktree branched from the base
+    # commit would not have it.
+    /bin/bash "$MEMORY" inject "$REPO" dwarf
+    echo; echo "---"; echo
+    if [ -s "$tdir/approach.md" ]; then
+      echo "## Intended approach"
+      echo "Planned before the run, and the other tasks were planned to fit it. Follow it"
+      echo "unless it is actually wrong — if it is, say so in your final message rather than"
+      echo "silently doing something else, because a sibling task may depend on this shape."
+      echo; cat "$tdir/approach.md"; echo; echo "---"; echo
+    fi
+    cat "$tdir/prompt.md"
+    echo; /bin/bash "$MEMORY" note dwarf
+  } > "$tdir/dwarf.input"
   if ! /bin/bash "$DISPATCH" dwarf "$dw" --repo "$wt" --run-dir "$tdir" \
         --prompt-file "$tdir/dwarf.input" $yd >"$tdir/dwarf.out" 2>&1; then
     echo ERROR > "$tdir/status"; note "$id: dwarf dispatch failed — see $tdir/dwarf.out"; return 1
   fi
 
+  /bin/bash "$MEMORY" record "$REPO" --last "$tdir/dwarf.last" --role dwarf \
+      --run-id "$run_id" --task "$id" --model "$dw" >/dev/null 2>&1
+
   # capture the real diff, including new files, then commit on the task branch
-  (cd "$wt" && git add -A && git diff --cached) > "$tdir/changes.diff" 2>/dev/null
+  # .forge/ is forge's own memory, rewritten in the user's tree after every run.
+  # Left in, it would reach QA as if a dwarf had written it, and any task whose
+  # files touched it would collide with every other task in the wave planner.
+  (cd "$wt" && git add -A -- . ":(exclude).forge" \
+      && git diff --cached -- . ":(exclude).forge") > "$tdir/changes.diff" 2>/dev/null
   if [ ! -s "$tdir/changes.diff" ]; then
     echo FAIL > "$tdir/status"
     echo "The dwarf produced no changes at all." > "$tdir/qa.last"
@@ -352,7 +393,16 @@ do_task() {
   # qa
   write_capsule "$PLAN" "$id" qa >/dev/null
   {
-    cat "$tdir/capsule.md"; echo; echo "---"; echo
+    cat "$tdir/capsule.md"; echo
+    /bin/bash "$MEMORY" inject "$REPO" qa
+    echo; echo "---"; echo
+    if [ -s "$tdir/approach.md" ]; then
+      echo "## Intended approach"
+      echo "This is what the implementer was asked to build, not just what it was asked to"
+      echo "achieve. Code that works but abandons this shape is a finding: a sibling task may"
+      echo "have been planned against it."
+      echo; cat "$tdir/approach.md"; echo
+    fi
     echo "The implementer was asked to do the task above. Review the diff below for correctness"
     echo "bugs: logic errors, broken edge cases, behaviour that does not match what was asked."
     echo "Also say if it solved a different problem, or touched files outside the task's scope."
@@ -366,6 +416,7 @@ do_task() {
     echo "  FORGE_VERDICT: FAIL   — at least one CONFIRMED correctness bug"
     echo
     echo '```diff'; cat "$tdir/changes.diff"; echo '```'
+    echo; /bin/bash "$MEMORY" note qa
   } > "$tdir/qa.input"
   if ! /bin/bash "$DISPATCH" qa "$qa" --repo "$wt" --run-dir "$tdir" \
         --prompt-file "$tdir/qa.input" $yq >"$tdir/qa.out" 2>&1; then
@@ -374,6 +425,9 @@ do_task() {
 
   local verdict
   verdict="$(grep -o 'FORGE_VERDICT: *[A-Za-z]*' "$tdir/qa.last" 2>/dev/null | tail -1 | awk '{print $2}')"
+  /bin/bash "$MEMORY" record "$REPO" --last "$tdir/qa.last" --role qa \
+      --run-id "$run_id" --task "$id" --model "$qa" --verdict "${verdict:-UNKNOWN}" >/dev/null 2>&1
+
   case "$verdict" in
     PASS) echo PASS > "$tdir/status" ;;
     FAIL) echo FAIL > "$tdir/status" ;;
@@ -483,7 +537,14 @@ do_run() {
   printf '  %-14s %-9s %s\n' id status branch
   awk -F'\t' '{printf "  %-14s %-9s %s\n", $1, $2, $3}' "$PLAN/results.tsv"
   echo
-  echo "Your branch and working tree were not touched."
+  if [ ! -f "$PLAN/no_memory" ] && [ -s "$REPO/.forge/memory.md" ]; then
+    echo "project memory: $(grep -c '^- ' "$REPO/.forge/memory.md") fact(s) in .forge/ —"
+    echo "  uncommitted, and the only thing forge wrote outside its own branches."
+    echo
+    echo "Your branch and working tree were not touched, apart from .forge/ above."
+  else
+    echo "Your branch and working tree were not touched."
+  fi
   [ "$failed" = 1 ] && return 5
   return 0
 }

@@ -13,6 +13,7 @@ run leaves branches behind.
 - [Routing](#routing)
 - [Waves and disjointness](#waves-and-disjointness)
 - [The capsule](#the-capsule)
+- [Planning](#planning)
 - [QA verdicts](#qa-verdicts)
 - [Branches, worktrees, cleanup](#branches-worktrees-cleanup)
 - [Failure modes](#failure-modes)
@@ -69,7 +70,11 @@ tests	mul	medium	tests/test_calc.py	-	-	Tests for multiply()
 | `title` | one line, shown in the approval table and the capsule |
 
 Each task also needs `tasks/<id>/prompt.md` — the implementation instruction, written the
-same way a single-task forge goal is.
+same way a single-task forge goal is. `tasks/<id>/approach.md` is optional: a few lines of
+intended approach, written by the orchestrator or by `--planner`. When present it is shown
+in the approval table, prepended to the dwarf's prompt, and given to qa as the intent to
+review against — so a review can say "this works but abandons the planned shape", which
+matters when a sibling task was planned against that shape.
 
 `files` is a promise, not a prediction: it is what the wave planner trusts when deciding what
 may run concurrently, and it is what the capsule tells other dwarves not to touch. An
@@ -151,6 +156,22 @@ defects in the diff it was handed.
 Keep it short. It is paid for on all 2N dispatches, so it is a status table and a few rules,
 not a design document.
 
+## Planning
+
+The capsule stops two dwarves editing one *file*. It does nothing about two dwarves
+inventing incompatible *interfaces* at a seam they share: both stay inside their own
+`files`, both pass their own QA, and the mismatch only appears at integration.
+
+Writing the approach down before dispatch is what closes that. By default the orchestrator
+does it while decomposing, which costs nothing. `--planner <spec>` dispatches it instead —
+**one dispatch for the whole run, never one per task**, because the value is that a single
+mind designed both sides of every seam. N independent planners would recreate the problem
+they were meant to solve.
+
+The planner runs with qa's permission profile: it reads the repo and writes nothing to it.
+Its output becomes `tasks.tsv` plus each `tasks/<id>/approach.md`, and the approval gate
+renders both — the last moment the plan can be changed for free.
+
 ## QA verdicts
 
 Decompose-mode QA prompts require a final line:
@@ -172,6 +193,8 @@ on its own.
 ## Branches, worktrees, cleanup
 
 ```
+<plan-dir>/tasks/<id>/approach.md               intended approach, if planned
+<repo>/.forge/                                  project memory (survives the run)
 <repo>/../.forge-worktrees/<run-id>/<task-id>   task worktree
 <repo>/../.forge-worktrees/<run-id>/_integration integration worktree
 forge/<run-id>/<task-id>                        task branch
@@ -202,6 +225,8 @@ The user's own branch and working tree are untouched for the whole run.
 | task status `CONFLICT` | QA passed but the merge onto the integration branch conflicted — `files` was understated somewhere |
 | every wave has one task | `files` sets overlap across most tasks; the decomposition is not actually parallel |
 | dwarves ignore existing work | `goal.txt` or `files` missing, so the capsule carries no useful status |
+| `.forge/` appears in a task's diff | the capture is missing `':(exclude).forge'` — see `memory.md` |
+| dwarves build incompatible interfaces | no `approach.md`; the seam was never agreed. Plan it, or use `--planner` |
 
 A run where several tasks report "produced no changes" usually means the decomposition
 produced tasks that were not independently actionable — the fix is a coarser

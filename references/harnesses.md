@@ -66,7 +66,8 @@ and `--approve-for-me` additionally conflicts with an explicit `-s/--sandbox`.
 
 ```
 <harness> -p --model <model> --add-dir <run-dir> --effort <effort> \
-  (--permission-mode auto | --dangerously-skip-permissions) [--disallowed-tools ...]
+  (--permission-mode acceptEdits --allowedTools Bash | --dangerously-skip-permissions)
+  [--disallowed-tools "Edit,Write,NotebookEdit"]
 ```
 with the prompt delivered on **stdin**.
 
@@ -78,21 +79,31 @@ pile of `Permission deny rule "the" matches no known tool` warnings and then
 stdin sidesteps this entirely and also lifts the argv length limit, which matters once a
 diff is inlined into a review prompt.
 
-**Permission modes are not interchangeable.** Measured on this machine with a prompt that
-asks the agent to run `python3 -c "print(6*7)"`:
+**Permission modes are not interchangeable, and no single mode is enough.** Re-measured on
+this machine with a prompt that asks the agent to edit a file *and* run a real command:
 
 | Mode | Can edit files | Can run shell |
 |------|----------------|---------------|
-| `acceptEdits` | yes | **no** |
+| `acceptEdits` | yes | trivial commands only — prompts for the rest |
 | `dontAsk` | — | **no** |
-| `auto` | yes | yes |
+| `auto` | **no** — prompts for Edit | yes |
 | `bypassPermissions` | yes | yes |
 
-Forge uses `auto` for non-yolo roles. Under `acceptEdits` a dwarf can write code but cannot
-run the tests that would tell it whether the code works — one such run reported
-"executable verification was delegated because headless mode blocked local Bash approval",
-i.e. it shipped unverified. QA additionally gets `--disallowed-tools "Edit,Write,NotebookEdit"`
-so it can read and reproduce but cannot quietly repair the diff it is supposed to be judging.
+Both single-mode choices fail, and both fail *silently*:
+
+- under `auto`, a dwarf writes nothing and ends with "I need your permission to edit f.py".
+  The harness still exits 0, so forge sees a successful run that produced an empty diff;
+- under `acceptEdits` alone, a dwarf writes the code and then stalls on "awaiting approval
+  to run pytest", shipping unverified work while reporting success.
+
+Beware that `acceptEdits` auto-approves *some* shell — `echo` goes through — so a smoke test
+using a trivial command will wrongly suggest shell access works.
+
+Forge therefore uses **`--permission-mode acceptEdits` plus `--allowedTools "Bash"`** for
+non-yolo roles, which gives both. QA additionally gets
+`--disallowed-tools "Edit,Write,NotebookEdit"`, which still overrides the mode's edit
+permission, so a reviewer can read and reproduce but cannot quietly repair the diff it is
+supposed to be judging.
 
 `--add-dir <run-dir>` is required because the run directory deliberately sits outside the
 repo; without it the agent refuses to open the artifacts forge just wrote for it
