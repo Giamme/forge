@@ -9,6 +9,7 @@ Read this when memory looks empty, looks wrong, or has grown past its budget.
 ## Contents
 
 - [Why two files](#why-two-files)
+- [Committing, ignoring, disabling](#committing-ignoring-disabling)
 - [The sentinel](#the-sentinel)
 - [Promotion](#promotion)
 - [Dedup, and the limits of it](#dedup-and-the-limits-of-it)
@@ -37,6 +38,37 @@ Never inline the ledger into a prompt. That would undo the whole arrangement.
 
 Both live in the repo so the memory travels with it, and both are written by forge but
 committed by the user — forge does not commit on anyone's behalf.
+
+## Committing, ignoring, disabling
+
+`.forge/` appears untracked after the first run. Three coherent choices:
+
+| Intent | Action |
+|---|---|
+| share memory with the team | commit `.forge/` |
+| keep it to this machine | `echo '.forge/' >> .gitignore` |
+| no memory at all | `--no-memory` or `FORGE_MEMORY=off` |
+
+Gitignoring does **not** disable anything: an ignored `.forge/` is still written and still
+injected into every prompt. Only the third row turns the feature off.
+
+**The two files must share a fate.** Because `memory.md` is rebuilt from `ledger.tsv` on
+every write, committing the memory while ignoring the ledger destroys the shared facts the
+first time anyone runs forge on a fresh clone — the rebuild regenerates `memory.md` from that
+machine's own short ledger, and nothing warns:
+
+```
+A commits memory.md only:   - pytest -q runs the suite
+                            - src/a.py is generated [src/a.py]
+B clones, runs forge once:  - b learned something new     <- A's facts gone
+```
+
+Committing both means `ledger.tsv` grows a line per dispatch and shows up in diffs. That is
+the price of the recurrence counting; the alternative is memory that cannot tell a one-off
+from a pattern.
+
+For a repo you contribute to but do not own, ignore it — a PR carrying forge's notes to
+itself is noise to a reviewer who does not use forge.
 
 ## The sentinel
 
@@ -166,3 +198,5 @@ injected, nothing is recorded, and no `.forge/` is created.
 | memory vanished after a refactor | its entries were anchored to paths that no longer exist and were dropped as stale. Working as intended |
 | `.forge/` shows up in a review | a diff capture is missing the exclude pathspec |
 | memory in a worktree is stale | inject reads the **main repo**, not the worktree; on a repo's first run `.forge/` is not committed, so a worktree branched from the base commit does not have it |
+| a teammate's clone lost every shared fact | `memory.md` was committed but `ledger.tsv` was not; the first `record` there rebuilt memory from an empty ledger. Commit both, or neither |
+| `.forge/` keeps appearing in `git status` | expected — forge never commits it. Commit it to share, or gitignore it to keep it local |

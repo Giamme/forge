@@ -217,6 +217,13 @@ Two things to tell the user rather than assume: forge **writes `.forge/` into th
 tree**, which is the only thing it ever writes outside its own branches, and it does not
 commit it. Committing it is what makes the memory travel with the repo to their team.
 
+When they ask what to do with it: commit `.forge/` to share, gitignore `.forge/` to keep it
+local, or `--no-memory` to stop it existing. Gitignoring does not disable anything — the
+file is still written and still injected, it just stops travelling. And never commit one of
+the two files without the other: `memory.md` is rebuilt from `ledger.tsv`, so a clone with
+the memory but not the ledger loses every shared fact the first time anyone runs forge
+there, silently.
+
 ## Orchestration
 
 1. **Check the tree.** Run `git status --porcelain` in the target repo. Pre-existing

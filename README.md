@@ -451,11 +451,45 @@ QA is not told the build command; it is not building anything. It *is* told the 
 findings, so it can notice this is the fourth time the same bug shipped.
 
 `.forge/` is the **only** thing forge writes into your working tree rather than onto a branch
-of its own, and it does not commit it — committing is what makes the memory travel with the
-repo to your team. It is excluded from every captured diff, so a reviewer never sees it as
-the dwarf's work.
+of its own. It is excluded from every captured diff, so a reviewer never sees it as the
+dwarf's work — but it *will* show up as untracked in `git status` after your first run.
 
-Turn it all off with `--no-memory` or `FORGE_MEMORY=off`.
+### What to do with `.forge/` when it appears
+
+forge never commits it. That decision is yours, and there are three sane answers:
+
+| You want | Do this |
+|---|---|
+| memory shared with your team, and with future you | **commit `.forge/`** — the intended case; every teammate's runs then build on the same facts |
+| memory kept to your machine | `echo '.forge/' >> .gitignore` |
+| no memory at all | `--no-memory`, or `FORGE_MEMORY=off` in your environment |
+
+Two things that are easy to get wrong:
+
+**Gitignoring is not the same as turning it off.** An ignored `.forge/` is still written and
+still injected into every prompt — it just stops travelling. Only `--no-memory` /
+`FORGE_MEMORY=off` actually disables the feature.
+
+**Never commit one file and ignore the other.** `memory.md` is *rebuilt from* `ledger.tsv` on
+every write, so a clone that has the memory but not the ledger loses everything the moment
+anyone runs forge there — the rebuild regenerates `memory.md` from that machine's own short
+ledger and the shared facts are gone, silently. Verified behaviour, not a theoretical risk:
+
+```
+teammate A commits memory.md only, ledger.tsv gitignored
+  memory.md: - pytest -q runs the suite
+             - src/a.py is generated [src/a.py]
+
+teammate B clones, runs forge once, learns one unrelated thing
+  memory.md: - b learned something new        ← A's two facts destroyed
+```
+
+Commit both, or neither. If you commit them, expect `ledger.tsv` to gain a line per dispatch
+— small, but it will appear in your diffs; that growth is the price of the recurrence
+counting that keeps `memory.md` honest.
+
+If you contribute to someone else's repo, gitignore it. A pull request containing forge's
+notes to itself is noise to a reviewer who does not use forge.
 
 ## Full command reference
 
