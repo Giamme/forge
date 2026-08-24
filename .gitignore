@@ -1,0 +1,6 @@
+.DS_Store
+*.swp
+
+# skill-creator eval workspaces, if they ever land beside the skill
+*-workspace/
+evals/results/
