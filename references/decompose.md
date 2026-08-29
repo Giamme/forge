@@ -245,6 +245,33 @@ forge/<run-id>/<task-id>                        task branch
 forge/<run-id>                                  integration branch
 ```
 
+### Worktree setup
+
+A fresh worktree is a bare checkout — no `node_modules`, no venv, no build output. Without help,
+every dwarf in the run rediscovers that the same way (run the tests, watch them fail, work out the
+install) and pays it again, which is both slow and a source of near-identical "this worktree has no
+dependencies" entries in project memory.
+
+Tell forge what a worktree needs and it runs it verbatim, once per worktree, from the worktree
+root, at creation time only:
+
+- `.forge/setup` in the repo — executable, or any file whose contents are a shell command;
+- `--setup <command>` on `run` or `retry`, which overrides it.
+
+A resumed run or a `retry` reuses the existing worktree and does not pay it again. The integration
+worktree gets the same treatment, since that is where a merged result is validated — without it the
+one checkout holding every task's merged work is the one checkout that cannot build it.
+
+Failure is reported and non-fatal: the dwarf gets a worktree it can still install into itself,
+which is the status quo this replaces. Output lands in `tasks/<id>/setup.out`.
+
+Forge does not guess this step, and the obvious guess is worth naming because it looks right and
+is not: symlinking the source repo's `node_modules` into the worktree. In a workspace monorepo the
+workspace links inside it point back at the source checkout, so the worktree builds against the
+source repo's packages rather than its own — producing type errors naming files the task never
+touched. Copying is correct but can be gigabytes per task. The repo knows which of those it wants;
+forge does not.
+
 The worktree root is a sibling of the repo and **never** `TMPDIR`. Isolated worktrees are
 never pushed, so a temp root that gets cleaned takes the only copy of that work with it —
 this has already destroyed real work in this user's `linear-spanks` runs.

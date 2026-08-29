@@ -7,8 +7,9 @@
 #
 # Usage:
 #   forge-parallel.sh plan <plan-dir> --repo <dir> [routing flags]
-#   forge-parallel.sh run  <plan-dir> [--max-parallel N] [--yolo-dwarf] [--yolo-qa] [--dry-run]
-#   forge-parallel.sh retry <plan-dir> <task-id> [--dwarf <spec>]
+#   forge-parallel.sh run  <plan-dir> [--max-parallel N] [--yolo-dwarf] [--yolo-qa]
+#                                     [--setup <command>] [--dry-run]
+#   forge-parallel.sh retry <plan-dir> <task-id> [--dwarf <spec>] [--setup <command>]
 #   forge-parallel.sh integrate <plan-dir> --approved
 #   forge-parallel.sh _task <plan-dir> <task-id>     (internal; the xargs target)
 #
@@ -333,8 +334,51 @@ write_capsule() { # write_capsule <plan> <id> <role>
 # The original version created the worktree unconditionally, which made a
 # decomposed run a one-shot — a failed task's preserved branch had nothing that
 # could act on it, and an interrupted run could not be continued.
-ensure_worktree() { # ensure_worktree <repo> <wt> <br> <base> <tdir>
-  local REPO="$1" wt="$2" br="$3" base="$4" tdir="$5"
+# A fresh worktree is a bare checkout: no node_modules, no venv, no build output,
+# nothing a package manager put there. Every dwarf in the run then rediscovers that
+# the same way — by running the test command, watching it fail, and working out the
+# install step — and pays it again. In one observed 6-task run that tax showed up as
+# four separate "this worktree has no node_modules" entries in project memory and
+# minutes per dispatch.
+#
+# Forge deliberately does NOT guess the fix. The obvious guess, symlinking the source
+# repo's node_modules into the worktree, is actively wrong in a workspace monorepo:
+# the workspace links inside it point back at the source checkout, so the worktree
+# silently builds against the source repo's packages instead of its own, and the
+# resulting type errors name files the task never touched. Copying is correct but can
+# be gigabytes per task.
+#
+# So the repo says what its worktrees need, and forge runs it verbatim: `.forge/setup`
+# (executable, or any file whose contents are a shell command), or `--setup <command>`
+# to override. It runs once per worktree, from the worktree root, only on creation —
+# a resumed run or a retry reuses the existing worktree and does not pay it again.
+# Always succeeds: "no setup configured" is the normal case, not a failure. Returning
+# the status of the last test instead would make the common path report an error, and
+# under a caller running `set -e` that aborts the task before the worktree is usable.
+worktree_setup_command() { # worktree_setup_command <plan> <repo>
+  local PLAN="$1" REPO="$2"
+  if [ -s "$PLAN/setup_cmd" ]; then cat "$PLAN/setup_cmd"
+  elif [ -f "$REPO/.forge/setup" ]; then cat "$REPO/.forge/setup"
+  fi
+  return 0
+}
+
+# Non-fatal by design. A setup step that fails leaves a worktree the dwarf can still
+# work in — it just has to install things itself, which is the status quo this exists
+# to improve on. Failing the task instead would turn a slow run into a dead one.
+run_worktree_setup() { # run_worktree_setup <plan> <repo> <wt> <tdir> <id>
+  local PLAN="$1" REPO="$2" wt="$3" tdir="$4" id="$5" cmd
+  cmd="$(worktree_setup_command "$PLAN" "$REPO")"
+  [ -n "$cmd" ] || return 0
+  if (cd "$wt" && eval "$cmd") >"$tdir/setup.out" 2>&1; then
+    note "$id: worktree setup ok"
+  else
+    note "$id: worktree setup failed (continuing) — see $tdir/setup.out"
+  fi
+}
+
+ensure_worktree() { # ensure_worktree <repo> <wt> <br> <base> <tdir> <plan> <id>
+  local REPO="$1" wt="$2" br="$3" base="$4" tdir="$5" PLAN="$6" id="$7"
   # A worktree directory deleted by hand leaves its registration behind, and that
   # registration then blocks `worktree add` with "already exists". Prune first.
   (cd "$REPO" && git worktree prune >/dev/null 2>&1)
@@ -344,7 +388,8 @@ ensure_worktree() { # ensure_worktree <repo> <wt> <br> <base> <tdir>
     (cd "$REPO" && git worktree add "$wt" "$br") >"$tdir/worktree.out" 2>&1
   else
     (cd "$REPO" && git worktree add -b "$br" "$wt" "$base") >"$tdir/worktree.out" 2>&1
-  fi
+  fi || return 1
+  run_worktree_setup "$PLAN" "$REPO" "$wt" "$tdir" "$id"
 }
 
 dispatch_duration() { # dispatch_duration <tdir> <role>
@@ -409,7 +454,7 @@ do_task() {
   [ -f "$PLAN/yolo_dwarf" ] && yd="--yolo"
   [ -f "$PLAN/yolo_qa" ] && yq="--yolo"
 
-  if ! ensure_worktree "$REPO" "$wt" "$br" "$base" "$tdir"; then
+  if ! ensure_worktree "$REPO" "$wt" "$br" "$base" "$tdir" "$PLAN" "$id"; then
     echo ERROR > "$tdir/status"
     note "$id: could not create worktree — $(tail -1 "$tdir/worktree.out")"
     return 1
@@ -581,6 +626,7 @@ do_retry() {
       --dwarf) NEWDWARF="${2:?--dwarf needs a spec}"; shift 2 ;;
       --yolo-dwarf) touch "$PLAN/yolo_dwarf"; shift ;;
       --yolo-qa)    touch "$PLAN/yolo_qa"; shift ;;
+      --setup)      printf '%s' "${2:?--setup needs a command}" > "$PLAN/setup_cmd"; shift 2 ;;
       *) die "retry: unknown option '$1'" ;;
     esac
   done
@@ -651,6 +697,7 @@ do_run() {
       --max-parallel) MAXP="${2:?}"; shift 2 ;;
       --yolo-dwarf)   touch "$PLAN/yolo_dwarf"; shift ;;
       --yolo-qa)      touch "$PLAN/yolo_qa"; shift ;;
+      --setup)        printf '%s' "${2:?--setup needs a command}" > "$PLAN/setup_cmd"; shift 2 ;;
       --dry-run)      DRY=1; shift ;;
       *) die "run: unknown option '$1'" ;;
     esac
@@ -693,8 +740,15 @@ do_run() {
   if ! (cd "$REPO" && git rev-parse --verify "$int_br" >/dev/null 2>&1); then
     (cd "$REPO" && git branch "$int_br" HEAD) || die "could not create $int_br" 3
   fi
-  [ -d "$int_wt" ] || (cd "$REPO" && git worktree add "$int_wt" "$int_br" >/dev/null 2>&1) \
-    || die "could not create integration worktree" 3
+  if [ ! -d "$int_wt" ]; then
+    (cd "$REPO" && git worktree add "$int_wt" "$int_br" >/dev/null 2>&1) \
+      || die "could not create integration worktree" 3
+    # The integration worktree is where a merged result gets validated, so it needs
+    # the same setup the task worktrees get. Without it, the one checkout holding
+    # every task's merged work is the one checkout that cannot build or test it.
+    mkdir -p "$PLAN/tasks/_integration"
+    run_worktree_setup "$PLAN" "$REPO" "$int_wt" "$PLAN/tasks/_integration" _integration
+  fi
 
   local w id st failed=0 todo skipped
   for w in $(awk -F'\t' '{print $1}' "$W" | sort -un); do
