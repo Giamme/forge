@@ -135,9 +135,12 @@ deferrals (serialized to protect the merge):
 That line matters: a decomposition that looks parallel but serializes at run time should say
 so, rather than leaving the user to wonder why eight tasks took eight rounds.
 
-Each wave branches from the integration branch **as it currently stands**, so a dependent
-task sees its dependencies' merged code. Passing tasks merge `--no-ff` onto the integration
-branch as their wave completes.
+Waves remain a planning preview. At execution time a Python 3 standard-library coordinator
+starts a task as soon as every prerequisite is MERGED, capacity is available, and its paths
+do not overlap an active task. Each passing task merges serially through the existing
+fingerprint checks. A slow unrelated task no longer holds up eligible dependents.
+
+Each task's baseline is pinned immediately before dispatch and stays fixed across retries.
 
 ## The capsule
 
@@ -145,12 +148,11 @@ Every dispatch is a clean slate — forge never passes `--continue`, `--resume`,
 `codex exec resume`. That keeps one task's confused turn from poisoning another and keeps
 each task's context small, but it also leaves each dwarf blind to the wider run.
 
-`tasks/<id>/capsule.md` is the fix, regenerated before every dispatch because status changes
-as waves land, and prepended to both the dwarf and QA prompts. It is written **per task**, not
-once per run: tasks in a wave execute concurrently, so a single shared capsule file is a race
-in which each task overwrites it and then reads back whichever sibling wrote last — handing a
-dwarf someone else's task description. It carries the overall goal, this
-task's identity and owned files, a status table of every task, and the ground rules.
+`tasks/<id>/capsule.md` records ownership and baseline context. `baseline.capsule` preserves
+the implementation-time capsule for QA. MERGED means the reviewed commit is an ancestor of
+this task's pinned baseline, not merely that another task finished while QA was preparing.
+Complete requirements, approach, retry findings and distinct memory facts are assembled once
+per role; implementation and review instructions are separate.
 
 It exists to prevent two specific failures that clean slates create:
 
@@ -191,7 +193,7 @@ FORGE_VERDICT: PASS    no confirmed correctness bug (style nits are not failures
 FORGE_VERDICT: FAIL    at least one CONFIRMED correctness bug
 ```
 
-The runner reads the last occurrence. A missing verdict is `UNKNOWN` and is treated exactly
+The runner accepts only a standalone verdict on the final nonempty line. A missing verdict is `UNKNOWN` and is treated exactly
 like a failure — excluded from integration and flagged. Merging a diff whose reviewer never
 reached a conclusion would defeat the point of reviewing it, so the ambiguous case fails
 safe rather than optimistically.
@@ -229,10 +231,12 @@ Two details that are load-bearing rather than incidental:
 `retry` is a command a human types. Forge does not loop a dwarf against its own reviewer on
 its own initiative, and that rule is unchanged.
 
-**Resuming** needs no special command: run `run` again. Tasks already `MERGED` are skipped
-rather than re-dispatched, each wave re-bases on the integration branch as it now stands, and
-existing worktrees are reused. That is what makes an interrupted run — a killed process, a
-hung harness, a closed laptop — continuable instead of a total loss.
+**Resuming** needs no special command: run `run` again. Tasks already `MERGED` are skipped. A saved PASS is fingerprint-checked and merged without
+redispatch. PENDING and newly unblocked tasks run when eligible. Failed or interrupted tasks
+require an explicit `retry`; `run` never silently pays for them again. Worktrees and pinned
+baselines are retained. A per-plan advisory lock excludes concurrent run/retry/integrate
+operations. Interrupting the coordinator terminates its active process groups and preserves
+their work as INTERRUPTED.
 
 ## Branches, worktrees, cleanup
 
@@ -312,7 +316,7 @@ produced tasks that were not independently actionable — the fix is a coarser
 Before dispatch, `run` preflights every task's dwarf and QA plus a configured planner.
 `retry` repeats preflight and dependency checks. A dependency must be MERGED, not merely
 planned or QA-passing; otherwise its consumer is BLOCKED without spending a dispatch.
-Directory/child ownership paths overlap and run in separate waves. A blocked task can be
+Directory/child ownership paths overlap and cannot run concurrently. A blocked task can be
 retried after its prerequisites merge. A fresh task then branches from current integration.
 
 QA receives complete implementation input, approach, capsule and cumulative binary diff.

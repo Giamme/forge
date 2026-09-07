@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
 # forge-parallel.sh — decomposed forge runs: many dwarves working concurrently in
 # isolated git worktrees, each task reviewed by its own QA pass, only passing work
-# merged. Harness-agnostic (bash + git only), and bash 3.2 compatible because that
-# is what /bin/bash is on macOS — hence xargs -P for concurrency rather than
-# `wait -n`, and no associative arrays anywhere.
+# merged. Bash 3.2 entrypoints keep the task and merge contracts; a Python 3
+# standard-library coordinator schedules ready tasks without wave barriers.
 #
 # Usage:
 #   forge-parallel.sh plan <plan-dir> --repo <dir> [routing flags]
@@ -11,7 +10,7 @@
 #                                     [--setup <command>] [--dry-run]
 #   forge-parallel.sh retry <plan-dir> <task-id> [--dwarf <spec>] [--setup <command>]
 #   forge-parallel.sh integrate <plan-dir> --approved
-#   forge-parallel.sh _task <plan-dir> <task-id>     (internal; the xargs target)
+#   forge-parallel.sh _task <plan-dir> <task-id>     (internal; coordinator target)
 #
 # Routing flags (plan):
 #   --dwarf <spec>          fallback for any difficulty tier not named below
@@ -29,6 +28,8 @@ SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DISPATCH="$SKILL_DIR/scripts/forge-dispatch.sh"
 MEMORY="$SKILL_DIR/scripts/forge-memory.sh"
 source "$SKILL_DIR/scripts/forge-artifact.sh"
+source "$SKILL_DIR/scripts/forge-metrics.sh"
+OUTPUT=summary
 
 die()  { printf 'forge: %s\n' "$1" >&2; exit "${2:-2}"; }
 note() { printf 'forge: %s\n' "$*" >&2; }
@@ -119,8 +120,7 @@ do_plan() {
   [ -s "$PLAN/repo" ] || die "plan needs --repo the first time"
   REPO="$(cat "$PLAN/repo")"
   [ -s "$PLAN/run_id" ] || basename "$PLAN" | sed 's/^forge-//' > "$PLAN/run_id"
-  # Markers rather than exported variables: do_task runs as a separate process
-  # under xargs and inherits nothing from here.
+  # Persist plan choices for later run and retry processes.
   [ "$NOMEM" = 1 ] && : > "$PLAN/no_memory"
   [ -n "$PLANNER" ] && printf '%s\n' "$PLANNER" > "$PLAN/planner"
 
@@ -304,6 +304,7 @@ dependencies_ready() {
 
 preflight_plan() {
   local plan="$1" id role flags
+  export FORGE_CAPABILITY_CACHE="$plan/capabilities"
   for id in $(all_ids "$plan/tasks.tsv"); do
     for role in dwarf qa; do
       flags=""; [ -f "$plan/yolo_$role" ] && flags=--yolo
@@ -342,20 +343,18 @@ write_capsule() { # write_capsule <plan> <id> <role>
     echo "## Run status"
     printf '%-14s %-7s %-9s %s\n' id diff status files
     for id in $(all_ids "$T"); do
-      if [ "$id" = "$me" ]; then st="THIS ONE"; else st="$(task_status "$PLAN" "$id")"; fi
+      if [ "$id" = "$me" ]; then st="THIS ONE"
+      elif [ -s "$PLAN/tasks/$id/reviewed.commit" ] && git -C "$(cat "$PLAN/repo")" merge-base --is-ancestor "$(cat "$PLAN/tasks/$id/reviewed.commit")" "$(cat "$PLAN/tasks/$me/base_ref")"; then st=MERGED
+      else st="NOT IN BASE"; fi
       printf '%-14s %-7s %-9s %s\n' "$id" "$(field "$T" "$id" difficulty)" "$st" "$(field "$T" "$id" files)"
     done
     echo
     echo "## Ground rules"
     echo "- Your branch already contains every MERGED task's work. Do not reimplement it."
-    if [ "$role" = qa ]; then
-      echo "- The diff below is only this task's work. Code from MERGED tasks is already in the"
-      echo "  base and is NOT part of this review — do not report it as this task's bug."
-    else
-      echo "- Files owned by other tasks are off limits; another dwarf is editing them now."
-      echo "- If your task genuinely needs a change in someone else's file, say so in your final"
-      echo "  message instead of making it."
-    fi
+    echo "- MERGED means present in this task's pinned baseline; later merges are not included."
+    echo "- The review diff is only this task's work against that baseline."
+    echo "- Implementation must respect other tasks' ownership; report necessary scope changes."
+
   } > "$out"
   echo "$out"
 }
@@ -457,18 +456,18 @@ check_drift() { # check_drift <declared-comma-list> <tdir> <wt> <base>
   return 0
 }
 
-do_task() {
+do_task() (
   local PLAN="${1:?}" id="${2:?}"
   local T="$PLAN/tasks.tsv" REPO run_id base wt br tdir attempt
   REPO="$(cat "$PLAN/repo")"; run_id="$(cat "$PLAN/run_id")"
   tdir="$PLAN/tasks/$id"; mkdir -p "$tdir"
+  forge_metric_begin "$tdir" task
   dependencies_ready "$PLAN" "$id" || return 1
   echo RUNNING > "$tdir/status"
   [ -f "$PLAN/no_memory" ] && export FORGE_MEMORY=off
   wt="$(cat "$PLAN/wt_root")/$id"
   br="forge/$run_id/$id"
-  # Owned here rather than by `retry`, so a task re-dispatched by a resumed `run`
-  # is also numbered — otherwise two different attempts share a commit message.
+  # Every explicit retry gets a distinct attempt number and commit message.
   attempt=$(( $(cat "$tdir/attempt" 2>/dev/null || echo 0) + 1 ))
   echo "$attempt" > "$tdir/attempt"
 
@@ -494,37 +493,21 @@ do_task() {
     return 1
   fi
 
-  # dwarf
+  # Persist each source separately; QA receives complete context once.
   write_capsule "$PLAN" "$id" dwarf >/dev/null
+  cp "$tdir/capsule.md" "$tdir/baseline.capsule"
+  /bin/bash "$MEMORY" inject "$REPO" dwarf > "$tdir/dwarf.memory"
   {
-    cat "$tdir/capsule.md"; echo
-    # Memory comes from the MAIN repo, not the worktree: on a repo's first forge
-    # run .forge/ is not committed yet, so a worktree branched from the base
-    # commit would not have it.
-    /bin/bash "$MEMORY" inject "$REPO" dwarf
-    echo; echo "---"; echo
-    if [ -s "$tdir/approach.md" ]; then
-      echo "## Intended approach"
-      echo "Planned before the run, and the other tasks were planned to fit it. Follow it"
-      echo "unless it is actually wrong — if it is, say so in your final message rather than"
-      echo "silently doing something else, because a sibling task may depend on this shape."
-      echo; cat "$tdir/approach.md"; echo; echo "---"; echo
-    fi
-    cat "$tdir/prompt.md"
-    if [ -s "$tdir/retry_findings.md" ]; then
-      echo; echo "---"; echo
-      echo "## Your previous attempt was reviewed and rejected"
-      echo "Your earlier work on this task is already in the working tree. Fix the findings"
-      echo "below rather than starting over, and do not revert the parts that were not"
-      echo "criticised. If a finding is wrong, say so in your final message instead of"
-      echo "silently ignoring it."
-      echo; cat "$tdir/retry_findings.md"
-    fi
+    python3 "$SKILL_DIR/scripts/forge-prompt.py" --requirements "$tdir/prompt.md" --capsule "$tdir/baseline.capsule" --approach "$tdir/approach.md" --retry "$tdir/retry_findings.md" --memory "$tdir/dwarf.memory"
+    echo "Implement this task in the repository. Follow the intended approach unless it is wrong; explain deviations. Run the task's requested verification and report results."
+    echo "On retry, fix the findings in the existing work; preserve parts not criticised. Explain any finding you reject."
     echo; /bin/bash "$MEMORY" note dwarf
   } > "$tdir/dwarf.input"
+  forge_metric_phase dispatch
   /bin/bash "$DISPATCH" dwarf "$dw" --repo "$wt" --run-dir "$tdir" \
-        --prompt-file "$tdir/dwarf.input" $yd >"$tdir/dwarf.out" 2>&1
+        --prompt-file "$tdir/dwarf.input" $yd --output "${FORGE_OUTPUT:-summary}" >"$tdir/dwarf.out" 2>&1
   rc=$?
+  if [ "${FORGE_OUTPUT:-summary}" = full ]; then cat "$tdir/dwarf.out"; fi
   if [ "$rc" -ne 0 ]; then
     if [ "$rc" = 7 ]; then
       echo TIMEOUT > "$tdir/status"; note "$id: dwarf hit the dispatch timeout — see $tdir/dwarf.out"
@@ -538,6 +521,7 @@ do_task() {
       --run-id "$run_id" --task "$id" --model "$dw" \
       --duration "$(dispatch_duration "$tdir" dwarf)" >/dev/null 2>&1
 
+  forge_metric_phase snapshot
   # Capture the real diff, including new files, then commit on the task branch.
   # Diffed against the task's pinned base rather than the branch head, so a retry
   # hands QA the task's CUMULATIVE work. Reviewing only the fix would let the
@@ -587,20 +571,11 @@ do_task() {
   echo "$source_fp" > "$tdir/source.fingerprint"
   echo "$review_fp" > "$tdir/review.fingerprint"
 
-  # qa
-  write_capsule "$PLAN" "$id" qa >/dev/null
+  forge_metric_phase preparation
+  # QA uses the dispatch-time ownership and baseline, never later merge state.
+  /bin/bash "$MEMORY" inject "$REPO" qa > "$tdir/qa.memory"
   {
-    cat "$tdir/capsule.md"; echo
-    /bin/bash "$MEMORY" inject "$REPO" qa
-    echo; echo "---"; echo
-    if [ -s "$tdir/approach.md" ]; then
-      echo "## Intended approach"
-      echo "This is what the implementer was asked to build, not just what it was asked to"
-      echo "achieve. Code that works but abandons this shape is a finding: a sibling task may"
-      echo "have been planned against it."
-      echo; cat "$tdir/approach.md"; echo
-    fi
-    echo "## Complete implementation requirements"; cat "$tdir/dwarf.input"; echo
+    python3 "$SKILL_DIR/scripts/forge-prompt.py" --requirements "$tdir/prompt.md" --capsule "$tdir/baseline.capsule" --approach "$tdir/approach.md" --retry "$tdir/retry_findings.md" --memory "$tdir/dwarf.memory" --memory "$tdir/qa.memory"
     echo "The implementer was asked to do the task above. Review the diff below for correctness"
     echo "bugs: logic errors, broken edge cases, behaviour that does not match what was asked."
     echo "Also say if it solved a different problem, or touched files outside the task's scope."
@@ -626,9 +601,11 @@ do_task() {
     echo; /bin/bash "$MEMORY" note qa
     echo "Place any learning notes before the final FORGE_VERDICT: PASS or FORGE_VERDICT: FAIL line."
   } > "$tdir/qa.input"
+  forge_metric_phase dispatch
   /bin/bash "$DISPATCH" qa "$qa" --repo "$review" --run-dir "$tdir" \
-        --prompt-file "$tdir/qa.input" $yq >"$tdir/qa.out" 2>&1
+        --prompt-file "$tdir/qa.input" $yq --output "${FORGE_OUTPUT:-summary}" >"$tdir/qa.out" 2>&1
   rc=$?
+  if [ "${FORGE_OUTPUT:-summary}" = full ]; then cat "$tdir/qa.out"; fi
   if [ "$rc" -ne 0 ]; then
     if [ "$rc" = 7 ]; then
       echo TIMEOUT > "$tdir/status"; note "$id: qa hit the dispatch timeout — see $tdir/qa.out"
@@ -638,6 +615,7 @@ do_task() {
     return 1
   fi
 
+  forge_metric_phase verification
   if [ "$(forge_fingerprint "$wt")" != "$source_fp" ] || [ "$(forge_fingerprint "$review")" != "$review_fp" ]; then
     echo INVALIDATED > "$tdir/status"; note "$id: artifact changed during review"; return 1
   fi
@@ -655,7 +633,7 @@ do_task() {
     *)    echo UNKNOWN > "$tdir/status" ;;
   esac
   return 0
-}
+)
 
 # Merge one passing task onto the integration branch. Shared by `run` and `retry`
 # so a retried task lands exactly the way a first-attempt task does.
@@ -696,6 +674,7 @@ do_retry() {
   local NEWDWARF=""
   while [ $# -gt 0 ]; do
     case "$1" in
+      --output) OUTPUT="${2:?}"; shift 2 ;;
       --dwarf) NEWDWARF="${2:?--dwarf needs a spec}"; shift 2 ;;
       --yolo-dwarf) touch "$PLAN/yolo_dwarf"; shift ;;
       --yolo-qa)    touch "$PLAN/yolo_qa"; shift ;;
@@ -704,6 +683,8 @@ do_retry() {
       *) die "retry: unknown option '$1'" ;;
     esac
   done
+  case "$OUTPUT" in summary|full) ;; *) die "--output must be summary or full" ;; esac
+  export FORGE_OUTPUT="$OUTPUT"
   local T="$PLAN/tasks.tsv" tdir="$PLAN/tasks/$id"
   [ -s "$T" ] || die "no tasks.tsv in '$PLAN'"
   all_ids "$T" | grep -qx "$id" || die "no task '$id' in this plan"
@@ -756,9 +737,11 @@ do_retry() {
   return 0
 }
 
-verify_result() { # plan, checkout, artifact directory
+verify_result() ( # plan, checkout, artifact directory
   local plan="$1" wt="$2" out="$3" cmd="" before after rc=0
   mkdir -p "$out"
+  forge_metric_begin "$out" verification
+  forge_metric_phase verification
   if [ -s "$plan/verify_cmd" ]; then cmd="$(cat "$plan/verify_cmd")"
   elif [ -s "$(cat "$plan/repo")/.forge/verify" ]; then cmd="$(cat "$(cat "$plan/repo")/.forge/verify")"; fi
   if [ "$(forge_tree "$wt")" != "$(git -C "$wt" rev-parse HEAD^{tree})" ]; then
@@ -782,7 +765,7 @@ verify_result() { # plan, checkout, artifact directory
     return 1
   fi
   echo PASS > "$out/verification.status"
-}
+)
 
 write_results() { # write_results <plan>
   local PLAN="$1" T="$1/tasks.tsv" run_id id
@@ -794,11 +777,12 @@ write_results() { # write_results <plan>
 }
 
 # --- run ----------------------------------------------------------------------
-do_run() {
+do_run() (
   local PLAN="${1:?run needs a plan dir}"; shift
   local MAXP=3 DRY=0
   while [ $# -gt 0 ]; do
     case "$1" in
+      --output) OUTPUT="${2:?}"; shift 2 ;;
       --max-parallel) MAXP="${2:?}"; shift 2 ;;
       --yolo-dwarf)   touch "$PLAN/yolo_dwarf"; shift ;;
       --yolo-qa)      touch "$PLAN/yolo_qa"; shift ;;
@@ -808,6 +792,10 @@ do_run() {
       *) die "run: unknown option '$1'" ;;
     esac
   done
+  case "$OUTPUT" in summary|full) ;; *) die "--output must be summary or full" ;; esac
+  export FORGE_OUTPUT="$OUTPUT"
+  case "$MAXP" in ''|*[!0-9]*) die "--max-parallel must be positive" ;; esac
+  [ "$MAXP" -gt 0 ] || die "--max-parallel must be positive"
   local T="$PLAN/tasks.tsv" W="$PLAN/waves.tsv"
   [ -s "$W" ] || die "no waves.tsv — run the plan subcommand first"
   grep -q 'UNASSIGNED' "$T" && die "some tasks are UNASSIGNED — assign a dwarf before running"
@@ -837,7 +825,10 @@ do_run() {
     return 0
   fi
 
+  forge_metric_begin "$PLAN" parallel
+  forge_metric_phase preflight
   preflight_plan "$PLAN" || return $?
+  forge_metric_phase preparation
   mkdir -p "$wt_root"
   # A branch named exactly forge/<run-id> would occupy refs/heads/forge/<run-id> as a
   # file and make every task branch below it impossible to create. Catch it here with
@@ -862,46 +853,11 @@ do_run() {
     die "integration branch changed outside this run" 3
   fi
   git -C "$int_wt" rev-parse HEAD > "$PLAN/accepted.integration"
-  local w id st failed=0 todo skipped
-  for w in $(awk -F'\t' '{print $1}' "$W" | sort -un); do
-    # Every wave branches from the integration branch as it currently stands, so a
-    # dependent task sees its dependencies' merged code.
-    (cd "$int_wt" && git rev-parse HEAD) > "$PLAN/base_ref"
-    # Already-merged tasks are skipped rather than re-dispatched, which is what
-    # makes an interrupted run continuable: the work that landed stays landed and
-    # nobody's quota is spent twice on it.
-    todo=""; skipped=0
-    for id in $(awk -F'\t' -v w="$w" '$1==w {print $2}' "$W"); do
-      if [ "$(task_status "$PLAN" "$id")" = "MERGED" ]; then
-        skipped=$((skipped+1))
-      else
-        todo="$todo $id"
-      fi
-    done
-    if [ -z "${todo// /}" ]; then
-      note "wave $w: all $skipped task(s) already merged — skipping"
-      continue
-    fi
-    [ "$skipped" -gt 0 ] && note "wave $w: $skipped task(s) already merged, resuming the rest"
-    note "wave $w: dispatching $(printf '%s\n' $todo | wc -l | tr -d ' ') task(s), max $MAXP in parallel"
-    printf '%s\n' $todo \
-      | xargs -P "$MAXP" -I{} /bin/bash "$SELF" _task "$PLAN" {}
-    for id in $todo; do
-      st="$(task_status "$PLAN" "$id")"
-      if [ "$st" = "PASS" ]; then
-        if merge_task "$PLAN" "$id"; then
-          note "wave $w: $id PASS -> merged"
-        else
-          note "wave $w: $id PASS but conflicted on merge — branch preserved"
-          failed=1
-        fi
-      else
-        note "wave $w: $id $st — excluded, branch forge/$run_id/$id preserved"
-        failed=1
-      fi
-    done
-  done
+  local id failed=0
+  forge_metric_phase dispatch
+  python3 "$SKILL_DIR/scripts/forge-schedule.py" "$SELF" "$PLAN" "$MAXP" || failed=1
 
+  forge_metric_phase verification
   verify_result "$PLAN" "$int_wt" "$PLAN" || failed=1
   write_results "$PLAN"
   # Only prune worktrees for work that is safely merged, and only after the record
@@ -915,6 +871,7 @@ do_run() {
 
   echo
   echo "results (integration branch: $int_br)"
+  echo "artifacts: $PLAN/tasks/<id>/{dwarf,qa}.{last,log}; results: $PLAN/results.tsv"
   printf '  %-14s %-9s %s\n' id status branch
   awk -F'\t' '{printf "  %-14s %-9s %s\n", $1, $2, $3}' "$PLAN/results.tsv"
   echo
@@ -951,7 +908,7 @@ do_run() {
   fi
   [ "$failed" = 1 ] && return 5
   return 0
-}
+)
 
 # --- integrate ----------------------------------------------------------------
 do_integrate() {
@@ -997,10 +954,17 @@ if [ -d "${1:-}" ]; then
   PLAN_PATH="$(cd "$1" && pwd)"; shift; set -- "$PLAN_PATH" "$@"
 fi
 case "$CMD" in
+  run|retry|integrate)
+    if [ "${FORGE_PLAN_LOCK:-}" != "${1:-}" ]; then
+      exec python3 "$SKILL_DIR/scripts/forge-schedule.py" lock "$SELF" "$CMD" "$@"
+    fi ;;
+esac
+case "$CMD" in
   plan)      do_plan "$@" ;;
   run)       do_run "$@" ;;
   retry)     do_retry "$@" ;;
   integrate) do_integrate "$@" ;;
   _task)     do_task "$@" ;;
+  _merge)    merge_task "$@" ;;
   *) die "unknown subcommand '$CMD'" ;;
 esac

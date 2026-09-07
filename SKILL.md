@@ -36,7 +36,8 @@ For explanation requests, explain the workflow without spending model quota.
 3. Use [solo runs](references/solo.md) for one implementation. For `--decompose-level
    low|medium|high`, read [decomposition](references/decompose.md), prepare the task table,
    obtain approval, then use `forge-parallel.sh plan/run`.
-4. Read implementation and QA outputs, report findings faithfully, and identify verification
+4. Runners default to summary output. Read each `dwarf.last` and `qa.last` once; retrieve raw
+   logs only when needed. Report findings faithfully, and identify verification
    limits. Source or review mutations invalidate acceptance. Missing verdicts are UNKNOWN.
    An absent repository verification command means UNVERIFIED, even when QA passes.
 

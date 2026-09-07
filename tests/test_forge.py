@@ -1,4 +1,8 @@
 import os
+import json
+import time
+import threading
+import fcntl
 from pathlib import Path
 import subprocess
 import tempfile
@@ -10,11 +14,16 @@ FAKE = '''#!/usr/bin/env python3
 import os, sys, pathlib, time
 a=sys.argv[1:]
 if '--help' in a:
- print('-p --model --add-dir --effort --permission-mode --allowedTools --disallowed-tools --dangerously-skip-permissions -m -C -o -c -s --skip-git-repo-check --approve-for-me --base --uncommitted --dangerously-bypass-approvals-and-sandbox --dir --variant --auto --agent --print --print-timeout --mode'); sys.exit()
-p = sys.stdin.read() if '-p' in a else a[-1]
+ if os.environ.get('HELPS'):
+  with open(os.environ['HELPS'], 'a') as f: f.write('help\\n')
+ print('-p --model --add-dir --effort --permission-mode --allowedTools --disallowed-tools --dangerously-skip-permissions -m -C -o -c -s --skip-git-repo-check --approve-for-me --base --uncommitted --dangerously-bypass-approvals-and-sandbox --dir --variant --auto --agent --print --print-timeout --mode --json --output-format'); sys.exit()
+p = sys.stdin.read() if '-p' in a or a[-1] == '-' else a[-1]
 qa = '--disallowed-tools' in a or '-s' in a or 'review' in a
-name = 'a.txt' if 'TASK_a' in p else ('b.txt' if 'TASK_b' in p else 'change.txt')
+name = 'a.txt' if 'TASK_a' in p else ('b.txt' if 'TASK_b' in p else ('c.txt' if 'TASK_c' in p else 'change.txt'))
 with open(os.environ['CALLS'], 'a') as f: f.write(('qa' if qa else 'dwarf')+'\\n')
+if os.environ.get('EVENTS'):
+ with open(os.environ['EVENTS'], 'a') as f: f.write(name+(' qa' if qa else ' dwarf')+' '+str(time.time())+'\\n')
+if name == 'b.txt' and not qa and os.environ.get('SLOW_B'): time.sleep(4)
 if not qa:
  if os.environ.get('SLEEP'): time.sleep(10)
  pathlib.Path(name).write_text(os.environ.get('CONTENT','implemented')+'\\n')
@@ -25,7 +34,11 @@ else:
  if os.environ.get('SOURCE'): pathlib.Path(os.environ['SOURCE'],'change.txt').write_text('source tampered\\n')
 verdict = 'FAIL' if name == 'a.txt' and os.environ.get('FAIL_A') else os.environ.get('VERDICT','PASS')
 result = ('FORGE_VERDICT: '+verdict) if qa else 'implemented'
-if '-o' in a: pathlib.Path(a[a.index('-o')+1]).write_text(result)
+if '-o' in a:
+ pathlib.Path(a[a.index('-o')+1]).write_text(result)
+ import json; print(json.dumps({'type':'turn.completed','usage':{'input_tokens':20,'cached_input_tokens':5,'output_tokens':3}}))
+elif '--output-format' in a:
+ import json; print(json.dumps({'type':'result', 'result':result, 'usage':{'input_tokens':10,'cache_read_input_tokens':2,'cache_creation_input_tokens':3,'output_tokens':4}}))
 else: print(result)
 '''
 
@@ -127,6 +140,7 @@ class ForgeTests(unittest.TestCase):
   self.assertEqual(r.returncode,0,r.stdout)
   self.assertEqual((p/'verification.status').read_text().strip(),'PASS')
   self.assertIn('REQUIREMENT_SENTINEL',(p/'tasks/a/qa.input').read_text())
+  self.assertIn("Run the task's requested verification",(p/'tasks/a/dwarf.input').read_text())
   self.assertIn('MERGED',(p/'results.tsv').read_text())
   r=self.run_script('forge-parallel.sh','integrate',p,'--approved')
   self.assertEqual(r.returncode,0,r.stdout); self.assertTrue((self.repo/'b.txt').exists())
@@ -185,5 +199,122 @@ class ForgeTests(unittest.TestCase):
   cli=self.bin/'codex'; cli.write_text(FAKE.replace("['git','add',name]", "['git','add','-f',name]")); cli.chmod(0o755)
   self.env['STAGED']='1'; r=self.solo(); self.assertEqual(r.returncode,0,r.stdout)
   self.assertIn('implemented',(self.root/'solo/changes.diff').read_text())
+
+
+ def test_large_unicode_prompt_stdin_fifo(self):
+  payload=('要求 café 😀\n'*20000).encode()
+  for mode in ('file','stdin','fifo'):
+   run=self.root/mode; run.mkdir(); source=self.root/(mode+'.input')
+   args=['bash',str(ROOT/'scripts/forge-dispatch.sh'),'dwarf','sol','--repo',str(self.repo),'--run-dir',str(run),'--output','summary','--prompt-file']
+   if mode == 'fifo':
+    os.mkfifo(source)
+    writer=threading.Thread(target=lambda: source.write_bytes(payload)); writer.start()
+   elif mode == 'file': source.write_bytes(payload)
+   args.append('-' if mode == 'stdin' else str(source))
+   result=subprocess.run(args,input=payload if mode == 'stdin' else None,env=self.env,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,timeout=8)
+   if mode == 'fifo': writer.join(timeout=1)
+   self.assertEqual(result.returncode,0,result.stdout)
+   self.assertEqual((run/'dwarf.prompt').read_bytes(),payload)
+   self.assertNotIn('要求',(run/'dwarf.cmd').read_text())
+ def test_whitespace_rejected(self):
+  run=self.root/'empty'; run.mkdir(); prompt=self.root/'whitespace'; prompt.write_text(' \t\r\n\v\f'*2000)
+  r=self.run_script('forge-dispatch.sh','dwarf','sol','--repo',self.repo,'--run-dir',run,'--prompt-file',prompt)
+  self.assertEqual(r.returncode,2,r.stdout)
+  metrics=json.loads(next(run.glob('attempts/*/metrics.json')).read_text())
+  self.assertEqual(metrics['exit_code'],2); self.assertIsNone(metrics['input_tokens'])
+ def test_summary_and_native_usage(self):
+  r=self.solo(); self.assertEqual(r.returncode,0,r.stdout)
+  self.assertNotIn('turn.completed',r.stdout)
+  run=self.root/'solo'
+  report=self.run_script('forge-dispatch.sh','report',run)
+  records=json.loads(report.stdout)['attempts']
+  dwarf=next(x for x in records if x['role']=='dwarf')
+  qa=next(x for x in records if x['role']=='qa')
+  self.assertEqual(dwarf['input_tokens'],20); self.assertEqual(dwarf['cached_input_tokens'],5)
+  self.assertEqual(qa['input_tokens'],15)
+  self.assertEqual((run/'qa.last').read_text().strip(),'FORGE_VERDICT: PASS')
+  self.assertIn('turn.completed',(run/'dwarf.log').read_text())
+  self.assertTrue(any(x['role']=='solo' and x['elapsed_s']['snapshot']>0 for x in records))
+ def test_full_output_and_attempt_history(self):
+  r=self.solo('--output','full'); self.assertEqual(r.returncode,0,r.stdout); self.assertIn('turn.completed',r.stdout)
+  self.env['CONTENT']='second'; r=self.solo()
+  records=list((self.root/'solo').glob('attempts/dwarf-*/dwarf.last'))
+  self.assertEqual(len(records),2)
+ def test_context_once(self):
+  run=self.root/'solo'; run.mkdir(); approach=self.root/'approach'; approach.write_text('APPROACH_SENTINEL\n')
+  r=self.solo('--approach',approach); self.assertEqual(r.returncode,0,r.stdout)
+  qa=(run/'qa.input').read_text()
+  self.assertEqual(qa.count('REQUIREMENT_SENTINEL'),1); self.assertEqual(qa.count('APPROACH_SENTINEL'),1)
+  self.assertNotIn('Edit the files in this repository directly',qa)
+ def test_help_cache_shared_and_invalidated(self):
+  self.env['HELPS']=str(self.root/'helps'); p=self.plan()
+  r=self.run_script('forge-parallel.sh','run',p); self.assertEqual(r.returncode,0,r.stdout)
+  self.assertEqual((self.root/'helps').read_text().count('help'),2)
+  self.env['FORGE_CAPABILITY_CACHE']=str(p/'capabilities')
+  cli=self.bin/'codex'; cli.write_text(cli.read_text()+'\n# changed executable\n')
+  r=self.run_script('forge-dispatch.sh','doctor','--spec','sol'); self.assertEqual(r.returncode,0,r.stdout)
+  self.assertEqual((self.root/'helps').read_text().count('help'),3)
+ def test_dependent_starts_before_unrelated_task_finishes(self):
+  p=self.plan('-')
+  with (p/'tasks.tsv').open('a') as f: f.write('c\ta\tlow\tc.txt\tsol\topus\tC\n')
+  t=p/'tasks/c'; t.mkdir(); (t/'prompt.md').write_text('Implement TASK_c')
+  self.env['EVENTS']=str(self.root/'events'); self.env['SLOW_B']='1'
+  r=self.run_script('forge-parallel.sh','run',p,'--max-parallel','2'); self.assertEqual(r.returncode,0,r.stdout)
+  events=(self.root/'events').read_text().splitlines()
+  c=next(float(x.split()[-1]) for x in events if x.startswith('c.txt dwarf'))
+  b=next(float(x.split()[-1]) for x in events if x.startswith('b.txt qa'))
+  self.assertLess(c,b,events)
+  self.assertNotIn('b              low     MERGED',(t/'baseline.capsule').read_text())
+ def test_resume_does_not_retry_failed_tasks(self):
+  p=self.plan(); self.env['FAIL_A']='1'; self.run_script('forge-parallel.sh','run',p)
+  before=(self.root/'calls').read_text()
+  self.run_script('forge-parallel.sh','run',p)
+  self.assertEqual(before,(self.root/'calls').read_text())
+ def test_snapshot_modes_symlinks_deletions_independent(self):
+  (self.repo/'executable').write_text('#!/bin/sh\n'); (self.repo/'executable').chmod(0o755)
+  (self.repo/'link').symlink_to('base.txt')
+  self.git('add','.'); self.git('commit','-qm','modes')
+  r=self.solo(); self.assertEqual(r.returncode,0,r.stdout)
+  review=next((self.root/'solo').glob('review-*'))
+  self.assertTrue((review/'link').is_symlink()); self.assertTrue((review/'executable').stat().st_mode & 0o111)
+  self.assertFalse((review/'.git/objects/info/alternates').exists())
+  subprocess.run(['git','fsck','--full'],cwd=review,env=self.env,check=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+
+ def test_prompt_alias_does_not_truncate(self):
+  run=self.root/'alias'; run.mkdir(); prompt=run/'dwarf.prompt'; prompt.write_bytes(b'EXACT\r\n\n')
+  alias=self.root/'prompt-alias'; alias.symlink_to(prompt)
+  r=self.run_script('forge-dispatch.sh','dwarf','sol','--repo',self.repo,'--run-dir',run,'--prompt-file',alias)
+  self.assertEqual(r.returncode,0,r.stdout); self.assertEqual(prompt.read_bytes(),b'EXACT\r\n\n')
+ def test_zero_capacity_rejected(self):
+  p=self.plan(); r=self.run_script('forge-parallel.sh','run',p,'--max-parallel','00')
+  self.assertEqual(r.returncode,2,r.stdout); self.assertFalse((self.root/'calls').exists())
+ def test_whitespace_locale_equivalence(self):
+  for value in (' ', '\t', '\r', '\n', '\v', '\f', '\u00a0', '\u2003', '\u2028', '😀'):
+   source=self.root/'space'; source.write_text(value)
+   old=subprocess.run(['/bin/bash','-c','p="$(cat "$1")"; [ -n "${p//[[:space:]]/}" ]','check',str(source)],env=self.env)
+   new=subprocess.run(['/bin/bash','-c',"grep -q '[^[:space:]]' \"$1\"",'check',str(source)],env=self.env)
+   self.assertEqual(old.returncode==0,new.returncode==0,repr(value))
+
+ def test_active_directory_overlap_serialized(self):
+  p=self.plan('-',('src','src/child.py')); self.env['EVENTS']=str(self.root/'events')
+  r=self.run_script('forge-parallel.sh','run',p,'--max-parallel','2'); self.assertEqual(r.returncode,0,r.stdout)
+  events=(self.root/'events').read_text().splitlines()
+  a=next(float(x.split()[-1]) for x in events if x.startswith('a.txt qa'))
+  b=next(float(x.split()[-1]) for x in events if x.startswith('b.txt dwarf'))
+  self.assertLess(a,b,events)
+ def test_concurrent_plan_operation_rejected_before_dispatch(self):
+  p=self.plan()
+  with (p/'schedule.lock').open('a') as lock:
+   fcntl.flock(lock,fcntl.LOCK_EX | fcntl.LOCK_NB)
+   r=self.run_script('forge-parallel.sh','run',p)
+  self.assertEqual(r.returncode,3,r.stdout); self.assertFalse((self.root/'calls').exists())
+ def test_missing_prompt_does_not_archive_stale_input(self):
+  r=self.solo(); self.assertEqual(r.returncode,0,r.stdout)
+  run=self.root/'solo'
+  r=self.run_script('forge-dispatch.sh','dwarf','sol','--repo',self.repo,'--run-dir',run,'--prompt-file',self.root/'missing')
+  self.assertEqual(r.returncode,2,r.stdout)
+  records=[json.loads(p.read_text()) for p in run.glob('attempts/dwarf-*/metrics.json')]
+  failed=next(x for x in records if x['exit_code']==2)
+  self.assertIsNone(failed['prompt_bytes']);self.assertIsNone(failed['input_tokens'])
 
 if __name__=='__main__': unittest.main()

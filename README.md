@@ -304,9 +304,10 @@ That line matters. A decomposition that looks parallel but serializes at run tim
 announce it, rather than leaving you wondering why eight tasks took eight rounds. When most
 tasks overlap, the fix is a better split — not more parallelism.
 
-Each wave branches from the integration branch **as it currently stands**, and passing tasks
-merge `--no-ff` onto it as their wave completes. So a wave-2 task that depends on a wave-1
-task genuinely sees its dependency's merged code.
+Waves are a planning preview. A Python 3 standard-library coordinator starts eligible tasks
+as prerequisites merge and capacity becomes available, while excluding overlapping active
+paths. Merges are serialized. Each task pins the integration commit at dispatch; retries keep
+that baseline, and QA sees only baseline membership recorded for that task.
 
 ### Fresh session per task, plus a capsule
 
@@ -315,7 +316,7 @@ Every dispatch is a **clean slate** — forge never passes `--continue`, `--resu
 stays small.
 
 Clean slates alone would leave every dwarf blind to the wider run, so a short `capsule.md` is
-regenerated before each dispatch and prepended to both the dwarf and QA prompt:
+generated from the task's pinned baseline and preserved for both implementation and QA:
 
 ```
 # forge run <run-id>
@@ -329,8 +330,8 @@ Files you own: src/auth/token.py
 ## Run status
 id        diff     status       files
 middleware high    MERGED       src/auth/middleware.py
-tokens     medium  IN FLIGHT    src/auth/token.py
-docs       low     PENDING      README.md
+tokens     medium  THIS ONE     src/auth/token.py
+docs       low     NOT IN BASE  README.md
 
 ## Ground rules
 - Your branch already contains every MERGED task's work — do not reimplement it.
@@ -518,7 +519,7 @@ notes to itself is noise to a reviewer who does not use forge.
 | `--repo <dir>` | cwd | repository to work in |
 | `--native-review` | off | use native Codex review against the recorded baseline instead of an inlined diff |
 | `--decompose-level <l>` | off | split the goal into parallel tasks |
-| `--max-parallel <n>` | `3` | concurrent dwarves per wave |
+| `--max-parallel <n>` | `3` | concurrent task pipelines |
 | `--dwarf-high/-medium/-low` | — | per-difficulty routing; comma-list pools models |
 | `--qa-high/-medium/-low` | — | same, for reviewers |
 
@@ -695,7 +696,7 @@ forge-parallel.sh integrate <plan-dir> --approved
 | Subcommand | Does |
 |---|---|
 | `plan` | validate `tasks.tsv`, resolve difficulty → concrete dwarf/qa specs, compute waves, render the approval table |
-| `run` | execute waves; per task: worktree → dwarf → diff → QA → status; merge passing tasks onto the integration branch |
+| `run` | schedule ready tasks; per task: worktree → dwarf → diff → QA → status; merge passing tasks onto the integration branch |
 | `retry` | re-run **one** failed task in the worktree it already has, with its reviewer's findings in the prompt |
 | `integrate` | **never automatic** — merge the integration branch into your branch |
 
@@ -749,16 +750,10 @@ initiative.
 
 #### Resuming an interrupted run
 
-Run `run` again. Tasks already `MERGED` are skipped rather than re-dispatched, worktrees are
-reused, and each wave re-bases on the integration branch as it now stands:
-
-```
-forge: wave 1: 3 task(s) already merged, resuming the rest
-forge: wave 1: dispatching 2 task(s), max 3 in parallel
-```
-
-A killed process, a hung harness or a closed laptop costs you the tasks that were in flight,
-not the ones that landed.
+Run `run` again to skip MERGED tasks, merge saved PASS results after fingerprint checks,
+and dispatch eligible pending tasks. Failed and interrupted tasks need an explicit `retry`.
+Their worktrees and pinned baselines remain available. Concurrent run/retry/integrate
+operations for the same plan are excluded by an advisory lock.
 
 #### Scope drift
 
@@ -1054,3 +1049,41 @@ command is reported as UNVERIFIED; a failing configured check blocks integration
 
 Run `bash tests/check.sh` for offline regression checks. See [tests](tests/README.md) for skill
 invocation scenarios and verification limits. CI covers macOS and Linux.
+
+
+## Runtime efficiency and measurement
+
+Shell entrypoints require Python 3 (standard library only) in addition to Bash and Git.
+The [runtime helper decision](references/runtime.md) records the module boundaries and tradeoffs.
+Solo and parallel runners default to `--output summary`; use `--output full` to include raw
+backend output. Direct dispatch keeps its full-output default. Read each `dwarf.last` and
+`qa.last` once, and retrieve `.log` or `.out` only when investigating a problem.
+
+QA receives complete requirements, approach, ownership, retry findings and distinct memory
+facts once, with review instructions separate from implementation instructions. Prompts and
+full binary diffs remain on disk. Review repositories receive self-contained tree object packs,
+create baseline/final commits, and check out the final tree once. Exact tree comparisons and
+all source, review and integration fingerprint checks remain acceptance boundaries.
+
+`FORGE_CAPABILITY_CACHE` optionally selects an offline help cache. Runners share a run-local
+`capabilities/` cache across preflights and dispatches. Keys cover the executable's resolved
+path, device/inode, size and modification/change timestamps, help command mode, registry
+contents and dispatch recipe. Every selected spec, effort and permission recipe is still
+validated; cached help never proves authentication or live model availability.
+
+Run `bash scripts/forge-dispatch.sh report <run-dir>` for JSON attempt records, including
+failures and timeouts, with project memory enabled or disabled. `attempts/<role>-<id>/`
+retains prompts, final responses, raw logs, resolution, command and `metrics.json` per dispatch.
+Pipeline records capture preparation, preflight, snapshot, verification and total time;
+dispatch records capture preparation, preflight, model and total time. Nested pipeline
+`dispatch` time includes dispatch overhead: do not add nested totals together. Timing uses
+monotonic seconds. A still-running or forcibly killed record has a null exit code and may
+have incomplete timings.
+
+Prompt bytes are separate from native input, cached-input and output token counts. Codex
+uses `turn.completed` usage; Claude uses result usage (input includes uncached, cache-read
+and cache-creation tokens). Unsupported or absent usage stays null, never estimated from
+bytes. See [measurement and live evaluation](tests/README.md).
+
+Measured results, including the live comparison's higher total token use and latency, are
+recorded in [the September 7 evaluation](tests/benchmark-2026-09-07.md).

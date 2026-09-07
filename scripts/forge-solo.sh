@@ -35,6 +35,7 @@ SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DISPATCH="$SKILL_DIR/scripts/forge-dispatch.sh"
 MEMORY="$SKILL_DIR/scripts/forge-memory.sh"
 source "$SKILL_DIR/scripts/forge-artifact.sh"
+source "$SKILL_DIR/scripts/forge-metrics.sh"
 
 die()  { printf 'forge: %s\n' "$1" >&2; exit "${2:-2}"; }
 note() { printf 'forge: %s\n' "$*" >&2; }
@@ -43,9 +44,11 @@ RUN="${1:-}"; [ -n "$RUN" ] || die "usage: forge-solo.sh <run-dir> --repo <dir> 
 case "$RUN" in -*) die "first argument must be the run directory, got '$RUN'" ;; esac
 shift
 
+OUTPUT=summary
 REPO="$PWD"; DWARF=""; QA="opus"; APPROACH=""; YD=""; YQ=""; NATIVE=""; TIMEOUT=""; DRY=0
 while [ $# -gt 0 ]; do
   case "$1" in
+    --output) OUTPUT="${2:?}"; shift 2 ;;
     --repo)       REPO="${2:?--repo needs a value}"; shift 2 ;;
     --dwarf)      DWARF="${2:?--dwarf needs a spec}"; shift 2 ;;
     --qa)         QA="${2:?--qa needs a spec}"; shift 2 ;;
@@ -59,6 +62,8 @@ while [ $# -gt 0 ]; do
     *) die "unknown option '$1'" ;;
   esac
 done
+
+case "$OUTPUT" in summary|full) ;; *) die "--output must be summary or full" ;; esac
 
 # Forge never picks the model: every dispatch spends the user's quota, and choosing
 # for them is not the tool's call.
@@ -78,20 +83,17 @@ esac
 RUN="$(cd "$RUN" && pwd)"
 REPO="$(cd "$REPO" && pwd)"
 RUN_ID="$(basename "$RUN")"
+export FORGE_CAPABILITY_CACHE="$RUN/capabilities"
 TFLAG=""; [ -n "$TIMEOUT" ] && TFLAG="--timeout $TIMEOUT"
 GOAL="$(head -1 "$RUN/goal.txt" 2>/dev/null || true)"
 
+[ "$DRY" = 1 ] || forge_metric_begin "$RUN" solo
+
 # --- dwarf --------------------------------------------------------------------
+/bin/bash "$MEMORY" inject "$REPO" dwarf > "$RUN/dwarf.memory"
+python3 "$SKILL_DIR/scripts/forge-prompt.py" --requirements "$RUN/prompt.md" --approach "$APPROACH" --memory "$RUN/dwarf.memory" > "$RUN/context.md" || exit 3
 {
-  /bin/bash "$MEMORY" inject "$REPO" dwarf
-  echo
-  cat "$RUN/prompt.md"
-  if [ -n "$APPROACH" ] && [ -s "$APPROACH" ]; then
-    echo; echo "## Intended approach"
-    echo "Follow it unless it is actually wrong — if it is, say so in your final message"
-    echo "rather than silently doing something else."
-    echo; cat "$APPROACH"
-  fi
+  cat "$RUN/context.md"
   cat <<'EOF'
 
 Edit the files in this repository directly. When you are done, run whatever tests
@@ -114,15 +116,18 @@ if [ "$DRY" = 1 ]; then
   exit 0
 fi
 
+forge_metric_phase preflight
 /bin/bash "$DISPATCH" doctor --spec "$DWARF" --role dwarf $YD $TFLAG || exit $?
 /bin/bash "$DISPATCH" doctor --spec "$QA" --role qa $YQ $NATIVE $TFLAG || exit $?
+forge_metric_phase snapshot
 START="$(forge_tree "$REPO")" || die "cannot record starting snapshot" 3
 echo "$START" > "$RUN/start.tree"
 git -C "$REPO" diff --binary HEAD "$START" -- . ':(exclude).forge' > "$RUN/existing.diff"
 rm -f "$RUN/verdict"
+forge_metric_phase dispatch
 note "dwarf $DWARF in $REPO"
 /bin/bash "$DISPATCH" dwarf "$DWARF" --repo "$REPO" --run-dir "$RUN" \
-  --prompt-file "$RUN/dwarf.input" $YD $TFLAG
+  --prompt-file "$RUN/dwarf.input" $YD $TFLAG --output "$OUTPUT"
 rc=$?
 dur_dwarf="$(sed -n 's/^duration_s=//p' "$RUN/dwarf.resolved" 2>/dev/null | tail -1)"
 /bin/bash "$MEMORY" record "$REPO" --last "$RUN/dwarf.last" --role dwarf \
@@ -130,6 +135,7 @@ dur_dwarf="$(sed -n 's/^duration_s=//p' "$RUN/dwarf.resolved" 2>/dev/null | tail
 [ "$rc" = 7 ] && die "the dwarf exceeded its timeout — see $RUN/dwarf.log" 7
 [ "$rc" -ne 0 ] && die "the dwarf dispatch failed — see $RUN/dwarf.log" 4
 
+forge_metric_phase snapshot
 # --- the real diff ------------------------------------------------------------
 # Diff complete filesystem snapshots; the private index preserves user staging.
 END="$(forge_tree "$REPO")" || die "cannot capture implementation" 3
@@ -149,18 +155,11 @@ SOURCE_FP="$(forge_fingerprint "$REPO")" || exit 3
 REVIEW_FP="$(forge_fingerprint "$REVIEW")" || exit 3
 printf '%s\n' "$SOURCE_FP" > "$RUN/source.fingerprint"
 printf '%s\n' "$REVIEW_FP" > "$RUN/review.fingerprint"
+forge_metric_phase preparation
 # --- qa -----------------------------------------------------------------------
+/bin/bash "$MEMORY" inject "$REPO" qa > "$RUN/qa.memory"
 {
-  /bin/bash "$MEMORY" inject "$REPO" qa
-  echo
-  echo "## Complete implementation requirements"; cat "$RUN/dwarf.input"; echo
-  [ -n "$GOAL" ] && { echo "The implementer was asked to: $GOAL"; echo; }
-  if [ -n "$APPROACH" ] && [ -s "$APPROACH" ]; then
-    echo "## Intended approach"
-    echo "This is what the implementer was asked to build, not just what it was asked to"
-    echo "achieve. Code that works but abandons this shape is worth reporting."
-    echo; cat "$APPROACH"; echo
-  fi
+  python3 "$SKILL_DIR/scripts/forge-prompt.py" --requirements "$RUN/prompt.md" --approach "$APPROACH" --goal "$RUN/goal.txt" --memory "$RUN/dwarf.memory" --memory "$RUN/qa.memory"
   cat <<'EOF'
 Review the diff below for correctness bugs: logic errors, broken edge cases, wrong
 behaviour versus what was asked. Also say if it solved a different problem than the
@@ -181,10 +180,12 @@ EOF
   echo "Place any learning notes before the final FORGE_VERDICT: PASS or FORGE_VERDICT: FAIL line."
 } > "$RUN/qa.input"
 
+forge_metric_phase dispatch
 note "qa $QA on $(wc -l < "$RUN/changes.diff" | tr -d ' ') diff lines"
 /bin/bash "$DISPATCH" qa "$QA" --repo "$REVIEW" --review-base "$(cat "$RUN/review.base")" --run-dir "$RUN" \
-  --prompt-file "$RUN/qa.input" $YQ $NATIVE $TFLAG
+  --prompt-file "$RUN/qa.input" $YQ $NATIVE $TFLAG --output "$OUTPUT"
 rc=$?
+forge_metric_phase verification
 verdict="$(forge_verdict "$RUN/qa.last")"
 [ -n "$NATIVE" ] && verdict=UNKNOWN
 if [ "$(forge_fingerprint "$REPO")" != "$SOURCE_FP" ] || [ "$(forge_fingerprint "$REVIEW")" != "$REVIEW_FP" ]; then

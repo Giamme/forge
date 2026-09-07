@@ -35,3 +35,9 @@ it cannot establish requirements coverage. The disposable repository supplies th
 baseline via `--review-base`.
 
 Changes remain in the source working tree. Forge does not commit or integrate solo work.
+
+Solo defaults to `--output summary`; `--output full` includes raw CLI output. Read the two
+`.last` files once, then inspect logs only as needed. `forge-dispatch.sh report <run-dir>`
+reports immutable attempt metrics and native usage independently of project memory. Shared
+context is assembled from original requirements and approach; QA does not embed dwarf
+execution instructions. Review snapshots use self-contained object packs and one checkout.

@@ -59,10 +59,12 @@ prints `reasoning effort: bogus` in its own header without erroring. A typo ther
 a full run at some unintended level, with nothing in the output saying so. This is the main
 reason forge validates efforts itself before dispatch.
 
-**It blocks on stdin.** `codex exec` prints `Reading additional input from stdin...` and
-waits, because a piped stdin is appended to the prompt as a `<stdin>` block. Headless that
-looks like a hang rather than an error, so the prompt goes on argv and stdin is redirected
-from `/dev/null`.
+**Prompt delivery uses stdin.** Forge copies the input once (including FIFOs), checks it
+with a streaming whitespace character class, and runs `codex exec ... - < role.prompt`.
+Native review has no custom prompt and uses `/dev/null`. Codex JSONL events and Claude
+`--output-format json` provide native usage; final responses remain in `<role>.last`.
+See the official [Codex non-interactive guide](https://learn.chatgpt.com/docs/non-interactive-mode)
+and [Claude headless guide](https://code.claude.com/docs/en/headless).
 
 `--approve-for-me` and `--dangerously-bypass-approvals-and-sandbox` are mutually exclusive,
 and `--approve-for-me` additionally conflicts with an explicit `-s/--sandbox`.

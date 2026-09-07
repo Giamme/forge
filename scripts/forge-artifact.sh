@@ -37,14 +37,19 @@ forge_review_snapshot() ( # source, baseline tree, final tree, destination
   [ ! -e "$dest" ] || exit 1
   mkdir -p "$dest" || exit 1
   git -C "$dest" init -q || exit 1
-  forge_export_tree "$src" "$base" "$dest" || exit 1
-  git -C "$dest" add --force -A && git -C "$dest" -c user.name=forge -c user.email=forge@local commit -qm baseline --allow-empty || exit 1
-  [ "$(git -C "$dest" rev-parse HEAD^{tree})" = "$(git -C "$src" rev-parse "$base^{tree}")" ] || exit 1
-  git -C "$dest" rev-parse HEAD > "$dest/../review.base"
-  git -C "$dest" rm -rfq --ignore-unmatch . || exit 1
-  forge_export_tree "$src" "$tree" "$dest" || exit 1
-  git -C "$dest" add --force -A && git -C "$dest" -c user.name=forge -c user.email=forge@local commit -qm artifact --allow-empty || exit 1
-  [ "$(git -C "$dest" rev-parse HEAD^{tree})" = "$(git -C "$src" rev-parse "$tree^{tree}")" ]
+  base="$(git -C "$src" rev-parse "$base^{tree}")" || exit 1
+  tree="$(git -C "$src" rev-parse "$tree^{tree}")" || exit 1
+  printf '%s\n%s\n' "$base" "$tree" |
+    git -C "$src" pack-objects --revs --stdout |
+    git -C "$dest" index-pack --stdin >/dev/null || exit 1
+  local baseline final
+  baseline="$(echo baseline | git -C "$dest" -c user.name=forge -c user.email=forge@local commit-tree "$base")" || exit 1
+  final="$(echo artifact | git -C "$dest" -c user.name=forge -c user.email=forge@local commit-tree "$tree" -p "$baseline")" || exit 1
+  [ "$(git -C "$dest" rev-parse "$baseline^{tree}")" = "$base" ] || exit 1
+  echo "$baseline" > "$dest/../review.base"
+  git -C "$dest" reset --hard "$final" >/dev/null || exit 1
+  [ "$(git -C "$dest" rev-parse HEAD^{tree})" = "$tree" ]
+
 )
 
 forge_fingerprint() {

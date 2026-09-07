@@ -17,6 +17,7 @@ set -uo pipefail
 
 SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REGISTRY="$SKILL_DIR/registry.tsv"
+RUNTIME="$SKILL_DIR/scripts/forge-runtime.py"
 
 die()  { printf 'forge: %s\n' "$1" >&2; exit "${2:-2}"; }
 note() { printf 'forge: %s\n' "$*" >&2; }
@@ -98,6 +99,7 @@ EOT
 
 [ $# -ge 1 ] || die "usage: forge-dispatch.sh <doctor|dwarf|qa|planner> [spec] [options]"
 ROLE="$1"; shift
+if [ "$ROLE" = report ]; then python3 "$RUNTIME" report "${1:?report needs a run directory}"; exit $?; fi
 PREFLIGHT=0
 if [ "$ROLE" = doctor ]; then
   if [ $# = 0 ]; then doctor; exit $?; fi
@@ -120,9 +122,11 @@ read_only_role() { case "$ROLE" in qa|planner) return 0 ;; *) return 1 ;; esac; 
 [ $# -ge 1 ] || die "role '$ROLE' needs a spec, e.g. sol:xhigh:openclaude"
 SPEC="$1"; shift
 
+OUTPUT=full
 REPO="$PWD"; RUN_DIR=""; PROMPT_FILE=""; YOLO=0; DRY=0; REVIEW_BASE=""; PROMPT_VIA_STDIN=0; NATIVE_REVIEW=0; AGY_TIMEOUT="30m"; LIMIT="${FORGE_TIMEOUT:-2700}"
 while [ $# -gt 0 ]; do
   case "$1" in
+    --output) OUTPUT="${2:?}"; shift 2 ;;
     --repo)         REPO="${2:?--repo needs a value}"; shift 2 ;;
     --run-dir)      RUN_DIR="${2:?--run-dir needs a value}"; shift 2 ;;
     --prompt-file)  PROMPT_FILE="${2:?--prompt-file needs a value}"; shift 2 ;;
@@ -136,6 +140,7 @@ while [ $# -gt 0 ]; do
   esac
 done
 
+case "$OUTPUT" in summary|full) ;; *) die "--output must be summary or full" ;; esac
 case "$LIMIT" in ''|*[!0-9]*) die "--timeout must be a nonnegative integer" ;; esac
 
 # --- resolve spec -------------------------------------------------------------
@@ -239,21 +244,29 @@ RUN_DIR="$(cd "$RUN_DIR" && pwd)"   # normalize, so the containment check below 
 # the working tree would show up in the dwarf's own diff and pollute QA's input.
 case "$RUN_DIR" in "$REPO"|"$REPO"/*) die "--run-dir must be outside --repo, or it lands in the diff under review" ;; esac
 
+# Start an immutable attempt record before preparation, including failures.
+ATTEMPT=""
+if [ "$PREFLIGHT" != 1 ] && [ "$DRY" != 1 ]; then
+  ATTEMPT="$(python3 "$RUNTIME" begin "$RUN_DIR" "$ROLE")" || exit 3
+  rm -f "$RUN_DIR/$ROLE.last" "$RUN_DIR/$ROLE.log" "$RUN_DIR/$ROLE.resolved" "$RUN_DIR/$ROLE.cmd" "$RUN_DIR/$ROLE.timedout"
+  trap 'exit 143' TERM
+  trap 'exit 130' INT
+  trap 'result=$?; if [ -n "${hpid:-}" ] && kill -0 "$hpid" 2>/dev/null; then pkill -TERM -P "$hpid" 2>/dev/null; kill -TERM "$hpid" 2>/dev/null; fi; if [ -n "${wpid:-}" ]; then pkill -P "$wpid" 2>/dev/null; kill "$wpid" 2>/dev/null; fi; python3 "$RUNTIME" finish "$ATTEMPT" "$RUN_DIR" "$ROLE" "$HARNESS" "$result"; exit "$result"' EXIT
+fi
 [ -n "$PROMPT_FILE" ] || die "role '$ROLE' needs --prompt-file"
-if [ "$PROMPT_FILE" = "-" ] || [ "$PROMPT_FILE" = "/dev/stdin" ]; then
-  PROMPT_FILE="$RUN_DIR/$ROLE.prompt"; cat > "$PROMPT_FILE"
-fi
-[ -r "$PROMPT_FILE" ] || die "cannot read --prompt-file '$PROMPT_FILE'"
-PROMPT="$(cat "$PROMPT_FILE")"
-[ -n "${PROMPT//[[:space:]]/}" ] || die "prompt file '$PROMPT_FILE' is empty"
-# Materialize the prompt into the run dir and read it from there from now on.
-# A caller passing a process substitution or any other FIFO can only be read
-# once, so the second read (stdin delivery) would otherwise hand the harness an
-# empty prompt. Keeping the copy also records exactly what each role was asked.
-if [ "$PROMPT_FILE" != "$RUN_DIR/$ROLE.prompt" ]; then
-  printf '%s\n' "$PROMPT" > "$RUN_DIR/$ROLE.prompt"
-  PROMPT_FILE="$RUN_DIR/$ROLE.prompt"
-fi
+case "$PROMPT_FILE" in -|/dev/stdin) cat > "$RUN_DIR/$ROLE.prompt" ;;
+  *) [ -r "$PROMPT_FILE" ] || die "cannot read --prompt-file '$PROMPT_FILE'"
+     if [ "$PROMPT_FILE" != "$RUN_DIR/$ROLE.prompt" ]; then
+       prompt_copy="$(mktemp "$RUN_DIR/.prompt.XXXXXX")" || die "cannot create prompt copy"
+       cat "$PROMPT_FILE" > "$prompt_copy" || { rm -f "$prompt_copy"; die "cannot materialize prompt"; }
+       mv "$prompt_copy" "$RUN_DIR/$ROLE.prompt" || die "cannot install prompt copy"
+     fi ;;
+esac
+PROMPT_FILE="$RUN_DIR/$ROLE.prompt"
+[ -z "$ATTEMPT" ] || touch "$ATTEMPT/prompt.ready"
+# Streaming POSIX character class, using the caller's locale as Bash did.
+grep -q '[^[:space:]]' "$PROMPT_FILE" || die "prompt file '$PROMPT_FILE' is empty"
+PROMPT=""
 
 LAST="$RUN_DIR/$ROLE.last"
 LOG="$RUN_DIR/$ROLE.log"
@@ -271,11 +284,13 @@ linters, git, or any other command. Verify your work by reading the code instead
 plainly in your final message that it is unverified by execution."
 fi
 if [ -n "$CONSTRAINT" ]; then
-  printf '%s\n\n%s\n' "$PROMPT" "$CONSTRAINT" > "$RUN_DIR/$ROLE.prompt"
+  printf '\n%s\n' "$CONSTRAINT" >> "$RUN_DIR/$ROLE.prompt"
   PROMPT="$(cat "$RUN_DIR/$ROLE.prompt")"
   PROMPT_FILE="$RUN_DIR/$ROLE.prompt"
   note "antigravity without --yolo cannot run commands; told the $ROLE not to try"
 fi
+
+case "$HARNESS" in opencode|antigravity) PROMPT="$(cat "$PROMPT_FILE")" ;; esac
 
 # --- build argv ---------------------------------------------------------------
 CMD=()
@@ -287,18 +302,19 @@ case "$HARNESS" in
       # whether the diff is correct, but not whether it is the change that was
       # actually asked for. `codex exec review` also has no --cd, hence the
       # subshell cd below.
-      CMD=(codex exec review -m "$MODEL" --skip-git-repo-check -o "$LAST")
+      CMD=(codex exec review --json -m "$MODEL" --skip-git-repo-check -o "$LAST")
       [ -n "$EFFORT" ] && CMD+=(-c "model_reasoning_effort=$EFFORT")
       if [ -n "$REVIEW_BASE" ]; then CMD+=(--base "$REVIEW_BASE"); else CMD+=(--uncommitted); fi
       if [ "$YOLO" = 1 ]; then CMD+=(--dangerously-bypass-approvals-and-sandbox); fi
     else
-      CMD=(codex exec -m "$MODEL" -C "$REPO" --skip-git-repo-check -o "$LAST")
+      CMD=(codex exec --json -m "$MODEL" -C "$REPO" --skip-git-repo-check -o "$LAST")
       [ -n "$EFFORT" ] && CMD+=(-c "model_reasoning_effort=$EFFORT")
       # --approve-for-me and --dangerously-bypass-... are mutually exclusive.
       if [ "$YOLO" = 1 ]; then CMD+=(--dangerously-bypass-approvals-and-sandbox)
       elif [ "$ROLE" = "dwarf" ]; then CMD+=(--approve-for-me)
       else CMD+=(-s read-only); fi
-      CMD+=("$PROMPT")
+      CMD+=(-)
+      PROMPT_VIA_STDIN=1
     fi
     ;;
   claude|openclaude)
@@ -306,6 +322,7 @@ case "$HARNESS" in
     # puts it outside the harness's default reach — without this the agent
     # refuses to open the very artifacts forge just wrote for it.
     CMD=("$HARNESS" -p --model "$MODEL" --add-dir "$RUN_DIR")
+    [ "$HARNESS" = claude ] && CMD+=(--output-format json)
     [ -n "$EFFORT" ] && CMD+=(--effort "$EFFORT")
     if [ "$YOLO" = 1 ]; then
       CMD+=(--dangerously-skip-permissions)
@@ -367,23 +384,23 @@ esac
 # Offline validation uses the exact command recipe, never a model request.
 preflight_command() {
   local bin help arg flag
+  local help_args=(--help)
   bin="$(command -v "$(binary_for "$HARNESS")")" || die "harness '$HARNESS' is not installed" 3
   case "$HARNESS" in
-    codex)
-      if [ "$NATIVE_REVIEW" = 1 ] && [ "$ROLE" = qa ]; then help="$("$bin" exec review --help 2>&1)"
-      else help="$("$bin" exec --help 2>&1)"; fi ;;
-    opencode) help="$("$bin" run --help 2>&1)" ;;
-    *) help="$("$bin" --help 2>&1)" ;;
+    codex) help_args=(exec --help); [ "$NATIVE_REVIEW" = 1 ] && help_args=(exec review --help) ;;
+    opencode) help_args=(run --help) ;;
   esac
-  [ $? = 0 ] || die "cannot read $HARNESS help" 3
+  help="$(python3 "$RUNTIME" help "${FORGE_CAPABILITY_CACHE:-$RUN_DIR/capabilities}" "$REGISTRY" "${BASH_SOURCE[0]}" "$bin" "${help_args[@]}")" || die "cannot read $HARNESS help" 3
   for arg in "${CMD[@]:1}"; do
     [ "$arg" = "$PROMPT" ] && continue
+    [ "$arg" = - ] && continue
     case "$arg" in
       -*) flag="${arg%%=*}"
           printf '%s\n' "$help" | grep -E -- "(^|[[:space:],|])$flag([=[:space:],|]|$)" >/dev/null || die "$HARNESS does not advertise required flag $flag" 3 ;;
     esac
   done
 }
+[ -z "$ATTEMPT" ] || python3 "$RUNTIME" phase "$ATTEMPT" preflight
 if [ "$DRY" != 1 ] || [ "$PREFLIGHT" = 1 ]; then preflight_command; fi
 
 # --- report the resolution ----------------------------------------------------
@@ -433,6 +450,7 @@ fi
 # run-dir, and silently wrong for `forge-parallel.sh retry`, which reuses the task
 # directory — it would read the first attempt's result and never notice.
 rm -f "$LAST" "$LOG" "$RUN_DIR/$ROLE.timedout"
+python3 "$RUNTIME" phase "$ATTEMPT" model
 t0="$(date +%s)"
 if [ "$PROMPT_VIA_STDIN" = 1 ]; then
   ( cd "$REPO" && exec "${CMD[@]}" < "$PROMPT_FILE" ) > "$LOG" 2>&1 &
@@ -472,11 +490,11 @@ if [ -n "$wpid" ]; then
   kill "$wpid" 2>/dev/null
   wait "$wpid" 2>/dev/null
 fi
+python3 "$RUNTIME" phase "$ATTEMPT" finalization
 DURATION=$(( $(date +%s) - t0 ))
 echo "duration_s=$DURATION" >> "$RUN_DIR/$ROLE.resolved"
-cat "$LOG"
-
-[ -s "$LAST" ] || { [ -s "$LOG" ] && cp "$LOG" "$LAST"; }
+[ "$OUTPUT" != full ] || cat "$LOG"
+[ "$OUTPUT" != summary ] || echo "forge: role=$ROLE backend_exit=$rc final=$LAST log=$LOG metrics=$ATTEMPT/metrics.json"
 if [ -f "$RUN_DIR/$ROLE.timedout" ]; then
   note "$HARNESS exceeded the ${LIMIT}s timeout and was killed after ${DURATION}s — see $LOG"
   exit 7

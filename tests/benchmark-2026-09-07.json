@@ -1,0 +1,360 @@
+{
+  "baseline_commit": "f436210eab78c0006fe2b8c611236acb607a7679",
+  "models": {
+    "dwarf": "sol:medium:codex",
+    "qa": "terra:xhigh:codex"
+  },
+  "dispatch_count": 24,
+  "artifact_root": "/private/tmp/forge-live-20260907",
+  "frozen_candidate_script_sha256": {
+    "scripts/forge-artifact.sh": "fd4497de98baf3d177fcf139060852413cef9dc7392e2a0a726139742c4daeda",
+    "scripts/forge-dispatch.sh": "91ed093797df3cbe8a4bee765c9a0965c1ae2269ca578c1252423dcee5820e48",
+    "scripts/forge-install.sh": "aabe005d09619f546f60c294ae9c03de3ce3c0ef993e2a3f07100eda30adf02b",
+    "scripts/forge-memory.sh": "f48fa070bea5f6f2fe28d52fdac8e1816974a5c8c9c8e50ffd450621a6798e79",
+    "scripts/forge-metrics.sh": "9ed9a6af837bb2bb9833160150a64e6f2fde43a1a8f126b54cf7a6521250cc8a",
+    "scripts/forge-parallel.sh": "9065ef7af32a9910dcd44175e52150c70f24d6217555a087dfd9564370df26ab",
+    "scripts/forge-prompt.py": "a4d29163b2d46a37e5aa1d1cf3644527a1347e1749bef82b737c7df6db5eef0f",
+    "scripts/forge-runtime.py": "9e8ea7a600875bf79ac72848a38fa5aeda3c0c7da8ba49c8e53520573ec676ed",
+    "scripts/forge-schedule.py": "cfd3aa97f8eb853549523b4a48ca18b09e6273bc414ebcc15959b5db372f606b",
+    "scripts/forge-solo.sh": "7e49d150f8e08ab2766f6d2391ecb26406de3a580cbadbed44a49d65cf5c2f74"
+  },
+  "aggregate": {
+    "baseline": {
+      "elapsed_s": 324.10339816799933,
+      "prompt_bytes": 23147,
+      "qa_prompt_bytes": 17107,
+      "runner_output_bytes": 33028,
+      "usage_events": 12,
+      "usage": {
+        "input_tokens": 967313,
+        "cached_input_tokens": 786048,
+        "output_tokens": 8341
+      }
+    },
+    "candidate": {
+      "elapsed_s": 358.0159464999997,
+      "prompt_bytes": 18135,
+      "qa_prompt_bytes": 11881,
+      "runner_output_bytes": 8350,
+      "usage_events": 12,
+      "usage": {
+        "input_tokens": 1093119,
+        "cached_input_tokens": 851072,
+        "output_tokens": 10799
+      }
+    }
+  },
+  "cases": [
+    {
+      "exit_code": 0,
+      "elapsed_s": 76.90402379200077,
+      "log": "/private/tmp/forge-live-20260907/slug-baseline/runner.log",
+      "case": "slug-baseline",
+      "artifacts": "/private/tmp/forge-live-20260907/slug-baseline/run",
+      "acceptance": {
+        "exit_code": 0,
+        "elapsed_s": 0.017585750000762346,
+        "log": "/private/tmp/forge-live-20260907/slug-baseline/acceptance.log"
+      },
+      "acceptance_unchanged": true,
+      "verdict": "PASS",
+      "usage": {
+        "input_tokens": 184875,
+        "cached_input_tokens": 148736,
+        "output_tokens": 1839
+      },
+      "usage_events": 2,
+      "prompt_bytes": 3377,
+      "qa_prompt_bytes": 2462,
+      "runner_output_bytes": 15842
+    },
+    {
+      "exit_code": 0,
+      "elapsed_s": 74.67205908399956,
+      "log": "/private/tmp/forge-live-20260907/slug-candidate/runner.log",
+      "case": "slug-candidate",
+      "artifacts": "/private/tmp/forge-live-20260907/slug-candidate/run",
+      "acceptance": {
+        "exit_code": 0,
+        "elapsed_s": 0.017183875000228,
+        "log": "/private/tmp/forge-live-20260907/slug-candidate/acceptance.log"
+      },
+      "acceptance_unchanged": true,
+      "verdict": "PASS",
+      "usage": {
+        "input_tokens": 183506,
+        "cached_input_tokens": 128000,
+        "output_tokens": 1817
+      },
+      "usage_events": 2,
+      "prompt_bytes": 2526,
+      "qa_prompt_bytes": 1694,
+      "runner_output_bytes": 2310
+    },
+    {
+      "exit_code": 0,
+      "elapsed_s": 78.91623216599965,
+      "log": "/private/tmp/forge-live-20260907/ranges-baseline/runner.log",
+      "case": "ranges-baseline",
+      "artifacts": "/private/tmp/forge-live-20260907/ranges-baseline/run",
+      "acceptance": {
+        "exit_code": 0,
+        "elapsed_s": 0.01618662500004575,
+        "log": "/private/tmp/forge-live-20260907/ranges-baseline/acceptance.log"
+      },
+      "acceptance_unchanged": true,
+      "verdict": "PASS",
+      "usage": {
+        "input_tokens": 204683,
+        "cached_input_tokens": 169216,
+        "output_tokens": 1805
+      },
+      "usage_events": 2,
+      "prompt_bytes": 3415,
+      "qa_prompt_bytes": 2521,
+      "runner_output_bytes": 13395
+    },
+    {
+      "exit_code": 0,
+      "elapsed_s": 79.16679449999992,
+      "log": "/private/tmp/forge-live-20260907/ranges-candidate/runner.log",
+      "case": "ranges-candidate",
+      "artifacts": "/private/tmp/forge-live-20260907/ranges-candidate/run",
+      "acceptance": {
+        "exit_code": 0,
+        "elapsed_s": 0.017295333000220126,
+        "log": "/private/tmp/forge-live-20260907/ranges-candidate/acceptance.log"
+      },
+      "acceptance_unchanged": true,
+      "verdict": "PASS",
+      "usage": {
+        "input_tokens": 184167,
+        "cached_input_tokens": 141696,
+        "output_tokens": 2030
+      },
+      "usage_events": 2,
+      "prompt_bytes": 2752,
+      "qa_prompt_bytes": 1941,
+      "runner_output_bytes": 2344
+    },
+    {
+      "exit_code": 0,
+      "elapsed_s": 156.7476749589996,
+      "log": "/private/tmp/forge-live-20260907/parallel-baseline/runner.log",
+      "case": "parallel-baseline",
+      "artifacts": "/private/tmp/forge-live-20260907/parallel-baseline/plan",
+      "acceptance": {
+        "exit_code": 0,
+        "elapsed_s": 0.016622832999928505,
+        "log": "/private/tmp/forge-live-20260907/parallel-baseline/acceptance.log"
+      },
+      "acceptance_unchanged": true,
+      "tasks": "a\tMERGED\tforge/parallel-baseline/a\nb\tMERGED\tforge/parallel-baseline/b\nc\tMERGED\tforge/parallel-baseline/c\n",
+      "usage": {
+        "input_tokens": 534547,
+        "cached_input_tokens": 429696,
+        "output_tokens": 4490
+      },
+      "usage_events": 6,
+      "prompt_bytes": 15260,
+      "qa_prompt_bytes": 11029,
+      "runner_output_bytes": 2262
+    },
+    {
+      "exit_code": 0,
+      "elapsed_s": 189.96505766600058,
+      "log": "/private/tmp/forge-live-20260907/parallel-candidate/runner.log",
+      "case": "parallel-candidate",
+      "artifacts": "/private/tmp/forge-live-20260907/parallel-candidate/plan",
+      "acceptance": {
+        "exit_code": 0,
+        "elapsed_s": 0.01688970800023526,
+        "log": "/private/tmp/forge-live-20260907/parallel-candidate/acceptance.log"
+      },
+      "acceptance_unchanged": true,
+      "tasks": "a\tMERGED\tforge/parallel-candidate/a\nb\tMERGED\tforge/parallel-candidate/b\nc\tMERGED\tforge/parallel-candidate/c\n",
+      "usage": {
+        "input_tokens": 682236,
+        "cached_input_tokens": 551168,
+        "output_tokens": 6645
+      },
+      "usage_events": 6,
+      "prompt_bytes": 11762,
+      "qa_prompt_bytes": 7151,
+      "runner_output_bytes": 2238
+    },
+    {
+      "exit_code": 0,
+      "elapsed_s": 6.154253416999381,
+      "log": "/private/tmp/forge-live-20260907/qa-clean-baseline/runner.log",
+      "case": "qa-clean-baseline",
+      "artifacts": "/private/tmp/forge-live-20260907/qa-clean-baseline/run",
+      "snapshot": {
+        "exit_code": 0,
+        "elapsed_s": 0.12328512499971112,
+        "log": "/private/tmp/forge-live-20260907/qa-clean-baseline/snapshot.log"
+      },
+      "verdict": "FORGE_VERDICT: PASS",
+      "expected": "FORGE_VERDICT: PASS",
+      "usage": {
+        "input_tokens": 21606,
+        "cached_input_tokens": 19200,
+        "output_tokens": 151
+      },
+      "usage_events": 1,
+      "prompt_bytes": 568,
+      "qa_prompt_bytes": 568,
+      "runner_output_bytes": 747,
+      "review_clean_after": true,
+      "control_correct": true,
+      "review_tree": "6e6d20087d0f40c53a936b1a5397f363e7789741"
+    },
+    {
+      "exit_code": 0,
+      "elapsed_s": 8.036792584000068,
+      "log": "/private/tmp/forge-live-20260907/qa-clean-candidate/runner.log",
+      "case": "qa-clean-candidate",
+      "artifacts": "/private/tmp/forge-live-20260907/qa-clean-candidate/run",
+      "snapshot": {
+        "exit_code": 0,
+        "elapsed_s": 0.08213295800032938,
+        "log": "/private/tmp/forge-live-20260907/qa-clean-candidate/snapshot.log"
+      },
+      "verdict": "FORGE_VERDICT: PASS",
+      "expected": "FORGE_VERDICT: PASS",
+      "usage": {
+        "input_tokens": 21607,
+        "cached_input_tokens": 11008,
+        "output_tokens": 200
+      },
+      "usage_events": 1,
+      "prompt_bytes": 568,
+      "qa_prompt_bytes": 568,
+      "runner_output_bytes": 711,
+      "review_clean_after": true,
+      "control_correct": true,
+      "review_tree": "6e6d20087d0f40c53a936b1a5397f363e7789741"
+    },
+    {
+      "exit_code": 0,
+      "elapsed_s": 5.3812138339999365,
+      "log": "/private/tmp/forge-live-20260907/qa-buggy-baseline/runner.log",
+      "case": "qa-buggy-baseline",
+      "artifacts": "/private/tmp/forge-live-20260907/qa-buggy-baseline/run",
+      "snapshot": {
+        "exit_code": 0,
+        "elapsed_s": 0.13208341599965934,
+        "log": "/private/tmp/forge-live-20260907/qa-buggy-baseline/snapshot.log"
+      },
+      "verdict": "FORGE_VERDICT: FAIL",
+      "expected": "FORGE_VERDICT: FAIL",
+      "usage": {
+        "input_tokens": 21602,
+        "cached_input_tokens": 19200,
+        "output_tokens": 56
+      },
+      "usage_events": 1,
+      "prompt_bytes": 527,
+      "qa_prompt_bytes": 527,
+      "runner_output_bytes": 782,
+      "review_clean_after": true,
+      "control_correct": true,
+      "review_tree": "1c447305708dd727991f1c3b573c2372682e7af4"
+    },
+    {
+      "exit_code": 0,
+      "elapsed_s": 6.175242665999576,
+      "log": "/private/tmp/forge-live-20260907/qa-buggy-candidate/runner.log",
+      "case": "qa-buggy-candidate",
+      "artifacts": "/private/tmp/forge-live-20260907/qa-buggy-candidate/run",
+      "snapshot": {
+        "exit_code": 0,
+        "elapsed_s": 0.08335012499992445,
+        "log": "/private/tmp/forge-live-20260907/qa-buggy-candidate/snapshot.log"
+      },
+      "verdict": "FORGE_VERDICT: FAIL",
+      "expected": "FORGE_VERDICT: FAIL",
+      "usage": {
+        "input_tokens": 21603,
+        "cached_input_tokens": 19200,
+        "output_tokens": 107
+      },
+      "usage_events": 1,
+      "prompt_bytes": 527,
+      "qa_prompt_bytes": 527,
+      "runner_output_bytes": 747,
+      "review_clean_after": true,
+      "control_correct": true,
+      "review_tree": "1c447305708dd727991f1c3b573c2372682e7af4"
+    }
+  ],
+  "offline": {
+    "5000": {
+      "baseline": {
+        "elapsed_s": 6.403860583000096,
+        "exit_code": 0,
+        "stdout": ""
+      },
+      "candidate": {
+        "elapsed_s": 0.004132792000746122,
+        "exit_code": 0,
+        "stdout": ""
+      }
+    },
+    "10000": {
+      "baseline": {
+        "elapsed_s": 25.00126470900068,
+        "timeout": true
+      },
+      "candidate": {
+        "elapsed_s": 0.00495733299976564,
+        "exit_code": 0,
+        "stdout": ""
+      }
+    },
+    "snapshot": {
+      "baseline": {
+        "elapsed_s": 1.3614785419995314,
+        "exit_code": 0,
+        "stdout": "",
+        "tree": "61a0563bd81ae78817b701bbd4e868409ba1fbad",
+        "equivalent": true
+      },
+      "candidate": {
+        "elapsed_s": 0.17140437499983818,
+        "exit_code": 0,
+        "stdout": "",
+        "tree": "61a0563bd81ae78817b701bbd4e868409ba1fbad",
+        "equivalent": true
+      }
+    }
+  },
+  "offline_scheduler": {
+    "baseline": {
+      "elapsed_s": 8.186804209000002,
+      "dependent_delay_after_qa_response_s": 4.503354787826538,
+      "exit_code": 0,
+      "events": [
+        "a.txt dwarf 1788779223.523987",
+        "b.txt dwarf 1788779223.526554",
+        "a.txt qa 1788779224.671882",
+        "b.txt qa 1788779228.6982",
+        "c.txt dwarf 1788779229.1828659",
+        "c.txt qa 1788779230.322192"
+      ]
+    },
+    "candidate": {
+      "elapsed_s": 6.5109522080001625,
+      "dependent_delay_after_qa_response_s": 0.6181797981262207,
+      "exit_code": 0,
+      "events": [
+        "a.txt dwarf 1788779232.0825422",
+        "b.txt dwarf 1788779232.082546",
+        "a.txt qa 1788779232.6402931",
+        "c.txt dwarf 1788779233.3154712",
+        "c.txt qa 1788779233.868586",
+        "b.txt qa 1788779236.722754"
+      ]
+    }
+  }
+}
