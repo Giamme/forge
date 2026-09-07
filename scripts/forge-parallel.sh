@@ -94,6 +94,7 @@ do_plan() {
     case "$1" in
       --repo)         REPO="${2:?}"; shift 2 ;;
       --planner)      PLANNER="${2:?}"; shift 2 ;;
+      --no-ripwire) export FORGE_RIPWIRE=off; shift ;;
       --no-memory)    NOMEM=1; shift ;;
       --dwarf)        D_ANY="${2:?}"; shift 2 ;;
       --dwarf-high)   D_HI="${2:?}"; shift 2 ;;
@@ -120,6 +121,7 @@ do_plan() {
   [ -s "$PLAN/repo" ] || die "plan needs --repo the first time"
   REPO="$(cat "$PLAN/repo")"
   [ -s "$PLAN/run_id" ] || basename "$PLAN" | sed 's/^forge-//' > "$PLAN/run_id"
+  [ "${FORGE_RIPWIRE:-}" != off ] || touch "$PLAN/no_ripwire"
   # Persist plan choices for later run and retry processes.
   [ "$NOMEM" = 1 ] && : > "$PLAN/no_memory"
   [ -n "$PLANNER" ] && printf '%s\n' "$PLANNER" > "$PLAN/planner"
@@ -505,7 +507,7 @@ do_task() (
   } > "$tdir/dwarf.input"
   forge_metric_phase dispatch
   /bin/bash "$DISPATCH" dwarf "$dw" --repo "$wt" --run-dir "$tdir" \
-        --prompt-file "$tdir/dwarf.input" $yd --output "${FORGE_OUTPUT:-summary}" >"$tdir/dwarf.out" 2>&1
+        --ripwire-query-file "$tdir/prompt.md" --prompt-file "$tdir/dwarf.input" $yd --output "${FORGE_OUTPUT:-summary}" >"$tdir/dwarf.out" 2>&1
   rc=$?
   if [ "${FORGE_OUTPUT:-summary}" = full ]; then cat "$tdir/dwarf.out"; fi
   if [ "$rc" -ne 0 ]; then
@@ -603,7 +605,7 @@ do_task() (
   } > "$tdir/qa.input"
   forge_metric_phase dispatch
   /bin/bash "$DISPATCH" qa "$qa" --repo "$review" --run-dir "$tdir" \
-        --prompt-file "$tdir/qa.input" $yq --output "${FORGE_OUTPUT:-summary}" >"$tdir/qa.out" 2>&1
+        --review-base "$(cat "$tdir/review.base")" --ripwire-query-file "$tdir/prompt.md" --prompt-file "$tdir/qa.input" $yq --output "${FORGE_OUTPUT:-summary}" >"$tdir/qa.out" 2>&1
   rc=$?
   if [ "${FORGE_OUTPUT:-summary}" = full ]; then cat "$tdir/qa.out"; fi
   if [ "$rc" -ne 0 ]; then
@@ -674,6 +676,7 @@ do_retry() {
   local NEWDWARF=""
   while [ $# -gt 0 ]; do
     case "$1" in
+      --no-ripwire) export FORGE_RIPWIRE=off; shift ;;
       --output) OUTPUT="${2:?}"; shift 2 ;;
       --dwarf) NEWDWARF="${2:?--dwarf needs a spec}"; shift 2 ;;
       --yolo-dwarf) touch "$PLAN/yolo_dwarf"; shift ;;
@@ -714,8 +717,11 @@ do_retry() {
       '$0 !~ /^#/ && $1==id { $5=dw } { print }' "$T" > "$PLAN/.tasks.tsv.retry" \
       && mv "$PLAN/.tasks.tsv.retry" "$T"
   fi
+  [ "${FORGE_RIPWIRE:-}" != off ] || touch "$PLAN/no_ripwire"
   dependencies_ready "$PLAN" "$id" || { write_results "$PLAN"; return 5; }
+  [ ! -f "$PLAN/no_ripwire" ] || export FORGE_RIPWIRE=off
   preflight_plan "$PLAN" || return $?
+  /bin/bash "$SKILL_DIR/scripts/forge-install-ripwire.sh" || true
   rm -f "$tdir/status"
 
   note "retrying $id with dwarf $(field "$T" "$id" dwarf)"
@@ -782,6 +788,7 @@ do_run() (
   local MAXP=3 DRY=0
   while [ $# -gt 0 ]; do
     case "$1" in
+      --no-ripwire) export FORGE_RIPWIRE=off; shift ;;
       --output) OUTPUT="${2:?}"; shift 2 ;;
       --max-parallel) MAXP="${2:?}"; shift 2 ;;
       --yolo-dwarf)   touch "$PLAN/yolo_dwarf"; shift ;;
@@ -827,7 +834,10 @@ do_run() (
 
   forge_metric_begin "$PLAN" parallel
   forge_metric_phase preflight
+  [ "${FORGE_RIPWIRE:-}" != off ] || touch "$PLAN/no_ripwire"
+  [ ! -f "$PLAN/no_ripwire" ] || export FORGE_RIPWIRE=off
   preflight_plan "$PLAN" || return $?
+  /bin/bash "$SKILL_DIR/scripts/forge-install-ripwire.sh" || true
   forge_metric_phase preparation
   mkdir -p "$wt_root"
   # A branch named exactly forge/<run-id> would occupy refs/heads/forge/<run-id> as a
@@ -950,6 +960,7 @@ do_integrate() {
 # --- main ---------------------------------------------------------------------
 [ $# -ge 1 ] || die "usage: forge-parallel.sh <plan|run|retry|integrate|_task> <plan-dir> [...]"
 CMD="$1"; shift
+[ ! -f "${1:-}/no_ripwire" ] || export FORGE_RIPWIRE=off
 if [ -d "${1:-}" ]; then
   PLAN_PATH="$(cd "$1" && pwd)"; shift; set -- "$PLAN_PATH" "$@"
 fi

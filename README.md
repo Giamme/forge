@@ -1087,3 +1087,11 @@ bytes. See [measurement and live evaluation](tests/README.md).
 
 Measured results, including the live comparison's higher total token use and latency, are
 recorded in [the September 7 evaluation](tests/benchmark-2026-09-07.md).
+
+## Ripwire context
+
+Forge automatically adds optional Ripwire 0.4.0 repository evidence to planner, dwarf,
+and QA prompts across all five harnesses. Setup and interactive runners offer a pinned,
+verified installation; headless runs continue when it is missing. Use `--no-ripwire`
+or `FORGE_RIPWIRE=off` to disable it. Decomposed plans preserve opt-out across resumes
+and retries. See [installation, controls and attempt artifacts](references/ripwire.md).

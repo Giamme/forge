@@ -10,6 +10,11 @@ run, never one per task. A single planner is the point: one mind designs both si
 seam, where N independent planners would recreate the problem. Effort defaults to `xhigh`,
 since a bad plan is executed at full price by every dwarf downstream of it.
 
+Offer optional installation once before a direct planner dispatch with
+`bash <skill_dir>/scripts/forge-install-ripwire.sh`. Propagate `FORGE_RIPWIRE=off`
+when the user opted out. Supply `--ripwire-query-file` when requirements are separate
+from the assembled planner prompt; see [Ripwire context](ripwire.md).
+
 ```bash
 bash <skill_dir>/scripts/forge-dispatch.sh planner <spec> \
   --repo "$REPO" --run-dir "$FORGE_RUN" --prompt-file "$FORGE_RUN/planner.prompt"

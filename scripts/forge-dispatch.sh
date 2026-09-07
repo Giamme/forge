@@ -9,6 +9,7 @@
 #   forge-dispatch.sh dwarf <spec> --prompt-file <f> [--repo <dir>] [--run-dir <d>] [--yolo] [--dry-run]
 #   forge-dispatch.sh qa    <spec> --prompt-file <f> [--repo <dir>] [--run-dir <d>] [--yolo] [--dry-run]
 #                                  [--native-review [--review-base <ref>]]
+#   any role: [--no-ripwire] [--ripwire-query-file <requirements>]
 #   any role: [--timeout <seconds>]   0 disables; default 2700 (45m), FORGE_TIMEOUT
 #
 # Exit codes: 0 ok | 2 usage/resolution error | 3 harness missing or unusable
@@ -85,6 +86,7 @@ doctor() {
     fi
     printf '%-12s %-10s %s\n' "$h" "found" "$bin"
   done
+  python3 "$SKILL_DIR/scripts/forge-ripwire.py" --doctor
   cat <<'EOT'
 
 Binary presence is not reachability. A harness can be installed and still fail on
@@ -122,10 +124,13 @@ read_only_role() { case "$ROLE" in qa|planner) return 0 ;; *) return 1 ;; esac; 
 [ $# -ge 1 ] || die "role '$ROLE' needs a spec, e.g. sol:xhigh:openclaude"
 SPEC="$1"; shift
 
+RIPWIRE_QUERY=""
 OUTPUT=full
 REPO="$PWD"; RUN_DIR=""; PROMPT_FILE=""; YOLO=0; DRY=0; REVIEW_BASE=""; PROMPT_VIA_STDIN=0; NATIVE_REVIEW=0; AGY_TIMEOUT="30m"; LIMIT="${FORGE_TIMEOUT:-2700}"
 while [ $# -gt 0 ]; do
   case "$1" in
+    --no-ripwire) export FORGE_RIPWIRE=off; shift ;;
+    --ripwire-query-file) RIPWIRE_QUERY="${2:?}"; shift 2 ;;
     --output) OUTPUT="${2:?}"; shift 2 ;;
     --repo)         REPO="${2:?--repo needs a value}"; shift 2 ;;
     --run-dir)      RUN_DIR="${2:?--run-dir needs a value}"; shift 2 ;;
@@ -262,6 +267,12 @@ case "$PROMPT_FILE" in -|/dev/stdin) cat > "$RUN_DIR/$ROLE.prompt" ;;
        mv "$prompt_copy" "$RUN_DIR/$ROLE.prompt" || die "cannot install prompt copy"
      fi ;;
 esac
+# Reusing the delivered prompt must not accumulate advisory sections or constraints.
+if [ -f "$RUN_DIR/$ROLE.delivered" ] && cmp -s "$RUN_DIR/$ROLE.prompt" "$RUN_DIR/$ROLE.delivered"; then
+  cp "$RUN_DIR/$ROLE.original" "$RUN_DIR/$ROLE.prompt"
+fi
+cp "$RUN_DIR/$ROLE.prompt" "$RUN_DIR/$ROLE.original"
+[ -n "$RIPWIRE_QUERY" ] || RIPWIRE_QUERY="$RUN_DIR/$ROLE.original"
 PROMPT_FILE="$RUN_DIR/$ROLE.prompt"
 [ -z "$ATTEMPT" ] || touch "$ATTEMPT/prompt.ready"
 # Streaming POSIX character class, using the caller's locale as Bash did.
@@ -290,6 +301,12 @@ if [ -n "$CONSTRAINT" ]; then
   note "antigravity without --yolo cannot run commands; told the $ROLE not to try"
 fi
 
+if [ -n "$ATTEMPT" ]; then
+  python3 "$SKILL_DIR/scripts/forge-ripwire.py" --repo "$REPO" --role "$ROLE" \
+    --prompt "$PROMPT_FILE" --query "$RIPWIRE_QUERY" --baseline "$REVIEW_BASE" \
+    --artifacts "$ATTEMPT" --native "$NATIVE_REVIEW" || note "Ripwire preparation failed; continuing"
+fi
+cp "$PROMPT_FILE" "$RUN_DIR/$ROLE.delivered"
 case "$HARNESS" in opencode|antigravity) PROMPT="$(cat "$PROMPT_FILE")" ;; esac
 
 # --- build argv ---------------------------------------------------------------

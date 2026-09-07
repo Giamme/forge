@@ -89,3 +89,10 @@ report_opencode
 
 say
 say "Verify with: bash $SKILL_DIR/scripts/forge-dispatch.sh doctor"
+
+# Optional context engine; failure never prevents Forge setup.
+if [ "$DRY" = 1 ]; then
+  /bin/bash "$SKILL_DIR/scripts/forge-install-ripwire.sh" --dry-run
+else
+  /bin/bash "$SKILL_DIR/scripts/forge-install-ripwire.sh" || true
+fi

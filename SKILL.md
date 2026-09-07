@@ -1,7 +1,7 @@
 ---
 name: forge
 description: Dispatch implementation and independent diff review to user-selected models through local agent CLIs. Use for /forge or explicit requests to delegate coding or review; explanation-only questions do not authorize dispatch.
-argument-hint: '"<goal>" --dwarf <alias>[:effort[:harness]] [--qa <alias>] [--planner <alias>] [--yolo-dwarf] [--yolo-qa] [--decompose-level low|medium|high] [--no-memory] [--timeout <seconds>]'
+argument-hint: '"<goal>" --dwarf <alias>[:effort[:harness]] [--qa <alias>] [--planner <alias>] [--yolo-dwarf] [--yolo-qa] [--decompose-level low|medium|high] [--no-memory] [--no-ripwire] [--timeout <seconds>]'
 allowed-tools: [Bash, Read]
 ---
 
@@ -40,6 +40,11 @@ For explanation requests, explain the workflow without spending model quota.
    logs only when needed. Report findings faithfully, and identify verification
    limits. Source or review mutations invalidate acceptance. Missing verdicts are UNKNOWN.
    An absent repository verification command means UNVERIFIED, even when QA passes.
+
+Ripwire context is automatic when compatible; `--no-ripwire` or `FORGE_RIPWIRE=off`
+disables it. Pass opt-out to every role, including a separately dispatched planner.
+Runners offer installation once before agents; dispatch never prompts. See
+[Ripwire](references/ripwire.md) for installation, limits and fallback behavior.
 
 ## Conditional references
 

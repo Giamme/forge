@@ -32,3 +32,10 @@ python3 tests/live_compare.py /absolute/path/to/fresh-artifacts --execute
 
 Only run this command with explicit authorization to spend model quota. Observed token and
 latency differences in this small sample do not establish universal savings or quality parity.
+
+Ripwire tests use fake binaries and mocked downloads, including a byte-pinned copy
+of the upstream v0.4.0 installer in `fixtures/`. They exercise all harnesses, FIFO/stdin
+prompts, opt-out persistence, QA baselines, bounded failures and terminal consent.
+The consent tests need access to `/dev/tty`; run outside a sandbox that blocks it.
+The real v0.4.0 smoke check is separate from the offline suite and uses a temporary
+installation with `RIPWIRE_NO_ACTIVATE=1`, never a provider call.

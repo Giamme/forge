@@ -56,6 +56,7 @@ while [ $# -gt 0 ]; do
     --yolo-dwarf) YD="--yolo"; shift ;;
     --yolo-qa)    YQ="--yolo"; shift ;;
     --native-review) NATIVE="--native-review"; shift ;;
+    --no-ripwire) export FORGE_RIPWIRE=off; shift ;;
     --no-memory)  export FORGE_MEMORY=off; shift ;;
     --timeout)    TIMEOUT="${2:?--timeout needs seconds}"; shift 2 ;;
     --dry-run)    DRY=1; shift ;;
@@ -109,7 +110,7 @@ EOF
 if [ "$DRY" = 1 ]; then
   echo "--- dry run ---"
   /bin/bash "$DISPATCH" dwarf "$DWARF" --repo "$REPO" --run-dir "$RUN" \
-    --prompt-file "$RUN/dwarf.input" $YD $TFLAG --dry-run
+    --ripwire-query-file "$RUN/prompt.md" --prompt-file "$RUN/dwarf.input" $YD $TFLAG --dry-run
   echo
   echo "qa would be: $QA $NATIVE $YQ"
   echo "dwarf prompt: $RUN/dwarf.input ($(wc -l < "$RUN/dwarf.input" | tr -d ' ') lines)"
@@ -119,6 +120,7 @@ fi
 forge_metric_phase preflight
 /bin/bash "$DISPATCH" doctor --spec "$DWARF" --role dwarf $YD $TFLAG || exit $?
 /bin/bash "$DISPATCH" doctor --spec "$QA" --role qa $YQ $NATIVE $TFLAG || exit $?
+/bin/bash "$SKILL_DIR/scripts/forge-install-ripwire.sh" || true
 forge_metric_phase snapshot
 START="$(forge_tree "$REPO")" || die "cannot record starting snapshot" 3
 echo "$START" > "$RUN/start.tree"
@@ -127,7 +129,7 @@ rm -f "$RUN/verdict"
 forge_metric_phase dispatch
 note "dwarf $DWARF in $REPO"
 /bin/bash "$DISPATCH" dwarf "$DWARF" --repo "$REPO" --run-dir "$RUN" \
-  --prompt-file "$RUN/dwarf.input" $YD $TFLAG --output "$OUTPUT"
+  --ripwire-query-file "$RUN/prompt.md" --prompt-file "$RUN/dwarf.input" $YD $TFLAG --output "$OUTPUT"
 rc=$?
 dur_dwarf="$(sed -n 's/^duration_s=//p' "$RUN/dwarf.resolved" 2>/dev/null | tail -1)"
 /bin/bash "$MEMORY" record "$REPO" --last "$RUN/dwarf.last" --role dwarf \
@@ -183,7 +185,7 @@ EOF
 forge_metric_phase dispatch
 note "qa $QA on $(wc -l < "$RUN/changes.diff" | tr -d ' ') diff lines"
 /bin/bash "$DISPATCH" qa "$QA" --repo "$REVIEW" --review-base "$(cat "$RUN/review.base")" --run-dir "$RUN" \
-  --prompt-file "$RUN/qa.input" $YQ $NATIVE $TFLAG --output "$OUTPUT"
+  --ripwire-query-file "$RUN/prompt.md" --prompt-file "$RUN/qa.input" $YQ $NATIVE $TFLAG --output "$OUTPUT"
 rc=$?
 forge_metric_phase verification
 verdict="$(forge_verdict "$RUN/qa.last")"

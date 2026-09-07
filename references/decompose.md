@@ -335,3 +335,6 @@ and integration revision, runs worktree setup and the configured check there, th
 user branch only if the candidate passed and the source branch stayed unchanged. Logs live in
 `<plan>/integrate-*/`. A failed candidate remains available for inspection. With no verification
 command, integration retains the existing approval boundary and reports UNVERIFIED.
+
+Optional [Ripwire context](ripwire.md) is enabled by default. Use `--no-ripwire`
+or `FORGE_RIPWIRE=off` to disable preparation and installation offers.

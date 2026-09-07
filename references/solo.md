@@ -41,3 +41,6 @@ Solo defaults to `--output summary`; `--output full` includes raw CLI output. Re
 reports immutable attempt metrics and native usage independently of project memory. Shared
 context is assembled from original requirements and approach; QA does not embed dwarf
 execution instructions. Review snapshots use self-contained object packs and one checkout.
+
+Optional [Ripwire context](ripwire.md) is enabled by default. Use `--no-ripwire`
+or `FORGE_RIPWIRE=off` to disable preparation and installation offers.
