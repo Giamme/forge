@@ -115,8 +115,8 @@ using a trivial command will wrongly suggest shell access works.
 Forge therefore uses **`--permission-mode acceptEdits` plus `--allowedTools "Bash"`** for
 non-yolo roles, which gives both. QA additionally gets
 `--disallowed-tools "Edit,Write,NotebookEdit"`, which still overrides the mode's edit
-permission, so a reviewer can read and reproduce but cannot quietly repair the diff it is
-supposed to be judging.
+permission for those tools. Bash can still write files. The solo and parallel runners use
+disposable review repositories and fingerprint checks to invalidate changed artifacts.
 
 `--add-dir <run-dir>` is required because the run directory deliberately sits outside the
 repo; without it the agent refuses to open the artifacts forge just wrote for it

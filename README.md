@@ -516,7 +516,7 @@ notes to itself is noise to a reviewer who does not use forge.
 | `--yolo-dwarf` | off | drop the dwarf's sandbox and approval gates |
 | `--yolo-qa` | off | drop the reviewer's sandbox |
 | `--repo <dir>` | cwd | repository to work in |
-| `--native-review` | off | use `codex exec review --uncommitted` instead of an inlined diff |
+| `--native-review` | off | use native Codex review against the recorded baseline instead of an inlined diff |
 | `--decompose-level <l>` | off | split the goal into parallel tasks |
 | `--max-parallel <n>` | `3` | concurrent dwarves per wave |
 | `--dwarf-high/-medium/-low` | — | per-difficulty routing; comma-list pools models |
@@ -659,7 +659,7 @@ bash scripts/forge-solo.sh "$RUN" --repo ~/dev/api --dwarf sol:high --qa opus
 ```
 
 **Exit codes:** `0` reviewed · `2` usage · `3` not a git repository · `4` a dispatch failed ·
-`5` **the dwarf produced no changes** · `7` a dispatch timed out.
+`5` **no changes or review invalidated** · `7` a dispatch timed out.
 
 `5` is the one worth recognising on sight. Headless dwarves genuinely stop to ask a
 clarifying question that nothing can answer; the run ends having spent the quota and changed
@@ -950,9 +950,8 @@ pushed, so a temp root that gets cleaned takes the only copy of that work with i
 
 ## Safety guarantees
 
-- forge **never** `git commit`s, `git push`es, `git reset --hard`s, or otherwise finalizes on
-  your behalf in a normal run. It edits the working tree and reports; every irreversible
-  decision is yours.
+- Solo runs leave source changes uncommitted. Forge creates private review commits, but
+  does not commit on the solo source branch, push, or reset the user tree.
 - In a decomposed run, commits and merges happen **only** on the `forge/<run-id>/*` task
   branches and the `forge/<run-id>-integration` branch — branches forge created for itself.
   Never your branch, never a push. Your branch and working tree are untouched for the whole
@@ -965,7 +964,8 @@ pushed, so a temp root that gets cleaned takes the only copy of that work with i
 - A failed task's branch and worktree are **never** deleted — they're the only record of what
   went wrong and the only thing to retry from. A successful task's worktree is removed only
   after `results.tsv` is written and read back.
-- qa cannot edit the code it is reviewing (unless you pass `--yolo-qa`).
+- QA runs in a disposable repository. Mutations to the source or review snapshot invalidate
+  acceptance. Disabled editing tools alone do not prevent writes through Bash.
 
 ### Preconditions
 
@@ -1032,3 +1032,25 @@ forge/
     ├── decompose.md             tasks.tsv schema, difficulty criteria, wave algorithm
     └── memory.md                FORGE_LEARNING grammar, promotion and pruning rules
 ```
+
+## Execution integrity and offline checks
+
+Forge now captures solo changes against a recorded starting snapshot, including staged edits,
+without altering the user's index. Existing work is recorded separately in `existing.diff`.
+QA receives the full implementation requirements and reviews a disposable repository; source
+or snapshot changes invalidate the result. Only the recorded reviewed task commit can merge.
+
+Parallel execution rechecks dependencies before each task and retry. Failed prerequisites leave
+consumers BLOCKED. Directory and child file declarations are serialized.
+
+`forge-dispatch.sh doctor --spec sol --role dwarf` validates a selected model recipe using local
+CLI help. Solo and parallel runners preflight the whole selected pipeline before implementation.
+These checks do not establish authentication, billing or live model availability.
+
+Use `forge-parallel.sh run <plan> --verify 'your check command'` or put the command in
+`.forge/verify` to verify the combined result. Output and exit status are saved with the plan.
+Integration checks a candidate containing the current user branch before updating it. A missing
+command is reported as UNVERIFIED; a failing configured check blocks integration.
+
+Run `bash tests/check.sh` for offline regression checks. See [tests](tests/README.md) for skill
+invocation scenarios and verification limits. CI covers macOS and Linux.

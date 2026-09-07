@@ -28,6 +28,7 @@ SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]
 SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DISPATCH="$SKILL_DIR/scripts/forge-dispatch.sh"
 MEMORY="$SKILL_DIR/scripts/forge-memory.sh"
+source "$SKILL_DIR/scripts/forge-artifact.sh"
 
 die()  { printf 'forge: %s\n' "$1" >&2; exit "${2:-2}"; }
 note() { printf 'forge: %s\n' "$*" >&2; }
@@ -53,10 +54,16 @@ list_has() { # list_has <needle> <comma-list>
   return 1
 }
 lists_overlap() { # lists_overlap <comma-list-a> <space-list-b>
-  local a="$1" b="$2" w
+  local a="$1" b="$2" w v
   [ "$a" = "-" ] && return 1
   for w in $(printf '%s' "$a" | tr ',' ' '); do
-    case " $b " in *" $w "*) return 0 ;; esac
+    w="${w#./}"; w="${w%/}"
+    for v in $b; do
+      v="${v#./}"; v="${v%/}"
+      case "$w/" in "$v/"*) return 0 ;; esac
+      case "$v/" in "$w/"*) return 0 ;; esac
+      [ "$w" = . ] || [ "$v" = . ] && return 0
+    done
   done
   return 1
 }
@@ -283,6 +290,31 @@ task_status() { # task_status <plan> <id>
   echo PENDING
 }
 
+dependencies_ready() {
+  local plan="$1" id="$2" dep
+  for dep in $(field "$plan/tasks.tsv" "$id" deps | tr ',' ' '); do
+    [ "$dep" = - ] && continue
+    if [ "$(task_status "$plan" "$dep")" != MERGED ]; then
+      echo BLOCKED > "$plan/tasks/$id/status"
+      note "$id: BLOCKED by $dep ($(task_status "$plan" "$dep"))"
+      return 1
+    fi
+  done
+}
+
+preflight_plan() {
+  local plan="$1" id role flags
+  for id in $(all_ids "$plan/tasks.tsv"); do
+    for role in dwarf qa; do
+      flags=""; [ -f "$plan/yolo_$role" ] && flags=--yolo
+      /bin/bash "$DISPATCH" doctor --spec "$(field "$plan/tasks.tsv" "$id" "$role")" --role "$role" $flags || return $?
+    done
+  done
+  if [ -s "$plan/planner" ]; then
+    /bin/bash "$DISPATCH" doctor --spec "$(cat "$plan/planner")" --role planner || return $?
+  fi
+}
+
 write_capsule() { # write_capsule <plan> <id> <role>
   local PLAN="$1" me="$2" role="$3" T="$1/tasks.tsv"
   local run_id; run_id="$(cat "$PLAN/run_id")"
@@ -430,6 +462,8 @@ do_task() {
   local T="$PLAN/tasks.tsv" REPO run_id base wt br tdir attempt
   REPO="$(cat "$PLAN/repo")"; run_id="$(cat "$PLAN/run_id")"
   tdir="$PLAN/tasks/$id"; mkdir -p "$tdir"
+  dependencies_ready "$PLAN" "$id" || return 1
+  echo RUNNING > "$tdir/status"
   [ -f "$PLAN/no_memory" ] && export FORGE_MEMORY=off
   wt="$(cat "$PLAN/wt_root")/$id"
   br="forge/$run_id/$id"
@@ -445,7 +479,7 @@ do_task() {
   if [ -s "$tdir/base_ref" ]; then
     base="$(cat "$tdir/base_ref")"
   else
-    base="$(cat "$PLAN/base_ref")"; printf '%s\n' "$base" > "$tdir/base_ref"
+    base="$(git -C "$(cat "$PLAN/wt_root")/_integration" rev-parse HEAD)"; printf '%s\n' "$base" > "$tdir/base_ref"
   fi
 
   local dw qa yd yq rc
@@ -513,7 +547,7 @@ do_task() {
   # files touched it would collide with every other task in the wave planner.
   [ -s "$tdir/changes.diff" ] && mv "$tdir/changes.diff" "$tdir/changes.prev.diff"
   (cd "$wt" && git add -A -- . ":(exclude).forge" \
-      && git diff --cached "$base" -- . ":(exclude).forge") > "$tdir/changes.diff" 2>/dev/null
+      && git diff --cached --binary "$base" -- . ":(exclude).forge") > "$tdir/changes.diff" 2>/dev/null || { echo ERROR > "$tdir/status"; return 1; }
   if [ ! -s "$tdir/changes.diff" ]; then
     echo FAIL > "$tdir/status"
     echo "The dwarf produced no changes at all." > "$tdir/qa.last"
@@ -526,13 +560,32 @@ do_task() {
     note "$id: retry produced no new changes — not re-reviewing identical code"; return 1
   fi
 
+  if ! git -C "$wt" diff --cached --quiet "$base" -- .forge; then
+    echo FAIL > "$tdir/status"; note "$id: changed excluded Forge memory; cannot accept an unreviewed change"; return 1
+  fi
   check_drift "$(field "$T" "$id" files)" "$tdir" "$wt" "$base"
   if [ -s "$tdir/drift.txt" ]; then
     note "$id: touched undeclared file(s): $(tr '\n' ' ' < "$tdir/drift.txt")"
   fi
 
   (cd "$wt" && git -c user.name=forge -c user.email=forge@local \
-      commit -q -m "forge($id) attempt $attempt: $(field "$T" "$id" title)") >/dev/null 2>&1
+      commit --allow-empty -q -m "forge($id) attempt $attempt: $(field "$T" "$id" title)") >/dev/null 2>&1 || {
+    echo ERROR > "$tdir/status"; return 1;
+  }
+  local reviewed review source_fp review_fp
+  reviewed="$(git -C "$wt" rev-parse HEAD)" || return 1
+  git -C "$wt" diff --binary "$base" "$reviewed" -- . ':(exclude).forge' > "$tdir/committed.diff" || return 1
+  if ! cmp -s "$tdir/changes.diff" "$tdir/committed.diff" ||
+     [ "$(forge_tree "$wt")" != "$(git -C "$wt" rev-parse "$reviewed^{tree}")" ]; then
+    echo INVALIDATED > "$tdir/status"; return 1
+  fi
+  echo "$reviewed" > "$tdir/reviewed.commit"
+  review="$tdir/review-$attempt-$$"
+  forge_review_snapshot "$wt" "$base" "$reviewed" "$review" || { echo ERROR > "$tdir/status"; return 1; }
+  source_fp="$(forge_fingerprint "$wt")" || return 1
+  review_fp="$(forge_fingerprint "$review")" || return 1
+  echo "$source_fp" > "$tdir/source.fingerprint"
+  echo "$review_fp" > "$tdir/review.fingerprint"
 
   # qa
   write_capsule "$PLAN" "$id" qa >/dev/null
@@ -547,6 +600,7 @@ do_task() {
       echo "have been planned against it."
       echo; cat "$tdir/approach.md"; echo
     fi
+    echo "## Complete implementation requirements"; cat "$tdir/dwarf.input"; echo
     echo "The implementer was asked to do the task above. Review the diff below for correctness"
     echo "bugs: logic errors, broken edge cases, behaviour that does not match what was asked."
     echo "Also say if it solved a different problem, or touched files outside the task's scope."
@@ -570,8 +624,9 @@ do_task() {
     echo
     echo '```diff'; cat "$tdir/changes.diff"; echo '```'
     echo; /bin/bash "$MEMORY" note qa
+    echo "Place any learning notes before the final FORGE_VERDICT: PASS or FORGE_VERDICT: FAIL line."
   } > "$tdir/qa.input"
-  /bin/bash "$DISPATCH" qa "$qa" --repo "$wt" --run-dir "$tdir" \
+  /bin/bash "$DISPATCH" qa "$qa" --repo "$review" --run-dir "$tdir" \
         --prompt-file "$tdir/qa.input" $yq >"$tdir/qa.out" 2>&1
   rc=$?
   if [ "$rc" -ne 0 ]; then
@@ -583,8 +638,11 @@ do_task() {
     return 1
   fi
 
+  if [ "$(forge_fingerprint "$wt")" != "$source_fp" ] || [ "$(forge_fingerprint "$review")" != "$review_fp" ]; then
+    echo INVALIDATED > "$tdir/status"; note "$id: artifact changed during review"; return 1
+  fi
   local verdict
-  verdict="$(grep -o 'FORGE_VERDICT: *[A-Za-z]*' "$tdir/qa.last" 2>/dev/null | tail -1 | awk '{print $2}')"
+  verdict="$(forge_verdict "$tdir/qa.last")"
   /bin/bash "$MEMORY" record "$REPO" --last "$tdir/qa.last" --role qa \
       --run-id "$run_id" --task "$id" --model "$qa" --verdict "${verdict:-UNKNOWN}" \
       --duration "$(dispatch_duration "$tdir" qa)" >/dev/null 2>&1
@@ -605,7 +663,22 @@ merge_task() { # merge_task <plan> <id> -> 0 merged, 1 conflicted
   local PLAN="$1" id="$2" REPO run_id int_wt
   REPO="$(cat "$PLAN/repo")"; run_id="$(cat "$PLAN/run_id")"
   int_wt="$(cat "$PLAN/wt_root")/_integration"
-  if (cd "$int_wt" && git merge --no-ff -m "forge: merge $id" "forge/$run_id/$id" >/dev/null 2>&1); then
+  if [ -s "$PLAN/accepted.integration" ] && [ "$(git -C "$int_wt" rev-parse HEAD)" != "$(cat "$PLAN/accepted.integration")" ]; then
+    echo INVALIDATED > "$PLAN/tasks/$id/status"; return 1
+  fi
+  [ -z "$(git -C "$int_wt" status --porcelain -- . ':(exclude).forge')" ] || {
+    echo INVALIDATED > "$PLAN/tasks/$id/status"; return 1;
+  }
+  local tdir="$PLAN/tasks/$id" reviewed wt
+  dependencies_ready "$PLAN" "$id" || return 1
+  reviewed="$(cat "$tdir/reviewed.commit")" || return 1
+  wt="$(cat "$PLAN/wt_root")/$id"
+  if [ "$(forge_fingerprint "$wt")" != "$(cat "$tdir/source.fingerprint")" ] ||
+     [ "$(git -C "$REPO" rev-parse "forge/$run_id/$id")" != "$reviewed" ]; then
+    echo INVALIDATED > "$tdir/status"; return 1
+  fi
+  if (cd "$int_wt" && git merge --no-ff -m "forge: merge $id" "$reviewed" >/dev/null 2>&1); then
+    git -C "$int_wt" rev-parse HEAD > "$PLAN/accepted.integration"
     touch "$PLAN/tasks/$id/merged"
     return 0
   fi
@@ -626,6 +699,7 @@ do_retry() {
       --dwarf) NEWDWARF="${2:?--dwarf needs a spec}"; shift 2 ;;
       --yolo-dwarf) touch "$PLAN/yolo_dwarf"; shift ;;
       --yolo-qa)    touch "$PLAN/yolo_qa"; shift ;;
+      --verify)     printf '%s' "${2:?--verify needs a command}" > "$PLAN/verify_cmd"; shift 2 ;;
       --setup)      printf '%s' "${2:?--setup needs a command}" > "$PLAN/setup_cmd"; shift 2 ;;
       *) die "retry: unknown option '$1'" ;;
     esac
@@ -659,6 +733,8 @@ do_retry() {
       '$0 !~ /^#/ && $1==id { $5=dw } { print }' "$T" > "$PLAN/.tasks.tsv.retry" \
       && mv "$PLAN/.tasks.tsv.retry" "$T"
   fi
+  dependencies_ready "$PLAN" "$id" || { write_results "$PLAN"; return 5; }
+  preflight_plan "$PLAN" || return $?
   rm -f "$tdir/status"
 
   note "retrying $id with dwarf $(field "$T" "$id" dwarf)"
@@ -671,12 +747,41 @@ do_retry() {
       note "$id PASS but conflicted on merge — branch preserved"
     fi
   fi
+  verify_result "$PLAN" "$(cat "$PLAN/wt_root")/_integration" "$PLAN" || { write_results "$PLAN"; return 5; }
   write_results "$PLAN"
   echo
   printf '  %-14s %-9s %s\n' id status branch
   awk -F'\t' '{printf "  %-14s %-9s %s\n", $1, $2, $3}' "$PLAN/results.tsv"
   [ "$(task_status "$PLAN" "$id")" = "MERGED" ] || return 5
   return 0
+}
+
+verify_result() { # plan, checkout, artifact directory
+  local plan="$1" wt="$2" out="$3" cmd="" before after rc=0
+  mkdir -p "$out"
+  if [ -s "$plan/verify_cmd" ]; then cmd="$(cat "$plan/verify_cmd")"
+  elif [ -s "$(cat "$plan/repo")/.forge/verify" ]; then cmd="$(cat "$(cat "$plan/repo")/.forge/verify")"; fi
+  if [ "$(forge_tree "$wt")" != "$(git -C "$wt" rev-parse HEAD^{tree})" ]; then
+    echo FAIL > "$out/verification.status"
+    note "verification checkout has source changes outside its commit"; return 1
+  fi
+  if [ -z "$cmd" ]; then
+    echo UNVERIFIED > "$out/verification.status"
+    note "combined result UNVERIFIED: no --verify command or .forge/verify configured"
+    return 0
+  fi
+  printf '%s\n' "$cmd" > "$out/verification.command"
+  before="$(forge_fingerprint "$wt")" || return 1
+  (cd "$wt" && /bin/bash -c "$cmd") > "$out/verification.log" 2>&1 || rc=$?
+  echo "$rc" > "$out/verification.exit"
+  after="$(forge_fingerprint "$wt")" || return 1
+  echo "$before" > "$out/verification.fingerprint"
+  if [ "$rc" != 0 ] || [ "$before" != "$after" ]; then
+    echo FAIL > "$out/verification.status"
+    note "combined verification failed or changed source; see $out/verification.log"
+    return 1
+  fi
+  echo PASS > "$out/verification.status"
 }
 
 write_results() { # write_results <plan>
@@ -697,6 +802,7 @@ do_run() {
       --max-parallel) MAXP="${2:?}"; shift 2 ;;
       --yolo-dwarf)   touch "$PLAN/yolo_dwarf"; shift ;;
       --yolo-qa)      touch "$PLAN/yolo_qa"; shift ;;
+      --verify)     printf '%s' "${2:?--verify needs a command}" > "$PLAN/verify_cmd"; shift 2 ;;
       --setup)        printf '%s' "${2:?--setup needs a command}" > "$PLAN/setup_cmd"; shift 2 ;;
       --dry-run)      DRY=1; shift ;;
       *) die "run: unknown option '$1'" ;;
@@ -706,6 +812,7 @@ do_run() {
   [ -s "$W" ] || die "no waves.tsv — run the plan subcommand first"
   grep -q 'UNASSIGNED' "$T" && die "some tasks are UNASSIGNED — assign a dwarf before running"
 
+  compute_waves "$PLAN"
   local REPO run_id wt_root int_wt int_br
   REPO="$(cat "$PLAN/repo")"; run_id="$(cat "$PLAN/run_id")"
   # Durable, beside the repo — never TMPDIR. A temp worktree root has destroyed
@@ -730,6 +837,7 @@ do_run() {
     return 0
   fi
 
+  preflight_plan "$PLAN" || return $?
   mkdir -p "$wt_root"
   # A branch named exactly forge/<run-id> would occupy refs/heads/forge/<run-id> as a
   # file and make every task branch below it impossible to create. Catch it here with
@@ -750,6 +858,10 @@ do_run() {
     run_worktree_setup "$PLAN" "$REPO" "$int_wt" "$PLAN/tasks/_integration" _integration
   fi
 
+  if [ -s "$PLAN/accepted.integration" ] && [ "$(git -C "$int_wt" rev-parse HEAD)" != "$(cat "$PLAN/accepted.integration")" ]; then
+    die "integration branch changed outside this run" 3
+  fi
+  git -C "$int_wt" rev-parse HEAD > "$PLAN/accepted.integration"
   local w id st failed=0 todo skipped
   for w in $(awk -F'\t' '{print $1}' "$W" | sort -un); do
     # Every wave branches from the integration branch as it currently stands, so a
@@ -790,6 +902,7 @@ do_run() {
     done
   done
 
+  verify_result "$PLAN" "$int_wt" "$PLAN" || failed=1
   write_results "$PLAN"
   # Only prune worktrees for work that is safely merged, and only after the record
   # of it has been written and read back. A failed task keeps its worktree and
@@ -851,19 +964,38 @@ do_integrate() {
   local REPO run_id int_br cur
   REPO="$(cat "$PLAN/repo")"; run_id="$(cat "$PLAN/run_id")"; int_br="forge/$run_id-integration"
   cur="$(cd "$REPO" && git rev-parse --abbrev-ref HEAD)"
+  [ "$cur" = HEAD ] && die "integration requires a checked-out user branch" 3
   [ "$cur" = "$int_br" ] && die "you are already on $int_br"
   [ -n "$(cd "$REPO" && git status --porcelain)" ] && die "working tree is dirty — commit or stash before integrating"
-  if (cd "$REPO" && git merge --no-ff -m "forge: integrate run $run_id" "$int_br"); then
-    echo "merged $int_br into $cur"
-  else
-    note "merge conflicted; resolve or 'git merge --abort'. $int_br is unchanged."
-    return 6
+  # Verify the actual combined candidate, including changes on the user's branch.
+  local parent target candidate candidate_sha out
+  parent="$(git -C "$REPO" rev-parse HEAD)" || return 3
+  target="$(git -C "$REPO" rev-parse "$int_br")" || return 3
+  [ -s "$PLAN/accepted.integration" ] && [ "$target" = "$(cat "$PLAN/accepted.integration")" ] || die "integration revision does not match the accepted run" 3
+  out="$PLAN/integrate-$(date +%s)-$$"; mkdir -p "$out"
+  candidate="$(cat "$PLAN/wt_root")/_candidate-$$"
+  git -C "$REPO" worktree add --detach "$candidate" "$parent" > "$out/setup.log" 2>&1 || return 3
+  if ! git -C "$candidate" merge --no-ff -m "forge: integrate run $run_id" "$target" > "$out/merge.log" 2>&1; then
+    note "candidate merge conflicted; inspect $candidate and $out/merge.log"; return 6
   fi
+  run_worktree_setup "$PLAN" "$REPO" "$candidate" "$out" integration-candidate
+  verify_result "$PLAN" "$candidate" "$out" || return 5
+  candidate_sha="$(git -C "$candidate" rev-parse HEAD)" || return 3
+  [ "$(git -C "$REPO" rev-parse --abbrev-ref HEAD)" = "$cur" ] &&
+    [ "$(git -C "$REPO" rev-parse HEAD)" = "$parent" ] &&
+    [ "$(git -C "$REPO" rev-parse "$int_br")" = "$target" ] &&
+    [ -z "$(git -C "$REPO" status --porcelain)" ] || die "branch or working tree changed during verification" 3
+  git -C "$REPO" merge --ff-only "$candidate_sha" || return 6
+  git -C "$REPO" worktree remove "$candidate" || return 3
+  echo "merged candidate of $int_br into $cur (verification: $(cat "$out/verification.status"))"
 }
 
 # --- main ---------------------------------------------------------------------
 [ $# -ge 1 ] || die "usage: forge-parallel.sh <plan|run|retry|integrate|_task> <plan-dir> [...]"
 CMD="$1"; shift
+if [ -d "${1:-}" ]; then
+  PLAN_PATH="$(cd "$1" && pwd)"; shift; set -- "$PLAN_PATH" "$@"
+fi
 case "$CMD" in
   plan)      do_plan "$@" ;;
   run)       do_run "$@" ;;

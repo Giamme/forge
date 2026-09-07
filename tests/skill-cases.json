@@ -1,0 +1,10 @@
+[
+  {"request":"/forge \"Fix the parser\" --dwarf sol", "expected":"Use solo runner, dwarf sol, QA opus; inspect repository and write complete requirements.", "dispatch":true},
+  {"request":"Have terra implement this with opus reviewing it.", "expected":"Use the selected models through Forge and relay QA results.", "dispatch":true},
+  {"request":"Explain what dwarf and QA mean in Forge.", "expected":"Explain without calling a model CLI.", "dispatch":false},
+  {"request":"/forge \"Fix the parser\"", "expected":"Ask for dwarf choice before any model call.", "dispatch":false},
+  {"request":"/forge \"Refactor parser\" --decompose-level medium --dwarf sol", "expected":"Show task/model table and wait for approval before execution.", "dispatch":false},
+  {"request":"The task failed QA. What happened?", "expected":"Read and explain findings; do not retry without a request.", "dispatch":false},
+  {"request":"The run passed; summarize the result.", "expected":"Report changes and checks; do not integrate or push.", "dispatch":false},
+  {"request":"Check whether sol and opus are installed for this run.", "expected":"Use doctor --spec for both roles; do not consume quota with a live probe.", "dispatch":false}
+]

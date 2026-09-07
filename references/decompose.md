@@ -306,3 +306,28 @@ The user's own branch and working tree are untouched for the whole run.
 A run where several tasks report "produced no changes" usually means the decomposition
 produced tasks that were not independently actionable — the fix is a coarser
 `--decompose-level`, not more retries.
+
+## Execution checks and integration verification
+
+Before dispatch, `run` preflights every task's dwarf and QA plus a configured planner.
+`retry` repeats preflight and dependency checks. A dependency must be MERGED, not merely
+planned or QA-passing; otherwise its consumer is BLOCKED without spending a dispatch.
+Directory/child ownership paths overlap and run in separate waves. A blocked task can be
+retried after its prerequisites merge. A fresh task then branches from current integration.
+
+QA receives complete implementation input, approach, capsule and cumulative binary diff.
+It runs in a disposable repository. Both source and review fingerprints must remain unchanged,
+and the task branch must still point at the reviewed commit when merged. INVALIDATED results
+never merge. Disposable snapshots detect mutation; they do not confine unrestricted shell access.
+
+Configure combined executable checks with `run <plan> --verify '<command>'` (also accepted by
+`retry`), or a shell command file at `<repo>/.forge/verify`. Commands execute under Bash from
+the integration checkout. Forge records `verification.command`, `.log`, `.exit`, `.fingerprint`
+and `.status` in the plan directory. Failed checks or source changes fail the run. With no
+command, the result is explicitly UNVERIFIED.
+
+`integrate <plan> --approved` prepares a separate candidate combining the current user branch
+and integration revision, runs worktree setup and the configured check there, then updates the
+user branch only if the candidate passed and the source branch stayed unchanged. Logs live in
+`<plan>/integrate-*/`. A failed candidate remains available for inspection. With no verification
+command, integration retains the existing approval boundary and reports UNVERIFIED.

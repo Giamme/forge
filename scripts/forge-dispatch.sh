@@ -98,7 +98,19 @@ EOT
 
 [ $# -ge 1 ] || die "usage: forge-dispatch.sh <doctor|dwarf|qa|planner> [spec] [options]"
 ROLE="$1"; shift
-[ "$ROLE" = "doctor" ] && { doctor; exit $?; }
+PREFLIGHT=0
+if [ "$ROLE" = doctor ]; then
+  if [ $# = 0 ]; then doctor; exit $?; fi
+  [ "${1:-}" = --spec ] || die "doctor accepts --spec <spec> [--role dwarf|qa|planner]"
+  SPEC_CHECK="${2:?--spec needs a spec}"; shift 2
+  ROLE=dwarf
+  if [ "${1:-}" = --role ]; then ROLE="${2:?}"; shift 2; fi
+  PREFLIGHT=1
+  CHECK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/forge-doctor.XXXXXX")" || exit 3
+  trap 'rm -rf "$CHECK_DIR"' EXIT
+  echo 'Offline capability check' > "$CHECK_DIR/input"
+  set -- "$SPEC_CHECK" --run-dir "$CHECK_DIR" --prompt-file "$CHECK_DIR/input" "$@"
+fi
 case "$ROLE" in dwarf|qa|planner) ;; *) die "unknown role '$ROLE' (expected dwarf, qa, planner or doctor)" ;; esac
 
 # qa and planner both read the repo and write nothing to it: a reviewer that can
@@ -123,6 +135,8 @@ while [ $# -gt 0 ]; do
     *)              die "unknown option '$1'" ;;
   esac
 done
+
+case "$LIMIT" in ''|*[!0-9]*) die "--timeout must be a nonnegative integer" ;; esac
 
 # --- resolve spec -------------------------------------------------------------
 ALIAS="${SPEC%%:*}"; REST="${SPEC#*:}"
@@ -150,6 +164,10 @@ else
     note "'$ALIAS' is not in the registry — using it as a literal model id on $HARNESS"
   fi
   MODEL="$ALIAS"; CEILING="-"; PASSTHRU=1
+fi
+
+if [ "$NATIVE_REVIEW" = 1 ] && { [ "$ROLE" != qa ] || [ "$HARNESS" != codex ]; }; then
+  die "--native-review requires QA on codex"
 fi
 
 # --- resolve effort -----------------------------------------------------------
@@ -203,6 +221,10 @@ else
       EFFORT="$pick"
     fi
   fi
+fi
+
+if [ -n "$EFFORT" ] && [ -n "$LADDER" ] && [ "$(idx_in "$EFFORT" "$LADDER")" -lt 0 ]; then
+  die "invalid effort '$EFFORT' for $HARNESS"
 fi
 
 # --- run dir & prompt ---------------------------------------------------------
@@ -303,9 +325,8 @@ case "$HARNESS" in
       # verifying it. acceptEdits plus an explicit Bash allowance gives both, and
       # QA's --disallowed-tools below still overrides the edit permission.
       CMD+=(--allowedTools "Bash")
-      # QA must not be able to "fix" what it reviews — a reviewer that edits the
-      # diff is no longer an independent check of it. It keeps read and shell
-      # access so it can actually verify a finding before reporting it.
+      # Disable editing tools as defense in depth. Bash can still write files;
+      # runners use disposable snapshots and fingerprint checks for acceptance.
       read_only_role && CMD+=(--disallowed-tools "Edit,Write,NotebookEdit")
     fi
     # The prompt goes on stdin, not argv. --disallowed-tools and friends are
@@ -343,6 +364,28 @@ case "$HARNESS" in
   *) die "no dispatch recipe for harness '$HARNESS'" ;;
 esac
 
+# Offline validation uses the exact command recipe, never a model request.
+preflight_command() {
+  local bin help arg flag
+  bin="$(command -v "$(binary_for "$HARNESS")")" || die "harness '$HARNESS' is not installed" 3
+  case "$HARNESS" in
+    codex)
+      if [ "$NATIVE_REVIEW" = 1 ] && [ "$ROLE" = qa ]; then help="$("$bin" exec review --help 2>&1)"
+      else help="$("$bin" exec --help 2>&1)"; fi ;;
+    opencode) help="$("$bin" run --help 2>&1)" ;;
+    *) help="$("$bin" --help 2>&1)" ;;
+  esac
+  [ $? = 0 ] || die "cannot read $HARNESS help" 3
+  for arg in "${CMD[@]:1}"; do
+    [ "$arg" = "$PROMPT" ] && continue
+    case "$arg" in
+      -*) flag="${arg%%=*}"
+          printf '%s\n' "$help" | grep -E -- "(^|[[:space:],|])$flag([=[:space:],|]|$)" >/dev/null || die "$HARNESS does not advertise required flag $flag" 3 ;;
+    esac
+  done
+}
+if [ "$DRY" != 1 ] || [ "$PREFLIGHT" = 1 ]; then preflight_command; fi
+
 # --- report the resolution ----------------------------------------------------
 {
   echo "role=$ROLE"
@@ -357,6 +400,10 @@ esac
   echo "run_dir=$RUN_DIR"
 } | tee "$RUN_DIR/$ROLE.resolved"
 
+if [ "$PREFLIGHT" = 1 ]; then
+  echo "offline preflight passed; authentication, quota and live model availability unverified"
+  exit 0
+fi
 printf '%q ' "${CMD[@]}" > "$RUN_DIR/$ROLE.cmd"; echo >> "$RUN_DIR/$ROLE.cmd"
 if [ "$DRY" = 1 ]; then
   echo "--- dry run, command not executed ---"
@@ -413,7 +460,7 @@ if [ "${LIMIT:-0}" != "0" ]; then
     sleep 5
     pkill -KILL -P "$hpid" 2>/dev/null
     kill -KILL "$hpid" 2>/dev/null
-  ) 2>/dev/null &
+  ) >/dev/null 2>&1 &
   wpid=$!
 fi
 

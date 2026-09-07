@@ -34,6 +34,7 @@ set -uo pipefail
 SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DISPATCH="$SKILL_DIR/scripts/forge-dispatch.sh"
 MEMORY="$SKILL_DIR/scripts/forge-memory.sh"
+source "$SKILL_DIR/scripts/forge-artifact.sh"
 
 die()  { printf 'forge: %s\n' "$1" >&2; exit "${2:-2}"; }
 note() { printf 'forge: %s\n' "$*" >&2; }
@@ -74,6 +75,8 @@ case "$(cd "$RUN" && pwd)/" in
   "$(cd "$REPO" && pwd)"/*) die "run dir '$RUN' is inside the repo; put it somewhere else or it lands in the diff" ;;
 esac
 
+RUN="$(cd "$RUN" && pwd)"
+REPO="$(cd "$REPO" && pwd)"
 RUN_ID="$(basename "$RUN")"
 TFLAG=""; [ -n "$TIMEOUT" ] && TFLAG="--timeout $TIMEOUT"
 GOAL="$(head -1 "$RUN/goal.txt" 2>/dev/null || true)"
@@ -111,6 +114,12 @@ if [ "$DRY" = 1 ]; then
   exit 0
 fi
 
+/bin/bash "$DISPATCH" doctor --spec "$DWARF" --role dwarf $YD $TFLAG || exit $?
+/bin/bash "$DISPATCH" doctor --spec "$QA" --role qa $YQ $NATIVE $TFLAG || exit $?
+START="$(forge_tree "$REPO")" || die "cannot record starting snapshot" 3
+echo "$START" > "$RUN/start.tree"
+git -C "$REPO" diff --binary HEAD "$START" -- . ':(exclude).forge' > "$RUN/existing.diff"
+rm -f "$RUN/verdict"
 note "dwarf $DWARF in $REPO"
 /bin/bash "$DISPATCH" dwarf "$DWARF" --repo "$REPO" --run-dir "$RUN" \
   --prompt-file "$RUN/dwarf.input" $YD $TFLAG
@@ -122,24 +131,10 @@ dur_dwarf="$(sed -n 's/^duration_s=//p' "$RUN/dwarf.resolved" 2>/dev/null | tail
 [ "$rc" -ne 0 ] && die "the dwarf dispatch failed — see $RUN/dwarf.log" 4
 
 # --- the real diff ------------------------------------------------------------
-# .forge/ is excluded from both halves. It is forge's own memory, rewritten in the
-# working tree at the end of every run, so left in it reaches the reviewer as an
-# unrelated file the dwarf appears to have touched — which a good reviewer will
-# correctly flag as scope creep.
-#
-# Untracked files are diffed against /dev/null one by one rather than listed by
-# `git status`. A status line says only "?? calc.py" — so a dwarf whose whole task
-# was to add a new file would have had its actual code reviewed by nobody, while
-# the run still reported a clean QA pass. `--no-index` gets the content without
-# `git add -N`, which would leave marks in the user's index.
-{
-  (cd "$REPO" && git diff -- . ':(exclude).forge')
-  (cd "$REPO" && git ls-files --others --exclude-standard -- . ':(exclude).forge') \
-  | while IFS= read -r f; do
-      [ -n "$f" ] || continue
-      (cd "$REPO" && git diff --no-index --no-color -- /dev/null "$f" 2>/dev/null)
-    done
-} > "$RUN/changes.diff" 2>/dev/null
+# Diff complete filesystem snapshots; the private index preserves user staging.
+END="$(forge_tree "$REPO")" || die "cannot capture implementation" 3
+echo "$END" > "$RUN/reviewed.tree"
+git -C "$REPO" diff --binary "$START" "$END" -- . ':(exclude).forge' > "$RUN/changes.diff" || die "cannot create diff" 3
 
 if [ ! -s "$RUN/changes.diff" ]; then
   note "the dwarf produced no changes at all — see $RUN/dwarf.last for what it said"
@@ -147,10 +142,18 @@ if [ ! -s "$RUN/changes.diff" ]; then
   exit 5
 fi
 
+REVIEW="$RUN/review-$(date +%s)-$$"
+forge_review_snapshot "$REPO" "$START" "$END" "$REVIEW" || die "cannot create review snapshot" 3
+SOURCE_FP="$(forge_fingerprint "$REPO")" || exit 3
+[ "$(forge_tree "$REPO")" = "$END" ] || { echo INVALIDATED > "$RUN/verdict"; die "source changed while preparing QA" 5; }
+REVIEW_FP="$(forge_fingerprint "$REVIEW")" || exit 3
+printf '%s\n' "$SOURCE_FP" > "$RUN/source.fingerprint"
+printf '%s\n' "$REVIEW_FP" > "$RUN/review.fingerprint"
 # --- qa -----------------------------------------------------------------------
 {
   /bin/bash "$MEMORY" inject "$REPO" qa
   echo
+  echo "## Complete implementation requirements"; cat "$RUN/dwarf.input"; echo
   [ -n "$GOAL" ] && { echo "The implementer was asked to: $GOAL"; echo; }
   if [ -n "$APPROACH" ] && [ -s "$APPROACH" ]; then
     echo "## Intended approach"
@@ -175,13 +178,19 @@ EOF
   echo
   echo '```diff'; cat "$RUN/changes.diff"; echo '```'
   echo; /bin/bash "$MEMORY" note qa
+  echo "Place any learning notes before the final FORGE_VERDICT: PASS or FORGE_VERDICT: FAIL line."
 } > "$RUN/qa.input"
 
 note "qa $QA on $(wc -l < "$RUN/changes.diff" | tr -d ' ') diff lines"
-/bin/bash "$DISPATCH" qa "$QA" --repo "$REPO" --run-dir "$RUN" \
+/bin/bash "$DISPATCH" qa "$QA" --repo "$REVIEW" --review-base "$(cat "$RUN/review.base")" --run-dir "$RUN" \
   --prompt-file "$RUN/qa.input" $YQ $NATIVE $TFLAG
 rc=$?
-verdict="$(grep -o 'FORGE_VERDICT: *[A-Za-z]*' "$RUN/qa.last" 2>/dev/null | tail -1 | awk '{print $2}')"
+verdict="$(forge_verdict "$RUN/qa.last")"
+[ -n "$NATIVE" ] && verdict=UNKNOWN
+if [ "$(forge_fingerprint "$REPO")" != "$SOURCE_FP" ] || [ "$(forge_fingerprint "$REVIEW")" != "$REVIEW_FP" ]; then
+  echo INVALIDATED > "$RUN/verdict"
+  die "source or review artifact changed during QA; review invalidated" 5
+fi
 dur_qa="$(sed -n 's/^duration_s=//p' "$RUN/qa.resolved" 2>/dev/null | tail -1)"
 /bin/bash "$MEMORY" record "$REPO" --last "$RUN/qa.last" --role qa \
   --run-id "$RUN_ID" --model "$QA" --verdict "${verdict:-UNKNOWN}" \
