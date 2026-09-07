@@ -99,6 +99,38 @@ with the listed check rather than trusting file placement.
 `forge-install.sh --dry-run` prints what it would do and touches nothing. It never clobbers
 a real directory that isn't a symlink.
 
+### Updating all harness installations
+
+Run the updater from your Forge checkout (or through one of its skill symlinks):
+
+```bash
+bash ~/.claude/skills/forge/scripts/forge-update.sh
+```
+
+It fetches the current branch's configured upstream, fast-forwards the checkout, and
+runs Forge's installer to refresh Claude, OpenClaude and Codex links, OpenCode discovery,
+and Antigravity's copied plugin. Harnesses that are not present are skipped. Restart
+active harness sessions afterward to load the updated skill.
+
+```bash
+# Preview without fetching or changing files:
+bash <forge-checkout>/scripts/forge-update.sh --dry-run
+
+# Refresh harness installations after local edits, without fetching:
+bash <forge-checkout>/scripts/forge-update.sh --local
+
+# Point a copied installation's updater at the original checkout:
+bash <path>/scripts/forge-update.sh --source <forge-checkout>
+```
+
+The default update requires a clean Git checkout and a branch with an upstream. Local
+changes, detached HEAD, fetch failures and diverged branches stop the update without
+resetting or stashing your work. `--local` deliberately allows current local edits.
+Real skill directories are preserved; a conflicting directory or plugin installation
+failure produces a nonzero exit and an explanation. After fixing an installation
+failure, use `--local` to retry from the updated source. Updating Forge does not prompt
+for optional Ripwire installation.
+
 ---
 
 ## Quick start

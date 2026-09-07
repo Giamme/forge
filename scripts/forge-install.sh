@@ -14,6 +14,7 @@
 set -uo pipefail
 
 SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+RESULT=0
 DRY=0; [ "${1:-}" = "--dry-run" ] && DRY=1
 
 say() { printf '%s\n' "$*"; }
@@ -28,7 +29,7 @@ link_dir() { # link_dir <target-parent> <label>
   fi
   if [ -e "$dest" ] && [ ! -L "$dest" ]; then
     # Never clobber a real directory the user may have edited in place.
-    say "$label: SKIPPED — $dest exists and is not a symlink; move it aside first"; return
+    say "$label: SKIPPED — $dest exists and is not a symlink; move it aside first"; return 1
   fi
   do_ ln -sfn "$SKILL_DIR" "$dest" && say "$label: linked -> $dest"
 }
@@ -61,7 +62,7 @@ install_antigravity() {
     say "  would: agy plugin install $wrapper"
     say "$label: plugin -> $wrapper"; return
   fi
-  mkdir -p "$wrapper/skills"
+  mkdir -p "$wrapper/skills" || return 1
   cat > "$wrapper/plugin.json" <<EOF
 {
   "name": "forge",
@@ -70,21 +71,23 @@ install_antigravity() {
   "author": { "name": "forge" }
 }
 EOF
-  ln -sfn "$SKILL_DIR" "$wrapper/skills/forge"
-  if agy plugin install "$wrapper" >/dev/null 2>&1; then
+  [ "$?" = 0 ] || return 1
+  ln -sfn "$SKILL_DIR" "$wrapper/skills/forge" || return 1
+  if agy plugin install "$wrapper"; then
     say "$label: plugin installed (copied — re-run this script after editing the skill)"
   else
     say "$label: FAILED — try: agy plugin install $wrapper"
+    return 1
   fi
 }
 
 say "forge source: $SKILL_DIR"
 [ "$DRY" = 1 ] && say "(dry run)"
 
-link_dir "$HOME/.claude/skills"     "claude    "
-link_dir "$HOME/.openclaude/skills" "openclaude"
-link_dir "$HOME/.codex/skills"      "codex     "
-install_antigravity
+link_dir "$HOME/.claude/skills"     "claude    " || RESULT=1
+link_dir "$HOME/.openclaude/skills" "openclaude" || RESULT=1
+link_dir "$HOME/.codex/skills"      "codex     " || RESULT=1
+install_antigravity || RESULT=1
 report_opencode
 
 say
@@ -96,3 +99,5 @@ if [ "$DRY" = 1 ]; then
 else
   /bin/bash "$SKILL_DIR/scripts/forge-install-ripwire.sh" || true
 fi
+
+exit "$RESULT"
