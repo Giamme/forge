@@ -100,4 +100,16 @@ else
   /bin/bash "$SKILL_DIR/scripts/forge-install-ripwire.sh" || true
 fi
 
+# Optional runtime; installing never activates it for a run.
+if [ "$DRY" = 1 ]; then
+  /bin/bash "$SKILL_DIR/scripts/forge-install-fractal.sh" --dry-run
+elif [ -t 0 ]; then
+  printf 'Install optional Fractal execution support? [y/N] '
+  read -r fractal_answer
+  if [ "$fractal_answer" = y ] || [ "$fractal_answer" = Y ]; then
+    /bin/bash "$SKILL_DIR/scripts/forge-install-fractal.sh" --with-prerequisites || true
+  fi
+fi
+say "Fractal CLI: $SKILL_DIR/forge fractal --help (repository-local; existing forge commands are preserved)"
+
 exit "$RESULT"

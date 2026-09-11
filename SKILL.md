@@ -1,7 +1,7 @@
 ---
 name: forge
 description: Dispatch implementation and independent diff review to user-selected models through local agent CLIs. Use for /forge or explicit requests to delegate coding or review; explanation-only questions do not authorize dispatch.
-argument-hint: '"<goal>" --dwarf <alias>[:effort[:harness]] [--qa <alias>] [--planner <alias>] [--yolo-dwarf] [--yolo-qa] [--decompose-level low|medium|high] [--no-memory] [--no-ripwire] [--timeout <seconds>]'
+argument-hint: '"<goal>" --dwarf <alias>[:effort[:harness]] [--qa <alias>] [--planner <alias>] [--yolo-dwarf] [--yolo-qa] [--decompose-level low|medium|high] [--fractal|--no-fractal] [--no-memory] [--no-ripwire] [--timeout <seconds>]'
 allowed-tools: [Bash, Read]
 ---
 
@@ -19,6 +19,11 @@ For explanation requests, explain the workflow without spending model quota.
   [registry.tsv](registry.tsv); report any effort clamp. Literal model IDs require a harness.
 - Bypass flags apply only when explicitly requested for that role (`--yolo-dwarf`,
   `--yolo-qa`). Bash access can mutate files despite disabled editing tools.
+- Ask **“Use Fractal for this run? [y/N]”** once before an interactive run, unless
+  the user supplied `--fractal` or `--no-fractal`. Pass the answer explicitly to
+  the runner. Unattended runs default off. Installation never activates Fractal.
+  Resume and explicit retry retain the recorded choice. Read [Fractal](references/fractal.md)
+  when selected; Fractal completion never substitutes for Forge QA acceptance.
 - One implementer per tree. Solo edits remain uncommitted. Decomposed runs may commit
   and merge on Forge task and integration branches. Updating the user's branch requires
   separate authorization and `integrate --approved`. Never push automatically.
@@ -52,6 +57,8 @@ Runners offer installation once before agents; dispatch never prompts. See
 - [Solo](references/solo.md): command, snapshots, artifacts, exit codes and native-review limits.
 - [Decomposition](references/decompose.md): task schema, routing, waves, retries and integration.
 - [Harnesses](references/harnesses.md): invocation troubleshooting or adding a harness.
+- [Fractal](references/fractal.md): opt-in nested execution, installation, limits,
+  recovery, managed run commands, read-only dashboard and portable reports.
 - [Memory](references/memory.md): `.forge/` learning and spend records; `--no-memory` disables
   them. Memory is written to the user's repository but excluded from implementation diffs.
 

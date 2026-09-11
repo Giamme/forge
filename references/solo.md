@@ -8,6 +8,7 @@ efforts, harnesses and any explicit bypass flags before dispatch.
 bash <skill_dir>/scripts/forge-solo.sh "$FORGE_RUN" --repo "$REPO" \
   --dwarf <spec> [--qa <spec>] [--approach <file>] \
   [--yolo-dwarf] [--yolo-qa] [--timeout <seconds>] [--no-memory] [--dry-run]
+  # Also: [--fractal | --no-fractal] and Fractal limits documented below.
 ```
 
 Both roles receive offline preflight before implementation starts. The runner records a
@@ -44,3 +45,9 @@ execution instructions. Review snapshots use self-contained object packs and one
 
 Optional [Ripwire context](ripwire.md) is enabled by default. Use `--no-ripwire`
 or `FORGE_RIPWIRE=off` to disable preparation and installation offers.
+
+[Fractal](fractal.md) is separately opt-in. It starts from the complete snapshot
+above, runs in a managed isolated repository, and imports the candidate only after
+checking source drift. Resume preserves that snapshot. `--retry` starts an explicit
+new Fractal attempt using preserved work and the original QA baseline. A saved PASS
+checkpoint is reused only while its source fingerprint remains unchanged.

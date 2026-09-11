@@ -36,10 +36,18 @@ DISPATCH="$SKILL_DIR/scripts/forge-dispatch.sh"
 MEMORY="$SKILL_DIR/scripts/forge-memory.sh"
 source "$SKILL_DIR/scripts/forge-artifact.sh"
 source "$SKILL_DIR/scripts/forge-metrics.sh"
+source "$SKILL_DIR/scripts/forge-fractal-options.sh"
+ORIGINAL_ARGS=("$@")
 
 die()  { printf 'forge: %s\n' "$1" >&2; exit "${2:-2}"; }
 note() { printf 'forge: %s\n' "$*" >&2; }
 
+if [ "${1:-}" = --help ] || [ "${1:-}" = -h ]; then
+  sed -n '18,29s/^# *//p' "$0"
+  forge_fractal_help
+  echo 'Explicit Fractal retry: repeat the original command with --retry.'
+  exit 0
+fi
 RUN="${1:-}"; [ -n "$RUN" ] || die "usage: forge-solo.sh <run-dir> --repo <dir> --dwarf <spec> [--qa <spec>]"
 case "$RUN" in -*) die "first argument must be the run directory, got '$RUN'" ;; esac
 shift
@@ -48,6 +56,10 @@ OUTPUT=summary
 REPO="$PWD"; DWARF=""; QA="opus"; APPROACH=""; YD=""; YQ=""; NATIVE=""; TIMEOUT=""; DRY=0
 while [ $# -gt 0 ]; do
   case "$1" in
+    --fractal) forge_fractal_flag on || exit $?; shift ;;
+    --no-fractal) forge_fractal_flag off || exit $?; shift ;;
+    --retry) export FORGE_FRACTAL_RETRY=1; shift ;;
+    --fractal-*|--dwarf-low|--dwarf-medium|--dwarf-high) FRACTAL_ARGS+=("$1" "${2:?}"); shift 2 ;;
     --output) OUTPUT="${2:?}"; shift 2 ;;
     --repo)       REPO="${2:?--repo needs a value}"; shift 2 ;;
     --dwarf)      DWARF="${2:?--dwarf needs a spec}"; shift 2 ;;
@@ -83,10 +95,27 @@ esac
 
 RUN="$(cd "$RUN" && pwd)"
 REPO="$(cd "$REPO" && pwd)"
+if [ "$DRY" != 1 ] && [ "${FORGE_SOLO_LOCK:-}" != "$RUN" ]; then
+  exec python3 "$SKILL_DIR/scripts/forge-fractal.py" _lock "$RUN" "$0" "${ORIGINAL_ARGS[@]}"
+fi
 RUN_ID="$(basename "$RUN")"
 export FORGE_CAPABILITY_CACHE="$RUN/capabilities"
 TFLAG=""; [ -n "$TIMEOUT" ] && TFLAG="--timeout $TIMEOUT"
 GOAL="$(head -1 "$RUN/goal.txt" 2>/dev/null || true)"
+
+FFLAGS=()
+[ -z "$YD" ] || FFLAGS+=(--yolo-dwarf)
+[ -z "$YQ" ] || FFLAGS+=(--yolo-qa)
+forge_fractal_select "$RUN" "$REPO" solo "$DRY" --dwarf "$DWARF" --qa "$QA" ${FFLAGS[@]+"${FFLAGS[@]}"} || exit $?
+if [ -n "${FORGE_FRACTAL_RUN:-}" ]; then
+  python3 "$SKILL_DIR/scripts/forge-fractal.py" _remember "$0" "${ORIGINAL_ARGS[@]}" || exit $?
+fi
+if [ -n "${FORGE_FRACTAL_RUN:-}" ] && [ "$DRY" != 1 ] && [ "${FORGE_FRACTAL_RETRY:-}" != 1 ]; then
+  python3 "$SKILL_DIR/scripts/forge-fractal.py" _checkpoint "$REPO"
+  checkpoint_rc=$?
+  [ "$checkpoint_rc" != 0 ] || exit 0
+  [ "$checkpoint_rc" = 1 ] || exit "$checkpoint_rc"
+fi
 
 [ "$DRY" = 1 ] || forge_metric_begin "$RUN" solo
 
@@ -122,7 +151,11 @@ forge_metric_phase preflight
 /bin/bash "$DISPATCH" doctor --spec "$QA" --role qa $YQ $NATIVE $TFLAG || exit $?
 /bin/bash "$SKILL_DIR/scripts/forge-install-ripwire.sh" || true
 forge_metric_phase snapshot
-START="$(forge_tree "$REPO")" || die "cannot record starting snapshot" 3
+if [ -n "${FORGE_FRACTAL_RUN:-}" ] && [ -s "$RUN/start.tree" ]; then
+  START="$(cat "$RUN/start.tree")"
+else
+  START="$(forge_tree "$REPO")" || die "cannot record starting snapshot" 3
+fi
 echo "$START" > "$RUN/start.tree"
 git -C "$REPO" diff --binary HEAD "$START" -- . ':(exclude).forge' > "$RUN/existing.diff"
 rm -f "$RUN/verdict"

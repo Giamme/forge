@@ -1,5 +1,13 @@
 # forge
 
+Optional [Fractal execution](references/fractal.md) is available for solo and
+decomposed runs with `--fractal`; `--no-fractal` explicitly disables it. Interactive
+runs ask once, unattended runs default off, and installation never activates it.
+Forge retains model routing, independent QA, verification and integration.
+Use `./forge fractal --help` for installation, run controls, the local read-only
+dashboard and offline HTML reports. This repository-local launcher also works
+when another command named `forge` is already installed.
+
 **One model builds it. A different model reviews what it actually built.**
 
 `forge` is a skill for agent CLIs. You hand it a coding task and two models: a **dwarf**

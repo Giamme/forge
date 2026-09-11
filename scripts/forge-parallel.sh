@@ -29,6 +29,7 @@ DISPATCH="$SKILL_DIR/scripts/forge-dispatch.sh"
 MEMORY="$SKILL_DIR/scripts/forge-memory.sh"
 source "$SKILL_DIR/scripts/forge-artifact.sh"
 source "$SKILL_DIR/scripts/forge-metrics.sh"
+source "$SKILL_DIR/scripts/forge-fractal-options.sh"
 OUTPUT=summary
 
 die()  { printf 'forge: %s\n' "$1" >&2; exit "${2:-2}"; }
@@ -125,6 +126,14 @@ do_plan() {
   # Persist plan choices for later run and retry processes.
   [ "$NOMEM" = 1 ] && : > "$PLAN/no_memory"
   [ -n "$PLANNER" ] && printf '%s\n' "$PLANNER" > "$PLAN/planner"
+  python3 - "$PLAN/fractal-routing.json" "$D_ANY" "$D_LO" "$D_MD" "$D_HI" <<'PY'
+import json,sys
+from pathlib import Path
+p=Path(sys.argv[1]); data=json.loads(p.read_text()) if p.exists() else {}
+for key,value in zip(('any','low','medium','high'),sys.argv[2:]):
+    if value: data[key]=[s.strip() for s in value.split(',') if s.strip()]
+p.write_text(json.dumps(data))
+PY
 
   # Uncommitted work is invisible to every dwarf, because worktrees branch from a
   # commit. That is the likeliest way to get a confusingly wrong result, so it is
@@ -463,6 +472,9 @@ do_task() (
   local T="$PLAN/tasks.tsv" REPO run_id base wt br tdir attempt
   REPO="$(cat "$PLAN/repo")"; run_id="$(cat "$PLAN/run_id")"
   tdir="$PLAN/tasks/$id"; mkdir -p "$tdir"
+  if [ -s "$PLAN/fractal-selection.json" ]; then
+    forge_fractal_select "$PLAN" "$REPO" parallel 0 || return $?
+  fi
   forge_metric_begin "$tdir" task
   dependencies_ready "$PLAN" "$id" || return 1
   echo RUNNING > "$tdir/status"
@@ -531,7 +543,9 @@ do_task() (
   # .forge/ is forge's own memory, rewritten in the user's tree after every run.
   # Left in, it would reach QA as if a dwarf had written it, and any task whose
   # files touched it would collide with every other task in the wave planner.
-  [ -s "$tdir/changes.diff" ] && mv "$tdir/changes.diff" "$tdir/changes.prev.diff"
+  if [ -z "${FORGE_FRACTAL_RUN:-}" ] || [ "${FORGE_FRACTAL_RETRY:-}" = 1 ]; then
+    [ -s "$tdir/changes.diff" ] && mv "$tdir/changes.diff" "$tdir/changes.prev.diff"
+  fi
   (cd "$wt" && git add -A -- . ":(exclude).forge" \
       && git diff --cached --binary "$base" -- . ":(exclude).forge") > "$tdir/changes.diff" 2>/dev/null || { echo ERROR > "$tdir/status"; return 1; }
   if [ ! -s "$tdir/changes.diff" ]; then
@@ -725,6 +739,7 @@ do_retry() {
   rm -f "$tdir/status"
 
   note "retrying $id with dwarf $(field "$T" "$id" dwarf)"
+  export FORGE_FRACTAL_RETRY=1
   do_task "$PLAN" "$id"
   st="$(task_status "$PLAN" "$id")"
   if [ "$st" = "PASS" ]; then
@@ -785,9 +800,13 @@ write_results() { # write_results <plan>
 # --- run ----------------------------------------------------------------------
 do_run() (
   local PLAN="${1:?run needs a plan dir}"; shift
+  local fractal_pipeline_args=("$@")
   local MAXP=3 DRY=0
   while [ $# -gt 0 ]; do
     case "$1" in
+      --fractal) forge_fractal_flag on || exit $?; shift ;;
+      --no-fractal) forge_fractal_flag off || exit $?; shift ;;
+      --fractal-*) FRACTAL_ARGS+=("$1" "${2:?}"); shift 2 ;;
       --no-ripwire) export FORGE_RIPWIRE=off; shift ;;
       --output) OUTPUT="${2:?}"; shift 2 ;;
       --max-parallel) MAXP="${2:?}"; shift 2 ;;
@@ -810,6 +829,7 @@ do_run() (
   compute_waves "$PLAN"
   local REPO run_id wt_root int_wt int_br
   REPO="$(cat "$PLAN/repo")"; run_id="$(cat "$PLAN/run_id")"
+  forge_fractal_parallel_run "$PLAN" "$REPO" "$DRY" ${fractal_pipeline_args[@]+"${fractal_pipeline_args[@]}"} || return $?
   # Durable, beside the repo — never TMPDIR. A temp worktree root has destroyed
   # real work here before: isolated worktrees are never pushed, so when the root
   # goes, the only copy of that work goes with it.
@@ -958,6 +978,11 @@ do_integrate() {
 }
 
 # --- main ---------------------------------------------------------------------
+if [ "${1:-}" = --help ] || [ "${1:-}" = -h ]; then
+  sed -n '7,20s/^# *//p' "$SELF"
+  forge_fractal_help
+  exit 0
+fi
 [ $# -ge 1 ] || die "usage: forge-parallel.sh <plan|run|retry|integrate|_task> <plan-dir> [...]"
 CMD="$1"; shift
 [ ! -f "${1:-}/no_ripwire" ] || export FORGE_RIPWIRE=off
