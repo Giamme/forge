@@ -41,10 +41,20 @@ For explanation requests, explain the workflow without spending model quota.
 3. Use [solo runs](references/solo.md) for one implementation. For `--decompose-level
    low|medium|high`, read [decomposition](references/decompose.md), prepare the task table,
    obtain approval, then use `forge-parallel.sh plan/run`.
+   Pass the recorded Fractal choice and requested limits to the execution runner; tier
+   pools go to solo directly or decomposed `plan`. Fractal does not replace planner dispatch.
 4. Runners default to summary output. Read each `dwarf.last` and `qa.last` once; retrieve raw
    logs only when needed. Report findings faithfully, and identify verification
    limits. Source or review mutations invalidate acceptance. Missing verdicts are UNKNOWN.
    An absent repository verification command means UNVERIFIED, even when QA passes.
+
+For a Fractal run, report its managed run ID with the Forge result. Use
+`<skill_dir>/forge fractal runs --repo <repo> --json` and `tree RUN_ID --json` to discover
+run/task/node IDs; use `status`, `logs` or `open` for inspection. Run-level `resume`
+recovers the recorded pipeline; scoped controls affect only the selected execution scope.
+Preserve failed work and state the distinction between execution completion, QA acceptance
+and verification. Read the Fractal reference before retrying, changing limits or exporting
+a portable report.
 
 Ripwire context is automatic when compatible; `--no-ripwire` or `FORGE_RIPWIRE=off`
 disables it. Pass opt-out to every role, including a separately dispatched planner.

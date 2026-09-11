@@ -5,6 +5,20 @@ model routing, independent QA of the cumulative diff, verification and integrati
 Fractal execution completion and Forge acceptance are separate outcomes. Costs are
 observational, and this integration makes no speed or cost-saving claim.
 
+For a first run, follow the [README walkthrough](../README.md#fractal-execution).
+This reference covers the exact selection, routing, lifecycle and inspection contracts.
+
+## Contents
+
+- [Selecting a run](#selecting-a-run)
+- [Installation and provenance](#installation-and-provenance)
+- [Bridge, routing and ownership](#bridge-routing-and-ownership)
+- [Limits and lifecycle](#limits-and-lifecycle)
+- [Inspection and controls](#inspection-and-controls)
+- [Managed data and identifiers](#managed-data-and-identifiers)
+- [Troubleshooting](#troubleshooting)
+- [Verification](#verification)
+
 ## Selecting a run
 
 ```sh
@@ -102,6 +116,10 @@ execution. Each node records its difficulty, requested spec and resolved model.
 | `--fractal-concurrency` | 3 | Shared across all task trees and Forge QA |
 | `--fractal-deadline` | 2700 seconds | Task execution attempt, excluding pauses |
 
+Limits must be positive integers, except depth may be zero to disallow children.
+Decomposed `--max-parallel` remains a separate limit on top-level task pipelines.
+Increasing it does not increase the shared Fractal invocation limit.
+
 `--fractal-max-cost` returns an unsupported-capability error: the bridge cannot
 enforce a dollar cap. Unknown tokens, tools and cost data remain unknown.
 The existing `--timeout` also bounds each implementation invocation when supplied;
@@ -166,9 +184,66 @@ Portable reports embed captured data, complete logs and assets, escape artifact
 content, display capture time and missing data, and work without Fractal or a server.
 Credential directories are not part of the export allowlist.
 
+Inspection verbs currently emit the same JSON run projection, with the selected task/node
+scope; `--json` makes that intent explicit. Logs are loaded by `logs`, `report` or an HTML
+export. Live text reads are capped at 256 KiB per artifact and include a truncation flag;
+portable exports include complete logs and history. History offsets are zero-based and
+CLI page limits must be between 1 and 1000. `report RUN` defaults to `RUN.html` when
+`--html PATH` is omitted.
+
+## Managed data and identifiers
+
+All commands below can be invoked as `<forge-checkout>/forge fractal ...` when the
+checkout is not the current directory. Installing the skill does not put a new `forge`
+executable on your PATH.
+
+| Location | Purpose |
+| --- | --- |
+| `<solo-run-or-plan>/fractal-selection.json` | selected backend and, when enabled, managed run ID |
+| `<plan>/fractal-routing.json` | dwarf pools captured during decomposed planning |
+| `<state>/forge/fractal/runtime/` | isolated Fractal and wiki runtime |
+| `<state>/forge/fractal/provenance.json` | pinned revision, checksum and installed versions |
+| `<state>/forge/fractal/installs/` | installation previews, logs and retained failures |
+| `<state>/forge/fractal/runs/<run-id>/run.json` | effective repository, routing, limits and pipeline binding |
+| `<state>/forge/fractal/runs/<run-id>/tasks/` | task checkpoints, control repositories, product candidates and step records |
+
+`<state>` is `$XDG_STATE_HOME`, defaulting to `~/.local/state`. `runs --repo DIR` discovers
+managed `run-…` identifiers. `tree RUN --json` reveals managed task IDs and node IDs;
+task request records map back to their Forge runner output directories. These IDs differ
+from a directory basename or the human task ID in `tasks.tsv`.
+
+```bash
+./forge fractal runs --repo /absolute/path/to/product --json
+./forge fractal tree RUN_ID --json
+./forge fractal status RUN_ID --task TASK_ID --node NODE_ID --json
+./forge fractal logs RUN_ID --task TASK_ID --node NODE_ID --follow
+./forge fractal report RUN_ID --task TASK_ID --html /absolute/path/to/task-report.html
+```
+
+Use the same scope to resume a pause or stop request. An active control on an ancestor
+still applies to its descendants; resuming a child does not clear a run-level pause.
+Run-level `resume` is the recovery entry point when the full Forge pipeline also needs
+to continue. No inspection or control command deletes these records automatically.
+
+## Troubleshooting
+
+| Symptom | Next step |
+| --- | --- |
+| Installed runtime, but a new run uses ordinary execution | explicitly pass `--fractal`; installation is never activation |
+| Selected runtime is unavailable | inspect `doctor`, install the managed runtime, then resume or retry the same run |
+| New pool, backend or limit rejected on resume | use the recorded settings; changed settings require a new run directory |
+| `source_drift` or `scope_drift` | inspect preserved candidate changes and the source/owned paths; automatic import is blocked |
+| `timeout` | inspect setup, per-step logs and elapsed task time; a resumed attempt retains elapsed time, while explicit retry starts a new attempt |
+| Iterations exhausted | inspect the last response and preserved work; explicit retry starts a new bounded attempt |
+| Execution completed, acceptance pending/failed | inspect Forge QA, verdict and verification records; completion alone does not establish acceptance |
+| Dashboard stopped or access token no longer works | run `open` again for a new local server/token; execution continues independently |
+| Missing or truncated live log data | inspect diagnostics; generate `report` for a complete capture of available artifacts |
+| Dollar-cap request rejected | v1 cannot enforce cost caps; limits cover nodes, iterations, time and concurrency |
+
 ## Verification
 
 The default unittest suite is provider-free. Set `FORGE_TEST_FRACTAL_RUNTIME` to an
 isolated environment containing the pinned runtime to enable real Fractal/tmux
-integration tests with fake CLIs. See [test instructions](../tests/README.md).
+integration tests with fake CLIs. See [test instructions](../tests/README.md) and
+[implementation verification evidence](../tests/fractal-verification.md).
 Paid provider smoke tests and performance comparisons require separate explicit runs.

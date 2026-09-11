@@ -7,8 +7,8 @@ efforts, harnesses and any explicit bypass flags before dispatch.
 ```bash
 bash <skill_dir>/scripts/forge-solo.sh "$FORGE_RUN" --repo "$REPO" \
   --dwarf <spec> [--qa <spec>] [--approach <file>] \
-  [--yolo-dwarf] [--yolo-qa] [--timeout <seconds>] [--no-memory] [--dry-run]
-  # Also: [--fractal | --no-fractal] and Fractal limits documented below.
+  [--yolo-dwarf] [--yolo-qa] [--timeout <seconds>] [--no-memory] [--dry-run] \
+  [--fractal | --no-fractal] [--fractal-concurrency <n>] [--fractal-deadline <seconds>]
 ```
 
 Both roles receive offline preflight before implementation starts. The runner records a
@@ -24,11 +24,13 @@ This detects mutations; it is not an operating-system security sandbox for unres
 
 Read `dwarf.last`, `qa.last`, `changes.diff` and `verdict`. Preserve CONFIRMED/PLAUSIBLE labels
 when relaying findings. Report scope drift and unsupported implementation claims. Do not
-automatically retry: one implementation followed by one review is the run.
+automatically retry. In ordinary execution the run is one implementation followed by
+one review; Fractal may use multiple bounded work steps before that independent review.
 
 Statuses: PASS, FAIL, UNKNOWN, NOCHANGES, INVALIDATED. Exit codes: 0 completed review
 (inspect verdict), 2 usage, 3 precondition, 4 dispatch failure, 5 no changes or invalidated
-review, 7 timeout. The default timeout is 2700 seconds; 0 disables it.
+review, 7 timeout. The default dispatch timeout is 2700 seconds; 0 disables that
+dispatch timeout, but an enabled Fractal task still has its own attempt deadline.
 
 `--native-review` is an explicit Codex-only alternative: native review cannot accept the
 custom requirements prompt or verdict instruction. Its result is informational and UNKNOWN;
@@ -46,8 +48,37 @@ execution instructions. Review snapshots use self-contained object packs and one
 Optional [Ripwire context](ripwire.md) is enabled by default. Use `--no-ripwire`
 or `FORGE_RIPWIRE=off` to disable preparation and installation offers.
 
+## Fractal execution and recovery
+
 [Fractal](fractal.md) is separately opt-in. It starts from the complete snapshot
 above, runs in a managed isolated repository, and imports the candidate only after
 checking source drift. Resume preserves that snapshot. `--retry` starts an explicit
 new Fractal attempt using preserved work and the original QA baseline. A saved PASS
 checkpoint is reused only while its source fingerprint remains unchanged.
+
+Ask `Use Fractal for this run? [y/N]` once in the conversational workflow and pass
+`--fractal` or `--no-fractal` explicitly to the runner. A direct interactive runner
+asks if neither flag is given; unattended execution defaults off. Installation is a
+separate choice. Do not ask again when resuming or retrying a recorded run.
+
+```bash
+# First run, with optional child routing; the run directory already contains prompt.md.
+bash <skill_dir>/scripts/forge-solo.sh "$FORGE_RUN" --repo "$REPO" \
+  --dwarf sol:high --qa opus --dwarf-low luna:medium --fractal
+
+# Discover the managed run ID, then inspect or resume from another terminal.
+<skill_dir>/forge fractal runs --repo "$REPO" --json
+<skill_dir>/forge fractal tree RUN_ID --json
+<skill_dir>/forge fractal resume RUN_ID
+
+# Start a new attempt only when explicitly requested, using the same frozen settings.
+bash <skill_dir>/scripts/forge-solo.sh "$FORGE_RUN" --repo "$REPO" \
+  --dwarf sol:high --qa opus --dwarf-low luna:medium --fractal --retry
+```
+
+The solo directory's `fractal-selection.json` also records the managed run ID.
+Per-node workspaces, preserved responses and raw attempts are under the managed run;
+the solo directory still supplies `changes.diff`, `qa.last` and `verdict` for delivery.
+Parent invocations yield while their children run. QA sees their combined task diff.
+Use [Fractal controls and reports](fractal.md#inspection-and-controls) to inspect partial
+work; a completed execution node does not imply a PASS verdict or repository verification.

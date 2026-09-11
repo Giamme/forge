@@ -7,6 +7,13 @@ Everything below was verified by running the CLIs on this machine, not read from
 several of these behaviours are undocumented and a few contradict what the `--help` text
 implies.
 
+Fractal uses this same dispatcher for all five harnesses through its `agents.py` bridge.
+It is an optional execution backend, not a sixth model harness or a replacement for
+`alias:effort:harness`. The same effort and permission rules apply to each fresh nested
+work step. Use `./forge fractal doctor --spec SPEC` for runtime and advertised capability
+checks; authentication and live provider availability still require an explicitly requested
+provider test. See [Fractal execution](fractal.md).
+
 ## Contents
 
 - [At a glance](#at-a-glance)

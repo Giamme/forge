@@ -1,5 +1,10 @@
 ## Planning
 
+Fractal selection applies to the later implementation stage. It does not turn a planner
+dispatch or `forge-parallel.sh plan` into nested execution, install a runtime during
+planning, or bypass the task/model approval table. Pass `--fractal` or `--no-fractal` to
+the eventual solo runner or decomposed `run`. See [Fractal](fractal.md).
+
 By default **you** plan: before dispatching, decide the approach and put it in the prompt,
 so the dwarf builds the agreed thing rather than inventing a shape nobody has seen. In a
 decomposed run that matters more, because the capsule prevents two dwarves from touching
@@ -27,4 +32,3 @@ approach per task; in a single-task run, just the approach. Write each task's ap
 
 Show the approach before dispatching and let the user change it. That gate is the last
 moment the plan is free; after it, changing the plan costs a whole run.
-

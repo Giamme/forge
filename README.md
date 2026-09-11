@@ -1,13 +1,5 @@
 # forge
 
-Optional [Fractal execution](references/fractal.md) is available for solo and
-decomposed runs with `--fractal`; `--no-fractal` explicitly disables it. Interactive
-runs ask once, unattended runs default off, and installation never activates it.
-Forge retains model routing, independent QA, verification and integration.
-Use `./forge fractal --help` for installation, run controls, the local read-only
-dashboard and offline HTML reports. This repository-local launcher also works
-when another command named `forge` is already installed.
-
 **One model builds it. A different model reviews what it actually built.**
 
 `forge` is a skill for agent CLIs. You hand it a coding task and two models: a **dwarf**
@@ -28,12 +20,18 @@ With `--decompose-level` it goes wider: the goal is split into tasks, several dw
 **concurrently in isolated git worktrees**, each task is reviewed on its own diff, and only
 the tasks that pass get merged.
 
+With optional [Fractal execution](#fractal-execution), an implementer can delegate bounded
+child tasks inside its owned paths. Forge still chooses the models, reviews the combined
+diff, verifies the result and controls integration. A local dashboard shows the task tree,
+logs and separate execution/acceptance states; HTML reports capture them for later review.
+
 ---
 
 ## Contents
 
 - [Install](#install)
 - [Quick start](#quick-start)
+- [Fractal execution](#fractal-execution)
 - [The spec: `alias:effort:harness`](#the-spec-aliaseffortharness)
 - [Effort, ceilings and clamping](#effort-ceilings-and-clamping)
 - [Yolo mode](#yolo-mode)
@@ -59,6 +57,10 @@ bash ~/.claude/skills/forge/scripts/forge-install.sh
 Clone anywhere you like — the installer works out its own location and links from there.
 `~/.claude/skills/forge` is just the tidiest home, since one of the five harnesses reads
 that path directly.
+
+The installer also offers optional Fractal support in an interactive terminal. Declining
+or a Fractal installation failure does not prevent ordinary Forge setup. See
+[Fractal installation](#install-the-optional-runtime) for prerequisites and a separate install.
 
 Then check what's actually reachable on your machine:
 
@@ -152,6 +154,8 @@ Inside any installed harness, invoke the skill:
 That's the whole minimum. `sol` builds it at `high` effort on Codex, `opus` reviews the
 resulting diff at `xhigh` (the default reviewer), and you get back a summary of the change
 plus qa's findings.
+Before an interactive run, Forge asks **“Use Fractal for this run? [y/N]”** once.
+Pass `--fractal` or `--no-fractal` to answer explicitly; unattended runs default off.
 
 **Pick both sides explicitly:**
 
@@ -183,6 +187,122 @@ forge decomposes the goal, rates each task's difficulty, routes it, then **shows
 table and stops** before spending anything.
 
 ---
+
+## Fractal execution
+
+Fractal is an optional implementation backend for both solo and decomposed runs. It uses
+the existing Forge dispatcher for Codex, Claude, OpenClaude, OpenCode and Antigravity.
+Each work step gets a fresh model invocation; preserved files and child results provide
+continuity when a parent resumes. Independent QA reviews the complete Forge task diff.
+
+`--decompose-level` plans top-level Forge tasks before execution. `--fractal` lets an
+implementer request nested children during execution. They can be used together, and
+solo runs can use Fractal without a top-level decomposition.
+
+### Install the optional runtime
+
+From the Forge checkout:
+
+```bash
+./forge fractal install --dry-run
+./forge fractal install --yes --with-prerequisites
+./forge fractal doctor --spec sol --spec opus --json
+```
+
+The managed runtime pins **Fractal 1.2.0** at revision
+`18793200c0d7e8cdb2db369ea3abe5647a1e15e4`, checks the source archive checksum,
+and includes the required `wiki` executable. It prefers an existing Python 3.12–3.14;
+with prerequisite installation selected, it can provision uv, Python 3.13 and tmux.
+tmux installation uses an existing Homebrew on macOS or apt on Debian/Ubuntu.
+The [installation reference](references/fractal.md#installation-and-provenance) covers
+consent, supported bootstrap platforms, provenance and failure diagnostics.
+
+Installation never enables Fractal for a run. `./forge` is the repository-local launcher;
+it does not replace a command already named `forge` or change your shell startup files.
+Doctor checks the runtime and advertised harness capabilities without calling a provider.
+
+### Start and inspect a run
+
+Through the skill:
+
+```text
+/forge "add retry with exponential backoff to the HTTP client" --dwarf sol:high --fractal
+```
+
+Or prepare a solo run directory outside the product repository and invoke the runner:
+
+```bash
+FORGE_RUN="$HOME/.local/state/forge/examples/http-client"
+mkdir -p "$FORGE_RUN"
+printf '%s\n' 'Add bounded exponential backoff to the HTTP client and run its tests.' > "$FORGE_RUN/prompt.md"
+bash scripts/forge-solo.sh "$FORGE_RUN" --repo /absolute/path/to/product \
+  --dwarf sol:high --qa opus --fractal --fractal-concurrency 3
+```
+
+Choose a new run directory for unrelated work. Backend selection, routing pools and limits
+are stored with the run; resume and explicit retry retain them. For a prepared, approved
+decomposed plan, select the backend on `run`:
+
+```bash
+bash scripts/forge-parallel.sh run /absolute/path/to/plan --fractal --dry-run
+bash scripts/forge-parallel.sh run /absolute/path/to/plan --fractal
+```
+
+Dry runs show resolved model pools, limits and proposed workspaces without installation
+or provider calls. When a selected runtime is unavailable, interactive runs offer
+installation; unattended runs return an actionable error instead of changing backends.
+
+Discover the managed run ID, then inspect it from another terminal:
+
+```bash
+./forge fractal runs --repo /absolute/path/to/product --json
+./forge fractal open                         # live runs index
+./forge fractal status RUN_ID --json
+./forge fractal tree RUN_ID --json
+./forge fractal logs RUN_ID --follow
+./forge fractal report RUN_ID --html /absolute/path/to/report.html
+```
+
+`RUN_ID` is the `run-…` identifier returned by `runs`, not the solo directory or plan name.
+The dashboard refreshes every two seconds, loads logs on demand and offers copyable CLI
+controls. Browser access is read-only, bound to `127.0.0.1` with an ephemeral access token.
+Closing its server does not stop execution. Portable HTML embeds captured data and logs,
+shows capture time and missing data, and needs no Fractal runtime to read.
+
+### Bounds, recovery and acceptance
+
+Defaults per Forge task are two nesting levels below implementation, three unsettled
+direct children per node, twelve lifetime nodes, six iterations per node per attempt,
+and a 45-minute attempt deadline excluding explicit pauses. Three model slots are shared
+across the whole Forge run, including QA. `--max-parallel` bounds top-level task pipelines;
+`--fractal-concurrency` bounds model invocations across their nested trees.
+
+Child difficulty selects a frozen `--dwarf-low`, `--dwarf-medium` or `--dwarf-high` pool,
+falling back to the configured general dwarf, then the parent. Dependencies and owned
+paths constrain admission; overlapping ownership is serialized. Fractal never implies
+`--yolo-dwarf`. Costs are observational; unavailable usage stays unknown and dollar-cap
+requests are rejected.
+
+```bash
+./forge fractal pause RUN_ID
+./forge fractal resume RUN_ID
+./forge fractal stop RUN_ID
+```
+
+Pause and stop preserve work and diagnostics. Run-level resume recovers recorded execution
+and the Forge pipeline without repeating accepted stages. Use explicit runner retry for
+a new attempt, retaining work and the original Forge QA baseline. Controls also accept
+`--task TASK_ID` and `--task TASK_ID --node NODE_ID`; those IDs come from `tree` output.
+
+Managed data lives in `${XDG_STATE_HOME:-$HOME/.local/state}/forge/fractal/`. Solo execution
+uses an isolated snapshot and imports changes only after checking source drift, preserving
+staging and leaving changes uncommitted. Decomposed candidates return to Forge's existing
+review/integration pipeline. **Fractal completion is not Forge acceptance**: QA, repository
+verification and authorization to update the user's branch remain distinct.
+
+See the [full Fractal reference](references/fractal.md) for limits, child requests and
+recovery details, and [verification evidence](tests/fractal-verification.md) for the tested
+platforms and browser checks. No paid-provider or speed/cost claim follows from fake-CLI tests.
 
 ## The spec: `alias:effort:harness`
 
@@ -541,7 +661,9 @@ notes to itself is noise to a reviewer who does not use forge.
                 [--qa <alias>[:<effort>[:<harness>]]]
                 [--planner <alias>[:<effort>[:<harness>]]]
                 [--yolo-dwarf] [--yolo-qa] [--repo <dir>] [--native-review]
-                [--no-memory] [--timeout <seconds>]
+                [--no-memory] [--timeout <seconds>] [--fractal | --no-fractal]
+                [--fractal-depth <n>] [--fractal-children <n>] [--fractal-nodes <n>]
+                [--fractal-iterations <n>] [--fractal-concurrency <n>] [--fractal-deadline <s>]
                 [--decompose-level low|medium|high] [--max-parallel <n>]
                 [--dwarf-high <spec>] [--dwarf-medium <spec>] [--dwarf-low <spec>]
                 [--qa-high <spec>] [--qa-medium <spec>] [--qa-low <spec>]
@@ -562,6 +684,18 @@ notes to itself is noise to a reviewer who does not use forge.
 | `--max-parallel <n>` | `3` | concurrent task pipelines |
 | `--dwarf-high/-medium/-low` | — | per-difficulty routing; comma-list pools models |
 | `--qa-high/-medium/-low` | — | same, for reviewers |
+| `--fractal` / `--no-fractal` | ask interactively; off unattended | mutually exclusive, per-run backend choice |
+| `--fractal-depth <n>` | `2` | nested levels below each Forge implementation node |
+| `--fractal-children <n>` | `3` | unsettled direct children per node |
+| `--fractal-nodes <n>` | `12` | lifetime nodes per Forge task, including implementation |
+| `--fractal-iterations <n>` | `6` | per node per execution attempt |
+| `--fractal-concurrency <n>` | `3` | shared model slots across nested trees and QA |
+| `--fractal-deadline <s>` | `2700` | task attempt deadline, excluding explicit pauses |
+| `--fractal-max-cost <amount>` | unsupported | returns an error; the bridge cannot enforce dollar caps |
+
+Fractal's task deadline still applies when `--timeout 0` disables the ordinary
+per-dispatch timeout. Child routing uses the dwarf tier flags; QA stays at the Forge
+task boundary. Pools and Fractal limits are frozen for an existing run.
 
 **On `--native-review`:** for a diff too large to inline, this switches codex to its
 purpose-built reviewer. Know the trade — codex refuses a custom prompt alongside its scope
@@ -619,6 +753,30 @@ findings that failed it, on a stronger model:
 bash scripts/forge-parallel.sh retry /tmp/forge-billing pricing --dwarf sol:ultra
 ```
 
+### `forge fractal` command group
+
+Use `./forge fractal` from this checkout, or `<forge-checkout>/forge fractal` elsewhere.
+This group manages Fractal runs; it does not replace the `/forge` skill or runner scripts.
+
+| Command | Purpose |
+| --- | --- |
+| `install [--dry-run] [--yes] [--with-prerequisites]` | preview or install the isolated pinned runtime |
+| `doctor [--spec SPEC] [--json]` | check runtime/hooks/tmux and optional repeated harness specs without provider calls |
+| `runs [--repo DIR] [--json] [--html PATH]` | discover managed runs, optionally filtered by repository |
+| `status\|tree\|activity RUN_ID` | inspect progress, hierarchy and history |
+| `logs\|costs\|messages\|config RUN_ID` | inspect diagnostics, observed accounting, radio traffic and effective settings |
+| `pause\|resume\|stop RUN_ID` | request a control and record its observed state |
+| `open [RUN_ID] [--port PORT]` | open the read-only live dashboard or runs index |
+| `report RUN_ID [--html PATH]` | capture a self-contained HTML report; default filename is `RUN_ID.html` |
+
+Inspection commands accept `--task TASK_ID`, `--node NODE_ID`, `--json`, `--html PATH`,
+`--offset N` and `--limit N` (1–1000). They currently return a common JSON run projection;
+the command names do not imply separate output schemas. `logs --follow` follows changes.
+HTML exports capture full history and logs. Controls require an explicit run ID, and a
+node control also requires its task ID; they never guess the latest run. Use each command's
+`--help` for its accepted options. Installation is also available through
+`bash scripts/forge-install-fractal.sh`.
+
 ### `scripts/forge-dispatch.sh`
 
 Resolves a spec into a real CLI invocation and runs it. Needs only bash and coreutils, which
@@ -675,6 +833,8 @@ capture, the QA dispatch, and the ledger writes.
 forge-solo.sh <run-dir> --repo <dir> --dwarf <spec> [--qa <spec>]
               [--approach <file>] [--yolo-dwarf] [--yolo-qa]
               [--native-review] [--no-memory] [--timeout <s>] [--dry-run]
+              [--fractal | --no-fractal] [--fractal-<limit> <n>]
+              [--dwarf-low <pool>] [--dwarf-medium <pool>] [--dwarf-high <pool>] [--retry]
 ```
 
 You write two files into the run directory; forge does the rest:
@@ -690,6 +850,11 @@ You write two files into the run directory; forge does the rest:
 | `changes.diff` | exactly what the reviewer read |
 | `verdict` | `PASS`, `FAIL`, `UNKNOWN` or `NOCHANGES` |
 | `<role>.{input,log,resolved,cmd}` | the prompt, the transcript, the resolution, the command |
+| `fractal-selection.json` | persisted backend choice; enabled runs include their managed run ID |
+
+With Fractal, per-step dispatch artifacts live in the managed run while the solo directory
+retains the aggregate diff and Forge QA result. `--retry` starts a new Fractal attempt;
+`./forge fractal resume RUN_ID` continues preserved execution and pipeline checkpoints.
 
 ```bash
 RUN="$(mktemp -d /tmp/forge-XXXXXX)"
@@ -723,12 +888,12 @@ quietly.
 ### `scripts/forge-parallel.sh`
 
 Decomposed runs: many dwarves in isolated worktrees, per-task QA, only passing work merged.
-bash 3.2 compatible, because that's what `/bin/bash` is on macOS — hence `xargs -P` for
-concurrency rather than `wait -n`, and no associative arrays anywhere.
+Bash 3.2 entrypoints use a Python standard-library coordinator to schedule eligible tasks.
 
 ```
 forge-parallel.sh plan      <plan-dir> --repo <dir> [routing flags] [--planner <spec>] [--no-memory]
 forge-parallel.sh run       <plan-dir> [--max-parallel N] [--yolo-dwarf] [--yolo-qa] [--dry-run]
+                                     [--fractal | --no-fractal] [--fractal-<limit> <n>]
 forge-parallel.sh retry     <plan-dir> <task-id> [--dwarf <spec>]
 forge-parallel.sh integrate <plan-dir> --approved
 ```
@@ -761,6 +926,9 @@ bash scripts/forge-parallel.sh integrate "$PLAN" --approved
 ```
 
 `integrate` refuses without `--approved`, and refuses on a dirty working tree.
+For Fractal execution, pass tier pools to `plan` and backend/limit flags to `run`.
+`--max-parallel` limits task pipelines; the shared `--fractal-concurrency` limit includes
+all their child invocations and QA. See [decomposed Fractal execution](references/decompose.md#fractal-within-decomposed-tasks).
 
 #### Retrying a failed task
 
@@ -794,6 +962,11 @@ Run `run` again to skip MERGED tasks, merge saved PASS results after fingerprint
 and dispatch eligible pending tasks. Failed and interrupted tasks need an explicit `retry`.
 Their worktrees and pinned baselines remain available. Concurrent run/retry/integrate
 operations for the same plan are excluded by an advisory lock.
+
+For a Fractal-backed run, use `./forge fractal resume RUN_ID` to recover recorded execution
+and pipeline checkpoints. A task/subtree selector resumes only that execution scope.
+Explicit `retry` retains the backend and frozen pools; a replacement dwarf must already
+belong to that pool. See [recovery](references/fractal.md#limits-and-lifecycle).
 
 #### Scope drift
 
@@ -938,6 +1111,28 @@ Adding a model is one line in this file. Nothing else needs to change.
 
 ## Run artifacts
 
+Fractal adds a managed workspace alongside the runner artifacts described here:
+
+```text
+${XDG_STATE_HOME:-$HOME/.local/state}/forge/fractal/
+  runtime/                       isolated pinned Fractal and wiki environment
+  provenance.json                installed versions and source checksum
+  installs/                      installation attempts and diagnostics
+  runs/<run-id>/run.json          effective routing, limits and runner binding
+  runs/<run-id>/controls/         requested controls and observed results
+  runs/<run-id>/tasks/<task-id>/
+    request.json / state.json     task request and execution checkpoint
+    initialization.json         control repository and Fractal ledger provenance
+    control/                     Fractal metadata, separate from product changes
+    nodes/<node-id>/product/      isolated product candidate
+    nodes/<node-id>/steps/        fresh dispatcher attempts and raw logs
+    outcome.json                 captured Forge acceptance and verification
+```
+
+The original solo/plan directory stores `fractal-selection.json`; decomposed plans also
+store `fractal-routing.json`. Prefer `./forge fractal runs`, `tree`, `logs` and `report`
+to direct ledger access. Inspection and stop never delete managed work.
+
 Each stage writes into the run directory, which lives **outside** the repo — anything forge
 writes inside the working tree would show up in the dwarf's own diff and land in front of qa
 as if the dwarf had written it.
@@ -1041,6 +1236,14 @@ pushed, so a temp root that gets cleaned takes the only copy of that work with i
 | memory stays empty | nothing durable was learned — the common, correct case. The ledger still has a row per dispatch |
 | a wrong fact keeps reappearing | `memory.md` is rebuilt from the ledger; delete the ledger rows, not the memory line |
 | dwarves build incompatible interfaces | the seam was never agreed — plan the approach, or use `--planner` |
+| Fractal was installed but a new unattended run uses ordinary execution | installation never activates it; pass `--fractal` explicitly |
+| `Fractal selected but unavailable` | run `./forge fractal doctor`, then the suggested managed install; resume retains the selected backend |
+| existing run rejects a new backend, pool or limit | selection and bounds are recorded; create a new run directory for changed settings |
+| Fractal reports completion but Forge has not accepted the work | inspect QA, verdict and verification; execution completion does not establish acceptance |
+| Fractal import stops with `source_drift` | the source changed after its snapshot; preserve both versions and inspect the candidate instead of forcing import |
+| Fractal work was paused or its coordinator exited | inspect `status` and `logs`, then use explicit `resume RUN_ID`; retry starts a new attempt |
+| browser dashboard closed while work is running | execution is independent; reopen with `./forge fractal open RUN_ID` |
+| costs are unknown or a dollar cap is rejected | the bridge only reports available usage; v1 cannot enforce a spending cap |
 
 For per-harness invocation details, effort ladders and known CLI failure modes, see
 [`references/harnesses.md`](references/harnesses.md). For decomposition mechanics, see
@@ -1056,15 +1259,22 @@ forge/
 ├── SKILL.md                     the skill itself — what the orchestrating model reads
 ├── registry.tsv                 alias → (harness, model, effort). Add a row to teach forge a model
 ├── README.md                    this file
+├── forge                        repository-local Fractal management launcher
 ├── scripts/
 │   ├── forge-dispatch.sh        resolve a spec → run one role on one harness
 │   ├── forge-solo.sh            the whole single-task run: dwarf → diff → qa
 │   ├── forge-parallel.sh        plan / run / retry / integrate for decomposed runs
 │   ├── forge-memory.sh          inject / note / record / spend project memory
+│   ├── forge-fractal.py         Fractal CLI and internal adapter entrypoint
+│   ├── forge-fractal-options.sh runner selection, limit flags and help
+│   ├── forge-fractal-dispatch.sh bridge entrypoint for existing pipelines
+│   ├── forge-install-fractal.sh isolated optional runtime installer
+│   ├── forge_fractal/           nested execution, recovery, inspection and dashboard
 │   └── forge-install.sh         install into all five harnesses
 └── references/
     ├── harnesses.md             per-harness invocation, ladders, failure modes
     ├── decompose.md             tasks.tsv schema, difficulty criteria, wave algorithm
+    ├── fractal.md               opt-in backend, limits, recovery and observability
     └── memory.md                FORGE_LEARNING grammar, promotion and pruning rules
 ```
 

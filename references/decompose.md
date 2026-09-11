@@ -11,6 +11,7 @@ run leaves branches behind.
 - [The two axes: decompose-level and difficulty](#the-two-axes-decompose-level-and-difficulty)
 - [tasks.tsv](#taskstsv)
 - [Routing](#routing)
+- [Fractal within decomposed tasks](#fractal-within-decomposed-tasks)
 - [Waves and disjointness](#waves-and-disjointness)
 - [The capsule](#the-capsule)
 - [Planning](#planning)
@@ -116,6 +117,42 @@ outright. Forge does not invent a model when the user has not said which one sho
 their quota.
 
 QA has no tier rules by default and falls back to `opus`, matching single-task forge.
+
+## Fractal within decomposed tasks
+
+Select optional Fractal execution on `run`; planning the task table does not activate it.
+`--decompose-level` defines the top-level Forge tasks and approval table. Each such task
+can then use a Fractal implementation node with bounded children inside its declared `files`.
+Each top-level task still returns its combined candidate to Forge's independent QA and
+existing integration checks. Child completion never marks the Forge task accepted.
+
+```bash
+# With tasks.tsv, goal.txt and per-task prompts already prepared:
+bash <skill_dir>/scripts/forge-parallel.sh plan "$PLAN" --repo "$REPO" \
+  --dwarf sol:high --dwarf-low luna:medium --dwarf-high sol:xhigh,terra:xhigh --qa opus
+
+# Preview the selected backend, pools, bounds and workspace without provider calls.
+bash <skill_dir>/scripts/forge-parallel.sh run "$PLAN" --fractal --dry-run
+
+# After approval of the task/model table:
+bash <skill_dir>/scripts/forge-parallel.sh run "$PLAN" --fractal \
+  --max-parallel 3 --fractal-concurrency 3 --fractal-depth 2
+```
+
+`plan` saves tier pools in `fractal-routing.json`. The first enabled execution freezes
+eligible specs, canonical resolutions and limits with the run and preflights every
+eligible model/harness. Children route by difficulty, then the configured general dwarf,
+then their parent's dwarf. A retry cannot introduce a model outside that frozen pool.
+
+`--max-parallel` bounds top-level task pipelines. `--fractal-concurrency` separately bounds
+all active model invocations across their trees, including QA. Parents release their model
+slot while waiting; nesting cannot multiply that limit. Child dependencies must be satisfied,
+ownership must remain inside the parent, and overlapping children are serialized.
+
+The choice is persisted in `fractal-selection.json`. Explicit `--fractal` or `--no-fractal`
+skips the once-per-interactive-run question; unattended execution without either is off.
+Installation never activates the backend. The [Fractal reference](fractal.md) documents
+all limits, prerequisites and the child-request protocol.
 
 ## Waves and disjointness
 
@@ -231,12 +268,20 @@ Two details that are load-bearing rather than incidental:
 `retry` is a command a human types. Forge does not loop a dwarf against its own reviewer on
 its own initiative, and that rule is unchanged.
 
-**Resuming** needs no special command: run `run` again. Tasks already `MERGED` are skipped. A saved PASS is fingerprint-checked and merged without
+**Ordinary execution resume:** run `run` again. Tasks already `MERGED` are skipped. A saved PASS is fingerprint-checked and merged without
 redispatch. PENDING and newly unblocked tasks run when eligible. Failed or interrupted tasks
 require an explicit `retry`; `run` never silently pays for them again. Worktrees and pinned
 baselines are retained. A per-plan advisory lock excludes concurrent run/retry/integrate
 operations. Interrupting the coordinator terminates its active process groups and preserves
 their work as INTERRUPTED.
+
+**Fractal resume:** discover the managed ID with `<skill_dir>/forge fractal runs --repo
+"$REPO" --json`, then use `<skill_dir>/forge fractal resume RUN_ID`. Run-level resume
+recovers execution and the recorded Forge pipeline, retaining accepted stages and pinned
+baselines. A control scoped with `--task` or `--task ... --node ...` only resumes that
+execution scope; it does not relaunch the full pipeline. Use `retry "$PLAN" TASK_ID` for
+an explicitly requested new attempt, with the existing backend, bounds and eligible pool.
+Pause, stop and inspection preserve both the work and diagnostics.
 
 ## Branches, worktrees, cleanup
 
@@ -248,6 +293,13 @@ their work as INTERRUPTED.
 forge/<run-id>/<task-id>                        task branch
 forge/<run-id>                                  integration branch
 ```
+
+Fractal also keeps control repositories, isolated product candidates and per-step logs
+under `${XDG_STATE_HOME:-$HOME/.local/state}/forge/fractal/runs/<managed-run-id>/tasks/`.
+These are separate from the Forge task worktrees listed above. Candidates begin at each
+task's pinned baseline and return to its ordinary review/integration pipeline; Fractal
+initialization metadata stays outside the product diff. Managed run/task IDs are shown by
+`fractal runs` and `fractal tree`, and differ from the human-readable `tasks.tsv` IDs.
 
 ### Worktree setup
 
