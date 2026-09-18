@@ -395,6 +395,40 @@ to separate vague prompts from clear ones. That was a bad label, not a bad rubri
 vagueness is not the same property as needing a sibling task to land first. Against the
 right labels it separates with a 0.27 margin.
 
+## Post-review annotation
+
+When a reviewer returns `FORGE_VERDICT: FAIL`, Jev reads the review against the diff and
+says whether the failure looks sound. **It cannot change the verdict, and no caller is
+given a way to.** The status file is written before this runs and nothing here rewrites
+it; a test asserts that structurally, by reading the shipped block and failing if a
+status write ever appears inside it.
+
+That restraint is the point. Forge's second invariant is reviewer independence, and a
+model that could talk a reviewer out of a FAIL would produce confident PASSes on code
+nobody checked — worse than having no reviewer. The asymmetry runs the other way too:
+nothing ever annotates a PASS into looking suspect, because a PASS is the outcome that
+gets merged and its reviewer's judgement is left alone.
+
+Two questions, one request:
+
+| | |
+|---|---|
+| **correctness** | does the review name a real bug, or only preferences about how the code is written? The QA prompt already says "style nits are not failures" |
+| **citation** | do the files, lines and quoted code the review cites actually appear in this diff? |
+
+Measured on three hand-written reviews against one diff:
+
+| review | correctness | citation | flagged |
+|---|---|---|---|
+| style nits only ("`i` should be `item`") | 0.21 | 0.80 | yes — style |
+| a real bug (discount below zero, with a triggering input) | 0.96 | 0.88 | no |
+| cites `src/payment.py`, absent from the diff | 0.45 | 0.02 | yes — citation |
+
+A low citation score suppresses the correctness reason rather than printing both. The
+hallucinated review scored 0.45 on correctness and would have been reported as "style
+preferences", which describes the wrong problem: nothing can be said about the
+correctness of code that is not there.
+
 ## Status
 
 Phase 0 added the configuration surface. Phase 1a added `backtest`, which scores the
@@ -411,10 +445,9 @@ properly needs a disposable export with the dependency environment rebuilt, whos
 may exceed the saving — a trade that needs `backtest` numbers to settle.
 
 Routing is wired but shadow-first: it can advise today and cannot act until a repo
-has been calibrated. Three of Phase 4's six gates are wired (prompt adequacy,
-independent verifiability, files drift). Semantic wave coupling and the two
-post-review QA gates — finding triage and effort sizing — are not, and neither is
-memory curation.
+has been calibrated. Four of Phase 4's six gates are wired: prompt adequacy,
+independent verifiability, files drift, and post-review finding triage. Semantic
+wave coupling and QA effort sizing are not, and neither is memory curation.
 
 Verification is calibrated against real judgments (see above). Routing is not: its
 `routing_act` of 0.85 rests on six hand-labelled tasks, which is a smoke test and not a

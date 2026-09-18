@@ -393,3 +393,64 @@ def independently_verifiable() -> dict:
         ),
     )
 
+# --- post-review annotation (Phase 4, items 5 and 6) -------------------------------
+#
+# These read a FAIL and say whether it looks sound. They NEVER overturn it. Forge's
+# second invariant is reviewer independence: a model that can talk another model out of
+# a FAIL is worth less than no reviewer at all, because it produces confident PASSes on
+# code nobody checked. So the only output here is an annotation a human reads.
+
+
+def failure_is_correctness() -> dict:
+    """Does this FAIL rest on a correctness bug, or on taste?
+
+    The QA prompt is explicit that "style nits are not failures", and a reviewer that
+    fails a diff over naming or structure costs a whole retry cycle for nothing.
+    """
+    instructions = (
+        'A reviewer failed a code change. Given the review text and the diff it '
+        'reviewed (in state), does the review identify at least one genuine correctness '
+        'problem -- behaviour that is wrong, an edge case that breaks, a requirement not '
+        'met -- as opposed to only preferences about how the code is written?'
+    )
+    return Noul(
+        instructions,
+        true=(
+            'At least one finding describes something that would produce a wrong result, '
+            'a crash, data loss, a security hole, or a plain failure to do what the task '
+            'asked. It would still be a bug if the code were formatted perfectly.'
+        ),
+        false=(
+            'Every finding is about style, naming, structure, duplication, comments, '
+            'idiom, or a preference for a different approach that would work no better. '
+            'A reader could apply none of them and the code would still behave correctly.'
+        ),
+    )
+
+
+def findings_cite_the_diff() -> dict:
+    """Citation check: is the review talking about code that is actually there?
+
+    A review that cites a line the diff does not contain is describing something else --
+    a stale read, a hallucinated hunk, or the wrong file -- and its verdict is worth
+    nothing regardless of how confident it sounds.
+    """
+    instructions = (
+        'Given the review text and the diff it reviewed (in state), do the specific '
+        'places the review cites -- files, line numbers, function names, quoted code -- '
+        'actually appear in that diff, saying what the review claims they say?'
+    )
+    return Noul(
+        instructions,
+        true=(
+            'The code the review quotes or points at is present in the diff and matches '
+            'the description given of it. Minor paraphrasing or an off-by-a-line '
+            'reference is fine as long as the cited code is really there.'
+        ),
+        false=(
+            'The review cites a file, function, or line that the diff does not contain, '
+            'or quotes code that does not appear in it, or describes the cited code as '
+            'doing something it plainly does not do.'
+        ),
+    )
+

@@ -71,6 +71,12 @@ def parser() -> argparse.ArgumentParser:
     score_plan.add_argument('--repo', required=True)
     score_plan.add_argument('--json', action='store_true')
 
+    review_triage = sub.add_parser('review-triage')
+    review_triage.add_argument('--review', required=True)
+    review_triage.add_argument('--diff', required=True)
+    review_triage.add_argument('--run-dir', default=None)
+    review_triage.add_argument('--json', action='store_true')
+
     verify_triage = sub.add_parser('verify-triage')
     verify_triage.add_argument('--repo', required=True)
     # dest is deliberately not 'command': the top-level subparsers already own that dest
@@ -471,6 +477,30 @@ def cmd_score_plan(args) -> int:
     return 0
 
 
+def cmd_review_triage(args) -> int:
+    """Annotate a FAIL. Exit 0 only when the review looks SUSPECT.
+
+    The exit code carries the whole signal so the caller stays a one-liner, and it is
+    deliberately the narrow case that exits 0: anything else -- a sound review, no key,
+    no judgment, a crash -- leaves the verdict to speak for itself.
+    """
+    config = load_config()
+    if not enabled('gates', config=config) or api_key(config) is None:
+        return 3
+    from . import review
+
+    result = review.annotate_failure(review_path=args.review, diff_path=args.diff,
+                                     run_dir=args.run_dir, config=config)
+    if result is None:
+        return 3
+    if args.json:
+        print(json.dumps(result, indent=2, sort_keys=True))
+    elif result['suspect']:
+        for reason in result['reasons']:
+            print(reason)
+    return 0 if result['suspect'] else 1
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     try:
@@ -479,6 +509,7 @@ def main(argv: list[str] | None = None) -> int:
                     status=cmd_status, doctor=cmd_doctor, backtest=cmd_backtest,
                     calibrate=cmd_calibrate,
                     **{'score-plan': cmd_score_plan,
+                       'review-triage': cmd_review_triage,
                        'verify-discover': cmd_verify_discover,
                        'verify-triage': cmd_verify_triage})[args.command](args)
     except SystemExit as exit:

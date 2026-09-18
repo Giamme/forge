@@ -711,6 +711,39 @@ do_task() (
     # pass would merge unreviewed code, so it is fail-safe by construction.
     *)    echo UNKNOWN > "$tdir/status" ;;
   esac
+
+  # Annotate a FAIL that looks unsound. Note what this does NOT do: the status file is
+  # already written above and nothing below rewrites it. A model that could talk a
+  # reviewer out of a FAIL would produce confident PASSes on code nobody checked, which
+  # is worth less than having no reviewer at all. Only a human acts on this line.
+  if [ "$verdict" = FAIL ]; then
+    # do_task is a subshell and does not inherit do_plan's copy, so source it here.
+    # A missing or broken options file leaves jev_loaded=0 and this block does nothing.
+    local jev_loaded=0 jev_rc
+    if [ -f "$SKILL_DIR/scripts/forge-jev-options.sh" ]; then
+      source "$SKILL_DIR/scripts/forge-jev-options.sh" 2>/dev/null && jev_loaded=1
+    fi
+    if [ "$jev_loaded" = 1 ] && forge_jev_active gates; then
+      # One request, not two: asking the same question twice costs twice and can come
+      # back with two different answers, and the record must match what was printed.
+      python3 "$SKILL_DIR/scripts/forge-jev.py" review-triage --review "$tdir/qa.last" \
+          --diff "$tdir/changes.diff" --run-dir "$tdir" --json > "$tdir/qa.jev.json" 2>/dev/null
+      jev_rc=$?
+      if [ "$jev_rc" -eq 0 ]; then
+        note "$id: FAIL stands, but jev flags the review — $(python3 -c '
+import json, sys
+try:
+    data = json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit(0)
+print("; ".join(data.get("reasons") or []))
+' "$tdir/qa.jev.json" 2>/dev/null)"
+      else
+        # Exit 1 means the review looked sound; there is nothing to say and no file to keep.
+        rm -f "$tdir/qa.jev.json" 2>/dev/null || true
+      fi
+    fi
+  fi
   return 0
 )
 
