@@ -1,0 +1,218 @@
+"""Small CLI; every subcommand must work with no key configured and no network."""
+from __future__ import annotations
+
+import argparse
+import getpass
+import json
+import os
+from pathlib import Path
+import sys
+import tempfile
+import urllib.parse
+
+from . import (CAPABILITIES, api_key, config_path, enabled, load_config,
+              redact, save_config)
+from . import client, questions
+
+PRIVACY_STATEMENT = """\
+Jev (TypeSafe System One) sends task prompts, diff hunks, file excerpts, test names,
+and memory entries to an external API (api.typesafe.ai) to get back structured
+judgments. Anything under .forge/ or .git is never sent. Your API key is stored at
+{path} with file mode 0600, and is never written into a run directory, a prompt, or a
+log.
+"""
+
+_CAP_ENV = dict(routing='FORGE_JEV_ROUTING', tests='FORGE_JEV_TESTS',
+                gates='FORGE_JEV_GATES', memory='FORGE_JEV_MEMORY')
+
+
+def parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(description='Opt-in TypeSafe/Jev integration for Forge')
+    sub = p.add_subparsers(dest='command', required=True)
+
+    setup = sub.add_parser('setup')
+    setup.add_argument('--key')
+    setup.add_argument('--yes', action='store_true')
+
+    for name in ('enable', 'disable'):
+        command = sub.add_parser(name)
+        command.add_argument('--capability', choices=CAPABILITIES, action='append', default=[])
+
+    status = sub.add_parser('status')
+    status.add_argument('--json', action='store_true')
+
+    doctor = sub.add_parser('doctor')
+    doctor.add_argument('--live', action='store_true')
+    doctor.add_argument('--json', action='store_true')
+    return p
+
+
+def _read_key_from_tty() -> str | None:
+    # Probe /dev/tty first: getpass falls back to stdin with a warning when it cannot
+    # open the terminal itself, and a background worker must never block there.
+    try:
+        tty = open('/dev/tty', 'r')
+    except OSError:
+        return None
+    try:
+        if not _isatty(tty):
+            return None
+    finally:
+        tty.close()
+    return getpass.getpass('TypeSafe API key: ', stream=sys.stderr)
+
+
+def _isatty(tty) -> bool:
+    try:
+        return os.isatty(tty.fileno())
+    except OSError:
+        return False
+
+
+def _probe(config: dict) -> tuple[bool, str | None]:
+    with tempfile.TemporaryDirectory() as run_dir:
+        result = client.ask(questions.PROBE_STATE, questions.PROBE, site='setup-probe',
+                            run_dir=run_dir, config=config, deadline_s=config['deadline_s'])
+        if result is not None:
+            return True, None
+        log = Path(run_dir) / 'jev.jsonl'
+        reason = None
+        if log.exists():
+            lines = log.read_text().splitlines()
+            if lines:
+                reason = json.loads(lines[-1]).get('reason')
+        return False, reason
+
+
+def cmd_setup(args) -> int:
+    path = config_path()
+    print(PRIVACY_STATEMENT.format(path=path))
+    key = args.key
+    if not key:
+        key = _read_key_from_tty()
+    if not key:
+        print('No key given and no controlling terminal to prompt on. Run again with --key.')
+        return 0
+    config = load_config()
+    config['key'] = key
+    if not os.environ.get('FORGE_JEV_FIXTURES'):
+        ok, reason = _probe(config)
+        if not ok:
+            if reason and reason.startswith('http-401'):
+                print('forge jev: TypeSafe rejected the key.', file=sys.stderr)
+            else:
+                print('forge jev: could not validate the key (' + redact(str(reason), key) + ')', file=sys.stderr)
+            return 3
+    config['enabled'] = True
+    save_config(config)
+    print('Jev enabled. Capabilities: ' + ', '.join(c for c in CAPABILITIES if config['capabilities'].get(c, True)))
+    return 0
+
+
+def cmd_enable(args) -> int:
+    config = load_config()
+    if args.capability:
+        for name in args.capability:
+            config['capabilities'][name] = True
+    else:
+        config['enabled'] = True
+    save_config(config)
+    return 0
+
+
+def cmd_disable(args) -> int:
+    config = load_config()
+    if args.capability:
+        for name in args.capability:
+            config['capabilities'][name] = False
+    else:
+        config['enabled'] = False
+    save_config(config)
+    return 0
+
+
+def cmd_status(args) -> int:
+    config = load_config()
+    overrides = {var: os.environ[var] for var in ('FORGE_JEV', 'FORGE_JEV_ACT', 'FORGE_JEV_SHADOW',
+                *_CAP_ENV.values()) if var in os.environ}
+    data = dict(config_path=str(config_path()), key_present=api_key(config) is not None,
+               enabled=enabled(config=config),
+               capabilities={c: enabled(c, config=config) for c in CAPABILITIES},
+               thresholds=config['thresholds'], env_overrides=overrides)
+    if args.json:
+        print(json.dumps(data, indent=2))
+    else:
+        print('config: ' + data['config_path'])
+        print('key present: ' + str(data['key_present']))
+        print('enabled: ' + str(data['enabled']))
+        for name, state in data['capabilities'].items():
+            print(f'  {name}: {state}')
+        print('thresholds: ' + json.dumps(data['thresholds']))
+        if overrides:
+            print('env overrides: ' + ', '.join(f'{k}={v}' for k, v in overrides.items()))
+    return 0
+
+
+def cmd_doctor(args) -> int:
+    checks = []
+    config = load_config()
+    path = config_path()
+    if path.exists():
+        try:
+            json.loads(path.read_text())
+            checks.append(('config readable', True, None))
+        except (OSError, ValueError) as error:
+            checks.append(('config readable', False, str(error)))
+        mode = path.stat().st_mode & 0o777
+        checks.append(('config mode 0600', mode == 0o600, None if mode == 0o600 else oct(mode)))
+    else:
+        checks.append(('config readable', True, 'no config file; using defaults'))
+    key = api_key(config)
+    checks.append(('key present', key is not None, None))
+    parsed = urllib.parse.urlparse(config['endpoint'])
+    checks.append(('endpoint parseable', bool(parsed.scheme and parsed.netloc), None))
+    checks.append(('urllib importable', True, None))
+
+    # The 0600 check is a warning, not a blocker: a loose mode is worth fixing but
+    # doesn't itself prevent Jev from working.
+    ready = key is not None and all(ok for name, ok, _ in checks if name != 'config mode 0600')
+
+    if args.live:
+        if key is None:
+            checks.append(('live probe', False, 'no key configured'))
+            ready = False
+        else:
+            ok, reason = _probe(config)
+            checks.append(('live probe', ok, reason))
+            ready = ready and ok
+
+    data = dict(ready=ready, checks=[dict(name=n, ok=o, detail=redact(str(d), key or '') if d else None)
+                                     for n, o, d in checks])
+    if args.json:
+        print(json.dumps(data, indent=2))
+    else:
+        for check in data['checks']:
+            mark = 'ok' if check['ok'] else 'FAIL'
+            line = f"[{mark}] {check['name']}"
+            if check['detail']:
+                line += ': ' + check['detail']
+            print(line)
+        print('ready' if ready else 'not ready')
+    return 0 if ready else 3
+
+
+def main(argv: list[str] | None = None) -> int:
+    argv = sys.argv[1:] if argv is None else argv
+    try:
+        args = parser().parse_args(argv)
+        return dict(setup=cmd_setup, enable=cmd_enable, disable=cmd_disable,
+                    status=cmd_status, doctor=cmd_doctor)[args.command](args)
+    except SystemExit as exit:
+        # argparse exits the process on a usage error; return the code instead so the
+        # shim owns exiting and main() stays callable from a test.
+        return int(exit.code or 0)
+    except KeyboardInterrupt:
+        return 130
+    except (OSError, ValueError, RuntimeError, KeyError) as error:
+        print('forge jev: ' + redact(str(error)), file=sys.stderr)
+        return 3

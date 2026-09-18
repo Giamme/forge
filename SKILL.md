@@ -1,7 +1,7 @@
 ---
 name: forge
 description: Dispatch implementation and independent diff review to user-selected models through local agent CLIs. Use for /forge or explicit requests to delegate coding or review; explanation-only questions do not authorize dispatch.
-argument-hint: '"<goal>" --dwarf <alias>[:effort[:harness]] [--qa <alias>] [--planner <alias>] [--yolo-dwarf] [--yolo-qa] [--decompose-level low|medium|high] [--fractal|--no-fractal] [--no-memory] [--no-ripwire] [--timeout <seconds>]'
+argument-hint: '"<goal>" --dwarf <alias>[:effort[:harness]] [--qa <alias>] [--planner <alias>] [--yolo-dwarf] [--yolo-qa] [--decompose-level low|medium|high] [--fractal|--no-fractal] [--jev|--no-jev] [--jev-act] [--jev-shadow] [--no-memory] [--no-ripwire] [--timeout <seconds>]'
 allowed-tools: [Bash, Read]
 ---
 
@@ -29,6 +29,9 @@ For explanation requests, explain the workflow without spending model quota.
   separate authorization and `integrate --approved`. Never push automatically.
 - Show the decomposed task/model table and wait for approval before dispatch. Retry only
   when requested; preserve failed task branches and worktrees.
+- Jev is optional, off unless configured and enabled, and advisory unless `--jev-act`.
+  It never selects a model the user did not authorize and never substitutes for QA
+  acceptance or repository verification. Read [Jev](references/jev.md) when selected.
 
 ## Common workflow
 
@@ -71,6 +74,8 @@ Runners offer installation once before agents; dispatch never prompts. See
   recovery, managed run commands, read-only dashboard and portable reports.
 - [Memory](references/memory.md): `.forge/` learning and spend records; `--no-memory` disables
   them. Memory is written to the user's repository but excluded from implementation diffs.
+- [Jev](references/jev.md): optional TypeSafe System One judgments for routing, test
+  selection and memory curation; off by default.
 
 The common invocation is `/forge "<goal>" --dwarf <spec> [--qa <spec>]`. Advanced flags and
 commands live with their mode reference. Use [offline tests and evaluation cases](tests/README.md)

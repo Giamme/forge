@@ -1,9 +1,18 @@
 #!/usr/bin/env bash
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-if [ "${1:-}" != fractal ]; then
-  echo 'usage: forge fractal <install|doctor|runs|status|tree|activity|logs|costs|messages|config|pause|resume|stop|open|report>' >&2
-  exit 2
-fi
-shift
-exec python3 "$ROOT/scripts/forge-fractal.py" "$@"
+case "${1:-}" in
+  fractal)
+    shift
+    exec python3 "$ROOT/scripts/forge-fractal.py" "$@"
+    ;;
+  jev)
+    shift
+    exec python3 "$ROOT/scripts/forge-jev.py" "$@"
+    ;;
+  *)
+    echo 'usage: forge fractal <install|doctor|runs|status|tree|activity|logs|costs|messages|config|pause|resume|stop|open|report>' >&2
+    echo 'usage: forge jev <setup|status|doctor|enable|disable>' >&2
+    exit 2
+    ;;
+esac
