@@ -214,15 +214,46 @@ def _repo_files(repo: Path, limit: int = 200) -> list[str]:
     return entries[:limit]
 
 
-def _memory_verify_lines(repo: Path) -> list[str]:
-    path = repo / '.forge' / 'memory.md'
-    if not path.is_file():
+# The headings forge-memory.sh:93 renders. Both readers below looked for the LEDGER row
+# format instead -- `verify |` and `trap |` -- which is what ledger.tsv holds, not what
+# `rebuild` writes into memory.md. No line in a rendered memory.md has ever contained
+# either, so both lists were empty for every repo, always, while jev.md documented them
+# as working. Verification discovery never saw a recorded verify command, and
+# known_traps never corroborated anything -- which made the flake re-run unreachable,
+# since its third condition is a trap sharing a distinctive token with the failure.
+_MEMORY_SECTIONS = {'verify': '## Verify', 'trap': '## Known traps',
+                    'finding': '## Recurring QA findings'}
+
+
+def _memory_facts(repo: Path, category: str) -> list[str]:
+    """The `- ` bullets under one heading of a rendered .forge/memory.md."""
+    heading = _MEMORY_SECTIONS.get(category)
+    path = Path(repo) / '.forge' / 'memory.md'
+    if not heading or not path.is_file():
         return []
     try:
         lines = path.read_text(errors='replace').splitlines()
     except OSError:
         return []
-    return [line.strip() for line in lines if 'verify |' in line]
+    facts, inside = [], False
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith('## '):
+            inside = stripped == heading
+            continue
+        if inside and stripped.startswith('- '):
+            fact = stripped[2:].strip()
+            # `rebuild` prefixes a recurring finding with its count ("3x: ..."), which is
+            # bookkeeping about the fact rather than part of it.
+            if fact[:1].isdigit() and 'x: ' in fact[:6]:
+                fact = fact.split('x: ', 1)[1].strip()
+            if fact:
+                facts.append(fact)
+    return facts
+
+
+def _memory_verify_lines(repo: Path) -> list[str]:
+    return _memory_facts(repo, 'verify')
 
 
 def known_traps(repo) -> list[str]:
@@ -235,11 +266,46 @@ def known_traps(repo) -> list[str]:
         lines = path.read_text(errors='replace').splitlines()
     except OSError:
         return []
-    traps = []
-    for line in lines:
-        if 'trap |' in line:
-            traps.append(line.split('trap |', 1)[1].strip())
-    return traps
+    return _memory_facts(path.parent.parent, 'trap')
+
+
+# Enough of an evidence file to tell a test command from a build one, and no more: the
+# request already carries one Choice and two Nouls per candidate.
+EVIDENCE_CHARS = 400
+
+
+def _evidence_excerpt(candidate: dict) -> str:
+    """What the command actually runs, read off the file that produced the candidate.
+
+    Without this the model is handed the string 'make test' plus the repo's top-level
+    file list and asked whether it runs the suite. It cannot know: the answer is inside
+    the Makefile. Measured on a repo with a textbook `test:` target, discovery picked
+    `make test` at 0.58 while leaving 0.40 on `none`, for a Choice confidence of 0.37
+    against a 0.70 gate -- so it declined, and a verifiable repo reported UNVERIFIED.
+    """
+    path = candidate.get('evidence') or ''
+    try:
+        text = Path(path).read_text(errors='replace')
+    except OSError:
+        return ''
+    command = candidate.get('command') or ''
+    # A make target's recipe is the only part of a Makefile that answers the question,
+    # and it is rarely near the top of the file.
+    if command.startswith('make ') and Path(path).name.lower().startswith('makefile'):
+        target = command.split(None, 1)[1].strip()
+        recipe, collecting = [], False
+        for line in text.splitlines():
+            if collecting:
+                if line.startswith(('\t', ' ')) or not line.strip():
+                    recipe.append(line.strip())
+                    continue
+                break
+            if ':' in line and line.split(':')[0].strip() == target:
+                collecting = True
+        joined = '\n'.join(x for x in recipe if x)
+        if joined:
+            return joined[:EVIDENCE_CHARS]
+    return text[:EVIDENCE_CHARS]
 
 
 def discover(repo, *, config=None, run_dir=None) -> dict | None:
@@ -264,7 +330,11 @@ def discover(repo, *, config=None, run_dir=None) -> dict | None:
         questions[f'runs_{i}'] = runs_tests(commands[i])
         questions[f'runtime_{i}'] = verify_runtime(commands[i])
 
-    state = dict(repo_files=_repo_files(repo_path), candidates=commands,
+    # The candidates carry where they came from and what they run. Sending only the
+    # command strings threw away the single thing that answers the question being asked.
+    described = [dict(command=c['command'], source=c.get('source', ''),
+                      runs=_evidence_excerpt(c)) for c in cand]
+    state = dict(repo_files=_repo_files(repo_path), candidates=described,
                 memory_verify=_memory_verify_lines(repo_path))
     result = ask(state, questions, site='jev-verify-discover', run_dir=run_dir, config=config)
     if result is None:

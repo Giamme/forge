@@ -336,7 +336,11 @@ class DiscoverGatingTests(JevVerifyTestCase):
         picked = commands[0]
 
         def fake_ask(state, questions, **kwargs):
-            self.assertEqual(state['candidates'], commands)
+            # Dicts, not bare strings: each carries where it came from and an excerpt
+            # of what it runs. Sending only the command names threw away the one thing
+            # that answers the question, and a verifiable repo reported UNVERIFIED.
+            self.assertEqual([c['command'] for c in state['candidates']], commands)
+            self.assertTrue(all('runs' in c for c in state['candidates']))
             answers = {'choice': dict(type='choice', choice=picked, confidence=0.9)}
             for qid, q in questions.items():
                 if qid.startswith('runs_'):
@@ -418,8 +422,12 @@ class TriageTests(JevVerifyTestCase):
 
     def test_known_traps_reads_memory_md(self):
         (self.repo / '.forge').mkdir()
+        # The rendered file, as forge-memory.sh `rebuild` writes it. This fixture used
+        # to hold a raw FORGE_LEARNING line, which is a model's reply format, not this
+        # file's -- so it asserted that the parser read something memory.md never holds.
         (self.repo / '.forge' / 'memory.md').write_text(
-            'FORGE_LEARNING: trap | test_api.py::test_timeout is flaky under -n auto [tests/test_api.py]\n')
+            '# forge project memory\n\n## Known traps\n'
+            '- test_api.py::test_timeout is flaky under -n auto [tests/test_api.py]\n')
         traps = verify.known_traps(self.repo)
         self.assertEqual(len(traps), 1)
         self.assertIn('test_timeout', traps[0])
@@ -558,3 +566,102 @@ class TrapCorroborationTests(JevVerifyTestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class MemoryFactParsingTests(unittest.TestCase):
+    """Both readers parsed the ledger row format against the rendered memory file."""
+
+    RENDERED = """# forge project memory
+<!-- Maintained by forge. -->
+
+## Verify
+- `bash scripts/check.sh` runs compileall then unittest discover [scripts/check.sh]
+
+## Known traps
+- `tests/test_net.py` binds a fixed port and flakes under -j [tests/test_net.py]
+- `schema.sql` is generated; hand edits are overwritten [schema.sql]
+
+## Recurring QA findings
+- 3x: money is held in cents as int; a float divide reintroduces drift [total.py]
+"""
+
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        self.repo = Path(self.dir.name)
+        (self.repo / '.forge').mkdir()
+        (self.repo / '.forge' / 'memory.md').write_text(self.RENDERED)
+
+    def test_verify_facts_are_read_from_the_rendered_file(self):
+        # The old reader looked for 'verify |', which is ledger.tsv's format. No line in
+        # a rendered memory.md has ever contained it, so this was empty for every repo.
+        facts = verify._memory_verify_lines(self.repo)
+        self.assertEqual(len(facts), 1)
+        self.assertIn('check.sh', facts[0])
+
+    def test_traps_are_read_from_the_rendered_file(self):
+        # Same bug, and worse: the flake re-run requires a corroborating trap, so an
+        # always-empty trap list made flake_act unreachable.
+        traps = verify.known_traps(str(self.repo))
+        self.assertEqual(len(traps), 2)
+        self.assertTrue(any('fixed port' in trap for trap in traps))
+
+    def test_a_section_does_not_leak_into_the_next(self):
+        self.assertNotIn('schema.sql',
+                         ' '.join(verify._memory_verify_lines(self.repo)))
+
+    def test_a_recurrence_count_is_not_part_of_the_fact(self):
+        facts = verify._memory_facts(self.repo, 'finding')
+        self.assertEqual(len(facts), 1)
+        self.assertTrue(facts[0].startswith('money is held in cents'), facts[0])
+
+    def test_a_missing_memory_file_is_empty_not_an_error(self):
+        empty = Path(self.dir.name) / 'nope'
+        self.assertEqual(verify._memory_verify_lines(empty), [])
+        self.assertEqual(verify.known_traps(str(empty)), [])
+
+
+class EvidenceExcerptTests(unittest.TestCase):
+    """The candidate said 'make test'; what it runs lives inside the Makefile."""
+
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        self.repo = Path(self.dir.name)
+
+    def _makefile(self, text):
+        path = self.repo / 'Makefile'
+        path.write_text(text)
+        return dict(command='make test', source='Makefile', evidence=str(path))
+
+    def test_a_make_target_yields_its_recipe(self):
+        cand = self._makefile('.PHONY: test lint\n\nlint:\n\truff check .\n\n'
+                              'test:\n\tpython3 -m unittest discover -s tests\n')
+        excerpt = verify._evidence_excerpt(cand)
+        self.assertIn('unittest discover', excerpt)
+        self.assertNotIn('ruff', excerpt)
+
+    def test_a_target_whose_name_is_a_prefix_of_another_is_not_matched(self):
+        cand = self._makefile('test-integration:\n\tpytest tests/integration\n\n'
+                              'test:\n\tpytest tests/unit\n')
+        self.assertIn('tests/unit', verify._evidence_excerpt(cand))
+
+    def test_a_script_yields_its_head(self):
+        path = self.repo / 'check.sh'
+        path.write_text('#!/bin/sh\npython3 -m unittest discover\n')
+        excerpt = verify._evidence_excerpt(
+            dict(command='bash check.sh', source='scripts/', evidence=str(path)))
+        self.assertIn('unittest discover', excerpt)
+
+    def test_an_unreadable_evidence_file_is_empty_not_an_error(self):
+        self.assertEqual(verify._evidence_excerpt(
+            dict(command='make test', evidence='/nonexistent/Makefile')), '')
+        self.assertEqual(verify._evidence_excerpt({}), '')
+
+    def test_the_excerpt_is_bounded(self):
+        path = self.repo / 'big.sh'
+        path.write_text('x' * 10000)
+        excerpt = verify._evidence_excerpt(
+            dict(command='bash big.sh', evidence=str(path)))
+        self.assertLessEqual(len(excerpt), verify.EVIDENCE_CHARS)
+
