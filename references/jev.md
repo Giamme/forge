@@ -429,6 +429,67 @@ hallucinated review scored 0.45 on correctness and would have been reported as "
 preferences", which describes the wrong problem: nothing can be said about the
 correctness of code that is not there.
 
+## Wave coupling
+
+`compute_waves` bounds parallelism structurally: two tasks share a wave only when their
+file sets are disjoint. Disjointness cannot see the case where task A changes an
+interface task B consumes — both diffs are clean against their own baseline, both pass
+review, and the merge is broken.
+
+One request covers every same-wave pair (capped at 60, sorted before truncation so the
+same plan always warns the same way). **Advisory only**: it never edits `tasks.tsv`,
+never adds a dep, never changes `waves.tsv`.
+
+Live check on a three-task wave — a parser task changing `parse()`'s return type, a
+validator consuming it, and a README typo fix — flagged exactly one pair of the three at
+0.78 and left the docs task alone.
+
+## Memory curation
+
+Guarded so `--no-memory`, `FORGE_MEMORY=off` and a disabled capability each yield today's
+exact behaviour, verified against a pristine `HEAD` export.
+
+The asymmetry that shapes every default here: `memory.md` is injected into every dispatch
+of every future run, so a wrong fact is paid for forever, while `ledger.tsv` is
+append-only and never injected. **Nothing recorded is ever lost — only injection is
+gated.** A rejected line still lands in the ledger in full.
+
+| At `record` | |
+|---|---|
+| **quality gate** | a one-off observation is recorded but not injected |
+| **category correction** | refiles a fact under `verify`/`trap`/`finding`; `none` leaves it alone |
+| **semantic dedup** | merges a paraphrase onto the existing key |
+
+Dedup fixes a limitation `norm_key`'s own comment names: exact-match keys mean two runs
+learning the same thing in different words count as two facts, so neither reaches the
+two-distinct-runs promotion threshold for a `finding`. Live, four learnings produced:
+a rename note recorded but not injected (durable 0.1); a `trap` refiled to `verify`; a
+differently-worded restatement of it merged onto the same key; and a genuine new trap
+kept.
+
+The ledger gained an eleventh column for the injectable flag. `rebuild` treats a row
+without it as injectable, so an existing ledger keeps behaving as it did.
+
+| Elsewhere | |
+|---|---|
+| **semantic staleness** (`prune` only) | an entry whose anchor still exists but whose fact went false |
+| **injection slicing** (`inject`) | narrows the role slice to the ~8 facts bearing on this task |
+
+Staleness runs **only** on an explicit `forge-memory.sh prune`, never during `record`.
+`rebuild` runs after every dispatch, so a request per entry per dispatch would be the
+most expensive thing in a run.
+
+Its threshold is `stale_drop` at 0.25, far below `gate_warn`. Measured over six facts
+against real files: ones that had genuinely gone false scored 0.03–0.10, ones still true
+scored 0.47–0.96. `gate_warn`'s 0.60 sits inside the true range and would have deleted a
+fact the file still supports. Dropping a fact is irreversible and silent; keeping a stale
+one costs a line until someone notices.
+
+Slicing only removes lines — never adds, never reorders, and keeps the section heading
+above each kept line. The 40-line/4KB cap and the role slice remain the outer bound. Live
+on a 10-fact memory against a payments-retry task, it kept 8 and dropped the CSS build
+ordering and the parser cache — while keeping the idempotency trap.
+
 ## Status
 
 Phase 0 added the configuration surface. Phase 1a added `backtest`, which scores the
@@ -445,9 +506,10 @@ properly needs a disposable export with the dependency environment rebuilt, whos
 may exceed the saving — a trade that needs `backtest` numbers to settle.
 
 Routing is wired but shadow-first: it can advise today and cannot act until a repo
-has been calibrated. Four of Phase 4's six gates are wired: prompt adequacy,
-independent verifiability, files drift, and post-review finding triage. Semantic
-wave coupling and QA effort sizing are not, and neither is memory curation.
+has been calibrated. Phase 4 is wired except QA effort sizing, which is left out
+deliberately: it would size a review using the same kind of threshold routing
+cannot yet act on, so it would be advisory with no way to earn its way out of that.
+Phase 5 is wired in full.
 
 Verification is calibrated against real judgments (see above). Routing is not: its
 `routing_act` of 0.85 rests on six hand-labelled tasks, which is a smoke test and not a

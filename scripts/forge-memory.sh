@@ -35,6 +35,11 @@ MAX_LINES="${FORGE_MEMORY_MAX_LINES:-40}"
 MAX_BYTES="${FORGE_MEMORY_MAX_BYTES:-4096}"
 TAB="$(printf '\t')"
 
+# Derived here rather than inherited: forge-parallel.sh sets SKILL_DIR but does not
+# export it, and this script is also run directly. Getting it wrong would leave the Jev
+# curation below silently disabled instead of visibly broken.
+SKILL_DIR="${SKILL_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+
 # Writing files into someone's repo automatically needs an escape hatch that does
 # not require editing the skill.
 memory_off() { [ "${FORGE_MEMORY:-on}" = "off" ]; }
@@ -94,7 +99,10 @@ section_title() {
 # Rebuilding is idempotent and order-independent, so a crashed or concurrent run
 # cannot leave memory half-updated — it can only leave the ledger short a row.
 rebuild() { # rebuild <repo> -> prints "kept<TAB>pruned_stale<TAB>pruned_cap"
-  local repo="$1" led mem tmp cand
+  local repo="$1" led mem tmp cand jev_loaded=0
+  if [ "${FORGE_MEMORY_DEEP_PRUNE:-0}" = 1 ] && [ -f "$SKILL_DIR/scripts/forge-jev-options.sh" ]; then
+    source "$SKILL_DIR/scripts/forge-jev-options.sh" 2>/dev/null && jev_loaded=1
+  fi
   led="$(ledger_for "$repo")"; mem="$(memory_for "$repo")"
   [ -f "$led" ] || return 0
   tmp="$mem.tmp.$$"; cand="$mem.cand.$$"
@@ -104,6 +112,9 @@ rebuild() { # rebuild <repo> -> prints "kept<TAB>pruned_stale<TAB>pruned_cap"
   # same learning twice is still one occurrence.
   awk -F'\t' '
     /^#/ || NF < 9 { next }
+    # Column 11 is the injectable flag. Rows written before it existed have NF == 10
+    # and are treated as injectable, so an existing ledger keeps behaving as it did.
+    NF >= 11 && $11 == "0" { next }
     {
       ts=$1; run=$2; cat=$7; key=$8; txt=$9
       k = cat "\034" key
@@ -132,6 +143,18 @@ rebuild() { # rebuild <repo> -> prints "kept<TAB>pruned_stale<TAB>pruned_cap"
       # actively misleading. Drop it rather than wait for the cap to evict it.
       if [ -n "$anchor" ] && [ ! -e "$repo/$anchor" ]; then
         stale=$((stale+1)); continue
+      fi
+      # The anchor still exists, but the fact about it may have quietly stopped being
+      # true. Only on an explicit `prune`: rebuild runs after EVERY dispatch, and a
+      # request per entry per dispatch would be the most expensive thing in a run.
+      # An unreachable or undecided answer keeps the entry -- dropping a fact on a
+      # failed request would erode memory over time with nothing recording why.
+      if [ "${FORGE_MEMORY_DEEP_PRUNE:-0}" = 1 ] && [ -n "$anchor" ] \
+         && [ "$jev_loaded" = 1 ] && forge_jev_active memory; then
+        if python3 "$SKILL_DIR/scripts/forge-jev.py" memory-stale \
+             --text "$text" --anchor "$repo/$anchor" >/dev/null 2>&1; then
+          stale=$((stale+1)); continue
+        fi
       fi
       if [ "$sec" = finding ]; then
         printf '%s\t- %sx: %s\n' "$count" "$count" "$text" >> "$body"
@@ -208,6 +231,14 @@ drop_empty_sections() {
 # QA is not building anything, so the build command is dead weight in its prompt.
 do_inject() {
   local repo="${1:?inject needs a repo}" role="${2:?inject needs a role}"
+  shift 2 2>/dev/null || true
+  local TASKFILE=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --task) TASKFILE="${2:-}"; shift 2 ;;
+      *) shift ;;
+    esac
+  done
   memory_off && return 0
   local mem; mem="$(memory_for "$repo")"
   [ -s "$mem" ] || return 0
@@ -227,6 +258,47 @@ do_inject() {
     keep && NF { print }
   ' "$mem")"
   [ -n "$(printf '%s' "$body" | tr -d '[:space:]')" ] || return 0
+
+  # Narrow to the facts that bear on THIS task. The role slice and the 40-line/4KB cap
+  # above remain the outer bound; this only removes lines, never adds or reorders them,
+  # and any failure leaves `body` exactly as it was. Every line here is paid for on
+  # every dispatch of every run, which is what makes narrowing worth a request -- and
+  # also why the fallback has to be the full slice rather than an empty one.
+  if [ -n "$TASKFILE" ] && [ -r "$TASKFILE" ]; then
+    local jev_loaded=0
+    if [ -f "$SKILL_DIR/scripts/forge-jev-options.sh" ]; then
+      source "$SKILL_DIR/scripts/forge-jev-options.sh" 2>/dev/null && jev_loaded=1
+    fi
+    if [ "$jev_loaded" = 1 ] && forge_jev_active memory; then
+      local facts sliced
+      facts="$(printf '%s\n' "$body" | grep '^- ' || true)"
+      if [ -n "$facts" ]; then
+        local ftmp="${TMPDIR:-/tmp}/forge-mem-$$.txt"
+        printf '%s\n' "$facts" > "$ftmp"
+        local ktmp="${TMPDIR:-/tmp}/forge-mem-keep-$$.txt"
+        if python3 "$SKILL_DIR/scripts/forge-jev.py" memory-slice \
+             --task "$TASKFILE" --lines "$ftmp" > "$ktmp" 2>/dev/null && [ -s "$ktmp" ]; then
+          # Two files, not -v: awk's -v processes escapes and cannot carry a literal
+          # newline, so passing the kept lines that way silently truncated the set at the
+          # first one. Read them as a first file instead.
+          sliced="$(printf '%s\n' "$body" | awk '
+            NR == FNR { want[$0] = 1; next }
+            /^## / { header = $0; printed = 0; next }
+            /^- / { if ($0 in want) { if (!printed) { print ""; print header; printed = 1 } print $0 } next }
+            { print }
+          ' "$ktmp" -)"
+          # Only adopt a narrowed body that actually kept something. An awk that fails,
+          # or a slice that matched nothing, must leave the full slice in place -- an
+          # empty memory section is a worse outcome than an unnarrowed one.
+          if [ -n "$(printf '%s' "$sliced" | grep -c '^- ' | tr -d ' ')" ] \
+             && printf '%s' "$sliced" | grep -q '^- '; then
+            body="$sliced"
+          fi
+        fi
+        rm -f "$ftmp" "$ktmp" 2>/dev/null || true
+      fi
+    fi
+  fi
 
   echo "## What forge learned in this repo before"
   if [ "$role" = qa ]; then
@@ -290,11 +362,15 @@ do_record() {
   ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   mkdir -p "$(dir_for "$repo")"
   if [ ! -f "$led" ]; then
-    printf '# ts\trun_id\ttask\trole\tmodel\tverdict\tcategory\tkey\ttext\tduration_s\n' > "$led"
+    printf '# ts\trun_id\ttask\trole\tmodel\tverdict\tcategory\tkey\ttext\tduration_s\tinjectable\n' > "$led"
   fi
 
+  local jev_loaded=0
+  if [ -f "$SKILL_DIR/scripts/forge-jev-options.sh" ]; then
+    source "$SKILL_DIR/scripts/forge-jev-options.sh" 2>/dev/null && jev_loaded=1
+  fi
   if [ -n "$LAST" ] && [ -r "$LAST" ]; then
-    local line cat text key
+    local line cat text key inject curated jcat jinject jmatch jkey
     while IFS= read -r line; do
       cat="$(printf '%s' "$line" | sed -n 's/^[[:space:]]*FORGE_LEARNING:[[:space:]]*\([a-zA-Z]\{1,\}\)[[:space:]]*|.*/\1/p' | tr '[:upper:]' '[:lower:]')"
       text="$(printf '%s' "$line" | sed -n 's/^[[:space:]]*FORGE_LEARNING:[[:space:]]*[a-zA-Z]\{1,\}[[:space:]]*|[[:space:]]*\(.*\)/\1/p')"
@@ -303,10 +379,36 @@ do_record() {
       [ -n "$text" ] || continue
       key="$(norm_key "$(strip_anchor "$text")")"
       [ -n "$key" ] || continue
-      printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+      # Jev may refile the category, merge a paraphrase onto an existing key, and mark
+      # a one-off as not worth injecting. Every one of those is a suggestion: any
+      # failure, any missing key, any disabled capability leaves the three values below
+      # exactly as the model emitted them. The row is written either way -- the ledger
+      # is append-only and never injected, so this gates injection, never recording.
+      inject=1
+      if [ "$jev_loaded" = 1 ] && forge_jev_active memory; then
+        curated="$(python3 "$SKILL_DIR/scripts/forge-jev.py" memory-curate \
+            --repo "$repo" --category "$cat" --text "$text" 2>/dev/null)"
+        if [ $? -eq 0 ] && [ -n "$curated" ]; then
+          jcat="$(printf '%s' "$curated" | cut -f1)"
+          jinject="$(printf '%s' "$curated" | cut -f2)"
+          jmatch="$(printf '%s' "$curated" | cut -f3)"
+          case "$jcat" in verify|trap|finding) cat="$jcat" ;; esac
+          [ "$jinject" = 0 ] && inject=0
+          if [ -n "$jmatch" ]; then
+            # Re-derive the key with THIS file's norm_key rather than having Python
+            # return one: two implementations of the same normalisation would drift,
+            # and a key that disagrees by one character silently stops deduplicating.
+            # The leading "Nx: " is rebuild's recurrence marker, not part of the fact.
+            jmatch="$(printf '%s' "$jmatch" | sed 's/^[0-9]\{1,\}x: //')"
+            jkey="$(norm_key "$(strip_anchor "$jmatch")")"
+            [ -n "$jkey" ] && key="$jkey"
+          fi
+        fi
+      fi
+      printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
         "$ts" "$(sanitize "$RUN_ID")" "$(sanitize "$TASK")" "$(sanitize "$ROLE")" \
         "$(sanitize "$MODEL")" "$(sanitize "$VERDICT")" "$cat" "$key" "$text" \
-        "$(sanitize "$DURATION")" >> "$led"
+        "$(sanitize "$DURATION")" "$inject" >> "$led"
       n=$((n+1))
     done < <(grep -o 'FORGE_LEARNING:.*' "$LAST" 2>/dev/null)
   fi
@@ -404,6 +506,7 @@ case "$CMD" in
   record) do_record "$@" ;;
   show)   mem="$(memory_for "${1:?show needs a repo}")"; [ -s "$mem" ] && cat "$mem" ;;
   spend)  do_spend "$@" ;;
-  prune)  rebuild "${1:?prune needs a repo}" >/dev/null; do_inject "${1}" dwarf ;;
+  prune)  FORGE_MEMORY_DEEP_PRUNE=1 rebuild "${1:?prune needs a repo}" >/dev/null
+          do_inject "${1}" dwarf ;;
   *) die "unknown subcommand '$CMD'" ;;
 esac

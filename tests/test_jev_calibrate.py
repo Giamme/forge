@@ -335,5 +335,18 @@ class AbsoluteFloorTests(CalibrateTestCase):
         self.assertIn('floor', reason)
 
 
+class LedgerWidthTests(CalibrateTestCase):
+    def test_an_eleven_column_ledger_row_is_still_read(self):
+        """The ledger gained an `injectable` column; an exact-width check would have
+        skipped every row written after that and reported no data at all."""
+        rows = [_routing_row('r1', 't1', 'low', 0.90)]
+        self._seed_run(rows)
+        wide = _ledger_qa_row('r1', 't1', 'PASS') + ('1',)
+        self._seed_ledger([wide])
+        summary = calibrate.run(self.repo, min_sample=1)
+        self.assertEqual(summary['n_samples'], 1)
+        self.assertEqual(summary['n_skipped_ledger_rows'], 0)
+
+
 if __name__ == '__main__':
     unittest.main()

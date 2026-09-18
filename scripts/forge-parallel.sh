@@ -260,6 +260,34 @@ EOF
   mv "$tmp" "$T"
 
   compute_waves "$PLAN"
+
+  # --- jev: advisory wave coupling ------------------------------------------------
+  # Disjoint files bound parallelism structurally, but they cannot see the conflict
+  # where one task in a wave changes an interface another task in the SAME wave
+  # consumes -- both diffs are clean against their own baseline, and the merge is
+  # broken. This is advisory only: it never edits tasks.tsv, never adds a dep, and
+  # never changes waves.tsv, so it must run after compute_waves and before the table
+  # that reports the plan is printed.
+  if [ "$jev_loaded" = 1 ] && forge_jev_active gates; then
+    local jev_coupling jev_coupling_rc
+    jev_coupling="$(python3 "$SKILL_DIR/scripts/forge-jev.py" coupling \
+      --plan "$PLAN" --repo "$REPO" 2>/dev/null)"
+    jev_coupling_rc=$?
+    if [ "$jev_coupling_rc" -eq 0 ] && [ -n "$jev_coupling" ]; then
+      if [ "${FORGE_JEV_SHADOW:-}" = on ]; then
+        note "jev: found $(printf '%s\n' "$jev_coupling" | grep -c .) coupled pair(s) in shadow mode (no change)"
+      else
+        local ca cb cp
+        while IFS="$(printf '\t')" read -r ca cb cp; do
+          [ -n "$ca" ] || continue
+          note "jev: tasks '$ca' and '$cb' may conflict despite disjoint files ($cp) — consider a dep"
+        done <<EOF
+$jev_coupling
+EOF
+      fi
+    fi
+  fi
+
   render_table "$PLAN"
 
   if [ "$unassigned" -gt 0 ]; then
@@ -573,7 +601,9 @@ do_task() (
   # Persist each source separately; QA receives complete context once.
   write_capsule "$PLAN" "$id" dwarf >/dev/null
   cp "$tdir/capsule.md" "$tdir/baseline.capsule"
-  /bin/bash "$MEMORY" inject "$REPO" dwarf > "$tdir/dwarf.memory"
+  # --task lets Jev narrow the injected slice to facts that bear on THIS task. Without
+  # it, or with Jev off, the full role slice is injected exactly as before.
+  /bin/bash "$MEMORY" inject "$REPO" dwarf --task "$tdir/prompt.md" > "$tdir/dwarf.memory"
   {
     python3 "$SKILL_DIR/scripts/forge-prompt.py" --requirements "$tdir/prompt.md" --capsule "$tdir/baseline.capsule" --approach "$tdir/approach.md" --retry "$tdir/retry_findings.md" --memory "$tdir/dwarf.memory"
     echo "Implement this task in the repository. Follow the intended approach unless it is wrong; explain deviations. Run the task's requested verification and report results."
@@ -652,7 +682,7 @@ do_task() (
 
   forge_metric_phase preparation
   # QA uses the dispatch-time ownership and baseline, never later merge state.
-  /bin/bash "$MEMORY" inject "$REPO" qa > "$tdir/qa.memory"
+  /bin/bash "$MEMORY" inject "$REPO" qa --task "$tdir/prompt.md" > "$tdir/qa.memory"
   {
     python3 "$SKILL_DIR/scripts/forge-prompt.py" --requirements "$tdir/prompt.md" --capsule "$tdir/baseline.capsule" --approach "$tdir/approach.md" --retry "$tdir/retry_findings.md" --memory "$tdir/dwarf.memory" --memory "$tdir/qa.memory"
     echo "The implementer was asked to do the task above. Review the diff below for correctness"

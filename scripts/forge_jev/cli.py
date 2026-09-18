@@ -71,11 +71,31 @@ def parser() -> argparse.ArgumentParser:
     score_plan.add_argument('--repo', required=True)
     score_plan.add_argument('--json', action='store_true')
 
+    coupling = sub.add_parser('coupling')
+    coupling.add_argument('--plan', required=True)
+    coupling.add_argument('--repo', required=True)
+    coupling.add_argument('--json', action='store_true')
+
     review_triage = sub.add_parser('review-triage')
     review_triage.add_argument('--review', required=True)
     review_triage.add_argument('--diff', required=True)
     review_triage.add_argument('--run-dir', default=None)
     review_triage.add_argument('--json', action='store_true')
+
+    memory_curate = sub.add_parser('memory-curate')
+    memory_curate.add_argument('--repo', required=True)
+    memory_curate.add_argument('--category', required=True)
+    memory_curate.add_argument('--text', required=True)
+    memory_curate.add_argument('--json', action='store_true')
+
+    memory_slice = sub.add_parser('memory-slice')
+    memory_slice.add_argument('--task', required=True)
+    memory_slice.add_argument('--lines', required=True)
+    memory_slice.add_argument('--keep', type=int, default=None)
+
+    memory_stale = sub.add_parser('memory-stale')
+    memory_stale.add_argument('--text', required=True)
+    memory_stale.add_argument('--anchor', required=True)
 
     verify_triage = sub.add_parser('verify-triage')
     verify_triage.add_argument('--repo', required=True)
@@ -477,6 +497,50 @@ def cmd_score_plan(args) -> int:
     return 0
 
 
+def cmd_coupling(args) -> int:
+    """Warn about same-wave task pairs that may conflict despite disjoint files.
+
+    Advisory only -- like cmd_score_plan, this never edits tasks.tsv or waves.tsv. It
+    reads both (waves.tsv must already exist; forge-parallel.sh runs this after
+    compute_waves) and writes jev-coupling.json for a human or a later run to inspect.
+    """
+    plan, repo = Path(args.plan), Path(args.repo)
+    if not plan.is_dir():
+        print(f'forge jev coupling: --plan {args.plan!r} is not a directory', file=sys.stderr)
+        return 2
+    if not repo.is_dir():
+        print(f'forge jev coupling: --repo {args.repo!r} is not a directory', file=sys.stderr)
+        return 2
+    waves_file = plan / 'waves.tsv'
+    if not waves_file.is_file():
+        print(f'forge jev coupling: no waves.tsv in {args.plan!r} -- run compute_waves first', file=sys.stderr)
+        return 2
+    config = load_config()
+    if not enabled('gates', config=config) or api_key(config) is None:
+        return 3
+
+    from . import coupling
+
+    tasks = list(coupling.parse_tasks(plan).values())
+    waves = coupling.parse_waves(plan)
+    found = coupling.coupled_pairs(repo, tasks=tasks, waves=waves, run_dir=str(plan), config=config)
+    if not found:
+        return 3
+
+    payload = [dict(a=a, b=b, probability=p) for a, b, p in found]
+    try:
+        (plan / 'jev-coupling.json').write_text(json.dumps(payload, indent=2, sort_keys=True) + '\n')
+    except OSError:
+        pass
+
+    if args.json:
+        print(json.dumps(payload, indent=2, sort_keys=True))
+    else:
+        for a, b, p in found:
+            print(f'{a}\t{b}\t{p}')
+    return 0
+
+
 def cmd_review_triage(args) -> int:
     """Annotate a FAIL. Exit 0 only when the review looks SUSPECT.
 
@@ -501,6 +565,80 @@ def cmd_review_triage(args) -> int:
     return 0 if result['suspect'] else 1
 
 
+def cmd_memory_curate(args) -> int:
+    """Curate one learning line. Prints `category<TAB>injectable<TAB>matched_key`.
+
+    A tab-separated line rather than JSON because forge-memory.sh calls this once per
+    learning and parsing JSON in bash for three fields is not worth the subprocess. Exit
+    3 means "no opinion", and the caller keeps exactly what the model said.
+    """
+    config = load_config()
+    if not enabled('memory', config=config) or api_key(config) is None:
+        return 3
+    from . import memory as memory_module
+
+    existing = []
+    path = Path(args.repo) / '.forge' / 'memory.md'
+    if path.is_file():
+        try:
+            existing = [line.strip(' -') for line in path.read_text(errors='replace').splitlines()
+                        if line.strip().startswith('-')]
+        except OSError:
+            existing = []
+
+    result = memory_module.curate(category=args.category, text=args.text,
+                                  existing=existing, config=config)
+    if result is None:
+        return 3
+    if args.json:
+        print(json.dumps(result, indent=2, sort_keys=True))
+    else:
+        print('\t'.join((result['category'], '1' if result['injectable'] else '0',
+                         result['matched'] or '')))
+    return 0
+
+
+def cmd_memory_slice(args) -> int:
+    """Print the memory lines worth injecting for this task, one per line.
+
+    Exit 3 means "no opinion", and the caller injects exactly what it would have before.
+    That is the only safe default: this runs on every dispatch of every run, so a wrong
+    answer here is paid for more often than anywhere else in the integration.
+    """
+    config = load_config()
+    if not enabled('memory', config=config) or api_key(config) is None:
+        return 3
+    from . import memory as memory_module
+
+    try:
+        task = Path(args.task).read_text(errors='replace')[:4000]
+        lines = Path(args.lines).read_text(errors='replace').splitlines()
+    except OSError:
+        return 3
+    kept = memory_module.relevant_lines(
+        task=task, lines=lines,
+        keep=args.keep if args.keep and args.keep > 0 else memory_module.SLICE_KEEP,
+        config=config)
+    if kept is None:
+        return 3
+    for line in kept:
+        print(line)
+    return 0
+
+
+def cmd_memory_stale(args) -> int:
+    """Exit 0 when the fact looks stale, 1 when it still holds, 3 when unknown."""
+    config = load_config()
+    if not enabled('memory', config=config) or api_key(config) is None:
+        return 3
+    from . import memory as memory_module
+
+    result = memory_module.still_true(text=args.text, anchor_path=args.anchor, config=config)
+    if result is None:
+        return 3
+    return 0 if result['stale'] else 1
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     try:
@@ -509,7 +647,11 @@ def main(argv: list[str] | None = None) -> int:
                     status=cmd_status, doctor=cmd_doctor, backtest=cmd_backtest,
                     calibrate=cmd_calibrate,
                     **{'score-plan': cmd_score_plan,
+                       'coupling': cmd_coupling,
                        'review-triage': cmd_review_triage,
+                       'memory-curate': cmd_memory_curate,
+                       'memory-slice': cmd_memory_slice,
+                       'memory-stale': cmd_memory_stale,
                        'verify-discover': cmd_verify_discover,
                        'verify-triage': cmd_verify_triage})[args.command](args)
     except SystemExit as exit:

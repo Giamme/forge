@@ -454,3 +454,134 @@ def findings_cite_the_diff() -> dict:
         ),
     )
 
+# --- semantic wave coupling (Phase 4, item 4) --------------------------------------
+
+
+def wave_coupling(first: str, second: str) -> dict:
+    """Would running these two tasks concurrently produce an integration conflict?
+
+    `compute_waves` bounds parallelism structurally: two tasks share a wave only when
+    their file sets are disjoint. Disjointness cannot see the conflict where task A
+    changes an interface that task B consumes -- both diffs are clean, both pass review
+    against their own baseline, and the merge is broken. This asks about exactly that.
+    """
+    instructions = (
+        f'Two Forge tasks are about to run at the same time, in separate worktrees '
+        f'branched from the same commit, each reviewed only against its own baseline. '
+        f'Task A: {first!r}. Task B: {second!r}. Their declared files do not overlap. '
+        'Would running them concurrently still produce a broken result once both are '
+        'merged?'
+    )
+    return Noul(
+        instructions,
+        true=(
+            'One task changes something the other depends on -- a function signature, a '
+            'return type, a schema, a config key, an interface, a shared constant -- so '
+            'the second task is written against a version of the code that will no '
+            'longer exist. Both diffs can be individually correct and the merge still '
+            'broken.'
+        ),
+        false=(
+            'The two tasks touch genuinely independent behaviour. Neither one changes '
+            'anything the other reads, calls, or relies on, so the order they land in '
+            'does not matter.'
+        ),
+    )
+
+
+# --- memory curation (Phase 5, items 1-3) ------------------------------------------
+#
+# The stakes here are asymmetric and worth stating. memory.md is injected into EVERY
+# dispatch of EVERY future run, so a wrong fact is paid for forever and is corrected
+# only when a human happens to read it. The ledger is append-only and never injected, so
+# nothing recorded is ever lost -- only injection is gated.
+
+
+def memory_same_fact(text: str, existing: list) -> dict:
+    """Which recorded fact, if any, is this one restating?
+
+    `memory.md` counts recurrence by exact normalised key, which the docs already name
+    as a limitation: two runs learning the same thing in different words count as two
+    separate facts and neither reaches the promotion threshold. Matching paraphrases to
+    the existing key is what makes that threshold work.
+    """
+    criteria = {
+        entry: f'The new note states the same fact as {entry!r}, in different words.'
+        for entry in existing
+    }
+    criteria['none'] = (
+        'The new note states something none of the entries above says. Pick this '
+        'whenever the match is partial -- merging two facts that only look alike loses '
+        'one of them permanently, and a duplicate is merely untidy.'
+    )
+    return Choice(
+        f'A model working in this repo recorded: {text!r}. Which of the facts already '
+        'recorded, if any, states that same thing?', criteria)
+
+
+def memory_durable(text: str) -> dict:
+    """A durable project fact, or a one-off observation about today's task?"""
+    return Noul(
+        f'A model working in this repo recorded: {text!r}. Is this a durable fact about '
+        'the project that would still be useful to a different model, working on a '
+        'different task, months from now?',
+        true=(
+            'It states something stable about the project itself -- how it is built, '
+            'tested or verified, a trap that will catch the next person, a constraint '
+            'that holds across tasks. It would read as true and useful out of context.'
+        ),
+        false=(
+            'It is about this particular change, task, or moment -- what was just '
+            'edited, what the model did, a status report, a restatement of the task, or '
+            'an observation that is only meaningful next to that diff. Injecting it '
+            'into unrelated future work would be noise at best and misleading at worst.'
+        ),
+    )
+
+
+def memory_category(text: str) -> dict:
+    """verify | trap | finding | none -- the categories references/memory.md defines."""
+    criteria = {
+        'verify': 'How this project is checked: the command that runs its tests, what '
+                  'that command covers, how long it takes, what it needs set up first.',
+        'trap': 'A sharp edge that will catch the next person: a flaky test, a generated '
+                'file that must not be hand-edited, a surprising dependency, a thing '
+                'that looks wrong but is deliberate.',
+        'finding': 'A recurring correctness problem in this codebase -- a mistake that '
+                   'has been made before and is likely to be made again.',
+        'none': 'None of the above fits. Prefer this over forcing a bad fit: a fact '
+                'filed under the wrong category is injected into the wrong role\'s '
+                'prompt, where it is noise.',
+    }
+    return Choice(
+        f'A model working in this repo recorded: {text!r}. Which kind of fact is it?',
+        criteria)
+
+
+def memory_still_true(text: str, file_content: str) -> dict:
+    """Has this fact quietly gone false while its anchor file still exists?"""
+    excerpt = (file_content or '')[:4000]
+    return Noul(
+        f'A fact recorded about this project says: {text!r}. The file it refers to now '
+        f'contains:\n\n{excerpt}\n\nIs the recorded fact still true?',
+        true='The file still behaves the way the fact describes, or the fact is about '
+             'something the file does not contradict.',
+        false='The file has changed in a way that makes the fact wrong -- the command, '
+              'behaviour, constraint or trap it describes is no longer there.',
+    )
+
+
+def memory_relevant(text: str, task: str) -> dict:
+    """Is this fact worth spending prompt space on for THIS task?"""
+    return Noul(
+        f'A model is about to work on this task: {task!r}. A fact recorded about the '
+        f'project says: {text!r}. Is that fact worth including in the prompt for this '
+        'particular task?',
+        true='The fact bears on what this task touches -- the same area, the same '
+             'command, a trap the task could plausibly hit, or a mistake it could '
+             'plausibly repeat.',
+        false='The fact is true but unrelated to this task. Every line included costs '
+              'context on every dispatch, so a fact that will not change what the model '
+              'does here should be left out.',
+    )
+

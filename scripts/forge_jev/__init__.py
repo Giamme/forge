@@ -16,7 +16,10 @@ DEFAULT_THRESHOLDS = dict(routing_act=0.85, tests_act=0.70, flake_act=0.90,
                           gate_warn=0.60, prompt_warn=0.30, verifiable_warn=0.38,
                           # The pass rate a tier must be shown to hold, with 95%
                           # confidence, before routing may act on it.
-                          calibrate_floor=0.80, memory_dedup=0.80)
+                          calibrate_floor=0.80, memory_dedup=0.80,
+                          # Deliberately far below gate_warn: dropping a fact is
+                          # irreversible, so only a confident "this went false" acts.
+                          stale_drop=0.25)
 DEFAULTS = dict(enabled=False, key='', model=MODEL, endpoint=ENDPOINT, deadline_s=5.0,
                 capabilities={c: True for c in CAPABILITIES},
                 thresholds=dict(DEFAULT_THRESHOLDS))

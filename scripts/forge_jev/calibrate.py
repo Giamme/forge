@@ -123,10 +123,13 @@ def _read_ledger(path: Path) -> tuple[dict[tuple[str, str], dict], int]:
         if not line.strip():
             continue
         parts = line.split('\t')
-        if len(parts) != 10:
+        # At least 10, not exactly 10. The ledger is append-only and has gained a column
+        # since (the injectable flag), so an exact-width check would silently skip every
+        # row written from now on and quietly report that no calibration data exists.
+        if len(parts) < 10:
             skipped += 1
             continue
-        ts, run_id, task, role, model, verdict, category, key, text, duration_s = parts
+        ts, run_id, task, role, model, verdict, category, key, text, duration_s = parts[:10]
         if role not in ('dwarf', 'qa'):
             skipped += 1
             continue
