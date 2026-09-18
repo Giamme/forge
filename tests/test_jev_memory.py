@@ -69,6 +69,74 @@ class CurateTests(unittest.TestCase):
         result = self._curate(existing=['something else'], same='none', same_confidence=1.0)
         self.assertIsNone(result['matched'])
 
+    def test_the_worst_measured_false_merge_does_not_merge(self):
+        # Six repeats per case against a memory shaped the way cmd_memory_curate shapes
+        # one. The worst wrong merge -- two different facts about `config/prod.yaml`,
+        # that it is ciphertext and that it must not hold plaintext secrets -- topped
+        # out at 0.72, and it merged on every one of the six, so only the threshold
+        # stops it.
+        result = self._curate(existing=['the checked-in prod.yaml is ciphertext'],
+                              same='the checked-in prod.yaml is ciphertext',
+                              same_confidence=0.72)
+        self.assertIsNone(result['matched'])
+
+    def test_the_weakest_measured_true_merge_still_merges(self):
+        # 0.91, from the same paraphrase against a three-line memory. An earlier pass
+        # measured this case at 0.99 because it fed entries as "verify | text"; real
+        # entries carry no category prefix, and the number moved with the state.
+        result = self._curate(existing=['`pytest -q` runs the suite in about 40s'],
+                              same='`pytest -q` runs the suite in about 40s',
+                              same_confidence=0.91)
+        self.assertEqual(result['matched'], '`pytest -q` runs the suite in about 40s')
+
+    def test_the_strongest_measured_false_correction_is_refused(self):
+        # A fact that genuinely spans two categories: `make test` regenerating fixtures
+        # is both how the project is verified and a trap about the dirty tree it leaves.
+        # Five repeats, 0.60-0.72, and it proposed the change every time.
+        result = self._curate(recorded='verify', category='trap', category_confidence=0.72)
+        self.assertEqual(result['category'], 'verify')
+
+    def test_the_weakest_measured_true_correction_is_applied(self):
+        result = self._curate(recorded='verify', category='trap', category_confidence=0.92)
+        self.assertEqual(result['category'], 'trap')
+
+    def test_merging_sits_higher_in_the_gap_than_recategorising(self):
+        # Both rubrics separate at the same place -- correct 0.91+, wrong 0.72 or less --
+        # so the two numbers differ by cost, not by scale. Losing a fact is worse than
+        # filing it under the wrong heading, so merging takes the top of the gap.
+        merge = DEFAULT_THRESHOLDS['memory_merge']
+        recat = DEFAULT_THRESHOLDS['memory_recategorize']
+        self.assertGreater(merge, recat)
+        for name, value in (('memory_merge', merge), ('memory_recategorize', recat)):
+            with self.subTest(name):
+                self.assertGreater(value, 0.72, 'would act on a measured wrong judgment')
+                self.assertLess(value, 0.91, 'would refuse a measured correct judgment')
+
+    def test_a_merged_line_is_injectable_even_when_it_reads_as_a_one_off(self):
+        # Without this, dedup is defeated by the quality gate in the case it exists for:
+        # rebuild skips a non-injectable row before counting it, a finding needs two
+        # distinct runs to be promoted, and a restatement measures 0.44-0.83 on
+        # durability where the same fact stated fresh measures 0.82-0.83.
+        result = self._curate(existing=['`pytest -q` runs the suite in about 40s'],
+                              same='`pytest -q` runs the suite in about 40s',
+                              same_confidence=0.95, durable=0.44)
+        self.assertEqual(result['matched'], '`pytest -q` runs the suite in about 40s')
+        self.assertTrue(result['injectable'])
+
+    def test_a_line_that_did_not_merge_is_still_gated(self):
+        # The exemption is the merge, not the presence of existing entries.
+        result = self._curate(existing=['`pytest -q` runs the suite in about 40s'],
+                              same='none', same_confidence=1.0, durable=0.44)
+        self.assertIsNone(result['matched'])
+        self.assertFalse(result['injectable'])
+
+    def test_a_merge_refused_by_the_threshold_does_not_grant_the_exemption(self):
+        result = self._curate(existing=['`pytest -q` runs the suite in about 40s'],
+                              same='`pytest -q` runs the suite in about 40s',
+                              same_confidence=0.72, durable=0.44)
+        self.assertIsNone(result['matched'])
+        self.assertFalse(result['injectable'])
+
     def test_dedup_is_not_asked_when_there_is_nothing_to_match(self):
         captured = {}
 

@@ -467,6 +467,56 @@ a rename note recorded but not injected (durable 0.1); a `trap` refiled to `veri
 differently-worded restatement of it merged onto the same key; and a genuine new trap
 kept.
 
+**Category correction and dedup are two rubrics, and they have two thresholds.** They
+shared one `memory_dedup` value at 0.80 until both were measured. Splitting them was
+right; the first numbers put on them were not, and the way that went wrong is the useful
+part.
+
+The first pass fed existing entries as `verify | text` and read correct merges at
+0.99–1.00, which set the bar at 0.90. Running the real CLI against a real `memory.md`
+then returned **0.90 on a correct merge** — right on the threshold. Production strips
+entries to bare text under a `## section` heading, with no category prefix; the state
+was different, so the number was. Re-measured with the state
+`cmd_memory_curate` actually builds, six repeats per boundary case:
+
+| | wrong, must not act | right, must act | threshold |
+|---|---|---|---|
+| `memory_merge` | 0.56–0.72 | 0.91–1.00 | **0.85** |
+| `memory_recategorize` | 0.56–0.72 | 0.92–1.00 | **0.80** |
+
+Both rubrics separate in the same place. What sets the two numbers apart is therefore not
+the scale but the cost: a wrong merge loses a fact permanently, so it takes the top of the
+gap, while a wrong refile leaves the fact in place under the wrong heading and refusing a
+correction is the commoner harm, so it takes the bottom. **0.80 was a defensible value for
+one of the two all along** — the fault was never measuring it, and the first measurement
+was worse than the guess.
+
+The wrong merges are worth naming, because the threshold is the only thing that stops
+them: `config/prod.yaml` is ciphertext / `config/prod.yaml` must not hold plaintext
+secrets merged on 6 of 6 runs at 0.56–0.72. The rubric's `none` criterion already tells
+the model to keep both on a partial match and it picks one anyway — at a confidence that
+separates cleanly from a true paraphrase. That is the case for gating on confidence
+rather than wording the criterion harder.
+
+The refused corrections are facts that genuinely span two categories: a test that fails
+without `alembic upgrade head`, and `make test` regenerating fixtures so a dirty tree is
+expected. Both are verify and trap at once, which is exactly when the recorded category
+should stand.
+
+**A merged line is exempt from the quality gate.** The two judgments arrive in one
+request and originally did not consult each other, which broke dedup in the case dedup
+exists for. `rebuild` skips a non-injectable row *before* it counts anything, and a
+`finding` needs two distinct runs to be promoted — so a restatement judged not durable
+was dropped from the count of the fact it restates, and the two wordings still never
+reached two.
+
+Measured over paraphrases of facts already in memory: durability 0.44–0.83, against
+0.82–0.83 for the same facts stated fresh. A restatement reads as less durable than the
+thing it restates. That is the wrong question to ask of it: the entry it matched is
+already in `memory.md`, so durability was settled when *that* entry was written, and a
+line matching it is by definition not the one-off observation the gate is for. The
+exemption is the merge itself — a match refused by `memory_merge` grants nothing.
+
 The ledger gained an eleventh column for the injectable flag. `rebuild` treats a row
 without it as injectable, so an existing ledger keeps behaving as it did.
 

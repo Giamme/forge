@@ -58,7 +58,7 @@ def curate(*, category: str, text: str, existing=None, run_dir=None,
     # alike loses one of them permanently, while a duplicate is only untidy -- so the
     # bar sits on the side of keeping both.
     if (matched and matched != 'none' and match_confidence is not None
-            and match_confidence >= threshold('memory_dedup', config=config)):
+            and match_confidence >= threshold('memory_merge', config=config)):
         out['matched'] = matched
         out['match_confidence'] = match_confidence
 
@@ -66,12 +66,27 @@ def curate(*, category: str, text: str, existing=None, run_dir=None,
     # place it, which is a reason to leave the recorded category alone, not to discard it.
     if (suggested in CATEGORIES and suggested != category
             and category_confidence is not None
-            and category_confidence >= threshold('memory_dedup', config=config)):
+            and category_confidence >= threshold('memory_recategorize', config=config)):
         out['category'] = suggested
 
     # The quality gate. Silence is the safe direction: a rejected line still lands in the
     # ledger in full, so the only thing lost is injection into future prompts.
     out['injectable'] = not (durable is not None and durable < threshold('gate_warn', config=config))
+
+    # A line that merged onto an existing entry is exempt, and the two judgments have to
+    # be read together to see why. `rebuild` skips a non-injectable row before it counts
+    # anything, and a `finding` needs two DISTINCT runs before it is promoted -- which is
+    # the whole reason dedup exists, since two runs wording one fact differently would
+    # otherwise never reach two. So a restatement judged not durable is dropped from the
+    # count of the fact it restates, defeating dedup in exactly the case it was built for.
+    #
+    # Measured: paraphrases score 0.44-0.83 on durability against 0.82-0.83 for the same
+    # facts stated fresh -- a restatement reads as less durable than the thing it
+    # restates, which is the wrong question. The entry it matched is already in
+    # memory.md, so its durability was settled when that entry was written; a line
+    # matching it is by definition not the one-off observation this gate is for.
+    if out['matched']:
+        out['injectable'] = True
     return out
 
 

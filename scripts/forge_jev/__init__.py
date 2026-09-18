@@ -16,7 +16,22 @@ DEFAULT_THRESHOLDS = dict(routing_act=0.85, tests_act=0.70, flake_act=0.90,
                           gate_warn=0.60, prompt_warn=0.30, verifiable_warn=0.38,
                           # The pass rate a tier must be shown to hold, with 95%
                           # confidence, before routing may act on it.
-                          calibrate_floor=0.80, memory_dedup=0.80,
+                          calibrate_floor=0.80,
+                          # Two rubrics, and they were measured separately because a
+                          # shared name is not a shared scale. The measurement then said
+                          # the scales ARE close -- a correct judgment scores 0.91+ on
+                          # both, a wrong one 0.72 or less on both -- so what separates
+                          # these two numbers is not the scale but the cost of being
+                          # wrong, and each sits at a different point in the same gap.
+                          #
+                          # A wrong merge loses a fact permanently, so it takes the top
+                          # of the gap: 0.13 clear of the worst false merge, 0.06 under
+                          # the weakest true one.
+                          memory_merge=0.85,
+                          # A wrong refile is recoverable -- the fact is still there,
+                          # under the wrong heading -- and refusing a correction is the
+                          # commoner harm, so it takes the bottom of the same gap.
+                          memory_recategorize=0.80,
                           # Deliberately far below gate_warn: dropping a fact is
                           # irreversible, so only a confident "this went false" acts.
                           stale_drop=0.25)

@@ -10,8 +10,8 @@ import sys
 import tempfile
 import urllib.parse
 
-from . import (CAPABILITIES, api_key, config_path, enabled, load_config,
-              redact, save_config)
+from . import (CAPABILITIES, DEFAULT_THRESHOLDS, api_key, config_path, enabled,
+              load_config, redact, save_config)
 from . import client, questions
 
 PRIVACY_STATEMENT = """\
@@ -255,9 +255,18 @@ def cmd_doctor(args) -> int:
     checks.append(('endpoint parseable', bool(parsed.scheme and parsed.netloc), None))
     checks.append(('urllib importable', True, None))
 
-    # The 0600 check is a warning, not a blocker: a loose mode is worth fixing but
-    # doesn't itself prevent Jev from working.
-    ready = key is not None and all(ok for name, ok, _ in checks if name != 'config mode 0600')
+    # A threshold in the config that no rubric reads. The config is frozen at first run,
+    # so a key that was renamed since stays in the file forever and `status` keeps
+    # printing it -- which invites tuning a number that changes nothing. Also catches a
+    # typo in a hand-edited config, where the symptom is otherwise silence.
+    unknown = sorted(set(config.get('thresholds') or ()) - set(DEFAULT_THRESHOLDS))
+    checks.append(('thresholds all known', not unknown,
+                   None if not unknown else 'not read by anything: ' + ', '.join(unknown)))
+
+    # Two warnings rather than blockers: a loose mode is worth fixing but does not stop
+    # Jev working, and an unread threshold key is inert by definition.
+    _warnings = ('config mode 0600', 'thresholds all known')
+    ready = key is not None and all(ok for name, ok, _ in checks if name not in _warnings)
 
     if args.live:
         if key is None:
@@ -268,13 +277,17 @@ def cmd_doctor(args) -> int:
             checks.append(('live probe', ok, reason))
             ready = ready and ok
 
-    data = dict(ready=ready, checks=[dict(name=n, ok=o, detail=redact(str(d), key or '') if d else None)
-                                     for n, o, d in checks])
+    data = dict(ready=ready,
+                checks=[dict(name=n, ok=o, warning=n in _warnings,
+                             detail=redact(str(d), key or '') if d else None)
+                        for n, o, d in checks])
     if args.json:
         print(json.dumps(data, indent=2))
     else:
         for check in data['checks']:
-            mark = 'ok' if check['ok'] else 'FAIL'
+            # A failed warning prints `warn`, not `FAIL`: the line below says `ready`,
+            # and one report cannot say both.
+            mark = 'ok' if check['ok'] else ('warn' if check['warning'] else 'FAIL')
             line = f"[{mark}] {check['name']}"
             if check['detail']:
                 line += ': ' + check['detail']

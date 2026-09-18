@@ -370,7 +370,7 @@ do_record() {
     source "$SKILL_DIR/scripts/forge-jev-options.sh" 2>/dev/null && jev_loaded=1
   fi
   if [ -n "$LAST" ] && [ -r "$LAST" ]; then
-    local line cat text key inject curated jcat jinject jmatch jkey
+    local line cat text key inject curated curated_rc jcat jinject jmatch jkey
     while IFS= read -r line; do
       cat="$(printf '%s' "$line" | sed -n 's/^[[:space:]]*FORGE_LEARNING:[[:space:]]*\([a-zA-Z]\{1,\}\)[[:space:]]*|.*/\1/p' | tr '[:upper:]' '[:lower:]')"
       text="$(printf '%s' "$line" | sed -n 's/^[[:space:]]*FORGE_LEARNING:[[:space:]]*[a-zA-Z]\{1,\}[[:space:]]*|[[:space:]]*\(.*\)/\1/p')"
@@ -388,7 +388,8 @@ do_record() {
       if [ "$jev_loaded" = 1 ] && forge_jev_active memory; then
         curated="$(python3 "$SKILL_DIR/scripts/forge-jev.py" memory-curate \
             --repo "$repo" --category "$cat" --text "$text" 2>/dev/null)"
-        if [ $? -eq 0 ] && [ -n "$curated" ]; then
+        curated_rc=$?
+        if [ "$curated_rc" -eq 0 ] && [ -n "$curated" ]; then
           jcat="$(printf '%s' "$curated" | cut -f1)"
           jinject="$(printf '%s' "$curated" | cut -f2)"
           jmatch="$(printf '%s' "$curated" | cut -f3)"

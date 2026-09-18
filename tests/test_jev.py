@@ -490,6 +490,32 @@ class CliTests(JevTestCase):
         rc, out, err = self._run(['doctor'])
         self.assertEqual(rc, 3)
 
+    def test_doctor_names_a_threshold_nothing_reads(self):
+        # The config is frozen at first run, so a threshold renamed since stays in the
+        # file forever and `status` keeps printing it -- which invites tuning a number
+        # that changes nothing. Also catches a typo in a hand-edited config.
+        config = forge_jev.load_config()
+        config['thresholds']['memory_dedup'] = 0.8
+        forge_jev.save_config(config)
+        rc, out, _ = self._run(['doctor'])
+        self.assertIn('memory_dedup', out)
+
+    def test_an_unread_threshold_is_a_warning_not_a_failure(self):
+        # It is inert by definition, so it must not make a working install read as
+        # broken -- and the word printed has to agree with the verdict on the last line.
+        os.environ['TYPESAFE_API_KEY'] = 'DOCTOR-WARN-KEY'
+        config = forge_jev.load_config()
+        config['thresholds']['not_a_real_threshold'] = 0.5
+        forge_jev.save_config(config)
+        rc, out, _ = self._run(['doctor'])
+        self.assertEqual(rc, 0)
+        self.assertIn('[warn]', out)
+        self.assertNotIn('[FAIL]', out)
+        self.assertIn('ready', out)
+
+    def test_doctor_is_quiet_when_every_threshold_is_known(self):
+        rc, out, _ = self._run(['doctor'])
+        self.assertIn('[ok] thresholds all known', out)
     def test_enable_then_disable_global_flag(self):
         rc, _, _ = self._run(['enable'])
         self.assertEqual(rc, 0)

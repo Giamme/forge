@@ -748,10 +748,13 @@ do_task() (
   # threshold, because its failure mode is a bug a cheaper review missed and nobody
   # ever learns about.
   if [ "$jev_loaded_qa" = 1 ] && forge_jev_active gates; then
-    local qa_effort
+    local qa_effort qa_effort_rc
     qa_effort="$(python3 "$SKILL_DIR/scripts/forge-jev.py" qa-effort \
         --diff "$tdir/changes.diff" --task "$tdir/prompt.md" --run-dir "$tdir" 2>/dev/null)"
-    if [ $? -eq 0 ] && [ -n "$qa_effort" ]; then
+    # Captured, not read inline. `[ $? -eq 0 ]` is correct only while nothing sits
+    # between it and the assignment, which is a property of the next edit, not this one.
+    qa_effort_rc=$?
+    if [ "$qa_effort_rc" -eq 0 ] && [ -n "$qa_effort" ]; then
       note "$id: jev sizes this review at effort $(printf '%s' "$qa_effort" | cut -f1) (advisory; qa runs as configured)"
       printf '%s' "$qa_effort" > "$tdir/qa.effort.jev"
     fi
