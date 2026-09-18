@@ -36,6 +36,22 @@ written to a run directory, a prompt, or a log.
 `TYPESAFE_API_KEY` in the environment overrides the stored key for that
 invocation only. Keys come from `console.typesafe.ai`.
 
+## Commands
+
+User-facing:
+
+```
+forge jev setup                       # store a key, validate it, enable Jev
+forge jev status | doctor [--live]    # what is on; whether it works
+forge jev enable | disable [--capability routing|tests|gates|memory]
+forge jev backtest --repo <path> [--capability tests|drift] [--execute]
+forge jev calibrate --repo <path> [--write]
+```
+
+`score-plan`, `verify-discover` and `verify-triage` are also subcommands, but they are
+called by `forge-parallel.sh` rather than by hand. They are documented here only so that
+a line in a run log is traceable to the code that produced it.
+
 ## Gating and precedence
 
 Four steps, implemented identically by `scripts/forge-jev-options.sh` (shell)
