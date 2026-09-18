@@ -12,10 +12,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from . import threshold
-from .client import ask, score
-from .questions import (blast_radius, design_judgment, spec_clarity, state_subtlety,
-                        test_coverage)
+from . import enabled, threshold
+from .client import ask, noul, score
+from .questions import (blast_radius, design_judgment, independently_verifiable,
+                        prompt_adequacy, spec_clarity, state_subtlety, test_coverage)
 
 # Weights sum to 1.0. design_judgment carries the most because decompose.md defines
 # difficulty by it first ("rated ... by what the task demands of the model"), and
@@ -172,6 +172,16 @@ def score_task(repo, *, goal: str, task_id: str, title: str, files: str,
     # The planner's own rating is deliberately NOT sent. Jev is here to be a second,
     # independent opinion on the same evidence; showing it the answer first would buy an
     # agreement rate instead of a judgment.
+    # Phase 4's plan-time gates need exactly this state, and questions in one request
+    # evaluate in parallel, so folding them in here costs no extra round trip -- the
+    # alternative is a second request per task carrying an identical payload.
+    gate_ids = {}
+    if enabled('gates', config=config):
+        gate_ids = dict(prompt_adequacy=prompt_adequacy,
+                        independently_verifiable=independently_verifiable)
+        for name, builder in gate_ids.items():
+            questions[name] = builder()
+
     result = ask(state, questions, site='jev-score-plan', run_dir=run_dir, config=config)
     if result is None:
         return None
@@ -183,6 +193,26 @@ def score_task(repo, *, goal: str, task_id: str, title: str, files: str,
     if combined is None:
         return None
     combined.update(id=task_id, declared=declared_difficulty)
+
+    # Warnings, not gates: recorded below the threshold and silent above it. A LOW
+    # probability is what is worth saying out loud here.
+    #
+    # Each rubric gets its own threshold because they are not on one scale, which is the
+    # same trap `tests_act` set earlier. Measured over 15 hand-labelled task prompts:
+    # genuinely vague prompts ("add tests", "make it faster") all landed at 0.04 while
+    # specific ones ran 0.55-0.87, and task fragments that need a sibling to land first
+    # scored 0.11-0.24 against 0.51-0.72 for self-contained work. The shared gate_warn
+    # of 0.60 -- which IS right for drift, where it was measured -- would have warned on
+    # 5 of 9 and 5 of 11 perfectly good tasks.
+    warn_levels = dict(prompt_adequacy=threshold('prompt_warn', config=config),
+                       independently_verifiable=threshold('verifiable_warn', config=config))
+    warnings = {}
+    for name in gate_ids:
+        probability = noul(result, name)
+        if probability is not None and probability < warn_levels[name]:
+            warnings[name] = round(probability, 3)
+    if warnings:
+        combined['warnings'] = warnings
     return combined
 
 

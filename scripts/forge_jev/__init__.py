@@ -13,7 +13,8 @@ ENDPOINT = 'https://api.typesafe.ai/v1/systemone'
 MODEL = 'jev-latest'
 CAPABILITIES = ('routing', 'tests', 'gates', 'memory')
 DEFAULT_THRESHOLDS = dict(routing_act=0.85, tests_act=0.70, flake_act=0.90,
-                          gate_warn=0.60, memory_dedup=0.80)
+                          gate_warn=0.60, prompt_warn=0.30, verifiable_warn=0.38,
+                          memory_dedup=0.80)
 DEFAULTS = dict(enabled=False, key='', model=MODEL, endpoint=ENDPOINT, deadline_s=5.0,
                 capabilities={c: True for c in CAPABILITIES},
                 thresholds=dict(DEFAULT_THRESHOLDS))

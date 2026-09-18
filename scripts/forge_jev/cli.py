@@ -391,7 +391,7 @@ def cmd_score_plan(args) -> int:
     if not enabled('routing', config=config) or api_key(config) is None:
         return 3
 
-    from . import routing
+    from . import gates, routing
 
     goal = ''
     goal_file = plan / 'goal.txt'
@@ -420,6 +420,18 @@ def cmd_score_plan(args) -> int:
         if judgment is None:
             continue
         judgment['may_act'] = routing.may_act(repo, judgment, config=config)
+
+        # A second request per task, and the only one Phase 4 adds -- the adequacy and
+        # verifiability gates ride inside the routing request above. This one cannot,
+        # because it asks about a different universe (every tracked file) rather than
+        # about the task itself.
+        if enabled('gates', config=config):
+            predicted = gates.predict_drift(repo, goal=goal, task_id=task_id, title=title,
+                                            declared=files, approach=approach,
+                                            run_dir=str(plan), config=config)
+            if predicted:
+                judgment['predicted_drift'] = [dict(file=name, probability=probability)
+                                               for name, probability in predicted]
         judgments.append(judgment)
         out = plan / 'tasks' / task_id
         try:
@@ -447,11 +459,15 @@ def cmd_score_plan(args) -> int:
         print(json.dumps(judgments, indent=2, sort_keys=True))
     else:
         for judgment in judgments:
+            # Two extra columns for the Phase 4 gates. '-' rather than an empty field so
+            # a `read` in bash cannot silently shift the columns after it.
+            warnings = ','.join(sorted(judgment.get('warnings') or {})) or '-'
+            drift = ','.join(item['file'] for item in judgment.get('predicted_drift') or ()) or '-'
             print('\t'.join((judgment['id'], judgment['tier'],
                              str(judgment['confidence']), str(judgment['composite']),
                              judgment['escalated'] or '-',
                              '1' if judgment['may_act'] else '0',
-                             judgment['declared'])))
+                             judgment['declared'], warnings, drift)))
     return 0
 
 

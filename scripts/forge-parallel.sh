@@ -165,8 +165,8 @@ PY
       if [ "${FORGE_JEV_SHADOW:-}" = on ]; then
         note "jev: scored $(printf '%s\n' "$jev_scores" | grep -c . ) task(s) in shadow mode (no change)"
       else
-        local jid jtier jconf jcomp jesc jact jdecl jtmp applied=0
-        while IFS="$(printf '\t')" read -r jid jtier jconf jcomp jesc jact jdecl; do
+        local jid jtier jconf jcomp jesc jact jdecl jwarn jdrift jtmp applied=0
+        while IFS="$(printf '\t')" read -r jid jtier jconf jcomp jesc jact jdecl jwarn jdrift; do
           [ -n "$jid" ] || continue
           if [ "${FORGE_JEV_ACT:-}" = on ] && [ "$jact" = 1 ] && [ "$jtier" != "$jdecl" ]; then
             # Rewrite this row's difficulty column only. awk over the whole file each
@@ -184,6 +184,20 @@ PY
             # score-plan writes "-" for "not escalated"; only a real reason is worth showing.
             [ "$jesc" = "-" ] && jesc=""
             note "jev: $jid suggests $jtier (confidence $jconf${jesc:+, escalated: $jesc}) — declared $jdecl"
+          fi
+          # Gates are warnings in both modes, including when the tier was applied: they
+          # are about the task text and its declared files, not about which model runs it.
+          if [ -n "$jwarn" ] && [ "$jwarn" != "-" ]; then
+            case "$jwarn" in
+              *prompt_adequacy*) note "jev: $jid — the prompt may be too vague for QA to judge correctness against" ;;
+            esac
+            case "$jwarn" in
+              *independently_verifiable*) note "jev: $jid — may not be verifiable on its own (decompose.md forbids splitting this finely)" ;;
+            esac
+          fi
+          if [ -n "$jdrift" ] && [ "$jdrift" != "-" ]; then
+            note "jev: $jid may also edit undeclared files: $jdrift"
+            note "     undeclared files break wave disjointness — add them to the files column or split the task"
           fi
         done <<EOF
 $jev_scores

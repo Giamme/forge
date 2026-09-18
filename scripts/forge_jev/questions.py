@@ -331,3 +331,65 @@ def test_coverage() -> dict:
         'well covered -- the behaviour has direct tests that would fail on a mistake.',
     ])
 
+# --- pre-dispatch gates (Phase 4) --------------------------------------------------
+#
+# These ride in the SAME request as the routing rubrics. The state a gate needs -- goal,
+# task, declared files, approach -- is exactly the state routing already sends, and
+# questions in one request evaluate in parallel, so asking them costs no extra round
+# trip. They warn and never block: a gate that can stop a dispatch is a gate that will
+# eventually stop a good one.
+
+
+def prompt_adequacy() -> dict:
+    """Could a reviewer judge correctness against this prompt at all?
+
+    SKILL.md already requires this of a decomposition ("short titles are insufficient
+    for QA") and nothing enforces it. The failure it prevents is expensive and silent:
+    a dwarf produces something plausible, and QA has no stated requirement to check it
+    against, so a PASS means only "nothing looked wrong".
+    """
+    instructions = (
+        'A Forge task is about to be dispatched to a model, and its diff will then be '
+        'reviewed by a separate reviewer who sees this same task text. Does the task '
+        '(in state) state requirements specific enough that the reviewer could judge '
+        'whether the work is correct?'
+    )
+    return Noul(
+        instructions,
+        true=(
+            'The task names the behaviour that must hold when it is done -- what should '
+            'happen, to what, under which conditions -- specifically enough that a '
+            'reviewer reading only this text could point at a diff and say whether it '
+            'meets them.'
+        ),
+        false=(
+            'The task states an area, a file, or an intention rather than a '
+            'requirement -- "improve error handling", "refactor the parser", "add '
+            'tests" -- so a reviewer could only judge whether the diff looks reasonable, '
+            'not whether it is correct. A title with no body belongs here.'
+        ),
+    )
+
+
+def independently_verifiable() -> dict:
+    """decompose.md's hard rule, checked: can this task be verified on its own?"""
+    instructions = (
+        'Forge runs this task in its own worktree and verifies it alone, before any '
+        'other task in the plan is merged. Can this task (in state) be verified on its '
+        'own, or does confirming it works require another task to land first?'
+    )
+    return Noul(
+        instructions,
+        true=(
+            'Once this task is done, something observable proves it: a test that can '
+            'run, a command that behaves differently, a check that passes. The proof '
+            'does not depend on work declared in a different task.'
+        ),
+        false=(
+            'The task is a fragment -- one half of a rename, a caller without its '
+            'callee, an interface with no implementation -- so nothing can confirm it '
+            'works until a sibling task lands. decompose.md forbids splitting this '
+            'finely for exactly this reason.'
+        ),
+    )
+

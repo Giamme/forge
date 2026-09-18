@@ -304,6 +304,47 @@ the QA verdict as the outcome. It prints the shortfall per tier rather than a
 confident-looking guess, and `--write` is a separate step because that file is the only
 thing standing between `--jev-act` and Jev changing which model spends your quota.
 
+## Pre-dispatch gates
+
+Three plan-time warnings. All advisory, all fail-open, none can block a dispatch — a gate
+that can stop a dispatch is a gate that will eventually stop a good one.
+
+**Prompt adequacy** and **independent verifiability** ride inside the routing request.
+They need exactly the state routing already sends, and questions in one request evaluate
+in parallel, so they cost **no extra round trip**.
+
+**`files` drift prediction** needs a different universe — every tracked file, not the task
+text — so it is the one extra request Phase 4 adds, and only when the `gates` capability
+is on. `decompose.md` calls the `files` column "a promise, not a prediction"; Forge
+already detects a broken promise in `drift.txt`, but only after the wave has run. Asking
+at plan time turns a post-mortem into a warning while the plan can still change.
+
+### Each rubric has its own threshold, because they are not on one scale
+
+This is the same trap `tests_act` set earlier, and it was measured rather than guessed.
+
+| Gate | Threshold | Evidence |
+|---|---|---|
+| drift | `gate_warn` 0.60 | 50 commits × 2 repos: precision **1.000** and **0.934** |
+| prompt adequacy | `prompt_warn` 0.30 | vague prompts clustered at **0.04**, specific ones ran **0.55–0.87** |
+| independent verifiability | `verifiable_warn` 0.38 | task fragments **0.11–0.24**, self-contained tasks **0.51–0.72** |
+
+Using the single `gate_warn` of 0.60 for all three — which is what shipped first — warned
+on 5 of 9 and 5 of 11 perfectly good tasks in the hand-labelled set. It was caught by a
+live plan where a precisely specified task tripped both text gates. Precision is the only
+number that matters for a warning: one that fires on good work teaches people to ignore
+every future warning.
+
+Drift is the strongest of the three and the only one measured at corpus scale. Its
+threshold sits comfortably clear of the noise on real repos (non-edited files scored
+≤0.23 in a live check where the true file scored 0.65), but note that 0.65 is not a wide
+margin — a borderline file can fall either side between runs.
+
+The verifiability rubric was nearly discarded on a first reading that showed it failing
+to separate vague prompts from clear ones. That was a bad label, not a bad rubric:
+vagueness is not the same property as needing a sibling task to land first. Against the
+right labels it separates with a 0.27 margin.
+
 ## Status
 
 Phase 0 added the configuration surface. Phase 1a added `backtest`, which scores the
@@ -320,7 +361,10 @@ properly needs a disposable export with the dependency environment rebuilt, whos
 may exceed the saving — a trade that needs `backtest` numbers to settle.
 
 Routing is wired but shadow-first: it can advise today and cannot act until a repo
-has been calibrated. Pre-dispatch gates and memory curation remain unwired.
+has been calibrated. Three of Phase 4's six gates are wired (prompt adequacy,
+independent verifiability, files drift). Semantic wave coupling and the two
+post-review QA gates — finding triage and effort sizing — are not, and neither is
+memory curation.
 
 Verification is calibrated against real judgments (see above). Routing is not: its
 `routing_act` of 0.85 rests on six hand-labelled tasks, which is a smoke test and not a
