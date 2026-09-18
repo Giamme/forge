@@ -160,3 +160,34 @@ $parsed
 EOF
   forge_jev_export
 }
+
+# forge_jev_active <capability> — succeeds (0) when Jev is enabled for that
+# capability AND a key is configured; fails (non-zero) otherwise, including when
+# the Python package is missing, the config is unreadable, or anything else goes
+# wrong. Silent (no stdout/stderr) and never blocks: it only reads local config
+# through `forge-jev.py status --json`, never the network.
+#
+# The status JSON is fetched at most once per shell (cached in
+# FORGE_JEV_STATUS_JSON/FORGE_JEV_STATUS_FETCHED) so a caller checking several
+# capabilities, or the same capability more than once in one verify_result call,
+# pays for one subprocess instead of one per check.
+FORGE_JEV_STATUS_JSON=""
+FORGE_JEV_STATUS_FETCHED=0
+forge_jev_active() {
+  local cap="$1"
+  if [ "$FORGE_JEV_STATUS_FETCHED" != 1 ]; then
+    FORGE_JEV_STATUS_FETCHED=1
+    FORGE_JEV_STATUS_JSON="$(python3 "$SKILL_DIR/scripts/forge-jev.py" status --json 2>/dev/null)" \
+      || FORGE_JEV_STATUS_JSON=""
+  fi
+  [ -n "$FORGE_JEV_STATUS_JSON" ] || return 1
+  printf '%s' "$FORGE_JEV_STATUS_JSON" | python3 -c '
+import json, sys
+cap = sys.argv[1]
+try:
+    data = json.load(sys.stdin)
+except ValueError:
+    sys.exit(1)
+sys.exit(0 if data.get("key_present") and data.get("capabilities", {}).get(cap) else 1)
+' "$cap" 2>/dev/null
+}

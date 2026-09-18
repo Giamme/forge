@@ -75,6 +75,129 @@ def test_relevance(test_path: str, header: str = '') -> dict:
     )
 
 
+def verify_selection(candidates: list[str]) -> dict:
+    """Which existing command, if any, actually verifies this repo by running its tests?
+
+    Asked once per discover() call, over every candidate enumerated from real files in
+    the repo (see verify.candidates) plus a 'none' escape hatch. Jev may only choose
+    among commands that demonstrably exist -- this rubric selects, it never generates,
+    so it cannot invent 'make test' for a repo with no Makefile.
+    """
+    criteria = {
+        command: (
+            f'{command!r} runs this project\'s actual test suite end to end -- the same '
+            'checks a human would run before trusting a change, not a narrow slice of '
+            'it and not an unrelated build, lint, format, or deploy step.'
+        )
+        for command in candidates
+    }
+    criteria['none'] = (
+        'No candidate above actually runs this project\'s test suite. Every one either '
+        'lints, type-checks, builds, formats, or covers only a small, unrelated slice of '
+        'the project. Pick this rather than force a bad guess: a wrong pick here reports '
+        'an unverified change as verified.'
+    )
+    instructions = (
+        'Given this repo\'s top-level files and any known verify facts (in state), which '
+        'of these existing commands actually verifies a change to this project by '
+        'running its test suite? Choose \'none\' if nothing listed truly does.'
+    )
+    return Choice(instructions, criteria)
+
+
+def runs_tests(command: str) -> dict:
+    """Does this command execute tests, as opposed to only build/lint/typecheck/format?
+
+    Asked once per candidate alongside verify_selection, so a command that only builds
+    can be rejected even if the Choice rubric picked it confidently -- a build that
+    passes is not a verified change.
+    """
+    instructions = (
+        f'Does the command {command!r} execute this project\'s tests, as opposed to '
+        'only linting, type-checking, building, formatting, or deploying it?'
+    )
+    return Noul(
+        instructions,
+        true=(
+            'The command invokes a test runner or test framework (for example pytest, '
+            'go test, cargo test, npm test, a test shell script, tox) that exercises the '
+            'project\'s actual behavior and can fail when that behavior is wrong.'
+        ),
+        false=(
+            'The command only compiles, bundles, lints, type-checks, formats, or deploys '
+            '-- it can succeed while the project\'s behavior is broken. A build or lint '
+            'that passes is not a verified change, even if its name contains the word '
+            '"check" or "verify".'
+        ),
+    )
+
+
+def verify_runtime(command: str) -> dict:
+    """How long does this command typically take? Ordered levels, cheapest first.
+
+    Mirrors the kind of fact Forge's own `verify` memory category already records
+    ("pytest -q runs the suite; make test also lints and is 4x slower") so the levels
+    describe situations exactly like that one.
+    """
+    instructions = (
+        f'How long does {command!r} typically take to run against this project, based '
+        'on what its name, scope, and any known verify facts (in state) imply?'
+    )
+    criteria = [
+        'seconds -- a small, focused check: a single test file or a fast unit-test slice.',
+        'under a minute -- a normal unit test run with no heavy setup or external services.',
+        'minutes -- a fuller suite, integration tests, or a build-then-test pipeline.',
+        'very slow -- end-to-end or browser tests, a full CI pipeline, or a command that '
+        'bundles lint, typecheck, build and test together (e.g. "make test also lints and '
+        'is 4x slower" than a plain test runner).',
+    ]
+    return Score(instructions, criteria)
+
+
+def failure_triage(traps: list[str]) -> dict:
+    """Why did verification fail: a real regression, a known flake, environment, or drift?
+
+    Asked once per verification failure. Getting this wrong ships a regression, so
+    'real_regression' is written as the default reading and 'known_flake' is written to
+    require positive evidence -- a named trap, or an error signature characteristic of
+    flakiness (timeout, ordering, port in use, a race) -- never just "it failed and a
+    rerun might pass."
+    """
+    named = '; '.join(traps) if traps else '(none recorded)'
+    instructions = (
+        'Verification just failed. Given the command that was run, the tail of its '
+        f'output, and this repo\'s known traps (in state -- recorded traps: {named}), '
+        'classify why it failed.'
+    )
+    criteria = {
+        'real_regression': (
+            'DEFAULT reading. The failure looks like the change under test actually '
+            'broke something: a specific assertion, a new error, or a changed output '
+            'tied to the kind of change being verified. Pick this whenever the failure '
+            'is not clearly explained by one of the other options -- an ambiguous '
+            'failure is a regression until proven otherwise.'
+        ),
+        'known_flake': (
+            'Requires positive evidence, not just an unwanted failure: the failing test '
+            'or command is named among the recorded traps above, OR the error signature '
+            'is characteristic of flakiness with no link to the change under test -- a '
+            'timeout, a test-ordering or isolation failure, "address already in use" / '
+            'port in use, or an evident race condition.'
+        ),
+        'environment': (
+            'The failure is about the environment, not the code or a flaky test: a '
+            'missing binary, dependency, credential, network resource, or a disk or '
+            'permission error unrelated to test logic.'
+        ),
+        'generated_drift': (
+            'The failure is a diff against a generated or derived artifact (a lockfile, '
+            'a snapshot, generated bindings or code) that is expected to regenerate, not '
+            'a behavioral failure.'
+        ),
+    }
+    return Choice(instructions, criteria)
+
+
 def drift_prediction(file_path: str) -> dict:
     """Is this file likely to need editing to complete the described task?
 

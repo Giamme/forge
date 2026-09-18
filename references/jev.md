@@ -130,10 +130,53 @@ Three honesty caveats, printed with every run so they travel with the numbers:
   labeled tests are 1.6% of the candidate suite in one repo and 13.2% in
   another, which are not the same problem.
 
+## Verification (the first live capability)
+
+Two judgments inside `verify_result`, the decomposed runner's verification step.
+Both are off unless the `tests` capability is enabled and a key is configured; with
+Jev inactive the function behaves exactly as it did before.
+
+**Finding a command.** Only when neither `--verify` nor `.forge/verify` exists — the
+case that reports `UNVERIFIED` today even when QA passed. Code enumerates commands
+that *demonstrably exist* in the repo (`package.json` scripts, Makefile targets,
+tox/nox, runner scripts under `tests/`, `scripts/`, `bin/`, a configured pytest,
+`go.mod`, `Cargo.toml`, `run:` steps in GitHub workflows, and `verify |` lines already
+in `.forge/memory.md`); Jev picks one, or `none`. It selects, never generates, so it
+cannot propose `make test` for a repo with no Makefile. A non-executable runner is
+offered with its interpreter — forge's own `tests/check.sh` is mode 644 and its README
+says `bash tests/check.sh`.
+
+The chosen command is announced through `note` before it runs, recorded with its
+confidence and evidence in `<out>/verification.jev.json`, and then flows through the
+existing run/fingerprint/status logic unchanged. `UNVERIFIED` remains the outcome
+whenever nothing is chosen: Jev may find a command, never declare something verified.
+
+**Re-running a corroborated flake.** On a non-zero exit, Jev classifies the failure as
+`real_regression`, `known_flake`, `environment` or `generated_drift`. The command is
+re-run **once**, and only when all of these hold:
+
+- the exit was non-zero *and* the tree did not change — a tree change is never a flake;
+- the verdict is `known_flake` at or above the `flake_act` threshold (0.90 by default);
+- a `trap` already recorded in `.forge/memory.md` shares a distinctive token with this
+  failure's output.
+
+That last condition is deterministic and computed in code, not asked of the model. A
+model alone calling a failure a flake is how a real regression ships, and a trap noted
+months ago must not excuse an unrelated failure today. If the re-run also fails the
+status stays `FAIL` and the first log is preserved. `real_regression` is never re-run
+at any confidence.
+
 ## Status
 
-Phase 0 added the configuration surface only: entry points, gating flags,
-config storage and this document. Phase 1a adds `backtest` — a measurement
-tool that scores Jev's rubrics against git history offline. **Backtest does
-not change any Forge decision.** Routing, test selection, pre-dispatch gates
-and memory curation remain unwired to any live decision.
+Phase 0 added the configuration surface. Phase 1a added `backtest`, which scores the
+rubrics against git history offline and changes no Forge decision. Phase 2 makes
+verification the first capability wired to a live decision, as described above.
+
+Per-task test subsetting is **not** implemented. Running tests inside a task worktree
+has no safe window: artifacts created before the diff capture reach QA as if the dwarf
+wrote them, and artifacts created after are caught by the fingerprint re-checks in
+`do_task` and `merge_task`, which write `INVALIDATED` and block the merge. Doing it
+properly needs a disposable export with the dependency environment rebuilt, whose cost
+may exceed the saving — a trade that needs `backtest` numbers to settle.
+
+Routing, pre-dispatch gates and memory curation remain unwired.

@@ -53,6 +53,19 @@ def parser() -> argparse.ArgumentParser:
     backtest.add_argument('--out', default=None)
     backtest.add_argument('--capability', choices=('tests', 'drift'), default='tests')
     backtest.add_argument('--json', action='store_true')
+
+    verify_discover = sub.add_parser('verify-discover')
+    verify_discover.add_argument('--repo', required=True)
+    verify_discover.add_argument('--json', action='store_true')
+
+    verify_triage = sub.add_parser('verify-triage')
+    verify_triage.add_argument('--repo', required=True)
+    # dest is deliberately not 'command': the top-level subparsers already own that dest
+    # name for the subcommand itself ('verify-triage'), and letting --command collide
+    # with it would overwrite the dispatch key in main().
+    verify_triage.add_argument('--command', dest='verify_command', required=True)
+    verify_triage.add_argument('--log', required=True)
+    verify_triage.add_argument('--json', action='store_true')
     return p
 
 
@@ -243,13 +256,80 @@ def cmd_backtest(args) -> int:
     return 0
 
 
+def cmd_verify_discover(args) -> int:
+    repo = Path(args.repo)
+    if not repo.is_dir():
+        print(f'forge jev verify-discover: --repo {args.repo!r} is not a directory', file=sys.stderr)
+        return 2
+
+    # Imported lazily so cli.py keeps working, and status/doctor keep paying nothing,
+    # even while verify.py is mid-edit -- same reasoning as cmd_backtest's import.
+    try:
+        from . import verify
+    except ImportError as error:
+        print('forge jev verify-discover: verify module unavailable (' + str(error) + ')', file=sys.stderr)
+        return 3
+
+    config = load_config()
+    result = verify.discover(repo, config=config)
+    if result is None:
+        if not args.json:
+            print('forge jev verify-discover: no verified candidate found', file=sys.stderr)
+        else:
+            print(json.dumps(None))
+        return 3
+    if args.json:
+        print(json.dumps(result, indent=2))
+    else:
+        # stdout carries only the command, deliberately, so the bash caller can capture
+        # it with $(...); everything explanatory goes to stderr instead.
+        print(result['command'])
+        print(f"forge jev verify-discover: picked {result['command']!r} "
+             f"(confidence {result['confidence']:.2f}, source {result['source']})", file=sys.stderr)
+    return 0
+
+
+def cmd_verify_triage(args) -> int:
+    repo = Path(args.repo)
+    if not repo.is_dir():
+        print(f'forge jev verify-triage: --repo {args.repo!r} is not a directory', file=sys.stderr)
+        return 2
+    try:
+        log_tail = Path(args.log).read_text(errors='replace')
+    except OSError as error:
+        print(f'forge jev verify-triage: cannot read --log {args.log!r}: {error}', file=sys.stderr)
+        return 2
+
+    try:
+        from . import verify
+    except ImportError as error:
+        print('forge jev verify-triage: verify module unavailable (' + str(error) + ')', file=sys.stderr)
+        return 3
+
+    config = load_config()
+    traps = verify.known_traps(repo)
+    result = verify.triage(repo, command=args.verify_command, log_tail=log_tail, traps=traps, config=config)
+    if result is None:
+        if args.json:
+            print(json.dumps(None))
+        else:
+            print('forge jev verify-triage: no judgment produced', file=sys.stderr)
+        return 3
+    if args.json:
+        print(json.dumps(result, indent=2))
+    else:
+        print(f"{result['verdict']} (confidence {result['confidence']:.2f})")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     try:
         args = parser().parse_args(argv)
         return dict(setup=cmd_setup, enable=cmd_enable, disable=cmd_disable,
-                    status=cmd_status, doctor=cmd_doctor,
-                    backtest=cmd_backtest)[args.command](args)
+                    status=cmd_status, doctor=cmd_doctor, backtest=cmd_backtest,
+                    **{'verify-discover': cmd_verify_discover,
+                       'verify-triage': cmd_verify_triage})[args.command](args)
     except SystemExit as exit:
         # argparse exits the process on a usage error; return the code instead so the
         # shim owns exiting and main() stays callable from a test.

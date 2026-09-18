@@ -759,15 +759,62 @@ do_retry() {
 }
 
 verify_result() ( # plan, checkout, artifact directory
-  local plan="$1" wt="$2" out="$3" cmd="" before after rc=0
+  local plan="$1" wt="$2" out="$3" cmd="" before after rc=0 repo jev_loaded=0
   mkdir -p "$out"
   forge_metric_begin "$out" verification
   forge_metric_phase verification
+  repo="$(cat "$plan/repo")"
+  # Sourced unconditionally (cheap: local function/var definitions, no network) so
+  # forge_jev_active is available below. verify_result is itself a subshell, so this
+  # never leaks state into the caller. A missing or broken options file just leaves
+  # jev_loaded=0 and every Jev branch below falls through to today's behaviour.
+  if [ -f "$SKILL_DIR/scripts/forge-jev-options.sh" ]; then
+    source "$SKILL_DIR/scripts/forge-jev-options.sh" 2>/dev/null && jev_loaded=1
+  fi
   if [ -s "$plan/verify_cmd" ]; then cmd="$(cat "$plan/verify_cmd")"
-  elif [ -s "$(cat "$plan/repo")/.forge/verify" ]; then cmd="$(cat "$(cat "$plan/repo")/.forge/verify")"; fi
+  elif [ -s "$repo/.forge/verify" ]; then cmd="$(cat "$repo/.forge/verify")"; fi
   if [ "$(forge_tree "$wt")" != "$(git -C "$wt" rev-parse HEAD^{tree})" ]; then
     echo FAIL > "$out/verification.status"
     note "verification checkout has source changes outside its commit"; return 1
+  fi
+  # Only when nothing is configured: ask Jev to name a command that actually exists
+  # in the repo. Its exit code, not its stdout text, decides whether a judgment was
+  # produced — any non-zero exit (no key, disabled, nothing suitable, a traceback)
+  # falls straight through to the exact UNVERIFIED behaviour below. A Jev failure
+  # must never change the outcome of a run.
+  if [ -z "$cmd" ] && [ "$jev_loaded" = 1 ] && forge_jev_active tests; then
+    local jev_json jev_rc jev_cmd
+    # --json rather than the bare form: the record exists so a human can audit why a
+    # command ran, and "confidence: null" answers nothing. The exit code still decides.
+    jev_json="$(python3 "$SKILL_DIR/scripts/forge-jev.py" verify-discover --repo "$repo" --json 2>/dev/null)"
+    jev_rc=$?
+    jev_cmd=""
+    if [ "$jev_rc" -eq 0 ] && [ -n "$jev_json" ]; then
+      jev_cmd="$(printf '%s' "$jev_json" | python3 -c '
+import json, sys
+try:
+    print((json.load(sys.stdin) or {}).get("command") or "")
+except ValueError:
+    print("")
+' 2>/dev/null)"
+    fi
+    if [ -n "$jev_cmd" ]; then
+      cmd="$jev_cmd"
+      # Loud on purpose: an unreviewed command is about to run on the user's behalf,
+      # and they must never discover that later from a log instead of right here.
+      note "jev chose a verification command (no --verify or .forge/verify configured): $cmd"
+      printf '%s' "$jev_json" | python3 -c '
+import json, sys
+out = sys.argv[1]
+try:
+    found = json.load(sys.stdin) or {}
+except ValueError:
+    found = {}
+with open(out + "/verification.jev.json", "w") as fh:
+    json.dump({"discovered": found}, fh, indent=2, sort_keys=True)
+    fh.write("\n")
+' "$out" 2>/dev/null || true
+    fi
   fi
   if [ -z "$cmd" ]; then
     echo UNVERIFIED > "$out/verification.status"
@@ -781,6 +828,96 @@ verify_result() ( # plan, checkout, artifact directory
   after="$(forge_fingerprint "$wt")" || return 1
   echo "$before" > "$out/verification.fingerprint"
   if [ "$rc" != 0 ] || [ "$before" != "$after" ]; then
+    local flaked=0
+    # A tree change is never a flake — it stays FAIL immediately, no triage. Beyond
+    # that, act on a "known_flake" verdict ONLY when Forge's own memory already
+    # records a `trap` for this repo: a model alone deciding a failure was a flake
+    # is exactly how a real regression ships, so the verdict needs corroboration
+    # from Forge's own records, not just the model's word.
+    if [ "$rc" != 0 ] && [ "$before" = "$after" ] && [ "$jev_loaded" = 1 ] \
+      && forge_jev_active tests \
+      && [ -s "$repo/.forge/memory.md" ] \
+      && awk '/^## Known traps$/{f=1;next} /^## /{f=0} f && NF{c++} END{exit !(c>0)}' "$repo/.forge/memory.md"
+    then
+      local triage_json triage_rc verdict="" confidence="" flake_act="0.90" parsed corroborated=0 retried=0 rc2="" before2 after2
+      triage_json="$(python3 "$SKILL_DIR/scripts/forge-jev.py" verify-triage --repo "$repo" \
+        --command "$cmd" --log "$out/verification.log" --json 2>/dev/null)"
+      triage_rc=$?
+      if [ "$triage_rc" -eq 0 ] && [ -n "$triage_json" ]; then
+        parsed="$(printf '%s' "$triage_json" | python3 -c '
+import json, sys
+try:
+    data = json.load(sys.stdin)
+except ValueError:
+    data = {}
+print(data.get("verdict") or "")
+c = data.get("confidence")
+print(c if c is not None else "")
+print(bool(data.get("corroborated")))
+' 2>/dev/null)"
+        verdict="$(printf '%s\n' "$parsed" | sed -n 1p)"
+        confidence="$(printf '%s\n' "$parsed" | sed -n 2p)"
+        # triage() reports whether a recorded trap shares a distinctive token with this
+        # failure's output. Without that, one flaky test noted months ago would excuse
+        # every future failure in the repo.
+        [ "$(printf '%s\n' "$parsed" | sed -n 3p)" = "True" ] && corroborated=1 || corroborated=0
+        if [ -n "$FORGE_JEV_STATUS_JSON" ]; then
+          local threshold_read
+          threshold_read="$(printf '%s' "$FORGE_JEV_STATUS_JSON" | python3 -c '
+import json, sys
+try:
+    data = json.load(sys.stdin)
+except ValueError:
+    data = {}
+v = (data.get("thresholds") or {}).get("flake_act")
+print(v if v is not None else "0.90")
+' 2>/dev/null)"
+          [ -n "$threshold_read" ] && flake_act="$threshold_read"
+        fi
+        if [ "$verdict" = known_flake ] && [ -n "$confidence" ] && [ "$corroborated" = 1 ] \
+          && awk -v a="$confidence" -v b="$flake_act" 'BEGIN{exit !(a+0 >= b+0)}'
+        then
+          retried=1
+          note "jev: known_flake (confidence $confidence >= $flake_act), corroborated by a recorded trap — retrying once"
+          before2="$(forge_fingerprint "$wt")" || return 1
+          (cd "$wt" && /bin/bash -c "$cmd") > "$out/verification.retry.log" 2>&1 || rc2=$?
+          rc2="${rc2:-0}"
+          after2="$(forge_fingerprint "$wt")" || return 1
+          if [ "$rc2" = 0 ] && [ "$before2" = "$after2" ]; then
+            flaked=1
+            note "jev: retry passed — treating as a corroborated flake, not a regression"
+          else
+            note "jev: retry also failed (exit $rc2) — keeping FAIL"
+          fi
+        fi
+        python3 -c '
+import json, sys
+out, verdict, confidence, threshold, corroborated, retried, first_rc, retry_rc = sys.argv[1:9]
+path = out + "/verification.jev.json"
+try:
+    with open(path) as fh:
+        data = json.load(fh)
+except (OSError, ValueError):
+    data = {}
+data["triage"] = {
+    "verdict": verdict or None,
+    "confidence": float(confidence) if confidence else None,
+    "flake_act_threshold": float(threshold),
+    "trap_corroboration": corroborated == "1",
+    "retried": retried == "1",
+    "first_exit": int(first_rc),
+    "retry_exit": int(retry_rc) if retry_rc != "" else None,
+}
+with open(path, "w") as fh:
+    json.dump(data, fh, indent=2, sort_keys=True)
+    fh.write("\n")
+' "$out" "$verdict" "$confidence" "$flake_act" "$corroborated" "$retried" "$rc" "$rc2" 2>/dev/null || true
+      fi
+    fi
+    if [ "$flaked" = 1 ]; then
+      echo PASS > "$out/verification.status"
+      return 0
+    fi
     echo FAIL > "$out/verification.status"
     note "combined verification failed or changed source; see $out/verification.log"
     return 1
