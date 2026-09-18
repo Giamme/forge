@@ -633,3 +633,23 @@ def spec_from_sentence(tier: str, aliases: list) -> dict:
         f'A user described how they want work routed. Which model alias, if any, are '
         f'they asking for on {tier}-difficulty tasks?', criteria)
 
+def qa_effort() -> dict:
+    """How much review effort does this diff warrant?
+
+    Sizes the review; it can never skip one. Forge's premise is that an independent
+    reviewer reads every diff, so the cheapest level here is still a real review.
+    """
+    instructions = (
+        'A diff is about to be reviewed for correctness by an independent model that '
+        'did not write it (the diff and the task are in state). How much reasoning '
+        'effort does reviewing it well require?'
+    )
+    return Score(instructions, [
+        'low -- short and mechanical; a careful read is enough to see whether it is right.',
+        'medium -- ordinary logic to follow, with a few edge cases worth checking.',
+        'high -- the correctness argument spans several places in the diff.',
+        'xhigh -- interacting constraints, or behaviour whose failure mode is silent.',
+        'max -- concurrency, protocol, migration or security surface where a '
+        'plausible-looking diff is routinely wrong.',
+    ])
+

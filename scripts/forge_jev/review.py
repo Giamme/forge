@@ -15,7 +15,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from . import threshold
-from .client import ask, noul
+from .client import ask, noul, score
 from .questions import failure_is_correctness, findings_cite_the_diff
 
 # A diff large enough to exceed this is one no reviewer read carefully either. Truncating
@@ -70,3 +70,32 @@ def annotate_failure(*, review_path, diff_path, run_dir=None, config: dict | Non
         reasons.append('the findings look like style preferences rather than correctness bugs')
     return dict(correctness=correctness, citation=citation, suspect=bool(reasons),
                 reasons=reasons, truncated=review_truncated or diff_truncated)
+
+# forge-dispatch.sh's ladder, weakest first, matching qa_effort's Score levels.
+QA_EFFORT_WORDS = ('low', 'medium', 'high', 'xhigh', 'max')
+
+
+def size_review(*, diff_path, task_path=None, run_dir=None, config: dict | None = None):
+    """Suggest a review effort for this diff. Advisory only; never skips a review.
+
+    Returned, printed and recorded -- never applied. Sizing a review down is exactly the
+    decision that should not rest on an uncalibrated threshold, because its failure mode
+    is a bug that a cheaper review missed and nobody ever learns about.
+    """
+    from .questions import qa_effort
+
+    diff, truncated = _read(diff_path, DIFF_CHARS)
+    if not diff.strip():
+        return None
+    task = _read(task_path, REVIEW_CHARS)[0] if task_path else ''
+    result = ask(dict(diff=diff, task=task, truncated=truncated),
+                 dict(effort=qa_effort()), site='jev-qa-effort', run_dir=run_dir,
+                 config=config)
+    if result is None:
+        return None
+    position, confidence = score(result, 'effort')
+    if position is None:
+        return None
+    index = max(0, min(len(QA_EFFORT_WORDS) - 1, int(round(float(position)))))
+    return dict(effort=QA_EFFORT_WORDS[index], confidence=confidence)
+

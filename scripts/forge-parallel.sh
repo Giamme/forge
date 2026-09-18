@@ -681,6 +681,27 @@ do_task() (
   echo "$review_fp" > "$tdir/review.fingerprint"
 
   forge_metric_phase preparation
+  local jev_loaded_qa=0 subset_cmd=""
+  # A SEPARATE file from .forge/verify, and opt-in. It must contain {files}, because
+  # only the project knows how its runner takes a file list -- `pytest -q {files}` works,
+  # `npm test -- {files}` needs the dashes, and `go test ./...` cannot do it at all.
+  # Absent, this whole feature stays off and nothing extra runs.
+  [ -s "$REPO/.forge/verify-subset" ] && subset_cmd="$(cat "$REPO/.forge/verify-subset")"
+  if [ -f "$SKILL_DIR/scripts/forge-jev-options.sh" ]; then
+    source "$SKILL_DIR/scripts/forge-jev-options.sh" 2>/dev/null && jev_loaded_qa=1
+  fi
+  # Early feedback for the reviewer: run the tests this change most likely broke, in a
+  # throwaway export. Requires a configured verify command -- without one there is no
+  # runner to point at a file list, and inventing one is not this feature's job.
+  if [ -n "$subset_cmd" ] && [ "$jev_loaded_qa" = 1 ] && forge_jev_active tests; then
+    git -C "$wt" diff --name-only "$(cat "$tdir/review.base")" "$reviewed" \
+        > "$tdir/changed.txt" 2>/dev/null || : > "$tdir/changed.txt"
+    python3 "$SKILL_DIR/scripts/forge-jev.py" test-subset --repo "$wt" \
+        --commit "$reviewed" --task "$tdir/prompt.md" --command "$subset_cmd" \
+        --changed "$tdir/changed.txt" --base "$(cat "$tdir/review.base")" \
+        --run-dir "$tdir" > "$tdir/subset.jev.txt" 2>/dev/null \
+      || : > "$tdir/subset.jev.txt"
+  fi
   # QA uses the dispatch-time ownership and baseline, never later merge state.
   /bin/bash "$MEMORY" inject "$REPO" qa --task "$tdir/prompt.md" > "$tdir/qa.memory"
   {
@@ -689,6 +710,17 @@ do_task() (
     echo "bugs: logic errors, broken edge cases, behaviour that does not match what was asked."
     echo "Also say if it solved a different problem, or touched files outside the task's scope."
     echo
+    # A subset failure is the one thing a reviewer most wants to know and cannot see
+    # from the diff. It runs in a throwaway export of the reviewed commit, so the task
+    # worktree is untouched and no fingerprint can change. It never replaces
+    # verification -- the full suite still runs at integration exactly as before.
+    if [ -s "$tdir/subset.jev.txt" ]; then
+      cat "$tdir/subset.jev.txt"
+      echo
+      echo "That is a subset chosen by relevance, not the full suite, so a pass would"
+      echo "prove nothing and is not reported. A failure here is real."
+      echo
+    fi
     if [ -s "$tdir/drift.txt" ]; then
       # The reviewer is already asked about scope and had no way to know the answer.
       echo "Scope note: this task declared it would touch $(field "$T" "$id" files), and the"
@@ -710,6 +742,20 @@ do_task() (
     echo; /bin/bash "$MEMORY" note qa
     echo "Place any learning notes before the final FORGE_VERDICT: PASS or FORGE_VERDICT: FAIL line."
   } > "$tdir/qa.input"
+  # Size the review before it runs, so the number is visible while it still means
+  # something. Advisory only: forge dispatches QA at the effort the user specified.
+  # Sizing a review DOWN is the one decision that must not rest on an uncalibrated
+  # threshold, because its failure mode is a bug a cheaper review missed and nobody
+  # ever learns about.
+  if [ "$jev_loaded_qa" = 1 ] && forge_jev_active gates; then
+    local qa_effort
+    qa_effort="$(python3 "$SKILL_DIR/scripts/forge-jev.py" qa-effort \
+        --diff "$tdir/changes.diff" --task "$tdir/prompt.md" --run-dir "$tdir" 2>/dev/null)"
+    if [ $? -eq 0 ] && [ -n "$qa_effort" ]; then
+      note "$id: jev sizes this review at effort $(printf '%s' "$qa_effort" | cut -f1) (advisory; qa runs as configured)"
+      printf '%s' "$qa_effort" > "$tdir/qa.effort.jev"
+    fi
+  fi
   forge_metric_phase dispatch
   /bin/bash "$DISPATCH" qa "$qa" --repo "$review" --run-dir "$tdir" \
         --review-base "$(cat "$tdir/review.base")" --ripwire-query-file "$tdir/prompt.md" --prompt-file "$tdir/qa.input" $yq --output "${FORGE_OUTPUT:-summary}" >"$tdir/qa.out" 2>&1

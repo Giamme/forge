@@ -533,6 +533,48 @@ parent dwarf's JSON. Two properties, both tested:
   already authorised, and it is gated on `routing.may_act`, so it does nothing on an
   uncalibrated repo.
 
+## Early test feedback (what became of per-task subsetting)
+
+Running tests inside a task worktree has no safe window: an artifact created before the
+diff is captured reaches QA as if the dwarf wrote it, and one created after trips the
+fingerprint re-checks in `do_task` and `merge_task`, which write `INVALIDATED` and block
+the merge. So this exports the reviewed commit to a throwaway directory and runs there.
+A test asserts the worktree's tree hash, file list and absence of `__pycache__` across a
+real run.
+
+**It is not a speed-up.** The full suite still runs at integration exactly as before, so
+this *adds* a run rather than replacing one. The saving the plan described required
+replacing verification, which the fingerprint rules forbid. What it buys instead is that
+a reviewer learns "your diff breaks `test_x`" while it can still act on that.
+
+### It is opt-in, and needs a template
+
+`.forge/verify-subset` must exist and contain `{files}`:
+
+```
+pytest -q {files}
+npm test -- {files}
+python3 -m unittest {files}
+```
+
+Deliberately a separate file from `.forge/verify`. There is no general way to restrict an
+arbitrary command to a file list, and the first version assumed there was — it appended
+paths to the verify command, which works for `pytest -q` and fails for `npm test`,
+`go test ./...`, `bash tests/check.sh` and `python -m unittest discover`, each for a
+different reason. Without the template this feature stays off.
+
+### A failure is only reported when the base passes
+
+The first run of this reported **"the likely-affected tests FAILED"** when the real
+problem was that `pytest` was not installed in the export. An environment failure
+presented to a reviewer as a broken diff is worse than silence, and pre-existing failures
+have the same shape.
+
+So on a failure the identical subset runs again against the commit the task started from,
+and the result is reported **only if the base passes**. That one extra run — paid only
+when something already failed — is what separates "this diff broke it" from "this was
+already broken, or cannot run here".
+
 ## Status
 
 Phase 0 added the configuration surface. Phase 1a added `backtest`, which scores the
@@ -541,19 +583,13 @@ verification the first capability wired to a live decision. Phase 3 adds routing
 can advise today and cannot act anywhere until that repo has been calibrated — which is
 also what Phase 1b's shadow accrual exists to make possible.
 
-Per-task test subsetting is **not** implemented. Running tests inside a task worktree
-has no safe window: artifacts created before the diff capture reach QA as if the dwarf
-wrote them, and artifacts created after are caught by the fingerprint re-checks in
-`do_task` and `merge_task`, which write `INVALIDATED` and block the merge. Doing it
-properly needs a disposable export with the dependency environment rebuilt, whose cost
-may exceed the saving — a trade that needs `backtest` numbers to settle.
+Per-task test subsetting now exists, but **not as the wall-clock lever the plan
+described**, and that distinction matters. See "Early test feedback" above.
 
 Routing is wired but shadow-first: it can advise today and cannot act until a repo
-has been calibrated. Phase 4 is wired except QA effort sizing, which is left out
-deliberately: it would size a review using the same kind of threshold routing
-cannot yet act on, so it would be advisory with no way to earn its way out of that.
-Phase 5 is wired in full. Phase 2(b), per-task test subsetting, remains deferred for
-the fingerprint reason above.
+has been calibrated. Every phase of the plan is now implemented. Routing, effort
+sizing and QA effort sizing are advisory and cannot act until a repo is calibrated;
+the gates, verification, early test feedback and memory curation act today.
 
 Verification is calibrated against real judgments (see above). Routing is not: its
 `routing_act` of 0.85 rests on six hand-labelled tasks, which is a smoke test and not a

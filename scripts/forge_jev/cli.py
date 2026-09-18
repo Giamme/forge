@@ -101,6 +101,23 @@ def parser() -> argparse.ArgumentParser:
     parse_spec.add_argument('sentence')
     parse_spec.add_argument('--json', action='store_true')
 
+    qa_effort = sub.add_parser('qa-effort')
+    qa_effort.add_argument('--diff', required=True)
+    qa_effort.add_argument('--task', default=None)
+    qa_effort.add_argument('--run-dir', default=None)
+    qa_effort.add_argument('--json', action='store_true')
+
+    test_subset = sub.add_parser('test-subset')
+    test_subset.add_argument('--repo', required=True)
+    test_subset.add_argument('--commit', required=True)
+    test_subset.add_argument('--task', required=True)
+    test_subset.add_argument('--command', dest='subset_command', required=True)
+    test_subset.add_argument('--changed', default=None)
+    test_subset.add_argument('--base', default=None)
+    test_subset.add_argument('--run-dir', default=None)
+    test_subset.add_argument('--max', type=int, default=8)
+    test_subset.add_argument('--timeout', type=int, default=600)
+
     verify_triage = sub.add_parser('verify-triage')
     verify_triage.add_argument('--repo', required=True)
     # dest is deliberately not 'command': the top-level subparsers already own that dest
@@ -666,6 +683,123 @@ def cmd_parse_spec(args) -> int:
     return 0
 
 
+def cmd_qa_effort(args) -> int:
+    """Suggest a review effort. Prints it; forge never applies it."""
+    config = load_config()
+    if not enabled('gates', config=config) or api_key(config) is None:
+        return 3
+    from . import review
+
+    result = review.size_review(diff_path=args.diff, task_path=args.task,
+                                run_dir=args.run_dir, config=config)
+    if result is None:
+        return 3
+    print(json.dumps(result, sort_keys=True) if args.json
+          else result['effort'] + '\t' + str(result['confidence']))
+    return 0
+
+
+def cmd_test_subset(args) -> int:
+    """Run the likely-affected tests in a throwaway export of the reviewed commit.
+
+    Exit 0 only when the subset RAN AND FAILED -- that is the one outcome worth telling
+    a reviewer about. Exit 1 covers "ran and passed", which proves nothing here because
+    the subset is not the suite, and exit 3 covers everything else. The task worktree is
+    never touched, so no fingerprint can change.
+    """
+    import subprocess
+    import tempfile
+
+    config = load_config()
+    if not enabled('tests', config=config) or api_key(config) is None:
+        return 3
+    from . import subset
+
+    repo = Path(args.repo)
+    if not repo.is_dir():
+        return 2
+    try:
+        task = Path(args.task).read_text(errors='replace')[:6000]
+    except OSError:
+        return 3
+    changed = []
+    if args.changed:
+        try:
+            changed = Path(args.changed).read_text(errors='replace').split()[:200]
+        except OSError:
+            changed = []
+
+    if '{files}' not in args.subset_command:
+        # Without the placeholder there is nowhere to put the selection, and appending
+        # blindly is what broke this before. Do nothing rather than run the full suite
+        # twice under a name that says "subset".
+        return 2
+    candidates = subset.candidate_tests(repo)
+    if not candidates:
+        return 3
+    scored = subset.select(repo, task=task, changed=changed, candidates=candidates,
+                           run_dir=args.run_dir, config=config)
+    if not scored:
+        return 3
+
+    # No measured per-repo threshold exists, so rather than invent one this takes the
+    # highest-scoring few. Over-selecting only costs runtime in a throwaway directory;
+    # the result is advisory either way and never decides verification.
+    chosen = [name for _p, name in scored[:max(1, args.max)]]
+    export_dir = tempfile.mkdtemp(prefix='forge-subset-')
+    try:
+        if not subset.export(repo, args.commit, export_dir):
+            return 3
+        # The template says how THIS project's runner takes a file list, because there
+        # is no general answer. `pytest -q <files>` works; `npm test <files>` does not
+        # (it needs `--`), `go test ./...` and `bash tests/check.sh` take no file list at
+        # all, and `python -m unittest discover -s tests` rejects paths outright. Guessing
+        # produced a command that failed for a reason having nothing to do with the diff.
+        command = args.subset_command.replace('{files}', ' '.join(chosen))
+        try:
+            completed = subprocess.run(command, shell=True, cwd=export_dir,
+                                       capture_output=True, text=True,
+                                       timeout=max(1, args.timeout))
+        except (OSError, subprocess.SubprocessError):
+            return 3
+        if completed.returncode == 0:
+            return 1
+        tail = (completed.stdout or '') + (completed.stderr or '')
+    finally:
+        subset.cleanup(export_dir)
+
+    # It failed. That is not yet evidence against the diff. A throwaway export has no
+    # installed dependencies of its own, so `No module named pytest` looks exactly like
+    # a broken test -- and reporting an environment failure to a reviewer as "your diff
+    # breaks tests" is worse than saying nothing at all. Pre-existing failures have the
+    # same shape. So run the identical subset against the BASE commit and only speak up
+    # when the base passes: that is the one case where this diff is implicated.
+    if not args.base:
+        return 3
+    control_dir = tempfile.mkdtemp(prefix='forge-subset-base-')
+    try:
+        if not subset.export(repo, args.base, control_dir):
+            return 3
+        try:
+            control = subprocess.run(command, shell=True, cwd=control_dir,
+                                     capture_output=True, text=True,
+                                     timeout=max(1, args.timeout))
+        except (OSError, subprocess.SubprocessError):
+            return 3
+        if control.returncode != 0:
+            # Same failure without the diff: environment or pre-existing, not this change.
+            return 3
+    finally:
+        subset.cleanup(control_dir)
+
+    print('The likely-affected tests were run against this diff and FAILED.')
+    print('The same tests PASS on the commit this task started from, so the failure')
+    print('is attributable to this diff rather than to the environment.')
+    print('Command: ' + command)
+    print(redact(tail[-3000:]))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     try:
@@ -677,6 +811,8 @@ def main(argv: list[str] | None = None) -> int:
                        'coupling': cmd_coupling,
                        'review-triage': cmd_review_triage,
                        'parse-spec': cmd_parse_spec,
+                       'qa-effort': cmd_qa_effort,
+                       'test-subset': cmd_test_subset,
                        'memory-curate': cmd_memory_curate,
                        'memory-slice': cmd_memory_slice,
                        'memory-stale': cmd_memory_stale,
