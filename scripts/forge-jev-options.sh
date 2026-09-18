@@ -16,6 +16,26 @@
 # Phase 0 wires only the flags, env vars and freeze/restore files below. Nothing
 # dispatches differently yet.
 
+# What the environment said before any flag was parsed. Captured once, and exported so
+# a second source of this file (there are several per run) sees the original answer
+# rather than whatever forge_jev_export has since written into FORGE_JEV.
+#
+# This exists because wiring the flags up made a documented guarantee reachable for the
+# first time: FORGE_JEV=off is a hard kill switch that wins over everything, and until
+# forge_jev_export was actually called by a runner, it won by default -- nothing was
+# there to override it. The first real run with --jev clobbered it.
+if [ -z "${FORGE_JEV_ENV_CAPTURED:-}" ]; then
+  FORGE_JEV_ENV_CAPTURED=1
+  FORGE_JEV_ENV_KILL=0
+  [ "${FORGE_JEV:-}" = off ] && FORGE_JEV_ENV_KILL=1
+  FORGE_JEV_ENV_ROUTING="${FORGE_JEV_ROUTING:-}"
+  FORGE_JEV_ENV_TESTS="${FORGE_JEV_TESTS:-}"
+  FORGE_JEV_ENV_GATES="${FORGE_JEV_GATES:-}"
+  FORGE_JEV_ENV_MEMORY="${FORGE_JEV_MEMORY:-}"
+  export FORGE_JEV_ENV_CAPTURED FORGE_JEV_ENV_KILL FORGE_JEV_ENV_ROUTING \
+         FORGE_JEV_ENV_TESTS FORGE_JEV_ENV_GATES FORGE_JEV_ENV_MEMORY
+fi
+
 JEV_CHOICE=""          # "" | on | off
 JEV_ACT=0              # --jev-act
 JEV_SHADOW=0           # --jev-shadow
@@ -72,14 +92,30 @@ forge_jev_flag() {
 # Python side reads. Call after all flags are parsed (and after forge_jev_restore,
 # if resuming, since restore re-parses the frozen selection through this path).
 forge_jev_export() {
-  if [ "$JEV_CHOICE" = off ]; then
+  if [ "${FORGE_JEV_ENV_KILL:-0}" = 1 ]; then
+    # Rule 1 of the precedence above: it wins over everything, and "everything" has to
+    # include this function. A flag must not be able to switch Jev back on.
+    export FORGE_JEV=off
+  elif [ "$JEV_CHOICE" = off ]; then
     export FORGE_JEV=off
   elif [ "$JEV_CHOICE" = on ]; then
     export FORGE_JEV=on
   else
     unset FORGE_JEV 2>/dev/null || true
   fi
-  unset FORGE_JEV_ROUTING FORGE_JEV_TESTS FORGE_JEV_GATES FORGE_JEV_MEMORY 2>/dev/null || true
+  # Restore what the environment said, rather than clearing it: a per-capability
+  # variable set by the caller is rule 2's allowlist, and wiping it here would have
+  # made `FORGE_JEV_TESTS=on forge ...` silently do nothing. A flag for the same
+  # capability still wins, because it is the more specific instruction.
+  local cap_env
+  for cap_env in ROUTING TESTS GATES MEMORY; do
+    eval "local inherited=\"\${FORGE_JEV_ENV_$cap_env:-}\""
+    if [ -n "$inherited" ]; then
+      eval "export FORGE_JEV_$cap_env=\"\$inherited\""
+    else
+      unset "FORGE_JEV_$cap_env" 2>/dev/null || true
+    fi
+  done
   local entry cap val
   for entry in ${JEV_CAPS[@]+"${JEV_CAPS[@]}"}; do
     cap="${entry%%=*}"; val="${entry#*=}"
@@ -159,6 +195,31 @@ for cap, val in sorted((data.get("capabilities") or {}).items()):
 $parsed
 EOF
   forge_jev_export
+}
+
+# forge_jev_settle <plan-dir> — what `run` and `retry` do about Jev.
+#
+# `plan` is the command that makes the choice and freezes it. A later run or retry of
+# the same plan must make the same decisions, for the reason fractal-selection.json is
+# frozen: a resumed run that quietly changed its mind about whether a judgment may act
+# is a run nobody can reason about afterwards.
+#
+# So a frozen selection wins over a flag passed here, and saying so out loud beats
+# ignoring the flag in silence. When nothing was frozen — a plan dir written before
+# selections existed — the flags parsed on this command apply and are then frozen, so
+# the next retry of it is reproducible too.
+forge_jev_settle() {
+  local plan="$1"
+  if [ -f "$plan/jev-selection.json" ]; then
+    if [ -n "$JEV_CHOICE" ] || [ "$JEV_ACT" = 1 ] || [ "$JEV_SHADOW" = 1 ] \
+       || [ "${#JEV_CAPS[@]}" -gt 0 ]; then
+      printf 'forge: jev: using the selection frozen at plan time; ignoring the flags given here\n' >&2
+    fi
+    forge_jev_restore "$plan"
+  else
+    forge_jev_export
+    forge_jev_record "$plan"
+  fi
 }
 
 # forge_jev_active <capability> — succeeds (0) when Jev is enabled for that

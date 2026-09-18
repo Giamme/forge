@@ -69,7 +69,8 @@ def candidates(repo, declared: str) -> list[str]:
 
 
 def predict_drift(repo, *, goal: str, task_id: str, title: str, declared: str,
-                  approach: str = '', run_dir=None, config: dict | None = None):
+                  approach: str = '', prompt: str = '', run_dir=None,
+                  config: dict | None = None):
     """Undeclared files this task looks likely to edit, highest probability first.
 
     Returns [] when there is nothing to say and None when no judgment could be made, so
@@ -79,8 +80,10 @@ def predict_drift(repo, *, goal: str, task_id: str, title: str, declared: str,
     if not pool:
         return []
     questions = {f'f{i}': drift_prediction(name) for i, name in enumerate(pool)}
+    # Which files a task will really touch is stated in its requirements far more often
+    # than in its title -- "extend tests/test_events.py" is in the prompt, not the title.
     state = dict(goal=goal, task=dict(id=task_id, title=title, declared_files=declared),
-                 approach=approach)
+                 prompt=prompt, approach=approach)
     result = ask(state, questions, site='jev-drift', run_dir=run_dir, config=config)
     if result is None:
         return None

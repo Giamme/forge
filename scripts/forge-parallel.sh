@@ -30,6 +30,12 @@ MEMORY="$SKILL_DIR/scripts/forge-memory.sh"
 source "$SKILL_DIR/scripts/forge-artifact.sh"
 source "$SKILL_DIR/scripts/forge-metrics.sh"
 source "$SKILL_DIR/scripts/forge-fractal-options.sh"
+# Beside fractal's, and for the same reason: an option parser sourced from inside
+# a function, after that function has already walked its arguments, cannot parse
+# anything. Every --jev flag was rejected as "unknown option" until this line.
+JEV_OPTS=0
+[ -f "$SKILL_DIR/scripts/forge-jev-options.sh" ] \
+  && source "$SKILL_DIR/scripts/forge-jev-options.sh" 2>/dev/null && JEV_OPTS=1
 OUTPUT=summary
 
 die()  { printf 'forge: %s\n' "$1" >&2; exit "${2:-2}"; }
@@ -90,7 +96,7 @@ pool_pick() { # pool_pick <comma-list> <index>
 do_plan() {
   local PLAN="${1:?plan needs a plan dir}"; shift
   local REPO="" D_ANY="" D_HI="" D_MD="" D_LO="" Q_ANY="" Q_HI="" Q_MD="" Q_LO=""
-  local PLANNER="" NOMEM=0
+  local PLANNER="" NOMEM=0 jev_rc=0
   while [ $# -gt 0 ]; do
     case "$1" in
       --repo)         REPO="${2:?}"; shift 2 ;;
@@ -105,10 +111,24 @@ do_plan() {
       --qa-high)      Q_HI="${2:?}"; shift 2 ;;
       --qa-medium)    Q_MD="${2:?}"; shift 2 ;;
       --qa-low)       Q_LO="${2:?}"; shift 2 ;;
-      *) die "plan: unknown option '$1'" ;;
+      *)
+        # `case` is not a loop, so `continue` here belongs to the enclosing while.
+        if [ "$JEV_OPTS" = 1 ]; then
+          forge_jev_flag "$1"; jev_rc=$?
+          case "$jev_rc" in
+            0) shift "$JEV_SHIFT"; continue ;;
+            2) exit 2 ;;
+          esac
+        fi
+        die "plan: unknown option '$1'"
+        ;;
     esac
   done
+  [ "$JEV_OPTS" = 1 ] && forge_jev_export
   [ -d "$PLAN" ] || die "plan dir '$PLAN' does not exist"
+  # Freeze the selection next to the task table, so run and retry restore it rather
+  # than re-deciding. Written on every plan: a re-plan is a new decision.
+  [ "$JEV_OPTS" = 1 ] && forge_jev_record "$PLAN"
   local T="$PLAN/tasks.tsv"
   [ -r "$T" ] || die "no tasks.tsv in '$PLAN' — decompose the goal first"
 
@@ -862,7 +882,7 @@ merge_task() { # merge_task <plan> <id> -> 0 merged, 1 conflicted
 # repair loop, which is what keeps forge's one-dwarf-then-QA rule intact.
 do_retry() {
   local PLAN="${1:?retry needs a plan dir}" id="${2:?retry needs a task id}"; shift 2
-  local NEWDWARF=""
+  local NEWDWARF="" jev_rc=0
   while [ $# -gt 0 ]; do
     case "$1" in
       --no-ripwire) export FORGE_RIPWIRE=off; shift ;;
@@ -872,9 +892,20 @@ do_retry() {
       --yolo-qa)    touch "$PLAN/yolo_qa"; shift ;;
       --verify)     printf '%s' "${2:?--verify needs a command}" > "$PLAN/verify_cmd"; shift 2 ;;
       --setup)      printf '%s' "${2:?--setup needs a command}" > "$PLAN/setup_cmd"; shift 2 ;;
-      *) die "retry: unknown option '$1'" ;;
+      *)
+        # `case` is not a loop, so `continue` here belongs to the enclosing while.
+        if [ "$JEV_OPTS" = 1 ]; then
+          forge_jev_flag "$1"; jev_rc=$?
+          case "$jev_rc" in
+            0) shift "$JEV_SHIFT"; continue ;;
+            2) exit 2 ;;
+          esac
+        fi
+        die "retry: unknown option '$1'"
+        ;;
     esac
   done
+  [ "$JEV_OPTS" = 1 ] && forge_jev_settle "$PLAN"
   case "$OUTPUT" in summary|full) ;; *) die "--output must be summary or full" ;; esac
   export FORGE_OUTPUT="$OUTPUT"
   local T="$PLAN/tasks.tsv" tdir="$PLAN/tasks/$id"
@@ -1113,7 +1144,7 @@ write_results() { # write_results <plan>
 do_run() (
   local PLAN="${1:?run needs a plan dir}"; shift
   local fractal_pipeline_args=("$@")
-  local MAXP=3 DRY=0
+  local MAXP=3 DRY=0 jev_rc=0
   while [ $# -gt 0 ]; do
     case "$1" in
       --fractal) forge_fractal_flag on || exit $?; shift ;;
@@ -1127,9 +1158,20 @@ do_run() (
       --verify)     printf '%s' "${2:?--verify needs a command}" > "$PLAN/verify_cmd"; shift 2 ;;
       --setup)        printf '%s' "${2:?--setup needs a command}" > "$PLAN/setup_cmd"; shift 2 ;;
       --dry-run)      DRY=1; shift ;;
-      *) die "run: unknown option '$1'" ;;
+      *)
+        # `case` is not a loop, so `continue` here belongs to the enclosing while.
+        if [ "$JEV_OPTS" = 1 ]; then
+          forge_jev_flag "$1"; jev_rc=$?
+          case "$jev_rc" in
+            0) shift "$JEV_SHIFT"; continue ;;
+            2) exit 2 ;;
+          esac
+        fi
+        die "run: unknown option '$1'"
+        ;;
     esac
   done
+  [ "$JEV_OPTS" = 1 ] && forge_jev_settle "$PLAN"
   case "$OUTPUT" in summary|full) ;; *) die "--output must be summary or full" ;; esac
   export FORGE_OUTPUT="$OUTPUT"
   case "$MAXP" in ''|*[!0-9]*) die "--max-parallel must be positive" ;; esac

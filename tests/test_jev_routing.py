@@ -195,6 +195,49 @@ class StateTests(unittest.TestCase):
         self.assertNotIn('high', json.dumps(captured['state']))
 
 
+    def test_the_task_prompt_reaches_the_model(self):
+        # It did not, until a real plan was scored. Every rubric still answered about
+        # the one-line title, plausibly enough that no unit test noticed -- and
+        # prompt_adequacy, the gate whose whole job is to catch an under-specified
+        # task, was structurally guaranteed to be shown one. A 460-word spec with a
+        # declared output shape and named edge cases scored 0.23 and tripped it.
+        captured = {}
+
+        def fake_ask(state, questions, **kwargs):
+            captured['state'] = state
+            return None
+
+        needle = 'THE-REQUIREMENTS-THE-REVIEWER-READS'
+        with patch('forge_jev.routing.ask', side_effect=fake_ask):
+            routing.score_task(self.repo, goal='g', task_id='t', title='t', files='a.py',
+                               prompt='Do the thing. ' + needle)
+        self.assertIn(needle, json.dumps(captured['state']))
+
+
+    def test_boundary_rounding_never_jumps_a_tier(self):
+        # Measured on a real plan: a composite of 0.373 sat 0.043 above LOW_MAX, scored
+        # medium, and was escalated to high -- promoted a whole tier past a line it was
+        # merely near. Rounding up to a boundary is a tie-break; jumping the next one
+        # is not, and it sends the expensive model at a task nothing said was hard.
+        order = {'low': 0, 'medium': 1, 'high': 2}
+        step = 0.001
+        value = 0.0
+        while value <= 1.0:
+            base = routing.tier_for(value)
+            final = routing._escalate(base) if routing._near_boundary(value) else base
+            with self.subTest(composite=round(value, 3)):
+                self.assertLessEqual(order[final] - order[base], 1)
+            value += step
+
+    def test_a_composite_at_or_above_a_cut_is_not_rounded_up_to_it(self):
+        # At exactly the cut, tier_for already returns the higher tier.
+        for cut in (routing.LOW_MAX, routing.MEDIUM_MAX):
+            with self.subTest(cut=cut):
+                self.assertFalse(routing._near_boundary(cut))
+                self.assertFalse(routing._near_boundary(cut + 0.001))
+                self.assertTrue(routing._near_boundary(cut - 0.001))
+
+
 class CalibrationGateTests(unittest.TestCase):
     """--jev-act alone must never be enough. This is the gate that makes that true."""
 

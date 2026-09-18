@@ -581,13 +581,57 @@ class ShimTests(JevTestCase):
 class OptionsShellTests(unittest.TestCase):
     """The options file is bash, so `bash -n` is otherwise its only coverage."""
 
-    def _shell(self, body):
+    def _shell(self, body, env=None):
         script = 'set -uo pipefail\nSKILL_DIR="{root}"\nsource "$SKILL_DIR/scripts/forge-jev-options.sh"\n{body}'.format(
             root=ROOT, body=body)
-        return subprocess.run(['/bin/bash', '-c', script], capture_output=True, text=True)
+        environ = dict(os.environ)
+        # The capture in the options file is keyed off these, so a leaked value from the
+        # test runner's own environment would decide the result instead of the test.
+        for name in ('FORGE_JEV', 'FORGE_JEV_ROUTING', 'FORGE_JEV_TESTS',
+                     'FORGE_JEV_GATES', 'FORGE_JEV_MEMORY', 'FORGE_JEV_ENV_CAPTURED'):
+            environ.pop(name, None)
+        environ.update(env or {})
+        return subprocess.run(['/bin/bash', '-c', script], capture_output=True, text=True,
+                              env=environ)
 
     PARSE_ALL = 'for f in --jev --jev-act --jev-tests --no-jev-memory; do forge_jev_flag "$f" || exit 9; done'
     SHOW = 'echo "${FORGE_JEV:-unset} ${FORGE_JEV_ACT:-unset} ${FORGE_JEV_TESTS:-unset} ${FORGE_JEV_MEMORY:-unset}"'
+
+    def test_forge_jev_off_survives_an_explicit_jev_flag(self):
+        # Rule 1 of the precedence the options file documents: FORGE_JEV=off wins over
+        # everything. It won by default until the flags were wired into the runners,
+        # because nothing called forge_jev_export -- and the first real run with --jev
+        # switched Jev straight back on.
+        r = self._shell('forge_jev_flag --jev && forge_jev_export && '
+                        'echo "${FORGE_JEV:-unset}"', env={'FORGE_JEV': 'off'})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout.strip(), 'off')
+
+    def test_forge_jev_off_survives_a_capability_flag(self):
+        r = self._shell('forge_jev_flag --jev-tests && forge_jev_export && '
+                        'echo "${FORGE_JEV:-unset}"', env={'FORGE_JEV': 'off'})
+        self.assertEqual(r.stdout.strip(), 'off')
+
+    def test_an_inherited_capability_is_not_wiped_by_export(self):
+        # Rule 2: a per-capability variable set by the caller is an allowlist. Clearing
+        # it here would make `FORGE_JEV_TESTS=on forge ...` silently do nothing.
+        r = self._shell('forge_jev_export && echo "${FORGE_JEV_TESTS:-unset}"',
+                        env={'FORGE_JEV_TESTS': 'on'})
+        self.assertEqual(r.stdout.strip(), 'on')
+
+    def test_a_flag_still_beats_an_inherited_capability(self):
+        r = self._shell('forge_jev_flag --no-jev-tests && forge_jev_export && '
+                        'echo "${FORGE_JEV_TESTS:-unset}"', env={'FORGE_JEV_TESTS': 'on'})
+        self.assertEqual(r.stdout.strip(), 'off')
+
+    def test_re_sourcing_does_not_recapture_what_export_wrote(self):
+        # The file is sourced several times per run. By the second source FORGE_JEV
+        # holds whatever export wrote, so a fresh capture would read its own output.
+        r = self._shell('forge_jev_flag --jev && forge_jev_export && '
+                        'source "$SKILL_DIR/scripts/forge-jev-options.sh" && '
+                        'forge_jev_export && echo "${FORGE_JEV:-unset}"',
+                        env={'FORGE_JEV': 'off'})
+        self.assertEqual(r.stdout.strip(), 'off')
 
     def test_flags_map_to_environment(self):
         r = self._shell(self.PARSE_ALL + '\nforge_jev_export\n' + self.SHOW)

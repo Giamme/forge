@@ -83,7 +83,16 @@ def _escalate(tier: str) -> str:
 
 
 def _near_boundary(composite: float) -> bool:
-    return any(abs(composite - cut) <= BOUNDARY_BAND for cut in (LOW_MAX, MEDIUM_MAX))
+    """Is this close enough to a cut, from BELOW, that it should round up to it?
+
+    Only from below. A composite just above a cut is already on the higher side of that
+    boundary, and escalating it again promotes it a whole tier past the line it was
+    merely near -- measured on a real plan, a task at 0.373 sat 0.043 above LOW_MAX,
+    scored `medium`, and was escalated to `high`. Rounding up to a boundary is a
+    tie-break; jumping the next one is not a tie-break at all.
+    """
+    # Strictly below: at exactly the cut, tier_for already returns the higher tier.
+    return any(0.0 < cut - composite <= BOUNDARY_BAND for cut in (LOW_MAX, MEDIUM_MAX))
 
 
 def combine(dimensions: dict) -> dict | None:
@@ -163,8 +172,8 @@ def _memory(repo: Path) -> str:
 
 
 def score_task(repo, *, goal: str, task_id: str, title: str, files: str,
-               approach: str = '', declared_difficulty: str = '', run_dir=None,
-               config: dict | None = None) -> dict | None:
+               approach: str = '', prompt: str = '', declared_difficulty: str = '',
+               run_dir=None, config: dict | None = None) -> dict | None:
     """One request per task. All five rubrics evaluate in parallel server-side.
 
     Returns None whenever anything at all goes wrong, because a plan that cannot be
@@ -172,9 +181,20 @@ def score_task(repo, *, goal: str, task_id: str, title: str, files: str,
     """
     repo_path = Path(repo)
     questions = {name: builder() for name, builder in QUESTIONS.items()}
+    # `prompt` is the task's requirements -- tasks/<id>/prompt.md, the text the dwarf is
+    # dispatched with and the reviewer reads. It was missing from this state until a real
+    # plan was scored, and its absence was not visible from any unit test: every rubric
+    # still answered, plausibly, about the one-line title.
+    #
+    # It mattered most to the gate that exists to catch under-specified tasks. Asked
+    # whether "the task states requirements specific enough that a reviewer could judge
+    # correctness", with only a title in state, the honest answer is no -- so a 460-word
+    # spec with a declared output shape and named edge cases scored 0.23 and tripped its
+    # own warning. The gate could not have done anything else; it was never shown the
+    # requirements it was asked about.
     state = dict(goal=goal, task=dict(id=task_id, title=title, files=files),
-                 approach=approach, file_excerpts=_excerpt(repo_path, files),
-                 memory=_memory(repo_path))
+                 prompt=prompt, approach=approach,
+                 file_excerpts=_excerpt(repo_path, files), memory=_memory(repo_path))
     # The planner's own rating is deliberately NOT sent. Jev is here to be a second,
     # independent opinion on the same evidence; showing it the answer first would buy an
     # agreement rate instead of a judgment.

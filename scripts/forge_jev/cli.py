@@ -429,6 +429,12 @@ def cmd_verify_triage(args) -> int:
     return 0
 
 
+# Enough of a task prompt for the rubrics to judge it. The longest prompt in forge's
+# own test plan is about 3.5KB; this leaves room without letting one enormous task
+# prompt dominate a request that also carries file excerpts and memory.
+PROMPT_CHARS = 8000
+
+
 def cmd_score_plan(args) -> int:
     """Rate every task in a plan. Advisory output only -- this never edits tasks.tsv.
 
@@ -473,8 +479,15 @@ def cmd_score_plan(args) -> int:
         approach_file = plan / 'tasks' / task_id / 'approach.md'
         if approach_file.is_file():
             approach = approach_file.read_text(errors='replace')[:4000]
+        # The requirements themselves. decompose.md makes this file mandatory and
+        # SKILL.md says a short title is insufficient for QA -- so scoring a task
+        # without it was scoring the one thing both documents say is not the task.
+        prompt_text = ''
+        prompt_file = plan / 'tasks' / task_id / 'prompt.md'
+        if prompt_file.is_file():
+            prompt_text = prompt_file.read_text(errors='replace')[:PROMPT_CHARS]
         judgment = routing.score_task(repo, goal=goal, task_id=task_id, title=title,
-                                      files=files, approach=approach,
+                                      files=files, approach=approach, prompt=prompt_text,
                                       declared_difficulty=declared, run_dir=str(plan),
                                       config=config)
         if judgment is None:
@@ -488,6 +501,7 @@ def cmd_score_plan(args) -> int:
         if enabled('gates', config=config):
             predicted = gates.predict_drift(repo, goal=goal, task_id=task_id, title=title,
                                             declared=files, approach=approach,
+                                            prompt=prompt_text,
                                             run_dir=str(plan), config=config)
             if predicted:
                 judgment['predicted_drift'] = [dict(file=name, probability=probability)

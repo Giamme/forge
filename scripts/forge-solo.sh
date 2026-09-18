@@ -37,6 +37,9 @@ MEMORY="$SKILL_DIR/scripts/forge-memory.sh"
 source "$SKILL_DIR/scripts/forge-artifact.sh"
 source "$SKILL_DIR/scripts/forge-metrics.sh"
 source "$SKILL_DIR/scripts/forge-fractal-options.sh"
+JEV_OPTS=0
+[ -f "$SKILL_DIR/scripts/forge-jev-options.sh" ] \
+  && source "$SKILL_DIR/scripts/forge-jev-options.sh" 2>/dev/null && JEV_OPTS=1
 ORIGINAL_ARGS=("$@")
 
 die()  { printf 'forge: %s\n' "$1" >&2; exit "${2:-2}"; }
@@ -72,9 +75,21 @@ while [ $# -gt 0 ]; do
     --no-memory)  export FORGE_MEMORY=off; shift ;;
     --timeout)    TIMEOUT="${2:?--timeout needs seconds}"; shift 2 ;;
     --dry-run)    DRY=1; shift ;;
-    *) die "unknown option '$1'" ;;
+    *)
+      # `case` is not a loop, so `continue` here belongs to the enclosing while.
+      if [ "$JEV_OPTS" = 1 ]; then
+        forge_jev_flag "$1"; jev_rc=$?
+        case "$jev_rc" in
+          0) shift "$JEV_SHIFT"; continue ;;
+          2) exit 2 ;;
+        esac
+      fi
+      die "unknown option '$1'" ;;
   esac
 done
+# A solo run has one run dir and no plan, so the selection is frozen there: an
+# explicit retry of the same run dir must not change its mind about Jev.
+[ "$JEV_OPTS" = 1 ] && forge_jev_export
 
 case "$OUTPUT" in summary|full) ;; *) die "--output must be summary or full" ;; esac
 
@@ -94,6 +109,9 @@ case "$(cd "$RUN" && pwd)/" in
 esac
 
 RUN="$(cd "$RUN" && pwd)"
+# Freeze the selection now that the run dir is real and absolute. A retry of this
+# same run dir restores it rather than re-reading whatever flags are passed then.
+[ "$JEV_OPTS" = 1 ] && { forge_jev_restore "$RUN" || true; forge_jev_record "$RUN"; }
 REPO="$(cd "$REPO" && pwd)"
 if [ "$DRY" != 1 ] && [ "${FORGE_SOLO_LOCK:-}" != "$RUN" ]; then
   exec python3 "$SKILL_DIR/scripts/forge-fractal.py" _lock "$RUN" "$0" "${ORIGINAL_ARGS[@]}"
