@@ -129,16 +129,18 @@ class MeetsBarTests(CalibrateTestCase):
         tier = summary['tiers']['high']
         self.assertEqual(tier['n'], 12)
         self.assertAlmostEqual(tier['pass_rate'], 8 / 12)
-        self.assertIsNotNone(tier['threshold'])
-        # At 0.50 the subset (4 fail + 6 pass = 10) has rate 0.6 < 8/12 -> fails.
-        # At 0.55 the subset (the 6 passing 0.90s) has rate 1.0 -> first threshold that clears.
-        self.assertAlmostEqual(tier['threshold'], 0.55)
+        # The six passing 0.90 samples score 1.0 observed, but a Wilson 95% lower bound
+        # on 6/6 is only 0.61 -- under the tier's own 0.667 -- so no threshold is
+        # suggested. Before that guard this returned 0.55 on the strength of six points,
+        # which is precisely the overfit the sweep is prone to.
+        self.assertIsNone(tier['threshold'])
         self.assertIsNone(tier['shortfall'])
         self.assertTrue(summary['any_meets_bar'])
 
         text = calibrate.report(summary)
         self.assertIn('high: n=12', text)
-        self.assertIn('suggested threshold: 0.55', text)
+        self.assertIn('below the floor', text)
+        self.assertIn('95% lower bound=0.610', text)
 
 
 # 3. Malformed jev.jsonl lines are skipped, never raise -------------------------------
@@ -274,6 +276,63 @@ class UsageErrorTests(unittest.TestCase):
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             rc = cli.main(['calibrate', '--repo', '/no/such/path/at/all'])
         self.assertEqual(rc, 2)
+
+
+class AbsoluteFloorTests(CalibrateTestCase):
+    """Acting is gated on an absolute pass rate, not on beating the tier's own average.
+
+    The relative version is unanswerable by construction: the confident subset is
+    contained in the tier, so when confidence clusters tightly it IS most of the tier and
+    cannot out-perform it by a detectable margin.
+    """
+
+    def _seed(self, n, passing, confidence=0.90, tier='low'):
+        rows, ledger = [], []
+        for i in range(n):
+            task = f't{i}'
+            rows.append(_routing_row('r1', task, tier, confidence))
+            ledger.append(_ledger_qa_row('r1', task, 'PASS' if i < passing else 'FAIL'))
+        self._seed_run(rows)
+        self._seed_ledger(ledger)
+        return calibrate.run(self.repo, min_sample=30)
+
+    def test_a_reliable_tier_meets_the_floor(self):
+        tier = self._seed(40, 40)['tiers']['low']
+        self.assertEqual(tier['n_confident'], 40)
+        self.assertTrue(tier['meets_floor'])
+        self.assertGreaterEqual(tier['confident_lower_bound'], 0.80)
+
+    def test_a_marginal_tier_is_refused(self):
+        # 80% observed is exactly the floor, so the lower bound sits well under it.
+        tier = self._seed(40, 32)['tiers']['low']
+        self.assertFalse(tier['meets_floor'])
+        self.assertLess(tier['confident_lower_bound'], 0.80)
+
+    def test_a_perfect_but_tiny_sample_is_still_refused(self):
+        # 100% of 5 is 1.0 observed and 0.57 bounded: the sample-size requirement falls
+        # out of the arithmetic rather than being a second magic constant.
+        tier = self._seed(5, 5)['tiers']['low']
+        self.assertFalse(tier['meets_floor'])
+        self.assertEqual(tier['shortfall'], 25)
+
+    def test_low_confidence_samples_do_not_count_toward_the_floor(self):
+        tier = self._seed(40, 40, confidence=0.50)['tiers']['low']
+        self.assertEqual(tier['n_confident'], 0)
+        self.assertFalse(tier['meets_floor'])
+
+    def test_write_follows_the_floor_not_the_swept_threshold(self):
+        summary = self._seed(40, 40)
+        written, reason = calibrate.write_calibration(self.repo, summary)
+        self.assertTrue(written, reason)
+        stored = json.loads((self.repo / '.forge'
+                             / 'jev-routing-calibration.json').read_text())
+        self.assertEqual(sorted(stored['tiers']), ['low'])
+        self.assertGreaterEqual(stored['tiers']['low']['lower_bound'], 0.80)
+
+    def test_write_refuses_a_marginal_tier(self):
+        written, reason = calibrate.write_calibration(self.repo, self._seed(40, 32))
+        self.assertFalse(written)
+        self.assertIn('floor', reason)
 
 
 if __name__ == '__main__':

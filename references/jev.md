@@ -320,6 +320,40 @@ the QA verdict as the outcome. It prints the shortfall per tier rather than a
 confident-looking guess, and `--write` is a separate step because that file is the only
 thing standing between `--jev-act` and Jev changing which model spends your quota.
 
+### What the bar actually is, and why N=30
+
+A tier earns the right to be acted on when the tasks Jev judged at or above `routing_act`
+passed at a rate whose **95% Wilson lower bound** clears `calibrate_floor` (0.80). Not the
+observed rate: 5 of 5 and 30 of 30 are both 1.0 observed, and 0.57 versus 0.89 bounded.
+The sample-size requirement falls out of that arithmetic instead of being a second magic
+constant.
+
+The question is deliberately **absolute** — "if Jev routes these, does the work still
+pass?" — and not "does the confident subset beat the tier's own average". The relative
+version is unanswerable by construction, because the subset is contained in the tier;
+when confidence clusters tightly, as the measured low-tier composites do at 0.89–0.93,
+the subset *is* most of the tier and cannot out-perform it by a detectable margin.
+Simulated over 3000 trials, the relative criterion accepted a genuinely reliable tier
+less than 1% of the time at every sample size tried.
+
+With the absolute criterion, simulation puts N=30 in a reasonable place:
+
+| true pass rate of Jev-confident tasks | n=30 | n=40 | n=50 | n=75 |
+|---|---|---|---|---|
+| 99% (safe to route down) | 84% | **97%** | 99% | 100% |
+| 95% (good) | 41% | 59% | **75%** | 93% |
+| 80% (marginal — should refuse) | 1.3% | 1.7% | 1.6% | 2.1% |
+| 70% (bad — should refuse) | 0.1% | 0.1% | 0.0% | 0.0% |
+
+Read it as: 30 is enough when routing-down genuinely works, ~50 when it merely works
+well, and no sample size lets a marginal tier through. A tier that stays below the floor
+as N grows is not short of data — it is telling you Jev's cheap-tier judgments are not
+safe to act on in that repo.
+
+The swept "suggested threshold" still appears in the report, marked informational. It is
+not used to decide anything: searching ten candidate cuts for the best-looking one is how
+a threshold ends up backed by three observations.
+
 ## Pre-dispatch gates
 
 Three plan-time warnings. All advisory, all fail-open, none can block a dispatch — a gate

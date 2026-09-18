@@ -31,7 +31,7 @@ import json
 import time
 from pathlib import Path
 
-from . import routing
+from . import routing, threshold
 
 TIERS = ('low', 'medium', 'high')
 DEFAULT_MIN_SAMPLE = 30
@@ -182,16 +182,46 @@ def _collect(repo: Path, dirs: list[Path]) -> tuple[list[dict], dict]:
     return samples, meta
 
 
+# 1.96 = 95% two-sided normal quantile. Hard-coded rather than imported so calibrate.py
+# keeps the package's standard-library-only rule without pulling in statistics machinery.
+_Z = 1.96
+
+
+def _wilson_lower_bound(passed: int, total: int) -> float:
+    """Lower end of the 95% Wilson score interval for a proportion.
+
+    Wilson rather than the naive proportion because the naive one cannot tell 3/3 from
+    30/30: both are 1.0. Wilson gives 0.44 and 0.89, which is exactly the distinction the
+    sweep below needs in order not to be fooled by a small lucky subset.
+    """
+    if total <= 0:
+        return 0.0
+    phat = passed / total
+    denominator = 1 + _Z ** 2 / total
+    centre = phat + _Z ** 2 / (2 * total)
+    margin = _Z * ((phat * (1 - phat) / total + _Z ** 2 / (4 * total ** 2)) ** 0.5)
+    return max(0.0, (centre - margin) / denominator)
+
+
 def _sweep_threshold(samples: list[dict], overall_pass_rate: float) -> float | None:
-    """Lowest confidence in CONFIDENCE_SWEEP at which the pass rate of judgments
-    at-or-above that confidence meets or beats the tier's overall pass rate. Returns
-    None rather than inventing a value when no swept confidence clears the bar."""
+    """Lowest swept confidence whose subset BEATS the tier's pass rate with 95% confidence.
+
+    The obvious version of this -- take the first cut whose observed subset pass rate
+    meets the overall rate -- overfits badly, and did. Ten candidate cuts over thirty
+    samples means the highest cuts retain a handful of points each, and a single passing
+    sample at 0.95 scores a perfect 1.0 and wins. That produces a confident-looking
+    threshold backed by one observation.
+
+    Requiring the subset's Wilson LOWER bound to clear the overall rate fixes it without
+    another magic minimum: the sample-size requirement falls out of the arithmetic, so a
+    small subset simply cannot clear the bar however well it did.
+    """
     for c in CONFIDENCE_SWEEP:
         subset = [s for s in samples if s['confidence'] >= c]
         if not subset:
             continue
-        rate = sum(1 for s in subset if s['passed']) / len(subset)
-        if rate >= overall_pass_rate:
+        passed = sum(1 for s in subset if s['passed'])
+        if _wilson_lower_bound(passed, len(subset)) >= overall_pass_rate:
             return c
     return None
 
@@ -208,12 +238,34 @@ def _tier_stats(samples: list[dict], min_sample: int) -> dict:
         mean_duration = (sum(durations) / len(durations)) if durations else None
         mean_confidence = sum(s['confidence'] for s in samples) / n
 
-    result = dict(n=n, pass_rate=pass_rate, mean_duration_s=mean_duration, mean_confidence=mean_confidence)
+    result = dict(n=n, pass_rate=pass_rate, mean_duration_s=mean_duration,
+                  mean_confidence=mean_confidence)
+
+    # The question routing actually needs answered is absolute, not relative: if Jev is
+    # allowed to route these tasks, does the work still pass? An earlier version asked
+    # whether the confident subset beat the TIER's own pass rate, which is unanswerable
+    # by construction -- the subset is contained in the tier, and when confidence
+    # clusters tightly (measured: low-tier composites 0.89-0.93) the subset is most of
+    # the sample, so it cannot out-perform the whole by a detectable margin. Simulated at
+    # 3000 trials, that criterion accepted a genuinely good tier under 1% of the time.
+    act_at = threshold('routing_act')
+    floor = threshold('calibrate_floor')
+    confident = [s for s in samples if s['confidence'] >= act_at]
+    confident_passed = sum(1 for s in confident if s['passed'])
+    bound = _wilson_lower_bound(confident_passed, len(confident)) if confident else 0.0
+    result.update(n_confident=len(confident), confident_pass_rate=(
+        confident_passed / len(confident)) if confident else None,
+        confident_lower_bound=round(bound, 3), floor=floor, act_at=act_at)
+
     if n < min_sample:
         result['shortfall'] = min_sample - n
         result['threshold'] = None
+        result['meets_floor'] = False
     else:
         result['shortfall'] = None
+        result['meets_floor'] = bound >= floor
+        # Reported for a human reading the table, never used to decide: searching ten
+        # cuts for the best-looking one is how a threshold gets backed by three samples.
         result['threshold'] = _sweep_threshold(samples, pass_rate)
     return result
 
@@ -257,11 +309,21 @@ def report(summary: dict) -> str:
         lines.append(f"{tier}: n={t['n']} pass_rate={_fmt(t['pass_rate'])} "
                     f"mean_duration_s={_fmt(t['mean_duration_s'], 1)} "
                     f"mean_confidence={_fmt(t['mean_confidence'])}")
-        if t['threshold'] is not None:
-            lines.append(f"  suggested threshold: {t['threshold']:.2f}")
+        lines.append(f"  at confidence >= {_fmt(t.get('act_at'), 2)}: "
+                    f"n={t.get('n_confident')} "
+                    f"pass_rate={_fmt(t.get('confident_pass_rate'))} "
+                    f"95% lower bound={_fmt(t.get('confident_lower_bound'))} "
+                    f"(needs >= {_fmt(t.get('floor'), 2)})")
+        if t.get('meets_floor'):
+            lines.append('  MEETS the floor -- `--write` would let routing act on this tier')
         else:
-            lines.append('  no confidence value in the sweep holds pass rate >= overall -- '
-                        'no threshold suggested')
+            # The lower bound rises with sample size, so "not yet" and "never" look the
+            # same here. Say which one it is.
+            lines.append('  below the floor -- routing stays advisory for this tier. More '
+                        'samples raise the bound; a genuinely low pass rate will not.')
+        if t['threshold'] is not None:
+            lines.append(f"  (informational: swept threshold {t['threshold']:.2f} -- "
+                        'not used to decide)')
     return '\n'.join(lines)
 
 
@@ -276,12 +338,15 @@ def write_calibration(repo, summary: dict) -> tuple[bool, str]:
     reporting, because this file is the only thing standing between `--jev-act` and Jev
     changing which model spends the user's quota.
     """
-    tiers = {name: dict(n=stats['n'], threshold=stats['threshold'],
-                        pass_rate=stats['pass_rate'])
+    tiers = {name: dict(n=stats['n'], n_confident=stats.get('n_confident'),
+                        pass_rate=stats['pass_rate'],
+                        lower_bound=stats.get('confident_lower_bound'),
+                        act_at=stats.get('act_at'))
              for name, stats in summary.get('tiers', {}).items()
-             if stats.get('threshold') is not None and not stats.get('shortfall')}
+             if stats.get('meets_floor') and not stats.get('shortfall')}
     if not tiers:
-        return False, 'no tier met the sample bar with a usable threshold'
+        return False, ('no tier both reached the sample bar and held its pass rate above '
+                       'the floor with 95% confidence')
     path = Path(repo) / '.forge' / routing.CALIBRATION_FILE
     payload = dict(calibrated=True, min_sample=summary.get('min_sample'),
                    n_samples=summary.get('n_samples'), tiers=tiers,

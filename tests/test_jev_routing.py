@@ -241,7 +241,7 @@ class CalibrationGateTests(unittest.TestCase):
     def test_write_refuses_when_no_tier_met_the_bar(self):
         from forge_jev import calibrate
         summary = dict(min_sample=30, tiers=dict(
-            low=dict(n=4, threshold=None, pass_rate=1.0, shortfall=26)))
+            low=dict(n=4, pass_rate=1.0, shortfall=26, meets_floor=False)))
         written, reason = calibrate.write_calibration(self.repo, summary)
         self.assertFalse(written)
         self.assertIn('no tier', reason)
@@ -249,9 +249,11 @@ class CalibrationGateTests(unittest.TestCase):
 
     def test_write_stores_only_the_tiers_that_earned_it(self):
         from forge_jev import calibrate
+        # meets_floor, not a swept threshold, is what earns a tier the right to act.
         summary = dict(min_sample=30, n_samples=43, tiers=dict(
-            low=dict(n=40, threshold=0.7, pass_rate=0.9, shortfall=None),
-            high=dict(n=3, threshold=None, pass_rate=0.5, shortfall=27)))
+            low=dict(n=40, n_confident=38, pass_rate=0.9, shortfall=None,
+                     meets_floor=True, confident_lower_bound=0.87, act_at=0.85),
+            high=dict(n=3, pass_rate=0.5, shortfall=27, meets_floor=False)))
         written, _reason = calibrate.write_calibration(self.repo, summary)
         self.assertTrue(written)
         stored = routing.calibration(self.repo)
