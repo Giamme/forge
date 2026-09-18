@@ -166,6 +166,67 @@ months ago must not excuse an unrelated failure today. If the re-run also fails 
 status stays `FAIL` and the first log is preserved. `real_regression` is never re-run
 at any confidence.
 
+## Calibration (measured 2026-09-18)
+
+First measurements against the live API. Two repos for test selection, 18 for verify
+discovery. Every number below is from this machine's repos and does not transfer —
+re-measure before trusting a threshold elsewhere.
+
+### `tests_act` = 0.70 is supported by evidence, not a guess
+
+Discovery was run over every git repo on this machine (18 with candidates). The pick
+was compared against the command each repo's own README or `package.json` documents.
+
+| | |
+|---|---|
+| Fires at 0.70 | 10 of 18, **every pick correct** |
+| Lowest correct pick that fires | 0.73 (`ctrlrisk-tools-redigo`) |
+| Highest *incorrect* pick | 0.55 (`spankai` → `cargo test`) |
+| Margin around the threshold | **0.18** |
+
+`spankai` is the one confirmed wrong pick: a Rust + TypeScript monorepo whose README
+says `npm run check`, where Jev chose `cargo test` — a real test command that covers
+only the Rust half. The gate blocked it. Lowering the threshold to 0.58 would add four
+correct picks but leave only a 0.03 margin above that wrong one, so 0.70 stays.
+
+Confidence tracks how ambiguous the candidate set is, not how likely the pick is to be
+wrong: repos with 2 candidates land at 0.73–0.81, repos with 11–25 land at 0.58–0.61.
+This is why the gate is the Choice confidence and **not** `runs_tests`, which sat at
+0.79–0.98 for every repo including the wrong `cargo test` at 0.97. `runs_tests` answers
+"is this a test command" — true of `cargo test` — and is nearly useless as a gate.
+
+Repeating the identical request three times gives a spread of 0.02–0.08 and never
+changes the pick, so these numbers are reproducible rather than one lucky sample.
+
+### Test selection: no single threshold works across repos
+
+`backtest --capability tests` over 25 commits of `ctrlrisk-tools-enrich` (40 requests)
+and all 44 of `spankai` (44 requests), sweeping the per-file relevance probability:
+
+| repo | highest threshold holding recall ≥ 0.95 | suite reduction there |
+|---|---|---|
+| `ctrlrisk-tools-enrich` | 0.20 | 46% |
+| `spankai` | 0.45 | 36% |
+
+The safe threshold differs by 2.25× between two repos, which settles the question of
+whether one global default could serve: it cannot. Any future test-subsetting capability
+must calibrate per repo and store the result, not ship a constant. Note also that no
+answer ever exceeded 0.90 — the top of the probability range is unused by this rubric,
+so a threshold set there silently disables the capability.
+
+### A rejected change, recorded so it is not retried
+
+Feeding each repo's documented commands (README, CONTRIBUTING, AGENTS.md) into
+discovery state looked obviously right and **measured worse**. It fixed `spankai`'s pick
+but cut repos firing at 0.70 from 10 to 3, and it destabilised the judgment: against a
+baseline spread of 0.02–0.08, `ctrlrisk-intelligence` fell from a steady 0.81/0.81/0.83
+on the correct command to 0.30 on a narrow migration check. A README lists many
+commands and nothing marks which one is the gate, so the evidence is mostly noise.
+Half the damage was a prompt artifact — naming the state key when the list was empty
+cost 0.12–0.21 confidence on every repo that documents nothing, because "no candidate
+matches" reads as evidence against rather than absence of evidence. Fixing that
+recovered those repos exactly, and the doc-rich repos stayed erratic. Reverted.
+
 ## Status
 
 Phase 0 added the configuration surface. Phase 1a added `backtest`, which scores the
@@ -180,3 +241,9 @@ properly needs a disposable export with the dependency environment rebuilt, whos
 may exceed the saving — a trade that needs `backtest` numbers to settle.
 
 Routing, pre-dispatch gates and memory curation remain unwired.
+
+Verification is calibrated against real judgments (see above). Routing is not: its
+`routing_act` of 0.85 is still an unmeasured placeholder, and the discovery result
+above — that confidence tracks option-set ambiguity rather than correctness — is a
+warning that a Choice threshold picked by intuition can be badly wrong in either
+direction.
