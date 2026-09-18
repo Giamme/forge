@@ -75,9 +75,65 @@ run.
   confidences, latency, tokens, and whether the judgment was applied.
 - `<run-dir>/jev.skip` — present when a request was skipped, with the reason.
 
+## Backtest
+
+`forge jev backtest` measures whether Jev's `test_relevance` rubric (see
+`scripts/forge_jev/questions.py`) picks the right tests for a change, before
+that judgment is ever wired into a live decision.
+
+The label comes from git history, not from a model: a commit where a human
+changed source and test files together is treated as ground truth — "these
+are the tests a person judged relevant." Non-circular because nothing Jev (or
+any model) produced enters the label. `scripts/forge_jev/corpus.py` extracts
+these (change, tests-touched) pairs from `git log`.
+
+Candidates for a commit are the test files present in its **parent** tree, not
+at HEAD. Scoring against HEAD would ask about tests that did not exist yet:
+measured on one repo, a commit 300 back had 94 test files in tree against 416
+at HEAD, which would inflate the suite-reduction metric more than fourfold.
+
+```sh
+./forge jev backtest --repo PATH --limit 50            # dry estimate, no API call
+./forge jev backtest --repo PATH --execute --max-requests 200
+./forge jev backtest --repo PATH --execute --capability drift --json
+```
+
+`--execute` is required before backtest makes a single API call; without it,
+the command only estimates the run (commit count, request count) and says so.
+`--max-requests` caps spend by bounding how many Jev requests the run is
+allowed to make, regardless of `--limit`. Results land under `--out` (default:
+a directory under the run's own temp/output location) as raw judgments plus
+the printed summary — precision/recall of the rubric's "true" answers against
+the commit's actual test changes.
+
+The summary sweeps thresholds and reports micro/macro recall, precision,
+suite reduction, and `records_with_full_recall` — the fraction of commits where
+*every* labeled test was selected. That last one is the number that decides
+whether the judgment is safe to act on: a selector averaging 95% recall by
+missing one test in every commit is useless. For `--capability drift` the
+headline is instead precision at the warn threshold, because a warning that
+fires on files nobody edits trains people to ignore it.
+
+Three honesty caveats, printed with every run so they travel with the numbers:
+
+- Commit messages are written **after** the work and often name the very files
+  or behaviour that changed; a Forge task prompt is written before. Backtest
+  scores are therefore an **upper bound** on live performance.
+- A commit's test changes are a **lower bound** on the tests that were
+  actually relevant — humans miss tests too. High recall against this label
+  is necessary to trust the rubric, but not sufficient; it cannot prove the
+  rubric would catch tests no human thought to touch. (This one does not apply
+  to `--capability drift`, whose label is the commit's complete file set.)
+- Co-change encodes **one team's testing habits and repo layout**, not a
+  universal property of the change. A number measured on one repo does not
+  transfer to another's thresholds without re-measuring there. Measured here:
+  labeled tests are 1.6% of the candidate suite in one repo and 13.2% in
+  another, which are not the same problem.
+
 ## Status
 
-Phase 0 adds the configuration surface only: entry points, gating flags,
-config storage and this document. **No Forge decision consults Jev yet.**
-Routing, test selection, pre-dispatch gates and memory curation are the
-planned capabilities; none is wired to a live decision in this phase.
+Phase 0 added the configuration surface only: entry points, gating flags,
+config storage and this document. Phase 1a adds `backtest` — a measurement
+tool that scores Jev's rubrics against git history offline. **Backtest does
+not change any Forge decision.** Routing, test selection, pre-dispatch gates
+and memory curation remain unwired to any live decision.

@@ -44,6 +44,15 @@ def parser() -> argparse.ArgumentParser:
     doctor = sub.add_parser('doctor')
     doctor.add_argument('--live', action='store_true')
     doctor.add_argument('--json', action='store_true')
+
+    backtest = sub.add_parser('backtest')
+    backtest.add_argument('--repo', required=True)
+    backtest.add_argument('--limit', type=int, default=None)
+    backtest.add_argument('--execute', action='store_true')
+    backtest.add_argument('--max-requests', type=int, default=200)
+    backtest.add_argument('--out', default=None)
+    backtest.add_argument('--capability', choices=('tests', 'drift'), default='tests')
+    backtest.add_argument('--json', action='store_true')
     return p
 
 
@@ -201,12 +210,46 @@ def cmd_doctor(args) -> int:
     return 0 if ready else 3
 
 
+def cmd_backtest(args) -> int:
+    repo = Path(args.repo)
+    if not repo.is_dir() or not (repo / '.git').exists():
+        print(f'forge jev backtest: --repo {args.repo!r} is not a git repository', file=sys.stderr)
+        return 2
+
+    # Imported lazily so cli.py keeps working (and status/doctor keep paying nothing)
+    # even while backtest.py is mid-edit by another agent, and so a missing module is a
+    # clean exit rather than a traceback.
+    try:
+        from . import backtest
+    except ImportError as error:
+        print('forge jev backtest: backtest module unavailable (' + str(error) + ')', file=sys.stderr)
+        return 3
+
+    config = load_config()
+    if args.execute and api_key(config) is None:
+        print('forge jev backtest: no API key configured. Run `forge jev setup` first.', file=sys.stderr)
+        return 3
+
+    if not args.execute:
+        print('Dry estimate only -- no API call was made (pass --execute to run one).', file=sys.stderr)
+
+    summary = backtest.run(repo, limit=args.limit, execute=args.execute,
+                           max_requests=args.max_requests, out_dir=args.out,
+                           capability=args.capability, config=config)
+    if args.json:
+        print(json.dumps(summary, indent=2))
+    else:
+        print(backtest.report(summary))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     try:
         args = parser().parse_args(argv)
         return dict(setup=cmd_setup, enable=cmd_enable, disable=cmd_disable,
-                    status=cmd_status, doctor=cmd_doctor)[args.command](args)
+                    status=cmd_status, doctor=cmd_doctor,
+                    backtest=cmd_backtest)[args.command](args)
     except SystemExit as exit:
         # argparse exits the process on a usage error; return the code instead so the
         # shim owns exiting and main() stays callable from a test.
