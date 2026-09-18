@@ -58,6 +58,19 @@ def parser() -> argparse.ArgumentParser:
     verify_discover.add_argument('--repo', required=True)
     verify_discover.add_argument('--json', action='store_true')
 
+    calibrate = sub.add_parser('calibrate')
+    calibrate.add_argument('--repo', required=True)
+    calibrate.add_argument('--run-dir', action='append', default=[])
+    calibrate.add_argument('--min-sample', type=int, default=30)
+    calibrate.add_argument('--json', action='store_true')
+    calibrate.add_argument('--write', action='store_true',
+                           help='record which tiers may be acted on (see routing.may_act)')
+
+    score_plan = sub.add_parser('score-plan')
+    score_plan.add_argument('--plan', required=True)
+    score_plan.add_argument('--repo', required=True)
+    score_plan.add_argument('--json', action='store_true')
+
     verify_triage = sub.add_parser('verify-triage')
     verify_triage.add_argument('--repo', required=True)
     # dest is deliberately not 'command': the top-level subparsers already own that dest
@@ -256,6 +269,40 @@ def cmd_backtest(args) -> int:
     return 0
 
 
+def cmd_calibrate(args) -> int:
+    repo = Path(args.repo)
+    if not repo.is_dir():
+        print(f'forge jev calibrate: --repo {args.repo!r} is not a directory', file=sys.stderr)
+        return 2
+    if args.min_sample < 1:
+        print('forge jev calibrate: --min-sample must be >= 1', file=sys.stderr)
+        return 2
+
+    # Imported lazily so cli.py keeps working, and status/doctor keep paying nothing,
+    # even while calibrate.py is mid-edit -- same reasoning as cmd_backtest's import.
+    try:
+        from . import calibrate
+    except ImportError as error:
+        print('forge jev calibrate: calibrate module unavailable (' + str(error) + ')', file=sys.stderr)
+        return 3
+
+    summary = calibrate.run(repo, run_dirs=args.run_dir, min_sample=args.min_sample)
+    if args.write:
+        written, reason = calibrate.write_calibration(repo, summary)
+        summary['calibration_written'] = written
+        summary['calibration_path' if written else 'calibration_refused'] = reason
+    if args.json:
+        print(json.dumps(summary, indent=2))
+    else:
+        print(calibrate.report(summary))
+        if args.write:
+            print('\nwrote calibration: ' + reason if written
+                  else '\nno calibration written -- ' + reason)
+    # Exit 3 (not 0) when no tier cleared --min-sample: the whole point of this command
+    # is refusing to pretend a threshold means anything below that bar.
+    return 0 if summary['any_meets_bar'] else 3
+
+
 def cmd_verify_discover(args) -> int:
     repo = Path(args.repo)
     if not repo.is_dir():
@@ -322,13 +369,101 @@ def cmd_verify_triage(args) -> int:
     return 0
 
 
+def cmd_score_plan(args) -> int:
+    """Rate every task in a plan. Advisory output only -- this never edits tasks.tsv.
+
+    Writing a tier into the plan is forge-parallel.sh's decision, made through
+    routing.may_act, so that the one place a model can change which model gets dispatched
+    stays in the runner where the rest of the routing rules already live.
+    """
+    plan, repo = Path(args.plan), Path(args.repo)
+    if not plan.is_dir():
+        print(f'forge jev score-plan: --plan {args.plan!r} is not a directory', file=sys.stderr)
+        return 2
+    if not repo.is_dir():
+        print(f'forge jev score-plan: --repo {args.repo!r} is not a directory', file=sys.stderr)
+        return 2
+    tasks = plan / 'tasks.tsv'
+    if not tasks.is_file():
+        print(f'forge jev score-plan: no tasks.tsv in {args.plan!r}', file=sys.stderr)
+        return 2
+    config = load_config()
+    if not enabled('routing', config=config) or api_key(config) is None:
+        return 3
+
+    from . import routing
+
+    goal = ''
+    goal_file = plan / 'goal.txt'
+    if goal_file.is_file():
+        goal = goal_file.read_text(errors='replace')[:2000]
+
+    rows, judgments = [], []
+    for line in tasks.read_text(errors='replace').splitlines():
+        if not line.strip() or line.startswith('#'):
+            continue
+        parts = line.split('\t')
+        if len(parts) < 7:
+            continue
+        rows.append(parts)
+
+    for parts in rows:
+        task_id, _deps, declared, files, _dwarf, _qa, title = parts[:7]
+        approach = ''
+        approach_file = plan / 'tasks' / task_id / 'approach.md'
+        if approach_file.is_file():
+            approach = approach_file.read_text(errors='replace')[:4000]
+        judgment = routing.score_task(repo, goal=goal, task_id=task_id, title=title,
+                                      files=files, approach=approach,
+                                      declared_difficulty=declared, run_dir=str(plan),
+                                      config=config)
+        if judgment is None:
+            continue
+        judgment['may_act'] = routing.may_act(repo, judgment, config=config)
+        judgments.append(judgment)
+        out = plan / 'tasks' / task_id
+        try:
+            out.mkdir(parents=True, exist_ok=True)
+            (out / 'jev.json').write_text(json.dumps(judgment, indent=2, sort_keys=True) + '\n')
+        except OSError:
+            pass
+
+    if not judgments:
+        return 3
+
+    # The TSV that `calibrate` later joins against the ledger. Written even in shadow
+    # mode -- accruing this file IS shadow mode's entire purpose.
+    try:
+        run_id = (plan / 'run_id').read_text().strip() if (plan / 'run_id').is_file() else '-'
+        with (plan / 'jev-routing.tsv').open('a') as handle:
+            for judgment in judgments:
+                handle.write('\t'.join((run_id, judgment['id'], judgment['tier'],
+                                        str(judgment['confidence']),
+                                        str(judgment['composite']))) + '\n')
+    except OSError:
+        pass
+
+    if args.json:
+        print(json.dumps(judgments, indent=2, sort_keys=True))
+    else:
+        for judgment in judgments:
+            print('\t'.join((judgment['id'], judgment['tier'],
+                             str(judgment['confidence']), str(judgment['composite']),
+                             judgment['escalated'] or '-',
+                             '1' if judgment['may_act'] else '0',
+                             judgment['declared'])))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     try:
         args = parser().parse_args(argv)
         return dict(setup=cmd_setup, enable=cmd_enable, disable=cmd_disable,
                     status=cmd_status, doctor=cmd_doctor, backtest=cmd_backtest,
-                    **{'verify-discover': cmd_verify_discover,
+                    calibrate=cmd_calibrate,
+                    **{'score-plan': cmd_score_plan,
+                       'verify-discover': cmd_verify_discover,
                        'verify-triage': cmd_verify_triage})[args.command](args)
     except SystemExit as exit:
         # argparse exits the process on a usage error; return the code instead so the

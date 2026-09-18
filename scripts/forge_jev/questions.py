@@ -233,3 +233,101 @@ def drift_prediction(file_path: str) -> dict:
             'files nobody edits trains people to ignore it.'
         ),
     )
+
+# --- routing (Phase 3 rubrics, recorded in shadow mode before they decide anything) ---
+#
+# Five Scores rather than one Choice asking for the tier directly. Two reasons. First,
+# `decompose.md` already defines difficulty as a conjunction of distinct properties
+# ("design judgment ... cross-cutting ... subtle edge cases or state/concurrency ... the
+# right approach is not obvious"), and asking about each separately is what lets code,
+# not the model, decide how to weigh them. Second, the composite is then computed here,
+# so re-tuning weights against accrued outcomes costs nothing -- no re-inference.
+#
+# The levels below are quoted from decompose.md's difficulty table wherever it says the
+# same thing, so that the rubric and the human-facing spec cannot drift apart.
+
+
+def design_judgment() -> dict:
+    """How much design judgment does this task demand? (decompose.md's primary axis.)"""
+    instructions = (
+        'Given the task and its context (in state), how much design judgment does '
+        'carrying it out demand? Rate what the task demands of whoever does it, NOT how '
+        'much code it produces: a five-hundred-line mechanical rename demands little, a '
+        'ten-line concurrency fix demands a lot.'
+    )
+    return Score(instructions, [
+        'none -- mechanical and local: a rename, a move, a docs edit, or a test for '
+        'behaviour that already exists. A mistake would be obvious.',
+        'some -- a self-contained implementation against a clear spec. A few choices to '
+        'make, all of them local and reversible.',
+        'substantial -- several defensible approaches exist and the choice between them '
+        'changes the shape of the result.',
+        'the approach must be invented -- the right way to do this is not obvious from '
+        'the goal, and getting it wrong means the work is wasted rather than merely '
+        'imperfect.',
+    ])
+
+
+def blast_radius() -> dict:
+    """How far can a mistake in this task reach?"""
+    instructions = (
+        'If this task were done wrong, how far would the damage reach through the rest '
+        'of the codebase (state describes the repo and the files the task declares)?'
+    )
+    return Score(instructions, [
+        'local -- confined to the lines the task edits; nothing else observes the change.',
+        'one module -- other code in the same module or package is affected, but the '
+        'boundary holds.',
+        'cross-module -- behaviour other parts of the project depend on changes, so a '
+        'mistake surfaces somewhere the task never touched.',
+        'a public contract -- an API, schema, wire format, CLI surface or file format '
+        'that callers outside this repo, or already-stored data, depend on.',
+    ])
+
+
+def state_subtlety() -> dict:
+    """Concurrency and state -- called out by name in decompose.md's `high` row."""
+    instructions = (
+        'How much subtle state or concurrency does this task involve? decompose.md '
+        'names this on its own because it is the property most often underrated: a very '
+        'small diff can still be the hardest kind of change.'
+    )
+    return Score(instructions, [
+        'none -- pure or straight-line code; no shared state, no ordering, no time.',
+        'sequential state -- state is read and written, but in one place, in a '
+        'predictable order, by one caller at a time.',
+        'shared or asynchronous state -- concurrency, locks, retries, caching, '
+        'cross-process coordination, or ordering that is not obvious from reading the '
+        'code, where a wrong interleaving produces a bug that does not reproduce.',
+    ])
+
+
+def spec_clarity() -> dict:
+    """Is the approach given, or must it be worked out? Note the inverted direction."""
+    instructions = (
+        'How clearly does the task (and its approach.md, if state carries one) state '
+        'HOW the work should be done, as opposed to only what outcome is wanted?'
+    )
+    return Score(instructions, [
+        'the approach is stated -- the task says which files change and what to do in '
+        'them; carrying it out is following instructions.',
+        'the approach is implied -- the outcome is clear and there is an obvious way to '
+        'reach it, but nobody has written it down.',
+        'the approach must be invented -- the task states a goal and leaves the means '
+        'open, so the first real work is deciding what to build.',
+    ])
+
+
+def test_coverage() -> dict:
+    """Would a mistake here be caught? Coverage is why a wrong `low` is survivable."""
+    instructions = (
+        'How well is the behaviour this task touches already covered by tests in this '
+        'repo (state lists the repo\'s files and the files the task declares)?'
+    )
+    return Score(instructions, [
+        'none -- nothing exercises this behaviour; a regression ships silently.',
+        'partial -- some tests touch the area, but not the specific behaviour being '
+        'changed.',
+        'well covered -- the behaviour has direct tests that would fail on a mistake.',
+    ])
+

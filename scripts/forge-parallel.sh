@@ -144,6 +144,55 @@ PY
     note "         if the tasks depend on them."
   fi
 
+  # --- jev: advisory difficulty scoring ------------------------------------------
+  # Runs BEFORE the resolution loop on purpose. When a judgment is acted on it rewrites
+  # the `difficulty` column and nothing else, so the tier then resolves through the
+  # existing pool logic untouched — forge still never picks a model, it picks a tier the
+  # user already supplied a pool for, and a tier with no pool still lands on UNASSIGNED.
+  local jev_loaded=0
+  if [ -f "$SKILL_DIR/scripts/forge-jev-options.sh" ]; then
+    source "$SKILL_DIR/scripts/forge-jev-options.sh" 2>/dev/null && jev_loaded=1
+  fi
+  if [ "$jev_loaded" = 1 ] && forge_jev_active routing; then
+    local jev_scores jev_rc
+    jev_scores="$(python3 "$SKILL_DIR/scripts/forge-jev.py" score-plan \
+      --plan "$PLAN" --repo "$REPO" 2>/dev/null)"
+    jev_rc=$?
+    if [ "$jev_rc" -eq 0 ] && [ -n "$jev_scores" ]; then
+      # Shadow mode accrues the judgment and changes nothing — not the table, not a
+      # single dispatch. That is the whole contract: it is how routing earns the
+      # outcome data it needs before it is ever allowed to decide anything.
+      if [ "${FORGE_JEV_SHADOW:-}" = on ]; then
+        note "jev: scored $(printf '%s\n' "$jev_scores" | grep -c . ) task(s) in shadow mode (no change)"
+      else
+        local jid jtier jconf jcomp jesc jact jdecl jtmp applied=0
+        while IFS="$(printf '\t')" read -r jid jtier jconf jcomp jesc jact jdecl; do
+          [ -n "$jid" ] || continue
+          if [ "${FORGE_JEV_ACT:-}" = on ] && [ "$jact" = 1 ] && [ "$jtier" != "$jdecl" ]; then
+            # Rewrite this row's difficulty column only. awk over the whole file each
+            # time is fine at plan scale and avoids a partial-write window.
+            jtmp="$PLAN/.tasks.tsv.jev"
+            if awk -F'\t' -v OFS='\t' -v id="$jid" -v tier="$jtier" \
+                 '$1==id && $0 !~ /^#/ {$3=tier} {print}' "$T" > "$jtmp" 2>/dev/null; then
+              mv "$jtmp" "$T"
+              note "jev: $jid difficulty $jdecl -> $jtier (confidence $jconf, applied)"
+              applied=$((applied+1))
+            else
+              rm -f "$jtmp" 2>/dev/null || true
+            fi
+          else
+            # score-plan writes "-" for "not escalated"; only a real reason is worth showing.
+            [ "$jesc" = "-" ] && jesc=""
+            note "jev: $jid suggests $jtier (confidence $jconf${jesc:+, escalated: $jesc}) — declared $jdecl"
+          fi
+        done <<EOF
+$jev_scores
+EOF
+        [ "$applied" -gt 0 ] && note "jev: applied $applied difficulty change(s); the table below shows the result"
+      fi
+    fi
+  fi
+
   # --- validate + resolve routing ---
   local tmp="$PLAN/.tasks.tsv.new"; : > "$tmp"
   local hi_i=0 md_i=0 lo_i=0 an_i=0 unassigned=0

@@ -227,11 +227,90 @@ cost 0.12–0.21 confidence on every repo that documents nothing, because "no ca
 matches" reads as evidence against rather than absence of evidence. Fixing that
 recovered those repos exactly, and the doc-rich repos stayed erratic. Reverted.
 
+## Routing (shadow-first)
+
+Five `Score` rubrics per task, all in one request, evaluated in parallel. **This code,
+not the model, turns them into a tier** — `forge_jev/routing.py` holds the weights, so
+re-tuning them against accrued outcomes replays recorded scores instead of paying for
+inference again.
+
+| Rubric | Weight | Why |
+|---|---|---|
+| design judgment | 0.35 | `decompose.md` defines difficulty by this first |
+| state & concurrency subtlety | 0.25 | that table names it as what makes a ten-line diff `high` |
+| blast radius | 0.20 | how far a mistake reaches |
+| spec clarity | 0.15 | is the approach given, or must it be invented |
+| existing test coverage | **−0.05** | inverted: good coverage lowers the tier |
+
+Coverage is weighted lightly on purpose. It does not reduce the judgment a task demands,
+only what a mistake costs, and letting it dominate would send a genuinely hard change to
+a cheap model because the area happens to be well tested.
+
+The planner's own difficulty rating is **not** sent. Jev is a second opinion on the same
+evidence; showing it the answer first buys an agreement rate, not a judgment.
+
+**Escalation.** A composite within 0.05 of a tier boundary, or a confidence below 0.55,
+escalates one tier and records why (`boundary` / `low-confidence`). Paying for a stronger
+model on an ambiguous task is the cheap error. An escalated judgment is never acted on —
+the escalation exists precisely because the composite was not trustworthy there.
+
+### Three modes, and why acting is currently impossible
+
+| Mode | What happens |
+|---|---|
+| `--jev-shadow` | Scores every task, writes `jev-routing.tsv` and `tasks/<id>/jev.json`, **changes nothing else** — not the table, not one dispatch |
+| `--jev` (default) | Adds an advisory line per task; the `difficulty` column is untouched |
+| `--jev-act` | Writes the tier into `difficulty` — **only** where `routing.may_act` allows |
+
+`may_act` requires all of: a stored calibration for **this repo**, covering **this tier**,
+plus an unescalated judgment at or above `routing_act` (0.85). The calibration file is
+written only by `forge jev calibrate --write`, and only for tiers that reached the sample
+bar (default N=30). No repo has one yet, so **`--jev-act` is inert for routing today** and
+stays advisory — by design, not by omission.
+
+Calibration is per repo because the measurements above show the same rubric behaving
+differently across repos; a threshold earned in one project says nothing about another.
+
+### What was measured
+
+Six real tasks from this repo, hand-labelled first, scored live:
+
+- **5 of 6 matched.** The sixth was a boundary escalation `medium`→`high`, the intended
+  conservative direction.
+- Confidence is high on easy work (0.89–0.93) and lower on hard work (0.67–0.76). That
+  asymmetry is the useful one: Jev is confident exactly where routing *down* saves money,
+  and defers to the human where getting it wrong is expensive.
+- End to end, a spelling fix declared `high` was routed to the cheap pool at 0.864 while a
+  concurrency redesign stayed on the expensive one.
+
+Composite confidence is the **weight-weighted** mean, not the minimum. The minimum was
+tried first and measured wrong: on a real task `blast_radius` returned 0.0 while
+`design_judgment` (weight 0.35) was 0.94, and the minimum reported 0.0 for a composite
+that was mostly settled. The weakest dimension is still reported separately as `weakest`.
+
+Six hand-labelled tasks is **not** a calibration. It is a smoke test that the rubrics
+point the right way. The real numbers come from shadow runs.
+
+### Accruing the data
+
+```
+/forge "<goal>" --decompose-level medium --jev --jev-shadow    # normal work, nothing changes
+forge jev calibrate --repo <repo>                              # reports, refuses below N=30/tier
+forge jev calibrate --repo <repo> --write                      # only then may routing act
+```
+
+`calibrate` joins `jev-routing.tsv` against `.forge/ledger.tsv` on `(run_id, task)`, taking
+the QA verdict as the outcome. It prints the shortfall per tier rather than a
+confident-looking guess, and `--write` is a separate step because that file is the only
+thing standing between `--jev-act` and Jev changing which model spends your quota.
+
 ## Status
 
 Phase 0 added the configuration surface. Phase 1a added `backtest`, which scores the
-rubrics against git history offline and changes no Forge decision. Phase 2 makes
-verification the first capability wired to a live decision, as described above.
+rubrics against git history offline and changes no Forge decision. Phase 2 made
+verification the first capability wired to a live decision. Phase 3 adds routing, which
+can advise today and cannot act anywhere until that repo has been calibrated — which is
+also what Phase 1b's shadow accrual exists to make possible.
 
 Per-task test subsetting is **not** implemented. Running tests inside a task worktree
 has no safe window: artifacts created before the diff capture reach QA as if the dwarf
@@ -240,10 +319,13 @@ wrote them, and artifacts created after are caught by the fingerprint re-checks 
 properly needs a disposable export with the dependency environment rebuilt, whose cost
 may exceed the saving — a trade that needs `backtest` numbers to settle.
 
-Routing, pre-dispatch gates and memory curation remain unwired.
+Routing is wired but shadow-first: it can advise today and cannot act until a repo
+has been calibrated. Pre-dispatch gates and memory curation remain unwired.
 
 Verification is calibrated against real judgments (see above). Routing is not: its
-`routing_act` of 0.85 is still an unmeasured placeholder, and the discovery result
-above — that confidence tracks option-set ambiguity rather than correctness — is a
-warning that a Choice threshold picked by intuition can be badly wrong in either
-direction.
+`routing_act` of 0.85 rests on six hand-labelled tasks, which is a smoke test and not a
+calibration. Observed composite confidences ran 0.54–0.93, so 0.85 currently admits only
+the clearest cases — deliberately, but the number itself is unearned until shadow runs
+produce outcomes. The discovery result above, that confidence tracks option-set
+ambiguity rather than correctness, is the standing warning that a threshold picked by
+intuition can be wrong in either direction.
