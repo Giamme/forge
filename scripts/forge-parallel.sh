@@ -967,7 +967,38 @@ do_retry() {
   echo
   printf '  %-14s %-9s %s\n' id status branch
   awk -F'\t' '{printf "  %-14s %-9s %s\n", $1, $2, $3}' "$PLAN/results.tsv"
+  forge_jev_review_flags "$PLAN"
   [ "$(task_status "$PLAN" "$id")" = "MERGED" ] || return 5
+  return 0
+}
+
+# Print any Jev review-triage flags under the results table.
+#
+# do_task's notes go to tasks/<id>/task.out, which the scheduler only echoes when
+# FORGE_OUTPUT=full -- the right call for parallel dispatch, where interleaved output is
+# unreadable. But it meant this particular note was written where nobody would read it,
+# and it is the only signal that a FAIL may not be sound. A human has to see it to act
+# on it, and the default output mode is `summary`.
+#
+# qa.jev.json exists only when the review was flagged: review-triage deletes it when the
+# review looks sound, so its presence is the signal and no new file is needed.
+forge_jev_review_flags() {
+  local plan="$1" id notice printed=0
+  for id in $(all_ids "$plan/tasks.tsv"); do
+    [ -s "$plan/tasks/$id/qa.jev.json" ] || continue
+    notice="$(python3 -c '
+import json, sys
+try:
+    data = json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit(0)
+print("; ".join(data.get("reasons") or []))
+' "$plan/tasks/$id/qa.jev.json" 2>/dev/null)"
+    [ -n "$notice" ] || continue
+    [ "$printed" = 0 ] && { echo; printed=1; }
+    printf '  jev: %s — the FAIL stands; %s\n' "$id" "$notice"
+  done
+  [ "$printed" = 1 ] && printf '  A flagged review is not an overturned one. Read it before retrying.\n'
   return 0
 }
 
@@ -1265,6 +1296,7 @@ do_run() (
   echo "artifacts: $PLAN/tasks/<id>/{dwarf,qa}.{last,log}; results: $PLAN/results.tsv"
   printf '  %-14s %-9s %s\n' id status branch
   awk -F'\t' '{printf "  %-14s %-9s %s\n", $1, $2, $3}' "$PLAN/results.tsv"
+  forge_jev_review_flags "$PLAN"
   echo
 
   # Undeclared files are reported here rather than buried in a task log, because

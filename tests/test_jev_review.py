@@ -1,4 +1,5 @@
 """Post-review annotation. The load-bearing test here is that nothing overturns a FAIL."""
+import json
 import subprocess
 import sys
 import tempfile
@@ -144,3 +145,56 @@ class CliContractTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class SummarySurfacingTests(unittest.TestCase):
+    """A flag nobody sees is a flag that does nothing."""
+
+    HELPER = None
+
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        self.plan = Path(self.dir.name)
+        (self.plan / 'tasks' / 'alpha').mkdir(parents=True)
+        (self.plan / 'tasks' / 'beta').mkdir(parents=True)
+        (self.plan / 'tasks.tsv').write_text(
+            '# id\tdeps\tdifficulty\tfiles\tdwarf\tqa\ttitle\n'
+            'alpha\t-\tlow\ta.py\t-\t-\tA\n'
+            'beta\t-\tlow\tb.py\t-\t-\tB\n')
+
+    def _run(self):
+        script = (REPO_ROOT / 'scripts' / 'forge-parallel.sh').read_text()
+        start = script.index('forge_jev_review_flags() {')
+        end = script.index('\n}\n', start) + 3
+        body = 'set -uo pipefail\n' \
+               'all_ids() { awk -F"\\t" \'!/^#/ && NF {print $1}\' "$1"; }\n' \
+               + script[start:end] + '\nforge_jev_review_flags "%s"\n' % self.plan
+        return subprocess.run(['/bin/bash', '-c', body], capture_output=True, text=True)
+
+    def test_a_flagged_review_is_named_in_the_summary(self):
+        # It was written to tasks/<id>/task.out, which the scheduler echoes only under
+        # FORGE_OUTPUT=full. The default is summary, so the one signal that a FAIL may
+        # be unsound went where nobody reads it.
+        (self.plan / 'tasks' / 'beta' / 'qa.jev.json').write_text(
+            json.dumps({'reasons': ['the review cites code that may not be in this diff']}))
+        out = self._run().stdout
+        self.assertIn('beta', out)
+        self.assertIn('cites code', out)
+        self.assertIn('not an overturned one', out)
+
+    def test_nothing_is_printed_when_no_review_was_flagged(self):
+        # review-triage deletes the record when the review looks sound, so its absence
+        # is the signal. A summary that says "no flags" on every clean run is noise.
+        self.assertEqual(self._run().stdout.strip(), '')
+
+    def test_an_unreadable_record_is_skipped_not_fatal(self):
+        (self.plan / 'tasks' / 'alpha' / 'qa.jev.json').write_text('{not json')
+        result = self._run()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), '')
+
+    def test_a_record_with_no_reasons_prints_nothing(self):
+        (self.plan / 'tasks' / 'alpha' / 'qa.jev.json').write_text(json.dumps({'reasons': []}))
+        self.assertEqual(self._run().stdout.strip(), '')
+
