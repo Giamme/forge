@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / 'scripts'))
 
-from forge_jev import coupling  # noqa: E402
+from forge_jev import DEFAULT_THRESHOLDS, coupling  # noqa: E402
 
 
 def task(task_id, title='t', files='-', difficulty='low'):
@@ -105,11 +105,15 @@ class CoupledPairsTests(unittest.TestCase):
         answers = {f'p{i}': dict(type='noul', noul=v) for i, v in enumerate(values[:len(candidate_pairs)])}
         with patch('forge_jev.coupling.ask', return_value=dict(answers=answers)):
             found = coupling.coupled_pairs(self.repo, tasks=tasks, waves=waves)
-        # gate_warn default is 0.60, so only >= 0.60 survive.
+        # coupling_warn, not gate_warn: this rubric's own measured scale. Everything
+        # above it is ranked, then capped -- the ordering is the signal, and a plan that
+        # warns about half its pairs teaches people to ignore the warning.
+        warn = DEFAULT_THRESHOLDS['coupling_warn']
         probabilities = [p for _a, _b, p in found]
         self.assertEqual(probabilities, sorted(probabilities, reverse=True))
-        self.assertTrue(all(p >= 0.60 for p in probabilities))
-        self.assertEqual(len(found), sum(1 for v in values[:len(candidate_pairs)] if v >= 0.60))
+        self.assertTrue(all(p >= warn for p in probabilities))
+        above = sorted((v for v in values[:len(candidate_pairs)] if v >= warn), reverse=True)
+        self.assertEqual(probabilities, above[:coupling.MAX_WARNINGS])
 
     def test_pairs_are_never_formed_across_waves(self):
         tasks = [task('a'), task('b'), task('c')]
@@ -143,3 +147,61 @@ class CoupledPairsTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class MeasuredThresholdTests(unittest.TestCase):
+    """This gate borrowed gate_warn and therefore never fired, on any plan, ever."""
+
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        self.plan = Path(self.dir.name)
+
+    def _tasks(self, n):
+        return [dict(id=f't{i}', title=f'Task {i}', files=f'f{i}.py', difficulty='low',
+                     prompt=f'requirements for t{i}') for i in range(n)]
+
+    def _found(self, probabilities):
+        tasks = self._tasks(len(probabilities) + 1)
+        waves = {'1': [task['id'] for task in tasks]}
+        captured = {}
+
+        def fake_ask(state, questions, **kwargs):
+            captured['state'] = state
+            answers = {qid: dict(type='noul', noul=p)
+                       for qid, p in zip(sorted(questions), probabilities)}
+            return dict(answers=answers)
+
+        with patch('forge_jev.coupling.ask', side_effect=fake_ask):
+            found = coupling.coupled_pairs(self.plan, tasks=tasks, waves=waves)
+        return found, captured.get('state')
+
+    def test_coupling_has_its_own_threshold_far_below_gate_warn(self):
+        # Measured over 11 same-wave pairs from a real plan with known outcomes, 5 runs
+        # each: coupling probabilities live at 0.09-0.27. gate_warn's 0.60 was not a
+        # strict threshold, it was unreachable -- the feature had never fired once.
+        warn = DEFAULT_THRESHOLDS['coupling_warn']
+        self.assertLess(warn, DEFAULT_THRESHOLDS['gate_warn'])
+        self.assertGreater(warn, 0.18, 'must clear the highest measured independent pair')
+        self.assertLess(warn, 0.22, 'must stay under the lowest measured coupled pair')
+
+    def test_the_requirements_reach_the_model(self):
+        # Without them this rubric had no signal at all: the two pairs that produced a
+        # defect that really shipped scored lowest of everything measured.
+        _found, state = self._found([0.9])
+        self.assertIn('requirements for t0', str(state))
+
+    def test_no_more_than_three_pairs_are_reported(self):
+        # Rank is the signal, not the absolute value, and the distribution moves with the
+        # plan. At a fixed threshold a real 8-task plan warned about 12 of its 21 pairs.
+        found, _state = self._found([0.9] * 10)
+        self.assertLessEqual(len(found), coupling.MAX_WARNINGS)
+
+    def test_the_three_reported_are_the_highest_scoring(self):
+        found, _state = self._found([0.21, 0.95, 0.22, 0.80, 0.60])
+        self.assertEqual([p for _a, _b, p in found], [0.95, 0.8, 0.6])
+
+    def test_a_plan_with_nothing_above_the_threshold_reports_nothing(self):
+        found, _state = self._found([0.19, 0.10, 0.05])
+        self.assertEqual(found, [])
+

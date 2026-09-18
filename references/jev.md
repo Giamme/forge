@@ -457,17 +457,55 @@ correctness of code that is not there.
 ## Wave coupling
 
 `compute_waves` bounds parallelism structurally: two tasks share a wave only when their
-file sets are disjoint. Disjointness cannot see the case where task A changes an
-interface task B consumes — both diffs are clean against their own baseline, both pass
-review, and the merge is broken.
+declared file sets are disjoint. Disjointness cannot see the case where task A changes an
+interface task B consumes — both diffs are individually correct, both pass review against
+their own baseline, and the merge is broken. This asks about exactly that.
 
-One request covers every same-wave pair (capped at 60, sorted before truncation so the
-same plan always warns the same way). **Advisory only**: it never edits `tasks.tsv`,
-never adds a dep, never changes `waves.tsv`.
+**It never fired once, on any plan, until it was measured.** It borrowed `gate_warn`
+(0.60) while coupling probabilities live around 0.09–0.38. That was not a strict
+threshold; it was an unreachable one.
 
-Live check on a three-task wave — a parser task changing `parse()`'s return type, a
-validator consuming it, and a README typo fix — flagged exactly one pair of the three at
-0.78 and left the docs task alone.
+Measured over 11 same-wave pairs from a real 8-task plan, five runs each, with ground
+truth taken from the run itself — two of those pairs produced a defect that actually
+shipped:
+
+| | median |
+|---|---|
+| `events`+`fixtures` — fixtures reads an event's answers object | **0.27** |
+| `events`+`page` — page renders normalised events | **0.25** |
+| `page`+`stats` — page rendered a repeats shape stats never emitted *(shipped bug)* | **0.23** |
+| `events`+`stats` — stats consumes `normalise()`'s output shape | **0.22** |
+| `discover`+`readme` — unrelated | 0.18 |
+| `discover`+`server`, `readme`+`fixtures` — unrelated | 0.13–0.14 |
+| `discover`+`fixtures`, `fixtures`+`page`, `discover`+`page` — unrelated | 0.09–0.10 |
+
+Two changes came out of it.
+
+**The requirements now reach the rubric.** It used to see `id (title) files: …` and
+nothing else, and in that state it had *no signal at all*: the pairs that produced real
+defects scored lowest of everything, below pairs that were entirely unrelated. An
+interface dependency between two tasks is written down in `prompt.md` and nowhere else —
+certainly not in a one-line title. File *contents* are still not sent; diffs nobody has
+written yet would be noise.
+
+**`coupling_warn` is 0.20, and at most three pairs are reported.** The threshold decides
+whether anything is worth saying; the ordering decides what gets said. Rank is the real
+signal — the coupled pairs took four of the top five places — while the absolute scores
+move with the plan: the same rubric sat at 0.09–0.27 in the measurement and 0.20–0.38 on
+the live plan, where a bare 0.20 warned about 12 of 21 pairs. A gate that fires on more
+than half of everything teaches people to ignore it.
+
+On the live plan it now names three pairs, all genuinely coupled, `page`+`server` highest
+— the page consumes the server's API contract. On a plan of eight unrelated tasks it says
+nothing.
+
+**What it structurally cannot catch.** The other shipped defect was `readme` documenting
+a CLI interface that `cli` had not built yet. Those two were in *different waves*, so they
+were never a candidate pair. "Task A depends on an interface task B builds later" is a
+real failure mode and no same-wave check can see it. Worth noting before trusting this
+gate to cover cross-task risk in general.
+
+Still advisory in every mode: it prints, and never reorders a wave or blocks a dispatch.
 
 ## Memory curation
 

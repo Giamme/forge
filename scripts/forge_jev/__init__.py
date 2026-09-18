@@ -42,6 +42,18 @@ DEFAULT_THRESHOLDS = dict(routing_act=0.85, tests_act=0.70, flake_act=0.90,
                           # The rubric needs reworking; until then, treat a warning here
                           # as a hint and its silence as no evidence at all.
                           verifiable_warn=0.38,
+                          # Coupling borrowed gate_warn (0.60) and therefore never fired
+                          # once, on any plan. Measured over 11 same-wave pairs from a
+                          # real 8-task plan, 5 runs each, with ground truth taken from
+                          # the run itself -- two of those pairs produced a defect that
+                          # actually shipped. Coupling probabilities live at 0.09-0.27.
+                          # 0.60 was not a strict threshold, it was unreachable.
+                          #
+                          # At 0.20: 4 of 5 genuinely coupled pairs warn, 0 of 6
+                          # independent ones do. Provisional -- one plan, one repo, and
+                          # margins of about 0.02 either side -- but a gate that fires on
+                          # the right pairs 4 times in 5 beats one that cannot fire.
+                          coupling_warn=0.20,
                           # The pass rate a tier must be shown to hold, with 95%
                           # confidence, before routing may act on it.
                           calibrate_floor=0.80,
