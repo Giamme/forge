@@ -138,7 +138,7 @@ fi
 [ "$DRY" = 1 ] || forge_metric_begin "$RUN" solo
 
 # --- dwarf --------------------------------------------------------------------
-/bin/bash "$MEMORY" inject "$REPO" dwarf > "$RUN/dwarf.memory"
+/bin/bash "$MEMORY" inject "$REPO" dwarf --run-dir "$RUN" > "$RUN/dwarf.memory"
 python3 "$SKILL_DIR/scripts/forge-prompt.py" --requirements "$RUN/prompt.md" --approach "$APPROACH" --memory "$RUN/dwarf.memory" > "$RUN/context.md" || exit 3
 {
   cat "$RUN/context.md"
@@ -184,7 +184,8 @@ note "dwarf $DWARF in $REPO"
 rc=$?
 dur_dwarf="$(sed -n 's/^duration_s=//p' "$RUN/dwarf.resolved" 2>/dev/null | tail -1)"
 /bin/bash "$MEMORY" record "$REPO" --last "$RUN/dwarf.last" --role dwarf \
-  --run-id "$RUN_ID" --model "$DWARF" --duration "${dur_dwarf:--}" >/dev/null 2>&1
+  --run-id "$RUN_ID" --model "$DWARF" --run-dir "$RUN" \
+  --duration "${dur_dwarf:--}" >/dev/null 2>&1
 [ "$rc" = 7 ] && die "the dwarf exceeded its timeout — see $RUN/dwarf.log" 7
 [ "$rc" -ne 0 ] && die "the dwarf dispatch failed — see $RUN/dwarf.log" 4
 
@@ -210,7 +211,7 @@ printf '%s\n' "$SOURCE_FP" > "$RUN/source.fingerprint"
 printf '%s\n' "$REVIEW_FP" > "$RUN/review.fingerprint"
 forge_metric_phase preparation
 # --- qa -----------------------------------------------------------------------
-/bin/bash "$MEMORY" inject "$REPO" qa > "$RUN/qa.memory"
+/bin/bash "$MEMORY" inject "$REPO" qa --run-dir "$RUN" > "$RUN/qa.memory"
 {
   python3 "$SKILL_DIR/scripts/forge-prompt.py" --requirements "$RUN/prompt.md" --approach "$APPROACH" --goal "$RUN/goal.txt" --memory "$RUN/dwarf.memory" --memory "$RUN/qa.memory"
   cat <<'EOF'
@@ -247,7 +248,7 @@ if [ "$(forge_fingerprint "$REPO")" != "$SOURCE_FP" ] || [ "$(forge_fingerprint 
 fi
 dur_qa="$(sed -n 's/^duration_s=//p' "$RUN/qa.resolved" 2>/dev/null | tail -1)"
 /bin/bash "$MEMORY" record "$REPO" --last "$RUN/qa.last" --role qa \
-  --run-id "$RUN_ID" --model "$QA" --verdict "${verdict:-UNKNOWN}" \
+  --run-id "$RUN_ID" --model "$QA" --verdict "${verdict:-UNKNOWN}" --run-dir "$RUN" \
   --duration "${dur_qa:--}" >/dev/null 2>&1
 [ "$rc" = 7 ] && die "qa exceeded its timeout — the dwarf's changes are still in the tree; see $RUN/qa.log" 7
 [ "$rc" -ne 0 ] && die "the qa dispatch failed — the dwarf's changes are still in the tree; see $RUN/qa.log" 4

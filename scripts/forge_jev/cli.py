@@ -87,15 +87,21 @@ def parser() -> argparse.ArgumentParser:
     memory_curate.add_argument('--category', required=True)
     memory_curate.add_argument('--text', required=True)
     memory_curate.add_argument('--json', action='store_true')
+    # Without this, every curation call is invisible: no jev.jsonl line, no latency, no
+    # tokens. A first real run made 51 logged calls and an unknown number of unlogged
+    # memory ones, which is exactly the accounting a run log exists to prevent.
+    memory_curate.add_argument('--run-dir', default=None)
 
     memory_slice = sub.add_parser('memory-slice')
     memory_slice.add_argument('--task', required=True)
     memory_slice.add_argument('--lines', required=True)
     memory_slice.add_argument('--keep', type=int, default=None)
+    memory_slice.add_argument('--run-dir', default=None)
 
     memory_stale = sub.add_parser('memory-stale')
     memory_stale.add_argument('--text', required=True)
     memory_stale.add_argument('--anchor', required=True)
+    memory_stale.add_argument('--run-dir', default=None)
 
     parse_spec = sub.add_parser('parse-spec')
     parse_spec.add_argument('sentence')
@@ -635,7 +641,7 @@ def cmd_memory_curate(args) -> int:
             existing = []
 
     result = memory_module.curate(category=args.category, text=args.text,
-                                  existing=existing, config=config)
+                                  existing=existing, run_dir=args.run_dir, config=config)
     if result is None:
         return 3
     if args.json:
@@ -664,7 +670,7 @@ def cmd_memory_slice(args) -> int:
     except OSError:
         return 3
     kept = memory_module.relevant_lines(
-        task=task, lines=lines,
+        task=task, lines=lines, run_dir=args.run_dir,
         keep=args.keep if args.keep and args.keep > 0 else memory_module.SLICE_KEEP,
         config=config)
     if kept is None:
@@ -681,7 +687,8 @@ def cmd_memory_stale(args) -> int:
         return 3
     from . import memory as memory_module
 
-    result = memory_module.still_true(text=args.text, anchor_path=args.anchor, config=config)
+    result = memory_module.still_true(text=args.text, anchor_path=args.anchor,
+                                      run_dir=args.run_dir, config=config)
     if result is None:
         return 3
     return 0 if result['stale'] else 1

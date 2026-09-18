@@ -623,7 +623,8 @@ do_task() (
   cp "$tdir/capsule.md" "$tdir/baseline.capsule"
   # --task lets Jev narrow the injected slice to facts that bear on THIS task. Without
   # it, or with Jev off, the full role slice is injected exactly as before.
-  /bin/bash "$MEMORY" inject "$REPO" dwarf --task "$tdir/prompt.md" > "$tdir/dwarf.memory"
+  /bin/bash "$MEMORY" inject "$REPO" dwarf --task "$tdir/prompt.md" \
+      --run-dir "$tdir" > "$tdir/dwarf.memory"
   {
     python3 "$SKILL_DIR/scripts/forge-prompt.py" --requirements "$tdir/prompt.md" --capsule "$tdir/baseline.capsule" --approach "$tdir/approach.md" --retry "$tdir/retry_findings.md" --memory "$tdir/dwarf.memory"
     echo "Implement this task in the repository. Follow the intended approach unless it is wrong; explain deviations. Run the task's requested verification and report results."
@@ -645,7 +646,7 @@ do_task() (
   fi
 
   /bin/bash "$MEMORY" record "$REPO" --last "$tdir/dwarf.last" --role dwarf \
-      --run-id "$run_id" --task "$id" --model "$dw" \
+      --run-id "$run_id" --task "$id" --model "$dw" --run-dir "$tdir" \
       --duration "$(dispatch_duration "$tdir" dwarf)" >/dev/null 2>&1
 
   forge_metric_phase snapshot
@@ -723,7 +724,8 @@ do_task() (
       || : > "$tdir/subset.jev.txt"
   fi
   # QA uses the dispatch-time ownership and baseline, never later merge state.
-  /bin/bash "$MEMORY" inject "$REPO" qa --task "$tdir/prompt.md" > "$tdir/qa.memory"
+  /bin/bash "$MEMORY" inject "$REPO" qa --task "$tdir/prompt.md" \
+      --run-dir "$tdir" > "$tdir/qa.memory"
   {
     python3 "$SKILL_DIR/scripts/forge-prompt.py" --requirements "$tdir/prompt.md" --capsule "$tdir/baseline.capsule" --approach "$tdir/approach.md" --retry "$tdir/retry_findings.md" --memory "$tdir/dwarf.memory" --memory "$tdir/qa.memory"
     echo "The implementer was asked to do the task above. Review the diff below for correctness"
@@ -775,7 +777,11 @@ do_task() (
     # between it and the assignment, which is a property of the next edit, not this one.
     qa_effort_rc=$?
     if [ "$qa_effort_rc" -eq 0 ] && [ -n "$qa_effort" ]; then
-      note "$id: jev sizes this review at effort $(printf '%s' "$qa_effort" | cut -f1) (advisory; qa runs as configured)"
+      # The confidence goes in the line. Measured on a real run, this rubric returned
+      # high/0.27, high/0.23, xhigh/0.63 and medium/0.59 -- a bare recommendation at
+      # 0.23 is a coin flip presented as an opinion, and the routing line next to it
+      # has always shown its own. A reader cannot discount a number they cannot see.
+      note "$id: jev sizes this review at effort $(printf '%s' "$qa_effort" | cut -f1) (confidence $(printf '%s' "$qa_effort" | cut -f2); advisory; qa runs as configured)"
       printf '%s' "$qa_effort" > "$tdir/qa.effort.jev"
     fi
   fi
@@ -801,6 +807,7 @@ do_task() (
   verdict="$(forge_verdict "$tdir/qa.last")"
   /bin/bash "$MEMORY" record "$REPO" --last "$tdir/qa.last" --role qa \
       --run-id "$run_id" --task "$id" --model "$qa" --verdict "${verdict:-UNKNOWN}" \
+      --run-dir "$tdir" \
       --duration "$(dispatch_duration "$tdir" qa)" >/dev/null 2>&1
 
   case "$verdict" in

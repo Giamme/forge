@@ -29,6 +29,11 @@
 # Exit codes: 0 ok | 2 usage error
 set -uo pipefail
 
+# Where to log the Jev calls this script makes. Empty means nowhere, which is what it
+# meant everywhere until a real run showed 51 logged calls and an unknown number of
+# unlogged memory ones sitting beside them.
+JEV_RUN_DIR=""
+
 die()  { printf 'forge: %s\n' "$1" >&2; exit "${2:-2}"; }
 
 MAX_LINES="${FORGE_MEMORY_MAX_LINES:-40}"
@@ -152,7 +157,8 @@ rebuild() { # rebuild <repo> -> prints "kept<TAB>pruned_stale<TAB>pruned_cap"
       if [ "${FORGE_MEMORY_DEEP_PRUNE:-0}" = 1 ] && [ -n "$anchor" ] \
          && [ "$jev_loaded" = 1 ] && forge_jev_active memory; then
         if python3 "$SKILL_DIR/scripts/forge-jev.py" memory-stale \
-             --text "$text" --anchor "$repo/$anchor" >/dev/null 2>&1; then
+             --text "$text" --anchor "$repo/$anchor" \
+             ${JEV_RUN_DIR:+--run-dir "$JEV_RUN_DIR"} >/dev/null 2>&1; then
           stale=$((stale+1)); continue
         fi
       fi
@@ -236,6 +242,7 @@ do_inject() {
   while [ $# -gt 0 ]; do
     case "$1" in
       --task) TASKFILE="${2:-}"; shift 2 ;;
+      --run-dir) JEV_RUN_DIR="${2:-}"; shift 2 ;;
       *) shift ;;
     esac
   done
@@ -277,7 +284,8 @@ do_inject() {
         printf '%s\n' "$facts" > "$ftmp"
         local ktmp="${TMPDIR:-/tmp}/forge-mem-keep-$$.txt"
         if python3 "$SKILL_DIR/scripts/forge-jev.py" memory-slice \
-             --task "$TASKFILE" --lines "$ftmp" > "$ktmp" 2>/dev/null && [ -s "$ktmp" ]; then
+             --task "$TASKFILE" --lines "$ftmp" \
+             ${JEV_RUN_DIR:+--run-dir "$JEV_RUN_DIR"} > "$ktmp" 2>/dev/null && [ -s "$ktmp" ]; then
           # Two files, not -v: awk's -v processes escapes and cannot carry a literal
           # newline, so passing the kept lines that way silently truncated the set at the
           # first one. Read them as a first file instead.
@@ -347,6 +355,7 @@ do_record() {
       --role)    ROLE="${2:?--role needs a value}"; shift 2 ;;
       --run-id)  RUN_ID="${2:?--run-id needs a value}"; shift 2 ;;
       --task)    TASK="${2:?--task needs a value}"; shift 2 ;;
+      --run-dir) JEV_RUN_DIR="${2:?--run-dir needs a value}"; shift 2 ;;
       --model)   MODEL="${2:?--model needs a value}"; shift 2 ;;
       --verdict) VERDICT="${2:?--verdict needs a value}"; shift 2 ;;
       --duration) DURATION="${2:?--duration needs a value}"; shift 2 ;;
@@ -387,7 +396,8 @@ do_record() {
       inject=1
       if [ "$jev_loaded" = 1 ] && forge_jev_active memory; then
         curated="$(python3 "$SKILL_DIR/scripts/forge-jev.py" memory-curate \
-            --repo "$repo" --category "$cat" --text "$text" 2>/dev/null)"
+            --repo "$repo" --category "$cat" --text "$text" \
+            ${JEV_RUN_DIR:+--run-dir "$JEV_RUN_DIR"} 2>/dev/null)"
         curated_rc=$?
         if [ "$curated_rc" -eq 0 ] && [ -n "$curated" ]; then
           jcat="$(printf '%s' "$curated" | cut -f1)"

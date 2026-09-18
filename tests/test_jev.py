@@ -564,6 +564,32 @@ class CliTests(JevTestCase):
 
 # 9. Shim ----------------------------------------------------------------------------
 
+class MemoryObservabilityTests(unittest.TestCase):
+    """Every memory subcommand must be able to say where to log."""
+
+    def test_all_three_memory_commands_accept_a_run_dir(self):
+        for argv in (['memory-curate', '--repo', '.', '--category', 'trap', '--text', 'x'],
+                     ['memory-slice', '--task', 'a', '--lines', 'b'],
+                     ['memory-stale', '--text', 'x', '--anchor', 'y']):
+            with self.subTest(argv[0]):
+                parsed = cli.parser().parse_args(argv + ['--run-dir', '/tmp/run-42'])
+                self.assertEqual(parsed.run_dir, '/tmp/run-42')
+
+    def test_every_memory_invocation_in_a_runner_passes_one(self):
+        # The gap was never in the Python: it was that no caller had a flag to pass.
+        for name in ('forge-parallel.sh', 'forge-solo.sh'):
+            text = (ROOT / 'scripts' / name).read_text()
+            # Join backslash continuations first: every one of these calls spans two or
+            # three physical lines, and a per-line scan reads only the first of them.
+            logical = text.replace('\\\n', ' ')
+            calls = [line for line in logical.splitlines()
+                     if '"$MEMORY" record' in line or '"$MEMORY" inject' in line]
+            self.assertTrue(calls, name)
+            for call in calls:
+                with self.subTest(runner=name, call=call.strip()[:70]):
+                    self.assertIn('--run-dir', call)
+
+
 class ShimTests(JevTestCase):
     def test_shim_exists_is_executable_and_runs_status(self):
         shim = ROOT / 'scripts/forge-jev.py'

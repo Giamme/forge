@@ -148,6 +148,20 @@ class CurateTests(unittest.TestCase):
             memory.curate(category='trap', text='a fact', existing=[])
         self.assertNotIn('same', captured['q'])
 
+    def test_curate_logs_where_it_is_told_to(self):
+        # Every memory call was invisible until a real run: no jev.jsonl line, no
+        # latency, no tokens. 51 logged calls sat beside an unknown number of unlogged
+        # ones, which is the accounting a run log exists to prevent.
+        seen = {}
+
+        def fake_ask(state, questions, **kwargs):
+            seen['run_dir'] = kwargs.get('run_dir')
+            return _result(durable=0.9, category='trap', category_confidence=1.0)
+
+        with patch('forge_jev.memory.ask', side_effect=fake_ask):
+            memory.curate(category='trap', text='a fact', run_dir='/tmp/run-42')
+        self.assertEqual(seen['run_dir'], '/tmp/run-42')
+
     def test_a_failed_request_yields_no_opinion(self):
         with patch('forge_jev.memory.ask', return_value=None):
             self.assertIsNone(memory.curate(category='trap', text='a fact'))
