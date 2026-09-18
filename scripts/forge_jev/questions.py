@@ -585,3 +585,51 @@ def memory_relevant(text: str, task: str) -> dict:
               'does here should be left out.',
     )
 
+# --- effort sizing and spec parsing (Phase 3, remaining items) ---------------------
+
+
+def effort_level() -> dict:
+    """How much thinking should the chosen model spend on this task?
+
+    Ordered to match forge-dispatch.sh's CANON ladder (low..ultra), so the answer maps
+    onto a real effort word rather than a number this file invented. forge-dispatch.sh
+    already clamps a request above what a pairing offers, so a level this repo's models
+    cannot reach degrades to their top tier instead of failing.
+
+    This does not choose a MODEL -- the alias is whatever the user supplied for the tier.
+    """
+    instructions = (
+        'A model has already been chosen for this task. Given the task and its context '
+        '(in state), how much reasoning effort should it spend? Rate what the work '
+        'requires, not how much code it produces.'
+    )
+    return Score(instructions, [
+        'low -- mechanical and local; the answer is evident from reading the task.',
+        'medium -- ordinary implementation work against a clear spec.',
+        'high -- needs the approach worked out before any code is written.',
+        'xhigh -- several interacting constraints have to be held at once.',
+        'max -- subtle correctness the obvious implementation would get wrong.',
+        'ultra -- the hardest class of change: concurrency, protocol or migration work '
+        'where a plausible-looking answer is usually wrong.',
+    ])
+
+
+def spec_from_sentence(tier: str, aliases: list) -> dict:
+    """Which registry alias does this sentence ask for, for this tier?
+
+    Asked once per tier over the closed set of aliases in registry.tsv plus 'none'. The
+    user still chose the models -- this only maps their words onto the aliases they
+    already have, and the result is echoed back for confirmation rather than applied.
+    """
+    criteria = {
+        alias: f'The sentence asks for {alias!r} for the {tier} tier.'
+        for alias in aliases
+    }
+    criteria['none'] = (
+        f'The sentence does not say which model should handle {tier} work. Pick this '
+        'rather than guess: an unasked-for model spends the user\'s quota.'
+    )
+    return Choice(
+        f'A user described how they want work routed. Which model alias, if any, are '
+        f'they asking for on {tier}-difficulty tasks?', criteria)
+

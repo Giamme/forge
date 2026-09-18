@@ -97,6 +97,10 @@ def parser() -> argparse.ArgumentParser:
     memory_stale.add_argument('--text', required=True)
     memory_stale.add_argument('--anchor', required=True)
 
+    parse_spec = sub.add_parser('parse-spec')
+    parse_spec.add_argument('sentence')
+    parse_spec.add_argument('--json', action='store_true')
+
     verify_triage = sub.add_parser('verify-triage')
     verify_triage.add_argument('--repo', required=True)
     # dest is deliberately not 'command': the top-level subparsers already own that dest
@@ -639,6 +643,29 @@ def cmd_memory_stale(args) -> int:
     return 0 if result['stale'] else 1
 
 
+def cmd_parse_spec(args) -> int:
+    """Map a sentence onto --dwarf-<tier> flags. Prints them; never applies them."""
+    config = load_config()
+    if not enabled('routing', config=config) or api_key(config) is None:
+        return 3
+    from . import spec
+
+    chosen = spec.parse(args.sentence, skill_dir=Path(__file__).resolve().parent.parent.parent,
+                        config=config)
+    if not chosen:
+        return 3
+    if args.json:
+        print(json.dumps(chosen, indent=2, sort_keys=True))
+    else:
+        print(spec.as_flags(chosen))
+        for tier, picked in sorted(chosen.items()):
+            print(f'  {tier}: {picked["alias"]} (confidence {picked["confidence"]})',
+                  file=sys.stderr)
+        print('Check these before using them — forge will not apply them for you.',
+              file=sys.stderr)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     try:
@@ -649,6 +676,7 @@ def main(argv: list[str] | None = None) -> int:
                     **{'score-plan': cmd_score_plan,
                        'coupling': cmd_coupling,
                        'review-triage': cmd_review_triage,
+                       'parse-spec': cmd_parse_spec,
                        'memory-curate': cmd_memory_curate,
                        'memory-slice': cmd_memory_slice,
                        'memory-stale': cmd_memory_stale,

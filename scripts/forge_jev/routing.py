@@ -14,8 +14,14 @@ from pathlib import Path
 
 from . import enabled, threshold
 from .client import ask, noul, score
-from .questions import (blast_radius, design_judgment, independently_verifiable,
-                        prompt_adequacy, spec_clarity, state_subtlety, test_coverage)
+from .questions import (blast_radius, design_judgment, effort_level,
+                        independently_verifiable, prompt_adequacy, spec_clarity,
+                        state_subtlety, test_coverage)
+
+# forge-dispatch.sh's CANON ladder, weakest first. Kept in the same order as the Score
+# levels in questions.effort_level so a position maps onto a word without a lookup that
+# could drift.
+EFFORT_WORDS = ('low', 'medium', 'high', 'xhigh', 'max', 'ultra')
 
 # Weights sum to 1.0. design_judgment carries the most because decompose.md defines
 # difficulty by it first ("rated ... by what the task demands of the model"), and
@@ -175,6 +181,11 @@ def score_task(repo, *, goal: str, task_id: str, title: str, files: str,
     # Phase 4's plan-time gates need exactly this state, and questions in one request
     # evaluate in parallel, so folding them in here costs no extra round trip -- the
     # alternative is a second request per task carrying an identical payload.
+    # Effort rides along too: same state, same request, no extra round trip. It is
+    # advisory in every mode -- acting on it would need its own calibration, and there
+    # is no outcome data that says a Jev-chosen effort produces better work.
+    questions['effort'] = effort_level()
+
     gate_ids = {}
     if enabled('gates', config=config):
         gate_ids = dict(prompt_adequacy=prompt_adequacy,
@@ -187,12 +198,18 @@ def score_task(repo, *, goal: str, task_id: str, title: str, files: str,
         return None
 
     dimensions = {}
-    for name, question in questions.items():
-        dimensions[name] = _normalized(result, name, len(question['criteria']))
+    for name in QUESTIONS:
+        dimensions[name] = _normalized(result, name, len(questions[name]['criteria']))
     combined = combine(dimensions)
     if combined is None:
         return None
     combined.update(id=task_id, declared=declared_difficulty)
+
+    effort_position, effort_confidence = score(result, 'effort')
+    if effort_position is not None:
+        index = max(0, min(len(EFFORT_WORDS) - 1, int(round(float(effort_position)))))
+        combined['effort'] = EFFORT_WORDS[index]
+        combined['effort_confidence'] = effort_confidence
 
     # Warnings, not gates: recorded below the threshold and silent above it. A LOW
     # probability is what is worth saying out loud here.

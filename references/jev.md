@@ -490,6 +490,49 @@ above each kept line. The 40-line/4KB cap and the role slice remain the outer bo
 on a 10-fact memory against a payments-retry task, it kept 8 and dropped the CSS build
 ordering and the parser cache — while keeping the idempotency trap.
 
+## Effort sizing, spec parsing, fractal re-rating
+
+**Effort sizing** rides in the routing request — same state, no extra round trip — and
+maps onto `forge-dispatch.sh`'s own `low..ultra` ladder, so a level this repo's models
+cannot reach is clamped by the existing dispatch logic rather than failing. It is
+**advisory in every mode**, including `--jev-act`: acting on it would need its own
+calibration, and no outcome data says a Jev-chosen effort produces better work.
+
+**`forge jev parse-spec "<sentence>"`** maps a sentence onto `--dwarf-<tier>` flags over
+the closed set of aliases in `registry.tsv`. It prints flags; it never applies them.
+
+It works on named models and declines on purely descriptive ones:
+
+```
+$ forge jev parse-spec "haiku for the easy stuff, opus for anything hard"
+--dwarf-low haiku --dwarf-high opus
+
+$ forge jev parse-spec "something cheap for docs, the strongest thing for concurrency"
+(exit 3 — nothing proposed)
+```
+
+That second result is correct, not a shortfall. `registry.tsv` has no cost or capability
+column, so nothing in the state says which alias is "cheap" or "strongest", and guessing
+would put an unasked-for model on the user's quota. The plan assumed this case would map;
+measurement says it cannot, with the registry as it stands.
+
+Worth recording how that was found: sending bare alias names returned `none` for every
+tier at 0.79–1.00 confidence. Alias names are opaque — `sol`, `luna`, `haiku` say nothing
+about what they are. Adding each alias's model ids to the state made the named case work
+at confidence 1.0 and left the descriptive case correctly refused.
+
+**Fractal child re-rating** corrects a child's difficulty in
+`forge_fractal/execution.py:Tree.admit`, where it is otherwise taken verbatim from the
+parent dwarf's JSON. Two properties, both tested:
+
+- It runs **outside `self.guard`**. `admit` holds a lock the whole tree contends for, and
+  a network call under it would stall every sibling.
+- A malformed difficulty is **rejected before** any correction, so a bad value from the
+  parent still raises rather than being silently replaced. Pool membership and the frozen
+  `eligible` check are untouched — this can only move a child between pools the user
+  already authorised, and it is gated on `routing.may_act`, so it does nothing on an
+  uncalibrated repo.
+
 ## Status
 
 Phase 0 added the configuration surface. Phase 1a added `backtest`, which scores the
@@ -509,7 +552,8 @@ Routing is wired but shadow-first: it can advise today and cannot act until a re
 has been calibrated. Phase 4 is wired except QA effort sizing, which is left out
 deliberately: it would size a review using the same kind of threshold routing
 cannot yet act on, so it would be advisory with no way to earn its way out of that.
-Phase 5 is wired in full.
+Phase 5 is wired in full. Phase 2(b), per-task test subsetting, remains deferred for
+the fingerprint reason above.
 
 Verification is calibrated against real judgments (see above). Routing is not: its
 `routing_act` of 0.85 rests on six hand-labelled tasks, which is a smoke test and not a
