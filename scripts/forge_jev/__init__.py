@@ -13,7 +13,35 @@ ENDPOINT = 'https://api.typesafe.ai/v1/systemone'
 MODEL = 'jev-latest'
 CAPABILITIES = ('routing', 'tests', 'gates', 'memory')
 DEFAULT_THRESHOLDS = dict(routing_act=0.85, tests_act=0.70, flake_act=0.90,
-                          gate_warn=0.60, prompt_warn=0.30, verifiable_warn=0.38,
+                          gate_warn=0.60,
+                          # Measured twice. The first 15 prompts were hand-written and
+                          # scored with only a task TITLE in state, because prompt.md did
+                          # not reach the model then -- so 0.30 was fitted to data
+                          # production never produced.
+                          #
+                          # Re-measured with the real state, 3 runs over 8 prompts: ones
+                          # a reviewer could not judge correctness from ("make the error
+                          # messages better", "harden the server -- fix what you find")
+                          # scored 0.06-0.27, and ones stating checkable behaviour scored
+                          # 0.85-0.96. Eight real task prompts landed 0.85-0.96 too. A
+                          # 0.58 gap, so this sits in the middle of it: 0.28 clear on
+                          # both sides, against a measured repeat-noise of 0.07.
+                          # 0.30 also classified every case correctly, but sat 0.03 above
+                          # the worst true positive -- correct by luck, not by margin.
+                          prompt_warn=0.55,
+                          # Unchanged deliberately, and not because it is right. Over the
+                          # same probes plus 8 real tasks, the two classes OVERLAP: tasks
+                          # that genuinely cannot be checked alone scored 0.34-0.56, and
+                          # ones that can scored 0.43-0.90. No threshold separates them.
+                          #
+                          # 0.38 has produced no false positive yet -- everything at or
+                          # below it has been genuinely unverifiable -- but it is 0.05
+                          # from the lowest true negative and noise is 0.07, so one
+                          # re-roll can flip it. This is a low-recall precision gate, and
+                          # moving the number cannot fix a rubric that does not separate.
+                          # The rubric needs reworking; until then, treat a warning here
+                          # as a hint and its silence as no evidence at all.
+                          verifiable_warn=0.38,
                           # The pass rate a tier must be shown to hold, with 95%
                           # confidence, before routing may act on it.
                           calibrate_floor=0.80,

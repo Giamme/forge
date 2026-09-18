@@ -376,8 +376,33 @@ This is the same trap `tests_act` set earlier, and it was measured rather than g
 | Gate | Threshold | Evidence |
 |---|---|---|
 | drift | `gate_warn` 0.60 | 50 commits × 2 repos: precision **1.000** and **0.934** |
-| prompt adequacy | `prompt_warn` 0.30 | vague prompts clustered at **0.04**, specific ones ran **0.55–0.87** |
-| independent verifiability | `verifiable_warn` 0.38 | task fragments **0.11–0.24**, self-contained tasks **0.51–0.72** |
+| prompt adequacy | `prompt_warn` 0.55 | unjudgeable prompts **0.06–0.27**, prompts stating checkable behaviour **0.85–0.96** |
+| independent verifiability | `verifiable_warn` 0.38 | **does not separate** — see below |
+
+Both text gates were first measured at a time when `prompt.md` did not reach the model:
+`score_task` sent only the task title. Those numbers (vague 0.04, specific 0.55–0.87)
+described data production never produced, and both thresholds were fitted to them.
+
+Re-measured with the real state — three runs over eight probe prompts against a real
+repo, plus the eight prompts of a real plan:
+
+**`prompt_adequacy` separates cleanly.** "Make the error messages better" scores 0.06;
+"harden the server — fix what you find" 0.15; "make it faster without breaking anything"
+0.27. A prompt that states checkable behaviour scores 0.85–0.96, and so did every one of
+the eight real task prompts. A 0.58-wide gap, so the threshold sits in the middle of it
+with 0.28 clear on each side. The old 0.30 classified every case correctly too, but sat
+**0.03** above the worst true positive — correct by luck rather than by margin, against a
+measured repeat-noise of 0.07.
+
+**`independently_verifiable` does not separate, and no threshold will fix it.** Tasks
+that genuinely cannot be checked on their own scored 0.34–0.56; tasks that can scored
+0.43–0.90. The classes overlap across 0.43–0.56. 0.38 is kept because everything at or
+below it has so far been genuinely unverifiable — it buys precision by giving up recall,
+missing the unverifiable tasks that land at 0.40–0.56. It is 0.05 from the lowest true
+negative and the noise is 0.07, so one re-roll can flip it.
+
+Treat a warning from it as a hint and its silence as no evidence at all. The rubric needs
+reworking; moving the number cannot fix a rubric whose classes overlap.
 
 Using the single `gate_warn` of 0.60 for all three — which is what shipped first — warned
 on 5 of 9 and 5 of 11 perfectly good tasks in the hand-labelled set. It was caught by a

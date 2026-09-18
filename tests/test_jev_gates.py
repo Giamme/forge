@@ -10,6 +10,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / 'scripts'))
 
 from forge_jev import DEFAULT_THRESHOLDS, gates, routing  # noqa: E402
 
+# The largest spread jevscope measured across byte-identical repeated requests in
+# a real run. A threshold with less margin than this is measuring noise.
+NOISE = 0.07
+
 
 class CandidateTests(unittest.TestCase):
     def setUp(self):
@@ -85,23 +89,34 @@ class ThresholdTests(unittest.TestCase):
     """Each rubric gets its own warn level. Measured, not assumed."""
 
     def test_the_three_gate_thresholds_are_distinct(self):
-        # Reusing gate_warn for all three would warn on roughly half of all good tasks;
-        # see references/jev.md for the 15-task measurement behind these numbers.
+        # Reusing gate_warn for all three would warn on roughly half of all good tasks.
         self.assertEqual(DEFAULT_THRESHOLDS['gate_warn'], 0.60)
-        self.assertEqual(DEFAULT_THRESHOLDS['prompt_warn'], 0.30)
+        self.assertEqual(DEFAULT_THRESHOLDS['prompt_warn'], 0.55)
         self.assertEqual(DEFAULT_THRESHOLDS['verifiable_warn'], 0.38)
 
-    def test_measured_vague_and_specific_prompts_fall_the_right_side(self):
-        # Observed: vague prompts clustered at 0.04, specific ones ran 0.55-0.87.
+    def test_prompt_warn_sits_in_the_measured_gap(self):
+        # Re-measured after prompt.md began reaching the model. The earlier numbers
+        # (vague 0.04, specific 0.55-0.87) were taken with only a task TITLE in state,
+        # so they described data production never produced.
+        #
+        # 3 runs over 8 prompts in the real state, plus 8 real task prompts:
+        # unjudgeable ("make the error messages better", "harden the server -- fix what
+        # you find") 0.06-0.27; stating checkable behaviour 0.85-0.96.
         warn = DEFAULT_THRESHOLDS['prompt_warn']
-        self.assertLess(0.04, warn)
-        self.assertGreater(0.55, warn)
+        self.assertGreater(warn, 0.27 + NOISE,
+                           'must clear the worst true positive by more than repeat noise')
+        self.assertLess(warn, 0.85 - NOISE,
+                        'must stay clear of the weakest real prompt by the same')
 
-    def test_measured_fragments_and_whole_tasks_fall_the_right_side(self):
-        # Observed: task fragments 0.11-0.24, self-contained tasks 0.51-0.72.
-        warn = DEFAULT_THRESHOLDS['verifiable_warn']
-        self.assertLess(0.24, warn)
-        self.assertGreater(0.51, warn)
+    def test_verifiable_warn_stays_below_the_overlap(self):
+        # This rubric does NOT separate its classes. Tasks that genuinely cannot be
+        # checked alone scored 0.34-0.56; ones that can scored 0.43-0.90. They overlap,
+        # so no threshold divides them and moving the number cannot fix that -- the
+        # rubric needs reworking. 0.38 trades recall for precision: everything at or
+        # below it has so far been genuinely unverifiable. This test exists to stop
+        # someone raising it into the overlap in the meantime.
+        self.assertLess(DEFAULT_THRESHOLDS['verifiable_warn'], 0.43,
+                        'above 0.43 it fires on tasks that ARE independently verifiable')
 
 
 class WarningPlumbingTests(unittest.TestCase):
