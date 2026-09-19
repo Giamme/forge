@@ -12,7 +12,7 @@ case "${1:-}" in
     ;;
   *)
     echo 'usage: forge fractal <install|doctor|runs|status|tree|activity|logs|costs|messages|config|pause|resume|stop|open|report>' >&2
-    echo 'usage: forge jev <setup|status|doctor|enable|disable|backtest|calibrate>' >&2
+    echo 'usage: forge jev <setup|status|doctor|enable|disable|backtest|calibrate|scope>' >&2
     exit 2
     ;;
 esac

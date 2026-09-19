@@ -125,6 +125,10 @@ def parser() -> argparse.ArgumentParser:
     test_subset.add_argument('--max', type=int, default=8)
     test_subset.add_argument('--timeout', type=int, default=600)
 
+    scope = sub.add_parser('scope')
+    scope.add_argument('paths', nargs='+', help='run or plan directories, or jev.jsonl files')
+    scope.add_argument('--json', action='store_true')
+
     verify_triage = sub.add_parser('verify-triage')
     verify_triage.add_argument('--repo', required=True)
     # dest is deliberately not 'command': the top-level subparsers already own that dest
@@ -642,6 +646,25 @@ def cmd_coupling(args) -> int:
     return 0
 
 
+def cmd_scope(args) -> int:
+    """Report what each rubric returned across recorded runs, and the repeat noise floor.
+
+    Reads jev.jsonl only; never sends a request and needs no key. Exit 2 when nothing
+    was found, so a mistyped path is not reported as an empty run.
+    """
+    from . import scope
+
+    result = scope.report(args.paths)
+    if not result['logs']:
+        print('forge jev scope: no jev.jsonl under ' + ', '.join(args.paths), file=sys.stderr)
+        return 2
+    if args.json:
+        print(json.dumps(result, indent=2, sort_keys=True))
+    else:
+        print(scope.render(result), end='')
+    return 0
+
+
 def cmd_review_triage(args) -> int:
     """Annotate a FAIL. Exit 0 only when the review looks SUSPECT.
 
@@ -791,14 +814,22 @@ def cmd_test_subset(args) -> int:
     import subprocess
     import tempfile
 
+    # Usage errors come before the capability gate: a command with nowhere to put the
+    # selection is wrong whether or not Jev is on, and checking `enabled` first made the
+    # exit code depend on the developer's own ~/.config/forge/jev.json.
+    if '{files}' not in args.subset_command:
+        # Without the placeholder there is nowhere to put the selection, and appending
+        # blindly is what broke this before. Do nothing rather than run the full suite
+        # twice under a name that says "subset".
+        return 2
+    repo = Path(args.repo)
+    if not repo.is_dir():
+        return 2
     config = load_config()
     if not enabled('tests', config=config) or api_key(config) is None:
         return 3
     from . import subset
 
-    repo = Path(args.repo)
-    if not repo.is_dir():
-        return 2
     try:
         task = Path(args.task).read_text(errors='replace')[:6000]
     except OSError:
@@ -810,11 +841,6 @@ def cmd_test_subset(args) -> int:
         except OSError:
             changed = []
 
-    if '{files}' not in args.subset_command:
-        # Without the placeholder there is nowhere to put the selection, and appending
-        # blindly is what broke this before. Do nothing rather than run the full suite
-        # twice under a name that says "subset".
-        return 2
     candidates = subset.candidate_tests(repo)
     if not candidates:
         return 3
@@ -891,6 +917,7 @@ def main(argv: list[str] | None = None) -> int:
                     **{'score-plan': cmd_score_plan,
                        'coupling': cmd_coupling,
                        'review-triage': cmd_review_triage,
+                       'scope': cmd_scope,
                        'parse-spec': cmd_parse_spec,
                        'qa-effort': cmd_qa_effort,
                        'test-subset': cmd_test_subset,

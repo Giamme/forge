@@ -127,7 +127,10 @@ class CliContractTests(RepoCase):
     """Exit 0 means only one thing: the subset failed here AND passed on the base."""
 
     def _run(self, command, base=None, env=None):
-        environment = dict(os.environ)
+        # A private config home: without it the exit code depended on whether the
+        # developer's own ~/.config/forge/jev.json happened to be enabled.
+        environment = dict(os.environ, XDG_CONFIG_HOME=str(Path(self.dir.name) / 'config'))
+        environment.pop('TYPESAFE_API_KEY', None)
         environment.update(env or {})
         args = [sys.executable, str(ROOT / 'scripts' / 'forge-jev.py'), 'test-subset',
                 '--repo', str(self.repo), '--commit', 'HEAD',

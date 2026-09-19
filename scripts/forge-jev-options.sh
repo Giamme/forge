@@ -236,6 +236,17 @@ FORGE_JEV_STATUS_JSON=""
 FORGE_JEV_STATUS_FETCHED=0
 forge_jev_active() {
   local cap="$1"
+  # Two answers that need no subprocess, mirroring rules the Python side already
+  # implements: the kill switch wins over everything, and a key can only come from
+  # TYPESAFE_API_KEY or the config file, so with neither present nothing can be active.
+  # Every runner shell asks this at least once, and a run that never mentioned Jev was
+  # paying a python3 spawn per shell for the answer "no" (measured with fake CLIs:
+  # +0.15s per plan and +0.35s per two-task run).
+  [ "${FORGE_JEV:-}" = off ] && return 1
+  if [ -z "${TYPESAFE_API_KEY:-}" ] \
+     && [ ! -f "${XDG_CONFIG_HOME:-$HOME/.config}/forge/jev.json" ]; then
+    return 1
+  fi
   if [ "$FORGE_JEV_STATUS_FETCHED" != 1 ]; then
     FORGE_JEV_STATUS_FETCHED=1
     FORGE_JEV_STATUS_JSON="$(python3 "$SKILL_DIR/scripts/forge-jev.py" status --json 2>/dev/null)" \

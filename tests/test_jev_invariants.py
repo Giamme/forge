@@ -46,7 +46,9 @@ class PlanInvariantCase(unittest.TestCase):
         return plan
 
     def _run(self, plan, *args, env=None):
-        environment = dict(os.environ, FORGE_RIPWIRE='off')
+        environment = dict(os.environ, FORGE_RIPWIRE='off',
+                           XDG_CONFIG_HOME=str(Path(self.dir.name) / 'config'))
+        environment.pop('TYPESAFE_API_KEY', None)
         environment.update(env or {})
         return subprocess.run(
             ['bash', str(ROOT / 'scripts' / 'forge-parallel.sh'), 'plan', str(plan),
@@ -160,7 +162,8 @@ class MemoryInvariantTests(unittest.TestCase):
         self.task.write_text('do a thing\n')
 
     def _memory(self, *args, env=None):
-        environment = dict(os.environ)
+        environment = dict(os.environ, XDG_CONFIG_HOME=str(Path(self.dir.name) / 'config'))
+        environment.pop('TYPESAFE_API_KEY', None)
         environment.update(env or {})
         return subprocess.run(
             ['bash', str(ROOT / 'scripts' / 'forge-memory.sh'), *args],

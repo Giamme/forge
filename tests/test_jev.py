@@ -213,6 +213,40 @@ class GatingTests(JevTestCase):
 
 # 4. Question builders ----------------------------------------------------------
 
+class ShellActiveCheckTests(JevTestCase):
+    """forge_jev_active answers "no" without a subprocess whenever no key can exist."""
+
+    OPTIONS = ROOT / 'scripts' / 'forge-jev-options.sh'
+
+    def _active(self, cap='gates', **env):
+        # A PATH with no python3 makes any status probe fail loudly instead of quietly
+        # answering the question this test is asking.
+        environment = {k: v for k, v in os.environ.items() if k != 'PATH'}
+        environment['PATH'] = str(self.root / 'nobin')
+        environment['SKILL_DIR'] = str(ROOT)
+        environment.update(env)
+        (self.root / 'nobin').mkdir(exist_ok=True)
+        return subprocess.run(['/bin/bash', '-c', f'source "{self.OPTIONS}"; forge_jev_active {cap}'],
+                              capture_output=True, text=True, env=environment).returncode
+
+    def test_no_key_and_no_config_is_inactive_without_a_probe(self):
+        self.assertEqual(self._active(), 1)
+
+    def test_kill_switch_is_inactive_without_a_probe(self):
+        forge_jev.save_config(dict(forge_jev.DEFAULTS, enabled=True, key='k'))
+        self.assertEqual(self._active(FORGE_JEV='off'), 1)
+
+    def test_a_configured_key_reaches_the_status_probe(self):
+        # With a key present the shell must ask Python; here that probe cannot run
+        # (no python3 on PATH), and the function fails closed rather than guessing.
+        forge_jev.save_config(dict(forge_jev.DEFAULTS, enabled=True, key='k'))
+        self.assertEqual(self._active(), 1)
+        real = subprocess.run(['/bin/bash', '-c', f'source "{self.OPTIONS}"; forge_jev_active gates'],
+                              capture_output=True, text=True,
+                              env=dict(os.environ, SKILL_DIR=str(ROOT))).returncode
+        self.assertEqual(real, 0)
+
+
 class QuestionBuilderTests(unittest.TestCase):
     def test_noul_without_criteria(self):
         q = questions.Noul('Is it done?')

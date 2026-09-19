@@ -38,6 +38,11 @@ preservation; distinct memory; summary/full output; native final-response and us
 extraction; attempt history; help cache invalidation; readiness, overlaps, interruptions and
 restart behavior; and independent review object equivalence. CI runs these on both platforms.
 
+Jev tests (`test_jev*.py`) never reach the network: `client.ask` replays recorded responses
+from `FORGE_JEV_FIXTURES` keyed by the request's hash, and every CLI contract test points
+`XDG_CONFIG_HOME` at a private directory so a developer's own `~/.config/forge/jev.json`
+cannot change an exit code. A live probe is `./forge jev doctor --live`, run by hand.
+
 `live_compare.py` is deliberately outside unittest discovery. It requires `--execute`, creates
 isolated fixtures and revision copies, and never changes the source checkout. The approved
 comparison uses baseline `f436210`, implementer `sol:medium:codex`, reviewer
