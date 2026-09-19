@@ -38,6 +38,7 @@ logs and separate execution/acceptance states; HTML reports capture them for lat
 - [Decomposed runs](#decomposed-runs)
 - [Planning](#planning)
 - [Project memory](#project-memory)
+- [Jev advisory judgments](#jev-advisory-judgments)
 - [Full command reference](#full-command-reference)
 - [Model registry](#model-registry)
 - [Run artifacts](#run-artifacts)
@@ -652,6 +653,49 @@ counting that keeps `memory.md` honest.
 If you contribute to someone else's repo, gitignore it. A pull request containing forge's
 notes to itself is noise to a reviewer who does not use forge.
 
+## Jev advisory judgments
+
+Optional, **off by default**, and advisory: [Jev](https://docs.typesafe.ai) is TypeSafe's
+"System One" model. It answers narrow typed questions (a yes/no probability, one choice
+from a set, a position on a rubric) over supplied state in about 100 ms, with calibrated
+confidence. Forge asks it a second opinion at the points where it already has to judge
+something, and keeps every existing decision and gate. Jev never picks a model you did
+not authorise, never overturns a `FORGE_VERDICT`, and never marks anything verified.
+
+```bash
+./forge jev setup            # store an API key (mode 0600), validate it, enable Jev
+./forge jev status           # what is on
+./forge jev doctor --live    # config checks, plus one probe request
+```
+
+```
+/forge "<goal>" --decompose-level medium --dwarf sol --jev            # advisory lines in the plan
+/forge "<goal>" --decompose-level medium --dwarf sol --jev --jev-shadow   # record only, print nothing
+```
+
+What each capability does when it is on:
+
+| Capability | Where | Says |
+|---|---|---|
+| `routing` | `plan` | a difficulty tier per task from five rubrics composed in code; the effort it would size the dwarf at. Both advisory until `forge jev calibrate --write` has enough outcomes from **this repo** |
+| `gates` | `plan`, QA | a prompt too vague for QA to judge; undeclared files a task will probably edit; two same-wave tasks that share an interface despite disjoint `files`; on a `FAIL`, whether the review names a real bug and cites code that is in the diff |
+| `tests` | verification | which existing command runs the suite when neither `--verify` nor `.forge/verify` exists; one re-run of a failure that looks like a flake **and** matches a recorded trap; which tests a diff probably breaks, run early in a throwaway export (`.forge/verify-subset`) |
+| `memory` | `record`, `inject`, `prune` | whether a learning is durable enough to inject; a paraphrase of an existing fact; the ~8 facts relevant to this task; a fact whose file still exists but which went false |
+
+Every request is one row in `<run-dir>/jev.jsonl`; a skipped one is named in `jev.skip`.
+Any failure, timeout or missing key is a skip and the run continues exactly as it would
+without Jev. `forge jev scope <run-dir>` reads those logs back and reports what each
+rubric returned and the spread across repeated identical requests, which is the noise floor
+any threshold has to clear.
+
+**Privacy.** Each enabled capability sends a narrow slice of your repository to
+`api.typesafe.ai`: task prompts, diff hunks, file excerpts, test names, memory entries.
+`.forge/` and `.git` are never sent. That is why it is off until you turn it on.
+`FORGE_JEV=off` is a hard kill switch that wins over every flag.
+
+The [Jev reference](references/jev.md) records every threshold, the measurement behind
+it, and the judgments that are known not to separate yet.
+
 ## Full command reference
 
 ### The `/forge` slash command
@@ -662,6 +706,7 @@ notes to itself is noise to a reviewer who does not use forge.
                 [--planner <alias>[:<effort>[:<harness>]]]
                 [--yolo-dwarf] [--yolo-qa] [--repo <dir>] [--native-review]
                 [--no-memory] [--timeout <seconds>] [--fractal | --no-fractal]
+                [--jev | --no-jev] [--jev-act] [--jev-shadow] [--jev-<cap> | --no-jev-<cap>]
                 [--fractal-depth <n>] [--fractal-children <n>] [--fractal-nodes <n>]
                 [--fractal-iterations <n>] [--fractal-concurrency <n>] [--fractal-deadline <s>]
                 [--decompose-level low|medium|high] [--max-parallel <n>]
@@ -692,6 +737,10 @@ notes to itself is noise to a reviewer who does not use forge.
 | `--fractal-concurrency <n>` | `3` | shared model slots across nested trees and QA |
 | `--fractal-deadline <s>` | `2700` | task attempt deadline, excluding explicit pauses |
 | `--fractal-max-cost <amount>` | unsupported | returns an error; the bridge cannot enforce dollar caps |
+| `--jev` / `--no-jev` | off | ask Jev for advisory judgments, when a key is configured |
+| `--jev-act` | off | let a calibrated judgment change a task's difficulty tier; inert until `forge jev calibrate --write` |
+| `--jev-shadow` | off | record judgments and print nothing |
+| `--jev-<cap>` / `--no-jev-<cap>` | — | per-capability allowlist: `routing`, `tests`, `gates`, `memory` |
 
 Fractal's task deadline still applies when `--timeout 0` disables the ordinary
 per-dispatch timeout. Child routing uses the dwarf tier flags; QA stays at the Forge
@@ -777,6 +826,25 @@ node control also requires its task ID; they never guess the latest run. Use eac
 `--help` for its accepted options. Installation is also available through
 `bash scripts/forge-install-fractal.sh`.
 
+### `forge jev` command group
+
+Use `./forge jev` from this checkout. Every subcommand works with no key configured and no
+network; only `setup`, `doctor --live`, `backtest --execute` and the runners' own advisory
+calls send a request.
+
+| Command | Purpose |
+| --- | --- |
+| `setup [--key K] [--yes]` | store a key at `~/.config/forge/jev.json`, probe it, enable Jev |
+| `status [--json]` \| `doctor [--live]` | resolved config and enabled capabilities; `--live` adds one probe request |
+| `enable` \| `disable [--capability NAME]` | persist the switch, optionally for one capability |
+| `backtest --repo DIR [--capability tests\|drift] [--execute]` | score a rubric against git co-change history; `--execute` is required before any request |
+| `calibrate --repo DIR [--write]` | join shadow routing scores to QA outcomes; `--write` is the only thing that lets `--jev-act` route |
+| `scope <run-or-plan-dir>... [--json]` | what each rubric returned across recorded runs, and the repeat noise floor |
+| `parse-spec "<sentence>"` | map a sentence onto `--dwarf-<tier>` flags over the aliases in `registry.tsv`; prints, never applies |
+
+`score-plan`, `coupling`, `verify-discover`, `verify-triage`, `test-subset`, `qa-effort`,
+`review-triage` and the `memory-*` subcommands are called by the runners, not by hand.
+
 ### `scripts/forge-dispatch.sh`
 
 Resolves a spec into a real CLI invocation and runs it. Needs only bash and coreutils, which
@@ -835,6 +903,7 @@ forge-solo.sh <run-dir> --repo <dir> --dwarf <spec> [--qa <spec>]
               [--native-review] [--no-memory] [--timeout <s>] [--dry-run]
               [--fractal | --no-fractal] [--fractal-<limit> <n>]
               [--dwarf-low <pool>] [--dwarf-medium <pool>] [--dwarf-high <pool>] [--retry]
+              [--jev | --no-jev] [--jev-act] [--jev-shadow] [--jev-<cap> | --no-jev-<cap>]
 ```
 
 You write two files into the run directory; forge does the rest:
@@ -851,6 +920,7 @@ You write two files into the run directory; forge does the rest:
 | `verdict` | `PASS`, `FAIL`, `UNKNOWN` or `NOCHANGES` |
 | `<role>.{input,log,resolved,cmd}` | the prompt, the transcript, the resolution, the command |
 | `fractal-selection.json` | persisted backend choice; enabled runs include their managed run ID |
+| `jev-selection.json`, `jev.jsonl`, `qa.jev.json` | the frozen Jev choice, one row per request, and an annotation of a `FAIL` that looks unsound (never a changed verdict) |
 
 With Fractal, per-step dispatch artifacts live in the managed run while the solo directory
 retains the aggregate diff and Forge QA result. `--retry` starts a new Fractal attempt;
@@ -1259,7 +1329,7 @@ forge/
 ├── SKILL.md                     the skill itself — what the orchestrating model reads
 ├── registry.tsv                 alias → (harness, model, effort). Add a row to teach forge a model
 ├── README.md                    this file
-├── forge                        repository-local Fractal management launcher
+├── forge                        repository-local `forge fractal` / `forge jev` launcher
 ├── scripts/
 │   ├── forge-dispatch.sh        resolve a spec → run one role on one harness
 │   ├── forge-solo.sh            the whole single-task run: dwarf → diff → qa
@@ -1270,11 +1340,15 @@ forge/
 │   ├── forge-fractal-dispatch.sh bridge entrypoint for existing pipelines
 │   ├── forge-install-fractal.sh isolated optional runtime installer
 │   ├── forge_fractal/           nested execution, recovery, inspection and dashboard
+│   ├── forge-jev.py             `forge jev` entrypoint
+│   ├── forge-jev-options.sh     runner flags, precedence and frozen selection
+│   ├── forge_jev/               opt-in TypeSafe/Jev client, rubrics, gates, calibration
 │   └── forge-install.sh         install into all five harnesses
 └── references/
     ├── harnesses.md             per-harness invocation, ladders, failure modes
     ├── decompose.md             tasks.tsv schema, difficulty criteria, wave algorithm
     ├── fractal.md               opt-in backend, limits, recovery and observability
+    ├── jev.md                   advisory judgments, every threshold and its measurement
     └── memory.md                FORGE_LEARNING grammar, promotion and pruning rules
 ```
 

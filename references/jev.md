@@ -46,6 +46,7 @@ forge jev status | doctor [--live]    # what is on; whether it works
 forge jev enable | disable [--capability routing|tests|gates|memory]
 forge jev backtest --repo <path> [--capability tests|drift] [--execute]
 forge jev calibrate --repo <path> [--write]
+forge jev scope <run-or-plan-dir>... [--json]   # what each rubric returned; repeat noise floor
 ```
 
 `score-plan`, `verify-discover` and `verify-triage` are also subcommands, but they are
@@ -735,6 +736,7 @@ number is unearned until real runs produce outcomes.
 
 The standing lesson, now learned five separate times: a threshold named for one rubric
 and reused for another is wrong, and a number measured against state the model is not
-actually sent describes nothing. `jevscope` exists to make both visible — it reads the
-run logs back and reports each rubric's distribution and the spread across byte-identical
-repeated requests, which is the floor any threshold has to clear.
+actually sent describes nothing. `forge jev scope <run-or-plan-dir>...` exists to make
+both visible — it reads the run logs back and reports each rubric's distribution and the
+spread across byte-identical repeated requests, which is the floor any threshold has to
+clear. It reads `jev.jsonl` only and never sends a request.

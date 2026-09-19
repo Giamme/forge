@@ -1374,6 +1374,7 @@ do_integrate() {
 if [ "${1:-}" = --help ] || [ "${1:-}" = -h ]; then
   sed -n '7,20s/^# *//p' "$SELF"
   forge_fractal_help
+  [ "${JEV_OPTS:-0}" = 1 ] && forge_jev_help
   exit 0
 fi
 [ $# -ge 1 ] || die "usage: forge-parallel.sh <plan|run|retry|integrate|_task> <plan-dir> [...]"

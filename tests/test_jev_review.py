@@ -112,6 +112,16 @@ class IndependenceTests(unittest.TestCase):
         self.assertNotIn('> "$tdir/status"', block)
         self.assertNotIn("> '$tdir/status'", block)
 
+    def test_the_solo_runner_has_the_same_block_with_the_same_restraint(self):
+        source = (REPO_ROOT / 'scripts' / 'forge-solo.sh').read_text()
+        start = source.index('Annotate a FAIL that looks unsound')
+        block = source[start:source.index('\nfi\n', start)]
+        self.assertIn('review-triage', block)
+        self.assertIn('if [ "$verdict" = FAIL ]', block)
+        # The verdict file is written before this block and never inside it.
+        self.assertNotIn('> "$RUN/verdict"', block)
+        self.assertLess(source.index('> "$RUN/verdict"'), start)
+
     def test_the_annotation_runs_only_for_a_failing_verdict(self):
         source = (REPO_ROOT / 'scripts' / 'forge-parallel.sh').read_text()
         start = source.index('Annotate a FAIL that looks unsound')
@@ -131,6 +141,8 @@ class CliContractTests(unittest.TestCase):
         self.diff.write_text('diff')
 
     def _exit(self, env):
+        env = dict(env, XDG_CONFIG_HOME=str(Path(self.dir.name) / 'config'))
+        env.pop('TYPESAFE_API_KEY', None)
         result = subprocess.run(
             [sys.executable, str(REPO_ROOT / 'scripts' / 'forge-jev.py'), 'review-triage',
              '--review', str(self.review), '--diff', str(self.diff)],

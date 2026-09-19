@@ -19,6 +19,7 @@
 #   forge-solo.sh <run-dir> --repo <dir> --dwarf <spec> [--qa <spec>]
 #                 [--approach <file>] [--yolo-dwarf] [--yolo-qa]
 #                 [--native-review] [--no-memory] [--timeout <s>] [--dry-run]
+#                 [--jev | --no-jev] [--jev-act] [--jev-shadow] [--jev-<cap> | --no-jev-<cap>]
 #
 # Reads  <run-dir>/prompt.md   the implementation instruction (required)
 #        <run-dir>/goal.txt    one line, what the user asked for (optional)
@@ -26,6 +27,7 @@
 #        <run-dir>/changes.diff
 #        <run-dir>/qa.{input,last,log,resolved}
 #        <run-dir>/verdict      PASS | FAIL | UNKNOWN, when qa emitted one
+#        <run-dir>/qa.jev.json  only on a FAIL that Jev flags as unsound (advisory)
 #
 # Exit codes: 0 ok | 2 usage | 3 precondition | 4 a dispatch failed
 #             5 the dwarf produced no changes | 7 a dispatch timed out
@@ -46,8 +48,9 @@ die()  { printf 'forge: %s\n' "$1" >&2; exit "${2:-2}"; }
 note() { printf 'forge: %s\n' "$*" >&2; }
 
 if [ "${1:-}" = --help ] || [ "${1:-}" = -h ]; then
-  sed -n '18,29s/^# *//p' "$0"
+  sed -n '18,31s/^# *//p' "$0"
   forge_fractal_help
+  [ "${JEV_OPTS:-0}" = 1 ] && forge_jev_help
   echo 'Explicit Fractal retry: repeat the original command with --retry.'
   exit 0
 fi
@@ -256,6 +259,28 @@ dur_qa="$(sed -n 's/^duration_s=//p' "$RUN/qa.resolved" 2>/dev/null | tail -1)"
 # --native-review is codex's own reviewer, which refuses a custom prompt alongside
 # its scope flags — so it never sees the verdict instruction and cannot emit one.
 echo "${verdict:-UNKNOWN}" > "$RUN/verdict"
+
+# Annotate a FAIL that looks unsound — the same block forge-parallel.sh runs per task.
+# Note what this does NOT do: the verdict file is already written above and nothing
+# below rewrites it. A model that could talk a reviewer out of a FAIL would produce
+# confident PASSes on code nobody checked. Only a human acts on this line.
+if [ "$verdict" = FAIL ] && [ "$JEV_OPTS" = 1 ] && forge_jev_active gates; then
+  # One request, not two: the record must match what was printed.
+  if python3 "$SKILL_DIR/scripts/forge-jev.py" review-triage --review "$RUN/qa.last" \
+       --diff "$RUN/changes.diff" --run-dir "$RUN" --json > "$RUN/qa.jev.json" 2>/dev/null; then
+    note "FAIL stands, but jev flags the review — $(python3 -c '
+import json, sys
+try:
+    data = json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit(0)
+print("; ".join(data.get("reasons") or []))
+' "$RUN/qa.jev.json" 2>/dev/null) (an annotation, not an overturned verdict)"
+  else
+    # Exit 1 means the review looked sound; there is nothing to say and no file to keep.
+    rm -f "$RUN/qa.jev.json" 2>/dev/null || true
+  fi
+fi
 
 echo
 echo "dwarf:  $DWARF   ${dur_dwarf:-?}s"
