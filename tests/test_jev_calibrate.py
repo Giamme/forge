@@ -11,10 +11,12 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import os
 from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -350,3 +352,63 @@ class LedgerWidthTests(CalibrateTestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class RunRegistryTests(unittest.TestCase):
+    """calibrate --repo X found nothing, because forge keeps plan dirs outside the repo."""
+
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        self.home = Path(self.dir.name) / 'config'
+        self.repo = Path(self.dir.name) / 'repo'
+        self.repo.mkdir()
+        self._old = os.environ.get('XDG_CONFIG_HOME')
+        os.environ['XDG_CONFIG_HOME'] = str(self.home)
+        self.addCleanup(self._restore)
+
+    def _restore(self):
+        if self._old is None:
+            os.environ.pop('XDG_CONFIG_HOME', None)
+        else:
+            os.environ['XDG_CONFIG_HOME'] = self._old
+
+    def test_the_registry_is_never_written_inside_the_repo(self):
+        # The first version wrote <repo>/.forge/jev-runs.txt, which left the user's tree
+        # dirty and made `integrate` refuse: "working tree is dirty -- commit or stash
+        # before integrating". Forge's contract is that it does not touch that tree.
+        cli.register_run_dir(self.repo, Path(self.dir.name) / 'plan-a')
+        written = [p for p in self.repo.rglob('*') if p.is_file()]
+        self.assertEqual(written, [], 'forge must not dirty the user working tree')
+        self.assertTrue(cli.runs_registry(self.repo).is_file())
+
+    def test_a_run_dir_is_recorded_once(self):
+        plan = Path(self.dir.name) / 'plan-a'
+        for _ in range(3):
+            cli.register_run_dir(self.repo, plan)
+        lines = [x for x in cli.runs_registry(self.repo).read_text().splitlines()
+                 if x and not x.startswith('#')]
+        self.assertEqual(lines, [str(plan.resolve())])
+
+    def test_two_repos_do_not_share_a_registry(self):
+        other = Path(self.dir.name) / 'other'
+        other.mkdir()
+        self.assertNotEqual(cli.runs_registry(self.repo), cli.runs_registry(other))
+
+    def test_calibrate_finds_a_registered_run_dir(self):
+        plan = Path(self.dir.name) / 'plan-a'
+        plan.mkdir()
+        cli.register_run_dir(self.repo, plan)
+        found = calibrate._run_dirs(self.repo, [])
+        self.assertIn(plan.resolve(), [p.resolve() for p in found])
+
+    def test_the_comment_header_is_not_read_back_as_a_path(self):
+        cli.register_run_dir(self.repo, Path(self.dir.name) / 'plan-a')
+        for found in calibrate._run_dirs(self.repo, []):
+            self.assertFalse(str(found).startswith('#'), found)
+
+    def test_an_unwritable_registry_never_raises(self):
+        # Recording where a run lives must not be able to fail the run.
+        with patch('forge_jev.cli.runs_registry', side_effect=OSError('nope')):
+            cli.register_run_dir(self.repo, Path('/tmp/plan'))
+

@@ -156,9 +156,12 @@ Jev inactive the function behaves exactly as it did before.
 case that reports `UNVERIFIED` today even when QA passed. Code enumerates commands
 that *demonstrably exist* in the repo (`package.json` scripts, Makefile targets,
 tox/nox, runner scripts under `tests/`, `scripts/`, `bin/`, a configured pytest,
-`go.mod`, `Cargo.toml`, `run:` steps in GitHub workflows, and `verify |` lines already
-in `.forge/memory.md`); Jev picks one, or `none`. It selects, never generates, so it
-cannot propose `make test` for a repo with no Makefile. A non-executable runner is
+`go.mod`, `Cargo.toml`, `run:` steps in GitHub workflows, and facts recorded under the
+`## Verify` heading of `.forge/memory.md`); Jev picks one, or `none`. Each candidate is
+sent with its source and an excerpt of what it actually runs — a make target's recipe
+rather than the head of the Makefile — because the command name alone does not say
+whether it runs the suite. It selects, never generates, so it cannot propose `make test`
+for a repo with no Makefile. A non-executable runner is
 offered with its interpreter — forge's own `tests/check.sh` is mode 644 and its README
 says `bash tests/check.sh`.
 
@@ -315,7 +318,8 @@ forge jev calibrate --repo <repo>                              # reports, refuse
 forge jev calibrate --repo <repo> --write                      # only then may routing act
 ```
 
-`calibrate` joins `jev-routing.tsv` against `.forge/ledger.tsv` on `(run_id, task)`, taking
+`calibrate` joins each run's `jev-routing.tsv` against `.forge/ledger.tsv` on
+`(run_id, task)`, taking
 the QA verdict as the outcome. It prints the shortfall per tier rather than a
 confident-looking guess, and `--write` is a separate step because that file is the only
 thing standing between `--jev-act` and Jev changing which model spends your quota.
@@ -690,24 +694,47 @@ already broken, or cannot run here".
 
 ## Status
 
-Phase 0 added the configuration surface. Phase 1a added `backtest`, which scores the
-rubrics against git history offline and changes no Forge decision. Phase 2 made
-verification the first capability wired to a live decision. Phase 3 adds routing, which
-can advise today and cannot act anywhere until that repo has been calibrated — which is
-also what Phase 1b's shadow accrual exists to make possible.
+Every phase of the plan is implemented. What changed the picture since is that it was
+finally **run**, rather than tested: the first real `forge-parallel.sh` invocation with
+Jev enabled, on an 8-task plan, found twelve defects that 402 passing tests could not
+see. Most shared one shape — the code was correct and nothing reached it.
 
-Per-task test subsetting now exists, but **not as the wall-clock lever the plan
-described**, and that distinction matters. See "Early test feedback" above.
+- Every `--jev*` flag was unreachable: the option parser was sourced from inside
+  functions that had already walked their arguments, so `forge_jev_flag`,
+  `forge_jev_export`, `forge_jev_record` and `forge_jev_restore` had no callers at all.
+- `prompt.md` never reached routing or the gates, which judged tasks from a one-line
+  title. Both text gates had therefore been calibrated on data production never produced.
+- Both memory readers in `verify.py` parsed the *ledger* row format against the rendered
+  `memory.md`, so they were empty for every repo, always — which made the `known_flake`
+  re-run unreachable, since it requires a corroborating trap.
+- Wave coupling borrowed `gate_warn` and had never fired on any plan.
+- Every memory call was unlogged, and the review-triage flag printed where the default
+  output mode never shows it.
 
-Routing is wired but shadow-first: it can advise today and cannot act until a repo
-has been calibrated. Every phase of the plan is now implemented. Routing, effort
-sizing and QA effort sizing are advisory and cannot act until a repo is calibrated;
-the gates, verification, early test feedback and memory curation act today.
+**What acts today:** the drift and prompt-adequacy gates, verification, early test
+feedback, memory curation, wave coupling and review-triage annotation. All are advisory —
+none blocks a dispatch, and nothing overturns a `FORGE_VERDICT`.
 
-Verification is calibrated against real judgments (see above). Routing is not: its
-`routing_act` of 0.85 rests on six hand-labelled tasks, which is a smoke test and not a
-calibration. Observed composite confidences ran 0.54–0.93, so 0.85 currently admits only
-the clearest cases — deliberately, but the number itself is unearned until shadow runs
-produce outcomes. The discovery result above, that confidence tracks option-set
-ambiguity rather than correctness, is the standing warning that a threshold picked by
-intuition can be wrong in either direction.
+**What cannot act yet:** routing, effort sizing and QA effort sizing, all of which
+require a per-repo calibration that does not exist. `routing_act` at 0.85 still rests on
+six hand-labelled tasks, which is a smoke test, not a calibration. Observed composite
+confidences run 0.50–0.85, so it currently admits almost nothing — deliberately, but the
+number is unearned until real runs produce outcomes.
+
+**Known unsound, recorded rather than patched:**
+
+- `independently_verifiable` does not separate its classes (0.34–0.56 unverifiable
+  against 0.43–0.90 verifiable). Its threshold buys precision by giving up recall and no
+  number can fix it; the rubric needs reworking.
+- `tests_act` gates Choice confidence, so it cannot tell a tie between two correct verify
+  commands from genuine doubt, and a verifiable repo still reports `UNVERIFIED`.
+- Wave coupling only considers same-wave pairs, so "task A depends on an interface task B
+  builds later" is outside its reach — one of the two defects that shipped was exactly
+  that.
+- `coupling_warn` rests on one plan with roughly 0.02 of margin.
+
+The standing lesson, now learned five separate times: a threshold named for one rubric
+and reused for another is wrong, and a number measured against state the model is not
+actually sent describes nothing. `jevscope` exists to make both visible — it reads the
+run logs back and reports each rubric's distribution and the spread across byte-identical
+repeated requests, which is the floor any threshold has to clear.

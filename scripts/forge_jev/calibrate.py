@@ -47,7 +47,27 @@ def _run_dirs(repo: Path, extra: list[str]) -> list[Path]:
     glob_root = repo / '.forge' / 'runs'
     if glob_root.is_dir():
         dirs += sorted(p for p in glob_root.iterdir() if p.is_dir())
-    return dirs
+    # Plus every plan dir that has scored this repo. score-plan records them, because
+    # forge keeps plan dirs outside the repo and the glob above therefore matched
+    # nothing -- `calibrate --repo X` reported "no data" for repos with plenty. The list
+    # lives beside the Jev config, not in the repo: writing it into the working tree
+    # made `integrate` refuse to run on a tree forge had dirtied itself.
+    try:
+        from .cli import runs_registry
+        registry = runs_registry(repo)
+        if registry.is_file():
+            dirs += [Path(line.strip())
+                     for line in registry.read_text(errors='replace').splitlines()
+                     if line.strip() and not line.startswith('#')]
+    except (OSError, ImportError):
+        pass
+    seen, unique = set(), []
+    for path in dirs:
+        key = str(path)
+        if key not in seen:
+            seen.add(key)
+            unique.append(path)
+    return unique
 
 
 def _has_shadow_score(path: Path) -> tuple[bool, int]:

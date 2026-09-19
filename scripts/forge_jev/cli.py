@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import getpass
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -535,6 +536,16 @@ def cmd_score_plan(args) -> int:
     except OSError:
         pass
 
+    # Tell the repo where its own run data lives. `calibrate` globs <repo>/.forge/runs/*/
+    # and forge keeps plan dirs nowhere near there, so `calibrate --repo X` -- the obvious
+    # invocation -- found zero run dirs and reported "no data" for a repo that had plenty.
+    # A user would read that as calibration being broken, and calibration is the one gate
+    # standing between routing and ever being allowed to act.
+    #
+    # A registry rather than moving the file: plan dirs are the user's to place, and
+    # relocating them would orphan every run already on disk.
+    register_run_dir(repo, plan)
+
     if args.json:
         print(json.dumps(judgments, indent=2, sort_keys=True))
     else:
@@ -549,6 +560,42 @@ def cmd_score_plan(args) -> int:
                              '1' if judgment['may_act'] else '0',
                              judgment['declared'], warnings, drift)))
     return 0
+
+
+def runs_registry(repo) -> Path:
+    """Where this repo's run-dir list lives -- beside the Jev config, never in the repo.
+
+    The first version of this wrote <repo>/.forge/jev-runs.txt, which left the user's
+    working tree dirty and made `integrate` refuse to run: "working tree is dirty --
+    commit or stash before integrating". Forge's contract is that it does not touch the
+    user's tree, and a file recording where forge keeps its own data is forge's
+    bookkeeping, not the project's.
+    """
+    digest = hashlib.sha256(str(Path(repo).resolve()).encode()).hexdigest()[:16]
+    return config_path().parent / 'runs' / (digest + '.txt')
+
+
+def register_run_dir(repo: Path, run_dir: Path) -> None:
+    """Record an absolute run-dir path for this repo, deduplicated.
+
+    Never raises: failing to note where a run lives must not fail the run.
+    """
+    try:
+        registry = runs_registry(repo)
+        registry.parent.mkdir(parents=True, exist_ok=True)
+        line = str(Path(run_dir).resolve())
+        existing = []
+        if registry.is_file():
+            existing = [x.strip() for x in registry.read_text(errors='replace').splitlines()]
+        if line in existing:
+            return
+        header = [] if existing else ['# run dirs that have scored ' + str(Path(repo).resolve())]
+        with registry.open('a') as handle:
+            for entry in header:
+                handle.write(entry + '\n')
+            handle.write(line + '\n')
+    except OSError:
+        pass
 
 
 def cmd_coupling(args) -> int:
