@@ -89,6 +89,7 @@ def checkpoint(run: Path, source: Path) -> bool:
 
 
 def retry(run: Path, task: Path, prompt: str, model: str) -> None:
+    from .decomposition import retry_decision
     config = read_json(run / 'run.json')
     if model not in config['eligible']:
         raise ValueError('Retry model is outside the frozen routing pool; create a new run to change the pool')
@@ -104,6 +105,7 @@ def retry(run: Path, task: Path, prompt: str, model: str) -> None:
         for path in (task / 'nodes').glob('*/node.json'):
             node = read_json(path)
             shutil.copyfile(path, previous / (node['id'] + '.json'))
+            retry_decision(node, prompt)
             if node['id'] == 'implementation':
                 node.update(goal=prompt, model=model, status='pending', iteration=0,
                             fingerprint=artifact('forge_fingerprint', request['repo']),

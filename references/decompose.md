@@ -126,6 +126,12 @@ can then use a Fractal implementation node with bounded children inside its decl
 Each top-level task still returns its combined candidate to Forge's independent QA and
 existing integration checks. Child completion never marks the Forge task accepted.
 
+Use `--fractal-auto-decompose` on `run` to require recursive split-or-atomic decisions
+automatically. Add `--fractal-planner <spec>` to use a stronger decision model for all
+nodes; otherwise the saved top-level planner or each task's initial root model is reused.
+Show that choice and the bounds in the approval table. See the
+[decision contract](fractal.md#automatic-decomposition-decisions) for recovery and limits.
+
 ```bash
 # With tasks.tsv, goal.txt and per-task prompts already prepared:
 bash <skill_dir>/scripts/forge-parallel.sh plan "$PLAN" --repo "$REPO" \

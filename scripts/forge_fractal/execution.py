@@ -108,19 +108,22 @@ def slot(run: Path, check):
 
 def bridge(step: Path, prompt: Path, model: str) -> int:
     config = read_json(step / 'request.json')
-    argv = ['/bin/bash', str(SCRIPTS / 'forge-dispatch.sh'), 'dwarf', model,
+    role = config.get('role', 'dwarf')
+    if role not in ('dwarf', 'planner'):
+        raise ValueError('Unsupported Fractal bridge role')
+    argv = ['/bin/bash', str(SCRIPTS / 'forge-dispatch.sh'), role, model,
             '--repo', config['workspace'], '--run-dir', str(step), '--prompt-file', str(prompt),
             '--timeout', str(max(1, math.ceil(config['remaining']))), '--output', 'summary']
-    if config['yolo']:
+    if config['yolo'] and role == 'dwarf':
         argv.append('--yolo')
     # Stay in the bridge session so its entire descendant group is reapable.
     with (step / 'dispatch.out').open('w') as output:
         result = subprocess.run(argv, stdout=output, stderr=subprocess.STDOUT)
-    last = step / 'dwarf.last'
+    last = step / (role + '.last')
     text = last.read_text(errors='replace') if last.exists() else 'Dispatcher failed; inspect dispatch.out'
     cost = None
-    if model.endswith(':claude') and (step / 'dwarf.log').exists():
-        for line in (step / 'dwarf.log').read_text(errors='replace').splitlines():
+    if model.endswith(':claude') and (step / (role + '.log')).exists():
+        for line in (step / (role + '.log')).read_text(errors='replace').splitlines():
             try:
                 frame = json.loads(line)
             except ValueError:
@@ -219,13 +222,18 @@ class Tree:
     def create_node(self, name: str, parent: dict | None, goal: str, difficulty: str,
                     paths: list[str], deps: list[str], model: str) -> dict:
         from fractal.core.node import Node
+        from fractal.util.git import find_worktree
         control = self.task / 'control'
-        owner = Node(parent['control']) if parent else Node(control)
-        branch = owner.init(name, agent='forge-bridge', max_depth=self.limits['depth'],
-                            max_children=self.limits['children'], max_descendants=self.limits['nodes'] - 1)
-        # Node.init returns presentation text; branch is a deterministic pinned API contract.
-        branch = owner.branch + '.' + name
-        child = Node(control, branch=branch)
+        owner = Node(control)
+        branch = (parent['branch'] if parent else owner.branch) + '.' + name
+        existing = find_worktree(repo_dir=control, branch=branch)
+        # An accepted admission can outlive a crash between upstream init and node.json.
+        if existing is None or not Node(existing).exists():
+            owner.init(name, path=('.worktrees/' + parent['branch']) if parent else None,
+                       agent='forge-bridge', max_depth=self.limits['depth'],
+                       max_children=self.limits['children'], max_descendants=self.limits['nodes'] - 1)
+        existing = find_worktree(repo_dir=control, branch=branch)
+        child = Node(existing)
         node = dict(id=name, parent=parent['id'] if parent else None, goal=goal, difficulty=difficulty,
                     paths=paths, deps=deps, model=model, status='pending', iteration=0,
                     ancestors=parent['ancestors'] + [parent['id']] if parent else [],
@@ -249,45 +257,49 @@ class Tree:
 
     def admit(self, parent: dict, requests: list) -> None:
         with self.guard:
-            nodes = self.nodes()
-            if len(parent['ancestors']) >= self.limits['depth']:
-                raise ValueError('Nesting limit exceeded')
-            unsettled = [n for n in nodes.values() if n['parent'] == parent['id'] and n['status'] != 'completed']
-            if len(requests) + len(unsettled) > self.limits['children'] or len(nodes) + len(requests) > self.limits['nodes']:
-                raise ValueError('Child or lifetime-node limit exceeded')
-            validated = []
-            names = set()
-            for request in requests:
-                name = identifier(request['id'])
-                if name in nodes or name in names:
-                    raise ValueError('Child identifiers must be unique for the task lifetime')
-                names.add(name)
-                difficulty = request['difficulty']
-                if difficulty not in ('low', 'medium', 'high'):
-                    raise ValueError('Invalid child difficulty')
-                paths = [path_scope(p) for p in request['paths']]
-                if not paths or not all(any(contains(p, c) for p in parent['paths']) for c in paths):
-                    raise ValueError('Child ownership escapes parent scope')
-                goal = request['goal']
-                if not isinstance(goal, str) or not goal.strip():
-                    raise ValueError('Child goal must be nonempty')
-                deps = [identifier(d) for d in request.get('deps', [])]
-                pool = self.config['routing'].get(difficulty) or self.config['routing'].get('any') or [parent['model']]
-                model = pool[(len(nodes) + len(validated) - 1) % len(pool)]
-                if model not in self.config['eligible']:
-                    raise ValueError('Model not in frozen eligible pool')
-                validated.append((name, goal, difficulty, paths, deps, model))
-            known = {n['id'] for n in nodes.values() if n['parent'] == parent['id']}
-            remaining = {v[0]: set(v[4]) for v in validated}
-            while remaining:
-                ready = [key for key, deps in remaining.items() if deps <= known]
-                if not ready:
-                    raise ValueError('Child dependencies are cyclic, missing, or outside sibling scope')
-                for key in ready:
-                    known.add(key)
-                    del remaining[key]
-            for name, goal, difficulty, paths, deps, model in validated:
-                self.create_node(name, parent, goal, difficulty, paths, deps, model)
+            for child in self.validate_children(parent, requests):
+                self.create_node(parent=parent, **child)
+
+    def validate_children(self, parent: dict, requests: list) -> list[dict]:
+        from .decomposition import reserved_nodes
+        nodes = reserved_nodes(self.nodes())
+        if len(parent['ancestors']) >= self.limits['depth']:
+            raise ValueError('Nesting limit exceeded')
+        unsettled = [n for n in nodes.values() if n['parent'] == parent['id'] and n['status'] != 'completed']
+        if len(requests) + len(unsettled) > self.limits['children'] or len(nodes) + len(requests) > self.limits['nodes']:
+            raise ValueError('Child or lifetime-node limit exceeded')
+        validated = []
+        names = set()
+        for request in requests:
+            name = identifier(request['id'])
+            if name.casefold() in {key.casefold() for key in nodes.keys() | names}:
+                raise ValueError('Child identifiers must be unique for the task lifetime')
+            names.add(name)
+            difficulty = request['difficulty']
+            if difficulty not in ('low', 'medium', 'high'):
+                raise ValueError('Invalid child difficulty')
+            paths = [path_scope(p) for p in request['paths']]
+            if not paths or not all(any(contains(p, c) for p in parent['paths']) for c in paths):
+                raise ValueError('Child ownership escapes parent scope')
+            goal = request['goal']
+            if not isinstance(goal, str) or not goal.strip():
+                raise ValueError('Child goal must be nonempty')
+            deps = [identifier(d) for d in request.get('deps', [])]
+            pool = self.config['routing'].get(difficulty) or self.config['routing'].get('any') or [parent['model']]
+            model = pool[(len(nodes) + len(validated) - 1) % len(pool)]
+            if model not in self.config['eligible']:
+                raise ValueError('Model not in frozen eligible pool')
+            validated.append(dict(name=name, goal=goal, difficulty=difficulty, paths=paths, deps=deps, model=model))
+        known = {n['id'] for n in nodes.values() if n['parent'] == parent['id']}
+        remaining = {v['name']: set(v['deps']) for v in validated}
+        while remaining:
+            ready = [key for key, deps in remaining.items() if deps <= known]
+            if not ready:
+                raise ValueError('Child dependencies are cyclic, missing, or outside sibling scope')
+            for key in ready:
+                known.add(key)
+                del remaining[key]
+        return validated
 
     def children(self, parent: dict) -> None:
         # Parents own no model slot while waiting. Overlapping candidates start only
@@ -320,69 +332,8 @@ class Tree:
                         del active[key]
 
     def step(self, node: dict, workspace: Path, prompt: str) -> tuple[int, str]:
-        from fractal.core.node import Node
-        from fractal.core.agent import resolve
-        directory = self.task / 'nodes' / node['id'] / 'steps' / uuid.uuid4().hex
-        directory.mkdir(parents=True)
-        with slot(self.run, lambda: self.check(node)):
-            self.pause_gate(node)
-            fractal = Node(node['control'])
-            agent = resolve('forge-bridge', root=Node(self.task / 'control').db.path.parent)(fractal)
-            agent.forge_step, agent.forge_workspace = directory, workspace
-            remaining = max(1, self.limits['deadline'] - self.elapsed)
-            if self.request.get('step_timeout', 0) > 0:
-                remaining = min(remaining, self.request['step_timeout'])
-            write_json(directory / 'request.json', dict(workspace=str(workspace), yolo=self.config['yolo_dwarf'],
-                       remaining=remaining))
-            resolved = next(item['canonical'] for item in self.config['resolved'] if item['spec'] == node['model'])
-            self.update(node, resolved_model=resolved)
-            invocation = agent.invocation(prompt, model=resolved)
-            record = fractal.record
-            run_id = record.run_start()
-            iter_id = record.iter_start(run_id=run_id, iter=node['iteration'])
-            step_id = record.step_start(run_id=run_id, iter_id=iter_id, step=1, step_name='FORGE_WORK')
-            self.update(node, status='active', step=str(directory.relative_to(self.task)), started_at=time.time())
-            output = directory / 'events.jsonl'
-            rc = 1
-            cost = None
-            try:
-                with output.open('w') as stream:
-                    process = agent.spawn(invocation, start_new_session=True)
-                    write_json(directory / 'process.json', dict(pid=process.pid, identity=process_identity(process.pid)))
-                    def drain():
-                        for line in process.stdout:
-                            stream.write(line)
-                            stream.flush()
-                    reader = threading.Thread(target=drain, daemon=True)
-                    reader.start()
-                    try:
-                        while process.poll() is None:
-                            self.check(node)
-                            if self.control(node) == 'pause':
-                                raise Halt('paused')
-                            time.sleep(.1)
-                        rc = process.returncode
-                    finally:
-                        terminate(process)
-                        reader.join(timeout=3)
-                if rc == 0:
-                    result = agent.stream(output.read_text(errors='replace').splitlines(), step_id=step_id, model=resolved, detached=True)
-                    cost = result.cost
-            finally:
-                status = 'completed' if rc == 0 else 'exited'
-                record.step_end(step_id=step_id, status=status, exit_code=rc)
-                record.iter_end(iter_id=iter_id, status=status, exit_code=rc)
-                record.run_end(run_id=run_id, status=status, exit_code=rc)
-            last = directory / 'dwarf.last'
-            text = last.read_text(errors='replace') if last.exists() else ''
-            attempts = sorted(directory.glob('attempts/dwarf-*/metrics.json'))
-            if attempts:
-                metrics = read_json(attempts[-1])
-                self.update(node, tokens={key: metrics.get(key) for key in ('input_tokens', 'cached_input_tokens', 'output_tokens')})
-            self.update(node, cost=(node.get('cost') or 0) + cost if cost is not None else node.get('cost'),
-                        unknown_cost_steps=node.get('unknown_cost_steps', 0) + int(cost is None))
-            event(self.task, 'step_finished', node=node['id'], iteration=node['iteration'], exit_code=rc, cost=cost)
-            return rc, text
+        from .invocation import run_step
+        return run_step(self, node, workspace, prompt)
 
     def import_node(self, node: dict) -> None:
         with self.guard:
@@ -427,6 +378,7 @@ class Tree:
                         imported_fingerprint=artifact('forge_fingerprint', source))
 
     def execute_node(self, node: dict) -> None:
+        from .decomposition import DecisionStage, implementation_prompt
         if node['status'] == 'completed':
             return
         workspace = self.candidate(node)
@@ -435,18 +387,16 @@ class Tree:
             if intent.exists() and artifact('forge_fingerprint', node['source']) == read_json(intent)['after']:
                 self.import_node(node)
                 return
+            automatic = self.config.get('decomposition', {}).get('enabled', False)
+            if automatic:
+                DecisionStage(self).ensure(node, workspace)
             if node.get('awaiting_children'):
                 self.children(node)
                 self.update(node, awaiting_children=False)
             while node['iteration'] < self.limits['iterations']:
                 self.pause_gate(node)
                 node['iteration'] += 1
-                children = [n for n in self.nodes().values() if n['parent'] == node['id']]
-                prompt = node['goal'] + PROTOCOL + '\nOwned paths: ' + json.dumps(node['paths'])
-                if children:
-                    prompt += '\nCompleted child results (already imported):\n' + json.dumps(children)
-                if node.get('last'):
-                    prompt += '\nPrevious work is preserved. Prior response:\n' + node['last']
+                prompt = implementation_prompt(self, node)
                 try:
                     rc, text = self.step(node, workspace, prompt)
                 except Halt as error:
@@ -463,6 +413,8 @@ class Tree:
                     continue
                 response = json.loads(lines[-1].split(': ', 1)[1])
                 if response.get('children'):
+                    if automatic:
+                        raise Halt('unplanned_children')
                     self.admit(node, response['children'])
                     self.update(node, status='waiting', awaiting_children=True)
                     self.children(node)
@@ -580,8 +532,9 @@ def dispatch(argv: list[str]) -> int:
                 row = next(line.split('\t') for line in table.read_text().splitlines()
                            if line and not line.startswith('#') and line.split('\t')[0] == output.name)
                 paths = [path_scope(p) for p in row[3].split(',')]
+            planner = config.get('decomposition', {}).get('planner') or argv[1]
             write_json(request_path, dict(repo=str(source), output=str(output), model=argv[1], prompt=prompt,
-                                         paths=paths, step_timeout=int(option('--timeout', '0'))))
+                                         planner=planner, paths=paths, step_timeout=int(option('--timeout', '0'))))
             write_json(task / 'state.json', dict(status='pending', acceptance='pending', elapsed=0))
         elif os.environ.get('FORGE_FRACTAL_RETRY') == '1':
             from .pipeline import retry

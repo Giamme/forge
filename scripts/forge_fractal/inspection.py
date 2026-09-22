@@ -60,6 +60,18 @@ def ledger(task: Path, table: str, offset: int, limit: int) -> dict:
         return dict(missing=str(error))
 
 
+def _step_logs(task: Path, directory: Path, maximum: int | None) -> dict:
+    result = {}
+    for step in sorted(directory.glob('steps/*')):
+        request = step / 'request.json'
+        role = read_json(safe_file(task, str(request.relative_to(task)))).get('role', 'dwarf') if request.exists() else 'dwarf'
+        if role not in ('dwarf', 'planner'):
+            raise ValueError('Invalid step role')
+        for suffix in (role + '.log', role + '.resolved', role + '.last', 'dispatch.out', 'events.jsonl'):
+            result[str((step / suffix).relative_to(directory))] = read_text(task, str((step / suffix).relative_to(task)), maximum)
+    return result
+
+
 def capture(run: Path, *, task_id: str | None = None, node_id: str | None = None,
             logs: bool = False, offset: int = 0, limit: int = 100, portable: bool = False) -> dict:
     data = dict(config=read_json(run / 'run.json'), captured_at=time.time(), tasks=[], missing=[])
@@ -82,14 +94,11 @@ def capture(run: Path, *, task_id: str | None = None, node_id: str | None = None
                 continue
             node = read_json(safe_file(task, str(path.relative_to(task))))
             if logs:
-                node['logs'] = {}
-                for step in sorted(path.parent.glob('steps/*')):
-                    for suffix in ('dwarf.log', 'dwarf.resolved', 'dwarf.last', 'dispatch.out', 'events.jsonl'):
-                        rel = str((step / suffix).relative_to(task))
-                        node['logs'][str((step / suffix).relative_to(path.parent))] = read_text(task, rel, None if portable else 262144)
+                node['logs'] = _step_logs(task, path.parent, None if portable else 262144)
                 node['candidate_changes'] = read_text(task, str((path.parent / 'candidate.diff').relative_to(task)), None if portable else 262144)
             item['nodes'].append(node)
         item['activity'] = ledger(task, 'events', offset, limit)
+        item['coordinator_events'] = read_text(task, 'events.jsonl', None if portable else 262144)
         item['steps'] = ledger(task, 'steps', offset, limit)
         item['messages'] = ledger(task, 'messages', offset, limit)
         if portable:

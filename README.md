@@ -269,6 +269,23 @@ controls. Browser access is read-only, bound to `127.0.0.1` with an ephemeral ac
 Closing its server does not stop execution. Portable HTML embeds captured data and logs,
 shows capture time and missing data, and needs no Fractal runtime to read.
 
+### Automatic recursive decomposition
+
+`--fractal` permits workers to request children. To require a planning decision before
+every eligible node implements, use `--fractal-auto-decompose`:
+
+```text
+/forge "<goal>" --dwarf luna:high --qa sol:high --fractal-auto-decompose --fractal-planner sol:xhigh --fractal-depth 3 --fractal-nodes 24
+```
+
+After the top-level Forge approval, the planner automatically splits useful work or
+records why it is atomic. Children repeat this decision within the approved ownership
+and frozen limits. `--fractal-planner` selects a separate decision model; when omitted,
+Forge reuses the configured top-level planner, then the task's initial root model.
+Decisions use disposable snapshots, persist for resume, and appear in tree/status/HTML
+reports. Ordinary `--fractal` and existing runs retain their current behavior. Start a
+new run to change policy or planner. See the [full decision contract](references/fractal.md#automatic-decomposition-decisions).
+
 ### Bounds, recovery and acceptance
 
 Defaults per Forge task are two nesting levels below implementation, three unsettled
@@ -662,6 +679,7 @@ notes to itself is noise to a reviewer who does not use forge.
                 [--planner <alias>[:<effort>[:<harness>]]]
                 [--yolo-dwarf] [--yolo-qa] [--repo <dir>] [--native-review]
                 [--no-memory] [--timeout <seconds>] [--fractal | --no-fractal]
+                [--fractal-auto-decompose] [--fractal-planner <spec>]
                 [--fractal-depth <n>] [--fractal-children <n>] [--fractal-nodes <n>]
                 [--fractal-iterations <n>] [--fractal-concurrency <n>] [--fractal-deadline <s>]
                 [--decompose-level low|medium|high] [--max-parallel <n>]
@@ -685,6 +703,8 @@ notes to itself is noise to a reviewer who does not use forge.
 | `--dwarf-high/-medium/-low` | — | per-difficulty routing; comma-list pools models |
 | `--qa-high/-medium/-low` | — | same, for reviewers |
 | `--fractal` / `--no-fractal` | ask interactively; off unattended | mutually exclusive, per-run backend choice |
+| `--fractal-auto-decompose` | off | enables Fractal with automatic recursive split-or-atomic decisions |
+| `--fractal-planner <spec>` | top-level planner, then task root spec | frozen decision model; requires automatic mode |
 | `--fractal-depth <n>` | `2` | nested levels below each Forge implementation node |
 | `--fractal-children <n>` | `3` | unsettled direct children per node |
 | `--fractal-nodes <n>` | `12` | lifetime nodes per Forge task, including implementation |

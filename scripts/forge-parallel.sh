@@ -805,6 +805,7 @@ do_run() (
   while [ $# -gt 0 ]; do
     case "$1" in
       --fractal) forge_fractal_flag on || exit $?; shift ;;
+      --fractal-auto-decompose) forge_fractal_flag on || exit $?; FRACTAL_ARGS+=("$1"); shift ;;
       --no-fractal) forge_fractal_flag off || exit $?; shift ;;
       --fractal-*) FRACTAL_ARGS+=("$1" "${2:?}"); shift 2 ;;
       --no-ripwire) export FORGE_RIPWIRE=off; shift ;;

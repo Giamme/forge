@@ -5,6 +5,8 @@ forge_fractal_help() {
   cat <<'HELP'
 Optional Fractal execution (solo or parallel run):
   --fractal | --no-fractal   Explicit choice; unattended defaults off
+  --fractal-auto-decompose  Enable Fractal with automatic split-or-atomic planning
+  --fractal-planner SPEC    Decision model (top-level planner, then task root model)
   --fractal-depth N         Nested levels below implementation (2)
   --fractal-children N      Unsettled direct children per node (3)
   --fractal-nodes N         Lifetime nodes per task (12)
@@ -12,7 +14,7 @@ Optional Fractal execution (solo or parallel run):
   --fractal-concurrency N   Model slots across the run, including QA (3)
   --fractal-deadline N      Task attempt seconds excluding pauses (2700)
   --fractal-max-cost N      Unsupported: costs are observational
-Run choice, limits and pools persist for resume/retry. Installation never activates it.
+Run choice, planners, limits and pools persist for resume/retry. Installation never activates it.
 Solo child routing: --dwarf-low, --dwarf-medium, --dwarf-high (comma pools).
 Decomposed routing is configured by the plan command.
 Use ./forge fractal --help for installation, inspection, controls and HTML reports.

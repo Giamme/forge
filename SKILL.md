@@ -1,7 +1,7 @@
 ---
 name: forge
 description: Dispatch implementation and independent diff review to user-selected models through local agent CLIs. Use for /forge or explicit requests to delegate coding or review; explanation-only questions do not authorize dispatch.
-argument-hint: '"<goal>" --dwarf <alias>[:effort[:harness]] [--qa <alias>] [--planner <alias>] [--yolo-dwarf] [--yolo-qa] [--decompose-level low|medium|high] [--fractal|--no-fractal] [--no-memory] [--no-ripwire] [--timeout <seconds>]'
+argument-hint: '"<goal>" --dwarf <alias>[:effort[:harness]] [--qa <alias>] [--planner <alias>] [--yolo-dwarf] [--yolo-qa] [--decompose-level low|medium|high] [--fractal|--no-fractal|--fractal-auto-decompose] [--fractal-planner <spec>] [--no-memory] [--no-ripwire] [--timeout <seconds>]'
 allowed-tools: [Bash, Read]
 ---
 
@@ -20,10 +20,16 @@ For explanation requests, explain the workflow without spending model quota.
 - Bypass flags apply only when explicitly requested for that role (`--yolo-dwarf`,
   `--yolo-qa`). Bash access can mutate files despite disabled editing tools.
 - Ask **“Use Fractal for this run? [y/N]”** once before an interactive run, unless
-  the user supplied `--fractal` or `--no-fractal`. Pass the answer explicitly to
+  the user supplied `--fractal`, `--no-fractal`, or `--fractal-auto-decompose`. Pass the answer explicitly to
   the runner. Unattended runs default off. Installation never activates Fractal.
   Resume and explicit retry retain the recorded choice. Read [Fractal](references/fractal.md)
   when selected; Fractal completion never substitutes for Forge QA acceptance.
+- `--fractal-auto-decompose` enables automatic split-or-atomic decisions before each
+  eligible node implements. Include the effective planner and bounds in the approval
+  preview; child decisions need no additional user approval inside those bounds.
+  Forward `--fractal-planner <spec>` to the runner. When omitted, forward a selected
+  top-level `--planner` as `--fractal-planner`; otherwise each task's initial root model
+  plans all its descendants. Ordinary `--fractal` keeps worker-requested decomposition.
 - One implementer per tree. Solo edits remain uncommitted. Decomposed runs may commit
   and merge on Forge task and integration branches. Updating the user's branch requires
   separate authorization and `integrate --approved`. Never push automatically.

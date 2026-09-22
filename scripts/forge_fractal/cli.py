@@ -46,6 +46,8 @@ def parser() -> argparse.ArgumentParser:
     selection.add_argument('--choice', choices=('', 'on', 'off'), default='')
     selection.add_argument('--dwarf', default='')
     selection.add_argument('--qa', default='')
+    selection.add_argument('--fractal-auto-decompose', action='store_true')
+    selection.add_argument('--fractal-planner', default='')
     for tier in ('any', 'low', 'medium', 'high'):
         selection.add_argument('--dwarf-' + tier, default='')
     for key in DEFAULTS:

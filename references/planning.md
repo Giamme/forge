@@ -5,6 +5,12 @@ dispatch or `forge-parallel.sh plan` into nested execution, install a runtime du
 planning, or bypass the task/model approval table. Pass `--fractal` or `--no-fractal` to
 the eventual solo runner or decomposed `run`. See [Fractal](fractal.md).
 
+For automatic recursive decisions during execution, use `--fractal-auto-decompose`.
+Its `--fractal-planner` selects the per-node decision model, independently of the
+top-level `--planner` that designs the whole run. Without an override it reuses that
+planner when configured, then each task's initial root model. Child planning must
+preserve the approved interfaces and ownership established here.
+
 By default **you** plan: before dispatching, decide the approach and put it in the prompt,
 so the dwarf builds the agreed thing rather than inventing a shape nobody has seen. In a
 decomposed run that matters more, because the capsule prevents two dwarves from touching

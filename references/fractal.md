@@ -13,6 +13,7 @@ This reference covers the exact selection, routing, lifecycle and inspection con
 - [Selecting a run](#selecting-a-run)
 - [Installation and provenance](#installation-and-provenance)
 - [Bridge, routing and ownership](#bridge-routing-and-ownership)
+- [Automatic decomposition decisions](#automatic-decomposition-decisions)
 - [Limits and lifecycle](#limits-and-lifecycle)
 - [Inspection and controls](#inspection-and-controls)
 - [Managed data and identifiers](#managed-data-and-identifiers)
@@ -39,6 +40,10 @@ Dry runs resolve pools and show limits and proposed managed paths. They neither
 install dependencies nor invoke providers, including when inspecting an existing run.
 Limits and routing pools are frozen with the run; changed settings require a new
 run directory. A missing runtime on resume can be reinstalled, preserving the backend.
+
+`--fractal-auto-decompose` enables Fractal and the automatic decision policy described
+below. It conflicts with `--no-fractal`. Existing runs retain their recorded policy;
+enabling automatic decomposition on a legacy run requires a new run directory.
 
 ## Installation and provenance
 
@@ -104,6 +109,57 @@ decomposed planner persists these pools; solo accepts them directly. Routing fal
 back to the explicitly configured general dwarf pool, then the parent's resolved
 dwarf. All eligible specs are preflighted and canonical resolutions frozen before
 execution. Each node records its difficulty, requested spec and resolved model.
+
+## Automatic decomposition decisions
+
+```sh
+bash scripts/forge-solo.sh /path/outside/repo/new-run --repo /path/to/repo \
+  --dwarf luna:high --qa sol:high --fractal-auto-decompose --fractal-planner sol:xhigh
+bash scripts/forge-parallel.sh run /path/to/new-plan \
+  --fractal-auto-decompose --fractal-planner sol:xhigh --fractal-depth 3 --fractal-nodes 24
+```
+
+Approve the top-level task/model table as usual. Within that approved ownership and
+the frozen limits, decisions and child execution are automatic: no per-node questions.
+Every eligible node gets a dedicated planning-only call before implementation. The
+planner sees the complete approved contract, scoped goal, existing child results,
+available routing, depth and remaining capacity. It splits useful separable work or
+records why the work is atomic; the policy does not force artificial subtasks.
+
+`--fractal-planner <spec>` chooses the decision model independently of dwarf pools and
+requires automatic mode. When omitted, parallel runs reuse their saved top-level
+planner; otherwise each task's initial root dwarf spec plans its whole tree, including
+low-strength children. `/forge` forwards any selected top-level planner for solo runs
+as well. Planner-role defaults apply (unspecified effort defaults to `xhigh`). Canonical
+planner resolutions are preflighted and frozen; resume/retry cannot change them.
+
+The planner returns exactly one final-line marker:
+
+```text
+FORGE_FRACTAL: {"decision":"atomic","reason":"One tightly coupled change remains"}
+FORGE_FRACTAL: {"decision":"split","reason":"Independent modules","children":[{"id":"parser","goal":"Implement and test parser","difficulty":"low","paths":["src/parser.py"],"deps":[]},{"id":"formatter","goal":"Implement and test formatter","difficulty":"low","paths":["src/formatter.py"],"deps":[]}]}
+```
+
+Choose one marker. A split needs at least two children; normal ownership and dependency
+validation applies. At the depth limit, or with fewer than two available child/node
+slots, Forge records `bounded` and proceeds without a planning call. Admission reserves
+lifetime capacity and persists exact child routing before spawning, so recovery does
+not duplicate children. Children receive the same decision stage recursively; parents
+integrate their results and verify the combined work. Implementation responses cannot
+spawn children directly in automatic mode.
+
+Planning runs in disposable snapshots with planner permissions and no yolo bypass.
+Changes to snapshot product content, HEAD or staged content invalidate the decision;
+snapshot changes are never imported. Provider permission flags alone are not a universal
+filesystem sandbox. Two invalid planning responses exhaust the decision stage; provider
+failure or mutation halts it immediately. There is no silent fallback to implementation.
+
+Planning shares the run's model slots, invocation timeout and task deadline. Its attempts
+are recorded separately from implementation iterations. Resume reuses accepted decisions
+and completes pending admissions. Explicit retry archives replaced or failed decisions;
+changed goals are replanned while completed children, work and lifetime accounting survive.
+Inspect decisions, reasons, planner resolutions and history with `tree`, `status`, `logs`,
+or the existing HTML report. Extra planning calls consume quota; no speed/cost saving is promised.
 
 ## Limits and lifecycle
 

@@ -320,15 +320,22 @@ result = ('FORGE_VERDICT: '+verdict) if qa else ('implemented\\nFORGE_FRACTAL: '
         self.assertEqual((self.repo / 'base.txt').read_text(), 'concurrent user edit\n')
         self.assertFalse((self.repo / 'change.txt').exists())
 
-    def test_parallel_tasks_keep_existing_review_integration(self):
+    def parallel_plan(self, dwarf='sol', planner=None):
         plan = self.root / 'plan'; plan.mkdir()
-        (plan / 'tasks.tsv').write_text('a\t-\tlow\ta.txt\tsol\topus\tA\nb\t-\tlow\tb.txt\tsol\topus\tB\n')
+        (plan / 'tasks.tsv').write_text(''.join(
+            f'{name}\t-\tlow\t{name}.txt\t{dwarf}\topus\t{name.upper()}\n' for name in ('a', 'b')))
         for name in ('a', 'b'):
             task = plan / 'tasks' / name; task.mkdir(parents=True)
             (task / 'prompt.md').write_text('Implement TASK_' + name)
         script = ['/bin/bash', str(ROOT / 'scripts/forge-parallel.sh')]
-        result = subprocess.run([*script, 'plan', str(plan), '--repo', str(self.repo), '--no-memory'], env=self.env, capture_output=True, text=True)
-        self.assertEqual(result.returncode, 0, result.stderr)
+        options = ['--planner', planner] if planner else []
+        result = subprocess.run([*script, 'plan', str(plan), '--repo', str(self.repo), '--no-memory', *options],
+                                env=self.env, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        return plan, script
+
+    def test_parallel_tasks_keep_existing_review_integration(self):
+        plan, script = self.parallel_plan()
         result = subprocess.run([*script, 'run', str(plan), '--fractal', '--fractal-concurrency', '1'], env=self.env, capture_output=True, text=True, timeout=90)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn('MERGED', (plan / 'results.tsv').read_text())
