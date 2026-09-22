@@ -13,6 +13,8 @@ import unittest
 import sqlite3
 import io
 import contextlib
+import threading
+import urllib.request
 from argparse import Namespace
 from unittest.mock import patch
 
@@ -22,7 +24,7 @@ sys.path.insert(0, str(ROOT / 'scripts'))
 from forge_fractal import ARCHIVE_SHA256, REVISION, write_json
 from forge_fractal.cli import parser
 from forge_fractal.execution import contains, overlap, path_scope
-from forge_fractal.inspection import html, capture, runs
+from forge_fractal.inspection import html, capture, make_server, progress, runs, scoped
 from forge_fractal.selection import select
 
 
@@ -152,6 +154,63 @@ class FractalContracts(unittest.TestCase):
         with self.assertRaises(ValueError): capture(run, task_id='../escape')
         (step / 'dwarf.log').unlink(); (step / 'dwarf.log').symlink_to(credentials / 'secret')
         self.assertNotIn('DO_NOT_EXPORT_CREDENTIAL', html(capture(run, logs=True)))
+
+
+class DashboardContracts(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name).resolve()
+        environment = patch.dict(os.environ, {'XDG_STATE_HOME': str(self.root / 'state')})
+        environment.start()
+        self.addCleanup(environment.stop)
+
+    def test_renderer_does_not_replace_artifact_placeholders(self):
+        page = html(dict(config=dict(id='/*__SCRIPT__*/__LIVE__')))
+        self.assertEqual(page.count('const FORGE_LIVE = false'), 1)
+        self.assertIn('/*__SCRIPT__*/__LIVE__', page)
+
+    def test_dashboard_scopes_and_run_specific_index(self):
+        run = self.root / 'state/forge/fractal/runs/run-test'
+        task = run / 'tasks/task-test'
+        for name in ('first', 'second'):
+            (task / 'nodes' / name / 'steps' / 'one').mkdir(parents=True)
+            write_json(task / 'nodes' / name / 'node.json', dict(id=name, parent=None, goal=name,
+                       status='active', model='test', paths=['.']))
+            (task / 'nodes' / name / 'steps' / 'one' / 'dwarf.log').write_text(name)
+        write_json(run / 'run.json', dict(id='run-test', repository='/example'))
+        write_json(task / 'request.json', dict(prompt='A test task', model='test'))
+        write_json(task / 'state.json', dict(status='active'))
+        data = progress(run)
+        self.assertNotIn('logs', data['tasks'][0]['nodes'][0])
+        self.assertNotIn('activity', data['tasks'][0])
+        with patch('forge_fractal.inspection.read_text', wraps=importlib.import_module('forge_fractal.inspection').read_text) as read:
+            result = scoped(run, 'task-test', node_id='first', artifact='logs')
+            self.assertIn('steps/one/dwarf.log', result)
+            self.assertEqual(len(read.call_args_list), 5)
+            self.assertTrue(all('second' not in str(call) for call in read.call_args_list))
+        with self.assertRaises(ValueError):
+            scoped(run, '../outside', artifact='qa')
+        try:
+            server, url = make_server('run-test')
+        except PermissionError:
+            self.skipTest('loopback sockets are blocked in this sandbox')
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        def get(query):
+            with urllib.request.urlopen(url + 'data?' + query) as response:
+                return json.load(response)
+        self.assertEqual(get('run=&scope=runs')['runs'][0]['id'], 'run-test')
+        self.assertNotIn('activity', get('run=run-test&scope=progress')['tasks'][0])
+        self.assertIn('activity', get('run=run-test')['tasks'][0])
+        result = get('run=run-test&scope=artifact&task=task-test&node=first&artifact=logs')
+        self.assertIn('steps/one/dwarf.log', result)
+        with self.assertRaises(urllib.error.HTTPError) as denied:
+            get('run=run-test&scope=artifact&task=../outside&artifact=qa')
+        self.assertEqual(denied.exception.code, 400)
+        denied.exception.close()
 
 
 @unittest.skipUnless(os.environ.get('FORGE_TEST_FRACTAL_RUNTIME'), 'set FORGE_TEST_FRACTAL_RUNTIME to an isolated pinned 1.2.0 environment')

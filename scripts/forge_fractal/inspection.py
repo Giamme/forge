@@ -11,7 +11,7 @@ import time
 from urllib.parse import parse_qs, urlparse
 import webbrowser
 
-from . import SCRIPTS, managed_run, read_json, safe_file, state_root
+from . import SCRIPTS, identifier, managed_run, read_json, safe_file, state_root
 
 
 def runs(repository: str | None = None) -> dict:
@@ -82,7 +82,7 @@ def capture(run: Path, *, task_id: str | None = None, node_id: str | None = None
         safe_file(run, str(task.relative_to(run)))
         state = read_json(safe_file(task, 'state.json'))
         request = read_json(safe_file(task, 'request.json'))
-        item = dict(id=task.name, state=state, nodes=[], acceptance='pending', verification='unverified')
+        item = dict(id=task.name, state=state, request=request, nodes=[], acceptance='pending', verification='unverified')
         # Only explicitly captured Forge outcome files are read from runner directories.
         outcome = task / 'outcome.json'
         if outcome.exists():
@@ -125,50 +125,133 @@ def capture(run: Path, *, task_id: str | None = None, node_id: str | None = None
     return data
 
 
+def progress(run: Path) -> dict:
+    """Small, read-only projection for polling; no ledger or text artifacts."""
+    data = dict(config=read_json(safe_file(run, 'run.json')), captured_at=time.time(), tasks=[])
+    task_root = run / 'tasks'
+    for task in sorted(task_root.iterdir()) if task_root.exists() else []:
+        safe_file(run, str(task.relative_to(run)))
+        request = read_json(safe_file(task, 'request.json'))
+        item = dict(id=task.name, goal=str(request.get('prompt', ''))[:240],
+                    model=request.get('model'), state=read_json(safe_file(task, 'state.json')),
+                    nodes=[], acceptance='pending', verification='unverified')
+        if (task / 'outcome.json').exists():
+            item.update(read_json(safe_file(task, 'outcome.json')))
+        for path in sorted((task / 'nodes').glob('*/node.json')):
+            node = read_json(safe_file(task, str(path.relative_to(task))))
+            item['nodes'].append({key: node.get(key) for key in (
+                'id', 'parent', 'status', 'model', 'iteration', 'cost', 'unknown_cost_steps',
+                'difficulty', 'paths', 'deps', 'phase')}
+                | dict(goal=str(node.get('goal', ''))[:240], error=str(node.get('error', ''))[:240]))
+        data['tasks'].append(item)
+    return data
+
+
+def scoped(run: Path, task_id: str, *, node_id: str | None = None,
+           artifact: str = 'task', table: str = 'events', offset: int = 0) -> dict:
+    """Read only the selected task or node's requested heavy material."""
+    task = safe_file(run, 'tasks/' + identifier(task_id))
+    if not task.is_dir():
+        raise ValueError('Task selector did not match a managed task')
+    if artifact == 'task':
+        return dict(request=read_json(safe_file(task, 'request.json')),
+                    outcome=read_json(safe_file(task, 'outcome.json')) if (task / 'outcome.json').exists() else {})
+    if artifact == 'history':
+        if table not in ('events', 'steps', 'messages'):
+            raise ValueError('Unsupported history table')
+        return ledger(task, table, offset, 100)
+    if artifact == 'qa':
+        return {name: read_text(task, name) for name in ('qa.last', 'qa.log', 'changes.diff', 'coordinator.log')}
+    if artifact == 'node' and node_id:
+        node = safe_file(task, 'nodes/' + identifier(node_id))
+        if not (node / 'node.json').is_file():
+            raise ValueError('Node selector did not match a managed node')
+        return read_json(safe_file(task, 'nodes/' + node_id + '/node.json'))
+    if artifact not in ('logs', 'changes') or not node_id:
+        raise ValueError('Unsupported scoped artifact')
+    node = safe_file(task, 'nodes/' + identifier(node_id))
+    if not (node / 'node.json').is_file():
+        raise ValueError('Node selector did not match a managed node')
+    if artifact == 'logs':
+        return _step_logs(task, node, 262144)
+    return read_text(task, str((node / 'candidate.diff').relative_to(task)))
+
+
 def html(data: dict, live: bool = False) -> str:
     template = (SCRIPTS / 'forge_fractal/dashboard.html').read_text()
+    css = (SCRIPTS / 'forge_fractal/dashboard.css').read_text()
+    script = (SCRIPTS / 'forge_fractal/dashboard.js').read_text()
     embedded = json.dumps(data).replace('<', '\\u003c').replace('>', '\\u003e').replace('&', '\\u0026')
-    return template.replace('__CAPTURE__', embedded).replace('__LIVE__', 'true' if live else 'false')
+    return (template.replace('/*__STYLE__*/', css).replace('/*__SCRIPT__*/', script)
+            .replace('__LIVE__', 'true' if live else 'false').replace('__CAPTURE__', embedded))
+
+
+def _http_data(selected: str | None, query: dict) -> dict:
+    if query.get('scope') == ['runs'] or not selected:
+        return runs()
+    run = managed_run(selected)
+    if query.get('scope') == ['progress']:
+        return progress(run)
+    if query.get('scope') == ['artifact']:
+        offset = int(query.get('offset', ['0'])[0])
+        if offset < 0:
+            raise ValueError('History offset must be nonnegative')
+        return scoped(run, query.get('task', [''])[0], node_id=query.get('node', [None])[0],
+                      artifact=query.get('artifact', ['task'])[0],
+                      table=query.get('table', ['events'])[0], offset=offset)
+    return capture(run, logs=query.get('logs') == ['1'],
+                   offset=max(0, int(query.get('offset', ['0'])[0])), limit=100)
+
+
+class DashboardHandler(BaseHTTPRequestHandler):
+    def log_message(self, *args):
+        pass  # never log the access token
+
+    def do_GET(self):
+        target = urlparse(self.path)
+        prefix = self.server.dashboard_prefix
+        if self.headers.get('Host') != f'127.0.0.1:{self.server.server_port}' or not target.path.startswith(prefix):
+            self.send_error(403)
+            return
+        route = target.path[len(prefix):]
+        if route not in ('', 'data'):
+            self.send_error(404)
+            return
+        query = parse_qs(target.query, keep_blank_values=True)
+        selected = query.get('run', [self.server.dashboard_run_id])[0]
+        try:
+            if route == 'data':
+                body = json.dumps(_http_data(selected, query)).encode()
+                content_type = 'application/json'
+            else:
+                data = progress(managed_run(selected)) if selected else runs()
+                body = html(data, live=True).encode()
+                content_type = 'text/html; charset=utf-8'
+        except (OSError, ValueError, KeyError) as error:
+            body = json.dumps(dict(error=str(error))).encode()
+            content_type = 'application/json'
+            self.send_response(400)
+        else:
+            self.send_response(200)
+        self.send_header('Content-Type', content_type)
+        self.send_header('Cache-Control', 'no-store')
+        self.send_header('Referrer-Policy', 'no-referrer')
+        self.send_header('X-Content-Type-Options', 'nosniff')
+        self.send_header('Content-Length', str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+
+def make_server(run_id: str | None, port: int = 0) -> tuple[ThreadingHTTPServer, str]:
+    prefix = '/' + secrets.token_urlsafe(32) + '/'
+    server = ThreadingHTTPServer(('127.0.0.1', port), DashboardHandler)
+    server.dashboard_prefix = prefix
+    server.dashboard_run_id = run_id
+    return server, f'http://127.0.0.1:{server.server_port}{prefix}'
 
 
 def serve(run_id: str | None, port: int = 0) -> None:
-    token = secrets.token_urlsafe(32)
-    prefix = '/' + token + '/'
-    class Handler(BaseHTTPRequestHandler):
-        def log_message(self, *args):
-            pass  # never log the access token
-
-        def do_GET(self):
-            target = urlparse(self.path)
-            if self.headers.get('Host') != f'127.0.0.1:{self.server.server_port}' or not target.path.startswith(prefix):
-                self.send_error(403)
-                return
-            route = target.path[len(prefix):]
-            query = parse_qs(target.query)
-            try:
-                selected = query.get('run', [run_id])[0]
-                if route == 'data':
-                    data = capture(managed_run(selected), logs=query.get('logs') == ['1'],
-                                   offset=max(0, int(query.get('offset', ['0'])[0])), limit=100) if selected else runs()
-                    body, content_type = json.dumps(data).encode(), 'application/json'
-                elif route == '':
-                    data = capture(managed_run(selected)) if selected else runs()
-                    body, content_type = html(data, live=True).encode(), 'text/html; charset=utf-8'
-                else:
-                    self.send_error(404)
-                    return
-            except (OSError, ValueError, KeyError) as error:
-                body, content_type = json.dumps(dict(error=str(error))).encode(), 'application/json'
-            self.send_response(200)
-            self.send_header('Content-Type', content_type)
-            self.send_header('Cache-Control', 'no-store')
-            self.send_header('Referrer-Policy', 'no-referrer')
-            self.send_header('X-Content-Type-Options', 'nosniff')
-            self.send_header('Content-Length', str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-    server = ThreadingHTTPServer(('127.0.0.1', port), Handler)
-    url = f'http://127.0.0.1:{server.server_port}{prefix}'
+    server, url = make_server(run_id, port)
     print('Read-only dashboard: ' + url, flush=True)
     print('Ctrl-C closes the dashboard; execution continues.', flush=True)
     webbrowser.open(url)
