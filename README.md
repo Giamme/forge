@@ -264,10 +264,13 @@ Discover the managed run ID, then inspect it from another terminal:
 ```
 
 `RUN_ID` is the `run-…` identifier returned by `runs`, not the solo directory or plan name.
-The dashboard refreshes every two seconds, loads logs on demand and offers copyable CLI
-controls. Browser access is read-only, bound to `127.0.0.1` with an ephemeral access token.
-Closing its server does not stop execution. Portable HTML embeds captured data and logs,
-shows capture time and missing data, and needs no Fractal runtime to read.
+The [run inspector](references/fractal-dashboard.md) opens on progress and problems, then lets
+readers inspect task QA/history or node decisions, logs and changes. It refreshes about every
+two seconds without replacing the workspace; search, selection, focus and scrolling remain in
+place. “Pause live updates” affects the browser only. Browser access is read-only, bound to
+`127.0.0.1` with an ephemeral access token. Closing its server does not stop execution.
+Portable HTML embeds complete captured history and logs, works offline and needs no Fractal
+runtime to read.
 
 ### Automatic recursive decomposition
 

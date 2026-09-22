@@ -227,11 +227,13 @@ bounded to 1000 entries and returns at most 200 runs with corruption diagnostics
 Use run-level `resume` to recover the complete Forge pipeline through QA and integration.
 A task/subtree selector resumes that execution scope and does not relaunch unrelated tasks.
 
-The dashboard is served by Python's standard library on `127.0.0.1` with an ephemeral
-access token. It is read-only, polls every two seconds, paginates history and loads
-logs on demand. It displays copyable CLI controls, models, iteration, elapsed time,
-limits, unknown costs, node hierarchy, candidate changes, QA and verification results.
-Closing the browser server does not stop execution.
+The [run inspector design brief](fractal-dashboard.md) describes the dark, two-pane
+workspace and its navigation. It is served by Python's standard library on `127.0.0.1`
+with an ephemeral access token. It is read-only, polls about every two seconds, preserves
+focus and pane scroll during updates, pages selected task history and loads selected
+artifacts on demand. “All runs” works from a run-specific launch. Pausing live updates
+only stops browser polling; execution controls are copyable CLI commands. Closing the
+browser server does not stop execution.
 
 Ledger inspection uses SQLite `mode=ro` and `query_only`; it never constructs an
 upstream Node for browsing, reconciles lifecycle state or marks radio messages read.
