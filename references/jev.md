@@ -210,12 +210,51 @@ correct picks but leave only a 0.03 margin above that wrong one, so 0.70 stays.
 
 Confidence tracks how ambiguous the candidate set is, not how likely the pick is to be
 wrong: repos with 2 candidates land at 0.73–0.81, repos with 11–25 land at 0.58–0.61.
-This is why the gate is the Choice confidence and **not** `runs_tests`, which sat at
-0.79–0.98 for every repo including the wrong `cargo test` at 0.97. `runs_tests` answers
-"is this a test command" — true of `cargo test` — and is nearly useless as a gate.
+This is why the gate was not `runs_tests`, which sat at 0.79–0.98 for every repo
+including the wrong `cargo test` at 0.97. `runs_tests` answers "is this a test command" —
+true of `cargo test` — and is nearly useless as a gate.
 
 Repeating the identical request three times gives a spread of 0.02–0.08 and never
 changes the pick, so these numbers are reproducible rather than one lucky sample.
+
+#### The gate is no longer Choice confidence, because that answers the wrong question
+
+Confidence measures *which* option wins. For a selection among several **acceptable**
+options that is the wrong quantity: two commands that both run the suite split the mass
+and depress it, and a tie is not doubt. Measured live on the jevscope repo, three times
+running — `bash scripts/check.sh` and `make test` both run its suite —
+
+| | |
+|---|---|
+| Choice confidence | **0.48–0.52**, against a 0.70 gate |
+| Mass on `none` | **0.01–0.02** |
+| Actual state of the repo | 48 tests, all passing |
+
+So forge reported `UNVERIFIED` for a verifiable repo while the model was 98% sure some
+listed command verified it. The gate now reads **1 − P(none)** — the probability that the
+repo is verifiable at all, which is what `tests_act` was always meant to bound. A split
+between correct commands leaves it high; genuine doubt piles onto `none` and drops it,
+and the winner is then just the tie-break. `client.probabilities` exposes the
+distribution the response was already returning and `choice()` was discarding. When a
+response omits it, the old confidence gate stands — a missing field is not certainty.
+
+#### …and 0.70 itself is now stale, for either gate
+
+`spankai` is the one confirmed wrong pick in the table above: `cargo test` covers only
+the Rust half of a Rust + TypeScript monorepo, and at 0.55 the 0.70 gate blocked it.
+**It no longer does.** Re-run today it scores 0.77–0.81, which clears 0.70 on the old
+gate as well as the new one.
+
+The cause is measurable rather than guessed. Suppressing `_evidence_excerpt` — restoring
+the state as it was when 0.55 was recorded — reproduces 0.52–0.59; restoring it gives
+0.77–0.81. Sending a `make` target's recipe raised confidence across the board, and it
+raised the wrong pick with everything else.
+
+So the whole table above was measured against a state production no longer produces, for
+the seventh time in this file. `tests_act` needs re-measuring across those 18 repos in
+the current state before 0.70 means anything, and **no number should be moved until it
+is** — fitting a new one to the single data point above is exactly the mistake being
+recorded here.
 
 ### Test selection: no single threshold works across repos
 
@@ -320,7 +359,21 @@ forge jev calibrate --repo <repo> --write                      # only then may r
 
 `calibrate` joins each run's `jev-routing.tsv` against `.forge/ledger.tsv` on
 `(run_id, task)`, taking
-the QA verdict as the outcome. It prints the shortfall per tier rather than a
+the QA verdict as the outcome.
+
+**One execution is one sample, however many run dirs describe it.** Run dirs are
+deduplicated by path, so a plan that was copied, re-scored, moved, or registered under a
+second path used to arrive twice — and the ledger holds one outcome per `(run_id, task)`,
+because the task ran once. The first real calibration, over the jevscope run, reported
+**16 samples for an 8-task plan**: every outcome counted twice against `min_sample`, the
+only bar standing between routing and the right to act.
+
+Worse when the copies disagree. A re-score had moved `stats` low→medium and `fixtures`
+high→medium, so one pass was credited to **two different tiers**. The outcome tested
+whichever tier actually ran the task and nothing records which, so a `(run_id, task)`
+whose run dirs disagree on tier is now dropped rather than guessed at, and both the
+collapsed duplicates and the dropped keys are printed. The same run now reports 6
+samples, which is what it has. It prints the shortfall per tier rather than a
 confident-looking guess, and `--write` is a separate step because that file is the only
 thing standing between `--jev-act` and Jev changing which model spends your quota.
 
@@ -381,7 +434,7 @@ This is the same trap `tests_act` set earlier, and it was measured rather than g
 |---|---|---|
 | drift | `gate_warn` 0.60 | 50 commits × 2 repos: precision **1.000** and **0.934** |
 | prompt adequacy | `prompt_warn` 0.55 | unjudgeable prompts **0.06–0.27**, prompts stating checkable behaviour **0.85–0.96** |
-| independent verifiability | `verifiable_warn` 0.38 | **does not separate** — see below |
+| independent verifiability | `verifiable_warn` 0.55 | fragments **0.26–0.65**, self-contained tasks **0.65–0.96** — precision gate, see below |
 
 Both text gates were first measured at a time when `prompt.md` did not reach the model:
 `score_task` sent only the task title. Those numbers (vague 0.04, specific 0.55–0.87)
@@ -398,15 +451,38 @@ with 0.28 clear on each side. The old 0.30 classified every case correctly too, 
 **0.03** above the worst true positive — correct by luck rather than by margin, against a
 measured repeat-noise of 0.07.
 
-**`independently_verifiable` does not separate, and no threshold will fix it.** Tasks
-that genuinely cannot be checked on their own scored 0.34–0.56; tasks that can scored
-0.43–0.90. The classes overlap across 0.43–0.56. 0.38 is kept because everything at or
-below it has so far been genuinely unverifiable — it buys precision by giving up recall,
-missing the unverifiable tasks that land at 0.40–0.56. It is 0.05 from the lowest true
-negative and the noise is 0.07, so one re-roll can flip it.
+**`independently_verifiable` was unanswerable, and rewording it was never going to
+help.** The rubric asked whether confirming a task requires "work declared in a different
+task" — and `score_task` sent no other task. The model was asked about a plan it had
+never been shown, so it could only guess whether such a sibling existed. That is why the
+classes overlapped (0.34–0.56 against 0.43–0.90), and it is the same failure as
+`prompt.md`: a rubric scored against evidence that never reached it.
 
-Treat a warning from it as a hint and its silence as no evidence at all. The rubric needs
-reworking; moving the number cannot fix a rubric whose classes overlap.
+The fix is state, not wording. `routing._siblings` now sends every other task in the plan
+— id, title, file scope, declared deps, capped at `MAX_SIBLINGS` — plus the task's own
+`deps`, and the rubric points at that list by name.
+
+Re-measured on the eight tasks of the real jevscope plan, eight repeats on every task the
+threshold depends on. Ground truth was taken from the **import graph and wave position**,
+not from the task titles — which corrected the labelling, not the model:
+
+| task | score | truth |
+|---|---|---|
+| `server` | 0.26–0.34 | fragment: wave 1, imports `discover`/`events`/`stats` and serves `page`'s `index.html`, **none declared** |
+| `page` | 0.43–0.53 | fragment: consumes `server`'s API; both defects that shipped were `page`↔`events` shape mismatches |
+| `readme` | 0.60–0.65 | fragment: documents the wave-2 CLI, and shipped wrong |
+| `cli` | 0.65–0.75 | verifiable: wave 2, so everything it needs has already landed |
+| `stats`, `events`, `discover`, `fixtures` | 0.67–0.96 | verifiable: own file set, own test file |
+
+**At the old 0.38 this gate caught nothing on a real plan** — every genuine fragment
+scored above it — exactly as wave coupling had never fired. 0.55 catches `server` with
+0.21 to spare and `page` with 0.02, and keeps **0.10** to the nearest true negative,
+which is the only margin here that beats the 0.07 noise floor. An advisory gate has to
+hold precision above all: one that cries wolf is one people switch off.
+
+The classes still touch at 0.65, where `readme` meets `cli`. So this is a precision gate
+that buys a clean left-hand side by giving up `readme` entirely, and **silence above 0.55
+still means "no evidence", not "verifiable"**.
 
 Using the single `gate_warn` of 0.60 for all three — which is what shipped first — warned
 on 5 of 9 and 5 of 11 perfectly good tasks in the hand-labelled set. It was caught by a
@@ -503,11 +579,39 @@ On the live plan it now names three pairs, all genuinely coupled, `page`+`server
 — the page consumes the server's API contract. On a plan of eight unrelated tasks it says
 nothing.
 
-**What it structurally cannot catch.** The other shipped defect was `readme` documenting
-a CLI interface that `cli` had not built yet. Those two were in *different waves*, so they
-were never a candidate pair. "Task A depends on an interface task B builds later" is a
-real failure mode and no same-wave check can see it. Worth noting before trusting this
-gate to cover cross-task risk in general.
+### The ordering half: `forward_dependency`
+
+The other shipped defect was `readme` documenting a CLI interface that `cli` had not
+built yet. Those two were in *different waves*, so they were never a candidate pair, and
+no same-wave check can see that shape. It is a different failure from coupling, too:
+not a broken merge between concurrent tasks, but a task reviewed, verified and merged
+**before the thing it was written against exists** — so its own review cannot catch it,
+and the error ships.
+
+`forward_pairs` forms ordered `(earlier, later)` pairs across waves, skipping any pair
+where LATER is named in EARLIER's declared deps — forge would not have placed EARLIER
+first in that case, so the risk cannot arise. Cross-wave pairs get their own
+`MAX_FORWARD_PAIRS` budget rather than sharing `MAX_PAIRS`, or one large first wave would
+spend the whole allowance inside itself and never ask the ordering question at all.
+
+Measured over that plan's seven cross-wave pairs, five runs each:
+
+| pair | score | |
+|---|---|---|
+| `readme` → `cli` | **0.88–0.90** | documents the CLI built in the next wave *(shipped bug)* |
+| `page` → `cli` | 0.13–0.15 | |
+| the other five | 0.05–0.07 | |
+
+A **0.73-wide gap**, the cleanest separation any rubric here has produced, so
+`forward_warn` sits in the middle of it at 0.50 — 0.35 clear below, 0.38 above, against a
+0.07 noise floor. Provisional in one specific way: the gap is enormous but rests on a
+single positive example. A second plan could move the positive class; it is unlikely to
+move it 0.38.
+
+Both halves run from one `forge jev coupling` invocation, so a plan gets both warnings or
+neither, and each row carries a trailing `kind` of `same-wave` or `forward`. On the real
+plan the gate now names all three of its genuine problems: `page`+`server` and
+`events`+`page` same-wave, and `readme`→`cli` at 0.88.
 
 Still advisory in every mode: it prints, and never reorders a wave or blocks a dispatch.
 
@@ -711,8 +815,9 @@ see. Most shared one shape — the code was correct and nothing reached it.
 - Every memory call was unlogged, and the review-triage flag printed where the default
   output mode never shows it.
 
-**What acts today:** the drift and prompt-adequacy gates, verification, early test
-feedback, memory curation, wave coupling and review-triage annotation. All are advisory —
+**What acts today:** the drift, prompt-adequacy and verifiability gates, verification,
+early test feedback, memory curation, wave coupling (same-wave and cross-wave) and
+review-triage annotation. All are advisory —
 none blocks a dispatch, and nothing overturns a `FORGE_VERDICT`.
 
 **What cannot act yet:** routing, effort sizing and QA effort sizing, all of which
@@ -721,20 +826,32 @@ six hand-labelled tasks, which is a smoke test, not a calibration. Observed comp
 confidences run 0.50–0.85, so it currently admits almost nothing — deliberately, but the
 number is unearned until real runs produce outcomes.
 
+The counter that decides when it becomes earned is now honest, which it was not: the
+first calibration run on real data reported 16 samples for an 8-task plan, because the
+same run reached it through two paths. Until that was fixed, the 30-sample bar could have
+been cleared by 15 real tasks. The jevscope run contributes **6** samples toward the
+first tier's 30 — that is the true rate of accrual, and it is slow on purpose.
+
 **Known unsound, recorded rather than patched:**
 
-- `independently_verifiable` does not separate its classes (0.34–0.56 unverifiable
-  against 0.43–0.90 verifiable). Its threshold buys precision by giving up recall and no
-  number can fix it; the rubric needs reworking.
-- `tests_act` gates Choice confidence, so it cannot tell a tie between two correct verify
-  commands from genuine doubt, and a verifiable repo still reports `UNVERIFIED`.
-- Wave coupling only considers same-wave pairs, so "task A depends on an interface task B
-  builds later" is outside its reach — one of the two defects that shipped was exactly
-  that.
-- `coupling_warn` rests on one plan with roughly 0.02 of margin.
+- `independently_verifiable` still cannot separate a task that documents later work
+  (`readme`, 0.60–0.65) from a real one (`cli`, 0.65–0.75). Putting the plan in state
+  fixed the rubric's worst end — it now scores the clearest fragment at 0.26–0.34, where
+  it used to score 0.63–0.65 — but the right-hand side remains a precision gate whose
+  silence is not evidence.
+- `tests_act` = 0.70 is stale. The semantics are fixed — the gate reads 1 − P(none)
+  rather than Choice confidence, so a tie between two correct commands no longer reads as
+  doubt — but the threshold behind it was calibrated before candidate evidence reached
+  the model, and the one confirmed wrong pick (`spankai` → `cargo test`) has risen from
+  0.55 to 0.77–0.81 and now clears the gate either way.
+- Wave coupling's same-wave half rests on one plan with roughly 0.02 of margin. Its
+  cross-wave half (`forward_dependency`, gap 0.73) is far better separated but rests on a
+  single positive example.
 
-The standing lesson, now learned five separate times: a threshold named for one rubric
+The standing lesson, now learned seven separate times: a threshold named for one rubric
 and reused for another is wrong, and a number measured against state the model is not
-actually sent describes nothing. `jevscope` exists to make both visible — it reads the
+actually sent describes nothing. The sixth was `independently_verifiable`, which asked
+whether a task needed "work declared in a different task" while no different task had
+ever been in state — and the fix was to send the plan, not to reword the question. `jevscope` exists to make both visible — it reads the
 run logs back and reports each rubric's distribution and the spread across byte-identical
 repeated requests, which is the floor any threshold has to clear.

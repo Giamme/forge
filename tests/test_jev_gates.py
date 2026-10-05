@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / 'scripts'))
 
-from forge_jev import DEFAULT_THRESHOLDS, gates, routing  # noqa: E402
+from forge_jev import DEFAULT_THRESHOLDS, gates, routing, threshold  # noqa: E402
 
 # The largest spread jevscope measured across byte-identical repeated requests in
 # a real run. A threshold with less margin than this is measuring noise.
@@ -88,11 +88,16 @@ class CandidateTests(unittest.TestCase):
 class ThresholdTests(unittest.TestCase):
     """Each rubric gets its own warn level. Measured, not assumed."""
 
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        self.repo = Path(self.dir.name)
+
     def test_the_three_gate_thresholds_are_distinct(self):
         # Reusing gate_warn for all three would warn on roughly half of all good tasks.
         self.assertEqual(DEFAULT_THRESHOLDS['gate_warn'], 0.60)
         self.assertEqual(DEFAULT_THRESHOLDS['prompt_warn'], 0.55)
-        self.assertEqual(DEFAULT_THRESHOLDS['verifiable_warn'], 0.38)
+        self.assertEqual(DEFAULT_THRESHOLDS['verifiable_warn'], 0.55)
 
     def test_prompt_warn_sits_in_the_measured_gap(self):
         # Re-measured after prompt.md began reaching the model. The earlier numbers
@@ -108,15 +113,45 @@ class ThresholdTests(unittest.TestCase):
         self.assertLess(warn, 0.85 - NOISE,
                         'must stay clear of the weakest real prompt by the same')
 
-    def test_verifiable_warn_stays_below_the_overlap(self):
-        # This rubric does NOT separate its classes. Tasks that genuinely cannot be
-        # checked alone scored 0.34-0.56; ones that can scored 0.43-0.90. They overlap,
-        # so no threshold divides them and moving the number cannot fix that -- the
-        # rubric needs reworking. 0.38 trades recall for precision: everything at or
-        # below it has so far been genuinely unverifiable. This test exists to stop
-        # someone raising it into the overlap in the meantime.
-        self.assertLess(DEFAULT_THRESHOLDS['verifiable_warn'], 0.43,
-                        'above 0.43 it fires on tasks that ARE independently verifiable')
+    def test_verifiable_warn_keeps_more_than_noise_from_a_real_task(self):
+        # Re-measured on the 8 real jevscope tasks once the plan reached the model, with
+        # ground truth from the import graph and wave position: fragments 0.26-0.65,
+        # self-contained tasks 0.65-0.96. The classes still touch at 0.65, so this is a
+        # precision gate -- it buys a clean left-hand side by giving up `readme`.
+        #
+        # The lowest genuinely-verifiable task measured 0.65 (`cli`). A gate that fires
+        # on a good task is one people switch off, so the cut must sit more than the
+        # 0.07 repeat-noise below it.
+        warn = DEFAULT_THRESHOLDS['verifiable_warn']
+        self.assertLess(warn, 0.65 - NOISE,
+                        'within noise of `cli` at 0.65 -- it would warn on a real task')
+        # And it must stay above `page` at 0.53, or it is back to catching nothing: at
+        # the old 0.38 this gate fired on no fragment of a real plan at all.
+        self.assertGreater(warn, 0.53,
+                           'below 0.53 it stops catching `page`, whose two shape '
+                           'mismatches with `events` actually shipped')
+
+    def test_each_gate_reads_its_own_key_even_when_the_defaults_are_equal(self):
+        # verifiable_warn and prompt_warn are equal today by coincidence of measurement,
+        # not by kinship, and equality is exactly when collapsing them onto one constant
+        # looks like a tidy-up. Pull them apart and check each gate follows its own key:
+        # a shared threshold would make one of these two assertions fail.
+        config = dict(thresholds=dict(DEFAULT_THRESHOLDS,
+                                      prompt_warn=0.90, verifiable_warn=0.10))
+        self.assertEqual(threshold('prompt_warn', config=config), 0.90)
+        self.assertEqual(threshold('verifiable_warn', config=config), 0.10)
+
+        # 0.50 is below prompt_warn (0.90) and above verifiable_warn (0.10), so exactly
+        # one gate may speak.
+        answers = {name: dict(type='score', score=0, confidence=0.9)
+                   for name in routing.WEIGHTS}
+        answers['prompt_adequacy'] = dict(type='noul', noul=0.50)
+        answers['independently_verifiable'] = dict(type='noul', noul=0.50)
+        with patch('forge_jev.routing.enabled', return_value=True), \
+             patch('forge_jev.routing.ask', return_value=dict(answers=answers)):
+            scored = routing.score_task(self.repo, goal='g', task_id='t', title='t',
+                                        files='a.py', config=config)
+        self.assertEqual(scored['warnings'], dict(prompt_adequacy=0.5))
 
 
 class WarningPlumbingTests(unittest.TestCase):

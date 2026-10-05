@@ -142,6 +142,29 @@ def choice(result, qid: str) -> tuple[str | None, float]:
     return (answer.get('choice'), answer.get('confidence', 0.0))
 
 
+def probabilities(result, qid: str) -> dict[str, float]:
+    """A Choice's full distribution over its options, {} when the response omits it.
+
+    `choice()` returns only the winner and its confidence, and for a selection among
+    several ACCEPTABLE options that confidence is the wrong quantity: it measures
+    "which one", not "any of them". Two commands that both run the suite split the mass
+    and depress it, which is a tie, not doubt.
+    """
+    answer = (result or {}).get('answers', {}).get(qid) if result else None
+    if not answer or answer.get('type') != 'choice':
+        return {}
+    found = answer.get('probabilities')
+    if not isinstance(found, dict):
+        return {}
+    out = {}
+    for option, value in found.items():
+        try:
+            out[str(option)] = float(value)
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
 def score(result, qid: str) -> tuple[float | None, float]:
     answer = (result or {}).get('answers', {}).get(qid) if result else None
     if not answer or answer.get('type') != 'score':

@@ -140,7 +140,10 @@ def _read_ledger(path: Path) -> tuple[dict[tuple[str, str], dict], int]:
     except OSError:
         return groups, skipped
     for line in lines:
-        if not line.strip():
+        if not line.strip() or line.startswith('#'):
+            # The ledger carries a `# ts  run_id  task ...` header. Counting it as
+            # malformed made every clean ledger report "skipped 1 malformed row", which
+            # is how a diagnostic line teaches people to stop reading it.
             continue
         parts = line.split('\t')
         # At least 10, not exactly 10. The ledger is append-only and has gained a column
@@ -192,16 +195,41 @@ def _collect(repo: Path, dirs: list[Path]) -> tuple[list[dict], dict]:
 
     outcomes, n_skipped_ledger = _read_ledger(repo / '.forge' / 'ledger.tsv')
 
-    samples = []
+    # One sample per (run_id, task). _run_dirs dedups by path string, so a run dir that
+    # was copied, re-scored, moved or registered under a second path arrives here twice
+    # -- measured: calibrate on the real jevscope run reported 16 samples for an 8-task
+    # plan. The ledger holds ONE outcome per (run_id, task) because the task ran once, so
+    # a second routing row for that key is not a second observation. It is the same
+    # observation counted twice against min_sample, which is the whole bar standing
+    # between routing and the right to act.
+    by_key: dict[tuple[str, str], list[dict]] = {}
     for row in routing_rows:
-        outcome = outcomes.get((row['run_id'], row['task']))
+        by_key.setdefault((row['run_id'], row['task']), []).append(row)
+    n_duplicate_rows = len(routing_rows) - len(by_key)
+    n_conflicting = 0
+
+    samples = []
+    for key, rows in sorted(by_key.items()):
+        # Copies that disagree are worse than copies that agree: the re-score above moved
+        # `stats` low->medium and `fixtures` high->medium, so one pass would have been
+        # credited to two different tiers. The outcome tested whichever tier actually ran
+        # the task, and nothing here records which that was, so drop the key rather than
+        # guess. Dropping is the conservative direction for a gate that is supposed to be
+        # earned.
+        if len({r['tier'] for r in rows}) > 1:
+            n_conflicting += 1
+            continue
+        outcome = outcomes.get(key)
         if outcome is None:
             continue  # a routing decision with no matching ledger outcome joins to nothing
+        row = rows[0]
         samples.append(dict(tier=row['tier'], confidence=row['confidence'], composite=row['composite'],
                             passed=outcome['verdict'] == 'PASS', duration_s=outcome['duration_s']))
 
     meta = dict(n_run_dirs_used=n_run_dirs_used, n_skipped_jsonl_lines=n_skipped_jsonl,
-               n_skipped_routing_rows=n_skipped_routing, n_skipped_ledger_rows=n_skipped_ledger)
+               n_skipped_routing_rows=n_skipped_routing, n_skipped_ledger_rows=n_skipped_ledger,
+               n_duplicate_routing_rows=n_duplicate_rows,
+               n_conflicting_routing_keys=n_conflicting)
     return samples, meta
 
 
@@ -321,6 +349,14 @@ def report(summary: dict) -> str:
                     f"(jsonl={summary.get('n_skipped_jsonl_lines', 0)}, "
                     f"routing={summary.get('n_skipped_routing_rows', 0)}, "
                     f"ledger={summary.get('n_skipped_ledger_rows', 0)})")
+    # Never silent. A shortfall that is really a de-duplication is the one thing a reader
+    # of this table would otherwise misread as "not enough runs yet".
+    if summary.get('n_duplicate_routing_rows'):
+        lines.append(f"collapsed {summary['n_duplicate_routing_rows']} duplicate routing "
+                    'row(s): the same (run, task) scored in more than one run dir counts once')
+    if summary.get('n_conflicting_routing_keys'):
+        lines.append(f"dropped {summary['n_conflicting_routing_keys']} (run, task) key(s) whose "
+                    'run dirs disagree on tier -- one outcome cannot validate two predictions')
     lines.append('')
 
     for tier in TIERS:

@@ -214,6 +214,60 @@ class StateTests(unittest.TestCase):
         self.assertIn(needle, json.dumps(captured['state']))
 
 
+    def test_the_rest_of_the_plan_reaches_the_model(self):
+        # independently_verifiable asks whether confirming this task needs another task
+        # in the plan to land first -- and until this was wired, no other task was ever
+        # in state, so the model could only guess whether such a task existed. That is
+        # why its classes overlapped and no threshold divided them. Same failure as
+        # prompt.md: a rubric scored against evidence it was never shown.
+        captured = {}
+
+        def fake_ask(state, questions, **kwargs):
+            captured['state'] = state
+            return None
+
+        siblings = [dict(id='t', deps='-', files='a.py', title='the task itself'),
+                    dict(id='other', deps='-', files='b.py', title='SIBLING-TASK-TITLE')]
+        with patch('forge_jev.routing.ask', side_effect=fake_ask):
+            routing.score_task(self.repo, goal='g', task_id='t', title='t', files='a.py',
+                               deps='dep-one', siblings=siblings)
+        blob = json.dumps(captured['state'])
+        self.assertIn('SIBLING-TASK-TITLE', blob)
+        # Its own deps too: a task whose need is already declared WILL have that work in
+        # place, so "needs a sibling" and "is a fragment" are not the same question.
+        self.assertIn('dep-one', blob)
+        # The task being scored is not listed among its own siblings.
+        self.assertEqual([t['id'] for t in captured['state']['plan_tasks']], ['other'])
+
+    def test_the_sibling_list_is_bounded(self):
+        captured = {}
+
+        def fake_ask(state, questions, **kwargs):
+            captured['state'] = state
+            return None
+
+        siblings = [dict(id=f's{i}', deps='-', files=f'f{i}.py', title='x' * 400)
+                    for i in range(routing.MAX_SIBLINGS + 25)]
+        with patch('forge_jev.routing.ask', side_effect=fake_ask):
+            routing.score_task(self.repo, goal='g', task_id='t', title='t', files='a.py',
+                               siblings=siblings)
+        listed = captured['state']['plan_tasks']
+        self.assertEqual(len(listed), routing.MAX_SIBLINGS)
+        self.assertEqual(len(listed[0]['title']), routing.SIBLING_TITLE_CHARS)
+
+    def test_a_plan_of_one_task_sends_an_empty_sibling_list(self):
+        captured = {}
+
+        def fake_ask(state, questions, **kwargs):
+            captured['state'] = state
+            return None
+
+        with patch('forge_jev.routing.ask', side_effect=fake_ask):
+            routing.score_task(self.repo, goal='g', task_id='t', title='t', files='a.py',
+                               siblings=[dict(id='t', deps='-', files='a.py', title='t')])
+        self.assertEqual(captured['state']['plan_tasks'], [])
+
+
     def test_boundary_rounding_never_jumps_a_tier(self):
         # Measured on a real plan: a composite of 0.373 sat 0.043 above LOW_MAX, scored
         # medium, and was escalated to high -- promoted a whole tier past a line it was

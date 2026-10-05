@@ -350,6 +350,93 @@ class LedgerWidthTests(CalibrateTestCase):
         self.assertEqual(summary['n_skipped_ledger_rows'], 0)
 
 
+# 9. One execution is one sample, however many run dirs describe it ------------------
+
+class DuplicateRunDirTests(CalibrateTestCase):
+    """A run dir can be copied, re-scored, moved, or registered under a second path.
+    _run_dirs dedups by path string, so the same run reaches _collect twice; the ledger
+    holds one outcome per (run_id, task) because the task ran once. Counting that
+    outcome twice inflates the only bar standing between routing and the right to act.
+    Measured on the real jevscope run: 16 samples reported for an 8-task plan."""
+
+    def _two_dirs(self):
+        second = self.repo / '.forge' / 'runs' / 'r1-copy'
+        second.mkdir(parents=True)
+        return second
+
+    def test_the_same_run_and_task_in_two_run_dirs_counts_once(self):
+        rows = [_routing_row('r1', f't{i}', 'low', 0.6) for i in range(4)]
+        self._seed_run(rows)
+        self._seed_run(rows, run_dir=self._two_dirs())
+        self._seed_ledger([_ledger_qa_row('r1', f't{i}', 'PASS') for i in range(4)])
+
+        summary = calibrate.run(self.repo, min_sample=30)
+        self.assertEqual(summary['n_run_dirs_used'], 2)
+        self.assertEqual(summary['n_samples'], 4)
+        self.assertEqual(summary['tiers']['low']['n'], 4)
+        self.assertEqual(summary['n_duplicate_routing_rows'], 4)
+
+    def test_a_collapsed_duplicate_is_reported_not_silently_absorbed(self):
+        # Otherwise the shortfall reads as "not enough runs yet" when it is really
+        # "the runs you have describe the same tasks".
+        rows = [_routing_row('r1', 't0', 'low', 0.6)]
+        self._seed_run(rows)
+        self._seed_run(rows, run_dir=self._two_dirs())
+        self._seed_ledger([_ledger_qa_row('r1', 't0', 'PASS')])
+
+        text = calibrate.report(calibrate.run(self.repo, min_sample=30))
+        self.assertIn('collapsed 1 duplicate routing row(s)', text)
+
+    def test_run_dirs_that_disagree_on_tier_drop_the_key(self):
+        # The re-score that exposed this moved `stats` low->medium and `fixtures`
+        # high->medium. One pass would have been credited to two different tiers; the
+        # outcome tested whichever tier actually ran the task and nothing records which.
+        self._seed_run([_routing_row('r1', 't0', 'low', 0.6),
+                        _routing_row('r1', 't1', 'medium', 0.6)])
+        self._seed_run([_routing_row('r1', 't0', 'medium', 0.6),
+                        _routing_row('r1', 't1', 'medium', 0.6)],
+                       run_dir=self._two_dirs())
+        self._seed_ledger([_ledger_qa_row('r1', 't0', 'PASS'),
+                           _ledger_qa_row('r1', 't1', 'PASS')])
+
+        summary = calibrate.run(self.repo, min_sample=30)
+        self.assertEqual(summary['n_conflicting_routing_keys'], 1)
+        self.assertEqual(summary['tiers']['low']['n'], 0)   # t0 dropped, not kept as low
+        self.assertEqual(summary['tiers']['medium']['n'], 1)  # only t1, the agreeing key
+        self.assertIn('disagree on tier', calibrate.report(summary))
+
+    def test_distinct_runs_over_the_same_tasks_still_count_separately(self):
+        # The dedup key is (run_id, task), not task: two genuine runs over the same plan
+        # are two executions and two observations. Collapsing those would make the bar
+        # unreachable for anyone who runs the same plan twice.
+        self._seed_run([_routing_row('r1', 't0', 'low', 0.6)])
+        self._seed_run([_routing_row('r2', 't0', 'low', 0.6)], run_dir=self._two_dirs())
+        self._seed_ledger([_ledger_qa_row('r1', 't0', 'PASS'),
+                           _ledger_qa_row('r2', 't0', 'FAIL')])
+
+        summary = calibrate.run(self.repo, min_sample=30)
+        self.assertEqual(summary['n_samples'], 2)
+        self.assertEqual(summary['n_duplicate_routing_rows'], 0)
+        self.assertEqual(summary['tiers']['low']['pass_rate'], 0.5)
+
+
+class LedgerHeaderTests(CalibrateTestCase):
+    def test_the_commented_header_is_not_counted_as_malformed(self):
+        # Every clean ledger forge writes starts with `# ts  run_id  task ...`, so this
+        # reported "skipped 1 malformed row(s)" on healthy input -- which is how a
+        # diagnostic line teaches people to stop reading it.
+        _write_tsv(self.repo / '.forge' / 'ledger.tsv',
+                   [('# ts', 'run_id', 'task', 'role', 'model', 'verdict', 'category',
+                     'key', 'text', 'duration_s', 'injectable'),
+                    _ledger_qa_row('r1', 't0', 'PASS')])
+        self._seed_run([_routing_row('r1', 't0', 'low', 0.6)])
+
+        summary = calibrate.run(self.repo, min_sample=30)
+        self.assertEqual(summary['n_skipped_ledger_rows'], 0)
+        self.assertEqual(summary['n_samples'], 1)
+        self.assertNotIn('malformed', calibrate.report(summary))
+
+
 if __name__ == '__main__':
     unittest.main()
 

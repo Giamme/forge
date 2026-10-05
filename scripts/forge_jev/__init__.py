@@ -29,19 +29,40 @@ DEFAULT_THRESHOLDS = dict(routing_act=0.85, tests_act=0.70, flake_act=0.90,
                           # 0.30 also classified every case correctly, but sat 0.03 above
                           # the worst true positive -- correct by luck, not by margin.
                           prompt_warn=0.55,
-                          # Unchanged deliberately, and not because it is right. Over the
-                          # same probes plus 8 real tasks, the two classes OVERLAP: tasks
-                          # that genuinely cannot be checked alone scored 0.34-0.56, and
-                          # ones that can scored 0.43-0.90. No threshold separates them.
+                          # The rubric asked whether verifying a task needs "work
+                          # declared in a different task" while the state contained no
+                          # other task, so the model could only guess whether one
+                          # existed. That, not the wording, is why the classes used to
+                          # overlap. The plan is now in state (routing._siblings) and the
+                          # rubric points at it by name.
                           #
-                          # 0.38 has produced no false positive yet -- everything at or
-                          # below it has been genuinely unverifiable -- but it is 0.05
-                          # from the lowest true negative and noise is 0.07, so one
-                          # re-roll can flip it. This is a low-recall precision gate, and
-                          # moving the number cannot fix a rubric that does not separate.
-                          # The rubric needs reworking; until then, treat a warning here
-                          # as a hint and its silence as no evidence at all.
-                          verifiable_warn=0.38,
+                          # Re-measured on the 8 real jevscope tasks, ground truth taken
+                          # from the import graph and wave position rather than from the
+                          # titles: `server` (wave 1, imports discover/events/stats and
+                          # serves page's index.html, none declared) 0.26-0.34; `page`
+                          # (consumes server's API -- both defects that shipped were
+                          # page<->events shape mismatches) 0.43-0.53; `readme`
+                          # (documents the wave-2 CLI, and shipped wrong) 0.60-0.65.
+                          # Genuinely self-contained tasks scored 0.65-0.96.
+                          #
+                          # At the old 0.38 this gate caught NOTHING on a real plan, the
+                          # same way coupling never fired: every fragment scored above
+                          # it. 0.55 catches server (0.21 clear) and page (0.02 clear --
+                          # marginal, counted as recall but not relied on), misses readme
+                          # entirely, and keeps 0.10 to the nearest true negative, which
+                          # is the only margin here that beats the 0.07 noise floor.
+                          # Precision is what an advisory gate must hold: a gate that
+                          # cries wolf is one people switch off.
+                          #
+                          # `readme` is not separable from a real task by this rubric --
+                          # it sits at 0.65 alongside `cli` at 0.65 -- so silence above
+                          # 0.55 still means "no evidence", not "verifiable".
+                          #
+                          # Equal to prompt_warn by coincidence, not by kinship. They
+                          # were measured separately against different rubrics and must
+                          # stay separate keys; collapsing them into one constant is the
+                          # exact mistake this file has now recorded six times.
+                          verifiable_warn=0.55,
                           # Coupling borrowed gate_warn (0.60) and therefore never fired
                           # once, on any plan. Measured over 11 same-wave pairs from a
                           # real 8-task plan, 5 runs each, with ground truth taken from
@@ -54,6 +75,22 @@ DEFAULT_THRESHOLDS = dict(routing_act=0.85, tests_act=0.70, flake_act=0.90,
                           # margins of about 0.02 either side -- but a gate that fires on
                           # the right pairs 4 times in 5 beats one that cannot fire.
                           coupling_warn=0.20,
+                          # The ordering question coupling could not ask: an earlier-wave
+                          # task written against what a LATER task builds. jevscope's
+                          # `readme` ran in wave 1 documenting the wave-2 CLI, passed its
+                          # own review because the thing it was wrong about did not exist
+                          # yet, and shipped describing an interface nobody wrote.
+                          #
+                          # Measured over that plan's 7 cross-wave pairs, 5 runs each:
+                          # readme->cli 0.88-0.90, every independent pair 0.05-0.15. A
+                          # 0.73-wide gap, the cleanest any rubric here has produced, so
+                          # this sits in the middle with 0.35 clear below and 0.38 above
+                          # against a 0.07 noise floor.
+                          #
+                          # Provisional in one specific way: the gap is enormous but it
+                          # rests on a single positive example. A second plan could move
+                          # the positive class; it is unlikely to move it 0.38.
+                          forward_warn=0.50,
                           # The pass rate a tier must be shown to hold, with 95%
                           # confidence, before routing may act on it.
                           calibrate_floor=0.80,

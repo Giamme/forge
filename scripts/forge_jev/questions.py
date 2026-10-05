@@ -375,21 +375,28 @@ def independently_verifiable() -> dict:
     """decompose.md's hard rule, checked: can this task be verified on its own?"""
     instructions = (
         'Forge runs this task in its own worktree and verifies it alone, before any '
-        'other task in the plan is merged. Can this task (in state) be verified on its '
-        'own, or does confirming it works require another task to land first?'
+        'other task in the plan is merged. state.plan_tasks lists the other tasks in '
+        'the plan with their file scopes; state.task.deps names the ones that are '
+        'guaranteed to land BEFORE this one. Judge against that list, not against '
+        'imagined work: can this task be verified on its own?'
     )
     return Noul(
         instructions,
         true=(
-            'Once this task is done, something observable proves it: a test that can '
-            'run, a command that behaves differently, a check that passes. The proof '
-            'does not depend on work declared in a different task.'
+            'Something observable proves this task once it is done -- a test that can '
+            'run, a command that behaves differently, a check that passes -- using only '
+            'this task\'s own files, what already exists in the repo, and anything '
+            'named in state.task.deps. A task that needs nothing from plan_tasks is '
+            'verifiable; so is one whose only needs are already its declared deps.'
         ),
         false=(
-            'The task is a fragment -- one half of a rename, a caller without its '
-            'callee, an interface with no implementation -- so nothing can confirm it '
-            'works until a sibling task lands. decompose.md forbids splitting this '
-            'finely for exactly this reason.'
+            'Verifying this task requires a specific OTHER task in state.plan_tasks '
+            'that is not among its declared deps -- name it to yourself before '
+            'answering. This is the fragment case: one half of a rename, a caller whose '
+            'callee is a sibling task, an interface whose only implementation is a '
+            'sibling task. decompose.md forbids splitting this finely for exactly this '
+            'reason. Do not answer false merely because the task is small, or because '
+            'its value is only visible once the whole plan lands.'
         ),
     )
 
@@ -455,6 +462,42 @@ def findings_cite_the_diff() -> dict:
     )
 
 # --- semantic wave coupling (Phase 4, item 4) --------------------------------------
+
+
+def forward_dependency(earlier: str, later: str) -> dict:
+    """Is an earlier-wave task written against something a LATER task has not built yet?
+
+    Distinct from wave_coupling, which asks about two tasks running at the same time and
+    breaking on merge. This asks about ordering: a task that runs in wave 1 is reviewed,
+    verified and merged before wave 2 exists, so if it was written against wave 2's work
+    it is wrong at the moment anyone checks it -- and its own review cannot tell, because
+    the thing it is wrong about is not in the tree yet.
+
+    The concrete case: a `readme` task in wave 1 documenting a CLI built in wave 2. It
+    passed review and shipped describing an interface that was never built that way.
+    """
+    instructions = (
+        f'Forge runs plan tasks in waves. Task EARLIER: {earlier!r} runs first and is '
+        f'reviewed, verified and merged before task LATER: {later!r} has started. '
+        'LATER is not a declared dependency of EARLIER, so nothing forces that order to '
+        'be safe. Does EARLIER depend on what LATER will build -- describing it, calling '
+        'it, or assuming its shape -- so that EARLIER cannot be confirmed correct until '
+        'LATER lands?'
+    )
+    return Noul(
+        instructions,
+        true=(
+            'EARLIER is written against something LATER produces: it documents a command '
+            'or interface LATER defines, calls an API LATER adds, or assumes a shape only '
+            'LATER fixes. When EARLIER is reviewed that thing does not exist yet, so the '
+            'review cannot catch a mismatch and the error ships.'
+        ),
+        false=(
+            'EARLIER stands on its own. It depends only on what already exists in the '
+            'repo or on its own files, and nothing in LATER can make it wrong. LATER '
+            'building on EARLIER is the normal, safe direction and is not this.'
+        ),
+    )
 
 
 def wave_coupling(first: str, second: str) -> dict:

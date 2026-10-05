@@ -16,7 +16,7 @@ from pathlib import Path
 
 from . import threshold
 from .client import ask, noul
-from .questions import wave_coupling
+from .questions import forward_dependency, wave_coupling
 
 # A wave of 12 tasks is 66 pairs; a plan-time gate must not become the slowest thing in
 # `forge plan`. Sorted before truncation (see pairs()) so the same plan always produces
@@ -38,11 +38,16 @@ MAX_PAIRS = 60
 MAX_WARNINGS = 3
 
 
+# Cross-wave pairs get their own budget rather than sharing MAX_PAIRS: a plan with one
+# big first wave would otherwise spend the whole allowance inside it and never ask the
+# ordering question at all, which is the one that shipped a defect.
+MAX_FORWARD_PAIRS = 40
+
 PROMPT_CHARS = 2500
 
 
 def parse_tasks(plan: Path) -> dict[str, dict]:
-    """id -> {id, title, files, difficulty, prompt}, skipping comments and malformed rows."""
+    """id -> {id, title, files, deps, difficulty, prompt}, skipping comments and malformed rows."""
     path = plan / 'tasks.tsv'
     tasks = {}
     try:
@@ -55,7 +60,7 @@ def parse_tasks(plan: Path) -> dict[str, dict]:
         parts = line.split('\t')
         if len(parts) < 7:
             continue
-        task_id, _deps, difficulty, files, _dwarf, _qa, title = parts[:7]
+        task_id, deps, difficulty, files, _dwarf, _qa, title = parts[:7]
         if not task_id:
             continue
         # The requirements, not the implementation. An interface dependency between two
@@ -68,7 +73,7 @@ def parse_tasks(plan: Path) -> dict[str, dict]:
                 prompt = prompt_file.read_text(errors='replace')[:PROMPT_CHARS]
         except OSError:
             prompt = ''
-        tasks[task_id] = dict(id=task_id, title=title, files=files,
+        tasks[task_id] = dict(id=task_id, title=title, files=files, deps=deps,
                               difficulty=difficulty, prompt=prompt)
     return tasks
 
@@ -106,6 +111,88 @@ def pairs(tasks: dict, waves: dict) -> list[tuple[str, str]]:
                 found.append((first, second))
     found.sort()
     return found[:MAX_PAIRS]
+
+
+def _wave_order(waves: dict) -> dict[str, int]:
+    """Task id -> wave position. Waves are numbered as strings in waves.tsv; sort them
+    numerically where possible so '10' follows '9' rather than '1'."""
+    def key(name):
+        try:
+            return (0, int(name))
+        except ValueError:
+            return (1, name)
+
+    order = {}
+    for position, wave in enumerate(sorted(waves, key=key)):
+        for task_id in waves[wave]:
+            order[task_id] = position
+    return order
+
+
+def forward_pairs(tasks: dict, waves: dict) -> list[tuple[str, str]]:
+    """Ordered (earlier, later) pairs across waves that nothing forces to be safe.
+
+    `pairs()` only looks inside a wave, so "task A is written against an interface task B
+    builds later" was structurally outside this gate's reach -- and that is what shipped:
+    jevscope's `readme` ran in wave 1 documenting the CLI that wave 2 built, passed its
+    own review, and described an interface nobody ever wrote.
+
+    A declared dependency is excluded, in the direction that matters: if LATER is named
+    in EARLIER's deps, forge would not have placed EARLIER first, so the pair cannot
+    arise. Nothing else about wave placement makes the order safe.
+    """
+    order = _wave_order(waves)
+    found = []
+    for earlier in sorted(tasks):
+        for later in sorted(tasks):
+            if earlier == later:
+                continue
+            if earlier not in order or later not in order:
+                continue
+            if order[earlier] >= order[later]:
+                continue
+            declared = {d.strip() for d in str(tasks[earlier].get('deps', '')).split(',')}
+            if later in declared:
+                continue
+            found.append((earlier, later))
+    found.sort()
+    return found[:MAX_FORWARD_PAIRS]
+
+
+def forward_dependencies(repo, *, tasks, waves, run_dir=None, config: dict | None = None):
+    """Earlier-wave tasks Jev thinks were written against work that lands later.
+
+    Same contract as coupled_pairs: [(earlier, later, probability), ...] highest first,
+    [] for "nothing to say", None for "no judgment could be made".
+    """
+    by_id = {t['id']: t for t in tasks if isinstance(t, dict) and t.get('id')}
+    candidates = forward_pairs(by_id, waves)
+    if not candidates:
+        return []
+
+    questions = {}
+    for i, (earlier, later) in enumerate(candidates):
+        earlier_desc = f"{earlier} ({by_id[earlier]['title']}) files: {by_id[earlier]['files']}"
+        later_desc = f"{later} ({by_id[later]['title']}) files: {by_id[later]['files']}"
+        questions[f'f{i}'] = forward_dependency(earlier_desc, later_desc)
+
+    involved = sorted({task_id for pair in candidates for task_id in pair})
+    state = dict(tasks=[dict(id=by_id[i]['id'], title=by_id[i]['title'],
+                             files=by_id[i]['files'],
+                             requirements=by_id[i].get('prompt', ''))
+                        for i in involved])
+    result = ask(state, questions, site='jev-forward', run_dir=run_dir, config=config)
+    if result is None:
+        return None
+
+    warn_at = threshold('forward_warn', config=config)
+    found = []
+    for i, (earlier, later) in enumerate(candidates):
+        probability = noul(result, f'f{i}')
+        if probability is not None and probability >= warn_at:
+            found.append((earlier, later, probability))
+    found.sort(key=lambda row: (-row[2], row[0], row[1]))
+    return found[:MAX_WARNINGS]
 
 
 def coupled_pairs(repo, *, tasks, waves, run_dir=None, config: dict | None = None):

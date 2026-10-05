@@ -6,7 +6,7 @@ from pathlib import Path
 import re
 
 from . import enabled, load_config, threshold
-from .client import ask, choice, noul, score
+from .client import ask, choice, noul, probabilities, score
 from .questions import failure_triage, runs_tests, verify_runtime, verify_selection
 
 CANDIDATE_CAP = 25  # keeps one discover() request small; deterministic order means the
@@ -311,7 +311,8 @@ def _evidence_excerpt(candidate: dict) -> str:
 def discover(repo, *, config=None, run_dir=None) -> dict | None:
     """Ask Jev which candidate actually verifies this repo. None when Jev is
     unavailable, no candidates exist, or it picks `none`.
-    -> {'command', 'confidence', 'runs_tests', 'runtime_level', 'source', 'evidence'}
+    -> {'command', 'confidence', 'verifiable', 'runs_tests', 'runtime_level', 'source',
+        'evidence'}
     """
     config = config or load_config()
     if not enabled('tests', config=config):
@@ -343,7 +344,28 @@ def discover(repo, *, config=None, run_dir=None) -> dict | None:
     picked, confidence = choice(result, 'choice')
     if picked is None or picked == 'none':
         return None
-    if confidence < threshold('tests_act', config=config):
+
+    # Gate on "is this repo verifiable at all", not on "which command wins".
+    #
+    # Choice confidence answers the second question, and for a selection among several
+    # ACCEPTABLE options it is the wrong quantity: a repo offering both `bash
+    # tests/check.sh` and `python3 -m unittest discover -s tests` splits the mass
+    # 0.62/0.31 with only 0.07 on `none`, for a confidence of 0.49 against a 0.70 gate.
+    # The model is 93% sure the repo is verifiable and forge reported UNVERIFIED --
+    # because two right answers look exactly like doubt to a rubric that measures
+    # agreement on one.
+    #
+    # 1 - P(none) is the quantity `tests_act` was always meant to gate. A split between
+    # correct commands leaves it high; genuine doubt piles onto `none` and drops it.
+    # Ties are then broken by the winner, which is what Choice is for.
+    distribution = probabilities(result, 'choice')
+    act_at = threshold('tests_act', config=config)
+    if distribution:
+        if (1.0 - distribution.get('none', 0.0)) < act_at:
+            return None
+    elif confidence < act_at:
+        # No distribution in the response: fall back to the old gate rather than treat a
+        # missing field as certainty.
         return None
     try:
         idx = commands.index(picked)
@@ -365,7 +387,11 @@ def discover(repo, *, config=None, run_dir=None) -> dict | None:
         runtime_level = runtime_levels[int(runtime_score)]
 
     picked_candidate = cand[idx]
-    return dict(command=picked, confidence=confidence, runs_tests=runs_probability,
+    # `verifiable` is the quantity the gate actually used; `confidence` is kept beside it
+    # because they answer different questions and a future re-measurement needs both.
+    verifiable = (1.0 - distribution.get('none', 0.0)) if distribution else None
+    return dict(command=picked, confidence=confidence, verifiable=verifiable,
+               runs_tests=runs_probability,
                runtime_level=runtime_level, source=picked_candidate['source'],
                evidence=picked_candidate['evidence'])
 

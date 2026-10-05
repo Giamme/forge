@@ -297,10 +297,17 @@ EOF
       if [ "${FORGE_JEV_SHADOW:-}" = on ]; then
         note "jev: found $(printf '%s\n' "$jev_coupling" | grep -c .) coupled pair(s) in shadow mode (no change)"
       else
-        local ca cb cp
-        while IFS="$(printf '\t')" read -r ca cb cp; do
+        local ca cb cp ckind
+        while IFS="$(printf '\t')" read -r ca cb cp ckind; do
           [ -n "$ca" ] || continue
-          note "jev: tasks '$ca' and '$cb' may conflict despite disjoint files ($cp) — consider a dep"
+          # Two different failures, so two different sentences. same-wave is a broken
+          # merge between concurrent tasks; forward is an earlier task written against
+          # work that has not been built yet, which its own review cannot catch.
+          if [ "$ckind" = forward ]; then
+            note "jev: task '$ca' runs before '$cb' and may depend on what it builds ($cp) — consider a dep"
+          else
+            note "jev: tasks '$ca' and '$cb' may conflict despite disjoint files ($cp) — consider a dep"
+          fi
         done <<EOF
 $jev_coupling
 EOF

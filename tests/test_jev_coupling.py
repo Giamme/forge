@@ -10,8 +10,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / 'scripts'))
 from forge_jev import DEFAULT_THRESHOLDS, coupling  # noqa: E402
 
 
-def task(task_id, title='t', files='-', difficulty='low'):
-    return dict(id=task_id, title=title, files=files, difficulty=difficulty)
+def task(task_id, title='t', files='-', difficulty='low', deps='-'):
+    return dict(id=task_id, title=title, files=files, difficulty=difficulty, deps=deps)
 
 
 class PairsTests(unittest.TestCase):
@@ -205,3 +205,148 @@ class MeasuredThresholdTests(unittest.TestCase):
         found, _state = self._found([0.19, 0.10, 0.05])
         self.assertEqual(found, [])
 
+
+
+class ForwardPairTests(unittest.TestCase):
+    """The ordering question `pairs()` structurally could not ask.
+
+    jevscope's `readme` ran in wave 1 documenting the CLI that wave 2 built. It passed
+    its own review -- the thing it was wrong about did not exist yet -- and shipped
+    describing an interface nobody ever wrote.
+    """
+
+    def test_pairs_run_earlier_wave_to_later_only(self):
+        tasks = {i: task(i) for i in ('a', 'b', 'c')}
+        waves = {'1': ['a', 'b'], '2': ['c']}
+        found = coupling.forward_pairs(tasks, waves)
+        self.assertEqual(sorted(found), [('a', 'c'), ('b', 'c')])
+        # Never the safe direction, and never within a wave -- that is coupled_pairs.
+        self.assertNotIn(('c', 'a'), found)
+        self.assertNotIn(('a', 'b'), found)
+
+    def test_a_declared_dependency_is_not_a_forward_dependency(self):
+        # If LATER were named in EARLIER's deps, forge would not have placed EARLIER
+        # first, so the pair cannot arise. Only the undeclared ordering is a risk.
+        tasks = {'doc': task('doc', deps='cli'), 'cli': task('cli')}
+        waves = {'1': ['doc'], '2': ['cli']}
+        self.assertEqual(coupling.forward_pairs(tasks, waves), [])
+
+    def test_waves_sort_numerically_not_as_strings(self):
+        # '10' must follow '9'. Sorted as strings it precedes '2', which would invert
+        # the direction of every pair involving a plan with ten or more waves.
+        tasks = {i: task(i) for i in ('early', 'late')}
+        waves = {'9': ['early'], '10': ['late']}
+        self.assertEqual(coupling.forward_pairs(tasks, waves), [('early', 'late')])
+
+    def test_a_single_wave_plan_has_no_forward_pairs(self):
+        tasks = {i: task(i) for i in ('a', 'b')}
+        self.assertEqual(coupling.forward_pairs(tasks, {'1': ['a', 'b']}), [])
+
+    def test_the_pair_budget_is_separate_and_deterministic(self):
+        # Sharing MAX_PAIRS would let one large first wave spend the whole allowance
+        # inside itself and never ask the ordering question at all.
+        early = [f'e{i:03d}' for i in range(30)]
+        late = [f'l{i:03d}' for i in range(30)]
+        tasks = {i: task(i) for i in early + late}
+        waves = {'1': early, '2': late}
+        found = coupling.forward_pairs(tasks, waves)
+        self.assertEqual(len(found), coupling.MAX_FORWARD_PAIRS)
+        self.assertEqual(found, sorted(found))
+        self.assertEqual(found, coupling.forward_pairs(tasks, waves))
+
+
+class ForwardDependencyTests(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        self.repo = Path(self.dir.name)
+
+    def _ask(self, values):
+        tasks = [task('doc'), task('cli')]
+        waves = {'1': ['doc'], '2': ['cli']}
+        captured = {}
+
+        def fake_ask(state, questions, **kwargs):
+            captured['state'] = state
+            captured['site'] = kwargs.get('site')
+            return dict(answers={qid: dict(type='noul', noul=v)
+                                 for qid, v in zip(sorted(questions), values)})
+
+        with patch('forge_jev.coupling.ask', side_effect=fake_ask):
+            found = coupling.forward_dependencies(self.repo, tasks=tasks, waves=waves)
+        return found, captured
+
+    def test_a_single_wave_plan_asks_nothing(self):
+        with patch('forge_jev.coupling.ask') as mocked:
+            self.assertEqual(coupling.forward_dependencies(
+                self.repo, tasks=[task('a'), task('b')], waves={'1': ['a', 'b']}), [])
+        mocked.assert_not_called()
+
+    def test_a_failed_request_is_none_not_an_empty_list(self):
+        with patch('forge_jev.coupling.ask', return_value=None):
+            self.assertIsNone(coupling.forward_dependencies(
+                self.repo, tasks=[task('a'), task('b')],
+                waves={'1': ['a'], '2': ['b']}))
+
+    def test_it_is_logged_under_its_own_site(self):
+        # Sharing jev-coupling's site would make the two rubrics indistinguishable in
+        # the run log, and the log is the only place a threshold can be re-measured.
+        _found, captured = self._ask([0.9])
+        self.assertEqual(captured['site'], 'jev-forward')
+
+    def test_above_the_threshold_warns(self):
+        # Measured on the real plan, 5 runs: readme->cli 0.88-0.90, every independent
+        # cross-wave pair 0.05-0.15. forward_warn sits in the middle of that gap.
+        found, _c = self._ask([0.88])
+        self.assertEqual(found, [('doc', 'cli', 0.88)])
+
+    def test_below_the_threshold_says_nothing(self):
+        found, _c = self._ask([0.15])
+        self.assertEqual(found, [])
+
+    def test_the_requirements_reach_the_model(self):
+        tasks = [dict(id='doc', title='d', files='README.md', difficulty='low', deps='-',
+                      prompt='DOC-REQUIREMENTS-MARKER'),
+                 dict(id='cli', title='c', files='cli.py', difficulty='low', deps='-',
+                      prompt='')]
+        captured = {}
+
+        def fake_ask(state, questions, **kwargs):
+            captured['state'] = state
+            return dict(answers={qid: dict(type='noul', noul=0.9) for qid in questions})
+
+        with patch('forge_jev.coupling.ask', side_effect=fake_ask):
+            coupling.forward_dependencies(self.repo, tasks=tasks,
+                                          waves={'1': ['doc'], '2': ['cli']})
+        self.assertIn('DOC-REQUIREMENTS-MARKER', str(captured['state']))
+
+    def test_no_more_than_three_are_reported_highest_first(self):
+        early = [task(f'e{i}') for i in range(5)]
+        tasks = early + [task('z')]
+        waves = {'1': [t['id'] for t in early], '2': ['z']}
+
+        def fake_ask(state, questions, **kwargs):
+            values = [0.99, 0.95, 0.60, 0.91, 0.70]
+            return dict(answers={qid: dict(type='noul', noul=v)
+                                 for qid, v in zip(sorted(questions), values)})
+
+        with patch('forge_jev.coupling.ask', side_effect=fake_ask):
+            found = coupling.forward_dependencies(self.repo, tasks=tasks, waves=waves)
+        self.assertEqual([p for _a, _b, p in found], [0.99, 0.95, 0.91])
+
+
+class ForwardThresholdTests(unittest.TestCase):
+    def test_forward_warn_sits_in_the_measured_gap(self):
+        # 7 cross-wave pairs of a real plan, 5 runs each. The one genuine forward
+        # dependency -- `readme`, which shipped documenting an interface nobody built --
+        # scored 0.88-0.90; the other six scored 0.05-0.15.
+        warn = DEFAULT_THRESHOLDS['forward_warn']
+        self.assertGreater(warn, 0.15 + 0.07, 'must clear the worst true negative by more than noise')
+        self.assertLess(warn, 0.88 - 0.07, 'must stay clear of the one known positive by the same')
+
+    def test_forward_and_coupling_are_separate_keys(self):
+        # Different rubrics, different questions, measured separately: same-wave
+        # probabilities live at 0.09-0.38, forward ones at 0.05-0.90. Sharing a number
+        # is how coupling itself ended up never firing.
+        self.assertNotEqual(DEFAULT_THRESHOLDS['forward_warn'],
+                            DEFAULT_THRESHOLDS['coupling_warn'])

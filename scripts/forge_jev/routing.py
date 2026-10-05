@@ -171,8 +171,32 @@ def _memory(repo: Path) -> str:
         return ''
 
 
+# The other tasks in the plan, as sent to the model. Capped because a large plan would
+# otherwise dominate the payload, and truncated per field for the same reason: the
+# question these answer is "does this task need one of those to land first", which needs
+# their identity and file scope, not their full text.
+MAX_SIBLINGS = 40
+SIBLING_TITLE_CHARS = 120
+
+
+def _siblings(siblings, task_id: str) -> list[dict]:
+    """Compact view of the rest of the plan, excluding the task being scored."""
+    out = []
+    for sibling in siblings or []:
+        if sibling.get('id') == task_id:
+            continue
+        out.append(dict(id=sibling.get('id', ''),
+                        title=str(sibling.get('title', ''))[:SIBLING_TITLE_CHARS],
+                        files=sibling.get('files', ''),
+                        deps=sibling.get('deps', '')))
+        if len(out) >= MAX_SIBLINGS:
+            break
+    return out
+
+
 def score_task(repo, *, goal: str, task_id: str, title: str, files: str,
                approach: str = '', prompt: str = '', declared_difficulty: str = '',
+               deps: str = '', siblings: list[dict] | None = None,
                run_dir=None, config: dict | None = None) -> dict | None:
     """One request per task. All five rubrics evaluate in parallel server-side.
 
@@ -192,8 +216,15 @@ def score_task(repo, *, goal: str, task_id: str, title: str, files: str,
     # spec with a declared output shape and named edge cases scored 0.23 and tripped its
     # own warning. The gate could not have done anything else; it was never shown the
     # requirements it was asked about.
-    state = dict(goal=goal, task=dict(id=task_id, title=title, files=files),
-                 prompt=prompt, approach=approach,
+    # The rest of the plan. independently_verifiable asks whether confirming this task
+    # needs "work declared in a different task" -- and until now no different task was
+    # ever in state, so the model could only guess whether such a task existed. That is
+    # why its two classes overlapped (0.34-0.56 unverifiable against 0.43-0.90
+    # verifiable) and no threshold divided them: same failure as prompt.md, a rubric
+    # scored against evidence it was never shown.
+    plan_tasks = _siblings(siblings, task_id)
+    state = dict(goal=goal, task=dict(id=task_id, title=title, files=files, deps=deps),
+                 prompt=prompt, approach=approach, plan_tasks=plan_tasks,
                  file_excerpts=_excerpt(repo_path, files), memory=_memory(repo_path))
     # The planner's own rating is deliberately NOT sent. Jev is here to be a second,
     # independent opinion on the same evidence; showing it the answer first would buy an

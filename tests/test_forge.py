@@ -52,7 +52,14 @@ class ForgeTests(unittest.TestCase):
   for name in 'bash python3 git tar awk sed grep tr sort wc head tail cat mkdir rm mv cp touch date basename dirname mktemp xargs tee sleep pkill cmp'.split():
    binary=shutil.which(name)
    if binary: (self.bin/name).symlink_to(binary)
-  self.env=dict(os.environ, PATH=str(self.bin), FORGE_MEMORY='off', FORGE_TIMEOUT='0', CALLS=str(self.root/'calls'), GIT_AUTHOR_NAME='test', GIT_AUTHOR_EMAIL='test@test', GIT_COMMITTER_NAME='test', GIT_COMMITTER_EMAIL='test@test')
+  # forge-ripwire.py falls back to ~/.local/bin/ripwire when the binary isn't on PATH
+  # (that's where forge-install-ripwire.sh puts it). This env only sandboxes PATH, not
+  # HOME, so on any machine that has actually run the installer, dispatch quietly shells
+  # out to the real ripwire and appends advisory context to dwarf.prompt/qa.prompt.
+  # Tests that assert exact prompt bytes then fail depending on what's installed on the
+  # box running them. Ripwire has its own dedicated coverage in test_ripwire.py; here it
+  # must stay off so a real local install can't leak into unrelated assertions.
+  self.env=dict(os.environ, PATH=str(self.bin), FORGE_MEMORY='off', FORGE_TIMEOUT='0', FORGE_RIPWIRE='off', CALLS=str(self.root/'calls'), GIT_AUTHOR_NAME='test', GIT_AUTHOR_EMAIL='test@test', GIT_COMMITTER_NAME='test', GIT_COMMITTER_EMAIL='test@test')
   self.git('init','-q'); (self.repo/'base.txt').write_text('base\n'); self.git('add','.'); self.git('commit','-qm','initial')
  def git(self,*args):
   return subprocess.check_output(['git',*args],cwd=self.repo,env=self.env)
@@ -111,6 +118,9 @@ class ForgeTests(unittest.TestCase):
  def test_verdict_requires_final_standalone_line(self):
   self.env['VERDICT']='PASS\nprose'; r=self.solo(); self.assertEqual(r.returncode,0,r.stdout)
   self.assertEqual((self.root/'solo/verdict').read_text().strip(),'UNKNOWN')
+ def test_verdict_accepts_prompt_gloss(self):
+  self.env['VERDICT']='PASS   \u2014 no confirmed correctness bug (style nits are not failures)'; r=self.solo(); self.assertEqual(r.returncode,0,r.stdout)
+  self.assertEqual((self.root/'solo/verdict').read_text().strip(),'PASS')
  def test_timeout(self):
   self.env['SLEEP']='1'; r=self.solo('--timeout','1'); self.assertEqual(r.returncode,7,r.stdout)
  def test_retry_rechecks_dependencies(self):

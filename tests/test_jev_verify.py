@@ -295,7 +295,9 @@ class DiscoverGatingTests(JevVerifyTestCase):
         with patch('forge_jev.verify.ask', side_effect=fake_ask):
             self.assertIsNone(verify.discover(self.repo, config=config))
 
-    def test_confidence_below_threshold_returns_none(self):
+    def test_confidence_is_the_fallback_when_the_response_omits_probabilities(self):
+        # The gate reads 1 - P(none) when the distribution is there. When it is not, a
+        # missing field must not be read as certainty, so the old confidence gate stands.
         config = self._enabled_config()
         cand = verify.candidates(self.repo)
         picked = cand[0]['command']
@@ -665,3 +667,82 @@ class EvidenceExcerptTests(unittest.TestCase):
             dict(command='bash big.sh', evidence=str(path)))
         self.assertLessEqual(len(excerpt), verify.EVIDENCE_CHARS)
 
+
+
+class TiedCommandsTests(JevVerifyTestCase):
+    """A split between two CORRECT commands is a tie, not doubt.
+
+    Choice confidence measures "which one", and `tests_act` was gating it. Measured live
+    on the jevscope repo three times running: `bash scripts/check.sh` and `make test`
+    both run its suite, the mass splits, confidence lands at 0.48-0.52 against a 0.70
+    gate -- and the repo reported UNVERIFIED while only 0.01-0.02 of the distribution
+    sat on `none`. Its 48 tests pass.
+    """
+
+    def setUp(self):
+        super().setUp()
+        (self.repo / 'pytest.ini').write_text('[pytest]\n')
+        (self.repo / 'Makefile').write_text('test:\n\tpytest\ncheck:\n\tflake8\n')
+
+    def _ask(self, *, picked, confidence, distribution):
+        def fake_ask(state, questions, **kwargs):
+            answer = dict(type='choice', choice=picked, confidence=confidence)
+            if distribution is not None:
+                answer['probabilities'] = distribution
+            answers = {'choice': answer}
+            for qid, q in questions.items():
+                if qid.startswith('runs_'):
+                    answers[qid] = dict(type='noul', noul=0.9)
+                elif qid.startswith('runtime_'):
+                    answers[qid] = _score_answer(q['criteria'], 1)
+            return dict(answers=answers, usage=None, model='jev-latest', latency_s=0.0,
+                        site=kwargs['site'])
+        return fake_ask
+
+    def test_a_split_between_correct_commands_is_accepted(self):
+        config = self._enabled_config()
+        cand = verify.candidates(self.repo)
+        picked, other = cand[0]['command'], cand[1]['command']
+        fake = self._ask(picked=picked, confidence=0.48,
+                         distribution={picked: 0.55, other: 0.43, 'none': 0.02})
+        with patch('forge_jev.verify.ask', side_effect=fake):
+            found = verify.discover(self.repo, config=config)
+        self.assertIsNotNone(found)
+        self.assertEqual(found['command'], picked)
+        # Both quantities are reported, because they answer different questions.
+        self.assertEqual(found['confidence'], 0.48)
+        self.assertAlmostEqual(found['verifiable'], 0.98)
+
+    def test_mass_on_none_still_declines_however_confident_the_winner(self):
+        # This is the case tests_act exists for: real doubt that the repo is verifiable
+        # at all. A confident pick among bad options must not rescue it.
+        config = self._enabled_config()
+        cand = verify.candidates(self.repo)
+        picked = cand[0]['command']
+        fake = self._ask(picked=picked, confidence=0.95,
+                         distribution={picked: 0.35, 'none': 0.65})
+        with patch('forge_jev.verify.ask', side_effect=fake):
+            self.assertIsNone(verify.discover(self.repo, config=config))
+
+    def test_the_gate_reads_its_own_threshold(self):
+        config = self._enabled_config()
+        config['thresholds']['tests_act'] = 0.99
+        cand = verify.candidates(self.repo)
+        picked, other = cand[0]['command'], cand[1]['command']
+        fake = self._ask(picked=picked, confidence=0.48,
+                         distribution={picked: 0.55, other: 0.43, 'none': 0.02})
+        with patch('forge_jev.verify.ask', side_effect=fake):
+            # 1 - 0.02 = 0.98, just under a 0.99 bar.
+            self.assertIsNone(verify.discover(self.repo, config=config))
+
+    def test_a_malformed_distribution_falls_back_rather_than_crashing(self):
+        config = self._enabled_config()
+        cand = verify.candidates(self.repo)
+        picked = cand[0]['command']
+        fake = self._ask(picked=picked, confidence=0.95,
+                         distribution={picked: 'not-a-number', 'none': None})
+        with patch('forge_jev.verify.ask', side_effect=fake):
+            found = verify.discover(self.repo, config=config)
+        # Nothing parseable -> treated as absent -> confidence gate, which 0.95 clears.
+        self.assertIsNotNone(found)
+        self.assertIsNone(found['verifiable'])

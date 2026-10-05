@@ -480,8 +480,13 @@ def cmd_score_plan(args) -> int:
             continue
         rows.append(parts)
 
+    # The whole plan, once, for every task's state. independently_verifiable asks
+    # whether confirming a task needs another task in the plan to land first; it had
+    # never been shown another task, so it was guessing whether one existed.
+    siblings = [dict(id=p[0], deps=p[1], files=p[3], title=p[6]) for p in rows]
+
     for parts in rows:
-        task_id, _deps, declared, files, _dwarf, _qa, title = parts[:7]
+        task_id, task_deps, declared, files, _dwarf, _qa, title = parts[:7]
         approach = ''
         approach_file = plan / 'tasks' / task_id / 'approach.md'
         if approach_file.is_file():
@@ -495,7 +500,8 @@ def cmd_score_plan(args) -> int:
             prompt_text = prompt_file.read_text(errors='replace')[:PROMPT_CHARS]
         judgment = routing.score_task(repo, goal=goal, task_id=task_id, title=title,
                                       files=files, approach=approach, prompt=prompt_text,
-                                      declared_difficulty=declared, run_dir=str(plan),
+                                      declared_difficulty=declared, deps=task_deps,
+                                      siblings=siblings, run_dir=str(plan),
                                       config=config)
         if judgment is None:
             continue
@@ -625,10 +631,19 @@ def cmd_coupling(args) -> int:
     tasks = list(coupling.parse_tasks(plan).values())
     waves = coupling.parse_waves(plan)
     found = coupling.coupled_pairs(repo, tasks=tasks, waves=waves, run_dir=str(plan), config=config)
-    if not found:
+    # The other half of the same question. `pairs()` only looks inside a wave, so "task A
+    # is written against an interface task B builds later" was structurally out of reach
+    # -- and that is what shipped: jevscope's `readme` ran in wave 1 documenting the
+    # wave-2 CLI and passed its own review, because the thing it was wrong about did not
+    # exist yet. Asked here rather than in a separate command so a plan gets both
+    # warnings or neither.
+    forward = coupling.forward_dependencies(repo, tasks=tasks, waves=waves,
+                                            run_dir=str(plan), config=config)
+    if not found and not forward:
         return 3
 
-    payload = [dict(a=a, b=b, probability=p) for a, b, p in found]
+    payload = ([dict(a=a, b=b, probability=p, kind='same-wave') for a, b, p in (found or [])]
+               + [dict(a=a, b=b, probability=p, kind='forward') for a, b, p in (forward or [])])
     try:
         (plan / 'jev-coupling.json').write_text(json.dumps(payload, indent=2, sort_keys=True) + '\n')
     except OSError:
@@ -637,8 +652,10 @@ def cmd_coupling(args) -> int:
     if args.json:
         print(json.dumps(payload, indent=2, sort_keys=True))
     else:
-        for a, b, p in found:
-            print(f'{a}\t{b}\t{p}')
+        # `kind` is the LAST field: forge-parallel.sh reads these with a three-variable
+        # `read`, so a new leading column would silently land in the probability.
+        for row in payload:
+            print(f"{row['a']}\t{row['b']}\t{row['probability']}\t{row['kind']}")
     return 0
 
 
