@@ -29,6 +29,8 @@
 #
 # Exit codes: 0 ok | 2 usage | 3 precondition | 4 a dispatch failed
 #             5 the dwarf produced no changes | 7 a dispatch timed out
+#             8 a dispatch hit an infrastructure failure (quota, auth, rate limit, network,
+#               empty output): nothing about the work was judged, fix the cause and re-run
 set -uo pipefail
 
 SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -37,6 +39,10 @@ MEMORY="$SKILL_DIR/scripts/forge-memory.sh"
 source "$SKILL_DIR/scripts/forge-artifact.sh"
 source "$SKILL_DIR/scripts/forge-metrics.sh"
 source "$SKILL_DIR/scripts/forge-fractal-options.sh"
+source "$SKILL_DIR/scripts/forge-lib-task.sh"
+JEV_OPTS=0
+[ -f "$SKILL_DIR/scripts/forge-jev-options.sh" ] \
+  && source "$SKILL_DIR/scripts/forge-jev-options.sh" 2>/dev/null && JEV_OPTS=1
 ORIGINAL_ARGS=("$@")
 
 die()  { printf 'forge: %s\n' "$1" >&2; exit "${2:-2}"; }
@@ -73,9 +79,21 @@ while [ $# -gt 0 ]; do
     --no-memory)  export FORGE_MEMORY=off; shift ;;
     --timeout)    TIMEOUT="${2:?--timeout needs seconds}"; shift 2 ;;
     --dry-run)    DRY=1; shift ;;
-    *) die "unknown option '$1'" ;;
+    *)
+      # `case` is not a loop, so `continue` here belongs to the enclosing while.
+      if [ "$JEV_OPTS" = 1 ]; then
+        forge_jev_flag "$1"; jev_rc=$?
+        case "$jev_rc" in
+          0) shift "$JEV_SHIFT"; continue ;;
+          2) exit 2 ;;
+        esac
+      fi
+      die "unknown option '$1'" ;;
   esac
 done
+# A solo run has one run dir and no plan, so the selection is frozen there: an
+# explicit retry of the same run dir must not change its mind about Jev.
+[ "$JEV_OPTS" = 1 ] && forge_jev_export
 
 case "$OUTPUT" in summary|full) ;; *) die "--output must be summary or full" ;; esac
 
@@ -95,6 +113,9 @@ case "$(cd "$RUN" && pwd)/" in
 esac
 
 RUN="$(cd "$RUN" && pwd)"
+# Freeze the selection now that the run dir is real and absolute. A retry of this
+# same run dir restores it rather than re-reading whatever flags are passed then.
+[ "$JEV_OPTS" = 1 ] && { forge_jev_restore "$RUN" || true; forge_jev_record "$RUN"; }
 REPO="$(cd "$REPO" && pwd)"
 if [ "$DRY" != 1 ] && [ "${FORGE_SOLO_LOCK:-}" != "$RUN" ]; then
   exec python3 "$SKILL_DIR/scripts/forge-fractal.py" _lock "$RUN" "$0" "${ORIGINAL_ARGS[@]}"
@@ -121,7 +142,7 @@ fi
 [ "$DRY" = 1 ] || forge_metric_begin "$RUN" solo
 
 # --- dwarf --------------------------------------------------------------------
-/bin/bash "$MEMORY" inject "$REPO" dwarf > "$RUN/dwarf.memory"
+/bin/bash "$MEMORY" inject "$REPO" dwarf --run-dir "$RUN" > "$RUN/dwarf.memory"
 python3 "$SKILL_DIR/scripts/forge-prompt.py" --requirements "$RUN/prompt.md" --approach "$APPROACH" --memory "$RUN/dwarf.memory" > "$RUN/context.md" || exit 3
 {
   cat "$RUN/context.md"
@@ -134,6 +155,7 @@ You are running headless: nobody is at the other end and no one can answer a
 question. If something is ambiguous, pick the most reasonable interpretation,
 proceed, and state the assumption in your final message.
 EOF
+  echo; python3 "$SKILL_DIR/scripts/forge-contract.py" dwarf
   echo; /bin/bash "$MEMORY" note dwarf
 } > "$RUN/dwarf.input"
 
@@ -162,14 +184,18 @@ git -C "$REPO" diff --binary HEAD "$START" -- . ':(exclude).forge' > "$RUN/exist
 rm -f "$RUN/verdict"
 forge_metric_phase dispatch
 note "dwarf $DWARF in $REPO"
+guard_before_dwarf "$REPO" "$RUN"
 /bin/bash "$DISPATCH" dwarf "$DWARF" --repo "$REPO" --run-dir "$RUN" \
   --ripwire-query-file "$RUN/prompt.md" --prompt-file "$RUN/dwarf.input" $YD $TFLAG --output "$OUTPUT"
 rc=$?
 dur_dwarf="$(sed -n 's/^duration_s=//p' "$RUN/dwarf.resolved" 2>/dev/null | tail -1)"
 /bin/bash "$MEMORY" record "$REPO" --last "$RUN/dwarf.last" --role dwarf \
-  --run-id "$RUN_ID" --model "$DWARF" --duration "${dur_dwarf:--}" >/dev/null 2>&1
+  --run-id "$RUN_ID" --model "$DWARF" --run-dir "$RUN" \
+  --duration "${dur_dwarf:--}" >/dev/null 2>&1
 [ "$rc" = 7 ] && die "the dwarf exceeded its timeout — see $RUN/dwarf.log" 7
+[ "$rc" = 8 ] && die "the dwarf hit an infrastructure failure ($(sed -n 's/^class=//p' "$RUN/dwarf.infra" 2>/dev/null | head -1)) — nothing was reviewed; fix the cause and run again (see $RUN/dwarf.infra)" 8
 [ "$rc" -ne 0 ] && die "the dwarf dispatch failed — see $RUN/dwarf.log" 4
+guard_after_dwarf "$REPO" "$RUN" solo
 
 forge_metric_phase snapshot
 # --- the real diff ------------------------------------------------------------
@@ -179,6 +205,8 @@ echo "$END" > "$RUN/reviewed.tree"
 git -C "$REPO" diff --binary "$START" "$END" -- . ':(exclude).forge' > "$RUN/changes.diff" || die "cannot create diff" 3
 
 if [ ! -s "$RUN/changes.diff" ]; then
+  # An exit-0 harness with an empty final message and no changes never really ran.
+  grep -qx 'class=empty' "$RUN/dwarf.infra" 2>/dev/null && die "the dwarf returned nothing (empty output, no changes) — an infrastructure failure, not a refusal; fix the cause and run again (see $RUN/dwarf.infra)" 8
   note "the dwarf produced no changes at all — see $RUN/dwarf.last for what it said"
   echo NOCHANGES > "$RUN/verdict"
   exit 5
@@ -193,23 +221,12 @@ printf '%s\n' "$SOURCE_FP" > "$RUN/source.fingerprint"
 printf '%s\n' "$REVIEW_FP" > "$RUN/review.fingerprint"
 forge_metric_phase preparation
 # --- qa -----------------------------------------------------------------------
-/bin/bash "$MEMORY" inject "$REPO" qa > "$RUN/qa.memory"
+/bin/bash "$MEMORY" inject "$REPO" qa --run-dir "$RUN" > "$RUN/qa.memory"
 {
   python3 "$SKILL_DIR/scripts/forge-prompt.py" --requirements "$RUN/prompt.md" --approach "$APPROACH" --goal "$RUN/goal.txt" --memory "$RUN/dwarf.memory" --memory "$RUN/qa.memory"
-  cat <<'EOF'
-Review the diff below for correctness bugs: logic errors, broken edge cases, wrong
-behaviour versus what was asked. Also say if it solved a different problem than the
-one stated, or changed files outside the goal's scope.
-
-Report findings only — do not edit any file. For each finding give the file and
-line, what breaks, and a concrete input that triggers it. Mark each CONFIRMED if
-you traced it in the code, or PLAUSIBLE if you could not fully verify it. If the
-diff is correct, say so plainly rather than inventing something to report.
-
-End your reply with exactly one line:
-  FORGE_VERDICT: PASS   — no confirmed correctness bug (style nits are not failures)
-  FORGE_VERDICT: FAIL   — at least one CONFIRMED correctness bug
-EOF
+  python3 "$SKILL_DIR/scripts/forge-contract.py" qa --part head --kind solo
+  echo
+  python3 "$SKILL_DIR/scripts/forge-contract.py" qa --part tail --kind solo
   echo
   echo '```diff'; cat "$RUN/changes.diff"; echo '```'
   echo; /bin/bash "$MEMORY" note qa
@@ -230,9 +247,10 @@ if [ "$(forge_fingerprint "$REPO")" != "$SOURCE_FP" ] || [ "$(forge_fingerprint 
 fi
 dur_qa="$(sed -n 's/^duration_s=//p' "$RUN/qa.resolved" 2>/dev/null | tail -1)"
 /bin/bash "$MEMORY" record "$REPO" --last "$RUN/qa.last" --role qa \
-  --run-id "$RUN_ID" --model "$QA" --verdict "${verdict:-UNKNOWN}" \
+  --run-id "$RUN_ID" --model "$QA" --verdict "${verdict:-UNKNOWN}" --run-dir "$RUN" \
   --duration "${dur_qa:--}" >/dev/null 2>&1
 [ "$rc" = 7 ] && die "qa exceeded its timeout — the dwarf's changes are still in the tree; see $RUN/qa.log" 7
+[ "$rc" = 8 ] && die "qa hit an infrastructure failure ($(sed -n 's/^class=//p' "$RUN/qa.infra" 2>/dev/null | head -1)) — the dwarf's changes are still in the tree and unreviewed; fix the cause and review again (see $RUN/qa.infra)" 8
 [ "$rc" -ne 0 ] && die "the qa dispatch failed — the dwarf's changes are still in the tree; see $RUN/qa.log" 4
 
 # --native-review is codex's own reviewer, which refuses a custom prompt alongside
@@ -245,4 +263,12 @@ echo "qa:     $QA   ${dur_qa:-?}s   verdict: ${verdict:-UNKNOWN}"
 echo "diff:   $RUN/changes.diff"
 echo "read:   $RUN/dwarf.last and $RUN/qa.last"
 echo
-echo "The changes are UNCOMMITTED in $REPO. Nothing was committed, pushed or reset."
+if grep -q '^self-commit' "$RUN/guard.txt" 2>/dev/null; then
+  echo "The dwarf COMMITTED in $REPO although it was told not to. The review above covers its"
+  echo "changes either way. To turn its commit(s) back into uncommitted changes:"
+  echo "  git -C $REPO reset --soft $(cat "$RUN/dwarf.head.before" 2>/dev/null)"
+  echo "Forge itself committed, pushed and reset nothing."
+else
+  echo "The changes are UNCOMMITTED in $REPO. Nothing was committed, pushed or reset."
+fi
+[ ! -s "$RUN/guard.txt" ] || { echo; echo "implementer guard notes:"; sed 's/^/  /' "$RUN/guard.txt"; }

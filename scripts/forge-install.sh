@@ -112,4 +112,17 @@ elif [ -t 0 ]; then
 fi
 say "Fractal CLI: $SKILL_DIR/forge fractal --help (repository-local; existing forge commands are preserved)"
 
+# Optional advisory judgments; sends task/diff/test/memory excerpts to an external
+# API. Off unless configured and enabled. Failure never prevents Forge setup.
+if [ "$DRY" = 1 ]; then
+  say "  would: offer optional Jev setup (sends data to an external API; declined by default)"
+elif [ -t 0 ]; then
+  printf 'Set up optional Jev advisory judgments? Sends task/diff excerpts to an external API. [y/N] '
+  read -r jev_answer
+  if [ "$jev_answer" = y ] || [ "$jev_answer" = Y ]; then
+    python3 "$SKILL_DIR/scripts/forge-jev.py" setup || true
+  fi
+fi
+say "Jev CLI: $SKILL_DIR/forge jev --help (optional; disabled until configured)"
+
 exit "$RESULT"

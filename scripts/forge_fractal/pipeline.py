@@ -33,7 +33,7 @@ def resume_pipeline(run: Path) -> bool:
         for task in (run / 'tasks').iterdir():
             request = read_json(task / 'request.json')
             status = Path(request['output']) / 'status'
-            if status.exists() and status.read_text().strip() in ('RUNNING', 'INTERRUPTED', 'ERROR', 'TIMEOUT'):
+            if status.exists() and status.read_text().strip() in ('RUNNING', 'INTERRUPTED', 'ERROR', 'TIMEOUT', 'INFRA'):
                 status.write_text('PENDING\n')
     script = run / 'resume-pipeline.sh'
     script.write_text('#!/bin/sh\ncd ' + shlex.quote(config['pipeline_cwd']) + '\nexec ' +

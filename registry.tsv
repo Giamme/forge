@@ -10,6 +10,21 @@
 #                       models offer low and high but not medium)
 #              none     this model takes no effort flag at all; passing one errors
 #              -        harness has no validated ladder; forwarded verbatim
+#   timeout  OPTIONAL fifth column: the watchdog limit in seconds for this pairing.
+#            Leave it off (existing rows do) or write `-` for "no opinion", which falls
+#            through to the built-in 2700. `0` disables the watchdog for this pairing.
+#            Precedence, highest first: --timeout, the FORGE_TIMEOUT environment
+#            variable (both used as given, and `0` there still disables), then this
+#            column, then 2700. Only this column and the built-in value are scaled by the
+#            effort that finally runs (after clamping): up to high x1, xhigh x4/3,
+#            max/ultra/ultracode x2. The result and its source are recorded as
+#            `timeout=` and `timeout_source=` in <role>.resolved.
+#            Commented examples (not enabled; write the real number for your model):
+#              # sol	codex	gpt-5.6-sol	<=ultra	1800
+#              # opus	claude	opus	<=max	-
+#
+# FORGE_REGISTRY=<file> points dispatch at a different registry (useful for trying a
+# row without editing this one); the capability cache keys on the file actually used.
 #
 # An effort outside the accepted set is clamped to the nearest lower one that is
 # accepted (and reported), rather than failing a dispatch the user already paid
@@ -23,7 +38,7 @@
 # model id, but only when you name the harness explicitly (forge cannot guess a
 # default harness for a model it has never heard of).
 #
-# alias	harness	model	effort
+# alias	harness	model	effort	[timeout]
 sol	codex	gpt-5.6-sol	<=ultra
 sol	openclaude	gpt-5.6-sol	<=max
 sol	opencode	github-copilot/gpt-5.6-sol	-

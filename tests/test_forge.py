@@ -19,14 +19,31 @@ if '--help' in a:
  print('-p --model --add-dir --effort --permission-mode --allowedTools --disallowed-tools --dangerously-skip-permissions -m -C -o -c -s --skip-git-repo-check --approve-for-me --base --uncommitted --dangerously-bypass-approvals-and-sandbox --dir --variant --auto --agent --print --print-timeout --mode --json --output-format'); sys.exit()
 p = sys.stdin.read() if '-p' in a or a[-1] == '-' else a[-1]
 qa = '--disallowed-tools' in a or '-s' in a or 'review' in a
-name = 'a.txt' if 'TASK_a' in p else ('b.txt' if 'TASK_b' in p else ('c.txt' if 'TASK_c' in p else 'change.txt'))
+name = 'a.txt' if 'TASK_a' in p else ('b.txt' if 'TASK_b' in p else ('c.txt' if 'TASK_c' in p else ('d.txt' if 'TASK_d' in p else 'change.txt')))
 with open(os.environ['CALLS'], 'a') as f: f.write(('qa' if qa else 'dwarf')+'\\n')
 if os.environ.get('EVENTS'):
  with open(os.environ['EVENTS'], 'a') as f: f.write(name+(' qa' if qa else ' dwarf')+' '+str(time.time())+'\\n')
+# SCENARIO is a JSON file keyed '<task>.<role>.<call number>' (task = file stem, so a.txt -> a);
+# '*' matches any task or any call. Per-key counters live in their own files because
+# decomposed tasks dispatch concurrently and must never share one. Unset, nothing here runs.
+sc = {}
+if os.environ.get('SCENARIO'):
+ import json
+ sp = pathlib.Path(os.environ['SCENARIO']); role = 'qa' if qa else 'dwarf'; task = name.rsplit('.', 1)[0]
+ cp = pathlib.Path(str(sp) + '.' + task + '.' + role); n = int(cp.read_text() if cp.exists() else '0') + 1; cp.write_text(str(n))
+ table = json.loads(sp.read_text()) if sp.exists() else {}
+ for k in (task+'.'+role+'.'+str(n), task+'.'+role+'.*', '*.'+role+'.'+str(n), '*.'+role+'.*'):
+  if k in table: sc = table[k]; break
+if sc.get('sleep'): time.sleep(sc['sleep'])
 if name == 'b.txt' and not qa and os.environ.get('SLOW_B'): time.sleep(4)
 if not qa:
  if os.environ.get('SLEEP'): time.sleep(10)
- pathlib.Path(name).write_text(os.environ.get('CONTENT','implemented')+'\\n')
+ if not sc.get('no_edit'): pathlib.Path(name).write_text(sc.get('content', os.environ.get('CONTENT','implemented'))+'\\n')
+ if sc.get('background'):
+  import subprocess; q = subprocess.Popen(['sleep','60'], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+  pathlib.Path(os.environ['SCENARIO']+'.bgpid').write_text(str(q.pid))
+ if sc.get('self_commit'):
+  import subprocess; subprocess.run(['git','add','-A'], check=True); subprocess.run(['git','commit','-qm','implementer self-commit'], check=True)
  if os.environ.get('STAGED'):
   import subprocess; subprocess.run(['git','add',name], check=True)
 else:
@@ -34,12 +51,19 @@ else:
  if os.environ.get('SOURCE'): pathlib.Path(os.environ['SOURCE'],'change.txt').write_text('source tampered\\n')
 verdict = 'FAIL' if name == 'a.txt' and os.environ.get('FAIL_A') else os.environ.get('VERDICT','PASS')
 result = ('FORGE_VERDICT: '+verdict) if qa else 'implemented'
+if qa and (sc.get('findings') is not None or sc.get('verdict') is not None):
+ v = sc.get('verdict', verdict); result = (sc['findings']+'\\n' if sc.get('findings') else '') + ('' if v == 'none' else 'FORGE_VERDICT: '+v)
+elif not qa and sc.get('message') is not None: result = sc['message']
+if sc.get('empty'): result = ''
+if sc.get('stderr'): sys.stderr.write(sc['stderr']+'\\n')
+if sc.get('stdout') is not None: print(sc['stdout']); sys.exit(sc.get('rc', 0))
 if '-o' in a:
  pathlib.Path(a[a.index('-o')+1]).write_text(result)
  import json; print(json.dumps({'type':'turn.completed','usage':{'input_tokens':20,'cached_input_tokens':5,'output_tokens':3}}))
 elif '--output-format' in a:
- import json; print(json.dumps({'type':'result', 'result':result, 'usage':{'input_tokens':10,'cache_read_input_tokens':2,'cache_creation_input_tokens':3,'output_tokens':4}}))
+ import json; print(json.dumps({'type':'result', 'is_error':bool(sc.get('is_error')), 'result':result, 'usage':{'input_tokens':10,'cache_read_input_tokens':2,'cache_creation_input_tokens':3,'output_tokens':4}}))
 else: print(result)
+sys.exit(sc.get('rc', 0))
 '''
 
 class ForgeTests(unittest.TestCase):
@@ -52,10 +76,22 @@ class ForgeTests(unittest.TestCase):
   for name in 'bash python3 git tar awk sed grep tr sort wc head tail cat mkdir rm mv cp touch date basename dirname mktemp xargs tee sleep pkill cmp'.split():
    binary=shutil.which(name)
    if binary: (self.bin/name).symlink_to(binary)
-  self.env=dict(os.environ, PATH=str(self.bin), FORGE_MEMORY='off', FORGE_TIMEOUT='0', CALLS=str(self.root/'calls'), GIT_AUTHOR_NAME='test', GIT_AUTHOR_EMAIL='test@test', GIT_COMMITTER_NAME='test', GIT_COMMITTER_EMAIL='test@test')
+  # forge-ripwire.py falls back to ~/.local/bin/ripwire when the binary isn't on PATH
+  # (that's where forge-install-ripwire.sh puts it). This env only sandboxes PATH, not
+  # HOME, so on any machine that has actually run the installer, dispatch quietly shells
+  # out to the real ripwire and appends advisory context to dwarf.prompt/qa.prompt.
+  # Tests that assert exact prompt bytes then fail depending on what's installed on the
+  # box running them. Ripwire has its own dedicated coverage in test_ripwire.py; here it
+  # must stay off so a real local install can't leak into unrelated assertions.
+  self.env=dict(os.environ, PATH=str(self.bin), FORGE_MEMORY='off', FORGE_TIMEOUT='0', FORGE_RIPWIRE='off', CALLS=str(self.root/'calls'), GIT_AUTHOR_NAME='test', GIT_AUTHOR_EMAIL='test@test', GIT_COMMITTER_NAME='test', GIT_COMMITTER_EMAIL='test@test')
   self.git('init','-q'); (self.repo/'base.txt').write_text('base\n'); self.git('add','.'); self.git('commit','-qm','initial')
  def git(self,*args):
   return subprocess.check_output(['git',*args],cwd=self.repo,env=self.env)
+ def scenario(self,table):
+  # Per-call behaviour for the fake CLI; see the SCENARIO comment inside FAKE.
+  p=self.root/'scenario.json'; p.write_text(json.dumps(table)); self.env['SCENARIO']=str(p); return p
+ def calls(self):
+  f=self.root/'calls'; return f.read_text().split() if f.exists() else []
  def run_script(self,name,*args):
   return subprocess.run(['bash',str(ROOT/'scripts'/name),*map(str,args)],cwd=self.repo,env=self.env,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
  def solo(self,*args):
@@ -111,6 +147,9 @@ class ForgeTests(unittest.TestCase):
  def test_verdict_requires_final_standalone_line(self):
   self.env['VERDICT']='PASS\nprose'; r=self.solo(); self.assertEqual(r.returncode,0,r.stdout)
   self.assertEqual((self.root/'solo/verdict').read_text().strip(),'UNKNOWN')
+ def test_verdict_accepts_prompt_gloss(self):
+  self.env['VERDICT']='PASS   \u2014 no confirmed correctness bug (style nits are not failures)'; r=self.solo(); self.assertEqual(r.returncode,0,r.stdout)
+  self.assertEqual((self.root/'solo/verdict').read_text().strip(),'PASS')
  def test_timeout(self):
   self.env['SLEEP']='1'; r=self.solo('--timeout','1'); self.assertEqual(r.returncode,7,r.stdout)
  def test_retry_rechecks_dependencies(self):

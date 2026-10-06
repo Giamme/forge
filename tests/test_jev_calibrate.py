@@ -1,0 +1,501 @@
+"""Offline contracts for the Jev calibrate command: joining shadow-mode routing
+judgments to ledger outcomes, and -- most importantly -- refusing to emit a threshold
+below --min-sample.
+
+Pure file-format parsing with no network and no API key involved, so unlike
+test_jev.py/test_jev_backtest.py these tests do not need to scrub FORGE_JEV* env vars
+or point XDG_CONFIG_HOME anywhere; calibrate.py never touches config or the client.
+"""
+from __future__ import annotations
+
+import contextlib
+import io
+import json
+import os
+from pathlib import Path
+import sys
+import tempfile
+import unittest
+from unittest.mock import patch
+
+ROOT = Path(__file__).resolve().parents[1]
+
+sys.path.insert(0, str(ROOT / 'scripts'))
+from forge_jev import calibrate, cli  # noqa: E402
+
+
+def _write_tsv(path: Path, rows) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lines = ['\t'.join(str(x) for x in row) for row in rows]
+    path.write_text('\n'.join(lines) + ('\n' if lines else ''))
+
+
+def _write_jsonl(path: Path, entries) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lines = [json.dumps(e) if not isinstance(e, str) else e for e in entries]
+    path.write_text('\n'.join(lines) + ('\n' if lines else ''))
+
+
+def _score_line(ok=True, at=1.0) -> dict:
+    return dict(at=at, site='jev-score-plan', ok=ok, answers={'q0': dict(type='noul', noul=0.5)},
+               shadow=True, acting=False)
+
+
+def _routing_row(run_id, task, tier, confidence, composite=0.5):
+    return (run_id, task, tier, confidence, composite)
+
+
+def _ledger_qa_row(run_id, task, verdict, ts='1'):
+    return (ts, run_id, task, 'qa', 'model', verdict, 'cat', 'key', 'text', '-')
+
+
+def _ledger_dwarf_row(run_id, task, duration_s, ts='0'):
+    return (ts, run_id, task, 'dwarf', 'model', '-', 'cat', 'key', 'text', duration_s)
+
+
+class CalibrateTestCase(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.repo = Path(self.temp.name) / 'repo'
+        self.repo.mkdir()
+        self.run_dir = self.repo / '.forge' / 'runs' / 'r1'
+        self.run_dir.mkdir(parents=True)
+
+    def _seed_run(self, routing_rows, run_dir=None, score_ok=True):
+        run_dir = run_dir or self.run_dir
+        _write_jsonl(run_dir / 'jev.jsonl', [_score_line(ok=score_ok)])
+        _write_tsv(run_dir / 'jev-routing.tsv', routing_rows)
+
+    def _seed_ledger(self, rows):
+        _write_tsv(self.repo / '.forge' / 'ledger.tsv', rows)
+
+
+# 1. The refusal below min_sample is the headline behaviour ---------------------------
+
+class RefusalTests(CalibrateTestCase):
+    def test_tier_below_min_sample_emits_no_threshold(self):
+        rows = [_routing_row('r1', f't{i}', 'low', 0.6) for i in range(4)]
+        self._seed_run(rows)
+        self._seed_ledger([_ledger_qa_row('r1', f't{i}', 'PASS') for i in range(4)])
+
+        summary = calibrate.run(self.repo, min_sample=30)
+        tier = summary['tiers']['low']
+        self.assertEqual(tier['n'], 4)
+        self.assertIsNone(tier['threshold'])
+        self.assertEqual(tier['shortfall'], 26)
+        self.assertFalse(summary['any_meets_bar'])
+
+        text = calibrate.report(summary)
+        self.assertIn('low: 4 of 30 samples -- no threshold emitted (need 26 more)', text)
+
+    def test_exit_code_3_when_nothing_can_be_said(self):
+        rows = [_routing_row('r1', f't{i}', 'low', 0.6) for i in range(4)]
+        self._seed_run(rows)
+        self._seed_ledger([_ledger_qa_row('r1', f't{i}', 'PASS') for i in range(4)])
+
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = cli.main(['calibrate', '--repo', str(self.repo)])
+        self.assertEqual(rc, 3)
+
+
+# 2. A tier that meets the bar gets stats and a real (non-invented) threshold ---------
+
+class MeetsBarTests(CalibrateTestCase):
+    def test_tier_meeting_bar_emits_stats_and_swept_threshold(self):
+        rows = []
+        ledger = []
+        # 2 samples below the sweep floor (0.30 confidence), passing -- excluded from
+        # every subset in the sweep, but they still drag the tier's overall pass rate up.
+        for i in range(2):
+            task = f'below{i}'
+            rows.append(_routing_row('r1', task, 'high', 0.30))
+            ledger.append(_ledger_qa_row('r1', task, 'PASS'))
+        # 4 samples at exactly the sweep floor (0.50), failing.
+        for i in range(4):
+            task = f'floor{i}'
+            rows.append(_routing_row('r1', task, 'high', 0.50))
+            ledger.append(_ledger_qa_row('r1', task, 'FAIL'))
+        # 6 samples at 0.90, passing.
+        for i in range(6):
+            task = f'high{i}'
+            rows.append(_routing_row('r1', task, 'high', 0.90))
+            ledger.append(_ledger_qa_row('r1', task, 'PASS'))
+            ledger.append(_ledger_dwarf_row('r1', task, str(10.0 + i)))
+
+        self._seed_run(rows)
+        self._seed_ledger(ledger)
+
+        summary = calibrate.run(self.repo, min_sample=10)
+        tier = summary['tiers']['high']
+        self.assertEqual(tier['n'], 12)
+        self.assertAlmostEqual(tier['pass_rate'], 8 / 12)
+        # The six passing 0.90 samples score 1.0 observed, but a Wilson 95% lower bound
+        # on 6/6 is only 0.61 -- under the tier's own 0.667 -- so no threshold is
+        # suggested. Before that guard this returned 0.55 on the strength of six points,
+        # which is precisely the overfit the sweep is prone to.
+        self.assertIsNone(tier['threshold'])
+        self.assertIsNone(tier['shortfall'])
+        self.assertTrue(summary['any_meets_bar'])
+
+        text = calibrate.report(summary)
+        self.assertIn('high: n=12', text)
+        self.assertIn('below the floor', text)
+        self.assertIn('95% lower bound=0.610', text)
+
+
+# 3. Malformed jev.jsonl lines are skipped, never raise -------------------------------
+
+class MalformedJsonlTests(CalibrateTestCase):
+    def test_corrupt_jsonl_lines_are_skipped_and_counted(self):
+        _write_jsonl(self.run_dir / 'jev.jsonl',
+                    ['not json at all', json.dumps(['also', 'not', 'a', 'dict']), _score_line()])
+        _write_tsv(self.run_dir / 'jev-routing.tsv', [_routing_row('r1', 't0', 'low', 0.6)])
+        self._seed_ledger([_ledger_qa_row('r1', 't0', 'PASS')])
+
+        summary = calibrate.run(self.repo, min_sample=1)
+        self.assertEqual(summary['n_skipped_jsonl_lines'], 2)
+        self.assertEqual(summary['n_samples'], 1)  # the one good score line still gates the run dir in
+
+    def test_run_dir_with_no_successful_score_line_is_skipped(self):
+        _write_jsonl(self.run_dir / 'jev.jsonl', [_score_line(ok=False)])
+        _write_tsv(self.run_dir / 'jev-routing.tsv', [_routing_row('r1', 't0', 'low', 0.6)])
+        self._seed_ledger([_ledger_qa_row('r1', 't0', 'PASS')])
+
+        summary = calibrate.run(self.repo, min_sample=1)
+        self.assertEqual(summary['n_samples'], 0)
+        self.assertEqual(summary['n_run_dirs_used'], 0)
+
+
+# 4. Malformed / short ledger rows are skipped, never raise ---------------------------
+
+class MalformedLedgerTests(CalibrateTestCase):
+    def test_short_and_bad_role_rows_are_skipped_and_counted(self):
+        rows = [_routing_row('r1', 't0', 'low', 0.6)]
+        self._seed_run(rows)
+        good = _ledger_qa_row('r1', 't0', 'PASS')
+        short_row = ('1', 'r1', 't0', 'qa')  # only 4 of 10 fields
+        bad_role = ('1', 'r1', 't0', 'sysadmin', 'model', 'PASS', 'cat', 'key', 'text', '-')
+        _write_tsv(self.repo / '.forge' / 'ledger.tsv', [good])
+        # Append the malformed rows as raw lines (they aren't valid 10-tuples to render
+        # via _write_tsv's normal path, but the short one legitimately has few columns).
+        path = self.repo / '.forge' / 'ledger.tsv'
+        with path.open('a') as handle:
+            handle.write('\t'.join(short_row) + '\n')
+            handle.write('\t'.join(bad_role) + '\n')
+
+        summary = calibrate.run(self.repo, min_sample=1)
+        self.assertEqual(summary['n_skipped_ledger_rows'], 2)
+        self.assertEqual(summary['n_samples'], 1)
+        self.assertTrue(summary['tiers']['low']['pass_rate'] == 1.0)
+
+    def test_non_numeric_duration_does_not_crash_and_is_simply_not_counted(self):
+        rows = [_routing_row('r1', 't0', 'low', 0.6)]
+        self._seed_run(rows)
+        self._seed_ledger([_ledger_qa_row('r1', 't0', 'PASS'),
+                           _ledger_dwarf_row('r1', 't0', 'not-a-number')])
+        summary = calibrate.run(self.repo, min_sample=1)
+        self.assertEqual(summary['n_samples'], 1)
+        self.assertIsNone(summary['tiers']['low']['mean_duration_s'])
+
+
+# 5. Missing files are not an error ----------------------------------------------------
+
+class MissingFilesTests(CalibrateTestCase):
+    def test_missing_ledger_tsv_yields_zero_samples_not_a_crash(self):
+        rows = [_routing_row('r1', 't0', 'low', 0.6)]
+        self._seed_run(rows)
+        # no ledger.tsv written at all
+        summary = calibrate.run(self.repo, min_sample=1)
+        self.assertEqual(summary['n_samples'], 0)
+        for tier in calibrate.TIERS:
+            self.assertEqual(summary['tiers'][tier]['n'], 0)
+
+    def test_missing_jev_routing_tsv_skips_the_run_dir(self):
+        _write_jsonl(self.run_dir / 'jev.jsonl', [_score_line()])
+        # no jev-routing.tsv written
+        self._seed_ledger([_ledger_qa_row('r1', 't0', 'PASS')])
+        summary = calibrate.run(self.repo, min_sample=1)
+        self.assertEqual(summary['n_samples'], 0)
+        self.assertEqual(summary['n_run_dirs_used'], 0)
+
+
+# 6. qa verdict wins the collapse; dwarf supplies duration -----------------------------
+
+class CollapseRuleTests(CalibrateTestCase):
+    def test_qa_verdict_wins_over_absence_and_dwarf_supplies_duration(self):
+        rows = [_routing_row('r1', 't0', 'medium', 0.7)]
+        self._seed_run(rows)
+        self._seed_ledger([
+            _ledger_dwarf_row('r1', 't0', '5.0', ts='0'),
+            _ledger_dwarf_row('r1', 't0', '9.5', ts='1'),  # max of the dwarf durations
+            _ledger_qa_row('r1', 't0', 'PASS', ts='2'),
+        ])
+        summary = calibrate.run(self.repo, min_sample=1)
+        tier = summary['tiers']['medium']
+        self.assertEqual(tier['n'], 1)
+        self.assertEqual(tier['pass_rate'], 1.0)
+        self.assertAlmostEqual(tier['mean_duration_s'], 9.5)
+
+    def test_no_qa_row_collapses_to_unknown_which_is_not_a_pass(self):
+        rows = [_routing_row('r1', 't0', 'medium', 0.7)]
+        self._seed_run(rows)
+        self._seed_ledger([_ledger_dwarf_row('r1', 't0', '5.0')])
+        summary = calibrate.run(self.repo, min_sample=1)
+        tier = summary['tiers']['medium']
+        self.assertEqual(tier['n'], 1)
+        self.assertEqual(tier['pass_rate'], 0.0)
+
+
+# 7. --json shape -----------------------------------------------------------------------
+
+class JsonShapeTests(CalibrateTestCase):
+    def test_json_output_is_valid_and_matches_run_summary(self):
+        rows = [_routing_row('r1', 't0', 'low', 0.6)]
+        self._seed_run(rows)
+        self._seed_ledger([_ledger_qa_row('r1', 't0', 'PASS')])
+
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = cli.main(['calibrate', '--repo', str(self.repo), '--min-sample', '1', '--json'])
+        self.assertEqual(rc, 0)
+        data = json.loads(out.getvalue())
+        self.assertEqual(data['n_samples'], 1)
+        self.assertIn('tiers', data)
+        for tier in calibrate.TIERS:
+            self.assertIn(tier, data['tiers'])
+            self.assertIn('n', data['tiers'][tier])
+            self.assertIn('threshold', data['tiers'][tier])
+        self.assertTrue(data['any_meets_bar'])
+
+
+# 8. --repo not a directory is a usage error --------------------------------------------
+
+class UsageErrorTests(unittest.TestCase):
+    def test_missing_repo_dir_returns_2(self):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = cli.main(['calibrate', '--repo', '/no/such/path/at/all'])
+        self.assertEqual(rc, 2)
+
+
+class AbsoluteFloorTests(CalibrateTestCase):
+    """Acting is gated on an absolute pass rate, not on beating the tier's own average.
+
+    The relative version is unanswerable by construction: the confident subset is
+    contained in the tier, so when confidence clusters tightly it IS most of the tier and
+    cannot out-perform it by a detectable margin.
+    """
+
+    def _seed(self, n, passing, confidence=0.90, tier='low'):
+        rows, ledger = [], []
+        for i in range(n):
+            task = f't{i}'
+            rows.append(_routing_row('r1', task, tier, confidence))
+            ledger.append(_ledger_qa_row('r1', task, 'PASS' if i < passing else 'FAIL'))
+        self._seed_run(rows)
+        self._seed_ledger(ledger)
+        return calibrate.run(self.repo, min_sample=30)
+
+    def test_a_reliable_tier_meets_the_floor(self):
+        tier = self._seed(40, 40)['tiers']['low']
+        self.assertEqual(tier['n_confident'], 40)
+        self.assertTrue(tier['meets_floor'])
+        self.assertGreaterEqual(tier['confident_lower_bound'], 0.80)
+
+    def test_a_marginal_tier_is_refused(self):
+        # 80% observed is exactly the floor, so the lower bound sits well under it.
+        tier = self._seed(40, 32)['tiers']['low']
+        self.assertFalse(tier['meets_floor'])
+        self.assertLess(tier['confident_lower_bound'], 0.80)
+
+    def test_a_perfect_but_tiny_sample_is_still_refused(self):
+        # 100% of 5 is 1.0 observed and 0.57 bounded: the sample-size requirement falls
+        # out of the arithmetic rather than being a second magic constant.
+        tier = self._seed(5, 5)['tiers']['low']
+        self.assertFalse(tier['meets_floor'])
+        self.assertEqual(tier['shortfall'], 25)
+
+    def test_low_confidence_samples_do_not_count_toward_the_floor(self):
+        tier = self._seed(40, 40, confidence=0.50)['tiers']['low']
+        self.assertEqual(tier['n_confident'], 0)
+        self.assertFalse(tier['meets_floor'])
+
+    def test_write_follows_the_floor_not_the_swept_threshold(self):
+        summary = self._seed(40, 40)
+        written, reason = calibrate.write_calibration(self.repo, summary)
+        self.assertTrue(written, reason)
+        stored = json.loads((self.repo / '.forge'
+                             / 'jev-routing-calibration.json').read_text())
+        self.assertEqual(sorted(stored['tiers']), ['low'])
+        self.assertGreaterEqual(stored['tiers']['low']['lower_bound'], 0.80)
+
+    def test_write_refuses_a_marginal_tier(self):
+        written, reason = calibrate.write_calibration(self.repo, self._seed(40, 32))
+        self.assertFalse(written)
+        self.assertIn('floor', reason)
+
+
+class LedgerWidthTests(CalibrateTestCase):
+    def test_an_eleven_column_ledger_row_is_still_read(self):
+        """The ledger gained an `injectable` column; an exact-width check would have
+        skipped every row written after that and reported no data at all."""
+        rows = [_routing_row('r1', 't1', 'low', 0.90)]
+        self._seed_run(rows)
+        wide = _ledger_qa_row('r1', 't1', 'PASS') + ('1',)
+        self._seed_ledger([wide])
+        summary = calibrate.run(self.repo, min_sample=1)
+        self.assertEqual(summary['n_samples'], 1)
+        self.assertEqual(summary['n_skipped_ledger_rows'], 0)
+
+
+# 9. One execution is one sample, however many run dirs describe it ------------------
+
+class DuplicateRunDirTests(CalibrateTestCase):
+    """A run dir can be copied, re-scored, moved, or registered under a second path.
+    _run_dirs dedups by path string, so the same run reaches _collect twice; the ledger
+    holds one outcome per (run_id, task) because the task ran once. Counting that
+    outcome twice inflates the only bar standing between routing and the right to act.
+    Measured on the real jevscope run: 16 samples reported for an 8-task plan."""
+
+    def _two_dirs(self):
+        second = self.repo / '.forge' / 'runs' / 'r1-copy'
+        second.mkdir(parents=True)
+        return second
+
+    def test_the_same_run_and_task_in_two_run_dirs_counts_once(self):
+        rows = [_routing_row('r1', f't{i}', 'low', 0.6) for i in range(4)]
+        self._seed_run(rows)
+        self._seed_run(rows, run_dir=self._two_dirs())
+        self._seed_ledger([_ledger_qa_row('r1', f't{i}', 'PASS') for i in range(4)])
+
+        summary = calibrate.run(self.repo, min_sample=30)
+        self.assertEqual(summary['n_run_dirs_used'], 2)
+        self.assertEqual(summary['n_samples'], 4)
+        self.assertEqual(summary['tiers']['low']['n'], 4)
+        self.assertEqual(summary['n_duplicate_routing_rows'], 4)
+
+    def test_a_collapsed_duplicate_is_reported_not_silently_absorbed(self):
+        # Otherwise the shortfall reads as "not enough runs yet" when it is really
+        # "the runs you have describe the same tasks".
+        rows = [_routing_row('r1', 't0', 'low', 0.6)]
+        self._seed_run(rows)
+        self._seed_run(rows, run_dir=self._two_dirs())
+        self._seed_ledger([_ledger_qa_row('r1', 't0', 'PASS')])
+
+        text = calibrate.report(calibrate.run(self.repo, min_sample=30))
+        self.assertIn('collapsed 1 duplicate routing row(s)', text)
+
+    def test_run_dirs_that_disagree_on_tier_drop_the_key(self):
+        # The re-score that exposed this moved `stats` low->medium and `fixtures`
+        # high->medium. One pass would have been credited to two different tiers; the
+        # outcome tested whichever tier actually ran the task and nothing records which.
+        self._seed_run([_routing_row('r1', 't0', 'low', 0.6),
+                        _routing_row('r1', 't1', 'medium', 0.6)])
+        self._seed_run([_routing_row('r1', 't0', 'medium', 0.6),
+                        _routing_row('r1', 't1', 'medium', 0.6)],
+                       run_dir=self._two_dirs())
+        self._seed_ledger([_ledger_qa_row('r1', 't0', 'PASS'),
+                           _ledger_qa_row('r1', 't1', 'PASS')])
+
+        summary = calibrate.run(self.repo, min_sample=30)
+        self.assertEqual(summary['n_conflicting_routing_keys'], 1)
+        self.assertEqual(summary['tiers']['low']['n'], 0)   # t0 dropped, not kept as low
+        self.assertEqual(summary['tiers']['medium']['n'], 1)  # only t1, the agreeing key
+        self.assertIn('disagree on tier', calibrate.report(summary))
+
+    def test_distinct_runs_over_the_same_tasks_still_count_separately(self):
+        # The dedup key is (run_id, task), not task: two genuine runs over the same plan
+        # are two executions and two observations. Collapsing those would make the bar
+        # unreachable for anyone who runs the same plan twice.
+        self._seed_run([_routing_row('r1', 't0', 'low', 0.6)])
+        self._seed_run([_routing_row('r2', 't0', 'low', 0.6)], run_dir=self._two_dirs())
+        self._seed_ledger([_ledger_qa_row('r1', 't0', 'PASS'),
+                           _ledger_qa_row('r2', 't0', 'FAIL')])
+
+        summary = calibrate.run(self.repo, min_sample=30)
+        self.assertEqual(summary['n_samples'], 2)
+        self.assertEqual(summary['n_duplicate_routing_rows'], 0)
+        self.assertEqual(summary['tiers']['low']['pass_rate'], 0.5)
+
+
+class LedgerHeaderTests(CalibrateTestCase):
+    def test_the_commented_header_is_not_counted_as_malformed(self):
+        # Every clean ledger forge writes starts with `# ts  run_id  task ...`, so this
+        # reported "skipped 1 malformed row(s)" on healthy input -- which is how a
+        # diagnostic line teaches people to stop reading it.
+        _write_tsv(self.repo / '.forge' / 'ledger.tsv',
+                   [('# ts', 'run_id', 'task', 'role', 'model', 'verdict', 'category',
+                     'key', 'text', 'duration_s', 'injectable'),
+                    _ledger_qa_row('r1', 't0', 'PASS')])
+        self._seed_run([_routing_row('r1', 't0', 'low', 0.6)])
+
+        summary = calibrate.run(self.repo, min_sample=30)
+        self.assertEqual(summary['n_skipped_ledger_rows'], 0)
+        self.assertEqual(summary['n_samples'], 1)
+        self.assertNotIn('malformed', calibrate.report(summary))
+
+
+if __name__ == '__main__':
+    unittest.main()
+
+
+class RunRegistryTests(unittest.TestCase):
+    """calibrate --repo X found nothing, because forge keeps plan dirs outside the repo."""
+
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        self.home = Path(self.dir.name) / 'config'
+        self.repo = Path(self.dir.name) / 'repo'
+        self.repo.mkdir()
+        self._old = os.environ.get('XDG_CONFIG_HOME')
+        os.environ['XDG_CONFIG_HOME'] = str(self.home)
+        self.addCleanup(self._restore)
+
+    def _restore(self):
+        if self._old is None:
+            os.environ.pop('XDG_CONFIG_HOME', None)
+        else:
+            os.environ['XDG_CONFIG_HOME'] = self._old
+
+    def test_the_registry_is_never_written_inside_the_repo(self):
+        # The first version wrote <repo>/.forge/jev-runs.txt, which left the user's tree
+        # dirty and made `integrate` refuse: "working tree is dirty -- commit or stash
+        # before integrating". Forge's contract is that it does not touch that tree.
+        cli.register_run_dir(self.repo, Path(self.dir.name) / 'plan-a')
+        written = [p for p in self.repo.rglob('*') if p.is_file()]
+        self.assertEqual(written, [], 'forge must not dirty the user working tree')
+        self.assertTrue(cli.runs_registry(self.repo).is_file())
+
+    def test_a_run_dir_is_recorded_once(self):
+        plan = Path(self.dir.name) / 'plan-a'
+        for _ in range(3):
+            cli.register_run_dir(self.repo, plan)
+        lines = [x for x in cli.runs_registry(self.repo).read_text().splitlines()
+                 if x and not x.startswith('#')]
+        self.assertEqual(lines, [str(plan.resolve())])
+
+    def test_two_repos_do_not_share_a_registry(self):
+        other = Path(self.dir.name) / 'other'
+        other.mkdir()
+        self.assertNotEqual(cli.runs_registry(self.repo), cli.runs_registry(other))
+
+    def test_calibrate_finds_a_registered_run_dir(self):
+        plan = Path(self.dir.name) / 'plan-a'
+        plan.mkdir()
+        cli.register_run_dir(self.repo, plan)
+        found = calibrate._run_dirs(self.repo, [])
+        self.assertIn(plan.resolve(), [p.resolve() for p in found])
+
+    def test_the_comment_header_is_not_read_back_as_a_path(self):
+        cli.register_run_dir(self.repo, Path(self.dir.name) / 'plan-a')
+        for found in calibrate._run_dirs(self.repo, []):
+            self.assertFalse(str(found).startswith('#'), found)
+
+    def test_an_unwritable_registry_never_raises(self):
+        # Recording where a run lives must not be able to fail the run.
+        with patch('forge_jev.cli.runs_registry', side_effect=OSError('nope')):
+            cli.register_run_dir(self.repo, Path('/tmp/plan'))
+

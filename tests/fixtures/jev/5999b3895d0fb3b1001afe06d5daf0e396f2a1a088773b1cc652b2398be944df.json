@@ -1,0 +1,9 @@
+{
+  "model": "jev-latest",
+  "answers": {
+    "n": {"type": "noul", "noul": 0.92},
+    "c": {"type": "choice", "choice": "ori", "probabilities": {"sol": 0.15, "ori": 0.75, "fili": 0.10}, "confidence": 0.82},
+    "s": {"type": "score", "score": 2, "legend": {"0": "negligible", "1": "low", "2": "medium", "3": "high"}, "probabilities": {"0": 0.05, "1": 0.15, "2": 0.6, "3": 0.2}, "confidence": 0.7}
+  },
+  "usage": {"input_tokens": 312, "output_tokens": 48}
+}

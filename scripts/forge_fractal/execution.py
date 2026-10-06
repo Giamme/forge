@@ -255,12 +255,55 @@ class Tree:
             self.update(node, base=base, source=str(source), fingerprint=fingerprint, workspace=str(workspace))
         return workspace
 
+    def _rerate(self, parent: dict, requests: list) -> dict:
+        """Jev's difficulty for each child, by child id. Empty when it has no opinion.
+
+        Called OUTSIDE self.guard on purpose: admit holds a lock the whole tree
+        contends for, and a network call under it would stall every sibling. Entirely
+        advisory in the same sense routing is -- a rating is used only where
+        routing.may_act allows, so on an uncalibrated repo this returns nothing and the
+        parent dwarf's own difficulty stands.
+
+        Pool membership and the frozen `eligible` check below are untouched. This can
+        only change which ALREADY AUTHORIZED pool a child draws from.
+        """
+        try:
+            import sys
+            sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+            from forge_jev import enabled, api_key, load_config
+            from forge_jev import routing as jev_routing
+        except Exception:
+            return {}
+        try:
+            config = load_config()
+            if not enabled('routing', config=config) or api_key(config) is None:
+                return {}
+            repo = self.request.get('repo')
+            if not repo:
+                return {}
+            ratings = {}
+            for request in requests:
+                judgment = jev_routing.score_task(
+                    repo, goal=parent.get('goal', ''), task_id=str(request.get('id', '')),
+                    title=str(request.get('goal', '')),
+                    files=' '.join(str(p) for p in request.get('paths', [])),
+                    declared_difficulty=str(request.get('difficulty', '')), config=config)
+                if judgment and jev_routing.may_act(repo, judgment, config=config):
+                    ratings[str(request.get('id', ''))] = judgment['tier']
+            return ratings
+        except Exception:
+            # A rating is a convenience; a raised exception here would fail an admit
+            # that would otherwise have succeeded.
+            return {}
+
     def admit(self, parent: dict, requests: list) -> None:
+        rerated = self._rerate(parent, requests)
         with self.guard:
-            for child in self.validate_children(parent, requests):
+            for child in self.validate_children(parent, requests, rerated):
                 self.create_node(parent=parent, **child)
 
-    def validate_children(self, parent: dict, requests: list) -> list[dict]:
+    def validate_children(self, parent: dict, requests: list, rerated: dict | None = None) -> list[dict]:
+        rerated = rerated or {}
         from .decomposition import reserved_nodes
         nodes = reserved_nodes(self.nodes())
         if len(parent['ancestors']) >= self.limits['depth']:
@@ -278,6 +321,9 @@ class Tree:
             difficulty = request['difficulty']
             if difficulty not in ('low', 'medium', 'high'):
                 raise ValueError('Invalid child difficulty')
+            # Validated first, then possibly corrected: a malformed difficulty from
+            # the parent must still be rejected rather than silently replaced.
+            difficulty = rerated.get(name, difficulty)
             paths = [path_scope(p) for p in request['paths']]
             if not paths or not all(any(contains(p, c) for p in parent['paths']) for c in paths):
                 raise ValueError('Child ownership escapes parent scope')
@@ -591,7 +637,9 @@ def limited_dispatch(run: Path, argv: list[str]) -> int:
     rc = qa_dispatch(run, task, argv, limit)
     if rc == 0 and artifact('forge_tree', review) == key['tree']:
         last = output / 'qa.last'
-        if last.exists() and last.read_text().strip().splitlines()[-1:] == ['FORGE_VERDICT: PASS']:
+        # One parser for every runner (forge-artifact.sh), so a reply the decomposed runner
+        # accepts is accepted here too, and one it rejects is not checkpointed.
+        if last.exists() and artifact('forge_verdict', last) == 'PASS':
             for suffix in ('last', 'log', 'resolved'):
                 shutil.copyfile(output / ('qa.' + suffix), task / ('qa-accepted.' + suffix))
             write_json(checkpoint, dict(key=key))

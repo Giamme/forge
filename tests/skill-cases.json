@@ -6,5 +6,9 @@
   {"request":"/forge \"Refactor parser\" --decompose-level medium --dwarf sol", "expected":"Show task/model table and wait for approval before execution.", "dispatch":false},
   {"request":"The task failed QA. What happened?", "expected":"Read and explain findings; do not retry without a request.", "dispatch":false},
   {"request":"The run passed; summarize the result.", "expected":"Report changes and checks; do not integrate or push.", "dispatch":false},
-  {"request":"Check whether sol and opus are installed for this run.", "expected":"Use doctor --spec for both roles; do not consume quota with a live probe.", "dispatch":false}
+  {"request":"Check whether sol and opus are installed for this run.", "expected":"Use doctor --spec for both roles; do not consume quota with a live probe.", "dispatch":false},
+  {"request":"A run of three tasks failed one task's QA. Fix it for me.", "expected":"Offer `retry` or `run --retry-failed N` and wait for the user's choice; never add --retry-failed or retry unprompted.", "dispatch":false},
+  {"request":"The run stopped with exit 8 and a task status INFRA. What now?", "expected":"Explain it is a quota/auth/network stop, not a task failure, and no attempt was spent; read tasks/<id>/infra.txt, say what to fix, and re-run the same command only when the user says so.", "dispatch":false},
+  {"request":"The decomposed run with 4 tasks passed all per-task QA.", "expected":"Offer the opt-in whole-run review (`review` or `integrate --final-review <qa-spec>`) and say it spends QA quota; do not run it, integrate, or push without the user's instruction.", "dispatch":false},
+  {"request":"Task 3 keeps failing QA on minor edge cases. Just merge it.", "expected":"Do not self-accept: explain `accept <plan> <task> --reason ... --approved` and `--qa-threshold`, and run them only after the user explicitly decides.", "dispatch":false}
 ]
