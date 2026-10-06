@@ -1,0 +1,39 @@
+{
+  "changelog": "CHANGELOG.md",
+  "heading_format": "## [{version}] - {date}",
+  "group_by_type": true,
+  "tag_format": "v{version}",
+  "versioning": {
+    "preset": "two-part",
+    "format": "{major}.{minor}",
+    "bump_rules": {
+      "breaking": "major",
+      "added": "minor",
+      "default": "minor"
+    },
+    "zero_major": true
+  },
+  "version_files": [
+    "VERSION"
+  ],
+  "whats_new_path": null,
+  "skip_types": [
+    "build",
+    "chore",
+    "ci",
+    "docs",
+    "refactor",
+    "style",
+    "test",
+    "tests"
+  ],
+  "ignore": [
+    "^Merge (pull request|branch|remote-tracking branch) ",
+    "^chore\\(release\\)",
+    "^Release v?\\d+\\.\\d+",
+    "^v?\\d+(\\.\\d+)+\\S*$",
+    "\\[(skip|no) changelog\\]"
+  ],
+  "normalize": [],
+  "baseline": "ffa3d0a647863cfe0f99293ff3a0cd67f783b3b2"
+}
