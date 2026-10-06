@@ -808,14 +808,22 @@ def cmd_test_subset(args) -> int:
     import subprocess
     import tempfile
 
+    # Usage errors come first and need neither a key nor a config: a caller who gets
+    # exit 3 ("Jev is unavailable") for a malformed command would conclude the wrong
+    # thing and never fix the command.
+    if '{files}' not in args.subset_command:
+        # Without the placeholder there is nowhere to put the selection, and appending
+        # blindly is what broke this before. Do nothing rather than run the full suite
+        # twice under a name that says "subset".
+        return 2
+    repo = Path(args.repo)
+    if not repo.is_dir():
+        return 2
     config = load_config()
     if not enabled('tests', config=config) or api_key(config) is None:
         return 3
     from . import subset
 
-    repo = Path(args.repo)
-    if not repo.is_dir():
-        return 2
     try:
         task = Path(args.task).read_text(errors='replace')[:6000]
     except OSError:
@@ -827,11 +835,6 @@ def cmd_test_subset(args) -> int:
         except OSError:
             changed = []
 
-    if '{files}' not in args.subset_command:
-        # Without the placeholder there is nowhere to put the selection, and appending
-        # blindly is what broke this before. Do nothing rather than run the full suite
-        # twice under a name that says "subset".
-        return 2
     candidates = subset.candidate_tests(repo)
     if not candidates:
         return 3

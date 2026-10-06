@@ -23,7 +23,8 @@ forge_verdict() {
   # Only a standalone final line is authoritative; prose/quoted markers are not.
   # The QA prompt shows each verdict followed by a dash and its meaning, and some
   # reviewers copy that whole line; accept exactly that dash-separated gloss.
-  awk 'NF {last=$0} END {if(last ~ /^FORGE_VERDICT: (PASS|FAIL)([ \t]+(—|–|-)( .*)?)?[ \t]*$/) {sub(/^FORGE_VERDICT: /,"",last); sub(/[ \t].*$/,"",last); print last} else print "UNKNOWN"}' "$1"
+  # CRLF replies (some harnesses on some platforms) are the same line with a stray CR.
+  awk 'NF {last=$0} END {sub(/\r$/,"",last); if(last ~ /^FORGE_VERDICT: (PASS|FAIL)([ \t]+(—|–|-)( .*)?)?[ \t]*$/) {sub(/^FORGE_VERDICT: /,"",last); sub(/[ \t].*$/,"",last); print last} else print "UNKNOWN"}' "$1"
 }
 
 forge_export_tree() ( # source repository, tree, destination; no archive attributes

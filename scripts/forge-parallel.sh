@@ -7,9 +7,16 @@
 # Usage:
 #   forge-parallel.sh plan <plan-dir> --repo <dir> [routing flags]
 #   forge-parallel.sh run  <plan-dir> [--max-parallel N] [--yolo-dwarf] [--yolo-qa]
-#                                     [--setup <command>] [--dry-run]
+#                                     [--verify <command>] [--setup <command>] [--dry-run]
+#                                     [--timeout S] [--retry-failed N] [--infra-retries M]
+#                                     [--qa-threshold P0|P1|P2|P3] [--verify-retries N]
 #   forge-parallel.sh retry <plan-dir> <task-id> [--dwarf <spec>] [--setup <command>]
-#   forge-parallel.sh integrate <plan-dir> --approved
+#                                     [--timeout S] [--qa-threshold Pn] [--verify-retries N]
+#   forge-parallel.sh integrate <plan-dir> --approved [--verify-retries N] [--final-review <qa-spec>]
+#   forge-parallel.sh review <plan-dir> [--qa <spec>] [--yolo-qa] [--qa-threshold Pn]
+#   forge-parallel.sh accept <plan-dir> <task-id> --reason "<why>" --approved
+#   forge-parallel.sh split <plan-dir> <new-plan> --tasks <id,id> [--dry-run]
+#   forge-parallel.sh combine <new-plan> <plan-a> <plan-b> [<plan>...] [--verify <command>] [--dry-run]
 #   forge-parallel.sh _task <plan-dir> <task-id>     (internal; coordinator target)
 #
 # Routing flags (plan):
@@ -19,8 +26,17 @@
 #   --dwarf-low <spec>
 #   --qa, --qa-high, --qa-medium, --qa-low    identical grammar
 #
+# Opt-in run behaviour (all off unless asked):
+#   --retry-failed N        re-queue a task whose reviewer said FAIL up to N more times,
+#                           inside the same run, while the other tasks keep going
+#   --infra-retries M       wait out quota/auth/network stops up to M times instead of pausing
+#   --qa-threshold Pn       a reviewer FAIL made only of findings less severe than Pn is
+#                           accepted as PASS-with-known-issues (P0 worst ... P3 mildest)
+#
 # Exit codes: 0 ok | 2 usage/validation | 3 precondition (not a git repo, etc.)
-#             5 some task failed QA | 6 integration conflict
+#             5 some task failed QA or verification failed | 6 integration conflict
+#             8 paused on an infrastructure failure (quota, auth, network): no attempt was
+#               spent, fix the cause and re-run `run`
 set -uo pipefail
 
 SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
@@ -36,6 +52,12 @@ source "$SKILL_DIR/scripts/forge-fractal-options.sh"
 JEV_OPTS=0
 [ -f "$SKILL_DIR/scripts/forge-jev-options.sh" ] \
   && source "$SKILL_DIR/scripts/forge-jev-options.sh" 2>/dev/null && JEV_OPTS=1
+# Flags shared by several subcommands, then the helper libraries. Functions only, resolved
+# at call time, so they may use die/note/field and friends defined below.
+source "$SKILL_DIR/scripts/forge-parallel-options.sh"
+for forge_lib in task verify plans review; do
+  [ -f "$SKILL_DIR/scripts/forge-lib-$forge_lib.sh" ] && source "$SKILL_DIR/scripts/forge-lib-$forge_lib.sh"
+done
 OUTPUT=summary
 
 die()  { printf 'forge: %s\n' "$1" >&2; exit "${2:-2}"; }
@@ -585,9 +607,10 @@ check_drift() { # check_drift <declared-comma-list> <tdir> <wt> <base>
   return 0
 }
 
-do_task() (
+do_task_body() (
   local PLAN="${1:?}" id="${2:?}"
-  local T="$PLAN/tasks.tsv" REPO run_id base wt br tdir attempt
+  local T="$PLAN/tasks.tsv" REPO run_id base wt br tdir attempt resume=""
+  local reviewed review source_fp review_fp
   REPO="$(cat "$PLAN/repo")"; run_id="$(cat "$PLAN/run_id")"
   tdir="$PLAN/tasks/$id"; mkdir -p "$tdir"
   if [ -s "$PLAN/fractal-selection.json" ]; then
@@ -596,12 +619,28 @@ do_task() (
   forge_metric_begin "$tdir" task
   dependencies_ready "$PLAN" "$id" || return 1
   echo RUNNING > "$tdir/status"
+  rm -f "$tdir/noretry"
   [ -f "$PLAN/no_memory" ] && export FORGE_MEMORY=off
+  # --timeout given to run/retry is kept in the plan and wins over the environment.
+  [ -s "$PLAN/timeout" ] && export FORGE_TIMEOUT="$(cat "$PLAN/timeout")"
   wt="$(cat "$PLAN/wt_root")/$id"
   br="forge/$run_id/$id"
-  # Every explicit retry gets a distinct attempt number and commit message.
-  attempt=$(( $(cat "$tdir/attempt" 2>/dev/null || echo 0) + 1 ))
-  echo "$attempt" > "$tdir/attempt"
+  # Every attempt gets a distinct number and commit message. A QA-only resume (the
+  # reviewer hit an infrastructure failure, or never reached a verdict) re-reviews work
+  # that is already committed, so it neither runs the dwarf nor spends an attempt.
+  attempt="$(cat "$tdir/attempt" 2>/dev/null || echo 0)"
+  if [ -f "$tdir/resume" ]; then
+    if resume_valid "$tdir" "$wt"; then
+      resume=qa
+    else
+      rm -f "$tdir/resume"
+      note "$id: the saved review state no longer matches the worktree — running the full task"
+    fi
+  fi
+  if [ -z "$resume" ]; then
+    attempt=$(( attempt + 1 ))
+    echo "$attempt" > "$tdir/attempt"
+  fi
 
   # The base is pinned per task on first creation and reused by every retry. The
   # integration branch moves as later waves land, so re-reading the run-level
@@ -625,82 +664,95 @@ do_task() (
     return 1
   fi
 
-  # Persist each source separately; QA receives complete context once.
-  write_capsule "$PLAN" "$id" dwarf >/dev/null
-  cp "$tdir/capsule.md" "$tdir/baseline.capsule"
-  # --task lets Jev narrow the injected slice to facts that bear on THIS task. Without
-  # it, or with Jev off, the full role slice is injected exactly as before.
-  /bin/bash "$MEMORY" inject "$REPO" dwarf --task "$tdir/prompt.md" \
-      --run-dir "$tdir" > "$tdir/dwarf.memory"
-  {
-    python3 "$SKILL_DIR/scripts/forge-prompt.py" --requirements "$tdir/prompt.md" --capsule "$tdir/baseline.capsule" --approach "$tdir/approach.md" --retry "$tdir/retry_findings.md" --memory "$tdir/dwarf.memory"
-    echo "Implement this task in the repository. Follow the intended approach unless it is wrong; explain deviations. Run the task's requested verification and report results."
-    echo "On retry, fix the findings in the existing work; preserve parts not criticised. Explain any finding you reject."
-    echo; /bin/bash "$MEMORY" note dwarf
-  } > "$tdir/dwarf.input"
-  forge_metric_phase dispatch
-  /bin/bash "$DISPATCH" dwarf "$dw" --repo "$wt" --run-dir "$tdir" \
-        --ripwire-query-file "$tdir/prompt.md" --prompt-file "$tdir/dwarf.input" $yd --output "${FORGE_OUTPUT:-summary}" >"$tdir/dwarf.out" 2>&1
-  rc=$?
-  if [ "${FORGE_OUTPUT:-summary}" = full ]; then cat "$tdir/dwarf.out"; fi
-  if [ "$rc" -ne 0 ]; then
-    if [ "$rc" = 7 ]; then
-      echo TIMEOUT > "$tdir/status"; note "$id: dwarf hit the dispatch timeout — see $tdir/dwarf.out"
-    else
-      echo ERROR > "$tdir/status"; note "$id: dwarf dispatch failed — see $tdir/dwarf.out"
+  if [ -z "$resume" ]; then
+    # Persist each source separately; QA receives complete context once.
+    write_capsule "$PLAN" "$id" dwarf >/dev/null
+    cp "$tdir/capsule.md" "$tdir/baseline.capsule"
+    # --task lets Jev narrow the injected slice to facts that bear on THIS task. Without
+    # it, or with Jev off, the full role slice is injected exactly as before.
+    /bin/bash "$MEMORY" inject "$REPO" dwarf --task "$tdir/prompt.md" \
+        --run-dir "$tdir" > "$tdir/dwarf.memory"
+    {
+      python3 "$SKILL_DIR/scripts/forge-prompt.py" --requirements "$tdir/prompt.md" --capsule "$tdir/baseline.capsule" --approach "$tdir/approach.md" --retry "$tdir/retry_findings.md" --memory "$tdir/dwarf.memory"
+      echo "Implement this task in the repository. Follow the intended approach unless it is wrong; explain deviations. Run the task's requested verification and report results."
+      echo "On retry, fix the findings in the existing work; preserve parts not criticised. Explain any finding you reject."
+      echo; python3 "$SKILL_DIR/scripts/forge-contract.py" dwarf
+      echo; /bin/bash "$MEMORY" note dwarf
+    } > "$tdir/dwarf.input"
+    guard_before_dwarf "$wt" "$tdir"
+    forge_metric_phase dispatch
+    /bin/bash "$DISPATCH" dwarf "$dw" --repo "$wt" --run-dir "$tdir" \
+          --ripwire-query-file "$tdir/prompt.md" --prompt-file "$tdir/dwarf.input" $yd --output "${FORGE_OUTPUT:-summary}" >"$tdir/dwarf.out" 2>&1
+    rc=$?
+    if [ "${FORGE_OUTPUT:-summary}" = full ]; then cat "$tdir/dwarf.out"; fi
+    if [ "$rc" -ne 0 ]; then
+      case "$rc" in
+        7) echo TIMEOUT > "$tdir/status"; note "$id: dwarf hit the dispatch timeout — see $tdir/dwarf.out" ;;
+        8) infra_stop "$tdir" "$id" dwarf "$attempt"; return 8 ;;
+        *) echo ERROR > "$tdir/status"; note "$id: dwarf dispatch failed — see $tdir/dwarf.out" ;;
+      esac
+      return 1
     fi
-    return 1
-  fi
 
-  /bin/bash "$MEMORY" record "$REPO" --last "$tdir/dwarf.last" --role dwarf \
-      --run-id "$run_id" --task "$id" --model "$dw" --run-dir "$tdir" \
-      --duration "$(dispatch_duration "$tdir" dwarf)" >/dev/null 2>&1
+    /bin/bash "$MEMORY" record "$REPO" --last "$tdir/dwarf.last" --role dwarf \
+        --run-id "$run_id" --task "$id" --model "$dw" --run-dir "$tdir" \
+        --duration "$(dispatch_duration "$tdir" dwarf)" >/dev/null 2>&1
 
-  forge_metric_phase snapshot
-  # Capture the real diff, including new files, then commit on the task branch.
-  # Diffed against the task's pinned base rather than the branch head, so a retry
-  # hands QA the task's CUMULATIVE work. Reviewing only the fix would let the
-  # first attempt's code through unread.
-  # .forge/ is forge's own memory, rewritten in the user's tree after every run.
-  # Left in, it would reach QA as if a dwarf had written it, and any task whose
-  # files touched it would collide with every other task in the wave planner.
-  if [ -z "${FORGE_FRACTAL_RUN:-}" ] || [ "${FORGE_FRACTAL_RETRY:-}" = 1 ]; then
-    [ -s "$tdir/changes.diff" ] && mv "$tdir/changes.diff" "$tdir/changes.prev.diff"
-  fi
-  (cd "$wt" && git add -A -- . ":(exclude).forge" \
-      && git diff --cached --binary "$base" -- . ":(exclude).forge") > "$tdir/changes.diff" 2>/dev/null || { echo ERROR > "$tdir/status"; return 1; }
-  if [ ! -s "$tdir/changes.diff" ]; then
-    echo FAIL > "$tdir/status"
-    echo "The dwarf produced no changes at all." > "$tdir/qa.last"
-    note "$id: dwarf produced an empty diff"; return 1
-  fi
-  if [ -s "$tdir/changes.prev.diff" ] && cmp -s "$tdir/changes.diff" "$tdir/changes.prev.diff"; then
-    echo FAIL > "$tdir/status"
-    echo "The retry changed nothing: the diff is byte-identical to the previous attempt." \
-      > "$tdir/qa.last"
-    note "$id: retry produced no new changes — not re-reviewing identical code"; return 1
-  fi
+    guard_after_dwarf "$wt" "$tdir" "$id"
+    forge_metric_phase snapshot
+    # Capture the real diff, including new files, then commit on the task branch.
+    # Diffed against the task's pinned base rather than the branch head, so a retry
+    # hands QA the task's CUMULATIVE work. Reviewing only the fix would let the
+    # first attempt's code through unread.
+    # .forge/ is forge's own memory, rewritten in the user's tree after every run.
+    # Left in, it would reach QA as if a dwarf had written it, and any task whose
+    # files touched it would collide with every other task in the wave planner.
+    if [ -z "${FORGE_FRACTAL_RUN:-}" ] || [ "${FORGE_FRACTAL_RETRY:-}" = 1 ]; then
+      [ -s "$tdir/changes.diff" ] && mv "$tdir/changes.diff" "$tdir/changes.prev.diff"
+    fi
+    (cd "$wt" && git add -A -- . ":(exclude).forge" \
+        && git diff --cached --binary "$base" -- . ":(exclude).forge") > "$tdir/changes.diff" 2>/dev/null || { echo ERROR > "$tdir/status"; return 1; }
+    if [ ! -s "$tdir/changes.diff" ]; then
+      # A harness that exited 0 with an empty final message and changed nothing did not
+      # decline the task; it never really ran (login, quota, a dropped connection).
+      if grep -qx 'class=empty' "$tdir/dwarf.infra" 2>/dev/null; then
+        infra_stop "$tdir" "$id" dwarf "$attempt"; return 8
+      fi
+      echo FAIL > "$tdir/status"
+      : > "$tdir/noretry"
+      echo "The dwarf produced no changes at all." > "$tdir/qa.last"
+      note "$id: dwarf produced an empty diff"; return 1
+    fi
+    if [ -s "$tdir/changes.prev.diff" ] && cmp -s "$tdir/changes.diff" "$tdir/changes.prev.diff"; then
+      echo FAIL > "$tdir/status"
+      : > "$tdir/noretry"
+      echo "The retry changed nothing: the diff is byte-identical to the previous attempt." \
+        > "$tdir/qa.last"
+      note "$id: retry produced no new changes — not re-reviewing identical code"; return 1
+    fi
 
-  if ! git -C "$wt" diff --cached --quiet "$base" -- .forge; then
-    echo FAIL > "$tdir/status"; note "$id: changed excluded Forge memory; cannot accept an unreviewed change"; return 1
-  fi
-  check_drift "$(field "$T" "$id" files)" "$tdir" "$wt" "$base"
-  if [ -s "$tdir/drift.txt" ]; then
-    note "$id: touched undeclared file(s): $(tr '\n' ' ' < "$tdir/drift.txt")"
-  fi
+    if ! git -C "$wt" diff --cached --quiet "$base" -- .forge; then
+      echo FAIL > "$tdir/status"; note "$id: changed excluded Forge memory; cannot accept an unreviewed change"; return 1
+    fi
+    check_drift "$(field "$T" "$id" files)" "$tdir" "$wt" "$base"
+    if [ -s "$tdir/drift.txt" ]; then
+      note "$id: touched undeclared file(s): $(tr '\n' ' ' < "$tdir/drift.txt")"
+    fi
 
-  (cd "$wt" && git -c user.name=forge -c user.email=forge@local \
-      commit --allow-empty -q -m "forge($id) attempt $attempt: $(field "$T" "$id" title)") >/dev/null 2>&1 || {
-    echo ERROR > "$tdir/status"; return 1;
-  }
-  local reviewed review source_fp review_fp
-  reviewed="$(git -C "$wt" rev-parse HEAD)" || return 1
-  git -C "$wt" diff --binary "$base" "$reviewed" -- . ':(exclude).forge' > "$tdir/committed.diff" || return 1
-  if ! cmp -s "$tdir/changes.diff" "$tdir/committed.diff" ||
-     [ "$(forge_tree "$wt")" != "$(git -C "$wt" rev-parse "$reviewed^{tree}")" ]; then
-    echo INVALIDATED > "$tdir/status"; return 1
+    (cd "$wt" && git -c user.name=forge -c user.email=forge@local \
+        commit --allow-empty -q -m "forge($id) attempt $attempt: $(field "$T" "$id" title)") >/dev/null 2>&1 || {
+      echo ERROR > "$tdir/status"; return 1;
+    }
+    reviewed="$(git -C "$wt" rev-parse HEAD)" || return 1
+    git -C "$wt" diff --binary "$base" "$reviewed" -- . ':(exclude).forge' > "$tdir/committed.diff" || return 1
+    if ! cmp -s "$tdir/changes.diff" "$tdir/committed.diff" ||
+       [ "$(forge_tree "$wt")" != "$(git -C "$wt" rev-parse "$reviewed^{tree}")" ]; then
+      echo INVALIDATED > "$tdir/status"; return 1
+    fi
+    echo "$reviewed" > "$tdir/reviewed.commit"
+  else
+    reviewed="$(cat "$tdir/reviewed.commit")"
   fi
-  echo "$reviewed" > "$tdir/reviewed.commit"
   review="$tdir/review-$attempt-$$"
   forge_review_snapshot "$wt" "$base" "$reviewed" "$review" || { echo ERROR > "$tdir/status"; return 1; }
   source_fp="$(forge_fingerprint "$wt")" || return 1
@@ -709,7 +761,9 @@ do_task() (
   echo "$review_fp" > "$tdir/review.fingerprint"
 
   forge_metric_phase preparation
-  local jev_loaded_qa=0 subset_cmd=""
+  local jev_loaded_qa=0 subset_cmd="" qa_thr
+  qa_thr="$(qa_threshold_for "$PLAN" "$id")"
+
   # A SEPARATE file from .forge/verify, and opt-in. It must contain {files}, because
   # only the project knows how its runner takes a file list -- `pytest -q {files}` works,
   # `npm test -- {files}` needs the dashes, and `go test ./...` cannot do it at all.
@@ -735,9 +789,7 @@ do_task() (
       --run-dir "$tdir" > "$tdir/qa.memory"
   {
     python3 "$SKILL_DIR/scripts/forge-prompt.py" --requirements "$tdir/prompt.md" --capsule "$tdir/baseline.capsule" --approach "$tdir/approach.md" --retry "$tdir/retry_findings.md" --memory "$tdir/dwarf.memory" --memory "$tdir/qa.memory"
-    echo "The implementer was asked to do the task above. Review the diff below for correctness"
-    echo "bugs: logic errors, broken edge cases, behaviour that does not match what was asked."
-    echo "Also say if it solved a different problem, or touched files outside the task's scope."
+    python3 "$SKILL_DIR/scripts/forge-contract.py" qa --part head --kind task
     echo
     # A subset failure is the one thing a reviewer most wants to know and cannot see
     # from the diff. It runs in a throwaway export of the reviewed commit, so the task
@@ -750,6 +802,15 @@ do_task() (
       echo "prove nothing and is not reported. A failure here is real."
       echo
     fi
+    if [ -s "$tdir/guard.txt" ]; then
+      # Facts forge observed about how the implementer worked. The reviewer never sees the
+      # implementer's own report, so this is the only way an unfinished measurement or a
+      # stray process reaches the review.
+      echo "Implementer guard notes (observed by forge, not claimed by the implementer):"
+      sed 's/^/  - /' "$tdir/guard.txt"
+      echo "A promise of later work means a check may never have run; judge the diff on its own merits."
+      echo
+    fi
     if [ -s "$tdir/drift.txt" ]; then
       # The reviewer is already asked about scope and had no way to know the answer.
       echo "Scope note: this task declared it would touch $(field "$T" "$id" files), and the"
@@ -759,13 +820,7 @@ do_task() (
       echo "matters because another task may own those files."
       echo
     fi
-    echo "Report findings only — do not edit any file. For each finding give the file and line,"
-    echo "what breaks, and a concrete input that triggers it. Mark each CONFIRMED if you traced"
-    echo "it in the code, or PLAUSIBLE if you could not fully verify it."
-    echo
-    echo "End your reply with exactly one line:"
-    echo "  FORGE_VERDICT: PASS   — no confirmed correctness bug (style nits are not failures)"
-    echo "  FORGE_VERDICT: FAIL   — at least one CONFIRMED correctness bug"
+    python3 "$SKILL_DIR/scripts/forge-contract.py" qa --part tail --kind task ${qa_thr:+--threshold "$qa_thr"}
     echo
     echo '```diff'; cat "$tdir/changes.diff"; echo '```'
     echo; /bin/bash "$MEMORY" note qa
@@ -798,13 +853,14 @@ do_task() (
   rc=$?
   if [ "${FORGE_OUTPUT:-summary}" = full ]; then cat "$tdir/qa.out"; fi
   if [ "$rc" -ne 0 ]; then
-    if [ "$rc" = 7 ]; then
-      echo TIMEOUT > "$tdir/status"; note "$id: qa hit the dispatch timeout — see $tdir/qa.out"
-    else
-      echo ERROR > "$tdir/status"; note "$id: qa dispatch failed — see $tdir/qa.out"
-    fi
+    case "$rc" in
+      7) echo TIMEOUT > "$tdir/status"; note "$id: qa hit the dispatch timeout — see $tdir/qa.out" ;;
+      8) infra_stop "$tdir" "$id" qa "$attempt"; return 8 ;;
+      *) echo ERROR > "$tdir/status"; note "$id: qa dispatch failed — see $tdir/qa.out" ;;
+    esac
     return 1
   fi
+  rm -f "$tdir/resume"
 
   forge_metric_phase verification
   if [ "$(forge_fingerprint "$wt")" != "$source_fp" ] || [ "$(forge_fingerprint "$review")" != "$review_fp" ]; then
@@ -824,12 +880,15 @@ do_task() (
     # pass would merge unreviewed code, so it is fail-safe by construction.
     *)    echo UNKNOWN > "$tdir/status" ;;
   esac
+  # With an explicit --qa-threshold a FAIL made only of tolerated findings becomes an
+  # accepted PASS-with-known-issues. No threshold, no change.
+  qa_gate "$PLAN" "$id" "$tdir" "$verdict"
 
   # Annotate a FAIL that looks unsound. Note what this does NOT do: the status file is
   # already written above and nothing below rewrites it. A model that could talk a
   # reviewer out of a FAIL would produce confident PASSes on code nobody checked, which
   # is worth less than having no reviewer at all. Only a human acts on this line.
-  if [ "$verdict" = FAIL ]; then
+  if [ "$verdict" = FAIL ] && [ "$(cat "$tdir/status")" = FAIL ]; then
     # do_task is a subshell and does not inherit do_plan's copy, so source it here.
     # A missing or broken options file leaves jev_loaded=0 and this block does nothing.
     local jev_loaded=0 jev_rc
@@ -859,6 +918,16 @@ print("; ".join(data.get("reasons") or []))
   fi
   return 0
 )
+
+# Entry point for both the scheduler's `_task` and `retry`: runs the pipeline, then logs
+# the attempt (including infrastructure stops, which spend nothing) for later audit.
+do_task() {
+  local rc
+  do_task_body "$@"; rc=$?
+  record_attempt "$1" "$2"
+  return $rc
+}
+
 
 # Merge one passing task onto the integration branch. Shared by `run` and `retry`
 # so a retried task lands exactly the way a first-attempt task does.
@@ -908,6 +977,7 @@ do_retry() {
       --setup)      printf '%s' "${2:?--setup needs a command}" > "$PLAN/setup_cmd"; shift 2 ;;
       *)
         # `case` is not a loop, so `continue` here belongs to the enclosing while.
+        if forge_pp_flag retry "$PLAN" "$@"; then shift "$PP_SHIFT"; continue; fi
         if [ "$JEV_OPTS" = 1 ]; then
           forge_jev_flag "$1"; jev_rc=$?
           case "$jev_rc" in
@@ -929,28 +999,9 @@ do_retry() {
   local st; st="$(task_status "$PLAN" "$id")"
   [ "$st" = "MERGED" ] && die "task '$id' already merged — nothing to retry"
 
-  # The findings are the whole point of retrying rather than re-running: the dwarf
-  # gets told what was wrong with its own previous attempt.
-  # Only a real review replaces the findings. The runner also writes explanatory
-  # text into qa.last when it fails a task without dispatching QA ("produced no
-  # changes at all"), and copying that over would throw away the actual findings
-  # the previous reviewer gave — the one thing a retry exists to carry forward.
-  if grep -q 'FORGE_VERDICT' "$tdir/qa.last" 2>/dev/null; then
-    cp "$tdir/qa.last" "$tdir/retry_findings.md"
-  elif [ -s "$tdir/retry_findings.md" ]; then
-    note "$id: no new review since the last retry — reusing the previous findings"
-  else
-    note "$id: no previous QA findings to pass on (last status was $st)"
-    : > "$tdir/retry_findings.md"
-  fi
-  if [ -n "$NEWDWARF" ]; then
-    # Written into tasks.tsv rather than kept in a side file: the table then shows
-    # the model that will actually be spent, and plan's rule that an explicit
-    # column value survives a re-plan protects the escalation for free.
-    awk -F'\t' -v OFS='\t' -v id="$id" -v dw="$NEWDWARF" \
-      '$0 !~ /^#/ && $1==id { $5=dw } { print }' "$T" > "$PLAN/.tasks.tsv.retry" \
-      && mv "$PLAN/.tasks.tsv.retry" "$T"
-  fi
+  # Findings carry-forward, the optional --dwarf escalation and the QA-only resume
+  # decision are shared with the scheduler's automatic retries.
+  prepare_retry "$PLAN" "$id" "$NEWDWARF"
   [ "${FORGE_RIPWIRE:-}" != off ] || touch "$PLAN/no_ripwire"
   dependencies_ready "$PLAN" "$id" || { write_results "$PLAN"; return 5; }
   [ ! -f "$PLAN/no_ripwire" ] || export FORGE_RIPWIRE=off
@@ -962,6 +1013,13 @@ do_retry() {
   export FORGE_FRACTAL_RETRY=1
   do_task "$PLAN" "$id"
   st="$(task_status "$PLAN" "$id")"
+  if [ "$st" = "INFRA" ]; then
+    # Nothing was judged and no attempt was spent: skip verification, say how to resume.
+    write_results "$PLAN"
+    echo
+    report_infra "$PLAN"
+    return 8
+  fi
   if [ "$st" = "PASS" ]; then
     if merge_task "$PLAN" "$id"; then
       note "$id PASS -> merged"
@@ -969,12 +1027,13 @@ do_retry() {
       note "$id PASS but conflicted on merge — branch preserved"
     fi
   fi
-  verify_result "$PLAN" "$(cat "$PLAN/wt_root")/_integration" "$PLAN" || { write_results "$PLAN"; return 5; }
+  verify_result "$PLAN" "$(cat "$PLAN/wt_root")/_integration" "$PLAN" || { write_results "$PLAN"; run_report_extras "$PLAN"; return 5; }
   write_results "$PLAN"
   echo
   printf '  %-14s %-9s %s\n' id status branch
   awk -F'\t' '{printf "  %-14s %-9s %s\n", $1, $2, $3}' "$PLAN/results.tsv"
   forge_jev_review_flags "$PLAN"
+  run_report_extras "$PLAN"
   [ "$(task_status "$PLAN" "$id")" = "MERGED" ] || return 5
   return 0
 }
@@ -1010,11 +1069,17 @@ print("; ".join(data.get("reasons") or []))
 }
 
 verify_result() ( # plan, checkout, artifact directory
-  local plan="$1" wt="$2" out="$3" cmd="" before after rc=0 repo jev_loaded=0
+  local plan="$1" wt="$2" out="$3" cmd="" before after rc=0 repo jev_loaded=0 vretries
   mkdir -p "$out"
   forge_metric_begin "$out" verification
   forge_metric_phase verification
   repo="$(cat "$plan/repo")"
+  rm -f "$out/verification.flaky" "$out/verification.retry.log" "$out/verification.coverage.txt"
+  # A failed command is rerun this many times before it counts, so one flaky lane does not
+  # cost a whole run. The source fingerprint still has to be unchanged, and a rerun that
+  # passes is recorded loudly (verification.flaky) rather than passed off as clean.
+  vretries="$(cat "$plan/verify_retries" 2>/dev/null)"
+  case "$vretries" in ''|*[!0-9]*) vretries=1 ;; esac
   # Sourced unconditionally (cheap: local function/var definitions, no network) so
   # forge_jev_active is available below. verify_result is itself a subshell, so this
   # never leaks state into the caller. A missing or broken options file just leaves
@@ -1067,6 +1132,7 @@ with open(out + "/verification.jev.json", "w") as fh:
 ' "$out" 2>/dev/null || true
     fi
   fi
+  verify_coverage_report "$wt" "$cmd" "$out/verification.coverage.txt"
   if [ -z "$cmd" ]; then
     echo UNVERIFIED > "$out/verification.status"
     note "combined result UNVERIFIED: no --verify command or .forge/verify configured"
@@ -1079,13 +1145,35 @@ with open(out + "/verification.jev.json", "w") as fh:
   after="$(forge_fingerprint "$wt")" || return 1
   echo "$before" > "$out/verification.fingerprint"
   if [ "$rc" != 0 ] || [ "$before" != "$after" ]; then
-    local flaked=0
+    local flaked=0 det_retried=0 n_retry=0 rc3 b3 a3
+    # Deterministic rerun first: the rerun itself is the evidence, so unlike Jev's triage
+    # below it needs no model and no recorded trap. A tree change is never retried.
+    if [ "$rc" != 0 ] && [ "$before" = "$after" ] && [ "$vretries" -gt 0 ]; then
+      det_retried=1
+      while [ "$n_retry" -lt "$vretries" ] && [ "$flaked" = 0 ]; do
+        n_retry=$((n_retry+1)); rc3=0
+        note "verification failed (exit $rc); rerunning to tell a flaky lane from a regression ($n_retry/$vretries)"
+        b3="$(forge_fingerprint "$wt")" || return 1
+        (cd "$wt" && /bin/bash -c "$cmd") > "$out/verification.retry.log" 2>&1 || rc3=$?
+        a3="$(forge_fingerprint "$wt")" || return 1
+        if [ "$rc3" = 0 ] && [ "$b3" = "$a3" ]; then
+          flaked=1
+          {
+            echo "first_exit=$rc"; echo "retry_exit=0"; echo "retries_used=$n_retry"
+            echo "first_log=$out/verification.log"; echo "retry_log=$out/verification.retry.log"
+          } > "$out/verification.flaky"
+          echo 0 > "$out/verification.exit"
+          note "FLAKY: verification failed once (exit $rc) and passed on rerun — the first failure is in $out/verification.log; this is not a clean pass"
+        fi
+      done
+    fi
     # A tree change is never a flake — it stays FAIL immediately, no triage. Beyond
     # that, act on a "known_flake" verdict ONLY when Forge's own memory already
     # records a `trap` for this repo: a model alone deciding a failure was a flake
     # is exactly how a real regression ships, so the verdict needs corroboration
     # from Forge's own records, not just the model's word.
     if [ "$rc" != 0 ] && [ "$before" = "$after" ] && [ "$jev_loaded" = 1 ] \
+      && [ "$det_retried" = 0 ] \
       && forge_jev_active tests \
       && [ -s "$repo/.forge/memory.md" ] \
       && awk '/^## Known traps$/{f=1;next} /^## /{f=0} f && NF{c++} END{exit !(c>0)}' "$repo/.forge/memory.md"
@@ -1205,6 +1293,7 @@ do_run() (
       --dry-run)      DRY=1; shift ;;
       *)
         # `case` is not a loop, so `continue` here belongs to the enclosing while.
+        if forge_pp_flag run "$PLAN" "$@"; then shift "$PP_SHIFT"; continue; fi
         if [ "$JEV_OPTS" = 1 ]; then
           forge_jev_flag "$1"; jev_rc=$?
           case "$jev_rc" in
@@ -1267,6 +1356,9 @@ do_run() (
   fi
   if ! (cd "$REPO" && git rev-parse --verify "$int_br" >/dev/null 2>&1); then
     (cd "$REPO" && git branch "$int_br" HEAD) || die "could not create $int_br" 3
+    # Where the integration branch started, so a whole-run review can diff exactly what
+    # this run added. Plans created before this file existed fall back to a merge-base.
+    git -C "$REPO" rev-parse HEAD > "$PLAN/integration.base"
   fi
   if [ ! -d "$int_wt" ]; then
     (cd "$REPO" && git worktree add "$int_wt" "$int_br" >/dev/null 2>&1) \
@@ -1283,11 +1375,22 @@ do_run() (
   fi
   git -C "$int_wt" rev-parse HEAD > "$PLAN/accepted.integration"
   local id failed=0
+  # Say now, before any model is paid for, which suites the verify command will not run.
+  verify_coverage_report "$REPO" "$(verify_command_for "$PLAN" "$REPO")" "$PLAN/verification.coverage.txt"
+  local sched_rc=0 paused=0 sched_args=()
+  [ "$PP_RETRY_FAILED" -gt 0 ] && sched_args+=(--retry-failed "$PP_RETRY_FAILED")
+  [ "$PP_INFRA_RETRIES" -gt 0 ] && sched_args+=(--infra-retries "$PP_INFRA_RETRIES")
   forge_metric_phase dispatch
-  python3 "$SKILL_DIR/scripts/forge-schedule.py" "$SELF" "$PLAN" "$MAXP" || failed=1
+  python3 "$SKILL_DIR/scripts/forge-schedule.py" "$SELF" "$PLAN" "$MAXP" ${sched_args[@]+"${sched_args[@]}"} || sched_rc=$?
+  [ "$sched_rc" != 0 ] && failed=1
+  [ "$sched_rc" = 8 ] && paused=1
 
   forge_metric_phase verification
-  verify_result "$PLAN" "$int_wt" "$PLAN" || failed=1
+  # An infrastructure pause leaves the run unfinished, so there is nothing yet worth
+  # verifying; the next `run` resumes and verifies at its end.
+  if [ "$paused" = 0 ]; then
+    verify_result "$PLAN" "$int_wt" "$PLAN" || failed=1
+  fi
   write_results "$PLAN"
   # Only prune worktrees for work that is safely merged, and only after the record
   # of it has been written and read back. A failed task keeps its worktree and
@@ -1305,6 +1408,7 @@ do_run() (
   awk -F'\t' '{printf "  %-14s %-9s %s\n", $1, $2, $3}' "$PLAN/results.tsv"
   forge_jev_review_flags "$PLAN"
   echo
+  run_report_extras "$PLAN"
 
   # Undeclared files are reported here rather than buried in a task log, because
   # this is the list that explains any CONFLICT above.
@@ -1318,9 +1422,16 @@ do_run() (
   done
   [ "$drift" = 1 ] && echo
 
-  if [ "$failed" = 1 ]; then
+  # The retry hint is for tasks that actually failed; a run that only failed verification,
+  # or only paused on infrastructure, has nothing to retry task by task.
+  if [ "$(awk -F'\t' '$2!="MERGED" && $2!="INFRA" && $2!="PENDING" && $2!="BLOCKED" {n++} END {print n+0}' "$PLAN/results.tsv")" -gt 0 ]; then
     echo "retry a failed task with its reviewer's findings:"
     echo "  forge-parallel.sh retry $PLAN <task-id> [--dwarf <spec>]"
+    echo "or let a run retry them itself:  forge-parallel.sh run $PLAN --retry-failed 1"
+    echo
+  fi
+  if [ "$failed" = 1 ] && [ "$paused" = 0 ] && [ "$(cat "$PLAN/verification.status" 2>/dev/null)" = FAIL ]; then
+    echo "combined verification failed: see $PLAN/verification.log"
     echo
   fi
 
@@ -1336,6 +1447,7 @@ do_run() (
   else
     echo "Your branch and working tree were not touched."
   fi
+  [ "$paused" = 1 ] && return 8
   [ "$failed" = 1 ] && return 5
   return 0
 )
@@ -1345,9 +1457,13 @@ do_integrate() {
   local PLAN="${1:?}"; shift
   local APPROVED=0
   while [ $# -gt 0 ]; do
-    case "$1" in --approved) APPROVED=1; shift ;; *) die "integrate: unknown option '$1'" ;; esac
+    case "$1" in
+      --approved) APPROVED=1; shift ;;
+      *) if forge_pp_flag integrate "$PLAN" "$@"; then shift "$PP_SHIFT"; else die "integrate: unknown option '$1'"; fi ;;
+    esac
   done
   [ "$APPROVED" = 1 ] || die "integrate needs --approved: it merges forge's work into YOUR current branch"
+  report_unmerged "$PLAN"
   local REPO run_id int_br cur
   REPO="$(cat "$PLAN/repo")"; run_id="$(cat "$PLAN/run_id")"; int_br="forge/$run_id-integration"
   cur="$(cd "$REPO" && git rev-parse --abbrev-ref HEAD)"
@@ -1366,8 +1482,16 @@ do_integrate() {
     note "candidate merge conflicted; inspect $candidate and $out/merge.log"; return 6
   fi
   run_worktree_setup "$PLAN" "$REPO" "$candidate" "$out" integration-candidate
-  verify_result "$PLAN" "$candidate" "$out" || return 5
+  verify_result "$PLAN" "$candidate" "$out" || { report_verify_notes "$out"; return 5; }
   candidate_sha="$(git -C "$candidate" rev-parse HEAD)" || return 3
+  report_verify_notes "$out"
+  report_known_issues "$PLAN"
+  # Opt-in whole-run review of the combined candidate, after verification and before the
+  # user's branch moves. Per-task review only ever saw one slice at a time.
+  if [ -n "$PP_FINAL_REVIEW" ]; then
+    declare -F final_review_for_integrate >/dev/null || die "the final review is not available in this build" 3
+    final_review_for_integrate "$PLAN" "$parent" "$candidate_sha" "$candidate" "$out" "$PP_FINAL_REVIEW" || return $?
+  fi
   [ "$(git -C "$REPO" rev-parse --abbrev-ref HEAD)" = "$cur" ] &&
     [ "$(git -C "$REPO" rev-parse HEAD)" = "$parent" ] &&
     [ "$(git -C "$REPO" rev-parse "$int_br")" = "$target" ] &&
@@ -1379,28 +1503,36 @@ do_integrate() {
 
 # --- main ---------------------------------------------------------------------
 if [ "${1:-}" = --help ] || [ "${1:-}" = -h ]; then
-  sed -n '7,20s/^# *//p' "$SELF"
+  awk '/^# Usage:/ {on=1} /^set -uo pipefail/ {on=0} on {sub(/^# ?/, ""); print}' "$SELF"
   forge_fractal_help
   exit 0
 fi
-[ $# -ge 1 ] || die "usage: forge-parallel.sh <plan|run|retry|integrate|_task> <plan-dir> [...]"
+[ $# -ge 1 ] || die "usage: forge-parallel.sh <plan|run|retry|accept|review|integrate|split|combine> <plan-dir> [...]"
 CMD="$1"; shift
 [ ! -f "${1:-}/no_ripwire" ] || export FORGE_RIPWIRE=off
 if [ -d "${1:-}" ]; then
   PLAN_PATH="$(cd "$1" && pwd)"; shift; set -- "$PLAN_PATH" "$@"
 fi
 case "$CMD" in
-  run|retry|integrate)
+  # `combine` takes a plan dir that does not exist yet and locks its sources itself.
+  run|retry|integrate|accept|review|split)
     if [ "${FORGE_PLAN_LOCK:-}" != "${1:-}" ]; then
       exec python3 "$SKILL_DIR/scripts/forge-schedule.py" lock "$SELF" "$CMD" "$@"
     fi ;;
 esac
+# Subcommands implemented in the optional libraries fail clearly if the library is absent.
+need_fn() { declare -F "$1" >/dev/null || die "'$CMD' is not available: $1 is missing" 3; }
 case "$CMD" in
   plan)      do_plan "$@" ;;
   run)       do_run "$@" ;;
   retry)     do_retry "$@" ;;
   integrate) do_integrate "$@" ;;
+  accept)    need_fn do_accept;  do_accept "$@" ;;
+  review)    need_fn do_review;  do_review "$@" ;;
+  split)     need_fn do_split;   do_split "$@" ;;
+  combine)   need_fn do_combine; do_combine "$@" ;;
   _task)     do_task "$@" ;;
   _merge)    merge_task "$@" ;;
+  _prepare_retry) retry_for_scheduler "$@" ;;
   *) die "unknown subcommand '$CMD'" ;;
 esac

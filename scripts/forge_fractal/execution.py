@@ -683,7 +683,9 @@ def limited_dispatch(run: Path, argv: list[str]) -> int:
     rc = qa_dispatch(run, task, argv, limit)
     if rc == 0 and artifact('forge_tree', review) == key['tree']:
         last = output / 'qa.last'
-        if last.exists() and last.read_text().strip().splitlines()[-1:] == ['FORGE_VERDICT: PASS']:
+        # One parser for every runner (forge-artifact.sh), so a reply the decomposed runner
+        # accepts is accepted here too, and one it rejects is not checkpointed.
+        if last.exists() and artifact('forge_verdict', last) == 'PASS':
             for suffix in ('last', 'log', 'resolved'):
                 shutil.copyfile(output / ('qa.' + suffix), task / ('qa-accepted.' + suffix))
             write_json(checkpoint, dict(key=key))

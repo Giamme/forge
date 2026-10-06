@@ -330,7 +330,14 @@ do_note() {
   memory_off && return 0
   echo "## Before you finish"
   echo "If — and only if — you learned something about THIS repository that would still be"
-  echo "true and useful on an unrelated task next month, add a line for it at the very end:"
+  if [ "$role" = qa ]; then
+    # The reviewer's verdict line must stay the very last line of the reply, so a learning
+    # goes just above it; asking for "the very end" produced replies the parser rejected.
+    echo "true and useful on an unrelated task next month, add a line for it just above your"
+    echo "final FORGE_VERDICT line (the verdict stays the last line of your reply):"
+  else
+    echo "true and useful on an unrelated task next month, add a line for it at the very end:"
+  fi
   echo
   echo "  FORGE_LEARNING: verify | <the command that actually builds or tests this project>"
   echo "  FORGE_LEARNING: trap | <a landmine: a flaky test, a generated file, a sharp edge>"

@@ -16,7 +16,11 @@ run leaves branches behind.
 - [The capsule](#the-capsule)
 - [Planning](#planning)
 - [QA verdicts](#qa-verdicts)
+- [Severity, thresholds and known issues](#severity-thresholds-and-known-issues)
 - [Retrying, and resuming an interrupted run](#retrying-and-resuming-an-interrupted-run)
+- [Infrastructure failures](#infrastructure-failures)
+- [Implementer guards](#implementer-guards)
+- [Accepting, splitting, combining and the whole-run review](#accepting-splitting-combining-and-the-whole-run-review)
 - [Branches, worktrees, cleanup](#branches-worktrees-cleanup)
 - [Failure modes](#failure-modes)
 
@@ -230,14 +234,39 @@ FORGE_VERDICT: PASS    no confirmed correctness bug (style nits are not failures
 FORGE_VERDICT: FAIL    at least one CONFIRMED correctness bug
 ```
 
-The runner accepts only a standalone verdict on the final nonempty line. A missing verdict is `UNKNOWN` and is treated exactly
+The runner accepts only a standalone verdict on the final nonempty line (the shared parser
+also tolerates the dash gloss the prompt prints after each verdict, trailing whitespace and
+CRLF). A missing verdict is `UNKNOWN` and is treated exactly
 like a failure — excluded from integration and flagged. Merging a diff whose reviewer never
 reached a conclusion would defeat the point of reviewing it, so the ambiguous case fails
 safe rather than optimistically.
 
 A failing task is excluded and its branch preserved; the rest of the run proceeds. There is
-no automatic repair pass, consistent with forge's rule that a dwarf → QA cycle does not loop
-on its own.
+no automatic repair pass unless the run was started with `--retry-failed N`, consistent with
+forge's rule that a dwarf → QA cycle does not loop on its own initiative.
+
+The prompt contract (preamble, findings format, severity definitions and the verdict lines)
+comes from one place, `scripts/forge-contract.py`, shared by solo, decomposed and the final
+review; the implementer rules appended to every dwarf prompt come from the same module.
+
+## Severity, thresholds and known issues
+
+QA labels each finding `- [P0..P3][CONFIRMED|PLAUSIBLE] file:line — what breaks (input)`:
+P0 data loss, security hole, crash or wrong result on the main path; P1 wrong behaviour on
+realistic input or a broken existing contract; P2 edge-case bug, unusual-timing race, missing
+hardening; P3 minor. Severity is impact; CONFIRMED/PLAUSIBLE is confidence.
+
+`run`/`retry --qa-threshold Pn` (remembered in `<plan>/qa_threshold`; `none` clears it) sets
+the **least severe level that still blocks**. `tasks/<id>/qa_threshold` overrides it per task —
+the way to give a dev-tooling or investigation task a looser bar than production code,
+which otherwise gets a new finding in a new corner of a non-default option every round and
+only a human decision ends it. The orchestrator decides *deterministically* (`forge-contract.py gate`),
+it does not take the reviewer's word: with a threshold set, a `FAIL` becomes `PASS` with known
+issues only when there is at least one CONFIRMED finding, every CONFIRMED finding carries a
+`P0..P3` label, and all of them are strictly milder than the threshold. Anything unlabelled,
+any blocking finding, or a `FAIL` with no CONFIRMED finding stays a failure. The task's status is
+then the literal `PASS`; `known_issues.md`, `qa.gate` and the summary say what was tolerated.
+Without a threshold none of this applies.
 
 ## Retrying, and resuming an interrupted run
 
@@ -266,11 +295,26 @@ Two details that are load-bearing rather than incidental:
   the same code twice buys nothing.
 
 `retry` is a command a human types. Forge does not loop a dwarf against its own reviewer on
-its own initiative, and that rule is unchanged.
+its own initiative; the one exception is the opt-in `run --retry-failed N` below.
+
+**`UNKNOWN` and `INFRA` resume at the review stage.** If the reviewer never gave a verdict (or
+its dispatch stopped on an infrastructure failure after the dwarf finished), the work was not
+rejected, so `retry` / `--retry-failed` re-runs **QA only** on the unchanged, already-committed
+work: no dwarf, no new commit, no attempt spent. A `tasks/<id>/resume` marker records this and is
+revalidated against the branch tip and the saved source fingerprint before it is trusted; if the
+worktree changed, the full task runs. Findings are carried only from a real review.
+
+**In-run retries.** `run <plan> --retry-failed N` re-queues a task whose reviewer said
+`FAIL`/`UNKNOWN` as soon as it ends, up to `N` more times in that run, preparing the retry exactly
+as `retry` does (same findings carry-forward, same pinned base, same cumulative review). Other
+tasks keep running; dependents wait for the task to merge. It applies per invocation (not
+remembered), never to `TIMEOUT`/`ERROR`/`INVALIDATED`/`CONFLICT`, and never after a retry that
+changed nothing (`tasks/<id>/noretry`). Every entry is logged in `tasks/<id>/attempts.tsv`.
 
 **Ordinary execution resume:** run `run` again. Tasks already `MERGED` are skipped. A saved PASS is fingerprint-checked and merged without
-redispatch. PENDING and newly unblocked tasks run when eligible. Failed or interrupted tasks
-require an explicit `retry`; `run` never silently pays for them again. Worktrees and pinned
+redispatch. PENDING, `INFRA` (paused by an infrastructure failure) and newly unblocked tasks run
+when eligible. Failed or interrupted tasks
+require an explicit `retry` (or `--retry-failed N`); `run` never silently pays for them again. Worktrees and pinned
 baselines are retained. A per-plan advisory lock excludes concurrent run/retry/integrate
 operations. Interrupting the coordinator terminates its active process groups and preserves
 their work as INTERRUPTED.
@@ -282,6 +326,64 @@ baselines. A control scoped with `--task` or `--task ... --node ...` only resume
 execution scope; it does not relaunch the full pipeline. Use `retry "$PLAN" TASK_ID` for
 an explicitly requested new attempt, with the existing backend, bounds and eligible pool.
 Pause, stop and inspection preserve both the work and diagnostics.
+
+## Infrastructure failures
+
+Quota or usage limits, auth problems, rate limits, network errors and empty answers say nothing
+about the work. `forge-dispatch.sh` classifies them from the dispatch log (strong phrases and
+structured `is_error`/`turn.failed` results only; a reply that otherwise succeeded is never
+reclassified) and exits **8**, writing `<role>.infra` (`class=`, `retry_after=`, `detail=`).
+`do_task` then ends the task as **`INFRA`**:
+
+- a **dwarf-stage** stop refunds the attempt counter;
+- a **QA-stage** stop keeps the attempt (the dwarf's work is real and committed) and writes the
+  `resume=qa` marker, so the next entry re-reviews without running the dwarf;
+- the scheduler stops dispatching, drains what is running, leaves unstarted tasks `PENDING`
+  (never `BLOCKED`), and `run` exits `8` after printing what to fix. Verification is skipped.
+  Running the same command again resumes; `run --infra-retries M` instead waits (the provider's
+  retry-after if parsed, capped at 6 h, else 60 s doubling to 30 min; `FORGE_INFRA_BACKOFF` sets the
+  base) and resumes in the same run, up to `M` times.
+
+A dwarf that exits 0 with an empty final message *and* an empty diff is the same class
+(`class=empty`): it never really ran. Under Fractal a dwarf-side stop still ends as Fractal's own
+`failed`; QA-side stops behave as above, and `pipeline.py` resets `INFRA` to `PENDING` on resume.
+
+## Implementer guards
+
+forge records what it observed about how each dwarf behaved, never what the dwarf claimed:
+HEAD or the checked-out ref moved (**self-commit / branch switch**), processes left alive in the
+harness's session after it exited (**orphans**, listed in `dwarf.orphans` and stopped; disabled by
+`FORGE_ORPHAN_GUARD=off` or under Fractal), and a final message that **promises later work**.
+They are written to `tasks/<id>/guard.txt`, added to the QA prompt as "Implementer guard notes" and
+shown in the run summary. They never change a status. The dwarf prompt itself tells the
+implementer not to commit, not to start background processes, to finish every measurement before
+its last message, and to say plainly what it could not run.
+
+## Accepting, splitting, combining and the whole-run review
+
+Four subcommands act on plans after tasks have run. Full usage and refusal conditions are in the
+[README](../README.md#accepting-a-task-despite-its-reviewer); the mechanics:
+
+- **`accept <plan> <task> --reason … --approved`** overrides a `FAIL`/`UNKNOWN` reviewer only
+  when the reviewed commit is still the branch tip and the worktree still matches
+  `source.fingerprint`. It records `known_issues.md` and `accepted.by`, merges through `merge_task`,
+  and restores the prior state if the merge fails. The orchestrator never runs it unprompted.
+- **`review <plan> [--qa <spec>]`** and **`integrate --final-review <spec>`** run one QA dispatch
+  over the combined result (`integration.base..tip`, or `parent..candidate`) in a disposable
+  checkout with the goal, every task's requirements, known issues, drift, guard notes and the
+  verification result in front of the reviewer. Same verdict/severity contract and
+  `--qa-threshold` gate as per-task QA; a mutation during the review is `INVALIDATED`; a `FAIL`
+  or missing verdict blocks `integrate` with exit `5`, an infrastructure stop with `8`, and the
+  user's branch is never touched. Nothing runs unless one of them is invoked.
+- **`split <plan> <new-plan> --tasks a,b`** copies the selected tasks' saved state to a new plan,
+  renames their branches and worktrees to the new run id, starts a new integration branch at the
+  source's accepted tip and removes them from the source (refuses Fractal-backed plans, `MERGED`
+  or `RUNNING` tasks, and selections that strand a dependent).
+- **`combine <new-plan> <plan>…`** merges the integration branches of fully merged plans into one
+  new plan whose `run` only verifies. Task branches keep their original names.
+
+`split`/`combine` hold the plans' advisory locks for their whole duration, and every failure path
+removes what it created.
 
 ## Branches, worktrees, cleanup
 
@@ -349,7 +451,9 @@ The user's own branch and working tree are untouched for the whole run.
 | task status `ERROR` | worktree creation or a dispatch failed; see `tasks/<id>/dwarf.out` / `qa.out` |
 | task status `TIMEOUT` | that role exceeded the dispatch timeout and was killed. It has usually left a partial edit in the worktree; `retry` continues from it |
 | task status `FAIL` with "produced no changes" | the dwarf ended without editing anything — usually an ambiguous prompt it could not resolve headlessly |
-| task status `UNKNOWN` | QA never emitted a verdict line; read `tasks/<id>/qa.last` |
+| task status `UNKNOWN` | QA never emitted a verdict line; read `tasks/<id>/qa.last`. `retry` re-runs QA only, on the unchanged work |
+| task status `INFRA`, `run` exits `8` | quota/auth/rate limit/network/empty output stopped a dispatch; no attempt spent. See `tasks/<id>/infra.txt`, fix the cause, run again (or `--infra-retries M`) |
+| a `FAIL` task merged anyway | an explicit `--qa-threshold` tolerated its findings; see `known_issues.md` and `qa.gate` |
 | task status `CONFLICT` | QA passed but the merge onto the integration branch conflicted — `files` was understated somewhere |
 | every wave has one task | `files` sets overlap across most tasks; the decomposition is not actually parallel |
 | dwarves ignore existing work | `goal.txt` or `files` missing, so the capsule carries no useful status |
@@ -381,6 +485,18 @@ Configure combined executable checks with `run <plan> --verify '<command>'` (als
 the integration checkout. Forge records `verification.command`, `.log`, `.exit`, `.fingerprint`
 and `.status` in the plan directory. Failed checks or source changes fail the run. With no
 command, the result is explicitly UNVERIFIED.
+
+A failed command whose source fingerprint is unchanged is rerun (`--verify-retries N`, default
+`1`, `0` = strict single run). A rerun that passes leaves status `PASS` but writes
+`verification.flaky` (both exit codes), keeps the first run in `verification.log` and the second
+in `verification.retry.log`, and prints a loud `FLAKY` line in `run`/`retry`/`integrate` output;
+a command that changes the tree is never retried. This runs before Jev's optional model-assisted
+triage, which then does not.
+
+`scripts/forge-verify-coverage.py` reads the project's own test configuration and **warns**
+(never fails) about suites the command does not run — at `run` start before any model is paid
+for, again in `verify_result`, and at `integrate` — recording the lines in
+`verification.coverage.txt`. Without a verify command it lists what the project defines.
 
 `integrate <plan> --approved` prepares a separate candidate combining the current user branch
 and integration revision, runs worktree setup and the configured check there, then updates the

@@ -37,14 +37,33 @@ provider test. See [Fractal execution](fractal.md).
 indefinitely, and stock macOS ships no `timeout` binary to wrap them in — so a hung dwarf
 used to stall its whole wave under `forge-parallel.sh`'s `xargs -P` with no output and no
 way to distinguish stuck from slow. `forge-dispatch.sh` therefore runs every backend in the
-background and kills it after `--timeout` seconds (default 2700; `0` disables; `FORGE_TIMEOUT`
-in the environment). A killed dispatch exits `7`.
+background and kills it after its timeout: `--timeout`, else `FORGE_TIMEOUT` (an explicit `0`
+disables), else the optional `timeout` column of the model's registry row, else 2700 s — scaled
+×4/3 for `xhigh` and ×2 for `max`/`ultra` effort when not explicit (`<role>.resolved` records
+`timeout=` and `timeout_source=`). A killed dispatch exits `7`.
 
-Two implementation notes worth keeping, because both were arrived at the hard way: the
-backend is started with `exec` inside its subshell, so the pid forge holds is the backend
-itself rather than a wrapper it would be useless to kill; and macOS has no `setsid`, so
-there is no process group to signal as a unit and the kill has to walk children explicitly
-(`pkill -P`, then TERM, then KILL for a CLI that traps TERM).
+**Infrastructure failures exit `8`.** After the backend exits, `forge-runtime.py classify` reads
+the dispatch log (never `<role>.last`, which is only created afterwards): claude/openclaude
+`result` events with `is_error`, codex `turn.failed`/`error` events that nothing followed,
+and for the raw-log harnesses (opencode, antigravity) the last 2 KB when the exit was nonzero —
+looking for strong phrases (usage/session limit, quota, insufficient balance/credit, rate limit,
+429/529, unauthorized/401/403, invalid API key, not logged in, ECONNRESET/ENOTFOUND/…). An
+`empty` answer (exit 0, nothing said) is the fifth class. codex's non-fatal reconnect notices
+followed by a normal reply never classify. `<role>.infra` holds `class=`, `retry_after=` (parsed
+from "resets 3pm", "try again in 2h", `|<epoch>`, capped at 24 h), `detail=`, `rc=`, `role=`.
+A dwarf that exits 0 with nothing said writes the file but still exits 0; callers consult it
+only when the diff is empty.
+
+Implementation notes worth keeping, because they were arrived at the hard way: the backend is
+started with `exec` inside its subshell, so the pid forge holds is the backend itself rather than
+a wrapper it would be useless to kill. macOS has no `setsid` binary, so the harness is launched
+through `forge-guard.py session` (python's `os.setsid()` then `exec`, same pid, pgid == pid)
+unless `FORGE_ORPHAN_GUARD=off` or the run is Fractal. That gives a process group to signal as a
+unit: the watchdog (TERM, then KILL for a CLI that traps TERM) and the exit trap signal the whole
+group in addition to `pkill -P`, and after a normal exit `forge-guard.py reap` lists and stops
+anything still alive in it (`<role>.orphans`). This is proven offline only; verify a new harness
+with one live dispatch before relying on it, and use the kill switch if a harness deliberately
+leaves a helper running.
 
 Effort ladders, low to high:
 

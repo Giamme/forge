@@ -6,8 +6,11 @@ shell entrypoints and all existing model, retry and integration boundaries.
 A complete Python runner would simplify process ownership, but would also rewrite artifact
 capture, retry, merge, permission and setup behavior. The chosen design keeps those shell
 contracts and adds focused helpers: `forge-prompt.py` assembles context without summarizing
-requirements, `forge-schedule.py` coordinates eligible tasks, and `forge-runtime.py` handles
-capability caching and attempt telemetry. `forge-metrics.sh` connects pipeline timing to
+requirements, `forge-schedule.py` coordinates eligible tasks (including opt-in in-run retries and
+infrastructure pauses), `forge-runtime.py` handles capability caching, attempt telemetry and
+infrastructure-failure classification, `forge-contract.py` owns the shared QA/dwarf prompt
+contract and the severity gate, `forge-guard.py` the implementer guards, and
+`forge-verify-coverage.py` the verify-coverage warnings. `forge-metrics.sh` connects pipeline timing to
 existing shell stages. Python unit tests retain the repository's standard-library unittest
 convention; no new dependency manager or test framework is required.
 
@@ -16,7 +19,9 @@ before launching tasks, excludes overlapping active ownership paths, and seriali
 Each merge still checks dependency status, reviewed commit, source fingerprint and accepted
 integration revision. A plan lock spans run/retry/integrate operations. Saved passing work
 can resume without a new dispatch; ordinary failed and interrupted work requires explicit
-retry. Fractal has the additional recovery checkpoints described below.
+retry (or an opt-in `run --retry-failed N`), while tasks paused on an infrastructure failure
+resume on the next `run` and an unjudged review re-runs QA only. Fractal has the additional
+recovery checkpoints described below.
 
 Review repositories import self-contained tree object packs and create two commits before
 checking out the final tree. No alternates or source repository access is required afterward.

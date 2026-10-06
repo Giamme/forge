@@ -25,7 +25,7 @@ latest implementation evidence and the scope of those checks.
 Run `bash tests/check.sh`. Python's standard-library unittest suite uses temporary Git
 repositories and fake model CLIs. PATH is restricted to those fakes and an explicit utility
 allowlist, so installed model clients cannot be used accidentally. No provider account is needed.
-CI runs the same checks on macOS (system Bash 3.2) and Linux.
+There is currently no CI workflow; run the suite on macOS (system Bash 3.2) and Linux yourself.
 
 `skill-cases.json` contains invocation and approval scenarios with expected observable behavior.
 Use these for a manual or independent skill evaluation: provide each request and SKILL.md,
@@ -36,7 +36,22 @@ Live model routing, authentication and provider behavior are separate, explicitl
 The suite covers large Unicode prompts via regular files, stdin and FIFOs; exact context
 preservation; distinct memory; summary/full output; native final-response and usage
 extraction; attempt history; help cache invalidation; readiness, overlaps, interruptions and
-restart behavior; and independent review object equivalence. CI runs these on both platforms.
+restart behavior; and independent review object equivalence.
+
+The fake agent CLI in `test_forge.py` can be steered per call with a `SCENARIO` JSON file keyed
+`"<task>.<role>.<call number>"` (`*` matches any task or call; task = the prompt's `TASK_<id>`
+marker, `change` when absent). Entry keys: `rc`, `stderr`, `stdout`, `empty`, `message`, `content`,
+`verdict` (`none` omits the verdict line), `findings`, `is_error`, `no_edit`, `self_commit`,
+`background`, `sleep`. `ForgeTests.scenario({...})` writes it and `calls()` returns the
+`dwarf`/`qa` call log; new test modules borrow the fixtures (`setUp = fixtures.ForgeTests.setUp`)
+rather than subclassing, which would re-run every `ForgeTests` test. Modules by area:
+`test_schedule` (scheduler retries and infrastructure pauses, no model or git), `test_retry`
+(retry, QA-only resume, verify reruns), `test_infra` (exit-8 classification end to end and the
+implementer guards), `test_policy` (severity gate, shared prompt contract, verify coverage),
+`test_qa` and `test_verify_coverage` (the pure modules), `test_dispatch` and `test_guards`
+(dispatch timeouts, `FORGE_REGISTRY`, process hygiene), `test_plan_ops` and `test_review`
+(accept/combine/split and the opt-in final review). Scripts must not use external commands
+outside the allowlist above (no `cut`, `seq`, `ps`, `find`, `perl`, `setsid`).
 
 `live_compare.py` is deliberately outside unittest discovery. It requires `--execute`, creates
 isolated fixtures and revision copies, and never changes the source checkout. The approved

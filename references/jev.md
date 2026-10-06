@@ -185,6 +185,14 @@ months ago must not excuse an unrelated failure today. If the re-run also fails 
 status stays `FAIL` and the first log is preserved. `real_regression` is never re-run
 at any confidence.
 
+**Interaction with the deterministic rerun.** `forge-parallel.sh` now reruns *any* failed
+verify command once by default (`--verify-retries`, default `1`) when the tree did not
+change, with no model and no recorded trap needed: the rerun itself is the evidence, and a pass
+is reported loudly as `FLAKY` (`verification.flaky`) rather than as a clean pass. That rerun
+comes first, so Jev's triage above only runs when the deterministic one is disabled
+(`--verify-retries 0`) — in which case the corroboration requirements above still apply
+unchanged. A deterministic rerun that also fails ends in `FAIL` without consulting Jev.
+
 ## Calibration (measured 2026-09-18)
 
 First measurements against the live API. Two repos for test selection, 18 for verify

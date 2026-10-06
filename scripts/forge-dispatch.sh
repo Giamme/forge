@@ -10,15 +10,32 @@
 #   forge-dispatch.sh qa    <spec> --prompt-file <f> [--repo <dir>] [--run-dir <d>] [--yolo] [--dry-run]
 #                                  [--native-review [--review-base <ref>]]
 #   any role: [--no-ripwire] [--ripwire-query-file <requirements>]
-#   any role: [--timeout <seconds>]   0 disables; default 2700 (45m), FORGE_TIMEOUT
+#   any role: [--timeout <seconds>]   0 disables the watchdog
+#
+# Timeout precedence: --timeout, then FORGE_TIMEOUT (both used as given, 0 included),
+#   then the registry row's optional 5th `timeout` column, then the built-in 2700 (45m).
+#   A registry or built-in value is scaled by the resolved effort: <= high x1,
+#   xhigh x4/3, max/ultra/ultracode x2. The limit and its source are recorded as
+#   `timeout=` / `timeout_source=` in $ROLE.resolved.
+#
+# Environment: FORGE_REGISTRY      alternate registry file (default: <skill>/registry.tsv)
+#              FORGE_ORPHAN_GUARD  off = do not run the harness in its own process group
+#                                  (default on; also skipped under FORGE_FRACTAL_RUN)
 #
 # Exit codes: 0 ok | 2 usage/resolution error | 3 harness missing or unusable
 #             4 backend ran but failed | 7 backend exceeded --timeout and was killed
+#             8 infrastructure failure (auth, quota, rate limit, network, or an empty
+#               answer): the model never got to do its work. $ROLE.infra says which.
+#               A DWARF that exits 0 with an empty final message also writes $ROLE.infra
+#               (class=empty) but still exits 0; consult the file only if the diff is empty.
+# A process still alive in the harness's group after it exited is killed and listed in
+# $ROLE.orphans (only written when there is something to list).
 set -uo pipefail
 
 SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-REGISTRY="$SKILL_DIR/registry.tsv"
+REGISTRY="${FORGE_REGISTRY:-$SKILL_DIR/registry.tsv}"
 RUNTIME="$SKILL_DIR/scripts/forge-runtime.py"
+GUARD="$SKILL_DIR/scripts/forge-guard.py"
 
 die()  { printf 'forge: %s\n' "$1" >&2; exit "${2:-2}"; }
 note() { printf 'forge: %s\n' "$*" >&2; }
@@ -63,11 +80,16 @@ idx_in() { # idx_in <needle> <space-separated haystack> -> index or -1
 }
 
 # --- registry lookup ----------------------------------------------------------
-lookup() { # lookup <alias> [harness] -> "harness<TAB>model<TAB>ceiling"
+# The fourth and fifth fields print "-" when empty, because `IFS=$'\t' read` treats tab as
+# whitespace and would collapse an empty field into its neighbour.
+lookup() { # lookup <alias> [harness] -> "harness<TAB>model<TAB>ceiling<TAB>timeout"
   local alias="$1" want="${2:-}"
   awk -F'\t' -v a="$alias" -v h="$want" '
     /^#/ || NF < 3 { next }
-    $1 == a && (h == "" || $2 == h) { print $2 "\t" $3 "\t" ($4 == "" ? "-" : $4); exit }
+    $1 == a && (h == "" || $2 == h) {
+      t = $5; gsub(/[ \t\r]+$/, "", t)
+      print $2 "\t" $3 "\t" ($4 == "" ? "-" : $4) "\t" (t == "" ? "-" : t); exit
+    }
   ' "$REGISTRY"
 }
 
@@ -126,7 +148,7 @@ SPEC="$1"; shift
 
 RIPWIRE_QUERY=""
 OUTPUT=full
-REPO="$PWD"; RUN_DIR=""; PROMPT_FILE=""; YOLO=0; DRY=0; REVIEW_BASE=""; PROMPT_VIA_STDIN=0; NATIVE_REVIEW=0; AGY_TIMEOUT="30m"; LIMIT="${FORGE_TIMEOUT:-2700}"
+REPO="$PWD"; RUN_DIR=""; PROMPT_FILE=""; YOLO=0; DRY=0; REVIEW_BASE=""; PROMPT_VIA_STDIN=0; NATIVE_REVIEW=0; AGY_TIMEOUT="30m"; TIMEOUT_FLAG=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --no-ripwire) export FORGE_RIPWIRE=off; shift ;;
@@ -138,7 +160,7 @@ while [ $# -gt 0 ]; do
     --review-base)  REVIEW_BASE="${2:?--review-base needs a value}"; shift 2 ;;
     --native-review) NATIVE_REVIEW=1; shift ;;
     --agy-timeout)  AGY_TIMEOUT="${2:?--agy-timeout needs a value}"; shift 2 ;;
-    --timeout)      LIMIT="${2:?--timeout needs a value in seconds, 0 to disable}"; shift 2 ;;
+    --timeout)      TIMEOUT_FLAG="${2:?--timeout needs a value in seconds, 0 to disable}"; shift 2 ;;
     --yolo)         YOLO=1; shift ;;
     --dry-run)      DRY=1; shift ;;
     *)              die "unknown option '$1'" ;;
@@ -146,7 +168,11 @@ while [ $# -gt 0 ]; do
 done
 
 case "$OUTPUT" in summary|full) ;; *) die "--output must be summary or full" ;; esac
-case "$LIMIT" in ''|*[!0-9]*) die "--timeout must be a nonnegative integer" ;; esac
+# Where the limit comes from is part of the record, so --timeout and FORGE_TIMEOUT are kept
+# apart from the registry and built-in values instead of being folded into one variable.
+case "$TIMEOUT_FLAG" in *[!0-9]*) die "--timeout must be a nonnegative integer" ;; esac
+case "${FORGE_TIMEOUT:-}" in *[!0-9]*) die "FORGE_TIMEOUT must be a nonnegative integer" ;; esac
+[ -z "${FORGE_REGISTRY:-}" ] || [ -f "$REGISTRY" ] || die "FORGE_REGISTRY '$REGISTRY' is not a file"
 
 # --- resolve spec -------------------------------------------------------------
 ALIAS="${SPEC%%:*}"; REST="${SPEC#*:}"
@@ -160,8 +186,9 @@ fi
   || die "unknown harness '$HARNESS' (expected codex, claude, openclaude, opencode or antigravity)"
 
 ROW="$(lookup "$ALIAS" "$HARNESS")"
+REG_TIMEOUT="-"
 if [ -n "$ROW" ]; then
-  IFS=$'\t' read -r HARNESS MODEL CEILING <<< "$ROW"
+  IFS=$'\t' read -r HARNESS MODEL CEILING REG_TIMEOUT <<< "$ROW"
   PASSTHRU=0
 else
   # Not in the registry. Treat the alias as a literal model id — but only with an
@@ -237,6 +264,29 @@ if [ -n "$EFFORT" ] && [ -n "$LADDER" ] && [ "$(idx_in "$EFFORT" "$LADDER")" -lt
   die "invalid effort '$EFFORT' for $HARNESS"
 fi
 
+# --- resolve timeout ----------------------------------------------------------
+# Explicit (--timeout, FORGE_TIMEOUT) wins as given, including 0. Otherwise the registry
+# row's `timeout` column, then 2700. Only those two defaults scale with the resolved
+# effort, because an xhigh/max run is expected to think for longer; a number the caller
+# typed is never second-guessed.
+if [ -n "$TIMEOUT_FLAG" ]; then LIMIT="$TIMEOUT_FLAG"; LIMIT_SOURCE=explicit
+elif [ -n "${FORGE_TIMEOUT:-}" ]; then LIMIT="$FORGE_TIMEOUT"; LIMIT_SOURCE=env
+elif [ "$REG_TIMEOUT" != "-" ]; then
+  case "$REG_TIMEOUT" in ''|*[!0-9]*) die "registry timeout '$REG_TIMEOUT' for $ALIAS on $HARNESS is not a nonnegative integer ($REGISTRY)" ;; esac
+  LIMIT="$REG_TIMEOUT"; LIMIT_SOURCE=registry
+else LIMIT=2700; LIMIT_SOURCE=default
+fi
+# Normalize ("007" -> 7) so arithmetic is not read as octal and "00" really means off.
+[ "${#LIMIT}" -gt 9 ] || LIMIT=$((10#$LIMIT))
+if [ "$LIMIT_SOURCE" = registry ] || [ "$LIMIT_SOURCE" = default ]; then
+  if [ "$LIMIT" != 0 ] && [ "${#LIMIT}" -le 9 ]; then
+    effort_rank=-1; [ -z "$EFFORT" ] || effort_rank="$(rank_of "$EFFORT")"
+    if [ "$effort_rank" -ge 4 ]; then LIMIT=$((LIMIT * 2)); LIMIT_SOURCE="$LIMIT_SOURCE+effort-scaled"
+    elif [ "$effort_rank" -eq 3 ]; then LIMIT=$((LIMIT * 4 / 3)); LIMIT_SOURCE="$LIMIT_SOURCE+effort-scaled"
+    fi
+  fi
+fi
+
 # --- run dir & prompt ---------------------------------------------------------
 [ -d "$REPO" ] || die "--repo '$REPO' is not a directory"
 REPO="$(cd "$REPO" && pwd)"
@@ -253,10 +303,25 @@ case "$RUN_DIR" in "$REPO"|"$REPO"/*) die "--run-dir must be outside --repo, or 
 ATTEMPT=""
 if [ "$PREFLIGHT" != 1 ] && [ "$DRY" != 1 ]; then
   ATTEMPT="$(python3 "$RUNTIME" begin "$RUN_DIR" "$ROLE")" || exit 3
-  rm -f "$RUN_DIR/$ROLE.last" "$RUN_DIR/$ROLE.log" "$RUN_DIR/$ROLE.resolved" "$RUN_DIR/$ROLE.cmd" "$RUN_DIR/$ROLE.timedout"
+  rm -f "$RUN_DIR/$ROLE.last" "$RUN_DIR/$ROLE.log" "$RUN_DIR/$ROLE.resolved" "$RUN_DIR/$ROLE.cmd" "$RUN_DIR/$ROLE.timedout" "$RUN_DIR/$ROLE.infra" "$RUN_DIR/$ROLE.orphans"
   trap 'exit 143' TERM
   trap 'exit 130' INT
-  trap 'result=$?; if [ -n "${hpid:-}" ] && kill -0 "$hpid" 2>/dev/null; then pkill -TERM -P "$hpid" 2>/dev/null; kill -TERM "$hpid" 2>/dev/null; fi; if [ -n "${wpid:-}" ]; then pkill -P "$wpid" 2>/dev/null; kill "$wpid" 2>/dev/null; fi; python3 "$RUNTIME" finish "$ATTEMPT" "$RUN_DIR" "$ROLE" "$HARNESS" "$result"; exit "$result"' EXIT
+  # GUARD_ON is 1 only when the harness was started in its own process group (see the
+  # launch below), in which case $hpid is also the group id and the whole group is
+  # signalled. Every wait here is bounded: this runs on the way out of an interrupted
+  # dispatch and must not be the thing that hangs it.
+  exit_cleanup() {
+    if [ -n "${hpid:-}" ] && kill -0 "$hpid" 2>/dev/null; then
+      [ "${GUARD_ON:-0}" != 1 ] || kill -s TERM -- "-$hpid" 2>/dev/null
+      pkill -TERM -P "$hpid" 2>/dev/null; kill -TERM "$hpid" 2>/dev/null
+      if [ "${GUARD_ON:-0}" = 1 ]; then sleep 1; kill -s KILL -- "-$hpid" 2>/dev/null; fi
+    elif [ "${GUARD_ON:-0}" = 1 ] && [ "${reaped:-0}" != 1 ] && [ -n "${hpid:-}" ]; then
+      # Interrupted after the harness exited but before the normal reap.
+      python3 "$GUARD" reap "$hpid" "$RUN_DIR/$ROLE.orphans" >/dev/null 2>&1
+    fi
+    if [ -n "${wpid:-}" ]; then pkill -P "$wpid" 2>/dev/null; kill "$wpid" 2>/dev/null; fi
+  }
+  trap 'result=$?; exit_cleanup; python3 "$RUNTIME" finish "$ATTEMPT" "$RUN_DIR" "$ROLE" "$HARNESS" "$result"; exit "$result"' EXIT
 fi
 [ -n "$PROMPT_FILE" ] || die "role '$ROLE' needs --prompt-file"
 case "$PROMPT_FILE" in -|/dev/stdin) cat > "$RUN_DIR/$ROLE.prompt" ;;
@@ -430,6 +495,8 @@ if [ "$DRY" != 1 ] || [ "$PREFLIGHT" = 1 ]; then preflight_command; fi
   echo "yolo=$([ "$YOLO" = 1 ] && echo ON || echo off)"
   echo "passthrough=$([ "$PASSTHRU" = 1 ] && echo yes || echo no)"
   [ -n "$CLAMPED" ] && echo "clamped=$CLAMPED"
+  echo "timeout=$LIMIT"
+  echo "timeout_source=$LIMIT_SOURCE"
   echo "repo=$REPO"
   echo "run_dir=$RUN_DIR"
 } | tee "$RUN_DIR/$ROLE.resolved"
@@ -466,13 +533,26 @@ fi
 # when a stale $LAST is already there. That is harmless when each run gets a fresh
 # run-dir, and silently wrong for `forge-parallel.sh retry`, which reuses the task
 # directory — it would read the first attempt's result and never notice.
-rm -f "$LAST" "$LOG" "$RUN_DIR/$ROLE.timedout"
+rm -f "$LAST" "$LOG" "$RUN_DIR/$ROLE.timedout" "$RUN_DIR/$ROLE.infra" "$RUN_DIR/$ROLE.orphans"
 python3 "$RUNTIME" phase "$ATTEMPT" model
 t0="$(date +%s)"
+# Process-group guard. A dwarf that starts `npm test &` and ends its turn leaves that
+# process running after dispatch returns, mutating the tree under whoever reads it next.
+# forge-guard.py does setsid() and then exec()s the harness, so $! is still the harness
+# pid and is now also its group id; after the harness exits, anything left in the group is
+# reaped and listed. Off by kill switch, and under Fractal (which manages its own process
+# groups and would otherwise lose the ability to signal this one). If the helper cannot
+# even start, fall back to the plain exec: a guard failure must never cost the run.
+GUARD_ON=0; reaped=0
+case "${FORGE_ORPHAN_GUARD:-on}" in off|OFF|Off|0|no|false) ;; *)
+  if [ -z "${FORGE_FRACTAL_RUN:-}" ] && [ -r "$GUARD" ] && [ "$(python3 "$GUARD" ping 2>/dev/null)" = ok ]; then GUARD_ON=1; fi ;;
+esac
+RUNCMD=("${CMD[@]}")
+[ "$GUARD_ON" != 1 ] || RUNCMD=(python3 "$GUARD" session -- "${CMD[@]}")
 if [ "$PROMPT_VIA_STDIN" = 1 ]; then
-  ( cd "$REPO" && exec "${CMD[@]}" < "$PROMPT_FILE" ) > "$LOG" 2>&1 &
+  ( cd "$REPO" && exec "${RUNCMD[@]}" < "$PROMPT_FILE" ) > "$LOG" 2>&1 &
 else
-  ( cd "$REPO" && exec "${CMD[@]}" </dev/null ) > "$LOG" 2>&1 &
+  ( cd "$REPO" && exec "${RUNCMD[@]}" </dev/null ) > "$LOG" 2>&1 &
 fi
 hpid=$!
 
@@ -487,12 +567,14 @@ if [ "${LIMIT:-0}" != "0" ]; then
     sleep "$LIMIT"
     kill -0 "$hpid" 2>/dev/null || exit 0
     : > "$RUN_DIR/$ROLE.timedout"
-    # Children first, then the process itself, then SIGKILL for a CLI that traps
-    # TERM and takes its time. macOS has no setsid, so there is no process group
-    # to signal as a unit.
+    # The whole process group first when the harness has its own (GUARD_ON), then
+    # children, then the process itself, then SIGKILL for a CLI that traps TERM and
+    # takes its time. Without the guard there is no group to signal as a unit.
+    [ "$GUARD_ON" != 1 ] || kill -s TERM -- "-$hpid" 2>/dev/null
     pkill -TERM -P "$hpid" 2>/dev/null
     kill -TERM "$hpid" 2>/dev/null
     sleep 5
+    [ "$GUARD_ON" != 1 ] || kill -s KILL -- "-$hpid" 2>/dev/null
     pkill -KILL -P "$hpid" 2>/dev/null
     kill -KILL "$hpid" 2>/dev/null
   ) >/dev/null 2>&1 &
@@ -507,6 +589,14 @@ if [ -n "$wpid" ]; then
   kill "$wpid" 2>/dev/null
   wait "$wpid" 2>/dev/null
 fi
+# Anything the harness left running in its group is an abandoned background job. Kill it
+# before reading the tree, and leave the list for the caller. Bounded (~3s) and advisory:
+# a reaper failure changes nothing about the exit code.
+if [ "$GUARD_ON" = 1 ]; then
+  orphans_found="$(python3 "$GUARD" reap "$hpid" "$RUN_DIR/$ROLE.orphans" 2>/dev/null)"
+  case "$orphans_found" in ''|*[!0-9]*|0) ;; *) note "$HARNESS left $orphans_found process(es) running after it exited; killed — see $RUN_DIR/$ROLE.orphans" ;; esac
+fi
+reaped=1
 python3 "$RUNTIME" phase "$ATTEMPT" finalization
 DURATION=$(( $(date +%s) - t0 ))
 echo "duration_s=$DURATION" >> "$RUN_DIR/$ROLE.resolved"
@@ -515,6 +605,33 @@ echo "duration_s=$DURATION" >> "$RUN_DIR/$ROLE.resolved"
 if [ -f "$RUN_DIR/$ROLE.timedout" ]; then
   note "$HARNESS exceeded the ${LIMIT}s timeout and was killed after ${DURATION}s — see $LOG"
   exit 7
+fi
+# Infrastructure, not the model's work: auth, quota, rate limit, network, or an answer that
+# never arrived. Classified from the LOG because $LAST is only created later, by the EXIT
+# trap's `finish`. Any trouble running the classifier counts as "not infrastructure".
+INFRA="$(python3 "$RUNTIME" classify "$LOG" "$HARNESS" "$rc" "$LAST" "$ROLE" 2>/dev/null)" || INFRA=""
+if [ -n "$INFRA" ]; then
+  TAB=$'\t'
+  infra_class="${INFRA%%"$TAB"*}"; infra_rest="${INFRA#*"$TAB"}"
+  infra_after="${infra_rest%%"$TAB"*}"; infra_detail="${infra_rest#*"$TAB"}"
+  {
+    echo "class=$infra_class"
+    echo "retry_after=$infra_after"
+    echo "detail=$infra_detail"
+    echo "rc=$rc"
+    echo "role=$ROLE"
+    echo "harness=$HARNESS"
+    echo "model=$MODEL"
+  } > "$RUN_DIR/$ROLE.infra"
+  # A dwarf may legitimately finish with nothing to say when its work is the diff, so
+  # an empty message alone is recorded but is not a failure; the caller decides when
+  # the diff turns out to be empty too. Every other role has nothing but its message.
+  if [ "$rc" -eq 0 ] && [ "$infra_class" = empty ] && [ "$ROLE" = dwarf ]; then
+    note "$HARNESS finished with an empty final message — recorded in $RUN_DIR/$ROLE.infra"
+  else
+    note "$HARNESS failed on infrastructure ($infra_class${infra_after:+, retry after ${infra_after}s}): $infra_detail — see $LOG"
+    exit 8
+  fi
 fi
 if [ "$rc" -ne 0 ]; then
   note "$HARNESS exited $rc — see $LOG"
