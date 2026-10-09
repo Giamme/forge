@@ -1337,8 +1337,8 @@ columns, plus an optional fifth:
 
 ```
 # alias	harness	model	effort	[timeout]
-sol	codex	gpt-5.6-sol	<=ultra
-sol	openclaude	gpt-5.6-sol	<=max
+sol	codex	gpt-6.1-sol	<=ultra
+sol	openclaude	gpt-6.1-sol	<=max
 gemini-pro	antigravity	gemini-3.1-pro	low,high
 opus	antigravity	claude-opus-4-6-thinking	none
 grok	opencode	github-copilot/grok-4.6	-

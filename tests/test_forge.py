@@ -225,7 +225,7 @@ class ForgeTests(unittest.TestCase):
  def test_routing_and_clamping(self):
   for name in ['openclaude','opencode','agy']:
    cli=self.bin/name; cli.write_text(FAKE); cli.chmod(0o755)
-  for spec,model,effort in [('sol','gpt-5.6-sol','medium'),('sol:ultra:openclaude','gpt-5.6-sol','max'),('gemini-pro:medium','gemini-3.1-pro','low'),('opus::antigravity','claude-opus-4-6-thinking','<harness default>'),('grok::opencode','github-copilot/grok-4.6','<harness default>')]:
+  for spec,model,effort in [('sol','gpt-6.1-sol','medium'),('sol:ultra:openclaude','gpt-6.1-sol','max'),('gemini-pro:medium','gemini-3.1-pro','low'),('opus::antigravity','claude-opus-4-6-thinking','<harness default>'),('grok::opencode','github-copilot/grok-4.6','<harness default>')]:
    with self.subTest(spec=spec):
     r=self.run_script('forge-dispatch.sh','doctor','--spec',spec)
     self.assertEqual(r.returncode,0,r.stdout)

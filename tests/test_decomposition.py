@@ -217,7 +217,7 @@ class AutoIntegration(unittest.TestCase):
         nodes = {n['id']: n for n in self.nodes()}
         self.assertEqual(len(nodes), 5)
         self.assertEqual(nodes['alpha']['model'], 'luna:high')
-        self.assertEqual(nodes['alpha']['resolved_planner'], 'gpt-5.6-sol:xhigh:codex')
+        self.assertEqual(nodes['alpha']['resolved_planner'], 'gpt-6.1-sol:xhigh:codex')
         self.assertEqual(nodes['alpha1']['decomposition']['decision'], 'bounded')
         self.assertIn('.alpha.alpha1', nodes['alpha1']['branch'])
         self.assertTrue(all(n['iteration'] == 1 for n in nodes.values()))
@@ -338,6 +338,6 @@ assert tree.nodes()['recovered']['parent'] == 'implementation'
         result = subprocess.run([*script, 'run', str(plan), '--fractal-auto-decompose', '--fractal-concurrency', '1'],
                                 env=self.env, capture_output=True, text=True, timeout=90)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertTrue(all(n['resolved_planner'] == 'gpt-5.6-sol:xhigh:codex' for n in self.nodes()))
+        self.assertTrue(all(n['resolved_planner'] == 'gpt-6.1-sol:xhigh:codex' for n in self.nodes()))
         self.assertEqual((self.root / 'calls').read_text().splitlines().count('qa'), 2)
         self.assertIn('MERGED', (plan / 'results.tsv').read_text())

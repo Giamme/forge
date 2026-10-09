@@ -20,7 +20,7 @@
 #            max/ultra/ultracode x2. The result and its source are recorded as
 #            `timeout=` and `timeout_source=` in <role>.resolved.
 #            Commented examples (not enabled; write the real number for your model):
-#              # sol	codex	gpt-5.6-sol	<=ultra	1800
+#              # sol	codex	gpt-6.1-sol	<=ultra	1800
 #              # opus	claude	opus	<=max	-
 #
 # FORGE_REGISTRY=<file> points dispatch at a different registry (useful for trying a
@@ -39,29 +39,32 @@
 # default harness for a model it has never heard of).
 #
 # alias	harness	model	effort	[timeout]
-sol	codex	gpt-5.6-sol	<=ultra
-sol	openclaude	gpt-5.6-sol	<=max
-sol	opencode	github-copilot/gpt-5.6-sol	-
+sol	codex	gpt-6.1-sol	<=ultra
+sol	openclaude	gpt-6.1-sol	<=max
+sol	opencode	github-copilot/gpt-6.1-sol	-
+astra	codex	gpt-6-astra	<=ultra
+astra	openclaude	gpt-6-astra	<=max
+astra	opencode	github-copilot/gpt-6-astra	-
 terra	codex	gpt-5.6-terra	<=ultra
 terra	openclaude	gpt-5.6-terra	<=max
 terra	opencode	github-copilot/gpt-5.6-terra	-
-luna	codex	gpt-5.6-luna	<=max
-luna	openclaude	gpt-5.6-luna	<=max
-luna	opencode	opencode-go/gpt-5.6-luna	-
+luna	codex	gpt-6-luna	<=max
+luna	openclaude	gpt-6-luna	<=max
+luna	opencode	opencode-go/gpt-6-luna	-
 opus	claude	opus	<=max
 opus	openclaude	opus	<=ultracode
 opus	antigravity	claude-opus-4-6-thinking	none
-opus	opencode	github-copilot/claude-opus-5	-
+opus	opencode	github-copilot/claude-opus-5.5	-
 sonnet	claude	sonnet	<=max
 sonnet	openclaude	sonnet	<=ultracode
 sonnet	antigravity	claude-sonnet-4-6	none
-sonnet	opencode	github-copilot/claude-sonnet-5	-
+sonnet	opencode	github-copilot/claude-sonnet-5.5	-
 fable	claude	fable	<=max
 fable	openclaude	fable	<=ultracode
-fable	opencode	github-copilot/claude-fable-5	-
+fable	opencode	github-copilot/claude-fable-5.1	-
 haiku	claude	haiku	<=max
 haiku	openclaude	haiku	<=ultracode
-haiku	opencode	github-copilot/claude-haiku-4.5	-
+haiku	opencode	github-copilot/claude-haiku-5.5	-
 # Antigravity (agy). Gemini models take effort as a flag on the UNSUFFIXED id;
 # the suffixed ids agy lists (gemini-3.7-flash-low) conflict with --effort.
 gemini	antigravity	gemini-3.7-flash	low,medium,high
