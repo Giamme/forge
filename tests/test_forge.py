@@ -83,7 +83,10 @@ class ForgeTests(unittest.TestCase):
   # Tests that assert exact prompt bytes then fail depending on what's installed on the
   # box running them. Ripwire has its own dedicated coverage in test_ripwire.py; here it
   # must stay off so a real local install can't leak into unrelated assertions.
-  self.env=dict(os.environ, PATH=str(self.bin), FORGE_MEMORY='off', FORGE_TIMEOUT='0', FORGE_RIPWIRE='off', CALLS=str(self.root/'calls'), GIT_AUTHOR_NAME='test', GIT_AUTHOR_EMAIL='test@test', GIT_COMMITTER_NAME='test', GIT_COMMITTER_EMAIL='test@test')
+  # Jev is the same story: a developer's ~/.config/forge/jev.json with a key turns it on, and
+  # it then picks a verify command on its own (UNVERIFIED becomes FAIL) and calls the network.
+  # Its coverage lives in the test_jev*.py files, which point XDG_CONFIG_HOME at a temp dir.
+  self.env=dict(os.environ, PATH=str(self.bin), FORGE_MEMORY='off', FORGE_TIMEOUT='0', FORGE_RIPWIRE='off', FORGE_JEV='off', CALLS=str(self.root/'calls'), GIT_AUTHOR_NAME='test', GIT_AUTHOR_EMAIL='test@test', GIT_COMMITTER_NAME='test', GIT_COMMITTER_EMAIL='test@test')
   self.git('init','-q'); (self.repo/'base.txt').write_text('base\n'); self.git('add','.'); self.git('commit','-qm','initial')
  def git(self,*args):
   return subprocess.check_output(['git',*args],cwd=self.repo,env=self.env)
