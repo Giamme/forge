@@ -1,4 +1,5 @@
 """Routing composite: the part that decides a tier without asking the model to."""
+import dataset_isolation  # noqa: F401  keeps the run dataset out of the developer's store
 import json
 import os
 import sys

@@ -497,6 +497,9 @@ if [ "$DRY" != 1 ] || [ "$PREFLIGHT" = 1 ]; then preflight_command; fi
   [ -n "$CLAMPED" ] && echo "clamped=$CLAMPED"
   echo "timeout=$LIMIT"
   echo "timeout_source=$LIMIT_SOURCE"
+  # Native review ignores the assembled prompt, so whether it reached the model is a fact
+  # worth recording rather than inferring from the role and harness later.
+  echo "delivery=$([ "$NATIVE_REVIEW" = 1 ] && echo native_review || echo custom)"
   echo "repo=$REPO"
   echo "run_dir=$RUN_DIR"
 } | tee "$RUN_DIR/$ROLE.resolved"

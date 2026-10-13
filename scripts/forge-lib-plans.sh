@@ -471,6 +471,10 @@ Retry or accept them (or split them off into their own plan) first." 3
       files="$(git -C "$NEWINT" diff --name-only --diff-filter=U 2>/dev/null | tr '\n' ' ')"
       git -C "$NEWINT" merge --abort >/dev/null 2>&1
       local why; why="$(tail -3 "$mlog" 2>/dev/null | tr '\n' ' ')"
+      # Recorded before the rollback deletes the new plan: two plans whose work collides
+      # is a coupling label nothing else keeps.
+      forge_dataset_event combine_conflict --dir "${SRC[0]}" --set new_plan="$NEW" \
+        --set plans="${SRC[*]}" --set failed="${S_NAME[$i]}" --set into="$merged_names" --set conflicts="$files"
       plans_undo
       trap - INT TERM
       if [ -n "$files" ]; then

@@ -5,6 +5,7 @@ Running tests there has no safe window -- artifacts before the diff capture reac
 if the dwarf wrote them, and artifacts after trip the fingerprint re-checks in do_task
 and merge_task, which write INVALIDATED and block the merge.
 """
+import dataset_isolation  # noqa: F401  keeps the run dataset out of the developer's store
 import os
 import subprocess
 import sys

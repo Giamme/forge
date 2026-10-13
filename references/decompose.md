@@ -137,8 +137,8 @@ Show that choice and the bounds in the approval table. See the
 [decision contract](fractal.md#automatic-decomposition-decisions) for recovery and limits.
 
 ```bash
-# With tasks.tsv, goal.txt and per-task prompts already prepared:
-bash <skill_dir>/scripts/forge-parallel.sh plan "$PLAN" --repo "$REPO" \
+# With tasks.tsv, goal.txt, request.md and per-task prompts already prepared:
+bash <skill_dir>/scripts/forge-parallel.sh plan "$PLAN" --repo "$REPO" --decompose-level medium \
   --dwarf sol:high --dwarf-low luna:medium --dwarf-high sol:xhigh,terra:xhigh --qa opus
 
 # Preview the selected backend, pools, bounds and workspace without provider calls.

@@ -5,7 +5,7 @@
 # standard-library coordinator schedules ready tasks without wave barriers.
 #
 # Usage:
-#   forge-parallel.sh plan <plan-dir> --repo <dir> [routing flags]
+#   forge-parallel.sh plan <plan-dir> --repo <dir> [routing flags] [--decompose-level low|medium|high]
 #   forge-parallel.sh run  <plan-dir> [--max-parallel N] [--yolo-dwarf] [--yolo-qa]
 #                                     [--verify <command>] [--setup <command>] [--dry-run]
 #                                     [--timeout S] [--retry-failed N] [--infra-retries M]
@@ -25,6 +25,7 @@
 #   --dwarf-medium <spec>
 #   --dwarf-low <spec>
 #   --qa, --qa-high, --qa-medium, --qa-low    identical grammar
+#   --decompose-level L     the --decompose-level the goal was split at, kept as a record
 #
 # Opt-in run behaviour (all off unless asked):
 #   --retry-failed N        re-queue a task whose reviewer said FAIL up to N more times,
@@ -118,11 +119,14 @@ pool_pick() { # pool_pick <comma-list> <index>
 do_plan() {
   local PLAN="${1:?plan needs a plan dir}"; shift
   local REPO="" D_ANY="" D_HI="" D_MD="" D_LO="" Q_ANY="" Q_HI="" Q_MD="" Q_LO=""
-  local PLANNER="" NOMEM=0 jev_rc=0
+  local PLANNER="" NOMEM=0 jev_rc=0 DLEVEL=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --repo)         REPO="${2:?}"; shift 2 ;;
       --planner)      PLANNER="${2:?}"; shift 2 ;;
+      --decompose-level)
+        case "${2:-}" in low|medium|high) DLEVEL="$2"; shift 2 ;;
+          *) die "--decompose-level must be low, medium or high" ;; esac ;;
       --no-ripwire) export FORGE_RIPWIRE=off; shift ;;
       --no-memory)    NOMEM=1; shift ;;
       --dwarf)        D_ANY="${2:?}"; shift 2 ;;
@@ -153,6 +157,10 @@ do_plan() {
   [ "$JEV_OPTS" = 1 ] && forge_jev_record "$PLAN"
   local T="$PLAN/tasks.tsv"
   [ -r "$T" ] || die "no tasks.tsv in '$PLAN' — decompose the goal first"
+  # The table as the planner or orchestrator wrote it, before Jev or route resolution
+  # rewrites any column: which tier a task was DECLARED is a label of its own.
+  cp "$T" "$PLAN/tasks.declared.tsv"
+  [ -z "$DLEVEL" ] || printf '%s\n' "$DLEVEL" > "$PLAN/decompose_level"
 
   # repo: from flag on first plan, remembered afterwards
   if [ -n "$REPO" ]; then
@@ -936,10 +944,14 @@ merge_task() { # merge_task <plan> <id> -> 0 merged, 1 conflicted
   REPO="$(cat "$PLAN/repo")"; run_id="$(cat "$PLAN/run_id")"
   int_wt="$(cat "$PLAN/wt_root")/_integration"
   if [ -s "$PLAN/accepted.integration" ] && [ "$(git -C "$int_wt" rev-parse HEAD)" != "$(cat "$PLAN/accepted.integration")" ]; then
-    echo INVALIDATED > "$PLAN/tasks/$id/status"; return 1
+    echo INVALIDATED > "$PLAN/tasks/$id/status"
+    forge_dataset_event merge --dir "$PLAN" --task "$id" --set status=INVALIDATED --set reason=integration-moved
+    return 1
   fi
   [ -z "$(git -C "$int_wt" status --porcelain -- . ':(exclude).forge')" ] || {
-    echo INVALIDATED > "$PLAN/tasks/$id/status"; return 1;
+    echo INVALIDATED > "$PLAN/tasks/$id/status"
+    forge_dataset_event merge --dir "$PLAN" --task "$id" --set status=INVALIDATED --set reason=integration-dirty
+    return 1;
   }
   local tdir="$PLAN/tasks/$id" reviewed wt
   dependencies_ready "$PLAN" "$id" || return 1
@@ -947,15 +959,25 @@ merge_task() { # merge_task <plan> <id> -> 0 merged, 1 conflicted
   wt="$(cat "$PLAN/wt_root")/$id"
   if [ "$(forge_fingerprint "$wt")" != "$(cat "$tdir/source.fingerprint")" ] ||
      [ "$(git -C "$REPO" rev-parse "forge/$run_id/$id")" != "$reviewed" ]; then
-    echo INVALIDATED > "$tdir/status"; return 1
+    echo INVALIDATED > "$tdir/status"
+    forge_dataset_event merge --dir "$PLAN" --task "$id" --set status=INVALIDATED --set reason=task-moved
+    return 1
   fi
   if (cd "$int_wt" && git merge --no-ff -m "forge: merge $id" "$reviewed" >/dev/null 2>&1); then
     git -C "$int_wt" rev-parse HEAD > "$PLAN/accepted.integration"
     touch "$PLAN/tasks/$id/merged"
+    rm -f "$tdir/conflict.files"
+    forge_dataset_event merge --dir "$PLAN" --task "$id" --set status=MERGED --set commit="$reviewed" \
+      --set integration="$(cat "$PLAN/accepted.integration")"
     return 0
   fi
+  # Which files collided is the label for whether two tasks were coupled, and the abort
+  # below erases it, so it is kept first.
+  (cd "$int_wt" && git diff --name-only --diff-filter=U) > "$tdir/conflict.files" 2>/dev/null
   (cd "$int_wt" && git merge --abort >/dev/null 2>&1)
   echo CONFLICT > "$PLAN/tasks/$id/status"
+  forge_dataset_event merge --dir "$PLAN" --task "$id" --set status=CONFLICT --set commit="$reviewed" \
+    --set conflicts="$(tr '\n' ' ' < "$tdir/conflict.files" 2>/dev/null)"
   return 1
 }
 
@@ -1011,6 +1033,7 @@ do_retry() {
 
   note "retrying $id with dwarf $(field "$T" "$id" dwarf)"
   export FORGE_FRACTAL_RETRY=1
+  export FORGE_DATASET_TRIGGER=human
   do_task "$PLAN" "$id"
   st="$(task_status "$PLAN" "$id")"
   if [ "$st" = "INFRA" ]; then
@@ -1068,13 +1091,25 @@ print("; ".join(data.get("reasons") or []))
   return 0
 }
 
+# One row per execution of the verify command, with its own copy of the log: the
+# deterministic rerun and Jev's retry both write verification.retry.log, so without this
+# only the last of them would survive.
+verify_run_note() { # verify_run_note <out> <kind> <rc> <before> <after> <log> <t0>
+  local out="$1" n=1
+  [ -f "$out/verification.runs.tsv" ] && n=$(( $(wc -l < "$out/verification.runs.tsv") + 1 ))
+  cp "$out/$6" "$out/verification.run-$n.log" 2>/dev/null || :
+  printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$n" "$2" "${3:-}" "$([ "$4" = "$5" ] && echo 0 || echo 1)" \
+    "$(( $(date +%s) - $7 ))" "verification.run-$n.log" >> "$out/verification.runs.tsv"
+}
+
 verify_result() ( # plan, checkout, artifact directory
   local plan="$1" wt="$2" out="$3" cmd="" before after rc=0 repo jev_loaded=0 vretries
   mkdir -p "$out"
   forge_metric_begin "$out" verification
   forge_metric_phase verification
   repo="$(cat "$plan/repo")"
-  rm -f "$out/verification.flaky" "$out/verification.retry.log" "$out/verification.coverage.txt"
+  rm -f "$out/verification.flaky" "$out/verification.retry.log" "$out/verification.coverage.txt" \
+    "$out/verification.runs.tsv" "$out"/verification.run-*.log
   # A failed command is rerun this many times before it counts, so one flaky lane does not
   # cost a whole run. The source fingerprint still has to be unchanged, and a rerun that
   # passes is recorded loudly (verification.flaky) rather than passed off as clean.
@@ -1102,7 +1137,7 @@ verify_result() ( # plan, checkout, artifact directory
     local jev_json jev_rc jev_cmd
     # --json rather than the bare form: the record exists so a human can audit why a
     # command ran, and "confidence: null" answers nothing. The exit code still decides.
-    jev_json="$(python3 "$SKILL_DIR/scripts/forge-jev.py" verify-discover --repo "$repo" --json 2>/dev/null)"
+    jev_json="$(python3 "$SKILL_DIR/scripts/forge-jev.py" verify-discover --repo "$repo" --json --run-dir "$out" 2>/dev/null)"
     jev_rc=$?
     jev_cmd=""
     if [ "$jev_rc" -eq 0 ] && [ -n "$jev_json" ]; then
@@ -1140,9 +1175,11 @@ with open(out + "/verification.jev.json", "w") as fh:
   fi
   printf '%s\n' "$cmd" > "$out/verification.command"
   before="$(forge_fingerprint "$wt")" || return 1
+  local vt0; vt0="$(date +%s)"
   (cd "$wt" && /bin/bash -c "$cmd") > "$out/verification.log" 2>&1 || rc=$?
   echo "$rc" > "$out/verification.exit"
   after="$(forge_fingerprint "$wt")" || return 1
+  verify_run_note "$out" initial "$rc" "$before" "$after" verification.log "$vt0"
   echo "$before" > "$out/verification.fingerprint"
   if [ "$rc" != 0 ] || [ "$before" != "$after" ]; then
     local flaked=0 det_retried=0 n_retry=0 rc3 b3 a3
@@ -1154,8 +1191,10 @@ with open(out + "/verification.jev.json", "w") as fh:
         n_retry=$((n_retry+1)); rc3=0
         note "verification failed (exit $rc); rerunning to tell a flaky lane from a regression ($n_retry/$vretries)"
         b3="$(forge_fingerprint "$wt")" || return 1
+        vt0="$(date +%s)"
         (cd "$wt" && /bin/bash -c "$cmd") > "$out/verification.retry.log" 2>&1 || rc3=$?
         a3="$(forge_fingerprint "$wt")" || return 1
+        verify_run_note "$out" rerun "$rc3" "$b3" "$a3" verification.retry.log "$vt0"
         if [ "$rc3" = 0 ] && [ "$b3" = "$a3" ]; then
           flaked=1
           {
@@ -1180,7 +1219,7 @@ with open(out + "/verification.jev.json", "w") as fh:
     then
       local triage_json triage_rc verdict="" confidence="" flake_act="0.90" parsed corroborated=0 retried=0 rc2="" before2 after2
       triage_json="$(python3 "$SKILL_DIR/scripts/forge-jev.py" verify-triage --repo "$repo" \
-        --command "$cmd" --log "$out/verification.log" --json 2>/dev/null)"
+        --command "$cmd" --log "$out/verification.log" --json --run-dir "$out" 2>/dev/null)"
       triage_rc=$?
       if [ "$triage_rc" -eq 0 ] && [ -n "$triage_json" ]; then
         parsed="$(printf '%s' "$triage_json" | python3 -c '
@@ -1219,9 +1258,11 @@ print(v if v is not None else "0.90")
           retried=1
           note "jev: known_flake (confidence $confidence >= $flake_act), corroborated by a recorded trap — retrying once"
           before2="$(forge_fingerprint "$wt")" || return 1
+          vt0="$(date +%s)"
           (cd "$wt" && /bin/bash -c "$cmd") > "$out/verification.retry.log" 2>&1 || rc2=$?
           rc2="${rc2:-0}"
           after2="$(forge_fingerprint "$wt")" || return 1
+          verify_run_note "$out" jev_retry "$rc2" "$before2" "$after2" verification.retry.log "$vt0"
           if [ "$rc2" = 0 ] && [ "$before2" = "$after2" ]; then
             flaked=1
             note "jev: retry passed — treating as a corroborated flake, not a regression"
@@ -1480,6 +1521,9 @@ do_integrate() {
   candidate="$(cat "$PLAN/wt_root")/_candidate-$$"
   git -C "$REPO" worktree add --detach "$candidate" "$parent" > "$out/setup.log" 2>&1 || return 3
   if ! git -C "$candidate" merge --no-ff -m "forge: integrate run $run_id" "$target" > "$out/merge.log" 2>&1; then
+    forge_dataset_event integrate_conflict --dir "$PLAN" --set branch="$cur" --set parent="$parent" \
+      --set target="$target" --set conflicts="$(git -C "$candidate" diff --name-only --diff-filter=U 2>/dev/null | tr '\n' ' ')" \
+      --file merge_log="$out/merge.log"
     note "candidate merge conflicted; inspect $candidate and $out/merge.log"; return 6
   fi
   run_worktree_setup "$PLAN" "$REPO" "$candidate" "$out" integration-candidate
@@ -1498,6 +1542,10 @@ do_integrate() {
     [ "$(git -C "$REPO" rev-parse "$int_br")" = "$target" ] &&
     [ -z "$(git -C "$REPO" status --porcelain)" ] || die "branch or working tree changed during verification" 3
   git -C "$REPO" merge --ff-only "$candidate_sha" || return 6
+  # The user's branch has moved: the run shipped. Recorded now, because the cleanup below
+  # can still fail and make the command's exit code say otherwise.
+  forge_dataset_event integrate_advanced --dir "$PLAN" --set branch="$cur" --set parent="$parent" \
+    --set candidate="$candidate_sha" --set target="$target" --set verification="$(cat "$out/verification.status" 2>/dev/null)"
   git -C "$REPO" worktree remove "$candidate" || return 3
   echo "merged candidate of $int_br into $cur (verification: $(cat "$out/verification.status"))"
 }
@@ -1520,6 +1568,16 @@ case "$CMD" in
     if [ "${FORGE_PLAN_LOCK:-}" != "${1:-}" ]; then
       exec python3 "$SKILL_DIR/scripts/forge-schedule.py" lock "$SELF" "$CMD" "$@"
     fi ;;
+esac
+# Every user-facing subcommand leaves one record in the run dataset, whatever its exit
+# path (die included). Installed after the lock re-exec, so it fires once, in the process
+# that did the work; `_task` and `_merge` are parts of a `run` and are not recorded alone.
+case "$CMD" in
+  plan|run|retry|integrate|accept|review|split|combine)
+    FORGE_DATASET_INVOCATION="inv-$(date +%s)-$$-$RANDOM"; export FORGE_DATASET_INVOCATION
+    FORGE_DATASET_STARTED="$(date +%s)"
+    FORGE_DATASET_ARGV=("$@")
+    trap 'forge_dataset_rc=$?; trap - EXIT; forge_dataset_invocation "$CMD" "$forge_dataset_rc" "$FORGE_DATASET_STARTED" ${FORGE_DATASET_ARGV[@]+"${FORGE_DATASET_ARGV[@]}"}; exit "$forge_dataset_rc"' EXIT ;;
 esac
 # Subcommands implemented in the optional libraries fail clearly if the library is absent.
 need_fn() { declare -F "$1" >/dev/null || die "'$CMD' is not available: $1 is missing" 3; }

@@ -82,6 +82,10 @@ prepare_retry() { # prepare_retry <plan> <id> [new-dwarf]
     : > "$tdir/retry_findings.md"
   fi
   if [ -n "$newdwarf" ]; then
+    # The overwrite below loses which model failed first, and an escalation is exactly
+    # the record of "this tier was too weak for this task".
+    printf '%s\t%s\t%s\t%s\n' "$(date +%s)" "$(cat "$tdir/attempt" 2>/dev/null || echo 0)" \
+      "$(field "$T" "$id" dwarf)" "$newdwarf" >> "$tdir/escalations.tsv"
     # Written into tasks.tsv rather than kept in a side file: the table then shows the
     # model that will actually be spent, and plan's rule that an explicit column value
     # survives a re-plan protects the escalation for free.

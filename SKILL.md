@@ -56,7 +56,8 @@ For explanation requests, explain the workflow without spending model quota.
    quota and live model availability remain unverified; a live probe must be explicitly requested.
 3. Use [solo runs](references/solo.md) for one implementation. For `--decompose-level
    low|medium|high`, read [decomposition](references/decompose.md), prepare the task table,
-   obtain approval, then use `forge-parallel.sh plan/run`.
+   obtain approval, then use `forge-parallel.sh plan/run`. Write the user's request verbatim
+   to `request.md` in the run or plan dir, and pass `--decompose-level` to `plan`.
    Pass the recorded Fractal choice and requested limits to the execution runner; tier
    pools go to solo directly or decomposed `plan`. Fractal does not replace planner dispatch.
    `--timeout` applies to decomposed runs too (kept in the plan).
@@ -88,6 +89,8 @@ Runners offer installation once before agents; dispatch never prompts. See
   recovery, managed run commands, read-only dashboard and portable reports.
 - [Memory](references/memory.md): `.forge/` learning and spend records; `--no-memory` disables
   them. Memory is written to the user's repository but excluded from implementation diffs.
+- [Dataset](references/dataset.md): every run's inputs and outcomes, kept outside the repo
+  for training decision models; `forge dataset status|import`, `FORGE_DATASET=off`.
 - [Jev](references/jev.md): optional TypeSafe System One judgments for routing, test
   selection and memory curation; off by default.
 

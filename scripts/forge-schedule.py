@@ -24,6 +24,19 @@ import sys
 import time
 
 
+def dataset_event(name: str, plan: Path, task: str, values: dict) -> None:
+    """Record a status only the scheduler sets (INTERRUPTED, BLOCKED, ERROR) in the run
+    dataset. No task process is alive to record it. Fail-open, like every capture."""
+    try:
+        scripts = str(Path(__file__).resolve().parent)
+        if scripts not in sys.path:
+            sys.path.insert(0, scripts)
+        from forge_dataset.capture import point
+        point(name, str(plan), task, values)
+    except Exception:
+        pass
+
+
 def overlap(a: str, b: str) -> bool:
     def paths(value: str) -> list[str]:
         return [posixpath.normpath(p) for p in value.split(',') if p and p != '-']
@@ -107,6 +120,7 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
 
     def mark(name: str, state: str) -> None:
         (plan / 'tasks' / name / 'status').write_text(state + '\n')
+        dataset_event('sched_terminal', plan, name, dict(status=state))
 
     def merge(name: str) -> None:
         result = subprocess.run(['/bin/bash', script, '_merge', str(plan), name])
@@ -222,7 +236,8 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
                 log = open(root / 'task.out', 'ab')
                 # A retried task runs with the same environment `retry` gives it, so the
                 # no-progress guard (byte-identical diff) applies under Fractal too.
-                env = dict(os.environ, FORGE_FRACTAL_RETRY='1') if name in retried else None
+                env = (dict(os.environ, FORGE_FRACTAL_RETRY='1', FORGE_DATASET_TRIGGER='auto')
+                       if name in retried else None)
                 process = subprocess.Popen(
                     ['/bin/bash', script, '_task', str(plan), name],
                     stdout=log, stderr=subprocess.STDOUT, start_new_session=True, env=env,

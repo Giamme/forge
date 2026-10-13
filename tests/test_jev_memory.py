@@ -1,5 +1,6 @@
 """Memory curation. The asymmetry that shapes every default: memory.md is injected into
 every dispatch of every future run, and the ledger is append-only and never injected."""
+import dataset_isolation  # noqa: F401  keeps the run dataset out of the developer's store
 import subprocess
 import sys
 import tempfile

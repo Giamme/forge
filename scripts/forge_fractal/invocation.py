@@ -9,6 +9,15 @@ import uuid
 from . import read_json, write_json
 
 
+def _dataset_step(task, node: dict, directory: Path, **values) -> None:
+    """Record the step in the run dataset (scripts/forge_dataset). Never raises."""
+    try:
+        from forge_dataset.capture import fractal_step
+        fractal_step(task, node, directory, **values)
+    except Exception:
+        pass
+
+
 def run_step(tree, node: dict, workspace: Path, prompt: str, *, phase: str = 'implementation') -> tuple[int, str]:
     from .execution import Halt, event, process_identity, slot, terminate
     from fractal.core.node import Node
@@ -81,4 +90,5 @@ def run_step(tree, node: dict, workspace: Path, prompt: str, *, phase: str = 'im
         tree.update(node, cost=(node.get('cost') or 0) + cost if cost is not None else node.get('cost'),
                     unknown_cost_steps=node.get('unknown_cost_steps', 0) + int(cost is None))
         event(tree.task, 'step_finished', node=node['id'], phase=phase, iteration=iteration, exit_code=rc, cost=cost)
+        _dataset_step(tree.task, node, directory, phase=phase, iteration=iteration, rc=rc, cost=cost, resolved=resolved)
         return rc, text

@@ -1,5 +1,6 @@
 """Development-only browser regression suite; no provider calls or runtime dependency."""
 from __future__ import annotations
+import dataset_isolation  # noqa: F401  keeps the run dataset out of the developer's store
 
 import json
 import os

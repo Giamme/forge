@@ -139,6 +139,8 @@ if [ -n "${FORGE_FRACTAL_RUN:-}" ] && [ "$DRY" != 1 ] && [ "${FORGE_FRACTAL_RETR
   [ "$checkpoint_rc" = 1 ] || exit "$checkpoint_rc"
 fi
 
+# The dispatches see a review snapshot, not the repo, so the run dir names it for the dataset.
+[ "$DRY" = 1 ] || printf '%s\n' "$REPO" > "$RUN/repo"
 [ "$DRY" = 1 ] || forge_metric_begin "$RUN" solo
 
 # --- dwarf --------------------------------------------------------------------

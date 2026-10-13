@@ -7,6 +7,7 @@ test_jev.py/test_jev_backtest.py these tests do not need to scrub FORGE_JEV* env
 or point XDG_CONFIG_HOME anywhere; calibrate.py never touches config or the client.
 """
 from __future__ import annotations
+import dataset_isolation  # noqa: F401  keeps the run dataset out of the developer's store
 
 import contextlib
 import io

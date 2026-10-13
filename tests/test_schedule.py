@@ -4,6 +4,7 @@ pauses and resume. The worker is a small bash script standing in for forge-paral
 file and consumed one per `_task` call, so every scenario is deterministic.
 
 Ordering is asserted from an event log, never from wall-clock timing."""
+import dataset_isolation  # noqa: F401  keeps the run dataset out of the developer's store
 import os
 from pathlib import Path
 import subprocess

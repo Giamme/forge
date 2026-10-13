@@ -1,4 +1,5 @@
 """Post-review annotation. The load-bearing test here is that nothing overturns a FAIL."""
+import dataset_isolation  # noqa: F401  keeps the run dataset out of the developer's store
 import json
 import subprocess
 import sys

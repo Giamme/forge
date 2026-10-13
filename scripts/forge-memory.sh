@@ -49,6 +49,22 @@ SKILL_DIR="${SKILL_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 # not require editing the skill.
 memory_off() { [ "${FORGE_MEMORY:-on}" = "off" ]; }
 
+# --- run dataset ----------------------------------------------------------------
+# What curation decided, for the run dataset (scripts/forge_dataset): the final ledger
+# rows say what was kept, but not that Jev refiled a category, merged a paraphrase or
+# muted a fact, nor which facts a rebuild dropped and why. Fail-open and silent.
+MEMORY_DROPS=""   # when set, rebuild appends "<reason>\t<category>\t<text>" rows here
+memory_dataset_on() {
+  case "${FORGE_DATASET:-on}" in off|OFF|Off|0|no|false) return 1 ;; esac
+  return 0
+}
+memory_dataset_event() { # memory_dataset_event <name> <repo> <run-dir> [--set k=v | --file label=path]...
+  local name="$1" repo="$2" dir="$3"; shift 3
+  memory_dataset_on || return 0
+  python3 "$SKILL_DIR/scripts/forge-dataset.py" event "$name" --repo "$repo" ${dir:+--dir "$dir"} "$@" \
+    >/dev/null 2>&1 || true
+}
+
 dir_for()    { echo "$1/.forge"; }
 memory_for() { echo "$1/.forge/memory.md"; }
 ledger_for() { echo "$1/.forge/ledger.tsv"; }
@@ -147,6 +163,7 @@ rebuild() { # rebuild <repo> -> prints "kept<TAB>pruned_stale<TAB>pruned_cap"
       # the code it describes is gone, so the fact is at best useless and at worst
       # actively misleading. Drop it rather than wait for the cap to evict it.
       if [ -n "$anchor" ] && [ ! -e "$repo/$anchor" ]; then
+        [ -z "$MEMORY_DROPS" ] || printf 'anchor_missing\t%s\t%s\n' "$cat" "$text" >> "$MEMORY_DROPS"
         stale=$((stale+1)); continue
       fi
       # The anchor still exists, but the fact about it may have quietly stopped being
@@ -159,6 +176,7 @@ rebuild() { # rebuild <repo> -> prints "kept<TAB>pruned_stale<TAB>pruned_cap"
         if python3 "$SKILL_DIR/scripts/forge-jev.py" memory-stale \
              --text "$text" --anchor "$repo/$anchor" \
              ${JEV_RUN_DIR:+--run-dir "$JEV_RUN_DIR"} >/dev/null 2>&1; then
+          [ -z "$MEMORY_DROPS" ] || printf 'jev_stale\t%s\t%s\n' "$cat" "$text" >> "$MEMORY_DROPS"
           stale=$((stale+1)); continue
         fi
       fi
@@ -197,6 +215,7 @@ rebuild() { # rebuild <repo> -> prints "kept<TAB>pruned_stale<TAB>pruned_cap"
     local last_fact
     last_fact="$(grep -n '^- ' "$header" | tail -1 | cut -d: -f1)"
     [ -n "$last_fact" ] || break
+    [ -z "$MEMORY_DROPS" ] || printf 'cap\t-\t%s\n' "$(sed -n "${last_fact}p" "$header")" >> "$MEMORY_DROPS"
     sed "${last_fact}d" "$header" > "$header.x" && mv "$header.x" "$header"
     capped=$((capped+1)); kept=$((kept-1))
   done
@@ -381,12 +400,17 @@ do_record() {
     printf '# ts\trun_id\ttask\trole\tmodel\tverdict\tcategory\tkey\ttext\tduration_s\tinjectable\n' > "$led"
   fi
 
-  local jev_loaded=0
+  local jev_loaded=0 cur=""
   if [ -f "$SKILL_DIR/scripts/forge-jev-options.sh" ]; then
     source "$SKILL_DIR/scripts/forge-jev-options.sh" 2>/dev/null && jev_loaded=1
   fi
+  # Scratch files for the dataset event, outside the repo: .forge/ is the user's tree.
+  if memory_dataset_on; then
+    cur="$(mktemp "${TMPDIR:-/tmp}/forge-memory-cur.XXXXXX" 2>/dev/null)" || cur=""
+    MEMORY_DROPS="$(mktemp "${TMPDIR:-/tmp}/forge-memory-drops.XXXXXX" 2>/dev/null)" || MEMORY_DROPS=""
+  fi
   if [ -n "$LAST" ] && [ -r "$LAST" ]; then
-    local line cat text key inject curated curated_rc jcat jinject jmatch jkey
+    local line cat text key inject curated curated_rc jcat jinject jmatch jkey ecat
     while IFS= read -r line; do
       cat="$(printf '%s' "$line" | sed -n 's/^[[:space:]]*FORGE_LEARNING:[[:space:]]*\([a-zA-Z]\{1,\}\)[[:space:]]*|.*/\1/p' | tr '[:upper:]' '[:lower:]')"
       text="$(printf '%s' "$line" | sed -n 's/^[[:space:]]*FORGE_LEARNING:[[:space:]]*[a-zA-Z]\{1,\}[[:space:]]*|[[:space:]]*\(.*\)/\1/p')"
@@ -400,7 +424,7 @@ do_record() {
       # failure, any missing key, any disabled capability leaves the three values below
       # exactly as the model emitted them. The row is written either way -- the ledger
       # is append-only and never injected, so this gates injection, never recording.
-      inject=1
+      inject=1; ecat="$cat"; jcat=""; jinject=""; jmatch=""
       if [ "$jev_loaded" = 1 ] && forge_jev_active memory; then
         curated="$(python3 "$SKILL_DIR/scripts/forge-jev.py" memory-curate \
             --repo "$repo" --category "$cat" --text "$text" \
@@ -427,6 +451,8 @@ do_record() {
         "$ts" "$(sanitize "$RUN_ID")" "$(sanitize "$TASK")" "$(sanitize "$ROLE")" \
         "$(sanitize "$MODEL")" "$(sanitize "$VERDICT")" "$cat" "$key" "$text" \
         "$(sanitize "$DURATION")" "$inject" >> "$led"
+      [ -z "$cur" ] || printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$ecat" "$cat" "$key" "$inject" \
+        "$jcat" "$jinject" "$jmatch" "$text" >> "$cur"
       n=$((n+1))
     done < <(grep -o 'FORGE_LEARNING:.*' "$LAST" 2>/dev/null)
   fi
@@ -444,10 +470,29 @@ do_record() {
   out="$(rebuild "$repo")"
   kept="$(printf '%s' "$out" | cut -f1)"; stale="$(printf '%s' "$out" | cut -f2)"
   capped="$(printf '%s' "$out" | cut -f3)"
+  memory_dataset_event memory_record "$repo" "$JEV_RUN_DIR" --set role="$ROLE" --set run_id="$RUN_ID" \
+    --set task="$TASK" --set model="$MODEL" --set verdict="$VERDICT" --set recorded="$n" \
+    --set kept="${kept:-0}" --set stale="${stale:-0}" --set capped="${capped:-0}" \
+    --set max_lines="$MAX_LINES" --set max_bytes="$MAX_BYTES" \
+    ${cur:+--file curation="$cur"} ${MEMORY_DROPS:+--file drops="$MEMORY_DROPS"} --file memory="$(memory_for "$repo")"
+  rm -f ${cur:+"$cur"} ${MEMORY_DROPS:+"$MEMORY_DROPS"}
   printf 'memory: %s learning(s) recorded, %s fact(s) live' "$n" "${kept:-0}"
   [ "${stale:-0}" -gt 0 ] 2>/dev/null && printf ', %s stale dropped' "$stale"
   [ "${capped:-0}" -gt 0 ] 2>/dev/null && printf ', %s trimmed at cap' "$capped"
   printf '\n'
+}
+
+# --- prune --------------------------------------------------------------------
+do_prune() { # do_prune <repo>
+  local repo="$1" out
+  if memory_dataset_on; then
+    MEMORY_DROPS="$(mktemp "${TMPDIR:-/tmp}/forge-memory-drops.XXXXXX" 2>/dev/null)" || MEMORY_DROPS=""
+  fi
+  out="$(FORGE_MEMORY_DEEP_PRUNE=1 rebuild "$repo")"
+  memory_dataset_event memory_prune "$repo" "" --set kept="$(printf '%s' "$out" | cut -f1)" \
+    --set stale="$(printf '%s' "$out" | cut -f2)" --set capped="$(printf '%s' "$out" | cut -f3)" \
+    ${MEMORY_DROPS:+--file drops="$MEMORY_DROPS"} --file memory="$(memory_for "$repo")"
+  rm -f ${MEMORY_DROPS:+"$MEMORY_DROPS"}
 }
 
 # --- spend --------------------------------------------------------------------
@@ -524,7 +569,7 @@ case "$CMD" in
   record) do_record "$@" ;;
   show)   mem="$(memory_for "${1:?show needs a repo}")"; [ -s "$mem" ] && cat "$mem" ;;
   spend)  do_spend "$@" ;;
-  prune)  FORGE_MEMORY_DEEP_PRUNE=1 rebuild "${1:?prune needs a repo}" >/dev/null
+  prune)  do_prune "${1:?prune needs a repo}" >/dev/null
           do_inject "${1}" dwarf ;;
   *) die "unknown subcommand '$CMD'" ;;
 esac

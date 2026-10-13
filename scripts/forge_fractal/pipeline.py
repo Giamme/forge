@@ -70,6 +70,11 @@ def outcome(run: Path, runner: Path, rc: int) -> None:
         if Path(request['repo']).exists():
             data['fingerprint'] = artifact('forge_fingerprint', request['repo'])
         write_json(task / 'outcome.json', data)
+        try:
+            from forge_dataset.capture import fractal_outcome
+            fractal_outcome(task)
+        except Exception:
+            pass
 
 
 def checkpoint(run: Path, source: Path) -> bool:

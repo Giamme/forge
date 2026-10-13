@@ -5,6 +5,7 @@ Runs with no network access and no API key -- every test patches forge_jev.backt
 path, and scrubs FORGE_JEV*/TYPESAFE_API_KEY env vars the same way tests/test_jev.py does.
 """
 from __future__ import annotations
+import dataset_isolation  # noqa: F401  keeps the run dataset out of the developer's store
 
 import json
 import os

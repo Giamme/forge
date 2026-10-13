@@ -1,4 +1,5 @@
 """Offline tests for the git-history corpus extractor. No network, no API key, real temp git repos."""
+import dataset_isolation  # noqa: F401  keeps the run dataset out of the developer's store
 from pathlib import Path
 import subprocess
 import sys

@@ -4,6 +4,7 @@ Every test here is about something Jev must NOT be able to do. They are delibera
 end-to-end and shell-level: the properties are about what the runner writes to disk and
 exits with, and a mock cannot prove those.
 """
+import dataset_isolation  # noqa: F401  keeps the run dataset out of the developer's store
 import json
 import os
 import subprocess

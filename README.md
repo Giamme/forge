@@ -38,6 +38,7 @@ logs and separate execution/acceptance states; HTML reports capture them for lat
 - [Decomposed runs](#decomposed-runs)
 - [Planning](#planning)
 - [Project memory](#project-memory)
+- [Run dataset](#run-dataset)
 - [Full command reference](#full-command-reference)
 - [Model registry](#model-registry)
 - [Run artifacts](#run-artifacts)
@@ -776,6 +777,23 @@ counting that keeps `memory.md` honest.
 
 If you contribute to someone else's repo, gitignore it. A pull request containing forge's
 notes to itself is noise to a reviewer who does not use forge.
+
+## Run dataset
+
+Run dirs get deleted, and the ledger keeps spec strings and verdicts but no inputs. So
+every run also records its raw inputs and outcomes outside every repo, in
+`~/.local/share/forge/dataset/` (`FORGE_DATA_HOME` moves it, `FORGE_DATASET=off` turns
+it off). That covers resolved models, prompts, per-attempt diffs, verdicts and findings,
+tokens, merge and verification outcomes, and the full request behind every Jev judgment.
+It exists to train and calibrate decision models on what forge actually did.
+
+```sh
+./forge dataset status            # size, counts, and anything that looks incomplete
+./forge dataset import ~/.local/share/forge/legacy   # runs that predate live capture
+```
+
+Capture is fail-open and never read by anything that builds a prompt. See
+[references/dataset.md](references/dataset.md) for the event schema and its invariants.
 
 ## Full command reference
 
@@ -1554,12 +1572,15 @@ forge/
 │   ├── forge-fractal-dispatch.sh bridge entrypoint for existing pipelines
 │   ├── forge-install-fractal.sh isolated optional runtime installer
 │   ├── forge_fractal/           nested execution, recovery, inspection and dashboard
+│   ├── forge-dataset.py         `forge dataset` entry point
+│   ├── forge_dataset/           the run dataset: capture hooks, readers, importer, status checks
 │   └── forge-install.sh         install into all five harnesses
 └── references/
     ├── harnesses.md             per-harness invocation, ladders, failure modes
     ├── decompose.md             tasks.tsv schema, difficulty criteria, wave algorithm
     ├── fractal.md               opt-in backend, limits, recovery and observability
-    └── memory.md                FORGE_LEARNING grammar, promotion and pruning rules
+    ├── memory.md                FORGE_LEARNING grammar, promotion and pruning rules
+    └── dataset.md               the run dataset: what is captured, where, and its invariants
 ```
 
 ## Execution integrity and offline checks

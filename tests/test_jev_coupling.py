@@ -1,4 +1,5 @@
 """Plan-time semantic wave coupling: warns on same-wave pairs, never edits the plan."""
+import dataset_isolation  # noqa: F401  keeps the run dataset out of the developer's store
 import sys
 import tempfile
 import unittest

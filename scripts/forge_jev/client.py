@@ -43,6 +43,32 @@ def _log(run_dir, site, key, ok, reason, latency_s, model, usage, questions, ans
         _skip(run_dir, site, reason)
 
 
+# Not decisions about a real run: replays of recorded answers, the setup key probe, and
+# backtests over history. Kept out of the run dataset so it only holds live judgments.
+_DATASET_SKIP_SITES = ('setup-probe',)
+_DATASET_SKIP_PREFIXES = ('jev-backtest',)
+
+
+def _dataset(site, key, canonical, ok, reason, latency, model, usage, qids, answers, run_dir) -> None:
+    """Keep the full request (state and questions) with its answers in the run dataset.
+
+    jev.jsonl keeps only the request's sha256, so a judgment could never be replayed
+    against another model, or used to train one. The blob's original sha IS that key,
+    so the two records join. Fail-open: never raises, never prints.
+    """
+    if os.environ.get('FORGE_JEV_FIXTURES') or site in _DATASET_SKIP_SITES or site.startswith(_DATASET_SKIP_PREFIXES):
+        return
+    try:
+        scripts = str(Path(__file__).resolve().parent.parent)
+        if scripts not in sys.path:
+            sys.path.insert(0, scripts)
+        from forge_dataset.capture import jev
+        jev(site=site, key=key, canonical=canonical, ok=ok, reason=reason, latency=latency, model=model,
+            usage=usage, questions=qids, answers=answers, run_dir=run_dir, acting=acting(), shadow=shadow())
+    except Exception:
+        pass
+
+
 def ask(state, questions: dict, *, site: str, run_dir=None, config: dict | None = None,
         deadline_s: float | None = None) -> dict | None:
     config = config or load_config()
@@ -51,11 +77,14 @@ def ask(state, questions: dict, *, site: str, run_dir=None, config: dict | None 
     started = time.time()
 
     def done(ok, reason, result, model=None, usage=None, latency=None):
-        _log(run_dir, site, fixture_key, ok, reason, latency if latency is not None else time.time() - started,
-             model, usage, qids, result['answers'] if result else None)
+        latency = latency if latency is not None else time.time() - started
+        answers = result['answers'] if result else None
+        _log(run_dir, site, fixture_key, ok, reason, latency, model, usage, qids, answers)
+        if canonical is not None:
+            _dataset(site, fixture_key, canonical, ok, reason, latency, model, usage, qids, answers, run_dir)
         return result
 
-    fixture_key = None
+    fixture_key = canonical = None
     body = dict(state=state, model=config.get('model', DEFAULTS['model']), questions=questions)
     try:
         canonical = json.dumps(body, sort_keys=True, separators=(',', ':')).encode()

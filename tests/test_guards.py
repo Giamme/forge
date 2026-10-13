@@ -1,4 +1,5 @@
 """forge-guard.py: the process-group session wrapper, the reaper, and the promise scan."""
+import dataset_isolation  # noqa: F401  keeps the run dataset out of the developer's store
 import importlib.util
 import os
 import signal

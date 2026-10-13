@@ -5,6 +5,7 @@ from __future__ import annotations
 import datetime
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import shutil
@@ -18,6 +19,25 @@ def write_json(path: Path, value: dict) -> None:
     temporary = path.with_name(path.name + '.' + uuid.uuid4().hex)
     temporary.write_text(json.dumps(value, indent=2) + '\n')
     temporary.replace(path)
+
+
+def _dataset(hook: str, *args) -> None:
+    """Hand an execution to the run dataset (scripts/forge_dataset/).
+
+    Fail-open by contract: a capture problem lands in the dataset's errors.log and never
+    changes what this command prints, returns or exits with. begin()'s stdout is the
+    attempt path the shell reads, so nothing here may print.
+    """
+    if os.environ.get('FORGE_DATASET', 'on').strip().lower() in ('off', '0', 'no', 'false'):
+        return
+    try:
+        scripts = str(Path(__file__).resolve().parent)
+        if scripts not in sys.path:
+            sys.path.insert(0, scripts)
+        from forge_dataset import capture
+        getattr(capture, hook)(*args)
+    except Exception:
+        pass
 
 
 def capability_help(cache: str, registry: str, recipe: str, command: list[str]) -> str:
@@ -56,6 +76,7 @@ def begin(root: str, role: str) -> Path:
         )},
         'exit_code': None,
     })
+    _dataset('on_begin', str(attempt), root, role)
     return attempt
 
 
@@ -114,7 +135,14 @@ def extract(log: str, harness: str) -> tuple[str | None, dict[str, int | None]]:
 
 
 def finish(attempt: str, root: str, role: str, harness: str, rc: str) -> None:
-    root, attempt = Path(root), Path(attempt)
+    try:
+        _finish(Path(attempt), Path(root), role, harness, rc)
+    finally:
+        # In `finally`, so an extraction or copy error above cannot lose the record.
+        _dataset('on_finish', str(attempt), str(root), role, harness, rc)
+
+
+def _finish(attempt: Path, root: Path, role: str, harness: str, rc: str) -> None:
     log = root / (role + '.log')
     last = root / (role + '.last')
     structured = harness in ('codex', 'claude')

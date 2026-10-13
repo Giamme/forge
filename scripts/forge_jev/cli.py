@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import sys
 import tempfile
+import time
 import urllib.parse
 
 from . import (CAPABILITIES, DEFAULT_THRESHOLDS, api_key, config_path, enabled,
@@ -58,6 +59,7 @@ def parser() -> argparse.ArgumentParser:
     verify_discover = sub.add_parser('verify-discover')
     verify_discover.add_argument('--repo', required=True)
     verify_discover.add_argument('--json', action='store_true')
+    verify_discover.add_argument('--run-dir')
 
     calibrate = sub.add_parser('calibrate')
     calibrate.add_argument('--repo', required=True)
@@ -133,6 +135,7 @@ def parser() -> argparse.ArgumentParser:
     verify_triage.add_argument('--command', dest='verify_command', required=True)
     verify_triage.add_argument('--log', required=True)
     verify_triage.add_argument('--json', action='store_true')
+    verify_triage.add_argument('--run-dir')
     return p
 
 
@@ -385,7 +388,7 @@ def cmd_verify_discover(args) -> int:
         return 3
 
     config = load_config()
-    result = verify.discover(repo, config=config)
+    result = verify.discover(repo, config=config, run_dir=args.run_dir)
     if result is None:
         if not args.json:
             print('forge jev verify-discover: no verified candidate found', file=sys.stderr)
@@ -422,7 +425,8 @@ def cmd_verify_triage(args) -> int:
 
     config = load_config()
     traps = verify.known_traps(repo)
-    result = verify.triage(repo, command=args.verify_command, log_tail=log_tail, traps=traps, config=config)
+    result = verify.triage(repo, command=args.verify_command, log_tail=log_tail, traps=traps, config=config,
+                           run_dir=args.run_dir)
     if result is None:
         if args.json:
             print(json.dumps(None))
@@ -808,6 +812,23 @@ def cmd_test_subset(args) -> int:
     import subprocess
     import tempfile
 
+    receipt_values: dict = {}
+
+    def receipt(outcome: str, **values) -> None:
+        """Record how the subset run ended, every outcome, not just a failure. A selection
+        is only trainable when we know whether the chosen tests passed, failed on this
+        diff, or could not run. Fail-open."""
+        receipt_values.update(values)
+        try:
+            scripts = str(Path(__file__).resolve().parent.parent)
+            if scripts not in sys.path:
+                sys.path.insert(0, scripts)
+            from forge_dataset.capture import point
+            texts = {k: receipt_values.pop(k) for k in ('candidate_output', 'base_output') if k in receipt_values}
+            point('subset_run', args.run_dir, None, dict(receipt_values, outcome=outcome), texts=texts)
+        except Exception:
+            pass
+
     # Usage errors come first and need neither a key nor a config: a caller who gets
     # exit 3 ("Jev is unavailable") for a malformed command would conclude the wrong
     # thing and never fix the command.
@@ -847,9 +868,12 @@ def cmd_test_subset(args) -> int:
     # highest-scoring few. Over-selecting only costs runtime in a throwaway directory;
     # the result is advisory either way and never decides verification.
     chosen = [name for _p, name in scored[:max(1, args.max)]]
+    receipt_values.update(chosen=chosen, scored=[[p, name] for p, name in scored[:40]], changed=changed,
+                          commit=args.commit, base=args.base)
     export_dir = tempfile.mkdtemp(prefix='forge-subset-')
     try:
         if not subset.export(repo, args.commit, export_dir):
+            receipt('export_failed')
             return 3
         # The template says how THIS project's runner takes a file list, because there
         # is no general answer. `pytest -q <files>` works; `npm test <files>` does not
@@ -857,15 +881,22 @@ def cmd_test_subset(args) -> int:
         # all, and `python -m unittest discover -s tests` rejects paths outright. Guessing
         # produced a command that failed for a reason having nothing to do with the diff.
         command = args.subset_command.replace('{files}', ' '.join(chosen))
+        receipt_values['command'] = command
+        started = time.time()
         try:
             completed = subprocess.run(command, shell=True, cwd=export_dir,
                                        capture_output=True, text=True,
                                        timeout=max(1, args.timeout))
-        except (OSError, subprocess.SubprocessError):
+        except (OSError, subprocess.SubprocessError) as error:
+            receipt('timeout' if isinstance(error, subprocess.TimeoutExpired) else 'candidate_error',
+                    candidate_s=round(time.time() - started, 3))
             return 3
-        if completed.returncode == 0:
-            return 1
         tail = (completed.stdout or '') + (completed.stderr or '')
+        receipt_values.update(candidate_exit=completed.returncode, candidate_s=round(time.time() - started, 3),
+                              candidate_output=tail[-65536:])
+        if completed.returncode == 0:
+            receipt('pass')
+            return 1
     finally:
         subset.cleanup(export_dir)
 
@@ -876,22 +907,31 @@ def cmd_test_subset(args) -> int:
     # same shape. So run the identical subset against the BASE commit and only speak up
     # when the base passes: that is the one case where this diff is implicated.
     if not args.base:
+        receipt('fail_no_base')
         return 3
     control_dir = tempfile.mkdtemp(prefix='forge-subset-base-')
     try:
         if not subset.export(repo, args.base, control_dir):
+            receipt('base_export_failed')
             return 3
+        started = time.time()
         try:
             control = subprocess.run(command, shell=True, cwd=control_dir,
                                      capture_output=True, text=True,
                                      timeout=max(1, args.timeout))
-        except (OSError, subprocess.SubprocessError):
+        except (OSError, subprocess.SubprocessError) as error:
+            receipt('base_timeout' if isinstance(error, subprocess.TimeoutExpired) else 'base_error',
+                    base_s=round(time.time() - started, 3))
             return 3
+        receipt_values.update(base_exit=control.returncode, base_s=round(time.time() - started, 3),
+                              base_output=((control.stdout or '') + (control.stderr or ''))[-65536:])
         if control.returncode != 0:
             # Same failure without the diff: environment or pre-existing, not this change.
+            receipt('environment')
             return 3
     finally:
         subset.cleanup(control_dir)
+    receipt('regression')
 
     print('The likely-affected tests were run against this diff and FAILED.')
     print('The same tests PASS on the commit this task started from, so the failure')

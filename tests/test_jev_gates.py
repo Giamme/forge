@@ -1,4 +1,5 @@
 """Pre-dispatch gates: plan-time warnings that must never block and never nag."""
+import dataset_isolation  # noqa: F401  keeps the run dataset out of the developer's store
 import subprocess
 import sys
 import tempfile
