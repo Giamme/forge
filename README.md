@@ -791,6 +791,7 @@ It exists to train and calibrate decision models on what forge actually did.
 ./forge dataset status            # size, counts, and anything that looks incomplete
 ./forge dataset import ~/.local/share/forge/legacy   # runs that predate live capture
 ./forge dataset export            # labeled decision cases for benchmarks and fine-tuning
+./forge dataset outcomes          # which integrated lines survived, read from git history
 ```
 
 Capture is fail-open and never read by anything that builds a prompt. See

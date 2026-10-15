@@ -1109,7 +1109,10 @@ verify_result() ( # plan, checkout, artifact directory
   forge_metric_phase verification
   repo="$(cat "$plan/repo")"
   rm -f "$out/verification.flaky" "$out/verification.retry.log" "$out/verification.coverage.txt" \
-    "$out/verification.runs.tsv" "$out"/verification.run-*.log
+    "$out/verification.runs.tsv" "$out"/verification.run-*.log "$out/verification.commit"
+  # The commit being verified, named before any early return, so every outcome (FAIL and
+  # UNVERIFIED included) can be joined to the code it judged.
+  git -C "$wt" rev-parse HEAD > "$out/verification.commit" 2>/dev/null || rm -f "$out/verification.commit"
   # A failed command is rerun this many times before it counts, so one flaky lane does not
   # cost a whole run. The source fingerprint still has to be unchanged, and a rerun that
   # passes is recorded loudly (verification.flaky) rather than passed off as clean.

@@ -424,6 +424,67 @@ class EndToEndTests(StoreCase):
     def text_of(self, plan, task):
         return (plan / 'tasks' / task / 'status').read_text().strip()
 
+    def commit_at(self, when, message, files=None):
+        env = dict(self.env, GIT_AUTHOR_DATE='@%d +0000' % when, GIT_COMMITTER_DATE='@%d +0000' % when)
+        for name, content in (files or {}).items():
+            if content is None:
+                subprocess.run(['git', 'rm', '-q', name], cwd=self.repo, env=env, check=True)
+            else:
+                (self.repo / name).write_text(content)
+                subprocess.run(['git', 'add', name], cwd=self.repo, env=env, check=True)
+        subprocess.run(['git', 'commit', '-q', '--allow-empty', '-m', message], cwd=self.repo, env=env, check=True)
+        return self.git('rev-parse', 'HEAD').decode().strip()
+
+    def test_integrated_work_is_followed_into_the_history_that_comes_after(self):
+        # The one outcome no reviewer decides: whether the lines a task added are still there.
+        # Later commits get frozen dates around a one-day horizon after the integration.
+        from forge_dataset import export, outcomes
+        self.scenario({'a.dwarf.*': {'content': 'one\ntwo\nthree\nfour'}, 'b.dwarf.*': {'content': 'kept'}})
+        p = self.plan_of([('a', '-', 'a.txt'), ('b', '-', 'b.txt')])
+        self.assertEqual(self.run_script('forge-parallel.sh', 'run', p).returncode, 0)
+        r = self.run_script('forge-parallel.sh', 'integrate', p, '--approved')
+        self.assertEqual(r.returncode, 0, r.stdout)
+        shutil.rmtree(p)
+        db = store.connect()
+        [(at, integration)] = [(ts, json.loads(d)) for ts, d in db.execute("SELECT ts, data FROM events WHERE kind='event'")
+                               if json.loads(d)['name'] == 'integrate_advanced']
+        db.close()
+        [attempt_a] = self.attempts('a')
+        rewrite = self.commit_at(at + 3600, 'reword one line', {'a.txt': 'one\nTWO\nthree\nfour\n'})
+        revert = self.commit_at(at + 7200, 'Revert "a"\n\nThis reverts commit %s.' % attempt_a['data']['reviewed_commit'])
+        self.commit_at(at + 3 * 86400, 'after the horizon', {'b.txt': None})
+        index = (self.repo / '.git' / 'index').stat().st_mtime_ns
+
+        found, counts = outcomes.harvest(horizon_days=1, include_temp=True, now=at + 10 * 86400)
+        by_task = {e['task']: e['data'] for _, e in found}
+        self.assertEqual({t: (d['status'], d['added'], d['surviving'], d['horizon_rev']) for t, d in by_task.items()},
+                         {'a': ('ok', 4, 3, revert), 'b': ('ok', 1, 1, revert)})
+        self.assertEqual((by_task['a']['reverted_by'], by_task['b']['reverted_by']), ([revert], []))
+        self.assertEqual((self.repo / '.git' / 'index').stat().st_mtime_ns, index)
+        self.assertNotEqual(rewrite, revert)
+
+        # A horizon the history has not reached yet is not an outcome: nothing is written.
+        self.assertEqual(outcomes.harvest(horizon_days=30, include_temp=True, now=at + 86400)[1]['pending'], 2)
+        args = type('A', (), dict(horizon_days=1, repo=None, include_temp=True, dry_run=True))()
+        before = len(self.events())
+        with contextlib.redirect_stdout(io.StringIO()), patch.object(outcomes.time, 'time', lambda: at + 10 * 86400):
+            outcomes.main(args)
+            self.assertEqual(len(self.events()), before)
+            args.dry_run = False
+            outcomes.main(args)
+            self.assertEqual(len(self.events(kind='outcome')), 2)
+            outcomes.main(args)
+        self.assertEqual(len(self.events(kind='outcome')), 2)
+
+        reviews = {c['task']: c for c in export.build(store.connect(), slices=('review',)) if 'survives' in c['expected']}
+        self.assertEqual({t: c['expected']['survives'] for t, c in reviews.items()}, {'a': False, 'b': True})
+
+        # A branch reset past the integration can no longer say what survived: lost, not failed.
+        self.git('reset', '-q', '--hard', integration['parent'])
+        found, _ = outcomes.harvest(horizon_days=2, include_temp=True, now=at + 10 * 86400)
+        self.assertEqual({e['data']['status'] for _, e in found}, {'lost'})
+        self.assertEqual(self.errors(), '')
+
 
 class ImportTests(StoreCase):
     def test_an_old_run_gets_one_attempt_per_execution_with_its_own_diff(self):

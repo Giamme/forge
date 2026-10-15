@@ -38,6 +38,7 @@ time order: an attempt that PASSed, then a merge that CONFLICTed, then a human `
 | `jev` | Jev request | site, answers, usage, latency, mode. Blob: the **full request** (state and questions). Its original sha is `jev.jsonl`'s `key` |
 | `fractal_step` / `fractal_node` | Fractal step, node state | decomposition decision, iteration, resolved model, cost, tokens, candidate diff |
 | `ledger` | ledger row | imported `.forge/ledger.tsv` rows |
+| `outcome` | integrated task, per horizon | written by `forge dataset outcomes`, never by a run: how many of the lines a task added survive N days after `integrate`, and what reverted it |
 
 Each blob reference carries `sha` (the stored bytes), `original_sha`, `n` (the original
 size), `kept`, and `cut`. A cut keeps the head and the tail, because a QA prompt ends with
@@ -110,6 +111,7 @@ forge still running keeps writing.
 ./forge dataset blob <sha>              # print one stored blob
 ./forge dataset import <dir|archive|legacy-dir>... [--registry] [--fractal] [--ledger REPO] [--dry-run]
 ./forge dataset export [--slice S]... [--limit N] [--seed N] [--out DIR]   # labeled decision cases
+./forge dataset outcomes [--horizon-days 14] [--repo PATH] [--dry-run]     # what integrated work became
 ```
 
 `status` runs a different completeness check for each mode, because each mode
@@ -136,6 +138,7 @@ from what happened afterwards:
 | `routing` | which difficulty tier is this task? | the tier the orchestrator or planner declared. This is agreement, not an outcome |
 | `retry` | will this retry pass, given the review findings it was handed? (state adds the attempt number and the previous review) | the final status of that attempt (see below) |
 | `review` | will the independent reviewer pass this diff? (state names the reviewer's model, effort and harness) | the QA verdict. A diff whose reviews disagreed is dropped |
+| `review` | will most of the lines this diff adds stay in the code, unrewritten and unreverted? | from `outcomes`: at least 80% of the added lines still blamed to the task's commits at the horizon, and no revert. Only the review of the diff that landed gets it |
 | `review` | what is the most severe problem the reviewer will find? (`none`, `P3` to `P0`, the contract's scale) | the worst CONFIRMED finding, only when every CONFIRMED finding carries a severity and none is UNSTATED. A review whose findings cannot be fully read gets no label rather than a wrong `none` |
 | `drift` | is this undeclared file likely to need editing? | whether the passing attempt changed it. Negatives are undeclared files near the task, plus random ones |
 | `citation` | do the places this review cites appear in this diff? | the review paired with its own diff, or with another task's diff from the same repo that shares no file |
@@ -185,6 +188,38 @@ The output defaults to `<data>/exports/forge-decisions/` (`0700`, files `0600`).
 prompts, diffs and reviews from your repos, so keep it out of public repos and pass it
 only to local models. Builds are deterministic for a given store and `--seed`.
 
+## Outcomes after merge
+
+Every other label comes from a reviewer. `forge dataset outcomes` adds one that does not,
+read from the repo's history after the fact. `integrate` merges the run branch with
+`--no-ff` and fast-forwards your branch to that merge, never squashing, so each task's
+attempt commits land as they are and `git blame` still attributes a task's lines to them.
+For every integration, and every task it brought in, the harvester records:
+
+- **Survival:** of the text lines the task added (`base_ref..reviewed_commit`), how many
+  are still attributed to the task's commits at the horizon, per file. A deleted file
+  counts as none surviving. Binary files are skipped, and a task that only deleted lines
+  is `no_additions`.
+- **Reverts:** later commits whose message says `This reverts commit <sha>` for one of the
+  task's commits, its merge or the integration.
+- **The horizon:** the last commit on your branch's first-parent chain, after the
+  integration, dated before `integrate` + N days. The branch is resolved once, and the
+  chain is walked by position, so commit dates out of order cannot skip a commit.
+
+Two cases leave a task without a survival count:
+- **Pending:** the horizon has not been reached and no later commit has passed it yet.
+  Nothing is written, and the next harvest tries again.
+- **Lost:** a rebase, squash or reset took the integration off the branch. This means
+  unobservable, not failed.
+
+The rid names the integration, the reviewed commit and the horizon, so harvesting again
+adds nothing, and two horizons are two outcomes. Survival describes the diff that landed,
+with every retry in it, not the first model the task was routed to. That is why the
+exporter attaches it to that diff's review.
+
+Each verification event also records the commit it verified (`verification.commit`, named
+before any early return), so a FAIL or UNVERIFIED result can be joined to its code too.
+
 ## Importing old runs
 
 `import` reads run dirs that predate live capture through the same readers. An execution
@@ -216,6 +251,11 @@ listed in `ledgers/REPOS.tsv`.
   the store. A reviewer that could see earlier runs' verdicts would not be independent.
   `tests/test_dataset.py` enforces that outside its own package, the dataset is only
   imported for capture.
+- **Read-only in your repos.** Capture and the harvester run only object-store git queries
+  in a repo: `rev-parse`, `rev-list`, `log`, `show`, `ls-tree`, `cat-file`, `diff` between
+  commits and `blame` at a commit. All run with `GIT_OPTIONAL_LOCKS=0`. None takes the
+  working tree or refreshes the index. `outcomes` reads the store through a read-only
+  connection and writes only what it found.
 - **Private.** Prompts, diffs and logs can contain secrets. The dir is `0700` and its files
   `0600`. Do not sync it. Redaction belongs to whatever exports a training set.
 

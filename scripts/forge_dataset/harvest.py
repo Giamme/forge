@@ -42,7 +42,8 @@ WATCHED = (
     'verdict', 'existing.diff', 'start.tree', 'reviewed.tree', 'context.md',
     'verification.status', 'verification.exit', 'verification.command', 'verification.log',
     'verification.retry.log', 'verification.flaky', 'verification.coverage.txt',
-    'verification.jev.json', 'verification.runs.tsv', 'results.tsv',
+    'verification.jev.json', 'verification.runs.tsv', 'verification.commit', 'verification.fingerprint',
+    'results.tsv',
 )
 
 _VERDICT = re.compile(r'^FORGE_VERDICT: (PASS|FAIL)([ \t]+(—|–|-)( .*)?)?[ \t]*$')
@@ -507,6 +508,7 @@ def verification_events(attempt: Path, out: Path, rc, prov: dict, src: str = 'li
     status = first_line(out / 'verification.status') if made('verification.status') else None
     data = dict(
         scope='integrate' if out != plan else 'run', status=status, exit=as_int(rc), command=command,
+        commit=first_line(out / 'verification.commit') if made('verification.commit') else None,
         command_source=source, retries_allowed=as_int(first_line(plan / 'verify_retries')),
         flaky=kv(out / 'verification.flaky') if made('verification.flaky') else None,
         jev=jev, runs=[{k: v for k, v in r.items() if k != 'log'} for r in runs],
@@ -545,7 +547,7 @@ def _git(repo: str, *args: str, limit: int = 1 << 20) -> str | None:
     """Read-only object-store queries; never touches the working tree or index."""
     try:
         result = subprocess.run(['git', '-C', repo, *args], stdout=subprocess.PIPE,
-                                stderr=subprocess.DEVNULL, timeout=5)
+                                stderr=subprocess.DEVNULL, timeout=5, env=dict(os.environ, GIT_OPTIONAL_LOCKS='0'))
     except (OSError, subprocess.SubprocessError):
         return None
     if result.returncode:

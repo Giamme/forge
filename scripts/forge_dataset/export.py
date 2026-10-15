@@ -189,6 +189,21 @@ def review_severity() -> dict:
             'P0': 'data loss, security hole, crash or wrong result on the main path'})
 
 
+SURVIVES_AT = 0.8
+
+
+def review_survives() -> dict:
+    return dict(type='noul', instructions=(
+        'This diff (in state) is about to pass review and be merged into the user\'s branch. In the '
+        'weeks after it lands, will most of the lines it adds stay in the code, neither rewritten '
+        'nor reverted?'),
+        criteria={
+            'true': 'At least %d%% of the added lines are still there, unchanged, and nothing reverted '
+                    'the change: it was right the first time.' % (SURVIVES_AT * 100),
+            'false': 'Much of it was rewritten soon after, or the change was reverted: it landed, but '
+                     'it was not what the code needed.'})
+
+
 def retry_pass() -> dict:
     return dict(type='noul', instructions=(
         'An earlier attempt at this Forge task failed review. The task is now dispatched again, to '
@@ -230,6 +245,21 @@ class Runs:
         self.interrupted = {(e['run'], e['task']) for e in store.of('event')
                             if e['d'].get('name') == 'sched_terminal' and e['d'].get('status') == 'INTERRUPTED'}
         self.censored = Counter()
+        # What `forge dataset outcomes` saw after integration, per reviewed commit; the
+        # longest horizon observed wins, since it is the stronger observation.
+        self.reviewed = {(e['run'], e['task'], e['attempt']): e['d']['reviewed_commit']
+                         for e in store.of('attempt') if e['d'].get('reviewed_commit')}
+        self.survival = {}
+        for e in store.of('outcome'):
+            d = e['d']
+            if d.get('name') == 'survival' and d.get('status') == 'ok' and d.get('added'):
+                held = self.survival.get(d['reviewed'])
+                if held is None or d['horizon_days'] > held['horizon_days']:
+                    self.survival[d['reviewed']] = d
+        self.integrate_verification = {}
+        for e in sorted(store.of('verification'), key=lambda e: e['ts']):
+            if e['d'].get('scope') == 'integrate' and e['d'].get('status'):
+                self.integrate_verification[e['run']] = e['d']['status']
         self.started = {}
         for e in store.events:
             if e['run'] and e['ts'] and (e['run'] not in self.started or e['ts'] < self.started[e['run']]):
@@ -403,7 +433,8 @@ def _meta(runs: Runs, run, plan_event, outcome_event) -> dict:
     """Which forge decided and which ran, and the options that shape the outcome."""
     out = dict(decision_provenance=plan_event.get('prov'), outcome_provenance=outcome_event.get('prov'),
                code_changed=bool(outcome_event['d'].get('code_changed')),
-               options=plan_event['d'].get('options') or {}, started=runs.started.get(run))
+               options=plan_event['d'].get('options') or {}, started=runs.started.get(run),
+               integrate_verification=runs.integrate_verification.get(run))
     if not out['decision_provenance'] and not out['outcome_provenance']:
         out['forge_rev_estimate'] = forge_rev_estimate(out['started'])
     return out
@@ -549,6 +580,16 @@ def review_cases(runs: Runs):
             questions['severity'], expected['severity'] = review_severity(), r['worst']
             label_source['severity'] = 'worst CONFIRMED finding (%s)' % r['completeness']
         meta = dict(completeness=r['completeness'])
+        # The one label here no reviewer decides: whether the merged diff's lines stayed.
+        landed = next((runs.survival[c] for c in (runs.reviewed.get((i['run'], i['task'], i['attempt']))
+                                                   for i, _ in items) if c in runs.survival), None)
+        if landed:
+            kept = landed['surviving'] / landed['added']
+            questions['survives'] = review_survives()
+            expected['survives'] = kept >= SURVIVES_AT and not landed.get('reverted_by')
+            label_source['survives'] = 'git blame %d days after integrate' % landed['horizon_days']
+            meta['survival'] = dict(added=landed['added'], surviving=landed['surviving'],
+                                    reverted_by=landed.get('reverted_by') or [], horizon_days=landed['horizon_days'])
         yield dict(slice='review', key=key, run=r['run'], repo=r['repo'], task=r['task'], state=state,
                    questions=questions, expected=expected, baseline=baseline, label_source=label_source,
                    reviewer=r['model'], meta=meta)

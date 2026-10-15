@@ -91,7 +91,7 @@ Runners offer installation once before agents; dispatch never prompts. See
 - [Memory](references/memory.md): `.forge/` learning and spend records; `--no-memory` disables
   them. Memory is written to the user's repository but excluded from implementation diffs.
 - [Dataset](references/dataset.md): every run's inputs and outcomes, kept outside the repo
-  for training decision models; `forge dataset status|import|export`, `FORGE_DATASET=off`.
+  for training decision models; `forge dataset status|import|export|outcomes`, `FORGE_DATASET=off`.
 - [Jev](references/jev.md): optional TypeSafe System One judgments for routing, test
   selection and memory curation; off by default.
 
