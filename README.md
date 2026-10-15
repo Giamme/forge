@@ -615,6 +615,17 @@ lists them. The literal status stays `PASS`, so nothing downstream needed a new 
 It fails safe: an unlabelled CONFIRMED finding, or a FAIL with no CONFIRMED finding at all,
 is never tolerated, and without a threshold nothing changes.
 
+#### Shadow reviews: how much of a verdict is the reviewer?
+
+`plan --shadow-qa <spec>[,<spec>...] [--shadow-rate R]` (default R = 0.1) sends a sampled
+share of reviewed attempts to a second reviewer, the first listed one of another model
+family than the task's. Its verdict goes to the run dataset and nothing in the run reads it,
+so it never changes a status, merge, memory or retry. `forge dataset status` then reports how
+often the two reviewers agree, overall and per model pair. The table shows the extra reviews
+before you approve. The shadow runs beside the main review and is stopped soon after that
+finishes, so the most it costs is reviews and a little latency. See
+[decomposition](references/decompose.md#shadow-reviews-opt-in).
+
 #### Implementer guards
 
 The dwarf is told not to commit, switch branches, start background processes, or claim checks
@@ -1068,6 +1079,7 @@ Bash 3.2 entrypoints use a Python standard-library coordinator to schedule eligi
 
 ```
 forge-parallel.sh plan      <plan-dir> --repo <dir> [routing flags] [--planner <spec>] [--no-memory]
+                                     [--decompose-level L] [--shadow-qa <spec>[,..]|none] [--shadow-rate R]
 forge-parallel.sh run       <plan-dir> [--max-parallel N] [--yolo-dwarf] [--yolo-qa] [--dry-run]
                                      [--verify <cmd>] [--setup <cmd>] [--timeout S]
                                      [--retry-failed N] [--infra-retries M]

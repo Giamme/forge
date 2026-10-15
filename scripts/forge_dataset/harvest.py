@@ -30,7 +30,7 @@ PIPELINE_ROLES = ('task', 'solo', 'verification', 'parallel')
 TASKS_COLS = ('id', 'deps', 'difficulty', 'files', 'dwarf', 'qa', 'title')
 STRUCTURED = ('codex', 'claude')
 # Plan files that change what a plan decides, added to its rid only when present (see plan_event).
-PLAN_RID_LATER = ('decompose_level',)
+PLAN_RID_LATER = ('decompose_level', 'shadow_qa', 'shadow_rate')
 
 # Files a task or solo execution may write. begin() snapshots their signatures so
 # finish() can tell this execution's outputs from what an earlier one left behind.
@@ -267,7 +267,10 @@ def locate(root: str | Path, role: str | None = None) -> dict:
                    repo=request.get('repo') or request.get('source'), link=request.get('output'))
         return ctx
     plan = None
-    if p.parent.name == 'tasks' and (p.parent.parent / 'tasks.tsv').exists():
+    if p.parent.parent.name == 'shadow' and (p.parent.parent.parent / 'tasks.tsv').exists():
+        # <plan>/shadow/<task>/<attempt>-<k>: a shadow review (forge-shadow.py) of that task.
+        plan, ctx['task'], ctx['scope'], ctx['shadow'] = p.parent.parent.parent, p.parent.name, 'task', True
+    elif p.parent.name == 'tasks' and (p.parent.parent / 'tasks.tsv').exists():
         plan, ctx['task'], ctx['scope'] = p.parent.parent, p.name, 'task'
     elif p.name.startswith('final-review-') and (p.parent / 'tasks.tsv').exists():
         plan, ctx['scope'] = p.parent, 'final_review'
@@ -343,8 +346,11 @@ def dispatch_event(attempt: Path, root: Path, role: str, harness: str, rc, prov:
     effort = resolved.get('effort')
     verdict = verdict_of(message) if message is not None else None
     found, parsed = parse_review(message) if role == 'qa' else ([], True)
+    shadow = prov.get('shadow')
     data = dict(
-        role=role, alias=resolved.get('alias'), harness=harness, model=resolved.get('model'),
+        # A shadow review keeps the qa files and contract but is never a task's review, so it
+        # gets its own role: nothing that reads qa dispatches mistakes it for the one that decided.
+        role='qa_shadow' if shadow and role == 'qa' else role, alias=resolved.get('alias'), harness=harness, model=resolved.get('model'),
         effort=None if not effort or effort.startswith('<') else effort,
         yolo=resolved.get('yolo') == 'ON', passthrough=resolved.get('passthrough') == 'yes',
         clamped=resolved.get('clamped'), timeout=as_int(resolved.get('timeout')),
@@ -359,6 +365,7 @@ def dispatch_event(attempt: Path, root: Path, role: str, harness: str, rc, prov:
         verdict=verdict, findings=found, learnings=learnings(message),
         findings_parse=review_completeness(verdict, found, parsed) if role == 'qa' else None,
         root=str(root), scope=prov.get('scope'), trigger=prov.get('trigger'),
+        **({'shadow': shadow} if shadow else {}),
     )
     prompt = None if delivery == 'native_review' else put_file(attempt / (role + '.prompt'), 'prompt')
     last = put_file(attempt / (role + '.last'), 'message' if final_source == 'structured' else 'log')
@@ -622,7 +629,8 @@ def plan_event(plan: Path, prov: dict, src: str = 'live', inventory: bool = True
         pools=read_json(plan / 'fractal-routing.json'), jev_selection=read_json(plan / 'jev-selection.json'),
         fractal_selection=read_json(plan / 'fractal-selection.json'),
         jev_coupling=read_json(plan / 'jev-coupling.json'),
-        options={name: first_line(plan / name) for name in ('qa_threshold', 'verify_retries', 'timeout', 'final_qa')
+        options={name: first_line(plan / name) for name in ('qa_threshold', 'verify_retries', 'timeout', 'final_qa',
+                                                            'shadow_qa', 'shadow_rate')
                  if (plan / name).exists()},
         flags=sorted(name for name in ('no_memory', 'no_ripwire', 'yolo_dwarf', 'yolo_qa') if (plan / name).exists()),
         blobs=blobs(goal=put_file(plan / 'goal.txt'), request=put_file(plan / 'request.md', 'prompt'),

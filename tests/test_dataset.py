@@ -255,13 +255,14 @@ class EndToEndTests(StoreCase):
     run_script = fixtures.ForgeTests.run_script
     scenario = fixtures.ForgeTests.scenario
     solo = fixtures.ForgeTests.solo
+    calls = fixtures.ForgeTests.calls
 
     def setUp(self):
         StoreCase.setUp(self)
         self.setUp_fixture()
         self.env['FORGE_DATA_HOME'] = str(self.home)
 
-    def plan_of(self, rows):
+    def plan_of(self, rows, *flags):
         p = self.root / 'plan'
         p.mkdir()
         (p / 'tasks.tsv').write_text(''.join(f'{i}\t{d}\tlow\t{f}\tsol\topus\t{i.upper()}\n' for i, d, f in rows))
@@ -270,8 +271,9 @@ class EndToEndTests(StoreCase):
             t.mkdir(parents=True)
             (t / 'prompt.md').write_text('Implement change. REQUIREMENT_SENTINEL TASK_' + i)
         r = self.run_script('forge-parallel.sh', 'plan', p, '--repo', self.repo, '--no-memory',
-                            '--decompose-level', 'low')
+                            '--decompose-level', 'low', *flags)
         self.assertEqual(r.returncode, 0, r.stdout)
+        self.plan_output = r.stdout
         return p
 
     def attempts(self, task):
@@ -423,6 +425,88 @@ class EndToEndTests(StoreCase):
 
     def text_of(self, plan, task):
         return (plan / 'tasks' / task / 'status').read_text().strip()
+
+    def test_a_shadow_review_is_recorded_beside_the_run_and_changes_nothing(self):
+        # A second reviewer of another model family, sampled (here every attempt), measures
+        # how often two reviewers agree. Nothing in the run reads it: a shadow FAIL on a
+        # diff the primary passed leaves the task PASS and merged.
+        from forge_dataset import export
+        self.scenario({'a.shadow.*': {'verdict': 'FAIL', 'findings': '- [P1][CONFIRMED] a.txt:1 — wrong'}})
+        p = self.plan_of([('a', '-', 'a.txt'), ('b', '-', 'b.txt')], '--shadow-qa', 'opus,sol', '--shadow-rate', '1')
+        self.assertIn('shadow review: opus,sol on a sampled 1 of reviewed attempts (about 2 extra reviews', self.plan_output)
+        r = self.run_script('forge-parallel.sh', 'run', p)
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertEqual({t: self.text_of(p, t) for t in 'ab'}, {'a': 'PASS', 'b': 'PASS'})
+        self.assertTrue(all((p / 'tasks' / t / 'merged').exists() for t in 'ab'))
+        self.assertEqual(sorted(self.calls()), ['dwarf', 'dwarf', 'qa', 'qa', 'shadow', 'shadow'])
+        self.assertEqual({t: (p / 'shadow' / t / '1-1' / 'shadow.status').read_text().strip() for t in 'ab'},
+                         {'a': 'done', 'b': 'done'})
+        self.assertEqual(json.loads((p / 'shadow' / 'a' / '1-1' / 'shadow.json').read_text())['spec'], 'sol')
+        # Two reviews of one diff, each in its own files: the shadow's FAIL never touched the primary's PASS.
+        verdict = lambda path: path.read_text().strip().splitlines()[-1]
+        self.assertEqual((verdict(p / 'tasks' / 'a' / 'qa.last'), verdict(p / 'shadow' / 'a' / '1-1' / 'qa.last')),
+                         ('FORGE_VERDICT: PASS', 'FORGE_VERDICT: FAIL'))
+        shutil.rmtree(p)
+
+        shadows = {e['task']: e for e in self.events(kind='dispatch') if e['data']['role'] == 'qa_shadow'}
+        self.assertEqual({t: (e['attempt'], e['data']['verdict'], e['data']['model']) for t, e in shadows.items()},
+                         {'a': (1, 'FAIL', 'gpt-6.1-sol'), 'b': (1, 'PASS', 'gpt-6.1-sol')})
+        [attempt_a] = self.attempts('a')
+        self.assertEqual(shadows['a']['data']['shadow']['reviewed'], attempt_a['data']['reviewed_commit'])
+        ended = {e['task']: e['data']['status'] for e in self.events(kind='event') if e['data']['name'] == 'shadow_review'}
+        self.assertEqual(ended, {'a': 'done', 'b': 'done'})
+        reviews = {c['task']: c for c in export.build(store.connect(), slices=('review',))}
+        self.assertEqual({t: (c['expected']['passes'], c['meta']['consensus']) for t, c in reviews.items()},
+                         {'a': (True, False), 'b': (True, True)})
+        runs = export.Runs(export.Store(store.connect()))
+        self.assertEqual({k: export.agreement(runs)[k] for k in ('shadow_reviews', 'pairs', 'agree')},
+                         dict(shadow_reviews=2, pairs=2, agree=1))
+        self.assertEqual(checks.run(store.connect())['qa_without_attempt']['items'], [])
+        self.assertEqual(self.errors(), '')
+
+    def test_a_shadow_review_never_holds_its_task_for_long_or_outlives_it(self):
+        # The shadow may take as long again as the primary did (here a 2 s minimum), then it
+        # is stopped and the task goes on. A spec that cannot run here is dropped, not fatal.
+        self.env['FORGE_SHADOW_GRACE_S'] = '2'
+        self.scenario({'a.shadow.*': {'sleep': 60}})
+        p = self.plan_of([('a', '-', 'a.txt'), ('b', '-', 'b.txt')], '--shadow-qa', 'nosuchalias,sol',
+                         '--shadow-rate', '1')
+        started = time.time()
+        r = self.run_script('forge-parallel.sh', 'run', p)
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertLess(time.time() - started, 40, r.stdout)
+        self.assertIn('shadow review spec nosuchalias is not usable here', r.stdout)
+        self.assertEqual((p / 'shadow' / 'a' / '1-1' / 'shadow.status').read_text().strip(), 'overtime')
+        self.assertEqual((p / 'shadow' / 'b' / '1-1' / 'shadow.status').read_text().strip(), 'done')
+        self.assertEqual(self.text_of(p, 'a'), 'PASS')
+        live = subprocess.run(['pgrep', '-f', str(p / 'shadow')], capture_output=True, text=True)
+        self.assertEqual(live.stdout.strip(), '')
+
+    def test_a_shadow_review_dies_with_the_task_that_started_it(self):
+        # An interrupt never reaches a background job (a manual retry's Ctrl-C), and nothing
+        # cleans up after a SIGKILL, so the shadow watches the task shell that started it.
+        self.scenario({'a.shadow.*': {'sleep': 60}, 'a.qa.*': {'sleep': 60}})
+        p = self.plan_of([('a', '-', 'a.txt')], '--shadow-qa', 'sol', '--shadow-rate', '1')
+        run = subprocess.Popen(['bash', str(ROOT / 'scripts' / 'forge-parallel.sh'), 'run', str(p)], cwd=self.repo,
+                               env=self.env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.addCleanup(lambda: run.poll() is None and run.kill())
+        shadow = p / 'shadow' / 'a' / '1-1'
+        self.wait_for(lambda: (shadow / 'shadow.out').exists(), 30)
+        launcher = subprocess.run(['pgrep', '-f', 'forge-shadow.py run --plan %s' % p], capture_output=True,
+                                  text=True).stdout.split()
+        self.assertEqual(len(launcher), 1, launcher)
+        task_shell = int(subprocess.run(['ps', '-o', 'ppid=', '-p', launcher[0]], capture_output=True,
+                                        text=True).stdout.strip())
+        os.kill(task_shell, 9)
+        self.wait_for(lambda: (shadow / 'shadow.status').exists(), 30)
+        self.assertEqual((shadow / 'shadow.status').read_text().strip(), 'orphaned')
+        self.wait_for(lambda: not subprocess.run(['pgrep', '-f', str(shadow)], capture_output=True).stdout, 15)
+
+    def wait_for(self, condition, seconds):
+        deadline = time.time() + seconds
+        while not condition():
+            self.assertLess(time.time(), deadline, 'timed out waiting')
+            time.sleep(0.2)
 
     def commit_at(self, when, message, files=None):
         env = dict(self.env, GIT_AUTHOR_DATE='@%d +0000' % when, GIT_COMMITTER_DATE='@%d +0000' % when)
@@ -678,8 +762,8 @@ class IndependenceTests(unittest.TestCase):
         # Nothing that builds a prompt may read earlier runs' verdicts, or the reviewer
         # stops being independent. Outside its own package, the dataset may only be
         # written to, through capture.
-        allowed = {'forge-runtime.py', 'forge-schedule.py', 'forge-dataset.py', 'client.py', 'cli.py',
-                   'invocation.py', 'pipeline.py'}
+        allowed = {'forge-runtime.py', 'forge-schedule.py', 'forge-dataset.py', 'forge-shadow.py', 'client.py',
+                   'cli.py', 'invocation.py', 'pipeline.py'}
         for path in (ROOT / 'scripts').rglob('*'):
             if path.suffix not in ('.py', '.sh') or 'forge_dataset' in path.parts:
                 continue

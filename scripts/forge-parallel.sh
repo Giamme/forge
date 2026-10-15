@@ -26,6 +26,10 @@
 #   --dwarf-low <spec>
 #   --qa, --qa-high, --qa-medium, --qa-low    identical grammar
 #   --decompose-level L     the --decompose-level the goal was split at, kept as a record
+#   --shadow-qa <spec[,..]> opt-in: a second review of a sampled share of reviewed attempts,
+#                           by a listed reviewer of another model family, recorded and
+#                           never read (measures reviewer agreement). `none` turns it off
+#   --shadow-rate R         that share, 0..1 (default 0.1)
 #
 # Opt-in run behaviour (all off unless asked):
 #   --retry-failed N        re-queue a task whose reviewer said FAIL up to N more times,
@@ -119,7 +123,7 @@ pool_pick() { # pool_pick <comma-list> <index>
 do_plan() {
   local PLAN="${1:?plan needs a plan dir}"; shift
   local REPO="" D_ANY="" D_HI="" D_MD="" D_LO="" Q_ANY="" Q_HI="" Q_MD="" Q_LO=""
-  local PLANNER="" NOMEM=0 jev_rc=0 DLEVEL=""
+  local PLANNER="" NOMEM=0 jev_rc=0 DLEVEL="" SHADOW_QA="" SHADOW_RATE=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --repo)         REPO="${2:?}"; shift 2 ;;
@@ -129,6 +133,12 @@ do_plan() {
           *) die "--decompose-level must be low, medium or high" ;; esac ;;
       --no-ripwire) export FORGE_RIPWIRE=off; shift ;;
       --no-memory)    NOMEM=1; shift ;;
+      --shadow-qa)
+        [ -n "${2:-}" ] || die "--shadow-qa needs a QA spec, a comma list of specs, or none"
+        SHADOW_QA="$2"; shift 2 ;;
+      --shadow-rate)
+        printf '%s' "${2:-}" | grep -Eq '^(0?\.[0-9]+|0|1|1\.0+)$' || die "--shadow-rate needs a share between 0 and 1"
+        SHADOW_RATE="$2"; shift 2 ;;
       --dwarf)        D_ANY="${2:?}"; shift 2 ;;
       --dwarf-high)   D_HI="${2:?}"; shift 2 ;;
       --dwarf-medium) D_MD="${2:?}"; shift 2 ;;
@@ -161,6 +171,15 @@ do_plan() {
   # rewrites any column: which tier a task was DECLARED is a label of its own.
   cp "$T" "$PLAN/tasks.declared.tsv"
   [ -z "$DLEVEL" ] || printf '%s\n' "$DLEVEL" > "$PLAN/decompose_level"
+  # Shadow reviews are part of the plan, like its routing: frozen here, shown in the table
+  # and read by every task process. `none` turns them off again.
+  case "$SHADOW_QA" in
+    '') ;;
+    none|off) rm -f "$PLAN/shadow_qa" "$PLAN/shadow_rate" "$PLAN/shadow_qa.ok" ;;
+    *) printf '%s\n' "$SHADOW_QA" > "$PLAN/shadow_qa" ;;
+  esac
+  [ -z "$SHADOW_RATE" ] || [ "$SHADOW_QA" = none ] || [ "$SHADOW_QA" = off ] \
+    || printf '%s\n' "$SHADOW_RATE" > "$PLAN/shadow_rate"
 
   # repo: from flag on first plan, remembered afterwards
   if [ -n "$REPO" ]; then
@@ -411,6 +430,11 @@ render_table() {
     est=$((est+1)); extra=" + 1 planner ($(cat "$PLAN/planner"))"
   fi
   echo "tasks: $n   waves: $waves   estimated dispatches: $est ($n dwarf + $n qa$extra)"
+  if [ -s "$PLAN/shadow_qa" ]; then
+    local rate; rate="$(cat "$PLAN/shadow_rate" 2>/dev/null || echo 0.1)"
+    echo "shadow review: $(cat "$PLAN/shadow_qa") on a sampled $rate of reviewed attempts" \
+      "(about $(awk -v n="$n" -v r="$rate" 'BEGIN { x = n * r; printf "%d", (x == int(x)) ? x : int(x) + 1 }') extra reviews; recorded, never changes a result)"
+  fi
   echo
   local w id
   for w in $(awk -F'\t' '{print $1}' "$W" | sort -un); do
@@ -472,6 +496,10 @@ preflight_plan() {
   done
   if [ -s "$plan/planner" ]; then
     /bin/bash "$DISPATCH" doctor --spec "$(cat "$plan/planner")" --role planner || return $?
+  fi
+  # A shadow reviewer that cannot run here is dropped with a note, never a failed run.
+  if [ -s "$plan/shadow_qa" ]; then
+    python3 "$SKILL_DIR/scripts/forge-shadow.py" preflight --plan "$plan" || true
   fi
 }
 
@@ -855,10 +883,27 @@ do_task_body() (
       printf '%s' "$qa_effort" > "$tdir/qa.effort.jev"
     fi
   fi
+  # Opt-in (plan --shadow-qa): a second, independent review of this same diff, to measure
+  # how often two reviewers agree. It reviews its own snapshot from its own dir under
+  # $PLAN/shadow/, and nothing in this script ever reads its result.
+  local shadow_pid=""
+  if [ -s "$PLAN/shadow_qa" ] && [ -z "${FORGE_FRACTAL_RUN:-}" ]; then
+    python3 "$SKILL_DIR/scripts/forge-shadow.py" run --plan "$PLAN" --task "$id" --worktree "$wt" \
+        --base "$base" --reviewed "$reviewed" --attempt "$attempt" --qa "$qa" --tdir "$tdir" ${yq:+--yolo} \
+        </dev/null >/dev/null 2>&1 &
+    shadow_pid=$!
+  fi
   forge_metric_phase dispatch
   /bin/bash "$DISPATCH" qa "$qa" --repo "$review" --run-dir "$tdir" \
         --review-base "$(cat "$tdir/review.base")" --ripwire-query-file "$tdir/prompt.md" --prompt-file "$tdir/qa.input" $yq --output "${FORGE_OUTPUT:-summary}" >"$tdir/qa.out" 2>&1
   rc=$?
+  if [ -n "$shadow_pid" ]; then
+    # On every path below, before any status is written: the shadow learns the primary is
+    # done (which bounds how much longer it may take), and no shadow outlives its task, so
+    # a retry can never start while one is still reviewing. It can delay a task, never change it.
+    kill -USR1 "$shadow_pid" 2>/dev/null || true
+    wait "$shadow_pid" 2>/dev/null || true
+  fi
   if [ "${FORGE_OUTPUT:-summary}" = full ]; then cat "$tdir/qa.out"; fi
   if [ "$rc" -ne 0 ]; then
     case "$rc" in

@@ -552,7 +552,56 @@ def _worst(found) -> str:
 EFFORT_RANK = dict(low=0, medium=1, high=2, xhigh=3, max=4)
 
 
+def shadow_pairs(runs: Runs) -> dict:
+    """{(run, task, attempt): (primary qa dispatch, shadow dispatch)} for every usable shadow review.
+
+    Usable means the shadow ran to its end on an untouched snapshot (`shadow_review` says
+    done), both reviewers gave a verdict, and the shadow reviewed the commit that attempt
+    committed. Anything else would count noise in the shadow as disagreement.
+    """
+    ended = {}
+    for e in runs.store.of('event'):
+        if e['d'].get('name') == 'shadow_review':
+            ended[(e['run'], e['task'], _int(e['d'].get('attempt')))] = e['d'].get('status')
+    out = {}
+    for (run, task, role), rows in runs.dispatches.items():
+        if role != 'qa_shadow':
+            continue
+        for shadow in rows:
+            n = shadow['attempt']
+            if ended.get((run, task, n)) != 'done' or shadow['d'].get('verdict') not in ('PASS', 'FAIL'):
+                continue
+            primary = [d for d in runs.dispatches.get((run, task, 'qa'), [])
+                       if d['attempt'] == n and d['d'].get('verdict') in ('PASS', 'FAIL')]
+            reviewed = (shadow['d'].get('shadow') or {}).get('reviewed')
+            if primary and reviewed and reviewed == runs.reviewed.get((run, task, n)):
+                out[(run, task, n)] = (primary[-1], shadow)
+    return out
+
+
+def agreement(runs: Runs) -> dict:
+    """How often two reviewers of one diff agree, overall and per (primary, shadow) model pair."""
+    pairs = shadow_pairs(runs)
+    by_pair = defaultdict(lambda: [0, 0])
+    for primary, shadow in pairs.values():
+        key = '%s vs %s' % (primary['d'].get('model'), shadow['d'].get('model'))
+        by_pair[key][0] += 1
+        by_pair[key][1] += primary['d']['verdict'] == shadow['d']['verdict']
+    shadows = sum(len(rows) for (_, _, role), rows in runs.dispatches.items() if role == 'qa_shadow')
+    agree = sum(a for _, a in by_pair.values())
+    return dict(shadow_reviews=shadows, pairs=len(pairs), agree=agree,
+                by_pair={k: dict(pairs=n, agree=a) for k, (n, a) in sorted(by_pair.items())})
+
+
+def _int(value):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def review_cases(runs: Runs):
+    shadows = shadow_pairs(runs)
     seen = {}
     for r in _qa_rows(runs):
         task = runs.prompt(r['run'], r['task'])[:REVIEW_CHARS]
@@ -580,6 +629,14 @@ def review_cases(runs: Runs):
             questions['severity'], expected['severity'] = review_severity(), r['worst']
             label_source['severity'] = 'worst CONFIRMED finding (%s)' % r['completeness']
         meta = dict(completeness=r['completeness'])
+        # A second reviewer of the same diff, never consulted by the run: agreement is how
+        # much of this label is the diff and how much is who happened to review it.
+        paired = next((shadows[k] for k in ((i['run'], i['task'], i['attempt']) for i, _ in items) if k in shadows), None)
+        if paired:
+            primary, shadow = paired
+            meta['shadow'] = dict(verdict=shadow['d']['verdict'], reviewer=shadow['d'].get('model'),
+                                  worst=_worst(shadow['d'].get('findings') or []))
+            meta['consensus'] = shadow['d']['verdict'] == primary['d']['verdict']
         # The one label here no reviewer decides: whether the merged diff's lines stayed.
         landed = next((runs.survival[c] for c in (runs.reviewed.get((i['run'], i['task'], i['attempt']))
                                                    for i, _ in items) if c in runs.survival), None)

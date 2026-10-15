@@ -46,6 +46,11 @@ def on_begin(attempt: str, root: str, role: str) -> None:
             link=ctx['link'], role=role, root=str(root_dir), wall_started_ns=time.time_ns(),
             provenance=provenance(), **env,
         )
+        if os.environ.get('FORGE_SHADOW') == '1':
+            # Carried in the attempt dir, so an import long after still knows what this was.
+            prov['shadow'] = dict(attempt=h.as_int(os.environ.get('FORGE_SHADOW_ATTEMPT')),
+                                  reviewed=os.environ.get('FORGE_SHADOW_REVIEWED') or None,
+                                  primary=os.environ.get('FORGE_SHADOW_FROM') or None)
         if role in h.PIPELINE_ROLES:
             prov['files'] = h.snapshot(root_dir)
         if role == 'task':
@@ -74,7 +79,9 @@ def provenance_for(attempt_dir: Path, root_dir: Path, role: str) -> dict:
 
 def events_for(attempt_dir: Path, root_dir: Path, role: str, harness: str, rc, prov: dict, src: str) -> list:
     if harness != 'pipeline':
-        if prov.get('scope') == 'task':
+        if prov.get('shadow'):
+            prov['attempt_now'] = prov['shadow'].get('attempt')   # its dir has no attempt counter
+        elif prov.get('scope') == 'task':
             prov['attempt_now'] = h.as_int(h.first_line(root_dir / 'attempt'))
         return [h.dispatch_event(attempt_dir, root_dir, role, harness, rc, prov, src)]
     if role == 'task':

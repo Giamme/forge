@@ -21,9 +21,12 @@ if '--help' in a:
 p = sys.stdin.read() if '-p' in a or a[-1] == '-' else a[-1]
 qa = '--disallowed-tools' in a or '-s' in a or 'review' in a
 name = 'a.txt' if 'TASK_a' in p else ('b.txt' if 'TASK_b' in p else ('c.txt' if 'TASK_c' in p else ('d.txt' if 'TASK_d' in p else 'change.txt')))
-with open(os.environ['CALLS'], 'a') as f: f.write(('qa' if qa else 'dwarf')+'\\n')
+# A shadow review (forge-shadow.py) is a review the run never reads; it gets its own role so
+# it never shifts the primary reviewer's call numbers or counts.
+role = ('shadow' if os.environ.get('FORGE_SHADOW') == '1' else 'qa') if qa else 'dwarf'
+with open(os.environ['CALLS'], 'a') as f: f.write(role+'\\n')
 if os.environ.get('EVENTS'):
- with open(os.environ['EVENTS'], 'a') as f: f.write(name+(' qa' if qa else ' dwarf')+' '+str(time.time())+'\\n')
+ with open(os.environ['EVENTS'], 'a') as f: f.write(name+' '+role+' '+str(time.time())+'\\n')
 # SCENARIO is a JSON file keyed '<task>.<role>.<call number>' (task = file stem, so a.txt -> a);
 # '*' matches any task or any call. Per-key counters live in their own files because
 # decomposed tasks dispatch concurrently and must never share one. Two tasks can still
@@ -32,7 +35,7 @@ if os.environ.get('EVENTS'):
 sc = {}
 if os.environ.get('SCENARIO'):
  import json, fcntl
- sp = pathlib.Path(os.environ['SCENARIO']); role = 'qa' if qa else 'dwarf'; task = name.rsplit('.', 1)[0]
+ sp = pathlib.Path(os.environ['SCENARIO']); task = name.rsplit('.', 1)[0]
  cp = pathlib.Path(str(sp) + '.' + task + '.' + role)
  with open(str(cp) + '.lock', 'a') as lock:
   fcntl.flock(lock, fcntl.LOCK_EX); n = int(cp.read_text() if cp.exists() else '0') + 1; cp.write_text(str(n))

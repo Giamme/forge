@@ -255,6 +255,35 @@ The prompt contract (preamble, findings format, severity definitions and the ver
 comes from one place, `scripts/forge-contract.py`, shared by solo, decomposed and the final
 review; the implementer rules appended to every dwarf prompt come from the same module.
 
+### Shadow reviews (opt-in)
+
+`plan --shadow-qa <spec>[,<spec>...] [--shadow-rate R]` sends a sampled share of
+reviewed attempts (R, default 0.1) to a second, independent reviewer. Its verdict is
+recorded in the run dataset and never read by the run. It exists to measure how often two
+reviewers agree on one diff, which is the noise in every review-based label. The approval
+table shows the reviewers, the rate and the expected extra reviews, and `--shadow-qa none`
+turns shadow reviews off again.
+
+- **Which reviewer:** the first listed spec whose model family (Claude, GPT, Gemini, ...)
+  differs from the task's reviewer, so the two do not share one blind spot. If none
+  differs, the first listed spec. Forge only ever uses the specs you list. A spec that
+  cannot run here (`doctor` fails) is dropped with a note and never fails the run.
+- **Which attempts:** a deterministic sample per (run, task, attempt), so a QA-only
+  resume decides the same way.
+- **Same evidence, separate everything else.** The shadow reviews a byte-identical copy of
+  the primary's prompt, in its own snapshot, from its own dir
+  (`<plan>/shadow/<task>/<attempt>-<k>/`). Nothing reads that dir. It writes no status,
+  memory, ledger, gate or retry findings, and a reviewer that edits its snapshot is
+  recorded as `invalid`.
+- **Bounded:** it runs beside the primary, and the task waits for it before writing any
+  status. Once the primary is done, the shadow gets as long again as the primary took
+  (at least 5 minutes), then it is stopped. It dies with its task, including on Ctrl-C of
+  a manual `retry`.
+- **Scope:** parallel mode only, and never under Fractal.
+
+`./forge dataset status` reports the agreement rate, overall and per model pair. The export
+adds `shadow` and `consensus` to the matching review cases' metadata.
+
 ## Severity, thresholds and known issues
 
 QA labels each finding `- [P0..P3][CONFIRMED|PLAUSIBLE] file:line — what breaks (input)`:

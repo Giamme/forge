@@ -1,7 +1,7 @@
 ---
 name: forge
 description: Dispatch implementation and independent diff review to user-selected models through local agent CLIs. Use for /forge or explicit requests to delegate coding or review; explanation-only questions do not authorize dispatch.
-argument-hint: '"<goal>" --dwarf <alias>[:effort[:harness]] [--qa <alias>] [--planner <alias>] [--yolo-dwarf] [--yolo-qa] [--decompose-level low|medium|high] [--fractal|--no-fractal|--fractal-auto-decompose] [--fractal-planner <spec>] [--jev|--no-jev] [--jev-act] [--jev-shadow] [--no-memory] [--no-ripwire] [--timeout <seconds>] [--retry-failed <n>] [--qa-threshold P0|P1|P2|P3]'
+argument-hint: '"<goal>" --dwarf <alias>[:effort[:harness]] [--qa <alias>] [--planner <alias>] [--yolo-dwarf] [--yolo-qa] [--decompose-level low|medium|high] [--fractal|--no-fractal|--fractal-auto-decompose] [--fractal-planner <spec>] [--jev|--no-jev] [--jev-act] [--jev-shadow] [--no-memory] [--no-ripwire] [--timeout <seconds>] [--retry-failed <n>] [--qa-threshold P0|P1|P2|P3] [--shadow-qa <spec>[,<spec>]] [--shadow-rate <0..1>]'
 allowed-tools: [Bash, Read]
 ---
 
@@ -35,8 +35,9 @@ For explanation requests, explain the workflow without spending model quota.
   separate authorization and `integrate --approved`. Never push automatically.
 - Show the decomposed task/model table and wait for approval before dispatch. Retry only
   when requested; preserve failed task branches and worktrees. `run --retry-failed N`,
-  `--infra-retries M` and `--qa-threshold Pn` are opt-in: offer them, never add them
-  unprompted. `accept` overrides a reviewer, so run it (with the user's `--reason` and
+  `--infra-retries M`, `--qa-threshold Pn` and `plan --shadow-qa` (a second review of a
+  sampled share of attempts, never read, to measure reviewer agreement) are opt-in: offer
+  them, never add them unprompted. `accept` overrides a reviewer, so run it (with the user's `--reason` and
   `--approved`) only on the user's explicit instruction; never self-accept.
 - Exit `8` / status `INFRA` is a quota, auth or network stop, not a task failure and no
   attempt was spent: report it, say what to fix, and re-run only when told. For a multi-task

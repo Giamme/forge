@@ -75,6 +75,9 @@ def begin(root: str, role: str) -> Path:
             'preparation', 'preflight', 'model', 'snapshot', 'verification',
         )},
         'exit_code': None,
+        # A shadow review (forge-shadow.py) is spend like any other dispatch, but no
+        # result: report keeps it apart from the reviews whose verdicts decided something.
+        **({'shadow': True} if os.environ.get('FORGE_SHADOW') == '1' else {}),
     })
     _dataset('on_begin', str(attempt), root, role)
     return attempt

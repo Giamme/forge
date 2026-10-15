@@ -43,6 +43,10 @@ def status(args) -> int:
             last = db.execute('SELECT MAX(ts) FROM events').fetchone()[0]
             summary['last_event'] = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(last)) if last else None
             summary['checks'] = checks.run(db, verbose=args.verbose)
+            if summary['events'].get('dispatch'):
+                from . import export
+                if db.execute("SELECT 1 FROM events WHERE kind = 'dispatch' AND data LIKE '%qa_shadow%' LIMIT 1").fetchone():
+                    summary['shadow'] = export.agreement(export.Runs(export.Store(db)))
         finally:
             db.close()
         summary['size'] = dict(database=_size(directory / 'dataset.sqlite') + _size(directory / 'dataset.sqlite-wal'),
@@ -66,6 +70,13 @@ def status(args) -> int:
             print('          %d imported from old run dirs' % summary['by_source']['import'])
         for line in checks.report(summary['checks']):
             print('  ' + line)
+        shadow = summary.get('shadow')
+        if shadow:
+            rate = ' (%.0f%% agree)' % (100.0 * shadow['agree'] / shadow['pairs']) if shadow['pairs'] else ''
+            print('  shadow: %d second review(s), %d usable pair(s), %d agree%s'
+                  % (shadow['shadow_reviews'], shadow['pairs'], shadow['agree'], rate))
+            for pair, n in shadow['by_pair'].items():
+                print('          %s: %d of %d agree' % (pair, n['agree'], n['pairs']))
     if summary['legacy_archives']:
         print('  legacy: %d archived run dir(s) kept in %s (`forge dataset import %s` re-reads them;'
               ' events already stored are skipped)' % (summary['legacy_archives'], legacy, legacy))
