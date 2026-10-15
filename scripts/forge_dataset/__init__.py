@@ -381,6 +381,9 @@ def record(events: list[dict], repo: str | Path | None = None, where: str = 'rec
         # Refused silently: errors.log lives in the same refused place.
         if location_refused(repo):
             return 0
+        # Fingerprinting the code reads every shipped file and runs git once per process:
+        # done under the write lock, it held every other writer past its busy timeout.
+        provenance()
         db = connect()
         try:
             db.execute('BEGIN IMMEDIATE')
