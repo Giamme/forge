@@ -129,6 +129,75 @@ class StorePrimitiveTests(StoreCase):
             db.close()
         self.assertIn('locked', self.errors())
 
+    def provenance_of(self, rid):
+        db = sqlite3.connect(str(self.home / 'dataset' / 'dataset.sqlite'))
+        try:
+            return db.execute('SELECT forge_version, registry_sha, code_sha, forge_rev FROM events WHERE rid = ?',
+                              (rid,)).fetchone()
+        finally:
+            db.close()
+
+    def test_events_name_the_code_that_produced_them_and_imports_name_none(self):
+        # The release number outlives weeks of dev edits; code_sha tells two regimes apart.
+        # An imported run was produced by whatever forge ran it, never by the importer.
+        store.record([dict(rid='live', kind='t'), dict(rid='old', kind='t', src='import')])
+        prov = store.provenance()
+        self.assertEqual(self.provenance_of('live'),
+                         (prov['forge_version'], prov['registry_sha'], prov['code_sha'], prov['forge_rev']))
+        self.assertRegex(prov['code_sha'], '^[0-9a-f]{16}$')
+        self.assertEqual(self.provenance_of('old'), (None, None, None, None))
+
+    def test_a_review_is_graded_only_when_every_sure_finding_carries_a_severity(self):
+        from forge_dataset import harvest
+        sure = lambda severity, status='CONFIRMED': dict(status=status, severity=severity)
+        cases = [('PASS', [], True, 'clean'), ('PASS', [sure(None, 'PLAUSIBLE')], True, 'graded'),
+                 ('FAIL', [sure(1), sure(2)], True, 'graded'), ('FAIL', [sure(1), sure(None)], True, 'ungraded'),
+                 ('FAIL', [sure(2, 'UNSTATED')], True, 'ungraded'), ('FAIL', [], True, 'ungraded'),
+                 ('FAIL', [sure(None, 'PLAUSIBLE')], True, 'ungraded'), ('UNKNOWN', [], True, 'unparseable'),
+                 ('PASS', [], False, 'unparseable')]
+        self.assertEqual([harvest.review_completeness(v, f, ok) for v, f, ok, _ in cases], [c[-1] for c in cases])
+
+    SCHEMA_1 = ('CREATE TABLE events (rid TEXT PRIMARY KEY, kind TEXT NOT NULL, ts REAL NOT NULL, src TEXT NOT NULL, '
+                'repo TEXT, run TEXT, run_id TEXT, mode TEXT, task TEXT, attempt INTEGER, parent TEXT, inv TEXT, '
+                'forge_version TEXT, registry_sha TEXT, data TEXT NOT NULL);'
+                "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT); INSERT INTO meta VALUES ('schema', '1');")
+
+    def old_store(self, extra=''):
+        directory = self.home / 'dataset'
+        directory.mkdir(parents=True)
+        db = sqlite3.connect(str(directory / 'dataset.sqlite'))
+        db.executescript(self.SCHEMA_1 + extra)
+        db.execute("INSERT INTO events (rid, kind, ts, src, data) VALUES ('before', 't', 1, 'live', '{}')")
+        db.commit()
+        db.close()
+
+    def schema(self):
+        db = sqlite3.connect(str(self.home / 'dataset' / 'dataset.sqlite'))
+        try:
+            columns = [row[1] for row in db.execute('PRAGMA table_info(events)')]
+            return db.execute("SELECT value FROM meta WHERE key = 'schema'").fetchone()[0], columns
+        finally:
+            db.close()
+
+    def test_a_schema_1_store_migrates_once_under_concurrent_first_writers(self):
+        # Every capture after an upgrade races to migrate; one wins, none fails or is lost.
+        self.old_store()
+        script = ('import sys; sys.path.insert(0, %r)\nimport forge_dataset as s\n'
+                  's.record([dict(rid="w-" + sys.argv[1], kind="t")])\n') % str(ROOT / 'scripts')
+        procs = [subprocess.Popen([sys.executable, '-c', script, str(w)], env=dict(os.environ)) for w in range(12)]
+        self.assertEqual([p.wait() for p in procs], [0] * 12)
+        version, columns = self.schema()
+        self.assertEqual((version, columns[-2:]), ('2', ['code_sha', 'forge_rev']))
+        self.assertEqual(sorted(e['rid'] for e in self.events()), sorted(['before'] + ['w-%d' % w for w in range(12)]))
+        self.assertEqual(self.errors(), '')
+
+    def test_a_half_finished_migration_is_completed_by_the_next_connect(self):
+        self.old_store(extra='ALTER TABLE events ADD COLUMN code_sha TEXT;')
+        store.record([dict(rid='after', kind='t')])
+        version, columns = self.schema()
+        self.assertEqual((version, columns[-2:]), ('2', ['code_sha', 'forge_rev']))
+        self.assertIsNotNone(self.provenance_of('after')[2])
+
 
 class RuntimeHookTests(StoreCase):
     def runtime(self, *args, env=None):
@@ -158,6 +227,26 @@ class RuntimeHookTests(StoreCase):
         self.assertEqual(began.stderr, '')
         finished = self.runtime('finish', attempt, root, 'dwarf', 'codex', 0, env=env)
         self.assertEqual((finished.returncode, finished.stderr), (0, ''))
+
+    def test_an_execution_keeps_the_code_it_started_with_and_a_mid_run_edit_marks_it(self):
+        # The skill dir is the live dev checkout: an edit between begin and finish must not
+        # credit the outcome to code the execution never ran.
+        root = Path(self.tmp.name) / 'run'
+        root.mkdir()
+        registry = Path(self.tmp.name) / 'registry.tsv'
+        registry.write_text((ROOT / 'registry.tsv').read_text())
+        env = dict(FORGE_REGISTRY=str(registry))
+        began = self.runtime('begin', root, 'dwarf', env=env)
+        attempt = Path(began.stdout.strip())
+        started = json.loads((attempt / 'dataset.json').read_text())['provenance']
+        registry.write_text(registry.read_text() + '# edited mid-run\n')
+        self.runtime('finish', attempt, root, 'dwarf', 'codex', 0, env=env)
+        [dispatch] = self.events(kind='dispatch')
+        self.assertTrue(dispatch['data']['code_changed'])
+        db = sqlite3.connect(str(self.home / 'dataset' / 'dataset.sqlite'))
+        row = db.execute('SELECT registry_sha, code_sha FROM events WHERE kind = ?', ('dispatch',)).fetchone()
+        db.close()
+        self.assertEqual(row, (started['registry_sha'], started['code_sha']))
 
 
 class EndToEndTests(StoreCase):
@@ -294,12 +383,46 @@ class EndToEndTests(StoreCase):
                          for c in cases if c['slice'] == 'review')
         self.assertEqual(reviews, [('a', False, False), ('a', True, True), ('b', True, False)])
         self.assertEqual({c['state']['reviewer']['model'] for c in cases if c['slice'] == 'review'}, {'opus'})
+        severities = sorted((c['task'], c['expected']['passes'], c['expected'].get('severity'))
+                            for c in cases if c['slice'] == 'review')
+        self.assertEqual(severities, [('a', False, 'P1'), ('a', True, 'none'), ('b', True, 'none')])
+        self.assertEqual(state['size'], dict(prompt_chars=len(state['prompt']), declared_files=1, plan_tasks=2,
+                                             deps=0, decompose_level='low'))
+        self.assertEqual((routing['a']['meta']['attempts_observed'], routing['a']['meta']['raw_verdict'],
+                          routing['a']['meta']['first_raw_pass_attempt'], routing['a']['meta']['stop_reason']),
+                         (2, 'FAIL', 2, 'passed'))
         [retry] = [c for c in cases if c['slice'] == 'retry']
         self.assertEqual((retry['task'], retry['state']['attempt'], retry['expected']), ('a', 2, {'retry_pass': True}))
         self.assertIn('a.txt:1 — broken', retry['state']['previous_review'])
         out = self.home / 'export'
         export.write(cases, out, seed=7, limit=None)
         self.assertEqual((out.stat().st_mode & 0o777, (out / 'dataset.jsonl').stat().st_mode & 0o777), (0o700, 0o600))
+
+    def test_an_attempt_that_says_nothing_about_the_implementer_is_never_labeled(self):
+        # A later success must not stand in for the first attempt, and a reviewer's or a
+        # harness's failure is no evidence about the task: only an implementer that ran out
+        # of time failed it. a times out, b's harness crashes, c's reviewer gives no verdict.
+        from forge_dataset import export
+        p = self.plan_of([('a', '-', 'a.txt'), ('b', '-', 'b.txt'), ('c', '-', 'c.txt')])
+        (p / 'timeout').write_text('2\n')
+        self.scenario({'a.dwarf.1': {'sleep': 6}, 'b.dwarf.1': {'rc': 1},
+                       'c.qa.1': {'verdict': 'none', 'findings': 'Ran out of budget before deciding.'}})
+        self.run_script('forge-parallel.sh', 'run', p, '--retry-failed', 1)
+        self.assertEqual([self.text_of(p, t) for t in 'abc'], ['TIMEOUT', 'ERROR', 'PASS'])
+        for task in 'ab':
+            r = self.run_script('forge-parallel.sh', 'retry', p, task)
+            self.assertEqual(self.text_of(p, task), 'PASS', r.stdout)
+        shutil.rmtree(p)
+
+        stats = {}
+        cases = export.build(store.connect(), slices=('routing',), stats=stats)
+        routing = {c['task']: c for c in cases}
+        self.assertEqual({t: c['expected']['first_pass'] for t, c in routing.items()}, {'a': False, 'c': True})
+        self.assertEqual(routing['c']['meta']['attempts_observed'], 1)
+        self.assertEqual(stats['censored'], {'routing:dwarf_error': 1})
+
+    def text_of(self, plan, task):
+        return (plan / 'tasks' / task / 'status').read_text().strip()
 
 
 class ImportTests(StoreCase):

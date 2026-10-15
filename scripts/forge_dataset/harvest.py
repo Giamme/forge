@@ -29,6 +29,8 @@ DISPATCH_ROLES = ('dwarf', 'qa', 'planner')
 PIPELINE_ROLES = ('task', 'solo', 'verification', 'parallel')
 TASKS_COLS = ('id', 'deps', 'difficulty', 'files', 'dwarf', 'qa', 'title')
 STRUCTURED = ('codex', 'claude')
+# Plan files that change what a plan decides, added to its rid only when present (see plan_event).
+PLAN_RID_LATER = ('decompose_level',)
 
 # Files a task or solo execution may write. begin() snapshots their signatures so
 # finish() can tell this execution's outputs from what an earlier one left behind.
@@ -150,14 +152,40 @@ def learnings(message: str | None) -> list:
 
 
 def findings(message: str | None) -> list:
+    return parse_review(message)[0]
+
+
+def parse_review(message: str | None) -> tuple[list, bool]:
+    """(findings, parsed): parsed is False when the contract's parser raised."""
     if not message:
-        return []
+        return [], True
     try:
         parsed = contract().parse_findings(message)
     except Exception:
-        return []
+        return [], False
     return [dict(status=f.status, severity=f.severity, located=f.located, line=f.line,
-                 head=f.text.splitlines()[0][:300] if f.text else '') for f in parsed]
+                 head=f.text.splitlines()[0][:300] if f.text else '') for f in parsed], True
+
+
+def review_completeness(verdict: str | None, found: list, parsed: bool = True) -> str | None:
+    """How fully a review's findings can be read, so a graded label is never a guess.
+
+    clean        a PASS with no finding blocks: worst severity is none
+    graded       every CONFIRMED finding carries P0-P3 and none is UNSTATED
+    ungraded     a CONFIRMED finding without a severity, an UNSTATED one, or a FAIL whose
+                 reasons are not CONFIRMED findings
+    unparseable  no verdict line, or the parser failed: an empty list here means nothing
+    """
+    if verdict not in ('PASS', 'FAIL') or not parsed:
+        return 'unparseable'
+    if not found:
+        return 'clean' if verdict == 'PASS' else 'ungraded'
+    confirmed = [f for f in found if f.get('status') == 'CONFIRMED']
+    if any(f.get('status') == 'UNSTATED' for f in found) or any(f.get('severity') is None for f in confirmed):
+        return 'ungraded'
+    if verdict == 'FAIL' and not confirmed:
+        return 'ungraded'
+    return 'graded'
 
 
 def tasks_rows(path: Path) -> dict:
@@ -312,6 +340,8 @@ def dispatch_event(attempt: Path, root: Path, role: str, harness: str, rc, prov:
     delivery = resolved.get('delivery') or 'custom'
     orphans = text(attempt / (role + '.orphans'))
     effort = resolved.get('effort')
+    verdict = verdict_of(message) if message is not None else None
+    found, parsed = parse_review(message) if role == 'qa' else ([], True)
     data = dict(
         role=role, alias=resolved.get('alias'), harness=harness, model=resolved.get('model'),
         effort=None if not effort or effort.startswith('<') else effort,
@@ -325,8 +355,8 @@ def dispatch_event(attempt: Path, root: Path, role: str, harness: str, rc, prov:
         tokens=dict(input=metrics.get('input_tokens'), cached_input=metrics.get('cached_input_tokens'),
                     output=metrics.get('output_tokens')),
         prompt_bytes=metrics.get('prompt_bytes'), final_source=final_source,
-        verdict=verdict_of(message) if message is not None else None,
-        findings=findings(message) if role == 'qa' else [], learnings=learnings(message),
+        verdict=verdict, findings=found, learnings=learnings(message),
+        findings_parse=review_completeness(verdict, found, parsed) if role == 'qa' else None,
         root=str(root), scope=prov.get('scope'), trigger=prov.get('trigger'),
     )
     prompt = None if delivery == 'native_review' else put_file(attempt / (role + '.prompt'), 'prompt')
@@ -573,8 +603,12 @@ def plan_event(plan: Path, prov: dict, src: str = 'live', inventory: bool = True
         cells = line.split('\t')
         if len(cells) >= 2:
             waves[cells[1]] = as_int(cells[0])
+    # Inputs that joined the plan after its rid scheme was fixed are hashed only when present,
+    # so every plan already in a store keeps its rid and re-importing an archive adds nothing.
+    # Options older than that (timeout, qa_threshold, ...) stay out for the same reason.
+    later = {name: first_line(plan / name) for name in PLAN_RID_LATER if (plan / name).exists()}
     inputs = json.dumps([text(plan / 'goal.txt'), text(plan / 'tasks.tsv'), text(declared_path),
-                         {t: [r['prompt'], r['approach']] for t, r in per_task.items()}],
+                         {t: [r['prompt'], r['approach']] for t, r in per_task.items()}] + ([later] if later else []),
                         sort_keys=True, default=str)
     snapshot_excerpts = decision_snapshot(repo, rows, head) if repo else None
     listing = _git(repo, 'ls-tree', '-r', '--name-only', head) if inventory and repo and head else None

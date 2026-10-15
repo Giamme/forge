@@ -57,7 +57,8 @@ For explanation requests, explain the workflow without spending model quota.
 3. Use [solo runs](references/solo.md) for one implementation. For `--decompose-level
    low|medium|high`, read [decomposition](references/decompose.md), prepare the task table,
    obtain approval, then use `forge-parallel.sh plan/run`. Write the user's request verbatim
-   to `request.md` in the run or plan dir, and pass `--decompose-level` to `plan`.
+   to `request.md` in the run or plan dir, and pass `--decompose-level` to `plan` with the
+   level you actually split at, even when the user named none.
    Pass the recorded Fractal choice and requested limits to the execution runner; tier
    pools go to solo directly or decomposed `plan`. Fractal does not replace planner dispatch.
    `--timeout` applies to decomposed runs too (kept in the plan).

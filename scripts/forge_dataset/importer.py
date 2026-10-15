@@ -223,6 +223,8 @@ def import_tree(top: Path, mapper: Mapper, args, counts: dict) -> list[tuple[lis
         for event in events:
             if isinstance(event.get('data'), dict) and event['data'].get('root'):
                 event['data']['root'] = str(mapper(event['data']['root']))
+        # A live begin() recorded which code the execution started with; keep it.
+        capture.stamp(events, (stored or {}).get('provenance'), check_change=False)
         batches.append((events, repo))
     for root, prov, repo, attempts in by_task.values():
         try:

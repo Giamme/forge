@@ -11,7 +11,7 @@ import os
 import time
 from pathlib import Path
 
-from . import enabled, location_refused, log_error, put_blob, put_file, record
+from . import PROVENANCE, enabled, location_refused, log_error, provenance, put_blob, put_file, record
 from . import harvest as h
 
 
@@ -38,10 +38,13 @@ def on_begin(attempt: str, root: str, role: str) -> None:
         env = _environment()
         if role == 'task' and not env['trigger']:
             env['trigger'] = 'initial'
+        # The code is fingerprinted here, when the execution starts: the prompt is built
+        # from it now, and finish() runs in another process that may see a later edit.
         prov = dict(
             schema=1, run=uid, run_id=ctx['run_id'], mode=ctx['mode'], scope=ctx['scope'],
             plan=str(ctx['plan']) if ctx['plan'] else None, task=ctx['task'], repo=ctx['repo'],
-            link=ctx['link'], role=role, root=str(root_dir), wall_started_ns=time.time_ns(), **env,
+            link=ctx['link'], role=role, root=str(root_dir), wall_started_ns=time.time_ns(),
+            provenance=provenance(), **env,
         )
         if role in h.PIPELINE_ROLES:
             prov['files'] = h.snapshot(root_dir)
@@ -85,6 +88,23 @@ def events_for(attempt_dir: Path, root_dir: Path, role: str, harness: str, rc, p
     return []
 
 
+def stamp(events: list, started: dict | None, check_change: bool = True) -> None:
+    """Attribute an execution's events to the code it started with.
+
+    A live edit between begin and finish would otherwise credit the outcome to code the
+    execution never ran; the change itself is kept, so a mixed execution can be dropped.
+    An import has no finish-time code to compare with, so it only keeps what begin saw.
+    """
+    if not started:
+        return
+    changed = check_change and started.get('code_sha') != provenance().get('code_sha')
+    for event in events:
+        for key in PROVENANCE:
+            event.setdefault(key, started.get(key))
+        if changed:
+            event.setdefault('data', {})['code_changed'] = True
+
+
 def on_finish(attempt: str, root: str, role: str, harness: str, rc) -> None:
     if not enabled():
         return
@@ -95,6 +115,7 @@ def on_finish(attempt: str, root: str, role: str, harness: str, rc) -> None:
             return
         prov['wall_ended'] = time.time()
         events = events_for(attempt_dir, root_dir, role, harness, rc, prov, 'live')
+        stamp(events, prov.get('provenance'))
         record(events, repo=prov.get('repo'), where='finish')
     except Exception as error:
         log_error('finish', error)

@@ -29,10 +29,13 @@ import random
 import re
 import subprocess
 import time
-from collections import defaultdict
+from collections import Counter, defaultdict
 from pathlib import Path
 
-from . import connect, data_home, read_blob
+from forge_jev.features import task_size
+
+from . import SKILL, connect, data_home, read_blob
+from .harvest import review_completeness
 
 SLICES = ('routing', 'retry', 'review', 'drift', 'citation', 'memory')
 
@@ -57,6 +60,41 @@ def _sha(*parts) -> str:
     return hashlib.sha256('\0'.join(str(p) for p in parts).encode()).hexdigest()
 
 
+def _provenance(src, forge_version, registry_sha, code_sha, forge_rev) -> dict | None:
+    """Which forge produced an event, or None when that is unknown.
+
+    Rows imported before schema 2 carry the importer's version, not the one that ran the
+    run; an import knows its provenance only when a live begin() recorded it (code_sha set).
+    """
+    if src == 'import' and not code_sha:
+        return None
+    return dict(forge_version=forge_version, registry_sha=registry_sha, code_sha=code_sha, forge_rev=forge_rev)
+
+
+_ESTIMATES: dict = {}
+
+
+def forge_rev_estimate(ts: float) -> str | None:
+    """The newest forge commit before `ts`: a guess for runs captured with no provenance.
+
+    The dev checkout is live-edited, so a run may have used uncommitted code; this names
+    the commit it most likely started from, never more. Read-only, in the forge checkout.
+    """
+    if not ts or not (SKILL / '.git').exists():
+        return None
+    key = int(ts)
+    if key not in _ESTIMATES:
+        try:
+            out = subprocess.run(['git', '-C', str(SKILL), 'log', '-1', '--format=%H', '--before=@%d' % key],
+                                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=10,
+                                 env=dict(os.environ, GIT_OPTIONAL_LOCKS='0'))
+            rev = out.stdout.decode().strip() if out.returncode == 0 else ''
+            _ESTIMATES[key] = rev or None
+        except (OSError, subprocess.SubprocessError):
+            _ESTIMATES[key] = None
+    return _ESTIMATES[key]
+
+
 def _words(value) -> list[str]:
     if isinstance(value, list):
         return [str(v) for v in value if v]
@@ -66,10 +104,12 @@ def _words(value) -> list[str]:
 class Store:
     def __init__(self, db):
         self.events = []
-        for kind, src, repo, run, run_id, mode, task, attempt, ts, data in db.execute(
-                'SELECT kind, src, repo, run, run_id, mode, task, attempt, ts, data FROM events'):
+        for kind, src, repo, run, run_id, mode, task, attempt, ts, data, *prov in db.execute(
+                'SELECT kind, src, repo, run, run_id, mode, task, attempt, ts, data, '
+                'forge_version, registry_sha, code_sha, forge_rev FROM events'):
             self.events.append(dict(kind=kind, src=src, repo=repo, run=run, run_id=run_id, mode=mode,
-                                    task=task, attempt=attempt, ts=ts or 0, d=json.loads(data)))
+                                    task=task, attempt=attempt, ts=ts or 0, d=json.loads(data),
+                                    prov=_provenance(src, *prov)))
         self.repo_paths = dict(db.execute('SELECT repo, path FROM repos'))
         self._blobs = {}
 
@@ -136,6 +176,19 @@ def review_passes() -> dict:
                      'elsewhere.'})
 
 
+def review_severity() -> dict:
+    # forge-contract.py's severity scale, verbatim: the reviewer graded against these words.
+    return dict(type='choice', instructions=(
+        'An independent model reviews this diff against its task (both in state) and labels each '
+        'problem it is sure of by impact. What is the most severe problem it will find?'),
+        criteria={
+            'none': 'Nothing it is sure of: the diff does what the task asks.',
+            'P3': 'minor: cosmetic, naming, nit-level correctness',
+            'P2': 'edge-case bug, race that needs unusual timing, missing hardening',
+            'P1': 'wrong behaviour on realistic input, or breaks an existing contract',
+            'P0': 'data loss, security hole, crash or wrong result on the main path'})
+
+
 def retry_pass() -> dict:
     return dict(type='noul', instructions=(
         'An earlier attempt at this Forge task failed review. The task is now dispatched again, to '
@@ -172,6 +225,15 @@ class Runs:
         for e in store.of('dispatch'):
             if e['task']:
                 self.dispatches[(e['run'], e['task'], e['d'].get('role'))].append(e)
+        self.accepted = {(e['run'], e['d'].get('task')) for e in store.of('invocation')
+                         if e['d'].get('command') == 'accept' and e['d'].get('exit') == 0}
+        self.interrupted = {(e['run'], e['task']) for e in store.of('event')
+                            if e['d'].get('name') == 'sched_terminal' and e['d'].get('status') == 'INTERRUPTED'}
+        self.censored = Counter()
+        self.started = {}
+        for e in store.events:
+            if e['run'] and e['ts'] and (e['run'] not in self.started or e['ts'] < self.started[e['run']]):
+                self.started[e['run']] = e['ts']
 
     def plan_for(self, run, task, at):
         """The plan revision that held this task when its attempt started."""
@@ -236,14 +298,74 @@ def _siblings(plan, task_id) -> list:
     return out
 
 
-def _first_real(rows):
-    """The first attempt that ran to a verdict: refunded and infra attempts do not count."""
+def _attempts(runs: Runs, run, task, rows) -> list:
+    """One entry per real attempt number, oldest first: {n, events, outcome, reason}.
+
+    Refunded and infra-stopped executions spent no attempt. A QA-only rerun keeps its
+    attempt's number, so the number's last execution holds its final status. outcome is
+    True or False, or None when the attempt says nothing about the implementer (reason
+    names why): a later success must never be labeled as the first attempt's.
+    """
+    by_n = {}
     for e in rows:
         d = e['d']
-        if d.get('refunded') or d.get('infra') or d.get('status') not in ('PASS', 'FAIL'):
+        if d.get('refunded') or d.get('infra') or not d.get('status'):
             continue
-        return e
-    return None
+        by_n.setdefault(e['attempt'] or 0, []).append(e)
+    out = []
+    for n in sorted(by_n):
+        events = by_n[n]
+        outcome, reason = _outcome(runs, run, task, n, events[-1]['d']['status'])
+        out.append(dict(n=n, events=events, outcome=outcome, reason=reason))
+    return out
+
+
+def _outcome(runs: Runs, run, task, n, status):
+    if status in ('PASS', 'FAIL'):
+        return status == 'PASS', None
+    if status in ('TIMEOUT', 'ERROR'):
+        # Both statuses come from three places: the implementer's dispatch, the reviewer's,
+        # and forge's own steps between them (diff, commit, snapshot). Only an implementer
+        # that ran out of time failed the task; a crash of a harness is not task difficulty.
+        if any(x['attempt'] == n for x in runs.dispatches.get((run, task, 'qa'), [])):
+            return None, 'reviewer_' + status.lower()
+        exits = [x['d'].get('exit') for x in runs.dispatches.get((run, task, 'dwarf'), []) if x['attempt'] == n]
+        if status == 'TIMEOUT' and exits and exits[-1] == 7:
+            return False, None
+        return None, ('dwarf_' if exits and exits[-1] not in (0, None) else 'forge_') + status.lower()
+    return None, str(status).lower()
+
+
+def _verdicts(runs: Runs, run, task) -> dict:
+    """The reviewer's own verdict per attempt number, before any severity gate."""
+    out = {}
+    for x in runs.dispatches.get((run, task, 'qa'), []):
+        if x['d'].get('verdict') in ('PASS', 'FAIL'):
+            out[x['attempt']] = x['d']['verdict']
+    return out
+
+
+def _course(runs: Runs, run, task, attempts) -> dict:
+    """How the task went, for meta: what a single first-pass bit leaves out."""
+    raw = _verdicts(runs, run, task)
+    first = attempts[0]['n'] if attempts else None
+    final = attempts[-1]['events'][-1]['d'] if attempts else {}
+    accepted = (run, task) in runs.accepted
+    if any(a['outcome'] for a in attempts):
+        stop = 'passed'
+    elif accepted:
+        stop = 'accepted'
+    elif final.get('noretry'):
+        stop = 'noretry'
+    elif (run, task) in runs.interrupted:
+        stop = 'interrupted'
+    else:
+        stop = 'no_pass_observed'
+    return dict(attempts_observed=len(attempts), raw_verdict=raw.get(first),
+                gate_pass=bool(attempts) and attempts[0]['events'][-1]['d'].get('status') == 'PASS'
+                and raw.get(first) == 'FAIL',
+                first_raw_pass_attempt=min((n for n, v in raw.items() if v == 'PASS'), default=None),
+                human_accept=accepted, stop_reason=stop)
 
 
 # --- slices ----------------------------------------------------------------------------
@@ -251,16 +373,16 @@ def _first_real(rows):
 def _task_state(runs: Runs, run, task, attempt):
     """forge_jev.routing's state for this task as planned when `attempt` started, plus who ran and reviewed it.
 
-    Returns (state, plan row) or (None, None) when the plan or the task's requirements are gone.
+    Returns (state, plan row, plan event), or Nones when the plan or the task's requirements are gone.
     """
     store = runs.store
     plan = runs.plan_for(run, task, attempt['d'].get('wall_started') or attempt['ts'])
     if plan is None:
-        return None, None
+        return None, None, None
     row = plan['d']['tasks'][task]
     prompt = store.text(row.get('prompt')) or runs.prompt(run, task)
     if not prompt.strip():
-        return None, None
+        return None, None, None
     dwarf = runs.resolved(run, task, 'dwarf', attempt['attempt']) or _spec(attempt['d'].get('dwarf'))
     reviewer = runs.resolved(run, task, 'qa', attempt['attempt']) or _spec(attempt['d'].get('qa'))
     state = dict(goal=store.text((plan['d'].get('blobs') or {}).get('goal')) or plan['d'].get('goal') or '',
@@ -270,21 +392,38 @@ def _task_state(runs: Runs, run, task, attempt):
                  plan_tasks=_siblings(plan, task),
                  file_excerpts=_file_excerpts(store, plan, row.get('files')),
                  memory=store.text((plan['d'].get('blobs') or {}).get('memory'))[:MEMORY_CHARS],
-                 dwarf=dwarf, reviewer=reviewer)
-    return state, row
+                 dwarf=dwarf, reviewer=reviewer,
+                 size=task_size(prompt=prompt, declared_files=row.get('files'),
+                                plan_tasks=len(plan['d'].get('tasks') or {}), deps=row.get('deps'),
+                                decompose_level=plan['d'].get('decompose_level')))
+    return state, row, plan
+
+
+def _meta(runs: Runs, run, plan_event, outcome_event) -> dict:
+    """Which forge decided and which ran, and the options that shape the outcome."""
+    out = dict(decision_provenance=plan_event.get('prov'), outcome_provenance=outcome_event.get('prov'),
+               code_changed=bool(outcome_event['d'].get('code_changed')),
+               options=plan_event['d'].get('options') or {}, started=runs.started.get(run))
+    if not out['decision_provenance'] and not out['outcome_provenance']:
+        out['forge_rev_estimate'] = forge_rev_estimate(out['started'])
+    return out
 
 
 def routing_cases(runs: Runs):
     for (run, task), rows in runs.attempts.items():
-        first = _first_real(rows)
-        if first is None:
+        attempts = _attempts(runs, run, task, rows)
+        if not attempts:
             continue
-        state, row = _task_state(runs, run, task, first)
+        if attempts[0]['outcome'] is None:
+            runs.censored['routing:' + attempts[0]['reason']] += 1
+            continue
+        first = attempts[0]['events'][0]
+        state, row, plan = _task_state(runs, run, task, first)
         if state is None:
             continue
         dwarf = state['dwarf']
         questions = dict(first_pass=first_pass())
-        expected = dict(first_pass=first['d']['status'] == 'PASS')
+        expected = dict(first_pass=attempts[0]['outcome'])
         declared = row.get('declared_difficulty')
         if row.get('difficulty_source') in ('orchestrator', 'planner') and declared in ('low', 'medium', 'high'):
             questions['tier'] = declared_tier()
@@ -302,36 +441,37 @@ def routing_cases(runs: Runs):
                                 dict(low=0.0, medium=0.5, high=1.0)[declared]))
         yield dict(slice='routing', key=(run, task), run=run, repo=first['repo'], task=task,
                    state=state, questions=questions, expected=expected, baseline=baseline,
-                   label_source=dict(first_pass='first non-infra attempt status',
+                   label_source=dict(first_pass='final status of the first real attempt',
                                      tier='declared_difficulty (%s)' % row.get('difficulty_source')),
-                   dwarf=dwarf.get('model'))
+                   dwarf=dwarf.get('model'),
+                   meta=dict(_meta(runs, run, plan, attempts[0]['events'][-1]), **_course(runs, run, task, attempts)))
 
 
 def retry_cases(runs: Runs):
-    """Every attempt after the first that ran to a verdict: retry with the findings it was given, or escalate?"""
+    """Every attempt after the first: retry with the findings it was given, or escalate?"""
     store = runs.store
     for (run, task), rows in runs.attempts.items():
-        first = _first_real(rows)
-        if first is None:
-            continue
-        for e in rows:
-            d = e['d']
-            if (e is first or (e['attempt'] or 0) <= (first['attempt'] or 0) or d.get('refunded') or d.get('infra')
-                    or d.get('status') not in ('PASS', 'FAIL')):
+        for a in _attempts(runs, run, task, rows)[1:]:
+            if a['outcome'] is None:
+                runs.censored['retry:' + a['reason']] += 1
                 continue
-            findings = store.text((d.get('blobs') or {}).get('retry_findings'))
+            # The findings were handed over when the attempt began; a QA-only rerun of the
+            # same number carries them without having produced them.
+            findings = next((store.text((e['d'].get('blobs') or {}).get('retry_findings')) for e in a['events']
+                             if store.text((e['d'].get('blobs') or {}).get('retry_findings')).strip()), '')
             if not findings.strip():
                 continue
-            state, _row = _task_state(runs, run, task, e)
+            start = a['events'][0]
+            state, _row, plan = _task_state(runs, run, task, start)
             if state is None:
                 continue
-            state.update(attempt=e['attempt'], previous_review=findings[:REVIEW_CHARS],
+            state.update(attempt=a['n'], previous_review=findings[:REVIEW_CHARS],
                          previous_review_truncated=len(findings) > REVIEW_CHARS)
-            yield dict(slice='retry', key=(run, task, e['attempt']), run=run, repo=e['repo'], task=task,
+            yield dict(slice='retry', key=(run, task, a['n']), run=run, repo=start['repo'], task=task,
                        state=state, questions=dict(retry_pass=retry_pass()),
-                       expected=dict(retry_pass=d['status'] == 'PASS'), baseline={},
-                       label_source=dict(retry_pass='status of this retry attempt'),
-                       dwarf=state['dwarf'].get('model'))
+                       expected=dict(retry_pass=a['outcome']), baseline={},
+                       label_source=dict(retry_pass='final status of this retry attempt'),
+                       dwarf=state['dwarf'].get('model'), meta=_meta(runs, run, plan, a['events'][-1]))
 
 
 def _float(value):
@@ -362,10 +502,20 @@ def _qa_rows(runs: Runs):
             blocks = _DIFF_BLOCK.findall(prompt)
             if not blocks or not blocks[-1].strip():
                 continue
+            found = d.get('findings') or []
             yield dict(run=run, task=task, attempt=e['attempt'], repo=e['repo'], verdict=d['verdict'],
                        diff=blocks[-1], review=store.text((d.get('blobs') or {}).get('message')),
                        effort=effort.get((run, task, e['attempt'])), model=d.get('model'),
-                       reviewer=dict(model=d.get('model'), effort=d.get('effort'), harness=d.get('harness')))
+                       reviewer=dict(model=d.get('model'), effort=d.get('effort'), harness=d.get('harness')),
+                       # Receipts from before findings_parse existed: an empty list then cannot
+                       # tell a clean review from a parser failure, which was rare; read it as clean.
+                       completeness=d.get('findings_parse') or review_completeness(d['verdict'], found),
+                       worst=_worst(found))
+
+
+def _worst(found) -> str:
+    severities = [f['severity'] for f in found if f.get('status') == 'CONFIRMED' and f.get('severity') is not None]
+    return 'P%d' % min(severities) if severities else 'none'
 
 
 EFFORT_RANK = dict(low=0, medium=1, high=2, xhigh=3, max=4)
@@ -390,9 +540,18 @@ def review_cases(runs: Runs):
         baseline = {}
         if r['effort'] and r['effort'][0] in EFFORT_RANK:
             baseline['passes'] = dict(source='hosted-jev qa effort', risk=EFFORT_RANK[r['effort'][0]] / 4.0)
+        questions, expected = dict(passes=review_passes()), dict(passes=r['verdict'] == 'PASS')
+        label_source = dict(passes='QA verdict')
+        # A graded label only where every finding the reviewer was sure of carries a severity:
+        # skipping the rest keeps "none" honest instead of counting unreadable reviews as clean.
+        if all(item['completeness'] in ('clean', 'graded') for item, _ in items) and \
+                len({item['worst'] for item, _ in items}) == 1:
+            questions['severity'], expected['severity'] = review_severity(), r['worst']
+            label_source['severity'] = 'worst CONFIRMED finding (%s)' % r['completeness']
+        meta = dict(completeness=r['completeness'])
         yield dict(slice='review', key=key, run=r['run'], repo=r['repo'], task=r['task'], state=state,
-                   questions=dict(passes=review_passes()), expected=dict(passes=r['verdict'] == 'PASS'),
-                   baseline=baseline, label_source=dict(passes='QA verdict'), reviewer=r['model'])
+                   questions=questions, expected=expected, baseline=baseline, label_source=label_source,
+                   reviewer=r['model'], meta=meta)
 
 
 _SKIP_PREFIXES = ('.git/', '.forge/', 'node_modules/', 'vendor/', 'target/', 'dist/',
@@ -601,7 +760,8 @@ def _sample(cases: list, limit: int | None, seed: int) -> list:
     return picked
 
 
-def build(db, *, slices=SLICES, limit: int | None = None, seed: int = 7) -> list:
+def build(db, *, slices=SLICES, limit: int | None = None, seed: int = 7, stats: dict | None = None) -> list:
+    """Every case of the given slices. `stats`, when given, receives the censored-label counts."""
     store = Store(db)
     runs = Runs(store)
     builders = dict(routing=lambda: routing_cases(runs), retry=lambda: retry_cases(runs),
@@ -615,6 +775,8 @@ def build(db, *, slices=SLICES, limit: int | None = None, seed: int = 7) -> list
             case['id'] = '%s-%s' % (name, _sha(seed, *([case['key']] if isinstance(case['key'], str)
                                                         else case['key']))[:12])
         out.extend(sorted(_sample(cases, limit, seed), key=lambda c: c['id']))
+    if stats is not None:
+        stats['censored'] = dict(sorted(runs.censored.items()))
     return out
 
 
@@ -625,14 +787,14 @@ def _private_write(path: Path, text: str) -> None:
     os.chmod(path, 0o600)
 
 
-def write(cases: list, out: Path, *, seed: int, limit) -> dict:
+def write(cases: list, out: Path, *, seed: int, limit, stats: dict | None = None) -> dict:
     out.mkdir(parents=True, exist_ok=True)
     os.chmod(out, 0o700)
     lines, meta = [], []
     for c in cases:
         lines.append(json.dumps(dict(id=c['id'], state=c['state'], questions=c['questions'],
                                      expected=c['expected']), ensure_ascii=False, sort_keys=True))
-        meta.append(json.dumps(dict(id=c['id'], slice=c['slice'], run=c['run'], repo=c['repo'],
+        meta.append(json.dumps(dict(c.get('meta') or {}, id=c['id'], slice=c['slice'], run=c['run'], repo=c['repo'],
                                     task=c['task'], baseline=c['baseline'], label_source=c['label_source'],
                                     dwarf=c.get('dwarf'), reviewer=c.get('reviewer'),
                                     state_chars=len(json.dumps(c['state'], ensure_ascii=False)),
@@ -647,6 +809,7 @@ def write(cases: list, out: Path, *, seed: int, limit) -> dict:
             counts[c['slice']][str(label)] += 1
     manifest = dict(created=time.strftime('%Y-%m-%dT%H:%M:%S'), seed=seed, limit_per_slice=limit,
                     cases=len(cases), sha256=hashlib.sha256(body.encode()).hexdigest(),
+                    censored=(stats or {}).get('censored', {}),
                     slices={s: dict(cases=sum(1 for c in cases if c['slice'] == s), labels=dict(v))
                             for s, v in counts.items()})
     _private_write(out / 'manifest.json', json.dumps(manifest, indent=2, sort_keys=True) + '\n')
@@ -656,7 +819,8 @@ def write(cases: list, out: Path, *, seed: int, limit) -> dict:
 def main(args) -> int:
     db = connect()
     try:
-        cases = build(db, slices=args.slices or SLICES, limit=args.limit, seed=args.seed)
+        stats = {}
+        cases = build(db, slices=args.slices or SLICES, limit=args.limit, seed=args.seed, stats=stats)
     finally:
         db.close()
     if args.out:
@@ -665,9 +829,11 @@ def main(args) -> int:
         (data_home() / 'exports').mkdir(mode=0o700, parents=True, exist_ok=True)
         os.chmod(data_home() / 'exports', 0o700)
         out = data_home() / 'exports' / 'forge-decisions'
-    manifest = write(cases, out, seed=args.seed, limit=args.limit)
+    manifest = write(cases, out, seed=args.seed, limit=args.limit, stats=stats)
     print('wrote %d cases to %s' % (manifest['cases'], out / 'dataset.jsonl'))
     for name, info in sorted(manifest['slices'].items()):
         print('  %-9s %4d cases  labels %s' % (name, info['cases'],
                                                ', '.join('%s %d' % kv for kv in sorted(info['labels'].items()))))
+    if manifest['censored']:
+        print('  left out, no label: %s' % ', '.join('%s %d' % kv for kv in manifest['censored'].items()))
     return 0

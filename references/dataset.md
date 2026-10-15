@@ -76,6 +76,32 @@ Run identity is a uuid in `<plan-or-run-dir>/dataset.uid`, created once (`O_EXCL
 `plan` or by the first `begin()`. Split and combine copy attempt dirs unchanged, so a
 copied execution keeps its original identity and collapses to one event by rid.
 
+## Which forge produced an event
+
+Outcomes depend on the prompts, contracts and registry forge ran with, and the skill is
+often a live dev checkout that changes between releases. So every event carries four
+provenance columns:
+
+| column | what it identifies |
+|---|---|
+| `forge_version` | the release in `VERSION` |
+| `registry_sha` | the effective `registry.tsv` (or `FORGE_REGISTRY`) |
+| `code_sha` | the content of every file that shapes a run: `scripts/`, `references/`, `SKILL.md`, `VERSION`, `forge` and the effective registry. Two runs share it only if they ran the same code, uncommitted edits included |
+| `forge_rev` | the skill checkout's `HEAD` (`git rev-parse`, read-only), or null for a copied skill dir |
+
+An execution is stamped with what `begin()` saw, because its prompt was built then.
+`finish()` runs in another process; if the code changed in between, the event carries
+`code_changed: true` and can be left out of any per-regime analysis.
+
+An imported run was produced by whatever forge ran it, so the importer stamps nothing,
+unless a live `begin()` left its provenance in the attempt dir. Rows imported before
+schema 2 carry the importer's version by mistake, so readers treat `forge_version` and
+`registry_sha` on `src = 'import'` rows without a `code_sha` as unknown. The exporter
+gives those a `forge_rev_estimate`: the last forge commit before the run started, which is a
+guess and is labeled as one. Schema 2 added `code_sha` and `forge_rev`. The first
+capture after an upgrade adds them in one `BEGIN IMMEDIATE` transaction, and an older
+forge still running keeps writing.
+
 ## Commands
 
 ```sh
@@ -106,17 +132,33 @@ from what happened afterwards:
 
 | slice | question | label |
 |---|---|---|
-| `routing` | will the first attempt at this task pass review? (state adds the dwarf and reviewer models) | the first attempt's status, refunds and infra stops excluded |
+| `routing` | will the first attempt at this task pass review? (state adds the dwarf and reviewer models) | the final status of the first real attempt (see below) |
 | `routing` | which difficulty tier is this task? | the tier the orchestrator or planner declared. This is agreement, not an outcome |
-| `retry` | will this retry pass, given the review findings it was handed? (state adds the attempt number and the previous review) | the retry's status, refunds and infra stops excluded |
+| `retry` | will this retry pass, given the review findings it was handed? (state adds the attempt number and the previous review) | the final status of that attempt (see below) |
 | `review` | will the independent reviewer pass this diff? (state names the reviewer's model, effort and harness) | the QA verdict. A diff whose reviews disagreed is dropped |
+| `review` | what is the most severe problem the reviewer will find? (`none`, `P3` to `P0`, the contract's scale) | the worst CONFIRMED finding, only when every CONFIRMED finding carries a severity and none is UNSTATED. A review whose findings cannot be fully read gets no label rather than a wrong `none` |
 | `drift` | is this undeclared file likely to need editing? | whether the passing attempt changed it. Negatives are undeclared files near the task, plus random ones |
 | `citation` | do the places this review cites appear in this diff? | the review paired with its own diff, or with another task's diff from the same repo that shares no file |
 | `memory` | is this recorded fact worth including for this task? | the fact's anchor is a file the task edited (true), or lies in an area it never touched (false). Anything in between is left out |
 
 The reviewer is part of the review state because strictness differs by reviewer: the
 same kind of diff passes far more often under one reviewer than another, so a label
-means little without knowing who gave it.
+means little without knowing who gave it. Routing and retry states also carry a `size`
+block (`prompt_chars`, `declared_files`, `plan_tasks`, `deps`, `decompose_level`, from
+`forge_jev/features.py`), since task size moves the first-pass rate more than anything
+else in the history.
+
+An attempt is labeled by the last execution that carries its number, because a QA-only
+rerun keeps the number. Refunded and infra-stopped executions spent no attempt. PASS is
+true and FAIL is false. TIMEOUT is false only when the implementer's own dispatch ran out
+of time. Everything else says nothing about the implementer and is left out, counted
+under `censored` in `manifest.json`:
+- a reviewer's TIMEOUT or ERROR
+- a harness crash
+- forge's own failures between dispatches
+- UNKNOWN, INVALIDATED, INTERRUPTED
+
+A later success is never labeled as the first attempt's.
 
 Decisions with no outcome to label them are left out rather than labeled by opinion.
 These are QA effort sizing, the five routing rubrics, failure triage, and coupling, since
@@ -124,6 +166,21 @@ no merge has conflicted yet.
 
 `meta.jsonl` records each case's slice, run, repo and label source. It also holds hosted
 Jev's own answers where forge recorded them, as baselines that are never part of a case.
+Routing and retry cases add:
+- `decision_provenance` (the plan's) and `outcome_provenance` (the attempt's)
+- `code_changed`
+- the plan `options`
+- `started`
+
+Routing cases also add how the task went:
+- `attempts_observed`
+- `raw_verdict`
+- `gate_pass`, a reviewer FAIL the severity gate accepted
+- `first_raw_pass_attempt`
+- `human_accept`
+- `stop_reason`: `passed`, `accepted`, `noretry`, `interrupted` or `no_pass_observed`
+
+A final FAIL is not proof a task cannot pass: the retry budget ended the observation.
 The output defaults to `<data>/exports/forge-decisions/` (`0700`, files `0600`). It holds
 prompts, diffs and reviews from your repos, so keep it out of public repos and pass it
 only to local models. Builds are deterministic for a given store and `--seed`.

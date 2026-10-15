@@ -30,12 +30,13 @@ import hashlib
 import json
 import os
 import sqlite3
+import subprocess
 import time
 import traceback
 import uuid
 from pathlib import Path
 
-SCHEMA = 1
+SCHEMA = 2
 SCRIPTS = Path(__file__).resolve().parent.parent
 SKILL = SCRIPTS.parent
 BUSY_TIMEOUT_S = 1.0
@@ -62,7 +63,7 @@ CREATE TABLE IF NOT EXISTS events (
     src TEXT NOT NULL,
     repo TEXT, run TEXT, run_id TEXT, mode TEXT, task TEXT, attempt INTEGER,
     parent TEXT, inv TEXT, forge_version TEXT, registry_sha TEXT,
-    data TEXT NOT NULL
+    data TEXT NOT NULL, code_sha TEXT, forge_rev TEXT
 );
 CREATE INDEX IF NOT EXISTS events_run ON events(run, task);
 CREATE INDEX IF NOT EXISTS events_kind ON events(kind, ts);
@@ -73,7 +74,10 @@ CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
 """
 
 EVENT_COLUMNS = ('rid', 'kind', 'ts', 'src', 'repo', 'run', 'run_id', 'mode', 'task',
-                 'attempt', 'parent', 'inv', 'forge_version', 'registry_sha', 'data')
+                 'attempt', 'parent', 'inv', 'forge_version', 'registry_sha', 'data', 'code_sha', 'forge_rev')
+# Columns added after schema 1, in order. connect() adds any a store is missing.
+ADDED_COLUMNS = (('code_sha', 'TEXT'), ('forge_rev', 'TEXT'))
+PROVENANCE = ('forge_version', 'registry_sha', 'code_sha', 'forge_rev')
 
 
 def enabled() -> bool:
@@ -166,7 +170,38 @@ def connect() -> sqlite3.Connection:
     db.execute('PRAGMA synchronous=NORMAL')
     db.executescript(SCHEMA_SQL)
     db.execute("INSERT OR IGNORE INTO meta(key, value) VALUES ('schema', ?)", (str(SCHEMA),))
+    migrate(db)
     return db
+
+
+def _columns(db: sqlite3.Connection) -> set:
+    return {row[1] for row in db.execute('PRAGMA table_info(events)')}
+
+
+def migrate(db: sqlite3.Connection) -> None:
+    """Bring a schema-1 store up to date, once, under the write lock.
+
+    Concurrent first captures after an upgrade all try this: the column set is re-read
+    inside BEGIN IMMEDIATE, so exactly one of them alters the table and the others see
+    it done. ADD COLUMN never rewrites the table, so the lock is held for milliseconds.
+    The schema number moves last, so an interrupted migration is simply redone.
+    """
+    if all(name in _columns(db) for name, _ in ADDED_COLUMNS):
+        return
+    db.execute('BEGIN IMMEDIATE')
+    try:
+        have = _columns(db)
+        for name, kind in ADDED_COLUMNS:
+            if name not in have:
+                db.execute('ALTER TABLE events ADD COLUMN %s %s' % (name, kind))
+        db.execute("INSERT OR REPLACE INTO meta(key, value) VALUES ('schema', ?)", (str(SCHEMA),))
+        db.execute('COMMIT')
+    except BaseException:
+        try:
+            db.execute('ROLLBACK')
+        except sqlite3.Error:
+            pass
+        raise
 
 
 def sha256(data: bytes) -> str:
@@ -226,7 +261,14 @@ _PROVENANCE: dict | None = None
 
 
 def provenance() -> dict:
-    """The forge version and registry sha, so prompt and contract drift is visible later."""
+    """Which forge produced an event, so prompt, contract and registry drift is visible later.
+
+    forge_version is the release, which the dev checkout outlives by weeks of edits.
+    code_sha is the content of every file that shapes a run (scripts, SKILL.md, the
+    references the orchestrator follows, the effective registry), so two runs share it
+    only if they ran the same prompts and contracts. forge_rev is the checkout's commit,
+    a readable anchor for it; code_sha also covers uncommitted edits on top.
+    """
     global _PROVENANCE
     if _PROVENANCE is None:
         version = None
@@ -234,13 +276,50 @@ def provenance() -> dict:
             version = (SKILL / 'VERSION').read_text().strip() or None
         except OSError:
             pass
-        registry = os.environ.get('FORGE_REGISTRY') or str(SKILL / 'registry.tsv')
+        registry = Path(os.environ.get('FORGE_REGISTRY') or str(SKILL / 'registry.tsv'))
         try:
-            registry_sha = sha256(Path(registry).read_bytes())[:12]
+            registry_bytes = registry.read_bytes()
         except OSError:
-            registry_sha = None
-        _PROVENANCE = dict(forge_version=version, registry_sha=registry_sha)
+            registry_bytes = None
+        _PROVENANCE = dict(forge_version=version,
+                           registry_sha=sha256(registry_bytes)[:12] if registry_bytes is not None else None,
+                           code_sha=code_sha(registry_bytes), forge_rev=forge_rev())
     return _PROVENANCE
+
+
+CODE_FILES = ('SKILL.md', 'VERSION', 'forge')
+CODE_TREES = ('scripts', 'references')
+
+
+def code_sha(registry_bytes: bytes | None) -> str | None:
+    try:
+        digest = hashlib.sha256()
+        paths = [SKILL / name for name in CODE_FILES]
+        for tree in CODE_TREES:
+            paths.extend(p for p in (SKILL / tree).rglob('*') if p.is_file() and '__pycache__' not in p.parts)
+        for path in sorted(paths):
+            try:
+                content = path.read_bytes()
+            except OSError:
+                continue
+            digest.update(b'%s\0%s\n' % (path.relative_to(SKILL).as_posix().encode(), sha256(content).encode()))
+        digest.update(b'registry\0%s\n' % (sha256(registry_bytes).encode() if registry_bytes is not None else b'-'))
+        return digest.hexdigest()[:16]
+    except Exception:
+        return None
+
+
+def forge_rev() -> str | None:
+    """HEAD of the forge checkout, or None for a copied skill dir. Read-only: no index refresh."""
+    if not (SKILL / '.git').exists():
+        return None
+    try:
+        result = subprocess.run(['git', '-C', str(SKILL), 'rev-parse', 'HEAD'], stdout=subprocess.PIPE,
+                                stderr=subprocess.DEVNULL, timeout=2, env=dict(os.environ, GIT_OPTIONAL_LOCKS='0'))
+    except (OSError, subprocess.SubprocessError):
+        return None
+    rev = result.stdout.decode('ascii', 'replace').strip()
+    return rev if result.returncode == 0 and len(rev) >= 40 else None
 
 
 def repo_id(path: str | Path) -> str:
@@ -280,9 +359,13 @@ def register_repo(db: sqlite3.Connection, path: str | Path | None) -> str | None
 def insert(db: sqlite3.Connection, event: dict) -> bool:
     """Append one event. The first writer of a rid wins, so import and live never duplicate."""
     row = dict(event)
-    row.update({k: v for k, v in provenance().items() if row.get(k) is None})
-    row.setdefault('ts', time.time())
     row.setdefault('src', 'live')
+    if row['src'] != 'import':
+        # An imported run was produced by whatever forge ran it, not by the importer, so its
+        # provenance stays unknown. Rows imported before schema 2 carry the importer's
+        # version: readers treat forge_version/registry_sha on src='import' as unknown.
+        row.update({k: v for k, v in provenance().items() if row.get(k) is None})
+    row.setdefault('ts', time.time())
     row['data'] = json.dumps(row.get('data') or {}, sort_keys=True, default=str)
     values = [row.get(column) for column in EVENT_COLUMNS]
     cursor = db.execute('INSERT OR IGNORE INTO events(%s) VALUES (%s)'
