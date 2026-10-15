@@ -273,6 +273,34 @@ class EndToEndTests(StoreCase):
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertEqual(len(self.events()), before, r.stdout)
 
+    def test_an_export_labels_each_decision_by_what_happened_next(self):
+        from forge_dataset import export
+        p = self.plan_of([('a', '-', 'a.txt'), ('b', '-', 'b.txt')])
+        self.scenario({'a.qa.1': {'verdict': 'FAIL', 'findings': '- [P1][CONFIRMED] a.txt:1 — broken'},
+                       'a.dwarf.2': {'content': 'fixed'}})
+        r = self.run_script('forge-parallel.sh', 'run', p, '--retry-failed', 1)
+        self.assertEqual(r.returncode, 0, r.stdout)
+        shutil.rmtree(p)
+
+        cases = export.build(store.connect())
+        routing = {c['task']: c for c in cases if c['slice'] == 'routing'}
+        self.assertEqual({t: c['expected'] for t, c in routing.items()},
+                         {'a': {'first_pass': False, 'tier': 'low'}, 'b': {'first_pass': True, 'tier': 'low'}})
+        state = routing['a']['state']
+        self.assertIn('REQUIREMENT_SENTINEL TASK_a', state['prompt'])
+        self.assertEqual([s['id'] for s in state['plan_tasks']], ['b'])
+        self.assertEqual(state['dwarf']['model'], 'gpt-6.1-sol')
+        reviews = sorted((c['task'], c['expected']['passes'], '+fixed' in c['state']['diff'])
+                         for c in cases if c['slice'] == 'review')
+        self.assertEqual(reviews, [('a', False, False), ('a', True, True), ('b', True, False)])
+        self.assertEqual({c['state']['reviewer']['model'] for c in cases if c['slice'] == 'review'}, {'opus'})
+        [retry] = [c for c in cases if c['slice'] == 'retry']
+        self.assertEqual((retry['task'], retry['state']['attempt'], retry['expected']), ('a', 2, {'retry_pass': True}))
+        self.assertIn('a.txt:1 — broken', retry['state']['previous_review'])
+        out = self.home / 'export'
+        export.write(cases, out, seed=7, limit=None)
+        self.assertEqual((out.stat().st_mode & 0o777, (out / 'dataset.jsonl').stat().st_mode & 0o777), (0o700, 0o600))
+
 
 class ImportTests(StoreCase):
     def test_an_old_run_gets_one_attempt_per_execution_with_its_own_diff(self):

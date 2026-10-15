@@ -1,6 +1,6 @@
 """`forge dataset ...`: inspect the run dataset, import old runs, and the shell's capture hooks.
 
-User-facing: status, dump, import. Internal (called by forge's shell scripts, fail-open,
+User-facing: status, dump, import, export. Internal (called by forge's shell scripts, fail-open,
 silent): event, invocation, plan.
 """
 from __future__ import annotations
@@ -137,6 +137,11 @@ def run_import(args) -> int:
     return importer.main(args)
 
 
+def run_export(args) -> int:
+    from . import export
+    return export.main(args)
+
+
 def parser() -> argparse.ArgumentParser:
     top = argparse.ArgumentParser(prog='forge dataset', description='The run dataset: every run\'s inputs and outcomes.')
     sub = top.add_subparsers(dest='command', required=True)
@@ -160,6 +165,13 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument('--include-temp', action='store_true', help='also import runs whose repo is a temp dir (test runs)')
     p.add_argument('--dry-run', action='store_true')
     p.set_defaults(func=run_import)
+    p = sub.add_parser('export', help='labeled decision cases (System One JSONL) derived from outcomes')
+    p.add_argument('--out', help='output dir (default: <data>/exports/forge-decisions)')
+    p.add_argument('--slice', dest='slices', action='append', choices=('routing', 'retry', 'review', 'drift', 'citation', 'memory'),
+                   help='only this slice; repeatable (default: all)')
+    p.add_argument('--limit', type=int, help='at most this many cases per slice, spread across runs')
+    p.add_argument('--seed', type=int, default=7)
+    p.set_defaults(func=run_export)
     p = sub.add_parser('event', help=argparse.SUPPRESS)
     p.add_argument('name')
     p.add_argument('--dir')

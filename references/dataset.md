@@ -83,6 +83,7 @@ copied execution keeps its original identity and collapses to one event by rid.
 ./forge dataset dump [--kind K] [--run R] [--task T] [--since UNIX]   # events as JSON lines
 ./forge dataset blob <sha>              # print one stored blob
 ./forge dataset import <dir|archive|legacy-dir>... [--registry] [--fractal] [--ledger REPO] [--dry-run]
+./forge dataset export [--slice S]... [--limit N] [--seed N] [--out DIR]   # labeled decision cases
 ```
 
 `status` runs a different completeness check for each mode, because each mode
@@ -94,6 +95,38 @@ final review's QA has no task attempt. The checks are:
 - parallel PASSes with no merge outcome in a finished run
 - parallel runs with no end
 - blob references with no stored blob
+
+## Exporting labeled decisions
+
+`export` folds the events into cases in the System One wire format (one JSON object per
+line with `id`, `state`, `questions` and `expected`), the format decision-model
+benchmarks and fine-tuning recipes take. Each case is a decision Jev makes in forge,
+with its state built the way `forge_jev` builds it for that site and its label taken
+from what happened afterwards:
+
+| slice | question | label |
+|---|---|---|
+| `routing` | will the first attempt at this task pass review? (state adds the dwarf and reviewer models) | the first attempt's status, refunds and infra stops excluded |
+| `routing` | which difficulty tier is this task? | the tier the orchestrator or planner declared. This is agreement, not an outcome |
+| `retry` | will this retry pass, given the review findings it was handed? (state adds the attempt number and the previous review) | the retry's status, refunds and infra stops excluded |
+| `review` | will the independent reviewer pass this diff? (state names the reviewer's model, effort and harness) | the QA verdict. A diff whose reviews disagreed is dropped |
+| `drift` | is this undeclared file likely to need editing? | whether the passing attempt changed it. Negatives are undeclared files near the task, plus random ones |
+| `citation` | do the places this review cites appear in this diff? | the review paired with its own diff, or with another task's diff from the same repo that shares no file |
+| `memory` | is this recorded fact worth including for this task? | the fact's anchor is a file the task edited (true), or lies in an area it never touched (false). Anything in between is left out |
+
+The reviewer is part of the review state because strictness differs by reviewer: the
+same kind of diff passes far more often under one reviewer than another, so a label
+means little without knowing who gave it.
+
+Decisions with no outcome to label them are left out rather than labeled by opinion.
+These are QA effort sizing, the five routing rubrics, failure triage, and coupling, since
+no merge has conflicted yet.
+
+`meta.jsonl` records each case's slice, run, repo and label source. It also holds hosted
+Jev's own answers where forge recorded them, as baselines that are never part of a case.
+The output defaults to `<data>/exports/forge-decisions/` (`0700`, files `0600`). It holds
+prompts, diffs and reviews from your repos, so keep it out of public repos and pass it
+only to local models. Builds are deterministic for a given store and `--seed`.
 
 ## Importing old runs
 

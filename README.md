@@ -790,6 +790,7 @@ It exists to train and calibrate decision models on what forge actually did.
 ```sh
 ./forge dataset status            # size, counts, and anything that looks incomplete
 ./forge dataset import ~/.local/share/forge/legacy   # runs that predate live capture
+./forge dataset export            # labeled decision cases for benchmarks and fine-tuning
 ```
 
 Capture is fail-open and never read by anything that builds a prompt. See
