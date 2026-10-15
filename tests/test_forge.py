@@ -26,12 +26,16 @@ if os.environ.get('EVENTS'):
  with open(os.environ['EVENTS'], 'a') as f: f.write(name+(' qa' if qa else ' dwarf')+' '+str(time.time())+'\\n')
 # SCENARIO is a JSON file keyed '<task>.<role>.<call number>' (task = file stem, so a.txt -> a);
 # '*' matches any task or any call. Per-key counters live in their own files because
-# decomposed tasks dispatch concurrently and must never share one. Unset, nothing here runs.
+# decomposed tasks dispatch concurrently and must never share one. Two tasks can still
+# share a key (both prompts name TASK_a), so the read-increment-write holds a lock: two
+# calls reading the same count would replay one scenario twice. Unset, nothing here runs.
 sc = {}
 if os.environ.get('SCENARIO'):
- import json
+ import json, fcntl
  sp = pathlib.Path(os.environ['SCENARIO']); role = 'qa' if qa else 'dwarf'; task = name.rsplit('.', 1)[0]
- cp = pathlib.Path(str(sp) + '.' + task + '.' + role); n = int(cp.read_text() if cp.exists() else '0') + 1; cp.write_text(str(n))
+ cp = pathlib.Path(str(sp) + '.' + task + '.' + role)
+ with open(str(cp) + '.lock', 'a') as lock:
+  fcntl.flock(lock, fcntl.LOCK_EX); n = int(cp.read_text() if cp.exists() else '0') + 1; cp.write_text(str(n))
  table = json.loads(sp.read_text()) if sp.exists() else {}
  for k in (task+'.'+role+'.'+str(n), task+'.'+role+'.*', '*.'+role+'.'+str(n), '*.'+role+'.*'):
   if k in table: sc = table[k]; break
