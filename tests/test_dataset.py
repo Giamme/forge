@@ -166,6 +166,9 @@ class StorePrimitiveTests(StoreCase):
         directory = self.home / 'dataset'
         directory.mkdir(parents=True)
         db = sqlite3.connect(str(directory / 'dataset.sqlite'))
+        # WAL, as connect() has made every store since the first one: a rollback-journal
+        # store would race twelve first writers to switch it, a race no real store has.
+        db.execute('PRAGMA journal_mode=WAL')
         db.executescript(self.SCHEMA_1 + extra)
         db.execute("INSERT INTO events (rid, kind, ts, src, data) VALUES ('before', 't', 1, 'live', '{}')")
         db.commit()
