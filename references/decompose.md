@@ -122,6 +122,34 @@ their quota.
 
 QA has no tier rules by default and falls back to `opus`, matching single-task forge.
 
+### Exploratory routing (opt-in)
+
+Every task in the run history ran on the model its tier was routed to, so the history
+says how that model did and nothing about how another would have done on the same task.
+`plan --explore E` (or `FORGE_ROUTE_EXPLORE=E`, with E between 0 and 0.5) collects that
+evidence on purpose.
+
+- **Which rows:** only rows whose dwarf column is `-` (left to forge). The pool's own turn
+  is still taken, so the round robin of every other row is unchanged.
+- **How:** with probability E, the row gets a uniform pick among the specs passed to this
+  `plan` (`--dwarf` and every `--dwarf-<tier>`). Including the other tiers' models is the
+  point: it shows whether a low task really needed nothing more, or a high task really
+  needed the high model.
+- **Never a model you did not name.**
+- **The table:** an explored row is marked `*` in the approval table, so the spend is
+  visible before anything runs. To pin another model, put its spec in the dwarf column
+  and re-plan.
+- **The record:** each decision goes to `tasks/<id>/route.jsonl` (append-only) with its
+  candidates, the pool's own pick, the choice, and its probability:
+  `(1 - E)·[choice = pool's pick] + E / candidates`.
+- **Later changes:** a re-plan draws nothing for rows that are already resolved. An
+  approval-gate edit or a `retry --dwarf` simply runs a different model. The dataset then
+  marks the decision `followed: false`, so its probability is never applied to a choice
+  that did not run.
+- **Calibration:** Jev's routing calibration leaves explored tasks out, since they say
+  nothing about their tier's own model.
+- **Default:** `E = 0`, or no flag, is exactly today's plan.
+
 ## Fractal within decomposed tasks
 
 Select optional Fractal execution on `run`; planning the task table does not activate it.

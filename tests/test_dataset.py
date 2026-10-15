@@ -508,6 +508,74 @@ class EndToEndTests(StoreCase):
             self.assertLess(time.time(), deadline, 'timed out waiting')
             time.sleep(0.2)
 
+    def plan_rows(self, name, rows, *flags):
+        p = self.root / name
+        p.mkdir()
+        (p / 'tasks.tsv').write_text(''.join('%s\t-\tlow\t%s.txt\t%s\topus\t%s\n' % (i, i, dw, i.upper()) for i, dw in rows))
+        for i, _ in rows:
+            (p / 'tasks' / i).mkdir(parents=True)
+            (p / 'tasks' / i / 'prompt.md').write_text('Implement change. REQUIREMENT_SENTINEL TASK_' + i)
+        return p, self.run_script('forge-parallel.sh', 'plan', p, '--repo', self.repo, '--no-memory', *flags)
+
+    def test_exploratory_routing_records_each_decision_with_its_odds(self):
+        # Rows left to forge sometimes get another of the specs given to this plan, never a
+        # model nobody named, and each decision keeps the probability it had. A seed makes
+        # the draws repeatable: with it, a and b are explored, c and d keep the pool's turn.
+        from forge_dataset import export
+        rows = [('a', '-'), ('b', '-'), ('c', '-'), ('d', '-'), ('e', 'sol:high')]
+        pools = ('--dwarf-low', 'sol,luna', '--dwarf-high', 'astra')
+        column = lambda p: {line.split('\t')[0]: line.split('\t')[4] for line in (p / 'tasks.tsv').read_text().splitlines()
+                            if line and not line.startswith('#')}
+        today, _ = self.plan_rows('today', rows, *pools)
+        off, r = self.plan_rows('off', rows, *pools, '--explore', '0')
+        self.assertEqual(((off / 'tasks.tsv').read_text(), list(off.rglob('route.*'))), ((today / 'tasks.tsv').read_text(), []))
+        self.assertEqual(self.plan_rows('bad', rows, *pools, '--explore', '0.7')[1].returncode, 2)
+
+        self.env['FORGE_ROUTE_EXPLORE_SEED'] = '3'
+        p, r = self.plan_rows('plan', rows, *pools, '--explore', '0.5')
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertEqual(column(p), {'a': 'luna', 'b': 'astra', 'c': 'sol', 'd': 'luna', 'e': 'sol:high'})
+        self.assertEqual(column(today), {'a': 'sol', 'b': 'luna', 'c': 'sol', 'd': 'luna', 'e': 'sol:high'})
+        decisions = {t: [json.loads(l) for l in (p / 'tasks' / t / 'route.jsonl').read_text().splitlines()]
+                     for t in 'abcd'}
+        self.assertFalse((p / 'tasks' / 'e' / 'route.jsonl').exists())
+        for t, [d] in decisions.items():
+            self.assertEqual((d['candidates'], d['default'], d['chosen']),
+                             (['sol', 'luna', 'astra'], column(today)[t], column(p)[t]))
+            self.assertAlmostEqual(d['propensity'], 0.5 * (d['chosen'] == d['default']) + 0.5 / 3, places=5)
+        self.assertEqual({t for t, [d] in decisions.items() if d['explored']}, {'a', 'b'})
+        self.assertIn('luna*', r.stdout)
+        self.assertIn('picked by exploratory routing (--explore 0.5)', r.stdout)
+        # A re-plan sees resolved rows as the user's: no new draw, nothing re-labelled.
+        self.assertEqual(self.run_script('forge-parallel.sh', 'plan', p, '--no-memory', *pools, '--explore', '0.5').returncode, 0)
+        self.assertEqual([len((p / 'tasks' / t / 'route.jsonl').read_text().splitlines()) for t in 'abcd'], [1] * 4)
+        # An approval-gate edit after the draw: b now runs sol, so its odds describe a choice that never ran.
+        (p / 'tasks.tsv').write_text((p / 'tasks.tsv').read_text().replace('\tastra\t', '\tsol\t'))
+        self.assertEqual(self.run_script('forge-parallel.sh', 'plan', p, '--no-memory', *pools).returncode, 0)
+        r = self.run_script('forge-parallel.sh', 'run', p)
+        self.assertEqual(r.returncode, 0, r.stdout)
+        shutil.rmtree(p)
+
+        stats = {}
+        cases = {c['task']: c for c in export.build(store.connect(), slices=('routing',), stats=stats)}
+        self.assertEqual({t: (c['meta']['route'] or {}).get('followed') for t, c in cases.items()},
+                         {'a': True, 'b': False, 'c': True, 'd': True, 'e': None})
+        self.assertNotIn('route', cases['a']['state'])
+        cohort = {a['task']: (a['explored'], a['followed'], a['first_pass']) for a in stats['assignments']}
+        self.assertEqual(cohort, {'a': (True, True, True), 'b': (True, False, True), 'c': (False, True, True),
+                                  'd': (False, True, True)})
+
+    def test_an_escalation_is_recorded_at_the_moment_the_model_changes(self):
+        self.scenario({'a.qa.1': {'verdict': 'FAIL', 'findings': '- [P1][CONFIRMED] a.txt:1 — broken'},
+                       'a.dwarf.2': {'content': 'fixed'}})
+        p = self.plan_of([('a', '-', 'a.txt')])
+        self.run_script('forge-parallel.sh', 'run', p)
+        r = self.run_script('forge-parallel.sh', 'retry', p, 'a', '--dwarf', 'luna')
+        self.assertEqual(r.returncode, 0, r.stdout)
+        [e] = [e for e in self.events(kind='event') if e['data']['name'] == 'escalation']
+        self.assertEqual((e['task'], e['data']['from'], e['data']['to'], e['data']['after_attempt']),
+                         ('a', 'sol', 'luna', '1'))
+
     def commit_at(self, when, message, files=None):
         env = dict(self.env, GIT_AUTHOR_DATE='@%d +0000' % when, GIT_COMMITTER_DATE='@%d +0000' % when)
         for name, content in (files or {}).items():

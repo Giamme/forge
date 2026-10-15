@@ -31,10 +31,11 @@ time order: an attempt that PASSed, then a merge that CONFLICTed, then a human `
 | `dispatch` | model call | role, alias, harness, **resolved** model, effort after clamping, timeout and its source, delivery (custom or native review), phase timings, exit, timeout, infra class, tokens, parsed verdict and findings, `FORGE_LEARNING` lines. Blobs: the delivered prompt and the final message |
 | `attempt` | task attempt or solo run | status, attempt number (with refund and resume flags), trigger (`initial`, `auto`, `human`), dwarf and qa spec, declared vs changed files, numstat, drift, guard notes, gate line, patch key, the files this execution wrote and the ones it only carried. Blobs: the diff, retry findings, memory slices, capsule, Jev task files |
 | `verification` / `verify_run` | verify, and each command execution | command and its source (flag, `.forge/verify`, Jev), status, flaky, Jev triage. One `verify_run` per execution, each with its own log |
-| `plan` | `plan` | goal, original request, decompose level, author (orchestrator or planner), per-task declared vs executed difficulty and who set it, pools, waves, Jev routing and coupling. Blobs: both task tables, prompts, approaches, excerpts of the declared files at plan time, the file inventory, `memory.md` |
+| `plan` | `plan` | goal, original request, decompose level, exploratory routing decisions (`tasks[id].route`, with their odds), author (orchestrator or planner), per-task declared vs executed difficulty and who set it, pools, waves, Jev routing and coupling. Blobs: both task tables, prompts, approaches, excerpts of the declared files at plan time, the file inventory, `memory.md` |
 | `run_end` | `run` | results per task, the accepted integration commit, `memory.md` |
 | `invocation` | user-facing `forge-parallel.sh` subcommand | argv, exit, duration, plus final review, accept, integrate and split/combine payloads |
 | `event` | point event | `merge` (MERGED, CONFLICT with the files, INVALIDATED and why), `integrate_advanced`, `integrate_conflict`, `combine_conflict`, `sched_terminal`, `subset_run` (every outcome), `memory_record`, `memory_prune` |
+| `event` `escalation` | `retry --dwarf` | the model a retry escalated from and to, recorded at the rewrite, before the retried attempt begins |
 | `event` `shadow_review` | shadow review | how an opt-in second review ended (`done`, `invalid`, `overtime`, `orphaned`, ...), with the reviewed commit and both specs. Its dispatch is recorded with role `qa_shadow` |
 | `jev` | Jev request | site, answers, usage, latency, mode. Blob: the **full request** (state and questions). Its original sha is `jev.jsonl`'s `key` |
 | `fractal_step` / `fractal_node` | Fractal step, node state | decomposition decision, iteration, resolved model, cost, tokens, candidate diff |
@@ -167,6 +168,13 @@ A later success is never labeled as the first attempt's.
 Decisions with no outcome to label them are left out rather than labeled by opinion.
 These are QA effort sizing, the five routing rubrics, failure triage, and coupling, since
 no merge has conflicted yet.
+
+Routing cases of tasks routed with `plan --explore` add `route` to their metadata: the
+candidates, the pool's own pick, the choice, its propensity, and `followed`, which says
+whether attempt 1 really ran the chosen spec (an approval-gate edit or `retry --dwarf` can
+replace it). `assignments.jsonl` lists every such decision with its first attempt's outcome
+or censoring reason, including tasks no case was exported for. It is the randomized cohort,
+free of the export's own filters.
 
 Review cases whose attempt also had a shadow review (`plan --shadow-qa`) add `shadow` (its
 verdict, reviewer and worst finding) and `consensus` to their metadata. Only a shadow that

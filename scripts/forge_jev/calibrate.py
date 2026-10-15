@@ -190,6 +190,10 @@ def _collect(repo: Path, dirs: list[Path]) -> tuple[list[dict], dict]:
             continue  # routing rows with no corroborating shadow-mode Jev call
         rows, routing_skipped = _read_routing(routing_path)
         n_skipped_routing += routing_skipped
+        for row in rows:
+            # A task routed by exploration (plan --explore) ran on another model than its
+            # tier's pool would have given it, so its outcome says nothing about that tier.
+            row['explored'] = (run_dir / 'tasks' / row['task'] / 'route.explored').exists()
         routing_rows.extend(rows)
         n_run_dirs_used += 1
 
@@ -207,6 +211,7 @@ def _collect(repo: Path, dirs: list[Path]) -> tuple[list[dict], dict]:
         by_key.setdefault((row['run_id'], row['task']), []).append(row)
     n_duplicate_rows = len(routing_rows) - len(by_key)
     n_conflicting = 0
+    n_explored = 0
 
     samples = []
     for key, rows in sorted(by_key.items()):
@@ -222,6 +227,9 @@ def _collect(repo: Path, dirs: list[Path]) -> tuple[list[dict], dict]:
         outcome = outcomes.get(key)
         if outcome is None:
             continue  # a routing decision with no matching ledger outcome joins to nothing
+        if any(r['explored'] for r in rows):
+            n_explored += 1
+            continue
         row = rows[0]
         samples.append(dict(tier=row['tier'], confidence=row['confidence'], composite=row['composite'],
                             passed=outcome['verdict'] == 'PASS', duration_s=outcome['duration_s']))
@@ -229,7 +237,7 @@ def _collect(repo: Path, dirs: list[Path]) -> tuple[list[dict], dict]:
     meta = dict(n_run_dirs_used=n_run_dirs_used, n_skipped_jsonl_lines=n_skipped_jsonl,
                n_skipped_routing_rows=n_skipped_routing, n_skipped_ledger_rows=n_skipped_ledger,
                n_duplicate_routing_rows=n_duplicate_rows,
-               n_conflicting_routing_keys=n_conflicting)
+               n_conflicting_routing_keys=n_conflicting, n_explored_tasks=n_explored)
     return samples, meta
 
 
@@ -357,6 +365,9 @@ def report(summary: dict) -> str:
     if summary.get('n_conflicting_routing_keys'):
         lines.append(f"dropped {summary['n_conflicting_routing_keys']} (run, task) key(s) whose "
                     'run dirs disagree on tier -- one outcome cannot validate two predictions')
+    if summary.get('n_explored_tasks'):
+        lines.append(f"left out {summary['n_explored_tasks']} task(s) routed by --explore: they ran on "
+                    "another model than their tier's pool, so they say nothing about that tier")
     lines.append('')
 
     for tier in TIERS:

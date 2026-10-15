@@ -1080,6 +1080,7 @@ Bash 3.2 entrypoints use a Python standard-library coordinator to schedule eligi
 ```
 forge-parallel.sh plan      <plan-dir> --repo <dir> [routing flags] [--planner <spec>] [--no-memory]
                                      [--decompose-level L] [--shadow-qa <spec>[,..]|none] [--shadow-rate R]
+                                     [--explore E]
 forge-parallel.sh run       <plan-dir> [--max-parallel N] [--yolo-dwarf] [--yolo-qa] [--dry-run]
                                      [--verify <cmd>] [--setup <cmd>] [--timeout S]
                                      [--retry-failed N] [--infra-retries M]

@@ -86,6 +86,10 @@ prepare_retry() { # prepare_retry <plan> <id> [new-dwarf]
     # the record of "this tier was too weak for this task".
     printf '%s\t%s\t%s\t%s\n' "$(date +%s)" "$(cat "$tdir/attempt" 2>/dev/null || echo 0)" \
       "$(field "$T" "$id" dwarf)" "$newdwarf" >> "$tdir/escalations.tsv"
+    # Recorded at the rewrite itself: it happens before the retried attempt begins, so no
+    # attempt capture would ever see it as something that attempt produced.
+    forge_dataset_event escalation --dir "$PLAN" --task "$id" --set "from=$(field "$T" "$id" dwarf)" \
+      --set "to=$newdwarf" --set "after_attempt=$(cat "$tdir/attempt" 2>/dev/null || echo 0)"
     # Written into tasks.tsv rather than kept in a side file: the table then shows the
     # model that will actually be spent, and plan's rule that an explicit column value
     # survives a re-plan protects the escalation for free.

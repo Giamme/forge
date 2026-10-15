@@ -406,6 +406,18 @@ class DuplicateRunDirTests(CalibrateTestCase):
         self.assertEqual(summary['tiers']['medium']['n'], 1)  # only t1, the agreeing key
         self.assertIn('disagree on tier', calibrate.report(summary))
 
+    def test_a_task_routed_by_exploration_says_nothing_about_its_tier(self):
+        # plan --explore gave t1 another model than the low pool's, so its pass is not a
+        # pass of the low tier's model; counting it would calibrate the tier on the wrong model.
+        self._seed_run([_routing_row('r1', 't0', 'low', 0.6), _routing_row('r1', 't1', 'low', 0.6)])
+        (self.run_dir / 'tasks' / 't1').mkdir(parents=True)
+        (self.run_dir / 'tasks' / 't1' / 'route.explored').write_text('astra\n')
+        self._seed_ledger([_ledger_qa_row('r1', 't0', 'PASS'), _ledger_qa_row('r1', 't1', 'PASS')])
+
+        summary = calibrate.run(self.repo, min_sample=30)
+        self.assertEqual((summary['tiers']['low']['n'], summary['n_explored_tasks']), (1, 1))
+        self.assertIn('left out 1 task(s) routed by --explore', calibrate.report(summary))
+
     def test_distinct_runs_over_the_same_tasks_still_count_separately(self):
         # The dedup key is (run_id, task), not task: two genuine runs over the same plan
         # are two executions and two observations. Collapsing those would make the bar

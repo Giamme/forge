@@ -30,7 +30,7 @@ PIPELINE_ROLES = ('task', 'solo', 'verification', 'parallel')
 TASKS_COLS = ('id', 'deps', 'difficulty', 'files', 'dwarf', 'qa', 'title')
 STRUCTURED = ('codex', 'claude')
 # Plan files that change what a plan decides, added to its rid only when present (see plan_event).
-PLAN_RID_LATER = ('decompose_level', 'shadow_qa', 'shadow_rate')
+PLAN_RID_LATER = ('decompose_level', 'shadow_qa', 'shadow_rate', 'explore')
 
 # Files a task or solo execution may write. begin() snapshots their signatures so
 # finish() can tell this execution's outputs from what an earlier one left behind.
@@ -187,6 +187,19 @@ def review_completeness(verdict: str | None, found: list, parsed: bool = True) -
     if verdict == 'FAIL' and not confirmed:
         return 'ungraded'
     return 'graded'
+
+
+def jsonl(path: Path) -> list:
+    """The JSON objects of a line-per-record file; a torn or foreign line is skipped, not fatal."""
+    out = []
+    for line in (text(path) or '').splitlines():
+        try:
+            value = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(value, dict):
+            out.append(value)
+    return out
 
 
 def tasks_rows(path: Path) -> dict:
@@ -607,6 +620,9 @@ def plan_event(plan: Path, prov: dict, src: str = 'live', inventory: bool = True
         per_task[tid] = dict(row, declared_difficulty=declared_tier, difficulty_source=source,
                              routing=routing, prompt=put_file(tdir / 'prompt.md', 'prompt'),
                              approach=put_file(tdir / 'approach.md', 'prompt'))
+        decisions = jsonl(tdir / 'route.jsonl')
+        if decisions:
+            per_task[tid]['route'] = decisions   # exploratory routing (forge-route.py), oldest first
     waves = {}
     for line in (text(plan / 'waves.tsv') or '').splitlines():
         cells = line.split('\t')
@@ -616,6 +632,9 @@ def plan_event(plan: Path, prov: dict, src: str = 'live', inventory: bool = True
     # so every plan already in a store keeps its rid and re-importing an archive adds nothing.
     # Options older than that (timeout, qa_threshold, ...) stay out for the same reason.
     later = {name: first_line(plan / name) for name in PLAN_RID_LATER if (plan / name).exists()}
+    routes = {tid: [d.get('decision') for d in r['route']] for tid, r in per_task.items() if r.get('route')}
+    if routes:
+        later['route'] = routes
     inputs = json.dumps([text(plan / 'goal.txt'), text(plan / 'tasks.tsv'), text(declared_path),
                          {t: [r['prompt'], r['approach']] for t, r in per_task.items()}] + ([later] if later else []),
                         sort_keys=True, default=str)
@@ -630,7 +649,7 @@ def plan_event(plan: Path, prov: dict, src: str = 'live', inventory: bool = True
         fractal_selection=read_json(plan / 'fractal-selection.json'),
         jev_coupling=read_json(plan / 'jev-coupling.json'),
         options={name: first_line(plan / name) for name in ('qa_threshold', 'verify_retries', 'timeout', 'final_qa',
-                                                            'shadow_qa', 'shadow_rate')
+                                                            'shadow_qa', 'shadow_rate', 'explore')
                  if (plan / name).exists()},
         flags=sorted(name for name in ('no_memory', 'no_ripwire', 'yolo_dwarf', 'yolo_qa') if (plan / name).exists()),
         blobs=blobs(goal=put_file(plan / 'goal.txt'), request=put_file(plan / 'request.md', 'prompt'),

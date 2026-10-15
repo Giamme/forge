@@ -30,6 +30,10 @@
 #                           by a listed reviewer of another model family, recorded and
 #                           never read (measures reviewer agreement). `none` turns it off
 #   --shadow-rate R         that share, 0..1 (default 0.1)
+#   --explore E             opt-in: a row left to forge gets, with probability E (0..0.5),
+#                           a uniform pick among the specs given to this plan instead of
+#                           its pool's turn; each decision and its odds go to
+#                           tasks/<id>/route.jsonl (or FORGE_ROUTE_EXPLORE=E)
 #
 # Opt-in run behaviour (all off unless asked):
 #   --retry-failed N        re-queue a task whose reviewer said FAIL up to N more times,
@@ -123,7 +127,7 @@ pool_pick() { # pool_pick <comma-list> <index>
 do_plan() {
   local PLAN="${1:?plan needs a plan dir}"; shift
   local REPO="" D_ANY="" D_HI="" D_MD="" D_LO="" Q_ANY="" Q_HI="" Q_MD="" Q_LO=""
-  local PLANNER="" NOMEM=0 jev_rc=0 DLEVEL="" SHADOW_QA="" SHADOW_RATE=""
+  local PLANNER="" NOMEM=0 jev_rc=0 DLEVEL="" SHADOW_QA="" SHADOW_RATE="" EXPLORE="${FORGE_ROUTE_EXPLORE:-}"
   while [ $# -gt 0 ]; do
     case "$1" in
       --repo)         REPO="${2:?}"; shift 2 ;;
@@ -139,6 +143,7 @@ do_plan() {
       --shadow-rate)
         printf '%s' "${2:-}" | grep -Eq '^(0?\.[0-9]+|0|1|1\.0+)$' || die "--shadow-rate needs a share between 0 and 1"
         SHADOW_RATE="$2"; shift 2 ;;
+      --explore)      EXPLORE="${2:?--explore needs a share between 0 and 0.5}"; shift 2 ;;
       --dwarf)        D_ANY="${2:?}"; shift 2 ;;
       --dwarf-high)   D_HI="${2:?}"; shift 2 ;;
       --dwarf-medium) D_MD="${2:?}"; shift 2 ;;
@@ -180,6 +185,13 @@ do_plan() {
   esac
   [ -z "$SHADOW_RATE" ] || [ "$SHADOW_QA" = none ] || [ "$SHADOW_QA" = off ] \
     || printf '%s\n' "$SHADOW_RATE" > "$PLAN/shadow_rate"
+  # Exploration is decided here and only here, so the table and preflight see what will run.
+  if [ -n "$EXPLORE" ]; then
+    awk -v v="$EXPLORE" 'BEGIN { exit !(v ~ /^(0|0?\.[0-9]+)$/ && v + 0 <= 0.5) }' \
+      || die "--explore (or FORGE_ROUTE_EXPLORE) needs a share between 0 and 0.5"
+    awk -v v="$EXPLORE" 'BEGIN { exit !(v + 0 == 0) }' && EXPLORE=""
+  fi
+  if [ -n "$EXPLORE" ]; then printf '%s\n' "$EXPLORE" > "$PLAN/explore"; else rm -f "$PLAN/explore"; fi
 
   # repo: from flag on first plan, remembered afterwards
   if [ -n "$REPO" ]; then
@@ -312,6 +324,15 @@ EOF
         if [ -n "$D_ANY" ]; then dw="$(pool_pick "$D_ANY" "$an_i")"; an_i=$((an_i+1));
         else dw="UNASSIGNED"; unassigned=$((unassigned+1)); fi
       fi
+      # Opt-in (--explore): now and then another of the specs given to this plan, with the
+      # odds recorded, so later analysis can compare models on tasks they were not routed
+      # to by design. The pool's turn above was still taken, so other rows are unchanged.
+      if [ -n "$EXPLORE" ] && [ "$dw" != UNASSIGNED ]; then
+        local explored
+        explored="$(python3 "$SKILL_DIR/scripts/forge-route.py" explore --plan "$PLAN" --task "$id" \
+          --tier "$diff" --epsilon "$EXPLORE" --default "$dw" --candidates "$D_ANY,$D_LO,$D_MD,$D_HI" 2>/dev/null)"
+        [ -z "$explored" ] || dw="$explored"
+      fi
     fi
     # resolve qa
     if [ "$qa" = "-" ] || [ -z "$qa" ]; then
@@ -436,14 +457,18 @@ render_table() {
       "(about $(awk -v n="$n" -v r="$rate" 'BEGIN { x = n * r; printf "%d", (x == int(x)) ? x : int(x) + 1 }') extra reviews; recorded, never changes a result)"
   fi
   echo
-  local w id
+  local w id dws starred=0
   for w in $(awk -F'\t' '{print $1}' "$W" | sort -un); do
     local cnt; cnt="$(awk -F'\t' -v w="$w" '$1==w' "$W" | wc -l | tr -d ' ')"
     echo "wave $w ($cnt parallel)"
     printf '  %-14s %-7s %-24s %-14s %s\n' id diff dwarf qa files
     for id in $(awk -F'\t' -v w="$w" '$1==w {print $2}' "$W"); do
+      dws="$(field "$T" "$id" dwarf)"
+      if [ -s "$PLAN/tasks/$id/route.explored" ] && [ "$(cat "$PLAN/tasks/$id/route.explored")" = "$dws" ]; then
+        dws="$dws*"; starred=1
+      fi
       printf '  %-14s %-7s %-24s %-14s %s\n' \
-        "$id" "$(field "$T" "$id" difficulty)" "$(field "$T" "$id" dwarf)" \
+        "$id" "$(field "$T" "$id" difficulty)" "$dws" \
         "$(field "$T" "$id" qa)" "$(field "$T" "$id" files)"
       # The approach is shown here because this gate is the only moment a human can
       # change the plan for free. After dispatch, changing it costs a whole run.
@@ -453,6 +478,11 @@ render_table() {
     done
     echo
   done
+  if [ "$starred" = 1 ]; then
+    echo "* picked by exploratory routing (--explore $(cat "$PLAN/explore" 2>/dev/null)) instead of the pool's turn;"
+    echo "  to pin another model, put its spec in the dwarf column of tasks.tsv and re-plan"
+    echo
+  fi
   if [ -s "$PLAN/deferrals.txt" ]; then
     echo "deferrals (serialized to protect the merge):"
     sed 's/^/  /' "$PLAN/deferrals.txt"

@@ -475,7 +475,50 @@ def routing_cases(runs: Runs):
                    label_source=dict(first_pass='final status of the first real attempt',
                                      tier='declared_difficulty (%s)' % row.get('difficulty_source')),
                    dwarf=dwarf.get('model'),
-                   meta=dict(_meta(runs, run, plan, attempts[0]['events'][-1]), **_course(runs, run, task, attempts)))
+                   meta=dict(_meta(runs, run, plan, attempts[0]['events'][-1]), **_course(runs, run, task, attempts),
+                             route=_route(row, first)))
+
+
+ROUTE_FIELDS = ('decision', 'tier', 'epsilon', 'candidates', 'default', 'chosen', 'explored', 'propensity')
+
+
+def _route(row, first_event) -> dict | None:
+    """The routing decision (plan --explore) behind this task's model, and whether attempt 1 followed it.
+
+    An approval-gate edit or a `retry --dwarf` replaces the model after the draw; the
+    propensity then describes a choice that never ran, so `followed` says which is which.
+    """
+    decisions = row.get('route') or []
+    if not decisions:
+        return None
+    decision = decisions[-1]
+    out = {k: decision.get(k) for k in ROUTE_FIELDS}
+    out['followed'] = first_event['d'].get('dwarf') == decision.get('chosen')
+    return out
+
+
+def assignments(runs: Runs) -> list:
+    """Every routing decision with what its task's first attempt did, exported cases or not.
+
+    The randomized cohort for estimating how another model would have done: the export's
+    own filters (a task with no prompt left, a censored first attempt) must not select it.
+    """
+    out = []
+    for run, revisions in sorted(runs.plans.items(), key=lambda kv: str(kv[0])):
+        latest = {}
+        for plan in revisions:
+            for tid, row in (plan['d'].get('tasks') or {}).items():
+                if row.get('route'):
+                    latest[tid] = row['route'][-1]
+        for tid, decision in sorted(latest.items()):
+            attempts = _attempts(runs, run, tid, runs.attempts.get((run, tid), []))
+            first = attempts[0] if attempts else None
+            ran = first['events'][0]['d'].get('dwarf') if first else None
+            out.append(dict({k: decision.get(k) for k in ROUTE_FIELDS}, run=run, task=tid,
+                            followed=(ran == decision.get('chosen')) if first else None, ran=ran,
+                            first_pass=first['outcome'] if first else None,
+                            censored=(first['reason'] if first['outcome'] is None else None) if first else 'not_run'))
+    return out
 
 
 def retry_cases(runs: Runs):
@@ -875,6 +918,7 @@ def build(db, *, slices=SLICES, limit: int | None = None, seed: int = 7, stats: 
         out.extend(sorted(_sample(cases, limit, seed), key=lambda c: c['id']))
     if stats is not None:
         stats['censored'] = dict(sorted(runs.censored.items()))
+        stats['assignments'] = assignments(runs)
     return out
 
 
@@ -901,6 +945,9 @@ def write(cases: list, out: Path, *, seed: int, limit, stats: dict | None = None
     body = '\n'.join(lines) + '\n'
     _private_write(out / 'dataset.jsonl', body)
     _private_write(out / 'meta.jsonl', '\n'.join(meta) + '\n')
+    routed = (stats or {}).get('assignments') or []
+    if routed:
+        _private_write(out / 'assignments.jsonl', ''.join(json.dumps(a, sort_keys=True) + '\n' for a in routed))
     counts = defaultdict(lambda: defaultdict(int))
     for c in cases:
         for qid, label in c['expected'].items():
