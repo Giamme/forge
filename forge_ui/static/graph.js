@@ -7,7 +7,6 @@
   var NS = 'http://www.w3.org/2000/svg';
   var NODE_W = 176, NODE_H = 46, COL_GAP = 72, ROW_GAP = 14;
   var PAD = 16, HEADER_H = 26;
-  var CHAR_W = 6.8; // rough width of one 12px glyph, used to ellipsize
   var uid = 0;
 
   function el(name, attrs, parent) {
@@ -23,9 +22,29 @@
     return t;
   }
 
-  function ellipsize(s, maxChars) {
+  // Conservative per-glyph advance (in em) so wide letters cannot overflow the node.
+  function glyphEm(c) {
+    if (/[WM@%]/.test(c)) return 1.0;
+    if (/[mw]/.test(c)) return 0.9;
+    if (/[A-Z0-9_#&$]/.test(c)) return 0.75;
+    if (/[il.,:;'|!\[\]() \-]/.test(c)) return 0.4;
+    if (c.charCodeAt(0) > 0x2e7f) return 1.1;
+    return 0.64;
+  }
+
+  // Cut s so its estimated width at fontSize (times extra, e.g. 1.1 for bold) fits maxPx.
+  function ellipsize(s, maxPx, fontSize, extra) {
     s = String(s);
-    return s.length > maxChars ? s.slice(0, Math.max(1, maxChars - 1)) + '…' : s;
+    var k = fontSize * (extra || 1), w = 0, i, total = 0;
+    for (i = 0; i < s.length; i++) total += glyphEm(s.charAt(i)) * k;
+    if (total <= maxPx) return s;
+    var room = maxPx - glyphEm('…') * k;
+    for (i = 0; i < s.length; i++) {
+      var cw = glyphEm(s.charAt(i)) * k;
+      if (w + cw > room) break;
+      w += cw;
+    }
+    return s.slice(0, Math.max(1, i)) + '…';
   }
 
   function str(v, dflt) {
@@ -213,11 +232,11 @@
         style: 'fill:var(--st, #888);'
       }, g);
 
-      var maxChars = Math.floor((NODE_W - 36) / CHAR_W);
-      textEl(g, ellipsize(id, maxChars), {
+      var maxPx = NODE_W - 36;
+      textEl(g, ellipsize(id, maxPx, 13, 1.1), {
         x: 12, y: 19, 'font-size': 13, 'font-weight': 'bold', fill: 'currentColor'
       });
-      var spec = t.explored ? ellipsize(str(t.dwarf, '—'), maxChars - 2) + ' *' : ellipsize(str(t.dwarf, '—'), maxChars);
+      var spec = t.explored ? ellipsize(str(t.dwarf, '—'), maxPx - 12, 12) + ' *' : ellipsize(str(t.dwarf, '—'), maxPx, 12);
       textEl(g, spec, {
         x: 12, y: 36, 'font-size': 12, fill: 'currentColor', 'fill-opacity': 0.75
       });
