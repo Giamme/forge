@@ -1,0 +1,1 @@
+{"at": 1760619000.0, "task": "reader", "tier": "high", "epsilon": 0.5, "candidates": ["astra", "opus"], "default": "opus", "chosen": "astra", "explored": false, "propensity": 0.25, "inputs": {}, "decision": "9c1e4b7a0d2f3e58", "future_field": {"keep": true}}
