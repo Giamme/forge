@@ -10,6 +10,11 @@ import re
 import stat
 
 
+# Waves are returned as a dense, indexed list, including empty waves. Bound
+# that expansion so a corrupt integer cannot allocate an arbitrary-sized list.
+_MAX_WAVE = 10000
+
+
 def run_key(path) -> str:
     return hashlib.sha1(os.fsencode(os.path.realpath(path))).hexdigest()[:12]
 
@@ -77,6 +82,7 @@ class _Read:
         self.path = Path(os.path.realpath(path))
         self.warnings = []
         self.truncated = []
+        self.present_files = set()
         self.updated = None
         self.exists('')
 
@@ -104,6 +110,7 @@ class _Read:
             path = self.path / name
             # Do not open special files (a FIFO could otherwise block forever).
             info = path.stat()
+            self.present_files.add(name)
             if not stat.S_ISREG(info.st_mode):
                 self.warn(name, 'not a regular file')
                 return None
@@ -124,7 +131,13 @@ class _Read:
                         start += 1
                     raw = raw[start:]
                 value = raw.decode('utf-8', errors='replace')
-            if '\ufffd' in value or '\x00' in value:
+            invalid_encoding = False
+            if '\ufffd' in value:
+                try:
+                    raw.decode('utf-8')
+                except UnicodeDecodeError:
+                    invalid_encoding = True
+            if invalid_encoding or '\x00' in value:
                 self.warn(name, 'invalid text encoding or NUL byte')
             return value
         except FileNotFoundError:
@@ -211,7 +224,8 @@ def _nullable(value):
 
 
 def _verdict(value):
-    matches = re.findall(r'^FORGE_VERDICT:[ \t]*(PASS|FAIL)[ \t\r]*$', value or '', re.MULTILINE)
+    matches = re.findall(r'^FORGE_VERDICT:[ \t]*(PASS|FAIL)[ \t]*(?:[—–-][^\r\n]*)?\r?$',
+                         value or '', re.MULTILINE)
     return matches[-1] if matches else None
 
 
@@ -331,18 +345,19 @@ def detail(path, source='plan') -> dict:
     result['request'] = reader.cap(reader.text('request.md'), 'request')
     result['settings'] = dict(explore=reader.number('explore'), shadow_rate=reader.number('shadow_rate'),
                               shadow_qa=_list(reader.text('shadow_qa') or ''), timeout=reader.number('timeout', int))
-    verification = dict(status=result['verification_status'], command=reader.text('verification.command'),
+    command = reader.text('verification.command')
+    verification = dict(status=result['verification_status'], command=command.strip() if command is not None else None,
                         log_tail=reader.cap(reader.text('verification.log', 65536), 'verification.log_tail', 4000, True))
-    result['verification'] = verification if any(reader.exists('verification.' + suffix)
+    result['verification'] = verification if any('verification.' + suffix in reader.present_files
                                                for suffix in ('status', 'command', 'log')) else None
     waves, wave_map = {}, {}
     for label, row in reader.rows('waves.tsv', 2):
         try:
             wave = int(row[0])
-            if wave < 1:
+            if not 1 <= wave <= _MAX_WAVE:
                 raise ValueError()
         except ValueError:
-            reader.warn(label, 'invalid wave number')
+            reader.warn(label, f'invalid wave number (expected 1..{_MAX_WAVE})')
             continue
         waves.setdefault(wave, []).append(row[1])
         wave_map[row[1]] = wave

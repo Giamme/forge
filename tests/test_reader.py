@@ -75,7 +75,7 @@ class ReaderTests(unittest.TestCase):
         self.assertEqual(data['waves'], [['reader'], ['page', 'graph']])
         self.assertEqual(data['settings'], {'explore': 0.5, 'shadow_rate': 0.25,
                                            'shadow_qa': ['opus', 'sol:xhigh'], 'timeout': 3600})
-        self.assertEqual(data['verification'], {'status': 'PASS', 'command': 'python3 -m unittest\n',
+        self.assertEqual(data['verification'], {'status': 'PASS', 'command': 'python3 -m unittest',
                                                'log_tail': 'All tests passed.\n'})
         self.assertEqual(data['request'], 'A read-only run viewer.\n')
         self.assertEqual(data['warnings'], [])
@@ -163,12 +163,68 @@ class ReaderTests(unittest.TestCase):
                           'started': None, 'status': None, 'verdict': None})
         self.assertEqual(data['warnings'], [])
 
-    def test_verdict_requires_a_complete_matching_line(self):
+    def test_verdict_accepts_dash_glosses_and_uses_last_matching_line(self):
         plan = self.copy_plan()
-        self.write(plan / 'tasks/reader/qa.last',
-                   'FORGE_VERDICT: PASS\r\nQuoted FORGE_VERDICT: FAIL\n'
-                   'FORGE_VERDICT: FAIL extra\nFORGE_VERDICT:\nFAIL\n')
-        self.assertEqual(detail(plan)['tasks'][0]['verdict'], 'PASS')
+        for suffix in ('', '   — no confirmed correctness bug',
+                       ' – explanation', ' - explanation'):
+            for verdict in ('PASS', 'FAIL'):
+                with self.subTest(suffix=suffix, verdict=verdict):
+                    previous = 'FAIL' if verdict == 'PASS' else 'PASS'
+                    review = (f'FORGE_VERDICT: {previous}\n'
+                              f'FORGE_VERDICT: {verdict}{suffix}\r\n'
+                              f'Quoted FORGE_VERDICT: {previous}\n'
+                              f'FORGE_VERDICT: {previous} extra\n'
+                              'FORGE_VERDICT:\nFAIL\n')
+                    for name in ('tasks/reader/qa.last', 'shadow/reader/1-2/qa.last'):
+                        self.write(plan / name, review)
+                    task = detail(plan)['tasks'][0]
+                    self.assertEqual(task['verdict'], verdict)
+                    self.assertEqual(task['shadow'][0]['verdict'], verdict)
+
+    def test_wave_numbers_are_bounded(self):
+        plan = self.copy_plan()
+        # Preserve sparse indexing at the limit; reject oversized input before
+        # allocating a list proportional to it.
+        for wave in (10000, 10001, 3000000, 10000000000):
+            with self.subTest(wave=wave):
+                self.write(plan / 'waves.tsv', f'1\tpage\n{wave}\treader\n')
+                data = detail(plan)
+                if wave == 10000:
+                    self.assertEqual(len(data['waves']), 10000)
+                    self.assertEqual(data['waves'][-1], ['reader'])
+                    self.assertEqual(data['tasks'][0]['wave'], 10000)
+                    self.assertEqual(data['warnings'], [])
+                else:
+                    self.assertEqual(data['waves'], [['page']])
+                    self.assertIsNone(data['tasks'][0]['wave'])
+                    self.assertEqual(len(data['warnings']), 1)
+                    self.assertIn('waves.tsv line 2', data['warnings'][0])
+                json.dumps(data)
+
+    def test_literal_replacement_character_is_valid_utf8(self):
+        plan = self.copy_plan()
+        for raw, expected, warning in ((b'literal \xef\xbf\xbd char', 'literal \ufffd char', False),
+                                       (b'invalid \xff char', 'invalid \ufffd char', True)):
+            with self.subTest(raw=raw):
+                (plan / 'tasks/reader/retry_findings.md').write_bytes(raw)
+                data = detail(plan)
+                self.assertEqual(data['tasks'][0]['retry_findings'], expected)
+                self.assertEqual(len(data['warnings']), int(warning))
+                if warning:
+                    self.assertIn('retry_findings.md', data['warnings'][0])
+
+    def test_verification_dangling_symlink_warns_once(self):
+        self.write(self.base / 'tasks.tsv', '')
+        (self.base / 'verification.command').symlink_to(self.base / 'missing')
+        data = detail(self.base)
+        self.assertIsNone(data['verification'])
+        self.assertEqual(len(data['warnings']), 1)
+        self.assertIn('verification.command', data['warnings'][0])
+        # An existing but empty file still makes verification present.
+        self.write(self.base / 'verification.log', '')
+        data = detail(self.base)
+        self.assertEqual(data['verification'], {'status': None, 'command': None, 'log_tail': ''})
+        self.assertEqual(len(data['warnings']), 1)
 
     def test_text_caps_and_verdict_outside_tail(self):
         plan = self.copy_plan()
