@@ -5,8 +5,10 @@ import json
 import os
 from pathlib import Path
 import socket
+import struct
 import tempfile
 import threading
+import time
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from unittest.mock import patch
@@ -230,16 +232,53 @@ class RoutesTests(ServerTestCase):
 
     def test_host_header_must_be_the_local_address(self):
         port = self.server.server_address[1]
-        for host in [f'evil.example:{port}', f'127.0.0.1.evil.example:{port}', '127.0.0.1', f'127.0.0.2:{port}']:
+        for host in [f'evil.example:{port}', 'evil.example', f'127.0.0.1.evil.example:{port}', '127.0.0.2',
+                     f'127.0.0.2:{port}', f'localhost.evil.example:{port}']:
             for path, method in [('/api/runs', 'GET'), ('/app.js', 'GET'), ('/', 'GET'), ('/api/runs', 'POST')]:
                 status, _, body = self.request(method, path, headers={'Host': host})
                 self.assertEqual((status, json.loads(body)), (403, {'error': 'forbidden'}), (host, path))
 
-    def test_local_host_names_are_accepted(self):
+    def test_local_host_names_are_accepted_with_any_port_or_none(self):
+        # A port forward (ssh -L 9000:127.0.0.1:<port>) sends the forwarded port in Host.
         port = self.server.server_address[1]
-        for host in [f'127.0.0.1:{port}', f'localhost:{port}', f'LOCALHOST:{port}']:
+        for host in [f'127.0.0.1:{port}', f'localhost:{port}', f'LOCALHOST:{port}', 'localhost:9000',
+                     '127.0.0.1:65535', '127.0.0.1', 'localhost']:
             status, _, _ = self.request('GET', '/api/runs', headers={'Host': host})
             self.assertEqual(status, 200, host)
+
+    def test_client_reset_while_sending_the_request_is_silent(self):
+        port = self.server.server_address[1]
+        baseline = threading.active_count()
+        stderr = io.StringIO()
+        with redirect_stderr(stderr):
+            sock = socket.create_connection(('127.0.0.1', port), timeout=10)
+            sock.sendall(b'GET /api/ru')  # the request line is never finished
+            # Wait for the server to start a handler thread for this connection, then for it to finish.
+            deadline = time.monotonic() + 5
+            while threading.active_count() <= baseline and time.monotonic() < deadline:
+                time.sleep(0.01)
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack('ii', 1, 0))
+            sock.close()  # SO_LINGER 0: the close sends a reset, not a FIN
+            deadline = time.monotonic() + 5
+            while threading.active_count() > baseline and time.monotonic() < deadline:
+                time.sleep(0.01)
+        self.assertEqual(stderr.getvalue(), '')
+        status, _, _ = self.request('GET', '/api/runs')
+        self.assertEqual(status, 200)
+
+    def test_head_error_has_headers_but_no_body(self):
+        # More than 100 header lines is a 431 from the base class; HEAD must not get a body for it.
+        port = self.server.server_address[1]
+        headers = ''.join(f'X-{i}: a\r\n' for i in range(150))
+        request = f'HEAD /api/runs HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n{headers}\r\n'.encode('ascii')
+        with socket.create_connection(('127.0.0.1', port), timeout=10) as sock:
+            sock.sendall(request)
+            data = b''
+            while chunk := sock.recv(4096):
+                data += chunk
+        head, _, body = data.partition(b'\r\n\r\n')
+        self.assertRegex(head, rb'^HTTP/1\.[01] 431 ')
+        self.assertEqual(body, b'')
 
 
 class MainTests(TempCase):

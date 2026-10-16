@@ -43,9 +43,17 @@ class Handler(BaseHTTPRequestHandler):
             return self._method_not_allowed
         raise AttributeError(name)
 
+    def handle(self):
+        # The client may reset the connection while the request line is still being read. That error
+        # comes from rfile.readline(), before any response exists, so the base class would print a traceback.
+        try:
+            super().handle()
+        except ConnectionError:
+            pass  # the client hung up (ConnectionResetError, BrokenPipeError, ...): nothing to tell it
+
     def send_error(self, code, message=None, explain=None):
         # The base class answers malformed requests with an HTML page; keep the JSON contract.
-        self._send(*self._json(code, {'error': self.responses[code][0].lower()}))
+        self._send(*self._json(code, {'error': self.responses[code][0].lower()}), head=self.command == 'HEAD')
 
     def log_request(self, code='-', size='-'):
         if not self._quiet():
@@ -62,9 +70,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def _host_allowed(self):
         # DNS rebinding: a hostile page can make its own domain resolve to 127.0.0.1 and read us same-origin.
-        # Only the names we are actually reachable under are accepted.
-        port = self.server.server_address[1]
-        return self.headers.get('Host', '').lower() in (f'127.0.0.1:{port}', f'localhost:{port}')
+        # Only the local names are accepted, with any port: a port forward (ssh -L, VS Code) changes the port.
+        host = (self.headers.get('Host') or '').lower()
+        name = host.rsplit(':', 1)[0] if ':' in host else host
+        return name in ('127.0.0.1', 'localhost')
 
     def _method_not_allowed(self):
         if not self._host_allowed():
