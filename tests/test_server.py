@@ -13,7 +13,7 @@ from unittest.mock import patch
 
 from forge_ui import __version__, reader
 from forge_ui.__main__ import main
-from forge_ui.server import make_server
+from forge_ui.server import Handler, make_server
 
 
 FIXTURES = Path(__file__).parent / 'fixtures'
@@ -82,11 +82,11 @@ class ServerTestCase(TempCase):
         server.server_close()
         thread.join()
 
-    def request(self, method, path, server=None):
+    def request(self, method, path, server=None, headers=None):
         port = (server or self.server).server_address[1]
         conn = http.client.HTTPConnection('127.0.0.1', port, timeout=10)
         try:
-            conn.request(method, path)
+            conn.request(method, path, headers=headers or {})
             response = conn.getresponse()
             headers = {name.lower(): value for name, value in response.getheaders()}
             return response.status, headers, response.read()
@@ -220,6 +220,27 @@ class RoutesTests(ServerTestCase):
             self.request('GET', '/api/runs')
         self.assertEqual(stderr.getvalue(), '')
 
+    def test_quiet_server_stays_silent_when_an_idle_connection_times_out(self):
+        port = self.server.server_address[1]
+        stderr = io.StringIO()
+        with patch.object(Handler, 'timeout', 0.2), redirect_stderr(stderr):
+            with socket.create_connection(('127.0.0.1', port), timeout=10) as sock:
+                self.assertEqual(sock.recv(1), b'')  # the server gives up on the silent client and closes
+        self.assertEqual(stderr.getvalue(), '')
+
+    def test_host_header_must_be_the_local_address(self):
+        port = self.server.server_address[1]
+        for host in [f'evil.example:{port}', f'127.0.0.1.evil.example:{port}', '127.0.0.1', f'127.0.0.2:{port}']:
+            for path, method in [('/api/runs', 'GET'), ('/app.js', 'GET'), ('/', 'GET'), ('/api/runs', 'POST')]:
+                status, _, body = self.request(method, path, headers={'Host': host})
+                self.assertEqual((status, json.loads(body)), (403, {'error': 'forbidden'}), (host, path))
+
+    def test_local_host_names_are_accepted(self):
+        port = self.server.server_address[1]
+        for host in [f'127.0.0.1:{port}', f'localhost:{port}', f'LOCALHOST:{port}']:
+            status, _, _ = self.request('GET', '/api/runs', headers={'Host': host})
+            self.assertEqual(status, 200, host)
+
 
 class MainTests(TempCase):
     def run_main(self, argv):
@@ -245,6 +266,18 @@ class MainTests(TempCase):
         self.assertEqual(code, 2)
         self.assertEqual(out, '')
         self.assertEqual(err.count('\n'), 1)
+        self.assertIn(str(port), err)
+        self.assertIn('--port', err)
+
+    def test_port_held_on_all_interfaces_is_exit_2(self):
+        # On macOS a 127.0.0.1 bind succeeds next to a 0.0.0.0 listener; the startup probe must still refuse.
+        blocker = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.addCleanup(blocker.close)
+        blocker.bind(('0.0.0.0', 0))
+        blocker.listen()
+        port = blocker.getsockname()[1]
+        code, out, err = self.run_main(['--no-registry', '--plan', str(PLAN), '--port', str(port)])
+        self.assertEqual((code, out), (2, ''))
         self.assertIn(str(port), err)
         self.assertIn('--port', err)
 

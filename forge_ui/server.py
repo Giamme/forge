@@ -48,21 +48,41 @@ class Handler(BaseHTTPRequestHandler):
         self._send(*self._json(code, {'error': self.responses[code][0].lower()}))
 
     def log_request(self, code='-', size='-'):
-        if not getattr(self.server, 'quiet', False):
+        if not self._quiet():
             path = (getattr(self, 'path', None) or '').partition('?')[0]
             _log(f'{self.command or "-"} {path} {code}')
 
+    def log_message(self, format, *args):
+        # Also reached by the base class for stalled connections (log_error): --quiet silences those too.
+        if not self._quiet():
+            _log(f'{self.address_string()} {format % args}')
+
+    def _quiet(self):
+        return getattr(self.server, 'quiet', False)
+
+    def _host_allowed(self):
+        # DNS rebinding: a hostile page can make its own domain resolve to 127.0.0.1 and read us same-origin.
+        # Only the names we are actually reachable under are accepted.
+        port = self.server.server_address[1]
+        return self.headers.get('Host', '').lower() in (f'127.0.0.1:{port}', f'localhost:{port}')
+
     def _method_not_allowed(self):
+        if not self._host_allowed():
+            self._send(*self._json(403, {'error': 'forbidden'}))
+            return
         self._send(*self._json(405, {'error': 'method not allowed'}, {'Allow': 'GET, HEAD'}))
 
     def _serve(self, head):
         path = self.path.partition('?')[0]
-        try:
-            response = self._route(path)
-        except Exception as exc:  # one bad request must not kill the server
-            detail = ' '.join(str(exc).split())
-            _log(f'internal error on {self.command} {path}: {type(exc).__name__}: {detail}')
-            response = self._json(500, {'error': 'internal error'})
+        if not self._host_allowed():
+            response = self._json(403, {'error': 'forbidden'})
+        else:
+            try:
+                response = self._route(path)
+            except Exception as exc:  # one bad request must not kill the server
+                detail = ' '.join(str(exc).split())
+                _log(f'internal error on {self.command} {path}: {type(exc).__name__}: {detail}')
+                response = self._json(500, {'error': 'internal error'})
         self._send(*response, head=head)
 
     def _route(self, path):

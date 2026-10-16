@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import errno
 import os
+import socket
 import sys
 import webbrowser
 
@@ -39,6 +40,21 @@ def _message(level, text):
     print(f'forge-ui: {level}: {text}', file=sys.stderr)
 
 
+def _port_taken(port):
+    # Binding is not enough: SO_REUSEADDR lets a 127.0.0.1 bind succeed on macOS while another process
+    # listens on 0.0.0.0 or [::] (dual-stack) at the same port, and the requests then go to whichever wins.
+    # A probe connect reaches any of those listeners, so it is the check that matters.
+    if port == 0:
+        return False
+    try:
+        socket.create_connection((HOST, port), timeout=1).close()
+    except socket.timeout:
+        return True  # something accepted the SYN but does not answer: treat as taken
+    except OSError:
+        return False  # refused or unreachable: nothing is listening there
+    return True
+
+
 def main(argv=None):
     parser = _parser()
     try:
@@ -54,13 +70,18 @@ def main(argv=None):
             if not os.path.exists(path):
                 _message('warning', f'{flag} {path}: no such file or directory')
 
+    in_use = f'port {args.port} is already in use; try --port with another number'
+    if _port_taken(args.port):
+        _message('error', in_use)
+        return 2
+
     catalog = reader.Catalog(plans=args.plan, roots=args.root, registry=not args.no_registry,
                              registry_dir=args.registry_dir)
     try:
         server = make_server(catalog, HOST, args.port, quiet=args.quiet)
     except OSError as exc:
         if exc.errno == errno.EADDRINUSE:
-            _message('error', f'port {args.port} is already in use; try --port with another number')
+            _message('error', in_use)
         else:
             _message('error', f'cannot listen on {HOST}:{args.port}: {exc.strerror or exc}')
         return 2
