@@ -28,7 +28,7 @@
     if (/[mw]/.test(c)) return 0.9;
     if (/[A-Z0-9_#&$]/.test(c)) return 0.75;
     if (/[il.,:;'|!\[\]() \-]/.test(c)) return 0.4;
-    if (c.charCodeAt(0) > 0x2e7f) return 1.1;
+    if (c.charCodeAt(0) > 0x7e) return 1.1; // em dash, ellipsis, CJK, emoji: about one em or more
     return 0.64;
   }
 
