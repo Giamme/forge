@@ -72,6 +72,8 @@ class Handler(BaseHTTPRequestHandler):
         # DNS rebinding: a hostile page can make its own domain resolve to 127.0.0.1 and read us same-origin.
         # Only the local names are accepted, with any port: a port forward (ssh -L, VS Code) changes the port.
         host = (self.headers.get('Host') or '').lower()
+        if not host:
+            return True  # HTTP/1.0 clients may omit Host; a rebinding page always sends its own name
         name = host.rsplit(':', 1)[0] if ':' in host else host
         return name in ('127.0.0.1', 'localhost')
 

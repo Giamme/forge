@@ -176,8 +176,11 @@ class RoutesTests(ServerTestCase):
             data = b''
             while chunk := sock.recv(4096):
                 data += chunk
-        # The request line is unparseable, so the base class treats it as HTTP/0.9: only the body is sent.
-        self.assertEqual(data, b'{"error": "bad request"}')
+        # Python 3.9-3.13 answer an unparseable request line as HTTP/0.9 (body only); 3.14+ send a full
+        # status line first. Either way the body must be the JSON error and any status line a 400.
+        self.assertTrue(data.endswith(b'{"error": "bad request"}'), data)
+        if data.startswith(b'HTTP/'):
+            self.assertEqual(data.split(b' ', 2)[1], b'400', data)
 
     def test_headers_on_json_and_static_responses(self):
         for path, body_of in [('/api/runs', None), ('/app.js', APP)]:
@@ -237,6 +240,15 @@ class RoutesTests(ServerTestCase):
             for path, method in [('/api/runs', 'GET'), ('/app.js', 'GET'), ('/', 'GET'), ('/api/runs', 'POST')]:
                 status, _, body = self.request(method, path, headers={'Host': host})
                 self.assertEqual((status, json.loads(body)), (403, {'error': 'forbidden'}), (host, path))
+
+    def test_http10_request_without_host_is_served(self):
+        with socket.create_connection(('127.0.0.1', self.server.server_address[1]), timeout=10) as sock:
+            sock.sendall(b'GET /api/runs HTTP/1.0\r\n\r\n')
+            data = b''
+            while chunk := sock.recv(4096):
+                data += chunk
+        self.assertTrue(data.startswith(b'HTTP/1.0 200'), data[:40])
+        self.assertIn(b'"runs"', data)
 
     def test_local_host_names_are_accepted_with_any_port_or_none(self):
         # A port forward (ssh -L 9000:127.0.0.1:<port>) sends the forwarded port in Host.
