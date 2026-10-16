@@ -194,6 +194,31 @@ class StorePrimitiveTests(StoreCase):
         self.assertEqual(sorted(e['rid'] for e in self.events()), sorted(['before'] + ['w-%d' % w for w in range(12)]))
         self.assertEqual(self.errors(), '')
 
+    def test_first_writers_to_a_new_store_from_threads_lose_nothing(self):
+        # A plan's first-pass predictions are threads of one process, and on a new machine
+        # they can be the store's very first writers: switching the new file to WAL must not
+        # drop the event of whichever thread loses that race (it lost 5 rounds in 40 before).
+        for r in range(20):
+            home = self.home / ('r%d' % r)
+            with patch.dict(os.environ, {'FORGE_DATA_HOME': str(home)}):
+                barrier = threading.Barrier(8)
+
+                def write(i, r=r, barrier=barrier):
+                    barrier.wait()
+                    store.record([dict(rid='r%d-%d' % (r, i), kind='t')])
+                threads = [threading.Thread(target=write, args=(i,)) for i in range(8)]
+                for thread in threads:
+                    thread.start()
+                for thread in threads:
+                    thread.join()
+            db = sqlite3.connect(str(home / 'dataset' / 'dataset.sqlite'))
+            try:
+                self.assertEqual(db.execute('SELECT count(*) FROM events').fetchone()[0], 8, r)
+                self.assertEqual(db.execute('PRAGMA journal_mode').fetchone()[0], 'wal')
+            finally:
+                db.close()
+            self.assertFalse((home / 'dataset' / 'errors.log').exists(), r)
+
     def test_a_half_finished_migration_is_completed_by_the_next_connect(self):
         self.old_store(extra='ALTER TABLE events ADD COLUMN code_sha TEXT;')
         store.record([dict(rid='after', kind='t')])

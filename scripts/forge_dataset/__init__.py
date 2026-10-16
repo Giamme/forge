@@ -166,7 +166,16 @@ def connect() -> sqlite3.Connection:
             path.chmod(0o600)
         except OSError:
             pass
-    db.execute('PRAGMA journal_mode=WAL')
+    # Switching to WAL needs the file to itself, and SQLite does not wait on the busy
+    # timeout for it: two first writers to a brand-new store (threads of one plan's
+    # predictions) would see "database is locked" and drop an event. Only a store that is
+    # not WAL yet asks, and losing that race is harmless -- the winner makes it WAL, and
+    # every write below waits on the busy timeout either way.
+    try:
+        if str(db.execute('PRAGMA journal_mode').fetchone()[0]).lower() != 'wal':
+            db.execute('PRAGMA journal_mode=WAL')
+    except sqlite3.OperationalError:
+        pass
     db.execute('PRAGMA synchronous=NORMAL')
     db.executescript(SCHEMA_SQL)
     db.execute("INSERT OR IGNORE INTO meta(key, value) VALUES ('schema', ?)", (str(SCHEMA),))
