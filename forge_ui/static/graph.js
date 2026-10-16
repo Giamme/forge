@@ -91,6 +91,16 @@
     tasks.forEach(function (t) { if (!byId[t.id]) byId[t.id] = t; });
     var col = computeColumns(tasks, byId);
 
+    // Densify columns: only waves actually used get a column, so a huge wave number can't blow up the layout.
+    var used = Object.create(null), waves = [];
+    tasks.forEach(function (t) { if (!used[col[t.id]]) { used[col[t.id]] = true; waves.push(col[t.id]); } });
+    waves.sort(function (a, b) { return a - b; });
+    var idx = Object.create(null);
+    waves.forEach(function (w, i) { idx[w] = i + 1; });
+    var label = {};
+    waves.forEach(function (w) { label[idx[w]] = w; });
+    tasks.forEach(function (t) { col[t.id] = idx[col[t.id]]; });
+
     var maxCol = 1, rows = Object.create(null), pos = Object.create(null), maxRows = 0;
     tasks.forEach(function (t) { if (col[t.id] > maxCol) maxCol = col[t.id]; });
     tasks.forEach(function (t) {
@@ -123,7 +133,7 @@
     el('path', { d: 'M0 0 L10 5 L0 10 z', fill: 'currentColor', 'fill-opacity': 0.6 }, marker);
 
     for (var c = 1; c <= maxCol; c++) {
-      textEl(svg, 'wave ' + c, {
+      textEl(svg, 'wave ' + label[c], {
         'class': 'fg-wave', x: PAD + (c - 1) * (NODE_W + COL_GAP), y: PAD + 10,
         'font-size': 12, fill: 'currentColor', 'fill-opacity': 0.6
       });
@@ -145,13 +155,20 @@
           fill: 'none', stroke: 'currentColor', 'stroke-opacity': 0.4,
           'stroke-width': 1.5, 'marker-end': 'url(#' + markerId + ')'
         }, edgeLayer);
-        (edgesOf[t.id] = edgesOf[t.id] || []).push(path);
-        (edgesOf[d] = edgesOf[d] || []).push(path);
+        var ends = { path: path, from: d, to: t.id };
+        (edgesOf[t.id] = edgesOf[t.id] || []).push(ends);
+        if (d !== t.id) (edgesOf[d] = edgesOf[d] || []).push(ends);
       });
     });
 
-    function highlight(id, on) {
-      (edgesOf[id] || []).forEach(function (p) {
+    var active = Object.create(null); // id -> {hover, focus}
+    function highlight(id, kind, flag) {
+      var a = active[id] = active[id] || {};
+      a[kind] = flag;
+      (edgesOf[id] || []).forEach(function (e) {
+        var p = e.path;
+        var fa = active[e.from], ta = active[e.to];
+        var on = !!((fa && (fa.hover || fa.focus)) || (ta && (ta.hover || ta.focus)));
         p.setAttribute('stroke-opacity', on ? 0.95 : 0.4);
         p.setAttribute('stroke-width', on ? 2.5 : 1.5);
         if (on) p.setAttribute('class', 'fg-edge fg-edge-hi');
@@ -221,10 +238,10 @@
           select();
         }
       });
-      g.addEventListener('mouseenter', function () { highlight(t.id, true); });
-      g.addEventListener('mouseleave', function () { highlight(t.id, false); });
-      g.addEventListener('focus', function () { highlight(t.id, true); });
-      g.addEventListener('blur', function () { highlight(t.id, false); });
+      g.addEventListener('mouseenter', function () { highlight(t.id, 'hover', true); });
+      g.addEventListener('mouseleave', function () { highlight(t.id, 'hover', false); });
+      g.addEventListener('focus', function () { highlight(t.id, 'focus', true); });
+      g.addEventListener('blur', function () { highlight(t.id, 'focus', false); });
     });
 
     container.appendChild(svg);
