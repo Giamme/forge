@@ -23,6 +23,9 @@ no exception. The API key lives at
 `${XDG_CONFIG_HOME:-$HOME/.config}/forge/jev.json`, mode `0600`. It is never
 written to a run directory, a prompt, or a log.
 
+A site mapped to the Cloudflare provider (see [Cloudflare Clef](#cloudflare-clef-a-second-provider))
+sends the same slice to Cloudflare Workers AI instead of TypeSafe.
+
 ## Setup
 
 ```sh
@@ -35,6 +38,10 @@ written to a run directory, a prompt, or a log.
 
 `TYPESAFE_API_KEY` in the environment overrides the stored key for that
 invocation only. Keys come from `console.typesafe.ai`.
+
+A second provider, Cloudflare's hosted Clef, is set up with
+`./forge jev setup --provider cloudflare --account-id <id>`; see
+[Cloudflare Clef](#cloudflare-clef-a-second-provider).
 
 ## Commands
 
@@ -803,6 +810,85 @@ So on a failure the identical subset runs again against the commit the task star
 and the result is reported **only if the base passes**. That one extra run — paid only
 when something already failed — is what separates "this diff broke it" from "this was
 already broken, or cannot run here".
+
+## Cloudflare Clef (a second provider)
+
+Cloudflare Workers AI hosts Clef, a decision model that takes Jev's request shape
+(`{state, questions}`) and answers with a probability per option. Forge can send chosen
+**sites** (the `site=` name of each call: `jev-drift`, `jev-memory-slice`, ...) to it.
+Without a Cloudflare provider configured, every site asks TypeSafe exactly as before.
+
+```sh
+./forge jev setup --provider cloudflare --account-id <id> [--model clef|clef-flash] [--sites a,b]
+./forge jev sites                       # which provider answers each site, and whether it is ready
+./forge jev sites jev-drift=typesafe    # move a site back
+./forge jev doctor --live               # probes every provider a site uses
+```
+
+- **Token:** a Cloudflare API token with **Account > Workers AI > Read**, in
+  `cloudflare.env` beside `jev.json` (`CLOUDFLARE_API_TOKEN=...`, mode `0600`) or in
+  `CLOUDFLARE_API_TOKEN`; the account id in config or `CLOUDFLARE_ACCOUNT_ID`. Never argv,
+  never a run dir, a prompt or a log: reasons are redacted before they are cut.
+- **Privacy:** a mapped site sends Cloudflare what it would have sent TypeSafe: prompts,
+  diff hunks, file excerpts, memory entries. Cloudflare states it does not store or train on
+  these requests.
+- **Off switches:** `FORGE_CLEF=off` sends every site back to TypeSafe and stops the
+  predictions below; `FORGE_JEV_PROVIDER=typesafe|cloudflare` forces one provider for every
+  site; `FORGE_JEV_OUTCOMES=off` stops only the predictions; `FORGE_JEV=off` still stops all.
+- **Limits the client handles:** at most 64 questions per request (drift asks up to 120, so
+  it goes as two requests, concurrently, merged); a context of 64K tokens (`clef`) or 24K
+  (`clef-flash`) for state and questions together, beyond which Cloudflare cuts the state
+  silently, so the client refuses (`too-large`) rather than send it; `4006`/`3036` (allocation
+  used up) and `5035` (plan) are final, `3040`/`971` and 429 are retried within the deadline,
+  honoring `Retry-After`. Every requested answer must be present and in range, or the call
+  is `malformed`. A failure is "no judgment", as with TypeSafe.
+- **Thresholds are per model.** A cutoff measured on Jev's probabilities is not one on
+  Clef's: `model_thresholds.<model>.<name>` overrides a threshold for that model's answers.
+  Drift now reads `drift_warn`, which falls back to `gate_warn` until a model has its own.
+- **Cost and latency:** `clef` is $0.24 and `clef-flash` $0.038 per million input tokens,
+  output free. A drift request (two chunks) takes about 2.4 s at the median and 3.0 s at
+  p90, against Jev's 0.65 s and 10.8 s on the same live requests.
+
+### Which sites move: a paired replay, not an assumption
+
+`jev-drift` is the only site `setup` maps by default. Measured 2026-10-16 by replaying the
+stored live requests (the run dataset keeps each one whole) through Clef, labeled by the
+task's own outcome, older half of runs to calibrate, newer half to judge; a site moves only
+if Clef is non-inferior (paired run-bootstrap lower bound above -0.02) on at least 30
+labeled decisions from at least 8 held-out runs:
+
+| site | labeled | held-out | Clef AUC | Jev AUC | paired diff [95%] | moves |
+|---|---|---|---|---|---|---|
+| `jev-drift` | 4560 decisions, 16 positive, 17 runs | 9 runs | 0.985 | 0.972 | +0.013 [0.000, +0.028] | yes |
+| `jev-memory-slice` | 855 decisions, 144 positive, 10 runs | 5 runs | 0.951 | 0.953 | -0.003 [-0.064, +0.014] | no: too few runs |
+
+`jev-review-triage` was not replayed: its `correctness` half has no label, and the export's
+citation label (a review against its own diff or a substituted one) is not a live label.
+Clef keeps drift's shared 0.60 cutoff: on the calibration half neither model warned
+precisely (Jev flagged nothing at 0.60), so no Clef-specific value could be fitted there; at
+0.60 on the held-out half Clef flagged 1 file (right) and Jev 2 (1 right). The other sites
+stay on TypeSafe until a replay of their own justifies a move.
+
+### Silent outcome predictions
+
+With a Cloudflare provider configured, forge also asks Clef two questions forge has never
+asked, and records the answers without acting on them:
+
+- `clef-first-pass`, once per plan after the table rewrite that assigns every row its dwarf
+  and reviewer: will this task's first attempt pass review? Written to
+  `tasks/<id>/clef.first_pass` with the assignment it was about.
+- `clef-retry-pass`, when a dwarf attempt above 1 begins (not on a QA-only resume): will this
+  retry pass, given the findings it was handed? Written to `tasks/<id>/clef.retry_pass.<n>`.
+
+On forge's exported history Clef ranks these at AUC 0.73 (first pass, 253 cases) and 0.75
+(retry, 300), against hosted Jev's composite at 0.69 and cheap features at 0.67 and 0.61, but
+its raw probabilities are poorly calibrated (retry ECE 0.28) and the newest, largest tasks
+were too few to test. So nothing is printed and nothing acts: no prompt, verdict, tasks table,
+retry spec or findings ever sees a prediction. The export attaches them to the routing and
+retry cases (`first_pass_clef`, with whether attempt 1 ran the predicted dwarf, and
+`retry_pass_clef`), so their skill on new runs can be measured before anything relies on
+them. One bounded command per plan or retry: one deadline, at most 4 requests in flight,
+model resolution cached, an in-process watchdog; about $0.0025 a task with `clef`.
 
 ## Status
 

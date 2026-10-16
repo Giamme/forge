@@ -249,6 +249,11 @@ try:
     data = json.load(sys.stdin)
 except ValueError:
     sys.exit(1)
+# capability_ready: some site of this capability has credentials for the provider it
+# uses (a Cloudflare-only setup has no TypeSafe key). Older status output lacks it.
+ready = data.get("capability_ready")
+if isinstance(ready, dict):
+    sys.exit(0 if ready.get(cap) else 1)
 sys.exit(0 if data.get("key_present") and data.get("capabilities", {}).get(cap) else 1)
 ' "$cap" 2>/dev/null
 }

@@ -95,7 +95,8 @@ Runners offer installation once before agents; dispatch never prompts. See
 - [Dataset](references/dataset.md): every run's inputs and outcomes, kept outside the repo
   for training decision models; `forge dataset status|import|export|outcomes`, `FORGE_DATASET=off`.
 - [Jev](references/jev.md): optional TypeSafe System One judgments for routing, test
-  selection and memory curation; off by default.
+  selection and memory curation; off by default. Chosen sites can go to Cloudflare's hosted
+  Clef instead (`forge jev setup --provider cloudflare`, `forge jev sites`, `FORGE_CLEF=off`).
 
 The common invocation is `/forge "<goal>" --dwarf <spec> [--qa <spec>]`. Advanced flags and
 commands live with their mode reference. Use [offline tests and evaluation cases](tests/README.md)

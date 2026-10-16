@@ -32,7 +32,9 @@ import time
 from collections import Counter, defaultdict
 from pathlib import Path
 
+from forge_jev import outcome
 from forge_jev.features import task_size
+from forge_jev.questions import first_pass, retry_pass  # noqa: F401  shared with live forge
 
 from . import SKILL, connect, data_home, read_blob
 from .harvest import review_completeness
@@ -133,21 +135,6 @@ def _question_builders():
 
 # --- new rubrics: the outcome versions of questions forge asks without a label --------
 
-def first_pass() -> dict:
-    return dict(type='noul', instructions=(
-        'This Forge task is dispatched to the model in state.dwarf, at the effort shown, in its '
-        'own worktree. An independent model (state.reviewer) then reviews the resulting diff '
-        'against the task. Will that FIRST attempt pass review, with no retry needed?'),
-        criteria={
-            'true': 'The task is within reach of this model at this effort on the first try: the '
-                    'requirements are clear, the change is contained, and nothing in it is likely '
-                    'to be missed or subtly wrong.',
-            'false': 'The first attempt is likely to fail review: the task has edge cases, '
-                     'cross-cutting effects, unclear requirements or subtle state that a first '
-                     'attempt by this model at this effort typically gets wrong, so a retry would '
-                     'be needed.'})
-
-
 def declared_tier() -> dict:
     # decompose.md's difficulty table, verbatim.
     return dict(type='choice', instructions=(
@@ -204,20 +191,6 @@ def review_survives() -> dict:
                      'it was not what the code needed.'})
 
 
-def retry_pass() -> dict:
-    return dict(type='noul', instructions=(
-        'An earlier attempt at this Forge task failed review. The task is now dispatched again, to '
-        'the model in state.dwarf at the effort shown, with that review\'s findings '
-        '(state.previous_review) to fix; state.attempt is which try this is, and the model in '
-        'state.reviewer reviews the result. Will this attempt pass review?'),
-        criteria={
-            'true': 'The findings are specific and fixable, and this model at this effort can address '
-                    'them without breaking something else: the retry is likely to pass.',
-            'false': 'The findings point at a design problem, an unclear requirement or a recurring '
-                     'mistake that another attempt by this model at this effort is likely to repeat: '
-                     'the retry is likely to fail again and should be escalated or rethought.'})
-
-
 # --- indexes ---------------------------------------------------------------------------
 
 class Runs:
@@ -256,6 +229,20 @@ class Runs:
                 held = self.survival.get(d['reviewed'])
                 if held is None or d['horizon_days'] > held['horizon_days']:
                     self.survival[d['reviewed']] = d
+        # Live Clef predictions (forge_jev/predict.py), recorded before the attempt they are
+        # about: {(run, task, attempt): [(ts, p, model, assignment)]}, oldest first.
+        self.clef = defaultdict(list)
+        for e in sorted(store.of('jev'), key=lambda e: e['ts']):
+            d = e['d']
+            site = d.get('site')
+            if site not in ('clef-first-pass', 'clef-retry-pass') or not d.get('ok'):
+                continue
+            qid = 'first_pass' if site == 'clef-first-pass' else 'retry_pass'
+            p = ((d.get('answers') or {}).get(qid) or {}).get('noul')
+            n = d.get('intended_attempt') if site == 'clef-first-pass' else d.get('attempt')
+            if isinstance(p, (int, float)) and n:
+                self.clef[(e['run'], e['task'] or d.get('task'), int(n))].append(
+                    (e['ts'], float(p), d.get('model'), d.get('assignment') or {}))
         self.integrate_verification = {}
         for e in sorted(store.of('verification'), key=lambda e: e['ts']):
             if e['d'].get('scope') == 'integrate' and e['d'].get('status'):
@@ -317,15 +304,7 @@ def _file_excerpts(store: Store, plan, files) -> dict:
 
 
 def _siblings(plan, task_id) -> list:
-    out = []
-    for tid, row in (plan['d'].get('tasks') or {}).items():
-        if tid == task_id:
-            continue
-        out.append(dict(id=tid, title=str(row.get('title', ''))[:SIBLING_TITLE_CHARS],
-                        files=row.get('files', ''), deps=row.get('deps', '')))
-        if len(out) >= MAX_SIBLINGS:
-            break
-    return out
+    return outcome.siblings([dict(row, id=tid) for tid, row in (plan['d'].get('tasks') or {}).items()], task_id)
 
 
 def _attempts(runs: Runs, run, task, rows) -> list:
@@ -415,17 +394,16 @@ def _task_state(runs: Runs, run, task, attempt):
         return None, None, None
     dwarf = runs.resolved(run, task, 'dwarf', attempt['attempt']) or _spec(attempt['d'].get('dwarf'))
     reviewer = runs.resolved(run, task, 'qa', attempt['attempt']) or _spec(attempt['d'].get('qa'))
-    state = dict(goal=store.text((plan['d'].get('blobs') or {}).get('goal')) or plan['d'].get('goal') or '',
-                 task=dict(id=task, title=row.get('title', ''), files=row.get('files', ''),
-                           deps=row.get('deps', '')),
-                 prompt=prompt, approach=store.text(row.get('approach')),
-                 plan_tasks=_siblings(plan, task),
-                 file_excerpts=_file_excerpts(store, plan, row.get('files')),
-                 memory=store.text((plan['d'].get('blobs') or {}).get('memory'))[:MEMORY_CHARS],
-                 dwarf=dwarf, reviewer=reviewer,
-                 size=task_size(prompt=prompt, declared_files=row.get('files'),
-                                plan_tasks=len(plan['d'].get('tasks') or {}), deps=row.get('deps'),
-                                decompose_level=plan['d'].get('decompose_level')))
+    state = outcome.assemble(
+        goal=store.text((plan['d'].get('blobs') or {}).get('goal')) or plan['d'].get('goal') or '',
+        task_id=task, title=row.get('title', ''), files=row.get('files', ''), deps=row.get('deps', ''),
+        prompt=prompt, approach=store.text(row.get('approach')), plan_tasks=_siblings(plan, task),
+        file_excerpts=_file_excerpts(store, plan, row.get('files')),
+        memory=store.text((plan['d'].get('blobs') or {}).get('memory')),
+        dwarf=dwarf, reviewer=reviewer,
+        size=task_size(prompt=prompt, declared_files=row.get('files'),
+                       plan_tasks=len(plan['d'].get('tasks') or {}), deps=row.get('deps'),
+                       decompose_level=plan['d'].get('decompose_level')))
     return state, row, plan
 
 
@@ -470,6 +448,12 @@ def routing_cases(runs: Runs):
         if declared in ('low', 'medium', 'high'):
             baseline.setdefault('first_pass_declared', dict(source='declared difficulty', risk=
                                 dict(low=0.0, medium=0.5, high=1.0)[declared]))
+        live = _clef_before(runs, run, task, 1, first['d'].get('wall_started') or first['ts'])
+        if live:
+            # Followed: attempt 1 ran the dwarf the prediction was about. A gate edit or a
+            # `retry --dwarf` in between makes it a prediction about a model that never ran.
+            baseline['first_pass_clef'] = dict(source='live clef first-pass', p=live[1], model=live[2],
+                                               followed=live[3].get('dwarf') == first['d'].get('dwarf'))
         yield dict(slice='routing', key=(run, task), run=run, repo=first['repo'], task=task,
                    state=state, questions=questions, expected=expected, baseline=baseline,
                    label_source=dict(first_pass='final status of the first real attempt',
@@ -539,13 +523,28 @@ def retry_cases(runs: Runs):
             state, _row, plan = _task_state(runs, run, task, start)
             if state is None:
                 continue
-            state.update(attempt=a['n'], previous_review=findings[:REVIEW_CHARS],
-                         previous_review_truncated=len(findings) > REVIEW_CHARS)
+            state = outcome.retry(state, attempt=a['n'], previous_review=findings)
             yield dict(slice='retry', key=(run, task, a['n']), run=run, repo=start['repo'], task=task,
                        state=state, questions=dict(retry_pass=retry_pass()),
-                       expected=dict(retry_pass=a['outcome']), baseline={},
+                       expected=dict(retry_pass=a['outcome']), baseline=_retry_baseline(runs, run, task, a['n']),
                        label_source=dict(retry_pass='final status of this retry attempt'),
                        dwarf=state['dwarf'].get('model'), meta=_meta(runs, run, plan, a['events'][-1]))
+
+
+def _clef_before(runs: Runs, run, task, attempt, started):
+    """The last plan-time Clef prediction about attempt 1 made before it started, or None."""
+    found = None
+    for item in runs.clef.get((run, task, attempt), []):
+        if item[0] <= (started or 0):
+            found = item
+    return found
+
+
+def _retry_baseline(runs: Runs, run, task, n) -> dict:
+    """The Clef prediction about retry attempt n. It is made once, as the attempt begins
+    (after its receipt opened, so not timed against it): the attempt number is the join."""
+    live = (runs.clef.get((run, task, n)) or [None])[0]
+    return dict(retry_pass_clef=dict(source='live clef retry-pass', p=live[1], model=live[2])) if live else {}
 
 
 def _float(value):
@@ -728,10 +727,18 @@ def _final_pass(rows):
     return passed[-1] if passed else None
 
 
+DRIFT_JOIN_S = 24 * 3600
+
+
 def _drift_baseline(store: Store):
-    """Hosted Jev's jev-drift answers, keyed by (repo, task id, file)."""
-    out = {}
-    for e in store.of('jev'):
+    """Hosted Jev's jev-drift answers: {(repo, task id): [(ts, {file: p})]}, oldest first.
+
+    Keyed by when, not only by what: a task id repeats across runs of one repo, and most
+    drift requests predate the run uid, so drift_cases takes the request made last before
+    the task's attempts began (see _drift_answers).
+    """
+    out = defaultdict(list)
+    for e in sorted(store.of('jev'), key=lambda e: e['ts']):
         if e['d'].get('site') != 'jev-drift':
             continue
         try:
@@ -740,12 +747,24 @@ def _drift_baseline(store: Store):
             continue
         task = ((request.get('state') or {}).get('task') or {}).get('id')
         answers = e['d'].get('answers') or {}
+        files = {}
         for qid, question in (request.get('questions') or {}).items():
             found = re.search(r"the file '([^']+)'", question.get('instructions', ''))
             value = (answers.get(qid) or {}).get('noul') if isinstance(answers.get(qid), dict) else answers.get(qid)
             if found and isinstance(value, (int, float)):
-                out[(e['repo'], task, found.group(1))] = float(value)
+                files[found.group(1)] = float(value)
+        if files:
+            out[(e['repo'], task)].append((e['ts'], files))
     return out
+
+
+def _drift_answers(baseline, repo, task, started) -> dict:
+    """The drift answers of the last request for this task before `started`, within a day."""
+    found = {}
+    for ts, files in baseline.get((repo, task), []):
+        if ts <= started and started - ts <= DRIFT_JOIN_S:
+            found = files
+    return found
 
 
 def drift_cases(runs: Runs, rng_seed: int):
@@ -790,12 +809,14 @@ def drift_cases(runs: Runs, rng_seed: int):
                      task=dict(id=task, title=row.get('title') or d.get('title', ''),
                                declared_files=','.join(sorted(declared))),
                      prompt=prompt, approach=store.text(row.get('approach')))
+        started = min((e['d'].get('wall_started') or e['ts']) for e in rows)
+        jev_files = _drift_answers(jev, final['repo'], task, started)
         questions, expected, baseline = {}, {}, {}
         for i, name in enumerate(files):
             questions['f%d' % i] = q.drift_prediction(name)
             expected['f%d' % i] = name in positives
-            if (final['repo'], task, name) in jev:
-                baseline['f%d' % i] = dict(source='hosted-jev drift', p=jev[(final['repo'], task, name)])
+            if name in jev_files:
+                baseline['f%d' % i] = dict(source='hosted-jev drift', p=jev_files[name])
         yield dict(slice='drift', key=(run, task), run=run, repo=final['repo'], task=task, state=state,
                    questions=questions, expected=expected, baseline=baseline,
                    label_source=dict(all='file in the passing attempt\'s changed files'))

@@ -114,7 +114,35 @@ DEFAULT_THRESHOLDS = dict(routing_act=0.85, tests_act=0.70, flake_act=0.90,
                           stale_drop=0.25)
 DEFAULTS = dict(enabled=False, key='', model=MODEL, endpoint=ENDPOINT, deadline_s=5.0,
                 capabilities={c: True for c in CAPABILITIES},
-                thresholds=dict(DEFAULT_THRESHOLDS))
+                thresholds=dict(DEFAULT_THRESHOLDS),
+                # A second provider, per site. Empty means every site asks TypeSafe exactly
+                # as before; see "Cloudflare Clef" in references/jev.md.
+                providers={}, sites={}, model_thresholds={})
+
+# Cloudflare Workers AI's hosted Clef: Jev's request shape, a different envelope and
+# limits. Context is state AND questions together; a text state that does not fit is
+# cut silently by the service, so the client refuses rather than send it.
+PROVIDERS = ('typesafe', 'cloudflare')
+CLOUDFLARE_URL = 'https://api.cloudflare.com/client/v4/accounts/{account}/ai/run/@cf/cloudflare/{model}'
+CLOUDFLARE_MODEL = 'clef'
+CLOUDFLARE_CONTEXT = {'clef': 65536, 'clef-flash': 24576}
+CLOUDFLARE_MAX_QUESTIONS = 64
+# Beside jev.json (honoring XDG_CONFIG_HOME), so a test's private config home never reads
+# the developer's real token.
+CLOUDFLARE_TOKEN_FILE = 'cloudflare.env'
+
+# Which capability each site belongs to, so a site on a provider with no credentials is
+# not ready even when its capability is on. clef-* sites exist only on Cloudflare: they
+# ask rubrics TypeSafe was never measured on, and record silently.
+SITE_CAPABILITY = {
+    'jev-score-plan': 'routing', 'jev-parse-spec': 'routing',
+    'clef-first-pass': 'routing', 'clef-retry-pass': 'routing',
+    'jev-drift': 'gates', 'jev-coupling': 'gates', 'jev-forward': 'gates',
+    'jev-review-triage': 'gates', 'jev-qa-effort': 'gates',
+    'jev-memory-curate': 'memory', 'jev-memory-stale': 'memory', 'jev-memory-slice': 'memory',
+    'jev-test-subset': 'tests', 'jev-verify-discover': 'tests', 'jev-verify-triage': 'tests',
+}
+CLEF_ONLY_SITES = ('clef-first-pass', 'clef-retry-pass')
 
 # Loaded via importlib rather than a package-relative import: forge-runtime.py lives one
 # directory up and is not itself part of a package (same trick as forge_fractal).
@@ -140,7 +168,7 @@ def load_config() -> dict:
     if not isinstance(stored, dict):
         return data
     data.update(stored)
-    for section in ('capabilities', 'thresholds'):
+    for section in ('capabilities', 'thresholds', 'providers', 'sites', 'model_thresholds'):
         value = stored.get(section)
         data[section] = dict(DEFAULTS[section], **value) if isinstance(value, dict) else dict(DEFAULTS[section])
     return data
@@ -168,10 +196,108 @@ def redact(text: str, *keys: str) -> str:
     for key in keys:
         if key:
             text = text.replace(key, '***')
-    env = os.environ.get('TYPESAFE_API_KEY')
-    if env:
-        text = text.replace(env, '***')
+    for var in ('TYPESAFE_API_KEY', 'CLOUDFLARE_API_TOKEN'):
+        env = os.environ.get(var)
+        if env:
+            text = text.replace(env, '***')
     return text
+
+
+def _env_file(path: str) -> dict:
+    """KEY=VALUE lines of a private env file; {} when it is missing or unreadable."""
+    out = {}
+    try:
+        lines = Path(path).expanduser().read_text().splitlines()
+    except (OSError, UnicodeDecodeError):
+        return out
+    for line in lines:
+        line = line.strip()
+        if not line or line.startswith('#') or '=' not in line:
+            continue
+        name, _, value = line.partition('=')
+        name = name.strip()
+        if name.startswith('export '):
+            name = name[len('export '):].strip()
+        out[name] = value.strip().strip('"').strip("'")
+    return out
+
+
+def cloudflare(config: dict | None = None) -> dict | None:
+    """The Cloudflare provider's account, token and model, or None when not configured.
+
+    Configured means a `providers.cloudflare` entry exists, or the token is in the
+    environment. The token comes from CLOUDFLARE_API_TOKEN, else the entry's `token`,
+    else its `token_file` (default cloudflare.env beside jev.json) -- never from argv.
+    """
+    config = config if config is not None else load_config()
+    entry = (config.get('providers') or {}).get('cloudflare')
+    if not isinstance(entry, dict):
+        entry = None
+    if entry is None and not os.environ.get('CLOUDFLARE_API_TOKEN'):
+        return None
+    entry = entry or {}
+    from_file = _env_file(entry.get('token_file') or str(config_path().parent / CLOUDFLARE_TOKEN_FILE))
+    token = os.environ.get('CLOUDFLARE_API_TOKEN') or entry.get('token') or from_file.get('CLOUDFLARE_API_TOKEN')
+    account = (os.environ.get('CLOUDFLARE_ACCOUNT_ID') or entry.get('account_id')
+               or from_file.get('CLOUDFLARE_ACCOUNT_ID'))
+    model = entry.get('model') or CLOUDFLARE_MODEL
+    # `url` is a template with {account} and {model}: an AI Gateway route, or a local test server.
+    return dict(token=token or None, account_id=account or None,
+                model=model if model in CLOUDFLARE_CONTEXT else CLOUDFLARE_MODEL,
+                url=entry.get('url') or CLOUDFLARE_URL)
+
+
+def secrets(config: dict | None = None) -> list:
+    """Every credential forge might send, for redaction."""
+    config = config if config is not None else load_config()
+    out = [api_key(config)]
+    cf = cloudflare(config)
+    if cf:
+        out.append(cf['token'])
+    return [s for s in out if s]
+
+
+def provider_for(site: str, config: dict | None = None) -> str:
+    """Which provider answers `site`: the site map, unless an env override says otherwise."""
+    if site in CLEF_ONLY_SITES:
+        return 'cloudflare'
+    if os.environ.get('FORGE_CLEF') == 'off':
+        return 'typesafe'
+    forced = os.environ.get('FORGE_JEV_PROVIDER')
+    if forced in PROVIDERS:
+        return forced
+    config = config if config is not None else load_config()
+    chosen = (config.get('sites') or {}).get(site)
+    return chosen if chosen in PROVIDERS else 'typesafe'
+
+
+def provider_ready(name: str, config: dict | None = None) -> bool:
+    config = config if config is not None else load_config()
+    if name == 'cloudflare':
+        cf = cloudflare(config)
+        return bool(cf and cf['token'] and cf['account_id'])
+    return api_key(config) is not None
+
+
+def site_ready(site: str, config: dict | None = None) -> bool:
+    """The site's capability is on and its provider has credentials. Offline: reads config only."""
+    config = config if config is not None else load_config()
+    capability = SITE_CAPABILITY.get(site)
+    if not enabled(capability, config=config):
+        return False
+    if site in CLEF_ONLY_SITES:
+        entry = (config.get('providers') or {}).get('cloudflare')
+        if (os.environ.get('FORGE_CLEF') == 'off' or os.environ.get('FORGE_JEV_OUTCOMES') == 'off'
+                or (isinstance(entry, dict) and entry.get('outcomes') is False)):
+            return False
+    return provider_ready(provider_for(site, config), config)
+
+
+def capability_ready(capability: str, config: dict | None = None) -> bool:
+    """Some site of this capability can be asked: what the shell's forge_jev_active tests."""
+    config = config if config is not None else load_config()
+    return any(site_ready(site, config) for site, cap in SITE_CAPABILITY.items()
+               if cap == capability and site not in CLEF_ONLY_SITES)
 
 
 def _capability_overrides() -> dict[str, str]:
@@ -203,8 +329,39 @@ def shadow() -> bool:
     return os.environ.get('FORGE_JEV_SHADOW') == 'on'
 
 
-def threshold(name: str, *, config: dict | None = None) -> float:
-    return (config or load_config())['thresholds'].get(name, DEFAULT_THRESHOLDS.get(name))
+def threshold(name: str, *, config: dict | None = None, model: str | None = None) -> float:
+    """A rubric's cutoff. `model` is the model that answered: a threshold measured on one
+    model's probabilities means nothing on another's, so a per-model value wins."""
+    config = config or load_config()
+    if model:
+        per_model = dict(DEFAULT_MODEL_THRESHOLDS.get(model, {}),
+                         **((config.get('model_thresholds') or {}).get(model) or {}))
+        if name in per_model:
+            return per_model[name]
+    if name not in config['thresholds'] and name in THRESHOLD_FALLBACK:
+        return threshold(THRESHOLD_FALLBACK[name], config=config)
+    return config['thresholds'].get(name, DEFAULT_THRESHOLDS.get(name))
+
+
+# Rubric thresholds introduced after a shared one: until measured separately they read the
+# old shared value, so a config that never named them behaves exactly as before.
+THRESHOLD_FALLBACK = dict(drift_warn='gate_warn')
+# Per-model cutoffs, only where a replay justified one. Clef has none yet:
+#
+# Replayed 2026-10-16 on the 38 live jev-drift requests whose task outcome could be joined
+# (4560 decisions, 16 positives, 17 runs; older half of runs to calibrate, newer half to
+# evaluate). Clef ranks drift at least as well as Jev on the held-out runs (AUC 0.985 vs
+# 0.972, paired run-bootstrap difference [0.000, +0.028]) and at the shared 0.60 cutoff its
+# warnings are no less precise (1 of 1 against 1 of 2). The calibration half could not fit
+# a cutoff of its own: neither model warned precisely there (Jev flagged nothing at 0.60).
+# So drift_warn keeps reading gate_warn for Clef too; the evaluation half hints 0.40 (3 of
+# 4 right), but choosing it there would be fitting on the data that judges it.
+DEFAULT_MODEL_THRESHOLDS: dict = {}
+
+# The sites a replay showed Clef non-inferior on, which `forge jev setup --provider
+# cloudflare` maps by default. jev-memory-slice tied (AUC 0.951 vs 0.953) on too few held-out
+# runs (5) to clear the rule; jev-review-triage has no live label for its correctness half.
+CLOUDFLARE_DEFAULT_SITES = ('jev-drift',)
 
 
 def write_json(path: Path, value: object) -> None:

@@ -12,8 +12,10 @@ import tempfile
 import time
 import urllib.parse
 
-from . import (CAPABILITIES, DEFAULT_THRESHOLDS, api_key, config_path, enabled,
-              load_config, redact, save_config)
+from . import (CAPABILITIES, CLEF_ONLY_SITES, CLOUDFLARE_DEFAULT_SITES, CLOUDFLARE_TOKEN_FILE,
+              DEFAULT_THRESHOLDS, PROVIDERS, SITE_CAPABILITY, THRESHOLD_FALLBACK, api_key,
+              capability_ready, cloudflare, config_path, enabled, load_config, provider_for, provider_ready,
+              redact, save_config, secrets, site_ready)
 from . import client, questions
 
 PRIVACY_STATEMENT = """\
@@ -22,6 +24,15 @@ and memory entries to an external API (api.typesafe.ai) to get back structured
 judgments. Anything under .forge/ or .git is never sent. Your API key is stored at
 {path} with file mode 0600, and is never written into a run directory, a prompt, or a
 log.
+"""
+
+CLOUDFLARE_PRIVACY = """\
+Sites mapped to Cloudflare send the same evidence Jev gets -- task prompts, diff hunks,
+file excerpts and memory entries -- to Cloudflare Workers AI (api.cloudflare.com), where
+Cloudflare's hosted Clef answers. Cloudflare states it does not store or train on these
+requests. The token is read from {token_file} (mode 0600) or CLOUDFLARE_API_TOKEN, and is
+never written into a run directory, a prompt or a log. It needs only Account > Workers AI
+> Read.
 """
 
 _CAP_ENV = dict(routing='FORGE_JEV_ROUTING', tests='FORGE_JEV_TESTS',
@@ -35,6 +46,22 @@ def parser() -> argparse.ArgumentParser:
     setup = sub.add_parser('setup')
     setup.add_argument('--key')
     setup.add_argument('--yes', action='store_true')
+    setup.add_argument('--provider', choices=PROVIDERS, default='typesafe')
+    setup.add_argument('--account-id', help='Cloudflare account id (else CLOUDFLARE_ACCOUNT_ID)')
+    setup.add_argument('--model', choices=('clef', 'clef-flash'), default='clef')
+    setup.add_argument('--sites', help='comma-separated sites to send to Cloudflare (default: the measured ones)')
+
+    first = sub.add_parser('first-pass', help=argparse.SUPPRESS)
+    first.add_argument('--plan', required=True)
+    first.add_argument('--repo', required=True)
+    retry = sub.add_parser('retry-pass', help=argparse.SUPPRESS)
+    retry.add_argument('--plan', required=True)
+    retry.add_argument('--repo', required=True)
+    retry.add_argument('--task', required=True)
+    retry.add_argument('--attempt', type=int, required=True)
+
+    sites = sub.add_parser('sites', help='show or set which provider answers each site')
+    sites.add_argument('assign', nargs='*', metavar='SITE=PROVIDER')
 
     for name in ('enable', 'disable'):
         command = sub.add_parser(name)
@@ -139,7 +166,7 @@ def parser() -> argparse.ArgumentParser:
     return p
 
 
-def _read_key_from_tty() -> str | None:
+def _read_key_from_tty(prompt: str = 'TypeSafe API key: ') -> str | None:
     # Probe /dev/tty first: getpass falls back to stdin with a warning when it cannot
     # open the terminal itself, and a background worker must never block there.
     try:
@@ -151,7 +178,7 @@ def _read_key_from_tty() -> str | None:
             return None
     finally:
         tty.close()
-    return getpass.getpass('TypeSafe API key: ', stream=sys.stderr)
+    return getpass.getpass(prompt, stream=sys.stderr)
 
 
 def _isatty(tty) -> bool:
@@ -161,7 +188,8 @@ def _isatty(tty) -> bool:
         return False
 
 
-def _probe(config: dict) -> tuple[bool, str | None]:
+def _probe(config: dict, provider: str = 'typesafe') -> tuple[bool, str | None]:
+    config = dict(config, sites=dict(config.get('sites') or {}, **{'setup-probe': provider}))
     with tempfile.TemporaryDirectory() as run_dir:
         result = client.ask(questions.PROBE_STATE, questions.PROBE, site='setup-probe',
                             run_dir=run_dir, config=config, deadline_s=config['deadline_s'])
@@ -176,7 +204,97 @@ def _probe(config: dict) -> tuple[bool, str | None]:
         return False, reason
 
 
+def _setup_cloudflare(args) -> int:
+    token_file = config_path().parent / CLOUDFLARE_TOKEN_FILE
+    print(CLOUDFLARE_PRIVACY.format(token_file=token_file))
+    config = load_config()
+    entry = dict((config.get('providers') or {}).get('cloudflare') or {}, model=args.model)
+    account = args.account_id or os.environ.get('CLOUDFLARE_ACCOUNT_ID') or entry.get('account_id')
+    if not account:
+        print('forge jev: no Cloudflare account id; pass --account-id or set CLOUDFLARE_ACCOUNT_ID.', file=sys.stderr)
+        return 2
+    entry['account_id'] = account
+    config['providers'] = dict(config.get('providers') or {}, cloudflare=entry)
+    if not (cloudflare(config) or {}).get('token'):
+        token = _read_key_from_tty('Cloudflare API token: ')
+        if not token:
+            print('No token in CLOUDFLARE_API_TOKEN or %s, and no terminal to prompt on.' % token_file)
+            return 0
+        token_file.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(str(token_file), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, 'w') as handle:
+            handle.write('CLOUDFLARE_API_TOKEN=%s\n' % token)
+        os.chmod(token_file, 0o600)
+    chosen = [s for s in (args.sites.split(',') if args.sites else CLOUDFLARE_DEFAULT_SITES) if s]
+    unknown = [s for s in chosen if s not in SITE_CAPABILITY or s in CLEF_ONLY_SITES]
+    if unknown:
+        print('forge jev: unknown site(s): ' + ', '.join(unknown), file=sys.stderr)
+        return 2
+    if not os.environ.get('FORGE_JEV_FIXTURES'):
+        ok, reason = _probe(config, 'cloudflare')
+        if not ok:
+            print('forge jev: Cloudflare did not answer the probe (' + redact(str(reason), *secrets(config)) + ')',
+                  file=sys.stderr)
+            return 3
+    config['sites'] = dict(config.get('sites') or {}, **{s: 'cloudflare' for s in chosen})
+    config['enabled'] = True
+    save_config(config)
+    print('Cloudflare (%s) answers: %s' % (args.model, ', '.join(chosen) or 'no site yet'))
+    return 0
+
+
+def _watchdog(seconds: float) -> None:
+    """Exit this process, whatever it is doing, `seconds` from now. A separate CLI process
+    with no worker threads of its own to protect, so SIGALRM is safe here (unlike in
+    Fractal's threads); the shell hooks that call it then never wait past the bound."""
+    import signal
+
+    signal.signal(signal.SIGALRM, lambda *_: os._exit(3))
+    signal.setitimer(signal.ITIMER_REAL, seconds)
+
+
+def cmd_first_pass(args) -> int:
+    """Silent first-attempt predictions for a freshly planned table (forge_jev/predict.py)."""
+    from . import predict
+    config = load_config()
+    if not site_ready('clef-first-pass', config):
+        return 3
+    _watchdog(2 * config.get('deadline_s', 5.0) + 5)
+    return predict.main_first_pass(args)
+
+
+def cmd_retry_pass(args) -> int:
+    """Silent prediction for a dwarf attempt above 1 (forge_jev/predict.py)."""
+    from . import predict
+    config = load_config()
+    if not site_ready('clef-retry-pass', config):
+        return 3
+    _watchdog(2 * config.get('deadline_s', 5.0) + 5)
+    return predict.main_retry_pass(args)
+
+
+def cmd_sites(args) -> int:
+    config = load_config()
+    if args.assign:
+        for item in args.assign:
+            site, _, provider = item.partition('=')
+            if site not in SITE_CAPABILITY or site in CLEF_ONLY_SITES or provider not in PROVIDERS:
+                print('forge jev sites: expected SITE=PROVIDER with SITE one of %s and PROVIDER one of %s; got %r'
+                      % (', '.join(s for s in SITE_CAPABILITY if s not in CLEF_ONLY_SITES), ', '.join(PROVIDERS), item),
+                      file=sys.stderr)
+                return 2
+            config['sites'][site] = provider
+        save_config(config)
+    for site in SITE_CAPABILITY:
+        if site in CLEF_ONLY_SITES and cloudflare(config) is None:
+            continue
+        print('%-20s %-10s %s' % (site, provider_for(site, config), 'ready' if site_ready(site, config) else 'not ready'))
+    return 0
+
+
 def cmd_setup(args) -> int:
+    if args.provider == 'cloudflare':
+        return _setup_cloudflare(args)
     path = config_path()
     print(PRIVACY_STATEMENT.format(path=path))
     key = args.key
@@ -227,10 +345,22 @@ def cmd_status(args) -> int:
     config = load_config()
     overrides = {var: os.environ[var] for var in ('FORGE_JEV', 'FORGE_JEV_ACT', 'FORGE_JEV_SHADOW',
                 *_CAP_ENV.values()) if var in os.environ}
+    overrides.update({var: os.environ[var] for var in ('FORGE_CLEF', 'FORGE_JEV_PROVIDER', 'FORGE_JEV_OUTCOMES')
+                      if var in os.environ})
+    remote = cloudflare(config)
+    # Offline by contract: the shell's forge_jev_active reads this before every Jev step.
     data = dict(config_path=str(config_path()), key_present=api_key(config) is not None,
                enabled=enabled(config=config),
                capabilities={c: enabled(c, config=config) for c in CAPABILITIES},
-               thresholds=config['thresholds'], env_overrides=overrides)
+               capability_ready={c: capability_ready(c, config) for c in CAPABILITIES},
+               providers=dict(typesafe=dict(ready=provider_ready('typesafe', config)),
+                              cloudflare=dict(configured=remote is not None,
+                                              ready=provider_ready('cloudflare', config),
+                                              model=remote['model'] if remote else None)),
+               sites={s: dict(provider=provider_for(s, config), ready=site_ready(s, config))
+                      for s in SITE_CAPABILITY},
+               thresholds=config['thresholds'], model_thresholds=config.get('model_thresholds') or {},
+               env_overrides=overrides)
     if args.json:
         print(json.dumps(data, indent=2))
     else:
@@ -239,6 +369,13 @@ def cmd_status(args) -> int:
         print('enabled: ' + str(data['enabled']))
         for name, state in data['capabilities'].items():
             print(f'  {name}: {state}')
+        cf = data['providers']['cloudflare']
+        if cf['configured']:
+            print('cloudflare: ready=%s model=%s' % (cf['ready'], cf['model']))
+        moved = {s: v for s, v in data['sites'].items()
+                 if v['provider'] != 'typesafe' and (cf['configured'] or s not in CLEF_ONLY_SITES)}
+        for site, value in sorted(moved.items()):
+            print(f"  {site}: {value['provider']}{'' if value['ready'] else ' (not ready)'}")
         print('thresholds: ' + json.dumps(data['thresholds']))
         if overrides:
             print('env overrides: ' + ', '.join(f'{k}={v}' for k, v in overrides.items()))
@@ -260,7 +397,20 @@ def cmd_doctor(args) -> int:
     else:
         checks.append(('config readable', True, 'no config file; using defaults'))
     key = api_key(config)
-    checks.append(('key present', key is not None, None))
+    # The Clef-only sites count once a Cloudflare provider is configured, not before:
+    # a TypeSafe-only setup is as ready as it ever was.
+    used = {provider_for(s, config) for s in SITE_CAPABILITY
+            if enabled(SITE_CAPABILITY[s], config=config) and s not in CLEF_ONLY_SITES}
+    if cloudflare(config) is not None:
+        used.add('cloudflare')
+    if 'typesafe' in used or not used:
+        checks.append(('key present', key is not None, None))
+    if 'cloudflare' in used:
+        remote = cloudflare(config) or {}
+        checks.append(('cloudflare credentials', provider_ready('cloudflare', config),
+                       None if provider_ready('cloudflare', config) else
+                       'missing ' + ' and '.join(n for n, v in (('token', remote.get('token')),
+                                                                ('account id', remote.get('account_id'))) if not v)))
     parsed = urllib.parse.urlparse(config['endpoint'])
     checks.append(('endpoint parseable', bool(parsed.scheme and parsed.netloc), None))
     checks.append(('urllib importable', True, None))
@@ -269,27 +419,29 @@ def cmd_doctor(args) -> int:
     # so a key that was renamed since stays in the file forever and `status` keeps
     # printing it -- which invites tuning a number that changes nothing. Also catches a
     # typo in a hand-edited config, where the symptom is otherwise silence.
-    unknown = sorted(set(config.get('thresholds') or ()) - set(DEFAULT_THRESHOLDS))
+    unknown = sorted(set(config.get('thresholds') or ()) - set(DEFAULT_THRESHOLDS) - set(THRESHOLD_FALLBACK))
     checks.append(('thresholds all known', not unknown,
                    None if not unknown else 'not read by anything: ' + ', '.join(unknown)))
 
     # Two warnings rather than blockers: a loose mode is worth fixing but does not stop
     # Jev working, and an unread threshold key is inert by definition.
     _warnings = ('config mode 0600', 'thresholds all known')
-    ready = key is not None and all(ok for name, ok, _ in checks if name not in _warnings)
+    ready = all(ok for name, ok, _ in checks if name not in _warnings)
 
     if args.live:
-        if key is None:
-            checks.append(('live probe', False, 'no key configured'))
-            ready = False
-        else:
-            ok, reason = _probe(config)
-            checks.append(('live probe', ok, reason))
-            ready = ready and ok
+        for provider in sorted(used or {'typesafe'}):
+            label = 'live probe' if provider == 'typesafe' else 'live probe (%s)' % provider
+            if not provider_ready(provider, config):
+                checks.append((label, False, 'no credentials configured'))
+                ready = False
+            else:
+                ok, reason = _probe(config, provider)
+                checks.append((label, ok, reason))
+                ready = ready and ok
 
     data = dict(ready=ready,
                 checks=[dict(name=n, ok=o, warning=n in _warnings,
-                             detail=redact(str(d), key or '') if d else None)
+                             detail=redact(str(d), *secrets(config)) if d else None)
                         for n, o, d in checks])
     if args.json:
         print(json.dumps(data, indent=2))
@@ -465,7 +617,7 @@ def cmd_score_plan(args) -> int:
         print(f'forge jev score-plan: no tasks.tsv in {args.plan!r}', file=sys.stderr)
         return 2
     config = load_config()
-    if not enabled('routing', config=config) or api_key(config) is None:
+    if not site_ready('jev-score-plan', config):
         return 3
 
     from . import gates, routing
@@ -627,7 +779,7 @@ def cmd_coupling(args) -> int:
         print(f'forge jev coupling: no waves.tsv in {args.plan!r} -- run compute_waves first', file=sys.stderr)
         return 2
     config = load_config()
-    if not enabled('gates', config=config) or api_key(config) is None:
+    if not site_ready('jev-coupling', config):
         return 3
 
     from . import coupling
@@ -671,7 +823,7 @@ def cmd_review_triage(args) -> int:
     no judgment, a crash -- leaves the verdict to speak for itself.
     """
     config = load_config()
-    if not enabled('gates', config=config) or api_key(config) is None:
+    if not site_ready('jev-review-triage', config):
         return 3
     from . import review
 
@@ -695,7 +847,7 @@ def cmd_memory_curate(args) -> int:
     3 means "no opinion", and the caller keeps exactly what the model said.
     """
     config = load_config()
-    if not enabled('memory', config=config) or api_key(config) is None:
+    if not site_ready('jev-memory-curate', config):
         return 3
     from . import memory as memory_module
 
@@ -728,7 +880,7 @@ def cmd_memory_slice(args) -> int:
     answer here is paid for more often than anywhere else in the integration.
     """
     config = load_config()
-    if not enabled('memory', config=config) or api_key(config) is None:
+    if not site_ready('jev-memory-slice', config):
         return 3
     from . import memory as memory_module
 
@@ -751,7 +903,7 @@ def cmd_memory_slice(args) -> int:
 def cmd_memory_stale(args) -> int:
     """Exit 0 when the fact looks stale, 1 when it still holds, 3 when unknown."""
     config = load_config()
-    if not enabled('memory', config=config) or api_key(config) is None:
+    if not site_ready('jev-memory-stale', config):
         return 3
     from . import memory as memory_module
 
@@ -765,7 +917,7 @@ def cmd_memory_stale(args) -> int:
 def cmd_parse_spec(args) -> int:
     """Map a sentence onto --dwarf-<tier> flags. Prints them; never applies them."""
     config = load_config()
-    if not enabled('routing', config=config) or api_key(config) is None:
+    if not site_ready('jev-parse-spec', config):
         return 3
     from . import spec
 
@@ -788,7 +940,7 @@ def cmd_parse_spec(args) -> int:
 def cmd_qa_effort(args) -> int:
     """Suggest a review effort. Prints it; forge never applies it."""
     config = load_config()
-    if not enabled('gates', config=config) or api_key(config) is None:
+    if not site_ready('jev-qa-effort', config):
         return 3
     from . import review
 
@@ -841,7 +993,7 @@ def cmd_test_subset(args) -> int:
     if not repo.is_dir():
         return 2
     config = load_config()
-    if not enabled('tests', config=config) or api_key(config) is None:
+    if not site_ready('jev-test-subset', config):
         return 3
     from . import subset
 
@@ -945,7 +1097,8 @@ def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     try:
         args = parser().parse_args(argv)
-        return dict(setup=cmd_setup, enable=cmd_enable, disable=cmd_disable,
+        return dict(setup=cmd_setup, sites=cmd_sites, enable=cmd_enable, disable=cmd_disable,
+                    **{'first-pass': cmd_first_pass, 'retry-pass': cmd_retry_pass},
                     status=cmd_status, doctor=cmd_doctor, backtest=cmd_backtest,
                     calibrate=cmd_calibrate,
                     **{'score-plan': cmd_score_plan,

@@ -27,7 +27,8 @@ from forge_jev import client, cli, questions  # noqa: E402
 ENV_KEYS = ('FORGE_JEV', 'FORGE_JEV_ACT', 'FORGE_JEV_SHADOW', 'FORGE_JEV_ROUTING',
            'FORGE_JEV_TESTS', 'FORGE_JEV_GATES', 'FORGE_JEV_MEMORY', 'FORGE_JEV_FIXTURES',
            'FORGE_JEV_FIXTURES_STRICT', 'FORGE_JEV_RECORD', 'TYPESAFE_API_KEY',
-           'XDG_CONFIG_HOME')
+           'XDG_CONFIG_HOME', 'CLOUDFLARE_API_TOKEN', 'CLOUDFLARE_ACCOUNT_ID', 'FORGE_CLEF',
+           'FORGE_JEV_PROVIDER', 'FORGE_JEV_OUTCOMES')
 
 
 def fixture_key(state, question_dict, model='jev-latest'):

@@ -164,12 +164,29 @@ def point(name: str, directory: str | None, task: str | None = None, values: dic
         log_error('event:' + name, error)
 
 
+def mint_run_uid(run_dir) -> None:
+    """Create the run dir's dataset uid now, if capture is on. Write-only, fail-open.
+
+    For decisions recorded before the run's own first capture would mint it (a plan's
+    predictions run inside `plan`): without it each would carry a legacy id that never
+    joins the attempts the plan goes on to run.
+    """
+    if not enabled():
+        return
+    try:
+        h.run_uid(Path(run_dir), create=True)
+    except Exception as error:
+        log_error('mint_run_uid', error)
+
+
 def jev(*, site, key, canonical: bytes, ok, reason, latency, model, usage, questions, answers,
-        run_dir, acting, shadow) -> None:
+        run_dir, acting, shadow, extra=None) -> None:
     """One Jev request: the full state and questions it judged, and what came back.
 
     The request blob's original sha equals jev.jsonl's `key`, so a run dir that still
     exists joins to it, and a judgment can later be replayed against any other model.
+    `extra` carries the provider, the occurrence id (a body asked twice is two
+    decisions), chunk hashes, and for plan-level sites the task they were about.
     """
     if not enabled():
         return
@@ -184,8 +201,10 @@ def jev(*, site, key, canonical: bytes, ok, reason, latency, model, usage, quest
         data = dict(site=site, key=key, ok=ok, reason=reason, latency_s=latency, model=model, usage=usage,
                     questions=questions, answers=answers, acting=acting, shadow=shadow,
                     run_dir=str(run_dir) if run_dir else None, blobs=dict(request=put_blob(canonical, 'request')))
+        data.update(extra or {})
         record([dict(rid=rid, kind='jev', ts=at, run=uid, run_id=ctx.get('run_id'), mode=ctx.get('mode'),
-                     task=ctx.get('task'), parent=env['parent'], inv=env['inv'], data=data)],
+                     task=ctx.get('task') or (extra or {}).get('task'), parent=env['parent'], inv=env['inv'],
+                     data=data)],
                repo=ctx.get('repo'), where='jev:' + site)
     except Exception as error:
         log_error('jev:' + str(site), error)
