@@ -709,6 +709,29 @@ class EndToEndTests(StoreCase):
         self.assertEqual(cohort, {'a': (True, True, True), 'b': (True, False, True), 'c': (False, True, True),
                                   'd': (False, True, True)})
 
+    def test_a_qa_list_round_robins_within_its_tier(self):
+        # The QA flags share the dwarf's grammar. A list was written into the column verbatim
+        # and reached dispatch as one spec ('opus,sol' is not a known alias): no review ran.
+        p = self.root / 'qapool'
+        rows = [('a', 'low'), ('b', 'low'), ('c', 'low'), ('d', 'high')]
+        (p / 'tasks').mkdir(parents=True)
+        (p / 'tasks.tsv').write_text(''.join('%s\t-\t%s\t%s.txt\tsol\t-\t%s\n' % (i, tier, i, i.upper()) for i, tier in rows))
+        for i, _ in rows:
+            (p / 'tasks' / i).mkdir()
+            (p / 'tasks' / i / 'prompt.md').write_text('Implement change. REQUIREMENT_SENTINEL TASK_' + i)
+        plan = lambda: self.run_script('forge-parallel.sh', 'plan', p, '--repo', self.repo, '--no-memory',
+                                       '--qa', 'opus,sol:xhigh', '--qa-high', 'astra')
+        r = plan()
+        self.assertEqual(r.returncode, 0, r.stdout)
+        qa = {l.split('\t')[0]: l.split('\t')[5] for l in (p / 'tasks.tsv').read_text().splitlines()
+              if l and not l.startswith('#')}
+        self.assertEqual(qa, {'a': 'opus', 'b': 'sol:xhigh', 'c': 'opus', 'd': 'astra'})
+        # A list in an explicit column is refused by plan, rather than by the first review.
+        (p / 'tasks.tsv').write_text((p / 'tasks.tsv').read_text().replace('\tastra\t', '\topus,astra\t'))
+        r = plan()
+        self.assertEqual(r.returncode, 2, r.stdout)
+        self.assertIn("the qa column names one spec, not a list ('opus,astra')", r.stdout)
+
     def test_an_escalation_is_recorded_at_the_moment_the_model_changes(self):
         self.scenario({'a.qa.1': {'verdict': 'FAIL', 'findings': '- [P1][CONFIRMED] a.txt:1 — broken'},
                        'a.dwarf.2': {'content': 'fixed'}})

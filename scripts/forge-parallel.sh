@@ -290,7 +290,7 @@ EOF
 
   # --- validate + resolve routing ---
   local tmp="$PLAN/.tasks.tsv.new"; : > "$tmp"
-  local hi_i=0 md_i=0 lo_i=0 an_i=0 unassigned=0
+  local hi_i=0 md_i=0 lo_i=0 an_i=0 qhi_i=0 qmd_i=0 qlo_i=0 qan_i=0 unassigned=0
   printf '# id\tdeps\tdifficulty\tfiles\tdwarf\tqa\ttitle\n' > "$tmp"
   local id deps diff files dw qa title line
   while IFS= read -r line; do
@@ -334,17 +334,22 @@ EOF
         [ -z "$explored" ] || dw="$explored"
       fi
     fi
-    # resolve qa
+    # resolve qa: the same grammar as the dwarf, a comma-list round-robins within its tier.
+    # Written verbatim, a list reached dispatch as one spec ('opus,sol' is not a known
+    # alias) and every review of the run failed before a model was called.
     if [ "$qa" = "-" ] || [ -z "$qa" ]; then
       case "$diff" in
-        high)   [ -n "$Q_HI" ] && qa="$Q_HI" ;;
-        medium) [ -n "$Q_MD" ] && qa="$Q_MD" ;;
-        low)    [ -n "$Q_LO" ] && qa="$Q_LO" ;;
+        high)   if [ -n "$Q_HI" ]; then qa="$(pool_pick "$Q_HI" "$qhi_i")"; qhi_i=$((qhi_i+1)); fi ;;
+        medium) if [ -n "$Q_MD" ]; then qa="$(pool_pick "$Q_MD" "$qmd_i")"; qmd_i=$((qmd_i+1)); fi ;;
+        low)    if [ -n "$Q_LO" ]; then qa="$(pool_pick "$Q_LO" "$qlo_i")"; qlo_i=$((qlo_i+1)); fi ;;
       esac
       if [ "$qa" = "-" ] || [ -z "$qa" ]; then
-        if [ -n "$Q_ANY" ]; then qa="$Q_ANY"; else qa="opus"; fi
+        if [ -n "$Q_ANY" ]; then qa="$(pool_pick "$Q_ANY" "$qan_i")"; qan_i=$((qan_i+1)); else qa="opus"; fi
       fi
     fi
+    # A column runs one spec; a list there would only fail later, at its first dispatch.
+    case "$dw" in *,*) die "task '$id': the dwarf column names one spec, not a list ('$dw'); pool models with a --dwarf flag" ;; esac
+    case "$qa" in *,*) die "task '$id': the qa column names one spec, not a list ('$qa'); pool reviewers with a --qa flag" ;; esac
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$id" "$deps" "$diff" "$files" "$dw" "$qa" "$title" >> "$tmp"
   done < "$T"
   mv "$tmp" "$T"
