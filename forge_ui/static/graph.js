@@ -41,7 +41,7 @@
 
   // Column (1-based) of every task: its wave, else one right of its deepest dep.
   function computeColumns(tasks, byId) {
-    var col = {}, i, pass;
+    var col = Object.create(null), i, pass;
     for (i = 0; i < tasks.length; i++) {
       var w = Math.floor(Number(tasks[i].wave));
       col[tasks[i].id] = isFinite(w) && w >= 1 && tasks[i].wave !== null ? w : 0;
@@ -57,7 +57,7 @@
           if (deps[d] === t.id || !byId[deps[d]]) continue;
           if (col[deps[d]] > deepest) deepest = col[deps[d]];
         }
-        var want = deepest ? Math.min(deepest + 1, tasks.length + 1) : 1;
+        var want = deepest ? deepest + 1 : 1;
         if (want !== col[t.id]) { col[t.id] = want; changed = true; }
       }
       if (!changed) break;
@@ -87,11 +87,11 @@
     }) : [];
     if (!tasks.length) { message(container, 'No tasks'); return; }
 
-    var byId = {};
+    var byId = Object.create(null);
     tasks.forEach(function (t) { if (!byId[t.id]) byId[t.id] = t; });
     var col = computeColumns(tasks, byId);
 
-    var maxCol = 1, rows = {}, pos = {}, maxRows = 0;
+    var maxCol = 1, rows = Object.create(null), pos = Object.create(null), maxRows = 0;
     tasks.forEach(function (t) { if (col[t.id] > maxCol) maxCol = col[t.id]; });
     tasks.forEach(function (t) {
       if (pos[t.id]) return;
@@ -130,13 +130,13 @@
     }
 
     var edgeLayer = el('g', { 'class': 'fg-edges', color: 'inherit' }, svg);
-    var edgesOf = {};
-    var seen = {};
+    var edgesOf = Object.create(null);
+    var seen = Object.create(null);
     tasks.forEach(function (t) {
       if (seen[t.id]) return;
       seen[t.id] = true;
       var deps = Array.isArray(t.deps) ? t.deps : [];
-      var done = {};
+      var done = Object.create(null);
       deps.forEach(function (d) {
         if (!byId[d] || done[d]) return;
         done[d] = true;
@@ -159,7 +159,7 @@
       });
     }
 
-    var drawn = {};
+    var drawn = Object.create(null);
     tasks.forEach(function (t) {
       if (drawn[t.id]) return;
       drawn[t.id] = true;
@@ -200,8 +200,8 @@
       textEl(g, ellipsize(id, maxChars), {
         x: 12, y: 19, 'font-size': 13, 'font-weight': 'bold', fill: 'currentColor'
       });
-      var spec = str(t.dwarf, '—') + (t.explored ? ' *' : '');
-      textEl(g, ellipsize(spec, maxChars), {
+      var spec = t.explored ? ellipsize(str(t.dwarf, '—'), maxChars - 2) + ' *' : ellipsize(str(t.dwarf, '—'), maxChars);
+      textEl(g, spec, {
         x: 12, y: 36, 'font-size': 12, fill: 'currentColor', 'fill-opacity': 0.75
       });
 
