@@ -101,7 +101,7 @@ window.ForgeUI = (() => {
     return body;
   }
   // Restore disclosures, internal scroll and keyboard focus after changed data arrives.
-  function preserve(parent, build) {
+  function preserve(parent, build, { restore = true, restorePage = true } = {}) {
     const open = new Map(Array.from(parent.querySelectorAll('details[data-keep]'), n => [n.dataset.keep, n.open]));
     const scroll = new Map(Array.from(parent.querySelectorAll('[data-scroll]'), n => [n.dataset.scroll, [n.scrollLeft, n.scrollTop]]));
     const active = parent.contains(document.activeElement) ? document.activeElement : null;
@@ -109,6 +109,7 @@ window.ForgeUI = (() => {
     const page = [window.scrollX, window.scrollY];
     parent.replaceChildren();
     build();
+    if (!restore) return;
     for (const node of parent.querySelectorAll('details[data-keep]')) {
       if (open.has(node.dataset.keep)) node.open = open.get(node.dataset.keep);
     }
@@ -120,9 +121,15 @@ window.ForgeUI = (() => {
       const target = Array.from(parent.querySelectorAll('a')).find(n => n.getAttribute('href') === focusHref);
       target?.focus({ preventScroll: true });
     }
-    window.scrollTo(page[0], page[1]);
+    if (restorePage) window.scrollTo(page[0], page[1]);
+  }
+  function currentResource(path) {
+    return path === '/api/runs' || (state.key != null && path === '/api/runs/' + encodeURIComponent(state.key));
   }
   function renderErrors() {
+    for (const path of state.errors.keys()) {
+      if (!currentResource(path)) state.errors.delete(path);
+    }
     const banner = $('errors');
     banner.textContent = Array.from(state.errors.values()).join(' · ');
     banner.hidden = !state.errors.size;
@@ -144,7 +151,7 @@ window.ForgeUI = (() => {
         $('run-list').append(empty);
       }
       for (const run of runs) {
-        const item = link('', run.key);
+        const item = link(undefined, run.key);
         item.className = 'run-item';
         item.dataset.run = run.key;
         const goal = el('strong', String(run.goal || 'Untitled run').split('\n')[0], 'run-goal');
@@ -188,6 +195,8 @@ window.ForgeUI = (() => {
   }
   function renderRun(run) {
     const main = $('main');
+    const sameRun = main.dataset.run === run.key;
+    const taskChanged = main.dataset.task !== (state.task ?? '');
     preserve(main, () => {
       const header = section(main, run.goal || 'Untitled run');
       header.className = 'run-header';
@@ -218,7 +227,22 @@ window.ForgeUI = (() => {
         if (task) renderTask(main, task, run);
         else main.append(el('p', `Task ${state.task} was not found in this run.`, 'empty'));
       }
-    });
+      // Scope saved state to its run and, inside the panel, its task.
+      for (const node of main.querySelectorAll('[data-keep], [data-scroll]')) {
+        const scope = JSON.stringify([run.key, node.closest('#task-panel') ? state.task : null]);
+        if (node.dataset.keep) node.dataset.keep = scope + ':' + node.dataset.keep;
+        if (node.dataset.scroll) node.dataset.scroll = scope + ':' + node.dataset.scroll;
+      }
+    }, { restore: sameRun, restorePage: sameRun && !taskChanged });
+    main.dataset.run = run.key;
+    main.dataset.task = state.task ?? '';
+    if (!sameRun) window.scrollTo(0, 0);
+    if ((!sameRun || taskChanged) && $('task-panel')) {
+      const panel = $('task-panel');
+      panel.tabIndex = -1;
+      panel.focus({ preventScroll: true });
+      panel.scrollIntoView({ block: 'start' });
+    }
   }
   function renderTasks(parent, run) {
     const rows = list(run.tasks).map(task => {
@@ -301,18 +325,25 @@ window.ForgeUI = (() => {
   }
   async function fetchJSON(path) {
     const response = await fetch(path, { cache: 'no-store' });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    if (!response.ok) {
+      const error = new Error(`HTTP ${response.status}`);
+      error.status = response.status;
+      throw error;
+    }
     const text = await response.text();
     return { text, data: JSON.parse(text) };
   }
   // Coalesce polling and navigation requests for the same resource.
-  function request(path, consume, label) {
+  function request(path, consume, label, onError) {
     if (state.pending.has(path)) return state.pending.get(path);
     const pending = fetchJSON(path).then(result => {
       consume(result);
       state.errors.delete(path);
     }).catch(error => {
-      state.errors.set(path, `${label}: ${error.message}. Keeping last good data; will retry.`);
+      if (currentResource(path)) {
+        state.errors.set(path, `${label}: ${error.message}. Any last good data is kept. Refresh retries while enabled and this tab is visible.`);
+        onError?.(error);
+      }
     }).finally(() => { state.pending.delete(path); renderErrors(); });
     state.pending.set(path, pending);
     return pending;
@@ -330,7 +361,12 @@ window.ForgeUI = (() => {
       const changed = state.cache.get(key)?.text !== result.text;
       state.cache.set(key, result);
       if (state.key === key && changed) renderRun(result.data);
-    }, 'Could not refresh run');
+    }, 'Could not refresh run', error => {
+      if (state.key !== key || state.cache.has(key)) return;
+      $('main').replaceChildren(el('p', error.status === 404 ?
+        'Run not found. Its plan directory may have been removed. Select another run from the list.' :
+        'Could not load this run. Select another run, or leave refresh enabled to retry.', 'empty'));
+    });
   }
   function navigate() {
     const match = location.hash.match(/^#\/runs\/([^/]+)(?:\/tasks\/([^/]+))?\/?$/);
@@ -339,7 +375,12 @@ window.ForgeUI = (() => {
     catch (_) { /* Invalid escaped hashes fall back to the run picker. */ }
     state.key = key;
     state.task = task;
+    renderErrors();
     markSelection();
+    if ($('main').dataset.run !== key) {
+      delete $('main').dataset.run;
+      delete $('main').dataset.task;
+    }
     if (!key) { $('main').replaceChildren(el('p', 'Select a run to inspect its tasks.', 'empty')); return; }
     const cached = state.cache.get(key);
     if (cached) renderRun(cached.data);
