@@ -740,6 +740,13 @@ class EndToEndTests(StoreCase):
         # A row whose tier has no neighbour in the pools is not explored at all.
         alone, r = self.plan_rows('alone', rows, '--dwarf-low', 'sol')
         self.assertEqual(list(alone.rglob('route.*')), [])
+        # Effort counts: pools that differ only in effort still explore, which is how the
+        # routing table measures whether an effort was needed. The same spec twice does not.
+        effort, r = self.plan_rows('effort', rows, '--dwarf-low', 'sol', '--dwarf-high', 'sol:xhigh')
+        [d] = [json.loads(l) for l in (effort / 'tasks' / 'a' / 'route.jsonl').read_text().splitlines()]
+        self.assertEqual(d['candidates'], ['sol', 'sol:xhigh'])
+        same, r = self.plan_rows('same', rows, '--dwarf-low', 'sol', '--dwarf-high', 'sol')
+        self.assertEqual(list(same.rglob('route.*')), [])
 
     def test_a_qa_list_round_robins_within_its_tier(self):
         # The QA flags share the dwarf's grammar. A list was written into the column verbatim

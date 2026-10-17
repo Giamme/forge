@@ -139,7 +139,9 @@ needs some randomized picks, so `plan` makes a few: `--explore E`, with E betwee
   round robin already alternates between pool members; across tiers nothing else ever
   produces data. The neighbour keeps the pick's position in its pool, so
   `--dwarf-low luna,haiku --dwarf-medium sol,sonnet` pairs luna with sol and haiku with
-  sonnet. A row whose tier has no neighbour is not explored.
+  sonnet. A different effort is a different candidate, so pools that differ only in
+  effort (`--dwarf-low sol --dwarf-high sol:xhigh`) compare the two efforts. A row whose
+  tier has no neighbour is not explored.
 - **How often:** with probability E the row is drawn uniformly between the two, so it
   actually changes model with probability E/2 (10% at the default).
 - **Never a model you did not name.**

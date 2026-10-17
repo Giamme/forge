@@ -105,6 +105,18 @@ def canonical(spec: str, registry: dict) -> str:
     return next(iter(rows.values()))
 
 
+def arm(spec: str, registry: dict) -> tuple:
+    """What exploration compares on: the model and the effort as written.
+
+    `sol` and `sol:xhigh` are one model but two arms, so pools that differ only in effort
+    still explore and the routing table measures whether the effort was needed. A bare
+    spec and one naming the effort its harness defaults to count as two arms: a wasted
+    comparison at worst, never a wrong one.
+    """
+    parts = str(spec).split(':')
+    return canonical(spec, registry), parts[1] if len(parts) > 1 else ''
+
+
 def load_pools(path) -> dict:
     """{tier: [spec, ...]} for low/medium/high. `any` (plain --dwarf) has no rank, so it is left out."""
     try:
@@ -128,22 +140,23 @@ def rank_of(spec: str, pools: dict, registry: dict):
     return max(ranks) if ranks else None
 
 
-def _aligned(spec: str, pool_of_spec: list, other: list, registry: dict):
+def _aligned(spec: str, pool_of_spec: list, other: list, key):
     """The spec in `other` at this spec's position in its own pool, else the first distinct one.
 
     Users list one family per position (`--dwarf-low luna,haiku --dwarf-medium sol,sonnet`),
     so position keeps a comparison within a family without forge guessing what a family is.
+    `key` says what distinct means: the arm for exploration, the model for escalation.
     """
-    model = canonical(spec, registry)
-    distinct = [s for s in other if canonical(s, registry) != model]
+    own = key(spec)
+    distinct = [s for s in other if key(s) != own]
     if not distinct:
         return None
     try:
-        i = [canonical(s, registry) for s in pool_of_spec].index(model)
+        i = [key(s) for s in pool_of_spec].index(own)
     except ValueError:
         return distinct[0]
     pick = other[i % len(other)]
-    return pick if canonical(pick, registry) != model else distinct[0]
+    return pick if key(pick) != own else distinct[0]
 
 
 def neighbour(spec: str, tier: str, pools: dict, registry: dict):
@@ -154,7 +167,7 @@ def neighbour(spec: str, tier: str, pools: dict, registry: dict):
     order = TIERS[i + 1:] if i == 0 else tuple(reversed(TIERS[:i]))
     for other in order:
         if pools.get(other):
-            pick = _aligned(spec, pools.get(tier) or [spec], pools[other], registry)
+            pick = _aligned(spec, pools.get(tier) or [spec], pools[other], lambda s: arm(s, registry))
             if pick:
                 return pick
     return None
@@ -167,7 +180,7 @@ def stronger(spec: str, pools: dict, registry: dict):
         return None, 'its model is in none of this plan\'s tier pools, so there is no configured escalation'
     own = pools.get(TIERS[rank]) or [spec]
     for tier in TIERS[rank + 1:]:
-        pick = _aligned(spec, own, pools.get(tier) or [], registry)
+        pick = _aligned(spec, own, pools.get(tier) or [], lambda s: canonical(s, registry))
         if pick:
             return pick, None
     return None, 'it is already in the highest tier of this plan\'s pools (%s)' % TIERS[rank]
