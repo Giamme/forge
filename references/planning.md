@@ -33,7 +33,9 @@ bash <skill_dir>/scripts/forge-dispatch.sh planner <spec> \
 
 The planner is instructed to read only and uses QA permission flags. These flags alone do not enforce filesystem immutability.
 Ask it for the approach only: in a decomposed run, `tasks.tsv` rows plus a few lines of
-approach per task; in a single-task run, just the approach. Write each task's approach to
+approach per task; in a single-task run, just the approach. Ask too for tasks small enough to
+pass on a first attempt, each ending its prompt with an `## Acceptance criteria` section of
+checks the reviewer can verify; see [task size](decompose.md#task-size-and-acceptance-criteria). Write each task's approach to
 `tasks/<id>/approach.md`, where the runner picks it up for both the dwarf and qa.
 
 Show the approach before dispatching and let the user change it. That gate is the last

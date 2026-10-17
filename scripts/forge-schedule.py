@@ -135,6 +135,9 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
             # A task that produced no new work (empty diff, byte-identical retry) would
             # only repeat itself; its marker says so and it is left for a human.
             and not (plan / 'tasks' / name / 'noretry').exists()
+            # The retry policy found no stronger model after repeated failures on one: a
+            # split, or an explicit `retry --dwarf`, is the human's call.
+            and not (plan / 'tasks' / name / 'escalation.stop').exists()
         )
 
     def requeue(name: str) -> bool:

@@ -114,6 +114,7 @@ forge still running keeps writing.
 ./forge dataset import <dir|archive|legacy-dir>... [--registry] [--fractal] [--ledger REPO] [--dry-run]
 ./forge dataset export [--slice S]... [--limit N] [--seed N] [--out DIR]   # labeled decision cases
 ./forge dataset outcomes [--horizon-days 14] [--repo PATH] [--dry-run]     # what integrated work became
+./forge dataset routing [--repo PATH] [--since DAYS] [--json]   # pass rate and runtime per tier and model
 ```
 
 `status` runs a different completeness check for each mode, because each mode
@@ -202,6 +203,48 @@ A final FAIL is not proof a task cannot pass: the retry budget ended the observa
 The output defaults to `<data>/exports/forge-decisions/` (`0700`, files `0600`). It holds
 prompts, diffs and reviews from your repos, so keep it out of public repos and pass it
 only to local models. Builds are deterministic for a given store and `--seed`.
+
+## Routing
+
+`forge dataset routing` answers "which model should this tier use?" from the store, in two
+tables kept apart because they answer different questions.
+
+**Observational.** Every task's first attempt, by declared tier and the model and effort that
+ran it (resolved, so `sol` and `gpt-6.1-sol:medium:codex` share a row):
+- first-pass rate with a Wilson 95% interval
+- the share that passed review at some attempt, or that a human accepted
+- unfinished tasks
+- attempts per task
+- the implementer's median runtime
+
+Routing chose who ran what, so a model sent the hard tasks looks worse here than it is.
+Fractal runs are left out, since their dispatches have identities of their own.
+
+**Randomized.** The `plan --explore` draws, one row per (tier, pool pick, neighbour) pair.
+Round-robin pools make the pair differ between rows, and a model has no chance at all
+outside its own pairs, so pairs are never pooled. For each arm:
+- assigned tasks
+- first-pass as a Hajek (self-normalized inverse-propensity) mean
+- Kish's effective n
+- attrition: tasks not run as assigned, and tasks with no outcome
+- runtime
+
+Every task stays in the arm it was *assigned* (intent to treat), whatever the approval gate
+or a retry did afterwards. A task is bound to the last draw recorded before its first attempt
+started, so a later re-plan never relabels it. Draws from before the two-candidate rule
+(a pick among every spec of the plan) have no pair and are counted, not compared.
+
+**The decision rule** is fixed in advance and only advises. A pair is judged once, at the
+first of 30, 60 or 120 neighbour assignments it reaches, on exactly the assignments up to
+that point. The interval is a run-cluster bootstrap, shown only with at least 10 neighbour
+assignments across 3 runs.
+- For a **low** pair the neighbour is the stronger model: switching is advised only when the
+  interval is above 0.
+- For **medium** and **high** pairs it is the cheaper one: it is called non-inferior when the
+  interval's lower end is above -0.10 and its runtime is lower.
+
+At the default `--explore 0.2` a row changes model 10% of the time, so a pair needs weeks of
+normal use to reach its first window.
 
 ## Outcomes after merge
 

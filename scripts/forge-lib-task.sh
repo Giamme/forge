@@ -7,15 +7,17 @@
 # SKILL_DIR. Functions only; nothing runs at source time.
 
 # --- attempt log ----------------------------------------------------------------
-# One row per do_task entry: epoch, attempt number, resulting status, infra class.
+# One row per do_task entry: epoch, attempt number, resulting status, infra class, and the
+# implementer spec the attempt ran (the escalation policy counts failures per model, and
+# the dwarf column is rewritten before the next attempt begins).
 # `attempt` itself only counts attempts that were really spent (an infrastructure stop
 # refunds it), so this file is the audit trail of what happened, including the refunds.
 record_attempt() { # record_attempt <plan> <id>
   local tdir="$1/tasks/$2" cls=""
   [ "$(task_status "$1" "$2")" = BLOCKED ] && return 0   # never started: nothing to audit
   [ "$(task_status "$1" "$2")" = INFRA ] && cls="$(sed -n 's/^class=//p' "$tdir/infra.txt" 2>/dev/null | head -1)"
-  printf '%s\t%s\t%s\t%s\n' "$(date +%s)" "$(cat "$tdir/attempt" 2>/dev/null || echo 0)" \
-    "$(task_status "$1" "$2")" "$cls" >> "$tdir/attempts.tsv"
+  printf '%s\t%s\t%s\t%s\t%s\n' "$(date +%s)" "$(cat "$tdir/attempt" 2>/dev/null || echo 0)" \
+    "$(task_status "$1" "$2")" "$cls" "$(field "$1/tasks.tsv" "$2" dwarf)" >> "$tdir/attempts.tsv"
 }
 
 # --- infrastructure stops -------------------------------------------------------
@@ -81,21 +83,44 @@ prepare_retry() { # prepare_retry <plan> <id> [new-dwarf]
     note "$id: no previous QA findings to pass on (last status was $st)"
     : > "$tdir/retry_findings.md"
   fi
+  # The retry policy (forge-route.py escalation): after escalate_after failed attempts on
+  # one model (default 3), the next attempt goes a tier up in the user's own pools instead
+  # of repeating the dispatch whose fourth try passes least often, or the task stops with a
+  # split suggestion. An explicit --dwarf is the human's call and skips the policy.
+  local cur next rc
+  cur="$(field "$T" "$id" dwarf)"
+  if [ -z "$newdwarf" ]; then
+    next="$(python3 "$SKILL_DIR/scripts/forge-route.py" escalation --plan "$PLAN" --task "$id")"; rc=$?
+    if [ "$rc" = 3 ]; then
+      note "$(cat "$tdir/split.suggested" 2>/dev/null)"
+      return 3
+    fi
+    if [ -n "$next" ]; then
+      note "$id: escalating from $cur to $next after $(cat "$PLAN/escalate_after" 2>/dev/null || echo 3) failed attempts on one model (--escalate-after 0 turns this off)"
+      newdwarf="$next"
+    fi
+  else
+    rm -f "$tdir/escalation.stop" "$tdir/split.suggested" "$tdir/escalation.next"
+  fi
+  if [ "$newdwarf" = "$cur" ]; then newdwarf=""; fi   # the same spec again is no escalation
   if [ -n "$newdwarf" ]; then
-    # The overwrite below loses which model failed first, and an escalation is exactly
-    # the record of "this tier was too weak for this task".
-    printf '%s\t%s\t%s\t%s\n' "$(date +%s)" "$(cat "$tdir/attempt" 2>/dev/null || echo 0)" \
-      "$(field "$T" "$id" dwarf)" "$newdwarf" >> "$tdir/escalations.tsv"
-    # Recorded at the rewrite itself: it happens before the retried attempt begins, so no
-    # attempt capture would ever see it as something that attempt produced.
-    forge_dataset_event escalation --dir "$PLAN" --task "$id" --set "from=$(field "$T" "$id" dwarf)" \
-      --set "to=$newdwarf" --set "after_attempt=$(cat "$tdir/attempt" 2>/dev/null || echo 0)"
     # Written into tasks.tsv rather than kept in a side file: the table then shows the
     # model that will actually be spent, and plan's rule that an explicit column value
-    # survives a re-plan protects the escalation for free.
+    # survives a re-plan protects the escalation for free. Rewritten first, so a failed
+    # rewrite is never recorded as an escalation that happened.
     awk -F'\t' -v OFS='\t' -v id="$id" -v dw="$newdwarf" \
       '$0 !~ /^#/ && $1==id { $5=dw } { print }' "$T" > "$PLAN/.tasks.tsv.retry" \
-      && mv "$PLAN/.tasks.tsv.retry" "$T"
+      && mv "$PLAN/.tasks.tsv.retry" "$T" \
+      || { note "$id: could not write $newdwarf into tasks.tsv; nothing was retried"; return 1; }
+    # The rewrite loses which model failed first, and an escalation is exactly the record
+    # of "this tier was too weak for this task".
+    printf '%s\t%s\t%s\t%s\n' "$(date +%s)" "$(cat "$tdir/attempt" 2>/dev/null || echo 0)" \
+      "$cur" "$newdwarf" >> "$tdir/escalations.tsv"
+    # Recorded at the rewrite itself: it happens before the retried attempt begins, so no
+    # attempt capture would ever see it as something that attempt produced.
+    forge_dataset_event escalation --dir "$PLAN" --task "$id" --set "from=$cur" \
+      --set "to=$newdwarf" --set "after_attempt=$(cat "$tdir/attempt" 2>/dev/null || echo 0)"
+    rm -f "$tdir/escalation.next"
   fi
   rm -f "$tdir/noretry"
 }
@@ -232,8 +257,33 @@ report_verify_notes() { # report_verify_notes <dir holding verification.*>
 }
 
 # Everything worth saying under the results table, in one call.
+# Advisory notes under the approval table: tasks large enough that their first attempt
+# usually fails review, and prompts with no acceptance criteria (forge-plan-check.py).
+report_size() { # report_size <plan>
+  python3 "$SKILL_DIR/scripts/forge-plan-check.py" size --plan "$1" 2>/dev/null || true
+}
+
+# The retry policy's verdicts: a task that stopped with a split suggestion, or whose next
+# retry would go a tier up. Decided after every attempt, so a spent budget still says it.
+report_escalations() { # report_escalations <plan>
+  local plan="$1" id n=0 head
+  head="retry policy (after $(cat "$plan/escalate_after" 2>/dev/null || echo 3) failed attempts on one model):"
+  for id in $(all_ids "$plan/tasks.tsv"); do
+    if [ -s "$plan/tasks/$id/split.suggested" ]; then
+      [ "$n" = 0 ] && echo "$head"
+      n=$((n+1)); printf '  %-14s split suggested: %s\n' "$id" "$(cat "$plan/tasks/$id/split.suggested")"
+    elif [ -s "$plan/tasks/$id/escalation.next" ] && [ "$(task_status "$plan" "$id")" != MERGED ]; then
+      [ "$n" = 0 ] && echo "$head"
+      n=$((n+1)); printf '  %-14s its next retry goes to %s\n' "$id" "$(cat "$plan/tasks/$id/escalation.next")"
+    fi
+  done
+  [ "$n" -gt 0 ] && echo
+  return 0
+}
+
 run_report_extras() { # run_report_extras <plan> [<verification dir>]
   report_infra "$1"
+  report_escalations "$1"
   report_known_issues "$1"
   report_guard_notes "$1"
   report_verify_notes "${2:-$1}"

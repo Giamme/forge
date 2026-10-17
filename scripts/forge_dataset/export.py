@@ -487,16 +487,20 @@ def assignments(runs: Runs) -> list:
     The randomized cohort for estimating how another model would have done: the export's
     own filters (a task with no prompt left, a censored first attempt) must not select it.
     """
+    from .routing import _started, decision_before
     out = []
     for run, revisions in sorted(runs.plans.items(), key=lambda kv: str(kv[0])):
-        latest = {}
+        decisions = defaultdict(list)
         for plan in revisions:
             for tid, row in (plan['d'].get('tasks') or {}).items():
-                if row.get('route'):
-                    latest[tid] = row['route'][-1]
-        for tid, decision in sorted(latest.items()):
+                decisions[tid].extend(row.get('route') or [])
+        for tid in sorted(t for t, rows in decisions.items() if rows):
             attempts = _attempts(runs, run, tid, runs.attempts.get((run, tid), []))
             first = attempts[0] if attempts else None
+            # The draw attempt 1 ran under: a later re-plan must not relabel it.
+            decision = decision_before(decisions[tid], _started(runs, run, tid, first) if first else None)
+            if decision is None:
+                continue
             ran = first['events'][0]['d'].get('dwarf') if first else None
             out.append(dict({k: decision.get(k) for k in ROUTE_FIELDS}, run=run, task=tid,
                             followed=(ran == decision.get('chosen')) if first else None, ran=ran,

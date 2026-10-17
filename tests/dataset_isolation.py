@@ -30,6 +30,9 @@ atexit.register(shutil.rmtree, CONFIG, True)
 for name in ('FORGE_ROUTE_EXPLORE', 'FORGE_ROUTE_EXPLORE_SEED', 'FORGE_SHADOW', 'FORGE_SHADOW_ATTEMPT',
              'FORGE_SHADOW_REVIEWED', 'FORGE_SHADOW_FROM', 'FORGE_SHADOW_GRACE_S'):
     os.environ.pop(name, None)
+# Exploration is on by default in `plan`; a suite's plans must resolve the same way every
+# time, so tests start with it off and the tests about it turn it on.
+os.environ['FORGE_ROUTE_EXPLORE'] = '0'
 
 # The same for which decision provider answers: a developer's Cloudflare token or provider
 # override would send every Jev test to another provider (and its real credentials into it).

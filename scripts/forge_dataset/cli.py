@@ -158,6 +158,11 @@ def run_outcomes(args) -> int:
     return outcomes.main(args)
 
 
+def run_routing(args) -> int:
+    from . import routing
+    return routing.main(args)
+
+
 def parser() -> argparse.ArgumentParser:
     top = argparse.ArgumentParser(prog='forge dataset', description='The run dataset: every run\'s inputs and outcomes.')
     sub = top.add_subparsers(dest='command', required=True)
@@ -194,6 +199,11 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument('--include-temp', action='store_true', help='also repos under temp dirs (test runs)')
     p.add_argument('--dry-run', action='store_true', help='report what would be recorded, write nothing')
     p.set_defaults(func=run_outcomes)
+    p = sub.add_parser('routing', help='pass rate and runtime per tier and model, and what the --explore draws say')
+    p.add_argument('--repo', help='only this repo')
+    p.add_argument('--since', type=float, metavar='DAYS', help='only tasks first attempted in the last DAYS days')
+    p.add_argument('--json', action='store_true')
+    p.set_defaults(func=run_routing)
     p = sub.add_parser('event', help=argparse.SUPPRESS)
     p.add_argument('name')
     p.add_argument('--dir')

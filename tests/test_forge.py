@@ -366,5 +366,16 @@ class ForgeTests(unittest.TestCase):
   records=[json.loads(p.read_text()) for p in run.glob('attempts/dwarf-*/metrics.json')]
   failed=next(x for x in records if x['exit_code']==2)
   self.assertIsNone(failed['prompt_bytes']);self.assertIsNone(failed['input_tokens'])
+ def test_plan_names_large_tasks_and_missing_acceptance_criteria(self):
+  # Advisory only: the table and the exit code are what they would be without the notes.
+  p=self.root/'plan'; p.mkdir()
+  files=','.join('f%d.txt'%i for i in range(9))
+  (p/'tasks.tsv').write_text(f'big\t-\thigh\t{files}\tsol\topus\tBig\nok\t-\tlow\tok.txt\tsol\topus\tOk\n')
+  for i,text in (('big','Implement change. TASK_big '+'x'*9500),('ok','Implement change. TASK_ok\n\n## Acceptance criteria\n\n- ok.txt says implemented\n')):
+   (p/'tasks'/i).mkdir(parents=True); (p/'tasks'/i/'prompt.md').write_text(text)
+  r=self.run_script('forge-parallel.sh','plan',p,'--repo',self.repo,'--no-memory'); self.assertEqual(r.returncode,0,r.stdout)
+  notes=[l.split() for l in r.stdout.split('task size and acceptance criteria')[1].splitlines()[1:] if l.strip()]
+  self.assertEqual([(n[0],' '.join(n[1:3])) for n in notes],[('big','large prompt'),('big','touches 9'),('big','no acceptance')])
+  self.assertIn('at 7-10K passed review',r.stdout)
 
 if __name__=='__main__': unittest.main()

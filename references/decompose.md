@@ -13,6 +13,7 @@ run leaves branches behind.
 - [Routing](#routing)
 - [Fractal within decomposed tasks](#fractal-within-decomposed-tasks)
 - [Waves and disjointness](#waves-and-disjointness)
+- [Task size and acceptance criteria](#task-size-and-acceptance-criteria)
 - [The capsule](#the-capsule)
 - [Planning](#planning)
 - [QA verdicts](#qa-verdicts)
@@ -122,33 +123,47 @@ their quota.
 
 QA has no tier rules by default and falls back to `opus`, matching single-task forge.
 
-### Exploratory routing (opt-in)
+### Exploratory routing (on by default)
 
 Every task in the run history ran on the model its tier was routed to, so the history
-says how that model did and nothing about how another would have done on the same task.
-`plan --explore E` (or `FORGE_ROUTE_EXPLORE=E`, with E between 0 and 0.5) collects that
-evidence on purpose.
+says how that model did and nothing about how another would have done on the same task
+(only 9 tasks ever ran on more than one spec). Choosing models from measured pass rates
+needs some randomized picks, so `plan` makes a few: `--explore E`, with E between 0 and
+0.5, defaults to **0.2**.
 
 - **Which rows:** only rows whose dwarf column is `-` (left to forge). The pool's own turn
   is still taken, so the round robin of every other row is unchanged.
-- **How:** with probability E, the row gets a uniform pick among the specs passed to this
-  `plan` (`--dwarf` and every `--dwarf-<tier>`). Including the other tiers' models is the
-  point: it shows whether a low task really needed nothing more, or a high task really
-  needed the high model.
+- **Two candidates:** the pool's pick and its *neighbour*, the model one tier away in the
+  pools given to this plan: the next cheaper tier for medium and high rows ("is a cheaper
+  model enough?"), the next stronger for low rows ("did it need more?"). Within a tier the
+  round robin already alternates between pool members; across tiers nothing else ever
+  produces data. The neighbour keeps the pick's position in its pool, so
+  `--dwarf-low luna,haiku --dwarf-medium sol,sonnet` pairs luna with sol and haiku with
+  sonnet. A row whose tier has no neighbour is not explored.
+- **How often:** with probability E the row is drawn uniformly between the two, so it
+  actually changes model with probability E/2 (10% at the default).
 - **Never a model you did not name.**
-- **The table:** an explored row is marked `*` in the approval table, so the spend is
-  visible before anything runs. To pin another model, put its spec in the dwarf column
-  and re-plan.
+- **The table:** an explored row is marked `*` in the approval table, and a footer states
+  the active setting, so the spend is visible before anything runs. To pin another model,
+  put its spec in the dwarf column and re-plan.
 - **The record:** each decision goes to `tasks/<id>/route.jsonl` (append-only) with its
-  candidates, the pool's own pick, the choice, and its probability:
-  `(1 - E)·[choice = pool's pick] + E / candidates`.
+  two candidates, the pool's own pick, the choice, and its probability:
+  `(1 - E)·[choice = pool's pick] + E / 2`.
+- **Turning it off:** `--explore 0`. The choice is kept in the plan dir (`explore`), so a
+  later re-plan neither turns it back on nor changes rows already resolved. Precedence:
+  the flag, then the plan's earlier choice, then `FORGE_ROUTE_EXPLORE`, then 0.2.
 - **Later changes:** a re-plan draws nothing for rows that are already resolved. An
-  approval-gate edit or a `retry --dwarf` simply runs a different model. The dataset then
-  marks the decision `followed: false`, so its probability is never applied to a choice
-  that did not run.
+  approval-gate edit or a `retry --dwarf` simply runs a different model; the analysis
+  keeps such a task in the arm it was assigned and reports it as not followed.
 - **Calibration:** Jev's routing calibration leaves explored tasks out, since they say
   nothing about their tier's own model.
-- **Default:** `E = 0`, or no flag, is exactly today's plan.
+
+`forge dataset routing` reads the draws back: per (tier, pool pick, neighbour) pair, each
+arm's first-pass rate (inverse-propensity weighted, every task in the arm it was assigned),
+attrition, runtime and a run-clustered interval, judged at the first of 30, 60 or 120
+neighbour assignments it reaches. See [Dataset](dataset.md#routing). At the default rate
+that is weeks of normal use per pair; a pair that matters can be given more with
+`--explore 0.5` on its plans.
 
 ## Fractal within decomposed tasks
 
@@ -216,6 +231,33 @@ do not overlap an active task. Each passing task merges serially through the exi
 fingerprint checks. A slow unrelated task no longer holds up eligible dependents.
 
 Each task's baseline is pinned immediately before dispatch and stays fixed across retries.
+
+## Task size and acceptance criteria
+
+Size predicts a failed first attempt better than anything forge asks a model. In the run
+history (269 first attempts, 2026-10-17), the share a reviewer passed:
+
+| prompt.md | passed | | declared files | passed |
+|---|---|---|---|---|
+| under 3K chars | 62% (n=50) | | 1 | 83% (n=12) |
+| 3–5K | 56% (n=48) | | 2 | 68% (n=25) |
+| 5–7K | 51% (n=49) | | 3–5 | 52% (n=75) |
+| 7–10K | 33% (n=49) | | 6–8 | 40% (n=50) |
+| 10–14K | 28% (n=29) | | 9 or more | 29% (n=107) |
+| 14K and over | 23% (n=44) | | | |
+
+Size and difficulty are confounded (high tasks are longer), but splitting reduces both.
+So:
+
+- Split along independently verifiable behaviour and explicit interfaces, not to make more
+  parallel tasks. A task should still be reviewable and correct on its own.
+- End every `prompt.md` with an `## Acceptance criteria` section: observable checks the
+  reviewer can verify (a behaviour, a command that passes, a file that exists), not
+  restated goals.
+- `plan` prints an advisory block under the table naming tasks at 7,000 characters or 9
+  declared files and over, with the history for their size, and tasks with no acceptance
+  criteria. A heading inside a code fence, or with nothing under it, does not count. The
+  block never changes the table or the exit code.
 
 ## The capsule
 
@@ -373,6 +415,32 @@ as `retry` does (same findings carry-forward, same pinned base, same cumulative 
 tasks keep running; dependents wait for the task to merge. It applies per invocation (not
 remembered), never to `TIMEOUT`/`ERROR`/`INVALIDATED`/`CONFLICT`, and never after a retry that
 changed nothing (`tasks/<id>/noretry`). Every entry is logged in `tasks/<id>/attempts.tsv`.
+
+**Escalation after repeated failures.** In forge's history the first three attempts at a task
+pass review at about the same rate (43%, 42%, 47%), and the fourth and later at 29%, whether
+or not the model changed. So a retry does not repeat a dispatch that has already failed three
+times on one model (`--escalate-after N` on `run` or `retry`, kept in the plan, default 3, `0`
+turns it off):
+
+- **Counting:** the count is the task's failed attempts (FAIL, or an implementer TIMEOUT) on its current model,
+  from the fifth column of `attempts.tsv`. Infrastructure stops, missing verdicts and
+  forge's own errors judge nothing and are skipped; a pass or a change of model resets it.
+- **Escalation:** at the threshold, the next attempt goes to a different model in the next tier
+  up of the pools given to `plan` (same position in the pool, as with exploration),
+  recorded in `escalations.tsv` and `tasks.tsv` like a `retry --dwarf`.
+- **Stop:** when nothing is above (the model is in the top tier, or in no tier pool at
+  all), the task stops with `tasks/<id>/split.suggested`: split it into smaller tasks, or
+  name a model. `run --retry-failed` does not retry it, and a plain `retry` refuses (exit 2).
+- **Overrides:** an explicit `retry --dwarf <spec>` is the human's choice and skips the policy, even
+  with the same model. The dwarf column itself cannot tell a pin from a pool pick, so it does
+  not; `--escalate-after 0` does.
+- **Fractal plans** keep their frozen eligible set and are not escalated; neither is a
+  QA-only resume, which spends no implementer attempt.
+- **Reporting:** the policy's state is decided after every attempt, so a run whose retry budget ran out
+  still reports `its next retry goes to <spec>` or the split suggestion under the results.
+
+History cannot yet say whether escalating rescues a task (31% of the 29 later attempts on a
+changed spec passed, mostly effort bumps); the attempts this policy makes are what will.
 
 **Ordinary execution resume:** run `run` again. Tasks already `MERGED` are skipped. A saved PASS is fingerprint-checked and merged without
 redispatch. PENDING, `INFRA` (paused by an infrastructure failure) and newly unblocked tasks run

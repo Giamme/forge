@@ -662,10 +662,11 @@ class EndToEndTests(StoreCase):
         return p, self.run_script('forge-parallel.sh', 'plan', p, '--repo', self.repo, '--no-memory', *flags)
 
     def test_exploratory_routing_records_each_decision_with_its_odds(self):
-        # Rows left to forge sometimes get another of the specs given to this plan, never a
-        # model nobody named, and each decision keeps the probability it had. A seed makes
-        # the draws repeatable: with it, a and b are explored, c and d keep the pool's turn.
-        from forge_dataset import export
+        # Rows left to forge sometimes get their neighbouring tier's model from the pools given
+        # to this plan, never a model nobody named, and each decision keeps the probability it
+        # had. A seed makes the draws repeatable: with it, a and b are explored, c and d keep
+        # the pool's turn.
+        from forge_dataset import export, routing
         rows = [('a', '-'), ('b', '-'), ('c', '-'), ('d', '-'), ('e', 'sol:high')]
         pools = ('--dwarf-low', 'sol,luna', '--dwarf-high', 'astra')
         column = lambda p: {line.split('\t')[0]: line.split('\t')[4] for line in (p / 'tasks.tsv').read_text().splitlines()
@@ -678,23 +679,24 @@ class EndToEndTests(StoreCase):
         self.env['FORGE_ROUTE_EXPLORE_SEED'] = '3'
         p, r = self.plan_rows('plan', rows, *pools, '--explore', '0.5')
         self.assertEqual(r.returncode, 0, r.stdout)
-        self.assertEqual(column(p), {'a': 'luna', 'b': 'astra', 'c': 'sol', 'd': 'luna', 'e': 'sol:high'})
+        self.assertEqual(column(p), {'a': 'astra', 'b': 'astra', 'c': 'sol', 'd': 'luna', 'e': 'sol:high'})
         self.assertEqual(column(today), {'a': 'sol', 'b': 'luna', 'c': 'sol', 'd': 'luna', 'e': 'sol:high'})
         decisions = {t: [json.loads(l) for l in (p / 'tasks' / t / 'route.jsonl').read_text().splitlines()]
                      for t in 'abcd'}
         self.assertFalse((p / 'tasks' / 'e' / 'route.jsonl').exists())
         for t, [d] in decisions.items():
+            # Exactly two candidates: the pool's turn and the next tier up (low has no cheaper one).
             self.assertEqual((d['candidates'], d['default'], d['chosen']),
-                             (['sol', 'luna', 'astra'], column(today)[t], column(p)[t]))
-            self.assertAlmostEqual(d['propensity'], 0.5 * (d['chosen'] == d['default']) + 0.5 / 3, places=5)
+                             ([column(today)[t], 'astra'], column(today)[t], column(p)[t]))
+            self.assertAlmostEqual(d['propensity'], 0.5 * (d['chosen'] == d['default']) + 0.5 / 2, places=5)
         self.assertEqual({t for t, [d] in decisions.items() if d['explored']}, {'a', 'b'})
-        self.assertIn('luna*', r.stdout)
+        self.assertIn('astra*', r.stdout)
         self.assertIn('picked by exploratory routing (--explore 0.5)', r.stdout)
         # A re-plan sees resolved rows as the user's: no new draw, nothing re-labelled.
         self.assertEqual(self.run_script('forge-parallel.sh', 'plan', p, '--no-memory', *pools, '--explore', '0.5').returncode, 0)
         self.assertEqual([len((p / 'tasks' / t / 'route.jsonl').read_text().splitlines()) for t in 'abcd'], [1] * 4)
         # An approval-gate edit after the draw: b now runs sol, so its odds describe a choice that never ran.
-        (p / 'tasks.tsv').write_text((p / 'tasks.tsv').read_text().replace('\tastra\t', '\tsol\t'))
+        (p / 'tasks.tsv').write_text((p / 'tasks.tsv').read_text().replace('b\t-\tlow\tb.txt\tastra', 'b\t-\tlow\tb.txt\tsol'))
         self.assertEqual(self.run_script('forge-parallel.sh', 'plan', p, '--no-memory', *pools).returncode, 0)
         r = self.run_script('forge-parallel.sh', 'run', p)
         self.assertEqual(r.returncode, 0, r.stdout)
@@ -708,6 +710,36 @@ class EndToEndTests(StoreCase):
         cohort = {a['task']: (a['explored'], a['followed'], a['first_pass']) for a in stats['assignments']}
         self.assertEqual(cohort, {'a': (True, True, True), 'b': (True, False, True), 'c': (False, True, True),
                                   'd': (False, True, True)})
+        # The routing table compares within each fixed pair, every task in the arm it was assigned:
+        # b stays in astra's arm although the gate gave it sol, and says so.
+        pairs = {(r['default'], r['alternative']): r for r in routing.randomized(
+            routing.tasks(export.Runs(export.Store(store.connect()))))}
+        self.assertEqual(set(pairs), {('sol', 'astra'), ('luna', 'astra')})
+        arms = {pair: {arm: (a['assigned'], a['not_followed'], a['first_pass']) for arm, a in r['arms'].items()}
+                for pair, r in pairs.items()}
+        self.assertEqual(arms, {('sol', 'astra'): {'default': (1, 0, 1.0), 'alternative': (1, 0, 1.0)},
+                                ('luna', 'astra'): {'default': (1, 0, 1.0), 'alternative': (1, 1, 1.0)}})
+        self.assertTrue(all(r['verdict'].startswith('not enough randomized data (1/30') for r in pairs.values()))
+
+    def test_exploration_is_on_by_default_and_an_explicit_zero_is_kept(self):
+        self.env.pop('FORGE_ROUTE_EXPLORE')       # the suite turns it off; a user's shell does not
+        rows = [('a', '-'), ('b', '-')]
+        pools = ('--dwarf-low', 'sol', '--dwarf-high', 'astra')
+        on, r = self.plan_rows('on', rows, *pools)
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertEqual((on / 'explore').read_text().strip(), '0.2')
+        for t in 'ab':
+            [d] = [json.loads(l) for l in (on / 'tasks' / t / 'route.jsonl').read_text().splitlines()]
+            self.assertEqual((d['epsilon'], d['candidates']), (0.2, ['sol', 'astra']))
+        self.assertIn('exploration on (--explore 0.2)', r.stdout)
+        off, r = self.plan_rows('off', rows, *pools, '--explore', '0')
+        self.assertNotIn('exploration on', r.stdout)
+        (off / 'tasks.tsv').write_text((off / 'tasks.tsv').read_text().replace('\tsol\t', '\t-\t'))
+        r = self.run_script('forge-parallel.sh', 'plan', off, '--no-memory', *pools)   # a re-plan, no flag
+        self.assertEqual(((off / 'explore').read_text().strip(), list(off.rglob('route.*'))), ('0', []), r.stdout)
+        # A row whose tier has no neighbour in the pools is not explored at all.
+        alone, r = self.plan_rows('alone', rows, '--dwarf-low', 'sol')
+        self.assertEqual(list(alone.rglob('route.*')), [])
 
     def test_a_qa_list_round_robins_within_its_tier(self):
         # The QA flags share the dwarf's grammar. A list was written into the column verbatim

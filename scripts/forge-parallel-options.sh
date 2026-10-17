@@ -21,6 +21,8 @@
 #   --infra-retries M       run               (this run only)      waits out quota/auth/network stops
 #   --qa-threshold Pn|none  run retry         $PLAN/qa_threshold   least severe finding that still blocks
 #   --verify-retries N      run retry integrate  $PLAN/verify_retries  reruns of a failed verify command
+#   --escalate-after N      run retry         $PLAN/escalate_after failed attempts on one model before the
+#                                                                  next goes a tier up (default 3; 0 = off)
 #   --final-review SPEC     integrate         $PLAN/final_qa       QA spec for the whole-run review
 PP_SHIFT=2
 PP_RETRY_FAILED=0
@@ -52,6 +54,14 @@ forge_pp_flag() {
         none|off) rm -f "$plan/qa_threshold" ;;
         *) die "--qa-threshold needs P0, P1, P2, P3 or none" ;;
       esac ;;
+    --escalate-after)
+      case "$cmd" in run|retry) ;; *) return 1 ;; esac
+      pp_nonneg --escalate-after "${2:-}"
+      printf '%s' "$2" > "$plan/escalate_after"
+      # Off means off: the policy's own stop markers go too, so the scheduler retries again.
+      if [ "$2" = 0 ]; then
+        rm -f "$plan"/tasks/*/escalation.stop "$plan"/tasks/*/split.suggested "$plan"/tasks/*/escalation.next
+      fi ;;
     --verify-retries)
       case "$cmd" in run|retry|integrate) ;; *) return 1 ;; esac
       pp_nonneg --verify-retries "${2:-}"

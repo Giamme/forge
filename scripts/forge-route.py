@@ -1,23 +1,35 @@
 #!/usr/bin/env python3
-"""Exploratory routing: now and then give a task another of the user's models, and record the odds.
+"""Routing helpers for `plan` and retries: exploratory picks with their odds, and escalation.
 
 Every task in the run history ran on the model the router chose for it, so the data says
 how that model did and nothing about how another would have done on the same task. A
 small, recorded share of random assignments is what lets that be estimated later without
 bias (inverse-propensity weighting needs the probability each choice had).
 
-  forge-route.py explore --plan P --task ID --tier T --epsilon E --default SPEC --candidates A,B,...
+  forge-route.py explore --plan P --task ID --tier T --epsilon E --default SPEC --pools FILE
       Called by `plan` for a row the user left to forge, after the pool's own turn picked
-      SPEC (the pool counters advance exactly as without exploration). With probability
-      1-E it keeps SPEC; with probability E it picks uniformly among the candidates, which
-      are only the specs the user passed to this `plan` (`--dwarf`, `--dwarf-<tier>`).
+      SPEC (the pool counters advance exactly as without exploration). The candidates are
+      exactly two: SPEC and its neighbour, the model one tier away in the user's own pools
+      (the next cheaper tier for medium and high, the next stronger for low). With
+      probability 1-E it keeps SPEC; with probability E it picks uniformly between the two.
       Prints the spec to use. Appends the decision to <plan>/tasks/<id>/route.jsonl (never
-      rewritten) and marks a changed pick in tasks/<id>/route.explored for the table.
+      rewritten) and marks a changed pick in tasks/<id>/route.explored for the table. A row
+      with no neighbour is not explored and records nothing.
 
-The propensity of the chosen spec is (1-E)*[chosen == SPEC] + E/len(candidates). Forge
-still never picks a model the user did not name. FORGE_ROUTE_EXPLORE_SEED makes the draws
-reproducible (tests only). Any failure prints SPEC: exploration never changes a plan by
-breaking.
+  forge-route.py escalation --plan P --task ID [--check]
+      The retry policy: after <plan>/escalate_after (default 3; 0 = off) failed attempts on
+      one spec, the next attempt goes to the next tier up of the user's pools instead of
+      repeating the same dispatch. Prints that spec when one is due. When none exists, writes
+      tasks/<id>/escalation.stop and split.suggested and exits 3. `--check` (run after every
+      attempt) also records a due escalation in escalation.next, and clears the markers once
+      the streak no longer holds.
+
+The propensity of the chosen spec is (1-E)*[chosen == SPEC] + E/2. Forge never picks a
+model the user did not name: both helpers read only the pools `plan` stored in
+fractal-routing.json, and "stronger" means only "in a higher tier of those pools" --
+registry.tsv has no cost or capability column to say more. FORGE_ROUTE_EXPLORE_SEED makes
+the draws reproducible (tests only). Any failure prints SPEC (explore) or nothing
+(escalation): neither ever changes a run by breaking.
 """
 from __future__ import annotations
 
@@ -30,6 +42,13 @@ import secrets
 import sys
 import time
 from pathlib import Path
+
+TIERS = ('low', 'medium', 'high')
+SCRIPTS = Path(__file__).resolve().parent
+REGISTRY = SCRIPTS.parent / 'registry.tsv'
+FAILED = ('FAIL', 'TIMEOUT')                       # a judgment against the spec that ran
+NEUTRAL = ('INFRA', 'UNKNOWN', 'ERROR', 'RUNNING', 'INTERRUPTED')   # say nothing about it
+DEFAULT_ESCALATE_AFTER = 3
 
 
 def rng_for(task: str):
@@ -55,11 +74,115 @@ def row_inputs(plan: Path, task: str) -> str:
     return hashlib.sha256(('%s\0%s' % (row, prompt)).encode()).hexdigest()[:16]
 
 
+# --- the user's ladder -------------------------------------------------------------
+
+def registry_models(path: Path = REGISTRY) -> dict:
+    """{alias: {harness: model id}} from registry.tsv; the first row of an alias is its default."""
+    out = {}
+    try:
+        lines = path.read_text().splitlines()
+    except OSError:
+        return out
+    for line in lines:
+        if not line.strip() or line.startswith('#'):
+            continue
+        cells = line.split('\t')
+        if len(cells) >= 3:
+            out.setdefault(cells[0], {}).setdefault(cells[1], cells[2])
+    return out
+
+
+def canonical(spec: str, registry: dict) -> str:
+    """The model a spec runs, so `sol` and `sol:xhigh` count as one model and `gpt-6.1-sol` too."""
+    parts = str(spec).split(':')
+    alias = parts[0]
+    harness = parts[2] if len(parts) > 2 else None
+    rows = registry.get(alias)
+    if not rows:
+        return alias                       # a literal model id is its own identity
+    if harness and harness in rows:
+        return rows[harness]
+    return next(iter(rows.values()))
+
+
+def load_pools(path) -> dict:
+    """{tier: [spec, ...]} for low/medium/high. `any` (plain --dwarf) has no rank, so it is left out."""
+    try:
+        data = json.loads(Path(path).read_text())
+    except (OSError, ValueError):
+        return {}
+    out = {}
+    for tier in TIERS:
+        specs = data.get(tier) if isinstance(data, dict) else None
+        if isinstance(specs, list):
+            specs = [str(s).strip() for s in specs if str(s).strip()]
+            if specs:
+                out[tier] = specs
+    return out
+
+
+def rank_of(spec: str, pools: dict, registry: dict):
+    """The highest tier whose pool runs this spec's model, or None when no pool does."""
+    model = canonical(spec, registry)
+    ranks = [i for i, tier in enumerate(TIERS) for s in pools.get(tier, ()) if canonical(s, registry) == model]
+    return max(ranks) if ranks else None
+
+
+def _aligned(spec: str, pool_of_spec: list, other: list, registry: dict):
+    """The spec in `other` at this spec's position in its own pool, else the first distinct one.
+
+    Users list one family per position (`--dwarf-low luna,haiku --dwarf-medium sol,sonnet`),
+    so position keeps a comparison within a family without forge guessing what a family is.
+    """
+    model = canonical(spec, registry)
+    distinct = [s for s in other if canonical(s, registry) != model]
+    if not distinct:
+        return None
+    try:
+        i = [canonical(s, registry) for s in pool_of_spec].index(model)
+    except ValueError:
+        return distinct[0]
+    pick = other[i % len(other)]
+    return pick if canonical(pick, registry) != model else distinct[0]
+
+
+def neighbour(spec: str, tier: str, pools: dict, registry: dict):
+    """The exploration alternative: the nearest cheaper tier for medium/high, the nearest stronger for low."""
+    if tier not in TIERS:
+        return None
+    i = TIERS.index(tier)
+    order = TIERS[i + 1:] if i == 0 else tuple(reversed(TIERS[:i]))
+    for other in order:
+        if pools.get(other):
+            pick = _aligned(spec, pools.get(tier) or [spec], pools[other], registry)
+            if pick:
+                return pick
+    return None
+
+
+def stronger(spec: str, pools: dict, registry: dict):
+    """The escalation target: a distinct model in the next tier up, or (None, why)."""
+    rank = rank_of(spec, pools, registry)
+    if rank is None:
+        return None, 'its model is in none of this plan\'s tier pools, so there is no configured escalation'
+    own = pools.get(TIERS[rank]) or [spec]
+    for tier in TIERS[rank + 1:]:
+        pick = _aligned(spec, own, pools.get(tier) or [], registry)
+        if pick:
+            return pick, None
+    return None, 'it is already in the highest tier of this plan\'s pools (%s)' % TIERS[rank]
+
+
+# --- exploration -------------------------------------------------------------------
+
 def explore(args) -> str:
     epsilon = float(args.epsilon)
-    candidates = list(dict.fromkeys(s.strip() for s in args.candidates.split(',') if s.strip()))
-    if not (0 < epsilon <= 1) or len(candidates) < 2 or args.default not in candidates:
+    if not 0 < epsilon <= 1:
         return args.default
+    alternative = neighbour(args.default, args.tier, load_pools(args.pools), registry_models())
+    if not alternative:
+        return args.default
+    candidates = [args.default, alternative]
     rng = rng_for(args.task)
     draw = rng.random()
     chosen = rng.choice(candidates) if draw < epsilon else args.default
@@ -81,18 +204,127 @@ def explore(args) -> str:
     return chosen
 
 
+# --- escalation --------------------------------------------------------------------
+
+def _dwarf_of(plan: Path, task: str) -> str:
+    for line in (plan / 'tasks.tsv').read_text().splitlines():
+        cells = line.split('\t')
+        if not line.startswith('#') and cells and cells[0] == task and len(cells) > 4:
+            return cells[4]
+    return ''
+
+
+def failed_streak(rows: list, current: str, registry: dict) -> int:
+    """Distinct trailing attempt numbers that failed on `current`'s model.
+
+    rows: (attempt, status, spec-or-None) oldest first. A row without a spec predates the
+    column and is taken as the current spec. Infra stops, missing verdicts and forge errors
+    judge nothing and are skipped; a pass, a merge or another model ends the streak.
+    """
+    model = canonical(current, registry)
+    seen = set()
+    for attempt, status, spec in reversed(rows):
+        if status in NEUTRAL:
+            continue
+        if spec and canonical(spec, registry) != model:
+            break
+        if status not in FAILED:
+            break
+        seen.add(attempt)
+    return len(seen)
+
+
+def attempt_rows(tdir: Path) -> list:
+    rows = []
+    try:
+        lines = (tdir / 'attempts.tsv').read_text().splitlines()
+    except OSError:
+        return rows
+    for line in lines:
+        cells = line.split('\t')
+        if len(cells) >= 3 and cells[1].isdigit():
+            rows.append((int(cells[1]), cells[2], cells[4] if len(cells) > 4 and cells[4] else None))
+    return rows
+
+
+def _setting(plan: Path) -> int:
+    try:
+        value = (plan / 'escalate_after').read_text().strip()
+        return int(value) if value else DEFAULT_ESCALATE_AFTER
+    except (OSError, ValueError):
+        return DEFAULT_ESCALATE_AFTER
+
+
+def _fractal(plan: Path) -> bool:
+    try:
+        return bool(json.loads((plan / 'fractal-selection.json').read_text()).get('enabled'))
+    except (OSError, ValueError, AttributeError):
+        return False
+
+
+def _clear(tdir: Path, *names) -> None:
+    for name in names or ('escalation.stop', 'split.suggested', 'escalation.next'):
+        try:
+            (tdir / name).unlink()
+        except OSError:
+            pass
+
+
+def escalation(args) -> int:
+    plan = Path(args.plan)
+    tdir = plan / 'tasks' / args.task
+    after = _setting(plan)
+    # Fractal plans freeze their eligible set at selection; a QA-only resume spends no dwarf
+    # attempt, so neither is a moment to change the implementer.
+    if after <= 0 or _fractal(plan) or (tdir / 'resume').exists():
+        if after <= 0:
+            _clear(tdir)
+        return 0
+    current = _dwarf_of(plan, args.task)
+    if not current or current in ('-', 'UNASSIGNED'):
+        return 0
+    registry = registry_models()
+    streak = failed_streak(attempt_rows(tdir), current, registry)
+    if streak < after:
+        _clear(tdir)
+        return 0
+    target, why = stronger(current, load_pools(plan / 'fractal-routing.json'), registry)
+    if target:
+        _clear(tdir, 'escalation.stop', 'split.suggested')
+        if args.check:
+            (tdir / 'escalation.next').write_text(target + '\n')
+        print(target)
+        return 0
+    _clear(tdir, 'escalation.next')
+    (tdir / 'escalation.stop').write_text('%d\t%s\n' % (streak, current))
+    (tdir / 'split.suggested').write_text(
+        '%s failed %d attempts on %s, and %s. Another attempt on the same model rarely passes, '
+        'so split the task into smaller ones, or retry it with an explicit --dwarf <spec>.\n'
+        % (args.task, streak, current, why))
+    return 3
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog='forge-route.py')
     sub = ap.add_subparsers(dest='command', required=True)
     p = sub.add_parser('explore')
-    for name in ('plan', 'task', 'tier', 'epsilon', 'default', 'candidates'):
+    for name in ('plan', 'task', 'tier', 'epsilon', 'default', 'pools'):
         p.add_argument('--' + name, required=True)
+    p = sub.add_parser('escalation')
+    p.add_argument('--plan', required=True)
+    p.add_argument('--task', required=True)
+    p.add_argument('--check', action='store_true')
     args = ap.parse_args(argv)
+    if args.command == 'explore':
+        try:
+            print(explore(args))
+        except Exception:
+            print(args.default)
+        return 0
     try:
-        print(explore(args))
+        return escalation(args)
     except Exception:
-        print(args.default)
-    return 0
+        return 0
 
 
 if __name__ == '__main__':

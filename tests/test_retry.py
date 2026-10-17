@@ -101,6 +101,70 @@ class RetryTests(unittest.TestCase):
         self.assertEqual(self.calls().count('dwarf'), 2)
         self.assertEqual(self.text(p, 'tasks/a/attempt'), '2')
 
+    # --- escalation policy -----------------------------------------------------------
+    def pooled_plan(self, *pools):
+        """One low task on sol, planned with the given tier pools (the escalation ladder)."""
+        p = self.root / 'plan'; p.mkdir()
+        (p / 'tasks.tsv').write_text('a\t-\tlow\ta.txt\tsol\topus\tA\n')
+        (p / 'tasks' / 'a').mkdir(parents=True)
+        (p / 'tasks' / 'a' / 'prompt.md').write_text('Implement change. REQUIREMENT_SENTINEL TASK_a')
+        r = self.run_script('forge-parallel.sh', 'plan', p, '--repo', self.repo, '--no-memory', *pools)
+        self.assertEqual(r.returncode, 0, r.stdout)
+        return p
+
+    def three_failures(self, then=None):
+        # Each attempt writes something new, so no retry is the byte-identical kind.
+        table = {'a.qa.%d' % n: {'verdict': 'FAIL', 'findings': '- [P1][CONFIRMED] a.txt:1 — still broken'}
+                 for n in (1, 2, 3)}
+        table.update({'a.dwarf.%d' % n: {'content': 'try %d' % n} for n in (1, 2, 3, 4, 5)})
+        table.update(then or {})
+        self.scenario(table)
+
+    def spent_on(self, p):
+        return [(r[1], r[2], r[4]) for r in (line.split('\t') for line in
+                                             (p / 'tasks/a/attempts.tsv').read_text().splitlines())]
+
+    def test_the_fourth_attempt_after_three_failures_goes_a_tier_up(self):
+        p = self.pooled_plan('--dwarf-low', 'sol', '--dwarf-high', 'astra')
+        self.three_failures()
+        r = self.run_script('forge-parallel.sh', 'run', p, '--retry-failed', 3)
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertEqual(self.spent_on(p), [('1', 'FAIL', 'sol'), ('2', 'FAIL', 'sol'), ('3', 'FAIL', 'sol'),
+                                            ('4', 'PASS', 'astra')])
+        self.assertIn('model=gpt-6-astra', (p / 'tasks/a/dwarf.resolved').read_text())
+        self.assertEqual((p / 'tasks/a/escalations.tsv').read_text().split('\t')[1:], ['3', 'sol', 'astra\n'])
+        self.assertIn('escalating from sol to astra', r.stdout)
+
+    def test_with_no_stronger_model_the_task_stops_with_a_split_suggestion(self):
+        p = self.pooled_plan('--dwarf-low', 'sol')
+        self.three_failures()
+        r = self.run_script('forge-parallel.sh', 'run', p, '--retry-failed', 5)
+        self.assertEqual(r.returncode, 5, r.stdout)
+        self.assertEqual(self.calls().count('dwarf'), 3)          # budget left, but no fourth sol attempt
+        self.assertIn('already in the highest tier', (p / 'tasks/a/split.suggested').read_text())
+        self.assertIn('split suggested', r.stdout)
+        # A plain retry is refused the same way; naming a model is the human's call.
+        r = self.run_script('forge-parallel.sh', 'retry', p, 'a')
+        self.assertEqual((r.returncode, self.calls().count('dwarf')), (2, 3), r.stdout)
+        r = self.run_script('forge-parallel.sh', 'retry', p, 'a', '--dwarf', 'sol')
+        self.assertEqual((r.returncode, self.calls().count('dwarf')), (0, 4), r.stdout)
+        self.assertFalse((p / 'tasks/a/escalations.tsv').exists())   # the same model is no escalation
+
+    def test_a_spent_budget_still_reports_the_escalation_due(self):
+        p = self.pooled_plan('--dwarf-low', 'sol', '--dwarf-high', 'astra')
+        self.three_failures()
+        r = self.run_script('forge-parallel.sh', 'run', p, '--retry-failed', 2)
+        self.assertEqual(r.returncode, 5, r.stdout)
+        self.assertIn('its next retry goes to astra', r.stdout)
+
+    def test_escalate_after_zero_keeps_retrying_the_same_model(self):
+        p = self.pooled_plan('--dwarf-low', 'sol', '--dwarf-high', 'astra')
+        self.three_failures()
+        r = self.run_script('forge-parallel.sh', 'run', p, '--retry-failed', 3, '--escalate-after', 0)
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertEqual([spec for _, _, spec in self.spent_on(p)], ['sol'] * 4)
+        self.assertFalse((p / 'tasks/a/escalations.tsv').exists())
+
     # --- attempt log -----------------------------------------------------------------
     def test_every_entry_is_logged_for_audit(self):
         p = self.plan_of([('a', '-', 'a.txt')])
@@ -160,7 +224,7 @@ class RetryTests(unittest.TestCase):
     def test_bad_values_are_usage_errors(self):
         p = self.plan_of([('a', '-', 'a.txt')])
         for flag, value in [('--retry-failed', 'x'), ('--infra-retries', '-1'), ('--timeout', 'soon'),
-                            ('--qa-threshold', 'P9'), ('--verify-retries', '')]:
+                            ('--qa-threshold', 'P9'), ('--verify-retries', ''), ('--escalate-after', 'x')]:
             r = self.run_script('forge-parallel.sh', 'run', p, flag, value)
             self.assertEqual(r.returncode, 2, (flag, r.stdout))
 

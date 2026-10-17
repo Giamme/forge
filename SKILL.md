@@ -1,7 +1,7 @@
 ---
 name: forge
 description: Dispatch implementation and independent diff review to user-selected models through local agent CLIs. Use for /forge or explicit requests to delegate coding or review; explanation-only questions do not authorize dispatch.
-argument-hint: '"<goal>" --dwarf <alias>[:effort[:harness]] [--qa <alias>] [--planner <alias>] [--yolo-dwarf] [--yolo-qa] [--decompose-level low|medium|high] [--fractal|--no-fractal|--fractal-auto-decompose] [--fractal-planner <spec>] [--jev|--no-jev] [--jev-act] [--jev-shadow] [--no-memory] [--no-ripwire] [--timeout <seconds>] [--retry-failed <n>] [--qa-threshold P0|P1|P2|P3] [--shadow-qa <spec>[,<spec>]] [--shadow-rate <0..1>] [--explore <0..0.5>]'
+argument-hint: '"<goal>" --dwarf <alias>[:effort[:harness]] [--qa <alias>] [--planner <alias>] [--yolo-dwarf] [--yolo-qa] [--decompose-level low|medium|high] [--fractal|--no-fractal|--fractal-auto-decompose] [--fractal-planner <spec>] [--jev|--no-jev] [--jev-act] [--jev-shadow] [--no-memory] [--no-ripwire] [--timeout <seconds>] [--retry-failed <n>] [--escalate-after <n>] [--qa-threshold P0|P1|P2|P3] [--shadow-qa <spec>[,<spec>]] [--shadow-rate <0..1>] [--explore <0..0.5>]'
 allowed-tools: [Bash, Read]
 ---
 
@@ -35,10 +35,15 @@ For explanation requests, explain the workflow without spending model quota.
   separate authorization and `integrate --approved`. Never push automatically.
 - Show the decomposed task/model table and wait for approval before dispatch. Retry only
   when requested; preserve failed task branches and worktrees. `run --retry-failed N`,
-  `--infra-retries M`, `--qa-threshold Pn`, `plan --shadow-qa` (a second review of a
-  sampled share of attempts, never read, to measure reviewer agreement) and `plan --explore
-  E` (now and then another of the user's pool models, with the odds recorded) are opt-in:
-  offer them, never add them unprompted. `accept` overrides a reviewer, so run it (with the user's `--reason` and
+  `--infra-retries M`, `--qa-threshold Pn` and `plan --shadow-qa` (a second review of a
+  sampled share of attempts, never read, to measure reviewer agreement) are opt-in: offer
+  them, never add them unprompted. `plan` explores by default (`--explore 0.2`: now and then
+  a row left to forge gets its neighbouring tier's model from the user's pools, odds
+  recorded for `forge dataset routing`); say so with the table and pass `--explore 0` when
+  the user declines. Retries follow a policy: after three failed attempts on one model the
+  next goes a tier up in the user's pools, or the task stops with a split suggestion
+  (`--escalate-after N`, `0` = off); an explicit `retry --dwarf` overrides it. `accept`
+  overrides a reviewer, so run it (with the user's `--reason` and
   `--approved`) only on the user's explicit instruction; never self-accept.
 - Exit `8` / status `INFRA` is a quota, auth or network stop, not a task failure and no
   attempt was spent: report it, say what to fix, and re-run only when told. For a multi-task
@@ -60,7 +65,9 @@ For explanation requests, explain the workflow without spending model quota.
    low|medium|high`, read [decomposition](references/decompose.md), prepare the task table,
    obtain approval, then use `forge-parallel.sh plan/run`. Write the user's request verbatim
    to `request.md` in the run or plan dir, and pass `--decompose-level` to `plan` with the
-   level you actually split at, even when the user named none.
+   level you actually split at, even when the user named none. Keep each task small and end
+   its `prompt.md` with an `## Acceptance criteria` section of checks the reviewer can verify;
+   `plan` names tasks over 7K characters or 9 files, where first attempts mostly fail review.
    Pass the recorded Fractal choice and requested limits to the execution runner; tier
    pools go to solo directly or decomposed `plan`. Fractal does not replace planner dispatch.
    `--timeout` applies to decomposed runs too (kept in the plan).

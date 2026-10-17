@@ -30,10 +30,11 @@
 #                           by a listed reviewer of another model family, recorded and
 #                           never read (measures reviewer agreement). `none` turns it off
 #   --shadow-rate R         that share, 0..1 (default 0.1)
-#   --explore E             opt-in: a row left to forge gets, with probability E (0..0.5),
-#                           a uniform pick among the specs given to this plan instead of
-#                           its pool's turn; each decision and its odds go to
-#                           tasks/<id>/route.jsonl (or FORGE_ROUTE_EXPLORE=E)
+#   --explore E             on by default at 0.2 (0 turns it off, and is kept): a row left
+#                           to forge gets, with probability E/2, its neighbouring model
+#                           (one tier away in the given pools) instead of its pool's turn;
+#                           each decision and its odds go to tasks/<id>/route.jsonl
+#                           (precedence: flag, this plan's earlier choice, FORGE_ROUTE_EXPLORE)
 #
 # Opt-in run behaviour (all off unless asked):
 #   --retry-failed N        re-queue a task whose reviewer said FAIL up to N more times,
@@ -127,7 +128,7 @@ pool_pick() { # pool_pick <comma-list> <index>
 do_plan() {
   local PLAN="${1:?plan needs a plan dir}"; shift
   local REPO="" D_ANY="" D_HI="" D_MD="" D_LO="" Q_ANY="" Q_HI="" Q_MD="" Q_LO=""
-  local PLANNER="" NOMEM=0 jev_rc=0 DLEVEL="" SHADOW_QA="" SHADOW_RATE="" EXPLORE="${FORGE_ROUTE_EXPLORE:-}"
+  local PLANNER="" NOMEM=0 jev_rc=0 DLEVEL="" SHADOW_QA="" SHADOW_RATE="" EXPLORE=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --repo)         REPO="${2:?}"; shift 2 ;;
@@ -186,12 +187,19 @@ do_plan() {
   [ -z "$SHADOW_RATE" ] || [ "$SHADOW_QA" = none ] || [ "$SHADOW_QA" = off ] \
     || printf '%s\n' "$SHADOW_RATE" > "$PLAN/shadow_rate"
   # Exploration is decided here and only here, so the table and preflight see what will run.
-  if [ -n "$EXPLORE" ]; then
-    awk -v v="$EXPLORE" 'BEGIN { exit !(v ~ /^(0|0?\.[0-9]+)$/ && v + 0 <= 0.5) }' \
-      || die "--explore (or FORGE_ROUTE_EXPLORE) needs a share between 0 and 0.5"
-    awk -v v="$EXPLORE" 'BEGIN { exit !(v + 0 == 0) }' && EXPLORE=""
+  # On by default: choosing models from measured pass rates needs some randomized picks, and
+  # history had almost none (9 tasks ever ran on more than one spec). The flag wins, then
+  # this plan's earlier choice, then FORGE_ROUTE_EXPLORE, then 0.2. A 0 is written down too,
+  # so a later re-plan never quietly turns exploration back on.
+  if [ -z "$EXPLORE" ]; then
+    if [ -f "$PLAN/explore" ]; then EXPLORE="$(cat "$PLAN/explore")"
+    elif [ -n "${FORGE_ROUTE_EXPLORE:-}" ]; then EXPLORE="$FORGE_ROUTE_EXPLORE"
+    else EXPLORE=0.2; fi
   fi
-  if [ -n "$EXPLORE" ]; then printf '%s\n' "$EXPLORE" > "$PLAN/explore"; else rm -f "$PLAN/explore"; fi
+  awk -v v="$EXPLORE" 'BEGIN { exit !(v ~ /^(0|0?\.[0-9]+)$/ && v + 0 <= 0.5) }' \
+    || die "--explore (or FORGE_ROUTE_EXPLORE) needs a share between 0 and 0.5"
+  printf '%s\n' "$EXPLORE" > "$PLAN/explore"
+  if awk -v v="$EXPLORE" 'BEGIN { exit !(v + 0 == 0) }'; then EXPLORE=""; fi
 
   # repo: from flag on first plan, remembered afterwards
   if [ -n "$REPO" ]; then
@@ -324,13 +332,13 @@ EOF
         if [ -n "$D_ANY" ]; then dw="$(pool_pick "$D_ANY" "$an_i")"; an_i=$((an_i+1));
         else dw="UNASSIGNED"; unassigned=$((unassigned+1)); fi
       fi
-      # Opt-in (--explore): now and then another of the specs given to this plan, with the
-      # odds recorded, so later analysis can compare models on tasks they were not routed
-      # to by design. The pool's turn above was still taken, so other rows are unchanged.
+      # Exploration (--explore): now and then the neighbouring tier's model instead, with the
+      # odds recorded, so `forge dataset routing` can compare two models on tasks neither was
+      # routed to by design. The pool's turn above was still taken, so other rows are unchanged.
       if [ -n "$EXPLORE" ] && [ "$dw" != UNASSIGNED ]; then
         local explored
         explored="$(python3 "$SKILL_DIR/scripts/forge-route.py" explore --plan "$PLAN" --task "$id" \
-          --tier "$diff" --epsilon "$EXPLORE" --default "$dw" --candidates "$D_ANY,$D_LO,$D_MD,$D_HI" 2>/dev/null)"
+          --tier "$diff" --epsilon "$EXPLORE" --default "$dw" --pools "$PLAN/fractal-routing.json" 2>/dev/null)"
         [ -z "$explored" ] || dw="$explored"
       fi
     fi
@@ -497,6 +505,13 @@ render_table() {
     echo "  to pin another model, put its spec in the dwarf column of tasks.tsv and re-plan"
     echo
   fi
+  local explore; explore="$(cat "$PLAN/explore" 2>/dev/null)"
+  if [ -n "$explore" ] && awk -v v="$explore" 'BEGIN { exit !(v + 0 > 0) }'; then
+    echo "exploration on (--explore $explore): a row left to forge gets its neighbouring tier's model with"
+    echo "  probability $(awk -v v="$explore" 'BEGIN { print v / 2 }'), odds logged for \`forge dataset routing\`; --explore 0 turns it off for this plan"
+    echo
+  fi
+  report_size "$PLAN"
   if [ -s "$PLAN/deferrals.txt" ]; then
     echo "deferrals (serialized to protect the merge):"
     sed 's/^/  /' "$PLAN/deferrals.txt"
@@ -1029,6 +1044,9 @@ do_task() {
   local rc
   do_task_body "$@"; rc=$?
   record_attempt "$1" "$2"
+  # The retry policy's state (escalation.next or escalation.stop), decided now rather than
+  # at the next retry so a spent retry budget still reports it and the scheduler sees it.
+  python3 "$SKILL_DIR/scripts/forge-route.py" escalation --plan "$1" --task "$2" --check >/dev/null 2>&1 || true
   return $rc
 }
 
@@ -1119,7 +1137,15 @@ do_retry() {
 
   # Findings carry-forward, the optional --dwarf escalation and the QA-only resume
   # decision are shared with the scheduler's automatic retries.
-  prepare_retry "$PLAN" "$id" "$NEWDWARF"
+  # A refusal (the retry policy found no stronger model, or the escalation could not be
+  # written) must stop here: past this point the status is cleared and a dwarf dispatched.
+  local prc=0
+  prepare_retry "$PLAN" "$id" "$NEWDWARF" || prc=$?
+  if [ "$prc" != 0 ]; then
+    write_results "$PLAN"
+    [ "$prc" = 3 ] && return 2
+    return "$prc"
+  fi
   [ "${FORGE_RIPWIRE:-}" != off ] || touch "$PLAN/no_ripwire"
   dependencies_ready "$PLAN" "$id" || { write_results "$PLAN"; return 5; }
   [ ! -f "$PLAN/no_ripwire" ] || export FORGE_RIPWIRE=off
