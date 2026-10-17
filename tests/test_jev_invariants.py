@@ -5,7 +5,6 @@ end-to-end and shell-level: the properties are about what the runner writes to d
 exits with, and a mock cannot prove those.
 """
 import dataset_isolation  # noqa: F401  keeps the run dataset out of the developer's store
-import json
 import os
 import subprocess
 import sys
@@ -54,34 +53,9 @@ class PlanInvariantCase(unittest.TestCase):
              '--repo', str(self.repo), *args],
             capture_output=True, text=True, env=environment)
 
-    def _calibrate(self, tier='low'):
-        forge = self.repo / '.forge'
-        forge.mkdir(exist_ok=True)
-        (forge / 'jev-routing-calibration.json').write_text(json.dumps(
-            dict(calibrated=True, tiers={tier: dict(n=40, threshold=0.7, pass_rate=0.95)})))
-
 
 class InvariantOneTests(PlanInvariantCase):
-    """Forge never picks a model. A Jev tier is still only a tier."""
-
-    def test_a_jev_written_tier_with_no_pool_is_unassigned_and_exits_2(self):
-        # The danger the invariant guards: Jev moves a task to a tier the user supplied
-        # no pool for, and forge quietly falls back to some model to keep going.
-        self._calibrate('low')
-        plan = self._plan([f'd1{TAB}-{TAB}high{TAB}src/a.py{TAB}-{TAB}-{TAB}'
-                           'Fix a spelling mistake in a comment'])
-        result = self._run(plan, '--dwarf-high', 'sol', '--qa', 'opus',
-                           env=dict(FORGE_JEV_ACT='on'))
-        rows = (plan / 'tasks.tsv').read_text().splitlines()[1:]
-        dwarf = rows[0].split('\t')[4]
-        if rows[0].split('\t')[2] == 'low':
-            # Jev acted, so the invariant is the thing under test.
-            self.assertEqual(dwarf, 'UNASSIGNED')
-            self.assertEqual(result.returncode, 2)
-            self.assertIn('will not pick a model', result.stdout + result.stderr)
-        else:
-            # Jev declined to act; the row must be untouched either way.
-            self.assertNotEqual(dwarf, '')
+    """Jev never changes a task's tier: it suggests one, and the plan keeps the declared one."""
 
     def test_jev_off_leaves_the_difficulty_column_byte_identical(self):
         rows = [f'a1{TAB}-{TAB}low{TAB}src/a.py{TAB}-{TAB}-{TAB}Edit a',
@@ -94,16 +68,6 @@ class InvariantOneTests(PlanInvariantCase):
         after = [line.split('\t')[2] for line in
                  (plan / 'tasks.tsv').read_text().splitlines()[1:]]
         self.assertEqual(before, after)
-
-    def test_advisory_mode_does_not_write_the_difficulty_column(self):
-        # No calibration exists, so --jev-act must still be inert.
-        rows = [f'a1{TAB}-{TAB}high{TAB}src/a.py{TAB}-{TAB}-{TAB}'
-                'Fix a spelling mistake in a comment']
-        plan = self._plan(rows)
-        self._run(plan, '--dwarf-low', 'luna', '--dwarf-high', 'sol', '--qa', 'opus',
-                  env=dict(FORGE_JEV_ACT='on'))
-        after = (plan / 'tasks.tsv').read_text().splitlines()[1]
-        self.assertEqual(after.split('\t')[2], 'high')
 
 
 class InvariantThreeTests(unittest.TestCase):
@@ -218,60 +182,15 @@ class SecretHygieneTests(unittest.TestCase):
             self.assertIn('"key_present": true', result.stdout)
 
 
-if __name__ == '__main__':
-    unittest.main()
-
-
-class FractalRerateTests(unittest.TestCase):
-    """Child re-rating may move a child between authorized pools, nothing more."""
+class FractalEligibleTests(unittest.TestCase):
+    """A Fractal child's model always comes from the run's frozen eligible pool."""
 
     SOURCE = (ROOT / 'scripts' / 'forge_fractal' / 'execution.py').read_text()
-
-    def test_rerating_happens_outside_the_guard(self):
-        # admit holds a lock the whole tree contends for; a network call under it would
-        # stall every sibling.
-        admit = self.SOURCE[self.SOURCE.index('    def admit(self'):]
-        admit = admit[:admit.index('with self.guard:')]
-        self.assertIn('self._rerate(', admit)
 
     def test_the_frozen_eligible_check_is_untouched(self):
         self.assertIn("if model not in self.config['eligible']:", self.SOURCE)
         self.assertIn("raise ValueError('Model not in frozen eligible pool')", self.SOURCE)
 
-    def test_a_malformed_difficulty_is_rejected_before_any_correction(self):
-        body = self.SOURCE[self.SOURCE.index("difficulty = request['difficulty']"):]
-        body = body[:body.index('paths = [')]
-        validate = body.index("raise ValueError('Invalid child difficulty')")
-        correct = body.index('rerated.get(')
-        self.assertLess(validate, correct,
-                        'a bad difficulty must be rejected, not silently replaced')
 
-    def test_rerate_returns_empty_rather_than_raising(self):
-        from forge_fractal import execution
-        tree = execution.Tree.__new__(execution.Tree)
-        tree.request = {}
-        self.assertEqual(tree._rerate({'goal': 'g'}, [{'id': 'c1'}]), {})
-
-
-class SpecParseTests(unittest.TestCase):
-    """NL -> flags maps onto aliases the user already has; it never invents one."""
-
-    def test_aliases_come_from_the_registry_with_their_model_ids(self):
-        from forge_jev import spec
-        catalogue = spec.aliases(ROOT)
-        self.assertIn('opus', catalogue)
-        # Bare alias names are opaque; the model id is what makes the question
-        # answerable at all. Measured: with names only, every tier returned 'none'.
-        self.assertTrue(any('opus' in model for model in catalogue['opus']))
-
-    def test_flags_are_rendered_in_tier_order(self):
-        from forge_jev import spec
-        flags = spec.as_flags(dict(high=dict(alias='opus'), low=dict(alias='haiku')))
-        self.assertEqual(flags, '--dwarf-low haiku --dwarf-high opus')
-
-    def test_an_empty_sentence_asks_nothing(self):
-        from unittest.mock import patch
-        from forge_jev import spec
-        with patch('forge_jev.spec.ask') as mocked:
-            self.assertIsNone(spec.parse('   ', skill_dir=ROOT))
-        mocked.assert_not_called()
+if __name__ == '__main__':
+    unittest.main()

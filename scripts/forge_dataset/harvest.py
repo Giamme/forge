@@ -611,6 +611,7 @@ def plan_event(plan: Path, prov: dict, src: str = 'live', inventory: bool = True
         tdir = plan / 'tasks' / tid
         routing = read_json(tdir / 'jev.json')
         declared_tier = (declared or {}).get(tid, {}).get('difficulty') or (routing or {}).get('declared')
+        # Only an imported plan from before 2026-10-17 can match: Jev no longer rewrites a tier.
         if declared_tier and declared_tier != row.get('difficulty') and routing and routing.get('may_act'):
             source = 'jev-act'
         elif (plan / 'planner').exists() and list(plan.glob('attempts/planner-*')):

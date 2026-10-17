@@ -167,7 +167,7 @@ under `censored` in `manifest.json`:
 A later success is never labeled as the first attempt's.
 
 Decisions with no outcome to label them are left out rather than labeled by opinion.
-These are QA effort sizing, the five routing rubrics, failure triage, and coupling, since
+These are QA effort sizing (recorded until 2026-10-17), the five routing rubrics, failure triage, and coupling, since
 no merge has conflicted yet.
 
 Routing cases of tasks routed with `plan --explore` add `route` to their metadata: the

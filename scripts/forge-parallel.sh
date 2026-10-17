@@ -234,10 +234,10 @@ PY
   fi
 
   # --- jev: advisory difficulty scoring ------------------------------------------
-  # Runs BEFORE the resolution loop on purpose. When a judgment is acted on it rewrites
-  # the `difficulty` column and nothing else, so the tier then resolves through the
-  # existing pool logic untouched — forge still never picks a model, it picks a tier the
-  # user already supplied a pool for, and a tier with no pool still lands on UNASSIGNED.
+  # Advisory only: a suggested tier, and gate warnings about the task text. Writing a Jev
+  # tier into the difficulty column (`--jev-act`, gated on a per-repo calibration) was
+  # removed on 2026-10-17 without ever having acted; models are chosen from measured pass
+  # rates instead (plan --explore, `forge dataset routing`).
   local jev_loaded=0
   if [ -f "$SKILL_DIR/scripts/forge-jev-options.sh" ]; then
     source "$SKILL_DIR/scripts/forge-jev-options.sh" 2>/dev/null && jev_loaded=1
@@ -248,34 +248,20 @@ PY
       --plan "$PLAN" --repo "$REPO" 2>/dev/null)"
     jev_rc=$?
     if [ "$jev_rc" -eq 0 ] && [ -n "$jev_scores" ]; then
-      # Shadow mode accrues the judgment and changes nothing — not the table, not a
-      # single dispatch. That is the whole contract: it is how routing earns the
-      # outcome data it needs before it is ever allowed to decide anything.
+      # Shadow mode records the judgment and prints nothing per task.
       if [ "${FORGE_JEV_SHADOW:-}" = on ]; then
         note "jev: scored $(printf '%s\n' "$jev_scores" | grep -c . ) task(s) in shadow mode (no change)"
       else
-        local jid jtier jconf jcomp jesc jact jdecl jwarn jdrift jtmp applied=0
-        while IFS="$(printf '\t')" read -r jid jtier jconf jcomp jesc jact jdecl jwarn jdrift; do
+        local jid jtier jconf jcomp jesc jdecl jwarn jdrift
+        # The columns score-plan prints: id, tier, confidence, composite, escalated,
+        # declared, warnings, drift. Read in lockstep with cmd_score_plan.
+        while IFS="$(printf '\t')" read -r jid jtier jconf jcomp jesc jdecl jwarn jdrift; do
           [ -n "$jid" ] || continue
-          if [ "${FORGE_JEV_ACT:-}" = on ] && [ "$jact" = 1 ] && [ "$jtier" != "$jdecl" ]; then
-            # Rewrite this row's difficulty column only. awk over the whole file each
-            # time is fine at plan scale and avoids a partial-write window.
-            jtmp="$PLAN/.tasks.tsv.jev"
-            if awk -F'\t' -v OFS='\t' -v id="$jid" -v tier="$jtier" \
-                 '$1==id && $0 !~ /^#/ {$3=tier} {print}' "$T" > "$jtmp" 2>/dev/null; then
-              mv "$jtmp" "$T"
-              note "jev: $jid difficulty $jdecl -> $jtier (confidence $jconf, applied)"
-              applied=$((applied+1))
-            else
-              rm -f "$jtmp" 2>/dev/null || true
-            fi
-          else
-            # score-plan writes "-" for "not escalated"; only a real reason is worth showing.
-            [ "$jesc" = "-" ] && jesc=""
-            note "jev: $jid suggests $jtier (confidence $jconf${jesc:+, escalated: $jesc}) — declared $jdecl"
-          fi
-          # Gates are warnings in both modes, including when the tier was applied: they
-          # are about the task text and its declared files, not about which model runs it.
+          # score-plan writes "-" for "not escalated"; only a real reason is worth showing.
+          [ "$jesc" = "-" ] && jesc=""
+          note "jev: $jid suggests $jtier (confidence $jconf${jesc:+, escalated: $jesc}) — declared $jdecl"
+          # Gates are warnings: they are about the task text and its declared files, not
+          # about which model runs it.
           if [ -n "$jwarn" ] && [ "$jwarn" != "-" ]; then
             case "$jwarn" in
               *prompt_adequacy*) note "jev: $jid — the prompt may be too vague for QA to judge correctness against" ;;
@@ -291,7 +277,6 @@ PY
         done <<EOF
 $jev_scores
 EOF
-        [ "$applied" -gt 0 ] && note "jev: applied $applied difficulty change(s); the table below shows the result"
       fi
     fi
   fi
@@ -928,27 +913,6 @@ do_task_body() (
     echo; /bin/bash "$MEMORY" note qa
     echo "Place any learning notes before the final FORGE_VERDICT: PASS or FORGE_VERDICT: FAIL line."
   } > "$tdir/qa.input"
-  # Size the review before it runs, so the number is visible while it still means
-  # something. Advisory only: forge dispatches QA at the effort the user specified.
-  # Sizing a review DOWN is the one decision that must not rest on an uncalibrated
-  # threshold, because its failure mode is a bug a cheaper review missed and nobody
-  # ever learns about.
-  if [ "$jev_loaded_qa" = 1 ] && forge_jev_active gates; then
-    local qa_effort qa_effort_rc
-    qa_effort="$(python3 "$SKILL_DIR/scripts/forge-jev.py" qa-effort \
-        --diff "$tdir/changes.diff" --task "$tdir/prompt.md" --run-dir "$tdir" 2>/dev/null)"
-    # Captured, not read inline. `[ $? -eq 0 ]` is correct only while nothing sits
-    # between it and the assignment, which is a property of the next edit, not this one.
-    qa_effort_rc=$?
-    if [ "$qa_effort_rc" -eq 0 ] && [ -n "$qa_effort" ]; then
-      # The confidence goes in the line. Measured on a real run, this rubric returned
-      # high/0.27, high/0.23, xhigh/0.63 and medium/0.59 -- a bare recommendation at
-      # 0.23 is a coin flip presented as an opinion, and the routing line next to it
-      # has always shown its own. A reader cannot discount a number they cannot see.
-      note "$id: jev sizes this review at effort $(printf '%s' "$qa_effort" | cut -f1) (confidence $(printf '%s' "$qa_effort" | cut -f2); advisory; qa runs as configured)"
-      printf '%s' "$qa_effort" > "$tdir/qa.effort.jev"
-    fi
-  fi
   # Opt-in (plan --shadow-qa): a second, independent review of this same diff, to measure
   # how often two reviewers agree. It reviews its own snapshot from its own dir under
   # $PLAN/shadow/, and nothing in this script ever reads its result.

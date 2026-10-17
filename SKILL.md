@@ -1,7 +1,7 @@
 ---
 name: forge
 description: Dispatch implementation and independent diff review to user-selected models through local agent CLIs. Use for /forge or explicit requests to delegate coding or review; explanation-only questions do not authorize dispatch.
-argument-hint: '"<goal>" --dwarf <alias>[:effort[:harness]] [--qa <alias>] [--planner <alias>] [--yolo-dwarf] [--yolo-qa] [--decompose-level low|medium|high] [--fractal|--no-fractal|--fractal-auto-decompose] [--fractal-planner <spec>] [--jev|--no-jev] [--jev-act] [--jev-shadow] [--no-memory] [--no-ripwire] [--timeout <seconds>] [--retry-failed <n>] [--escalate-after <n>] [--qa-threshold P0|P1|P2|P3] [--shadow-qa <spec>[,<spec>]] [--shadow-rate <0..1>] [--explore <0..0.5>]'
+argument-hint: '"<goal>" --dwarf <alias>[:effort[:harness]] [--qa <alias>] [--planner <alias>] [--yolo-dwarf] [--yolo-qa] [--decompose-level low|medium|high] [--fractal|--no-fractal|--fractal-auto-decompose] [--fractal-planner <spec>] [--jev|--no-jev] [--jev-shadow] [--no-memory] [--no-ripwire] [--timeout <seconds>] [--retry-failed <n>] [--escalate-after <n>] [--qa-threshold P0|P1|P2|P3] [--shadow-qa <spec>[,<spec>]] [--shadow-rate <0..1>] [--explore <0..0.5>]'
 allowed-tools: [Bash, Read]
 ---
 
@@ -49,9 +49,10 @@ For explanation requests, explain the workflow without spending model quota.
   attempt was spent: report it, say what to fix, and re-run only when told. For a multi-task
   plan, offer the opt-in whole-run review (`review`, or `integrate --final-review <qa-spec>`);
   it spends QA quota, so never run it unprompted.
-- Jev is optional, off unless configured and enabled, and advisory unless `--jev-act`.
-  It never selects a model the user did not authorize and never substitutes for QA
-  acceptance or repository verification. Read [Jev](references/jev.md) when selected.
+- Jev is optional, off unless configured and enabled, and always advisory: it never
+  changes a task's tier, never selects a model, and never substitutes for QA acceptance
+  or repository verification (`--jev-act` is still accepted and changes nothing). Read
+  [Jev](references/jev.md) when selected.
 
 ## Common workflow
 

@@ -12,7 +12,7 @@ SCRIPTS = Path(__file__).resolve().parents[1]
 ENDPOINT = 'https://api.typesafe.ai/v1/systemone'
 MODEL = 'jev-latest'
 CAPABILITIES = ('routing', 'tests', 'gates', 'memory')
-DEFAULT_THRESHOLDS = dict(routing_act=0.85, tests_act=0.70, flake_act=0.90,
+DEFAULT_THRESHOLDS = dict(tests_act=0.70, flake_act=0.90,
                           gate_warn=0.60,
                           # Measured twice. The first 15 prompts were hand-written and
                           # scored with only a task TITLE in state, because prompt.md did
@@ -91,9 +91,6 @@ DEFAULT_THRESHOLDS = dict(routing_act=0.85, tests_act=0.70, flake_act=0.90,
                           # rests on a single positive example. A second plan could move
                           # the positive class; it is unlikely to move it 0.38.
                           forward_warn=0.50,
-                          # The pass rate a tier must be shown to hold, with 95%
-                          # confidence, before routing may act on it.
-                          calibrate_floor=0.80,
                           # Two rubrics, and they were measured separately because a
                           # shared name is not a shared scale. The measurement then said
                           # the scales ARE close -- a correct judgment scores 0.91+ on
@@ -135,10 +132,10 @@ CLOUDFLARE_TOKEN_FILE = 'cloudflare.env'
 # not ready even when its capability is on. clef-* sites exist only on Cloudflare: they
 # ask rubrics TypeSafe was never measured on, and record silently.
 SITE_CAPABILITY = {
-    'jev-score-plan': 'routing', 'jev-parse-spec': 'routing',
+    'jev-score-plan': 'routing',
     'clef-first-pass': 'routing', 'clef-retry-pass': 'routing',
     'jev-drift': 'gates', 'jev-coupling': 'gates', 'jev-forward': 'gates',
-    'jev-review-triage': 'gates', 'jev-qa-effort': 'gates',
+    'jev-review-triage': 'gates',
     'jev-memory-curate': 'memory', 'jev-memory-stale': 'memory', 'jev-memory-slice': 'memory',
     'jev-test-subset': 'tests', 'jev-verify-discover': 'tests', 'jev-verify-triage': 'tests',
 }
@@ -346,6 +343,10 @@ def threshold(name: str, *, config: dict | None = None, model: str | None = None
 # Rubric thresholds introduced after a shared one: until measured separately they read the
 # old shared value, so a config that never named them behaves exactly as before.
 THRESHOLD_FALLBACK = dict(drift_warn='gate_warn')
+# Thresholds whose only reader was removed on 2026-10-17 (routing's --jev-act tier rewrite
+# and `forge jev calibrate`). A config written before then still holds them: they are
+# ignored, and `doctor` names them as safe to delete rather than as unknown.
+RETIRED_THRESHOLDS = frozenset(('routing_act', 'calibrate_floor'))
 # Per-model cutoffs, only where a replay justified one. Clef has none yet:
 #
 # Replayed 2026-10-16 on the 38 live jev-drift requests whose task outcome could be joined

@@ -13,7 +13,7 @@ import time
 import urllib.parse
 
 from . import (CAPABILITIES, CLEF_ONLY_SITES, CLOUDFLARE_DEFAULT_SITES, CLOUDFLARE_TOKEN_FILE,
-              DEFAULT_THRESHOLDS, PROVIDERS, SITE_CAPABILITY, THRESHOLD_FALLBACK, api_key,
+              DEFAULT_THRESHOLDS, PROVIDERS, RETIRED_THRESHOLDS, SITE_CAPABILITY, THRESHOLD_FALLBACK, api_key,
               capability_ready, cloudflare, config_path, enabled, load_config, provider_for, provider_ready,
               redact, save_config, secrets, site_ready)
 from . import client, questions
@@ -88,14 +88,6 @@ def parser() -> argparse.ArgumentParser:
     verify_discover.add_argument('--json', action='store_true')
     verify_discover.add_argument('--run-dir')
 
-    calibrate = sub.add_parser('calibrate')
-    calibrate.add_argument('--repo', required=True)
-    calibrate.add_argument('--run-dir', action='append', default=[])
-    calibrate.add_argument('--min-sample', type=int, default=30)
-    calibrate.add_argument('--json', action='store_true')
-    calibrate.add_argument('--write', action='store_true',
-                           help='record which tiers may be acted on (see routing.may_act)')
-
     score_plan = sub.add_parser('score-plan')
     score_plan.add_argument('--plan', required=True)
     score_plan.add_argument('--repo', required=True)
@@ -132,16 +124,6 @@ def parser() -> argparse.ArgumentParser:
     memory_stale.add_argument('--text', required=True)
     memory_stale.add_argument('--anchor', required=True)
     memory_stale.add_argument('--run-dir', default=None)
-
-    parse_spec = sub.add_parser('parse-spec')
-    parse_spec.add_argument('sentence')
-    parse_spec.add_argument('--json', action='store_true')
-
-    qa_effort = sub.add_parser('qa-effort')
-    qa_effort.add_argument('--diff', required=True)
-    qa_effort.add_argument('--task', default=None)
-    qa_effort.add_argument('--run-dir', default=None)
-    qa_effort.add_argument('--json', action='store_true')
 
     test_subset = sub.add_parser('test-subset')
     test_subset.add_argument('--repo', required=True)
@@ -419,9 +401,13 @@ def cmd_doctor(args) -> int:
     # so a key that was renamed since stays in the file forever and `status` keeps
     # printing it -- which invites tuning a number that changes nothing. Also catches a
     # typo in a hand-edited config, where the symptom is otherwise silence.
-    unknown = sorted(set(config.get('thresholds') or ()) - set(DEFAULT_THRESHOLDS) - set(THRESHOLD_FALLBACK))
+    held = set(config.get('thresholds') or ())
+    unknown = sorted(held - set(DEFAULT_THRESHOLDS) - set(THRESHOLD_FALLBACK) - RETIRED_THRESHOLDS)
     checks.append(('thresholds all known', not unknown,
                    None if not unknown else 'not read by anything: ' + ', '.join(unknown)))
+    retired = sorted(held & RETIRED_THRESHOLDS)
+    if retired:
+        checks.append(('retired thresholds', True, 'no longer read, safe to delete: ' + ', '.join(retired)))
 
     # Two warnings rather than blockers: a loose mode is worth fixing but does not stop
     # Jev working, and an unread threshold key is inert by definition.
@@ -489,40 +475,6 @@ def cmd_backtest(args) -> int:
     else:
         print(backtest.report(summary))
     return 0
-
-
-def cmd_calibrate(args) -> int:
-    repo = Path(args.repo)
-    if not repo.is_dir():
-        print(f'forge jev calibrate: --repo {args.repo!r} is not a directory', file=sys.stderr)
-        return 2
-    if args.min_sample < 1:
-        print('forge jev calibrate: --min-sample must be >= 1', file=sys.stderr)
-        return 2
-
-    # Imported lazily so cli.py keeps working, and status/doctor keep paying nothing,
-    # even while calibrate.py is mid-edit -- same reasoning as cmd_backtest's import.
-    try:
-        from . import calibrate
-    except ImportError as error:
-        print('forge jev calibrate: calibrate module unavailable (' + str(error) + ')', file=sys.stderr)
-        return 3
-
-    summary = calibrate.run(repo, run_dirs=args.run_dir, min_sample=args.min_sample)
-    if args.write:
-        written, reason = calibrate.write_calibration(repo, summary)
-        summary['calibration_written'] = written
-        summary['calibration_path' if written else 'calibration_refused'] = reason
-    if args.json:
-        print(json.dumps(summary, indent=2))
-    else:
-        print(calibrate.report(summary))
-        if args.write:
-            print('\nwrote calibration: ' + reason if written
-                  else '\nno calibration written -- ' + reason)
-    # Exit 3 (not 0) when no tier cleared --min-sample: the whole point of this command
-    # is refusing to pretend a threshold means anything below that bar.
-    return 0 if summary['any_meets_bar'] else 3
 
 
 def cmd_verify_discover(args) -> int:
@@ -599,11 +551,11 @@ PROMPT_CHARS = 8000
 
 
 def cmd_score_plan(args) -> int:
-    """Rate every task in a plan. Advisory output only -- this never edits tasks.tsv.
+    """Rate every task in a plan. Advisory output only: nothing ever writes it into tasks.tsv.
 
-    Writing a tier into the plan is forge-parallel.sh's decision, made through
-    routing.may_act, so that the one place a model can change which model gets dispatched
-    stays in the runner where the rest of the routing rules already live.
+    Writing a Jev tier into the plan (`--jev-act`, gated on a per-repo calibration) was
+    removed on 2026-10-17 without ever having acted: no repo reached the calibration bar,
+    and model choice is now measured from `plan --explore` draws (`forge dataset routing`).
     """
     plan, repo = Path(args.plan), Path(args.repo)
     if not plan.is_dir():
@@ -661,7 +613,6 @@ def cmd_score_plan(args) -> int:
                                       config=config)
         if judgment is None:
             continue
-        judgment['may_act'] = routing.may_act(repo, judgment, config=config)
 
         # A second request per task, and the only one Phase 4 adds -- the adequacy and
         # verifiability gates ride inside the routing request above. This one cannot,
@@ -686,24 +637,8 @@ def cmd_score_plan(args) -> int:
     if not judgments:
         return 3
 
-    # The TSV that `calibrate` later joins against the ledger. Written even in shadow
-    # mode -- accruing this file IS shadow mode's entire purpose.
-    try:
-        run_id = (plan / 'run_id').read_text().strip() if (plan / 'run_id').is_file() else '-'
-        with (plan / 'jev-routing.tsv').open('a') as handle:
-            for judgment in judgments:
-                handle.write('\t'.join((run_id, judgment['id'], judgment['tier'],
-                                        str(judgment['confidence']),
-                                        str(judgment['composite']))) + '\n')
-    except OSError:
-        pass
-
-    # Tell the repo where its own run data lives. `calibrate` globs <repo>/.forge/runs/*/
-    # and forge keeps plan dirs nowhere near there, so `calibrate --repo X` -- the obvious
-    # invocation -- found zero run dirs and reported "no data" for a repo that had plenty.
-    # A user would read that as calibration being broken, and calibration is the one gate
-    # standing between routing and ever being allowed to act.
-    #
+    # Tell the repo where its own run data lives: forge keeps plan dirs wherever the user put
+    # them, and `forge dataset import --registry` (and forge-ui) find them through this list.
     # A registry rather than moving the file: plan dirs are the user's to place, and
     # relocating them would orphan every run already on disk.
     register_run_dir(repo, plan)
@@ -719,7 +654,6 @@ def cmd_score_plan(args) -> int:
             print('\t'.join((judgment['id'], judgment['tier'],
                              str(judgment['confidence']), str(judgment['composite']),
                              judgment['escalated'] or '-',
-                             '1' if judgment['may_act'] else '0',
                              judgment['declared'], warnings, drift)))
     return 0
 
@@ -914,45 +848,6 @@ def cmd_memory_stale(args) -> int:
     return 0 if result['stale'] else 1
 
 
-def cmd_parse_spec(args) -> int:
-    """Map a sentence onto --dwarf-<tier> flags. Prints them; never applies them."""
-    config = load_config()
-    if not site_ready('jev-parse-spec', config):
-        return 3
-    from . import spec
-
-    chosen = spec.parse(args.sentence, skill_dir=Path(__file__).resolve().parent.parent.parent,
-                        config=config)
-    if not chosen:
-        return 3
-    if args.json:
-        print(json.dumps(chosen, indent=2, sort_keys=True))
-    else:
-        print(spec.as_flags(chosen))
-        for tier, picked in sorted(chosen.items()):
-            print(f'  {tier}: {picked["alias"]} (confidence {picked["confidence"]})',
-                  file=sys.stderr)
-        print('Check these before using them — forge will not apply them for you.',
-              file=sys.stderr)
-    return 0
-
-
-def cmd_qa_effort(args) -> int:
-    """Suggest a review effort. Prints it; forge never applies it."""
-    config = load_config()
-    if not site_ready('jev-qa-effort', config):
-        return 3
-    from . import review
-
-    result = review.size_review(diff_path=args.diff, task_path=args.task,
-                                run_dir=args.run_dir, config=config)
-    if result is None:
-        return 3
-    print(json.dumps(result, sort_keys=True) if args.json
-          else result['effort'] + '\t' + str(result['confidence']))
-    return 0
-
-
 def cmd_test_subset(args) -> int:
     """Run the likely-affected tests in a throwaway export of the reviewed commit.
 
@@ -1100,12 +995,9 @@ def main(argv: list[str] | None = None) -> int:
         return dict(setup=cmd_setup, sites=cmd_sites, enable=cmd_enable, disable=cmd_disable,
                     **{'first-pass': cmd_first_pass, 'retry-pass': cmd_retry_pass},
                     status=cmd_status, doctor=cmd_doctor, backtest=cmd_backtest,
-                    calibrate=cmd_calibrate,
                     **{'score-plan': cmd_score_plan,
                        'coupling': cmd_coupling,
                        'review-triage': cmd_review_triage,
-                       'parse-spec': cmd_parse_spec,
-                       'qa-effort': cmd_qa_effort,
                        'test-subset': cmd_test_subset,
                        'memory-curate': cmd_memory_curate,
                        'memory-slice': cmd_memory_slice,

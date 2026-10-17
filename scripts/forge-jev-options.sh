@@ -45,7 +45,7 @@ forge_jev_help() {
   cat <<'HELP'
 Optional Jev (TypeSafe System One) advisory judgments (solo or parallel run):
   --jev | --no-jev           Explicit choice; unattended defaults off
-  --jev-act                  Allow an applied judgment to change behavior
+  --jev-act                  Kept for old commands: only marks judgments as acting
   --jev-shadow               Record judgments only; changes nothing
   --jev-<cap> | --no-jev-<cap>  Per-capability on/off: routing tests gates memory
 FORGE_JEV=off is a hard kill switch and wins over every other setting.

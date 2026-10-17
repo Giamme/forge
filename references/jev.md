@@ -52,7 +52,6 @@ forge jev setup                       # store a key, validate it, enable Jev
 forge jev status | doctor [--live]    # what is on; whether it works
 forge jev enable | disable [--capability routing|tests|gates|memory]
 forge jev backtest --repo <path> [--capability tests|drift] [--execute]
-forge jev calibrate --repo <path> [--write]
 ```
 
 `score-plan`, `verify-discover` and `verify-triage` are also subcommands, but they are
@@ -78,13 +77,16 @@ A run directory freezes its resolved selection in `jev-selection.json`, the
 same way Fractal freezes `fractal-selection.json`, so resume and explicit
 retry make the same decisions as the original run.
 
-## Advisory by default
+## Advisory, always
 
-`--jev-act` is required before any judgment is auto-applied. Even then, Jev
-may only choose among models the user already authorized for the run — it
-never selects a model on its own, never overturns a `FORGE_VERDICT`, and never
-marks anything verified. `--jev-shadow` records judgments and changes nothing
-at all; use it to observe calibration before trusting `--jev-act`.
+Jev never selects a model, never changes a task's tier, never overturns a
+`FORGE_VERDICT`, and never marks anything verified. `--jev-shadow` records
+judgments and changes nothing at all.
+
+`--jev-act` still parses, so old commands and a frozen `jev-selection.json` keep
+working, and it still marks each judgment `acting` in `jev.jsonl` and the run
+dataset. Nothing reads it as permission: the one thing it unlocked, writing Jev's
+tier into the `difficulty` column, was removed on 2026-10-17 (see Routing).
 
 ## Fail-open
 
@@ -324,25 +326,27 @@ evidence; showing it the answer first buys an agreement rate, not a judgment.
 
 **Escalation.** A composite within 0.05 of a tier boundary, or a confidence below 0.55,
 escalates one tier and records why (`boundary` / `low-confidence`). Paying for a stronger
-model on an ambiguous task is the cheap error. An escalated judgment is never acted on —
-the escalation exists precisely because the composite was not trustworthy there.
+model on an ambiguous task is the cheap error.
 
-### Three modes, and why acting is currently impossible
+### Two modes, and why the tier is never written
 
 | Mode | What happens |
 |---|---|
 | `--jev-shadow` | Scores every task, writes `jev-routing.tsv` and `tasks/<id>/jev.json`, **changes nothing else** — not the table, not one dispatch |
 | `--jev` (default) | Adds an advisory line per task; the `difficulty` column is untouched |
-| `--jev-act` | Writes the tier into `difficulty` — **only** where `routing.may_act` allows |
 
-`may_act` requires all of: a stored calibration for **this repo**, covering **this tier**,
-plus an unescalated judgment at or above `routing_act` (0.85). The calibration file is
-written only by `forge jev calibrate --write`, and only for tiers that reached the sample
-bar (default N=30). No repo has one yet, so **`--jev-act` is inert for routing today** and
-stays advisory — by design, not by omission.
+A third mode, `--jev-act`, could write the tier into `difficulty` once a repo held a
+calibration for that tier (`forge jev calibrate --write`: 30 tasks, a 95% Wilson lower
+bound over 0.80). No repo ever reached it, so it never acted, and on 2026-10-17 it was
+removed along with `calibrate` and the `routing_act` and `calibrate_floor` thresholds.
 
-Calibration is per repo because the measurements above show the same rubric behaving
-differently across repos; a threshold earned in one project says nothing about another.
+The run dataset had settled the question by then. Jev's score predicts a task's first
+pass about as well as cheap features do (AUC 0.69 against 0.64–0.67 on older runs; on the
+newest runs every method, Jev included, sat near chance), and a model-swap test on Clef
+showed a decision model judging how hard a task is, not which model does it better:
+swapping the model explained 2% of the variance in its predictions. A tier is a choice of model, so it is measured instead: exploratory routing,
+on by default, and `forge dataset routing` compare models per tier from randomized
+assignments (see `decompose.md`, Exploratory routing).
 
 ### What was measured
 
@@ -362,69 +366,7 @@ tried first and measured wrong: on a real task `blast_radius` returned 0.0 while
 that was mostly settled. The weakest dimension is still reported separately as `weakest`.
 
 Six hand-labelled tasks is **not** a calibration. It is a smoke test that the rubrics
-point the right way. The real numbers come from shadow runs.
-
-### Accruing the data
-
-```
-/forge "<goal>" --decompose-level medium --jev --jev-shadow    # normal work, nothing changes
-forge jev calibrate --repo <repo>                              # reports, refuses below N=30/tier
-forge jev calibrate --repo <repo> --write                      # only then may routing act
-```
-
-`calibrate` joins each run's `jev-routing.tsv` against `.forge/ledger.tsv` on
-`(run_id, task)`, taking
-the QA verdict as the outcome.
-
-**One execution is one sample, however many run dirs describe it.** Run dirs are
-deduplicated by path, so a plan that was copied, re-scored, moved, or registered under a
-second path used to arrive twice — and the ledger holds one outcome per `(run_id, task)`,
-because the task ran once. The first real calibration, over the jevscope run, reported
-**16 samples for an 8-task plan**: every outcome counted twice against `min_sample`, the
-only bar standing between routing and the right to act.
-
-Worse when the copies disagree. A re-score had moved `stats` low→medium and `fixtures`
-high→medium, so one pass was credited to **two different tiers**. The outcome tested
-whichever tier actually ran the task and nothing records which, so a `(run_id, task)`
-whose run dirs disagree on tier is now dropped rather than guessed at, and both the
-collapsed duplicates and the dropped keys are printed. The same run now reports 6
-samples, which is what it has. It prints the shortfall per tier rather than a
-confident-looking guess, and `--write` is a separate step because that file is the only
-thing standing between `--jev-act` and Jev changing which model spends your quota.
-
-### What the bar actually is, and why N=30
-
-A tier earns the right to be acted on when the tasks Jev judged at or above `routing_act`
-passed at a rate whose **95% Wilson lower bound** clears `calibrate_floor` (0.80). Not the
-observed rate: 5 of 5 and 30 of 30 are both 1.0 observed, and 0.57 versus 0.89 bounded.
-The sample-size requirement falls out of that arithmetic instead of being a second magic
-constant.
-
-The question is deliberately **absolute** — "if Jev routes these, does the work still
-pass?" — and not "does the confident subset beat the tier's own average". The relative
-version is unanswerable by construction, because the subset is contained in the tier;
-when confidence clusters tightly, as the measured low-tier composites do at 0.89–0.93,
-the subset *is* most of the tier and cannot out-perform it by a detectable margin.
-Simulated over 3000 trials, the relative criterion accepted a genuinely reliable tier
-less than 1% of the time at every sample size tried.
-
-With the absolute criterion, simulation puts N=30 in a reasonable place:
-
-| true pass rate of Jev-confident tasks | n=30 | n=40 | n=50 | n=75 |
-|---|---|---|---|---|
-| 99% (safe to route down) | 84% | **97%** | 99% | 100% |
-| 95% (good) | 41% | 59% | **75%** | 93% |
-| 80% (marginal — should refuse) | 1.3% | 1.7% | 1.6% | 2.1% |
-| 70% (bad — should refuse) | 0.1% | 0.1% | 0.0% | 0.0% |
-
-Read it as: 30 is enough when routing-down genuinely works, ~50 when it merely works
-well, and no sample size lets a marginal tier through. A tier that stays below the floor
-as N grows is not short of data — it is telling you Jev's cheap-tier judgments are not
-safe to act on in that repo.
-
-The swept "suggested threshold" still appears in the report, marked informational. It is
-not used to decide anything: searching ten candidate cuts for the best-looking one is how
-a threshold ends up backed by three observations.
+point the right way.
 
 ## Pre-dispatch gates
 
@@ -726,48 +668,24 @@ above each kept line. The 40-line/4KB cap and the role slice remain the outer bo
 on a 10-fact memory against a payments-retry task, it kept 8 and dropped the CSS build
 ordering and the parser cache — while keeping the idempotency trap.
 
-## Effort sizing, spec parsing, fractal re-rating
+## Removed: effort sizing, spec parsing, Fractal re-rating
 
-**Effort sizing** rides in the routing request — same state, no extra round trip — and
-maps onto `forge-dispatch.sh`'s own `low..ultra` ladder, so a level this repo's models
-cannot reach is clamped by the existing dispatch logic rather than failing. It is
-**advisory in every mode**, including `--jev-act`: acting on it would need its own
-calibration, and no outcome data says a Jev-chosen effort produces better work.
+All three were removed on 2026-10-17, and none had ever acted.
 
-**`forge jev parse-spec "<sentence>"`** maps a sentence onto `--dwarf-<tier>` flags over
-the closed set of aliases in `registry.tsv`. It prints flags; it never applies them.
-
-It works on named models and declines on purely descriptive ones:
-
-```
-$ forge jev parse-spec "haiku for the easy stuff, opus for anything hard"
---dwarf-low haiku --dwarf-high opus
-
-$ forge jev parse-spec "something cheap for docs, the strongest thing for concurrency"
-(exit 3 — nothing proposed)
-```
-
-That second result is correct, not a shortfall. `registry.tsv` has no cost or capability
-column, so nothing in the state says which alias is "cheap" or "strongest", and guessing
-would put an unasked-for model on the user's quota. The plan assumed this case would map;
-measurement says it cannot, with the registry as it stands.
-
-Worth recording how that was found: sending bare alias names returned `none` for every
-tier at 0.79–1.00 confidence. Alias names are opaque — `sol`, `luna`, `haiku` say nothing
-about what they are. Adding each alias's model ids to the state made the named case work
-at confidence 1.0 and left the descriptive case correctly refused.
-
-**Fractal child re-rating** corrects a child's difficulty in
-`forge_fractal/execution.py:Tree.admit`, where it is otherwise taken verbatim from the
-parent dwarf's JSON. Two properties, both tested:
-
-- It runs **outside `self.guard`**. `admit` holds a lock the whole tree contends for, and
-  a network call under it would stall every sibling.
-- A malformed difficulty is **rejected before** any correction, so a bad value from the
-  parent still raises rather than being silently replaced. Pool membership and the frozen
-  `eligible` check are untouched — this can only move a child between pools the user
-  already authorised, and it is gated on `routing.may_act`, so it does nothing on an
-  uncalibrated repo.
+- **Effort sizing** rode in the routing request and suggested a `low..ultra` level per
+  task, with QA effort sizing (`qa-effort`) doing the same for the reviewer. Over the run
+  dataset the dwarf suggestion separated first-pass outcomes at AUC 0.64 overall but
+  0.50–0.54 within a tier: all it knew was the tier. And 81% of its suggestions were
+  `xhigh` or higher. Effort is now measured like models are: pools that differ only in
+  effort (`--dwarf-low sol --dwarf-medium sol:high --dwarf-high sol:xhigh`) give
+  exploratory routing two arms per tier, and `forge dataset routing` reports whether the
+  higher effort passes more.
+- **`forge jev parse-spec`** mapped a sentence onto `--dwarf-<tier>` flags. It could only
+  map a sentence that already named the aliases, since `registry.tsv` says nothing about
+  cost or strength, which made it no shorter than typing the flags.
+- **Fractal child re-rating** could move a child between authorised pools, gated on the
+  same per-repo calibration as `--jev-act`, which no repo had. A child's difficulty is the
+  parent dwarf's own again.
 
 ## Early test feedback (what became of per-task subsetting)
 
@@ -914,17 +832,13 @@ early test feedback, memory curation, wave coupling (same-wave and cross-wave) a
 review-triage annotation. All are advisory —
 none blocks a dispatch, and nothing overturns a `FORGE_VERDICT`.
 
-**What cannot act yet:** routing, effort sizing and QA effort sizing, all of which
-require a per-repo calibration that does not exist. `routing_act` at 0.85 still rests on
-six hand-labelled tasks, which is a smoke test, not a calibration. Observed composite
-confidences run 0.50–0.85, so it currently admits almost nothing — deliberately, but the
-number is unearned until real runs produce outcomes.
-
-The counter that decides when it becomes earned is now honest, which it was not: the
-first calibration run on real data reported 16 samples for an 8-task plan, because the
-same run reached it through two paths. Until that was fixed, the 30-sample bar could have
-been cleared by 15 real tasks. The jevscope run contributes **6** samples toward the
-first tier's 30 — that is the true rate of accrual, and it is slow on purpose.
+**What was removed (2026-10-17):** the tier rewrite behind `--jev-act`, `calibrate`,
+effort and QA-effort sizing, `parse-spec` and Fractal re-rating. None had ever acted, and
+the run dataset showed decision models cannot choose models or efforts; statistics over
+randomized routing do that now. **Frozen:** wave coupling and forward-dependency scoring
+keep running as they are, and the decision-model fine-tuning pipelines get no further
+work. **Kept and maintained:** capture and replay, the provider client, drift and memory
+curation, where decision models measurably read well.
 
 **Known unsound, recorded rather than patched:**
 

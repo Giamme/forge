@@ -109,29 +109,6 @@ class EscalationTests(unittest.TestCase):
         self.assertEqual(result['tier'], 'medium')
 
 
-class ActsTests(unittest.TestCase):
-    CONFIG = dict(thresholds=dict(routing_act=0.85))
-
-    def test_high_confidence_unescalated_judgment_acts(self):
-        judgment = dict(tier='high', confidence=0.9, escalated=None)
-        self.assertTrue(routing.acts(judgment, config=self.CONFIG))
-
-    def test_below_threshold_does_not_act(self):
-        judgment = dict(tier='high', confidence=0.84, escalated=None)
-        self.assertFalse(routing.acts(judgment, config=self.CONFIG))
-
-    def test_an_escalated_judgment_never_acts_however_confident(self):
-        # The escalation exists BECAUSE the composite was not trustworthy there, so
-        # acting on it would write the least reliable judgments straight into the plan.
-        judgment = dict(tier='high', confidence=0.99, escalated='boundary')
-        self.assertFalse(routing.acts(judgment, config=self.CONFIG))
-
-    def test_missing_confidence_does_not_act(self):
-        self.assertFalse(routing.acts(dict(tier='high', confidence=None, escalated=None),
-                                      config=self.CONFIG))
-        self.assertFalse(routing.acts(None, config=self.CONFIG))
-
-
 class NormalizationTests(unittest.TestCase):
     def test_levels_map_onto_zero_to_one(self):
         result = dict(answers=dict(q=dict(type='score', score=3, confidence=0.8)))
@@ -291,74 +268,6 @@ class StateTests(unittest.TestCase):
                 self.assertFalse(routing._near_boundary(cut))
                 self.assertFalse(routing._near_boundary(cut + 0.001))
                 self.assertTrue(routing._near_boundary(cut - 0.001))
-
-
-class CalibrationGateTests(unittest.TestCase):
-    """--jev-act alone must never be enough. This is the gate that makes that true."""
-
-    CONFIG = dict(thresholds=dict(routing_act=0.85))
-    CONFIDENT = dict(tier='low', confidence=0.95, escalated=None)
-
-    def setUp(self):
-        self.dir = tempfile.TemporaryDirectory()
-        self.addCleanup(self.dir.cleanup)
-        self.repo = Path(self.dir.name)
-
-    def _write(self, payload):
-        (self.repo / '.forge').mkdir(parents=True, exist_ok=True)
-        (self.repo / '.forge' / routing.CALIBRATION_FILE).write_text(json.dumps(payload))
-
-    def test_uncalibrated_repo_never_acts(self):
-        self.assertIsNone(routing.calibration(self.repo))
-        self.assertFalse(routing.may_act(self.repo, self.CONFIDENT, config=self.CONFIG))
-        # ...even though the judgment itself clears the threshold.
-        self.assertTrue(routing.acts(self.CONFIDENT, config=self.CONFIG))
-
-    def test_calibrated_tier_acts(self):
-        self._write(dict(calibrated=True, tiers=dict(low=dict(n=40, threshold=0.7))))
-        self.assertTrue(routing.may_act(self.repo, self.CONFIDENT, config=self.CONFIG))
-
-    def test_calibration_is_per_tier(self):
-        # A repo with 40 low samples and 3 high ones is calibrated for one, guessing
-        # about the other.
-        self._write(dict(calibrated=True, tiers=dict(low=dict(n=40, threshold=0.7))))
-        high = dict(tier='high', confidence=0.95, escalated=None)
-        self.assertFalse(routing.may_act(self.repo, high, config=self.CONFIG))
-
-    def test_corrupt_calibration_is_not_calibration(self):
-        for payload in ('not json at all', '[1,2,3]', 'null', '{"tiers": {"low": {}}}'):
-            (self.repo / '.forge').mkdir(parents=True, exist_ok=True)
-            (self.repo / '.forge' / routing.CALIBRATION_FILE).write_text(payload)
-            self.assertFalse(routing.may_act(self.repo, self.CONFIDENT, config=self.CONFIG),
-                             payload)
-
-    def test_calibrated_false_is_honoured(self):
-        self._write(dict(calibrated=False, tiers=dict(low=dict(n=40, threshold=0.7))))
-        self.assertFalse(routing.may_act(self.repo, self.CONFIDENT, config=self.CONFIG))
-
-    def test_write_refuses_when_no_tier_met_the_bar(self):
-        from forge_jev import calibrate
-        summary = dict(min_sample=30, tiers=dict(
-            low=dict(n=4, pass_rate=1.0, shortfall=26, meets_floor=False)))
-        written, reason = calibrate.write_calibration(self.repo, summary)
-        self.assertFalse(written)
-        self.assertIn('no tier', reason)
-        self.assertFalse((self.repo / '.forge' / routing.CALIBRATION_FILE).exists())
-
-    def test_write_stores_only_the_tiers_that_earned_it(self):
-        from forge_jev import calibrate
-        # meets_floor, not a swept threshold, is what earns a tier the right to act.
-        summary = dict(min_sample=30, n_samples=43, tiers=dict(
-            low=dict(n=40, n_confident=38, pass_rate=0.9, shortfall=None,
-                     meets_floor=True, confident_lower_bound=0.87, act_at=0.85),
-            high=dict(n=3, pass_rate=0.5, shortfall=27, meets_floor=False)))
-        written, _reason = calibrate.write_calibration(self.repo, summary)
-        self.assertTrue(written)
-        stored = routing.calibration(self.repo)
-        self.assertEqual(sorted(stored['tiers']), ['low'])
-        self.assertTrue(routing.may_act(self.repo, self.CONFIDENT, config=self.CONFIG))
-        self.assertFalse(routing.may_act(self.repo, dict(tier='high', confidence=0.95,
-                                                         escalated=None), config=self.CONFIG))
 
 
 if __name__ == '__main__':

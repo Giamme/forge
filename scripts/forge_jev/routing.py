@@ -14,14 +14,8 @@ from pathlib import Path
 
 from . import enabled, threshold
 from .client import ask, noul, score
-from .questions import (blast_radius, design_judgment, effort_level,
-                        independently_verifiable, prompt_adequacy, spec_clarity,
-                        state_subtlety, test_coverage)
-
-# forge-dispatch.sh's CANON ladder, weakest first. Kept in the same order as the Score
-# levels in questions.effort_level so a position maps onto a word without a lookup that
-# could drift.
-EFFORT_WORDS = ('low', 'medium', 'high', 'xhigh', 'max', 'ultra')
+from .questions import (blast_radius, design_judgment, independently_verifiable,
+                        prompt_adequacy, spec_clarity, state_subtlety, test_coverage)
 
 # Weights sum to 1.0. design_judgment carries the most because decompose.md defines
 # difficulty by it first ("rated ... by what the task demands of the model"), and
@@ -232,10 +226,9 @@ def score_task(repo, *, goal: str, task_id: str, title: str, files: str,
     # Phase 4's plan-time gates need exactly this state, and questions in one request
     # evaluate in parallel, so folding them in here costs no extra round trip -- the
     # alternative is a second request per task carrying an identical payload.
-    # Effort rides along too: same state, same request, no extra round trip. It is
-    # advisory in every mode -- acting on it would need its own calibration, and there
-    # is no outcome data that says a Jev-chosen effort produces better work.
-    questions['effort'] = effort_level()
+    # (An effort question rode along here until 2026-10-17: it carried no signal beyond the
+    # tier -- within-tier AUC 0.50-0.54, 81% of answers xhigh or higher -- and never acted.
+    # Effort is now measured the way models are, by exploring pools that name efforts.)
 
     gate_ids = {}
     if enabled('gates', config=config):
@@ -255,12 +248,6 @@ def score_task(repo, *, goal: str, task_id: str, title: str, files: str,
     if combined is None:
         return None
     combined.update(id=task_id, declared=declared_difficulty)
-
-    effort_position, effort_confidence = score(result, 'effort')
-    if effort_position is not None:
-        index = max(0, min(len(EFFORT_WORDS) - 1, int(round(float(effort_position)))))
-        combined['effort'] = EFFORT_WORDS[index]
-        combined['effort_confidence'] = effort_confidence
 
     # Warnings, not gates: recorded below the threshold and silent above it. A LOW
     # probability is what is worth saying out loud here.
@@ -282,62 +269,3 @@ def score_task(repo, *, goal: str, task_id: str, title: str, files: str,
     if warnings:
         combined['warnings'] = warnings
     return combined
-
-
-def acts(judgment: dict, *, config: dict | None = None) -> bool:
-    """Is this judgment strong enough to be written into the plan?
-
-    Separate from combine() so the threshold can be read straight out of config and
-    tested without a request. Note that an escalated judgment is never acted on: the
-    escalation exists precisely because the composite was not trustworthy there.
-    """
-    if not judgment or judgment.get('escalated'):
-        return False
-    confidence = judgment.get('confidence')
-    return confidence is not None and confidence >= threshold('routing_act', config=config)
-
-
-# Written only by `forge jev calibrate`, and only when it actually had the sample to
-# justify it. Its absence is the normal state and means "advisory".
-CALIBRATION_FILE = 'jev-routing-calibration.json'
-
-
-def calibration(repo) -> dict | None:
-    """The stored calibration for this repo, or None if routing is not calibrated here.
-
-    Deliberately per-repo. The verify-discovery measurements in references/jev.md showed
-    the same rubric behaving differently across repos, and test selection needed
-    thresholds 2.25x apart on two repos, so a calibration earned in one project says
-    nothing about another.
-    """
-    path = Path(repo) / '.forge' / CALIBRATION_FILE
-    if not path.is_file():
-        return None
-    try:
-        import json
-        stored = json.loads(path.read_text())
-    except (OSError, ValueError):
-        return None
-    if not isinstance(stored, dict) or not stored.get('calibrated'):
-        return None
-    return stored
-
-
-def may_act(repo, judgment: dict, *, config: dict | None = None) -> bool:
-    """The complete gate: calibrated for THIS repo, and confident enough.
-
-    `--jev-act` is not sufficient on its own. Routing decides which model spends the
-    user's quota, and an uncalibrated threshold is a guess wearing a number -- the
-    measurements already recorded for verify discovery showed a placeholder threshold
-    sitting either side of every real value. Until `forge jev calibrate` has the sample
-    to say otherwise, this returns False and the human's difficulty column stands.
-    """
-    stored = calibration(repo)
-    if not stored or not judgment:
-        return False
-    # Per tier, not per repo: a project whose `low` tier has 40 samples and whose `high`
-    # tier has 3 is calibrated for one and guessing about the other.
-    tiers = stored.get('tiers')
-    if not isinstance(tiers, dict) or judgment.get('tier') not in tiers:
-        return False
-    return acts(judgment, config=config)

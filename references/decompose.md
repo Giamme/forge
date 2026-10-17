@@ -157,8 +157,6 @@ needs some randomized picks, so `plan` makes a few: `--explore E`, with E betwee
 - **Later changes:** a re-plan draws nothing for rows that are already resolved. An
   approval-gate edit or a `retry --dwarf` simply runs a different model; the analysis
   keeps such a task in the arm it was assigned and reports it as not followed.
-- **Calibration:** Jev's routing calibration leaves explored tasks out, since they say
-  nothing about their tier's own model.
 
 `forge dataset routing` reads the draws back: per (tier, pool pick, neighbour) pair, each
 arm's first-pass rate (inverse-propensity weighted, every task in the arm it was assigned),
