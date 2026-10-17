@@ -7,6 +7,7 @@ it is supposed to find rather than mocking the filesystem.
 """
 from __future__ import annotations
 
+import dataset_isolation  # noqa: F401  keeps forge's dataset and config out of the developer's home
 import contextlib
 import io
 import json

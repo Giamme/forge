@@ -1,4 +1,4 @@
-"""Point the run dataset at a throwaway store for this test process.
+"""Point the run dataset and forge's config at throwaway dirs for this test process.
 
 Imported for its side effect, before any test builds a subprocess env from os.environ.
 Every dispatch, task and Jev call is captured into a store under the user's data dir
@@ -14,6 +14,15 @@ import tempfile
 HOME = tempfile.mkdtemp(prefix='forge-dataset-test-')
 os.environ['FORGE_DATA_HOME'] = HOME
 atexit.register(shutil.rmtree, HOME, True)
+
+# Forge's config home holds jev.json (with the TypeSafe key), cloudflare.env and the runs
+# registry. A test that reached Jev without a private config home of its own scored against
+# the developer's real key and appended its temp dirs to the real registry: ~300 dead
+# entries, written on the days tests were being written. Tests that need a config still set
+# their own XDG_CONFIG_HOME; every other one now sees an empty home.
+CONFIG = tempfile.mkdtemp(prefix='forge-config-test-')
+os.environ['XDG_CONFIG_HOME'] = CONFIG
+atexit.register(shutil.rmtree, CONFIG, True)
 
 # Opt-in data collection that changes what a run does (exploratory routing) or how a call
 # is classified (shadow reviews) must never leak in from a developer's shell: every test

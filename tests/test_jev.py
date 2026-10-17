@@ -4,6 +4,7 @@ Runs with no network access and no API key. Every test scrubs FORGE_JEV*/TYPESAF
 env vars and points XDG_CONFIG_HOME at a fresh temp dir so the developer's real
 ~/.config/forge/jev.json is never read or written.
 """
+import dataset_isolation  # noqa: F401  keeps forge's dataset and config out of the developer's home
 import contextlib
 import hashlib
 import io

@@ -1,3 +1,4 @@
+import dataset_isolation  # noqa: F401  keeps forge's dataset and config out of the developer's home
 import json
 from pathlib import Path
 import re
