@@ -191,6 +191,10 @@ class RoutesTests(ServerTestCase):
             'build': build_id(),
             'pid': os.getpid(),
         })
+        # The build is that of the code this process loaded, not of the files on disk now.
+        with patch('forge_ui.server.build_id', return_value='f' * 64):
+            _, _, body = self.request('GET', '/api/health')
+        self.assertEqual(json.loads(body)['build'], _source_build_id())
         status, headers, head = self.request('HEAD', '/api/health')
         self.assertEqual((status, head), (200, b''))
         self.assertEqual(headers['content-type'], 'application/json; charset=utf-8')
@@ -546,6 +550,47 @@ class MainTests(TempCase):
         self.assertEqual(box['code'], 0)
         self.assertRegex(out.getvalue(), rf'^forge-ui on http://127\.0\.0\.1:{port}/ \(0 runs\)\n$')
         self.assertEqual(err.getvalue(), '')
+
+    def test_a_slow_request_is_not_cut_off_by_idle_exit(self):
+        # A request arrives before the 1s limit and its catalog read outlasts the limit.
+        entered, release = threading.Event(), threading.Event()
+        started = []
+
+        def slow_runs(catalog):
+            if started:  # the startup count is the first call and must not block
+                entered.set()
+                release.wait(20)
+            started.append(1)
+            return []
+
+        result = {}
+
+        def ask(port):
+            try:
+                result['reply'] = self._get(port, '/api/runs')
+            except OSError as exc:
+                result['error'] = exc
+
+        with patch.object(reader.Catalog, 'runs', slow_runs):
+            thread, out, err, box = self._start_main(
+                ['--no-registry', '--port', '0', '--idle-exit', '1', '--quiet'])
+            port = self._port_from_startup(out, thread, box, timeout=IDLE_DONE)
+            started.append(1)
+            asker = threading.Thread(target=ask, args=(port,), daemon=True)
+            asker.start()
+            self.addCleanup(release.set)
+            self.assertTrue(entered.wait(IDLE_DONE), 'the request never reached the catalog')
+            # Several watcher checks pass, all after the idle limit, with the request still in flight.
+            deadline = time.monotonic() + IDLE_STAY
+            while time.monotonic() < deadline:
+                self.assertTrue(thread.is_alive(), f'server exited under a request in flight: {box}')
+                time.sleep(0.05)
+            release.set()
+            asker.join(IDLE_DONE)
+        self.assertEqual(result, {'reply': (200, b'{"runs": []}')})
+        thread.join(IDLE_DONE)
+        self.assertFalse(thread.is_alive(), 'server did not exit after the slow request ended')
+        self.assertEqual(box['code'], 0)
 
     def test_idle_exit_zero_is_accepted_and_does_not_stop_the_server(self):
         # Positive control for the negative-value case: 0 is a real value, not a usage error.
