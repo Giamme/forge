@@ -58,12 +58,19 @@ class UiLauncherTests(unittest.TestCase):
         shutil.copytree(FIXTURES / name, target)
         return target
 
-    def _stop_server(self):
+    def _recorded_pid(self, state):
+        path = state / 'forge/ui/server.json'
         try:
-            pid = json.loads((self.state / 'forge/ui/server.json').read_text())['pid']
-        except (OSError, ValueError, KeyError):
+            pid = json.loads(path.read_text())['pid'] if path.is_file() else None  # never read a FIFO
+        except (OSError, ValueError, KeyError, TypeError):
+            return None
+        return pid if isinstance(pid, int) else None
+
+    def _stop_server(self, state=None):
+        pid = self._recorded_pid(state or self.state)
+        if pid is None:
             return
-        self.ui('stop')
+        self.ui('stop', env=dict(self.env, XDG_STATE_HOME=str(state or self.state)))
         if alive(pid):  # stop did not take it down: do not leave it for the idle timeout
             os.kill(pid, signal.SIGKILL)
 
@@ -317,6 +324,85 @@ class UiLauncherTests(unittest.TestCase):
         result = self.ui('open', str(locked))
         self.assertEqual(result.returncode, 3, result.stderr)
         self.assertNotIn('Traceback', result.stderr)
+
+    def test_hostile_state_gives_the_documented_exit_code_without_a_traceback(self):
+        # open: state it cannot use is exit 4 naming the path; a server.json it cannot read
+        # or parse means no server, so it starts one. status: unreadable state is exit 1.
+        # stop: exit 0 either way.
+        def home_read_only(home, env):
+            home.mkdir()
+            home.chmod(0o500)
+            self.addCleanup(home.chmod, 0o755)
+
+        def record(content):
+            def setup(home, env):
+                (home / 'forge/ui').mkdir(parents=True)
+                (home / 'forge/ui/server.json').write_bytes(content)
+            return setup
+
+        def record_unreadable(home, env):
+            record(b'{}')(home, env)
+            (home / 'forge/ui/server.json').chmod(0)
+
+        def record_is_a_fifo(home, env):  # reading it would block forever
+            (home / 'forge/ui').mkdir(parents=True)
+            os.mkfifo(home / 'forge/ui/server.json')
+
+        def lock_is_a_dir(home, env):
+            (home / 'forge/ui/lock').mkdir(parents=True)
+
+        def live_server_recorded_with_a_list_build(home, env):
+            self.assertEqual(self.ui('open', '--no-browser', env=env).returncode, 0)
+            path = home / 'forge/ui/server.json'
+            path.write_text(json.dumps(dict(json.loads(path.read_text()), build=['old'])))
+
+        looped = self._copy('solo-full', 'repo-is-a-symlink-loop')
+        os.symlink(self.tmp / 'loop-b', self.tmp / 'loop-a')
+        os.symlink(self.tmp / 'loop-a', self.tmp / 'loop-b')
+        (looped / 'repo').write_text(f'{self.tmp / "loop-a"}\n')
+
+        starts = 'a new server'
+        cases = (
+            # label, setup, needs a non-root user, command, exit code
+            ('read-only state home', home_read_only, True, ['open', str(self.plan)], 4),
+            ('read-only state home', home_read_only, True, ['status'], 1),
+            ('read-only state home', home_read_only, True, ['stop'], 0),
+            ('unreadable server.json', record_unreadable, True, ['open', str(self.plan)], starts),
+            ('unreadable server.json', record_unreadable, True, ['status'], 1),
+            ('server.json not JSON', record(b'{"pid": '), False, ['open', str(self.plan)], starts),
+            ('server.json not JSON', record(b'{"pid": '), False, ['status'], 1),
+            ('server.json not UTF-8', record(b'{"pid": "\xff"}'), False, ['status'], 1),
+            ('server.json is a FIFO', record_is_a_fifo, False, ['open', str(self.plan)], starts),
+            ('server.json is a FIFO', record_is_a_fifo, False, ['status'], 1),
+            ('lock is a directory', lock_is_a_dir, False, ['open', str(self.plan)], 4),
+            ('lock is a directory', lock_is_a_dir, False, ['stop'], 0),
+            ('recorded build is a list', live_server_recorded_with_a_list_build, False, ['open'], starts),
+            ('repo marker is a symlink loop', None, False, ['open', str(looped)], starts),
+        )
+        for number, (label, setup, needs_user, args, expected) in enumerate(cases):
+            with self.subTest(label, command=args[0]):
+                if needs_user and os.geteuid() == 0:
+                    self.skipTest('root ignores file modes')
+                home = self.tmp / f'hostile-{number}'
+                env = dict(self.env, XDG_STATE_HOME=str(home))
+                self.addCleanup(self._stop_server, home)
+                if setup:
+                    setup(home, env)
+                before = self._recorded_pid(home)
+                try:
+                    result = self.ui(*args, env=env, timeout=15)
+                except subprocess.TimeoutExpired:
+                    self.fail(f'{args[0]} blocked')
+                self.assertNotIn('Traceback', result.stderr)
+                if expected == starts:
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    recorded = json.loads((home / 'forge/ui/server.json').read_text())
+                    self.assertNotEqual(recorded['pid'], before)
+                    self.assertEqual(get_json(recorded['port'], '/api/health')['pid'], recorded['pid'])
+                else:
+                    self.assertEqual(result.returncode, expected, result.stderr)
+                    if expected == 4:
+                        self.assertIn(str(home), result.stderr, 'the message must name the path')
 
 
 if __name__ == '__main__':

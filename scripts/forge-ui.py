@@ -9,6 +9,7 @@ and `lock` (serialises launchers). The server exits by itself after FORGE_UI_IDL
 from __future__ import annotations
 
 import argparse
+import errno
 import fcntl
 import http.client
 import json
@@ -93,17 +94,31 @@ def health(port):
         if response.status != 200:
             return None
         data = json.loads(response.read(65536))
-    except (OSError, ValueError, http.client.HTTPException):
+    except (OSError, ValueError, RecursionError, http.client.HTTPException):
         return None
     finally:
         conn.close()
     return data if isinstance(data, dict) else None
 
 
+def open_regular(path, flags):
+    """An fd on path, which must be a regular file; OSError otherwise.
+
+    O_NONBLOCK: a FIFO or device planted at one of our paths must fail, never block.
+    """
+    fd = os.open(path, flags | os.O_NONBLOCK | os.O_CLOEXEC, 0o644)
+    if not stat.S_ISREG(os.fstat(fd).st_mode):
+        os.close(fd)
+        raise OSError(errno.EINVAL, 'not a regular file', str(path))
+    return fd
+
+
 def read_state(state):
+    """server.json as a dict, or None when it is missing, unreadable or not a JSON object."""
     try:
-        data = json.loads((state / 'server.json').read_text())
-    except (OSError, ValueError):
+        with os.fdopen(open_regular(state / 'server.json', os.O_RDONLY), 'rb') as handle:
+            data = json.loads(handle.read())
+    except (OSError, ValueError, RecursionError):  # ValueError covers bad UTF-8 and bad JSON
         return None
     return data if isinstance(data, dict) else None
 
@@ -141,20 +156,24 @@ class Lock:
         self.handle = None
 
     def __enter__(self):
-        self.handle = open(self.path, 'a')
+        self.handle = open_regular(self.path, os.O_WRONLY | os.O_CREAT)
         deadline = time.monotonic() + LOCK_WAIT_S
         while True:
             try:
                 fcntl.flock(self.handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 return self
-            except OSError:
-                if time.monotonic() >= deadline:
-                    self.handle.close()
-                    raise TimeoutError(f'another forge ui is holding {self.path}')
-                time.sleep(0.05)
+            except OSError as exc:
+                busy = exc.errno in (errno.EWOULDBLOCK, errno.EAGAIN)
+                if busy and time.monotonic() < deadline:
+                    time.sleep(0.05)
+                    continue
+                os.close(self.handle)
+                if busy:
+                    raise TimeoutError(errno.ETIMEDOUT, 'another forge ui is holding it', str(self.path)) from None
+                raise OSError(exc.errno, exc.strerror, str(self.path)) from None  # flock names no file
 
     def __exit__(self, *exc):
-        self.handle.close()  # closing releases the lock
+        os.close(self.handle)  # closing releases the lock
 
 
 def terminate(pid) -> bool:
@@ -174,7 +193,7 @@ def _spawn(state, port, registry, idle):
     env = {k: v for k, v in os.environ.items() if not k.startswith('FORGE_')}
     command = [sys.executable, '-I', str(Path(__file__).resolve()), '_serve', '--port', str(port),
                '--quiet', '--registry-dir', registry, '--idle-exit', str(idle)]
-    with open(log, 'w') as out:
+    with os.fdopen(open_regular(log, os.O_WRONLY | os.O_CREAT | os.O_TRUNC), 'w') as out:
         proc = subprocess.Popen(command, cwd=str(state), stdin=subprocess.DEVNULL, stdout=out, stderr=out,
                                 start_new_session=True, close_fds=True, env=env)
     deadline = time.monotonic() + START_WAIT_S
@@ -280,21 +299,27 @@ def cmd_open(args):
         if why:
             _say(f'error: {directory}: {why}')
             return 3
-        forge_registry.register_run_dir(Path(repo), directory)
+        try:
+            forge_registry.register_run_dir(Path(repo), directory)
+        except RuntimeError:  # pathlib before 3.13 raises it for a symlink loop; noting a run is best-effort
+            pass
         key = run_key(directory)
 
     state = state_dir()
-    state.mkdir(parents=True, exist_ok=True)
-    registry = str(forge_registry.registry_dir())
-    build = build_id()
     log = state / 'server.log'
+    registry = str(forge_registry.registry_dir())
+    spawned = None
+    # Any OSError below is state we cannot use (state dir, lock, server.log, server.json) or a
+    # spawn that failed: exit 4. An unreadable or invalid server.json is not one: it means no server.
     try:
+        build = build_id()
+        state.mkdir(parents=True, exist_ok=True)
         with Lock(state):
             server = read_state(state)
             answer = confirmed(server) if server else None
             if answer:
                 # the record and the live answer must both name this code
-                if {server.get('build'), answer.get('build')} == {build} and server.get('registry') == registry:
+                if server.get('build') == build and answer.get('build') == build and server.get('registry') == registry:
                     pass  # reuse
                 else:
                     terminate(server['pid'])
@@ -302,11 +327,11 @@ def cmd_open(args):
             else:
                 server = None  # dead, or a pid that is not our forge-ui: never signal it
             if server is None:
-                started = start_server(state, port, registry, idle)
-                if started is None:
+                spawned = start_server(state, port, registry, idle)
+                if spawned is None:
                     _say(f'error: the server did not start; see {log}')
                     return 4
-                server = dict(started, version=__version__, build=build, registry=registry, log=str(log),
+                server = dict(spawned, version=__version__, build=build, registry=registry, log=str(log),
                               started=datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'), opened=[])
             opened = server.get('opened')
             opened = opened if isinstance(opened, list) else []
@@ -317,8 +342,11 @@ def cmd_open(args):
                 opened.append(mark)
             server['opened'] = opened
             write_state(state, server)
-    except TimeoutError as exc:
-        _say(f'error: {exc}')
+    except OSError as exc:  # TimeoutError (the lock) included
+        if spawned:
+            terminate(spawned['pid'])  # our own child, but unrecorded: no later command could find it
+        hint = f'; see {log}' if os.path.isfile(log) else ''
+        _say(f'error: cannot use {exc.filename or state}: {exc.strerror or exc}{hint}')
         return 4
 
     url = f'http://{HOST}:{server["port"]}/'
@@ -351,7 +379,7 @@ def cmd_status(args):
 
 def cmd_stop(args):
     state = state_dir()
-    if not state.is_dir():
+    if not os.path.isdir(state):  # unlike Path.is_dir, never raises
         print('forge-ui: not running')
         return 0
     try:
@@ -371,8 +399,8 @@ def cmd_stop(args):
                 (state / 'server.json').unlink()
             except OSError:
                 pass
-    except TimeoutError as exc:
-        _say(f'warning: {exc}')
+    except OSError as exc:  # the lock, TimeoutError included: exit 0 either way
+        _say(f'warning: cannot use {exc.filename or state}: {exc.strerror or exc}')
     return 0
 
 
