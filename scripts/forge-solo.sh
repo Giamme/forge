@@ -18,7 +18,7 @@
 # Usage:
 #   forge-solo.sh <run-dir> --repo <dir> --dwarf <spec> [--qa <spec>]
 #                 [--approach <file>] [--yolo-dwarf] [--yolo-qa]
-#                 [--native-review] [--no-memory] [--timeout <s>] [--dry-run]
+#                 [--native-review] [--no-memory] [--timeout <s>] [--dry-run] [--ui]
 #
 # Reads  <run-dir>/prompt.md   the implementation instruction (required)
 #        <run-dir>/goal.txt    one line, what the user asked for (optional)
@@ -41,6 +41,7 @@ MEMORY="$SKILL_DIR/scripts/forge-memory.sh"
 source "$SKILL_DIR/scripts/forge-artifact.sh"
 source "$SKILL_DIR/scripts/forge-metrics.sh"
 source "$SKILL_DIR/scripts/forge-fractal-options.sh"
+source "$SKILL_DIR/scripts/forge-ui-options.sh"
 source "$SKILL_DIR/scripts/forge-lib-task.sh"
 JEV_OPTS=0
 [ -f "$SKILL_DIR/scripts/forge-jev-options.sh" ] \
@@ -120,6 +121,7 @@ while [ $# -gt 0 ]; do
     --no-memory)  export FORGE_MEMORY=off; shift ;;
     --timeout)    TIMEOUT="${2:?--timeout needs seconds}"; shift 2 ;;
     --dry-run)    DRY=1; shift ;;
+    --ui|--no-ui) forge_ui_flag "$1"; shift ;;
     *)
       # `case` is not a loop, so `continue` here belongs to the enclosing while.
       if [ "$JEV_OPTS" = 1 ]; then
@@ -171,7 +173,12 @@ FFLAGS=()
 [ -z "$YQ" ] || FFLAGS+=(--yolo-qa)
 forge_fractal_select "$RUN" "$REPO" solo "$DRY" --dwarf "$DWARF" --qa "$QA" ${FFLAGS[@]+"${FFLAGS[@]}"} || exit $?
 if [ -n "${FORGE_FRACTAL_RUN:-}" ]; then
-  python3 "$SKILL_DIR/scripts/forge-fractal.py" _remember "$0" "${ORIGINAL_ARGS[@]}" || exit $?
+  # The UI choice is per invocation: a tmux resume replays these args and must not open it again.
+  REMEMBER_ARGS=()
+  for arg in "${ORIGINAL_ARGS[@]}"; do
+    case "$arg" in --ui|--no-ui) ;; *) REMEMBER_ARGS+=("$arg") ;; esac
+  done
+  python3 "$SKILL_DIR/scripts/forge-fractal.py" _remember "$0" ${REMEMBER_ARGS[@]+"${REMEMBER_ARGS[@]}"} || exit $?
 fi
 if [ -n "${FORGE_FRACTAL_RUN:-}" ] && [ "$DRY" != 1 ] && [ "${FORGE_FRACTAL_RETRY:-}" != 1 ]; then
   python3 "$SKILL_DIR/scripts/forge-fractal.py" _checkpoint "$REPO"
@@ -212,6 +219,7 @@ EOF
 
 if [ "$DRY" = 1 ]; then
   echo "--- dry run ---"
+  [ "$FORGE_UI_WANTED" != 1 ] || note "--ui ignored: a dry run starts no UI"
   /bin/bash "$DISPATCH" dwarf "$DWARF" --repo "$REPO" --run-dir "$RUN" \
     --ripwire-query-file "$RUN/prompt.md" --prompt-file "$RUN/dwarf.input" $YD $TFLAG --dry-run
   echo
@@ -224,6 +232,8 @@ forge_metric_phase preflight
 /bin/bash "$DISPATCH" doctor --spec "$DWARF" --role dwarf $YD $TFLAG || exit $?
 /bin/bash "$DISPATCH" doctor --spec "$QA" --role qa $YQ $NATIVE $TFLAG || exit $?
 /bin/bash "$SKILL_DIR/scripts/forge-install-ripwire.sh" || true
+# After the _lock re-exec and the Fractal checkpoint exit, so it runs once per run.
+forge_ui_launch "$RUN"
 forge_metric_phase snapshot
 if [ -n "${FORGE_FRACTAL_RUN:-}" ] && [ -s "$RUN/start.tree" ]; then
   START="$(cat "$RUN/start.tree")"

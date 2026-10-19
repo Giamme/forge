@@ -1,5 +1,6 @@
 """`forge ui open|status|stop`: one shared, detached forge-ui server for every run."""
 import dataset_isolation  # noqa: F401  keeps forge's dataset and config out of the developer's home
+import fcntl
 import http.client
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import json
@@ -15,8 +16,11 @@ import threading
 import time
 import unittest
 
+import test_forge
+
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'ui'))
+sys.path.insert(0, str(ROOT / 'scripts'))  # forge_fractal, for the Fractal replay test
 
 from forge_ui import build_id  # noqa: E402
 from forge_ui.reader import run_key  # noqa: E402
@@ -403,6 +407,156 @@ class UiLauncherTests(unittest.TestCase):
                     self.assertEqual(result.returncode, expected, result.stderr)
                     if expected == 4:
                         self.assertIn(str(home), result.stderr, 'the message must name the path')
+
+
+class UiRunnerTests(unittest.TestCase):
+    """`--ui` on solo runs and on `plan`, driven through test_forge's fake CLIs and restricted PATH.
+
+    test_forge.ForgeTests is borrowed method by method: subclassing it would re-run all of its tests here.
+    """
+    setUp_forge = test_forge.ForgeTests.setUp
+    git = test_forge.ForgeTests.git
+    scenario = test_forge.ForgeTests.scenario
+    calls = test_forge.ForgeTests.calls
+    run_script = test_forge.ForgeTests.run_script
+    plan = test_forge.ForgeTests.plan
+    ui = UiLauncherTests.ui
+    _recorded_pid = UiLauncherTests._recorded_pid
+    _stop_server = UiLauncherTests._stop_server
+
+    def setUp(self):
+        self.setUp_forge()
+        self.state = self.root / 'state'
+        self.env.update(XDG_STATE_HOME=str(self.state), FORGE_UI_BROWSER='off', FORGE_UI_PORT='0',
+                        FORGE_UI_IDLE_S='120')
+        self.addCleanup(self._stop_server)
+        self.run_dir = self.root / 'solo'
+
+    def server_json(self):
+        return json.loads((self.state / 'forge/ui/server.json').read_text())
+
+    def start_solo(self, *args):
+        self.run_dir.mkdir(exist_ok=True)
+        (self.run_dir / 'prompt.md').write_text('Implement change. REQUIREMENT_SENTINEL\n')
+        proc = subprocess.Popen(['bash', str(ROOT / 'scripts/forge-solo.sh'), str(self.run_dir), '--repo', str(self.repo),
+                                 '--dwarf', 'sol', *args], cwd=self.repo, env=self.env, text=True,
+                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        self.addCleanup(proc.kill)
+        self.addCleanup(proc.stdout.close)
+        return proc
+
+    def solo(self, *args, timeout=30):
+        """Output and exit code of a solo run. A server that inherited our pipe holds it past the deadline."""
+        proc = self.start_solo(*args)
+        try:
+            out, _ = proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.communicate()
+            self.fail(f'forge-solo.sh did not return within {timeout}s')
+        return proc.returncode, out
+
+    def test_solo_ui_prints_the_url_before_the_dwarf_and_serves_the_finished_run(self):
+        self.scenario({'*.dwarf.*': {'sleep': 4}})  # the fake writes its CALLS line first, then sleeps
+        proc = self.start_solo('--ui')
+        lines, calls_at_url = [], None
+        for line in proc.stdout:
+            lines.append(line)
+            if line.startswith('forge-ui: ') and calls_at_url is None:
+                calls_at_url = self.calls()
+        self.assertEqual(proc.wait(timeout=60), 0, ''.join(lines))
+        self.assertEqual(calls_at_url, [], ''.join(lines))  # the dwarf had not been called when the URL went out
+        self.assertEqual(self.calls(), ['dwarf', 'qa'])
+        port, key = self.server_json()['port'], run_key(self.run_dir)
+        self.assertIn(f'forge-ui: http://127.0.0.1:{port}/#/runs/{key}\n', lines)
+        run = get_json(port, f'/api/runs/{key}')
+        task = run['tasks'][0]
+        self.assertEqual((run['kind'], task['status']), ('solo', 'PASS'))
+        self.assertEqual((task['dwarf'], task['qa']), ('sol', 'opus'))
+        self.assertIn('REQUIREMENT_SENTINEL', task['prompt'])
+
+    def test_the_server_inherits_nothing_from_the_run(self):
+        rc, out = self.solo('--ui')
+        self.assertEqual(rc, 0, out)
+        self.assertTrue(alive(self.server_json()['pid']))
+        # The lock a solo run holds on its whole pipeline: a server that inherited it would pin the run dir.
+        with open(self.run_dir / 'pipeline.lock', 'a') as handle:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+    def test_plan_ui_prints_the_url_under_the_table_and_run_refuses_the_flag(self):
+        plan = self.plan()
+        result = self.run_script('forge-parallel.sh', 'plan', plan, '--repo', self.repo, '--no-memory', '--ui')
+        self.assertEqual(result.returncode, 0, result.stdout)
+        port = self.server_json()['port']
+        url = f'forge-ui: http://127.0.0.1:{port}/#/runs/{run_key(plan)}'
+        lines = result.stdout.splitlines()
+        self.assertEqual(lines[-1], url, result.stdout)
+        run = get_json(port, f'/api/runs/{run_key(plan)}')
+        self.assertEqual(run['kind'], 'plan')
+        self.assertEqual([t['id'] for t in run['tasks']], ['a', 'b'])
+        self.assertEqual(run['waves'], [['a'], ['b']])
+        # The choice belongs to one invocation: run has no such option.
+        refused = self.run_script('forge-parallel.sh', 'run', plan, '--ui')
+        self.assertEqual(refused.returncode, 2, refused.stdout)
+        self.assertEqual(self.calls(), [])
+
+    def test_a_ui_that_cannot_start_never_changes_the_run(self):
+        rc, out = self.solo()
+        self.assertEqual(rc, 0, out)
+        baseline = (rc, (self.run_dir / 'verdict').read_text())
+        base_env = self.env
+        for label, extra, note in (('off', {'FORGE_UI': 'off'}, 'FORGE_UI=off'),
+                                   ('broken launcher', {'FORGE_UI_PORT': 'x'}, 'forge-ui did not start; the run goes on')):
+            with self.subTest(label):
+                self.git('clean', '-fdq')  # the dwarf's file from the last run would make this one a no-change run
+                shutil.rmtree(self.run_dir)
+                self.env = dict(base_env, **extra)
+                rc, out = self.solo('--ui')
+                self.assertEqual((rc, (self.run_dir / 'verdict').read_text()), baseline, out)
+                self.assertEqual(sum(note in line for line in out.splitlines()), 1, out)
+                self.assertNotIn('forge-ui: http', out)
+                self.assertFalse((self.state / 'forge/ui').exists())
+
+    def test_a_ui_that_cannot_start_does_not_fail_plan(self):
+        self.env['FORGE_UI_PORT'] = 'x'
+        plan = self.root / 'plan'
+        self.plan()  # a plain plan first: the same plan, re-planned below with --ui
+        result = self.run_script('forge-parallel.sh', 'plan', plan, '--repo', self.repo, '--no-memory', '--ui')
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn('forge-ui did not start; the run goes on', result.stdout)
+
+    def test_nothing_starts_unless_the_user_said_yes(self):
+        rc, out = self.solo()
+        self.assertEqual(rc, 0, out)
+        plain_plan = self.plan()
+        no = self.run_script('forge-parallel.sh', 'plan', plain_plan, '--repo', self.repo, '--no-memory', '--ui', '--no-ui')
+        self.assertEqual(no.returncode, 0, no.stdout)
+        dry_rc, dry_out = self.solo('--ui', '--dry-run')
+        self.assertEqual(dry_rc, 0, dry_out)
+        self.assertIn('--ui ignored', dry_out)
+        self.assertFalse((self.state / 'forge/ui').exists())
+        self.assertNotIn('forge-ui:', out + no.stdout + dry_out)
+
+    @unittest.skipUnless(os.environ.get('FORGE_TEST_FRACTAL_RUNTIME') or (Path.home() / '.local/state/forge/fractal/runtime').is_dir(),
+                         'Fractal is not installed (or set FORGE_TEST_FRACTAL_RUNTIME)')
+    def test_a_fractal_resume_does_not_replay_the_ui_choice(self):
+        from forge_fractal import ARCHIVE_SHA256, REVISION, write_json
+        runtime = os.environ.get('FORGE_TEST_FRACTAL_RUNTIME') or str(Path.home() / '.local/state/forge/fractal/runtime')
+        managed = self.state / 'forge/fractal'
+        managed.mkdir(parents=True)
+        (managed / 'runtime').symlink_to(runtime, target_is_directory=True)
+        write_json(managed / 'provenance.json', dict(revision=REVISION, archive_sha256=ARCHIVE_SHA256))
+        fake = test_forge.FAKE.replace("else 'implemented'", "else 'implemented\\nFORGE_FRACTAL: {\"done\":true}'")
+        for name in ('codex', 'claude'):
+            (self.bin / name).write_text(fake)
+        self.env['PATH'] += os.pathsep + os.environ['PATH']  # Fractal needs tmux
+        rc, out = self.solo('--fractal', '--ui', timeout=90)
+        self.assertEqual(rc, 0, out)
+        recorded = [json.loads(p.read_text()) for p in managed.glob('runs/*/run.json')]
+        self.assertEqual(len(recorded), 1)
+        argv = recorded[0]['pipeline_argv']
+        self.assertIn('--fractal', argv)  # the rest of the command is replayed as typed
+        self.assertNotIn('--ui', argv)  # a replay that carried it would open the UI a second time
 
 
 if __name__ == '__main__':
