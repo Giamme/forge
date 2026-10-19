@@ -7,8 +7,10 @@ Capture itself stays on, so every end-to-end test also shows that capture leaves
 run's outcome alone.
 """
 import atexit
+import json
 import os
 import shutil
+import signal
 import tempfile
 
 HOME = tempfile.mkdtemp(prefix='forge-dataset-test-')
@@ -39,3 +41,28 @@ os.environ['FORGE_ROUTE_EXPLORE'] = '0'
 for name in ('CLOUDFLARE_API_TOKEN', 'CLOUDFLARE_ACCOUNT_ID', 'FORGE_CLEF', 'FORGE_JEV_PROVIDER',
              'FORGE_JEV_OUTCOMES'):
     os.environ.pop(name, None)
+
+# `forge ui open` starts a detached server that outlives the command, and keeps its state
+# under XDG_STATE_HOME. Tests get a private state home, never open a browser, ask for a free
+# port, and stop whatever server they left behind when the process exits. FORGE_UI would let
+# a developer's shell decide whether runs offer the UI.
+STATE = tempfile.mkdtemp(prefix='forge-state-test-')
+os.environ['XDG_STATE_HOME'] = STATE
+
+
+def _stop_ui_server(state=STATE):
+    try:
+        with open(os.path.join(state, 'forge/ui/server.json')) as handle:
+            pid = json.load(handle).get('pid')
+        if isinstance(pid, int) and pid > 1:
+            os.kill(pid, signal.SIGTERM)
+    except (OSError, ValueError, AttributeError):
+        pass
+    shutil.rmtree(state, True)
+
+
+atexit.register(_stop_ui_server)
+os.environ['FORGE_UI_BROWSER'] = 'off'
+os.environ['FORGE_UI_PORT'] = '0'
+os.environ['FORGE_UI_IDLE_S'] = '120'
+os.environ.pop('FORGE_UI', None)
