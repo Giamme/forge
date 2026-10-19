@@ -19,3 +19,4 @@ f9e1ceb	forge(page) attempt 2: The page: run list, run view, task table and task
 b95a2dd	forge(page) attempt 1: The page: run list, run view, task table and task panel
 b506694	forge(graph) attempt 1: SVG graph of tasks by wave with dependency edges
 47b3c20	chore: forge-ui skeleton and the reader/server/page data contract
+43f4692	docs(readme): forge-ui, default exploration, and six harnesses throughout

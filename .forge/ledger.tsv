@@ -1,0 +1,38 @@
+# ts	run_id	task	role	model	verdict	category	key	text	duration_s	injectable
+2026-10-19T15:45:02Z	ui-integration-plan	registry	dwarf	grok:high	-	-	-	-	783
+2026-10-19T15:49:27Z	ui-integration-plan	registry	qa	sol	PASS	-	-	-	263
+2026-10-19T15:51:59Z	ui-integration-plan	solo-status	dwarf	grok:high	-	-	-	-	1200
+2026-10-19T15:56:58Z	ui-integration-plan	solo-status	qa	sol	FAIL	-	-	-	296
+2026-10-19T16:15:34Z	ui-integration-plan	ui-server	dwarf	grok:high	-	-	-	-	1565
+2026-10-19T16:17:56Z	ui-integration-plan	ui-server	qa	sol	FAIL	-	-	-	140
+2026-10-19T16:22:32Z	ui-integration-plan	solo-status	dwarf	grok:high	-	trap	macos bash 3 2 nt compares mtimes in whole seconds so same second writes compare equal	macOS Bash 3.2 -nt compares mtimes in whole seconds, so same-second writes compare equal [scripts/forge-solo.sh]	1531	1
+2026-10-19T16:27:36Z	ui-integration-plan	solo-status	qa	sol	FAIL	-	-	-	299
+2026-10-19T17:23:50Z	ui-integration-plan	ui-reader	dwarf	grok:high	-	-	-	-	6711
+2026-10-19T17:25:07Z	ui-integration-plan	ui-reader	qa	sol	PASS	-	-	-	74
+2026-10-19T18:07:48Z	ui-integration-plan	ui-server	dwarf	sonnet:high	-	-	-	-	90
+2026-10-19T18:08:01Z	ui-integration-plan	ui-page	dwarf	sonnet:high	-	-	-	-	103
+2026-10-19T18:09:53Z	ui-integration-plan	ui-page	qa	sol	PASS	-	-	-	109
+2026-10-19T18:11:06Z	ui-integration-plan	solo-status	dwarf	sonnet:high	-	-	-	-	287
+2026-10-19T18:12:12Z	ui-integration-plan	ui-server	qa	sol	FAIL	-	-	-	261
+2026-10-19T18:13:26Z	ui-integration-plan	ui-server	dwarf	sonnet:high	-	-	-	-	71
+2026-10-19T18:15:19Z	ui-integration-plan	solo-status	qa	sol	PASS	-	-	-	251
+2026-10-19T18:16:40Z	ui-integration-plan	ui-server	qa	sol	FAIL	-	-	-	191
+2026-10-19T18:18:53Z	ui-integration-plan	ui-server	dwarf	sonnet:high	-	-	-	-	124
+2026-10-19T18:20:22Z	ui-integration-plan	ui-server	qa	sol	PASS	-	-	-	87
+2026-10-19T18:44:37Z	ui-integration-plan	launcher	dwarf	sonnet:high	-	verify	the full python3 m unittest discover s tests takes over 10 minutes run only the modules you touched	the full `python3 -m unittest discover -s tests` takes over 10 minutes; run only the modules you touched [tests/check.sh]	1452	1
+2026-10-19T18:44:37Z	ui-integration-plan	launcher	dwarf	sonnet:high	-	trap	test dataset s clef predictions end to end test already fails on a clean checkout	test_dataset's clef-predictions end-to-end test already fails on a clean checkout [tests/test_dataset.py]	1452	0
+2026-10-19T18:47:29Z	ui-integration-plan	launcher	qa	sol	FAIL	-	-	-	167
+2026-10-19T18:50:21Z	ui-integration-plan	launcher	dwarf	sonnet:high	-	-	-	-	168
+2026-10-19T18:53:06Z	ui-integration-plan	launcher	qa	sol	FAIL	-	-	-	161
+2026-10-19T18:54:46Z	ui-integration-plan	launcher	dwarf	sonnet:high	-	-	-	-	97
+2026-10-19T18:57:18Z	ui-integration-plan	launcher	qa	sol	FAIL	-	-	-	150
+2026-10-19T19:51:35Z	ui-integration-plan	launcher	dwarf	sonnet:high	-	-	-	-	92
+2026-10-19T19:53:51Z	ui-integration-plan	launcher	qa	sol	FAIL	-	-	-	134
+2026-10-19T20:35:42Z	ui-integration-plan	launcher	dwarf	opus:high	-	verify	tests import dataset isolation by bare name so run a single module from inside tests cd tests python3 m unittest test ui	tests import `dataset_isolation` by bare name, so run a single module from inside tests/: `cd tests && python3 -m unittest test_ui` [tests/dataset_isolation.py]	300	1
+2026-10-19T20:37:47Z	ui-integration-plan	launcher	qa	sol	FAIL	-	-	-	121
+2026-10-19T21:30:54Z	ui-integration-plan	runner-wiring	dwarf	sonnet:high	-	-	-	-	656
+2026-10-19T21:32:46Z	ui-integration-plan	runner-wiring	qa	sol	PASS	-	-	-	109
+2026-10-19T21:34:46Z	ui-integration-plan	docs	dwarf	sonnet:high	-	-	-	-	118
+2026-10-19T21:36:59Z	ui-integration-plan	docs	qa	sol	FAIL	-	-	-	130
+2026-10-19T21:37:42Z	ui-integration-plan	docs	dwarf	sonnet:high	-	-	-	-	40
+2026-10-19T21:38:50Z	ui-integration-plan	docs	qa	sol	PASS	-	-	-	65
