@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import argparse
 import getpass
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -11,6 +10,8 @@ import sys
 import tempfile
 import time
 import urllib.parse
+
+from forge_registry import register_run_dir, runs_registry
 
 from . import (CAPABILITIES, CLEF_ONLY_SITES, CLOUDFLARE_DEFAULT_SITES, CLOUDFLARE_TOKEN_FILE,
               DEFAULT_THRESHOLDS, PROVIDERS, RETIRED_THRESHOLDS, SITE_CAPABILITY, THRESHOLD_FALLBACK, api_key,
@@ -656,42 +657,6 @@ def cmd_score_plan(args) -> int:
                              judgment['escalated'] or '-',
                              judgment['declared'], warnings, drift)))
     return 0
-
-
-def runs_registry(repo) -> Path:
-    """Where this repo's run-dir list lives -- beside the Jev config, never in the repo.
-
-    The first version of this wrote <repo>/.forge/jev-runs.txt, which left the user's
-    working tree dirty and made `integrate` refuse to run: "working tree is dirty --
-    commit or stash before integrating". Forge's contract is that it does not touch the
-    user's tree, and a file recording where forge keeps its own data is forge's
-    bookkeeping, not the project's.
-    """
-    digest = hashlib.sha256(str(Path(repo).resolve()).encode()).hexdigest()[:16]
-    return config_path().parent / 'runs' / (digest + '.txt')
-
-
-def register_run_dir(repo: Path, run_dir: Path) -> None:
-    """Record an absolute run-dir path for this repo, deduplicated.
-
-    Never raises: failing to note where a run lives must not fail the run.
-    """
-    try:
-        registry = runs_registry(repo)
-        registry.parent.mkdir(parents=True, exist_ok=True)
-        line = str(Path(run_dir).resolve())
-        existing = []
-        if registry.is_file():
-            existing = [x.strip() for x in registry.read_text(errors='replace').splitlines()]
-        if line in existing:
-            return
-        header = [] if existing else ['# run dirs that have scored ' + str(Path(repo).resolve())]
-        with registry.open('a') as handle:
-            for entry in header:
-                handle.write(entry + '\n')
-            handle.write(line + '\n')
-    except OSError:
-        pass
 
 
 def cmd_coupling(args) -> int:

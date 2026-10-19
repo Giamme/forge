@@ -36,6 +36,8 @@ import traceback
 import uuid
 from pathlib import Path
 
+import forge_registry
+
 SCHEMA = 2
 SCRIPTS = Path(__file__).resolve().parent.parent
 SKILL = SCRIPTS.parent
@@ -97,8 +99,8 @@ def dataset_dir() -> Path:
 
 
 def config_runs_dir() -> Path:
-    """The Jev runs registry (forge_jev.cli.runs_registry): plan dirs per repo."""
-    return Path(os.environ.get('XDG_CONFIG_HOME', str(Path.home() / '.config'))).expanduser() / 'forge' / 'runs'
+    """The runs registry (forge_registry.registry_dir): plan dirs per repo."""
+    return forge_registry.registry_dir()
 
 
 def log_error(where: str, error: BaseException | str) -> None:
@@ -332,8 +334,8 @@ def forge_rev() -> str | None:
 
 
 def repo_id(path: str | Path) -> str:
-    """Same scheme as the Jev runs registry, so the two join on one key."""
-    return sha256(str(Path(path).resolve()).encode())[:16]
+    """Same scheme as the runs registry, so the two join on one key."""
+    return forge_registry.repo_key(path)
 
 
 def git_origin(repo: str | Path) -> str | None:

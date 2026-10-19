@@ -18,7 +18,7 @@
 # Usage:
 #   forge-solo.sh <run-dir> --repo <dir> --dwarf <spec> [--qa <spec>]
 #                 [--approach <file>] [--yolo-dwarf] [--yolo-qa]
-#                 [--native-review] [--no-memory] [--timeout <s>] [--dry-run]
+#                 [--native-review] [--no-memory] [--timeout <s>] [--dry-run] [--ui]
 #
 # Reads  <run-dir>/prompt.md   the implementation instruction (required)
 #        <run-dir>/goal.txt    one line, what the user asked for (optional)
@@ -26,6 +26,8 @@
 #        <run-dir>/changes.diff
 #        <run-dir>/qa.{input,last,log,resolved}
 #        <run-dir>/verdict      PASS | FAIL | UNKNOWN, when qa emitted one
+#        <run-dir>/status       RUNNING, then this invocation's outcome
+#        <run-dir>/dwarf.spec, qa.spec and attempts.tsv
 #
 # Exit codes: 0 ok | 2 usage | 3 precondition | 4 a dispatch failed
 #             5 the dwarf produced no changes | 7 a dispatch timed out
@@ -39,6 +41,7 @@ MEMORY="$SKILL_DIR/scripts/forge-memory.sh"
 source "$SKILL_DIR/scripts/forge-artifact.sh"
 source "$SKILL_DIR/scripts/forge-metrics.sh"
 source "$SKILL_DIR/scripts/forge-fractal-options.sh"
+source "$SKILL_DIR/scripts/forge-ui-options.sh"
 source "$SKILL_DIR/scripts/forge-lib-task.sh"
 JEV_OPTS=0
 [ -f "$SKILL_DIR/scripts/forge-jev-options.sh" ] \
@@ -48,8 +51,47 @@ ORIGINAL_ARGS=("$@")
 die()  { printf 'forge: %s\n' "$1" >&2; exit "${2:-2}"; }
 note() { printf 'forge: %s\n' "$*" >&2; }
 
+# forge_metric_begin's EXIT trap calls this, before runtime finish and Fractal's
+# _outcome read status. Only this script defines it. It must not change the exit code.
+forge_metric_on_exit() {
+  local rc="${1:-}" status="" word="" cls="" n=0 pick=""
+  [ -n "${RUN:-}" ] || return 0
+  if [ -f "$RUN/verdict" ]; then
+    word=$(awk 'NF { print $1; exit }' "$RUN/verdict" 2>/dev/null || true)
+    case "$word" in
+      PASS|FAIL|UNKNOWN|NOCHANGES|INVALIDATED) status=$word ;;
+    esac
+  fi
+  if [ -z "$status" ]; then
+    case "$rc" in
+      7) status=TIMEOUT ;;
+      8) status=INFRA ;;
+      130|143) status=INTERRUPTED ;;
+      *) status=ERROR ;;
+    esac
+  fi
+  printf '%s\n' "$status" > "$RUN/status" 2>/dev/null || true
+  # The run start cleared both infra files, so any file here is this invocation's.
+  # QA only runs once the dwarf has passed, which makes qa.infra the later stage; no
+  # timestamps are compared (macOS mtimes can tie at whole-second resolution).
+  if [ "$status" = INFRA ]; then
+    for pick in "$RUN/qa.infra" "$RUN/dwarf.infra"; do
+      [ -f "$pick" ] || continue
+      cls=$(awk '/^class=/ { sub(/^class=/, ""); print; exit }' "$pick" 2>/dev/null || true)
+      break
+    done
+  fi
+  n=0
+  if [ -f "$RUN/attempts.tsv" ]; then
+    n=$(grep -c . "$RUN/attempts.tsv" 2>/dev/null) || n=0
+  fi
+  n=$(( ${n:-0} + 1 ))
+  printf '%s\t%s\t%s\t%s\t%s\n' "$(date +%s)" "$n" "$status" "$cls" "${DWARF:-}" >> "$RUN/attempts.tsv" 2>/dev/null || true
+  return 0
+}
+
 if [ "${1:-}" = --help ] || [ "${1:-}" = -h ]; then
-  sed -n '18,29s/^# *//p' "$0"
+  sed -n '18,31s/^# *//p' "$0"
   forge_fractal_help
   echo 'Explicit Fractal retry: repeat the original command with --retry.'
   exit 0
@@ -79,6 +121,7 @@ while [ $# -gt 0 ]; do
     --no-memory)  export FORGE_MEMORY=off; shift ;;
     --timeout)    TIMEOUT="${2:?--timeout needs seconds}"; shift 2 ;;
     --dry-run)    DRY=1; shift ;;
+    --ui|--no-ui) forge_ui_flag "$1"; shift ;;
     *)
       # `case` is not a loop, so `continue` here belongs to the enclosing while.
       if [ "$JEV_OPTS" = 1 ]; then
@@ -130,7 +173,12 @@ FFLAGS=()
 [ -z "$YQ" ] || FFLAGS+=(--yolo-qa)
 forge_fractal_select "$RUN" "$REPO" solo "$DRY" --dwarf "$DWARF" --qa "$QA" ${FFLAGS[@]+"${FFLAGS[@]}"} || exit $?
 if [ -n "${FORGE_FRACTAL_RUN:-}" ]; then
-  python3 "$SKILL_DIR/scripts/forge-fractal.py" _remember "$0" "${ORIGINAL_ARGS[@]}" || exit $?
+  # The UI choice is per invocation: a tmux resume replays these args and must not open it again.
+  REMEMBER_ARGS=()
+  for arg in "${ORIGINAL_ARGS[@]}"; do
+    case "$arg" in --ui|--no-ui) ;; *) REMEMBER_ARGS+=("$arg") ;; esac
+  done
+  python3 "$SKILL_DIR/scripts/forge-fractal.py" _remember "$0" ${REMEMBER_ARGS[@]+"${REMEMBER_ARGS[@]}"} || exit $?
 fi
 if [ -n "${FORGE_FRACTAL_RUN:-}" ] && [ "$DRY" != 1 ] && [ "${FORGE_FRACTAL_RETRY:-}" != 1 ]; then
   python3 "$SKILL_DIR/scripts/forge-fractal.py" _checkpoint "$REPO"
@@ -141,7 +189,15 @@ fi
 
 # The dispatches see a review snapshot, not the repo, so the run dir names it for the dataset.
 [ "$DRY" = 1 ] || printf '%s\n' "$REPO" > "$RUN/repo"
-[ "$DRY" = 1 ] || forge_metric_begin "$RUN" solo
+# Recorded before any dispatch: forge-ui opens this dir immediately, and a re-run
+# that dies early must not keep showing the previous invocation's verdict.
+if [ "$DRY" != 1 ]; then
+  forge_metric_begin "$RUN" solo
+  printf '%s\n' RUNNING > "$RUN/status"
+  printf '%s\n' "$DWARF" > "$RUN/dwarf.spec"
+  printf '%s\n' "$QA" > "$RUN/qa.spec"
+  rm -f "$RUN/verdict" "$RUN/dwarf.infra" "$RUN/qa.infra"
+fi
 
 # --- dwarf --------------------------------------------------------------------
 /bin/bash "$MEMORY" inject "$REPO" dwarf --run-dir "$RUN" > "$RUN/dwarf.memory"
@@ -163,6 +219,7 @@ EOF
 
 if [ "$DRY" = 1 ]; then
   echo "--- dry run ---"
+  [ "$FORGE_UI_WANTED" != 1 ] || note "--ui ignored: a dry run starts no UI"
   /bin/bash "$DISPATCH" dwarf "$DWARF" --repo "$REPO" --run-dir "$RUN" \
     --ripwire-query-file "$RUN/prompt.md" --prompt-file "$RUN/dwarf.input" $YD $TFLAG --dry-run
   echo
@@ -175,6 +232,8 @@ forge_metric_phase preflight
 /bin/bash "$DISPATCH" doctor --spec "$DWARF" --role dwarf $YD $TFLAG || exit $?
 /bin/bash "$DISPATCH" doctor --spec "$QA" --role qa $YQ $NATIVE $TFLAG || exit $?
 /bin/bash "$SKILL_DIR/scripts/forge-install-ripwire.sh" || true
+# After the _lock re-exec and the Fractal checkpoint exit, so it runs once per run.
+forge_ui_launch "$RUN"
 forge_metric_phase snapshot
 if [ -n "${FORGE_FRACTAL_RUN:-}" ] && [ -s "$RUN/start.tree" ]; then
   START="$(cat "$RUN/start.tree")"
@@ -183,7 +242,6 @@ else
 fi
 echo "$START" > "$RUN/start.tree"
 git -C "$REPO" diff --binary HEAD "$START" -- . ':(exclude).forge' > "$RUN/existing.diff"
-rm -f "$RUN/verdict"
 forge_metric_phase dispatch
 note "dwarf $DWARF in $REPO"
 guard_before_dwarf "$REPO" "$RUN"

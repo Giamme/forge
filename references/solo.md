@@ -8,8 +8,22 @@ efforts, harnesses and any explicit bypass flags before dispatch.
 bash <skill_dir>/scripts/forge-solo.sh "$FORGE_RUN" --repo "$REPO" \
   --dwarf <spec> [--qa <spec>] [--approach <file>] \
   [--yolo-dwarf] [--yolo-qa] [--timeout <seconds>] [--no-memory] [--dry-run] \
-  [--fractal | --no-fractal] [--fractal-concurrency <n>] [--fractal-deadline <seconds>]
+  [--fractal | --no-fractal] [--fractal-concurrency <n>] [--fractal-deadline <seconds>] \
+  [--ui | --no-ui]
 ```
+
+`--ui` opens the run in [forge-ui](ui.md) before the first dispatch and prints a
+`forge-ui: <url>` line to relay. It is fail-open (a UI that cannot start never changes the
+exit code), is not remembered, and is ignored with `--dry-run`. Ask once for a new run; do
+not ask on a re-run or `--retry`.
+
+Besides the artifacts above, the runner writes these for forge-ui and for you:
+
+| File | Meaning |
+|---|---|
+| `status` | `RUNNING` while it works, then this invocation's outcome: a verdict word (`PASS`, `FAIL`, `UNKNOWN`, `NOCHANGES`, `INVALIDATED`) or `TIMEOUT`, `INFRA`, `INTERRUPTED`, `ERROR` |
+| `dwarf.spec`, `qa.spec` | the specs this run was given, one line each |
+| `attempts.tsv` | one row per invocation: epoch, attempt number, status, infrastructure class, dwarf spec |
 
 Both roles receive offline preflight before implementation starts. The runner records a
 starting tree with a private index, then captures the net filesystem changes since that
