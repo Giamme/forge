@@ -66,6 +66,12 @@ implementer guards), `test_policy` (severity gate, shared prompt contract, verif
 (accept/combine/split and the opt-in final review). Scripts must not use external commands
 outside the allowlist above (no `cut`, `seq`, `ps`, `find`, `perl`, `setsid`).
 
+The forge-ui suite lives in `ui/tests` and runs from `ui/`:
+`(cd ui && python3 -m unittest discover -s tests)`. `tests/test_ui.py` covers the launcher
+(`forge ui`) and the runners' `--ui` flag. `tests/check.sh` runs both suites and, when `node`
+is on PATH, `node --check` on every `ui/forge_ui/static/*.js`; without `node` that syntax
+check is silently skipped.
+
 `live_compare.py` is deliberately outside unittest discovery. It requires `--execute`, creates
 isolated fixtures and revision copies, and never changes the source checkout. The approved
 comparison uses baseline `f436210`, implementer `sol:medium:codex`, reviewer

@@ -6,11 +6,16 @@ propensities, attempts and escalations, reviewer verdicts and shadow reviews,
 and Clef predictions. It runs on `127.0.0.1` using Python's standard library and
 a static vanilla JavaScript page, with no install step, third-party packages or build step.
 
-It is the companion of forge+.
+It lives inside forge, in `ui/`, and is forge's companion: runs open it with `--ui`.
 
 ## Run it
 
-From the repo root:
+Normally forge launches it. `forge ui open [DIR]` (from the forge checkout) starts or
+reuses one shared detached server and prints the link to a run dir, `forge ui status`
+shows it and `forge ui stop` ends it; see [references/ui.md](../references/ui.md). A run
+starts it itself with `forge-solo.sh --ui` or `forge-parallel.sh plan --ui`.
+
+To run the server directly, from `ui/`:
 
 ```sh
 python3 -m forge_ui
@@ -25,6 +30,7 @@ Open the printed URL (default `http://127.0.0.1:8765/`). Stop with Ctrl-C.
 - `--port N`: use port N, default `8765`; `0` selects a free port.
 - `--quiet`: suppress request logging; off by default (errors can still be logged).
 - `--open`: open the browser after startup; off by default.
+- `--idle-exit SECONDS`: exit after that many idle seconds; default `0` (never). `forge ui` sets it from `FORGE_UI_IDLE_S`.
 - `--version`: print the version and exit.
 - `-h`, `--help`: print usage and exit.
 
@@ -51,8 +57,9 @@ Sources are checked in this order:
    supplies absolute paths, one per line; blank lines and `#` comments are ignored.
    `--registry-dir` replaces this location; `--no-registry` disables it.
 
-Only plan directories (directories containing a `tasks.tsv` file) appear; solo
-runs do not. Stale or invalid paths are skipped. Duplicate real paths appear once,
+Plan directories (containing a `tasks.tsv` file) and solo run directories (a `prompt.md`
+and a `repo` file) appear through `--plan` and the registry; `--root` finds plan directories
+only. Stale or invalid paths are skipped. Duplicate real paths appear once,
 with the first source winning. Discovery and disk reads repeat on each API request.
 
 ## What you see
@@ -86,7 +93,7 @@ the machine while this server is running and discovering that plan directory.
 - `forge_ui/reader.py`: discover plans, parse files and produce run summaries/details.
 - `forge_ui/server.py`: serve the JSON API and static assets, with GET/HEAD only.
 - `forge_ui/__main__.py`: CLI options, local startup and optional browser opening.
-- `forge_ui/__init__.py`: package version.
+- `forge_ui/__init__.py`: package version and the build id `forge ui` compares to find a stale server.
 - `forge_ui/static/index.html`: page shell and controls.
 - `forge_ui/static/app.js`: API fetching, navigation, polling, tables and task panels.
 - `forge_ui/static/style.css`: layout, light/dark themes and status colors.
@@ -113,7 +120,7 @@ Use Python 3.9+ to run the server and tests. Node.js 14+ supports the JavaScript
 syntax used here and is needed only for the syntax checks below; use a modern
 browser for the page. No Python or Node packages need installing.
 
-From the repo root:
+Run these from `ui/`:
 
 ```sh
 python3 -m unittest discover -s tests
