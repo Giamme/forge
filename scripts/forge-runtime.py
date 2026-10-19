@@ -463,7 +463,17 @@ def classify(log: str, harness: str, rc: object, last: str = '', role: str = '',
         if not body.strip() and isinstance(event.get('errors'), list):
             body = '\n'.join(str(e) for e in event['errors'])
         if event.get('is_error') is True:
-            return classify_text(body, event.get('api_error_status'), now)
+            hit = classify_text(body, event.get('api_error_status'), now)
+            if hit or harness != 'grok' or event.get('stop_reason') != 'cancelled':
+                return hit
+            # Headless grok cancels the whole session when a tool call needs approval it
+            # cannot ask for, and exits 0 anyway. Not infrastructure: the model was working
+            # when the CLI stopped it, so what it did is still judged. Named, so nobody
+            # mistakes the cut-off for a finished run.
+            asked = [line.strip() for line in stray if line.strip().startswith('permission required:')]
+            if asked:
+                return 'cancelled', None, 'grok cancelled the session after a tool call needed approval: ' + asked[-1]
+            return 'cancelled', None, 'grok cancelled the session before it finished'
         if rc == 0 and not body.strip():
             return 'empty', None, '%s finished with exit 0 but its final result is empty' % harness
         return None

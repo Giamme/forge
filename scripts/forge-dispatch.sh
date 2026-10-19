@@ -649,6 +649,10 @@ if [ -n "$INFRA" ]; then
   # the diff turns out to be empty too. Every other role has nothing but its message.
   if [ "$rc" -eq 0 ] && [ "$infra_class" = empty ] && [ "$ROLE" = dwarf ]; then
     note "$HARNESS finished with an empty final message — recorded in $RUN_DIR/$ROLE.infra"
+  elif [ "$rc" -eq 0 ] && [ "$infra_class" = cancelled ]; then
+    # The CLI stopped a working model: a dwarf's diff so far still goes to review, and a
+    # reviewer cut off before its verdict is UNKNOWN, which re-runs only the review.
+    note "$HARNESS cancelled the $ROLE before it finished: $infra_detail — recorded in $RUN_DIR/$ROLE.infra"
   else
     note "$HARNESS failed on infrastructure ($infra_class${infra_after:+, retry after ${infra_after}s}): $infra_detail — see $LOG"
     exit 8

@@ -34,6 +34,15 @@ CODEX_RECONNECT_THEN_OK = '\n'.join([
     '{"type":"item.completed","item":{"id":"i1","type":"agent_message","text":"Done: the change is in."}}',
     '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}'])
 
+# The tail of a real grok-4.7 dwarf (2026-10-19): a tool call needed approval a headless run
+# cannot give, grok cancelled the whole session, and the CLI still exited 0.
+GROK_CANCELLED = '\n'.join([
+    'permission required: Execute `mkdir -p /tmp/registry-task-backup && cp scripts/x.py /tmp/registry-task-backup/` '
+    'was not run, as a headless run cannot ask for approval',
+    '{"type":"result","subtype":"error_during_execution","is_error":true,"duration_ms":779570,"num_turns":44,'
+    '"stop_reason":"cancelled","usage":{"input_tokens":110615,"output_tokens":34890,"cache_read_input_tokens":3314560},'
+    '"errors":["cancelled"]}'])
+
 
 def alive(pid):
     try:
@@ -163,6 +172,18 @@ class GrokHarnessTests(DispatchBase):
         self.assertFalse((self.repo / 'change.txt').exists())
         self.assertEqual(self.read('qa.last'), 'FORGE_VERDICT: PASS\n')
         self.assertEqual(self.kv('qa.resolved')['clamped'], 'max -> xhigh')
+
+    def test_a_session_grok_cancelled_is_recorded_and_said_not_passed_off_as_finished(self):
+        # What the dwarf did before the cancel is still a diff for review, so this is no
+        # failure and no infrastructure stop; but a cut-off session must not look finished.
+        self.scenario({'*.dwarf.*': {'stdout': GROK_CANCELLED}})
+        result = self.dispatch('dwarf', 'grok:high')
+        self.assertEqual(result.returncode, 0, result.stdout)
+        fields = self.kv('dwarf.infra')
+        self.assertEqual(fields['class'], 'cancelled')
+        self.assertIn('needed approval', fields['detail'])
+        self.assertIn('mkdir -p /tmp/registry-task-backup', fields['detail'])
+        self.assertIn('cancelled', result.stdout)
 
     def test_an_error_result_is_infrastructure(self):
         self.scenario({'*.dwarf.*': {'rc': 1, 'is_error': True,

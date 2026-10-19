@@ -270,11 +270,24 @@ GitHub Copilot) as a second row.
   `result`, `is_error` and the three disjoint token buckets, so `forge-runtime.py` reads the
   final message, the tokens and an `is_error` failure exactly as it does for claude. An error
   subtype can leave `result` empty and put the reason in `errors[]`, which is read instead.
+- **A tool call that still needs approval cancels the whole session.** `--allow Bash` does not
+  cover every command. Seen in a real run: a `mkdir -p /tmp/… && cp …` into a directory outside
+  the worktree, and a multi-line `cd …/ui && \` command. Each printed `permission required: …
+  was not run`, and the session then ended with an `error_during_execution` result (`stop_reason`
+  `cancelled`), still exiting 0.
+  - **What forge records:** class `cancelled` in `<role>.infra`, with the refused command, and
+    a note in the run output.
+  - **It is not an infrastructure stop:** the dwarf's diff so far still goes to review, and a
+    reviewer cut off before its verdict is UNKNOWN, which re-runs only the review.
+  - **Untested:** whether `--permission-mode dontAsk` (deny without cancelling) together with
+    explicit Edit/Write/Bash allows would avoid the cancel. Nothing changes until that is
+    proven live.
 - The prompt goes by `--prompt-file`, never argv, and stdin is `/dev/null`.
 
 Verified live on 2026-10-19 with a `FORGE_OK` dispatch: exit 0, `permissionMode` acceptEdits,
-the answer extracted from the `result` line, tokens recorded, nothing left running. An edit and
-a read-only review have not been proven live yet.
+the answer extracted from the `result` line, tokens recorded, nothing left running. The same
+day, grok-4.7 dwarfs implemented and passed review on real tasks (the forge-ui integration run).
+A grok reviewer has not been proven live yet.
 
 ## Installing forge into a harness
 
