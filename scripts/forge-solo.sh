@@ -26,6 +26,8 @@
 #        <run-dir>/changes.diff
 #        <run-dir>/qa.{input,last,log,resolved}
 #        <run-dir>/verdict      PASS | FAIL | UNKNOWN, when qa emitted one
+#        <run-dir>/status       RUNNING, then this invocation's outcome
+#        <run-dir>/dwarf.spec, qa.spec and attempts.tsv
 #
 # Exit codes: 0 ok | 2 usage | 3 precondition | 4 a dispatch failed
 #             5 the dwarf produced no changes | 7 a dispatch timed out
@@ -48,8 +50,47 @@ ORIGINAL_ARGS=("$@")
 die()  { printf 'forge: %s\n' "$1" >&2; exit "${2:-2}"; }
 note() { printf 'forge: %s\n' "$*" >&2; }
 
+# forge_metric_begin's EXIT trap calls this, before runtime finish and Fractal's
+# _outcome read status. Only this script defines it. It must not change the exit code.
+forge_metric_on_exit() {
+  local rc="${1:-}" status="" word="" cls="" n=0 pick=""
+  [ -n "${RUN:-}" ] || return 0
+  if [ -f "$RUN/verdict" ]; then
+    word=$(awk 'NF { print $1; exit }' "$RUN/verdict" 2>/dev/null || true)
+    case "$word" in
+      PASS|FAIL|UNKNOWN|NOCHANGES|INVALIDATED) status=$word ;;
+    esac
+  fi
+  if [ -z "$status" ]; then
+    case "$rc" in
+      7) status=TIMEOUT ;;
+      8) status=INFRA ;;
+      130|143) status=INTERRUPTED ;;
+      *) status=ERROR ;;
+    esac
+  fi
+  printf '%s\n' "$status" > "$RUN/status" 2>/dev/null || true
+  # The run start cleared both infra files, so any file here is this invocation's.
+  # QA only runs once the dwarf has passed, which makes qa.infra the later stage; no
+  # timestamps are compared (macOS mtimes can tie at whole-second resolution).
+  if [ "$status" = INFRA ]; then
+    for pick in "$RUN/qa.infra" "$RUN/dwarf.infra"; do
+      [ -f "$pick" ] || continue
+      cls=$(awk '/^class=/ { sub(/^class=/, ""); print; exit }' "$pick" 2>/dev/null || true)
+      break
+    done
+  fi
+  n=0
+  if [ -f "$RUN/attempts.tsv" ]; then
+    n=$(grep -c . "$RUN/attempts.tsv" 2>/dev/null) || n=0
+  fi
+  n=$(( ${n:-0} + 1 ))
+  printf '%s\t%s\t%s\t%s\t%s\n' "$(date +%s)" "$n" "$status" "$cls" "${DWARF:-}" >> "$RUN/attempts.tsv" 2>/dev/null || true
+  return 0
+}
+
 if [ "${1:-}" = --help ] || [ "${1:-}" = -h ]; then
-  sed -n '18,29s/^# *//p' "$0"
+  sed -n '18,31s/^# *//p' "$0"
   forge_fractal_help
   echo 'Explicit Fractal retry: repeat the original command with --retry.'
   exit 0
@@ -141,7 +182,15 @@ fi
 
 # The dispatches see a review snapshot, not the repo, so the run dir names it for the dataset.
 [ "$DRY" = 1 ] || printf '%s\n' "$REPO" > "$RUN/repo"
-[ "$DRY" = 1 ] || forge_metric_begin "$RUN" solo
+# Recorded before any dispatch: forge-ui opens this dir immediately, and a re-run
+# that dies early must not keep showing the previous invocation's verdict.
+if [ "$DRY" != 1 ]; then
+  forge_metric_begin "$RUN" solo
+  printf '%s\n' RUNNING > "$RUN/status"
+  printf '%s\n' "$DWARF" > "$RUN/dwarf.spec"
+  printf '%s\n' "$QA" > "$RUN/qa.spec"
+  rm -f "$RUN/verdict" "$RUN/dwarf.infra" "$RUN/qa.infra"
+fi
 
 # --- dwarf --------------------------------------------------------------------
 /bin/bash "$MEMORY" inject "$REPO" dwarf --run-dir "$RUN" > "$RUN/dwarf.memory"
@@ -183,7 +232,6 @@ else
 fi
 echo "$START" > "$RUN/start.tree"
 git -C "$REPO" diff --binary HEAD "$START" -- . ':(exclude).forge' > "$RUN/existing.diff"
-rm -f "$RUN/verdict"
 forge_metric_phase dispatch
 note "dwarf $DWARF in $REPO"
 guard_before_dwarf "$REPO" "$RUN"
