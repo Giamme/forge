@@ -25,6 +25,10 @@ child tasks inside its owned paths. Forge still chooses the models, reviews the 
 diff, verifies the result and controls integration. A local dashboard shows the task tree,
 logs and separate execution/acceptance states; HTML reports capture them for later review.
 
+[forge-ui](#forge-ui), its opt-in companion, is a read-only local page that watches any run
+live: tasks by wave, models, attempts and reviewer verdicts. forge offers it at the start of
+every new run and never opens it without a yes.
+
 ---
 
 ## Contents
@@ -57,8 +61,8 @@ bash ~/.claude/skills/forge/scripts/forge-install.sh
 ```
 
 Clone anywhere you like — the installer works out its own location and links from there.
-`~/.claude/skills/forge` is just the tidiest home, since one of the five harnesses reads
-that path directly.
+`~/.claude/skills/forge` is just the tidiest home: claude reads that path directly, and
+opencode and grok scan it on their own.
 
 The installer also offers optional Fractal support in an interactive terminal. Declining
 or a Fractal installation failure does not prevent ordinary Forge setup. See
@@ -159,6 +163,8 @@ resulting diff at `xhigh` (the default reviewer), and you get back a summary of 
 plus qa's findings.
 Before an interactive run, Forge asks **“Use Fractal for this run? [y/N]”** once.
 Pass `--fractal` or `--no-fractal` to answer explicitly; unattended runs default off.
+It also asks **“Open forge-ui to watch this run? [y/N]”** (`--ui` / `--no-ui`); on a yes,
+the [forge-ui](#forge-ui) page opens as soon as the run exists. Resume and retry never ask.
 
 **Pick both sides explicitly:**
 
@@ -470,6 +476,19 @@ task table with each task's difficulty and resolved dwarf/qa. Retier a task ("2 
 medium") and it re-routes per your rules, or override a single row's dwarf outright. This is
 also the cost gate — `high` on a large goal is 20+ dispatches, which should be visible before
 it's spent.
+
+**Exploration is on by default** (`--explore 0.2`):
+- **Which rows:** only rows left to forge, never one whose dwarf column you filled.
+- **What changes:** now and then such a row gets its *neighbouring* tier's spec from your own
+  pools: the next cheaper tier for medium and high rows, the next stronger for low rows.
+  Pools that differ only in effort (`--dwarf-low sol --dwarf-high sol:xhigh`) compare the
+  two efforts.
+- **How often:** about one row in ten at the default.
+- **What you see:** each explored row is marked `*` in the table, before anything is spent.
+- **What it's for:** `forge dataset routing` reads the draws back as pass rates per model and
+  effort. Pass `--explore 0` to turn it off.
+
+See [decompose.md](references/decompose.md#exploratory-routing-on-by-default).
 
 ### Waves, and what actually bounds parallelism
 
@@ -1114,7 +1133,7 @@ Bash 3.2 entrypoints use a Python standard-library coordinator to schedule eligi
 ```
 forge-parallel.sh plan      <plan-dir> --repo <dir> [routing flags] [--planner <spec>] [--no-memory]
                                      [--decompose-level L] [--shadow-qa <spec>[,..]|none] [--shadow-rate R]
-                                     [--explore E]
+                                     [--explore E] [--ui | --no-ui]
 forge-parallel.sh run       <plan-dir> [--max-parallel N] [--yolo-dwarf] [--yolo-qa] [--dry-run]
                                      [--verify <cmd>] [--setup <cmd>] [--timeout S]
                                      [--retry-failed N] [--infra-retries M]
@@ -1377,7 +1396,7 @@ Durations sum concurrent work, so they exceed the wall-clock of a parallel run.
   qa                              7     22m10s
 ```
 
-**Time and dispatch counts, never tokens or money.** The five CLIs expose usage differently
+**Time and dispatch counts, never tokens or money.** The six CLIs expose usage differently
 or not at all, and a number forge cannot actually measure would be worse than no number.
 
 `duration_s` is the ledger's tenth column, appended at the end on purpose: a ledger written
@@ -1408,6 +1427,7 @@ sol	codex	gpt-6.1-sol	<=ultra
 sol	openclaude	gpt-6.1-sol	<=max
 gemini-pro	antigravity	gemini-3.1-pro	low,high
 opus	antigravity	claude-opus-4-6-thinking	none
+grok	grok	grok-4.7	<=xhigh
 grok	opencode	github-copilot/grok-4.6	-
 ```
 
@@ -1635,7 +1655,7 @@ forge/
 │   ├── forge_registry.py        the run registry: where run dirs are noted, read by forge-ui
 │   ├── forge-dataset.py         `forge dataset` entry point
 │   ├── forge_dataset/           the run dataset: capture hooks, readers, importer, status checks
-│   └── forge-install.sh         install into all five harnesses
+│   └── forge-install.sh         install into every harness that needs it (opencode and grok find it themselves)
 ├── ui/                          forge-ui: read-only local run viewer (`forge_ui` package, tests, API contract)
 └── references/
     ├── ui.md                    forge-ui: commands, env vars, shared server, state, privacy
