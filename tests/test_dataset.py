@@ -538,14 +538,9 @@ class EndToEndTests(StoreCase):
             self.assertNotIn('0.42', prompt.read_text(errors='replace'), prompt)
             self.assertNotIn('clef', prompt.read_text(errors='replace').lower(), prompt)
         uid = (p / 'dataset.uid').read_text().strip()
-        print('DEBUG uid', uid)
-        print('DEBUG q clef', list((q).rglob('clef*')))
-        print('DEBUG q uid', (q / 'dataset.uid').read_text().strip() if (q / 'dataset.uid').exists() else None)
         shutil.rmtree(p)
 
         jev = [e for e in self.events(kind='jev') if e['data']['site'].startswith('clef-')]
-        for e in jev:
-            print('DEBUG event', e['data']['site'], e['task'], e['run'], e['run'] == uid, e.get('run_id'))
         self.assertEqual(sorted((e['data']['site'], e['task'], e['run'] == uid, e['data']['provider']) for e in jev),
                          [('clef-first-pass', 'a', True, 'cloudflare'), ('clef-first-pass', 'b', True, 'cloudflare'),
                           ('clef-retry-pass', 'a', True, 'cloudflare')])
