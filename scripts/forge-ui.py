@@ -18,7 +18,6 @@ import signal
 import subprocess
 import sys
 import tempfile
-import threading
 import time
 import webbrowser
 from datetime import datetime, timezone
@@ -215,15 +214,28 @@ def browser_wanted(args) -> bool:
 
 
 def launch_browser(url):
-    """Open url, waiting at most BROWSER_WAIT_S for a browser command that blocks."""
-    def go():
-        try:
-            webbrowser.open(url)
-        except Exception:  # a missing browser must not fail the run
-            pass
-    worker = threading.Thread(target=go, daemon=True)
-    worker.start()
-    worker.join(BROWSER_WAIT_S)
+    """Open url from a detached helper, waiting at most BROWSER_WAIT_S for it.
+
+    The helper's output goes to /dev/null: a browser command that blocks must not keep the
+    pipes of whoever captures our output open after we return.
+    """
+    command = [sys.executable, '-I', str(Path(__file__).resolve()), '_browse', url]
+    try:
+        proc = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL, start_new_session=True, close_fds=True)
+        proc.wait(BROWSER_WAIT_S)
+    except subprocess.TimeoutExpired:
+        pass  # still starting its browser: leave it
+    except OSError:  # a missing browser must not fail the run
+        pass
+
+
+def browse(url):
+    try:
+        webbrowser.open(url)
+    except Exception:
+        return 1
+    return 0
 
 
 def run_info(directory):
@@ -234,8 +246,8 @@ def run_info(directory):
         return None, 'not a forge run (no tasks.tsv, and no prompt.md with repo)'
     try:
         repo = (directory / 'repo').read_text().strip()
-    except OSError as exc:
-        return None, f'cannot read {directory / "repo"}: {exc.strerror or exc}'
+    except (OSError, ValueError) as exc:  # ValueError: not decodable text
+        return None, f'cannot read {directory / "repo"}: {getattr(exc, "strerror", None) or exc}'
     if not repo:
         return None, f'{directory / "repo"} is empty'
     return repo, None
@@ -381,6 +393,8 @@ def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     if argv and argv[0] == '_serve':
         return serve(argv[1:])
+    if len(argv) == 2 and argv[0] == '_browse':
+        return browse(argv[1])
     args = build_parser().parse_args(argv)  # a usage error exits 2
     return {'open': cmd_open, 'status': cmd_status, 'stop': cmd_stop}[args.command](args)
 

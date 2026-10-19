@@ -147,7 +147,7 @@ class UiLauncherTests(unittest.TestCase):
 
     def test_a_browser_command_that_hangs_does_not_hold_open(self):
         pidfile = self.tmp / 'browser.pid'
-        env = self._browser_stub(f'echo $$ > {pidfile}\nexec sleep 30 >/dev/null 2>&1\n')
+        env = self._browser_stub(f'echo $$ > {pidfile}\nexec sleep 30\n')
         self.addCleanup(lambda: pidfile.exists() and subprocess.run(['kill', pidfile.read_text().strip()], capture_output=True))
         self.open(self.plan, '--no-browser', env=env)  # server up: only the browser launch is timed
         start = time.monotonic()
@@ -285,9 +285,12 @@ class UiLauncherTests(unittest.TestCase):
         no_repo = self._copy('solo-full', 'repo-is-a-dir')
         (no_repo / 'repo').unlink()
         (no_repo / 'repo').mkdir()  # DIR/repo exists but cannot be read as a file
+        garbled = self._copy('solo-full', 'repo-is-not-text')
+        (garbled / 'repo').write_bytes(b'/tmp/\xff\xfe\n')
         for label, args, code in (('missing dir', ['open', str(self.tmp / 'nope')], 3),
                                   ('prompt without repo', ['open', str(notes)], 3),
                                   ('unreadable repo file', ['open', str(no_repo)], 3),
+                                  ('undecodable repo file', ['open', str(garbled)], 3),
                                   ('unknown command', ['frobnicate'], 2),
                                   ('bad port', ['open', '--port', 'x'], 2)):
             with self.subTest(label):
