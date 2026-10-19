@@ -1,0 +1,21 @@
+a285647	forge: integrate run ui-plan
+ffe68dc	forge: merge readme
+72dac9e	forge(readme) attempt 1: README: what forge-ui shows, how to run it, how to test it
+2edb86b	forge: merge graph
+3b8951a	forge(graph) attempt 6: SVG graph of tasks by wave with dependency edges
+f17de06	forge: merge server
+ee1f422	forge(server) attempt 4: Local JSON API and static file server, python3 -m forge_ui
+cafe291	forge(server) attempt 3: Local JSON API and static file server, python3 -m forge_ui
+ac71943	forge(server) attempt 2: Local JSON API and static file server, python3 -m forge_ui
+7fd252f	forge(server) attempt 1: Local JSON API and static file server, python3 -m forge_ui
+220fca6	forge: merge reader
+9f69296	forge: merge page
+b07d66d	forge(reader) attempt 2: Read forge plan dirs into the docs/api.md dicts
+bacb8eb	forge(graph) attempt 4: SVG graph of tasks by wave with dependency edges
+f9e1ceb	forge(page) attempt 2: The page: run list, run view, task table and task panel
+91aa2ce	forge(graph) attempt 3: SVG graph of tasks by wave with dependency edges
+440b695	forge(reader) attempt 1: Read forge plan dirs into the docs/api.md dicts
+83c6f91	forge(graph) attempt 2: SVG graph of tasks by wave with dependency edges
+b95a2dd	forge(page) attempt 1: The page: run list, run view, task table and task panel
+b506694	forge(graph) attempt 1: SVG graph of tasks by wave with dependency edges
+47b3c20	chore: forge-ui skeleton and the reader/server/page data contract
