@@ -966,7 +966,7 @@ node control also requires its task ID; they never guess the latest run. Use eac
 | `status [--json]` | exit 0 and describe the server when it runs, 1 when not |
 | `stop` | stop the server |
 
-`FORGE_UI=off` makes `--ui` start nothing, `FORGE_UI_BROWSER=off` never opens a browser,
+`FORGE_UI=off` makes `--ui` on a runner start nothing (it does not stop a running server or block `forge ui open`; use `forge ui stop`), `FORGE_UI_BROWSER=off` never opens a browser,
 `FORGE_UI_PORT` (8765) and `FORGE_UI_IDLE_S` (14400, `0` = never) tune the server. State and
 `server.log` are in `${XDG_STATE_HOME:-~/.local/state}/forge/ui/`.
 

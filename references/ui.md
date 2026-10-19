@@ -39,7 +39,7 @@ bash <skill_dir>/scripts/forge-solo.sh "$FORGE_RUN" --repo "$REPO" --dwarf <spec
 
 | Variable | Meaning |
 |---|---|
-| `FORGE_UI=off` | `--ui` starts nothing (a note is printed) |
+| `FORGE_UI=off` | `--ui` on a runner starts nothing (a note is printed); `forge ui open` still starts the server |
 | `FORGE_UI_BROWSER=off` | print the link, never open a browser |
 | `FORGE_UI_PORT` | preferred port, default `8765`; `--port` wins; a taken port falls back to a free one |
 | `FORGE_UI_IDLE_S` | idle seconds before the server exits, default `14400`; `0` never |
@@ -68,8 +68,12 @@ Opening a run dir also registers it in forge's run registry
 ## Privacy
 
 The server binds only `127.0.0.1` and serves read-only. It has **no token**: any process on
-the machine, under any user who can reach loopback, can read the runs it knows, including
-prompts, diffs and review text from private repos. Stop it with `forge ui stop` when that
-matters, or run with `--no-ui` / `FORGE_UI=off`. Do not forward its port.
+the machine, under any user who can reach loopback, can read every run it knows, including
+prompts, diffs and review text from private repos. A running server keeps serving them,
+including runs that were later rerun with `--no-ui`.
+
+`--no-ui` and `FORGE_UI=off` only stop a *runner* from launching the server. They do not stop a
+server that is already running, do not unregister runs, and do not block `forge ui open`. To
+close the exposure, run `forge ui stop`. Do not forward the server's port.
 
 The API contract is [ui/docs/api.md](../ui/docs/api.md).
