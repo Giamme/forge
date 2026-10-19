@@ -5,6 +5,20 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and versions follow the format `{major}.{minor}` ([...] parts appear only when non-zero).
 
+## [0.6] - 2026-10-20
+
+Forge gets a companion: forge-ui, a read-only local page that watches any run live, now ships inside forge and is offered at the start of every run. Grok 4.7 joins as a sixth harness through xAI's grok CLI, and a grok session the CLI cancels partway through is now recorded instead of passing as finished.
+
+### Added
+
+- Forge can now dispatch through xAI's `grok` CLI. The `grok` alias runs Grok 4.7 there, at efforts up to `xhigh`, as an implementer or a read-only reviewer: `--dwarf grok:high`. Its answers and token counts are read like Claude's, and an expired login or a rate limit is reported as an infrastructure failure (exit 8). The previous route, Grok 4.6 through opencode, is still available as `grok:high:opencode`.
+- Forge can now show a run live in a local web page. At the start of each new run `/forge` asks "Open forge-ui to watch this run? [y/N]"; answer yes (or pass `--ui`) and forge prints a `forge-ui:` link to the tasks, statuses, models, attempts and reviewer verdicts of a decomposed or solo run, and opens it in your browser. `--no-ui` skips the question. All runs share one local server that stops itself after four idle hours, and `forge ui open|status|stop` manages it by hand; `FORGE_UI=off` stops runs from launching it. A UI that cannot start never fails the run. The page has no login, so while the server runs, any program on your machine can read the prompts and diffs it shows, even for runs started with `--no-ui`; `forge ui stop` closes it. Solo runs now also record `status`, `attempts.tsv`, `dwarf.spec` and `qa.spec`.
+
+### Fixed
+
+- A grok session that the grok CLI cancels partway through no longer passes as a finished run. This happens when a tool call needs an approval that a headless run can't give, and the CLI still exits 0. forge now records it as `cancelled` in `<role>.infra`, together with the refused command, and says so in the run output. The work done before the cancel is still reviewed as usual.
+- The exploration note under `plan`'s table now appears only when at least one row was actually drawn. It used to say "exploration on" even when every row named its own dwarf, or no tier had a neighbour to try. Its odds are also printed with a decimal point whatever your number locale (it showed "probability 0,1" under an Italian locale).
+
 ## [0.5] - 2026-10-19
 
 Forge now picks models from measured results rather than a decision model's opinion: it explores your own pools by default, compares models and efforts per tier with forge dataset routing, moves a task to a stronger model after three failed attempts, and flags tasks too large to pass review first time. Jev's effort sizing, tier rewriting and calibration are gone, and Cloudflare's hosted Clef can answer chosen Jev decisions instead.

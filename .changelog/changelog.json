@@ -1,6 +1,71 @@
 {
   "versions": [
     {
+      "version": "0.6",
+      "date": "2026-10-20",
+      "summary": "Forge gets a companion: forge-ui, a read-only local page that watches any run live, now ships inside forge and is offered at the start of every run. Grok 4.7 joins as a sixth harness through xAI's grok CLI, and a grok session the CLI cancels partway through is now recorded instead of passing as finished.",
+      "entries": [
+        {
+          "type": "added",
+          "text": "Forge can now dispatch through xAI's `grok` CLI. The `grok` alias runs Grok 4.7 there, at efforts up to `xhigh`, as an implementer or a read-only reviewer: `--dwarf grok:high`. Its answers and token counts are read like Claude's, and an expired login or a rate limit is reported as an infrastructure failure (exit 8). The previous route, Grok 4.6 through opencode, is still available as `grok:high:opencode`.",
+          "breaking": false,
+          "audience": "user",
+          "highlight": false,
+          "commits": [
+            "383a244"
+          ]
+        },
+        {
+          "type": "added",
+          "text": "Forge can now show a run live in a local web page. At the start of each new run `/forge` asks \"Open forge-ui to watch this run? [y/N]\"; answer yes (or pass `--ui`) and forge prints a `forge-ui:` link to the tasks, statuses, models, attempts and reviewer verdicts of a decomposed or solo run, and opens it in your browser. `--no-ui` skips the question. All runs share one local server that stops itself after four idle hours, and `forge ui open|status|stop` manages it by hand; `FORGE_UI=off` stops runs from launching it. A UI that cannot start never fails the run. The page has no login, so while the server runs, any program on your machine can read the prompts and diffs it shows, even for runs started with `--no-ui`; `forge ui stop` closes it. Solo runs now also record `status`, `attempts.tsv`, `dwarf.spec` and `qa.spec`.",
+          "breaking": false,
+          "audience": "user",
+          "highlight": false,
+          "commits": [
+            "954e138",
+            "4cc100f",
+            "a3a909b",
+            "a8f9c3b",
+            "3d60569",
+            "7df637c",
+            "1d7d237",
+            "fd4a396",
+            "0911db4",
+            "7b31bc4",
+            "894d8e7",
+            "467101b",
+            "43b78a3",
+            "e8076b1",
+            "404e2ae",
+            "5a17cc5",
+            "41ba426",
+            "f8d5d6c",
+            "2b9a2e5"
+          ]
+        },
+        {
+          "type": "fixed",
+          "text": "A grok session that the grok CLI cancels partway through no longer passes as a finished run. This happens when a tool call needs an approval that a headless run can't give, and the CLI still exits 0. forge now records it as `cancelled` in `<role>.infra`, together with the refused command, and says so in the run output. The work done before the cancel is still reviewed as usual.",
+          "breaking": false,
+          "audience": "user",
+          "highlight": false,
+          "commits": [
+            "259969c"
+          ]
+        },
+        {
+          "type": "fixed",
+          "text": "The exploration note under `plan`'s table now appears only when at least one row was actually drawn. It used to say \"exploration on\" even when every row named its own dwarf, or no tier had a neighbour to try. Its odds are also printed with a decimal point whatever your number locale (it showed \"probability 0,1\" under an Italian locale).",
+          "breaking": false,
+          "audience": "user",
+          "highlight": false,
+          "commits": [
+            "0c5afd1"
+          ]
+        }
+      ]
+    },
+    {
       "version": "0.5",
       "date": "2026-10-19",
       "summary": "Forge now picks models from measured results rather than a decision model's opinion: it explores your own pools by default, compares models and efforts per tier with forge dataset routing, moves a task to a stronger model after three failed attempts, and flags tasks too large to pass review first time. Jev's effort sizing, tier rewriting and calibration are gone, and Cloudflare's hosted Clef can answer chosen Jev decisions instead.",
