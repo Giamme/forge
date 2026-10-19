@@ -1,14 +1,23 @@
 """Local HTTP server: the JSON API of docs/api.md and the static page. Read-only."""
 from __future__ import annotations
 
+from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
+import os
 from pathlib import Path
 import re
 import sys
+import threading
+import time
+
+from forge_ui import __version__, build_id
 
 
 STATIC_DIR = Path(__file__).resolve().parent / 'static'
+# The build of the code this process loaded. Files edited later must not change it: the launcher
+# compares /api/health with its own build_id() to find a server still running old code.
+BUILD = build_id()
 
 _RUN_PATH = re.compile(r'/api/runs/([0-9a-f]{12})')
 _STATIC_PATH = re.compile(r'/([A-Za-z0-9_.-]+\.(?:html|js|css|svg))')
@@ -53,7 +62,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def send_error(self, code, message=None, explain=None):
         # The base class answers malformed requests with an HTML page; keep the JSON contract.
-        self._send(*self._json(code, {'error': self.responses[code][0].lower()}), head=self.command == 'HEAD')
+        with self._active():
+            self._send(*self._json(code, {'error': self.responses[code][0].lower()}), head=self.command == 'HEAD')
 
     def log_request(self, code='-', size='-'):
         if not self._quiet():
@@ -78,12 +88,36 @@ class Handler(BaseHTTPRequestHandler):
         return name in ('127.0.0.1', 'localhost')
 
     def _method_not_allowed(self):
+        with self._active():
+            self._refuse_method()
+
+    def _refuse_method(self):
         if not self._host_allowed():
             self._send(*self._json(403, {'error': 'forbidden'}))
             return
         self._send(*self._json(405, {'error': 'method not allowed'}, {'Allow': 'GET, HEAD'}))
 
+    @contextmanager
+    def _active(self):
+        # Idle exit measures from the last activity, and a request in flight is activity: stamp when it
+        # arrives and when it ends, and count it so a slow one is not cut off at the idle deadline.
+        server = self.server
+        # The stamp and the count change together under busy_lock: the idle watcher reads both under it.
+        with server.busy_lock:
+            server.last_request = time.monotonic()
+            server.busy += 1
+        try:
+            yield
+        finally:
+            with server.busy_lock:
+                server.busy -= 1
+                server.last_request = time.monotonic()
+
     def _serve(self, head):
+        with self._active():
+            self._respond(head)
+
+    def _respond(self, head):
         path = self.path.partition('?')[0]
         if not self._host_allowed():
             response = self._json(403, {'error': 'forbidden'})
@@ -97,6 +131,13 @@ class Handler(BaseHTTPRequestHandler):
         self._send(*response, head=head)
 
     def _route(self, path):
+        if path == '/api/health':
+            return self._json(200, {
+                'app': 'forge-ui',
+                'version': __version__,
+                'build': BUILD,
+                'pid': os.getpid(),
+            })
         catalog = self.server.catalog
         if path == '/api/runs':
             return self._json(200, {'runs': catalog.runs()})
@@ -155,4 +196,7 @@ def make_server(catalog, host='127.0.0.1', port=0, static_dir=None, quiet=False)
     server.catalog = catalog
     server.static_dir = STATIC_DIR if static_dir is None else static_dir
     server.quiet = quiet
+    server.last_request = time.monotonic()  # stamped when a request arrives and when it ends
+    server.busy = 0  # requests in flight; idle exit waits for them
+    server.busy_lock = threading.Lock()
     return server
