@@ -67,7 +67,7 @@ def pid_alive(pid) -> bool:
         return False
     try:
         os.kill(pid, 0)
-    except ProcessLookupError:
+    except (ProcessLookupError, OverflowError):  # OverflowError: no process can have that pid
         return False
     except PermissionError:
         return True
@@ -274,6 +274,8 @@ def run_info(directory):
         return None, f'cannot read {marker}: {getattr(exc, "strerror", None) or exc}'
     if not repo:
         return None, f'{marker} is empty'
+    if '\x00' in repo:  # readable text, but no path can hold it
+        return None, f'{marker} does not hold a path (it contains a NUL byte)'
     return repo, None
 
 
@@ -299,10 +301,7 @@ def cmd_open(args):
         if why:
             _say(f'error: {directory}: {why}')
             return 3
-        try:
-            forge_registry.register_run_dir(Path(repo), directory)
-        except RuntimeError:  # pathlib before 3.13 raises it for a symlink loop; noting a run is best-effort
-            pass
+        forge_registry.register_run_dir(Path(repo), directory)
         key = run_key(directory)
 
     state = state_dir()

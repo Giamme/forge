@@ -41,7 +41,7 @@ def get_json(port, path):
 def alive(pid):
     try:
         os.kill(pid, 0)
-    except ProcessLookupError:
+    except (ProcessLookupError, OverflowError):  # OverflowError: a pid no process can have
         return False
     return True
 
@@ -298,10 +298,13 @@ class UiLauncherTests(unittest.TestCase):
         (no_repo / 'repo').mkdir()  # DIR/repo exists but cannot be read as a file
         garbled = self._copy('solo-full', 'repo-is-not-text')
         (garbled / 'repo').write_bytes(b'/tmp/\xff\xfe\n')
+        nul = self._copy('plan-full', 'repo-has-a-nul')
+        (nul / 'repo').write_bytes(b'/tmp/example\x00repo\n')  # text, but no path can hold it
         for label, args, code in (('missing dir', ['open', str(self.tmp / 'nope')], 3),
                                   ('prompt without repo', ['open', str(notes)], 3),
                                   ('unreadable repo file', ['open', str(no_repo)], 3),
                                   ('undecodable repo file', ['open', str(garbled)], 3),
+                                  ('repo path with a NUL byte', ['open', str(nul)], 3),
                                   ('unknown command', ['frobnicate'], 2),
                                   ('bad port', ['open', '--port', 'x'], 2)):
             with self.subTest(label):
@@ -365,6 +368,7 @@ class UiLauncherTests(unittest.TestCase):
         os.symlink(self.tmp / 'loop-a', self.tmp / 'loop-b')
         (looped / 'repo').write_text(f'{self.tmp / "loop-a"}\n')
 
+        huge_pid = json.dumps(dict(pid=2 ** 80, port=1, build='b', registry_dir='r')).encode()
         starts = 'a new server'
         cases = (
             # label, setup, needs a non-root user, command, exit code
@@ -378,6 +382,9 @@ class UiLauncherTests(unittest.TestCase):
             ('server.json not UTF-8', record(b'{"pid": "\xff"}'), False, ['status'], 1),
             ('server.json is a FIFO', record_is_a_fifo, False, ['open', str(self.plan)], starts),
             ('server.json is a FIFO', record_is_a_fifo, False, ['status'], 1),
+            ('pid too large for os.kill', record(huge_pid), False, ['open', str(self.plan)], starts),
+            ('pid too large for os.kill', record(huge_pid), False, ['status'], 1),
+            ('pid too large for os.kill', record(huge_pid), False, ['stop'], 0),
             ('lock is a directory', lock_is_a_dir, False, ['open', str(self.plan)], 4),
             ('lock is a directory', lock_is_a_dir, False, ['stop'], 0),
             ('recorded build is a list', live_server_recorded_with_a_list_build, False, ['open'], starts),

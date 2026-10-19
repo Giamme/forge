@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import stat
 from pathlib import Path
 
 
@@ -45,7 +46,8 @@ def runs_registry(repo) -> Path:
 def register_run_dir(repo: Path, run_dir: Path) -> None:
     """Record an absolute run-dir path for this repo, deduplicated.
 
-    Never raises: failing to note where a run lives must not fail the run.
+    Never raises and never blocks: failing to note where a run lives must not fail the run,
+    and ``forge ui open`` calls this before any of its own timeouts.
     """
     try:
         registry = runs_registry(repo)
@@ -57,9 +59,15 @@ def register_run_dir(repo: Path, run_dir: Path) -> None:
         if line in existing:
             return
         header = [] if existing else ['# run dirs that have scored ' + str(Path(repo).resolve())]
-        with registry.open('a') as handle:
+        # O_NONBLOCK: a FIFO with no reader fails at once (ENXIO) instead of blocking the
+        # open, and anything that is not a regular file is left alone.
+        fd = os.open(registry, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NONBLOCK, 0o644)
+        with os.fdopen(fd, 'a') as handle:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                return
             for entry in header:
                 handle.write(entry + '\n')
             handle.write(line + '\n')
-    except OSError:
+    except (OSError, ValueError, RuntimeError):
+        # ValueError: a NUL byte in a path; RuntimeError: a symlink loop (pathlib before 3.13)
         pass

@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import sys
 import tempfile
+import threading
 import unittest
 from unittest.mock import patch
 
@@ -59,6 +60,40 @@ class RunRegistryTests(unittest.TestCase):
         other = Path(self.dir.name) / 'other'
         other.mkdir()
         self.assertNotEqual(forge_registry.runs_registry(self.repo), forge_registry.runs_registry(other))
+
+    def test_registering_never_raises_or_blocks_whatever_the_paths_are(self):
+        # Callers rely on it to note a run and move on: `forge ui open` calls it before any
+        # of its own timeouts, so a hang here hangs the command.
+        tmp = Path(self.dir.name)
+        os.symlink(tmp / 'loop-b', tmp / 'loop-a')
+        os.symlink(tmp / 'loop-a', tmp / 'loop-b')
+
+        def registry_is_a_fifo():
+            repo = tmp / 'fifo-repo'
+            repo.mkdir()
+            registry = forge_registry.runs_registry(repo)
+            registry.parent.mkdir(parents=True, exist_ok=True)
+            os.mkfifo(registry)  # no reader: opening it for append would block forever
+            return repo, tmp / 'plan-a'
+
+        for label, paths in (('registry file is a FIFO', registry_is_a_fifo),
+                             ('repo path with a NUL byte', lambda: (Path('/tmp/a\x00b'), tmp / 'plan-a')),
+                             ('run dir is a symlink loop', lambda: (self.repo, tmp / 'loop-a'))):
+            with self.subTest(label):
+                repo, run_dir = paths()
+                failure = []
+
+                def call():
+                    try:
+                        forge_registry.register_run_dir(repo, run_dir)
+                    except BaseException as exc:  # any escape breaks "never raises"
+                        failure.append(exc)
+
+                worker = threading.Thread(target=call, daemon=True)
+                worker.start()
+                worker.join(5)
+                self.assertFalse(worker.is_alive(), 'register_run_dir blocked')
+                self.assertEqual(failure, [])
 
     def test_an_unwritable_registry_never_raises(self):
         # Recording where a run lives must not be able to fail the run.
