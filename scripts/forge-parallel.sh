@@ -494,10 +494,13 @@ render_table() {
     echo "  to pin another model, put its spec in the dwarf column of tasks.tsv and re-plan"
     echo
   fi
-  local explore; explore="$(cat "$PLAN/explore" 2>/dev/null)"
-  if [ -n "$explore" ] && awk -v v="$explore" 'BEGIN { exit !(v + 0 > 0) }'; then
+  local explore drawn=0 decisions; explore="$(cat "$PLAN/explore" 2>/dev/null)"
+  # Said only when a row was actually drawn (route.jsonl): with every row named, or no tier
+  # with a neighbour, there is no spend to show. LC_ALL=C: a comma-decimal locale prints "0,1".
+  for decisions in "$PLAN"/tasks/*/route.jsonl; do [ -e "$decisions" ] && { drawn=1; break; }; done
+  if [ -n "$explore" ] && [ "$drawn" = 1 ] && LC_ALL=C awk -v v="$explore" 'BEGIN { exit !(v + 0 > 0) }'; then
     echo "exploration on (--explore $explore): a row left to forge gets its neighbouring tier's model with"
-    echo "  probability $(awk -v v="$explore" 'BEGIN { print v / 2 }'), odds logged for \`forge dataset routing\`; --explore 0 turns it off for this plan"
+    echo "  probability $(LC_ALL=C awk -v v="$explore" 'BEGIN { print v / 2 }'), odds logged for \`forge dataset routing\`; --explore 0 turns it off for this plan"
     echo
   fi
   report_size "$PLAN"

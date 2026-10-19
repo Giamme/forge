@@ -732,6 +732,11 @@ class EndToEndTests(StoreCase):
             [d] = [json.loads(l) for l in (on / 'tasks' / t / 'route.jsonl').read_text().splitlines()]
             self.assertEqual((d['epsilon'], d['candidates']), (0.2, ['sol', 'astra']))
         self.assertIn('exploration on (--explore 0.2)', r.stdout)
+        # The odds are printed with a dot whatever the user's number locale says.
+        self.env['LC_ALL'] = 'it_IT.UTF-8'
+        _, r = self.plan_rows('on-it', rows, *pools)
+        self.env.pop('LC_ALL')
+        self.assertIn('probability 0.1,', r.stdout)
         off, r = self.plan_rows('off', rows, *pools, '--explore', '0')
         self.assertNotIn('exploration on', r.stdout)
         (off / 'tasks.tsv').write_text((off / 'tasks.tsv').read_text().replace('\tsol\t', '\t-\t'))
@@ -740,6 +745,11 @@ class EndToEndTests(StoreCase):
         # A row whose tier has no neighbour in the pools is not explored at all.
         alone, r = self.plan_rows('alone', rows, '--dwarf-low', 'sol')
         self.assertEqual(list(alone.rglob('route.*')), [])
+        self.assertNotIn('exploration on', r.stdout)   # nothing could be drawn, so nothing to announce
+        # Nor when every row names its dwarf: exploration only touches rows left to forge.
+        named, r = self.plan_rows('named', [('a', 'sol'), ('b', 'astra')], *pools)
+        self.assertEqual((r.returncode, list(named.rglob('route.*'))), (0, []), r.stdout)
+        self.assertNotIn('exploration on', r.stdout)
         # Effort counts: pools that differ only in effort still explore, which is how the
         # routing table measures whether an effort was needed. The same spec twice does not.
         effort, r = self.plan_rows('effort', rows, '--dwarf-low', 'sol', '--dwarf-high', 'sol:xhigh')
