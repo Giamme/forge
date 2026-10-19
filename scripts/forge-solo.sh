@@ -50,6 +50,18 @@ ORIGINAL_ARGS=("$@")
 die()  { printf 'forge: %s\n' "$1" >&2; exit "${2:-2}"; }
 note() { printf 'forge: %s\n' "$*" >&2; }
 
+# 0 when $1 is strictly newer than $2. Bash 3.2's -nt compares whole seconds on
+# macOS, so two writes in one second compare equal and a leftover qa.infra wins.
+forge_infra_newer() {
+  python3 -c 'import os,sys
+try:
+ a=os.stat(sys.argv[1]).st_mtime_ns
+ b=os.stat(sys.argv[2]).st_mtime_ns
+except OSError:
+ sys.exit(1)
+sys.exit(0 if a>b else 1)' "$1" "$2" 2>/dev/null
+}
+
 # forge_metric_begin's EXIT trap calls this, before runtime finish and Fractal's
 # _outcome read status. Only this script defines it. It must not change the exit code.
 forge_metric_on_exit() {
@@ -71,10 +83,10 @@ forge_metric_on_exit() {
   fi
   printf '%s\n' "$status" > "$RUN/status" 2>/dev/null || true
   # A dwarf can leave class=empty and still exit 0; the newer file is this
-  # invocation's failure, and a same-second tie belongs to QA, the later stage.
+  # invocation's failure, and an exact timestamp tie belongs to QA, the later stage.
   if [ "$status" = INFRA ]; then
     [ -f "$RUN/qa.infra" ] && pick=$RUN/qa.infra
-    if [ -f "$RUN/dwarf.infra" ] && { [ -z "$pick" ] || [ "$RUN/dwarf.infra" -nt "$pick" ]; }; then
+    if [ -f "$RUN/dwarf.infra" ] && { [ -z "$pick" ] || forge_infra_newer "$RUN/dwarf.infra" "$pick"; }; then
       pick=$RUN/dwarf.infra
     fi
     [ -z "$pick" ] || cls=$(awk '/^class=/ { sub(/^class=/, ""); print; exit }' "$pick" 2>/dev/null || true)
