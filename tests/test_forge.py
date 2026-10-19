@@ -432,10 +432,9 @@ class ForgeTests(unittest.TestCase):
   rows=[line.split('\t') for line in (run/'attempts.tsv').read_text().splitlines()]
   self.assertEqual([row[1:] for row in rows], [['1','PASS','','sol'],['2','ERROR','','sol']])
 
- def test_solo_same_second_infra_retry_records_the_dwarf_class(self):
-  # A QA quota stop leaves qa.infra. The retry's dwarf auth failure is written
-  # later in that same timestamp second. attempts.tsv must record auth: Bash
-  # 3.2's -nt is whole seconds and would keep the stale quota class.
+ def test_solo_infra_retry_records_the_dwarf_class(self):
+  # A QA quota stop leaves qa.infra. The retry stops at the dwarf with auth, so
+  # attempts.tsv must record auth whatever the two files' timestamps say.
   self.scenario({'change.qa.1':{'rc':1,'is_error':True,'verdict':'none','findings':"You've hit your usage limit. Try again in 2 hours."}})
   r=self.solo()
   self.assertEqual(r.returncode, 8, r.stdout)
@@ -444,38 +443,10 @@ class ForgeTests(unittest.TestCase):
   for p in self.root.glob('scenario.json*'): p.unlink()
   self.env.pop('SCENARIO', None)
   self.scenario({'change.dwarf.1':{'rc':1,'stderr':'authentication failed'}})
-  real=os.path.realpath(self.bin/'sed')
-  (self.bin/'sed').unlink()
-  (self.bin/'sed').write_text(
-   '#!/usr/bin/env python3\n'
-   'import os, sys\n'
-   'real = %r\n'
-   'args = sys.argv[1:]\n'
-   'if os.environ.get("STAMP_SAME_SECOND") == "1" and args[:2] == ["-n", "s/^class=//p"] and args[-1].endswith("dwarf.infra"):\n'
-   '    try:\n'
-   '        from pathlib import Path\n'
-   '        dwarf = Path(args[-1]); qa = dwarf.with_name("qa.infra")\n'
-   '        if dwarf.is_file() and qa.is_file():\n'
-   '            ns = dwarf.stat().st_mtime_ns\n'
-   '            sec, frac = divmod(ns, 1000000000)\n'
-   '            if frac < 2000000:\n'
-   '                os.utime(qa, ns=(sec * 1000000000 + 1000000,) * 2)\n'
-   '                os.utime(dwarf, ns=(sec * 1000000000 + 5000000,) * 2)\n'
-   '            else:\n'
-   '                os.utime(qa, ns=(ns - 1000000,) * 2)\n'
-   '    except OSError:\n'
-   '        pass\n'
-   'os.execv(real, [real, *args])\n' % real)
-  (self.bin/'sed').chmod(0o755)
-  self.env['STAMP_SAME_SECOND']='1'
   r=self.solo()
   self.assertEqual(r.returncode, 8, r.stdout)
   self.assertIn('infrastructure failure (auth)', r.stdout)
-  qa_ns=(run/'qa.infra').stat().st_mtime_ns
-  dwarf_ns=(run/'dwarf.infra').stat().st_mtime_ns
-  self.assertEqual(qa_ns // 1000000000, dwarf_ns // 1000000000)
-  self.assertGreater(dwarf_ns, qa_ns)
-  self.assertTrue((run/'qa.infra').read_text().startswith('class=quota\n'))
+  self.assertFalse((run/'qa.infra').exists())
   self.assertTrue((run/'dwarf.infra').read_text().startswith('class=auth\n'))
   rows=[line.split('\t') for line in (run/'attempts.tsv').read_text().splitlines()]
   self.assertEqual([row[1:] for row in rows], [['1','INFRA','quota','sol'],['2','INFRA','auth','sol']])
