@@ -12,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -127,6 +128,33 @@ class UiLauncherTests(unittest.TestCase):
         base = f'http://127.0.0.1:{first["port"]}/#/runs/'
         self.assertEqual(calls.read_text().split(), [base + run_key(self.plan), base + run_key(self.solo)])
 
+    def _browser_stub(self, body):
+        stub = self.tmp / 'browser.sh'
+        stub.write_text('#!/bin/sh\n' + body)
+        stub.chmod(0o755)
+        env = dict(self.env, BROWSER=str(stub))
+        env.pop('FORGE_UI_BROWSER')
+        return env
+
+    def test_a_run_opened_with_no_browser_still_opens_one_when_asked_later(self):
+        calls = self.tmp / 'browser.log'
+        env = self._browser_stub(f'echo "$1" >> {calls}\n')
+        self.open(self.plan, '--no-browser', env=env)
+        self.assertFalse(calls.exists())
+        self.open(self.plan, env=env)
+        self.open(self.plan, env=env)
+        self.assertEqual(len(calls.read_text().split()), 1)
+
+    def test_a_browser_command_that_hangs_does_not_hold_open(self):
+        pidfile = self.tmp / 'browser.pid'
+        env = self._browser_stub(f'echo $$ > {pidfile}\nexec sleep 30 >/dev/null 2>&1\n')
+        self.addCleanup(lambda: pidfile.exists() and subprocess.run(['kill', pidfile.read_text().strip()], capture_output=True))
+        self.open(self.plan, '--no-browser', env=env)  # server up: only the browser launch is timed
+        start = time.monotonic()
+        self.open(self.solo, env=env)
+        self.assertLess(time.monotonic() - start, 6)
+        self.assertTrue(pidfile.exists(), 'the browser command was never run')
+
     def test_no_browser_flag_and_forge_ui_browser_off_both_keep_the_browser_closed(self):
         calls = self.tmp / 'browser.log'
         stub = self.tmp / 'browser.sh'
@@ -218,6 +246,37 @@ class UiLauncherTests(unittest.TestCase):
                 self.assertEqual(new['build'], build_id())
                 self.assertEqual(get_json(new['port'], '/api/health')['pid'], new['pid'])
                 self.ui('stop')
+
+    def test_a_server_whose_health_reports_another_build_is_replaced(self):
+        # server.json still claims the current build; only the live answer says the code is old.
+        self.open(self.plan)
+        registry = self.server_json()['registry']
+        self.assertEqual(self.ui('stop').returncode, 0)
+        old = subprocess.Popen(['sleep', '60'])
+        self.addCleanup(old.wait)
+        self.addCleanup(old.kill)
+        answer = json.dumps({'app': 'forge-ui', 'pid': old.pid, 'build': 'old'}).encode()
+
+        class Health(BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(200)
+                self.send_header('Content-Length', str(len(answer)))
+                self.end_headers()
+                self.wfile.write(answer)
+
+            def log_message(self, *args):
+                pass
+
+        stale = HTTPServer(('127.0.0.1', 0), Health)
+        threading.Thread(target=stale.serve_forever, daemon=True).start()
+        self.addCleanup(stale.server_close)
+        self.addCleanup(stale.shutdown)
+        (self.state / 'forge/ui/server.json').write_text(json.dumps(
+            {'pid': old.pid, 'port': stale.server_address[1], 'build': build_id(), 'registry': registry}))
+
+        self.open(self.plan)
+        self.assertEqual(old.wait(timeout=5), -signal.SIGTERM)
+        self.assertNotEqual(self.server_json()['pid'], old.pid)
 
     def test_exit_codes_for_arguments_that_are_not_runs(self):
         notes = self.tmp / 'notes'

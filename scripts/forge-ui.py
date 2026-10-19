@@ -18,6 +18,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import webbrowser
 from datetime import datetime, timezone
@@ -35,6 +36,7 @@ DEFAULT_IDLE_S = 14400
 LOCK_WAIT_S = 10
 START_WAIT_S = 5
 STOP_WAIT_S = 2
+BROWSER_WAIT_S = 2  # a browser command that hangs must not hold `open` past its budget
 
 
 def state_dir() -> Path:
@@ -212,6 +214,18 @@ def browser_wanted(args) -> bool:
     return gui_available()
 
 
+def launch_browser(url):
+    """Open url, waiting at most BROWSER_WAIT_S for a browser command that blocks."""
+    def go():
+        try:
+            webbrowser.open(url)
+        except Exception:  # a missing browser must not fail the run
+            pass
+    worker = threading.Thread(target=go, daemon=True)
+    worker.start()
+    worker.join(BROWSER_WAIT_S)
+
+
 def run_info(directory):
     """(repo, None) for a run dir, or (None, why not)."""
     plan = (directory / 'tasks.tsv').is_file()
@@ -260,8 +274,10 @@ def cmd_open(args):
     try:
         with Lock(state):
             server = read_state(state)
-            if server and confirmed(server):
-                if server.get('build') == build and server.get('registry') == registry:
+            answer = confirmed(server) if server else None
+            if answer:
+                # the record and the live answer must both name this code
+                if {server.get('build'), answer.get('build')} == {build} and server.get('registry') == registry:
                     pass  # reuse
                 else:
                     terminate(server['pid'])
@@ -278,7 +294,8 @@ def cmd_open(args):
             opened = server.get('opened')
             opened = opened if isinstance(opened, list) else []
             mark = key or ''
-            first = mark not in opened
+            # a key counts as opened only when a browser is really launched for it
+            first = mark not in opened and browser_wanted(args)
             if first:
                 opened.append(mark)
             server['opened'] = opened
@@ -291,11 +308,8 @@ def cmd_open(args):
     if key:
         url += f'#/runs/{key}'
     print(f'forge-ui: {url}')
-    if first and browser_wanted(args):
-        try:
-            webbrowser.open(url)
-        except Exception:  # a missing browser must not fail the run
-            pass
+    if first:
+        launch_browser(url)
     return 0
 
 
