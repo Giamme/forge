@@ -5,7 +5,7 @@
 # standard-library coordinator schedules ready tasks without wave barriers.
 #
 # Usage:
-#   forge-parallel.sh plan <plan-dir> --repo <dir> [routing flags] [--decompose-level low|medium|high]
+#   forge-parallel.sh plan <plan-dir> --repo <dir> [routing flags] [--decompose-level low|medium|high] [--ui]
 #   forge-parallel.sh run  <plan-dir> [--max-parallel N] [--yolo-dwarf] [--yolo-qa]
 #                                     [--verify <command>] [--setup <command>] [--dry-run]
 #                                     [--timeout S] [--retry-failed N] [--infra-retries M]
@@ -56,6 +56,7 @@ MEMORY="$SKILL_DIR/scripts/forge-memory.sh"
 source "$SKILL_DIR/scripts/forge-artifact.sh"
 source "$SKILL_DIR/scripts/forge-metrics.sh"
 source "$SKILL_DIR/scripts/forge-fractal-options.sh"
+source "$SKILL_DIR/scripts/forge-ui-options.sh"
 # Beside fractal's, and for the same reason: an option parser sourced from inside
 # a function, after that function has already walked its arguments, cannot parse
 # anything. Every --jev flag was rejected as "unknown option" until this line.
@@ -153,6 +154,7 @@ do_plan() {
       --qa-high)      Q_HI="${2:?}"; shift 2 ;;
       --qa-medium)    Q_MD="${2:?}"; shift 2 ;;
       --qa-low)       Q_LO="${2:?}"; shift 2 ;;
+      --ui|--no-ui)   forge_ui_flag "$1"; shift ;;
       *)
         # `case` is not a loop, so `continue` here belongs to the enclosing while.
         if [ "$JEV_OPTS" = 1 ]; then
@@ -393,6 +395,8 @@ EOF
   fi
 
   render_table "$PLAN"
+  # Before the UNASSIGNED return, so the URL prints under the table either way.
+  forge_ui_launch "$PLAN"
 
   if [ "$unassigned" -gt 0 ]; then
     note ""
