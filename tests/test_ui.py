@@ -67,9 +67,9 @@ class UiLauncherTests(unittest.TestCase):
         if alive(pid):  # stop did not take it down: do not leave it for the idle timeout
             os.kill(pid, signal.SIGKILL)
 
-    def ui(self, *args, env=None):
+    def ui(self, *args, env=None, timeout=60):
         return subprocess.run([sys.executable, str(LAUNCHER), *args], env=env or self.env,
-                              capture_output=True, text=True, timeout=60)
+                              capture_output=True, text=True, timeout=timeout)
 
     def server_json(self):
         return json.loads((self.state / 'forge/ui/server.json').read_text())
@@ -296,6 +296,27 @@ class UiLauncherTests(unittest.TestCase):
             with self.subTest(label):
                 self.assertEqual(self.ui(*args).returncode, code)
         self.assertEqual(self.ui('status').returncode, 1, 'a rejected DIR must not start a server')
+
+    def test_a_repo_file_that_is_a_fifo_is_refused_without_blocking(self):
+        fifo = self._copy('plan-full', 'repo-is-a-fifo')
+        (fifo / 'repo').unlink()
+        os.mkfifo(fifo / 'repo')  # no writer: reading it would block forever
+        start = time.monotonic()
+        try:
+            result = self.ui('open', str(fifo), timeout=8)
+        except subprocess.TimeoutExpired:
+            self.fail('open blocked on a repo file that is a FIFO')
+        self.assertEqual(result.returncode, 3, result.stderr)
+        self.assertLess(time.monotonic() - start, 4)
+
+    @unittest.skipIf(os.geteuid() == 0, 'root can read a chmod 000 directory')
+    def test_an_unreadable_dir_is_refused_without_a_traceback(self):
+        locked = self._copy('plan-full', 'locked')
+        locked.chmod(0)
+        self.addCleanup(locked.chmod, 0o755)
+        result = self.ui('open', str(locked))
+        self.assertEqual(result.returncode, 3, result.stderr)
+        self.assertNotIn('Traceback', result.stderr)
 
 
 if __name__ == '__main__':

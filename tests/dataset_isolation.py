@@ -42,6 +42,18 @@ for name in ('CLOUDFLARE_API_TOKEN', 'CLOUDFLARE_ACCOUNT_ID', 'FORGE_CLEF', 'FOR
              'FORGE_JEV_OUTCOMES'):
     os.environ.pop(name, None)
 
+# A forge runner exports state for its own children (Jev's captured environment, the
+# capability cache, the dataset's invocation chain, the fractal run ids). The suite also runs
+# inside a forge run, as a plan's --verify: there the outer run's FORGE_JEV_ENV_CAPTURED made
+# a nested forge-jev-options.sh skip its own capture, so a test's FORGE_JEV=off was unset
+# again, and FORGE_CAPABILITY_CACHE pointed capability probes at the outer plan's cache. The
+# tests must behave the same inside a run as from a plain shell.
+for name in ('FORGE_JEV_ENV_CAPTURED', 'FORGE_JEV_ENV_KILL', 'FORGE_JEV_ENV_ROUTING',
+             'FORGE_JEV_ENV_TESTS', 'FORGE_JEV_ENV_GATES', 'FORGE_JEV_ENV_MEMORY',
+             'FORGE_CAPABILITY_CACHE', 'FORGE_DATASET_INVOCATION', 'FORGE_DATASET_PARENT',
+             'FORGE_DATASET_TRIGGER', 'FORGE_FRACTAL_RUN', 'FORGE_FRACTAL_RETRY'):
+    os.environ.pop(name, None)
+
 # `forge ui open` starts a detached server that outlives the command, and keeps its state
 # under XDG_STATE_HOME. Tests get a private state home, never open a browser, ask for a free
 # port, and stop whatever server they left behind when the process exits. FORGE_UI would let

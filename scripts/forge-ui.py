@@ -15,6 +15,7 @@ import json
 import os
 import re
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -239,17 +240,21 @@ def browse(url):
 
 
 def run_info(directory):
-    """(repo, None) for a run dir, or (None, why not)."""
-    plan = (directory / 'tasks.tsv').is_file()
-    solo = (directory / 'prompt.md').is_file() and (directory / 'repo').is_file()
-    if not (plan or solo):
-        return None, 'not a forge run (no tasks.tsv, and no prompt.md with repo)'
+    """(repo, None) for a run dir, or (None, why not). Never raises and never blocks."""
+    marker = directory / 'repo'
     try:
-        repo = (directory / 'repo').read_text().strip()
+        plan = (directory / 'tasks.tsv').is_file()
+        solo = (directory / 'prompt.md').is_file() and marker.is_file()
+        if not (plan or solo):
+            return None, 'not a forge run (no tasks.tsv, and no prompt.md with repo)'
+        # a FIFO or a device named `repo` would block the read: only a regular file is read
+        if not stat.S_ISREG(os.stat(marker).st_mode):
+            return None, f'{marker} is not a regular file'
+        repo = marker.read_text().strip()
     except (OSError, ValueError) as exc:  # ValueError: not decodable text
-        return None, f'cannot read {directory / "repo"}: {getattr(exc, "strerror", None) or exc}'
+        return None, f'cannot read {marker}: {getattr(exc, "strerror", None) or exc}'
     if not repo:
-        return None, f'{directory / "repo"} is empty'
+        return None, f'{marker} is empty'
     return repo, None
 
 
