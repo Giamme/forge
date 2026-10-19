@@ -379,4 +379,66 @@ class ForgeTests(unittest.TestCase):
   self.assertEqual([(n[0],' '.join(n[1:3])) for n in notes],[('big','large prompt'),('big','touches 9'),('big','no acceptance')])
   self.assertIn('at 7-10K passed review',r.stdout)
 
+ def test_solo_run_records_its_outcome(self):
+  # One row per invocation: epoch, attempt (existing rows + 1), status, infra class, dwarf spec.
+  # Verdict words win over the exit code; without a verdict the exit code decides.
+  cases=[
+   ('PASS', {}, {}, [], 0, 'PASS', ''),
+   ('FAIL', {'VERDICT':'FAIL'}, {}, [], 0, 'FAIL', ''),
+   ('NOCHANGES', {}, {'change.dwarf.1':{'no_edit':True,'message':'nothing in the tree needs an edit'}}, [], 5, 'NOCHANGES', ''),
+   ('INFRA', {}, {'change.dwarf.1':{'rc':1,'stderr':'Claude AI usage limit reached|1760000000'}}, [], 8, 'INFRA', 'quota'),
+   ('QA-INFRA', {}, {'change.qa.1':{'rc':1,'is_error':True,'verdict':'none','findings':"You've hit your usage limit. Try again in 2 hours."}}, [], 8, 'INFRA', 'quota'),
+   ('ERROR', {}, {'change.dwarf.1':{'rc':1,'stderr':'Traceback: something unrelated broke'}}, [], 4, 'ERROR', ''),
+   ('TIMEOUT', {'SLEEP':'1'}, {}, ['--timeout','1'], 7, 'TIMEOUT', ''),
+  ]
+  for name, env, table, extra, rc, status, infra in cases:
+   with self.subTest(outcome=name):
+    for p in self.root.glob('scenario.json*'): p.unlink()
+    self.git('reset','-q','--hard'); self.git('clean','-qfd')
+    solo=self.root/'solo'
+    if solo.exists(): shutil.rmtree(solo)
+    for key in ('VERDICT','SLEEP','SCENARIO'): self.env.pop(key, None)
+    self.env.update(env)
+    if table: self.scenario(table)
+    r=self.solo(*extra)
+    self.assertEqual(r.returncode, rc, r.stdout)
+    self.assertEqual((solo/'status').read_text().strip(), status)
+    self.assertEqual((solo/'dwarf.spec').read_text().strip(), 'sol')
+    self.assertEqual((solo/'qa.spec').read_text().strip(), 'opus')
+    self.assertFalse((solo/'run_id').exists())
+    if status in ('PASS','FAIL','NOCHANGES'):
+     self.assertEqual((solo/'verdict').read_text().strip(), status)
+    else:
+     self.assertFalse((solo/'verdict').exists())
+    rows=[line.split('\t') for line in (solo/'attempts.tsv').read_text().splitlines()]
+    self.assertEqual(len(rows), 1, rows)
+    self.assertTrue(rows[0][0].isdigit() and int(rows[0][0]) > 0)
+    self.assertEqual(rows[0][1:], ['1', status, infra, 'sol'])
+
+ def test_solo_rerun_that_fails_before_qa_drops_the_previous_pass(self):
+  # Doctor rejects the QA harness before any dispatch, which is before the old
+  # verdict removal. A dead re-run must not keep reading as the earlier PASS.
+  r=self.solo()
+  self.assertEqual(r.returncode, 0, r.stdout)
+  run=self.root/'solo'
+  self.assertEqual((run/'verdict').read_text().strip(), 'PASS')
+  r=self.solo('--qa','opus::openclaude')
+  self.assertNotEqual(r.returncode, 0, r.stdout)
+  self.assertEqual((run/'status').read_text().strip(), 'ERROR')
+  self.assertFalse((run/'verdict').exists())
+  self.assertEqual((run/'dwarf.spec').read_text().strip(), 'sol')
+  self.assertEqual((run/'qa.spec').read_text().strip(), 'opus::openclaude')
+  self.assertFalse((run/'run_id').exists())
+  rows=[line.split('\t') for line in (run/'attempts.tsv').read_text().splitlines()]
+  self.assertEqual([row[1:] for row in rows], [['1','PASS','','sol'],['2','ERROR','','sol']])
+
+ def test_solo_dry_run_writes_no_status(self):
+  run=self.root/'solo'
+  run.mkdir(); (run/'verdict').write_text('PASS\n')
+  r=self.solo('--dry-run')
+  self.assertEqual(r.returncode, 0, r.stdout)
+  for name in ('status','attempts.tsv','dwarf.spec','qa.spec','run_id'):
+   self.assertFalse((run/name).exists(), name)
+  self.assertEqual((run/'verdict').read_text(), 'PASS\n')
+
 if __name__=='__main__': unittest.main()
