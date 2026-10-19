@@ -192,6 +192,10 @@ bash <skill_dir>/scripts/forge-parallel.sh run "$PLAN" --fractal \
   --max-parallel 3 --fractal-concurrency 3 --fractal-depth 2
 ```
 
+Add `--ui` to `plan` to open the plan in [forge-ui](ui.md): the `forge-ui:` URL is printed
+under the task table, so the user can watch the later `run`. Ask once when the plan is made,
+not on `run`, `retry` or resume; it is fail-open and not remembered.
+
 `plan` saves tier pools in `fractal-routing.json`. The first enabled execution freezes
 eligible specs, canonical resolutions and limits with the run and preflights every
 eligible model/harness. Children route by difficulty, then the configured general dwarf,

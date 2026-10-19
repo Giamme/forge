@@ -39,6 +39,7 @@ logs and separate execution/acceptance states; HTML reports capture them for lat
 - [Planning](#planning)
 - [Project memory](#project-memory)
 - [Run dataset](#run-dataset)
+- [forge-ui](#forge-ui)
 - [Full command reference](#full-command-reference)
 - [Model registry](#model-registry)
 - [Run artifacts](#run-artifacts)
@@ -811,6 +812,24 @@ It exists to train and calibrate decision models on what forge actually did.
 Capture is fail-open and never read by anything that builds a prompt. See
 [references/dataset.md](references/dataset.md) for the event schema and its invariants.
 
+## forge-ui
+
+forge-ui is a small read-only local web page that shows a run live: tasks by wave,
+statuses, models, attempts, reviewer verdicts and, for a solo run, its one task. It is opt-in.
+The `/forge` skill asks "Open forge-ui to watch this run? [y/N]" at the start of every new
+interactive run, or you pass it yourself:
+
+```sh
+bash scripts/forge-solo.sh "$RUN" --repo "$REPO" --dwarf sol --ui
+bash scripts/forge-parallel.sh plan "$PLAN" --repo "$REPO" --decompose-level medium --ui
+./forge ui open [DIR]     # an existing run dir, or the run list
+```
+
+All runs share one detached server on `127.0.0.1:8765` (`FORGE_UI_PORT`) that exits after
+four idle hours (`FORGE_UI_IDLE_S`). A UI that cannot start never fails the run. It has no
+token: any local process can read the prompts and diffs of the runs it shows. See
+[references/ui.md](references/ui.md) and [ui/README.md](ui/README.md).
+
 ## Full command reference
 
 ### The `/forge` slash command
@@ -820,7 +839,7 @@ Capture is fail-open and never read by anything that builds a prompt. See
                 [--qa <alias>[:<effort>[:<harness>]]]
                 [--planner <alias>[:<effort>[:<harness>]]]
                 [--yolo-dwarf] [--yolo-qa] [--repo <dir>] [--native-review]
-                [--no-memory] [--timeout <seconds>] [--fractal | --no-fractal]
+                [--no-memory] [--timeout <seconds>] [--ui | --no-ui] [--fractal | --no-fractal]
                 [--fractal-auto-decompose] [--fractal-planner <spec>]
                 [--fractal-depth <n>] [--fractal-children <n>] [--fractal-nodes <n>]
                 [--fractal-iterations <n>] [--fractal-concurrency <n>] [--fractal-deadline <s>]
@@ -939,6 +958,18 @@ node control also requires its task ID; they never guess the latest run. Use eac
 `--help` for its accepted options. Installation is also available through
 `bash scripts/forge-install-fractal.sh`.
 
+### `forge ui` command group
+
+| Command | Purpose |
+| --- | --- |
+| `open [DIR] [--no-browser] [--port N]` | start or reuse the shared forge-ui server; print `forge-ui: <url>` for the plan or solo run dir `DIR` (the run list without it) and open a browser the first time |
+| `status [--json]` | exit 0 and describe the server when it runs, 1 when not |
+| `stop` | stop the server |
+
+`FORGE_UI=off` makes `--ui` start nothing, `FORGE_UI_BROWSER=off` never opens a browser,
+`FORGE_UI_PORT` (8765) and `FORGE_UI_IDLE_S` (14400, `0` = never) tune the server. State and
+`server.log` are in `${XDG_STATE_HOME:-~/.local/state}/forge/ui/`.
+
 ### `scripts/forge-dispatch.sh`
 
 Resolves a spec into a real CLI invocation and runs it. Needs only bash and coreutils, which
@@ -1013,7 +1044,7 @@ capture, the QA dispatch, and the ledger writes.
 ```
 forge-solo.sh <run-dir> --repo <dir> --dwarf <spec> [--qa <spec>]
               [--approach <file>] [--yolo-dwarf] [--yolo-qa]
-              [--native-review] [--no-memory] [--timeout <s>] [--dry-run]
+              [--native-review] [--no-memory] [--timeout <s>] [--dry-run] [--ui | --no-ui]
               [--fractal | --no-fractal] [--fractal-<limit> <n>]
               [--dwarf-low <pool>] [--dwarf-medium <pool>] [--dwarf-high <pool>] [--retry]
 ```
@@ -1440,6 +1471,15 @@ as if the dwarf had written it.
   changes.diff        the dwarf's real diff, which is qa's input
 ```
 
+A solo run also records, for forge-ui and for you:
+
+```
+<run-dir>/
+  status              RUNNING, then PASS|FAIL|UNKNOWN|NOCHANGES|INVALIDATED|TIMEOUT|INFRA|INTERRUPTED|ERROR
+  dwarf.spec, qa.spec the specs the run was given
+  attempts.tsv        epoch, attempt number, status, infrastructure class, dwarf spec; one row per invocation
+```
+
 Plus, in the repo itself and surviving the run:
 
 ```
@@ -1570,7 +1610,7 @@ forge/
 ├── SKILL.md                     the skill itself — what the orchestrating model reads
 ├── registry.tsv                 alias → (harness, model, effort). Add a row to teach forge a model
 ├── README.md                    this file
-├── forge                        repository-local Fractal management launcher
+├── forge                        repository-local launcher: `forge fractal`, `jev`, `dataset` and `ui`
 ├── scripts/
 │   ├── forge-dispatch.sh        resolve a spec → run one role on one harness
 │   ├── forge-solo.sh            the whole single-task run: dwarf → diff → qa
@@ -1590,10 +1630,15 @@ forge/
 │   ├── forge-fractal-dispatch.sh bridge entrypoint for existing pipelines
 │   ├── forge-install-fractal.sh isolated optional runtime installer
 │   ├── forge_fractal/           nested execution, recovery, inspection and dashboard
+│   ├── forge-ui.py              `forge ui open|status|stop`: the one shared forge-ui server
+│   ├── forge-ui-options.sh      `--ui|--no-ui` and the fail-open launch, sourced by the runners
+│   ├── forge_registry.py        the run registry: where run dirs are noted, read by forge-ui
 │   ├── forge-dataset.py         `forge dataset` entry point
 │   ├── forge_dataset/           the run dataset: capture hooks, readers, importer, status checks
 │   └── forge-install.sh         install into all five harnesses
+├── ui/                          forge-ui: read-only local run viewer (`forge_ui` package, tests, API contract)
 └── references/
+    ├── ui.md                    forge-ui: commands, env vars, shared server, state, privacy
     ├── harnesses.md             per-harness invocation, ladders, failure modes
     ├── decompose.md             tasks.tsv schema, difficulty criteria, wave algorithm
     ├── fractal.md               opt-in backend, limits, recovery and observability

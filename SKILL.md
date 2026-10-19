@@ -1,7 +1,7 @@
 ---
 name: forge
 description: Dispatch implementation and independent diff review to user-selected models through local agent CLIs. Use for /forge or explicit requests to delegate coding or review; explanation-only questions do not authorize dispatch.
-argument-hint: '"<goal>" --dwarf <alias>[:effort[:harness]] [--qa <alias>] [--planner <alias>] [--yolo-dwarf] [--yolo-qa] [--decompose-level low|medium|high] [--fractal|--no-fractal|--fractal-auto-decompose] [--fractal-planner <spec>] [--jev|--no-jev] [--jev-shadow] [--no-memory] [--no-ripwire] [--timeout <seconds>] [--retry-failed <n>] [--escalate-after <n>] [--qa-threshold P0|P1|P2|P3] [--shadow-qa <spec>[,<spec>]] [--shadow-rate <0..1>] [--explore <0..0.5>]'
+argument-hint: '"<goal>" --dwarf <alias>[:effort[:harness]] [--qa <alias>] [--planner <alias>] [--yolo-dwarf] [--yolo-qa] [--decompose-level low|medium|high] [--fractal|--no-fractal|--fractal-auto-decompose] [--fractal-planner <spec>] [--jev|--no-jev] [--jev-shadow] [--no-memory] [--no-ripwire] [--ui|--no-ui] [--timeout <seconds>] [--retry-failed <n>] [--escalate-after <n>] [--qa-threshold P0|P1|P2|P3] [--shadow-qa <spec>[,<spec>]] [--shadow-rate <0..1>] [--explore <0..0.5>]'
 allowed-tools: [Bash, Read]
 ---
 
@@ -24,6 +24,10 @@ For explanation requests, explain the workflow without spending model quota.
   the runner. Unattended runs default off. Installation never activates Fractal.
   Resume and explicit retry retain the recorded choice. Read [Fractal](references/fractal.md)
   when selected; Fractal completion never substitutes for Forge QA acceptance.
+- Ask **“Open forge-ui to watch this run? [y/N]”** once at the start of every new
+  interactive run, unless the user supplied `--ui` or `--no-ui`. Pass the answer to `plan`
+  or `forge-solo.sh` and relay the `forge-ui:` URL they print. Never ask on resume or retry;
+  unattended runs leave it off. A UI failure never changes the run. Read [forge-ui](references/ui.md).
 - `--fractal-auto-decompose` enables automatic split-or-atomic decisions before each
   eligible node implements. Include the effective planner and bounds in the approval
   preview; child decisions need no additional user approval inside those bounds.
@@ -100,6 +104,8 @@ Runners offer installation once before agents; dispatch never prompts. See
   recovery, managed run commands, read-only dashboard and portable reports.
 - [Memory](references/memory.md): `.forge/` learning and spend records; `--no-memory` disables
   them. Memory is written to the user's repository but excluded from implementation diffs.
+- [forge-ui](references/ui.md): the opt-in local run viewer; `forge ui open|status|stop`,
+  `FORGE_UI=off`, one shared server, privacy.
 - [Dataset](references/dataset.md): every run's inputs and outcomes, kept outside the repo
   for training decision models; `forge dataset status|import|export|outcomes`, `FORGE_DATASET=off`.
 - [Jev](references/jev.md): optional TypeSafe System One judgments for routing, test
