@@ -7,11 +7,11 @@ that implements the change, and a **qa** reviewer that reads the dwarf's real di
 the dwarf's summary of its own work. A model grading its own homework isn't a check; the
 entire value of the second stage is that it sees the code rather than the claim.
 
-Either role can be any model, at any reasoning effort, through any of five agent CLIs:
+Either role can be any model, at any reasoning effort, through any of six agent CLIs:
 
-| | codex | claude | openclaude | opencode | antigravity |
-|---|---|---|---|---|---|
-| binary | `codex` | `claude` | `openclaude` | `opencode` | `agy` |
+| | codex | claude | openclaude | opencode | antigravity | grok |
+|---|---|---|---|---|---|---|
+| binary | `codex` | `claude` | `openclaude` | `opencode` | `agy` | `grok` |
 
 So `--dwarf sol:xhigh --qa opus` runs GPT through Codex and Claude Opus through Claude
 Code, in one command, from whichever CLI you happen to be sitting in.
@@ -76,6 +76,7 @@ claude       found      /Users/you/.local/bin/claude
 openclaude   found      /Users/you/.nvm/versions/node/v24.18.0/bin/openclaude
 opencode     found      /Users/you/.opencode/bin/opencode
 antigravity  MISSING    agy not on PATH
+grok         found      /Users/you/.grok/bin/grok
 ```
 
 A `MISSING` harness is fine — forge only needs the ones you actually route models through.
@@ -362,6 +363,7 @@ Every harness has its own effort ladder:
 | claude | `low medium high xhigh max` |
 | openclaude | `low medium high xhigh max ultracode` |
 | antigravity | `low medium high` |
+| grok | `low medium high xhigh max` (grok-4.7 offers up to `xhigh`) |
 | opencode | provider-specific; forwarded verbatim |
 
 And support is more irregular than one ceiling per backend:
@@ -390,6 +392,7 @@ A word that isn't a recognized effort at all is an error, not a clamp.
 | codex | `--dangerously-bypass-approvals-and-sandbox` |
 | claude / openclaude / antigravity | `--dangerously-skip-permissions` |
 | opencode | `--auto` |
+| grok | `--always-approve` |
 
 Each flag applies to **one role only**, so `--yolo-dwarf` alone is the normal combination:
 the implementer gets a free hand, the reviewer stays fenced in and still can't edit the code
@@ -1667,7 +1670,7 @@ recorded in [the September 7 evaluation](tests/benchmark-2026-09-07.md).
 ## Ripwire context
 
 Forge automatically adds optional Ripwire 0.4.0 repository evidence to planner, dwarf,
-and QA prompts across all five harnesses. Setup and interactive runners offer a pinned,
+and QA prompts across all six harnesses. Setup and interactive runners offer a pinned,
 verified installation; headless runs continue when it is missing. Use `--no-ripwire`
 or `FORGE_RIPWIRE=off` to disable it. Decomposed plans preserve opt-out across resumes
 and retries. See [installation, controls and attempt artifacts](references/ripwire.md).

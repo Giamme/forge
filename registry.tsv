@@ -74,6 +74,7 @@ gemini-pro	antigravity	gemini-3.1-pro	low,high
 gemini-3.6	antigravity	gemini-3.6-flash	low,medium,high
 gemini-3.5	antigravity	gemini-3.5-flash	low,medium,high
 gpt-oss	antigravity	gpt-oss-120b	medium
+grok	grok	grok-4.7	<=xhigh
 grok	opencode	github-copilot/grok-4.6	-
 kimi	opencode	github-copilot/kimi-k3	-
 glm	opencode	opencode-go/glm-5.2	-

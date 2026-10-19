@@ -7,8 +7,8 @@ Everything below was verified by running the CLIs on this machine, not read from
 several of these behaviours are undocumented and a few contradict what the `--help` text
 implies.
 
-Fractal uses this same dispatcher for all five harnesses through its `agents.py` bridge.
-It is an optional execution backend, not a sixth model harness or a replacement for
+Fractal uses this same dispatcher for all six harnesses through its `agents.py` bridge.
+It is an optional execution backend, not a seventh model harness or a replacement for
 `alias:effort:harness`. The same effort and permission rules apply to each fresh nested
 work step. Use `./forge fractal doctor --spec SPEC` for runtime and advertised capability
 checks; authentication and live provider availability still require an explicitly requested
@@ -21,6 +21,7 @@ provider test. See [Fractal execution](fractal.md).
 - [claude / openclaude](#claude--openclaude)
 - [opencode](#opencode)
 - [antigravity (agy)](#antigravity-agy)
+- [grok](#grok)
 - [Adding a harness](#adding-a-harness)
 
 ## At a glance
@@ -32,8 +33,9 @@ provider test. See [Fractal execution](fractal.md).
 | `openclaude` | `openclaude -p` | `--model` | `--effort` | `--dangerously-skip-permissions` |
 | `opencode` | `opencode run` | `-m provider/model` | `--variant` | `--auto` |
 | `antigravity` | `agy --print=...` | `--model` | `--effort` | `--dangerously-skip-permissions` |
+| `grok` | `grok --prompt-file` | `--model` | `--reasoning-effort` | `--always-approve` |
 
-**Only antigravity bounds its own runtime.** The other four will sit on a hung request
+**Only antigravity bounds its own runtime.** The other five will sit on a hung request
 indefinitely, and stock macOS ships no `timeout` binary to wrap them in — so a hung dwarf
 used to stall its whole wave under `forge-parallel.sh`'s `xargs -P` with no output and no
 way to distinguish stuck from slow. `forge-dispatch.sh` therefore runs every backend in the
@@ -43,7 +45,7 @@ disables), else the optional `timeout` column of the model's registry row, else 
 `timeout=` and `timeout_source=`). A killed dispatch exits `7`.
 
 **Infrastructure failures exit `8`.** After the backend exits, `forge-runtime.py classify` reads
-the dispatch log (never `<role>.last`, which is only created afterwards): claude/openclaude
+the dispatch log (never `<role>.last`, which is only created afterwards): claude/openclaude/grok
 `result` events with `is_error`, codex `turn.failed`/`error` events that nothing followed,
 and for the raw-log harnesses (opencode, antigravity) the last 2 KB when the exit was nonzero —
 looking for strong phrases (usage/session limit, quota, insufficient balance/credit, rate limit,
@@ -72,6 +74,7 @@ Effort ladders, low to high:
 - openclaude — `low medium high xhigh max ultracode`
 - antigravity — `low medium high`, and **per-model**: see below
 - opencode — no fixed ladder; `--variant` is provider-specific and is forwarded verbatim
+- grok — `low medium high xhigh max`; each model offers a subset (grok-4.7: up to `xhigh`)
 
 ## codex
 
@@ -246,6 +249,33 @@ the skill, or agy will silently run a stale version.
 `--print-timeout` defaults to 5m in agy, which is short for real implementation work; forge
 passes 30m and exposes `--agy-timeout` to change it.
 
+## grok
+
+```
+grok --model <model> --prompt-file <prompt> --output-format streaming-messages-json \
+  --reasoning-effort <effort> (--permission-mode acceptEdits --allow Bash [--deny Edit --deny Write] | --always-approve)
+```
+
+The xAI Grok Build CLI, signed in with `grok login` (or `XAI_API_KEY`); `grok models` lists
+what the account can use and each model's efforts live in `~/.grok/models_cache.json`. The
+`grok` alias runs `grok-4.7` here and keeps its opencode route (`grok:high:opencode`, 4.6 via
+GitHub Copilot) as a second row.
+
+- **A headless run cannot ask, so it refuses and exits 0.** In the default mode an edit that
+  needs approval is skipped with `permission required: Edit calc.py was not run` on stderr:
+  the same silent empty diff claude gives. The dwarf therefore runs in `acceptEdits` with
+  `--allow Bash` (shell for tests). A reviewer gets the same plus `--deny Edit --deny Write`;
+  deny beats the mode and every allow, and Bash can still write files, as with claude.
+- **Output is the claude stream.** `streaming-messages-json` ends in a `result` event with
+  `result`, `is_error` and the three disjoint token buckets, so `forge-runtime.py` reads the
+  final message, the tokens and an `is_error` failure exactly as it does for claude. An error
+  subtype can leave `result` empty and put the reason in `errors[]`, which is read instead.
+- The prompt goes by `--prompt-file`, never argv, and stdin is `/dev/null`.
+
+Verified live on 2026-10-19 with a `FORGE_OK` dispatch: exit 0, `permissionMode` acceptEdits,
+the answer extracted from the `result` line, tokens recorded, nothing left running. An edit and
+a read-only review have not been proven live yet.
+
 ## Installing forge into a harness
 
 Each harness discovers skills differently, and the differences are not guessable — verify
@@ -258,6 +288,7 @@ with the listed check rather than trusting file placement.
 | codex | symlink in **`~/.codex/skills/`** | `codex exec "do you have a skill named forge?"` |
 | opencode | **nothing** — it scans `~/.claude/` itself | `opencode debug skill` |
 | antigravity | `agy plugin install` of a wrapper | `agy --print='/forge'` |
+| grok | **nothing** — it lists `~/.claude/skills` itself | `skills` in a headless `init` line |
 
 Three traps here:
 

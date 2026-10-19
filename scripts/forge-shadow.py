@@ -78,6 +78,8 @@ def family(model: str) -> str:
         return 'gpt'
     if m.startswith('gemini'):
         return 'gemini'
+    if m.startswith('grok'):
+        return 'grok'
     return m
 
 

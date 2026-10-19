@@ -124,7 +124,8 @@ def extract(log: str, harness: str) -> tuple[str | None, dict[str, int | None]]:
             if isinstance(item, dict) and item.get('type') == 'agent_message':
                 if isinstance(item.get('text'), str):
                     final = item['text']
-        if harness == 'claude' and event.get('type') == 'result':
+        # grok's streaming-messages-json ends in the same `result` event, token buckets included.
+        if harness in ('claude', 'grok') and event.get('type') == 'result':
             if isinstance(event.get('result'), str):
                 final = event['result']
             # Claude reports uncached, cache-read and cache-creation separately.
@@ -148,7 +149,7 @@ def finish(attempt: str, root: str, role: str, harness: str, rc: str) -> None:
 def _finish(attempt: Path, root: Path, role: str, harness: str, rc: str) -> None:
     log = root / (role + '.log')
     last = root / (role + '.last')
-    structured = harness in ('codex', 'claude')
+    structured = harness in ('codex', 'claude', 'grok')
     text = log.read_text(errors='replace') if structured and log.exists() else ''
     final, usage = extract(text, harness)
     if not last.exists() or not last.stat().st_size:
@@ -438,7 +439,7 @@ def classify(log: str, harness: str, rc: object, last: str = '', role: str = '',
         text = Path(log).read_text(errors='replace')
     except OSError:
         text = ''
-    events, stray = _events(text) if harness in ('codex', 'claude', 'openclaude') else ([], [])
+    events, stray = _events(text) if harness in ('codex', 'claude', 'openclaude', 'grok') else ([], [])
 
     if harness == 'codex':
         final = _codex_final(events, last)
@@ -453,11 +454,14 @@ def classify(log: str, harness: str, rc: object, last: str = '', role: str = '',
             return 'empty', None, 'codex finished with exit 0 but produced no final message'
         return classify_text('\n'.join(pending + [_tail(stray)]), now=now)
 
-    results = [e for e in events if e.get('type') == 'result'] if harness in ('claude', 'openclaude') else []
+    results = [e for e in events if e.get('type') == 'result'] if harness in ('claude', 'openclaude', 'grok') else []
     if results:
         event = results[-1]
         body = event.get('result')
         body = body if isinstance(body, str) else ''
+        # grok's error subtypes put the reason in errors[] and may leave result empty.
+        if not body.strip() and isinstance(event.get('errors'), list):
+            body = '\n'.join(str(e) for e in event['errors'])
         if event.get('is_error') is True:
             return classify_text(body, event.get('api_error_status'), now)
         if rc == 0 and not body.strip():

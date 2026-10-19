@@ -2,7 +2,7 @@
 
 Forge automatically uses Ripwire **0.4.0** when found on `PATH`, then in
 `~/.local/bin`. Other versions are preserved but skipped until compatibility is verified.
-All five harnesses use the same preparation step. No provider calls are needed for it.
+All six harnesses use the same preparation step. No provider calls are needed for it.
 
 Use `--no-ripwire` on dispatch, solo, or parallel `plan`, `run`, and `retry`, or set
 `export FORGE_RIPWIRE=off` in your shell configuration. Opt-out is resolved before

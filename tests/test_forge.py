@@ -17,9 +17,10 @@ a=sys.argv[1:]
 if '--help' in a:
  if os.environ.get('HELPS'):
   with open(os.environ['HELPS'], 'a') as f: f.write('help\\n')
- print('-p --model --add-dir --effort --permission-mode --allowedTools --disallowed-tools --dangerously-skip-permissions -m -C -o -c -s --skip-git-repo-check --approve-for-me --base --uncommitted --dangerously-bypass-approvals-and-sandbox --dir --variant --auto --agent --print --print-timeout --mode --json --output-format'); sys.exit()
-p = sys.stdin.read() if '-p' in a or a[-1] == '-' else a[-1]
-qa = '--disallowed-tools' in a or '-s' in a or 'review' in a
+ print('-p --model --add-dir --effort --permission-mode --allowedTools --disallowed-tools --dangerously-skip-permissions -m -C -o -c -s --skip-git-repo-check --approve-for-me --base --uncommitted --dangerously-bypass-approvals-and-sandbox --dir --variant --auto --agent --print --print-timeout --mode --json --output-format --prompt-file --reasoning-effort --allow --deny --always-approve'); sys.exit()
+p = (pathlib.Path(a[a.index('--prompt-file')+1]).read_text() if '--prompt-file' in a
+     else sys.stdin.read() if '-p' in a or a[-1] == '-' else a[-1])
+qa = '--disallowed-tools' in a or '--deny' in a or '-s' in a or 'review' in a
 name = 'a.txt' if 'TASK_a' in p else ('b.txt' if 'TASK_b' in p else ('c.txt' if 'TASK_c' in p else ('d.txt' if 'TASK_d' in p else 'change.txt')))
 # A shadow review (forge-shadow.py) is a review the run never reads; it gets its own role so
 # it never shifts the primary reviewer's call numbers or counts.

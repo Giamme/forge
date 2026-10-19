@@ -21,7 +21,7 @@ DISPATCH = ROOT / 'scripts' / 'forge-dispatch.sh'
 HELP = ('-p --model --add-dir --effort --permission-mode --allowedTools --disallowed-tools '
         '--dangerously-skip-permissions -m -C -o -c -s --skip-git-repo-check --approve-for-me --base '
         '--uncommitted --dangerously-bypass-approvals-and-sandbox --dir --variant --auto --agent --print '
-        '--print-timeout --mode --json --output-format exec')
+        '--print-timeout --mode --json --output-format exec --prompt-file --reasoning-effort --allow --deny --always-approve')
 
 # What a real claude/codex wrote the day they hit a limit (from an earlier forge run).
 CLAUDE_LIMIT = "You've hit your session limit · resets 1:10pm (Europe/Rome)"
@@ -130,6 +130,46 @@ class ExitCodeTests(DispatchBase):
         self.env.pop('FORGE_TIMEOUT')
         self.env['FORGE_REGISTRY'] = str(self.root / 'missing.tsv')
         self.assertEqual(self.dispatch('dwarf', 'sol').returncode, 2)
+
+
+class GrokHarnessTests(DispatchBase):
+    """The grok CLI: its permission recipe per role, and its claude-shaped result stream."""
+
+    def setUp(self):
+        super().setUp()
+        shutil.copy(self.bin / 'claude', self.bin / 'grok')
+
+    def test_dwarf_can_edit_and_its_answer_and_tokens_come_from_the_result_line(self):
+        # Headless grok refuses an unapproved edit and still exits 0, so a dwarf without
+        # acceptEdits ends with an empty diff that looks like success.
+        result = self.dispatch('dwarf', 'grok:high')
+        self.assertEqual(result.returncode, 0, result.stdout)
+        resolved = self.kv('dwarf.resolved')
+        self.assertEqual((resolved['harness'], resolved['model'], resolved['effort']), ('grok', 'grok-4.7', 'high'))
+        cmd = self.read('dwarf.cmd')
+        self.assertIn('--permission-mode acceptEdits --allow Bash', cmd)
+        self.assertIn('--output-format streaming-messages-json', cmd)
+        self.assertNotIn('--deny', cmd)
+        self.assertEqual((self.repo / 'change.txt').read_text(), 'implemented\n')
+        # The final message, not a copy of the JSON stream, is what the runner reads next.
+        self.assertEqual(self.read('dwarf.last'), 'implemented\n')
+        metrics = json.loads((self.attempt('dwarf') / 'metrics.json').read_text())
+        self.assertEqual((metrics['input_tokens'], metrics['cached_input_tokens'], metrics['output_tokens']), (15, 2, 4))
+
+    def test_reviewer_cannot_edit_and_effort_is_clamped_to_what_grok_offers(self):
+        result = self.dispatch('qa', 'grok:max')
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn('--deny Edit --deny Write', self.read('qa.cmd'))
+        self.assertFalse((self.repo / 'change.txt').exists())
+        self.assertEqual(self.read('qa.last'), 'FORGE_VERDICT: PASS\n')
+        self.assertEqual(self.kv('qa.resolved')['clamped'], 'max -> xhigh')
+
+    def test_an_error_result_is_infrastructure(self):
+        self.scenario({'*.dwarf.*': {'rc': 1, 'is_error': True,
+                                     'message': 'Unauthorized: token authentication failed: credential expired'}})
+        result = self.dispatch('dwarf', 'grok')
+        self.assertEqual(result.returncode, 8, result.stdout)
+        self.assertEqual(self.kv('dwarf.infra')['class'], 'auth')
 
 
 class InfraTests(DispatchBase):

@@ -5,7 +5,7 @@
 # opencode.
 #
 # Usage:
-#   forge-dispatch.sh doctor          (harnesses: codex claude openclaude opencode antigravity)
+#   forge-dispatch.sh doctor          (harnesses: codex claude openclaude opencode antigravity grok)
 #   forge-dispatch.sh dwarf <spec> --prompt-file <f> [--repo <dir>] [--run-dir <d>] [--yolo] [--dry-run]
 #   forge-dispatch.sh qa    <spec> --prompt-file <f> [--repo <dir>] [--run-dir <d>] [--yolo] [--dry-run]
 #                                  [--native-review [--review-base <ref>]]
@@ -51,6 +51,7 @@ ladder_for() {
     claude)      echo "low medium high xhigh max" ;;
     openclaude)  echo "low medium high xhigh max ultracode" ;;
     antigravity) echo "low medium high" ;;
+    grok)        echo "low medium high xhigh max" ;;   # each model offers a subset (registry)
     opencode)    echo "" ;;   # --variant is provider-specific; forwarded verbatim
     *)           echo "" ;;
   esac
@@ -94,14 +95,14 @@ lookup() { # lookup <alias> [harness] -> "harness<TAB>model<TAB>ceiling<TAB>time
 }
 
 known_harness() {
-  case "$1" in codex|claude|openclaude|opencode|antigravity) return 0 ;; *) return 1 ;; esac
+  case "$1" in codex|claude|openclaude|opencode|antigravity|grok) return 0 ;; *) return 1 ;; esac
 }
 
 # --- doctor -------------------------------------------------------------------
 doctor() {
   local rc=0 h bin
   printf '%-12s %-10s %s\n' HARNESS STATUS DETAIL
-  for h in codex claude openclaude opencode antigravity; do
+  for h in codex claude openclaude opencode antigravity grok; do
     bin="$(command -v "$(binary_for "$h")" 2>/dev/null)"
     if [ -z "$bin" ]; then
       printf '%-12s %-10s %s\n' "$h" MISSING "$(binary_for "$h") not on PATH"; rc=1; continue
@@ -183,7 +184,7 @@ else
 fi
 [ -n "$ALIAS" ] || die "empty alias in spec '$SPEC'"
 [ -z "$HARNESS" ] || known_harness "$HARNESS" \
-  || die "unknown harness '$HARNESS' (expected codex, claude, openclaude, opencode or antigravity)"
+  || die "unknown harness '$HARNESS' (expected codex, claude, openclaude, opencode, antigravity or grok)"
 
 ROW="$(lookup "$ALIAS" "$HARNESS")"
 REG_TIMEOUT="-"
@@ -459,6 +460,23 @@ case "$HARNESS" in
     elif read_only_role; then CMD+=(--mode plan)
     else CMD+=(--mode accept-edits); fi
     CMD+=(--print="$PROMPT")
+    ;;
+  grok)
+    # Headless grok refuses any tool call that needs approval and still exits 0
+    # ("permission required: Edit calc.py was not run"): the same silent empty diff
+    # claude gives without acceptEdits, so the dwarf gets edits and the whole shell.
+    # The Messages-format stream ends in a claude-shaped `result` line, which
+    # forge-runtime.py reads for the final message and the tokens.
+    CMD=(grok --model "$MODEL" --prompt-file "$PROMPT_FILE" --output-format streaming-messages-json)
+    [ -n "$EFFORT" ] && CMD+=(--reasoning-effort "$EFFORT")
+    if [ "$YOLO" = 1 ]; then
+      CMD+=(--always-approve)
+    else
+      CMD+=(--permission-mode acceptEdits --allow Bash)
+      # A deny rule beats the mode and every allow, so a reviewer keeps its shell for
+      # running tests but cannot edit. Bash can still write files, as with claude.
+      read_only_role && CMD+=(--deny Edit --deny Write)
+    fi
     ;;
   *) die "no dispatch recipe for harness '$HARNESS'" ;;
 esac
