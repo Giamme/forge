@@ -1,11 +1,14 @@
+import hashlib
 import http.client
 from http.server import ThreadingHTTPServer
 import io
 import json
 import os
 from pathlib import Path
+import re
 import socket
 import struct
+import sys
 import tempfile
 import threading
 import time
@@ -13,7 +16,7 @@ import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from unittest.mock import patch
 
-from forge_ui import __version__, reader
+from forge_ui import __version__, build_id, reader
 from forge_ui.__main__ import main
 from forge_ui.server import Handler, make_server
 
@@ -26,6 +29,76 @@ INDEX = b'<!doctype html><title>index</title>'
 APP = b'window.app = 1;'
 STYLE = b'body { color: #222; }'
 SVG = b'<svg xmlns="http://www.w3.org/2000/svg"/>'
+# The idle thread checks about once a second. A 1s idle exit has to finish inside this
+# window on a busy machine; staying up is observed across several of those checks.
+IDLE_DONE = 10
+IDLE_STAY = 4
+
+
+def _source_build_id():
+    """Spec of build_id: sha256 of each package *.py name and its bytes, names sorted."""
+    digest = hashlib.sha256()
+    root = Path(__file__).resolve().parents[1] / 'forge_ui'
+    for path in sorted(root.glob('*.py'), key=lambda item: item.name):
+        digest.update(path.name.encode('utf-8'))
+        digest.update(path.read_bytes())
+    return digest.hexdigest()
+
+
+class _LockedBuffer:
+    """Text buffer one thread can write while the test waits for a line."""
+
+    def __init__(self):
+        self._parts = []
+        self._cond = threading.Condition()
+
+    def write(self, text):
+        with self._cond:
+            self._parts.append(text)
+            self._cond.notify_all()
+        return len(text)
+
+    def flush(self):
+        return None
+
+    def getvalue(self):
+        with self._cond:
+            return ''.join(self._parts)
+
+    def wait_for(self, predicate, timeout):
+        deadline = time.monotonic() + timeout
+        with self._cond:
+            while True:
+                value = ''.join(self._parts)
+                if predicate(value):
+                    return value
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return value
+                self._cond.wait(min(0.05, remaining))
+
+
+class _ThreadCapture:
+    """Send one thread's writes to a buffer and leave every other thread's stream alone."""
+
+    def __init__(self, real, buffer):
+        self._real = real
+        self._buffer = buffer
+        self.ident = None
+
+    def write(self, text):
+        if threading.get_ident() == self.ident:
+            return self._buffer.write(text)
+        return self._real.write(text)
+
+    def flush(self):
+        if threading.get_ident() == self.ident:
+            self._buffer.flush()
+        else:
+            self._real.flush()
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
 
 
 class FakeCatalog:
@@ -102,6 +175,31 @@ class RoutesTests(ServerTestCase):
         self.assertEqual(status, 200)
         self.assertEqual(json.loads(body), {'runs': self.catalog.runs()})
         self.assertEqual([run['key'] for run in json.loads(body)['runs']], [reader.run_key(PLAN)])
+
+    def test_health_reports_version_build_and_pid(self):
+        status, headers, body = self.request('GET', '/api/health')
+        self.assertEqual(status, 200)
+        self.assertEqual(headers['content-type'], 'application/json; charset=utf-8')
+        self.assertEqual(headers['cache-control'], 'no-store')
+        self.assertEqual(headers['x-content-type-options'], 'nosniff')
+        self.assertEqual(headers['content-security-policy'], CSP)
+        self.assertEqual(__version__, '0.2.0')
+        self.assertEqual(build_id(), _source_build_id())
+        self.assertEqual(json.loads(body), {
+            'app': 'forge-ui',
+            'version': '0.2.0',
+            'build': build_id(),
+            'pid': os.getpid(),
+        })
+        status, headers, head = self.request('HEAD', '/api/health')
+        self.assertEqual((status, head), (200, b''))
+        self.assertEqual(headers['content-type'], 'application/json; charset=utf-8')
+        self.assertEqual(headers['cache-control'], 'no-store')
+        self.assertEqual(headers['content-length'], str(len(body)))
+        for method, empty in (('GET', False), ('HEAD', True)):
+            status, _, denied = self.request(method, '/api/health', headers={'Host': 'evil.example'})
+            self.assertEqual(status, 403, method)
+            self.assertEqual(denied, b'' if empty else b'{"error": "forbidden"}')
 
     def test_detail_matches_the_reader(self):
         status, _, body = self.request('GET', f'/api/runs/{reader.run_key(PLAN)}')
@@ -237,7 +335,8 @@ class RoutesTests(ServerTestCase):
         port = self.server.server_address[1]
         for host in [f'evil.example:{port}', 'evil.example', f'127.0.0.1.evil.example:{port}', '127.0.0.2',
                      f'127.0.0.2:{port}', f'localhost.evil.example:{port}']:
-            for path, method in [('/api/runs', 'GET'), ('/app.js', 'GET'), ('/', 'GET'), ('/api/runs', 'POST')]:
+            for path, method in [('/api/runs', 'GET'), ('/api/health', 'GET'), ('/app.js', 'GET'),
+                                 ('/', 'GET'), ('/api/runs', 'POST')]:
                 status, _, body = self.request(method, path, headers={'Host': host})
                 self.assertEqual((status, json.loads(body)), (403, {'error': 'forbidden'}), (host, path))
 
@@ -363,6 +462,144 @@ class MainTests(TempCase):
         code, _, err = self.run_main(['--host', '0.0.0.0'])
         self.assertEqual(code, 2)
         self.assertIn('--host', err)
+
+    def _start_main(self, argv):
+        out, err = _LockedBuffer(), _LockedBuffer()
+        stdout, stderr = _ThreadCapture(sys.stdout, out), _ThreadCapture(sys.stderr, err)
+        box = {}
+        old_out, old_err = sys.stdout, sys.stderr
+        sys.stdout, sys.stderr = stdout, stderr
+
+        def restore():
+            sys.stdout, sys.stderr = old_out, old_err
+
+        def run():
+            stdout.ident = stderr.ident = threading.get_ident()
+            try:
+                box['code'] = main(argv)
+            except Exception as exc:
+                box['error'] = exc
+
+        thread = threading.Thread(target=run, daemon=True)
+        self.addCleanup(restore)
+        thread.start()
+        self.addCleanup(lambda: thread.join(IDLE_DONE + 5))
+        return thread, out, err, box
+
+    def _port_from_startup(self, out, thread, box, timeout):
+        def ready(text):
+            return 'forge-ui on http://127.0.0.1:' in text or not thread.is_alive()
+
+        text = out.wait_for(ready, timeout)
+        match = re.search(r'forge-ui on http://127\.0\.0\.1:(\d+)/', text)
+        if match is None:
+            self.fail(f'no startup line (alive={thread.is_alive()}, code={box.get("code")}, '
+                      f'error={box.get("error")!r}): {text!r}')
+        return int(match.group(1))
+
+    def _get(self, port, path):
+        conn = http.client.HTTPConnection('127.0.0.1', port, timeout=5)
+        try:
+            conn.request('GET', path)
+            response = conn.getresponse()
+            return response.status, response.read()
+        finally:
+            conn.close()
+
+    def test_idle_exit_returns_0_when_unused(self):
+        thread, out, err, box = self._start_main(
+            ['--no-registry', '--port', '0', '--idle-exit', '1', '--quiet'])
+        thread.join(IDLE_DONE)
+        self.assertFalse(thread.is_alive(), f'server did not exit on its own: {out.getvalue()!r}')
+        self.assertIsNone(box.get('error'))
+        self.assertEqual(box['code'], 0)
+        self.assertRegex(out.getvalue(), r'^forge-ui on http://127\.0\.0\.1:\d+/ \(0 runs\)\n$')
+        self.assertEqual(err.getvalue(), '')
+
+    def test_a_request_postpones_idle_exit(self):
+        thread, out, err, box = self._start_main(
+            ['--no-registry', '--port', '0', '--idle-exit', '1', '--quiet'])
+        port = self._port_from_startup(out, thread, box, timeout=IDLE_DONE)
+        # Keep asking well past the 1s limit. If a request did not stamp the server,
+        # it would shut down while this loop is still running.
+        deadline = time.monotonic() + 3
+        answered = False
+        while time.monotonic() < deadline:
+            if not thread.is_alive():
+                self.fail(f'server exited while a request should have postponed it '
+                          f'(code={box.get("code")}, out={out.getvalue()!r}, err={err.getvalue()!r})')
+            try:
+                status, _ = self._get(port, '/api/runs')
+            except OSError:
+                if not thread.is_alive():
+                    self.fail('server closed before the postponing request was answered')
+                time.sleep(0.02)
+                continue
+            self.assertEqual(status, 200)
+            answered = True
+            time.sleep(0.05)
+        self.assertTrue(answered)
+        self.assertTrue(thread.is_alive())
+        thread.join(IDLE_DONE)
+        self.assertFalse(thread.is_alive(), 'server did not exit after requests stopped')
+        self.assertIsNone(box.get('error'))
+        self.assertEqual(box['code'], 0)
+        self.assertRegex(out.getvalue(), rf'^forge-ui on http://127\.0\.0\.1:{port}/ \(0 runs\)\n$')
+        self.assertEqual(err.getvalue(), '')
+
+    def test_idle_exit_zero_is_accepted_and_does_not_stop_the_server(self):
+        # Positive control for the negative-value case: 0 is a real value, not a usage error.
+        with self.serve_once_then_ctrl_c():
+            code, out, err = self.run_main(['--no-registry', '--port', '0', '--idle-exit', '0'])
+        self.assertEqual(code, 0)
+        self.assertRegex(out, r'^forge-ui on http://127\.0\.0\.1:\d+/ \(0 runs\)\n$')
+        self.assertEqual(err, '')
+
+        captured = []
+
+        def capture(*args, **kwargs):
+            server = make_server(*args, **kwargs)
+            captured.append(server)
+            return server
+
+        with patch('forge_ui.__main__.make_server', side_effect=capture):
+            thread, out, err, box = self._start_main(
+                ['--no-registry', '--port', '0', '--idle-exit', '0'])
+            self.addCleanup(self._stop_captured, captured, thread)
+            self._port_from_startup(out, thread, box, timeout=IDLE_DONE)
+            deadline = time.monotonic() + IDLE_STAY
+            while time.monotonic() < deadline:
+                if not thread.is_alive():
+                    self.fail(f'--idle-exit 0 exited on its own (code={box.get("code")}, '
+                              f'out={out.getvalue()!r}, err={err.getvalue()!r})')
+                time.sleep(0.05)
+            self.assertTrue(thread.is_alive())
+            self.assertEqual(err.getvalue(), '')
+            captured[0].shutdown()
+            thread.join(IDLE_DONE)
+        self.assertFalse(thread.is_alive())
+        self.assertIsNone(box.get('error'))
+        self.assertEqual(box['code'], 0)
+        self.assertRegex(out.getvalue(), r'^forge-ui on http://127\.0\.0\.1:\d+/ \(0 runs\)\n$')
+
+    @staticmethod
+    def _stop_captured(captured, thread):
+        if captured and thread.is_alive():
+            stopper = threading.Thread(target=captured[0].shutdown, daemon=True)
+            stopper.start()
+            stopper.join(5)
+        thread.join(5)
+
+    def test_negative_idle_exit_is_exit_2(self):
+        thread, out, err, box = self._start_main(['--idle-exit', '-1'])
+        thread.join(IDLE_DONE)
+        self.assertFalse(thread.is_alive(), 'negative --idle-exit kept the server running')
+        self.assertIsNone(box.get('error'))
+        self.assertEqual(box['code'], 2)
+        self.assertEqual(out.getvalue(), '')
+        self.assertIn('--idle-exit', err.getvalue())
+        self.assertNotIn('unrecognized arguments', err.getvalue())
+        self.assertNotIn('Traceback', err.getvalue())
 
 
 if __name__ == '__main__':

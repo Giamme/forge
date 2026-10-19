@@ -6,6 +6,8 @@ import errno
 import os
 import socket
 import sys
+import threading
+import time
 import webbrowser
 
 from forge_ui import __version__, reader
@@ -30,6 +32,8 @@ def _parser():
                         help='read the run registry from DIR instead of ~/.config/forge/runs')
     parser.add_argument('--port', type=int, default=DEFAULT_PORT,
                         help=f'port to listen on (default {DEFAULT_PORT}; 0 picks a free one)')
+    parser.add_argument('--idle-exit', type=int, default=0, metavar='SECONDS',
+                        help='exit after SECONDS with no request (default 0, which never exits)')
     parser.add_argument('--quiet', action='store_true', help='do not log requests')
     parser.add_argument('--open', action='store_true', help='open the page in the browser once started')
     parser.add_argument('--version', action='version', version=f'forge-ui {__version__}')
@@ -38,6 +42,16 @@ def _parser():
 
 def _message(level, text):
     print(f'forge-ui: {level}: {text}', file=sys.stderr)
+
+
+def _watch_idle(server, seconds, stop):
+    # About once a second. shutdown() deadlocks unless serve_forever() is running in
+    # another thread, so when main leaves that loop another way (Ctrl-C) it sets `stop`
+    # and this thread must not call shutdown().
+    while not stop.wait(1):
+        if time.monotonic() - server.last_request >= seconds:
+            server.shutdown()
+            return
 
 
 def _port_taken(port):
@@ -64,6 +78,9 @@ def main(argv=None):
     if not 0 <= args.port <= 65535:
         _message('error', f'port {args.port} is out of range (0-65535)')
         return 2
+    if args.idle_exit < 0:
+        _message('error', f'--idle-exit {args.idle_exit} is out of range (0 or more seconds)')
+        return 2
 
     for flag, paths in (('--plan', args.plan), ('--root', args.root)):
         for path in paths:
@@ -87,15 +104,25 @@ def main(argv=None):
         return 2
 
     url = f'http://{HOST}:{server.server_address[1]}/'
+    stop = threading.Event()
+    watcher = None
     try:
         print(f'forge-ui on {url} ({len(catalog.runs())} runs)', flush=True)
         if args.open:
             webbrowser.open(url)
+        # The idle window starts once we are accepting requests, after discovery and this line.
+        server.last_request = time.monotonic()
+        if args.idle_exit > 0:
+            watcher = threading.Thread(target=_watch_idle, args=(server, args.idle_exit, stop), daemon=True)
+            watcher.start()
         server.serve_forever()
     except KeyboardInterrupt:
         pass
     finally:
+        stop.set()
         server.server_close()
+        if watcher is not None:
+            watcher.join(timeout=5)
     return 0
 
 

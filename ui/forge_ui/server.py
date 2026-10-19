@@ -3,9 +3,13 @@ from __future__ import annotations
 
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
+import os
 from pathlib import Path
 import re
 import sys
+import time
+
+from forge_ui import __version__, build_id
 
 
 STATIC_DIR = Path(__file__).resolve().parent / 'static'
@@ -97,6 +101,13 @@ class Handler(BaseHTTPRequestHandler):
         self._send(*response, head=head)
 
     def _route(self, path):
+        if path == '/api/health':
+            return self._json(200, {
+                'app': 'forge-ui',
+                'version': __version__,
+                'build': build_id(),
+                'pid': os.getpid(),
+            })
         catalog = self.server.catalog
         if path == '/api/runs':
             return self._json(200, {'runs': catalog.runs()})
@@ -134,6 +145,8 @@ class Handler(BaseHTTPRequestHandler):
         return status, _JSON, body, extra or {}
 
     def _send(self, status, ctype, body, extra, head=False):
+        # Every handled request, including errors. Idle exit measures from this stamp.
+        self.server.last_request = time.monotonic()
         try:
             self.send_response(int(status))
             self.send_header('Content-Type', ctype)
@@ -155,4 +168,5 @@ def make_server(catalog, host='127.0.0.1', port=0, static_dir=None, quiet=False)
     server.catalog = catalog
     server.static_dir = STATIC_DIR if static_dir is None else static_dir
     server.quiet = quiet
+    server.last_request = time.monotonic()  # stamped again on every handled request
     return server
