@@ -11,6 +11,8 @@ from forge_ui.reader import Catalog, detail, discover, run_key, summarize
 
 
 FIXTURE = Path(__file__).parent / 'fixtures' / 'plan-full'
+SOLO = Path(__file__).parent / 'fixtures' / 'solo-full'
+LEGACY = Path(__file__).parent / 'fixtures' / 'solo-legacy'
 
 
 class ReaderTests(unittest.TestCase):
@@ -55,6 +57,7 @@ class ReaderTests(unittest.TestCase):
             'prompt': 'Read the plan.\n', 'approach': 'Use standard Python.\n',
             'retry_findings': 'Handle missing files.\n',
             'qa_tail': 'FORGE_VERDICT: FAIL\nFixed now.\nFORGE_VERDICT: PASS\nPostscript.\n',
+            'dwarf_tail': None,
         })
         self.assertEqual(page['status'], 'RUNNING')
         self.assertEqual(page['branch'], 'forge/20261016-153012-ab12/page')
@@ -332,22 +335,181 @@ class ReaderTests(unittest.TestCase):
 
     def test_read_only_and_summary_does_not_read_details(self):
         plan = self.copy_plan()
-        def snapshot():
-            return {str(p.relative_to(plan)): p.stat().st_mtime_ns for p in [plan, *plan.rglob('*')]}
-        before = snapshot()
+        solo = Path(shutil.copytree(SOLO, self.base / 'solo'))
+        def snapshot(root):
+            return {str(p.relative_to(root)): p.stat().st_mtime_ns for p in [root, *root.rglob('*')]}
+        before_plan, before_solo = snapshot(plan), snapshot(solo)
         detail(plan)
         summarize(plan)
-        self.assertEqual(snapshot(), before)
+        detail(solo)
+        summarize(solo)
+        self.assertEqual(snapshot(plan), before_plan)
+        self.assertEqual(snapshot(solo), before_solo)
         original = Path.open
-        def guard(path, *args, **kwargs):
-            allowed = {'run_id', 'repo', 'goal.txt', 'decompose_level', 'verification.status', 'tasks.tsv', 'status'}
-            self.assertIn(path.name, allowed)
-            return original(path, *args, **kwargs)
-        with patch.object(Path, 'open', guard):
+        def guard(allowed):
+            def wrapped(path, *args, **kwargs):
+                self.assertIn(path.name, allowed)
+                return original(path, *args, **kwargs)
+            return wrapped
+        with patch.object(Path, 'open', guard(
+                {'run_id', 'repo', 'goal.txt', 'decompose_level', 'verification.status', 'tasks.tsv', 'status'})):
             self.assertEqual(summarize(plan)['task_count'], 3)
         os.utime(plan / 'tasks/reader/prompt.md', (4000000000, 4000000000))
         self.assertEqual(detail(plan)['updated'], 4000000000.0)
         self.assertLess(summarize(plan)['updated'], 4000000000.0)
+        for path in [solo, *solo.rglob('*')]:
+            os.utime(path, (100, 100))
+        with self.subTest('solo log mtime'):
+            # Logs are stat'd, not read, so a model appending to one moves `updated`.
+            os.utime(solo / 'dwarf.log', (300, 300))
+            self.assertEqual(summarize(solo)['updated'], 300.0)
+            os.utime(solo / 'qa.log', (400, 400))
+            self.assertEqual(summarize(solo)['updated'], 400.0)
+            os.utime(solo / 'prompt.md', (500, 500))
+            self.assertEqual(summarize(solo)['updated'], 400.0)
+        with self.subTest('solo summary reads'):
+            with patch.object(Path, 'open', guard({'repo', 'goal.txt', 'status', 'verdict'})):
+                summary = summarize(solo)
+            self.assertEqual(summary['task_count'], 1)
+            self.assertEqual(summary['counts'], {'RUNNING': 1})
+
+    def test_solo_summary_and_detail(self):
+        data = detail(SOLO)
+        self.assertEqual(data['tasks'], [{
+            'id': 'solo', 'title': 'Ship the solo reader', 'deps': [], 'difficulty': None, 'files': [],
+            'dwarf': 'sol:high', 'qa': 'opus', 'wave': 1, 'status': 'RUNNING', 'branch': None, 'attempt': 2,
+            'attempts': [
+                {'at': 1760620000.0, 'attempt': 1, 'status': 'FAIL', 'infra': None},
+                {'at': 1760621000.0, 'attempt': 2, 'status': 'RUNNING', 'infra': None}],
+            'escalations': [], 'verdict': 'FAIL', 'accepted_by': None, 'explored': False, 'route': [],
+            'clef': {'first_pass': None, 'retry_pass': {}}, 'shadow': [],
+            'prompt': 'Implement the reader.\n', 'approach': None, 'retry_findings': None,
+            'qa_tail': 'Looked at the diff.\nFORGE_VERDICT: FAIL\n', 'dwarf_tail': 'Still working.\n',
+        }])
+        self.assertEqual(data['kind'], 'solo')
+        self.assertEqual(data['run_id'], 'solo-full')
+        self.assertEqual(data['repo'], '/example/solo-repo')
+        self.assertEqual(data['goal'], 'Ship the solo reader')
+        self.assertIsNone(data['decompose_level'])
+        self.assertIsNone(data['verification_status'])
+        self.assertEqual(data['task_count'], 1)
+        self.assertEqual(data['counts'], {'RUNNING': 1})
+        self.assertEqual(data['waves'], [['solo']])
+        self.assertIsNone(data['verification'])
+        self.assertEqual(data['settings'], {'explore': None, 'shadow_rate': None, 'shadow_qa': None, 'timeout': None})
+        self.assertEqual(data['request'], 'Watch a solo run while it works.\n')
+        self.assertEqual(data['warnings'], [])
+        self.assertEqual(data['truncated'], [])
+        self.assertEqual(data['key'], run_key(SOLO))
+        self.assertEqual(data['path'], str(Path(os.path.realpath(SOLO))))
+        summary = summarize(SOLO, 'registry')
+        for field in ('kind', 'run_id', 'repo', 'goal', 'decompose_level', 'verification_status', 'task_count', 'counts'):
+            self.assertEqual(summary[field], data[field], field)
+        self.assertEqual(summary['source'], 'registry')
+        for value in (summary, data):
+            json.dumps(value, allow_nan=False)
+
+    def test_legacy_verdict_and_missing_status(self):
+        data = detail(LEGACY)
+        self.assertEqual(data['kind'], 'solo')
+        self.assertEqual(data['run_id'], 'solo-legacy')
+        self.assertEqual(data['repo'], '/example/legacy')
+        self.assertIsNone(data['goal'])
+        self.assertIsNone(data['decompose_level'])
+        self.assertIsNone(data['verification_status'])
+        self.assertEqual(data['task_count'], 1)
+        self.assertEqual(data['counts'], {'NOCHANGES': 1})
+        self.assertEqual(data['waves'], [['solo']])
+        self.assertIsNone(data['verification'])
+        self.assertIsNone(data['request'])
+        self.assertEqual(data['settings'], {'explore': None, 'shadow_rate': None, 'shadow_qa': None, 'timeout': None})
+        self.assertEqual(data['warnings'], [])
+        self.assertEqual(data['tasks'], [{
+            'id': 'solo', 'title': 'Solo run', 'deps': [], 'difficulty': None, 'files': [],
+            'dwarf': None, 'qa': None, 'wave': 1, 'status': 'NOCHANGES', 'branch': None, 'attempt': None,
+            'attempts': [], 'escalations': [], 'verdict': None, 'accepted_by': None, 'explored': False,
+            'route': [], 'clef': {'first_pass': None, 'retry_pass': {}}, 'shadow': [],
+            'prompt': 'Old prompt.\n', 'approach': None, 'retry_findings': None,
+            'qa_tail': None, 'dwarf_tail': None,
+        }])
+        json.dumps(data, allow_nan=False)
+        run = self.base / 'neither'
+        self.write(run / 'prompt.md', 'Nothing yet.\n')
+        self.write(run / 'repo', '/example/empty\n')
+        data = detail(run)
+        self.assertEqual(data['counts'], {'UNKNOWN': 1})
+        self.assertEqual(data['task_count'], 1)
+        self.assertIsNone(data['goal'])
+        self.assertEqual(data['tasks'][0]['status'], 'UNKNOWN')
+        self.assertEqual(data['tasks'][0]['title'], 'Solo run')
+        self.assertIsNone(data['tasks'][0]['verdict'])
+        self.assertEqual(summarize(run)['counts'], {'UNKNOWN': 1})
+
+    def test_solo_spec_falls_back_to_resolved(self):
+        run = Path(shutil.copytree(SOLO, self.base / 'resolved'))
+        # Spec wins over the contradictory resolved file shipped in the fixture.
+        self.assertEqual(detail(run)['tasks'][0]['dwarf'], 'sol:high')
+        self.assertEqual(detail(run)['tasks'][0]['qa'], 'opus')
+        (run / 'dwarf.spec').unlink()
+        (run / 'qa.spec').unlink()
+        task = detail(run)['tasks'][0]
+        self.assertEqual(task['dwarf'], 'luna:low')
+        self.assertEqual(task['qa'], 'ignored:max')
+        self.write(run / 'dwarf.resolved', 'role=dwarf\nalias=sol\nharness=codex\n')
+        self.write(run / 'qa.resolved', 'alias=opus\neffort=<harness default>\n')
+        task = detail(run)['tasks'][0]
+        self.assertEqual(task['dwarf'], 'sol')
+        self.assertEqual(task['qa'], 'opus')
+
+    def test_root_scan_ignores_solo_dirs(self):
+        root = self.base / 'root'
+        solo = Path(shutil.copytree(SOLO, root / 'solo-run'))
+        plan = root / 'plan-run'
+        self.write(plan / 'tasks.tsv', '')
+        # Solo markers on a plan dir do not change its kind, so root still finds it.
+        self.write(plan / 'prompt.md', 'plan prompt\n')
+        self.write(plan / 'repo', '/example/plan\n')
+        stray = root / 'notes'
+        self.write(stray / 'prompt.md', 'just notes\n')
+        registry = self.base / 'registry'
+        self.write(registry / 'runs.txt', f'# forge registry\n{solo}\n{stray}\n')
+        solo_real, plan_real = Path(os.path.realpath(solo)), Path(os.path.realpath(plan))
+        with self.subTest('root'):
+            self.assertEqual(discover(roots=[root], registry=False), [(plan_real, 'root')])
+            self.assertEqual([r['path'] for r in Catalog(roots=[root], registry=False).runs()], [str(plan_real)])
+        with self.subTest('plan'):
+            self.assertEqual(discover(plans=[solo, stray], registry=False), [(solo_real, 'plan')])
+            runs = Catalog(plans=[solo], registry=False).runs()
+            self.assertEqual([r['kind'] for r in runs], ['solo'])
+            self.assertEqual(runs[0]['run_id'], 'solo-run')
+            self.assertEqual(Catalog(plans=[solo], registry=False).get(run_key(solo))['tasks'][0]['id'], 'solo')
+            self.assertIsNone(Catalog(plans=[stray], registry=False).get(run_key(stray)))
+        with self.subTest('registry'):
+            self.assertEqual(discover(registry_dir=registry), [(solo_real, 'registry')])
+            self.assertEqual(Catalog(registry_dir=registry).runs()[0]['source'], 'registry')
+
+    def test_plan_kind_and_dwarf_tail(self):
+        data = detail(FIXTURE)
+        with self.subTest('kind'):
+            self.assertEqual(data.get('kind'), 'plan')
+            self.assertEqual(summarize(FIXTURE).get('kind'), 'plan')
+        with self.subTest('missing'):
+            self.assertIn('dwarf_tail', data['tasks'][0])
+            self.assertIsNone(data['tasks'][0]['dwarf_tail'])
+        plan = self.copy_plan()
+        solo = Path(shutil.copytree(SOLO, self.base / 'solo-tail'))
+        body = 'note\n' + '尾' * 4000
+        self.write(plan / 'tasks/reader/dwarf.last', body)
+        self.write(solo / 'dwarf.last', body)
+        for path, field in ((plan, 'tasks/reader/dwarf_tail'), (solo, 'tasks/solo/dwarf_tail')):
+            with self.subTest(path=path.name):
+                data = detail(path)
+                self.assertEqual(data['tasks'][0]['dwarf_tail'], '…' + '尾' * 4000)
+                self.assertNotIn('note', data['tasks'][0]['dwarf_tail'])
+                self.assertIn(field, data['truncated'])
+                if path == plan:
+                    self.assertIsNone(data['tasks'][1]['dwarf_tail'])
+                    self.assertIsNone(data['tasks'][2]['dwarf_tail'])
 
 
 if __name__ == '__main__':

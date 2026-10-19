@@ -1,4 +1,4 @@
-"""Read live forge plan directories without modifying them."""
+"""Read live forge plan and solo run directories without modifying them."""
 from __future__ import annotations
 
 import hashlib
@@ -19,12 +19,20 @@ def run_key(path) -> str:
     return hashlib.sha1(os.fsencode(os.path.realpath(path))).hexdigest()[:12]
 
 
-def _is_plan(path):
+def _kind(path):
     try:
         # Check the directory first: stale registry entries cost just one stat.
-        return stat.S_ISDIR(path.stat().st_mode) and (path / 'tasks.tsv').is_file()
+        path = Path(path)
+        if not stat.S_ISDIR(path.stat().st_mode):
+            return None
+        if (path / 'tasks.tsv').is_file():
+            return 'plan'
+        # Both markers are required, so a notes directory that only has prompt.md is not a run.
+        if (path / 'prompt.md').is_file() and (path / 'repo').is_file():
+            return 'solo'
     except (OSError, ValueError):
-        return False
+        return None
+    return None
 
 
 def discover(plans=(), roots=(), registry=True, registry_dir=None):
@@ -32,7 +40,9 @@ def discover(plans=(), roots=(), registry=True, registry_dir=None):
 
     def add(path, source):
         path = Path(path)
-        if not _is_plan(path):
+        kind = _kind(path)
+        # `--root` stays plans-only: a tree of unrelated prompt.md files is not a run list.
+        if kind is None or (source == 'root' and kind != 'plan'):
             return False
         real = Path(os.path.realpath(path))
         if real not in seen:
@@ -245,7 +255,7 @@ def _tasks(reader):
 
 
 def _summary(reader, source):
-    result = dict(key=run_key(reader.path), path=str(reader.path), source=source,
+    result = dict(key=run_key(reader.path), path=str(reader.path), source=source, kind='plan',
                   run_id=reader.line('run_id'), repo=reader.line('repo'),
                   goal=reader.line('goal.txt'), decompose_level=reader.word('decompose_level'),
                   verification_status=reader.word('verification.status'))
@@ -257,8 +267,52 @@ def _summary(reader, source):
     return result, tasks
 
 
+def _resolved_spec(value):
+    alias = effort = None
+    for line in (value or '').splitlines():
+        key, sep, item = line.partition('=')
+        if not sep:
+            continue
+        key, item = key.strip(), item.strip()
+        if key == 'alias':
+            alias = item or None
+        elif key == 'effort':
+            effort = item or None
+    if not alias:
+        return None
+    # `<harness default>` is the dispatch placeholder, not an effort a caller can select.
+    if effort and effort != '<harness default>':
+        return alias + ':' + effort
+    return alias
+
+
+def _role_spec(reader, role):
+    spec = reader.line(role + '.spec')
+    if spec:
+        return spec
+    return _resolved_spec(reader.text(role + '.resolved'))
+
+
+def _solo_status(reader):
+    return reader.word('status') or reader.word('verdict') or 'UNKNOWN'
+
+
+def _solo_summary(reader, source):
+    status = _solo_status(reader)
+    # Stat the live logs without reading them, so `updated` moves while a model writes.
+    reader.exists('dwarf.log')
+    reader.exists('qa.log')
+    return dict(key=run_key(reader.path), path=str(reader.path), source=source, kind='solo',
+                run_id=reader.path.name, repo=reader.line('repo'), goal=reader.line('goal.txt'),
+                decompose_level=None, verification_status=None, updated=reader.updated,
+                task_count=1, counts={status: 1})
+
+
 def summarize(path, source='plan') -> dict:
-    return _summary(_Read(path), source)[0]
+    reader = _Read(path)
+    if _kind(reader.path) == 'solo':
+        return _solo_summary(reader, source)
+    return _summary(reader, source)[0]
 
 
 def _history(reader, name, escalation=False):
@@ -298,6 +352,7 @@ def _task_detail(reader, task, run_id, waves, branches):
     qa = reader.text(prefix + '/qa.last')
     task['verdict'] = _verdict(qa)
     task['qa_tail'] = reader.cap(qa, prefix + '/qa_tail', 4000, True)
+    task['dwarf_tail'] = reader.cap(reader.text(prefix + '/dwarf.last'), prefix + '/dwarf_tail', 4000, True)
     task['accepted_by'] = reader.text(prefix + '/accepted.by')
     for field, filename in [('prompt', 'prompt.md'), ('approach', 'approach.md'), ('retry_findings', 'retry_findings.md')]:
         task[field] = reader.cap(reader.text(prefix + '/' + filename), prefix + '/' + field)
@@ -339,8 +394,31 @@ def _task_detail(reader, task, run_id, waves, branches):
     task['shadow'].sort(key=lambda item: (item['attempt'], item['k']))
 
 
+def _solo_detail(reader, source):
+    result = _solo_summary(reader, source)
+    status = next(iter(result['counts']))
+    result['request'] = reader.cap(reader.text('request.md'), 'request')
+    result['settings'] = dict(explore=None, shadow_rate=None, shadow_qa=None, timeout=None)
+    result['verification'] = None
+    result['waves'] = [['solo']]
+    attempts = _history(reader, 'attempts.tsv')
+    qa = reader.text('qa.last')
+    task = dict(id='solo', title=result['goal'] or 'Solo run', deps=[], difficulty=None, files=[],
+                dwarf=_role_spec(reader, 'dwarf'), qa=_role_spec(reader, 'qa'), wave=1, status=status,
+                branch=None, attempt=max((item['attempt'] for item in attempts), default=None),
+                attempts=attempts, escalations=[], verdict=_verdict(qa), accepted_by=None,
+                explored=False, route=[], clef={'first_pass': None, 'retry_pass': {}}, shadow=[],
+                prompt=reader.cap(reader.text('prompt.md'), 'tasks/solo/prompt'), approach=None,
+                retry_findings=None, qa_tail=reader.cap(qa, 'tasks/solo/qa_tail', 4000, True),
+                dwarf_tail=reader.cap(reader.text('dwarf.last'), 'tasks/solo/dwarf_tail', 4000, True))
+    result.update(tasks=[task], warnings=reader.warnings, truncated=reader.truncated, updated=reader.updated)
+    return result
+
+
 def detail(path, source='plan') -> dict:
     reader = _Read(path)
+    if _kind(reader.path) == 'solo':
+        return _solo_detail(reader, source)
     result, tasks = _summary(reader, source)
     result['request'] = reader.cap(reader.text('request.md'), 'request')
     result['settings'] = dict(explore=reader.number('explore'), shadow_rate=reader.number('shadow_rate'),
@@ -377,7 +455,7 @@ class Catalog:
         runs = []
         for path, source in discover(**self.options):
             result = summarize(path, source)
-            if _is_plan(path):
+            if _kind(path):
                 runs.append(result)
         return sorted(runs, key=lambda item: item['updated'] if item['updated'] is not None else float('-inf'), reverse=True)
 
@@ -385,5 +463,5 @@ class Catalog:
         for path, source in discover(**self.options):
             if run_key(path) == key:
                 result = detail(path, source)
-                return result if _is_plan(path) else None
+                return result if _kind(path) else None
         return None
