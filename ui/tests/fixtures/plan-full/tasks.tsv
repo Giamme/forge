@@ -1,0 +1,4 @@
+# id deps difficulty files dwarf qa title
+reader	-	high	forge_ui/reader.py,tests/test_reader.py	astra	opus	Read plan dirs
+page	reader	medium	index.html	-	UNASSIGNED	Build page
+graph	reader,page	low	-	luna		Draw graph
