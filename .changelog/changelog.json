@@ -1,6 +1,114 @@
 {
   "versions": [
     {
+      "version": "0.5",
+      "date": "2026-10-19",
+      "summary": "Forge now picks models from measured results rather than a decision model's opinion: it explores your own pools by default, compares models and efforts per tier with forge dataset routing, moves a task to a stronger model after three failed attempts, and flags tasks too large to pass review first time. Jev's effort sizing, tier rewriting and calibration are gone, and Cloudflare's hosted Clef can answer chosen Jev decisions instead.",
+      "entries": [
+        {
+          "type": "added",
+          "text": "With a Cloudflare provider configured, forge records two predictions it never acts on: whether each task's first attempt will pass review (once per plan, after models are assigned) and whether a retry will pass with the findings it was handed. They are written beside the task (`clef.first_pass`, `clef.retry_pass.<n>`) and into the run dataset, and the export attaches them to its routing and retry cases, so their accuracy on new runs can be measured before anything relies on them. No prompt, verdict, table or retry ever sees them; `FORGE_JEV_OUTCOMES=off` turns them off.",
+          "breaking": false,
+          "audience": "user",
+          "highlight": false,
+          "commits": [
+            "84c816d"
+          ]
+        },
+        {
+          "type": "added",
+          "text": "Forge can send chosen decision sites to Cloudflare's hosted Clef instead of TypeSafe's Jev: `forge jev setup --provider cloudflare --account-id <id>` validates a Workers AI token (kept in `cloudflare.env` beside `jev.json`, never in argv or logs) and maps the sites a paired replay of forge's own live requests showed Clef no worse on, which today is drift prediction alone; `forge jev sites` shows or changes the map and `FORGE_CLEF=off` sends everything back. Thresholds can now differ per model, and `status` and `doctor` report readiness per site and provider. Without a Cloudflare provider configured nothing changes.",
+          "breaking": false,
+          "audience": "user",
+          "highlight": false,
+          "commits": [
+            "84c816d"
+          ]
+        },
+        {
+          "type": "added",
+          "text": "After three failed attempts on one model, a decomposed task's next retry goes a tier up in the pools you gave `plan`, instead of repeating a dispatch whose fourth try passes least often. When no stronger model exists, the task stops with a split suggestion, and a plain `retry` refuses until you split the task or name a model with `--dwarf`. Use `--escalate-after N` to change the threshold, or `--escalate-after 0` to turn this off.",
+          "breaking": false,
+          "audience": "user",
+          "highlight": false,
+          "commits": [
+            "ac517f6"
+          ]
+        },
+        {
+          "type": "added",
+          "text": "`plan` now names tasks that are large enough that their first attempt usually fails review (at least 7,000 characters of prompt or 9 declared files; forge's history passes about a third of those), and tasks whose prompt has no `## Acceptance criteria` section. The note is advisory: the table and the exit code are unchanged.",
+          "breaking": false,
+          "audience": "user",
+          "highlight": false,
+          "commits": [
+            "ac517f6"
+          ]
+        },
+        {
+          "type": "changed",
+          "text": "`plan` now explores by default (`--explore 0.2`): now and then, a row left to forge gets the model one tier away in your own pools (cheaper for medium and high tasks, stronger for low ones), with the odds recorded. The new `forge dataset routing` command compares each pair of models from those draws, and also shows every model's first-pass rate and runtime per tier. Pools that differ only in effort (`--dwarf-low sol --dwarf-high sol:xhigh`) are compared too, so the table also shows whether a higher effort passes more. `--explore 0` turns exploration off, and that choice is kept for later re-plans.",
+          "breaking": false,
+          "audience": "user",
+          "highlight": false,
+          "commits": [
+            "ac517f6",
+            "0862fce"
+          ]
+        },
+        {
+          "type": "removed",
+          "text": "Jev no longer suggests efforts or rewrites tiers, because forge's run history showed it could not choose either: its effort suggestions carried no information beyond the task's tier. `forge jev calibrate`, `forge jev parse-spec` and `forge jev qa-effort` are gone, and so are the effort suggestions in Jev's routing lines and Fractal's re-rating of child tasks. `--jev-act` is still accepted but changes nothing. `forge jev doctor` lists the `routing_act` and `calibrate_floor` thresholds as safe to delete from an existing config. Drift checks, memory curation, verification and the other advisory gates are unchanged.",
+          "breaking": true,
+          "audience": "user",
+          "highlight": false,
+          "commits": [
+            "f5a7608"
+          ]
+        },
+        {
+          "type": "fixed",
+          "text": "The run dataset no longer drops an event when several writers in one process are the first ever to write to a new store: switching the new file to WAL is no longer raced by every connection, and losing that race is harmless.",
+          "breaking": false,
+          "audience": "user",
+          "highlight": false,
+          "commits": [
+            "d71efad"
+          ]
+        },
+        {
+          "type": "fixed",
+          "text": "A comma list in `--qa` (or `--qa-high`, `--qa-medium`, `--qa-low`) now rotates through its reviewers task by task, as the docs promise and as the dwarf flags always did. Before, `plan` copied the whole list into every row, so every review failed before reaching a model. A list typed directly into a task's dwarf or qa column is now refused when you run `plan`.",
+          "breaking": false,
+          "audience": "user",
+          "highlight": false,
+          "commits": [
+            "72f2b51"
+          ]
+        },
+        {
+          "type": "fixed",
+          "text": "The test suite now runs every test process against a throwaway forge config home, so no test, including one still being written, can read your real `jev.json` (and its TypeSafe key) or add its temp dirs to your runs registry.",
+          "breaking": false,
+          "audience": "internal",
+          "highlight": false,
+          "commits": [
+            "804aa8a"
+          ]
+        },
+        {
+          "type": "security",
+          "text": "A decision-model API key or token that straddled the 200-character cut of an error message could leave its first characters in `jev.jsonl` and `jev.skip`; error text is now redacted before it is shortened.",
+          "breaking": false,
+          "audience": "user",
+          "highlight": false,
+          "commits": [
+            "84c816d"
+          ]
+        }
+      ]
+    },
+    {
       "version": "0.4",
       "date": "2026-10-15",
       "summary": "Every forge run now records its inputs and outcomes in a dataset outside your repos, built for training and calibrating decision models on how forge really performs: it exports labeled decision cases, follows merged work into later history, and can add a second, independent review or an exploratory model pick to measure what a single run cannot.",
