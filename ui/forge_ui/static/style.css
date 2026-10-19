@@ -39,6 +39,8 @@
 .st-invalidated { --st: #725389; }
 .st-blocked { --st: #725389; }
 .st-interrupted { --st: #725389; }
+.st-nochanges { --st: #1f6f78; }
+.st-conflict { --st: #a2336f; }
 @media (prefers-color-scheme: dark) {
   .st-merged, .st-pass { --st: #85d59b; }
   .st-running { --st: #97bdff; }
@@ -46,6 +48,8 @@
   .st-fail, .st-error { --st: #ff9da5; }
   .st-infra, .st-timeout { --st: #f3bb77; }
   .st-unknown, .st-invalidated, .st-blocked, .st-interrupted { --st: #c9a7e4; }
+  .st-nochanges { --st: #86d0d8; }
+  .st-conflict { --st: #f0a3cb; }
 }
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--bg); color: var(--text); }
@@ -77,6 +81,7 @@ h2 { font-size: 1.05rem; font-weight: 650; margin-bottom: 12px; overflow-wrap: a
 .run-goal { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .run-item .mono { overflow-wrap: anywhere; }
 .repo { font-size: .9rem; }
+.tag { align-self: flex-start; border: 1px solid var(--line); border-radius: 4px; padding: 0 5px; color: var(--muted); font-size: .73rem; line-height: 1.5; }
 .updated, .verification { font-size: .8rem; }
 .chips { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 5px; }
 .chip { display: inline-block; border: 1px solid currentColor; color: var(--st, var(--muted)); border-radius: 4px; padding: 1px 5px; white-space: nowrap; font-size: .73rem; font-weight: 600; line-height: 1.5; }

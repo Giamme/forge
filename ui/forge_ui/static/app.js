@@ -22,7 +22,7 @@ window.ForgeUI = (() => {
     return node;
   }
   const statuses = new Set(['merged', 'pass', 'running', 'pending', 'fail', 'error', 'infra',
-    'timeout', 'unknown', 'invalidated', 'blocked', 'interrupted']);
+    'timeout', 'unknown', 'invalidated', 'blocked', 'interrupted', 'nochanges', 'conflict']);
   function chip(value) {
     const status = String(value || 'unknown').toLowerCase();
     return el('span', value || '—', 'chip st-' + (statuses.has(status) ? status : 'unknown'));
@@ -156,7 +156,9 @@ window.ForgeUI = (() => {
         item.dataset.run = run.key;
         const goal = el('strong', String(run.goal || 'Untitled run').split('\n')[0], 'run-goal');
         goal.title = run.goal || 'Untitled run';
+        const solo = run.kind === 'solo';
         item.append(goal, el('span', basename(run.repo), 'repo'), el('span', run.run_id, 'mono'));
+        if (solo) item.append(el('span', 'solo', 'tag'));
         const updated = el('span', relative(run.updated), 'muted updated');
         if (run.updated != null) updated.dataset.epoch = run.updated;
         updated.title = time(run.updated);
@@ -168,9 +170,11 @@ window.ForgeUI = (() => {
           counts.append(badge);
         }
         item.append(counts);
-        const verification = el('span', undefined, 'verification');
-        verification.append(document.createTextNode('Verification '), chip(run.verification_status));
-        item.append(verification);
+        if (!solo) {
+          const verification = el('span', undefined, 'verification');
+          verification.append(document.createTextNode('Verification '), chip(run.verification_status));
+          item.append(verification);
+        }
         $('run-list').append(item);
       }
     });
@@ -197,9 +201,23 @@ window.ForgeUI = (() => {
     const main = $('main');
     const sameRun = main.dataset.run === run.key;
     const taskChanged = main.dataset.task !== (state.task ?? '');
+    const solo = run.kind === 'solo';
     preserve(main, () => {
       const header = section(main, run.goal || 'Untitled run');
       header.className = 'run-header';
+      if (solo) {
+        // A solo run is one task: header and the task panel inline, no table, graph or waves.
+        const only = list(run.tasks)[0];
+        fields(header, [['Repo', run.repo, true], ['Status', chip(only?.status), false], ['Run ID', run.run_id, true],
+          ['Path', run.path, true], ['Updated', time(run.updated)]]);
+        details(header, 'Request', run.request, 'run-request');
+        if (list(run.warnings).length) details(header, `Reader warnings (${run.warnings.length})`, run.warnings.join('\n'), 'warnings');
+        if (list(run.truncated).length) details(header, 'Truncated fields', run.truncated.join('\n'), 'truncated');
+        if (only) renderTask(main, only, run);
+        else main.append(el('p', 'This run has no task data yet.', 'empty'));
+        scopeSaved(run);
+        return;
+      }
       fields(header, [ ['Repo', run.repo, true], ['Run ID', run.run_id, true], ['Plan path', run.path, true],
         ['Source', run.source], ['Decompose', run.decompose_level], ['Updated', time(run.updated)],
         ['Task count', run.task_count], ['Counts', run.counts], ['Explore', run.settings?.explore],
@@ -227,21 +245,24 @@ window.ForgeUI = (() => {
         if (task) renderTask(main, task, run);
         else main.append(el('p', `Task ${state.task} was not found in this run.`, 'empty'));
       }
-      // Scope saved state to its run and, inside the panel, its task.
-      for (const node of main.querySelectorAll('[data-keep], [data-scroll]')) {
-        const scope = JSON.stringify([run.key, node.closest('#task-panel') ? state.task : null]);
-        if (node.dataset.keep) node.dataset.keep = scope + ':' + node.dataset.keep;
-        if (node.dataset.scroll) node.dataset.scroll = scope + ':' + node.dataset.scroll;
-      }
+      scopeSaved(run);
     }, { restore: sameRun, restorePage: sameRun && !taskChanged });
     main.dataset.run = run.key;
     main.dataset.task = state.task ?? '';
     if (!sameRun) window.scrollTo(0, 0);
-    if ((!sameRun || taskChanged) && $('task-panel')) {
+    if (!solo && (!sameRun || taskChanged) && $('task-panel')) {
       const panel = $('task-panel');
       panel.tabIndex = -1;
       panel.focus({ preventScroll: true });
       panel.scrollIntoView({ block: 'start' });
+    }
+  }
+  // Scope saved state to its run and, inside the panel, its task.
+  function scopeSaved(run) {
+    for (const node of $('main').querySelectorAll('[data-keep], [data-scroll]')) {
+      const scope = JSON.stringify([run.key, node.closest('#task-panel') ? state.task : null]);
+      if (node.dataset.keep) node.dataset.keep = scope + ':' + node.dataset.keep;
+      if (node.dataset.scroll) node.dataset.scroll = scope + ':' + node.dataset.scroll;
     }
   }
   function renderTasks(parent, run) {
@@ -261,19 +282,24 @@ window.ForgeUI = (() => {
     });
   }
   function renderTask(parent, task, run) {
-    const panel = section(parent, `${task.id} · ${task.title || 'Untitled task'}`);
+    const solo = run.kind === 'solo';
+    const panel = section(parent, solo ? 'Solo task' : `${task.id} · ${task.title || 'Untitled task'}`);
     panel.className = 'task-panel';
     panel.id = 'task-panel';
-    const close = link('Close task', run.key);
-    close.className = 'close-task';
-    panel.prepend(close);
-    fields(panel, [['ID', task.id, true], ['Title', task.title], ['Difficulty', task.difficulty],
+    if (!solo) {
+      const close = link('Close task', run.key);
+      close.className = 'close-task';
+      panel.prepend(close);
+    }
+    if (solo) fields(panel, [['Status', chip(task.status)], ['Verdict', chip(task.verdict)],
+      ['Dwarf', task.dwarf, true], ['QA', task.qa, true], ['Attempt', task.attempt]]);
+    else fields(panel, [['ID', task.id, true], ['Title', task.title], ['Difficulty', task.difficulty],
       ['Status', chip(task.status)], ['Verdict', chip(task.verdict)], ['Accepted by', task.accepted_by],
       ['Branch', task.branch, true], ['Wave', task.wave], ['Dependencies', depLinks(task.deps, run.key)],
       ['Files', list(task.files).join('\n'), true], ['Dwarf', task.dwarf, true], ['QA', task.qa, true],
       ['Attempt', task.attempt], ['Explored', task.explored]]);
-    const routing = section(panel, 'Routing');
-    if (!list(task.route).length) routing.append(el('p', 'No routing data: routed before forge recorded decisions.', 'muted'));
+    const routing = solo ? null : section(panel, 'Routing');
+    if (solo) { /* no routing for a solo run */ } else if (!list(task.route).length) routing.append(el('p', 'No routing data: routed before forge recorded decisions.', 'muted'));
     else table(routing, ['Tier', 'Candidates', 'Default', 'Chosen', 'Explored', 'Propensity', 'Epsilon', 'Time', 'Task', 'Decision', 'Inputs / extra fields'],
       task.route.map(entry => {
         const candidates = el('div', undefined, 'candidates mono');
@@ -290,8 +316,8 @@ window.ForgeUI = (() => {
     if (!list(task.attempts).length) attempts.append(el('p', 'No attempt history recorded.', 'muted'));
     else table(attempts, ['Attempt', 'Status', 'Infra class', 'Time'], task.attempts.map(a =>
       [a.attempt, chip(a.status), a.infra, time(a.at)]), 'Attempts');
-    const escalations = section(panel, 'Escalations');
-    if (!list(task.escalations).length) escalations.append(el('p', 'No escalations recorded.', 'muted'));
+    const escalations = solo ? null : section(panel, 'Escalations');
+    if (solo) { /* no escalations for a solo run */ } else if (!list(task.escalations).length) escalations.append(el('p', 'No escalations recorded.', 'muted'));
     else table(escalations, ['Attempt', 'From → to', 'Time'], task.escalations.map(e =>
       [e.attempt, `${display(e.from)} → ${display(e.to)}`, time(e.at)]), 'Escalations');
     const reviews = section(panel, 'Reviews');
@@ -299,7 +325,7 @@ window.ForgeUI = (() => {
     const qa = el('pre', task.qa_tail);
     qa.dataset.scroll = `qa-${task.id}`;
     reviews.append(qa);
-    if (!list(task.shadow).length) reviews.append(el('p', 'No shadow reviews.', 'muted'));
+    if (solo) { /* no shadow reviews for a solo run */ } else if (!list(task.shadow).length) reviews.append(el('p', 'No shadow reviews.', 'muted'));
     else table(reviews, ['Attempt', 'Index', 'Spec', 'Primary', 'Status', 'Verdict', 'Agreement', 'Started', 'Other fields'],
       task.shadow.map(s => {
         // The API has only the current primary verdict, not a verdict per attempt.
@@ -309,17 +335,19 @@ window.ForgeUI = (() => {
         const extra = Object.fromEntries(Object.entries(s).filter(([key]) => !['attempt', 'k', 'spec', 'primary', 'status', 'verdict', 'started'].includes(key)));
         return [s.attempt, s.k, s.spec, s.primary, chip(s.status), chip(s.verdict), agreement, time(s.started), el('pre', extra)];
       }), 'Shadow reviews');
-    const clef = section(panel, 'Clef predictions');
+    details(panel, 'Dwarf output', task.dwarf_tail, `task-${task.id}-dwarf_tail`);
+    const clef = solo ? null : section(panel, 'Clef predictions');
     const predictions = [];
-    if (task.clef?.first_pass) predictions.push(['First pass', task.clef.first_pass]);
-    for (const [attempt, prediction] of Object.entries(task.clef?.retry_pass || {})) {
+    if (!solo && task.clef?.first_pass) predictions.push(['First pass', task.clef.first_pass]);
+    for (const [attempt, prediction] of solo ? [] : Object.entries(task.clef?.retry_pass || {})) {
       if (prediction) predictions.push([`Retry · attempt ${attempt}`, prediction]);
     }
-    if (!predictions.length) clef.append(el('p', 'No Clef data.', 'muted'));
+    if (solo) { /* no Clef predictions for a solo run */ } else if (!predictions.length) clef.append(el('p', 'No Clef data.', 'muted'));
     else table(clef, ['Pass', 'p', 'Assignment', 'Model', 'Time', 'Attempt', 'Plan table / extra fields'],
       predictions.map(([label, p]) => [label, p.p, el('pre', p.assignment), p.model, time(p.at), p.attempt,
         el('pre', Object.fromEntries(Object.entries(p).filter(([key]) => !['p', 'assignment', 'model', 'at', 'attempt'].includes(key))))]), 'Clef predictions');
-    for (const [name, key] of [['Prompt', 'prompt'], ['Approach', 'approach'], ['Retry findings', 'retry_findings']]) {
+    for (const [name, key] of solo ? [['Prompt', 'prompt']] :
+      [['Prompt', 'prompt'], ['Approach', 'approach'], ['Retry findings', 'retry_findings']]) {
       details(panel, name, task[key], `task-${task.id}-${key}`);
     }
   }
@@ -363,8 +391,10 @@ window.ForgeUI = (() => {
       if (state.key === key && changed) renderRun(result.data);
     }, 'Could not refresh run', error => {
       if (state.key !== key || state.cache.has(key)) return;
+      // A freshly launched run can be opened before it is registered: wait, do not alarm.
+      if (error.status === 404) state.errors.delete('/api/runs/' + encodeURIComponent(key));
       $('main').replaceChildren(el('p', error.status === 404 ?
-        'Run not found. Its plan directory may have been removed. Select another run from the list.' :
+        'Waiting for this run to appear… checking every 5 seconds while this tab is visible. If its directory was removed, pick another run.' :
         'Could not load this run. Select another run, or leave refresh enabled to retry.', 'empty'));
     });
   }
