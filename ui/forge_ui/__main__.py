@@ -49,13 +49,14 @@ def _watch_idle(server, seconds, stop):
     # another thread, so when main leaves that loop another way (Ctrl-C) it sets `stop`
     # and this thread must not call shutdown().
     while not stop.wait(1):
-        # busy and last_request are read under the lock a request takes to change them, so a request
-        # that starts between the two reads cannot be judged by a stale count.
+        # The decision and the shutdown happen under the lock a request takes to be counted, so no request
+        # can be admitted between "idle" and the stop: one that arrives meanwhile waits for the lock and
+        # then reaches a server that is already stopping, like one that arrives just after the exit.
+        # shutdown() only waits for serve_forever() to leave its loop, which never needs this lock.
         with server.busy_lock:
-            idle = server.busy == 0 and time.monotonic() - server.last_request >= seconds
-        if idle:
-            server.shutdown()
-            return
+            if server.busy == 0 and time.monotonic() - server.last_request >= seconds:
+                server.shutdown()
+                return
 
 
 def _port_taken(port):

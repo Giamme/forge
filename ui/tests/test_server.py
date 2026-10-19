@@ -592,16 +592,19 @@ class MainTests(TempCase):
         self.assertFalse(thread.is_alive(), 'server did not exit after the slow request ended')
         self.assertEqual(box['code'], 0)
 
-    def test_idle_decision_is_made_under_the_lock_a_request_takes(self):
-        # A request that starts while the watcher decides must not be judged by a stale busy count,
-        # so the decision waits for any request that is being admitted (it holds busy_lock).
+    def test_idle_decision_and_shutdown_happen_under_the_lock_a_request_takes(self):
+        # A request admitted between the idle decision and the stop would be cut off, so the decision
+        # waits for any request being admitted (it holds busy_lock) and the shutdown is made before
+        # the lock is released.
         class Server:
             busy = 0
             last_request = time.monotonic() - 100  # long idle
             busy_lock = threading.Lock()
             shut_down = threading.Event()
+            locked_at_shutdown = None
 
             def shutdown(self):
+                self.locked_at_shutdown = self.busy_lock.locked()
                 self.shut_down.set()
 
         class Ticks:  # a stop event whose one-second wait returns at once
@@ -615,6 +618,7 @@ class MainTests(TempCase):
             self.assertFalse(server.shut_down.wait(0.5), 'idle exit decided without taking busy_lock')
         self.assertTrue(server.shut_down.wait(IDLE_DONE), 'idle exit never fired once the lock was free')
         watcher.join(IDLE_DONE)
+        self.assertTrue(server.locked_at_shutdown, 'shutdown was called after busy_lock was released')
 
     def test_idle_exit_zero_is_accepted_and_does_not_stop_the_server(self):
         # Positive control for the negative-value case: 0 is a real value, not a usage error.
