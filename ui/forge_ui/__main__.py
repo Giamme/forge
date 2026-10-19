@@ -49,7 +49,11 @@ def _watch_idle(server, seconds, stop):
     # another thread, so when main leaves that loop another way (Ctrl-C) it sets `stop`
     # and this thread must not call shutdown().
     while not stop.wait(1):
-        if server.busy == 0 and time.monotonic() - server.last_request >= seconds:
+        # busy and last_request are read under the lock a request takes to change them, so a request
+        # that starts between the two reads cannot be judged by a stale count.
+        with server.busy_lock:
+            idle = server.busy == 0 and time.monotonic() - server.last_request >= seconds
+        if idle:
             server.shutdown()
             return
 

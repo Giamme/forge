@@ -102,15 +102,16 @@ class Handler(BaseHTTPRequestHandler):
         # Idle exit measures from the last activity, and a request in flight is activity: stamp when it
         # arrives and when it ends, and count it so a slow one is not cut off at the idle deadline.
         server = self.server
-        server.last_request = time.monotonic()
+        # The stamp and the count change together under busy_lock: the idle watcher reads both under it.
         with server.busy_lock:
+            server.last_request = time.monotonic()
             server.busy += 1
         try:
             yield
         finally:
             with server.busy_lock:
                 server.busy -= 1
-            server.last_request = time.monotonic()
+                server.last_request = time.monotonic()
 
     def _serve(self, head):
         with self._active():

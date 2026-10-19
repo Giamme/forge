@@ -17,7 +17,7 @@ from contextlib import redirect_stderr, redirect_stdout
 from unittest.mock import patch
 
 from forge_ui import __version__, build_id, reader
-from forge_ui.__main__ import main
+from forge_ui.__main__ import _watch_idle, main
 from forge_ui.server import Handler, make_server
 
 
@@ -591,6 +591,30 @@ class MainTests(TempCase):
         thread.join(IDLE_DONE)
         self.assertFalse(thread.is_alive(), 'server did not exit after the slow request ended')
         self.assertEqual(box['code'], 0)
+
+    def test_idle_decision_is_made_under_the_lock_a_request_takes(self):
+        # A request that starts while the watcher decides must not be judged by a stale busy count,
+        # so the decision waits for any request that is being admitted (it holds busy_lock).
+        class Server:
+            busy = 0
+            last_request = time.monotonic() - 100  # long idle
+            busy_lock = threading.Lock()
+            shut_down = threading.Event()
+
+            def shutdown(self):
+                self.shut_down.set()
+
+        class Ticks:  # a stop event whose one-second wait returns at once
+            def wait(self, timeout):
+                return False
+
+        server = Server()
+        with server.busy_lock:
+            watcher = threading.Thread(target=_watch_idle, args=(server, 1, Ticks()), daemon=True)
+            watcher.start()
+            self.assertFalse(server.shut_down.wait(0.5), 'idle exit decided without taking busy_lock')
+        self.assertTrue(server.shut_down.wait(IDLE_DONE), 'idle exit never fired once the lock was free')
+        watcher.join(IDLE_DONE)
 
     def test_idle_exit_zero_is_accepted_and_does_not_stop_the_server(self):
         # Positive control for the negative-value case: 0 is a real value, not a usage error.
