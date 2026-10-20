@@ -33,10 +33,14 @@ test('ranking: exact ids first, then prefixes and word starts, then loose matche
   assert.ok(RM.searchRank(idx, 'rdr', { now: NOW }).length > 0, 'a subsequence still finds it');
   assert.deepEqual(RM.searchRank(idx, 'reader bread', { now: NOW }).map(e => e.id), []);
   assert.equal(RM.searchRank(idx, 'r-bbbb', { now: NOW })[0].id, 'run:bbbbbbbbbbbb', 'run ids are searchable');
+  // each tier beats the next one even when that one is newer
+  const tier = (id, label, age) => ({ id, kind: 'run', label, t: NOW - age });
+  const tiers = [tier('loose', 'r-e-a-d', 10), tier('substring', 'bread', 20), tier('word', 'the read', 30), tier('prefix', 'reader', 40), tier('exact', 'read', 50)];
+  assert.deepEqual(RM.searchRank(tiers, 'read', { now: NOW }).map(e => e.id), ['exact', 'prefix', 'word', 'substring', 'loose']);
 });
 
 test('an empty query lists recent picks first, then live and recent runs', () => {
-  const idx = RM.searchIndex([run('aaaaaaaaaaaa', { updated: NOW - 86400 * 30 }), run('bbbbbbbbbbbb', { counts: { RUNNING: 1 } }), run('cccccccccccc')]);
+  const idx = RM.searchIndex([run('aaaaaaaaaaaa', { updated: NOW - 86400 * 30 }), run('bbbbbbbbbbbb', { counts: { RUNNING: 1 }, updated: NOW - 86400 * 3 }), run('cccccccccccc')]);   // live beats newer
   const top = RM.searchRank(idx, '', { now: NOW, recent: { 'run:aaaaaaaaaaaa': NOW - 10 } });
   assert.deepEqual(top.slice(0, 3).map(e => e.key), ['aaaaaaaaaaaa', 'bbbbbbbbbbbb', 'cccccccccccc']);
 });
@@ -50,6 +54,7 @@ test('status events: finished and failed runs, failing tasks, review verdicts; t
   const c1 = run('cccccccccccc', { counts: { FAIL: 1 }, tasks: [['t1', 'FAIL']], updated: NOW - 9000 });
   const d1 = run('dddddddddddd', { counts: { FAIL: 1 }, tasks: [['t1', 'FAIL']] });
   assert.deepEqual(RM.statusEvents(null, [a1, b1], { now: NOW }), []);
+  assert.deepEqual(RM.statusEvents([a1, b1], [a1, b1], { now: NOW }), [], 'nothing changed: nothing fires again');
   const ev = RM.statusEvents([a0, b0, c0], [a1, b1, c1, d1], { now: NOW });
   assert.deepEqual(ev.map(e => e.kind).sort(), ['review', 'run-done', 'run-failed', 'task-failed']);
   const tf = ev.find(e => e.kind === 'task-failed');

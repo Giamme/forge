@@ -201,10 +201,9 @@
   function mulberry32(a) { return () => { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
   function jaccard(a, b) { if (!a.size || !b.size) return 0; let n = 0; for (const x of a) if (b.has(x)) n++; return n / (a.size + b.size - n); }
   // 3D force layout: springs between runs of one project and runs that share models, repulsion within a cutoff
-  function forceLayout(facts, { iterations = 300, pinned = {}, seed = 7 } = {}) {
+  function forceLayout(facts, { iterations = 300, seed = 7 } = {}) {
     const N = facts.length, rnd = mulberry32(seed), s = sizes(facts).smax, R0 = 100 * Math.sqrt(Math.max(1, N));
-    const P = facts.map(f => pinned[f.key] ? pinned[f.key].slice(0, 3) : [(rnd() - .5) * 2 * R0, (rnd() - .5) * 2 * R0, rnd() * R0]);
-    const fixed = facts.map(f => !!pinned[f.key]);
+    const P = facts.map(() => [(rnd() - .5) * 2 * R0, (rnd() - .5) * 2 * R0, rnd() * R0]);
     const links = [];
     const byNode = facts.map(() => []);
     for (let i = 0; i < N; i++) for (let j = i + 1; j < N; j++) {
@@ -239,7 +238,6 @@
         }
       }
       for (let i = 0; i < N; i++) {
-        if (fixed[i]) continue;
         for (let k = 0; k < 3; k++) {
           F[i][k] -= P[i][k] * .002;                        // weak gravity toward the middle
           const step = clamp(F[i][k], -s, s) * cool;
@@ -247,9 +245,9 @@
         }
       }
     }
-    const zmin = Math.min(0, ...P.filter((_, i) => !fixed[i]).map(p => p[2]));
+    const zmin = Math.min(0, ...P.map(p => p[2]));
     const pos = {};
-    facts.forEach((f, i) => { pos[f.key] = fixed[i] ? P[i] : [P[i][0], P[i][1], P[i][2] - zmin]; });
+    facts.forEach((f, i) => { pos[f.key] = [P[i][0], P[i][1], P[i][2] - zmin]; });
     return pos;
   }
 
@@ -372,6 +370,6 @@
     return { ok: true, errors, layouts, count };
   }
 
-  return { LAYOUTS, LAYOUT_INFO, hashId, projects, runFacts, bucket, blockSize, orbRadius, emptyFilter, normFilter, activeCount, match, options,
-    layout, layoutKey, forceLayout, resolve, constellationLinks, niceAxis, labelPick, serializeLayout, parseLayoutFile };
+  return { LAYOUTS, LAYOUT_INFO, hashId, projects, runFacts, blockSize, orbRadius, emptyFilter, normFilter, activeCount, match, options,
+    layout, layoutKey, resolve, constellationLinks, niceAxis, labelPick, serializeLayout, parseLayoutFile };
 });

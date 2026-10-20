@@ -26,18 +26,11 @@ test('wilson matches scripts/forge_dataset/routing.py', () => {
   ];
   for (const [k, n, z, lo, hi] of cases) {
     const w = MS.wilson(k, n, z);
-    assert.ok(Math.abs(w.lo - lo) < 1e-12 && Math.abs(w.hi - hi) < 1e-12, `${k}/${n} z=${z}: ${w.lo} ${w.hi}`);
+    assert.deepEqual([w.lo, w.hi], [lo, hi], `${k}/${n} z=${z}`);                 // to the last bit
     assert.equal(w.p, k / n);
   }
   assert.deepEqual(MS.wilson(0, 0), { p: null, lo: null, hi: null });
   assert.deepEqual(MS.wilson(3, 7), MS.wilson(3, 7, 1.96));
-});
-
-test('median follows statistics.median and ignores nulls', () => {
-  assert.equal(MS.median([3, null, 1, 2]), 2);
-  assert.equal(MS.median([4, 1, 3, 2]), 2.5);
-  assert.equal(MS.median([null, undefined]), null);
-  assert.equal(MS.median(undefined), null);
 });
 
 test('first attempts: the lowest attempt number counts, censored attempts count in no rate', () => {
@@ -108,6 +101,7 @@ test('rows below min n are flagged small but kept; rank by the interval\'s lower
   assert.deepEqual(L.implementers.map(r => r.small), [false, true, true]);
   assert.ok(L.caveats.some(c => c.includes('fewer than 5')));
   assert.equal(MS.leaderboard({ tasks }, { minN: 1 }, NOW).implementers.filter(r => r.small).length, 0);
+  assert.deepEqual(MS.leaderboard({ tasks }, { minN: 4 }, NOW).implementers.map(r => r.small), [false, true, false], 'exactly min n is enough');
   // equal lower bounds: more outcomes first
   const tie = MS.leaderboard({ tasks: [task('r', 'x', [att(1, 'b', 'fail')]), task('r', 'y', [att(1, 'a', 'fail')]), task('r', 'z', [att(1, 'a', 'fail')])] }, {}, NOW);
   assert.deepEqual(tie.implementers.map(r => r.alias), ['a', 'b']);
@@ -140,12 +134,12 @@ test('filters: project, difficulty, kind, period and exploratory picks; reviews 
   assert.deepEqual([byD.low.length, byD.high.map(r => r.alias), byD.none.map(r => r.alias).sort()], [0, ['sol'], ['luna', 'sol']]);
 });
 
-test('filter values are normalised; activeCount ignores min n', () => {
-  assert.deepEqual(MS.normFilter(null), MS.emptyFilter());
-  assert.deepEqual(MS.normFilter({ project: 3, difficulty: 'huge', kind: 'x', days: -4, exploratoryOnly: 'yes', minN: 'a' }), MS.emptyFilter());
-  assert.deepEqual(MS.normFilter({ days: 7.9, minN: 10.5, exploratoryOnly: true }), { ...MS.emptyFilter(), days: 7, minN: 10, exploratoryOnly: true });
-  assert.equal(MS.activeCount({ minN: 30 }), 0);
-  assert.equal(MS.activeCount({ project: '/w', days: 7, exploratoryOnly: true }), 3);
+test('filter values are normalised to the defaults', () => {
+  const empty = { project: '', difficulty: '', kind: '', days: 0, exploratoryOnly: false, minN: 5 };
+  assert.deepEqual(MS.emptyFilter(), empty);
+  assert.deepEqual(MS.normFilter(null), empty);
+  assert.deepEqual(MS.normFilter({ project: 3, difficulty: 'huge', kind: 'x', days: -4, exploratoryOnly: 'yes', minN: 'a' }), empty);
+  assert.deepEqual(MS.normFilter({ days: 7.9, minN: 10.5, exploratoryOnly: true }), { ...empty, days: 7, minN: 10, exploratoryOnly: true });
 });
 
 test('reviewers: counts by kind, verdicts, findings per review, shadow agreement', () => {
@@ -177,6 +171,7 @@ test('reviewers: counts by kind, verdicts, findings per review, shadow agreement
   assert.equal(opus.agreement.lo, null);
   assert.deepEqual([sol.agreement.k, sol.agreement.n, sol.agreement.unknown], [2, 3, 1]);
   assert.equal(sol.agreement.lo, MS.wilson(2, 3).lo);
+  assert.equal(sol.medianDurationS, null, 'no durations: no median');
   assert.equal(sol.reviews.shadow, 4);
   assert.equal(L.totals.unattributedReviews, 1);
   assert.ok(L.caveats.some(c => c.startsWith('1 review with no recorded model')));

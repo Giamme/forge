@@ -1,7 +1,7 @@
 /* forge-ui run model: pure data for the 3D stage, the 2D views and the inspector. No DOM, no I/O.
    A plain script in the page (window.ForgeRunModel) and a CommonJS module under node:test.
-   plate(), cells() and blockSize() are archivision's lib/layout.js (MIT, © 2026 Giamme), with the
-   size function passed in so run blocks and task blocks can size themselves. */
+   plate() is archivision's lib/layout.js (MIT, © 2026 Giamme), with the size function passed in so run
+   blocks and task blocks can size themselves. */
 (function (root, factory) {
   'use strict';
   var api = factory();
@@ -29,40 +29,8 @@
 
   /* ---------- archivision's plate: one district per layer, wrapped into rows ---------- */
   const GAPX = 18, PADX = 22, TOPPAD = 44, BOTPAD = 16, ROWGAP = 18, DGAP = 18;
-  const isInt = v => Number.isInteger(v) && v >= 0;
-  function cells(m) {
-    const parts = m.parts || [];
-    const taken = new Set();
-    const own = parts.length && parts.every(p => isInt(p.col) && isInt(p.row)) && parts.every(p => {
-      for (let c = p.col; c < p.col + (p.cspan || 1); c++) for (let r = p.row; r < p.row + (p.rspan || 1); r++) {
-        if (taken.has(`${c},${r}`)) return false; taken.add(`${c},${r}`);
-      }
-      return true;
-    });
-    if (own) return 'own';
-    for (const p of parts) { delete p.cspan; delete p.rspan; }
-    const zones = (m.zones || []).filter(z => z.parts && z.parts.length);
-    if (zones.length) {
-      const at = {}; zones.forEach((z, c) => z.parts.forEach((id, r) => { at[id] = [c, r]; }));
-      const extra = zones.length;
-      parts.filter(p => !at[p.id]).forEach((p, r) => { at[p.id] = [extra, r]; });
-      for (const p of parts) [p.col, p.row] = at[p.id];
-      return 'zones';
-    }
-    const C = Math.max(1, Math.ceil(Math.sqrt(parts.length)));
-    parts.forEach((p, i) => { p.col = i % C; p.row = Math.floor(i / C); });
-    return 'grid';
-  }
-  function grid(m) {
-    const ps = m.parts || [];
-    return [Math.max(1, ...ps.map(p => (p.col || 0) + (p.cspan || 1))), Math.max(1, ...ps.map(p => (p.row || 0) + (p.rspan || 1)))];
-  }
-  function blockSize(m) {
-    const [C, R] = grid(m);
-    return [clamp(24 + C * 70 + (C - 1) * 20, 190, 460), clamp(40 + R * 38 + (R - 1) * 26, 160, 300), 50 + Math.min(14, (m.parts || []).length * 1.6)];
-  }
   // modules: [{ id, layer, … }] in display order; layers: [{ id }] in display order.
-  function plate({ modules, layers }, size = blockSize) {
+  function plate({ modules, layers }, size) {
     const used = layers.filter(l => modules.some(m => m.layer === l.id));
     if (!modules.length) return { px: 900, py: 400, place: {}, districts: [], rows: 0 };
     const AREA = Math.sqrt(modules.reduce((t, m) => { const [w, d] = size(m); return t + (w + GAPX) * (d + TOPPAD + BOTPAD + ROWGAP); }, 0));
@@ -677,7 +645,7 @@
     return { pos, edges, cols, rows: next };
   }
 
-  return { plate, cells, blockSize, liveNow, integrationStatus, shadowStatus, runState, execStatus, matchRun, filterOptions, atlasModel, columns, planModel, finishState, taskParts,
+  return { liveNow, runState, execStatus, matchRun, filterOptions, atlasModel, columns, planModel, finishState, taskParts,
     taskTimes, metricValue, overlap, projectSchedule, execModel, criticalPath, concurrency, stateAt, timeRange, events, structureKey, innerKey,
     fmtDur, alias, basename, weight, searchIndex, searchRank, statusEvents, fractalTree };
 });

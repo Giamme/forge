@@ -29,14 +29,13 @@ function run(overrides = {}) {
 }
 
 test('plate keeps archivision layout: districts per layer, blocks inside, plate at least 900 wide', () => {
-  const modules = [{ id: 'a', layer: 'x', parts: [{ id: 1 }, { id: 2 }] }, { id: 'b', layer: 'x', parts: [] }, { id: 'c', layer: 'y', parts: [{ id: 1 }] }];
-  const p = RM.plate({ modules, layers: [{ id: 'x' }, { id: 'y' }] });
-  assert.ok(p.px >= 900);
-  assert.equal(p.districts.length, 2);
-  for (const id of ['a', 'b', 'c']) assert.equal(p.place[id].length, 5);
-  const [ax, ay, aw] = p.place.a, [bx] = p.place.b;
+  const P = RM.planModel(run());
+  assert.ok(P.px >= 900);
+  assert.deepEqual(P.districts.map(d => d.layer), ['w1', 'w2', 'w3', 'finish']);
+  for (const m of P.modules) assert.equal(P.place[m.id].length, 5, m.id);
+  const [ax, ay, aw] = P.place['t:reader'], [bx, by] = P.place['t:page'];
   assert.ok(bx >= ax + aw, 'blocks in one district do not overlap');
-  assert.equal(p.place.a[1], ay);
+  assert.equal(by, ay, 'a district is one row');
 });
 
 test('plan model: waves as districts, inferred column for a task without a wave, a finish line after them', () => {
@@ -80,8 +79,10 @@ test('projected schedule respects dependencies, capacity and file overlap', () =
   assert.ok(proj.graph.running, 'a running task keeps its slot');
   assert.ok(proj.docs.ghost && proj.docs.start >= T0 + 400, 'docs can start now: reader merged');
   assert.ok(proj.server.start >= proj.graph.end - 1e-6, 'server waits for graph');
-  const busyAt = t => Object.values(proj).filter(p => p.start !== null && p.start <= t && p.end > t).length;
-  for (const p of Object.values(proj)) if (p.start !== null) assert.ok(busyAt(p.start + .5) <= 2);
+  const one = RM.projectSchedule(r, { now: T0 + 400, maxParallel: 1 });
+  assert.ok(one.docs.start >= one.graph.end - 1e-6, 'one slot: docs waits for the running graph');
+  const busyAt = t => Object.values(one).filter(p => p.start !== null && p.start <= t && p.end > t).length;
+  for (const p of Object.values(one)) if (p.start !== null) assert.ok(busyAt(p.start + .5) <= 1);
   // overlapping files never run together
   const r2 = run(); r2.tasks[4].files = ['ui/static/graph.js'];
   const p2 = RM.projectSchedule(r2, { now: T0 + 400, maxParallel: 3 });
@@ -115,8 +116,7 @@ test('critical path follows the dependency that finished last', () => {
   r.tasks[2].executions = r.tasks[2].executions.map(e => ({ ...e, state: 'done', exit_code: 0, ended: T0 + 870 }));
   r.tasks[3].executions = [ex('task-9', 'task', T0 + 900, 250)];
   const cp2 = RM.criticalPath(r, { now: T0 + 1300 });
-  assert.equal(cp2.ids[cp2.ids.length - 1], 'server');
-  assert.ok(cp2.ids.includes('reader') || cp2.ids.includes('graph'));
+  assert.deepEqual(cp2.ids, ['page', 'graph', 'server'], 'graph (merged at +880) finished after reader (+700)');
 });
 
 test('stateAt rebuilds statuses at any moment', () => {
@@ -135,7 +135,9 @@ test('stateAt rebuilds statuses at any moment', () => {
 test('concurrency counts attempts and model calls against the limit', () => {
   const c = RM.concurrency(run(), { now: T0 + 400 });
   assert.equal(c.cap, 2);
-  assert.ok(c.peak >= 2);
+  assert.equal(c.peak, 2);
+  const calls = RM.concurrency({ tasks: [{ id: 'a', executions: [ex('d1', 'dwarf', T0, 100)] }, { id: 'b', executions: [ex('d2', 'dwarf', T0 + 10, 100)] }] });
+  assert.equal(calls.peak, 2, 'model calls count without a task record');
   assert.ok(c.series.every(p => p.task >= 0 && p.dwarf >= 0 && p.qa >= 0));
 });
 
@@ -173,19 +175,21 @@ test('empty and odd runs never throw', () => {
 });
 
 test('integration runs only while a task does; a finished run with an unmerged task is blocked', () => {
-  assert.equal(RM.integrationStatus(['MERGED', 'MERGED', 'FAIL']), 'BLOCKED');
-  assert.equal(RM.integrationStatus(['MERGED', 'RUNNING']), 'RUNNING');
-  assert.equal(RM.integrationStatus(['MERGED', 'MERGED']), 'MERGED');
-  assert.equal(RM.integrationStatus(['MERGED', 'PENDING']), 'PENDING');
+  const integration = statuses => RM.finishState({ tasks: statuses.map((status, i) => ({ id: 't' + i, status })) }).integration.status;
+  assert.equal(integration(['MERGED', 'MERGED', 'FAIL']), 'BLOCKED');
+  assert.equal(integration(['MERGED', 'RUNNING']), 'RUNNING');
+  assert.equal(integration(['MERGED', 'MERGED']), 'MERGED');
+  assert.equal(integration(['MERGED', 'PENDING']), 'PENDING');
   const r = run(); r.tasks[2].status = 'FAIL'; r.tasks[3].status = 'BLOCKED'; r.tasks[4].status = 'MERGED';
   assert.equal(RM.finishState(r).integration.status, 'BLOCKED');
 });
 
 test('a shadow review without shadow.status still runs; a timed-out one is not running', () => {
-  assert.equal(RM.shadowStatus({ status: null }), 'RUNNING');
-  assert.equal(RM.shadowStatus({ status: 'timeout' }), 'TIMEOUT');
-  assert.equal(RM.shadowStatus({ status: 'error' }), 'ERROR');
-  assert.equal(RM.shadowStatus({ status: 'done', verdict: 'PASS' }), 'PASS');
+  const shadow = s => RM.taskParts({ shadow: [{ attempt: 1, k: 0, ...s }] }).parts.find(p => p.kind === 'shadow').status;
+  assert.equal(shadow({ status: null }), 'RUNNING');
+  assert.equal(shadow({ status: 'timeout' }), 'TIMEOUT');
+  assert.equal(shadow({ status: 'error' }), 'ERROR');
+  assert.equal(shadow({ status: 'done', verdict: 'PASS' }), 'PASS');
 });
 
 test('the projection queues BLOCKED and INFRA tasks and merges a saved PASS first, as forge-schedule does', () => {
@@ -202,7 +206,7 @@ test('the projection queues BLOCKED and INFRA tasks and merges a saved PASS firs
 
 test('a live execution model keeps its time axis while every block still fits', () => {
   const X1 = RM.execModel(run(), { now: T0 + 400 });
-  const X2 = RM.execModel(run(), { now: T0 + 402, scale: { t0: X1.t0, t1: X1.t1 } });
+  const X2 = RM.execModel(run(), { now: T0 + 600, scale: { t0: X1.t0, t1: X1.t1 } });     // unscaled, this poll's axis would be longer
   assert.equal(X2.t1, X1.t1); assert.equal(X2.k, X1.k);
   const X3 = RM.execModel(run(), { now: X1.t1 + 10, scale: { t0: X1.t0, t1: X1.t1 } });
   assert.ok(X3.t1 > X1.t1, 'a block past the axis rescales it');

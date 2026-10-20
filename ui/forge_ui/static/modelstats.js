@@ -56,11 +56,6 @@
       minN: num(f.minN) !== null && f.minN >= 0 ? Math.floor(f.minN) : DEFAULT_MIN_N,
     };
   }
-  // filters that hide tasks (minN only greys rows)
-  function activeCount(f) {
-    f = normFilter(f);
-    return [f.project, f.difficulty, f.kind, f.days, f.exploratoryOnly].filter(Boolean).length;
-  }
   function inPeriod(created, f, now) {
     return !f.days || num(now) === null || (num(created) !== null && created >= now - f.days * DAY);
   }
@@ -250,5 +245,5 @@
     return { implementers: imp.rows, reviewers: rev.rows, byDifficulty, totals, caveats, filter: f };
   }
 
-  return { DIFFS, KINDS, SEVERITIES, DEFAULT_MIN_N, wilson, median, emptyFilter, normFilter, activeCount, taskMatch, options, leaderboard };
+  return { DIFFS, KINDS, SEVERITIES, DEFAULT_MIN_N, wilson, emptyFilter, normFilter, taskMatch, options, leaderboard };
 });

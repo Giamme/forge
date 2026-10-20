@@ -33,28 +33,31 @@ test('projects group by repo, oldest first, and disambiguate equal folder names'
 test('facts: task buckets, difficulty mix, roles, stale running runs', () => {
   const [f] = facts([{ ...runs(1)[0], counts: { RUNNING: 1 }, updated: NOW - 3 * 3600 }]);
   assert.equal(f.state, 'stale');
-  assert.equal(f.bucket, CM.bucket(f.n));
+  assert.deepEqual([1, 10, 200].map(n => CM.runFacts({ key: hex(9), task_count: n }, NOW).bucket), [1, 3, 9], 'the square root of the tasks, at most 9');
   assert.ok(f.dwarf.has('sol') && f.qa.has('opus') && !f.dwarf.has('opus'));
   assert.equal(Object.values(f.diff).reduce((a, b) => a + b, 0), f.n);
 });
 
 test('every filter dimension selects exactly what it names', () => {
   const F = facts(runs());
-  const pick = f => F.filter(x => CM.match(x, f, NOW)).map(x => x.key);
+  const pick = f => F.filter(x => CM.match(x, f, NOW));
+  // runs(): odd runs have 8 tasks and even ones 1; every 4th is in /w/payments (the oldest project) with a failing
+  // final review; every 9th is solo; i % 3 === 2 has no opus; 7, 14, 21 and 28 failed
+  const exactly = (f, n, ok) => { const got = pick(f); assert.equal(got.length, n, JSON.stringify(f)); assert.ok(got.every(ok), JSON.stringify(f)); };
   const proj = CM.projects(F.map(x => x.run))[0].id;
-  assert.ok(pick({ projects: [proj] }).every(k => F.find(x => x.key === k).project === proj));
-  assert.ok(pick({ states: ['failed'] }).length > 0);
-  assert.ok(pick({ kinds: ['solo'] }).every(k => F.find(x => x.key === k).kind === 'solo'));
-  assert.ok(pick({ tasks: { min: 10 } }).every(k => F.find(x => x.key === k).n >= 10));
-  assert.ok(pick({ tasks: { min: 3, max: 5 } }).every(k => { const n = F.find(x => x.key === k).n; return n >= 3 && n <= 5; }));
-  assert.ok(pick({ models: { aliases: ['opus'], role: 'qa' } }).length > 0);
-  assert.deepEqual(pick({ models: { aliases: ['opus'], role: 'dwarf' } }), []);
-  assert.ok(pick({ difficulty: { levels: ['high'], mode: 'dominant' } }).every(k => F.find(x => x.key === k).dominant === 'high'));
-  assert.ok(pick({ review: 'FAIL' }).every(k => F.find(x => x.key === k).review === 'FAIL'));
-  assert.ok(pick({ review: 'none' }).every(k => !F.find(x => x.key === k).review));
-  assert.ok(pick({ decompose: ['none'] }).every(k => !F.find(x => x.key === k).decompose));
-  assert.deepEqual(pick({ text: 'goal 3' }).length >= 1, true);
-  assert.ok(pick({ text: 'task 2' }).length > 0, 'task titles are searchable');
+  exactly({ projects: [proj] }, 10, x => x.project === proj);
+  exactly({ states: ['failed'] }, 4, x => x.state === 'failed');
+  exactly({ kinds: ['solo'] }, 5, x => x.kind === 'solo');
+  exactly({ tasks: { min: 8 } }, 20, x => x.n >= 8);
+  exactly({ tasks: { max: 7 } }, 20, x => x.n <= 7);
+  exactly({ models: { aliases: ['opus'], role: 'qa' } }, 27, x => x.qa.has('opus'));
+  exactly({ models: { aliases: ['opus'], role: 'dwarf' } }, 0, () => true);
+  exactly({ difficulty: { levels: ['high'], mode: 'dominant' } }, 10, x => x.dominant === 'high');
+  exactly({ review: 'FAIL' }, 10, x => x.review === 'FAIL');
+  exactly({ review: 'none' }, 30, x => !x.review);
+  exactly({ decompose: ['none'] }, 20, x => !x.decompose);
+  exactly({ text: 'goal 3' }, 11, x => /^goal 3/.test(x.run.goal));
+  exactly({ text: 'task 2' }, 20, x => x.n === 8);                         // task titles are searchable
   assert.equal(pick({}).length, F.length);
   assert.equal(CM.activeCount({ projects: [proj], tasks: { min: 2 } }), 2);
 });
@@ -81,6 +84,9 @@ test('each layout places every run, deterministically, without collisions inside
     assert.ok(a.bounds.every(Number.isFinite));
     noOverlap(a, F);
   }
+  // the runs of each project started together: the timeline stacks them
+  const burst = facts(runs(40).map((r, i) => ({ ...r, created: NOW + (i % 4) * 3600 + i })));
+  noOverlap(CM.layout('timeline', burst), burst);
   const T = CM.layout('timeline', F);
   assert.ok(T.axis.ticks.length > 0 && T.axis.ticks.length <= 13);
 });
@@ -96,10 +102,11 @@ test('a filter never moves a project, and adding a newer project leaves older on
 });
 
 test('dragged runs keep their place in every layout, constellation included', () => {
-  const F = facts(runs(20)), k = F[3].key, at = [1234, -567, 89];
-  for (const name of CM.LAYOUTS) assert.deepEqual(CM.layout(name, F, { pinned: { [k]: at } }).pos[k], at, name);
-  const pos = CM.forceLayout(F, { pinned: { [k]: at }, iterations: 50 });
-  assert.deepEqual(pos[k], at);
+  const F = facts(runs(20)), k = F[3].key;
+  for (const name of CM.LAYOUTS) {
+    const at = CM.layout(name, F).pos[F[5].key].slice();                     // dropped onto another run
+    assert.deepEqual(CM.layout(name, F, { pinned: { [k]: at } }).pos[k], at, name);
+  }
 });
 
 test('labels: the most important that do not overlap', () => {
@@ -113,7 +120,7 @@ test('layout files: round trip, and anything odd is refused', () => {
   const back = CM.parseLayoutFile(file);
   assert.equal(back.ok, true); assert.equal(back.count, 1); assert.deepEqual(back.layouts.helix[hex(1)], [1, 2, 3, 99]);
   const bad = CM.parseLayoutFile({ format: 'forge-ui-cloud-layout', version: 1, layouts: { helix: { 'nope': [1, 2, 3], [hex(2)]: [NaN, 1, 1], [hex(3)]: [1e9, 0, 0] }, warp: {} } });
-  assert.equal(bad.count, 0); assert.ok(bad.errors.length >= 3);
+  assert.equal(bad.count, 0); assert.equal(bad.errors.length, 4); assert.deepEqual(Object.keys(bad.layouts), ['helix']);
   assert.equal(CM.parseLayoutFile({ format: 'other' }).ok, false);
   assert.equal(CM.parseLayoutFile(null).ok, false);
 });

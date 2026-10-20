@@ -43,7 +43,7 @@ class CspRules(unittest.TestCase):
         (re.compile(r"createElement\(\s*['\"]style['\"]"), 'a <style> element'),
         (re.compile(r"\.cssText\b"), 'cssText'),
         (re.compile(r"\binnerHTML\b|\bouterHTML\b|insertAdjacentHTML"), 'HTML parsing of strings'),
-        (re.compile(r"['\"]style['\"]\s*:"), 'a style attribute in an attribute map'),
+        (re.compile(r"(?:['\"]style['\"]|\bstyle)\s*:"), 'a style attribute in an attribute map'),
         (re.compile(r"\beval\(|new Function\("), 'eval'),
     ]
 
@@ -61,8 +61,11 @@ class CspRules(unittest.TestCase):
         scripts = re.findall(r'<script\b([^>]*)>(.*?)</script>', html, re.S | re.I)
         inline = [attrs for attrs, body in scripts if body.strip()]
         self.assertEqual(inline, [' type="importmap"'])
-        # three.js comes from one pinned version, and the import map is the only place that names it
-        self.assertEqual(set(re.findall(r'three@([0-9.]+)', html)), {'0.160.0'})
+        # three.js comes from one pinned version: the one the page CSP and the export allow
+        from forge_ui import export, server
+        pinned = set(re.findall(r'three@([0-9.]+)', server._PAGE_CSP + export.CDN))
+        self.assertEqual(len(pinned), 1, pinned)
+        self.assertEqual(set(re.findall(r'three@([0-9.]+)', html)), pinned)
 
     def test_third_party_notices_travel_with_the_ported_code(self):
         for name in ('iso.js', 'scene3d.js', 'runmodel.js', 'cloud3d.js'):
