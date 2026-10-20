@@ -89,6 +89,8 @@ export async function createStage(host, cb = {}) {
     T.tint = PLAIN.has(s) ? 0 : light ? .09 : .1;
     T.vis = 1; T.op = 1; T.opB = 1;
     if (s === 'PENDING' || s === 'NONE') { T.opB = .55; T.op = .8; }
+    // parts are small: their status has to read from the colour of the whole piece
+    if (el.kind === 'part' && !PLAIN.has(s)) { T.tint = light ? .28 : .32; T.lit = .55; }
   }
   // a label plane on the roof or the front, redrawn only when what it shows changes
   function label(el, w, h, P, draw, where, at) {

@@ -171,6 +171,7 @@ code { font-family: var(--mono); font-size: .8rem; }
 .map-card:hover { border-color: var(--accent); }
 .map-card strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .map-card.dim { opacity: .35; }
+.map-card .muted { font-size: .8rem; }
 .leds { display: flex; flex-wrap: wrap; gap: 3px; }
 .led { width: 8px; height: 8px; border-radius: 2px; background: var(--st, var(--muted)); }
 
