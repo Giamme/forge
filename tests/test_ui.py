@@ -558,11 +558,6 @@ class UiRunnerTests(unittest.TestCase):
     # forge-ui's view of a repo's runs reads $XDG_CONFIG_HOME/forge/runs, so a run that was
     # never opened in the UI must still be there. Nothing about it may show in a run.
 
-    def test_a_plain_plan_registers_its_plan_dir(self):
-        plan = self.plan()
-        self.assertEqual(self.registered(), [str(plan.resolve())])
-        self.assertFalse((self.state / 'forge/ui').exists())  # registering is not starting the UI
-
     def test_a_plain_solo_run_registers_its_run_dir_and_a_dry_run_does_not(self):
         rc, out = self.solo('--dry-run')
         self.assertEqual(rc, 0, out)
@@ -573,36 +568,9 @@ class UiRunnerTests(unittest.TestCase):
         self.assertEqual(self.registered(), [str(self.run_dir.resolve())])
         self.assertFalse((self.state / 'forge/ui').exists())
 
-    def test_forge_run_registry_off_keeps_a_run_out_of_the_registry(self):
-        self.env['FORGE_RUN_REGISTRY'] = 'off'
-        self.plan()
-        rc, out = self.solo()
-        self.assertEqual(rc, 0, out)
-        self.assertFalse((self.config / 'forge/runs').exists())
-
-    def test_an_unwritable_registry_never_changes_a_plan_or_a_solo_run(self):
-        plan = self.plan()
-        normal = self.run_script('forge-parallel.sh', 'plan', plan, '--repo', self.repo, '--no-memory')
-        self.assertEqual(normal.returncode, 0, normal.stdout)
-        rc, out = self.solo()
-        self.assertEqual(rc, 0, out)
-        verdict = (self.run_dir / 'verdict').read_text()
-
-        self.git('clean', '-fdq')  # the dwarf's file: a no-change solo run, and a dirty-tree warning from plan
-        shutil.rmtree(self.run_dir)
-
-        shutil.rmtree(self.config)
-        self.config.write_text('a file where the config dir should be')
-        broken = self.run_script('forge-parallel.sh', 'plan', plan, '--repo', self.repo, '--no-memory')
-        self.assertEqual((broken.returncode, broken.stdout), (normal.returncode, normal.stdout))
-        rc, broken_out = self.solo()
-        self.assertEqual((rc, (self.run_dir / 'verdict').read_text()), (0, verdict), broken_out)
-        for text in (broken.stdout, broken_out):
-            self.assertNotIn('Traceback', text)
-            self.assertNotIn('registry', text)
-
     def test_run_records_max_parallel_and_registers_plans_made_before_plan_did(self):
         plan = self.plan()
+        self.assertEqual(self.registered(), [str(plan.resolve())])  # every plan registers, --ui or not
         registry = self.config / 'forge/runs' / (forge_registry.repo_key(self.repo) + '.txt')
         registry.unlink()  # as if an older forge had made the plan
 

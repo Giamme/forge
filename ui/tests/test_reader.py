@@ -548,10 +548,6 @@ class ReaderTests(unittest.TestCase):
                     self.assertIsNone(data['tasks'][2]['dwarf_tail'])
 
 
-if __name__ == '__main__':
-    unittest.main()
-
-
 class SummaryExtensionTests(unittest.TestCase):
     """The fields the cloud, quick jump and notifications read from the run list."""
 
@@ -575,23 +571,24 @@ class SummaryExtensionTests(unittest.TestCase):
 
     def test_models_by_role(self):
         summary = summarize(self.plan)
-        self.assertEqual(summary['models'], sorted(set(summary['dwarf_models']) | set(summary['qa_models'])))
-        self.assertTrue(summary['dwarf_models'])
-        self.assertTrue(summary['qa_models'])
+        self.assertEqual((summary['dwarf_models'], summary['qa_models']), (['astra', 'luna'], ['opus']))
+        solo = summarize(SOLO)
+        self.assertEqual((solo['dwarf_models'], solo['qa_models']), (['sol:high'], ['opus']))
 
     def test_created_is_the_start_and_never_moves_updated(self):
-        for name, at in (('run_id', 1000), ('repo', 900), ('tasks.tsv', 1100), ('goal.txt', 950)):
+        for name, at in (('run_id', 1000), ('repo', 900), ('request.md', 990), ('tasks.tsv', 1100), ('goal.txt', 950)):
             os.utime(self.plan / name, (at, at))
         before = summarize(self.plan)
-        self.assertLessEqual(before['created'], 950)
-        self.assertLessEqual(before['created'], before['updated'])
-        os.utime(self.plan / 'repo', (5, 5))
+        self.assertEqual(before['created'], 900.0)
+        # request.md is a start file summarize never reads: only `created` may stat it, never `updated`.
+        os.utime(self.plan / 'request.md', (4000000000, 4000000000))
         after = summarize(self.plan)
-        self.assertEqual(after['updated'], before['updated'])
+        self.assertEqual((after['created'], after['updated']), (900.0, before['updated']))
+        solo = Path(shutil.copytree(SOLO, Path(self.temp.name) / 'solo'))
+        for name, at in (('prompt.md', 800), ('repo', 700), ('request.md', 750), ('goal.txt', 760)):
+            os.utime(solo / name, (at, at))
+        self.assertEqual(summarize(solo)['created'], 700.0)
 
-    def test_solo_summary_shape(self):
-        summary = summarize(SOLO)
-        self.assertEqual(summary['task_statuses'][0]['id'], 'solo')
-        self.assertIsNone(summary['task_statuses'][0]['difficulty'])
-        self.assertIn('created', summary)
-        self.assertEqual(summary['models'], sorted(set(summary['dwarf_models']) | set(summary['qa_models'])))
+
+if __name__ == '__main__':
+    unittest.main()

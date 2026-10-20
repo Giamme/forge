@@ -268,6 +268,10 @@ class ExecutionTests(FixtureCase):
         (self.plan / 'final-review').unlink()
         (self.plan / 'final-review').symlink_to(F.INTEGRATE + '/final-review')
         self.assertEqual([item['published'] for item in detail(self.plan)['final_reviews']], [False, False, True])
+        # Only the newest review can be in flight: an older one with a prompt and no verdict never finished.
+        self.write(self.plan / 'final-review-1760602500-1' / 'qa.input', 'Review the combined result.\n')
+        older = detail(self.plan)['final_reviews'][1]
+        self.assertEqual((older['name'], older['state']), ('final-review-1760602500-1', 'orphaned'))
 
     def test_final_reviews_are_capped_at_twenty(self):
         for n in range(25):

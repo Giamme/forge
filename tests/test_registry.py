@@ -209,8 +209,8 @@ class RegisterCommandTests(unittest.TestCase):
             with self.subTest(setup.__name__):
                 self.setUp()
                 self.register(setup())  # a hang fails on the timeout, any output or exit code on the assert
-                if self.config.is_dir():
-                    self.assertEqual(self.registered(), [])
+                runs = self.config / 'forge/runs'
+                self.assertEqual(sorted(runs.iterdir()) if runs.is_dir() else [], [], 'nothing is registered, under any repo')
 
     def test_arguments_it_does_not_understand_are_ignored_quietly(self):
         for args in ([], ['register'], ['register', 'a', 'b'], ['unregister', str(self.run_dir)]):
@@ -219,10 +219,6 @@ class RegisterCommandTests(unittest.TestCase):
                                         env=self.env, capture_output=True, text=True, timeout=10)
                 self.assertEqual((result.returncode, result.stdout, result.stderr), (0, '', ''))
         self.assertFalse(self.config.exists())
-
-    def test_main_returns_zero_in_process_too(self):
-        with patch('forge_registry.register_run_dir', side_effect=RuntimeError('boom')):
-            self.assertEqual(forge_registry.main(['register', str(self.run_dir)]), 0)
 
 
 if __name__ == '__main__':

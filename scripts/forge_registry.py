@@ -117,7 +117,7 @@ def _register(run_dir_arg: str) -> None:
         register_run_dir(repo, run_dir)
 
 
-def main(argv=None) -> int:
+def main() -> int:
     """``register <run-dir>``: record the run dir under the repo its ``repo`` file names.
 
     Always exits 0 and prints nothing. The runners call it on every plan, run and solo run,
@@ -127,7 +127,7 @@ def main(argv=None) -> int:
     interrupted runner still stops.
     """
     try:
-        args = sys.argv[1:] if argv is None else list(argv)
+        args = sys.argv[1:]
         if len(args) == 2 and args[0] == 'register':
             _register(args[1])
     except Exception:  # noqa: BLE001  -- see the docstring: nothing here may reach the run
