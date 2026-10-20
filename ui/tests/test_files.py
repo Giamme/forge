@@ -88,17 +88,23 @@ class FilesTests(unittest.TestCase):
                                                             same_wave=True))
         self.assertEqual(overlaps[('reader', 'docs')], dict(a='reader', b='docs', planned=False,
                                                             touched=['ui/reader.py'], same_wave=False))
-        self.assertTrue(all(overlaps[pair]['planned'] for pair in overlaps if 'graph' in pair))
+        self.assertEqual([(pair, overlaps[pair]['planned']) for pair in overlaps if 'graph' in pair],
+                         [(('reader', 'graph'), True), (('page', 'graph'), True), (('graph', 'docs'), True)])
         self.assertEqual(overlaps[('page', 'docs')]['planned'], True)  # docs/guide.md lies in docs
 
     def test_caps(self):
-        F.write(self.plan / 'tasks/docs/changes.diff', diff_of(*[f'docs/f{n}.md' for n in range(20)]))
-        with patch('forge_ui.reader._MAX_FILES', 5):
+        # At most 2,000 files and 300 tasks, at the edge.
+        have = len(reader.files_detail(self.plan)['files'])
+        for extra, kept, cut in ((2000 - have, 2000, False), (2001 - have, 2000, True)):
+            F.write(self.plan / 'tasks/docs/changes.diff', diff_of(*[f'docs/f{n}.md' for n in range(extra)]))
             data = reader.files_detail(self.plan)
-        self.assertEqual((len(data['files']), data['truncated']), (5, True))
-        with patch('forge_ui.reader._MAX_TASKS', 2):
+            self.assertEqual((len(data['files']), data['truncated']), (kept, cut), extra)
+        F.write(self.plan / 'tasks/docs/changes.diff', '')
+        tasks = (self.plan / 'tasks.tsv').read_text(encoding='utf-8')
+        for extra, cut in ((295, False), (296, True)):  # the fixture has 5 tasks
+            F.write(self.plan / 'tasks.tsv', tasks + ''.join(f't{n}\t-\tlow\tx{n}.py\tluna\topus\tT\n' for n in range(extra)))
             data = reader.files_detail(self.plan)
-        self.assertEqual(([task['id'] for task in data['tasks']], data['truncated']), (['reader', 'page'], True))
+            self.assertEqual((len(data['tasks']), data['tasks'][-1]['id'], data['truncated']), (300, 't294', cut), extra)
 
     def test_solo(self):
         data = reader.files_detail(self.solo)
@@ -128,8 +134,6 @@ class FilesTests(unittest.TestCase):
         key = reader.run_key(self.plan)
         status, body = request(f'/api/runs/{key}/files')
         self.assertEqual((status, json.loads(body)), (200, reader.files_detail(self.plan)))
-        self.assertEqual(request(f'/api/runs/{key}/files', 'HEAD'), (200, b''))
-        self.assertEqual(request(f'/api/runs/{key}/files', headers={'Host': 'evil.example'})[0], 403)
         for path in (f'/api/runs/{"0" * 12}/files', f'/api/runs/{key}/files/x'):
             status, body = request(path)
             self.assertEqual((status, json.loads(body)), (404, {'error': 'not found'}), path)

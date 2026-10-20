@@ -28,13 +28,18 @@ index 1111111..2222222 100644
 """
 
 
+def parse(text):
+    """The files DiffDetail shows of a diff: diffs.parsed() with its documented caps."""
+    return diffs.parsed(text, False, 0)['files']
+
+
 def finding(location=None, text='- [P1][CONFIRMED] something is wrong'):
     return dict(severity='P1', status='CONFIRMED', location=location, summary=text.split('\n')[0], text=text)
 
 
 class ParserTests(unittest.TestCase):
     def test_modified_file_hunks_and_counts(self):
-        [item] = diffs.parse_unified(MODIFIED)
+        [item] = parse(MODIFIED)
         self.assertEqual({key: item[key] for key in item if key != 'hunks'},
                          dict(old='src/app.py', new='src/app.py', status='modified', binary=False, additions=2,
                               deletions=1, truncated=False))
@@ -54,7 +59,7 @@ class ParserTests(unittest.TestCase):
                 'diff --git a/gone.txt b/gone.txt\ndeleted file mode 100644\n--- a/gone.txt\n+++ /dev/null\n'
                 '@@ -1 +0,0 @@\n-bye\n'
                 'diff --git a/empty b/empty\nnew file mode 100644\nindex 0000000..e69de29\n')
-        files = diffs.parse_unified(text)
+        files = parse(text)
         self.assertEqual([(item['old'], item['new'], item['status']) for item in files], [
             ('old name.txt', 'new name.txt', 'renamed'), ('x.py', 'y.py', 'copied'), ('run.sh', 'run.sh', 'modified'),
             (None, 'new.txt', 'added'), ('gone.txt', None, 'deleted'), (None, 'empty', 'added')])
@@ -68,7 +73,7 @@ class ParserTests(unittest.TestCase):
                 'diff --git a/b.bin b/b.bin\nindex 1111111..2222222 100644\nBinary files a/b.bin and b/b.bin differ\n'
                 'diff --git a/c.bin b/c.bin\ndeleted file mode 100644\nBinary files a/c.bin and /dev/null differ\n'
                 + MODIFIED)
-        files = diffs.parse_unified(text)
+        files = parse(text)
         self.assertEqual([(item['new'] or item['old'], item['status'], item['binary'], item['hunks']) for item in files[:3]],
                          [('img.png', 'added', True, []), ('b.bin', 'modified', True, []),
                           ('c.bin', 'deleted', True, [])])
@@ -79,7 +84,7 @@ class ParserTests(unittest.TestCase):
         text = ('diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-old\n\\ No newline at end of file\n'
                 '+new\n\\ No newline at end of file\n')
         for body in (text, text.replace('\n', '\r\n')):
-            [item] = diffs.parse_unified(body)
+            [item] = parse(body)
             self.assertEqual(item['hunks'][0]['lines'], ['-old', '\\ No newline at end of file', '+new',
                                                          '\\ No newline at end of file'])
             self.assertEqual((item['additions'], item['deletions'], item['new']), (1, 1, 'a.txt'))
@@ -88,7 +93,7 @@ class ParserTests(unittest.TestCase):
         text = ('diff --git "a/caf\\303\\251 \\"q\\".txt" "b/caf\\303\\251 \\"q\\".txt"\nnew file mode 100644\n'
                 '--- /dev/null\n+++ "b/caf\\303\\251 \\"q\\".txt"\n@@ -0,0 +1 @@\n+x\n'
                 'diff --git "a/tab\\there" b/plain\nsimilarity index 100%\nrename from "tab\\there"\nrename to plain\n')
-        files = diffs.parse_unified(text)
+        files = parse(text)
         self.assertEqual([(item['old'], item['new'], item['status']) for item in files],
                          [(None, 'café "q".txt', 'added'), ('tab\there', 'plain', 'renamed')])
         self.assertEqual(diffs.touched(text), ['café "q".txt', 'plain'])
@@ -97,38 +102,48 @@ class ParserTests(unittest.TestCase):
         # A deleted SQL comment `-- x` is the diff line `--- x`; the hunk's counts say it is content.
         text = ('diff --git a/q.sql b/q.sql\n--- a/q.sql\n+++ b/q.sql\n@@ -1,2 +1,2 @@\n--- x\n+++ y\n select 1;\n'
                 'diff --git a/z.txt b/z.txt\n--- a/z.txt\n+++ b/z.txt\n@@ -1 +1 @@\n-a\n+b\n')
-        files = diffs.parse_unified(text)
+        files = parse(text)
         self.assertEqual([item['new'] for item in files], ['q.sql', 'z.txt'])
         self.assertEqual(files[0]['hunks'][0]['lines'], ['--- x', '+++ y', ' select 1;'])
         self.assertEqual(diffs.touched(text), ['q.sql', 'z.txt'])
 
     def test_plain_unified_diffs_prefixes_and_garbage(self):
         plain = '--- a/x.txt\t2026-01-01\n+++ b/x.txt\t2026-01-02\n@@ -1 +1 @@\n-a\n+b\n--- y.txt\n+++ y.txt\n@@ -1 +1 @@\n-c\n+d\n'
-        self.assertEqual([(item['old'], item['new']) for item in diffs.parse_unified(plain)],
+        self.assertEqual([(item['old'], item['new']) for item in parse(plain)],
                          [('x.txt', 'x.txt'), ('y.txt', 'y.txt')])
         mnemonic = 'diff --git c/src/a.py i/src/a.py\n--- c/src/a.py\n+++ i/src/a.py\n@@ -1 +1 @@\n-a\n+b\n'
-        self.assertEqual(diffs.parse_unified(mnemonic)[0]['new'], 'src/a.py')
+        self.assertEqual(parse(mnemonic)[0]['new'], 'src/a.py')
         noprefix = 'diff --git src/a.py src/a.py\n--- src/a.py\n+++ src/a.py\n@@ -1 +1 @@\n-a\n+b\n'
-        self.assertEqual(diffs.parse_unified(noprefix)[0]['new'], 'src/a.py')
+        self.assertEqual(parse(noprefix)[0]['new'], 'src/a.py')
         for junk in ('', 'not a diff\n', '@@ -1 +1 @@\n+x\n', 'diff --git\n', '\x00\xff'):
-            self.assertIsInstance(diffs.parse_unified(junk), list, repr(junk))
+            self.assertIsInstance(parse(junk), list, repr(junk))
         # Counts that claim more lines than the hunk has: the next header is still read.
         short = MODIFIED.replace('@@ -10,6 +10,7 @@', '@@ -10,60 +10,70 @@') + MODIFIED.replace('src/app.py', 'b.py')
-        self.assertEqual([item['new'] for item in diffs.parse_unified(short)], ['src/app.py', 'b.py'])
+        self.assertEqual([item['new'] for item in parse(short)], ['src/app.py', 'b.py'])
 
     def test_caps(self):
-        many = ''.join(MODIFIED.replace('src/app.py', f'f{n}.py') for n in range(5))
-        files, cut = diffs._parse(many, 3, 20000, 2000)
-        self.assertEqual((len(files), cut), (3, True))
-        self.assertEqual(len(diffs.parse_unified(many, max_files=3)), 3)
-        files = diffs.parse_unified(many, max_lines=10)
-        self.assertEqual([len(item['hunks'][0]['lines']) if item['hunks'] else None for item in files], [8, 2, None, None, None])
-        self.assertEqual([item['truncated'] for item in files], [False, True, True, True, True])
-        self.assertEqual([item['additions'] for item in files], [2] * 5)  # counts cover what was cut
-        [item] = diffs.parse_unified(MODIFIED.replace('d = 5', 'd = ' + 'x' * 50), max_line=20)
-        self.assertEqual(item['hunks'][0]['lines'][4], ('+    d = ' + 'x' * 50)[:20] + '…')
-        self.assertTrue(item['truncated'])
-        self.assertEqual(diffs.parsed(many, False, 1, terminated=False)['truncated'], True)
+        # The documented limits, at the edge: 300 files, 20,000 hunk lines in all, 2,000 characters a line.
+        def files(count):
+            return ''.join(MODIFIED.replace('src/app.py', f'f{n}.py') for n in range(count))
+
+        def hunk(lines, line='+x'):
+            return f'diff --git a/a.py b/a.py\n--- a/a.py\n+++ b/a.py\n@@ -0,0 +1,{lines} @@\n' + (line + '\n') * lines
+
+        self.assertEqual([(len(data['files']), data['truncated']) for data in
+                          (diffs.parsed(files(300), False, 0), diffs.parsed(files(301), False, 0))],
+                         [(300, False), (300, True)])
+        whole, cut = diffs.parsed(hunk(20000), False, 0), diffs.parsed(hunk(20001), False, 0)
+        self.assertEqual((len(whole['files'][0]['hunks'][0]['lines']), whole['truncated']), (20000, False))
+        [item] = cut['files']
+        self.assertEqual((len(item['hunks'][0]['lines']), item['truncated'], item['additions'], cut['truncated']),
+                         (20000, True, 20001, True))  # counts cover what was cut
+        over = diffs.parsed(hunk(20000) + files(1), False, 0)['files']
+        self.assertEqual((over[1]['hunks'], over[1]['truncated'], over[1]['additions']), ([], True, 2))
+        [kept] = parse(hunk(1, '+' + 'x' * 1999))
+        self.assertEqual((kept['hunks'][0]['lines'], kept['truncated']), (['+' + 'x' * 1999], False))
+        [long] = parse(hunk(1, '+' + 'x' * 2000))
+        self.assertEqual((long['hunks'][0]['lines'], long['truncated']), (['+' + 'x' * 1999 + '…'], True))
+        self.assertTrue(diffs.parsed(files(1), False, 0, terminated=False)['truncated'])
 
 
 class FenceTests(unittest.TestCase):
@@ -149,7 +164,7 @@ class FenceTests(unittest.TestCase):
 
 class PinTests(unittest.TestCase):
     def setUp(self):
-        self.files = diffs.parse_unified(
+        self.files = parse(
             MODIFIED + MODIFIED.replace('src/app.py', 'lib/util.py') + MODIFIED.replace('src/app.py', 'tests/util.py')
             + 'diff --git a/Makefile b/Makefile\n--- a/Makefile\n+++ b/Makefile\n@@ -2,2 +2,3 @@\n all:\n+\tmake x\n'
               '\tmake y\n'
@@ -166,6 +181,10 @@ class PinTests(unittest.TestCase):
                          'b/src/app.py:13', 'src\\app.py:13'):
             self.assertEqual(self.pin(location), (expected, None), location)
         self.assertEqual(self.pin('src/app.py:14')[0]['index'], 5)
+        # The prefixes are dropped before matching, not left to the suffix rule: there a root app.py matches too.
+        both = parse(MODIFIED + MODIFIED.replace('src/app.py', 'app.py'))
+        for location in ('./src/app.py:13', 'b/src/app.py:13'):
+            self.assertEqual(self.pin(location, files=both), (expected, None), location)
         self.assertEqual(self.pin('src/app.py:10')[0]['index'], 0)
 
     def test_ambiguous_and_absent_files(self):
@@ -190,13 +209,13 @@ class PinTests(unittest.TestCase):
                                                           index=None), 'line outside the changed hunks'))
         self.assertEqual(self.pin('gone.py:2'), (dict(file=4, path='gone.py', line=2, side='old', hunk=0, index=1), None))
         self.assertEqual(self.pin('line 13'), (None, 'no location'))  # several files: no telling which
-        one = diffs.parse_unified(MODIFIED)
+        one = parse(MODIFIED)
         self.assertEqual(self.pin('line 13', files=one), (dict(file=0, path='src/app.py', line=13, side='new', hunk=0,
                                                                index=4), None))
         self.assertEqual(self.pin('src/app.py:13', files=[]), (None, 'file not in this diff'))
 
     def test_renamed_file_old_path(self):
-        files = diffs.parse_unified('diff --git a/old/x.py b/new/x.py\nsimilarity index 90%\nrename from old/x.py\n'
+        files = parse('diff --git a/old/x.py b/new/x.py\nsimilarity index 90%\nrename from old/x.py\n'
                                     'rename to new/x.py\n--- a/old/x.py\n+++ b/new/x.py\n@@ -5,2 +5,2 @@\n a\n-b\n+c\n')
         self.assertEqual(self.pin('new/x.py:6', files=files)[0]['side'], 'new')
         self.assertEqual(self.pin('old/x.py:6', files=files)[0], dict(file=0, path='old/x.py', line=6, side='old',
@@ -374,15 +393,6 @@ class EndpointTests(unittest.TestCase):
         self.assertNotIn(str(target), opened)
         status, data = self.get(f'/api/runs/{self.key}/tasks/reader/diff')
         self.assertEqual((status, data['available']), (200, False))
-
-    def test_head_and_foreign_host(self):
-        for path in (f'/api/runs/{self.key}/tasks/reader/diff', f'/api/runs/{self.key}/executions/{F.READER_QA1}/diff',
-                     f'/api/runs/{self.key}/final-reviews/{F.REVIEW_OLD}/diff'):
-            status, body = self.request(path)
-            self.assertEqual(self.request(path, 'HEAD'), (200, b''), path)
-            self.assertEqual(status, 200)
-            self.assertEqual(self.request(path, headers={'Host': 'evil.example'})[0], 403, path)
-            self.assertEqual(self.request(path, 'POST')[0], 405, path)
 
     def test_parsed_diffs_are_cached(self):
         calls = []

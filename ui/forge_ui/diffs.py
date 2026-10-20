@@ -234,15 +234,6 @@ def _parse(text, max_files, max_lines, max_line, keep=True):
     return files, False
 
 
-def parse_unified(text, max_files=300, max_lines=20000, max_line=2000):
-    """Files of a unified diff: {old, new, status, binary, additions, deletions, truncated, hunks}.
-
-    `old` is null for an added file and `new` for a deleted one. Hunks keep `max_lines` lines in
-    all, each cut at `max_line` characters; a file that lost any is `truncated`. Counts cover it all.
-    """
-    return _parse(text, max_files, max_lines, max_line)[0]
-
-
 def touched(text, limit=2000):
     """Paths a diff changes, from its headers: the new path, the old one for a deleted file."""
     return list(dict.fromkeys(item['new'] or item['old'] for item in _parse(text, limit, 0, 0, keep=False)[0]))

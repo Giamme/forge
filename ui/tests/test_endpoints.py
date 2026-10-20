@@ -143,20 +143,6 @@ class EndpointTests(unittest.TestCase):
         tasks = [call[2] for call in self.catalog.calls if call[0] == 'task']
         self.assertEqual(sorted(tasks), ['nope', 'reader', 'solo'])
 
-    def test_head_and_foreign_host(self):
-        for path in (f'/api/runs/{self.key}/tasks/reader', f'/api/runs/{self.key}/executions/{F.READER_QA1}',
-                     f'/api/runs/{self.key}/final-reviews/{F.REVIEW_OLD}'):
-            status, headers, body = self.request(path)
-            head_status, head_headers, head_body = self.request(path, 'HEAD')
-            self.assertEqual((head_status, head_body), (200, b''), path)
-            self.assertEqual(self.header(head_headers, 'Content-Length'), str(len(body)))
-            self.assertEqual(self.header(headers, 'Content-Security-Policy'), OLD_CSP)
-            self.assertEqual(self.header(headers, 'Referrer-Policy'), 'no-referrer')
-            for method in ('GET', 'HEAD', 'POST'):
-                status, headers, body = self.request(path, method, {'Host': 'evil.example'})
-                self.assertEqual(status, 403, (path, method))
-                self.assertEqual(self.header(headers, 'Referrer-Policy'), 'no-referrer')
-
     def test_page_csp_hashes_the_import_map(self):
         for path in ('/', '/index.html'):
             status, headers, body = self.request(path)

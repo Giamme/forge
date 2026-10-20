@@ -53,6 +53,9 @@ class ExportTests(unittest.TestCase):
         cls.temp = tempfile.TemporaryDirectory(prefix='forge-ui-export-')
         cls.base = Path(cls.temp.name)
         cls.plan, cls.solo = F.make_plan(cls.base / 'p'), F.make_solo(cls.base / 's')
+        # Texts the export keeps: one with markup, one naming the run dir and the home dir.
+        F.write(cls.plan / 'goal.txt', 'Fixture run </script><script>alert(1)</script><!-- & more\n')
+        F.write(cls.plan / 'verification.command', f'python3 {cls.plan}/check.py --out {Path.home()}/out\n')
         cls.catalog = reader.Catalog(plans=[cls.plan, cls.solo], registry=False)
         cls.key = reader.run_key(cls.plan)
 
@@ -97,6 +100,8 @@ class ExportTests(unittest.TestCase):
         self.assertFalse(any(path.endswith('/diff') for path in snap['api']))
         self.assertNotIn(str(self.base), html)
         self.assertNotIn(str(Path.home()) + '/', html.replace('~/', ''))
+        self.assertNotIn('/example/', html)                                # a whole absolute path: its last component
+        self.assertIn('python3 plan-rich/check.py --out ~/out', html)      # the run dir and home inside a text
         _, full, _, snap = self.build(texts=True, paths=True)
         self.assertTrue(snap['meta']['texts'] and snap['meta']['paths'])
         for text in ('The read is not wrapped', 'A task without a status file has not started', str(self.base)):
@@ -127,13 +132,16 @@ class ExportTests(unittest.TestCase):
             self.skipTest('loopback sockets are blocked in this sandbox')
         thread = threading.Thread(target=srv.serve_forever, daemon=True); thread.start()
         self.addCleanup(lambda: (srv.shutdown(), srv.server_close(), thread.join(timeout=2)))
-        url = f'http://127.0.0.1:{srv.server_address[1]}/api/runs/{self.key}/export?texts=0&paths=0'
-        with urllib.request.urlopen(url, timeout=30) as r:
-            self.assertEqual(r.status, 200)
-            self.assertTrue(r.headers['Content-Type'].startswith('text/html'))
-            self.assertRegex(r.headers['Content-Disposition'], r'^attachment; filename="forge-run-[A-Za-z0-9._-]+\.html"$')
-            self.assertEqual(r.headers['Content-Security-Policy'], "default-src 'none'; sandbox")
-            self.assertNotIn(str(self.base), r.read().decode())
+        url = f'http://127.0.0.1:{srv.server_address[1]}/api/runs/{self.key}/export'
+        for query in ('', '?texts=0&paths=0'):  # the default, and what the page's dialog sends
+            with urllib.request.urlopen(url + query, timeout=30) as r:
+                self.assertEqual(r.status, 200)
+                self.assertTrue(r.headers['Content-Type'].startswith('text/html'))
+                self.assertRegex(r.headers['Content-Disposition'], r'^attachment; filename="forge-run-[A-Za-z0-9._-]+\.html"$')
+                self.assertEqual(r.headers['Content-Security-Policy'], "default-src 'none'; sandbox")
+                body = r.read().decode()
+                self.assertNotIn(str(self.base), body, query)
+                self.assertNotIn('The read is not wrapped', body, query)
         with self.assertRaises(urllib.error.HTTPError) as caught:
             urllib.request.urlopen(f'http://127.0.0.1:{srv.server_address[1]}/api/runs/{"0" * 12}/export', timeout=30)
         self.assertEqual(caught.exception.code, 404)

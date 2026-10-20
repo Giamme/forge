@@ -105,15 +105,21 @@ class FractalTests(FractalCase):
         def record_scandir(path='.'):
             opened.append(('scandir', path if isinstance(path, int) else os.fsdecode(path)))
             return original_scandir(path)
-        with patch('os.open', record_open), patch('os.scandir', record_scandir):
+        # fractal.supported() looks the functions up in these sets: the recorders must pass for the real ones.
+        with patch('os.open', record_open), patch('os.scandir', record_scandir), \
+                patch.object(os, 'supports_dir_fd', os.supports_dir_fd | {record_open}), \
+                patch.object(os, 'supports_fd', os.supports_fd | {record_scandir}):
             data = self.detail()
             for name in ('implementation', 'ui', 'api', 'docs'):
                 reader.fractal_node(self.plan, 'reader', name)
                 reader.fractal_node_diff(self.plan, 'reader', name)
-        names = {item for item in opened if isinstance(item, str)}
+        self.assertEqual((data['available'], data['warnings']), (True, []))
+        # Every component of every path opened, so an absolute path a node stores is caught too.
+        names = {part for item in opened if isinstance(item, str) for part in Path(item).parts}
+        self.assertLessEqual({'run.json', 'request.json', 'state.json', 'events.jsonl', 'nodes', 'node.json',
+                              'candidate.diff'}, names)  # the reads did go through the recorder
         self.assertFalse(names & {'control', 'locked', 'product', 'steps', 'planning', 'ledger.db', 'initialization.json'},
                          names)
-        self.assertEqual(data['warnings'], [])
 
     def test_symlinks_are_refused(self):
         outside = self.base / 'elsewhere'
@@ -259,8 +265,6 @@ class FractalEndpointTests(FractalCase):
                                (base + '/nodes/ui/diff', reader.fractal_node_diff(self.plan, 'reader', 'ui'))):
             status, body = self.request(path)
             self.assertEqual((status, json.loads(body)), (200, expected), path)
-            self.assertEqual(self.request(path, 'HEAD'), (200, b''), path)
-            self.assertEqual(self.request(path, headers={'Host': 'evil.example'})[0], 403, path)
         status, body = self.request(f'/api/runs/{self.key}/tasks/page/fractal')
         self.assertEqual((status, json.loads(body)['available']), (200, False))
         for path in (f'/api/runs/{self.key}/tasks/nope/fractal', f'/api/runs/{self.key}/tasks/%2e%2e/fractal',

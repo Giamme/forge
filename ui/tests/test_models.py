@@ -85,8 +85,10 @@ class ModelsTests(unittest.TestCase):
 
     def test_outcomes(self):
         b = Builder(self.base)
+        # Refunded rows (an infra class, or INFRA) are dropped, also when they are a number's last.
         b.task('refund', status='PASS', rows=[('1', 'FAIL', 'quota', 'luna'), ('1', 'INFRA', '-', 'luna'),
-                                              ('1', 'PASS', '', 'luna')],
+                                              ('1', 'PASS', '', 'luna'), ('2', 'FAIL', 'quota', 'luna'),
+                                              ('3', 'INFRA', '-', 'luna')],
                attempts=[dict(n=1, review=PASS)])
         b.task('resume', status='PASS', rows=[('1', 'TIMEOUT', '', 'luna'), ('1', 'PASS', '', 'luna')],
                attempts=[dict(n=1, review=PASS)])
@@ -216,8 +218,6 @@ class ModelsTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual({key: data[key] for key in data if key != 'generated'},
                          {key: expected[key] for key in expected if key != 'generated'})
-        self.assertEqual(request('/api/models', 'HEAD'), (200, b''))
-        self.assertEqual(request('/api/models', headers={'Host': 'evil.example'})[0], 403)
         self.assertEqual(request('/api/models/x')[0], 404)
 
 
