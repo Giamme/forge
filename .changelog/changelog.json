@@ -1,6 +1,33 @@
 {
   "versions": [
     {
+      "version": "0.7.1",
+      "date": "2026-10-20",
+      "summary": "A patch for forge-ui: orbiting its 3D views no longer stalls, and you can look around it on made-up runs before your first one.",
+      "entries": [
+        {
+          "type": "added",
+          "text": "You can look around forge-ui before your first run: `python3 ui/tools/demo_runs.py DIR` writes made-up runs (one still working, and a few weeks of history across five projects), and `python3 -m forge_ui --no-registry --root DIR`, run from `ui/`, shows them.",
+          "breaking": false,
+          "audience": "user",
+          "highlight": false,
+          "commits": [
+            "33e6daf"
+          ]
+        },
+        {
+          "type": "fixed",
+          "text": "Orbiting forge-ui's 3D views no longer stalls. While the camera moved, every frame asked for two more, so the drawing doubled with each frame: a second of orbiting drew hundreds of times and the page stalled, worst in the run cloud.",
+          "breaking": false,
+          "audience": "user",
+          "highlight": false,
+          "commits": [
+            "eec8dc1"
+          ]
+        }
+      ]
+    },
+    {
       "version": "0.7",
       "date": "2026-10-20",
       "summary": "forge-ui grows from a run viewer into a full picture of your runs: a full-screen 3D cloud of every run, grouped by project and filtered down to exactly the runs you want, diffs that show each review finding on the line it names, and a model leaderboard that compares implementers and reviewers on your own history. It also gains 3D run views, quick jump, notifications, a files heatmap and one-file HTML exports.",
