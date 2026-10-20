@@ -214,6 +214,7 @@ its last 20,000 behind a leading `…`. Their `truncated` lists the field names 
 | `GET /api/runs/<key>/final-reviews/<name>/diff` | `200 DiffDetail` |
 | `GET /api/runs/<key>/files` | `200 Files` |
 | `GET /api/models` | `200 Models` |
+| `GET /api/runs/<key>/export?texts=0\|1&paths=0\|1` | `200` the run as one HTML file (see Export), `Content-Disposition: attachment`, `Content-Security-Policy: default-src 'none'; sandbox`; `404` for an unknown run |
 | `GET /api/runs/<key>/tasks/<id>/fractal` | `200 TaskFractal` |
 | `GET /api/runs/<key>/tasks/<id>/fractal/nodes/<node>[/diff]` | `200 FractalNodeDetail`, or with `/diff` a `DiffDetail` of its `candidate.diff`; `<node>` matches `[A-Za-z0-9][A-Za-z0-9_-]{0,100}` |
 | `GET /` | `forge_ui/static/index.html` |
@@ -778,6 +779,41 @@ difficulty paths deps model` each), `decomposition_history` (its newest 20, each
 `decomposition`, `reason` and `error` 2,000), and `run`, `task`, `fractal_run`,
 `fractal_task`, `warnings`, `truncated` (the texts cut). A reserved node has these `null` or
 `[]`, with its admission's `goal`.
+
+## Export (`forge_ui/export.py`)
+
+`GET /api/runs/<key>/export` answers one self-contained HTML file named
+`forge-run-<run_id>.html` (the run id with anything but `[A-Za-z0-9._-]` made `-`).
+
+- It holds `style.css` and the classic scripts the run view uses (`runmodel.js cloudmodel.js
+  graph.js gantt.js panel.js diffview.js files.js map3d.js search.js app.js`), inline; the import
+  map; a `<script type="application/json" id="forge-snapshot">` with `{meta, api}`; and a
+  `<script type="text/plain" id="forge-stage">` holding `iso.js`, `cloud3d.js` and `scene3d.js`
+  bundled into one module (each module in its own scope, relative imports bound to the earlier
+  ones' exports, `createStage` exported), which `map3d.js` imports from a `blob:` URL.
+- `api` maps each path the page requests to that endpoint's response as the server would answer
+  it (server.api_get): `/api/runs` (this run only), the RunDetail, every TaskDetail, every
+  ExecutionDetail the RunDetail names, every FinalReviewDetail, Files, and the Fractal trees and
+  nodes. With `texts=1` also every diff the page can open (each task's diff and its `sources`,
+  each final review's, each Fractal node's).
+- `texts=0` (the default) nulls these keys wherever they hold a string, list or object: `prompt
+  last request log_tail dwarf_tail qa_tail qa_last qa_input tasks_summary known_issues texts text
+  planning_last approach retry_findings dwarf_input error`, and stores no diff. A finding keeps its
+  `summary`.
+- `paths=0` (the default) makes every string that is a whole absolute path (but `/api/…` and
+  `url`s) its last component, and replaces the run dir, the repo and the home dir inside other
+  strings with their last component (`~` for home).
+- At most 1 MB of JSON per diff and 25 MB in all; what did not fit is listed in `meta.omitted`
+  (`path`, `bytes`, `why`). `meta`: `format` `forge-ui-export`, `version` 1, `app`, `key`,
+  `generated`, `texts`, `paths`, `omitted`.
+- The page's `<meta http-equiv="Content-Security-Policy">`: `default-src 'none'; script-src
+  <sha256 of the import map and each inline script> blob: https://cdn.jsdelivr.net/npm/three@0.160.0/;
+  style-src <sha256 of the style>; img-src data: blob:; connect-src 'none'; base-uri 'none';
+  form-action 'none'; object-src 'none'`. Inside a script, `</script` and `<!--` are escaped; the
+  JSON escapes `<`, `>` and `&`.
+- In the page, `app.js` reads the snapshot instead of the network, never polls, shows only the
+  exported run (any other route goes to it) and a banner with the export's date and what it left
+  out; the cloud, the leaderboard and notifications are not there.
 
 ## Status vocabulary for the page and the graph
 

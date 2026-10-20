@@ -18,7 +18,7 @@ try:
 except ImportError:
     sync_playwright = None
 
-from forge_ui import reader
+from forge_ui import export, reader
 from forge_ui.server import make_server
 import many_fixture as MF
 import run_fixture as F
@@ -102,8 +102,8 @@ class Page(unittest.TestCase):
             def serve(route):
                 rel = route.request.url[len(CDN):].split('?')[0]
                 path = Path(THREE_LOCAL) / rel
-                if path.is_file():
-                    route.fulfill(status=200, content_type='text/javascript', body=path.read_bytes())
+                if path.is_file():   # as the CDN answers: readable from any origin, file:// pages included
+                    route.fulfill(status=200, content_type='text/javascript', body=path.read_bytes(), headers={'Access-Control-Allow-Origin': '*'})
                 else:
                     route.fulfill(status=404, body='')
             page.route(CDN + '**', serve)
@@ -221,6 +221,41 @@ class Page(unittest.TestCase):
         page.wait_for_selector('.cloud-filters-btn')
         self.assertIn('Filters (1)', page.text_content('.cloud-filters-btn'))
         self.assertClean(page)
+
+    def test_the_export_dialog_leaves_private_texts_out_by_default(self):
+        page = self.open(cdn=False)
+        page.goto(self.url + '#/runs/' + self.key)
+        page.click('.export-btn')
+        page.wait_for_selector('dialog.export-dialog[open]')
+        link = page.locator('dialog.export-dialog a[download]')
+        self.assertTrue(link.get_attribute('href').endswith(f'/api/runs/{self.key}/export?texts=0&paths=0'))
+        page.click('dialog.export-dialog .export-opt:has-text("Include prompts") input')
+        self.assertIn('texts=1', link.get_attribute('href'))
+        self.assertIn('Share this file only', page.text_content('dialog.export-dialog'))
+        with page.expect_download() as dl:
+            link.click()
+        self.assertRegex(dl.value.suggested_filename, r'^forge-run-.+\.html$')
+        self.assertClean(page)
+
+    def test_an_exported_run_opens_from_a_file_without_a_server(self):
+        name, body = export.build(reader.Catalog(plans=[self.plan], registry=False), self.key)
+        path = Path(self.temp.name) / name
+        path.write_bytes(body)
+        page = self.open(cdn=False)
+        page.goto(path.as_uri())
+        page.wait_for_function("() => window.ForgeMap3D && window.ForgeMap3D.state === 'unavailable'", timeout=30000)
+        page.wait_for_selector('#graph2d .fg-node')
+        self.assertIn('left out', page.text_content('.snapshot-banner'))
+        self.assertEqual(page.evaluate('location.hash'), '#/runs/' + self.key)
+        page.click('#graph2d .fg-node[data-id="reader"]')
+        page.wait_for_selector('#inspector .finding')
+        self.assertIn('P1', page.text_content('#inspector'))
+        self.assertEqual(page.evaluate('window.__csp'), [])
+        three = self.open(cdn=True)
+        three.goto(path.as_uri())
+        self.three_or_skip(three)
+        three.wait_for_function("() => window.ForgeUI.state.stage.view === 'run'")
+        self.assertEqual(three.evaluate('window.__csp'), [])
 
     def test_quick_jump_finds_a_task_and_opens_it(self):
         page = self.open(cdn=False)

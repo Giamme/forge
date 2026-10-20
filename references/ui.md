@@ -21,6 +21,8 @@ run goes on, with the same exit code.
   review's combined diff, with every P0–P3 finding shown under the line it names.
 - **Fractal child tasks:** the tree a Fractal task was split into, in the inspector and above
   the opened task in 3D, each node with its decision, cost, output and candidate diff.
+- **Export a run:** one HTML file to share that opens without forge-ui; prompts, diffs, reports
+  and local paths stay out unless chosen.
 - **Quick jump and notifications:** Ctrl K (⌘K) or `/` searches every run, task, project and
   model; the bell tells you when a run finishes or fails, a task fails or a final review gives its
   verdict, and can raise browser notifications while the tab is in the background.

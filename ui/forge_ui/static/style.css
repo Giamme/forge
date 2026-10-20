@@ -523,3 +523,17 @@ dialog.jump::backdrop { background: rgba(10, 12, 16, .45); }
 @media (max-width: 760px) {
   .lb-caveat .lb-explore { white-space: normal; }
 }
+
+/* exports (forge_ui/export.py): the dialog that makes one, and the page it makes */
+.export-btn { margin-left: auto; font-size: .85rem; }
+dialog.export-dialog { width: min(560px, calc(100vw - 24px)); padding: 18px 20px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); color: var(--text); box-shadow: 0 24px 70px rgba(0, 0, 0, .4); }
+dialog.export-dialog::backdrop { background: rgba(10, 12, 16, .45); }
+dialog.export-dialog h2 { margin-bottom: 8px; }
+.export-opt { display: flex; gap: 10px; align-items: flex-start; margin: 12px 0; cursor: pointer; }
+.export-opt input { margin-top: 4px; }
+.export-opt span { display: grid; gap: 2px; }
+.export-opt .muted { font-size: .84rem; }
+.export-note:empty { display: none; }
+.export-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
+.snapshot-banner { padding: 7px 22px; background: var(--selected); border-bottom: 1px solid var(--line); font-size: .85rem; overflow-wrap: anywhere; }
+body.snapshot .top-link, body.snapshot #bell, body.snapshot .refresh-control, body.snapshot .topbar > .muted { display: none; }

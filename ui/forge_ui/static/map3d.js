@@ -22,7 +22,10 @@ window.ForgeMap3D = (() => {
     M.state = 'loading';
     let timer = null;
     const timeout = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('timeout')), 12000); });
-    loading = Promise.race([import('./scene3d.js'), timeout]).then(mod => {
+    // an exported page carries the stage as one module text (forge_ui/export.py), imported from a blob: URL
+    const bundle = document.getElementById('forge-stage');
+    const target = bundle ? URL.createObjectURL(new Blob([bundle.textContent], { type: 'text/javascript' })) : './scene3d.js';
+    loading = Promise.race([import(target), timeout]).then(mod => {
       clearTimeout(timer); M.state = 'ready'; M.module = mod; return mod;
     }, err => {
       clearTimeout(timer); M.state = 'unavailable'; M.reason = err && err.message === 'timeout' ? 'timeout' : 'load';

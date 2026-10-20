@@ -139,6 +139,12 @@ with the first source winning. Discovery and disk reads repeat on each API reque
   paths, timings, cost and tokens, its decomposition and the children it admitted, its last
   messages, and its candidate diff. Fractal's state is read under `$XDG_STATE_HOME/forge/fractal`
   (default `~/.local/state`), read-only, without following symlinks.
+- **Export:** *Export…* in a run's header downloads the run as one HTML file that opens in any
+  browser without forge-ui, offline included (in 2D; in 3D when cdn.jsdelivr.net is reachable).
+  It asks each time: by default prompts, reviewer reports, logs, finding details and diffs are
+  left out (each finding's headline stays) and local paths are reduced to their last component.
+  The file states what it left out, and fetches nothing but three.js: its own policy allows only
+  its inline scripts, by hash.
 - **Quick jump:** Ctrl K (⌘K on a Mac), `/` or *Search* opens one search over every run (goal,
   run id, repo, models), task (id and title), project, model and command. Enter opens the pick;
   Shift+Enter shows a run in the cloud; a model shows its runs in the cloud. With nothing typed,
@@ -174,6 +180,8 @@ polling; a hidden tab never polls. Failed requests keep the last good data and s
 - `forge_ui/static/cloudmodel.js`, `cloud3d.js`, `cloudui.js`: the run cloud's pure model (projects,
   filters, layouts, layout files), its scene on the shared stage, and its controls.
 - `forge_ui/static/diffview.js`: the diff viewer, with findings pinned to their lines.
+- `forge_ui/export.py`: a run as one HTML file (the page's scripts and styles inlined, the API
+  responses it reads, the 3D stage's modules as one module text, a hash-based policy).
 - `forge_ui/static/modelstats.js`, `leaderboard.js`: the leaderboard's aggregation (outcomes as
   `scripts/forge_dataset/export.py` labels them, the interval of its `routing.py`) and its page.
 - `forge_ui/diffs.py`, `fractal.py`, `models.py`: diff parsing and finding pins, the Fractal state

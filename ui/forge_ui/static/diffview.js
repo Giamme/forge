@@ -129,7 +129,7 @@ window.ForgeDiff = (() => {
     const close = el('a', 'Close ✕', 'diff-close'); close.href = ctx.closeHref; top.append(close);
     host.append(top);
     if (!D) {
-      host.append(el('p', entry.error ? `Could not load this diff (${entry.error.status === 404 ? 'not found' : entry.error.message}).` : 'Loading the diff…', entry.error ? 'warn' : 'muted'));
+      host.append(el('p', entry.error ? (entry.error.snapshot ? 'This diff is not in this export.' : `Could not load this diff (${entry.error.status === 404 ? 'not found' : entry.error.message}).`) : 'Loading the diff…', entry.error ? 'warn' : 'muted'));
       return;
     }
     D.__url = url;

@@ -5,6 +5,8 @@
 window.ForgeUI = (() => {
   'use strict';
   const RM = window.ForgeRunModel;
+  // an exported page (forge_ui/export.py): one run and the API responses it needs, no server behind it
+  const SNAP = (() => { const n = document.getElementById('forge-snapshot'); if (!n) return null; try { const v = JSON.parse(n.textContent); return v && v.api ? v : null; } catch (_) { return null; } })();
   const store = {
     get(k, d) { try { const v = localStorage.getItem('forge-ui-' + k); return v === null ? d : JSON.parse(v); } catch (_) { return d; } },
     set(k, v) { try { localStorage.setItem('forge-ui-' + k, JSON.stringify(v)); } catch (_) { /* private mode: not remembered */ } },
@@ -547,6 +549,10 @@ window.ForgeUI = (() => {
       const counts = el('span', undefined, 'chips');
       for (const [s, n] of Object.entries(run.counts || {})) { const c = chip(s); c.append(document.createTextNode(' ' + n)); counts.append(c); }
       meta.append(counts);
+      if (!SNAP) {
+        const ex = el('button', 'Export…', 'export-btn'); ex.type = 'button'; ex.title = 'Download this run as one HTML file to share';
+        ex.addEventListener('click', () => exportDialog(run)); meta.append(ex);
+      }
       head.append(meta);
       const more = el('details', undefined, 'run-more'); more.dataset.keep = 'run-more';
       more.append(el('summary', 'Run details'));
@@ -693,6 +699,11 @@ window.ForgeUI = (() => {
 
   /* ---------- data ---------- */
   async function fetchJSON(path) {
+    if (SNAP) {
+      const data = SNAP.api[path];
+      if (data === undefined) { const error = new Error('not in this export'); error.status = 404; error.snapshot = true; throw error; }
+      return { text: JSON.stringify(data), data };
+    }
     const response = await fetch(path, { cache: 'no-store' });
     if (!response.ok) {
       const error = new Error(`HTTP ${response.status}`);
@@ -745,6 +756,10 @@ window.ForgeUI = (() => {
   function navigate() {
     let parsed = { key: null, sel: null };
     try { parsed = parseHash(location.hash); } catch (_) { /* invalid escapes fall back to the map */ }
+    if (SNAP && parsed.key !== SNAP.meta.key) {               // an export shows its one run
+      history.replaceState(null, '', '#/runs/' + encodeURIComponent(SNAP.meta.key));
+      parsed = parseHash(location.hash);
+    }
     const keyChanged = parsed.key !== state.key;
     state.key = parsed.key;
     state.sel = parsed.sel;
@@ -787,7 +802,7 @@ window.ForgeUI = (() => {
   }
   const background = () => document.visibilityState !== 'visible' && !!window.ForgeNotify && window.ForgeNotify.background();
   function refresh() {
-    if (state.paused) return;
+    if (state.paused || SNAP) return;
     if (document.visibilityState !== 'visible') { if (background()) loadList(); return; }   // only to notify
     loadList();
     if (state.key) loadRun(state.key);
@@ -797,6 +812,7 @@ window.ForgeUI = (() => {
   // Poll faster while something runs, slower otherwise; never while the tab is hidden or refresh is off.
   function schedule() {
     clearTimeout(state.timer);
+    if (SNAP) return;                                       // an export never changes
     state.timer = setTimeout(() => { refresh(); schedule(); }, background() ? 30000 : busy() ? 2000 : 5000);
   }
   // the quick jump's commands: what the page can do from anywhere
@@ -812,6 +828,8 @@ window.ForgeUI = (() => {
       { id: 'cmd:refresh', label: state.paused ? 'Resume live refresh' : 'Pause live refresh', sub: 'polling of the runs', ids: ['refresh', 'pause'],
         action: () => { $('refresh').checked = state.paused; state.paused = !state.paused; refresh(); } },
     ];
+    if (run && !SNAP) out.push({ id: 'cmd:export', label: 'Export this run as one HTML file…', sub: 'to share; opens without forge-ui', ids: ['export', 'share'], action: () => exportDialog(run) });
+    if (SNAP) return out.filter(c => c.id === 'cmd:dim').concat(run ? [{ id: 'cmd:mode', label: state.mode === 'plan' ? 'Show the execution' : 'Show the planned waves', sub: '', ids: ['exec', 'plan'], action: () => setMode(state.mode === 'plan' ? 'exec' : 'plan') }] : []);
     if (run) out.push({ id: 'cmd:mode', label: state.mode === 'plan' ? 'Show the execution' : 'Show the planned waves', sub: run.goal ? String(run.goal).split('\n')[0] : '', ids: ['exec', 'plan'], action: () => setMode(state.mode === 'plan' ? 'exec' : 'plan') });
     return out;
   }
@@ -821,7 +839,41 @@ window.ForgeUI = (() => {
     if (state.cloud && state.cloudUI) state.cloudUI.setFilter(f);
     if (!state.cloud) location.hash = '#/cloud';
   }
+  // what an export holds: chosen each time, private texts and paths off by default
+  let exportDlg = null;
+  function exportDialog(run) {
+    if (!exportDlg) {
+      exportDlg = el('dialog', undefined, 'export-dialog'); exportDlg.setAttribute('aria-label', 'Export this run');
+      document.body.append(exportDlg);
+      exportDlg.addEventListener('click', e => { if (e.target === exportDlg) exportDlg.close(); });
+    }
+    const d = exportDlg; d.replaceChildren();
+    d.append(el('h2', 'Export this run as one HTML file'),
+      el('p', 'The file opens in any browser without forge-ui: the run in 2D, and in 3D when it can reach cdn.jsdelivr.net. It holds the goal, task titles, statuses, models, timings, and each finding\'s headline.', 'muted'));
+    const opt = (label, help, checked) => { const l = el('label', undefined, 'export-opt'), c = el('input'); c.type = 'checkbox'; c.checked = checked; const t = el('span'); t.append(el('strong', label), el('span', help, 'muted')); l.append(c, t); d.append(l); return c; };
+    const texts = opt('Include prompts, diffs and reports', 'Prompts, reviewer reports, logs, finding details and diffs can contain code, secrets and private notes.', false);
+    const hide = opt('Hide local paths', 'Paths on this machine are reduced to their last folder or file name.', true);
+    const note = el('p', '', 'warn export-note');
+    const go = el('a', 'Download', 'button primary'); go.setAttribute('download', '');
+    const sync = () => {
+      go.href = `/api/runs/${encodeURIComponent(run.key)}/export?texts=${texts.checked ? 1 : 0}&paths=${hide.checked ? 0 : 1}`;
+      note.textContent = texts.checked ? 'Share this file only with people who may read this repository\'s code.' : '';
+    };
+    texts.addEventListener('change', sync); hide.addEventListener('change', sync); sync();
+    const cancel = el('button', 'Cancel'); cancel.type = 'button'; cancel.addEventListener('click', () => d.close());
+    go.addEventListener('click', () => setTimeout(() => d.close(), 300));
+    const row = el('div', undefined, 'export-actions'); row.append(cancel, go);
+    d.append(note, row);
+    d.showModal(); go.focus();
+  }
+  function snapshotBanner() {
+    const m = SNAP.meta, b = el('div', undefined, 'snapshot-banner'); b.setAttribute('role', 'note');
+    const when = Number.isFinite(m.generated) ? new Date(m.generated * 1000).toLocaleString() : 'an unknown date';
+    b.append(el('strong', 'Exported run'), document.createTextNode(` · from forge-ui ${m.app || ''} on ${when} · ${m.texts ? 'prompts, diffs and reports included' : 'prompts, diffs and reports left out'} · ${m.paths ? 'local paths shown' : 'local paths hidden'}${(m.omitted || []).length ? ` · ${m.omitted.length} large item${m.omitted.length === 1 ? '' : 's'} left out` : ''}`));
+    document.querySelector('.topbar').after(b);
+  }
   function init() {
+    if (SNAP) { document.body.classList.add('snapshot'); snapshotBanner(); $('refresh').checked = false; }
     if (window.ForgeSearch) window.ForgeSearch.init({ runs: () => state.runs, commands, go: href => { location.hash = href; }, cloudFilter });
     if (window.ForgeNotify) window.ForgeNotify.init({ go: href => { location.hash = href; } });
     $('filter').addEventListener('input', event => { state.mapFilter.text = event.target.value; filterChanged(true); });
