@@ -136,7 +136,9 @@ class Page(unittest.TestCase):
         page.goto(self.url + '#/runs/' + self.key)
         page.wait_for_function("() => window.ForgeMap3D && window.ForgeMap3D.state === 'unavailable'", timeout=30000)
         page.wait_for_selector('#graph2d .fg-node')
-        self.assertEqual(page.text_content('.stage-note'), page.evaluate('window.ForgeMap3D.message()'))
+        note = page.text_content('.stage-note')
+        self.assertTrue(note.strip(), 'the stage says why there is no 3D view')
+        self.assertEqual(note, page.evaluate('window.ForgeMap3D.message()'))
         self.assertEqual(page.locator('#graph2d .fg-node').count(), 5)
         # status colours come from style.css classes: the page CSP refuses style attributes (they drew black)
         fills = page.evaluate("[...document.querySelectorAll('#graph2d .fg-bar')].map(e => getComputedStyle(e).fill)")
@@ -145,6 +147,9 @@ class Page(unittest.TestCase):
         page.click('#graph2d .fg-node[data-id="reader"]')
         page.wait_for_selector('#inspector .attempt')
         self.assertTrue(page.text_content('#inspector .insp-head h2').startswith('reader'))
+        # the task's models and timings, beside its attempts and findings (fixture values, not headings)
+        values = page.eval_on_selector_all('#inspector .insp-section > dl.fields dd', 'ds => ds.map(d => d.textContent)')
+        self.assertLessEqual({'sol:xhigh', 'opus', '20m00s', '18m38s'}, set(values), values)   # dwarf, reviewer; busy, model time
         # the findings and the prompts come from the lazy endpoint
         page.wait_for_selector('#inspector .finding')
         self.assertIn('P1', page.text_content('#inspector .findings'))
@@ -206,7 +211,7 @@ class Page(unittest.TestCase):
         page.goto(self.url + f'#/runs/{self.key}/tasks/reader')
         page.wait_for_selector('#inspector .fractal-tree li')
         self.assertEqual(page.locator('#inspector .fractal-tree li').count(), 4)
-        self.assertEqual(page.locator('#inspector .fractal-tree .tag').count(), 1)    # the one split decision
+        self.assertEqual(page.eval_on_selector_all('#inspector .fractal-tree .tag', 'ts => ts.map(t => (t.textContent.match(/\\d+/) || [])[0])'), ['3'])   # the one split, into 3
         page.click('#inspector .fractal-tree a:text-is("ui")')
         page.wait_for_function("() => location.hash.endsWith('/tasks/reader/fractal/ui')")
         node_diff = '#inspector .insp-head a.diff-link[href$="/tasks/reader/fractal/ui/diff"]'   # not the task view's link, still there until the hash is handled
@@ -377,7 +382,8 @@ class Cloud(unittest.TestCase):
         self.frames(page)                                       # drawn settled: picking reads the drawn matrices
 
     def filter_to(self, page, selector, n):
-        """Click a filter, wait for n runs to show and for the camera's re-frame, 650 ms after a filter settles, to land."""
+        """Click a filter, wait for n runs to show and for them to move to the filtered layout, then settle it.
+        The camera's re-frame, 650 ms later, is not waited for."""
         at = f"JSON.stringify(window.ForgeUI.state.stage.cloud.debug().screenPos('{self.solo}'))"   # a run shown either way
         before = page.evaluate(at)
         page.click(selector)
