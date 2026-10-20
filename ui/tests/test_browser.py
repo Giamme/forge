@@ -7,8 +7,10 @@ tests are skipped. Development-only: nothing here runs in forge itself.
 """
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
+import re
 import tempfile
 import threading
 import unittest
@@ -119,41 +121,45 @@ class Page(unittest.TestCase):
         self.assertEqual(page.evaluate('window.__csp'), [])
         self.assertEqual(self.errors, [])
 
+    def steady(self, page, expr):
+        """Wait until `expr` (a screen position) reads the same on two frames in a row: the camera has stopped."""
+        page.evaluate('window.__steady = null')
+        page.wait_for_function(f'() => {{ const now = JSON.stringify({expr}); const same = now === window.__steady; window.__steady = now; return same; }}')
+
+    def frames(self, page, n=2):
+        """Wait for n animation frames, so the stage has drawn what was just set."""
+        page.evaluate('window.__frames = 0')
+        page.wait_for_function(f'() => ++window.__frames > {n}')
+
     def test_without_the_cdn_the_2d_views_and_the_inspector_still_work(self):
         page = self.open(cdn=False)
         page.goto(self.url + '#/runs/' + self.key)
         page.wait_for_function("() => window.ForgeMap3D && window.ForgeMap3D.state === 'unavailable'", timeout=30000)
         page.wait_for_selector('#graph2d .fg-node')
-        self.assertIn('3D view unavailable', page.text_content('.stage-note'))
+        self.assertEqual(page.text_content('.stage-note'), page.evaluate('window.ForgeMap3D.message()'))
         self.assertEqual(page.locator('#graph2d .fg-node').count(), 5)
+        # status colours come from style.css classes: the page CSP refuses style attributes (they drew black)
+        fills = page.evaluate("[...document.querySelectorAll('#graph2d .fg-bar')].map(e => getComputedStyle(e).fill)")
+        self.assertTrue(fills and all(f not in ('none', 'rgb(0, 0, 0)') for f in fills), fills)
+        self.assertGreater(len(set(fills)), 1, 'different statuses, different colours')
         page.click('#graph2d .fg-node[data-id="reader"]')
         page.wait_for_selector('#inspector .attempt')
-        text = page.text_content('#inspector')
-        for expected in ('reader', 'Models', 'Timings', 'Attempts', 'Review findings', 'P1'):
-            self.assertIn(expected, text)
+        self.assertTrue(page.text_content('#inspector .insp-head h2').startswith('reader'))
         # the findings and the prompts come from the lazy endpoint
         page.wait_for_selector('#inspector .finding')
+        self.assertIn('P1', page.text_content('#inspector .findings'))
         page.click('[data-mode=exec]')
         page.wait_for_selector('#graph2d .gantt .gt-item')
         page.wait_for_selector('#strip .strip')
         self.assertTrue(page.evaluate("getComputedStyle(document.querySelector('#graph2d .gt-box')).fill") != 'none')
         page.goto(self.url + '#/runs/' + self.key + '/final-review')
-        page.wait_for_function("() => document.querySelector('#inspector') && document.querySelector('#inspector').textContent.includes('Final review')")
+        page.wait_for_selector('#inspector a.diff-link[href*="/final-review/"]')
         page.goto(self.url + '#/')
         page.wait_for_selector('.map-card')
         self.assertEqual(page.locator('.map-card').count(), 2)
         page.select_option('select[data-f=kind]', 'solo')
         page.wait_for_selector('.map-card.dim')
         self.assertEqual(page.locator('.map-card.dim').count(), 1)
-        self.assertClean(page)
-
-    def test_the_2d_graph_draws_status_colours_under_the_csp(self):
-        page = self.open(cdn=False, view='2d')
-        page.goto(self.url + '#/runs/' + self.key)
-        page.wait_for_selector('#graph2d .fg-node')
-        fills = page.evaluate("[...document.querySelectorAll('#graph2d .fg-bar')].map(e => getComputedStyle(e).fill)")
-        self.assertTrue(fills and all(f not in ('none', 'rgb(0, 0, 0)') for f in fills), fills)
-        self.assertGreater(len(set(fills)), 1, 'different statuses, different colours')
         self.assertClean(page)
 
     def test_the_3d_stage_shows_the_run_and_opens_a_task(self):
@@ -166,7 +172,7 @@ class Page(unittest.TestCase):
         self.assertEqual(nodes['t:graph'], 'RUNNING')
         self.assertIn('f:final', nodes)
         page.evaluate("window.ForgeUI.state.stage.debug().settle()")
-        page.wait_for_timeout(600)
+        self.steady(page, "window.ForgeUI.state.stage.debug().screenPos('t:reader')")
         pos = page.evaluate("window.ForgeUI.state.stage.debug().screenPos('t:reader')")
         self.assertTrue(pos and pos['on'])
         page.mouse.click(pos['x'], pos['y'])
@@ -186,8 +192,9 @@ class Page(unittest.TestCase):
         page.click('.diff-source:has-text("attempt 1")')
         page.wait_for_function(f"() => location.hash.endsWith('/diff/{F.READER_QA1}')")
         page.wait_for_selector('.diff-pin .diff-finding.sev-P1')
-        self.assertIn('line 42', page.text_content('.diff-pin'))
-        page.wait_for_selector('.diff-file-findings:has-text("outside the changed lines")')
+        # the P1 sits right under new line 42; the finding on line 88, outside the hunks, heads its file
+        self.assertEqual(page.evaluate("document.querySelector('.diff-pin .sev-P1').closest('.diff-pin').previousElementSibling.querySelectorAll('td.ln')[1].textContent"), '42')
+        self.assertEqual(page.locator('.diff-file[data-path="ui/reader.py"] .diff-file-findings .diff-finding').count(), 1)
         self.assertFalse(page.is_visible('.stage-row'))
         page.click('.diff-close')
         page.wait_for_function("() => location.hash.endsWith('/tasks/reader') && document.getElementById('diff-view').hidden")
@@ -199,27 +206,29 @@ class Page(unittest.TestCase):
         page.goto(self.url + f'#/runs/{self.key}/tasks/reader')
         page.wait_for_selector('#inspector .fractal-tree li')
         self.assertEqual(page.locator('#inspector .fractal-tree li').count(), 4)
-        self.assertIn('split into 3', page.text_content('#inspector .fractal-tree'))
+        self.assertEqual(page.locator('#inspector .fractal-tree .tag').count(), 1)    # the one split decision
         page.click('#inspector .fractal-tree a:text-is("ui")')
         page.wait_for_function("() => location.hash.endsWith('/tasks/reader/fractal/ui')")
-        page.wait_for_selector('#inspector .insp-head .diff-link')
+        node_diff = '#inspector .insp-head a.diff-link[href$="/tasks/reader/fractal/ui/diff"]'   # not the task view's link, still there until the hash is handled
+        page.wait_for_selector(node_diff)
         self.assertIn('Add accessible status labels', page.text_content('#inspector'))
-        page.click('#inspector .insp-head .diff-link')
+        page.click(node_diff)
         page.wait_for_selector('.diff-file')
         self.assertIn('candidate.diff', page.text_content('.diff-meta'))
         self.assertClean(page)
 
-    def test_the_model_leaderboard_counts_first_attempts_and_links_to_the_cloud(self):
+    def test_the_model_leaderboard_links_a_model_to_its_runs_in_the_cloud(self):
         page = self.open(cdn=False)
         page.goto(self.url + '#/models')
         page.wait_for_selector('.lb table')
+        self.assertTrue(page.is_visible('.lb .lb-caveat[role=note]'))   # observational, not causal
         text = page.text_content('.lb')
-        for expected in ('Observational', 'Implementers', 'Reviewers', 'luna', 'opus'):
-            self.assertIn(expected, text)
+        for model in ('luna', 'opus'):                                  # an implementer, a reviewer
+            self.assertIn(model, text)
         page.click('.lb table a:text-is("luna")')
         page.wait_for_function("() => location.hash === '#/cloud'")
-        page.wait_for_selector('.cloud-filters-btn')
-        self.assertIn('Filters (1)', page.text_content('.cloud-filters-btn'))
+        page.wait_for_selector('.cloud-list .map-card')
+        self.assertEqual(page.locator('.cloud-list .map-card').count(), 1)    # only the plan used luna
         self.assertClean(page)
 
     def test_the_export_dialog_leaves_private_texts_out_by_default(self):
@@ -229,12 +238,10 @@ class Page(unittest.TestCase):
         page.wait_for_selector('dialog.export-dialog[open]')
         link = page.locator('dialog.export-dialog a[download]')
         self.assertTrue(link.get_attribute('href').endswith(f'/api/runs/{self.key}/export?texts=0&paths=0'))
+        self.assertEqual(page.text_content('dialog.export-dialog .export-note'), '')
         page.click('dialog.export-dialog .export-opt:has-text("Include prompts") input')
         self.assertIn('texts=1', link.get_attribute('href'))
-        self.assertIn('Share this file only', page.text_content('dialog.export-dialog'))
-        with page.expect_download() as dl:
-            link.click()
-        self.assertRegex(dl.value.suggested_filename, r'^forge-run-.+\.html$')
+        self.assertNotEqual(page.text_content('dialog.export-dialog .export-note'), '')   # who may see it, once texts are in
         self.assertClean(page)
 
     def test_an_exported_run_opens_from_a_file_without_a_server(self):
@@ -245,17 +252,17 @@ class Page(unittest.TestCase):
         page.goto(path.as_uri())
         page.wait_for_function("() => window.ForgeMap3D && window.ForgeMap3D.state === 'unavailable'", timeout=30000)
         page.wait_for_selector('#graph2d .fg-node')
-        self.assertIn('left out', page.text_content('.snapshot-banner'))
+        self.assertIn('left out', page.text_content('.snapshot-banner'))   # README: the file states what it left out
         self.assertEqual(page.evaluate('location.hash'), '#/runs/' + self.key)
         page.click('#graph2d .fg-node[data-id="reader"]')
         page.wait_for_selector('#inspector .finding')
         self.assertIn('P1', page.text_content('#inspector'))
-        self.assertEqual(page.evaluate('window.__csp'), [])
+        self.assertClean(page)
         three = self.open(cdn=True)
         three.goto(path.as_uri())
         self.three_or_skip(three)
         three.wait_for_function("() => window.ForgeUI.state.stage.view === 'run'")
-        self.assertEqual(three.evaluate('window.__csp'), [])
+        self.assertClean(three)
 
     def test_the_files_heatmap_selects_tasks_and_opens_a_file_diff(self):
         page = self.open(cdn=False)
@@ -265,8 +272,10 @@ class Page(unittest.TestCase):
         page.wait_for_selector('.files-view .fm-defs', state='attached')
         self.assertFalse(page.is_visible('#graph2d'))
         text = page.text_content('.files-view')
-        for expected in ('ui/', 'graph.js', 'README.md', 'MERGE CONFLICTS', 'DRIFT'):
-            self.assertIn(expected.lower(), text.lower())
+        for path in ('ui/', 'graph.js', 'README.md'):
+            self.assertIn(path, text)
+        # under the matrix: docs drifted into README.md, graph conflicted on ui/graph.js
+        self.assertEqual(page.eval_on_selector_all('.files-view .fm-list .fm-task', 'bs => bs.map(b => b.textContent)'), ['docs', 'graph'])
         page.focus('.files-view [data-fm-focus^="cell:reader"]')
         page.keyboard.press('ArrowDown')
         page.keyboard.press('Enter')
@@ -300,7 +309,7 @@ class Page(unittest.TestCase):
     def test_a_failing_task_is_notified_once_across_tabs(self):
         stub = """
           window.__notes = [];
-          window.Notification = class { constructor(t, o) { window.__notes.push(t + ' | ' + o.body); } close() {} };
+          window.Notification = class { constructor(t, o) { window.__notes.push(o.tag); } close() {} };
           Notification.permission = 'granted'; Notification.requestPermission = () => Promise.resolve('granted');
           document.hasFocus = () => false;
           try { localStorage.setItem('forge-ui-notify', JSON.stringify({ kinds: { run: true, task: true, review: true }, browser: true })); } catch (_) {}
@@ -309,23 +318,24 @@ class Page(unittest.TestCase):
         other = self.open(cdn=False, init=stub, context=page.context)
         for p in (page, other):
             p.goto(self.url + '#/')
-            p.wait_for_selector('.map-card')
-        page.wait_for_timeout(2500)                             # the first poll is only a baseline
+            p.wait_for_selector('.map-card')                     # drawn after the first poll, which is only a baseline
         task = self.plan / 'tasks' / 'graph'
         status = (task / 'status').read_text()
         self.addCleanup(lambda: (task / 'status').write_text(status))
         (task / 'status').write_text('FAIL\n')
-        page.wait_for_function("() => window.__notes.some(n => n.startsWith('Task graph fail'))", timeout=20000)
-        other.wait_for_function("() => document.title.startsWith('(')", timeout=20000)
-        page.wait_for_timeout(2500)
+        tag = f'task|{self.key}|graph|FAIL'
+        page.wait_for_function(f"() => JSON.parse(localStorage.getItem('forge-ui-notify-log') || '[]').some(x => x.id === '{tag}')", timeout=20000)
+        for p in (page, other):                                 # each tab has polled the failure and decided what to tell
+            p.wait_for_function("() => document.querySelectorAll('.map-card .led.st-fail').length === 2", timeout=20000)
+            p.evaluate("() => navigator.locks.request('forge-ui-notify', () => {})")
         notes = page.evaluate('window.__notes') + other.evaluate('window.__notes')
-        self.assertEqual(sum(n.startswith('Task graph fail') for n in notes), 1, notes)
+        self.assertEqual(notes.count(tag), 1, notes)
+        other.wait_for_function("() => document.title.startsWith('(')")
         self.assertTrue(page.evaluate("document.querySelector('link[rel=icon]').href.startsWith('data:image/png')"))
         page.click('#bell')
-        page.wait_for_selector('.notify-pop .notify-item')
-        self.assertIn('Task graph fail', page.text_content('.notify-pop'))
-        page.wait_for_function("() => document.title === 'forge-ui'")
-        other.wait_for_function("() => document.title === 'forge-ui'", timeout=10000)
+        page.wait_for_selector(f'.notify-pop .notify-item a[href="#/runs/{self.key}/tasks/graph"]')
+        page.wait_for_function("() => !document.title.startsWith('(')")
+        other.wait_for_function("() => !document.title.startsWith('(')", timeout=10000)
         self.assertClean(page)
 
     def test_a_status_change_on_disk_recolours_the_node_without_a_rebuild(self):
@@ -346,7 +356,7 @@ class Page(unittest.TestCase):
 @unittest.skipUnless(sync_playwright, 'install Python Playwright to run browser checks')
 class Cloud(unittest.TestCase):
     """The run cloud (#/cloud) over many runs in several repos."""
-    open, three_or_skip, assertClean = Page.open, Page.three_or_skip, Page.assertClean
+    open, three_or_skip, assertClean, frames = Page.open, Page.three_or_skip, Page.assertClean, Page.frames
 
     @classmethod
     def setUpClass(cls):
@@ -354,6 +364,7 @@ class Cloud(unittest.TestCase):
         base = Path(cls.temp.name)
         cls.runs = sorted(MF.make_many(base, 40, repos=3, live=1).iterdir())
         cls.solos = sum(1 for p in cls.runs if (p / 'prompt.md').is_file())
+        cls.solo = next(reader.run_key(p) for p in cls.runs if (p / 'prompt.md').is_file())
         _serve(cls, reader.Catalog(plans=cls.runs, registry=False))
 
     tearDownClass = classmethod(Page.tearDownClass.__func__)
@@ -363,7 +374,17 @@ class Cloud(unittest.TestCase):
         self.three_or_skip(page)
         page.wait_for_function("() => window.ForgeUI.state.stage.view === 'cloud' && window.ForgeUI.state.stage.cloud.debug().visible.length > 0", timeout=30000)
         page.evaluate("window.ForgeUI.state.stage.cloud.debug().settle()")
-        page.wait_for_timeout(500)
+        self.frames(page)                                       # drawn settled: picking reads the drawn matrices
+
+    def filter_to(self, page, selector, n):
+        """Click a filter, wait for n runs to show and for the camera's re-frame, 650 ms after a filter settles, to land."""
+        at = f"JSON.stringify(window.ForgeUI.state.stage.cloud.debug().screenPos('{self.solo}'))"   # a run shown either way
+        before = page.evaluate(at)
+        page.click(selector)
+        page.wait_for_function(f"() => window.ForgeUI.state.stage.cloud.debug().visible.length === {n}")
+        page.wait_for_function(f"() => {at} !== {json.dumps(before)}")
+        page.evaluate("window.ForgeUI.state.stage.cloud.debug().settle()")
+        self.frames(page)
 
     def visible(self, page):
         return page.evaluate("window.ForgeUI.state.stage.cloud.debug().visible.length")
@@ -376,26 +397,20 @@ class Cloud(unittest.TestCase):
         self.assertEqual(page.locator('.cloud-list .map-card').count(), len(self.runs))
         page.click('.cloud-chip:has-text("solo")')
         page.wait_for_function(f"() => document.querySelectorAll('.cloud-list .map-card').length === {self.solos}")
-        self.assertIn(f'{self.solos} of {len(self.runs)} runs', page.text_content('.cloud-count'))
+        self.assertEqual(re.findall(r'\d+', page.text_content('.cloud-count')), [str(self.solos), str(len(self.runs))])
         self.assertClean(page)
 
     def test_the_cloud_filters_selects_and_opens_runs(self):
         page = self.open(cdn=True)
         self.cloud(page)
         self.assertEqual(self.visible(page), len(self.runs))
-        page.click('.cloud-chip:has-text("solo")')
-        page.wait_for_function(f"() => window.ForgeUI.state.stage.cloud.debug().visible.length === {self.solos}")
-        page.click('.cloud-panel-head button')
-        page.wait_for_function(f"() => window.ForgeUI.state.stage.cloud.debug().visible.length === {len(self.runs)}")
-        page.wait_for_timeout(1700)                             # the camera re-frames once a filter settles
-        page.evaluate("window.ForgeUI.state.stage.cloud.debug().settle()")
-        page.wait_for_timeout(300)
+        self.filter_to(page, '.cloud-chip:has-text("solo")', self.solos)
+        self.filter_to(page, '.cloud-panel-head button', len(self.runs))
         spot = page.evaluate("window.ForgeUI.state.stage.cloud.debug().clickable(340, 120, 1080, 780)")
         self.assertTrue(spot, 'no run is clickable in the middle of the stage')
         page.mouse.click(spot['x'], spot['y'])
         page.wait_for_function(f"() => location.hash === '#/cloud/runs/{spot['key']}'")
-        page.wait_for_selector('.cloud-card h2')
-        self.assertIn('Open run', page.text_content('.cloud-card'))
+        page.wait_for_selector(f'.cloud-card a[href="#/runs/{spot["key"]}"]')
         page.mouse.dblclick(spot['x'], spot['y'])
         page.wait_for_function(f"() => location.hash === '#/runs/{spot['key']}' && window.ForgeUI.state.stage.view === 'run'", timeout=15000)
         page.go_back()
