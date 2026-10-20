@@ -842,7 +842,7 @@ window.ForgeUI = (() => {
     if (state.models) loadModels();
     for (const node of document.querySelectorAll('[data-epoch]')) node.textContent = relative(node.dataset.epoch);
   }
-  // Poll faster while something runs, slower otherwise; never while the tab is hidden or refresh is off.
+  // Poll faster while something runs, slower otherwise; never with refresh off, and a hidden tab only to notify.
   function schedule() {
     clearTimeout(state.timer);
     if (SNAP) return;                                       // an export never changes
