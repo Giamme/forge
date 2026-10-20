@@ -858,11 +858,30 @@ Plain scripts unless noted; each defines one global and none parses API text as 
 |---|---|---|
 | `runmodel.js` | `ForgeRunModel` | pure data, no DOM: the plate layout (archivision's `plate()`), the atlas, plan and execution models, forge-schedule's rules projected forward, the critical path, concurrency, the state of every node at a time `t` (replay), filters. Also a CommonJS module, for `node --test` |
 | `gantt.js` | `ForgeGantt` | `render(container, run, {now, onSelect, sel, replay, critical, ghosts})`: attempts on wall-clock time in lanes; `strip(container, run, {now, replay})`: busy attempts and model calls against `max_parallel` |
-| `panel.js` | `ForgePanel` | `render(host, ctx)`: the inspector for a run, task, execution, final review, verification or integration; fetches the lazy endpoints once per node |
-| `map3d.js` | `ForgeMap3D` | `load()` imports `scene3d.js` (and so three.js) on first use, with a 12 s timeout; `state` is `idle`, `loading`, `ready` or `unavailable`, `message()` says why |
-| `scene3d.js` | (ES module) | `createStage(host, {onSelect, onOpenRun, onBack, onMode})`: the atlas, plan and execution scenes, live status updates without rebuilding, overlays and replay |
-| `iso.js` | (ES module) | the iso-glow engine ported from archivision: renderer, materials, blocks, labels, cables, camera, picking, drawn on demand |
+| `panel.js` | `ForgePanel` | `render(host, ctx)`: the inspector for a run, task, execution, final review, verification, integration or Fractal node; fetches the lazy endpoints once per node; `ctx.diffHash(spec)` links into the diff viewer, `ctx.onFractal(task, TaskFractal)` hands a task's tree to the stage |
+| `diffview.js` | `ForgeDiff` | `render(host, {run, spec, fetchJSON, rerender, href, closeHref})`: a DiffDetail with its findings under their lines; `spec` is `{kind: task, task, source, file}`, `{kind: final, name, file}` or `{kind: fractal, task, node, file}` |
+| `cloudmodel.js` | `ForgeCloudModel` | pure: projects, per-run facts, the cloud's filters, its five layouts (anchors from every run, dragged runs kept), label picking, layout files. Also a CommonJS module |
+| `cloudui.js` | `ForgeCloudUI` | `create(root, ctx)`: the cloud's filter panel, layout and shape switches, position tools, legend and run card; a list of the same runs without 3D |
+| `modelstats.js` | `ForgeModelStats` | pure: the leaderboard's aggregation of `/api/models` (`leaderboard`, `wilson`, `options`). Also a CommonJS module |
+| `leaderboard.js` | `ForgeLeaderboard` | `render(host, data, {runs, prefs, savePrefs, modelHref, now})`: the `#/models` page |
+| `search.js` | `ForgeSearch` | `init({runs, commands, go, cloudFilter})`: the quick jump (Ctrl/⌘ K, `/`), ranked by `ForgeRunModel.searchRank` |
+| `notify.js` | `ForgeNotify` | `init({go})`, `observe(runs)` on each poll of the run list (`ForgeRunModel.statusEvents`), `open()`, `background()`: the bell, its log, the title count, the favicon dot and browser notifications |
+| `map3d.js` | `ForgeMap3D` | `load()` imports `scene3d.js` (and so three.js) on first use, with a 12 s timeout, or in an export the bundled stage from a `blob:` URL; `state` is `idle`, `loading`, `ready` or `unavailable`, `message()` says why |
+| `scene3d.js` | (ES module) | `createStage(host, {onSelect, onOpenRun, onBack, onMode, cloud})`: the atlas, plan and execution scenes, live status updates without rebuilding, overlays, replay, Fractal trees over opened tasks (`setFractal`), and `showCloud(runs, opts)` |
+| `cloud3d.js` | (ES module) | `createCloud(engine, host, callbacks)`: the run cloud on the stage's engine (blocks or orbs, labels, frames, drag and drop kept per layout in this browser) |
+| `iso.js` | (ES module) | the iso-glow engine ported from archivision: renderer, materials, blocks, labels, cables, camera (plate and free profiles), picking and grabbing, shared solids, sprites, drawn on demand |
 
-Routes (the URL hash): `#/` the map of every run; `#/runs/<key>`; `…/tasks/<id>`;
+Routes (the URL hash): `#/` the map of every run; `#/cloud`, `#/cloud/runs/<key>` (a run
+selected), `#/cloud/projects/<id>` (a project in focus), `#/cloud/models/<alias>` (the cloud
+filtered to that model); `#/models` the leaderboard; `#/runs/<key>`; `…/tasks/<id>`;
 `…/tasks/<id>/executions/<name>`; `…/executions/<name>` (an execution that belongs to no
-task); `…/final-review[/<name>]`; `…/verification`; `…/integration`.
+task); `…/final-review[/<name>]`; `…/verification`; `…/integration`; `…/tasks/<id>/fractal/<node>`;
+and the diff viewer: `…/tasks/<id>/diff[/<source>][/file/<path>]` (`source` is `current`, `prev`,
+`committed`, `existing` or an execution), `…/final-review/<name>/diff[/file/<path>]`,
+`…/tasks/<id>/fractal/<node>/diff[/file/<path>]` (`path` percent-encoded whole).
+
+Kept in the browser (localStorage, every access guarded): `forge-ui-view`, `-mode`, `-overlay`,
+`-speed`, `-map-filter`; `forge-ui-cloud` (filter, layout, shape, panel) and
+`forge-ui-cloud-layout-v1` (dragged positions per layout, at most 5,000 per layout);
+`forge-ui-models` (leaderboard filters); `forge-ui-recent` (quick-jump picks); `forge-ui-notify`,
+`-notify-log` (the last 100) and `-notify-seen` (ten minutes, to notify once across tabs).

@@ -17,7 +17,10 @@ window.ForgeUI = (() => {
     overlay: Object.assign({ height: 'none', color: 'status', critical: false, arcs: true, ghosts: true }, store.get('overlay', {})),
     replay: null, playing: null, speed: store.get('speed', 60), stage: null, stageFailed: null, stageLoading: false, timer: null,
     lastStatuses: new Map(), announced: 0, rendered: null, cloud: null, cloudUI: null, cloudPrefs: store.get('cloud', {}),
-    models: false, modelsData: null, modelsText: null, modelsError: null, modelsPrefs: store.get('models', {}) };
+    models: false, modelsData: null, modelsText: null, modelsError: null, modelsPrefs: store.get('models', {}),
+    files: new Map(), filesPrefs: store.get('files', {}) };
+  state.stageMode = state.mode === 'exec' ? 'exec' : 'plan';   // the stage's own mode, kept while Files is shown
+  if (state.mode === 'files' && !window.ForgeFiles) state.mode = state.stageMode;
   const $ = id => document.getElementById(id);
   const display = value => value === null || value === undefined || value === '' ? '—' :
     typeof value === 'object' ? JSON.stringify(value, null, 2) : String(value);
@@ -450,14 +453,15 @@ window.ForgeUI = (() => {
   function setMode(mode) {
     if (mode === state.mode) return;
     state.mode = mode; store.set('mode', mode);
-    if (state.stage) state.stage.setMode(mode);
+    if (mode !== 'files') { state.stageMode = mode; if (state.stage) state.stage.setMode(mode); }
     syncToggles();
     const run = state.cache.get(state.key)?.data; if (run) renderRunBody(run);
   }
   function toolbar(parent) {
     const bar = el('div', undefined, 'run-toolbar'); bar.setAttribute('role', 'toolbar'); bar.setAttribute('aria-label', 'Run view');
     const modes = el('div', undefined, 'seg'); modes.setAttribute('role', 'group'); modes.setAttribute('aria-label', 'Plan or execution');
-    for (const [m, label, title] of [['plan', 'Planned waves', 'Tasks in the waves the plan put them in'], ['exec', 'Execution', 'Attempts on wall-clock time, in the lanes they really ran in (e)']]) {
+    for (const [m, label, title] of [['plan', 'Planned waves', 'Tasks in the waves the plan put them in'], ['exec', 'Execution', 'Attempts on wall-clock time, in the lanes they really ran in (e)'],
+      ['files', 'Files', 'Which tasks planned, changed, drifted into or conflicted on which files']].filter(([m]) => m !== 'files' || window.ForgeFiles)) {
       const b = el('button', label); b.type = 'button'; b.dataset.mode = m; b.title = title; b.addEventListener('click', () => setMode(m)); modes.append(b);
     }
     bar.append(modes, viewToggle());
@@ -619,7 +623,7 @@ window.ForgeUI = (() => {
     preserve(host, () => {
       const r = atReplay(run);
       try {
-        if (state.mode === 'exec') window.ForgeGantt.render(host, run, { now: now(), onSelect: select, sel: state.sel, replay: state.replay, critical: state.overlay.critical ? RM.criticalPath(run, { now: now() }) : null, ghosts: state.overlay.ghosts });
+        if (state.stageMode === 'exec') window.ForgeGantt.render(host, run, { now: now(), onSelect: select, sel: state.sel, replay: state.replay, critical: state.overlay.critical ? RM.criticalPath(run, { now: now() }) : null, ghosts: state.overlay.ghosts });
         else window.ForgeGraph.render(host, r, { selected: state.sel && (state.sel.task || state.sel.id), onSelect: id => select({ kind: 'task', id }) });
       } catch (_) { host.replaceChildren(el('p', 'Graph unavailable. Select tasks in the table below.', 'muted')); }
     });
@@ -629,6 +633,33 @@ window.ForgeUI = (() => {
     const show = state.mode === 'exec' && run.kind !== 'solo';
     host.hidden = !show;
     if (show) window.ForgeGantt.strip(host, run, { now: now(), replay: state.replay }); else host.replaceChildren();
+  }
+  // Files: which task touched which file, in the stage's place (the inspector stays beside it)
+  function renderFiles(run) {
+    const host = $('files-view'), view = $('run-view'); if (!host || !view) return;
+    const open = state.mode === 'files' && !!window.ForgeFiles;
+    view.classList.toggle('files-open', open); host.hidden = !open;
+    if (!open) { host.filesSig = ''; return; }
+    const c = state.files.get(run.key);
+    if (!c || c.updated !== run.updated) loadFiles(run);
+    if (!c || !c.data) {
+      host.filesSig = '';
+      host.replaceChildren(el('p', c && c.error ? `Could not load the files (${c.error}).` : 'Reading which files each task touched…', c && c.error ? 'warn' : 'muted'));
+      return;
+    }
+    const sig = JSON.stringify([c.at, state.sel]);
+    if (host.filesSig === sig) return;                     // a poll that changed nothing here redraws nothing
+    host.filesSig = sig;
+    window.ForgeFiles.render(host, c.data, { run, sel: state.sel, onSelectTask: id => select({ kind: 'task', id }),
+      diffHref: (task, path) => diffHash(run.key, { kind: 'task', task, source: 'current', file: path }),
+      prefs: state.filesPrefs, savePrefs: p => { state.filesPrefs = p; store.set('files', p); } });
+  }
+  function loadFiles(run) {
+    const key = run.key, updated = run.updated, c = state.files.get(key) || {};
+    if (c.pending === updated) return;
+    c.pending = updated; state.files.set(key, c);
+    fetchJSON(`/api/runs/${encodeURIComponent(key)}/files`).then(r => { c.data = r.data; c.error = null; c.at = Date.now(); }, e => { c.error = e.message; })
+      .finally(() => { c.updated = updated; c.pending = null; const cur = state.cache.get(state.key)?.data; if (cur && cur.key === key) renderFiles(cur); });
   }
   // the diff viewer takes the stage's place while it is open
   function renderDiff(run) {
@@ -645,9 +676,10 @@ window.ForgeUI = (() => {
     syncToggles();
     syncReplay(run);
     placeStage($('stage-slot'));
-    if (use3d() && state.stage) state.stage.showRun(run, { mode: state.mode, sel: state.sel });
+    if (use3d() && state.stage) state.stage.showRun(run, { mode: state.stageMode, sel: state.sel });
     render2d(run);
     renderStrip(run);
+    renderFiles(run);
     renderInspector(run);
   }
   function renderRun(run) {
@@ -664,7 +696,8 @@ window.ForgeUI = (() => {
       const col = el('div', undefined, 'stage-col');
       const slot = el('div', undefined, 'stage-slot'); slot.id = 'stage-slot';
       const g2 = el('div', undefined, 'graph'); g2.id = 'graph2d'; g2.dataset.scroll = 'graph';
-      col.append(slot, g2);
+      const files = el('div', undefined, 'files-view'); files.id = 'files-view'; files.hidden = true;
+      col.append(slot, g2, files);
       const insp = el('aside', undefined, 'inspector'); insp.id = 'inspector'; insp.setAttribute('aria-label', 'Inspector'); insp.tabIndex = -1;
       row.append(col, insp); view.append(row);
       const strip = el('div', undefined, 'strip-wrap'); strip.id = 'strip'; view.append(strip);
@@ -830,6 +863,7 @@ window.ForgeUI = (() => {
     ];
     if (run && !SNAP) out.push({ id: 'cmd:export', label: 'Export this run as one HTML file…', sub: 'to share; opens without forge-ui', ids: ['export', 'share'], action: () => exportDialog(run) });
     if (SNAP) return out.filter(c => c.id === 'cmd:dim').concat(run ? [{ id: 'cmd:mode', label: state.mode === 'plan' ? 'Show the execution' : 'Show the planned waves', sub: '', ids: ['exec', 'plan'], action: () => setMode(state.mode === 'plan' ? 'exec' : 'plan') }] : []);
+    if (run && window.ForgeFiles) out.push({ id: 'cmd:files', label: 'Show which tasks touched which files', sub: 'the Files view of this run', ids: ['files', 'heatmap'], action: () => setMode('files') });
     if (run) out.push({ id: 'cmd:mode', label: state.mode === 'plan' ? 'Show the execution' : 'Show the planned waves', sub: run.goal ? String(run.goal).split('\n')[0] : '', ids: ['exec', 'plan'], action: () => setMode(state.mode === 'plan' ? 'exec' : 'plan') });
     return out;
   }
@@ -880,7 +914,7 @@ window.ForgeUI = (() => {
     $('refresh').addEventListener('change', event => { state.paused = !event.target.checked; refresh(); });
     window.addEventListener('hashchange', navigate);
     document.addEventListener('visibilitychange', refresh);
-    window.addEventListener('resize', () => { const run = !state.cloud && state.cache.get(state.key)?.data; if (run && (!use3d() || !state.stage || state.mode === 'exec')) { render2d(run); renderStrip(run); } });
+    window.addEventListener('resize', () => { const run = !state.cloud && state.cache.get(state.key)?.data; if (run && (!use3d() || !state.stage || state.stageMode === 'exec')) { render2d(run); renderStrip(run); } });
     loadList();
     navigate();
     schedule();

@@ -537,3 +537,8 @@ dialog.export-dialog h2 { margin-bottom: 8px; }
 .export-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
 .snapshot-banner { padding: 7px 22px; background: var(--selected); border-bottom: 1px solid var(--line); font-size: .85rem; overflow-wrap: anywhere; }
 body.snapshot .top-link, body.snapshot #bell, body.snapshot .refresh-control, body.snapshot .topbar > .muted { display: none; }
+
+/* Files: the run view's third mode (files.js), in the stage's place */
+.run-view.files-open .stage-slot, .run-view.files-open .stage-note, .run-view.files-open #graph2d, .run-view.files-open .strip-wrap, .run-view.files-open .replay, .run-view.files-open .overlays { display: none; }
+.files-view[hidden] { display: none; }
+.files-view { min-width: 0; }
