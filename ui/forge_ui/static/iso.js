@@ -466,23 +466,37 @@ export async function createEngine(host, { reduceMotion = false } = {}) {
   let CAMT = null, NOW = performance.now();
   const ez = t => t < .5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
   const clamp01 = v => Math.max(0, Math.min(1, v));
-  function fitFor(bx, dir) {
-    const c = W((bx[0] + bx[3]) / 2, (bx[1] + bx[4]) / 2, (bx[2] + bx[5]) / 2);
+  // bx: a plan box [x0, y0, z0, x1, y1, z1], or {pts: [[x, y, z], …]} to fit the points themselves (tighter for
+  // round or scattered things); inset: pixels on each side that overlays cover, kept clear of what is framed
+  function fitFor(bx, dir, inset = null) {
     const f = dir.clone().negate(), r = new THREE.Vector3().crossVectors(f, UP).normalize(), u = new THREE.Vector3().crossVectors(r, f);
+    const pts = Array.isArray(bx) ? [] : bx.pts.map(p => W(...p));
+    if (Array.isArray(bx)) for (const X of [bx[0], bx[3]]) for (const Y of [bx[1], bx[4]]) for (const Z of [bx[2], bx[5]]) pts.push(W(X, Y, Z));
+    if (!pts.length) pts.push(new THREE.Vector3());
+    const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+    for (const p of pts) { const q = [p.dot(r), p.dot(u), p.dot(f)]; for (let i = 0; i < 3; i++) { lo[i] = Math.min(lo[i], q[i]); hi[i] = Math.max(hi[i], q[i]); } }
+    const c = r.clone().multiplyScalar((lo[0] + hi[0]) / 2).addScaledVector(u, (lo[1] + hi[1]) / 2).addScaledVector(f, (lo[2] + hi[2]) / 2);
+    const I = { l: 0, r: 0, t: 0, b: 0, ...(inset || {}) };
+    if (I.l + I.r > VW * .7) I.l = I.r = 0;                 // overlays that cover most of the stage: frame under them
+    if (I.t + I.b > VH * .7) I.t = I.b = 0;
+    const fw = (VW - I.l - I.r) / VW, fh = (VH - I.t - I.b) / VH;
     const tv = Math.tan(THREE.MathUtils.degToRad(persp.fov / 2)), th = tv * VW / VH;
     let D = .5;
-    for (const X of [bx[0], bx[3]]) for (const Y of [bx[1], bx[4]]) for (const Z of [bx[2], bx[5]]) {
-      const p = W(X, Y, Z).sub(c), px = p.dot(r), py = p.dot(u), pz = p.dot(f);
-      D = Math.max(D, Math.abs(px) / (th * .96) - pz, Math.abs(py) / (tv * .92) - pz);
+    for (const p0 of pts) {
+      const p = p0.clone().sub(c), px = p.dot(r), py = p.dot(u), pz = p.dot(f);
+      D = Math.max(D, Math.abs(px) / (th * fw * .96) - pz, Math.abs(py) / (tv * fh * .92) - pz);
     }
+    // what is framed sits in the middle of the uncovered part of the stage
+    c.addScaledVector(r, -(I.l - I.r) / VW * D * th).addScaledVector(u, (I.t - I.b) / VH * D * tv);
     return { c, D };
   }
-  function frameBox(bx, dur = 900, minEl = 26, dirOverride = null) {
+  function frameBox(bx, dur = 900, minEl = 26, dirOverride = null, inset = null) {
+    resize();                                               // the host may have just been shown or moved: fit its real size
     let dir = dirOverride ? dirOverride.clone().normalize() : camera.position.clone().sub(controls.target);
     dir = dir.lengthSq() > 1e-8 ? dir.normalize() : DIR_ISO.clone();
     const el = Math.asin(THREE.MathUtils.clamp(dir.y, -1, 1)), lo = THREE.MathUtils.degToRad(minEl);
     if (el < lo) { const hz = Math.hypot(dir.x, dir.z) || 1; dir.set(dir.x / hz * Math.cos(lo), Math.sin(lo), dir.z / hz * Math.cos(lo)); }
-    const { c, D } = fitFor(bx, dir);
+    const { c, D } = fitFor(bx, dir, inset);
     const to = { t: c, off: dir.clone().multiplyScalar(D), zoom: camera === ortho ? orthoH / (D * fovK()) : null };
     if (reduceMotion || dur <= 1) {
       controls.target.copy(to.t); camera.position.copy(to.t).add(to.off);
@@ -502,6 +516,7 @@ export async function createEngine(host, { reduceMotion = false } = {}) {
     return true;
   }
   const cancelCam = () => { if (CAMT) { controls.enableDamping = true; CAMT = null; } };
+  const settleCam = () => { if (CAMT) { camStep(CAMT.t0 + CAMT.dur + 1); controls.update(); } };   // jump to where a glide ends (tests)
 
   /* ---------- the loop: frames only while something moves ---------- */
   const tickers = new Set();
@@ -556,24 +571,162 @@ export async function createEngine(host, { reduceMotion = false } = {}) {
     camera.updateMatrixWorld(); VP.copy(W(x, y, z)).project(camera);
     return { x: (VP.x + 1) / 2 * VW, y: (1 - VP.y) / 2 * VH, on: VP.z < 1 && VP.z > -1 && Math.abs(VP.x) < 1.04 && Math.abs(VP.y) < 1.04 };
   }
-  const handlers = { click: null, hover: null, key: null };
-  let down = null, hoverAt = null;
-  const engage = on => { controls.enableZoom = on; canvas.classList.toggle('engaged', on); };
+  function pickHit(cx, cy, objects, ok) {
+    rayAt(cx, cy);
+    for (const h of RAY.intersectObjects(objects, false)) if (!ok || ok(h.object, h)) return { object: h.object, instanceId: h.instanceId, point: h.point };
+    return null;
+  }
+  function rayAt(cx, cy) {
+    const r = canvas.getBoundingClientRect();
+    NDC.set((cx - r.left) / r.width * 2 - 1, -((cy - r.top) / r.height) * 2 + 1); RAY.setFromCamera(NDC, camera);
+    return RAY;
+  }
+  /* Control profiles: 'plate' is the run and map views (orbit above the plate, zoom only once the stage
+     is engaged, so the page still scrolls); 'free' is the full-screen cloud (look from anywhere, always zoom). */
+  let profile = 'plate', engaged = false;
+  function setProfile(name) {
+    profile = name === 'free' ? 'free' : 'plate';
+    const free = profile === 'free';
+    controls.minPolarAngle = free ? .02 : 0;
+    controls.maxPolarAngle = free ? Math.PI - .02 : Math.PI * .495;
+    controls.enableZoom = free || engaged;
+    controls.screenSpacePanning = true;
+    controls.zoomToCursor = free;
+    controls.maxDistance = free ? 2500 : 400;
+    persp.far = ortho.far = free ? 6000 : 900;
+    persp.updateProjectionMatrix(); ortho.updateProjectionMatrix();
+    invalidate();
+  }
+  const handlers = { click: null, hover: null, key: null, grab: null, drag: null, drop: null, dbl: null };
+  let down = null, hoverAt = null, grab = null;
+  const engage = on => { engaged = on; controls.enableZoom = profile === 'free' || on; canvas.classList.toggle('engaged', on); };
+  // A grab claims the pointer before OrbitControls sees it: this capture listener on the host runs first,
+  // and controls.enabled = false makes OrbitControls ignore the press that follows on the canvas.
+  host.addEventListener('pointerdown', e => {
+    if (e.button !== 0 || !handlers.grab || e.target !== canvas) return;
+    const token = handlers.grab(e.clientX, e.clientY, e); if (!token) return;
+    grab = { token, x: e.clientX, y: e.clientY, moved: false, id: e.pointerId, damping: controls.enableDamping };
+    controls.enabled = false; controls.enableDamping = false;
+    try { canvas.setPointerCapture(e.pointerId); } catch (_) { /* no capture: moves still arrive over the canvas */ }
+    canvas.classList.add('grabbing');
+  }, true);
+  function endGrab(e, how) {
+    const g = grab; grab = null; if (!g) return;
+    controls.enabled = true; controls.enableDamping = g.damping;
+    try { canvas.releasePointerCapture(g.id); } catch (_) { /* already released */ }
+    canvas.classList.remove('grabbing');
+    if (how === 'cancel') { if (handlers.drop) handlers.drop(0, 0, e, g.token, { cancel: true }); }
+    else {
+      if (!g.moved && handlers.click) handlers.click(e.clientX, e.clientY, e);
+      if (handlers.drop) handlers.drop(e.clientX, e.clientY, e, g.token, { moved: g.moved });
+    }
+    invalidate();
+  }
   canvas.addEventListener('pointerdown', e => { down = [e.clientX, e.clientY]; cancelCam(); engage(true); canvas.focus({ preventScroll: true }); });
   canvas.addEventListener('pointerup', e => {
+    if (grab) { down = null; endGrab(e, 'up'); return; }
     if (!down || Math.hypot(e.clientX - down[0], e.clientY - down[1]) > 5) { down = null; return; }
     down = null; if (handlers.click) handlers.click(e.clientX, e.clientY, e);
   });
-  canvas.addEventListener('pointermove', e => { hoverAt = [e.clientX, e.clientY]; if (!down && handlers.hover) { handlers.hover(e.clientX, e.clientY); } });
-  canvas.addEventListener('pointerleave', () => { hoverAt = null; if (handlers.hover) handlers.hover(null, null); });
+  canvas.addEventListener('pointercancel', e => { if (grab) endGrab(e, 'cancel'); });
+  canvas.addEventListener('pointermove', e => {
+    hoverAt = [e.clientX, e.clientY];
+    if (grab) {
+      if (!grab.moved && Math.hypot(e.clientX - grab.x, e.clientY - grab.y) > 5) grab.moved = true;
+      if (grab.moved && handlers.drag) { handlers.drag(e.clientX, e.clientY, e, grab.token); invalidate(); }
+      return;
+    }
+    if (!down && handlers.hover) handlers.hover(e.clientX, e.clientY);
+  });
+  canvas.addEventListener('pointerleave', () => { hoverAt = null; if (!grab && handlers.hover) handlers.hover(null, null); });
+  canvas.addEventListener('dblclick', e => { if (handlers.dbl) handlers.dbl(e.clientX, e.clientY, e); });
   canvas.addEventListener('blur', () => engage(false));
   canvas.addEventListener('wheel', () => cancelCam(), { passive: true });
-  canvas.addEventListener('keydown', e => { if (handlers.key && handlers.key(e)) { e.preventDefault(); invalidate(); } });
+  canvas.addEventListener('keydown', e => {
+    if (grab && e.key === 'Escape') { e.preventDefault(); endGrab(e, 'cancel'); return; }
+    if (handlers.key && handlers.key(e)) { e.preventDefault(); invalidate(); }
+  });
+
+  /* ---------- shared solids: one extruded box and its crease lines per size, reused by many elements ---------- */
+  const SHARED = new Map();
+  function unitSolid(key, w, d, h, r) {
+    if (SHARED.has(key)) return SHARED.get(key);
+    r = Math.max(.01, Math.min(r, w / 2 - .01, d / 2 - .01));
+    const sh = new THREE.Shape(); roundRect(sh, -w / 2, -d / 2, w, d, r);
+    const geo = new THREE.ExtrudeGeometry(sh, { depth: h, bevelEnabled: false, curveSegments: r > 3 ? 10 : 4 });
+    geo.rotateX(-Math.PI / 2); geo.scale(TS, TS, TS);
+    const l30 = new LineSegmentsGeometry().setPositions(creaseLines(geo, 30));
+    const l60 = new LineSegmentsGeometry().setPositions(creaseLines(geo, 60));
+    for (const g of [geo, l30, l60]) g.userData.shared = key;
+    const unit = { key, w, d, h, geo, l30, l60 };
+    SHARED.set(key, unit); return unit;
+  }
+  // an element on a shared solid: its own materials (so paint() lights it alone), the unit's geometry
+  function solidFrom(unit, M, parent, ud) {
+    const m = new THREE.Mesh(unit.geo, M.body); m.userData = ud || {};
+    m.add(noRay(new THREE.Mesh(unit.geo, M.out)));
+    const a = noRay(new LineSegments2(unit.l30, M.line)), b = noRay(new LineSegments2(unit.l60, M.major)); b.renderOrder = 1;
+    a.userData.crease = true; m.add(a, b);
+    parent.add(m); return m;
+  }
+  function disposeShared(prefix = '') {
+    for (const [k, u] of [...SHARED]) if (k.startsWith(prefix)) { u.geo.dispose(); u.l30.dispose(); u.l60.dispose(); SHARED.delete(k); }
+  }
+
+  /* ---------- sprites: labels that always face the camera ---------- */
+  // screen: true keeps a constant size in pixels (px tall), else the sprite is w × h plan units in the world
+  const SCREEN = new Set();
+  function sprite(w, h, P, draw, { screen = false, px = 14 } = {}) {
+    const s = Math.max(.6, Math.min(P, 1024 / w, 1024 / h)), cw = Math.max(2, Math.ceil(w * s)), ch = Math.max(2, Math.ceil(h * s));
+    const c = document.createElement('canvas'); c.width = cw; c.height = ch;
+    const tex = new THREE.CanvasTexture(c); tex.colorSpace = THREE.SRGBColorSpace; tex.anisotropy = 4;
+    const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false, toneMapped: false, sizeAttenuation: !screen });
+    const sp = new THREE.Sprite(mat); sp.renderOrder = 4;
+    const t = { c, x: c.getContext('2d'), tex, s, w, h, mesh: sp, mat, gone: false, screen, px };
+    t.redraw = () => { if (c.width !== cw || c.height !== ch) { c.width = cw; c.height = ch; } const x = t.x; x.setTransform(1, 0, 0, 1, 0, 0); x.clearRect(0, 0, cw, ch); draw(x, s, PALC, t); t.gone = false; tex.needsUpdate = true; };
+    tex.onUpdate = () => { c.width = c.height = 1; };
+    sp.onBeforeRender = () => { if (t.gone) t.redraw(); };
+    sp.userData.tp = t;
+    if (screen) { SCREEN.add(t); screenScale(t); } else sp.scale.set(w * TS, h * TS, 1);
+    t.redraw(); TXT.add(t); return t;
+  }
+  // a screen sprite's world scale for its pixel height: perspective sprites without size attenuation are
+  // sized in view units at distance 1; orthographic ones in world units
+  function screenScale(t) {
+    const unit = camera === ortho ? (ortho.top - ortho.bottom) / ortho.zoom / VH : 2 * Math.tan(THREE.MathUtils.degToRad(persp.fov / 2)) / VH;
+    t.mesh.scale.set(t.px * t.w / t.h * unit, t.px * unit, 1);
+  }
+  weightHooks.add(() => { for (const t of SCREEN) screenScale(t); });
+
+  /* ---------- instanced outlines: the silhouette shader, per instance ---------- */
+  function outlineInstanced() {
+    return new THREE.ShaderMaterial({
+      uniforms: { color: { value: new THREE.Color() }, thickness: outlineMat.uniforms.thickness, res: outlineMat.uniforms.res, opacity: { value: 1 } },
+      vertexShader: `uniform float thickness; uniform vec2 res;
+        void main() {
+          mat4 m = modelViewMatrix;
+          #ifdef USE_INSTANCING
+            m = m * instanceMatrix;
+          #endif
+          vec4 p = projectionMatrix * m * vec4(position, 1.0);
+          vec4 n = projectionMatrix * vec4(normalize(mat3(m) * normal), 0.0);
+          vec2 d = length(n.xy) > 1e-5 ? normalize(n.xy) : vec2(0.0);
+          p.xy += d * thickness * 2.0 / res * p.w;
+          gl_Position = p;
+        }`,
+      fragmentShader: OUT_FS, side: THREE.BackSide, transparent: true, polygonOffset: true, polygonOffsetFactor: 6, polygonOffsetUnits: 24,
+    });
+  }
+  // paint()'s colour mix for one colour (instance colours of orbs)
+  function mixColor(out, base, vis, hot, hov, col = accent) {
+    out.copy(base); if (hov > .01) out.lerp(INKHI, hov * .5); if (hot > .01) out.lerp(col, hot); if (vis < .999) out.lerp(BG_COL, 1 - vis);
+    return out;
+  }
 
   function disposeGroup(g) {
     g.traverse(o => {
-      if (o.geometry) o.geometry.dispose();
-      const t = o.userData && o.userData.tp; if (t) { t.tex.dispose(); TXT.delete(t); }
+      if (o.geometry && !o.geometry.userData.shared) o.geometry.dispose();
+      const t = o.userData && o.userData.tp; if (t) { t.tex.dispose(); TXT.delete(t); SCREEN.delete(t); }
       for (const m of [].concat(o.material || [])) {
         if (m === bodyMat || m === lineMat || m === majorMat || m === outlineMat || m === recessMat || m === accentLineMat) continue;
         glowMats.delete(m); softGlows.delete(m); lineMats.delete(m);
@@ -601,7 +754,9 @@ export async function createEngine(host, { reduceMotion = false } = {}) {
     mats, lmat, paint, lineCol, setOp, solid, loopAt, roofPlate, cone,
     tplane, release, roofAt, frontAt, lines, rr, font, fit, wrap, ellipsis, pxIn,
     ends, curve, arc, statusColor, statusHex, cssColor,
-    frameBox, fitFor, cancelCam, setOrtho, isOrtho: () => camera === ortho, invalidate, tickers, themeHooks, weightHooks,
-    pick, project, handlers, disposeGroup, dispose, reduceMotion, now: () => NOW,
+    frameBox, fitFor, cancelCam, settleCam, setOrtho, isOrtho: () => camera === ortho, invalidate, tickers, themeHooks, weightHooks,
+    pick, pickHit, rayAt, project, handlers, disposeGroup, dispose, reduceMotion, now: () => NOW,
+    setProfile, get profile() { return profile; }, unitSolid, solidFrom, disposeShared, sprite, outlineInstanced, mixColor,
+    LineSegments2, LineSegmentsGeometry, creaseLines,
   };
 }
