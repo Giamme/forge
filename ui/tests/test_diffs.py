@@ -257,6 +257,13 @@ class EndpointTests(unittest.TestCase):
         status, body = self.request(path)
         return status, json.loads(body)
 
+    def test_reads_stop_at_8_mib_on_a_line_end(self):
+        body = 'diff --git a/a.py b/a.py\n--- a/a.py\n+++ b/a.py\n@@ -0,0 +1,5000 @@\n' + ('+' + 'x' * 1990 + '\n') * 5000
+        F.write(self.plan / 'tasks' / 'reader' / 'changes.diff', body)
+        diff = self.server.catalog.diff(self.key, 'reader', 'current')
+        self.assertEqual((diff['available'], diff['bytes'], diff['truncated']), (True, len(body), True))
+        self.assertEqual(len(diff['files'][0]['hunks'][0]['lines']), (8 << 20) // 1992)
+
     def test_task_sources(self):
         status, data = self.get(f'/api/runs/{self.key}/tasks/reader/diff')
         self.assertEqual(status, 200)
