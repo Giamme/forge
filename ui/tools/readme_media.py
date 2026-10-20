@@ -39,8 +39,6 @@ FPS = 10
 # The animations run on a clock the script turns: performance.now() and requestAnimationFrame answer to
 # window.__clock once it is frozen, so every frame is 1/FPS s after the last however slowly a
 # software renderer draws it. Frames the browser had already asked for wait for the next step.
-# A callback already waiting is not queued twice: the stage's loop asks for its next frame twice
-# while the camera moves (issue #6), and the copies would double at every step.
 CLOCK = """(() => {
   const realNow = performance.now.bind(performance), realRaf = window.requestAnimationFrame.bind(window);
   const realCancel = window.cancelAnimationFrame.bind(window), queue = new Map(), real = new Map();
@@ -48,9 +46,8 @@ CLOCK = """(() => {
   performance.now = () => frozen === null ? realNow() : frozen;
   window.requestAnimationFrame = cb => {
     const id = ++seq;
-    const wait = () => { for (const f of queue.values()) if (f === cb) return; queue.set(id, cb); };
-    if (frozen !== null) { wait(); return id; }
-    real.set(id, realRaf(t => { real.delete(id); if (frozen === null) cb(t); else wait(); }));
+    if (frozen !== null) { queue.set(id, cb); return id; }
+    real.set(id, realRaf(t => { real.delete(id); if (frozen === null) cb(t); else queue.set(id, cb); }));
     return id;
   };
   window.cancelAnimationFrame = id => { queue.delete(id); if (real.has(id)) { realCancel(real.get(id)); real.delete(id); } };
