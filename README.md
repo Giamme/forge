@@ -1122,6 +1122,7 @@ capture, the QA dispatch, and the ledger writes.
 forge-solo.sh <run-dir> --repo <dir> --dwarf <spec> [--qa <spec>]
               [--approach <file>] [--yolo-dwarf] [--yolo-qa]
               [--native-review] [--no-memory] [--timeout <s>] [--dry-run] [--ui | --no-ui]
+              [--fail-first]
               [--fractal | --no-fractal] [--fractal-<limit> <n>]
               [--dwarf-low <pool>] [--dwarf-medium <pool>] [--dwarf-high <pool>] [--retry]
 ```
@@ -1191,7 +1192,7 @@ Bash 3.2 entrypoints use a Python standard-library coordinator to schedule eligi
 ```
 forge-parallel.sh plan      <plan-dir> --repo <dir> [routing flags] [--planner <spec>] [--no-memory]
                                      [--decompose-level L] [--shadow-qa <spec>[,..]|none] [--shadow-rate R]
-                                     [--explore E] [--ui | --no-ui]
+                                     [--explore E] [--ui | --no-ui] [--fail-first | --no-fail-first]
 forge-parallel.sh run       <plan-dir> [--max-parallel N] [--yolo-dwarf] [--yolo-qa] [--dry-run]
                                      [--verify <cmd>] [--setup <cmd>] [--timeout S]
                                      [--retry-failed N] [--infra-retries M]

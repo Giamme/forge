@@ -62,3 +62,17 @@ forge_fingerprint() {
   index="$(git -C "$1" diff --cached --binary HEAD | git -C "$1" hash-object --stdin)" || return 1
   printf '%s %s %s\n' "$head" "$tree" "$index"
 }
+
+forge_fail_first() { # review snapshot, run or task dir, repo: advisory fail-first evidence for QA
+  # Writes <dir>/failfirst.json and the reviewer's section to <dir>/failfirst.txt; never fails
+  # the run and never touches the snapshot (forge-fail-first.py exports through its own index).
+  local cmd="" reviewed
+  rm -f "$2/failfirst.json" "$2/failfirst.txt"
+  [ -s "$3/.forge/verify-subset" ] && cmd="$(cat "$3/.forge/verify-subset")"
+  reviewed="$(git -C "$1" rev-parse HEAD)" || return 0
+  python3 "$SKILL_DIR/scripts/forge-fail-first.py" run --repo "$1" --base "$(cat "$2/review.base")" \
+      --reviewed "$reviewed" --command "$cmd" --out "$2/failfirst.json" --deps-from "$3" \
+      > "$2/failfirst.txt" 2>/dev/null || : > "$2/failfirst.txt"
+  forge_dataset_event fail_first --dir "$2" --file failfirst="$2/failfirst.json"
+  return 0
+}

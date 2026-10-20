@@ -129,7 +129,7 @@ pool_pick() { # pool_pick <comma-list> <index>
 do_plan() {
   local PLAN="${1:?plan needs a plan dir}"; shift
   local REPO="" D_ANY="" D_HI="" D_MD="" D_LO="" Q_ANY="" Q_HI="" Q_MD="" Q_LO=""
-  local PLANNER="" NOMEM=0 jev_rc=0 DLEVEL="" SHADOW_QA="" SHADOW_RATE="" EXPLORE=""
+  local PLANNER="" NOMEM=0 jev_rc=0 DLEVEL="" SHADOW_QA="" SHADOW_RATE="" EXPLORE="" FAIL_FIRST=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --repo)         REPO="${2:?}"; shift 2 ;;
@@ -155,6 +155,8 @@ do_plan() {
       --qa-medium)    Q_MD="${2:?}"; shift 2 ;;
       --qa-low)       Q_LO="${2:?}"; shift 2 ;;
       --ui|--no-ui)   forge_ui_flag "$1"; shift ;;
+      --fail-first)   FAIL_FIRST=on; shift ;;
+      --no-fail-first) FAIL_FIRST=off; shift ;;
       *)
         # `case` is not a loop, so `continue` here belongs to the enclosing while.
         if [ "$JEV_OPTS" = 1 ]; then
@@ -188,6 +190,8 @@ do_plan() {
   esac
   [ -z "$SHADOW_RATE" ] || [ "$SHADOW_QA" = none ] || [ "$SHADOW_QA" = off ] \
     || printf '%s\n' "$SHADOW_RATE" > "$PLAN/shadow_rate"
+  # Fail-first evidence (opt-in, advisory) is part of the plan too: every task's review gets it.
+  case "$FAIL_FIRST" in on) : > "$PLAN/fail_first" ;; off) rm -f "$PLAN/fail_first" ;; esac
   # Exploration is decided here and only here, so the table and preflight see what will run.
   # On by default: choosing models from measured pass rates needs some randomized picks, and
   # history had almost none (9 tasks ever ran on more than one spec). The flag wins, then
@@ -468,6 +472,13 @@ render_table() {
     local rate; rate="$(cat "$PLAN/shadow_rate" 2>/dev/null || echo 0.1)"
     echo "shadow review: $(cat "$PLAN/shadow_qa") on a sampled $rate of reviewed attempts" \
       "(about $(awk -v n="$n" -v r="$rate" 'BEGIN { x = n * r; printf "%d", (x == int(x)) ? x : int(x) + 1 }') extra reviews; recorded, never changes a result)"
+  fi
+  if [ -f "$PLAN/fail_first" ]; then
+    if [ -s "$(cat "$PLAN/repo")/.forge/verify-subset" ]; then
+      echo "fail-first: each task's new tests also run without its change (advice for the reviewer; never changes a result)"
+    else
+      echo "fail-first: on, but $(cat "$PLAN/repo")/.forge/verify-subset (a test command with {files}) is missing, so nothing will run"
+    fi
   fi
   echo
   local w id dws starred=0
@@ -880,6 +891,10 @@ do_task_body() (
         --run-dir "$tdir" > "$tdir/subset.jev.txt" 2>/dev/null \
       || : > "$tdir/subset.jev.txt"
   fi
+  # Opt-in (plan --fail-first): do this attempt's new tests fail without its change? Read-only
+  # on the review snapshot, like the subset run above; the reviewer gets the evidence.
+  rm -f "$tdir/failfirst.json" "$tdir/failfirst.txt"
+  [ ! -f "$PLAN/fail_first" ] || forge_fail_first "$review" "$tdir" "$REPO"
   # QA uses the dispatch-time ownership and baseline, never later merge state.
   /bin/bash "$MEMORY" inject "$REPO" qa --task "$tdir/prompt.md" \
       --run-dir "$tdir" > "$tdir/qa.memory"
@@ -887,6 +902,7 @@ do_task_body() (
     python3 "$SKILL_DIR/scripts/forge-prompt.py" --requirements "$tdir/prompt.md" --capsule "$tdir/baseline.capsule" --approach "$tdir/approach.md" --retry "$tdir/retry_findings.md" --memory "$tdir/dwarf.memory" --memory "$tdir/qa.memory"
     python3 "$SKILL_DIR/scripts/forge-contract.py" qa --part head --kind task
     echo
+    if [ -s "$tdir/failfirst.txt" ]; then cat "$tdir/failfirst.txt"; echo; fi
     # A subset failure is the one thing a reviewer most wants to know and cannot see
     # from the diff. It runs in a throwaway export of the reviewed commit, so the task
     # worktree is untouched and no fingerprint can change. It never replaces

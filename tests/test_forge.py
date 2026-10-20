@@ -48,6 +48,7 @@ if name == 'b.txt' and not qa and os.environ.get('SLOW_B'): time.sleep(4)
 if not qa:
  if os.environ.get('SLEEP'): time.sleep(10)
  if not sc.get('no_edit'): pathlib.Path(name).write_text(sc.get('content', os.environ.get('CONTENT','implemented'))+'\\n')
+ for k, v in (sc.get('files') or {}).items(): pathlib.Path(k).parent.mkdir(parents=True, exist_ok=True); pathlib.Path(k).write_text(v)
  if sc.get('background'):
   import subprocess; q = subprocess.Popen(['sleep','60'], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
   pathlib.Path(os.environ['SCENARIO']+'.bgpid').write_text(str(q.pid))

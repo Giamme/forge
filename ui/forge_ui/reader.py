@@ -545,9 +545,40 @@ def _task_detail(reader, task, run_id, waves, branches):
     task['findings'] = executions.summary_of(qa)
     task['gate'] = _gate(reader, prefix + '/qa.gate')
     task['known_issues'] = _nonempty(reader, prefix + '/known_issues.md')
+    task['fail_first'] = _fail_first(reader, prefix + '/failfirst.json')
     shadows = _shadows(reader, ident, execs)
     task['shadow'] = [entry for entry, _, _ in shadows]
     return execs + [item for _, items, _ in shadows for item in items]
+
+
+_FAIL_FIRST_RESULTS = ('proven', 'passes_without_change', 'inconclusive', 'error')
+
+
+def _fail_first(reader, name):
+    """failfirst.json (forge-fail-first.py, opt-in): did each new test fail without the change?"""
+    obj = reader.object(name)
+    if obj is None:
+        return None
+    status = obj.get('status')
+    if status not in ('ran', 'skipped', 'error'):
+        reader.warn(name, 'unknown fail-first status')
+        return None
+    tests = []
+    for item in obj.get('tests') if isinstance(obj.get('tests'), list) else []:
+        if isinstance(item, dict) and isinstance(item.get('path'), str) and item.get('result') in _FAIL_FIRST_RESULTS:
+            runs = {}
+            for side in ('with_change', 'without_change'):
+                run = item.get(side) if isinstance(item.get(side), dict) else {}
+                rc = run.get('rc')
+                runs[side] = dict(rc=rc if type(rc) is int else None,
+                                  tail=run['tail'][-2000:] if isinstance(run.get('tail'), str) else None)
+            tests.append(dict(path=item['path'], result=item['result'], **runs))
+    counts = dict.fromkeys(_FAIL_FIRST_RESULTS, 0)
+    for item in tests:
+        counts[item['result']] += 1
+    return dict(status=status, reason=obj.get('reason') if isinstance(obj.get('reason'), str) else None,
+                command=obj.get('command') if isinstance(obj.get('command'), str) else None,
+                tests=tests, counts=counts)
 
 
 def _published(reader):
@@ -662,7 +693,8 @@ def _solo_detail(reader, source):
                 retry_findings=None, qa_tail=reader.cap(qa, 'tasks/solo/qa_tail', 4000, True),
                 dwarf_tail=reader.cap(reader.text('dwarf.last'), 'tasks/solo/dwarf_tail', 4000, True),
                 executions=execs, merged_at=None, findings=executions.summary_of(qa),
-                gate=_gate(reader, 'qa.gate'), known_issues=_nonempty(reader, 'known_issues.md'))
+                gate=_gate(reader, 'qa.gate'), known_issues=_nonempty(reader, 'known_issues.md'),
+                fail_first=_fail_first(reader, 'failfirst.json'))
     result.update(timeline=_timeline(execs, [], []), integration=None, final_review=None, final_reviews=[],
                   deferrals=[], findings_available=findings.available(), fractal=fractal.summary(reader))
     result.update(tasks=[task], warnings=reader.warnings, truncated=reader.truncated, updated=reader.updated)
