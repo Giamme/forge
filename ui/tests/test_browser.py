@@ -188,6 +188,37 @@ class Page(unittest.TestCase):
         self.assertTrue(page.evaluate("window.ForgeUI.state.stage.debug().nodes.some(n => n.id.startsWith('x:task-'))"))
         self.assertClean(page)
 
+    def test_orbiting_asks_for_one_frame_at_a_time(self):
+        """While the camera moves, the stage asks for its next frame once (#6). Asked twice a frame,
+        the copies doubled every frame and a second of orbiting drew hundreds of times."""
+        count = """(() => {
+          const raf = window.requestAnimationFrame.bind(window), waiting = new Map(); window.__copies = 0;
+          window.requestAnimationFrame = cb => {
+            const n = (waiting.get(cb) || 0) + 1; waiting.set(cb, n); window.__copies = Math.max(window.__copies, n);
+            return raf(t => { const m = waiting.get(cb) - 1; if (m) waiting.set(cb, m); else waiting.delete(cb); cb(t); });
+          };
+        })();"""
+        page = self.open(cdn=True, init=count)
+        page.goto(self.url + '#/runs/' + self.key)
+        self.three_or_skip(page)
+        page.evaluate("window.ForgeUI.state.stage.debug().settle()")
+        at = "window.ForgeUI.state.stage.debug().screenPos('t:reader')"
+        self.steady(page, at)
+        before = page.evaluate(at)
+        box = page.locator('#stage-host canvas').bounding_box()
+        x, y = box['x'] + box['width'] / 2, box['y'] + box['height'] / 4
+        page.mouse.move(x, y)
+        page.mouse.down()
+        for i in range(1, 4):
+            page.mouse.move(x - 12 * i, y + 2 * i)
+            self.frames(page)
+        moved, copies = page.evaluate(at) != before, page.evaluate('window.__copies')
+        page.mouse.up()
+        self.assertTrue(moved, 'the drag orbited the camera')
+        self.assertEqual(copies, 1, 'copies of the frame callback waiting at once')
+        self.steady(page, at)                                           # and the camera comes to rest
+        self.assertClean(page)
+
     def test_the_diff_viewer_pins_findings_to_their_lines(self):
         page = self.open(cdn=False)
         page.goto(self.url + f'#/runs/{self.key}/tasks/reader')

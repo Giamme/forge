@@ -538,7 +538,10 @@ export async function createEngine(host, { reduceMotion = false } = {}) {
     const bufH = renderer.getDrawingBufferSize(tmpV).y, pxScale = camera === ortho ? bufH * ortho.zoom / orthoH : bufH / fovK();
     for (const m of glowMats) m.uniforms.scale.value = pxScale;
     composer.render();
-    if ((more || now < wakeUntil) && visible && onScreen) raf = requestAnimationFrame(frame); else last = 0;
+    // controls.update() fires 'change', whose invalidate() may already have asked for the next frame:
+    // ask once, or the copies double every frame while the camera moves
+    if ((more || now < wakeUntil) && visible && onScreen) { if (!raf) raf = requestAnimationFrame(frame); }
+    else if (!raf) last = 0;
   }
   controls.addEventListener('change', () => invalidate());
   const onVisibility = () => { visible = document.visibilityState === 'visible'; if (visible) invalidate(); };

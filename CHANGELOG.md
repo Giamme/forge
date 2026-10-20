@@ -3,7 +3,19 @@
 All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
-and versions follow the format `{major}.{minor}` ([...] parts appear only when non-zero).
+and versions follow the format `{major}.{minor}[.{patch}]` ([...] parts appear only when non-zero).
+
+## [0.7.1] - 2026-10-20
+
+A patch for forge-ui: orbiting its 3D views no longer stalls, and you can look around it on made-up runs before your first one.
+
+### Added
+
+- You can look around forge-ui before your first run: `python3 ui/tools/demo_runs.py DIR` writes made-up runs (one still working, and a few weeks of history across five projects), and `python3 -m forge_ui --no-registry --root DIR`, run from `ui/`, shows them.
+
+### Fixed
+
+- Orbiting forge-ui's 3D views no longer stalls. While the camera moved, every frame asked for two more, so the drawing doubled with each frame: a second of orbiting drew hundreds of times and the page stalled, worst in the run cloud.
 
 ## [0.7] - 2026-10-20
 

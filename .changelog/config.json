@@ -4,8 +4,7 @@
   "group_by_type": true,
   "tag_format": "v{version}",
   "versioning": {
-    "preset": "two-part",
-    "format": "{major}.{minor}",
+    "format": "{major}.{minor}[.{patch}]",
     "bump_rules": {
       "breaking": "major",
       "added": "minor",
