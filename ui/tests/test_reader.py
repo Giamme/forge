@@ -13,6 +13,12 @@ from forge_ui.reader import Catalog, detail, discover, run_key, summarize
 FIXTURE = Path(__file__).parent / 'fixtures' / 'plan-full'
 SOLO = Path(__file__).parent / 'fixtures' / 'solo-full'
 LEGACY = Path(__file__).parent / 'fixtures' / 'solo-legacy'
+NEW_SETTINGS = dict(max_parallel=None, qa_threshold=None, escalate_after=None, verify_retries=None, final_qa=None)
+SOLO_SETTINGS = dict(explore=None, shadow_rate=None, shadow_qa=None, timeout=None, **NEW_SETTINGS)
+# A reply with verdict lines and no finding blocks.
+NO_FINDINGS = dict(P0=0, P1=0, P2=0, P3=0, unlabelled=0, plausible=0, confirmed=0, worst=None)
+SHADOW_EXTRA = dict(execution=None, findings=NO_FINDINGS, primary_verdict=None, agreement='unknown',
+                    ended=None, duration_s=None)
 
 
 class ReaderTests(unittest.TestCase):
@@ -51,13 +57,15 @@ class ReaderTests(unittest.TestCase):
                                           'attempt': 2, 'assignment': {'dwarf': 'sol', 'qa': 'opus'}}}},
             'shadow': [
                 {'attempt': 1, 'k': 2, 'spec': 'sol:xhigh', 'primary': 'opus', 'started': 1760620100.0,
-                 'status': 'PASS', 'verdict': 'FAIL'},
+                 'status': 'PASS', 'verdict': 'FAIL', 'reviewed': True, 'pick': 2, **SHADOW_EXTRA},
                 {'attempt': 2, 'k': 0, 'spec': 'sol:xhigh', 'primary': 'opus', 'started': 1760620100.0,
-                 'status': 'FAIL', 'verdict': 'PASS'}],
+                 'status': 'FAIL', 'verdict': 'PASS', 'reviewed': True, 'pick': 0, **SHADOW_EXTRA}],
             'prompt': 'Read the plan.\n', 'approach': 'Use standard Python.\n',
             'retry_findings': 'Handle missing files.\n',
             'qa_tail': 'FORGE_VERDICT: FAIL\nFixed now.\nFORGE_VERDICT: PASS\nPostscript.\n',
-            'dwarf_tail': None,
+            'dwarf_tail': None, 'executions': [],
+            'merged_at': (FIXTURE / 'tasks/reader/merged').stat().st_mtime, 'findings': NO_FINDINGS,
+            'gate': None, 'known_issues': False,
         })
         self.assertEqual(page['status'], 'RUNNING')
         self.assertEqual(page['branch'], 'forge/20261016-153012-ab12/page')
@@ -76,10 +84,18 @@ class ReaderTests(unittest.TestCase):
             self.assertEqual(graph[field], [])
         self.assertFalse(graph['explored'])
         self.assertEqual(data['waves'], [['reader'], ['page', 'graph']])
+        self.assertEqual(page['executions'], [])
+        self.assertIsNone(page['merged_at'])
+        self.assertIsNone(graph['findings'])
         self.assertEqual(data['settings'], {'explore': 0.5, 'shadow_rate': 0.25,
-                                           'shadow_qa': ['opus', 'sol:xhigh'], 'timeout': 3600})
+                                           'shadow_qa': ['opus', 'sol:xhigh'], 'timeout': 3600, **NEW_SETTINGS})
         self.assertEqual(data['verification'], {'status': 'PASS', 'command': 'python3 -m unittest',
-                                               'log_tail': 'All tests passed.\n'})
+                                               'log_tail': 'All tests passed.\n', 'runs': [], 'commit': None})
+        self.assertEqual(data['timeline'], {'started': None, 'ended': None, 'runs': [], 'verifications': []})
+        self.assertIsNotNone(data['integration'])  # the merged marker
+        self.assertEqual(data['integration']['merged'], [{'id': 'reader', 'at': reader['merged_at']}])
+        for field, value in (('final_review', None), ('final_reviews', []), ('deferrals', []), ('findings_available', True)):
+            self.assertEqual(data[field], value, field)
         self.assertEqual(data['request'], 'A read-only run viewer.\n')
         self.assertEqual(data['warnings'], [])
         self.assertEqual(data['truncated'], [])
@@ -91,6 +107,11 @@ class ReaderTests(unittest.TestCase):
         self.assertEqual(summary['verification_status'], 'PASS')
         self.assertEqual(summary['task_count'], 3)
         self.assertEqual(summary['counts'], {'MERGED': 1, 'RUNNING': 1, 'PENDING': 1})
+        self.assertEqual(summary['task_statuses'], [{'id': 'reader', 'status': 'MERGED'},
+                                                    {'id': 'page', 'status': 'RUNNING'},
+                                                    {'id': 'graph', 'status': 'PENDING'}])
+        self.assertEqual(summary['models'], ['astra', 'luna', 'opus'])
+        self.assertIsNone(summary['final_review'])
         for value in (summary, data):
             json.dumps(value, allow_nan=False)
 
@@ -99,7 +120,9 @@ class ReaderTests(unittest.TestCase):
         data = detail(self.base)
         self.assertIsNone(data['verification'])
         self.assertIsNone(data['request'])
-        self.assertEqual(data['settings'], {'explore': None, 'shadow_rate': None, 'shadow_qa': [], 'timeout': None})
+        self.assertEqual(data['settings'], {'explore': None, 'shadow_rate': None, 'shadow_qa': [], 'timeout': None,
+                                            **NEW_SETTINGS})
+        self.assertIsNone(data['integration'])
         self.assertEqual(data['waves'], [])
         self.assertEqual(data['warnings'], [])
         self.assertIsNone(data['tasks'][0]['wave'])
@@ -162,8 +185,8 @@ class ReaderTests(unittest.TestCase):
         self.assertEqual([(s['attempt'], s['k']) for s in data['tasks'][0]['shadow']],
                          [(1, 2), (2, 0), (2, 2), (2, 10)])
         self.assertEqual(data['tasks'][0]['shadow'][-1],
-                         {'attempt': 2, 'k': 10, 'spec': None, 'primary': None,
-                          'started': None, 'status': None, 'verdict': None})
+                         {'attempt': 2, 'k': 10, 'spec': None, 'primary': None, 'started': None, 'status': None,
+                          'verdict': None, 'reviewed': None, 'pick': None, **SHADOW_EXTRA, 'findings': None})
         self.assertEqual(data['warnings'], [])
 
     def test_verdict_accepts_dash_glosses_and_uses_last_matching_line(self):
@@ -226,7 +249,8 @@ class ReaderTests(unittest.TestCase):
         # An existing but empty file still makes verification present.
         self.write(self.base / 'verification.log', '')
         data = detail(self.base)
-        self.assertEqual(data['verification'], {'status': None, 'command': None, 'log_tail': ''})
+        self.assertEqual(data['verification'], {'status': None, 'command': None, 'log_tail': '', 'runs': [],
+                                                'commit': None})
         self.assertEqual(len(data['warnings']), 1)
 
     def test_text_caps_and_verdict_outside_tail(self):
@@ -352,7 +376,8 @@ class ReaderTests(unittest.TestCase):
                 return original(path, *args, **kwargs)
             return wrapped
         with patch.object(Path, 'open', guard(
-                {'run_id', 'repo', 'goal.txt', 'decompose_level', 'verification.status', 'tasks.tsv', 'status'})):
+                {'run_id', 'repo', 'goal.txt', 'decompose_level', 'verification.status', 'tasks.tsv', 'status',
+                 'final-review.verdict'})):
             self.assertEqual(summarize(plan)['task_count'], 3)
         os.utime(plan / 'tasks/reader/prompt.md', (4000000000, 4000000000))
         self.assertEqual(detail(plan)['updated'], 4000000000.0)
@@ -368,7 +393,8 @@ class ReaderTests(unittest.TestCase):
             os.utime(solo / 'prompt.md', (500, 500))
             self.assertEqual(summarize(solo)['updated'], 400.0)
         with self.subTest('solo summary reads'):
-            with patch.object(Path, 'open', guard({'repo', 'goal.txt', 'status', 'verdict'})):
+            with patch.object(Path, 'open', guard({'repo', 'goal.txt', 'status', 'verdict', 'dwarf.spec', 'qa.spec',
+                                                   'dwarf.resolved', 'qa.resolved'})):
                 summary = summarize(solo)
             self.assertEqual(summary['task_count'], 1)
             self.assertEqual(summary['counts'], {'RUNNING': 1})
@@ -385,6 +411,7 @@ class ReaderTests(unittest.TestCase):
             'clef': {'first_pass': None, 'retry_pass': {}}, 'shadow': [],
             'prompt': 'Implement the reader.\n', 'approach': None, 'retry_findings': None,
             'qa_tail': 'Looked at the diff.\nFORGE_VERDICT: FAIL\n', 'dwarf_tail': 'Still working.\n',
+            'executions': [], 'merged_at': None, 'findings': NO_FINDINGS, 'gate': None, 'known_issues': False,
         }])
         self.assertEqual(data['kind'], 'solo')
         self.assertEqual(data['run_id'], 'solo-full')
@@ -396,15 +423,22 @@ class ReaderTests(unittest.TestCase):
         self.assertEqual(data['counts'], {'RUNNING': 1})
         self.assertEqual(data['waves'], [['solo']])
         self.assertIsNone(data['verification'])
-        self.assertEqual(data['settings'], {'explore': None, 'shadow_rate': None, 'shadow_qa': None, 'timeout': None})
+        self.assertEqual(data['settings'], SOLO_SETTINGS)
         self.assertEqual(data['request'], 'Watch a solo run while it works.\n')
         self.assertEqual(data['warnings'], [])
         self.assertEqual(data['truncated'], [])
         self.assertEqual(data['key'], run_key(SOLO))
         self.assertEqual(data['path'], str(Path(os.path.realpath(SOLO))))
         summary = summarize(SOLO, 'registry')
-        for field in ('kind', 'run_id', 'repo', 'goal', 'decompose_level', 'verification_status', 'task_count', 'counts'):
+        for field in ('kind', 'run_id', 'repo', 'goal', 'decompose_level', 'verification_status', 'task_count', 'counts',
+                      'task_statuses', 'models'):
             self.assertEqual(summary[field], data[field], field)
+        self.assertEqual(summary['task_statuses'], [{'id': 'solo', 'status': 'RUNNING'}])
+        self.assertEqual(summary['models'], ['opus', 'sol:high'])
+        self.assertIsNone(summary['final_review'])
+        for field, value in (('timeline', {'started': None, 'ended': None, 'runs': [], 'verifications': []}),
+                             ('integration', None), ('final_review', None), ('final_reviews', []), ('deferrals', [])):
+            self.assertEqual(data[field], value, field)
         self.assertEqual(summary['source'], 'registry')
         for value in (summary, data):
             json.dumps(value, allow_nan=False)
@@ -422,7 +456,7 @@ class ReaderTests(unittest.TestCase):
         self.assertEqual(data['waves'], [['solo']])
         self.assertIsNone(data['verification'])
         self.assertIsNone(data['request'])
-        self.assertEqual(data['settings'], {'explore': None, 'shadow_rate': None, 'shadow_qa': None, 'timeout': None})
+        self.assertEqual(data['settings'], SOLO_SETTINGS)
         self.assertEqual(data['warnings'], [])
         self.assertEqual(data['tasks'], [{
             'id': 'solo', 'title': 'Solo run', 'deps': [], 'difficulty': None, 'files': [],
@@ -430,7 +464,8 @@ class ReaderTests(unittest.TestCase):
             'attempts': [], 'escalations': [], 'verdict': None, 'accepted_by': None, 'explored': False,
             'route': [], 'clef': {'first_pass': None, 'retry_pass': {}}, 'shadow': [],
             'prompt': 'Old prompt.\n', 'approach': None, 'retry_findings': None,
-            'qa_tail': None, 'dwarf_tail': None,
+            'qa_tail': None, 'dwarf_tail': None, 'executions': [], 'merged_at': None, 'findings': None,
+            'gate': None, 'known_issues': False,
         }])
         json.dumps(data, allow_nan=False)
         run = self.base / 'neither'

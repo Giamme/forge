@@ -183,11 +183,11 @@ class RoutesTests(ServerTestCase):
         self.assertEqual(headers['cache-control'], 'no-store')
         self.assertEqual(headers['x-content-type-options'], 'nosniff')
         self.assertEqual(headers['content-security-policy'], CSP)
-        self.assertEqual(__version__, '0.2.0')
+        self.assertEqual(__version__, '0.3.0')
         self.assertEqual(build_id(), _source_build_id())
         self.assertEqual(json.loads(body), {
             'app': 'forge-ui',
-            'version': '0.2.0',
+            'version': '0.3.0',
             'build': build_id(),
             'pid': os.getpid(),
         })

@@ -1,7 +1,9 @@
 """Local HTTP server: the JSON API of docs/api.md and the static page. Read-only."""
 from __future__ import annotations
 
+import base64
 from contextlib import contextmanager
+import hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
@@ -10,6 +12,7 @@ import re
 import sys
 import threading
 import time
+import urllib.parse
 
 from forge_ui import __version__, build_id
 
@@ -20,6 +23,9 @@ STATIC_DIR = Path(__file__).resolve().parent / 'static'
 BUILD = build_id()
 
 _RUN_PATH = re.compile(r'/api/runs/([0-9a-f]{12})')
+_TASK_PATH = re.compile(r'/api/runs/([0-9a-f]{12})/tasks/([^/]+)')
+_EXEC_PATH = re.compile(r'/api/runs/([0-9a-f]{12})/executions/((?:task|dwarf|qa|solo|verification|parallel)-[0-9a-f]{32})')
+_REVIEW_PATH = re.compile(r'/api/runs/([0-9a-f]{12})/final-reviews/((?:final-review|integrate)-[0-9]+-[0-9]+)')
 _STATIC_PATH = re.compile(r'/([A-Za-z0-9_.-]+\.(?:html|js|css|svg))')
 _TYPES = {
     'html': 'text/html; charset=utf-8',
@@ -30,10 +36,35 @@ _TYPES = {
 _JSON = 'application/json; charset=utf-8'
 _CSP = ("default-src 'self'; style-src 'self'; script-src 'self'; img-src 'self' data:; "
         "connect-src 'self'; frame-ancestors 'none'")
+# The page may load three.js, pinned, from the CDN (only when the 3D view is opened); its inline
+# import map is allowed by hash, computed from the file actually served.
+_PAGE_CSP = ("default-src 'self'; style-src 'self'; script-src 'self' https://cdn.jsdelivr.net/npm/three@0.160.0/{}; "
+             "img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; object-src 'none'")
+_IMPORTMAP = re.compile(r'<script type="importmap">(.*?)</script>', re.DOTALL | re.IGNORECASE)
 
 
 def _log(message):
     print(f'forge-ui: {message}', file=sys.stderr)
+
+
+def page_csp(body):
+    """The CSP for an HTML page: _PAGE_CSP plus the sha256 of each inline import map in it."""
+    # Browsers hash the script text after normalising newlines, so the hash is taken the same way.
+    text = body.decode('utf-8', errors='replace').replace('\r\n', '\n').replace('\r', '\n')
+    hashes = ''.join(" 'sha256-%s'" % base64.b64encode(hashlib.sha256(script.encode('utf-8')).digest()).decode('ascii')
+                     for script in _IMPORTMAP.findall(text))
+    return _PAGE_CSP.format(hashes)
+
+
+def _task_id(segment):
+    """A task id from its URL segment, or None when it cannot name a task dir."""
+    try:
+        value = urllib.parse.unquote(segment, errors='strict')
+    except UnicodeDecodeError:
+        return None
+    if not value or value in ('.', '..') or '/' in value or '\x00' in value or '\ufffd' in value:
+        return None
+    return value
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -147,6 +178,16 @@ class Handler(BaseHTTPRequestHandler):
             if run is None:
                 return self._json(404, {'error': 'not found'})
             return self._json(200, run)
+        match = _TASK_PATH.fullmatch(path)
+        if match:
+            task_id = _task_id(match.group(2))
+            return self._found(None if task_id is None else catalog.task(match.group(1), task_id))
+        match = _EXEC_PATH.fullmatch(path)
+        if match:
+            return self._found(catalog.execution(*match.groups()))
+        match = _REVIEW_PATH.fullmatch(path)
+        if match:
+            return self._found(catalog.final_review(*match.groups()))
         if path == '/':
             return self._static('index.html')
         match = _STATIC_PATH.fullmatch(path)
@@ -167,7 +208,11 @@ class Handler(BaseHTTPRequestHandler):
                 body = None
         if body is None:
             return self._json(404, {'error': 'not found'})
-        return 200, _TYPES[name.rsplit('.', 1)[1]], body, {}
+        kind = name.rsplit('.', 1)[1]
+        return 200, _TYPES[kind], body, {'Content-Security-Policy': page_csp(body)} if kind == 'html' else {}
+
+    def _found(self, value):
+        return self._json(404, {'error': 'not found'}) if value is None else self._json(200, value)
 
     @staticmethod
     def _json(status, obj, extra=None):
@@ -175,13 +220,15 @@ class Handler(BaseHTTPRequestHandler):
         return status, _JSON, body, extra or {}
 
     def _send(self, status, ctype, body, extra, head=False):
+        extra = dict(extra)
         try:
             self.send_response(int(status))
             self.send_header('Content-Type', ctype)
             self.send_header('Content-Length', str(len(body)))
             self.send_header('Cache-Control', 'no-store')
             self.send_header('X-Content-Type-Options', 'nosniff')
-            self.send_header('Content-Security-Policy', _CSP)
+            self.send_header('Content-Security-Policy', extra.pop('Content-Security-Policy', _CSP))
+            self.send_header('Referrer-Policy', 'no-referrer')
             for name, value in extra.items():
                 self.send_header(name, value)
             self.end_headers()
