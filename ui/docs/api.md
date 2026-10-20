@@ -230,13 +230,23 @@ nothing when there is none. Every other response keeps
   "task_count": 5,
   "counts": {"MERGED": 3, "RUNNING": 1, "PENDING": 1},
   "verification_status": "PASS",
-  "task_statuses": [{"id": "reader", "status": "MERGED"}, {"id": "page", "status": "RUNNING"}],
+  "created": 1760619000.0,
+  "task_statuses": [{"id": "reader", "status": "MERGED", "difficulty": "high", "title": "Read plan dirs"},
+                    {"id": "page", "status": "RUNNING", "difficulty": "medium", "title": "Draw the page"}],
   "models": ["opus", "sol:xhigh"],
+  "dwarf_models": ["sol:xhigh"],
+  "qa_models": ["opus"],
   "final_review": "FAIL"
 }
 ```
 
-- `task_statuses`: every task in `tasks.tsv` order (a solo run: `[{"id": "solo", "status": <solo status>}]`).
+- `task_statuses`: every task in `tasks.tsv` order, with its `difficulty` (`null` when empty) and
+  `title` (its first 160 characters, then `…`). A solo run: `[{"id": "solo", "status": <solo status>,
+  "difficulty": null, "title": <goal or "Solo run">}]`.
+- `created`: when the run began: the earliest birth time (else mtime) of the files a run writes
+  once at its start (plan: `run_id`, `repo`, `request.md`, `goal.txt`, `tasks.tsv`; solo: `prompt.md`,
+  `repo`, `request.md`, `goal.txt`), else `null`. These are stat'ed only, and never move `updated`.
+- `dwarf_models`, `qa_models`: `models` split by role.
 - `models`: the sorted distinct specs of the `dwarf` and `qa` columns (a solo run: its `dwarf`
   and `qa` specs as its task has them), nulls left out.
 - `final_review`: the first word of `final-review.verdict`, else `null`; always `null` for a

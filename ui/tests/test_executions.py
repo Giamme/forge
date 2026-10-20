@@ -330,7 +330,7 @@ class ExecutionTests(FixtureCase):
 
     def test_summary_additions(self):
         summary = summarize(self.plan)
-        self.assertEqual(summary['task_statuses'], [{'id': 'reader', 'status': 'MERGED'},
+        self.assertEqual([{k: t[k] for k in ('id', 'status')} for t in summary['task_statuses']], [{'id': 'reader', 'status': 'MERGED'},
                                                     {'id': 'page', 'status': 'MERGED'},
                                                     {'id': 'graph', 'status': 'RUNNING'},
                                                     {'id': 'server', 'status': 'PENDING'},
@@ -340,7 +340,7 @@ class ExecutionTests(FixtureCase):
         self.assertNotIn('timeline', summary)
         solo = summarize(self.solo)
         self.assertEqual((solo['task_statuses'], solo['models'], solo['final_review']),
-                         ([{'id': 'solo', 'status': 'PASS'}], ['opus', 'sol:high'], None))
+                         ([{'id': 'solo', 'status': 'PASS', 'difficulty': None, 'title': 'A rich solo run'}], ['opus', 'sol:high'], None))
 
     def test_solo_executions(self):
         data = detail(self.solo)

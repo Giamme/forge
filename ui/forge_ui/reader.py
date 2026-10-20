@@ -316,6 +316,30 @@ def _tasks(reader):
     return tasks
 
 
+_TITLE_CAP = 160
+# Files a run writes once, when it starts: their earliest time is when the run began. Stat'ed
+# outside _Read.track, so they never move `updated`.
+_PLAN_START_FILES = ('run_id', 'repo', 'request.md', 'goal.txt', 'tasks.tsv')
+_SOLO_START_FILES = ('prompt.md', 'repo', 'request.md', 'goal.txt')
+
+
+def _created(path, names):
+    times = []
+    for name in names:
+        try:
+            info = os.stat(path / name)
+        except (OSError, ValueError):
+            continue
+        value = getattr(info, 'st_birthtime', None) or info.st_mtime
+        if math.isfinite(value):
+            times.append(float(value))
+    return min(times) if times else None
+
+
+def _brief(title):
+    return title if len(title) <= _TITLE_CAP else title[:_TITLE_CAP] + '…'
+
+
 def _summary(reader, source):
     result = dict(key=run_key(reader.path), path=str(reader.path), source=source, kind='plan',
                   run_id=reader.line('run_id'), repo=reader.line('repo'),
@@ -326,9 +350,13 @@ def _summary(reader, source):
     for task in tasks:
         counts[task['status']] = counts.get(task['status'], 0) + 1
     final_review = reader.word('final-review.verdict')
-    result.update(updated=reader.updated, task_count=len(tasks), counts=counts,
-                  task_statuses=[dict(id=task['id'], status=task['status']) for task in tasks],
-                  models=sorted({spec for task in tasks for spec in (task['dwarf'], task['qa']) if spec}),
+    dwarf_models = sorted({task['dwarf'] for task in tasks if task['dwarf']})
+    qa_models = sorted({task['qa'] for task in tasks if task['qa']})
+    result.update(updated=reader.updated, created=_created(reader.path, _PLAN_START_FILES),
+                  task_count=len(tasks), counts=counts,
+                  task_statuses=[dict(id=task['id'], status=task['status'], difficulty=task['difficulty'] or None,
+                                      title=_brief(task['title'])) for task in tasks],
+                  models=sorted(set(dwarf_models) | set(qa_models)), dwarf_models=dwarf_models, qa_models=qa_models,
                   final_review=final_review)
     return result, tasks
 
@@ -353,12 +381,16 @@ def _solo_summary(reader, source):
     # Stat the live logs without reading them, so `updated` moves while a model writes.
     reader.exists('dwarf.log')
     reader.exists('qa.log')
-    specs = {_role_spec(reader, 'dwarf'), _role_spec(reader, 'qa')} - {None}
+    dwarf, qa = _role_spec(reader, 'dwarf'), _role_spec(reader, 'qa')
+    goal = reader.line('goal.txt')
     return dict(key=run_key(reader.path), path=str(reader.path), source=source, kind='solo',
-                run_id=reader.path.name, repo=reader.line('repo'), goal=reader.line('goal.txt'),
+                run_id=reader.path.name, repo=reader.line('repo'), goal=goal,
                 decompose_level=None, verification_status=None, updated=reader.updated,
-                task_count=1, counts={status: 1}, task_statuses=[dict(id='solo', status=status)],
-                models=sorted(specs), final_review=None)
+                created=_created(reader.path, _SOLO_START_FILES),
+                task_count=1, counts={status: 1},
+                task_statuses=[dict(id='solo', status=status, difficulty=None, title=_brief(goal or 'Solo run'))],
+                models=sorted({dwarf, qa} - {None}), dwarf_models=[dwarf] if dwarf else [],
+                qa_models=[qa] if qa else [], final_review=None)
 
 
 def summarize(path, source='plan') -> dict:

@@ -107,7 +107,7 @@ class ReaderTests(unittest.TestCase):
         self.assertEqual(summary['verification_status'], 'PASS')
         self.assertEqual(summary['task_count'], 3)
         self.assertEqual(summary['counts'], {'MERGED': 1, 'RUNNING': 1, 'PENDING': 1})
-        self.assertEqual(summary['task_statuses'], [{'id': 'reader', 'status': 'MERGED'},
+        self.assertEqual([{k: t[k] for k in ('id', 'status')} for t in summary['task_statuses']], [{'id': 'reader', 'status': 'MERGED'},
                                                     {'id': 'page', 'status': 'RUNNING'},
                                                     {'id': 'graph', 'status': 'PENDING'}])
         self.assertEqual(summary['models'], ['astra', 'luna', 'opus'])
@@ -433,7 +433,7 @@ class ReaderTests(unittest.TestCase):
         for field in ('kind', 'run_id', 'repo', 'goal', 'decompose_level', 'verification_status', 'task_count', 'counts',
                       'task_statuses', 'models'):
             self.assertEqual(summary[field], data[field], field)
-        self.assertEqual(summary['task_statuses'], [{'id': 'solo', 'status': 'RUNNING'}])
+        self.assertEqual([{k: t[k] for k in ('id', 'status')} for t in summary['task_statuses']], [{'id': 'solo', 'status': 'RUNNING'}])
         self.assertEqual(summary['models'], ['opus', 'sol:high'])
         self.assertIsNone(summary['final_review'])
         for field, value in (('timeline', {'started': None, 'ended': None, 'runs': [], 'verifications': []}),
@@ -549,3 +549,48 @@ class ReaderTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class SummaryExtensionTests(unittest.TestCase):
+    """The fields the cloud, quick jump and notifications read from the run list."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.plan = Path(shutil.copytree(FIXTURE, Path(self.temp.name) / 'plan'))
+
+    def test_tasks_carry_difficulty_and_a_capped_title(self):
+        rows = (self.plan / 'tasks.tsv').read_text().splitlines()
+        long = 'x' * 400
+        rows = [r if r.startswith('#') or not r.startswith('graph\t') else '\t'.join(r.split('\t')[:6] + [long]) for r in rows]
+        (self.plan / 'tasks.tsv').write_text('\n'.join(rows) + '\n')
+        summary = summarize(self.plan)
+        by_id = {t['id']: t for t in summary['task_statuses']}
+        self.assertEqual(by_id['reader']['difficulty'], 'high')
+        self.assertEqual(by_id['reader']['title'], 'Read plan dirs')
+        self.assertEqual(len(by_id['graph']['title']), 161)
+        self.assertTrue(by_id['graph']['title'].endswith('…'))
+        json.dumps(summary, allow_nan=False)
+
+    def test_models_by_role(self):
+        summary = summarize(self.plan)
+        self.assertEqual(summary['models'], sorted(set(summary['dwarf_models']) | set(summary['qa_models'])))
+        self.assertTrue(summary['dwarf_models'])
+        self.assertTrue(summary['qa_models'])
+
+    def test_created_is_the_start_and_never_moves_updated(self):
+        for name, at in (('run_id', 1000), ('repo', 900), ('tasks.tsv', 1100), ('goal.txt', 950)):
+            os.utime(self.plan / name, (at, at))
+        before = summarize(self.plan)
+        self.assertLessEqual(before['created'], 950)
+        self.assertLessEqual(before['created'], before['updated'])
+        os.utime(self.plan / 'repo', (5, 5))
+        after = summarize(self.plan)
+        self.assertEqual(after['updated'], before['updated'])
+
+    def test_solo_summary_shape(self):
+        summary = summarize(SOLO)
+        self.assertEqual(summary['task_statuses'][0]['id'], 'solo')
+        self.assertIsNone(summary['task_statuses'][0]['difficulty'])
+        self.assertIn('created', summary)
+        self.assertEqual(summary['models'], sorted(set(summary['dwarf_models']) | set(summary['qa_models'])))
