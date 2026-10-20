@@ -2,6 +2,14 @@
 
 **One model builds it. A different model reviews what it actually built.**
 
+[![Latest release](https://img.shields.io/github/v/release/Giamme/forge?label=release)](https://github.com/Giamme/forge/releases)
+[![Changelog](https://img.shields.io/badge/changelog-what's%20new-blue)](CHANGELOG.md)
+
+<p align="center">
+  <img src="ui/docs/media/hero.webp" width="880" alt="A decomposed run in forge-ui's 3D view: eight tasks on a plate in their planned waves, five merged in green and two running in blue, then the same run on wall-clock time, where two first attempts that failed review show in red beside the retries that passed.">
+</p>
+<p align="center"><sub>The run from <a href="#quick-start">Quick start</a> in <a href="#forge-ui">forge-ui</a>: its tasks in the waves the plan gave them, then as they really ran, the failed attempts and their retries included. Demo data.</sub></p>
+
 `forge` is a skill for agent CLIs. You hand it a coding task and two models: a **dwarf**
 that implements the change, and a **qa** reviewer that reads the dwarf's real diff — not
 the dwarf's summary of its own work. A model grading its own homework isn't a check; the
@@ -19,6 +27,15 @@ Code, in one command, from whichever CLI you happen to be sitting in.
 With `--decompose-level` it goes wider: the goal is split into tasks, several dwarves work
 **concurrently in isolated git worktrees**, each task is reviewed on its own diff, and only
 the tasks that pass get merged.
+
+```mermaid
+flowchart LR
+    goal(["your goal"]) --> plan["plan: tasks and models,<br/>then you read the table"] --> dwarf["each task: a dwarf<br/>implements it in<br/>its own worktree"] --> qa["qa reads<br/>the real diff"]
+    qa -. "FAIL: retry with<br/>the findings" .-> dwarf
+    qa -- PASS --> merge["merged into<br/>integration"] --> deliver(["verification, final review,<br/>integrate --approved"])
+```
+
+Without `--decompose-level` the whole goal is one task: one dwarf, one review of its diff.
 
 With optional [Fractal execution](#fractal-execution), an implementer can delegate bounded
 child tasks inside its owned paths. Forge still chooses the models, reviews the combined
@@ -837,30 +854,34 @@ Capture is fail-open and never read by anything that builds a prompt. See
 ## forge-ui
 
 forge-ui is a small read-only local web page that shows runs live, as a 3D isometric map
-ported from [archivision](https://github.com/Giamme/archivision):
+ported from [archivision](https://github.com/Giamme/archivision). Its **run cloud** puts every
+run in one full-screen view, grouped by project, in five layouts (helix, sphere, galaxy,
+timeline, constellation), filtered down to exactly the runs you want; drag any run anywhere
+and the cloud remembers it.
 
-- a map of every run, grouped by repo, with a lamp per task and filters on the map;
-- a run's tasks in their planned waves with dependency cables, ending in integration,
-  verification and the whole-run final review; and the same run on wall-clock time, one block
-  per attempt in the lane it ran in, against `--max-parallel`;
-- click a task to open it: its attempts, dwarves, reviews and escalations, with an inspector
-  showing each step's exact prompt, model, timings, tokens and P0–P3 findings;
-- live statuses, replay, critical path, and height and colour by duration, tokens or model;
-- a run cloud (`#/cloud`): every run at once, full screen in 3D and grouped by project, in five
-  layouts (helix, sphere, galaxy, timeline, constellation), filtered to exactly the runs you
-  want (project, state, difficulty, tasks per run, models by role and more); drag any run
-  anywhere and the cloud remembers it;
-- diffs with every P0–P3 finding under the line it names: a task's own diffs, or exactly the
-  diff a reviewer read;
-- a model leaderboard (`#/models`): first-attempt pass rate with a confidence interval,
-  retries, escalations, time and tokens per implementer, and verdicts, findings and shadow
-  agreement per reviewer;
-- a files heatmap of which tasks planned, changed, drifted into or conflicted on which files;
-- Fractal child tasks, in the inspector and as a tree above the opened task;
-- quick jump (Ctrl K, ⌘K on a Mac, or `/`) and a bell for runs that finish or fail, failed
-  tasks and final-review verdicts, with opt-in browser notifications;
-- export a run as one HTML file that opens without forge-ui; prompts, diffs and local paths
-  stay out unless you choose them.
+<p align="center">
+  <img src="ui/docs/media/cloud.webp" width="880" alt="The run cloud: about seventy runs as blocks in five project spirals, orbited, then laid out as galaxies and as a timeline with one lane per project.">
+</p>
+
+<table>
+<tr>
+<td width="50%" valign="top"><img src="ui/docs/media/run.png" alt="A run's eight tasks on a 3D plate in their planned waves, with dependency cables and the finish nodes, beside the run's inspector."><br><b>A run, as planned.</b> Tasks in their waves with dependency cables, ending in integration, verification and the final review. Click a task to open its attempts, dwarves and reviews.</td>
+<td width="50%" valign="top"><img src="ui/docs/media/execution.png" alt="The same run on wall-clock time: one block per attempt, failed attempts in red, a plane marking now, and the inspector's timeline and critical path."><br><b>And as it ran.</b> One block per attempt in the lane it ran in, failed ones in red, against <code>--max-parallel</code>; the inspector names the critical path.</td>
+</tr>
+<tr>
+<td valign="top"><img src="ui/docs/media/diff.png" alt="The diff a reviewer read, with a P1 finding pinned under the line comparing token digests and a P2 finding under the revoke function."><br><b>Findings on their lines.</b> Any diff of a task, or exactly the diff one reviewer read, with each P0–P3 finding under the line it names.</td>
+<td valign="top"><img src="ui/docs/media/models.png" alt="The model leaderboard: per implementer, tasks, first-attempt pass rate with a 95% interval bar, retries, escalations, timeouts, accepts, median model time and tokens."><br><b>Models, measured on your runs.</b> First-attempt pass rate with a confidence interval, retries, escalations, time and tokens; reviewers' verdicts and shadow agreement.</td>
+</tr>
+<tr>
+<td valign="top"><img src="ui/docs/media/files.png" alt="The files heatmap: files grouped by directory against tasks grouped by wave, with planned, touched, drift and same-wave overlap marks."><br><b>Who touched which file.</b> Planned, changed, drifted into or conflicted on, wave by wave; a cell opens that file's diff.</td>
+<td valign="top"><img src="ui/docs/media/map.png" alt="The map of every run: one block per run in a district per repo, green when done, blue while running, red with failures."><br><b>Every run, by repo.</b> One block per run with a lamp per task, filtered by state, repo, model, age or review verdict.</td>
+</tr>
+</table>
+
+Also: replay, critical path, Fractal child-task trees, quick jump (Ctrl K, ⌘K on a Mac, or
+`/`), a bell for runs that finish or fail, failed tasks and final-review verdicts (with opt-in
+browser notifications), and a run exported as one HTML file that opens without forge-ui, with
+prompts, diffs and local paths left out unless you choose them.
 
 Offline (it loads three.js from a CDN for the 3D view) the same page works in 2D. It is opt-in.
 The `/forge` skill asks "Open forge-ui to watch this run? [y/N]" at the start of every new
@@ -876,6 +897,13 @@ All runs share one detached server on `127.0.0.1:8765` (`FORGE_UI_PORT`) that ex
 four idle hours (`FORGE_UI_IDLE_S`). A UI that cannot start never fails the run. It has no
 token: any local process can read the prompts and diffs of the runs it shows. See
 [references/ui.md](references/ui.md) and [ui/README.md](ui/README.md).
+
+To look around before your first run, point it at made-up runs (the ones in these pictures):
+
+```sh
+python3 ui/tools/demo_runs.py /tmp/forge-demo
+(cd ui && python3 -m forge_ui --no-registry --root /tmp/forge-demo --open)
+```
 
 ## Full command reference
 

@@ -30,6 +30,10 @@ blocks on a plate, with cables between them and lamps that light up as things ha
   **quick jump** and **notifications**; and **export** of a run as one HTML file. See
   [What you see](#what-you-see).
 
+<p align="center">
+  <img src="docs/media/hero.webp" width="860" alt="A decomposed run on its 3D plate: eight tasks in their planned waves, then the same run on wall-clock time, where two first attempts that failed review show in red beside the retries that passed.">
+</p>
+
 The 3D view loads three.js from a CDN the first time it is used (see [Privacy](#privacy)).
 Without it (offline, an old browser, no WebGL) the same page shows the 2D dependency graph,
 an execution chart and the same inspector. The server is Python's standard library; there
@@ -74,6 +78,14 @@ python3 -m forge_ui --no-registry --plan /path/to/plan
 python3 -m forge_ui --no-registry --root /path/to/runs
 ```
 
+No runs yet? `tools/demo_runs.py` writes made-up ones, the same that fill the pictures here: a
+live run and a few weeks of history across five projects.
+
+```sh
+python3 tools/demo_runs.py /tmp/forge-demo
+python3 -m forge_ui --no-registry --root /tmp/forge-demo --open
+```
+
 ## Where runs come from
 
 Sources are checked in this order:
@@ -96,6 +108,8 @@ with the first source winning. Discovery and disk reads repeat on each API reque
 - **Map (`#/`):** every discovered run, newest first, grouped by repo. By default the last
   60 runs from the past 14 days; *older runs too* shows the rest. The sidebar list follows
   the same filter.
+
+  <img src="docs/media/map.png" width="760" alt="The map: one block per run, in a district per repo, green when done, blue while running, red with failures.">
 - **Run cloud (`#/cloud`):** every run at once, full screen, floating in 3D and grouped by project
   (repo). Pick a layout: *Helix* (one spiral per project, oldest at the bottom), *Sphere*,
   *Galaxy* (a disc per project, newest at the centre), *Timeline* (left to right by start time,
@@ -112,10 +126,14 @@ with the first source winning. Discovery and disk reads repeat on each API reque
   arrows orbit, + − zoom, F frames, P steps through projects, [ ] through runs, L changes the
   layout, B the shape, 0 resets the view, Esc steps back. With *2D*, the cloud lists the same
   filtered runs and offers *Load 3D*.
+
+  <img src="docs/media/cloud.webp" width="760" alt="The run cloud orbited, then laid out as galaxies and as a timeline with one lane per project.">
 - **Run (`#/runs/<key>`):** a header (goal, repo, counts, and *Run details*: settings, request,
   waves, verification output), a toolbar (*Planned waves* / *Execution*, *3D* / *2D*, height
   and colour overlays, *Critical path*, *Review marks*, *Projected*, *Replay*), the stage with
   the inspector beside it, and the task table.
+
+  <img src="docs/media/run.png" width="49%" alt="Planned waves: a run's tasks on a 3D plate with dependency cables and the finish nodes, beside the run's inspector."> <img src="docs/media/execution.png" width="49%" alt="Execution: one block per attempt on wall-clock time, failed attempts in red, with the timeline and critical path in the inspector.">
 - **Inspector:** for the run, its timeline, critical path, peak concurrency and finish line;
   for a task, its models and routing, escalations, timings (busy, model time, overhead,
   queue wait after its dependencies merged), attempts and their executions, review findings
@@ -128,6 +146,8 @@ with the first source winning. Discovery and disk reads repeat on each API reque
   of the same wave planned or touched the file too. Filter by path, sort by path, most touched or
   most tasks, and hide any kind of mark; a cell selects its task and offers that file's diff.
   Below: overlaps, drift, merge conflicts and deferrals as lists.
+
+  <img src="docs/media/files.png" width="560" alt="The files heatmap: files by directory against tasks by wave, with planned, touched, drift and same-wave overlap marks.">
 - **Models (`#/models`):** a leaderboard of the models forge used. Implementers: tasks, first-attempt
   pass rate with its 95% Wilson interval, censored attempts, retries, escalations away from the
   model, timeouts, gate and human accepts, median model time and tokens. Reviewers: primary,
@@ -136,6 +156,8 @@ with the first source winning. Discovery and disk reads repeat on each API reque
   only exploratory picks; open a difficulty for its own table. Routing is not random, so the
   numbers compare what happened, not what would have: the page says so. A model's name opens the
   run cloud filtered to its runs.
+
+  <img src="docs/media/models.png" width="760" alt="The implementers table: tasks, first-attempt pass rate with its 95% interval, retries, escalations, timeouts, accepts, median model time and tokens per model.">
 - **Diffs (`…/tasks/<id>/diff[/<source>][/file/<path>]`, `…/final-review/<name>/diff`):** a task's
   `changes.diff`, its previous or committed diff, or exactly the diff one reviewer read (the last
   diff in that review's prompt), picked from a row of sources with each review's verdict; a final
@@ -144,6 +166,8 @@ with the first source winning. Discovery and disk reads repeat on each API reque
   hunks at the top of their file, and those whose file is not in the diff (or that name no
   location) in a section of their own. n and p move between findings, j and k between files.
   Open it from a task, an attempt's review, an execution or the final review in the inspector.
+
+  <img src="docs/media/diff.png" width="760" alt="The diff a reviewer read, with a P1 finding under the line that compares token digests and a P2 finding under the revoke function.">
 - **Fractal child tasks:** when a run used Fractal, a task's inspector shows the tree it was split
   into (status, difficulty, model, phase, cost, the split decision), and the opened task in 3D
   carries the same tree floating above it. A node (`…/tasks/<id>/fractal/<node>`) shows its goal,
@@ -204,6 +228,9 @@ notifications on. Failed requests keep the last good data and show a banner.
 - `tests/`: reader, executions, endpoints, server, static-script and browser checks; `run_fixture.py`
   builds realistic runs in a temp dir (`python3 tests/run_fixture.py DIR` writes two you can open),
   and `many_fixture.py` many small ones across repos for the cloud (`python3 tests/many_fixture.py DIR 300`).
+- `tools/demo_runs.py`, `tools/readme_media.py`: made-up runs to look around with (one live run
+  and five projects of history), and the script that turns them into the READMEs' pictures in
+  `docs/media/`.
 - [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md): the licences of the ported and loaded code.
 
 [docs/api.md](docs/api.md) is the data contract between the reader, server and page.
@@ -236,6 +263,15 @@ node --test tests/js/*.test.js                 # the run and cloud models alone
 `tests/test_browser.py` drives the page in Chromium when Python Playwright is installed, and
 skips otherwise. Its 3D tests need three.js: the CDN, or a local copy of the npm package
 (`npm pack three@0.160.0`, unpacked) named by `FORGE_UI_TEST_THREE=<dir>/package`.
+
+The pictures in this README and forge's come from `tools/readme_media.py`. After a change you
+can see, run it again: it builds the demo runs, serves them, and captures each view in
+Chromium with Playwright (three.js as for the browser tests; ffmpeg with libwebp and ImageMagick
+to encode the animations and PNGs). `--only cloud diff` retakes some of them.
+
+```sh
+python3 tools/readme_media.py                  # writes docs/media/
+```
 
 ## Privacy
 
