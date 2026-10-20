@@ -173,7 +173,8 @@ def build(catalog, key, texts=False, paths=False, now=None):
     meta = {'format': 'forge-ui-export', 'version': 1, 'app': __version__, 'key': key,
             'generated': now if now is not None else time.time(), 'texts': bool(texts), 'paths': bool(paths),
             'omitted': snap.omitted}
-    page = _page({'meta': meta, 'api': snap.api}, run)
+    # the title follows the same rules as the data: no local paths unless chosen
+    page = _page({'meta': meta, 'api': snap.api}, snap.clean({'goal': run.get('goal'), 'run_id': run.get('run_id')}))
     stem = re.sub(r'[^A-Za-z0-9._-]+', '-', str(run.get('run_id') or key)).strip('.-')[:80] or key
     return f'forge-run-{stem}.html', page.encode('utf-8')
 

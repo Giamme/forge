@@ -54,7 +54,7 @@ class ExportTests(unittest.TestCase):
         cls.base = Path(cls.temp.name)
         cls.plan, cls.solo = F.make_plan(cls.base / 'p'), F.make_solo(cls.base / 's')
         # Texts the export keeps: one with markup, one naming the run dir and the home dir.
-        F.write(cls.plan / 'goal.txt', 'Fixture run </script><script>alert(1)</script><!-- & more\n')
+        F.write(cls.plan / 'goal.txt', f'Fixture run in {cls.plan}/notes </script><script>alert(1)</script><!-- & more\n')
         F.write(cls.plan / 'verification.command', f'python3 {cls.plan}/check.py --out {Path.home()}/out\n')
         cls.catalog = reader.Catalog(plans=[cls.plan, cls.solo], registry=False)
         cls.key = reader.run_key(cls.plan)
