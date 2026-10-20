@@ -4,26 +4,39 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light dark">
+  <meta name="referrer" content="no-referrer">
   <title>forge-ui</title>
+  <script type="importmap">
+  { "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  } }
+  </script>
   <link rel="stylesheet" href="style.css">
+  <script src="runmodel.js" defer></script>
   <script src="graph.js" defer></script>
+  <script src="gantt.js" defer></script>
+  <script src="panel.js" defer></script>
+  <script src="map3d.js" defer></script>
   <script src="app.js" defer></script>
 </head>
 <body>
   <header class="topbar">
     <a class="brand" href="#/">forge-ui</a>
+    <a class="top-link" href="#/">Map of all runs</a>
     <span class="muted">Local run viewer · read only</span>
-    <label class="refresh-control"><input id="refresh" type="checkbox" checked> Refresh every 5s</label>
+    <label class="refresh-control"><input id="refresh" type="checkbox" checked> Live refresh</label>
   </header>
   <div id="errors" role="status" aria-live="polite" hidden></div>
   <div class="layout">
     <aside class="sidebar" aria-label="Runs">
       <div class="sidebar-heading"><h1>Runs</h1><span id="run-count" class="muted"></span></div>
-      <label class="filter-label" for="filter">Filter by goal, repo, ID or path</label>
+      <label class="filter-label" for="filter">Filter by goal, repo, ID, path or model</label>
       <input id="filter" type="search" placeholder="Filter runs…" autocomplete="off">
       <nav id="run-list" aria-label="Choose a run"><p class="empty">Loading runs…</p></nav>
     </aside>
-    <main id="main" tabindex="-1"><p class="empty">Select a run to inspect its tasks.</p></main>
+    <main id="main" tabindex="-1"><p class="empty">Loading…</p></main>
   </div>
+  <div id="live" class="visually-hidden" aria-live="polite"></div>
 </body>
 </html>
