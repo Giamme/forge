@@ -1,10 +1,34 @@
 # forge-ui
 
-forge-ui is a small, read-only local web UI for forge runs: tasks and statuses,
-waves and dependencies, branches, model choices with routing exploration and
-propensities, attempts and escalations, reviewer verdicts and shadow reviews,
-and Clef predictions. It runs on `127.0.0.1` using Python's standard library and
-a static vanilla JavaScript page, with no install step, third-party packages or build step.
+forge-ui is a small, read-only local web UI for forge runs. It draws them the way
+[archivision](https://github.com/Giamme/archivision) draws a codebase: a 3D isometric map of
+blocks on a plate, with cables between them and lamps that light up as things happen.
+
+- **A map of every run**, one district per repo and one block per run, with a lamp per task.
+  Filter it by state, repo, kind, model, age or review verdict; what does not match fades
+  instead of disappearing.
+- **A run, as planned and as it ran.** *Planned waves* puts each task in its wave, with
+  dependency cables, and ends in a *finish* line of three nodes: integration, verification
+  and the whole-run **final review**. *Execution* lays the same work out on wall-clock time:
+  one block per attempt, in the lane it really ran in, with its dwarf and review inside, the
+  attempts that have not started projected by forge-schedule's own rules, and a strip of how
+  many slots were busy against `--max-parallel`. Switching between the two moves each task
+  from its wave to where it ran.
+- **Click to open.** A task opens to show its attempts, each with its dwarf, its reviewer and
+  any shadow reviews, linked; an escalation is a labelled cable between attempts. The
+  inspector beside the stage shows what launched each step and what came of it: the exact
+  prompt, the model (alias, harness, model, effort, clamping), the timings by phase, tokens,
+  the verdict, and every **P0–P3 finding** of every review, the final review included.
+- **Live.** Statuses change in place while a run works (every 2 s while something runs, 5 s
+  otherwise); running nodes pulse and show their current phase.
+- **Extras:** replay a run from its recorded times, light its critical path, set block height
+  and colour by duration, tokens, attempts or model, and mark shadow reviews that disagreed
+  with the primary and how sure Clef was that each task would pass.
+
+The 3D view loads three.js from a CDN the first time it is used (see [Privacy](#privacy)).
+Without it (offline, an old browser, no WebGL) the same page shows the 2D dependency graph,
+an execution chart and the same inspector. The server is Python's standard library; there
+is no install or build step.
 
 It lives inside forge, in `ui/`, and is forge's companion: runs open it with `--ui`.
 
@@ -64,41 +88,42 @@ with the first source winning. Discovery and disk reads repeat on each API reque
 
 ## What you see
 
-- **Run list:** newest update first, with goal, repo name, run ID, status counts
-  and verification status. Filter by goal, repo, ID or path.
-- **Run view:** repo and plan paths, source, settings, counts and verification
-  command; expandable request, verification output, waves, warnings and truncation notices.
-- **Graph:** tasks in wave columns with dependency arrows, status colors and dwarf
-  model specs. Exploratory picks have dashed outlines and `*` markers. Click a node
-  (or use Enter/Space when focused) to select it; hover/focus highlights its edges.
-- **Task table:** title, difficulty, wave, status, dwarf/QA models, attempt, verdict,
-  exploratory picks and their propensities, dependency links and branch names.
-  Select a row or task ID to open its panel.
-- **Task panel:** files and metadata; routing candidates, default/chosen models,
-  exploration, propensity, epsilon and inputs; attempts and escalations; primary
-  review tail and shadow verdicts; Clef first-pass/retry probabilities and assignments;
-  expandable prompt, approach and retry findings. Shadow agreement is compared only
-  for the current attempt; otherwise it is unknown.
+- **Map (`#/`):** every discovered run, newest first, grouped by repo. By default the last
+  60 runs from the past 14 days; *older runs too* shows the rest. The sidebar list follows
+  the same filter.
+- **Run (`#/runs/<key>`):** a header (goal, repo, counts, and *Run details*: settings, request,
+  waves, verification output), a toolbar (*Planned waves* / *Execution*, *3D* / *2D*, height
+  and colour overlays, *Critical path*, *Review marks*, *Projected*, *Replay*), the stage with
+  the inspector beside it, and the task table.
+- **Inspector:** for the run, its timeline, critical path, peak concurrency and finish line;
+  for a task, its models and routing, escalations, timings (busy, model time, overhead,
+  queue wait after its dependencies merged), attempts and their executions, review findings
+  with the gate decision, Clef predictions against outcomes, and its prompts; for one
+  execution, its model, phases, tokens, exact prompt and final message; for the final
+  review, its verdict, findings, report, prompt and history.
+- **Keys on the stage:** ← → move between tasks, Esc closes, `e` switches plan and
+  execution. Drag to orbit, right-drag to pan, scroll to zoom once the stage is clicked.
 
-Auto-refresh fetches the run list and selected run every five seconds while the
-tab is visible. Uncheck **Refresh every 5s** to pause polling; rechecking it or
-returning to a visible tab refreshes when enabled. Navigation still loads the chosen
-run while paused. Failed requests retain the last good data and show an error banner.
-
-URLs such as `http://127.0.0.1:8765/#/runs/<key>/tasks/<id>` are shareable within
-the machine while this server is running and discovering that plan directory.
+URLs such as `http://127.0.0.1:8765/#/runs/<key>/tasks/<id>` are shareable within the
+machine while this server is running and discovering that run dir. *Live refresh* pauses
+polling; a hidden tab never polls. Failed requests keep the last good data and show a banner.
 
 ## Layout of the code
 
-- `forge_ui/reader.py`: discover plans, parse files and produce run summaries/details.
+- `forge_ui/reader.py`: discover runs, parse their files and produce summaries and details.
+- `forge_ui/executions.py`: the per-dispatch records (`attempts/<role>-<uuid>/`), nested and
+  matched to attempts, through a cache keyed by each file's identity and mtime.
+- `forge_ui/findings.py`: P0–P3 findings and the gate, parsed by forge's own `scripts/forge-contract.py`.
 - `forge_ui/server.py`: serve the JSON API and static assets, with GET/HEAD only.
 - `forge_ui/__main__.py`: CLI options, local startup and optional browser opening.
 - `forge_ui/__init__.py`: package version and the build id `forge ui` compares to find a stale server.
-- `forge_ui/static/index.html`: page shell and controls.
-- `forge_ui/static/app.js`: API fetching, navigation, polling, tables and task panels.
-- `forge_ui/static/style.css`: layout, light/dark themes and status colors.
-- `forge_ui/static/graph.js`: SVG dependency graph and task selection.
-- `tests/test_reader.py`, `tests/test_server.py`, `tests/fixtures/`: reader and server checks and sample plans.
+- `forge_ui/static/index.html`, `style.css`, `app.js`: the page shell, styles, routes, views and polling.
+- `forge_ui/static/runmodel.js`: the pure run model (layouts, schedule projection, critical path, replay).
+- `forge_ui/static/panel.js`, `gantt.js`, `graph.js`: the inspector, the execution chart and strip, the 2D graph.
+- `forge_ui/static/map3d.js`, `scene3d.js`, `iso.js`: the 3D loader, scenes and engine (ported from archivision).
+- `tests/`: reader, executions, endpoints, server, static-script and browser checks; `run_fixture.py`
+  builds realistic runs in a temp dir (`python3 tests/run_fixture.py DIR` writes two you can open).
+- [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md): the licences of the ported and loaded code.
 
 [docs/api.md](docs/api.md) is the data contract between the reader, server and page.
 
@@ -116,22 +141,29 @@ the machine while this server is running and discovering that plan directory.
 
 ## Develop
 
-Use Python 3.9+ to run the server and tests. Node.js 14+ supports the JavaScript
-syntax used here and is needed only for the syntax checks below; use a modern
-browser for the page. No Python or Node packages need installing.
+Use Python 3.9+ to run the server and tests. Node.js 18+ runs the JavaScript checks; use a
+modern browser for the page (import maps: Chrome 89, Firefox 108, Safari 16.4). No Python or
+Node packages need installing.
 
 Run these from `ui/`:
 
 ```sh
-python3 -m unittest discover -s tests
-for file in forge_ui/static/*.js; do node --check "$file" || exit; done
+python3 -m unittest discover -s tests          # includes the syntax checks and node --test
+node --test tests/js/*.test.js                 # the run model alone
 ```
 
-The JavaScript command checks each static script's syntax; it does not run browser tests.
+`tests/test_browser.py` drives the page in Chromium when Python Playwright is installed, and
+skips otherwise. Its 3D tests need three.js: the CDN, or a local copy of the npm package
+(`npm pack three@0.160.0`, unpacked) named by `FORGE_UI_TEST_THREE=<dir>/package`.
 
 ## Privacy
 
-Plan directories can contain prompts, diffs and review text from private repos.
-The CLI server binds only `127.0.0.1`, serves local assets without CDN dependencies,
-and writes nothing to plan directories, repositories or forge's config. Anyone
-with access to the local server can read the discovered runs.
+Run dirs can contain prompts, diffs and review text from private repos. The server binds
+only `127.0.0.1`, makes no network requests, and writes nothing to run dirs, repositories or
+forge's config. Anyone with access to the local server can read the runs it discovers, and
+forge now registers every run, so that is every run on the machine.
+
+The 3D view loads three.js 0.160.0 from `cdn.jsdelivr.net` the first time it is shown in a
+tab: the browser asks the CDN for those script files and sends nothing about your runs
+(`Referrer-Policy: no-referrer`, and the page's CSP allows only that one package). Choose
+**2D** in the toolbar and the browser remembers it and never contacts the CDN.

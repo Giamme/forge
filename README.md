@@ -26,8 +26,10 @@ diff, verifies the result and controls integration. A local dashboard shows the 
 logs and separate execution/acceptance states; HTML reports capture them for later review.
 
 [forge-ui](#forge-ui), its opt-in companion, is a read-only local page that watches any run
-live: tasks by wave, models, attempts and reviewer verdicts. forge offers it at the start of
-every new run and never opens it without a yes.
+live, drawn as a 3D map in archivision's style: every run on one plate, tasks in their waves
+and as they really ran, the final review as a node, and the prompt, model, timings and P0–P3
+findings behind every step. forge offers it at the start of every new run and never opens it
+without a yes.
 
 ---
 
@@ -833,8 +835,18 @@ Capture is fail-open and never read by anything that builds a prompt. See
 
 ## forge-ui
 
-forge-ui is a small read-only local web page that shows a run live: tasks by wave,
-statuses, models, attempts, reviewer verdicts and, for a solo run, its one task. It is opt-in.
+forge-ui is a small read-only local web page that shows runs live, as a 3D isometric map
+ported from [archivision](https://github.com/Giamme/archivision):
+
+- a map of every run, grouped by repo, with a lamp per task and filters on the map;
+- a run's tasks in their planned waves with dependency cables, ending in integration,
+  verification and the whole-run final review; and the same run on wall-clock time, one block
+  per attempt in the lane it ran in, against `--max-parallel`;
+- click a task to open it: its attempts, dwarves, reviews and escalations, with an inspector
+  showing each step's exact prompt, model, timings, tokens and P0–P3 findings;
+- live statuses, replay, critical path, and height and colour by duration, tokens or model.
+
+Offline (it loads three.js from a CDN for the 3D view) the same page works in 2D. It is opt-in.
 The `/forge` skill asks "Open forge-ui to watch this run? [y/N]" at the start of every new
 interactive run, or you pass it yourself:
 

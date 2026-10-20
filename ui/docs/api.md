@@ -198,8 +198,9 @@ execution or review. An execution is looked for only where executions are writte
 that resolves outside the run dir (a symlinked `attempts/`, say) is ignored.
 
 JSON responses: `Content-Type: application/json; charset=utf-8`,
-`Cache-Control: no-store`. The page loads `style.css`, `graph.js` and `app.js` by those
-relative names.
+`Cache-Control: no-store`. The page loads `style.css`, `runmodel.js`, `graph.js`, `gantt.js`,
+`panel.js`, `map3d.js` and `app.js` by those relative names, and `scene3d.js` and `iso.js`
+(ES modules) only when the 3D view is used.
 
 Every response carries `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`
 and exactly one `Content-Security-Policy`. An `.html` file gets the page policy
@@ -521,8 +522,11 @@ of Findings, in place of the summary), `truncated` and `warnings`.
 Both the page and the graph mark a task by its status with the CSS class
 `st-<status in lowercase>`, e.g. `st-merged`, `st-running`, `st-pending`. `style.css`
 (owned by the page) defines, for every status above plus `pending`, a custom property
-`--st` holding that status's color, e.g. `.st-merged { --st: #2f9e44; }`. `graph.js`
-never hard-codes status colors: it draws with `var(--st, #888)`.
+`--st` holding that status's color, e.g. `.st-merged { --st: #2f9e44; }`. No script
+hard-codes status colors: `graph.js` and `gantt.js` give their SVG elements classes that
+`style.css` fills with `var(--st, #888)` (the page CSP refuses style attributes, so a script
+never writes one), and the 3D stage reads `--st` from a hidden `.st-<status>` probe. The
+stage's own background and accent are `--stage-bg` and `--stage-accent` on `.stage-slot`.
 
 Suggested meaning: merged and pass green, running blue, pending grey, fail, error and conflict
 red, infra and timeout orange, blocked, interrupted, invalidated, unknown and nochanges muted
@@ -547,3 +551,20 @@ deepest dependency (column 1 when it has none). Each node shows the task id and 
 Clicking a node calls `options.onSelect(taskId)`. It must work with 0 tasks (renders an
 empty-state message), with deps that name unknown tasks (edge skipped), and with cycles
 (no infinite loop).
+
+## The page's other scripts
+
+Plain scripts unless noted; each defines one global and none parses API text as HTML.
+
+| File | Global | What it is |
+|---|---|---|
+| `runmodel.js` | `ForgeRunModel` | pure data, no DOM: the plate layout (archivision's `plate()`), the atlas, plan and execution models, forge-schedule's rules projected forward, the critical path, concurrency, the state of every node at a time `t` (replay), filters. Also a CommonJS module, for `node --test` |
+| `gantt.js` | `ForgeGantt` | `render(container, run, {now, onSelect, sel, replay, critical, ghosts})`: attempts on wall-clock time in lanes; `strip(container, run, {now, replay})`: busy attempts and model calls against `max_parallel` |
+| `panel.js` | `ForgePanel` | `render(host, ctx)`: the inspector for a run, task, execution, final review, verification or integration; fetches the lazy endpoints once per node |
+| `map3d.js` | `ForgeMap3D` | `load()` imports `scene3d.js` (and so three.js) on first use, with a 12 s timeout; `state` is `idle`, `loading`, `ready` or `unavailable`, `message()` says why |
+| `scene3d.js` | (ES module) | `createStage(host, {onSelect, onOpenRun, onBack, onMode})`: the atlas, plan and execution scenes, live status updates without rebuilding, overlays and replay |
+| `iso.js` | (ES module) | the iso-glow engine ported from archivision: renderer, materials, blocks, labels, cables, camera, picking, drawn on demand |
+
+Routes (the URL hash): `#/` the map of every run; `#/runs/<key>`; `…/tasks/<id>`;
+`…/tasks/<id>/executions/<name>`; `…/executions/<name>` (an execution that belongs to no
+task); `…/final-review[/<name>]`; `…/verification`; `…/integration`.
