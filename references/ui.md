@@ -14,6 +14,8 @@ run goes on, with the same exit code.
   (helix, sphere, galaxy, timeline, constellation) as blocks or orbs. Filters narrow it to exactly
   the runs wanted (project, state, difficulty, tasks per run, models and more), and runs can be
   dragged anywhere; where they were dropped is remembered in that browser.
+- **Files heatmap:** which tasks planned, changed, drifted into or conflicted on which files,
+  with same-wave overlaps marked, and each file's diff a click away.
 - **Model leaderboard:** first-attempt pass rates with confidence intervals, retries, escalations,
   timeouts, time and tokens per implementer, and verdicts, findings and shadow agreement per
   reviewer, filterable by project, difficulty and period.

@@ -117,6 +117,12 @@ with the first source winning. Discovery and disk reads repeat on each API reque
   with the gate decision, Clef predictions against outcomes, and its prompts; for one
   execution, its model, phases, tokens, exact prompt and final message; for the final
   review, its verdict, findings, report, prompt and history.
+- **Files (the run toolbar's third mode):** a heatmap of files (grouped and collapsible by
+  directory) against tasks (grouped by wave): planned files outlined, touched files filled by how
+  many attempts changed them, drift hatched, merge conflicts ringed, and a dot where another task
+  of the same wave planned or touched the file too. Filter by path, sort by path, most touched or
+  most tasks, and hide any kind of mark; a cell selects its task and offers that file's diff.
+  Below: overlaps, drift, merge conflicts and deferrals as lists.
 - **Models (`#/models`):** a leaderboard of the models forge used. Implementers: tasks, first-attempt
   pass rate with its 95% Wilson interval, censored attempts, retries, escalations away from the
   model, timeouts, gate and human accepts, median model time and tokens. Reviewers: primary,
@@ -180,6 +186,7 @@ polling; a hidden tab never polls. Failed requests keep the last good data and s
 - `forge_ui/static/cloudmodel.js`, `cloud3d.js`, `cloudui.js`: the run cloud's pure model (projects,
   filters, layouts, layout files), its scene on the shared stage, and its controls.
 - `forge_ui/static/diffview.js`: the diff viewer, with findings pinned to their lines.
+- `forge_ui/static/files.js`: the files heatmap (`matrix()` is pure and node-tested).
 - `forge_ui/export.py`: a run as one HTML file (the page's scripts and styles inlined, the API
   responses it reads, the 3D stage's modules as one module text, a hash-based policy).
 - `forge_ui/static/modelstats.js`, `leaderboard.js`: the leaderboard's aggregation (outcomes as

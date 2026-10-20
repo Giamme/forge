@@ -257,6 +257,25 @@ class Page(unittest.TestCase):
         three.wait_for_function("() => window.ForgeUI.state.stage.view === 'run'")
         self.assertEqual(three.evaluate('window.__csp'), [])
 
+    def test_the_files_heatmap_selects_tasks_and_opens_a_file_diff(self):
+        page = self.open(cdn=False)
+        page.goto(self.url + f'#/runs/{self.key}/tasks/reader')
+        page.wait_for_selector('#inspector .insp-head')
+        page.click('[data-mode=files]')
+        page.wait_for_selector('.files-view .fm-defs', state='attached')
+        self.assertFalse(page.is_visible('#graph2d'))
+        text = page.text_content('.files-view')
+        for expected in ('ui/', 'graph.js', 'README.md', 'MERGE CONFLICTS', 'DRIFT'):
+            self.assertIn(expected.lower(), text.lower())
+        page.focus('.files-view [data-fm-focus^="cell:reader"]')
+        page.keyboard.press('ArrowDown')
+        page.keyboard.press('Enter')
+        page.wait_for_selector('.files-view .fm-pop')
+        page.click('.files-view .fm-pop')
+        page.wait_for_function("() => location.hash.endsWith('/tasks/reader/diff/file/tests%2Ftest_reader.py')")
+        page.wait_for_selector('.diff-file[data-path="tests/test_reader.py"]')
+        self.assertClean(page)
+
     def test_quick_jump_finds_a_task_and_opens_it(self):
         page = self.open(cdn=False)
         page.goto(self.url + '#/')
