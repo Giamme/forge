@@ -79,9 +79,9 @@ class UiLauncherTests(unittest.TestCase):
         if alive(pid):  # stop did not take it down: do not leave it for the idle timeout
             os.kill(pid, signal.SIGKILL)
 
-    def ui(self, *args, env=None, timeout=60):
+    def ui(self, *args, env=None, timeout=60, cwd=None):
         return subprocess.run([sys.executable, str(LAUNCHER), *args], env=env or self.env,
-                              capture_output=True, text=True, timeout=timeout)
+                              capture_output=True, text=True, timeout=timeout, cwd=cwd)
 
     def server_json(self):
         return json.loads((self.state / 'forge/ui/server.json').read_text())
@@ -289,6 +289,23 @@ class UiLauncherTests(unittest.TestCase):
         self.open(self.plan)
         self.assertEqual(old.wait(timeout=5), -signal.SIGTERM)
         self.assertNotEqual(self.server_json()['pid'], old.pid)
+
+    def test_an_empty_config_home_registers_the_run_in_the_default_one_not_the_current_directory(self):
+        # XDG_CONFIG_HOME= taken literally put the registry at ./forge/runs: an untracked
+        # forge/ dir in whatever repo `open` ran from, and a server reading a relative path.
+        home, work = self.tmp / 'home', self.tmp / 'work'
+        work.mkdir()
+        repo = (self.plan / 'repo').read_text().strip()
+        default = home / '.config/forge/runs'
+        for value in ('', 'relative/config'):
+            with self.subTest(repr(value)):
+                env = dict(self.env, XDG_CONFIG_HOME=value, HOME=str(home))
+                result = self.ui('open', str(self.plan), env=env, cwd=work)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(sorted(work.rglob('*')), [], 'nothing is written below the current directory')
+                self.ui('stop', env=env)
+        entry = default / (forge_registry.repo_key(repo) + '.txt')
+        self.assertIn(str(self.plan.resolve()), entry.read_text().splitlines())
 
     def test_exit_codes_for_arguments_that_are_not_runs(self):
         notes = self.tmp / 'notes'

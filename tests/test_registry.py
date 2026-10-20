@@ -155,15 +155,22 @@ class RegisterCommandTests(unittest.TestCase):
                 self.assertFalse(self.config.exists())
 
     def test_a_config_home_that_is_not_absolute_is_never_written_below_the_current_directory(self):
-        # An empty or relative XDG_CONFIG_HOME resolves below the cwd, which for a runner is
-        # usually the user's repo.
-        for value in ('', 'relative/config'):
+        # A relative XDG_CONFIG_HOME resolves below the cwd, which for a runner is usually the
+        # user's repo. An empty one counts as unset (XDG spec): the run lands in ~/.config.
+        home = self.tmp / 'home'
+        default = home / '.config/forge/runs' / (forge_registry.repo_key(self.repo) + '.txt')
+        for value, expected in (('', [str(self.run_dir.resolve())]), ('relative/config', [])):
             with self.subTest(repr(value)):
                 result = subprocess.run([sys.executable, '-I', str(ROOT / 'scripts/forge_registry.py'), 'register',
-                                         str(self.run_dir)], env=dict(self.env, XDG_CONFIG_HOME=value), cwd=self.repo,
-                                        capture_output=True, text=True, timeout=10, stdin=subprocess.DEVNULL)
+                                         str(self.run_dir)], env=dict(self.env, XDG_CONFIG_HOME=value, HOME=str(home)),
+                                        cwd=self.repo, capture_output=True, text=True, timeout=10,
+                                        stdin=subprocess.DEVNULL)
                 self.assertEqual((result.returncode, result.stdout, result.stderr), (0, '', ''))
                 self.assertEqual([p for p in self.repo.rglob('*')], [])
+                lines = default.read_text().splitlines() if default.is_file() else []
+                self.assertEqual([x for x in lines if x and not x.startswith('#')], expected)
+                if default.exists():
+                    default.unlink()
 
     def test_never_fails_blocks_or_prints_whatever_the_run_dir_holds(self):
         def missing_run_dir():
