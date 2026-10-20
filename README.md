@@ -143,7 +143,9 @@ a real directory that isn't a symlink.
 Run the updater from your Forge checkout (or through one of its skill symlinks):
 
 ```bash
-bash ~/.claude/skills/forge/scripts/forge-update.sh
+./forge update            # same as: bash ~/.claude/skills/forge/scripts/forge-update.sh
+./forge version           # VERSION, checkout commit, tracked upstream, last known release
+./forge version --check   # ask the upstream for its newest release now
 ```
 
 It fetches the current branch's configured upstream, fast-forwards the checkout, and
@@ -161,6 +163,13 @@ bash <forge-checkout>/scripts/forge-update.sh --local
 # Point a copied installation's updater at the original checkout:
 bash <path>/scripts/forge-update.sh --source <forge-checkout>
 ```
+
+When a solo run, `plan` or `run` finishes, forge checks the checkout's upstream for a newer
+release tag at most once a day (`git ls-remote`, 5-second timeout, cached in
+`${XDG_STATE_HOME:-~/.local/state}/forge/update-check.json`) and, if there is one, prints a
+single line on stderr: `forge 0.8 is available (you have 0.7.1): forge update`. The check is
+silent offline, in a copied installation without Git, in CI (`CI` set) and with
+`FORGE_UPDATE_CHECK=off`, and it never changes a run's outcome or exit code.
 
 The default update requires a clean Git checkout and a branch with an upstream. Local
 changes, detached HEAD, fetch failures and diverged branches stop the update without

@@ -30,3 +30,10 @@ forge_dataset_invocation() { # forge_dataset_invocation <command> <rc> <started>
   python3 "$SKILL_DIR/scripts/forge-dataset.py" invocation --dir "${1:-}" --rc "$rc" \
     --started "$started" --pid "$$" "$command" -- "$@" >/dev/null 2>&1 || true
 }
+
+# --- update notice (scripts/forge-version.py) ----------------------------------------
+# One line on stderr when a newer forge release exists, checked at most once a day. Silent
+# offline, in CI and with FORGE_UPDATE_CHECK=off; it never changes a run's exit code.
+forge_update_notice() {
+  python3 "$SKILL_DIR/scripts/forge-version.py" notice --source "$SKILL_DIR" </dev/null >&2 2>/dev/null || true
+}

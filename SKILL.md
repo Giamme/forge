@@ -28,6 +28,9 @@ For explanation requests, explain the workflow without spending model quota.
   interactive run, unless the user supplied `--ui` or `--no-ui`. Pass the answer to `plan`
   or `forge-solo.sh` and relay the `forge-ui:` URL they print. Never ask on resume or retry;
   unattended runs leave it off. A UI failure never changes the run. Read [forge-ui](references/ui.md).
+- A finished solo run, `plan` or `run` may end with one stderr line, `forge X is available
+  (you have Y): forge update` (checked at most once a day). Relay it once; run the update only
+  when the user asks (`forge update`, then restart the harness session). `FORGE_UPDATE_CHECK=off` silences it.
 - `--fractal-auto-decompose` enables automatic split-or-atomic decisions before each
   eligible node implements. Include the effective planner and bounds in the approval
   preview; child decisions need no additional user approval inside those bounds.

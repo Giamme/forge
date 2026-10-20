@@ -18,11 +18,21 @@ case "${1:-}" in
     shift
     exec python3 "$ROOT/scripts/forge-ui.py" "$@"
     ;;
+  update)
+    shift
+    exec /bin/bash "$ROOT/scripts/forge-update.sh" "$@"
+    ;;
+  version)
+    shift
+    exec python3 "$ROOT/scripts/forge-version.py" "$@"
+    ;;
   *)
     echo 'usage: forge fractal <install|doctor|runs|status|tree|activity|logs|costs|messages|config|pause|resume|stop|open|report>' >&2
     echo 'usage: forge jev <setup|status|doctor|enable|disable|backtest>' >&2
     echo 'usage: forge dataset <status|dump|blob|import|export|outcomes>' >&2
     echo 'usage: forge ui <open [DIR] [--no-browser] [--port N]|status [--json]|stop>' >&2
+    echo 'usage: forge update [--dry-run|--local|--source <checkout>]' >&2
+    echo 'usage: forge version [--check]' >&2
     exit 2
     ;;
 esac

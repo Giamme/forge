@@ -334,3 +334,4 @@ else
   echo "The changes are UNCOMMITTED in $REPO. Nothing was committed, pushed or reset."
 fi
 [ ! -s "$RUN/guard.txt" ] || { echo; echo "implementer guard notes:"; sed 's/^/  /' "$RUN/guard.txt"; }
+forge_update_notice

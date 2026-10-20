@@ -1686,8 +1686,8 @@ esac
 # Subcommands implemented in the optional libraries fail clearly if the library is absent.
 need_fn() { declare -F "$1" >/dev/null || die "'$CMD' is not available: $1 is missing" 3; }
 case "$CMD" in
-  plan)      do_plan "$@" ;;
-  run)       do_run "$@" ;;
+  plan)      do_plan "$@"; rc=$?; forge_update_notice; exit "$rc" ;;
+  run)       do_run "$@"; rc=$?; forge_update_notice; exit "$rc" ;;
   retry)     do_retry "$@" ;;
   integrate) do_integrate "$@" ;;
   accept)    need_fn do_accept;  do_accept "$@" ;;

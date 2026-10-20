@@ -1,10 +1,13 @@
 import dataset_isolation  # noqa: F401  keeps forge's dataset and config out of the developer's home
+import json
 import os
 from pathlib import Path
 import shutil
 import subprocess
 import tempfile
 import unittest
+
+import test_forge as fixtures
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -115,3 +118,117 @@ echo copied >> "$HOME/agy.calls"
         self.assertIn('original Git checkout', self.update(source=copied).stdout)
         result = self.update('--source', str(self.source), '--local', source=copied)
         self.assertEqual(result.returncode, 0, result.stdout)
+
+
+class VersionTests(unittest.TestCase):
+    """`forge update` / `forge version` from the launcher, and the once-a-day notice the runners print."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(); self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name).resolve()
+        self.home = self.root / 'home'; self.home.mkdir()
+        self.state = self.root / 'state'
+        self.env = dict(os.environ, HOME=str(self.home), XDG_STATE_HOME=str(self.state),
+                        GIT_AUTHOR_NAME='test', GIT_AUTHOR_EMAIL='test@test',
+                        GIT_COMMITTER_NAME='test', GIT_COMMITTER_EMAIL='test@test')
+        self.env.pop('FORGE_UPDATE_CHECK', None); self.env.pop('CI', None)
+        self.seed = self.root / 'seed'; (self.seed / 'scripts').mkdir(parents=True)
+        shutil.copyfile(ROOT / 'forge', self.seed / 'forge'); (self.seed / 'forge').chmod(0o755)
+        for name in ['forge-update.sh', 'forge-install.sh', 'forge-install-ripwire.sh', 'forge-version.py']:
+            shutil.copyfile(ROOT / 'scripts' / name, self.seed / 'scripts' / name)
+        (self.seed / 'SKILL.md').write_text('skill\n')
+        (self.seed / 'VERSION').write_text('0.7\n')
+        self.git(self.seed, 'init', '-q'); self.git(self.seed, 'add', '.'); self.git(self.seed, 'commit', '-qm', 'initial')
+        self.git(self.seed, 'tag', 'v0.7')
+        self.source = self.root / 'checkout'
+        self.git(self.root, 'clone', '-q', str(self.seed), str(self.source))
+
+    def git(self, cwd, *args):
+        return subprocess.check_output(['git', '-C', str(cwd), *args], env=self.env, stderr=subprocess.PIPE).decode().strip()
+
+    def forge(self, *args, **env):
+        return subprocess.run([str(self.source / 'forge'), *args], env=dict(self.env, **env), cwd=self.root,
+                              capture_output=True, text=True)
+
+    def notice(self, **env):
+        return subprocess.run(['python3', str(self.source / 'scripts/forge-version.py'), 'notice'],
+                              env=dict(self.env, **env), capture_output=True, text=True)
+
+    def test_update_and_version_are_routed_from_the_launcher(self):
+        self.git(self.seed, 'tag', 'v0.8')
+        result = self.forge('update', '--dry-run')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('would fetch origin', result.stdout)
+        self.assertFalse((self.source / '.git/FETCH_HEAD').exists())
+        result = self.forge('version')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        lines = result.stdout.splitlines()
+        self.assertEqual(lines[0], 'forge 0.7')
+        self.assertIn(self.git(self.source, 'rev-parse', '--short', 'HEAD'), lines[1])
+        self.assertIn('origin/', lines[2])
+        self.assertIn('not checked yet', lines[3])  # plain `version` never reaches the network
+        result = self.forge('version', '--check')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('forge 0.8 is available (you have 0.7): forge update', result.stdout)
+
+    def test_the_notice_names_the_newest_release_at_most_once_a_day(self):
+        self.git(self.seed, 'tag', 'v0.9'); self.git(self.seed, 'tag', 'v0.10')  # 0.10 is newer, not lexically
+        first = self.notice()
+        self.assertEqual((first.returncode, first.stdout), (0, 'forge 0.10 is available (you have 0.7): forge update\n'))
+        self.assertEqual(self.notice().stdout, '')  # same day: no second check, no second line
+        cache = self.state / 'forge/update-check.json'
+        data = json.loads(cache.read_text()); data['checked'] -= 25 * 3600; cache.write_text(json.dumps(data))
+        self.assertEqual(self.notice().stdout, first.stdout)  # a day later it tells again
+
+    def test_the_notice_stays_quiet_and_never_fails(self):
+        self.git(self.seed, 'tag', 'v0.8')
+        cache = self.state / 'forge/update-check.json'
+        cases = [
+            ('switched off', dict(FORGE_UPDATE_CHECK='off'), False),
+            ('in CI', dict(CI='true'), False),
+            ('offline', {}, True),
+        ]
+        for name, env, checked in cases:
+            with self.subTest(name):
+                if name == 'offline':
+                    self.git(self.source, 'remote', 'set-url', 'origin', str(self.root / 'absent'))
+                result = self.notice(**env)
+                self.assertEqual((result.returncode, result.stdout, result.stderr), (0, '', ''))
+                self.assertEqual(cache.exists(), checked)  # off and CI do not even ask the remote
+        self.git(self.source, 'remote', 'set-url', 'origin', str(self.seed))
+        cache.unlink()
+        self.git(self.seed, 'tag', '-d', 'v0.8')
+        self.assertEqual(self.notice().stdout, '')  # positive control: reachable, and already the newest
+
+
+class RunnerNoticeTests(unittest.TestCase):
+    """A finished solo run and `plan` print the notice and keep their exit code."""
+    setUp = fixtures.ForgeTests.setUp
+    git = fixtures.ForgeTests.git
+
+    def test_runs_end_with_the_notice(self):
+        seed = self.root / 'forge-seed'
+        seed.mkdir()
+        shutil.copytree(ROOT / 'scripts', seed / 'scripts', ignore=shutil.ignore_patterns('__pycache__'))
+        for name in ('forge', 'SKILL.md', 'registry.tsv'):
+            shutil.copy2(ROOT / name, seed / name)
+        (seed / 'VERSION').write_text('0.7\n')
+        for args in (['init', '-q'], ['add', '.'], ['commit', '-qm', 'forge'], ['tag', 'v9.9']):
+            subprocess.run(['git', '-C', str(seed), *args], env=self.env, check=True, capture_output=True)
+        forge = self.root / 'forge-checkout'
+        subprocess.run(['git', 'clone', '-q', str(seed), str(forge)], env=self.env, check=True, capture_output=True)
+        line = 'forge 9.9 is available (you have 0.7): forge update'
+        run = self.root / 'solo'; run.mkdir(); (run / 'prompt.md').write_text('Implement change. REQUIREMENT_SENTINEL\n')
+        plan = self.root / 'plan'; (plan / 'tasks/a').mkdir(parents=True)
+        (plan / 'tasks.tsv').write_text('a\t-\tlow\ta.txt\tsol\topus\tA\n')
+        (plan / 'tasks/a/prompt.md').write_text('Implement change. REQUIREMENT_SENTINEL TASK_a')
+        for name, args in (('solo', ['forge-solo.sh', run, '--repo', self.repo, '--dwarf', 'sol']),
+                           ('plan', ['forge-parallel.sh', 'plan', plan, '--repo', self.repo, '--no-memory'])):
+            with self.subTest(name):
+                state = self.root / ('state-' + name)
+                env = dict(self.env, XDG_STATE_HOME=str(state), FORGE_UPDATE_CHECK='on')
+                result = subprocess.run(['bash', str(forge / 'scripts' / args[0]), *map(str, args[1:])], cwd=self.repo,
+                                        env=env, text=True, capture_output=True)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertEqual(result.stderr.splitlines()[-1], line)
+                self.assertNotIn(line, result.stdout)
