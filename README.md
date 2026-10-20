@@ -28,8 +28,9 @@ logs and separate execution/acceptance states; HTML reports capture them for lat
 [forge-ui](#forge-ui), its opt-in companion, is a read-only local page that watches any run
 live, drawn as a 3D map in archivision's style: every run on one plate, tasks in their waves
 and as they really ran, the final review as a node, and the prompt, model, timings and P0–P3
-findings behind every step. forge offers it at the start of every new run and never opens it
-without a yes.
+findings behind every step. It also floats every run in a full-screen 3D cloud, shows diffs
+with each review finding under its line, and ranks the models on your own runs. forge offers
+it at the start of every new run and never opens it without a yes.
 
 ---
 
@@ -844,7 +845,22 @@ ported from [archivision](https://github.com/Giamme/archivision):
   per attempt in the lane it ran in, against `--max-parallel`;
 - click a task to open it: its attempts, dwarves, reviews and escalations, with an inspector
   showing each step's exact prompt, model, timings, tokens and P0–P3 findings;
-- live statuses, replay, critical path, and height and colour by duration, tokens or model.
+- live statuses, replay, critical path, and height and colour by duration, tokens or model;
+- a run cloud (`#/cloud`): every run at once, full screen in 3D and grouped by project, in five
+  layouts (helix, sphere, galaxy, timeline, constellation), filtered to exactly the runs you
+  want (project, state, difficulty, tasks per run, models by role and more); drag any run
+  anywhere and the cloud remembers it;
+- diffs with every P0–P3 finding under the line it names: a task's own diffs, or exactly the
+  diff a reviewer read;
+- a model leaderboard (`#/models`): first-attempt pass rate with a confidence interval,
+  retries, escalations, time and tokens per implementer, and verdicts, findings and shadow
+  agreement per reviewer;
+- a files heatmap of which tasks planned, changed, drifted into or conflicted on which files;
+- Fractal child tasks, in the inspector and as a tree above the opened task;
+- quick jump (Ctrl K, ⌘K on a Mac, or `/`) and a bell for runs that finish or fail, failed
+  tasks and final-review verdicts, with opt-in browser notifications;
+- export a run as one HTML file that opens without forge-ui; prompts, diffs and local paths
+  stay out unless you choose them.
 
 Offline (it loads three.js from a CDN for the 3D view) the same page works in 2D. It is opt-in.
 The `/forge` skill asks "Open forge-ui to watch this run? [y/N]" at the start of every new

@@ -24,6 +24,11 @@ blocks on a plate, with cables between them and lamps that light up as things ha
 - **Extras:** replay a run from its recorded times, light its critical path, set block height
   and colour by duration, tokens, attempts or model, and mark shadow reviews that disagreed
   with the primary and how sure Clef was that each task would pass.
+- **Beyond one run:** a full-screen **run cloud** of every run, grouped by project, in five
+  layouts with filters and runs you can drag anywhere; **diffs** with each finding under the
+  line it names; a **model leaderboard**; a **files heatmap**; **Fractal** child-task trees;
+  **quick jump** and **notifications**; and **export** of a run as one HTML file. See
+  [What you see](#what-you-see).
 
 The 3D view loads three.js from a CDN the first time it is used (see [Privacy](#privacy)).
 Without it (offline, an old browser, no WebGL) the same page shows the 2D dependency graph,
@@ -168,7 +173,8 @@ with the first source winning. Discovery and disk reads repeat on each API reque
 
 URLs such as `http://127.0.0.1:8765/#/runs/<key>/tasks/<id>` are shareable within the
 machine while this server is running and discovering that run dir. *Live refresh* pauses
-polling; a hidden tab never polls. Failed requests keep the last good data and show a banner.
+polling; a hidden tab polls only the run list, every 30 seconds, and only with browser
+notifications on. Failed requests keep the last good data and show a banner.
 
 ## Layout of the code
 
