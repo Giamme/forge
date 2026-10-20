@@ -91,6 +91,22 @@ with the first source winning. Discovery and disk reads repeat on each API reque
 - **Map (`#/`):** every discovered run, newest first, grouped by repo. By default the last
   60 runs from the past 14 days; *older runs too* shows the rest. The sidebar list follows
   the same filter.
+- **Run cloud (`#/cloud`):** every run at once, full screen, floating in 3D and grouped by project
+  (repo). Pick a layout: *Helix* (one spiral per project, oldest at the bottom), *Sphere*,
+  *Galaxy* (a disc per project, newest at the centre), *Timeline* (left to right by start time,
+  one lane per project) or *Constellation* (pulled together by project and shared models, with
+  lines joining each project's nearest runs). Runs are *Blocks* (a lamp per task on the roof) or
+  *Orbs* (a ring of task segments); size is the number of tasks, colour the run's state. The
+  filter panel narrows the cloud to exactly the runs wanted: projects, state, kind, difficulty
+  (has a task of, or mostly), tasks per run, models (any role, implementer or reviewer), recent
+  activity, final review, verification, decompose level and text (goals, ids, task titles).
+  Orbit, pan and zoom anywhere; drag a run to put it where you want (Shift: nearer or further,
+  Alt: up or down). Dropped positions are kept in this browser per layout; *Positions* resets them
+  (with undo) or exports and imports them as a JSON file. Click a run for its card, double-click
+  to open it; `#/cloud/runs/<key>` and `#/cloud/projects/<id>` link to a selection. Keys:
+  arrows orbit, + − zoom, F frames, P steps through projects, [ ] through runs, L changes the
+  layout, B the shape, 0 resets the view, Esc steps back. With *2D*, the cloud lists the same
+  filtered runs and offers *Load 3D*.
 - **Run (`#/runs/<key>`):** a header (goal, repo, counts, and *Run details*: settings, request,
   waves, verification output), a toolbar (*Planned waves* / *Execution*, *3D* / *2D*, height
   and colour overlays, *Critical path*, *Review marks*, *Projected*, *Replay*), the stage with
@@ -121,8 +137,11 @@ polling; a hidden tab never polls. Failed requests keep the last good data and s
 - `forge_ui/static/runmodel.js`: the pure run model (layouts, schedule projection, critical path, replay).
 - `forge_ui/static/panel.js`, `gantt.js`, `graph.js`: the inspector, the execution chart and strip, the 2D graph.
 - `forge_ui/static/map3d.js`, `scene3d.js`, `iso.js`: the 3D loader, scenes and engine (ported from archivision).
+- `forge_ui/static/cloudmodel.js`, `cloud3d.js`, `cloudui.js`: the run cloud's pure model (projects,
+  filters, layouts, layout files), its scene on the shared stage, and its controls.
 - `tests/`: reader, executions, endpoints, server, static-script and browser checks; `run_fixture.py`
-  builds realistic runs in a temp dir (`python3 tests/run_fixture.py DIR` writes two you can open).
+  builds realistic runs in a temp dir (`python3 tests/run_fixture.py DIR` writes two you can open),
+  and `many_fixture.py` many small ones across repos for the cloud (`python3 tests/many_fixture.py DIR 300`).
 - [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md): the licences of the ported and loaded code.
 
 [docs/api.md](docs/api.md) is the data contract between the reader, server and page.
@@ -149,7 +168,7 @@ Run these from `ui/`:
 
 ```sh
 python3 -m unittest discover -s tests          # includes the syntax checks and node --test
-node --test tests/js/*.test.js                 # the run model alone
+node --test tests/js/*.test.js                 # the run and cloud models alone
 ```
 
 `tests/test_browser.py` drives the page in Chromium when Python Playwright is installed, and

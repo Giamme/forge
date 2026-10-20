@@ -1,6 +1,6 @@
 /* forge-ui: read-only API viewer. All API values enter the DOM as text.
-   Views: the map of every run (#/), and a run (#/runs/<key>) with its stage (3D, or the 2D graph and chart),
-   the inspector beside it and the task table under it. The stage is one element that moves between views,
+   Views: the map of every run (#/), the run cloud (#/cloud, full screen: cloudui.js over cloud3d.js), and a
+   run (#/runs/<key>) with its stage (3D, or the 2D graph and chart), the inspector beside it and the task table under it. The stage is one element that moves between views,
    so the 3D scene (and its WebGL context) survives navigation and refreshes. */
 window.ForgeUI = (() => {
   'use strict';
@@ -14,7 +14,7 @@ window.ForgeUI = (() => {
     showAll: false, mode: store.get('mode', 'plan'), dim: store.get('view', '3d'),
     overlay: Object.assign({ height: 'none', color: 'status', critical: false, arcs: true, ghosts: true }, store.get('overlay', {})),
     replay: null, playing: null, speed: store.get('speed', 60), stage: null, stageFailed: null, stageLoading: false, timer: null,
-    lastStatuses: new Map(), announced: 0, rendered: null };
+    lastStatuses: new Map(), announced: 0, rendered: null, cloud: null, cloudUI: null, cloudPrefs: store.get('cloud', {}) };
   const $ = id => document.getElementById(id);
   const display = value => value === null || value === undefined || value === '' ? '—' :
     typeof value === 'object' ? JSON.stringify(value, null, 2) : String(value);
@@ -40,7 +40,13 @@ window.ForgeUI = (() => {
     if (sel.kind === 'integration') return `${base}/integration`;
     return base;
   }
+  function cloudHash(sel, focus) {
+    if (sel) return '#/cloud/runs/' + encodeURIComponent(sel);
+    return focus ? '#/cloud/projects/' + encodeURIComponent(focus) : '#/cloud';
+  }
   function parseHash(hash) {
+    const c = hash.match(/^#\/cloud(?:\/(runs|projects)\/([^/]+))?\/?$/);
+    if (c) return { key: null, sel: null, cloud: { sel: c[1] === 'runs' ? decodeURIComponent(c[2]) : null, focus: c[1] === 'projects' ? decodeURIComponent(c[2]) : null } };
     const m = hash.match(/^#\/runs\/([^/]+)(\/.*)?$/);
     if (!m) return { key: null, sel: null };
     const d = decodeURIComponent, rest = m[2] || '';
@@ -236,6 +242,14 @@ window.ForgeUI = (() => {
       onOpenRun: key => { location.hash = hashFor(key, null); },
       onBack: () => { location.hash = '#/'; },
       onMode: mode => setMode(mode),
+      cloud: {
+        onSelect: key => { location.hash = cloudHash(key, state.cloud && state.cloud.focus); },
+        onFocus: pid => { location.hash = cloudHash(null, pid); },
+        onOpenRun: key => { location.hash = hashFor(key, null); },
+        onMoved: () => state.cloudUI && state.cloudUI.refreshCard(),
+        onLayout: name => state.cloudUI && state.cloudUI.setLayout(name),
+        onShape: shape => state.cloudUI && state.cloudUI.setShape(shape),
+      },
     })).then(stage => {
       state.stage = stage; state.stageLoading = false;
       stage.setOverlay(state.overlay);
@@ -295,7 +309,7 @@ window.ForgeUI = (() => {
   function filterChanged(rebuildBar) {
     store.set('map-filter', state.mapFilter);
     renderList();
-    if (!state.key) renderMap({ rebuildBar });
+    if (!state.key && !state.cloud) renderMap({ rebuildBar });
   }
   function mapCards(parent) {
     const A = RM.atlasModel(state.runs, state.mapFilter, { now: wall(), showAll: state.showAll });
@@ -325,8 +339,9 @@ window.ForgeUI = (() => {
       main.replaceChildren();
       const v = section(main, undefined, 'map-view'); v.className = 'map-view';
       const head = el('div', undefined, 'map-head');
-      head.append(el('h1', 'All runs'), el('span', '', 'muted'), viewToggle());
-      head.lastChild.classList.add('push');
+      const toCloud = el('a', 'Open the run cloud', 'top-link'); toCloud.href = '#/cloud';
+      head.append(el('h1', 'All runs'), el('span', '', 'muted'), toCloud, viewToggle());
+      toCloud.classList.add('push');
       v.append(head);
       const bar = el('div'); bar.id = 'map-filters'; v.append(bar);
       const slot = el('div', undefined, 'stage-slot map'); slot.id = 'stage-slot'; v.append(slot);
@@ -346,6 +361,32 @@ window.ForgeUI = (() => {
     }
     const counter = $('map-view').querySelector('.map-head .muted');
     if (info) counter.textContent = `${info.matches} of ${info.shown} shown runs match${info.hidden ? ` · ${info.hidden} older hidden` : ''}`;
+  }
+
+  /* ---------- the run cloud: every run in 3D, full screen ---------- */
+  function renderCloud() {
+    const main = $('main');
+    if (main.dataset.view !== 'cloud' || !state.cloudUI) {
+      main.dataset.view = 'cloud'; delete main.dataset.run;
+      main.replaceChildren();
+      const v = el('section', undefined, 'cloud-view'); v.id = 'cloud-view'; v.setAttribute('aria-label', 'Run cloud');
+      const slot = el('div', undefined, 'stage-slot cloud'); slot.id = 'stage-slot'; v.append(slot);
+      main.append(v);
+      state.cloudUI = window.ForgeCloudUI.create(v, {
+        prefs: state.cloudPrefs,
+        save: p => { state.cloudPrefs = p; store.set('cloud', p); },
+        route: ({ sel, focus }) => { location.hash = cloudHash(sel, focus); },
+        load3d: () => { state.dim = '3d'; store.set('view', '3d'); state.stageFailed = null; renderMain(); },
+        viewToggle,
+      });
+    }
+    ensureStage();
+    placeStage($('stage-slot'));
+    stageNote.textContent = '';
+    const mode = use3d() ? (state.stage ? '3d' : 'loading') : state.stageFailed && state.dim === '3d' ? 'failed' : '2d';
+    state.cloudUI.render({ runs: state.runs, sel: state.cloud.sel, focus: state.cloud.focus, mode, stage: mode === '3d' ? state.stage : null,
+      note: mode === 'failed' ? window.ForgeMap3D.message() : '' });
+    syncToggles();
   }
 
   /* ---------- a run ---------- */
@@ -577,6 +618,8 @@ window.ForgeUI = (() => {
     announce(run);
   }
   function renderMain() {
+    document.body.classList.toggle('cloud-mode', !!state.cloud);
+    if (state.cloud) { renderCloud(); return; }
     if (!state.key) { renderMap(); return; }
     const cached = state.cache.get(state.key);
     if (cached) renderRun(cached.data);
@@ -624,7 +667,8 @@ window.ForgeUI = (() => {
       state.runs = list(result.data.runs);
       state.listText = result.text;
       renderList();
-      if (!state.key) renderMap({ rebuildBar: $('map-filters') ? !$('map-filters').contains(document.activeElement) : true });
+      if (state.cloud) renderCloud();
+      else if (!state.key) renderMap({ rebuildBar: $('map-filters') ? !$('map-filters').contains(document.activeElement) : true });
     }, 'Could not refresh runs');
   }
   function loadRun(key) {
@@ -647,8 +691,15 @@ window.ForgeUI = (() => {
     const keyChanged = parsed.key !== state.key;
     state.key = parsed.key;
     state.sel = parsed.sel;
+    state.cloud = parsed.cloud || null;
+    document.body.classList.toggle('cloud-mode', !!state.cloud);
+    for (const a of document.querySelectorAll('.topbar .top-link')) {
+      const here = a.getAttribute('href') === (state.cloud ? '#/cloud' : !state.key ? '#/' : null);
+      if (here) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
+    }
     renderErrors();
     markSelection();
+    if (state.cloud) { renderCloud(); return; }
     if (!state.key) { renderMap(); return; }
     const cached = state.cache.get(state.key);
     if (cached) {
@@ -682,7 +733,7 @@ window.ForgeUI = (() => {
     $('refresh').addEventListener('change', event => { state.paused = !event.target.checked; refresh(); });
     window.addEventListener('hashchange', navigate);
     document.addEventListener('visibilitychange', refresh);
-    window.addEventListener('resize', () => { const run = state.cache.get(state.key)?.data; if (run && (!use3d() || !state.stage || state.mode === 'exec')) { render2d(run); renderStrip(run); } });
+    window.addEventListener('resize', () => { const run = !state.cloud && state.cache.get(state.key)?.data; if (run && (!use3d() || !state.stage || state.mode === 'exec')) { render2d(run); renderStrip(run); } });
     loadList();
     navigate();
     schedule();

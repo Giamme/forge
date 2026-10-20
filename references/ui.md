@@ -10,6 +10,10 @@ run goes on, with the same exit code.
 
 - **Map of every run:** every run forge has registered, one district per repo and one block per
   run with a lamp per task, filterable by state, repo, kind, model, age and review verdict.
+- **Run cloud:** every run at once, full screen in 3D, grouped by project, in one of five layouts
+  (helix, sphere, galaxy, timeline, constellation) as blocks or orbs. Filters narrow it to exactly
+  the runs wanted (project, state, difficulty, tasks per run, models and more), and runs can be
+  dragged anywhere; where they were dropped is remembered in that browser.
 - **Plan run:** tasks in their planned waves with dependency cables, then the finish line:
   integration, verification and the whole-run final review, each a node with its status. The
   *Execution* view shows the same run on wall-clock time, one block per attempt in the lane it

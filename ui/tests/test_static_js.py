@@ -14,7 +14,7 @@ import unittest
 
 STATIC = Path(__file__).resolve().parents[1] / 'forge_ui' / 'static'
 JS_TESTS = Path(__file__).resolve().parent / 'js'
-MODULES = {'iso.js', 'scene3d.js'}          # ES modules; every other script is a classic script
+MODULES = {'iso.js', 'scene3d.js', 'cloud3d.js'}          # ES modules; every other script is a classic script
 
 
 @unittest.skipUnless(shutil.which('node'), 'node is not installed')
@@ -65,7 +65,7 @@ class CspRules(unittest.TestCase):
         self.assertEqual(set(re.findall(r'three@([0-9.]+)', html)), {'0.160.0'})
 
     def test_third_party_notices_travel_with_the_ported_code(self):
-        for name in ('iso.js', 'scene3d.js', 'runmodel.js'):
+        for name in ('iso.js', 'scene3d.js', 'runmodel.js', 'cloud3d.js'):
             with self.subTest(name):
                 head = (STATIC / name).read_text(encoding='utf-8')[:3000]
                 self.assertIn('archivision', head)

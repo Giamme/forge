@@ -2,11 +2,13 @@
    - atlas: every run on one plate, one district per repo, one block per run with a lamp per task;
    - plan: one run's waves as districts, a block per task, and the finish line (integration, verification,
      final review); opening a task shows its attempts, each with its dwarf, its review and any shadow reviews;
-   - exec: the same run on wall-clock time, one block per attempt in the lane it really ran in.
+   - exec: the same run on wall-clock time, one block per attempt in the lane it really ran in;
+   - cloud: every run floating in 3D, grouped by project (cloud3d.js), on the same engine and WebGL context.
    The scene logic (blocks, roofs, lamps, opening, cables, beads) is archivision's assets/figure.js (MIT,
    © 2026 Giamme; drawing style iso-glow, MIT © 2026 April Zhu and Tolga Cohce: see the notice in iso.js).
    All text from the API is drawn on canvases or set with textContent, never parsed as HTML. */
 import { createEngine } from './iso.js';
+import { createCloud } from './cloud3d.js';
 
 const RM = window.ForgeRunModel;
 const list = v => Array.isArray(v) ? v : [];
@@ -772,6 +774,17 @@ export async function createStage(host, cb = {}) {
     return false;
   };
 
+  // the cloud has its own pointer and keys: while it is shown, the engine's handlers go to it
+  let cloud = null;
+  for (const k of Object.keys(E.handlers)) {
+    const mine = E.handlers[k];
+    E.handlers[k] = (...a) => {
+      if (st.view === 'cloud') return cloud && cloud.handlers[k] ? cloud.handlers[k](...a) : k === 'grab' ? null : false;
+      return mine ? mine(...a) : k === 'grab' ? null : false;
+    };
+  }
+  const leaveCloud = () => { if (cloud) cloud.detach(); };
+
   /* ---------- public API ---------- */
   function frameSelection(dur = 850) {
     if (st.view !== 'run') return;
@@ -792,7 +805,7 @@ export async function createStage(host, cb = {}) {
       const A = RM.atlasModel(st.runs, st.filter, { now: nowSec(), ...st.atlasOpts });
       const sig = JSON.stringify(A.modules.map(m => [m.id, m.tasks.length, m.layer]));
       if (st.view !== 'atlas' || sig !== st.atlasSig) {
-        st.view = 'atlas'; st.run = null; st.sel = null; clearWorld(); st.atlasSig = sig; st.rebuilds++; buildAtlas();
+        leaveCloud(); st.view = 'atlas'; st.run = null; st.sel = null; clearWorld(); st.atlasSig = sig; st.rebuilds++; buildAtlas();
       } else updateAtlas();
       E.canvas.setAttribute('aria-label', `Map of ${A.modules.length} runs, ${A.matches} matching the filter${A.hidden ? `, ${A.hidden} older runs hidden` : ''}`);
       retarget();
@@ -806,7 +819,7 @@ export async function createStage(host, cb = {}) {
       if (sel !== undefined) st.sel = sel;
       if (selChanged && !first && key === st.structure) { api.update(run); retarget(); frameSelection(); return; }
       if (first || key !== st.structure) {
-        st.view = 'run'; st.structure = key; buildRun();
+        leaveCloud(); st.view = 'run'; st.structure = key; buildRun();
         if (first) {
           const b = boxOf(st.mode);
           if (!reduce) { E.frameBox(b, 0, 26); }
@@ -899,6 +912,15 @@ export async function createStage(host, cb = {}) {
       st.sel = s || null; retarget();
       if (frame && !same && st.view === 'run') frameSelection();
     },
+    // runs: every RunSummary; opts: {filter, layout, shape, sel, focus} (see cloud3d.js)
+    showCloud(runs, opts = {}) {
+      if (st.view !== 'cloud') { clearWorld(); st.view = 'cloud'; st.run = null; st.sel = null; st.atlasSig = ''; st.structure = ''; }
+      if (!cloud) cloud = createCloud(E, host, cb.cloud || {});
+      const c = cloud.show(list(runs), opts);
+      E.canvas.setAttribute('aria-label', `Cloud of runs: ${c.visible} of ${c.total} runs in ${c.projects} projects, ${c.layout} layout`);
+      return c;
+    },
+    get cloud() { return cloud; },
     focus() { E.canvas.focus({ preventScroll: true }); },
     get mode() { return st.mode; },
     get view() { return st.view; },
