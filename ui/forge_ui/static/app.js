@@ -14,7 +14,8 @@ window.ForgeUI = (() => {
     showAll: false, mode: store.get('mode', 'plan'), dim: store.get('view', '3d'),
     overlay: Object.assign({ height: 'none', color: 'status', critical: false, arcs: true, ghosts: true }, store.get('overlay', {})),
     replay: null, playing: null, speed: store.get('speed', 60), stage: null, stageFailed: null, stageLoading: false, timer: null,
-    lastStatuses: new Map(), announced: 0, rendered: null, cloud: null, cloudUI: null, cloudPrefs: store.get('cloud', {}) };
+    lastStatuses: new Map(), announced: 0, rendered: null, cloud: null, cloudUI: null, cloudPrefs: store.get('cloud', {}),
+    models: false, modelsData: null, modelsText: null, modelsError: null, modelsPrefs: store.get('models', {}) };
   const $ = id => document.getElementById(id);
   const display = value => value === null || value === undefined || value === '' ? '—' :
     typeof value === 'object' ? JSON.stringify(value, null, 2) : String(value);
@@ -53,8 +54,9 @@ window.ForgeUI = (() => {
     return focus ? '#/cloud/projects/' + encodeURIComponent(focus) : '#/cloud';
   }
   function parseHash(hash) {
-    const c = hash.match(/^#\/cloud(?:\/(runs|projects)\/([^/]+))?\/?$/);
-    if (c) return { key: null, sel: null, cloud: { sel: c[1] === 'runs' ? decodeURIComponent(c[2]) : null, focus: c[1] === 'projects' ? decodeURIComponent(c[2]) : null } };
+    const c = hash.match(/^#\/cloud(?:\/(runs|projects|models)\/([^/]+))?\/?$/);
+    if (c) return { key: null, sel: null, cloud: { sel: c[1] === 'runs' ? decodeURIComponent(c[2]) : null, focus: c[1] === 'projects' ? decodeURIComponent(c[2]) : null, model: c[1] === 'models' ? decodeURIComponent(c[2]) : null } };
+    if (/^#\/models\/?$/.test(hash)) return { key: null, sel: null, models: true };
     const m = hash.match(/^#\/runs\/([^/]+)(\/.*)?$/);
     if (!m) return { key: null, sel: null };
     const d = decodeURIComponent, rest = m[2] || '';
@@ -177,7 +179,7 @@ window.ForgeUI = (() => {
 
   /* ---------- errors and the run list ---------- */
   function currentResource(path) {
-    return path === '/api/runs' || (state.key != null && path === '/api/runs/' + encodeURIComponent(state.key));
+    return path === '/api/runs' || (state.models && path === '/api/models') || (state.key != null && path === '/api/runs/' + encodeURIComponent(state.key));
   }
   function renderErrors() {
     for (const path of state.errors.keys()) if (!currentResource(path)) state.errors.delete(path);
@@ -399,6 +401,34 @@ window.ForgeUI = (() => {
     state.cloudUI.render({ runs: state.runs, sel: state.cloud.sel, focus: state.cloud.focus, mode, stage: mode === '3d' ? state.stage : null,
       note: mode === 'failed' ? window.ForgeMap3D.message() : '' });
     syncToggles();
+  }
+
+  /* ---------- the model leaderboard (#/models) ---------- */
+  function renderModels() {
+    const main = $('main');
+    if (main.dataset.view !== 'models') {
+      main.dataset.view = 'models'; delete main.dataset.run;
+      main.replaceChildren();
+      const v = el('section', undefined, 'models-view'); v.id = 'models-view'; main.append(v);
+    }
+    const host = $('models-view');
+    if (!state.modelsData) {
+      host.replaceChildren(el('h1', 'Models'), el('p', state.modelsError ? `Could not load the model results (${state.modelsError}).` : 'Reading every run\'s attempts and reviews…', state.modelsError ? 'warn' : 'muted'));
+      return;
+    }
+    window.ForgeLeaderboard.render(host, state.modelsData, {
+      runs: state.runs, prefs: state.modelsPrefs, now: () => Date.now() / 1000,
+      savePrefs: p => { state.modelsPrefs = p; store.set('models', p); },
+      modelHref: alias => '#/cloud/models/' + encodeURIComponent(alias),
+    });
+  }
+  function loadModels() {
+    return request('/api/models', result => {
+      state.modelsError = null;
+      if (result.text === state.modelsText) return;
+      state.modelsText = result.text; state.modelsData = result.data;
+      if (state.models) renderModels();
+    }, 'Could not refresh the model results', error => { state.modelsError = error.message; if (state.models) renderModels(); });
   }
 
   /* ---------- a run ---------- */
@@ -645,6 +675,7 @@ window.ForgeUI = (() => {
   function renderMain() {
     document.body.classList.toggle('cloud-mode', !!state.cloud);
     if (state.cloud) { renderCloud(); return; }
+    if (state.models) { renderModels(); return; }
     if (!state.key) { renderMap(); return; }
     const cached = state.cache.get(state.key);
     if (cached) renderRun(cached.data);
@@ -720,14 +751,20 @@ window.ForgeUI = (() => {
     const diffWas = JSON.stringify(state.diff || null);
     state.diff = parsed.diff || null;
     state.cloud = parsed.cloud || null;
+    state.models = !!parsed.models;
+    if (state.cloud && state.cloud.model) {                  // a model's runs: the cloud, filtered to it
+      cloudFilter({ models: { aliases: [state.cloud.model], role: 'any' } });
+      history.replaceState(null, '', '#/cloud'); state.cloud.model = null;
+    }
     document.body.classList.toggle('cloud-mode', !!state.cloud);
     for (const a of document.querySelectorAll('.topbar .top-link')) {
-      const here = a.getAttribute('href') === (state.cloud ? '#/cloud' : !state.key ? '#/' : null);
+      const here = a.getAttribute('href') === (state.cloud ? '#/cloud' : state.models ? '#/models' : !state.key ? '#/' : null);
       if (here) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
     }
     renderErrors();
     markSelection();
     if (state.cloud) { renderCloud(); return; }
+    if (state.models) { renderModels(); loadModels(); return; }
     if (!state.key) { renderMap(); return; }
     const cached = state.cache.get(state.key);
     if (cached) {
@@ -754,6 +791,7 @@ window.ForgeUI = (() => {
     if (document.visibilityState !== 'visible') { if (background()) loadList(); return; }   // only to notify
     loadList();
     if (state.key) loadRun(state.key);
+    if (state.models) loadModels();
     for (const node of document.querySelectorAll('[data-epoch]')) node.textContent = relative(node.dataset.epoch);
   }
   // Poll faster while something runs, slower otherwise; never while the tab is hidden or refresh is off.
@@ -767,6 +805,7 @@ window.ForgeUI = (() => {
     const out = [
       { id: 'cmd:cloud', label: 'Open the run cloud', sub: 'every run in 3D, grouped by project', ids: ['cloud'], href: '#/cloud' },
       { id: 'cmd:map', label: 'Open the map of all runs', sub: 'the front page', ids: ['map', 'home'], href: '#/' },
+      { id: 'cmd:models', label: 'Open the model leaderboard', sub: 'pass rates, retries, time and tokens per model', ids: ['models', 'leaderboard'], href: '#/models' },
       { id: 'cmd:notify', label: 'Notifications', sub: 'what finished or failed, and browser notifications', ids: ['alerts', 'bell'], action: () => window.ForgeNotify && window.ForgeNotify.open() },
       { id: 'cmd:dim', label: state.dim === '3d' ? 'Switch to 2D' : 'Switch to 3D', sub: state.dim === '3d' ? 'graphs and charts, no WebGL' : 'loads three.js from cdn.jsdelivr.net', ids: ['2d', '3d'],
         action: () => { state.dim = state.dim === '3d' ? '2d' : '3d'; store.set('view', state.dim); if (state.dim === '3d') state.stageFailed = null; renderMain(); } },

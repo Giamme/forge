@@ -209,6 +209,19 @@ class Page(unittest.TestCase):
         self.assertIn('candidate.diff', page.text_content('.diff-meta'))
         self.assertClean(page)
 
+    def test_the_model_leaderboard_counts_first_attempts_and_links_to_the_cloud(self):
+        page = self.open(cdn=False)
+        page.goto(self.url + '#/models')
+        page.wait_for_selector('.lb table')
+        text = page.text_content('.lb')
+        for expected in ('Observational', 'Implementers', 'Reviewers', 'luna', 'opus'):
+            self.assertIn(expected, text)
+        page.click('.lb table a:text-is("luna")')
+        page.wait_for_function("() => location.hash === '#/cloud'")
+        page.wait_for_selector('.cloud-filters-btn')
+        self.assertIn('Filters (1)', page.text_content('.cloud-filters-btn'))
+        self.assertClean(page)
+
     def test_quick_jump_finds_a_task_and_opens_it(self):
         page = self.open(cdn=False)
         page.goto(self.url + '#/')

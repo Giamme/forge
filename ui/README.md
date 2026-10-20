@@ -117,6 +117,14 @@ with the first source winning. Discovery and disk reads repeat on each API reque
   with the gate decision, Clef predictions against outcomes, and its prompts; for one
   execution, its model, phases, tokens, exact prompt and final message; for the final
   review, its verdict, findings, report, prompt and history.
+- **Models (`#/models`):** a leaderboard of the models forge used. Implementers: tasks, first-attempt
+  pass rate with its 95% Wilson interval, censored attempts, retries, escalations away from the
+  model, timeouts, gate and human accepts, median model time and tokens. Reviewers: primary,
+  shadow and final reviews, the PASS/FAIL split, findings per review by severity, and how often a
+  shadow review agreed with the primary. Filter by project, difficulty, kind and period, or keep
+  only exploratory picks; open a difficulty for its own table. Routing is not random, so the
+  numbers compare what happened, not what would have: the page says so. A model's name opens the
+  run cloud filtered to its runs.
 - **Diffs (`…/tasks/<id>/diff[/<source>][/file/<path>]`, `…/final-review/<name>/diff`):** a task's
   `changes.diff`, its previous or committed diff, or exactly the diff one reviewer read (the last
   diff in that review's prompt), picked from a row of sources with each review's verdict; a final
@@ -166,6 +174,8 @@ polling; a hidden tab never polls. Failed requests keep the last good data and s
 - `forge_ui/static/cloudmodel.js`, `cloud3d.js`, `cloudui.js`: the run cloud's pure model (projects,
   filters, layouts, layout files), its scene on the shared stage, and its controls.
 - `forge_ui/static/diffview.js`: the diff viewer, with findings pinned to their lines.
+- `forge_ui/static/modelstats.js`, `leaderboard.js`: the leaderboard's aggregation (outcomes as
+  `scripts/forge_dataset/export.py` labels them, the interval of its `routing.py`) and its page.
 - `forge_ui/diffs.py`, `fractal.py`, `models.py`: diff parsing and finding pins, the Fractal state
   reader, and the facts behind the model leaderboard.
 - `forge_ui/static/search.js`, `notify.js`, `favicon.svg`: the quick jump and the notifications

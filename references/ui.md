@@ -14,6 +14,9 @@ run goes on, with the same exit code.
   (helix, sphere, galaxy, timeline, constellation) as blocks or orbs. Filters narrow it to exactly
   the runs wanted (project, state, difficulty, tasks per run, models and more), and runs can be
   dragged anywhere; where they were dropped is remembered in that browser.
+- **Model leaderboard:** first-attempt pass rates with confidence intervals, retries, escalations,
+  timeouts, time and tokens per implementer, and verdicts, findings and shadow agreement per
+  reviewer, filterable by project, difficulty and period.
 - **Diffs with findings in place:** any task diff, the exact diff each reviewer read, or a final
   review's combined diff, with every P0–P3 finding shown under the line it names.
 - **Fractal child tasks:** the tree a Fractal task was split into, in the inspector and above
