@@ -5,6 +5,31 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and versions follow the format `{major}.{minor}` ([...] parts appear only when non-zero).
 
+## [0.7] - 2026-10-20
+
+forge-ui grows from a run viewer into a full picture of your runs: a full-screen 3D cloud of every run, grouped by project and filtered down to exactly the runs you want, diffs that show each review finding on the line it names, and a model leaderboard that compares implementers and reviewers on your own history. It also gains 3D run views, quick jump, notifications, a files heatmap and one-file HTML exports.
+
+### Highlights
+
+- forge-ui has a run cloud (*Run cloud* in the top bar): every run at once, full screen in 3D, grouped by project. Choose how it is laid out (a helix per project, spheres, galaxies, a timeline with one lane per project, or a constellation that pulls together runs sharing models) and whether runs are blocks or orbs. The filter panel narrows the cloud to exactly the runs you want: projects, state, difficulty, tasks per run, the models that implemented or reviewed them, recent activity, verdicts and more. Orbit, zoom and drag any run wherever you want it; the cloud remembers where you put things in that browser, per layout, and *Positions* resets them or exports and imports them as a file. Click a run for a summary card, double-click to open it.
+- forge-ui shows diffs with the review findings in place. From a task, any of its reviews or the final review, open the diff: the task's current, previous or committed changes, or exactly the diff a reviewer read, with every P0–P3 finding shown under the line it points at (and the ones that point outside the diff listed apart). n and p jump between findings. When a run used Fractal, a task also shows the child tasks it was split into, in the inspector and as a small tree floating over the opened task in 3D, each with its decision, cost, output and its own diff.
+- forge-ui has a model leaderboard (*Models* in the top bar): for each implementer model, how often its first attempt passed (with a confidence interval), its retries, escalations away, timeouts, time and tokens; for each reviewer, its verdicts, findings per review and how often shadow reviews agreed with it. Filter by project, difficulty and period, or keep only the tasks where forge picked the model at random, the fairest comparison since routing is otherwise not random. Click a model to see its runs in the run cloud.
+
+### Added
+
+- forge-ui now draws your runs as a 3D map in archivision's style. The front page shows every run grouped by repo, with a lamp per task and filters that fade what does not match; a run shows its tasks in their planned waves, ending in integration, verification and the whole-run final review, and *Execution* shows the same run on wall-clock time, attempt by attempt, against `--max-parallel`. Click a task to open it to its attempts, reviews and escalations; the inspector beside it shows each step's exact prompt, model, timings, tokens, verdict and P0–P3 findings. Statuses update live, and you can replay a run, light its critical path, and size or colour tasks by duration, tokens, attempts or model. The 3D view loads three.js from cdn.jsdelivr.net the first time it is shown; offline, or with *2D* chosen, the page works without it.
+- forge-ui has a quick jump and notifications. Press Ctrl K (⌘K on a Mac) or `/` anywhere to search every run, task, project and model and jump straight to it; Shift+Enter shows a run in the run cloud. The new bell tells you when a run finishes or ends with failures, when a task fails, and when a final review gives its verdict, with an unread count in the tab title; turn on browser notifications from the bell to hear about them while the tab is in the background.
+- You can export a run from forge-ui as one HTML file to share (*Export…* in the run's header). The file opens in any browser without forge-ui, even offline (in 2D; in 3D when it can reach cdn.jsdelivr.net), with the run's plan, execution, inspector and findings. It asks each time what to include: prompts, reports and diffs are left out unless you tick them, and local paths are hidden unless you untick that.
+- forge-ui shows which tasks touched which files: *Files* in a run's toolbar draws every file the run planned or changed against its tasks, wave by wave, with how many attempts changed each file, the files a task changed without planning to (drift), merge conflicts, and files two tasks of the same wave both worked on. Click a cell to select the task and open that file's diff.
+
+### Changed
+
+- Every plan, run and solo run now registers its run dir in forge's run registry, not only the ones opened with `--ui`, so forge-ui's map can show all of a repo's runs. While the forge-ui server runs, that means it can show every run on the machine; `forge ui stop` closes it, and `FORGE_RUN_REGISTRY=off` stops runs from registering. `forge-parallel.sh run` also records the `--max-parallel` it was given in the plan dir.
+
+### Fixed
+
+- forge-ui's 2D dependency graph shows its status colours again; the page's own security policy had been blocking them.
+
 ## [0.6] - 2026-10-20
 
 Forge gets a companion: forge-ui, a read-only local page that watches any run live, now ships inside forge and is offered at the start of every run. Grok 4.7 joins as a sixth harness through xAI's grok CLI, and a grok session the CLI cancels partway through is now recorded instead of passing as finished.
