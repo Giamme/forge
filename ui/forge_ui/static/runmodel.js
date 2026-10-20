@@ -562,7 +562,98 @@
     return JSON.stringify([list(task && task.executions).filter(e => e.role === 'dwarf' || e.role === 'qa').map(e => e.id), list(task && task.shadow).map(s => [s.attempt, s.k]), list(task && task.escalations).length]);
   }
 
+  /* ---------- quick jump: an index of runs and tasks, ranked against what was typed ---------- */
+  function searchIndex(runs) {
+    const out = [];
+    for (const r of list(runs)) {
+      const goal = String(r.goal || 'Untitled run').split('\n')[0], n = num(r.task_count) || list(r.task_statuses).length;
+      out.push({ id: 'run:' + r.key, kind: 'run', key: r.key, label: goal, sub: `${basename(r.repo)} · ${r.run_id || r.key} · ${r.kind === 'solo' ? 'solo' : n + ' task' + (n === 1 ? '' : 's')}`,
+        ids: [r.run_id, r.key].filter(Boolean), words: [basename(r.repo), ...list(r.models)], t: num(r.updated) || 0, state: runState(r), href: '#/runs/' + encodeURIComponent(r.key) });
+      if (r.kind === 'solo') continue;
+      for (const t of list(r.task_statuses)) {
+        if (!t || !t.id) continue;
+        out.push({ id: `task:${r.key}:${t.id}`, kind: 'task', key: r.key, task: t.id, label: t.title ? `${t.id} · ${t.title}` : t.id, sub: `${goal} · ${String(t.status || 'PENDING').toLowerCase()}`,
+          ids: [t.id], words: [r.run_id, basename(r.repo)].filter(Boolean), t: num(r.updated) || 0, status: t.status, subSearch: false,   // not found through its run's goal
+          href: `#/runs/${encodeURIComponent(r.key)}/tasks/${encodeURIComponent(t.id)}` });
+      }
+    }
+    return out;
+  }
+  // how well one query token matches a text: exact, prefix, word start, substring, then a loose subsequence
+  function tokenScore(text, q, loose = true) {
+    const s = String(text || '').toLowerCase(); if (!s || !q) return null;
+    if (s === q) return { score: 100, at: 0, len: q.length };
+    const i = s.indexOf(q);
+    if (i === 0) return { score: 80, at: 0, len: q.length };
+    if (i > 0) return { score: /[^a-z0-9]/.test(s[i - 1]) ? 65 : 50, at: i, len: q.length };
+    if (!loose || q.length < 2) return null;
+    let j = 0, run = 0, best = 0, starts = 0, first = -1, last = -1;
+    for (let k = 0; k < s.length && j < q.length; k++) {
+      if (s[k] !== q[j]) { run = 0; continue; }
+      if (first < 0) first = k;
+      run++; best = Math.max(best, run); if (k === 0 || /[^a-z0-9]/.test(s[k - 1])) starts++;
+      j++; last = k;
+    }
+    if (j < q.length || last - first + 1 > q.length * 3) return null;     // all of it, close together
+    return { score: Math.max(5, 18 + best * 3 + starts * 4 - (s.length - q.length) / 8), at: -1, len: 0 };
+  }
+  // entries from searchIndex() and any others ({id, kind, label, sub, ids, words, t}); recent: {id: epoch} picked before
+  function searchRank(entries, query, { now = null, recent = {}, limit = 40 } = {}) {
+    const q = String(query || '').trim().toLowerCase(), tokens = q.split(/\s+/).filter(Boolean);
+    const t0 = num(now) ?? Math.max(0, ...list(entries).map(e => num(e.t) || 0));
+    const fresh = e => num(e.t) ? 12 * Math.exp(-Math.max(0, t0 - e.t) / (7 * 86400)) : 0;
+    const scored = [];
+    for (const e of list(entries)) {
+      let total = 0, mark = null;
+      if (!tokens.length) total = (recent[e.id] ? 200 + (recent[e.id] / 1e10) : 0) + (e.state === 'live' ? 30 : 0) + fresh(e) + (e.kind === 'run' ? 5 : e.kind === 'command' ? 1 : -50);
+      else {
+        let ok = true;
+        for (const tok of tokens) {
+          let best = null;
+          const fields = [[e.label, 1, true], ...list(e.ids).map(v => [v, 1.15, true]), ...(e.subSearch === false ? [] : [[e.sub, .55, false]]), ...list(e.words).map(v => [v, .6, false])];
+          for (const [text, w, loose] of fields) {
+            const m = tokenScore(text, tok, loose); if (!m) continue;
+            const sc = m.score * w;
+            if (!best || sc > best.sc) best = { sc };
+          }
+          if (!best) { ok = false; break; }
+          total += best.sc;
+          const at = String(e.label || '').toLowerCase().indexOf(tok);
+          if (at >= 0 && !mark) mark = [at, at + tok.length];
+        }
+        if (!ok) continue;
+        total += fresh(e) + (recent[e.id] ? 15 : 0) + (e.state === 'live' ? 4 : 0);
+      }
+      if (total > 0 || !tokens.length) scored.push({ ...e, score: total, mark });
+    }
+    scored.sort((a, b) => b.score - a.score || (b.t || 0) - (a.t || 0) || String(a.label).localeCompare(String(b.label)));
+    return scored.slice(0, limit);
+  }
+
+  /* ---------- notifications: what changed between two polls of the run list ---------- */
+  const FAILING = new Set(['FAIL', 'ERROR', 'CONFLICT', 'TIMEOUT', 'INVALIDATED', 'INTERRUPTED', 'BLOCKED']);
+  // prev, next: RunSummary lists (prev null on the first poll, which is only a baseline). A run that has not
+  // changed for two hours (stale: its process died) never fires.
+  function statusEvents(prev, next, { now = null, staleAfter = 7200 } = {}) {
+    if (!Array.isArray(prev)) return [];
+    const before = new Map(prev.map(r => [r.key, r])), out = [], t = num(now);
+    for (const r of list(next)) {
+      const p = before.get(r.key); if (!p) continue;
+      if (t !== null && num(r.updated) !== null && t - r.updated > staleAfter) continue;
+      const goal = String(r.goal || 'Untitled run').split('\n')[0], base = { key: r.key, run_id: r.run_id || '', goal, repo: basename(r.repo), t: num(r.updated) };
+      const was = runState(p), is = runState(r);
+      if (was === 'live' && (is === 'done' || is === 'failed')) out.push({ ...base, kind: is === 'done' ? 'run-done' : 'run-failed', id: `run|${r.key}|${is}`, href: '#/runs/' + encodeURIComponent(r.key) });
+      const old = new Map(list(p.task_statuses).map(x => [x.id, x.status]));
+      for (const x of list(r.task_statuses)) {
+        if (!FAILING.has(x.status) || old.get(x.id) === x.status || !old.has(x.id)) continue;
+        out.push({ ...base, kind: 'task-failed', task: x.id, status: x.status, title: x.title || '', id: `task|${r.key}|${x.id}|${x.status}`, href: `#/runs/${encodeURIComponent(r.key)}/tasks/${encodeURIComponent(x.id)}` });
+      }
+      if ((r.final_review === 'PASS' || r.final_review === 'FAIL') && p.final_review !== r.final_review) out.push({ ...base, kind: 'review', verdict: r.final_review, id: `review|${r.key}|${r.final_review}`, href: `#/runs/${encodeURIComponent(r.key)}/final-review` });
+    }
+    return out;
+  }
+
   return { plate, cells, blockSize, liveNow, integrationStatus, shadowStatus, runState, execStatus, matchRun, filterOptions, atlasModel, columns, planModel, finishState, taskParts,
     taskTimes, metricValue, overlap, projectSchedule, execModel, criticalPath, concurrency, stateAt, timeRange, events, structureKey, innerKey,
-    fmtDur, alias, basename, weight };
+    fmtDur, alias, basename, weight, searchIndex, searchRank, statusEvents };
 });

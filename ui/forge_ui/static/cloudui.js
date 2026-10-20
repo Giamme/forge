@@ -386,6 +386,7 @@ window.ForgeCloudUI = (() => {
     // keys and clicks on the stage come back through the app (cloud callbacks)
     return {
       render, setLayout, setShape, refreshCard: () => { syncBar(); refreshCard(); },
+      setFilter(f) { prefs.filter = CM.normFilter(f); apply({ rebuild: true }); },
       get prefs() { return prefs; },
     };
   }

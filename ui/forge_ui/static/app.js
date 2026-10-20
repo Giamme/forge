@@ -666,6 +666,7 @@ window.ForgeUI = (() => {
       if (result.text === state.listText) return;
       state.runs = list(result.data.runs);
       state.listText = result.text;
+      if (window.ForgeNotify) window.ForgeNotify.observe(state.runs);
       renderList();
       if (state.cloud) renderCloud();
       else if (!state.key) renderMap({ rebuildBar: $('map-filters') ? !$('map-filters').contains(document.activeElement) : true });
@@ -717,8 +718,10 @@ window.ForgeUI = (() => {
     }
     return state.runs.some(r => r.counts && r.counts.RUNNING);
   }
+  const background = () => document.visibilityState !== 'visible' && !!window.ForgeNotify && window.ForgeNotify.background();
   function refresh() {
-    if (state.paused || document.visibilityState !== 'visible') return;
+    if (state.paused) return;
+    if (document.visibilityState !== 'visible') { if (background()) loadList(); return; }   // only to notify
     loadList();
     if (state.key) loadRun(state.key);
     for (const node of document.querySelectorAll('[data-epoch]')) node.textContent = relative(node.dataset.epoch);
@@ -726,9 +729,32 @@ window.ForgeUI = (() => {
   // Poll faster while something runs, slower otherwise; never while the tab is hidden or refresh is off.
   function schedule() {
     clearTimeout(state.timer);
-    state.timer = setTimeout(() => { refresh(); schedule(); }, busy() ? 2000 : 5000);
+    state.timer = setTimeout(() => { refresh(); schedule(); }, background() ? 30000 : busy() ? 2000 : 5000);
+  }
+  // the quick jump's commands: what the page can do from anywhere
+  function commands() {
+    const run = state.key && state.cache.get(state.key)?.data;
+    const out = [
+      { id: 'cmd:cloud', label: 'Open the run cloud', sub: 'every run in 3D, grouped by project', ids: ['cloud'], href: '#/cloud' },
+      { id: 'cmd:map', label: 'Open the map of all runs', sub: 'the front page', ids: ['map', 'home'], href: '#/' },
+      { id: 'cmd:notify', label: 'Notifications', sub: 'what finished or failed, and browser notifications', ids: ['alerts', 'bell'], action: () => window.ForgeNotify && window.ForgeNotify.open() },
+      { id: 'cmd:dim', label: state.dim === '3d' ? 'Switch to 2D' : 'Switch to 3D', sub: state.dim === '3d' ? 'graphs and charts, no WebGL' : 'loads three.js from cdn.jsdelivr.net', ids: ['2d', '3d'],
+        action: () => { state.dim = state.dim === '3d' ? '2d' : '3d'; store.set('view', state.dim); if (state.dim === '3d') state.stageFailed = null; renderMain(); } },
+      { id: 'cmd:refresh', label: state.paused ? 'Resume live refresh' : 'Pause live refresh', sub: 'polling of the runs', ids: ['refresh', 'pause'],
+        action: () => { $('refresh').checked = state.paused; state.paused = !state.paused; refresh(); } },
+    ];
+    if (run) out.push({ id: 'cmd:mode', label: state.mode === 'plan' ? 'Show the execution' : 'Show the planned waves', sub: run.goal ? String(run.goal).split('\n')[0] : '', ids: ['exec', 'plan'], action: () => setMode(state.mode === 'plan' ? 'exec' : 'plan') });
+    return out;
+  }
+  function cloudFilter(filter) {
+    const f = window.ForgeCloudModel.normFilter(filter);
+    state.cloudPrefs = { ...state.cloudPrefs, filter: f }; store.set('cloud', state.cloudPrefs);
+    if (state.cloud && state.cloudUI) state.cloudUI.setFilter(f);
+    if (!state.cloud) location.hash = '#/cloud';
   }
   function init() {
+    if (window.ForgeSearch) window.ForgeSearch.init({ runs: () => state.runs, commands, go: href => { location.hash = href; }, cloudFilter });
+    if (window.ForgeNotify) window.ForgeNotify.init({ go: href => { location.hash = href; } });
     $('filter').addEventListener('input', event => { state.mapFilter.text = event.target.value; filterChanged(true); });
     $('refresh').addEventListener('change', event => { state.paused = !event.target.checked; refresh(); });
     window.addEventListener('hashchange', navigate);

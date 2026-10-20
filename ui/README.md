@@ -117,6 +117,18 @@ with the first source winning. Discovery and disk reads repeat on each API reque
   with the gate decision, Clef predictions against outcomes, and its prompts; for one
   execution, its model, phases, tokens, exact prompt and final message; for the final
   review, its verdict, findings, report, prompt and history.
+- **Quick jump:** Ctrl K (⌘K on a Mac), `/` or *Search* opens one search over every run (goal,
+  run id, repo, models), task (id and title), project, model and command. Enter opens the pick;
+  Shift+Enter shows a run in the cloud; a model shows its runs in the cloud. With nothing typed,
+  recent picks and running runs come first.
+- **Notifications:** the bell lists what changed while the page was open: a run that finished or
+  ended with failures, a task that failed (FAIL, ERROR, CONFLICT, TIMEOUT, INVALIDATED,
+  INTERRUPTED or BLOCKED; INFRA retries are not failures) and a final review's verdict, each
+  linked to it. Unread ones show as a count in the tab title and a dot on its icon. *Enable
+  browser notifications* asks the browser once; then changes also show as system notifications
+  while the tab is in the background, and a hidden tab checks the run list every 30 seconds
+  (browsers may check less often after a while). Open tabs share one log and notify once. Runs
+  that have not changed for two hours never notify.
 - **Keys on the stage:** ← → move between tasks, Esc closes, `e` switches plan and
   execution. Drag to orbit, right-drag to pan, scroll to zoom once the stage is clicked.
 
@@ -139,6 +151,8 @@ polling; a hidden tab never polls. Failed requests keep the last good data and s
 - `forge_ui/static/map3d.js`, `scene3d.js`, `iso.js`: the 3D loader, scenes and engine (ported from archivision).
 - `forge_ui/static/cloudmodel.js`, `cloud3d.js`, `cloudui.js`: the run cloud's pure model (projects,
   filters, layouts, layout files), its scene on the shared stage, and its controls.
+- `forge_ui/static/search.js`, `notify.js`, `favicon.svg`: the quick jump and the notifications
+  (ranking and change detection are in `runmodel.js`).
 - `tests/`: reader, executions, endpoints, server, static-script and browser checks; `run_fixture.py`
   builds realistic runs in a temp dir (`python3 tests/run_fixture.py DIR` writes two you can open),
   and `many_fixture.py` many small ones across repos for the cloud (`python3 tests/many_fixture.py DIR 300`).

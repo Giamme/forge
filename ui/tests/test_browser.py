@@ -77,9 +77,10 @@ class Page(unittest.TestCase):
         cls.server.shutdown(); cls.server.server_close(); cls.thread.join(timeout=2)
         cls.temp.cleanup()
 
-    def open(self, cdn, view='3d', mode='plan'):
-        context = self.browser.new_context(viewport={'width': 1440, 'height': 960})
-        self.addCleanup(context.close)
+    def open(self, cdn, view='3d', mode='plan', init='', context=None):
+        if context is None:
+            context = self.browser.new_context(viewport={'width': 1440, 'height': 960})
+            self.addCleanup(context.close)
         page = context.new_page()
         self.errors = []
         page.on('pageerror', lambda e: self.errors.append(str(e)))
@@ -87,7 +88,7 @@ class Page(unittest.TestCase):
           window.__csp = [];
           document.addEventListener('securitypolicyviolation', e => window.__csp.push(e.violatedDirective + ' ' + e.blockedURI));
           try {{ localStorage.setItem('forge-ui-view', '"{view}"'); localStorage.setItem('forge-ui-mode', '"{mode}"'); }} catch (_) {{}}
-        """)
+        """ + init)
         if not cdn:
             page.route(CDN + '**', lambda route: route.abort())
         elif THREE_LOCAL:
@@ -167,6 +168,58 @@ class Page(unittest.TestCase):
         page.click('[data-mode=exec]')
         page.wait_for_function("() => window.ForgeUI.state.stage.mode === 'exec'")
         self.assertTrue(page.evaluate("window.ForgeUI.state.stage.debug().nodes.some(n => n.id.startsWith('x:task-'))"))
+        self.assertClean(page)
+
+    def test_quick_jump_finds_a_task_and_opens_it(self):
+        page = self.open(cdn=False)
+        page.goto(self.url + '#/')
+        page.wait_for_selector('.map-card')
+        page.keyboard.press('Control+k')
+        page.wait_for_selector('dialog.jump[open]')
+        page.keyboard.type('reader')
+        page.wait_for_selector('.jump-item[aria-selected=true]')
+        self.assertTrue(page.text_content('.jump-item[aria-selected=true] .jump-label').startswith('reader'))
+        page.keyboard.press('Enter')
+        page.wait_for_function("() => location.hash.endsWith('/tasks/reader')")
+        self.assertFalse(page.is_visible('dialog.jump'))
+        page.click('.run-header h2')
+        page.keyboard.press('/')
+        page.wait_for_selector('dialog.jump[open]')
+        self.assertIn('reader', page.text_content('.jump-item[aria-selected=true]'), 'a recent pick comes first')
+        page.keyboard.type('cloud')
+        page.keyboard.press('Enter')
+        page.wait_for_function("() => location.hash === '#/cloud'")
+        self.assertClean(page)
+
+    def test_a_failing_task_is_notified_once_across_tabs(self):
+        stub = """
+          window.__notes = [];
+          window.Notification = class { constructor(t, o) { window.__notes.push(t + ' | ' + o.body); } close() {} };
+          Notification.permission = 'granted'; Notification.requestPermission = () => Promise.resolve('granted');
+          document.hasFocus = () => false;
+          try { localStorage.setItem('forge-ui-notify', JSON.stringify({ kinds: { run: true, task: true, review: true }, browser: true })); } catch (_) {}
+        """
+        page = self.open(cdn=False, init=stub)
+        other = self.open(cdn=False, init=stub, context=page.context)
+        for p in (page, other):
+            p.goto(self.url + '#/')
+            p.wait_for_selector('.map-card')
+        page.wait_for_timeout(2500)                             # the first poll is only a baseline
+        task = self.plan / 'tasks' / 'graph'
+        status = (task / 'status').read_text()
+        self.addCleanup(lambda: (task / 'status').write_text(status))
+        (task / 'status').write_text('FAIL\n')
+        page.wait_for_function("() => window.__notes.some(n => n.startsWith('Task graph fail'))", timeout=20000)
+        other.wait_for_function("() => document.title.startsWith('(')", timeout=20000)
+        page.wait_for_timeout(2500)
+        notes = page.evaluate('window.__notes') + other.evaluate('window.__notes')
+        self.assertEqual(sum(n.startswith('Task graph fail') for n in notes), 1, notes)
+        self.assertTrue(page.evaluate("document.querySelector('link[rel=icon]').href.startsWith('data:image/png')"))
+        page.click('#bell')
+        page.wait_for_selector('.notify-pop .notify-item')
+        self.assertIn('Task graph fail', page.text_content('.notify-pop'))
+        page.wait_for_function("() => document.title === 'forge-ui'")
+        other.wait_for_function("() => document.title === 'forge-ui'", timeout=10000)
         self.assertClean(page)
 
     def test_a_status_change_on_disk_recolours_the_node_without_a_rebuild(self):

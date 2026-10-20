@@ -14,6 +14,9 @@ run goes on, with the same exit code.
   (helix, sphere, galaxy, timeline, constellation) as blocks or orbs. Filters narrow it to exactly
   the runs wanted (project, state, difficulty, tasks per run, models and more), and runs can be
   dragged anywhere; where they were dropped is remembered in that browser.
+- **Quick jump and notifications:** Ctrl K (⌘K) or `/` searches every run, task, project and
+  model; the bell tells you when a run finishes or fails, a task fails or a final review gives its
+  verdict, and can raise browser notifications while the tab is in the background.
 - **Plan run:** tasks in their planned waves with dependency cables, then the finish line:
   integration, verification and the whole-run final review, each a node with its status. The
   *Execution* view shows the same run on wall-clock time, one block per attempt in the lane it
