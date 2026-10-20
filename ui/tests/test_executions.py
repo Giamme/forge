@@ -425,7 +425,7 @@ class LazyTests(FixtureCase):
         self.assertEqual(result['dataset'], {'trigger': None, 'parent': F.READER_TASK1, 'attempt_start': None,
                                              'resume': None})
         self.assertEqual(result['resolved']['alias'], 'opus')
-        self.assertEqual(result['prompt'], f'The qa prompt of {F.READER_QA1}.\n')
+        self.assertEqual(result['prompt'], F.prompt_text('qa', F.READER_QA1, F.DIFF_READER_1))
         self.assertEqual(result['last'], F.QA_READER_1)
         self.assertEqual([item['severity'] for item in result['findings']], ['P1', 'P2'])
         task = execution_detail(self.plan, F.READER_TASK2)

@@ -26,6 +26,11 @@ _RUN_PATH = re.compile(r'/api/runs/([0-9a-f]{12})')
 _TASK_PATH = re.compile(r'/api/runs/([0-9a-f]{12})/tasks/([^/]+)')
 _EXEC_PATH = re.compile(r'/api/runs/([0-9a-f]{12})/executions/((?:task|dwarf|qa|solo|verification|parallel)-[0-9a-f]{32})')
 _REVIEW_PATH = re.compile(r'/api/runs/([0-9a-f]{12})/final-reviews/((?:final-review|integrate)-[0-9]+-[0-9]+)')
+_TASK_DIFF_PATH = re.compile(_TASK_PATH.pattern + r'/diff(?:/(current|prev|committed|existing))?')
+_EXEC_DIFF_PATH = re.compile(_EXEC_PATH.pattern + '/diff')
+_REVIEW_DIFF_PATH = re.compile(_REVIEW_PATH.pattern + '/diff')
+_FILES_PATH = re.compile(r'/api/runs/([0-9a-f]{12})/files')
+_FRACTAL_PATH = re.compile(_TASK_PATH.pattern + r'/fractal(?:/nodes/([A-Za-z0-9][A-Za-z0-9_-]{0,100})(/diff)?)?')
 _STATIC_PATH = re.compile(r'/([A-Za-z0-9_.-]+\.(?:html|js|css|svg))')
 _TYPES = {
     'html': 'text/html; charset=utf-8',
@@ -172,6 +177,8 @@ class Handler(BaseHTTPRequestHandler):
         catalog = self.server.catalog
         if path == '/api/runs':
             return self._json(200, {'runs': catalog.runs()})
+        if path == '/api/models':
+            return self._json(200, catalog.models())
         match = _RUN_PATH.fullmatch(path)
         if match:
             run = catalog.get(match.group(1))
@@ -188,6 +195,29 @@ class Handler(BaseHTTPRequestHandler):
         match = _REVIEW_PATH.fullmatch(path)
         if match:
             return self._found(catalog.final_review(*match.groups()))
+        match = _TASK_DIFF_PATH.fullmatch(path)
+        if match:
+            task_id = _task_id(match.group(2))
+            return self._found(None if task_id is None else
+                               catalog.diff(match.group(1), task_id, match.group(3) or 'current'))
+        match = _EXEC_DIFF_PATH.fullmatch(path)
+        if match:
+            return self._found(catalog.execution_diff(*match.groups()))
+        match = _REVIEW_DIFF_PATH.fullmatch(path)
+        if match:
+            return self._found(catalog.final_review_diff(*match.groups()))
+        match = _FILES_PATH.fullmatch(path)
+        if match:
+            return self._found(catalog.files(match.group(1)))
+        match = _FRACTAL_PATH.fullmatch(path)
+        if match:
+            key, task_id, node, diff = match.group(1), _task_id(match.group(2)), match.group(3), match.group(4)
+            if task_id is None:
+                return self._found(None)
+            if node is None:
+                return self._found(catalog.fractal(key, task_id))
+            read = catalog.fractal_node_diff if diff else catalog.fractal_node
+            return self._found(read(key, task_id, node))
         if path == '/':
             return self._static('index.html')
         match = _STATIC_PATH.fullmatch(path)

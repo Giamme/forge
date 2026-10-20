@@ -3,6 +3,7 @@ reviews and an integration, and a solo run. Fixed uuids, epochs and mtimes, so r
 
     python3 ui/tests/run_fixture.py DIR    writes DIR/plan-rich and DIR/solo-rich and prints them
 """
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -72,6 +73,104 @@ QA_SOLO = """- [P2][PLAUSIBLE] src/solo.py:3 — the retry loop has no upper bou
 FORGE_VERDICT: PASS
 """
 
+DIFF_READER_1 = """diff --git a/ui/reader.py b/ui/reader.py
+index 1111111..2222222 100644
+--- a/ui/reader.py
++++ b/ui/reader.py
+@@ -38,7 +38,9 @@ def _tasks(reader):
+     for label, row in reader.rows('tasks.tsv', 7):
+         ident = row[0]
+         prefix = f'tasks/{ident}'
+-        status = reader.word(prefix + '/status')
++        # A task without a status file has not started.
++        status = (reader.path / prefix / 'status').read_text().split()[0]
++        tasks.append(dict(id=ident, status=status))
+     return tasks
+ 
+ 
+"""
+DIFF_READER_2 = """diff --git a/ui/reader.py b/ui/reader.py
+index 1111111..4444444 100644
+--- a/ui/reader.py
++++ b/ui/reader.py
+@@ -38,7 +38,10 @@ def _tasks(reader):
+     for label, row in reader.rows('tasks.tsv', 7):
+         ident = row[0]
+         prefix = f'tasks/{ident}'
+-        status = reader.word(prefix + '/status')
++        # A task without a status file has not started.
++        status = reader.word(prefix + '/status') or 'PENDING'
++        if status == 'PENDING':
++            reader.warn(prefix + '/status', 'missing')
++        tasks.append(dict(id=ident, status=status))
+     return tasks
+ 
+ 
+diff --git a/tests/test_reader.py b/tests/test_reader.py
+new file mode 100644
+index 0000000..3333333
+--- /dev/null
++++ b/tests/test_reader.py
+@@ -0,0 +1,3 @@
++import unittest
++
++from ui import reader
+"""
+DIFF_PAGE = """diff --git a/ui/page.html b/ui/page.html
+index 5555555..6666666 100644
+--- a/ui/page.html
++++ b/ui/page.html
+@@ -10,5 +10,6 @@
+ <main>
+   <section id="runs">
+-    <p>Nothing yet</p>
++    <p class="empty">No runs yet</p>
++    <p class="hint">Start one with forge plan</p>
+   </section>
+ </main>
+"""
+DIFF_APP = """diff --git a/ui/app.js b/ui/app.js
+index 7777777..8888888 100644
+--- a/ui/app.js
++++ b/ui/app.js
+@@ -118,4 +118,5 @@ async function load(key) {
+   spinner.show();
+   const response = await fetch(url);
+-  if (!response.ok) return;
++  if (!response.ok) throw new Error(response.statusText);
++  spinner.hide();
+   render(await response.json());
+"""
+DIFF_SOLO = """diff --git a/src/solo.py b/src/solo.py
+index 9999999..aaaaaaa 100644
+--- a/src/solo.py
++++ b/src/solo.py
+@@ -1,4 +1,6 @@
+ def run(task):
+-    while True:
++    # Retry until the task settles.
++    while not task.done:
+         task.step()
++    return task.result
+ 
+"""
+DIFF_EXISTING = """diff --git a/notes.txt b/notes.txt
+index bbbbbbb..ccccccc 100644
+--- a/notes.txt
++++ b/notes.txt
+@@ -1 +1,2 @@
+ notes
++uncommitted line
+"""
+
+
+def prompt_text(role, name, diff=None):
+    """The <role>.prompt copy execution() writes: a fenced diff, as forge appends one, when given."""
+    text = f'The {role} prompt of {name}.\n'
+    if diff is not None:
+        text += '\n```diff\n' + diff + '```\n\nPlace any learning notes before the final FORGE_VERDICT line.\n'
+    return text
+
 
 def write(path, value, at=None):
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -110,7 +209,7 @@ def resolved(role, alias, effort, run_dir, harness='codex', model=None):
 
 
 def execution(owner, name, start, end=None, phase='model', exit_code=0, parent=None, dataset=True,
-              spec=None, last=None, tokens=None, shadow=False, attempt_start=None, trigger=None):
+              spec=None, last=None, tokens=None, shadow=False, attempt_start=None, trigger=None, diff=None):
     """One attempts/<name>/ dir. spec=(alias, effort, harness) for a dwarf or qa execution."""
     role = name.split('-', 1)[0]
     root = owner / 'attempts' / name
@@ -124,7 +223,7 @@ def execution(owner, name, start, end=None, phase='model', exit_code=0, parent=N
     if spec is not None and end is not None:
         alias, effort, harness = spec
         write(root / f'{role}.resolved', resolved(role, alias, effort, str(owner), harness))
-        write(root / f'{role}.prompt', f'The {role} prompt of {name}.\n')
+        write(root / f'{role}.prompt', prompt_text(role, name, diff))
         write(root / f'{role}.log', 'raw log: never read by forge-ui\n')
         write(root / f'{role}.cmd', 'codex exec ...\n')
         if last is not None:
@@ -181,12 +280,14 @@ def make_plan(base: Path) -> Path:
     execution(tdir, READER_DWARF1, 20.0, 320.0, parent=READER_TASK1, spec=('luna', None, 'codex'),
               last='Implemented the reader.\n', tokens=(120000, 90000, 8000))
     execution(tdir, READER_QA1, 330.0, 600.0, parent=READER_TASK1, spec=('opus', None, 'claude'),
-              last=QA_READER_1, tokens=(50000, 0, 3000))
+              last=QA_READER_1, tokens=(50000, 0, 3000), diff=DIFF_READER_1)
     execution(tdir, READER_TASK2, 620.0, 1220.0, parent=PARALLEL, attempt_start=1, trigger='auto')
     execution(tdir, READER_DWARF2, 630.0, 930.0, parent=READER_TASK2, spec=('sol', 'xhigh', 'codex'),
               last='Handled missing files.\n', tokens=(150000, 100000, 9000))
     execution(tdir, READER_QA2, 940.0, 1200.0, parent=READER_TASK2, spec=('opus', None, 'claude'),
-              last=QA_READER_2, tokens=(52000, 1000, 2500))
+              last=QA_READER_2, tokens=(52000, 1000, 2500), diff=DIFF_READER_2)
+    write(tdir / 'changes.diff', DIFF_READER_2)
+    write(tdir / 'changes.prev.diff', DIFF_READER_1)
     write(tdir / 'status', 'PASS\n')
     write(tdir / 'attempt', '2\n')
     write(tdir / 'attempts.tsv', f'{int(T0 + 612)}\t1\tFAIL\t\tluna\n{int(T0 + 1222)}\t2\tPASS\t\tsol:xhigh\n')
@@ -212,7 +313,9 @@ def make_plan(base: Path) -> Path:
     tdir = plan / 'tasks/page'
     execution(tdir, PAGE_TASK, 15.0, 915.0, parent=PARALLEL, attempt_start=0, trigger='initial')
     execution(tdir, PAGE_DWARF, 25.0, 600.0, parent=PAGE_TASK, spec=('luna', 'low', 'codex'), last='Built it.\n')
-    execution(tdir, PAGE_QA, 610.0, 900.0, parent=PAGE_TASK, spec=('opus', None, 'claude'), last=QA_PAGE)
+    execution(tdir, PAGE_QA, 610.0, 900.0, parent=PAGE_TASK, spec=('opus', None, 'claude'), last=QA_PAGE,
+              diff=DIFF_PAGE)
+    write(tdir / 'changes.diff', DIFF_PAGE)
     write(tdir / 'status', 'PASS\n')
     write(tdir / 'attempt', '1\n')
     write(tdir / 'attempts.tsv', f'{int(T0 + 917)}\t1\tPASS\t\tluna:low\n')
@@ -229,7 +332,7 @@ def make_plan(base: Path) -> Path:
     write(sdir / 'qa.last', QA_PAGE_SHADOW)
     write(sdir / 'qa.input', 'Review this diff.\n')
     execution(sdir, PAGE_SHADOW_QA, 613.0, 1013.0, parent=PAGE_TASK, spec=('sol', 'xhigh', 'codex'),
-              last=QA_PAGE_SHADOW, shadow=True)
+              last=QA_PAGE_SHADOW, shadow=True, diff=DIFF_PAGE)
 
     # graph: running; its dwarf is done and its reviewer is in flight.
     tdir = plan / 'tasks/graph'
@@ -242,6 +345,7 @@ def make_plan(base: Path) -> Path:
     write(tdir / 'qa.resolved', resolved('qa', 'opus', 'high', str(tdir), 'claude'))
     write(tdir / 'qa.delivered', 'Review the graph diff (as delivered).\n')
     write(tdir / 'qa.input', 'Review the graph diff.\n')
+    write(tdir / 'conflict.files', 'ui/graph.js\n')
 
     # docs: FAIL, an unlabelled confirmed finding; no dataset.json anywhere (older forge).
     tdir = plan / 'tasks/docs'
@@ -253,6 +357,7 @@ def make_plan(base: Path) -> Path:
     write(tdir / 'attempts.tsv', f'{int(T0 + 1502)}\t1\tFAIL\t\tluna\n')
     write(tdir / 'qa.last', QA_DOCS)
     write(tdir / 'prompt.md', 'Write the docs.\n')
+    write(tdir / 'drift.txt', 'README.md\n')
 
     # Final reviews: an older published FAIL, a newer one in flight; an integration with its own.
     rdir = plan / REVIEW_OLD
@@ -264,6 +369,7 @@ def make_plan(base: Path) -> Path:
     write(rdir / 'verdict', 'FAIL\n')
     write(rdir / 'tasks.summary', 'reader\tMERGED\tRead run dirs\tui/reader.py\npage\tMERGED\tBuild the page\tui/page.html\n')
     write(rdir / 'context.md', 'Goal: Fixture run for the forge UI\n')
+    write(rdir / 'combined.diff', DIFF_READER_2 + DIFF_PAGE + DIFF_APP)
     execution(rdir, REVIEW_OLD_QA, 2010.0, 2400.0, spec=('opus', None, 'claude'), last=QA_REVIEW_OLD)
     (plan / 'final-review').symlink_to(REVIEW_OLD)
     write(plan / 'final-review.verdict', 'FAIL\n')
@@ -307,11 +413,105 @@ def make_solo(base: Path) -> Path:
     write(run / 'dwarf.last', 'Done.\n')
     write(run / 'dwarf.input', 'Implement the solo change.\n')
     write(run / 'qa.input', 'Review the solo change.\n')
+    write(run / 'changes.diff', DIFF_SOLO)
+    write(run / 'existing.diff', DIFF_EXISTING)
     execution(run, SOLO_RUN, 0.0, 690.0)
     execution(run, SOLO_DWARF, 10.0, 400.0, parent=SOLO_RUN, spec=('sol', 'high', 'codex'), last='Done.\n')
-    execution(run, SOLO_QA, 410.0, 680.0, parent=SOLO_RUN, spec=('opus', None, 'claude'), last=QA_SOLO)
+    execution(run, SOLO_QA, 410.0, 680.0, parent=SOLO_RUN, spec=('opus', None, 'claude'), last=QA_SOLO,
+              diff=DIFF_SOLO)
     _settle(run)
     return run
+
+
+FRACTAL_DIFF = """diff --git a/ui/labels.py b/ui/labels.py
+new file mode 100644
+index 0000000..dddddddd
+--- /dev/null
++++ b/ui/labels.py
+@@ -0,0 +1,2 @@
++LABELS = {'MERGED': 'merged'}
++FALLBACK = 'unknown'
+"""
+
+
+def make_fractal(state: Path, run_dir: Path, task_id: str) -> Path:
+    """A managed Fractal run, as scripts/forge_fractal leaves it, for one task of `run_dir` (a plan
+    task id, or `solo` for a solo run) under `state`, the XDG_STATE_HOME the test sets. The root
+    split into ui (completed, with a candidate.diff), api (active) and docs (admitted, not created
+    yet); control/ holds a dir nobody may read. Returns the Fractal task dir."""
+    run_dir = Path(os.path.realpath(run_dir))
+    output = run_dir if task_id == 'solo' else Path(os.path.realpath(run_dir / 'tasks' / task_id))
+    run_id = 'run-' + hashlib.sha256(str(run_dir).encode()).hexdigest()[:20]
+    task = Path(state) / 'forge/fractal/runs' / run_id / 'tasks' / (
+        'task-' + hashlib.sha256(str(output).encode()).hexdigest()[:16])
+    write(run_dir / 'fractal-selection.json', dict(enabled=True, run=run_id))
+    write(task.parents[1] / 'run.json', dict(
+        id=run_id, backend='fractal', mode='solo' if task_id == 'solo' else 'parallel',
+        repository='/example/fixture-repo', runner=str(run_dir), routing=dict(any=['sol:xhigh', 'luna']),
+        limits=dict(depth=2, children=3, nodes=12, iterations=6, concurrency=3, deadline=2700), yolo_dwarf=False,
+        eligible=['luna', 'sol:xhigh'], qa_specs=['opus'], version='1.2.0', acceptance='pending',
+        workspace=str(task.parent), resolved=[dict(spec='sol:xhigh', role='dwarf', canonical='gpt-sol:xhigh:codex')],
+        decomposition=dict(enabled=True, version=1, planner='sol:xhigh', resolved=[])))
+    write(task / 'request.json', dict(repo='/example/fixture-repo', output=str(output), model='sol:xhigh',
+                                      prompt='Read forge run dirs into plain dicts.\n', planner='sol:xhigh',
+                                      paths=['ui'], step_timeout=0))
+    write(task / 'state.json', dict(status='active', acceptance='pending', elapsed=120.5, owner=4242,
+                                    started_at=T0 + 20, settled=False))
+    write(task / 'initialization.json', dict(repository=str(task / 'control'), ledger=str(task / 'control/ledger.db'),
+                                             tree='e' * 40))
+    write(task / 'events.jsonl', ''.join(json.dumps(event) + '\n' for event in [
+        dict(at=T0 + 21, kind='node_created', node='implementation', difficulty='medium', model='sol:xhigh'),
+        dict(at=T0 + 60, kind='decomposition_decision', node='implementation', phase='accepted', decision='split',
+             reason='The labels and the API are independent.'),
+        dict(at=T0 + 61, kind='node_created', node='ui', difficulty='low', model='luna'),
+        dict(at=T0 + 62, kind='node_created', node='api', difficulty='medium', model='sol:xhigh'),
+        dict(at=T0 + 300, kind='step_finished', node='ui', phase='implementation', iteration=1, exit_code=0, cost=0.08),
+    ]))
+    control = task / 'control'
+    write(control / 'ledger.db', 'SQLite format 3\x00')
+    (control / 'locked').mkdir()
+    workspace = str(control / '.worktrees')
+    admission = [dict(name='ui', goal='Add accessible status labels', difficulty='low', paths=['ui/labels.py'], deps=[],
+                      model='luna'),
+                 dict(name='api', goal='Serve the labels', difficulty='medium', paths=['ui/api.py'], deps=[],
+                      model='sol:xhigh'),
+                 dict(name='docs', goal='Document the labels', difficulty='low', paths=['ui/docs'], deps=['ui'],
+                      model='luna')]
+    nodes = task / 'nodes'
+    write(nodes / 'implementation/node.json', dict(
+        id='implementation', parent=None, ancestors=[], goal='Read forge run dirs into plain dicts.\n',
+        difficulty='medium', paths=['ui'], deps=[], model='sol:xhigh', resolved_model='gpt-sol:xhigh:codex',
+        status='waiting', phase='implementation', iteration=1, started_at=T0 + 22, cost=0.42, unknown_cost_steps=0,
+        tokens=dict(input_tokens=1000, cached_input_tokens=200, output_tokens=300),
+        planning_tokens=dict(input_tokens=500, cached_input_tokens=0, output_tokens=50),
+        decomposition=dict(phase='accepted', attempts=1, decision='split', reason='The labels and the API are independent.',
+                           bounds=dict(depth=0, max_depth=2, children=3, nodes=11), admission=admission),
+        decomposition_history=[dict(phase='rejected', attempts=1, reason='The first proposal crossed owned paths.')],
+        awaiting_children=True, control=workspace + '/forge-root', workspace=str(nodes / 'implementation/product'),
+        source='/example/fixture-repo', branch='forge-root.implementation', fingerprint='f' * 40,
+        planning_step='nodes/implementation/planning/' + 'a' * 32, last='Planned the split. ' * 2000,
+        planning_last='FORGE_FRACTAL: {"decision":"split"}'))
+    write(nodes / 'ui/node.json', dict(
+        id='ui', parent='implementation', ancestors=['implementation'], goal='Add accessible status labels',
+        difficulty='low', paths=['ui/labels.py'], deps=[], model='luna', resolved_model='luna-model', status='completed',
+        phase='implementation', iteration=1, started_at=T0 + 70, ended_at=T0 + 300, cost=0.08, unknown_cost_steps=0,
+        tokens=dict(input_tokens=400, cached_input_tokens=100, output_tokens=80), control=workspace + '/ui',
+        workspace=str(nodes / 'ui/product'), candidate=str(nodes / 'ui/candidate.diff'),
+        branch='forge-root.implementation.ui',
+        imported_fingerprint='a' * 40, step='nodes/ui/steps/' + 'b' * 32, last='Done.\nFORGE_FRACTAL: {"done": true}'))
+    write(nodes / 'ui/candidate.diff', FRACTAL_DIFF)
+    write(nodes / 'ui/product/ui/labels.py', "LABELS = {'MERGED': 'merged'}\n")
+    write(nodes / 'ui/steps' / ('b' * 32) / 'request.json', dict(role='dwarf'))
+    write(nodes / 'api/node.json', dict(
+        id='api', parent='implementation', ancestors=['implementation'], goal='Serve the labels', difficulty='medium',
+        paths=['ui/api.py'], deps=[], model='sol:xhigh', resolved_model='gpt-sol:xhigh:codex', status='active',
+        phase='implementation', iteration=2, started_at=T0 + 75, cost=None, unknown_cost_steps=1, tokens=None,
+        control=workspace + '/api', branch='forge-root.implementation.api', step='nodes/api/steps/' + 'c' * 32))
+    write(nodes / 'implementation/planning' / ('a' * 32) / 'planner.last', 'never read\n')
+    for path in sorted(task.rglob('*'), key=lambda item: len(item.parts), reverse=True):
+        os.utime(path, (MTIME, MTIME))
+    os.chmod(control / 'locked', 0)
+    return task
 
 
 if __name__ == '__main__':

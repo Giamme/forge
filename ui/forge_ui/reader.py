@@ -9,8 +9,9 @@ from pathlib import Path
 import posixpath
 import re
 import stat
+import urllib.parse
 
-from forge_ui import executions, findings
+from forge_ui import diffs, executions, findings, fractal
 from forge_ui.findings import verdict as _verdict
 
 
@@ -663,9 +664,24 @@ def _solo_detail(reader, source):
                 executions=execs, merged_at=None, findings=executions.summary_of(qa),
                 gate=_gate(reader, 'qa.gate'), known_issues=_nonempty(reader, 'known_issues.md'))
     result.update(timeline=_timeline(execs, [], []), integration=None, final_review=None, final_reviews=[],
-                  deferrals=[], findings_available=findings.available())
+                  deferrals=[], findings_available=findings.available(), fractal=fractal.summary(reader))
     result.update(tasks=[task], warnings=reader.warnings, truncated=reader.truncated, updated=reader.updated)
     return result
+
+
+def _waves(reader):
+    waves, wave_map = {}, {}
+    for label, row in reader.rows('waves.tsv', 2):
+        try:
+            wave = int(row[0])
+            if not 1 <= wave <= _MAX_WAVE:
+                raise ValueError()
+        except ValueError:
+            reader.warn(label, f'invalid wave number (expected 1..{_MAX_WAVE})')
+            continue
+        waves.setdefault(wave, []).append(row[1])
+        wave_map[row[1]] = wave
+    return waves, wave_map
 
 
 def detail(path, source='plan') -> dict:
@@ -687,17 +703,7 @@ def detail(path, source='plan') -> dict:
         result['verification'] = verification
     else:
         result['verification'] = None
-    waves, wave_map = {}, {}
-    for label, row in reader.rows('waves.tsv', 2):
-        try:
-            wave = int(row[0])
-            if not 1 <= wave <= _MAX_WAVE:
-                raise ValueError()
-        except ValueError:
-            reader.warn(label, f'invalid wave number (expected 1..{_MAX_WAVE})')
-            continue
-        waves.setdefault(wave, []).append(row[1])
-        wave_map[row[1]] = wave
+    waves, wave_map = _waves(reader)
     result['waves'] = [waves.get(n, []) for n in range(1, max(waves, default=0) + 1)]
     branches = {row[0]: _nullable(row[2]) for _, row in reader.rows('results.tsv', 3)}
     pool = []
@@ -718,6 +724,7 @@ def detail(path, source='plan') -> dict:
     result['final_reviews'] = reviews
     result['deferrals'] = [line.strip() for line in (reader.text('deferrals.txt') or '').splitlines() if line.strip()]
     result['findings_available'] = findings.available()
+    result['fractal'] = fractal.summary(reader)
     result.update(tasks=tasks, warnings=reader.warnings, truncated=reader.truncated, updated=reader.updated)
     return result
 
@@ -862,6 +869,384 @@ def final_review_detail(path, name, source='plan'):
     return result
 
 
+# --- diffs: what a task changed and what each review read, its findings pinned -------------
+
+_PLAN_DIFFS = (('current', 'changes.diff'), ('prev', 'changes.prev.diff'), ('committed', 'committed.diff'))
+_SOLO_DIFFS = (('current', 'changes.diff'), ('existing', 'existing.diff'))
+_NOT_INLINED = 'not inlined (larger than 400 KB)'
+
+
+def _url(key, *parts):
+    return '/api/runs/' + key + ''.join('/' + urllib.parse.quote(part, safe='') for part in parts)
+
+
+def _first(reader, rels):
+    return next((rel for rel in rels if os.path.lexists(reader.path / rel)), None)
+
+
+def _regular(reader, rel):
+    """fstat of a regular file under the run dir, quietly; None otherwise."""
+    try:
+        real = os.path.realpath(reader.path / rel)
+        info = os.stat(real)
+    except (OSError, ValueError):
+        return None
+    return info if executions.inside(reader.path, real) and stat.S_ISREG(info.st_mode) else None
+
+
+def _diff_review(kind, item, attempt, spec, verdict, last, prompts, execution=None):
+    return dict(kind=kind, item=item, execution=item['id'] if item is not None else execution, attempt=attempt,
+                spec=spec, verdict=verdict, last=last, prompts=prompts)
+
+
+def _prompts(item, owner_dir):
+    """Where the diff a qa execution reviewed is: its prompt copy, made when it finishes; while it
+    runs, what its dispatch works from."""
+    prompts = [item.rel + '/qa.prompt']
+    if item['state'] == 'running':
+        prompts += [posixpath.join(owner_dir, 'qa.' + suffix) for suffix in ('delivered', 'prompt', 'input')]
+    return prompts
+
+
+def _diff_task(reader, task_id):
+    """What a task's diffs need: dir, diff files, attempt, executions and every review; None if no such task."""
+    kind = _kind(reader.path)
+    if kind == 'solo' and task_id == 'solo':
+        attempts = _history(reader, 'attempts.tsv')
+        execs = _solo_execs(reader, _solo_status(reader), attempts)
+        base, names, shadows = '', _SOLO_DIFFS, []
+        attempt, spec = max((item['attempt'] for item in attempts), default=None), _role_spec(reader, 'qa')
+    elif kind == 'plan':
+        task = _plan_task(reader, _tasks(reader), task_id)
+        if task is None:
+            return None
+        base, names = f'tasks/{task_id}', _PLAN_DIFFS
+        execs = _task_execs(reader, task)
+        shadows = _shadows(reader, task_id, execs)
+        attempt, spec = task['attempt'], task['qa']
+    else:
+        return None
+    reviews, copies = [], set()
+    for item in execs:
+        if item['role'] == 'qa' and not item['shadow']:
+            last = item.rel + '/qa.last' if item['state'] == 'done' else None
+            copies.add(reader.text(last) if last else None)
+            reviews.append(_diff_review('primary', item, item['attempt'], (item['model'] or {}).get('spec'),
+                                        item['verdict'], last, _prompts(item, base)))
+    live = posixpath.join(base, 'qa.last')
+    text = reader.text(live)
+    # As in TaskDetail: the task's own qa.last counts only when no execution's copy is identical.
+    if text is not None and text not in copies:
+        reviews.append(_diff_review('primary', None, attempt, spec, _verdict(text), live, []))
+    shadowed = []
+    for entry, items, sub in shadows:
+        run = items[-1] if items else None
+        shadowed += items
+        reviews.append(_diff_review('shadow', run, entry['attempt'], entry['spec'] if isinstance(entry['spec'], str)
+                                    else None, entry['verdict'], sub + '/qa.last',
+                                    ([run.rel + '/qa.prompt'] if run else []) + [sub + '/qa.input']))
+    return dict(kind='task', id=task_id, dir=base, names=names, attempt=attempt, execs=execs + shadowed,
+                reviews=reviews)
+
+
+def _diff_final(reader, name):
+    items = executions.review_dirs(reader)[0]
+    index = next((i for i, item in enumerate(items) if item[0] == name), None)
+    if index is None:
+        return None
+    summary, execs, _ = _final_review(reader, items[index], index == 0, _published(reader))
+    reviews = [_diff_review('final', item, None, summary['spec'] or (item['model'] or {}).get('spec'),
+                            item['verdict'], item.rel + '/qa.last' if item['state'] == 'done' else None,
+                            [item.rel + '/qa.prompt'])
+               for item in execs]
+    return dict(kind='final_review', id=name, dir=items[index][3], items=items, summary=summary, execs=execs,
+                reviews=reviews)
+
+
+def _diff_sources(reader, key, ctx):
+    sources = []
+    if ctx['kind'] == 'final_review':
+        for name, _, _, rel in ctx['items'][:_MAX_REVIEWS]:
+            info = _regular(reader, rel + '/combined.diff')
+            if info is not None or name == ctx['id']:
+                sources.append(dict(id=name, label='combined.diff' if info else 'reviewed diff', kind='final',
+                                    verdict=reader.word(rel + '/verdict'), bytes=info.st_size if info else None,
+                                    url=_url(key, 'final-reviews', name, 'diff')))
+        return sources
+    for which, name in ctx['names']:
+        info = _regular(reader, posixpath.join(ctx['dir'], name))
+        if info is not None:
+            sources.append(dict(id=which, label=name, bytes=info.st_size,
+                                url=_url(key, 'tasks', ctx['id'], 'diff', *([which] if which != 'current' else []))))
+    for review in ctx['reviews']:
+        rel = _first(reader, review['prompts']) if review['item'] is not None else None
+        size = diffs.fence_bytes(reader, rel) if rel else None
+        if size is not None:
+            label = 'reviewed diff' if review['kind'] == 'primary' else 'shadow review'
+            if review['attempt'] is not None:
+                label += f', attempt {review["attempt"]}'
+            sources.append(dict(id=review['execution'], label=label, attempt=review['attempt'],
+                                verdict=review['verdict'], kind=review['kind'], bytes=size,
+                                url=_url(key, 'executions', review['execution'], 'diff')))
+    return sources
+
+
+def _diff_detail(reader, key, origin, sources, loaded, reason, reviews):
+    files = loaded['files'] if loaded is not None else []
+    found = []
+    for review in reviews:
+        text = reader.text(review['last']) if review['last'] else None
+        for item in findings.listing(text) or []:
+            found.append(dict(review={key: review[key] for key in ('kind', 'execution', 'attempt', 'spec')},
+                              severity=item['severity'], status=item['status'], location=item['location'],
+                              summary=item['summary'], text=item['text']))
+    return dict(run=key, source=origin, sources=sources, available=loaded is not None,
+                reason=None if loaded is not None else reason, bytes=loaded['bytes'] if loaded else None,
+                truncated=bool(loaded and loaded['truncated']), files=files, findings=diffs.pin(found, files),
+                warnings=reader.warnings, truncated_fields=reader.truncated)
+
+
+def _missing(reader, rel):
+    return 'unreadable (see warnings)' if os.path.lexists(reader.path / rel) else 'no ' + posixpath.basename(rel)
+
+
+def task_diff(path, task_id, which='current', source='plan'):
+    """DiffDetail of a task's changes.diff (`current`), changes.prev.diff, committed.diff or, for a
+    solo run, existing.diff; None when the task or that kind of diff does not exist."""
+    reader = _Read(path)
+    ctx = _diff_task(reader, task_id)
+    names = dict(ctx['names']) if ctx is not None else {}
+    if which not in names:
+        return None
+    rel = posixpath.join(ctx['dir'], names[which])
+    loaded = diffs.load(reader, rel)
+    latest = ctx['attempt']
+    if latest is None:
+        latest = max((review['attempt'] for review in ctx['reviews'] if review['attempt'] is not None), default=None)
+    key = run_key(reader.path)
+    origin = dict(kind='task', id=task_id, which=which, execution=None,
+                  attempt=latest if which in ('current', 'committed') else None, file=rel)
+    return _diff_detail(reader, key, origin, _diff_sources(reader, key, ctx), loaded, _missing(reader, rel),
+                        [review for review in ctx['reviews'] if review['attempt'] == latest])
+
+
+def execution_diff(path, name, source='plan'):
+    """DiffDetail of the diff a qa execution reviewed (for a dwarf: its attempt's review), or None."""
+    reader = _Read(path)
+    kind = _kind(reader.path)
+    if kind is None or not executions.NAME.fullmatch(name or '') or name.split('-', 1)[0] not in ('qa', 'dwarf'):
+        return None
+    rel = executions.locate(reader.path, name, [task['id'] for task in _tasks(reader)] if kind == 'plan' else [])
+    if rel is None:
+        return None
+    parts = rel.parts
+    if parts[0] == 'attempts':
+        ctx = _diff_task(reader, 'solo') if kind == 'solo' else None
+    elif parts[0] in ('tasks', 'shadow'):
+        ctx = _diff_task(reader, parts[1])
+    else:
+        ctx = _diff_final(reader, parts[0])
+    item = next((candidate for candidate in ctx['execs'] if candidate['id'] == name), None) if ctx else None
+    if item is None:
+        return None
+    review = next((review for review in ctx['reviews'] if review['execution'] == name), None)
+    if review is None and item['role'] == 'qa':  # an older run of a shadow dir
+        review = _diff_review('shadow', item, item['attempt'], (item['model'] or {}).get('spec'), item['verdict'],
+                              item.rel + '/qa.last' if item['state'] == 'done' else None, [item.rel + '/qa.prompt'])
+    elif review is None:
+        # A dwarf's diff is the one its attempt's review read.
+        def same(other):
+            if item['parent']:
+                return other['parent'] == item['parent']
+            return item['attempt'] is not None and other['attempt'] == item['attempt']
+        matches = [other for other in ctx['reviews']
+                   if other['kind'] == 'primary' and other['item'] and same(other['item'])]
+        review = matches[-1] if matches else None
+    prompt = _first(reader, review['prompts']) if review else None
+    loaded = diffs.load(reader, prompt, fence=True) if prompt else None
+    if review is None:
+        reason = 'no review of this attempt'
+    elif prompt is None:
+        reason = 'no review prompt'
+    elif _regular(reader, prompt) is None:
+        reason = 'unreadable (see warnings)'
+    else:
+        reason = _NOT_INLINED if ctx['kind'] == 'final_review' else 'no diff in the review prompt'
+    reviews = [review] if review else []
+    if review and review['kind'] == 'primary' and review['attempt'] is not None:
+        reviews += [other for other in ctx['reviews']
+                    if other['kind'] == 'shadow' and other['attempt'] == review['attempt']]
+    key = run_key(reader.path)
+    origin = dict(kind='execution', id=name, which='reviewed', execution=review['execution'] if review else None,
+                  attempt=review['attempt'] if review else item['attempt'], file=prompt)
+    return _diff_detail(reader, key, origin, _diff_sources(reader, key, ctx), loaded, reason, reviews)
+
+
+def final_review_diff(path, name, source='plan'):
+    """DiffDetail of a final review: combined.diff, else the ```diff fence of its prompt, or None."""
+    reader = _Read(path)
+    if _kind(reader.path) != 'plan':
+        return None
+    ctx = _diff_final(reader, name)
+    if ctx is None:
+        return None
+    base, summary = ctx['dir'], ctx['summary']
+    candidates = [(base + '/combined.diff', False)]
+    candidates += [(review['prompts'][0], True) for review in reversed(ctx['reviews'])] + [(base + '/qa.input', True)]
+    loaded = rel = None
+    for rel, fence in candidates:
+        if os.path.lexists(reader.path / rel):
+            loaded = diffs.load(reader, rel, fence)
+            if loaded is not None:
+                break
+    prompted = any(os.path.lexists(reader.path / candidate) for candidate, fence in candidates if fence)
+    key = run_key(reader.path)
+    origin = dict(kind='final_review', id=name, which='reviewed', execution=summary['execution'], attempt=None,
+                  file=rel if loaded is not None else None)
+    review = _diff_review('final', None, None, summary['spec'], summary['verdict'], base + '/qa.last', [],
+                          summary['execution'])
+    return _diff_detail(reader, key, origin, _diff_sources(reader, key, ctx), loaded,
+                        _NOT_INLINED if prompted else 'no review prompt yet', [review])
+
+
+# --- files: who planned, changed, drifted into or conflicted on each file --------------------
+
+_MAX_FILES, _MAX_TASKS, _MAX_OVERLAPS = 2000, 300, 5000
+
+
+def _lines(reader, name):
+    return [line.strip() for line in (reader.text(name) or '').splitlines() if line.strip()]
+
+
+def _scope(path):
+    return posixpath.normpath(path.replace('\\', '/'))
+
+
+def _covers(scope, path):
+    return path == scope or path.startswith(scope + '/')
+
+
+def _overlap(left, right):
+    """forge-schedule.py's overlap(): equal, one a dir prefix of the other, or either `.`."""
+    return any(x == '.' or y == '.' or _covers(x, y) or _covers(y, x) for x in left for y in right)
+
+
+def files_detail(path, source='plan'):
+    """Files of a run: which tasks planned, touched, drifted into or conflicted on each one."""
+    reader = _Read(path)
+    kind = _kind(reader.path)
+    if kind is None:
+        return None
+    truncated, rows, wave_map, deferrals = False, [], {}, []
+    if kind == 'solo':
+        attempts = _history(reader, 'attempts.tsv')
+        status = _solo_status(reader)
+        rows.append((dict(id='solo', status=status, files=[]), '', _solo_execs(reader, status, attempts)))
+        wave_map = {'solo': 1}
+    else:
+        tasks = _tasks(reader)
+        if len(tasks) > _MAX_TASKS:
+            tasks, truncated = tasks[:_MAX_TASKS], True
+        wave_map = _waves(reader)[1]
+        for task in tasks:
+            task['attempts'], task['attempt'] = _attempt_state(reader, f'tasks/{task["id"]}')
+            rows.append((task, f'tasks/{task["id"]}', _task_execs(reader, task)))
+        deferrals = _lines(reader, 'deferrals.txt')
+    entries, raw = [], {}
+    for task, base, execs in rows:
+        attempts = []
+        for item in execs:
+            if item['role'] == 'qa' and not item['shadow']:
+                prompt = _first(reader, _prompts(item, base))
+                paths = diffs.touched_of(reader, prompt, fence=True) if prompt else None
+                if paths is not None:
+                    attempts.append(dict(attempt=item['attempt'], execution=item['id'], files=paths))
+        planned = [_scope(entry) for entry in task['files']]
+        raw[task['id']] = task['files']
+        entry = dict(id=task['id'], wave=wave_map.get(task['id']), status=task['status'], planned=planned,
+                     planned_all='.' in planned, attempts=attempts,
+                     current=diffs.touched_of(reader, posixpath.join(base, 'changes.diff')) or [],
+                     drift=_lines(reader, base + '/drift.txt') if base else [],
+                     conflicts=_lines(reader, base + '/conflict.files') if base else [])
+        if kind == 'solo':
+            entry['existing'] = diffs.touched_of(reader, 'existing.diff') or []
+        entries.append(entry)
+    files, touched = {}, {}
+
+    def add(path):
+        if path not in files:
+            if len(files) >= _MAX_FILES:
+                return None
+            files[path] = dict(path=path, dir=posixpath.dirname(path), planned_by=[], touched_by=[], drift_by=[],
+                               conflict_by=[])
+        return files[path]
+    for entry in entries:
+        touched[entry['id']] = set(entry['current']).union(*(item['files'] for item in entry['attempts']))
+        for field, paths in (('touched_by', sorted(touched[entry['id']])), ('drift_by', entry['drift']),
+                             ('conflict_by', entry['conflicts'])):
+            for name in paths:
+                item = add(name)
+                truncated = truncated or item is None
+                if item is not None and entry['id'] not in item[field]:
+                    item[field].append(entry['id'])
+    dirs = {}
+    for entry in entries:
+        for scope, given in zip(entry['planned'], raw[entry['id']]):
+            if scope == '.':
+                continue
+            # A planned entry is a dir when it says so or holds a file the run changed.
+            if given.endswith('/') or (scope not in files and any(_covers(scope, name) for name in files)):
+                planners = dirs.setdefault(scope + '/', [])
+                if entry['id'] not in planners:
+                    planners.append(entry['id'])
+            elif add(scope) is None:
+                truncated = True
+    for item in files.values():
+        item['planned_by'] = [entry['id'] for entry in entries
+                              if any(scope != '.' and _covers(scope, item['path']) for scope in entry['planned'])]
+    overlaps = []
+    for i, left in enumerate(entries):
+        for right in entries[i + 1:]:
+            planned = _overlap(left['planned'], right['planned'])
+            shared = sorted(touched[left['id']] & touched[right['id']])
+            if planned or shared:
+                if len(overlaps) >= _MAX_OVERLAPS:
+                    truncated = True
+                    break
+                overlaps.append(dict(a=left['id'], b=right['id'], planned=planned, touched=shared,
+                                     same_wave=left['wave'] is not None and left['wave'] == right['wave']))
+    return dict(run=run_key(reader.path), files=[files[name] for name in sorted(files)],
+                planned_dirs=[dict(path=name, planned_by=dirs[name]) for name in sorted(dirs)], tasks=entries,
+                overlaps=overlaps, deferrals=deferrals, truncated=truncated, warnings=reader.warnings)
+
+
+# --- Fractal: the child tasks inside a task ---------------------------------------------------
+
+def _fractal(path, task_id, read, *args):
+    reader = _Read(path)
+    kind = _kind(reader.path)
+    if kind == 'solo' and task_id == 'solo':
+        target = str(reader.path)
+    elif kind == 'plan' and any(task['id'] == task_id for task in _tasks(reader)):
+        # forge hands Fractal the task dir as --run-dir, resolved: its realpath names the Fractal task.
+        target = os.path.realpath(reader.path / 'tasks' / task_id)
+    else:
+        return None
+    return read(reader, run_key(reader.path), task_id, target, *args)
+
+
+def fractal_detail(path, task_id, source='plan'):
+    return _fractal(path, task_id, fractal.task)
+
+
+def fractal_node(path, task_id, node, source='plan'):
+    return _fractal(path, task_id, fractal.node, node)
+
+
+def fractal_node_diff(path, task_id, node, source='plan'):
+    return _fractal(path, task_id, fractal.node_diff, node)
+
+
 class Catalog:
     def __init__(self, plans=(), roots=(), registry=True, registry_dir=None):
         self.options = dict(plans=tuple(plans), roots=tuple(roots), registry=registry, registry_dir=registry_dir)
@@ -892,3 +1277,28 @@ class Catalog:
 
     def final_review(self, key, name):
         return self._find(key, final_review_detail, name)
+
+    def diff(self, key, task_id, which='current'):
+        return self._find(key, task_diff, task_id, which)
+
+    def execution_diff(self, key, name):
+        return self._find(key, execution_diff, name)
+
+    def final_review_diff(self, key, name):
+        return self._find(key, final_review_diff, name)
+
+    def files(self, key):
+        return self._find(key, files_detail)
+
+    def fractal(self, key, task_id):
+        return self._find(key, fractal_detail, task_id)
+
+    def fractal_node(self, key, task_id, node):
+        return self._find(key, fractal_node, task_id, node)
+
+    def fractal_node_diff(self, key, task_id, node):
+        return self._find(key, fractal_node_diff, task_id, node)
+
+    def models(self):
+        from forge_ui import models  # it reads runs through this module
+        return models.collect(discover(**self.options))

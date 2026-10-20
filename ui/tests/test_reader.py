@@ -94,7 +94,8 @@ class ReaderTests(unittest.TestCase):
         self.assertEqual(data['timeline'], {'started': None, 'ended': None, 'runs': [], 'verifications': []})
         self.assertIsNotNone(data['integration'])  # the merged marker
         self.assertEqual(data['integration']['merged'], [{'id': 'reader', 'at': reader['merged_at']}])
-        for field, value in (('final_review', None), ('final_reviews', []), ('deferrals', []), ('findings_available', True)):
+        for field, value in (('final_review', None), ('final_reviews', []), ('deferrals', []), ('findings_available', True),
+                             ('fractal', None)):
             self.assertEqual(data[field], value, field)
         self.assertEqual(data['request'], 'A read-only run viewer.\n')
         self.assertEqual(data['warnings'], [])

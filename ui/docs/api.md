@@ -2,12 +2,16 @@
 
 This file is the contract between the three parts of forge-ui. It is fixed for tasks and
 dwarves: implement it as written, and do not edit it as part of a task. Its owner revised it
-deliberately for 0.3.0 (executions, findings, final reviews, the lazy endpoints and the 3D view).
+deliberately for 0.3.0 (executions, findings, final reviews, the lazy endpoints and the 3D view)
+and for 0.4.0 (diffs with pinned findings, the files heatmap, model facts and Fractal child tasks).
 
 ```
 forge_ui/reader.py      reads forge run dirs from disk, returns plain dicts (no I/O beyond reads)
 forge_ui/executions.py  the attempts/<role>-<uuid>/ dirs: parsing, nesting, attempt numbers, a parse cache
 forge_ui/findings.py    QA findings and gate lines, parsed by scripts/forge-contract.py
+forge_ui/diffs.py       unified diffs: parsing, the ```diff fence of a review prompt, pinning findings, cached reads
+forge_ui/models.py      per-run model facts (attempts and reviews) for the leaderboard, cached per run
+forge_ui/fractal.py     Fractal child tasks under $XDG_STATE_HOME/forge/fractal, read through dir fds
 forge_ui/server.py      serves those dicts as JSON plus the static page, 127.0.0.1 only
 forge_ui/static/        the page: index.html, app.js, style.css, graph.js and the scripts they load
 ```
@@ -58,6 +62,11 @@ written), and the reader must never raise because of one.
 | `tasks/<id>/known_issues.md` | the confirmed findings a threshold tolerated |
 | `tasks/<id>/dwarf.input`, `qa.input` | the prompts forge assembled; `<role>.delivered`, `<role>.resolved` the live dispatch files |
 | `tasks/<id>/attempts/<role>-<uuid>/` | one execution of the task: `task`, `dwarf` or `qa` |
+| `tasks/<id>/changes.diff` | `git diff --binary` of the task's work since its base, cumulative, rewritten every attempt; `changes.prev.diff` the previous attempt's; `committed.diff` base..the reviewed commit |
+| `tasks/<id>/drift.txt`, `conflict.files` | one path per line: files the diff changed without declaring them; files that conflicted on merge |
+| `attempts/qa-<uuid>/qa.prompt` | the copy of the prompt a reviewer read; the diff it reviewed is its **last** fenced block: a line exactly ` ```diff `, the diff, a line exactly ` ``` ` (a section may follow) |
+| `final-review-*/combined.diff` | the diff a final review read, absent when larger than 400 KB (then not inlined in `qa.input`) |
+| `fractal-selection.json` | `{"enabled": true, "run": "run-<20 hex>"}` (or `enabled: false`): the run's Fractal choice, see Fractal below |
 | `tasks/<id>/route.jsonl` | one JSON object per line, one per routing decision: `at` (epoch), `task`, `tier`, `epsilon`, `candidates` (list of specs), `default` (spec), `chosen` (spec), `explored` (bool), `propensity` (probability the chosen spec had), `inputs` (object), `decision` (a short hash identifying the decision). Keep unknown fields |
 | `tasks/<id>/route.explored` | exists when the task's route was an exploratory pick |
 | `tasks/<id>/clef.first_pass` | JSON: `p` (predicted probability the first attempt passes), `model`, `at`, `plan_table`, `assignment` (`{dwarf, qa}`) |
@@ -105,6 +114,8 @@ raise because of one. Older solo dirs have `verdict` and not `status`.
 | `dwarf.input`, `qa.input`, `qa.gate`, `known_issues.md` | as for a plan task |
 | `dwarf.last`, `qa.last` | the role's final message. `qa.last` carries `FORGE_VERDICT:` the same way a plan task does |
 | `dwarf.log`, `qa.log` | raw logs. The summary stats them and does not read them, so `updated` moves while a model writes |
+| `changes.diff`, `existing.diff` | the run's change, and the uncommitted changes the repo already had when it started |
+| `fractal-selection.json` | as for a plan |
 
 **Solo status** is the first word of `status`, otherwise the first word of `verdict`, otherwise
 `UNKNOWN`.
@@ -143,6 +154,13 @@ def detail(path, source='plan') -> dict         # a RunDetail, below
 def task_detail(path, task_id, source='plan') -> dict | None       # a TaskDetail
 def execution_detail(path, name, source='plan') -> dict | None     # an ExecutionDetail
 def final_review_detail(path, name, source='plan') -> dict | None  # a FinalReviewDetail
+def task_diff(path, task_id, which='current', source='plan') -> dict | None  # a DiffDetail
+def execution_diff(path, name, source='plan') -> dict | None       # a DiffDetail
+def final_review_diff(path, name, source='plan') -> dict | None    # a DiffDetail
+def files_detail(path, source='plan') -> dict | None               # Files
+def fractal_detail(path, task_id, source='plan') -> dict | None    # a TaskFractal
+def fractal_node(path, task_id, node, source='plan') -> dict | None       # a FractalNodeDetail
+def fractal_node_diff(path, task_id, node, source='plan') -> dict | None  # a DiffDetail
 
 class Catalog:
     def __init__(self, plans=(), roots=(), registry=True, registry_dir=None): ...
@@ -151,6 +169,10 @@ class Catalog:
     def task(self, key, task_id) -> dict | None
     def execution(self, key, name) -> dict | None
     def final_review(self, key, name) -> dict | None
+    def diff(self, key, task_id, which='current'), execution_diff(self, key, name),
+        final_review_diff(self, key, name), files(self, key), fractal(self, key, task_id),
+        fractal_node(self, key, task_id, node), fractal_node_diff(self, key, task_id, node) -> dict | None
+    def models(self) -> dict            # Models, over every run
 ```
 
 `Catalog` re-discovers and re-reads on every call: runs change while they are watched. Files
@@ -187,12 +209,22 @@ its last 20,000 behind a leading `…`. Their `truncated` lists the field names 
 | `GET /api/runs/<key>/tasks/<id>` | `200 TaskDetail`; `<id>` is percent-decoded (strict UTF-8) and must be a `tasks.tsv` id (`solo` for a solo run). An id that decodes to `/`, NUL, U+FFFD, `.` or `..` is a 404 without a read |
 | `GET /api/runs/<key>/executions/<role>-<uuid>` | `200 ExecutionDetail` |
 | `GET /api/runs/<key>/final-reviews/<name>` | `200 FinalReviewDetail`; `<name>` is `final-review-<e>-<p>` or `integrate-<e>-<p>` |
+| `GET /api/runs/<key>/tasks/<id>/diff[/<which>]` | `200 DiffDetail`; `<which>` is `current` (the default: `changes.diff`), `prev`, `committed` (plan tasks), `existing` (solo) |
+| `GET /api/runs/<key>/executions/<qa-or-dwarf>/diff` | `200 DiffDetail` of the diff that review read (a dwarf: its attempt's primary review) |
+| `GET /api/runs/<key>/final-reviews/<name>/diff` | `200 DiffDetail` |
+| `GET /api/runs/<key>/files` | `200 Files` |
+| `GET /api/models` | `200 Models` |
+| `GET /api/runs/<key>/tasks/<id>/fractal` | `200 TaskFractal` |
+| `GET /api/runs/<key>/tasks/<id>/fractal/nodes/<node>[/diff]` | `200 FractalNodeDetail`, or with `/diff` a `DiffDetail` of its `candidate.diff`; `<node>` matches `[A-Za-z0-9][A-Za-z0-9_-]{0,100}` |
 | `GET /` | `forge_ui/static/index.html` |
 | `GET /<name>` | that file from `forge_ui/static/` (`.html .js .css .svg` only, no subdirs) |
 | anything else | `404 {"error": "not found"}`; any method but GET or HEAD: `405` |
 
-The three lazy endpoints answer `404 {"error": "not found"}` for an unknown run, task,
-execution or review. An execution is looked for only where executions are written:
+The lazy endpoints answer `404 {"error": "not found"}` for an unknown run, task,
+execution or review; the diff endpoints also for a `<which>` the run kind has not (`existing`
+of a plan task, `prev` of a solo run) and for an execution that is not `qa` or `dwarf`; the
+Fractal node endpoints for an unknown node or a task whose Fractal state is not `available`. A
+diff that is not there yet is a `200` with `available: false`. An execution is looked for only where executions are written:
 `attempts/`, `tasks/<id>/attempts/`, `shadow/<id>/<a>-<k>/attempts/`,
 `final-review-*/attempts/` and `integrate-*/final-review/attempts/`, in that order; a dir
 that resolves outside the run dir (a symlinked `attempts/`, say) is ignored.
@@ -318,6 +350,8 @@ Every RunSummary field, plus:
   epoch in the name), or `null`; `final_reviews` lists the newest 20, newest first.
 - `deferrals`: the non-empty lines of `deferrals.txt`, `[]` when it is missing.
 - `findings_available`: whether `scripts/forge-contract.py` could be loaded.
+- `fractal`: `null` without `fractal-selection.json`, else `{"enabled", "run", "available", "reason"}`
+  (Fractal below). Plan and solo runs alike.
 - A solo run has `integration` `null`, `final_review` `null`, `final_reviews` and
   `deferrals` `[]`.
 - `waves` comes from `waves.tsv` (index 0 is wave 1); `[]` when it is missing. A solo run's
@@ -526,6 +560,224 @@ solo run), `<task>/<attempt>-<k>`, the review name, or `null`), `truncated` and 
 FinalReviewDetail: the FinalReviewSummary, plus `meta` (every `review.meta` key),
 `tasks_summary`, `qa_input`, `qa_last`, `known_issues` (texts or `null`), `findings` (a list
 of Findings, in place of the summary), `truncated` and `warnings`.
+
+## DiffDetail (`forge_ui/diffs.py`)
+
+```json
+{"run": "3f9a0c1d2e4b",
+ "source": {"kind": "task", "id": "reader", "which": "current", "execution": null, "attempt": 2,
+            "file": "tasks/reader/changes.diff"},
+ "sources": [{"id": "current", "label": "changes.diff", "bytes": 1234, "url": "/api/runs/…/tasks/reader/diff"},
+             {"id": "prev", "label": "changes.prev.diff", "bytes": 980, "url": "…/tasks/reader/diff/prev"},
+             {"id": "qa-…", "label": "reviewed diff, attempt 1", "attempt": 1, "verdict": "FAIL",
+              "kind": "primary", "bytes": 980, "url": "/api/runs/…/executions/qa-…/diff"}],
+ "available": true, "reason": null, "bytes": 1234, "truncated": false,
+ "files": [{"old": "ui/reader.py", "new": "ui/reader.py", "status": "modified", "binary": false,
+            "additions": 5, "deletions": 1, "truncated": false,
+            "hunks": [{"old_start": 38, "old_lines": 7, "new_start": 38, "new_lines": 10,
+                       "section": "def _tasks(reader):", "lines": [" ctx", "-old", "+new"]}]}],
+ "findings": [{"review": {"kind": "primary", "execution": "qa-…", "attempt": 2, "spec": "opus"},
+               "severity": "P1", "status": "CONFIRMED", "location": "ui/reader.py:42",
+               "summary": "…", "text": "…",
+               "pin": {"file": 0, "path": "ui/reader.py", "line": 42, "side": "new", "hunk": 0, "index": 5},
+               "off_diff": null}],
+ "warnings": [], "truncated_fields": []}
+```
+
+| Field | Meaning |
+|---|---|
+| `source.kind` | `task`, `execution`, `final_review` or `fractal`; `id` the task id, execution name, review name or node |
+| `source.which` | `current` `prev` `committed` `existing` (task), `reviewed` (execution, final review), `candidate` (fractal) |
+| `source.execution`, `attempt` | the qa execution whose prompt held the diff (a final review: its newest), its attempt; a task's `current` and `committed` carry the task's attempt, `prev` and `existing` `null` |
+| `source.file` | the file read, relative to the run dir (fractal: to the Fractal state's `runs/<run>/tasks/`); `null` when none was |
+| `sources` | what else can be shown. Task (and its executions): every diff file present (`id` = `which`, `label` = file name, `bytes` its size), then every primary and shadow qa execution whose prompt has a fence (`id` the execution, `label` `reviewed diff, attempt N` / `shadow review, attempt N`, `attempt`, `verdict`, `kind` `primary`/`shadow`, `bytes` of the fenced diff). Final review: itself plus the newest 20 reviews that kept a `combined.diff` (`id` the name, `kind` `final`, `verdict`, `bytes` or `null`). Fractal: `[{"id": "candidate", "label": "candidate.diff", "bytes"}]`. Every entry but fractal's has `url`, the endpoint that shows it |
+| `available`, `reason` | whether a diff was read; else why: `no changes.diff` (any missing file's name), `unreadable (see warnings)`, `no diff in the review prompt`, `no review prompt`, `no review of this attempt` (a dwarf), `not inlined (larger than 400 KB)` (final reviews), `no review prompt yet`, `no candidate diff yet` |
+| `bytes` | the file's size, or the fenced diff's (UTF-8); `null` when unavailable |
+| `truncated` | the read stopped at 8 MiB (at a line end), the fence never closed, more than 300 files, or a file is `truncated` |
+| `files[]` | per file of the diff: `old` (`null` when added), `new` (`null` when deleted), `status` `modified added deleted renamed copied`, `binary` (`Binary files … differ` or a `GIT binary patch`, whose body is skipped), `additions`, `deletions` (of the whole file, even when cut), `truncated`, `hunks` |
+| `hunks[]` | `old_start`, `old_lines`, `new_start`, `new_lines` (a count left out is 1), `section` (after the second `@@`, or `null`), `lines`: each raw line with its marker (` `, `-`, `+`, `\` for `\ No newline at end of file`) |
+| `findings[]` | the Findings (as above, without `line`) of the reviews attached, each with its `review` (`kind` `primary` `shadow` `final`, `execution`, `attempt`, `spec`), `pin` and `off_diff` |
+| `pin` | `file` (index in `files`), `path`, `line`, `side` (`new`; `old` for a deleted file or a renamed file's old path), `hunk` and `index` (into that hunk's `lines`), or `null` |
+| `off_diff` | `null` when pinned to a line, else `no location`, `file not in this diff`, `ambiguous path` or `line outside the changed hunks` (then `pin` has `file`, `line`, `side` and `hunk`/`index` `null`) |
+
+Which diff: a task's `changes.diff` etc. from its dir (a solo run's from the run dir). An
+execution's is the last fence of its `qa.prompt` copy; a running one's, of its owner's
+`qa.delivered`, `.prompt`, then `.input`; a shadow's falls back to its dir's `qa.input`; a
+dwarf's is its attempt's primary review's (same parent, else same attempt). A final review's
+is `combined.diff`, else the fence of its newest execution's `qa.prompt`, then of its
+`qa.input`.
+
+Which findings: a task diff gets every review (primary, the task's own `qa.last` when no copy
+matches it, shadows) of the task's latest attempt; an execution diff that review's (a
+primary's also brings the shadows of its attempt); a final review's its `qa.last`'s; a fractal
+node's none.
+
+Parsing: `git diff --binary` output and plain unified diffs; renames, copies, mode changes,
+`/dev/null`, C-quoted paths (`"a/caf\303\251"`), CRLF, the mnemonic and no-prefix forms.
+A hunk's lines are counted, so a deleted `-- x` (the line `--- x`) stays content. At most 300
+files, 20,000 hunk lines in all and 2,000 characters a line (then `…`).
+
+Pinning: the path is the Finding's `location` (`a.py:10-12` arrives as `a.py:10`); without one,
+the first `path:N` of its first line that names a file of this diff (`Makefile:3`). `line N`
+alone pins only in a one-file diff. Paths are matched after `\` → `/` and dropping `./`, with
+and without an `a/`/`b/` prefix: exactly first, then as a `/`-suffix either way; two files
+matching is `ambiguous path`. The line is looked up on the new side (old for a deleted file).
+
+Reads stay inside the run dir after symlinks are resolved, open regular files only (a FIFO is
+never opened) and read at most 8 MiB; parses are kept by `(dev, inode, size, mtime_ns)` as
+other parses are.
+
+## Files
+
+`GET /api/runs/<key>/files`: who planned, changed, drifted into or conflicted on each file.
+
+```json
+{"run": "3f9a0c1d2e4b",
+ "files": [{"path": "ui/reader.py", "dir": "ui", "planned_by": ["reader"], "touched_by": ["reader"],
+            "drift_by": [], "conflict_by": []}],
+ "planned_dirs": [{"path": "ui/", "planned_by": ["page"]}],
+ "tasks": [{"id": "reader", "wave": 1, "status": "MERGED", "planned": ["ui/reader.py"], "planned_all": false,
+            "attempts": [{"attempt": 1, "execution": "qa-…", "files": ["ui/reader.py"]}],
+            "current": ["ui/reader.py"], "drift": [], "conflicts": []}],
+ "overlaps": [{"a": "reader", "b": "docs", "planned": true, "touched": ["ui/reader.py"], "same_wave": false}],
+ "deferrals": ["…"], "truncated": false, "warnings": []}
+```
+
+- `tasks[]`: `planned` is the `files` column, normalised (`ui/` → `ui`); `planned_all` when it
+  has `.`. `attempts`: each primary qa execution whose prompt has a fence, with the paths that
+  diff touched (from its headers: the new path, a deleted file's old one). `current`: those of
+  `changes.diff`. `drift`, `conflicts`: the lines of `drift.txt`, `conflict.files`. A solo
+  run has one task `solo` (wave 1, nothing planned) with also `existing`, the paths of
+  `existing.diff`.
+- `files[]`, by path: every path touched (by `current` or any attempt), drifted, conflicted, or
+  planned as a file. `dir` is its dirname (`""` at the root). `planned_by`: tasks with a planned
+  entry equal to it or a dir above it (a `.` task is left out: see `planned_all`);
+  `touched_by`, `drift_by`, `conflict_by` in `tasks.tsv` order.
+- `planned_dirs`: planned entries that end in `/` or hold a touched file, with a trailing `/`.
+- `overlaps`: each pair of tasks (in `tasks.tsv` order) whose planned entries overlap by
+  forge-schedule's rule (equal, one a dir above the other, or either `.`) or that touched a
+  file in common (`touched`, sorted); `same_wave` from `waves.tsv`.
+- At most 2,000 files, 300 tasks and 5,000 overlaps; past them `truncated` is true.
+
+## Models
+
+`GET /api/models`: facts about every run, newest `updated` first, for the page to aggregate.
+
+```json
+{"generated": 1760621412.5, "runs": 12, "truncated": false,
+ "tasks": [{"run": "3f9a0c1d2e4b", "task": "reader", "kind": "plan", "repo": "/x/y", "difficulty": "high",
+            "created": 1760619000.0, "explored": true, "propensity": 0.125, "final_status": "MERGED",
+            "accepted": true,
+            "attempts": [{"n": 1, "alias": "luna", "spec": "luna", "source": "execution", "outcome": "fail",
+                          "reason": null, "gate": false, "model_s": 297.0, "duration_s": 300.0,
+                          "tokens": {"input": 120000, "cached": 90000, "output": 8000}, "timed_out": false}],
+            "escalations": [{"n": 1, "from": "luna", "to": "sol:xhigh"}]}],
+ "reviews": [{"run": "3f9a0c1d2e4b", "task": "reader", "n": 1, "kind": "primary", "alias": "opus", "spec": "opus",
+              "verdict": "FAIL", "findings": FindingsSummary, "duration_s": 270.0, "tokens": {...},
+              "agreement": null, "primary_alias": null}],
+ "warnings": ["3f9a0c1d2e4b: tasks/x/attempts.tsv line 2: invalid attempt"]}
+```
+
+- `tasks[]`: one per task (`solo` for a solo run). `explored` as Task's; `propensity` that of
+  the newest `route.jsonl` decision, else `null`; `final_status` the task (or solo) status;
+  `accepted` whether `accepted.by` is non-empty (`false` for a solo run). `escalations` is
+  `escalations.tsv` as it is (`n` its attempt column, `from`/`to` specs).
+- `attempts[]`, from `attempts.tsv` (`epoch n status infra spec`): a row with an infra class
+  or status `INFRA` was refunded and is dropped; the last row of a number wins (a QA-only
+  resume reuses it). `outcome`: `PASS`/`MERGED` `pass`, `FAIL` `fail`. `TIMEOUT`/`ERROR` with a
+  primary qa execution of that attempt is `censored` with `reason` `reviewer_timeout`/
+  `reviewer_error`; else `TIMEOUT` is a `fail` when the attempt's last dwarf execution exited 7
+  or timed out, otherwise `censored`, `dwarf_*` (it exited non-zero) or `forge_*`. Any other
+  status is `censored` with the status lowercased (`nochanges`, `interrupted`, ...), as
+  `scripts/forge_dataset/export.py` labels them.
+- `alias`/`spec`/`source`: the last dwarf execution's model (`execution`), else the fifth
+  `attempts.tsv` column (`attempts.tsv`), else for attempt 1 only the `tasks.tsv` dwarf (a solo
+  run's `dwarf.spec`/`dwarf.resolved`) (`plan`), else all `null`.
+- `gate`: the attempt passed although its (last) primary review said FAIL. `model_s`,
+  `duration_s`, `tokens`, `timed_out`: that dwarf execution's `phases.model`, `duration_s`,
+  `tokens`, `timed_out`, else `null`/`false`.
+- `reviews[]`: every finished primary qa execution (`n` its attempt); every shadow whose
+  `shadow.status` is `done` (`alias`/`spec` its execution's model, else `shadow.json`'s spec;
+  `agreement` and `primary_alias` against the primary review of its attempt); every finished
+  final review (`kind` `final`, `task` and `n` `null`, `verdict` `PASS`/`FAIL` else `null`,
+  timing from its newest execution).
+- Per run the facts are kept, keyed by its realpath, until its RunSummary's `updated`,
+  `task_count`, `counts` or `final_review` changes (4,096 runs); a run with a `RUNNING` task is
+  read again after 120 s. One computation runs at a time. Past 50,000 task rows the next run
+  is left out and `truncated` is true. `warnings` (first 500) are prefixed by the run key.
+
+## Fractal (`forge_ui/fractal.py`)
+
+A run that chose Fractal (`fractal-selection.json`) has its tasks executed by
+`scripts/forge_fractal` as trees of child tasks, in a managed run under the state root:
+`realpath($XDG_STATE_HOME or ~/.local/state)/forge/fractal` (unlike forge, an empty
+`XDG_STATE_HOME` counts as unset). forge-ui never imports that package.
+
+| Path under `runs/<run>/` | Read |
+|---|---|
+| `run.json` (≤ 1 MiB) | its `runner` must be the run dir's realpath |
+| `tasks/task-<sha256(T)[:16]>/` | the Fractal task of forge task `T` = realpath of `tasks/<id>` (plan) or of the run dir (solo) |
+| `…/request.json` (≤ 2 MiB) | its `output` must be `T` |
+| `…/state.json`, `outcome.json` (≤ 256 KiB) | `state`, `outcome` |
+| `…/events.jsonl` | its last 64 KiB |
+| `…/nodes/<n>/node.json` (≤ 4 MiB) | one node; a bigger one is skipped with a warning |
+| `…/nodes/<n>/candidate.diff` | the node's imported change |
+
+Everything is opened through directory fds, one component at a time with `O_NOFOLLOW`
+(files also `O_NONBLOCK`, regular only, bounded): a symlink anywhere is refused with a
+warning. `nodes/` is the only dir listed, and only names matching
+`[A-Za-z0-9][A-Za-z0-9_-]{0,100}`. `control/`, `nodes/*/product/`, `planning/`, `steps/` and
+the ledger are never opened, nor any absolute path a node stores. Parses are kept by
+signature and path.
+
+RunDetail `fractal`: `{"enabled", "run", "available", "reason"}`. `enabled` is true only for
+`"enabled": true`; `run` must match `run-[0-9a-f]{20}`. Reasons: `Fractal is off for this run`,
+`invalid fractal-selection.json` (not a ≤ 64 KiB JSON object), `invalid run id`,
+`managed run not found`, `invalid run.json`, `runner mismatch`, `not supported on this
+platform`.
+
+TaskFractal:
+
+```json
+{"run": "3f9a0c1d2e4b", "task": "reader", "fractal_run": "run-…", "fractal_task": "task-…",
+ "available": true, "reason": null,
+ "state": {"status": "active", "acceptance": "pending", "elapsed": 120.5, "started_at": 1760600020.0,
+           "ended_at": null, "exit_code": null, "error": null, "qa_status": null},
+ "outcome": {"acceptance": "PASS", "verification": "passed", "task_status": "PASS"},
+ "nodes": [{"id": "implementation", "parent": null, "depth": 0, "goal": "…", "difficulty": "medium",
+            "paths": ["ui"], "deps": [], "model": "sol:xhigh", "resolved_model": "…", "status": "waiting",
+            "ui_status": "RUNNING", "phase": "implementation", "iteration": 1, "started_at": 1760600022.0,
+            "ended_at": null, "cost": 0.42, "unknown_cost_steps": 0,
+            "tokens": {"input_tokens": 1, "cached_input_tokens": 0, "output_tokens": 2},
+            "decomposition": {"phase": "accepted", "decision": "split", "reason": "…", "children": ["a", "b"]},
+            "error": null, "has_diff": false, "reserved": false}],
+ "events": [{"at": 1760600021.0, "kind": "node_created", "node": "implementation"}],
+ "warnings": [], "truncated": []}
+```
+
+- `available: false` (`state`, `outcome` `null`, `nodes`, `events` `[]`) with the RunDetail
+  reasons, or `Fractal is not selected for this run`, `no Fractal task for this task yet`,
+  `request does not match this task`, `invalid request.json`.
+- `nodes`: tree order (a parent, then its children by id), at most 500 node dirs (else
+  `truncated` has `nodes`). Children a decomposition admitted (`decomposition.admission` and
+  `decomposition_history[].admission`) that have no dir yet are listed with `status`
+  `reserved` and `reserved: true`. `depth` counts parents. `goal` and `error` keep 240
+  characters, a decision's `reason` 2,000. Values of the wrong type are `null` (lists `[]`).
+  `has_diff`: `candidate.diff` is a regular file.
+- `ui_status`: `pending` `PENDING`, `active`/`waiting` `RUNNING`, `paused` `BLOCKED`,
+  `completed` `MERGED`, `timeout` `TIMEOUT`, `interrupted`/`stopped` `INTERRUPTED`, `reserved`
+  `PENDING`, any other status `FAIL`, none `UNKNOWN`.
+- `events`: the newest 50 JSON lines of `events.jsonl` with a `kind`, oldest first: `at`,
+  `kind`, `node`, and those of `phase decision status acceptance exit_code iteration cost
+  difficulty model reason` the line has. Other lines are counted in a warning.
+
+FractalNodeDetail (`…/fractal/nodes/<node>`): the node as listed, plus `goal`, `error` (20,000
+characters), `last` and `planning_last` (their last 20,000, behind `…`), `planning_tokens`,
+`decomposition` in full (`phase decision reason attempts error`, and `admission`: `name goal
+difficulty paths deps model` each), `decomposition_history` (its newest 20, each like
+`decomposition`, `reason` and `error` 2,000), and `run`, `task`, `fractal_run`,
+`fractal_task`, `warnings`, `truncated` (the texts cut). A reserved node has these `null` or
+`[]`, with its admission's `goal`.
 
 ## Status vocabulary for the page and the graph
 
