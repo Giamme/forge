@@ -38,7 +38,15 @@ window.ForgeUI = (() => {
     if (sel.kind === 'final') return `${base}/final-review${sel.name ? '/' + e(sel.name) : ''}`;
     if (sel.kind === 'verification') return `${base}/verification`;
     if (sel.kind === 'integration') return `${base}/integration`;
+    if (sel.kind === 'fractal') return `${base}/tasks/${e(sel.task)}/fractal/${e(sel.node)}`;
     return base;
+  }
+  // a diff: {kind: 'task', task, source, file} | {kind: 'final', name, file} | {kind: 'fractal', task, node, file}
+  function diffHash(key, spec) {
+    const e = encodeURIComponent, base = '#/runs/' + e(key), file = spec.file ? '/file/' + e(spec.file) : '';
+    if (spec.kind === 'final') return `${base}/final-review/${e(spec.name)}/diff${file}`;
+    if (spec.kind === 'fractal') return `${base}/tasks/${e(spec.task)}/fractal/${e(spec.node)}/diff${file}`;
+    return `${base}/tasks/${e(spec.task)}/diff${spec.source && spec.source !== 'current' ? '/' + e(spec.source) : ''}${file}`;
   }
   function cloudHash(sel, focus) {
     if (sel) return '#/cloud/runs/' + encodeURIComponent(sel);
@@ -51,6 +59,9 @@ window.ForgeUI = (() => {
     if (!m) return { key: null, sel: null };
     const d = decodeURIComponent, rest = m[2] || '';
     let sel = null, r;
+    if ((r = rest.match(/^\/tasks\/([^/]+)\/diff(?:\/([^/]+))?(?:\/file\/(.+?))?\/?$/))) return { key: d(m[1]), sel: { kind: 'task', id: d(r[1]) }, diff: { kind: 'task', task: d(r[1]), source: r[2] ? d(r[2]) : 'current', file: r[3] ? d(r[3]) : null } };
+    if ((r = rest.match(/^\/tasks\/([^/]+)\/fractal\/([^/]+)\/diff(?:\/file\/(.+?))?\/?$/))) return { key: d(m[1]), sel: { kind: 'task', id: d(r[1]) }, diff: { kind: 'fractal', task: d(r[1]), node: d(r[2]), file: r[3] ? d(r[3]) : null } };
+    if ((r = rest.match(/^\/final-review\/([^/]+)\/diff(?:\/file\/(.+?))?\/?$/))) return { key: d(m[1]), sel: { kind: 'final', name: d(r[1]) }, diff: { kind: 'final', name: d(r[1]), file: r[2] ? d(r[2]) : null } };
     if ((r = rest.match(/^\/tasks\/([^/]+)\/executions\/([^/]+)\/?$/))) sel = { kind: 'execution', task: d(r[1]), id: d(r[1]), exec: d(r[2]) };
     if (sel && sel.kind === 'execution' && sel.task) {
       const run = state.cache.get(d(m[1]))?.data, t = run && list(run.tasks).find(x => x.id === sel.task);
@@ -61,6 +72,7 @@ window.ForgeUI = (() => {
     else if ((r = rest.match(/^\/final-review(?:\/([^/]+))?\/?$/))) sel = { kind: 'final', name: r[1] ? d(r[1]) : null };
     else if (/^\/verification\/?$/.test(rest)) sel = { kind: 'verification' };
     else if (/^\/integration\/?$/.test(rest)) sel = { kind: 'integration' };
+    else if ((r = rest.match(/^\/tasks\/([^/]+)\/fractal\/([^/]+)\/?$/))) sel = { kind: 'fractal', task: d(r[1]), node: d(r[2]) };
     return { key: d(m[1]), sel };
   }
   const select = sel => { location.hash = hashFor(state.key, sel); };
@@ -557,7 +569,8 @@ window.ForgeUI = (() => {
         run, sel, now: now(),
         fetchJSON: path => fetchJSON(path).then(r => r.data),
         rerender: () => { const r = state.cache.get(state.key)?.data; if (r) renderInspector(r); },
-        hash: s => hashFor(run.key, s), onSelect: s => select(s),
+        hash: s => hashFor(run.key, s), onSelect: s => select(s), diffHash: spec => diffHash(run.key, spec),
+        onFractal: (id, data) => { if (state.stage && state.stage.setFractal) state.stage.setFractal(id, data); },
       });
       scoped(host, run.key + ':');
     });
@@ -581,7 +594,18 @@ window.ForgeUI = (() => {
     host.hidden = !show;
     if (show) window.ForgeGantt.strip(host, run, { now: now(), replay: state.replay }); else host.replaceChildren();
   }
+  // the diff viewer takes the stage's place while it is open
+  function renderDiff(run) {
+    const host = $('diff-view'), view = $('run-view'); if (!host || !view) return;
+    const open = !!state.diff && !!window.ForgeDiff;
+    view.classList.toggle('diff-open', open); host.hidden = !open;
+    if (!open) { host.replaceChildren(); host.diffSig = ''; return; }
+    window.ForgeDiff.render(host, { run, spec: state.diff, fetchJSON: path => fetchJSON(path).then(r => r.data),
+      rerender: () => { const r = state.cache.get(state.key)?.data; if (r) renderDiff(r); },
+      href: spec => diffHash(run.key, spec), closeHref: hashFor(run.key, state.sel) });
+  }
   function renderRunBody(run) {
+    renderDiff(run);
     syncToggles();
     syncReplay(run);
     placeStage($('stage-slot'));
@@ -608,6 +632,7 @@ window.ForgeUI = (() => {
       const insp = el('aside', undefined, 'inspector'); insp.id = 'inspector'; insp.setAttribute('aria-label', 'Inspector'); insp.tabIndex = -1;
       row.append(col, insp); view.append(row);
       const strip = el('div', undefined, 'strip-wrap'); strip.id = 'strip'; view.append(strip);
+      const diff = el('section', undefined, 'diff-view'); diff.id = 'diff-view'; diff.hidden = true; view.append(diff);
       const tasks = el('section', undefined, 'run-tasks'); tasks.id = 'run-tasks'; main.append(tasks);
       window.scrollTo(0, 0);
     }
@@ -692,6 +717,8 @@ window.ForgeUI = (() => {
     const keyChanged = parsed.key !== state.key;
     state.key = parsed.key;
     state.sel = parsed.sel;
+    const diffWas = JSON.stringify(state.diff || null);
+    state.diff = parsed.diff || null;
     state.cloud = parsed.cloud || null;
     document.body.classList.toggle('cloud-mode', !!state.cloud);
     for (const a of document.querySelectorAll('.topbar .top-link')) {
@@ -709,7 +736,10 @@ window.ForgeUI = (() => {
     } else { $('main').dataset.view = 'loading'; $('main').replaceChildren(el('p', 'Loading run…', 'empty')); }
     loadRun(state.key);
     // a selection made on the stage keeps the keyboard there (← → walk the tasks); one made elsewhere moves it to the inspector
-    if (state.sel && !keyChanged && !stageHost.contains(document.activeElement)) $('inspector')?.focus({ preventScroll: true });
+    if (state.diff) {
+      const opened = diffWas === 'null' || JSON.stringify({ ...JSON.parse(diffWas), file: null }) !== JSON.stringify({ ...state.diff, file: null });
+      if (opened && $('diff-view')) { $('run-view').scrollIntoView({ block: 'start' }); $('diff-view').focus({ preventScroll: true }); }
+    } else if (state.sel && !keyChanged && !stageHost.contains(document.activeElement)) $('inspector')?.focus({ preventScroll: true });
   }
   function busy() {
     if (state.key) {

@@ -117,6 +117,20 @@ with the first source winning. Discovery and disk reads repeat on each API reque
   with the gate decision, Clef predictions against outcomes, and its prompts; for one
   execution, its model, phases, tokens, exact prompt and final message; for the final
   review, its verdict, findings, report, prompt and history.
+- **Diffs (`…/tasks/<id>/diff[/<source>][/file/<path>]`, `…/final-review/<name>/diff`):** a task's
+  `changes.diff`, its previous or committed diff, or exactly the diff one reviewer read (the last
+  diff in that review's prompt), picked from a row of sources with each review's verdict; a final
+  review's combined diff. Files are listed with their +/− counts and how many findings point
+  into them; each finding is shown under the line it names, those on a line outside the changed
+  hunks at the top of their file, and those whose file is not in the diff (or that name no
+  location) in a section of their own. n and p move between findings, j and k between files.
+  Open it from a task, an attempt's review, an execution or the final review in the inspector.
+- **Fractal child tasks:** when a run used Fractal, a task's inspector shows the tree it was split
+  into (status, difficulty, model, phase, cost, the split decision), and the opened task in 3D
+  carries the same tree floating above it. A node (`…/tasks/<id>/fractal/<node>`) shows its goal,
+  paths, timings, cost and tokens, its decomposition and the children it admitted, its last
+  messages, and its candidate diff. Fractal's state is read under `$XDG_STATE_HOME/forge/fractal`
+  (default `~/.local/state`), read-only, without following symlinks.
 - **Quick jump:** Ctrl K (⌘K on a Mac), `/` or *Search* opens one search over every run (goal,
   run id, repo, models), task (id and title), project, model and command. Enter opens the pick;
   Shift+Enter shows a run in the cloud; a model shows its runs in the cloud. With nothing typed,
@@ -151,6 +165,9 @@ polling; a hidden tab never polls. Failed requests keep the last good data and s
 - `forge_ui/static/map3d.js`, `scene3d.js`, `iso.js`: the 3D loader, scenes and engine (ported from archivision).
 - `forge_ui/static/cloudmodel.js`, `cloud3d.js`, `cloudui.js`: the run cloud's pure model (projects,
   filters, layouts, layout files), its scene on the shared stage, and its controls.
+- `forge_ui/static/diffview.js`: the diff viewer, with findings pinned to their lines.
+- `forge_ui/diffs.py`, `fractal.py`, `models.py`: diff parsing and finding pins, the Fractal state
+  reader, and the facts behind the model leaderboard.
 - `forge_ui/static/search.js`, `notify.js`, `favicon.svg`: the quick jump and the notifications
   (ranking and change detection are in `runmodel.js`).
 - `tests/`: reader, executions, endpoints, server, static-script and browser checks; `run_fixture.py`

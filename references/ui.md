@@ -14,6 +14,10 @@ run goes on, with the same exit code.
   (helix, sphere, galaxy, timeline, constellation) as blocks or orbs. Filters narrow it to exactly
   the runs wanted (project, state, difficulty, tasks per run, models and more), and runs can be
   dragged anywhere; where they were dropped is remembered in that browser.
+- **Diffs with findings in place:** any task diff, the exact diff each reviewer read, or a final
+  review's combined diff, with every P0–P3 finding shown under the line it names.
+- **Fractal child tasks:** the tree a Fractal task was split into, in the inspector and above
+  the opened task in 3D, each node with its decision, cost, output and candidate diff.
 - **Quick jump and notifications:** Ctrl K (⌘K) or `/` searches every run, task, project and
   model; the bell tells you when a run finishes or fails, a task fails or a final review gives its
   verdict, and can raise browser notifications while the tab is in the background.

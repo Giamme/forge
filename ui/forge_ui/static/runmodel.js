@@ -653,7 +653,31 @@
     return out;
   }
 
+  /* ---------- Fractal: a task's child tasks as a tidy tree (depth across, siblings down) ---------- */
+  // nodes: TaskFractal.nodes (tree order, parent ids); returns {pos: {id: {col, row, depth}}, edges: [[parent, child]], cols, rows}
+  function fractalTree(nodes) {
+    const ns = list(nodes).filter(n => n && n.id), ids = new Set(ns.map(n => n.id)), kids = new Map();
+    const roots = [];
+    for (const n of ns) {
+      const p = n.parent && ids.has(n.parent) && n.parent !== n.id ? n.parent : null;
+      if (p) { if (!kids.has(p)) kids.set(p, []); kids.get(p).push(n.id); } else roots.push(n.id);
+    }
+    const pos = {}, edges = [], seen = new Set();
+    let next = 0, cols = 0;
+    const place = (id, depth) => {
+      if (seen.has(id)) return null; seen.add(id);                         // a cycle in bad data stops here
+      const ch = (kids.get(id) || []).map(k => place(k, depth + 1)).filter(r => r !== null);
+      for (const k of kids.get(id) || []) if (pos[k]) edges.push([id, k]);
+      const row = ch.length ? (ch[0] + ch[ch.length - 1]) / 2 : next++;
+      pos[id] = { col: depth, row, depth }; cols = Math.max(cols, depth + 1);
+      return row;
+    };
+    for (const r of roots) place(r, 0);
+    for (const n of ns) if (!seen.has(n.id)) place(n.id, 0);               // what a cycle left out
+    return { pos, edges, cols, rows: next };
+  }
+
   return { plate, cells, blockSize, liveNow, integrationStatus, shadowStatus, runState, execStatus, matchRun, filterOptions, atlasModel, columns, planModel, finishState, taskParts,
     taskTimes, metricValue, overlap, projectSchedule, execModel, criticalPath, concurrency, stateAt, timeRange, events, structureKey, innerKey,
-    fmtDur, alias, basename, weight, searchIndex, searchRank, statusEvents };
+    fmtDur, alias, basename, weight, searchIndex, searchRank, statusEvents, fractalTree };
 });

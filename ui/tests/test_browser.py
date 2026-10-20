@@ -70,11 +70,18 @@ class Page(unittest.TestCase):
         base = Path(cls.temp.name)
         cls.plan, cls.solo = F.make_plan(base / 'p'), F.make_solo(base / 's')
         cls.key = reader.run_key(cls.plan)
+        cls.xdg = os.environ.get('XDG_STATE_HOME')
+        os.environ['XDG_STATE_HOME'] = str(base / 'state')      # where the reader task's Fractal tree lives
+        F.make_fractal(base / 'state', cls.plan, 'reader')
         _serve(cls, reader.Catalog(plans=[cls.plan, cls.solo], registry=False))
 
     @classmethod
     def tearDownClass(cls):
         cls.server.shutdown(); cls.server.server_close(); cls.thread.join(timeout=2)
+        if getattr(cls, 'xdg', None) is None:
+            os.environ.pop('XDG_STATE_HOME', None)
+        else:
+            os.environ['XDG_STATE_HOME'] = cls.xdg
         cls.temp.cleanup()
 
     def open(self, cdn, view='3d', mode='plan', init='', context=None):
@@ -168,6 +175,38 @@ class Page(unittest.TestCase):
         page.click('[data-mode=exec]')
         page.wait_for_function("() => window.ForgeUI.state.stage.mode === 'exec'")
         self.assertTrue(page.evaluate("window.ForgeUI.state.stage.debug().nodes.some(n => n.id.startsWith('x:task-'))"))
+        self.assertClean(page)
+
+    def test_the_diff_viewer_pins_findings_to_their_lines(self):
+        page = self.open(cdn=False)
+        page.goto(self.url + f'#/runs/{self.key}/tasks/reader')
+        page.wait_for_selector('#inspector .insp-head .diff-link')
+        page.click('#inspector .insp-head .diff-link')
+        page.wait_for_selector('.diff-file')
+        page.click('.diff-source:has-text("attempt 1")')
+        page.wait_for_function(f"() => location.hash.endsWith('/diff/{F.READER_QA1}')")
+        page.wait_for_selector('.diff-pin .diff-finding.sev-P1')
+        self.assertIn('line 42', page.text_content('.diff-pin'))
+        page.wait_for_selector('.diff-file-findings:has-text("outside the changed lines")')
+        self.assertFalse(page.is_visible('.stage-row'))
+        page.click('.diff-close')
+        page.wait_for_function("() => location.hash.endsWith('/tasks/reader') && document.getElementById('diff-view').hidden")
+        self.assertTrue(page.is_visible('.stage-row'))
+        self.assertClean(page)
+
+    def test_fractal_child_tasks_show_in_the_inspector_with_their_diffs(self):
+        page = self.open(cdn=False)
+        page.goto(self.url + f'#/runs/{self.key}/tasks/reader')
+        page.wait_for_selector('#inspector .fractal-tree li')
+        self.assertEqual(page.locator('#inspector .fractal-tree li').count(), 4)
+        self.assertIn('split into 3', page.text_content('#inspector .fractal-tree'))
+        page.click('#inspector .fractal-tree a:text-is("ui")')
+        page.wait_for_function("() => location.hash.endsWith('/tasks/reader/fractal/ui')")
+        page.wait_for_selector('#inspector .insp-head .diff-link')
+        self.assertIn('Add accessible status labels', page.text_content('#inspector'))
+        page.click('#inspector .insp-head .diff-link')
+        page.wait_for_selector('.diff-file')
+        self.assertIn('candidate.diff', page.text_content('.diff-meta'))
         self.assertClean(page)
 
     def test_quick_jump_finds_a_task_and_opens_it(self):

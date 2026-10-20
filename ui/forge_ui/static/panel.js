@@ -48,6 +48,8 @@ window.ForgePanel = (() => {
     return a;
   }
   function muted(parent, text) { parent.append(el('p', text, 'muted')); }
+  // a link into the diff viewer (ctx.diffHash is absent where there is no viewer)
+  function diffLink(ctx, text, spec, cls = 'diff-link') { if (!ctx.diffHash) return null; const a = el('a', text, cls); a.href = ctx.diffHash(spec); return a; }
   // a lazy resource: returns cached data, or starts the fetch and re-renders when it lands
   function lazy(ctx, path, fresh) {
     const c = cache.get(path);
@@ -183,7 +185,9 @@ window.ForgePanel = (() => {
     if (task.verdict) chips.append(chip('review ' + task.verdict, task.verdict.toLowerCase()));
     if (task.explored) chips.append(el('span', '* explored', 'tag'));
     if (task.accepted_by) chips.append(chip('accepted over FAIL', 'nochanges'));
-    head.append(chips); host.append(head);
+    head.append(chips);
+    const dl = diffLink(ctx, solo ? 'View the diff →' : 'View its diff, findings pinned to their lines →', { kind: 'task', task: task.id, source: 'current' }); if (dl) head.append(dl);
+    host.append(head);
     if (!solo) fields(host, [['Difficulty', task.difficulty], ['Depends on', depLinks(task.deps, ctx)], ['Files', list(task.files).join('\n') || '—', true], ['Branch', task.branch, true]]);
 
     // the models: who owned it, how it was routed, what it was escalated to
@@ -220,11 +224,14 @@ window.ForgePanel = (() => {
         if (p.kind === 'shadow' && p.shadow) line.append(el('span', p.shadow.agreement === 'disagree' ? '⚑ disagrees with the primary review' : p.shadow.agreement === 'agree' ? 'agrees' : '', p.shadow.agreement === 'disagree' ? 'warn' : 'muted'));
         const fs = (e && e.findings) || (p.shadow && p.shadow.findings);
         if (fs && fs.worst) line.append(chip(`${fs.worst}×${fs[fs.worst]}`, SEV[fs.worst]));
+        if ((p.kind === 'qa' || p.kind === 'shadow') && p.exec && p.exec.id) { const a = diffLink(ctx, 'diff it read', { kind: 'task', task: task.id, source: p.exec.id }, 'diff-link small'); if (a) line.append(a); }
         box.append(line);
       }
       for (const l of tp.links.filter(l => l.kind === 'escalation' && z.parts.includes(l.to))) box.append(el('p', `escalated: ${l.label}`, 'muted'));
       as.append(box);
     }
+
+    if (run.fractal && run.fractal.enabled) fractalSection(host, ctx, task);
 
     // reviews and their findings
     const rs = section(host, 'Review findings');
@@ -283,6 +290,7 @@ window.ForgePanel = (() => {
     if (e) { chips.append(chip(RM.execStatus(e))); if (e.verdict) chips.append(chip('verdict ' + e.verdict, e.verdict.toLowerCase())); }
     head.append(chips);
     if (task) head.append(link('← task ' + task.id, ctx.hash({ kind: 'task', id: task.id }), () => ctx.onSelect({ kind: 'task', id: task.id })));
+    if (task && (role === 'qa' || role === 'dwarf')) { const a = diffLink(ctx, role === 'qa' ? 'The diff this review read →' : 'The diff its review read →', { kind: 'task', task: task.id, source: sel.exec }); if (a) head.append(a); }
     host.append(head);
     if (!e) { loading(host, entry, 'this execution'); return; }
     const ms = section(host, 'Model');
@@ -310,6 +318,80 @@ window.ForgePanel = (() => {
     if (list(d.warnings).length) details(ps, `Reader warnings (${d.warnings.length})`, d.warnings.join('\n'), `exec-${sel.exec}-warn`);
   }
 
+  /* ---------- Fractal: the child tasks a task was split into ---------- */
+  const money = v => num(v) === null ? '—' : '$' + (v < 1 ? v.toFixed(3) : v.toFixed(2));
+  const fractalPath = (run, task) => `/api/runs/${encodeURIComponent(run.key)}/tasks/${encodeURIComponent(task)}/fractal`;
+  function fractalSection(host, ctx, task) {
+    const run = ctx.run, fs = section(host, 'Fractal tree');
+    if (!run.fractal.available) { muted(fs, `Fractal ran this run, but its state cannot be read: ${run.fractal.reason || 'unavailable'}.`); return; }
+    const entry = lazy(ctx, fractalPath(run, task.id), run.updated);
+    if (loading(fs, entry, 'the Fractal tree')) return;
+    const F = entry.data;
+    if (ctx.onFractal) ctx.onFractal(task.id, F.available ? F : null);
+    if (!F.available) { muted(fs, F.reason || 'No Fractal state for this task.'); return; }
+    const st = F.state || {}, out = F.outcome || {};
+    const chips = el('div', undefined, 'chips');
+    if (st.status) chips.append(chip(st.status === 'active' ? 'RUNNING' : st.status, st.status === 'active' ? 'running' : undefined));
+    if (out.acceptance || st.acceptance) chips.append(chip('acceptance ' + (out.acceptance || st.acceptance), String(out.acceptance || '').toLowerCase() === 'pass' ? 'pass' : 'none'));
+    if (out.verification) chips.append(chip('verification ' + out.verification, out.verification === 'passed' ? 'pass' : 'none'));
+    fs.append(chips);
+    const nodes = list(F.nodes), cost = nodes.reduce((a, n) => a + (num(n.cost) || 0), 0);
+    muted(fs, `${nodes.length} node${nodes.length === 1 ? '' : 's'} · ${RM.fmtDur(st.elapsed)} · ${money(cost)} so far · click a node for its goal, decision and output`);
+    const T = RM.fractalTree(nodes), ul = el('ul', undefined, 'fractal-tree');
+    for (const n of nodes) {
+      const li = el('li', undefined, 'ft-node ft-d' + Math.min(6, (T.pos[n.id] || {}).depth || 0) + (n.reserved ? ' reserved' : ''));
+      li.append(el('i', undefined, 'led st-' + String(n.ui_status || 'unknown').toLowerCase()));
+      const target = { kind: 'fractal', task: task.id, node: n.id };
+      li.append(link(n.id, ctx.hash(target), () => ctx.onSelect(target)));
+      const bits = [n.reserved ? 'reserved' : n.status, n.difficulty, n.model, n.phase ? `${n.phase}${n.iteration ? ' #' + n.iteration : ''}` : null, num(n.cost) !== null ? money(n.cost) : null].filter(Boolean);
+      li.append(el('span', bits.join(' · '), 'muted'));
+      const dec = n.decomposition;
+      if (dec && dec.decision) li.append(el('span', dec.decision === 'split' ? `split into ${list(dec.children).length}` : dec.decision, 'tag'));
+      if (n.has_diff) { const a = diffLink(ctx, 'diff', { kind: 'fractal', task: task.id, node: n.id }, 'diff-link small'); if (a) li.append(a); }
+      if (n.goal) li.title = n.goal;
+      ul.append(li);
+    }
+    fs.append(ul);
+    if (list(F.events).length) details(fs, `Recent events (${F.events.length})`, F.events.map(e => `${time(e.at)}  ${e.kind}${e.node ? ' · ' + e.node : ''}${e.decision ? ' · ' + e.decision : ''}${e.status ? ' · ' + e.status : ''}${e.reason ? ' — ' + e.reason : ''}`).join('\n'), `fractal-${task.id}-events`);
+    if (list(F.warnings).length) details(fs, `Reader warnings (${F.warnings.length})`, F.warnings.join('\n'), `fractal-${task.id}-warn`);
+  }
+  function fractalNodeView(host, ctx, sel) {
+    const run = ctx.run, path = `${fractalPath(run, sel.task)}/nodes/${encodeURIComponent(sel.node)}`;
+    const entry = lazy(ctx, path, run.updated), n = entry.data;
+    const head = el('div', undefined, 'insp-head');
+    head.append(el('div', `Fractal node · task ${sel.task}`, 'insp-kind'), el('h2', sel.node));
+    const back = { kind: 'task', id: sel.task };
+    if (n) { const chips = el('div', undefined, 'chips'); chips.append(chip(n.reserved ? 'reserved' : n.ui_status || n.status, n.reserved ? 'none' : undefined)); if (n.decomposition && n.decomposition.decision) chips.append(el('span', n.decomposition.decision, 'tag')); head.append(chips); }
+    head.append(link('← task ' + sel.task, ctx.hash(back), () => ctx.onSelect(back)));
+    if (n && n.has_diff) { const a = diffLink(ctx, 'Its candidate diff →', { kind: 'fractal', task: sel.task, node: sel.node }); if (a) head.append(a); }
+    host.append(head);
+    if (loading(host, entry, 'this node')) return;
+    if (n.goal) host.append(el('p', n.goal));
+    fields(host, [['Parent', n.parent ? link(n.parent, ctx.hash({ kind: 'fractal', task: sel.task, node: n.parent }), () => ctx.onSelect({ kind: 'fractal', task: sel.task, node: n.parent })) : '—'],
+      ['Difficulty', n.difficulty], ['Model', n.model, true], ['Resolved', n.resolved_model, true], ['Paths', list(n.paths).join('\n') || '—', true], ['Depends on', list(n.deps).join(', ') || '—', true],
+      ['Phase', n.phase ? `${n.phase}${n.iteration ? ' · iteration ' + n.iteration : ''}` : '—'], ['Started', time(n.started_at)], ['Ended', time(n.ended_at)],
+      ['Cost', `${money(n.cost)}${n.unknown_cost_steps ? ` (+${n.unknown_cost_steps} steps of unknown cost)` : ''}`], ['Tokens', n.tokens ? `${display(n.tokens.input_tokens)} in (${display(n.tokens.cached_input_tokens)} cached) · ${display(n.tokens.output_tokens)} out` : '—']]);
+    if (n.error) host.append(el('p', n.error, 'warn'));
+    const dec = n.decomposition;
+    if (dec) {
+      const ds = section(host, 'Decomposition');
+      fields(ds, [['Decision', dec.decision], ['Phase', dec.phase], ['Attempts', dec.attempts]]);
+      if (dec.reason) ds.append(el('p', dec.reason));
+      const adm = list(dec.admission);
+      if (adm.length) {
+        const ul = el('ul', undefined, 'plain');
+        for (const a of adm) { const li = el('li'); li.append(link(a.name, ctx.hash({ kind: 'fractal', task: sel.task, node: a.name }), () => ctx.onSelect({ kind: 'fractal', task: sel.task, node: a.name })), document.createTextNode(` · ${a.difficulty || '—'} · ${a.model || '—'} — ${a.goal || ''}`)); ul.append(li); }
+        ds.append(el('p', 'Children it admitted:', 'muted'), ul);
+      }
+      if (dec.error) ds.append(el('p', dec.error, 'warn'));
+    }
+    if (list(n.decomposition_history).length > 1) details(host, `Decomposition history (${n.decomposition_history.length})`, n.decomposition_history.map(h => `${h.phase || '—'} · ${h.decision || '—'}${h.reason ? ' — ' + h.reason : ''}`).join('\n'), `fnode-${sel.task}-${sel.node}-hist`);
+    const ps = section(host, 'Output');
+    if (n.last != null) details(ps, 'Last message', n.last, `fnode-${sel.task}-${sel.node}-last`);
+    if (n.planning_last != null) details(ps, 'Planner\'s last message', n.planning_last, `fnode-${sel.task}-${sel.node}-plan`);
+    if (n.last == null && n.planning_last == null) muted(ps, 'No output yet.');
+  }
+
   function finalView(host, ctx, sel) {
     const run = ctx.run, reviews = list(run.final_reviews);
     const head = el('div', undefined, 'insp-head');
@@ -330,6 +412,7 @@ window.ForgePanel = (() => {
     fields(host, [['Reviewer', pick.spec, true], ['Threshold', pick.threshold], ['Reviewed', pick.base || pick.tip ? `${String(pick.base || '?').slice(0, 10)}..${String(pick.tip || '?').slice(0, 10)}` : '—', true],
       ['Started', time(pick.started ?? pick.at)], ['Ended', time(pick.ended)], ['Duration', RM.fmtDur(pick.duration_s)]]);
     if (pick.execution) { const s = { kind: 'execution', task: null, exec: pick.execution }; host.append(link('Model, timings and exact prompt →', ctx.hash(s), () => ctx.onSelect(s))); }
+    { const a = diffLink(ctx, 'The combined diff it read, findings pinned →', { kind: 'final', name: pick.name }); if (a) { host.append(el('br')); host.append(a); } }
     const fs = section(host, 'Findings');
     if (pick.state === 'running') muted(fs, 'The reviewer is still reading the combined diff; its findings appear here when it finishes.');
     gateLine(fs, pick.gate);
@@ -412,6 +495,7 @@ window.ForgePanel = (() => {
     if (sel.kind === 'final') return finalView(host, ctx, sel);
     if (sel.kind === 'verification') return verificationView(host, ctx);
     if (sel.kind === 'integration') return integrationView(host, ctx);
+    if (sel.kind === 'fractal') return fractalNodeView(host, ctx, sel);
     return runView(host, ctx);
   }
   return { render, cache };

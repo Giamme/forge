@@ -408,3 +408,67 @@ dialog.jump::backdrop { background: rgba(10, 12, 16, .45); }
   .top-search { min-width: 0; margin-left: 0; }
   .top-search kbd { display: none; }
 }
+
+/* the diff viewer (diffview.js): in the run view, in place of the toolbar and the stage */
+.run-view.diff-open > .run-toolbar, .run-view.diff-open > .stage-row, .run-view.diff-open > .strip-wrap { display: none; }
+.diff-view { --add: #e6f4ea; --add-ink: #1d6b35; --del: #fbe9eb; --del-ink: #9f2832; --hunk: #eef1f5; outline: none; }
+@media (prefers-color-scheme: dark) { .diff-view { --add: #17301f; --add-ink: #8fd6a2; --del: #3a1c20; --del-ink: #ff9da5; --hunk: #222a35; } }
+.diff-view[hidden] { display: none; }
+.diff-top { display: flex; align-items: baseline; gap: 12px; }
+.diff-top h2 { margin: 0; }
+.diff-close { margin-left: auto; font-size: .85rem; }
+.diff-sources { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0 6px; }
+.diff-source { display: inline-flex; align-items: center; gap: 4px; padding: 4px 10px; border: 1px solid var(--line); border-radius: 14px; color: var(--text); text-decoration: none; font-size: .84rem; background: var(--surface); }
+.diff-source[aria-current=true] { border-color: var(--accent); background: var(--selected); color: var(--accent); font-weight: 650; }
+.diff-meta { margin: 4px 0 10px; font-size: .84rem; }
+.diff-note { padding: 12px 0; }
+.diff-body { display: grid; grid-template-columns: minmax(200px, 280px) minmax(0, 1fr); gap: 16px; align-items: start; }
+.diff-files { position: sticky; top: 10px; max-height: calc(100vh - 20px); overflow: auto; border: 1px solid var(--line); border-radius: 9px; background: var(--surface); padding: 6px; }
+.diff-files ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+.diff-file-link { display: flex; align-items: center; gap: 6px; padding: 5px 8px; border-radius: 6px; color: var(--text); text-decoration: none; font-family: var(--mono); font-size: .78rem; min-width: 0; }
+.diff-file-link:hover, .diff-file-link[aria-current=true] { background: var(--selected); }
+.diff-dir { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 0 1 auto; min-width: 0; }
+.diff-body.no-files { grid-template-columns: minmax(0, 1fr); }
+.diff-base { white-space: nowrap; flex: none; max-width: 60%; overflow: hidden; text-overflow: ellipsis; }
+.diff-stat { margin-left: auto; white-space: nowrap; font-family: var(--mono); font-size: .76rem; color: var(--muted); }
+.diff-add { color: var(--add-ink); } .diff-del { color: var(--del-ink); }
+.diff-loose-link { margin-top: 6px; border-top: 1px solid var(--line); border-radius: 0; font-family: inherit; color: var(--warning-text); }
+.diff-main { min-width: 0; display: grid; gap: 14px; }
+.diff-file { border: 1px solid var(--line); border-radius: 9px; background: var(--surface); overflow: hidden; scroll-margin-top: 12px; }
+.diff-file-head { display: flex; align-items: center; gap: 8px; padding: 7px 10px; background: var(--subtle); border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+.diff-path { color: var(--text); text-decoration: none; font-weight: 600; overflow-wrap: anywhere; }
+.diff-path:hover { text-decoration: underline; }
+.diff-file-findings { padding: 6px 10px; display: grid; gap: 6px; border-bottom: 1px solid var(--line); }
+.diff-scroll { overflow-x: auto; }
+.diff-table { width: 100%; border-collapse: collapse; font-family: var(--mono); font-size: .78rem; line-height: 1.45; }
+.diff-table td { padding: 0 8px; border: 0; vertical-align: top; max-width: none; min-width: 0; font-size: inherit; }
+.diff-table tr:hover { background: none; }
+.diff-table td.ln { width: 1%; min-width: 3.2em; text-align: right; color: var(--muted); user-select: none; border-right: 1px solid var(--line); }
+.diff-table td.mk { width: 1%; padding: 0 2px 0 8px; user-select: none; color: var(--muted); }
+.diff-table td.code { white-space: pre; overflow-wrap: normal; }
+.diff-line.add { background: var(--add); } .diff-line.add td.mk, .diff-line.add td.code { color: var(--add-ink); }
+.diff-line.del { background: var(--del); } .diff-line.del td.mk, .diff-line.del td.code { color: var(--del-ink); }
+.diff-line.meta td.code { color: var(--muted); font-style: italic; }
+.diff-hunk td { background: var(--hunk); color: var(--muted); padding: 3px 10px; white-space: pre; }
+.diff-pin > td { padding: 6px 10px 6px 7.4em; background: var(--surface); font-family: system-ui, sans-serif; font-size: .84rem; white-space: normal; }
+.diff-finding { border: 1px solid var(--line); border-left: 4px solid var(--st, var(--line)); border-radius: 7px; padding: 6px 10px; background: var(--bg); max-width: 900px; scroll-margin: 80px; }
+.diff-finding.sev-P0 { --st: #ae2b36; } .diff-finding.sev-P1 { --st: #a2336f; } .diff-finding.sev-P2 { --st: #985008; } .diff-finding.sev-P3 { --st: #725389; }
+.diff-finding.flash { box-shadow: 0 0 0 3px var(--accent); }
+.diff-finding-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: .78rem; }
+.diff-finding p { margin: 4px 0 0; overflow-wrap: anywhere; }
+.diff-finding details { border: 0; padding: 2px 0 0; font-size: .8rem; }
+.diff-more { margin: 10px; }
+.diff-loose { border: 1px solid var(--line); border-radius: 9px; padding: 10px 12px; display: grid; gap: 8px; background: var(--surface); }
+.diff-loose h3 { margin: 0; font-size: .78rem; text-transform: uppercase; letter-spacing: .09em; color: var(--muted); }
+.diff-link { display: inline-block; margin-top: 6px; font-size: .86rem; }
+.diff-link.small { margin: 0 0 0 auto; font-size: .78rem; }
+@media (max-width: 900px) { .diff-body { grid-template-columns: minmax(0, 1fr); } .diff-files { position: static; max-height: 240px; } .diff-pin > td { padding-left: 10px; } }
+
+/* Fractal child tasks in the inspector (panel.js) */
+.fractal-tree { list-style: none; margin: 8px 0; padding: 0; display: grid; gap: 3px; }
+.ft-node { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; font-size: .86rem; padding-left: 0; }
+.ft-node > a { font-family: var(--mono); font-weight: 600; }
+.ft-node.reserved > a { font-weight: 400; color: var(--muted); }
+.ft-node .muted { font-size: .78rem; }
+.ft-d1 { padding-left: 16px; } .ft-d2 { padding-left: 32px; } .ft-d3 { padding-left: 48px; } .ft-d4 { padding-left: 64px; } .ft-d5 { padding-left: 80px; } .ft-d6 { padding-left: 96px; }
+.ft-node:not(.ft-d0) { border-left: 1px solid var(--line); margin-left: 4px; }
