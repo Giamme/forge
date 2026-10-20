@@ -189,6 +189,8 @@ fi
 
 # The dispatches see a review snapshot, not the repo, so the run dir names it for the dataset.
 [ "$DRY" = 1 ] || printf '%s\n' "$REPO" > "$RUN/repo"
+# Every real run, --ui or not: forge-ui's view of this repo's runs reads the registry.
+[ "$DRY" = 1 ] || forge_ui_register "$RUN"
 # Recorded before any dispatch: forge-ui opens this dir immediately, and a re-run
 # that dies early must not keep showing the previous invocation's verdict.
 if [ "$DRY" != 1 ]; then

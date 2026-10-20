@@ -213,6 +213,8 @@ do_plan() {
   [ -s "$PLAN/repo" ] || die "plan needs --repo the first time"
   REPO="$(cat "$PLAN/repo")"
   [ -s "$PLAN/run_id" ] || basename "$PLAN" | sed 's/^forge-//' > "$PLAN/run_id"
+  # Every plan, --ui or not: forge-ui's view of this repo's runs reads the registry.
+  forge_ui_register "$PLAN"
   [ "${FORGE_RIPWIRE:-}" != off ] || touch "$PLAN/no_ripwire"
   # Persist plan choices for later run and retry processes.
   [ "$NOMEM" = 1 ] && : > "$PLAN/no_memory"
@@ -1455,6 +1457,12 @@ do_run() (
   compute_waves "$PLAN"
   local REPO run_id wt_root int_wt int_br
   REPO="$(cat "$PLAN/repo")"; run_id="$(cat "$PLAN/run_id")"
+  if [ "$DRY" != 1 ]; then
+    # The concurrency limit this run was given, for forge-ui to draw; a later run rewrites it.
+    printf '%s\n' "$MAXP" > "$PLAN/max_parallel"
+    # Plan registers too; this also picks up plans made before it did.
+    forge_ui_register "$PLAN"
+  fi
   forge_fractal_parallel_run "$PLAN" "$REPO" "$DRY" ${fractal_pipeline_args[@]+"${fractal_pipeline_args[@]}"} || return $?
   # Durable, beside the repo — never TMPDIR. A temp worktree root has destroyed
   # real work here before: isolated worktrees are never pushed, so when the root

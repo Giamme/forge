@@ -24,6 +24,7 @@ sys.path.insert(0, str(ROOT / 'scripts'))  # forge_fractal, for the Fractal repl
 
 from forge_ui import build_id  # noqa: E402
 from forge_ui.reader import run_key  # noqa: E402
+import forge_registry  # noqa: E402
 
 LAUNCHER = ROOT / 'scripts/forge-ui.py'
 FIXTURES = ROOT / 'ui/tests/fixtures'
@@ -434,10 +435,19 @@ class UiRunnerTests(unittest.TestCase):
     def setUp(self):
         self.setUp_forge()
         self.state = self.root / 'state'
-        self.env.update(XDG_STATE_HOME=str(self.state), FORGE_UI_BROWSER='off', FORGE_UI_PORT='0',
-                        FORGE_UI_IDLE_S='120')
+        self.config = self.root / 'config'  # private: every run now registers itself there
+        self.env.update(XDG_STATE_HOME=str(self.state), XDG_CONFIG_HOME=str(self.config), FORGE_UI_BROWSER='off',
+                        FORGE_UI_PORT='0', FORGE_UI_IDLE_S='120')
+        self.env.pop('FORGE_RUN_REGISTRY', None)
         self.addCleanup(self._stop_server)
         self.run_dir = self.root / 'solo'
+
+    def registered(self):
+        """The run dirs forge's run registry holds for self.repo."""
+        path = self.config / 'forge/runs' / (forge_registry.repo_key(self.repo) + '.txt')
+        if not path.is_file():
+            return []
+        return [x for x in path.read_text().splitlines() if x and not x.startswith('#')]
 
     def server_json(self):
         return json.loads((self.state / 'forge/ui/server.json').read_text())
@@ -543,6 +553,69 @@ class UiRunnerTests(unittest.TestCase):
         self.assertIn('--ui ignored', dry_out)
         self.assertFalse((self.state / 'forge/ui').exists())
         self.assertNotIn('forge-ui:', out + no.stdout + dry_out)
+
+    # --- the run registry: every run, --ui or not ------------------------------------------
+    # forge-ui's view of a repo's runs reads $XDG_CONFIG_HOME/forge/runs, so a run that was
+    # never opened in the UI must still be there. Nothing about it may show in a run.
+
+    def test_a_plain_plan_registers_its_plan_dir(self):
+        plan = self.plan()
+        self.assertEqual(self.registered(), [str(plan.resolve())])
+        self.assertFalse((self.state / 'forge/ui').exists())  # registering is not starting the UI
+
+    def test_a_plain_solo_run_registers_its_run_dir_and_a_dry_run_does_not(self):
+        rc, out = self.solo('--dry-run')
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self.registered(), [])
+        self.assertFalse((self.config / 'forge/runs').exists(), out)
+        rc, out = self.solo()
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self.registered(), [str(self.run_dir.resolve())])
+        self.assertFalse((self.state / 'forge/ui').exists())
+
+    def test_forge_run_registry_off_keeps_a_run_out_of_the_registry(self):
+        self.env['FORGE_RUN_REGISTRY'] = 'off'
+        self.plan()
+        rc, out = self.solo()
+        self.assertEqual(rc, 0, out)
+        self.assertFalse((self.config / 'forge/runs').exists())
+
+    def test_an_unwritable_registry_never_changes_a_plan_or_a_solo_run(self):
+        plan = self.plan()
+        normal = self.run_script('forge-parallel.sh', 'plan', plan, '--repo', self.repo, '--no-memory')
+        self.assertEqual(normal.returncode, 0, normal.stdout)
+        rc, out = self.solo()
+        self.assertEqual(rc, 0, out)
+        verdict = (self.run_dir / 'verdict').read_text()
+
+        self.git('clean', '-fdq')  # the dwarf's file: a no-change solo run, and a dirty-tree warning from plan
+        shutil.rmtree(self.run_dir)
+
+        shutil.rmtree(self.config)
+        self.config.write_text('a file where the config dir should be')
+        broken = self.run_script('forge-parallel.sh', 'plan', plan, '--repo', self.repo, '--no-memory')
+        self.assertEqual((broken.returncode, broken.stdout), (normal.returncode, normal.stdout))
+        rc, broken_out = self.solo()
+        self.assertEqual((rc, (self.run_dir / 'verdict').read_text()), (0, verdict), broken_out)
+        for text in (broken.stdout, broken_out):
+            self.assertNotIn('Traceback', text)
+            self.assertNotIn('registry', text)
+
+    def test_run_records_max_parallel_and_registers_plans_made_before_plan_did(self):
+        plan = self.plan()
+        registry = self.config / 'forge/runs' / (forge_registry.repo_key(self.repo) + '.txt')
+        registry.unlink()  # as if an older forge had made the plan
+
+        dry = self.run_script('forge-parallel.sh', 'run', plan, '--max-parallel', '2', '--dry-run')
+        self.assertEqual(dry.returncode, 0, dry.stdout)
+        self.assertFalse((plan / 'max_parallel').exists())
+        self.assertEqual(self.registered(), [])
+
+        result = self.run_script('forge-parallel.sh', 'run', plan, '--max-parallel', '2')
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertEqual((plan / 'max_parallel').read_text(), '2\n')
+        self.assertEqual(self.registered(), [str(plan.resolve())])
+        self.assertEqual(sorted(self.calls()), ['dwarf', 'dwarf', 'qa', 'qa'])
 
     @unittest.skipUnless(os.environ.get('FORGE_TEST_FRACTAL_RUNTIME') or (Path.home() / '.local/state/forge/fractal/runtime').is_dir(),
                          'Fractal is not installed (or set FORGE_TEST_FRACTAL_RUNTIME)')
