@@ -171,3 +171,39 @@ test('empty and odd runs never throw', () => {
   }
   assert.equal(RM.fmtDur(3725), '1h02m'); assert.equal(RM.fmtDur(65), '1m05s'); assert.equal(RM.fmtDur(null), '—');
 });
+
+test('integration runs only while a task does; a finished run with an unmerged task is blocked', () => {
+  assert.equal(RM.integrationStatus(['MERGED', 'MERGED', 'FAIL']), 'BLOCKED');
+  assert.equal(RM.integrationStatus(['MERGED', 'RUNNING']), 'RUNNING');
+  assert.equal(RM.integrationStatus(['MERGED', 'MERGED']), 'MERGED');
+  assert.equal(RM.integrationStatus(['MERGED', 'PENDING']), 'PENDING');
+  const r = run(); r.tasks[2].status = 'FAIL'; r.tasks[3].status = 'BLOCKED'; r.tasks[4].status = 'MERGED';
+  assert.equal(RM.finishState(r).integration.status, 'BLOCKED');
+});
+
+test('a shadow review without shadow.status still runs; a timed-out one is not running', () => {
+  assert.equal(RM.shadowStatus({ status: null }), 'RUNNING');
+  assert.equal(RM.shadowStatus({ status: 'timeout' }), 'TIMEOUT');
+  assert.equal(RM.shadowStatus({ status: 'error' }), 'ERROR');
+  assert.equal(RM.shadowStatus({ status: 'done', verdict: 'PASS' }), 'PASS');
+});
+
+test('the projection queues BLOCKED and INFRA tasks and merges a saved PASS first, as forge-schedule does', () => {
+  const r = run();
+  r.tasks[2].status = 'PASS';                            // graph passed and waits to be merged
+  r.tasks[2].executions = r.tasks[2].executions.map(e => ({ ...e, state: 'done', exit_code: 0, ended: T0 + 500 }));
+  r.tasks[3].status = 'BLOCKED';                         // server: blocked last time, its deps are done now
+  r.tasks[4].status = 'INFRA';
+  const p = RM.projectSchedule(r, { now: T0 + 600, maxParallel: 3 });
+  assert.ok(p.server && p.server.ghost && p.server.start === T0 + 600, 'server starts now');
+  assert.ok(p.docs && p.docs.ghost, 'an INFRA stop is dispatched again');
+  assert.equal(p.graph, undefined, 'a PASS is merged, not run again');
+});
+
+test('a live execution model keeps its time axis while every block still fits', () => {
+  const X1 = RM.execModel(run(), { now: T0 + 400 });
+  const X2 = RM.execModel(run(), { now: T0 + 402, scale: { t0: X1.t0, t1: X1.t1 } });
+  assert.equal(X2.t1, X1.t1); assert.equal(X2.k, X1.k);
+  const X3 = RM.execModel(run(), { now: X1.t1 + 10, scale: { t0: X1.t0, t1: X1.t1 } });
+  assert.ok(X3.t1 > X1.t1, 'a block past the axis rescales it');
+});

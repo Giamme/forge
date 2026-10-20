@@ -392,7 +392,7 @@ export async function createStage(host, cb = {}) {
   }
 
   /* ---------- exec: attempts on wall-clock time ---------- */
-  function execSig(X) { return JSON.stringify([X.items.map(i => [i.id, i.lane, i.ghost ? 1 : 0, i.segs.length]), X.extra.map(e => e.id), X.lanes, Math.round(X.k * 1e4)]); }
+  function execSig(X) { return JSON.stringify([X.items.map(i => [i.id, i.lane, i.ghost ? 1 : 0, i.segs.length]), X.extra.map(e => e.id), X.lanes, X.t0, X.t1]); }
   function buildExec(g) {
     const X = RM.execModel(st.run, { now: nowSec(), ghosts: st.overlay.ghosts }); st.exec = X;
     st.execSig = execSig(X);
@@ -764,8 +764,9 @@ export async function createStage(host, cb = {}) {
     if (st.view !== 'run') return false;
     if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
       const ids = order(); if (!ids.length) return true;
-      const cur = st.sel && (st.sel.kind === 'task' ? st.sel.id : st.sel.task), i = ids.indexOf(cur), d = e.key === 'ArrowRight' ? 1 : -1;
-      cb.onSelect && cb.onSelect({ kind: 'task', id: ids[(i + d + ids.length) % ids.length] }); return true;
+      const cur = st.sel && (st.sel.kind === 'task' ? st.sel.id : st.sel.task), d = e.key === 'ArrowRight' ? 1 : -1;
+      const i = ids.indexOf(cur), next = i < 0 ? (d > 0 ? 0 : ids.length - 1) : (i + d + ids.length) % ids.length;
+      cb.onSelect && cb.onSelect({ kind: 'task', id: ids[next] }); return true;
     }
     if (e.key === 'e' || e.key === 'E') { cb.onMode && cb.onMode(st.mode === 'plan' ? 'exec' : 'plan'); return true; }
     return false;
@@ -838,7 +839,7 @@ export async function createStage(host, cb = {}) {
           const sig = JSON.stringify([finishInfo(el.id), el.status]); if (sig !== el.sig) { el.sig = sig; redraw(el); }
         }
       }
-      const X = RM.execModel(run, { now: nowSec(), ghosts: st.overlay.ghosts });
+      const X = RM.execModel(run, { now: nowSec(), ghosts: st.overlay.ghosts, scale: st.exec && { t0: st.exec.t0, t1: st.exec.t1 } });
       // the hidden view is rebuilt when it is next shown, not on every poll that changes its shape
       if (execSig(X) !== st.execSig) { if (st.mode === 'exec' || st.fade) rebuildExec(); else st.execDirty = true; }
       else {

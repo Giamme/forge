@@ -68,7 +68,20 @@ window.ForgePanel = (() => {
   }
 
   /* ---------- findings: P0–P3, confirmed or plausible, with where and what ---------- */
+  // FindingsSummary from a list of Findings (the lazy endpoints) or as given (the summaries)
+  function countsOf(f) {
+    if (!Array.isArray(f)) return f || null;
+    const c = { P0: 0, P1: 0, P2: 0, P3: 0, unlabelled: 0, plausible: 0, confirmed: 0, worst: null };
+    for (const x of f) {
+      if (x.status === 'PLAUSIBLE') { c.plausible++; continue; }
+      if (x.status === 'UNSTATED' || !x.severity) { c.unlabelled++; if (x.status === 'CONFIRMED') c.confirmed++; continue; }
+      c.confirmed++; c[x.severity]++;
+    }
+    c.worst = ['P0', 'P1', 'P2', 'P3'].find(k => c[k]) || null;
+    return c;
+  }
   function findingCounts(parent, f) {
+    f = countsOf(f);
     const row = el('div', undefined, 'chips');
     if (!f) { row.append(el('span', 'no findings parsed', 'muted')); parent.append(row); return; }
     let any = false;
@@ -203,7 +216,7 @@ window.ForgePanel = (() => {
         const label = `${p.label.toLowerCase()} · ${p.spec || '—'}`;
         const target = p.exec && p.exec.id ? { kind: 'execution', task: task.id, id: task.id, exec: p.exec.id, shadow: p.kind === 'shadow' } : null;
         line.append(target ? link(label, ctx.hash(target), () => ctx.onSelect(target)) : el('span', label), chip(p.status));
-        if (e) line.append(el('span', `${RM.fmtDur(e.duration_s ?? (e.state === 'running' ? now - e.started : null))}${e.state === 'running' && e.phase ? ' · ' + e.phase : ''}`, 'muted'));
+        if (e) line.append(el('span', `${RM.fmtDur(e.duration_s ?? (e.state === 'running' && num(e.started) !== null ? now - e.started : null))}${e.state === 'running' && e.phase ? ' · ' + e.phase : ''}`, 'muted'));
         if (p.kind === 'shadow' && p.shadow) line.append(el('span', p.shadow.agreement === 'disagree' ? '⚑ disagrees with the primary review' : p.shadow.agreement === 'agree' ? 'agrees' : '', p.shadow.agreement === 'disagree' ? 'warn' : 'muted'));
         const fs = (e && e.findings) || (p.shadow && p.shadow.findings);
         if (fs && fs.worst) line.append(chip(`${fs.worst}×${fs[fs.worst]}`, SEV[fs.worst]));
@@ -226,7 +239,8 @@ window.ForgePanel = (() => {
         const h = el('div', undefined, 'attempt-head');
         h.append(el('strong', `${r.kind} review · attempt ${display(r.attempt)}`), el('span', r.spec || '', 'mono'), chip(r.verdict || r.state || 'unknown'));
         box.append(h);
-        findingsList(box, r.findings, `task-${task.id}-r${i}`);
+        if (r.state === 'running') muted(box, 'Still reviewing; findings appear when it finishes.');
+        else findingsList(box, r.findings, `task-${task.id}-r${i}`);
         rs.append(box);
       });
     }
@@ -276,13 +290,16 @@ window.ForgePanel = (() => {
     const ts = section(host, 'Timings');
     const running = e.state === 'running';
     fields(ts, [['Started', time(e.started)], ['Ended', running ? 'running' : time(e.ended)], ['Duration', RM.fmtDur(e.duration_s ?? (running && num(e.started) !== null ? now - e.started : null))],
-      ['Phase', running ? `${display(e.phase)} for ${RM.fmtDur(num(e.phase_started) !== null ? now - e.phase_started : null)}` : e.phase], ['Tokens', tokens(e.tokens)],
+      ['Phase', running ? `${display(e.phase)}${num(e.phase_started) !== null ? ' for ' + RM.fmtDur(now - e.phase_started) : ''}` : e.phase], ['Tokens', tokens(e.tokens)],
       ['Prompt size', e.prompt_bytes != null ? `${e.prompt_bytes} bytes` : '—'], ['Exit', e.exit_code], ['Infra', e.infra_class], ['Timed out', e.timed_out ? 'yes' : undefined]]);
     phaseBar(ts, e.phases, e.duration_s);
     if (role === 'qa') {
       const rs = section(host, 'Findings');
-      findingCounts(rs, e.findings);
-      if (entry.data) findingsList(rs, entry.data.findings, `exec-${sel.exec}`); else loading(rs, entry, 'the findings');
+      if (running) muted(rs, 'Still reviewing; findings appear when it finishes.');
+      else {
+        findingCounts(rs, entry.data ? entry.data.findings : e.findings);
+        if (entry.data) findingsList(rs, entry.data.findings, `exec-${sel.exec}`); else loading(rs, entry, 'the findings');
+      }
     }
     const ps = section(host, 'Prompt and output');
     if (loading(ps, entry, 'the prompt')) return;
@@ -385,7 +402,7 @@ window.ForgePanel = (() => {
     host.replaceChildren();
     const run = ctx.run, sel = ctx.sel;
     if (!run) return;
-    const close = sel ? link('Close ✕', ctx.hash(null), () => ctx.onSelect(null)) : null;
+    const close = sel && !(run.kind === 'solo' && sel.kind === 'task') ? link('Close ✕', ctx.hash(null), () => ctx.onSelect(null)) : null;
     if (close) { close.className = 'insp-close'; host.append(close); }
     const tid = sel && (sel.kind === 'task' ? sel.id : sel.kind === 'execution' ? sel.task : null);
     const task = tid ? list(run.tasks).find(t => t.id === tid) : run.kind === 'solo' && sel && sel.kind === 'execution' ? list(run.tasks)[0] : null;

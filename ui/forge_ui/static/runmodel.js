@@ -204,11 +204,19 @@
   }
   const TASK_H = { low: 42, medium: 54, high: 66 };
   const planSize = m => m.kind === 'task' ? [230, 168, TASK_H[String(m.task.difficulty || '').toLowerCase()] || 50] : [210, 150, 46];
+  // Integration is running only while a task is; a finished run with a task that never merged is blocked there.
+  function integrationStatus(statuses) {
+    if (!statuses.length) return 'PENDING';
+    if (statuses.some(s => s === 'RUNNING')) return 'RUNNING';
+    if (statuses.every(s => s === 'MERGED')) return 'MERGED';
+    if (statuses.some(s => s === 'PENDING' || s === 'PASS')) return 'PENDING';
+    return 'BLOCKED';
+  }
   function finishState(run) {
     const fr = run.final_review, v = run.verification, ig = run.integration;
     const tasks = list(run.tasks), merged = tasks.filter(t => t.status === 'MERGED').length;
     return {
-      integration: { status: !tasks.length ? 'PENDING' : merged === tasks.length ? 'MERGED' : tasks.some(t => t.status === 'RUNNING') || merged ? 'RUNNING' : 'PENDING',
+      integration: { status: integrationStatus(tasks.map(t => t.status)),
         merged, total: tasks.length, base: ig && ig.base || null, accepted: ig && ig.accepted || null },
       verification: { status: v && v.status ? String(v.status).toUpperCase() : 'PENDING', command: v && v.command || null, runs: list(v && v.runs).length },
       final: { status: !fr ? (run.settings && run.settings.final_qa ? 'PENDING' : 'NONE') : fr.state === 'running' ? 'RUNNING' : fr.state === 'infra' ? 'INFRA' : fr.verdict || 'UNKNOWN',
@@ -237,6 +245,8 @@
   }
 
   /* ---------- inside a task: one zone per attempt, its dwarf, its review and the shadow reviews ---------- */
+  // shadow.status is written only when a shadow review ends (done, timeout, error, …): none means it still runs
+  const shadowStatus = s => s.verdict || (s.status == null ? 'RUNNING' : s.status === 'done' ? 'UNKNOWN' : s.status === 'timeout' || s.status === 'overtime' ? 'TIMEOUT' : 'ERROR');
   function taskParts(task) {
     const execs = list(task && task.executions);
     const byAttempt = new Map();
@@ -247,7 +257,7 @@
     }
     for (const s of list(task && task.shadow)) {
       put(s.attempt, { id: 'shadow:' + s.attempt + '-' + s.k, kind: 'shadow', shadow: s, exec: s.execution ? { id: s.execution } : null,
-        status: s.verdict || (s.status === 'done' ? 'UNKNOWN' : s.status ? 'RUNNING' : 'PENDING'), label: 'SHADOW', spec: s.spec || null, attempt: s.attempt });
+        status: shadowStatus(s), label: 'SHADOW', spec: s.spec || null, attempt: s.attempt });
     }
     if (!byAttempt.size) {
       put(1, { id: 'plan:dwarf', kind: 'dwarf', planned: true, status: 'PENDING', label: 'DWARF', spec: task && task.dwarf || null, attempt: 1 });
@@ -337,13 +347,14 @@
     const merged = new Map(), active = new Map(), out = {};
     for (const t of tasks) {
       if (t.status === 'MERGED') merged.set(t.id, num(t.merged_at) || clock);
+      else if (t.status === 'PASS') merged.set(t.id, clock);   // the scheduler merges a saved PASS before anything starts
       else if (t.status === 'RUNNING') {
         const tl = taskTimes(t, null, clock);
         const end = Math.max(clock + 30, (tl.first !== null ? tl.first : clock) + est(t));
         active.set(t.id, end); out[t.id] = { start: tl.first !== null ? tl.first : clock, end, running: true };
       }
     }
-    const pending = tasks.filter(t => !merged.has(t.id) && !active.has(t.id) && (t.status === 'PENDING' || t.status === 'PASS' && !list(t.executions).length)).map(t => t.id);
+    const pending = tasks.filter(t => !merged.has(t.id) && !active.has(t.id) && ['PENDING', 'BLOCKED', 'INFRA'].includes(t.status || 'PENDING')).map(t => t.id);
     let guard = tasks.length * 4 + 8;
     while ((pending.length || active.size) && guard-- > 0) {
       for (const id of pending.slice()) {
@@ -390,7 +401,9 @@
     }
     return items;
   }
-  function execModel(run, { now = null, ghosts = true, maxParallel = null } = {}) {
+  // scale: {t0, t1} of a previous model, kept while every block still fits inside it, so a live run does not
+  // change the time axis (and so every block) on each poll
+  function execModel(run, { now = null, ghosts = true, maxParallel = null, scale = null } = {}) {
     const items = execItems(run, now);
     const cap = Math.max(1, num(maxParallel) || num(run && run.settings && run.settings.max_parallel) || 3);
     const live = items.some(i => i.running) || list(run && run.tasks).some(t => t.status === 'RUNNING');
@@ -405,9 +418,14 @@
     }
     const all = items.concat(extra);
     if (!all.length) return { items: [], extra: [], lanes: 0, cap, overLimit: false, t0: null, t1: null, k: 1, px: 900, py: 300, ruler: [], live, nowX: null };
-    const t0 = Math.min(...all.map(i => i.start));
+    let t0 = Math.min(...all.map(i => i.start));
     let t1 = Math.max(...all.map(i => i.end), num(now) !== null && live ? now : -Infinity);
-    if (live) t1 += Math.max(120, (t1 - t0) * 0.25);   // headroom, so growing blocks do not rescale every poll
+    if (scale && num(scale.t0) === t0 && num(scale.t1) !== null && t1 <= scale.t1) t1 = scale.t1;
+    else if (live) {
+      // headroom, rounded to a whole step, so growing blocks do not rescale every poll
+      const raw = Math.max(60, (t1 - t0) * 1.25 + 120), unit = [60, 300, 600, 1800, 3600, 7200, 21600].find(u => raw / u <= 12) || 21600;
+      t1 = t0 + Math.ceil(raw / unit) * unit;
+    }
     const span = Math.max(60, t1 - t0);
     const W = clamp(260 * Math.sqrt(Math.max(1, items.length)), 900, 2600), k = W / span;
     // greedy interval partitioning: the real attempts first (in start order), then the projected ones
@@ -512,8 +530,7 @@
     const vs = list(run && run.timeline && run.timeline.verifications).filter(v => num(v.started) !== null && v.started <= t);
     const lv = vs.pop();
     const verification = !lv ? 'PENDING' : num(lv.ended) !== null && lv.ended <= t ? (lv.exit_code === 0 ? 'PASS' : 'FAIL') : 'RUNNING';
-    const merged = Object.values(tasks).filter(s => s.status === 'MERGED').length, total = Object.keys(tasks).length;
-    return { t, tasks, final, verification, integration: total && merged === total ? 'MERGED' : merged ? 'RUNNING' : 'PENDING' };
+    return { t, tasks, final, verification, integration: integrationStatus(Object.values(tasks).map(s => s.status)) };
   }
   function timeRange(run, now) {
     const s = [], e = [];
@@ -545,7 +562,7 @@
     return JSON.stringify([list(task && task.executions).filter(e => e.role === 'dwarf' || e.role === 'qa').map(e => e.id), list(task && task.shadow).map(s => [s.attempt, s.k]), list(task && task.escalations).length]);
   }
 
-  return { plate, cells, blockSize, liveNow, runState, execStatus, matchRun, filterOptions, atlasModel, columns, planModel, finishState, taskParts,
+  return { plate, cells, blockSize, liveNow, integrationStatus, shadowStatus, runState, execStatus, matchRun, filterOptions, atlasModel, columns, planModel, finishState, taskParts,
     taskTimes, metricValue, overlap, projectSchedule, execModel, criticalPath, concurrency, stateAt, timeRange, events, structureKey, innerKey,
     fmtDur, alias, basename, weight };
 });

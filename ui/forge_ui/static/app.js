@@ -46,6 +46,10 @@ window.ForgeUI = (() => {
     const d = decodeURIComponent, rest = m[2] || '';
     let sel = null, r;
     if ((r = rest.match(/^\/tasks\/([^/]+)\/executions\/([^/]+)\/?$/))) sel = { kind: 'execution', task: d(r[1]), id: d(r[1]), exec: d(r[2]) };
+    if (sel && sel.kind === 'execution' && sel.task) {
+      const run = state.cache.get(d(m[1]))?.data, t = run && list(run.tasks).find(x => x.id === sel.task);
+      if (t && list(t.shadow).some(x => x.execution === sel.exec)) sel.shadow = true;
+    }
     else if ((r = rest.match(/^\/tasks\/([^/]+)\/?$/))) sel = { kind: 'task', id: d(r[1]) };
     else if ((r = rest.match(/^\/executions\/([^/]+)\/?$/))) sel = { kind: 'execution', task: null, exec: d(r[1]) };
     else if ((r = rest.match(/^\/final-review(?:\/([^/]+))?\/?$/))) sel = { kind: 'final', name: r[1] ? d(r[1]) : null };
@@ -234,6 +238,8 @@ window.ForgeUI = (() => {
       onMode: mode => setMode(mode),
     })).then(stage => {
       state.stage = stage; state.stageLoading = false;
+      stage.setOverlay(state.overlay);
+      stage.setReplay(state.replay);
       renderMain();
     }, err => {
       state.stageLoading = false;
@@ -547,6 +553,7 @@ window.ForgeUI = (() => {
     const main = $('main');
     if (main.dataset.view !== 'run' || main.dataset.run !== run.key) {
       stopPlay(); state.replay = null;
+      if (state.stage) state.stage.setReplay(null);
       main.dataset.view = 'run'; main.dataset.run = run.key;
       main.replaceChildren();
       const head = el('section', undefined, 'run-header'); head.id = 'run-head'; main.append(head);
