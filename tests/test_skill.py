@@ -2,6 +2,7 @@ import dataset_isolation  # noqa: F401  keeps forge's dataset and config out of 
 import json
 from pathlib import Path
 import re
+import subprocess
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -21,3 +22,30 @@ class SkillChecks(unittest.TestCase):
             self.assertTrue(case['request'])
             self.assertTrue(case['expected'])
             self.assertIsInstance(case['dispatch'], bool)
+
+
+class LauncherTests(unittest.TestCase):
+    """`./forge`, the repository-local launcher: asking for help is not a usage error."""
+
+    def forge(self, *args):
+        return subprocess.run([str(ROOT / 'forge'), *args], capture_output=True, text=True, timeout=60,
+                              stdin=subprocess.DEVNULL)
+
+    def test_help_succeeds_on_stdout_and_mistakes_fail_on_stderr(self):
+        for args, code in ((['--help'], 0), (['-h'], 0), (['help'], 0), ([], 2), (['frobnicate'], 2)):
+            with self.subTest(args):
+                result = self.forge(*args)
+                self.assertEqual(result.returncode, code, result.stderr)
+                shown, quiet = (result.stdout, result.stderr) if code == 0 else (result.stderr, result.stdout)
+                self.assertIn('usage: forge', shown)
+                self.assertEqual(quiet, '')
+        self.assertIn('frobnicate', self.forge('frobnicate').stderr, 'the error names what was typed')
+
+    def test_every_command_the_help_lists_is_routed(self):
+        listed = re.findall(r'^  ([a-z]+) ', self.forge('--help').stdout, re.M)
+        self.assertTrue(listed)
+        for name in listed:
+            with self.subTest(name):
+                result = self.forge(name, '--help')
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn(f'usage: forge {name}', result.stdout)

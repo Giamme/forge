@@ -1,6 +1,22 @@
 #!/usr/bin/env bash
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+usage() {
+  printf '%s\n' \
+    'usage: forge <command> [args]' \
+    '' \
+    'commands:' \
+    '  fractal   opt-in Fractal execution: install, doctor, runs, status, tree, logs, open, report, ...' \
+    '  jev       optional Jev advice: setup, status, doctor, enable, disable, backtest' \
+    '  dataset   every run'"'"'s inputs and outcomes: status, dump, import, export, outcomes, ...' \
+    '  ui        forge-ui, the run viewer: open [DIR], status, stop' \
+    '' \
+    'Run `forge <command> --help` for its options.' \
+    'Runs start from your agent harness (/forge "<goal>" --dwarf <model>); see README.md.' \
+    "Update forge with: bash $ROOT/scripts/forge-update.sh"
+}
+
 case "${1:-}" in
   fractal)
     shift
@@ -18,11 +34,17 @@ case "${1:-}" in
     shift
     exec python3 "$ROOT/scripts/forge-ui.py" "$@"
     ;;
+  -h|--help|help)
+    usage
+    exit 0
+    ;;
+  '')
+    usage >&2
+    exit 2
+    ;;
   *)
-    echo 'usage: forge fractal <install|doctor|runs|status|tree|activity|logs|costs|messages|config|pause|resume|stop|open|report>' >&2
-    echo 'usage: forge jev <setup|status|doctor|enable|disable|backtest>' >&2
-    echo 'usage: forge dataset <status|dump|blob|import|export|outcomes>' >&2
-    echo 'usage: forge ui <open [DIR] [--no-browser] [--port N]|status [--json]|stop>' >&2
+    printf 'forge: unknown command: %s\n\n' "$1" >&2
+    usage >&2
     exit 2
     ;;
 esac
