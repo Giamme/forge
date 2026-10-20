@@ -183,11 +183,11 @@ class RoutesTests(ServerTestCase):
         self.assertEqual(headers['cache-control'], 'no-store')
         self.assertEqual(headers['x-content-type-options'], 'nosniff')
         self.assertEqual(headers['content-security-policy'], CSP)
-        self.assertEqual(__version__, '0.2.0')
+        self.assertEqual(__version__, '0.4.0')
         self.assertEqual(build_id(), _source_build_id())
         self.assertEqual(json.loads(body), {
             'app': 'forge-ui',
-            'version': '0.2.0',
+            'version': '0.4.0',
             'build': build_id(),
             'pid': os.getpid(),
         })
@@ -259,11 +259,18 @@ class RoutesTests(ServerTestCase):
             self.assertNotIn(b'secret', body)
 
     def test_head_has_headers_but_no_body(self):
-        status, headers, body = self.request('HEAD', '/app.js')
-        self.assertEqual((status, body, headers['content-length']), (200, b'', str(len(APP))))
-        status, headers, body = self.request('HEAD', '/api/runs')
-        self.assertEqual((status, body), (200, b''))
-        self.assertEqual(headers['content-length'], str(len(self.request('GET', '/api/runs')[2])))
+        # http.client never reads a HEAD response's body, so the bytes on the wire are read here.
+        port = self.server.server_address[1]
+        for path, length in (('/app.js', len(APP)), ('/api/runs', len(self.request('GET', '/api/runs')[2]))):
+            with socket.create_connection(('127.0.0.1', port), timeout=10) as sock:
+                sock.sendall(f'HEAD {path} HTTP/1.0\r\nHost: 127.0.0.1\r\n\r\n'.encode('ascii'))
+                data = b''
+                while chunk := sock.recv(4096):
+                    data += chunk
+            head, _, body = data.partition(b'\r\n\r\n')
+            self.assertRegex(head, rb'^HTTP/1\.[01] 200 ', path)
+            self.assertIn(b'\r\nContent-Length: %d\r\n' % length, head + b'\r\n', path)
+            self.assertEqual(body, b'', path)
 
     def test_other_methods_are_405_with_allow(self):
         for method in ['POST', 'PUT', 'DELETE', 'BOGUS']:

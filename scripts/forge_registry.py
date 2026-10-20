@@ -4,12 +4,18 @@
 run-dir path per line, with a ``#`` header on a new file. ``forge jev``, ``forge
 dataset import --registry`` and the forge-ui launcher all use it, so it does not
 live inside the Jev package.
+
+Run as a script, ``forge_registry.py register <run-dir>`` records a run dir from the
+shell runners (forge-ui-options.sh ``forge_ui_register``): every plan, run and solo run
+is registered, not only the ones opened with ``--ui``, because forge-ui's map of a
+repo's runs reads this registry. ``FORGE_RUN_REGISTRY=off`` turns that off.
 """
 from __future__ import annotations
 
 import hashlib
 import os
 import stat
+import sys
 from pathlib import Path
 
 
@@ -58,7 +64,7 @@ def register_run_dir(repo: Path, run_dir: Path) -> None:
             existing = [x.strip() for x in registry.read_text(errors='replace').splitlines()]
         if line in existing:
             return
-        header = [] if existing else ['# run dirs that have scored ' + str(Path(repo).resolve())]
+        header = [] if existing else ['# forge run dirs for ' + str(Path(repo).resolve())]
         # O_NONBLOCK: a FIFO with no reader fails at once (ENXIO) instead of blocking the
         # open, and anything that is not a regular file is left alone.
         fd = os.open(registry, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NONBLOCK, 0o644)
@@ -71,3 +77,63 @@ def register_run_dir(repo: Path, run_dir: Path) -> None:
     except (OSError, ValueError, RuntimeError):
         # ValueError: a NUL byte in a path; RuntimeError: a symlink loop (pathlib before 3.13)
         pass
+
+
+# A path, not a file's worth of data: the first line of <run-dir>/repo is all that is read.
+_REPO_LINE_MAX = 64 * 1024
+
+
+def _repo_of(run_dir: Path) -> Path | None:
+    """The repo named on the first line of ``<run-dir>/repo``, or None. Never blocks.
+
+    The runners write that file themselves, but a run dir is any directory a user passes,
+    so the read is as careful as forge-ui's: O_NONBLOCK so a FIFO with no writer cannot
+    hold the open, and nothing but a regular file is read (a FIFO, a device or a directory
+    named ``repo`` is ignored).
+    """
+    fd = os.open(run_dir / 'repo', os.O_RDONLY | os.O_NONBLOCK)
+    with os.fdopen(fd, 'rb') as handle:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            return None
+        line = handle.readline(_REPO_LINE_MAX).decode(errors='replace').strip()
+    # Empty, or text no path can hold, or relative: a relative repo would be resolved
+    # against whatever directory the runner happened to start in, and keyed to the wrong repo.
+    if not line or '\x00' in line or not os.path.isabs(line):
+        return None
+    return Path(line)
+
+
+def _register(run_dir_arg: str) -> None:
+    if os.environ.get('FORGE_RUN_REGISTRY', '').strip().lower() == 'off':
+        return
+    # The registry is resolved from XDG_CONFIG_HOME, which an empty or relative value turns
+    # into a path below the current directory -- for a runner, usually the user's repo.
+    # Forge does not write into the user's tree, so a registry that is not absolute is skipped.
+    if not registry_dir().is_absolute():
+        return
+    run_dir = Path(run_dir_arg).resolve()
+    repo = _repo_of(run_dir)
+    if repo is not None:
+        register_run_dir(repo, run_dir)
+
+
+def main() -> int:
+    """``register <run-dir>``: record the run dir under the repo its ``repo`` file names.
+
+    Always exits 0 and prints nothing. The runners call it on every plan, run and solo run,
+    and noting where a run lives must never fail, block, slow or change one: a missing
+    run dir, an unreadable or hostile ``repo`` file, an unwritable registry and arguments
+    it does not understand are all silently nothing. Ctrl-C is not swallowed, so an
+    interrupted runner still stops.
+    """
+    try:
+        args = sys.argv[1:]
+        if len(args) == 2 and args[0] == 'register':
+            _register(args[1])
+    except Exception:  # noqa: BLE001  -- see the docstring: nothing here may reach the run
+        pass
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

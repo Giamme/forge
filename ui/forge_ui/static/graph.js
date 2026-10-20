@@ -1,5 +1,6 @@
 /* forge-ui graph: tasks as SVG nodes in wave columns, dependencies as edges.
-   Defines window.ForgeGraph.render(container, run, {selected, onSelect}). */
+   Defines window.ForgeGraph.render(container, run, {selected, onSelect}). Colours come from style.css
+   classes (.fg-box, .fg-bar, .fg-verdict): the page CSP refuses style attributes. */
 (function () {
   'use strict';
   if (typeof window === 'undefined' || typeof document === 'undefined') return;
@@ -223,14 +224,10 @@
 
       el('rect', {
         'class': 'fg-box', x: 0, y: 0, width: NODE_W, height: NODE_H, rx: 8, ry: 8,
-        style: 'fill:var(--st, #888);fill-opacity:0.12;stroke:var(--st, #888);',
         'stroke-width': selected ? 3.5 : 1.5,
         'stroke-dasharray': t.explored ? '5 3' : 'none'
       }, g);
-      el('rect', {
-        x: 0, y: 6, width: 4, height: NODE_H - 12, rx: 2,
-        style: 'fill:var(--st, #888);'
-      }, g);
+      el('rect', { 'class': 'fg-bar', x: 0, y: 6, width: 4, height: NODE_H - 12, rx: 2 }, g);
 
       var maxPx = NODE_W - 36;
       textEl(g, ellipsize(id, maxPx, 13, 1.1), {
@@ -244,8 +241,7 @@
       if (t.verdict === 'PASS' || t.verdict === 'FAIL') {
         var pass = t.verdict === 'PASS';
         textEl(g, pass ? '✓' : '✗', {
-          x: NODE_W - 8, y: 17, 'text-anchor': 'end', 'font-size': 14, 'font-weight': 'bold',
-          style: 'fill:' + (pass ? 'var(--st, #888)' : 'currentColor') + ';'
+          'class': 'fg-verdict' + (pass ? ' fg-pass' : ''), x: NODE_W - 8, y: 17, 'text-anchor': 'end', 'font-size': 14, 'font-weight': 'bold'
         });
       }
 

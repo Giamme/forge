@@ -8,14 +8,40 @@ run goes on, with the same exit code.
 
 ## What it shows
 
-- **Run list:** every run forge has registered, newest first, with goal, repo, status counts
-  and verification status.
-- **Plan run:** tasks by wave with dependency edges, statuses, dwarf/QA models, attempts,
-  escalations, reviewer verdicts, shadow reviews, routing exploration and Clef predictions.
-- **Solo run:** one task: its status, dwarf and QA specs, attempts and the final messages.
-- It refreshes every five seconds while the tab is visible, so a run can be watched as it goes.
+- **Map of every run:** every run forge has registered, one district per repo and one block per
+  run with a lamp per task, filterable by state, repo, kind, model, age and review verdict.
+- **Run cloud:** every run at once, full screen in 3D, grouped by project, in one of five layouts
+  (helix, sphere, galaxy, timeline, constellation) as blocks or orbs. Filters narrow it to exactly
+  the runs wanted (project, state, difficulty, tasks per run, models and more), and runs can be
+  dragged anywhere; where they were dropped is remembered in that browser.
+- **Files heatmap:** which tasks planned, changed, drifted into or conflicted on which files,
+  with same-wave overlaps marked, and each file's diff a click away.
+- **Model leaderboard:** first-attempt pass rates with confidence intervals, retries, escalations,
+  timeouts, time and tokens per implementer, and verdicts, findings and shadow agreement per
+  reviewer, filterable by project, difficulty and period.
+- **Diffs with findings in place:** any task diff, the exact diff each reviewer read, or a final
+  review's combined diff, with every P0–P3 finding shown under the line it names.
+- **Fractal child tasks:** the tree a Fractal task was split into, in the inspector and above
+  the opened task in 3D, each node with its decision, cost, output and candidate diff.
+- **Export a run:** one HTML file to share that opens without forge-ui; prompts, diffs, reports
+  and local paths stay out unless chosen.
+- **Quick jump and notifications:** Ctrl K (⌘K) or `/` searches every run, task, project and
+  model; the bell tells you when a run finishes or fails, a task fails or a final review gives its
+  verdict, and can raise browser notifications while the tab is in the background.
+- **Plan run:** tasks in their planned waves with dependency cables, then the finish line:
+  integration, verification and the whole-run final review, each a node with its status. The
+  *Execution* view shows the same run on wall-clock time, one block per attempt in the lane it
+  ran in, with projected blocks for what has not started and a strip of busy slots against
+  `--max-parallel`.
+- **Opening a node** shows its attempts, dwarves and reviews, and an inspector with the prompt
+  that launched each one, the model, timings by phase, tokens, verdicts and the P0–P3 findings
+  of every review (the final review's included).
+- **Solo run:** one task: its attempts, specs, prompts and the final messages.
+- It refreshes every two seconds while something runs (five otherwise) while the tab is
+  visible, so a run can be watched as it goes. A run can also be replayed from its record.
 
-The full page description is in [ui/README.md](../ui/README.md).
+The 3D view loads three.js from cdn.jsdelivr.net when first used; offline, the page shows the
+same run in 2D. The full page description is in [ui/README.md](../ui/README.md).
 
 ## Commands
 
@@ -43,6 +69,7 @@ bash <skill_dir>/scripts/forge-solo.sh "$FORGE_RUN" --repo "$REPO" --dwarf <spec
 | `FORGE_UI_BROWSER=off` | print the link, never open a browser |
 | `FORGE_UI_PORT` | preferred port, default `8765`; `--port` wins; a taken port falls back to a free one |
 | `FORGE_UI_IDLE_S` | idle seconds before the server exits, default `14400`; `0` never |
+| `FORGE_RUN_REGISTRY=off` | runs stop registering themselves (`--ui` and `forge ui open DIR` still register the run they open) |
 
 ## One shared server
 
@@ -62,8 +89,10 @@ ${XDG_STATE_HOME:-~/.local/state}/forge/ui/
   lock            serialises launchers
 ```
 
-Opening a run dir also registers it in forge's run registry
-(`${XDG_CONFIG_HOME:-~/.config}/forge/runs/`), which is how the server finds it.
+Every plan, run and solo run registers its run dir in forge's run registry
+(`${XDG_CONFIG_HOME:-~/.config}/forge/runs/`), whether or not the UI was asked for: that is
+how the map shows all of a repo's runs. `forge-parallel.sh run` also records the
+`--max-parallel` it was given in `$PLAN/max_parallel`.
 
 ## Privacy
 
@@ -71,6 +100,10 @@ The server binds only `127.0.0.1` and serves read-only. It has **no token**: any
 the machine, under any user who can reach loopback, can read every run it knows, including
 prompts, diffs and review text from private repos. A running server keeps serving them,
 including runs that were later rerun with `--no-ui`.
+
+Every run is registered, so a running server shows every run on the machine, not only those
+opened with `--ui`. The 3D view fetches three.js from cdn.jsdelivr.net (no run data is sent;
+choose 2D in the page to never contact it).
 
 `--no-ui` and `FORGE_UI=off` only stop a *runner* from launching the server. They do not stop a
 server that is already running, do not unregister runs, and do not block `forge ui open`. To

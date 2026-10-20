@@ -5,6 +5,7 @@
 import dataset_isolation  # noqa: F401  keeps forge's dataset and config out of the developer's home
 import os
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 import threading
@@ -100,6 +101,124 @@ class RunRegistryTests(unittest.TestCase):
         # Patch the module the function looks up: forge_jev.cli only re-exports the name.
         with patch('forge_registry.runs_registry', side_effect=OSError('nope')):
             forge_registry.register_run_dir(self.repo, Path('/tmp/plan'))
+
+
+class RegisterCommandTests(unittest.TestCase):
+    """`forge_registry.py register <run-dir>`: what the runners call on every run.
+
+    It runs inside every plan, run and solo run, so whatever the run dir holds it must
+    exit 0, print nothing and return at once.
+    """
+
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        self.tmp = Path(self.dir.name)
+        self.config = self.tmp / 'config'
+        self.repo = self.tmp / 'repo'
+        self.repo.mkdir()
+        self.run_dir = self.tmp / 'plan-a'
+        self.run_dir.mkdir()
+        (self.run_dir / 'repo').write_text(str(self.repo) + '\n')
+        self.env = dict(os.environ, XDG_CONFIG_HOME=str(self.config))
+        self.env.pop('FORGE_RUN_REGISTRY', None)
+
+    def register(self, run_dir, env=None):
+        result = subprocess.run([sys.executable, '-I', str(ROOT / 'scripts/forge_registry.py'), 'register',
+                                 str(run_dir)], env=env or self.env, capture_output=True, text=True, timeout=10,
+                                stdin=subprocess.DEVNULL)
+        self.assertEqual((result.returncode, result.stdout, result.stderr), (0, '', ''))
+        return result
+
+    def registered(self, repo=None):
+        path = self.config / 'forge/runs' / (forge_registry.repo_key(repo or self.repo) + '.txt')
+        if not path.is_file():
+            return []
+        return [x for x in path.read_text().splitlines() if x and not x.startswith('#')]
+
+    def test_a_run_dir_is_registered_under_its_repo_once(self):
+        self.register(self.run_dir)
+        self.register(self.run_dir)
+        self.assertEqual(self.registered(), [str(self.run_dir.resolve())])
+        self.assertEqual([p for p in self.repo.rglob('*')], [], 'forge must not dirty the user working tree')
+
+    def test_only_the_first_line_of_the_repo_file_is_read(self):
+        (self.run_dir / 'repo').write_text(f'  {self.repo}  \nsomething else\n')
+        self.register(self.run_dir)
+        self.assertEqual(self.registered(), [str(self.run_dir.resolve())])
+
+    def test_forge_run_registry_off_registers_nothing(self):
+        for value in ('off', 'OFF', 'Off'):
+            with self.subTest(value):
+                self.register(self.run_dir, env=dict(self.env, FORGE_RUN_REGISTRY=value))
+                self.assertEqual(self.registered(), [])
+                self.assertFalse(self.config.exists())
+
+    def test_a_config_home_that_is_not_absolute_is_never_written_below_the_current_directory(self):
+        # An empty or relative XDG_CONFIG_HOME resolves below the cwd, which for a runner is
+        # usually the user's repo.
+        for value in ('', 'relative/config'):
+            with self.subTest(repr(value)):
+                result = subprocess.run([sys.executable, '-I', str(ROOT / 'scripts/forge_registry.py'), 'register',
+                                         str(self.run_dir)], env=dict(self.env, XDG_CONFIG_HOME=value), cwd=self.repo,
+                                        capture_output=True, text=True, timeout=10, stdin=subprocess.DEVNULL)
+                self.assertEqual((result.returncode, result.stdout, result.stderr), (0, '', ''))
+                self.assertEqual([p for p in self.repo.rglob('*')], [])
+
+    def test_never_fails_blocks_or_prints_whatever_the_run_dir_holds(self):
+        def missing_run_dir():
+            return self.tmp / 'no-such-run'
+
+        def missing_repo_file():
+            (self.run_dir / 'repo').unlink()
+            return self.run_dir
+
+        def repo_file_is_a_fifo():
+            (self.run_dir / 'repo').unlink()
+            os.mkfifo(self.run_dir / 'repo')  # no writer: a blocking open would wait forever
+            return self.run_dir
+
+        def repo_file_is_a_dir():
+            (self.run_dir / 'repo').unlink()
+            (self.run_dir / 'repo').mkdir()
+            return self.run_dir
+
+        def repo_with_a_nul_byte():
+            (self.run_dir / 'repo').write_bytes(str(self.repo).encode() + b'\x00x\n')
+            return self.run_dir
+
+        def relative_repo():
+            (self.run_dir / 'repo').write_text('repo\n')
+            return self.run_dir
+
+        def empty_repo_file():
+            (self.run_dir / 'repo').write_text('\n')
+            return self.run_dir
+
+        def undecodable_repo_file():
+            (self.run_dir / 'repo').write_bytes(b'\xff\xfe/not/utf8\n')
+            return self.run_dir
+
+        def registry_is_unwritable():
+            self.config.write_text('a file where the config dir should be')
+            return self.run_dir
+
+        for setup in (missing_run_dir, missing_repo_file, repo_file_is_a_fifo, repo_file_is_a_dir,
+                      repo_with_a_nul_byte, relative_repo, empty_repo_file, undecodable_repo_file,
+                      registry_is_unwritable):
+            with self.subTest(setup.__name__):
+                self.setUp()
+                self.register(setup())  # a hang fails on the timeout, any output or exit code on the assert
+                runs = self.config / 'forge/runs'
+                self.assertEqual(sorted(runs.iterdir()) if runs.is_dir() else [], [], 'nothing is registered, under any repo')
+
+    def test_arguments_it_does_not_understand_are_ignored_quietly(self):
+        for args in ([], ['register'], ['register', 'a', 'b'], ['unregister', str(self.run_dir)]):
+            with self.subTest(args):
+                result = subprocess.run([sys.executable, '-I', str(ROOT / 'scripts/forge_registry.py'), *args],
+                                        env=self.env, capture_output=True, text=True, timeout=10)
+                self.assertEqual((result.returncode, result.stdout, result.stderr), (0, '', ''))
+        self.assertFalse(self.config.exists())
 
 
 if __name__ == '__main__':
