@@ -45,11 +45,19 @@ def available() -> bool:
     return _load() is not None
 
 
+# forge_verdict in scripts/forge-artifact.sh, as forge_dataset.harvest.verdict_of also ports it: only the
+# reply's last non-blank line counts, and only as exactly `FORGE_VERDICT: PASS|FAIL`, optionally followed by
+# a dash and a gloss. A verdict anywhere else (quoted, followed by more text) is no verdict, as for forge.
+_VERDICT = re.compile(r'^FORGE_VERDICT: (PASS|FAIL)([ \t]+(—|–|-)( .*)?)?[ \t]*$')
+
+
 def verdict(text):
-    """PASS, FAIL or None: the last `FORGE_VERDICT:` line of a reviewer's reply."""
-    matches = re.findall(r'^FORGE_VERDICT:[ \t]*(PASS|FAIL)[ \t]*(?:[—–-][^\r\n]*)?\r?$',
-                         text or '', re.MULTILINE)
-    return matches[-1] if matches else None
+    """PASS, FAIL or None, exactly as forge decides it: from the reply's last non-blank line only.
+
+    None means forge recorded no verdict (UNKNOWN), which forge's gate treats as blocking."""
+    lines = [line for line in (text or '').splitlines() if line.strip()]
+    match = _VERDICT.match(lines[-1].rstrip('\r')) if lines else None
+    return match.group(1) if match else None
 
 
 def _parse(text):
