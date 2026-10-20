@@ -231,7 +231,8 @@ notifications on. Failed requests keep the last good data and show a banner.
 - `tools/demo_runs.py`, `tools/readme_media.py`: made-up runs to look around with (one live run
   and five projects of history), and the script that turns them into the READMEs' pictures in
   `docs/media/`.
-- [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md): the licences of the ported and loaded code.
+- [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md): the licences of the ported and loaded code;
+  forge-ui itself is under forge's [MIT License](../LICENSE).
 
 [docs/api.md](docs/api.md) is the data contract between the reader, server and page.
 
