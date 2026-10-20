@@ -4,6 +4,7 @@
 
 [![Latest release](https://img.shields.io/github/v/release/Giamme/forge?label=release)](https://github.com/Giamme/forge/releases)
 [![Changelog](https://img.shields.io/badge/changelog-what's%20new-blue)](CHANGELOG.md)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
 <p align="center">
   <img src="ui/docs/media/hero.webp" width="880" alt="A decomposed run in forge-ui's 3D view: eight tasks on a plate in their planned waves, five merged in green and two running in blue, then the same run on wall-clock time, where two first attempts that failed review show in red beside the retries that passed.">
@@ -70,6 +71,7 @@ it at the start of every new run and never opens it without a yes.
 - [Safety guarantees](#safety-guarantees)
 - [Troubleshooting](#troubleshooting)
 - [Repository layout](#repository-layout)
+- [License](#license)
 
 ---
 
@@ -1686,6 +1688,7 @@ forge/
 ├── SKILL.md                     the skill itself — what the orchestrating model reads
 ├── registry.tsv                 alias → (harness, model, effort). Add a row to teach forge a model
 ├── README.md                    this file
+├── LICENSE                      MIT
 ├── forge                        repository-local launcher: `forge fractal`, `jev`, `dataset` and `ui`
 ├── scripts/
 │   ├── forge-dispatch.sh        resolve a spec → run one role on one harness
@@ -1795,3 +1798,11 @@ and QA prompts across all six harnesses. Setup and interactive runners offer a p
 verified installation; headless runs continue when it is missing. Use `--no-ripwire`
 or `FORGE_RIPWIRE=off` to disable it. Decomposed plans preserve opt-out across resumes
 and retries. See [installation, controls and attempt artifacts](references/ripwire.md).
+
+---
+
+## License
+
+forge is released under the [MIT License](LICENSE). forge-ui's 3D view ports code from
+archivision, iso-glow and iso-figure, all MIT-licensed; their notices are in
+[ui/THIRD_PARTY_NOTICES.md](ui/THIRD_PARTY_NOTICES.md).
