@@ -810,8 +810,7 @@ dialog.jump::backdrop, dialog.export-dialog::backdrop { background: light-dark(r
 .diff-line.meta td.code { color: var(--muted); font-style: italic; }
 .diff-hunk td { background: var(--hunk); color: var(--muted); padding: 3px 10px; white-space: pre; }
 .diff-pin > td { padding: 6px 10px 6px 7.4em; background: var(--module); font-family: var(--font-ui); font-size: var(--t-sm); white-space: normal; }
-.diff-finding { position: relative; border: 1px solid var(--rule); border-radius: var(--r-key); padding: 6px 10px 6px 26px; background: var(--module); max-width: 900px; scroll-margin: 80px; transition: box-shadow var(--dur-1) var(--ease-out); }
-.diff-finding::before { content: ''; position: absolute; left: 9px; top: 11px; width: 10px; height: 10px; clip-path: var(--sev-shape, circle(30%)); background: var(--sev, var(--rule-2)); }
+.diff-finding { position: relative; border: 1px solid var(--rule); border-radius: var(--r-key); padding: 6px 10px; background: var(--module); max-width: 900px; scroll-margin: 80px; transition: box-shadow var(--dur-1) var(--ease-out); }   /* its chip carries the severity's shape */
 .diff-finding.flash { box-shadow: 0 0 0 2px var(--route); }
 .diff-finding-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: var(--t-xs); }
 .diff-finding p { margin: 4px 0 0; overflow-wrap: anywhere; }

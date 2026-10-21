@@ -31,7 +31,7 @@ blocks on a plate, with cables between them and lamps that light up as things ha
   [What you see](#what-you-see).
 
 <p align="center">
-  <img src="docs/media/hero.webp" width="860" alt="A decomposed run on its 3D plate: eight tasks in their planned waves, then the same run on wall-clock time, where two first attempts that failed review show in red beside the retries that passed.">
+  <img src="docs/media/hero.webp" width="860" alt="A decomposed run on its 3D plate: eight tasks in their planned waves with a mark for each review finding, then the same run on wall-clock time, where two first attempts that failed review show in red beside the retries that passed.">
 </p>
 
 The 3D view loads three.js from a CDN the first time it is used (see [Privacy](#privacy)).
@@ -119,7 +119,7 @@ keep one meaning everywhere (amber running, green merged or passed, red failed, 
   60 runs from the past 14 days; *older runs too* shows the rest. The runs list follows the same
   filter, and sorts by latest activity, state or repo.
 
-  <img src="docs/media/map.png" width="760" alt="The map: one block per run, in a district per repo, green when done, blue while running, red with failures.">
+  <img src="docs/media/map.png" width="760" alt="The map: one block per run, in a district per repo, green when done, amber while running, red with failures.">
 - **Run cloud (`#/cloud`):** every run at once, full screen, floating in 3D and grouped by project
   (repo). Pick a layout: *Helix* (one spiral per project, oldest at the bottom), *Sphere*,
   *Galaxy* (a disc per project, newest at the centre), *Timeline* (left to right by start time,
@@ -169,7 +169,7 @@ keep one meaning everywhere (amber running, green merged or passed, red failed, 
   ascending, descending, off), reorder by dragging a header (or Alt+← → on it), and show or hide
   columns from *Columns*, which also resets them. Each table remembers its columns.
 
-  <img src="docs/media/run.png" width="49%" alt="Planned waves: a run's tasks on a 3D plate with dependency cables and the finish nodes, beside the run's inspector."> <img src="docs/media/execution.png" width="49%" alt="Execution: one block per attempt on wall-clock time, failed attempts in red, with the timeline and critical path in the inspector.">
+  <img src="docs/media/run.png" width="49%" alt="Planned waves: a run's tasks on a 3D plate with dependency cables, finding marks and the finish nodes, between the runs list and the run's inspector."> <img src="docs/media/execution.png" width="49%" alt="Execution: one block per attempt on wall-clock time, failed attempts in red, with the timeline and critical path in the inspector.">
 - **Inspector:** for the run, its timeline, critical path, peak concurrency and finish line;
   for a task, its models and routing, escalations, timings (busy, model time, overhead,
   queue wait after its dependencies merged), attempts and their executions, review findings
@@ -183,7 +183,7 @@ keep one meaning everywhere (amber running, green merged or passed, red failed, 
   most tasks, and hide any kind of mark; a cell selects its task and offers that file's diff.
   Below: overlaps, drift, merge conflicts and deferrals as lists.
 
-  <img src="docs/media/files.png" width="560" alt="The files heatmap: files by directory against tasks by wave, with planned, touched, drift and same-wave overlap marks.">
+  <img src="docs/media/files.png" width="760" alt="The files heatmap: files by directory against tasks by wave, with planned, touched, drift and same-wave overlap marks.">
 - **Models (`#/models`):** a leaderboard of the models forge used. Implementers: tasks, first-attempt
   pass rate with its 95% Wilson interval, censored attempts, retries, escalations away from the
   model, timeouts, gate and human accepts, median model time and tokens. Reviewers: primary,
