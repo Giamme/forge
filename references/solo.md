@@ -62,6 +62,10 @@ custom requirements prompt or verdict instruction. Its result is informational a
 it cannot establish requirements coverage. The disposable repository supplies the recorded
 baseline via `--review-base`.
 
+`--fail-first` runs the change's new tests against the code without its non-test changes
+first and gives the reviewer the result (`failfirst.json`); see
+[fail-first evidence](decompose.md#fail-first-evidence-opt-in).
+
 Changes remain in the source working tree. Forge does not commit or integrate solo work.
 
 Solo defaults to `--output summary`; `--output full` includes raw CLI output. Read the two

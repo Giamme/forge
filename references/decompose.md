@@ -329,6 +329,30 @@ The prompt contract (preamble, findings format, severity definitions and the ver
 comes from one place, `scripts/forge-contract.py`, shared by solo, decomposed and the final
 review; the implementer rules appended to every dwarf prompt come from the same module.
 
+### Fail-first evidence (opt-in)
+
+`plan --fail-first` (and `forge-solo.sh --fail-first`) checks that the tests a change adds
+or edits can fail. Before each review, forge exports the reviewed commit and, separately,
+the task's base plus only the change's test-path files (tests, their fixtures and helpers),
+then runs `.forge/verify-subset` (the per-file test command with `{files}`, see
+[Jev](jev.md)) once per new or edited test file in each. Every file gets one result in
+`tasks/<id>/failfirst.json` (solo: `<run>/failfirst.json`):
+
+- `proven`: passes with the change, fails without it;
+- `passes_without_change`: passes both ways, so it does not prove the change;
+- `inconclusive`: fails even with the change (a broken test or a missing dependency);
+- `error`: could not run (export failure, or `FORGE_FAIL_FIRST_TIMEOUT`, default 600 s, per run).
+
+The reviewer's prompt lists the results and asks for a `[P2][CONFIRMED]` finding for each
+test that passes without the change, unless the reviewer explains why it need not fail
+(a refactor kept green). It is advice: forge never changes a status or verdict from it, and
+a P2 only blocks through the reviewer and the usual `--qa-threshold` gate. The exports are
+throwaway directories outside the review snapshot, so no fingerprint changes. forge-ui
+shows the evidence under the task's review findings, and each check is recorded in the
+run dataset as a `fail_first` event with the JSON attached. Without
+`.forge/verify-subset` the check records `skipped` and the prompt says nothing.
+`plan --no-fail-first` turns it off again.
+
 ### Shadow reviews (opt-in)
 
 `plan --shadow-qa <spec>[,<spec>...] [--shadow-rate R]` sends a sampled share of

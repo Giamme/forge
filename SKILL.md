@@ -1,7 +1,7 @@
 ---
 name: forge
 description: Dispatch implementation and independent diff review to user-selected models through local agent CLIs. Use for /forge or explicit requests to delegate coding or review; explanation-only questions do not authorize dispatch.
-argument-hint: '"<goal>" --dwarf <alias>[:effort[:harness]] [--qa <alias>] [--planner <alias>] [--yolo-dwarf] [--yolo-qa] [--decompose-level low|medium|high] [--fractal|--no-fractal|--fractal-auto-decompose] [--fractal-planner <spec>] [--jev|--no-jev] [--jev-shadow] [--no-memory] [--no-ripwire] [--ui|--no-ui] [--timeout <seconds>] [--retry-failed <n>] [--escalate-after <n>] [--qa-threshold P0|P1|P2|P3] [--shadow-qa <spec>[,<spec>]] [--shadow-rate <0..1>] [--explore <0..0.5>]'
+argument-hint: '"<goal>" --dwarf <alias>[:effort[:harness]] [--qa <alias>] [--planner <alias>] [--yolo-dwarf] [--yolo-qa] [--decompose-level low|medium|high] [--fractal|--no-fractal|--fractal-auto-decompose] [--fractal-planner <spec>] [--jev|--no-jev] [--jev-shadow] [--no-memory] [--no-ripwire] [--ui|--no-ui] [--timeout <seconds>] [--retry-failed <n>] [--escalate-after <n>] [--qa-threshold P0|P1|P2|P3] [--shadow-qa <spec>[,<spec>]] [--shadow-rate <0..1>] [--explore <0..0.5>] [--fail-first]'
 allowed-tools: [Bash, Read]
 ---
 
@@ -44,7 +44,9 @@ For explanation requests, explain the workflow without spending model quota.
   when requested; preserve failed task branches and worktrees. `run --retry-failed N`,
   `--infra-retries M`, `--qa-threshold Pn` and `plan --shadow-qa` (a second review of a
   sampled share of attempts, never read, to measure reviewer agreement) are opt-in: offer
-  them, never add them unprompted. `plan` explores by default (`--explore 0.2`: now and then
+  them, never add them unprompted. So is `--fail-first` (solo or `plan`): the change's new
+  tests also run without its non-test changes, and the reviewer is asked to report any that
+  still pass as P2; it needs `.forge/verify-subset` and never changes a result by itself. `plan` explores by default (`--explore 0.2`: now and then
   a row left to forge gets its neighbouring tier's model from the user's pools, odds
   recorded for `forge dataset routing`); say so with the table and pass `--explore 0` when
   the user declines. Retries follow a policy: after three failed attempts on one model the

@@ -66,7 +66,7 @@ class ReaderTests(unittest.TestCase):
             'qa_tail': 'FORGE_VERDICT: FAIL\nFixed now.\nFORGE_VERDICT: PASS\n',
             'dwarf_tail': None, 'executions': [],
             'merged_at': (FIXTURE / 'tasks/reader/merged').stat().st_mtime, 'findings': NO_FINDINGS,
-            'gate': None, 'known_issues': False,
+            'gate': None, 'known_issues': False, 'fail_first': None,
         })
         self.assertEqual(page['status'], 'RUNNING')
         self.assertEqual(page['branch'], 'forge/20261016-153012-ab12/page')
@@ -220,6 +220,34 @@ class ReaderTests(unittest.TestCase):
                 forge = subprocess.run(['bash', '-c', 'source "$1"; forge_verdict "$2"', 'x', str(artifact),
                                         str(plan / 'tasks/reader/qa.last')], capture_output=True, text=True)
                 self.assertEqual(forge.stdout.strip(), expected or 'UNKNOWN', forge.stderr)
+
+    def test_fail_first_evidence_is_shown_beside_the_findings(self):
+        # forge-fail-first.py writes failfirst.json next to qa.last (opt-in --fail-first).
+        evidence = {'version': 1, 'status': 'ran', 'command': 'pytest -q {files}', 'tests': [
+            {'path': 'tests/test_a.py', 'result': 'proven',
+             'with_change': {'rc': 0, 'tail': 'ok'}, 'without_change': {'rc': 1, 'tail': 'AssertionError'}},
+            {'path': 'tests/test_b.py', 'result': 'passes_without_change',
+             'with_change': {'rc': 0, 'tail': 'ok'}, 'without_change': {'rc': 0, 'tail': 'ok'}},
+            {'path': 'tests/test_c.py', 'result': 'made-up'},  # dropped: not a known result
+        ]}
+        expected = {'status': 'ran', 'reason': None, 'command': 'pytest -q {files}', 'tests': [
+            {'path': 'tests/test_a.py', 'result': 'proven', 'with_change': {'rc': 0, 'tail': 'ok'},
+             'without_change': {'rc': 1, 'tail': 'AssertionError'}},
+            {'path': 'tests/test_b.py', 'result': 'passes_without_change', 'with_change': {'rc': 0, 'tail': 'ok'},
+             'without_change': {'rc': 0, 'tail': 'ok'}}],
+            'counts': {'proven': 1, 'passes_without_change': 1, 'inconclusive': 0, 'error': 0}}
+        plan = self.copy_plan()
+        solo = Path(shutil.copytree(SOLO, self.base / 'solo'))
+        for name, root, rel in (('plan task', plan, 'tasks/reader/failfirst.json'), ('solo', solo, 'failfirst.json')):
+            with self.subTest(name):
+                self.write(root / rel, json.dumps(evidence))
+                data = detail(root)
+                self.assertEqual(data['tasks'][0]['fail_first'], expected)
+                self.assertEqual(data['warnings'], [])
+                self.write(root / rel, '{"status": "maybe"}')
+                data = detail(root)
+                self.assertIsNone(data['tasks'][0]['fail_first'])
+                self.assertEqual(len(data['warnings']), 1)
 
     def test_wave_numbers_are_bounded(self):
         plan = self.copy_plan()
@@ -426,6 +454,7 @@ class ReaderTests(unittest.TestCase):
             'prompt': 'Implement the reader.\n', 'approach': None, 'retry_findings': None,
             'qa_tail': 'Looked at the diff.\nFORGE_VERDICT: FAIL\n', 'dwarf_tail': 'Still working.\n',
             'executions': [], 'merged_at': None, 'findings': NO_FINDINGS, 'gate': None, 'known_issues': False,
+            'fail_first': None,
         }])
         self.assertEqual(data['kind'], 'solo')
         self.assertEqual(data['run_id'], 'solo-full')
@@ -479,7 +508,7 @@ class ReaderTests(unittest.TestCase):
             'route': [], 'clef': {'first_pass': None, 'retry_pass': {}}, 'shadow': [],
             'prompt': 'Old prompt.\n', 'approach': None, 'retry_findings': None,
             'qa_tail': None, 'dwarf_tail': None, 'executions': [], 'merged_at': None, 'findings': None,
-            'gate': None, 'known_issues': False,
+            'gate': None, 'known_issues': False, 'fail_first': None,
         }])
         json.dumps(data, allow_nan=False)
         run = self.base / 'neither'

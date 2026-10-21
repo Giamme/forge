@@ -93,6 +93,29 @@ window.ForgePanel = (() => {
     if (!any) row.append(el('span', 'no confirmed findings', 'muted'));
     parent.append(row);
   }
+  /* ---------- fail-first (opt-in --fail-first): did the change's new tests fail without it? ---------- */
+  const FAIL_FIRST = { proven: ['fails without the change', 'pass'], passes_without_change: ['passes without the change: proves nothing', 'fail'],
+    inconclusive: ['fails even with the change: no evidence', 'unknown'], error: ['could not run', 'unknown'] };
+  function failFirst(parent, ff) {
+    if (!ff) return;
+    const box = el('div', undefined, 'review');
+    const h = el('div', undefined, 'attempt-head');
+    h.append(el('strong', 'fail-first evidence'));
+    const weak = (ff.counts && ff.counts.passes_without_change) || 0;
+    if (weak) h.append(chip(`${weak} pass without the change`, 'fail'));
+    box.append(h);
+    if (ff.status !== 'ran') { muted(box, ff.reason || `Fail-first did not run (${ff.status}).`); parent.append(box); return; }
+    if (ff.command) box.append(el('p', ff.command, 'mono muted'));
+    const ul = el('ul', undefined, 'findings');
+    for (const t of list(ff.tests)) {
+      const [label, cls] = FAIL_FIRST[t.result] || [t.result, 'unknown'];
+      const li = el('li');
+      li.append(el('span', t.path, 'mono'), document.createTextNode(' '), chip(label, cls));
+      ul.append(li);
+    }
+    box.append(ul);
+    parent.append(box);
+  }
   function findingsList(parent, findings, key) {
     if (findings === null || findings === undefined) { muted(parent, 'Findings could not be parsed (forge-contract.py was not available to the server).'); return; }
     if (!findings.length) { muted(parent, 'The reviewer reported no findings in the expected `- [P1][CONFIRMED] file:line — …` form.'); return; }
@@ -237,6 +260,7 @@ window.ForgePanel = (() => {
     const rs = section(host, 'Review findings');
     gateLine(rs, task.gate);
     findingCounts(rs, task.findings);
+    failFirst(rs, task.fail_first);
     const detail = lazy(ctx, `/api/runs/${encodeURIComponent(run.key)}/tasks/${encodeURIComponent(task.id)}`, run.updated);
     if (!loading(rs, detail, 'the full findings')) {
       const reviews = list(detail.data.reviews);

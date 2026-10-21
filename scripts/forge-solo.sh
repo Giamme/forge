@@ -19,6 +19,7 @@
 #   forge-solo.sh <run-dir> --repo <dir> --dwarf <spec> [--qa <spec>]
 #                 [--approach <file>] [--yolo-dwarf] [--yolo-qa]
 #                 [--native-review] [--no-memory] [--timeout <s>] [--dry-run] [--ui]
+#                 [--fail-first]
 #
 # Reads  <run-dir>/prompt.md   the implementation instruction (required)
 #        <run-dir>/goal.txt    one line, what the user asked for (optional)
@@ -26,6 +27,7 @@
 #        <run-dir>/changes.diff
 #        <run-dir>/qa.{input,last,log,resolved}
 #        <run-dir>/verdict      PASS | FAIL | UNKNOWN, when qa emitted one
+#        <run-dir>/failfirst.json  with --fail-first: do the change's tests fail without it?
 #        <run-dir>/status       RUNNING, then this invocation's outcome
 #        <run-dir>/dwarf.spec, qa.spec and attempts.tsv
 #
@@ -91,7 +93,7 @@ forge_metric_on_exit() {
 }
 
 if [ "${1:-}" = --help ] || [ "${1:-}" = -h ]; then
-  sed -n '18,31s/^# *//p' "$0"
+  sed -n '18,33s/^# *//p' "$0"
   forge_fractal_help
   echo 'Explicit Fractal retry: repeat the original command with --retry.'
   exit 0
@@ -101,7 +103,7 @@ case "$RUN" in -*) die "first argument must be the run directory, got '$RUN'" ;;
 shift
 
 OUTPUT=summary
-REPO="$PWD"; DWARF=""; QA="opus"; APPROACH=""; YD=""; YQ=""; NATIVE=""; TIMEOUT=""; DRY=0
+REPO="$PWD"; DWARF=""; QA="opus"; APPROACH=""; YD=""; YQ=""; NATIVE=""; TIMEOUT=""; DRY=0; FAIL_FIRST=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --fractal) forge_fractal_flag on || exit $?; shift ;;
@@ -121,6 +123,7 @@ while [ $# -gt 0 ]; do
     --no-memory)  export FORGE_MEMORY=off; shift ;;
     --timeout)    TIMEOUT="${2:?--timeout needs seconds}"; shift 2 ;;
     --dry-run)    DRY=1; shift ;;
+    --fail-first) FAIL_FIRST=1; shift ;;
     --ui|--no-ui) forge_ui_flag "$1"; shift ;;
     *)
       # `case` is not a loop, so `continue` here belongs to the enclosing while.
@@ -283,11 +286,18 @@ printf '%s\n' "$SOURCE_FP" > "$RUN/source.fingerprint"
 printf '%s\n' "$REVIEW_FP" > "$RUN/review.fingerprint"
 forge_metric_phase preparation
 # --- qa -----------------------------------------------------------------------
+rm -f "$RUN/failfirst.json" "$RUN/failfirst.txt"
+if [ "$FAIL_FIRST" = 1 ]; then
+  # Opt-in and advisory: the reviewer reads the evidence; nothing here changes a verdict.
+  forge_fail_first "$REVIEW" "$RUN" "$REPO"
+  note "fail-first evidence for the reviewer: $RUN/failfirst.json"
+fi
 /bin/bash "$MEMORY" inject "$REPO" qa --run-dir "$RUN" > "$RUN/qa.memory"
 {
   python3 "$SKILL_DIR/scripts/forge-prompt.py" --requirements "$RUN/prompt.md" --approach "$APPROACH" --goal "$RUN/goal.txt" --memory "$RUN/dwarf.memory" --memory "$RUN/qa.memory"
   python3 "$SKILL_DIR/scripts/forge-contract.py" qa --part head --kind solo
   echo
+  if [ -s "$RUN/failfirst.txt" ]; then cat "$RUN/failfirst.txt"; echo; fi
   python3 "$SKILL_DIR/scripts/forge-contract.py" qa --part tail --kind solo
   echo
   echo '```diff'; cat "$RUN/changes.diff"; echo '```'
