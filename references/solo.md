@@ -48,7 +48,7 @@ nothing was judged — fix the cause and run again; a dwarf that returns nothing
 nothing is reported as 8, not 5). The default dispatch timeout is 2700 seconds, scaled up for
 `xhigh`/`max` effort (so the default QA/planner effort gets 3600), overridable per model in the
 registry; 0 disables that dispatch timeout, but an enabled Fractal task still has its own attempt
-deadline. See [dispatch timeouts](../README.md#scriptsforge-dispatchsh).
+deadline. See [dispatch timeouts](../docs/commands.md#scriptsforge-dispatchsh).
 
 The dwarf prompt carries implementer rules (no commits, no background processes, finish every
 measurement before the last message). forge records what it observes: if the dwarf committed

@@ -1,0 +1,314 @@
+# Command reference
+
+[← README](../README.md) · [All docs](README.md)
+
+Every flag of the `/forge` slash command, the `forge` command, and the scripts the skill runs underneath.
+
+## The `forge` command
+
+npm puts `forge` on your `PATH`; in a git checkout it is `./forge`. Runs start from your agent
+harness (`/forge`); this command installs forge and drives its optional tools.
+
+| Command | Does |
+|---|---|
+| `forge install [--dry-run]` | link forge into each agent harness on this machine; see [install](install.md) |
+| `forge update` | fast-forward a git checkout and refresh every harness installation; on an npm install it names the npm command instead. See [updating](install.md#updating-all-harness-installations) |
+| `forge version [--check]` | the installed version, and whether a newer release is out |
+| `forge fractal …` | opt-in Fractal execution; see [the command group](fractal.md#forge-fractal-command-group) |
+| `forge ui open\|status\|stop` | forge-ui, the run viewer; see [the command group](forge-ui.md#forge-ui-command-group) |
+| `forge dataset …` | every run's inputs and outcomes; see [run dataset](dataset.md) |
+| `forge jev …` | optional Jev advice: setup, status, doctor, enable, disable, backtest; see [Jev](add-ons.md#jev) |
+| `forge --help` | list the commands; `forge <command> --help` shows each one's options |
+
+## The `/forge` slash command
+
+```
+/forge "<goal>" --dwarf <alias>[:<effort>[:<harness>]]
+                [--qa <alias>[:<effort>[:<harness>]]]
+                [--planner <alias>[:<effort>[:<harness>]]]
+                [--yolo-dwarf] [--yolo-qa] [--repo <dir>] [--native-review]
+                [--no-memory] [--timeout <seconds>] [--ui | --no-ui] [--fractal | --no-fractal]
+                [--fractal-auto-decompose] [--fractal-planner <spec>]
+                [--fractal-depth <n>] [--fractal-children <n>] [--fractal-nodes <n>]
+                [--fractal-iterations <n>] [--fractal-concurrency <n>] [--fractal-deadline <s>]
+                [--decompose-level low|medium|high] [--max-parallel <n>]
+                [--dwarf-high <spec>] [--dwarf-medium <spec>] [--dwarf-low <spec>]
+                [--qa-high <spec>] [--qa-medium <spec>] [--qa-low <spec>]
+```
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--dwarf <spec>` | *asks* | the model that implements the change |
+| `--qa <spec>` | `opus` at `xhigh` | the model that reviews the dwarf's diff |
+| `--planner <spec>` | orchestrator plans | dispatch planning to a model; one dispatch per run, effort defaults to `xhigh` |
+| `--no-memory` | memory on | write and inject nothing in `.forge/` |
+| `--timeout <s>` | `2700` (45m) | kill any single dispatch that runs longer. `0` disables |
+| `--yolo-dwarf` | off | drop the dwarf's sandbox and approval gates |
+| `--yolo-qa` | off | drop the reviewer's sandbox |
+| `--repo <dir>` | cwd | repository to work in |
+| `--native-review` | off | use native Codex review against the recorded baseline instead of an inlined diff |
+| `--decompose-level <l>` | off | split the goal into parallel tasks |
+| `--max-parallel <n>` | `3` | concurrent task pipelines |
+| `--dwarf-high/-medium/-low` | — | per-difficulty routing; comma-list pools models |
+| `--qa-high/-medium/-low` | — | same, for reviewers |
+| `--fractal` / `--no-fractal` | ask interactively; off unattended | mutually exclusive, per-run backend choice |
+| `--fractal-auto-decompose` | off | enables Fractal with automatic recursive split-or-atomic decisions |
+| `--fractal-planner <spec>` | top-level planner, then task root spec | frozen decision model; requires automatic mode |
+| `--fractal-depth <n>` | `2` | nested levels below each Forge implementation node |
+| `--fractal-children <n>` | `3` | unsettled direct children per node |
+| `--fractal-nodes <n>` | `12` | lifetime nodes per Forge task, including implementation |
+| `--fractal-iterations <n>` | `6` | per node per execution attempt |
+| `--fractal-concurrency <n>` | `3` | shared model slots across nested trees and QA |
+| `--fractal-deadline <s>` | `2700` | task attempt deadline, excluding explicit pauses |
+| `--fractal-max-cost <amount>` | unsupported | returns an error; the bridge cannot enforce dollar caps |
+
+Fractal's task deadline still applies when `--timeout 0` disables the ordinary
+per-dispatch timeout. Child routing uses the dwarf tier flags; QA stays at the Forge
+task boundary. Pools and Fractal limits are frozen for an existing run.
+
+Before an interactive run, forge asks **“Use Fractal for this run? [y/N]”** once.
+Pass `--fractal` or `--no-fractal` to answer explicitly; unattended runs default off.
+It also asks **“Open forge-ui to watch this run? [y/N]”** (`--ui` / `--no-ui`); on a yes,
+the [forge-ui](forge-ui.md) page opens as soon as the run exists. Resume and retry never ask.
+
+For what `--native-review` trades away, see [native review](reviews.md#native-review).
+
+### Examples
+
+```bash
+# minimum
+/forge "make the cache key include the tenant id" --dwarf sol:high
+
+# both roles named, reviewer thinking harder than the implementer
+/forge "rewrite the rate limiter as a token bucket" --dwarf luna:max --qa sol:ultra
+
+# same model, different CLI
+/forge "extract the retry helper into its own module" --dwarf sol:high:openclaude
+
+# Gemini as the dwarf, unsandboxed so it can actually run the tests it writes
+/forge "add table-driven tests for the parser" --dwarf gemini:high:antigravity --yolo-dwarf
+
+# a cheap dwarf with an expensive reviewer
+/forge "update all the docstrings to match the new signatures" --dwarf haiku --qa opus:max
+
+# work in another repo
+/forge "bump the pinned deps and fix the fallout" --dwarf sol:xhigh --repo ~/dev/other-project
+
+# large refactor, reviewed by codex's native reviewer
+/forge "split the god object into three services" --dwarf sol:ultra --qa sol:ultra --native-review
+
+# parallel, one dwarf for every task
+/forge "add CRUD endpoints for projects, users and teams" \
+  --decompose-level medium --dwarf sol:high
+
+# parallel, routed by difficulty, wider fan-out
+/forge "migrate the whole API layer from REST to gRPC" \
+  --decompose-level high --max-parallel 5 \
+  --dwarf-high sol:ultra --dwarf-medium luna:high --dwarf-low haiku:medium \
+  --qa-high opus:max --qa sonnet:high
+
+# pool two providers on the hard tier so neither quota carries it alone
+/forge "implement the new billing rules across the codebase" \
+  --decompose-level medium \
+  --dwarf-high sol:xhigh,terra:xhigh --dwarf luna:high
+
+# a model that thinks for a long time; raise the per-dispatch backstop
+/forge "prove the scheduler cannot deadlock, and fix it if it can" \
+  --dwarf sol:ultra --timeout 7200
+```
+
+After a decomposed run, a task that failed review can be re-run on its own — with the
+findings that failed it, on a stronger model:
+
+```bash
+bash scripts/forge-parallel.sh retry /tmp/forge-billing pricing --dwarf sol:ultra
+```
+
+## `scripts/forge-dispatch.sh`
+
+Resolves a spec into a real CLI invocation and runs it. Needs only bash and coreutils, which
+is the point: it behaves identically no matter which harness is orchestrating.
+
+```
+forge-dispatch.sh doctor
+forge-dispatch.sh dwarf   <spec> --prompt-file <f> [--repo <dir>] [--run-dir <d>] [--yolo] [--dry-run]
+forge-dispatch.sh qa      <spec> --prompt-file <f> [--repo <dir>] [--run-dir <d>] [--yolo] [--dry-run]
+                                 [--native-review [--review-base <ref>]]
+forge-dispatch.sh planner <spec> --prompt-file <f> [--repo <dir>] [--run-dir <d>] [--dry-run]
+```
+
+| Option | Meaning |
+|---|---|
+| `--prompt-file <f>` | file holding the prompt (required for `dwarf`/`qa`) |
+| `--repo <dir>` | repository the role operates in |
+| `--run-dir <d>` | where prompts, logs and results are written |
+| `--yolo` | bypass sandbox and approvals for this role |
+| `--dry-run` | resolve and print the command; run nothing |
+| `--native-review` | qa only; use codex's built-in reviewer |
+| `--review-base <ref>` | qa only; base ref for the native review |
+| `--agy-timeout <s>` | antigravity `--print-timeout` (long runs need this raised) |
+| `--timeout <s>` | kill this dispatch after `<s>` seconds; `0` disables. See the precedence below |
+
+**Exit codes:** `0` ok · `2` spec or usage error · `3` harness missing or unusable ·
+`4` the backend ran and failed · `7` the backend hit its timeout and was killed ·
+`8` an **infrastructure failure** (quota or usage limit, auth, rate limit, network, or an
+empty answer) — nothing about the work was judged, so callers pause instead of counting a
+failure. On `8`, `<run-dir>/<role>.infra` holds `class=`, `retry_after=`, `detail=`, `rc=`,
+`role=`.
+
+**Timeout precedence.** An explicit `--timeout`, then `FORGE_TIMEOUT` (an explicit `0` wins
+and disables the watchdog), then the optional fifth `timeout` column of the model's
+[registry](models.md#model-registry) row, then the built-in `2700` (45 min). A value that was *not*
+explicit is scaled by the resolved (post-clamp) effort: up to `high` ×1, `xhigh` ×4/3,
+`max`/`ultra`/`ultracode` ×2. QA and planner default to `xhigh`, so their built-in limit is
+3600 s; dwarves default to `medium` and keep 2700 s. `<role>.resolved` records `timeout=` and
+`timeout_source=` (`explicit`, `env`, `registry` or `default`, plus `+effort-scaled`).
+`forge-parallel.sh run`/`retry --timeout S` sets it for a decomposed run (kept in the plan).
+`FORGE_REGISTRY` points the dispatcher at an alternative registry file.
+
+Only antigravity bounds its own runtime, and stock macOS has no `timeout` binary to wrap the
+others in — so a hung backend used to block forever, and under a decomposed run one hung task
+silently stalled the others. The default is deliberately generous: this is a backstop against
+a wedged process, not a budget. A role killed by it has usually left a partial edit behind, so
+`7` is worth reporting as such rather than as a clean failure.
+
+On `3` or `4`, forge shows you the actual error rather than substituting a different model —
+quietly swapping backends hides the fact that the one you picked is broken.
+
+**Process hygiene.** Unless `FORGE_ORPHAN_GUARD=off` (or the run is a Fractal one), the harness
+is started in its own session, and after it exits any process still alive in that session is
+listed in `<role>.orphans` and stopped, so a backgrounded measurement cannot outlive the
+dispatch. The timeout watchdog and the exit trap signal the whole session too.
+
+```bash
+# what would this actually run?
+bash scripts/forge-dispatch.sh dwarf sol:ultra --prompt-file /tmp/p --dry-run
+
+# check a clamp before committing to a long run
+bash scripts/forge-dispatch.sh qa gemini-pro:medium --prompt-file /tmp/p --dry-run
+# effort=low
+# clamped=medium -> low        (gemini-pro offers low and high, but no medium)
+```
+
+## `scripts/forge-solo.sh`
+
+The whole single-task run: memory injection, prompt assembly, the dwarf dispatch, the diff
+capture, the QA dispatch, and the ledger writes.
+
+```
+forge-solo.sh <run-dir> --repo <dir> --dwarf <spec> [--qa <spec>]
+              [--approach <file>] [--yolo-dwarf] [--yolo-qa]
+              [--native-review] [--no-memory] [--timeout <s>] [--dry-run] [--ui | --no-ui]
+              [--fail-first]
+              [--fractal | --no-fractal] [--fractal-<limit> <n>]
+              [--dwarf-low <pool>] [--dwarf-medium <pool>] [--dwarf-high <pool>] [--retry]
+```
+
+You write two files into the run directory; forge does the rest:
+
+| You write | Is |
+|---|---|
+| `prompt.md` | the implementation instruction (required) |
+| `goal.txt` | one line, what was asked — given to the reviewer as intent (optional) |
+
+| It writes | Is |
+|---|---|
+| `dwarf.last` / `qa.last` | each role's final message |
+| `changes.diff` | exactly what the reviewer read |
+| `verdict` | `PASS`, `FAIL`, `UNKNOWN` or `NOCHANGES` |
+| `<role>.{input,log,resolved,cmd}` | the prompt, the transcript, the resolution, the command |
+| `fractal-selection.json` | persisted backend choice; enabled runs include their managed run ID |
+
+With Fractal, per-step dispatch artifacts live in the managed run while the solo directory
+retains the aggregate diff and Forge QA result. `--retry` starts a new Fractal attempt;
+`forge fractal resume RUN_ID` continues preserved execution and pipeline checkpoints.
+
+```bash
+RUN="$(mktemp -d /tmp/forge-XXXXXX)"
+echo "add retry with backoff to the HTTP client" > "$RUN/goal.txt"
+echo "Add exponential backoff to src/http.py, capped at 5 attempts." > "$RUN/prompt.md"
+
+bash scripts/forge-solo.sh "$RUN" --repo ~/dev/api --dwarf sol:high --qa opus
+```
+
+**Exit codes:** `0` reviewed · `2` usage · `3` not a git repository · `4` a dispatch failed ·
+`5` **no changes or review invalidated** · `7` a dispatch timed out · `8` a dispatch hit an
+**infrastructure failure** (quota, auth, rate limit, network, empty output): nothing was
+judged, fix the cause and run again. A dwarf that exits 0 with an empty answer *and* changes
+nothing is reported as `8`, not `5` — it never really ran.
+
+The dwarf is given the same implementer rules as in a decomposed run (no commits, no
+background processes, finish measurements before the last message). If it commits anyway, the
+run still reviews its changes, says so, and prints the `git reset --soft <old HEAD>` that would
+turn them back into uncommitted changes; forge never resets anything itself. Orphan processes
+and promised-later-work notes appear under "implementer guard notes".
+
+`5` is the one worth recognising on sight. Headless dwarves genuinely stop to ask a
+clarifying question that nothing can answer; the run ends having spent the quota and changed
+nothing, with the question sitting in `dwarf.last`.
+
+Two things it gets right that are easy to get wrong by hand, and that fail *silently* rather
+than loudly:
+
+- **`.forge/` is excluded from the capture.** Forge rewrites its own memory in the working
+  tree at the end of every run, so left in, it reaches the reviewer as a file the dwarf
+  appears to have touched — which a good reviewer correctly flags as scope creep.
+- **New files are diffed against `/dev/null`.** A `git status` line says only `?? calc.py`.
+  A dwarf whose entire task was to add a file would have had its actual code reviewed by
+  nobody, while the run still reported a clean QA pass.
+
+The run directory must live outside the repository — anything forge writes inside the working
+tree shows up in the dwarf's own diff. `forge-solo.sh` refuses rather than letting that happen
+quietly.
+
+## `scripts/forge-parallel.sh`
+
+Decomposed runs: many dwarves in isolated worktrees, per-task QA, only passing work merged.
+Bash 3.2 entrypoints use a Python standard-library coordinator to schedule eligible tasks.
+
+```
+forge-parallel.sh plan      <plan-dir> --repo <dir> [routing flags] [--planner <spec>] [--no-memory]
+                                     [--decompose-level L] [--shadow-qa <spec>[,..]|none] [--shadow-rate R]
+                                     [--explore E] [--ui | --no-ui] [--fail-first | --no-fail-first]
+forge-parallel.sh run       <plan-dir> [--max-parallel N] [--yolo-dwarf] [--yolo-qa] [--dry-run]
+                                     [--verify <cmd>] [--setup <cmd>] [--timeout S]
+                                     [--retry-failed N] [--infra-retries M]
+                                     [--qa-threshold P0|P1|P2|P3|none] [--verify-retries N]
+                                     [--fractal | --no-fractal] [--fractal-<limit> <n>]
+forge-parallel.sh retry     <plan-dir> <task-id> [--dwarf <spec>] [--timeout S]
+                                     [--qa-threshold Pn|none] [--verify-retries N]
+forge-parallel.sh accept    <plan-dir> <task-id> --reason "<why>" --approved
+forge-parallel.sh review    <plan-dir> [--qa <spec>] [--yolo-qa] [--qa-threshold Pn]
+forge-parallel.sh integrate <plan-dir> --approved [--final-review <qa-spec>] [--verify-retries N]
+forge-parallel.sh split     <plan-dir> <new-plan-dir> --tasks <id,id> [--dry-run]
+forge-parallel.sh combine   <new-plan-dir> <plan-dir> <plan-dir>... [--verify <cmd>] [--dry-run]
+```
+
+| Subcommand | Does |
+|---|---|
+| `plan` | validate `tasks.tsv`, resolve difficulty → concrete dwarf/qa specs, compute waves, render the approval table |
+| `run` | schedule ready tasks; per task: worktree → dwarf → diff → QA → status; merge passing tasks onto the integration branch |
+| `retry` | re-run **one** failed task in the worktree it already has, with its reviewer's findings in the prompt |
+| `integrate` | **never automatic** — merge the integration branch into your branch |
+| `accept` | **only on your explicit instruction** — merge a `FAIL`/`UNKNOWN` task's reviewed work anyway, recording why |
+| `review` | **opt-in, spends QA quota** — one reviewer reads the whole combined result; read-only |
+| `split` / `combine` | move tasks into a plan of their own / join fully merged plans into one |
+
+| Flag | Subcommands | Remembered in the plan | Means |
+|---|---|---|---|
+| `--timeout S` | run, retry | `timeout` | per-dispatch timeout in seconds (`0` disables); wins over `FORGE_TIMEOUT` |
+| `--retry-failed N` | run | no — this run only | re-queue a task the reviewer rejected up to `N` more times inside the run |
+| `--infra-retries M` | run | no — this run only | wait out up to `M` infrastructure stops instead of pausing |
+| `--qa-threshold Pn` | run, retry | `qa_threshold` | least severe finding that still blocks; milder ones become known issues; `none` clears |
+| `--verify-retries N` | run, retry, integrate | `verify_retries` | reruns of a failed verify command (default `1`, `0` = strict single run) |
+
+**Exit codes:** `0` ok · `2` usage or validation · `3` precondition (not a git repo, …) ·
+`5` some task failed QA, or the combined verification failed · `6` integration conflict ·
+`8` **paused on an infrastructure failure** (quota, auth, rate limit, network): no attempt was
+spent and nothing was judged — fix the cause and run the same command again.
+
+The full plan → run → integrate walkthrough is in [decomposed runs](decomposed-runs.md#plan-run-integrate). `retry`, `accept` and `review` are covered in [reviews, retries and recovery](reviews.md); resuming, `split`/`combine`, scope drift and `tasks.tsv` in [decomposed runs](decomposed-runs.md).
+
+## `scripts/forge-memory.sh` and `scripts/forge-install.sh`
+
+See [project memory](memory.md#scriptsforge-memorysh) and [install](install.md#scriptsforge-installsh).

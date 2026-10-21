@@ -5,7 +5,7 @@ model routing, independent QA of the cumulative diff, verification and integrati
 Fractal execution completion and Forge acceptance are separate outcomes. Costs are
 observational, and this integration makes no speed or cost-saving claim.
 
-For a first run, follow the [README walkthrough](../README.md#fractal-execution).
+For a first run, follow the [Fractal guide](../docs/fractal.md).
 This reference covers the exact selection, routing, lifecycle and inspection contracts.
 
 ## Contents
