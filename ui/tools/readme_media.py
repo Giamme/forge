@@ -1,6 +1,6 @@
 """The README's pictures of forge-ui, made again from the made-up runs of demo_runs.py.
 
-Needs Python Playwright with its Chromium, ffmpeg (with libwebp) and ImageMagick, and three.js:
+Needs Python Playwright with its Chromium, ImageMagick and the WebP tools (img2webp), and three.js:
 from the CDN, or from a local copy of the three@0.160.0 npm package named by FORGE_UI_TEST_THREE
 (its package/ dir).
 Development-only, like the browser tests: nothing here runs in forge itself.
@@ -10,6 +10,7 @@ Development-only, like the browser tests: nothing here runs in forge itself.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 from pathlib import Path
 import shutil
@@ -62,15 +63,18 @@ class Studio:
     def __init__(self, out, browser, url, key, catalog):
         self.out, self.browser, self.url, self.key, self.catalog = out, browser, url, key, catalog
 
-    def page(self, motion=False, mode='plan', view=None):
+    def page(self, motion=False, mode='plan', view=None, shell=None):
+        """shell: which modules start open ({'runs', 'insp', 'tasks'}: true or false), Immersive layout."""
         ctx = self.browser.new_context(viewport=view or (MOTION_VIEW if motion else VIEW), device_scale_factor=1 if motion else 2,
                                        color_scheme='dark')
         page = ctx.new_page()
         if motion:
             page.add_init_script(CLOCK)
         page.on('pageerror', lambda e: print('page error:', e, file=sys.stderr))
+        modules = {'shell': 'immersive', 'runs': False, 'insp': False, 'tasks': False, **(shell or {})}
         page.add_init_script("try { localStorage.setItem('forge-ui-view', '\"3d\"'); "
-                             f"localStorage.setItem('forge-ui-mode', '\"{mode}\"'); }} catch (_) {{}}")
+                             f"localStorage.setItem('forge-ui-mode', '\"{mode}\"'); "
+                             f"localStorage.setItem('forge-ui-shell', '{json.dumps(modules)}'); }} catch (_) {{}}")
         if THREE:
             def serve(route):
                 path = Path(THREE) / route.request.url[len(CDN):].split('?')[0]
@@ -91,8 +95,9 @@ class Studio:
 
     @staticmethod
     def settle(page, ms=900):
-        """Let tweens and the camera finish, then wait for two quiet frames."""
-        page.wait_for_timeout(ms)
+        """Let tweens and the camera finish, asking for frames all along (headless Chromium can stop drawing a
+        page whose only pending frame was asked for mid-frame), then wait for two quiet frames."""
+        page.evaluate('ms => new Promise(r => { const t0 = performance.now(); const f = () => performance.now() - t0 > ms ? r() : requestAnimationFrame(f); f(); })', ms)
         page.evaluate('() => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)))')
 
     def still(self, page, name, clip):
@@ -120,10 +125,12 @@ class Studio:
             w, h, x, y = (int(v) for v in box.replace('x', '+').split('+'))
             x0, y0 = max(x + inset - pad, inset), max(y + inset - pad, inset)
             x1, y1 = min(x + inset + w + pad, width - inset), min(y + inset + h + pad, height - inset)
-            subprocess.run(['ffmpeg', '-v', 'error', '-y', '-framerate', str(FPS), '-i', str(Path(tmp) / '%05d.png'),
-                            '-vf', f'crop={x1 - x0}:{y1 - y0}:{x0}:{y0},scale=min({ANIM_WIDTH}\\,iw):-1:flags=lanczos',
-                            '-c:v', 'libwebp_anim', '-lossless', '0', '-quality', '75', '-compression_level', '6', '-loop', '0',
-                            str(dest)], check=True)
+            cut = Path(tmp) / 'cut'
+            cut.mkdir()
+            subprocess.run(['mogrify', '-path', str(cut), '-crop', f'{x1 - x0}x{y1 - y0}+{x0}+{y0}', '+repage',
+                            '-filter', 'Lanczos', '-resize', f'{ANIM_WIDTH}x>', *map(str, first)], check=True)
+            subprocess.run(['img2webp', '-loop', '0', '-lossy', '-q', '75', '-m', '6', '-d', str(1000 // FPS),
+                            *map(str, sorted(cut.glob('*.png'))), '-o', str(dest)], check=True, capture_output=True)
         print(f'{dest.name}: {dest.stat().st_size // 1024} KB, {len(frames)} frames')
 
     @staticmethod
@@ -136,34 +143,35 @@ class Studio:
             y1 = min(y1, bottom)
         return dict(x=max(x0, 0), y=max(y0, 0), width=x1 - max(x0, 0), height=y1 - max(y0, 0))
 
-    def zoom(self, page, clicks, at=(.5, .5)):
-        """Bring the camera closer: a click in an empty corner engages the wheel without selecting anything."""
-        slot = self.box(page, '#stage-slot')
-        page.mouse.click(slot['x'] + 10, slot['y'] + 10)
-        page.mouse.move(slot['x'] + slot['width'] * at[0], slot['y'] + slot['height'] * at[1])
-        for _ in range(clicks):
-            page.mouse.wheel(0, -160)
-            page.wait_for_timeout(150)
-        page.evaluate('document.activeElement && document.activeElement.blur()')   # no focus ring in the picture
+    def zoom(self, page, presses):
+        """Bring the camera closer with the stage's own key (+), which works wherever focus is."""
+        for _ in range(presses):
+            page.keyboard.press('+')
+            page.wait_for_timeout(300)
         page.mouse.move(0, 0)
         self.settle(page, 1200)
+
+    @staticmethod
+    def window(page):
+        """The whole window: the stage with the modules floating over it."""
+        return dict(x=0, y=0, **page.viewport_size)
 
     # -- stills ----------------------------------------------------------------------------------
 
     def run(self):
-        ctx, page = self.page()
+        ctx, page = self.page(shell={'runs': True, 'insp': True})
         self.go(page, f'#/runs/{self.key}')
         self.settle(page, 1500)
-        self.zoom(page, 3)
-        self.still(page, 'run', self.box(page, '#stage-slot', '#inspector', pad=8, bottom=VIEW['height'] - 4))
+        self.zoom(page, 1)
+        self.still(page, 'run', self.window(page))
         ctx.close()
 
     def execution(self):
-        ctx, page = self.page(mode='exec')
+        ctx, page = self.page(mode='exec', shell={'insp': True})
         self.go(page, f'#/runs/{self.key}')
         self.settle(page, 1500)
-        self.zoom(page, 5, at=(.42, .5))
-        self.still(page, 'execution', self.box(page, '#stage-slot', '#inspector', pad=8, bottom=VIEW['height'] - 4))
+        self.zoom(page, 2)
+        self.still(page, 'execution', self.window(page))
         ctx.close()
 
     def files(self):
@@ -171,20 +179,19 @@ class Studio:
         self.go(page, f'#/runs/{self.key}', stage=False)
         page.wait_for_selector('#files-view .fm-cell')
         self.settle(page)
-        self.still(page, 'files', self.box(page, '#files-view', pad=8, bottom=VIEW['height'] - 4))
+        self.still(page, 'files', self.box(page, '#main', bottom=VIEW['height']))
         ctx.close()
 
     def diff(self):
         detail = server.api_get(self.catalog, f'/api/runs/{self.key}/tasks/token-model/diff')
         source = next(s['id'] for s in detail['sources'] if s.get('verdict') == 'FAIL')
         ctx, page = self.page()
-        self.go(page, f'#/runs/{self.key}/tasks/token-model/diff/{source}', stage=False)
+        # opened at its first finding, as a finding's mark on the stage opens it: the diff scrolls to it
+        self.go(page, f'#/runs/{self.key}/tasks/token-model/diff/{source}/finding/{source}%3A0', stage=False)
         page.wait_for_selector('#diff-view .diff-pin')
-        self.settle(page)
-        page.locator('#diff-view').scroll_into_view_if_needed()
-        self.settle(page, 300)
-        last = page.locator('#diff-view .diff-pin').last.bounding_box()
-        self.still(page, 'diff', self.box(page, '#diff-view', pad=8, bottom=last['y'] + last['height'] + 12))
+        self.settle(page, 2000)                                 # past the finding's flash
+        page.evaluate('document.activeElement && document.activeElement.blur()')
+        self.still(page, 'diff', self.box(page, '#diff-view', pad=8, bottom=VIEW['height'] - 4))
         ctx.close()
 
     def models(self):
@@ -196,11 +203,11 @@ class Studio:
         ctx.close()
 
     def map(self):
-        ctx, page = self.page()
+        ctx, page = self.page(shell={'runs': True})
         self.go(page, '#/')
         self.settle(page, 1500)
-        self.zoom(page, 2)
-        self.still(page, 'map', self.box(page, '#main', bottom=VIEW['height']))
+        page.mouse.move(0, 0)
+        self.still(page, 'map', self.window(page))
         ctx.close()
 
     # -- animations ------------------------------------------------------------------------------
@@ -224,7 +231,12 @@ class Studio:
         ctx, page = self.page(motion=True)
         self.go(page, f'#/runs/{self.key}')
         self.settle(page, 1500)
-        crop = self.box(page, '#stage-slot')
+        self.zoom(page, 1)
+        # the open stage only: below the run's header, above the tasks, left of the stage's keys
+        slot, head = self.box(page, '#stage-slot'), page.locator('#run-head').bounding_box()
+        tasks, keys = page.locator('.tasks-module').bounding_box(), page.locator('.stage-ctl').bounding_box()
+        top, right = head['y'] + head['height'] + 8, keys['x'] - 8
+        crop = dict(x=slot['x'], y=top, width=right - slot['x'], height=tasks['y'] - 8 - top)
         page.evaluate('window.__clock.freeze()')
         frames = self.film(page, crop, 1.5)
         page.click('[data-mode="exec"]')
@@ -264,7 +276,7 @@ def main(argv=None):
     parser.add_argument('out', nargs='?', type=Path, default=HERE.parent / 'docs' / 'media')
     parser.add_argument('--only', nargs='+', choices=TAKES, default=TAKES, metavar='NAME', help=', '.join(TAKES))
     args = parser.parse_args(argv)
-    for tool in ('ffmpeg', 'convert', 'identify'):
+    for tool in ('img2webp', 'convert', 'mogrify', 'identify'):
         if not shutil.which(tool):
             parser.error(f'{tool} is not installed')
     args.out.mkdir(parents=True, exist_ok=True)

@@ -389,6 +389,74 @@ body[data-shell] .stage-note { position: absolute; z-index: 2; left: var(--L, va
 .stage-tip-title { font-weight: 650; overflow-wrap: anywhere; }
 .stage-tip-body { font-family: var(--mono); font-size: var(--t-xs); overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
 .stage-tip-foot { color: var(--muted); font-size: var(--t-xs); margin-top: 3px; }
+.stage-tip-body + .stage-tip-body { margin-top: 2px; }
+.stage-tip-note { margin-top: 4px; padding-top: 4px; border-top: 1px solid var(--rule); color: var(--ink-2); font-size: var(--t-xs); text-wrap: pretty;
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; }
+.stage-tip-note .sev-chip { margin-right: 6px; vertical-align: -1px; }
+.stage:fullscreen { --L: var(--gap); --R: var(--gap); --B: var(--gap); background: var(--stage-bg); }
+
+/* the stage's own keys (stagectl.js): a bank down the right edge of the free stage, the legend beside it */
+.stage-ctl { position: absolute; z-index: 4; right: var(--R, var(--gap)); top: 50%; translate: 0 -50%; display: grid; gap: 2px; padding: 3px;
+  border: 1px solid var(--rule); border-radius: calc(var(--r-key) + 3px); background: var(--module); box-shadow: var(--ply-1); }
+.stage-ctl[hidden] { display: none; }
+body:not([data-view=run]) .stage-ctl { right: var(--gap); }                 /* the map has no inspector beside it */
+body:not([data-view=run]) .stage-legend { right: calc(var(--gap) + 48px); }
+.stage-ctl .icon-btn { border: 0; background: none; box-shadow: none; color: var(--ink-2); }
+.stage-ctl .icon-btn:hover:not(:disabled) { background: var(--key); color: var(--ink); }
+.stage-ctl .icon-btn[aria-pressed=true] { background: var(--key); color: var(--ink); box-shadow: inset 0 0 0 1px var(--rule-2); }
+.stage-ctl .icon-btn::after { inset: -2px -4px; }                   /* 36 × 40 hit areas that never overlap */
+.stage-ctl-rule { height: 1px; margin: 2px 4px; background: var(--rule); }
+.stage-ctl-group { display: grid; gap: 2px; }
+.stage-ctl .latch::before { content: ''; position: absolute; top: 4px; right: 4px; width: 5px; height: 5px; border-radius: 50%; background: var(--lamp-off); transition: background-color var(--relay); }
+.stage-ctl .latch[aria-pressed=true]::before { background: var(--route); }
+/* the stage has the keyboard: its bank says so (the canvas fills the window behind the modules, its own ring would be hidden) */
+.stage:has(.stage-canvas:focus-visible) .stage-ctl { box-shadow: var(--ply-1), 0 0 0 2px var(--route); }
+body[data-shell] .stage-canvas:focus-visible { outline: none; }
+.stage-legend { position: absolute; z-index: 4; right: calc(var(--R, var(--gap)) + 48px); top: 50%; translate: 0 -50%; width: 264px; max-height: calc(100% - 2 * var(--gap));
+  overflow: auto; padding: 8px 12px 12px; border: 1px solid var(--rule); border-radius: var(--r-module); background: var(--module); color: var(--ink); box-shadow: var(--ply-2); }
+.stage-legend[hidden] { display: none; }
+.stage-legend-head, .keys-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; }
+.stage-legend-head .icon-btn, .keys-head .icon-btn { width: 28px; min-width: 28px; min-height: 28px; border: 0; background: none; box-shadow: none; }
+.lg-sec + .lg-sec { margin-top: 10px; }
+.lg-title { margin: 0 0 6px; font-size: .714rem; }
+.stage-legend-head h3 { margin: 0; }
+.lg-row { display: flex; align-items: center; gap: 8px; min-height: 22px; font-size: var(--t-sm); }
+.lg-label { min-width: 0; overflow-wrap: anywhere; }
+.lg-note { margin: 4px 0 0; color: var(--muted); font-size: var(--t-xs); text-wrap: pretty; }
+.lg-sw { flex: none; display: inline-grid; place-items: center; width: 22px; height: 14px; }
+.lamp-route { --st-fill: var(--route); --st-ring: var(--lamp-edge); }
+.lg-sev::before { content: ''; width: 11px; height: 11px; clip-path: var(--sev-shape); background: var(--sev); }
+.lg-sev.pale::before { width: 8px; height: 8px; opacity: .55; }
+.lg-cable::before { content: ''; width: 22px; height: 0; border-top: 1px solid var(--ink-2); }
+.lg-cable.cable-route::before { border-top: 2px solid var(--route); }
+.lg-cable.cable-critical::before { border-top: 2px solid var(--stage-accent, var(--lamp-amber)); }
+.lg-cable.cable-retry::before { border-top: 1px dashed var(--ink-2); }
+.lg-cable.cable-escalation::before { border-top: 1.5px solid var(--stage-accent, var(--lamp-amber)); }
+.lg-bead { position: relative; }
+.lg-bead::before { content: ''; width: 22px; height: 0; border-top: 1px solid var(--ink-2); }
+.lg-bead::after { content: ''; position: absolute; left: 9px; top: 4px; width: 6px; height: 6px; border-radius: 50%; background: var(--stage-accent, var(--lamp-amber)); }
+.lg-ring::before { content: ''; width: 12px; height: 12px; border-radius: 50%; background: conic-gradient(var(--lamp-green) 0 70%, var(--lamp-off) 70% 100%); mask: radial-gradient(circle, transparent 3.5px, #000 4px); }
+.lg-color::before { content: ''; width: 12px; height: 12px; border-radius: 3px; background: var(--sw); }
+.lg-height { display: inline-flex; align-items: end; gap: 2px; height: 14px; }
+.lg-height i { width: 5px; border: 1px solid var(--ink-2); border-bottom: 0; }
+.lg-height i:nth-child(1) { height: 5px; } .lg-height i:nth-child(2) { height: 9px; } .lg-height i:nth-child(3) { height: 14px; }
+.lg-sec:has(.lg-scale) .lg-row { display: block; }
+.lg-scale { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 6px; width: 100%; height: auto; font-family: var(--mono); font-size: var(--t-xs); color: var(--muted); font-variant-numeric: tabular-nums; }
+.lg-bar { height: 6px; border-radius: 3px; background: linear-gradient(90deg, var(--lamp-off), var(--stage-accent, var(--lamp-amber))); }
+.lg-scale + .lg-label:empty { display: none; }
+dialog.keys-sheet { width: min(640px, calc(100vw - 24px)); padding: 14px 18px 18px; border: 1px solid var(--rule); border-radius: var(--r-module); background: var(--module); color: var(--ink); box-shadow: var(--ply-2); }
+dialog.keys-sheet::backdrop { background: light-dark(rgb(17 22 19 / .35), rgb(0 0 0 / .55)); }
+.keys-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px 24px; }
+.keys-group dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 5px 12px; margin: 0; font-size: var(--t-sm); }
+.keys-group dt { display: flex; align-items: flex-start; gap: 3px; }
+.keys-group dd { margin: 0; color: var(--ink-2); }
+
+/* the View popover's banks: a push button per part of the drawing, its lamp lit while that part is drawn */
+.layer-bank { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; }
+.layer-key { justify-content: flex-start; min-height: 30px; padding: 0 8px; gap: 7px; color: var(--ink-2); }
+.layer-key::before { content: ''; width: 7px; height: 7px; border-radius: 50%; background: var(--lamp-off); flex: none; transition: background-color var(--relay); }
+.layer-key[aria-pressed=true] { color: var(--ink); }
+.layer-key[aria-pressed=true]::before { background: var(--route); }
 
 /* ---------- the map of every run ---------- */
 .map-head-module { padding: 8px 10px; display: grid; gap: var(--s-2); }
@@ -742,9 +810,7 @@ dialog.jump::backdrop, dialog.export-dialog::backdrop { background: light-dark(r
 .diff-line.meta td.code { color: var(--muted); font-style: italic; }
 .diff-hunk td { background: var(--hunk); color: var(--muted); padding: 3px 10px; white-space: pre; }
 .diff-pin > td { padding: 6px 10px 6px 7.4em; background: var(--module); font-family: var(--font-ui); font-size: var(--t-sm); white-space: normal; }
-.diff-finding { position: relative; border: 1px solid var(--rule); border-radius: var(--r-key); padding: 6px 10px 6px 26px; background: var(--module); max-width: 900px; scroll-margin: 80px; transition: box-shadow var(--dur-1) var(--ease-out); }
-.diff-finding::before { content: ''; position: absolute; left: 10px; top: 12px; width: 8px; height: 8px; transform: rotate(45deg); background: var(--sev, var(--rule-2)); }
-.diff-finding.sev-P0 { --sev: var(--sev-p0); } .diff-finding.sev-P1 { --sev: var(--sev-p1); } .diff-finding.sev-P2 { --sev: var(--sev-p2); } .diff-finding.sev-P3 { --sev: var(--sev-p3); }
+.diff-finding { position: relative; border: 1px solid var(--rule); border-radius: var(--r-key); padding: 6px 10px; background: var(--module); max-width: 900px; scroll-margin: 80px; transition: box-shadow var(--dur-1) var(--ease-out); }   /* its chip carries the severity's shape */
 .diff-finding.flash { box-shadow: 0 0 0 2px var(--route); }
 .diff-finding-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: var(--t-xs); }
 .diff-finding p { margin: 4px 0 0; overflow-wrap: anywhere; }
@@ -913,6 +979,12 @@ dialog.export-dialog h2 { margin-bottom: var(--s-2); }
   body[data-shell] :is(.run-header, .insp-module, .tasks-module, .diff-view, .map-head-module, .strip-wrap) { position: static; width: auto; max-width: none; height: auto; margin: 0; box-shadow: none; border-radius: var(--r-module); border-width: 1px; }
   body[data-shell] .tasks-module .run-tasks { max-height: 60vh; }
   body[data-shell] .stage-note { position: static; }
+  .stage-ctl { top: auto; bottom: var(--gap); right: var(--gap); translate: none; grid-auto-flow: column; }
+  .stage-ctl-rule { width: 1px; height: auto; margin: 4px 2px; }
+  .stage-ctl :is([data-ctl=zoom-in], [data-ctl=zoom-out], [data-ctl=keys]) { display: none; }
+  .stage-ctl-group { grid-auto-flow: column; }
+  /* a phone's stage is too short to hold the legend: it opens as a sheet from the bottom of the screen */
+  .stage-legend { position: fixed; z-index: 20; left: 0; right: 0; top: auto; bottom: 0; translate: none; width: auto; max-height: 70vh; border-radius: var(--r-module) var(--r-module) 0 0; padding-bottom: calc(12px + env(safe-area-inset-bottom)); }
   .splitter { display: none !important; }
   .fields { grid-template-columns: 96px minmax(0, 1fr); gap: 6px 10px; }
   .diff-body { grid-template-columns: minmax(0, 1fr); }

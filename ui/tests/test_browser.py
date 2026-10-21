@@ -442,6 +442,62 @@ class Page(unittest.TestCase):
         self.assertEqual(page.evaluate("window.ForgeUI.state.stage.debug().rebuilds"), before)
         self.assertClean(page)
 
+    def beacons(self, page):
+        """The finding marks drawn now, once the camera and the marks have stopped, each with where it is on the screen."""
+        page.wait_for_function("() => window.ForgeUI.state.stage.debug().beacons().some(b => b.shown)", timeout=15000)
+        page.evaluate("window.ForgeUI.state.stage.debug().settle()")
+        self.steady(page, "window.ForgeUI.state.stage.debug().beacons()")
+        return [b for b in page.evaluate("window.ForgeUI.state.stage.debug().beacons()") if b['shown'] and b['on']]
+
+    def test_a_finding_mark_opens_the_diff_at_its_finding(self):
+        page = self.open(cdn=True)
+        page.goto(self.url + '#/runs/' + self.key)
+        self.three_or_skip(page)
+        mark = next(b for b in self.beacons(page) if b['sev'] == 'P1')
+        page.mouse.click(mark['x'], mark['y'])
+        page.wait_for_function(f"() => decodeURIComponent(location.hash).endsWith('/finding/{mark['id']}')")
+        page.wait_for_function(f"() => document.activeElement && document.activeElement.dataset.finding === {json.dumps(mark['id'])}")
+        self.assertTrue(page.evaluate("document.activeElement.classList.contains('sev-P1')"))
+        self.assertClean(page)
+
+    def test_a_layer_switched_off_and_the_projection_stay_after_a_reload(self):
+        context = self.browser.new_context(viewport={'width': 1440, 'height': 960})
+        self.addCleanup(context.close)
+        page = self.open(cdn=True, context=context)
+        page.goto(self.url + '#/runs/' + self.key)
+        self.three_or_skip(page)
+        mark = self.beacons(page)[0]
+        page.click('.view-btn')
+        page.click('.layer-key[data-layer=beacons]')
+        self.assertEqual(page.get_attribute('.layer-key[data-layer=beacons]', 'aria-pressed'), 'false')
+        self.frames(page)
+        self.assertIsNone(page.evaluate(f"window.ForgeUI.state.stage.debug().pickBeacon({mark['x']}, {mark['y']})"), 'a hidden mark is not picked')
+        page.keyboard.press('Escape')
+        page.keyboard.press('v')                                    # the stage's keys work wherever focus is
+        page.wait_for_function("() => window.ForgeUI.state.stage.debug().projection().ortho")
+        page.reload()
+        self.three_or_skip(page)
+        page.wait_for_function("() => window.ForgeUI.state.stage.view === 'run'")
+        self.assertEqual(page.evaluate("window.ForgeUI.state.stage.debug().projection()"), {'proj': 'iso', 'ortho': True})
+        self.assertFalse(page.evaluate("window.ForgeUI.state.stage.layers.beacons"))
+        page.click('.view-btn')
+        self.assertEqual(page.get_attribute('.layer-key[data-layer=beacons]', 'aria-pressed'), 'false')
+        self.assertClean(page)
+
+    def test_the_map_walks_its_runs_by_keyboard_and_enter_opens_one(self):
+        page = self.open(cdn=True)
+        page.goto(self.url + '#/')
+        self.three_or_skip(page)
+        page.wait_for_function("() => window.ForgeUI.state.stage.view === 'atlas'")
+        page.focus('#stage-host canvas')
+        page.keyboard.press('ArrowRight')
+        page.wait_for_function("() => window.ForgeUI.state.stage.debug().sel && window.ForgeUI.state.stage.debug().sel.kind === 'run'")
+        key = page.evaluate("window.ForgeUI.state.stage.debug().sel.key")
+        self.assertNotEqual(page.text_content('#live'), '')        # where the walk is, said aloud
+        page.keyboard.press('Enter')
+        page.wait_for_function(f"() => location.hash === '#/runs/{key}'")
+        self.assertClean(page)
+
 
 @unittest.skipUnless(sync_playwright, 'install Python Playwright to run browser checks')
 class Cloud(unittest.TestCase):

@@ -362,8 +362,27 @@ class EndpointTests(unittest.TestCase):
             self.assertEqual((status, data['source']['file'], data['available']), (200, name, True))
         self.assertEqual([item['id'] for item in data['sources']], ['current', 'existing', F.SOLO_QA])
 
+    def test_run_findings_name_each_finding_as_the_diff_that_pins_it(self):
+        status, data = self.get(f'/api/runs/{self.key}/findings')
+        self.assertEqual((status, data), (200, reader.run_findings(self.plan)))
+        listed = {f['id']: f for task in data['tasks'] for review in task['reviews'] for f in review['findings']}
+        listed.update({f['id']: f for review in data['final_reviews'] for f in review['findings']})
+        self.assertFalse([f for f in listed.values() if 'text' in f], 'no finding text in the run-wide list')
+        # every attempt's reviews, primary and shadow, each finding under the id its diff gives it
+        [reader_task] = [task for task in data['tasks'] if task['id'] == 'reader']
+        self.assertEqual([(r['execution'], r['attempt'], len(r['findings'])) for r in reader_task['reviews']],
+                         [(F.READER_QA1, 1, 2), (F.READER_QA2, 2, 1)])
+        for path in (f'/api/runs/{self.key}/executions/{F.READER_QA1}/diff', f'/api/runs/{self.key}/tasks/page/diff',
+                     f'/api/runs/{self.key}/final-reviews/{F.REVIEW_OLD}/diff'):
+            pinned = self.get(path)[1]['findings']
+            self.assertTrue(pinned, path)
+            for item in pinned:
+                self.assertEqual((listed[item['id']]['severity'], listed[item['id']]['location']),
+                                 (item['severity'], item['location']), path)
+        self.assertEqual(self.get(f'/api/runs/{self.solo_key}/findings')[1]['tasks'][0]['id'], 'solo')
+
     def test_not_found(self):
-        paths = [f'/api/runs/{self.key}/tasks/nope/diff', f'/api/runs/{self.key}/tasks/reader/diff/existing',
+        paths = [f'/api/runs/{self.key}/tasks/nope/diff', f'/api/runs/{"0" * 12}/findings', f'/api/runs/{self.key}/tasks/reader/diff/existing',
                  f'/api/runs/{self.key}/tasks/reader/diff/other', f'/api/runs/{self.key}/tasks/reader/diff/',
                  f'/api/runs/{self.key}/tasks/%2e%2e/diff', f'/api/runs/{self.solo_key}/tasks/solo/diff/prev',
                  f'/api/runs/{self.solo_key}/tasks/reader/diff', f'/api/runs/{"0" * 12}/tasks/reader/diff',

@@ -158,6 +158,7 @@ def task_diff(path, task_id, which='current', source='plan') -> dict | None  # a
 def execution_diff(path, name, source='plan') -> dict | None       # a DiffDetail
 def final_review_diff(path, name, source='plan') -> dict | None    # a DiffDetail
 def files_detail(path, source='plan') -> dict | None               # Files
+def run_findings(path, source='plan') -> dict | None               # RunFindings
 def fractal_detail(path, task_id, source='plan') -> dict | None    # a TaskFractal
 def fractal_node(path, task_id, node, source='plan') -> dict | None       # a FractalNodeDetail
 def fractal_node_diff(path, task_id, node, source='plan') -> dict | None  # a DiffDetail
@@ -170,7 +171,7 @@ class Catalog:
     def execution(self, key, name) -> dict | None
     def final_review(self, key, name) -> dict | None
     def diff(self, key, task_id, which='current'), execution_diff(self, key, name),
-        final_review_diff(self, key, name), files(self, key), fractal(self, key, task_id),
+        final_review_diff(self, key, name), files(self, key), findings(self, key), fractal(self, key, task_id),
         fractal_node(self, key, task_id, node), fractal_node_diff(self, key, task_id, node) -> dict | None
     def models(self) -> dict            # Models, over every run
 ```
@@ -213,6 +214,7 @@ its last 20,000 behind a leading `…`. Their `truncated` lists the field names 
 | `GET /api/runs/<key>/executions/<qa-or-dwarf>/diff` | `200 DiffDetail` of the diff that review read (a dwarf: its attempt's primary review) |
 | `GET /api/runs/<key>/final-reviews/<name>/diff` | `200 DiffDetail` |
 | `GET /api/runs/<key>/files` | `200 Files` |
+| `GET /api/runs/<key>/findings` | `200 RunFindings` |
 | `GET /api/models` | `200 Models` |
 | `GET /api/runs/<key>/export?texts=0\|1&paths=0\|1` | `200` the run as one HTML file (see Export), `Content-Disposition: attachment`, `Content-Security-Policy: default-src 'none'; sandbox`; `404` for an unknown run |
 | `GET /api/runs/<key>/tasks/<id>/fractal` | `200 TaskFractal` |
@@ -577,7 +579,7 @@ of Findings, in place of the summary), `truncated` and `warnings`.
             "additions": 5, "deletions": 1, "truncated": false,
             "hunks": [{"old_start": 38, "old_lines": 7, "new_start": 38, "new_lines": 10,
                        "section": "def _tasks(reader):", "lines": [" ctx", "-old", "+new"]}]}],
- "findings": [{"review": {"kind": "primary", "execution": "qa-…", "attempt": 2, "spec": "opus"},
+ "findings": [{"id": "qa-…:0", "review": {"kind": "primary", "execution": "qa-…", "attempt": 2, "spec": "opus"},
                "severity": "P1", "status": "CONFIRMED", "location": "ui/reader.py:42",
                "summary": "…", "text": "…",
                "pin": {"file": 0, "path": "ui/reader.py", "line": 42, "side": "new", "hunk": 0, "index": 5},
@@ -597,7 +599,7 @@ of Findings, in place of the summary), `truncated` and `warnings`.
 | `truncated` | the read stopped at 8 MiB (at a line end), the fence never closed, more than 300 files, or a file is `truncated` |
 | `files[]` | per file of the diff: `old` (`null` when added), `new` (`null` when deleted), `status` `modified added deleted renamed copied`, `binary` (`Binary files … differ` or a `GIT binary patch`, whose body is skipped), `additions`, `deletions` (of the whole file, even when cut), `truncated`, `hunks` |
 | `hunks[]` | `old_start`, `old_lines`, `new_start`, `new_lines` (a count left out is 1), `section` (after the second `@@`, or `null`), `lines`: each raw line with its marker (` `, `-`, `+`, `\` for `\ No newline at end of file`) |
-| `findings[]` | the Findings (as above, without `line`) of the reviews attached, each with its `review` (`kind` `primary` `shadow` `final`, `execution`, `attempt`, `spec`), `pin` and `off_diff` |
+| `findings[]` | the Findings (as above, without `line`) of the reviews attached, each with its `id` (see RunFindings), its `review` (`kind` `primary` `shadow` `final`, `execution`, `attempt`, `spec`), `pin` and `off_diff` |
 | `pin` | `file` (index in `files`), `path`, `line`, `side` (`new`; `old` for a deleted file or a renamed file's old path), `hunk` and `index` (into that hunk's `lines`), or `null` |
 | `off_diff` | `null` when pinned to a line, else `no location`, `file not in this diff`, `ambiguous path` or `line outside the changed hunks` (then `pin` has `file`, `line`, `side` and `hunk`/`index` `null`) |
 
@@ -627,6 +629,28 @@ matching is `ambiguous path`. The line is looked up on the new side (old for a d
 Reads stay inside the run dir after symlinks are resolved, open regular files only (a FIFO is
 never opened) and read at most 8 MiB; parses are kept by `(dev, inode, size, mtime_ns)` as
 other parses are.
+
+## RunFindings
+
+Every review's Findings in one read, for the stage's marks: what a TaskDetail or DiffDetail
+lists, for all tasks and final reviews at once, without `text` or `line`.
+
+```json
+{"run": "3f9a0c1d2e4b", "available": true,
+ "tasks": [{"id": "reader", "reviews": [{"kind": "primary", "execution": "qa-…", "attempt": 1, "spec": "opus",
+            "verdict": "FAIL", "findings": [{"id": "qa-…:0", "severity": "P1", "status": "CONFIRMED",
+                                             "location": "ui/reader.py:42", "summary": "…"}]}]}],
+ "final_reviews": [{"name": "final-review-…", "execution": "qa-…", "spec": "sol", "verdict": "FAIL",
+                    "findings": [{"id": "qa-…:0", "severity": "P2", "status": "CONFIRMED", "location": null, "summary": "…"}]}],
+ "truncated": [], "warnings": []}
+```
+
+A task's `reviews` are every primary and shadow review of every attempt that listed a Finding
+(a solo run has one task, `solo`); `final_reviews` the newest 20 final reviews that did. A
+Finding's `id` is `<execution>:<n>`, `n` its 0-based place in the reply (`primary:<n>` or
+`final:<n>` for a reply without an execution); the DiffDetail that pins it gives it the same
+`id`, so a mark on the stage opens that Finding in the diff. `available` is `false` without the
+contract module, and the lists are then empty.
 
 ## Files
 
@@ -785,16 +809,18 @@ difficulty paths deps model` each), `decomposition_history` (its newest 20, each
 `GET /api/runs/<key>/export` answers one self-contained HTML file named
 `forge-run-<run_id>.html` (the run id with anything but `[A-Za-z0-9._-]` made `-`).
 
-- It holds `style.css` and the classic scripts the run view uses (`runmodel.js cloudmodel.js
-  graph.js gantt.js panel.js diffview.js files.js map3d.js search.js app.js`), inline; the import
-  map; a `<script type="application/json" id="forge-snapshot">` with `{meta, api}`; and a
-  `<script type="text/plain" id="forge-stage">` holding `iso.js`, `cloud3d.js` and `scene3d.js`
-  bundled into one module (each module in its own scope, relative imports bound to the earlier
-  ones' exports, `createStage` exported), which `map3d.js` imports from a `blob:` URL.
+- It holds `style.css` (with the labels' face, `D-DINCondensed-Bold.woff2`, inlined as a `data:`
+  URL) and the classic scripts the run view uses (`theme.js icons.js datatable.js shell.js
+  runmodel.js cloudmodel.js graph.js gantt.js panel.js diffview.js files.js map3d.js search.js
+  app.js`), inline; the import map; a `<script type="application/json" id="forge-snapshot">` with
+  `{meta, api}`; and a `<script type="text/plain" id="forge-stage">` holding `iso.js`,
+  `cloud3d.js`, `findings3d.js`, `stagectl.js` and `scene3d.js` bundled into one module (each
+  module in its own scope, relative imports bound to the earlier ones' exports, `createStage`
+  exported), which `map3d.js` imports from a `blob:` URL.
 - `api` maps each path the page requests to that endpoint's response as the server would answer
   it (server.api_get): `/api/runs` (this run only), the RunDetail, every TaskDetail, every
-  ExecutionDetail the RunDetail names, every FinalReviewDetail, Files, and the Fractal trees and
-  nodes. With `texts=1` also every diff the page can open (each task's diff and its `sources`,
+  ExecutionDetail the RunDetail names, every FinalReviewDetail, Files, RunFindings, and the
+  Fractal trees and nodes. With `texts=1` also every diff the page can open (each task's diff and its `sources`,
   each final review's, each Fractal node's).
 - `texts=0` (the default) nulls these keys wherever they hold a string, list or object: `prompt
   last request log_tail dwarf_tail qa_tail qa_last qa_input tasks_summary known_issues texts text
@@ -808,7 +834,7 @@ difficulty paths deps model` each), `decomposition_history` (its newest 20, each
   `generated`, `texts`, `paths`, `omitted`.
 - The page's `<meta http-equiv="Content-Security-Policy">`: `default-src 'none'; script-src
   <sha256 of the import map and each inline script> blob: https://cdn.jsdelivr.net/npm/three@0.160.0/;
-  style-src <sha256 of the style>; img-src data: blob:; connect-src 'none'; base-uri 'none';
+  style-src <sha256 of the style>; img-src data: blob:; font-src data:; connect-src 'none'; base-uri 'none';
   form-action 'none'; object-src 'none'`. Inside a script, `</script` and `<!--` are escaped; the
   JSON escapes `<`, `>` and `&`.
 - In the page, `app.js` reads the snapshot instead of the network, never polls, shows only the

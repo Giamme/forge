@@ -508,6 +508,22 @@
     if (!s.length) return null;
     return { start: Math.min(...s), end: Math.max(...e, ...s) };
   }
+  // A task's route through the plan: the tasks it waits on, however indirectly (ancestors), and the tasks that wait
+  // on it (descendants). Unknown ids and dependency cycles end the walk instead of looping.
+  function lineage(run, id) {
+    const up = new Map(), down = new Map();
+    for (const t of list(run && run.tasks)) {
+      if (!t || t.id == null) continue;
+      up.set(t.id, list(t.deps));
+      for (const d of list(t.deps)) { if (!down.has(d)) down.set(d, []); down.get(d).push(t.id); }
+    }
+    const walk = next => {
+      const out = new Set(), stack = [...(next.get(id) || [])];
+      while (stack.length) { const x = stack.pop(); if (x === id || out.has(x) || !up.has(x)) continue; out.add(x); stack.push(...(next.get(x) || [])); }
+      return out;
+    };
+    return { ancestors: walk(up), descendants: walk(down) };
+  }
   // Events worth flashing during a replay: attempts ending, escalations, merges, reviews.
   function events(run) {
     const out = [];
@@ -646,6 +662,6 @@
   }
 
   return { liveNow, runState, execStatus, matchRun, filterOptions, atlasModel, columns, planModel, finishState, taskParts,
-    taskTimes, metricValue, overlap, projectSchedule, execModel, criticalPath, concurrency, stateAt, timeRange, events, structureKey, innerKey,
+    taskTimes, metricValue, overlap, projectSchedule, execModel, criticalPath, concurrency, stateAt, timeRange, events, lineage, structureKey, innerKey,
     fmtDur, alias, basename, weight, searchIndex, searchRank, statusEvents, fractalTree };
 });

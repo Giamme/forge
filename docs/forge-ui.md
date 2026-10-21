@@ -14,8 +14,8 @@ and the cloud remembers it.
 
 <table>
 <tr>
-<td width="50%" valign="top"><img src="../ui/docs/media/run.png" alt="A run's eight tasks on a 3D plate in their planned waves, with dependency cables and the finish nodes, beside the run's inspector."><br><b>A run, as planned.</b> Tasks in their waves with dependency cables, ending in integration, verification and the final review. Click a task to open its attempts, dwarves and reviews.</td>
-<td width="50%" valign="top"><img src="../ui/docs/media/execution.png" alt="The same run on wall-clock time: one block per attempt, failed attempts in red, a plane marking now, and the inspector's timeline and critical path."><br><b>And as it ran.</b> One block per attempt in the lane it ran in, failed ones in red, against <code>--max-parallel</code>; the inspector names the critical path.</td>
+<td width="50%" valign="top"><img src="../ui/docs/media/run.png" alt="forge-ui's window: the runs list, a run's eight tasks on a 3D plate in their planned waves with dependency cables, finding marks and the finish nodes, and the run's inspector."><br><b>A run, as planned.</b> Tasks in their waves with dependency cables, ending in integration, verification and the final review. Click a task to open its attempts, dwarves and reviews.</td>
+<td width="50%" valign="top"><img src="../ui/docs/media/execution.png" alt="The same run on wall-clock time: one block per attempt, failed attempts in red with their finding marks, a plane marking now, the concurrency strip, and the inspector's timeline and critical path."><br><b>And as it ran.</b> One block per attempt in the lane it ran in, failed ones in red, against <code>--max-parallel</code>; the inspector names the critical path.</td>
 </tr>
 <tr>
 <td valign="top"><img src="../ui/docs/media/diff.png" alt="The diff a reviewer read, with a P1 finding pinned under the line comparing token digests and a P2 finding under the revoke function."><br><b>Findings on their lines.</b> Any diff of a task, or exactly the diff one reviewer read, with each P0–P3 finding under the line it names.</td>
@@ -23,7 +23,7 @@ and the cloud remembers it.
 </tr>
 <tr>
 <td valign="top"><img src="../ui/docs/media/files.png" alt="The files heatmap: files grouped by directory against tasks grouped by wave, with planned, touched, drift and same-wave overlap marks."><br><b>Who touched which file.</b> Planned, changed, drifted into or conflicted on, wave by wave; a cell opens that file's diff.</td>
-<td valign="top"><img src="../ui/docs/media/map.png" alt="The map of every run: one block per run in a district per repo, green when done, blue while running, red with failures."><br><b>Every run, by repo.</b> One block per run with a lamp per task, filtered by state, repo, model, age or review verdict.</td>
+<td valign="top"><img src="../ui/docs/media/map.png" alt="The map of every run: one block per run in a district per repo, green when done, amber while running, red with failures."><br><b>Every run, by repo.</b> One block per run with a lamp per task, filtered by state, repo, model, age or review verdict.</td>
 </tr>
 </table>
 
@@ -34,6 +34,13 @@ over a full-window stage (on a first visit the inspector and the tasks start fol
 opens on its plate); *Workbench* docks them beside it with splitters. `1`, `2` and
 `3` fold each module away, the header switches layout and theme (system, light or dark), and the
 task and model tables sort, reorder and hide columns. forge-ui remembers all of it in your browser.
+
+On the 3D stage every review finding stands over its block as a mark shaped by its severity, and
+a click opens the diff at that finding. A chosen task keeps its route lit, a hover shows its card
+(attempts, time, tokens, worst finding), and merges, failed attempts and escalations play over the
+plate as they happen or as a replay passes them. The *View* menu switches each part of the drawing
+on or off; the keys at the stage's edge fit, zoom, switch between perspective, isometric and
+top-down, open a legend of what is drawn, and `?` lists every key.
 
 Also: replay, critical path, Fractal child-task trees, quick jump (Ctrl K, ⌘K on a Mac, or
 `/`), a bell for runs that finish or fail, failed tasks and final-review verdicts (with opt-in

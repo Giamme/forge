@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "generatedAt": "2026-10-21T14:25:08+00:00",
+  "generatedAt": "2026-10-21T19:00:00+00:00",
   "title": "Design System: forge-ui",
   "extensions": {
     "colorMeta": {
@@ -742,7 +742,22 @@
       {
         "name": "key-bevel",
         "value": "inset 0 -1px 0 light-dark(rgb(0 0 0 / .08), rgb(0 0 0 / .35))",
-        "purpose": "The lower lip of a key cap; the only bevel."
+        "purpose": "The lower lip of a key cap."
+      },
+      {
+        "name": "kbd-lip",
+        "value": "inset 0 -1px 0 var(--rule-2)",
+        "purpose": "The lower lip of a kbd cap (search field, keys sheet). With the key bevel, the only bevels."
+      },
+      {
+        "name": "stage-focus-ring",
+        "value": "var(--ply-1), 0 0 0 2px var(--route)",
+        "purpose": "The stage key bank while the plate has keyboard focus; the canvas's own outline is hidden behind the modules."
+      },
+      {
+        "name": "sheet-backdrop",
+        "value": "light-dark(rgb(17 22 19 / .35), rgb(0 0 0 / .55))",
+        "purpose": "The page behind the keys sheet."
       }
     ],
     "motion": [
@@ -765,6 +780,36 @@
         "name": "reduced-motion",
         "value": "animation: none; transition-duration: 0ms",
         "purpose": "Drops movement; every lit, pressed and selected state stays."
+      },
+      {
+        "name": "beacon-drop",
+        "value": "650ms, ease-out cubic, from 60 plan units above",
+        "purpose": "A finding beacon that arrives (a poll, a replay, an opened task) drops onto its block once."
+      },
+      {
+        "name": "merge-pulse",
+        "value": "900ms pulse along an arc, then a 900ms ring, lamp green",
+        "purpose": "A task merged: a pulse to integration, which answers with a ring."
+      },
+      {
+        "name": "fail-ring",
+        "value": "1400ms ring, ease-out cubic, lamp red",
+        "purpose": "A failed attempt rings wide across the plate."
+      },
+      {
+        "name": "escalation-hop",
+        "value": "2200ms rise, fading over the last 30%, accent",
+        "purpose": "An escalation lifts a label with the two model aliases over an accent arc."
+      },
+      {
+        "name": "review-ring",
+        "value": "1200ms ring in the verdict's lamp colour",
+        "purpose": "A final review finished."
+      },
+      {
+        "name": "reduced-motion-event",
+        "value": "static lit block and halo for 2.6s",
+        "purpose": "Under reduced motion an event lights its block instead of moving; beacons appear without dropping."
       }
     ],
     "breakpoints": [
@@ -862,11 +907,51 @@
       "description": "A module on the desk: hairline edge, 12px corners, plate head, ply 1 when floating.",
       "html": "<section class=\"ds-module\"><div class=\"ds-module-head\"><h3 class=\"ds-module-title\">Runs</h3><span class=\"ds-module-count\">71/71</span></div><p class=\"ds-module-body\">Paginate the product search</p></section>",
       "css": ".ds-module { width:280px; background:var(--module); color:var(--ink); border:1px solid var(--rule); border-radius:12px; box-shadow:0 1px 0 light-dark(rgb(17 26 20 / .06), rgb(0 0 0 / .4)), 0 12px 30px -14px light-dark(rgb(17 26 20 / .26), rgb(0 0 0 / .62)); } .ds-module-head { display:flex; align-items:center; gap:8px; min-height:40px; padding:4px 6px 4px 10px; border-bottom:1px solid var(--rule); } .ds-module-title { margin:0; padding:2px 7px 1px; border-radius:3px; background:var(--plate); color:var(--plate-ink); font-family:\"D-DIN Condensed\", \"Arial Narrow\", \"Roboto Condensed\", system-ui, sans-serif; font-weight:700; font-size:.857rem; letter-spacing:.07em; text-transform:uppercase; } .ds-module-count { font-family:ui-monospace, monospace; font-size:.786rem; color:var(--muted); font-variant-numeric:tabular-nums; } .ds-module-body { margin:0; padding:10px 12px; font:600 14px/1.5 system-ui, sans-serif; }"
+    },
+    {
+      "name": "Stage Key Bank",
+      "kind": "custom",
+      "refersTo": "stage-bank",
+      "description": "The plate's own keys: momentary keys without a lamp, latching keys (projection bank, legend, full screen) with a lamp that lights while they are in.",
+      "html": "<div class=\"ds-ctl\" role=\"toolbar\" aria-orientation=\"vertical\"><button class=\"ds-ck\" aria-label=\"Fit\"><svg width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5\"/><rect x=\"9\" y=\"9\" width=\"6\" height=\"6\" rx=\"1\"/></svg></button><span class=\"ds-rule\"></span><button class=\"ds-ck ds-latch\" aria-pressed=\"true\" aria-label=\"Perspective\"><svg width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M3.5 19 8.5 5h7l5 14Z\"/><path d=\"M10.5 5 9.5 19M13.5 5l1 14M6 12h12\"/></svg></button><button class=\"ds-ck ds-latch\" aria-pressed=\"false\" aria-label=\"Isometric\"><svg width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M12 4.5 18.5 8v8L12 19.5 5.5 16V8Z\"/><path d=\"M5.5 8 12 11.5 18.5 8M12 11.5v8\"/></svg></button><button class=\"ds-ck ds-latch\" aria-pressed=\"false\" aria-label=\"Top-down\"><svg width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><rect x=\"4\" y=\"4\" width=\"16\" height=\"16\" rx=\"2\"/><rect x=\"8.5\" y=\"8.5\" width=\"7\" height=\"7\" rx=\"1\"/></svg></button><span class=\"ds-rule\"></span><button class=\"ds-ck ds-latch\" aria-pressed=\"false\" aria-label=\"Legend\"><svg width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><circle cx=\"6\" cy=\"7\" r=\"1.5\"/><circle cx=\"6\" cy=\"12\" r=\"1.5\"/><circle cx=\"6\" cy=\"17\" r=\"1.5\"/><path d=\"M10 7h9M10 12h9M10 17h6\"/></svg></button></div>",
+      "css": ".ds-ctl { display:inline-grid; gap:2px; padding:3px; border:1px solid var(--rule); border-radius:9px; background:var(--module); box-shadow:0 1px 0 light-dark(rgb(17 26 20 / .06), rgb(0 0 0 / .4)), 0 12px 30px -14px light-dark(rgb(17 26 20 / .26), rgb(0 0 0 / .62)); } .ds-ck { position:relative; display:grid; place-items:center; width:32px; height:32px; padding:0; border:0; border-radius:6px; background:none; color:var(--ink-2); cursor:pointer; transition:background-color 80ms linear, color 80ms linear; } .ds-ck:hover { background:var(--key); color:var(--ink); } .ds-ck:focus-visible { outline:2px solid var(--route); outline-offset:2px; } .ds-ck[aria-pressed=true] { background:var(--key); color:var(--ink); box-shadow:inset 0 0 0 1px var(--rule-2); } .ds-latch::before { content:\"\"; position:absolute; top:4px; right:4px; width:5px; height:5px; border-radius:50%; background:var(--lamp-off); transition:background-color 80ms linear; } .ds-latch[aria-pressed=true]::before { background:var(--route); } .ds-rule { height:1px; margin:2px 4px; background:var(--rule); }"
+    },
+    {
+      "name": "Legend Panel",
+      "kind": "card",
+      "refersTo": "stage-legend",
+      "description": "What the plate draws now, under engraved section plates; a bottom sheet on phones.",
+      "html": "<section class=\"ds-leg\"><h3 class=\"ds-plate\">Legend</h3><h4 class=\"ds-plate ds-sm\">Status</h4><div class=\"ds-row\"><span class=\"ds-sw\"><i class=\"ds-lamp ds-green\"></i></span>merged, passed</div><div class=\"ds-row\"><span class=\"ds-sw\"><i class=\"ds-lamp ds-route\"></i></span>on the route</div><h4 class=\"ds-plate ds-sm\">Cables</h4><div class=\"ds-row\"><span class=\"ds-sw ds-cable\"></span>critical path</div><p class=\"ds-note\">A click opens the diff at the finding.</p></section>",
+      "css": ".ds-leg { width:264px; padding:8px 12px 12px; border:1px solid var(--rule); border-radius:12px; background:var(--module); color:var(--ink); box-shadow:0 2px 6px light-dark(rgb(17 26 20 / .1), rgb(0 0 0 / .45)), 0 24px 54px -18px light-dark(rgb(17 26 20 / .26), rgb(0 0 0 / .62)); font-size:.893rem; } .ds-plate { display:inline-block; margin:0 0 6px; padding:2px 7px 1px; border-radius:3px; background:var(--plate); color:var(--plate-ink); font-family:\"D-DIN Condensed\", \"Arial Narrow\", \"Roboto Condensed\", system-ui, sans-serif; font-weight:700; font-size:.857rem; letter-spacing:.07em; text-transform:uppercase; line-height:1.25; } .ds-sm { display:block; width:max-content; margin-top:10px; font-size:.714rem; } .ds-row { display:flex; align-items:center; gap:8px; min-height:22px; } .ds-sw { display:inline-grid; place-items:center; width:22px; height:14px; flex:none; } .ds-lamp { width:9px; height:9px; border-radius:50%; box-shadow:inset 0 0 0 1.5px rgb(0 0 0 / .15); } .ds-green { background:var(--lamp-green); } .ds-route { background:var(--route); } .ds-cable::before { content:\"\"; width:22px; border-top:2px solid var(--lamp-amber); } .ds-note { margin:4px 0 0; color:var(--muted); font-size:.786rem; }"
+    },
+    {
+      "name": "Layer Bank",
+      "kind": "chip",
+      "refersTo": "layer-key",
+      "description": "The View popover's Layers and Marks banks: a push button per part of the drawing, its lamp lit while that part is drawn.",
+      "html": "<div class=\"ds-lb\" role=\"group\" aria-label=\"Layers\"><button class=\"ds-lk\" aria-pressed=\"true\">Cables</button><button class=\"ds-lk\" aria-pressed=\"true\">Flow</button><button class=\"ds-lk\" aria-pressed=\"false\">Lamps</button><button class=\"ds-lk\" aria-pressed=\"true\">Findings</button></div>",
+      "css": ".ds-lb { display:grid; grid-template-columns:1fr 1fr; gap:4px; width:260px; } .ds-lk { display:inline-flex; align-items:center; justify-content:flex-start; gap:7px; min-height:30px; padding:0 8px; border:1px solid var(--rule-2); border-radius:6px; background:var(--key); color:var(--ink-2); box-shadow:inset 0 -1px 0 light-dark(rgb(0 0 0 / .08), rgb(0 0 0 / .35)); font-family:\"D-DIN Condensed\", \"Arial Narrow\", \"Roboto Condensed\", system-ui, sans-serif; font-weight:700; letter-spacing:.05em; text-transform:uppercase; font-size:.929rem; line-height:1; cursor:pointer; transition:background-color 80ms linear, color 80ms linear; } .ds-lk::before { content:\"\"; width:7px; height:7px; border-radius:50%; background:var(--lamp-off); flex:none; transition:background-color 80ms linear; } .ds-lk:hover { background:var(--key-hover); } .ds-lk:focus-visible { outline:2px solid var(--route); outline-offset:2px; } .ds-lk[aria-pressed=true] { color:var(--ink); } .ds-lk[aria-pressed=true]::before { background:var(--route); }"
+    },
+    {
+      "name": "Stage Hover Card",
+      "kind": "card",
+      "refersTo": "stage-tip",
+      "description": "A task's card over the plate: status chip with its lamp, attempts and tokens, models, worst finding, dependencies.",
+      "html": "<div class=\"ds-tip\" role=\"tooltip\"><div class=\"ds-meta\">task · wave 2 · hard</div><div class=\"ds-title\">T4 · Parse the run ledger</div><div class=\"ds-body\"><span class=\"ds-chip\">Merged</span> 2 attempts · busy 6m 12s · 84k tokens</div><div class=\"ds-body\">sonnet → opus</div><div class=\"ds-note\"><span class=\"ds-sev\">P2</span>reader.py:88 — the cursor is never closed</div><div class=\"ds-foot\">after T1, T2 · 3 tasks wait on it</div></div>",
+      "css": ".ds-tip { max-width:320px; padding:9px 11px; border:1px solid var(--rule); border-radius:6px; background:var(--module); color:var(--ink); font-size:.893rem; box-shadow:0 2px 6px light-dark(rgb(17 26 20 / .1), rgb(0 0 0 / .45)), 0 24px 54px -18px light-dark(rgb(17 26 20 / .26), rgb(0 0 0 / .62)); } .ds-meta { display:inline-block; margin-bottom:4px; padding:2px 7px 1px; border-radius:3px; background:var(--plate); color:var(--plate-ink); font-family:\"D-DIN Condensed\", \"Arial Narrow\", \"Roboto Condensed\", system-ui, sans-serif; font-weight:700; font-size:.714rem; letter-spacing:.07em; text-transform:uppercase; } .ds-title { font-weight:650; } .ds-body { font-family:ui-monospace, \"SF Mono\", Menlo, Consolas, monospace; font-size:.786rem; font-variant-numeric:tabular-nums; margin-top:2px; } .ds-chip { display:inline-flex; align-items:center; gap:5px; padding:1px 7px 0 6px; border:1px solid var(--rule); border-radius:4px; background:var(--key); font-family:\"D-DIN Condensed\", \"Arial Narrow\", \"Roboto Condensed\", system-ui, sans-serif; font-weight:700; letter-spacing:.07em; text-transform:uppercase; } .ds-chip::before { content:\"\"; width:7px; height:7px; border-radius:50%; background:var(--lamp-green); } .ds-note { margin-top:4px; padding-top:4px; border-top:1px solid var(--rule); color:var(--ink-2); font-size:.786rem; } .ds-sev { display:inline-flex; align-items:center; gap:6px; margin-right:6px; font-family:ui-monospace, monospace; } .ds-sev::before { content:\"\"; width:9px; height:9px; clip-path:polygon(0 8%, 100% 8%, 50% 100%); background:var(--sev-p2); } .ds-foot { margin-top:3px; color:var(--muted); font-size:.786rem; }"
+    },
+    {
+      "name": "Keys Sheet",
+      "kind": "custom",
+      "refersTo": "keys-sheet",
+      "description": "The dialog of every key: plate group titles, kbd caps, plain descriptions.",
+      "html": "<div class=\"ds-ks\"><span class=\"ds-p\">Keys</span><h4 class=\"ds-p ds-g\">Stage</h4><dl><dt><kbd>F</kbd></dt><dd>Fit what is shown</dd><dt><kbd>+</kbd><kbd>−</kbd></dt><dd>Zoom in, out</dd><dt><kbd>Shift</kbd><kbd>F</kbd></dt><dd>Full screen</dd></dl></div>",
+      "css": ".ds-ks { width:300px; padding:14px 18px 18px; border:1px solid var(--rule); border-radius:12px; background:var(--module); color:var(--ink); } .ds-p { display:inline-block; padding:2px 7px 1px; border-radius:3px; background:var(--plate); color:var(--plate-ink); font-family:\"D-DIN Condensed\", \"Arial Narrow\", \"Roboto Condensed\", system-ui, sans-serif; font-weight:700; font-size:.857rem; letter-spacing:.07em; text-transform:uppercase; } .ds-g { display:block; width:max-content; margin:12px 0 6px; font-size:.714rem; } .ds-ks dl { display:grid; grid-template-columns:max-content minmax(0,1fr); gap:5px 12px; margin:0; font-size:.893rem; } .ds-ks dt { display:flex; gap:3px; } .ds-ks dd { margin:0; color:var(--ink-2); } .ds-ks kbd { font-family:ui-monospace, \"SF Mono\", Menlo, Consolas, monospace; font-size:.786rem; padding:0 5px; border:1px solid var(--rule-2); border-radius:4px; box-shadow:inset 0 -1px 0 var(--rule-2); color:var(--muted); background:var(--field); }"
     }
   ],
   "narrative": {
     "northStar": "The Signal Box",
-    "overview": "forge-ui is a relay interlocking route-setting desk, after the Italian ACEI panels, built for code. A run is an inlaid track diagram (the 3D plate) set into an enamelled grey-green desk. Tasks are track sections, and their lamps show clear, occupied or failed before anyone reads a word. Everything around the plate is desk furniture. Region headings are engraved plates, toggles are push buttons with their own lamp, and numbers sit in black-glass describer windows. The desk is dense and quiet. The only saturated colour on it comes from lamps, and each lamp means one thing.\n\nBoth themes are finished to the same standard. Every colour token is a `light-dark()` pair: pale enamel with black plates in light, near-black green enamel with bone plates in dark. The system setting chooses the theme, and `<html data-theme>` overrides it. The 3D plate reads its colours from these same tokens through a probe element, so the desk and the diagram never drift apart. Depth comes in three plies (panel, module, popover) and nothing in between. Motion is relay motion: chrome changes state in 80ms with no easing, and running lamps blink at 1Hz.\n\nThe world rejects the dark dashboard of cards, sidebars and one blue accent, and it rejects skeuomorphic hardware. There are no screws, levers, rails or brushed metal. The desk is suggested by its typography, its lamps and its plies, not by drawn hardware.",
+    "overview": "forge-ui is a relay interlocking route-setting desk, after the Italian ACEI panels, built for code. A run is an inlaid track diagram (the 3D plate) set into an enamelled grey-green desk. Tasks are track sections, and their lamps show clear, occupied or failed before anyone reads a word. Everything around the plate is desk furniture. Region headings are engraved plates, toggles are push buttons with their own lamp, and numbers sit in black-glass describer windows. The desk is dense and quiet. The only saturated colour on it comes from lamps, and each lamp means one thing.\n\nBoth themes are finished to the same standard. Every colour token is a `light-dark()` pair: pale enamel with black plates in light, near-black green enamel with bone plates in dark. The system setting chooses the theme, and `<html data-theme>` overrides it. The 3D plate reads its colours from these same tokens through a probe element, so the desk and the diagram never drift apart. Depth comes in three plies (panel, module, popover) and nothing in between. Motion is relay motion: chrome changes state in 80ms with no easing, and running lamps blink at 1Hz.\n\nThe plate has its own small desk. A bank of keys stands at the right edge of the free stage: keys that act once have no lamp, keys that stay in light one. Choosing a task sets its route. What it waits on and what waits on it stay lit, and the rest of the plan sinks, as a set route does on the desk. Review findings stand on the plate as beacons, each in its severity shape, and what happens during a run (a merge, a failed attempt, an escalation, a final review) plays once on the plate.\n\nThe world rejects the dark dashboard of cards, sidebars and one blue accent, and it rejects skeuomorphic hardware. There are no screws, levers, rails or brushed metal. The desk is suggested by its typography, its lamps and its plies, not by drawn hardware.",
     "keyCharacteristics": [
       "Enamelled grey-green desk in both themes, with three plies of depth only.",
       "Engraved plates in condensed DIN capitals on every region heading.",
@@ -875,7 +960,9 @@
       "Five lamps with one meaning each. A hollow ring marks the family's non-plain case.",
       "Review severity shown as shape on its own colour ramp, never as a status lamp.",
       "One name plate per model everywhere it appears.",
-      "Relay motion: 80ms linear, a 1Hz blink, and every state kept under reduced motion."
+      "Relay motion: 80ms linear, a 1Hz blink, and every state kept under reduced motion.",
+      "A set route keeps a task's lineage lit and sinks the rest of the plan.",
+      "Findings stand on the plate as severity-shaped beacons, drawn like the blocks."
     ],
     "rules": [
       {
@@ -912,6 +999,21 @@
         "name": "The Three Plies Rule",
         "body": "Use the panel, a module or a popover, and nothing else. A box inside a module is a tonal well with a hairline, not a raised card.",
         "section": "elevation"
+      },
+      {
+        "name": "The Lit Route Rule",
+        "body": "A set route stays lit and only what is off the route sinks. With no route, nothing sinks.",
+        "section": "components"
+      },
+      {
+        "name": "The Latch Lamp Rule",
+        "body": "A key that stays in has a lamp, and a key that acts once has none. Never put a lamp on a momentary key.",
+        "section": "components"
+      },
+      {
+        "name": "The Legend Now Rule",
+        "body": "The legend describes only what the plate draws at this moment, never the full catalogue.",
+        "section": "components"
       }
     ],
     "dos": [
@@ -922,7 +1024,10 @@
       "Do show review severity as shape plus the severity ramp (P0 spike, P1 diamond, P2 cone, P3 pin).",
       "Do show every model through the name plate (alias engraved, effort in mono).",
       "Do use relay timing (80ms linear) for chrome state changes, and keep every state when motion is reduced.",
-      "Do draw new icons in the authored set: 24-unit grid, 1.5 stroke, round joins, currentColor."
+      "Do draw new icons in the authored set: 24-unit grid, 1.5 stroke, round joins, currentColor.",
+      "Do give a stage key a lamp only when it latches, and light it with the route colour while it is in.",
+      "Do list in the legend only what the plate draws now.",
+      "Do play a plate event once, and light the block statically when motion is reduced."
     ],
     "donts": [
       "Don't add a fourth ply. A box inside a module is a tonal well with a hairline, not a shadowed card.",
@@ -930,7 +1035,9 @@
       "Don't colour review severity with a status lamp.",
       "Don't draw hardware: no fake screws, levers, rails or brushed metal.",
       "Don't use inline styles or `innerHTML`. The page CSP refuses them.",
-      "Don't use emoji or text glyphs as icons."
+      "Don't use emoji or text glyphs as icons.",
+      "Don't sink the plan when no route is set, and never sink a task on the route.",
+      "Don't let a name tag cover a finding beacon."
     ]
   }
 }

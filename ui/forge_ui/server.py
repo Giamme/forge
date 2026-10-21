@@ -30,6 +30,7 @@ _TASK_DIFF_PATH = re.compile(_TASK_PATH.pattern + r'/diff(?:/(current|prev|commi
 _EXEC_DIFF_PATH = re.compile(_EXEC_PATH.pattern + '/diff')
 _REVIEW_DIFF_PATH = re.compile(_REVIEW_PATH.pattern + '/diff')
 _FILES_PATH = re.compile(r'/api/runs/([0-9a-f]{12})/files')
+_FINDINGS_PATH = re.compile(r'/api/runs/([0-9a-f]{12})/findings')
 _EXPORT_PATH = re.compile(r'/api/runs/([0-9a-f]{12})/export')
 _FRACTAL_PATH = re.compile(_TASK_PATH.pattern + r'/fractal(?:/nodes/([A-Za-z0-9][A-Za-z0-9_-]{0,100})(/diff)?)?')
 _STATIC_PATH = re.compile(r'/([A-Za-z0-9_.-]+\.(?:html|js|css|svg|woff2))')
@@ -110,6 +111,9 @@ def api_get(catalog, path):
     match = _FILES_PATH.fullmatch(path)
     if match:
         return catalog.files(match.group(1))
+    match = _FINDINGS_PATH.fullmatch(path)
+    if match:
+        return catalog.findings(match.group(1))
     match = _FRACTAL_PATH.fullmatch(path)
     if match:
         key, task_id, node, diff = match.group(1), _task_id(match.group(2)), match.group(3), match.group(4)
