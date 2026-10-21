@@ -12,6 +12,7 @@ forge_ui/findings.py    QA findings and gate lines, parsed by scripts/forge-cont
 forge_ui/diffs.py       unified diffs: parsing, the ```diff fence of a review prompt, pinning findings, cached reads
 forge_ui/models.py      per-run model facts (attempts and reviews) for the leaderboard, cached per run
 forge_ui/fractal.py     Fractal child tasks under $XDG_STATE_HOME/forge/fractal, read through dir fds
+forge_ui/transcripts.py an agent CLI's `<role>.log` read as one conversation, whichever harness wrote it
 forge_ui/server.py      serves those dicts as JSON plus the static page, 127.0.0.1 only
 forge_ui/static/        the page: index.html, app.js, style.css, graph.js and the scripts they load
 ```
@@ -85,7 +86,8 @@ one of `task dwarf qa solo verification parallel` and `<uuid>` 32 lowercase hex 
 | `dataset.json` | may be absent: `parent` (the execution that started this one, e.g. `task-<uuid>`), `trigger`, `attempt_start` and `resume` (task executions) |
 | `<role>.resolved`, `.prompt`, `.last`, `.timedout` | copies made when it finished: the model resolution (`key=value`), the prompt, the final message, the timeout marker |
 
-The reader never opens an execution's `.log` or `.cmd`.
+Only the transcript endpoint opens an execution's `.log` (a `dwarf`'s or `qa`'s, see
+ExecutionTranscript); no read opens a `.cmd`.
 
 **Task status** is `MERGED` if `tasks/<id>/merged` exists, otherwise the first word of
 `tasks/<id>/status`, otherwise `PENDING`.
@@ -159,6 +161,7 @@ def execution_diff(path, name, source='plan') -> dict | None       # a DiffDetai
 def final_review_diff(path, name, source='plan') -> dict | None    # a DiffDetail
 def files_detail(path, source='plan') -> dict | None               # Files
 def run_findings(path, source='plan') -> dict | None               # RunFindings
+def execution_transcript(path, name, source='plan') -> dict | None # an ExecutionTranscript
 def fractal_detail(path, task_id, source='plan') -> dict | None    # a TaskFractal
 def fractal_node(path, task_id, node, source='plan') -> dict | None       # a FractalNodeDetail
 def fractal_node_diff(path, task_id, node, source='plan') -> dict | None  # a DiffDetail
@@ -171,7 +174,8 @@ class Catalog:
     def execution(self, key, name) -> dict | None
     def final_review(self, key, name) -> dict | None
     def diff(self, key, task_id, which='current'), execution_diff(self, key, name),
-        final_review_diff(self, key, name), files(self, key), findings(self, key), fractal(self, key, task_id),
+        final_review_diff(self, key, name), files(self, key), findings(self, key), transcript(self, key, name),
+        fractal(self, key, task_id),
         fractal_node(self, key, task_id, node), fractal_node_diff(self, key, task_id, node) -> dict | None
     def models(self) -> dict            # Models, over every run
 ```
@@ -215,6 +219,7 @@ its last 20,000 behind a leading `…`. Their `truncated` lists the field names 
 | `GET /api/runs/<key>/final-reviews/<name>/diff` | `200 DiffDetail` |
 | `GET /api/runs/<key>/files` | `200 Files` |
 | `GET /api/runs/<key>/findings` | `200 RunFindings` |
+| `GET /api/runs/<key>/executions/<qa-or-dwarf>/transcript` | `200 ExecutionTranscript` |
 | `GET /api/models` | `200 Models` |
 | `GET /api/runs/<key>/export?texts=0\|1&paths=0\|1` | `200` the run as one HTML file (see Export), `Content-Disposition: attachment`, `Content-Security-Policy: default-src 'none'; sandbox`; `404` for an unknown run |
 | `GET /api/runs/<key>/tasks/<id>/fractal` | `200 TaskFractal` |
@@ -225,7 +230,8 @@ its last 20,000 behind a leading `…`. Their `truncated` lists the field names 
 
 The lazy endpoints answer `404 {"error": "not found"}` for an unknown run, task,
 execution or review; the diff endpoints also for a `<which>` the run kind has not (`existing`
-of a plan task, `prev` of a solo run) and for an execution that is not `qa` or `dwarf`; the
+of a plan task, `prev` of a solo run), the diff and transcript endpoints for an execution that is
+not `qa` or `dwarf`; the
 Fractal node endpoints for an unknown node or a task whose Fractal state is not `available`. A
 diff that is not there yet is a `200` with `available: false`. An execution is looked for only where executions are written:
 `attempts/`, `tasks/<id>/attempts/`, `shadow/<id>/<a>-<k>/attempts/`,
@@ -652,6 +658,55 @@ Finding's `id` is `<execution>:<n>`, `n` its 0-based place in the reply (`primar
 `id`, so a mark on the stage opens that Finding in the diff. `available` is `false` without the
 contract module, and the lists are then empty.
 
+## ExecutionTranscript (`forge_ui/transcripts.py`)
+
+What the agent of one `dwarf` or `qa` execution said and did, read from its `<role>.log`: the
+copy in its execution dir once it has finished, the owner dir's log while it runs (up to its
+last whole line, so the page can poll it). The format is told from the log itself:
+
+| Log | Written by | Read as |
+|---|---|---|
+| one JSON event per line: `thread.started`, `item.*`, `turn.*` | codex `--json` | `format` `codex` |
+| one message per line in Claude's shape: `system`, `assistant`, `user`, `result` | grok `--output-format streaming-messages-json`; claude and openclaude `--output-format stream-json` | `claude` |
+| one event per line: `text`, `reasoning`, `tool_use`, `step_finish`, `error` | opencode `--format json` | `opencode` |
+| one `result` object with a `session_id` | claude `--output-format json` | the session file, see below |
+| other JSON lines | | `json`: each line shown as it is |
+| anything else | a harness without a structured stream (today openclaude, opencode, antigravity) | `text`: one event |
+
+A claude log that holds only its result names the session the conversation is in. That one
+file is read, `<config dir>/projects/<one dir>/<session id>.jsonl`, the config dir being
+`$CLAUDE_CONFIG_DIR` then `~/.claude`, and only when the id is a UUID; it is the one file
+outside the run dir forge-ui reads. Its subagent (`isSidechain`) and meta lines are left out.
+Without it, the result alone is shown with a warning.
+
+```json
+{"run": "3f9a0c1d2e4b", "execution": "dwarf-…", "role": "dwarf", "state": "done", "attempt": 1, "spec": "luna",
+ "harness": "codex", "repo": "/work/worktrees/reader", "owner": {"kind": "task", "id": "reader"},
+ "format": "codex", "source": "log", "session": "0199…", "model": null, "cost": null,
+ "tokens": {"input": 12000, "cached": 9000, "output": 800},
+ "events": [{"kind": "reasoning", "text": "…"},
+            {"kind": "command", "command": "rg -n status ui/reader.py", "output": "…", "exit": 0},
+            {"kind": "edit", "files": ["/repo/ui/reader.py"], "patch": "-old\n+new"},
+            {"kind": "message", "text": "…"}],
+ "truncated": false, "warnings": []}
+```
+
+`attempt`, `spec` and `owner` are the Execution's; `harness` and `repo` (the worktree the agent ran
+in, so the page can make its absolute paths relative) come from `<role>.resolved`. `source` is
+`log`, `session` (claude's session file) or `none` (no log). An event has `kind`
+and the keys that kind uses: `prompt` (`text`: the task as a session file holds it), `message`,
+`reasoning`, `command` (`command`, `output`, `exit`), `edit` (`files`, `patch`: `-`/`+` lines,
+or `input` when there are none), `tool` (`tool`, `input`, `output`), `result` (`text`, left out
+with `same: true` when the last message said it; `tokens`), `error` (`text`), `text` (`text`,
+`stream: "stderr"` for lines between JSON events) and `gap` (`count` events left out). Any event
+may have `t` (epoch seconds), `id` (the harness's call id), `error` (`true` for a failed call or a
+non-zero exit, `false` for a call answered without one) and `running: true` (a call not finished yet). `tokens` are the run's totals
+(`input` counts cached input too). A message, a reasoning or a result keeps 20,000 characters, a
+command, an input or an output its first two thirds and last third of 8,000 around `… n
+characters …` (`<key>_cut` holds n). A log over 32 MB is read from its end; past 5,000 events or
+4,000,000 characters the middle is left out (a `gap` event, `truncated: true`). Parses are kept by
+the log's `(path, size, mtime_ns)` and the session file's.
+
 ## Files
 
 `GET /api/runs/<key>/files`: who planned, changed, drifted into or conflicted on each file.
@@ -811,7 +866,7 @@ difficulty paths deps model` each), `decomposition_history` (its newest 20, each
 
 - It holds `style.css` (with the labels' face, `D-DINCondensed-Bold.woff2`, inlined as a `data:`
   URL) and the classic scripts the run view uses (`theme.js icons.js datatable.js shell.js
-  runmodel.js cloudmodel.js graph.js gantt.js panel.js diffview.js files.js map3d.js search.js
+  runmodel.js cloudmodel.js graph.js gantt.js panel.js diffview.js convo.js files.js map3d.js search.js
   app.js`), inline; the import map; a `<script type="application/json" id="forge-snapshot">` with
   `{meta, api}`; and a `<script type="text/plain" id="forge-stage">` holding `iso.js`,
   `cloud3d.js`, `findings3d.js`, `stagectl.js` and `scene3d.js` bundled into one module (each
@@ -821,11 +876,11 @@ difficulty paths deps model` each), `decomposition_history` (its newest 20, each
   it (server.api_get): `/api/runs` (this run only), the RunDetail, every TaskDetail, every
   ExecutionDetail the RunDetail names, every FinalReviewDetail, Files, RunFindings, and the
   Fractal trees and nodes. With `texts=1` also every diff the page can open (each task's diff and its `sources`,
-  each final review's, each Fractal node's).
+  each final review's, each Fractal node's) and every `dwarf` and `qa` ExecutionTranscript (at most 2 MB each).
 - `texts=0` (the default) nulls these keys wherever they hold a string, list or object: `prompt
   last request log_tail dwarf_tail qa_tail qa_last qa_input tasks_summary known_issues texts text
-  planning_last approach retry_findings dwarf_input error`, and stores no diff. A finding keeps its
-  `summary`.
+  planning_last approach retry_findings dwarf_input error`, and stores no diff and no transcript. A
+  finding keeps its `summary`.
 - `paths=0` (the default) makes every string that is a whole absolute path (but `/api/…` and
   `url`s) its last component, and replaces the run dir, the repo and the home dir inside other
   strings with their last component (`~` for home).
@@ -886,6 +941,7 @@ Plain scripts unless noted; each defines one global and none parses API text as 
 | `gantt.js` | `ForgeGantt` | `render(container, run, {now, onSelect, sel, replay, critical, ghosts})`: attempts on wall-clock time in lanes; `strip(container, run, {now, replay})`: busy attempts and model calls against `max_parallel` |
 | `panel.js` | `ForgePanel` | `render(host, ctx)`: the inspector for a run, task, execution, final review, verification, integration or Fractal node; fetches the lazy endpoints once per node; `ctx.diffHash(spec)` links into the diff viewer, `ctx.onFractal(task, TaskFractal)` hands a task's tree to the stage |
 | `diffview.js` | `ForgeDiff` | `render(host, {run, spec, fetchJSON, rerender, href, closeHref})`: a DiffDetail with its findings under their lines; `spec` is `{kind: task, task, source, file}`, `{kind: final, name, file}` or `{kind: fractal, task, node, file}` |
+| `convo.js` | `ForgeConvo` | `render(host, {run, spec: {task, exec}, brief, live, fetchJSON, rerender, diffHash, closeHref})`: an ExecutionTranscript as a timeline, with search, the errors and, while the execution runs, a read of its log every 2.5 s |
 | `files.js` | `ForgeFiles` | `matrix(data, run, opts)` (pure: Files as rows of dirs and files against task columns by wave) and `render(host, data, {run, sel, onSelectTask, diffHref, prefs, savePrefs})`: the run's Files mode. Also a CommonJS module |
 | `cloudmodel.js` | `ForgeCloudModel` | pure: projects, per-run facts, the cloud's filters, its five layouts (anchors from every run, dragged runs kept), label picking, layout files. Also a CommonJS module |
 | `cloudui.js` | `ForgeCloudUI` | `create(root, ctx)`: the cloud's filter panel, layout and shape switches, position tools, legend and run card; a list of the same runs without 3D |

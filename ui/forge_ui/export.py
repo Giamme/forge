@@ -26,10 +26,11 @@ from forge_ui import __version__, server
 
 STATIC = server.STATIC_DIR
 # what the exported page runs, in index.html's order; the cloud, the leaderboard and notifications need a server
-SCRIPTS = ('theme.js', 'icons.js', 'datatable.js', 'shell.js', 'runmodel.js', 'cloudmodel.js', 'graph.js', 'gantt.js', 'panel.js', 'diffview.js', 'files.js', 'map3d.js',
+SCRIPTS = ('theme.js', 'icons.js', 'datatable.js', 'shell.js', 'runmodel.js', 'cloudmodel.js', 'graph.js', 'gantt.js', 'panel.js', 'diffview.js', 'convo.js', 'files.js', 'map3d.js',
            'search.js', 'app.js')
 MODULES = ('iso.js', 'cloud3d.js', 'findings3d.js', 'stagectl.js', 'scene3d.js')   # bundled in dependency order
 DIFF_CAP = 1 << 20                                          # one diff's JSON
+TRANSCRIPT_CAP = 2 << 20                                    # one execution's transcript
 TOTAL_CAP = 25 << 20                                        # every response together
 CDN = 'https://cdn.jsdelivr.net/npm/three@0.160.0/'
 _EXEC = re.compile(r'(?:task|dwarf|qa|solo|verification|parallel)-[0-9a-f]{32}')
@@ -145,7 +146,8 @@ def build(catalog, key, texts=False, paths=False, now=None):
     tasks = [t for t in (detail.get('tasks') or []) if isinstance(t, dict) and t.get('id')]
     for task in tasks:
         snap.add(f"{base}/tasks/{_enc(task['id'])}")
-    for name in sorted(set(_EXEC.findall(json.dumps(run)))):
+    names = sorted(set(_EXEC.findall(json.dumps(run))))
+    for name in names:
         snap.add(f'{base}/executions/{name}')
     reviews = [r.get('name') for r in (run.get('final_reviews') or []) if isinstance(r, dict) and r.get('name')]
     for name in reviews:
@@ -171,6 +173,10 @@ def build(catalog, key, texts=False, paths=False, now=None):
                     snap.add(url, cap=DIFF_CAP)
         for name in reviews:
             snap.add(f'{base}/final-reviews/{_enc(name)}/diff', cap=DIFF_CAP)
+        # what each dwarf and reviewer said and ran: its conversation is all text
+        for name in names:
+            if name.startswith(('dwarf-', 'qa-')):
+                snap.add(f'{base}/executions/{name}/transcript', cap=TRANSCRIPT_CAP)
     meta = {'format': 'forge-ui-export', 'version': 1, 'app': __version__, 'key': key,
             'generated': now if now is not None else time.time(), 'texts': bool(texts), 'paths': bool(paths),
             'omitted': snap.omitted}

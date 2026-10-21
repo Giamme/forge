@@ -97,16 +97,19 @@ class ExportTests(unittest.TestCase):
         self.assertNotIn('The read is not wrapped', html)                 # a finding's details
         self.assertIn('a missing status file raises', html)               # its headline stays
         self.assertNotIn('A task without a status file has not started', html)   # a diff
-        self.assertFalse(any(path.endswith('/diff') for path in snap['api']))
+        self.assertFalse(any(path.endswith(('/diff', '/transcript')) for path in snap['api']))
+        self.assertNotIn('Finding where the status is read', html)        # what a dwarf thought
         self.assertNotIn(str(self.base), html)
         self.assertNotIn(str(Path.home()) + '/', html.replace('~/', ''))
         self.assertNotIn('/example/', html)                                # a whole absolute path: its last component
         self.assertIn('python3 plan-rich/check.py --out ~/out', html)      # the run dir and home inside a text
         _, full, _, snap = self.build(texts=True, paths=True)
         self.assertTrue(snap['meta']['texts'] and snap['meta']['paths'])
-        for text in ('The read is not wrapped', 'A task without a status file has not started', str(self.base)):
+        for text in ('The read is not wrapped', 'A task without a status file has not started', str(self.base),
+                     'Finding where the status is read'):
             self.assertIn(text, full)
         self.assertTrue(any(path.endswith('/diff') for path in snap['api']))
+        self.assertIn(f'/api/runs/{self.key}/executions/{F.READER_DWARF1}/transcript', snap['api'])
 
     def test_a_strange_run_id_makes_a_plain_file_name(self):
         run = self.base / 'odd'

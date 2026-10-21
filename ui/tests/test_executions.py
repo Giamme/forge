@@ -8,7 +8,7 @@ import unittest
 from unittest.mock import patch
 
 from forge_ui import executions, findings, reader
-from forge_ui.reader import detail, execution_detail, final_review_detail, summarize, task_detail
+from forge_ui.reader import detail, execution_detail, execution_transcript, final_review_detail, summarize, task_detail
 import run_fixture as F
 
 
@@ -469,6 +469,30 @@ class LazyTests(FixtureCase):
                 final_review_detail(self.plan, review['name'])
         self.assertTrue(opened)
         self.assertEqual([name for name in opened if name.endswith(('.log', '.cmd'))], [])
+
+    def test_execution_transcript(self):
+        done = execution_transcript(self.plan, F.READER_DWARF1)
+        self.assertEqual({key: done[key] for key in ('role', 'state', 'harness', 'format', 'source', 'owner')},
+                         dict(role='dwarf', state='done', harness='codex', format='codex', source='log',
+                              owner={'kind': 'task', 'id': 'reader'}))
+        # a finished execution reads its own copy, never the owner dir's log (the next attempt's)
+        self.write(self.plan / 'tasks/reader/dwarf.log', 'the next attempt\n')
+        self.assertEqual(execution_transcript(self.plan, F.READER_DWARF1)['events'], done['events'])
+        # a reviewer still at work: the log its dispatch is writing, up to its last whole line
+        live = execution_transcript(self.plan, F.GRAPH_QA)
+        self.assertEqual((live['state'], [ev['kind'] for ev in live['events']]), ('running', ['reasoning', 'command']))
+        for name in (F.READER_TASK1, F.PARALLEL, F.VERIFICATION, 'qa-' + F.uid(999)):
+            self.assertIsNone(execution_transcript(self.plan, name), name)
+
+    def test_a_transcript_never_follows_a_log_out_of_the_run(self):
+        log = self.plan / 'tasks/reader/attempts' / F.READER_DWARF1 / 'dwarf.log'
+        outside = self.base / 'outside.log'
+        outside.write_text(log.read_text())
+        log.unlink()
+        log.symlink_to(outside)
+        result = execution_transcript(self.plan, F.READER_DWARF1)
+        self.assertEqual((result['source'], result['events']), ('none', []))
+        self.assertIn('outside the run dir', ' '.join(result['warnings']))
 
     def test_final_review_detail(self):
         result = final_review_detail(self.plan, F.REVIEW_OLD)

@@ -19,11 +19,14 @@ and the cloud remembers it.
 </tr>
 <tr>
 <td valign="top"><img src="../ui/docs/media/diff.png" alt="The diff a reviewer read, with a P1 finding pinned under the line comparing token digests and a P2 finding under the revoke function."><br><b>Findings on their lines.</b> Any diff of a task, or exactly the diff one reviewer read, with each P0–P3 finding under the line it names.</td>
-<td valign="top"><img src="../ui/docs/media/models.png" alt="The model leaderboard: per implementer, tasks, first-attempt pass rate with a 95% interval bar, retries, escalations, timeouts, accepts, median model time and tokens."><br><b>Models, measured on your runs.</b> First-attempt pass rate with a confidence interval, retries, escalations, time and tokens; reviewers' verdicts and shadow agreement.</td>
+<td valign="top"><img src="../ui/docs/media/conversation.png" alt="A dwarf's conversation: its thinking, a search, the files it wrote, a test run that failed with exit 1 and the run that passed after the fix."><br><b>What each agent said and ran.</b> A dwarf's or reviewer's conversation from its CLI's log: commands with their exit and output, edits linked to the diff, its thinking; searchable, errors one key apart, live while it runs.</td>
 </tr>
 <tr>
+<td valign="top"><img src="../ui/docs/media/models.png" alt="The model leaderboard: per implementer, tasks, first-attempt pass rate with a 95% interval bar, retries, escalations, timeouts, accepts, median model time and tokens."><br><b>Models, measured on your runs.</b> First-attempt pass rate with a confidence interval, retries, escalations, time and tokens; reviewers' verdicts and shadow agreement.</td>
 <td valign="top"><img src="../ui/docs/media/files.png" alt="The files heatmap: files grouped by directory against tasks grouped by wave, with planned, touched, drift and same-wave overlap marks."><br><b>Who touched which file.</b> Planned, changed, drifted into or conflicted on, wave by wave; a cell opens that file's diff.</td>
-<td valign="top"><img src="../ui/docs/media/map.png" alt="The map of every run: one block per run in a district per repo, green when done, amber while running, red with failures."><br><b>Every run, by repo.</b> One block per run with a lamp per task, filtered by state, repo, model, age or review verdict.</td>
+</tr>
+<tr>
+<td colspan="2" valign="top" align="center"><img width="50%" src="../ui/docs/media/map.png" alt="The map of every run: one block per run in a district per repo, green when done, amber while running, red with failures."><br><b>Every run, by repo.</b> One block per run with a lamp per task, filtered by state, repo, model, age or review verdict.</td>
 </tr>
 </table>
 
@@ -41,6 +44,13 @@ a click opens the diff at that finding. A chosen task keeps its route lit, a hov
 plate as they happen or as a replay passes them. The *View* menu switches each part of the drawing
 on or off; the keys at the stage's edge fit, zoom, switch between perspective, isometric and
 top-down, open a legend of what is drawn, and `?` lists every key.
+
+Each dwarf's and reviewer's conversation opens from its attempt: what it said, what it ran and
+with what exit, what it changed (with a link into the diff), its thinking folded, and the final
+answer with tokens and cost, searchable, with its errors one key apart and, while it runs,
+following its log as it grows. It is read from the agent CLI's own log, whichever harness
+wrote it (as plain text for those that log no events yet), or for an older claude run from
+Claude's session file on this machine.
 
 Also: replay, critical path, Fractal child-task trees, quick jump (Ctrl K, ⌘K on a Mac, or
 `/`), a bell for runs that finish or fail, failed tasks and final-review verdicts (with opt-in

@@ -13,6 +13,7 @@ const SHEET = [
   ['With the stage focused', [['← →', 'Previous, next task (on the map: run)'], ['↑ ↓', 'On the map: previous, next repository'], ['Enter', 'On the map: open the run'],
     ['E', 'Plan or execution'], ['Esc', 'Clear the selection, then back to the map']]],
   ['In a diff', [['n p', 'Next, previous finding'], ['j k', 'Next, previous file']]],
+  ['In a conversation', [['/', 'Search what it said and ran'], ['E', 'Next error']]],
 ];
 
 const el = (tag, cls, text) => { const n = document.createElement(tag); if (cls) n.className = cls; if (text != null) n.textContent = text; return n; };

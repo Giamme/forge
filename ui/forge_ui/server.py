@@ -28,6 +28,7 @@ _EXEC_PATH = re.compile(r'/api/runs/([0-9a-f]{12})/executions/((?:task|dwarf|qa|
 _REVIEW_PATH = re.compile(r'/api/runs/([0-9a-f]{12})/final-reviews/((?:final-review|integrate)-[0-9]+-[0-9]+)')
 _TASK_DIFF_PATH = re.compile(_TASK_PATH.pattern + r'/diff(?:/(current|prev|committed|existing))?')
 _EXEC_DIFF_PATH = re.compile(_EXEC_PATH.pattern + '/diff')
+_TRANSCRIPT_PATH = re.compile(_EXEC_PATH.pattern + '/transcript')
 _REVIEW_DIFF_PATH = re.compile(_REVIEW_PATH.pattern + '/diff')
 _FILES_PATH = re.compile(r'/api/runs/([0-9a-f]{12})/files')
 _FINDINGS_PATH = re.compile(r'/api/runs/([0-9a-f]{12})/findings')
@@ -108,6 +109,9 @@ def api_get(catalog, path):
     match = _REVIEW_DIFF_PATH.fullmatch(path)
     if match:
         return catalog.final_review_diff(*match.groups())
+    match = _TRANSCRIPT_PATH.fullmatch(path)
+    if match:
+        return catalog.transcript(*match.groups())
     match = _FILES_PATH.fullmatch(path)
     if match:
         return catalog.files(match.group(1))
