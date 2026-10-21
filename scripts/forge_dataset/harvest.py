@@ -28,7 +28,7 @@ from . import SCRIPTS, put_blob, put_file, sha256
 DISPATCH_ROLES = ('dwarf', 'qa', 'planner')
 PIPELINE_ROLES = ('task', 'solo', 'verification', 'parallel')
 TASKS_COLS = ('id', 'deps', 'difficulty', 'files', 'dwarf', 'qa', 'title')
-STRUCTURED = ('codex', 'claude', 'grok')
+STRUCTURED = ('codex', 'claude', 'openclaude', 'grok', 'opencode')   # as forge-runtime.py's: .last is the message, not the log
 # Plan files that change what a plan decides, added to its rid only when present (see plan_event).
 PLAN_RID_LATER = ('decompose_level', 'shadow_qa', 'shadow_rate', 'explore')
 

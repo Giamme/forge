@@ -212,8 +212,8 @@ keep one meaning everywhere (amber running, green merged or passed, red failed, 
   its patch and a link to the file in the diff its review read, other tool calls, and the final
   answer with the tokens and cost. Search it (`/`), keep only what it said, ran or changed, and
   step through its errors (`E`). While the agent works the log is read again every few seconds and
-  *Follow* keeps the newest event in view. codex, grok, opencode and claude stream logs are read
-  event by event; when a claude run logged only its final answer, the conversation comes from
+  *Follow* keeps the newest event in view. codex, grok, claude, openclaude and opencode logs are
+  read event by event; when a claude run logged only its final answer, the conversation comes from
   Claude's own session file for that run, if it is still on this machine; any other log is shown
   as it is. Open it from an attempt's dwarf or reviewer in the inspector.
 

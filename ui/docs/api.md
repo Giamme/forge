@@ -670,8 +670,8 @@ last whole line, so the page can poll it). The format is told from the log itsel
 | one message per line in Claude's shape: `system`, `assistant`, `user`, `result` | grok `--output-format streaming-messages-json`; claude and openclaude `--output-format stream-json` | `claude` |
 | one event per line: `text`, `reasoning`, `tool_use`, `step_finish`, `error` | opencode `--format json` | `opencode` |
 | one `result` object with a `session_id` | claude `--output-format json` | the session file, see below |
-| other JSON lines | | `json`: each line shown as it is |
-| anything else | a harness without a structured stream (today openclaude, opencode, antigravity) | `text`: one event |
+| other JSON lines | e.g. agy `--output-format stream-json` (its `{"event": "result"}` is read as the result) | `json`: each line shown as it is |
+| anything else | antigravity's printed output; openclaude and opencode runs from before forge streamed them | `text`: one event |
 
 A claude log that holds only its result names the session the conversation is in. That one
 file is read, `<config dir>/projects/<one dir>/<session id>.jsonl`, the config dir being

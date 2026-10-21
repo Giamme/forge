@@ -405,7 +405,10 @@ case "$HARNESS" in
     # puts it outside the harness's default reach — without this the agent
     # refuses to open the very artifacts forge just wrote for it.
     CMD=("$HARNESS" -p --model "$MODEL" --add-dir "$RUN_DIR")
-    [ "$HARNESS" = claude ] && CMD+=(--output-format json)
+    # One JSON message per line: what the agent said and every tool call, so the run keeps
+    # its conversation (forge-ui reads it), ending in the `result` line forge-runtime.py
+    # takes the final message and the tokens from. stream-json needs --verbose with -p.
+    CMD+=(--output-format stream-json --verbose)
     [ -n "$EFFORT" ] && CMD+=(--effort "$EFFORT")
     if [ "$YOLO" = 1 ]; then
       CMD+=(--dangerously-skip-permissions)
@@ -443,6 +446,9 @@ case "$HARNESS" in
     # permission prompt that nothing can answer headlessly, so it is always set.
     CMD+=(--auto)
     read_only_role && [ "$YOLO" != 1 ] && CMD+=(--agent plan)
+    # One JSON event per line (text, tool_use, step_finish, error): the conversation, the
+    # final message and the tokens, read by forge-runtime.py and forge-ui.
+    CMD+=(--format json)
     CMD+=("$PROMPT")
     ;;
   antigravity)

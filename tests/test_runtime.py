@@ -93,6 +93,10 @@ class RuntimeTests(unittest.TestCase):
 
 # --- infrastructure classification ------------------------------------------------
 # Fixtures marked (real) are lines forge's own earlier runs captured from live harnesses.
+# (real) opencode run --format json, a route whose token was refused (2026-10-21), exit 1
+OPENCODE_401 = {'type': 'error', 'timestamp': 1792605283944, 'sessionID': 'ses_ea066217bfferXT11J1xZ27NMf',
+                'error': {'name': 'APIError', 'data': {'message': 'Unauthorized: unauthorized: token authentication failed',
+                                                       'statusCode': 401, 'isRetryable': False}}}
 CLAUDE_SESSION_LIMIT = {   # (real) claude -p --output-format json, exit 1
     'type': 'result', 'subtype': 'success', 'is_error': True, 'api_error_status': 429,
     'result': "You've hit your session limit · resets 1:10pm (Europe/Rome)",
@@ -157,6 +161,8 @@ class ClassifyTests(unittest.TestCase):
             ('codex error after the last message', jsonl([CODEX_RECONNECTS[3], {'type': 'error', 'message': 'ECONNRESET'}]), 'codex', 1, 'network'),
             ('codex stderr 401', jsonl([{'type': 'turn.started'}]) + 'ERROR: unexpected status 401 Unauthorized\n', 'codex', 1, 'auth'),
             ('codex exit 0 but turn failed', jsonl(CODEX_AT_CAPACITY), 'codex', 0, 'rate_limit'),
+            ('opencode error event', jsonl([OPENCODE_401]), 'opencode', 1, 'auth'),
+            ('opencode error event, exit 0, no answer', jsonl([{'type': 'step_start'}, OPENCODE_401]), 'opencode', 0, 'auth'),
             ('opencode balance', 'Insufficient balance.\n', 'opencode', 1, 'quota'),
             ('opencode auth', 'Unauthorized: unauthorized: AuthenticateToken authentication failed\n', 'opencode', 1, 'auth'),
             ('raw 401, rc 1', 'HTTP 401\n', 'opencode', 1, 'auth'),
@@ -185,6 +191,7 @@ class ClassifyTests(unittest.TestCase):
         empty = self.klass
         self.assertEqual(empty(json.dumps({'type': 'result', 'is_error': False, 'result': '  \n'}), 'claude', 0), 'empty')
         self.assertEqual(empty('', 'opencode', 0), 'empty')
+        self.assertEqual(empty(jsonl([{'type': 'step_start'}, {'type': 'step_finish', 'part': {}}]), 'opencode', 0), 'empty')
         self.assertEqual(empty('\n  \n', 'antigravity', 0), 'empty')
         # codex: its -o file is the message; an empty or missing file with no agent_message is empty.
         log = jsonl([{'type': 'turn.completed', 'usage': {}}])
@@ -211,6 +218,7 @@ class ClassifyTests(unittest.TestCase):
             ('claude result quoting limits, odd rc', json.dumps({'type': 'result', 'is_error': False, 'result': quoting}), 'claude', 1),
             ('claude is_error without a strong phrase', json.dumps({'type': 'result', 'is_error': True, 'subtype': 'error_max_turns', 'result': 'Reached max turns (50)'}), 'claude', 1),
             ('opencode prose at exit 0', quoting + 'Insufficient balance is shown when the account is empty.\n', 'opencode', 0),
+            ('opencode error, then an answer', jsonl([OPENCODE_401, {'type': 'text', 'part': {'text': 'Done: the change is in.'}}]), 'opencode', 0),
             ('antigravity prose at exit 0', 'Unauthorized access is rejected; ECONNRESET is retried.\n', 'antigravity', 0),
             ('python stack trace', STACK_TRACE, 'opencode', 1),
             ('node stack trace mentioning quota and line 401', NODE_TRACE, 'opencode', 1),
