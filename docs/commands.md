@@ -15,6 +15,7 @@ harness (`/forge`); this command installs forge and drives its optional tools.
 | `forge update` | fast-forward a git checkout and refresh every harness installation; on an npm install it names the npm command instead. See [updating](install.md#updating-all-harness-installations) |
 | `forge version [--check]` | the installed version, and whether a newer release is out |
 | `forge fractal …` | opt-in Fractal execution; see [the command group](fractal.md#forge-fractal-command-group) |
+| `forge runs [--repo DIR \| --all] [--limit N] [--json]` | this repo's recent runs, newest first: run id, kind, age, task states, verification and final review, goal, and the run dir. Read-only; the same summaries forge-ui shows |
 | `forge ui open\|status\|stop` | forge-ui, the run viewer; see [the command group](forge-ui.md#forge-ui-command-group) |
 | `forge dataset …` | every run's inputs and outcomes; see [run dataset](dataset.md) |
 | `forge jev …` | optional Jev advice: setup, status, doctor, enable, disable, backtest; see [Jev](add-ons.md#jev) |
