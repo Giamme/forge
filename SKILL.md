@@ -63,12 +63,16 @@ For explanation requests, explain the workflow without spending model quota.
   - PLAUSIBLE findings in a passed task's `qa.last`;
   - whatever a whole-run review left open.
 
-  When there are any, and the `gh-proman` skill is installed and configured for the repository (`gh-proman config show` succeeds there), act on the user's `--file-issues` choice:
-  - `ask` (the default): run `gh-proman findings --from <plan or run dir> --include-plausible --json`, show its summary (count by severity, titles, anything already filed), and ask once: **"File these N findings as GitHub issues with gh-proman? [all / CONFIRMED only / none]"**. Then follow the gh-proman skill's review-findings steps.
+  When there are any, act on the user's `--file-issues` choice with one filer:
+  - **gh-proman**, only when it is installed and set up for the repository: `gh-proman -C <repo> config show` exits 0. It also puts the issues on the team's board with a priority. Run `gh-proman findings --from <plan or run dir> --include-plausible --json`, then follow the gh-proman skill's review-findings steps.
+  - **forge's own filer** otherwise (gh-proman missing, or not configured for this repo; never configure it yourself): `python3 <skill_dir>/scripts/forge-issues.py <plan or run dir> --include-plausible --json`, plain `gh issue create`. Pass `--lang` matching the repo's existing issues, and `--label bug` when the repo has that label. If `gh` is missing, unauthenticated or the repo has no GitHub remote, list the findings in the report and say why none were filed.
+
+  The choice:
+  - `ask` (the default): show the dry-run summary (count by severity, titles, anything already filed) and ask once: **"File these N findings as GitHub issues? [all / CONFIRMED only / none]"**. Then re-run with `--apply`, adding `--include-plausible` only for "all".
   - `auto`: file them without asking (`--apply`, PLAUSIBLE included as "to verify" issues) and report what was created and skipped.
   - `off`: never offer.
 
-  `--file-issues` is an instruction to you: never forward it to a runner. Skip INFRA, interrupted and still-failing runs. gh-proman never re-files a finding it already filed, so offering again after a retry only brings up new ones.
+  `--file-issues` is an instruction to you: never forward it to a runner. Skip INFRA, interrupted and still-failing runs. Both filers mark each issue with the same finding fingerprint and skip a finding either one already filed, so offering again after a retry only brings up new ones. A draft flagged as a possible duplicate is skipped on `--apply`: show it, and file it (`--confirm-new`) only if the user says it is different.
 - Jev is optional, off unless configured and enabled, and always advisory: it never
   changes a task's tier, never selects a model, and never substitutes for QA acceptance
   or repository verification (`--jev-act` is still accepted and changes nothing). Read

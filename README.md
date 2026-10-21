@@ -705,6 +705,20 @@ lists them. The literal status stays `PASS`, so nothing downstream needed a new 
 It fails safe: an unlabelled CONFIRMED finding, or a FAIL with no CONFIRMED finding at all,
 is never tolerated, and without a threshold nothing changes.
 
+Tolerated findings are recorded, not fixed. After a run, the skill offers once to file them as
+GitHub issues, together with PLAUSIBLE findings of passed tasks and whatever a whole-run review
+left open (`--file-issues ask|auto|off`, `ask` by default). Where the
+[gh-proman](https://github.com/Giamme/gh-proman) skill is set up for the repository, it files
+them on the team's project board; anywhere else forge files them itself with plain `gh`:
+
+```sh
+./forge issues <plan-dir>                       # drafts only: titles, severity, already filed
+./forge issues <plan-dir> --include-plausible --apply --label bug
+```
+
+Each issue gets the finding, its severity, the task, reviewer and a code link at the merged
+commit. A hidden fingerprint, shared with gh-proman, keeps a finding from being filed twice.
+
 #### Shadow reviews: how much of a verdict is the reviewer?
 
 `plan --shadow-qa <spec>[,<spec>...] [--shadow-rate R]` (default R = 0.1) sends a sampled
