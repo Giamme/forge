@@ -117,6 +117,10 @@ tr.selected { background: var(--selected); }
 .close-task { display: inline-block; font-size: .85rem; }
 .empty { padding: 18px; overflow-wrap: anywhere; }
 .empty p + p { margin-top: 12px; }
+.first-run { max-width: 640px; margin: 48px auto; padding: 0 18px; }
+.first-run h1 { font-size: 1.4rem; margin-bottom: 10px; }
+.first-run h2 { font-size: 1rem; margin-top: 28px; }
+.first-run p { margin-top: 8px; }
 .st-none { --st: #8a929e; }
 .st-accepted { --st: #1f6f78; }
 @media (prefers-color-scheme: dark) {

@@ -488,3 +488,31 @@ class Cloud(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+@unittest.skipUnless(sync_playwright, 'install Python Playwright to run browser checks')
+class FirstRun(unittest.TestCase):
+    """With no run at all (a fresh install), the map says how to get one; the first run that appears replaces it."""
+    open, assertClean = Page.open, Page.assertClean
+
+    @classmethod
+    def setUpClass(cls):
+        cls.temp = tempfile.TemporaryDirectory(prefix='forge-ui-first-run-')
+        cls.root = Path(cls.temp.name) / 'runs'; cls.root.mkdir()
+        _serve(cls, reader.Catalog(roots=[cls.root], registry=False))
+
+    tearDownClass = classmethod(Page.tearDownClass.__func__)
+
+    def test_no_runs_shows_how_to_start_one_until_a_run_appears(self):
+        page = self.open(cdn=False, view='2d')
+        page.goto(self.url)
+        page.wait_for_selector('#first-run')
+        self.assertEqual(page.locator('#map-filters, #stage-slot').count(), 0)   # no filters, no plate over nothing
+        commands = page.locator('#first-run pre').all_text_contents() + page.locator('#run-list pre').all_text_contents()
+        self.assertTrue(any(c.startswith('/forge ') for c in commands), commands)
+        self.assertTrue(any(c.startswith('forge ui open ') for c in commands), commands)
+        self.assertFalse([c for c in commands if 'python3 -m forge_ui' in c], commands)   # works only from inside ui/
+        F.make_plan(self.root / 'p')
+        page.wait_for_selector('#map-filters', timeout=30000)
+        self.assertEqual(page.locator('#first-run').count(), 0)
+        self.assertClean(page)

@@ -205,7 +205,7 @@ window.ForgeUI = (() => {
         empty.append(el('p', state.runs.length ? 'No runs match this filter.' : 'No runs found.'));
         if (!state.runs.length) {
           empty.append(el('p', 'Sources: explicit --plan directories, --root directories (up to two levels deep), and the forge run registry at $XDG_CONFIG_HOME/forge/runs/ (default ~/.config/forge/runs/). Every forge run registers itself there.'));
-          empty.append(el('p', 'Point the server at your runs:'), el('pre', 'python3 -m forge_ui --root <dir>'));
+          empty.append(el('p', 'Open runs kept somewhere else:'), el('pre', 'forge ui open <run-dir>', 'cmd'));
         }
         $('run-list').append(empty);
       }
@@ -351,8 +351,26 @@ window.ForgeUI = (() => {
     parent.append(wrap);
     return A;
   }
+  // No run at all yet (a fresh install, or nothing registered): say how to get one, instead of an empty
+  // plate under a filter bar with nothing to filter. The first run that registers replaces it with the map.
+  function renderFirstRun() {
+    const main = $('main');
+    if (main.dataset.view === 'first-run') return;
+    main.dataset.view = 'first-run'; delete main.dataset.run;
+    main.replaceChildren();
+    const v = section(main, undefined, 'first-run'); v.className = 'first-run';
+    v.append(el('h1', 'No forge runs yet'),
+      el('p', 'forge-ui shows what forge records while it works: every solo run, plan and run registers itself here when it starts, with its tasks, diffs, reviews and verdicts.'),
+      el('h2', 'Start a run from your agent harness'),
+      el('pre', '/forge "<goal>" --dwarf <model>', 'cmd'),
+      el('p', 'Inside any agent CLI where forge is installed (forge install links it into each one it finds). The run shows up here as soon as it starts.', 'muted'),
+      el('h2', 'Open runs kept somewhere else'),
+      el('pre', 'forge ui open <run-dir>', 'cmd'),
+      el('p', 'A run dir is a plan or solo directory forge wrote. Runs register under $XDG_CONFIG_HOME/forge/runs/ (default ~/.config/forge/runs/); FORGE_RUN_REGISTRY=off turns that off.', 'muted'));
+  }
   function renderMap({ rebuildBar = true } = {}) {
     const main = $('main');
+    if (state.listLoaded && !state.runs.length && !SNAP) { renderFirstRun(); return; }
     if (main.dataset.view !== 'map') {
       main.dataset.view = 'map'; delete main.dataset.run;
       main.replaceChildren();
@@ -765,7 +783,7 @@ window.ForgeUI = (() => {
     return request('/api/runs', result => {
       if (result.text === state.listText) return;
       state.runs = list(result.data.runs);
-      state.listText = result.text;
+      state.listText = result.text; state.listLoaded = true;
       if (window.ForgeNotify) window.ForgeNotify.observe(state.runs);
       renderList();
       if (state.cloud) renderCloud();
