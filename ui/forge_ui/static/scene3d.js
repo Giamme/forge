@@ -17,7 +17,6 @@ const clamp = v => Math.max(0, Math.min(1, v));
 const segT = (v, a, b) => clamp((v - a) / (b - a));
 const ez = t => t < .5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
 const back = t => t <= 0 ? 0 : t >= 1 ? 1 : 1 + 2.2 * Math.pow(t - 1, 3) + 1.2 * Math.pow(t - 1, 2);
-const SEV_STATUS = { P0: 'fail', P1: 'conflict', P2: 'timeout', P3: 'unknown' };
 const MODEL_PALETTE = ['#4e9af1', '#f08c3a', '#6cc070', '#c46fd8', '#e0c341', '#4fc2c0', '#e06a8c', '#9a8cff', '#a3b84a', '#d98f6b'];
 const KIND_H = { dwarf: 24, qa: 13, shadow: 12 };
 
@@ -74,7 +73,7 @@ export async function createStage(host, cb = {}) {
     const a = el.leds.geo.attributes.color;
     for (let i = 0; i < el.leds.n; i++) {
       const s = statuses[i];
-      const c = s ? E.statusColor(s) : E.DETAIL;
+      const c = !s ? E.DETAIL : s.isColor ? s : E.statusColor(s);   // a state, or a colour of its own (a severity)
       for (let k = 0; k < 6; k++) a.setXYZ(i * 6 + k, c.r, c.g, c.b);
     }
     a.needsUpdate = true;
@@ -88,11 +87,11 @@ export async function createStage(host, cb = {}) {
   function baseTargets(el) {
     const T = el.tgt, s = el.status, light = E.theme === 'light';
     T.lit = PLAIN.has(s) ? 0 : .32;
-    T.tint = PLAIN.has(s) ? 0 : light ? .09 : .1;
+    T.tint = PLAIN.has(s) ? 0 : light ? .34 : .1;          // a pale panel shows a lit section by its colour: no glow to carry it
     T.vis = 1; T.op = 1; T.opB = 1;
     if (s === 'PENDING' || s === 'NONE') { T.opB = .55; T.op = .8; }
     // parts are small: their status has to read from the colour of the whole piece
-    if (el.kind === 'part' && !PLAIN.has(s)) { T.tint = light ? .28 : .32; T.lit = .55; }
+    if (el.kind === 'part' && !PLAIN.has(s)) { T.tint = light ? .5 : .32; T.lit = .55; }
   }
   // a label plane on the roof or the front, redrawn only when what it shows changes
   function label(el, w, h, P, draw, where, at) {
@@ -190,7 +189,8 @@ export async function createStage(host, cb = {}) {
       display(el, e => runInfo(e.data.run), { w: w - 24, x: x + 12, y: y + d, z: h - 8 });
       halo(el);
     }
-    E.frameBox([-34, -34, -16, A.px + 34, A.py + 34, 80], st.atlasFramed ? 700 : 1400, 30);
+    st.atlasBox = [-34, -34, -16, A.px + 34, A.py + 34, 80];
+    E.frameBox(st.atlasBox, st.atlasFramed ? 700 : 1400, 30);
     st.atlasFramed = true;
   }
   function updateAtlas() {
@@ -240,11 +240,11 @@ export async function createStage(host, cb = {}) {
       let bx = 2;
       const f = tk.findings;
       if (f && (f.confirmed || f.plausible)) {
-        for (const sev of ['P0', 'P1', 'P2', 'P3']) if (f[sev]) bx += chip(cx, s, C, bx, 64, `${sev}×${f[sev]}`, E.statusHex(SEV_STATUS[sev])) + 3;
+        for (const sev of ['P0', 'P1', 'P2', 'P3']) if (f[sev]) bx += chip(cx, s, C, bx, 64, `${sev}×${f[sev]}`, E.sevHex(sev)) + 3;
         if (f.unlabelled) bx += chip(cx, s, C, bx, 64, `?×${f.unlabelled}`, E.statusHex('unknown')) + 3;
       }
       if (tk.gate && tk.gate.decision === 'accept') bx += chip(cx, s, C, bx, 64, 'gate ok', E.statusHex('pass')) + 3;
-      if (st.overlay.arcs && list(tk.shadow).some(x => x.agreement === 'disagree')) bx += chip(cx, s, C, bx, 64, '⚑ shadow', E.statusHex('conflict')) + 3;
+      if (st.overlay.arcs && list(tk.shadow).some(x => x.agreement === 'disagree')) bx += chip(cx, s, C, bx, 64, 'shadow ≠', E.statusHex('conflict')) + 3;
       if (tk.accepted_by) chip(cx, s, C, bx, 64, 'accepted', E.statusHex('nochanges'));
     }, 'cover', { x: x + 12, y: y + 8, z: h });
     const tries = Math.max(1, list(t.attempts).length);
@@ -285,7 +285,7 @@ export async function createStage(host, cb = {}) {
       if (fi.status === 'NONE') { cx.setLineDash([2.4 * s, 1.8 * s]); cx.strokeStyle = C.line; cx.lineWidth = Math.max(1, .3 * s); E.rr(cx, s, .5, .5, w - 25, d - 29, 5); cx.stroke(); cx.setLineDash([]); }
       E.font(cx, 15, s, 600); cx.fillStyle = sel ? C.accHi : C.inkHi; cx.fillText(fi.title || '', 4 * s, 17 * s);
       const sub = E.fit(fi.sub || '', w - 34, 22, 9.5, 2, 5); if (sub) E.lines(cx, s, sub, 4, 23, C.ink, w - 34, 400);
-      if (fi.findings) { let bx = 4; for (const sev of ['P0', 'P1', 'P2', 'P3']) if (fi.findings[sev]) bx += chip(cx, s, C, bx, 46, `${sev}×${fi.findings[sev]}`, E.statusHex(SEV_STATUS[sev])) + 3;
+      if (fi.findings) { let bx = 4; for (const sev of ['P0', 'P1', 'P2', 'P3']) if (fi.findings[sev]) bx += chip(cx, s, C, bx, 46, `${sev}×${fi.findings[sev]}`, E.sevHex(sev)) + 3;
         if (fi.findings.plausible) chip(cx, s, C, bx, 46, `~${fi.findings.plausible}`, E.statusHex('pending'), { fill: false }); }
     }, 'cover', { x: x + 12, y: y + 8, z: h });
     if (m.id === 'f:final') { leds(el, 4, x + 18, y + d - 13, h + .16, { step: 11, s: 3 }); }
@@ -301,7 +301,7 @@ export async function createStage(host, cb = {}) {
     return info.status || 'PENDING';
   }
   function finishLeds(el) {
-    if (el.id === 'f:final') { const f = finishInfo(el.id).findings || {}; setLeds(el, ['P0', 'P1', 'P2', 'P3'].map(s => f[s] ? SEV_STATUS[s].toUpperCase() : null)); }
+    if (el.id === 'f:final') { const f = finishInfo(el.id).findings || {}; setLeds(el, ['P0', 'P1', 'P2', 'P3'].map(s => f[s] ? E.sevColor(s) : null)); }
     else if (el.id === 'f:integration') setLeds(el, list(st.run.tasks).map(t => taskStatus(t) === 'MERGED' ? 'MERGED' : null));
     else setLeds(el, list(st.run.verification && st.run.verification.runs).map(r => r.exit === 0 ? 'PASS' : 'FAIL'));
   }
@@ -361,7 +361,7 @@ export async function createStage(host, cb = {}) {
           const sp = E.fit(pt.spec || '—', cw - 2 * pad, ch - f1 * 1.6 - pad * 2, 6, 2, 2.5);
           if (sp) E.lines(cx, s, sp, pad, pad + f1 * 1.35, Cc.ink, cw - 2 * pad, 400);
           const fs = pt.exec && pt.exec.findings || pt.shadow && pt.shadow.findings;
-          if (fs && fs.worst) chip(cx, s, Cc, pad, ch - pad - 6 * 1.6, `${fs.worst}×${fs[fs.worst]}`, E.statusHex(SEV_STATUS[fs.worst]), { f: Math.min(5, ch * .14) });
+          if (fs && fs.worst) chip(cx, s, Cc, pad, ch - pad - 6 * 1.6, `${fs.worst}×${fs[fs.worst]}`, E.sevHex(fs.worst), { f: Math.min(5, ch * .14) });
         }, 'cover', { x: zx, y: n.y, z: ph });
         el.kids.push(k);
       });
@@ -499,7 +499,7 @@ export async function createStage(host, cb = {}) {
         E.rr(cx, s, 1 + sx, by, Math.min(sw, lw - 2 - sx), 8, 2); cx.fill(); cx.globalAlpha = 1;
         if (sw > 26) { E.font(cx, 5.5, s, 600); cx.fillStyle = C.bg; cx.fillText(sg.role === 'qa' ? 'QA' : 'DWARF', (3 + sx) * s, (by + 6) * s); }
       }
-      if (item.findings && item.findings.worst) chip(cx, s, C, 1, by - 12, `${item.findings.worst}×${item.findings[item.findings.worst]}`, E.statusHex(SEV_STATUS[item.findings.worst]), { f: 5 });
+      if (item.findings && item.findings.worst) chip(cx, s, C, 1, by - 12, `${item.findings.worst}×${item.findings[item.findings.worst]}`, E.sevHex(item.findings.worst), { f: 5 });
       if (item.ghost) { cx.setLineDash([2 * s, 1.6 * s]); cx.strokeStyle = C.line; cx.lineWidth = Math.max(1, .3 * s); E.rr(cx, s, .5, .5, lw - 1, it.d - 15, 3); cx.stroke(); cx.setLineDash([]); }
     }, 'cover', { x: it.x + 5, y: it.y + 6, z: h });
     if (it.w > 70) display(el, attemptLine, { w: Math.min(it.w - 10, 150), x: it.x + 5, y: it.y + it.d, z: h - 6 });
@@ -585,7 +585,7 @@ export async function createStage(host, cb = {}) {
       if (crit.has(el.id)) { T.lit = Math.max(T.lit, .75); T.halo = Math.max(T.halo, .12); }
       if (st.overlay.critical && st.crit && el.kind === 'task' && !crit.has(el.id)) T.vis = Math.min(T.vis, .55);
       el.metricCol = metricColor(el);
-      if (el.metricCol) { T.tint = E.theme === 'light' ? .35 : .45; T.lit = .5; }
+      if (el.metricCol) { T.tint = E.theme === 'light' ? .5 : .45; T.lit = .5; }
       if (el.kind === 'task' && st.overlay.height !== 'none') {
         const v = RM.metricValue(el.data.task, st.overlay.height, st.run, nowSec()), mx = st.metricMax[st.overlay.height];
         T.hk = v === null || !mx ? .35 : .4 + 1.4 * Math.sqrt(v / mx);
@@ -663,7 +663,7 @@ export async function createStage(host, cb = {}) {
       TMP.copy(col).lerp(E.accent, c.sel);
       E.paint(el.M, c.vis, Math.min(1, c.lit + c.sel * .9), c.hov, c.op * ol * gf, c.opB * ob * gf, TMP, 0);
       if (c.tint > .001) el.M.body.color.lerp(TMP2.copy(col), c.tint * c.vis);
-      if (el.tintMat) { el.tintMat.color.copy(col); el.tintMat.opacity = (c.tint * 1.1 + .08 * c.sel) * ob * gf * c.vis; }
+      if (el.tintMat) { el.tintMat.color.copy(col); el.tintMat.opacity = (c.tint * (E.theme === 'light' ? 1.45 : 1.1) + .08 * c.sel) * ob * gf * c.vis; }
       if (el.haloMat) el.haloMat.uniforms.opacity.value = (c.halo + (el.pulse ? .12 * pulseK : 0)) * gf * c.vis;
       if (el.clef) el.clef.fgM.color.copy(E.statusColor(['MERGED', 'PASS'].includes(el.status) ? 'pass' : ['FAIL', 'ERROR', 'CONFLICT'].includes(el.status) ? 'fail' : 'pending'));
       if (el.inner) {
@@ -965,6 +965,12 @@ export async function createStage(host, cb = {}) {
       const el = EL.get('t:' + taskId); if (el && el.inner) { syncFractal(el); E.invalidate(300); }
     },
     focus() { E.canvas.focus({ preventScroll: true }); },
+    // frame again what is shown, in the part of the stage the modules leave free (after a module opens, folds or resizes)
+    reframe(dur = 500) {
+      if (st.view === 'run' && st.run) { if (st.sel) frameSelection(dur); else E.frameBox(boxOf(st.mode), dur, 26); }
+      else if (st.view === 'atlas' && st.atlasBox) E.frameBox(st.atlasBox, dur, 30);
+      else if (st.view === 'cloud' && cloud && cloud.frameAll) cloud.frameAll();
+    },
     get mode() { return st.mode; },
     get view() { return st.view; },
     dispose() { E.dispose(); tip.remove(); },

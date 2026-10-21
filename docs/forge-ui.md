@@ -27,6 +27,14 @@ and the cloud remembers it.
 </tr>
 </table>
 
+The page reads like a signal box's desk: engraved plates for headings, push buttons with lamps
+for switches, and lamps that keep one meaning everywhere (amber running, green merged, red failed,
+unlit pending). Two layouts share it. *Immersive*, the default, floats the runs, the inspector and the tasks
+over a full-window stage (on a first visit the inspector and the tasks start folded, so a run
+opens on its plate); *Workbench* docks them beside it with splitters. `1`, `2` and
+`3` fold each module away, the header switches layout and theme (system, light or dark), and the
+task and model tables sort, reorder and hide columns. forge-ui remembers all of it in your browser.
+
 Also: replay, critical path, Fractal child-task trees, quick jump (Ctrl K, ⌘K on a Mac, or
 `/`), a bell for runs that finish or fail, failed tasks and final-review verdicts (with opt-in
 browser notifications), and a run exported as one HTML file that opens without forge-ui, with

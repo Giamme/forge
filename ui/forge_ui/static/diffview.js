@@ -6,7 +6,6 @@
 window.ForgeDiff = (() => {
   'use strict';
   const list = v => Array.isArray(v) ? v : [];
-  const SEV = { P0: 'fail', P1: 'conflict', P2: 'timeout', P3: 'unknown' };
   const RANK = { P0: 0, P1: 1, P2: 2, P3: 3 };
   const BUDGET = 4000;                                       // lines drawn before the rest of the files wait for a click
   const cache = new Map();                                   // url → {data, error, pending, fresh}
@@ -18,6 +17,7 @@ window.ForgeDiff = (() => {
     return n;
   }
   const chip = (text, st) => el('span', text, 'chip st-' + st);
+  const sevChip = (text, sev) => el('span', text, 'chip sev-chip sev-' + (/^P[0-3]$/.test(sev) ? sev : 'none'));
   const enc = encodeURIComponent;
   const TASK_FILES = new Set(['current', 'prev', 'committed', 'existing']);
   function urlFor(run, spec) {
@@ -48,7 +48,7 @@ window.ForgeDiff = (() => {
   function findingBox(f, where) {
     const box = el('div', undefined, 'diff-finding sev-' + (f.severity || 'P3'));
     const head = el('div', undefined, 'diff-finding-head');
-    head.append(chip(f.severity || '?', SEV[f.severity] || 'unknown'));
+    head.append(sevChip(f.severity || '?', f.severity));
     if (f.status) head.append(el('span', f.status.toLowerCase(), 'tag'));
     const r = f.review || {};
     head.append(el('span', `${r.kind || 'review'}${r.attempt != null ? ' · attempt ' + r.attempt : ''}${r.spec ? ' · ' + r.spec : ''}`, 'muted'));
@@ -126,7 +126,9 @@ window.ForgeDiff = (() => {
     const top = el('div', undefined, 'diff-top');
     const what = spec.kind === 'final' ? 'Final review' : spec.kind === 'fractal' ? `${spec.task} · Fractal node ${spec.node}` : spec.task === 'solo' && run.kind === 'solo' ? 'Solo run' : `Task ${spec.task}`;
     const title = el('h2'); title.append(el('span', 'Diff · ', 'muted'), document.createTextNode(what)); top.append(title);
-    const close = el('a', 'Close ✕', 'diff-close'); close.href = ctx.closeHref; top.append(close);
+    const close = el('a', undefined, 'diff-close button'); close.href = ctx.closeHref;
+    if (window.ForgeIcons) close.append(window.ForgeIcons.icon('close'));
+    close.append(document.createTextNode('Close')); top.append(close);
     host.append(top);
     if (!D) {
       host.append(el('p', entry.error ? (entry.error.snapshot ? 'This diff is not in this export.' : `Could not load this diff (${entry.error.status === 404 ? 'not found' : entry.error.message}).`) : 'Loading the diff…', entry.error ? 'warn' : 'muted'));
@@ -172,7 +174,7 @@ window.ForgeDiff = (() => {
       const stat = el('span', undefined, 'diff-stat'); stat.append(el('span', `+${f.additions}`, 'diff-add'), document.createTextNode(' '), el('span', `−${f.deletions}`, 'diff-del'));
       a.append(stat);
       const ps = byFile.get(fi) || [];
-      if (ps.length) { const w = worst(ps.map(x => x.f)); a.append(chip(`${ps.length}`, SEV[w] || 'unknown')); a.title = `${ps.length} finding${ps.length === 1 ? '' : 's'}, worst ${w}`; }
+      if (ps.length) { const w = worst(ps.map(x => x.f)); a.append(sevChip(`${ps.length}`, w)); a.title = `${ps.length} finding${ps.length === 1 ? '' : 's'}, worst ${w}`; }
       if (spec.file && spec.file === p) a.setAttribute('aria-current', 'true');
       li.append(a); ul.append(li);
     });
