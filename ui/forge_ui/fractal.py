@@ -47,8 +47,7 @@ def supported():
 
 
 def state_root():
-    """forge_fractal.state_root(), except that an empty XDG_STATE_HOME counts as unset (forge
-    resolves '' to its working directory)."""
+    """forge_fractal.state_root(): an empty XDG_STATE_HOME counts as unset."""
     base = os.environ.get('XDG_STATE_HOME') or os.path.join(os.path.expanduser('~'), '.local', 'state')
     return os.path.join(os.path.realpath(os.path.expanduser(base)), 'forge', 'fractal')
 

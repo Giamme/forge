@@ -347,7 +347,7 @@ def main(args) -> int:
                 if line.strip() and not line.startswith('#') and Path(line.strip()).is_dir():
                     targets.append(Path(line.strip()))
     if args.fractal:
-        state = Path(os.environ.get('XDG_STATE_HOME', str(Path.home() / '.local' / 'state'))).expanduser()
+        state = Path(os.environ.get('XDG_STATE_HOME') or str(Path.home() / '.local' / 'state')).expanduser()
         targets.append(state / 'forge' / 'fractal' / 'runs')
     ledgers = [(Path(r).expanduser() / '.forge' / 'ledger.tsv', str(Path(r).expanduser().resolve())) for r in args.ledger]
     archives = []

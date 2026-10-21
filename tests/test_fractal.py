@@ -39,6 +39,18 @@ class FractalContracts(unittest.TestCase):
         self.output = contextlib.redirect_stdout(io.StringIO())
         self.output.__enter__(); self.addCleanup(self.output.__exit__, None, None, None)
 
+    def test_empty_xdg_state_home_means_the_default_state_dir(self):
+        # forge-ui and `forge dataset import --fractal` look under ~/.local/state when
+        # XDG_STATE_HOME is empty; Fractal must keep its state there, not in the cwd.
+        from forge_fractal import state_root
+        home, cwd = self.root / 'home', self.root / 'cwd'
+        cwd.mkdir()
+        previous = os.getcwd()
+        os.chdir(cwd)
+        self.addCleanup(os.chdir, previous)
+        with patch.dict(os.environ, {'XDG_STATE_HOME': '', 'HOME': str(home)}):
+            self.assertEqual(state_root(), home / '.local' / 'state' / 'forge' / 'fractal')
+
     def test_unattended_off_and_persistent(self):
         run = self.root / 'run'; run.mkdir()
         args = parser().parse_args(['select', '--run-dir', str(run), '--repo', str(self.root), '--mode', 'solo'])
