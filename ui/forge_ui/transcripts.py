@@ -432,6 +432,14 @@ def parse_json(text):
             events.append(_event('text', text=_ANSI.sub('', raw)))
             continue
         kind = str(value.get('type') or value.get('event') or 'event')
+        res = value.get('result')
+        if kind == 'result' and isinstance(res, dict):           # agy --output-format stream-json's last event
+            usage = res.get('usage') if isinstance(res.get('usage'), dict) else {}
+            error = res.get('status') == 'ERROR' or bool(res.get('error'))
+            events.append(_event('result', text=res.get('response') or res.get('error'), error=True if error else None,
+                                 tokens={'input': usage.get('input_tokens') or 0, 'cached': usage.get('cache_read_tokens') or 0,
+                                         'output': (usage.get('output_tokens') or 0) + (usage.get('thinking_tokens') or 0)} if usage else None))
+            continue
         body = value.get('text') or value.get('content') or value.get('message') or value.get('result')
         if isinstance(body, str) and body.strip():
             events.append(_event('error' if 'error' in kind else 'message', text=body, source=kind))

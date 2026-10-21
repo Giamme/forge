@@ -21,7 +21,7 @@ DISPATCH = ROOT / 'scripts' / 'forge-dispatch.sh'
 HELP = ('-p --model --add-dir --effort --permission-mode --allowedTools --disallowed-tools '
         '--dangerously-skip-permissions -m -C -o -c -s --skip-git-repo-check --approve-for-me --base '
         '--uncommitted --dangerously-bypass-approvals-and-sandbox --dir --variant --auto --agent --print '
-        '--print-timeout --mode --json --output-format exec --prompt-file --reasoning-effort --allow --deny --always-approve')
+        '--print-timeout --mode --json --output-format --verbose --format exec --prompt-file --reasoning-effort --allow --deny --always-approve')
 
 # What a real claude/codex wrote the day they hit a limit (from an earlier forge run).
 CLAUDE_LIMIT = "You've hit your session limit · resets 1:10pm (Europe/Rome)"
@@ -42,6 +42,12 @@ GROK_CANCELLED = '\n'.join([
     '{"type":"result","subtype":"error_during_execution","is_error":true,"duration_ms":779570,"num_turns":44,'
     '"stop_reason":"cancelled","usage":{"input_tokens":110615,"output_tokens":34890,"cache_read_input_tokens":3314560},'
     '"errors":["cancelled"]}'])
+
+
+# What a real opencode `--format json` printed for a route whose token was refused (2026-10-21), exit 1.
+OPENCODE_UNAUTHORIZED = json.dumps({'type': 'error', 'timestamp': 1792605283944, 'sessionID': 'ses_ea066217bfferXT11J1xZ27NMf',
+                                    'error': {'name': 'APIError', 'data': {'message': 'Unauthorized: unauthorized: token authentication failed',
+                                                                           'statusCode': 401, 'isRetryable': False}}})
 
 
 def alive(pid):
@@ -189,6 +195,40 @@ class GrokHarnessTests(DispatchBase):
         self.scenario({'*.dwarf.*': {'rc': 1, 'is_error': True,
                                      'message': 'Unauthorized: token authentication failed: credential expired'}})
         result = self.dispatch('dwarf', 'grok')
+        self.assertEqual(result.returncode, 8, result.stdout)
+        self.assertEqual(self.kv('dwarf.infra')['class'], 'auth')
+
+
+class StreamTests(DispatchBase):
+    """claude, openclaude and opencode write one JSON event per line, so a run keeps its conversation; the final
+    message and the tokens still come out of it."""
+
+    def test_claude_and_openclaude_stream_and_their_answer_comes_from_the_result_line(self):
+        shutil.copy(self.bin / 'claude', self.bin / 'openclaude')
+        for spec in ('opus', 'haiku::openclaude'):
+            with self.subTest(spec):
+                result = self.dispatch('dwarf', spec)
+                self.assertEqual(result.returncode, 0, result.stdout)
+                self.assertIn('--output-format stream-json --verbose', self.read('dwarf.cmd'))
+                self.assertEqual(self.read('dwarf.log').count('\n'), 3)          # the session, a message, the result
+                self.assertEqual(self.read('dwarf.last'), 'implemented\n')
+                metrics = json.loads((self.attempt('dwarf') / 'metrics.json').read_text())
+                self.assertEqual((metrics['input_tokens'], metrics['cached_input_tokens'], metrics['output_tokens']), (15, 2, 4))
+
+    def test_opencode_writes_events_and_its_answer_is_the_last_steps_text(self):
+        shutil.copy(self.bin / 'codex', self.bin / 'opencode')
+        result = self.dispatch('dwarf', 'sol:high:opencode')
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn('--format json', self.read('dwarf.cmd'))
+        # what it said before its tool call is not the answer
+        self.assertEqual(self.read('dwarf.last'), 'implemented\n')
+        metrics = json.loads((self.attempt('dwarf') / 'metrics.json').read_text())
+        self.assertEqual((metrics['input_tokens'], metrics['cached_input_tokens'], metrics['output_tokens']), (19, 8, 6))
+
+    def test_an_opencode_error_event_is_infrastructure(self):
+        shutil.copy(self.bin / 'codex', self.bin / 'opencode')
+        self.scenario({'*.dwarf.*': {'rc': 1, 'stdout': OPENCODE_UNAUTHORIZED}})
+        result = self.dispatch('dwarf', 'sol:high:opencode')
         self.assertEqual(result.returncode, 8, result.stdout)
         self.assertEqual(self.kv('dwarf.infra')['class'], 'auth')
 

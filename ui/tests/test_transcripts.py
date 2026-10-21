@@ -56,6 +56,7 @@ class Formats(unittest.TestCase):
                 ('tool', 'read', 'error'), ('message', 'Done: a missing status reads as PENDING.'),
                 ('error', 'rate limited, retrying')],
              {'input': 10100, 'cached': 9000, 'output': 190}),
+            ('agy-error.jsonl', 'json', [('result', 'authentication failed or timed out', 'error')], None),   # agy's stream-json
             ('plain.txt', 'text', [('text', 'openclaude session started\nEdited ui/reader.py\nAll tests pass.')], None),
         ]
         for name, fmt, events, tokens in cases:

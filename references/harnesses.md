@@ -46,8 +46,8 @@ disables), else the optional `timeout` column of the model's registry row, else 
 
 **Infrastructure failures exit `8`.** After the backend exits, `forge-runtime.py classify` reads
 the dispatch log (never `<role>.last`, which is only created afterwards): claude/openclaude/grok
-`result` events with `is_error`, codex `turn.failed`/`error` events that nothing followed,
-and for the raw-log harnesses (opencode, antigravity) the last 2 KB when the exit was nonzero —
+`result` events with `is_error`, codex `turn.failed`/`error` and opencode `error` events that no
+answer followed, and for the raw-log harness (antigravity) the last 2 KB when the exit was nonzero —
 looking for strong phrases (usage/session limit, quota, insufficient balance/credit, rate limit,
 429/529, unauthorized/401/403, invalid API key, not logged in, ECONNRESET/ENOTFOUND/…). An
 `empty` answer (exit 0, nothing said) is the fifth class. codex's non-fatal reconnect notices
@@ -90,8 +90,9 @@ reason forge validates efforts itself before dispatch.
 
 **Prompt delivery uses stdin.** Forge copies the input once (including FIFOs), checks it
 with a streaming whitespace character class, and runs `codex exec ... - < role.prompt`.
-Native review has no custom prompt and uses `/dev/null`. Codex JSONL events and Claude
-`--output-format json` provide native usage; final responses remain in `<role>.last`.
+Native review has no custom prompt and uses `/dev/null`. Codex JSONL events, Claude and openclaude
+`--output-format stream-json` and opencode `--format json` provide native usage; final responses
+remain in `<role>.last`.
 See the official [Codex non-interactive guide](https://learn.chatgpt.com/docs/non-interactive-mode)
 and [Claude headless guide](https://code.claude.com/docs/en/headless).
 
@@ -109,11 +110,17 @@ and `--approve-for-me` additionally conflicts with an explicit `-s/--sandbox`.
 ## claude / openclaude
 
 ```
-<harness> -p --model <model> --add-dir <run-dir> --effort <effort> \
+<harness> -p --model <model> --add-dir <run-dir> --output-format stream-json --verbose --effort <effort> \
   (--permission-mode acceptEdits --allowedTools Bash | --dangerously-skip-permissions)
   [--disallowed-tools "Edit,Write,NotebookEdit"]
 ```
 with the prompt delivered on **stdin**.
+
+**The log is a stream.** `--output-format stream-json` (which `-p` accepts only with `--verbose`)
+writes one JSON message per line: the session, every assistant message and tool call, every tool
+result, and a closing `result` line with the final answer and the token counts, which is what
+forge reads into `<role>.last` and the metrics. The rest is the run's conversation, which forge-ui
+shows. Hook and rate-limit events in the stream are ignored.
 
 **The prompt must not go on argv when a variadic flag precedes it.** `--disallowed-tools`,
 `--allowed-tools` and friends are variadic, so a following positional is consumed as
@@ -162,7 +169,7 @@ Claude-Code-shaped harness. That is the point of `sol:xhigh:openclaude`.
 ## opencode
 
 ```
-opencode run -m <provider>/<model> --dir <repo> --variant <effort> --auto [--agent plan] "<prompt>"
+opencode run -m <provider>/<model> --dir <repo> --variant <effort> --auto [--agent plan] --format json "<prompt>"
 ```
 
 Models are always `provider/model`; `opencode models` lists what is configured.
@@ -194,6 +201,11 @@ agy --model <model> --print-timeout <t> [--effort <e>] --add-dir <repo> --add-di
 
 The harness is named `antigravity` in forge; the binary is `agy`. This is how Gemini is
 reached.
+
+**Its log stays plain text.** agy has `--output-format stream-json`, but only its closing event
+has been seen (`{"event": "result", "result": {"status", "response", "error", "usage", ...}}`, on a
+lapsed login), not the stream of a working run, and the final answer would come from it. Until
+then forge keeps agy's printed output, which is both its log and its answer.
 
 **`--print` must use the attached `=` form.** It is a Go flag with an optional value, so
 written detached it consumes whatever token follows as its prompt. `agy --print

@@ -17,7 +17,7 @@ a=sys.argv[1:]
 if '--help' in a:
  if os.environ.get('HELPS'):
   with open(os.environ['HELPS'], 'a') as f: f.write('help\\n')
- print('-p --model --add-dir --effort --permission-mode --allowedTools --disallowed-tools --dangerously-skip-permissions -m -C -o -c -s --skip-git-repo-check --approve-for-me --base --uncommitted --dangerously-bypass-approvals-and-sandbox --dir --variant --auto --agent --print --print-timeout --mode --json --output-format --prompt-file --reasoning-effort --allow --deny --always-approve'); sys.exit()
+ print('-p --model --add-dir --effort --permission-mode --allowedTools --disallowed-tools --dangerously-skip-permissions -m -C -o -c -s --skip-git-repo-check --approve-for-me --base --uncommitted --dangerously-bypass-approvals-and-sandbox --dir --variant --auto --agent --print --print-timeout --mode --json --output-format --verbose --format --prompt-file --reasoning-effort --allow --deny --always-approve'); sys.exit()
 p = (pathlib.Path(a[a.index('--prompt-file')+1]).read_text() if '--prompt-file' in a
      else sys.stdin.read() if '-p' in a or a[-1] == '-' else a[-1])
 qa = '--disallowed-tools' in a or '--deny' in a or '-s' in a or 'review' in a
@@ -71,7 +71,20 @@ if '-o' in a:
  pathlib.Path(a[a.index('-o')+1]).write_text(result)
  import json; print(json.dumps({'type':'turn.completed','usage':{'input_tokens':20,'cached_input_tokens':5,'output_tokens':3}}))
 elif '--output-format' in a:
- import json; print(json.dumps({'type':'result', 'is_error':bool(sc.get('is_error')), 'result':result, 'usage':{'input_tokens':10,'cache_read_input_tokens':2,'cache_creation_input_tokens':3,'output_tokens':4}}))
+ import json
+ # claude's and openclaude's stream-json: the session, what the model said, then the result
+ if a[a.index('--output-format')+1] == 'stream-json':
+  print(json.dumps({'type':'system','subtype':'init','session_id':'5f0c2a8e-1d2b-4c3d-9e4f-0123456789ab','model':'fake'}))
+  print(json.dumps({'type':'assistant','message':{'id':'msg_1','role':'assistant','content':[{'type':'text','text':result}],'usage':{'input_tokens':1,'output_tokens':1}}}))
+ print(json.dumps({'type':'result', 'is_error':bool(sc.get('is_error')), 'result':result, 'usage':{'input_tokens':10,'cache_read_input_tokens':2,'cache_creation_input_tokens':3,'output_tokens':4}}))
+elif '--format' in a and a[a.index('--format')+1] == 'json':
+ import json   # opencode: one event per line, each step closed with its tokens
+ for e in [{'type':'step_start','part':{}}, {'type':'text','part':{'text':'Looking around first.'}},
+           {'type':'tool_use','part':{'tool':'bash','callID':'c1','state':{'status':'completed','input':{'command':'ls'},'output':'x'}}},
+           {'type':'step_finish','part':{'tokens':{'input':6,'output':2,'reasoning':1,'cache':{'read':3,'write':1}}}},
+           {'type':'step_start','part':{}}, {'type':'text','part':{'text':result}},
+           {'type':'step_finish','part':{'tokens':{'input':4,'output':3,'reasoning':0,'cache':{'read':5,'write':0}}}}]:
+  print(json.dumps(dict(e, sessionID='ses_fake')))
 else: print(result)
 sys.exit(sc.get('rc', 0))
 '''

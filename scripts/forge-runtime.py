@@ -101,9 +101,45 @@ def token_count(value: object) -> int | None:
     return value if type(value) is int and value >= 0 else None
 
 
+# Harnesses whose log is a stream of JSON events rather than the answer itself.
+STRUCTURED = ('codex', 'claude', 'openclaude', 'grok', 'opencode')
+
+
+def _opencode_final(events: list) -> str:
+    """opencode's answer: the text of its last step, after its last tool call."""
+    final, step = '', []
+    for event in events:
+        kind = event.get('type')
+        if kind in ('step_start', 'tool_use'):
+            step = []
+        elif kind == 'text':
+            part = event.get('part')
+            text = part.get('text') if isinstance(part, dict) else None
+            if isinstance(text, str) and text.strip():
+                step.append(text)
+                final = '\n'.join(step)
+    return final
+
+
 def extract(log: str, harness: str) -> tuple[str | None, dict[str, int | None]]:
     usage = dict(input_tokens=None, cached_input_tokens=None, output_tokens=None)
     final = None
+    if harness == 'opencode':
+        events = _events(log)[0]
+        for event in events:
+            part = event.get('part')
+            tokens = part.get('tokens') if event.get('type') == 'step_finish' and isinstance(part, dict) else None
+            if not isinstance(tokens, dict):
+                continue
+            cache = tokens.get('cache') if isinstance(tokens.get('cache'), dict) else {}
+            # input counts what was read from and written to the cache, as claude's does
+            for key, parts in (('input_tokens', (tokens.get('input'), cache.get('read'), cache.get('write'))),
+                               ('cached_input_tokens', (cache.get('read'),)),
+                               ('output_tokens', (tokens.get('output'), tokens.get('reasoning')))):
+                counts = [token_count(v) for v in parts if v is not None]
+                if counts and all(v is not None for v in counts):
+                    usage[key] = (usage[key] or 0) + sum(counts)
+        return _opencode_final(events) or None, usage
     for line in log.splitlines():
         try:
             event = json.loads(line)
@@ -124,8 +160,9 @@ def extract(log: str, harness: str) -> tuple[str | None, dict[str, int | None]]:
             if isinstance(item, dict) and item.get('type') == 'agent_message':
                 if isinstance(item.get('text'), str):
                     final = item['text']
-        # grok's streaming-messages-json ends in the same `result` event, token buckets included.
-        if harness in ('claude', 'grok') and event.get('type') == 'result':
+        # claude's and openclaude's stream-json and grok's streaming-messages-json end in the same
+        # `result` event, token buckets included.
+        if harness in ('claude', 'openclaude', 'grok') and event.get('type') == 'result':
             if isinstance(event.get('result'), str):
                 final = event['result']
             # Claude reports uncached, cache-read and cache-creation separately.
@@ -149,7 +186,7 @@ def finish(attempt: str, root: str, role: str, harness: str, rc: str) -> None:
 def _finish(attempt: Path, root: Path, role: str, harness: str, rc: str) -> None:
     log = root / (role + '.log')
     last = root / (role + '.last')
-    structured = harness in ('codex', 'claude', 'grok')
+    structured = harness in STRUCTURED
     text = log.read_text(errors='replace') if structured and log.exists() else ''
     final, usage = extract(text, harness)
     if not last.exists() or not last.stat().st_size:
@@ -439,7 +476,7 @@ def classify(log: str, harness: str, rc: object, last: str = '', role: str = '',
         text = Path(log).read_text(errors='replace')
     except OSError:
         text = ''
-    events, stray = _events(text) if harness in ('codex', 'claude', 'openclaude', 'grok') else ([], [])
+    events, stray = _events(text) if harness in STRUCTURED else ([], [])
 
     if harness == 'codex':
         final = _codex_final(events, last)
@@ -453,6 +490,22 @@ def classify(log: str, harness: str, rc: object, last: str = '', role: str = '',
                     return hit
             return 'empty', None, 'codex finished with exit 0 but produced no final message'
         return classify_text('\n'.join(pending + [_tail(stray)]), now=now)
+
+    if harness == 'opencode' and events:
+        # Like codex: an error event counts when the run produced no answer after it.
+        errors = []
+        for event in events:
+            error = event.get('error') if event.get('type') == 'error' else None
+            if isinstance(error, dict):
+                data = error.get('data') if isinstance(error.get('data'), dict) else {}
+                errors.append(str(data.get('message') or error.get('name') or json.dumps(error)))
+        final = _opencode_final(events)
+        if rc == 0:
+            if final.strip():
+                return None
+            hit = classify_text('\n'.join(errors), now=now) if errors else None
+            return hit or ('empty', None, 'opencode finished with exit 0 but produced no final message')
+        return classify_text('\n'.join(errors + [_tail(stray)]), now=now)
 
     results = [e for e in events if e.get('type') == 'result'] if harness in ('claude', 'openclaude', 'grok') else []
     if results:
@@ -478,8 +531,8 @@ def classify(log: str, harness: str, rc: object, last: str = '', role: str = '',
             return 'empty', None, '%s finished with exit 0 but its final result is empty' % harness
         return None
 
-    # Raw-log harness (opencode, antigravity, openclaude's plain text, or a claude that
-    # died before emitting its result): the log is the message, so only the tail of a
+    # Raw-log harness (antigravity, an opencode or openclaude from before their streams, or a
+    # claude that died before emitting its result): the log is the message, so only the tail of a
     # failing run is evidence. A successful run's prose is never scanned.
     if rc != 0:
         return classify_text(_tail(text), now=now)
