@@ -77,6 +77,37 @@ it at the start of every new run and never opens it without a yes.
 
 ## Install
 
+forge runs on macOS and Linux. It needs bash, git and Python 3.9 or later, plus the agent
+CLIs you route models through; the doctor below shows which ones it finds. Installing from
+npm brings none of these with it.
+
+### From npm
+
+```bash
+npm install -g @giamme/forge
+forge install
+```
+
+`forge install` links the installed package into each harness, as the installer does for a
+checkout below. It is a step of its own rather than an npm install script, so it works where
+scripts are turned off (`--ignore-scripts`). To update:
+
+```bash
+npm install -g @giamme/forge@latest && forge install
+```
+
+The links point into npm's global package directory, so they keep working across updates;
+`forge install` refreshes antigravity's copied plugin. Under nvm, that directory belongs to
+one Node version: after switching Node, install forge on the new one and run `forge install`
+again.
+
+> **Foundry users:** Foundry's `forge` has the same name, and whichever directory comes first
+> on your `PATH` wins; npm's global bin usually comes first. Runs start from your harness
+> (`/forge`), so this command is only for `forge install` and the optional tools. If you keep
+> Foundry's `forge` first, run ours as `"$(npm root -g)/@giamme/forge/forge"`.
+
+### From a git checkout
+
 ```bash
 git clone https://github.com/Giamme/forge.git ~/.claude/skills/forge
 bash ~/.claude/skills/forge/scripts/forge-install.sh
@@ -179,6 +210,9 @@ failure produces a nonzero exit and an explanation. After fixing an installation
 failure, use `--local` to retry from the updated source. Updating Forge does not prompt
 for optional Ripwire installation.
 
+An npm installation is not a Git checkout, so the updater stops there and prints the npm
+command [above](#from-npm) instead. `--local` still refreshes its harness installations.
+
 ---
 
 ## Quick start
@@ -257,8 +291,9 @@ tmux installation uses an existing Homebrew on macOS or apt on Debian/Ubuntu.
 The [installation reference](references/fractal.md#installation-and-provenance) covers
 consent, supported bootstrap platforms, provenance and failure diagnostics.
 
-Installation never enables Fractal for a run. `./forge` is the repository-local launcher;
-it does not replace a command already named `forge` or change your shell startup files.
+Installation never enables Fractal for a run. `./forge` is the repository-local launcher,
+the same one npm puts on your `PATH` as `forge`; installing Fractal does not add a command
+or change your shell startup files.
 `./forge --help` lists its commands.
 Doctor checks the runtime and advertised harness capabilities without calling a provider.
 
@@ -1700,7 +1735,8 @@ forge/
 ├── registry.tsv                 alias → (harness, model, effort). Add a row to teach forge a model
 ├── README.md                    this file
 ├── LICENSE                      MIT
-├── forge                        repository-local launcher: `forge fractal`, `jev`, `dataset` and `ui`
+├── package.json                 the npm package: its name, version and the files it ships
+├── forge                        launcher, on PATH from npm: `forge install`, `fractal`, `jev`, `dataset` and `ui`
 ├── scripts/
 │   ├── forge-dispatch.sh        resolve a spec → run one role on one harness
 │   ├── forge-solo.sh            the whole single-task run: dwarf → diff → qa

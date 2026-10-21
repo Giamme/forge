@@ -1,8 +1,10 @@
 import dataset_isolation  # noqa: F401  keeps forge's dataset and config out of the developer's home
 import json
+import os
 from pathlib import Path
 import re
 import subprocess
+import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -27,9 +29,15 @@ class SkillChecks(unittest.TestCase):
 class LauncherTests(unittest.TestCase):
     """`./forge`, the repository-local launcher: asking for help is not a usage error."""
 
+    def setUp(self):
+        # `forge install --help` reaches the installer: if it ever installed, it would relink
+        # the developer's real harnesses, so every call runs in a throwaway HOME.
+        home = tempfile.TemporaryDirectory(); self.addCleanup(home.cleanup)
+        self.env = dict(os.environ, HOME=home.name)
+
     def forge(self, *args):
         return subprocess.run([str(ROOT / 'forge'), *args], capture_output=True, text=True, timeout=60,
-                              stdin=subprocess.DEVNULL)
+                              stdin=subprocess.DEVNULL, env=self.env)
 
     def test_help_succeeds_on_stdout_and_mistakes_fail_on_stderr(self):
         for args, code in ((['--help'], 0), (['-h'], 0), (['help'], 0), ([], 2), (['frobnicate'], 2)):

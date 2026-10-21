@@ -25,6 +25,11 @@ main() {
   echo "forge: update source: $source_dir"
   if [ "$local_only" = 0 ]; then
     if [ "$(git -C "$source_dir" rev-parse --show-toplevel 2>/dev/null)" != "$source_dir" ]; then
+      case "$source_dir" in
+        */node_modules/*)
+          # @latest, because older npm updated a global package within ^version: never 0.7 -> 0.8.
+          echo 'forge: installed with npm; update with: npm install -g @giamme/forge@latest && forge install' >&2; return 2 ;;
+      esac
       echo 'forge: update needs the original Git checkout; use --source <checkout> or --local' >&2; return 2
     fi
     changes="$(git -C "$source_dir" status --porcelain --untracked-files=all)" || return $?

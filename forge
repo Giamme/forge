@@ -1,12 +1,23 @@
 #!/usr/bin/env bash
 set -uo pipefail
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# npm runs this file through a symlink in its bin dir, usually a relative one. Follow the
+# links so ROOT is the package and not the bin dir; older macOS has no readlink -f.
+SELF="${BASH_SOURCE[0]}"
+while [ -L "$SELF" ]; do
+  LINK="$(readlink "$SELF")"
+  case "$LINK" in
+    /*) SELF="$LINK" ;;
+    *) SELF="$(dirname "$SELF")/$LINK" ;;
+  esac
+done
+ROOT="$(cd -P "$(dirname "$SELF")" && pwd)"
 
 usage() {
   printf '%s\n' \
     'usage: forge <command> [args]' \
     '' \
     'commands:' \
+    '  install   link forge into each agent harness on this machine; --dry-run previews' \
     '  fractal   opt-in Fractal execution: install, doctor, runs, status, tree, logs, open, report, ...' \
     '  jev       optional Jev advice: setup, status, doctor, enable, disable, backtest' \
     '  dataset   every run'"'"'s inputs and outcomes: status, dump, import, export, outcomes, ...' \
@@ -19,6 +30,10 @@ usage() {
 }
 
 case "${1:-}" in
+  install)
+    shift
+    exec /bin/bash "$ROOT/scripts/forge-install.sh" "$@"
+    ;;
   fractal)
     shift
     exec python3 "$ROOT/scripts/forge-fractal.py" "$@"

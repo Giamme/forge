@@ -8,3 +8,7 @@ evals/results/
 # Offline Python checks
 __pycache__/
 *.pyc
+
+# npm: forge has no dependencies to lock, and `npm pack` leaves its tarball here
+package-lock.json
+giamme-forge-*.tgz
