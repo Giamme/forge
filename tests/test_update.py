@@ -49,6 +49,15 @@ echo copied >> "$HOME/agy.calls"
         (self.seed / 'SKILL.md').write_text('new skill\n')
         self.git(self.seed, 'commit', '-qam', 'update')
 
+    def npm_install(self):
+        """Lay forge out as `npm install -g` does: a package dir, and a relative link in bin/."""
+        package = self.root / 'npm/lib/node_modules/@giamme/forge'
+        shutil.copytree(self.seed, package, ignore=shutil.ignore_patterns('.git'))
+        shutil.copy2(ROOT / 'forge', package / 'forge')
+        forge = self.root / 'npm/bin/forge'; forge.parent.mkdir()
+        forge.symlink_to('../lib/node_modules/@giamme/forge/forge')
+        return package, forge
+
     def test_fast_forward_refreshes_links_and_copy(self):
         self.advance()
         result = self.update()
@@ -115,3 +124,18 @@ echo copied >> "$HOME/agy.calls"
         self.assertIn('original Git checkout', self.update(source=copied).stdout)
         result = self.update('--source', str(self.source), '--local', source=copied)
         self.assertEqual(result.returncode, 0, result.stdout)
+
+    def test_forge_install_through_the_npm_bin_link_links_the_package(self):
+        package, forge = self.npm_install()
+        result = subprocess.run([str(forge), 'install'], env=dict(self.env, FORGE_RIPWIRE='off'), cwd=self.root,
+                                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        self.assertEqual(result.returncode, 0, result.stdout)
+        for harness in ['claude', 'openclaude', 'codex']:
+            self.assertEqual((self.home / ('.' + harness) / 'skills/forge').resolve(), package)
+
+    def test_update_of_an_npm_install_names_the_npm_command(self):
+        package, _ = self.npm_install()
+        result = self.update(source=package)
+        self.assertEqual(result.returncode, 2, result.stdout)
+        self.assertIn('npm install -g @giamme/forge@latest', result.stdout)
+        self.assertFalse((self.home / 'agy.calls').exists())

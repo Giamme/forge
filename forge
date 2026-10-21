@@ -1,7 +1,21 @@
 #!/usr/bin/env bash
 set -uo pipefail
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# npm runs this file through a symlink in its bin dir, usually a relative one. Follow the
+# links so ROOT is the package and not the bin dir; older macOS has no readlink -f.
+SELF="${BASH_SOURCE[0]}"
+while [ -L "$SELF" ]; do
+  LINK="$(readlink "$SELF")"
+  case "$LINK" in
+    /*) SELF="$LINK" ;;
+    *) SELF="$(dirname "$SELF")/$LINK" ;;
+  esac
+done
+ROOT="$(cd -P "$(dirname "$SELF")" && pwd)"
 case "${1:-}" in
+  install)
+    shift
+    exec /bin/bash "$ROOT/scripts/forge-install.sh" "$@"
+    ;;
   fractal)
     shift
     exec python3 "$ROOT/scripts/forge-fractal.py" "$@"
@@ -19,6 +33,7 @@ case "${1:-}" in
     exec python3 "$ROOT/scripts/forge-ui.py" "$@"
     ;;
   *)
+    echo 'usage: forge install [--dry-run]' >&2
     echo 'usage: forge fractal <install|doctor|runs|status|tree|activity|logs|costs|messages|config|pause|resume|stop|open|report>' >&2
     echo 'usage: forge jev <setup|status|doctor|enable|disable|backtest>' >&2
     echo 'usage: forge dataset <status|dump|blob|import|export|outcomes>' >&2

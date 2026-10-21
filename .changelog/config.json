@@ -13,7 +13,8 @@
     "zero_major": true
   },
   "version_files": [
-    "VERSION"
+    "VERSION",
+    {"path": "package.json", "format": "{major}.{minor}.{patch}"}
   ],
   "whats_new_path": null,
   "skip_types": [
