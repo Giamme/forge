@@ -11,10 +11,11 @@ usage() {
     '  jev       optional Jev advice: setup, status, doctor, enable, disable, backtest' \
     '  dataset   every run'"'"'s inputs and outcomes: status, dump, import, export, outcomes, ...' \
     '  ui        forge-ui, the run viewer: open [DIR], status, stop' \
+    '  update    fast-forward this checkout and refresh every harness installation' \
+    '  version   the installed version, and whether a newer release is out' \
     '' \
     'Run `forge <command> --help` for its options.' \
-    'Runs start from your agent harness (/forge "<goal>" --dwarf <model>); see README.md.' \
-    "Update forge with: bash $ROOT/scripts/forge-update.sh"
+    'Runs start from your agent harness (/forge "<goal>" --dwarf <model>); see README.md.'
 }
 
 case "${1:-}" in
@@ -33,6 +34,14 @@ case "${1:-}" in
   ui)
     shift
     exec python3 "$ROOT/scripts/forge-ui.py" "$@"
+    ;;
+  update)
+    shift
+    exec /bin/bash "$ROOT/scripts/forge-update.sh" "$@"
+    ;;
+  version)
+    shift
+    exec python3 "$ROOT/scripts/forge-version.py" "$@"
     ;;
   -h|--help|help)
     usage

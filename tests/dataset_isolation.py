@@ -78,3 +78,8 @@ os.environ['FORGE_UI_BROWSER'] = 'off'
 os.environ['FORGE_UI_PORT'] = '0'
 os.environ['FORGE_UI_IDLE_S'] = '120'
 os.environ.pop('FORGE_UI', None)
+
+# A finished solo run, `plan` or `run` checks the forge checkout's upstream for a newer release
+# once a day (scripts/forge-version.py). Every runner test would otherwise reach GitHub from
+# the developer's checkout; the tests about the notice turn it back on in their own env.
+os.environ['FORGE_UPDATE_CHECK'] = 'off'

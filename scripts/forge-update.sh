@@ -11,7 +11,7 @@ main() {
       --dry-run) dry=1; shift ;;
       --local) local_only=1; shift ;;
       --help|-h)
-        echo 'Usage: forge-update.sh [--source <checkout>] [--local] [--dry-run]'
+        echo 'usage: forge update [--source <checkout>] [--local] [--dry-run]'
         echo 'Default: fast-forward the tracked upstream, then refresh harness installations.'
         echo '--local: refresh installations from the current files without fetching.'
         return 0 ;;
