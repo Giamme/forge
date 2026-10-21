@@ -13,7 +13,7 @@ from . import DEFAULTS, identifier, managed_run, read_json, safe_file, write_jso
 
 
 def parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(description='Opt-in Fractal execution and read-only observability for Forge')
+    p = argparse.ArgumentParser(prog='forge fractal', description='Opt-in Fractal execution and read-only observability for Forge')
     sub = p.add_subparsers(dest='command', required=True)
     install = sub.add_parser('install')
     for flag in ('dry-run', 'yes', 'with-prerequisites'):

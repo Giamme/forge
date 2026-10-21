@@ -250,6 +250,7 @@ consent, supported bootstrap platforms, provenance and failure diagnostics.
 
 Installation never enables Fractal for a run. `./forge` is the repository-local launcher;
 it does not replace a command already named `forge` or change your shell startup files.
+`./forge --help` lists its commands.
 Doctor checks the runtime and advertised harness capabilities without calling a provider.
 
 ### Start and inspect a run

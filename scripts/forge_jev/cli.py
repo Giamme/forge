@@ -41,7 +41,7 @@ _CAP_ENV = dict(routing='FORGE_JEV_ROUTING', tests='FORGE_JEV_TESTS',
 
 
 def parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(description='Opt-in TypeSafe/Jev integration for Forge')
+    p = argparse.ArgumentParser(prog='forge jev', description='Opt-in TypeSafe/Jev integration for Forge')
     sub = p.add_subparsers(dest='command', required=True)
 
     setup = sub.add_parser('setup')
