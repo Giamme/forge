@@ -1,11 +1,11 @@
 {
   "name": "@giamme/forge",
-  "version": "0.7.1",
+  "version": "0.8.0",
   "description": "One model builds it. A different model reviews what it actually built.",
   "keywords": ["claude-code", "codex", "opencode", "agent-skill", "code-review", "multi-model"],
   "license": "MIT",
   "author": "Giamme",
-  "repository": "github:Giamme/forge",
+  "repository": { "type": "git", "url": "git+https://github.com/Giamme/forge.git" },
   "bin": { "forge": "forge" },
   "os": ["darwin", "linux"],
   "files": [

@@ -1,6 +1,93 @@
 {
   "versions": [
     {
+      "version": "0.8",
+      "date": "2026-10-21",
+      "summary": "forge installs from npm: `npm install -g @giamme/forge`, then `forge install`. The forge command also gains `forge update`, `forge version` and a real `--help`, reviews can ask for opt-in fail-first evidence, and forge is now under the MIT License.",
+      "entries": [
+        {
+          "type": "added",
+          "text": "forge is now released under the MIT License: anyone may use, change and share it as long as the copyright notice stays with it. Until now the repository had no license, which left nobody the right to use it.",
+          "breaking": false,
+          "audience": "user",
+          "highlight": false,
+          "commits": [
+            "56f8612"
+          ]
+        },
+        {
+          "type": "added",
+          "text": "`forge update` and `forge version` now work from the forge command. `forge version` shows your version, checkout and upstream (`--check` asks for the newest release), and a finished solo run, `plan` or `run` prints one line when a newer forge is out, at most once a day; it stays quiet offline, in CI or with `FORGE_UPDATE_CHECK=off`.",
+          "breaking": false,
+          "audience": "user",
+          "highlight": false,
+          "commits": [
+            "0f8b20c"
+          ]
+        },
+        {
+          "type": "added",
+          "text": "New opt-in `--fail-first` (solo runs and `plan`): forge also runs the tests a change adds or edits against the code without its change, using `.forge/verify-subset`, and asks the reviewer to report any test that still passes as a P2 finding. It is advice only and never changes a result by itself; forge-ui shows the evidence under the review findings, and each check is recorded in the run dataset.",
+          "breaking": false,
+          "audience": "user",
+          "highlight": false,
+          "commits": [
+            "df1242c"
+          ]
+        },
+        {
+          "type": "added",
+          "text": "forge installs from npm: `npm install -g @giamme/forge`, then `forge install` links it into your agent harnesses, and `npm install -g @giamme/forge@latest && forge install` updates it. The `forge` command works through the link npm puts on your PATH, `forge install` runs the installer from a checkout too, and `forge update` on an npm installation names the npm command instead of asking for a Git checkout. The once-a-day update notice needs a Git checkout, so npm installations don't get it yet.",
+          "breaking": false,
+          "audience": "user",
+          "highlight": true,
+          "commits": [
+            "3a836f4"
+          ]
+        },
+        {
+          "type": "changed",
+          "text": "`./forge --help` (or `-h`, or `forge help`) now lists the commands with a line on each and exits successfully, instead of failing with four bare usage lines. An unknown command is named in the error, and `forge fractal --help` and `forge jev --help` call themselves by the name you typed rather than their script file.",
+          "breaking": false,
+          "audience": "user",
+          "highlight": false,
+          "commits": [
+            "4e1cd31"
+          ]
+        },
+        {
+          "type": "fixed",
+          "text": "With `XDG_CONFIG_HOME` set but empty, `forge ui open` wrote its run list into a `forge/` folder in the current directory (usually your repo), where forge-ui could not find it; runs were left off forge-ui's run map, and `forge jev` read `jev.json` from the current directory. An empty value now counts as unset, as the XDG spec says, so all of it lives in `~/.config/forge`.",
+          "breaking": false,
+          "audience": "user",
+          "highlight": false,
+          "commits": [
+            "720b806"
+          ]
+        },
+        {
+          "type": "fixed",
+          "text": "forge-ui now shows a review's verdict exactly as forge records it: only a FORGE_VERDICT line that ends the reply counts. A reply forge treated as having no verdict (and blocked on) no longer shows as passed or failed in forge-ui.",
+          "breaking": false,
+          "audience": "user",
+          "highlight": false,
+          "commits": [
+            "3ffccc8"
+          ]
+        },
+        {
+          "type": "fixed",
+          "text": "`forge-install.sh --help` prints its usage instead of installing, and an option it does not know, such as a mistyped `--dryrun`, is refused rather than ignored, which used to run a real installation.",
+          "breaking": false,
+          "audience": "user",
+          "highlight": false,
+          "commits": [
+            "c9d760b"
+          ]
+        }
+      ]
+    },
+    {
       "version": "0.7.1",
       "date": "2026-10-20",
       "summary": "A patch for forge-ui: orbiting its 3D views no longer stalls, and you can look around it on made-up runs before your first one.",
