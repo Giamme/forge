@@ -521,7 +521,7 @@ its last message, and to say plainly what it could not run.
 ## Accepting, splitting, combining and the whole-run review
 
 Four subcommands act on plans after tasks have run. Full usage and refusal conditions are in the
-[README](../README.md#accepting-a-task-despite-its-reviewer); the mechanics:
+[README](../docs/reviews.md#accepting-a-task-despite-its-reviewer); the mechanics:
 
 - **`accept <plan> <task> --reason … --approved`** overrides a `FAIL`/`UNKNOWN` reviewer only
   when the reviewed commit is still the branch tip and the worktree still matches
