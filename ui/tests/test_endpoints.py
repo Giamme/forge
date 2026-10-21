@@ -116,6 +116,9 @@ class EndpointTests(unittest.TestCase):
         self.assertEqual(self.get_json(f'/api/runs/{self.solo_key}/executions/{F.SOLO_QA}'),
                          (200, reader.execution_detail(self.solo, F.SOLO_QA)))
         self.assertEqual(self.get_json(f'/api/runs/{self.key}'), (200, reader.detail(self.plan)))
+        for name in (F.READER_DWARF1, F.GRAPH_QA):
+            self.assertEqual(self.get_json(f'/api/runs/{self.key}/executions/{name}/transcript'),
+                             (200, reader.execution_transcript(self.plan, name)), name)
 
     def test_task_ids_are_percent_decoded(self):
         tasks = self.plan / 'tasks.tsv'
@@ -136,7 +139,8 @@ class EndpointTests(unittest.TestCase):
                   f'/api/runs/{self.solo_key}/executions/{F.READER_QA1}',
                   f'/api/runs/{"0" * 12}/tasks/reader', f'/api/runs/{"0" * 12}/executions/{F.READER_QA1}',
                   f'/api/runs/{self.key}/tasks/', f'/api/runs/{self.key}/tasks/reader/x',
-                  f'/api/runs/{self.key}/executions/{F.READER_QA1}/x', f'/api/runs/{self.key}/tasks']
+                  f'/api/runs/{self.key}/executions/{F.READER_QA1}/x', f'/api/runs/{self.key}/tasks',
+                  f'/api/runs/{self.key}/executions/{F.READER_TASK1}/transcript']
         for path in paths:
             self.assertEqual(self.get_json(path), (404, {'error': 'not found'}), path)
         # Ids that cannot name a task dir never reach the catalog.

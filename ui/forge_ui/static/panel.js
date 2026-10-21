@@ -268,7 +268,11 @@ window.ForgePanel = (() => {
         if (p.kind === 'shadow' && p.shadow) line.append(el('span', p.shadow.agreement === 'disagree' ? 'disagrees with the primary review' : p.shadow.agreement === 'agree' ? 'agrees' : '', p.shadow.agreement === 'disagree' ? 'warn' : 'muted'));
         const fs = (e && e.findings) || (p.shadow && p.shadow.findings);
         if (fs && fs.worst) line.append(sevChip(`${fs.worst}×${fs[fs.worst]}`, fs.worst));
-        if ((p.kind === 'qa' || p.kind === 'shadow') && p.exec && p.exec.id) { const a = diffLink(ctx, 'diff it read', { kind: 'task', task: task.id, source: p.exec.id }, 'diff-link small'); if (a) line.append(a); }
+        // what it said and ran, and the diff a review read
+        const go = el('span', undefined, 'exec-links');
+        if (target && ctx.convoHash) { const a = el('a', 'conversation', 'diff-link small'); a.href = ctx.convoHash(target); go.append(a); }
+        if ((p.kind === 'qa' || p.kind === 'shadow') && p.exec && p.exec.id) { const a = diffLink(ctx, 'diff it read', { kind: 'task', task: task.id, source: p.exec.id }, 'diff-link small'); if (a) go.append(a); }
+        if (go.childElementCount) line.append(go);
         box.append(line);
       }
       for (const l of tp.links.filter(l => l.kind === 'escalation' && z.parts.includes(l.to))) box.append(el('p', `escalated: ${l.label}`, 'muted'));
@@ -334,6 +338,7 @@ window.ForgePanel = (() => {
     if (e) { chips.append(chip(RM.execStatus(e))); if (e.verdict) chips.append(chip('verdict ' + e.verdict, e.verdict.toLowerCase())); }
     head.append(chips);
     if (task) head.append(link('← task ' + task.id, ctx.hash({ kind: 'task', id: task.id }), () => ctx.onSelect({ kind: 'task', id: task.id })));
+    if ((role === 'qa' || role === 'dwarf') && ctx.convoHash) { const a = el('a', 'Its conversation: what it said and ran →', 'diff-link'); a.href = ctx.convoHash(sel); head.append(a); }
     if (task && (role === 'qa' || role === 'dwarf')) { const a = diffLink(ctx, role === 'qa' ? 'The diff this review read →' : 'The diff its review read →', { kind: 'task', task: task.id, source: sel.exec }); if (a) head.append(a); }
     host.append(head);
     if (!e) { loading(host, entry, 'this execution'); return; }

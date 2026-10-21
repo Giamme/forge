@@ -11,7 +11,7 @@ import re
 import stat
 import urllib.parse
 
-from forge_ui import diffs, executions, findings, fractal
+from forge_ui import diffs, executions, findings, fractal, transcripts
 from forge_ui.findings import verdict as _verdict
 
 
@@ -824,9 +824,8 @@ def task_detail(path, task_id, source='plan'):
                 reviews=reviews, truncated=reader.truncated, warnings=reader.warnings)
 
 
-def execution_detail(path, name, source='plan'):
-    """ExecutionDetail of one attempts/<role>-<uuid>/ dir of the run, or None."""
-    reader = _Read(path)
+def _execution(reader, name):
+    """(Execution, owner, owner dir) of the execution `name` of the run, or None."""
     kind = _kind(reader.path)
     if kind is None or not executions.NAME.fullmatch(name or ''):
         return None
@@ -856,8 +855,16 @@ def execution_detail(path, name, source='plan'):
         execs = _final_review(reader, items[index], index == 0, _published(reader))[1]
         owner, owner_dir = dict(kind='final_review', id=parts[0]), items[index][3]
     item = next((candidate for candidate in execs if candidate['id'] == name), None)
-    if item is None:
+    return None if item is None else (item, owner, owner_dir)
+
+
+def execution_detail(path, name, source='plan'):
+    """ExecutionDetail of one attempts/<role>-<uuid>/ dir of the run, or None."""
+    reader = _Read(path)
+    found = _execution(reader, name)
+    if found is None:
         return None
+    item, owner, owner_dir = found
     role, running = item['role'], item['state'] == 'running'
     resolved = executions.resolved_of(reader, f'{item.rel}/{role}.resolved')
     prompt = last = listed = None
@@ -877,6 +884,37 @@ def execution_detail(path, name, source='plan'):
     result.update(resolved=dict(resolved) if resolved is not None else None,
                   dataset=dict(item.dataset) if item.dataset is not None else None, prompt=prompt, last=last,
                   findings=listed, owner=owner, truncated=reader.truncated, warnings=reader.warnings)
+    return result
+
+
+def execution_transcript(path, name, source='plan'):
+    """ExecutionTranscript of a dwarf or qa execution: its agent's conversation, read from its `.log`; None
+    when there is no such execution or it is of another role."""
+    reader = _Read(path)
+    found = _execution(reader, name)
+    if found is None or found[0]['role'] not in ('dwarf', 'qa'):
+        return None
+    item, owner, owner_dir = found
+    role, running = item['role'], item['state'] == 'running'
+    # A finished execution's log is its copy; the owner dir's is the one being written, or the next one's.
+    rel = posixpath.join(owner_dir, role + '.log') if running else f'{item.rel}/{role}.log'
+    log = None
+    try:
+        real = Path(os.path.realpath(reader.path / rel))
+        if executions.inside(reader.path, str(real)) and stat.S_ISREG(real.stat().st_mode):
+            log = real
+        elif real.exists():
+            reader.warn(rel, 'outside the run dir or not a regular file')
+    except (OSError, ValueError):
+        pass
+    resolved = executions.resolved_of(reader, f'{item.rel}/{role}.resolved')
+    if resolved is None and running:
+        resolved = executions.parse_resolved(reader.text(posixpath.join(owner_dir, role + '.resolved'))) or None
+    model = item['model'] or {}
+    result = transcripts.transcript(log, model.get('harness'), running)
+    result.update(run=run_key(reader.path), execution=name, role=role, state=item['state'], attempt=item['attempt'],
+                  spec=model.get('spec'), harness=model.get('harness'), repo=(resolved or {}).get('repo') or None,
+                  owner=owner, warnings=reader.warnings + result['warnings'])
     return result
 
 
@@ -1359,6 +1397,9 @@ class Catalog:
 
     def execution_diff(self, key, name):
         return self._find(key, execution_diff, name)
+
+    def transcript(self, key, name):
+        return self._find(key, execution_transcript, name)
 
     def final_review_diff(self, key, name):
         return self._find(key, final_review_diff, name)

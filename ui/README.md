@@ -26,7 +26,8 @@ blocks on a plate, with cables between them and lamps that light up as things ha
   with the primary and how sure Clef was that each task would pass.
 - **Beyond one run:** a full-screen **run cloud** of every run, grouped by project, in five
   layouts with filters and runs you can drag anywhere; **diffs** with each finding under the
-  line it names; a **model leaderboard**; a **files heatmap**; **Fractal** child-task trees;
+  line it names; each dwarf's and reviewer's **conversation**, read from its CLI's log; a
+  **model leaderboard**; a **files heatmap**; **Fractal** child-task trees;
   **quick jump** and **notifications**; and **export** of a run as one HTML file. See
   [What you see](#what-you-see).
 
@@ -205,6 +206,18 @@ keep one meaning everywhere (amber running, green merged or passed, red failed, 
   from a finding's mark on the stage (`/finding/<id>` scrolls to that finding and focuses it).
 
   <img src="docs/media/diff.png" width="760" alt="The diff a reviewer read, with a P1 finding under the line that compares token digests and a P2 finding under the revoke function.">
+- **Conversations (`…/tasks/<id>/executions/<dwarf-or-qa>/conversation`, `…/executions/<id>/conversation`):**
+  what one dwarf or reviewer said and did, read from its agent CLI's `<role>.log`, in the diff's
+  place: its messages, its thinking folded, each command with its exit and output, each edit with
+  its patch and a link to the file in the diff its review read, other tool calls, and the final
+  answer with the tokens and cost. Search it (`/`), keep only what it said, ran or changed, and
+  step through its errors (`E`). While the agent works the log is read again every few seconds and
+  *Follow* keeps the newest event in view. codex, grok, opencode and claude stream logs are read
+  event by event; when a claude run logged only its final answer, the conversation comes from
+  Claude's own session file for that run, if it is still on this machine; any other log is shown
+  as it is. Open it from an attempt's dwarf or reviewer in the inspector.
+
+  <img src="docs/media/conversation.png" width="760" alt="A dwarf's conversation: its thinking, the files it wrote, a test run that failed with exit 1 and the run that passed after the fix.">
 - **Fractal child tasks:** when a run used Fractal, a task's inspector shows the tree it was split
   into (status, difficulty, model, phase, cost, the split decision), and the opened task in 3D
   carries the same tree floating above it. A node (`…/tasks/<id>/fractal/<node>`) shows its goal,
@@ -259,6 +272,8 @@ notifications on. Failed requests keep the last good data and show a banner.
 - `forge_ui/static/cloudmodel.js`, `cloud3d.js`, `cloudui.js`: the run cloud's pure model (projects,
   filters, layouts, layout files), its scene on the shared stage, and its controls.
 - `forge_ui/static/diffview.js`: the diff viewer, with findings pinned to their lines.
+- `forge_ui/static/convo.js`, `forge_ui/transcripts.py`: an execution's conversation, and the
+  reader of each agent CLI's log format behind it.
 - `forge_ui/static/files.js`: the files heatmap (`matrix()` is pure and node-tested).
 - `forge_ui/export.py`: a run as one HTML file (the page's scripts and styles inlined, the API
   responses it reads, the 3D stage's modules as one module text, a hash-based policy).
@@ -310,7 +325,7 @@ skips otherwise. Its 3D tests need three.js: the CDN, or a local copy of the npm
 
 The pictures in this README and forge's come from `tools/readme_media.py`. After a change you
 can see, run it again: it builds the demo runs, serves them, and captures each view in
-Chromium with Playwright (three.js as for the browser tests; ffmpeg with libwebp and ImageMagick
+Chromium with Playwright (three.js as for the browser tests; libwebp's `img2webp` and ImageMagick
 to encode the animations and PNGs). `--only cloud diff` retakes some of them.
 
 ```sh
@@ -321,7 +336,9 @@ python3 tools/readme_media.py                  # writes docs/media/
 
 Run dirs can contain prompts, diffs and review text from private repos. The server binds
 only `127.0.0.1`, makes no network requests, and writes nothing to run dirs, repositories or
-forge's config. Anyone with access to the local server can read the runs it discovers, and
+forge's config. Outside the runs it reads one kind of file: for a claude execution whose log
+holds only its final answer, that run's session file, `<session id>.jsonl` under
+`~/.claude/projects/` (or `$CLAUDE_CONFIG_DIR/projects/`). Anyone with access to the local server can read the runs it discovers, and
 forge now registers every run, so that is every run on the machine.
 
 The 3D view loads three.js 0.160.0 from `cdn.jsdelivr.net` the first time it is shown in a

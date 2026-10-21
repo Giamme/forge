@@ -291,6 +291,46 @@ class Page(unittest.TestCase):
         self.assertTrue(page.is_visible('.stage-row'))
         self.assertClean(page)
 
+    def test_an_attempts_conversation_shows_what_its_agent_said_and_ran(self):
+        page = self.open(cdn=False)
+        page.goto(self.url + f'#/runs/{self.key}/tasks/reader')
+        link = f'#inspector .exec-line a[href$="/executions/{F.READER_DWARF1}/conversation"]'
+        page.wait_for_selector(link)
+        page.click(link)
+        page.wait_for_selector('.convo-list .ev--command')
+        self.assertFalse(page.is_visible('.stage-row'))
+        # codex's log: its failed test run is the one error, and E goes to it
+        self.assertEqual(page.locator('.convo-list .ev.is-error').count(), 1)
+        page.keyboard.press('e')
+        page.wait_for_function("() => document.activeElement.matches('.ev.is-error.ev--command')")
+        # an edit links to its file, made relative, in the diff its review read
+        self.assertEqual(page.get_attribute('.ev--edit a.ev-file', 'href'),
+                         f'#/runs/{self.key}/tasks/reader/diff/{F.READER_DWARF1}/file/ui%2Freader.py')
+        # / searches the conversation, not every run
+        page.keyboard.press('/')
+        page.wait_for_function("() => document.activeElement.matches('.convo-find input')")
+        self.assertFalse(page.evaluate("!!document.querySelector('dialog[open]')"))
+        page.fill('.convo-find input', 'pending')
+        page.wait_for_function("() => [...document.querySelectorAll('.convo-list .ev')].filter(n => !n.hidden).map(n => n.dataset.kind).join() === 'message'")
+        page.click('.diff-close')
+        page.wait_for_function(f"() => location.hash.endsWith('/executions/{F.READER_DWARF1}') && document.getElementById('diff-view').hidden")
+        self.assertClean(page)
+
+    def test_a_running_reviewers_conversation_grows_with_its_log(self):
+        log = self.plan / 'tasks/graph/qa.log'
+        before = log.read_text()
+        self.addCleanup(log.write_text, before)
+        page = self.open(cdn=False)
+        page.goto(self.url + f'#/runs/{self.key}/tasks/graph/executions/{F.GRAPH_QA}/conversation')
+        page.wait_for_selector('.convo-list .ev--command')
+        self.assertTrue(page.is_visible('.convo-follow'))
+        kinds = "() => [...document.querySelectorAll('.convo-list .ev')].map(n => n.dataset.kind).join()"
+        self.assertEqual(page.evaluate(kinds), 'reasoning,command')
+        # the reviewer goes on: its log grows, the run dir does not change, the page reads it again
+        log.write_text(''.join((F.TRANSCRIPTS / 'claude-stream.jsonl').read_text().splitlines(keepends=True)[:7]))
+        page.wait_for_function(f"{kinds} === 'reasoning,command,edit,message'", timeout=10000)
+        self.assertClean(page)
+
     def test_fractal_child_tasks_show_in_the_inspector_with_their_diffs(self):
         page = self.open(cdn=False)
         page.goto(self.url + f'#/runs/{self.key}/tasks/reader')

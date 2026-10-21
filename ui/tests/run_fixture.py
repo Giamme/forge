@@ -10,6 +10,7 @@ from pathlib import Path
 import sys
 
 
+TRANSCRIPTS = Path(__file__).parent / 'transcripts'   # one small log per harness format
 T0 = 1760600000.0
 MTIME = T0 + 5000  # every file and dir, unless set otherwise
 MERGED = {'reader': T0 + 1300, 'page': T0 + 950}
@@ -209,8 +210,9 @@ def resolved(role, alias, effort, run_dir, harness='codex', model=None):
 
 
 def execution(owner, name, start, end=None, phase='model', exit_code=0, parent=None, dataset=True,
-              spec=None, last=None, tokens=None, shadow=False, attempt_start=None, trigger=None, diff=None):
-    """One attempts/<name>/ dir. spec=(alias, effort, harness) for a dwarf or qa execution."""
+              spec=None, last=None, tokens=None, shadow=False, attempt_start=None, trigger=None, diff=None, log=None):
+    """One attempts/<name>/ dir. spec=(alias, effort, harness) for a dwarf or qa execution; log names a file of
+    TRANSCRIPTS for its <role>.log, else the log is plain text."""
     role = name.split('-', 1)[0]
     root = owner / 'attempts' / name
     write(root / 'metrics.json', metrics(role, start, end, phase, exit_code, tokens, shadow))
@@ -224,7 +226,7 @@ def execution(owner, name, start, end=None, phase='model', exit_code=0, parent=N
         alias, effort, harness = spec
         write(root / f'{role}.resolved', resolved(role, alias, effort, str(owner), harness))
         write(root / f'{role}.prompt', prompt_text(role, name, diff))
-        write(root / f'{role}.log', 'raw log: never read by forge-ui\n')
+        write(root / f'{role}.log', (TRANSCRIPTS / log).read_text() if log else 'plain log of a harness without a structured stream\n')
         write(root / f'{role}.cmd', 'codex exec ...\n')
         if last is not None:
             write(root / f'{role}.last', last)
@@ -278,9 +280,9 @@ def make_plan(base: Path) -> Path:
     tdir = plan / 'tasks/reader'
     execution(tdir, READER_TASK1, 10.0, 610.0, exit_code=1, parent=PARALLEL, attempt_start=0, trigger='initial')
     execution(tdir, READER_DWARF1, 20.0, 320.0, parent=READER_TASK1, spec=('luna', None, 'codex'),
-              last='Implemented the reader.\n', tokens=(120000, 90000, 8000))
+              last='Implemented the reader.\n', tokens=(120000, 90000, 8000), log='codex.jsonl')
     execution(tdir, READER_QA1, 330.0, 600.0, parent=READER_TASK1, spec=('opus', None, 'claude'),
-              last=QA_READER_1, tokens=(50000, 0, 3000), diff=DIFF_READER_1)
+              last=QA_READER_1, tokens=(50000, 0, 3000), diff=DIFF_READER_1, log='claude-stream.jsonl')
     execution(tdir, READER_TASK2, 620.0, 1220.0, parent=PARALLEL, attempt_start=1, trigger='auto')
     execution(tdir, READER_DWARF2, 630.0, 930.0, parent=READER_TASK2, spec=('sol', 'xhigh', 'codex'),
               last='Handled missing files.\n', tokens=(150000, 100000, 9000))
@@ -343,6 +345,9 @@ def make_plan(base: Path) -> Path:
     write(tdir / 'attempt', '1\n')
     write(tdir / 'prompt.md', 'Draw the graph.\n')
     write(tdir / 'qa.resolved', resolved('qa', 'opus', 'high', str(tdir), 'claude'))
+    # the reviewer's stream so far, its last line still being written
+    stream = (TRANSCRIPTS / 'claude-stream.jsonl').read_text().splitlines(keepends=True)
+    write(tdir / 'qa.log', ''.join(stream[:4]) + stream[4][:40])
     write(tdir / 'qa.delivered', 'Review the graph diff (as delivered).\n')
     write(tdir / 'qa.input', 'Review the graph diff.\n')
     write(tdir / 'conflict.files', 'ui/graph.js\n')
@@ -418,7 +423,7 @@ def make_solo(base: Path) -> Path:
     execution(run, SOLO_RUN, 0.0, 690.0)
     execution(run, SOLO_DWARF, 10.0, 400.0, parent=SOLO_RUN, spec=('sol', 'high', 'codex'), last='Done.\n')
     execution(run, SOLO_QA, 410.0, 680.0, parent=SOLO_RUN, spec=('opus', None, 'claude'), last=QA_SOLO,
-              diff=DIFF_SOLO)
+              diff=DIFF_SOLO, log='claude-result.json')
     _settle(run)
     return run
 

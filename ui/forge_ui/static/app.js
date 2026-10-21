@@ -63,6 +63,8 @@ window.ForgeUI = (() => {
     if (spec.kind === 'fractal') return `${base}/tasks/${e(spec.task)}/fractal/${e(spec.node)}/diff${file}`;
     return `${base}/tasks/${e(spec.task)}/diff${spec.source && spec.source !== 'current' ? '/' + e(spec.source) : ''}${file}`;
   }
+  // an execution's conversation, in the stage's place like a diff
+  const convoHash = (key, sel) => hashFor(key, sel) + '/conversation';
   function cloudHash(sel, focus) {
     if (sel) return '#/cloud/runs/' + encodeURIComponent(sel);
     return focus ? '#/cloud/projects/' + encodeURIComponent(focus) : '#/cloud';
@@ -78,6 +80,12 @@ window.ForgeUI = (() => {
     if ((r = rest.match(/^\/tasks\/([^/]+)\/diff(?:\/(?!file\/|finding\/)([^/]+))?(?:\/finding\/([^/]+))?(?:\/file\/(.+?))?\/?$/))) return { key: d(m[1]), sel: { kind: 'task', id: d(r[1]) }, diff: { kind: 'task', task: d(r[1]), source: r[2] ? d(r[2]) : 'current', finding: r[3] ? d(r[3]) : null, file: r[4] ? d(r[4]) : null } };
     if ((r = rest.match(/^\/tasks\/([^/]+)\/fractal\/([^/]+)\/diff(?:\/file\/(.+?))?\/?$/))) return { key: d(m[1]), sel: { kind: 'task', id: d(r[1]) }, diff: { kind: 'fractal', task: d(r[1]), node: d(r[2]), file: r[3] ? d(r[3]) : null } };
     if ((r = rest.match(/^\/final-review\/([^/]+)\/diff(?:\/finding\/([^/]+))?(?:\/file\/(.+?))?\/?$/))) return { key: d(m[1]), sel: { kind: 'final', name: d(r[1]) }, diff: { kind: 'final', name: d(r[1]), finding: r[2] ? d(r[2]) : null, file: r[3] ? d(r[3]) : null } };
+    if ((r = rest.match(/^\/(?:tasks\/([^/]+)\/)?executions\/([^/]+)\/conversation\/?$/))) {
+      const s = r[1] ? { kind: 'execution', task: d(r[1]), id: d(r[1]), exec: d(r[2]) } : { kind: 'execution', task: null, exec: d(r[2]) };
+      const run = s.task && state.cache.get(d(m[1]))?.data, t = run && list(run.tasks).find(x => x.id === s.task);
+      if (t && list(t.shadow).some(x => x.execution === s.exec)) s.shadow = true;
+      return { key: d(m[1]), sel: s, convo: { task: s.task, exec: s.exec } };
+    }
     if ((r = rest.match(/^\/tasks\/([^/]+)\/executions\/([^/]+)\/?$/))) sel = { kind: 'execution', task: d(r[1]), id: d(r[1]), exec: d(r[2]) };
     if (sel && sel.kind === 'execution' && sel.task) {
       const run = state.cache.get(d(m[1]))?.data, t = run && list(run.tasks).find(x => x.id === sel.task);
@@ -704,6 +712,7 @@ window.ForgeUI = (() => {
         fetchJSON: path => fetchJSON(path).then(r => r.data),
         rerender: () => { const r = state.cache.get(state.key)?.data; if (r) renderInspector(r); },
         hash: s => hashFor(run.key, s), onSelect: s => select(s), diffHash: spec => diffHash(run.key, spec),
+        convoHash: s => convoHash(run.key, s),
         onFractal: (id, data) => { if (state.stage && state.stage.setFractal) state.stage.setFractal(id, data); },
       });
       scoped(host, run.key + ':');
@@ -764,14 +773,22 @@ window.ForgeUI = (() => {
     fetchJSON(`/api/runs/${encodeURIComponent(key)}/files`).then(r => { c.data = r.data; c.error = null; c.at = Date.now(); }, e => { c.error = e.message; })
       .finally(() => { c.updated = updated; c.pending = null; const cur = state.cache.get(state.key)?.data; if (cur && cur.key === key) renderFiles(cur); });
   }
-  // the diff viewer takes the stage's place while it is open
+  // the diff viewer, or an execution's conversation, takes the stage's place while it is open
   function renderDiff(run) {
     const host = $('diff-view'), view = $('run-view'); if (!host || !view) return;
-    const open = !!state.diff && !!window.ForgeDiff;
-    view.classList.toggle('diff-open', open); host.hidden = !open;
-    if (!open) { host.replaceChildren(); host.diffSig = ''; return; }
-    window.ForgeDiff.render(host, { run, spec: state.diff, fetchJSON: path => fetchJSON(path).then(r => r.data),
-      rerender: () => { const r = state.cache.get(state.key)?.data; if (r) renderDiff(r); },
+    const kind = state.convo && window.ForgeConvo ? 'convo' : state.diff && window.ForgeDiff ? 'diff' : null;
+    view.classList.toggle('diff-open', !!kind); host.hidden = !kind;
+    if (host.dataset.kind !== (kind || '')) { host.replaceChildren(); host.diffSig = ''; host.convoFrame = null; host.dataset.kind = kind || ''; }
+    if (!kind) return;
+    const rerender = () => { const r = state.cache.get(state.key)?.data; if (r) renderDiff(r); };
+    if (kind === 'convo') {
+      const sel = state.sel, task = sel.task ? list(run.tasks).find(t => t.id === sel.task) : run.kind === 'solo' ? list(run.tasks)[0] : null;
+      const brief = list(task && task.executions).find(e => e.id === state.convo.exec) || null;
+      window.ForgeConvo.render(host, { run, spec: { task: task ? task.id : null, exec: state.convo.exec }, brief, live: !SNAP,
+        fetchJSON: path => fetchJSON(path).then(r => r.data), rerender, diffHash: spec => diffHash(run.key, spec), closeHref: hashFor(run.key, state.sel) });
+      return;
+    }
+    window.ForgeDiff.render(host, { run, spec: state.diff, fetchJSON: path => fetchJSON(path).then(r => r.data), rerender,
       href: spec => diffHash(run.key, spec), closeHref: hashFor(run.key, state.sel) });
   }
   function renderRunBody(run) {
@@ -911,8 +928,9 @@ window.ForgeUI = (() => {
     state.sel = parsed.sel;
     // a selection is read in the inspector, so choosing one opens it
     if (state.sel && JSON.stringify(state.sel) !== selWas && document.body.dataset.insp !== 'open') Shell.toggle('insp', true);
-    const diffWas = JSON.stringify(state.diff || null);
+    const diffWas = JSON.stringify(state.diff || null), convoWas = JSON.stringify(state.convo || null);
     state.diff = parsed.diff || null;
+    state.convo = parsed.convo || null;
     state.cloud = parsed.cloud || null;
     state.models = !!parsed.models;
     if (state.cloud && state.cloud.model) {                  // a model's runs: the cloud, filtered to it
@@ -937,8 +955,9 @@ window.ForgeUI = (() => {
     } else { setView($('main'), 'loading'); $('main').replaceChildren(el('p', 'Loading run…', 'empty')); }
     loadRun(state.key);
     // a selection made on the stage keeps the keyboard there (← → walk the tasks); one made elsewhere moves it to the inspector
-    if (state.diff) {
-      const opened = diffWas === 'null' || JSON.stringify({ ...JSON.parse(diffWas), file: null }) !== JSON.stringify({ ...state.diff, file: null });
+    if (state.diff || state.convo) {
+      const opened = state.convo ? convoWas !== JSON.stringify(state.convo) :
+        diffWas === 'null' || JSON.stringify({ ...JSON.parse(diffWas), file: null }) !== JSON.stringify({ ...state.diff, file: null });
       if (opened && $('diff-view')) { $('run-view').scrollIntoView({ block: 'start' }); $('diff-view').focus({ preventScroll: true }); }
     } else if (state.sel && !keyChanged && !stageHost.contains(document.activeElement)) $('inspector')?.focus({ preventScroll: true });
   }

@@ -194,6 +194,19 @@ class Studio:
         self.still(page, 'diff', self.box(page, '#diff-view', pad=8, bottom=VIEW['height'] - 4))
         ctx.close()
 
+    def conversation(self):
+        task = next(t for t in server.api_get(self.catalog, f'/api/runs/{self.key}')['tasks'] if t['id'] == 'token-model')
+        dwarf = [e['id'] for e in task['executions'] if e['role'] == 'dwarf'][-1]   # the retry: a test fails, then the fix
+        ctx, page = self.page()
+        self.go(page, f'#/runs/{self.key}/tasks/token-model/executions/{dwarf}/conversation', stage=False)
+        page.wait_for_selector('#diff-view .ev--command')
+        self.settle(page)
+        page.evaluate('document.activeElement && document.activeElement.blur()')
+        # down to the passing test run, so no event is cut in half
+        end = page.evaluate("() => [...document.querySelectorAll('#diff-view .ev--command')].pop().getBoundingClientRect().bottom")
+        self.still(page, 'conversation', self.box(page, '#diff-view', pad=8, bottom=min(end, VIEW['height'] - 4)))
+        ctx.close()
+
     def models(self):
         ctx, page = self.page()
         self.go(page, '#/models', stage=False)
@@ -268,7 +281,7 @@ class Studio:
         self.animation(frames, 'cloud')
 
 
-TAKES = ('hero', 'cloud', 'run', 'execution', 'diff', 'models', 'files', 'map')
+TAKES = ('hero', 'cloud', 'run', 'execution', 'diff', 'conversation', 'models', 'files', 'map')
 
 
 def main(argv=None):
