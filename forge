@@ -22,6 +22,7 @@ usage() {
     '  jev       optional Jev advice: setup, status, doctor, enable, disable, backtest' \
     '  dataset   every run'"'"'s inputs and outcomes: status, dump, import, export, outcomes, ...' \
     '  ui        forge-ui, the run viewer: open [DIR], status, stop' \
+    '  runs      this repo'"'"'s recent runs in the terminal: state, verdicts and run dirs' \
     '  update    fast-forward this checkout and refresh every harness installation' \
     '  version   the installed version, and whether a newer release is out' \
     '' \
@@ -49,6 +50,10 @@ case "${1:-}" in
   ui)
     shift
     exec python3 "$ROOT/scripts/forge-ui.py" "$@"
+    ;;
+  runs)
+    shift
+    exec python3 "$ROOT/scripts/forge-runs.py" "$@"
     ;;
   update)
     shift
