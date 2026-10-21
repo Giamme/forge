@@ -1,7 +1,7 @@
 ---
 name: forge
 description: Dispatch implementation and independent diff review to user-selected models through local agent CLIs. Use for /forge or explicit requests to delegate coding or review; explanation-only questions do not authorize dispatch.
-argument-hint: '"<goal>" --dwarf <alias>[:effort[:harness]] [--qa <alias>] [--planner <alias>] [--yolo-dwarf] [--yolo-qa] [--decompose-level low|medium|high] [--fractal|--no-fractal|--fractal-auto-decompose] [--fractal-planner <spec>] [--jev|--no-jev] [--jev-shadow] [--no-memory] [--no-ripwire] [--ui|--no-ui] [--timeout <seconds>] [--retry-failed <n>] [--escalate-after <n>] [--qa-threshold P0|P1|P2|P3] [--shadow-qa <spec>[,<spec>]] [--shadow-rate <0..1>] [--explore <0..0.5>] [--fail-first]'
+argument-hint: '"<goal>" --dwarf <alias>[:effort[:harness]] [--qa <alias>] [--planner <alias>] [--yolo-dwarf] [--yolo-qa] [--decompose-level low|medium|high] [--fractal|--no-fractal|--fractal-auto-decompose] [--fractal-planner <spec>] [--jev|--no-jev] [--jev-shadow] [--no-memory] [--no-ripwire] [--ui|--no-ui] [--timeout <seconds>] [--retry-failed <n>] [--escalate-after <n>] [--qa-threshold P0|P1|P2|P3] [--file-issues ask|auto|off] [--shadow-qa <spec>[,<spec>]] [--shadow-rate <0..1>] [--explore <0..0.5>] [--fail-first]'
 allowed-tools: [Bash, Read]
 ---
 
@@ -58,6 +58,17 @@ For explanation requests, explain the workflow without spending model quota.
   attempt was spent: report it, say what to fix, and re-run only when told. For a multi-task
   plan, offer the opt-in whole-run review (`review`, or `integrate --final-review <qa-spec>`);
   it spends QA quota, so never run it unprompted.
+- **Leftover findings become issues.** A run can finish with review findings nobody will act on:
+  - CONFIRMED findings that `--qa-threshold` tolerated (`tasks/<id>/known_issues.md`);
+  - PLAUSIBLE findings in a passed task's `qa.last`;
+  - whatever a whole-run review left open.
+
+  When there are any, and the `gh-proman` skill is installed and configured for the repository (`gh-proman config show` succeeds there), act on the user's `--file-issues` choice:
+  - `ask` (the default): run `gh-proman findings --from <plan or run dir> --include-plausible --json`, show its summary (count by severity, titles, anything already filed), and ask once: **"File these N findings as GitHub issues with gh-proman? [all / CONFIRMED only / none]"**. Then follow the gh-proman skill's review-findings steps.
+  - `auto`: file them without asking (`--apply`, PLAUSIBLE included as "to verify" issues) and report what was created and skipped.
+  - `off`: never offer.
+
+  `--file-issues` is an instruction to you: never forward it to a runner. Skip INFRA, interrupted and still-failing runs. gh-proman never re-files a finding it already filed, so offering again after a retry only brings up new ones.
 - Jev is optional, off unless configured and enabled, and always advisory: it never
   changes a task's tier, never selects a model, and never substitutes for QA acceptance
   or repository verification (`--jev-act` is still accepted and changes nothing). Read
