@@ -87,8 +87,9 @@ export function createCloud(E, host, cb = {}) {
     TMP.copy(col).lerp(E.accent, c.hot > .5 ? c.hot : 0);
     const lit = statusOf(el.f) === 'PENDING' ? 0 : .3;
     E.paint(el.M, c.vis, Math.min(1, lit + c.hot * .9), c.hov, 1, 1, TMP, 0);
-    el.M.body.color.lerp(col, (E.theme === 'light' ? .1 : .12) * c.vis);
-    setRoof(el, col, Math.round((E.theme === 'light' ? .14 : .2) * c.vis * 50) / 50);
+    const light = E.theme === 'light', plain = statusOf(el.f) === 'PENDING';
+    el.M.body.color.lerp(col, (light ? plain ? .06 : .34 : .12) * c.vis);
+    setRoof(el, col, Math.round((light ? plain ? .12 : .55 : .2) * c.vis * 50) / 50);
     el.haloMat.uniforms.color.value.copy(col);
     const glow = (el.f.state === 'live' ? .14 + .12 * pulse : 0) * c.vis + (c.hot > .5 ? .12 : 0);
     el.haloMat.uniforms.opacity.value = glow; el.halo.visible = glow > .002;   // no draw for a halo that is off

@@ -7,7 +7,7 @@ blocks on a plate, with cables between them and lamps that light up as things ha
 - **A map of every run**, one district per repo and one block per run, with a lamp per task.
   Filter it by state, repo, kind, model, age or review verdict; what does not match fades
   instead of disappearing.
-- **A run, as planned and as it ran.** *Planned waves* puts each task in its wave, with
+- **A run, as planned and as it ran.** *Plan* puts each task in its planned wave, with
   dependency cables, and ends in a *finish* line of three nodes: integration, verification
   and the whole-run **final review**. *Execution* lays the same work out on wall-clock time:
   one block per attempt, in the lane it really ran in, with its dwarf and review inside, the
@@ -105,9 +105,19 @@ with the first source winning. Discovery and disk reads repeat on each API reque
 
 ## What you see
 
+forge-ui looks like a signal box's route-setting desk: the run is drawn on a panel, every heading
+is an engraved plate, every switch is a push button whose lamp lights when it is on, and lamps
+keep one meaning everywhere (amber running, green merged or passed, red failed, unlit pending).
+
+- **Layout:** the *Runs*, *Inspector* and *Tasks* modules sit around the stage. *Immersive* (the
+  default) floats them over a stage that fills the window; *Workbench* docks them beside it, and
+  the runs list folds to a rail of lamps. Switch with the two layout keys in the header; the
+  module keys beside them, or `1`, `2` and `3`, fold and open the runs, the inspector and the
+  tasks. On your first visit the inspector and the tasks start folded, so a run opens on its plate. Drag a module's inner edge, or focus it and use the arrow keys, to resize it. The header
+  also switches the theme (system, light or dark). All of this is remembered in this browser.
 - **Map (`#/`):** every discovered run, newest first, grouped by repo. By default the last
-  60 runs from the past 14 days; *older runs too* shows the rest. The sidebar list follows
-  the same filter.
+  60 runs from the past 14 days; *older runs too* shows the rest. The runs list follows the same
+  filter, and sorts by latest activity, state or repo.
 
   <img src="docs/media/map.png" width="760" alt="The map: one block per run, in a district per repo, green when done, blue while running, red with failures.">
 - **Run cloud (`#/cloud`):** every run at once, full screen, floating in 3D and grouped by project
@@ -128,10 +138,21 @@ with the first source winning. Discovery and disk reads repeat on each API reque
   filtered runs and offers *Load 3D*.
 
   <img src="docs/media/cloud.webp" width="760" alt="The run cloud orbited, then laid out as galaxies and as a timeline with one lane per project.">
-- **Run (`#/runs/<key>`):** a header (goal, repo, counts, and *Run details*: settings, request,
-  waves, verification output), a toolbar (*Planned waves* / *Execution*, *3D* / *2D*, height
-  and colour overlays, *Critical path*, *Review marks*, *Projected*, *Replay*), the stage with
-  the inspector beside it, and the task table.
+- **Run (`#/runs/<key>`):** a header with the goal, the repo, a describer (each state's count,
+  the wall time, how long since anything moved), a bank of push buttons (*Plan* /
+  *Execution* / *Files*, *3D* / *2D*, and *View*: height and colour overlays, *Critical path*,
+  *Review marks*, *Projected*) and the replay's time base; then the stage, the inspector and the
+  task table. The stage frames the run in the part of the window the modules leave free. The
+  inspector opens when you choose a task, an attempt or a finish node; with
+  nothing chosen it shows the run's timeline, finish and record (*Run details* in the header:
+  settings, request, waves, verification output).
+- **Lamps:** green merged or passed, amber running, red failed, unlit pending. A hollow lamp is
+  that family's other case: passed or accepted without a merge (green), interrupted (amber), an
+  infrastructure failure, a timeout or blocked behind a failure (red). Review findings are never
+  a lamp: their severity is a shape (P0 spike, P1 diamond, P2 cone, P3 pin).
+- **Tables:** the task table and the leaderboard's tables sort by any column (click its header:
+  ascending, descending, off), reorder by dragging a header (or Alt+← → on it), and show or hide
+  columns from *Columns*, which also resets them. Each table remembers its columns.
 
   <img src="docs/media/run.png" width="49%" alt="Planned waves: a run's tasks on a 3D plate with dependency cables and the finish nodes, beside the run's inspector."> <img src="docs/media/execution.png" width="49%" alt="Execution: one block per attempt on wall-clock time, failed attempts in red, with the timeline and critical path in the inspector.">
 - **Inspector:** for the run, its timeline, critical path, peak concurrency and finish line;
@@ -210,6 +231,9 @@ notifications on. Failed requests keep the last good data and show a banner.
 - `forge_ui/__main__.py`: CLI options, local startup and optional browser opening.
 - `forge_ui/__init__.py`: package version and the build id `forge ui` compares to find a stale server.
 - `forge_ui/static/index.html`, `style.css`, `app.js`: the page shell, styles, routes, views and polling.
+- `forge_ui/static/theme.js`, `shell.js`, `icons.js`, `datatable.js`: the theme switch, the Immersive and
+  Workbench layouts with their modules, keys and splitters, the icon set, and the sortable tables
+  (their pure parts are node-tested). `D-DINCondensed-Bold.woff2` is the engraved labels' face.
 - `forge_ui/static/runmodel.js`: the pure run model (layouts, schedule projection, critical path, replay).
 - `forge_ui/static/panel.js`, `gantt.js`, `graph.js`: the inspector, the execution chart and strip, the 2D graph.
 - `forge_ui/static/map3d.js`, `scene3d.js`, `iso.js`: the 3D loader, scenes and engine (ported from archivision).

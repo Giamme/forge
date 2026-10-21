@@ -86,7 +86,7 @@ class Page(unittest.TestCase):
             os.environ['XDG_STATE_HOME'] = cls.xdg
         cls.temp.cleanup()
 
-    def open(self, cdn, view='3d', mode='plan', init='', context=None):
+    def open(self, cdn, view='3d', mode='plan', init='', context=None, tasks=True):
         if context is None:
             context = self.browser.new_context(viewport={'width': 1440, 'height': 960})
             self.addCleanup(context.close)
@@ -97,7 +97,8 @@ class Page(unittest.TestCase):
           window.__csp = [];
           document.addEventListener('securitypolicyviolation', e => window.__csp.push(e.violatedDirective + ' ' + e.blockedURI));
           try {{ localStorage.setItem('forge-ui-view', '"{view}"'); localStorage.setItem('forge-ui-mode', '"{mode}"'); }} catch (_) {{}}
-        """ + init)
+        """ + ("try { if (!localStorage.getItem('forge-ui-shell')) localStorage.setItem('forge-ui-shell', '{\"tasks\":true}'); } catch (_) {}"   # past a first visit: the table open
+               if tasks else '') + init)
         if not cdn:
             page.route(CDN + '**', lambda route: route.abort())
         elif THREE_LOCAL:
@@ -219,6 +220,59 @@ class Page(unittest.TestCase):
         self.steady(page, at)                                           # and the camera comes to rest
         self.assertClean(page)
 
+    def test_choosing_a_task_opens_the_inspector_and_a_module_key_folds_it_for_good(self):
+        page = self.open(cdn=False, tasks=False)                        # a first visit: nothing remembered yet
+        page.goto(self.url + '#/runs/' + self.key)
+        page.wait_for_selector('#run-tasks table', state='attached')
+        self.assertFalse(page.is_visible('#run-tasks table'))           # a run opens on its plate
+        self.assertFalse(page.is_visible('#inspector'))
+        page.keyboard.press('3')                                        # 3: the tasks
+        page.click('#run-tasks td[data-col=id] a:text-is("reader")')
+        page.wait_for_selector('#inspector .attempt')                   # what was chosen is read in the inspector
+        page.keyboard.press('2')                                        # 2: the inspector
+        page.wait_for_function("document.body.dataset.insp === 'closed'")
+        self.assertFalse(page.is_visible('#inspector'))
+        page.click('[data-shell-pick=workbench]')
+        page.evaluate("location.hash = '#/runs/' + %r" % self.key)      # back to the run: nothing chosen to reopen it
+        page.reload()
+        page.wait_for_selector('#run-tasks table')
+        self.assertEqual(page.evaluate('[document.body.dataset.shell, document.body.dataset.insp]'), ['workbench', 'closed'])
+        self.assertFalse(page.is_visible('#inspector'))
+        self.assertClean(page)
+
+    def test_a_header_click_sorts_the_tasks_and_the_sort_is_remembered(self):
+        page = self.open(cdn=False)
+        page.goto(self.url + '#/runs/' + self.key)
+        page.wait_for_selector('#run-tasks table')
+        ids = lambda: page.eval_on_selector_all('#run-tasks tbody td[data-col=id]', 'ns => ns.map(n => n.textContent)')
+        self.assertEqual(ids(), ['reader', 'page', 'graph', 'server', 'docs'])          # the plan's order
+        page.click('#run-tasks th[data-col=id] .th-btn')
+        page.click('#run-tasks th[data-col=id] .th-btn')
+        self.assertEqual(ids(), ['server', 'reader', 'page', 'graph', 'docs'])
+        self.assertEqual(page.get_attribute('#run-tasks th[data-col=id]', 'aria-sort'), 'descending')
+        page.reload()
+        page.wait_for_selector('#run-tasks table')
+        self.assertEqual(ids(), ['server', 'reader', 'page', 'graph', 'docs'])
+        self.assertClean(page)
+
+    def test_the_theme_switch_overrides_the_system_and_is_remembered(self):
+        page = self.open(cdn=False)                                     # the browser itself asks for light
+        page.goto(self.url + '#/')
+        page.wait_for_selector('[data-theme-pick=dark]')
+        bg = lambda: page.evaluate('getComputedStyle(document.body).backgroundColor')
+        light = bg()
+        page.click('[data-theme-pick=dark]')
+        self.assertEqual(page.get_attribute('html', 'data-theme'), 'dark')
+        dark = bg()
+        self.assertNotEqual(dark, light)
+        page.reload()
+        page.wait_for_selector('[data-theme-pick=dark][aria-pressed=true]')
+        self.assertEqual(bg(), dark)
+        page.click('[data-theme-pick=system]')
+        self.assertIsNone(page.get_attribute('html', 'data-theme'))
+        self.assertEqual(bg(), light)
+        self.assertClean(page)
+
     def test_the_diff_viewer_pins_findings_to_their_lines(self):
         page = self.open(cdn=False)
         page.goto(self.url + f'#/runs/{self.key}/tasks/reader')
@@ -261,7 +315,7 @@ class Page(unittest.TestCase):
         text = page.text_content('.lb')
         for model in ('luna', 'opus'):                                  # an implementer, a reviewer
             self.assertIn(model, text)
-        page.click('.lb table a:text-is("luna")')
+        page.click('.lb table a.lb-alias:has(.model-plate[title="luna"])')       # the model's name plate links to its runs
         page.wait_for_function("() => location.hash === '#/cloud'")
         page.wait_for_selector('.cloud-list .map-card')
         self.assertEqual(page.locator('.cloud-list .map-card').count(), 1)    # only the plan used luna

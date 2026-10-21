@@ -32,12 +32,13 @@ _REVIEW_DIFF_PATH = re.compile(_REVIEW_PATH.pattern + '/diff')
 _FILES_PATH = re.compile(r'/api/runs/([0-9a-f]{12})/files')
 _EXPORT_PATH = re.compile(r'/api/runs/([0-9a-f]{12})/export')
 _FRACTAL_PATH = re.compile(_TASK_PATH.pattern + r'/fractal(?:/nodes/([A-Za-z0-9][A-Za-z0-9_-]{0,100})(/diff)?)?')
-_STATIC_PATH = re.compile(r'/([A-Za-z0-9_.-]+\.(?:html|js|css|svg))')
+_STATIC_PATH = re.compile(r'/([A-Za-z0-9_.-]+\.(?:html|js|css|svg|woff2))')
 _TYPES = {
     'html': 'text/html; charset=utf-8',
     'js': 'text/javascript; charset=utf-8',
     'css': 'text/css; charset=utf-8',
     'svg': 'image/svg+xml',
+    'woff2': 'font/woff2',
 }
 _JSON = 'application/json; charset=utf-8'
 _CSP = ("default-src 'self'; style-src 'self'; script-src 'self'; img-src 'self' data:; "
