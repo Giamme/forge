@@ -1028,8 +1028,8 @@ def _diff_detail(reader, key, origin, sources, loaded, reason, reviews):
     found = []
     for review in reviews:
         text = reader.text(review['last']) if review['last'] else None
-        for item in findings.listing(text) or []:
-            found.append(dict(review={key: review[key] for key in ('kind', 'execution', 'attempt', 'spec')},
+        for index, item in enumerate(findings.listing(text) or []):
+            found.append(dict(id=_finding_id(review, index), review={key: review[key] for key in ('kind', 'execution', 'attempt', 'spec')},
                               severity=item['severity'], status=item['status'], location=item['location'],
                               summary=item['summary'], text=item['text']))
     return dict(run=key, source=origin, sources=sources, available=loaded is not None,
@@ -1139,6 +1139,50 @@ def final_review_diff(path, name, source='plan'):
                           summary['execution'])
     return _diff_detail(reader, key, origin, _diff_sources(reader, key, ctx), loaded,
                         _NOT_INLINED if prompted else 'no review prompt yet', [review])
+
+
+# --- findings: every review's findings of a run, for the stage's marks ---------------------
+
+def _finding_id(review, index):
+    """A Finding's id: its review's execution (its kind when it has none) and its place in that reply."""
+    return f"{review['execution'] or review['kind']}:{index}"
+
+
+def _findings_of(reader, review):
+    listed = findings.listing(reader.text(review['last'])) if review['last'] else None
+    return [dict(id=_finding_id(review, index), severity=item['severity'], status=item['status'],
+                 location=item['location'], summary=item['summary'])
+            for index, item in enumerate(listed or [])]
+
+
+def run_findings(path, source='plan'):
+    """RunFindings: each review's Findings, without their text, by task and by final review; None if no run."""
+    reader = _Read(path)
+    kind = _kind(reader.path)
+    if kind is None:
+        return None
+    keys = ('kind', 'execution', 'attempt', 'spec', 'verdict')
+    tasks = []
+    for task_id in ['solo'] if kind == 'solo' else [task['id'] for task in _tasks(reader)]:
+        ctx = _diff_task(reader, task_id)
+        reviews = [dict({key: review[key] for key in keys}, findings=found)
+                   for review in (ctx['reviews'] if ctx else []) for found in [_findings_of(reader, review)] if found]
+        if reviews:
+            tasks.append(dict(id=task_id, reviews=reviews))
+    finals = []
+    if kind == 'plan':
+        items, published = executions.review_dirs(reader)[0], _published(reader)
+        for index, item in enumerate(items[:_MAX_REVIEWS]):
+            summary = _final_review(reader, item, index == 0, published)[0]
+            # the same review final_review_diff pins, so a Finding's id opens it there
+            review = _diff_review('final', None, None, summary['spec'], summary['verdict'], item[3] + '/qa.last', [],
+                                  summary['execution'])
+            found = _findings_of(reader, review)
+            if found:
+                finals.append(dict(name=item[0], execution=summary['execution'], spec=summary['spec'],
+                                   verdict=summary['verdict'], findings=found))
+    return dict(run=run_key(reader.path), available=findings.available(), tasks=tasks, final_reviews=finals,
+                truncated=reader.truncated, warnings=reader.warnings)
 
 
 # --- files: who planned, changed, drifted into or conflicted on each file --------------------
@@ -1321,6 +1365,9 @@ class Catalog:
 
     def files(self, key):
         return self._find(key, files_detail)
+
+    def findings(self, key):
+        return self._find(key, run_findings)
 
     def fractal(self, key, task_id):
         return self._find(key, fractal_detail, task_id)

@@ -15,10 +15,12 @@ window.ForgeUI = (() => {
     mapFilter: Object.assign({ text: '', state: '', repo: '', kind: '', model: '', ageDays: 0, verdict: '' }, store.get('map-filter', {})),
     showAll: false, mode: store.get('mode', 'plan'), dim: store.get('view', '3d'),
     overlay: Object.assign({ height: 'none', color: 'status', critical: false, arcs: true, ghosts: true }, store.get('overlay', {})),
+    layers: Object.assign({ cables: true, beads: true, lamps: true, roof: true, labels: true, beacons: true, finish: true, districts: true, halos: true, route: true }, store.get('layers', {})),
     replay: null, playing: null, speed: store.get('speed', 60), stage: null, stageFailed: null, stageLoading: false, timer: null,
     lastStatuses: new Map(), announced: 0, rendered: null, cloud: null, cloudUI: null, cloudPrefs: store.get('cloud', {}),
     models: false, modelsData: null, modelsText: null, modelsError: null, modelsPrefs: store.get('models', {}),
-    files: new Map(), filesPrefs: store.get('files', {}), runSort: store.get('run-sort', 'updated'), tablePrefs: store.get('tables', {}) };
+    files: new Map(), filesPrefs: store.get('files', {}), runSort: store.get('run-sort', 'updated'), tablePrefs: store.get('tables', {}),
+    findings: new Map() };
   state.stageMode = state.mode === 'exec' ? 'exec' : 'plan';   // the stage's own mode, kept while Files is shown
   if (state.mode === 'files' && !window.ForgeFiles) state.mode = state.stageMode;
   const $ = id => document.getElementById(id);
@@ -53,9 +55,10 @@ window.ForgeUI = (() => {
     if (sel.kind === 'fractal') return `${base}/tasks/${e(sel.task)}/fractal/${e(sel.node)}`;
     return base;
   }
-  // a diff: {kind: 'task', task, source, file} | {kind: 'final', name, file} | {kind: 'fractal', task, node, file}
+  // a diff: {kind: 'task', task, source, file} | {kind: 'final', name, file} | {kind: 'fractal', task, node, file},
+  // opened at a file, or at one finding (its id from /findings)
   function diffHash(key, spec) {
-    const e = encodeURIComponent, base = '#/runs/' + e(key), file = spec.file ? '/file/' + e(spec.file) : '';
+    const e = encodeURIComponent, base = '#/runs/' + e(key), file = spec.finding ? '/finding/' + e(spec.finding) : spec.file ? '/file/' + e(spec.file) : '';
     if (spec.kind === 'final') return `${base}/final-review/${e(spec.name)}/diff${file}`;
     if (spec.kind === 'fractal') return `${base}/tasks/${e(spec.task)}/fractal/${e(spec.node)}/diff${file}`;
     return `${base}/tasks/${e(spec.task)}/diff${spec.source && spec.source !== 'current' ? '/' + e(spec.source) : ''}${file}`;
@@ -72,9 +75,9 @@ window.ForgeUI = (() => {
     if (!m) return { key: null, sel: null };
     const d = decodeURIComponent, rest = m[2] || '';
     let sel = null, r;
-    if ((r = rest.match(/^\/tasks\/([^/]+)\/diff(?:\/([^/]+))?(?:\/file\/(.+?))?\/?$/))) return { key: d(m[1]), sel: { kind: 'task', id: d(r[1]) }, diff: { kind: 'task', task: d(r[1]), source: r[2] ? d(r[2]) : 'current', file: r[3] ? d(r[3]) : null } };
+    if ((r = rest.match(/^\/tasks\/([^/]+)\/diff(?:\/(?!file\/|finding\/)([^/]+))?(?:\/finding\/([^/]+))?(?:\/file\/(.+?))?\/?$/))) return { key: d(m[1]), sel: { kind: 'task', id: d(r[1]) }, diff: { kind: 'task', task: d(r[1]), source: r[2] ? d(r[2]) : 'current', finding: r[3] ? d(r[3]) : null, file: r[4] ? d(r[4]) : null } };
     if ((r = rest.match(/^\/tasks\/([^/]+)\/fractal\/([^/]+)\/diff(?:\/file\/(.+?))?\/?$/))) return { key: d(m[1]), sel: { kind: 'task', id: d(r[1]) }, diff: { kind: 'fractal', task: d(r[1]), node: d(r[2]), file: r[3] ? d(r[3]) : null } };
-    if ((r = rest.match(/^\/final-review\/([^/]+)\/diff(?:\/file\/(.+?))?\/?$/))) return { key: d(m[1]), sel: { kind: 'final', name: d(r[1]) }, diff: { kind: 'final', name: d(r[1]), file: r[2] ? d(r[2]) : null } };
+    if ((r = rest.match(/^\/final-review\/([^/]+)\/diff(?:\/finding\/([^/]+))?(?:\/file\/(.+?))?\/?$/))) return { key: d(m[1]), sel: { kind: 'final', name: d(r[1]) }, diff: { kind: 'final', name: d(r[1]), finding: r[2] ? d(r[2]) : null, file: r[3] ? d(r[3]) : null } };
     if ((r = rest.match(/^\/tasks\/([^/]+)\/executions\/([^/]+)\/?$/))) sel = { kind: 'execution', task: d(r[1]), id: d(r[1]), exec: d(r[2]) };
     if (sel && sel.kind === 'execution' && sel.task) {
       const run = state.cache.get(d(m[1]))?.data, t = run && list(run.tasks).find(x => x.id === sel.task);
@@ -264,6 +267,12 @@ window.ForgeUI = (() => {
       onOpenRun: key => { location.hash = hashFor(key, null); },
       onBack: () => { location.hash = '#/'; },
       onMode: mode => setMode(mode),
+      onLayers: L => { state.layers = L; store.set('layers', L); syncLayerKeys(); },   // the stage's I key
+      // a finding's mark: the diff that review read, opened at that finding
+      onFinding: d => {
+        location.hash = d.final ? diffHash(state.key, { kind: 'final', name: d.final, finding: d.finding.id })
+          : diffHash(state.key, { kind: 'task', task: d.task, source: d.review && d.review.execution || 'current', finding: d.finding.id });
+      },
       cloud: {
         onSelect: key => { location.hash = cloudHash(key, state.cloud && state.cloud.focus); },
         onFocus: pid => { location.hash = cloudHash(null, pid); },
@@ -275,6 +284,7 @@ window.ForgeUI = (() => {
     })).then(stage => {
       state.stage = stage; state.stageLoading = false;
       stage.setOverlay(state.overlay);
+      stage.setLayers(state.layers);
       stage.setReplay(state.replay);
       renderMain();
     }, err => {
@@ -458,6 +468,7 @@ window.ForgeUI = (() => {
   function syncToggles() {
     for (const b of document.querySelectorAll('[data-dim]')) b.setAttribute('aria-pressed', String(b.dataset.dim === state.dim));
     for (const b of document.querySelectorAll('[data-mode]')) b.setAttribute('aria-pressed', String(b.dataset.mode === state.mode));
+    syncLayerKeys();
   }
   function setMode(mode) {
     if (mode === state.mode) return;
@@ -478,8 +489,8 @@ window.ForgeUI = (() => {
     const ov = el('div', undefined, 'overlays popover'); ov.popover = 'auto'; ov.id = 'view-pop'; ov.setAttribute('aria-label', 'What the stage shows');
     ov.append(el('span', 'View', 'plate'));
     const viewBtn = el('button', undefined, 'view-btn'); viewBtn.type = 'button'; viewBtn.popoverTargetElement = ov; viewBtn.setAttribute('aria-haspopup', 'true');
-    viewBtn.append(icon('layers'), el('span', 'View'), icon('chevron-up')); viewBtn.title = 'Height, colour and what the stage marks';
-    ov.addEventListener('toggle', e => { if (e.newState === 'open') placePopover(viewBtn, ov); });
+    viewBtn.append(icon('layers'), el('span', 'View'), icon('chevron-up')); viewBtn.title = 'Height, colour, layers and marks';
+    ov.addEventListener('toggle', e => { if (e.newState === 'open') { syncLayerKeys(); placePopover(viewBtn, ov); } });
     const sel = (label, key, entries) => {
       const l = el('label', undefined, 'filter'); l.append(el('span', label));
       const s = el('select'); s.dataset.ov = key;
@@ -488,14 +499,37 @@ window.ForgeUI = (() => {
     };
     sel('Height', 'height', [['none', 'difficulty'], ['duration', 'duration'], ['tokens', 'tokens'], ['attempts', 'attempts']]);
     sel('Colour', 'color', [['status', 'status'], ['model', 'model'], ['duration', 'duration'], ['tokens', 'tokens']]);
-    for (const [key, label, title] of [['critical', 'Critical path', 'The chain of dependencies that bounded the wall time'], ['arcs', 'Review marks', 'Shadow disagreements and Clef rings'], ['ghosts', 'Projected', 'Where the tasks that have not started would run, by forge-schedule\'s rules']]) {
-      const l = el('label', undefined, 'filter check'); l.title = title;
-      const c = el('input'); c.type = 'checkbox'; c.checked = !!state.overlay[key]; c.dataset.ov = key;
-      l.append(c, document.createTextNode(' ' + label)); ov.append(l);
-    }
+    // push buttons, one per part of the drawing: its lamp lights while that part is drawn
+    const bankOf = (title, rows, attr) => {
+      const g = el('div', undefined, 'layer-bank'); g.setAttribute('role', 'group'); g.setAttribute('aria-label', title);
+      for (const [key, label, tip] of rows) {
+        const b = el('button', label, 'layer-key'); b.type = 'button'; b.dataset[attr] = key; b.title = tip; g.append(b);
+      }
+      ov.append(el('span', title, 'plate'), g);
+      return g;
+    };
+    bankOf('Layers', [['cables', 'Cables', 'The cables from each task to the tasks that wait on it'], ['beads', 'Flow', 'Beads flowing down the cables into running tasks'],
+      ['lamps', 'Lamps', 'The lamps on each block: one per attempt'], ['roof', 'Roof text', 'Task id, title, models and finding counts on each roof'],
+      ['labels', 'Readouts', 'The status line on the front of each block'], ['beacons', 'Findings', 'A mark over the block per review finding, shaped by its severity'],
+      ['finish', 'Finish line', 'Integration, verification and the final review'], ['districts', 'Districts', 'The wave and repository names on the plate'],
+      ['halos', 'Halos', 'The glow under running and chosen blocks'], ['route', 'Route', 'A chosen task keeps its route lit: what it waits on and what waits on it (I)']], 'layer');
+    bankOf('Marks', [['critical', 'Critical path', 'The chain of dependencies that bounded the wall time'], ['arcs', 'Review marks', 'Shadow disagreements and Clef rings'],
+      ['ghosts', 'Projected', 'Where the tasks that have not started would run, by forge-schedule\'s rules']], 'ov');
+    ov.addEventListener('click', e => {
+      const b = e.target.closest('.layer-key'); if (!b) return;
+      if (b.dataset.layer) {
+        const k = b.dataset.layer; state.layers[k] = !state.layers[k]; store.set('layers', state.layers);
+        if (state.stage) state.stage.setLayers({ [k]: state.layers[k] });
+      } else {
+        const k = b.dataset.ov; state.overlay[k] = !state.overlay[k]; store.set('overlay', state.overlay);
+        if (state.stage) state.stage.setOverlay({ [k]: state.overlay[k] });
+        const run = state.cache.get(state.key)?.data; if (run) renderRunBody(run);
+      }
+      syncLayerKeys();
+    });
     ov.addEventListener('input', e => {
       const k = e.target.dataset.ov; if (!k) return;
-      state.overlay[k] = e.target.type === 'checkbox' ? e.target.checked : e.target.value;
+      state.overlay[k] = e.target.value;
       store.set('overlay', state.overlay);
       if (state.stage) state.stage.setOverlay({ [k]: state.overlay[k] });
       const run = state.cache.get(state.key)?.data; if (run) renderRunBody(run);
@@ -529,6 +563,14 @@ window.ForgeUI = (() => {
     bar.append(rp, acts);
     header.append(bar);
   }
+  // the View popover's push buttons: pressed in while their part is drawn; the layers are the 3D stage's own
+  function syncLayerKeys() {
+    for (const b of document.querySelectorAll('.layer-key')) {
+      const on = b.dataset.layer ? !!state.layers[b.dataset.layer] : !!state.overlay[b.dataset.ov];
+      b.setAttribute('aria-pressed', String(on));
+      if (b.dataset.layer) b.disabled = !use3d();
+    }
+  }
   // a popover beside the button that opened it: above when the button sits low on the screen
   function placePopover(btn, pop) {
     const r = btn.getBoundingClientRect(), w = pop.offsetWidth, h = pop.offsetHeight, below = window.innerHeight - r.bottom > h + 16;
@@ -553,19 +595,25 @@ window.ForgeUI = (() => {
     if (state.stage) state.stage.setReplay(state.replay);
     const run = state.cache.get(state.key)?.data; if (run) { renderRunBody(run); }
   }
-  function stopPlay() { if (state.playing) { clearInterval(state.playing); state.playing = null; } }
+  function stopPlay() { if (state.playing) { cancelAnimationFrame(state.playing); state.playing = null; } }
+  // the replay runs on the display's frames: the stage moves every frame, the panels around it four times a second
   function togglePlay() {
     const run = state.cache.get(state.key)?.data; if (!run) return;
     if (state.playing) { stopPlay(); syncReplay(run); return; }
     const r = RM.timeRange(run, now()); if (!r) return;
     if (state.replay === null || state.replay >= r.end) state.replay = r.start;
-    state.playing = setInterval(() => {
+    let last = performance.now(), painted = 0;
+    const step = t0 => {
       const run2 = state.cache.get(state.key)?.data, r2 = run2 && RM.timeRange(run2, now());
       if (!r2) { stopPlay(); return; }
-      const t = Math.min(r2.end, state.replay + state.speed * .2);
-      setReplay(t);
-      if (t >= r2.end) { stopPlay(); syncReplay(run2); }
-    }, 200);
+      const t = Math.min(r2.end, state.replay + state.speed * Math.min(.25, (t0 - last) / 1000)); last = t0;
+      state.replay = t;
+      if (state.stage && use3d()) state.stage.setReplay(t);
+      if (t0 - painted > 250 || t >= r2.end || !use3d()) { painted = t0; renderRunBody(run2); } else syncReplay(run2);
+      if (t >= r2.end) { state.playing = null; syncReplay(run2); return; }
+      state.playing = requestAnimationFrame(step);
+    };
+    state.playing = requestAnimationFrame(step);
     syncReplay(run);
   }
   // A copy of the run whose statuses are what they were at time t (for the 2D views during a replay).
@@ -700,6 +748,15 @@ window.ForgeUI = (() => {
       diffHref: (task, path) => diffHash(run.key, { kind: 'task', task, source: 'current', file: path }),
       prefs: state.filesPrefs, savePrefs: p => { state.filesPrefs = p; store.set('files', p); } });
   }
+  // every review's findings of the run, for the stage's marks: read again when the run changes
+  function syncFindings(run) {
+    const key = run.key, c = state.findings.get(key) || {};
+    if (c.data && state.stage) state.stage.setFindings(c.data);
+    if (c.updated === run.updated || c.pending === run.updated) return;
+    c.pending = run.updated; state.findings.set(key, c);
+    fetchJSON(`/api/runs/${encodeURIComponent(key)}/findings`).then(r => { c.data = r.data; }, () => {})
+      .finally(() => { c.updated = c.pending; c.pending = null; if (state.key === key && state.stage && c.data) state.stage.setFindings(c.data); });
+  }
   function loadFiles(run) {
     const key = run.key, updated = run.updated, c = state.files.get(key) || {};
     if (c.pending === updated) return;
@@ -722,7 +779,7 @@ window.ForgeUI = (() => {
     syncToggles();
     syncReplay(run);
     placeStage($('stage-slot'));
-    if (use3d() && state.stage) state.stage.showRun(run, { mode: state.stageMode, sel: state.sel });
+    if (use3d() && state.stage) { state.stage.showRun(run, { mode: state.stageMode, sel: state.sel }); syncFindings(run); }
     render2d(run);
     renderStrip(run);
     renderFiles(run);

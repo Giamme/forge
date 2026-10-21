@@ -28,7 +28,7 @@ STATIC = server.STATIC_DIR
 # what the exported page runs, in index.html's order; the cloud, the leaderboard and notifications need a server
 SCRIPTS = ('theme.js', 'icons.js', 'datatable.js', 'shell.js', 'runmodel.js', 'cloudmodel.js', 'graph.js', 'gantt.js', 'panel.js', 'diffview.js', 'files.js', 'map3d.js',
            'search.js', 'app.js')
-MODULES = ('iso.js', 'cloud3d.js', 'scene3d.js')            # bundled in dependency order
+MODULES = ('iso.js', 'cloud3d.js', 'findings3d.js', 'stagectl.js', 'scene3d.js')   # bundled in dependency order
 DIFF_CAP = 1 << 20                                          # one diff's JSON
 TOTAL_CAP = 25 << 20                                        # every response together
 CDN = 'https://cdn.jsdelivr.net/npm/three@0.160.0/'
@@ -151,6 +151,7 @@ def build(catalog, key, texts=False, paths=False, now=None):
     for name in reviews:
         snap.add(f'{base}/final-reviews/{_enc(name)}')
     snap.add(f'{base}/files')
+    snap.add(f'{base}/findings')
     fractal = run.get('fractal') or {}
     if fractal.get('enabled') and fractal.get('available'):
         for task in tasks:

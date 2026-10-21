@@ -445,7 +445,8 @@ export async function createEngine(host, { reduceMotion = false } = {}) {
     const ppm = camera === ortho ? VH * ortho.zoom / orthoH : VH / (dist * fovK());
     const k = THREE.MathUtils.clamp((ppm / 40 - .35) / .65, 0, 1);
     const fm = THEMES[theme].fadeMin, fade = fm + (1 - fm) * k, dpr = renderer.getPixelRatio();
-    const key = fade.toFixed(2) + '|' + dpr + '|' + theme + '|' + (camera === ortho); if (key === appliedKey) return; appliedKey = key;
+    // orthographic zoom too: a screen sprite's world size follows it
+    const key = fade.toFixed(2) + '|' + dpr + '|' + theme + '|' + (camera === ortho ? ortho.zoom.toFixed(4) : 'p'); if (key === appliedKey) return; appliedKey = key;
     lineMat.linewidth = majorMat.linewidth = dpr; accentLineMat.linewidth = 1.6 * dpr;
     lineMat.color.copy(BG_COL).lerp(EDGE_COL, fade);
     majorMat.color.copy(BG_COL).lerp(MAJOR_COL, fade);
@@ -454,6 +455,8 @@ export async function createEngine(host, { reduceMotion = false } = {}) {
     for (const f of weightHooks) f();
   }
   const weightHooks = new Set();
+  // screen pixels per plan unit at the point the camera looks at
+  const pxPerUnit = () => (camera === ortho ? VH * ortho.zoom / orthoH : VH / (camera.position.distanceTo(controls.target) * fovK())) * TS;
 
   /* ---------- camera: frame a box, keeping the user's angle ---------- */
   const fovK = () => 2 * Math.tan(THREE.MathUtils.degToRad(persp.fov / 2));
@@ -505,7 +508,9 @@ export async function createEngine(host, { reduceMotion = false } = {}) {
   function overlayInset() {
     const H = host.getBoundingClientRect(), I = { l: 0, r: 0, t: 0, b: 0 };
     if (!H.width || !H.height) return I;
+    const full = document.fullscreenElement;
     for (const n of document.querySelectorAll('[data-overlay]')) {
+      if (full && !full.contains(n)) continue;              // full screen: the modules are behind the stage
       const R = n.getBoundingClientRect();
       if (!R.width || !R.height || R.right <= H.left || R.left >= H.right || R.bottom <= H.top || R.top >= H.bottom) continue;
       const cl = Math.max(R.left, H.left), cr = Math.min(R.right, H.right), ct = Math.max(R.top, H.top), cb = Math.min(R.bottom, H.bottom);
@@ -542,6 +547,22 @@ export async function createEngine(host, { reduceMotion = false } = {}) {
     if (camera === ortho && CAMT.to.zoom && CAMT.fromZ) { ortho.zoom = THREE.MathUtils.lerp(CAMT.fromZ, CAMT.to.zoom, k); ortho.updateProjectionMatrix(); }
     if (k >= 1) { controls.enableDamping = true; CAMT = null; }
     return true;
+  }
+  // closer (k > 1) or farther (k < 1) toward what the camera looks at, as a short glide; the angle stays
+  function zoomBy(k, dur = 260) {
+    settleCam();
+    const off = camera.position.clone().sub(controls.target);
+    let zoom = null;
+    if (camera === ortho) zoom = THREE.MathUtils.clamp(ortho.zoom * k, .05, 40);
+    else off.setLength(THREE.MathUtils.clamp(off.length() / k, controls.minDistance || .01, controls.maxDistance));
+    autoFrame = null;
+    if (reduceMotion || dur <= 1) {
+      camera.position.copy(controls.target).add(off);
+      if (zoom) { ortho.zoom = zoom; ortho.updateProjectionMatrix(); }
+      invalidate(); return;
+    }
+    CAMT = { t0: performance.now(), dur, fromT: controls.target.clone(), fromO: camera.position.clone().sub(controls.target), fromZ: zoom ? ortho.zoom : null, to: { t: controls.target.clone(), off, zoom } };
+    controls.enableDamping = false; invalidate();
   }
   const cancelCam = () => { if (CAMT) { controls.enableDamping = true; CAMT = null; } };
   const settleCam = () => { if (CAMT) { camStep(CAMT.t0 + CAMT.dur + 1); controls.update(); } };   // jump to where a glide ends (tests)
@@ -787,8 +808,8 @@ export async function createEngine(host, { reduceMotion = false } = {}) {
     mats, lmat, paint, lineCol, setOp, solid, loopAt, roofPlate, cone,
     tplane, release, roofAt, frontAt, lines, rr, font, fit, wrap, ellipsis, pxIn,
     ends, curve, arc, statusColor, statusHex, sevColor, sevHex, cssColor,
-    frameBox, fitFor, cancelCam, settleCam, setOrtho, isOrtho: () => camera === ortho, invalidate, tickers, themeHooks, weightHooks,
-    pick, pickHit, rayAt, project, handlers, disposeGroup, dispose, reduceMotion, now: () => NOW,
+    frameBox, fitFor, zoomBy, cancelCam, settleCam, setOrtho, overlayInset, isOrtho: () => camera === ortho, invalidate, tickers, themeHooks, weightHooks,
+    pick, pickHit, rayAt, project, pxPerUnit, handlers, disposeGroup, dispose, reduceMotion, now: () => NOW,
     setProfile, get profile() { return profile; }, unitSolid, solidFrom, disposeShared, sprite, outlineInstanced, mixColor,
     LineSegments2, LineSegmentsGeometry, creaseLines,
   };

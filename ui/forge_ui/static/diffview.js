@@ -1,7 +1,7 @@
 /* forge-ui diff viewer: a task's diff (current, previous, committed, or exactly what one reviewer read), a final
    review's combined diff or a Fractal node's candidate, with each review finding shown under the line it points
    at. Defines window.ForgeDiff.render(host, ctx). All API values enter the DOM as text.
-   ctx = { run, spec: {kind: 'task'|'final'|'fractal', task, source, file, name, node}, fetchJSON(path),
+   ctx = { run, spec: {kind: 'task'|'final'|'fractal', task, source, file, name, node, finding}, fetchJSON(path),
            rerender(), href(spec) → hash, closeHref }. */
 window.ForgeDiff = (() => {
   'use strict';
@@ -47,6 +47,7 @@ window.ForgeDiff = (() => {
   /* ---------- one finding, as a row under its line or in a list ---------- */
   function findingBox(f, where) {
     const box = el('div', undefined, 'diff-finding sev-' + (f.severity || 'P3'));
+    if (f.id) box.dataset.finding = f.id;                    // a mark on the stage opens the diff at this finding
     const head = el('div', undefined, 'diff-finding-head');
     head.append(sevChip(f.severity || '?', f.severity));
     if (f.status) head.append(el('span', f.status.toLowerCase(), 'tag'));
@@ -66,7 +67,7 @@ window.ForgeDiff = (() => {
     const st = { modified: 'running', added: 'merged', deleted: 'fail', renamed: 'nochanges', copied: 'nochanges' }[f.status] || 'unknown';
     head.append(chip(f.status, st));
     const name = el('a', f.status === 'renamed' || f.status === 'copied' ? `${f.old} → ${f.new}` : pathOf(f), 'mono diff-path');
-    name.href = ctx.href({ ...ctx.spec, file: pathOf(f) });
+    name.href = ctx.href({ ...ctx.spec, finding: null, file: pathOf(f) });
     head.append(name, el('span', `+${f.additions} −${f.deletions}`, 'diff-stat'));
     if (f.binary) head.append(el('span', 'binary', 'tag'));
     if (f.truncated) head.append(el('span', 'cut short', 'tag'));
@@ -118,9 +119,12 @@ window.ForgeDiff = (() => {
   function render(host, ctx) {
     const run = ctx.run, spec = ctx.spec, url = urlFor(run, spec), entry = load(ctx, url);
     // a poll that brought nothing new leaves thousands of rows alone
-    const sig = [url, entry.at || 0, !!entry.error, spec.file, opened.size].join('|');
+    const sig = [url, entry.at || 0, !!entry.error, spec.file, spec.finding, opened.size].join('|');
     if (host.diffSig === sig) return;
     host.diffSig = sig;
+    // the finding the keyboard is on keeps it through the rebuild (a poll, a fold)
+    const had = document.activeElement && host.contains(document.activeElement) && document.activeElement.closest('[data-finding]');
+    const keep = had ? had.dataset.finding : null;
     host.replaceChildren();
     const D = entry.data;
     const top = el('div', undefined, 'diff-top');
@@ -142,7 +146,7 @@ window.ForgeDiff = (() => {
       const cur = spec.kind === 'final' ? spec.name : spec.kind === 'fractal' ? 'candidate' : spec.source || 'current';
       for (const s of sources) {
         const a = el('a', s.label || s.id, 'diff-source'); a.setAttribute('aria-current', String(s.id === cur));
-        a.href = spec.kind === 'final' ? ctx.href({ kind: 'final', name: s.id }) : ctx.href({ ...spec, source: s.id, file: null });
+        a.href = spec.kind === 'final' ? ctx.href({ kind: 'final', name: s.id }) : ctx.href({ ...spec, source: s.id, file: null, finding: null });
         if (s.verdict) a.append(document.createTextNode(' '), chip(s.verdict, String(s.verdict).toLowerCase()));
         a.title = `${s.bytes != null ? s.bytes + ' bytes' : ''}${s.kind ? ' · ' + s.kind : ''}`;
         bar.append(a);
@@ -168,7 +172,7 @@ window.ForgeDiff = (() => {
     const nav = el('nav', undefined, 'diff-files'); nav.setAttribute('aria-label', 'Files in this diff');
     const ul = el('ul');
     files.forEach((f, fi) => {
-      const li = el('li'), a = el('a', undefined, 'diff-file-link'); a.href = ctx.href({ ...spec, file: pathOf(f) }); a.dataset.fi = String(fi);
+      const li = el('li'), a = el('a', undefined, 'diff-file-link'); a.href = ctx.href({ ...spec, finding: null, file: pathOf(f) }); a.dataset.fi = String(fi);
       const p = pathOf(f), cut = p.lastIndexOf('/');
       a.append(el('span', cut >= 0 ? p.slice(0, cut + 1) : '', 'diff-dir'), el('span', cut >= 0 ? p.slice(cut + 1) : p, 'diff-base'));
       const stat = el('span', undefined, 'diff-stat'); stat.append(el('span', `+${f.additions}`, 'diff-add'), document.createTextNode(' '), el('span', `−${f.deletions}`, 'diff-del'));
@@ -209,7 +213,20 @@ window.ForgeDiff = (() => {
         fileEls[i].scrollIntoView({ block: 'start' }); e.preventDefault();
       }
     };
-    if (spec.file) {
+    const flash = n => { n.classList.add('flash'); setTimeout(() => n.classList.remove('flash'), 1600); };
+    const back = keep && order.find(n => n.dataset.finding === keep);
+    if (back) back.focus({ preventScroll: true });
+    if (spec.finding) {
+      const target = order.find(n => n.dataset.finding === spec.finding);
+      if (target && host.dataset.scrolledTo !== url + '\n#' + spec.finding) {
+        host.dataset.scrolledTo = url + '\n#' + spec.finding; fIdx = order.indexOf(target);
+        requestAnimationFrame(() => {
+          const live = target.isConnected ? target : [...host.querySelectorAll('.diff-finding[id]')].find(n => n.dataset.finding === spec.finding);
+          if (!live) return;
+          live.scrollIntoView({ block: 'center' }); flash(live); live.focus({ preventScroll: true });
+        });
+      }
+    } else if (spec.file) {
       const target = fileEls.find(s => s.dataset.path === spec.file);
       if (target && host.dataset.scrolledTo !== url + '\n' + spec.file) { host.dataset.scrolledTo = url + '\n' + spec.file; requestAnimationFrame(() => target.scrollIntoView({ block: 'start' })); }
     }

@@ -140,12 +140,27 @@ keep one meaning everywhere (amber running, green merged or passed, red failed, 
   <img src="docs/media/cloud.webp" width="760" alt="The run cloud orbited, then laid out as galaxies and as a timeline with one lane per project.">
 - **Run (`#/runs/<key>`):** a header with the goal, the repo, a describer (each state's count,
   the wall time, how long since anything moved), a bank of push buttons (*Plan* /
-  *Execution* / *Files*, *3D* / *2D*, and *View*: height and colour overlays, *Critical path*,
-  *Review marks*, *Projected*) and the replay's time base; then the stage, the inspector and the
+  *Execution* / *Files*, *3D* / *2D*, and *View*: height and colour overlays, the *Layers* that
+  switch each part of the 3D drawing on or off, and the *Marks*: *Critical path*, *Review marks*,
+  *Projected*) and the replay's time base; then the stage, the inspector and the
   task table. The stage frames the run in the part of the window the modules leave free. The
   inspector opens when you choose a task, an attempt or a finish node; with
   nothing chosen it shows the run's timeline, finish and record (*Run details* in the header:
   settings, request, waves, verification output).
+- **Stage (3D):** each review finding stands over its task's block as a mark shaped by its
+  severity (P0 spike, P1 diamond, P2 cone, P3 pin, a ring when it has none; a plausible one smaller
+  and paler); on an opened task it moves onto the review that raised it, and the final review's sit
+  on *Final review*. Hover one for its location and summary; click it to open the diff that
+  review read at that finding. Choosing a task keeps its route lit, what it waits on and what
+  waits on it (`I` switches this off). Hovering a task shows its card: status, attempts, busy
+  time, tokens, models, its worst finding and what waits on it. A block whose roof text is too
+  small to read gets its name on a tag that faces you. A merge sends a pulse to *Integration*, a
+  failed attempt a red ring across the plate, an escalation a hop with the two models, a final
+  review a ring in its verdict's colour, live and during a replay (with reduced motion the block
+  lights instead). The keys at the stage's edge fit what is shown (`F`), zoom (`+` `−`), change
+  the projection (`V`: perspective, true isometric, top-down), reset the view (`0`), open the
+  legend of what the stage draws now (`L`), go full screen, and list every key (`?`). The layers,
+  the projection and the route are remembered.
 - **Lamps:** green merged or passed, amber running, red failed, unlit pending. A hollow lamp is
   that family's other case: passed or accepted without a merge (green), interrupted (amber), an
   infrastructure failure, a timeout or blocked behind a failure (red). Review findings are never
@@ -179,14 +194,15 @@ keep one meaning everywhere (amber running, green merged or passed, red failed, 
   run cloud filtered to its runs.
 
   <img src="docs/media/models.png" width="760" alt="The implementers table: tasks, first-attempt pass rate with its 95% interval, retries, escalations, timeouts, accepts, median model time and tokens per model.">
-- **Diffs (`…/tasks/<id>/diff[/<source>][/file/<path>]`, `…/final-review/<name>/diff`):** a task's
+- **Diffs (`…/tasks/<id>/diff[/<source>][/file/<path> | /finding/<id>]`, `…/final-review/<name>/diff[/finding/<id>]`):** a task's
   `changes.diff`, its previous or committed diff, or exactly the diff one reviewer read (the last
   diff in that review's prompt), picked from a row of sources with each review's verdict; a final
   review's combined diff. Files are listed with their +/− counts and how many findings point
   into them; each finding is shown under the line it names, those on a line outside the changed
   hunks at the top of their file, and those whose file is not in the diff (or that name no
   location) in a section of their own. n and p move between findings, j and k between files.
-  Open it from a task, an attempt's review, an execution or the final review in the inspector.
+  Open it from a task, an attempt's review, an execution or the final review in the inspector, or
+  from a finding's mark on the stage (`/finding/<id>` scrolls to that finding and focuses it).
 
   <img src="docs/media/diff.png" width="760" alt="The diff a reviewer read, with a P1 finding under the line that compares token digests and a P2 finding under the revoke function.">
 - **Fractal child tasks:** when a run used Fractal, a task's inspector shows the tree it was split
@@ -213,8 +229,10 @@ keep one meaning everywhere (amber running, green merged or passed, red failed, 
   while the tab is in the background, and a hidden tab checks the run list every 30 seconds
   (browsers may check less often after a while). Open tabs share one log and notify once. Runs
   that have not changed for two hours never notify.
-- **Keys on the stage:** ← → move between tasks, Esc closes, `e` switches plan and
-  execution. Drag to orbit, right-drag to pan, scroll to zoom once the stage is clicked.
+- **Keys on the stage:** with the stage focused, ← → move between tasks (on the map, between
+  runs; ↑ ↓ between repos, Enter opens the run), Esc closes, `e` switches plan and execution.
+  Anywhere on the page while the stage shows: `F`, `+` `−`, `V`, `0`, `L`, `I`, Shift+F (full
+  screen) and `?`. Drag to orbit, right-drag to pan, scroll to zoom once the stage is clicked.
 
 URLs such as `http://127.0.0.1:8765/#/runs/<key>/tasks/<id>` are shareable within the
 machine while this server is running and discovering that run dir. *Live refresh* pauses
@@ -236,7 +254,8 @@ notifications on. Failed requests keep the last good data and show a banner.
   (their pure parts are node-tested). `D-DINCondensed-Bold.woff2` is the engraved labels' face.
 - `forge_ui/static/runmodel.js`: the pure run model (layouts, schedule projection, critical path, replay).
 - `forge_ui/static/panel.js`, `gantt.js`, `graph.js`: the inspector, the execution chart and strip, the 2D graph.
-- `forge_ui/static/map3d.js`, `scene3d.js`, `iso.js`: the 3D loader, scenes and engine (ported from archivision).
+- `forge_ui/static/map3d.js`, `scene3d.js`, `iso.js`: the 3D loader, scenes and engine (ported from archivision);
+  `findings3d.js` the findings' marks, `stagectl.js` the stage's keys, legend and keys sheet.
 - `forge_ui/static/cloudmodel.js`, `cloud3d.js`, `cloudui.js`: the run cloud's pure model (projects,
   filters, layouts, layout files), its scene on the shared stage, and its controls.
 - `forge_ui/static/diffview.js`: the diff viewer, with findings pinned to their lines.

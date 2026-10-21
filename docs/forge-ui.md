@@ -35,6 +35,13 @@ opens on its plate); *Workbench* docks them beside it with splitters. `1`, `2` a
 `3` fold each module away, the header switches layout and theme (system, light or dark), and the
 task and model tables sort, reorder and hide columns. forge-ui remembers all of it in your browser.
 
+On the 3D stage every review finding stands over its block as a mark shaped by its severity, and
+a click opens the diff at that finding. A chosen task keeps its route lit, a hover shows its card
+(attempts, time, tokens, worst finding), and merges, failed attempts and escalations play over the
+plate as they happen or as a replay passes them. The *View* menu switches each part of the drawing
+on or off; the keys at the stage's edge fit, zoom, switch between perspective, isometric and
+top-down, open a legend of what is drawn, and `?` lists every key.
+
 Also: replay, critical path, Fractal child-task trees, quick jump (Ctrl K, ⌘K on a Mac, or
 `/`), a bell for runs that finish or fail, failed tasks and final-review verdicts (with opt-in
 browser notifications), and a run exported as one HTML file that opens without forge-ui, with
