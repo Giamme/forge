@@ -15,7 +15,14 @@ set -uo pipefail
 
 SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RESULT=0
-DRY=0; [ "${1:-}" = "--dry-run" ] && DRY=1
+DRY=0
+# `forge install --help` must never install; nor may a mistyped --dry-run.
+case "${1:-}" in
+  '') ;;
+  --dry-run) DRY=1 ;;
+  -h|--help) echo 'usage: forge install [--dry-run]'; exit 0 ;;
+  *) echo "forge: unknown install option: $1" >&2; exit 2 ;;
+esac
 
 say() { printf '%s\n' "$*"; }
 do_() { if [ "$DRY" = 1 ]; then say "  would: $*"; else "$@"; fi; }
