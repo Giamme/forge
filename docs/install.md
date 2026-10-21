@@ -133,6 +133,11 @@ single line on stderr: `forge 0.8 is available (you have 0.7.1): forge update`. 
 silent offline, in a copied installation without Git, in CI (`CI` set) and with
 `FORGE_UPDATE_CHECK=off`, and it never changes a run's outcome or exit code.
 
+An npm installation has no Git upstream, so there the same daily check asks the npm registry
+for the package's `latest` (`npm_config_registry` when you set one, as npm does), and the line
+names npm's command instead: `forge 0.9.0 is available (you have 0.8): npm install -g
+@giamme/forge@latest && forge install`. `forge version` shows the same command.
+
 The default update requires a clean Git checkout and a branch with an upstream. Local
 changes, detached HEAD, fetch failures and diverged branches stop the update without
 resetting or stashing your work. `--local` deliberately allows current local edits.

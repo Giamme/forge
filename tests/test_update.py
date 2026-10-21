@@ -1,11 +1,14 @@
 import dataset_isolation  # noqa: F401  keeps forge's dataset and config out of the developer's home
+import http.server
 import json
 import os
 from pathlib import Path
 import shutil
 import subprocess
 import tempfile
+import threading
 import unittest
+import urllib.parse
 
 import test_forge as fixtures
 
@@ -222,6 +225,45 @@ class VersionTests(unittest.TestCase):
         cache.unlink()
         self.git(self.seed, 'tag', '-d', 'v0.8')
         self.assertEqual(self.notice().stdout, '')  # positive control: reachable, and already the newest
+
+
+    def npm_registry(self, version):
+        """A local npm registry answering `<package>/latest`; returns its URL and the paths it was asked for."""
+        asked = []
+
+        class Registry(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                asked.append(urllib.parse.unquote(self.path))
+                body = json.dumps({'name': '@giamme/forge', 'version': version}).encode()
+                self.send_response(200); self.send_header('Content-Type', 'application/json')
+                self.send_header('Content-Length', str(len(body))); self.end_headers(); self.wfile.write(body)
+
+            def log_message(self, *args):
+                pass
+
+        server = http.server.HTTPServer(('127.0.0.1', 0), Registry)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close); self.addCleanup(server.shutdown)
+        return f'http://127.0.0.1:{server.server_port}/', asked
+
+    def test_an_npm_install_is_told_about_npm_releases_with_the_npm_command(self):
+        package = self.root / 'npm/lib/node_modules/@giamme/forge'
+        shutil.copytree(self.seed, package, ignore=shutil.ignore_patterns('.git'))
+        (package / 'package.json').write_text('{"name": "@giamme/forge", "version": "0.7.0"}\n')
+        registry, asked = self.npm_registry('0.9.0')
+        npm = 'npm install -g @giamme/forge@latest && forge install'
+        env = dict(self.env, npm_config_registry=registry, no_proxy='127.0.0.1', NO_PROXY='127.0.0.1')
+        notice = lambda: subprocess.run(['python3', str(package / 'scripts/forge-version.py'), 'notice'],
+                                        env=env, capture_output=True, text=True)
+        first = notice()
+        self.assertEqual((first.returncode, first.stdout), (0, f'forge 0.9.0 is available (you have 0.7): {npm}\n'))
+        self.assertEqual(asked, ['/@giamme/forge/latest'])
+        self.assertEqual(notice().stdout, '')  # same day: asked once
+        self.assertEqual(len(asked), 1)
+        shown = subprocess.run([str(package / 'forge'), 'version'], env=env, capture_output=True, text=True)
+        self.assertEqual(shown.returncode, 0, shown.stderr)
+        self.assertIn(npm, shown.stdout)
+        self.assertNotIn('--source <checkout>', shown.stdout)  # the advice for a copy without git, not for npm
 
 
 class RunnerNoticeTests(unittest.TestCase):
