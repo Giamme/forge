@@ -3,6 +3,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -62,7 +63,7 @@ class ReaderTests(unittest.TestCase):
                  'status': 'FAIL', 'verdict': 'PASS', 'reviewed': True, 'pick': 0, **SHADOW_EXTRA}],
             'prompt': 'Read the plan.\n', 'approach': 'Use standard Python.\n',
             'retry_findings': 'Handle missing files.\n',
-            'qa_tail': 'FORGE_VERDICT: FAIL\nFixed now.\nFORGE_VERDICT: PASS\nPostscript.\n',
+            'qa_tail': 'FORGE_VERDICT: FAIL\nFixed now.\nFORGE_VERDICT: PASS\n',
             'dwarf_tail': None, 'executions': [],
             'merged_at': (FIXTURE / 'tasks/reader/merged').stat().st_mtime, 'findings': NO_FINDINGS,
             'gate': None, 'known_issues': False,
@@ -190,23 +191,35 @@ class ReaderTests(unittest.TestCase):
                           'verdict': None, 'reviewed': None, 'pick': None, **SHADOW_EXTRA, 'findings': None})
         self.assertEqual(data['warnings'], [])
 
-    def test_verdict_accepts_dash_glosses_and_uses_last_matching_line(self):
+    def test_verdict_is_the_one_forge_records(self):
+        # forge (forge_verdict in scripts/forge-artifact.sh) trusts only the reply's last non-blank line;
+        # a reply forge recorded as UNKNOWN, which blocks, must not show as PASS or FAIL here.
         plan = self.copy_plan()
-        for suffix in ('', '   — no confirmed correctness bug',
-                       ' – explanation', ' - explanation'):
-            for verdict in ('PASS', 'FAIL'):
-                with self.subTest(suffix=suffix, verdict=verdict):
-                    previous = 'FAIL' if verdict == 'PASS' else 'PASS'
-                    review = (f'FORGE_VERDICT: {previous}\n'
-                              f'FORGE_VERDICT: {verdict}{suffix}\r\n'
-                              f'Quoted FORGE_VERDICT: {previous}\n'
-                              f'FORGE_VERDICT: {previous} extra\n'
-                              'FORGE_VERDICT:\nFAIL\n')
-                    for name in ('tasks/reader/qa.last', 'shadow/reader/1-2/qa.last'):
-                        self.write(plan / name, review)
-                    task = detail(plan)['tasks'][0]
-                    self.assertEqual(task['verdict'], verdict)
-                    self.assertEqual(task['shadow'][0]['verdict'], verdict)
+        artifact = Path(__file__).resolve().parents[2] / 'scripts' / 'forge-artifact.sh'
+        cases = [('', 'PASS'), ('   — no confirmed correctness bug', 'PASS'), (' – explanation', 'PASS'),
+                 (' - explanation', 'PASS'), ('', 'FAIL'), (' - explanation', 'FAIL')]
+        replies = [(f'FORGE_VERDICT: {"FAIL" if v == "PASS" else "PASS"}\nQuoted FORGE_VERDICT: FAIL\n'
+                    f'FORGE_VERDICT: {v}{suffix}\r\n\n  \n', v) for suffix, v in cases]
+        replies += [
+            ('FORGE_VERDICT: PASS\nPostscript.\n', None),  # more text after the verdict
+            ('Quoted FORGE_VERDICT: PASS\n', None),
+            ('FORGE_VERDICT: PASS extra\n', None),
+            ('FORGE_VERDICT: PASS—no space before the dash\n', None),
+            ('FORGE_VERDICT:PASS\n', None),
+            ('  FORGE_VERDICT: PASS\n', None),
+            ('FORGE_VERDICT:\nPASS\n', None),
+            ('FORGE_VERDICT: pass\n', None),
+        ]
+        for review, expected in replies:
+            with self.subTest(review=review):
+                for name in ('tasks/reader/qa.last', 'shadow/reader/1-2/qa.last'):
+                    self.write(plan / name, review)
+                task = detail(plan)['tasks'][0]
+                self.assertEqual(task['verdict'], expected)
+                self.assertEqual(task['shadow'][0]['verdict'], expected)
+                forge = subprocess.run(['bash', '-c', 'source "$1"; forge_verdict "$2"', 'x', str(artifact),
+                                        str(plan / 'tasks/reader/qa.last')], capture_output=True, text=True)
+                self.assertEqual(forge.stdout.strip(), expected or 'UNKNOWN', forge.stderr)
 
     def test_wave_numbers_are_bounded(self):
         plan = self.copy_plan()
@@ -254,7 +267,7 @@ class ReaderTests(unittest.TestCase):
                                                 'commit': None})
         self.assertEqual(len(data['warnings']), 1)
 
-    def test_text_caps_and_verdict_outside_tail(self):
+    def test_text_caps_and_the_verdict_of_a_capped_reply(self):
         plan = self.copy_plan()
         for count in (20000, 20001):
             with self.subTest(count=count):
@@ -270,11 +283,11 @@ class ReaderTests(unittest.TestCase):
                 self.assertEqual(data['tasks'][0]['qa_tail'], '尾' * 4000)
                 self.assertEqual(data['verification']['log_tail'], '尾' * 4000)
                 self.assertEqual(set(data['truncated']), {'request', 'tasks/reader/prompt', 'tasks/reader/approach', 'tasks/reader/retry_findings'} if count > 20000 else set())
-        self.write(plan / 'tasks/reader/qa.last', 'FORGE_VERDICT: FAIL\n' + 'z' * 5000)
+        self.write(plan / 'tasks/reader/qa.last', 'FORGE_VERDICT: PASS\n' + 'z' * 5000 + '\nFORGE_VERDICT: FAIL\n')
         self.write(plan / 'verification.log', 'x' * 200000 + '尾' * 4000)
         data = detail(plan)
         self.assertEqual(data['tasks'][0]['verdict'], 'FAIL')
-        self.assertEqual(data['tasks'][0]['qa_tail'], '…' + 'z' * 4000)
+        self.assertEqual(data['tasks'][0]['qa_tail'], '…' + 'z' * 3979 + '\nFORGE_VERDICT: FAIL\n')
         self.assertEqual(data['verification']['log_tail'], '…' + '尾' * 4000)
         self.assertIn('tasks/reader/qa_tail', data['truncated'])
         self.assertIn('verification.log_tail', data['truncated'])
