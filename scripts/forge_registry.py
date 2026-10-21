@@ -23,11 +23,13 @@ def registry_dir() -> Path:
     """The ``runs`` directory under forge's config home.
 
     Resolved the same way ``forge_jev.config_path()`` resolves ``jev.json``:
-    ``XDG_CONFIG_HOME`` when set, otherwise ``~/.config``, then ``expanduser()``.
-    ``config_path()`` is ``<that>/forge/jev.json``; the registry is the sibling
-    ``runs`` directory.
+    ``XDG_CONFIG_HOME`` when set and not empty, otherwise ``~/.config``, then
+    ``expanduser()``. An empty value counts as unset, as the XDG spec says and as
+    forge-ui's run list reads it; taken literally it named a directory below the
+    current one, usually the user's repo. ``config_path()`` is
+    ``<that>/forge/jev.json``; the registry is the sibling ``runs`` directory.
     """
-    config = (Path(os.environ.get('XDG_CONFIG_HOME', str(Path.home() / '.config'))).expanduser()
+    config = (Path(os.environ.get('XDG_CONFIG_HOME') or str(Path.home() / '.config')).expanduser()
               / 'forge/jev.json')
     return config.parent / 'runs'
 
@@ -56,6 +58,10 @@ def register_run_dir(repo: Path, run_dir: Path) -> None:
     and ``forge ui open`` calls this before any of its own timeouts.
     """
     try:
+        # A relative XDG_CONFIG_HOME resolves below the current directory -- for a runner or
+        # `forge ui open`, usually the user's repo. Forge does not write into the user's tree.
+        if not registry_dir().is_absolute():
+            return
         registry = runs_registry(repo)
         registry.parent.mkdir(parents=True, exist_ok=True)
         line = str(Path(run_dir).resolve())
@@ -105,11 +111,6 @@ def _repo_of(run_dir: Path) -> Path | None:
 
 def _register(run_dir_arg: str) -> None:
     if os.environ.get('FORGE_RUN_REGISTRY', '').strip().lower() == 'off':
-        return
-    # The registry is resolved from XDG_CONFIG_HOME, which an empty or relative value turns
-    # into a path below the current directory -- for a runner, usually the user's repo.
-    # Forge does not write into the user's tree, so a registry that is not absolute is skipped.
-    if not registry_dir().is_absolute():
         return
     run_dir = Path(run_dir_arg).resolve()
     repo = _repo_of(run_dir)
