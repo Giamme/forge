@@ -94,9 +94,13 @@ class Runs:
     def uid(self):
         return '%032x' % self.rng.getrandbits(128)
 
+    def session(self):
+        h = '%032x' % self.rng.getrandbits(128)
+        return f'{h[:8]}-{h[8:12]}-4{h[13:16]}-8{h[17:20]}-{h[20:]}'
+
     def execution(self, owner, role, start, end=None, *, spec=None, last=None, parent=None, trigger=None,
-                  attempt_start=None, diff=None, shadow=False, exit_code=0, phase='model', tokens=None):
-        """One attempts/<role>-<id>/ dir, as forge-runtime.py and forge-dispatch.sh leave it."""
+                  attempt_start=None, diff=None, shadow=False, exit_code=0, phase='model', tokens=None, log=None):
+        """One attempts/<role>-<id>/ dir, as forge-runtime.py and forge-dispatch.sh leave it; `log` is its <role>.log."""
         name = f'{role}-{self.uid()}'
         root = owner / 'attempts' / name
         at = end if end is not None else start
@@ -134,6 +138,8 @@ class Runs:
             put(root / f'{role}.prompt', prompt, start)
             if last is not None and end is not None:
                 put(root / f'{role}.last', last, end)
+            if log is not None and end is not None:
+                put(root / f'{role}.log', log, end)
         return name
 
     def tokens(self, role):
@@ -190,6 +196,111 @@ class Runs:
         lines = ''.join(f'- [{sev}][{status}] {loc} — {text}\n' for sev, status, loc, text in findings)
         tail = f'FORGE_VERDICT: {verdict}' + (f' — {why}' if why else '') + '\n'
         return ('Reviewed the diff against the task.\n\n' + lines + '\n' + tail) if lines else tail
+
+
+# ---------------------------------------------------------------------------------------------
+# What the agents said and ran: a <role>.log in each harness's own format (forge_ui/transcripts.py reads them).
+
+def _added(diff):
+    """(path, its added lines) of each file a unified diff changes."""
+    out = []
+    for line in diff.splitlines():
+        if line.startswith('+++ b/'):
+            out.append((line[6:], []))
+        elif out and line.startswith('+'):
+            out[-1][1].append(line[1:])
+    return out
+
+
+def transcript(harness, steps, tokens, session, partial=False):
+    """A <role>.log as `harness` writes it. steps: ('think', text), ('say', text), ('run', command, output, exit),
+    ('read', path, text), ('write', path, lines), ('answer', text). partial: cut inside its last line, as a log being written is."""
+    J = lambda value: json.dumps(value, separators=(',', ':'))
+    tin, cached, tout = tokens or (0, 0, 0)
+    cached = min(cached, tin * 4 // 5)
+    out = []
+    if harness == 'codex':
+        out += ['Reading prompt from stdin...', J({'type': 'thread.started', 'thread_id': session}), J({'type': 'turn.started'})]
+        for i, step in enumerate(steps):
+            kind, item = step[0], {'id': f'item_{i}'}
+            if kind == 'think':
+                item.update(type='reasoning', text=step[1])
+            elif kind in ('say', 'answer'):
+                item.update(type='agent_message', text=step[1])
+            elif kind in ('run', 'read'):
+                command, output, code = (step[1], step[2], step[3]) if kind == 'run' else (f'sed -n 1,200p {step[1]}', step[2], 0)
+                item.update(type='command_execution', command=f"/bin/zsh -lc '{command}'", aggregated_output=output, exit_code=code,
+                            status='completed' if code == 0 else 'failed')
+            elif kind == 'write':
+                item.update(type='file_change', changes=[{'path': step[1], 'kind': 'add'}], status='completed')
+            out.append(J({'type': 'item.completed', 'item': item}))
+        if not partial:
+            out.append(J({'type': 'turn.completed', 'usage': {'input_tokens': tin, 'cached_input_tokens': cached, 'output_tokens': tout}}))
+    elif harness in ('claude', 'grok'):
+        grok = harness == 'grok'
+        out.append(J({'type': 'system', 'subtype': 'init', 'session_id': session, 'model': 'grok-4' if grok else 'claude',
+                      'tools': ['run_terminal_command', 'read_file', 'search_replace'] if grok else ['Bash', 'Read', 'Write', 'Edit']}))
+        say = lambda blocks, n: J({'type': 'assistant', 'session_id': session, 'message': {'id': f'msg_{n}', 'role': 'assistant', 'content': blocks,
+                                   'usage': {'input_tokens': tin // max(1, len(steps)), 'cache_read_input_tokens': cached // max(1, len(steps)), 'output_tokens': tout // max(1, len(steps))}}})
+        back = lambda ident, content, error=False: J({'type': 'user', 'session_id': session, 'message': {'role': 'user', 'content': [
+            {'type': 'tool_result', 'tool_use_id': ident, 'content': content, 'is_error': error}]}})
+        for i, step in enumerate(steps):
+            kind, ident = step[0], f'call_{i}' if grok else f'toolu_{i:02d}'
+            if kind == 'think':
+                out.append(say([{'type': 'thinking', 'thinking': step[1]}], i))
+            elif kind in ('say', 'answer'):
+                out.append(say([{'type': 'text', 'text': step[1]}], i))
+            elif kind == 'run':
+                out.append(say([{'type': 'tool_use', 'id': ident, 'name': 'run_terminal_command' if grok else 'Bash', 'input': {'command': step[1]}}], i))
+                out.append(back(ident, J({'type': 'Exit', 'output': list(step[2].encode()), 'exit_code': step[3]}) if grok else step[2], step[3] != 0 and not grok))
+            elif kind == 'read':
+                out.append(say([{'type': 'tool_use', 'id': ident, 'name': 'read_file' if grok else 'Read', 'input': {'target_file' if grok else 'file_path': step[1]}}], i))
+                out.append(back(ident, J({'type': 'FileContent', 'FileContent': {'content': step[2], 'absolute_path': step[1]}}) if grok else step[2]))
+            elif kind == 'write':
+                body = '\n'.join(step[2]) + '\n'
+                if grok:
+                    out.append(say([{'type': 'tool_use', 'id': ident, 'name': 'search_replace', 'input': {'file_path': step[1], 'old_string': '', 'new_string': body}}], i))
+                    out.append(back(ident, J({'type': 'EditsApplied', 'EditsApplied': {'tool_output_for_prompt': f'Created {step[1]}', 'absolute_path': step[1]}})))
+                else:
+                    out.append(say([{'type': 'tool_use', 'id': ident, 'name': 'Write', 'input': {'file_path': step[1], 'content': body}}], i))
+                    out.append(back(ident, f'File created successfully at: {step[1]}'))
+        answer = next((step[1] for step in reversed(steps) if step[0] == 'answer'), None)
+        if answer is not None and not partial:
+            out.append(J({'type': 'result', 'subtype': 'success', 'is_error': False, 'result': answer, 'session_id': session, 'num_turns': len(steps),
+                          'total_cost_usd': round((tin - cached) * 3e-6 + cached * 3e-7 + tout * 1.5e-5, 4),
+                          'usage': {'input_tokens': tin - cached, 'cache_read_input_tokens': cached, 'output_tokens': tout}}))
+    else:                                                   # no structured stream: what the CLI printed
+        for step in steps:
+            if step[0] in ('say', 'answer'):
+                out.append(step[1].rstrip('\n'))
+            elif step[0] == 'run':
+                out += [f'$ {step[1]}', step[2].rstrip('\n')]
+            elif step[0] == 'write':
+                out.append(f'Wrote {step[1]}')
+    text = '\n'.join(out) + '\n'
+    return text[:-len(out[-1]) // 2] if partial else text
+
+
+def dwarf_story(title, diff, repo, think, test, fixed=None):
+    """An implementer: reads around, writes the files of its diff, runs the tests (again after `fixed`), answers."""
+    files = _added(diff)
+    steps = [('think', think), ('run', f'rg -n "auth" {" ".join(sorted({p.rsplit("/", 1)[0] for p, _ in files if "/" in p}) or {"."})}',
+                                   ''.join(f'{p}:1:{lines[0] if lines else ""}\n' for p, lines in files[:3]), 0)]
+    steps += [('write', f'{repo}/{path}', lines) for path, lines in files]
+    if fixed:
+        steps += [('run', test[0], fixed[0], 1), ('think', fixed[1])]
+    steps += [('run', test[0], test[1], 0), ('say', f'{title}: done. The tests above pass.'), ('answer', 'Done; see the diff.')]
+    return steps
+
+
+def qa_story(diff, repo, think, test, reply):
+    """A reviewer: the diff's files, the first one read in full, a thought, the tests, then its reply."""
+    files = _added(diff)
+    stat = ''.join(f' {path} | {len(lines)} +{"+" * min(len(lines), 30)}\n' for path, lines in files)
+    steps = [('run', 'git diff --stat HEAD', stat + f' {len(files)} files changed\n', 0)]
+    if files:
+        steps.append(('read', f'{repo}/{files[0][0]}', ''.join(f'{i:>4}  {line}\n' for i, line in enumerate(files[0][1], 1))))
+    return steps + [('think', think), ('run', test[0], test[1], 0), ('answer', reply)]
 
 
 # ---------------------------------------------------------------------------------------------
@@ -321,6 +432,38 @@ def login(form: LoginForm, response: Response):
     return {"user": user.id}'''.split('\n')
 
 
+# what each showcase attempt thought and ran
+STORIES = {
+    ('token-model', 1): dict(dwarf='Tokens are issued once and stored hashed. verify looks the token up by user and compares the digests.',
+                             test=('python -m pytest tests/test_tokens.py -q', '3 passed in 0.21s\n'),
+                             qa='verify compares token.digest == _digest(presented). An ordinary comparison returns at the first byte '
+                                'that differs, so the time it takes tells an attacker how much of a guess was right. And revoke deletes '
+                                'the digest from the store, but verify never asks the store: a revoked token keeps working.'),
+    ('token-model', 2): dict(dwarf='The review found two things: the digest comparison leaks timing, and revoke is not seen by verify. '
+                                   'Use hmac.compare_digest and check the store in verify.',
+                             test=('python -m pytest tests/test_tokens.py -q', '5 passed in 0.24s\n'),
+                             fixed=('FAILED tests/test_tokens.py::test_a_revoked_token_no_longer_verifies - assert True is False\n'
+                                    '1 failed, 4 passed in 0.26s\n', 'verify still trusts the token object; it has to ask the store whether the digest is there.'),
+                             qa='compare_digest closes the timing leak, and verify now asks the store, so revoke takes effect at once. '
+                                'The 30-day lifetime is a constant here while the other auth limits come from settings.'),
+    ('config', 1): dict(dwarf='Settings for auth: token lifetime and the login rate, read from the environment like the rest.',
+                        test=('python -c "from settings import AuthSettings; print(AuthSettings())"', "token_ttl_days=30 login_attempts_per_minute=5 cookie_name='session'\n"),
+                        qa='Two settings with defaults and an example env file. Nothing reads them yet; the rate limit task will.'),
+    ('rate-limit', 1): dict(dwarf='A sliding window per key: drop timestamps older than a minute, then count.',
+                            test=('python -m pytest tests -q -k ratelimit', '3 passed in 0.12s\n'),
+                            qa='The window is right, but nothing ever removes a key whose window emptied, so the dict only grows.'),
+    ('middleware', 1): dict(dwarf='A Starlette middleware: public paths pass, everything else needs a session token the store knows.',
+                            test=('python -m pytest tests -q -k middleware', '4 passed in 0.38s\n'),
+                            qa='Public paths pass through; any other request without a known token gets 401 before reaching a handler.'),
+    ('login', 1): dict(dwarf='Login looks the user up by email, checks the password, issues a token and sets the cookie.',
+                       test=('python -m pytest tests -q -k login', '4 passed in 0.51s\n'),
+                       qa='An unknown email answers 404 and a wrong password 401: anyone can tell which emails have accounts.'),
+    ('login', 2): dict(dwarf='Answer the same 401 for an unknown email and a wrong password, so the route says nothing about who has an account.',
+                       test=('python -m pytest tests -q -k login', '5 passed in 0.49s\n'),
+                       qa='Both failures now answer the same 401 with the same message. The route also registers itself in src/app.py.'),
+}
+
+
 def showcase(runs):
     """The quick-start run, 55 minutes in: five tasks merged, two in flight, one waiting."""
     now = runs.now
@@ -354,9 +497,13 @@ def showcase(runs):
         tdir = run / 'tasks' / task
         texec = runs.execution(tdir, 'task', t0, t2, parent=parallel, trigger=trigger, attempt_start=n - 1,
                                exit_code=0 if verdict == 'PASS' else 1)
-        runs.execution(tdir, 'dwarf', t0 + 10, t1, spec=spec, parent=texec, last='Done; see the diff.\n', tokens=runs.tokens('dwarf'))
+        title, repo, story = next(r['title'] for r in rows if r['id'] == task), '/tmp/forge-worktrees/' + task, STORIES[task, n]
         reply = runs.reply(findings, verdict, why)
-        runs.execution(tdir, 'qa', t1 + 10, t2, spec='opus:xhigh', parent=texec, last=reply, diff=diff, tokens=runs.tokens('qa'))
+        dt, qt = runs.tokens('dwarf'), runs.tokens('qa')
+        runs.execution(tdir, 'dwarf', t0 + 10, t1, spec=spec, parent=texec, last='Done; see the diff.\n', tokens=dt,
+                       log=transcript(spec_parts(spec)[2], dwarf_story(title, diff, repo, story['dwarf'], story['test'], story.get('fixed')), dt, runs.session()))
+        runs.execution(tdir, 'qa', t1 + 10, t2, spec='opus:xhigh', parent=texec, last=reply, diff=diff, tokens=qt,
+                       log=transcript('claude', qa_story(diff, repo, story['qa'], story['test'], reply), qt, runs.session()))
         return texec, reply
 
     def finish(task, history, final_diff, merged_at, reply, prev=None):
@@ -423,8 +570,11 @@ def showcase(runs):
     put(sdir / 'shadow.status', 'done\n', s + 2950)
     put(sdir / 'qa.last', 'FORGE_VERDICT: PASS\n', s + 2950)
     put(sdir / 'qa.input', 'Review this diff.\n', s + 2630)
-    runs.execution(sdir, 'qa', s + 2635, s + 2950, spec='sol:high', parent=texec, last='FORGE_VERDICT: PASS\n', shadow=True, diff=d,
-                   tokens=runs.tokens('qa'))
+    st = runs.tokens('qa')
+    runs.execution(sdir, 'qa', s + 2635, s + 2950, spec='sol:high', parent=texec, last='FORGE_VERDICT: PASS\n', shadow=True, diff=d, tokens=st,
+                   log=transcript('codex', qa_story(d, '/tmp/forge-worktrees/middleware', 'The public paths are matched by prefix, so /healthz is public too; '
+                                                    'that is the intent of PUBLIC. Every other path needs a token the store knows.',
+                                                    ('python -m pytest tests -q -k middleware', '4 passed in 0.38s\n'), 'FORGE_VERDICT: PASS\n'), st, runs.session()))
     finish('middleware', [(s + 2902, 1, 'PASS', 'sol:xhigh')], d, s + 2920, reply)
 
     # login: the first attempt tells attackers which emails exist; it also edits src/app.py (drift).
@@ -446,10 +596,19 @@ def showcase(runs):
     # tests: the implementer is done, the reviewer is reading.
     tdir = run / 'tasks/tests'
     texec = runs.execution(tdir, 'task', s + 3110, phase='dispatch', parent=parallel, trigger='initial')
-    runs.execution(tdir, 'dwarf', s + 3120, now - 140, spec='sonnet:high', parent=texec, last='Added the flow tests.\n',
-                   tokens=runs.tokens('dwarf'))
+    flow = _new_file('tests/test_auth_flow.py', ['def test_login_then_a_protected_route(client):', '    r = client.post("/auth/login", json=CREDS)',
+                                                 '    assert r.status_code == 200', '    assert client.get("/payments").status_code == 200'])
+    dt = runs.tokens('dwarf')
+    runs.execution(tdir, 'dwarf', s + 3120, now - 140, spec='sonnet:high', parent=texec, last='Added the flow tests.\n', tokens=dt,
+                   log=transcript('claude', dwarf_story('End-to-end auth tests', flow, '/tmp/forge-worktrees/tests',
+                                                        'One test through the real app: log in, then call a route behind the middleware.',
+                                                        ('python -m pytest tests/test_auth_flow.py -q', '2 passed in 0.44s\n')), dt, runs.session()))
     runs.execution(tdir, 'qa', now - 120, parent=texec)
-    put(tdir / 'qa.resolved', 'role=qa\nalias=opus\nharness=claude\nmodel=opus\neffort=xhigh\n', now - 120)
+    put(tdir / 'qa.resolved', 'role=qa\nalias=opus\nharness=claude\nmodel=opus\neffort=xhigh\nrepo=/tmp/forge-worktrees/tests\n', now - 120)
+    put(tdir / 'qa.log', transcript('claude', qa_story(flow, '/tmp/forge-worktrees/tests', 'The flow test logs in and calls one protected route; '
+                                                       'it never checks that a revoked token is refused, which is the case the token-model review cared about.',
+                                                       ('python -m pytest tests/test_auth_flow.py -q', '2 passed in 0.44s\n'), '')[:-1],
+                                    runs.tokens('qa'), runs.session(), partial=True), now - 20)
     put(tdir / 'qa.input', 'Review the diff.\n', now - 120)
     put(tdir / 'status', 'RUNNING\n', s + 3110)
     put(tdir / 'attempt', '1\n', s + 3110)
@@ -458,7 +617,12 @@ def showcase(runs):
     tdir = run / 'tasks/docs'
     texec = runs.execution(tdir, 'task', s + 3105, phase='dispatch', parent=parallel, trigger='initial')
     runs.execution(tdir, 'dwarf', s + 3112, parent=texec)
-    put(tdir / 'dwarf.resolved', 'role=dwarf\nalias=haiku\nharness=claude\nmodel=haiku\neffort=<harness default>\n', s + 3112)
+    put(tdir / 'dwarf.resolved', 'role=dwarf\nalias=haiku\nharness=claude\nmodel=haiku\neffort=<harness default>\nrepo=/tmp/forge-worktrees/docs\n', s + 3112)
+    put(tdir / 'dwarf.log', transcript('claude', [('think', 'Docs for the auth routes: what login and refresh take and answer, and how a token is revoked.'),
+                                                  ('read', '/tmp/forge-worktrees/docs/src/auth/routes.py', ''.join(f'{i:>4}  {line}\n' for i, line in enumerate(ROUTES_PY, 1))),
+                                                  ('write', '/tmp/forge-worktrees/docs/docs/auth.md', ['# Authentication', '', 'POST /auth/login takes an email and a password.']),
+                                                  ('say', 'Next: the refresh route and the README section.')],
+                                       runs.tokens('dwarf'), runs.session(), partial=True), now - 15)
     put(tdir / 'status', 'RUNNING\n', s + 3105)
     put(tdir / 'attempt', '1\n', s + 3105)
     put(tdir / 'prompt.md', 'API docs for auth.\n', s + 3105)

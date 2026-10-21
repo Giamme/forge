@@ -107,7 +107,8 @@ window.ForgeSearch = (() => {
     dlg.addEventListener('click', e => { if (e.target === dlg) close(); });       // the backdrop
     document.addEventListener('keydown', e => {
       if ((e.key === 'k' || e.key === 'K') && (e.ctrlKey || e.metaKey) && !e.altKey) { e.preventDefault(); if (dlg.open) close(); else open(); }
-      else if (e.key === '/' && !e.ctrlKey && !e.metaKey && !e.altKey && !dlg.open && !typing(e.target)) { e.preventDefault(); open(); }
+      // a view that handles / itself (a conversation's search) keeps it
+      else if (e.key === '/' && !e.defaultPrevented && !e.ctrlKey && !e.metaKey && !e.altKey && !dlg.open && !typing(e.target)) { e.preventDefault(); open(); }
     });
     for (const b of document.querySelectorAll('[data-jump]')) {
       b.addEventListener('click', open);

@@ -1,0 +1,1043 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-10-21T19:00:00+00:00",
+  "title": "Design System: forge-ui",
+  "extensions": {
+    "colorMeta": {
+      "desk": {
+        "role": "neutral",
+        "displayName": "Desk Enamel",
+        "canonical": "light-dark(#c9d0c7, #0d110f)",
+        "tonalRamp": [
+          "oklch(15% 0.014 138.7)",
+          "oklch(26% 0.014 138.7)",
+          "oklch(37% 0.014 138.7)",
+          "oklch(48% 0.014 138.7)",
+          "oklch(60% 0.014 138.7)",
+          "oklch(72% 0.014 138.7)",
+          "oklch(84% 0.014 138.7)",
+          "oklch(95% 0.014 138.7)"
+        ],
+        "light": "#c9d0c7",
+        "dark": "#0d110f"
+      },
+      "stage-bg": {
+        "role": "neutral",
+        "displayName": "Stage Panel",
+        "canonical": "light-dark(#c6cec4, #0e1210)",
+        "tonalRamp": [
+          "oklch(15% 0.016 139.4)",
+          "oklch(26% 0.016 139.4)",
+          "oklch(37% 0.016 139.4)",
+          "oklch(48% 0.016 139.4)",
+          "oklch(60% 0.016 139.4)",
+          "oklch(72% 0.016 139.4)",
+          "oklch(84% 0.016 139.4)",
+          "oklch(95% 0.016 139.4)"
+        ],
+        "light": "#c6cec4",
+        "dark": "#0e1210"
+      },
+      "module": {
+        "role": "neutral",
+        "displayName": "Module Enamel",
+        "canonical": "light-dark(#f1f3ee, #171d1a)",
+        "tonalRamp": [
+          "oklch(15% 0.007 124.4)",
+          "oklch(26% 0.007 124.4)",
+          "oklch(37% 0.007 124.4)",
+          "oklch(48% 0.007 124.4)",
+          "oklch(60% 0.007 124.4)",
+          "oklch(72% 0.007 124.4)",
+          "oklch(84% 0.007 124.4)",
+          "oklch(95% 0.007 124.4)"
+        ],
+        "light": "#f1f3ee",
+        "dark": "#171d1a"
+      },
+      "module-2": {
+        "role": "neutral",
+        "displayName": "Module Enamel, Second Shade",
+        "canonical": "light-dark(#e4e8e1, #1e2521)",
+        "tonalRamp": [
+          "oklch(15% 0.010 131.4)",
+          "oklch(26% 0.010 131.4)",
+          "oklch(37% 0.010 131.4)",
+          "oklch(48% 0.010 131.4)",
+          "oklch(60% 0.010 131.4)",
+          "oklch(72% 0.010 131.4)",
+          "oklch(84% 0.010 131.4)",
+          "oklch(95% 0.010 131.4)"
+        ],
+        "light": "#e4e8e1",
+        "dark": "#1e2521"
+      },
+      "key": {
+        "role": "neutral",
+        "displayName": "Key Face",
+        "canonical": "light-dark(#f8f9f5, #222a26)",
+        "tonalRamp": [
+          "oklch(15% 0.005 117.9)",
+          "oklch(26% 0.005 117.9)",
+          "oklch(37% 0.005 117.9)",
+          "oklch(48% 0.005 117.9)",
+          "oklch(60% 0.005 117.9)",
+          "oklch(72% 0.005 117.9)",
+          "oklch(84% 0.005 117.9)",
+          "oklch(95% 0.005 117.9)"
+        ],
+        "light": "#f8f9f5",
+        "dark": "#222a26"
+      },
+      "key-hover": {
+        "role": "neutral",
+        "displayName": "Key Face, Hover",
+        "canonical": "light-dark(#ffffff, #29322d)",
+        "tonalRamp": [
+          "oklch(15% 0.000 89.9)",
+          "oklch(26% 0.000 89.9)",
+          "oklch(37% 0.000 89.9)",
+          "oklch(48% 0.000 89.9)",
+          "oklch(60% 0.000 89.9)",
+          "oklch(72% 0.000 89.9)",
+          "oklch(84% 0.000 89.9)",
+          "oklch(95% 0.000 89.9)"
+        ],
+        "light": "#ffffff",
+        "dark": "#29322d"
+      },
+      "field": {
+        "role": "neutral",
+        "displayName": "Field",
+        "canonical": "light-dark(#fbfcf9, #101513)",
+        "tonalRamp": [
+          "oklch(15% 0.004 121.6)",
+          "oklch(26% 0.004 121.6)",
+          "oklch(37% 0.004 121.6)",
+          "oklch(48% 0.004 121.6)",
+          "oklch(60% 0.004 121.6)",
+          "oklch(72% 0.004 121.6)",
+          "oklch(84% 0.004 121.6)",
+          "oklch(95% 0.004 121.6)"
+        ],
+        "light": "#fbfcf9",
+        "dark": "#101513"
+      },
+      "wash": {
+        "role": "neutral",
+        "displayName": "Selection Wash",
+        "canonical": "light-dark(#ffffff, #26302b)",
+        "tonalRamp": [
+          "oklch(15% 0.000 89.9)",
+          "oklch(26% 0.000 89.9)",
+          "oklch(37% 0.000 89.9)",
+          "oklch(48% 0.000 89.9)",
+          "oklch(60% 0.000 89.9)",
+          "oklch(72% 0.000 89.9)",
+          "oklch(84% 0.000 89.9)",
+          "oklch(95% 0.000 89.9)"
+        ],
+        "light": "#ffffff",
+        "dark": "#26302b"
+      },
+      "glass": {
+        "role": "neutral",
+        "displayName": "Black Glass",
+        "canonical": "light-dark(#121715, #070a08)",
+        "tonalRamp": [
+          "oklch(15% 0.009 169.3)",
+          "oklch(26% 0.009 169.3)",
+          "oklch(37% 0.009 169.3)",
+          "oklch(48% 0.009 169.3)",
+          "oklch(60% 0.009 169.3)",
+          "oklch(72% 0.009 169.3)",
+          "oklch(84% 0.009 169.3)",
+          "oklch(95% 0.009 169.3)"
+        ],
+        "light": "#121715",
+        "dark": "#070a08"
+      },
+      "glass-ink": {
+        "role": "neutral",
+        "displayName": "Glass Bone Ink",
+        "canonical": "#ece8d9",
+        "tonalRamp": [
+          "oklch(15% 0.020 94.5)",
+          "oklch(26% 0.020 94.5)",
+          "oklch(37% 0.020 94.5)",
+          "oklch(48% 0.020 94.5)",
+          "oklch(60% 0.020 94.5)",
+          "oklch(72% 0.020 94.5)",
+          "oklch(84% 0.020 94.5)",
+          "oklch(95% 0.020 94.5)"
+        ]
+      },
+      "glass-dim": {
+        "role": "neutral",
+        "displayName": "Glass Dim Ink",
+        "canonical": "#8f9a92",
+        "tonalRamp": [
+          "oklch(15% 0.017 154.3)",
+          "oklch(26% 0.017 154.3)",
+          "oklch(37% 0.017 154.3)",
+          "oklch(48% 0.017 154.3)",
+          "oklch(60% 0.017 154.3)",
+          "oklch(72% 0.017 154.3)",
+          "oklch(84% 0.017 154.3)",
+          "oklch(95% 0.017 154.3)"
+        ]
+      },
+      "ink": {
+        "role": "neutral",
+        "displayName": "Ink",
+        "canonical": "light-dark(#111613, #e4e8e2)",
+        "tonalRamp": [
+          "oklch(15% 0.010 159.0)",
+          "oklch(26% 0.010 159.0)",
+          "oklch(37% 0.010 159.0)",
+          "oklch(48% 0.010 159.0)",
+          "oklch(60% 0.010 159.0)",
+          "oklch(72% 0.010 159.0)",
+          "oklch(84% 0.010 159.0)",
+          "oklch(95% 0.010 159.0)"
+        ],
+        "light": "#111613",
+        "dark": "#e4e8e2"
+      },
+      "ink-2": {
+        "role": "neutral",
+        "displayName": "Ink, Second",
+        "canonical": "light-dark(#38413b, #bac3bd)",
+        "tonalRamp": [
+          "oklch(15% 0.016 156.4)",
+          "oklch(26% 0.016 156.4)",
+          "oklch(37% 0.016 156.4)",
+          "oklch(48% 0.016 156.4)",
+          "oklch(60% 0.016 156.4)",
+          "oklch(72% 0.016 156.4)",
+          "oklch(84% 0.016 156.4)",
+          "oklch(95% 0.016 156.4)"
+        ],
+        "light": "#38413b",
+        "dark": "#bac3bd"
+      },
+      "muted": {
+        "role": "neutral",
+        "displayName": "Muted Ink",
+        "canonical": "light-dark(#4b554e, #8f9b94)",
+        "tonalRamp": [
+          "oklch(15% 0.017 155.1)",
+          "oklch(26% 0.017 155.1)",
+          "oklch(37% 0.017 155.1)",
+          "oklch(48% 0.017 155.1)",
+          "oklch(60% 0.017 155.1)",
+          "oklch(72% 0.017 155.1)",
+          "oklch(84% 0.017 155.1)",
+          "oklch(95% 0.017 155.1)"
+        ],
+        "light": "#4b554e",
+        "dark": "#8f9b94"
+      },
+      "rule": {
+        "role": "neutral",
+        "displayName": "Hairline Rule",
+        "canonical": "light-dark(#c1c8bf, #29322d)",
+        "tonalRamp": [
+          "oklch(15% 0.015 138.7)",
+          "oklch(26% 0.015 138.7)",
+          "oklch(37% 0.015 138.7)",
+          "oklch(48% 0.015 138.7)",
+          "oklch(60% 0.015 138.7)",
+          "oklch(72% 0.015 138.7)",
+          "oklch(84% 0.015 138.7)",
+          "oklch(95% 0.015 138.7)"
+        ],
+        "light": "#c1c8bf",
+        "dark": "#29322d"
+      },
+      "rule-2": {
+        "role": "neutral",
+        "displayName": "Edge Rule",
+        "canonical": "light-dark(#97a098, #3e4943)",
+        "tonalRamp": [
+          "oklch(15% 0.015 148.7)",
+          "oklch(26% 0.015 148.7)",
+          "oklch(37% 0.015 148.7)",
+          "oklch(48% 0.015 148.7)",
+          "oklch(60% 0.015 148.7)",
+          "oklch(72% 0.015 148.7)",
+          "oklch(84% 0.015 148.7)",
+          "oklch(95% 0.015 148.7)"
+        ],
+        "light": "#97a098",
+        "dark": "#3e4943"
+      },
+      "plate": {
+        "role": "neutral",
+        "displayName": "Engraving Plate",
+        "canonical": "light-dark(#151a17, #e2ddcd)",
+        "tonalRamp": [
+          "oklch(15% 0.010 159.2)",
+          "oklch(26% 0.010 159.2)",
+          "oklch(37% 0.010 159.2)",
+          "oklch(48% 0.010 159.2)",
+          "oklch(60% 0.010 159.2)",
+          "oklch(72% 0.010 159.2)",
+          "oklch(84% 0.010 159.2)",
+          "oklch(95% 0.010 159.2)"
+        ],
+        "light": "#151a17",
+        "dark": "#e2ddcd"
+      },
+      "plate-ink": {
+        "role": "neutral",
+        "displayName": "Engraved Letters",
+        "canonical": "light-dark(#eef1ea, #141916)",
+        "tonalRamp": [
+          "oklch(15% 0.010 125.7)",
+          "oklch(26% 0.010 125.7)",
+          "oklch(37% 0.010 125.7)",
+          "oklch(48% 0.010 125.7)",
+          "oklch(60% 0.010 125.7)",
+          "oklch(72% 0.010 125.7)",
+          "oklch(84% 0.010 125.7)",
+          "oklch(95% 0.010 125.7)"
+        ],
+        "light": "#eef1ea",
+        "dark": "#141916"
+      },
+      "route": {
+        "role": "primary",
+        "displayName": "Route White / Route Black",
+        "canonical": "light-dark(#18201b, #f4efdf)",
+        "tonalRamp": [
+          "oklch(15% 0.015 157.6)",
+          "oklch(26% 0.015 157.6)",
+          "oklch(37% 0.015 157.6)",
+          "oklch(48% 0.015 157.6)",
+          "oklch(60% 0.015 157.6)",
+          "oklch(72% 0.015 157.6)",
+          "oklch(84% 0.015 157.6)",
+          "oklch(95% 0.015 157.6)"
+        ],
+        "light": "#18201b",
+        "dark": "#f4efdf"
+      },
+      "lamp-off": {
+        "role": "secondary",
+        "displayName": "Unlit Lamp",
+        "canonical": "light-dark(#a3aca4, #3f4943)",
+        "tonalRamp": [
+          "oklch(15% 0.015 148.7)",
+          "oklch(26% 0.015 148.7)",
+          "oklch(37% 0.015 148.7)",
+          "oklch(48% 0.015 148.7)",
+          "oklch(60% 0.015 148.7)",
+          "oklch(72% 0.015 148.7)",
+          "oklch(84% 0.015 148.7)",
+          "oklch(95% 0.015 148.7)"
+        ],
+        "light": "#a3aca4",
+        "dark": "#3f4943"
+      },
+      "lamp-green": {
+        "role": "secondary",
+        "displayName": "Clear Green",
+        "canonical": "light-dark(#1d7a39, #5bd57d)",
+        "tonalRamp": [
+          "oklch(15% 0.131 148.9)",
+          "oklch(26% 0.131 148.9)",
+          "oklch(37% 0.131 148.9)",
+          "oklch(48% 0.131 148.9)",
+          "oklch(60% 0.131 148.9)",
+          "oklch(72% 0.131 148.9)",
+          "oklch(84% 0.131 148.9)",
+          "oklch(95% 0.131 148.9)"
+        ],
+        "light": "#1d7a39",
+        "dark": "#5bd57d"
+      },
+      "lamp-amber": {
+        "role": "secondary",
+        "displayName": "Occupied Amber",
+        "canonical": "light-dark(#9c6c00, #f4c443)",
+        "tonalRamp": [
+          "oklch(15% 0.118 78.0)",
+          "oklch(26% 0.118 78.0)",
+          "oklch(37% 0.118 78.0)",
+          "oklch(48% 0.118 78.0)",
+          "oklch(60% 0.118 78.0)",
+          "oklch(72% 0.118 78.0)",
+          "oklch(84% 0.118 78.0)",
+          "oklch(95% 0.118 78.0)"
+        ],
+        "light": "#9c6c00",
+        "dark": "#f4c443"
+      },
+      "lamp-red": {
+        "role": "secondary",
+        "displayName": "Failed Red",
+        "canonical": "light-dark(#bf3127, #ff5f53)",
+        "tonalRamp": [
+          "oklch(15% 0.180 28.8)",
+          "oklch(26% 0.180 28.8)",
+          "oklch(37% 0.180 28.8)",
+          "oklch(48% 0.180 28.8)",
+          "oklch(60% 0.180 28.8)",
+          "oklch(72% 0.180 28.8)",
+          "oklch(84% 0.180 28.8)",
+          "oklch(95% 0.180 28.8)"
+        ],
+        "light": "#bf3127",
+        "dark": "#ff5f53"
+      },
+      "lit-green": {
+        "role": "secondary",
+        "displayName": "Lit Green (3D plate)",
+        "canonical": "light-dark(#2fae55, #5bd57d)",
+        "tonalRamp": [
+          "oklch(15% 0.168 148.9)",
+          "oklch(26% 0.168 148.9)",
+          "oklch(37% 0.168 148.9)",
+          "oklch(48% 0.168 148.9)",
+          "oklch(60% 0.168 148.9)",
+          "oklch(72% 0.168 148.9)",
+          "oklch(84% 0.168 148.9)",
+          "oklch(95% 0.168 148.9)"
+        ],
+        "light": "#2fae55",
+        "dark": "#5bd57d"
+      },
+      "lit-amber": {
+        "role": "secondary",
+        "displayName": "Lit Amber (3D plate)",
+        "canonical": "light-dark(#d8b000, #f4c443)",
+        "tonalRamp": [
+          "oklch(15% 0.158 92.3)",
+          "oklch(26% 0.158 92.3)",
+          "oklch(37% 0.158 92.3)",
+          "oklch(48% 0.158 92.3)",
+          "oklch(60% 0.158 92.3)",
+          "oklch(72% 0.158 92.3)",
+          "oklch(84% 0.158 92.3)",
+          "oklch(95% 0.158 92.3)"
+        ],
+        "light": "#d8b000",
+        "dark": "#f4c443"
+      },
+      "lit-red": {
+        "role": "secondary",
+        "displayName": "Lit Red (3D plate)",
+        "canonical": "light-dark(#e0392e, #ff5f53)",
+        "tonalRamp": [
+          "oklch(15% 0.205 28.7)",
+          "oklch(26% 0.205 28.7)",
+          "oklch(37% 0.205 28.7)",
+          "oklch(48% 0.205 28.7)",
+          "oklch(60% 0.205 28.7)",
+          "oklch(72% 0.205 28.7)",
+          "oklch(84% 0.205 28.7)",
+          "oklch(95% 0.205 28.7)"
+        ],
+        "light": "#e0392e",
+        "dark": "#ff5f53"
+      },
+      "sev-p0": {
+        "role": "tertiary",
+        "displayName": "P0 Magenta (spike)",
+        "canonical": "light-dark(#a1145d, #ff52a8)",
+        "tonalRamp": [
+          "oklch(15% 0.180 356.5)",
+          "oklch(26% 0.180 356.5)",
+          "oklch(37% 0.180 356.5)",
+          "oklch(48% 0.180 356.5)",
+          "oklch(60% 0.180 356.5)",
+          "oklch(72% 0.180 356.5)",
+          "oklch(84% 0.180 356.5)",
+          "oklch(95% 0.180 356.5)"
+        ],
+        "light": "#a1145d",
+        "dark": "#ff52a8"
+      },
+      "sev-p1": {
+        "role": "tertiary",
+        "displayName": "P1 Violet (diamond)",
+        "canonical": "light-dark(#783ebd, #c18dff)",
+        "tonalRamp": [
+          "oklch(15% 0.190 300.6)",
+          "oklch(26% 0.190 300.6)",
+          "oklch(37% 0.190 300.6)",
+          "oklch(48% 0.190 300.6)",
+          "oklch(60% 0.190 300.6)",
+          "oklch(72% 0.190 300.6)",
+          "oklch(84% 0.190 300.6)",
+          "oklch(95% 0.190 300.6)"
+        ],
+        "light": "#783ebd",
+        "dark": "#c18dff"
+      },
+      "sev-p2": {
+        "role": "tertiary",
+        "displayName": "P2 Blue (cone)",
+        "canonical": "light-dark(#335dbd, #88a9ff)",
+        "tonalRamp": [
+          "oklch(15% 0.158 263.8)",
+          "oklch(26% 0.158 263.8)",
+          "oklch(37% 0.158 263.8)",
+          "oklch(48% 0.158 263.8)",
+          "oklch(60% 0.158 263.8)",
+          "oklch(72% 0.158 263.8)",
+          "oklch(84% 0.158 263.8)",
+          "oklch(95% 0.158 263.8)"
+        ],
+        "light": "#335dbd",
+        "dark": "#88a9ff"
+      },
+      "sev-p3": {
+        "role": "tertiary",
+        "displayName": "P3 Slate (pin)",
+        "canonical": "light-dark(#56635b, #a7b2ab)",
+        "tonalRamp": [
+          "oklch(15% 0.020 158.6)",
+          "oklch(26% 0.020 158.6)",
+          "oklch(37% 0.020 158.6)",
+          "oklch(48% 0.020 158.6)",
+          "oklch(60% 0.020 158.6)",
+          "oklch(72% 0.020 158.6)",
+          "oklch(84% 0.020 158.6)",
+          "oklch(95% 0.020 158.6)"
+        ],
+        "light": "#56635b",
+        "dark": "#a7b2ab"
+      },
+      "warn-ink": {
+        "role": "tertiary",
+        "displayName": "Warning Ink",
+        "canonical": "light-dark(#7a4f00, #f4c443)",
+        "tonalRamp": [
+          "oklch(15% 0.099 73.2)",
+          "oklch(26% 0.099 73.2)",
+          "oklch(37% 0.099 73.2)",
+          "oklch(48% 0.099 73.2)",
+          "oklch(60% 0.099 73.2)",
+          "oklch(72% 0.099 73.2)",
+          "oklch(84% 0.099 73.2)",
+          "oklch(95% 0.099 73.2)"
+        ],
+        "light": "#7a4f00",
+        "dark": "#f4c443"
+      },
+      "warn-wash": {
+        "role": "tertiary",
+        "displayName": "Warning Wash",
+        "canonical": "light-dark(#f6e7bf, #2b2412)",
+        "tonalRamp": [
+          "oklch(15% 0.055 89.9)",
+          "oklch(26% 0.055 89.9)",
+          "oklch(37% 0.055 89.9)",
+          "oklch(48% 0.055 89.9)",
+          "oklch(60% 0.055 89.9)",
+          "oklch(72% 0.055 89.9)",
+          "oklch(84% 0.055 89.9)",
+          "oklch(95% 0.055 89.9)"
+        ],
+        "light": "#f6e7bf",
+        "dark": "#2b2412"
+      },
+      "ph-1": {
+        "role": "tertiary",
+        "displayName": "Phase Grey 1",
+        "canonical": "light-dark(#b9c1b8, #36403a)",
+        "tonalRamp": [
+          "oklch(15% 0.015 142.2)",
+          "oklch(26% 0.015 142.2)",
+          "oklch(37% 0.015 142.2)",
+          "oklch(48% 0.015 142.2)",
+          "oklch(60% 0.015 142.2)",
+          "oklch(72% 0.015 142.2)",
+          "oklch(84% 0.015 142.2)",
+          "oklch(95% 0.015 142.2)"
+        ],
+        "light": "#b9c1b8",
+        "dark": "#36403a"
+      },
+      "ph-2": {
+        "role": "tertiary",
+        "displayName": "Phase Grey 2",
+        "canonical": "light-dark(#8e988f, #59645d)",
+        "tonalRamp": [
+          "oklch(15% 0.017 148.3)",
+          "oklch(26% 0.017 148.3)",
+          "oklch(37% 0.017 148.3)",
+          "oklch(48% 0.017 148.3)",
+          "oklch(60% 0.017 148.3)",
+          "oklch(72% 0.017 148.3)",
+          "oklch(84% 0.017 148.3)",
+          "oklch(95% 0.017 148.3)"
+        ],
+        "light": "#8e988f",
+        "dark": "#59645d"
+      },
+      "ph-3": {
+        "role": "tertiary",
+        "displayName": "Phase Grey 3",
+        "canonical": "light-dark(#5f6a63, #86918a)",
+        "tonalRamp": [
+          "oklch(15% 0.017 157.8)",
+          "oklch(26% 0.017 157.8)",
+          "oklch(37% 0.017 157.8)",
+          "oklch(48% 0.017 157.8)",
+          "oklch(60% 0.017 157.8)",
+          "oklch(72% 0.017 157.8)",
+          "oklch(84% 0.017 157.8)",
+          "oklch(95% 0.017 157.8)"
+        ],
+        "light": "#5f6a63",
+        "dark": "#86918a"
+      },
+      "ph-4": {
+        "role": "tertiary",
+        "displayName": "Phase Grey 4",
+        "canonical": "light-dark(#323b35, #b7c0ba)",
+        "tonalRamp": [
+          "oklch(15% 0.016 156.3)",
+          "oklch(26% 0.016 156.3)",
+          "oklch(37% 0.016 156.3)",
+          "oklch(48% 0.016 156.3)",
+          "oklch(60% 0.016 156.3)",
+          "oklch(72% 0.016 156.3)",
+          "oklch(84% 0.016 156.3)",
+          "oklch(95% 0.016 156.3)"
+        ],
+        "light": "#323b35",
+        "dark": "#b7c0ba"
+      },
+      "stage-body": {
+        "role": "neutral",
+        "displayName": "Stage Block Body",
+        "canonical": "light-dark(#f3f5f0, #161c19)",
+        "tonalRamp": [
+          "oklch(15% 0.007 124.4)",
+          "oklch(26% 0.007 124.4)",
+          "oklch(37% 0.007 124.4)",
+          "oklch(48% 0.007 124.4)",
+          "oklch(60% 0.007 124.4)",
+          "oklch(72% 0.007 124.4)",
+          "oklch(84% 0.007 124.4)",
+          "oklch(95% 0.007 124.4)"
+        ],
+        "light": "#f3f5f0",
+        "dark": "#161c19"
+      },
+      "stage-line": {
+        "role": "neutral",
+        "displayName": "Stage Hairline",
+        "canonical": "light-dark(#454f48, #4f5b54)",
+        "tonalRamp": [
+          "oklch(15% 0.017 155.1)",
+          "oklch(26% 0.017 155.1)",
+          "oklch(37% 0.017 155.1)",
+          "oklch(48% 0.017 155.1)",
+          "oklch(60% 0.017 155.1)",
+          "oklch(72% 0.017 155.1)",
+          "oklch(84% 0.017 155.1)",
+          "oklch(95% 0.017 155.1)"
+        ],
+        "light": "#454f48",
+        "dark": "#4f5b54"
+      },
+      "stage-major": {
+        "role": "neutral",
+        "displayName": "Stage Major Line",
+        "canonical": "light-dark(#6f7a72, #36413b)",
+        "tonalRamp": [
+          "oklch(15% 0.018 154.2)",
+          "oklch(26% 0.018 154.2)",
+          "oklch(37% 0.018 154.2)",
+          "oklch(48% 0.018 154.2)",
+          "oklch(60% 0.018 154.2)",
+          "oklch(72% 0.018 154.2)",
+          "oklch(84% 0.018 154.2)",
+          "oklch(95% 0.018 154.2)"
+        ],
+        "light": "#6f7a72",
+        "dark": "#36413b"
+      },
+      "stage-edge": {
+        "role": "neutral",
+        "displayName": "Stage Edge",
+        "canonical": "light-dark(#9aa49b, #242c28)",
+        "tonalRamp": [
+          "oklch(15% 0.017 148.3)",
+          "oklch(26% 0.017 148.3)",
+          "oklch(37% 0.017 148.3)",
+          "oklch(48% 0.017 148.3)",
+          "oklch(60% 0.017 148.3)",
+          "oklch(72% 0.017 148.3)",
+          "oklch(84% 0.017 148.3)",
+          "oklch(95% 0.017 148.3)"
+        ],
+        "light": "#9aa49b",
+        "dark": "#242c28"
+      },
+      "stage-recess": {
+        "role": "neutral",
+        "displayName": "Stage Recess",
+        "canonical": "light-dark(#dce1d9, #0b0e0c)",
+        "tonalRamp": [
+          "oklch(15% 0.012 133.4)",
+          "oklch(26% 0.012 133.4)",
+          "oklch(37% 0.012 133.4)",
+          "oklch(48% 0.012 133.4)",
+          "oklch(60% 0.012 133.4)",
+          "oklch(72% 0.012 133.4)",
+          "oklch(84% 0.012 133.4)",
+          "oklch(95% 0.012 133.4)"
+        ],
+        "light": "#dce1d9",
+        "dark": "#0b0e0c"
+      }
+    },
+    "typographyMeta": {
+      "display": {
+        "displayName": "Brand Plate",
+        "purpose": "The forge brand plate only."
+      },
+      "headline": {
+        "displayName": "Page Plate",
+        "purpose": "Page-level engraved plates (MODELS)."
+      },
+      "title": {
+        "displayName": "Content Title",
+        "purpose": "Run goals, inspector and card heads; user content, never engraved."
+      },
+      "body": {
+        "displayName": "Body",
+        "purpose": "Prose, fields and table cells."
+      },
+      "label": {
+        "displayName": "Engraving",
+        "purpose": "Plates, table headers, chips, model aliases."
+      },
+      "key-cap": {
+        "displayName": "Key Cap",
+        "purpose": "Buttons, push buttons, nav links, the Live control."
+      },
+      "mono": {
+        "displayName": "Describer Mono",
+        "purpose": "Counts, ids, effort, diffs; always tabular figures."
+      }
+    },
+    "shadows": [
+      {
+        "name": "ply-1",
+        "value": "0 1px 0 light-dark(rgb(17 26 20 / .06), rgb(0 0 0 / .4)), 0 12px 30px -14px light-dark(rgb(17 26 20 / .26), rgb(0 0 0 / .62))",
+        "purpose": "Modules floating over the stage in Immersive; cloud panels."
+      },
+      {
+        "name": "ply-2",
+        "value": "0 2px 6px light-dark(rgb(17 26 20 / .1), rgb(0 0 0 / .45)), 0 24px 54px -18px light-dark(rgb(17 26 20 / .26), rgb(0 0 0 / .62))",
+        "purpose": "Popovers, menus, dialogs, toasts, the stage tooltip."
+      },
+      {
+        "name": "key-bevel",
+        "value": "inset 0 -1px 0 light-dark(rgb(0 0 0 / .08), rgb(0 0 0 / .35))",
+        "purpose": "The lower lip of a key cap."
+      },
+      {
+        "name": "kbd-lip",
+        "value": "inset 0 -1px 0 var(--rule-2)",
+        "purpose": "The lower lip of a kbd cap (search field, keys sheet). With the key bevel, the only bevels."
+      },
+      {
+        "name": "stage-focus-ring",
+        "value": "var(--ply-1), 0 0 0 2px var(--route)",
+        "purpose": "The stage key bank while the plate has keyboard focus; the canvas's own outline is hidden behind the modules."
+      },
+      {
+        "name": "sheet-backdrop",
+        "value": "light-dark(rgb(17 22 19 / .35), rgb(0 0 0 / .55))",
+        "purpose": "The page behind the keys sheet."
+      }
+    ],
+    "motion": [
+      {
+        "name": "relay",
+        "value": "80ms linear",
+        "purpose": "Every chrome state change: colour, border, opacity, scale."
+      },
+      {
+        "name": "lamp-blink",
+        "value": "1s steps(1, end) infinite, 50% opacity .35",
+        "purpose": "Running lamps blink at 1Hz."
+      },
+      {
+        "name": "ease-out",
+        "value": "150ms cubic-bezier(.2, 0, 0, 1)",
+        "purpose": "Disclosure chevron rotation, scroll-edge fades, the finding flash."
+      },
+      {
+        "name": "reduced-motion",
+        "value": "animation: none; transition-duration: 0ms",
+        "purpose": "Drops movement; every lit, pressed and selected state stays."
+      },
+      {
+        "name": "beacon-drop",
+        "value": "650ms, ease-out cubic, from 60 plan units above",
+        "purpose": "A finding beacon that arrives (a poll, a replay, an opened task) drops onto its block once."
+      },
+      {
+        "name": "merge-pulse",
+        "value": "900ms pulse along an arc, then a 900ms ring, lamp green",
+        "purpose": "A task merged: a pulse to integration, which answers with a ring."
+      },
+      {
+        "name": "fail-ring",
+        "value": "1400ms ring, ease-out cubic, lamp red",
+        "purpose": "A failed attempt rings wide across the plate."
+      },
+      {
+        "name": "escalation-hop",
+        "value": "2200ms rise, fading over the last 30%, accent",
+        "purpose": "An escalation lifts a label with the two model aliases over an accent arc."
+      },
+      {
+        "name": "review-ring",
+        "value": "1200ms ring in the verdict's lamp colour",
+        "purpose": "A final review finished."
+      },
+      {
+        "name": "reduced-motion-event",
+        "value": "static lit block and halo for 2.6s",
+        "purpose": "Under reduced motion an event lights its block instead of moving; beacons appear without dropping."
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "narrow",
+        "value": "760px"
+      },
+      {
+        "name": "cloud-narrow",
+        "value": "900px"
+      },
+      {
+        "name": "panel-labels",
+        "value": "1280px"
+      }
+    ]
+  },
+  "components": [
+    {
+      "name": "Key Cap Button",
+      "kind": "button",
+      "refersTo": "button-key",
+      "description": "The default button: a key cap with a bevelled lip that presses in.",
+      "html": "<button class=\"ds-key\">Run details</button>",
+      "css": ".ds-key { display:inline-flex; align-items:center; gap:6px; min-height:32px; padding:0 12px; border:1px solid var(--rule-2); border-radius:6px; background:var(--key); color:var(--ink); font-family:\"D-DIN Condensed\", \"Arial Narrow\", \"Roboto Condensed\", system-ui, sans-serif; font-weight:700; font-size:.929rem; letter-spacing:.05em; text-transform:uppercase; line-height:1; cursor:pointer; box-shadow:inset 0 -1px 0 light-dark(rgb(0 0 0 / .08), rgb(0 0 0 / .35)); transition:background-color 80ms linear, border-color 80ms linear, scale 80ms linear; } .ds-key:hover { background:var(--key-hover); border-color:var(--ink-2); } .ds-key:focus-visible { outline:2px solid var(--route); outline-offset:2px; } .ds-key:active { scale:.96; }"
+    },
+    {
+      "name": "Primary Key",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "The one committing action in a dialog: a route-coloured face.",
+      "html": "<button class=\"ds-key-primary\">Export</button>",
+      "css": ".ds-key-primary { display:inline-flex; align-items:center; min-height:32px; padding:0 12px; border:1px solid var(--route); border-radius:6px; background:var(--route); color:var(--desk); font-family:\"D-DIN Condensed\", \"Arial Narrow\", \"Roboto Condensed\", system-ui, sans-serif; font-weight:700; font-size:.929rem; letter-spacing:.05em; text-transform:uppercase; line-height:1; cursor:pointer; transition:opacity 80ms linear, scale 80ms linear; } .ds-key-primary:hover { opacity:.9; } .ds-key-primary:focus-visible { outline:2px solid var(--route); outline-offset:2px; } .ds-key-primary:active { scale:.96; }"
+    },
+    {
+      "name": "Push-button Bank",
+      "kind": "nav",
+      "refersTo": "push-bank",
+      "description": "A bank of push buttons; the pressed one lights its route lamp. Also the desk nav.",
+      "html": "<div class=\"ds-seg\" role=\"group\"><button aria-pressed=\"true\">Plan</button><button aria-pressed=\"false\">Execution</button><button aria-pressed=\"false\">Files</button></div>",
+      "css": ".ds-seg { display:inline-flex; border:1px solid var(--rule-2); border-radius:6px; background:var(--module-2); padding:2px; } .ds-seg button { display:inline-flex; align-items:center; gap:6px; min-height:28px; padding:0 10px 0 9px; border:0; border-radius:4px; background:none; color:var(--ink-2); font-family:\"D-DIN Condensed\", \"Arial Narrow\", \"Roboto Condensed\", system-ui, sans-serif; font-weight:700; font-size:.929rem; letter-spacing:.05em; text-transform:uppercase; line-height:1; cursor:pointer; transition:background-color 80ms linear; } .ds-seg button::before { content:\"\"; width:7px; height:7px; border-radius:50%; background:var(--lamp-off); transition:background-color 80ms linear; } .ds-seg button:hover { background:var(--key); } .ds-seg button:focus-visible { outline:2px solid var(--route); outline-offset:2px; } .ds-seg button[aria-pressed=true] { background:var(--key); color:var(--ink); box-shadow:inset 0 0 0 1px var(--rule-2); } .ds-seg button[aria-pressed=true]::before { background:var(--route); }"
+    },
+    {
+      "name": "Engraved Plate",
+      "kind": "custom",
+      "refersTo": "plate",
+      "description": "Every region heading: condensed DIN capitals on the plate ground.",
+      "html": "<h3 class=\"ds-plate\">Inspector</h3>",
+      "css": ".ds-plate { display:inline-block; margin:0; padding:2px 7px 1px; border-radius:3px; background:var(--plate); color:var(--plate-ink); font-family:\"D-DIN Condensed\", \"Arial Narrow\", \"Roboto Condensed\", system-ui, sans-serif; font-weight:700; font-size:.857rem; line-height:1.25; letter-spacing:.07em; text-transform:uppercase; }"
+    },
+    {
+      "name": "Status Chips",
+      "kind": "chip",
+      "refersTo": "chip",
+      "description": "A lamp and its legend; hollow lamps mark a family's non-plain case, running blinks at 1Hz.",
+      "html": "<span class=\"ds-chips\"><span class=\"ds-chip ds-ok\">Merged 5</span><span class=\"ds-chip ds-run\">Running 2</span><span class=\"ds-chip ds-off\">Pending 1</span><span class=\"ds-chip ds-bad\">Fail 1</span><span class=\"ds-chip ds-ok ds-hollow\">Accepted</span></span>",
+      "css": ".ds-chips { display:inline-flex; gap:4px; flex-wrap:wrap; } .ds-chip { --st:var(--lamp-off); --st-fill:var(--st); --st-ring:var(--lamp-edge, rgb(0 0 0 / .2)); display:inline-flex; align-items:center; gap:5px; padding:1px 7px 0 6px; border:1px solid var(--rule); border-radius:4px; background:var(--key); color:var(--ink); font-family:\"D-DIN Condensed\", \"Arial Narrow\", \"Roboto Condensed\", system-ui, sans-serif; font-weight:700; font-size:.857rem; letter-spacing:.05em; text-transform:uppercase; line-height:1.5; font-variant-numeric:tabular-nums; } .ds-chip::before { content:\"\"; width:7px; height:7px; border-radius:50%; background:var(--st-fill); box-shadow:inset 0 0 0 1.5px var(--st-ring); } .ds-ok { --st:var(--lamp-green); } .ds-run { --st:var(--lamp-amber); } .ds-bad { --st:var(--lamp-red); } .ds-hollow { --st-fill:transparent; --st-ring:var(--st); } .ds-run::before { animation:ds-blink 1s steps(1, end) infinite; } @keyframes ds-blink { 50% { opacity:.35; } } @media (prefers-reduced-motion: reduce) { .ds-run::before { animation:none; } }"
+    },
+    {
+      "name": "Describer Window",
+      "kind": "custom",
+      "refersTo": "describer",
+      "description": "Run counts and times on black glass, tabular mono.",
+      "html": "<span class=\"ds-describer\"><span>MERGED 5</span><span>RUNNING 2</span><span>PENDING 1</span><span class=\"ds-dim\">WALL 1h58m</span></span>",
+      "css": ".ds-describer { display:inline-flex; align-items:baseline; gap:12px; padding:3px 9px; border-radius:6px; background:var(--glass); color:var(--glass-ink); font-family:ui-monospace, \"SF Mono\", Menlo, Consolas, monospace; font-size:.786rem; font-variant-numeric:tabular-nums; white-space:nowrap; color-scheme:dark; } .ds-describer .ds-dim { color:var(--glass-dim); }"
+    },
+    {
+      "name": "Model Name Plate",
+      "kind": "custom",
+      "refersTo": "model-plate-name",
+      "description": "The one way a model is shown: alias engraved, effort in mono.",
+      "html": "<span class=\"ds-mp\" title=\"luna:high\"><span class=\"ds-mp-name\">luna</span><span class=\"ds-mp-effort\">high</span></span>",
+      "css": ".ds-mp { display:inline-flex; align-items:stretch; border:1px solid var(--rule-2); border-radius:4px; overflow:hidden; white-space:nowrap; line-height:1.55; } .ds-mp-name { padding:0 6px; background:var(--module-2); color:var(--ink); font-family:\"D-DIN Condensed\", \"Arial Narrow\", \"Roboto Condensed\", system-ui, sans-serif; font-weight:700; font-size:.857rem; letter-spacing:.06em; text-transform:uppercase; transition:background-color 80ms linear; } .ds-mp:hover .ds-mp-name { background:var(--key-hover); } .ds-mp-effort { display:flex; align-items:center; padding:0 6px; border-left:1px solid var(--rule); color:var(--muted); font-family:ui-monospace, \"SF Mono\", Menlo, monospace; font-size:.786rem; }"
+    },
+    {
+      "name": "Severity Shapes",
+      "kind": "chip",
+      "refersTo": "sev-p0",
+      "description": "Review severity as shape on its own ramp: P0 spike, P1 diamond, P2 cone, P3 pin.",
+      "html": "<span class=\"ds-sevs\"><span class=\"ds-sev ds-p0\">P0</span><span class=\"ds-sev ds-p1\">P1</span><span class=\"ds-sev ds-p2\">P2</span><span class=\"ds-sev ds-p3\">P3</span></span>",
+      "css": ".ds-sevs { display:inline-flex; gap:12px; } .ds-sev { display:inline-flex; align-items:center; gap:6px; font-family:ui-monospace, \"SF Mono\", Menlo, monospace; font-size:.786rem; color:var(--ink); } .ds-sev::before { content:\"\"; width:9px; height:9px; background:var(--sev); clip-path:var(--shape); } .ds-p0 { --sev:var(--sev-p0); --shape:polygon(50% 0, 100% 100%, 0 100%); } .ds-p1 { --sev:var(--sev-p1); --shape:polygon(50% 0, 100% 50%, 50% 100%, 0 50%); } .ds-p2 { --sev:var(--sev-p2); --shape:polygon(0 8%, 100% 8%, 50% 100%); } .ds-p3 { --sev:var(--sev-p3); --shape:circle(45%); }"
+    },
+    {
+      "name": "Search Field",
+      "kind": "input",
+      "refersTo": "input",
+      "description": "Fields sit on the field ground with a rule-2 edge; focus is the route outline, the caret is amber.",
+      "html": "<input class=\"ds-input\" type=\"search\" placeholder=\"Filter runs…\">",
+      "css": ".ds-input { min-height:32px; padding:0 10px; border:1px solid var(--rule-2); border-radius:6px; background:var(--field); color:var(--ink); font:14px/1.5 system-ui, sans-serif; caret-color:var(--lamp-amber); transition:border-color 80ms linear; } .ds-input::placeholder { color:var(--muted); } .ds-input:hover { border-color:var(--ink-2); } .ds-input:focus-visible { outline:2px solid var(--route); outline-offset:2px; }"
+    },
+    {
+      "name": "Module",
+      "kind": "card",
+      "refersTo": "module",
+      "description": "A module on the desk: hairline edge, 12px corners, plate head, ply 1 when floating.",
+      "html": "<section class=\"ds-module\"><div class=\"ds-module-head\"><h3 class=\"ds-module-title\">Runs</h3><span class=\"ds-module-count\">71/71</span></div><p class=\"ds-module-body\">Paginate the product search</p></section>",
+      "css": ".ds-module { width:280px; background:var(--module); color:var(--ink); border:1px solid var(--rule); border-radius:12px; box-shadow:0 1px 0 light-dark(rgb(17 26 20 / .06), rgb(0 0 0 / .4)), 0 12px 30px -14px light-dark(rgb(17 26 20 / .26), rgb(0 0 0 / .62)); } .ds-module-head { display:flex; align-items:center; gap:8px; min-height:40px; padding:4px 6px 4px 10px; border-bottom:1px solid var(--rule); } .ds-module-title { margin:0; padding:2px 7px 1px; border-radius:3px; background:var(--plate); color:var(--plate-ink); font-family:\"D-DIN Condensed\", \"Arial Narrow\", \"Roboto Condensed\", system-ui, sans-serif; font-weight:700; font-size:.857rem; letter-spacing:.07em; text-transform:uppercase; } .ds-module-count { font-family:ui-monospace, monospace; font-size:.786rem; color:var(--muted); font-variant-numeric:tabular-nums; } .ds-module-body { margin:0; padding:10px 12px; font:600 14px/1.5 system-ui, sans-serif; }"
+    },
+    {
+      "name": "Stage Key Bank",
+      "kind": "custom",
+      "refersTo": "stage-bank",
+      "description": "The plate's own keys: momentary keys without a lamp, latching keys (projection bank, legend, full screen) with a lamp that lights while they are in.",
+      "html": "<div class=\"ds-ctl\" role=\"toolbar\" aria-orientation=\"vertical\"><button class=\"ds-ck\" aria-label=\"Fit\"><svg width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5\"/><rect x=\"9\" y=\"9\" width=\"6\" height=\"6\" rx=\"1\"/></svg></button><span class=\"ds-rule\"></span><button class=\"ds-ck ds-latch\" aria-pressed=\"true\" aria-label=\"Perspective\"><svg width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M3.5 19 8.5 5h7l5 14Z\"/><path d=\"M10.5 5 9.5 19M13.5 5l1 14M6 12h12\"/></svg></button><button class=\"ds-ck ds-latch\" aria-pressed=\"false\" aria-label=\"Isometric\"><svg width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M12 4.5 18.5 8v8L12 19.5 5.5 16V8Z\"/><path d=\"M5.5 8 12 11.5 18.5 8M12 11.5v8\"/></svg></button><button class=\"ds-ck ds-latch\" aria-pressed=\"false\" aria-label=\"Top-down\"><svg width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><rect x=\"4\" y=\"4\" width=\"16\" height=\"16\" rx=\"2\"/><rect x=\"8.5\" y=\"8.5\" width=\"7\" height=\"7\" rx=\"1\"/></svg></button><span class=\"ds-rule\"></span><button class=\"ds-ck ds-latch\" aria-pressed=\"false\" aria-label=\"Legend\"><svg width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><circle cx=\"6\" cy=\"7\" r=\"1.5\"/><circle cx=\"6\" cy=\"12\" r=\"1.5\"/><circle cx=\"6\" cy=\"17\" r=\"1.5\"/><path d=\"M10 7h9M10 12h9M10 17h6\"/></svg></button></div>",
+      "css": ".ds-ctl { display:inline-grid; gap:2px; padding:3px; border:1px solid var(--rule); border-radius:9px; background:var(--module); box-shadow:0 1px 0 light-dark(rgb(17 26 20 / .06), rgb(0 0 0 / .4)), 0 12px 30px -14px light-dark(rgb(17 26 20 / .26), rgb(0 0 0 / .62)); } .ds-ck { position:relative; display:grid; place-items:center; width:32px; height:32px; padding:0; border:0; border-radius:6px; background:none; color:var(--ink-2); cursor:pointer; transition:background-color 80ms linear, color 80ms linear; } .ds-ck:hover { background:var(--key); color:var(--ink); } .ds-ck:focus-visible { outline:2px solid var(--route); outline-offset:2px; } .ds-ck[aria-pressed=true] { background:var(--key); color:var(--ink); box-shadow:inset 0 0 0 1px var(--rule-2); } .ds-latch::before { content:\"\"; position:absolute; top:4px; right:4px; width:5px; height:5px; border-radius:50%; background:var(--lamp-off); transition:background-color 80ms linear; } .ds-latch[aria-pressed=true]::before { background:var(--route); } .ds-rule { height:1px; margin:2px 4px; background:var(--rule); }"
+    },
+    {
+      "name": "Legend Panel",
+      "kind": "card",
+      "refersTo": "stage-legend",
+      "description": "What the plate draws now, under engraved section plates; a bottom sheet on phones.",
+      "html": "<section class=\"ds-leg\"><h3 class=\"ds-plate\">Legend</h3><h4 class=\"ds-plate ds-sm\">Status</h4><div class=\"ds-row\"><span class=\"ds-sw\"><i class=\"ds-lamp ds-green\"></i></span>merged, passed</div><div class=\"ds-row\"><span class=\"ds-sw\"><i class=\"ds-lamp ds-route\"></i></span>on the route</div><h4 class=\"ds-plate ds-sm\">Cables</h4><div class=\"ds-row\"><span class=\"ds-sw ds-cable\"></span>critical path</div><p class=\"ds-note\">A click opens the diff at the finding.</p></section>",
+      "css": ".ds-leg { width:264px; padding:8px 12px 12px; border:1px solid var(--rule); border-radius:12px; background:var(--module); color:var(--ink); box-shadow:0 2px 6px light-dark(rgb(17 26 20 / .1), rgb(0 0 0 / .45)), 0 24px 54px -18px light-dark(rgb(17 26 20 / .26), rgb(0 0 0 / .62)); font-size:.893rem; } .ds-plate { display:inline-block; margin:0 0 6px; padding:2px 7px 1px; border-radius:3px; background:var(--plate); color:var(--plate-ink); font-family:\"D-DIN Condensed\", \"Arial Narrow\", \"Roboto Condensed\", system-ui, sans-serif; font-weight:700; font-size:.857rem; letter-spacing:.07em; text-transform:uppercase; line-height:1.25; } .ds-sm { display:block; width:max-content; margin-top:10px; font-size:.714rem; } .ds-row { display:flex; align-items:center; gap:8px; min-height:22px; } .ds-sw { display:inline-grid; place-items:center; width:22px; height:14px; flex:none; } .ds-lamp { width:9px; height:9px; border-radius:50%; box-shadow:inset 0 0 0 1.5px rgb(0 0 0 / .15); } .ds-green { background:var(--lamp-green); } .ds-route { background:var(--route); } .ds-cable::before { content:\"\"; width:22px; border-top:2px solid var(--lamp-amber); } .ds-note { margin:4px 0 0; color:var(--muted); font-size:.786rem; }"
+    },
+    {
+      "name": "Layer Bank",
+      "kind": "chip",
+      "refersTo": "layer-key",
+      "description": "The View popover's Layers and Marks banks: a push button per part of the drawing, its lamp lit while that part is drawn.",
+      "html": "<div class=\"ds-lb\" role=\"group\" aria-label=\"Layers\"><button class=\"ds-lk\" aria-pressed=\"true\">Cables</button><button class=\"ds-lk\" aria-pressed=\"true\">Flow</button><button class=\"ds-lk\" aria-pressed=\"false\">Lamps</button><button class=\"ds-lk\" aria-pressed=\"true\">Findings</button></div>",
+      "css": ".ds-lb { display:grid; grid-template-columns:1fr 1fr; gap:4px; width:260px; } .ds-lk { display:inline-flex; align-items:center; justify-content:flex-start; gap:7px; min-height:30px; padding:0 8px; border:1px solid var(--rule-2); border-radius:6px; background:var(--key); color:var(--ink-2); box-shadow:inset 0 -1px 0 light-dark(rgb(0 0 0 / .08), rgb(0 0 0 / .35)); font-family:\"D-DIN Condensed\", \"Arial Narrow\", \"Roboto Condensed\", system-ui, sans-serif; font-weight:700; letter-spacing:.05em; text-transform:uppercase; font-size:.929rem; line-height:1; cursor:pointer; transition:background-color 80ms linear, color 80ms linear; } .ds-lk::before { content:\"\"; width:7px; height:7px; border-radius:50%; background:var(--lamp-off); flex:none; transition:background-color 80ms linear; } .ds-lk:hover { background:var(--key-hover); } .ds-lk:focus-visible { outline:2px solid var(--route); outline-offset:2px; } .ds-lk[aria-pressed=true] { color:var(--ink); } .ds-lk[aria-pressed=true]::before { background:var(--route); }"
+    },
+    {
+      "name": "Stage Hover Card",
+      "kind": "card",
+      "refersTo": "stage-tip",
+      "description": "A task's card over the plate: status chip with its lamp, attempts and tokens, models, worst finding, dependencies.",
+      "html": "<div class=\"ds-tip\" role=\"tooltip\"><div class=\"ds-meta\">task · wave 2 · hard</div><div class=\"ds-title\">T4 · Parse the run ledger</div><div class=\"ds-body\"><span class=\"ds-chip\">Merged</span> 2 attempts · busy 6m 12s · 84k tokens</div><div class=\"ds-body\">sonnet → opus</div><div class=\"ds-note\"><span class=\"ds-sev\">P2</span>reader.py:88 — the cursor is never closed</div><div class=\"ds-foot\">after T1, T2 · 3 tasks wait on it</div></div>",
+      "css": ".ds-tip { max-width:320px; padding:9px 11px; border:1px solid var(--rule); border-radius:6px; background:var(--module); color:var(--ink); font-size:.893rem; box-shadow:0 2px 6px light-dark(rgb(17 26 20 / .1), rgb(0 0 0 / .45)), 0 24px 54px -18px light-dark(rgb(17 26 20 / .26), rgb(0 0 0 / .62)); } .ds-meta { display:inline-block; margin-bottom:4px; padding:2px 7px 1px; border-radius:3px; background:var(--plate); color:var(--plate-ink); font-family:\"D-DIN Condensed\", \"Arial Narrow\", \"Roboto Condensed\", system-ui, sans-serif; font-weight:700; font-size:.714rem; letter-spacing:.07em; text-transform:uppercase; } .ds-title { font-weight:650; } .ds-body { font-family:ui-monospace, \"SF Mono\", Menlo, Consolas, monospace; font-size:.786rem; font-variant-numeric:tabular-nums; margin-top:2px; } .ds-chip { display:inline-flex; align-items:center; gap:5px; padding:1px 7px 0 6px; border:1px solid var(--rule); border-radius:4px; background:var(--key); font-family:\"D-DIN Condensed\", \"Arial Narrow\", \"Roboto Condensed\", system-ui, sans-serif; font-weight:700; letter-spacing:.07em; text-transform:uppercase; } .ds-chip::before { content:\"\"; width:7px; height:7px; border-radius:50%; background:var(--lamp-green); } .ds-note { margin-top:4px; padding-top:4px; border-top:1px solid var(--rule); color:var(--ink-2); font-size:.786rem; } .ds-sev { display:inline-flex; align-items:center; gap:6px; margin-right:6px; font-family:ui-monospace, monospace; } .ds-sev::before { content:\"\"; width:9px; height:9px; clip-path:polygon(0 8%, 100% 8%, 50% 100%); background:var(--sev-p2); } .ds-foot { margin-top:3px; color:var(--muted); font-size:.786rem; }"
+    },
+    {
+      "name": "Keys Sheet",
+      "kind": "custom",
+      "refersTo": "keys-sheet",
+      "description": "The dialog of every key: plate group titles, kbd caps, plain descriptions.",
+      "html": "<div class=\"ds-ks\"><span class=\"ds-p\">Keys</span><h4 class=\"ds-p ds-g\">Stage</h4><dl><dt><kbd>F</kbd></dt><dd>Fit what is shown</dd><dt><kbd>+</kbd><kbd>−</kbd></dt><dd>Zoom in, out</dd><dt><kbd>Shift</kbd><kbd>F</kbd></dt><dd>Full screen</dd></dl></div>",
+      "css": ".ds-ks { width:300px; padding:14px 18px 18px; border:1px solid var(--rule); border-radius:12px; background:var(--module); color:var(--ink); } .ds-p { display:inline-block; padding:2px 7px 1px; border-radius:3px; background:var(--plate); color:var(--plate-ink); font-family:\"D-DIN Condensed\", \"Arial Narrow\", \"Roboto Condensed\", system-ui, sans-serif; font-weight:700; font-size:.857rem; letter-spacing:.07em; text-transform:uppercase; } .ds-g { display:block; width:max-content; margin:12px 0 6px; font-size:.714rem; } .ds-ks dl { display:grid; grid-template-columns:max-content minmax(0,1fr); gap:5px 12px; margin:0; font-size:.893rem; } .ds-ks dt { display:flex; gap:3px; } .ds-ks dd { margin:0; color:var(--ink-2); } .ds-ks kbd { font-family:ui-monospace, \"SF Mono\", Menlo, Consolas, monospace; font-size:.786rem; padding:0 5px; border:1px solid var(--rule-2); border-radius:4px; box-shadow:inset 0 -1px 0 var(--rule-2); color:var(--muted); background:var(--field); }"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Signal Box",
+    "overview": "forge-ui is a relay interlocking route-setting desk, after the Italian ACEI panels, built for code. A run is an inlaid track diagram (the 3D plate) set into an enamelled grey-green desk. Tasks are track sections, and their lamps show clear, occupied or failed before anyone reads a word. Everything around the plate is desk furniture. Region headings are engraved plates, toggles are push buttons with their own lamp, and numbers sit in black-glass describer windows. The desk is dense and quiet. The only saturated colour on it comes from lamps, and each lamp means one thing.\n\nBoth themes are finished to the same standard. Every colour token is a `light-dark()` pair: pale enamel with black plates in light, near-black green enamel with bone plates in dark. The system setting chooses the theme, and `<html data-theme>` overrides it. The 3D plate reads its colours from these same tokens through a probe element, so the desk and the diagram never drift apart. Depth comes in three plies (panel, module, popover) and nothing in between. Motion is relay motion: chrome changes state in 80ms with no easing, and running lamps blink at 1Hz.\n\nThe plate has its own small desk. A bank of keys stands at the right edge of the free stage: keys that act once have no lamp, keys that stay in light one. Choosing a task sets its route. What it waits on and what waits on it stay lit, and the rest of the plan sinks, as a set route does on the desk. Review findings stand on the plate as beacons, each in its severity shape, and what happens during a run (a merge, a failed attempt, an escalation, a final review) plays once on the plate.\n\nThe world rejects the dark dashboard of cards, sidebars and one blue accent, and it rejects skeuomorphic hardware. There are no screws, levers, rails or brushed metal. The desk is suggested by its typography, its lamps and its plies, not by drawn hardware.",
+    "keyCharacteristics": [
+      "Enamelled grey-green desk in both themes, with three plies of depth only.",
+      "Engraved plates in condensed DIN capitals on every region heading.",
+      "Push-button banks whose lamp lights when a button is pressed in.",
+      "Black-glass describer windows for counts, ids and times, set in tabular mono digits.",
+      "Five lamps with one meaning each. A hollow ring marks the family's non-plain case.",
+      "Review severity shown as shape on its own colour ramp, never as a status lamp.",
+      "One name plate per model everywhere it appears.",
+      "Relay motion: 80ms linear, a 1Hz blink, and every state kept under reduced motion.",
+      "A set route keeps a task's lineage lit and sinks the rest of the plan.",
+      "Findings stand on the plate as severity-shaped beacons, drawn like the blocks."
+    ],
+    "rules": [
+      {
+        "name": "The One Lamp, One Meaning Rule",
+        "body": "There are five lamps: green for clear (merged or passed), amber for occupied (running), red for failed, unlit for pending, and route white for a set route or selection. Never use a lamp colour for decoration or for a second meaning.",
+        "section": "colors"
+      },
+      {
+        "name": "The Hollow Lamp Rule",
+        "body": "A lamp drawn as a ring with a transparent fill belongs to its family but is not the plain case. Accepted and no changes are hollow green, interrupted is hollow amber, and infra, timeout and blocked are hollow red.",
+        "section": "colors"
+      },
+      {
+        "name": "The Separate Ramp Rule",
+        "body": "Review severity has its own colour ramp and always comes with a shape. It never borrows a status lamp.",
+        "section": "colors"
+      },
+      {
+        "name": "The Single Source Rule",
+        "body": "Every colour the 3D plate draws (`--stage-*`, `--st`, `--st-lit`) is a token in style.css and is read through the stage probe. Do not hard-code colours in the 3D code.",
+        "section": "colors"
+      },
+      {
+        "name": "The Engraving Rule",
+        "body": "Every region heading is an engraved plate: D-DIN capitals on the plate ground at 3px radius. Do not set a region heading as plain bold sans.",
+        "section": "typography"
+      },
+      {
+        "name": "The Describer Rule",
+        "body": "Numbers that describe a run (counts, wall time, ids) go in tabular mono, and on a describer window when they sit in a header.",
+        "section": "typography"
+      },
+      {
+        "name": "The Three Plies Rule",
+        "body": "Use the panel, a module or a popover, and nothing else. A box inside a module is a tonal well with a hairline, not a raised card.",
+        "section": "elevation"
+      },
+      {
+        "name": "The Lit Route Rule",
+        "body": "A set route stays lit and only what is off the route sinks. With no route, nothing sinks.",
+        "section": "components"
+      },
+      {
+        "name": "The Latch Lamp Rule",
+        "body": "A key that stays in has a lamp, and a key that acts once has none. Never put a lamp on a momentary key.",
+        "section": "components"
+      },
+      {
+        "name": "The Legend Now Rule",
+        "body": "The legend describes only what the plate draws at this moment, never the full catalogue.",
+        "section": "components"
+      }
+    ],
+    "dos": [
+      "Do take every colour from a `light-dark()` token on `:root`, so both themes stay equally finished and the 3D plate can read it through the probe.",
+      "Do put every region heading on an engraved plate (D-DIN 700, 0.857rem, 0.07em, uppercase, plate ground, 3px radius).",
+      "Do make every toggle a push button in a bank whose lamp lights when it is pressed (`aria-pressed` or `aria-current`).",
+      "Do use exactly one lamp meaning per state, and use the hollow ring for a family's non-plain case.",
+      "Do show review severity as shape plus the severity ramp (P0 spike, P1 diamond, P2 cone, P3 pin).",
+      "Do show every model through the name plate (alias engraved, effort in mono).",
+      "Do use relay timing (80ms linear) for chrome state changes, and keep every state when motion is reduced.",
+      "Do draw new icons in the authored set: 24-unit grid, 1.5 stroke, round joins, currentColor.",
+      "Do give a stage key a lamp only when it latches, and light it with the route colour while it is in.",
+      "Do list in the legend only what the plate draws now.",
+      "Do play a plate event once, and light the block statically when motion is reduced."
+    ],
+    "donts": [
+      "Don't add a fourth ply. A box inside a module is a tonal well with a hairline, not a shadowed card.",
+      "Don't use a lamp colour as decoration or as a brand accent. Amber means occupied, and its non-state uses are limited to the stage accent, the caret, selection and the measured band.",
+      "Don't colour review severity with a status lamp.",
+      "Don't draw hardware: no fake screws, levers, rails or brushed metal.",
+      "Don't use inline styles or `innerHTML`. The page CSP refuses them.",
+      "Don't use emoji or text glyphs as icons.",
+      "Don't sink the plan when no route is set, and never sink a task on the route.",
+      "Don't let a name tag cover a finding beacon."
+    ]
+  }
+}

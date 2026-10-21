@@ -1,0 +1,1 @@
+{"type":"result","subtype":"success","is_error":false,"duration_ms":61000,"num_turns":3,"result":"FORGE_VERDICT: PASS","session_id":"0b9e8d7c-6a5b-4c3d-8e2f-1a0b9c8d7e6f","total_cost_usd":0.12,"usage":{"input_tokens":20,"cache_creation_input_tokens":500,"cache_read_input_tokens":9000,"output_tokens":300}}

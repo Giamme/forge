@@ -41,14 +41,14 @@ const W = (x, y, z) => new THREE.Vector3(x * TS, z * TS, y * TS);   // plan x ri
 const MONO3 = 'ui-monospace, "SF Mono", Menlo, Consolas, monospace';
 const NOISE = `float hash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }`;
 const CW = .61;                                          // monospace advance, in em
-// same tokens as the iso figures' light and dark themes
+// the iso figures' light and dark themes, tinted to forge-ui's enamel panel; style.css's --stage-* tokens win when set
 const THEMES = {
-  dark: { bg: 0x121314, body: 0x1b1c1f, line: 0x4f5357, major: 0x393c3f, edge: 0x27292c, sky: 0xdde4ff, ground: 0x080808, hemi: .7, amb: 0, sun: .7, fill: .2, fadeMin: .45 },
-  light: { bg: 0xe9eaea, body: 0xf1f1f0, line: 0x5d6266, major: 0x8a8f93, edge: 0xb9bcbf, sky: 0xffffff, ground: 0xe6e6e6, hemi: .9, amb: 1.6, sun: .35, fill: .15, fadeMin: .8 },
+  dark: { bg: 0x0e1210, body: 0x161c19, line: 0x4f5b54, major: 0x36413b, edge: 0x242c28, recess: 0x0b0e0c, sky: 0xe4efe6, ground: 0x070908, hemi: .7, amb: 0, sun: .7, fill: .2, fadeMin: .45 },
+  light: { bg: 0xc6cec4, body: 0xf3f5f0, line: 0x454f48, major: 0x6f7a72, edge: 0x9aa49b, recess: 0xdce1d9, sky: 0xffffff, ground: 0xdfe5dc, hemi: .9, amb: 1.6, sun: .35, fill: .15, fadeMin: .85 },
 };
 const PAL = {
-  light: { line: '#8e9397', detail: '#c3c6c8', recess: '#dcdddd', ink: '#6a6f73', inkHi: '#16181a', glassOff: '#e4e5e5', glassOn: '#f6ece2', bg: '#f6f6f5' },
-  dark: { line: '#4f5357', detail: '#2b2e30', recess: '#0f1011', ink: '#868b8f', inkHi: '#e6e8e9', glassOff: '#141516', glassOn: '#22170f', bg: '#121314' },
+  light: { line: '#6f7a72', detail: '#a9b2a8', recess: '#dce1d9', ink: '#2c342f', inkHi: '#111613', glassOff: '#e3e7df', glassOn: '#f6ead0', bg: '#f3f5f0' },
+  dark: { line: '#4f5b54', detail: '#28302c', recess: '#0b0e0c', ink: '#86928b', inkHi: '#e4e8e2', glassOff: '#121714', glassOn: '#221d0e', bg: '#0e1210' },
 };
 
 /* ---------- text: wrap and fit monospace print into a box (archivision's figure.js) ---------- */
@@ -287,7 +287,7 @@ export async function createEngine(host, { reduceMotion = false } = {}) {
   function palette() {
     const C = PAL[theme], light = theme === 'light', hi = TMPC.copy(accent).lerp(new THREE.Color(light ? 0x000000 : 0xffffff), light ? .3 : .42);
     PALC = { ...C, acc: '#' + accent.getHexString(), accHi: '#' + hi.getHexString(), light };
-    INKHI.set(C.inkHi); DETAIL.set(light ? '#c3c6c8' : '#34373a'); GLASSON.set(C.glassOn);
+    INKHI.set(C.inkHi); DETAIL.set(C.detail); GLASSON.set(C.glassOn);
   }
   palette();
   const setOp = (m, o) => { m.opacity = o; const t = o < .999; if (m.transparent !== t) { m.transparent = t; m.needsUpdate = true; } };
@@ -391,18 +391,25 @@ export async function createEngine(host, { reduceMotion = false } = {}) {
   const probe = document.createElement('span');
   probe.className = 'stage-probe'; probe.setAttribute('aria-hidden', 'true'); host.append(probe);
   const COLORS = new Map();
+  // a custom property's colour, resolved by the browser (tokens are light-dark() pairs, so the raw value is not a colour)
   function cssColor(className, prop) {
     const key = className + '|' + prop;
     if (!COLORS.has(key)) {
       probe.className = 'stage-probe ' + className;
-      const v = getComputedStyle(probe).getPropertyValue(prop).trim();
+      probe.style.setProperty('color', `var(${prop})`);
+      const cs = getComputedStyle(probe), v = cs.getPropertyValue(prop).trim() ? cs.color : '';
       let c = null; try { if (v) c = new THREE.Color(v); } catch (_) { c = null; }
       COLORS.set(key, c);
     }
     return COLORS.get(key);
   }
-  const statusColor = s => cssColor('st-' + String(s || 'unknown').toLowerCase().replace(/[^a-z0-9_-]/g, ''), '--st') || new THREE.Color('#888888');
-  const statusHex = s => '#' + statusColor(s).getHexString();
+  // a state's lamp as lit on the plate (--st-lit), and as ink for print on it (--st)
+  const stClass = s => 'st-' + String(s || 'unknown').toLowerCase().replace(/[^a-z0-9_-]/g, '');
+  const statusColor = s => cssColor(stClass(s), '--st-lit') || cssColor(stClass(s), '--st') || new THREE.Color('#888888');
+  const statusHex = s => '#' + (cssColor(stClass(s), '--st') || statusColor(s)).getHexString();
+  // a finding severity's colour (--sev on .sev-P0…P3): a ramp of its own, never a status lamp
+  const sevColor = p => cssColor('sev-' + String(p).replace(/[^A-Za-z0-9]/g, ''), '--sev') || statusColor('unknown');
+  const sevHex = p => '#' + sevColor(p).getHexString();
 
   /* ---------- theme: follows the page (prefers-color-scheme), colours from style.css ---------- */
   const themeHooks = new Set();
@@ -413,9 +420,10 @@ export async function createEngine(host, { reduceMotion = false } = {}) {
     const bg = cssColor('', '--stage-bg'), acc = cssColor('', '--stage-accent');
     BG_COL.set(bg || T.bg); scene.background.copy(BG_COL);
     if (acc) accent.copy(acc);
-    bodyMat.color.set(T.body);
-    LINE_COL.set(T.line); MAJOR_COL.set(T.major); EDGE_COL.set(T.edge); appliedKey = '';
-    recessMat.color.set(light ? 0xdcdddd : 0x0f1011);
+    const tok = (name, d) => cssColor('', name) || new THREE.Color(d);
+    bodyMat.color.copy(tok('--stage-body', T.body));
+    LINE_COL.copy(tok('--stage-line', T.line)); MAJOR_COL.copy(tok('--stage-major', T.major)); EDGE_COL.copy(tok('--stage-edge', T.edge)); appliedKey = '';
+    recessMat.color.copy(tok('--stage-recess', T.recess));
     accentLineMat.color.copy(accent);
     hemi.color.set(T.sky); hemi.groundColor.set(T.ground); hemi.intensity = T.hemi; ambient.intensity = T.amb; sun.intensity = T.sun; fill.intensity = T.fill;
     for (const m of glowMats) { m.blending = light ? THREE.NormalBlending : THREE.AdditiveBlending; m.uniforms.light.value = light ? 1 : 0; m.needsUpdate = true; m.visible = !light; }
@@ -425,16 +433,20 @@ export async function createEngine(host, { reduceMotion = false } = {}) {
     for (const t of TXT) if (!t.gone) t.redraw();
     invalidate();
   }
+  // the page's theme: forge-ui's own switch (theme.js) when it is there, else the system setting
   const media = matchMedia('(prefers-color-scheme: light)');
-  const onScheme = () => setTheme(media.matches ? 'light' : 'dark');
+  const resolved = () => window.ForgeTheme ? window.ForgeTheme.resolved() : media.matches ? 'light' : 'dark';
+  const onScheme = () => setTheme(resolved());
   media.addEventListener('change', onScheme);
+  window.addEventListener('forge-theme', onScheme);
 
   function applyWeight() {
     const dist = camera.position.distanceTo(controls.target);
     const ppm = camera === ortho ? VH * ortho.zoom / orthoH : VH / (dist * fovK());
     const k = THREE.MathUtils.clamp((ppm / 40 - .35) / .65, 0, 1);
     const fm = THEMES[theme].fadeMin, fade = fm + (1 - fm) * k, dpr = renderer.getPixelRatio();
-    const key = fade.toFixed(2) + '|' + dpr + '|' + theme + '|' + (camera === ortho); if (key === appliedKey) return; appliedKey = key;
+    // orthographic zoom too: a screen sprite's world size follows it
+    const key = fade.toFixed(2) + '|' + dpr + '|' + theme + '|' + (camera === ortho ? ortho.zoom.toFixed(4) : 'p'); if (key === appliedKey) return; appliedKey = key;
     lineMat.linewidth = majorMat.linewidth = dpr; accentLineMat.linewidth = 1.6 * dpr;
     lineMat.color.copy(BG_COL).lerp(EDGE_COL, fade);
     majorMat.color.copy(BG_COL).lerp(MAJOR_COL, fade);
@@ -443,6 +455,8 @@ export async function createEngine(host, { reduceMotion = false } = {}) {
     for (const f of weightHooks) f();
   }
   const weightHooks = new Set();
+  // screen pixels per plan unit at the point the camera looks at
+  const pxPerUnit = () => (camera === ortho ? VH * ortho.zoom / orthoH : VH / (camera.position.distanceTo(controls.target) * fovK())) * TS;
 
   /* ---------- camera: frame a box, keeping the user's angle ---------- */
   const fovK = () => 2 * Math.tan(THREE.MathUtils.degToRad(persp.fov / 2));
@@ -484,14 +498,33 @@ export async function createEngine(host, { reduceMotion = false } = {}) {
     let D = .5;
     for (const p0 of pts) {
       const p = p0.clone().sub(c), px = p.dot(r), py = p.dot(u), pz = p.dot(f);
-      D = Math.max(D, Math.abs(px) / (th * fw * .96) - pz, Math.abs(py) / (tv * fh * .92) - pz);
+      D = Math.max(D, Math.abs(px) / (th * fw * .97) - pz, Math.abs(py) / (tv * fh * .95) - pz);
     }
     // what is framed sits in the middle of the uncovered part of the stage
     c.addScaledVector(r, -(I.l - I.r) / VW * D * th).addScaledVector(u, (I.t - I.b) / VH * D * tv);
     return { c, D };
   }
+  // the stage covered by modules floating over it (marked data-overlay): a tall one covers a side, a wide one a top or bottom
+  function overlayInset() {
+    const H = host.getBoundingClientRect(), I = { l: 0, r: 0, t: 0, b: 0 };
+    if (!H.width || !H.height) return I;
+    const full = document.fullscreenElement;
+    for (const n of document.querySelectorAll('[data-overlay]')) {
+      if (full && !full.contains(n)) continue;              // full screen: the modules are behind the stage
+      const R = n.getBoundingClientRect();
+      if (!R.width || !R.height || R.right <= H.left || R.left >= H.right || R.bottom <= H.top || R.top >= H.bottom) continue;
+      const cl = Math.max(R.left, H.left), cr = Math.min(R.right, H.right), ct = Math.max(R.top, H.top), cb = Math.min(R.bottom, H.bottom);
+      if (cb - ct > H.height * .5) { if (cl - H.left < H.right - cr) I.l = Math.max(I.l, cr - H.left); else I.r = Math.max(I.r, H.right - cl); }
+      else if (ct - H.top < H.bottom - cb) I.t = Math.max(I.t, cb - H.top); else I.b = Math.max(I.b, H.bottom - ct);
+    }
+    return I;
+  }
+  // the last framing, redone when the stage changes size, until the user moves the camera themselves
+  let autoFrame = null;
   function frameBox(bx, dur = 900, minEl = 26, dirOverride = null, inset = null) {
     resize();                                               // the host may have just been shown or moved: fit its real size
+    autoFrame = { bx, minEl, dirOverride, inset };
+    if (!inset) inset = overlayInset();
     let dir = dirOverride ? dirOverride.clone().normalize() : camera.position.clone().sub(controls.target);
     dir = dir.lengthSq() > 1e-8 ? dir.normalize() : DIR_ISO.clone();
     const el = Math.asin(THREE.MathUtils.clamp(dir.y, -1, 1)), lo = THREE.MathUtils.degToRad(minEl);
@@ -514,6 +547,22 @@ export async function createEngine(host, { reduceMotion = false } = {}) {
     if (camera === ortho && CAMT.to.zoom && CAMT.fromZ) { ortho.zoom = THREE.MathUtils.lerp(CAMT.fromZ, CAMT.to.zoom, k); ortho.updateProjectionMatrix(); }
     if (k >= 1) { controls.enableDamping = true; CAMT = null; }
     return true;
+  }
+  // closer (k > 1) or farther (k < 1) toward what the camera looks at, as a short glide; the angle stays
+  function zoomBy(k, dur = 260) {
+    settleCam();
+    const off = camera.position.clone().sub(controls.target);
+    let zoom = null;
+    if (camera === ortho) zoom = THREE.MathUtils.clamp(ortho.zoom * k, .05, 40);
+    else off.setLength(THREE.MathUtils.clamp(off.length() / k, controls.minDistance || .01, controls.maxDistance));
+    autoFrame = null;
+    if (reduceMotion || dur <= 1) {
+      camera.position.copy(controls.target).add(off);
+      if (zoom) { ortho.zoom = zoom; ortho.updateProjectionMatrix(); }
+      invalidate(); return;
+    }
+    CAMT = { t0: performance.now(), dur, fromT: controls.target.clone(), fromO: camera.position.clone().sub(controls.target), fromZ: zoom ? ortho.zoom : null, to: { t: controls.target.clone(), off, zoom } };
+    controls.enableDamping = false; invalidate();
   }
   const cancelCam = () => { if (CAMT) { controls.enableDamping = true; CAMT = null; } };
   const settleCam = () => { if (CAMT) { camStep(CAMT.t0 + CAMT.dur + 1); controls.update(); } };   // jump to where a glide ends (tests)
@@ -544,6 +593,7 @@ export async function createEngine(host, { reduceMotion = false } = {}) {
     else if (!raf) last = 0;
   }
   controls.addEventListener('change', () => invalidate());
+  controls.addEventListener('start', () => { autoFrame = null; });
   const onVisibility = () => { visible = document.visibilityState === 'visible'; if (visible) invalidate(); };
   document.addEventListener('visibilitychange', onVisibility);
   const io = typeof IntersectionObserver === 'function' ? new IntersectionObserver(es => { onScreen = es.some(e => e.isIntersecting); if (onScreen) invalidate(); }) : null;
@@ -556,6 +606,7 @@ export async function createEngine(host, { reduceMotion = false } = {}) {
     const res = devRes();
     outlineMat.uniforms.res.value.copy(res); lineMat.resolution.copy(res); majorMat.resolution.copy(res); accentLineMat.resolution.copy(res);
     appliedKey = ''; invalidate();
+    if (autoFrame) { const f = autoFrame; frameBox(f.bx, 0, f.minEl, f.dirOverride, f.inset); }
   }
   const ro = typeof ResizeObserver === 'function' ? new ResizeObserver(resize) : null;
   if (ro) ro.observe(host);
@@ -740,7 +791,7 @@ export async function createEngine(host, { reduceMotion = false } = {}) {
   }
   function dispose() {
     disposed = true; if (raf) cancelAnimationFrame(raf); raf = 0;
-    media.removeEventListener('change', onScheme); document.removeEventListener('visibilitychange', onVisibility);
+    media.removeEventListener('change', onScheme); window.removeEventListener('forge-theme', onScheme); document.removeEventListener('visibilitychange', onVisibility);
     if (io) io.disconnect(); if (ro) ro.disconnect();
     controls.dispose(); disposeGroup(scene); target.dispose(); composer.dispose && composer.dispose(); renderer.dispose();
     canvas.remove(); probe.remove();
@@ -756,9 +807,9 @@ export async function createEngine(host, { reduceMotion = false } = {}) {
     glowPoints, softMat, fat, loopL, noRay, rbox, inset, seg, polyLine, cumLen, alongPts, moveGlow, roundRect,
     mats, lmat, paint, lineCol, setOp, solid, loopAt, roofPlate, cone,
     tplane, release, roofAt, frontAt, lines, rr, font, fit, wrap, ellipsis, pxIn,
-    ends, curve, arc, statusColor, statusHex, cssColor,
-    frameBox, fitFor, cancelCam, settleCam, setOrtho, isOrtho: () => camera === ortho, invalidate, tickers, themeHooks, weightHooks,
-    pick, pickHit, rayAt, project, handlers, disposeGroup, dispose, reduceMotion, now: () => NOW,
+    ends, curve, arc, statusColor, statusHex, sevColor, sevHex, cssColor,
+    frameBox, fitFor, zoomBy, cancelCam, settleCam, setOrtho, overlayInset, isOrtho: () => camera === ortho, invalidate, tickers, themeHooks, weightHooks,
+    pick, pickHit, rayAt, project, pxPerUnit, handlers, disposeGroup, dispose, reduceMotion, now: () => NOW,
     setProfile, get profile() { return profile; }, unitSolid, solidFrom, disposeShared, sprite, outlineInstanced, mixColor,
     LineSegments2, LineSegmentsGeometry, creaseLines,
   };

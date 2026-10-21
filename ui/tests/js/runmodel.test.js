@@ -119,6 +119,17 @@ test('critical path follows the dependency that finished last', () => {
   assert.deepEqual(cp2.ids, ['page', 'graph', 'server'], 'graph (merged at +880) finished after reader (+700)');
 });
 
+test('lineage: every task a task waits on and every task that waits on it, through any number of steps', () => {
+  const L = id => { const l = RM.lineage(run(), id); return [[...l.ancestors].sort(), [...l.descendants].sort()]; };
+  assert.deepEqual(L('graph'), [['page'], ['server']]);
+  assert.deepEqual(L('server'), [['graph', 'page', 'reader'], []], 'through graph to page');
+  assert.deepEqual(L('reader'), [[], ['docs', 'server']]);
+  assert.deepEqual(L('nope'), [[], []]);
+  const cyc = { tasks: [{ id: 'a', deps: ['b'] }, { id: 'b', deps: ['a'] }, { id: 'c', deps: ['gone'] }] };
+  assert.deepEqual([...RM.lineage(cyc, 'a').ancestors], ['b'], 'a cycle ends the walk');
+  assert.deepEqual([...RM.lineage(cyc, 'c').ancestors], [], 'a dependency on no task is not a task');
+});
+
 test('stateAt rebuilds statuses at any moment', () => {
   const r = run();
   let s = RM.stateAt(r, T0 + 100);

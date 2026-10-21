@@ -14,7 +14,7 @@ import unittest
 
 STATIC = Path(__file__).resolve().parents[1] / 'forge_ui' / 'static'
 JS_TESTS = Path(__file__).resolve().parent / 'js'
-MODULES = {'iso.js', 'scene3d.js', 'cloud3d.js'}          # ES modules; every other script is a classic script
+MODULES = {'iso.js', 'scene3d.js', 'cloud3d.js', 'findings3d.js', 'stagectl.js'}   # ES modules; every other script is a classic script
 
 
 @unittest.skipUnless(shutil.which('node'), 'node is not installed')

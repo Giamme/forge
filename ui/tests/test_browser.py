@@ -86,7 +86,7 @@ class Page(unittest.TestCase):
             os.environ['XDG_STATE_HOME'] = cls.xdg
         cls.temp.cleanup()
 
-    def open(self, cdn, view='3d', mode='plan', init='', context=None):
+    def open(self, cdn, view='3d', mode='plan', init='', context=None, tasks=True):
         if context is None:
             context = self.browser.new_context(viewport={'width': 1440, 'height': 960})
             self.addCleanup(context.close)
@@ -97,7 +97,8 @@ class Page(unittest.TestCase):
           window.__csp = [];
           document.addEventListener('securitypolicyviolation', e => window.__csp.push(e.violatedDirective + ' ' + e.blockedURI));
           try {{ localStorage.setItem('forge-ui-view', '"{view}"'); localStorage.setItem('forge-ui-mode', '"{mode}"'); }} catch (_) {{}}
-        """ + init)
+        """ + ("try { if (!localStorage.getItem('forge-ui-shell')) localStorage.setItem('forge-ui-shell', '{\"tasks\":true}'); } catch (_) {}"   # past a first visit: the table open
+               if tasks else '') + init)
         if not cdn:
             page.route(CDN + '**', lambda route: route.abort())
         elif THREE_LOCAL:
@@ -219,6 +220,59 @@ class Page(unittest.TestCase):
         self.steady(page, at)                                           # and the camera comes to rest
         self.assertClean(page)
 
+    def test_choosing_a_task_opens_the_inspector_and_a_module_key_folds_it_for_good(self):
+        page = self.open(cdn=False, tasks=False)                        # a first visit: nothing remembered yet
+        page.goto(self.url + '#/runs/' + self.key)
+        page.wait_for_selector('#run-tasks table', state='attached')
+        self.assertFalse(page.is_visible('#run-tasks table'))           # a run opens on its plate
+        self.assertFalse(page.is_visible('#inspector'))
+        page.keyboard.press('3')                                        # 3: the tasks
+        page.click('#run-tasks td[data-col=id] a:text-is("reader")')
+        page.wait_for_selector('#inspector .attempt')                   # what was chosen is read in the inspector
+        page.keyboard.press('2')                                        # 2: the inspector
+        page.wait_for_function("document.body.dataset.insp === 'closed'")
+        self.assertFalse(page.is_visible('#inspector'))
+        page.click('[data-shell-pick=workbench]')
+        page.evaluate("location.hash = '#/runs/' + %r" % self.key)      # back to the run: nothing chosen to reopen it
+        page.reload()
+        page.wait_for_selector('#run-tasks table')
+        self.assertEqual(page.evaluate('[document.body.dataset.shell, document.body.dataset.insp]'), ['workbench', 'closed'])
+        self.assertFalse(page.is_visible('#inspector'))
+        self.assertClean(page)
+
+    def test_a_header_click_sorts_the_tasks_and_the_sort_is_remembered(self):
+        page = self.open(cdn=False)
+        page.goto(self.url + '#/runs/' + self.key)
+        page.wait_for_selector('#run-tasks table')
+        ids = lambda: page.eval_on_selector_all('#run-tasks tbody td[data-col=id]', 'ns => ns.map(n => n.textContent)')
+        self.assertEqual(ids(), ['reader', 'page', 'graph', 'server', 'docs'])          # the plan's order
+        page.click('#run-tasks th[data-col=id] .th-btn')
+        page.click('#run-tasks th[data-col=id] .th-btn')
+        self.assertEqual(ids(), ['server', 'reader', 'page', 'graph', 'docs'])
+        self.assertEqual(page.get_attribute('#run-tasks th[data-col=id]', 'aria-sort'), 'descending')
+        page.reload()
+        page.wait_for_selector('#run-tasks table')
+        self.assertEqual(ids(), ['server', 'reader', 'page', 'graph', 'docs'])
+        self.assertClean(page)
+
+    def test_the_theme_switch_overrides_the_system_and_is_remembered(self):
+        page = self.open(cdn=False)                                     # the browser itself asks for light
+        page.goto(self.url + '#/')
+        page.wait_for_selector('[data-theme-pick=dark]')
+        bg = lambda: page.evaluate('getComputedStyle(document.body).backgroundColor')
+        light = bg()
+        page.click('[data-theme-pick=dark]')
+        self.assertEqual(page.get_attribute('html', 'data-theme'), 'dark')
+        dark = bg()
+        self.assertNotEqual(dark, light)
+        page.reload()
+        page.wait_for_selector('[data-theme-pick=dark][aria-pressed=true]')
+        self.assertEqual(bg(), dark)
+        page.click('[data-theme-pick=system]')
+        self.assertIsNone(page.get_attribute('html', 'data-theme'))
+        self.assertEqual(bg(), light)
+        self.assertClean(page)
+
     def test_the_diff_viewer_pins_findings_to_their_lines(self):
         page = self.open(cdn=False)
         page.goto(self.url + f'#/runs/{self.key}/tasks/reader')
@@ -235,6 +289,46 @@ class Page(unittest.TestCase):
         page.click('.diff-close')
         page.wait_for_function("() => location.hash.endsWith('/tasks/reader') && document.getElementById('diff-view').hidden")
         self.assertTrue(page.is_visible('.stage-row'))
+        self.assertClean(page)
+
+    def test_an_attempts_conversation_shows_what_its_agent_said_and_ran(self):
+        page = self.open(cdn=False)
+        page.goto(self.url + f'#/runs/{self.key}/tasks/reader')
+        link = f'#inspector .exec-line a[href$="/executions/{F.READER_DWARF1}/conversation"]'
+        page.wait_for_selector(link)
+        page.click(link)
+        page.wait_for_selector('.convo-list .ev--command')
+        self.assertFalse(page.is_visible('.stage-row'))
+        # codex's log: its failed test run is the one error, and E goes to it
+        self.assertEqual(page.locator('.convo-list .ev.is-error').count(), 1)
+        page.keyboard.press('e')
+        page.wait_for_function("() => document.activeElement.matches('.ev.is-error.ev--command')")
+        # an edit links to its file, made relative, in the diff its review read
+        self.assertEqual(page.get_attribute('.ev--edit a.ev-file', 'href'),
+                         f'#/runs/{self.key}/tasks/reader/diff/{F.READER_DWARF1}/file/ui%2Freader.py')
+        # / searches the conversation, not every run
+        page.keyboard.press('/')
+        page.wait_for_function("() => document.activeElement.matches('.convo-find input')")
+        self.assertFalse(page.evaluate("!!document.querySelector('dialog[open]')"))
+        page.fill('.convo-find input', 'pending')
+        page.wait_for_function("() => [...document.querySelectorAll('.convo-list .ev')].filter(n => !n.hidden).map(n => n.dataset.kind).join() === 'message'")
+        page.click('.diff-close')
+        page.wait_for_function(f"() => location.hash.endsWith('/executions/{F.READER_DWARF1}') && document.getElementById('diff-view').hidden")
+        self.assertClean(page)
+
+    def test_a_running_reviewers_conversation_grows_with_its_log(self):
+        log = self.plan / 'tasks/graph/qa.log'
+        before = log.read_text()
+        self.addCleanup(log.write_text, before)
+        page = self.open(cdn=False)
+        page.goto(self.url + f'#/runs/{self.key}/tasks/graph/executions/{F.GRAPH_QA}/conversation')
+        page.wait_for_selector('.convo-list .ev--command')
+        self.assertTrue(page.is_visible('.convo-follow'))
+        kinds = "() => [...document.querySelectorAll('.convo-list .ev')].map(n => n.dataset.kind).join()"
+        self.assertEqual(page.evaluate(kinds), 'reasoning,command')
+        # the reviewer goes on: its log grows, the run dir does not change, the page reads it again
+        log.write_text(''.join((F.TRANSCRIPTS / 'claude-stream.jsonl').read_text().splitlines(keepends=True)[:7]))
+        page.wait_for_function(f"{kinds} === 'reasoning,command,edit,message'", timeout=10000)
         self.assertClean(page)
 
     def test_fractal_child_tasks_show_in_the_inspector_with_their_diffs(self):
@@ -261,7 +355,7 @@ class Page(unittest.TestCase):
         text = page.text_content('.lb')
         for model in ('luna', 'opus'):                                  # an implementer, a reviewer
             self.assertIn(model, text)
-        page.click('.lb table a:text-is("luna")')
+        page.click('.lb table a.lb-alias:has(.model-plate[title="luna"])')       # the model's name plate links to its runs
         page.wait_for_function("() => location.hash === '#/cloud'")
         page.wait_for_selector('.cloud-list .map-card')
         self.assertEqual(page.locator('.cloud-list .map-card').count(), 1)    # only the plan used luna
@@ -386,6 +480,62 @@ class Page(unittest.TestCase):
         (task / 'status').write_text('PASS\n'); (task / 'merged').write_text('')
         page.wait_for_function("() => window.ForgeUI.state.stage.debug().nodes.find(n => n.id === 't:graph').status === 'MERGED'", timeout=15000)
         self.assertEqual(page.evaluate("window.ForgeUI.state.stage.debug().rebuilds"), before)
+        self.assertClean(page)
+
+    def beacons(self, page):
+        """The finding marks drawn now, once the camera and the marks have stopped, each with where it is on the screen."""
+        page.wait_for_function("() => window.ForgeUI.state.stage.debug().beacons().some(b => b.shown)", timeout=15000)
+        page.evaluate("window.ForgeUI.state.stage.debug().settle()")
+        self.steady(page, "window.ForgeUI.state.stage.debug().beacons()")
+        return [b for b in page.evaluate("window.ForgeUI.state.stage.debug().beacons()") if b['shown'] and b['on']]
+
+    def test_a_finding_mark_opens_the_diff_at_its_finding(self):
+        page = self.open(cdn=True)
+        page.goto(self.url + '#/runs/' + self.key)
+        self.three_or_skip(page)
+        mark = next(b for b in self.beacons(page) if b['sev'] == 'P1')
+        page.mouse.click(mark['x'], mark['y'])
+        page.wait_for_function(f"() => decodeURIComponent(location.hash).endsWith('/finding/{mark['id']}')")
+        page.wait_for_function(f"() => document.activeElement && document.activeElement.dataset.finding === {json.dumps(mark['id'])}")
+        self.assertTrue(page.evaluate("document.activeElement.classList.contains('sev-P1')"))
+        self.assertClean(page)
+
+    def test_a_layer_switched_off_and_the_projection_stay_after_a_reload(self):
+        context = self.browser.new_context(viewport={'width': 1440, 'height': 960})
+        self.addCleanup(context.close)
+        page = self.open(cdn=True, context=context)
+        page.goto(self.url + '#/runs/' + self.key)
+        self.three_or_skip(page)
+        mark = self.beacons(page)[0]
+        page.click('.view-btn')
+        page.click('.layer-key[data-layer=beacons]')
+        self.assertEqual(page.get_attribute('.layer-key[data-layer=beacons]', 'aria-pressed'), 'false')
+        self.frames(page)
+        self.assertIsNone(page.evaluate(f"window.ForgeUI.state.stage.debug().pickBeacon({mark['x']}, {mark['y']})"), 'a hidden mark is not picked')
+        page.keyboard.press('Escape')
+        page.keyboard.press('v')                                    # the stage's keys work wherever focus is
+        page.wait_for_function("() => window.ForgeUI.state.stage.debug().projection().ortho")
+        page.reload()
+        self.three_or_skip(page)
+        page.wait_for_function("() => window.ForgeUI.state.stage.view === 'run'")
+        self.assertEqual(page.evaluate("window.ForgeUI.state.stage.debug().projection()"), {'proj': 'iso', 'ortho': True})
+        self.assertFalse(page.evaluate("window.ForgeUI.state.stage.layers.beacons"))
+        page.click('.view-btn')
+        self.assertEqual(page.get_attribute('.layer-key[data-layer=beacons]', 'aria-pressed'), 'false')
+        self.assertClean(page)
+
+    def test_the_map_walks_its_runs_by_keyboard_and_enter_opens_one(self):
+        page = self.open(cdn=True)
+        page.goto(self.url + '#/')
+        self.three_or_skip(page)
+        page.wait_for_function("() => window.ForgeUI.state.stage.view === 'atlas'")
+        page.focus('#stage-host canvas')
+        page.keyboard.press('ArrowRight')
+        page.wait_for_function("() => window.ForgeUI.state.stage.debug().sel && window.ForgeUI.state.stage.debug().sel.kind === 'run'")
+        key = page.evaluate("window.ForgeUI.state.stage.debug().sel.key")
+        self.assertNotEqual(page.text_content('#live'), '')        # where the walk is, said aloud
+        page.keyboard.press('Enter')
+        page.wait_for_function(f"() => location.hash === '#/runs/{key}'")
         self.assertClean(page)
 
 

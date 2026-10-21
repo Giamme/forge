@@ -23,7 +23,7 @@
 </p>
 
 <p align="center">
-  <img src="ui/docs/media/hero.webp" width="880" alt="A decomposed run in forge-ui's 3D view: eight tasks on a plate in their planned waves, five merged in green and two running in blue, then the same run on wall-clock time, where two first attempts that failed review show in red beside the retries that passed.">
+  <img src="ui/docs/media/hero.webp" width="880" alt="A decomposed run in forge-ui's 3D view: eight tasks on a plate in their planned waves, five merged in green and two running in amber, with a mark over each block for every review finding, then the same run on wall-clock time, where two first attempts that failed review show in red beside the retries that passed.">
 </p>
 <p align="center"><sub>The run from <a href="#quick-start">Quick start</a> in <a href="#forge-ui">forge-ui</a>: its tasks in the waves the plan gave them, then as they really ran, the failed attempts and their retries included. Demo data.</sub></p>
 
@@ -146,8 +146,8 @@ never opens it without a yes.
 
 <table>
 <tr>
-<td width="50%" valign="top"><img src="ui/docs/media/run.png" alt="A run's eight tasks on a 3D plate in their planned waves, with dependency cables and the finish nodes, beside the run's inspector."><br><b>A run, as planned.</b> Tasks in their waves with dependency cables, ending in integration, verification and the final review. Click a task to open its attempts, dwarves and reviews.</td>
-<td width="50%" valign="top"><img src="ui/docs/media/execution.png" alt="The same run on wall-clock time: one block per attempt, failed attempts in red, a plane marking now, and the inspector's timeline and critical path."><br><b>And as it ran.</b> One block per attempt in the lane it ran in, failed ones in red, against <code>--max-parallel</code>; the inspector names the critical path.</td>
+<td width="50%" valign="top"><img src="ui/docs/media/run.png" alt="forge-ui's window: the runs list, a run's eight tasks on a 3D plate in their planned waves with dependency cables, finding marks and the finish nodes, and the run's inspector."><br><b>A run, as planned.</b> Tasks in their waves with dependency cables, ending in integration, verification and the final review. Click a task to open its attempts, dwarves and reviews.</td>
+<td width="50%" valign="top"><img src="ui/docs/media/execution.png" alt="The same run on wall-clock time: one block per attempt, failed attempts in red with their finding marks, a plane marking now, the concurrency strip, and the inspector's timeline and critical path."><br><b>And as it ran.</b> One block per attempt in the lane it ran in, failed ones in red, against <code>--max-parallel</code>; the inspector names the critical path.</td>
 </tr>
 <tr>
 <td valign="top"><img src="ui/docs/media/diff.png" alt="The diff a reviewer read, with a P1 finding pinned under the line comparing token digests and a P2 finding under the revoke function."><br><b>Findings on their lines.</b> Any diff of a task, or exactly the diff one reviewer read, with each P0–P3 finding under the line it names.</td>
@@ -155,7 +155,7 @@ never opens it without a yes.
 </tr>
 <tr>
 <td valign="top"><img src="ui/docs/media/files.png" alt="The files heatmap: files grouped by directory against tasks grouped by wave, with planned, touched, drift and same-wave overlap marks."><br><b>Who touched which file.</b> Planned, changed, drifted into or conflicted on, wave by wave; a cell opens that file's diff.</td>
-<td valign="top"><img src="ui/docs/media/map.png" alt="The map of every run: one block per run in a district per repo, green when done, blue while running, red with failures."><br><b>Every run, by repo.</b> One block per run with a lamp per task, filtered by state, repo, model, age or review verdict.</td>
+<td valign="top"><img src="ui/docs/media/map.png" alt="The map of every run: one block per run in a district per repo, green when done, amber while running, red with failures."><br><b>Every run, by repo.</b> One block per run with a lamp per task, filtered by state, repo, model, age or review verdict.</td>
 </tr>
 </table>
 

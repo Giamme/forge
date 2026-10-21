@@ -26,10 +26,11 @@ from forge_ui import __version__, server
 
 STATIC = server.STATIC_DIR
 # what the exported page runs, in index.html's order; the cloud, the leaderboard and notifications need a server
-SCRIPTS = ('runmodel.js', 'cloudmodel.js', 'graph.js', 'gantt.js', 'panel.js', 'diffview.js', 'files.js', 'map3d.js',
+SCRIPTS = ('theme.js', 'icons.js', 'datatable.js', 'shell.js', 'runmodel.js', 'cloudmodel.js', 'graph.js', 'gantt.js', 'panel.js', 'diffview.js', 'convo.js', 'files.js', 'map3d.js',
            'search.js', 'app.js')
-MODULES = ('iso.js', 'cloud3d.js', 'scene3d.js')            # bundled in dependency order
+MODULES = ('iso.js', 'cloud3d.js', 'findings3d.js', 'stagectl.js', 'scene3d.js')   # bundled in dependency order
 DIFF_CAP = 1 << 20                                          # one diff's JSON
+TRANSCRIPT_CAP = 2 << 20                                    # one execution's transcript
 TOTAL_CAP = 25 << 20                                        # every response together
 CDN = 'https://cdn.jsdelivr.net/npm/three@0.160.0/'
 _EXEC = re.compile(r'(?:task|dwarf|qa|solo|verification|parallel)-[0-9a-f]{32}')
@@ -145,12 +146,14 @@ def build(catalog, key, texts=False, paths=False, now=None):
     tasks = [t for t in (detail.get('tasks') or []) if isinstance(t, dict) and t.get('id')]
     for task in tasks:
         snap.add(f"{base}/tasks/{_enc(task['id'])}")
-    for name in sorted(set(_EXEC.findall(json.dumps(run)))):
+    names = sorted(set(_EXEC.findall(json.dumps(run))))
+    for name in names:
         snap.add(f'{base}/executions/{name}')
     reviews = [r.get('name') for r in (run.get('final_reviews') or []) if isinstance(r, dict) and r.get('name')]
     for name in reviews:
         snap.add(f'{base}/final-reviews/{_enc(name)}')
     snap.add(f'{base}/files')
+    snap.add(f'{base}/findings')
     fractal = run.get('fractal') or {}
     if fractal.get('enabled') and fractal.get('available'):
         for task in tasks:
@@ -170,6 +173,10 @@ def build(catalog, key, texts=False, paths=False, now=None):
                     snap.add(url, cap=DIFF_CAP)
         for name in reviews:
             snap.add(f'{base}/final-reviews/{_enc(name)}/diff', cap=DIFF_CAP)
+        # what each dwarf and reviewer said and ran: its conversation is all text
+        for name in names:
+            if name.startswith(('dwarf-', 'qa-')):
+                snap.add(f'{base}/executions/{name}/transcript', cap=TRANSCRIPT_CAP)
     meta = {'format': 'forge-ui-export', 'version': 1, 'app': __version__, 'key': key,
             'generated': now if now is not None else time.time(), 'texts': bool(texts), 'paths': bool(paths),
             'omitted': snap.omitted}
@@ -182,14 +189,17 @@ def build(catalog, key, texts=False, paths=False, now=None):
 def _page(snapshot, run):
     index = (STATIC / 'index.html').read_text(encoding='utf-8')
     importmap = re.search(r'<script type="importmap">(.*?)</script>', index, re.DOTALL).group(1)
-    body = re.search(r'<body>(.*)</body>', index, re.DOTALL).group(1)
+    body_tag, body = re.search(r'(<body[^>]*>)(.*)</body>', index, re.DOTALL).groups()
+    body = re.sub(r'\s*<script src="[^"]*"></script>', '', body)          # the page's own scripts are inlined below
     css = (STATIC / 'style.css').read_text(encoding='utf-8')
+    # the engraving face travels inside the file
+    css = re.sub(r'url\(([A-Za-z0-9_.-]+\.woff2)\)', lambda m: 'url(data:font/woff2;base64,%s)' % base64.b64encode((STATIC / m.group(1)).read_bytes()).decode('ascii'), css)
     scripts = [_script_safe((STATIC / name).read_text(encoding='utf-8')) for name in SCRIPTS if (STATIC / name).is_file()]
     data = json.dumps(snapshot, ensure_ascii=False, separators=(',', ':')).replace('<', '\\u003c').replace('>', '\\u003e').replace('&', '\\u0026')
     stage = _script_safe(bundle())
     icon = 'data:image/svg+xml;base64,' + base64.b64encode((STATIC / 'favicon.svg').read_bytes()).decode('ascii')
     csp = ("default-src 'none'; script-src " + ' '.join([_sha(importmap)] + [_sha(s) for s in scripts]) + f" blob: {CDN}; "
-           f"style-src {_sha(css)}; img-src data: blob:; connect-src 'none'; base-uri 'none'; form-action 'none'; object-src 'none'")
+           f"style-src {_sha(css)}; img-src data: blob:; font-src data:; connect-src 'none'; base-uri 'none'; form-action 'none'; object-src 'none'")
     title = 'forge-ui · ' + re.sub(r'[<>&"]', '', str(run.get('goal') or run.get('run_id') or 'run').split('\n')[0])[:120]
     return ''.join([
         '<!doctype html>\n<html lang="en">\n<head>\n<meta charset="utf-8">\n',
@@ -197,7 +207,7 @@ def _page(snapshot, run):
         '<meta name="referrer" content="no-referrer">\n',
         f'<meta http-equiv="Content-Security-Policy" content="{csp}">\n',
         f'<title>{title}</title>\n<link rel="icon" href="{icon}">\n',
-        f'<script type="importmap">{importmap}</script>\n<style>{css}</style>\n</head>\n<body>{body}',
+        f'<script type="importmap">{importmap}</script>\n<style>{css}</style>\n</head>\n{body_tag}{body}',
         f'<script type="application/json" id="forge-snapshot">{data}</script>\n',
         f'<script type="text/plain" id="forge-stage">{stage}</script>\n',
         ''.join(f'<script>{s}</script>\n' for s in scripts),

@@ -15,13 +15,21 @@ window.ForgeUI = (() => {
     mapFilter: Object.assign({ text: '', state: '', repo: '', kind: '', model: '', ageDays: 0, verdict: '' }, store.get('map-filter', {})),
     showAll: false, mode: store.get('mode', 'plan'), dim: store.get('view', '3d'),
     overlay: Object.assign({ height: 'none', color: 'status', critical: false, arcs: true, ghosts: true }, store.get('overlay', {})),
+    layers: Object.assign({ cables: true, beads: true, lamps: true, roof: true, labels: true, beacons: true, finish: true, districts: true, halos: true, route: true }, store.get('layers', {})),
     replay: null, playing: null, speed: store.get('speed', 60), stage: null, stageFailed: null, stageLoading: false, timer: null,
     lastStatuses: new Map(), announced: 0, rendered: null, cloud: null, cloudUI: null, cloudPrefs: store.get('cloud', {}),
     models: false, modelsData: null, modelsText: null, modelsError: null, modelsPrefs: store.get('models', {}),
-    files: new Map(), filesPrefs: store.get('files', {}) };
+    files: new Map(), filesPrefs: store.get('files', {}), runSort: store.get('run-sort', 'updated'), tablePrefs: store.get('tables', {}),
+    findings: new Map() };
   state.stageMode = state.mode === 'exec' ? 'exec' : 'plan';   // the stage's own mode, kept while Files is shown
   if (state.mode === 'files' && !window.ForgeFiles) state.mode = state.stageMode;
   const $ = id => document.getElementById(id);
+  const Shell = window.ForgeShell, Table = window.ForgeTable;
+  const icon = name => window.ForgeIcons ? window.ForgeIcons.icon(name) : document.createTextNode('');
+  const LAMP = { live: 'running', failed: 'fail', done: 'merged', pending: 'pending' };
+  const STATE_ORDER = { live: 0, failed: 1, pending: 2, done: 3 };
+  // the view on <main> and on <body>: the shell's CSS lays out each view (stage views fill the window)
+  function setView(main, view) { main.dataset.view = view; document.body.dataset.view = view; }
   const display = value => value === null || value === undefined || value === '' ? '—' :
     typeof value === 'object' ? JSON.stringify(value, null, 2) : String(value);
   const list = value => Array.isArray(value) ? value : [];
@@ -47,13 +55,16 @@ window.ForgeUI = (() => {
     if (sel.kind === 'fractal') return `${base}/tasks/${e(sel.task)}/fractal/${e(sel.node)}`;
     return base;
   }
-  // a diff: {kind: 'task', task, source, file} | {kind: 'final', name, file} | {kind: 'fractal', task, node, file}
+  // a diff: {kind: 'task', task, source, file} | {kind: 'final', name, file} | {kind: 'fractal', task, node, file},
+  // opened at a file, or at one finding (its id from /findings)
   function diffHash(key, spec) {
-    const e = encodeURIComponent, base = '#/runs/' + e(key), file = spec.file ? '/file/' + e(spec.file) : '';
+    const e = encodeURIComponent, base = '#/runs/' + e(key), file = spec.finding ? '/finding/' + e(spec.finding) : spec.file ? '/file/' + e(spec.file) : '';
     if (spec.kind === 'final') return `${base}/final-review/${e(spec.name)}/diff${file}`;
     if (spec.kind === 'fractal') return `${base}/tasks/${e(spec.task)}/fractal/${e(spec.node)}/diff${file}`;
     return `${base}/tasks/${e(spec.task)}/diff${spec.source && spec.source !== 'current' ? '/' + e(spec.source) : ''}${file}`;
   }
+  // an execution's conversation, in the stage's place like a diff
+  const convoHash = (key, sel) => hashFor(key, sel) + '/conversation';
   function cloudHash(sel, focus) {
     if (sel) return '#/cloud/runs/' + encodeURIComponent(sel);
     return focus ? '#/cloud/projects/' + encodeURIComponent(focus) : '#/cloud';
@@ -66,9 +77,15 @@ window.ForgeUI = (() => {
     if (!m) return { key: null, sel: null };
     const d = decodeURIComponent, rest = m[2] || '';
     let sel = null, r;
-    if ((r = rest.match(/^\/tasks\/([^/]+)\/diff(?:\/([^/]+))?(?:\/file\/(.+?))?\/?$/))) return { key: d(m[1]), sel: { kind: 'task', id: d(r[1]) }, diff: { kind: 'task', task: d(r[1]), source: r[2] ? d(r[2]) : 'current', file: r[3] ? d(r[3]) : null } };
+    if ((r = rest.match(/^\/tasks\/([^/]+)\/diff(?:\/(?!file\/|finding\/)([^/]+))?(?:\/finding\/([^/]+))?(?:\/file\/(.+?))?\/?$/))) return { key: d(m[1]), sel: { kind: 'task', id: d(r[1]) }, diff: { kind: 'task', task: d(r[1]), source: r[2] ? d(r[2]) : 'current', finding: r[3] ? d(r[3]) : null, file: r[4] ? d(r[4]) : null } };
     if ((r = rest.match(/^\/tasks\/([^/]+)\/fractal\/([^/]+)\/diff(?:\/file\/(.+?))?\/?$/))) return { key: d(m[1]), sel: { kind: 'task', id: d(r[1]) }, diff: { kind: 'fractal', task: d(r[1]), node: d(r[2]), file: r[3] ? d(r[3]) : null } };
-    if ((r = rest.match(/^\/final-review\/([^/]+)\/diff(?:\/file\/(.+?))?\/?$/))) return { key: d(m[1]), sel: { kind: 'final', name: d(r[1]) }, diff: { kind: 'final', name: d(r[1]), file: r[2] ? d(r[2]) : null } };
+    if ((r = rest.match(/^\/final-review\/([^/]+)\/diff(?:\/finding\/([^/]+))?(?:\/file\/(.+?))?\/?$/))) return { key: d(m[1]), sel: { kind: 'final', name: d(r[1]) }, diff: { kind: 'final', name: d(r[1]), finding: r[2] ? d(r[2]) : null, file: r[3] ? d(r[3]) : null } };
+    if ((r = rest.match(/^\/(?:tasks\/([^/]+)\/)?executions\/([^/]+)\/conversation\/?$/))) {
+      const s = r[1] ? { kind: 'execution', task: d(r[1]), id: d(r[1]), exec: d(r[2]) } : { kind: 'execution', task: null, exec: d(r[2]) };
+      const run = s.task && state.cache.get(d(m[1]))?.data, t = run && list(run.tasks).find(x => x.id === s.task);
+      if (t && list(t.shadow).some(x => x.execution === s.exec)) s.shadow = true;
+      return { key: d(m[1]), sel: s, convo: { task: s.task, exec: s.exec } };
+    }
     if ((r = rest.match(/^\/tasks\/([^/]+)\/executions\/([^/]+)\/?$/))) sel = { kind: 'execution', task: d(r[1]), id: d(r[1]), exec: d(r[2]) };
     if (sel && sel.kind === 'execution' && sel.task) {
       const run = state.cache.get(d(m[1]))?.data, t = run && list(run.tasks).find(x => x.id === sel.task);
@@ -110,16 +127,6 @@ window.ForgeUI = (() => {
     if (title) node.append(el('h2', title));
     parent.append(node);
     return node;
-  }
-  function fields(parent, entries) {
-    const dl = el('dl', undefined, 'fields');
-    for (const [label, value, mono] of entries) {
-      dl.append(el('dt', label));
-      const dd = el('dd', undefined, mono ? 'mono' : '');
-      dd.append(value instanceof Node ? value : document.createTextNode(display(value)));
-      dl.append(dd);
-    }
-    parent.append(dl);
   }
   function details(parent, title, value, key) {
     const node = el('details');
@@ -193,11 +200,15 @@ window.ForgeUI = (() => {
     banner.hidden = !state.errors.size;
   }
   function filteredRuns() {
-    return state.runs.filter(run => RM.matchRun(run, state.mapFilter, wall())).sort((a, b) => (b.updated || 0) - (a.updated || 0));
+    const runs = state.runs.filter(run => RM.matchRun(run, state.mapFilter, wall())), byTime = (a, b) => (b.updated || 0) - (a.updated || 0);
+    if (state.runSort === 'state') return runs.sort((a, b) => STATE_ORDER[RM.runState(a)] - STATE_ORDER[RM.runState(b)] || byTime(a, b));
+    if (state.runSort === 'repo') return runs.sort((a, b) => RM.basename(a.repo).localeCompare(RM.basename(b.repo)) || byTime(a, b));
+    return runs.sort(byTime);
   }
   function renderList() {
     const runs = filteredRuns();
-    $('run-count').textContent = `${runs.length} / ${state.runs.length}`;
+    $('run-count').textContent = `${runs.length}/${state.runs.length}`;
+    if ($('run-sort').value !== state.runSort) $('run-sort').value = state.runSort;
     if ($('filter').value !== state.mapFilter.text) $('filter').value = state.mapFilter.text;
     preserve($('run-list'), () => {
       if (!runs.length) {
@@ -213,15 +224,18 @@ window.ForgeUI = (() => {
         const item = link(undefined, run.key);
         item.className = 'run-item';
         item.dataset.run = run.key;
+        const st = RM.runState(run), lamp = el('i', undefined, 'lamp run-lamp st-' + LAMP[st]);
+        lamp.title = { live: 'running', failed: 'has failures', done: 'all done', pending: 'not started' }[st];
         const goal = el('strong', String(run.goal || 'Untitled run').split('\n')[0], 'run-goal');
         goal.title = run.goal || 'Untitled run';
         const solo = run.kind === 'solo';
-        item.append(goal, el('span', RM.basename(run.repo), 'repo'), el('span', run.run_id, 'mono'));
-        if (solo) item.append(el('span', 'solo', 'tag'));
-        const updated = el('span', relative(run.updated), 'muted updated');
-        if (run.updated != null) updated.dataset.epoch = run.updated;
+        const sub = el('span', undefined, 'run-sub');
+        const updated = el('span', relative(run.updated).replace(/^updated /, ''), 'updated');
+        if (run.updated != null) { updated.dataset.epoch = run.updated; updated.dataset.short = ''; }
         updated.title = time(run.updated);
-        item.append(updated);
+        sub.append(el('span', RM.basename(run.repo), 'repo'), el('span', run.run_id, 'mono'), updated);
+        item.append(lamp, goal, sub);
+        if (solo) item.append(el('span', 'solo', 'tag'));
         const counts = el('div', undefined, 'chips');
         for (const [status, count] of Object.entries(run.counts || {})) {
           const badge = chip(status);
@@ -261,6 +275,12 @@ window.ForgeUI = (() => {
       onOpenRun: key => { location.hash = hashFor(key, null); },
       onBack: () => { location.hash = '#/'; },
       onMode: mode => setMode(mode),
+      onLayers: L => { state.layers = L; store.set('layers', L); syncLayerKeys(); },   // the stage's I key
+      // a finding's mark: the diff that review read, opened at that finding
+      onFinding: d => {
+        location.hash = d.final ? diffHash(state.key, { kind: 'final', name: d.final, finding: d.finding.id })
+          : diffHash(state.key, { kind: 'task', task: d.task, source: d.review && d.review.execution || 'current', finding: d.finding.id });
+      },
       cloud: {
         onSelect: key => { location.hash = cloudHash(key, state.cloud && state.cloud.focus); },
         onFocus: pid => { location.hash = cloudHash(null, pid); },
@@ -272,6 +292,7 @@ window.ForgeUI = (() => {
     })).then(stage => {
       state.stage = stage; state.stageLoading = false;
       stage.setOverlay(state.overlay);
+      stage.setLayers(state.layers);
       stage.setReplay(state.replay);
       renderMain();
     }, err => {
@@ -356,7 +377,7 @@ window.ForgeUI = (() => {
   function renderFirstRun() {
     const main = $('main');
     if (main.dataset.view === 'first-run') return;
-    main.dataset.view = 'first-run'; delete main.dataset.run;
+    setView(main, 'first-run'); delete main.dataset.run;   // the shell lays out each view by <body data-view>
     main.replaceChildren();
     const v = section(main, undefined, 'first-run'); v.className = 'first-run';
     v.append(el('h1', 'No forge runs yet'),
@@ -372,17 +393,22 @@ window.ForgeUI = (() => {
     const main = $('main');
     if (state.listLoaded && !state.runs.length && !SNAP) { renderFirstRun(); return; }
     if (main.dataset.view !== 'map') {
-      main.dataset.view = 'map'; delete main.dataset.run;
+      setView(main, 'map'); delete main.dataset.run;
       main.replaceChildren();
       const v = section(main, undefined, 'map-view'); v.className = 'map-view';
+      const box = el('div', undefined, 'module map-head-module'); box.dataset.overlay = '';
       const head = el('div', undefined, 'map-head');
-      const toCloud = el('a', 'Open the run cloud', 'top-link'); toCloud.href = '#/cloud';
-      head.append(el('h1', 'All runs'), el('span', '', 'muted'), toCloud, viewToggle());
-      toCloud.classList.add('push');
-      v.append(head);
-      const bar = el('div'); bar.id = 'map-filters'; v.append(bar);
+      const toCloud = el('a', undefined, 'button push'); toCloud.href = '#/cloud'; toCloud.append(icon('cloud'), el('span', 'Run cloud'));
+      head.append(el('h1', 'All runs', 'module-title'), el('span', '', 'map-count'), viewToggle(), toCloud);
+      const bar = el('div'); bar.id = 'map-filters';
+      // on a phone the filters fold behind a key, so the map is the first thing on the screen
+      const fk = el('button', undefined, 'filters-key'); fk.type = 'button'; fk.setAttribute('aria-controls', 'map-filters'); fk.setAttribute('aria-expanded', 'false');
+      fk.append(icon('filter'), el('span', 'Filters'));
+      fk.addEventListener('click', () => { const open = box.dataset.filters !== 'open'; box.dataset.filters = open ? 'open' : 'closed'; fk.setAttribute('aria-expanded', String(open)); });
+      head.append(fk);
+      box.append(head, bar); v.append(box);
       const slot = el('div', undefined, 'stage-slot map'); slot.id = 'stage-slot'; v.append(slot);
-      const cards = el('div'); cards.id = 'map-cards'; v.append(cards);
+      const cards = el('div', undefined, 'map-cards-host'); cards.id = 'map-cards'; v.append(cards);
       rebuildBar = true;
     }
     if (rebuildBar) preserve($('map-filters'), () => filterBar($('map-filters')));
@@ -396,7 +422,7 @@ window.ForgeUI = (() => {
     } else {
       preserve($('map-cards'), () => { const A = mapCards($('map-cards')); info = { hidden: A.hidden, matches: A.matches, shown: A.modules.length, total: A.total }; });
     }
-    const counter = $('map-view').querySelector('.map-head .muted');
+    const counter = $('map-view').querySelector('.map-head .map-count');
     if (info) counter.textContent = `${info.matches} of ${info.shown} shown runs match${info.hidden ? ` · ${info.hidden} older hidden` : ''}`;
   }
 
@@ -404,7 +430,7 @@ window.ForgeUI = (() => {
   function renderCloud() {
     const main = $('main');
     if (main.dataset.view !== 'cloud' || !state.cloudUI) {
-      main.dataset.view = 'cloud'; delete main.dataset.run;
+      setView(main, 'cloud'); delete main.dataset.run;
       main.replaceChildren();
       const v = el('section', undefined, 'cloud-view'); v.id = 'cloud-view'; v.setAttribute('aria-label', 'Run cloud');
       const slot = el('div', undefined, 'stage-slot cloud'); slot.id = 'stage-slot'; v.append(slot);
@@ -430,18 +456,19 @@ window.ForgeUI = (() => {
   function renderModels() {
     const main = $('main');
     if (main.dataset.view !== 'models') {
-      main.dataset.view = 'models'; delete main.dataset.run;
+      setView(main, 'models'); delete main.dataset.run;
       main.replaceChildren();
       const v = el('section', undefined, 'models-view'); v.id = 'models-view'; main.append(v);
     }
     const host = $('models-view');
     if (!state.modelsData) {
-      host.replaceChildren(el('h1', 'Models'), el('p', state.modelsError ? `Could not load the model results (${state.modelsError}).` : 'Reading every run\'s attempts and reviews…', state.modelsError ? 'warn' : 'muted'));
+      host.replaceChildren(el('h1', 'Models', 'module-title'), el('p', state.modelsError ? `Could not load the model results (${state.modelsError}).` : 'Reading every run\'s attempts and reviews…', state.modelsError ? 'warn' : 'muted'));
       return;
     }
     window.ForgeLeaderboard.render(host, state.modelsData, {
       runs: state.runs, prefs: state.modelsPrefs, now: () => Date.now() / 1000,
       savePrefs: p => { state.modelsPrefs = p; store.set('models', p); },
+      tablePrefs: id => state.tablePrefs[id], saveTablePrefs: (id, p) => { state.tablePrefs = { ...state.tablePrefs, [id]: p }; store.set('tables', state.tablePrefs); },
       modelHref: alias => '#/cloud/models/' + encodeURIComponent(alias),
     });
   }
@@ -467,6 +494,7 @@ window.ForgeUI = (() => {
   function syncToggles() {
     for (const b of document.querySelectorAll('[data-dim]')) b.setAttribute('aria-pressed', String(b.dataset.dim === state.dim));
     for (const b of document.querySelectorAll('[data-mode]')) b.setAttribute('aria-pressed', String(b.dataset.mode === state.mode));
+    syncLayerKeys();
   }
   function setMode(mode) {
     if (mode === state.mode) return;
@@ -475,15 +503,20 @@ window.ForgeUI = (() => {
     syncToggles();
     const run = state.cache.get(state.key)?.data; if (run) renderRunBody(run);
   }
-  function toolbar(parent) {
+  // the header's last row: the push-button bank that sets what the stage shows, then the replay's time base
+  function toolbar(header) {
     const bar = el('div', undefined, 'run-toolbar'); bar.setAttribute('role', 'toolbar'); bar.setAttribute('aria-label', 'Run view');
     const modes = el('div', undefined, 'seg'); modes.setAttribute('role', 'group'); modes.setAttribute('aria-label', 'Plan or execution');
-    for (const [m, label, title] of [['plan', 'Planned waves', 'Tasks in the waves the plan put them in'], ['exec', 'Execution', 'Attempts on wall-clock time, in the lanes they really ran in (e)'],
+    for (const [m, label, title] of [['plan', 'Plan', 'Planned waves: the tasks in the waves the plan put them in'], ['exec', 'Execution', 'Attempts on wall-clock time, in the lanes they really ran in (e)'],
       ['files', 'Files', 'Which tasks planned, changed, drifted into or conflicted on which files']].filter(([m]) => m !== 'files' || window.ForgeFiles)) {
       const b = el('button', label); b.type = 'button'; b.dataset.mode = m; b.title = title; b.addEventListener('click', () => setMode(m)); modes.append(b);
     }
     bar.append(modes, viewToggle());
-    const ov = el('div', undefined, 'overlays');
+    const ov = el('div', undefined, 'overlays popover'); ov.popover = 'auto'; ov.id = 'view-pop'; ov.setAttribute('aria-label', 'What the stage shows');
+    ov.append(el('span', 'View', 'plate'));
+    const viewBtn = el('button', undefined, 'view-btn'); viewBtn.type = 'button'; viewBtn.popoverTargetElement = ov; viewBtn.setAttribute('aria-haspopup', 'true');
+    viewBtn.append(icon('layers'), el('span', 'View'), icon('chevron-up')); viewBtn.title = 'Height, colour, layers and marks';
+    ov.addEventListener('toggle', e => { if (e.newState === 'open') { syncLayerKeys(); placePopover(viewBtn, ov); } });
     const sel = (label, key, entries) => {
       const l = el('label', undefined, 'filter'); l.append(el('span', label));
       const s = el('select'); s.dataset.ov = key;
@@ -492,35 +525,83 @@ window.ForgeUI = (() => {
     };
     sel('Height', 'height', [['none', 'difficulty'], ['duration', 'duration'], ['tokens', 'tokens'], ['attempts', 'attempts']]);
     sel('Colour', 'color', [['status', 'status'], ['model', 'model'], ['duration', 'duration'], ['tokens', 'tokens']]);
-    for (const [key, label, title] of [['critical', 'Critical path', 'The chain of dependencies that bounded the wall time'], ['arcs', 'Review marks', 'Shadow disagreements and Clef rings'], ['ghosts', 'Projected', 'Where the tasks that have not started would run, by forge-schedule\'s rules']]) {
-      const l = el('label', undefined, 'filter check'); l.title = title;
-      const c = el('input'); c.type = 'checkbox'; c.checked = !!state.overlay[key]; c.dataset.ov = key;
-      l.append(c, document.createTextNode(' ' + label)); ov.append(l);
-    }
+    // push buttons, one per part of the drawing: its lamp lights while that part is drawn
+    const bankOf = (title, rows, attr) => {
+      const g = el('div', undefined, 'layer-bank'); g.setAttribute('role', 'group'); g.setAttribute('aria-label', title);
+      for (const [key, label, tip] of rows) {
+        const b = el('button', label, 'layer-key'); b.type = 'button'; b.dataset[attr] = key; b.title = tip; g.append(b);
+      }
+      ov.append(el('span', title, 'plate'), g);
+      return g;
+    };
+    bankOf('Layers', [['cables', 'Cables', 'The cables from each task to the tasks that wait on it'], ['beads', 'Flow', 'Beads flowing down the cables into running tasks'],
+      ['lamps', 'Lamps', 'The lamps on each block: one per attempt'], ['roof', 'Roof text', 'Task id, title, models and finding counts on each roof'],
+      ['labels', 'Readouts', 'The status line on the front of each block'], ['beacons', 'Findings', 'A mark over the block per review finding, shaped by its severity'],
+      ['finish', 'Finish line', 'Integration, verification and the final review'], ['districts', 'Districts', 'The wave and repository names on the plate'],
+      ['halos', 'Halos', 'The glow under running and chosen blocks'], ['route', 'Route', 'A chosen task keeps its route lit: what it waits on and what waits on it (I)']], 'layer');
+    bankOf('Marks', [['critical', 'Critical path', 'The chain of dependencies that bounded the wall time'], ['arcs', 'Review marks', 'Shadow disagreements and Clef rings'],
+      ['ghosts', 'Projected', 'Where the tasks that have not started would run, by forge-schedule\'s rules']], 'ov');
+    ov.addEventListener('click', e => {
+      const b = e.target.closest('.layer-key'); if (!b) return;
+      if (b.dataset.layer) {
+        const k = b.dataset.layer; state.layers[k] = !state.layers[k]; store.set('layers', state.layers);
+        if (state.stage) state.stage.setLayers({ [k]: state.layers[k] });
+      } else {
+        const k = b.dataset.ov; state.overlay[k] = !state.overlay[k]; store.set('overlay', state.overlay);
+        if (state.stage) state.stage.setOverlay({ [k]: state.overlay[k] });
+        const run = state.cache.get(state.key)?.data; if (run) renderRunBody(run);
+      }
+      syncLayerKeys();
+    });
     ov.addEventListener('input', e => {
       const k = e.target.dataset.ov; if (!k) return;
-      state.overlay[k] = e.target.type === 'checkbox' ? e.target.checked : e.target.value;
+      state.overlay[k] = e.target.value;
       store.set('overlay', state.overlay);
       if (state.stage) state.stage.setOverlay({ [k]: state.overlay[k] });
       const run = state.cache.get(state.key)?.data; if (run) renderRunBody(run);
     });
-    bar.append(ov);
+    bar.append(viewBtn, ov);
     const rp = el('div', undefined, 'replay'); rp.id = 'replay';
-    const play = el('button', '▶ Replay'); play.type = 'button'; play.dataset.act = 'play';
+    const play = el('button', undefined, 'icon-btn'); play.type = 'button'; play.dataset.act = 'play'; play.append(icon('play')); play.setAttribute('aria-label', 'Replay'); play.title = 'Replay the run';
     const range = el('input'); range.type = 'range'; range.min = '0'; range.max = '1000'; range.value = '1000'; range.dataset.act = 'scrub'; range.setAttribute('aria-label', 'Replay time');
     const speed = el('select'); speed.dataset.act = 'speed'; speed.setAttribute('aria-label', 'Replay speed');
     for (const v of [10, 60, 600]) { const o = el('option', `×${v}`); o.value = String(v); if (state.speed === v) o.selected = true; speed.append(o); }
-    const live = el('button', 'Live'); live.type = 'button'; live.dataset.act = 'live';
+    const live = el('button'); live.type = 'button'; live.dataset.act = 'live'; live.append(icon('live'), el('span', 'Live'));
     const at = el('span', '', 'muted mono'); at.dataset.act = 'at';
     rp.append(play, range, speed, live, at);
-    rp.addEventListener('click', e => { const a = e.target.dataset.act; if (a === 'play') togglePlay(); if (a === 'live') setReplay(null); });
+    rp.addEventListener('click', e => { const a = e.target.closest('[data-act]')?.dataset.act; if (a === 'play') togglePlay(); if (a === 'live') setReplay(null); });
     rp.addEventListener('input', e => {
       const a = e.target.dataset.act, run = state.cache.get(state.key)?.data; if (!run) return;
       if (a === 'scrub') { stopPlay(); const r = RM.timeRange(run, now()); if (r) setReplay(r.start + (r.end - r.start) * Number(e.target.value) / 1000); }
       if (a === 'speed') { state.speed = Number(e.target.value); store.set('speed', state.speed); }
     });
-    bar.append(rp);
-    parent.append(bar);
+    // the header's action slot: the run's record opens in the inspector, the export opens its dialog
+    const acts = el('div', undefined, 'run-actions');
+    const rec = el('button', undefined, 'details-btn'); rec.type = 'button'; rec.title = 'Settings, request, waves and verification output, in the inspector (2)';
+    rec.append(icon('panel-right'), el('span', 'Run details'));
+    rec.addEventListener('click', () => { Shell.toggle('insp', true); if (state.sel) select(null); });
+    acts.append(rec);
+    if (!SNAP) {
+      const ex = el('button', undefined, 'export-btn'); ex.type = 'button'; ex.title = 'Download this run as one HTML file to share';
+      ex.append(icon('download'), el('span', 'Export…'));
+      ex.addEventListener('click', () => { const run = state.cache.get(state.key)?.data; if (run) exportDialog(run); }); acts.append(ex);
+    }
+    bar.append(rp, acts);
+    header.append(bar);
+  }
+  // the View popover's push buttons: pressed in while their part is drawn; the layers are the 3D stage's own
+  function syncLayerKeys() {
+    for (const b of document.querySelectorAll('.layer-key')) {
+      const on = b.dataset.layer ? !!state.layers[b.dataset.layer] : !!state.overlay[b.dataset.ov];
+      b.setAttribute('aria-pressed', String(on));
+      if (b.dataset.layer) b.disabled = !use3d();
+    }
+  }
+  // a popover beside the button that opened it: above when the button sits low on the screen
+  function placePopover(btn, pop) {
+    const r = btn.getBoundingClientRect(), w = pop.offsetWidth, h = pop.offsetHeight, below = window.innerHeight - r.bottom > h + 16;
+    pop.style.left = Math.round(Math.max(8, Math.min(window.innerWidth - w - 8, r.left))) + 'px';
+    pop.style.top = Math.round(below ? r.bottom + 6 : Math.max(8, r.top - h - 6)) + 'px';
   }
   function syncReplay(run) {
     const rp = $('replay'); if (!rp) return;
@@ -529,8 +610,9 @@ window.ForgeUI = (() => {
     if (!r) return;
     const range = rp.querySelector('[data-act=scrub]'), at = rp.querySelector('[data-act=at]');
     range.value = String(state.replay === null ? 1000 : Math.round((state.replay - r.start) / Math.max(1, r.end - r.start) * 1000));
-    at.textContent = state.replay === null ? 'live' : `+${RM.fmtDur(state.replay - r.start)} · ${new Date(state.replay * 1000).toLocaleTimeString()}`;
-    rp.querySelector('[data-act=play]').textContent = state.playing ? '❚❚ Pause' : '▶ Replay';
+    at.textContent = state.replay === null ? '' : `+${RM.fmtDur(state.replay - r.start)} · ${new Date(state.replay * 1000).toLocaleTimeString()}`;   // live: the Live key's lamp says it
+    const playBtn = rp.querySelector('[data-act=play]');
+    if (playBtn.dataset.on !== String(!!state.playing)) { playBtn.dataset.on = String(!!state.playing); playBtn.replaceChildren(icon(state.playing ? 'pause' : 'play')); playBtn.setAttribute('aria-label', state.playing ? 'Pause' : 'Replay'); playBtn.title = state.playing ? 'Pause the replay' : 'Replay the run'; }
     rp.querySelector('[data-act=live]').disabled = state.replay === null;
   }
   function setReplay(t) {
@@ -539,19 +621,25 @@ window.ForgeUI = (() => {
     if (state.stage) state.stage.setReplay(state.replay);
     const run = state.cache.get(state.key)?.data; if (run) { renderRunBody(run); }
   }
-  function stopPlay() { if (state.playing) { clearInterval(state.playing); state.playing = null; } }
+  function stopPlay() { if (state.playing) { cancelAnimationFrame(state.playing); state.playing = null; } }
+  // the replay runs on the display's frames: the stage moves every frame, the panels around it four times a second
   function togglePlay() {
     const run = state.cache.get(state.key)?.data; if (!run) return;
     if (state.playing) { stopPlay(); syncReplay(run); return; }
     const r = RM.timeRange(run, now()); if (!r) return;
     if (state.replay === null || state.replay >= r.end) state.replay = r.start;
-    state.playing = setInterval(() => {
+    let last = performance.now(), painted = 0;
+    const step = t0 => {
       const run2 = state.cache.get(state.key)?.data, r2 = run2 && RM.timeRange(run2, now());
       if (!r2) { stopPlay(); return; }
-      const t = Math.min(r2.end, state.replay + state.speed * .2);
-      setReplay(t);
-      if (t >= r2.end) { stopPlay(); syncReplay(run2); }
-    }, 200);
+      const t = Math.min(r2.end, state.replay + state.speed * Math.min(.25, (t0 - last) / 1000)); last = t0;
+      state.replay = t;
+      if (state.stage && use3d()) state.stage.setReplay(t);
+      if (t0 - painted > 250 || t >= r2.end || !use3d()) { painted = t0; renderRunBody(run2); } else syncReplay(run2);
+      if (t >= r2.end) { state.playing = null; syncReplay(run2); return; }
+      state.playing = requestAnimationFrame(step);
+    };
+    state.playing = requestAnimationFrame(step);
     syncReplay(run);
   }
   // A copy of the run whose statuses are what they were at time t (for the 2D views during a replay).
@@ -561,60 +649,74 @@ window.ForgeUI = (() => {
     return { ...run, tasks: list(run.tasks).map(t => ({ ...t, status: s.tasks[t.id] ? s.tasks[t.id].status : t.status })) };
   }
   function renderHeader(run) {
-    const head = $('run-head');
+    const head = $('run-head').querySelector('.run-head-body');
     preserve(head, () => {
       const solo = run.kind === 'solo';
-      head.append(el('h2', String(run.goal || 'Untitled run').split('\n')[0]));
-      const meta = el('p', undefined, 'run-meta');
-      meta.append(el('span', RM.basename(run.repo), 'repo'), el('span', run.run_id, 'mono'), el('span', solo ? 'solo run' : `${run.task_count} tasks · ${list(run.waves).length} waves`),
-        el('span', relative(run.updated), 'muted'));
-      const counts = el('span', undefined, 'chips');
-      for (const [s, n] of Object.entries(run.counts || {})) { const c = chip(s); c.append(document.createTextNode(' ' + n)); counts.append(c); }
-      meta.append(counts);
-      if (!SNAP) {
-        const ex = el('button', 'Export…', 'export-btn'); ex.type = 'button'; ex.title = 'Download this run as one HTML file to share';
-        ex.addEventListener('click', () => exportDialog(run)); meta.append(ex);
-      }
-      head.append(meta);
-      const more = el('details', undefined, 'run-more'); more.dataset.keep = 'run-more';
-      more.append(el('summary', 'Run details'));
-      fields(more, [['Repo', run.repo, true], ['Run ID', run.run_id, true], ['Path', run.path, true], ['Source', run.source],
-        ['Decompose', run.decompose_level], ['Updated', time(run.updated)], ['Explore', run.settings?.explore], ['Shadow rate', run.settings?.shadow_rate],
-        ['Shadow reviewers', list(run.settings?.shadow_qa).join(', '), true], ['QA threshold', run.settings?.qa_threshold], ['Max parallel', run.settings?.max_parallel],
-        ['Final reviewer', run.settings?.final_qa, true], ['Timeout (seconds)', run.settings?.timeout], ['Verification', chip(run.verification?.status || run.verification_status)],
-        ['Command', run.verification?.command, true]]);
-      details(more, 'Request', run.request, 'run-request');
-      if (!solo) details(more, 'Waves', list(run.waves).map((ids, i) => `${i + 1}: ${list(ids).join(', ')}`).join('\n') || '—', 'waves');
-      if (run.verification?.log_tail != null) details(more, 'Verification output', run.verification.log_tail, 'verification-output');
-      head.append(more);
+      // one line: the run's lamp, its goal, where it ran, and the describer
+      const row = el('div', undefined, 'run-title-row');
+      const lamp = el('i', undefined, 'lamp st-' + LAMP[RM.runState(run)]);
+      const title = el('h2', String(run.goal || 'Untitled run').split('\n')[0]); title.title = run.goal || '';
+      const where = el('span', undefined, 'run-where'); where.title = `${run.repo || ''}\n${run.run_id || ''}`;
+      where.append(el('span', RM.basename(run.repo), 'repo'), document.createTextNode(' '), el('span', run.run_id, 'mono'));
+      if (solo) where.append(document.createTextNode(' · solo run'));
+      // the describer: each state's count, the wall time so far, and how long since anything moved
+      const desc = el('span', undefined, 'describer');
+      for (const [s, n] of Object.entries(run.counts || {})) { const d = el('span', undefined, 'desc-count'); d.append(el('i', undefined, 'lamp st-' + String(s).toLowerCase()), document.createTextNode(` ${s} ${n}`)); desc.append(d); }
+      const r = RM.timeRange(run, now());
+      if (r) desc.append(el('span', `WALL ${RM.fmtDur(r.end - r.start)}`, 'dim'));
+      const upd = el('span', relative(run.updated).replace(/^updated /, ''), 'dim updated'); upd.title = 'Last activity ' + time(run.updated);
+      if (run.updated != null) { upd.dataset.epoch = run.updated; upd.dataset.short = ''; }
+      desc.append(upd);
+      row.append(lamp, title, where, desc); head.append(row);
       if (list(run.warnings).length) details(head, `Reader warnings (${run.warnings.length})`, run.warnings.join('\n'), 'warnings');
       if (list(run.truncated).length) details(head, 'Truncated fields', run.truncated.join('\n'), 'truncated');
       scoped(head, run.key + ':');
     });
   }
+  const SEV_RANK = { P0: 0, P1: 1, P2: 2, P3: 3 };
+  const DIFF_RANK = { low: 0, medium: 1, high: 2 };
+  function taskColumns(run) {
+    const sev = f => f && f.worst ? `${f.worst} ×${f[f.worst]}` : f && f.plausible ? `~${f.plausible}` : '—';
+    const busy = task => RM.taskTimes(task, null, now()).busy || null;
+    return [
+      { id: 'id', label: 'ID', mono: true, value: t => t.id, cell: t => link(t.id, run.key, { kind: 'task', id: t.id }) },
+      { id: 'title', label: 'Title', value: t => t.title },
+      { id: 'difficulty', label: 'Difficulty', value: t => DIFF_RANK[t.difficulty] ?? null, cell: t => display(t.difficulty) },
+      { id: 'wave', label: 'Wave', value: t => Number.isFinite(Number(t.wave)) && t.wave !== null && t.wave !== '' ? Number(t.wave) : null, cell: t => display(t.wave) },
+      { id: 'status', label: 'Status', value: t => t.status, cell: t => chip(t.status) },
+      { id: 'dwarf', label: 'Dwarf', value: t => t.dwarf, cell: t => window.ForgeIcons.modelPlate(t.dwarf) },
+      { id: 'qa', label: 'QA', value: t => t.qa, cell: t => window.ForgeIcons.modelPlate(t.qa) },
+      { id: 'attempt', label: 'Attempt', value: t => Number(t.attempt) || null, cell: t => display(t.attempt) },
+      { id: 'verdict', label: 'Verdict', value: t => t.verdict, cell: t => chip(t.verdict) },
+      { id: 'findings', label: 'Findings', title: 'The worst confirmed severity and how many; ~n plausible only',
+        value: t => t.findings && t.findings.worst ? SEV_RANK[t.findings.worst] * 1000 - (t.findings[t.findings.worst] || 0) : t.findings && t.findings.plausible ? 4000 : null,
+        cell: t => { const f = t.findings, v = sev(f); if (!f || !f.worst) return v; const n = el('span', v, 'sev-chip sev-' + f.worst); return n; } },
+      { id: 'busy', label: 'Busy', value: busy, cell: t => RM.fmtDur(busy(t)) },
+      { id: 'explored', label: '* Explored / propensity', hidden: true, title: 'Tasks whose model forge drew at random, with the pick\'s propensity',
+        value: t => t.explored ? 1 : null,
+        cell: t => { const picks = list(t.route).filter(r => r.explored); return t.explored ? '* ' + (picks.length ? picks.map(r => `${display(r.chosen)} p=${display(r.propensity)}`).join('; ') : 'p=—') : '—'; } },
+      { id: 'deps', label: 'Deps', hidden: true, value: t => list(t.deps).length || null,
+        cell: t => { const deps = el('span', undefined, 'mono'); list(t.deps).forEach((id, i) => { if (i) deps.append(document.createTextNode(', ')); deps.append(link(id, run.key, { kind: 'task', id })); }); if (!deps.hasChildNodes()) deps.textContent = '—'; return deps; } },
+      { id: 'branch', label: 'Branch', mono: true, hidden: true, value: t => t.branch },
+    ];
+  }
   function renderTable(run) {
-    const host = $('run-tasks');
+    const host = $('run-tasks'); if (!host) return;
+    const box = host.closest('.tasks-module'), count = box && box.querySelector('.module-count');
+    if (count) count.textContent = run.kind === 'solo' ? '' : String(list(run.tasks).length);
+    const tools = box && box.querySelector('.module-tools');
+    let slot = tools && tools.querySelector('.dt-tools');
+    if (tools && !slot) { slot = el('span', undefined, 'dt-tools'); tools.prepend(slot); }
     preserve(host, () => {
-      if (run.kind === 'solo') return;
-      host.append(el('h2', `Tasks (${list(run.tasks).length})`));
-      if (!list(run.tasks).length) { host.append(el('p', 'This run has no tasks yet.', 'empty')); return; }
-      const sev = f => f && f.worst ? `${f.worst} ×${f[f.worst]}` : f && f.plausible ? `~${f.plausible}` : '—';
-      const rows = list(run.tasks).map(task => {
-        const picks = list(task.route).filter(r => r.explored);
-        const exploration = task.explored ? '* ' + (picks.length ? picks.map(r => `${display(r.chosen)} p=${display(r.propensity)}`).join('; ') : 'p=—') : '—';
-        const deps = el('span', undefined, 'mono');
-        list(task.deps).forEach((id, i) => { if (i) deps.append(document.createTextNode(', ')); deps.append(link(id, run.key, { kind: 'task', id })); });
-        if (!deps.hasChildNodes()) deps.textContent = '—';
-        return [link(task.id, run.key, { kind: 'task', id: task.id }), task.title, task.difficulty, task.wave, chip(task.status),
-          task.dwarf, task.qa, task.attempt, chip(task.verdict), sev(task.findings), RM.fmtDur(RM.taskTimes(task, null, now()).busy || null), exploration, deps, task.branch];
-      });
-      const body = table(host, ['ID', 'Title', 'Difficulty', 'Wave', 'Status', 'Dwarf', 'QA', 'Attempt', 'Verdict', 'Findings', 'Busy', '* Explored / propensity', 'Deps', 'Branch'], rows, 'Tasks');
-      Array.from(body.children).forEach((row, i) => {
-        const id = run.tasks[i].id;
-        row.classList.toggle('selected', !!state.sel && (state.sel.id === id || state.sel.task === id));
-        row.addEventListener('click', event => {
-          if (!event.target.closest('a') && !window.getSelection()?.toString()) select({ kind: 'task', id });
-        });
+      if (run.kind === 'solo') { if (slot) slot.replaceChildren(); return; }
+      if (!list(run.tasks).length) { if (slot) slot.replaceChildren(); host.append(el('p', 'This run has no tasks yet.', 'empty')); return; }
+      Table.render(host, {
+        id: 'tasks', label: 'Tasks', columns: taskColumns(run), rows: list(run.tasks), tools: slot, scrollKey: 'Tasks',
+        prefs: state.tablePrefs.tasks, savePrefs: p => { state.tablePrefs = { ...state.tablePrefs, tasks: p }; store.set('tables', state.tablePrefs); },
+        rowClass: t => state.sel && (state.sel.id === t.id || state.sel.task === t.id) ? 'selected' : '',
+        onRow: (t, tr) => tr.addEventListener('click', event => {
+          if (!event.target.closest('a, button') && !window.getSelection()?.toString()) select({ kind: 'task', id: t.id });
+        }),
       });
       scoped(host, run.key + ':');
     });
@@ -628,6 +730,7 @@ window.ForgeUI = (() => {
         fetchJSON: path => fetchJSON(path).then(r => r.data),
         rerender: () => { const r = state.cache.get(state.key)?.data; if (r) renderInspector(r); },
         hash: s => hashFor(run.key, s), onSelect: s => select(s), diffHash: spec => diffHash(run.key, spec),
+        convoHash: s => convoHash(run.key, s),
         onFractal: (id, data) => { if (state.stage && state.stage.setFractal) state.stage.setFractal(id, data); },
       });
       scoped(host, run.key + ':');
@@ -672,6 +775,15 @@ window.ForgeUI = (() => {
       diffHref: (task, path) => diffHash(run.key, { kind: 'task', task, source: 'current', file: path }),
       prefs: state.filesPrefs, savePrefs: p => { state.filesPrefs = p; store.set('files', p); } });
   }
+  // every review's findings of the run, for the stage's marks: read again when the run changes
+  function syncFindings(run) {
+    const key = run.key, c = state.findings.get(key) || {};
+    if (c.data && state.stage) state.stage.setFindings(c.data);
+    if (c.updated === run.updated || c.pending === run.updated) return;
+    c.pending = run.updated; state.findings.set(key, c);
+    fetchJSON(`/api/runs/${encodeURIComponent(key)}/findings`).then(r => { c.data = r.data; }, () => {})
+      .finally(() => { c.updated = c.pending; c.pending = null; if (state.key === key && state.stage && c.data) state.stage.setFindings(c.data); });
+  }
   function loadFiles(run) {
     const key = run.key, updated = run.updated, c = state.files.get(key) || {};
     if (c.pending === updated) return;
@@ -679,14 +791,22 @@ window.ForgeUI = (() => {
     fetchJSON(`/api/runs/${encodeURIComponent(key)}/files`).then(r => { c.data = r.data; c.error = null; c.at = Date.now(); }, e => { c.error = e.message; })
       .finally(() => { c.updated = updated; c.pending = null; const cur = state.cache.get(state.key)?.data; if (cur && cur.key === key) renderFiles(cur); });
   }
-  // the diff viewer takes the stage's place while it is open
+  // the diff viewer, or an execution's conversation, takes the stage's place while it is open
   function renderDiff(run) {
     const host = $('diff-view'), view = $('run-view'); if (!host || !view) return;
-    const open = !!state.diff && !!window.ForgeDiff;
-    view.classList.toggle('diff-open', open); host.hidden = !open;
-    if (!open) { host.replaceChildren(); host.diffSig = ''; return; }
-    window.ForgeDiff.render(host, { run, spec: state.diff, fetchJSON: path => fetchJSON(path).then(r => r.data),
-      rerender: () => { const r = state.cache.get(state.key)?.data; if (r) renderDiff(r); },
+    const kind = state.convo && window.ForgeConvo ? 'convo' : state.diff && window.ForgeDiff ? 'diff' : null;
+    view.classList.toggle('diff-open', !!kind); host.hidden = !kind;
+    if (host.dataset.kind !== (kind || '')) { host.replaceChildren(); host.diffSig = ''; host.convoFrame = null; host.dataset.kind = kind || ''; }
+    if (!kind) return;
+    const rerender = () => { const r = state.cache.get(state.key)?.data; if (r) renderDiff(r); };
+    if (kind === 'convo') {
+      const sel = state.sel, task = sel.task ? list(run.tasks).find(t => t.id === sel.task) : run.kind === 'solo' ? list(run.tasks)[0] : null;
+      const brief = list(task && task.executions).find(e => e.id === state.convo.exec) || null;
+      window.ForgeConvo.render(host, { run, spec: { task: task ? task.id : null, exec: state.convo.exec }, brief, live: !SNAP,
+        fetchJSON: path => fetchJSON(path).then(r => r.data), rerender, diffHash: spec => diffHash(run.key, spec), closeHref: hashFor(run.key, state.sel) });
+      return;
+    }
+    window.ForgeDiff.render(host, { run, spec: state.diff, fetchJSON: path => fetchJSON(path).then(r => r.data), rerender,
       href: spec => diffHash(run.key, spec), closeHref: hashFor(run.key, state.sel) });
   }
   function renderRunBody(run) {
@@ -694,7 +814,7 @@ window.ForgeUI = (() => {
     syncToggles();
     syncReplay(run);
     placeStage($('stage-slot'));
-    if (use3d() && state.stage) state.stage.showRun(run, { mode: state.stageMode, sel: state.sel });
+    if (use3d() && state.stage) { state.stage.showRun(run, { mode: state.stageMode, sel: state.sel }); syncFindings(run); }
     render2d(run);
     renderStrip(run);
     renderFiles(run);
@@ -705,24 +825,32 @@ window.ForgeUI = (() => {
     if (main.dataset.view !== 'run' || main.dataset.run !== run.key) {
       stopPlay(); state.replay = null;
       if (state.stage) state.stage.setReplay(null);
-      main.dataset.view = 'run'; main.dataset.run = run.key;
+      setView(main, 'run'); main.dataset.run = run.key;
       main.replaceChildren();
-      const head = el('section', undefined, 'run-header'); head.id = 'run-head'; main.append(head);
       const view = el('section', undefined, 'run-view'); view.id = 'run-view'; main.append(view);
-      toolbar(view);
+      const head = el('section', undefined, 'run-header'); head.id = 'run-head'; head.dataset.overlay = '';
+      head.append(el('div', undefined, 'run-head-body')); view.append(head);
+      toolbar(head);
+      // what floats below the header (the 2D views) starts under it, however many rows it wraps to
+      if (window.ResizeObserver) new ResizeObserver(() => document.body.style.setProperty('--head-h', head.offsetHeight + 'px')).observe(head);
       const row = el('div', undefined, 'stage-row');
       const col = el('div', undefined, 'stage-col');
       const slot = el('div', undefined, 'stage-slot'); slot.id = 'stage-slot';
       const g2 = el('div', undefined, 'graph'); g2.id = 'graph2d'; g2.dataset.scroll = 'graph';
       const files = el('div', undefined, 'files-view'); files.id = 'files-view'; files.hidden = true;
       col.append(slot, g2, files);
-      const insp = el('aside', undefined, 'inspector'); insp.id = 'inspector'; insp.setAttribute('aria-label', 'Inspector'); insp.tabIndex = -1;
-      row.append(col, insp); view.append(row);
+      const module = el('aside', undefined, 'module insp-module'); module.setAttribute('aria-label', 'Inspector'); module.dataset.overlay = '';
+      const insp = el('div', undefined, 'inspector'); insp.id = 'inspector'; insp.tabIndex = -1;
+      module.append(Shell.head('insp', 'Inspector'), insp, Shell.splitter('insp'));
+      row.append(col, module); view.append(row);
       const strip = el('div', undefined, 'strip-wrap'); strip.id = 'strip'; view.append(strip);
-      const diff = el('section', undefined, 'diff-view'); diff.id = 'diff-view'; diff.hidden = true; view.append(diff);
-      const tasks = el('section', undefined, 'run-tasks'); tasks.id = 'run-tasks'; main.append(tasks);
-      window.scrollTo(0, 0);
+      const diff = el('section', undefined, 'diff-view'); diff.id = 'diff-view'; diff.hidden = true; diff.tabIndex = -1; view.append(diff);
+      const box = el('section', undefined, 'module tasks-module'); box.setAttribute('aria-label', 'Tasks'); box.dataset.overlay = '';
+      const tasks = el('div', undefined, 'run-tasks'); tasks.id = 'run-tasks';
+      box.append(Shell.head('tasks', 'Tasks', ''), tasks, Shell.splitter('tasks'));
+      view.append(box);
     }
+    document.body.classList.toggle('no-tasks', run.kind === 'solo');
     ensureStage();
     renderHeader(run);
     renderRunBody(run);
@@ -731,6 +859,7 @@ window.ForgeUI = (() => {
   }
   function renderMain() {
     document.body.classList.toggle('cloud-mode', !!state.cloud);
+    if (!state.key) document.body.classList.remove('no-tasks');
     if (state.cloud) { renderCloud(); return; }
     if (state.models) { renderModels(); return; }
     if (!state.key) { renderMap(); return; }
@@ -798,7 +927,7 @@ window.ForgeUI = (() => {
     }, 'Could not refresh run', error => {
       if (state.key !== key || state.cache.has(key)) return;
       if (error.status === 404) state.errors.delete('/api/runs/' + encodeURIComponent(key));
-      $('main').dataset.view = 'waiting';
+      setView($('main'), 'waiting');
       $('main').replaceChildren(el('p', error.status === 404 ?
         'Waiting for this run to appear… checking again while this tab is visible. If its directory was removed, pick another run.' :
         'Could not load this run. Select another run, or leave refresh enabled to retry.', 'empty'));
@@ -813,9 +942,13 @@ window.ForgeUI = (() => {
     }
     const keyChanged = parsed.key !== state.key;
     state.key = parsed.key;
+    const selWas = JSON.stringify(state.sel || null);
     state.sel = parsed.sel;
-    const diffWas = JSON.stringify(state.diff || null);
+    // a selection is read in the inspector, so choosing one opens it
+    if (state.sel && JSON.stringify(state.sel) !== selWas && document.body.dataset.insp !== 'open') Shell.toggle('insp', true);
+    const diffWas = JSON.stringify(state.diff || null), convoWas = JSON.stringify(state.convo || null);
     state.diff = parsed.diff || null;
+    state.convo = parsed.convo || null;
     state.cloud = parsed.cloud || null;
     state.models = !!parsed.models;
     if (state.cloud && state.cloud.model) {                  // a model's runs: the cloud, filtered to it
@@ -823,6 +956,7 @@ window.ForgeUI = (() => {
       history.replaceState(null, '', '#/cloud'); state.cloud.model = null;
     }
     document.body.classList.toggle('cloud-mode', !!state.cloud);
+    if (!state.key) document.body.classList.remove('no-tasks');
     for (const a of document.querySelectorAll('.topbar .top-link')) {
       const here = a.getAttribute('href') === (state.cloud ? '#/cloud' : state.models ? '#/models' : !state.key ? '#/' : null);
       if (here) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
@@ -836,11 +970,12 @@ window.ForgeUI = (() => {
     if (cached) {
       if (keyChanged) renderRun(cached.data);
       else { renderRunBody(cached.data); renderTable(cached.data); }
-    } else { $('main').dataset.view = 'loading'; $('main').replaceChildren(el('p', 'Loading run…', 'empty')); }
+    } else { setView($('main'), 'loading'); $('main').replaceChildren(el('p', 'Loading run…', 'empty')); }
     loadRun(state.key);
     // a selection made on the stage keeps the keyboard there (← → walk the tasks); one made elsewhere moves it to the inspector
-    if (state.diff) {
-      const opened = diffWas === 'null' || JSON.stringify({ ...JSON.parse(diffWas), file: null }) !== JSON.stringify({ ...state.diff, file: null });
+    if (state.diff || state.convo) {
+      const opened = state.convo ? convoWas !== JSON.stringify(state.convo) :
+        diffWas === 'null' || JSON.stringify({ ...JSON.parse(diffWas), file: null }) !== JSON.stringify({ ...state.diff, file: null });
       if (opened && $('diff-view')) { $('run-view').scrollIntoView({ block: 'start' }); $('diff-view').focus({ preventScroll: true }); }
     } else if (state.sel && !keyChanged && !stageHost.contains(document.activeElement)) $('inspector')?.focus({ preventScroll: true });
   }
@@ -858,7 +993,7 @@ window.ForgeUI = (() => {
     loadList();
     if (state.key) loadRun(state.key);
     if (state.models) loadModels();
-    for (const node of document.querySelectorAll('[data-epoch]')) node.textContent = relative(node.dataset.epoch);
+    for (const node of document.querySelectorAll('[data-epoch]')) { const t = relative(node.dataset.epoch); node.textContent = node.dataset.short !== undefined ? t.replace(/^updated /, '') : t; }
   }
   // Poll faster while something runs, slower otherwise; never with refresh off, and a hidden tab only to notify.
   function schedule() {
@@ -929,8 +1064,10 @@ window.ForgeUI = (() => {
     if (window.ForgeSearch) window.ForgeSearch.init({ runs: () => state.runs, commands, go: href => { location.hash = href; }, cloudFilter });
     if (window.ForgeNotify) window.ForgeNotify.init({ go: href => { location.hash = href; } });
     $('filter').addEventListener('input', event => { state.mapFilter.text = event.target.value; filterChanged(true); });
+    $('run-sort').addEventListener('change', event => { state.runSort = event.target.value; store.set('run-sort', state.runSort); renderList(); });
     $('refresh').addEventListener('change', event => { state.paused = !event.target.checked; refresh(); });
     window.addEventListener('hashchange', navigate);
+    if (Shell) Shell.onChange(() => { if (state.stage && !state.cloud) requestAnimationFrame(() => state.stage.reframe && state.stage.reframe()); });
     document.addEventListener('visibilitychange', refresh);
     window.addEventListener('resize', () => { const run = !state.cloud && state.cache.get(state.key)?.data; if (run && (!use3d() || !state.stage || state.stageMode === 'exec')) { render2d(run); renderStrip(run); } });
     loadList();

@@ -63,8 +63,9 @@ window.ForgeLeaderboard = (() => {
   function modelCell(alias, ctx, few) {
     const td = el('td', undefined, 'lb-model');
     const href = ctx.modelHref ? ctx.modelHref(alias) : null;
-    if (href) { const a = el('a', alias, 'mono lb-alias'); a.href = href; a.title = 'show its runs in the cloud'; td.append(a); }
-    else td.append(el('span', alias, 'mono'));
+    const plate = window.ForgeIcons ? window.ForgeIcons.modelPlate(alias) : el('span', alias, 'mono');
+    if (href) { const a = el('a', undefined, 'lb-alias'); a.href = href; a.title = 'show its runs in the cloud'; a.append(plate); td.append(a); }
+    else td.append(plate);
     if (few) { const s = el('span', 'few', 'lb-few'); s.title = few; td.append(s); }
     return td;
   }
@@ -96,11 +97,6 @@ window.ForgeLeaderboard = (() => {
     td.title = `input ${count(t.input)} (cached ${count(t.cached)}) · output ${count(t.output)} · recorded by ${count(used)} of ${plural(total, unit)}`;
     return td;
   }
-  function head(table, cols) {
-    const thead = el('thead'), tr = el('tr');
-    for (const [label, cls, title] of cols) { const th = el('th', label, cls || ''); th.scope = 'col'; if (title) th.title = title; tr.append(th); }
-    thead.append(tr); table.append(thead);
-  }
 
   /* ---------- implementers ---------- */
   const IMPL_COLS = [
@@ -116,31 +112,31 @@ window.ForgeLeaderboard = (() => {
     ['Median model time', 'lb-num', 'Median time in the model phase per attempt'],
     ['Tokens in / out', 'lb-num', 'Summed over the attempts that recorded tokens'],
   ];
+  const colsOf = (spec, cells) => spec.map(([label, cls, title], i) => ({ ...cells[i], label, cls, title }));
+  // a sortable, reorderable table (datatable.js); one set of preferences per kind of table, shared by its copies
+  function table(id, label, columns, rows, ctx, rowClass) {
+    const host = el('div', undefined, 'lb-dt');
+    window.ForgeTable.render(host, { id, label, columns, rows, className: 'lb-table', rowClass,
+      prefs: ctx.tablePrefs ? ctx.tablePrefs(id) : null, savePrefs: p => ctx.saveTablePrefs && ctx.saveTablePrefs(id, p) });
+    return host;
+  }
   function implementerTable(rows, ctx, minN, caption) {
-    const wrap = el('div', undefined, 'table-scroll'), table = el('table', undefined, 'lb-table');
-    table.append(el('caption', caption, 'visually-hidden'));
-    head(table, IMPL_COLS);
-    const body = el('tbody');
-    for (const r of rows) {
-      const tr = el('tr', undefined, r.small ? 'lb-small' : '');
-      const reasons = Object.entries(r.first.reasons).map(([k, v]) => `${v} ${k.replace(/_/g, ' ')}`).join(', ');
-      const tk = r.timeoutKinds;
-      tr.append(
-        modelCell(r.alias, ctx, r.small ? `Fewer than ${plural(minN, 'first-attempt outcome')}: too few to rank` : ''),
-        numCell(r.tasks),
-        rateCell(r.first),
-        numCell(r.first.censored, reasons || undefined),
-        numCell(r.retries),
-        numCell(r.escalationsAway),
-        numCell(r.timeouts, r.timeouts ? `implementer ${tk.implementer} · reviewer ${tk.reviewer} · forge ${tk.forge}` : undefined),
-        numCell(r.gateAccepts),
-        numCell(r.humanAccepts),
-        numCell(dur(r.medianModelS), `median wall time per attempt ${dur(r.medianDurationS)}`),
-        tokenCell(r.tokens, r.attempts.total, 'attempt'));
-      body.append(tr);
-    }
-    table.append(body); wrap.append(table);
-    return wrap;
+    const tk = r => r.timeoutKinds;
+    const columns = colsOf(IMPL_COLS, [
+      { id: 'model', value: r => r.alias, cell: r => modelCell(r.alias, ctx, r.small ? `Fewer than ${plural(minN, 'first-attempt outcome')}: too few to rank` : '') },
+      { id: 'tasks', value: r => r.tasks, cell: r => numCell(r.tasks) },
+      { id: 'pass', value: r => r.first.n ? r.first.lo : null, cell: r => rateCell(r.first) },
+      { id: 'censored', value: r => r.first.censored, cell: r => numCell(r.first.censored, Object.entries(r.first.reasons).map(([k, v]) => `${v} ${k.replace(/_/g, ' ')}`).join(', ') || undefined) },
+      { id: 'retries', value: r => r.retries, cell: r => numCell(r.retries) },
+      { id: 'escalated', value: r => r.escalationsAway, cell: r => numCell(r.escalationsAway) },
+      { id: 'timeouts', value: r => r.timeouts, cell: r => numCell(r.timeouts, r.timeouts ? `implementer ${tk(r).implementer} · reviewer ${tk(r).reviewer} · forge ${tk(r).forge}` : undefined) },
+      { id: 'gate', value: r => r.gateAccepts, cell: r => numCell(r.gateAccepts) },
+      { id: 'human', value: r => r.humanAccepts, cell: r => numCell(r.humanAccepts) },
+      { id: 'model-time', value: r => num(r.medianModelS), cell: r => numCell(dur(r.medianModelS), `median wall time per attempt ${dur(r.medianDurationS)}`) },
+      { id: 'tokens', value: r => (r.tokens.attempts ?? r.tokens.reviews) ? (r.tokens.input || 0) + (r.tokens.output || 0) : null, cell: r => tokenCell(r.tokens, r.attempts.total, 'attempt') },
+    ]);
+    columns[2].title += '. Sorts by the lower end of the interval, as the ranking does';
+    return table('implementers', caption, columns, rows, ctx, r => r.small ? 'lb-small' : '');
   }
 
   /* ---------- reviewers ---------- */
@@ -176,7 +172,7 @@ window.ForgeLeaderboard = (() => {
     const avg = r.findings[s];
     if (avg === null) return numCell('—', 'No review reply could be read');
     const td = numCell(avg === 0 ? 0 : avg.toFixed(avg < 10 ? 2 : 1), `${count(r.findingTotals[s])} confirmed ${s} over ${plural(r.findings.n, 'review')}`);
-    if (s === 'P0' && avg > 0) td.classList.add('lb-p0', 'st-fail');
+    if (s === 'P0' && avg > 0) td.classList.add('lb-p0');
     return td;
   }
   function agreementCell(a) {
@@ -187,25 +183,25 @@ window.ForgeLeaderboard = (() => {
     return td;
   }
   function reviewerTable(rows, ctx) {
-    const wrap = el('div', undefined, 'table-scroll'), table = el('table', undefined, 'lb-table');
-    table.append(el('caption', 'Reviewers', 'visually-hidden'));
-    head(table, REV_COLS);
-    const body = el('tbody');
-    for (const r of rows) {
-      const tr = el('tr');
-      tr.append(modelCell(r.alias, ctx, ''), numCell(r.reviews.primary), numCell(r.reviews.shadow), numCell(r.reviews.final), verdictCell(r.verdicts),
-        ...MS.SEVERITIES.map(s => findingCell(r, s)), agreementCell(r.agreement), numCell(dur(r.medianDurationS)), tokenCell(r.tokens, r.reviews.total, 'review'));
-      body.append(tr);
-    }
-    table.append(body); wrap.append(table);
-    return wrap;
+    const columns = colsOf(REV_COLS, [
+      { id: 'model', value: r => r.alias, cell: r => modelCell(r.alias, ctx, '') },
+      { id: 'primary', value: r => r.reviews.primary, cell: r => numCell(r.reviews.primary) },
+      { id: 'shadow', value: r => r.reviews.shadow, cell: r => numCell(r.reviews.shadow) },
+      { id: 'final', value: r => r.reviews.final, cell: r => numCell(r.reviews.final) },
+      { id: 'verdicts', value: r => { const v = r.verdicts, t = v.PASS + v.FAIL + v.other; return t ? v.PASS / t : null; }, cell: r => verdictCell(r.verdicts) },
+      ...MS.SEVERITIES.map(sv => ({ id: 'sev-' + sv, value: r => r.findings[sv], cell: r => findingCell(r, sv) })),
+      { id: 'agreement', value: r => r.agreement.n ? r.agreement.p : null, cell: r => agreementCell(r.agreement) },
+      { id: 'time', value: r => num(r.medianDurationS), cell: r => numCell(dur(r.medianDurationS)) },
+      { id: 'tokens', value: r => (r.tokens.attempts ?? r.tokens.reviews) ? (r.tokens.input || 0) + (r.tokens.output || 0) : null, cell: r => tokenCell(r.tokens, r.reviews.total, 'review') },
+    ]);
+    return table('reviewers', 'Reviewers', columns, rows, ctx);
   }
 
   /* ---------- header, caveat and filters ---------- */
   function header(L, O, f, update, withNote) {
     const t = L.totals, frag = document.createDocumentFragment();
     const top = el('header', undefined, 'lb-head');
-    top.append(el('h1', 'Models'), el('p', `${plural(t.runs, 'run')} · ${plural(t.tasks, 'task')} · ${plural(t.attempts, 'attempt')} · ${plural(t.reviews, 'review')} counted`, 'muted lb-summary'));
+    top.append(el('h1', 'Models', 'module-title'), el('p', `${plural(t.runs, 'run')} · ${plural(t.tasks, 'task')} · ${plural(t.attempts, 'attempt')} · ${plural(t.reviews, 'review')} counted`, 'muted lb-summary'));
     const note = el('div', undefined, 'lb-caveat'); note.setAttribute('role', 'note');
     const p = el('p');
     p.append(el('strong', 'Observational, not causal. '), document.createTextNode('Forge routes each task to a model by its difficulty and by how models did before, so a model sent the hard tasks looks worse here than it is. Exploratory picks, the tasks where forge drew the model at random, are the fairest comparison.'));
@@ -276,12 +272,12 @@ window.ForgeLeaderboard = (() => {
       root.append(emptyNote('No tasks or reviews match these filters.', [], reset));
     } else {
       const impl = el('section', undefined, 'lb-section');
-      impl.append(el('h2', 'Implementers'), el('p', 'Each task counts once, for the model that ran its first attempt; retries, escalations and accepts show what happened after. Ranked by the lower end of the 95% interval, so a high rate on few tasks does not jump the table.', 'lb-lead'));
+      impl.append(el('h2', 'Implementers', 'plate'), el('p', 'Each task counts once, for the model that ran its first attempt; retries, escalations and accepts show what happened after. Ranked by the lower end of the 95% interval, so a high rate on few tasks does not jump the table.', 'lb-lead'));
       impl.append(L.implementers.length ? implementerTable(L.implementers, ctx, f.minN, 'Implementers') : el('p', 'No attempts with a recorded model match these filters.', 'muted'));
       root.append(impl);
       if (!f.difficulty && L.implementers.length) {
         const by = el('section', undefined, 'lb-section');
-        by.append(el('h2', 'By difficulty'), el('p', 'The same table for the tasks of one declared difficulty: the comparison routing distorts least.', 'lb-lead'));
+        by.append(el('h2', 'By difficulty', 'plate'), el('p', 'The same table for the tasks of one declared difficulty: the comparison routing distorts least.', 'lb-lead'));
         for (const d of MS.DIFFS) {
           const rows = L.byDifficulty[d];
           if (!rows.length) continue;
@@ -299,7 +295,7 @@ window.ForgeLeaderboard = (() => {
         root.append(by);
       }
       const rev = el('section', undefined, 'lb-section');
-      rev.append(el('h2', 'Reviewers'), el('p', 'Primary reviews of each attempt, shadow reviews run beside them and final reviews of a whole run. Findings are confirmed findings per review.', 'lb-lead'));
+      rev.append(el('h2', 'Reviewers', 'plate'), el('p', 'Primary reviews of each attempt, shadow reviews run beside them and final reviews of a whole run. Findings are confirmed findings per review.', 'lb-lead'));
       rev.append(L.reviewers.length ? reviewerTable(L.reviewers, ctx) : el('p', 'No reviews with a recorded model match these filters.', 'muted'));
       root.append(rev);
     }

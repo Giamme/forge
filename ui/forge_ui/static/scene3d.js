@@ -9,6 +9,8 @@
    All text from the API is drawn on canvases or set with textContent, never parsed as HTML. */
 import { createEngine } from './iso.js';
 import { createCloud } from './cloud3d.js';
+import { createBeacons } from './findings3d.js';
+import { createControls } from './stagectl.js';
 
 const RM = window.ForgeRunModel;
 const list = v => Array.isArray(v) ? v : [];
@@ -17,7 +19,6 @@ const clamp = v => Math.max(0, Math.min(1, v));
 const segT = (v, a, b) => clamp((v - a) / (b - a));
 const ez = t => t < .5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
 const back = t => t <= 0 ? 0 : t >= 1 ? 1 : 1 + 2.2 * Math.pow(t - 1, 3) + 1.2 * Math.pow(t - 1, 2);
-const SEV_STATUS = { P0: 'fail', P1: 'conflict', P2: 'timeout', P3: 'unknown' };
 const MODEL_PALETTE = ['#4e9af1', '#f08c3a', '#6cc070', '#c46fd8', '#e0c341', '#4fc2c0', '#e06a8c', '#9a8cff', '#a3b84a', '#d98f6b'];
 const KIND_H = { dwarf: 24, qa: 13, shadow: 12 };
 
@@ -31,15 +32,19 @@ export async function createStage(host, cb = {}) {
 
   const st = { view: null, mode: 'plan', run: null, runs: [], filter: {}, atlasOpts: {}, sel: null, hover: null, replay: null,
     overlay: { height: 'none', color: 'status', critical: false, arcs: true, ghosts: true },
+    // what the stage draws, each switchable (the toolbar's Layers): see applyLayers
+    // route: a chosen task's lineage stays lit, what it waits on and what waits on it (I)
+    layers: { cables: true, beads: true, lamps: true, roof: true, labels: true, beacons: true, finish: true, districts: true, halos: true, route: true },
+    findings: null,
     structure: '', execSig: '', atlasSig: '', rebuilds: 0, fade: null, plan: null, exec: null, atlas: null, crit: null, now: Date.now() / 1000 };
   let world = null;                                         // the group of the current view
-  let EL = new Map(), PICK = [], FLOWS = [], PROG = new Map();
+  let EL = new Map(), PICK = [], FLOWS = [], PROG = new Map(), DISTRICTS = [], EXEC_BY = null;
   const nowSec = () => st.run ? RM.liveNow(st.run, Date.now() / 1000) : Date.now() / 1000;
 
   /* ---------- elements: a block, a part or a lane item, each with its own materials ---------- */
   function newEl(id, kind, g, n, data) {
     const el = { id, kind, g, n, data, status: 'PENDING', col: E.statusColor('pending'), root: new THREE.Group(), cover: new THREE.Group(),
-      M: E.mats(), cur: { vis: 1, sel: 0, hov: 0, lit: 0, op: 1, opB: 1, tint: 0, halo: 0, hk: 1 }, tgt: { vis: 1, sel: 0, hov: 0, lit: 0, op: 1, opB: 1, tint: 0, halo: 0, hk: 1 },
+      M: E.mats(), cur: { vis: 1, sel: 0, hov: 0, lit: 0, op: 1, opB: 1, tint: 0, halo: 0, hk: 1, route: 0 }, tgt: { vis: 1, sel: 0, hov: 0, lit: 0, op: 1, opB: 1, tint: 0, halo: 0, hk: 1, route: 0 },
       texts: [], sig: '', pulse: false, offset: new THREE.Vector3(), fadeK: 1 };
     el.root.add(el.cover); g.add(el.root); EL.set(id, el);
     return el;
@@ -51,7 +56,7 @@ export async function createStage(host, cb = {}) {
     E.roofPlate(x + 1, y + 1, z + h + .08, w - 2, d - 2, r - 1, el.tintMat, el.cover);
     el.haloMat = E.softMat(0xffffff, true);
     const hm = E.noRay(new THREE.Mesh(new THREE.PlaneGeometry((w + 80) * TS, (d + 80) * TS), el.haloMat));
-    hm.rotation.x = -Math.PI / 2; hm.position.copy(W(x + w / 2, y + d / 2, z + .5)); el.root.add(hm);
+    hm.rotation.x = -Math.PI / 2; hm.position.copy(W(x + w / 2, y + d / 2, z + .5)); el.root.add(hm); el.haloMesh = hm;
     return m;
   }
   // a row of status lamps on a roof: one geometry, a colour per lamp
@@ -66,15 +71,15 @@ export async function createStage(host, cb = {}) {
     geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
     geo.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
     const mat = new THREE.MeshBasicMaterial({ vertexColors: true, toneMapped: false, transparent: true, polygonOffset: true, polygonOffsetFactor: -4, polygonOffsetUnits: -12 });
-    el.cover.add(E.noRay(new THREE.Mesh(geo, mat))); el.M.labs.push(mat);
-    el.leds = { geo, n };
+    const mesh = E.noRay(new THREE.Mesh(geo, mat)); el.cover.add(mesh); el.M.labs.push(mat);
+    el.leds = { geo, n, mesh };
   }
   function setLeds(el, statuses) {
     if (!el.leds) return;
     const a = el.leds.geo.attributes.color;
     for (let i = 0; i < el.leds.n; i++) {
       const s = statuses[i];
-      const c = s ? E.statusColor(s) : E.DETAIL;
+      const c = !s ? E.DETAIL : s.isColor ? s : E.statusColor(s);   // a state, or a colour of its own (a severity)
       for (let k = 0; k < 6; k++) a.setXYZ(i * 6 + k, c.r, c.g, c.b);
     }
     a.needsUpdate = true;
@@ -88,11 +93,11 @@ export async function createStage(host, cb = {}) {
   function baseTargets(el) {
     const T = el.tgt, s = el.status, light = E.theme === 'light';
     T.lit = PLAIN.has(s) ? 0 : .32;
-    T.tint = PLAIN.has(s) ? 0 : light ? .09 : .1;
+    T.tint = PLAIN.has(s) ? 0 : light ? .34 : .1;          // a pale panel shows a lit section by its colour: no glow to carry it
     T.vis = 1; T.op = 1; T.opB = 1;
     if (s === 'PENDING' || s === 'NONE') { T.opB = .55; T.op = .8; }
     // parts are small: their status has to read from the colour of the whole piece
-    if (el.kind === 'part' && !PLAIN.has(s)) { T.tint = light ? .28 : .32; T.lit = .55; }
+    if (el.kind === 'part' && !PLAIN.has(s)) { T.tint = light ? .5 : .32; T.lit = .55; }
   }
   // a label plane on the roof or the front, redrawn only when what it shows changes
   function label(el, w, h, P, draw, where, at) {
@@ -111,7 +116,7 @@ export async function createStage(host, cb = {}) {
     return w;
   }
   function display(el, text, { w, x, y, z }) {
-    return label(el, w, 16, 4, (cx, s, C) => {
+    return el.disp = label(el, w, 16, 4, (cx, s, C) => {
       cx.fillStyle = C.glassOff; cx.strokeStyle = el.cur.sel > .5 ? C.acc : C.detail; cx.lineWidth = Math.max(1, .5 * s);
       E.rr(cx, s, .5, .5, w - 1, 15, 3); cx.fill(); cx.stroke();
       cx.fillStyle = E.statusHex(el.status); cx.beginPath(); cx.arc(7 * s, 8 * s, 2.6 * s, 0, 7); cx.fill();
@@ -135,7 +140,7 @@ export async function createStage(host, cb = {}) {
         E.font(x, f, s); x.letterSpacing = `${(f * .14 * s).toFixed(1)}px`; x.fillStyle = dd.warn ? E.statusHex('fail') : C.ink;
         x.fillText(name, 0, f * 1.05 * s, tw * s); x.letterSpacing = '0px';
       }, plateG);
-      E.roofAt(t, dd.x + 18, dd.y + 12, 0);
+      E.roofAt(t, dd.x + 18, dd.y + 12, 0); DISTRICTS.push(t);
     }
     return plateG;
   }
@@ -190,7 +195,8 @@ export async function createStage(host, cb = {}) {
       display(el, e => runInfo(e.data.run), { w: w - 24, x: x + 12, y: y + d, z: h - 8 });
       halo(el);
     }
-    E.frameBox([-34, -34, -16, A.px + 34, A.py + 34, 80], st.atlasFramed ? 700 : 1400, 30);
+    st.atlasBox = [-34, -34, -16, A.px + 34, A.py + 34, 80];
+    E.frameBox(st.atlasBox, st.atlasFramed ? 700 : 1400, 30);
     st.atlasFramed = true;
   }
   function updateAtlas() {
@@ -240,11 +246,11 @@ export async function createStage(host, cb = {}) {
       let bx = 2;
       const f = tk.findings;
       if (f && (f.confirmed || f.plausible)) {
-        for (const sev of ['P0', 'P1', 'P2', 'P3']) if (f[sev]) bx += chip(cx, s, C, bx, 64, `${sev}×${f[sev]}`, E.statusHex(SEV_STATUS[sev])) + 3;
+        for (const sev of ['P0', 'P1', 'P2', 'P3']) if (f[sev]) bx += chip(cx, s, C, bx, 64, `${sev}×${f[sev]}`, E.sevHex(sev)) + 3;
         if (f.unlabelled) bx += chip(cx, s, C, bx, 64, `?×${f.unlabelled}`, E.statusHex('unknown')) + 3;
       }
       if (tk.gate && tk.gate.decision === 'accept') bx += chip(cx, s, C, bx, 64, 'gate ok', E.statusHex('pass')) + 3;
-      if (st.overlay.arcs && list(tk.shadow).some(x => x.agreement === 'disagree')) bx += chip(cx, s, C, bx, 64, '⚑ shadow', E.statusHex('conflict')) + 3;
+      if (st.overlay.arcs && list(tk.shadow).some(x => x.agreement === 'disagree')) bx += chip(cx, s, C, bx, 64, 'shadow ≠', E.statusHex('conflict')) + 3;
       if (tk.accepted_by) chip(cx, s, C, bx, 64, 'accepted', E.statusHex('nochanges'));
     }, 'cover', { x: x + 12, y: y + 8, z: h });
     const tries = Math.max(1, list(t.attempts).length);
@@ -285,7 +291,7 @@ export async function createStage(host, cb = {}) {
       if (fi.status === 'NONE') { cx.setLineDash([2.4 * s, 1.8 * s]); cx.strokeStyle = C.line; cx.lineWidth = Math.max(1, .3 * s); E.rr(cx, s, .5, .5, w - 25, d - 29, 5); cx.stroke(); cx.setLineDash([]); }
       E.font(cx, 15, s, 600); cx.fillStyle = sel ? C.accHi : C.inkHi; cx.fillText(fi.title || '', 4 * s, 17 * s);
       const sub = E.fit(fi.sub || '', w - 34, 22, 9.5, 2, 5); if (sub) E.lines(cx, s, sub, 4, 23, C.ink, w - 34, 400);
-      if (fi.findings) { let bx = 4; for (const sev of ['P0', 'P1', 'P2', 'P3']) if (fi.findings[sev]) bx += chip(cx, s, C, bx, 46, `${sev}×${fi.findings[sev]}`, E.statusHex(SEV_STATUS[sev])) + 3;
+      if (fi.findings) { let bx = 4; for (const sev of ['P0', 'P1', 'P2', 'P3']) if (fi.findings[sev]) bx += chip(cx, s, C, bx, 46, `${sev}×${fi.findings[sev]}`, E.sevHex(sev)) + 3;
         if (fi.findings.plausible) chip(cx, s, C, bx, 46, `~${fi.findings.plausible}`, E.statusHex('pending'), { fill: false }); }
     }, 'cover', { x: x + 12, y: y + 8, z: h });
     if (m.id === 'f:final') { leds(el, 4, x + 18, y + d - 13, h + .16, { step: 11, s: 3 }); }
@@ -301,7 +307,7 @@ export async function createStage(host, cb = {}) {
     return info.status || 'PENDING';
   }
   function finishLeds(el) {
-    if (el.id === 'f:final') { const f = finishInfo(el.id).findings || {}; setLeds(el, ['P0', 'P1', 'P2', 'P3'].map(s => f[s] ? SEV_STATUS[s].toUpperCase() : null)); }
+    if (el.id === 'f:final') { const f = finishInfo(el.id).findings || {}; setLeds(el, ['P0', 'P1', 'P2', 'P3'].map(s => f[s] ? E.sevColor(s) : null)); }
     else if (el.id === 'f:integration') setLeds(el, list(st.run.tasks).map(t => taskStatus(t) === 'MERGED' ? 'MERGED' : null));
     else setLeds(el, list(st.run.verification && st.run.verification.runs).map(r => r.exit === 0 ? 'PASS' : 'FAIL'));
   }
@@ -361,7 +367,7 @@ export async function createStage(host, cb = {}) {
           const sp = E.fit(pt.spec || '—', cw - 2 * pad, ch - f1 * 1.6 - pad * 2, 6, 2, 2.5);
           if (sp) E.lines(cx, s, sp, pad, pad + f1 * 1.35, Cc.ink, cw - 2 * pad, 400);
           const fs = pt.exec && pt.exec.findings || pt.shadow && pt.shadow.findings;
-          if (fs && fs.worst) chip(cx, s, Cc, pad, ch - pad - 6 * 1.6, `${fs.worst}×${fs[fs.worst]}`, E.statusHex(SEV_STATUS[fs.worst]), { f: Math.min(5, ch * .14) });
+          if (fs && fs.worst) chip(cx, s, Cc, pad, ch - pad - 6 * 1.6, `${fs.worst}×${fs[fs.worst]}`, E.sevHex(fs.worst), { f: Math.min(5, ch * .14) });
         }, 'cover', { x: zx, y: n.y, z: ph });
         el.kids.push(k);
       });
@@ -386,6 +392,7 @@ export async function createStage(host, cb = {}) {
       el.innerFlows.push(f);
     }
     syncFractal(el);
+    applyLayers();
   }
   /* ---------- Fractal: an opened task's child tasks, a small tree floating over it ---------- */
   const FRACTAL = new Map();                                // task id → TaskFractal
@@ -499,7 +506,7 @@ export async function createStage(host, cb = {}) {
         E.rr(cx, s, 1 + sx, by, Math.min(sw, lw - 2 - sx), 8, 2); cx.fill(); cx.globalAlpha = 1;
         if (sw > 26) { E.font(cx, 5.5, s, 600); cx.fillStyle = C.bg; cx.fillText(sg.role === 'qa' ? 'QA' : 'DWARF', (3 + sx) * s, (by + 6) * s); }
       }
-      if (item.findings && item.findings.worst) chip(cx, s, C, 1, by - 12, `${item.findings.worst}×${item.findings[item.findings.worst]}`, E.statusHex(SEV_STATUS[item.findings.worst]), { f: 5 });
+      if (item.findings && item.findings.worst) chip(cx, s, C, 1, by - 12, `${item.findings.worst}×${item.findings[item.findings.worst]}`, E.sevHex(item.findings.worst), { f: 5 });
       if (item.ghost) { cx.setLineDash([2 * s, 1.6 * s]); cx.strokeStyle = C.line; cx.lineWidth = Math.max(1, .3 * s); E.rr(cx, s, .5, .5, lw - 1, it.d - 15, 3); cx.stroke(); cx.setLineDash([]); }
     }, 'cover', { x: it.x + 5, y: it.y + 6, z: h });
     if (it.w > 70) display(el, attemptLine, { w: Math.min(it.w - 10, 150), x: it.x + 5, y: it.y + it.d, z: h - 6 });
@@ -507,12 +514,181 @@ export async function createStage(host, cb = {}) {
     return el;
   }
 
+  /* ---------- finding beacons: each review finding as a mark over the block it is about ---------- */
+  const BEACONS = createBeacons(E, { reduce });
+  E.scene.add(BEACONS.group);
+  const SEV_RANK = { P0: 0, P1: 1, P2: 2, P3: 3 };
+  const byRank = (a, b) => (SEV_RANK[a.f.severity] ?? 4) - (SEV_RANK[b.f.severity] ?? 4) || (a.f.status === 'CONFIRMED' ? 0 : 1) - (b.f.status === 'CONFIRMED' ? 0 : 1);
+  const planOff = el => [el.offset.x / TS, el.offset.z / TS];
+  // the i-th of n marks, in a grid of up to five a row centred on (cx, cy)
+  function grid(i, n, cx, cy, step) {
+    const cols = Math.min(n, 5), rows = Math.ceil(n / cols), c = i % cols, r = Math.floor(i / cols);
+    return [cx + (c - (cols - 1) / 2) * step, cy + (r - (rows - 1) / 2) * step];
+  }
+  // the execution view's block holding an execution (an attempt holds its dwarf's and its review's)
+  function execEl(id) {
+    if (!EXEC_BY) {
+      EXEC_BY = new Map();
+      for (const el of EL.values()) { const it = el.data && el.data.item; if (!it || it.ghost) continue;
+        EXEC_BY.set(it.id, el); for (const g of list(it.segs)) if (g.id) EXEC_BY.set(g.id, el);
+        if (it.kind === 'review' && it.review) EXEC_BY.set('final:' + it.review, el); }
+    }
+    return EXEC_BY.get(id) || null;
+  }
+  // a mark's foot on a block's roof: [x, y, z, scale]
+  function over(el, i, n, step, scale) {
+    // lying flat (top-down) the marks keep to the roof's right edge, off its text
+    const cx = BEACONS.flat ? el.n.x + el.n.w - Math.min(el.n.w / 2, step * .7) : el.n.x + el.n.w / 2;
+    const [ox, oy] = planOff(el), [x, y] = grid(i, n, cx + ox, el.n.y + el.n.d / 2 + oy, step);
+    return [x, y, el.n.h, scale];
+  }
+  // where a task's finding stands: over the roof (the latest attempt's, while the task is shut), on the review
+  // that found it (while it is open), on its attempt (execution); null hides it
+  function anchorTask(tid, r, ri, rn, j, jn, shown) {
+    if (!st.layers.beacons || st.fade || !shown(r)) return null;
+    const u = BEACONS.unit * 1.15;                         // marks a little more than their width apart
+    if (st.mode === 'exec') { const el = execEl(r.execution); return el && el.cur.vis > .5 ? over(el, j, jn, u * .7, .7) : null; }
+    const el = EL.get('t:' + tid); if (!el || el.cur.vis < .5) return null;
+    const pr = PROG.get(el.id), p = pr ? pr.p : 0;
+    if (p > .5) {
+      const k = (el.kids || []).find(k => k.data.part.exec && k.data.part.exec.id === r.execution);
+      if (!k || (k.q || 0) < .6) return null;
+      const [ox, oy] = planOff(el), [x, y] = grid(j, jn, k.n.x + k.n.w / 2 + ox, k.n.y + k.n.d / 2 + oy, u * .5);
+      return [x, y, k.n.h * (k.q || 1), .5];
+    }
+    if (ri < 0 || p > .15) return null;
+    const a = over(el, ri, rn, u, 1); a[2] = el.n.h * el.cur.hk + el.cover.position.y / TS;
+    return a;
+  }
+  function anchorFinal(name, i, n, shown, review) {
+    if (!st.layers.beacons || !st.layers.finish || st.fade || !shown(review)) return null;
+    const el = st.mode === 'exec' ? execEl('final:' + name) : EL.get('f:final');
+    const s = st.mode === 'exec' ? .7 : .9;
+    return el && el.cur.vis > .5 ? over(el, i, n, BEACONS.unit * 1.15 * s, s) : null;
+  }
+  function syncBeacons() {
+    const F = st.findings, run = st.run;
+    if (st.view !== 'run' || !run || !F || F.run !== run.key) { BEACONS.set([]); return; }
+    // in a replay a finding shows once its review has finished
+    const ends = new Map();
+    for (const t of list(run.tasks)) for (const e of list(t.executions)) ends.set(e.id, num(e.ended));
+    for (const fr of list(run.final_reviews)) if (fr.execution) ends.set(fr.execution, num(fr.ended));
+    const shown = r => st.replay === null || (r.execution && ends.get(r.execution) != null && ends.get(r.execution) <= st.replay);
+    const items = [], solo = run.kind === 'solo';
+    for (const tf of list(F.tasks)) {
+      const tid = solo ? (list(run.tasks)[0] || {}).id : tf.id; if (!tid) continue;
+      const latest = Math.max(...tf.reviews.map(r => r.attempt ?? 0));
+      const roof = tf.reviews.filter(r => (r.attempt ?? 0) === latest).flatMap(r => r.findings.map(f => ({ f, r }))).sort(byRank);
+      for (const r of tf.reviews) {
+        const mine = r.findings.map(f => ({ f, r })).sort(byRank);
+        mine.forEach(({ f }, j) => {
+          const ri = roof.findIndex(x => x.f.id === f.id && x.r === r);
+          items.push({ key: `${run.key}:${tid}:${f.id}`, sev: f.severity, plausible: f.status !== 'CONFIRMED', data: { task: tid, review: r, finding: f },
+            anchor: () => anchorTask(tid, r, ri, roof.length, j, mine.length, shown) });
+        });
+      }
+    }
+    const fr = list(F.final_reviews)[0];                     // the newest final review's
+    if (fr) {
+      const review = { kind: 'final', execution: fr.execution, spec: fr.spec, verdict: fr.verdict };
+      fr.findings.map(f => ({ f })).sort(byRank).forEach(({ f }, i, arr) => items.push({ key: `${run.key}:final:${fr.name}:${f.id}`, sev: f.severity,
+        plausible: f.status !== 'CONFIRMED', data: { final: fr.name, review, finding: f }, anchor: () => anchorFinal(fr.name, i, arr.length, shown, review) }));
+    }
+    BEACONS.set(items);
+  }
+  // the layers the toolbar switches; a frame never turns these back on
+  function applyLayers() {
+    const L = st.layers, finishOff = id => !L.finish && String(id || '').startsWith('f:');
+    for (const f of FLOWS) f.line.visible = f.cone.visible = L.cables && !finishOff(f.from) && !finishOff(f.to);
+    for (const el of EL.values()) {
+      if (el.leds) el.leds.mesh.visible = L.lamps;
+      if (el.roof) el.roof.mesh.visible = L.roof && !el.roofTiny;
+      if (el.disp) el.disp.mesh.visible = L.labels;
+      if (el.haloMesh) el.haloMesh.visible = L.halos;
+      if (el.kind === 'finish') el.root.visible = L.finish;
+      if (el.kind === 'review' || el.kind === 'verification') el.root.visible = L.finish;
+    }
+    for (const t of DISTRICTS) t.mesh.visible = L.districts;
+    BEACONS.setVisible(L.beacons && st.view === 'run');
+    E.invalidate(100);
+  }
+
+  /* ---------- name tags: a roof too small to read gets its name floating over it, facing the screen ---------- */
+  const CM = window.ForgeCloudModel;
+  const TAGS = new Map();                                   // element id → screen sprite
+  const ID_FONT = 21, TAG_PX = 20, TINY = 3.5;             // the roof id's size in plan units; px: a tag, a roof too small to draw
+  const READ = 7 / Math.sqrt(Math.min(2, window.devicePixelRatio || 1));   // px at which a roof's id still reads (sharper on a dense screen)
+  let tagAt = 0, tagKey = '';
+  const SV = new THREE.Vector3();
+  function screenOf(v) { SV.copy(v).project(E.camera); const [VW, VH] = E.size; return { x: (SV.x + 1) / 2 * VW, y: (1 - SV.y) / 2 * VH, on: SV.z < 1 && Math.abs(SV.x) < 1.02 && Math.abs(SV.y) < 1.02 }; }
+  function tagText(el) {
+    if (el.kind === 'task') return el.data.task.id;
+    if (el.kind === 'finish') return el.data.name || '';
+    if (el.kind === 'run') return E.ellipsis(String(el.data.run.goal || el.data.run.run_id || '').split('\n')[0], 34);
+    const it = el.data.item; return it ? it.task || it.review || it.kind || '' : '';
+  }
+  // the elements a tag can name in the view shown: plan blocks, the attempts on the time axis, the map's runs
+  function taggable(el) {
+    if (st.view === 'atlas') return el.kind === 'run';
+    if (el.kind === 'part' || el.kind === 'ghost' || !el.root.parent) return false;
+    return st.mode === 'plan' ? el.g === st.planG : el.g === st.execG;
+  }
+  function roofTop(el) { el.root.updateWorldMatrix(true, false); return el.root.localToWorld(W(el.n.x + el.n.w / 2, el.n.y + el.n.d / 2, el.n.h * (el.cur.hk || 1) + el.cover.position.y / TS)); }
+  function tagFor(el) {
+    let t = TAGS.get(el.id); if (t) return t;
+    const id = el.id, text = tagText(el), w = Math.ceil(text.length * 11 * E.CW) + 26;
+    t = E.sprite(w, 22, 3, (x, s, C) => {
+      const cur = EL.get(id) || el, col = E.statusHex(cur.status);
+      E.rr(x, s, 1, 1, w - 2, 20, 6); x.globalAlpha = .92; x.fillStyle = C.bg; x.fill(); x.globalAlpha = 1;
+      x.strokeStyle = sameSel(cur) ? C.acc : C.line; x.lineWidth = Math.max(1, s); x.stroke();
+      x.fillStyle = col; x.beginPath(); x.arc(10 * s, 11 * s, 3.2 * s, 0, 7); x.fill();
+      E.font(x, 11, s, 600); x.fillStyle = C.inkHi; x.fillText(text, 18 * s, 15 * s);
+    }, { screen: true, px: TAG_PX });
+    t.mesh.center.set(.5, -.2); t.mat.depthTest = false; t.mesh.renderOrder = 6;
+    world.add(t.mesh); TAGS.set(id, t); return t;
+  }
+  const sameSel = el => st.sel && selIds().has(el.id);
+  function updateTags() {
+    const on = st.layers.roof && (st.view === 'run' || st.view === 'atlas'), cands = [], sel = selIds();
+    E.camera.updateMatrixWorld();                           // the frame step runs before the render that would update it
+    for (const el of EL.values()) {
+      if (!on || !taggable(el)) continue;
+      const top = roofTop(el), p = screenOf(top);
+      const b = screenOf(top.clone().add(W(ID_FONT, 0, 0))), px = Math.hypot(b.x - p.x, b.y - p.y);
+      const tiny = px < TINY && st.view === 'run';
+      if (el.roof && el.roofTiny !== tiny) { el.roofTiny = tiny; el.roof.mesh.visible = st.layers.roof && !tiny; }
+      if (!p.on || px >= READ || el.tgt.vis < .5) continue;
+      const w = (Math.ceil(tagText(el).length * 11 * E.CW) + 26) * TAG_PX / 22;
+      cands.push({ key: el.id, x: p.x, y: p.y - 4, w: w + 8, h: TAG_PX + 6, pri: (sel.has(el.id) ? 1e9 : 0) + (el.id === st.hover ? 1e8 : 0) + (el.status === 'RUNNING' ? 1e6 : 0) + px });
+    }
+    // a finding's mark is never covered: its head goes in first, as a place no tag may take
+    if (st.view === 'run' && st.layers.beacons) {
+      const sz = BEACONS.unit * 2.2 * E.pxPerUnit();
+      BEACONS.items.forEach((it, i) => { if (!it.head || it.hidden) return; const h = screenOf(W(...it.head)); if (h.on) cands.push({ key: 'beacon:' + i, x: h.x, y: h.y + sz * .45, w: sz * .8, h: sz, pri: 1e12 }); });
+    }
+    const keep = new Set(CM ? CM.labelPick(cands, { max: (st.view === 'atlas' ? 10 : 40) + cands.filter(c => c.pri === 1e12).length }).filter(k => !k.startsWith('beacon:')) : []);
+    for (const [id, t] of TAGS) if (!keep.has(id)) t.mesh.visible = false;
+    for (const id of keep) {
+      const el = EL.get(id), t = tagFor(el), look = el.status + '|' + sameSel(el);
+      if (t.look !== look) { t.look = look; t.redraw(); }
+      t.mesh.visible = true; t.mesh.position.copy(roofTop(el));
+    }
+  }
+  // each frame: the tags follow the camera, at most every 120 ms, and once more when it settles
+  function tagsTick(now) {
+    const c = E.camera, key = [c.position.x, c.position.y, c.position.z, c.zoom || 1, ...E.size].map(v => v.toFixed(4)).join() + st.view + st.mode + st.hover + JSON.stringify(st.sel) + st.layers.roof + st.rebuilds;
+    if (key === tagKey) return false;
+    if (now - tagAt < 120) return true;
+    tagAt = now; tagKey = key; updateTags(); return false;
+  }
+
   /* ---------- building a view ---------- */
   function clearWorld() {
     if (world) E.disposeGroup(world);
     world = new THREE.Group(); E.scene.add(world);
-    EL = new Map(); PICK = []; FLOWS = []; PROG = new Map();
+    EL = new Map(); PICK = []; FLOWS = []; PROG = new Map(); DISTRICTS = []; EXEC_BY = null; TAGS.clear(); tagKey = '';
     st.plan = st.exec = st.atlas = null; st.fade = null;
+    BEACONS.set([]);
     hideTip();
   }
   function buildRun() {
@@ -522,6 +698,7 @@ export async function createStage(host, cb = {}) {
     buildPlan(pg); buildExec(xg);
     pg.visible = st.mode === 'plan'; xg.visible = st.mode === 'exec';
     computeCritical();
+    syncBeacons(); applyLayers();
     retarget();
   }
   function rebuildExec() {
@@ -529,6 +706,7 @@ export async function createStage(host, cb = {}) {
     PICK = PICK.filter(o => { let p = o; while (p) { if (p === st.execG) return false; p = p.parent; } return true; });
     E.disposeGroup(st.execG); st.execG = new THREE.Group(); world.add(st.execG);
     buildExec(st.execG); st.execG.visible = st.mode === 'exec' || !!st.fade; st.rebuilds++; st.execDirty = false;
+    EXEC_BY = null; applyLayers();
   }
   function boxOf(which) {
     const P = which === 'exec' ? st.exec : st.plan;
@@ -558,7 +736,7 @@ export async function createStage(host, cb = {}) {
   }
   function metricColor(el) {
     const o = st.overlay, t = el.data && el.data.task; if (!t || o.color === 'status') return null;
-    if (o.color === 'model') { const a = RM.alias(t.dwarf) || '?'; const i = [...a].reduce((h, c) => (h * 31 + c.charCodeAt(0)) >>> 0, 7) % MODEL_PALETTE.length; return new THREE.Color(MODEL_PALETTE[i]); }
+    if (o.color === 'model') return new THREE.Color(modelHex(RM.alias(t.dwarf) || '?'));
     const v = RM.metricValue(t, o.color, st.run, nowSec()), mx = st.metricMax && st.metricMax[o.color];
     if (v === null || !mx) return E.DETAIL.clone();
     return new THREE.Color().copy(E.statusColor('pending')).lerp(E.accent, Math.sqrt(v / mx));
@@ -566,6 +744,10 @@ export async function createStage(host, cb = {}) {
   function retarget() {
     const sel = selIds(), tsel = st.sel && (st.sel.kind === 'task' ? st.sel.id : st.sel.kind === 'execution' || st.sel.kind === 'fractal' ? st.sel.task : null), open = tsel && st.mode === 'plan' && st.view === 'run' ? 't:' + tsel : null;
     const crit = st.overlay.critical && st.crit ? new Set(st.crit.ids.map(id => 't:' + id)) : new Set();
+    // the route: what the chosen task waits on and what waits on it, lit like a route set on a signal box desk
+    const route = new Set();
+    if (tsel && st.layers.route && st.view === 'run' && st.run) { const L = RM.lineage(st.run, tsel); for (const id of [...L.ancestors, ...L.descendants]) route.add('t:' + id); }
+    st.routeSet = route;
     if (st.view === 'run' && st.overlay.height !== 'none') {
       st.metricMax = st.metricMax || {};
       st.metricMax[st.overlay.height] = Math.max(0, ...list(st.run.tasks).map(t => RM.metricValue(t, st.overlay.height, st.run, nowSec()) || 0));
@@ -578,14 +760,16 @@ export async function createStage(host, cb = {}) {
       baseTargets(el);
       const T = el.tgt;
       T.sel = sel.has(el.id) ? 1 : 0;
+      T.route = route.has(el.id) && st.mode === 'plan' ? 1 : 0;
       T.hov = st.hover === el.id ? 1 : 0;
       T.halo = el.pulse ? .22 : sel.has(el.id) ? .16 : 0;
       if (el.kind === 'run' && el.data.module && !el.data.module.match) { T.vis = .14; T.op = .45; T.halo = 0; }
       if (el.kind === 'ghost') { T.opB = .08; T.op = .7; T.lit = 0; T.tint = 0; }
       if (crit.has(el.id)) { T.lit = Math.max(T.lit, .75); T.halo = Math.max(T.halo, .12); }
+      if (el.flash && el.flash > performance.now()) { T.lit = Math.max(T.lit, .9); T.halo = Math.max(T.halo, .3); }   // an event, without motion
       if (st.overlay.critical && st.crit && el.kind === 'task' && !crit.has(el.id)) T.vis = Math.min(T.vis, .55);
       el.metricCol = metricColor(el);
-      if (el.metricCol) { T.tint = E.theme === 'light' ? .35 : .45; T.lit = .5; }
+      if (el.metricCol) { T.tint = E.theme === 'light' ? .5 : .45; T.lit = .5; }
       if (el.kind === 'task' && st.overlay.height !== 'none') {
         const v = RM.metricValue(el.data.task, st.overlay.height, st.run, nowSec()), mx = st.metricMax[st.overlay.height];
         T.hk = v === null || !mx ? .35 : .4 + 1.4 * Math.sqrt(v / mx);
@@ -596,15 +780,24 @@ export async function createStage(host, cb = {}) {
       }
       if (el.kind === 'task') { const pr = PROG.get(el.id); if (pr) pr.t = el.id === open ? 1 : 0; }
       // an open task has the stage: the other blocks sink and fade, as archivision does when a block opens
-      if (open && el.id !== open && (el.kind === 'task' || el.kind === 'finish') && !sel.has(el.id)) { T.vis = Math.min(T.vis, .3); T.hk *= .4; T.halo = 0; }
+      // with its route set, the rest of the plan sinks and fades (gentler on the pale panel); the route is lit full
+      if (open && route.size && el.id !== open && (el.kind === 'task' || el.kind === 'finish') && !sel.has(el.id)) {
+        if (route.has(el.id)) { T.lit = 1; T.halo = Math.max(T.halo, .14); }
+        else { T.vis = Math.min(T.vis, E.theme === 'light' ? .5 : .3); T.hk *= .4; T.halo = 0; }
+      }
+      // on the time axis: the route's attempts stay, the rest dim
+      if (tsel && st.layers.route && st.mode === 'exec' && el.data && el.data.item && el.data.item.task && el.data.item.task !== tsel && !route.has('t:' + el.data.item.task)) T.vis = Math.min(T.vis, .35);
     }
     for (const f of FLOWS) {
       f.hot = (st.hover && (f.from === st.hover || f.to === st.hover)) || sel.has(f.from) || sel.has(f.to) ? 1 : 0;
+      const onRoute = id => route.has(id) || sel.has(id);
+      f.route = route.size && onRoute(f.from) && onRoute(f.to) ? 1 : 0;
       f.crit = st.overlay.critical && st.crit && crit.has(f.from) && crit.has(f.to) && st.crit.ids.indexOf(f.from.slice(2)) === st.crit.ids.indexOf(f.to.slice(2)) - 1 ? 1 : 0;
       const tgtEl = EL.get(f.to);
       f.live = tgtEl && tgtEl.status === 'RUNNING' && f.kind === 'dep';
     }
     E.invalidate(200);
+    syncCtl();
   }
   function computeCritical() { st.crit = st.view === 'run' && st.run && st.run.kind !== 'solo' ? RM.criticalPath(st.run, { now: nowSec() }) : null; }
 
@@ -617,6 +810,101 @@ export async function createStage(host, cb = {}) {
     const gl = E.glowPoints([new THREE.Vector3()], .3); gl.visible = false; beadG.add(gl); BEADS.push({ m, gl });
   }
   E.themeHooks.add(() => { beadMat.color.copy(E.accent); for (const el of EL.values()) { el.col = E.statusColor(el.status); halo(el); } retarget(); });
+  /* ---------- events: what just happened, played once on the plate. A merge sends a pulse to integration, a failed
+     attempt a red ring across the plate, an escalation a hop with the two models, a final review a ring in its verdict's
+     colour. They play for what a live poll brings and for what a replay passes; with reduced motion the block lights
+     instead, and a replay says each event in the live region. ---------- */
+  const fxG = new THREE.Group(); fxG.name = 'events'; E.scene.add(fxG);
+  const FX = [], RINGS = [], PULSES = [];
+  const UNIT_CIRCLE = Array.from({ length: 65 }, (_, i) => [Math.cos(i / 64 * Math.PI * 2), Math.sin(i / 64 * Math.PI * 2), 0]);
+  for (let i = 0; i < 6; i++) {
+    const g = new THREE.Group(), mat = E.lmat({ color: 0xffffff, transparent: true, linewidth: E.accentLineMat.linewidth, depthTest: false });
+    E.polyLine(UNIT_CIRCLE, mat, g); g.visible = false; g.renderOrder = 5; fxG.add(g); RINGS.push({ g, mat, busy: false });
+  }
+  for (let i = 0; i < 4; i++) {
+    const mat = new THREE.MeshBasicMaterial({ color: 0xffffff, toneMapped: false, transparent: true, depthTest: false });
+    const m = E.noRay(new THREE.Mesh(new THREE.SphereGeometry(TS, 12, 8), mat)); m.visible = false; m.renderOrder = 5;
+    const gl = E.glowPoints([new THREE.Vector3()], .5); gl.visible = false; fxG.add(m, gl); PULSES.push({ m, mat, gl, busy: false });
+  }
+  const FAILED = new Set(['FAIL', 'ERROR', 'CONFLICT', 'INFRA', 'TIMEOUT', 'BLOCKED']);
+  const evKey = ev => [ev.kind, ev.task || ev.name, ev.attempt ?? '', ev.t].join('|');
+  let evSeen = new Set(), evRun = null, evAt = null, sayAt = 0;
+  // the block an event happened to, in the view shown: the task's block, or on the time axis its attempt then
+  function evEl(ev) {
+    if (st.mode === 'plan') return EL.get(ev.kind === 'review' ? 'f:final' : 't:' + ev.task);
+    let best = null;
+    for (const el of EL.values()) {
+      const it = el.data && el.data.item; if (!it || it.ghost || el.g !== st.execG) continue;
+      const mine = ev.kind === 'review' ? it.kind === 'review' && it.review === ev.name : it.task === ev.task && !it.kind;
+      if (mine && it.start <= ev.t + 1 && (!best || it.start > best.data.item.start)) best = el;
+    }
+    return best;
+  }
+  const centre = el => { const p = roofTop(el); return [p.x / TS, p.z / TS, p.y / TS]; };   // world back to plan units
+  function ring(el, color, from, to, dur) {
+    const r = RINGS.find(x => !x.busy); if (!r) return;
+    const [x, y, z] = centre(el); r.busy = true; r.g.position.copy(W(x, y, z + 1)); r.mat.color.copy(color); r.g.visible = true;
+    FX.push({ t0: performance.now(), dur, step: k => { const e = 1 - Math.pow(1 - k, 3); r.g.scale.setScalar(from + (to - from) * e); E.setOp(r.mat, (1 - k) * .95); },
+      end: () => { r.g.visible = false; r.busy = false; } });
+  }
+  function pulse(a, b, color, dur, then) {
+    const p = PULSES.find(x => !x.busy); if (!p) { if (then) then(); return; }
+    const A = centre(a), B = centre(b), pts = E.arc(A, B, 24, .16, 140), cum = E.cumLen(pts);
+    p.busy = true; p.mat.color.copy(color); p.gl.material.uniforms.color.value.copy(color); p.m.visible = p.gl.visible = true; p.m.scale.setScalar(4.5);
+    FX.push({ t0: performance.now(), dur, step: k => { const q = E.alongPts(pts, cum, ez(k)); p.m.position.copy(W(...q)); E.moveGlow(p.gl, q, 1); },
+      end: () => { p.m.visible = p.gl.visible = false; p.busy = false; if (then) then(); } });
+  }
+  function hop(el, text) {
+    const [x, y, z] = centre(el), w = Math.ceil(text.length * 11 * E.CW) + 16;
+    const t = E.sprite(w, 22, 3, (c, s, C) => {
+      E.rr(c, s, 1, 1, w - 2, 20, 6); c.globalAlpha = .92; c.fillStyle = C.bg; c.fill(); c.globalAlpha = 1;
+      c.strokeStyle = C.acc; c.lineWidth = Math.max(1, s); c.stroke();
+      E.font(c, 11, s, 600); c.fillStyle = C.accHi; c.fillText(text, 8 * s, 15 * s);
+    }, { screen: true, px: 20 });
+    t.mesh.center.set(.5, 0); t.mat.depthTest = false; t.mesh.renderOrder = 7; fxG.add(t.mesh);
+    const r = el.n.w / 2;
+    const pts = E.arc([x - r * .8, y, z], [x + r * .8, y, z], 8, .3, 60), mat = E.lmat({ color: E.accent.clone(), transparent: true, linewidth: E.accentLineMat.linewidth, depthTest: false });
+    const line = E.polyLine(pts, mat, fxG);
+    FX.push({ t0: performance.now(), dur: 2200, step: k => { t.mesh.position.copy(W(x, y, z + 30 + 50 * ez(k))); const o = k < .7 ? 1 : 1 - (k - .7) / .3; t.mat.opacity = o; E.setOp(mat, o); },
+      end: () => { E.disposeGroup(t.mesh); fxG.remove(t.mesh); E.disposeGroup(line); fxG.remove(line); } });
+  }
+  function flash(el) { el.flash = performance.now() + 2600; retarget(); setTimeout(() => retarget(), 2700); }
+  function say(ev) {
+    if (ev.kind === 'merge') return `${ev.task} merged`;
+    if (ev.kind === 'attempt') return `${ev.task} attempt ${ev.attempt ?? ''} ${String(ev.status || '').toLowerCase()}`.replace(/\s+/g, ' ');
+    if (ev.kind === 'escalation') return `${ev.task} escalated ${RM.alias(ev.from) || ev.from} → ${RM.alias(ev.to) || ev.to}`;
+    return `final review ${ev.name || ''}: ${String(ev.verdict || '').toLowerCase()}`;
+  }
+  function playEvent(ev) {
+    const el = evEl(ev); if (!el || !el.root.parent) return false;
+    if (ev.kind === 'attempt' && !FAILED.has(ev.status)) return false;
+    if (reduce) { flash(el); return true; }
+    const r0 = Math.max(el.n.w, el.n.d) * .55;
+    if (ev.kind === 'merge') {
+      const integ = st.mode === 'plan' && st.layers.finish ? EL.get('f:integration') : null, green = E.statusColor('merged');
+      if (integ) pulse(el, integ, green, 900, () => ring(integ, green, Math.max(integ.n.w, integ.n.d) * .5, Math.max(integ.n.w, integ.n.d) * .5 + 60, 900));
+      else ring(el, green, r0, r0 + 60, 900);
+    } else if (ev.kind === 'attempt') ring(el, E.statusColor('fail'), r0, r0 + 220, 1400);
+    else if (ev.kind === 'escalation') hop(el, `${RM.alias(ev.from) || ev.from || '?'} → ${RM.alias(ev.to) || ev.to || '?'}`);
+    else if (ev.kind === 'review') ring(el, E.statusColor(['PASS', 'ACCEPT', 'APPROVE'].includes(String(ev.verdict || '').toUpperCase()) ? 'pass' : 'fail'), r0, r0 + 120, 1200);
+    E.invalidate(100);
+    return true;
+  }
+  // events not seen yet (a poll) or passed since the last replay time (a replay playing forward): at most six at once
+  function syncEvents({ replayFrom = null } = {}) {
+    if (st.view !== 'run' || !st.run) return;
+    const all = RM.events(st.run);
+    if (evRun !== st.run.key) { evRun = st.run.key; evSeen = new Set(all.map(evKey)); evAt = st.replay; return; }
+    let fresh;
+    if (st.replay !== null) {
+      fresh = replayFrom !== null && st.replay > replayFrom ? all.filter(ev => ev.t > replayFrom && ev.t <= st.replay) : [];
+      evAt = st.replay;
+    } else fresh = all.filter(ev => !evSeen.has(evKey(ev)));
+    for (const ev of all) evSeen.add(evKey(ev));
+    const shown = fresh.slice(-6).filter(playEvent);
+    if (st.replay !== null && shown.length && live && performance.now() - sayAt > 1500) { sayAt = performance.now(); live.textContent = shown.slice(-3).map(say).join('; '); }
+  }
+
   let lastPulse = 0, lastText = 0;
   function frameStep(now, dt) {
     const kk = reduce ? 1 : Math.min(1, dt * 7);
@@ -638,7 +926,7 @@ export async function createStage(host, cb = {}) {
     let pulsing = false;
     for (const el of EL.values()) {
       const c = el.cur, T = el.tgt;
-      for (const k of ['vis', 'sel', 'hov', 'lit', 'op', 'opB', 'tint', 'halo', 'hk']) {
+      for (const k of ['vis', 'sel', 'hov', 'lit', 'op', 'opB', 'tint', 'halo', 'hk', 'route']) {
         const d = T[k] - c[k]; if (Math.abs(d) > .002) { c[k] += d * kk; moving = true; } else c[k] = T[k];
       }
       // which view the element belongs to, during a switch
@@ -661,9 +949,10 @@ export async function createStage(host, cb = {}) {
       if (el.pulse) pulsing = true;
       const col = el.metricCol || el.col;
       TMP.copy(col).lerp(E.accent, c.sel);
-      E.paint(el.M, c.vis, Math.min(1, c.lit + c.sel * .9), c.hov, c.op * ol * gf, c.opB * ob * gf, TMP, 0);
+      if (c.route > .01) TMP.lerp(E.INKHI, .55 * c.route * (1 - c.sel));   // a set route: its blocks' hairlines take the route lamp
+      E.paint(el.M, c.vis, Math.min(1, Math.max(c.lit + c.sel * .9, c.route * .85)), c.hov, c.op * ol * gf, c.opB * ob * gf, TMP, 0);
       if (c.tint > .001) el.M.body.color.lerp(TMP2.copy(col), c.tint * c.vis);
-      if (el.tintMat) { el.tintMat.color.copy(col); el.tintMat.opacity = (c.tint * 1.1 + .08 * c.sel) * ob * gf * c.vis; }
+      if (el.tintMat) { el.tintMat.color.copy(col); el.tintMat.opacity = (c.tint * (E.theme === 'light' ? 1.45 : 1.1) + .08 * c.sel) * ob * gf * c.vis; }
       if (el.haloMat) el.haloMat.uniforms.opacity.value = (c.halo + (el.pulse ? .12 * pulseK : 0)) * gf * c.vis;
       if (el.clef) el.clef.fgM.color.copy(E.statusColor(['MERGED', 'PASS'].includes(el.status) ? 'pass' : ['FAIL', 'ERROR', 'CONFLICT'].includes(el.status) ? 'fail' : 'pending'));
       if (el.inner) {
@@ -689,9 +978,10 @@ export async function createStage(host, cb = {}) {
       let gf = 1;
       if (fk !== null) gf = st.mode === 'exec' ? 1 - fk : fk;
       const vis = Math.min(a ? a.cur.vis : 1, b ? b.cur.vis : 1);
-      const want = Math.max(f.hot, f.crit);
+      const want = Math.max(f.hot, f.crit, f.route || 0);
       f.cur += (want - f.cur) * kk; if (Math.abs(want - f.cur) > .002) moving = true;
-      E.lineCol(f.mat, E.outlineMat.uniforms.color.value, f.crit ? 1 : f.cur * .9, vis, E.accent);
+      // a set route is drawn in the route lamp's white; the critical path and hover keep the accent
+      E.lineCol(f.mat, E.outlineMat.uniforms.color.value, f.crit ? 1 : f.cur * .9, vis, f.route && !f.crit ? E.INKHI : E.accent);
       if (!f.crit && !f.cur) f.mat.color.lerp(E.INKHI, .12);
       f.mat.linewidth = E.lineMat.linewidth * (1 + .9 * Math.max(f.cur, f.crit));
       E.setOp(f.mat, (.55 + .45 * Math.max(f.cur, f.crit)) * gf);
@@ -700,18 +990,25 @@ export async function createStage(host, cb = {}) {
     // beads: into running tasks, along the selected task's cables, inside an open running task
     const want = [];
     const tB = now / 1600;
-    for (const f of FLOWS) if ((f.live || f.hot || f.crit) && (st.mode === 'plan' || st.fade) && st.planG && st.planG.visible) want.push({ pts: f.pts, cum: f.cum, t: (tB + (f.pts[0][0] % 97) / 97) % 1, r: 3.2, size: .32, k: .8 });
+    for (const f of FLOWS) if ((f.live || f.hot || f.crit || f.route) && (st.mode === 'plan' || st.fade) && st.planG && st.planG.visible) want.push({ pts: f.pts, cum: f.cum, t: (tB + (f.pts[0][0] % 97) / 97) % 1, r: 3.2, size: .32, k: .8 });
     for (const el of EL.values()) if (el.inner && el.inner.visible) for (const f of el.innerFlows) {
       const b = EL.get(f.b); if (b && b.status === 'RUNNING' || f.kind === 'flow' && st.sel && sel(f.a)) want.push({ pts: f.pts, cum: f.cum, t: (tB * 1.4) % 1, r: 1.1, size: .12, k: .8 });
     }
     BEADS.forEach((bd, i) => {
-      const w = want[i]; bd.m.visible = bd.gl.visible = !!w && !reduce; if (!w || reduce) return;
+      const w = want[i]; bd.m.visible = bd.gl.visible = !!w && !reduce && st.layers.beads; if (!bd.m.visible) return;
       const p = E.alongPts(w.pts, w.cum, w.t); bd.m.position.copy(W(...p)); bd.m.scale.setScalar(w.r);
       bd.gl.material.uniforms.size.value = w.size; E.moveGlow(bd.gl, p, w.k);
     });
     // elapsed times on running blocks tick once a second
     if (now - lastText > 1000) { lastText = now; for (const el of EL.values()) if (el.pulse && !el.roofOnly) for (const t of el.texts) if (t !== el.roof && !t.gone) t.redraw(); }
     if (st.view === 'run' && st.exec && st.exec.live && st.mode === 'exec') { placeNow(); }
+    if (BEACONS.tick(now)) moving = true;
+    if (tagsTick(now)) moving = true;
+    for (let i = FX.length - 1; i >= 0; i--) {
+      const f = FX[i], k = Math.min(1, (now - f.t0) / f.dur);
+      if (k >= 1) { FX.splice(i, 1); f.end(); } else f.step(k);
+      moving = true;
+    }
     if (!moving && (pulsing || want.length) && !reduce) {
       // only lamps and beads move: about 30 frames a second is plenty
       if (now - lastPulse > 30) { lastPulse = now; setTimeout(() => E.invalidate(), 33); }
@@ -734,7 +1031,7 @@ export async function createStage(host, cb = {}) {
   function info(el) {
     if (!el) return null;
     if (el.kind === 'run') { const r = el.data.run; return { meta: `${RM.basename(r.repo)} · ${r.kind}${el.data.module.match ? '' : ' · filtered out'}`, title: String(r.goal || 'Untitled run').split('\n')[0], body: runInfo(r), foot: 'click to open this run' }; }
-    if (el.kind === 'task') { const t = el.data.task; return { meta: `task · wave ${t.wave ?? '—'} · ${t.difficulty || '—'}`, title: `${t.id} · ${t.title || ''}`, body: `${el.status} · dwarf ${t.dwarf || '—'} · qa ${t.qa || '—'}`, foot: list(t.deps).length ? 'after ' + t.deps.join(', ') : 'no dependencies' }; }
+    if (el.kind === 'task') return taskCard(el);
     if (el.kind === 'finish') { const fi = finishInfo(el.id); return { meta: 'finish', title: fi.title, body: `${fi.status} · ${fi.sub}`, foot: fi.line }; }
     if (el.kind === 'part') { const p = el.data.part; return { meta: `${p.label.toLowerCase()} · attempt ${p.attempt ?? '—'}`, title: p.spec || '—', body: p.planned ? 'planned' : p.status, foot: p.exec && p.exec.id ? 'click for prompt, model and timings' : '' }; }
     const it = el.data.item; if (!it) return null;
@@ -742,17 +1039,54 @@ export async function createStage(host, cb = {}) {
     if (it.kind === 'review') return { meta: 'final review', title: it.review, body: attemptLine(el) };
     return { meta: it.ghost ? 'projected by forge-schedule rules' : `attempt ${it.attempt ?? '—'} · lane ${it.lane + 1}`, title: it.task, body: attemptLine(el), foot: new Date(it.start * 1000).toLocaleTimeString() + ' → ' + new Date(it.end * 1000).toLocaleTimeString() };
   }
-  function showTip(el, cx, cy) {
-    const inf = info(el); if (!inf) return hideTip();
+  // what a finding says after its "- [P1][CONFIRMED] path:line —" head
+  function said(f) {
+    const t = String(f.summary || '').replace(/^\s*-\s*\[P\d\]\s*(\[[A-Z]+\]\s*)?/, ''), i = t.indexOf(' — ');
+    return i >= 0 && i < 200 ? t.slice(i + 3) : t;
+  }
+  function findingInfo(d) {
+    const f = d.finding, r = d.review || {};
+    const who = r.kind === 'final' ? `final review ${d.final}` : `${r.kind || 'review'} review${r.attempt != null ? ', attempt ' + r.attempt : ''} of ${d.task}`;
+    return { meta: `${f.severity || 'no severity'} · ${String(f.status || '').toLowerCase()} · ${who}`, title: f.location || 'no location named', body: said(f), foot: 'click to open it in the diff' };
+  }
+  // a task's card: what it is, how it went, who did it, its worst finding and its place in the plan
+  function taskCard(el) {
+    const t = el.data.task, now = nowSec(), tt = RM.taskTimes(t, st.run, now), tok = RM.metricValue(t, 'tokens', st.run, now);
+    const tries = list(t.attempts).length;
+    const how = [tries ? `${tries} attempt${tries > 1 ? 's' : ''}` : null, tt.busy ? 'busy ' + RM.fmtDur(tt.busy) : null,
+      tok ? `${tok >= 1e6 ? (tok / 1e6).toFixed(1) + 'M' : tok >= 1e3 ? Math.round(tok / 1e3) + 'k' : tok} tokens` : null].filter(Boolean).join(' · ');
+    const body = [how, `${t.dwarf || '—'}${t.explored ? ' *' : ''} → ${t.qa || '—'}`];
+    const tf = st.findings && list(st.findings.tasks).find(x => x.id === t.id);
+    let note = null;
+    if (tf) {
+      const latest = Math.max(...tf.reviews.map(r => r.attempt ?? 0));
+      const fs = tf.reviews.filter(r => (r.attempt ?? 0) === latest).flatMap(r => r.findings.map(f => ({ f }))).sort(byRank);
+      if (fs.length) note = { sev: fs[0].f.severity, text: `${fs[0].f.location ? fs[0].f.location + ' — ' : ''}${said(fs[0].f)}${fs.length > 1 ? ` (+${fs.length - 1} more)` : ''}` };
+    }
+    const L = st.run ? RM.lineage(st.run, t.id) : { ancestors: new Set(), descendants: new Set() };
+    const foot = [list(t.deps).length ? 'after ' + t.deps.join(', ') : 'no dependencies', L.descendants.size ? `${L.descendants.size} task${L.descendants.size > 1 ? 's' : ''} wait on it` : null].filter(Boolean).join(' · ');
+    return { meta: `task · wave ${t.wave ?? '—'} · ${t.difficulty || '—'}`, title: `${t.id} · ${t.title || ''}`, status: el.status, body, note, foot };
+  }
+  function showTip(el, cx, cy, inf = info(el)) {
+    if (!inf) return hideTip();
     tip.replaceChildren();
-    for (const [cls, text] of [['meta', inf.meta], ['title', inf.title], ['body', inf.body], ['foot', inf.foot]]) {
-      if (!text) continue; const d = document.createElement('div'); d.className = 'stage-tip-' + cls; d.textContent = text; tip.append(d);
+    for (const [cls, text] of [['meta', inf.meta], ['title', inf.title], ...[].concat(inf.body || []).map(b => ['body', b]), ['note', inf.note], ['foot', inf.foot]]) {
+      if (!text) continue; const d = document.createElement('div'); d.className = 'stage-tip-' + cls;
+      // the status leads the first line as the inspector shows it: a chip with its lamp
+      if (cls === 'body' && inf.status && !tip.querySelector('.chip')) { const c = document.createElement('span'); c.className = 'chip st-' + String(inf.status).toLowerCase(); c.textContent = inf.status; d.append(c, ' '); }
+      if (typeof text === 'string') d.append(text);
+      else { const c = document.createElement('span'); c.className = 'sev-chip sev-' + (['P0', 'P1', 'P2', 'P3'].includes(text.sev) ? text.sev : 'none'); c.textContent = text.sev || '?'; d.append(c, text.text); }
+      tip.append(d);
     }
     tip.hidden = false;
-    const r = host.getBoundingClientRect(), tw = tip.offsetWidth || 240, th = tip.offsetHeight || 80;
+    // inside the part of the stage the modules and the stage's keys leave free
+    const r = host.getBoundingClientRect(), tw = tip.offsetWidth || 240, th = tip.offsetHeight || 80, I = E.overlayInset();
+    const bank = CTL && !CTL.bank.hidden ? CTL.bank.getBoundingClientRect() : null;
+    const L = I.l + 4, R = r.width - I.r - (bank && bank.width && bank.left - r.left > r.width / 2 ? r.right - bank.left + 4 : 8), T = I.t + 4, B = r.height - I.b - 8;
     let x = cx - r.left + 16, y = cy - r.top + 16;
-    if (x + tw > r.width - 8) x = cx - r.left - tw - 16;
-    if (y + th > r.height - 8) y = cy - r.top - th - 16;
+    if (x + tw > R) x = cx - r.left - tw - 16;
+    if (y + th > B) y = cy - r.top - th - 16;
+    x = Math.max(L, Math.min(x, R - tw)); y = Math.max(T, Math.min(y, B - th));
     tip.style.transform = `translate(${Math.max(4, x).toFixed(0)}px, ${Math.max(4, y).toFixed(0)}px)`;
   }
   function hideTip() { tip.hidden = true; }
@@ -762,6 +1096,14 @@ export async function createStage(host, cb = {}) {
     if (hoverRaf) return;
     hoverRaf = requestAnimationFrame(() => {
       hoverRaf = 0;
+      // a finding's mark floats in front of its block: it is picked first
+      const b = hoverAt && st.view === 'run' ? BEACONS.pick(hoverAt[0], hoverAt[1]) : null;
+      BEACONS.setHot(b ? b.key : null);
+      if (b) {
+        E.canvas.classList.add('pointing');
+        if (st.hover !== null) { st.hover = null; retarget(); }
+        showTip(null, hoverAt[0], hoverAt[1], findingInfo(b.data)); E.invalidate(); return;
+      }
       const o = hoverAt ? E.pick(hoverAt[0], hoverAt[1], PICK, pickable) : null;
       const el = elOf(o), id = el && !(o.userData.floor) ? el.id : null;
       E.canvas.classList.toggle('pointing', !!id);
@@ -782,6 +1124,8 @@ export async function createStage(host, cb = {}) {
   }
   E.handlers.click = (cx, cy) => {
     hideTip();
+    const b = st.view === 'run' ? BEACONS.pick(cx, cy) : null;
+    if (b) { cb.onFinding && cb.onFinding(b.data); return; }
     const o = E.pick(cx, cy, PICK, pickable), el = elOf(o);
     if (o && o.userData.fractal) { cb.onSelect && cb.onSelect({ kind: 'fractal', task: o.userData.fractal.task, node: o.userData.fractal.node }); return; }
     if (st.view === 'atlas') {
@@ -798,8 +1142,37 @@ export async function createStage(host, cb = {}) {
     cb.onSelect && cb.onSelect(selFor(el));
   };
   function order() { return st.plan ? st.plan.modules.filter(m => m.kind === 'task').map(m => m.task.id) : []; }
+  // the map by keyboard: ← → walk the runs, ↑ ↓ jump a repository, Enter opens; the run's card shows where it is
+  const live = document.getElementById('live');
+  function walkAtlas(e) {
+    // in reading order: repository by repository as the plate lays them out, then row by row
+    const A = st.atlas, li = new Map((A ? A.layers : []).map((l, j) => [l.id, j]));
+    const mods = A ? A.modules.filter(m => A.place[m.id] && m.match !== false)
+      .sort((a, b) => (li.get(a.layer) ?? 0) - (li.get(b.layer) ?? 0) || A.place[a.id][1] - A.place[b.id][1] || A.place[a.id][0] - A.place[b.id][0]) : [];
+    if (!mods.length) return false;
+    const cur = st.sel && st.sel.kind === 'run' ? mods.findIndex(m => m.run.key === st.sel.key) : -1;
+    if (e.key === 'Enter') { if (cur < 0) return false; cb.onOpenRun && cb.onOpenRun(mods[cur].run.key); return true; }
+    let i;
+    if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') { const d = e.key === 'ArrowRight' ? 1 : -1; i = cur < 0 ? (d > 0 ? 0 : mods.length - 1) : (cur + d + mods.length) % mods.length; }
+    else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      const d = e.key === 'ArrowDown' ? 1 : -1, layer = cur < 0 ? null : mods[cur].layer;
+      const starts = mods.map((m, j) => j).filter(j => j === 0 || mods[j].layer !== mods[j - 1].layer);
+      const at = layer === null ? -1 : starts.findIndex(j => mods[j].layer === layer);
+      i = starts[at < 0 ? (d > 0 ? 0 : starts.length - 1) : (at + d + starts.length) % starts.length];
+    } else return false;
+    const m = mods[i]; st.sel = { kind: 'run', key: m.run.key }; retarget();
+    const el = EL.get('r:' + m.id);
+    if (el) {
+      const r = E.canvas.getBoundingClientRect(), p = E.project(el.n.x + el.n.w / 2, el.n.y + el.n.d / 2, el.n.h);
+      if (!p.on) E.frameBox([el.n.x - 60, el.n.y - 60, 0, el.n.x + el.n.w + 60, el.n.y + el.n.d + 60, el.n.h * 2], 500, 30);
+      else showTip(el, r.left + p.x, r.top + p.y);
+    }
+    if (live) live.textContent = `${String(m.run.goal || m.run.run_id || m.run.key).split('\n')[0]}: ${m.state || ''}, ${RM.basename(m.run.repo || '')}, ${i + 1} of ${mods.length}`;
+    return true;
+  }
   E.handlers.key = e => {
-    if (e.key === 'Escape') { if (st.view === 'run' && st.sel) { cb.onSelect && cb.onSelect(null); return true; } if (st.view === 'run' && cb.onBack) { cb.onBack(); return true; } return false; }
+    if (e.key === 'Escape') { if (st.view === 'run' && st.sel) { cb.onSelect && cb.onSelect(null); return true; } if (st.view === 'run' && cb.onBack) { cb.onBack(); return true; } if (st.view === 'atlas' && st.sel) { st.sel = null; hideTip(); retarget(); return true; } return false; }
+    if (st.view === 'atlas') return walkAtlas(e);
     if (st.view !== 'run') return false;
     if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
       const ids = order(); if (!ids.length) return true;
@@ -823,10 +1196,12 @@ export async function createStage(host, cb = {}) {
   const leaveCloud = () => { if (cloud) cloud.detach(); };
 
   /* ---------- public API ---------- */
-  function frameSelection(dur = 850) {
+  function frameSelection(dur = 850, dir = null) {
     if (st.view !== 'run') return;
     const ids = [...selIds()].map(id => EL.get(id)).filter(el => el && el.root.parent && (st.mode === 'plan' ? el.g === st.planG || el.kind === 'part' : el.g === st.execG));
-    if (!ids.length) { E.frameBox(boxOf(st.mode), dur, 26); return; }
+    if (!ids.length) { E.frameBox(boxOf(st.mode), dur, 26, dir); return; }
+    // a chosen task's route is seen end to end: what it waits on and what waits on it come into the frame
+    if (st.mode === 'plan' && st.routeSet) for (const id of st.routeSet) { const el = EL.get(id); if (el && el.root.parent) ids.push(el); }
     hideTip();
     const xs = ids.flatMap(el => [el.n.x, el.n.x + el.n.w]), ys = ids.flatMap(el => [el.n.y, el.n.y + el.n.d]);
     const hs = Math.max(...ids.map(el => el.n.h));
@@ -835,8 +1210,73 @@ export async function createStage(host, cb = {}) {
     const pad = Math.max(st.mode === 'exec' ? 80 : 40, span * .3);
     const opening = st.mode === 'plan' && ids.some(el => el.kind === 'task');
     const tree = opening && ids.some(el => FRACTAL.has(el.data && el.data.task && el.data.task.id)) ? hs + 130 : 0;   // a Fractal tree floats above
-    E.frameBox([Math.min(...xs) - pad, Math.min(...ys) - pad, 0, Math.max(...xs) + pad, Math.max(...ys) + pad, Math.max(tree, hs * (opening ? 2 : 1.4))], dur, opening ? 52 : 40);
+    E.frameBox([Math.min(...xs) - pad, Math.min(...ys) - pad, 0, Math.max(...xs) + pad, Math.max(...ys) + pad, Math.max(tree, hs * (opening ? 2 : 1.4))], dur, opening ? 52 : 40, dir);
   }
+
+  /* ---------- the view controls (stagectl.js): fit, zoom, projection, reset, the legend ---------- */
+  const ISO_DIR = new THREE.Vector3(1, 1, 1), TOP_DIR = new THREE.Vector3(0, 1, .002);
+  let proj = 'persp';
+  try { proj = localStorage.getItem('forge-ui-projection') || 'persp'; } catch { /* storage refused: perspective */ }
+  if (!['persp', 'iso', 'top'].includes(proj)) proj = 'persp';
+  if (proj !== 'persp') { E.setOrtho(true); if (proj === 'top') E.camera.position.copy(TOP_DIR).normalize().multiplyScalar(20); }
+  BEACONS.setFlat(proj === 'top');
+  function frameShown(dur = 650, dir = null) {
+    if (st.view === 'run' && st.run) { if (st.sel) frameSelection(dur, dir); else E.frameBox(boxOf(st.mode), dur, 26, dir); }
+    else if (st.view === 'atlas' && st.atlasBox) E.frameBox(st.atlasBox, dur, 30, dir);
+  }
+  function setProjection(p, dur = 650, dir) {
+    const was = proj; proj = ['persp', 'iso', 'top'].includes(p) ? p : 'persp';
+    try { localStorage.setItem('forge-ui-projection', proj); } catch { /* not remembered */ }
+    E.setOrtho(proj !== 'persp'); BEACONS.setFlat(proj === 'top'); syncBeacons();
+    // isometric is the true 35° view; leaving top-down goes back to it
+    frameShown(dur, dir !== undefined ? dir : proj === 'top' ? TOP_DIR : proj === 'iso' || was === 'top' ? ISO_DIR : null);
+  }
+  const fmtMetric = (m, v) => v === null || v === undefined ? '—' : m === 'duration' ? RM.fmtDur(v) : m === 'tokens' ? (v >= 1e6 ? (v / 1e6).toFixed(1) + 'M' : v >= 1e3 ? Math.round(v / 1e3) + 'k' : String(v)) : String(Math.round(v));
+  const modelHex = a => MODEL_PALETTE[[...a].reduce((h, c) => (h * 31 + c.charCodeAt(0)) >>> 0, 7) % MODEL_PALETTE.length];
+  // what the legend says: only what the stage draws now
+  function legendModel() {
+    const L = st.layers, o = st.overlay, out = [];
+    const lamps = { title: 'Lamps', rows: [
+      { sw: { lamp: 'st-merged' }, label: 'merged · passed · accepted' }, { sw: { lamp: 'st-running' }, label: 'running · interrupted' },
+      { sw: { lamp: 'st-fail' }, label: 'failed · conflict · infra · timeout' }, { sw: { lamp: 'st-pending' }, label: 'pending, not started' },
+      { sw: { route: true }, label: st.view === 'atlas' ? 'chosen run' : 'chosen task' + (L.route ? ' and its route' : '') }] };
+    if (st.view === 'atlas') {
+      out.push({ title: 'Map', rows: [], note: 'Each block is a run, each district a repository. The lamps on a block are its tasks; the block stands taller the more tasks it has.' }, lamps);
+      return out;
+    }
+    if (st.view !== 'run') return out;
+    out.push(lamps);
+    if (st.mode === 'exec') out.push({ title: 'Execution', rows: [], note: 'One block per attempt on wall-clock time, in the lane it ran in: the dwarf, then its review.' });
+    const cables = [];
+    if (L.cables) cables.push({ sw: { cable: 'dep' }, label: 'a task waits on the one this comes from' });
+    if (L.cables && L.beads) cables.push({ sw: { bead: true }, label: 'work flowing into a running task' });
+    if (L.cables && L.route) cables.push({ sw: { cable: 'route' }, label: 'route of the chosen task' });
+    if (L.cables && o.critical) cables.push({ sw: { cable: 'critical' }, label: 'critical path: it bounded the wall time' });
+    cables.push({ sw: { cable: 'retry' }, label: 'inside a task: retry, shadow review' }, { sw: { cable: 'escalation' }, label: 'inside a task: escalation to another model' });
+    out.push({ title: 'Cables', rows: cables });
+    const fs = L.beacons && st.findings ? BEACONS.items : [];
+    if (fs.length) {
+      const has = new Set(fs.map(it => it.shape));
+      const rows = [['P0', 'P0 · spike'], ['P1', 'P1 · diamond'], ['P2', 'P2 · cone'], ['P3', 'P3 · pin'], ['none', 'no severity · ring']].filter(([k]) => has.has(k)).map(([k, label]) => ({ sw: { sev: k }, label }));
+      if (fs.some(it => it.plausible)) rows.push({ sw: { sev: 'P2', pale: true }, label: 'plausible: smaller, paler' });
+      out.push({ title: 'Findings', rows, note: 'A click opens the diff at the finding.' });
+    }
+    if (o.arcs && list(st.run.tasks).some(t => t.clef && t.clef.first_pass)) out.push({ title: 'Review marks', rows: [{ sw: { ring: true }, label: 'Clef ring: the chance the first try passes' }] });
+    if (o.height !== 'none') {
+      const mx = st.metricMax && st.metricMax[o.height];
+      out.push({ title: 'Height', rows: [{ sw: { height: true }, label: `${o.height}: up to ${fmtMetric(o.height, mx)}` }] });
+    } else out.push({ title: 'Height', rows: [{ sw: { height: true }, label: 'difficulty' }] });
+    if (o.color === 'model') {
+      const models = [...new Set(list(st.run.tasks).map(t => RM.alias(t.dwarf) || '?'))].sort();
+      out.push({ title: 'Colour: model', rows: models.map(a => ({ sw: { color: modelHex(a) }, label: a })) });
+    } else if (o.color !== 'status') {
+      const mx = st.metricMax && st.metricMax[o.color];
+      out.push({ title: `Colour: ${o.color}`, rows: [{ sw: { scale: [fmtMetric(o.color, 0), fmtMetric(o.color, mx)] }, label: '' }] });
+    }
+    return out;
+  }
+  let CTL = null, ctlQ = 0;
+  const syncCtl = () => { if (CTL && !ctlQ) ctlQ = requestAnimationFrame(() => { ctlQ = 0; CTL.sync(); }); };
   const api = {
     showAtlas(runs, filter, opts = {}) {
       st.runs = list(runs); st.filter = filter || {}; st.atlasOpts = { showAll: !!opts.showAll };
@@ -866,6 +1306,7 @@ export async function createStage(host, cb = {}) {
       } else api.update(run);
       E.canvas.setAttribute('aria-label', `Run ${run.run_id || ''}: ${list(run.tasks).length} tasks, ${st.mode === 'plan' ? 'planned waves' : 'execution timeline'}`);
       retarget();
+      syncEvents();
     },
     update(run) {
       if (st.view !== 'run' || !run || !st.run || run.key !== st.run.key) return;
@@ -906,6 +1347,7 @@ export async function createStage(host, cb = {}) {
       }
       computeCritical();
       retarget();
+      syncEvents();
     },
     setMode(mode) {
       if (mode === st.mode || st.view !== 'run') { st.mode = mode; return; }
@@ -930,10 +1372,17 @@ export async function createStage(host, cb = {}) {
       if (st.sel) frameSelection(900); else E.frameBox(boxOf(mode), 900, 26);
       E.invalidate(950);
     },
+    // RunFindings of the run shown (GET /api/runs/<key>/findings): a mark per finding
+    setFindings(data) { if ((data || null) === st.findings) return; st.findings = data || null; syncBeacons(); E.invalidate(200); },
+    // {cables, beads, lamps, roof, labels, beacons, finish, districts, halos}: what the stage draws
+    setLayers(L) { Object.assign(st.layers, L || {}); applyLayers(); if ('beacons' in (L || {}) || 'finish' in (L || {})) syncBeacons(); retarget(); },
+    get layers() { return { ...st.layers }; },
     setOverlay(o) { Object.assign(st.overlay, o || {}); if (st.view === 'run') { if ('ghosts' in (o || {})) rebuildExec(); computeCritical(); for (const el of EL.values()) redraw(el); } retarget(); },
     setReplay(t) {
+      const from = st.replay;
       st.replay = t === null || t === undefined ? null : Number(t);
       if (st.view !== 'run') return;
+      E.invalidate(100);                                    // marks a replay reaches drop in
       st.replayState = st.replay !== null ? RM.stateAt(st.run, st.replay) : null;
       for (const el of EL.values()) {
         if (el.kind === 'task') setStatus(el, taskStatus(el.data.task));
@@ -944,6 +1393,10 @@ export async function createStage(host, cb = {}) {
         const sig = 'replay:' + el.status; if (sig !== el.sig) { el.sig = sig; redraw(el); }
       }
       placeNow(); retarget();
+      // playing forward: what the replay just passed happens again; a jump across the run plays nothing
+      const R = st.run && RM.timeRange(st.run, nowSec());
+      if (st.replay === null) evAt = null;
+      else syncEvents({ replayFrom: from !== null && R && st.replay - from <= .1 * Math.max(1, R.end - R.start) ? from : null });
     },
     select(s, { frame = true } = {}) {
       const same = JSON.stringify(s || null) === JSON.stringify(st.sel || null);
@@ -954,7 +1407,7 @@ export async function createStage(host, cb = {}) {
     showCloud(runs, opts = {}) {
       if (st.view !== 'cloud') { clearWorld(); st.view = 'cloud'; st.run = null; st.sel = null; st.atlasSig = ''; st.structure = ''; }
       if (!cloud) cloud = createCloud(E, host, cb.cloud || {});
-      const c = cloud.show(list(runs), opts);
+      const c = cloud.show(list(runs), opts); syncCtl();
       E.canvas.setAttribute('aria-label', `Cloud of runs: ${c.visible} of ${c.total} runs in ${c.projects} projects, ${c.layout} layout`);
       return c;
     },
@@ -965,15 +1418,30 @@ export async function createStage(host, cb = {}) {
       const el = EL.get('t:' + taskId); if (el && el.inner) { syncFractal(el); E.invalidate(300); }
     },
     focus() { E.canvas.focus({ preventScroll: true }); },
+    // frame again what is shown, in the part of the stage the modules leave free (after a module opens, folds or resizes)
+    reframe(dur = 500) {
+      if (st.view === 'run' && st.run) { if (st.sel) frameSelection(dur); else E.frameBox(boxOf(st.mode), dur, 26); }
+      else if (st.view === 'atlas' && st.atlasBox) E.frameBox(st.atlasBox, dur, 30);
+      else if (st.view === 'cloud' && cloud && cloud.frameAll) cloud.frameAll();
+    },
     get mode() { return st.mode; },
     get view() { return st.view; },
-    dispose() { E.dispose(); tip.remove(); },
+    dispose() { if (CTL) CTL.dispose(); E.dispose(); tip.remove(); },
     debug() {
       return {
         view: st.view, mode: st.mode, rebuilds: st.rebuilds, sel: st.sel, prog: [...PROG].map(([id, p]) => [id, p.p, p.t]), fade: !!st.fade,
         nodes: [...EL.values()].map(el => ({ id: el.id, kind: el.kind, status: el.status, sel: el.tgt.sel, vis: el.tgt.vis })),
         screenPos(id) { const el = EL.get(id); if (!el) return null; const r = E.canvas.getBoundingClientRect(); const p = E.project(el.n.x + el.n.w / 2, el.n.y + el.n.d / 2, el.n.h); return { x: r.left + p.x, y: r.top + p.y, on: p.on }; },
         settle() { for (const el of EL.values()) Object.assign(el.cur, el.tgt); for (const pr of PROG.values()) pr.p = pr.t; E.invalidate(); },
+        beaconScale: () => ({ unit: BEACONS.unit, ppu: E.pxPerUnit() }),
+        projection: () => ({ proj, ortho: E.isOrtho() }),
+        pickBeacon: (x, y) => { const b = BEACONS.pick(x, y); return b ? b.key : null; },
+        // the finding marks drawn now, each with where it is on the screen
+        beacons() {
+          const r = E.canvas.getBoundingClientRect();
+          return BEACONS.items.map(it => { if (!it.anchor() || it.hidden || !it.head) return { key: it.key, id: it.data.finding.id, shown: false };
+            const p = E.project(...it.head); return { key: it.key, id: it.data.finding.id, sev: it.sev, shown: true, x: r.left + p.x, y: r.top + p.y, on: p.on }; });
+        },
       };
     },
   };
@@ -992,5 +1460,12 @@ export async function createStage(host, cb = {}) {
     const nel = buildAttempt(it, g);
     Object.assign(nel.cur, el.cur);
   }
+  CTL = createControls(host, {
+    view: () => st.view, fit: () => frameShown(650), zoom: k => E.zoomBy(k),
+    get projection() { return proj; }, setProjection,
+    reset: () => setProjection('persp', 700, ISO_DIR),
+    legend: legendModel,
+    toggleRoute: () => { api.setLayers({ route: !st.layers.route }); if (cb.onLayers) cb.onLayers({ ...st.layers }); },
+  });
   return api;
 }

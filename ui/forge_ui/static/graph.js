@@ -240,9 +240,9 @@
 
       if (t.verdict === 'PASS' || t.verdict === 'FAIL') {
         var pass = t.verdict === 'PASS';
-        textEl(g, pass ? '✓' : '✗', {
-          'class': 'fg-verdict' + (pass ? ' fg-pass' : ''), x: NODE_W - 8, y: 17, 'text-anchor': 'end', 'font-size': 14, 'font-weight': 'bold'
-        });
+        // a drawn tick or cross, in the verdict's colour
+        el('path', { 'class': 'fg-verdict' + (pass ? ' fg-pass' : ''), d: pass ? 'M' + (NODE_W - 20) + ' 12l4 4 7-8' : 'M' + (NODE_W - 19) + ' 8l8 8m0-8l-8 8',
+          fill: 'none', 'stroke-width': 1.8, 'stroke-linecap': 'round', 'stroke-linejoin': 'round' }, g);
       }
 
       function select() { if (typeof options.onSelect === 'function') options.onSelect(t.id); }

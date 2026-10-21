@@ -9,7 +9,6 @@ window.ForgePanel = (() => {
   const display = v => v === null || v === undefined || v === '' ? '—' : typeof v === 'object' ? JSON.stringify(v, null, 2) : String(v);
   const STATUSES = new Set(['merged', 'pass', 'running', 'pending', 'fail', 'error', 'infra', 'timeout', 'unknown', 'invalidated', 'blocked',
     'interrupted', 'nochanges', 'conflict', 'accepted', 'none']);
-  const SEV = { P0: 'fail', P1: 'conflict', P2: 'timeout', P3: 'unknown' };
   const cache = new Map();                                  // path → {data, error, at}
   function el(tag, text, className) {
     const node = document.createElement(tag);
@@ -21,6 +20,18 @@ window.ForgePanel = (() => {
     const s = String(value || 'unknown').toLowerCase();
     return el('span', value || '—', 'chip st-' + (cls || (STATUSES.has(s) ? s : 'unknown')));
   }
+  // a finding's severity: its own shape and ramp (style.css .sev-P0…P3), never a status lamp
+  const plate = spec => window.ForgeIcons ? window.ForgeIcons.modelPlate(spec) : el('span', spec || '—', 'mono');
+  const plates = specs => { const s = el('span', undefined, 'plates'); for (const x of specs) s.append(plate(x)); return specs.length ? s : undefined; };
+  // a long path cut in the middle: its head gives way, its last part always shows; copying takes all of it
+  function midPath(v) {
+    const s = String(v || ''), i = s.lastIndexOf('/', s.length - 2);
+    if (!s) return undefined;
+    const out = el('span', undefined, 'mid-path'); out.title = s;
+    out.append(el('span', i > 0 ? s.slice(0, i + 1) : '', 'mid-head'), el('span', i > 0 ? s.slice(i + 1) : s, 'mid-tail'));
+    return out;
+  }
+  const sevChip = (text, sev) => el('span', text, 'chip sev-chip sev-' + (/^P[0-3]$/.test(sev) ? sev : 'none'));
   function time(v) {
     if (num(v) === null) return '—';
     const d = new Date(v * 1000); return Number.isNaN(d.getTime()) ? '—' : d.toLocaleString();
@@ -87,7 +98,7 @@ window.ForgePanel = (() => {
     const row = el('div', undefined, 'chips');
     if (!f) { row.append(el('span', 'no findings parsed', 'muted')); parent.append(row); return; }
     let any = false;
-    for (const sev of ['P0', 'P1', 'P2', 'P3']) if (f[sev]) { row.append(chip(`${sev} × ${f[sev]}`, SEV[sev])); any = true; }
+    for (const sev of ['P0', 'P1', 'P2', 'P3']) if (f[sev]) { row.append(sevChip(`${sev} × ${f[sev]}`, sev)); any = true; }
     if (f.unlabelled) { row.append(chip(`unlabelled × ${f.unlabelled}`, 'unknown')); any = true; }
     if (f.plausible) { row.append(chip(`plausible × ${f.plausible}`, 'pending')); any = true; }
     if (!any) row.append(el('span', 'no confirmed findings', 'muted'));
@@ -124,7 +135,7 @@ window.ForgePanel = (() => {
     findings.slice().sort((a, b) => order(a) - order(b)).forEach((f, i) => {
       const li = el('li', undefined, 'finding' + (f.status === 'CONFIRMED' ? '' : ' plausible'));
       const head = el('div', undefined, 'finding-head');
-      head.append(chip(f.severity || 'P?', f.severity ? SEV[f.severity] : 'unknown'), el('span', f.status, 'tag'));
+      head.append(sevChip(f.severity || 'P?', f.severity), el('span', f.status, 'tag'));
       if (f.location) head.append(el('code', f.location));
       li.append(head, el('p', f.summary || ''));
       if (f.text && f.text !== f.summary) { const d = el('details'); d.dataset.keep = `${key}-f${i}`; d.append(el('summary', 'Full finding'), el('pre', f.text)); li.append(d); }
@@ -159,17 +170,26 @@ window.ForgePanel = (() => {
   const tokens = t => t ? `${display(t.input)} in (${display(t.cached)} cached) · ${display(t.output)} out` : '—';
   function modelFields(m) {
     if (!m) return [['Model', '—']];
-    return [['Spec', m.spec, true], ['Harness', m.harness, true], ['Model', m.model, true], ['Effort', m.effort], m.clamped ? ['Clamped', m.clamped] : ['Clamped', undefined]];
+    return [['Spec', m.spec ? plate(m.spec) : undefined], ['Harness', m.harness, true], ['Model', m.model, true], ['Effort', m.effort], m.clamped ? ['Clamped', m.clamped] : ['Clamped', undefined]];
   }
 
   /* ---------- views ---------- */
+  // the run's record: what it was asked, how it was set up, and what verification printed (the header names and counts it)
+  function runRecord(host, ctx) {
+    const run = ctx.run, solo = run.kind === 'solo';
+    const s = section(host, 'Settings');
+    fields(s, [['Repo', midPath(run.repo), true], ['Run ID', run.run_id, true], ['Path', midPath(run.path), true], ['Source', run.source],
+      ['Decompose', run.decompose_level], ['Updated', time(run.updated)], ['Explore', run.settings && run.settings.explore], ['Shadow rate', run.settings && run.settings.shadow_rate],
+      ['Shadow reviewers', run.settings && plates(list(run.settings.shadow_qa))], ['QA threshold', run.settings && run.settings.qa_threshold],
+      ['Max parallel', run.settings && run.settings.max_parallel], ['Final reviewer', run.settings && run.settings.final_qa ? plate(run.settings.final_qa) : undefined],
+      ['Timeout (seconds)', run.settings && run.settings.timeout], ['Verification', chip((run.verification && run.verification.status) || run.verification_status)],
+      ['Command', run.verification && run.verification.command, true]]);
+    details(host, 'Request', display(run.request), 'run-request');
+    if (!solo) details(host, 'Waves', list(run.waves).map((ids, i) => `${i + 1}: ${list(ids).join(', ')}`).join('\n') || '—', 'waves');
+    if (run.verification && run.verification.log_tail != null) details(host, 'Verification output', run.verification.log_tail, 'verification-output');
+  }
   function runView(host, ctx) {
     const run = ctx.run, now = ctx.now;
-    const head = el('div', undefined, 'insp-head');
-    head.append(el('div', run.kind === 'solo' ? 'solo run' : 'run', 'insp-kind'), el('h2', String(run.goal || 'Untitled run').split('\n')[0]));
-    const chips = el('div', undefined, 'chips');
-    for (const [s, n] of Object.entries(run.counts || {})) { const c = chip(s); c.append(document.createTextNode(' ' + n)); chips.append(c); }
-    head.append(chips); host.append(head);
     const tr = RM.timeRange(run, now);
     const s = section(host, 'Timeline');
     fields(s, [['Started', time(tr && tr.start)], ['Last activity', time(tr && tr.end)], ['Wall time', tr ? RM.fmtDur(tr.end - tr.start) : '—'],
@@ -196,13 +216,14 @@ window.ForgePanel = (() => {
       if (F.final.findings) findingCounts(f, F.final.findings);
     }
     if (list(run.deferrals).length) details(host, `Deferred tasks (${run.deferrals.length})`, run.deferrals.join('\n'), 'deferrals');
+    runRecord(host, ctx);
     muted(host, 'Select a task, an attempt or a finish node on the map or in the table to see its prompts, models, timings and findings.');
   }
 
   function taskView(host, ctx, task) {
     const run = ctx.run, now = ctx.now, solo = run.kind === 'solo';
     const head = el('div', undefined, 'insp-head');
-    head.append(el('div', solo ? 'solo task' : `task · wave ${display(task.wave)}`, 'insp-kind'), el('h2', solo ? (task.title || 'Solo run') : `${task.id} · ${task.title || 'Untitled task'}`));
+    head.append(el('h2', solo ? (task.title || 'Solo run') : `${task.id} · ${task.title || 'Untitled task'}`), el('div', solo ? 'solo task' : `task · wave ${display(task.wave)}`, 'insp-kind'));
     const chips = el('div', undefined, 'chips');
     chips.append(chip(task.status));
     if (task.verdict) chips.append(chip('review ' + task.verdict, task.verdict.toLowerCase()));
@@ -215,7 +236,7 @@ window.ForgePanel = (() => {
 
     // the models: who owned it, how it was routed, what it was escalated to
     const ms = section(host, 'Models');
-    fields(ms, [['Dwarf', task.dwarf, true], ['Reviewer', task.qa, true], ['Attempt', task.attempt]]);
+    fields(ms, [['Dwarf', plate(task.dwarf)], ['Reviewer', plate(task.qa)], ['Attempt', task.attempt]]);
     const route = list(task.route).slice(-1)[0];
     if (route) fields(ms, [['Routed', `${display(route.chosen)} from ${list(route.candidates).join(', ') || '—'}${route.explored ? ` (exploratory, p=${display(route.propensity)})` : ''}`, true], ['Tier · ε', `${display(route.tier)} · ${display(route.epsilon)}`]]);
     for (const e of list(task.escalations)) muted(ms, `Escalated after attempt ${display(e.attempt)}: ${display(e.from)} → ${display(e.to)} at ${time(e.at)}`);
@@ -240,14 +261,18 @@ window.ForgePanel = (() => {
         const p = tp.parts.find(x => x.id === pid); if (!p || p.planned) continue;
         const line = el('div', undefined, 'exec-line');
         const e = p.exec && list(task.executions).find(x => x.id === p.exec.id) || null;
-        const label = `${p.label.toLowerCase()} · ${p.spec || '—'}`;
+        const label = p.label.toLowerCase();
         const target = p.exec && p.exec.id ? { kind: 'execution', task: task.id, id: task.id, exec: p.exec.id, shadow: p.kind === 'shadow' } : null;
-        line.append(target ? link(label, ctx.hash(target), () => ctx.onSelect(target)) : el('span', label), chip(p.status));
+        line.append(target ? link(label, ctx.hash(target), () => ctx.onSelect(target)) : el('span', label), plate(p.spec), chip(p.status));
         if (e) line.append(el('span', `${RM.fmtDur(e.duration_s ?? (e.state === 'running' && num(e.started) !== null ? now - e.started : null))}${e.state === 'running' && e.phase ? ' · ' + e.phase : ''}`, 'muted'));
-        if (p.kind === 'shadow' && p.shadow) line.append(el('span', p.shadow.agreement === 'disagree' ? '⚑ disagrees with the primary review' : p.shadow.agreement === 'agree' ? 'agrees' : '', p.shadow.agreement === 'disagree' ? 'warn' : 'muted'));
+        if (p.kind === 'shadow' && p.shadow) line.append(el('span', p.shadow.agreement === 'disagree' ? 'disagrees with the primary review' : p.shadow.agreement === 'agree' ? 'agrees' : '', p.shadow.agreement === 'disagree' ? 'warn' : 'muted'));
         const fs = (e && e.findings) || (p.shadow && p.shadow.findings);
-        if (fs && fs.worst) line.append(chip(`${fs.worst}×${fs[fs.worst]}`, SEV[fs.worst]));
-        if ((p.kind === 'qa' || p.kind === 'shadow') && p.exec && p.exec.id) { const a = diffLink(ctx, 'diff it read', { kind: 'task', task: task.id, source: p.exec.id }, 'diff-link small'); if (a) line.append(a); }
+        if (fs && fs.worst) line.append(sevChip(`${fs.worst}×${fs[fs.worst]}`, fs.worst));
+        // what it said and ran, and the diff a review read
+        const go = el('span', undefined, 'exec-links');
+        if (target && ctx.convoHash) { const a = el('a', 'conversation', 'diff-link small'); a.href = ctx.convoHash(target); go.append(a); }
+        if ((p.kind === 'qa' || p.kind === 'shadow') && p.exec && p.exec.id) { const a = diffLink(ctx, 'diff it read', { kind: 'task', task: task.id, source: p.exec.id }, 'diff-link small'); if (a) go.append(a); }
+        if (go.childElementCount) line.append(go);
         box.append(line);
       }
       for (const l of tp.links.filter(l => l.kind === 'escalation' && z.parts.includes(l.to))) box.append(el('p', `escalated: ${l.label}`, 'muted'));
@@ -268,7 +293,7 @@ window.ForgePanel = (() => {
       reviews.forEach((r, i) => {
         const box = el('div', undefined, 'review');
         const h = el('div', undefined, 'attempt-head');
-        h.append(el('strong', `${r.kind} review · attempt ${display(r.attempt)}`), el('span', r.spec || '', 'mono'), chip(r.verdict || r.state || 'unknown'));
+        h.append(el('strong', `${r.kind} review · attempt ${display(r.attempt)}`), plate(r.spec), chip(r.verdict || r.state || 'unknown'));
         box.append(h);
         if (r.state === 'running') muted(box, 'Still reviewing; findings appear when it finishes.');
         else findingsList(box, r.findings, `task-${task.id}-r${i}`);
@@ -284,7 +309,7 @@ window.ForgePanel = (() => {
       const cs = section(host, 'Clef predictions');
       for (const [label, p] of preds) {
         const n = Number(String(label).match(/\d+/) || 1), outcome = list(task.attempts).filter(a => a.attempt === n).pop();
-        fields(cs, [[label, `p(pass) = ${display(p.p)} → ${outcome ? outcome.status : 'not finished'}`], ['Assignment', p.assignment ? `${display(p.assignment.dwarf)} / ${display(p.assignment.qa)}` : '—', true]]);
+        fields(cs, [[label, `p(pass) = ${display(p.p)} → ${outcome ? outcome.status : 'not finished'}`], ['Assignment', p.assignment ? plates([p.assignment.dwarf, p.assignment.qa]) : '—']]);
       }
     }
     // the prompts and the final messages
@@ -308,12 +333,12 @@ window.ForgePanel = (() => {
     const e = entry.data || brief;
     const head = el('div', undefined, 'insp-head');
     const role = e ? e.role : String(sel.exec).split('-')[0];
-    head.append(el('div', `${sel.shadow ? 'shadow ' : ''}${role === 'qa' ? 'review' : role} · attempt ${display(e && e.attempt)}`, 'insp-kind'),
-      el('h2', `${task ? task.id + ' · ' : ''}${role === 'qa' ? 'reviewer' : role === 'dwarf' ? 'dwarf' : role}`));
+    head.append(el('h2', `${task ? task.id + ' · ' : ''}${role === 'qa' ? 'reviewer' : role === 'dwarf' ? 'dwarf' : role}`), el('div', `${sel.shadow ? 'shadow ' : ''}${role === 'qa' ? 'review' : role} · attempt ${display(e && e.attempt)}`, 'insp-kind'));
     const chips = el('div', undefined, 'chips');
     if (e) { chips.append(chip(RM.execStatus(e))); if (e.verdict) chips.append(chip('verdict ' + e.verdict, e.verdict.toLowerCase())); }
     head.append(chips);
     if (task) head.append(link('← task ' + task.id, ctx.hash({ kind: 'task', id: task.id }), () => ctx.onSelect({ kind: 'task', id: task.id })));
+    if ((role === 'qa' || role === 'dwarf') && ctx.convoHash) { const a = el('a', 'Its conversation: what it said and ran →', 'diff-link'); a.href = ctx.convoHash(sel); head.append(a); }
     if (task && (role === 'qa' || role === 'dwarf')) { const a = diffLink(ctx, role === 'qa' ? 'The diff this review read →' : 'The diff its review read →', { kind: 'task', task: task.id, source: sel.exec }); if (a) head.append(a); }
     host.append(head);
     if (!e) { loading(host, entry, 'this execution'); return; }
@@ -367,7 +392,8 @@ window.ForgePanel = (() => {
       li.append(el('i', undefined, 'led st-' + String(n.ui_status || 'unknown').toLowerCase()));
       const target = { kind: 'fractal', task: task.id, node: n.id };
       li.append(link(n.id, ctx.hash(target), () => ctx.onSelect(target)));
-      const bits = [n.reserved ? 'reserved' : n.status, n.difficulty, n.model, n.phase ? `${n.phase}${n.iteration ? ' #' + n.iteration : ''}` : null, num(n.cost) !== null ? money(n.cost) : null].filter(Boolean);
+      const bits = [n.reserved ? 'reserved' : n.status, n.difficulty, n.phase ? `${n.phase}${n.iteration ? ' #' + n.iteration : ''}` : null, num(n.cost) !== null ? money(n.cost) : null].filter(Boolean);
+      if (n.model) li.append(plate(n.model));
       li.append(el('span', bits.join(' · '), 'muted'));
       const dec = n.decomposition;
       if (dec && dec.decision) li.append(el('span', dec.decision === 'split' ? `split into ${list(dec.children).length}` : dec.decision, 'tag'));
@@ -383,7 +409,7 @@ window.ForgePanel = (() => {
     const run = ctx.run, path = `${fractalPath(run, sel.task)}/nodes/${encodeURIComponent(sel.node)}`;
     const entry = lazy(ctx, path, run.updated), n = entry.data;
     const head = el('div', undefined, 'insp-head');
-    head.append(el('div', `Fractal node · task ${sel.task}`, 'insp-kind'), el('h2', sel.node));
+    head.append(el('h2', sel.node), el('div', `Fractal node · task ${sel.task}`, 'insp-kind'));
     const back = { kind: 'task', id: sel.task };
     if (n) { const chips = el('div', undefined, 'chips'); chips.append(chip(n.reserved ? 'reserved' : n.ui_status || n.status, n.reserved ? 'none' : undefined)); if (n.decomposition && n.decomposition.decision) chips.append(el('span', n.decomposition.decision, 'tag')); head.append(chips); }
     head.append(link('← task ' + sel.task, ctx.hash(back), () => ctx.onSelect(back)));
@@ -392,7 +418,7 @@ window.ForgePanel = (() => {
     if (loading(host, entry, 'this node')) return;
     if (n.goal) host.append(el('p', n.goal));
     fields(host, [['Parent', n.parent ? link(n.parent, ctx.hash({ kind: 'fractal', task: sel.task, node: n.parent }), () => ctx.onSelect({ kind: 'fractal', task: sel.task, node: n.parent })) : '—'],
-      ['Difficulty', n.difficulty], ['Model', n.model, true], ['Resolved', n.resolved_model, true], ['Paths', list(n.paths).join('\n') || '—', true], ['Depends on', list(n.deps).join(', ') || '—', true],
+      ['Difficulty', n.difficulty], ['Model', n.model ? plate(n.model) : '—'], ['Resolved', n.resolved_model ? plate(n.resolved_model) : '—'], ['Paths', list(n.paths).join('\n') || '—', true], ['Depends on', list(n.deps).join(', ') || '—', true],
       ['Phase', n.phase ? `${n.phase}${n.iteration ? ' · iteration ' + n.iteration : ''}` : '—'], ['Started', time(n.started_at)], ['Ended', time(n.ended_at)],
       ['Cost', `${money(n.cost)}${n.unknown_cost_steps ? ` (+${n.unknown_cost_steps} steps of unknown cost)` : ''}`], ['Tokens', n.tokens ? `${display(n.tokens.input_tokens)} in (${display(n.tokens.cached_input_tokens)} cached) · ${display(n.tokens.output_tokens)} out` : '—']]);
     if (n.error) host.append(el('p', n.error, 'warn'));
@@ -404,7 +430,7 @@ window.ForgePanel = (() => {
       const adm = list(dec.admission);
       if (adm.length) {
         const ul = el('ul', undefined, 'plain');
-        for (const a of adm) { const li = el('li'); li.append(link(a.name, ctx.hash({ kind: 'fractal', task: sel.task, node: a.name }), () => ctx.onSelect({ kind: 'fractal', task: sel.task, node: a.name })), document.createTextNode(` · ${a.difficulty || '—'} · ${a.model || '—'} — ${a.goal || ''}`)); ul.append(li); }
+        for (const a of adm) { const li = el('li'); li.append(link(a.name, ctx.hash({ kind: 'fractal', task: sel.task, node: a.name }), () => ctx.onSelect({ kind: 'fractal', task: sel.task, node: a.name })), document.createTextNode(` · ${a.difficulty || '—'} · `), plate(a.model), document.createTextNode(` — ${a.goal || ''}`)); ul.append(li); }
         ds.append(el('p', 'Children it admitted:', 'muted'), ul);
       }
       if (dec.error) ds.append(el('p', dec.error, 'warn'));
@@ -419,7 +445,7 @@ window.ForgePanel = (() => {
   function finalView(host, ctx, sel) {
     const run = ctx.run, reviews = list(run.final_reviews);
     const head = el('div', undefined, 'insp-head');
-    head.append(el('div', 'finish · whole-run review', 'insp-kind'), el('h2', 'Final review'));
+    head.append(el('h2', 'Final review'), el('div', 'finish · whole-run review', 'insp-kind'));
     host.append(head);
     const pick = sel.name ? reviews.find(r => r.name === sel.name) : reviews[0];
     if (!pick) {
@@ -433,7 +459,7 @@ window.ForgePanel = (() => {
     if (pick.published) chips.append(el('span', 'published', 'tag'));
     chips.append(el('span', pick.source === 'integrate' ? 'during integrate' : 'forge review', 'tag'));
     head.append(chips);
-    fields(host, [['Reviewer', pick.spec, true], ['Threshold', pick.threshold], ['Reviewed', pick.base || pick.tip ? `${String(pick.base || '?').slice(0, 10)}..${String(pick.tip || '?').slice(0, 10)}` : '—', true],
+    fields(host, [['Reviewer', plate(pick.spec)], ['Threshold', pick.threshold], ['Reviewed', pick.base || pick.tip ? `${String(pick.base || '?').slice(0, 10)}..${String(pick.tip || '?').slice(0, 10)}` : '—', true],
       ['Started', time(pick.started ?? pick.at)], ['Ended', time(pick.ended)], ['Duration', RM.fmtDur(pick.duration_s)]]);
     if (pick.execution) { const s = { kind: 'execution', task: null, exec: pick.execution }; host.append(link('Model, timings and exact prompt →', ctx.hash(s), () => ctx.onSelect(s))); }
     { const a = diffLink(ctx, 'The combined diff it read, findings pinned →', { kind: 'final', name: pick.name }); if (a) { host.append(el('br')); host.append(a); } }
@@ -457,7 +483,7 @@ window.ForgePanel = (() => {
       for (const r of reviews) {
         const li = el('li');
         li.append(link(`${time(r.started ?? r.at)} · ${r.verdict || r.state}`, ctx.hash({ kind: 'final', name: r.name }), () => ctx.onSelect({ kind: 'final', name: r.name })));
-        if (r.findings && r.findings.worst) li.append(document.createTextNode(' '), chip(`${r.findings.worst}×${r.findings[r.findings.worst]}`, SEV[r.findings.worst]));
+        if (r.findings && r.findings.worst) li.append(document.createTextNode(' '), sevChip(`${r.findings.worst}×${r.findings[r.findings.worst]}`, r.findings.worst));
         if (r.name === pick.name) li.className = 'current';
         ul.append(li);
       }
@@ -468,7 +494,7 @@ window.ForgePanel = (() => {
   function verificationView(host, ctx) {
     const run = ctx.run, v = run.verification;
     const head = el('div', undefined, 'insp-head');
-    head.append(el('div', 'finish', 'insp-kind'), el('h2', 'Verification'), chip(v && v.status || 'pending'));
+    head.append(el('h2', 'Verification'), el('div', 'finish', 'insp-kind'), chip(v && v.status || 'pending'));
     host.append(head);
     if (!v) { muted(host, 'Verification has not run: it runs after every task is merged into the integration branch.'); return; }
     fields(host, [['Command', v.command, true], ['Commit', v.commit, true]]);
@@ -484,7 +510,7 @@ window.ForgePanel = (() => {
     const run = ctx.run, ig = run.integration || {};
     const F = RM.finishState(run);
     const head = el('div', undefined, 'insp-head');
-    head.append(el('div', 'finish', 'insp-kind'), el('h2', 'Integration'), chip(F.integration.status));
+    head.append(el('h2', 'Integration'), el('div', 'finish', 'insp-kind'), chip(F.integration.status));
     host.append(head);
     fields(host, [['Merged', `${F.integration.merged} of ${F.integration.total} tasks`], ['Base', ig.base, true], ['Accepted at', ig.accepted, true]]);
     if (list(ig.merged).length) {
@@ -509,12 +535,22 @@ window.ForgePanel = (() => {
     host.replaceChildren();
     const run = ctx.run, sel = ctx.sel;
     if (!run) return;
-    const close = sel && !(run.kind === 'solo' && sel.kind === 'task') ? link('Close ✕', ctx.hash(null), () => ctx.onSelect(null)) : null;
-    if (close) { close.className = 'insp-close'; host.append(close); }
+    const close = sel && !(run.kind === 'solo' && sel.kind === 'task') ? link('', ctx.hash(null), () => ctx.onSelect(null)) : null;
+    if (close) {
+      close.className = 'insp-close button'; close.textContent = '';
+      if (window.ForgeIcons) close.append(window.ForgeIcons.icon('close'));
+      close.append(document.createTextNode('Close')); close.title = 'Back to the run (Esc on the stage)';
+      host.append(close);
+    }
     const tid = sel && (sel.kind === 'task' ? sel.id : sel.kind === 'execution' ? sel.task : null);
     const task = tid ? list(run.tasks).find(t => t.id === tid) : run.kind === 'solo' && sel && sel.kind === 'execution' ? list(run.tasks)[0] : null;
     if (!sel) return runView(host, ctx);
-    if (sel.kind === 'task') { if (!task) { muted(host, `Task ${sel.id} is not in this run.`); return; } return taskView(host, ctx, task); }
+    if (sel.kind === 'task') {
+      if (!task) { muted(host, `Task ${sel.id} is not in this run.`); return; }
+      taskView(host, ctx, task);
+      if (run.kind === 'solo') runRecord(host, ctx);      // a solo run is its one task: its record goes below it
+      return;
+    }
     if (sel.kind === 'execution') return execView(host, ctx, task, sel);
     if (sel.kind === 'final') return finalView(host, ctx, sel);
     if (sel.kind === 'verification') return verificationView(host, ctx);

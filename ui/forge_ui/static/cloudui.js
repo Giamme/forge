@@ -99,7 +99,7 @@ window.ForgeCloudUI = (() => {
       else if (root.requestFullscreen) root.requestFullscreen().catch(() => say('Full screen is not available here.'));
     });
     document.addEventListener('fullscreenchange', () => { full.textContent = document.fullscreenElement === root ? 'Exit full screen' : 'Full screen'; });
-    const title = el('h1', 'Run cloud');
+    const title = el('h1', 'Run cloud', 'module-title');
     const left = el('div', undefined, 'cloud-bar-left'); left.append(title, count);
     const tools = el('div', undefined, 'cloud-bar-tools'); tools.append(filtersBtn, layoutSeg, shapeSeg, resetView, posMenu, full);
     if (ctx.viewToggle) tools.append(ctx.viewToggle());
@@ -225,7 +225,7 @@ window.ForgeCloudUI = (() => {
       const f = prefs.filter, O = CM.options(S.facts), P = CM.projects(S.runs);
       panel.replaceChildren();
       const head = el('div', undefined, 'cloud-panel-head');
-      head.append(el('h2', 'Filters'), button('Reset', 'linkish', () => { prefs.filter = CM.emptyFilter(); apply({ rebuild: true }); }, 'Show every run'));
+      head.append(el('h2', 'Filters', 'plate'), button('Reset', 'linkish', () => { prefs.filter = CM.emptyFilter(); apply({ rebuild: true }); }, 'Show every run'));
       panel.append(head);
       const text = el('input'); text.type = 'search'; text.value = f.text; text.placeholder = 'goal, repo, run or task id, title, model…'; text.dataset.key = 'text';
       text.setAttribute('aria-label', 'Search the runs');
@@ -285,16 +285,19 @@ window.ForgeCloudUI = (() => {
       const head = el('div', undefined, 'cloud-card-head');
       head.append(el('span', STATE[f.state] ? STATE[f.state].label : f.state, 'chip st-' + (STATE[f.state] || { st: 'unknown' }).st),
         el('span', `${proj ? proj.name : RM.basename(r.repo)} · ${r.kind || 'plan'}`, 'muted'));
-      head.append(button('×', 'cloud-card-close', () => ctx.route({ sel: null, focus: S.focus }), 'Close (Esc)'));
+      const shut = button('', 'cloud-card-close', () => ctx.route({ sel: null, focus: S.focus }), 'Close (Esc)');
+      shut.setAttribute('aria-label', 'Close (Esc)'); if (window.ForgeIcons) shut.append(window.ForgeIcons.icon('close'));
+      head.append(shut);
       card.append(head, el('h2', String(r.goal || 'Untitled run').split('\n')[0]), el('p', r.run_id || '', 'mono muted'));
       const leds = el('span', undefined, 'leds');
       for (const t of list(r.task_statuses).slice(0, 120)) { const l = el('i', undefined, 'led st-' + String(t.status || 'pending').toLowerCase()); l.title = `${t.id}: ${t.status}${t.title ? ' · ' + t.title : ''}`; leds.append(l); }
       card.append(leds);
       const dl = el('dl', undefined, 'fields');
       const mix = ['high', 'medium', 'low', 'none'].filter(k => f.diff[k]).map(k => `${f.diff[k]} ${k === 'none' ? 'unset' : k}`).join(' · ');
-      for (const [k, v, mono] of [['Tasks', `${f.n}${mix ? ' · ' + mix : ''}`], ['Implementers', [...f.dwarf].join(', ') || '—', true], ['Reviewers', [...f.qa].join(', ') || '—', true],
+      const plates = specs => { if (!specs.length || !window.ForgeIcons) return specs.join(', ') || '—'; const s = el('span', undefined, 'plates'); for (const x of specs) s.append(window.ForgeIcons.modelPlate(x)); return s; };
+      for (const [k, v, mono] of [['Tasks', `${f.n}${mix ? ' · ' + mix : ''}`], ['Implementers', plates([...f.dwarf])], ['Reviewers', plates([...f.qa])],
         ['Started', when(r.created)], ['Updated', when(r.updated)], ['Final review', r.final_review || '—'], ['Verification', r.verification_status || '—'], ['Decompose', r.decompose_level || 'off']]) {
-        dl.append(el('dt', k), el('dd', v, mono ? 'mono' : ''));
+        const dd = el('dd', undefined, mono ? 'mono' : ''); dd.append(v instanceof Node ? v : document.createTextNode(String(v))); dl.append(el('dt', k), dd);
       }
       card.append(dl);
       if (!shown) card.append(el('p', 'Hidden by the current filters.', 'warn'));

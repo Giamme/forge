@@ -13,7 +13,11 @@
   } }
   </script>
   <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="preload" href="D-DINCondensed-Bold.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="style.css">
+  <script src="theme.js"></script>
+  <script src="icons.js" defer></script>
+  <script src="datatable.js" defer></script>
   <script src="runmodel.js" defer></script>
   <script src="cloudmodel.js" defer></script>
   <script src="modelstats.js" defer></script>
@@ -21,6 +25,7 @@
   <script src="gantt.js" defer></script>
   <script src="panel.js" defer></script>
   <script src="diffview.js" defer></script>
+  <script src="convo.js" defer></script>
   <script src="files.js" defer></script>
   <script src="map3d.js" defer></script>
   <script src="cloudui.js" defer></script>
@@ -29,23 +34,30 @@
   <script src="notify.js" defer></script>
   <script src="app.js" defer></script>
 </head>
-<body>
+<body data-shell="immersive" data-runs="open" data-insp="open" data-tasks="open">
+  <script src="shell.js"></script>
   <header class="topbar">
-    <a class="brand" href="#/">forge-ui</a>
-    <a class="top-link" href="#/">Map of all runs</a>
-    <a class="top-link" href="#/cloud">Run cloud</a>
-    <a class="top-link" href="#/models">Models</a>
-    <span class="muted">Local run viewer · read only</span>
-    <button class="top-search" type="button" data-jump title="Jump to a run, task, project, model or command (/)">Search <kbd>Ctrl K</kbd></button>
-    <button id="bell" class="bell" type="button" aria-label="Notifications"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 3a6 6 0 0 0-6 6v3.6L4.3 15.4A1 1 0 0 0 5.2 17h13.6a1 1 0 0 0 .9-1.6L18 12.6V9a6 6 0 0 0-6-6Zm-2.6 15.5a2.7 2.7 0 0 0 5.2 0Z"/></svg><span class="bell-count" hidden></span></button>
-    <label class="refresh-control"><input id="refresh" type="checkbox" checked> Live refresh</label>
+    <a class="brand" href="#/" title="forge-ui · local run viewer, read only"><span class="brand-plate">forge</span><span class="brand-sub">ui</span></a>
+    <nav class="desk-nav" aria-label="Views">
+      <a class="top-link" href="#/">Map</a>
+      <a class="top-link" href="#/cloud">Cloud</a>
+      <a class="top-link" href="#/models">Models</a>
+    </nav>
+    <button class="top-search" type="button" data-jump title="Jump to a run, task, project, model or command (/)"><span class="top-search-label"><span>Search</span></span> <kbd>Ctrl K</kbd></button>
+    <div class="desk-tools">
+      <button id="bell" class="bell" type="button" aria-label="Notifications"><span class="bell-count" hidden></span></button>
+      <label class="refresh-control" title="Poll the runs for changes"><input id="refresh" type="checkbox" checked> Live</label>
+    </div>
   </header>
   <div id="errors" role="status" aria-live="polite" hidden></div>
   <div class="layout">
-    <aside class="sidebar" aria-label="Runs">
-      <div class="sidebar-heading"><h1>Runs</h1><span id="run-count" class="muted"></span></div>
-      <label class="filter-label" for="filter">Filter by goal, repo, ID, path or model</label>
-      <input id="filter" type="search" placeholder="Filter runs…" autocomplete="off">
+    <aside class="sidebar module" aria-label="Runs" data-overlay>
+      <div class="module-head"><h1 class="module-title">Runs</h1><span id="run-count" class="module-count"></span><span class="module-tools"></span></div>
+      <div class="runs-tools">
+        <label class="visually-hidden" for="filter">Filter by goal, repo, ID, path or model</label>
+        <input id="filter" type="search" placeholder="Filter runs…" autocomplete="off">
+        <select id="run-sort" aria-label="Sort the runs"><option value="updated">Latest</option><option value="state">State</option><option value="repo">Repo</option></select>
+      </div>
       <nav id="run-list" aria-label="Choose a run"><p class="empty">Loading runs…</p></nav>
     </aside>
     <main id="main" tabindex="-1"><p class="empty">Loading…</p></main>

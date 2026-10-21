@@ -1,0 +1,9 @@
+{"type":"step_start","timestamp":1760600100000,"sessionID":"ses_fixture01","part":{"type":"step-start"}}
+{"type":"text","timestamp":1760600101000,"sessionID":"ses_fixture01","part":{"type":"text","text":"Reading the reader first."}}
+{"type":"tool_use","timestamp":1760600102000,"sessionID":"ses_fixture01","part":{"type":"tool","tool":"bash","callID":"call_1","state":{"status":"completed","input":{"command":"python3 -m unittest -q","description":"Run the tests"},"output":"FAILED (failures=1)\n","title":"python3 -m unittest -q","metadata":{"exit":1,"output":"FAILED (failures=1)\n"}}}}
+{"type":"tool_use","timestamp":1760600103000,"sessionID":"ses_fixture01","part":{"type":"tool","tool":"edit","callID":"call_2","state":{"status":"completed","input":{"filePath":"/example/fixture-repo/ui/reader.py","oldString":"read(task)","newString":"read(task) or 'PENDING'"},"output":"","title":"ui/reader.py","metadata":{}}}}
+{"type":"tool_use","timestamp":1760600104000,"sessionID":"ses_fixture01","part":{"type":"tool","tool":"read","callID":"call_3","state":{"status":"error","input":{"filePath":"/example/fixture-repo/ui/missing.py"},"error":"File not found: /example/fixture-repo/ui/missing.py"}}}
+{"type":"step_finish","timestamp":1760600105000,"sessionID":"ses_fixture01","part":{"type":"step-finish","reason":"tool-calls","tokens":{"input":900,"output":120,"reasoning":30,"cache":{"read":4000,"write":100}},"cost":0.01}}
+{"type":"text","timestamp":1760600106000,"sessionID":"ses_fixture01","part":{"type":"text","text":"Done: a missing status reads as PENDING."}}
+{"type":"step_finish","timestamp":1760600107000,"sessionID":"ses_fixture01","part":{"type":"step-finish","reason":"stop","tokens":{"input":100,"output":40,"reasoning":0,"cache":{"read":5000,"write":0}},"cost":0.005}}
+{"type":"error","timestamp":1760600108000,"sessionID":"ses_fixture01","error":{"name":"ProviderError","data":{"message":"rate limited, retrying"}}}

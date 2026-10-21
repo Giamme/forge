@@ -7,7 +7,7 @@ blocks on a plate, with cables between them and lamps that light up as things ha
 - **A map of every run**, one district per repo and one block per run, with a lamp per task.
   Filter it by state, repo, kind, model, age or review verdict; what does not match fades
   instead of disappearing.
-- **A run, as planned and as it ran.** *Planned waves* puts each task in its wave, with
+- **A run, as planned and as it ran.** *Plan* puts each task in its planned wave, with
   dependency cables, and ends in a *finish* line of three nodes: integration, verification
   and the whole-run **final review**. *Execution* lays the same work out on wall-clock time:
   one block per attempt, in the lane it really ran in, with its dwarf and review inside, the
@@ -26,12 +26,13 @@ blocks on a plate, with cables between them and lamps that light up as things ha
   with the primary and how sure Clef was that each task would pass.
 - **Beyond one run:** a full-screen **run cloud** of every run, grouped by project, in five
   layouts with filters and runs you can drag anywhere; **diffs** with each finding under the
-  line it names; a **model leaderboard**; a **files heatmap**; **Fractal** child-task trees;
+  line it names; each dwarf's and reviewer's **conversation**, read from its CLI's log; a
+  **model leaderboard**; a **files heatmap**; **Fractal** child-task trees;
   **quick jump** and **notifications**; and **export** of a run as one HTML file. See
   [What you see](#what-you-see).
 
 <p align="center">
-  <img src="docs/media/hero.webp" width="860" alt="A decomposed run on its 3D plate: eight tasks in their planned waves, then the same run on wall-clock time, where two first attempts that failed review show in red beside the retries that passed.">
+  <img src="docs/media/hero.webp" width="860" alt="A decomposed run on its 3D plate: eight tasks in their planned waves with a mark for each review finding, then the same run on wall-clock time, where two first attempts that failed review show in red beside the retries that passed.">
 </p>
 
 The 3D view loads three.js from a CDN the first time it is used (see [Privacy](#privacy)).
@@ -105,11 +106,21 @@ with the first source winning. Discovery and disk reads repeat on each API reque
 
 ## What you see
 
-- **Map (`#/`):** every discovered run, newest first, grouped by repo. By default the last
-  60 runs from the past 14 days; *older runs too* shows the rest. The sidebar list follows
-  the same filter.
+forge-ui looks like a signal box's route-setting desk: the run is drawn on a panel, every heading
+is an engraved plate, every switch is a push button whose lamp lights when it is on, and lamps
+keep one meaning everywhere (amber running, green merged or passed, red failed, unlit pending).
 
-  <img src="docs/media/map.png" width="760" alt="The map: one block per run, in a district per repo, green when done, blue while running, red with failures.">
+- **Layout:** the *Runs*, *Inspector* and *Tasks* modules sit around the stage. *Immersive* (the
+  default) floats them over a stage that fills the window; *Workbench* docks them beside it, and
+  the runs list folds to a rail of lamps. Switch with the two layout keys in the header; the
+  module keys beside them, or `1`, `2` and `3`, fold and open the runs, the inspector and the
+  tasks. On your first visit the inspector and the tasks start folded, so a run opens on its plate. Drag a module's inner edge, or focus it and use the arrow keys, to resize it. The header
+  also switches the theme (system, light or dark). All of this is remembered in this browser.
+- **Map (`#/`):** every discovered run, newest first, grouped by repo. By default the last
+  60 runs from the past 14 days; *older runs too* shows the rest. The runs list follows the same
+  filter, and sorts by latest activity, state or repo.
+
+  <img src="docs/media/map.png" width="760" alt="The map: one block per run, in a district per repo, green when done, amber while running, red with failures.">
 - **Run cloud (`#/cloud`):** every run at once, full screen, floating in 3D and grouped by project
   (repo). Pick a layout: *Helix* (one spiral per project, oldest at the bottom), *Sphere*,
   *Galaxy* (a disc per project, newest at the centre), *Timeline* (left to right by start time,
@@ -128,12 +139,38 @@ with the first source winning. Discovery and disk reads repeat on each API reque
   filtered runs and offers *Load 3D*.
 
   <img src="docs/media/cloud.webp" width="760" alt="The run cloud orbited, then laid out as galaxies and as a timeline with one lane per project.">
-- **Run (`#/runs/<key>`):** a header (goal, repo, counts, and *Run details*: settings, request,
-  waves, verification output), a toolbar (*Planned waves* / *Execution*, *3D* / *2D*, height
-  and colour overlays, *Critical path*, *Review marks*, *Projected*, *Replay*), the stage with
-  the inspector beside it, and the task table.
+- **Run (`#/runs/<key>`):** a header with the goal, the repo, a describer (each state's count,
+  the wall time, how long since anything moved), a bank of push buttons (*Plan* /
+  *Execution* / *Files*, *3D* / *2D*, and *View*: height and colour overlays, the *Layers* that
+  switch each part of the 3D drawing on or off, and the *Marks*: *Critical path*, *Review marks*,
+  *Projected*) and the replay's time base; then the stage, the inspector and the
+  task table. The stage frames the run in the part of the window the modules leave free. The
+  inspector opens when you choose a task, an attempt or a finish node; with
+  nothing chosen it shows the run's timeline, finish and record (*Run details* in the header:
+  settings, request, waves, verification output).
+- **Stage (3D):** each review finding stands over its task's block as a mark shaped by its
+  severity (P0 spike, P1 diamond, P2 cone, P3 pin, a ring when it has none; a plausible one smaller
+  and paler); on an opened task it moves onto the review that raised it, and the final review's sit
+  on *Final review*. Hover one for its location and summary; click it to open the diff that
+  review read at that finding. Choosing a task keeps its route lit, what it waits on and what
+  waits on it (`I` switches this off). Hovering a task shows its card: status, attempts, busy
+  time, tokens, models, its worst finding and what waits on it. A block whose roof text is too
+  small to read gets its name on a tag that faces you. A merge sends a pulse to *Integration*, a
+  failed attempt a red ring across the plate, an escalation a hop with the two models, a final
+  review a ring in its verdict's colour, live and during a replay (with reduced motion the block
+  lights instead). The keys at the stage's edge fit what is shown (`F`), zoom (`+` `−`), change
+  the projection (`V`: perspective, true isometric, top-down), reset the view (`0`), open the
+  legend of what the stage draws now (`L`), go full screen, and list every key (`?`). The layers,
+  the projection and the route are remembered.
+- **Lamps:** green merged or passed, amber running, red failed, unlit pending. A hollow lamp is
+  that family's other case: passed or accepted without a merge (green), interrupted (amber), an
+  infrastructure failure, a timeout or blocked behind a failure (red). Review findings are never
+  a lamp: their severity is a shape (P0 spike, P1 diamond, P2 cone, P3 pin).
+- **Tables:** the task table and the leaderboard's tables sort by any column (click its header:
+  ascending, descending, off), reorder by dragging a header (or Alt+← → on it), and show or hide
+  columns from *Columns*, which also resets them. Each table remembers its columns.
 
-  <img src="docs/media/run.png" width="49%" alt="Planned waves: a run's tasks on a 3D plate with dependency cables and the finish nodes, beside the run's inspector."> <img src="docs/media/execution.png" width="49%" alt="Execution: one block per attempt on wall-clock time, failed attempts in red, with the timeline and critical path in the inspector.">
+  <img src="docs/media/run.png" width="49%" alt="Planned waves: a run's tasks on a 3D plate with dependency cables, finding marks and the finish nodes, between the runs list and the run's inspector."> <img src="docs/media/execution.png" width="49%" alt="Execution: one block per attempt on wall-clock time, failed attempts in red, with the timeline and critical path in the inspector.">
 - **Inspector:** for the run, its timeline, critical path, peak concurrency and finish line;
   for a task, its models and routing, escalations, timings (busy, model time, overhead,
   queue wait after its dependencies merged), attempts and their executions, review findings
@@ -147,7 +184,7 @@ with the first source winning. Discovery and disk reads repeat on each API reque
   most tasks, and hide any kind of mark; a cell selects its task and offers that file's diff.
   Below: overlaps, drift, merge conflicts and deferrals as lists.
 
-  <img src="docs/media/files.png" width="560" alt="The files heatmap: files by directory against tasks by wave, with planned, touched, drift and same-wave overlap marks.">
+  <img src="docs/media/files.png" width="760" alt="The files heatmap: files by directory against tasks by wave, with planned, touched, drift and same-wave overlap marks.">
 - **Models (`#/models`):** a leaderboard of the models forge used. Implementers: tasks, first-attempt
   pass rate with its 95% Wilson interval, censored attempts, retries, escalations away from the
   model, timeouts, gate and human accepts, median model time and tokens. Reviewers: primary,
@@ -158,16 +195,29 @@ with the first source winning. Discovery and disk reads repeat on each API reque
   run cloud filtered to its runs.
 
   <img src="docs/media/models.png" width="760" alt="The implementers table: tasks, first-attempt pass rate with its 95% interval, retries, escalations, timeouts, accepts, median model time and tokens per model.">
-- **Diffs (`…/tasks/<id>/diff[/<source>][/file/<path>]`, `…/final-review/<name>/diff`):** a task's
+- **Diffs (`…/tasks/<id>/diff[/<source>][/file/<path> | /finding/<id>]`, `…/final-review/<name>/diff[/finding/<id>]`):** a task's
   `changes.diff`, its previous or committed diff, or exactly the diff one reviewer read (the last
   diff in that review's prompt), picked from a row of sources with each review's verdict; a final
   review's combined diff. Files are listed with their +/− counts and how many findings point
   into them; each finding is shown under the line it names, those on a line outside the changed
   hunks at the top of their file, and those whose file is not in the diff (or that name no
   location) in a section of their own. n and p move between findings, j and k between files.
-  Open it from a task, an attempt's review, an execution or the final review in the inspector.
+  Open it from a task, an attempt's review, an execution or the final review in the inspector, or
+  from a finding's mark on the stage (`/finding/<id>` scrolls to that finding and focuses it).
 
   <img src="docs/media/diff.png" width="760" alt="The diff a reviewer read, with a P1 finding under the line that compares token digests and a P2 finding under the revoke function.">
+- **Conversations (`…/tasks/<id>/executions/<dwarf-or-qa>/conversation`, `…/executions/<id>/conversation`):**
+  what one dwarf or reviewer said and did, read from its agent CLI's `<role>.log`, in the diff's
+  place: its messages, its thinking folded, each command with its exit and output, each edit with
+  its patch and a link to the file in the diff its review read, other tool calls, and the final
+  answer with the tokens and cost. Search it (`/`), keep only what it said, ran or changed, and
+  step through its errors (`E`). While the agent works the log is read again every few seconds and
+  *Follow* keeps the newest event in view. codex, grok, claude, openclaude and opencode logs are
+  read event by event; when a claude run logged only its final answer, the conversation comes from
+  Claude's own session file for that run, if it is still on this machine; any other log is shown
+  as it is. Open it from an attempt's dwarf or reviewer in the inspector.
+
+  <img src="docs/media/conversation.png" width="760" alt="A dwarf's conversation: its thinking, the files it wrote, a test run that failed with exit 1 and the run that passed after the fix.">
 - **Fractal child tasks:** when a run used Fractal, a task's inspector shows the tree it was split
   into (status, difficulty, model, phase, cost, the split decision), and the opened task in 3D
   carries the same tree floating above it. A node (`…/tasks/<id>/fractal/<node>`) shows its goal,
@@ -192,8 +242,10 @@ with the first source winning. Discovery and disk reads repeat on each API reque
   while the tab is in the background, and a hidden tab checks the run list every 30 seconds
   (browsers may check less often after a while). Open tabs share one log and notify once. Runs
   that have not changed for two hours never notify.
-- **Keys on the stage:** ← → move between tasks, Esc closes, `e` switches plan and
-  execution. Drag to orbit, right-drag to pan, scroll to zoom once the stage is clicked.
+- **Keys on the stage:** with the stage focused, ← → move between tasks (on the map, between
+  runs; ↑ ↓ between repos, Enter opens the run), Esc closes, `e` switches plan and execution.
+  Anywhere on the page while the stage shows: `F`, `+` `−`, `V`, `0`, `L`, `I`, Shift+F (full
+  screen) and `?`. Drag to orbit, right-drag to pan, scroll to zoom once the stage is clicked.
 
 URLs such as `http://127.0.0.1:8765/#/runs/<key>/tasks/<id>` are shareable within the
 machine while this server is running and discovering that run dir. *Live refresh* pauses
@@ -210,12 +262,18 @@ notifications on. Failed requests keep the last good data and show a banner.
 - `forge_ui/__main__.py`: CLI options, local startup and optional browser opening.
 - `forge_ui/__init__.py`: package version and the build id `forge ui` compares to find a stale server.
 - `forge_ui/static/index.html`, `style.css`, `app.js`: the page shell, styles, routes, views and polling.
+- `forge_ui/static/theme.js`, `shell.js`, `icons.js`, `datatable.js`: the theme switch, the Immersive and
+  Workbench layouts with their modules, keys and splitters, the icon set, and the sortable tables
+  (their pure parts are node-tested). `D-DINCondensed-Bold.woff2` is the engraved labels' face.
 - `forge_ui/static/runmodel.js`: the pure run model (layouts, schedule projection, critical path, replay).
 - `forge_ui/static/panel.js`, `gantt.js`, `graph.js`: the inspector, the execution chart and strip, the 2D graph.
-- `forge_ui/static/map3d.js`, `scene3d.js`, `iso.js`: the 3D loader, scenes and engine (ported from archivision).
+- `forge_ui/static/map3d.js`, `scene3d.js`, `iso.js`: the 3D loader, scenes and engine (ported from archivision);
+  `findings3d.js` the findings' marks, `stagectl.js` the stage's keys, legend and keys sheet.
 - `forge_ui/static/cloudmodel.js`, `cloud3d.js`, `cloudui.js`: the run cloud's pure model (projects,
   filters, layouts, layout files), its scene on the shared stage, and its controls.
 - `forge_ui/static/diffview.js`: the diff viewer, with findings pinned to their lines.
+- `forge_ui/static/convo.js`, `forge_ui/transcripts.py`: an execution's conversation, and the
+  reader of each agent CLI's log format behind it.
 - `forge_ui/static/files.js`: the files heatmap (`matrix()` is pure and node-tested).
 - `forge_ui/export.py`: a run as one HTML file (the page's scripts and styles inlined, the API
   responses it reads, the 3D stage's modules as one module text, a hash-based policy).
@@ -267,7 +325,7 @@ skips otherwise. Its 3D tests need three.js: the CDN, or a local copy of the npm
 
 The pictures in this README and forge's come from `tools/readme_media.py`. After a change you
 can see, run it again: it builds the demo runs, serves them, and captures each view in
-Chromium with Playwright (three.js as for the browser tests; ffmpeg with libwebp and ImageMagick
+Chromium with Playwright (three.js as for the browser tests; libwebp's `img2webp` and ImageMagick
 to encode the animations and PNGs). `--only cloud diff` retakes some of them.
 
 ```sh
@@ -278,7 +336,9 @@ python3 tools/readme_media.py                  # writes docs/media/
 
 Run dirs can contain prompts, diffs and review text from private repos. The server binds
 only `127.0.0.1`, makes no network requests, and writes nothing to run dirs, repositories or
-forge's config. Anyone with access to the local server can read the runs it discovers, and
+forge's config. Outside the runs it reads one kind of file: for a claude execution whose log
+holds only its final answer, that run's session file, `<session id>.jsonl` under
+`~/.claude/projects/` (or `$CLAUDE_CONFIG_DIR/projects/`). Anyone with access to the local server can read the runs it discovers, and
 forge now registers every run, so that is every run on the machine.
 
 The 3D view loads three.js 0.160.0 from `cdn.jsdelivr.net` the first time it is shown in a
