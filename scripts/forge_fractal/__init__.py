@@ -18,7 +18,8 @@ DEFAULTS = dict(depth=2, children=3, nodes=12, iterations=6, concurrency=3, dead
 
 
 def state_root() -> Path:
-    return Path(os.environ.get('XDG_STATE_HOME', str(Path.home() / '.local/state'))).expanduser().resolve() / 'forge/fractal'
+    # An empty XDG_STATE_HOME counts as unset; Path('') would be the working directory.
+    return Path(os.environ.get('XDG_STATE_HOME') or str(Path.home() / '.local/state')).expanduser().resolve() / 'forge/fractal'
 
 
 def runtime_python() -> Path:

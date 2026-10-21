@@ -915,6 +915,26 @@ class ImportTests(StoreCase):
             importer.main(args)
         self.assertEqual(self.events(kind='dispatch'), [])
 
+    def test_fractal_import_reads_the_default_state_dir_when_xdg_state_home_is_empty(self):
+        # XDG says an empty XDG_STATE_HOME means unset; forge stores Fractal runs under
+        # ~/.local/state then, so --fractal must not look in the working directory.
+        home, cwd = Path(self.tmp.name) / 'home', Path(self.tmp.name) / 'cwd'
+        cwd.mkdir()
+        task = home / '.local' / 'state' / 'forge' / 'fractal' / 'runs' / 'run-x' / 'tasks' / 'task-1'
+        (task / 'nodes' / 'root').mkdir(parents=True)
+        (task / 'request.json').write_text(json.dumps(dict(repo='/r', output='/o')))
+        (task / 'nodes' / 'root' / 'node.json').write_text(json.dumps(dict(id='root', iteration=0)))
+        from forge_dataset import importer
+        args = type('A', (), dict(paths=[], registry=False, fractal=True, ledger=[], include_temp=True,
+                                  dry_run=False))()
+        previous = os.getcwd()
+        os.chdir(cwd)
+        self.addCleanup(os.chdir, previous)
+        with patch.dict(os.environ, {'XDG_STATE_HOME': '', 'HOME': str(home)}), \
+                contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(importer.main(args), 0)
+        self.assertEqual([e['task'] for e in self.events(kind='fractal_node')], ['task-1/root'])
+
 
 class MemoryTests(StoreCase):
     def test_curation_and_cap_evictions_are_recorded_with_their_reasons(self):
