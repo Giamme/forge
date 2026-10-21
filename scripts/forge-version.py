@@ -10,6 +10,10 @@ VERSION, prints a single line saying so. It is silent offline, when the checkout
 upstream, in CI (`CI` set) and when `FORGE_UPDATE_CHECK=off`, and it always exits 0: it never
 changes a run's outcome. The last check is cached in
 `${XDG_STATE_HOME:-~/.local/state}/forge/update-check.json`.
+
+An npm installation (the package sits under a `node_modules` folder, the same rule as
+forge-update.sh) has no git upstream: there the newest release is the package's `latest` on the
+npm registry (`npm_config_registry` when set, as npm reads it), and the update command is npm's.
 """
 from __future__ import annotations
 
@@ -21,6 +25,8 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.parse
+import urllib.request
 from pathlib import Path
 
 SKILL = Path(__file__).resolve().parent.parent
@@ -28,6 +34,8 @@ DAY_S = 24 * 3600
 TIMEOUT_S = 5
 _TAG = re.compile(r'^refs/tags/v(\d+(?:\.\d+)*)$')
 _OFF = ('off', '0', 'false', 'no')
+NPM_PACKAGE = '@giamme/forge'
+NPM_REGISTRY = 'https://registry.npmjs.org/'
 
 
 def state_file() -> Path:
@@ -84,6 +92,34 @@ def checkout(source: Path) -> dict:
     return info
 
 
+def npm_install(source: Path) -> dict:
+    """An npm installation's facts, like checkout()'s: empty when `source` is not under node_modules."""
+    if 'node_modules' not in source.resolve().parts:
+        return {}
+    try:
+        name = json.loads((source / 'package.json').read_text(encoding='utf-8')).get('name') or NPM_PACKAGE
+    except (OSError, ValueError, UnicodeDecodeError, AttributeError):
+        name = NPM_PACKAGE
+    registry = os.environ.get('npm_config_registry') or os.environ.get('NPM_CONFIG_REGISTRY') or NPM_REGISTRY
+    url = registry.rstrip('/') + '/' + urllib.parse.quote(name, safe='@') + '/latest'
+    return dict(npm=name, remote='npm', url=url)
+
+
+def update_command(info: dict) -> str:
+    return f'npm install -g {info["npm"]}@latest && forge install' if info.get('npm') else 'forge update'
+
+
+def npm_latest(url: str) -> str | None:
+    """The `latest` version on the registry, or None when it cannot be read in time."""
+    try:
+        with urllib.request.urlopen(urllib.request.Request(url, headers={'Accept': 'application/json'}),
+                                    timeout=TIMEOUT_S) as reply:
+            version = json.loads(reply.read().decode('utf-8')).get('version')
+    except Exception:  # offline, HTTP error, a proxy page instead of JSON: no answer, never a failure
+        return None
+    return version if isinstance(version, str) and re.fullmatch(r'\d+(?:\.\d+)*', version) else None
+
+
 def latest_release(source: Path, remote: str) -> str | None:
     """The highest vX[.Y[.Z]] tag on the remote, or None when it cannot be reached in time."""
     out = _git(source, 'ls-remote', '--tags', '--refs', '--', remote, 'v*')
@@ -116,7 +152,7 @@ def write_cache(data: dict) -> None:
 def check(source: Path, info: dict) -> dict:
     """Ask the upstream now and cache the answer. Offline keeps the last known release."""
     cache = read_cache()
-    found = latest_release(source, info['remote'])
+    found = npm_latest(info['url']) if info.get('npm') else latest_release(source, info['remote'])
     same = cache.get('url') == info['url']
     entry = dict(checked=time.time(), url=info['url'],
                  latest=found if found else (cache.get('latest') if same else None), reached=found is not None)
@@ -131,15 +167,15 @@ def disabled() -> bool:
     return bool(ci) and ci not in _OFF
 
 
-def available_line(latest: str, current: str) -> str:
-    return f'forge {latest} is available (you have {current}): forge update'
+def available_line(latest: str, current: str, info: dict | None = None) -> str:
+    return f'forge {latest} is available (you have {current}): {update_command(info or {})}'
 
 
 def notice(source: Path) -> None:
     if disabled():
         return
     current = local_version(source)
-    info = checkout(source)
+    info = checkout(source) or npm_install(source)
     if not current or not info.get('remote'):
         return
     cache = read_cache()
@@ -148,22 +184,26 @@ def notice(source: Path) -> None:
         return  # checked (and told) within the last day
     entry = check(source, info)
     if newer(entry['latest'], current):
-        print(available_line(entry['latest'], current))
+        print(available_line(entry['latest'], current, info))
 
 
 def show(source: Path, ask: bool) -> int:
     current = local_version(source)
     print(f'forge {current or "unknown"}')
-    info = checkout(source)
+    info = checkout(source) or npm_install(source)
     if not info:
         print(f'checkout: {source} (not a git checkout; update it with forge update --source <checkout>)')
         return 0
-    where = info['branch'] or 'detached HEAD'
-    print(f'checkout: {source} ({where} @ {info["commit"] or "?"})')
-    if info.get('remote'):
-        print(f'upstream: {info["upstream"] or info["remote"]} ({info["url"] or "no url"})')
+    if info.get('npm'):
+        print(f'installed: {source} (npm package {info["npm"]})')
+        print(f'upstream: npm registry ({info["url"]})')
     else:
-        print('upstream: none')
+        where = info['branch'] or 'detached HEAD'
+        print(f'checkout: {source} ({where} @ {info["commit"] or "?"})')
+        if info.get('remote'):
+            print(f'upstream: {info["upstream"] or info["remote"]} ({info["url"] or "no url"})')
+        else:
+            print('upstream: none')
     entry = check(source, info) if ask and info.get('remote') else read_cache()
     if ask and info.get('remote') and not entry.get('reached'):
         print(f'latest:   could not reach {info["remote"]}')
@@ -172,9 +212,11 @@ def show(source: Path, ask: bool) -> int:
             if isinstance(entry.get('checked'), (int, float)) else 'unknown'
         print(f'latest:   {entry["latest"]} (checked {when})')
         if newer(entry['latest'], current):
-            print(available_line(entry['latest'], current))
+            print(available_line(entry['latest'], current, info))
     else:
         print('latest:   not checked yet; run forge version --check')
+    if info.get('npm'):
+        print(f'update:   {update_command(info)}')
     return 0
 
 
