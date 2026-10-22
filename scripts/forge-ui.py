@@ -269,7 +269,10 @@ def run_info(directory):
         # a FIFO or a device named `repo` would block the read: only a regular file is read
         if not stat.S_ISREG(os.stat(marker).st_mode):
             return None, f'{marker} is not a regular file'
-        repo = marker.read_text().strip()
+        # only the first line names the repo, as in forge_registry._repo_of (the runners register
+        # the same run dir under that line; anything after it must not change where it lands)
+        lines = marker.read_text().splitlines()
+        repo = lines[0].strip() if lines else ''
     except (OSError, ValueError) as exc:  # ValueError: not decodable text
         return None, f'cannot read {marker}: {getattr(exc, "strerror", None) or exc}'
     if not repo:

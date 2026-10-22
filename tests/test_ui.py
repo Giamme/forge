@@ -313,6 +313,15 @@ class UiLauncherTests(unittest.TestCase):
         entry = default / (forge_registry.repo_key(repo) + '.txt')
         self.assertIn(str(self.plan.resolve()), entry.read_text().splitlines())
 
+    def test_open_registers_the_run_under_the_first_line_of_its_repo_file_like_the_runners(self):
+        # forge_registry (what the runners call) reads only the first line; `open` read the whole
+        # file, so a repo file with a second line put the run under a repo that does not exist.
+        repo = (self.plan / 'repo').read_text().strip()
+        (self.plan / 'repo').write_text(f'  {repo}  \nwritten by something else\n')
+        self.open(self.plan)
+        registry = self.tmp / 'config/forge/runs'
+        self.assertEqual([p.name for p in registry.iterdir()], [forge_registry.repo_key(repo) + '.txt'])
+
     def test_exit_codes_for_arguments_that_are_not_runs(self):
         notes = self.tmp / 'notes'
         notes.mkdir()
