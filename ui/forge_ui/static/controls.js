@@ -451,7 +451,8 @@
     alias.type = 'text'; harness.type = 'text';
     for (const i of [alias, harness]) { i.autocomplete = 'off'; i.spellcheck = false; }
     alias.setAttribute('list', r.id + '-models');
-    list.id = r.id + '-models'; store.lists.add(list); fillList(list);
+    list.id = r.id + '-models'; fillList(list);
+    if (!store.models) trackList(list);
     alias.value = field(view, 'pin.alias', ''); harness.value = field(view, 'pin.harness', '');
     alias.addEventListener('input', () => touch(view, 'pin.alias', alias.value));
     harness.addEventListener('input', () => touch(view, 'pin.harness', harness.value));
@@ -479,13 +480,20 @@
     list.replaceChildren();
     for (const a of store.models || []) { const o = ui().el('option'); o.value = a; list.append(o); }
   }
+  // Only lists drawn while the aliases are still on their way wait for them (and only while attached: a
+  // detached one would keep its whole old section alive); once loaded, fillList reads store.models itself.
+  function trackList(list) {
+    for (const l of Array.from(store.lists)) if (!l.isConnected) store.lists.delete(l);
+    store.lists.add(list);
+  }
   function loadModels() {
     if (store.modelsAsked) return;
     store.modelsAsked = true;
     ui().get('/api/models').then(res => {
       if (!res.ok) { store.modelsAsked = false; return; }
       store.models = aliasesOf(res.data);
-      for (const l of Array.from(store.lists)) { if (l.isConnected) fillList(l); else store.lists.delete(l); }
+      for (const l of store.lists) if (l.isConnected) fillList(l);
+      store.lists.clear();
     });
   }
 
