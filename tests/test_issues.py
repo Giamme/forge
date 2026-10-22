@@ -268,6 +268,16 @@ class ForgeIssuesTests(unittest.TestCase):
         self.assertEqual(pick(direct), pick(via))
         self.assertEqual(pick(direct)[0][0], 'plan')
 
+    def test_review_qa_last_file_input_reports_the_plan(self):
+        self.review_dir(self.plan, 'final-review-1-1', ['- [P1][CONFIRMED] src/a.ts:1 — Review thing.'])
+        os.symlink('final-review-1-1', self.plan / 'final-review')
+        integ = self.plan / 'integrate-5-5'; integ.mkdir()
+        self.review_dir(integ, 'final-review', ['- [P1][CONFIRMED] src/b.ts:1 — Integrate thing.'])
+        pick = lambda o: [(f['plan'], f['plan_dir'], f['task'], f['origin']) for f in o['findings']]
+        for rel in ('final-review/qa.last', 'final-review-1-1/qa.last', 'integrate-5-5/final-review/qa.last'):
+            out = self.run_issues(str(self.plan / rel), '--offline', '--repo', 'o/r')
+            self.assertEqual(pick(out), [('plan', str(self.plan.resolve()), None, 'review')], rel)
+
     def test_all_runs_dedupes_to_the_newest_plan(self):
         xdg = self.dir / 'xdg'
         env = dict(self.env, XDG_CONFIG_HOME=str(xdg))

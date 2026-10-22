@@ -257,13 +257,29 @@ def collect(path: Path, include_plausible, all_runs=False):
     if path.is_file():
         if path.name not in ("known_issues.md", "qa.last"):
             raise Fail(f"{path}: expected a forge plan or task directory, known_issues.md or qa.last")
-        meta = {"task": path.parent.name, "threshold": read(path.parent / "qa_threshold") or "?",
-                "commit": read(path.parent / "merged") or read(path.parent / "reviewed.commit"),
-                "reviewer": reviewer_spec(path.parent)}
-        plan_root = path.parent.parent.parent if path.parent.parent.name == "tasks" else path.parent
+        parent = path.parent
+        is_task = parent.parent.name == "tasks"
+        if is_task:
+            plan_root = parent.parent.parent
+        elif (parent / "tasks").is_dir():
+            plan_root = parent
+        elif parent.parent.name.startswith("integrate-") and (parent.parent.parent / "tasks").is_dir():
+            plan_root = parent.parent.parent
+        elif (parent.parent / "tasks").is_dir():
+            plan_root = parent.parent
+        else:
+            plan_root = parent
+        is_review = not is_task and path.name == "qa.last" and not read(parent / "status")
+        meta = {"task": None if is_review else parent.name, "threshold": "-" if is_review else read(parent / "qa_threshold") or "?",
+                "commit": read(parent / "merged") or read(parent / "reviewed.commit"),
+                "reviewer": reviewer_spec(parent)}
         meta["plan"], meta["plan_dir"] = (plan_root.name, str(plan_root))
-        found = [{**f, **meta, "origin": "tolerated" if f["confidence"] == "CONFIRMED" else "plausible"}
-                 for f in parse_findings(read(path)) if f["confidence"] == "CONFIRMED" or include_plausible]
+        if is_review and path.name == "qa.last":
+            found = [{**f, **meta, "origin": "review" if f["confidence"] == "CONFIRMED" else "plausible"}
+                     for f in parse_findings(read(path)) if f["confidence"] == "CONFIRMED" or include_plausible]
+        else:
+            found = [{**f, **meta, "origin": "tolerated" if f["confidence"] == "CONFIRMED" else "plausible"}
+                     for f in parse_findings(read(path)) if f["confidence"] == "CONFIRMED" or include_plausible]
         return {"plan": plan_root.name, "repo_path": None}, found, []
     if (path / "tasks").is_dir():
         found, notes = collect_plan(path, include_plausible)
