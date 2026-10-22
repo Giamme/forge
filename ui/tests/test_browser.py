@@ -790,6 +790,19 @@ class Controls(unittest.TestCase):
         self.assertFalse(self.focused(page, field))
         self.assertClean(page)
 
+    def test_a_key_that_only_has_the_keyboard_does_not_freeze_the_section(self):
+        page = self.open(cdn=False, view='2d')
+        self.inspect(page)
+        key = '#inspector [data-row=qa-threshold] button[data-value=P1]'
+        page.focus(key)                                                     # on a key, nothing typed: not an edit
+        self.assertEqual(page.locator('#inspector .ctl[data-editing]').count(), 0)
+        (self.plan / 'scheduler.live').unlink()                             # the run stops being live
+        self.mark(page); self.poll(); self.rebuilt(page)
+        page.wait_for_selector('#inspector .ctl-live .lamp.st-pending', timeout=20000)
+        self.assertFalse(page.is_enabled('#inspector [data-row=retry-budget] input'), 'the new data reached the section')
+        self.assertTrue(self.focused(page, key), 'and the keyboard is still on the key')
+        self.assertClean(page)
+
     def test_a_task_being_edited_keeps_its_fields_and_an_open_confirm_across_polls(self):
         page = self.open(cdn=False, view='2d')
         self.inspect(page, 'graph')

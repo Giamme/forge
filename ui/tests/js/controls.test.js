@@ -163,7 +163,12 @@ test('an edit in progress is kept for the same run and task, and reset by moving
   assert.notEqual(C.scopeOf('k', 'run'), C.scopeOf('k'), 'a task named run is not the run');
 });
 
-test('a section is being edited while it has focus, an unsaved value, an open confirm or a request out', () => {
+test('only a text field with the keyboard is typing: a key that has it is not an edit', () => {
+  for (const tag of ['INPUT', 'input', 'TEXTAREA', 'SELECT']) assert.equal(C.typing(tag), true, tag);
+  for (const tag of ['BUTTON', 'A', 'DIV', 'SECTION', '', null, undefined]) assert.equal(C.typing(tag), false, String(tag));
+});
+
+test('a section is being edited while a text field has focus, an unsaved value, an open confirm or a request out', () => {
   assert.equal(C.isEditing({ focus: true }), true);
   assert.equal(C.isEditing({ dirty: true }), true);
   assert.equal(C.isEditing({ confirm: true }), true);

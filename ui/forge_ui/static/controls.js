@@ -198,7 +198,9 @@
 
   // Every section is one run (and task): `ctl:<run>:run` or `ctl:<run>:task:<id>`.
   const scopeOf = (runKey, taskId) => `ctl:${runKey}:${taskId ? 'task:' + taskId : 'run'}`;
-  // A section is being edited while a field has focus, holds an unsaved value, a confirm is open or a request is out.
+  // A text field has the focus: typing is under way. A key (button) with the focus is not an edit: nothing is half typed.
+  const typing = tag => /^(input|textarea|select)$/i.test(String(tag || ''));
+  // A section is being edited while a text field has focus, holds an unsaved value, a confirm is open or a request is out.
   const isEditing = s => !!(s && (s.focus || s.dirty || s.confirm || s.busy));
   // Whether the rebuilt tree takes back the section that was being edited: only for the same run and task. Choosing
   // another run or task builds another scope, so what was half typed goes with it.
@@ -218,7 +220,8 @@
 
   function sync(view) {
     const s = view.section;
-    const on = isEditing({ focus: s.contains(doc().activeElement), dirty: Object.keys(view.draft).length > 0,
+    const at = doc().activeElement;
+    const on = isEditing({ focus: !!at && s.contains(at) && typing(at.tagName), dirty: Object.keys(view.draft).length > 0,
       confirm: !!s.querySelector('.ui-confirm'), busy: view.inflight });
     if (on) s.dataset.editing = '1'; else delete s.dataset.editing;
   }
@@ -292,19 +295,24 @@
     remember(view, r, res, savedText(res.data));
     if (res.ok && obj(res.data).controls && res.data.controls.run) {
       for (const f of fields) delete view.draft[f];
-      const keyboard = view.section.contains(doc().activeElement);
       accept(view.run.key, res.data.controls, view.run.updated);
       draw(view, res.data.controls);
-      if (keyboard) refocus(view, r.key, button);
     } else sync(view);
   }
-  // The rows are drawn again after a change; the keyboard goes back to the same key, else to the row's field.
-  function refocus(view, rowKey, button) {
-    const row = Array.from(view.section.querySelectorAll('[data-row]')).find(n => n.dataset.row === rowKey);
+  // Where the keyboard is inside a section, as something that survives the rows being drawn again.
+  function focusMark(section) {
+    const at = doc().activeElement;
+    if (!at || !section.contains(at) || !at.closest) return null;
+    const row = at.closest('[data-row]');
+    return row ? { row: row.dataset.row, tag: at.tagName, value: at.dataset.value, text: at.tagName === 'BUTTON' ? at.textContent : null } : null;
+  }
+  // The rows are drawn again (after a change, or a poll): the keyboard goes back to the same key, else to the row's field.
+  function refocus(section, mark) {
+    const row = mark && Array.from(section.querySelectorAll('[data-row]')).find(n => n.dataset.row === mark.row);
     if (!row) return;
-    const value = button && button.dataset.value;
-    const target = (value && Array.from(row.querySelectorAll('button')).find(b => b.dataset.value === value && !b.disabled))
-      || row.querySelector('input:not(:disabled)') || row.querySelector('button:not(:disabled)');
+    const live = Array.from(row.querySelectorAll('button:not(:disabled), input:not(:disabled)'));
+    const target = live.find(n => n.tagName === mark.tag && n.dataset.value === mark.value && (mark.text === null || n.textContent === mark.text))
+      || live.find(n => n.tagName === 'INPUT') || live[0];
     if (target) target.focus({ preventScroll: true });
   }
   // A result line belongs to the edit it answered: a new edit clears it.
@@ -499,9 +507,10 @@
 
   // Draw a section from `forge control show`.
   function draw(view, c) {
-    const s = view.section;
+    const s = view.section, mark = focusMark(s);
     view.base = {};
     s.replaceChildren(ui().el('h3', 'Controls'), view.task ? drawTask(view, c, view.task) : drawRun(view, c));
+    refocus(s, mark);
     for (const f of Object.keys(view.draft)) if (!(f in view.base)) delete view.draft[f];   // its row is gone: so is the draft
     sync(view);
   }
@@ -575,24 +584,30 @@
   const mountTask = (host, ctx, task) => mount(host, ctx, task);
 
   // Before the inspector is rebuilt: the sections of `parent` being edited, to be put back after. Their focus and
-  // caret come back with them (a node taken out of the page loses its focus).
+  // caret come back with them (a node taken out of the page loses its focus). A key that only has the keyboard is not an
+  // edit: its section is drawn again from the new data, and the keyboard is put back on the same key.
   function hold(parent) {
     const held = Array.from(parent.querySelectorAll('[data-hold][data-editing]'));
-    if (!held.length) return null;
     const active = doc().activeElement;
+    const sec = active && active.closest ? active.closest('[data-hold]') : null;
+    const key = sec && parent.contains(sec) && !held.includes(sec) ? { scope: sec.dataset.hold, mark: focusMark(sec) } : null;
+    if (!held.length && !(key && key.mark)) return null;
     const focus = held.some(n => n.contains(active)) ? { node: active, from: active.selectionStart, to: active.selectionEnd, dir: active.selectionDirection } : null;
+    const fresh = scope => Array.from(parent.querySelectorAll('[data-hold]')).find(n => keepEditing({ scope, editing: true }, { scope: n.dataset.hold }));
     return { restore() {
       for (const node of held) {
-        const fresh = Array.from(parent.querySelectorAll('[data-hold]')).find(n => keepEditing({ scope: node.dataset.hold, editing: true }, { scope: n.dataset.hold }));
-        if (fresh) fresh.replaceWith(node);
+        const next = fresh(node.dataset.hold);
+        if (next) next.replaceWith(node);
       }
       if (focus && focus.node.isConnected) {
         focus.node.focus({ preventScroll: true });
         try { if (focus.from !== null && focus.from !== undefined) focus.node.setSelectionRange(focus.from, focus.to, focus.dir || 'none'); } catch (_) { /* not a text field */ }
       }
+      const next = key && key.mark ? fresh(key.scope) : null;
+      if (next) refocus(next, key.mark);
     } };
   }
 
   return { LEVELS, EFFORTS, KEYS, specOf, countOf, secondsOf, minutesOf, valueFor, bodyFor, prepare, savedText, effective, canEdit, logLine, agoText,
-    aliasesOf, scopeOf, isEditing, keepEditing, mountRun, mountTask, hold };
+    aliasesOf, scopeOf, typing, isEditing, keepEditing, mountRun, mountTask, hold };
 });
