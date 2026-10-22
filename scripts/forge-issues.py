@@ -14,6 +14,12 @@ gh-proman computes, and both tools skip a finding either of them already filed, 
 When the gh-proman skill is configured for the repository, prefer `gh-proman findings`: it also
 adds the issues to the team's project board with a priority. This command is the fallback.
 
+--json lists every finding in `findings` (fp, severity, origin, plan, task, text, `filed`, ...). --offline never
+runs `gh` (no filed state, publication of commits judged from local refs only). --only FP[,FP] keeps those
+fingerprints. --all-runs reads <run> as a repository (or a plan dir naming one) and collects every run in its
+registry, the newest plan winning for a finding present in several. A caller filing an explicit selection
+passes `--max-issues <len(selection)>`; the default is 10.
+
 Exit codes: 0 ok, 2 usage or `gh` error.
 """
 from __future__ import annotations
@@ -33,6 +39,7 @@ FINDING_RE = re.compile(r"^\s*[-*]\s*\[(P[0-3])\]\s*\[(CONFIRMED|PLAUSIBLE)\]\s*
 FP_MARK_RE = re.compile(r"<!-- (?:gh-proman|forge):finding fp=([0-9a-f]{12})")
 DONE = {"PASS", "MERGED"}
 SEVERITIES = ["P0", "P1", "P2", "P3"]
+FP_RE = re.compile(r"[0-9a-f]{12}")
 
 TEXT = {
     "en": {
@@ -155,32 +162,38 @@ def task_findings(task_dir: Path, plan_dir, include_plausible, reviewers):
     return found, None
 
 
-def collect(path: Path, include_plausible):
-    path = path.resolve()
-    if path.is_file():
-        if path.name not in ("known_issues.md", "qa.last"):
-            raise Fail(f"{path}: expected a forge plan or task directory, known_issues.md or qa.last")
-        meta = {"task": path.parent.name, "threshold": read(path.parent / "qa_threshold") or "?",
-                "commit": read(path.parent / "merged") or read(path.parent / "reviewed.commit"),
-                "reviewer": reviewer_spec(path.parent)}
-        found = [{**f, **meta, "origin": "tolerated" if f["confidence"] == "CONFIRMED" else "plausible"}
-                 for f in parse_findings(read(path)) if f["confidence"] == "CONFIRMED" or include_plausible]
-        return {"plan": path.parent.name, "repo_path": None}, found, []
-    if (path / "tasks").is_dir():
-        plan_dir = path
-        tasks = sorted(d for d in (path / "tasks").iterdir() if d.is_dir() and not d.name.startswith("_"))
-    elif (path / "qa.last").is_file() or (path / "known_issues.md").is_file():
-        if path.parent.name == "tasks":
-            plan_dir = path.parent.parent
-        elif (path.parent / "tasks").is_dir():
-            plan_dir = path.parent
-        else:
-            plan_dir = None
-        tasks = [path]
-    else:
-        raise Fail(f"{path} is not a forge run: no tasks/, qa.last or known_issues.md")
+def mtime(path: Path):
+    try:
+        return path.stat().st_mtime
+    except OSError:
+        return 0.0
+
+
+def whole_run_review(plan_dir: Path):
+    """The plan's canonical latest whole-run review dir, or None.
+
+    `review` publishes `<plan>/final-review` (a link to the newest `final-review-<epoch>-<pid>/`), and
+    `integrate --final-review` writes `integrate-*/final-review/` without touching it unless it publishes.
+    Any other final-review-* dir is superseded.
+    """
+    def usable(d):
+        return d if (d / "qa.last").is_file() else None
+    published = usable((plan_dir / "final-review").resolve()) if (plan_dir / "final-review").is_dir() else None
+    newest = None
+    for d in plan_dir.glob("integrate-*/final-review"):
+        d = d.resolve()
+        if usable(d) and (newest is None or mtime(d / "qa.last") > mtime(newest / "qa.last")):
+            newest = d
+    if newest and (published is None or (newest != published and
+                                         mtime(newest / "qa.last") > mtime(published / "qa.last"))):
+        return newest
+    return published
+
+
+def collect_plan(plan_dir: Path, include_plausible):
+    tasks = sorted(d for d in (plan_dir / "tasks").iterdir() if d.is_dir() and not d.name.startswith("_"))
     reviewers = {}
-    if plan_dir and (plan_dir / "tasks.tsv").is_file():
+    if (plan_dir / "tasks.tsv").is_file():
         for line in read(plan_dir / "tasks.tsv").splitlines():
             cols = line.split("\t")
             if len(cols) >= 6 and not line.startswith("#"):
@@ -191,8 +204,80 @@ def collect(path: Path, include_plausible):
         found += items
         if note:
             notes.append(note)
+    review = whole_run_review(plan_dir)
+    if review:
+        items, _ = task_findings(review, plan_dir, include_plausible, {})
+        found += [{**f, "task": None} for f in items]
+    for f in found:
+        f["plan"], f["plan_dir"] = plan_dir.name, str(plan_dir)
+    return found, notes
+
+
+def collect_all(path: Path, include_plausible):
+    plan_file = path / "repo"
+    repo = Path(read(plan_file)) if plan_file.is_file() else path
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from forge_registry import runs_registry
+    registry = runs_registry(repo)
+    lines = read(registry).splitlines() if registry.is_file() else []
+    plans, notes = [], []
+    for line in lines:
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        d = Path(line)
+        if not d.is_dir():
+            notes.append(f"{line}: run directory is missing, skipped")
+        elif not (d / "tasks").is_dir():
+            notes.append(f"{line}: no tasks/ directory, skipped")
+        elif d not in plans:
+            plans.append(d)
+    plans.sort(key=lambda d: mtime(d), reverse=True)  # newest first: the first occurrence of a fingerprint wins
+    found = []
+    for d in plans:
+        items, plan_notes = collect_plan(d, include_plausible)
+        found += items
+        notes += [f"{d.name}: {n}" for n in plan_notes]
+    return {"plan": f"{repo.name} (all runs)", "repo_path": str(repo)}, found, notes
+
+
+def collect(path: Path, include_plausible, all_runs=False):
+    path = path.resolve()
+    if all_runs:
+        if not path.is_dir():
+            raise Fail(f"{path}: --all-runs needs a repository or plan directory")
+        return collect_all(path, include_plausible)
+    if path.is_file():
+        if path.name not in ("known_issues.md", "qa.last"):
+            raise Fail(f"{path}: expected a forge plan or task directory, known_issues.md or qa.last")
+        meta = {"task": path.parent.name, "threshold": read(path.parent / "qa_threshold") or "?",
+                "commit": read(path.parent / "merged") or read(path.parent / "reviewed.commit"),
+                "reviewer": reviewer_spec(path.parent), "plan": path.parent.name, "plan_dir": str(path.parent)}
+        found = [{**f, **meta, "origin": "tolerated" if f["confidence"] == "CONFIRMED" else "plausible"}
+                 for f in parse_findings(read(path)) if f["confidence"] == "CONFIRMED" or include_plausible]
+        return {"plan": path.parent.name, "repo_path": None}, found, []
+    if (path / "tasks").is_dir():
+        found, notes = collect_plan(path, include_plausible)
+        return {"plan": path.name, "repo_path": read(path / "repo") or None}, found, notes
+    if not ((path / "qa.last").is_file() or (path / "known_issues.md").is_file()):
+        raise Fail(f"{path} is not a forge run: no tasks/, qa.last or known_issues.md")
+    if path.parent.name == "tasks":
+        plan_dir = path.parent.parent
+    elif (path.parent / "tasks").is_dir():
+        plan_dir = path.parent
+    else:
+        plan_dir = None
+    reviewers = {}
+    if plan_dir and (plan_dir / "tasks.tsv").is_file():
+        for line in read(plan_dir / "tasks.tsv").splitlines():
+            cols = line.split("\t")
+            if len(cols) >= 6 and not line.startswith("#"):
+                reviewers[cols[0]] = cols[5]
+    found, note = task_findings(path, plan_dir, include_plausible, reviewers)
+    for f in found:
+        f["plan"], f["plan_dir"] = (plan_dir or path).name, str(plan_dir or path)
     return {"plan": (plan_dir or path).name, "repo_path": (read(plan_dir / "repo") if plan_dir else "") or None}, \
-        found, notes
+        found, [note] if note else []
 
 
 # ---------------------------------------------------------------------------------------------- draft
@@ -221,16 +306,20 @@ def escape(text):
     return text.replace("<!--", "&lt;!--").replace("-->", "--&gt;")
 
 
-def published(slug, repo_path, commit):
+def published(slug, repo_path, commit, offline=False):
+    """True when the commit is on GitHub; with `offline`, only remote-tracking refs can prove it."""
     if repo_path and run(["git", "-C", repo_path, "branch", "-r", "--contains", commit], check=False).stdout.strip():
         return True
+    if offline:
+        return False
     return run(["gh", "api", f"repos/{slug}/commits/{commit}", "--jq", ".sha"], check=False).returncode == 0
 
 
-def body_for(slug, repo_path, plan, items, lang):
+def body_for(slug, repo_path, items, lang, offline=False):
     t = TEXT[lang]
     h = t["headings"]
     first = items[0]
+    plan = first["plan"]
     plausible = all(f["origin"] == "plausible" for f in items)
     if len(items) > 1:
         context = t["group"].format(plan=plan, n=len(items))
@@ -242,7 +331,7 @@ def body_for(slug, repo_path, plan, items, lang):
         context = t["tolerated"].format(threshold=first["threshold"])
     commit = f", commit `{first['commit'][:12]}`" if first.get("commit") else ""
     lines = [f"## {h[0]}", context, "",
-             t["origin"].format(plan=plan, task=first["task"], severity=first["severity"],
+             t["origin"].format(plan=plan, task=first["task"] or "final-review", severity=first["severity"],
                                 reviewer=first["reviewer"], commit=commit), "", f"## {h[1]}"]
     for f in items:
         lines += [f"> {escape(f['raw'])}", ""]
@@ -256,13 +345,13 @@ def body_for(slug, repo_path, plan, items, lang):
     lines += ["", f"## {h[4]}"]
     for f in items:
         loc = f"{f['file']}{':' + str(f['line']) if f['line'] else ''}"
-        if f.get("commit") and published(slug, repo_path, f["commit"]):
+        if f.get("commit") and published(slug, repo_path, f["commit"], offline):
             anchor = f"#L{f['line']}" if f["line"] else ""
             lines.append(f"- {t['code']}: https://github.com/{slug}/blob/{f['commit']}/{f['file']}{anchor}")
         else:
             lines.append(f"- {t['code']}: `{loc}` {t['unpublished'] if f.get('commit') else ''}".rstrip())
     lines.append("")
-    lines += [f"<!-- forge:finding fp={f['fp']} source=forge:{plan}/{f['task']} -->" for f in items]
+    lines += [f"<!-- forge:finding fp={f['fp']} source=forge:{f['plan']}/{f['task'] or 'final-review'} -->" for f in items]
     return "\n".join(lines)
 
 
@@ -282,7 +371,8 @@ def main(argv=None):
     ap = argparse.ArgumentParser(prog="forge issues", description=__doc__.split("\n\n")[0],
                                  formatter_class=argparse.RawDescriptionHelpFormatter,
                                  epilog="\n\n".join(__doc__.split("\n\n")[1:]))
-    ap.add_argument("run", help="plan dir, task dir, review dir, known_issues.md or qa.last")
+    ap.add_argument("run", help="plan dir, task dir, review dir, known_issues.md or qa.last "
+                                "(with --all-runs: a repository, or a plan dir naming one)")
     ap.add_argument("--include-plausible", action="store_true", help="also file PLAUSIBLE findings, as 'To verify'")
     ap.add_argument("--min-severity", choices=SEVERITIES, help="file only findings at least this severe")
     ap.add_argument("--group", choices=["finding", "task", "run"], default="finding",
@@ -292,9 +382,19 @@ def main(argv=None):
     ap.add_argument("--label", action="append", default=[], help="label to add if the repo has it; repeatable")
     ap.add_argument("--apply", action="store_true", help="create the issues (default: show drafts only)")
     ap.add_argument("--confirm-new", action="store_true", help="create even when an issue with the same title exists")
-    ap.add_argument("--max-issues", type=int, default=10, help="create at most this many per call (default 10)")
+    ap.add_argument("--max-issues", type=int, default=10,
+                    help="create at most this many per call (default 10); filing a --only selection: pass its size")
+    ap.add_argument("--offline", action="store_true", help="never run `gh`: no filed state, local refs only")
+    ap.add_argument("--only", action="append", default=[], metavar="FP",
+                    help="keep only this 12-hex fingerprint; repeatable or comma-separated")
+    ap.add_argument("--all-runs", action="store_true", help="collect every run in the repository's run registry")
     ap.add_argument("--json", action="store_true", help="machine-readable output")
     args = ap.parse_args(argv)
+    if args.offline and args.apply:
+        ap.error("--offline cannot be combined with --apply")
+    args.only = [x.strip() for v in args.only for x in v.split(",")]
+    if any(not FP_RE.fullmatch(x) for x in args.only):
+        ap.error("--only takes 12-hex-character fingerprints, repeated or comma-separated")
     try:
         out = file_findings(args)
     except Fail as exc:
@@ -307,8 +407,17 @@ def main(argv=None):
     return 0
 
 
+def finding_entry(f, filed=None):
+    return {"fp": f["fp"], "severity": f["severity"], "confidence": f["confidence"], "origin": f["origin"],
+            "plan": f["plan"], "plan_dir": f["plan_dir"], "task": f["task"], "file": f["file"],
+            "summary": (f["text"].splitlines() or [""])[0][:160], "text": f["text"],
+            "reviewer": f["reviewer"], "commit": f.get("commit") or "",
+            "filed": {"url": filed["url"], "state": filed["state"]} if filed else None}
+
+
 def file_findings(args):
-    meta, found, notes = collect(Path(args.run), args.include_plausible)
+    offline = args.offline
+    meta, found, notes = collect(Path(args.run), args.include_plausible, args.all_runs)
     repo_path = meta["repo_path"] or os.getcwd()
     slug = args.repo or github_slug(repo_path)
     if not slug:
@@ -316,22 +425,28 @@ def file_findings(args):
     if args.min_severity:
         cut = SEVERITIES.index(args.min_severity)
         found = [f for f in found if SEVERITIES.index(f["severity"]) <= cut]
-    issues = existing_issues(slug)
+    issues = [] if offline else existing_issues(slug)
     filed = {fp: issue for issue in issues for fp in FP_MARK_RE.findall(issue.get("body") or "")}
-    seen, todo, already = set(), [], []
+    only = set(args.only)
+    seen, todo, already, entries = set(), [], [], []
+    known = set()
     for f in found:
         f["fp"] = fingerprint(slug, f)
-        if f["fp"] in seen:
+        known.add(f["fp"])
+        if f["fp"] in seen or (only and f["fp"] not in only):
             continue
         seen.add(f["fp"])
-        if f["fp"] in filed:
-            issue = filed[f["fp"]]
+        issue = filed.get(f["fp"])
+        entries.append(finding_entry(f, issue))
+        if issue:
             already.append({"finding": f["raw"], "issue": issue["url"], "state": issue["state"]})
         else:
             todo.append(f)
+    notes = notes + [f"--only {fp}: no such open finding" for fp in args.only if fp not in known]
+    entries.sort(key=lambda e: SEVERITIES.index(e["severity"]))
     keyed = {}
     for f in todo:
-        key = id(f) if args.group == "finding" else (f["origin"], f["task"] if args.group == "task" else "")
+        key = id(f) if args.group == "finding" else (f["plan"], f["origin"], f["task"] if args.group == "task" else "")
         keyed.setdefault(key, []).append(f)
     open_titles = {norm_title(i["title"]): i["url"] for i in issues if i.get("state") == "OPEN"}
     t = TEXT[args.lang]
@@ -341,18 +456,18 @@ def file_findings(args):
         if len(items) == 1:
             title = title_for(items[0], args.lang)
         else:
-            scope = items[0]["task"] if args.group == "task" else meta["plan"]
+            scope = (items[0]["task"] or items[0]["plan"]) if args.group == "task" else items[0]["plan"]
             prefix = t["plausible"] if items[0]["origin"] == "plausible" else ""
             title = f"[{items[0]['severity']}] {prefix}{t['group_title'].format(scope=scope)}"
         drafts.append({"title": title, "severity": items[0]["severity"], "origin": items[0]["origin"],
                        "findings": [f["raw"] for f in items], "fingerprints": [f["fp"] for f in items],
-                       "same_title": open_titles.get(norm_title(title)),
-                       "body": body_for(slug, meta["repo_path"], meta["plan"], items, args.lang)})
+                       "same_title": None if offline else open_titles.get(norm_title(title)),
+                       "body": body_for(slug, repo_path if meta["repo_path"] else None, items, args.lang, offline)})
     drafts.sort(key=lambda d: SEVERITIES.index(d["severity"]))
     out = {"repo": slug, "plan": meta["plan"], "notes": notes,
            "summary": {"findings": len(seen), "already_filed": len(already), "drafts": len(drafts),
                        **{o: sum(1 for f in todo if f["origin"] == o) for o in ("tolerated", "review", "plausible")}},
-           "already_filed": already, "drafts": drafts}
+           "findings": entries, "already_filed": already, "drafts": drafts}
     if args.apply:
         out["created"] = create(slug, drafts, args)
         for d in drafts:
