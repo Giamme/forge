@@ -23,9 +23,11 @@ bias (inverse-propensity weighting needs the probability each choice had).
       tasks/<id>/escalation.stop and split.suggested and exits 3. `--check` (run after every
       attempt) also records a due escalation in escalation.next, and clears the markers once
       the streak no longer holds. A pending tasks/<id>/escalation.pin (a human's one-shot
-      choice, applied by prepare_retry) is what `--check` reports as the next model instead,
-      whatever escalate_after says, unless the next retry is a QA-only resume or the plan is
-      Fractal (pins never apply there).
+      choice, applied by prepare_retry) is what `--check` reports as the next model instead
+      (escalation.next = its spec), whatever escalate_after says, unless the next retry is a
+      QA-only resume or the plan is Fractal (pins never apply there). Nothing has applied the
+      pin yet, so the policy's own stop and split markers stay as the policy decided them
+      beneath it: they are what holds again if the pin is withdrawn.
       The marker writes take <plan>/control.lock and re-read escalate_after inside it: a
       policy decision made before a human switched the policy off writes nothing.
 
@@ -341,8 +343,11 @@ def _regular(path: Path) -> bool:
         return False
 
 
+MARKERS = ('escalation.stop', 'split.suggested', 'escalation.next')
+
+
 def _clear(tdir: Path, *names) -> None:
-    for name in names or ('escalation.stop', 'split.suggested', 'escalation.next'):
+    for name in names:
         if _regular(tdir / name):
             try:
                 (tdir / name).unlink()
@@ -383,21 +388,59 @@ def _pin(tdir: Path):
     return spec
 
 
-def _apply(plan: Path, tdir: Path, clear=(), writes=(), policy=True, pin=None) -> bool:
-    """Clear and write markers under the control lock; False when nothing was changed.
+def _qa_next(tdir: Path) -> bool:
+    """True when the task's next retry only re-runs QA, so it cannot apply a pin.
 
-    A policy decision re-reads escalate_after inside the lock (a human may have switched the
-    policy off since it was made); a pin report checks the pin is still pending instead.
+    That is a `resume` marker (a QA-stage infrastructure stop), or a verdict-less review of
+    committed work: prepare_retry turns that into the marker, but it has not run yet when
+    `--check` does, right after the attempt.
+    """
+    if (tdir / 'resume').exists():
+        return True
+    try:
+        return (tdir / 'status').read_text().strip() == 'UNKNOWN' and (tdir / 'reviewed.commit').stat().st_size > 0
+    except OSError:
+        return False
+
+
+def _apply(plan: Path, tdir: Path, clear=(), writes=(), policy=True, pin=None):
+    """Clear and write markers under the control lock. Returns (policy stood, pin reported).
+
+    The policy re-reads escalate_after inside the lock (a human may have switched it off since
+    the decision was made): it then writes nothing and its markers go, as `--escalate-after 0`
+    clears them. A pin is reported as escalation.next only while it is still pending; the stop
+    and split markers beneath it stay the policy's, because the pin has not been applied.
     """
     with _control_lock(plan):
-        if policy and _setting(plan) <= 0:
-            return False
-        if pin is not None and _pin(tdir) != pin:
-            return False
+        stood = policy and _setting(plan) > 0
+        if policy and not stood:
+            clear, writes = MARKERS, ()
+        reported = pin is not None and _pin(tdir) == pin
         _clear(tdir, *clear)
         for name, text in writes:
             _write_marker(tdir, name, text)
-    return True
+        if reported:
+            _write_marker(tdir, 'escalation.next', pin + '\n')
+    return stood, reported
+
+
+def _decide(plan: Path, tdir: Path, args, after: int):
+    """What the policy wants done to the markers: (clear, writes, spec to print, exit code)."""
+    current = _dwarf_of(plan, args.task)
+    if not current or current in ('-', 'UNASSIGNED'):
+        return (), (), '', 0
+    registry = registry_models()
+    streak = failed_streak(attempt_rows(tdir), current, registry)
+    if streak < after:
+        return MARKERS, (), '', 0
+    target, why = stronger(current, load_pools(plan / 'fractal-routing.json'), registry)
+    if target:
+        writes = (('escalation.next', target + '\n'),) if args.check else ()
+        return ('escalation.stop', 'split.suggested'), writes, target, 0
+    split = ('%s failed %d attempts on %s, and %s. Another attempt on the same model rarely passes, '
+             'so split the task into smaller ones, or retry it with an explicit --dwarf <spec>.\n'
+             % (args.task, streak, current, why))
+    return ('escalation.next',), (('escalation.stop', '%d\t%s\n' % (streak, current)), ('split.suggested', split)), '', 3
 
 
 def escalation(args) -> int:
@@ -406,43 +449,29 @@ def escalation(args) -> int:
     if tdir is None:
         return 0
     after = _setting(plan)
+    fractal = _fractal(plan)
     # Fractal plans freeze their eligible set at selection; a QA-only resume spends no dwarf
     # attempt, so neither is a moment to change the implementer.
-    qa_only = (tdir / 'resume').exists()
-    if args.check and not qa_only and not _fractal(plan):
-        # A pin is a human's choice and outranks the policy, so it is reported as the next
-        # model whatever escalate_after says; prepare_retry applies it and claims the file.
-        pinned = _pin(tdir)
-        if pinned:
-            _apply(plan, tdir, clear=('escalation.stop', 'split.suggested'),
-                   writes=(('escalation.next', pinned + '\n'),), policy=False, pin=pinned)
-            print(pinned)
-            return 0
-    if after <= 0 or _fractal(plan) or qa_only:
-        if after <= 0:
-            _clear(tdir)
+    idle = after <= 0 or fractal or (tdir / 'resume').exists()
+    # A pin is a human's choice and outranks the policy, so `--check` reports it as the next
+    # model whatever escalate_after says; prepare_retry applies it and claims the file. The
+    # policy is still decided underneath it and its markers kept current.
+    pin = _pin(tdir) if args.check and not fractal and not _qa_next(tdir) else None
+    clear, writes, shown, rc = (MARKERS if after <= 0 else ()), (), '', 0
+    if not idle:
+        clear, writes, shown, rc = _decide(plan, tdir, args, after)
+    if not (writes or shown or pin):
+        _clear(tdir, *clear)
         return 0
-    current = _dwarf_of(plan, args.task)
-    if not current or current in ('-', 'UNASSIGNED'):
+    stood, reported = _apply(plan, tdir, clear, writes, policy=not idle, pin=pin)
+    if reported:
+        print(pin)
         return 0
-    registry = registry_models()
-    streak = failed_streak(attempt_rows(tdir), current, registry)
-    if streak < after:
-        _clear(tdir)
+    if not stood:
         return 0
-    target, why = stronger(current, load_pools(plan / 'fractal-routing.json'), registry)
-    if target:
-        writes = (('escalation.next', target + '\n'),) if args.check else ()
-        if _apply(plan, tdir, clear=('escalation.stop', 'split.suggested'), writes=writes):
-            print(target)
-        return 0
-    split = ('%s failed %d attempts on %s, and %s. Another attempt on the same model rarely passes, '
-             'so split the task into smaller ones, or retry it with an explicit --dwarf <spec>.\n'
-             % (args.task, streak, current, why))
-    if not _apply(plan, tdir, clear=('escalation.next',),
-                  writes=(('escalation.stop', '%d\t%s\n' % (streak, current)), ('split.suggested', split))):
-        return 0
-    return 3
+    if shown:
+        print(shown)
+    return rc
 
 
 def main(argv=None) -> int:

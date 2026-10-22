@@ -101,6 +101,22 @@ settle_pin() {
   return 0
 }
 
+# True when the task's next retry only re-runs QA: a `resume` marker (a QA-stage infrastructure
+# stop), or a verdict-less review of committed work, which prepare_retry turns into the marker
+# but has not yet when the run summary is printed. Such a retry leaves a pin in place.
+qa_only_next() { # qa_only_next <plan> <id>
+  local tdir="$1/tasks/$2"
+  [ "$(cat "$tdir/resume" 2>/dev/null)" = qa ] && return 0
+  [ "$(task_status "$1" "$2")" = UNKNOWN ] && [ -s "$tdir/reviewed.commit" ]
+}
+
+# Writes the task's implementer column in tasks.tsv: a temp file, then a rename.
+set_dwarf() { # set_dwarf <plan> <id> <spec>
+  awk -F'\t' -v OFS='\t' -v id="$2" -v dw="$3" \
+    '$0 !~ /^#/ && $1==id { $5=dw } { print }' "$1/tasks.tsv" > "$1/.tasks.tsv.retry" \
+    && mv "$1/.tasks.tsv.retry" "$1/tasks.tsv"
+}
+
 # --- retry preparation ----------------------------------------------------------
 # Shared by `retry` (a human asked) and the scheduler's automatic retries. The findings
 # are the whole point of retrying rather than re-running: the dwarf is told what was
@@ -174,29 +190,37 @@ prepare_retry() { # prepare_retry <plan> <id> [new-dwarf]
   # request is recorded and consumed.
   if [ "$newdwarf" = "$cur" ] && [ "$esc_source" != pin ]; then newdwarf=""; fi
   if [ -n "$newdwarf" ]; then
+    # A pin is held to its record: whether the record can be written is learned before
+    # anything is changed, so a failure there leaves tasks.tsv and the pin as they were.
+    if [ "$esc_source" = pin ] && ! : >> "$tdir/escalations.tsv" 2>/dev/null; then
+      note "$id: could not record the escalation in escalations.tsv; nothing was retried"
+      settle_pin "$tdir" restore
+      return 1
+    fi
     # Written into tasks.tsv rather than kept in a side file: the table then shows the
     # model that will actually be spent, and plan's rule that an explicit column value
     # survives a re-plan protects the escalation for free. Rewritten first, so a failed
     # rewrite is never recorded as an escalation that happened.
     if [ "$newdwarf" != "$cur" ]; then
-      awk -F'\t' -v OFS='\t' -v id="$id" -v dw="$newdwarf" \
-        '$0 !~ /^#/ && $1==id { $5=dw } { print }' "$T" > "$PLAN/.tasks.tsv.retry" \
-        && mv "$PLAN/.tasks.tsv.retry" "$T" \
-        || {
-          note "$id: could not write $newdwarf into tasks.tsv; nothing was retried"
-          [ "$esc_source" = pin ] && settle_pin "$tdir" restore
-          return 1
-        }
+      set_dwarf "$PLAN" "$id" "$newdwarf" || {
+        note "$id: could not write $newdwarf into tasks.tsv; nothing was retried"
+        [ "$esc_source" = pin ] && settle_pin "$tdir" restore
+        return 1
+      }
     fi
     # The rewrite loses which model failed first, and an escalation is exactly the record
     # of "this tier was too weak for this task". The last column says who decided: forge's
     # policy, a human's `retry --dwarf`, or a pin.
     if ! printf '%s\t%s\t%s\t%s\t%s\n' "$(date +%s)" "$(cat "$tdir/attempt" 2>/dev/null || echo 0)" \
         "$cur" "$newdwarf" "$esc_source" >> "$tdir/escalations.tsv" && [ "$esc_source" = pin ]; then
-      # The pin must not be lost with its record: given back, it is a same-spec pin next time.
-      note "$id: could not record the escalation in escalations.tsv; nothing was retried"
-      settle_pin "$tdir" restore
-      return 1
+      # The rewrite is undone with the record, so the pin given back is still a real
+      # escalation next time, not a same-spec one that hides the model it replaced.
+      if [ "$newdwarf" = "$cur" ] || set_dwarf "$PLAN" "$id" "$cur"; then
+        note "$id: could not record the escalation in escalations.tsv; nothing was retried"
+        settle_pin "$tdir" restore
+        return 1
+      fi
+      note "$id: could not record the escalation in escalations.tsv, and tasks.tsv could not be put back to $cur; it keeps $newdwarf, so the pin is consumed and the retry goes on"
     fi
     # Recorded at the rewrite itself: it happens before the retried attempt begins, so no
     # attempt capture would ever see it as something that attempt produced.
@@ -363,7 +387,9 @@ report_size() { # report_size <plan>
 # The retry policy's verdicts: a task that stopped with a split suggestion, or whose next
 # retry would go a tier up. Decided after every attempt, so a spent budget still says it.
 # A pending pin is read from the file itself: it can be set between two attempts, and it
-# outranks both verdicts (the retry applies it first).
+# outranks both verdicts (the retry applies it first). The converse needs care too: a pin
+# withdrawn since the last attempt leaves the `escalation.next` that `--check` wrote for it,
+# so a marker found with no pin pending is decided again rather than trusted.
 report_escalations() { # report_escalations <plan>
   local plan="$1" id n=0 head pin
   head="retry policy (after $(cat "$plan/escalate_after" 2>/dev/null || echo 3) failed attempts on one model):"
@@ -373,12 +399,17 @@ report_escalations() { # report_escalations <plan>
     if [ -n "$pin" ] && [ "$(task_status "$plan" "$id")" != MERGED ]; then
       [ "$n" = 0 ] && echo "$head"
       n=$((n+1))
-      if [ "$(cat "$plan/tasks/$id/resume" 2>/dev/null)" = qa ]; then
+      if qa_only_next "$plan" "$id"; then
         printf '  %-14s its next retry goes to %s (pinned; after the QA-only re-run)\n' "$id" "$pin"
       else
         printf '  %-14s its next retry goes to %s (pinned)\n' "$id" "$pin"
       fi
-    elif [ -s "$plan/tasks/$id/split.suggested" ]; then
+      continue
+    fi
+    if [ -s "$plan/tasks/$id/escalation.next" ] && [ "$(task_status "$plan" "$id")" != MERGED ]; then
+      python3 "$SKILL_DIR/scripts/forge-route.py" escalation --plan "$plan" --task "$id" --check >/dev/null 2>&1 || true
+    fi
+    if [ -s "$plan/tasks/$id/split.suggested" ]; then
       [ "$n" = 0 ] && echo "$head"
       n=$((n+1)); printf '  %-14s split suggested: %s\n' "$id" "$(cat "$plan/tasks/$id/split.suggested")"
     elif [ -s "$plan/tasks/$id/escalation.next" ] && [ "$(task_status "$plan" "$id")" != MERGED ]; then

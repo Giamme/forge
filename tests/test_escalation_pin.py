@@ -277,6 +277,43 @@ class PinTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertEqual(self.pin_files(), ['escalation.pin'])
         self.assertIn('could not record', result.stderr)
+        self.assertEqual(self.dwarf(), 'sol')                     # found out before tasks.tsv was touched
+        self.assertEqual(self.event_lines(), [])
+
+    def break_record_after_rewrite(self, rollback_fails=False):
+        """An awk that, once it has rewritten tasks.tsv to the pinned spec, makes
+        escalations.tsv unwritable (the record fails after the rewrite, past the preflight)."""
+        bin_dir = self.root / 'bin'; bin_dir.mkdir()
+        awk = bin_dir / 'awk'
+        esc = self.tdir / 'escalations.tsv'
+        awk.write_text('#!/bin/sh\ncase "$*" in\n'
+                       '  *" dw=opus:high"*) rm -f "%s"; mkdir "%s" ;;\n' % (esc, esc)
+                       + ('  *" dw=sol"*) exit 1 ;;\n' if rollback_fails else '')
+                       + 'esac\nexec /usr/bin/awk "$@"\n')
+        awk.chmod(0o755)
+        return str(bin_dir) + ':' + PATH
+
+    def test_a_record_that_fails_after_the_rewrite_takes_the_rewrite_back(self):
+        self.pin()
+        result = self.retry(path=self.break_record_after_rewrite())
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn('nothing was retried', result.stderr)
+        self.assertEqual(self.dwarf(), 'sol')                     # not left on the pinned model, unrecorded
+        self.assertEqual(self.pin_files(), ['escalation.pin'])
+        self.assertEqual((self.tdir / 'escalation.pin').read_text(), 'opus:high\n')
+        self.assertEqual(self.event_lines(), [])
+        (self.tdir / 'escalations.tsv').rmdir()                   # the cause is fixed: the pin is a real escalation again
+        self.assertEqual(self.retry().returncode, 0)
+        self.assertEqual(self.records()[0][2:], ['sol', 'opus:high', 'pin'])
+
+    def test_a_record_that_fails_with_no_way_back_consumes_the_pin_and_goes_on(self):
+        self.pin()
+        result = self.retry(path=self.break_record_after_rewrite(rollback_fails=True))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('could not be put back', result.stderr)
+        self.assertEqual(self.dwarf(), 'opus:high')               # the human's choice is in effect
+        self.assertEqual(self.pin_files(), [])                    # and is not replayed as a same-spec pin
+        self.assertIn('--set from=sol --set to=opus:high', self.event_lines()[0])
 
     # --- Fractal ---------------------------------------------------------------------------
     def test_a_fractal_plan_never_applies_a_pin(self):
@@ -296,8 +333,8 @@ class PinTests(unittest.TestCase):
         self.assertEqual(self.dwarf(), 'opus:high')
 
     # --- the run summary ---------------------------------------------------------------------
-    def report(self):
-        result = self.sh("report_escalations '%s'" % self.plan)
+    def report(self, skill=None):
+        result = self.sh("report_escalations '%s'" % self.plan, skill=skill)
         self.assertEqual(result.returncode, 0, result.stderr)
         return result.stdout
 
@@ -309,6 +346,30 @@ class PinTests(unittest.TestCase):
         self.pin()
         (self.tdir / 'resume').write_text('qa\n')
         self.assertIn('its next retry goes to opus:high (pinned; after the QA-only re-run)', self.report())
+
+    def test_the_summary_sees_an_unreviewed_verdict_as_a_qa_only_re_run_before_the_marker_exists(self):
+        (self.tdir / 'status').write_text('UNKNOWN\n')           # prepare_retry has not written `resume` yet
+        (self.tdir / 'reviewed.commit').write_text('abc123\n')
+        self.pin()
+        self.assertIn('its next retry goes to opus:high (pinned; after the QA-only re-run)', self.report())
+        (self.tdir / 'reviewed.commit').write_text('')            # nothing was reviewed: a full retry
+        self.assertIn('its next retry goes to opus:high (pinned)\n', self.report())
+
+    def test_a_withdrawn_pin_leaves_the_summary_with_the_policys_verdict(self):
+        (self.plan / 'fractal-routing.json').write_text(json.dumps({'low': ['sol']}))   # no stronger model
+        self.fail_attempts(3)
+        self.pin()
+        route = [sys.executable, str(ROUTE), 'escalation', '--plan', str(self.plan), '--task', 'a', '--check']
+        self.assertEqual(subprocess.run(route, capture_output=True, text=True).stdout, 'opus:high\n')
+        (self.tdir / 'escalation.pin').unlink()                  # `forge control unpin`; no attempt, no new --check
+        report = self.report(skill=ROOT)
+        self.assertIn('split suggested:', report)
+        self.assertNotIn('opus:high', report)
+
+    def test_a_marker_the_withdrawn_pin_left_behind_is_decided_again(self):
+        (self.tdir / 'escalation.next').write_text('opus:high\n')   # what `--check` wrote while the pin was pending
+        self.assertEqual(self.report(skill=ROOT), '')             # one failure: the policy has nothing to say
+        self.assertFalse((self.tdir / 'escalation.next').exists())
 
     def test_a_pin_outranks_a_split_suggestion_and_a_merged_task_shows_none(self):
         (self.tdir / 'split.suggested').write_text('split it\n')
@@ -355,15 +416,35 @@ class CheckTests(unittest.TestCase):
         self.assertEqual(self.next_marker(), 'opus:high\n')
         self.assertTrue((self.tdir / 'escalation.pin').exists())     # reporting is not claiming
 
-    def test_check_reports_the_pin_over_a_due_policy_escalation_and_a_stop(self):
+    def test_check_reports_the_pin_over_a_due_policy_escalation(self):
         self.fail_three_times({'low': ['sol'], 'high': ['astra']})
-        (self.tdir / 'escalation.stop').write_text('3\tsol\n')
-        (self.tdir / 'split.suggested').write_text('split it\n')
+        (self.tdir / 'escalation.pin').write_text('opus:high\n')
+        result = self.route('--check')
+        self.assertEqual((result.returncode, result.stdout), (0, 'opus:high\n'), result.stderr)
+        self.assertEqual(self.next_marker(), 'opus:high\n')       # not astra, the policy's own pick
+
+    def test_check_keeps_the_policys_stop_under_a_pin_and_it_holds_when_the_pin_goes(self):
+        self.fail_three_times({'low': ['sol']})                      # no stronger model: the policy stops the task
         (self.tdir / 'escalation.pin').write_text('opus:high\n')
         result = self.route('--check')
         self.assertEqual((result.returncode, result.stdout), (0, 'opus:high\n'), result.stderr)
         self.assertEqual(self.next_marker(), 'opus:high\n')
-        self.assertFalse((self.tdir / 'escalation.stop').exists() or (self.tdir / 'split.suggested').exists())
+        self.assertEqual((self.tdir / 'escalation.stop').read_text(), '3\tsol\n')   # nothing has applied the pin yet
+        self.assertIn('already in the highest tier', (self.tdir / 'split.suggested').read_text())
+        (self.tdir / 'escalation.pin').unlink()
+        result = self.route('--check')
+        self.assertEqual((result.returncode, result.stdout), (3, ''), result.stderr)
+        self.assertIsNone(self.next_marker())                        # the old pin is not the next model any more
+        self.assertTrue((self.tdir / 'escalation.stop').exists())
+
+    def test_check_replaces_a_stale_policy_marker_with_the_pin_and_keeps_none_of_its_own(self):
+        self.fail_three_times({'low': ['sol']})
+        (self.tdir / 'escalation.pin').write_text('opus:high\n')
+        (self.plan / 'escalate_after').write_text('0\n')
+        (self.tdir / 'escalation.stop').write_text('3\tsol\n')
+        self.assertEqual(self.route('--check').stdout, 'opus:high\n')
+        self.assertEqual(sorted(p.name for p in self.tdir.iterdir() if p.name.startswith(('escalation.', 'split.'))),
+                         ['escalation.next', 'escalation.pin'])      # the policy is off: its markers go
 
     def test_check_reports_the_pin_even_with_the_policy_off(self):
         (self.plan / 'escalate_after').write_text('0\n')
@@ -380,6 +461,15 @@ class CheckTests(unittest.TestCase):
         (self.plan / 'fractal-selection.json').write_text('{"enabled": true}')
         self.assertEqual(self.route('--check').stdout, '')
         self.assertIsNone(self.next_marker())
+
+    def test_check_does_not_report_a_pin_behind_an_unreviewed_verdict_of_committed_work(self):
+        (self.tdir / 'escalation.pin').write_text('opus:high\n')
+        (self.tdir / 'status').write_text('UNKNOWN\n')              # prepare_retry will turn this into `resume`
+        (self.tdir / 'reviewed.commit').write_text('abc123\n')
+        self.assertEqual(self.route('--check').stdout, '')
+        self.assertIsNone(self.next_marker())
+        (self.tdir / 'reviewed.commit').unlink()                     # nothing reviewed: a full retry
+        self.assertEqual(self.route('--check').stdout, 'opus:high\n')
 
     def test_without_check_a_pin_is_not_the_policys_business(self):
         (self.tdir / 'escalation.pin').write_text('opus:high\n')
