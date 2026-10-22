@@ -989,8 +989,9 @@ do_task_body() (
     *)    echo UNKNOWN > "$tdir/status" ;;
   esac
   # With an explicit --qa-threshold a FAIL made only of tolerated findings becomes an
-  # accepted PASS-with-known-issues. No threshold, no change.
-  qa_gate "$PLAN" "$id" "$tdir" "$verdict"
+  # accepted PASS-with-known-issues. No threshold, no change. qa_thr is the value the review
+  # prompt was built with, so the prompt and the gate of one attempt agree.
+  qa_gate "$PLAN" "$id" "$tdir" "$verdict" "$qa_thr"
 
   # Annotate a FAIL that looks unsound. Note what this does NOT do: the status file is
   # already written above and nothing below rewrites it. A model that could talk a
