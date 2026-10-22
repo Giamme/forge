@@ -1,8 +1,8 @@
-/* forge-ui: read-only API viewer. All API values enter the DOM as text.
+/* forge-ui: the page. It reads the API; a change to a run goes through the write helpers in uikit.js (see controls.js). All API values enter the DOM as text.
    Views: the map of every run (#/), the run cloud (#/cloud, full screen: cloudui.js over cloud3d.js), and a
    run (#/runs/<key>) with its stage (3D, or the 2D graph and chart), the inspector beside it and the task table under it. The stage is one element that moves between views,
    so the 3D scene (and its WebGL context) survives navigation and refreshes. */
-window.ForgeUI = (() => {
+window.ForgeApp = (() => {
   'use strict';
   const RM = window.ForgeRunModel;
   // an exported page (forge_ui/export.py): one run and the API responses it needs, no server behind it
@@ -171,8 +171,10 @@ window.ForgeUI = (() => {
     const active = parent.contains(document.activeElement) ? document.activeElement : null;
     const focusHref = active?.getAttribute('href');
     const own = [parent.scrollLeft, parent.scrollTop];
+    const held = window.ForgeControls ? window.ForgeControls.hold(parent) : null;   // a control being edited rides through the rebuild
     parent.replaceChildren();
     build();
+    if (held) held.restore();
     if (!restore) return;
     for (const node of parent.querySelectorAll('details[data-keep]')) if (open.has(node.dataset.keep)) node.open = open.get(node.dataset.keep);
     for (const node of parent.querySelectorAll('[data-scroll]')) {
@@ -1077,3 +1079,6 @@ window.ForgeUI = (() => {
   init();
   return { refresh, state };
 })();
+// window.ForgeUI is uikit.js's shared helpers; the page's own handles (state, refresh) join it, where the browser
+// tests and ui/tools/readme_media.py read them.
+window.ForgeUI = Object.assign(window.ForgeUI || {}, window.ForgeApp);
