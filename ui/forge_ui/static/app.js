@@ -18,6 +18,7 @@ window.ForgeApp = (() => {
     layers: Object.assign({ cables: true, beads: true, lamps: true, roof: true, labels: true, beacons: true, finish: true, districts: true, halos: true, route: true }, store.get('layers', {})),
     replay: null, playing: null, speed: store.get('speed', 60), stage: null, stageFailed: null, stageLoading: false, timer: null,
     lastStatuses: new Map(), announced: 0, rendered: null, cloud: null, cloudUI: null, cloudPrefs: store.get('cloud', {}),
+    settings: false, lastKey: null, settingsRun: null, settingsView: null,
     models: false, modelsData: null, modelsText: null, modelsError: null, modelsPrefs: store.get('models', {}),
     files: new Map(), findingsCount: new Map(), filesPrefs: store.get('files', {}), runSort: store.get('run-sort', 'updated'), tablePrefs: store.get('tables', {}),
     findings: new Map() };
@@ -73,6 +74,7 @@ window.ForgeApp = (() => {
     const c = hash.match(/^#\/cloud(?:\/(runs|projects|models)\/([^/]+))?\/?$/);
     if (c) return { key: null, sel: null, cloud: { sel: c[1] === 'runs' ? decodeURIComponent(c[2]) : null, focus: c[1] === 'projects' ? decodeURIComponent(c[2]) : null, model: c[1] === 'models' ? decodeURIComponent(c[2]) : null } };
     if (/^#\/models\/?$/.test(hash)) return { key: null, sel: null, models: true };
+    if (/^#\/settings\/?$/.test(hash)) return { key: null, sel: null, settings: true };
     const m = hash.match(/^#\/runs\/([^/]+)(\/.*)?$/);
     if (!m) return { key: null, sel: null };
     const d = decodeURIComponent, rest = m[2] || '';
@@ -482,6 +484,18 @@ window.ForgeApp = (() => {
       state.modelsText = result.text; state.modelsData = result.data;
       if (state.models) renderModels();
     }, 'Could not refresh the model results', error => { state.modelsError = error.message; if (state.models) renderModels(); });
+  }
+
+  /* ---------- the settings (#/settings) ---------- */
+  function renderSettings() {
+    const main = $('main');
+    if (main.dataset.view === 'settings') { state.settingsView?.poll(); return; }   // already drawn: its unsaved edits stay
+    setView(main, 'settings'); delete main.dataset.run;
+    main.replaceChildren();
+    const v = el('section', undefined, 'settings-view'); v.id = 'settings-view'; main.append(v);
+    state.settingsView = window.ForgeSettings.render(v, {
+      key: state.settingsRun || state.lastKey, runs: () => state.runs, onPick: key => { state.settingsRun = key; },
+    });
   }
 
   /* ---------- a run's open findings (#/runs/<key>/findings) ---------- */
@@ -904,6 +918,7 @@ window.ForgeApp = (() => {
     if (!state.key) document.body.classList.remove('no-tasks');
     if (state.cloud) { renderCloud(); return; }
     if (state.models) { renderModels(); return; }
+    if (state.settings) { renderSettings(); return; }
     if (state.key && state.findingsPage) { renderFindings(); return; }
     if (!state.key) { renderMap(); return; }
     const cached = state.cache.get(state.key);
@@ -994,6 +1009,8 @@ window.ForgeApp = (() => {
     state.convo = parsed.convo || null;
     state.cloud = parsed.cloud || null;
     state.models = !!parsed.models;
+    state.settings = !!parsed.settings && !!window.ForgeSettings && !SNAP;
+    if (parsed.key) state.lastKey = parsed.key;
     state.findingsPage = !!parsed.findings && !!window.ForgeFindings;
     if (state.cloud && state.cloud.model) {                  // a model's runs: the cloud, filtered to it
       cloudFilter({ models: { aliases: [state.cloud.model], role: 'any' } });
@@ -1002,13 +1019,14 @@ window.ForgeApp = (() => {
     document.body.classList.toggle('cloud-mode', !!state.cloud);
     if (!state.key) document.body.classList.remove('no-tasks');
     for (const a of document.querySelectorAll('.topbar .top-link')) {
-      const here = a.getAttribute('href') === (state.cloud ? '#/cloud' : state.models ? '#/models' : !state.key ? '#/' : null);
+      const here = a.getAttribute('href') === (state.cloud ? '#/cloud' : state.models ? '#/models' : state.settings ? '#/settings' : !state.key ? '#/' : null);
       if (here) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
     }
     renderErrors();
     markSelection();
     if (state.cloud) { renderCloud(); return; }
     if (state.models) { renderModels(); loadModels(); return; }
+    if (state.settings) { renderSettings(); return; }
     if (state.key && state.findingsPage) { renderFindings(); return; }
     if (!state.key) { renderMap(); return; }
     const cached = state.cache.get(state.key);
@@ -1038,6 +1056,7 @@ window.ForgeApp = (() => {
     loadList();
     if (state.key) loadRun(state.key);
     if (state.models) loadModels();
+    if (state.settings) state.settingsView?.poll();
     for (const node of document.querySelectorAll('[data-epoch]')) { const t = relative(node.dataset.epoch); node.textContent = node.dataset.short !== undefined ? t.replace(/^updated /, '') : t; }
   }
   // Poll faster while something runs, slower otherwise; never with refresh off, and a hidden tab only to notify.
@@ -1053,6 +1072,7 @@ window.ForgeApp = (() => {
       { id: 'cmd:cloud', label: 'Open the run cloud', sub: 'every run in 3D, grouped by project', ids: ['cloud'], href: '#/cloud' },
       { id: 'cmd:map', label: 'Open the map of all runs', sub: 'the front page', ids: ['map', 'home'], href: '#/' },
       { id: 'cmd:models', label: 'Open the model leaderboard', sub: 'pass rates, retries, time and tokens per model', ids: ['models', 'leaderboard'], href: '#/models' },
+      ...(window.ForgeSettings ? [{ id: 'cmd:settings', label: 'Open the settings', sub: 'model registry, Jev, and the .forge files of a repository', ids: ['settings', 'config', 'verify', 'jev'], href: '#/settings' }] : []),
       { id: 'cmd:notify', label: 'Notifications', sub: 'what finished or failed, and browser notifications', ids: ['alerts', 'bell'], action: () => window.ForgeNotify && window.ForgeNotify.open() },
       { id: 'cmd:dim', label: state.dim === '3d' ? 'Switch to 2D' : 'Switch to 3D', sub: state.dim === '3d' ? 'graphs and charts, no WebGL' : 'loads three.js from cdn.jsdelivr.net', ids: ['2d', '3d'],
         action: () => { state.dim = state.dim === '3d' ? '2d' : '3d'; store.set('view', state.dim); if (state.dim === '3d') state.stageFailed = null; renderMain(); } },
