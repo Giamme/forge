@@ -1067,7 +1067,9 @@ class IndependenceTests(unittest.TestCase):
         # stops being independent. Outside its own package, the dataset may only be
         # written to, through capture.
         allowed = {'forge-runtime.py', 'forge-schedule.py', 'forge-dataset.py', 'forge-shadow.py', 'client.py',
-                   'cli.py', 'invocation.py', 'pipeline.py', 'predict.py'}
+                   'cli.py', 'invocation.py', 'pipeline.py', 'predict.py',
+                   # forge control, forge config and forge runs rm: they write to the store, or only locate it
+                   'forge-control.py', 'forge-config.py', 'forge-runs-rm.py'}
         for path in (ROOT / 'scripts').rglob('*'):
             if path.suffix not in ('.py', '.sh') or 'forge_dataset' in path.parts:
                 continue
@@ -1083,4 +1085,7 @@ class IndependenceTests(unittest.TestCase):
             for line in text.splitlines():
                 if 'forge_dataset' in line and 'import' in line:
                     self.assertRegex(line, r'from forge_dataset(\.capture)? import (capture|point|jev|fractal_step|'
-                                           r'fractal_outcome|mint_run_uid)|from forge_dataset\.cli import main', str(path))
+                                           r'fractal_outcome|mint_run_uid)|from forge_dataset\.cli import main|'
+                                           r'from forge_dataset import data_home, enabled$|'
+                                           r'from forge_dataset import DatasetError, data_home, dataset_dir, enabled, '
+                                           r'harvest, importer, record_strict', str(path))

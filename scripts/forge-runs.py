@@ -7,6 +7,10 @@ run dir under it, so you can see what happened without a browser and get the dir
 or open with `forge ui open`. The repo is the Git top level of the current directory unless
 `--repo` names one; `--all` lists the runs of every repo. It reads the same run summaries as
 forge-ui and never writes anything.
+
+`forge runs rm <run-dir> [--dry-run] [--yes] [--no-archive] [--worktrees] [--branches] [--json]`
+is the one thing here that changes anything: it deletes a run, after its traces are in the dataset
+and an archive exists (scripts/forge-runs-rm.py).
 """
 from __future__ import annotations
 
@@ -86,8 +90,22 @@ def line(run: dict, now: float, with_repo: bool = False) -> str:
     return f"{run['run_id'] or run['key']}  {run['kind']}{repo}  {age(run['updated'], now)}  {counts}{checks}  {goal}\n    {run['path']}"
 
 
+def remove(argv) -> int:
+    """`forge runs rm`: loaded on demand, so listing never pays for the dataset package."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location('forge_runs_rm', Path(__file__).resolve().with_name('forge-runs-rm.py'))
+    module = importlib.util.module_from_spec(spec)
+    sys.modules['forge_runs_rm'] = module
+    spec.loader.exec_module(module)
+    return module.main(argv)
+
+
 def main(argv=None) -> int:
-    parser = argparse.ArgumentParser(prog='forge runs', description="This repo's recent forge runs, newest first. Read-only.")
+    argv = sys.argv[1:] if argv is None else list(argv)
+    if argv[:1] == ['rm']:
+        return remove(argv[1:])
+    parser = argparse.ArgumentParser(prog='forge runs', description="This repo's recent forge runs, newest first. Listing is read-only.",
+                                     epilog='Delete a run, keeping its traces: forge runs rm <run-dir> (forge runs rm --help)')
     which = parser.add_mutually_exclusive_group()
     which.add_argument('--repo', type=Path, metavar='DIR', help='the repo whose runs to list (default: the Git top level of the current directory)')
     which.add_argument('--all', action='store_true', help='list the runs of every repo')
