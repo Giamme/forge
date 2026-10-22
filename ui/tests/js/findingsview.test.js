@@ -23,6 +23,8 @@ test('filters: open by default, then status, severity and origin', () => {
   assert.deepEqual(F.filterRows(rows).map(r => r.fp), ['a', 'b', 'c']);
   assert.deepEqual(F.filterRows(rows, { status: 'all' }).map(r => r.fp), ['a', 'b', 'c', 'd', 'e']);
   assert.deepEqual(F.filterRows(rows, { status: 'dismissed' }).map(r => r.fp), ['e']);
+  assert.deepEqual(F.filterRows(rows, { dismissed: true }).map(r => r.fp), ['a', 'b', 'c', 'e']);
+  assert.deepEqual(F.filterRows(rows, { status: 'all', dismissed: false }).map(r => r.fp), ['a', 'b', 'c', 'd']);
   assert.deepEqual(F.filterRows(rows, { severity: 'P0' }).map(r => r.fp), ['b']);
   assert.deepEqual(F.filterRows(rows, { origin: 'plausible' }).map(r => r.fp), ['c']);
   assert.deepEqual(F.filterRows(null), []);

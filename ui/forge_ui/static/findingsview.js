@@ -30,8 +30,13 @@
   // filter = { status: 'open' (default) | 'all' | one of STATUSES, severity: 'all' | P0..P3, origin: 'all' | ORIGINS }
   function filterRows(rows, filter) {
     const f = filter || {}, status = f.status || 'open', severity = f.severity || 'all', origin = f.origin || 'all';
-    return list(rows).filter(r => (status === 'all' || statusOf(r) === status) && (severity === 'all' || r.severity === severity) &&
-      (origin === 'all' || r.origin === origin));
+    // `dismissed` (optional): false hides dismissed rows whatever the status; true adds them to the default 'open' view.
+    return list(rows).filter(r => {
+      const st = statusOf(r);
+      if (f.dismissed === false && st === 'dismissed') return false;
+      const byStatus = status === 'all' || st === status || (f.dismissed === true && status === 'open' && st === 'dismissed');
+      return byStatus && (severity === 'all' || r.severity === severity) && (origin === 'all' || r.origin === origin);
+    });
   }
   // The online listing knows which findings have an issue: its `filed` goes into the offline rows by fingerprint.
   // A row only the online listing has is added; a row only the offline listing has stays as it was.
@@ -169,10 +174,11 @@
     const readOnly = el('p', 'read-only: findings can be read here, not filed or dismissed.', 'muted fnd-readonly'); readOnly.hidden = true;
 
     host.replaceChildren(head, lede, scopeBar, lamp, notes, filters, readOnly, actions, reasonHost, outcomeHost, tableHost);
+    let posting = false;   // a filing POST is running: the dialog stays open until its results are shown
     const dlg = el('dialog', undefined, 'fnd-dialog'); dlg.setAttribute('aria-label', 'File issues on GitHub');
     host.append(dlg);
 
-    const shown = () => filterRows(s.rows, s.filter);
+    const shown = () => filterRows(s.rows, { ...s.filter, dismissed: s.dismissed });
     function syncScope() {
       for (const [v, b] of Object.entries(scopeKeys)) b.setAttribute('aria-pressed', String(s.scope === v));
       lede.textContent = s.scope === 'run' ? `Findings this run left unfixed${ctx.run && ctx.run.goal ? ': ' + String(ctx.run.goal).split('\n')[0] : ''}.`
@@ -366,8 +372,9 @@
         const parsed = parseLabels(labels.value);
         labelNote.hidden = !parsed.error; labelNote.textContent = parsed.error || '';
         if (parsed.error) return;
-        go.disabled = true; cancel.disabled = true; labels.disabled = true; results.replaceChildren();
+        go.disabled = true; cancel.disabled = true; labels.disabled = true; results.replaceChildren(); posting = true;
         const res = await UI.post(issuesPath(key), fileBody(s.scope, fps, s.plausible, parsed.labels));
+        posting = false;
         if (!res.ok) { go.disabled = false; cancel.disabled = false; labels.disabled = false; UI.outcome(results, res); return; }
         const lines = resultLines(res.data.created), ul = el('ul', undefined, 'fnd-created');
         for (const ln of lines) {
@@ -387,7 +394,8 @@
       dlg.append(lab, labelNote, results, row);
       dlg.showModal(); (drafts.length ? go : cancel).focus();
     }
-    dlg.addEventListener('click', e => { if (e.target === dlg) dlg.close(); });
+    dlg.addEventListener('click', e => { if (e.target === dlg && !posting) dlg.close(); });
+    dlg.addEventListener('cancel', e => { if (posting) e.preventDefault(); });
     dlg.addEventListener('close', () => { fileKey.focus(); });
 
     syncScope();

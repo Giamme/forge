@@ -951,7 +951,7 @@ window.ForgeApp = (() => {
       state.cache.set(key, result);
       if (state.key === key && changed && !state.findingsPage) renderRun(result.data);
     }, 'Could not refresh run', error => {
-      if (state.key !== key || state.cache.has(key)) return;
+      if (state.key !== key || state.cache.has(key) || state.findingsPage) return;
       if (error.status === 404) state.errors.delete('/api/runs/' + encodeURIComponent(key));
       setView($('main'), 'waiting');
       $('main').replaceChildren(el('p', error.status === 404 ?
