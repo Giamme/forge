@@ -20,19 +20,41 @@ fingerprints. --all-runs reads <run> as a repository (or a plan dir naming one) 
 registry, the newest plan winning for a finding present in several. A caller filing an explicit selection
 passes `--max-issues <len(selection)>`; the default is 10.
 
-Exit codes: 0 ok, 2 usage or `gh` error.
+--dismiss FP[,FP] / --undismiss FP[,FP] (repeatable, with an optional --reason TEXT of at most 500 characters) mark
+findings that need no work, or take the mark back, then exit; they need no network and accept a fingerprint that
+matches no current finding. A dismissed finding stays in `findings` with `dismissed` = {at, reason} (null otherwise)
+and is left out of the drafts unless --include-dismissed is given. The marks live outside the repository, in
+`${XDG_STATE_HOME:-~/.local/state}/forge/findings/<repo_key>.json` (an empty or relative XDG_STATE_HOME counts as
+unset); the store directory and file must not be symlinks, and the file must be a regular one. The repository they
+belong to is the one <run> resolves to (a plan's `repo` file, or the repository under --all-runs); --repo does not
+change it.
+
+Two processes must not file for one repository at once, or both see a fingerprint as unfiled and create it. --apply
+holds `<repo_key>.lock` (next to the store, `flock`) from the `gh issue list` lookup to the last `gh issue create`,
+and each --dismiss/--undismiss holds it around its read-modify-write. A busy lock is retried for 10 s. Listing
+without --apply takes no lock.
+
+Exit codes: 0 ok, 2 usage, `gh` or dismissal store error, 3 busy (another filing or dismissal holds the lock).
 """
 from __future__ import annotations
 
 import argparse
+import contextlib
+import errno
+import fcntl
 import hashlib
 import json
 import os
 import re
+import stat
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from forge_registry import repo_key, runs_registry  # noqa: E402
 
 FINDING_RE = re.compile(r"^\s*[-*]\s*\[(P[0-3])\]\s*\[(CONFIRMED|PLAUSIBLE)\]\s*(\S.*?)\s+[—–]+\s+(.+?)\s*$", re.M)
 # gh-proman writes `gh-proman:finding`, this command `forge:finding`; the fingerprints match.
@@ -40,6 +62,10 @@ FP_MARK_RE = re.compile(r"<!-- (?:gh-proman|forge):finding fp=([0-9a-f]{12})")
 DONE = {"PASS", "MERGED"}
 SEVERITIES = ["P0", "P1", "P2", "P3"]
 FP_RE = re.compile(r"[0-9a-f]{12}")
+LOCK_WAIT = 10.0  # seconds a busy repository lock is retried before `forge issues` gives up (exit 3)
+LOCK_POLL = 0.1
+REASON_MAX = 500
+STORE_MAX = 4 << 20  # a dismissal store is a few hundred bytes per finding; anything bigger is not one
 
 TEXT = {
     "en": {
@@ -87,6 +113,10 @@ TEXT = {
 
 class Fail(Exception):
     pass
+
+
+class Busy(Fail):
+    """The repository lock is held by another filing or dismissal (exit 3, not 2)."""
 
 
 def read(path: Path) -> str:
@@ -224,8 +254,6 @@ def collect_plan(plan_dir: Path, include_plausible):
 def collect_all(path: Path, include_plausible):
     plan_file = path / "repo"
     repo = Path(read(plan_file)) if plan_file.is_file() else path
-    sys.path.insert(0, str(Path(__file__).resolve().parent))
-    from forge_registry import runs_registry
     registry = runs_registry(repo)
     lines = read(registry).splitlines() if registry.is_file() else []
     plans, notes = [], []
@@ -394,7 +422,155 @@ def norm_title(title):
     return re.sub(r"\W+", " ", re.sub(r"^\[P[0-3]\]\s*", "", title).lower()).strip()
 
 
+# ---------------------------------------------------------------------------------------------- state
+
+def findings_dir() -> Path:
+    """`${XDG_STATE_HOME:-~/.local/state}/forge/findings`; an empty or relative XDG_STATE_HOME counts as unset.
+
+    Forge keeps its own data out of the user's tree, and a relative state home would name a directory below
+    the current one, usually the repository.
+    """
+    for candidate in (os.environ.get("XDG_STATE_HOME") or "", "~/.local/state"):
+        try:
+            base = Path(candidate).expanduser() if candidate else None
+        except RuntimeError:  # no home directory to expand "~" against
+            base = None
+        if base is not None and base.is_absolute():
+            return base / "forge" / "findings"
+    raise Fail("cannot place the dismissal store: no home directory and no absolute XDG_STATE_HOME")
+
+
+def store_dir(create):
+    """The findings directory after an lstat check that it is a real directory, not a symlink; None when absent."""
+    path = findings_dir()
+    if create:
+        try:
+            path.mkdir(mode=0o700, parents=True, exist_ok=True)
+        except OSError as exc:
+            raise Fail(f"{path}: cannot create the dismissal store directory: {exc.strerror or exc}")
+    try:
+        mode = os.lstat(path).st_mode
+    except FileNotFoundError:
+        if create:
+            raise Fail(f"{path}: the dismissal store directory vanished")
+        return None
+    except OSError as exc:
+        raise Fail(f"{path}: cannot use the dismissal store directory: {exc.strerror}")
+    if not stat.S_ISDIR(mode):
+        raise Fail(f"{path}: the dismissal store directory must be a real directory, not a symlink")
+    return path
+
+
+def load_dismissed(key):
+    """The repository's dismissals, `{fp: {"at": epoch, "reason": str}}`; empty when it has none yet."""
+    base = store_dir(create=False)
+    if base is None:
+        return {}
+    path = base / f"{key}.json"
+    not_regular = f"{path}: the dismissal store must be a regular file, not a symlink or special file"
+    try:
+        if not stat.S_ISREG(os.lstat(path).st_mode):
+            raise Fail(not_regular)
+        # NOFOLLOW again for a swap after the lstat; NONBLOCK so a FIFO cannot hold the open
+        with os.fdopen(os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK), "rb") as fh:
+            if not stat.S_ISREG(os.fstat(fh.fileno()).st_mode):
+                raise Fail(not_regular)
+            raw = fh.read(STORE_MAX + 1)
+    except FileNotFoundError:
+        return {}
+    except OSError as exc:
+        raise Fail(f"{path}: cannot read the dismissal store: {exc.strerror}")
+    try:
+        data = json.loads(raw.decode("utf-8")) if len(raw) <= STORE_MAX else None
+    except ValueError:
+        data = None
+    if not (isinstance(data, dict) and all(
+            FP_RE.fullmatch(fp) and isinstance(v, dict) and isinstance(v.get("reason"), str)
+            and isinstance(v.get("at"), (int, float)) and not isinstance(v["at"], bool) for fp, v in data.items())):
+        raise Fail(f"{path}: not a dismissal store ({{fingerprint: {{at, reason}}}}); fix or remove it")
+    return {fp: {"at": v["at"], "reason": v["reason"]} for fp, v in data.items()}
+
+
+def save_dismissed(key, data):
+    """Replace the store atomically: a temp file in the same directory, fsynced, then renamed over it."""
+    base = store_dir(create=True)
+    path = base / f"{key}.json"
+    try:
+        fd, tmp = tempfile.mkstemp(prefix=f".{key}.", suffix=".tmp", dir=base)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                json.dump(data, fh, indent=2, sort_keys=True, ensure_ascii=False)
+                fh.write("\n")
+                fh.flush()
+                os.fsync(fh.fileno())
+            os.replace(tmp, path)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp)
+            raise
+    except OSError as exc:
+        raise Fail(f"{path}: cannot write the dismissal store: {exc.strerror}")
+
+
+@contextlib.contextmanager
+def repo_lock(key, label):
+    """Hold the repository's `<key>.lock` (flock, next to the store); busy for LOCK_WAIT seconds raises Busy.
+
+    The lock is its own file, opened in place and never replaced, because the store is: a lock on the store
+    file would stay with the old inode after an atomic save.
+    """
+    path = store_dir(create=True) / f"{key}.lock"
+    try:
+        fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
+    except OSError as exc:
+        raise Fail(f"{path}: cannot open the repository lock ({exc.strerror}); it must not be a symlink")
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise Fail(f"{path}: the repository lock must be a regular file")
+        deadline = time.monotonic() + LOCK_WAIT
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError as exc:
+                if exc.errno not in (errno.EWOULDBLOCK, errno.EAGAIN, errno.EACCES):
+                    raise Fail(f"{path}: cannot lock the repository: {exc.strerror}")
+            if time.monotonic() >= deadline:
+                raise Busy(f"busy: another filing or dismissal for {label} is in progress")
+            time.sleep(LOCK_POLL)
+        yield
+    finally:
+        os.close(fd)  # closing the descriptor releases the flock
+
+
+def dismiss(args):
+    """--dismiss / --undismiss: update the repository's store under its lock. No network: <run> is only read to
+    find the repository it resolves to."""
+    meta, _found, _notes = collect(Path(args.run), False, args.all_runs)
+    repo_path = meta["repo_path"] or os.getcwd()
+    key = repo_key(repo_path)
+    with repo_lock(key, args.repo or github_slug(repo_path) or repo_path):
+        data = load_dismissed(key)
+        before = json.dumps(data, sort_keys=True)
+        now = int(time.time())
+        for fp in args.dismiss:
+            # dismissing again without a --reason keeps the earlier mark, with its reason and date
+            if fp not in data or args.reason is not None:
+                data[fp] = {"at": now, "reason": args.reason or ""}
+        for fp in args.undismiss:
+            data.pop(fp, None)
+        if json.dumps(data, sort_keys=True) != before:
+            save_dismissed(key, data)
+    return {"ok": True, "dismissed": args.dismiss, "undismissed": args.undismiss}
+
+
 # ---------------------------------------------------------------------------------------------- main
+
+def split_fps(values):
+    """Repeatable, comma-separated fingerprints, deduplicated in order; None when one is not 12 hex characters."""
+    fps = [x.strip() for v in values for x in v.split(",")]
+    return None if any(not FP_RE.fullmatch(x) for x in fps) else list(dict.fromkeys(fps))
+
 
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="forge issues", description=__doc__.split("\n\n")[0],
@@ -417,35 +593,63 @@ def main(argv=None):
     ap.add_argument("--only", action="append", default=[], metavar="FP",
                     help="keep only this 12-hex fingerprint; repeatable or comma-separated")
     ap.add_argument("--all-runs", action="store_true", help="collect every run in the repository's run registry")
+    ap.add_argument("--dismiss", action="append", default=[], metavar="FP",
+                    help="mark this 12-hex fingerprint as needing no work, then exit; repeatable or comma-separated")
+    ap.add_argument("--undismiss", action="append", default=[], metavar="FP",
+                    help="take the mark back, then exit; repeatable or comma-separated")
+    ap.add_argument("--reason", help=f"why --dismiss marks them (at most {REASON_MAX} characters)")
+    ap.add_argument("--include-dismissed", action="store_true", help="draft dismissed findings too")
     ap.add_argument("--json", action="store_true", help="machine-readable output")
     args = ap.parse_args(argv)
     if args.offline and args.apply:
         ap.error("--offline cannot be combined with --apply")
-    args.only = [x.strip() for v in args.only for x in v.split(",")]
-    if any(not FP_RE.fullmatch(x) for x in args.only):
+    only = split_fps(args.only)
+    if only is None:
         ap.error("--only takes 12-hex-character fingerprints, repeated or comma-separated")
+    args.only = only
+    args.dismiss, args.undismiss = split_fps(args.dismiss), split_fps(args.undismiss)
+    if args.dismiss is None or args.undismiss is None:
+        ap.error("--dismiss and --undismiss take 12-hex-character fingerprints, repeated or comma-separated")
+    dismissing = bool(args.dismiss or args.undismiss)
+    if dismissing and args.apply:
+        ap.error("--dismiss and --undismiss cannot be combined with --apply")
+    if set(args.dismiss) & set(args.undismiss):
+        ap.error("a fingerprint cannot be both --dismiss and --undismiss")
+    if args.reason is not None:
+        if not args.dismiss:
+            ap.error("--reason goes with --dismiss")
+        try:
+            args.reason.encode("utf-8")
+        except UnicodeEncodeError:
+            ap.error("--reason must be valid UTF-8")
+        if len(args.reason) > REASON_MAX:
+            ap.error(f"--reason is at most {REASON_MAX} characters")
     try:
-        out = file_findings(args)
+        out = dismiss(args) if dismissing else file_findings(args)
     except Fail as exc:
         print(f"forge issues: {exc}", file=sys.stderr)
-        return 2
+        return 3 if isinstance(exc, Busy) else 2
     if args.json:
         print(json.dumps(out, indent=2, ensure_ascii=False))
+    elif dismissing:
+        for verb in ("dismissed", "undismissed"):
+            if out[verb]:
+                print(f"{verb} {len(out[verb])} finding(s): {', '.join(out[verb])}")
     else:
         print_human(out, args.apply)
     return 0
 
 
-def finding_entry(f, filed=None):
+def finding_entry(f, filed=None, dismissed=None):
     return {"fp": f["fp"], "severity": f["severity"], "confidence": f["confidence"], "origin": f["origin"],
             "plan": f["plan"], "plan_dir": f["plan_dir"], "task": f["task"], "file": f["file"],
             "summary": (f["text"].splitlines() or [""])[0][:160], "text": f["text"],
             "reviewer": f["reviewer"], "commit": f.get("commit") or "",
-            "filed": {"url": filed["url"], "state": filed["state"]} if filed else None}
+            "filed": {"url": filed["url"], "state": filed["state"]} if filed else None,
+            "dismissed": dismissed}
 
 
 def file_findings(args):
-    offline = args.offline
     meta, found, notes = collect(Path(args.run), args.include_plausible, args.all_runs)
     repo_path = meta["repo_path"] or os.getcwd()
     slug = args.repo or github_slug(repo_path)
@@ -454,6 +658,15 @@ def file_findings(args):
     if args.min_severity:
         cut = SEVERITIES.index(args.min_severity)
         found = [f for f in found if SEVERITIES.index(f["severity"]) <= cut]
+    # Filing is list-then-create, so no other filing or dismissal for this repository may run in between: the
+    # lock covers the lookup, the drafts (which ask `gh` whether commits are published) and every create.
+    with repo_lock(repo_key(repo_path), slug) if args.apply else contextlib.nullcontext():
+        return list_and_file(args, meta, found, notes, repo_path, slug)
+
+
+def list_and_file(args, meta, found, notes, repo_path, slug):
+    offline = args.offline
+    dismissed = load_dismissed(repo_key(repo_path))
     issues = [] if offline else existing_issues(slug)
     filed = {fp: issue for issue in issues for fp in FP_MARK_RE.findall(issue.get("body") or "")}
     only = set(args.only)
@@ -466,10 +679,11 @@ def file_findings(args):
             continue
         seen.add(f["fp"])
         issue = filed.get(f["fp"])
-        entries.append(finding_entry(f, issue))
+        mark = dismissed.get(f["fp"])
+        entries.append(finding_entry(f, issue, mark))
         if issue:
             already.append({"finding": f["raw"], "issue": issue["url"], "state": issue["state"]})
-        else:
+        elif not mark or args.include_dismissed:
             todo.append(f)
     notes = notes + [f"--only {fp}: no such open finding" for fp in args.only if fp not in known]
     entries.sort(key=lambda e: SEVERITIES.index(e["severity"]))
@@ -494,7 +708,8 @@ def file_findings(args):
                        "body": body_for(slug, repo_path if meta["repo_path"] else None, items, args.lang, offline)})
     drafts.sort(key=lambda d: SEVERITIES.index(d["severity"]))
     out = {"repo": slug, "plan": meta["plan"], "notes": notes,
-           "summary": {"findings": len(seen), "already_filed": len(already), "drafts": len(drafts),
+           "summary": {"findings": len(seen), "already_filed": len(already),
+                       "dismissed": sum(1 for e in entries if e["dismissed"]), "drafts": len(drafts),
                        **{o: sum(1 for f in todo if f["origin"] == o) for o in ("tolerated", "review", "plausible")}},
            "findings": entries, "already_filed": already, "drafts": drafts}
     if args.apply:
@@ -537,7 +752,8 @@ def create(slug, drafts, args):
 
 def print_human(out, applied):
     s = out["summary"]
-    print(f"{out['repo']} · run {out['plan']}: {s['findings']} finding(s), {s['already_filed']} already filed, "
+    dismissed = f", {s['dismissed']} dismissed" if s["dismissed"] else ""
+    print(f"{out['repo']} · run {out['plan']}: {s['findings']} finding(s), {s['already_filed']} already filed{dismissed}, "
           f"{s['drafts']} draft(s) ({s['tolerated']} tolerated, {s['review']} review, {s['plausible']} plausible)")
     for note in out["notes"]:
         print(f"  skipped {note}")
