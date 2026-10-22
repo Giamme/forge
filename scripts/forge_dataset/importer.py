@@ -24,7 +24,7 @@ import time
 from pathlib import Path
 from types import SimpleNamespace
 
-from . import (DatasetError, config_runs_dir, data_home, put_blob, put_file, record, record_strict,
+from . import (BLOB_WRITE_FAILURES, DatasetError, config_runs_dir, data_home, put_blob, put_file, record, record_strict,
                repo_id, sha256)
 from . import harvest as h
 from . import capture
@@ -215,7 +215,7 @@ def import_tree(top: Path, mapper: Mapper, args, counts: dict) -> list[tuple[lis
                         pass
                 except OSError as error:
                     unreadable(error)
-    plans ={p for p in walk_plans(top, onerror)}
+    plans = {p for p in walk_plans(top, onerror)}
     by_task: dict = {}
     for attempt in walk_attempts(top, onerror):
         role = attempt.name.split('-', 1)[0]
@@ -474,16 +474,24 @@ def import_run(path, strict: bool = True, include_temp: bool = True) -> dict:
     args = SimpleNamespace(include_temp=include_temp, report_unreadable=True)
     counts: dict = {'events': 0, 'new': 0}
     writer = record_strict if strict else record
+    blob_mark = len(BLOB_WRITE_FAILURES)
 
     def write(batches):
         for events, repo in batches:
             if events:
                 counts['events'] += len(events)
+                if strict and len(BLOB_WRITE_FAILURES) > blob_mark:
+                    # put_file turns a failed blob write into "no content"; the first writer of a
+                    # rid wins, so storing this batch would make the loss permanent.
+                    counts.setdefault('failed', []).extend(BLOB_WRITE_FAILURES[blob_mark:])
+                    return
                 try:
                     counts['new'] += writer(events, repo=repo, where='import')
                 except DatasetError as error:
                     counts.setdefault('failed', []).append('store: %s' % error)
                     return
+        if strict and len(BLOB_WRITE_FAILURES) > blob_mark and not counts.get('failed'):
+            counts.setdefault('failed', []).extend(BLOB_WRITE_FAILURES[blob_mark:])
 
     if path.is_dir():
         write(import_tree(path, Mapper(), args, counts))
@@ -523,6 +531,7 @@ def archive_run(run_dir, dest) -> dict:
         raise DatasetError('refusing to write the archive %s inside the run dir %s' % (dest, run))
     excluded: list[str] = []
     entries: list[tuple[Path, str]] = [(run, run.name)]
+
     def unreadable(error):
         raise DatasetError('cannot read %s: %s' % (error.filename, error)) from error
 

@@ -255,13 +255,27 @@ def put_blob(data: bytes | str, kind: str = 'text') -> dict:
                 n=len(data), kept=len(stored), cut=span)
 
 
+BLOB_WRITE_FAILURES: list[str] = []
+
+
 def put_file(path: str | Path, kind: str = 'text') -> dict | None:
+    """Store a file's content; None when it is absent, unreadable, or could not be stored.
+
+    A failed write into the blob store is also noted in BLOB_WRITE_FAILURES: the caller
+    still gets None (live capture fails open), but a strict importer can tell "no file" from
+    "content lost" and refuse to let the event win its rid without it.
+    """
     path = Path(path)
     try:
         if not path.is_file():
             return None
-        return put_blob(path.read_bytes(), kind)
+        data = path.read_bytes()
     except OSError:
+        return None
+    try:
+        return put_blob(data, kind)
+    except OSError as error:
+        BLOB_WRITE_FAILURES.append('%s: cannot store content: %s' % (path, error))
         return None
 
 

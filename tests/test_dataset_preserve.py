@@ -160,14 +160,28 @@ class ImportRunTests(PreserveCase):
 
     def test_a_failed_write_raises_in_strict_mode(self):
         run = self.make_run()
-        blocker = self.root / 'blocked'
-        blocker.write_text('x')
-        os.environ['FORGE_DATA_HOME'] = str(blocker)
+        store.dataset_dir().mkdir(parents=True)
+        (store.dataset_dir() / 'dataset.sqlite').mkdir()   # blobs store fine; the database cannot open
         with self.assertRaises(store.DatasetError) as caught:
             importer.import_run(run)
         self.assertTrue(any(f.startswith('store:') for f in caught.exception.result['failed']))
         # Lenient mode keeps the old contract: nothing stored, nothing raised.
         self.assertEqual(importer.import_run(run, strict=False)['new'], 0)
+
+    def test_a_failed_blob_write_fails_a_strict_import_and_stores_no_event_without_its_content(self):
+        run = self.make_run()
+        for task_attempt in (run / 'tasks' / 'a' / 'attempts').glob('task-*'):
+            shutil.rmtree(task_attempt)   # leave the attempts whose content goes through put_file
+        store.dataset_dir().mkdir(parents=True, exist_ok=True)
+        (store.dataset_dir() / 'blobs').write_text('not a directory')   # stands in for ENOSPC or EIO
+        with self.assertRaises(store.DatasetError) as caught:
+            importer.import_run(run)
+        self.assertTrue(any('cannot store content' in f for f in caught.exception.result['failed']))
+        self.assertEqual(self.rows('rid'), [])
+        # Live capture stays fail-open: no content, no exception.
+        self.assertIsNone(store.put_file(run / 'tasks.tsv'))
+        (store.dataset_dir() / 'blobs').unlink()
+        self.assertEqual(importer.import_run(run)['failed'], [])
 
     def test_a_missing_path_and_a_garbled_archive_are_failures(self):
         with self.assertRaises(store.DatasetError):
