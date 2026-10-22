@@ -240,7 +240,7 @@ its last 20,000 behind a leading `…`. Their `truncated` lists the field names 
 | `GET /api/runs/<key>/tasks/<id>/fractal/nodes/<node>[/diff]` | `200 FractalNodeDetail`, or with `/diff` a `DiffDetail` of its `candidate.diff`; `<node>` matches `[A-Za-z0-9][A-Za-z0-9_-]{0,100}` |
 | `GET /` | `forge_ui/static/index.html` |
 | `GET /<name>` | that file from `forge_ui/static/` (`.html .js .css .svg` only, no subdirs) |
-| anything else | `404 {"error": "not found"}` (an unknown path or run); a method a path does not take (PUT, DELETE, OPTIONS, a POST to a read path): `405` with `Allow` |
+| anything else | `404 {"error": "not found"}` (an unknown path or run); a method a path does not take (PUT, DELETE, OPTIONS, a POST to a read path): `405` with `Allow`, except that a GET to a path that only takes POST (`/api/runs/<key>/delete`, `/api/runs/<key>/issues/dismiss`) answers `404` |
 
 The lazy endpoints answer `404 {"error": "not found"}` for an unknown run, task,
 execution or review; the diff endpoints also for a `<which>` the run kind has not (`existing`
