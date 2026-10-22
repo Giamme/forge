@@ -5,6 +5,9 @@
 prints a link to the run; every later `open` reuses it. State lives in
 `${XDG_STATE_HOME:-~/.local/state}/forge/ui`: `server.json` (what we started), `server.log`
 and `lock` (serialises launchers). The server exits by itself after FORGE_UI_IDLE_S idle seconds.
+
+FORGE_UI_READONLY=1 starts (or insists on) a server that answers no write. The mode is recorded
+with the server, and a running server of the other mode is replaced like one running old code.
 """
 from __future__ import annotations
 
@@ -187,12 +190,23 @@ def terminate(pid) -> bool:
     return wait_dead(pid, STOP_WAIT_S)
 
 
-def _spawn(state, port, registry, idle):
+def read_only_wanted() -> bool:
+    return os.environ.get('FORGE_UI_READONLY', '').strip().lower() in ('1', 'true', 'yes', 'on')
+
+
+def is_read_only(answer) -> bool:
+    """Whether a live /api/health answer is a read-only server (a server too old to say is one)."""
+    return answer.get('controls') is not True
+
+
+def _spawn(state, port, registry, idle, read_only=False):
     """Start the server; returns (process, port) or (None, error text)."""
     log = state / 'server.log'
     env = {k: v for k, v in os.environ.items() if not k.startswith('FORGE_')}
     command = [sys.executable, '-I', str(Path(__file__).resolve()), '_serve', '--port', str(port),
                '--quiet', '--registry-dir', registry, '--idle-exit', str(idle)]
+    if read_only:  # the server's environment has no FORGE_* variables, so the mode goes as a flag
+        command.append('--read-only')
     with os.fdopen(open_regular(log, os.O_WRONLY | os.O_CREAT | os.O_TRUNC), 'w') as out:
         proc = subprocess.Popen(command, cwd=str(state), stdin=subprocess.DEVNULL, stdout=out, stderr=out,
                                 start_new_session=True, close_fds=True, env=env)
@@ -211,11 +225,11 @@ def _spawn(state, port, registry, idle):
     return None, None
 
 
-def start_server(state, port, registry, idle):
+def start_server(state, port, registry, idle, read_only=False):
     """Spawn a server, falling back once to a free port when the preferred one is taken."""
-    proc, result = _spawn(state, port, registry, idle)
+    proc, result = _spawn(state, port, registry, idle, read_only)
     if proc is None and result == 2 and port != 0:
-        proc, result = _spawn(state, 0, registry, idle)
+        proc, result = _spawn(state, 0, registry, idle, read_only)
     if proc is None:
         return None
     return {'pid': proc.pid, 'port': result}
@@ -307,6 +321,7 @@ def cmd_open(args):
     state = state_dir()
     log = state / 'server.log'
     registry = str(forge_registry.registry_dir())
+    read_only = read_only_wanted()
     spawned = None
     # Any OSError below is state we cannot use (state dir, lock, server.log, server.json) or a
     # spawn that failed: exit 4. An unreadable or invalid server.json is not one: it means no server.
@@ -317,8 +332,9 @@ def cmd_open(args):
             server = read_state(state)
             answer = confirmed(server) if server else None
             if answer:
-                # the record and the live answer must both name this code
-                if server.get('build') == build and answer.get('build') == build and server.get('registry') == registry:
+                # the record and the live answer must both name this code and the mode asked for
+                if (server.get('build') == build and answer.get('build') == build and server.get('registry') == registry
+                        and bool(server.get('read_only')) == read_only and is_read_only(answer) == read_only):
                     pass  # reuse
                 else:
                     terminate(server['pid'])
@@ -326,11 +342,11 @@ def cmd_open(args):
             else:
                 server = None  # dead, or a pid that is not our forge-ui: never signal it
             if server is None:
-                spawned = start_server(state, port, registry, idle)
+                spawned = start_server(state, port, registry, idle, read_only)
                 if spawned is None:
                     _say(f'error: the server did not start; see {log}')
                     return 4
-                server = dict(spawned, version=__version__, build=build, registry=registry, log=str(log),
+                server = dict(spawned, version=__version__, build=build, registry=registry, log=str(log), read_only=read_only,
                               started=datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'), opened=[])
             opened = server.get('opened')
             opened = opened if isinstance(opened, list) else []
@@ -368,11 +384,13 @@ def cmd_status(args):
         return 1
     info = {'running': True, 'pid': server['pid'], 'port': server['port'],
             'url': f'http://{HOST}:{server["port"]}/', 'version': answer.get('version'),
-            'build': answer.get('build'), 'started': server.get('started'), 'log': server.get('log')}
+            'build': answer.get('build'), 'started': server.get('started'), 'log': server.get('log'),
+            'read_only': is_read_only(answer)}
     if args.json:
         print(json.dumps(info, sort_keys=True))
     else:
-        print(f'forge-ui: running at {info["url"]} (pid {info["pid"]}, started {info["started"]})')
+        mode = 'read-only' if info['read_only'] else 'read-write'
+        print(f'forge-ui: running at {info["url"]} (pid {info["pid"]}, started {info["started"]}, {mode})')
     return 0
 
 

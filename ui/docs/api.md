@@ -13,14 +13,16 @@ forge_ui/diffs.py       unified diffs: parsing, the ```diff fence of a review pr
 forge_ui/models.py      per-run model facts (attempts and reviews) for the leaderboard, cached per run
 forge_ui/fractal.py     Fractal child tasks under $XDG_STATE_HOME/forge/fractal, read through dir fds
 forge_ui/transcripts.py an agent CLI's `<role>.log` read as one conversation, whichever harness wrote it
-forge_ui/server.py      serves those dicts as JSON plus the static page, 127.0.0.1 only
+forge_ui/server.py      serves those dicts as JSON plus the static page, 127.0.0.1 only; authenticates writes
+forge_ui/control.py     the write routes: each one is a forge CLI call (see Controls)
 forge_ui/static/        the page: index.html, app.js, style.css, graph.js and the scripts they load
 ```
 
 Python 3.9+ standard library only. No third-party packages, no build step. The server makes
 no network requests; the page loads three.js 0.160.0 from cdn.jsdelivr.net only when the 3D
-view is used, and falls back to the 2D graph when it can't. The UI is read-only: nothing in
-forge-ui writes to a run dir, a repo or forge's config.
+view is used, and falls back to the 2D graph when it can't. forge-ui never writes to a run dir,
+a repo or forge's config itself: every change is one call of the forge CLI (see Controls (write
+endpoints) below), and `--read-only` removes even that.
 
 ## What a forge plan dir looks like
 
@@ -55,7 +57,7 @@ written), and the reader must never raise because of one.
 | `tasks/<id>/status` | one word: `RUNNING PASS FAIL ERROR INFRA TIMEOUT UNKNOWN INVALIDATED BLOCKED INTERRUPTED NOCHANGES CONFLICT` |
 | `tasks/<id>/attempt` | the current attempt number |
 | `tasks/<id>/attempts.tsv` | `epoch<TAB>attempt<TAB>status<TAB>infra_class` per line, one per attempt entry; status may also be `MERGED`, `infra_class` may be empty, `-` or missing |
-| `tasks/<id>/escalations.tsv` | `epoch<TAB>attempt<TAB>from_spec<TAB>to_spec` per line |
+| `tasks/<id>/escalations.tsv` | `epoch<TAB>attempt<TAB>from_spec<TAB>to_spec[<TAB>source]` per line; `source` (who decided: `policy`, a human's `retry --dwarf` as `retry`, or a `pin`) is missing on older rows, which read as `policy` |
 | `tasks/<id>/qa.last` | the reviewer's final message; its last line matching `FORGE_VERDICT: PASS` or `FORGE_VERDICT: FAIL` is the verdict |
 | `tasks/<id>/prompt.md`, `approach.md`, `retry_findings.md` | free text |
 | `tasks/<id>/accepted.by` | who accepted a task over a reviewer's FAIL, and why (`key=value` lines in current forge; returned as text) |
@@ -178,7 +180,10 @@ class Catalog:
         fractal(self, key, task_id),
         fractal_node(self, key, task_id, node), fractal_node_diff(self, key, task_id, node) -> dict | None
     def models(self) -> dict            # Models, over every run
+    def locate(self, key) -> tuple[str, str] | None  # (run dir, 'plan' | 'solo'); None for an unknown key
 ```
+
+`Catalog.locate` is how a write finds its run: a client names a run by key and never by path.
 
 `Catalog` re-discovers and re-reads on every call: runs change while they are watched. Files
 that stop changing once written (`metrics.json`, `dataset.json`, `*.resolved` and `qa.last`
@@ -221,12 +226,15 @@ its last 20,000 behind a leading `…`. Their `truncated` lists the field names 
 | `GET /api/runs/<key>/findings` | `200 RunFindings` |
 | `GET /api/runs/<key>/executions/<qa-or-dwarf>/transcript` | `200 ExecutionTranscript` |
 | `GET /api/models` | `200 Models` |
+| `GET /api/health` | `200 {"app": "forge-ui", "version", "build", "pid", "controls": true\|false}`; `controls` is `false` in read-only mode |
+| `GET /api/runs/<key>/controls` | `200` the `forge control show --json` object of a plan run (see Controls); `404` for a solo or unknown run |
+| `POST /api/runs/<key>/controls` | change one control or pin; authenticated, see Controls (write endpoints) |
 | `GET /api/runs/<key>/export?texts=0\|1&paths=0\|1` | `200` the run as one HTML file (see Export), `Content-Disposition: attachment`, `Content-Security-Policy: default-src 'none'; sandbox`; `404` for an unknown run |
 | `GET /api/runs/<key>/tasks/<id>/fractal` | `200 TaskFractal` |
 | `GET /api/runs/<key>/tasks/<id>/fractal/nodes/<node>[/diff]` | `200 FractalNodeDetail`, or with `/diff` a `DiffDetail` of its `candidate.diff`; `<node>` matches `[A-Za-z0-9][A-Za-z0-9_-]{0,100}` |
 | `GET /` | `forge_ui/static/index.html` |
 | `GET /<name>` | that file from `forge_ui/static/` (`.html .js .css .svg` only, no subdirs) |
-| anything else | `404 {"error": "not found"}`; any method but GET or HEAD: `405` |
+| anything else | `404 {"error": "not found"}`; a method a path does not take (PUT, DELETE, OPTIONS, a POST to a read path): `405` with `Allow` |
 
 The lazy endpoints answer `404 {"error": "not found"}` for an unknown run, task,
 execution or review; the diff endpoints also for a `<which>` the run kind has not (`existing`
@@ -386,7 +394,7 @@ Every RunSummary field, plus:
   "attempt": 2,
   "attempts": [{"at": 1760620000.0, "attempt": 1, "status": "FAIL", "infra": null},
                {"at": 1760621000.0, "attempt": 2, "status": "PASS", "infra": null}],
-  "escalations": [{"at": 1760620500.0, "attempt": 2, "from": "luna", "to": "sol"}],
+  "escalations": [{"at": 1760620500.0, "attempt": 2, "from": "luna", "to": "sol", "source": "policy"}],
   "verdict": "PASS",
   "accepted_by": null,
   "explored": true,
@@ -421,6 +429,7 @@ Every RunSummary field, plus:
 - `attempt`: integer from `tasks/<id>/attempt`, else the highest attempt in `attempts`,
   else `null`.
 - `infra` in an attempt: `null` for empty, `-` or missing.
+- `source` in an escalation: the 5th column of `escalations.tsv` (`policy`, `retry` or `pin`, as forge wrote it); `policy` when the row has only 4 columns or the cell is empty.
 - `verdict`: `"PASS"`, `"FAIL"` or `null`, from `qa.last` as described above.
 - `dwarf_tail`: the last 4,000 characters of `dwarf.last` (`tasks/<id>/dwarf.last` for a
   plan task, the run dir's `dwarf.last` for a solo run), or `null` when the file is missing.
@@ -892,9 +901,103 @@ difficulty paths deps model` each), `decomposition_history` (its newest 20, each
   style-src <sha256 of the style>; img-src data: blob:; font-src data:; connect-src 'none'; base-uri 'none';
   form-action 'none'; object-src 'none'`. Inside a script, `</script` and `<!--` are escaped; the
   JSON escapes `<`, `>` and `&`.
+- The write token (below) is never in an export: the file has no controls.
 - In the page, `app.js` reads the snapshot instead of the network, never polls, shows only the
   exported run (any other route goes to it) and a banner with the export's date and what it left
   out; the cloud, the leaderboard and notifications are not there.
+
+## Controls (write endpoints)
+
+forge-ui changes a run only by calling the forge CLI. The server holds no code that writes a run
+dir, a repo or config; a write route builds an argv, runs it, and answers with what the CLI said.
+`forge_ui/control.py` holds the route table (`ROUTES`: method, path pattern, handler), the body
+validation, the call and the exit-code mapping; `server.py` does the authentication and gives
+each authenticated POST to the table, so a new write route is one entry in it.
+
+**The call.** `[<forge root>/forge, ...]`, an argv list with no shell, `stdin` closed, in a process
+group of its own. `<forge root>` is two directories above `forge_ui/` and can be replaced as
+`forge_ui.server.forge_cli`. A call that outlives its timeout (60 s) gets SIGTERM for its whole
+group, SIGKILL 5 s later if anything is left, and is reaped, all before the run's lock is
+released; the answer is `504 {"error": "timeout", "detail": "the operation may have partly
+completed; reload to see the current state"}`.
+
+**Runs are named by key.** The path holds the 12-hex run key and nothing else; the server finds
+the run dir with `Catalog.locate(key)`. A body field never names a path, and a field the route does
+not know is a `400`.
+
+**Authentication.** Each server process makes a random token (`secrets.token_urlsafe(32)`). `GET /`
+(and `/index.html`) carries it as `<meta name="forge-ui-token" content="...">` as the first element
+of `<head>`; the page script reads it and sends it back. The page's CSP is unchanged (its hash
+covers only the import map). Every POST must pass all of these, checked in this order, or it is
+refused before any route or CLI runs:
+
+| Check | Refusal |
+|---|---|
+| `Host` is `127.0.0.1` or `localhost` (any port) | `403 {"error": "forbidden"}` |
+| server is not read-only | `405` (below) |
+| `X-Forge-UI-Token` equals the token (`hmac.compare_digest`) | `403` |
+| `Content-Type` is `application/json` (parameters allowed) | `400` |
+| `Origin`, when sent, is exactly `http://` + the `Host` header | `403` |
+| `Content-Length` present, a number, no `Transfer-Encoding` | `400` |
+| the body is at most 64 KiB | `413 {"error": "payload too large"}` |
+| the body is UTF-8 JSON and an object | `400 {"error": "bad request"}` |
+
+No response carries `Access-Control-*` headers and `OPTIONS` is a `405` (`Allow` lists the methods
+the path takes), so a page on another origin can neither preflight nor read an answer. The token is
+not in `/export`, in a log line or in any JSON response.
+
+**Read-only mode.** `python3 -m forge_ui --read-only`, or `FORGE_UI_READONLY=1` (also `true`, `yes`,
+`on`). Every POST (after the Host check) is `405 {"error": "method not allowed"}` with
+`Allow: GET, HEAD`, the page has no token, and `/api/health` says `"controls": false`
+(`true` otherwise). Reads, `GET .../controls` included, still work. `forge ui open` passes the mode
+to the server it starts, records it in `server.json` (`read_only`) and never reuses a running server
+of the other mode: it replaces it as it does one running other code. `forge ui status` shows the
+mode (`read_only` in its JSON).
+
+**Serialization.** One write per run key at a time. A second write to a run whose write is still
+running is `409 {"error": "busy"}`, without reaching the CLI; other runs are not held up.
+
+**Errors.** For a CLI that exits non-zero the answer is `{"error", "detail", "result"?}`: `detail`
+is the last line of its stderr (at most 300 characters; the rest of stderr is not echoed) and
+`result` the object its stdout holds, when that parses as one.
+
+| CLI exit | Status | `error` |
+|---|---|---|
+| 0 | `200` | the CLI's stdout JSON object, as it is |
+| 2 (invalid input) | `400` | `invalid` |
+| 3 (refused: not live, MERGED, a Fractal plan, a pin that fails doctor, the control lock busy) | `409` | `refused` |
+| 4 (a failure the CLI reported) | `500` | `failed` |
+| anything else, a signal, a missing CLI, or a 0 with no JSON object | `502` | `bad gateway` |
+| timeout | `504` | `timeout` |
+
+Unknown run keys, solo runs (they have no controls) and runs the catalog does not hold are
+`404 {"error": "not found"}`. Every write that reaches a route logs
+`forge-ui: control <route> <run key> -> <status>` unless the server runs with `--quiet`.
+
+### `GET /api/runs/<key>/controls`
+
+`forge control show <plan dir> --json`: `200` with its object (`plan`, `run_id`, `live`, `fractal`,
+`run` (the plan-wide controls), `tasks` (per task: `status`, `dwarf`, `qa`, `qa_threshold`,
+`retry_budget`, `retries_used`, `pin`, `escalation_stop`, `escalation_next`) and `log`). No token
+is needed to read it.
+
+### `POST /api/runs/<key>/controls`
+
+One of these bodies. Every string is non-empty, at most 256 characters, has no control character
+and does not start with `-`; `400 {"error": "invalid", "detail": ...}` otherwise, and for a wrong
+shape or type, before the CLI is called. Whether a key exists, a value is in range, a task is
+known or a spec runs is for the CLI to say (its `400` or `409` comes back as above).
+
+| Body | CLI call (after `forge`) |
+|---|---|
+| `{"action": "set", "key": "qa-threshold", "value": "P2"}` | `control set <dir> qa-threshold P2 --actor ui --json` |
+| `{"action": "set", "key": "retry-budget", "value": "inherit", "task": "reader"}` | `control set <dir> retry-budget inherit --task reader --actor ui --json` |
+| `{"action": "pin", "task": "graph", "spec": "sol:high:codex"}` | `control pin <dir> graph sol:high:codex --actor ui --json` |
+| `{"action": "unpin", "task": "graph"}` | `control unpin <dir> graph --actor ui --json` |
+
+`value` is always a string. `task` is optional on `set`, and only for the keys the CLI allows it
+for. A success is `200 {"ok": true, "changed": {...}, "applies": "...", "controls": {...}}`, where
+`controls` is the `GET` object after the change.
 
 ## Status vocabulary for the page and the graph
 

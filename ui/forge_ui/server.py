@@ -1,26 +1,38 @@
-"""Local HTTP server: the JSON API of docs/api.md and the static page. Read-only."""
+"""Local HTTP server: the JSON API of docs/api.md and the static page.
+
+Reads are open to the local page. Writes (POST) pass the checks of `_write_response` and then run one
+forge CLI call through control.py; the server itself never writes a run dir, a repo or config.
+"""
 from __future__ import annotations
 
 import base64
 from contextlib import contextmanager
 import hashlib
+import hmac
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
 from pathlib import Path
 import re
+import secrets
 import sys
 import threading
 import time
 import urllib.parse
 
-from forge_ui import __version__, build_id
+from forge_ui import __version__, build_id, control
 
 
 STATIC_DIR = Path(__file__).resolve().parent / 'static'
 # The build of the code this process loaded. Files edited later must not change it: the launcher
 # compares /api/health with its own build_id() to find a server still running old code.
 BUILD = build_id()
+# The forge command every write calls. A test points it at a fake that records its argv.
+forge_cli = Path(__file__).resolve().parents[2] / 'forge'
+MAX_BODY = 64 * 1024
+DRAIN_WAIT = 1.0
+DRAIN_MAX = 1024 * 1024  # an unread request body is read (to here) before a refusal, so the client sees the answer
+TOKEN_HEADER = 'X-Forge-UI-Token'
 
 _RUN_PATH = re.compile(r'/api/runs/([0-9a-f]{12})')
 _TASK_PATH = re.compile(r'/api/runs/([0-9a-f]{12})/tasks/([^/]+)')
@@ -50,6 +62,8 @@ _CSP = ("default-src 'self'; style-src 'self'; script-src 'self'; img-src 'self'
 _PAGE_CSP = ("default-src 'self'; style-src 'self'; script-src 'self' https://cdn.jsdelivr.net/npm/three@0.160.0/{}; "
              "img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; object-src 'none'")
 _IMPORTMAP = re.compile(r'<script type="importmap">(.*?)</script>', re.DOTALL | re.IGNORECASE)
+_HEAD_TAG = re.compile(rb'<head(?:\s[^>]*)?>', re.IGNORECASE)
+_DOCTYPE = re.compile(rb'<!doctype[^>]*>', re.IGNORECASE)
 
 
 def _log(message):
@@ -63,6 +77,15 @@ def page_csp(body):
     hashes = ''.join(" 'sha256-%s'" % base64.b64encode(hashlib.sha256(script.encode('utf-8')).digest()).decode('ascii')
                      for script in _IMPORTMAP.findall(text))
     return _PAGE_CSP.format(hashes)
+
+
+def with_token(body, token):
+    """index.html with `<meta name="forge-ui-token">` as the first thing in its <head>."""
+    meta = b'<meta name="forge-ui-token" content="%s">' % token.encode('ascii')
+    # Without a <head> tag the meta goes after the doctype (before it the page would render in quirks mode).
+    found = _HEAD_TAG.search(body) or _DOCTYPE.search(body)
+    end = found.end() if found else 0
+    return body[:end] + meta + body[end:]
 
 
 def _task_id(segment):
@@ -140,6 +163,14 @@ class Handler(BaseHTTPRequestHandler):
     def do_HEAD(self):
         self._serve(head=True)
 
+    def do_POST(self):
+        with self._active():
+            self._send(*self._write_response())
+
+    def do_OPTIONS(self):
+        # No CORS: a preflight is never answered, so no other origin can learn that a write is allowed.
+        self._method_not_allowed()
+
     def __getattr__(self, name):
         # Every other method (POST, PUT, a made-up verb, ...) gets a 405, not the 501 of the base class.
         if name.startswith('do_'):
@@ -189,7 +220,10 @@ class Handler(BaseHTTPRequestHandler):
         if not self._host_allowed():
             self._send(*self._json(403, {'error': 'forbidden'}))
             return
-        self._send(*self._json(405, {'error': 'method not allowed'}, {'Allow': 'GET, HEAD'}))
+        allow = 'GET, HEAD'
+        if not self.server.read_only and control.has_route('POST', self.path.partition('?')[0]):
+            allow += ', POST'
+        self._send(*self._json(405, {'error': 'method not allowed'}, {'Allow': allow}))
 
     @contextmanager
     def _active(self):
@@ -231,6 +265,7 @@ class Handler(BaseHTTPRequestHandler):
                 'version': __version__,
                 'build': BUILD,
                 'pid': os.getpid(),
+                'controls': not self.server.read_only,
             })
         catalog = self.server.catalog
         match = _EXPORT_PATH.fullmatch(path)
@@ -239,6 +274,9 @@ class Handler(BaseHTTPRequestHandler):
         value = api_get(catalog, path)
         if value is not NO_ROUTE:
             return self._found(value)
+        routed = control.dispatch(self.server, forge_cli, 'GET', path, None)
+        if routed:
+            return self._json(routed[0], routed[1])
         if path == '/':
             return self._static('index.html')
         match = _STATIC_PATH.fullmatch(path)
@@ -260,7 +298,87 @@ class Handler(BaseHTTPRequestHandler):
         if body is None:
             return self._json(404, {'error': 'not found'})
         kind = name.rsplit('.', 1)[1]
+        if name == 'index.html' and not self.server.read_only:
+            body = with_token(body, self.server.token)
         return 200, _TYPES[kind], body, {'Content-Security-Policy': page_csp(body)} if kind == 'html' else {}
+
+    # ------------------------------------------------------------------------------ writes
+
+    def _drain(self):
+        """Read (and drop) the request body that is already on its way, up to DRAIN_MAX, so a refusal is not
+        lost to a connection reset. A client that claims more than it sends costs DRAIN_WAIT, not the timeout."""
+        self.close_connection = True
+        try:
+            left = min(int(self.headers.get('Content-Length') or 0), DRAIN_MAX)
+            self.connection.settimeout(DRAIN_WAIT)
+            while left > 0:
+                chunk = self.rfile.read1(min(left, 65536))
+                if not chunk:
+                    break
+                left -= len(chunk)
+        except (OSError, ValueError):
+            pass
+
+    def _refuse(self, status, error):
+        self._drain()
+        return self._json(status, {'error': error})
+
+    def _body(self):
+        """(object, None) for a valid JSON object body, else (None, refusal response)."""
+        if self.headers.get('Transfer-Encoding') is not None:
+            return None, self._refuse(400, 'bad request')
+        length = (self.headers.get('Content-Length') or '').strip()
+        if not length.isascii() or not length.isdigit():
+            return None, self._refuse(400, 'bad request')
+        if int(length) > MAX_BODY:
+            return None, self._refuse(413, 'payload too large')
+        try:
+            raw = self.rfile.read(int(length))
+            if len(raw) != int(length):
+                raise ValueError('short body')
+            body = json.loads(raw.decode('utf-8'))
+        except (OSError, ValueError, RecursionError):  # not UTF-8, not JSON, or the client hung up
+            self.close_connection = True
+            return None, self._json(400, {'error': 'bad request'})
+        if not isinstance(body, dict):
+            return None, self._json(400, {'error': 'bad request'})
+        return body, None
+
+    def _write_response(self):
+        """The answer to a POST. A request passes every check, in this order, before any route sees it:
+        the Host, read-only mode (405), the token, the content type, the Origin and the body."""
+        server = self.server
+        path = self.path.partition('?')[0]
+        if not self._host_allowed():
+            return self._refuse(403, 'forbidden')
+        if server.read_only:
+            self._drain()
+            return self._json(405, {'error': 'method not allowed'}, {'Allow': 'GET, HEAD'})
+        # compare_digest takes bytes here: a non-ASCII header value must not raise.
+        sent = (self.headers.get(TOKEN_HEADER) or '').encode('utf-8', 'surrogateescape')
+        if not hmac.compare_digest(sent, server.token.encode('ascii')):
+            return self._refuse(403, 'forbidden')
+        kind = (self.headers.get('Content-Type') or '').partition(';')[0].strip().lower()
+        if kind != 'application/json':
+            return self._refuse(400, 'content type must be application/json')
+        origin = self.headers.get('Origin')
+        if origin is not None and origin != 'http://' + (self.headers.get('Host') or ''):
+            return self._refuse(403, 'forbidden')
+        body, refusal = self._body()
+        if refusal:
+            return refusal
+        try:
+            routed = control.dispatch(server, forge_cli, 'POST', path, body)
+        except Exception as exc:  # one bad request must not kill the server
+            detail = ' '.join(str(exc).split())
+            _log(f'internal error on POST {path}: {type(exc).__name__}: {detail}')
+            return self._json(500, {'error': 'internal error'})
+        if routed is None:
+            return self._json(405, {'error': 'method not allowed'}, {'Allow': 'GET, HEAD'})
+        status, obj, route, key = routed
+        if not self._quiet():
+            _log(f'control {route} {key} -> {status}')
+        return self._json(status, obj)
 
     def _export(self, catalog, key):
         # One run as one HTML file, to download: never rendered from this origin (sandbox, no sources).
@@ -301,9 +419,12 @@ class Handler(BaseHTTPRequestHandler):
             pass  # the client hung up (BrokenPipeError, ConnectionResetError, ...): nothing to tell it
 
 
-def make_server(catalog, host='127.0.0.1', port=0, static_dir=None, quiet=False):
+def make_server(catalog, host='127.0.0.1', port=0, static_dir=None, quiet=False, read_only=False):
     server = ThreadingHTTPServer((host, port), Handler)
     server.catalog = catalog
+    server.read_only = read_only
+    server.token = secrets.token_urlsafe(32)  # per process; only the page this process serves carries it
+    server.run_locks = control.RunLocks()
     server.static_dir = STATIC_DIR if static_dir is None else static_dir
     server.quiet = quiet
     server.last_request = time.monotonic()  # stamped when a request arrives and when it ends

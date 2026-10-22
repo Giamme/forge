@@ -157,11 +157,15 @@ class ServerTestCase(TempCase):
         server.server_close()
         thread.join()
 
-    def request(self, method, path, server=None, headers=None):
+    def write_headers(self, body, server=None):
+        return {'X-Forge-UI-Token': (server or self.server).token, 'Content-Type': 'application/json',
+                'Content-Length': str(len(body))}
+
+    def request(self, method, path, server=None, headers=None, body=None):
         port = (server or self.server).server_address[1]
         conn = http.client.HTTPConnection('127.0.0.1', port, timeout=10)
         try:
-            conn.request(method, path, headers=headers or {})
+            conn.request(method, path, body=body, headers=headers or {})
             response = conn.getresponse()
             headers = {name.lower(): value for name, value in response.getheaders()}
             return response.status, headers, response.read()
@@ -190,6 +194,7 @@ class RoutesTests(ServerTestCase):
             'version': '0.4.0',
             'build': build_id(),
             'pid': os.getpid(),
+            'controls': True,
         })
         # The build is that of the code this process loaded, not of the files on disk now.
         with patch('forge_ui.server.build_id', return_value='f' * 64):
@@ -226,9 +231,11 @@ class RoutesTests(ServerTestCase):
         self.assertEqual(catalog.gets, ['0' * 12])
 
     def test_index_and_static_files_with_content_types(self):
+        paged = INDEX.replace(b'<!doctype html>', b'<!doctype html><meta name="forge-ui-token" content="%s">'
+                              % self.server.token.encode())  # the token goes into the page only
         cases = [
-            ('/', 'text/html; charset=utf-8', INDEX),
-            ('/index.html', 'text/html; charset=utf-8', INDEX),
+            ('/', 'text/html; charset=utf-8', paged),
+            ('/index.html', 'text/html; charset=utf-8', paged),
             ('/app.js', 'text/javascript; charset=utf-8', APP),
             ('/app.js?v=2', 'text/javascript; charset=utf-8', APP),
             ('/style.css', 'text/css; charset=utf-8', STYLE),
@@ -273,11 +280,17 @@ class RoutesTests(ServerTestCase):
             self.assertEqual(body, b'', path)
 
     def test_other_methods_are_405_with_allow(self):
-        for method in ['POST', 'PUT', 'DELETE', 'BOGUS']:
+        # POST is a write: without the token it is a 403 (test_control_api); with it, a read-only route is a 405.
+        for method in ['PUT', 'DELETE', 'PATCH', 'OPTIONS', 'BOGUS']:
             status, headers, body = self.request(method, '/api/runs')
             self.assertEqual(status, 405, method)
             self.assertEqual(headers['allow'], 'GET, HEAD')
             self.assertEqual(json.loads(body), {'error': 'method not allowed'})
+            self.assertFalse([name for name in headers if name.startswith('access-control-')], method)
+        status, headers, body = self.request('POST', '/api/runs', headers=self.write_headers(b'{}'), body=b'{}')
+        self.assertEqual((status, headers['allow'], json.loads(body)), (405, 'GET, HEAD', {'error': 'method not allowed'}))
+        status, headers, _ = self.request('PUT', f'/api/runs/{reader.run_key(PLAN)}/controls')
+        self.assertEqual((status, headers['allow']), (405, 'GET, HEAD, POST'))
 
     def test_malformed_request_gets_a_json_400(self):
         with socket.create_connection(('127.0.0.1', self.server.server_address[1]), timeout=10) as sock:

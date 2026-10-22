@@ -101,7 +101,7 @@ class ExecutionTests(FixtureCase):
     def test_attempts_match_rows_and_survive_escalation(self):
         data = detail(self.plan)
         task = self.task(data, 'reader')
-        self.assertEqual(task['escalations'], [{'at': T0 + 615, 'attempt': 1, 'from': 'luna', 'to': 'sol:xhigh'}])
+        self.assertEqual(task['escalations'], [{'at': T0 + 615, 'attempt': 1, 'from': 'luna', 'to': 'sol:xhigh', 'source': 'policy'}])
         self.assertEqual([item['attempt'] for item in task['executions']], [1, 1, 1, 2, 2, 2])
         self.assertEqual(self.execs(data, 'reader')[F.READER_DWARF1]['model']['spec'], 'luna')
         # Rows win over dataset.json: here the dataset disagrees and is ignored.
