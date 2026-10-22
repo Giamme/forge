@@ -1,12 +1,15 @@
 """`forge issues`: leftover review findings become GitHub issues through plain `gh` (a fake one here)."""
 import dataset_isolation  # noqa: F401  keeps forge's dataset and config out of the developer's home
+import importlib.util
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
 import textwrap
+import time
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -40,6 +43,54 @@ FAKE_GH = textwrap.dedent('''\
         save(); sys.exit('fake gh: unexpected ' + ' '.join(args))
     ''')
 
+# A `gh` for two processes at once: every call is appended to a log, and `issue create` is slow (so a second
+# filer that skipped the lock would look up the issues before the first one lands) and adds to a shared state.
+RACE_GH = textwrap.dedent('''\
+    #!/usr/bin/env python3
+    import fcntl, json, os, sys, time
+    state, log = os.environ['RACE_GH_STATE'], os.environ['RACE_GH_LOG']
+    args = sys.argv[1:]
+    with open(log, 'a') as fh:
+        fh.write(' '.join(args[:2]) + '\\n')
+    def issues():
+        with open(state) as fh:
+            return json.load(fh)
+    if args[:2] == ['issue', 'list']:
+        print(json.dumps(issues()))
+    elif args[:2] == ['issue', 'create']:
+        time.sleep(1)
+        with open(state + '.lock', 'w') as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            found = issues()
+            url = 'https://github.com/o/r/issues/%d' % (len(found) + 1)
+            with open(args[args.index('--body-file') + 1]) as body:
+                found.append({'number': len(found) + 1, 'url': url, 'state': 'OPEN',
+                              'title': args[args.index('--title') + 1], 'body': body.read()})
+            with open(state + '.tmp', 'w') as fh:
+                json.dump(found, fh)
+            os.replace(state + '.tmp', state)
+        print(url)
+    elif args[:2] == ['label', 'list']:
+        print('[]')
+    else:
+        sys.exit(1)
+    ''')
+
+# Holds a repository lock until its stdin closes: the "another process is filing" of the busy-lock test.
+LOCK_HOLDER = textwrap.dedent('''\
+    import fcntl, os, sys
+    fcntl.flock(os.open(sys.argv[1], os.O_RDWR | os.O_CREAT, 0o600), fcntl.LOCK_EX)
+    print('locked', flush=True)
+    sys.stdin.read()
+    ''')
+
+
+def repo_key(path):
+    spec = importlib.util.spec_from_file_location('forge_registry_under_test', ROOT / 'scripts/forge_registry.py')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.repo_key(path)
+
 
 class ForgeIssuesTests(unittest.TestCase):
     def setUp(self):
@@ -52,7 +103,9 @@ class ForgeIssuesTests(unittest.TestCase):
         self.repo = self.dir / 'repo'; self.repo.mkdir()
         subprocess.run(['git', 'init', '-q', str(self.repo)], check=True)
         subprocess.run(['git', '-C', str(self.repo), 'remote', 'add', 'origin', 'git@github.com:o/r.git'], check=True)
-        self.env = dict(os.environ, PATH=f'{bin_dir}:{os.environ["PATH"]}', FAKE_GH_STATE=str(self.state))
+        self.state_home = self.dir / 'state'
+        self.env = dict(os.environ, PATH=f'{bin_dir}:{os.environ["PATH"]}', FAKE_GH_STATE=str(self.state),
+                        XDG_STATE_HOME=str(self.state_home))
         self.plan = self.dir / 'plan'
         (self.plan / 'tasks').mkdir(parents=True)
         (self.plan / 'repo').write_text(str(self.repo) + '\n')
@@ -194,9 +247,9 @@ class ForgeIssuesTests(unittest.TestCase):
         self.assertEqual([f['severity'] for f in out['findings']], ['P2', 'P3', 'P3'])
         first = out['findings'][0]
         self.assertEqual(sorted(first), sorted(['fp', 'severity', 'confidence', 'origin', 'plan', 'plan_dir', 'task',
-                                               'file', 'summary', 'text', 'reviewer', 'commit', 'filed']))
-        self.assertEqual((first['origin'], first['plan'], first['task'], first['filed']),
-                         ('tolerated', 'plan', 'import', None))
+                                               'file', 'summary', 'text', 'reviewer', 'commit', 'filed', 'dismissed']))
+        self.assertEqual((first['origin'], first['plan'], first['task'], first['filed'], first['dismissed']),
+                         ('tolerated', 'plan', 'import', None, None))
         self.assertTrue(all(d['same_title'] is None for d in out['drafts']))
         # the commit is in no remote-tracking ref: unpublished wording, still no gh
         self.assertIn('(commit not pushed to GitHub yet)', out['drafts'][0]['body'])
@@ -327,6 +380,182 @@ class ForgeIssuesTests(unittest.TestCase):
         # a plan dir naming the repo works too
         again = self.run_issues(str(self.plan), '--all-runs', '--offline', env=env)
         self.assertEqual(len(again['findings']), 2)
+
+
+    # ------------------------------------------------------------------------ dismissals and the repository lock
+
+    def findings_dir(self):
+        return self.state_home / 'forge' / 'findings'
+
+    def store_path(self):
+        return self.findings_dir() / f'{repo_key(self.repo)}.json'
+
+    def lock_path(self):
+        return self.findings_dir() / f'{repo_key(self.repo)}.lock'
+
+    def fps(self):
+        return [f['fp'] for f in self.run_issues(str(self.plan), '--offline')['findings']]
+
+    def draft_fps(self, out):
+        return [fp for d in out['drafts'] for fp in d['fingerprints']]
+
+    def hold_lock(self):
+        """A separate process holding the repository lock, released by closing its stdin."""
+        self.findings_dir().mkdir(parents=True, exist_ok=True)
+        holder = subprocess.Popen([sys.executable, '-c', LOCK_HOLDER, str(self.lock_path())],
+                                  stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+        self.addCleanup(self.release_lock, holder)
+        self.assertEqual(holder.stdout.readline().strip(), 'locked')
+        return holder
+
+    def release_lock(self, holder):
+        holder.stdin.close(); holder.wait(); holder.stdout.close()
+
+    def test_dismiss_persists_and_the_finding_leaves_the_drafts(self):
+        env = self.offline_env()  # a dismissal needs no network: this gh records any call and fails
+        fp = self.fps()[0]
+        out = self.run_issues(str(self.plan), '--dismiss', fp, '--reason', 'x', env=env)
+        self.assertEqual(out, {'ok': True, 'dismissed': [fp], 'undismissed': []})
+        self.assertFalse((self.dir / 'gh-called').exists())
+        stored = json.loads(self.store_path().read_text())
+        self.assertEqual(list(stored), [fp])
+        self.assertEqual(stored[fp]['reason'], 'x')
+        self.assertIsInstance(stored[fp]['at'], int)
+        listed = self.run_issues(str(self.plan), '--offline')
+        self.assertNotIn(fp, self.draft_fps(listed))
+        marks = {f['fp']: f['dismissed'] for f in listed['findings']}
+        self.assertEqual(marks.pop(fp), {'at': stored[fp]['at'], 'reason': 'x'})
+        self.assertEqual(list(marks.values()), [None])
+        self.assertEqual(listed['summary']['dismissed'], 1)
+        # --include-dismissed drafts it again, and it stays marked
+        everything = self.run_issues(str(self.plan), '--offline', '--include-dismissed')
+        self.assertIn(fp, self.draft_fps(everything))
+        self.assertEqual({f['fp']: f['dismissed'] is not None for f in everything['findings']}[fp], True)
+        # filing leaves it out too
+        applied = self.run_issues(str(self.plan), '--apply')
+        self.assertEqual(len([c for c in applied['created'] if 'url' in c]), 1)
+        self.assertEqual(len(self.created()), 1)
+        # --undismiss restores it
+        out = self.run_issues(str(self.plan), '--undismiss', fp)
+        self.assertEqual(out, {'ok': True, 'dismissed': [], 'undismissed': [fp]})
+        self.assertEqual(json.loads(self.store_path().read_text()), {})
+        restored = self.run_issues(str(self.plan), '--offline')
+        self.assertIn(fp, self.draft_fps(restored))
+        self.assertEqual([f['dismissed'] for f in restored['findings']], [None, None])
+
+    def test_dismiss_takes_repeated_comma_separated_and_unknown_fingerprints(self):
+        a, b = self.fps()
+        ghost = '0' * 12
+        out = self.run_issues(str(self.plan), '--dismiss', f'{a},{ghost}', '--dismiss', b, '--dismiss', a)
+        self.assertEqual(out['dismissed'], [a, ghost, b])
+        self.assertEqual(sorted(json.loads(self.store_path().read_text())), sorted([a, b, ghost]))
+        out = self.run_issues(str(self.plan), '--undismiss', ghost, '--undismiss', a)
+        self.assertEqual(out, {'ok': True, 'dismissed': [], 'undismissed': [ghost, a]})
+        self.assertEqual(list(json.loads(self.store_path().read_text())), [b])
+        # dismissing again without a reason keeps the earlier one; with a reason it replaces it
+        self.run_issues(str(self.plan), '--dismiss', b, '--reason', 'first')
+        self.run_issues(str(self.plan), '--dismiss', b)
+        self.assertEqual(json.loads(self.store_path().read_text())[b]['reason'], 'first')
+        self.run_issues(str(self.plan), '--dismiss', b, '--reason', 'x' * 500)
+        self.assertEqual(json.loads(self.store_path().read_text())[b]['reason'], 'x' * 500)
+
+    def test_dismiss_rejects_bad_input_before_touching_the_store(self):
+        a = self.fps()[0]
+        for bad in (['--dismiss', 'xyz'], ['--undismiss', 'A' * 12], ['--dismiss', f'{a},'],
+                    ['--dismiss', a, '--reason', 'x' * 501], ['--undismiss', a, '--reason', 'x'],
+                    ['--reason', 'x'], ['--dismiss', a, '--undismiss', a], ['--dismiss', a, '--apply']):
+            self.run_issues(str(self.plan), *bad, code=2)
+        self.assertFalse(self.findings_dir().exists())
+
+    def test_the_store_belongs_to_the_repository_the_run_resolves_to(self):
+        fp = self.fps()[0]
+        # --repo changes the slug the issues go to, not the store the marks live in
+        self.run_issues(str(self.plan), '--dismiss', fp, '--repo', 'other/name')
+        # --all-runs: the repository itself, or a plan dir naming it
+        self.run_issues(str(self.repo), '--all-runs', '--dismiss', fp)
+        self.run_issues(str(self.plan), '--all-runs', '--dismiss', fp)
+        self.assertEqual([p.name for p in self.findings_dir().glob('*.json')], [f'{repo_key(self.repo)}.json'])
+        self.assertEqual(list(json.loads(self.store_path().read_text())), [fp])
+
+    def test_an_empty_xdg_state_home_means_the_default(self):
+        home = self.dir / 'home'; home.mkdir()
+        env = dict(self.env, XDG_STATE_HOME='', HOME=str(home))
+        fp = self.fps()[0]
+        self.run_issues(str(self.plan), '--dismiss', fp, env=env)
+        self.assertTrue((home / '.local/state/forge/findings' / f'{repo_key(self.repo)}.json').is_file())
+
+    def test_a_symlinked_or_special_store_is_refused(self):
+        fp = self.fps()[0]
+        self.findings_dir().mkdir(parents=True)
+        target = self.dir / 'elsewhere.json'; target.write_text('{}')
+        store = self.store_path()
+        store.symlink_to(target)
+        for argv in (['--dismiss', fp], ['--undismiss', fp], ['--offline']):
+            self.assertIn('regular file', self.run_issues(str(self.plan), *argv, code=2))
+        self.assertEqual(target.read_text(), '{}')
+        store.unlink(); store.mkdir()
+        self.assertIn('regular file', self.run_issues(str(self.plan), '--dismiss', fp, code=2))
+        store.rmdir()
+        store.write_text('[]')
+        self.assertIn('not a dismissal store', self.run_issues(str(self.plan), '--dismiss', fp, code=2))
+        self.assertEqual(store.read_text(), '[]')
+        # a symlinked lock file is refused too, before anything is looked up
+        store.unlink(); self.lock_path().unlink()
+        self.lock_path().symlink_to(target)
+        self.assertIn('lock', self.run_issues(str(self.plan), '--apply', code=2))
+        self.assertIn('lock', self.run_issues(str(self.plan), '--dismiss', fp, code=2))
+        self.assertEqual(self.gh_state()['calls'], [])
+        self.assertEqual(target.read_text(), '{}')
+        # a symlinked directory is refused for the store and for the lock around a filing
+        shutil.rmtree(self.findings_dir())
+        real = self.dir / 'real'; real.mkdir()
+        self.findings_dir().symlink_to(real)
+        self.assertIn('not a symlink', self.run_issues(str(self.plan), '--dismiss', fp, code=2))
+        self.assertIn('not a symlink', self.run_issues(str(self.plan), '--apply', code=2))
+        self.assertEqual(list(real.iterdir()), [])
+        self.assertEqual(self.created(), [])
+
+    def test_a_busy_repository_lock_stops_apply_and_dismiss_with_exit_3(self):
+        fp = self.fps()[0]
+        holder = self.hold_lock()
+        started = time.monotonic()
+        procs = [subprocess.Popen([sys.executable, str(SCRIPT), str(self.plan), *argv, '--json'],
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=self.env)
+                 for argv in (['--apply'], ['--dismiss', fp])]
+        results = [p.communicate(timeout=60) for p in procs]
+        elapsed = time.monotonic() - started
+        for proc, (out, err) in zip(procs, results):
+            self.assertEqual(proc.returncode, 3, err)
+            self.assertEqual(out, '')
+            self.assertEqual(err.strip(), 'forge issues: busy: another filing or dismissal for o/r is in progress')
+        self.assertTrue(9 <= elapsed < 20, f'a busy lock is retried for about 10 s, took {elapsed:.1f}')
+        # not even the lookup ran, and the dismissal was not stored
+        self.assertEqual(self.gh_state()['calls'], [])
+        self.assertFalse(self.store_path().exists())
+        # listing takes no lock
+        self.assertEqual(self.forge_issues(str(self.plan))['summary']['drafts'], 2)
+        self.release_lock(holder)
+        self.run_issues(str(self.plan), '--dismiss', fp)
+        self.assertEqual(len([c for c in self.run_issues(str(self.plan), '--apply')['created'] if 'url' in c]), 1)
+
+    def test_concurrent_apply_files_the_finding_once(self):
+        bin_dir = self.dir / 'racebin'; bin_dir.mkdir()
+        (bin_dir / 'gh').write_text(RACE_GH); (bin_dir / 'gh').chmod(0o755)
+        state, log = self.dir / 'race.json', self.dir / 'race.log'
+        state.write_text('[]')
+        env = dict(self.env, PATH=f'{bin_dir}:{os.environ["PATH"]}', RACE_GH_STATE=str(state), RACE_GH_LOG=str(log))
+        procs = [subprocess.Popen([sys.executable, str(SCRIPT), str(self.plan), '--min-severity', 'P2', '--apply',
+                                   '--json'], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
+                 for _ in range(2)]
+        results = [p.communicate(timeout=60) for p in procs]
+        for proc, (_, err) in zip(procs, results):
+            self.assertEqual(proc.returncode, 0, err)
+        self.assertEqual(log.read_text().split('\n').count('issue create'), 1)
+        self.assertEqual(len(json.loads(state.read_text())), 1)
+        outs = [json.loads(out) for out, _ in results]
+        # one process created it; the other's lookup, made after the first one's create, found it
+        self.assertEqual(sorted((o['summary']['already_filed'], len([c for c in o['created'] if 'url' in c]))
+                                for o in outs), [(0, 1), (1, 0)])
 
 
 if __name__ == '__main__':
