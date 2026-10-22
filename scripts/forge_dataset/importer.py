@@ -17,6 +17,7 @@ import json
 import os
 import re
 import shutil
+import sqlite3
 import stat
 import tarfile
 import tempfile
@@ -24,8 +25,8 @@ import time
 from pathlib import Path
 from types import SimpleNamespace
 
-from . import (DatasetError, config_runs_dir, connect, data_home, enabled, put_blob, put_file, record, record_strict,
-               repo_id, sha256, watch_blob_failures)
+from . import (BUSY_TIMEOUT_S, DatasetError, config_runs_dir, data_home, dataset_dir, enabled,
+               location_refused, put_blob, put_file, record, record_strict, repo_id, sha256, watch_blob_failures)
 from . import harvest as h
 from . import capture
 
@@ -283,7 +284,7 @@ def import_tree(top: Path, mapper: Mapper, args, counts: dict) -> list[tuple[lis
         prov = dict(run=uid, run_id=h.first_line(plan / 'run_id') or plan.name)
         bases = [h.first_line(t / 'base_ref') for t in sorted((plan / 'tasks').glob('*')) if (t / 'base_ref').exists()]
         events = [h.plan_event(plan, prov, src='import', head=bases[0] if bases else None)]
-        events += intervention_events(plan, prov, counts)
+        events += intervention_events(plan, prov, counts, repo)
         # A plan that has a dataset.uid was captured live, merges and final reviews included,
         # so synthesizing them again would only add a second, differently keyed copy.
         live = (plan / 'dataset.uid').exists()
@@ -323,19 +324,26 @@ def _regular_text(path: Path) -> str | None:
         return None
 
 
-def _stored_interventions(uid: str | None) -> dict:
+def _stored_interventions(uid: str | None, repo: str | None) -> dict:
     """What the store already holds for a run's escalations and control changes, by rid.
 
     Released forge captured these live under a time-based rid, which cannot be recomputed.
     A row like that is the same fact the run dir still lists, so the importer must not add
     it a second time under the deterministic rid. {rid: (name, task, fields)}; empty when
     the store cannot be read (a strict write then fails on its own).
+
+    Read only, and only a store that already exists: connect() would create the store,
+    which a dry run must not do, nor an import whose store location_refused() rules out.
     """
-    if not uid or not enabled():
+    from . import DRY
+    if not uid or not enabled() or DRY or location_refused(repo):
+        return {}
+    path = dataset_dir() / 'dataset.sqlite'
+    if not path.is_file():
         return {}
     found = {}
     try:
-        db = connect()
+        db = sqlite3.connect(path.resolve().as_uri() + '?mode=ro', uri=True, timeout=BUSY_TIMEOUT_S)
         try:
             for name in h.INTERVENTIONS:
                 for rid, task, data in db.execute(
@@ -358,7 +366,7 @@ def _normalized(name: str, values: dict) -> dict:
     return data
 
 
-def intervention_events(plan: Path, prov: dict, counts: dict) -> list[dict]:
+def intervention_events(plan: Path, prov: dict, counts: dict, repo: str | None = None) -> list[dict]:
     """The escalations and control changes a plan dir recorded, as the events live capture emits.
 
     Same rid as capture.point (harvest.intervention_rid), so a change seen live and then
@@ -367,7 +375,7 @@ def intervention_events(plan: Path, prov: dict, counts: dict) -> list[dict]:
     """
     uid, run_id = prov['run'], prov['run_id']
     events = []
-    stored = _stored_interventions(uid)
+    stored = _stored_interventions(uid, repo)
 
     def add(name, values, task, ts):
         data = dict(h.intervention_data(name, values), name=name, blobs={})

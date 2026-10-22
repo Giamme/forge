@@ -392,6 +392,28 @@ class InterventionTests(PreserveCase):
         importer.import_run(run)
         self.assertEqual(len(self.named('escalation')), 2)
 
+    def import_cli(self, run, dry_run):
+        args = type('A', (), dict(paths=[str(run)], registry=False, fractal=False, ledger=[],
+                                  include_temp=True, dry_run=dry_run))()
+        self.addCleanup(setattr, store, 'DRY', False)
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            importer.main(args)
+
+    def test_a_dry_run_import_creates_no_store(self):
+        run = self.run_with_interventions(time.time())
+        self.import_cli(run, dry_run=True)
+        self.assertFalse((store.dataset_dir() / 'dataset.sqlite').exists())
+
+    def test_an_import_whose_store_would_sit_in_the_repo_creates_no_store_there(self):
+        repo = self.root / 'repo'
+        (repo / '.git').mkdir(parents=True)
+        self.use_store('repo/data')
+        run = self.run_with_interventions(time.time())
+        (run / 'repo').write_text('%s\n' % repo)
+        self.assertIsNotNone(store.location_refused(str(repo)))
+        self.import_cli(run, dry_run=False)
+        self.assertFalse((store.dataset_dir() / 'dataset.sqlite').exists())
+
     def test_a_control_line_is_one_row_after_live_capture_and_repeated_imports(self):
         at = time.time()
         run = self.run_with_interventions(at)
