@@ -355,7 +355,7 @@ def _issues_dismiss(ctx):
         return 404, {'error': 'not found'}
     argv = ['issues', path, '--json', '--undismiss' if undo else '--dismiss', ','.join(fps)]
     if reason and reason.strip():
-        argv += ['--reason', reason]
+        argv.append('--reason=' + reason)  # '=' form: a reason like '-dup' is not read as an option
     ctx.route = 'undismiss' if undo else 'dismiss'
     return ctx.locked(lambda: ctx.call(*argv))
 

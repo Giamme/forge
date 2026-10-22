@@ -99,7 +99,9 @@ class IssuesWriteTests(EndpointCase):
         path = self.issues('/dismiss')
         self.post({'fingerprints': [FP, FP2], 'reason': 'not a bug'}, path)
         self.assertEqual(self.last_argv(), ['issues', self.rplan, '--json', '--dismiss', f'{FP},{FP2}',
-                                            '--reason', 'not a bug'])
+                                            '--reason=not a bug'])
+        self.post({'fingerprints': [FP], 'reason': '-dup'}, path)
+        self.assertEqual(self.last_argv()[-1], '--reason=-dup')
         self.post({'fingerprints': [FP], 'undo': True}, path)
         self.assertEqual(self.last_argv(), ['issues', self.rplan, '--json', '--undismiss', FP])
 
