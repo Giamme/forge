@@ -413,7 +413,9 @@ def _history(reader, name, escalation=False):
             continue
         entry = dict(at=at, attempt=attempt)
         if escalation:
-            entry.update({'from': row[2], 'to': row[3]})
+            # the 5th column says who decided (policy, a human's retry --dwarf, a pin); older rows have 4
+            source = row[4].strip() if len(row) > 4 else ''
+            entry.update({'from': row[2], 'to': row[3], 'source': source or 'policy'})
         else:
             entry.update(status=row[2], infra=_nullable(row[3]) if len(row) > 3 else None)
         result.append(entry)
@@ -1378,6 +1380,16 @@ class Catalog:
             if run_key(path) == key:
                 result = read(path, *args, source=source)
                 return result if _kind(path) else None
+        return None
+
+    def locate(self, key):
+        """(path, kind) of the run with this key, kind 'plan' or 'solo'; None for an unknown key.
+
+        The only way a write finds a run dir: the client names a key, never a path."""
+        for path, _source in discover(**self.options):
+            if run_key(path) == key:
+                kind = _kind(path)
+                return (str(path), kind) if kind else None
         return None
 
     def get(self, key):

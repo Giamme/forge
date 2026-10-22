@@ -21,7 +21,7 @@ DEFAULT_PORT = 8765
 def _parser():
     parser = argparse.ArgumentParser(
         prog='python3 -m forge_ui',
-        description='A small, read-only local UI for forge runs. Listens on 127.0.0.1 only.')
+        description='A small local UI for forge runs. Listens on 127.0.0.1 only. Its changes to a run go through the forge CLI.')
     parser.add_argument('--plan', action='append', default=[], metavar='DIR',
                         help='a plan dir to show (repeatable)')
     parser.add_argument('--root', action='append', default=[], metavar='DIR',
@@ -35,9 +35,17 @@ def _parser():
     parser.add_argument('--idle-exit', type=int, default=0, metavar='SECONDS',
                         help='exit after SECONDS with no request (default 0, which never exits)')
     parser.add_argument('--quiet', action='store_true', help='do not log requests')
+    parser.add_argument('--read-only', action='store_true',
+                        help='answer no write at all (also FORGE_UI_READONLY=1); the page shows no controls')
     parser.add_argument('--open', action='store_true', help='open the page in the browser once started')
     parser.add_argument('--version', action='version', version=f'forge-ui {__version__}')
     return parser
+
+
+def read_only_requested(flag, environ=None):
+    """--read-only, or FORGE_UI_READONLY set to 1/true/yes/on."""
+    value = (os.environ if environ is None else environ).get('FORGE_UI_READONLY', '')
+    return bool(flag) or value.strip().lower() in ('1', 'true', 'yes', 'on')
 
 
 def _message(level, text):
@@ -100,7 +108,7 @@ def main(argv=None):
     catalog = reader.Catalog(plans=args.plan, roots=args.root, registry=not args.no_registry,
                              registry_dir=args.registry_dir)
     try:
-        server = make_server(catalog, HOST, args.port, quiet=args.quiet)
+        server = make_server(catalog, HOST, args.port, quiet=args.quiet, read_only=read_only_requested(args.read_only))
     except OSError as exc:
         if exc.errno == errno.EADDRINUSE:
             _message('error', in_use)

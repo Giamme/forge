@@ -259,6 +259,40 @@ class UiLauncherTests(unittest.TestCase):
                 self.assertEqual(get_json(new['port'], '/api/health')['pid'], new['pid'])
                 self.ui('stop')
 
+    def test_a_server_of_the_other_mode_is_never_reused(self):
+        readonly = dict(self.env, FORGE_UI_READONLY='1')
+        modes = (('write-enabled', self.env, True, False), ('read-only', readonly, False, True),
+                 ('write-enabled again', self.env, True, False))
+        previous = None
+        for label, env, controls, recorded in modes:
+            with self.subTest(label):
+                self.open(self.plan, env=env)
+                current = self.server_json()
+                self.assertEqual(get_json(current['port'], '/api/health')['controls'], controls)
+                self.assertEqual(current['read_only'], recorded)
+                status = json.loads(self.ui('status', '--json', env=env).stdout)
+                self.assertEqual(status['read_only'], recorded)
+                self.assertIn('read-only' if recorded else 'read-write', self.ui('status', env=env).stdout)
+                if previous is not None:
+                    self.assertNotEqual(current['pid'], previous['pid'])
+                    self.assertFalse(alive(previous['pid']))
+                # the same mode asked again is a reuse
+                self.open(self.plan, env=env)
+                self.assertEqual(self.server_json()['pid'], current['pid'])
+                previous = current
+
+    def test_a_record_with_no_mode_reads_as_write_enabled(self):
+        # Records written before the mode existed have no read_only key.
+        self.open(self.plan)
+        old = self.server_json()
+        record = dict(old)
+        record.pop('read_only')
+        (self.state / 'forge/ui/server.json').write_text(json.dumps(record))
+        self.open(self.plan)
+        self.assertEqual(self.server_json()['pid'], old['pid'])
+        self.open(self.plan, env=dict(self.env, FORGE_UI_READONLY='1'))
+        self.assertNotEqual(self.server_json()['pid'], old['pid'])
+
     def test_a_server_whose_health_reports_another_build_is_replaced(self):
         # server.json still claims the current build; only the live answer says the code is old.
         self.open(self.plan)

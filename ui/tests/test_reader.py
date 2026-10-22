@@ -46,7 +46,7 @@ class ReaderTests(unittest.TestCase):
                 {'at': 1760620000.0, 'attempt': 1, 'status': 'FAIL', 'infra': None},
                 {'at': 1760621000.0, 'attempt': 2, 'status': 'PASS', 'infra': None},
                 {'at': 1760621100.0, 'attempt': 2, 'status': 'MERGED', 'infra': None}],
-            'escalations': [{'at': 1760620500.0, 'attempt': 2, 'from': 'luna', 'to': 'sol'}],
+            'escalations': [{'at': 1760620500.0, 'attempt': 2, 'from': 'luna', 'to': 'sol', 'source': 'policy'}],
             'verdict': 'PASS', 'accepted_by': 'User: accepted the tradeoff.\n', 'explored': True,
             'route': [{'at': 1760619000.0, 'task': 'reader', 'tier': 'high', 'epsilon': 0.5,
                        'candidates': ['astra', 'opus'], 'default': 'opus', 'chosen': 'astra',
@@ -319,6 +319,24 @@ class ReaderTests(unittest.TestCase):
         self.assertEqual(data['verification']['log_tail'], '…' + '尾' * 4000)
         self.assertIn('tasks/reader/qa_tail', data['truncated'])
         self.assertIn('verification.log_tail', data['truncated'])
+
+    def test_escalation_source_is_the_fifth_column(self):
+        plan = self.copy_plan()
+        rows = '1760620500\t2\tluna\tsol\n1760620600\t3\tsol\tsol:xhigh\tpin\n1760620700\t4\tsol:xhigh\topus\tretry\n1760620800\t5\ta\tb\t\n'
+        self.write(plan / 'tasks/reader/escalations.tsv', rows)
+        self.assertEqual([(e['to'], e['source']) for e in detail(plan)['tasks'][0]['escalations']],
+                         [('sol', 'policy'), ('sol:xhigh', 'pin'), ('opus', 'retry'), ('b', 'policy')])
+
+    def test_locate_finds_a_run_by_key_only(self):
+        solo = self.base / 'solo'
+        shutil.copytree(SOLO, solo)
+        catalog = Catalog(plans=[FIXTURE, solo], registry=False)
+        self.assertEqual(catalog.locate(run_key(FIXTURE)), (os.path.realpath(FIXTURE), 'plan'))
+        self.assertEqual(catalog.locate(run_key(solo)), (os.path.realpath(solo), 'solo'))
+        for key in (str(FIXTURE), '../plan-full', '', 'f' * 12):
+            self.assertIsNone(catalog.locate(key), key)
+        shutil.rmtree(solo)
+        self.assertIsNone(catalog.locate(run_key(solo)))
 
     def test_malformed_files_are_isolated(self):
         cases = {
