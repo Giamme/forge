@@ -28,6 +28,18 @@ class ConfigTests(unittest.TestCase):
         return subprocess.run([str(FORGE), 'config', *args], capture_output=True, text=True,
                               env=self.env, input=stdin, cwd=str(self.base))
 
+    def test_show_symlinked_forge_dir_reports_files_without_reading(self):
+        outside = self.base / 'elsewhere'
+        outside.mkdir()
+        (outside / 'verify').write_text('make evil\n')
+        (self.repo / '.forge').symlink_to(outside)
+        data = json.loads(self.run_cfg('show', '--repo', str(self.repo), '--json').stdout)
+        verify = data['repo']['files']['verify']
+        self.assertTrue(verify['exists'])
+        self.assertIsNone(verify['content'])
+        self.assertIn('not a real directory', verify['note'])
+        self.assertFalse(data['repo']['files']['setup']['exists'])
+
     def test_show_json(self):
         (self.repo / '.forge').mkdir()
         (self.repo / '.forge/verify').write_text('make test\n')

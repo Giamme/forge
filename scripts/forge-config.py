@@ -108,22 +108,38 @@ def read_small(path):
     return data.decode('utf-8', 'replace'), None
 
 
-def atomic_write(d, target, text):
-    os.makedirs(d, exist_ok=True)
-    tmp = os.path.join(d, '.%s.%d.tmp' % (os.path.basename(target), os.getpid()))
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644)
+def open_forge_dir(d):
+    """Create .forge when absent and open it without following a symlink; callers write through the fd."""
     try:
-        with os.fdopen(fd, 'w') as handle:
-            handle.write(text)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(tmp, target)
-    except BaseException:
+        os.mkdir(d)
+    except FileExistsError:
+        pass
+    try:
+        return os.open(d, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except OSError as err:
+        raise Invalid('%s must be a real directory, not a symlink or file (%s)' % (d, err.strerror))
+
+
+def atomic_write(d, target, text):
+    dfd = open_forge_dir(d)
+    name = os.path.basename(target)
+    tmp = '.%s.%d.tmp' % (name, os.getpid())
+    try:
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644, dir_fd=dfd)
         try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
+            with os.fdopen(fd, 'w') as handle:
+                handle.write(text)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(tmp, name, src_dir_fd=dfd, dst_dir_fd=dfd)
+        except BaseException:
+            try:
+                os.unlink(tmp, dir_fd=dfd)
+            except OSError:
+                pass
+            raise
+    finally:
+        os.close(dfd)
 
 
 # ------------------------------------------------------------------------------------------ show
@@ -157,8 +173,13 @@ def repo_block(root):
     files = {}
     for name in REPO_FILES:
         path = os.path.join(root, '.forge', name)
-        content, note = read_small(path) if forge_dir_ok(root) else (None, None)
-        entry = dict(exists=content is not None or note is not None, content=content)
+        if forge_dir_ok(root):
+            content, note = read_small(path)
+            entry = dict(exists=content is not None or note is not None, content=content)
+        else:
+            # forge itself follows a symlinked .forge; say the file is there without reading through it
+            note = '.forge is not a real directory; contents not read'
+            entry = dict(exists=os.path.exists(path), content=None)
         if note:
             entry['note'] = note
         files[name] = entry
@@ -261,7 +282,11 @@ def cmd_unset(args):
     d, target = safe_target(root, args.key[len('repo.'):])
     previous = read_small(target)[0] if d else None
     if d and os.path.lexists(target):
-        os.unlink(target)
+        dfd = open_forge_dir(d)
+        try:
+            os.unlink(os.path.basename(target), dir_fd=dfd)
+        finally:
+            os.close(dfd)
     emit(args, args.key, previous, None)
     return 0
 
