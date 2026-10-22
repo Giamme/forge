@@ -377,6 +377,21 @@ class InterventionTests(PreserveCase):
         rows = [r for r in self.rows() if r[1] == 'event' and json.loads(r[5]).get('name') == 'escalation']
         self.assertEqual(sorted((r[3], r[4]) for r in rows), [('a', 'import'), ('a', 'live')])
 
+    def test_an_escalation_captured_live_under_the_old_time_based_rid_is_not_added_again(self):
+        run = self.run_with_interventions(time.time())
+        uid = (run / 'dataset.uid').read_text().strip()
+        old = dict(rid='event:escalation:' + 'ab' * 12, kind='event', src='live', ts=1700000000.0, run=uid,
+                   run_id='r', mode='parallel', task='a',
+                   data=dict(name='escalation', after_attempt='1', to='luna', blobs={}, **{'from': 'sol'}, source='pin'))
+        legacy = dict(old, rid='event:escalation:' + 'cd' * 12, data=dict(old['data'], after_attempt='2',
+                                                                        to='astra', **{'from': 'luna'}))
+        del legacy['data']['source']   # written before the source column existed
+        self.assertEqual(store.record([old, legacy]), 2)
+        importer.import_run(run)
+        self.assertEqual(len(self.named('escalation')), 2)
+        importer.import_run(run)
+        self.assertEqual(len(self.named('escalation')), 2)
+
     def test_a_control_line_is_one_row_after_live_capture_and_repeated_imports(self):
         at = time.time()
         run = self.run_with_interventions(at)

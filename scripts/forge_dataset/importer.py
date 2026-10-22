@@ -24,7 +24,7 @@ import time
 from pathlib import Path
 from types import SimpleNamespace
 
-from . import (DatasetError, config_runs_dir, data_home, put_blob, put_file, record, record_strict,
+from . import (DatasetError, config_runs_dir, connect, data_home, enabled, put_blob, put_file, record, record_strict,
                repo_id, sha256, watch_blob_failures)
 from . import harvest as h
 from . import capture
@@ -323,6 +323,41 @@ def _regular_text(path: Path) -> str | None:
         return None
 
 
+def _stored_interventions(uid: str | None) -> dict:
+    """What the store already holds for a run's escalations and control changes, by rid.
+
+    Released forge captured these live under a time-based rid, which cannot be recomputed.
+    A row like that is the same fact the run dir still lists, so the importer must not add
+    it a second time under the deterministic rid. {rid: (name, task, fields)}; empty when
+    the store cannot be read (a strict write then fails on its own).
+    """
+    if not uid or not enabled():
+        return {}
+    found = {}
+    try:
+        db = connect()
+        try:
+            for name in h.INTERVENTIONS:
+                for rid, task, data in db.execute(
+                        "SELECT rid, task, data FROM events WHERE kind = 'event' AND run = ? AND rid LIKE ?",
+                        (uid, 'event:%s:%%' % name)):
+                    values = json.loads(data)
+                    if isinstance(values, dict) and values.get('name') == name:
+                        found[rid] = (name, task, _normalized(name, values))
+        finally:
+            db.close()
+    except Exception:
+        return {}
+    return found
+
+
+def _normalized(name: str, values: dict) -> dict:
+    data = h.intervention_data(name, values)
+    if name == 'escalation' and not data['source']:
+        data['source'] = 'policy'   # rows from before the source column
+    return data
+
+
 def intervention_events(plan: Path, prov: dict, counts: dict) -> list[dict]:
     """The escalations and control changes a plan dir recorded, as the events live capture emits.
 
@@ -332,10 +367,15 @@ def intervention_events(plan: Path, prov: dict, counts: dict) -> list[dict]:
     """
     uid, run_id = prov['run'], prov['run_id']
     events = []
+    stored = _stored_interventions(uid)
 
     def add(name, values, task, ts):
         data = dict(h.intervention_data(name, values), name=name, blobs={})
-        events.append(dict(rid=h.intervention_rid(name, uid, task, values), kind='event', src='import', ts=ts,
+        rid = h.intervention_rid(name, uid, task, values)
+        fields = _normalized(name, values)
+        if rid not in stored and any(known == (name, task, fields) for known in stored.values()):
+            return   # already captured live under the old time-based rid
+        events.append(dict(rid=rid, kind='event', src='import', ts=ts,
                            run=uid, run_id=run_id, mode='parallel', task=task, data=data))
 
     def read(path):
