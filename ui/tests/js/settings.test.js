@@ -44,6 +44,11 @@ test('value checks follow the server: not empty, 4096 at most, no control charac
   assert.match(S.valueProblem('setup', 'a\u001bb'), /Control/);
   assert.match(S.valueProblem('setup', 'a\u007fb'), /Control/);
   assert.match(S.valueProblem('setup', '-rf'), /cannot start/);
+  // the server counts code points, so emoji count once; lone surrogates it refuses
+  assert.equal(S.valueProblem('verify', '\u{1F600}'.repeat(4096)), null);
+  assert.match(S.valueProblem('verify', '\u{1F600}'.repeat(4097)), /Too long/);
+  assert.match(S.valueProblem('verify', 'a\ud83dz'), /surrogate/);
+  assert.match(S.valueProblem('verify', 'a\ude00z'), /surrogate/);
 });
 
 test('picker default: the current run when listed, else the most recent run that names a repo', () => {

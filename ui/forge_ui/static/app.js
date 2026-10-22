@@ -974,7 +974,8 @@ window.ForgeApp = (() => {
       if (window.ForgeNotify) window.ForgeNotify.observe(state.runs);
       renderList();
       if (state.cloud) renderCloud();
-      else if (!state.key) renderMap({ rebuildBar: $('map-filters') ? !$('map-filters').contains(document.activeElement) : true });
+      else if (state.settings) state.settingsView?.poll();       // the picker follows the run list; the page stays
+      else if (!state.key && !state.models) renderMap({ rebuildBar: $('map-filters') ? !$('map-filters').contains(document.activeElement) : true });
     }, 'Could not refresh runs');
   }
   function loadRun(key) {

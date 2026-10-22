@@ -16,6 +16,7 @@
 
   const FILES = ['verify', 'setup', 'verify-subset'];
   const VALUE_MAX = 4096;
+  const POLL_MS = 20000;                                         // the config rarely changes, and each read starts a CLI process
   const list = v => Array.isArray(v) ? v : [];
   const object = v => v && typeof v === 'object' && !Array.isArray(v) ? v : {};
   const text = v => typeof v === 'string' ? v : '';
@@ -38,7 +39,9 @@
   function valueProblem(name, value) {
     const v = text(value);
     if (!v.trim()) return 'Empty: use Remove to delete the file.';
-    if (v.length > VALUE_MAX) return `Too long: ${v.length} of ${VALUE_MAX} characters.`;
+    const chars = Array.from(v).length;                         // code points, as the server counts them
+    if (chars > VALUE_MAX) return `Too long: ${chars} of ${VALUE_MAX} characters.`;
+    if (/[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/.test(v)) return 'The text has an unpaired surrogate, which cannot be saved.';
     if (/[\u0000-\u0008\u000b-\u001f\u007f]/.test(v)) return 'Control characters are not allowed (newline and tab are).';
     if (v.startsWith('-')) return 'The text cannot start with "-".';
     if (name === 'verify-subset' && !subsetOk(v)) return 'verify-subset must contain {files}: the per-file command needs the place for the file list.';
@@ -88,7 +91,7 @@
   function render(host, ctx) {
     const UI = root.ForgeUI, c = ctx || {};
     const el = (tag, t, cls) => UI.el(tag, t, cls);
-    const s = { run: null, data: null, dataText: null, error: null, writes: false, loading: true, editors: {}, moved: {}, hold: 0, redraw: false, seq: 0, runsSig: null };
+    const s = { run: null, data: null, dataText: null, error: null, writes: false, loading: true, editors: {}, moved: {}, hold: 0, redraw: false, seq: 0, gen: 0, runsSig: null, ready: false, loadedAt: 0 };
     const key_ = (label, cls, onclick) => { const b = el('button', label, cls); b.type = 'button'; if (onclick) b.addEventListener('click', onclick); return b; };
 
     const head = el('header', undefined, 'set-head');
@@ -104,8 +107,10 @@
     function drawPicker() {
       const runs = c.runs ? c.runs() : [];
       const groups = groupRuns(runs);
+      const before = s.run;
       if (s.run != null && !withRepo(runs).some(r => r.key === s.run)) s.run = null;
       if (s.run == null) s.run = pickDefault(runs, c.key);
+      if (s.run !== before) { resetRun(); if (s.ready) { drawBody(); load(); } }   // the default arrived, or the run went away
       const sig = JSON.stringify([s.run, groups.map(g => [g.repo, g.runs.map(r => [r.key, optionLabel(r)])])]);
       if (sig === s.runsSig) return;
       s.runsSig = sig;
@@ -129,8 +134,13 @@
       const row = el('div', undefined, 'set-picker-row'); row.append(lab, sel);
       picker.replaceChildren(row, path);
     }
+    // A new run: nothing of the old one stays, and confirms of the old body (now detached) no longer hold a redraw.
+    function resetRun() {
+      s.data = null; s.dataText = null; s.error = null; s.editors = {}; s.moved = {}; s.loading = s.run != null;
+      s.gen++; s.hold = 0; s.redraw = false;
+    }
     function pick(key) {
-      s.run = key; s.data = null; s.dataText = null; s.error = null; s.editors = {}; s.moved = {}; s.loading = true;
+      s.run = key; resetRun();
       s.runsSig = null; drawPicker(); drawBody();
       if (c.onPick) c.onPick(key);
       load();
@@ -142,7 +152,7 @@
       if (run == null) { s.loading = false; drawBody(); return; }
       const res = await UI.get('/api/config?run=' + encodeURIComponent(run));
       if (seq !== s.seq || run !== s.run) return;                 // a later pick or load answered
-      s.loading = false;
+      s.loading = false; s.loadedAt = Date.now();
       if (!res.ok) {
         const msg = res.status === 0 ? null : res.detail || res.error;
         if (msg === null && s.data) return;                       // a poll that did not reach the server keeps the last good page
@@ -160,7 +170,11 @@
       if (s.hold > 0) { s.redraw = true; return; }                // a confirm or a write is open: draw after it
       drawBody();
     }
-    const hold = on => { s.hold += on ? 1 : -1; if (!s.hold && s.redraw) { s.redraw = false; drawBody(); } };
+    // Holds the redraw while a confirm or a write is open; the returned release is a no-op once the run changed.
+    function grab() {
+      const gen = s.gen; s.hold++;
+      return () => { if (gen !== s.gen) return; s.hold--; if (!s.hold && s.redraw) { s.redraw = false; drawBody(); } };
+    }
 
     function drawBody() {
       const focus = document.activeElement && body.contains(document.activeElement) ? document.activeElement : null;
@@ -230,13 +244,14 @@
         sw.setAttribute('aria-label', 'Jev enabled');
         sw.addEventListener('click', async () => {
           const next = !on;
-          sw.disabled = true; hold(true);
+          const run = s.run, release = grab();
+          sw.disabled = true;
           const yes = await UI.confirmInline(result, `Turn Jev ${next ? 'on' : 'off'}? This changes forge's own config (${text(jev.path)}) for every repository.`);
-          if (!yes) { sw.disabled = false; hold(false); sw.focus({ preventScroll: true }); return; }
-          const res = await UI.post('/api/config', configBody(s.run, 'jev.enabled', next));
+          if (!yes) { sw.disabled = false; release(); sw.focus({ preventScroll: true }); return; }
+          const res = await UI.post('/api/config', configBody(run, 'jev.enabled', next));
           UI.outcome(result, res, `Jev is now ${next ? 'enabled' : 'disabled'}.`);
-          sw.disabled = false; hold(false);
-          if (res.ok) await reload();
+          sw.disabled = false; release();
+          if (res.ok && run === s.run) await reload();
         });
         row.append(sw);
       }
@@ -303,24 +318,26 @@
       save.addEventListener('click', async () => {
         const cur = s.editors[name], bad = valueProblem(name, cur.draft);
         if (bad) { sync(); return; }
-        save.disabled = remove.disabled = true; hold(true);
+        const run = s.run, release = grab();
+        save.disabled = remove.disabled = true;
         const yes = await UI.confirmInline(result, `Write ${target}? This changes a file in the repository's working tree.`);
-        if (!yes) { remove.disabled = !file.exists; hold(false); sync(); save.focus({ preventScroll: true }); return; }
-        const res = await UI.post('/api/config', configBody(s.run, repoKey(name), cur.draft));
+        if (!yes) { remove.disabled = !file.exists; release(); sync(); save.focus({ preventScroll: true }); return; }
+        const res = await UI.post('/api/config', configBody(run, repoKey(name), cur.draft));
         UI.outcome(result, res, `Saved ${target}.`);
-        if (res.ok) s.editors[name] = editorOf(cur.draft.endsWith('\n') ? cur.draft : cur.draft + '\n');
-        remove.disabled = !file.exists; hold(false); sync();
-        if (res.ok) await reload();
+        if (res.ok && run === s.run) s.editors[name] = editorOf(cur.draft.endsWith('\n') ? cur.draft : cur.draft + '\n');
+        remove.disabled = !file.exists; release(); sync();
+        if (res.ok && run === s.run) await reload();
       });
       remove.addEventListener('click', async () => {
-        save.disabled = remove.disabled = true; hold(true);
+        const run = s.run, release = grab();
+        save.disabled = remove.disabled = true;
         const yes = await UI.confirmInline(result, `Delete ${target}? This removes a file from the repository's working tree.`, { danger: true });
-        if (!yes) { hold(false); sync(); remove.disabled = !file.exists; remove.focus({ preventScroll: true }); return; }
-        const res = await UI.post('/api/config', configBody(s.run, repoKey(name), null, true));
+        if (!yes) { release(); sync(); remove.disabled = !file.exists; remove.focus({ preventScroll: true }); return; }
+        const res = await UI.post('/api/config', configBody(run, repoKey(name), null, true));
         UI.outcome(result, res, `Removed ${target}.`);
-        if (res.ok) s.editors[name] = editorOf('');
-        hold(false);
-        if (res.ok) await reload(); else { remove.disabled = !file.exists; sync(); }
+        if (res.ok && run === s.run) s.editors[name] = editorOf('');
+        release();
+        if (res.ok && run === s.run) await reload(); else if (!res.ok) { remove.disabled = !file.exists; sync(); }
       });
       const keys = el('div', undefined, 'set-keys'); keys.append(save, remove);
       art.append(lab, ta, problem, keys, result);
@@ -348,8 +365,14 @@
 
     /* start, and the page's refresh */
     async function reload() { s.dataText = null; await load(); }
-    const poll = () => { drawPicker(); return load(); };
-    UI.controlsEnabled().then(on => { s.writes = !!on; note.hidden = on; drawPicker(); load(); });
+    // The page's refresh: the picker follows the run list at once (and a run that just appeared loads), the config itself
+    // is read again at most every POLL_MS.
+    const poll = () => {
+      if (!s.ready) return Promise.resolve();
+      drawPicker();
+      return Date.now() - s.loadedAt >= POLL_MS ? load() : Promise.resolve();
+    };
+    UI.controlsEnabled().then(on => { s.writes = !!on; s.ready = true; note.hidden = on; drawPicker(); load(); });
     return { poll, pick };
   }
 
