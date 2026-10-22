@@ -99,19 +99,51 @@ test('outcome: a 500 with a result is a partial failure, with its failed steps a
   assert.equal(o.kind, 'partial');
   assert.deepEqual(o.failed.map(s => s.name), ['worktrees', 'unregister']);
   assert.equal(o.steps.length, 3);
-  assert.match(o.guidance, /not completed/);
+  assert.equal(o.guidance, 'registry needs repair: rerun');
   assert.equal(o.steps[2].detail, 'registry needs repair: rerun');
 });
 
 test('outcome: 409 is plain, other failures are errors for ForgeUI.outcome', () => {
   assert.deepEqual(D.outcomeOf({ ok: false, status: 409, error: 'refused', detail: 'the run is active' }), { kind: 'busy', text: 'the run is active' });
   assert.equal(D.outcomeOf({ ok: false, status: 409, error: 'refused', detail: null }).text, 'the run is active');
+  assert.equal(D.outcomeOf({ ok: false, status: 409, error: 'refused', detail: 'the forge CLI exited 3' }).text, 'the run is active');
   assert.match(D.outcomeOf({ ok: false, status: 409, error: 'busy' }).text, /try again/);
   for (const res of [{ ok: false, status: 500, error: 'failed', detail: 'boom', result: null }, { ok: false, status: 504, error: 'timeout' },
     { ok: false, status: 0, error: 'network' }, { ok: false, status: 400, error: 'invalid', detail: 'bad' }]) {
     assert.equal(D.outcomeOf(res).kind, 'error', JSON.stringify(res));
   }
   assert.equal(D.outcomeOf(null).kind, 'error');
+});
+
+// The server never has stderr to quote for `runs rm --json`: detail is always "the forge CLI exited N" and the
+// CLI's words are only in result.steps.
+test('refusals carry the CLI reason from result.steps, not the generic exit text', () => {
+  const lock = dry({ ok: false, steps: [step('check'), step('lock', false, 'scheduler.live names a live process (pid 7): the run is active; stop it first')] });
+  const busy = { ok: false, status: 409, error: 'refused', detail: 'the forge CLI exited 3', result: lock };
+  assert.match(D.outcomeOf(busy).text, /the run is active; stop it first/);
+  assert.match(D.previewOf(busy).text, /pid 7/);
+  const refused = { ok: false, status: 400, error: 'invalid', detail: 'the forge CLI exited 2', result: dry({ ok: false, steps: [step('check', false, 'git for-each-ref failed')] }) };
+  const o = D.outcomeOf(refused);
+  assert.equal(o.kind, 'error');
+  assert.equal(o.text, 'git for-each-ref failed');
+  assert.equal(o.refused, true);
+  assert.equal(D.previewOf(refused).text, 'git for-each-ref failed');
+  assert.equal(D.reasonOf({ detail: 'the forge CLI exited 4' }), '');
+  assert.equal(D.reasonOf({ detail: 'real words' }), 'real words');
+});
+
+test('guidance is the failed steps that say what to do, not the generic exit text', () => {
+  const result = dry({ ok: false, steps: [step('remove', false, 'permission denied'), step('unregister', false, 'removed, registry needs repair: rerun `forge runs rm /r`')] });
+  const o = D.outcomeOf({ ok: false, status: 500, error: 'failed', detail: 'the forge CLI exited 4', result });
+  assert.equal(o.guidance, 'removed, registry needs repair: rerun `forge runs rm /r`');
+});
+
+test('click outside: only beyond the dialog box, not in its padding', () => {
+  const box = { left: 100, right: 400, top: 50, bottom: 350 };
+  assert.equal(D.outsideBox(box, 110, 60), false);
+  assert.equal(D.outsideBox(box, 99, 60), true);
+  assert.equal(D.outsideBox(box, 200, 351), true);
+  assert.equal(D.outsideBox(null, 0, 0), false);
 });
 
 test('a failed step name may come as name (older shape)', () => {

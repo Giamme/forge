@@ -83,8 +83,23 @@
     return list(object(result) && result.steps).filter(object).map(s => ({ name: text(s.step || s.name), ok: s.ok !== false, detail: text(s.detail) }));
   }
 
+  // `forge runs rm --json` prints nothing on stderr, so the server's `detail` is only "the forge CLI exited N".
+  // The CLI's real words are the details of the failed steps in `result`.
+  const GENERIC = /^the forge CLI exited \d+$/;
+  const failedDetails = result => stepsOf(result).filter(s => !s.ok && s.detail).map(s => s.detail);
+  // Why a refused or failed answer was refused, in the CLI's words ('' when there are none).
+  function reasonOf(res) {
+    const r = res || {};
+    const fromSteps = failedDetails(r.result);
+    if (fromSteps.length) return fromSteps.join('; ');
+    const d = text(r.detail);
+    return GENERIC.test(d) ? '' : d;
+  }
+  // The actionable part of a partial failure: failed steps that say what to do ("registry needs repair: rerun …").
+  const guidanceOf = result => failedDetails(result).filter(d => /rerun|repair/i.test(d)).join('; ');
+
   // What a POST answer means. kind: 'success' (a full success), 'partial' (the CLI failed part-way: steps and guidance),
-  // 'busy' (409: active or busy), 'error' (anything else: the page prints it with ForgeUI.outcome).
+  // 'busy' (409: active or busy), 'error' (anything else: the page prints `text` with ForgeUI.outcome).
   function outcomeOf(res) {
     const r = res || {};
     if (r.ok && object(r.data) && r.data.ok !== false) {
@@ -93,17 +108,17 @@
     }
     if (r.ok) {
       const steps = stepsOf(r.data);
-      return { kind: 'partial', result: r.data, steps, failed: steps.filter(s => !s.ok), guidance: '' };
+      return { kind: 'partial', result: r.data, steps, failed: steps.filter(s => !s.ok), guidance: guidanceOf(r.data) };
     }
     if (r.status === 409) {
-      return { kind: 'busy', text: r.error === 'busy' ? 'busy: another change to this run is in progress, try again' : text(r.detail) || 'the run is active' };
+      return { kind: 'busy', text: r.error === 'busy' ? 'busy: another change to this run is in progress, try again' : reasonOf(r) || 'the run is active' };
     }
     const result = object(r.result);
     if (r.status === 500 && result) {
       const steps = stepsOf(result);
-      return { kind: 'partial', result, steps, failed: steps.filter(s => !s.ok), guidance: text(r.detail) };
+      return { kind: 'partial', result, steps, failed: steps.filter(s => !s.ok), guidance: guidanceOf(result) };
     }
-    return { kind: 'error', text: text(r.detail) || text(r.error) || 'failed' };
+    return { kind: 'error', text: reasonOf(r) || text(r.detail) || text(r.error) || 'failed', refused: r.status === 400 && !!result };
   }
 
   // What a dry-run answer means: 'preview' with the result (and whether the real run would complete, with the CLI's
@@ -112,9 +127,13 @@
     const r = res || {};
     if (r.ok && object(r.data)) return { kind: 'preview', result: r.data, completes: r.data.ok !== false, note: '' };
     if (r.status === 409) return { kind: 'busy', text: outcomeOf(r).text };
-    if (r.status === 500 && object(r.result)) return { kind: 'preview', result: r.result, completes: false, note: text(r.detail) };
-    return { kind: 'error', text: text(r.detail) || text(r.error) || 'failed' };
+    if (r.status === 500 && object(r.result)) return { kind: 'preview', result: r.result, completes: false, note: reasonOf(r) };
+    return { kind: 'error', text: outcomeOf(r).text };
   }
+
+  // A click on the <dialog> element itself is on its backdrop only when it falls outside the dialog's box;
+  // the padding inside the border is also the element.
+  const outsideBox = (box, x, y) => !!box && (x < box.left || x > box.right || y < box.top || y > box.bottom);
 
   function fmtBytes(n) {
     if (typeof n !== 'number' || !isFinite(n) || n < 0) return 'unknown';
@@ -163,7 +182,8 @@
 
     const confirmBox = el('div', undefined, 'del-confirm');
     const confirmLabel = el('label', undefined, 'del-confirm-label'); confirmLabel.htmlFor = 'del-confirm-input';
-    confirmLabel.append(document.createTextNode('To delete, type the run id: '), el('code', run.run_id || '', 'del-id'));
+    const idCode = el('code', run.run_id || '…', 'del-id');
+    confirmLabel.append(document.createTextNode('To delete, type the run id: '), idCode);
     const confirmInput = el('input', undefined, 'del-confirm-input'); confirmInput.id = 'del-confirm-input'; confirmInput.type = 'text';
     confirmInput.autocomplete = 'off'; confirmInput.spellcheck = false; confirmInput.autocapitalize = 'off'; confirmInput.value = '';
     confirmBox.append(confirmLabel, confirmInput);
@@ -259,6 +279,8 @@
       const p = previewOf(res);
       if (p.kind === 'preview') {
         s.preview = p;
+        // A plan dir without a run_id file is named by its directory; the CLI says which id it confirms against.
+        if (!s.v.runId && text(p.result.run_id)) { s.v = { ...s.v, runId: text(p.result.run_id) }; idCode.textContent = s.v.runId; }
         setLamp(p.completes ? 'st-pass' : 'st-fail', p.completes ? 'Dry run: nothing has been changed yet.' : 'Dry run: nothing has been changed yet, but it would not complete.');
         drawPreview();
       } else {
@@ -269,7 +291,7 @@
 
     function showResult(o, res) {
       resultHost.replaceChildren();
-      if (o.kind === 'error') { UI.outcome(resultHost, res); return; }
+      if (o.kind === 'error') { UI.outcome(resultHost, o.refused ? { ...res, detail: o.text } : res); return; }
       if (o.kind === 'busy') { UI.outcome(resultHost, { ok: false, status: 0, error: '', detail: 'Not deleted: ' + o.text }); return; }
       const box = el('div', undefined, 'del-outcome');
       box.setAttribute('role', 'status'); box.setAttribute('aria-live', 'polite');
@@ -317,7 +339,7 @@
     go.addEventListener('click', submit);
     cancel.addEventListener('click', () => { if (!s.posting) dlg.close(); });
     dlg.addEventListener('cancel', e => { if (s.posting) e.preventDefault(); });
-    dlg.addEventListener('click', e => { if (e.target === dlg && !s.posting) dlg.close(); });
+    dlg.addEventListener('click', e => { if (e.target === dlg && !s.posting && outsideBox(dlg.getBoundingClientRect(), e.clientX, e.clientY)) dlg.close(); });
     dlg.addEventListener('close', () => { s.seq++; dlg.remove(); if (current && current.dlg === dlg) current = null; });
 
     document.body.append(dlg);
@@ -328,5 +350,5 @@
   }
 
   return { open, deleteBody, initial, withOption, withTyped, bodyOf, confirmOk, canDelete, warningsOf, worktreePlate, branchPlate,
-    stepsOf, outcomeOf, previewOf, fmtBytes, deletePath, OPTIONS };
+    stepsOf, outcomeOf, previewOf, reasonOf, outsideBox, fmtBytes, deletePath, OPTIONS };
 });
