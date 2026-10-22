@@ -370,6 +370,24 @@ class InterventionTests(PreserveCase):
         self.assertTrue(any(str(hidden) in f for f in caught.exception.result['failed']))
         self.assertEqual(importer.import_run(run, strict=False)['failed'], caught.exception.result['failed'])
 
+    @unittest.skipIf(os.geteuid() == 0, 'root reads every file')
+    def test_an_unreadable_run_file_fails_a_strict_import_instead_of_reading_as_absent(self):
+        run = self.make_run()
+        qa = sorted((run / 'tasks' / 'a' / 'attempts').glob('qa-*'))[-1]
+        files = [qa / 'metrics.json', run / 'tasks' / 'a' / 'status', run / 'run_id']
+        for target in files:
+            self.assertTrue(target.exists(), target)
+        for target in files:
+            with self.subTest(target.name):
+                original = target.stat().st_mode
+                target.chmod(0)
+                self.addCleanup(target.chmod, original)
+                with self.assertRaises(store.DatasetError) as caught:
+                    importer.import_run(run)
+                self.assertTrue(any(str(target) in f for f in caught.exception.result['failed']))
+                target.chmod(original)
+        self.assertEqual(importer.import_run(run)['failed'], [])
+
     def test_other_point_events_keep_a_rid_per_occurrence(self):
         run = self.make_run()
         for _ in range(2):

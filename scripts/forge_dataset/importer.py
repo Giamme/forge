@@ -200,7 +200,22 @@ def import_tree(top: Path, mapper: Mapper, args, counts: dict) -> list[tuple[lis
             counts.setdefault('failed', []).append('%s: cannot read: %s' % (error.filename, error.strerror or error))
 
     onerror = unreadable
-    plans = {p for p in walk_plans(top, onerror)}
+    if getattr(args, 'report_unreadable', False):
+        # The readers below (h.read_json, h.text, h.first_line) turn a file they cannot open into
+        # "absent": a finished attempt whose metrics.json is unreadable would pass as unfinished.
+        # So every file the walkers can reach must open before any of it is trusted.
+        for directory, subdirs, files in os.walk(top, onerror=onerror):
+            subdirs[:] = [d for d in subdirs if d not in SKIP_DIRS and not d.startswith('review-')]
+            for name in files:
+                full = os.path.join(directory, name)
+                try:
+                    if not stat.S_ISREG(os.lstat(full).st_mode):   # links and fifos are never run data
+                        continue
+                    with open(full, 'rb'):
+                        pass
+                except OSError as error:
+                    unreadable(error)
+    plans ={p for p in walk_plans(top, onerror)}
     by_task: dict = {}
     for attempt in walk_attempts(top, onerror):
         role = attempt.name.split('-', 1)[0]
