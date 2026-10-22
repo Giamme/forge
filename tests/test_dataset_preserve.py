@@ -183,6 +183,36 @@ class ImportRunTests(PreserveCase):
         (store.dataset_dir() / 'blobs').unlink()
         self.assertEqual(importer.import_run(run)['failed'], [])
 
+    def test_an_unexpected_error_reading_a_run_dir_is_a_dataset_error_not_a_traceback(self):
+        run = self.make_run()
+        (run / 'tasks.tsv').write_bytes(b'\x00\tbad\n')   # harvest.text raises ValueError on a NUL path
+        with patch.object(importer, 'import_tree', side_effect=ValueError('embedded null byte')):
+            with self.assertRaises(store.DatasetError):
+                importer.import_run(run)
+            self.assertTrue(importer.import_run(run, strict=False)['failed'])
+
+    def test_another_threads_failed_blob_write_is_not_this_imports_failure(self):
+        import threading
+        run = self.make_run()
+        theirs = self.root / 'theirs.txt'
+        theirs.write_text('x')
+
+        def other():
+            with store.watch_blob_failures():
+                with patch.object(store, 'put_blob', side_effect=OSError('disk full')):
+                    store.put_file(theirs)
+
+        real = importer.import_tree
+
+        def tree(*args, **kwargs):
+            thread = threading.Thread(target=other)
+            thread.start()
+            thread.join()
+            return real(*args, **kwargs)
+
+        with patch.object(importer, 'import_tree', tree):
+            self.assertEqual(importer.import_run(run)['failed'], [])
+
     def test_a_missing_path_and_a_garbled_archive_are_failures(self):
         with self.assertRaises(store.DatasetError):
             importer.import_run(self.root / 'nowhere')
@@ -250,6 +280,19 @@ class ArchiveTests(PreserveCase):
         with self.assertRaises(store.DatasetError):
             importer.archive_run(run, dest)
         self.assertFalse(dest.exists())
+
+    def test_a_hard_linked_file_is_stored_with_its_contents_and_survives_import(self):
+        run = self.make_run()
+        status = run / 'tasks' / 'a' / 'status'
+        status.write_text('done\n')
+        os.link(status, run / 'tasks' / 'a' / 'status_copy')   # forge's settle_pin makes such a pair
+        dest = self.root / 'out' / 'old.tar.gz'
+        self.assertEqual(importer.archive_run(run, dest)['excluded'], [])
+        with tarfile.open(dest) as bundle:
+            for member in bundle.getmembers():
+                self.assertFalse(member.islnk(), member.name)
+            self.assertEqual(bundle.extractfile('old/tasks/a/status').read(), b'done\n')
+            self.assertEqual(bundle.extractfile('old/tasks/a/status_copy').read(), b'done\n')
 
     def test_a_failed_write_leaves_no_partial_archive(self):
         run = self.make_run()

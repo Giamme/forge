@@ -24,8 +24,8 @@ import time
 from pathlib import Path
 from types import SimpleNamespace
 
-from . import (BLOB_WRITE_FAILURES, DatasetError, config_runs_dir, data_home, put_blob, put_file, record, record_strict,
-               repo_id, sha256)
+from . import (DatasetError, config_runs_dir, data_home, put_blob, put_file, record, record_strict,
+               repo_id, sha256, watch_blob_failures)
 from . import harvest as h
 from . import capture
 
@@ -474,38 +474,41 @@ def import_run(path, strict: bool = True, include_temp: bool = True) -> dict:
     args = SimpleNamespace(include_temp=include_temp, report_unreadable=True)
     counts: dict = {'events': 0, 'new': 0}
     writer = record_strict if strict else record
-    blob_mark = len(BLOB_WRITE_FAILURES)
 
-    def write(batches):
+    def write(batches, blob_failures):
         for events, repo in batches:
             if events:
                 counts['events'] += len(events)
-                if strict and len(BLOB_WRITE_FAILURES) > blob_mark:
+                if strict and blob_failures:
                     # put_file turns a failed blob write into "no content"; the first writer of a
                     # rid wins, so storing this batch would make the loss permanent.
-                    counts.setdefault('failed', []).extend(BLOB_WRITE_FAILURES[blob_mark:])
+                    counts.setdefault('failed', []).extend(blob_failures)
                     return
                 try:
                     counts['new'] += writer(events, repo=repo, where='import')
                 except DatasetError as error:
                     counts.setdefault('failed', []).append('store: %s' % error)
                     return
-        if strict and len(BLOB_WRITE_FAILURES) > blob_mark and not counts.get('failed'):
-            counts.setdefault('failed', []).extend(BLOB_WRITE_FAILURES[blob_mark:])
+        if strict and blob_failures and not counts.get('failed'):
+            counts.setdefault('failed', []).extend(blob_failures)
 
-    if path.is_dir():
-        write(import_tree(path, Mapper(), args, counts))
-    elif path.is_file() and path.name.endswith(('.tar.gz', '.tgz')):
-        work = Path(tempfile.mkdtemp(prefix='forge-dataset-import-'))
-        try:
-            _extract(path, work)
-            write(import_tree(work, _archive_mapper(work, None), args, counts))
-        except Exception as error:
-            counts.setdefault('failed', []).append('%s: %s' % (path, error))
-        finally:
-            shutil.rmtree(work, ignore_errors=True)
-    else:
-        counts.setdefault('failed', []).append('%s: not a run dir or .tar.gz archive' % path)
+    with watch_blob_failures() as blob_failures:
+        if path.is_dir():
+            try:
+                write(import_tree(path, Mapper(), args, counts), blob_failures)
+            except Exception as error:
+                counts.setdefault('failed', []).append('%s: %s' % (path, error))
+        elif path.is_file() and path.name.endswith(('.tar.gz', '.tgz')):
+            work = Path(tempfile.mkdtemp(prefix='forge-dataset-import-'))
+            try:
+                _extract(path, work)
+                write(import_tree(work, _archive_mapper(work, None), args, counts), blob_failures)
+            except Exception as error:
+                counts.setdefault('failed', []).append('%s: %s' % (path, error))
+            finally:
+                shutil.rmtree(work, ignore_errors=True)
+        else:
+            counts.setdefault('failed', []).append('%s: not a run dir or .tar.gz archive' % path)
     result = dict(counts, failed=list(counts.get('failed', [])))
     if strict and result['failed']:
         error = DatasetError('import of %s failed: %s' % (path, '; '.join(result['failed'][:5])))
@@ -519,7 +522,7 @@ def archive_run(run_dir, dest) -> dict:
 
     Layout: FORGE_ARCHIVE.json (the original realpath, run id, dataset uid), then
     FORGE_ARCHIVE_EXCLUDED.txt, then the run dir under its basename. Left out are what the
-    importer never reads (its skip rules, `review-*` snapshots), links, and files over 50 MB;
+    importer never reads (its skip rules, `review-*` snapshots), symlinks, and files over 50 MB;
     each is listed. Written to a temp name beside `dest`, fsynced, then renamed.
     """
     run = Path(run_dir).expanduser().resolve()
@@ -573,7 +576,7 @@ def archive_run(run_dir, dest) -> dict:
         raise DatasetError('cannot write the archive %s: %s' % (dest, error)) from error
     try:
         with os.fdopen(fd, 'wb') as handle:
-            with tarfile.open(fileobj=handle, mode='w:gz') as bundle:
+            with tarfile.open(fileobj=handle, mode='w:gz', dereference=True) as bundle:   # no link members: _extract drops them
                 for name, body in ((ARCHIVE_META, json.dumps(meta, sort_keys=True, indent=1) + '\n'),
                                    (ARCHIVE_EXCLUDED, ''.join(line + '\n' for line in excluded))):
                     info = tarfile.TarInfo(name)

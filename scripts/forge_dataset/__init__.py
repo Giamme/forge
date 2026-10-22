@@ -27,12 +27,14 @@ runs' verdicts would no longer be independent.
 """
 from __future__ import annotations
 
+import contextlib
 import gzip
 import hashlib
 import json
 import os
 import sqlite3
 import subprocess
+import threading
 import time
 import traceback
 import uuid
@@ -255,13 +257,29 @@ def put_blob(data: bytes | str, kind: str = 'text') -> dict:
                 n=len(data), kept=len(stored), cut=span)
 
 
-BLOB_WRITE_FAILURES: list[str] = []
+_BLOB_WATCH = threading.local()
+
+
+@contextlib.contextmanager
+def watch_blob_failures():
+    """Collect this thread's failed blob writes while the block runs (yields the list).
+
+    Only a caller that asks pays for the record: a long-lived process that never watches
+    keeps nothing, and another thread's failed write never lands in this thread's list.
+    """
+    previous = getattr(_BLOB_WATCH, 'failures', None)
+    failures: list[str] = []
+    _BLOB_WATCH.failures = failures
+    try:
+        yield failures
+    finally:
+        _BLOB_WATCH.failures = previous
 
 
 def put_file(path: str | Path, kind: str = 'text') -> dict | None:
     """Store a file's content; None when it is absent, unreadable, or could not be stored.
 
-    A failed write into the blob store is also noted in BLOB_WRITE_FAILURES: the caller
+    A failed write into the blob store is also noted for a watch_blob_failures() block: the caller
     still gets None (live capture fails open), but a strict importer can tell "no file" from
     "content lost" and refuse to let the event win its rid without it.
     """
@@ -275,7 +293,9 @@ def put_file(path: str | Path, kind: str = 'text') -> dict | None:
     try:
         return put_blob(data, kind)
     except OSError as error:
-        BLOB_WRITE_FAILURES.append('%s: cannot store content: %s' % (path, error))
+        failures = getattr(_BLOB_WATCH, 'failures', None)
+        if failures is not None:
+            failures.append('%s: cannot store content: %s' % (path, error))
         return None
 
 
