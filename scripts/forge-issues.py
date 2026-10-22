@@ -268,6 +268,8 @@ def collect(path: Path, include_plausible, all_runs=False):
         plan_dir = path.parent.parent
     elif (path.parent / "tasks").is_dir():
         plan_dir = path.parent
+    elif path.parent.name.startswith("integrate-") and (path.parent.parent / "tasks").is_dir():
+        plan_dir = path.parent.parent
     else:
         plan_dir = None
     reviewers = {}
