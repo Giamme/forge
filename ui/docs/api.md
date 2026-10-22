@@ -976,8 +976,10 @@ is the last line of its stderr (at most 300 characters; the rest of stderr is no
 | anything else, a signal, a missing CLI, or a 0 with no JSON object | `502` | `bad gateway` |
 | timeout | `504` | `timeout` |
 
-Unknown run keys, solo runs (they have no controls) and runs the catalog does not hold are
-`404 {"error": "not found"}`. Every write that reaches a route logs
+For the controls routes, unknown run keys, solo runs (they have no controls) and runs the
+catalog does not hold are `404 {"error": "not found"}`. The issues, dismiss, delete and config
+routes below accept plan and solo runs alike (`forge issues` and `forge runs rm` take both);
+for them only unknown keys and runs the catalog does not hold are `404`. Every write that reaches a route logs
 `forge-ui: control <route> <run key> -> <status>` unless the server runs with `--quiet`.
 
 ### `GET /api/runs/<key>/controls`
