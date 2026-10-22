@@ -25,6 +25,7 @@ usage() {
     '  ui        forge-ui, the run viewer: open [DIR], status, stop' \
     '  runs      this repo'"'"'s recent runs in the terminal: state, verdicts and run dirs' \
     '  control   a plan'"'"'s live controls: show, set (QA threshold, retries, timeouts), pin, unpin' \
+    '  config    every config source: show, and set/unset the per-repo .forge files and Jev on/off' \
     '  update    fast-forward this checkout and refresh every harness installation' \
     '  version   the installed version, and whether a newer release is out' \
     '' \
@@ -64,6 +65,10 @@ case "${1:-}" in
   control)
     shift
     exec python3 "$ROOT/scripts/forge-control.py" "$@"
+    ;;
+  config)
+    shift
+    exec python3 "$ROOT/scripts/forge-config.py" "$@"
     ;;
   update)
     shift
