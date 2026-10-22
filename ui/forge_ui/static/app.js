@@ -19,7 +19,7 @@ window.ForgeApp = (() => {
     replay: null, playing: null, speed: store.get('speed', 60), stage: null, stageFailed: null, stageLoading: false, timer: null,
     lastStatuses: new Map(), announced: 0, rendered: null, cloud: null, cloudUI: null, cloudPrefs: store.get('cloud', {}),
     models: false, modelsData: null, modelsText: null, modelsError: null, modelsPrefs: store.get('models', {}),
-    files: new Map(), filesPrefs: store.get('files', {}), runSort: store.get('run-sort', 'updated'), tablePrefs: store.get('tables', {}),
+    files: new Map(), findingsCount: new Map(), filesPrefs: store.get('files', {}), runSort: store.get('run-sort', 'updated'), tablePrefs: store.get('tables', {}),
     findings: new Map() };
   state.stageMode = state.mode === 'exec' ? 'exec' : 'plan';   // the stage's own mode, kept while Files is shown
   if (state.mode === 'files' && !window.ForgeFiles) state.mode = state.stageMode;
@@ -76,6 +76,7 @@ window.ForgeApp = (() => {
     const m = hash.match(/^#\/runs\/([^/]+)(\/.*)?$/);
     if (!m) return { key: null, sel: null };
     const d = decodeURIComponent, rest = m[2] || '';
+    if (/^\/findings\/?$/.test(rest)) return { key: d(m[1]), sel: null, findings: true };
     let sel = null, r;
     if ((r = rest.match(/^\/tasks\/([^/]+)\/diff(?:\/(?!file\/|finding\/)([^/]+))?(?:\/finding\/([^/]+))?(?:\/file\/(.+?))?\/?$/))) return { key: d(m[1]), sel: { kind: 'task', id: d(r[1]) }, diff: { kind: 'task', task: d(r[1]), source: r[2] ? d(r[2]) : 'current', finding: r[3] ? d(r[3]) : null, file: r[4] ? d(r[4]) : null } };
     if ((r = rest.match(/^\/tasks\/([^/]+)\/fractal\/([^/]+)\/diff(?:\/file\/(.+?))?\/?$/))) return { key: d(m[1]), sel: { kind: 'task', id: d(r[1]) }, diff: { kind: 'fractal', task: d(r[1]), node: d(r[2]), file: r[3] ? d(r[3]) : null } };
@@ -483,6 +484,27 @@ window.ForgeApp = (() => {
     }, 'Could not refresh the model results', error => { state.modelsError = error.message; if (state.models) renderModels(); });
   }
 
+  /* ---------- a run's open findings (#/runs/<key>/findings) ---------- */
+  function renderFindings() {
+    const main = $('main');
+    if (main.dataset.view === 'findings' && main.dataset.run === state.key) return;   // already drawn: a toggle elsewhere must not reload it
+    setView(main, 'findings'); main.dataset.run = state.key;
+    main.replaceChildren();
+    const v = el('section', undefined, 'findings-view'); v.id = 'findings-view'; main.append(v);
+    window.ForgeFindings.render(v, {
+      key: state.key, run: state.cache.get(state.key)?.data, back: '#/runs/' + encodeURIComponent(state.key),
+      tablePrefs: id => state.tablePrefs[id], saveTablePrefs: (id, p) => { state.tablePrefs = { ...state.tablePrefs, [id]: p }; store.set('tables', state.tablePrefs); },
+      onCount: (n, scope) => { if (scope !== 'run') return; state.findingsCount.set(state.key, n); },
+    });
+  }
+  function findingsLink(key) {
+    const a = el('a', undefined, 'details-btn findings-link'); a.href = '#/runs/' + encodeURIComponent(key) + '/findings';
+    a.title = 'The findings this run left unfixed: dismiss them or file them as issues';
+    const n = state.findingsCount.get(key);
+    a.append(icon('panel-right'), el('span', 'Open findings'), el('span', n === undefined ? '' : String(n), 'findings-count'));
+    return a;
+  }
+
   /* ---------- a run ---------- */
   function viewToggle() {
     const g = el('div', undefined, 'seg'); g.setAttribute('role', 'group'); g.setAttribute('aria-label', 'Rendering');
@@ -583,6 +605,7 @@ window.ForgeApp = (() => {
     rec.append(icon('panel-right'), el('span', 'Run details'));
     rec.addEventListener('click', () => { Shell.toggle('insp', true); if (state.sel) select(null); });
     acts.append(rec);
+    if (!SNAP && window.ForgeFindings) acts.append(findingsLink(state.key));
     if (!SNAP) {
       const ex = el('button', undefined, 'export-btn'); ex.type = 'button'; ex.title = 'Download this run as one HTML file to share';
       ex.append(icon('download'), el('span', 'Export…'));
@@ -864,6 +887,7 @@ window.ForgeApp = (() => {
     if (!state.key) document.body.classList.remove('no-tasks');
     if (state.cloud) { renderCloud(); return; }
     if (state.models) { renderModels(); return; }
+    if (state.key && state.findingsPage) { renderFindings(); return; }
     if (!state.key) { renderMap(); return; }
     const cached = state.cache.get(state.key);
     if (cached) renderRun(cached.data);
@@ -925,7 +949,7 @@ window.ForgeApp = (() => {
     return request('/api/runs/' + encodeURIComponent(key), result => {
       const changed = state.cache.get(key)?.text !== result.text;
       state.cache.set(key, result);
-      if (state.key === key && changed) renderRun(result.data);
+      if (state.key === key && changed && !state.findingsPage) renderRun(result.data);
     }, 'Could not refresh run', error => {
       if (state.key !== key || state.cache.has(key)) return;
       if (error.status === 404) state.errors.delete('/api/runs/' + encodeURIComponent(key));
@@ -942,7 +966,7 @@ window.ForgeApp = (() => {
       history.replaceState(null, '', '#/runs/' + encodeURIComponent(SNAP.meta.key));
       parsed = parseHash(location.hash);
     }
-    const keyChanged = parsed.key !== state.key;
+    const keyChanged = parsed.key !== state.key || (!!state.findingsPage && !parsed.findings);   // the findings page replaced the run's DOM
     state.key = parsed.key;
     const selWas = JSON.stringify(state.sel || null);
     state.sel = parsed.sel;
@@ -953,6 +977,7 @@ window.ForgeApp = (() => {
     state.convo = parsed.convo || null;
     state.cloud = parsed.cloud || null;
     state.models = !!parsed.models;
+    state.findingsPage = !!parsed.findings && !!window.ForgeFindings;
     if (state.cloud && state.cloud.model) {                  // a model's runs: the cloud, filtered to it
       cloudFilter({ models: { aliases: [state.cloud.model], role: 'any' } });
       history.replaceState(null, '', '#/cloud'); state.cloud.model = null;
@@ -967,6 +992,7 @@ window.ForgeApp = (() => {
     markSelection();
     if (state.cloud) { renderCloud(); return; }
     if (state.models) { renderModels(); loadModels(); return; }
+    if (state.key && state.findingsPage) { renderFindings(); return; }
     if (!state.key) { renderMap(); return; }
     const cached = state.cache.get(state.key);
     if (cached) {
@@ -1016,6 +1042,7 @@ window.ForgeApp = (() => {
       { id: 'cmd:refresh', label: state.paused ? 'Resume live refresh' : 'Pause live refresh', sub: 'polling of the runs', ids: ['refresh', 'pause'],
         action: () => { $('refresh').checked = state.paused; state.paused = !state.paused; refresh(); } },
     ];
+    if (state.key && !SNAP && window.ForgeFindings) out.push({ id: 'cmd:findings', label: 'Open findings of this run…', sub: 'dismiss them or file them as GitHub issues', ids: ['findings', 'issues', 'dismiss'], href: '#/runs/' + encodeURIComponent(state.key) + '/findings' });
     if (run && !SNAP) out.push({ id: 'cmd:export', label: 'Export this run as one HTML file…', sub: 'to share; opens without forge-ui', ids: ['export', 'share'], action: () => exportDialog(run) });
     if (SNAP) return out.filter(c => c.id === 'cmd:dim').concat(run ? [{ id: 'cmd:mode', label: state.mode === 'plan' ? 'Show the execution' : 'Show the planned waves', sub: '', ids: ['exec', 'plan'], action: () => setMode(state.mode === 'plan' ? 'exec' : 'plan') }] : []);
     if (run && window.ForgeFiles) out.push({ id: 'cmd:files', label: 'Show which tasks touched which files', sub: 'the Files view of this run', ids: ['files', 'heatmap'], action: () => setMode('files') });
