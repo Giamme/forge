@@ -1154,3 +1154,48 @@ dialog.fnd-dialog::backdrop { background: light-dark(rgb(17 22 19 / .35), rgb(0 
 .fnd-created { list-style: none; margin: var(--s-2) 0 0; padding: 0; }
 .fnd-created li { display: flex; align-items: flex-start; gap: 7px; overflow-wrap: anywhere; }
 .findings-link .findings-count:not(:empty) { font-family: var(--mono); }
+
+/* ---------- delete a run ---------- */
+.del-gap { align-self: stretch; width: 1px; margin: 0 6px; background: var(--rule-2); }
+button.del-key { border-color: var(--lamp-red); color: var(--lamp-red); }
+button.del-key:hover:not(:disabled) { background: var(--lamp-red); border-color: var(--lamp-red); color: light-dark(#fff, #111613); }
+button.del-key:focus-visible, button.del-go:focus-visible { outline: 2px solid var(--lamp-red); outline-offset: 2px; }
+dialog.del-dialog { width: min(680px, calc(100vw - 24px)); max-height: 90vh; overflow: auto; padding: 18px 20px; border: 1px solid var(--lamp-red); border-radius: var(--r-module); background: var(--module); color: var(--ink); box-shadow: var(--ply-2); }
+dialog.del-dialog::backdrop { background: light-dark(rgb(17 22 19 / .35), rgb(0 0 0 / .55)); }
+.del-title { margin: 0 0 var(--s-2); }
+.del-ident { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--s-2); margin: 0 0 var(--s-3); overflow-wrap: anywhere; }
+.del-id { padding: 0 5px; border: 1px solid var(--rule-2); border-radius: var(--r-small); background: var(--field); font-family: var(--mono); }
+.del-status { display: flex; align-items: flex-start; gap: 7px; margin: 0 0 var(--s-3); font-size: var(--t-sm); overflow-wrap: anywhere; }
+.del-status .lamp, .del-warning .lamp, .del-outcome-head .lamp { margin-top: .42em; }
+.del-section { margin: 0 0 var(--s-3); }
+.del-section > h3 { margin: 0 0 var(--s-2); }
+.del-facts { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 2px var(--s-3); margin: 0; font-size: var(--t-sm); }
+.del-facts dt { color: var(--muted); }
+.del-facts dd { margin: 0; overflow-wrap: anywhere; }
+.del-steps, .del-list, .del-warnings { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+.del-step, .del-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px var(--s-2); font-size: var(--t-sm); overflow-wrap: anywhere; }
+.del-step .lamp { align-self: center; }
+.del-step-fail { color: var(--lamp-red); font-weight: 600; }
+.del-row-text { min-width: 0; overflow-wrap: anywhere; }
+.del-plate-foreign { background: var(--ink-2); }
+.del-plate-dirty, .del-plate-unmerged { background: var(--lamp-red); color: light-dark(#fff, #111613); }
+.del-options { margin: 0 0 var(--s-3); padding: 0; border: 0; min-width: 0; }
+.del-options legend { margin-bottom: var(--s-2); }
+.del-opt { display: flex; gap: 10px; align-items: flex-start; margin: var(--s-2) 0; }
+.del-opt input { margin-top: 4px; }
+.del-opt span { display: grid; gap: 2px; }
+.del-opt .muted { font-size: var(--t-sm); }
+.del-warnings:empty { display: none; }
+.del-warnings { margin: 0 0 var(--s-3); }
+.del-warning { display: flex; align-items: flex-start; gap: 7px; padding: 6px var(--s-2); border: 1px solid var(--rule-2); border-radius: var(--r-key); background: var(--warn-wash); color: var(--warn-ink); font-size: var(--t-sm); overflow-wrap: anywhere; }
+.del-warning-warn { border-color: var(--lamp-red); }
+.del-confirm { display: grid; gap: 6px; margin: 0 0 var(--s-3); }
+.del-confirm-label { font-size: var(--t-sm); }
+.del-confirm-input { width: 100%; min-height: 32px; padding: 0 var(--s-2); border: 1px solid var(--rule-2); border-radius: var(--r-key); background: var(--field); font-family: var(--mono); }
+.del-confirm-input:focus-visible { outline: 2px solid var(--lamp-red); outline-offset: 1px; }
+.del-confirm-input:disabled { opacity: .45; }
+.del-outcome { margin: 0 0 var(--s-3); padding: var(--s-2); border: 1px solid var(--rule-2); border-radius: var(--r-key); }
+.del-outcome-head { display: flex; align-items: flex-start; gap: 7px; margin: 0 0 var(--s-2); }
+.del-guidance { margin: var(--s-2) 0 0; font-weight: 600; overflow-wrap: anywhere; }
+.del-archive { margin: var(--s-2) 0 0; font-size: var(--t-xs); overflow-wrap: anywhere; }
+.del-actions { display: flex; justify-content: flex-end; gap: var(--s-2); margin-top: var(--s-3); }
