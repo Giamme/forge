@@ -345,6 +345,31 @@ class InterventionTests(PreserveCase):
         self.assertTrue(any('escalations.tsv:1' in f for f in failed))
         self.assertTrue(any('control.log:2' in f for f in failed))
 
+    @unittest.skipIf(os.geteuid() == 0, 'root reads every file')
+    def test_an_unreadable_intervention_file_fails_the_import_instead_of_reading_as_empty(self):
+        for relative in ('tasks/a/escalations.tsv', 'control.log'):
+            with self.subTest(relative):
+                run = self.make_run(name='r-' + relative.replace('/', '-'))
+                target = run / relative
+                target.write_text('1700000000\t1\tsol\tluna\tpin\n' if relative.endswith('tsv')
+                                  else json.dumps(dict(at=1.0, actor='ui', action='set', task=None, key='k')) + '\n')
+                target.chmod(0)
+                self.addCleanup(target.chmod, 0o644)
+                with self.assertRaises(store.DatasetError) as caught:
+                    importer.import_run(run)
+                self.assertTrue(any(relative in f for f in caught.exception.result['failed']))
+
+    @unittest.skipIf(os.geteuid() == 0, 'root reads every directory')
+    def test_an_unreadable_subdirectory_fails_a_strict_import_instead_of_reading_as_empty(self):
+        run = self.make_run()
+        hidden = run / 'tasks' / 'a' / 'attempts'
+        hidden.chmod(0)
+        self.addCleanup(hidden.chmod, 0o755)
+        with self.assertRaises(store.DatasetError) as caught:
+            importer.import_run(run)
+        self.assertTrue(any(str(hidden) in f for f in caught.exception.result['failed']))
+        self.assertEqual(importer.import_run(run, strict=False)['failed'], caught.exception.result['failed'])
+
     def test_other_point_events_keep_a_rid_per_occurrence(self):
         run = self.make_run()
         for _ in range(2):

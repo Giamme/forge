@@ -47,9 +47,9 @@ def is_temp(path: str | None) -> bool:
     return real.startswith(_temp_roots())
 
 
-def walk_attempts(top: Path) -> list[Path]:
+def walk_attempts(top: Path, onerror=None) -> list[Path]:
     found = []
-    for directory, subdirs, _ in os.walk(top):
+    for directory, subdirs, _ in os.walk(top, onerror=onerror):
         subdirs[:] = [d for d in subdirs if d not in SKIP_DIRS and not d.startswith('review-')]
         if os.path.basename(directory) == 'attempts':
             found.extend(Path(directory) / d for d in subdirs if '-' in d)
@@ -57,18 +57,18 @@ def walk_attempts(top: Path) -> list[Path]:
     return sorted(found)
 
 
-def walk_plans(top: Path) -> list[Path]:
+def walk_plans(top: Path, onerror=None) -> list[Path]:
     found = []
-    for directory, subdirs, files in os.walk(top):
+    for directory, subdirs, files in os.walk(top, onerror=onerror):
         subdirs[:] = [d for d in subdirs if d not in SKIP_DIRS and not d.startswith('review-') and d != 'attempts']
         if 'tasks.tsv' in files:
             found.append(Path(directory))
     return sorted(found)
 
 
-def walk_fractal_tasks(top: Path) -> list[Path]:
+def walk_fractal_tasks(top: Path, onerror=None) -> list[Path]:
     found = []
-    for directory, subdirs, files in os.walk(top):
+    for directory, subdirs, files in os.walk(top, onerror=onerror):
         subdirs[:] = [d for d in subdirs if d not in SKIP_DIRS and not d.startswith('review-')
                       and d not in ('attempts', 'steps', 'runtime')]
         if 'request.json' in files and 'nodes' in subdirs and Path(directory).parent.name == 'tasks':
@@ -191,9 +191,18 @@ def import_tree(top: Path, mapper: Mapper, args, counts: dict) -> list[tuple[lis
     """Every event under `top`, grouped per repo: [(events, repo)]."""
     batches = []
     uids = {}
-    plans = {p for p in walk_plans(top)}
+    reported: set = set()
+
+    def unreadable(error):
+        # os.walk skips a directory it cannot list; import_run must not read that as empty.
+        if getattr(args, 'report_unreadable', False) and error.filename not in reported:
+            reported.add(error.filename)
+            counts.setdefault('failed', []).append('%s: cannot read: %s' % (error.filename, error.strerror or error))
+
+    onerror = unreadable
+    plans = {p for p in walk_plans(top, onerror)}
     by_task: dict = {}
-    for attempt in walk_attempts(top):
+    for attempt in walk_attempts(top, onerror):
         role = attempt.name.split('-', 1)[0]
         root = attempt.parent.parent
         ctx = h.locate(root, role)
@@ -235,7 +244,7 @@ def import_tree(top: Path, mapper: Mapper, args, counts: dict) -> list[tuple[lis
             batches.append((legacy_task_events(root, attempts, dict(prov, mode='parallel', task=root.name)), repo))
         except Exception as error:
             counts.setdefault('failed', []).append('%s: %s' % (root, error))
-    for task_dir in walk_fractal_tasks(top):
+    for task_dir in walk_fractal_tasks(top, onerror):
         try:
             ctx = h.fractal_context(task_dir, create=False)
             if ctx.get('run') and not (task_dir.parent.parent / 'dataset.uid').exists():
@@ -288,8 +297,15 @@ def import_tree(top: Path, mapper: Mapper, args, counts: dict) -> list[tuple[lis
 
 
 def _regular_text(path: Path) -> str | None:
-    """A run file's text; a link is never run data (forge's own writers refuse them too)."""
-    return None if path.is_symlink() else h.text(path)
+    """A run file's text, None if it is absent; a link is never run data (forge's own writers
+    refuse them too). A file that exists but cannot be read raises OSError: h.text would
+    report it as absent."""
+    if path.is_symlink():
+        return None
+    try:
+        return path.read_bytes().decode('utf-8', 'replace')
+    except (FileNotFoundError, NotADirectoryError):
+        return None
 
 
 def intervention_events(plan: Path, prov: dict, counts: dict) -> list[dict]:
@@ -307,9 +323,16 @@ def intervention_events(plan: Path, prov: dict, counts: dict) -> list[dict]:
         events.append(dict(rid=h.intervention_rid(name, uid, task, values), kind='event', src='import', ts=ts,
                            run=uid, run_id=run_id, mode='parallel', task=task, data=data))
 
+    def read(path):
+        try:
+            return _regular_text(path) or ''
+        except OSError as error:
+            counts.setdefault('failed', []).append('%s: cannot read: %s' % (path, error.strerror or error))
+            return ''
+
     for tdir in sorted((plan / 'tasks').glob('*')):
         path = tdir / 'escalations.tsv'
-        for number, line in enumerate((_regular_text(path) or '').splitlines(), 1):
+        for number, line in enumerate(read(path).splitlines(), 1):
             if not line.strip():
                 continue
             cells = line.split('\t')
@@ -320,7 +343,7 @@ def intervention_events(plan: Path, prov: dict, counts: dict) -> list[dict]:
                                    source=cells[4] if len(cells) == 5 and cells[4] else 'policy'),
                 tdir.name, int(cells[0]))
     path = plan / 'control.log'
-    for number, line in enumerate((_regular_text(path) or '').splitlines(), 1):
+    for number, line in enumerate(read(path).splitlines(), 1):
         if not line.strip():
             continue
         try:
@@ -433,7 +456,7 @@ def import_run(path, strict: bool = True, include_temp: bool = True) -> dict:
     CLI, test runs (a repo in a temp dir) are kept by default: live capture keeps them too.
     """
     path = Path(path).expanduser()
-    args = SimpleNamespace(include_temp=include_temp)
+    args = SimpleNamespace(include_temp=include_temp, report_unreadable=True)
     counts: dict = {'events': 0, 'new': 0}
     writer = record_strict if strict else record
 
