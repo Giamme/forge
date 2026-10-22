@@ -426,8 +426,9 @@ def import_run(path, strict: bool = True, include_temp: bool = True) -> dict:
     """Import one run dir or `.tar.gz` and say exactly what happened: {events, new, failed, ...}.
 
     Strict (the default) stores through record_strict and raises DatasetError if any event
-    could not be stored or any part of the run could not be read, after writing everything
-    that could be; the error's `result` holds the same dict. Unfinished executions are left
+    could not be stored or any part of the run could not be read; the error's `result` holds
+    the same dict. A store failure stops further writes (it is reported in `failed`), while an
+    unreadable part of the run is reported and the rest is still written. Unfinished executions are left
     for live capture and counted as `skipped_unfinished`: that is not a failure. Unlike the
     CLI, test runs (a repo in a temp dir) are kept by default: live capture keeps them too.
     """
@@ -440,7 +441,11 @@ def import_run(path, strict: bool = True, include_temp: bool = True) -> dict:
         for events, repo in batches:
             if events:
                 counts['events'] += len(events)
-                counts['new'] += writer(events, repo=repo, where='import')
+                try:
+                    counts['new'] += writer(events, repo=repo, where='import')
+                except DatasetError as error:
+                    counts.setdefault('failed', []).append('store: %s' % error)
+                    return
 
     if path.is_dir():
         write(import_tree(path, Mapper(), args, counts))
@@ -449,8 +454,6 @@ def import_run(path, strict: bool = True, include_temp: bool = True) -> dict:
         try:
             _extract(path, work)
             write(import_tree(work, _archive_mapper(work, None), args, counts))
-        except DatasetError:
-            raise
         except Exception as error:
             counts.setdefault('failed', []).append('%s: %s' % (path, error))
         finally:
@@ -482,7 +485,10 @@ def archive_run(run_dir, dest) -> dict:
         raise DatasetError('refusing to write the archive %s inside the run dir %s' % (dest, run))
     excluded: list[str] = []
     entries: list[tuple[Path, str]] = [(run, run.name)]
-    for directory, subdirs, files in os.walk(run):
+    def unreadable(error):
+        raise DatasetError('cannot read %s: %s' % (error.filename, error)) from error
+
+    for directory, subdirs, files in os.walk(run, onerror=unreadable):
         here = Path(directory)
         rel = here.relative_to(run)
         keep = []

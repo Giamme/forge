@@ -163,8 +163,9 @@ class ImportRunTests(PreserveCase):
         blocker = self.root / 'blocked'
         blocker.write_text('x')
         os.environ['FORGE_DATA_HOME'] = str(blocker)
-        with self.assertRaises(store.DatasetError):
+        with self.assertRaises(store.DatasetError) as caught:
             importer.import_run(run)
+        self.assertTrue(any(f.startswith('store:') for f in caught.exception.result['failed']))
         # Lenient mode keeps the old contract: nothing stored, nothing raised.
         self.assertEqual(importer.import_run(run, strict=False)['new'], 0)
 
@@ -222,6 +223,19 @@ class ArchiveTests(PreserveCase):
             with self.assertRaises(store.DatasetError):
                 importer.archive_run(run, dest)
         self.assertFalse((run / 'x.tar.gz').exists())
+
+    @unittest.skipIf(os.geteuid() == 0, 'root reads every directory')
+    def test_an_unreadable_subdirectory_fails_the_archive_instead_of_being_dropped(self):
+        run = self.make_run()
+        hidden = run / 'tasks' / 'hidden'
+        hidden.mkdir(parents=True)
+        (hidden / 'attempts.txt').write_text('x')
+        hidden.chmod(0)
+        self.addCleanup(hidden.chmod, 0o755)
+        dest = self.root / 'out' / 'a.tar.gz'
+        with self.assertRaises(store.DatasetError):
+            importer.archive_run(run, dest)
+        self.assertFalse(dest.exists())
 
     def test_a_failed_write_leaves_no_partial_archive(self):
         run = self.make_run()
