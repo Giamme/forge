@@ -320,7 +320,7 @@ body.no-tasks .tasks-module { display: none; }
 body[data-shell=workbench].no-tasks .run-view { grid-template-rows: auto minmax(0, 1fr) auto 0; }
 body[data-shell=immersive] .sidebar { position: absolute; z-index: 4; left: var(--gap); top: var(--gap); bottom: var(--gap); width: var(--runs-w); box-shadow: var(--ply-1); }
 body[data-shell=immersive][data-runs=closed] .sidebar { display: none; }
-body[data-shell=immersive]:is([data-view=models], [data-view=findings], [data-view=waiting], [data-view=loading], [data-view=first-run]) #main { left: calc(var(--L) - var(--gap)); }
+body[data-shell=immersive]:is([data-view=models], [data-view=findings], [data-view=settings], [data-view=waiting], [data-view=loading], [data-view=first-run]) #main { left: calc(var(--L) - var(--gap)); }
 body[data-shell=immersive] .stage-row, body[data-shell=immersive] .stage-col { position: absolute; inset: 0; }
 body[data-shell=immersive] .stage-col .stage-slot { position: absolute; inset: 0; }
 body[data-shell=immersive] .insp-module { position: absolute; z-index: 3; right: var(--gap); top: var(--gap); bottom: var(--gap); width: var(--insp-w); box-shadow: var(--ply-1); }
@@ -375,7 +375,7 @@ body[data-shell=workbench] .map-cards-host { overflow: auto; }
 body[data-shell=workbench] .map-cards { padding: var(--s-4); }
 
 /* content views: the leaderboard and the waiting pages */
-body:is([data-view=models], [data-view=findings], [data-view=waiting], [data-view=loading], [data-view=first-run]) #main { padding: var(--s-6) var(--s-6) var(--s-8); }
+body:is([data-view=models], [data-view=findings], [data-view=settings], [data-view=waiting], [data-view=loading], [data-view=first-run]) #main { padding: var(--s-6) var(--s-6) var(--s-8); }
 
 /* ---------- the stage: the panel the run is inlaid on ---------- */
 .stage-slot { position: relative; background: var(--stage-bg); }
@@ -1199,3 +1199,50 @@ dialog.del-dialog::backdrop { background: light-dark(rgb(17 22 19 / .35), rgb(0 
 .del-guidance { margin: var(--s-2) 0 0; font-weight: 600; overflow-wrap: anywhere; }
 .del-archive { margin: var(--s-2) 0 0; font-size: var(--t-xs); overflow-wrap: anywhere; }
 .del-actions { display: flex; justify-content: flex-end; gap: var(--s-2); margin-top: var(--s-3); }
+
+/* ---------- settings (#/settings): registry, Jev and the repository's .forge files ---------- */
+.settings-view { display: grid; gap: var(--s-4); max-width: 1100px; }
+.set-head { display: flex; align-items: baseline; gap: var(--s-4); flex-wrap: wrap; }
+.set-lede { margin: 0; font-size: var(--t-sm); }
+.set-picker-row { display: flex; align-items: center; flex-wrap: wrap; gap: var(--s-3); }
+.set-picker select { min-width: 22em; max-width: 100%; }
+.set-field { display: inline-flex; align-items: center; }
+.set-repo-path, .set-why, .set-state-line, .set-file-status { display: flex; align-items: flex-start; gap: 7px; margin: var(--s-2) 0 0; font-size: var(--t-sm); overflow-wrap: anywhere; }
+.set-repo-path .lamp, .set-why .lamp, .set-state-line .lamp, .set-file-status .lamp { margin-top: .42em; }
+.set-amber { --st-fill: var(--lamp-amber); }
+.set-body { display: grid; gap: var(--s-4); }
+.set-section { display: grid; gap: var(--s-2); justify-items: start; padding: var(--s-4); border: 1px solid var(--rule); border-radius: var(--r-key); background: var(--module); }
+.set-section > * { max-width: 100%; margin-block: 0; }
+.set-path { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--s-2); }
+.set-path-label { font-family: var(--font-plate); font-weight: 700; font-size: .857rem; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+.set-path .mono { overflow-wrap: anywhere; }
+.set-table-wrap { width: 100%; overflow-x: auto; border: 1px solid var(--rule); border-radius: var(--r-key); }
+.set-table th.set-alias { position: static; background: none; font-family: var(--mono); font-size: var(--t-sm); letter-spacing: 0; text-transform: none; color: var(--ink); }
+.set-switch-row { display: flex; align-items: center; gap: var(--s-3); }
+.set-state { font-weight: 600; }
+button.set-switch { gap: 8px; padding: 0 10px 0 4px; }
+.set-switch-knob { width: 26px; height: 14px; border-radius: 7px; background: var(--lamp-off); box-shadow: inset 0 0 0 1.5px var(--lamp-edge); position: relative; transition: background-color var(--relay); }
+.set-switch-knob::after { content: ''; position: absolute; top: 2px; left: 2px; width: 10px; height: 10px; border-radius: 50%; background: var(--key); box-shadow: 0 0 0 1px var(--lamp-edge); transition: translate var(--relay); }
+button.set-switch[aria-checked=true] .set-switch-knob { background: var(--lamp-green); }
+button.set-switch[aria-checked=true] .set-switch-knob::after { translate: 12px 0; }
+button.set-switch:focus-visible, .set-editor:focus-visible, .set-picker select:focus-visible { outline: 2px solid var(--route); outline-offset: 2px; }
+.set-file { display: grid; gap: var(--s-2); width: 100%; padding: var(--s-3); border: 1px solid var(--rule); border-radius: var(--r-key); background: var(--module-2); }
+.set-file > * { margin-block: 0; }
+.set-file-head { display: flex; align-items: baseline; justify-content: space-between; gap: var(--s-3); flex-wrap: wrap; }
+.set-file-name { margin: 0; font-family: var(--mono); font-size: var(--t-base); }
+.set-file-status { margin: 0; }
+.set-file-blurb, .set-file-note { font-size: var(--t-sm); }
+.set-editor { width: 100%; padding: 8px 10px; min-height: 4.5em; resize: vertical; font-family: var(--mono); font-size: var(--t-sm); line-height: 1.5; tab-size: 4; white-space: pre; overflow: auto; }
+.set-editor[aria-invalid=true] { border-color: var(--lamp-red); }
+.set-problem { font-size: var(--t-sm); }
+.set-keys { display: flex; gap: var(--s-2); }
+button.set-remove { border-color: var(--lamp-red); color: var(--lamp-red); }
+button.set-remove:hover:not(:disabled) { background: var(--lamp-red); border-color: var(--lamp-red); color: light-dark(#fff, #111613); }
+button.set-remove:focus-visible { outline: 2px solid var(--lamp-red); outline-offset: 2px; }
+.set-pre { max-height: 220px; }
+.set-result:empty { display: none; }
+.set-result { width: 100%; }
+.set-env { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 2px var(--s-4); margin: 0; width: 100%; }
+.set-env dt, .set-env dd { margin: 0; overflow-wrap: anywhere; }
+.set-env dt { color: var(--ink-2); }
+.set-readonly { margin: 0; }
