@@ -15,11 +15,22 @@ import signal
 import subprocess
 import threading
 import time
+import urllib.parse
 
 
 TIMEOUT_S = 60       # one CLI call; a test sets a shorter one
 TERM_WAIT_S = 5      # between SIGTERM and SIGKILL of a timed-out call's process group
 MAX_FIELD = 256
+ISSUES_LIST_TIMEOUT_S = 120   # a listing asks gh for the filed state
+ISSUES_FILE_TIMEOUT_S = 300   # filing up to 25 issues
+DELETE_TIMEOUT_S = 900        # removing worktrees, branches and the archive can be slow
+MAX_FPS = 25
+MAX_LABELS = 5
+MAX_LABEL = 50
+MAX_REASON = 500
+MAX_CONFIG_VALUE = 4096
+FP_RE = re.compile(r'[0-9a-f]{12}')
+CONFIG_KEYS = ('repo.verify', 'repo.setup', 'repo.verify-subset', 'jev.enabled')
 DETAIL_MAX = 300
 TIMEOUT_DETAIL = 'the operation may have partly completed; reload to see the current state'
 
@@ -166,8 +177,9 @@ def validate_body(body):
 class Context:
     """What a handler gets: the request's run key (and where it is), body and the server's tools."""
 
-    def __init__(self, server, cli, key, body, timeout):
+    def __init__(self, server, cli, key, body, timeout, query=''):
         self.server, self.cli, self.key, self.body, self.timeout = server, cli, key, body, timeout
+        self.query = query
         self.route = 'controls'  # what the write log names; a handler may narrow it
 
     def locate(self, kinds=('plan', 'solo')):
@@ -175,9 +187,11 @@ class Context:
         found = self.server.catalog.locate(self.key)
         return found[0] if found and found[1] in kinds else None
 
-    def call(self, *args):
-        """One CLI call, mapped to (status, body); the run's lock is the caller's to hold."""
-        return map_exit(run_cli([str(self.cli), *args], self.timeout))
+    def call(self, *args, limit=None):
+        """One CLI call, mapped to (status, body); the run's lock is the caller's to hold.
+
+        `limit` is the route's timeout; a timeout given to `dispatch` (a test's) replaces it."""
+        return map_exit(run_cli([str(self.cli), *args], self.timeout or limit or TIMEOUT_S))
 
     def locked(self, work):
         """work() under the run's lock; 409 busy when another write to this run is in flight."""
@@ -209,10 +223,283 @@ def _change(ctx):
     return ctx.locked(lambda: ctx.call('control', action, path, *tail, '--actor', 'ui', '--json'))
 
 
-# (method, path pattern, handler(ctx) -> (status, body)). The next write routes are added here.
+# ----------------------------------------------------------------- issues, delete and config routes
+
+def _invalid(detail):
+    return 400, {'error': 'invalid', 'detail': detail}
+
+
+def _no_control_chars(value):
+    return not any(ord(ch) < 32 or ord(ch) == 127 for ch in value)
+
+
+def _check_fields(body, allowed):
+    extra = sorted(set(body) - set(allowed))
+    if extra:
+        raise BadBody(f'unknown field {extra[0]!r}')
+
+
+def _scope(value):
+    if value not in ('run', 'repo'):
+        raise BadBody("scope must be 'run' or 'repo'")
+    return value
+
+
+def _flag(body, name, default=False):
+    value = body.get(name, default)
+    if not isinstance(value, bool):
+        raise BadBody(f'{name} must be true or false')
+    return value
+
+
+def _fingerprints(items, name='fingerprints'):
+    if not isinstance(items, list) or not 1 <= len(items) <= MAX_FPS:
+        raise BadBody(f'{name} must be a list of 1 to {MAX_FPS} fingerprints')
+    for item in items:
+        if not isinstance(item, str) or not FP_RE.fullmatch(item):
+            raise BadBody(f'{name} holds a value that is not a 12-hex fingerprint')
+    return list(dict.fromkeys(items))  # a repeated fingerprint is one finding
+
+
+def _query_params(raw, allowed):
+    try:
+        pairs = urllib.parse.parse_qsl(raw, keep_blank_values=True, strict_parsing=bool(raw), max_num_fields=16)
+    except ValueError:
+        raise BadBody('the query string is malformed')
+    params = {}
+    for name, value in pairs:
+        if name not in allowed:
+            raise BadBody(f'unknown parameter {name!r}')
+        if name in params:
+            raise BadBody(f'parameter {name!r} is given twice')
+        params[name] = value
+    return params
+
+
+def _bit(params, name):
+    value = params.get(name, '0')
+    if value not in ('0', '1'):
+        raise BadBody(f'{name} must be 0 or 1')
+    return value == '1'
+
+
+def _issues_list(ctx):
+    try:
+        params = _query_params(ctx.query, ('scope', 'offline', 'plausible', 'dismissed', 'only'))
+        scope = _scope(params.get('scope', 'run'))
+        flags = [('offline', '--offline'), ('plausible', '--include-plausible'), ('dismissed', '--include-dismissed')]
+        extra = [flag for name, flag in flags if _bit(params, name)]
+        only = []
+        if 'only' in params:
+            only = _fingerprints(params['only'].split(','), 'only')
+    except BadBody as exc:
+        return _invalid(str(exc))
+    path = ctx.locate()
+    if path is None:
+        return 404, {'error': 'not found'}
+    argv = ['issues', path, '--json']
+    if scope == 'repo':
+        argv.append('--all-runs')
+    argv += extra
+    if only:
+        argv += ['--only', ','.join(only)]
+    return ctx.call(*argv, limit=ISSUES_LIST_TIMEOUT_S)  # never cached: each request is a CLI call
+
+
+def _issues_file(ctx):
+    body = ctx.body
+    try:
+        _check_fields(body, ('scope', 'fingerprints', 'include_plausible', 'labels'))
+        scope = _scope(body.get('scope', 'run'))
+        fps = _fingerprints(body.get('fingerprints'))
+        plausible = _flag(body, 'include_plausible')
+        labels = body.get('labels', [])
+        if not isinstance(labels, list) or len(labels) > MAX_LABELS:
+            raise BadBody(f'labels must be a list of at most {MAX_LABELS} strings')
+        for label in labels:
+            if (not isinstance(label, str) or not label.strip() or len(label) > MAX_LABEL
+                    or label.startswith('-') or not _no_control_chars(label)):
+                raise BadBody(f'a label must be a text of 1 to {MAX_LABEL} characters, without control characters')
+    except BadBody as exc:
+        return _invalid(str(exc))
+    path = ctx.locate()
+    if path is None:
+        return 404, {'error': 'not found'}
+    argv = ['issues', path, '--only', ','.join(fps), '--max-issues', str(len(fps)), '--apply', '--json']
+    if scope == 'repo':
+        argv.append('--all-runs')
+    if plausible:
+        argv.append('--include-plausible')
+    for label in labels:
+        argv += ['--label', label]
+    ctx.route = 'issues'
+    return ctx.locked(lambda: ctx.call(*argv, limit=ISSUES_FILE_TIMEOUT_S))
+
+
+def _issues_dismiss(ctx):
+    body = ctx.body
+    try:
+        _check_fields(body, ('fingerprints', 'reason', 'undo'))
+        fps = _fingerprints(body.get('fingerprints'))
+        undo = _flag(body, 'undo')
+        reason = body.get('reason')
+        if reason is not None:
+            if not isinstance(reason, str) or len(reason) > MAX_REASON or not _no_control_chars(reason.replace('\n', ' ')):
+                raise BadBody(f'reason must be a text of at most {MAX_REASON} characters')
+            if undo:
+                raise BadBody('a reason goes with a dismissal, not with undo')
+    except BadBody as exc:
+        return _invalid(str(exc))
+    path = ctx.locate()
+    if path is None:
+        return 404, {'error': 'not found'}
+    argv = ['issues', path, '--json', '--undismiss' if undo else '--dismiss', ','.join(fps)]
+    if reason and reason.strip():
+        argv += ['--reason', reason]
+    ctx.route = 'undismiss' if undo else 'dismiss'
+    return ctx.locked(lambda: ctx.call(*argv))
+
+
+_dir_locks_guard = threading.Lock()
+
+
+def _server_lock(server, name):
+    """The server-wide lock object `name`, made on first use (make_server does not know these)."""
+    with _dir_locks_guard:
+        lock = getattr(server, name, None)
+        if lock is None:
+            lock = RunLocks() if name == 'dir_locks' else threading.Lock()
+            setattr(server, name, lock)
+        return lock
+
+
+def _delete(ctx):
+    body = ctx.body
+    try:
+        _check_fields(body, ('dry_run', 'archive', 'worktrees', 'branches'))
+        dry = _flag(body, 'dry_run')
+        archive = _flag(body, 'archive', True)
+        worktrees = _flag(body, 'worktrees')
+        branches = _flag(body, 'branches')
+    except BadBody as exc:
+        return _invalid(str(exc))
+    if ctx.locate() is None:
+        return 404, {'error': 'not found'}
+    ctx.route = 'delete'
+
+    def work():
+        # Looked up again under the run's lock: a delete that finished meanwhile left nothing to find.
+        path = ctx.locate()
+        if path is None:
+            return 404, {'error': 'not found'}
+        dir_locks = _server_lock(ctx.server, 'dir_locks')
+        real = os.path.realpath(path)
+        if not dir_locks.acquire(real):
+            return 409, {'error': 'busy'}
+        try:
+            argv = ['runs', 'rm', path, '--json', '--dry-run' if dry else '--yes']
+            if not archive:
+                argv.append('--no-archive')
+            if worktrees:
+                argv.append('--worktrees')
+            if branches:
+                argv.append('--branches')
+            return ctx.call(*argv, limit=DELETE_TIMEOUT_S)
+        finally:
+            dir_locks.release(real)
+    return ctx.locked(work)
+
+
+def _repo_of(path):
+    """The repository the run's own `repo` file names, or None."""
+    try:
+        with open(os.path.join(path, 'repo'), encoding='utf-8') as handle:
+            line = handle.readline().strip()
+    except (OSError, UnicodeDecodeError):
+        return None
+    return line if line and os.path.isabs(line) and _no_control_chars(line) and os.path.isdir(line) else None
+
+
+def _config_run(ctx, key):
+    """(repo, error answer) for the run key a config request names."""
+    if not isinstance(key, str) or not re.fullmatch(r'[0-9a-f]{12}', key):
+        return None, _invalid('run must be a 12-hex run key')
+    ctx.key = key
+    found = ctx.server.catalog.locate(key)
+    if not found:
+        return None, (404, {'error': 'not found'})
+    repo = _repo_of(found[0])
+    if repo is None:
+        return None, (409, {'error': 'refused', 'detail': 'the run names no repository directory'})
+    return repo, None
+
+
+def _config_get(ctx):
+    try:
+        params = _query_params(ctx.query, ('run',))
+    except BadBody as exc:
+        return _invalid(str(exc))
+    repo, error = _config_run(ctx, params.get('run'))
+    if error:
+        return error
+    ctx.route = 'config'
+    return ctx.call('config', 'show', '--repo', repo, '--json')
+
+
+def _config_value(key, body):
+    if 'unset' in body:
+        if body['unset'] is not True or 'value' in body:
+            raise BadBody('give value, or unset: true, not both')
+        if key == 'jev.enabled':
+            raise BadBody('jev.enabled cannot be unset')
+        return 'unset', None
+    value = body.get('value')
+    if not isinstance(value, str) or not value.strip():
+        raise BadBody('value must be a non-empty string')
+    if len(value) > MAX_CONFIG_VALUE or value.startswith('-') or not _no_control_chars(value.replace('\n', ' ').replace('\t', ' ')):
+        raise BadBody('value is not an acceptable text')
+    if key == 'jev.enabled' and value not in ('true', 'false'):
+        raise BadBody('jev.enabled takes true or false')
+    if key == 'repo.verify-subset' and '{files}' not in value:
+        raise BadBody('repo.verify-subset must contain {files}')
+    return 'set', value
+
+
+def _config_set(ctx):
+    body = ctx.body
+    try:
+        _check_fields(body, ('run', 'key', 'value', 'unset'))
+        key = body.get('key')
+        if key not in CONFIG_KEYS:
+            raise BadBody('key must be one of ' + ', '.join(CONFIG_KEYS))
+        verb, value = _config_value(key, body)
+    except BadBody as exc:
+        return _invalid(str(exc))
+    repo, error = _config_run(ctx, body.get('run'))
+    if error:
+        return error
+    ctx.route = 'config'
+    argv = ['config', verb, key] + ([value] if verb == 'set' else []) + ['--repo', repo, '--json']
+    lock = _server_lock(ctx.server, 'config_lock')
+    if not lock.acquire(blocking=False):
+        return 409, {'error': 'busy'}
+    try:
+        return ctx.call(*argv)
+    finally:
+        lock.release()
+
+
+# (method, path pattern, handler(ctx) -> (status, body)); group 1 of the pattern is the run key
+# (the config routes name it in the query or body instead). New routes are added here.
 ROUTES = [
     ('GET', re.compile(r'/api/runs/([0-9a-f]{12})/controls'), _show),
     ('POST', re.compile(r'/api/runs/([0-9a-f]{12})/controls'), _change),
+    ('GET', re.compile(r'/api/runs/([0-9a-f]{12})/issues'), _issues_list),
+    ('POST', re.compile(r'/api/runs/([0-9a-f]{12})/issues'), _issues_file),
+    ('POST', re.compile(r'/api/runs/([0-9a-f]{12})/issues/dismiss'), _issues_dismiss),
+    ('POST', re.compile(r'/api/runs/([0-9a-f]{12})/delete'), _delete),
+    ('GET', re.compile(r'/api/config()'), _config_get),
+    ('POST', re.compile(r'/api/config()'), _config_set),
 ]
 
 
@@ -230,12 +517,12 @@ def has_route(method, path):
     return match(method, path) is not None
 
 
-def dispatch(server, cli, method, path, body, timeout=None):
+def dispatch(server, cli, method, path, body, timeout=None, query=''):
     """Run the route for an authenticated request: (status, body, log route, run key), or None."""
     found = match(method, path)
     if found is None:
         return None
     handler, key = found
-    ctx = Context(server, cli, key, body, TIMEOUT_S if timeout is None else timeout)
+    ctx = Context(server, cli, key, body, timeout, query)
     status, obj = handler(ctx)
-    return status, obj, ctx.route, key
+    return status, obj, ctx.route, ctx.key

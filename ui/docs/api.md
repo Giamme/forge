@@ -999,6 +999,55 @@ known or a spec runs is for the CLI to say (its `400` or `409` comes back as abo
 for. A success is `200 {"ok": true, "changed": {...}, "applies": "...", "controls": {...}}`, where
 `controls` is the `GET` object after the change.
 
+### `GET /api/runs/<key>/issues`
+
+`forge issues <dir> --json [flags]`: the findings the run left open. Query (all optional, an
+unknown or repeated parameter is a `400`): `scope=run|repo` (`repo` adds `--all-runs`),
+`offline=0|1` (`--offline`), `plausible=0|1` (`--include-plausible`), `dismissed=0|1`
+(`--include-dismissed`), `only=fp,fp` (`--only`; one to 25 fingerprints, each `^[0-9a-f]{12}$`).
+`200` with the CLI's object (`findings`, ...). **Never cached**: every request is one CLI call; the
+page asks for an `offline=1` listing first for speed and then for the full one. It takes no lock (a
+busy CLI is its own exit 3, `409`). No token is needed. Plan and solo runs. Timeout 120 s.
+
+### `POST /api/runs/<key>/issues`
+
+File issues for findings. Body: `{"scope": "run"|"repo" (default run), "fingerprints": [1 to 25 of
+^[0-9a-f]{12}$], "include_plausible": bool, "labels": [at most 5 texts of 1 to 50 characters, no
+control character, not starting with "-"]}`; any other field is a `400`. Runs `issues <dir> --only
+<fps> --max-issues <number of fps> --apply --json` plus `--all-runs`, `--include-plausible` and one
+`--label` per label. `200` with the CLI's object. Under the run's write lock (`409 busy`). Timeout
+300 s.
+
+### `POST /api/runs/<key>/issues/dismiss`
+
+Body: `{"fingerprints": [1 to 25], "reason"?: text of at most 500 characters, "undo"?: bool}`. Runs
+`issues <dir> --json --dismiss <fps> [--reason R]`, or `--undismiss <fps>` when `undo` is true
+(a reason with `undo` is a `400`). Under the run's write lock. Timeout 60 s.
+
+### `POST /api/runs/<key>/delete`
+
+Body: `{"dry_run": bool (false), "archive": bool (true), "worktrees": bool (false), "branches": bool
+(false)}`. Runs `runs rm <dir> --json` with `--dry-run` or `--yes`, plus `--no-archive` when
+`archive` is false, `--worktrees`, `--branches`. `200` with the CLI's object. The CLI prints its
+JSON on failure too, so a non-zero exit answers with that object as `result` (its `steps` show what
+completed): exit 2 `400`, exit 3 (busy or the run is active) `409`, exit 4 (failed during
+deletion) `500`. Deletion holds the run's write lock and a server-wide lock on the run's real
+directory (`409 busy` when either is held). The run key is looked up again under the lock, and
+once the directory is gone every later request for that key is `404`. Timeout 900 s.
+
+### `GET /api/config?run=<key>` and `POST /api/config`
+
+The repository is the run's own `repo` file (first line, an existing absolute directory; else
+`409`), never a client field. `GET` runs `config show --repo <repo> --json` and answers with its
+object. `POST` takes `{"run": <key>, "key": one of repo.verify, repo.setup, repo.verify-subset,
+jev.enabled, "value": text | "unset": true}` (exactly one of the two; any other field, `repo`
+included, is a `400`) and runs `config set <key> <value> --repo <repo> --json` or `config unset
+<key> --repo <repo> --json`. A value is a non-empty text of at most 4096 characters without
+control characters (newline and tab are allowed), not starting with `-`; `jev.enabled` takes
+`true` or `false` and cannot be unset; `repo.verify-subset` must contain `{files}`. `200` with the
+CLI's object (`ok`, `key`, `previous`, `value`). Writes serialize on one server-wide config lock
+(`409 busy`). Unknown run `404`. Timeout 60 s.
+
 ## Status vocabulary for the page and the graph
 
 Both the page and the graph mark a task by its status with the CSS class

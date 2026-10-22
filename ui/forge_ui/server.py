@@ -274,7 +274,7 @@ class Handler(BaseHTTPRequestHandler):
         value = api_get(catalog, path)
         if value is not NO_ROUTE:
             return self._found(value)
-        routed = control.dispatch(self.server, forge_cli, 'GET', path, None)
+        routed = control.dispatch(self.server, forge_cli, 'GET', path, None, query=self.query)
         if routed:
             return self._json(routed[0], routed[1])
         if path == '/':
