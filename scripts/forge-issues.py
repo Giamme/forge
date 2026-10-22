@@ -145,11 +145,12 @@ def task_findings(task_dir: Path, plan_dir, include_plausible, reviewers, review
     state = results.get(task, status)
     meta = {"task": task, "commit": read(task_dir / "merged") or read(task_dir / "reviewed.commit"),
             "reviewer": reviewers.get(task) or reviewer_spec(task_dir)}
+    whole_run = review is True
     if review is None:
         review = not status and task not in results and not (task_dir / "known_issues.md").exists()
     if review:
         # A review with no task behind it (whole-run review): everything it found is still open.
-        found = [{**f, **meta, "task": None, "origin": "review" if f["confidence"] == "CONFIRMED" else "plausible", "threshold": "-"}
+        found = [{**f, **meta, "task": None if whole_run else task, "origin": "review" if f["confidence"] == "CONFIRMED" else "plausible", "threshold": "-"}
                  for f in parse_findings(read(task_dir / "qa.last"))
                  if f["confidence"] == "CONFIRMED" or include_plausible]
         return found, None
@@ -269,12 +270,12 @@ def collect(path: Path, include_plausible, all_runs=False):
             plan_root = parent.parent
         else:
             plan_root = parent
-        is_review = not is_task and path.name == "qa.last" and not read(parent / "status")
+        is_review = not is_task and not read(parent / "status")
         meta = {"task": None if is_review else parent.name, "threshold": "-" if is_review else read(parent / "qa_threshold") or "?",
                 "commit": read(parent / "merged") or read(parent / "reviewed.commit"),
                 "reviewer": reviewer_spec(parent)}
         meta["plan"], meta["plan_dir"] = (plan_root.name, str(plan_root))
-        if is_review and path.name == "qa.last":
+        if is_review:
             found = [{**f, **meta, "origin": "review" if f["confidence"] == "CONFIRMED" else "plausible"}
                      for f in parse_findings(read(path)) if f["confidence"] == "CONFIRMED" or include_plausible]
         else:

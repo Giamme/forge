@@ -278,6 +278,26 @@ class ForgeIssuesTests(unittest.TestCase):
             out = self.run_issues(str(self.plan / rel), '--offline', '--repo', 'o/r')
             self.assertEqual(pick(out), [('plan', str(self.plan.resolve()), None, 'review')], rel)
 
+    def test_review_known_issues_file_input_matches_directory(self):
+        line = '- [P2][CONFIRMED] src/a.ts:1 — Review thing.'
+        cur = self.review_dir(self.plan, 'final-review-1-1', [line])
+        (cur / 'known_issues.md').write_text(line + '\n')
+        os.symlink('final-review-1-1', self.plan / 'final-review')
+        pick = lambda o: [(f['plan'], f['task'], f['origin']) for f in o['findings'] if f['file'] == 'src/a.ts']
+        want = pick(self.run_issues(str(self.plan), '--offline', '--repo', 'o/r'))
+        self.assertEqual(want, [('plan', None, 'review')])
+        out = self.run_issues(str(self.plan / 'final-review' / 'known_issues.md'), '--offline', '--repo', 'o/r')
+        self.assertEqual(pick(out), want)
+        self.assertIn('source=forge:plan/final-review', out['drafts'][0]['body'])
+
+    def test_unfinished_task_keeps_its_name(self):
+        pend = self.plan / 'tasks' / 'pending'; pend.mkdir()
+        (pend / 'qa.last').write_text('- [P1][CONFIRMED] src/b.ts:1 — Pending thing.\n')
+        for arg in (str(self.plan), str(pend)):
+            out = self.run_issues(arg, '--offline', '--repo', 'o/r')
+            got = [f['task'] for f in out['findings'] if f['file'] == 'src/b.ts']
+            self.assertEqual(got, ['pending'], arg)
+
     def test_all_runs_dedupes_to_the_newest_plan(self):
         xdg = self.dir / 'xdg'
         env = dict(self.env, XDG_CONFIG_HOME=str(xdg))
