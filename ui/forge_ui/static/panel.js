@@ -1,6 +1,7 @@
 /* forge-ui inspector: what a selected node is, which model owned it, what prompt launched it, how long it
    took and what its reviewer found. Defines window.ForgePanel.render(host, ctx). All API values enter the
-   DOM as text. Large texts (prompts, reports) come from the lazy endpoints and are fetched once per node. */
+   DOM as text. Large texts (prompts, reports) come from the lazy endpoints and are fetched once per node.
+   The run's and a task's write controls are controls.js's (ForgeControls); this file only says where they stand. */
 window.ForgePanel = (() => {
   'use strict';
   const RM = window.ForgeRunModel;
@@ -59,6 +60,15 @@ window.ForgePanel = (() => {
     return a;
   }
   function muted(parent, text) { parent.append(el('p', text, 'muted')); }
+  // who decided an escalation: policy, a human's retry --dwarf (retry) or a pin; older rows read as policy
+  const sourcePlate = source => el('span', source || 'policy', 'plate src-plate src-' + String(source || 'policy').replace(/[^a-z]/g, ''));
+  // the write controls of a plan run (task undefined) or of one of its tasks; a page without controls.js says it is read-only
+  function controlsSection(host, ctx, task) {
+    if (ctx.run.kind === 'solo') return;
+    if (window.ForgeControls && window.ForgeUI && window.ForgeUI.confirmInline) { window.ForgeControls[task ? 'mountTask' : 'mountRun'](host, ctx, task); return; }
+    const s = section(host, 'Controls');
+    muted(s, 'Read-only: this page cannot change the run.');
+  }
   // a link into the diff viewer (ctx.diffHash is absent where there is no viewer)
   function diffLink(ctx, text, spec, cls = 'diff-link') { if (!ctx.diffHash) return null; const a = el('a', text, cls); a.href = ctx.diffHash(spec); return a; }
   // a lazy resource: returns cached data, or starts the fetch and re-renders when it lands
@@ -216,6 +226,7 @@ window.ForgePanel = (() => {
       if (F.final.findings) findingCounts(f, F.final.findings);
     }
     if (list(run.deferrals).length) details(host, `Deferred tasks (${run.deferrals.length})`, run.deferrals.join('\n'), 'deferrals');
+    controlsSection(host, ctx);
     runRecord(host, ctx);
     muted(host, 'Select a task, an attempt or a finish node on the map or in the table to see its prompts, models, timings and findings.');
   }
@@ -239,7 +250,11 @@ window.ForgePanel = (() => {
     fields(ms, [['Dwarf', plate(task.dwarf)], ['Reviewer', plate(task.qa)], ['Attempt', task.attempt]]);
     const route = list(task.route).slice(-1)[0];
     if (route) fields(ms, [['Routed', `${display(route.chosen)} from ${list(route.candidates).join(', ') || '—'}${route.explored ? ` (exploratory, p=${display(route.propensity)})` : ''}`, true], ['Tier · ε', `${display(route.tier)} · ${display(route.epsilon)}`]]);
-    for (const e of list(task.escalations)) muted(ms, `Escalated after attempt ${display(e.attempt)}: ${display(e.from)} → ${display(e.to)} at ${time(e.at)}`);
+    for (const e of list(task.escalations)) {
+      const line = el('p', `Escalated after attempt ${display(e.attempt)}: ${display(e.from)} → ${display(e.to)} at ${time(e.at)} `, 'muted');
+      line.append(sourcePlate(e.source)); ms.append(line);
+    }
+    controlsSection(host, ctx, task);
 
     // timings
     const tt = RM.taskTimes(task, run, now);
@@ -250,7 +265,7 @@ window.ForgePanel = (() => {
 
     // attempts, each with its dwarf and its review
     const as = section(host, 'Attempts');
-    const tp = RM.taskParts(task);
+    const tp = RM.taskParts(task), usedEscalations = new Set();
     if (!list(task.executions).length) muted(as, 'No executions recorded yet' + (task.status === 'PENDING' ? ': this task has not started.' : '.'));
     for (const z of tp.zones) {
       const box = el('div', undefined, 'attempt');
@@ -275,7 +290,12 @@ window.ForgePanel = (() => {
         if (go.childElementCount) line.append(go);
         box.append(line);
       }
-      for (const l of tp.links.filter(l => l.kind === 'escalation' && z.parts.includes(l.to))) box.append(el('p', `escalated: ${l.label}`, 'muted'));
+      for (const l of tp.links.filter(l => l.kind === 'escalation' && z.parts.includes(l.to))) {
+        const line = el('p', `escalated: ${l.label} `, 'muted');
+        const e = list(task.escalations).find(x => !usedEscalations.has(x) && `${x.from || '?'} → ${x.to || '?'}` === l.label);   // the link carries only its label
+        if (e) { usedEscalations.add(e); line.append(sourcePlate(e.source)); }
+        box.append(line);
+      }
       as.append(box);
     }
 

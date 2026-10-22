@@ -583,6 +583,52 @@ pre.cmd { max-height: none; }
 .ft-d1 { padding-left: 16px; } .ft-d2 { padding-left: 32px; } .ft-d3 { padding-left: 48px; } .ft-d4 { padding-left: 64px; } .ft-d5 { padding-left: 80px; } .ft-d6 { padding-left: 96px; }
 .ft-node:not(.ft-d0) { border-left: 1px solid var(--rule-2); margin-left: 4px; }
 
+/* ---------- write helpers (uikit.js) ---------- */
+/* a result line: a lamp and a sentence; a green lamp for done, a red one for refused or failed */
+p.ui-outcome { display: flex; align-items: flex-start; gap: 7px; margin: 6px 0 0; font-size: var(--t-sm); overflow-wrap: anywhere; }
+.ui-outcome .lamp { margin-top: .42em; }
+/* an inline confirm: a strip with Confirm and Cancel keys, its lamp the route lamp (red for a destructive change) */
+.ui-confirm { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-2); margin: var(--s-2) 0 0; padding: 6px var(--s-2); border: 1px solid var(--route); border-radius: var(--r-key); background: var(--key); }
+.ui-confirm.danger { border-color: var(--lamp-red); }
+.ui-confirm-text { flex: 1 1 14em; min-width: 0; font-size: var(--t-sm); overflow-wrap: anywhere; }
+.ui-confirm button { min-height: 28px; }
+button.ui-danger { background: var(--lamp-red); border-color: var(--lamp-red); color: light-dark(#fff, #111613); }
+button.ui-danger:hover:not(:disabled) { background: var(--lamp-red); color: light-dark(#fff, #111613); opacity: .9; }
+input:disabled { opacity: .45; cursor: default; }
+
+/* ---------- the inspector's controls (controls.js) ---------- */
+/* each control is a tonal well on the module: its caption, the keys or field, what it means, and its result */
+.ctl-body { display: grid; gap: var(--s-2); }
+.ctl-row { display: grid; gap: 6px; padding: var(--s-2) 10px; border: 1px solid var(--rule); border-radius: var(--r-key); background: var(--module-2); }
+.ctl-status:empty, .ctl-notes:empty, .ctl-confirm:empty, .ctl-out:empty { display: none; }
+.ctl-label { font-family: var(--font-plate); font-weight: 700; font-size: .786rem; letter-spacing: .07em; text-transform: uppercase; color: var(--muted); cursor: default; }
+label.ctl-label { cursor: pointer; }
+p.ctl-live { display: flex; align-items: center; gap: var(--s-2); margin: 0 0 var(--s-1); }
+p.ctl-note { margin: 0; }
+p.ctl-help, p.ctl-why { margin: 0; font-size: var(--t-xs); color: var(--muted); }
+p.ctl-why { display: flex; align-items: center; gap: 6px; }
+p.ctl-why::before { content: ''; width: 7px; height: 7px; border-radius: 50%; background: var(--lamp-off); flex: none; }
+.ctl-bank { flex-wrap: wrap; max-width: 100%; gap: 2px; justify-self: start; }
+.ctl-bank button.is-draft { box-shadow: inset 0 0 0 1px var(--route); }
+.ctl-set, .ctl-pin { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.ctl-set input { width: 6.5em; font-family: var(--mono); font-variant-numeric: tabular-nums; }
+.ctl-pin { align-items: end; }
+.ctl-pin .ctl-alias, .ctl-pin .ctl-harness { flex: 1 1 9em; min-width: 0; }
+.ctl-pin .ctl-effort { flex: 1 1 100%; }
+.ctl-pin input { min-width: 0; }
+.ctl-unit { color: var(--muted); font-size: var(--t-xs); }
+.ctl-set button, .ctl-pin > button { min-height: 28px; }
+.ctl-set button[aria-pressed=true] { background: var(--key); box-shadow: inset 0 0 0 1px var(--rule-2); color: var(--muted); }
+.ctl-pin-now { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; }
+p.ctl-stop { display: flex; align-items: center; gap: 7px; margin: 0; padding: 4px var(--s-2); border-radius: var(--r-small); background: var(--warn-wash); color: var(--warn-ink); font-weight: 600; }
+.ctl-log { margin-top: var(--s-1); }
+.ctl-changes { list-style: none; margin: 4px 0 0; padding: 0; display: grid; gap: 4px; font-size: var(--t-xs); }
+.ctl-changes li { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; }
+.ctl-what { color: var(--ink); font-weight: 600; }
+.ctl[aria-busy=true] .ctl-row { opacity: .7; }
+/* who decided an escalation, on the line that reports it */
+.src-plate { font-size: .714rem; padding: 0 5px; vertical-align: 1px; }
+
 /* ---------- tables ---------- */
 .table-scroll { overflow: auto; max-width: 100%; border: 1px solid var(--rule); border-radius: var(--r-key); background: var(--module); }
 table { width: 100%; border-collapse: separate; border-spacing: 0; text-align: left; font-variant-numeric: tabular-nums; }

@@ -13,7 +13,9 @@ from pathlib import Path
 import re
 import tempfile
 import threading
+import time
 import unittest
+from unittest import mock
 
 try:
     from playwright.sync_api import sync_playwright
@@ -665,4 +667,187 @@ class FirstRun(unittest.TestCase):
         F.make_plan(self.root / 'p')
         page.wait_for_selector('#map-filters', timeout=30000)
         self.assertEqual(page.locator('#first-run').count(), 0)
+        self.assertClean(page)
+
+
+@unittest.skipUnless(sync_playwright, 'install Python Playwright to run browser checks')
+class Controls(unittest.TestCase):
+    """The inspector's write controls: a fresh live plan and server per test, and the real `forge control` behind them."""
+    open, assertClean = Page.open, Page.assertClean
+
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory(prefix='forge-ui-controls-')
+        self.addCleanup(temp.cleanup)
+        self.plan = F.make_plan(Path(temp.name) / 'p')
+        (self.plan / 'scheduler.live').write_text(json.dumps({'pid': os.getpid()}))        # a live scheduler: this process
+        self.key = reader.run_key(self.plan)
+        _serve(self, reader.Catalog(plans=[self.plan], registry=False))
+        self.addCleanup(lambda: (self.server.shutdown(), self.server.server_close(), self.thread.join(timeout=2)))
+        env = mock.patch.dict(os.environ, {'FORGE_DATASET': 'off', 'FORGE_CONTROL_DOCTOR': 'true'})   # no dataset event, no doctor run
+        env.start()
+        self.addCleanup(env.stop)
+        self.ticks = 0
+
+    def inspect(self, page, task=None):
+        page.goto(self.url + '#/runs/' + self.key + (f'/tasks/{task}' if task else ''))
+        if task is None:
+            page.click('.details-btn')                                      # the run's own inspector
+        page.wait_for_selector('#inspector .ctl [data-row]')
+
+    def poll(self):
+        """A change the page's next poll reads (tasks.tsv is newer), so it rebuilds the inspector."""
+        self.ticks += 1
+        stamp = time.time() + self.ticks
+        os.utime(self.plan / 'tasks.tsv', (stamp, stamp))
+
+    def rebuilt(self, page):
+        """Wait until the inspector was built again: the marker put on its first heading is gone."""
+        page.wait_for_function("() => !document.querySelector('#inspector h3').dataset.mark", timeout=20000)
+
+    def mark(self, page):
+        page.evaluate("document.querySelector('#inspector h3').dataset.mark = '1'")
+
+    def focused(self, page, selector):
+        return page.evaluate("sel => document.activeElement === document.querySelector(sel)", selector)
+
+    def test_the_run_shows_the_effective_values_and_the_live_budgets(self):
+        page = self.open(cdn=False, view='2d')
+        self.inspect(page)
+        row = lambda key: f'#inspector [data-row={key}]'
+        self.assertEqual(page.get_attribute(row('qa-threshold') + ' button[aria-pressed=true]', 'data-value'), 'P2')
+        self.assertEqual(page.input_value(row('timeout') + ' input'), '60')         # 3600 s, shown in minutes
+        self.assertEqual(page.input_value(row('escalate-after') + ' input'), '1')
+        self.assertEqual(page.input_value(row('verify-retries') + ' input'), '1')
+        self.assertTrue(page.is_enabled(row('retry-budget') + ' input'))
+        self.assertTrue(page.is_visible('#inspector .ctl-live .lamp.st-running'))
+        self.assertIn('least severe finding that still blocks', page.text_content(row('qa-threshold')))
+        self.assertIn('none yet', page.text_content('#inspector .ctl-log'))
+        self.assertClean(page)
+
+    def test_the_budgets_are_off_unless_a_scheduler_is_live(self):
+        (self.plan / 'scheduler.live').unlink()
+        page = self.open(cdn=False, view='2d')
+        self.inspect(page)
+        for key in ('retry-budget', 'infra-retries'):
+            self.assertFalse(page.is_enabled(f'#inspector [data-row={key}] input'), key)
+            self.assertIn('only while a run is in progress', page.text_content(f'#inspector [data-row={key}]'))
+        self.assertTrue(page.is_enabled('#inspector [data-row=timeout] input'))
+        self.assertTrue(page.is_visible('#inspector .ctl-live .lamp.st-pending'))
+        self.inspect(page, 'graph')
+        self.assertFalse(page.is_enabled('#inspector [data-row=retry-budget] input'))
+        self.assertTrue(page.is_enabled('#inspector [data-row=qa-threshold] button[data-value=P1]'))
+        self.assertClean(page)
+
+    def test_a_change_is_confirmed_sent_to_the_cli_and_shown(self):
+        page = self.open(cdn=False, view='2d')
+        self.inspect(page)
+        key = '#inspector [data-row=qa-threshold]'
+        page.click(key + ' button[data-value=P1]')
+        page.wait_for_selector('#inspector .ui-confirm')
+        self.assertEqual(page.text_content('#inspector .ui-confirm .ui-confirm-text'), "Set QA threshold to P1? Takes effect at each task's next attempt")
+        page.click('#inspector .ui-confirm button:text-is("Cancel")')
+        self.assertEqual((self.plan / 'qa_threshold').read_text().strip(), 'P2', 'cancelled: nothing was sent')
+        page.click(key + ' button[data-value=P1]')
+        page.click('#inspector .ui-confirm button:text-is("Confirm")')
+        page.wait_for_selector(key + ' .ui-outcome.ok')
+        self.assertTrue(page.text_content(key + ' .ui-outcome').startswith('Saved. Applies at'))
+        self.assertEqual((self.plan / 'qa_threshold').read_text().strip(), 'P1')
+        self.assertEqual(page.get_attribute(key + ' button[aria-pressed=true]', 'data-value'), 'P1')
+        self.assertEqual(page.evaluate('document.activeElement.dataset.value'), 'P1', 'the keyboard stays on the key after the rows are drawn again')
+        page.wait_for_function("() => document.querySelector('#inspector .ctl-changes li')")
+        last = page.text_content('#inspector .ctl-changes li')
+        self.assertTrue(last.startswith('uiQA threshold') and 'P2 → P1' in last, last)
+        # a value the server refuses comes back on the row, in words, and nothing changes
+        page.fill('#inspector [data-row=timeout] input', 'soon')
+        page.click('#inspector [data-row=timeout] button:text-is("Set")')
+        page.wait_for_selector('#inspector [data-row=timeout] .ui-outcome.bad')
+        self.assertIn('minutes', page.text_content('#inspector [data-row=timeout] .ui-outcome'))
+        self.assertEqual((self.plan / 'timeout').read_text().strip(), '3600')
+        self.assertClean(page)
+
+    def test_a_value_being_typed_survives_the_polls_that_rebuild_the_inspector(self):
+        page = self.open(cdn=False, view='2d')
+        self.inspect(page)
+        field = '#inspector [data-row=timeout] input'
+        page.click(field)
+        page.keyboard.press('End'); page.keyboard.type('5')                 # 605: typed, not saved
+        page.evaluate("sel => document.querySelector(sel).setSelectionRange(0, 0)", field)   # the caret is not at the end
+        self.mark(page); self.poll(); self.rebuilt(page)
+        self.assertEqual(page.input_value(field), '605', 'the poll did not wipe the half-typed value')
+        self.assertTrue(self.focused(page, field), 'nor the focus')
+        page.keyboard.type('1')
+        self.assertEqual(page.input_value(field), '1605', 'nor the caret')
+        self.assertTrue(page.is_enabled('#inspector [data-row=timeout] button:text-is("Set")'))
+        # the rest of the inspector is not frozen: it was built again
+        self.mark(page); self.poll(); self.rebuilt(page)
+        self.assertEqual(page.input_value(field), '1605')
+        # choosing another task resets it, and so does coming back
+        page.evaluate("location.hash = '#/runs/%s/tasks/graph'" % self.key)
+        page.wait_for_selector('#inspector [data-row=pin]')
+        page.evaluate("location.hash = '#/runs/%s'" % self.key)
+        page.wait_for_selector(field)
+        self.assertEqual(page.input_value(field), '60')
+        self.assertFalse(self.focused(page, field))
+        self.assertClean(page)
+
+    def test_a_task_being_edited_keeps_its_fields_and_an_open_confirm_across_polls(self):
+        page = self.open(cdn=False, view='2d')
+        self.inspect(page, 'graph')
+        alias = '#inspector [data-row=pin] .ctl-alias input'
+        page.fill(alias, 'so')
+        page.click('#inspector [data-row=pin] button[data-value=high]')
+        page.click('#inspector [data-row=qa-threshold] button[data-value=P1]')
+        page.wait_for_selector('#inspector .ui-confirm')
+        self.mark(page); self.poll(); self.rebuilt(page)
+        self.assertEqual(page.input_value(alias), 'so')
+        self.assertEqual(page.get_attribute('#inspector [data-row=pin] button[aria-pressed=true]', 'data-value'), 'high')
+        self.assertEqual(page.locator('#inspector .ui-confirm').count(), 1, 'the open confirm stays')
+        self.assertEqual(page.evaluate('document.activeElement.textContent'), 'Confirm')
+        page.keyboard.press('Escape')
+        self.assertEqual(page.locator('#inspector .ui-confirm').count(), 0)
+        self.assertEqual(page.evaluate('document.activeElement.dataset.value'), 'P1', 'focus goes back to the key that asked')
+        self.assertFalse((self.plan / 'tasks/graph/qa_threshold').exists(), 'Escape sent nothing')
+        self.assertClean(page)
+
+    def test_pinning_a_task_and_taking_the_pin_off_go_through_the_cli(self):
+        page = self.open(cdn=False, view='2d')
+        self.inspect(page, 'graph')
+        row = '#inspector [data-row=pin]'
+        page.fill(row + ' .ctl-alias input', 'sol')
+        page.click(row + ' button[data-value=high]')
+        page.click(row + ' button.primary')
+        page.wait_for_selector('#inspector .ui-confirm')
+        self.assertIn("Pin task `graph`'s next retry to `sol:high`", page.text_content('#inspector .ui-confirm'))
+        page.click('#inspector .ui-confirm button:text-is("Confirm")')
+        page.wait_for_selector(row + ' .ctl-pin-now .model-plate')
+        self.assertEqual((self.plan / 'tasks/graph/escalation.pin').read_text().strip(), 'sol:high')
+        self.assertIn('not a QA-only resume', page.text_content(row))
+        page.click(row + ' button:text-is("Unpin")')
+        page.click('#inspector .ui-confirm button:text-is("Confirm")')
+        page.wait_for_function("() => !document.querySelector('#inspector [data-row=pin] .ctl-pin-now .model-plate')")
+        self.assertFalse((self.plan / 'tasks/graph/escalation.pin').exists())
+        self.assertClean(page)
+
+    def test_a_merged_task_has_nothing_to_change_and_a_stopped_policy_says_so(self):
+        (self.plan / 'tasks/docs').mkdir(exist_ok=True)
+        (self.plan / 'tasks/docs/escalation.stop').write_text('')
+        page = self.open(cdn=False, view='2d')
+        self.inspect(page, 'docs')
+        self.assertIn('policy stopped: split or pin a model', page.text_content('#inspector [data-row=pin]'))
+        page.goto(self.url + '#/runs/' + self.key + '/tasks/reader')
+        page.wait_for_selector('#inspector .ctl .ctl-note')
+        self.assertIn('Merged', page.text_content('#inspector .ctl'))
+        self.assertEqual(page.locator('#inspector .ctl button, #inspector .ctl input').count(), 0)
+        self.assertClean(page)
+
+    def test_a_read_only_server_shows_a_note_and_no_write_controls(self):
+        ro = make_server(reader.Catalog(plans=[self.plan], registry=False), port=0, quiet=True, read_only=True)
+        thread = threading.Thread(target=ro.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(lambda: (ro.shutdown(), ro.server_close(), thread.join(timeout=2)))
+        page = self.open(cdn=False, view='2d')
+        page.goto(f'http://127.0.0.1:{ro.server_address[1]}/#/runs/{self.key}/tasks/graph')
+        page.wait_for_selector('#inspector .ctl .ctl-note')
+        self.assertIn('Read-only', page.text_content('#inspector .ctl'))
+        self.assertEqual(page.locator('#inspector .ctl button, #inspector .ctl input, #inspector .ctl form').count(), 0)
         self.assertClean(page)
