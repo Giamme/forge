@@ -206,27 +206,47 @@ class ConfigTests(EndpointCase):
         self.assertEqual(self.calls(), [])
 
 
-class RealCliTest(unittest.TestCase):
+class RouteNameTests(EndpointCase):
+    """A refused request is logged under its own route and run, as api.md promises."""
+
+    def named(self, method, path, body, query=''):
+        return control.dispatch(self.server, self.fake, method, path, body, query=query)[2:]
+
+    def test_refused_requests_keep_their_route_and_key(self):
+        k = self.key
+        cases = [(('POST', f'/api/runs/{k}/issues', {}), ('issues', k)),
+                 (('POST', f'/api/runs/{k}/issues/dismiss', {}), ('dismiss', k)),
+                 (('POST', f'/api/runs/{k}/issues/dismiss', {'undo': True}), ('undismiss', k)),
+                 (('POST', f'/api/runs/{k}/delete', {'dry_run': 1}), ('delete', k)),
+                 (('POST', '/api/config', {'run': k, 'key': 'nope'}), ('config', k)),
+                 (('GET', '/api/config', None, f'run={k}&repo=/x'), ('config', k)),
+                 (('GET', f'/api/runs/{k}/issues', None, 'scope=x'), ('issues', k))]
+        for args, expected in cases:
+            self.assertEqual(self.named(*args), expected, args)
+        self.assertEqual(self.calls(), [])
+
+
+class RealCliTest(ControlApiCase):
+    """The real `forge runs rm --dry-run --json`, through the HTTP server, on a temp plan copy."""
+
+    def setUp(self):
+        super().setUp()
+        home = self.base / 'home'
+        home.mkdir()
+        env = {'HOME': str(home), 'XDG_CONFIG_HOME': str(self.base / 'config'), 'XDG_STATE_HOME': str(self.base / 'state'),
+               'XDG_DATA_HOME': str(self.base / 'data'), 'FORGE_DATA_HOME': str(self.base / 'data'),
+               'FORGE_DATASET': 'off'}
+        for patcher in (patch.dict(os.environ, env), patch.object(ui_server, 'forge_cli', ROOT / 'forge')):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
     def test_delete_dry_run_through_the_api(self):
-        with tempfile.TemporaryDirectory() as temp:
-            base = Path(temp)
-            plan = base / 'plan'
-            shutil.copytree(FIXTURES / 'plan-full', plan)
-            home = base / 'home'
-            home.mkdir()
-            env = {'HOME': str(home), 'XDG_CONFIG_HOME': str(base / 'config'), 'XDG_STATE_HOME': str(base / 'state'),
-                   'XDG_DATA_HOME': str(base / 'data'), 'FORGE_DATA_HOME': str(base / 'data')}
-            with patch.dict(os.environ, env):
-                catalog = reader.Catalog(plans=[plan], registry=False)
-                ctx_server = type('S', (), {'catalog': catalog, 'run_locks': control.RunLocks()})()
-                key = reader.run_key(plan)
-                status, body, route, ran = control.dispatch(ctx_server, ROOT / 'forge', 'POST',
-                                                            f'/api/runs/{key}/delete', {'dry_run': True})
-            self.assertEqual(route, 'delete')
-            self.assertTrue(plan.is_dir(), 'a dry run changes nothing')
-            self.assertEqual(status, 200, body)
-            self.assertTrue(body['dry_run'] and body['ok'])
-            self.assertEqual([step['step'] for step in body['steps']][-1], 'unregister')
+        status, body = self.post({'dry_run': True}, f'/api/runs/{self.key}/delete')
+        self.assertEqual(status, 200, body)
+        self.assertTrue(self.plan.is_dir(), 'a dry run changes nothing')
+        self.assertTrue(body['dry_run'] and body['ok'])
+        self.assertEqual([step['step'] for step in body['steps']][-1], 'unregister')
+        self.assertEqual(self.post({'dry_run': True}, f'/api/runs/{self.key}/delete', **{'X-Forge-UI-Token': 'wrong'})[0], 403)
 
 
 if __name__ == '__main__':

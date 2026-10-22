@@ -284,6 +284,7 @@ def _bit(params, name):
 
 
 def _issues_list(ctx):
+    ctx.route = 'issues'
     try:
         params = _query_params(ctx.query, ('scope', 'offline', 'plausible', 'dismissed', 'only'))
         scope = _scope(params.get('scope', 'run'))
@@ -308,6 +309,7 @@ def _issues_list(ctx):
 
 def _issues_file(ctx):
     body = ctx.body
+    ctx.route = 'issues'
     try:
         _check_fields(body, ('scope', 'fingerprints', 'include_plausible', 'labels'))
         scope = _scope(body.get('scope', 'run'))
@@ -332,12 +334,12 @@ def _issues_file(ctx):
         argv.append('--include-plausible')
     for label in labels:
         argv += ['--label', label]
-    ctx.route = 'issues'
     return ctx.locked(lambda: ctx.call(*argv, limit=ISSUES_FILE_TIMEOUT_S))
 
 
 def _issues_dismiss(ctx):
     body = ctx.body
+    ctx.route = 'undismiss' if body.get('undo') is True else 'dismiss'
     try:
         _check_fields(body, ('fingerprints', 'reason', 'undo'))
         fps = _fingerprints(body.get('fingerprints'))
@@ -356,7 +358,6 @@ def _issues_dismiss(ctx):
     argv = ['issues', path, '--json', '--undismiss' if undo else '--dismiss', ','.join(fps)]
     if reason and reason.strip():
         argv.append('--reason=' + reason)  # '=' form: a reason like '-dup' is not read as an option
-    ctx.route = 'undismiss' if undo else 'dismiss'
     return ctx.locked(lambda: ctx.call(*argv))
 
 
@@ -375,6 +376,7 @@ def _server_lock(server, name):
 
 def _delete(ctx):
     body = ctx.body
+    ctx.route = 'delete'
     try:
         _check_fields(body, ('dry_run', 'archive', 'worktrees', 'branches'))
         dry = _flag(body, 'dry_run')
@@ -385,7 +387,6 @@ def _delete(ctx):
         return _invalid(str(exc))
     if ctx.locate() is None:
         return 404, {'error': 'not found'}
-    ctx.route = 'delete'
 
     def work():
         # Looked up again under the run's lock: a delete that finished meanwhile left nothing to find.
@@ -424,7 +425,6 @@ def _config_run(ctx, key):
     """(repo, error answer) for the run key a config request names."""
     if not isinstance(key, str) or not re.fullmatch(r'[0-9a-f]{12}', key):
         return None, _invalid('run must be a 12-hex run key')
-    ctx.key = key
     found = ctx.server.catalog.locate(key)
     if not found:
         return None, (404, {'error': 'not found'})
@@ -434,7 +434,15 @@ def _config_run(ctx, key):
     return repo, None
 
 
+def _name_run(ctx, key):
+    """The log names the run a config request points at, as soon as the key is well-formed."""
+    if isinstance(key, str) and re.fullmatch(r'[0-9a-f]{12}', key):
+        ctx.key = key
+
+
 def _config_get(ctx):
+    ctx.route = 'config'
+    _name_run(ctx, urllib.parse.parse_qs(ctx.query[:2000]).get('run', [None])[0])
     try:
         params = _query_params(ctx.query, ('run',))
     except BadBody as exc:
@@ -442,7 +450,6 @@ def _config_get(ctx):
     repo, error = _config_run(ctx, params.get('run'))
     if error:
         return error
-    ctx.route = 'config'
     return ctx.call('config', 'show', '--repo', repo, '--json')
 
 
@@ -467,6 +474,8 @@ def _config_value(key, body):
 
 def _config_set(ctx):
     body = ctx.body
+    ctx.route = 'config'
+    _name_run(ctx, body.get('run'))
     try:
         _check_fields(body, ('run', 'key', 'value', 'unset'))
         key = body.get('key')
@@ -478,7 +487,6 @@ def _config_set(ctx):
     repo, error = _config_run(ctx, body.get('run'))
     if error:
         return error
-    ctx.route = 'config'
     argv = ['config', verb, key] + ([value] if verb == 'set' else []) + ['--repo', repo, '--json']
     lock = _server_lock(ctx.server, 'config_lock')
     if not lock.acquire(blocking=False):
