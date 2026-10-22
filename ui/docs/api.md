@@ -1028,7 +1028,7 @@ control character, not starting with "-"]}`; any other field is a `400`. Runs `i
 
 ### `POST /api/runs/<key>/issues/dismiss`
 
-Body: `{"fingerprints": [1 to 25], "reason"?: text of at most 500 characters, "undo"?: bool}`. Runs
+Body: `{"fingerprints": [1 to 25], "reason"?: text of at most 500 characters without control characters (newline and tab are allowed), "undo"?: bool}`. Runs
 `issues <dir> --json --dismiss <fps> [--reason R]`, or `--undismiss <fps>` when `undo` is true
 (a reason with `undo` is a `400`). Under the run's write lock. Timeout 60 s.
 

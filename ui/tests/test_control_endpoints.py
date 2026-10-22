@@ -87,7 +87,7 @@ class IssuesWriteTests(EndpointCase):
     def test_file_refusals(self):
         many = [f'{n:012x}' for n in range(26)]
         bad = [{'fingerprints': ['xyz']}, {'fingerprints': many}, {'fingerprints': []}, {},
-               {'fingerprints': [FP], 'labels': ['a\nb']}, {'fingerprints': [FP], 'labels': ['x' * 51]},
+               {'fingerprints': [FP], 'labels': ['a\nb']}, {'fingerprints': [FP], 'labels': ['x' * 51]}, {'fingerprints': [FP], 'labels': ['\ud800']},
                {'fingerprints': [FP], 'labels': ['a'] * 6}, {'fingerprints': [FP], 'labels': [3]},
                {'fingerprints': [FP], 'scope': 'all'}, {'fingerprints': [FP], 'include_plausible': 'yes'},
                {'fingerprints': [FP], 'repo': '/tmp'}]
@@ -102,6 +102,8 @@ class IssuesWriteTests(EndpointCase):
                                             '--reason=not a bug'])
         self.post({'fingerprints': [FP], 'reason': '-dup'}, path)
         self.assertEqual(self.last_argv()[-1], '--reason=-dup')
+        self.post({'fingerprints': [FP], 'reason': 'dup\tof #3'}, path)
+        self.assertEqual(self.last_argv()[-1], '--reason=dup\tof #3')
         self.post({'fingerprints': [FP], 'undo': True}, path)
         self.assertEqual(self.last_argv(), ['issues', self.rplan, '--json', '--undismiss', FP])
 
@@ -109,6 +111,7 @@ class IssuesWriteTests(EndpointCase):
         path = self.issues('/dismiss')
         for body in ({'fingerprints': ['nope']}, {'fingerprints': [FP], 'reason': 'x' * 501},
                      {'fingerprints': [FP], 'reason': 5}, {'fingerprints': [FP], 'undo': 1},
+                     {'fingerprints': [FP], 'reason': '\ud800'}, {'fingerprints': [FP], 'reason': 'a\x00b'},
                      {'fingerprints': [FP], 'extra': 1}, {'fingerprints': [FP], 'reason': 'a', 'undo': True}):
             self.assertEqual(self.post(body, path)[0], 400, body)
         self.assertEqual(self.calls(), [])

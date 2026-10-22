@@ -145,7 +145,7 @@ def _text(body, name):
     if not isinstance(value, str) or not value:
         raise BadBody(f'{name} must be a non-empty string')
     # argv values: a leading '-' would be read as an option by the CLI, the rest cannot name anything.
-    if len(value) > MAX_FIELD or value.startswith('-') or any(ord(ch) < 32 or ord(ch) == 127 for ch in value):
+    if len(value) > MAX_FIELD or value.startswith('-') or not _no_control_chars(value):
         raise BadBody(f'{name} is not an acceptable value')
     return value
 
@@ -230,7 +230,8 @@ def _invalid(detail):
 
 
 def _no_control_chars(value):
-    return not any(ord(ch) < 32 or ord(ch) == 127 for ch in value)
+    # A lone surrogate cannot be encoded into argv (the CLI refuses it too): treat it like a control character.
+    return not any(ord(ch) < 32 or ord(ch) == 127 or 0xD800 <= ord(ch) <= 0xDFFF for ch in value)
 
 
 def _check_fields(body, allowed):
@@ -346,8 +347,8 @@ def _issues_dismiss(ctx):
         undo = _flag(body, 'undo')
         reason = body.get('reason')
         if reason is not None:
-            if not isinstance(reason, str) or len(reason) > MAX_REASON or not _no_control_chars(reason.replace('\n', ' ')):
-                raise BadBody(f'reason must be a text of at most {MAX_REASON} characters')
+            if not isinstance(reason, str) or len(reason) > MAX_REASON or not _no_control_chars(reason.replace('\n', ' ').replace('\t', ' ')):
+                raise BadBody(f'reason must be a text of at most {MAX_REASON} characters, without control characters (newline and tab are allowed)')
             if undo:
                 raise BadBody('a reason goes with a dismissal, not with undo')
     except BadBody as exc:
