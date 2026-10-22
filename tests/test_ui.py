@@ -127,11 +127,17 @@ class UiLauncherTests(unittest.TestCase):
         env = dict(self.env, BROWSER=str(stub))
         env.pop('FORGE_UI_BROWSER')
 
-        self.open(self.plan, env=env)
+        launched = self.ui('open', str(self.plan), env=env)
         first = self.server_json()
-        self.open(self.plan, env=env)
+        repeated = self.ui('open', str(self.plan), env=env)
         self.open(self.solo, env=env)
         second = self.server_json()
+        quiet = self.ui('open', str(self.plan), '--no-browser', env=env)
+
+        # a repeat that opens no browser says why on stderr; a launch and --no-browser stay silent
+        self.assertEqual((launched.stderr, quiet.stderr), ('', ''))
+        self.assertIn('forge-ui:', repeated.stderr)
+        self.assertEqual(repeated.stdout, launched.stdout, 'stdout stays the one link line runners rely on')
 
         self.assertEqual((second['pid'], second['port']), (first['pid'], first['port']))
         keys = [run['key'] for run in get_json(first['port'], '/api/runs')['runs']]
