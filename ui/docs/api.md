@@ -229,12 +229,18 @@ its last 20,000 behind a leading `…`. Their `truncated` lists the field names 
 | `GET /api/health` | `200 {"app": "forge-ui", "version", "build", "pid", "controls": true\|false}`; `controls` is `false` in read-only mode |
 | `GET /api/runs/<key>/controls` | `200` the `forge control show --json` object of a plan run (see Controls); `404` for a solo or unknown run |
 | `POST /api/runs/<key>/controls` | change one control or pin; authenticated, see Controls (write endpoints) |
+| `GET /api/runs/<key>/issues?scope=run\|repo&offline=0\|1&plausible=0\|1&dismissed=0\|1&only=fp,fp` | `200` the `forge issues --json` listing, run fresh on every request (no cache); see Controls (write endpoints) |
+| `POST /api/runs/<key>/issues` | file GitHub issues for chosen findings; authenticated, 300 s timeout |
+| `POST /api/runs/<key>/issues/dismiss` | dismiss or (`undo`) restore findings; authenticated |
+| `POST /api/runs/<key>/delete` | dry-run or delete a run with `forge runs rm`; authenticated, 900 s timeout; later requests for the key answer `404` |
+| `GET /api/config?run=<key>` | `200` the `forge config show --json` of that run's repo |
+| `POST /api/config` | set or unset one allowed key (`repo.verify`, `repo.setup`, `repo.verify-subset`, `jev.enabled`); authenticated |
 | `GET /api/runs/<key>/export?texts=0\|1&paths=0\|1` | `200` the run as one HTML file (see Export), `Content-Disposition: attachment`, `Content-Security-Policy: default-src 'none'; sandbox`; `404` for an unknown run |
 | `GET /api/runs/<key>/tasks/<id>/fractal` | `200 TaskFractal` |
 | `GET /api/runs/<key>/tasks/<id>/fractal/nodes/<node>[/diff]` | `200 FractalNodeDetail`, or with `/diff` a `DiffDetail` of its `candidate.diff`; `<node>` matches `[A-Za-z0-9][A-Za-z0-9_-]{0,100}` |
 | `GET /` | `forge_ui/static/index.html` |
 | `GET /<name>` | that file from `forge_ui/static/` (`.html .js .css .svg` only, no subdirs) |
-| anything else | `404 {"error": "not found"}`; a method a path does not take (PUT, DELETE, OPTIONS, a POST to a read path): `405` with `Allow` |
+| anything else | `404 {"error": "not found"}` (an unknown path or run); a method a path does not take (PUT, DELETE, OPTIONS, a POST to a read path): `405` with `Allow`, except that a GET to a path that only takes POST (`/api/runs/<key>/delete`, `/api/runs/<key>/issues/dismiss`) answers `404` |
 
 The lazy endpoints answer `404 {"error": "not found"}` for an unknown run, task,
 execution or review; the diff endpoints also for a `<which>` the run kind has not (`existing`
@@ -970,8 +976,10 @@ is the last line of its stderr (at most 300 characters; the rest of stderr is no
 | anything else, a signal, a missing CLI, or a 0 with no JSON object | `502` | `bad gateway` |
 | timeout | `504` | `timeout` |
 
-Unknown run keys, solo runs (they have no controls) and runs the catalog does not hold are
-`404 {"error": "not found"}`. Every write that reaches a route logs
+For the controls routes, unknown run keys, solo runs (they have no controls) and runs the
+catalog does not hold are `404 {"error": "not found"}`. The issues, dismiss, delete and config
+routes below accept plan and solo runs alike (`forge issues` and `forge runs rm` take both);
+for them only unknown keys and runs the catalog does not hold are `404`. Every write that reaches a route logs
 `forge-ui: control <route> <run key> -> <status>` unless the server runs with `--quiet`.
 
 ### `GET /api/runs/<key>/controls`
@@ -998,6 +1006,55 @@ known or a spec runs is for the CLI to say (its `400` or `409` comes back as abo
 `value` is always a string. `task` is optional on `set`, and only for the keys the CLI allows it
 for. A success is `200 {"ok": true, "changed": {...}, "applies": "...", "controls": {...}}`, where
 `controls` is the `GET` object after the change.
+
+### `GET /api/runs/<key>/issues`
+
+`forge issues <dir> --json [flags]`: the findings the run left open. Query (all optional, an
+unknown or repeated parameter is a `400`): `scope=run|repo` (`repo` adds `--all-runs`),
+`offline=0|1` (`--offline`), `plausible=0|1` (`--include-plausible`), `dismissed=0|1`
+(`--include-dismissed`), `only=fp,fp` (`--only`; one to 25 fingerprints, each `^[0-9a-f]{12}$`).
+`200` with the CLI's object (`findings`, ...). **Never cached**: every request is one CLI call; the
+page asks for an `offline=1` listing first for speed and then for the full one. It takes no lock (a
+busy CLI is its own exit 3, `409`). No token is needed. Plan and solo runs. Timeout 120 s.
+
+### `POST /api/runs/<key>/issues`
+
+File issues for findings. Body: `{"scope": "run"|"repo" (default run), "fingerprints": [1 to 25 of
+^[0-9a-f]{12}$], "include_plausible": bool, "labels": [at most 5 texts of 1 to 50 characters, no
+control character, not starting with "-"]}`; any other field is a `400`. Runs `issues <dir> --only
+<fps> --max-issues <number of fps> --apply --json` plus `--all-runs`, `--include-plausible` and one
+`--label` per label. `200` with the CLI's object. Under the run's write lock (`409 busy`). Timeout
+300 s.
+
+### `POST /api/runs/<key>/issues/dismiss`
+
+Body: `{"fingerprints": [1 to 25], "reason"?: text of at most 500 characters without control characters (newline and tab are allowed), "undo"?: bool}`. Runs
+`issues <dir> --json --dismiss <fps> [--reason R]`, or `--undismiss <fps>` when `undo` is true
+(a reason with `undo` is a `400`). Under the run's write lock. Timeout 60 s.
+
+### `POST /api/runs/<key>/delete`
+
+Body: `{"dry_run": bool (false), "archive": bool (true), "worktrees": bool (false), "branches": bool
+(false)}`. Runs `runs rm <dir> --json` with `--dry-run` or `--yes`, plus `--no-archive` when
+`archive` is false, `--worktrees`, `--branches`. `200` with the CLI's object. The CLI prints its
+JSON on failure too, so a non-zero exit answers with that object as `result` (its `steps` show what
+completed): exit 2 `400`, exit 3 (busy or the run is active) `409`, exit 4 (failed during
+deletion) `500`. Deletion holds the run's write lock and a server-wide lock on the run's real
+directory (`409 busy` when either is held). The run key is looked up again under the lock, and
+once the directory is gone every later request for that key is `404`. Timeout 900 s.
+
+### `GET /api/config?run=<key>` and `POST /api/config`
+
+The repository is the run's own `repo` file (first line, an existing absolute directory; else
+`409`), never a client field. `GET` runs `config show --repo <repo> --json` and answers with its
+object. `POST` takes `{"run": <key>, "key": one of repo.verify, repo.setup, repo.verify-subset,
+jev.enabled, "value": text | "unset": true}` (exactly one of the two; any other field, `repo`
+included, is a `400`) and runs `config set <key> <value> --repo <repo> --json` or `config unset
+<key> --repo <repo> --json`. A value is a non-empty text of at most 4096 characters without
+control characters (newline and tab are allowed), not starting with `-`; `jev.enabled` takes
+`true` or `false` and cannot be unset; `repo.verify-subset` must contain `{files}`. `200` with the
+CLI's object (`ok`, `key`, `previous`, `value`). Writes serialize on one server-wide config lock
+(`409 busy`). Unknown run `404`. Timeout 60 s.
 
 ## Status vocabulary for the page and the graph
 
