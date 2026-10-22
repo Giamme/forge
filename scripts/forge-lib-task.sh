@@ -173,9 +173,17 @@ guard_after_dwarf() { # guard_after_dwarf <wt> <tdir> <id>
 
 # --- QA severity gate -----------------------------------------------------------
 qa_threshold_for() { # per-task file wins over the plan-level default; prints nothing if unset
-  local f
+  # A per-task "none" exempts the task from a plan-wide threshold (prints nothing, no fallback).
+  # A plan-level "none" is the same as no file. Anything but P0-P3 or none is ignored, so a
+  # garbage per-task value falls back to the plan file.
+  local f v
   for f in "$1/tasks/$2/qa_threshold" "$1/qa_threshold"; do
-    [ -s "$f" ] && { head -1 "$f" | tr -d ' \r'; return 0; }
+    [ -s "$f" ] || continue
+    v="$(head -1 "$f" | tr -d ' \r' | tr 'a-z' 'A-Z')"
+    case "$v" in
+      P0|P1|P2|P3) printf '%s\n' "$v"; return 0 ;;
+      NONE) [ "$f" = "$1/qa_threshold" ] || return 0 ;;
+    esac
   done
   return 0
 }
@@ -184,10 +192,13 @@ qa_threshold_for() { # per-task file wins over the plan-level default; prints no
 # and less severe than the threshold is accepted as PASS-with-known-issues. The literal
 # status stays PASS, so the merge path, the scheduler and Fractal need no new vocabulary.
 # Anything unlabelled stays blocking: a finding the gate cannot place is not tolerated.
-qa_gate() { # qa_gate <plan> <id> <tdir> <verdict>
+# The optional 5th argument is the threshold the caller already used for this attempt's review
+# prompt; when given (even empty) it is used as-is, so a change to the files between the prompt
+# and the gate cannot split one attempt across two thresholds. Absent, the files are read.
+qa_gate() { # qa_gate <plan> <id> <tdir> <verdict> [threshold]
   local plan="$1" id="$2" tdir="$3" verdict="$4" thr line
   rm -f "$tdir/qa.gate" "$tdir/known_issues.md"
-  thr="$(qa_threshold_for "$plan" "$id")"
+  if [ "$#" -ge 5 ]; then thr="$5"; else thr="$(qa_threshold_for "$plan" "$id")"; fi
   [ -n "$thr" ] || return 0
   line="$(python3 "$SKILL_DIR/scripts/forge-contract.py" gate --verdict "${verdict:-UNKNOWN}" \
       --qa-last "$tdir/qa.last" --threshold "$thr" --known-issues "$tdir/known_issues.md" 2>/dev/null)" || return 0
