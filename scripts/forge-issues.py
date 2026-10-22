@@ -181,14 +181,18 @@ def whole_run_review(plan_dir: Path):
     """
     def usable(d):
         return d if (d / "qa.last").is_file() else None
-    published = usable((plan_dir / "final-review").resolve()) if (plan_dir / "final-review").is_dir() else None
+    link = (plan_dir / "final-review").resolve() if (plan_dir / "final-review").is_dir() else None
+    published = usable(link) if link else None
+    # A published review without qa.last (infra stop, dispatch start failure) is still the latest attempt:
+    # an integrate review must beat its own mtime, and nothing older may stand in for it.
+    stamp = (mtime(published / "qa.last") if published else
+             max(mtime(link / "qa.input"), mtime(link)) if link else None)
     newest = None
     for d in plan_dir.glob("integrate-*/final-review"):
         d = d.resolve()
         if usable(d) and (newest is None or mtime(d / "qa.last") > mtime(newest / "qa.last")):
             newest = d
-    if newest and (published is None or (newest != published and
-                                         mtime(newest / "qa.last") > mtime(published / "qa.last"))):
+    if newest and (stamp is None or (newest != link and mtime(newest / "qa.last") > stamp)):
         return newest
     return published
 
@@ -255,10 +259,12 @@ def collect(path: Path, include_plausible, all_runs=False):
             raise Fail(f"{path}: expected a forge plan or task directory, known_issues.md or qa.last")
         meta = {"task": path.parent.name, "threshold": read(path.parent / "qa_threshold") or "?",
                 "commit": read(path.parent / "merged") or read(path.parent / "reviewed.commit"),
-                "reviewer": reviewer_spec(path.parent), "plan": path.parent.name, "plan_dir": str(path.parent)}
+                "reviewer": reviewer_spec(path.parent)}
+        plan_root = path.parent.parent.parent if path.parent.parent.name == "tasks" else path.parent
+        meta["plan"], meta["plan_dir"] = (plan_root.name, str(plan_root))
         found = [{**f, **meta, "origin": "tolerated" if f["confidence"] == "CONFIRMED" else "plausible"}
                  for f in parse_findings(read(path)) if f["confidence"] == "CONFIRMED" or include_plausible]
-        return {"plan": path.parent.name, "repo_path": None}, found, []
+        return {"plan": plan_root.name, "repo_path": None}, found, []
     if (path / "tasks").is_dir():
         found, notes = collect_plan(path, include_plausible)
         return {"plan": path.name, "repo_path": read(path / "repo") or None}, found, notes

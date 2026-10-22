@@ -228,6 +228,23 @@ class ForgeIssuesTests(unittest.TestCase):
         out = self.run_issues(str(self.plan), '--offline')
         self.assertEqual([f['file'] for f in out['findings'] if f['origin'] == 'review'], ['src/b.ts'])
 
+    def test_published_review_without_qa_last_is_not_replaced_by_older_integrate(self):
+        integ = self.plan / 'integrate-1-1'; integ.mkdir()
+        old = self.review_dir(integ, 'final-review', ['- [P1][CONFIRMED] src/old.ts:1 — Old integrate thing.'])
+        os.utime(old / 'qa.last', (1, 1))
+        fresh = self.plan / 'final-review-2-2'; fresh.mkdir()
+        (fresh / 'qa.input').write_text('x')
+        os.symlink('final-review-2-2', self.plan / 'final-review')
+        out = self.run_issues(str(self.plan), '--offline')
+        self.assertEqual([f for f in out['findings'] if f['origin'] == 'review'], [])
+
+    def test_known_issues_file_input_reports_the_plan_dir(self):
+        via_dir = self.run_issues(str(self.plan / 'tasks' / 'import'), '--offline', '--repo', 'o/r')
+        via_file = self.run_issues(str(self.plan / 'tasks' / 'import' / 'known_issues.md'), '--offline', '--repo', 'o/r')
+        pick = lambda o: [(f['plan'], f['plan_dir']) for f in o['findings']]
+        self.assertEqual(pick(via_file), pick(via_dir))
+        self.assertEqual(pick(via_file)[0][0], 'plan')
+
     def test_threshold_review_with_known_issues_is_collected(self):
         line = '- [P2][CONFIRMED] src/a.ts:1 — X.'
         cur = self.review_dir(self.plan, 'final-review-1-1', [line])
