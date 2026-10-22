@@ -228,6 +228,19 @@ class ForgeIssuesTests(unittest.TestCase):
         out = self.run_issues(str(self.plan), '--offline')
         self.assertEqual([f['file'] for f in out['findings'] if f['origin'] == 'review'], ['src/b.ts'])
 
+    def test_threshold_review_with_known_issues_is_collected(self):
+        line = '- [P2][CONFIRMED] src/a.ts:1 — X.'
+        cur = self.review_dir(self.plan, 'final-review-1-1', [line])
+        (cur / 'known_issues.md').write_text(line + '\n'); (cur / 'verdict').write_text('ACCEPTED\n')
+        os.symlink('final-review-1-1', self.plan / 'final-review')
+        out = self.run_issues(str(self.plan), '--offline')
+        reviews = [f for f in out['findings'] if f['origin'] == 'review']
+        self.assertEqual([(f['file'], f['task']) for f in reviews], [('src/a.ts', None)])
+        # the same review dir given directly reports the same task and source marker
+        direct = self.run_issues(str(self.plan / 'final-review'), '--offline', '--repo', 'o/r')
+        self.assertEqual([f['task'] for f in direct['findings']], [None])
+        self.assertIn('source=forge:plan/final-review', direct['drafts'][0]['body'])
+
     def test_all_runs_dedupes_to_the_newest_plan(self):
         xdg = self.dir / 'xdg'
         env = dict(self.env, XDG_CONFIG_HOME=str(xdg))

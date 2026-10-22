@@ -132,7 +132,8 @@ def reviewer_spec(task_dir: Path):
     return ":".join(x for x in (kv.get("alias"), kv.get("effort"), kv.get("harness")) if x) or "?"
 
 
-def task_findings(task_dir: Path, plan_dir, include_plausible, reviewers):
+def task_findings(task_dir: Path, plan_dir, include_plausible, reviewers, review=None):
+    """`review` True: task_dir is a whole-run review dir (it may hold a known_issues.md when a threshold applied)."""
     status = (read(task_dir / "status").split() or [""])[0]
     results = {}
     if plan_dir and (plan_dir / "results.tsv").is_file():
@@ -144,9 +145,11 @@ def task_findings(task_dir: Path, plan_dir, include_plausible, reviewers):
     state = results.get(task, status)
     meta = {"task": task, "commit": read(task_dir / "merged") or read(task_dir / "reviewed.commit"),
             "reviewer": reviewers.get(task) or reviewer_spec(task_dir)}
-    if not status and task not in results and not (task_dir / "known_issues.md").exists():
+    if review is None:
+        review = not status and task not in results and not (task_dir / "known_issues.md").exists()
+    if review:
         # A review with no task behind it (whole-run review): everything it found is still open.
-        found = [{**f, **meta, "origin": "review" if f["confidence"] == "CONFIRMED" else "plausible", "threshold": "-"}
+        found = [{**f, **meta, "task": None, "origin": "review" if f["confidence"] == "CONFIRMED" else "plausible", "threshold": "-"}
                  for f in parse_findings(read(task_dir / "qa.last"))
                  if f["confidence"] == "CONFIRMED" or include_plausible]
         return found, None
@@ -206,7 +209,7 @@ def collect_plan(plan_dir: Path, include_plausible):
             notes.append(note)
     review = whole_run_review(plan_dir)
     if review:
-        items, _ = task_findings(review, plan_dir, include_plausible, {})
+        items, _ = task_findings(review, plan_dir, include_plausible, {}, review=True)
         found += [{**f, "task": None} for f in items]
     for f in found:
         f["plan"], f["plan_dir"] = plan_dir.name, str(plan_dir)
@@ -273,7 +276,8 @@ def collect(path: Path, include_plausible, all_runs=False):
             cols = line.split("\t")
             if len(cols) >= 6 and not line.startswith("#"):
                 reviewers[cols[0]] = cols[5]
-    found, note = task_findings(path, plan_dir, include_plausible, reviewers)
+    found, note = task_findings(path, plan_dir, include_plausible, reviewers,
+                                review=True if path.parent.name != "tasks" and not read(path / "status") else None)
     for f in found:
         f["plan"], f["plan_dir"] = (plan_dir or path).name, str(plan_dir or path)
     return {"plan": (plan_dir or path).name, "repo_path": (read(plan_dir / "repo") if plan_dir else "") or None}, \
