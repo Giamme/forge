@@ -167,6 +167,167 @@ class ForgeIssuesTests(unittest.TestCase):
         err = self.forge_issues(str(self.plan), code=2)
         self.assertIn('has no GitHub origin remote; pass --repo owner/repo', err)
 
+    def offline_env(self):
+        """PATH with a `gh` that records every call and fails."""
+        bin_dir = self.dir / 'nogh'; bin_dir.mkdir(exist_ok=True)
+        (bin_dir / 'gh').write_text(f'#!/bin/sh\necho "$@" >> {self.dir}/gh-called\nexit 1\n')
+        (bin_dir / 'gh').chmod(0o755)
+        return dict(self.env, PATH=f'{bin_dir}:{os.environ["PATH"]}')
+
+    def run_issues(self, *args, env=None, code=0):
+        res = subprocess.run([sys.executable, str(SCRIPT), *args, '--json'], capture_output=True, text=True,
+                             env=env or self.env, timeout=60)
+        self.assertEqual(res.returncode, code, res.stderr)
+        return json.loads(res.stdout) if code == 0 else res.stderr
+
+    def review_dir(self, plan, name, lines):
+        d = plan / name; d.mkdir()
+        (d / 'qa.input').write_text('x'); (d / 'reviewed.commit').write_text('def456\n')
+        (d / 'qa.last').write_text('\n'.join(lines) + '\n')
+        return d
+
+    def test_offline_lists_each_finding_once_without_gh(self):
+        env = self.offline_env()
+        out = self.run_issues(str(self.plan), '--offline', '--include-plausible', env=env)
+        self.assertFalse((self.dir / 'gh-called').exists())
+        self.assertEqual(len(out['findings']), 3)
+        self.assertEqual([f['severity'] for f in out['findings']], ['P2', 'P3', 'P3'])
+        first = out['findings'][0]
+        self.assertEqual(sorted(first), sorted(['fp', 'severity', 'confidence', 'origin', 'plan', 'plan_dir', 'task',
+                                               'file', 'summary', 'text', 'reviewer', 'commit', 'filed']))
+        self.assertEqual((first['origin'], first['plan'], first['task'], first['filed']),
+                         ('tolerated', 'plan', 'import', None))
+        self.assertTrue(all(d['same_title'] is None for d in out['drafts']))
+        # the commit is in no remote-tracking ref: unpublished wording, still no gh
+        self.assertIn('(commit not pushed to GitHub yet)', out['drafts'][0]['body'])
+
+    def test_offline_apply_is_a_usage_error(self):
+        self.assertIn('--offline', self.run_issues(str(self.plan), '--offline', '--apply', code=2))
+
+    def test_only_selects_and_reports_unknown(self):
+        fps = [f['fp'] for f in self.run_issues(str(self.plan))['findings']]
+        out = self.run_issues(str(self.plan), '--only', f'{fps[1]},{"0" * 12}')
+        self.assertEqual([d['fingerprints'] for d in out['drafts']], [[fps[1]]])
+        self.assertEqual([f['fp'] for f in out['findings']], [fps[1]])
+        self.assertTrue(any('0' * 12 in n for n in out['notes']))
+        self.run_issues(str(self.plan), '--only', 'xyz', code=2)
+
+    def test_whole_run_review_is_current_only(self):
+        old = self.review_dir(self.plan, 'final-review-0-1', ['- [P1][CONFIRMED] src/old.ts:1 — Superseded thing.'])
+        cur = self.review_dir(self.plan, 'final-review-1-1', ['- [P1][CONFIRMED] src/a.ts:1 — Current thing.'])
+        os.utime(old / 'qa.last', (1, 1))
+        os.symlink('final-review-1-1', self.plan / 'final-review')
+        out = self.run_issues(str(self.plan), '--offline')
+        reviews = [f for f in out['findings'] if f['origin'] == 'review']
+        self.assertEqual([(f['file'], f['task']) for f in reviews], [('src/a.ts', None)])
+        self.assertEqual(len(out['findings']), 3)
+        # a newer integrate-*/final-review wins over the published link
+        integ = self.plan / 'integrate-9-9'; integ.mkdir()
+        self.review_dir(integ, 'final-review', ['- [P0][CONFIRMED] src/b.ts:2 — Integrate thing.'])
+        os.utime(cur / 'qa.last', (1000, 1000))
+        out = self.run_issues(str(self.plan), '--offline')
+        self.assertEqual([f['file'] for f in out['findings'] if f['origin'] == 'review'], ['src/b.ts'])
+
+    def test_published_review_without_qa_last_is_not_replaced_by_older_integrate(self):
+        integ = self.plan / 'integrate-1-1'; integ.mkdir()
+        old = self.review_dir(integ, 'final-review', ['- [P1][CONFIRMED] src/old.ts:1 — Old integrate thing.'])
+        os.utime(old / 'qa.last', (1, 1))
+        fresh = self.plan / 'final-review-2-2'; fresh.mkdir()
+        (fresh / 'qa.input').write_text('x')
+        os.symlink('final-review-2-2', self.plan / 'final-review')
+        out = self.run_issues(str(self.plan), '--offline')
+        self.assertEqual([f for f in out['findings'] if f['origin'] == 'review'], [])
+
+    def test_known_issues_file_input_reports_the_plan_dir(self):
+        via_dir = self.run_issues(str(self.plan / 'tasks' / 'import'), '--offline', '--repo', 'o/r')
+        via_file = self.run_issues(str(self.plan / 'tasks' / 'import' / 'known_issues.md'), '--offline', '--repo', 'o/r')
+        pick = lambda o: [(f['plan'], f['plan_dir']) for f in o['findings']]
+        self.assertEqual(pick(via_file), pick(via_dir))
+        self.assertEqual(pick(via_file)[0][0], 'plan')
+
+    def test_threshold_review_with_known_issues_is_collected(self):
+        line = '- [P2][CONFIRMED] src/a.ts:1 — X.'
+        cur = self.review_dir(self.plan, 'final-review-1-1', [line])
+        (cur / 'known_issues.md').write_text(line + '\n'); (cur / 'verdict').write_text('ACCEPTED\n')
+        os.symlink('final-review-1-1', self.plan / 'final-review')
+        out = self.run_issues(str(self.plan), '--offline')
+        reviews = [f for f in out['findings'] if f['origin'] == 'review']
+        self.assertEqual([(f['file'], f['task']) for f in reviews], [('src/a.ts', None)])
+        # the same review dir given directly reports the same task and source marker
+        direct = self.run_issues(str(self.plan / 'final-review'), '--offline', '--repo', 'o/r')
+        self.assertEqual([f['task'] for f in direct['findings']], [None])
+        self.assertIn('source=forge:plan/final-review', direct['drafts'][0]['body'])
+
+    def test_integrate_review_given_directly_reports_the_plan(self):
+        integ = self.plan / 'integrate-5-5'; integ.mkdir()
+        self.review_dir(integ, 'final-review', ['- [P2][CONFIRMED] src/a.ts:1 — X.'])
+        os.symlink('integrate-5-5/final-review', self.plan / 'final-review')
+        direct = self.run_issues(str(self.plan / 'final-review'), '--offline', '--repo', 'o/r')
+        via = self.run_issues(str(self.plan), '--offline', '--repo', 'o/r')
+        pick = lambda o: [(f['plan'], f['plan_dir'], f['task']) for f in o['findings'] if f['origin'] == 'review']
+        self.assertEqual(pick(direct), pick(via))
+        self.assertEqual(pick(direct)[0][0], 'plan')
+
+    def test_review_qa_last_file_input_reports_the_plan(self):
+        self.review_dir(self.plan, 'final-review-1-1', ['- [P1][CONFIRMED] src/a.ts:1 — Review thing.'])
+        os.symlink('final-review-1-1', self.plan / 'final-review')
+        integ = self.plan / 'integrate-5-5'; integ.mkdir()
+        self.review_dir(integ, 'final-review', ['- [P1][CONFIRMED] src/b.ts:1 — Integrate thing.'])
+        pick = lambda o: [(f['plan'], f['plan_dir'], f['task'], f['origin']) for f in o['findings']]
+        for rel in ('final-review/qa.last', 'final-review-1-1/qa.last', 'integrate-5-5/final-review/qa.last'):
+            out = self.run_issues(str(self.plan / rel), '--offline', '--repo', 'o/r')
+            self.assertEqual(pick(out), [('plan', str(self.plan.resolve()), None, 'review')], rel)
+
+    def test_review_known_issues_file_input_matches_directory(self):
+        line = '- [P2][CONFIRMED] src/a.ts:1 — Review thing.'
+        cur = self.review_dir(self.plan, 'final-review-1-1', [line])
+        (cur / 'known_issues.md').write_text(line + '\n')
+        os.symlink('final-review-1-1', self.plan / 'final-review')
+        pick = lambda o: [(f['plan'], f['task'], f['origin']) for f in o['findings'] if f['file'] == 'src/a.ts']
+        want = pick(self.run_issues(str(self.plan), '--offline', '--repo', 'o/r'))
+        self.assertEqual(want, [('plan', None, 'review')])
+        out = self.run_issues(str(self.plan / 'final-review' / 'known_issues.md'), '--offline', '--repo', 'o/r')
+        self.assertEqual(pick(out), want)
+        self.assertIn('source=forge:plan/final-review', out['drafts'][0]['body'])
+
+    def test_unfinished_task_keeps_its_name(self):
+        pend = self.plan / 'tasks' / 'pending'; pend.mkdir()
+        (pend / 'qa.last').write_text('- [P1][CONFIRMED] src/b.ts:1 — Pending thing.\n')
+        for arg in (str(self.plan), str(pend)):
+            out = self.run_issues(arg, '--offline', '--repo', 'o/r')
+            got = [f['task'] for f in out['findings'] if f['file'] == 'src/b.ts']
+            self.assertEqual(got, ['pending'], arg)
+
+    def test_all_runs_dedupes_to_the_newest_plan(self):
+        xdg = self.dir / 'xdg'
+        env = dict(self.env, XDG_CONFIG_HOME=str(xdg))
+        newer = self.dir / 'plan2'
+        (newer / 'tasks' / 'import').mkdir(parents=True)
+        (newer / 'repo').write_text(str(self.repo) + '\n')
+        d = newer / 'tasks' / 'import'
+        (d / 'status').write_text('MERGED\n'); (d / 'merged').write_text('abc123\n')
+        (d / 'known_issues.md').write_text('- [P2][CONFIRMED] src/import.ts:645 — Company creation runs before '
+                                           'the receipt replay. A retry creates an extra company.\n')
+        os.utime(self.plan, (1000, 1000))
+        sys.path.insert(0, str(ROOT / 'scripts'))
+        reg = xdg / 'forge/runs'; reg.mkdir(parents=True)
+        key = subprocess.run([sys.executable, '-c', 'import sys; sys.path.insert(0, sys.argv[1]); '
+                              'from forge_registry import repo_key; print(repo_key(sys.argv[2]))',
+                              str(ROOT / 'scripts'), str(self.repo)], capture_output=True, text=True,
+                             check=True).stdout.strip()
+        (reg / f'{key}.txt').write_text(f'# runs\n{self.plan}\n{newer}\n{self.dir}/gone\n')
+        out = self.run_issues(str(self.repo), '--all-runs', '--offline', env=env)
+        shared = [f for f in out['findings'] if f['file'] == 'src/import.ts' and f['severity'] == 'P2']
+        self.assertEqual([f['plan'] for f in shared], ['plan2'])
+        self.assertEqual(len(out['findings']), 2)
+        self.assertTrue(any('gone' in n and 'missing' in n for n in out['notes']))
+        draft = next(d for d in out['drafts'] if d['severity'] == 'P2')
+        self.assertIn('forge `plan2`', draft['body'])
+        self.assertIn('source=forge:plan2/import', draft['body'])
+        # a plan dir naming the repo works too
+        again = self.run_issues(str(self.plan), '--all-runs', '--offline', env=env)
+        self.assertEqual(len(again['findings']), 2)
+
 
 if __name__ == '__main__':
     unittest.main()
