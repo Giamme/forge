@@ -611,8 +611,25 @@ window.ForgeApp = (() => {
       ex.append(icon('download'), el('span', 'Export…'));
       ex.addEventListener('click', () => { const run = state.cache.get(state.key)?.data; if (run) exportDialog(run); }); acts.append(ex);
     }
+    // the delete key stands apart from the routine ones, and only a server that takes writes shows it
+    if (!SNAP && window.ForgeRunDelete && window.ForgeUI && window.ForgeUI.controlsEnabled) {
+      window.ForgeUI.controlsEnabled().then(on => {
+        if (!on || acts.querySelector('.del-key')) return;
+        const del = el('button', undefined, 'del-key'); del.type = 'button'; del.title = 'Delete this run, after a dry run and a typed confirmation';
+        del.append(el('i', undefined, 'lamp st-fail'), el('span', 'Delete run…'));
+        del.addEventListener('click', () => { const run = state.cache.get(state.key)?.data; if (run) window.ForgeRunDelete.open(run, { onDeleted: runDeleted }); });
+        acts.append(el('span', undefined, 'del-gap'), del);
+      });
+    }
     bar.append(rp, acts);
     header.append(bar);
+  }
+  // after a delete: the run is gone, so the page returns to the run list and drops what it held of the run
+  function runDeleted(run) {
+    state.cache.delete(run.key);
+    if (location.hash !== '#/') location.hash = '#/';
+    state.listText = null;
+    loadList();
   }
   // the View popover's push buttons: pressed in while their part is drawn; the layers are the 3D stage's own
   function syncLayerKeys() {
