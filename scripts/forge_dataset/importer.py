@@ -12,16 +12,21 @@ No historical outcome is inferred from a file that a later attempt could have re
 """
 from __future__ import annotations
 
+import io
 import json
 import os
 import re
 import shutil
+import sqlite3
+import stat
 import tarfile
 import tempfile
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
-from . import config_runs_dir, data_home, put_blob, put_file, record, repo_id, sha256
+from . import (BUSY_TIMEOUT_S, DatasetError, config_runs_dir, data_home, dataset_dir, enabled,
+               location_refused, put_blob, put_file, record, record_strict, repo_id, sha256, watch_blob_failures)
 from . import harvest as h
 from . import capture
 
@@ -43,9 +48,9 @@ def is_temp(path: str | None) -> bool:
     return real.startswith(_temp_roots())
 
 
-def walk_attempts(top: Path) -> list[Path]:
+def walk_attempts(top: Path, onerror=None) -> list[Path]:
     found = []
-    for directory, subdirs, _ in os.walk(top):
+    for directory, subdirs, _ in os.walk(top, onerror=onerror):
         subdirs[:] = [d for d in subdirs if d not in SKIP_DIRS and not d.startswith('review-')]
         if os.path.basename(directory) == 'attempts':
             found.extend(Path(directory) / d for d in subdirs if '-' in d)
@@ -53,18 +58,18 @@ def walk_attempts(top: Path) -> list[Path]:
     return sorted(found)
 
 
-def walk_plans(top: Path) -> list[Path]:
+def walk_plans(top: Path, onerror=None) -> list[Path]:
     found = []
-    for directory, subdirs, files in os.walk(top):
+    for directory, subdirs, files in os.walk(top, onerror=onerror):
         subdirs[:] = [d for d in subdirs if d not in SKIP_DIRS and not d.startswith('review-') and d != 'attempts']
         if 'tasks.tsv' in files:
             found.append(Path(directory))
     return sorted(found)
 
 
-def walk_fractal_tasks(top: Path) -> list[Path]:
+def walk_fractal_tasks(top: Path, onerror=None) -> list[Path]:
     found = []
-    for directory, subdirs, files in os.walk(top):
+    for directory, subdirs, files in os.walk(top, onerror=onerror):
         subdirs[:] = [d for d in subdirs if d not in SKIP_DIRS and not d.startswith('review-')
                       and d not in ('attempts', 'steps', 'runtime')]
         if 'request.json' in files and 'nodes' in subdirs and Path(directory).parent.name == 'tasks':
@@ -187,9 +192,33 @@ def import_tree(top: Path, mapper: Mapper, args, counts: dict) -> list[tuple[lis
     """Every event under `top`, grouped per repo: [(events, repo)]."""
     batches = []
     uids = {}
-    plans = {p for p in walk_plans(top)}
+    reported: set = set()
+
+    def unreadable(error):
+        # os.walk skips a directory it cannot list; import_run must not read that as empty.
+        if getattr(args, 'report_unreadable', False) and error.filename not in reported:
+            reported.add(error.filename)
+            counts.setdefault('failed', []).append('%s: cannot read: %s' % (error.filename, error.strerror or error))
+
+    onerror = unreadable
+    if getattr(args, 'report_unreadable', False):
+        # The readers below (h.read_json, h.text, h.first_line) turn a file they cannot open into
+        # "absent": a finished attempt whose metrics.json is unreadable would pass as unfinished.
+        # So every file the walkers can reach must open before any of it is trusted.
+        for directory, subdirs, files in os.walk(top, onerror=onerror):
+            subdirs[:] = [d for d in subdirs if d not in SKIP_DIRS and not d.startswith('review-')]
+            for name in files:
+                full = os.path.join(directory, name)
+                try:
+                    if not stat.S_ISREG(os.lstat(full).st_mode):   # links and fifos are never run data
+                        continue
+                    with open(full, 'rb'):
+                        pass
+                except OSError as error:
+                    unreadable(error)
+    plans = {p for p in walk_plans(top, onerror)}
     by_task: dict = {}
-    for attempt in walk_attempts(top):
+    for attempt in walk_attempts(top, onerror):
         role = attempt.name.split('-', 1)[0]
         root = attempt.parent.parent
         ctx = h.locate(root, role)
@@ -231,7 +260,7 @@ def import_tree(top: Path, mapper: Mapper, args, counts: dict) -> list[tuple[lis
             batches.append((legacy_task_events(root, attempts, dict(prov, mode='parallel', task=root.name)), repo))
         except Exception as error:
             counts.setdefault('failed', []).append('%s: %s' % (root, error))
-    for task_dir in walk_fractal_tasks(top):
+    for task_dir in walk_fractal_tasks(top, onerror):
         try:
             ctx = h.fractal_context(task_dir, create=False)
             if ctx.get('run') and not (task_dir.parent.parent / 'dataset.uid').exists():
@@ -255,6 +284,7 @@ def import_tree(top: Path, mapper: Mapper, args, counts: dict) -> list[tuple[lis
         prov = dict(run=uid, run_id=h.first_line(plan / 'run_id') or plan.name)
         bases = [h.first_line(t / 'base_ref') for t in sorted((plan / 'tasks').glob('*')) if (t / 'base_ref').exists()]
         events = [h.plan_event(plan, prov, src='import', head=bases[0] if bases else None)]
+        events += intervention_events(plan, prov, counts, repo)
         # A plan that has a dataset.uid was captured live, merges and final reviews included,
         # so synthesizing them again would only add a second, differently keyed copy.
         live = (plan / 'dataset.uid').exists()
@@ -280,6 +310,115 @@ def import_tree(top: Path, mapper: Mapper, args, counts: dict) -> list[tuple[lis
                                          blobs=h.blobs(diff=put_file(review / 'combined.diff', 'diff')))))
         batches.append((events, repo))
     return batches
+
+
+def _regular_text(path: Path) -> str | None:
+    """A run file's text, None if it is absent; a link is never run data (forge's own writers
+    refuse them too). A file that exists but cannot be read raises OSError: h.text would
+    report it as absent."""
+    if path.is_symlink():
+        return None
+    try:
+        return path.read_bytes().decode('utf-8', 'replace')
+    except (FileNotFoundError, NotADirectoryError):
+        return None
+
+
+def _stored_interventions(uid: str | None, repo: str | None) -> dict:
+    """What the store already holds for a run's escalations and control changes, by rid.
+
+    Released forge captured these live under a time-based rid, which cannot be recomputed.
+    A row like that is the same fact the run dir still lists, so the importer must not add
+    it a second time under the deterministic rid. {rid: (name, task, fields)}; empty when
+    the store cannot be read (a strict write then fails on its own).
+
+    Read only, and only a store that already exists: connect() would create the store,
+    which a dry run must not do, nor an import whose store location_refused() rules out.
+    """
+    from . import DRY
+    if not uid or not enabled() or DRY or location_refused(repo):
+        return {}
+    path = dataset_dir() / 'dataset.sqlite'
+    if not path.is_file():
+        return {}
+    found = {}
+    try:
+        db = sqlite3.connect(path.resolve().as_uri() + '?mode=ro', uri=True, timeout=BUSY_TIMEOUT_S)
+        try:
+            for name in h.INTERVENTIONS:
+                for rid, task, data in db.execute(
+                        "SELECT rid, task, data FROM events WHERE kind = 'event' AND run = ? AND rid LIKE ?",
+                        (uid, 'event:%s:%%' % name)):
+                    values = json.loads(data)
+                    if isinstance(values, dict) and values.get('name') == name:
+                        found[rid] = (name, task, _normalized(name, values))
+        finally:
+            db.close()
+    except Exception:
+        return {}
+    return found
+
+
+def _normalized(name: str, values: dict) -> dict:
+    data = h.intervention_data(name, values)
+    if name == 'escalation' and not data['source']:
+        data['source'] = 'policy'   # rows from before the source column
+    return data
+
+
+def intervention_events(plan: Path, prov: dict, counts: dict, repo: str | None = None) -> list[dict]:
+    """The escalations and control changes a plan dir recorded, as the events live capture emits.
+
+    Same rid as capture.point (harvest.intervention_rid), so a change seen live and then
+    imported, or imported twice, is one row. A line that cannot be read is a failure, not
+    a skip: this is the only record of what a human did once the run dir is gone.
+    """
+    uid, run_id = prov['run'], prov['run_id']
+    events = []
+    stored = _stored_interventions(uid, repo)
+
+    def add(name, values, task, ts):
+        data = dict(h.intervention_data(name, values), name=name, blobs={})
+        rid = h.intervention_rid(name, uid, task, values)
+        fields = _normalized(name, values)
+        if rid not in stored and any(known == (name, task, fields) for known in stored.values()):
+            return   # already captured live under the old time-based rid
+        events.append(dict(rid=rid, kind='event', src='import', ts=ts,
+                           run=uid, run_id=run_id, mode='parallel', task=task, data=data))
+
+    def read(path):
+        try:
+            return _regular_text(path) or ''
+        except OSError as error:
+            counts.setdefault('failed', []).append('%s: cannot read: %s' % (path, error.strerror or error))
+            return ''
+
+    for tdir in sorted((plan / 'tasks').glob('*')):
+        path = tdir / 'escalations.tsv'
+        for number, line in enumerate(read(path).splitlines(), 1):
+            if not line.strip():
+                continue
+            cells = line.split('\t')
+            if len(cells) not in (4, 5) or not cells[0].isdigit():
+                counts.setdefault('failed', []).append('%s:%d: not an escalations.tsv line' % (path, number))
+                continue
+            add('escalation', dict(after_attempt=cells[1], **{'from': cells[2]}, to=cells[3],
+                                   source=cells[4] if len(cells) == 5 and cells[4] else 'policy'),
+                tdir.name, int(cells[0]))
+    path = plan / 'control.log'
+    for number, line in enumerate(read(path).splitlines(), 1):
+        if not line.strip():
+            continue
+        try:
+            entry = json.loads(line)
+            ts = float(entry['at'])
+        except (ValueError, KeyError, TypeError):
+            entry = None
+        if not isinstance(entry, dict):
+            counts.setdefault('failed', []).append('%s:%d: not a control.log entry' % (path, number))
+            continue
+        add('control', {field: entry.get(field) for field in h.INTERVENTIONS['control']}, entry.get('task') or None, ts)
+    return events
 
 
 def ledger_events(ledger: Path, repo: str) -> list[dict]:
@@ -334,6 +473,192 @@ def _extract(archive: Path, into: Path) -> None:
             bundle.extractall(into, members=members)
 
 
+ARCHIVE_META = 'FORGE_ARCHIVE.json'
+ARCHIVE_EXCLUDED = 'FORGE_ARCHIVE_EXCLUDED.txt'
+ARCHIVE_FORMAT = 1
+ARCHIVE_MAX_FILE = 50 << 20
+
+
+def _archive_mapper(work: Path, source: Path | None) -> Mapper:
+    """Where an extracted archive's run dir lived: its own FORGE_ARCHIVE.json, else a MANIFEST's source.
+
+    The archive's word wins, and it brings the run's dataset.uid along for the case where
+    the run dir it was taken from no longer has one to read.
+    """
+    mapper = Mapper()
+    meta_path = work / ARCHIVE_META
+    if meta_path.is_file():
+        meta = json.loads(meta_path.read_text())
+        original = meta.get('original_path') if isinstance(meta, dict) else None
+        if not isinstance(meta, dict) or meta.get('format') != ARCHIVE_FORMAT or not isinstance(original, str) \
+                or not os.path.isabs(original):
+            raise ValueError('%s is not a format-%d forge archive description' % (ARCHIVE_META, ARCHIVE_FORMAT))
+        run = work / Path(original).name
+        if not run.is_dir():
+            dirs = [d for d in work.iterdir() if d.is_dir()]
+            if len(dirs) != 1:
+                raise ValueError('the archive holds no run dir named %s' % Path(original).name)
+            run = dirs[0]
+        uid = meta.get('dataset_uid')
+        if isinstance(uid, str) and uid.strip() and not (run / 'dataset.uid').exists():
+            (run / 'dataset.uid').write_text(uid.strip() + '\n')
+        mapper.add(run, Path(original))
+    elif source is not None:
+        mapper.add(work, source.parent)
+    return mapper
+
+
+def import_run(path, strict: bool = True, include_temp: bool = True) -> dict:
+    """Import one run dir or `.tar.gz` and say exactly what happened: {events, new, failed, ...}.
+
+    Strict (the default) stores through record_strict and raises DatasetError if any event
+    could not be stored or any part of the run could not be read; the error's `result` holds
+    the same dict. A store failure stops further writes (it is reported in `failed`), while an
+    unreadable part of the run is reported and the rest is still written. Unfinished executions are left
+    for live capture and counted as `skipped_unfinished`: that is not a failure. Unlike the
+    CLI, test runs (a repo in a temp dir) are kept by default: live capture keeps them too.
+    """
+    path = Path(path).expanduser()
+    args = SimpleNamespace(include_temp=include_temp, report_unreadable=True)
+    counts: dict = {'events': 0, 'new': 0}
+    writer = record_strict if strict else record
+
+    def write(batches, blob_failures):
+        for events, repo in batches:
+            if events:
+                counts['events'] += len(events)
+                if strict and blob_failures:
+                    # put_file turns a failed blob write into "no content"; the first writer of a
+                    # rid wins, so storing this batch would make the loss permanent.
+                    counts.setdefault('failed', []).extend(blob_failures)
+                    return
+                try:
+                    counts['new'] += writer(events, repo=repo, where='import')
+                except DatasetError as error:
+                    counts.setdefault('failed', []).append('store: %s' % error)
+                    return
+        if strict and blob_failures and not counts.get('failed'):
+            counts.setdefault('failed', []).extend(blob_failures)
+
+    with watch_blob_failures() as blob_failures:
+        if path.is_dir():
+            try:
+                write(import_tree(path, Mapper(), args, counts), blob_failures)
+            except Exception as error:
+                counts.setdefault('failed', []).append('%s: %s' % (path, error))
+        elif path.is_file() and path.name.endswith(('.tar.gz', '.tgz')):
+            work = Path(tempfile.mkdtemp(prefix='forge-dataset-import-'))
+            try:
+                _extract(path, work)
+                write(import_tree(work, _archive_mapper(work, None), args, counts), blob_failures)
+            except Exception as error:
+                counts.setdefault('failed', []).append('%s: %s' % (path, error))
+            finally:
+                shutil.rmtree(work, ignore_errors=True)
+        else:
+            counts.setdefault('failed', []).append('%s: not a run dir or .tar.gz archive' % path)
+    result = dict(counts, failed=list(counts.get('failed', [])))
+    if strict and result['failed']:
+        error = DatasetError('import of %s failed: %s' % (path, '; '.join(result['failed'][:5])))
+        error.result = result
+        raise error
+    return result
+
+
+def archive_run(run_dir, dest) -> dict:
+    """Write run_dir as a `.tar.gz` that `forge dataset import` maps back to the same run.
+
+    Layout: FORGE_ARCHIVE.json (the original realpath, run id, dataset uid), then
+    FORGE_ARCHIVE_EXCLUDED.txt, then the run dir under its basename. Left out are what the
+    importer never reads (its skip rules, `review-*` snapshots), symlinks, and files over 50 MB;
+    each is listed. Written to a temp name beside `dest`, fsynced, then renamed.
+    """
+    run = Path(run_dir).expanduser().resolve()
+    dest = Path(dest).expanduser()
+    if not run.is_dir():
+        raise DatasetError('%s is not a run dir' % run)
+    real_dest = Path(os.path.realpath(dest))
+    if real_dest == run or run in real_dest.parents:
+        raise DatasetError('refusing to write the archive %s inside the run dir %s' % (dest, run))
+    excluded: list[str] = []
+    entries: list[tuple[Path, str]] = [(run, run.name)]
+
+    def unreadable(error):
+        raise DatasetError('cannot read %s: %s' % (error.filename, error)) from error
+
+    for directory, subdirs, files in os.walk(run, onerror=unreadable):
+        here = Path(directory)
+        rel = here.relative_to(run)
+        keep = []
+        for name in sorted(subdirs):
+            if (here / name).is_symlink():
+                excluded.append((rel / name).as_posix())
+            elif name in SKIP_DIRS or name.startswith('review-'):
+                excluded.append((rel / name).as_posix() + '/')
+            else:
+                keep.append(name)
+                entries.append((here / name, (Path(run.name) / rel / name).as_posix()))
+        subdirs[:] = keep
+        for name in sorted(files):
+            full = here / name
+            try:
+                info = full.lstat()
+            except OSError as error:
+                raise DatasetError('cannot read %s: %s' % (full, error)) from error
+            if not stat.S_ISREG(info.st_mode) or info.st_size > ARCHIVE_MAX_FILE:
+                excluded.append((rel / name).as_posix())
+            else:
+                entries.append((full, (Path(run.name) / rel / name).as_posix()))
+    meta = dict(format=ARCHIVE_FORMAT, original_path=str(run), run_id=h.first_line(run / 'run_id') or run.name,
+                dataset_uid=h.first_line(run / 'dataset.uid') or None, created=int(time.time()))
+
+    def anonymous(info):
+        info.uid = info.gid = 0
+        info.uname = info.gname = ''
+        return info
+
+    try:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        fd, temporary = tempfile.mkstemp(dir=str(dest.parent), prefix='.%s.' % dest.name, suffix='.tmp')
+    except OSError as error:
+        raise DatasetError('cannot write the archive %s: %s' % (dest, error)) from error
+    try:
+        with os.fdopen(fd, 'wb') as handle:
+            with tarfile.open(fileobj=handle, mode='w:gz', dereference=True) as bundle:   # no link members: _extract drops them
+                for name, body in ((ARCHIVE_META, json.dumps(meta, sort_keys=True, indent=1) + '\n'),
+                                   (ARCHIVE_EXCLUDED, ''.join(line + '\n' for line in excluded))):
+                    info = tarfile.TarInfo(name)
+                    data = body.encode()
+                    info.size, info.mtime, info.mode = len(data), int(time.time()), 0o644
+                    bundle.addfile(info, io.BytesIO(data))
+                for full, arcname in entries:
+                    bundle.add(str(full), arcname=arcname, recursive=False, filter=anonymous)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, dest)
+        try:
+            directory_fd = os.open(str(dest.parent), os.O_RDONLY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+        except OSError:
+            pass
+    except (OSError, tarfile.TarError) as error:
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
+        raise DatasetError('cannot write the archive %s: %s' % (dest, error)) from error
+    except BaseException:
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
+        raise
+    return dict(path=str(dest), bytes=dest.stat().st_size, excluded=excluded)
+
+
 def main(args) -> int:
     from . import harvest  # noqa: F401  (keeps the import graph explicit)
     import forge_dataset as store
@@ -384,10 +709,7 @@ def main(args) -> int:
         work = Path(tempfile.mkdtemp(prefix='forge-dataset-import-'))
         try:
             _extract(archive, work)
-            mapper = Mapper()
-            if source is not None:
-                mapper.add(work, source.parent)
-            write(import_tree(work, mapper, args, counts))
+            write(import_tree(work, _archive_mapper(work, source), args, counts))
         except Exception as error:
             counts.setdefault('failed', []).append('%s: %s' % (archive, error))
         finally:
