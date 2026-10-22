@@ -24,6 +24,7 @@ usage() {
     '  issues    file the review findings a run left open as GitHub issues (plain gh)' \
     '  ui        forge-ui, the run viewer: open [DIR], status, stop' \
     '  runs      this repo'"'"'s recent runs in the terminal: state, verdicts and run dirs' \
+    '  control   a plan'"'"'s live controls: show, set (QA threshold, retries, timeouts), pin, unpin' \
     '  update    fast-forward this checkout and refresh every harness installation' \
     '  version   the installed version, and whether a newer release is out' \
     '' \
@@ -59,6 +60,10 @@ case "${1:-}" in
   runs)
     shift
     exec python3 "$ROOT/scripts/forge-runs.py" "$@"
+    ;;
+  control)
+    shift
+    exec python3 "$ROOT/scripts/forge-control.py" "$@"
     ;;
   update)
     shift
