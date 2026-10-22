@@ -91,7 +91,7 @@
   function render(host, ctx) {
     const UI = root.ForgeUI, c = ctx || {};
     const el = (tag, t, cls) => UI.el(tag, t, cls);
-    const s = { run: null, data: null, dataText: null, error: null, writes: false, loading: true, editors: {}, moved: {}, hold: 0, redraw: false, seq: 0, gen: 0, runsSig: null, ready: false, loadedAt: 0 };
+    const s = { run: null, data: null, dataText: null, error: null, writes: false, loading: true, editors: {}, moved: {}, hold: 0, redraw: false, seq: 0, gen: 0, runsSig: null, ready: false, loadedAt: 0, repo: null, gone: false };
     const key_ = (label, cls, onclick) => { const b = el('button', label, cls); b.type = 'button'; if (onclick) b.addEventListener('click', onclick); return b; };
 
     const head = el('header', undefined, 'set-head');
@@ -107,15 +107,30 @@
     function drawPicker() {
       const runs = c.runs ? c.runs() : [];
       const groups = groupRuns(runs);
-      const before = s.run;
-      if (s.run != null && !withRepo(runs).some(r => r.key === s.run)) s.run = null;
+      const before = s.run, usable = withRepo(runs);
+      let kept = false;
+      s.gone = false;
+      if (s.run != null && !usable.some(r => r.key === s.run)) {
+        // The run left the list. Another run of the same repository carries on with the editors as they are; with unsaved
+        // text and no such run the page stays on it, flagged, rather than throwing the text away.
+        const sibling = usable.slice().sort(newestFirst).find(r => r.repo === s.repo);
+        if (sibling) { s.run = sibling.key; kept = true; }
+        else if (FILES.some(n => isDirty(s.editors[n]))) s.gone = true;
+        else s.run = null;
+      }
       if (s.run == null) s.run = pickDefault(runs, c.key);
-      if (s.run !== before) { resetRun(); if (s.ready) { drawBody(); load(); } }   // the default arrived, or the run went away
-      const sig = JSON.stringify([s.run, groups.map(g => [g.repo, g.runs.map(r => [r.key, optionLabel(r)])])]);
+      const now = usable.find(r => r.key === s.run);
+      if (now) s.repo = now.repo;
+      if (s.run !== before) {
+        if (!kept) resetRun();
+        if (s.ready) { if (!kept) drawBody(); load(); }           // the default arrived, or the run went away
+      }
+      const sig = JSON.stringify([s.run, s.gone, groups.map(g => [g.repo, g.runs.map(r => [r.key, optionLabel(r)])])]);
       if (sig === s.runsSig) return;
       s.runsSig = sig;
       if (!groups.length) { picker.replaceChildren(el('p', 'No run names a repository yet, so there is nothing to configure.', 'muted')); return; }
       const sel = el('select'); sel.id = 'set-run';
+      if (s.gone) { const o = el('option', 'This run is no longer listed'); o.value = ''; o.selected = true; o.disabled = true; sel.append(o); }
       for (const g of groups) {
         const og = el('optgroup'); og.label = g.name + ' · ' + g.repo;
         for (const r of g.runs) { const o = el('option', optionLabel(r)); o.value = r.key; o.selected = r.key === s.run; og.append(o); }
@@ -123,16 +138,16 @@
       }
       sel.addEventListener('change', async () => {
         const unsaved = FILES.filter(n => s.editors[n] && isDirty(s.editors[n]));
-        if (unsaved.length && !(await UI.confirmInline(picker, `Switch repository and discard the unsaved edits to ${unsaved.map(n => '.forge/' + n).join(', ')}?`, { danger: true }))) { sel.value = s.run; return; }
+        if (unsaved.length && !(await UI.confirmInline(picker, `Switch repository and discard the unsaved edits to ${unsaved.map(n => '.forge/' + n).join(', ')}?`, { danger: true }))) { sel.value = s.gone ? '' : s.run; return; }
         pick(sel.value);
       });
       const lab = el('label', undefined, 'set-field'); lab.htmlFor = 'set-run';
       lab.append(el('span', 'Repository of run', 'plate'));
-      const current = withRepo(runs).find(r => r.key === s.run);
       const path = el('p', undefined, 'set-repo-path');
-      path.append(el('i', undefined, 'lamp lamp-route'), el('span', current ? current.repo : '', 'mono'));
+      path.append(el('i', undefined, 'lamp lamp-route'), el('span', s.repo || '', 'mono'));
       const row = el('div', undefined, 'set-picker-row'); row.append(lab, sel);
       picker.replaceChildren(row, path);
+      if (s.gone) picker.append(el('p', 'The run is gone from the list. Your unsaved edits are kept; pick another run to continue, which discards them.', 'warn set-problem'));
     }
     // A new run: nothing of the old one stays, and confirms of the old body (now detached) no longer hold a redraw.
     function resetRun() {
@@ -150,12 +165,15 @@
     async function load() {
       const run = s.run, seq = ++s.seq;
       if (run == null) { s.loading = false; drawBody(); return; }
+      if (s.gone) return;                                         // the run is not listed: nothing to read until another is picked
+      s.loadedAt = Date.now();
       const res = await UI.get('/api/config?run=' + encodeURIComponent(run));
       if (seq !== s.seq || run !== s.run) return;                 // a later pick or load answered
-      s.loading = false; s.loadedAt = Date.now();
+      s.loading = false;
       if (!res.ok) {
         const msg = res.status === 0 ? null : res.detail || res.error;
         if (msg === null && s.data) return;                       // a poll that did not reach the server keeps the last good page
+        if (s.hold > 0) return;                                   // a confirm or a write is open: its strip must not be torn down
         s.error = msg || 'could not reach forge-ui'; s.data = null; s.dataText = null; drawBody(); return;
       }
       s.error = null;
@@ -244,14 +262,14 @@
         sw.setAttribute('aria-label', 'Jev enabled');
         sw.addEventListener('click', async () => {
           const next = !on;
-          const run = s.run, release = grab();
+          const gen = s.gen, release = grab();
           sw.disabled = true;
           const yes = await UI.confirmInline(result, `Turn Jev ${next ? 'on' : 'off'}? This changes forge's own config (${text(jev.path)}) for every repository.`);
           if (!yes) { sw.disabled = false; release(); sw.focus({ preventScroll: true }); return; }
-          const res = await UI.post('/api/config', configBody(run, 'jev.enabled', next));
+          const res = await UI.post('/api/config', configBody(s.run, 'jev.enabled', next));
           UI.outcome(result, res, `Jev is now ${next ? 'enabled' : 'disabled'}.`);
           sw.disabled = false; release();
-          if (res.ok && run === s.run) await reload();
+          if (res.ok && gen === s.gen) await reload();
         });
         row.append(sw);
       }
@@ -318,26 +336,26 @@
       save.addEventListener('click', async () => {
         const cur = s.editors[name], bad = valueProblem(name, cur.draft);
         if (bad) { sync(); return; }
-        const run = s.run, release = grab();
-        save.disabled = remove.disabled = true;
+        const gen = s.gen, release = grab();
+        save.disabled = remove.disabled = ta.readOnly = true;       // the text sent is the text that was confirmed
         const yes = await UI.confirmInline(result, `Write ${target}? This changes a file in the repository's working tree.`);
-        if (!yes) { remove.disabled = !file.exists; release(); sync(); save.focus({ preventScroll: true }); return; }
-        const res = await UI.post('/api/config', configBody(run, repoKey(name), cur.draft));
+        if (!yes) { ta.readOnly = false; remove.disabled = !file.exists; release(); sync(); save.focus({ preventScroll: true }); return; }
+        const res = await UI.post('/api/config', configBody(s.run, repoKey(name), cur.draft));
         UI.outcome(result, res, `Saved ${target}.`);
-        if (res.ok && run === s.run) s.editors[name] = editorOf(cur.draft.endsWith('\n') ? cur.draft : cur.draft + '\n');
-        remove.disabled = !file.exists; release(); sync();
-        if (res.ok && run === s.run) await reload();
+        if (res.ok && gen === s.gen) s.editors[name] = editorOf(cur.draft.endsWith('\n') ? cur.draft : cur.draft + '\n');
+        ta.readOnly = false; remove.disabled = !file.exists; release(); sync();
+        if (res.ok && gen === s.gen) await reload();
       });
       remove.addEventListener('click', async () => {
-        const run = s.run, release = grab();
-        save.disabled = remove.disabled = true;
+        const gen = s.gen, release = grab();
+        save.disabled = remove.disabled = ta.readOnly = true;
         const yes = await UI.confirmInline(result, `Delete ${target}? This removes a file from the repository's working tree.`, { danger: true });
-        if (!yes) { release(); sync(); remove.disabled = !file.exists; remove.focus({ preventScroll: true }); return; }
-        const res = await UI.post('/api/config', configBody(run, repoKey(name), null, true));
+        if (!yes) { ta.readOnly = false; release(); sync(); remove.disabled = !file.exists; remove.focus({ preventScroll: true }); return; }
+        const res = await UI.post('/api/config', configBody(s.run, repoKey(name), null, true));
         UI.outcome(result, res, `Removed ${target}.`);
-        if (res.ok && run === s.run) s.editors[name] = editorOf('');
-        release();
-        if (res.ok && run === s.run) await reload(); else if (!res.ok) { remove.disabled = !file.exists; sync(); }
+        if (res.ok && gen === s.gen) s.editors[name] = editorOf('');
+        ta.readOnly = false; release();
+        if (res.ok && gen === s.gen) await reload(); else if (!res.ok) { remove.disabled = !file.exists; sync(); }
       });
       const keys = el('div', undefined, 'set-keys'); keys.append(save, remove);
       art.append(lab, ta, problem, keys, result);
@@ -372,7 +390,7 @@
       drawPicker();
       return Date.now() - s.loadedAt >= POLL_MS ? load() : Promise.resolve();
     };
-    UI.controlsEnabled().then(on => { s.writes = !!on; s.ready = true; note.hidden = on; drawPicker(); load(); });
+    UI.controlsEnabled().then(on => { s.writes = !!on; s.ready = true; note.hidden = on; const asked = s.seq; drawPicker(); if (s.seq === asked) load(); });
     return { poll, pick };
   }
 

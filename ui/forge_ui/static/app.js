@@ -18,7 +18,7 @@ window.ForgeApp = (() => {
     layers: Object.assign({ cables: true, beads: true, lamps: true, roof: true, labels: true, beacons: true, finish: true, districts: true, halos: true, route: true }, store.get('layers', {})),
     replay: null, playing: null, speed: store.get('speed', 60), stage: null, stageFailed: null, stageLoading: false, timer: null,
     lastStatuses: new Map(), announced: 0, rendered: null, cloud: null, cloudUI: null, cloudPrefs: store.get('cloud', {}),
-    settings: false, lastKey: null, settingsRun: null, settingsView: null,
+    settings: false, lastKey: null, settingsRun: null, settingsPickedAt: null, settingsView: null,
     models: false, modelsData: null, modelsText: null, modelsError: null, modelsPrefs: store.get('models', {}),
     files: new Map(), findingsCount: new Map(), filesPrefs: store.get('files', {}), runSort: store.get('run-sort', 'updated'), tablePrefs: store.get('tables', {}),
     findings: new Map() };
@@ -494,7 +494,9 @@ window.ForgeApp = (() => {
     main.replaceChildren();
     const v = el('section', undefined, 'settings-view'); v.id = 'settings-view'; main.append(v);
     state.settingsView = window.ForgeSettings.render(v, {
-      key: state.settingsRun || state.lastKey, runs: () => state.runs, onPick: key => { state.settingsRun = key; },
+      // a pick holds only while the current run is the one it was made from: the default is the current or most recent run
+      key: state.settingsRun && state.lastKey === state.settingsPickedAt ? state.settingsRun : state.lastKey,
+      runs: () => state.runs, onPick: key => { state.settingsRun = key; state.settingsPickedAt = state.lastKey; },
     });
   }
 
