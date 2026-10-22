@@ -145,6 +145,23 @@
     return 'unknown';
   }
 
+  // The write lock answers 409 {error: 'busy'} at once while another write to the run (a dry run included) is running.
+  const isLockBusy = res => !!res && res.status === 409 && res.error === 'busy';
+  const RETRIES = 8, RETRY_MS = 700;
+
+  // Runs async jobs one after another; a job that throws does not stop the queue.
+  function serializer() {
+    let tail = Promise.resolve();
+    return job => {
+      const p = tail.then(job);
+      tail = p.then(() => {}, () => {});
+      return p;
+    };
+  }
+  // One queue per page: a dialog that was closed may still have a request on the server, and the next must wait for it.
+  const gate = serializer();
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+
   const deletePath = key => '/api/runs/' + encodeURIComponent(key) + '/delete';
 
   /* ---------- DOM ---------- */
@@ -191,7 +208,8 @@
     const resultHost = el('div', undefined, 'del-result');
     const cancel = el('button', 'Cancel'); cancel.type = 'button';
     const go = el('button', 'Delete', 'ui-danger del-go'); go.type = 'button'; go.disabled = true;
-    const actions = el('div', undefined, 'del-actions'); actions.append(cancel, go);
+    const retry = el('button', 'Check again'); retry.type = 'button'; retry.hidden = true;
+    const actions = el('div', undefined, 'del-actions'); actions.append(retry, cancel, go);
     dlg.append(title, ident, lamp, previewHost, optHost, warnHost, confirmBox, resultHost, actions);
 
     function setLamp(cls, t) { lamp.replaceChildren(el('i', undefined, 'lamp ' + cls), el('span', t)); }
@@ -262,6 +280,7 @@
       go.disabled = s.done || !canDelete(s.v, s.preview, s.loading || s.posting);
       go.textContent = s.posting ? 'Deleting…' : 'Delete';
       go.hidden = s.done;
+      retry.hidden = s.done || s.loading || s.posting || !!s.preview;
       cancel.textContent = s.done ? 'Close' : 'Cancel';
       cancel.disabled = s.posting;
       drawWarnings();
@@ -273,8 +292,15 @@
       s.loading = true; s.preview = null;
       if (!keepResult) resultHost.replaceChildren();
       previewHost.replaceChildren(); setLamp('st-running', 'Checking what would be deleted…'); syncAll();
-      const res = await UI.post(deletePath(run.key), bodyOf(s.v, true));
-      if (seq !== s.seq || s.done) return;
+      // Only one request per run at a time (the server answers a second one 'busy'), and only the latest options are sent.
+      let res = null;
+      for (let i = 0; ; i++) {
+        res = await gate(() => seq === s.seq && !s.done ? UI.post(deletePath(run.key), bodyOf(s.v, true)) : null);
+        if (seq !== s.seq || s.done) return;
+        if (!isLockBusy(res) || i >= RETRIES) break;
+        await sleep(RETRY_MS);
+        if (seq !== s.seq || s.done) return;
+      }
       s.loading = false;
       const p = previewOf(res);
       if (p.kind === 'preview') {
@@ -317,7 +343,7 @@
     async function submit() {
       if (!canDelete(s.v, s.preview, s.loading || s.posting)) return;
       s.posting = true; syncAll();
-      const res = await UI.post(deletePath(run.key), bodyOf(s.v, false));
+      const res = await gate(() => UI.post(deletePath(run.key), bodyOf(s.v, false)));
       s.posting = false;
       const o = outcomeOf(res);
       showResult(o, res);
@@ -337,6 +363,7 @@
     confirmInput.addEventListener('input', () => { s.v = withTyped(s.v, confirmInput.value); syncAll(); });
     confirmInput.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); if (!go.disabled) submit(); } });
     go.addEventListener('click', submit);
+    retry.addEventListener('click', () => { load(); });
     cancel.addEventListener('click', () => { if (!s.posting) dlg.close(); });
     dlg.addEventListener('cancel', e => { if (s.posting) e.preventDefault(); });
     dlg.addEventListener('click', e => { if (e.target === dlg && !s.posting && outsideBox(dlg.getBoundingClientRect(), e.clientX, e.clientY)) dlg.close(); });
@@ -350,5 +377,5 @@
   }
 
   return { open, deleteBody, initial, withOption, withTyped, bodyOf, confirmOk, canDelete, warningsOf, worktreePlate, branchPlate,
-    stepsOf, outcomeOf, previewOf, reasonOf, outsideBox, fmtBytes, deletePath, OPTIONS };
+    stepsOf, outcomeOf, previewOf, reasonOf, outsideBox, fmtBytes, deletePath, isLockBusy, serializer, OPTIONS };
 });

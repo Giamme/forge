@@ -169,3 +169,27 @@ test('sizes and the request path', () => {
   assert.equal(D.fmtBytes(-1), 'unknown');
   assert.equal(D.deletePath('0123456789ab'), '/api/runs/0123456789ab/delete');
 });
+
+test('only the write lock\'s immediate answer counts as a transient busy', () => {
+  assert.equal(D.isLockBusy({ ok: false, status: 409, error: 'busy' }), true);
+  assert.equal(D.isLockBusy({ ok: false, status: 409, error: 'refused', detail: 'the run is active' }), false);
+  assert.equal(D.isLockBusy({ ok: false, status: 500, error: 'busy' }), false);
+  assert.equal(D.isLockBusy(null), false);
+});
+
+test('the serializer starts a job only when the one before it has finished, and survives a failure', async () => {
+  const gate = D.serializer(), log = [];
+  let release;
+  const first = gate(() => new Promise(r => { log.push('first start'); release = () => { log.push('first end'); r(1); }; }));
+  const second = gate(async () => { log.push('second start'); return 2; });
+  const third = gate(async () => { log.push('third start'); throw new Error('x'); });
+  const fourth = gate(async () => { log.push('fourth start'); return 4; });
+  await Promise.resolve();
+  assert.deepEqual(log, ['first start']);
+  release();
+  assert.equal(await first, 1);
+  assert.equal(await second, 2);
+  await assert.rejects(third);
+  assert.equal(await fourth, 4);
+  assert.deepEqual(log, ['first start', 'first end', 'second start', 'third start', 'fourth start']);
+});
