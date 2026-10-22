@@ -676,7 +676,7 @@ class Controls(unittest.TestCase):
     open, assertClean = Page.open, Page.assertClean
 
     def setUp(self):
-        temp = tempfile.TemporaryDirectory(prefix='forge-ui-controls-')
+        self.temp = temp = tempfile.TemporaryDirectory(prefix='forge-ui-controls-')       # _serve cleans it up on its skip paths
         self.addCleanup(temp.cleanup)
         self.plan = F.make_plan(Path(temp.name) / 'p')
         (self.plan / 'scheduler.live').write_text(json.dumps({'pid': os.getpid()}))        # a live scheduler: this process
