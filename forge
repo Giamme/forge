@@ -21,6 +21,7 @@ usage() {
     '  fractal   opt-in Fractal execution: install, doctor, runs, status, tree, logs, open, report, ...' \
     '  jev       optional Jev advice: setup, status, doctor, enable, disable, backtest' \
     '  dataset   every run'"'"'s inputs and outcomes: status, dump, import, export, outcomes, ...' \
+    '  issues    file the review findings a run left open as GitHub issues (plain gh)' \
     '  ui        forge-ui, the run viewer: open [DIR], status, stop' \
     '  runs      this repo'"'"'s recent runs in the terminal: state, verdicts and run dirs' \
     '  update    fast-forward this checkout and refresh every harness installation' \
@@ -46,6 +47,10 @@ case "${1:-}" in
   dataset)
     shift
     exec python3 "$ROOT/scripts/forge-dataset.py" "$@"
+    ;;
+  issues)
+    shift
+    exec python3 "$ROOT/scripts/forge-issues.py" "$@"
     ;;
   ui)
     shift
