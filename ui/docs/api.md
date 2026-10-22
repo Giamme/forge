@@ -229,12 +229,18 @@ its last 20,000 behind a leading `…`. Their `truncated` lists the field names 
 | `GET /api/health` | `200 {"app": "forge-ui", "version", "build", "pid", "controls": true\|false}`; `controls` is `false` in read-only mode |
 | `GET /api/runs/<key>/controls` | `200` the `forge control show --json` object of a plan run (see Controls); `404` for a solo or unknown run |
 | `POST /api/runs/<key>/controls` | change one control or pin; authenticated, see Controls (write endpoints) |
+| `GET /api/runs/<key>/issues?scope=run\|repo&offline=0\|1&plausible=0\|1&dismissed=0\|1&only=fp,fp` | `200` the `forge issues --json` listing, run fresh on every request (no cache); see Controls (write endpoints) |
+| `POST /api/runs/<key>/issues` | file GitHub issues for chosen findings; authenticated, 300 s timeout |
+| `POST /api/runs/<key>/issues/dismiss` | dismiss or (`undo`) restore findings; authenticated |
+| `POST /api/runs/<key>/delete` | dry-run or delete a run with `forge runs rm`; authenticated, 900 s timeout; later requests for the key answer `404` |
+| `GET /api/config?run=<key>` | `200` the `forge config show --json` of that run's repo |
+| `POST /api/config` | set or unset one allowed key (`repo.verify`, `repo.setup`, `repo.verify-subset`, `jev.enabled`); authenticated |
 | `GET /api/runs/<key>/export?texts=0\|1&paths=0\|1` | `200` the run as one HTML file (see Export), `Content-Disposition: attachment`, `Content-Security-Policy: default-src 'none'; sandbox`; `404` for an unknown run |
 | `GET /api/runs/<key>/tasks/<id>/fractal` | `200 TaskFractal` |
 | `GET /api/runs/<key>/tasks/<id>/fractal/nodes/<node>[/diff]` | `200 FractalNodeDetail`, or with `/diff` a `DiffDetail` of its `candidate.diff`; `<node>` matches `[A-Za-z0-9][A-Za-z0-9_-]{0,100}` |
 | `GET /` | `forge_ui/static/index.html` |
 | `GET /<name>` | that file from `forge_ui/static/` (`.html .js .css .svg` only, no subdirs) |
-| anything else | `404 {"error": "not found"}`; a method a path does not take (PUT, DELETE, OPTIONS, a POST to a read path): `405` with `Allow` |
+| anything else | `404 {"error": "not found"}` (an unknown path or run); a method a path does not take (PUT, DELETE, OPTIONS, a POST to a read path): `405` with `Allow` |
 
 The lazy endpoints answer `404 {"error": "not found"}` for an unknown run, task,
 execution or review; the diff endpoints also for a `<which>` the run kind has not (`existing`
