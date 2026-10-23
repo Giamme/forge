@@ -26,8 +26,12 @@ matches no current finding. A dismissed finding stays in `findings` with `dismis
 and is left out of the drafts unless --include-dismissed is given. The marks live outside the repository, in
 `${XDG_STATE_HOME:-~/.local/state}/forge/findings/<repo_key>.json` (an empty or relative XDG_STATE_HOME counts as
 unset); the store directory and file must not be symlinks, and the file must be a regular one. The repository they
-belong to is the one <run> resolves to (a plan's `repo` file, or the repository under --all-runs); --repo does not
-change it.
+belong to is the one <run> resolves to; --repo does not change it.
+
+The repository is the run's own, whatever form <run> takes: a file or task dir resolves to its plan dir and that plan's
+`repo` file, a solo run dir to its own `repo` file, and --all-runs to the repository it names. Listing, filing and
+(un)dismissing all resolve it the same way, so a mark lands in the store a later listing of the run reads. Only a run
+that records no repository falls back to the current directory, and the output says so (`warnings`).
 
 Two processes must not file for one repository at once, or both see a fingerprint as unfiled and create it. --apply
 holds `<repo_key>.lock` (next to the store, `flock`) from the `gh issue list` lookup to the last `gh issue create`,
@@ -277,7 +281,13 @@ def collect_all(path: Path, include_plausible):
     return {"plan": f"{repo.name} (all runs)", "repo_path": str(repo)}, found, notes
 
 
+def recorded_repo(run_dir: Path):
+    """The repository a plan dir or solo run dir records in its `repo` file; None when it records none."""
+    return read(run_dir / "repo") or None
+
+
 def collect(path: Path, include_plausible, all_runs=False):
+    """(meta, findings, notes); meta["repo_path"] is the run's recorded repository, None when it records none."""
     path = path.resolve()
     if all_runs:
         if not path.is_dir():
@@ -309,10 +319,11 @@ def collect(path: Path, include_plausible, all_runs=False):
         else:
             found = [{**f, **meta, "origin": "tolerated" if f["confidence"] == "CONFIRMED" else "plausible"}
                      for f in parse_findings(read(path)) if f["confidence"] == "CONFIRMED" or include_plausible]
-        return {"plan": plan_root.name, "repo_path": None}, found, []
+        # plan_root is the plan dir, or for a file outside any plan (a solo run's) the dir holding it
+        return {"plan": plan_root.name, "repo_path": recorded_repo(plan_root)}, found, []
     if (path / "tasks").is_dir():
         found, notes = collect_plan(path, include_plausible)
-        return {"plan": path.name, "repo_path": read(path / "repo") or None}, found, notes
+        return {"plan": path.name, "repo_path": recorded_repo(path)}, found, notes
     if not ((path / "qa.last").is_file() or (path / "known_issues.md").is_file()):
         raise Fail(f"{path} is not a forge run: no tasks/, qa.last or known_issues.md")
     if path.parent.name == "tasks":
@@ -333,8 +344,20 @@ def collect(path: Path, include_plausible, all_runs=False):
                                 review=True if path.parent.name != "tasks" and not read(path / "status") else None)
     for f in found:
         f["plan"], f["plan_dir"] = (plan_dir or path).name, str(plan_dir or path)
-    return {"plan": (plan_dir or path).name, "repo_path": (read(plan_dir / "repo") if plan_dir else "") or None}, \
+    # a task or review dir in a plan: the plan's repository; a solo run dir: its own
+    return {"plan": (plan_dir or path).name, "repo_path": recorded_repo(plan_dir or path)}, \
         found, [note] if note else []
+
+
+def run_repository(meta):
+    """(repo_path, warnings): the run's recorded repository, else the current directory with a warning saying so.
+
+    Listing, filing and (un)dismissing all go through here, so they agree on the dismissal store.
+    """
+    if meta["repo_path"]:
+        return meta["repo_path"], []
+    cwd = os.getcwd()
+    return cwd, [f"run {meta['plan']} records no repository; using the current directory {cwd}"]
 
 
 # ---------------------------------------------------------------------------------------------- draft
@@ -547,7 +570,7 @@ def dismiss(args):
     """--dismiss / --undismiss: update the repository's store under its lock. No network: <run> is only read to
     find the repository it resolves to."""
     meta, _found, _notes = collect(Path(args.run), False, args.all_runs)
-    repo_path = meta["repo_path"] or os.getcwd()
+    repo_path, warnings = run_repository(meta)
     key = repo_key(repo_path)
     with repo_lock(key, args.repo or github_slug(repo_path) or repo_path):
         data = load_dismissed(key)
@@ -561,7 +584,7 @@ def dismiss(args):
             data.pop(fp, None)
         if json.dumps(data, sort_keys=True) != before:
             save_dismissed(key, data)
-    return {"ok": True, "dismissed": args.dismiss, "undismissed": args.undismiss}
+    return {"ok": True, "dismissed": args.dismiss, "undismissed": args.undismiss, "warnings": warnings}
 
 
 # ---------------------------------------------------------------------------------------------- main
@@ -632,6 +655,8 @@ def main(argv=None):
     if args.json:
         print(json.dumps(out, indent=2, ensure_ascii=False))
     elif dismissing:
+        for warning in out["warnings"]:
+            print(f"warning: {warning}")
         for verb in ("dismissed", "undismissed"):
             if out[verb]:
                 print(f"{verb} {len(out[verb])} finding(s): {', '.join(out[verb])}")
@@ -651,20 +676,20 @@ def finding_entry(f, filed=None, dismissed=None):
 
 def file_findings(args):
     meta, found, notes = collect(Path(args.run), args.include_plausible, args.all_runs)
-    repo_path = meta["repo_path"] or os.getcwd()
+    repo_path, warnings = run_repository(meta)
     slug = args.repo or github_slug(repo_path)
     if not slug:
-        raise Fail(f"{repo_path} has no GitHub origin remote; pass --repo owner/repo")
+        raise Fail("; ".join(warnings + [f"{repo_path} has no GitHub origin remote; pass --repo owner/repo"]))
     if args.min_severity:
         cut = SEVERITIES.index(args.min_severity)
         found = [f for f in found if SEVERITIES.index(f["severity"]) <= cut]
     # Filing is list-then-create, so no other filing or dismissal for this repository may run in between: the
     # lock covers the lookup, the drafts (which ask `gh` whether commits are published) and every create.
     with repo_lock(repo_key(repo_path), slug) if args.apply else contextlib.nullcontext():
-        return list_and_file(args, meta, found, notes, repo_path, slug)
+        return list_and_file(args, meta, found, notes, repo_path, slug, warnings)
 
 
-def list_and_file(args, meta, found, notes, repo_path, slug):
+def list_and_file(args, meta, found, notes, repo_path, slug, warnings):
     offline = args.offline
     dismissed = load_dismissed(repo_key(repo_path))
     issues = [] if offline else existing_issues(slug)
@@ -707,7 +732,7 @@ def list_and_file(args, meta, found, notes, repo_path, slug):
                        "same_title": None if offline else open_titles.get(norm_title(title)),
                        "body": body_for(slug, repo_path if meta["repo_path"] else None, items, args.lang, offline)})
     drafts.sort(key=lambda d: SEVERITIES.index(d["severity"]))
-    out = {"repo": slug, "plan": meta["plan"], "notes": notes,
+    out = {"repo": slug, "plan": meta["plan"], "notes": notes, "warnings": warnings,
            "summary": {"findings": len(seen), "already_filed": len(already),
                        "dismissed": sum(1 for e in entries if e["dismissed"]), "drafts": len(drafts),
                        **{o: sum(1 for f in todo if f["origin"] == o) for o in ("tolerated", "review", "plausible")}},
@@ -755,6 +780,8 @@ def print_human(out, applied):
     dismissed = f", {s['dismissed']} dismissed" if s["dismissed"] else ""
     print(f"{out['repo']} · run {out['plan']}: {s['findings']} finding(s), {s['already_filed']} already filed{dismissed}, "
           f"{s['drafts']} draft(s) ({s['tolerated']} tolerated, {s['review']} review, {s['plausible']} plausible)")
+    for warning in out["warnings"]:
+        print(f"  warning {warning}")
     for note in out["notes"]:
         print(f"  skipped {note}")
     for a in out["already_filed"]:
