@@ -424,6 +424,140 @@ class ReviewTests(unittest.TestCase):
         self.assertEqual(self.text(art, 'verdict'), 'ACCEPTED')
         self.assertTrue((art / 'known_issues.md').exists())
 
+    # --- the previous final review is carried (issue #22) ----------------------------------
+    def advance(self, plan, name='c.txt'):
+        """Another change lands on the integration branch, as if a task had merged since."""
+        wt = Path(self.text(plan, 'wt_root')) / '_integration'
+        (wt / name).write_text('later work\n')
+        for cmd in (['add', name], ['commit', '-qm', 'later ' + name]):
+            subprocess.run(['git'] + cmd, cwd=wt, env=self.env, check=True)
+        tip = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=wt, env=self.env, text=True).strip()
+        (plan / 'accepted.integration').write_text(tip + '\n')
+        return tip
+
+    def meta(self, out):
+        return dict(l.split('=', 1) for l in self.text(out, 'review.meta').splitlines() if '=' in l)
+
+    def fences(self, prompt):
+        return [m.start() for m in re.finditer(r'```diff\n', prompt)]
+
+    def test_the_first_review_has_no_previous_section_and_records_its_integration(self):
+        p = self.merged_plan()
+        self.assertEqual(self.review(p).returncode, 0)
+        out = self.latest(p)
+        prompt = (out / 'qa.input').read_text()
+        self.assertNotIn('previous final review', prompt)
+        meta = self.meta(out)
+        self.assertEqual((meta['previous'], meta['since']), ('none', 'none'))
+        self.assertEqual(meta['integration'], self.text(p, 'accepted.integration'))
+        self.assertEqual(meta['integration'], meta['tip'])
+        self.assertEqual(list(meta)[:5], ['base', 'tip', 'source', 'spec', 'threshold'])   # the old keys, in order
+
+    def test_a_second_review_carries_the_first_report_and_only_the_diff_since(self):
+        quoted = P1 + '\n```diff\n-old\n+new\n```'
+        p = self.merged_plan()
+        self.scenario({ANY_REVIEW: {'verdict': 'FAIL', 'findings': quoted}})
+        self.assertEqual(self.review(p).returncode, 5)
+        first = self.latest(p)
+        first_tip = self.text(p, 'accepted.integration')
+        tip = self.advance(p)
+        self.scenario({ANY_REVIEW: {}})
+        self.assertEqual(self.review(p).returncode, 0)
+        second = self.latest(p)
+        self.assertNotEqual(first, second)
+        prompt = (second / 'qa.input').read_text()
+        self.assertIn('Findings from the previous final review (FAIL at %s, ' % first_tip[:7], prompt)
+        self.assertIn('the combined result drops the write', prompt)                # the first report
+        self.assertIn('fixed,\nstill present, or no longer applicable', prompt)
+        self.assertIn('never in that labelled format', prompt)
+        self.assertLess(prompt.index('previous final review'), prompt.index('Blocking threshold') if 'Blocking threshold' in prompt
+                        else len(prompt))
+        self.assertIn('### Changes since that review (%s..%s)' % (first_tip[:7], tip[:7]), prompt)
+        patch = prompt.split('```patch\n', 1)[1].split('\n```', 1)[0]
+        self.assertIn('c.txt', patch)
+        self.assertNotIn('a.txt', patch)                                            # only what is new
+        self.assertEqual(len(self.fences(prompt)), 1)                              # the quoted fence became text
+        self.assertGreater(prompt.index('```diff'), prompt.index('```patch'))      # the combined diff stays last
+        self.assertIn('+implemented', prompt[prompt.index('```diff'):])
+        meta = self.meta(second)
+        self.assertEqual(meta['previous'], first.name)
+        self.assertEqual(meta['since'], first_tip)
+        self.assertEqual(meta['integration'], tip)
+        # a review of the very same commit says there is nothing new
+        self.assertEqual(self.review(p).returncode, 0)
+        prompt = (self.latest(p) / 'qa.input').read_text()
+        self.assertIn('no changes since that review', prompt)
+        self.assertNotIn('```patch', prompt)
+
+    def test_the_previous_review_skips_dirs_without_a_usable_verdict_and_the_published_link(self):
+        p = self.merged_plan()
+        self.assertEqual(self.review(p).returncode, 0)
+        first = self.latest(p)
+        for name, verdict in (('final-review-9999999990-1', None), ('final-review-9999999991-1', 'INVALIDATED'),
+                              ('final-review-9999999992-1', 'UNKNOWN')):
+            d = p / name; d.mkdir()
+            (d / 'qa.last').write_text('report of ' + name + '\n')
+            if verdict:
+                (d / 'verdict').write_text(verdict + '\n')
+        empty = p / 'final-review-9999999993-1'; empty.mkdir()
+        (empty / 'verdict').write_text('PASS\n'); (empty / 'qa.last').write_text('')
+        self.assertTrue((p / 'final-review').is_symlink())
+        self.assertEqual(self.review(p).returncode, 0)
+        out = self.latest(p, 'final-review-1*')
+        self.assertEqual(self.meta(out)['previous'], first.name)
+        prompt = (out / 'qa.input').read_text()
+        self.assertEqual(prompt.count('Findings from the previous final review'), 1)
+        self.assertNotIn('report of final-review', prompt)
+
+    def test_integrate_carries_the_last_review_and_the_range_since_it(self):
+        p = self.merged_plan('--qa-threshold', 'P2')
+        self.scenario({ANY_REVIEW: {'verdict': 'FAIL', 'findings': P1}})
+        self.assertEqual(self.review(p).returncode, 5)
+        first_tip = self.text(self.latest(p), 'review.meta').split('tip=')[1].split()[0]
+        self.user_commit()
+        self.scenario({ANY_REVIEW: {}})
+        r = self.integrate(p, '--final-review', 'opus')
+        self.assertEqual(r.returncode, 0, r.stdout)
+        art = self.latest(p, 'integrate-*/final-review')
+        prompt = (art / 'qa.input').read_text()
+        self.assertIn('Findings from the previous final review (FAIL at %s' % first_tip[:7], prompt)
+        self.assertIn('the combined result drops the write', prompt)
+        patch = prompt.split('```patch\n', 1)[1].split('\n```', 1)[0]
+        self.assertIn('user.txt', patch)                                            # what the candidate added
+        self.assertNotIn('a.txt', patch)
+        meta = self.meta(art)
+        self.assertTrue(meta['previous'].startswith('final-review-'), meta)
+        self.assertEqual(meta['since'], first_tip)
+        self.assertEqual(meta['integration'], self.text(p, 'accepted.integration'))
+        self.assertNotEqual(meta['integration'], meta['tip'])                       # the candidate is a merge
+        # the next review finds that integrate review (the newest), and its tip is no ancestor of the integration branch
+        self.scenario({ANY_REVIEW: {}})
+        self.assertEqual(self.review(p).returncode, 0)
+        out = self.latest(p)
+        prompt = (out / 'qa.input').read_text()
+        self.assertIn('Findings from the previous final review (PASS at', prompt)
+        self.assertEqual(self.meta(out)['previous'].split('/')[0][:10], 'integrate-')
+        self.assertEqual(self.meta(out)['since'], 'none')
+        self.assertIn('cannot be shown', prompt)
+        self.assertNotIn('```patch', prompt)
+
+    def test_over_the_limit_no_diff_fence_comes_from_the_carried_section(self):
+        self.scenario({'a.dwarf.1': {'content': 'y' * 450_000}})
+        p = self.plan_of([('a', '-', 'a.txt'), ('b', 'a', 'b.txt')])
+        self.assertEqual(self.run_script('forge-parallel.sh', 'run', p).returncode, 0)
+        self.scenario({ANY_REVIEW: {'verdict': 'FAIL', 'findings': P1 + '\n```diff\n-x\n+y\n```'}})
+        self.assertEqual(self.review(p).returncode, 5)
+        self.advance(p)
+        self.scenario({ANY_REVIEW: {}})
+        self.assertEqual(self.review(p).returncode, 0)
+        prompt = (self.latest(p) / 'qa.input').read_text()
+        self.assertEqual(self.fences(prompt), [])
+        self.assertIn('```text\n-x\n+y\n```', prompt)                               # the quoted fence, defused
+        self.assertIn('git diff HEAD~1 HEAD', prompt)
+        self.assertIn('### Changes since that review', prompt)
+        self.assertNotIn('```patch', prompt)                                        # the combined diff is not inlined
+        self.assertIn('c.txt', prompt.split('### Changes since that review', 1)[1])  # a stat of what changed instead
+
 
 if __name__ == '__main__':
     unittest.main()
