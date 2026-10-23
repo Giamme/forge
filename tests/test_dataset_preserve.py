@@ -250,8 +250,8 @@ class ArchiveTests(PreserveCase):
             meta = json.load(bundle.extractfile('FORGE_ARCHIVE.json'))
             listed = bundle.extractfile('FORGE_ARCHIVE_EXCLUDED.txt').read().decode().split()
         self.assertEqual(sorted(listed), sorted(result['excluded']))
-        self.assertEqual((meta['format'], meta['original_path'], meta['run_id'], meta['dataset_uid']),
-                         (1, os.path.realpath(run), 'old', 'abc123'))
+        self.assertEqual((meta['format'], meta['original_path'], meta['run_id'], meta['dataset_uid'], meta['legacy_uids']),
+                         (1, os.path.realpath(run), 'old', 'abc123', {}))
         self.assertAlmostEqual(meta['created'], time.time(), delta=60)
         self.assertEqual([p.name for p in dest.parent.iterdir()], ['old.tar.gz'])
 
@@ -302,8 +302,13 @@ class ArchiveTests(PreserveCase):
                 importer.archive_run(run, dest)
         self.assertEqual(list(dest.parent.iterdir()), [])
 
-    def identity_roundtrip(self, uid):
+    def identity_roundtrip(self, uid, review_started=None):
         run = self.make_run(uid=uid)
+        if review_started is not None:
+            # A review snapshot the archive leaves out, holding the run's earliest attempt start.
+            snapshot = run / 'tasks' / 'a' / 'review-1-1' / 'attempts' / 'qa-1'
+            snapshot.mkdir(parents=True)
+            (snapshot / 'metrics.json').write_text(json.dumps(dict(role='qa', wall_started=review_started, exit_code=0)))
         original = os.path.realpath(run)
         self.assertEqual(importer.import_run(run)['failed'], [])
         before = self.rows('rid, run, data')
@@ -332,6 +337,31 @@ class ArchiveTests(PreserveCase):
 
     def test_an_archive_of_a_run_without_a_uid_imports_as_the_same_legacy_run(self):
         self.identity_roundtrip(None)
+
+    def test_a_legacy_run_keeps_its_id_when_its_earliest_attempt_is_in_a_left_out_review_snapshot(self):
+        self.identity_roundtrip(None, review_started=50.0)
+
+    def test_an_archive_written_before_legacy_ids_were_recorded_still_imports_as_the_same_run(self):
+        run = self.make_run()
+        importer.import_run(run)
+        before = self.rows('rid, run, data')
+        archive = self.root / 'old.tar.gz'
+        importer.archive_run(run, archive)
+        with tarfile.open(archive) as bundle:
+            members = [(m, bundle.extractfile(m).read() if m.isfile() else None) for m in bundle.getmembers()]
+        with tarfile.open(archive, 'w:gz') as bundle:
+            for member, data in members:
+                if member.name == importer.ARCHIVE_META:
+                    meta = json.loads(data)
+                    del meta['legacy_uids']
+                    data = json.dumps(meta).encode()
+                    member.size = len(data)
+                bundle.addfile(member, io.BytesIO(data) if data is not None else None)
+        shutil.rmtree(run)
+        self.assertEqual(importer.import_run(archive)['new'], 0)
+        self.use_store('fresh')
+        importer.import_run(archive)
+        self.assertEqual(self.rows('rid, run, data'), before)
 
     def test_the_cli_import_maps_a_direct_archive_too(self):
         run = self.make_run()

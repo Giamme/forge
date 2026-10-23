@@ -81,11 +81,13 @@ class Mapper:
     """Maps a path inside an extracted archive back to where the run originally lived.
 
     A run's legacy id hashes its original path, so importing an archive and importing
-    the original dir must agree on it.
+    the original dir must agree on it. An archive also brings the legacy ids it computed
+    from the whole dir (`legacy`, by original path), since it leaves out files they hash.
     """
 
     def __init__(self):
         self.pairs = []
+        self.legacy: dict[str, str] = {}
 
     def add(self, extracted_parent: Path, original_parent: Path) -> None:
         self.pairs.append((str(extracted_parent.resolve()), str(original_parent)))
@@ -102,8 +104,26 @@ def _uid(run_dir: Path, mapper: Mapper, cache: dict) -> str:
     key = str(run_dir)
     if key not in cache:
         stored = h.first_line(run_dir / 'dataset.uid') or _live_uid(run_dir, mapper(run_dir))
-        cache[key] = stored or h.legacy_uid_for(run_dir, mapper(run_dir))
+        cache[key] = stored or _legacy_uid(run_dir, mapper)
     return cache[key]
+
+
+def _legacy_uid(run_dir: Path, mapper: Mapper) -> str:
+    original = mapper(run_dir)
+    return mapper.legacy.get(str(original)) or h.legacy_uid_for(run_dir, original)
+
+
+def _legacy_uids(run: Path) -> dict:
+    """The legacy id an import of `run` gives each run dir in it that has no dataset.uid,
+    keyed by its path relative to `run`.
+
+    legacy_uid_for hashes the earliest attempt start anywhere below a run dir, `review-*`
+    snapshots included, and an archive leaves those out: so the archive records the ids.
+    """
+    dirs = {run} | set(walk_plans(run)) | {t.parent.parent for t in walk_fractal_tasks(run)}
+    dirs |= {h.locate(a.parent.parent, a.name.split('-', 1)[0])['run_dir'] for a in walk_attempts(run)}
+    return {d.relative_to(run).as_posix(): h.legacy_uid_for(d, d) for d in sorted(dirs)
+            if (d == run or run in d.parents) and not (d / 'dataset.uid').exists()}
 
 
 def _live_uid(run_dir: Path, original: Path) -> str | None:
@@ -264,7 +284,7 @@ def import_tree(top: Path, mapper: Mapper, args, counts: dict) -> list[tuple[lis
         try:
             ctx = h.fractal_context(task_dir, create=False)
             if ctx.get('run') and not (task_dir.parent.parent / 'dataset.uid').exists():
-                ctx['run'] = h.legacy_uid_for(task_dir.parent.parent, mapper(task_dir.parent.parent))
+                ctx['run'] = _legacy_uid(task_dir.parent.parent, mapper)
             if is_temp(ctx['repo']) and not args.include_temp:
                 continue
             events = h.fractal_task_events(task_dir, ctx, src='import')
@@ -503,6 +523,11 @@ def _archive_mapper(work: Path, source: Path | None) -> Mapper:
         if isinstance(uid, str) and uid.strip() and not (run / 'dataset.uid').exists():
             (run / 'dataset.uid').write_text(uid.strip() + '\n')
         mapper.add(run, Path(original))
+        # Absent from archives written before it existed: those recompute from what they hold.
+        legacy = meta.get('legacy_uids')
+        for rel, value in (legacy.items() if isinstance(legacy, dict) else ()):
+            if isinstance(value, str) and value.strip() and not os.path.isabs(rel) and '..' not in Path(rel).parts:
+                mapper.legacy[str(Path(original) / rel)] = value.strip()
     elif source is not None:
         mapper.add(work, source.parent)
     return mapper
@@ -568,7 +593,8 @@ def import_run(path, strict: bool = True, include_temp: bool = True) -> dict:
 def archive_run(run_dir, dest) -> dict:
     """Write run_dir as a `.tar.gz` that `forge dataset import` maps back to the same run.
 
-    Layout: FORGE_ARCHIVE.json (the original realpath, run id, dataset uid), then
+    Layout: FORGE_ARCHIVE.json (the original realpath, run id, dataset uid, the legacy ids of
+    run dirs without one), then
     FORGE_ARCHIVE_EXCLUDED.txt, then the run dir under its basename. Left out are what the
     importer never reads (its skip rules, `review-*` snapshots), symlinks, and files over 50 MB;
     each is listed. Written to a temp name beside `dest`, fsynced, then renamed.
@@ -610,7 +636,8 @@ def archive_run(run_dir, dest) -> dict:
             else:
                 entries.append((full, (Path(run.name) / rel / name).as_posix()))
     meta = dict(format=ARCHIVE_FORMAT, original_path=str(run), run_id=h.first_line(run / 'run_id') or run.name,
-                dataset_uid=h.first_line(run / 'dataset.uid') or None, created=int(time.time()))
+                dataset_uid=h.first_line(run / 'dataset.uid') or None, legacy_uids=_legacy_uids(run),
+                created=int(time.time()))
 
     def anonymous(info):
         info.uid = info.gid = 0
