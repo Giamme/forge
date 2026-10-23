@@ -20,9 +20,9 @@ differ from the last round's. Then review the full task diff below: the changes 
 round are where new problems are most likely."""
 
 
-def read(path: str | None) -> str:
+def read(path: str | None, errors: str = 'strict') -> str:
     if path and Path(path).is_file():
-        with Path(path).open(newline="") as source:
+        with Path(path).open(newline="", errors=errors) as source:
             return source.read()
     return ''
 
@@ -35,16 +35,17 @@ def carried(text: str) -> str:
 
 def qa_round(findings: str, diff: str | None, span: str | None, stat: str | None, reply: str | None) -> str:
     parts = ['## Findings from the previous review round\n' + carried(findings).rstrip('\n') + '\n\n' + QA_ROUND_NOTE]
-    patch = read(diff)
+    # A git diff carries raw source bytes, so a file that is not UTF-8 must not abort the prompt.
+    patch = read(diff, 'replace')
     if patch:
         label = ' (' + span.strip() + ')' if span and span.strip() else ''
         if len(patch.encode()) <= DIFF_INLINE_CAP:
             body = '```patch\n' + patch.rstrip('\n') + '\n```'
         else:
             body = ('The diff since that review is too large to inline; its stat:\n\n```text\n'
-                    + read(stat).rstrip('\n') + '\n```')
+                    + read(stat, 'replace').rstrip('\n') + '\n```')
         parts.append('### Changes since that review' + label + '\n' + body)
-    said = read(reply)
+    said = read(reply, 'replace')
     if said.strip():
         raw = said.encode()
         if len(raw) > REPLY_CAP:

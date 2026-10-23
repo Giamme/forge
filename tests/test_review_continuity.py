@@ -67,6 +67,16 @@ class PromptTests(unittest.TestCase):
         self.assertIn('### Changes since that review (aaaaaaa..bbbbbbb)\n```patch\n+CHANGED\n```', out)
         self.assertNotIn('a.txt | 1', out)
 
+    def test_a_diff_since_with_non_utf8_source_bytes_still_renders_the_whole_prompt(self):
+        latin = self.dir / 'd'; latin.write_bytes(b'-caf\xe9\n+cafe\n')
+        reply = self.dir / 'r'; reply.write_bytes(b'fixed caf\xe9\n')
+        out = prompt(*self.base(), '--role', 'qa', '--retry-diff', latin, '--retry-range', 'aaaaaaa..bbbbbbb',
+                     '--reply', reply)
+        self.assertIn('REQ', out)
+        self.assertIn('REPORT_SENTINEL', out)
+        self.assertIn('+cafe', out)
+        self.assertIn('fixed caf', out)
+
     def test_a_large_diff_since_is_summarised_by_its_stat(self):
         out = prompt(*self.base(), '--role', 'qa', '--retry-diff', self.write('d', '+' + 'x' * 120000 + '\n'),
                      '--retry-range', 'aaaaaaa..bbbbbbb', '--retry-stat', self.write('s', ' big.txt | 9 +\n'))
