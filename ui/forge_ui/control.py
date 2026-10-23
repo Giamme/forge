@@ -37,6 +37,43 @@ TIMEOUT_DETAIL = 'the operation may have partly completed; reload to see the cur
 # forge control's exit codes (scripts/forge-control.py) and the HTTP status each one gets.
 _EXITS = {2: (400, 'invalid'), 3: (409, 'refused'), 4: (500, 'failed')}
 
+# The forge configuration the CLIs read: which registry, which dataset store, the config and state homes.
+# `forge ui open` starts the server without the FORGE_* variables of the shell it ran in, and hands it these,
+# as that shell had them, in a file; every CLI call gets them on top of the server's own environment. None
+# of them is a secret (forge-config.py's SECRET_WORDS), and no other FORGE_* variable is ever passed.
+CLI_ENV_NAMES = ('FORGE_REGISTRY', 'FORGE_DATA_HOME', 'FORGE_DATASET', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_STATE_HOME')
+_CLI_ENV_PATHS = ('FORGE_REGISTRY', 'FORGE_DATA_HOME')  # read relative to the shell's directory, not the server's
+cli_env = {}  # set once, before the server starts; empty when it was started by hand
+
+
+def cli_env_from(environ):
+    """The CLI_ENV_NAMES set in `environ` (an empty value counts as unset, as it does for the CLIs).
+
+    A relative FORGE_REGISTRY or FORGE_DATA_HOME is made absolute here: the server and its CLIs run in
+    another directory than the shell that named it.
+    """
+    out = {}
+    for name in CLI_ENV_NAMES:
+        value = environ.get(name, '')
+        if not value:
+            continue
+        if name in _CLI_ENV_PATHS and not value.startswith('~'):
+            value = os.path.abspath(value)
+        out[name] = value
+    return out
+
+
+def check_cli_env(value):
+    """`value` if it is a mapping the launcher could have written, else ValueError."""
+    if not isinstance(value, dict):
+        raise ValueError('not a JSON object')
+    for name, text in value.items():
+        if name not in CLI_ENV_NAMES:
+            raise ValueError(f'{name!r} is not one of ' + ', '.join(CLI_ENV_NAMES))
+        if not isinstance(text, str) or not text or '\x00' in text:
+            raise ValueError(f'{name} is not a usable value')
+    return value
+
 
 class RunLocks:
     """One non-blocking lock per run key: a second write to a run that is being changed is refused."""
@@ -74,11 +111,12 @@ def run_cli(argv, timeout):
 
     On timeout the whole group gets SIGTERM, then SIGKILL after TERM_WAIT_S, and the leader is
     reaped before this returns, so a caller that holds a lock can release it knowing nothing of
-    the call is still running.
+    the call is still running. The CLI's environment is the server's plus `cli_env`.
     """
+    env = dict(os.environ, **cli_env) if cli_env else None
     try:
         proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                start_new_session=True, close_fds=True)
+                                start_new_session=True, close_fds=True, env=env)
     except OSError as exc:
         return CliResult(error=f'cannot run the forge CLI: {exc.strerror or exc}')
     try:

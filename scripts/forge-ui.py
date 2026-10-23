@@ -8,6 +8,10 @@ and `lock` (serialises launchers). The server exits by itself after FORGE_UI_IDL
 
 FORGE_UI_READONLY=1 starts (or insists on) a server that answers no write. The mode is recorded
 with the server, and a running server of the other mode is replaced like one running old code.
+
+The server runs without the shell's FORGE_* variables, but the CLIs its writes call need the forge
+configuration (control.CLI_ENV_NAMES): `open` writes those to `cli-env.json` (0600) for the server to
+load, records them in server.json, and refuses (exit 5) to reuse a server started with other values.
 """
 from __future__ import annotations
 
@@ -41,6 +45,7 @@ LOCK_WAIT_S = 10
 START_WAIT_S = 5
 STOP_WAIT_S = 2
 BROWSER_WAIT_S = 2  # a browser command that hangs must not hold `open` past its budget
+CLI_ENV_FILE = 'cli-env.json'
 
 
 def state_dir() -> Path:
@@ -126,13 +131,13 @@ def read_state(state):
     return data if isinstance(data, dict) else None
 
 
-def write_state(state, data):
-    handle, temp = tempfile.mkstemp(prefix='server.json.', dir=str(state))
+def write_state(state, data, name='server.json'):
+    handle, temp = tempfile.mkstemp(prefix=name + '.', dir=str(state))  # mkstemp makes it 0600
     try:
         with os.fdopen(handle, 'w') as out:
             json.dump(data, out, indent=1, sort_keys=True)
             out.write('\n')
-        os.replace(temp, state / 'server.json')
+        os.replace(temp, state / name)
     except BaseException:
         try:
             os.unlink(temp)
@@ -199,12 +204,14 @@ def is_read_only(answer) -> bool:
     return answer.get('controls') is not True
 
 
-def _spawn(state, port, registry, idle, read_only=False):
+def _spawn(state, port, registry, idle, read_only=False, cli_env=None):
     """Start the server; returns (process, port) or (None, error text)."""
     log = state / 'server.log'
     env = {k: v for k, v in os.environ.items() if not k.startswith('FORGE_')}
-    command = [sys.executable, '-I', str(Path(__file__).resolve()), '_serve', '--port', str(port),
-               '--quiet', '--registry-dir', registry, '--idle-exit', str(idle)]
+    # The forge configuration goes to the server's CLIs only, through a file: never into its own environment.
+    write_state(state, cli_env or {}, CLI_ENV_FILE)
+    command = [sys.executable, '-I', str(Path(__file__).resolve()), '_serve', '--cli-env', str(state / CLI_ENV_FILE),
+               '--port', str(port), '--quiet', '--registry-dir', registry, '--idle-exit', str(idle)]
     if read_only:  # the server's environment has no FORGE_* variables, so the mode goes as a flag
         command.append('--read-only')
     with os.fdopen(open_regular(log, os.O_WRONLY | os.O_CREAT | os.O_TRUNC), 'w') as out:
@@ -225,11 +232,11 @@ def _spawn(state, port, registry, idle, read_only=False):
     return None, None
 
 
-def start_server(state, port, registry, idle, read_only=False):
+def start_server(state, port, registry, idle, read_only=False, cli_env=None):
     """Spawn a server, falling back once to a free port when the preferred one is taken."""
-    proc, result = _spawn(state, port, registry, idle, read_only)
+    proc, result = _spawn(state, port, registry, idle, read_only, cli_env)
     if proc is None and result == 2 and port != 0:
-        proc, result = _spawn(state, 0, registry, idle, read_only)
+        proc, result = _spawn(state, 0, registry, idle, read_only, cli_env)
     if proc is None:
         return None
     return {'pid': proc.pid, 'port': result}
@@ -272,6 +279,14 @@ def browse(url):
     return 0
 
 
+def config_change(recorded, current):
+    """How the running server's forge configuration differs from this shell's, as text; '' when it does not."""
+    recorded = recorded if isinstance(recorded, dict) else {}  # a record without one has none
+    names = sorted(name for name in set(recorded) | set(current) if recorded.get(name) != current.get(name))
+    return '; '.join(f'{name} is {current.get(name, "unset")} here, {recorded.get(name, "unset")} in the server'
+                     for name in names)
+
+
 def run_info(directory):
     """(repo, None) for a run dir, or (None, why not). Never raises and never blocks."""
     marker = directory / 'repo'
@@ -296,6 +311,7 @@ def run_info(directory):
 def cmd_open(args):
     import forge_registry
     from forge_ui import __version__, build_id
+    from forge_ui.control import cli_env_from
     from forge_ui.reader import run_key
 
     try:
@@ -322,6 +338,7 @@ def cmd_open(args):
     log = state / 'server.log'
     registry = str(forge_registry.registry_dir())
     read_only = read_only_wanted()
+    cli_env = cli_env_from(os.environ)
     spawned = None
     # Any OSError below is state we cannot use (state dir, lock, server.log, server.json) or a
     # spawn that failed: exit 4. An unreadable or invalid server.json is not one: it means no server.
@@ -335,19 +352,25 @@ def cmd_open(args):
                 # the record and the live answer must both name this code and the mode asked for
                 if (server.get('build') == build and answer.get('build') == build and server.get('registry') == registry
                         and bool(server.get('read_only')) == read_only and is_read_only(answer) == read_only):
-                    pass  # reuse
+                    # Reused, it would run this shell's writes with another registry and dataset, and a
+                    # restart could cut off a write in flight: say so instead, and how to restart it.
+                    change = config_change(server.get('cli_env'), cli_env)
+                    if change:
+                        _say(f'error: the running forge-ui (pid {server["pid"]}) has another forge configuration '
+                             f'for its writes: {change}. Run `forge ui stop`, then open again.')
+                        return 5
                 else:
                     terminate(server['pid'])
                     server = None
             else:
                 server = None  # dead, or a pid that is not our forge-ui: never signal it
             if server is None:
-                spawned = start_server(state, port, registry, idle, read_only)
+                spawned = start_server(state, port, registry, idle, read_only, cli_env)
                 if spawned is None:
                     _say(f'error: the server did not start; see {log}')
                     return 4
                 server = dict(spawned, version=__version__, build=build, registry=registry, log=str(log), read_only=read_only,
-                              started=datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'), opened=[])
+                              cli_env=cli_env, started=datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'), opened=[])
             opened = server.get('opened')
             opened = opened if isinstance(opened, list) else []
             mark = key or ''
@@ -421,8 +444,26 @@ def cmd_stop(args):
     return 0
 
 
+def load_cli_env(path):
+    """The forge configuration `_spawn` wrote for the server's CLIs; OSError or ValueError otherwise."""
+    from forge_ui import control
+    with os.fdopen(open_regular(path, os.O_RDONLY), 'rb') as handle:
+        return control.check_cli_env(json.loads(handle.read()))
+
+
 def serve(argv):
+    from forge_ui import control
     from forge_ui.__main__ import main
+    if argv[:1] == ['--cli-env']:
+        if len(argv) < 2:
+            _say('error: --cli-env needs a file')
+            return 1  # not 2: start_server reads 2 as a taken port
+        try:
+            control.cli_env = load_cli_env(argv[1])
+        except (OSError, ValueError, RecursionError) as exc:
+            _say(f'error: cannot load the CLI configuration {argv[1]}: {getattr(exc, "strerror", None) or exc}')
+            return 1
+        argv = argv[2:]
     return main(argv)
 
 
