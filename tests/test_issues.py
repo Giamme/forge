@@ -227,9 +227,9 @@ class ForgeIssuesTests(unittest.TestCase):
         (bin_dir / 'gh').chmod(0o755)
         return dict(self.env, PATH=f'{bin_dir}:{os.environ["PATH"]}')
 
-    def run_issues(self, *args, env=None, code=0):
+    def run_issues(self, *args, env=None, code=0, cwd=None):
         res = subprocess.run([sys.executable, str(SCRIPT), *args, '--json'], capture_output=True, text=True,
-                             env=env or self.env, timeout=60)
+                             env=env or self.env, timeout=60, cwd=cwd)
         self.assertEqual(res.returncode, code, res.stderr)
         return json.loads(res.stdout) if code == 0 else res.stderr
 
@@ -297,6 +297,67 @@ class ForgeIssuesTests(unittest.TestCase):
         pick = lambda o: [(f['plan'], f['plan_dir']) for f in o['findings']]
         self.assertEqual(pick(via_file), pick(via_dir))
         self.assertEqual(pick(via_file)[0][0], 'plan')
+
+    def elsewhere(self, origin='git@github.com:other/b.git'):
+        """A cwd unrelated to the run: another repository with its own GitHub origin, or a plain dir."""
+        d = self.dir / ('elsewhere-repo' if origin else 'elsewhere')
+        d.mkdir()
+        if origin:
+            subprocess.run(['git', 'init', '-q', str(d)], check=True)
+            subprocess.run(['git', '-C', str(d), 'remote', 'add', 'origin', origin], check=True)
+        return d
+
+    def test_every_input_form_resolves_the_runs_repository_from_any_cwd(self):
+        cwd = self.elsewhere()
+        task = self.plan / 'tasks' / 'import'
+        listed = lambda: {f['fp']: f['dismissed'] for f in self.run_issues(str(self.plan), '--offline', cwd=cwd)['findings']}
+        fp = sorted(listed())[0]
+        self.run_issues(str(task / 'known_issues.md'), '--dismiss', fp, cwd=cwd)
+        self.assertIsNotNone(listed()[fp])
+        self.assertEqual([p.name for p in self.findings_dir().glob('*.json')], [f'{repo_key(self.repo)}.json'])
+        for form in (task / 'qa.last', task):
+            self.run_issues(str(form), '--undismiss', fp, cwd=cwd)
+            self.assertIsNone(listed()[fp])
+            self.run_issues(str(form), '--dismiss', fp, cwd=cwd)
+            self.assertIsNotNone(listed()[fp])
+        self.assertEqual([p.name for p in self.findings_dir().glob('*.json')], [f'{repo_key(self.repo)}.json'])
+        # listing through a file names the run's repository, not the cwd's
+        out = self.run_issues(str(task / 'known_issues.md'), '--offline', cwd=cwd)
+        self.assertEqual((out['repo'], out['warnings']), ('o/r', []))
+        self.assertIsNotNone({f['fp']: f['dismissed'] for f in out['findings']}[fp])
+
+    def solo_run(self):
+        solo = self.dir / 'solo-run'; solo.mkdir()
+        (solo / 'repo').write_text(str(self.repo) + '\n')
+        (solo / 'status').write_text('PASS\n')
+        (solo / 'merged').write_text('abc123\n')
+        (solo / 'qa.last').write_text('VERDICT: PASS\n\n- [P3][PLAUSIBLE] src/solo.ts:4 — Solo edge case.\n')
+        return solo
+
+    def test_a_solo_run_lists_and_dismisses_in_its_own_repository_from_any_cwd(self):
+        solo, cwd = self.solo_run(), self.elsewhere(origin=None)  # forge-ui calls from its state dir
+        env = self.offline_env()
+        out = self.run_issues(str(solo), '--offline', '--include-plausible', env=env, cwd=cwd)
+        self.assertFalse((self.dir / 'gh-called').exists())
+        self.assertEqual((out['repo'], out['warnings']), ('o/r', []))
+        self.assertEqual([(f['plan'], f['file']) for f in out['findings']], [('solo-run', 'src/solo.ts')])
+        fp = out['findings'][0]['fp']
+        self.run_issues(str(solo / 'qa.last'), '--dismiss', fp, env=env, cwd=cwd)
+        again = self.run_issues(str(solo), '--offline', '--include-plausible', env=env, cwd=cwd)
+        self.assertIsNotNone(again['findings'][0]['dismissed'])
+        self.assertEqual(list(json.loads(self.store_path().read_text())), [fp])
+
+    def test_a_run_recording_no_repository_falls_back_to_the_cwd_and_says_so(self):
+        solo = self.solo_run()
+        (solo / 'repo').unlink()
+        out = self.run_issues(str(solo), '--offline', '--include-plausible', cwd=self.repo)
+        self.assertEqual(out['repo'], 'o/r')
+        self.assertEqual(len(out['warnings']), 1)
+        self.assertIn('records no repository; using the current directory', out['warnings'][0])
+        fp = out['findings'][0]['fp']
+        dismissed = self.run_issues(str(solo), '--dismiss', fp, cwd=self.repo)
+        self.assertEqual(dismissed['warnings'], out['warnings'])
+        self.assertEqual(list(json.loads(self.store_path().read_text())), [fp])
 
     def test_threshold_review_with_known_issues_is_collected(self):
         line = '- [P2][CONFIRMED] src/a.ts:1 — X.'
@@ -415,7 +476,7 @@ class ForgeIssuesTests(unittest.TestCase):
         env = self.offline_env()  # a dismissal needs no network: this gh records any call and fails
         fp = self.fps()[0]
         out = self.run_issues(str(self.plan), '--dismiss', fp, '--reason', 'x', env=env)
-        self.assertEqual(out, {'ok': True, 'dismissed': [fp], 'undismissed': []})
+        self.assertEqual(out, {'ok': True, 'dismissed': [fp], 'undismissed': [], 'warnings': []})
         self.assertFalse((self.dir / 'gh-called').exists())
         stored = json.loads(self.store_path().read_text())
         self.assertEqual(list(stored), [fp])
@@ -437,7 +498,7 @@ class ForgeIssuesTests(unittest.TestCase):
         self.assertEqual(len(self.created()), 1)
         # --undismiss restores it
         out = self.run_issues(str(self.plan), '--undismiss', fp)
-        self.assertEqual(out, {'ok': True, 'dismissed': [], 'undismissed': [fp]})
+        self.assertEqual(out, {'ok': True, 'dismissed': [], 'undismissed': [fp], 'warnings': []})
         self.assertEqual(json.loads(self.store_path().read_text()), {})
         restored = self.run_issues(str(self.plan), '--offline')
         self.assertIn(fp, self.draft_fps(restored))
@@ -450,7 +511,7 @@ class ForgeIssuesTests(unittest.TestCase):
         self.assertEqual(out['dismissed'], [a, ghost, b])
         self.assertEqual(sorted(json.loads(self.store_path().read_text())), sorted([a, b, ghost]))
         out = self.run_issues(str(self.plan), '--undismiss', ghost, '--undismiss', a)
-        self.assertEqual(out, {'ok': True, 'dismissed': [], 'undismissed': [ghost, a]})
+        self.assertEqual(out, {'ok': True, 'dismissed': [], 'undismissed': [ghost, a], 'warnings': []})
         self.assertEqual(list(json.loads(self.store_path().read_text())), [b])
         # dismissing again without a reason keeps the earlier one; with a reason it replaces it
         self.run_issues(str(self.plan), '--dismiss', b, '--reason', 'first')
