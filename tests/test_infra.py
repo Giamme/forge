@@ -82,6 +82,19 @@ class InfraTests(unittest.TestCase):
         self.assertIn('waiting', r.stdout)
         self.assertTrue((p / 'tasks/a/merged').exists() and (p / 'tasks/b/merged').exists())
 
+    def test_a_resume_whose_pin_cannot_be_applied_stays_paused_and_blocks_nothing(self):
+        p = self.plan_of([('a', '-', 'a.txt'), ('b', 'a', 'b.txt')])
+        self.scenario({'a.dwarf.1': QUOTA})
+        self.assertEqual(self.run_script('forge-parallel.sh', 'run', p).returncode, 8)
+        (p / 'tasks/a/escalation.pin').write_text('opus\n')
+        (p / 'tasks/a/escalations.tsv').mkdir()                         # the pin cannot be recorded
+        r = self.run_script('forge-parallel.sh', 'run', p)
+        self.assertEqual(r.returncode, 8, r.stdout)
+        self.assertIn('a is not resumed', r.stdout)
+        self.assertEqual(self.calls(), ['dwarf'])                       # the old model was not run instead
+        self.assertEqual((self.text(p, 'tasks/a/status'), self.text(p, 'tasks/a/escalation.pin')), ('INFRA', 'opus'))
+        self.assertFalse((p / 'tasks/b/status').exists())               # b waits, PENDING, not BLOCKED
+
     def test_a_dwarf_that_returns_nothing_and_changes_nothing_never_ran(self):
         p = self.plan_of([('a', '-', 'a.txt')])
         self.scenario({'a.dwarf.1': {'empty': True, 'no_edit': True}})
