@@ -5,6 +5,32 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and versions follow the format `{major}.{minor}[.{patch}]` ([...] parts appear only when non-zero).
 
+## [0.10] - 2026-10-23
+
+forge-ui can now change a run: live QA threshold, retries and timeout, a one-shot model pin, open findings filed as GitHub issues, deleting runs while the dataset keeps them, and every config source in one view. Each control is also a forge CLI: forge control, forge runs rm, forge config and new forge issues modes.
+
+### Highlights
+
+- After a run, review findings nobody would act on can become GitHub issues: forge offers once to file the findings `--qa-threshold` tolerated, the PLAUSIBLE ones and whatever a whole-run review left open. Where the gh-proman skill is set up for the repository they go on the project board through it; anywhere else forge files them itself with plain `gh` (`forge issues <plan-dir>`). A finding is never filed twice. `--file-issues auto` files them without asking, `--file-issues off` never offers.
+- `forge control show|set|pin|unpin <plan-dir>` changes a plan while it runs: the QA threshold (read once per attempt, per task too, and `none` exempts a task), the timeout, `--escalate-after`, verify retries, and, while a scheduler is live, the retry and infrastructure-retry budgets. The budgets keep their per-invocation rule: a live scheduler publishes them for the length of the run and re-reads them at every decision. Every change is validated, logged in `control.log` and recorded in the dataset as a `control` event.
+- forge-ui has an Open findings view: the findings a run, or every run of its repository, left open, with their filed state. Select some to file as GitHub issues or dismiss ones that need no work. `forge issues` gains `--offline`, `--only`, `--all-runs`, `--dismiss`/`--undismiss` (with `--reason`), `--include-dismissed` and a `findings` list in its JSON; the whole-run review's findings are now collected, and filing and dismissal take a repository lock (exit 3 when busy).
+- `forge runs rm <run-dir>` deletes a run while the dataset keeps what it taught: a strict import, a self-describing archive (`FORGE_ARCHIVE.json`), and `run_delete_started` and `run_deleted` events, all under the run's own lock. `--worktrees` and `--branches` also remove the run's clean worktrees and its unchecked-out branches (foreign and dirty worktrees and UNMERGED branches are reported); `--dry-run` previews. forge-ui has a matching delete dialog. The dataset also imports `escalations.tsv` and `control.log`.
+- forge-ui is no longer read-only: it gains write endpoints and Controls panels for a run and for each task (QA threshold, timeout, escalate-after, verify retries, budgets, threshold override, retry budget, model pin). It only ever calls forge's own CLIs, and every change must carry a per-launch token and pass the Host and Origin checks. `--read-only` (or `FORGE_UI_READONLY=1`) turns writing off, and `forge ui open` never reuses a server running in the other mode.
+
+### Added
+
+- `forge control pin <plan-dir> <task> <spec>` sets the model a task's next full retry uses, once: the spec is checked with `forge-dispatch.sh doctor` (no quota), applied at the retry and written to `tasks.tsv`, and `escalations.tsv` gains a `source` column (`policy`, `retry` or `pin`) saying who decided. `forge control unpin` drops it; Fractal plans never apply pins.
+- `forge config show|set|unset` shows every config source in one view (the registry, Jev, a repository's `.forge/verify`, `setup` and `verify-subset`, the dataset and `FORGE_*` variables with secrets hidden) and edits the per-repo files and `jev.enabled`. forge-ui shows the same view as Settings.
+
+### Changed
+
+- A repeated `forge ui open` for a run that already has a browser tab no longer looks like it did nothing: it prints the link as before and says on stderr that no new tab was opened, so you know to use the link.
+
+### Fixed
+
+- `forge ui open DIR` now reads only the first line of the run's `repo` file, as the runners do, so a run whose `repo` file has extra lines is listed under its real repo instead of under a path that does not exist.
+- A forge-ui export no longer leaks a local path spelled another way: the run, repository and home paths are also scrubbed in their real form (on macOS, `/private/var/...` and `/var/...`).
+
 ## [0.9] - 2026-10-21
 
 forge-ui has a new look and layout, a 3D stage that marks every review finding on its task, and each dwarf's and reviewer's conversation, which runs on claude, openclaude and opencode now keep in full. Also new: `forge runs` and a first screen that says how to get runs; npm installations now hear about new releases.
