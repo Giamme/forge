@@ -11,6 +11,7 @@ import io
 import json
 import os
 from pathlib import Path
+import shutil
 import sqlite3
 import stat
 import subprocess
@@ -451,6 +452,96 @@ class StopsBeforeDeletingTests(RmCase):
         by_name = {Path(w['path']).name: w for w in result['worktrees']}
         self.assertEqual((by_name['a']['kind'], by_name['b']['kind']), ('foreign', 'run'))
         self.assertIn('forge/%s/a' % RUN_ID, self.branches(), 'and its branch stays: it is checked out there')
+
+
+class ArchiveNameTests(RmCase):
+    STAMP = '20261023-120000'
+
+    def twin(self):
+        """A second run dir with the same run id somewhere else; each says in logs/whose.txt which it is."""
+        twin = self.root / 'elsewhere' / RUN_ID
+        shutil.copytree(self.plan, twin)
+        for run in (self.plan, twin):
+            (run / 'logs' / 'whose.txt').write_text(str(run) + '\n')
+        return twin
+
+    @contextlib.contextmanager
+    def one_second(self):
+        """Every archive name is made in the same second."""
+        real = time.strftime
+        with patch('time.strftime', lambda fmt, *rest: self.STAMP if fmt == '%Y%m%d-%H%M%S' else real(fmt, *rest)):
+            yield
+
+    def main(self, module, run):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = module.main([str(run), '--yes', '--json'])
+        return code, json.loads(out.getvalue())
+
+    def archived(self, archive):
+        with tarfile.open(archive) as bundle:
+            meta = json.load(bundle.extractfile(importer.ARCHIVE_META))
+            whose = bundle.extractfile('%s/logs/whose.txt' % RUN_ID).read().decode().strip()
+        return meta['original_path'], whose
+
+    def test_two_deletes_of_one_run_id_in_the_same_second_keep_both_archives(self):
+        twin = self.twin()
+        module = load_module()
+        real_archive_run = importer.archive_run
+        calls, second = [], []
+
+        def archive_run(run_dir, dest, *rest):
+            calls.append(dest)
+            if len(calls) == 1:   # the first delete has picked its name, unwritten yet: the second one runs start to end now
+                second.append(self.main(module, twin))
+            return real_archive_run(run_dir, dest, *rest)
+
+        with patch.dict(os.environ, self.env), patch.object(importer, 'archive_run', archive_run), self.one_second(), \
+                contextlib.redirect_stderr(io.StringIO()):
+            first = self.main(module, self.plan)
+        for code, result in (first, second[0]):
+            self.assertEqual((code, result['ok']), (0, True), result)
+        base = self.data / 'archive' / ('%s-%s' % (RUN_ID, self.STAMP))
+        self.assertEqual((second[0][1]['archive'], first[1]['archive']), (str(base) + '.tar.gz', str(base) + '-1.tar.gz'))
+        self.assertEqual(self.archived(first[1]['archive']), (str(self.plan), str(self.plan)))
+        self.assertEqual(self.archived(second[0][1]['archive']), (str(twin), str(twin)))
+        self.assertEqual(sorted(os.listdir(self.data / 'archive')), [base.name + '-1.tar.gz', base.name + '.tar.gz'])
+        self.assertEqual(calls[0], calls[1], 'both picked the same name')
+        self.assertFalse(self.plan.exists() or twin.exists())
+
+    def test_a_failed_archive_leaves_nothing_under_its_name(self):
+        module = load_module()
+
+        def broken(*args, **kwargs):
+            raise OSError(5, 'Input/output error')
+
+        with patch.dict(os.environ, self.env), patch.object(tarfile.TarFile, 'add', broken), \
+                contextlib.redirect_stderr(io.StringIO()):
+            code, result = self.main(module, self.plan)
+        self.assertEqual(code, 4)
+        self.assertFalse(self.steps(result)['archive']['ok'])
+        self.assertIsNone(result['archive'])
+        self.assertEqual(os.listdir(self.data / 'archive'), [], 'neither the name nor the partial temp file is left')
+        self.assertTrue((self.plan / 'tasks.tsv').is_file())
+
+    def test_without_hard_links_a_taken_name_is_skipped_and_an_unfilled_reservation_removed(self):
+        archive = self.data / 'archive'
+        archive.mkdir(parents=True)
+        taken = archive / 'run.tar.gz'
+        taken.write_text('somebody else\'s archive')
+        (self.plan / 'logs' / 'whose.txt').write_text(str(self.plan) + '\n')
+        no_links = patch('os.link', side_effect=OSError(1, 'Operation not permitted'))
+        with no_links:
+            with self.assertRaises(importer.DatasetError):
+                importer.archive_run(self.plan, taken)
+            made = importer.archive_run(self.plan, taken, [archive / 'run-1.tar.gz'])
+        self.assertEqual(made['path'], str(archive / 'run-1.tar.gz'))
+        self.assertEqual(self.archived(made['path']), (str(self.plan), str(self.plan)))
+        with no_links, patch('os.replace', side_effect=OSError(28, 'No space left on device')):
+            with self.assertRaises(importer.DatasetError):
+                importer.archive_run(self.plan, archive / 'run-2.tar.gz')
+        self.assertEqual(taken.read_text(), 'somebody else\'s archive')
+        self.assertEqual(sorted(os.listdir(archive)), ['run-1.tar.gz', 'run.tar.gz'])
 
 
 class RefusalTests(RmCase):
