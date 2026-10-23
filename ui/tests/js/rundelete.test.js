@@ -7,7 +7,7 @@ const D = require(path.join(__dirname, '..', '..', 'forge_ui', 'static', 'rundel
 
 const step = (name, ok = true, detail = '') => ({ step: name, ok, detail });
 const wt = (p, extra = {}) => ({ path: p, branch: 'forge/r/t', kind: 'run', dirty: false, removed: false, note: '', ...extra });
-const br = (name, status = 'merged', extra = {}) => ({ name, sha: 'abc', status, checked_out: false, deleted: false, note: '', ...extra });
+const br = (name, status = 'merged', extra = {}) => ({ name, sha: 'abc', status, checked_out: null, stays_checked_out: null, deleted: false, note: '', ...extra });
 const dry = (extra = {}) => ({ run_dir: '/r', run_id: 'r1', dry_run: true, ok: true, steps: [step('preserve')], archive: '/a.tar.gz', bytes_freed: 0,
   branches: [], worktrees: [], size_bytes: 2048, archive_bytes: 0, archive_estimate_bytes: 512, ...extra });
 
@@ -69,10 +69,25 @@ test('warnings: archive off, UNMERGED branches by name, dirty worktrees', () => 
   assert.match(armed[2].text, /run directory is kept/);
 });
 
-test('warnings: nothing for merged branches, clean, foreign or checked-out ones', () => {
-  const r = dry({ branches: [br('forge/r/a'), br('forge/r/b', 'UNMERGED', { checked_out: true })], worktrees: [wt('/w/1'), wt('/w/2', { kind: 'foreign', dirty: true })] });
+test('warnings: nothing for merged branches, clean or foreign worktrees, or a branch a staying worktree keeps', () => {
+  const r = dry({ branches: [br('forge/r/a'), br('forge/r/b', 'UNMERGED', { checked_out: '/w/2', stays_checked_out: '/w/2' })],
+    worktrees: [wt('/w/1'), wt('/w/2', { kind: 'foreign', dirty: true })] });
   assert.deepEqual(D.warningsOf(r, { archive: true, worktrees: true, branches: true }), []);
   assert.deepEqual(D.warningsOf(null, D.initial('r1')), []);
+});
+
+test('warnings: an UNMERGED branch whose clean run worktree goes first is deleted, not kept', () => {
+  // `forge runs rm --dry-run --worktrees --branches`: the worktree is removed, so nothing holds the branch any more.
+  const r = dry({ branches: [br('forge/r/a', 'UNMERGED', { checked_out: '/w/a', stays_checked_out: null })],
+    worktrees: [wt('/w/a', { branch: 'forge/r/a' })] });
+  const both = { archive: true, worktrees: true, branches: true };
+  const ws = D.warningsOf(r, both);
+  assert.deepEqual(ws.map(w => [w.id, w.tone, w.names]), [['unmerged', 'warn', ['forge/r/a']]]);
+  assert.match(ws[0].text, /drops commits/);
+  assert.equal(D.branchPlate(r.branches[0], both).note, 'will be deleted');
+  // Without "Delete branches" every branch stays, checked out or not.
+  const kept = D.warningsOf(dry({ branches: [br('forge/r/a', 'UNMERGED', { checked_out: '/w/a', stays_checked_out: '/w/a' })] }), D.initial('r1'));
+  assert.deepEqual(kept.map(w => [w.id, w.tone, w.names]), [['unmerged', 'note', ['forge/r/a']]]);
 });
 
 test('plates: foreign is never touched, dirty is not removed, UNMERGED stands out', () => {
@@ -83,6 +98,8 @@ test('plates: foreign is never touched, dirty is not removed, UNMERGED stands ou
   assert.match(D.worktreePlate(wt('/w', { dirty: true })).note, /will not be removed/);
   assert.equal(D.branchPlate(br('a')).label, 'merged');
   assert.equal(D.branchPlate(br('a', 'UNMERGED')).label, 'UNMERGED');
+  assert.equal(D.branchPlate(br('a', 'UNMERGED', { checked_out: '/w', stays_checked_out: '/w' })).note, '', 'nothing is deleted without the option');
+  assert.equal(D.branchPlate(br('a', 'UNMERGED', { checked_out: '/w', stays_checked_out: '/w' }), { branches: true }).note, 'kept: checked out in /w');
 });
 
 test('outcome: a 200 is a full success', () => {
