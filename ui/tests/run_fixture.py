@@ -173,6 +173,14 @@ def prompt_text(role, name, diff=None):
     return text
 
 
+def set_merged_at(plan, task, at):
+    """Move tasks/<task>/merged's mtime. The marker must already exist.
+
+    make_plan's default times stay as they are; a test that needs a merge after a review calls this.
+    """
+    os.utime(Path(plan) / 'tasks' / task / 'merged', (at, at))
+
+
 def write(path, value, at=None):
     path.parent.mkdir(parents=True, exist_ok=True)
     if isinstance(value, (dict, list)):
