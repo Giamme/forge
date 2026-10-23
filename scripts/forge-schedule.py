@@ -268,6 +268,7 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
     retried = set()    # tasks whose next dispatch is a retry (FORGE_FRACTAL_RETRY=1)
     offsets = {}       # how much of each task.out was already echoed under --output full
     infra_seen = []    # tasks stopped by an infrastructure failure, awaiting resume
+    held = set()       # INFRA tasks not resumed: their pin could not be applied
     infra_cycles = 0   # how many times this run already waited out an infrastructure pause
     paused = False     # an infrastructure failure was seen: dispatch nothing new
     resume_at = 0.0
@@ -331,6 +332,20 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
               + str(budget(name)) + ')', file=sys.stderr, flush=True)
         return True
 
+    def resume(name: str) -> bool:
+        """Prepare an INFRA task's next entry. Not a retry, so nothing is counted, but a
+        pending pin applies when that entry is a full implementer attempt. False when a
+        claimed pin could not be put in place: the task then stays INFRA, as `retry` would."""
+        if not _pinned(plan, name):
+            return True
+        result = subprocess.run(['/bin/bash', script, '_prepare_retry', str(plan), name, '--resume'])
+        if result.returncode:
+            held.add(name)
+            print('forge: ' + name + ' is not resumed: its escalation pin could not be applied',
+                  file=sys.stderr, flush=True)
+            return False
+        return True
+
     def echo_output(name: str) -> None:
         # task.out is opened in append mode, so a retried task's file keeps its earlier
         # attempts; print only what is new.
@@ -362,6 +377,9 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
                 mark(name, 'INTERRUPTED')
             if state in ('FAIL', 'UNKNOWN') and retryable(name):
                 requeue(name)
+            if state == 'INFRA' and not resume(name):
+                pending.remove(name)
+                continue
             if status(name) not in ('PENDING', 'BLOCKED', 'INFRA'):
                 pending.remove(name)
         swept = time.monotonic()
@@ -411,8 +429,10 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
                     time.sleep(min(0.05, max(resume_at - time.time(), 0)))
                 if interrupted:
                     break
+                # A pin set before or during the wait applies to the entries that run the
+                # implementer again; a QA-stage stop keeps it for the next full retry.
                 for name in reversed(infra_seen):
-                    if name not in pending:
+                    if name not in pending and resume(name):
                         pending.insert(0, name)
                 infra_seen.clear()
                 paused = False
@@ -442,9 +462,10 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
                 pending.remove(name)
                 print('forge: dispatched ' + name + ' -> ' + str(root), file=sys.stderr, flush=True)
             if not active:
-                if paused:
+                if paused or held:
                     # Infrastructure stop: leave everything not yet run PENDING. Marking it
                     # BLOCKED would turn "the provider was down" into a recorded failure.
+                    # A task held back by its pin is still an infrastructure stop.
                     break
                 for name in pending:
                     mark(name, 'BLOCKED')

@@ -1,5 +1,5 @@
 """A human's one-shot escalation pin: prepare_retry applies it at the next FULL implementer
-retry, claims it by rename, records who decided each escalation, and `escalation --check`
+retry (prepare_resume at an infrastructure stop's resume), claims it by rename, records who decided each escalation, and `escalation --check`
 reports it as the next model.
 
 Most tests source forge-lib-task.sh in a temp plan directory and call prepare_retry
@@ -20,12 +20,15 @@ import test_retry as retry_fixtures
 
 ROOT = Path(__file__).resolve().parent.parent
 LIB = ROOT / 'scripts' / 'forge-lib-task.sh'
+ARTIFACT = ROOT / 'scripts' / 'forge-artifact.sh'
 ROUTE = ROOT / 'scripts' / 'forge-route.py'
 PATH = '/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin'
 
 # What forge-parallel.sh and forge-artifact.sh provide to the library, reduced to what
-# prepare_retry and the report need. `field` only knows the dwarf column.
+# prepare_retry and the report need. `field` only knows the dwarf column. forge-artifact.sh
+# gives the real forge_fingerprint, which a QA-only resume is validated with.
 PRELUDE = r'''
+source "$ARTIFACT"
 note() { printf 'forge: %s\n' "$*" >&2; }
 field() { awk -F'\t' -v id="$2" '!/^#/ && NF && $1==id {print $5; exit}' "$1"; }
 all_ids() { awk -F'\t' '!/^#/ && NF {print $1}' "$1"; }
@@ -76,13 +79,36 @@ class PinTests(unittest.TestCase):
         (self.tdir / 'escalation.pin').write_text(spec)
 
     def sh(self, body, skill=None, path=PATH):
-        env = {'PATH': path, 'SKILL_DIR': str(skill or self.skill), 'LIB': str(LIB), 'EVENTS': str(self.events)}
+        env = {'PATH': path, 'SKILL_DIR': str(skill or self.skill), 'LIB': str(LIB), 'ARTIFACT': str(ARTIFACT),
+               'EVENTS': str(self.events)}
         return subprocess.run(['/bin/bash', '-c', PRELUDE + body], capture_output=True, text=True,
                               encoding='utf-8', env=env)
 
     def retry(self, *dwarf, skill=None, path=PATH):
         return self.sh("prepare_retry '%s' a %s" % (self.plan, ' '.join("'%s'" % d for d in dwarf)),
                        skill=skill, path=path)
+
+    def resume(self):
+        """What the scheduler runs before it dispatches an INFRA task again."""
+        return self.sh("retry_for_scheduler '%s' a --resume" % self.plan)
+
+    def reviewed_worktree(self):
+        """The task's worktree, committed and recorded as what the reviewer saw, so a `resume`
+        marker for it holds; returns the worktree."""
+        wt = self.root / 'wt' / 'a'; wt.mkdir(parents=True)
+        git = ['git', '-C', str(wt), '-c', 'user.name=t', '-c', 'user.email=t@t']
+        subprocess.run(git + ['init', '-q'], check=True)
+        (wt / 'a.txt').write_text('implemented\n')
+        subprocess.run(git + ['add', '.'], check=True)
+        subprocess.run(git + ['commit', '-qm', 'attempt 1'], check=True)
+        (self.plan / 'wt_root').write_text(str(self.root / 'wt') + '\n')
+        head = subprocess.run(git + ['rev-parse', 'HEAD'], check=True, capture_output=True, text=True).stdout
+        (self.tdir / 'reviewed.commit').write_text(head)
+        (self.tdir / 'changes.diff').write_text('+implemented\n')
+        fp = self.sh("forge_fingerprint '%s'" % wt)
+        self.assertEqual(fp.returncode, 0, fp.stderr)
+        (self.tdir / 'source.fingerprint').write_text(fp.stdout)
+        return wt
 
     def dwarf(self):
         return tsv(self.plan / 'tasks.tsv')[0][4]
@@ -199,13 +225,14 @@ class PinTests(unittest.TestCase):
     def test_an_unknown_verdict_with_a_reviewed_commit_resumes_qa_and_keeps_the_pin(self):
         (self.tdir / 'status').write_text('UNKNOWN\n')
         (self.tdir / 'qa.last').write_text('no verdict line here\n')
-        (self.tdir / 'reviewed.commit').write_text('abc123\n')
+        self.reviewed_worktree()
         self.pin()
         result = self.retry()
         self.assert_pin_waits(result)
         self.assertIn('pin waits', result.stderr)
 
     def test_a_qa_stage_infra_stop_resumes_qa_and_keeps_the_pin(self):
+        self.reviewed_worktree()
         self.pin()
         stop = self.sh("infra_stop '%s' a qa 1; prepare_retry '%s' a" % (self.tdir, self.plan))
         self.assert_pin_waits(stop)
@@ -228,7 +255,7 @@ class PinTests(unittest.TestCase):
     def test_the_pin_applies_at_the_full_retry_after_a_qa_only_one(self):
         (self.tdir / 'status').write_text('UNKNOWN\n')
         (self.tdir / 'qa.last').write_text('no verdict line here\n')
-        (self.tdir / 'reviewed.commit').write_text('abc123\n')
+        self.reviewed_worktree()
         self.pin()
         self.assertEqual(self.retry().returncode, 0)
         (self.tdir / 'resume').unlink()                          # the QA-only attempt ran and failed the review
@@ -236,6 +263,89 @@ class PinTests(unittest.TestCase):
         self.assertEqual(self.retry().returncode, 0)
         self.assertEqual(self.dwarf(), 'opus:high')
         self.assertEqual(self.pin_files(), [])
+
+    # --- a QA-only marker the worktree no longer matches is a full retry ----------------------
+    def assert_pin_applied(self, result):
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.dwarf(), 'opus:high')
+        self.assertEqual(self.records()[0][2:], ['sol', 'opus:high', 'pin'])
+        self.assertEqual(self.pin_files(), [])
+        self.assertFalse((self.tdir / 'resume').exists())       # do_task_body runs the full task too
+
+    def test_an_unknown_verdict_whose_worktree_changed_is_a_full_retry_and_takes_the_pin(self):
+        (self.tdir / 'status').write_text('UNKNOWN\n')
+        (self.tdir / 'qa.last').write_text('no verdict line here\n')
+        (self.reviewed_worktree() / 'a.txt').write_text('edited after the review\n')
+        self.pin()
+        result = self.retry()
+        self.assert_pin_applied(result)
+        self.assertIn('no longer matches the worktree', result.stderr)
+        self.assertNotIn('re-running QA', result.stderr)
+
+    def test_a_qa_stage_infra_stop_on_a_changed_worktree_takes_the_pin(self):
+        (self.reviewed_worktree() / 'a.txt').write_text('edited after the review\n')
+        self.pin()
+        self.assert_pin_applied(self.sh("infra_stop '%s' a qa 1; prepare_retry '%s' a" % (self.tdir, self.plan)))
+
+    # --- an infrastructure stop's resume (the scheduler, no retry) ---------------------------
+    def infra_stop(self, role):
+        result = self.sh("infra_stop '%s' a %s 1" % (self.tdir, role))
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_a_dwarf_stage_resume_applies_the_pin_and_nothing_else(self):
+        (self.tdir / 'retry_findings.md').write_text('carried forward\n')
+        self.infra_stop('dwarf')
+        self.pin()
+        result = self.resume()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.dwarf(), 'opus:high')
+        [(_stamp, attempt, old, new, source)] = self.records()
+        self.assertEqual((attempt, old, new, source), ('0', 'sol', 'opus:high', 'pin'))   # the stop refunded attempt 1
+        self.assertEqual(self.event_lines(), [
+            "escalation --dir %s --task a --set from=sol --set to=opus:high --set after_attempt=0 --set source=pin"
+            % self.plan])
+        self.assertEqual(self.pin_files(), [])
+        self.assertFalse(self.policy_was_asked())
+        self.assertEqual((self.tdir / 'retry_findings.md').read_text(), 'carried forward\n')
+        self.assertEqual((self.tdir / 'status').read_text().strip(), 'INFRA')   # not turned into a retry
+
+    def test_a_qa_stage_resume_keeps_the_pin(self):
+        self.reviewed_worktree()
+        self.infra_stop('qa')
+        self.pin()
+        result = self.resume()
+        self.assert_pin_waits(result)
+        self.assertIn('pin waits', result.stderr)
+        self.assertFalse(self.policy_was_asked())
+
+    def test_a_qa_stage_resume_on_a_changed_worktree_takes_the_pin(self):
+        (self.reviewed_worktree() / 'a.txt').write_text('edited after the review\n')
+        self.infra_stop('qa')
+        self.pin()
+        self.assert_pin_applied(self.resume())
+
+    def test_a_resume_without_a_pin_changes_nothing(self):
+        self.infra_stop('dwarf')
+        result = self.resume()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((self.dwarf(), self.records(), self.event_lines()), ('sol', [], []))
+        self.assertFalse(self.policy_was_asked())
+
+    def test_a_resume_whose_pin_cannot_be_applied_refuses_and_keeps_the_pin(self):
+        self.infra_stop('dwarf')
+        self.pin()
+        self.block_rewrite()
+        result = self.resume()
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertEqual(self.pin_files(), ['escalation.pin'])
+        self.assertEqual((self.dwarf(), self.records()), ('sol', []))
+
+    def test_a_resume_in_a_fractal_plan_leaves_the_pin(self):
+        (self.plan / 'fractal-selection.json').write_text('{"enabled": true}')
+        self.infra_stop('dwarf')
+        self.pin()
+        self.assertEqual(self.resume().returncode, 0)
+        self.assertEqual((self.dwarf(), self.pin_files()), ('sol', ['escalation.pin']))
 
     # --- the claim's destination ------------------------------------------------------------
     def test_a_claim_symlinked_out_of_the_plan_neither_moves_the_pin_out_nor_drops_it(self):
@@ -606,6 +716,92 @@ class PinEndToEndTests(unittest.TestCase):
         self.assertIn('model=gpt-6-astra', (p / 'tasks/a/dwarf.resolved').read_text())
         self.assertEqual(tsv(p / 'tasks/a/escalations.tsv')[0][2:], ['sol', 'astra', 'pin'])
         self.assertEqual(sorted(x.name for x in (p / 'tasks/a').glob('escalation.*')), [])
+
+    # --- an infrastructure stop resumed inside the run ------------------------------------
+    QUOTA = {'rc': 1, 'stderr': 'Claude AI usage limit reached|1760000000'}
+
+    def run_pinning_during_the_backoff(self, p, pin='astra\n'):
+        """`run --infra-retries 1` with a backoff long enough to pin the task once its first
+        entry has stopped on the infrastructure failure, and before the scheduler resumes it."""
+        self.env['FORGE_INFRA_BACKOFF'] = '3'
+        out = self.root / 'run.out'
+        with open(out, 'w') as log:
+            proc = subprocess.Popen(['bash', str(ROOT / 'scripts' / 'forge-parallel.sh'), 'run', str(p),
+                                     '--infra-retries', '1'], cwd=self.repo, env=self.env, stdout=log,
+                                    stderr=subprocess.STDOUT, start_new_session=True)
+            try:
+                status = p / 'tasks/a/status'
+                deadline = time.time() + 60
+                while time.time() < deadline and proc.poll() is None:
+                    if status.exists() and status.read_text().strip() == 'INFRA':
+                        break
+                    time.sleep(0.02)
+                self.assertIsNone(proc.poll(), out.read_text())
+                (p / 'tasks/a/escalation.pin').write_text(pin)
+                proc.wait(timeout=120)
+            finally:
+                if proc.poll() is None:
+                    os.killpg(proc.pid, 9)
+                    proc.wait()
+        return proc.returncode, out.read_text()
+
+    def test_an_implementer_stage_infra_resume_runs_the_pinned_model(self):
+        p = self.pooled_plan('--dwarf-low', 'sol', '--dwarf-high', 'astra')
+        self.scenario({'a.dwarf.1': self.QUOTA})
+        rc, out = self.run_pinning_during_the_backoff(p)
+        self.assertEqual(rc, 0, out)
+        self.assertIn('waiting', out)
+        self.assertNotIn('automatic retry', out)                 # a resume, not a retry
+        self.assertEqual(self.calls(), ['dwarf', 'dwarf', 'qa'])
+        self.assertIn('model=gpt-6-astra', (p / 'tasks/a/dwarf.resolved').read_text())
+        self.assertEqual(tsv(p / 'tasks/a/escalations.tsv')[0][1:], ['0', 'sol', 'astra', 'pin'])
+        self.assertEqual(sorted(x.name for x in (p / 'tasks/a').glob('escalation.*')), [])
+        self.assertEqual([r[4] for r in tsv(p / 'tasks/a/attempts.tsv')], ['sol', 'astra'])
+        self.assertTrue((p / 'tasks/a/merged').exists())
+
+    def test_a_qa_stage_infra_resume_keeps_the_pin_pending(self):
+        p = self.pooled_plan('--dwarf-low', 'sol', '--dwarf-high', 'astra')
+        # No reset time in the message, so the test's short backoff is the wait.
+        self.scenario({'a.qa.1': {'rc': 1, 'is_error': True, 'verdict': 'none',
+                                  'findings': "You've hit your usage limit."}})
+        rc, out = self.run_pinning_during_the_backoff(p)
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self.calls(), ['dwarf', 'qa', 'qa'])    # QA only: the implementer did not run again
+        self.assertIn('pin waits', out)
+        self.assertEqual((p / 'tasks/a/escalation.pin').read_text(), 'astra\n')
+        self.assertFalse((p / 'tasks/a/escalations.tsv').exists())
+        self.assertEqual([r[4] for r in tsv(p / 'tasks.tsv') if r[0] == 'a'], ['sol'])
+
+    def test_a_re_run_after_an_implementer_stage_infra_stop_runs_the_pinned_model(self):
+        p = self.pooled_plan('--dwarf-low', 'sol', '--dwarf-high', 'astra')
+        self.scenario({'a.dwarf.1': self.QUOTA})
+        r = self.run_script('forge-parallel.sh', 'run', p)
+        self.assertEqual(r.returncode, 8, r.stdout)
+        (p / 'tasks/a/escalation.pin').write_text('astra\n')
+        r = self.run_script('forge-parallel.sh', 'run', p)
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertIn('model=gpt-6-astra', (p / 'tasks/a/dwarf.resolved').read_text())
+        self.assertEqual(tsv(p / 'tasks/a/escalations.tsv')[0][2:], ['sol', 'astra', 'pin'])
+
+    # --- an unreviewed verdict whose worktree changed ---------------------------------------
+    def test_retry_of_an_unreviewed_task_whose_worktree_changed_runs_the_pinned_model(self):
+        p = self.pooled_plan('--dwarf-low', 'sol', '--dwarf-high', 'astra')
+        self.scenario({'a.qa.1': {'verdict': 'none', 'findings': 'I looked, but I will not say.'},
+                       'a.dwarf.2': {'content': 'rewritten'}})
+        r = self.run_script('forge-parallel.sh', 'run', p)
+        self.assertEqual(r.returncode, 5, r.stdout)
+        self.assertEqual((p / 'tasks/a/status').read_text().strip(), 'UNKNOWN')
+        self.assertTrue((p / 'tasks/a/reviewed.commit').read_text().strip())
+        wt = Path((p / 'wt_root').read_text().strip()) / 'a'
+        (wt / 'a.txt').write_text('edited after the review\n')
+        (p / 'tasks/a/escalation.pin').write_text('astra\n')
+        r = self.run_script('forge-parallel.sh', 'retry', p, 'a')
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertIn('no longer matches the worktree', r.stdout)
+        self.assertEqual(self.calls(), ['dwarf', 'qa', 'dwarf', 'qa'])
+        self.assertIn('model=gpt-6-astra', (p / 'tasks/a/dwarf.resolved').read_text())
+        self.assertEqual(tsv(p / 'tasks/a/escalations.tsv')[0][1:], ['1', 'sol', 'astra', 'pin'])
+        self.assertFalse((p / 'tasks/a/escalation.pin').exists())
 
 
 if __name__ == '__main__':
