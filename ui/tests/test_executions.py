@@ -8,7 +8,8 @@ import unittest
 from unittest.mock import patch
 
 from forge_ui import executions, findings, reader
-from forge_ui.reader import detail, execution_detail, execution_transcript, final_review_detail, summarize, task_detail
+from forge_ui.reader import (detail, execution_detail, execution_transcript, final_review_detail, run_findings,
+                             summarize, task_detail)
 import run_fixture as F
 
 
@@ -239,12 +240,21 @@ class ExecutionTests(FixtureCase):
         self.assertEqual(reviews[1], {
             'name': F.REVIEW_OLD, 'source': 'review', 'at': 1760602000.0, 'published': True, 'verdict': 'FAIL',
             'state': 'done', 'spec': 'opus', 'threshold': 'P2', 'base': 'a' * 40, 'tip': 'b' * 40,
+            'integration': None, 'outdated': False, 'merged_since': [],
             'gate': {'threshold': 'P2', 'decision': 'keep', 'worst': 'P1', 'n_confirmed': 2, 'n_unlabelled': 0,
                      'n_below': 0},
             'findings': counts(P1=1, P2=1, confirmed=2, worst='P1'), 'execution': F.REVIEW_OLD_QA,
             'started': T0 + 2010, 'ended': T0 + 2400, 'duration_s': 390.0})
         self.assertEqual((reviews[0]['threshold'], reviews[0]['execution'], reviews[0]['ended']),
                          (None, F.REVIEW_NEW_QA, None))
+        # No verdict yet, so the newest review is not outdated either way. The integrate review's tip is the
+        # candidate, not the integration tip, and nothing merged after it started.
+        self.assertIsNone(reviews[0]['outdated'])
+        self.assertEqual(reviews[0]['merged_since'], [])
+        self.assertIsNone(reviews[0]['integration'])
+        self.assertIs(reviews[2]['outdated'], False)
+        self.assertEqual(reviews[2]['merged_since'], [])
+        self.assertNotEqual(reviews[2]['tip'], 'b' * 40)
         running = execution_detail(self.plan, F.REVIEW_NEW_QA)
         self.assertEqual((running['state'], running['model']['spec'], running['owner']),
                          ('running', 'opus', {'kind': 'final_review', 'id': F.REVIEW_NEW}))
@@ -341,10 +351,200 @@ class ExecutionTests(FixtureCase):
                                                     {'id': 'docs', 'status': 'FAIL'}])
         self.assertEqual(summary['models'], ['luna', 'luna:low', 'opus', 'opus:high', 'sol:xhigh'])
         self.assertEqual(summary['final_review'], 'FAIL')
+        self.assertIs(summary['final_review_outdated'], False)
+        self.assertEqual({task['id']: task['accepted'] for task in summary['task_statuses']},
+                         {'reader': True, 'page': False, 'graph': False, 'server': False, 'docs': False})
         self.assertNotIn('timeline', summary)
         solo = summarize(self.solo)
         self.assertEqual((solo['task_statuses'], solo['models'], solo['final_review']),
-                         ([{'id': 'solo', 'status': 'PASS', 'difficulty': None, 'title': 'A rich solo run'}], ['opus', 'sol:high'], None))
+                         ([{'id': 'solo', 'status': 'PASS', 'difficulty': None, 'title': 'A rich solo run',
+                            'accepted': False}], ['opus', 'sol:high'], None))
+        self.assertIsNone(solo['final_review_outdated'])
+
+    def _review(self, data, name):
+        return next(item for item in data['final_reviews'] if item['name'] == name)
+
+    def test_published_fail_review_outdated_after_later_merges(self):
+        # The run list must judge the published dir only, and must not open the other reviews' attempts.
+        opened = []
+        original = Path.open
+
+        def wrapped(path, *args, **kwargs):
+            opened.append(str(path))
+            return original(path, *args, **kwargs)
+
+        with patch.object(Path, 'open', wrapped):
+            self.assertIs(summarize(self.plan)['final_review_outdated'], False)
+        opened_text = '\n'.join(opened)
+        self.assertIn('accepted.integration', opened_text)
+        self.assertIn('final-review/review.meta', opened_text)
+        self.assertIn('final-review/verdict', opened_text)
+        self.assertNotIn('/attempts/', opened_text)
+        self.assertNotIn(F.REVIEW_NEW, opened_text)
+        self.assertNotIn(F.INTEGRATE + '/', opened_text)
+
+        # Drop the in-flight newer review so RunDetail's final_review is the published FAIL.
+        shutil.rmtree(self.plan / F.REVIEW_NEW)
+        data = detail(self.plan)
+        self.assertEqual(data['final_review']['name'], F.REVIEW_OLD)
+        self.assertIs(data['final_review']['outdated'], False)
+        self.assertEqual(data['final_review']['merged_since'], [])
+        self.assertIs(summarize(self.plan)['final_review_outdated'], False)
+
+        at = data['final_review']['at']
+        # A merge moves the integration tip. page lands before reader.
+        F.set_merged_at(self.plan, 'page', at + 2)
+        F.set_merged_at(self.plan, 'reader', at + 5)
+        self.write(self.plan / 'accepted.integration', 'c' * 40 + '\n')
+        data = detail(self.plan)
+        self.assertIs(data['final_review']['outdated'], True)
+        self.assertEqual(data['final_review']['merged_since'], ['page', 'reader'])
+        self.assertIs(summarize(self.plan)['final_review_outdated'], True)
+        self.assertEqual(final_review_detail(self.plan, F.REVIEW_OLD)['merged_since'], ['page', 'reader'])
+        found = next(item for item in run_findings(self.plan)['final_reviews'] if item['name'] == F.REVIEW_OLD)
+        self.assertIs(found['outdated'], True)
+        self.assertEqual(found['merged_since'], ['page', 'reader'])
+
+        # The commit has moved, but a merge inside the review's starting second is not "since".
+        F.set_merged_at(self.plan, 'page', at + 0.5)
+        F.set_merged_at(self.plan, 'reader', at + 0.25)
+        data = detail(self.plan)
+        self.assertIs(data['final_review']['outdated'], True)
+        self.assertEqual(data['final_review']['merged_since'], [])
+        self.assertIs(summarize(self.plan)['final_review_outdated'], True)
+
+    def test_malformed_integration_is_null_and_does_not_decide_freshness(self):
+        # tip of the published review already equals accepted.integration. A non-commit
+        # integration= must not count as known, or the review looks outdated for the wrong reason.
+        accepted = (self.plan / 'accepted.integration').read_text().strip()
+        old = self.plan / F.REVIEW_OLD / 'review.meta'
+        old.write_text(old.read_text() + 'integration=not-a-commit\n')
+        # The integrate review's tip is the candidate, not the integration tip. The same bad
+        # value must fall through to the merge-time rule, which finds nothing merged after it.
+        integrate = self.plan / F.INTEGRATE / 'final-review' / 'review.meta'
+        integrate.write_text(integrate.read_text() + 'integration=not-a-commit\n')
+
+        data = detail(self.plan)
+        review = self._review(data, F.REVIEW_OLD)
+        self.assertEqual(review['tip'], accepted)
+        self.assertIsNone(review['integration'])
+        self.assertIs(review['outdated'], False)
+        self.assertEqual(review['merged_since'], [])
+        self.assertIn(f'{F.REVIEW_OLD}/review.meta: integration is not a commit', data['warnings'])
+        self.assertIn('final-review/review.meta: integration is not a commit', data['warnings'])
+        integrate_review = self._review(data, F.INTEGRATE)
+        self.assertIsNone(integrate_review['integration'])
+        self.assertNotEqual(integrate_review['tip'], accepted)
+        self.assertIs(integrate_review['outdated'], False)
+        self.assertEqual(integrate_review['merged_since'], [])
+        self.assertIn(f'{F.INTEGRATE}/final-review/review.meta: integration is not a commit', data['warnings'])
+
+        self.assertIs(summarize(self.plan)['final_review_outdated'], False)
+        found = final_review_detail(self.plan, F.REVIEW_OLD)
+        self.assertIsNone(found['integration'])
+        self.assertIs(found['outdated'], False)
+        self.assertIn(f'{F.REVIEW_OLD}/review.meta: integration is not a commit', found['warnings'])
+
+    def test_summary_updated_includes_accepted_integration(self):
+        # Previously read files and the run dir stay at 200. Rewriting accepted.integration
+        # must move `updated`, because the summary reads it for final_review_outdated.
+        for path in [self.plan, *self.plan.rglob('*')]:
+            if not path.is_symlink():
+                os.utime(path, (200, 200))
+        os.utime(self.plan / 'accepted.integration', (300, 300))
+        self.assertEqual(summarize(self.plan)['updated'], 300.0)
+
+    def test_matching_integration_commit_is_current_even_when_the_candidate_tip_differs(self):
+        meta = self.plan / F.INTEGRATE / 'final-review' / 'review.meta'
+        accepted = (self.plan / 'accepted.integration').read_text().strip()
+        meta.write_text(meta.read_text() + f'integration={accepted}\n')
+        at = self._review(detail(self.plan), F.INTEGRATE)['at']
+        F.set_merged_at(self.plan, 'reader', at + 5)
+        review = self._review(detail(self.plan), F.INTEGRATE)
+        self.assertEqual(review['integration'], accepted)
+        self.assertNotEqual(review['tip'], accepted)
+        self.assertIs(review['outdated'], False)
+        self.assertEqual(review['merged_since'], [])
+        self.assertIs(final_review_detail(self.plan, F.INTEGRATE)['outdated'], False)
+        # A sha256 object name is a commit as well. It still wins over the later merge and the
+        # candidate tip; a length check that only allowed 40 hex digits would call this outdated.
+        sha256 = 'c' * 64
+        meta.write_text(meta.read_text().replace(f'integration={accepted}\n', f'integration={sha256}\n'))
+        self.write(self.plan / 'accepted.integration', sha256 + '\n')
+        review = self._review(detail(self.plan), F.INTEGRATE)
+        self.assertEqual((review['integration'], review['outdated'], review['merged_since']), (sha256, False, []))
+        self.assertEqual(detail(self.plan)['warnings'], [])
+
+    def test_same_second_merge_does_not_outdate_an_older_integrate_review(self):
+        at = self._review(detail(self.plan), F.INTEGRATE)['at']
+        metrics = self.plan / F.INTEGRATE / 'final-review' / 'attempts' / F.INTEGRATE_QA / 'metrics.json'
+        payload = json.loads(metrics.read_text())
+        payload['wall_started'] = at + 0.2  # inside the review's first second, before the merge below
+        metrics.write_text(json.dumps(payload))
+        F.set_merged_at(self.plan, 'reader', at + 0.5)
+        link = self.plan / 'final-review'
+        link.unlink()
+        link.symlink_to(F.INTEGRATE + '/final-review')
+
+        data = detail(self.plan)
+        review = self._review(data, F.INTEGRATE)
+        self.assertEqual(review['started'], at + 0.2)
+        self.assertGreater(at + 0.5, review['started'])
+        self.assertIsNone(review['integration'])
+        self.assertIs(review['outdated'], False)
+        self.assertEqual(review['merged_since'], [])
+        # The newest review is still in flight. The summary follows the published link.
+        self.assertEqual(data['final_review']['name'], F.REVIEW_NEW)
+        self.assertIsNone(data['final_review']['outdated'])
+        self.assertIs(summarize(self.plan)['final_review_outdated'], False)
+        self.assertIs(final_review_detail(self.plan, F.INTEGRATE)['outdated'], False)
+
+        F.set_merged_at(self.plan, 'reader', at + 1)
+        review = self._review(detail(self.plan), F.INTEGRATE)
+        self.assertIs(review['outdated'], True)
+        self.assertEqual(review['merged_since'], ['reader'])
+        self.assertIs(summarize(self.plan)['final_review_outdated'], True)
+        found = next(item for item in run_findings(self.plan)['final_reviews'] if item['name'] == F.INTEGRATE)
+        self.assertIs(found['outdated'], True)
+        self.assertEqual(found['merged_since'], ['reader'])
+
+    def test_accepted_tasks_keep_their_status(self):
+        before = detail(self.plan)
+        counts = before['counts']
+        reader_task = self.task(before, 'reader')
+        self.assertEqual((reader_task['status'], reader_task['accepted'], reader_task['accepted_attempt'],
+                          reader_task['accepted_over']), ('MERGED', True, None, None))
+        for ident in ('page', 'graph', 'server', 'docs'):
+            task = self.task(before, ident)
+            self.assertEqual((task['accepted'], task['accepted_attempt'], task['accepted_over']),
+                             (False, None, None), ident)
+        solo = detail(self.solo)
+        self.assertEqual((solo['tasks'][0]['accepted'], solo['tasks'][0]['accepted_attempt'],
+                          solo['tasks'][0]['accepted_over']), (False, None, None))
+        self.assertFalse(summarize(self.solo)['task_statuses'][0]['accepted'])
+
+        self.write(self.plan / 'tasks/page/accepted.by',
+                   'task=page\nstatus=FAIL\nreason=tradeoff\nby=human\nat=2026-01-01T00:00:00+0000\n'
+                   'epoch=1\nattempt=2\nreviewed_commit=abc\n')
+        self.write(self.plan / 'tasks/docs/accepted.by', 'task=docs\nstatus=UNKNOWN\nattempt=1\n')
+        data = detail(self.plan)
+        self.assertEqual(data['counts'], counts)
+        page, docs = self.task(data, 'page'), self.task(data, 'docs')
+        self.assertEqual((page['status'], page['accepted'], page['accepted_attempt'], page['accepted_over']),
+                         ('MERGED', True, 2, 'FAIL'))
+        self.assertEqual((docs['status'], docs['accepted'], docs['accepted_attempt'], docs['accepted_over']),
+                         ('FAIL', True, 1, 'UNKNOWN'))
+        self.assertEqual(data['warnings'], [])
+        statuses = {task['id']: task['accepted'] for task in summarize(self.plan)['task_statuses']}
+        self.assertEqual(statuses, {'reader': True, 'page': True, 'graph': False, 'server': False, 'docs': True})
+
+        self.write(self.plan / 'tasks/graph/accepted.by', 'task=graph\nstatus=FAIL\nattempt=nope\n')
+        data = detail(self.plan)
+        graph = self.task(data, 'graph')
+        self.assertEqual((graph['status'], graph['accepted'], graph['accepted_attempt'], graph['accepted_over']),
+                         ('RUNNING', True, None, 'FAIL'))
+        self.assertEqual(data['counts'], counts)
+        self.assertTrue(any(warning == 'tasks/graph/accepted.by: attempt is not an integer' for warning in data['warnings']))
 
     def test_solo_executions(self):
         data = detail(self.solo)
