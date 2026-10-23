@@ -200,6 +200,48 @@ and pipeline checkpoints. A task/subtree selector resumes only that execution sc
 Explicit `retry` retains the backend and frozen pools; a replacement dwarf must already
 belong to that pool. See [recovery](../references/fractal.md#limits-and-lifecycle).
 
+## Changing a run while it works
+
+`forge control` changes a plan's knobs without stopping it (forge-ui calls the same command):
+
+```bash
+forge control show <plan-dir> [--json]                    # every control, per-task overrides, pins, recent changes
+forge control set <plan-dir> qa-threshold P2              # also --task <id>; P0-P3, none, or inherit (task only)
+forge control set <plan-dir> retry-budget 3 [--task <id>] # automatic retries; live scheduler only
+forge control set <plan-dir> infra-retries 2              # infrastructure waits; live scheduler only
+forge control set <plan-dir> timeout|escalate-after|verify-retries <n>
+forge control pin <plan-dir> <task> sol:high:codex        # the model the next full retry uses, once
+forge control unpin <plan-dir> <task>
+```
+
+Each change is validated, written under `control.lock`, and says when it applies:
+
+- **The QA threshold is read once per attempt**, at the start of the task's next attempt; the
+  attempt already running keeps the one it began with, so a verdict is never judged by a bar that
+  moved under it. A per-task `none` exempts that task from the plan's threshold; `inherit` drops
+  the override. A plan-level `none` clears the threshold.
+- **Budgets stay "per invocation".** `run --retry-failed N` and `--infra-retries M` still apply
+  only to the invocation that was given them and are not remembered; the next `run` starts
+  from its own flags. A rule that came back from an old file would silently spend money nobody
+  asked for. While a scheduler is live it mirrors them into the plan (`retry_budget`,
+  `infra_budget`, `tasks/<id>/retry_budget`) and re-reads them at every decision, which is what
+  `forge control` edits. When the scheduler stops it removes them; so a budget can only be changed
+  while a run is live (exit 3 otherwise), and the change dies with the run.
+  `tasks/<id>/retries.used` counts the retries spent and stays after the run for forge-ui.
+- **A pin is one-shot.** `pin` makes the task's next *full* retry use that spec (checked with
+  `forge-dispatch.sh doctor`, which spends no quota). A QA-only resume spends no implementer
+  attempt and leaves the pin for later. The retry applies it, writes it into `tasks.tsv`, records
+  an `escalations.tsv` row with `source` `pin`, clears any `split.suggested` stop and consumes
+  it. Fractal plans never apply pins, and a MERGED task refuses one.
+- **Who decided an escalation.** The last column of `tasks/<id>/escalations.tsv` is `policy`
+  (`--escalate-after`), `retry` (a typed `retry --dwarf`) or `pin`; rows from before it was added
+  have four columns and read as `policy`.
+
+Every change is appended to `control.log` (one JSON line: `at`, `actor` `cli` or `ui`, `action`,
+`task`, `key`, `value`, `previous`) and recorded in the dataset as a `control` event, so a run's
+human interventions are on the record next to what the policy did. Setting a control to the
+value it already has changes and logs nothing.
+
 ## Splitting and combining plans
 
 `run --retry-failed N` removes most of the reason to split a plan (a failed task no longer holds

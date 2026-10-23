@@ -16,10 +16,60 @@ harness (`/forge`); this command installs forge and drives its optional tools.
 | `forge version [--check]` | the installed version, and whether a newer release is out |
 | `forge fractal …` | opt-in Fractal execution; see [the command group](fractal.md#forge-fractal-command-group) |
 | `forge runs [--repo DIR \| --all] [--limit N] [--json]` | this repo's recent runs, newest first: run id, kind, age, task states, verification and final review, goal, and the run dir. Read-only; the same summaries forge-ui shows |
+| `forge control show\|set\|pin\|unpin PLAN_DIR …` | change a live plan: `set` takes `qa-threshold`, `timeout`, `escalate-after`, `verify-retries`, `retry-budget` or `infra-retries` (the last two only while a scheduler runs; `--task ID` for `qa-threshold` and `retry-budget`, value `inherit` drops the override); `pin PLAN_DIR TASK SPEC` sets the model the task's next full retry uses once, `unpin` drops it; `--json`. Every change is logged in `control.log`. See [live controls](decomposed-runs.md#changing-a-run-while-it-works) |
+| `forge config show\|set\|unset [--repo DIR] [--json]` | one view of every config source (registry, Jev, the repo's `.forge/verify`, `setup` and `verify-subset`, dataset, `FORGE_*` variables with secrets hidden); `set KEY VALUE` / `unset KEY` edit `repo.verify`, `repo.setup`, `repo.verify-subset` (must contain `{files}`) and, for `set`, `jev.enabled true\|false`. `-` as a value reads stdin. Exit 2 on invalid input |
+| `forge runs rm RUN_DIR [--dry-run] [--yes] [--no-archive] [--worktrees] [--branches] [--json]` | delete a run directory but keep what it taught the dataset; see [below](#forge-runs-rm) |
+| `forge issues RUN [--apply] …` | file the review findings a run left open as GitHub issues; see [below](#forge-issues) |
 | `forge ui open\|status\|stop` | forge-ui, the run viewer; see [the command group](forge-ui.md#forge-ui-command-group) |
 | `forge dataset …` | every run's inputs and outcomes; see [run dataset](dataset.md) |
 | `forge jev …` | optional Jev advice: setup, status, doctor, enable, disable, backtest; see [Jev](add-ons.md#jev) |
 | `forge --help` | list the commands; `forge <command> --help` shows each one's options |
+
+### `forge runs rm`
+
+Deletes a run directory (a plan dir or a solo run dir) without losing its traces. It holds the
+run's own lock from the first step to the last (`schedule.lock` of a plan, `pipeline.lock` of a
+solo run), so a run started meanwhile fails to start instead of racing the delete. In order:
+
+1. **preserve**: a strict dataset import of the run; every event must be stored, or nothing is deleted;
+2. **archive**: a self-describing `.tar.gz` under `<data home>/archive/` (`--no-archive` skips it);
+3. **intent**: the dataset event `run_delete_started`;
+4. `--worktrees` removes the run's clean worktrees; `--branches` runs `git branch -D` on its
+   branches that no worktree has checked out;
+5. the run directory is removed, `run_deleted` is recorded and the run leaves the registry.
+
+What counts as the run's is decided from the run id, not read from the run directory: a worktree
+under `<repo>/../.forge-worktrees/<run id>/` on `forge/<run id>/<task>` or
+`forge/<run id>-integration`. Any other worktree there is `foreign`, one with uncommitted changes
+is `dirty`; neither is touched, and a dirty one keeps the run directory too. Branches are reported
+`merged` or `UNMERGED`, so you see what deleting them would lose. `--dry-run` changes nothing and
+reports; `--yes` skips the prompt for the run id (needed without a terminal); `--json` prints one
+object, on failure too. Exit 0 ok, 2 refused input, 3 busy or the run is active, 4 failed during
+deletion or the run directory was kept (the same command finishes the job).
+
+### `forge issues`
+
+`forge issues <plan dir, task dir, review dir, known_issues.md or qa.last>` drafts one GitHub
+issue per finding the run left open (`--group task|run` for fewer) and files them only with
+`--apply`. The findings are the CONFIRMED ones `--qa-threshold` tolerated, PLAUSIBLE ones with
+`--include-plausible`, and what the whole-run review left open. Each issue carries a hidden
+fingerprint, so a finding is never filed twice, by this command or by gh-proman. Also:
+`--min-severity`, `--repo`, `--lang`, `--label`, `--confirm-new`, `--max-issues` (default 10; pass
+the size of a `--only` selection).
+
+| Flag | Does |
+|---|---|
+| `--json` | machine-readable output; `findings` lists each one with its fingerprint, severity, origin, task, `filed` state and `dismissed` mark |
+| `--offline` | never run `gh`: no filed state, commit publication judged from local refs |
+| `--only FP` | keep only these 12-hex fingerprints (repeatable or comma-separated) |
+| `--all-runs` | read `RUN` as a repository (or a plan dir naming one) and collect every run in its registry; the newest plan wins for a finding in several |
+| `--dismiss FP`, `--undismiss FP`, `--reason TEXT` | mark findings as needing no work (or take it back), then exit; no network. The marks live outside the repo, in `${XDG_STATE_HOME:-~/.local/state}/forge/findings/<repo key>.json` |
+| `--include-dismissed` | draft dismissed findings too |
+
+Two filers for one repository at once would both see a finding as unfiled, so `--apply` takes a
+repository lock from the issue lookup to the last `gh issue create`, and each dismissal takes it
+around its write. A busy lock is retried for 10 s, then exit 3. Exit 0 ok, 2 usage or a `gh` or
+dismissal-store error, 3 busy.
 
 ## The `/forge` slash command
 
