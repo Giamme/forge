@@ -22,7 +22,14 @@ bias (inverse-propensity weighting needs the probability each choice had).
       repeating the same dispatch. Prints that spec when one is due. When none exists, writes
       tasks/<id>/escalation.stop and split.suggested and exits 3. `--check` (run after every
       attempt) also records a due escalation in escalation.next, and clears the markers once
-      the streak no longer holds.
+      the streak no longer holds. A pending tasks/<id>/escalation.pin (a human's one-shot
+      choice, applied by prepare_retry) is what `--check` reports as the next model instead
+      (escalation.next = its spec), whatever escalate_after says, unless the next retry is a
+      QA-only resume or the plan is Fractal (pins never apply there). Nothing has applied the
+      pin yet, so the policy's own stop and split markers stay as the policy decided them
+      beneath it: they are what holds again if the pin is withdrawn.
+      The marker writes take <plan>/control.lock and re-read escalate_after inside it: a
+      policy decision made before a human switched the policy off writes nothing.
 
 The propensity of the chosen spec is (1-E)*[chosen == SPEC] + E/2. Forge never picks a
 model the user did not name: both helpers read only the pools `plan` stored in
@@ -34,12 +41,17 @@ the draws reproducible (tests only). Any failure prints SPEC (explore) or nothin
 from __future__ import annotations
 
 import argparse
+import contextlib
+import errno
+import fcntl
 import hashlib
 import json
 import os
 import random
 import secrets
+import stat
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -49,6 +61,7 @@ REGISTRY = SCRIPTS.parent / 'registry.tsv'
 FAILED = ('FAIL', 'TIMEOUT')                       # a judgment against the spec that ran
 NEUTRAL = ('INFRA', 'UNKNOWN', 'ERROR', 'RUNNING', 'INTERRUPTED')   # say nothing about it
 DEFAULT_ESCALATE_AFTER = 3
+LOCK_WAIT = 5.0                                    # seconds to wait for P/control.lock
 
 
 def rng_for(task: str):
@@ -275,46 +288,190 @@ def _fractal(plan: Path) -> bool:
         return False
 
 
-def _clear(tdir: Path, *names) -> None:
-    for name in names or ('escalation.stop', 'split.suggested', 'escalation.next'):
+# --- live-control files ------------------------------------------------------------
+# Markers are shared with `forge control` and the scheduler, so they are written the way
+# every writer of the plan's control files writes: a task id the scheduler would accept, a
+# real directory chain under the canonical plan dir, a regular file as the target, a temp
+# file plus rename, and P/control.lock held around the check-and-write.
+
+class Busy(Exception):
+    """P/control.lock stayed held for LOCK_WAIT seconds."""
+
+
+def _task_dir(plan: Path, task: str):
+    """tasks/<task> under the canonical plan dir, or None when it is not a real directory."""
+    if not task or task in ('.', '..') or '/' in task or '\0' in task:
+        return None
+    tdir = plan / 'tasks' / task
+    try:
+        if not stat.S_ISDIR(os.lstat(tdir).st_mode) or os.path.realpath(tdir) != str(tdir):
+            return None
+    except OSError:
+        return None
+    return tdir
+
+
+@contextlib.contextmanager
+def _control_lock(plan: Path):
+    fd = os.open(str(plan / 'control.lock'), os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o644)
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise OSError(errno.EINVAL, 'control.lock is not a regular file')
+        deadline = time.monotonic() + LOCK_WAIT
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError as exc:
+                if exc.errno not in (errno.EAGAIN, errno.EACCES, errno.EWOULDBLOCK):
+                    raise
+                if time.monotonic() >= deadline:
+                    raise Busy('control.lock is held') from None
+                time.sleep(0.05)
         try:
-            (tdir / name).unlink()
+            yield
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
+
+
+def _regular(path: Path) -> bool:
+    try:
+        return stat.S_ISREG(os.lstat(path).st_mode)
+    except OSError:
+        return False
+
+
+MARKERS = ('escalation.stop', 'split.suggested', 'escalation.next')
+
+
+def _clear(tdir: Path, *names) -> None:
+    for name in names:
+        if _regular(tdir / name):
+            try:
+                (tdir / name).unlink()
+            except OSError:
+                pass
+
+
+def _write_marker(tdir: Path, name: str, text: str) -> None:
+    target = tdir / name
+    if os.path.lexists(target) and not _regular(target):
+        raise OSError(errno.EINVAL, '%s is not a regular file' % name)
+    fd, tmp = tempfile.mkstemp(dir=str(tdir), prefix='.%s.' % name)
+    try:
+        with os.fdopen(fd, 'w') as out:
+            out.write(text)
+        os.chmod(tmp, 0o644)
+        os.replace(tmp, target)
+    except BaseException:
+        try:
+            os.unlink(tmp)
         except OSError:
             pass
+        raise
 
 
-def escalation(args) -> int:
-    plan = Path(args.plan)
-    tdir = plan / 'tasks' / args.task
-    after = _setting(plan)
-    # Fractal plans freeze their eligible set at selection; a QA-only resume spends no dwarf
-    # attempt, so neither is a moment to change the implementer.
-    if after <= 0 or _fractal(plan) or (tdir / 'resume').exists():
-        if after <= 0:
-            _clear(tdir)
-        return 0
+def _pin(tdir: Path):
+    """The pending pin's spec, or None. One line, one token: it goes into a TSV column."""
+    path = tdir / 'escalation.pin'
+    if not _regular(path):
+        return None
+    try:
+        lines = path.read_text().splitlines()
+    except (OSError, UnicodeDecodeError):
+        return None
+    spec = lines[0].strip() if lines else ''
+    if not spec or spec in ('-', 'UNASSIGNED') or any(c.isspace() or ord(c) < 32 for c in spec):
+        return None
+    return spec
+
+
+def _qa_next(tdir: Path) -> bool:
+    """True when the task's next retry only re-runs QA, so it cannot apply a pin.
+
+    That is a `resume` marker (a QA-stage infrastructure stop), or a verdict-less review of
+    committed work: prepare_retry turns that into the marker, but it has not run yet when
+    `--check` does, right after the attempt.
+    """
+    if (tdir / 'resume').exists():
+        return True
+    try:
+        return (tdir / 'status').read_text().strip() == 'UNKNOWN' and (tdir / 'reviewed.commit').stat().st_size > 0
+    except OSError:
+        return False
+
+
+def _apply(plan: Path, tdir: Path, clear=(), writes=(), policy=True, pin=None):
+    """Clear and write markers under the control lock. Returns (policy stood, pin reported).
+
+    The policy re-reads escalate_after inside the lock (a human may have switched it off since
+    the decision was made): it then writes nothing and its markers go, as `--escalate-after 0`
+    clears them. A pin is reported as escalation.next only while it is still pending; the stop
+    and split markers beneath it stay the policy's, because the pin has not been applied.
+    """
+    with _control_lock(plan):
+        stood = policy and _setting(plan) > 0
+        if policy and not stood:
+            clear, writes = MARKERS, ()
+        reported = pin is not None and _pin(tdir) == pin
+        _clear(tdir, *clear)
+        for name, text in writes:
+            _write_marker(tdir, name, text)
+        if reported:
+            _write_marker(tdir, 'escalation.next', pin + '\n')
+    return stood, reported
+
+
+def _decide(plan: Path, tdir: Path, args, after: int):
+    """What the policy wants done to the markers: (clear, writes, spec to print, exit code)."""
     current = _dwarf_of(plan, args.task)
     if not current or current in ('-', 'UNASSIGNED'):
-        return 0
+        return (), (), '', 0
     registry = registry_models()
     streak = failed_streak(attempt_rows(tdir), current, registry)
     if streak < after:
-        _clear(tdir)
-        return 0
+        return MARKERS, (), '', 0
     target, why = stronger(current, load_pools(plan / 'fractal-routing.json'), registry)
     if target:
-        _clear(tdir, 'escalation.stop', 'split.suggested')
-        if args.check:
-            (tdir / 'escalation.next').write_text(target + '\n')
-        print(target)
+        writes = (('escalation.next', target + '\n'),) if args.check else ()
+        return ('escalation.stop', 'split.suggested'), writes, target, 0
+    split = ('%s failed %d attempts on %s, and %s. Another attempt on the same model rarely passes, '
+             'so split the task into smaller ones, or retry it with an explicit --dwarf <spec>.\n'
+             % (args.task, streak, current, why))
+    return ('escalation.next',), (('escalation.stop', '%d\t%s\n' % (streak, current)), ('split.suggested', split)), '', 3
+
+
+def escalation(args) -> int:
+    plan = Path(os.path.realpath(args.plan))
+    tdir = _task_dir(plan, args.task)
+    if tdir is None:
         return 0
-    _clear(tdir, 'escalation.next')
-    (tdir / 'escalation.stop').write_text('%d\t%s\n' % (streak, current))
-    (tdir / 'split.suggested').write_text(
-        '%s failed %d attempts on %s, and %s. Another attempt on the same model rarely passes, '
-        'so split the task into smaller ones, or retry it with an explicit --dwarf <spec>.\n'
-        % (args.task, streak, current, why))
-    return 3
+    after = _setting(plan)
+    fractal = _fractal(plan)
+    # Fractal plans freeze their eligible set at selection; a QA-only resume spends no dwarf
+    # attempt, so neither is a moment to change the implementer.
+    idle = after <= 0 or fractal or (tdir / 'resume').exists()
+    # A pin is a human's choice and outranks the policy, so `--check` reports it as the next
+    # model whatever escalate_after says; prepare_retry applies it and claims the file. The
+    # policy is still decided underneath it and its markers kept current.
+    pin = _pin(tdir) if args.check and not fractal and not _qa_next(tdir) else None
+    clear, writes, shown, rc = (MARKERS if after <= 0 else ()), (), '', 0
+    if not idle:
+        clear, writes, shown, rc = _decide(plan, tdir, args, after)
+    if not (writes or shown or pin):
+        _clear(tdir, *clear)
+        return 0
+    stood, reported = _apply(plan, tdir, clear, writes, policy=not idle, pin=pin)
+    if reported:
+        print(pin)
+        return 0
+    if not stood:
+        return 0
+    if shown:
+        print(shown)
+    return rc
 
 
 def main(argv=None) -> int:

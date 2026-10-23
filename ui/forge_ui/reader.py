@@ -413,7 +413,9 @@ def _history(reader, name, escalation=False):
             continue
         entry = dict(at=at, attempt=attempt)
         if escalation:
-            entry.update({'from': row[2], 'to': row[3]})
+            # the 5th column says who decided (policy, a human's retry --dwarf, a pin); older rows have 4
+            source = row[4].strip() if len(row) > 4 else ''
+            entry.update({'from': row[2], 'to': row[3], 'source': source or 'policy'})
         else:
             entry.update(status=row[2], infra=_nullable(row[3]) if len(row) > 3 else None)
         result.append(entry)
@@ -548,7 +550,18 @@ def _task_detail(reader, task, run_id, waves, branches):
     task['fail_first'] = _fail_first(reader, prefix + '/failfirst.json')
     shadows = _shadows(reader, ident, execs)
     task['shadow'] = [entry for entry, _, _ in shadows]
+    # What `forge control show` reads of the task. A change there (a write, or a delete: the dir's mtime) moves `updated`,
+    # so the page redraws and the Controls panel asks again.
+    reader.stat(prefix)
+    for name in _TASK_CONTROLS:
+        reader.stat(f'{prefix}/{name}')
     return execs + [item for _, items, _ in shadows for item in items]
+
+
+# The control files (CONTRACT.md) nothing else here reads. `forge control` appends control.log and writes the task's
+# files without touching the run dir, so they are stat'd for `updated` only.
+_RUN_CONTROLS = ('control.log', 'retry_budget', 'infra_budget')
+_TASK_CONTROLS = ('qa_threshold', 'retry_budget', 'retries.used', 'escalation.pin', 'escalation.stop', 'escalation.next')
 
 
 _FAIL_FIRST_RESULTS = ('proven', 'passes_without_change', 'inconclusive', 'error')
@@ -741,6 +754,8 @@ def detail(path, source='plan') -> dict:
     pool = []
     for task in tasks:
         pool += _task_detail(reader, task, result['run_id'], wave_map, branches)
+    for name in _RUN_CONTROLS:
+        reader.stat(name)
     run_execs = _run_execs(reader)
     items, integrations = executions.review_dirs(reader)
     published = _published(reader)
@@ -1378,6 +1393,16 @@ class Catalog:
             if run_key(path) == key:
                 result = read(path, *args, source=source)
                 return result if _kind(path) else None
+        return None
+
+    def locate(self, key):
+        """(path, kind) of the run with this key, kind 'plan' or 'solo'; None for an unknown key.
+
+        The only way a write finds a run dir: the client names a key, never a path."""
+        for path, _source in discover(**self.options):
+            if run_key(path) == key:
+                kind = _kind(path)
+                return (str(path), kind) if kind else None
         return None
 
     def get(self, key):

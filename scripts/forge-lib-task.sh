@@ -51,6 +51,96 @@ resume_valid() { # resume_valid <tdir> <wt>
   [ "$(forge_fingerprint "$wt")" = "$(cat "$tdir/source.fingerprint")" ]
 }
 
+# The next entry's kind, decided before it starts with the test do_task_body applies
+# (resume_valid): true when it only re-runs QA. A marker the worktree no longer matches is
+# cleared here, so whoever prepares the entry and do_task_body agree that it is a full one.
+resume_check() { # resume_check <plan> <id>
+  local tdir="$1/tasks/$2" root
+  [ -f "$tdir/resume" ] || return 1
+  root="$(cat "$1/wt_root" 2>/dev/null)"
+  [ -n "$root" ] && resume_valid "$tdir" "$root/$2" && return 0
+  rm -f "$tdir/resume"
+  note "$2: the saved review state no longer matches the worktree — the next attempt runs the full task"
+  return 1
+}
+
+# --- escalation pin -------------------------------------------------------------
+# A human's one-shot choice of the model for a task's next full retry:
+# tasks/<id>/escalation.pin holds one dwarf spec (written by `forge control pin`). The
+# retry claims it with an atomic rename so a writer replacing it meanwhile never races the
+# read, and settles the claim once tasks.tsv and escalations.tsv are written.
+forge_plan_is_fractal() { # forge_plan_is_fractal <plan>
+  [ -s "$1/fractal-selection.json" ] || return 1
+  python3 -c 'import json, sys
+try:
+    sys.exit(0 if json.load(open(sys.argv[1])).get("enabled") else 1)
+except Exception:
+    sys.exit(1)' "$1/fractal-selection.json"
+}
+
+# The pin's spec: the first line, trimmed, a single token (it lands in a TSV column).
+# Prints nothing when the file is not a regular file or holds no usable spec.
+pin_spec() { # pin_spec <file>
+  local spec
+  [ -f "$1" ] && [ ! -L "$1" ] || return 0
+  spec="$(head -n 1 "$1" 2>/dev/null | tr -d '\r')"
+  spec="${spec#"${spec%%[![:space:]]*}"}"; spec="${spec%"${spec##*[![:space:]]}"}"
+  case "$spec" in ''|-|UNASSIGNED|*[[:space:][:cntrl:]]*) return 0 ;; esac
+  printf '%s\n' "$spec"
+}
+
+# claim_pin <tdir> -> prints the spec and returns 0 when a pin was claimed; the file is
+# then escalation.pin.applying until settle_pin. A pin with no usable spec is dropped.
+# The claim is a bare rename(2), not mv: mv moves a file INTO a destination that is a
+# directory or a symlink to one (BSD mv has no -T), which could carry the pin out of the
+# plan. rename replaces a stale file or symlink named .applying and fails on a directory,
+# and then the pin stays where it is for a later retry.
+claim_pin() {
+  local tdir="$1" spec
+  [ -f "$tdir/escalation.pin" ] && [ ! -L "$tdir/escalation.pin" ] || return 1
+  if ! python3 -c 'import os, sys; os.rename(sys.argv[1], sys.argv[2])' \
+      "$tdir/escalation.pin" "$tdir/escalation.pin.applying" 2>/dev/null; then
+    [ -e "$tdir/escalation.pin" ] && \
+      note "$(basename "$tdir"): could not claim the escalation pin (escalation.pin.applying is in the way) — leaving it in place"
+    return 1
+  fi
+  spec="$(pin_spec "$tdir/escalation.pin.applying")"
+  if [ -z "$spec" ]; then
+    rm -f "$tdir/escalation.pin.applying"
+    note "$(basename "$tdir"): the escalation pin holds no usable spec — dropped"
+    return 1
+  fi
+  printf '%s\n' "$spec"
+}
+
+# settle_pin <tdir> done|restore. Done deletes the claim. Restore gives the pin back unless
+# a new one appeared meanwhile (hard link: it fails if the target exists, so a pin written
+# during the application is never overwritten); that newer pin is the one for the next retry.
+# python3, like claim_pin's rename: forge already requires it, and `ln` is one tool more.
+settle_pin() {
+  local tdir="$1"
+  [ "$2" = restore ] && python3 -c 'import os, sys; os.link(sys.argv[1], sys.argv[2])' \
+    "$tdir/escalation.pin.applying" "$tdir/escalation.pin" 2>/dev/null
+  rm -f "$tdir/escalation.pin.applying"
+  return 0
+}
+
+# True when the task's next retry only re-runs QA: a `resume` marker (a QA-stage infrastructure
+# stop), or a verdict-less review of committed work, which prepare_retry turns into the marker
+# but has not yet when the run summary is printed. Such a retry leaves a pin in place.
+qa_only_next() { # qa_only_next <plan> <id>
+  local tdir="$1/tasks/$2"
+  [ "$(cat "$tdir/resume" 2>/dev/null)" = qa ] && return 0
+  [ "$(task_status "$1" "$2")" = UNKNOWN ] && [ -s "$tdir/reviewed.commit" ]
+}
+
+# Writes the task's implementer column in tasks.tsv: a temp file, then a rename.
+set_dwarf() { # set_dwarf <plan> <id> <spec>
+  awk -F'\t' -v OFS='\t' -v id="$2" -v dw="$3" \
+    '$0 !~ /^#/ && $1==id { $5=dw } { print }' "$1/tasks.tsv" > "$1/.tasks.tsv.retry" \
+    && mv "$1/.tasks.tsv.retry" "$1/tasks.tsv"
+}
+
 # --- retry preparation ----------------------------------------------------------
 # Shared by `retry` (a human asked) and the scheduler's automatic retries. The findings
 # are the whole point of retrying rather than re-running: the dwarf is told what was
@@ -66,9 +156,8 @@ prepare_retry() { # prepare_retry <plan> <id> [new-dwarf]
   elif [ "$st" = UNKNOWN ] && [ -s "$tdir/reviewed.commit" ]; then
     # The reviewer never reached a verdict, so the code was not rejected. Re-asking QA is
     # cheaper and more honest than paying an implementer to rewrite unjudged work; the
-    # marker is revalidated against the worktree before it is believed.
+    # marker is validated against the worktree below before it is believed.
     echo qa > "$tdir/resume"
-    note "$id: the reviewer gave no verdict — re-running QA on the unchanged work"
   # Only a real review replaces the findings. The runner also writes explanatory text
   # into qa.last when it fails a task without dispatching QA ("produced no changes at
   # all"), and copying that over would throw away the actual findings the previous
@@ -83,13 +172,36 @@ prepare_retry() { # prepare_retry <plan> <id> [new-dwarf]
     note "$id: no previous QA findings to pass on (last status was $st)"
     : > "$tdir/retry_findings.md"
   fi
-  # The retry policy (forge-route.py escalation): after escalate_after failed attempts on
-  # one model (default 3), the next attempt goes a tier up in the user's own pools instead
-  # of repeating the dispatch whose fourth try passes least often, or the task stops with a
-  # split suggestion. An explicit --dwarf is the human's call and skips the policy.
-  local cur next rc
+  # A QA-only resume (an unreviewed verdict, or a QA-stage infrastructure stop) re-asks the
+  # reviewer about work that is already committed; the dwarf does not run, so it is no moment
+  # to change the implementer. Both branches above wrote the `resume` marker; it holds only
+  # while the worktree is still what was reviewed, which do_task_body checks again.
+  local qa_only=0
+  if resume_check "$PLAN" "$id"; then
+    qa_only=1
+    [ "$st" = UNKNOWN ] && note "$id: the reviewer gave no verdict — re-running QA on the unchanged work"
+  fi
+  # Who decides the next implementer, in this order: an explicit --dwarf (the human's call,
+  # source `retry`), a pin (the human's call, applied once, source `pin`), then the retry
+  # policy (forge-route.py escalation): after escalate_after failed attempts on one model
+  # (default 3) the next attempt goes a tier up in the user's own pools instead of repeating
+  # the dispatch whose fourth try passes least often, or the task stops with a split
+  # suggestion.
+  local cur next rc esc_source="" pinned="" has_pin=0
   cur="$(field "$T" "$id" dwarf)"
-  if [ -z "$newdwarf" ]; then
+  [ -f "$tdir/escalation.pin" ] && [ ! -L "$tdir/escalation.pin" ] && has_pin=1
+  if [ -n "$newdwarf" ]; then
+    esc_source=retry
+    rm -f "$tdir/escalation.stop" "$tdir/split.suggested" "$tdir/escalation.next"
+  elif [ "$has_pin" = 1 ] && [ "$qa_only" = 1 ]; then
+    note "$id: the escalation pin waits for the next full retry (this one only re-runs QA)"
+  elif [ "$has_pin" = 1 ] && forge_plan_is_fractal "$PLAN"; then
+    note "$id: an escalation pin is set, but Fractal plans never apply pins — leaving it in place"
+  elif [ "$has_pin" = 1 ] && pinned="$(claim_pin "$tdir")"; then
+    esc_source=pin
+    newdwarf="$pinned"
+    note "$id: applying the pinned escalation to $pinned"
+  else
     next="$(python3 "$SKILL_DIR/scripts/forge-route.py" escalation --plan "$PLAN" --task "$id")"; rc=$?
     if [ "$rc" = 3 ]; then
       note "$(cat "$tdir/split.suggested" 2>/dev/null)"
@@ -98,36 +210,93 @@ prepare_retry() { # prepare_retry <plan> <id> [new-dwarf]
     if [ -n "$next" ]; then
       note "$id: escalating from $cur to $next after $(cat "$PLAN/escalate_after" 2>/dev/null || echo 3) failed attempts on one model (--escalate-after 0 turns this off)"
       newdwarf="$next"
+      esc_source=policy
     fi
-  else
-    rm -f "$tdir/escalation.stop" "$tdir/split.suggested" "$tdir/escalation.next"
   fi
-  if [ "$newdwarf" = "$cur" ]; then newdwarf=""; fi   # the same spec again is no escalation
+  # The same spec again is no escalation, except a pin: a human asked for it, so the
+  # request is recorded and consumed.
+  if [ "$newdwarf" = "$cur" ] && [ "$esc_source" != pin ]; then newdwarf=""; fi
   if [ -n "$newdwarf" ]; then
-    # Written into tasks.tsv rather than kept in a side file: the table then shows the
-    # model that will actually be spent, and plan's rule that an explicit column value
-    # survives a re-plan protects the escalation for free. Rewritten first, so a failed
-    # rewrite is never recorded as an escalation that happened.
-    awk -F'\t' -v OFS='\t' -v id="$id" -v dw="$newdwarf" \
-      '$0 !~ /^#/ && $1==id { $5=dw } { print }' "$T" > "$PLAN/.tasks.tsv.retry" \
-      && mv "$PLAN/.tasks.tsv.retry" "$T" \
-      || { note "$id: could not write $newdwarf into tasks.tsv; nothing was retried"; return 1; }
-    # The rewrite loses which model failed first, and an escalation is exactly the record
-    # of "this tier was too weak for this task".
-    printf '%s\t%s\t%s\t%s\n' "$(date +%s)" "$(cat "$tdir/attempt" 2>/dev/null || echo 0)" \
-      "$cur" "$newdwarf" >> "$tdir/escalations.tsv"
-    # Recorded at the rewrite itself: it happens before the retried attempt begins, so no
-    # attempt capture would ever see it as something that attempt produced.
-    forge_dataset_event escalation --dir "$PLAN" --task "$id" --set "from=$cur" \
-      --set "to=$newdwarf" --set "after_attempt=$(cat "$tdir/attempt" 2>/dev/null || echo 0)"
-    rm -f "$tdir/escalation.next"
+    write_escalation "$PLAN" "$id" "$cur" "$newdwarf" "$esc_source" || return 1
   fi
   rm -f "$tdir/noretry"
 }
 
+# Puts the next implementer in place: tasks.tsv, the escalations.tsv record and the dataset
+# event. Returns 1, with tasks.tsv and a claimed pin given back, when nothing was changed.
+write_escalation() { # write_escalation <plan> <id> <from> <to> <retry|pin|policy>
+  local PLAN="$1" id="$2" cur="$3" newdwarf="$4" esc_source="$5" tdir="$1/tasks/$2"
+  # A pin is held to its record: whether the record can be written is learned before
+  # anything is changed, so a failure there leaves tasks.tsv and the pin as they were.
+  if [ "$esc_source" = pin ] && ! : >> "$tdir/escalations.tsv" 2>/dev/null; then
+    note "$id: could not record the escalation in escalations.tsv; nothing was retried"
+    settle_pin "$tdir" restore
+    return 1
+  fi
+  # Written into tasks.tsv rather than kept in a side file: the table then shows the
+  # model that will actually be spent, and plan's rule that an explicit column value
+  # survives a re-plan protects the escalation for free. Rewritten first, so a failed
+  # rewrite is never recorded as an escalation that happened.
+  if [ "$newdwarf" != "$cur" ]; then
+    set_dwarf "$PLAN" "$id" "$newdwarf" || {
+      note "$id: could not write $newdwarf into tasks.tsv; nothing was retried"
+      [ "$esc_source" = pin ] && settle_pin "$tdir" restore
+      return 1
+    }
+  fi
+  # The rewrite loses which model failed first, and an escalation is exactly the record
+  # of "this tier was too weak for this task". The last column says who decided: forge's
+  # policy, a human's `retry --dwarf`, or a pin.
+  if ! printf '%s\t%s\t%s\t%s\t%s\n' "$(date +%s)" "$(cat "$tdir/attempt" 2>/dev/null || echo 0)" \
+      "$cur" "$newdwarf" "$esc_source" >> "$tdir/escalations.tsv" && [ "$esc_source" = pin ]; then
+    # The rewrite is undone with the record, so the pin given back is still a real
+    # escalation next time, not a same-spec one that hides the model it replaced.
+    if [ "$newdwarf" = "$cur" ] || set_dwarf "$PLAN" "$id" "$cur"; then
+      note "$id: could not record the escalation in escalations.tsv; nothing was retried"
+      settle_pin "$tdir" restore
+      return 1
+    fi
+    note "$id: could not record the escalation in escalations.tsv, and tasks.tsv could not be put back to $cur; it keeps $newdwarf, so the pin is consumed and the retry goes on"
+  fi
+  # Recorded at the rewrite itself: it happens before the retried attempt begins, so no
+  # attempt capture would ever see it as something that attempt produced.
+  forge_dataset_event escalation --dir "$PLAN" --task "$id" --set "from=$cur" \
+    --set "to=$newdwarf" --set "after_attempt=$(cat "$tdir/attempt" 2>/dev/null || echo 0)" \
+    --set "source=$esc_source"
+  # A pin, like an explicit --dwarf, settles the retry policy's verdicts about this task.
+  [ "$esc_source" = pin ] && rm -f "$tdir/escalation.stop" "$tdir/split.suggested"
+  rm -f "$tdir/escalation.next"
+  [ "$esc_source" = pin ] && settle_pin "$tdir" done
+  return 0
+}
+
+# An infrastructure stop dispatched again by the scheduler. It is no retry: no attempt or
+# budget is spent, the findings carried forward stay, and the retry policy is not asked. But
+# unless the stop came at QA (and the reviewed work is intact), the entry is a full
+# implementer attempt, so a pending pin applies here exactly as prepare_retry applies it.
+# Returns 1 when a claimed pin could not be put in place; the task is then not resumed.
+prepare_resume() { # prepare_resume <plan> <id>
+  local PLAN="$1" id="$2" tdir="$1/tasks/$2" pinned
+  [ -f "$tdir/escalation.pin" ] && [ ! -L "$tdir/escalation.pin" ] || return 0
+  if resume_check "$PLAN" "$id"; then
+    note "$id: the escalation pin waits for the next full retry (this resume only re-runs QA)"
+  elif forge_plan_is_fractal "$PLAN"; then
+    note "$id: an escalation pin is set, but Fractal plans never apply pins — leaving it in place"
+  elif pinned="$(claim_pin "$tdir")"; then
+    note "$id: applying the pinned escalation to $pinned"
+    write_escalation "$PLAN" "$id" "$(field "$PLAN/tasks.tsv" "$id" dwarf)" "$pinned" pin || return 1
+  fi
+  return 0
+}
+
 # The scheduler's `_prepare_retry` target: prepare, then clear the status so the task
-# reads as PENDING again. `retry` clears it itself, after its own preflight.
-retry_for_scheduler() { # retry_for_scheduler <plan> <id>
+# reads as PENDING again. `retry` clears it itself, after its own preflight. With --resume it
+# prepares an infrastructure stop's resume instead (prepare_resume), and the status stays.
+retry_for_scheduler() { # retry_for_scheduler <plan> <id> [--resume]
+  if [ "${3:-}" = --resume ]; then
+    prepare_resume "$1" "$2"
+    return $?
+  fi
   prepare_retry "$1" "$2" || return $?
   rm -f "$1/tasks/$2/status"
 }
@@ -173,9 +342,17 @@ guard_after_dwarf() { # guard_after_dwarf <wt> <tdir> <id>
 
 # --- QA severity gate -----------------------------------------------------------
 qa_threshold_for() { # per-task file wins over the plan-level default; prints nothing if unset
-  local f
+  # A per-task "none" exempts the task from a plan-wide threshold (prints nothing, no fallback).
+  # A plan-level "none" is the same as no file. Anything but P0-P3 or none is ignored, so a
+  # garbage per-task value falls back to the plan file.
+  local f v
   for f in "$1/tasks/$2/qa_threshold" "$1/qa_threshold"; do
-    [ -s "$f" ] && { head -1 "$f" | tr -d ' \r'; return 0; }
+    [ -s "$f" ] || continue
+    v="$(head -1 "$f" | tr -d ' \r' | tr 'a-z' 'A-Z')"
+    case "$v" in
+      P0|P1|P2|P3) printf '%s\n' "$v"; return 0 ;;
+      NONE) [ "$f" = "$1/qa_threshold" ] || return 0 ;;
+    esac
   done
   return 0
 }
@@ -184,10 +361,13 @@ qa_threshold_for() { # per-task file wins over the plan-level default; prints no
 # and less severe than the threshold is accepted as PASS-with-known-issues. The literal
 # status stays PASS, so the merge path, the scheduler and Fractal need no new vocabulary.
 # Anything unlabelled stays blocking: a finding the gate cannot place is not tolerated.
-qa_gate() { # qa_gate <plan> <id> <tdir> <verdict>
+# The optional 5th argument is the threshold the caller already used for this attempt's review
+# prompt; when given (even empty) it is used as-is, so a change to the files between the prompt
+# and the gate cannot split one attempt across two thresholds. Absent, the files are read.
+qa_gate() { # qa_gate <plan> <id> <tdir> <verdict> [threshold]
   local plan="$1" id="$2" tdir="$3" verdict="$4" thr line
   rm -f "$tdir/qa.gate" "$tdir/known_issues.md"
-  thr="$(qa_threshold_for "$plan" "$id")"
+  if [ "$#" -ge 5 ]; then thr="$5"; else thr="$(qa_threshold_for "$plan" "$id")"; fi
   [ -n "$thr" ] || return 0
   line="$(python3 "$SKILL_DIR/scripts/forge-contract.py" gate --verdict "${verdict:-UNKNOWN}" \
       --qa-last "$tdir/qa.last" --threshold "$thr" --known-issues "$tdir/known_issues.md" 2>/dev/null)" || return 0
@@ -265,10 +445,29 @@ report_size() { # report_size <plan>
 
 # The retry policy's verdicts: a task that stopped with a split suggestion, or whose next
 # retry would go a tier up. Decided after every attempt, so a spent budget still says it.
+# A pending pin is read from the file itself: it can be set between two attempts, and it
+# outranks both verdicts (the retry applies it first). The converse needs care too: a pin
+# withdrawn since the last attempt leaves the `escalation.next` that `--check` wrote for it,
+# so a marker found with no pin pending is decided again rather than trusted.
 report_escalations() { # report_escalations <plan>
-  local plan="$1" id n=0 head
+  local plan="$1" id n=0 head pin
   head="retry policy (after $(cat "$plan/escalate_after" 2>/dev/null || echo 3) failed attempts on one model):"
   for id in $(all_ids "$plan/tasks.tsv"); do
+    pin="$(pin_spec "$plan/tasks/$id/escalation.pin")"
+    [ -n "$pin" ] && forge_plan_is_fractal "$plan" && pin=""
+    if [ -n "$pin" ] && [ "$(task_status "$plan" "$id")" != MERGED ]; then
+      [ "$n" = 0 ] && echo "$head"
+      n=$((n+1))
+      if qa_only_next "$plan" "$id"; then
+        printf '  %-14s its next retry goes to %s (pinned; after the QA-only re-run)\n' "$id" "$pin"
+      else
+        printf '  %-14s its next retry goes to %s (pinned)\n' "$id" "$pin"
+      fi
+      continue
+    fi
+    if [ -s "$plan/tasks/$id/escalation.next" ] && [ "$(task_status "$plan" "$id")" != MERGED ]; then
+      python3 "$SKILL_DIR/scripts/forge-route.py" escalation --plan "$plan" --task "$id" --check >/dev/null 2>&1 || true
+    fi
     if [ -s "$plan/tasks/$id/split.suggested" ]; then
       [ "$n" = 0 ] && echo "$head"
       n=$((n+1)); printf '  %-14s split suggested: %s\n' "$id" "$(cat "$plan/tasks/$id/split.suggested")"

@@ -48,9 +48,16 @@ A decomposed run adds:
   tasks/<id>/known_issues.md, qa.gate  findings tolerated by --qa-threshold, and the gate's decision
   tasks/<id>/guard.txt                 what forge observed about the implementer (self-commit, orphans, promises)
   tasks/<id>/infra.txt, resume, noretry  infrastructure stop record; QA-only resume marker; no-progress marker
-  tasks/<id>/qa_threshold              optional per-task blocking threshold
+  tasks/<id>/qa_threshold              optional per-task blocking threshold: P0-P3, or none (exempt from the plan's)
+  tasks/<id>/escalations.tsv           epoch, attempt, from-spec, to-spec, source (policy|retry|pin); older rows have 4 columns
+  tasks/<id>/escalation.pin            a human's one-shot model for the next full retry: one dwarf spec on one line
+  tasks/<id>/escalation.pin.applying   the pin while a retry has claimed it; removed once the retry is recorded
+  tasks/<id>/retry_budget, retries.used   live per-task retry budget (a number); retries spent (kept after the run)
   results.tsv                          id  status  branch
-  timeout, qa_threshold, verify_retries  options remembered from run/retry flags
+  timeout, qa_threshold, verify_retries  options remembered from run/retry flags (also escalate_after)
+  control.log                          one JSON line per human change made with forge control
+  scheduler.live, control.lock         only while a scheduler runs: {"pid", "started"}; the lock serialises forge control
+  retry_budget, infra_budget           only while a scheduler runs: its live budgets (a number each)
   integration.base                     commit the integration branch started from
   verification.{status,exit,log,command,fingerprint}   the combined verification
   verification.{flaky,retry.log}       only when a failing command passed on rerun
@@ -64,6 +71,14 @@ with worktrees and branches at:
 forge/<run-id>/<task-id>                         task branch
 forge/<run-id>-integration                       integration branch
 ```
+
+`control.log` lines look like
+`{"at": 1761200000.5, "actor": "ui", "action": "set", "task": null, "key": "qa-threshold", "value": "P2", "previous": "P1"}`
+(`actor` is `cli` or `ui`; `action` is `set`, `pin` or `unpin`; `key` is the control's name, or `pin`; `task` is null for a plan-wide
+control). `scheduler.live`, `retry_budget`, `infra_budget` and the per-task `retry_budget` exist
+only while the scheduler is live: it publishes the flags it was given when it starts, re-reads them
+at every decision and removes them when it stops, which is why `forge control` refuses a budget
+change outside a live run. See [live controls](decomposed-runs.md#changing-a-run-while-it-works).
 
 The worktree root is a **sibling of the repo, never `TMPDIR`**. Isolated worktrees are never
 pushed, so a temp root that gets cleaned takes the only copy of that work with it.

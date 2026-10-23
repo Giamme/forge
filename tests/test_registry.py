@@ -3,12 +3,14 @@
 `forge dataset import --registry` reads the registry to find runs to import.
 """
 import dataset_isolation  # noqa: F401  keeps forge's dataset and config out of the developer's home
+import fcntl
 import os
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from unittest.mock import patch
 
@@ -226,6 +228,246 @@ class RegisterCommandTests(unittest.TestCase):
                                         env=self.env, capture_output=True, text=True, timeout=10)
                 self.assertEqual((result.returncode, result.stdout, result.stderr), (0, '', ''))
         self.assertFalse(self.config.exists())
+
+
+class UnregisterTests(unittest.TestCase):
+    """`forge runs rm` takes a run dir back out of the registry, without costing any other entry."""
+
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        self.tmp = Path(self.dir.name).resolve()
+        self.config = self.tmp / 'config'
+        patcher = patch.dict(os.environ, {'XDG_CONFIG_HOME': str(self.config)})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.runs = self.config / 'forge' / 'runs'
+        self.repos = []
+        for name in ('one', 'two'):
+            repo = self.tmp / name
+            repo.mkdir()
+            self.repos.append(repo)
+
+    def entries(self, repo):
+        path = forge_registry.runs_registry(repo)
+        return [x for x in path.read_text().splitlines() if x and not x.startswith('#')] if path.is_file() else []
+
+    def test_a_run_dir_is_removed_from_every_registry_file_that_lists_it_and_nothing_else_changes(self):
+        shared, only_one, other = (self.tmp / n for n in ('shared', 'only-one', 'other'))
+        forge_registry.register_run_dir(self.repos[0], shared)
+        forge_registry.register_run_dir(self.repos[0], only_one)
+        forge_registry.register_run_dir(self.repos[1], shared)
+        forge_registry.register_run_dir(self.repos[1], other)
+        untouched = forge_registry.runs_registry(self.repos[1])
+        mine = forge_registry.runs_registry(self.repos[0])
+        # lines a human or an older forge may have left: padding, a comment, a path that is not UTF-8
+        extra = b'\n# a note\n  ' + str(shared).encode() + b'  \n' + b'/odd/\xff\xfe/dir\n' + str(only_one).encode()
+        mine.write_bytes(mine.read_bytes() + extra)   # no final newline
+        os.chmod(mine, 0o640)
+        untouched_before = (untouched.read_bytes(), untouched.stat().st_ino)
+        changed = forge_registry.unregister_run_dir(only_one)
+        self.assertEqual(changed, [mine])
+        self.assertEqual(mine.read_bytes().count(str(only_one).encode()), 0)
+        self.assertEqual((untouched.read_bytes(), untouched.stat().st_ino), untouched_before, 'a file that does not list it is left alone')
+        self.assertEqual(stat_mode(mine), 0o640)
+        changed = forge_registry.unregister_run_dir(shared)
+        self.assertEqual(sorted(changed), sorted([mine, untouched]))
+        self.assertEqual(self.entries(self.repos[1]), [str(other)])
+        text = mine.read_bytes()
+        self.assertIn(b'# forge run dirs for ' + str(self.repos[0]).encode(), text)
+        self.assertIn(b'# a note\n', text)
+        self.assertIn(b'/odd/\xff\xfe/dir\n', text, 'the bytes of other lines are kept as they were')
+        self.assertNotIn(str(shared).encode(), text)
+
+    def test_a_missing_run_dir_and_a_missing_registry_are_nothing_to_do(self):
+        self.assertEqual(forge_registry.unregister_run_dir(self.tmp / 'gone'), [])
+        self.assertFalse(self.config.exists(), 'unregistering creates nothing')
+        forge_registry.register_run_dir(self.repos[0], self.tmp / 'a')
+        self.assertEqual(forge_registry.unregister_run_dir(self.tmp / 'gone'), [])
+        self.assertEqual(self.entries(self.repos[0]), [str(self.tmp / 'a')])
+
+    def test_a_path_is_matched_as_written_and_as_resolved(self):
+        real = self.tmp / 'real'
+        real.mkdir()
+        link = self.tmp / 'via-link'
+        os.symlink(real, link)
+        forge_registry.register_run_dir(self.repos[0], link)   # recorded resolved
+        self.assertEqual(self.entries(self.repos[0]), [str(real)])
+        self.assertEqual(len(forge_registry.unregister_run_dir(link)), 1)
+        self.assertEqual(self.entries(self.repos[0]), [])
+
+    def test_the_lock_is_a_sibling_file_that_is_never_replaced(self):
+        # Locking the registry file itself would lock nothing once unregister renames a new one
+        # over it; the lock lives in a file of its own.
+        forge_registry.register_run_dir(self.repos[0], self.tmp / 'a')
+        forge_registry.register_run_dir(self.repos[0], self.tmp / 'b')
+        lock, registry = self.runs / '.lock', forge_registry.runs_registry(self.repos[0])
+        before = (lock.stat().st_ino, registry.stat().st_ino)
+        forge_registry.unregister_run_dir(self.tmp / 'a')
+        self.assertEqual(lock.stat().st_ino, before[0])
+        self.assertNotEqual(registry.stat().st_ino, before[1], 'the registry file itself was replaced atomically')
+        self.assertEqual([p.name for p in self.runs.iterdir() if p.name.endswith('.tmp')], [], 'no temporary file is left')
+        self.assertNotIn('.lock', [p.name for p in self.runs.glob('*.txt')])
+
+    def hold(self, seconds=None):
+        """Hold the registry lock from this process; for `seconds`, or until the returned callable is called."""
+        self.runs.mkdir(parents=True, exist_ok=True)
+        handle = open(self.runs / '.lock', 'a')
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        release = lambda: (fcntl.flock(handle, fcntl.LOCK_UN), handle.close())  # noqa: E731
+        if seconds is None:
+            return release
+        threading.Timer(seconds, release).start()
+        return release
+
+    def test_register_gives_up_waiting_after_half_a_second_and_still_records_the_run(self):
+        release = self.hold()
+        started = time.monotonic()
+        forge_registry.register_run_dir(self.repos[0], self.tmp / 'a')
+        waited = time.monotonic() - started
+        release()
+        self.assertTrue(0.4 <= waited < 3, waited)
+        self.assertEqual(self.entries(self.repos[0]), [str(self.tmp / 'a')], 'a duplicate is acceptable, a lost run is not')
+
+    def test_register_waits_out_a_lock_that_is_held_briefly(self):
+        self.hold(0.15)
+        started = time.monotonic()
+        forge_registry.register_run_dir(self.repos[0], self.tmp / 'a')
+        self.assertGreaterEqual(time.monotonic() - started, 0.1)
+        self.assertEqual(self.entries(self.repos[0]), [str(self.tmp / 'a')])
+
+    def test_register_never_blocks_or_raises_when_the_lock_file_is_unusable(self):
+        self.runs.mkdir(parents=True)
+        os.mkfifo(self.runs / '.lock')   # opening it for reading with no writer would block
+        failure = []
+
+        def call():
+            try:
+                forge_registry.register_run_dir(self.repos[0], self.tmp / 'a')
+            except BaseException as exc:  # noqa: BLE001
+                failure.append(exc)
+
+        worker = threading.Thread(target=call, daemon=True)
+        worker.start()
+        worker.join(5)
+        self.assertFalse(worker.is_alive(), 'register_run_dir blocked')
+        self.assertEqual(failure, [])
+        self.assertEqual(self.entries(self.repos[0]), [str(self.tmp / 'a')])
+
+    def test_unregister_reports_a_lock_that_stays_busy_and_changes_nothing(self):
+        forge_registry.register_run_dir(self.repos[0], self.tmp / 'a')
+        registry = forge_registry.runs_registry(self.repos[0])
+        before = registry.read_bytes()
+        release = self.hold()
+        self.addCleanup(release)
+        with patch.object(forge_registry, 'UNREGISTER_LOCK_WAIT_S', 0.2):
+            with self.assertRaises(BlockingIOError):
+                forge_registry.unregister_run_dir(self.tmp / 'a')
+        self.assertEqual(registry.read_bytes(), before)
+
+    def test_unregister_reports_a_registry_it_cannot_rewrite(self):
+        forge_registry.register_run_dir(self.repos[0], self.tmp / 'a')
+        if os.geteuid() == 0:
+            self.skipTest('permissions do not stop root')
+        os.chmod(self.runs, 0o500)
+        self.addCleanup(os.chmod, self.runs, 0o700)
+        with self.assertRaises(OSError):
+            forge_registry.unregister_run_dir(self.tmp / 'a')
+        self.assertEqual(self.entries(self.repos[0]), [str(self.tmp / 'a')])
+
+    def test_a_registry_file_that_is_not_a_regular_file_is_skipped_without_blocking(self):
+        forge_registry.register_run_dir(self.repos[0], self.tmp / 'a')
+        os.mkfifo(self.runs / 'fifo.txt')
+        os.symlink(forge_registry.runs_registry(self.repos[0]), self.runs / 'link.txt')
+        result = []
+        worker = threading.Thread(target=lambda: result.append(forge_registry.unregister_run_dir(self.tmp / 'a')), daemon=True)
+        worker.start()
+        worker.join(5)
+        self.assertFalse(worker.is_alive(), 'unregister_run_dir blocked')
+        self.assertEqual(result, [[forge_registry.runs_registry(self.repos[0])]])
+
+    def test_an_unlocked_append_to_the_file_an_unregister_has_read_survives_its_replace(self):
+        # Unregister read A and C, then stalled before its replace past register's wait: B,
+        # appended without the lock, went to the file that is about to be replaced.
+        repo = self.repos[0]
+        a, b, c = (self.tmp / n for n in 'abc')
+        forge_registry.register_run_dir(repo, a)
+        forge_registry.register_run_dir(repo, c)
+        replace = os.replace
+
+        def stalled_replace(src, dst):
+            started = time.monotonic()
+            forge_registry.register_run_dir(repo, b)   # the lock is unregister's: B is appended unlocked
+            self.assertGreaterEqual(time.monotonic() - started, 0.4)
+            replace(src, dst)
+
+        with patch.object(forge_registry.os, 'replace', side_effect=stalled_replace):
+            forge_registry.unregister_run_dir(a)
+        self.assertEqual(self.entries(repo), [str(c), str(b)])
+
+    def test_an_unlocked_append_that_lands_after_the_replace_is_made_again(self):
+        # Register opened the registry unlocked, then an unregister replaced it and checked the
+        # old file before register wrote: the line went to a file nobody reads any more.
+        repo = self.repos[0]
+        a, b, c = (self.tmp / n for n in 'abc')
+        forge_registry.register_run_dir(repo, a)
+        forge_registry.register_run_dir(repo, c)
+        registry = forge_registry.runs_registry(repo)
+        release = self.hold()
+        real_open, opened = os.open, []
+
+        def open_then_unregister(path, flags, *args, **kwargs):
+            fd = real_open(path, flags, *args, **kwargs)
+            if flags & os.O_APPEND and Path(path) == registry and not opened:
+                opened.append(fd)
+                release()
+                forge_registry.unregister_run_dir(a)
+            return fd
+
+        with patch.object(forge_registry.os, 'open', side_effect=open_then_unregister):
+            forge_registry.register_run_dir(repo, b)
+        self.assertEqual(len(opened), 1)
+        self.assertEqual(self.entries(repo), [str(c), str(b)])
+
+    def test_concurrent_register_and_unregister_in_separate_processes_lose_no_other_entries(self):
+        worker = (
+            'import sys\n'
+            'from pathlib import Path\n'
+            'sys.path.insert(0, %r)\n'
+            'import forge_registry\n'
+            'mode, repo, start, count, prefix = sys.argv[1:6]\n'
+            'for i in range(int(start), int(start) + int(count)):\n'
+            '    if mode == "register":\n'
+            '        forge_registry.register_run_dir(Path(repo), Path(prefix + str(i)))\n'
+            '    else:\n'
+            '        forge_registry.unregister_run_dir(prefix + str(i))\n'
+        ) % str(ROOT / 'scripts')
+        repo = self.repos[0]
+        victims, keepers, registrars, each = 90, 30, 4, 60
+        for i in range(victims):
+            forge_registry.register_run_dir(repo, self.tmp / ('victim-%d' % i))
+        for i in range(keepers):
+            forge_registry.register_run_dir(repo, self.tmp / ('keeper-%d' % i))
+        env = dict(os.environ, XDG_CONFIG_HOME=str(self.config))
+        jobs = []
+        for n in range(registrars):
+            jobs.append(['register', str(repo), str(n * each), str(each), str(self.tmp / ('new-%d-' % n))])
+        for half in range(3):
+            jobs.append(['unregister', str(repo), str(half * victims // 3), str(victims // 3), str(self.tmp / 'victim-')])
+        children = [subprocess.Popen([sys.executable, '-I', '-c', worker, *job], env=env, stderr=subprocess.PIPE) for job in jobs]
+        for child in children:
+            _, err = child.communicate(timeout=120)
+            self.assertEqual(child.returncode, 0, err)
+        found = self.entries(repo)
+        expected = {str(self.tmp / ('keeper-%d' % i)) for i in range(keepers)}
+        expected |= {str(self.tmp / ('new-%d-%d' % (n, i))) for n in range(registrars) for i in range(n * each, n * each + each)}
+        self.assertEqual(sorted(expected - set(found)), [], 'entries were lost')
+        self.assertEqual([x for x in found if '/victim-' in x], [], 'a victim survived')
+        self.assertEqual(len(found), len(set(found)), 'no duplicates when every register got the lock')
+
+
+def stat_mode(path):
+    return os.stat(path).st_mode & 0o777
 
 
 if __name__ == '__main__':

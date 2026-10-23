@@ -126,6 +126,17 @@ class _Snapshot:
         return text
 
 
+def _spellings(path):
+    """`path` and the other ways the same place is spelled: its real path and, when it is already real, the
+    symlinked form macOS conventionally reaches it by (/private/var is /var, /private/tmp is /tmp)."""
+    real = os.path.realpath(path)
+    found = [path]
+    for spelling in (real, real[len('/private'):] if real.startswith('/private/') else None):
+        if spelling and spelling != '/' and spelling not in found and os.path.realpath(spelling) == real:
+            found.append(spelling)
+    return found
+
+
 def build(catalog, key, texts=False, paths=False, now=None):
     """(file name, HTML bytes) of run `key`, or None when there is no such run."""
     base = f'/api/runs/{key}'
@@ -134,12 +145,15 @@ def build(catalog, key, texts=False, paths=False, now=None):
         return None
     snap = _Snapshot(catalog, key, texts, paths)
     home = os.path.expanduser('~')
+    found = {}
     for root in (run.get('path'), run.get('repo')):
         if isinstance(root, str) and root.startswith('/') and len(root) > 1:
-            snap.roots.append((root.rstrip('/'), os.path.basename(root.rstrip('/')) or root))
+            for spelling in _spellings(root.rstrip('/')):
+                found.setdefault(spelling, os.path.basename(root.rstrip('/')) or root)
     if home and home != '/':
-        snap.roots.append((home, '~'))
-    snap.roots.sort(key=lambda r: -len(r[0]))
+        for spelling in _spellings(home):
+            found.setdefault(spelling, '~')
+    snap.roots = sorted(found.items(), key=lambda r: -len(r[0]))
     summary = next((r for r in catalog.runs() if r.get('key') == key), None)
     snap.api['/api/runs'] = {'runs': [snap.clean(summary)] if summary else []}
     detail = snap.add(base, required=True)

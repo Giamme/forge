@@ -4,9 +4,29 @@
      overwritten. Facts only, one per line. -->
 
 ## Verify
+- `bash tests/check.sh` takes over 10 minutes; run it detached with a long timeout, since a 120s foreground call moves it to the background where it can be killed [tests/check.sh]
 - tests import `dataset_isolation` by bare name, so run a single module from inside tests/: `cd tests && python3 -m unittest test_ui` [tests/dataset_isolation.py]
 - the full `python3 -m unittest discover -s tests` takes over 10 minutes; run only the modules you touched [tests/check.sh]
 
 ## Known traps
+- end-to-end tests put only a fixed list of tools on PATH (no `ln`), so a library call to a tool outside that list fails silently in tests [tests/test_forge.py]
+- harvest.legacy_uid_for's `review-` skip tests the attempts dir's parent name ('attempts'), so attempts under review-* snapshots still count… [scripts/forge_dataset/harvest.py]
+- a test class in ui/tests/test_browser.py that calls `_serve(self, …)` must set `.temp` first, or its skip paths raise AttributeError instead of SkipTest [ui/tests/test_browser.py]
+- on macOS, concurrent `os.open(name, O_CREAT, dir_fd=...)` from two processes fails with ENOENT about 13% of the time; open lock files by full path [scripts/forge-issues.py]
+- put_file() returns None on any OSError, including a failed blob write, so an event can be stored with its content silently dropped [scripts/forge_dataset/__init__.py]
+- forge-issues input forms (plan dir, review dir, qa.last, known_issues.md) each take their own code path, so a fix to one form's plan/task attribution has… [scripts/forge-issues.py]
+- strict import must pre-check every file opens; harvest readers (read_json, text, first_line) turn an unreadable file into absent [scripts/forge_dataset/importer.py]
+- `<plan>/final-review` can point at a review dir with `qa.input` but no `qa.last` (infra stop or dispatch start failure), so code choosing the latest… [scripts/forge-lib-review.sh]
+- ui/forge_ui/export.py inlines a fixed SCRIPTS tuple, so a new static script is absent from exported pages unless that tuple is changed [ui/forge_ui/export.py]
+- ui/tests/test_static_js.py rejects the word "style" followed by a colon anywhere in a static JS file, comments included [ui/tests/test_static_js.py]
+- harvest.read_json() returns None on any OSError, so an unreadable metrics.json makes a finished attempt count as skipped_unfinished [scripts/forge_dataset/importer.py]
+- harvest.text() returns None on any OSError, so an unreadable run file reads as absent unless the caller checks [scripts/forge_dataset/harvest.py]
+- os.walk without onerror silently skips unreadable subdirectories, so walk-based archivers drop content without listing it [scripts/forge_dataset/importer.py]
+- ui tests import `run_fixture` by bare name, so run a single ui module from inside ui/tests: `cd ui/tests && PYTHONPATH=.. python3 -m unittest… [ui/tests/test_executions.py]
+- tests/test_dataset.py keeps a fixed list of scripts allowed to call the dataset; a new script that calls forge-dataset.py fails it until the script is added [tests/test_dataset.py]
+- `tests/test_dataset.py` runs ~4 minutes alone and runs real forge scripts as subprocesses, so don't edit `scripts/` while it runs [tests/test_dataset.py]
+- `integrate --final-review` publishes `<plan>/final-review` as a link into `integrate-*/final-review`, so code that takes the plan to be the resolved… [scripts/forge-lib-review.sh]
+- ui/forge_ui/reader.py always reports realpath for run dirs, so symlinked roots reach the export only via $HOME or repo [ui/forge_ui/reader.py]
+- `forge-dispatch.sh doctor --spec alias:effort:harness` passes offline even for an unknown model when the harness is named; only a bare unknown alias… [scripts/forge-dispatch.sh]
 - macOS Bash 3.2 -nt compares mtimes in whole seconds, so same-second writes compare equal [scripts/forge-solo.sh]
 

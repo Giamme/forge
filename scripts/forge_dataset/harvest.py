@@ -345,6 +345,28 @@ def run_uid(run_dir: Path, create: bool) -> str:
     return legacy_uid(Path(run_dir))
 
 
+# --- interventions: a human's (or the policy's) change of course ------------------------
+# Escalations and control changes are point events, recorded at the moment they happen, but
+# the run dir also keeps them (tasks/<id>/escalations.tsv, control.log). Their rid hangs on
+# what they say rather than on when they were captured, so live capture and an import of the
+# run dir agree on it and a missed live event is filled in later without a duplicate.
+
+INTERVENTIONS = {
+    'escalation': ('after_attempt', 'from', 'to', 'source'),
+    'control': ('at', 'actor', 'action', 'key', 'value', 'previous'),
+}
+
+
+def intervention_data(name: str, values: dict) -> dict:
+    """The fields that identify an intervention, as the strings `--set k=v` delivers."""
+    return {field: '' if values.get(field) is None else str(values[field]) for field in INTERVENTIONS[name]}
+
+
+def intervention_rid(name: str, uid: str | None, task: str | None, values: dict) -> str:
+    canonical = json.dumps([uid, task, intervention_data(name, values)], sort_keys=True)
+    return 'event:%s:%s' % (name, sha256(canonical.encode())[:24])
+
+
 # --- dispatch: one model call ----------------------------------------------------------
 
 def dispatch_event(attempt: Path, root: Path, role: str, harness: str, rc, prov: dict, src: str = 'live') -> dict:

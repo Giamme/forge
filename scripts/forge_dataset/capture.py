@@ -155,8 +155,11 @@ def point(name: str, directory: str | None, task: str | None = None, values: dic
                 refs[label] = put_blob(value, 'log')
         task = task or ctx.get('task')
         data['blobs'] = refs
-        rid = 'event:%s:%s' % (name, h.sha256(json.dumps([uid, task, time.time_ns(), data], sort_keys=True,
-                                                         default=str).encode())[:24])
+        if name in h.INTERVENTIONS:
+            rid = h.intervention_rid(name, uid, task, values or {})
+        else:
+            rid = 'event:%s:%s' % (name, h.sha256(json.dumps([uid, task, time.time_ns(), data], sort_keys=True,
+                                                             default=str).encode())[:24])
         record([dict(rid=rid, kind=kind, ts=time.time(), run=uid, run_id=ctx.get('run_id'),
                      mode=ctx.get('mode'), task=task, parent=env['parent'], inv=env['inv'], data=data)],
                repo=repo or ctx.get('repo'), where='event:' + name)

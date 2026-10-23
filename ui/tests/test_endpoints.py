@@ -150,7 +150,9 @@ class EndpointTests(unittest.TestCase):
     def test_page_csp_hashes_the_import_map(self):
         for path in ('/', '/index.html'):
             status, headers, body = self.request(path)
-            self.assertEqual((status, body.decode('utf-8')), (200, PAGE), path)
+            # the page as served has the write token added; the CSP hash is still that of the import map alone
+            paged = PAGE.replace('<!doctype html>', f'<!doctype html><meta name="forge-ui-token" content="{self.server.token}">', 1)
+            self.assertEqual((status, body.decode('utf-8')), (200, paged), path)
             self.assertEqual(self.header(headers, 'Content-Security-Policy'), page_csp([IMPORTMAP_HASH]), path)
             self.assertEqual(self.header(headers, 'Referrer-Policy'), 'no-referrer')
             status, headers, body = self.request(path, 'HEAD')

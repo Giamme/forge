@@ -36,3 +36,112 @@
 2026-10-19T21:36:59Z	ui-integration-plan	docs	qa	sol	FAIL	-	-	-	130
 2026-10-19T21:37:42Z	ui-integration-plan	docs	dwarf	sonnet:high	-	-	-	-	40
 2026-10-19T21:38:50Z	ui-integration-plan	docs	qa	sol	PASS	-	-	-	65
+2026-10-22T08:54:09Z	ui-controls	qa-gate-once	dwarf	sonnet:high	-	-	-	-	394
+2026-10-22T08:57:29Z	ui-controls	qa-gate-once	qa	opus:high	PASS	-	-	-	196
+2026-10-22T08:58:31Z	ui-controls	control-cli	dwarf	sonnet:xhigh	-	trap	forge dispatch sh doctor spec alias effort harness passes offline even for an unknown model when the harness is named only a bare unknown alias	`forge-dispatch.sh doctor --spec alias:effort:harness` passes offline even for an unknown model when the harness is named; only a bare unknown alias… [scripts/forge-dispatch.sh]	656	1
+2026-10-22T08:59:13Z	ui-controls	issues-list	dwarf	sonnet:medium	-	-	-	-	697
+2026-10-22T09:00:32Z	ui-controls	issues-list	qa	opus:high	FAIL	finding	whole run review dirs can contain known issues md threshold gate so code that tells review dirs from task dirs by whether known issues md exists	whole-run review dirs can contain known_issues.md (threshold gate), so code that tells review dirs from task dirs by whether known_issues.md exists… [scripts/forge-lib-review.sh]	77	1
+2026-10-22T09:01:24Z	ui-controls	export-paths	dwarf	sonnet:high	-	trap	ui forge ui reader py always reports realpath for run dirs so symlinked roots reach the export only via home or repo	ui/forge_ui/reader.py always reports realpath for run dirs, so symlinked roots reach the export only via $HOME or repo [ui/forge_ui/reader.py]	829	1
+2026-10-22T09:01:24Z	ui-controls	issues-list	dwarf	sonnet:medium	-	-	-	-	48
+2026-10-22T09:02:09Z	ui-controls	control-cli	qa	opus:high	PASS	-	-	-	214
+2026-10-22T09:02:53Z	ui-controls	export-paths	qa	opus:high	PASS	-	-	-	85
+2026-10-22T09:03:19Z	ui-controls	issues-list	qa	opus:high	FAIL	finding	integrate final review publishes plan final review as a link into integrate final review so code that takes the plan to be the resolved	`integrate --final-review` publishes `<plan>/final-review` as a link into `integrate-*/final-review`, so code that takes the plan to be the resolved… [scripts/forge-lib-review.sh]	111	1
+2026-10-22T09:04:02Z	ui-controls	issues-list	dwarf	sonnet:medium	-	trap	integrate final review publishes plan final review as a link into integrate final review so code that takes the plan to be the resolved	`integrate --final-review` publishes `<plan>/final-review` as a link into `integrate-*/final-review`, so code that takes the plan to be the resolved… [scripts/forge-lib-review.sh]	39	1
+2026-10-22T09:05:36Z	ui-controls	issues-list	qa	opus:high	FAIL	trap	plan final review can point at a review dir with qa input but no qa last infra stop or dispatch start failure so code choosing the latest	`<plan>/final-review` can point at a review dir with `qa.input` but no `qa.last` (infra stop or dispatch start failure), so code choosing the latest… [scripts/forge-lib-review.sh]	90	1
+2026-10-22T09:05:58Z	ui-controls	config-cli	dwarf	sonnet:medium	-	-	-	-	226
+2026-10-22T09:07:55Z	ui-controls	config-cli	qa	opus:high	FAIL	-	-	-	113
+2026-10-22T09:12:55Z	ui-controls	config-cli	dwarf	sonnet:medium	-	-	-	-	287
+2026-10-22T09:14:29Z	ui-controls	config-cli	qa	opus:high	PASS	-	-	-	89
+2026-10-22T09:16:13Z	ui-controls	escalation-pin	dwarf	sonnet:xhigh	-	-	-	-	1122
+2026-10-22T09:18:50Z	ui-controls	escalation-pin	qa	opus:high	FAIL	-	-	-	154
+2026-10-22T09:19:26Z	ui-controls	live-retries	dwarf	sonnet:xhigh	-	-	-	-	1911
+2026-10-22T09:22:27Z	ui-controls	live-retries	qa	opus:high	PASS	-	-	-	178
+2026-10-22T09:31:27Z	ui-controls	escalation-pin	dwarf	sonnet:xhigh	-	-	-	-	744
+2026-10-22T09:39:54Z	ui-controls	escalation-pin	qa	opus:high	PASS	-	-	-	502
+2026-10-22T09:48:39Z	ui-controls	dataset-preserve	dwarf	sonnet:high	-	trap	tests test dataset py runs 4 minutes alone and runs real forge scripts as subprocesses so don t edit scripts while it runs	`tests/test_dataset.py` runs ~4 minutes alone and runs real forge scripts as subprocesses, so don't edit `scripts/` while it runs [tests/test_dataset.py]	522	1
+2026-10-22T09:54:07Z	ui-controls	dataset-preserve	qa	opus:high	FAIL	trap	os walk without onerror silently skips unreadable subdirectories so walk based archivers drop content without listing it	os.walk without onerror silently skips unreadable subdirectories, so walk-based archivers drop content without listing it [scripts/forge_dataset/importer.py]	315	1
+2026-10-22T09:54:07Z	ui-controls	dataset-preserve	qa	opus:high	FAIL	trap	tests test dataset py keeps a fixed list of scripts allowed to call the dataset a new script that calls forge dataset py fails it until the script is added	tests/test_dataset.py keeps a fixed list of scripts allowed to call the dataset; a new script that calls forge-dataset.py fails it until the script is added [tests/test_dataset.py]	315	1
+2026-10-22T09:58:35Z	ui-controls	dataset-preserve	dwarf	sonnet:high	-	trap	os walk without onerror silently skips unreadable subdirectories so walk based archivers drop content without listing it	os.walk without onerror silently skips unreadable subdirectories, so walk-based archivers drop content without listing it [scripts/forge_dataset/importer.py]	209	1
+2026-10-22T09:58:35Z	ui-controls	dataset-preserve	dwarf	sonnet:high	-	trap	tests test dataset py keeps a fixed list of scripts allowed to call the dataset a new script that calls forge dataset py fails it until the script is added	tests/test_dataset.py keeps a fixed list of scripts allowed to call the dataset; a new script that calls forge-dataset.py fails it until the script is added [tests/test_dataset.py]	209	1
+2026-10-22T09:59:47Z	ui-controls	ui-auth	dwarf	sonnet:high	-	-	-	-	1191
+2026-10-22T10:04:12Z	ui-controls	dataset-preserve	qa	opus:high	FAIL	trap	harvest text returns none on any oserror so an unreadable run file reads as absent unless the caller checks	harvest.text() returns None on any OSError, so an unreadable run file reads as absent unless the caller checks [scripts/forge_dataset/harvest.py]	311	1
+2026-10-22T10:04:50Z	ui-controls	ui-auth	qa	opus:high	PASS	trap	ui tests import run fixture by bare name so run a single ui module from inside ui tests cd ui tests pythonpath python3 m unittest	ui tests import `run_fixture` by bare name, so run a single ui module from inside ui/tests: `cd ui/tests && PYTHONPATH=.. python3 -m unittest… [ui/tests/test_executions.py]	299	1
+2026-10-22T10:19:06Z	ui-controls	dataset-preserve	dwarf	sonnet:high	-	trap	harvest text returns none on any oserror so an unreadable run file reads as absent unless the caller checks	harvest.text() returns None on any OSError, so an unreadable run file reads as absent unless the caller checks [scripts/forge_dataset/harvest.py]	844	1
+2026-10-22T10:19:06Z	ui-controls	dataset-preserve	dwarf	sonnet:high	-	trap	os walk without onerror silently skips unreadable subdirectories so walk based archivers drop content without listing it	os.walk without onerror silently skips unreadable subdirectories, so walk-based archivers drop content without listing it [scripts/forge_dataset/importer.py]	844	1
+2026-10-22T10:20:28Z	ui-controls	dataset-preserve	qa	opus:high	FAIL	trap	harvest read json returns none on any oserror so an unreadable metrics json makes a finished attempt count as skipped unfinished	harvest.read_json() returns None on any OSError, so an unreadable metrics.json makes a finished attempt count as skipped_unfinished [scripts/forge_dataset/importer.py]	45	1
+2026-10-22T10:41:47Z	ui-controls	ui-controls	dwarf	sonnet:xhigh	-	trap	ui tests test static js py rejects the word style followed by a colon anywhere in a static js file comments included	ui/tests/test_static_js.py rejects the word "style" followed by a colon anywhere in a static JS file, comments included [ui/tests/test_static_js.py]	2191	1
+2026-10-22T10:45:51Z	ui-controls	ui-controls	qa	opus:high	FAIL	trap	ui forge ui export py inlines a fixed scripts tuple so a new static script is absent from exported pages unless that tuple is changed	ui/forge_ui/export.py inlines a fixed SCRIPTS tuple, so a new static script is absent from exported pages unless that tuple is changed [ui/forge_ui/export.py]	220	1
+2026-10-22T10:49:39Z	ui-controls	ui-controls	dwarf	sonnet:xhigh	-	-	-	-	179
+2026-10-22T10:51:50Z	ui-controls	ui-controls	qa	opus:high	FAIL	-	-	-	117
+2026-10-22T11:05:55Z	ui-controls	ui-controls	dwarf	sonnet:xhigh	-	-	-	-	807
+2026-10-22T11:10:26Z	ui-controls	ui-controls	qa	opus:high	FAIL	finding	a test class in ui tests test browser py that calls serve self must set temp first or its skip paths raise attributeerror instead of skiptest	a test class in ui/tests/test_browser.py that calls `_serve(self, …)` must set `.temp` first, or its skip paths raise AttributeError instead of SkipTest [ui/tests/test_browser.py]	256	1
+2026-10-22T11:56:14Z	ui-controls	issues-list	dwarf	sonnet:medium	-	trap	plan final review can point at a review dir with qa input but no qa last infra stop or dispatch start failure so code choosing the latest	`<plan>/final-review` can point at a review dir with `qa.input` but no `qa.last` (infra stop or dispatch start failure), so code choosing the latest… [scripts/forge-lib-review.sh]	44	1
+2026-10-22T11:56:21Z	ui-controls	dataset-preserve	dwarf	sonnet:high	-	trap	strict import must pre check every file opens harvest readers read json text first line turn an unreadable file into absent	strict import must pre-check every file opens; harvest readers (read_json, text, first_line) turn an unreadable file into absent [scripts/forge_dataset/importer.py]	52	1
+2026-10-22T11:57:25Z	ui-controls	issues-list	qa	opus:high	FAIL	-	-	-	66
+2026-10-22T11:58:23Z	ui-controls	issues-list	dwarf	sonnet:medium	-	-	-	-	55
+2026-10-22T12:00:01Z	ui-controls	issues-list	qa	opus:high	FAIL	finding	forge issues input forms plan dir review dir qa last known issues md each take their own code path so a fix to one form s plan task attribution has	forge-issues input forms (plan dir, review dir, qa.last, known_issues.md) each take their own code path, so a fix to one form's plan/task attribution has… [scripts/forge-issues.py]	95	1
+2026-10-22T12:00:48Z	ui-controls	issues-list	dwarf	sonnet:medium	-	trap	forge issues input forms plan dir review dir qa last known issues md each take their own code path so a fix to one form s plan task attribution has	forge-issues input forms (plan dir, review dir, qa.last, known_issues.md) each take their own code path, so a fix to one form's plan/task attribution has… [scripts/forge-issues.py]	42	1
+2026-10-22T12:01:02Z	ui-controls	dataset-preserve	qa	opus:high	FAIL	-	-	-	276
+2026-10-22T12:02:23Z	ui-controls	issues-list	qa	opus:high	PASS	-	-	-	91
+2026-10-22T12:14:54Z	ui-controls	dataset-preserve	dwarf	sonnet:high	-	trap	put file returns none on any oserror including a failed blob write so an event can be stored with its content silently dropped	put_file() returns None on any OSError, including a failed blob write, so an event can be stored with its content silently dropped [scripts/forge_dataset/__init__.py]	209	1
+2026-10-22T12:20:19Z	ui-controls	dataset-preserve	qa	opus:high	FAIL	finding	tarfile add stores a second hard linked path as lnktype and the dataset importer s extract drops link members so archivers built on it must	tarfile.add stores a second hard-linked path as LNKTYPE, and the dataset importer's _extract drops link members, so archivers built on it must… [scripts/forge_dataset/importer.py]	321	1
+2026-10-22T12:22:15Z	ui-controls	issues-state	dwarf	sonnet:xhigh	-	trap	on macos concurrent os open name o creat dir fd from two processes fails with enoent about 13 of the time open lock files by full path	on macOS, concurrent `os.open(name, O_CREAT, dir_fd=...)` from two processes fails with ENOENT about 13% of the time; open lock files by full path [scripts/forge-issues.py]	650	1
+2026-10-22T12:24:08Z	ui-controls	issues-state	qa	opus:high	PASS	-	-	-	109
+2026-10-22T12:24:11Z	ui-controls	dataset-preserve	dwarf	sonnet:high	-	finding	tarfile add stores a second hard linked path as lnktype and the dataset importer s extract drops link members so archivers built on it must	tarfile.add stores a second hard-linked path as LNKTYPE, and the dataset importer's _extract drops link members, so archivers built on it must… [scripts/forge_dataset/importer.py]	227	1
+2026-10-22T12:24:31Z	ui-controls	ui-controls	dwarf	sonnet:xhigh	-	trap	a test class in ui tests test browser py that calls serve self must set temp first or its skip paths raise attributeerror instead of skiptest	a test class in ui/tests/test_browser.py that calls `_serve(self, …)` must set `.temp` first, or its skip paths raise AttributeError instead of SkipTest [ui/tests/test_browser.py]	787	1
+2026-10-22T12:31:21Z	ui-controls	ui-controls	qa	opus:high	PASS	-	-	-	405
+2026-10-22T12:31:40Z	ui-controls	dataset-preserve	qa	opus:high	FAIL	finding	changing a dataset event s rid scheme leaves rows captured under the old rid in existing stores so an importer replaying the same fact under	changing a dataset event's rid scheme leaves rows captured under the old rid in existing stores, so an importer replaying the same fact under… [scripts/forge_dataset/importer.py]	445	1
+2026-10-22T12:33:06Z	ui-controls	dataset-preserve	dwarf	sonnet:high	-	finding	a dataset event s rid scheme change leaves rows under the old rid in existing stores so an importer replaying the same fact under the new rid	a dataset event's rid scheme change leaves rows under the old rid in existing stores, so an importer replaying the same fact under the new rid… [scripts/forge_dataset/importer.py]	80	1
+2026-10-22T12:34:13Z	ui-controls	dataset-preserve	qa	opus:high	FAIL	finding	an importer helper that reads the dataset store through connect creates the store so it bypasses import dry run store dry and	an importer helper that reads the dataset store through connect() creates the store, so it bypasses import --dry-run (store.DRY) and… [scripts/forge_dataset/importer.py]	63	1
+2026-10-22T13:38:42Z	ui-controls	dataset-preserve	dwarf	opus:high	-	verify	tests test dataset py must be run from tests cd tests python3 m unittest test dataset preserve python3 m unittest	tests/test_dataset.py must be run from tests/ (`cd tests && python3 -m unittest test_dataset_preserve`); `python3 -m unittest… [tests/test_dataset_preserve.py]	450	1
+2026-10-22T13:45:19Z	ui-controls	dataset-preserve	qa	opus:high	PASS	-	-	-	393
+2026-10-22T15:33:13Z	ui-controls	runs-rm	dwarf	sonnet:xhigh	-	-	-	-	2947
+2026-10-22T15:37:02Z	ui-controls	runs-rm	qa	opus:high	PASS	-	-	-	225
+2026-10-22T17:36:20Z	ui-controls	ui-endpoints	dwarf	sonnet:medium	-	-	-	-	1467
+2026-10-22T17:39:04Z	ui-controls	ui-endpoints	qa	opus:high	FAIL	-	-	-	150
+2026-10-22T17:40:23Z	ui-controls	ui-endpoints	dwarf	sonnet:medium	-	-	-	-	40
+2026-10-22T17:43:34Z	ui-controls	ui-endpoints	qa	opus:high	FAIL	-	-	-	177
+2026-10-22T18:05:57Z	ui-controls	ui-endpoints	dwarf	sonnet:medium	-	-	-	-	1305
+2026-10-22T18:09:17Z	ui-controls	ui-endpoints	qa	opus:high	FAIL	-	-	-	186
+2026-10-22T18:31:14Z	ui-controls	ui-endpoints	dwarf	sonnet:medium	-	-	-	-	1279
+2026-10-22T18:33:39Z	ui-controls	ui-endpoints	qa	opus:high	FAIL	-	-	-	130
+2026-10-22T18:34:41Z	ui-controls	ui-endpoints	dwarf	sonnet:medium	-	-	-	-	23
+2026-10-22T18:37:31Z	ui-controls	ui-endpoints	qa	opus:high	FAIL	-	-	-	157
+2026-10-22T18:48:37Z	ui-controls	ui-endpoints	dwarf	sonnet:medium	-	-	-	-	627
+2026-10-22T18:51:14Z	ui-controls	ui-endpoints	qa	opus:high	FAIL	-	-	-	142
+2026-10-22T19:04:35Z	ui-controls	ui-endpoints	dwarf	sonnet:medium	-	-	-	-	763
+2026-10-22T19:08:04Z	ui-controls	ui-endpoints	qa	opus:high	FAIL	-	-	-	194
+2026-10-22T20:12:40Z	ui-controls	ui-findings	dwarf	sonnet:medium	-	verify	bash tests check sh takes over 10 minutes run it detached with a long timeout since a 120s foreground call moves it to the background where it can be killed	`bash tests/check.sh` takes over 10 minutes; run it detached with a long timeout, since a 120s foreground call moves it to the background where it can be killed [tests/check.sh]	935	1
+2026-10-22T20:15:43Z	ui-controls	ui-findings	qa	opus:high	FAIL	-	-	-	179
+2026-10-22T20:16:23Z	ui-controls	ui-findings	dwarf	sonnet:medium	-	-	-	-	34
+2026-10-22T20:19:26Z	ui-controls	ui-findings	qa	opus:high	PASS	-	-	-	177
+2026-10-22T20:23:30Z	ui-controls	ui-delete	dwarf	sonnet:high	-	-	-	-	241
+2026-10-22T20:26:09Z	ui-controls	ui-delete	qa	opus:high	FAIL	finding	forge runs rm json prints nothing to stderr so control py s error detail is always the forge cli exited n the real reason is only in	`forge runs rm --json` prints nothing to stderr, so control.py's error `detail` is always "the forge CLI exited N"; the real reason is only in… [scripts/forge-runs-rm.py]	155	1
+2026-10-22T20:27:21Z	ui-controls	ui-delete	dwarf	sonnet:high	-	trap	forge runs rm json prints nothing to stderr so control py s error detail is always the forge cli exited n the real reason is only in	`forge runs rm --json` prints nothing to stderr, so control.py's error `detail` is always "the forge CLI exited N"; the real reason is only in… [scripts/forge-runs-rm.py]	65	1
+2026-10-22T23:20:49Z	ui-controls	ui-delete	qa	opus:high	FAIL	finding	forge ui s write lock ctx locked answers 409 busy at once instead of waiting so a page that fires a new request before the previous one to the same	forge-ui's write lock (`ctx.locked`) answers 409 busy at once instead of waiting, so a page that fires a new request before the previous one to the same… [ui/forge_ui/control.py]	3000	1
+2026-10-22T23:21:33Z	ui-controls	ui-delete	dwarf	sonnet:high	-	trap	forge ui s write lock ctx locked answers 409 busy at once instead of waiting so a page that fires a new request before the previous one to the same	forge-ui's write lock (`ctx.locked`) answers 409 busy at once instead of waiting, so a page that fires a new request before the previous one to the same… [ui/forge_ui/control.py]	39	1
+2026-10-22T23:23:09Z	ui-controls	ui-delete	qa	opus:high	PASS	-	-	-	90
+2026-10-22T23:28:17Z	ui-controls	ui-settings	dwarf	sonnet:high	-	-	-	-	305
+2026-10-22T23:32:33Z	ui-controls	ui-settings	qa	opus:high	FAIL	finding	app js loadlist calls rendermap whenever state key is null and the page is not the cloud so any new keyless route models settings gets	app.js loadList() calls renderMap whenever state.key is null and the page is not the cloud, so any new keyless route (#/models, #/settings) gets… [ui/forge_ui/static/app.js]	252	1
+2026-10-22T23:33:45Z	ui-controls	ui-settings	dwarf	sonnet:high	-	-	-	-	67
+2026-10-22T23:35:28Z	ui-controls	ui-settings	qa	opus:high	FAIL	finding	forgeui confirminline never resolves a strip whose host is detached so any code that holds a redraw until a confirm answers leaks the hold if	ForgeUI.confirmInline never resolves a strip whose host is detached, so any code that holds a redraw until a confirm answers leaks the hold if… [ui/forge_ui/static/uikit.js]	100	1
+2026-10-22T23:37:24Z	ui-controls	ui-settings	dwarf	sonnet:high	-	trap	forgeui confirminline never resolves a strip whose host is detached so code that holds a redraw until a confirm answers must not redraw that host	ForgeUI.confirmInline never resolves a strip whose host is detached, so code that holds a redraw until a confirm answers must not redraw that host [ui/forge_ui/static/uikit.js]	87	1
+2026-10-22T23:39:37Z	ui-controls	ui-settings	qa	opus:high	PASS	-	-	-	128
+2026-10-23T00:12:11Z	ui-controls	docs	dwarf	sonnet:medium	-	-	-	-	1951
+2026-10-23T00:14:01Z	ui-controls	docs	qa	opus:high	PASS	-	-	-	105
+2026-10-23T07:17:40Z	ui-controls	fu-config-import	dwarf	opus:high	-	verify	bash tests check sh fits a 10 minute foreground call when split bash n checks ui discover node check then cd tests ls test py sed	`bash tests/check.sh` fits a 10-minute foreground call when split: `bash -n` checks, `ui` discover, `node --check`, then `cd tests && ls test_*.py | sed… [tests/check.sh]	528	0
+2026-10-23T07:18:29Z	ui-controls	fu-config-import	qa	opus:high	PASS	-	-	-	44
+2026-10-23T07:39:17Z	ui-controls	fu-archive-identity	dwarf	opus:high	-	trap	harvest legacy uid for s review skip tests the attempts dir s parent name attempts so attempts under review snapshots still count	harvest.legacy_uid_for's `review-` skip tests the attempts dir's parent name ('attempts'), so attempts under review-* snapshots still count… [scripts/forge_dataset/harvest.py]	1824	1
+2026-10-23T07:40:16Z	ui-controls	fu-locks	dwarf	opus:high	-	-	-	-	1884
+2026-10-23T07:41:14Z	ui-controls	fu-archive-identity	qa	opus:high	PASS	-	-	-	112
+2026-10-23T07:41:56Z	ui-controls	fu-locks	qa	opus:high	PASS	-	-	-	96
+2026-10-23T07:43:26Z	ui-controls	fu-ui-refresh	dwarf	opus:high	-	-	-	-	2074
+2026-10-23T07:43:54Z	ui-controls	fu-ui-env	dwarf	opus:high	-	-	-	-	2101
+2026-10-23T07:45:51Z	ui-controls	fu-ui-refresh	qa	opus:high	PASS	-	-	-	141
+2026-10-23T07:45:52Z	ui-controls	fu-ui-env	qa	opus:high	PASS	-	-	-	114
+2026-10-23T08:57:55Z	ui-controls	fu2-issues-repo	dwarf	opus:high	-	-	-	-	1672
+2026-10-23T08:58:49Z	ui-controls	fu2-archive-name	dwarf	opus:high	-	-	-	-	1726
+2026-10-23T08:59:18Z	ui-controls	fu2-issues-repo	qa	opus:high	PASS	-	-	-	79
+2026-10-23T09:00:18Z	ui-controls	fu2-archive-name	qa	opus:high	PASS	-	-	-	86
+2026-10-23T10:09:45Z	ui-controls	fu2-pin-paths	dwarf	opus:high	-	trap	end to end tests put only a fixed list of tools on path no ln so a library call to a tool outside that list fails silently in tests	end-to-end tests put only a fixed list of tools on PATH (no `ln`), so a library call to a tool outside that list fails silently in tests [tests/test_forge.py]	1793	1
+2026-10-23T10:14:18Z	ui-controls	fu2-pin-paths	qa	opus:high	PASS	-	-	-	269

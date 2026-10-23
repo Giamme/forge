@@ -9,6 +9,7 @@ from pathlib import Path
 import shutil
 import signal
 import socket
+import stat
 import subprocess
 import sys
 import tempfile
@@ -127,11 +128,17 @@ class UiLauncherTests(unittest.TestCase):
         env = dict(self.env, BROWSER=str(stub))
         env.pop('FORGE_UI_BROWSER')
 
-        self.open(self.plan, env=env)
+        launched = self.ui('open', str(self.plan), env=env)
         first = self.server_json()
-        self.open(self.plan, env=env)
+        repeated = self.ui('open', str(self.plan), env=env)
         self.open(self.solo, env=env)
         second = self.server_json()
+        quiet = self.ui('open', str(self.plan), '--no-browser', env=env)
+
+        # a repeat that opens no browser says why on stderr; a launch and --no-browser stay silent
+        self.assertEqual((launched.stderr, quiet.stderr), ('', ''))
+        self.assertIn('forge-ui:', repeated.stderr)
+        self.assertEqual(repeated.stdout, launched.stdout, 'stdout stays the one link line runners rely on')
 
         self.assertEqual((second['pid'], second['port']), (first['pid'], first['port']))
         keys = [run['key'] for run in get_json(first['port'], '/api/runs')['runs']]
@@ -259,6 +266,94 @@ class UiLauncherTests(unittest.TestCase):
                 self.assertEqual(get_json(new['port'], '/api/health')['pid'], new['pid'])
                 self.ui('stop')
 
+    def test_a_server_of_the_other_mode_is_never_reused(self):
+        readonly = dict(self.env, FORGE_UI_READONLY='1')
+        modes = (('write-enabled', self.env, True, False), ('read-only', readonly, False, True),
+                 ('write-enabled again', self.env, True, False))
+        previous = None
+        for label, env, controls, recorded in modes:
+            with self.subTest(label):
+                self.open(self.plan, env=env)
+                current = self.server_json()
+                self.assertEqual(get_json(current['port'], '/api/health')['controls'], controls)
+                self.assertEqual(current['read_only'], recorded)
+                status = json.loads(self.ui('status', '--json', env=env).stdout)
+                self.assertEqual(status['read_only'], recorded)
+                self.assertIn('read-only' if recorded else 'read-write', self.ui('status', env=env).stdout)
+                if previous is not None:
+                    self.assertNotEqual(current['pid'], previous['pid'])
+                    self.assertFalse(alive(previous['pid']))
+                # the same mode asked again is a reuse
+                self.open(self.plan, env=env)
+                self.assertEqual(self.server_json()['pid'], current['pid'])
+                previous = current
+
+    def test_a_record_with_no_mode_reads_as_write_enabled(self):
+        # Records written before the mode existed have no read_only key.
+        self.open(self.plan)
+        old = self.server_json()
+        record = dict(old)
+        record.pop('read_only')
+        (self.state / 'forge/ui/server.json').write_text(json.dumps(record))
+        self.open(self.plan)
+        self.assertEqual(self.server_json()['pid'], old['pid'])
+        self.open(self.plan, env=dict(self.env, FORGE_UI_READONLY='1'))
+        self.assertNotEqual(self.server_json()['pid'], old['pid'])
+
+    def _custom_registry(self, name='custom.tsv'):
+        path = self.tmp / name
+        path.write_text('only-here\tcodex\tgpt-only-here\thigh\t600\n')
+        return path
+
+    def test_the_clis_of_writes_get_the_shells_forge_configuration_and_the_server_does_not(self):
+        repo = self.tmp / 'repo'
+        repo.mkdir()
+        subprocess.run(['git', 'init', '-q', str(repo)], check=True)
+        (self.plan / 'repo').write_text(f'{repo}\n')
+        self._custom_registry()
+        data = self.tmp / 'data'
+        env = dict(self.env, FORGE_REGISTRY='custom.tsv', FORGE_DATA_HOME=str(data), FORGE_DATASET='off',
+                   FORGE_UI_STRAY='1')
+        result = self.ui('open', str(self.plan), env=env, cwd=self.tmp)  # the registry is relative to the shell
+        self.assertEqual(result.returncode, 0, result.stderr)
+        server = self.server_json()
+        self.assertEqual(stat.S_IMODE((self.state / 'forge/ui/cli-env.json').stat().st_mode), 0o600)
+
+        # GET /api/config runs the real `forge config show` through control.run_cli
+        shown = get_json(server['port'], f'/api/config?run={run_key(self.plan)}')
+        registry = os.path.realpath(self.tmp / 'custom.tsv')
+        self.assertEqual((os.path.realpath(shown['registry']['path']), shown['registry']['overridden']), (registry, True))
+        self.assertEqual([row['alias'] for row in shown['registry']['rows']], ['only-here'])
+        self.assertEqual(shown['dataset'], {'path': str(data / 'dataset'), 'enabled': False})
+        # The CLI's environment is the server's plus the configuration: no other FORGE_* reached either.
+        self.assertEqual(sorted(shown['env']), ['FORGE_DATASET', 'FORGE_DATA_HOME', 'FORGE_REGISTRY'])
+        environ = Path(f'/proc/{server["pid"]}/environ')
+        if environ.exists():  # Linux: the server's own environment has none of them
+            names = [entry.split(b'=', 1)[0] for entry in environ.read_bytes().split(b'\0')]
+            self.assertEqual([name for name in names if name.startswith(b'FORGE_')], [])
+
+    def test_a_server_with_another_forge_configuration_is_never_reused(self):
+        first = dict(self.env, FORGE_REGISTRY=str(self._custom_registry()))
+        second = dict(self.env, FORGE_REGISTRY=str(self._custom_registry('other.tsv')))
+        unset = dict(self.env)
+        unset.pop('FORGE_REGISTRY', None)
+        self.open(self.plan, env=first)
+        old = self.server_json()
+        for label, env in (('another registry', second), ('no registry', unset)):
+            with self.subTest(label):
+                result = self.ui('open', str(self.plan), env=env)
+                self.assertEqual((result.returncode, result.stdout), (5, ''), result.stderr)
+                self.assertIn('FORGE_REGISTRY', result.stderr)
+                self.assertIn('forge ui stop', result.stderr)
+                self.assertTrue(alive(old['pid']))
+                self.assertEqual(self.server_json(), old)
+        self.open(self.plan, env=first)  # the same configuration is a reuse
+        self.assertEqual(self.server_json()['pid'], old['pid'])
+
+        self.assertEqual(self.ui('stop', env=second).returncode, 0)
+        self.open(self.plan, env=second)
+        self.assertEqual(self.server_json()['cli_env']['FORGE_REGISTRY'], second['FORGE_REGISTRY'])
+
     def test_a_server_whose_health_reports_another_build_is_replaced(self):
         # server.json still claims the current build; only the live answer says the code is old.
         self.open(self.plan)
@@ -306,6 +401,15 @@ class UiLauncherTests(unittest.TestCase):
                 self.ui('stop', env=env)
         entry = default / (forge_registry.repo_key(repo) + '.txt')
         self.assertIn(str(self.plan.resolve()), entry.read_text().splitlines())
+
+    def test_open_registers_the_run_under_the_first_line_of_its_repo_file_like_the_runners(self):
+        # forge_registry (what the runners call) reads only the first line; `open` read the whole
+        # file, so a repo file with a second line put the run under a repo that does not exist.
+        repo = (self.plan / 'repo').read_text().strip()
+        (self.plan / 'repo').write_text(f'  {repo}  \nwritten by something else\n')
+        self.open(self.plan)
+        registry = self.tmp / 'config/forge/runs'
+        self.assertEqual([p.name for p in registry.glob('*.txt')], [forge_registry.repo_key(repo) + '.txt'])
 
     def test_exit_codes_for_arguments_that_are_not_runs(self):
         notes = self.tmp / 'notes'

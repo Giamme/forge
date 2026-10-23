@@ -1,7 +1,7 @@
 ---
 name: forge
 description: Dispatch implementation and independent diff review to user-selected models through local agent CLIs. Use for /forge or explicit requests to delegate coding or review; explanation-only questions do not authorize dispatch.
-argument-hint: '"<goal>" --dwarf <alias>[:effort[:harness]] [--qa <alias>] [--planner <alias>] [--yolo-dwarf] [--yolo-qa] [--decompose-level low|medium|high] [--fractal|--no-fractal|--fractal-auto-decompose] [--fractal-planner <spec>] [--jev|--no-jev] [--jev-shadow] [--no-memory] [--no-ripwire] [--ui|--no-ui] [--timeout <seconds>] [--retry-failed <n>] [--escalate-after <n>] [--qa-threshold P0|P1|P2|P3] [--shadow-qa <spec>[,<spec>]] [--shadow-rate <0..1>] [--explore <0..0.5>] [--fail-first]'
+argument-hint: '"<goal>" --dwarf <alias>[:effort[:harness]] [--qa <alias>] [--planner <alias>] [--yolo-dwarf] [--yolo-qa] [--decompose-level low|medium|high] [--fractal|--no-fractal|--fractal-auto-decompose] [--fractal-planner <spec>] [--jev|--no-jev] [--jev-shadow] [--no-memory] [--no-ripwire] [--ui|--no-ui] [--timeout <seconds>] [--retry-failed <n>] [--escalate-after <n>] [--qa-threshold P0|P1|P2|P3] [--file-issues ask|auto|off] [--shadow-qa <spec>[,<spec>]] [--shadow-rate <0..1>] [--explore <0..0.5>] [--fail-first]'
 allowed-tools: [Bash, Read]
 ---
 
@@ -55,10 +55,28 @@ For explanation requests, explain the workflow without spending model quota.
   (`--escalate-after N`, `0` = off); an explicit `retry --dwarf` overrides it. `accept`
   overrides a reviewer, so run it (with the user's `--reason` and
   `--approved`) only on the user's explicit instruction; never self-accept.
+- When you report a run, read `<plan>/control.log` and mention any human change made mid-run
+  (a threshold, a budget, a model pin; `forge control show <plan>` lists them). Never set a
+  control, pin or delete a run with `forge control` / `forge runs rm` unless the user asks.
 - Exit `8` / status `INFRA` is a quota, auth or network stop, not a task failure and no
   attempt was spent: report it, say what to fix, and re-run only when told. For a multi-task
   plan, offer the opt-in whole-run review (`review`, or `integrate --final-review <qa-spec>`);
   it spends QA quota, so never run it unprompted.
+- **Leftover findings become issues.** A run can finish with review findings nobody will act on:
+  - CONFIRMED findings that `--qa-threshold` tolerated (`tasks/<id>/known_issues.md`);
+  - PLAUSIBLE findings in a passed task's `qa.last`;
+  - whatever a whole-run review left open.
+
+  When there are any, act on the user's `--file-issues` choice with one filer:
+  - **gh-proman**, only when it is installed and set up for the repository: `gh-proman -C <repo> config show` exits 0. It also puts the issues on the team's board with a priority. Run `gh-proman findings --from <plan or run dir> --include-plausible --json`, then follow the gh-proman skill's review-findings steps.
+  - **forge's own filer** otherwise (gh-proman missing, or not configured for this repo; never configure it yourself): `python3 <skill_dir>/scripts/forge-issues.py <plan or run dir> --include-plausible --json`, plain `gh issue create`. Pass `--lang` matching the repo's existing issues, and `--label bug` when the repo has that label. If `gh` is missing, unauthenticated or the repo has no GitHub remote, list the findings in the report and say why none were filed.
+
+  The choice:
+  - `ask` (the default): show the dry-run summary (count by severity, titles, anything already filed) and ask once: **"File these N findings as GitHub issues? [all / CONFIRMED only / none]"**. Then re-run with `--apply`, adding `--include-plausible` only for "all".
+  - `auto`: file them without asking (`--apply`, PLAUSIBLE included as "to verify" issues) and report what was created and skipped.
+  - `off`: never offer.
+
+  `--file-issues` is an instruction to you: never forward it to a runner. Skip INFRA, interrupted and still-failing runs. Both filers mark each issue with the same finding fingerprint and skip a finding either one already filed, so offering again after a retry only brings up new ones. A draft flagged as a possible duplicate is skipped on `--apply`: show it, and file it (`--confirm-new`) only if the user says it is different.
 - Jev is optional, off unless configured and enabled, and always advisory: it never
   changes a task's tier, never selects a model, and never substitutes for QA acceptance
   or repository verification (`--jev-act` is still accepted and changes nothing). Read

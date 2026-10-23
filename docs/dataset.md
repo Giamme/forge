@@ -16,5 +16,14 @@ forge dataset export            # labeled decision cases for benchmarks and fine
 forge dataset outcomes          # which integrated lines survived, read from git history
 ```
 
+Deleting a run keeps what it taught the dataset. `forge runs rm <run-dir>` first imports the run
+**strictly** (every event must be stored, or nothing is deleted), then writes a self-describing
+archive under `<data home>/archive/`: a `.tar.gz` whose `FORGE_ARCHIVE.json` records the run
+dir's original path, run id and dataset uid, so `forge dataset import` maps it back to the same
+run later. It records `run_delete_started` and `run_deleted` events around the removal. The same
+import also reads a plan's `escalations.tsv` (with who decided: `policy`, `retry` or `pin`) and
+`control.log`, so human interventions made with `forge control` are in the dataset as
+`control` events. See [forge runs rm](commands.md#forge-runs-rm).
+
 Capture is fail-open and never read by anything that builds a prompt. See
 [references/dataset.md](../references/dataset.md) for the event schema and its invariants.
