@@ -302,6 +302,13 @@ class ArchiveTests(PreserveCase):
                 importer.archive_run(run, dest)
         self.assertEqual(list(dest.parent.iterdir()), [])
 
+    def cli_import(self, path):
+        args = type('A', (), dict(paths=[str(path)], registry=False, fractal=False, ledger=[],
+                                  include_temp=True, dry_run=False))()
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            code = importer.main(args)
+        return code, out.getvalue()
+
     def identity_roundtrip(self, uid, review_started=None):
         run = self.make_run(uid=uid)
         if review_started is not None:
@@ -370,12 +377,88 @@ class ArchiveTests(PreserveCase):
         archive = self.root / 'old.tar.gz'
         importer.archive_run(run, archive)
         shutil.rmtree(run)
-        args = type('A', (), dict(paths=[str(archive)], registry=False, fractal=False, ledger=[],
-                                  include_temp=True, dry_run=False))()
-        with contextlib.redirect_stdout(io.StringIO()) as out:
-            self.assertEqual(importer.main(args), 0)
-        self.assertIn('(0 new)', out.getvalue())
+        code, out = self.cli_import(archive)
+        self.assertEqual(code, 0)
+        self.assertIn('(0 new)', out)
         self.assertEqual(self.rows('rid'), before)
+
+    def test_a_run_named_review_imports_from_its_archive_like_its_directory(self):
+        # The walkers skip review-* directories because those are snapshots inside a run.
+        # The run's own name must not be treated as one when the archive is the thing imported.
+        run = self.make_run(name='review-api', uid='uid-review')
+        original = os.path.realpath(run)
+        self.assertEqual(importer.import_run(run)['failed'], [])
+        before = self.rows('rid, run, data')
+        self.assertTrue(before)
+        self.assertTrue(any(original in row[2] for row in before))
+        self.assertTrue(all(row[1] == 'uid-review' for row in before))
+
+        forge_archive = self.root / 'kept' / 'review-api.tar.gz'
+        importer.archive_run(run, forge_archive)
+        legacy = self.root / 'legacy'
+        legacy.mkdir()
+        with tarfile.open(legacy / 'review-api.tar.gz', 'w:gz') as bundle:
+            bundle.add(str(run), arcname=run.name)
+        (legacy / 'MANIFEST.tsv').write_text('review-api.tar.gz\t%s\n' % original)
+        shutil.rmtree(run)
+
+        self.use_store('from-import-run')
+        result = importer.import_run(forge_archive)
+        self.assertEqual(result['failed'], [])
+        self.assertEqual((result['events'], result['new']), (len(before), len(before)))
+        self.assertEqual(self.rows('rid, run, data'), before)
+        self.assertFalse(any('forge-dataset-import-' in row[2] for row in before))
+
+        self.use_store('from-cli')
+        code, out = self.cli_import(forge_archive)
+        self.assertEqual(code, 0, out)
+        self.assertIn('(%d new)' % len(before), out)
+        self.assertEqual(self.rows('rid, run, data'), before)
+
+        self.use_store('from-manifest')
+        code, out = self.cli_import(legacy)
+        self.assertEqual(code, 0, out)
+        self.assertIn('(%d new)' % len(before), out)
+        self.assertEqual(self.rows('rid, run, data'), before)
+
+    def test_a_review_snapshot_inside_a_run_is_not_imported_as_a_run(self):
+        run = self.make_run(name='kept', uid='uid-kept')
+        nested = self.make_run(name='nested-src', uid='uid-from-snapshot')
+        attempts = nested / 'tasks' / 'a' / 'attempts'
+        for attempt in list(attempts.iterdir()):
+            attempt.rename(attempts / (attempt.name + 'snap'))
+        shutil.copytree(nested, run / 'review-1-1')
+        shutil.rmtree(nested)
+
+        direct = importer.import_run(run)
+        self.assertEqual(direct['failed'], [])
+        self.assertGreater(direct['events'], 0)
+        self.assertEqual({row[0] for row in self.rows('run')}, {'uid-kept'})
+        self.assertFalse(any('snap' in row[0] for row in self.rows('rid')))
+        before = self.rows('rid, run, data')
+
+        # The archive still holds the snapshot, so the walker's review-* skip is what leaves it out.
+        archive = self.root / 'with-snapshot.tar.gz'
+        meta = dict(format=importer.ARCHIVE_FORMAT, original_path=os.path.realpath(run),
+                    run_id='kept', dataset_uid='uid-kept', legacy_uids={}, created=0)
+        payload = (json.dumps(meta, sort_keys=True) + '\n').encode()
+        with tarfile.open(archive, 'w:gz') as bundle:
+            info = tarfile.TarInfo(importer.ARCHIVE_META)
+            info.size, info.mtime, info.mode = len(payload), 0, 0o644
+            bundle.addfile(info, io.BytesIO(payload))
+            bundle.add(str(run), arcname=run.name)
+        shutil.rmtree(run)
+
+        self.use_store('from-archive')
+        result = importer.import_run(archive)
+        self.assertEqual(result['failed'], [])
+        self.assertEqual((result['events'], result['new']), (len(before), len(before)))
+        self.assertEqual(self.rows('rid, run, data'), before)
+
+        code, out = self.cli_import(archive)
+        self.assertEqual(code, 0, out)
+        self.assertIn('(0 new)', out)
+        self.assertEqual(self.rows('rid, run, data'), before)
 
 
 class InterventionTests(PreserveCase):
