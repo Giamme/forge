@@ -7,7 +7,7 @@ run, the locks the runners take), so a run started meanwhile fails to start inst
 the delete:
 
   preserve    a strict dataset import of the run: every event must be stored
-  archive     a self-describing .tar.gz under <data home>/archive/ (--no-archive skips it)
+  archive     a self-describing .tar.gz under <data home>/archive/, never replacing one (--no-archive skips it)
   intent      the dataset event run_delete_started
   worktrees   --worktrees: remove the run's clean worktrees, then `git worktree prune`
   branches    --branches: `git branch -D` the run's branches not checked out anywhere
@@ -44,6 +44,7 @@ import argparse
 import errno
 import fcntl
 import hashlib
+import itertools
 import json
 import os
 import re
@@ -480,12 +481,16 @@ def inspect_git(run):
 # ------------------------------------------------------------------------------ the steps
 
 def archive_target(run):
+    """(the first archive name free now, the names to fall back on): <run id>-<time>[-<n>].tar.gz.
+
+    The first is what the plan shows. Another delete of the same run id can take it before the
+    archive is written, so archive_run claims a name exclusively and moves on to the fallbacks.
+    """
     base = data_home() / 'archive' / ('%s-%s' % (run.run_id, time.strftime('%Y%m%d-%H%M%S')))
-    candidate, count = Path(str(base) + '.tar.gz'), 0
-    while candidate.exists():
-        count += 1
-        candidate = Path('%s-%d.tar.gz' % (base, count))
-    return str(candidate)
+    names = itertools.chain([str(base) + '.tar.gz'], ('%s-%d.tar.gz' % (base, count) for count in itertools.count(1)))
+    for name in names:
+        if not os.path.lexists(name):
+            return name, names
 
 
 def plan_steps(run, args, dest, keep):
@@ -611,7 +616,7 @@ def delete_branches(run):
     return '; '.join(problems) or None
 
 
-def execute(run, args, report, dest, keep):
+def execute(run, args, report, dest, fallbacks, keep):
     """Steps 1 to 8 with the lock held. Returns the exit code."""
     plan = {name: (active, text) for name, active, text in plan_steps(run, args, dest, keep)}
 
@@ -632,7 +637,7 @@ def execute(run, args, report, dest, keep):
             result['events'], result['new'], ', %d unfinished execution(s) left to live capture' % unfinished if unfinished else ''))
     if not skipped('archive'):
         try:
-            made = importer.archive_run(run.path, dest)
+            made = importer.archive_run(run.path, dest, fallbacks)
         except (DatasetError, OSError) as error:
             report.step('archive', False, 'no archive, nothing was deleted: %s' % error)
             return FAILED
@@ -760,7 +765,7 @@ def run_command(args, report):
             run.uid = harvest.run_uid(Path(run.path), create=False)
         except Exception:   # noqa: BLE001  -- an identity we cannot read only costs the event its run column
             run.uid = None
-        dest = None if args.no_archive else archive_target(run)
+        dest, fallbacks = (None, ()) if args.no_archive else archive_target(run)
         report.archive = dest if args.dry_run else None
         report.extra.update(size_bytes=run.size, archive_bytes=None,
                             archive_estimate_bytes=None if args.no_archive else run.estimate)
@@ -779,7 +784,7 @@ def run_command(args, report):
         report.step('lock', True, 'holding %s' % os.path.basename(run.lock_path))
         if not args.yes:
             confirm(run)
-        return execute(run, args, report, dest, keep)
+        return execute(run, args, report, dest, fallbacks, keep)
     finally:
         if fd is not None:
             os.close(fd)

@@ -12,7 +12,9 @@ No historical outcome is inferred from a file that a later attempt could have re
 """
 from __future__ import annotations
 
+import errno
 import io
+import itertools
 import json
 import os
 import re
@@ -590,14 +592,59 @@ def import_run(path, strict: bool = True, include_temp: bool = True) -> dict:
     return result
 
 
-def archive_run(run_dir, dest) -> dict:
+# Errors of a link(2) on a filesystem without hard links.
+_NO_HARD_LINKS = {errno.EPERM, errno.ENOTSUP, errno.EOPNOTSUPP, errno.EMLINK}
+
+
+def _publish(temporary: str, names) -> Path:
+    """Give the finished temp file the first of `names` that nothing holds. Never replaces a file.
+
+    link(2) fails when the name exists, so two writers that picked the same name cannot both
+    get it. Where hard links do not exist the name is reserved with O_EXCL and then filled by
+    rename; a reservation the rename did not fill is removed again.
+    """
+    tried = []
+    for name in names:
+        tried.append(str(name))
+        try:
+            os.link(temporary, name)
+        except FileExistsError:
+            continue
+        except OSError as error:
+            if error.errno not in _NO_HARD_LINKS:
+                raise
+            try:
+                os.close(os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600))
+            except FileExistsError:
+                continue
+            try:
+                os.replace(temporary, name)
+            except BaseException:
+                try:
+                    os.unlink(name)
+                except OSError:
+                    pass
+                raise
+            return Path(name)
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass   # a hidden temp file left beside a complete archive
+        return Path(name)
+    raise DatasetError('every name offered for the archive is taken: %s' % ', '.join(tried))
+
+
+def archive_run(run_dir, dest, fallbacks=()) -> dict:
     """Write run_dir as a `.tar.gz` that `forge dataset import` maps back to the same run.
 
     Layout: FORGE_ARCHIVE.json (the original realpath, run id, dataset uid, the legacy ids of
     run dirs without one), then
     FORGE_ARCHIVE_EXCLUDED.txt, then the run dir under its basename. Left out are what the
     importer never reads (its skip rules, `review-*` snapshots), symlinks, and files over 50 MB;
-    each is listed. Written to a temp name beside `dest`, fsynced, then renamed.
+    each is listed. Written to a temp name beside `dest`, fsynced, then published under `dest`
+    or, when that name is taken, the first free one of `fallbacks` (names in the same dir, may be
+    endless). An existing file is never replaced, and no name shows a partial archive: the returned
+    path is the one it got. With every name taken it raises DatasetError.
     """
     run = Path(run_dir).expanduser().resolve()
     dest = Path(dest).expanduser()
@@ -639,6 +686,12 @@ def archive_run(run_dir, dest) -> dict:
                 dataset_uid=h.first_line(run / 'dataset.uid') or None, legacy_uids=_legacy_uids(run),
                 created=int(time.time()))
 
+    def beside_dest(names):
+        for name in map(Path, names):
+            if name.expanduser().parent != dest.parent:
+                raise DatasetError('the archive name %s is not beside %s' % (name, dest))
+            yield name.expanduser()
+
     def anonymous(info):
         info.uid = info.gid = 0
         info.uname = info.gname = ''
@@ -662,7 +715,7 @@ def archive_run(run_dir, dest) -> dict:
                     bundle.add(str(full), arcname=arcname, recursive=False, filter=anonymous)
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temporary, dest)
+        dest = _publish(temporary, itertools.chain([dest], beside_dest(fallbacks)))
         try:
             directory_fd = os.open(str(dest.parent), os.O_RDONLY)
             try:
