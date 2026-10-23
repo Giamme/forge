@@ -41,7 +41,13 @@
   // Delete is armed by the exact id AND a dry run that answers for the options as they stand now.
   const canDelete = (s, preview, busy) => !!preview && !busy && confirmOk(s.typed, s.runId);
 
-  const unmerged = result => list(object(result) && result.branches).filter(b => b && String(b.status).toUpperCase() === 'UNMERGED' && !b.checked_out);
+  const isUnmerged = b => !!b && String(b.status).toUpperCase() === 'UNMERGED';
+  // The worktree that still has a branch checked out once the worktrees step has run, which keeps the branch ('' when
+  // none does). The dry run answers this for the options it was asked with: with "Remove worktrees" the run's clean
+  // worktrees go first and no longer hold their branches.
+  const heldBy = b => text(b && b.stays_checked_out);
+  // The UNMERGED branches the options delete (all of them are kept without "Delete branches").
+  const unmerged = (result, branches) => list(object(result) && result.branches).filter(b => isUnmerged(b) && !(branches && heldBy(b)));
   const dirtyRun = result => list(object(result) && result.worktrees).filter(w => w && w.kind !== 'foreign' && w.dirty);
 
   // Warnings for a dry-run result under the options as they stand: [{id, tone: 'warn' | 'note', text, names}].
@@ -52,7 +58,7 @@
       out.push({ id: 'no-archive', tone: 'warn', names: [],
         text: 'Without the archive the transcripts and run files are lost for good. The dataset events are still preserved first.' });
     }
-    const bad = unmerged(result).map(b => text(b.name));
+    const bad = unmerged(result, o.branches).map(b => text(b.name));
     if (bad.length) {
       out.push({ id: 'unmerged', tone: o.branches ? 'warn' : 'note', names: bad,
         text: o.branches ? 'Deleting these branches drops commits that are merged nowhere: ' + bad.join(', ')
@@ -73,10 +79,11 @@
     if (w && w.dirty) return { id: 'dirty', label: 'dirty', note: 'will not be removed' };
     return { id: 'run', label: 'run', note: '' };
   }
-  // The plate of a branch: merged | UNMERGED.
-  function branchPlate(b) {
-    const un = !!b && String(b.status).toUpperCase() === 'UNMERGED';
-    return { id: un ? 'unmerged' : 'merged', label: un ? 'UNMERGED' : 'merged', note: b && b.checked_out ? 'checked out: kept' : '' };
+  // The plate of a branch: merged | UNMERGED, and, with "Delete branches", whether it goes.
+  function branchPlate(b, opts) {
+    const un = isUnmerged(b), held = heldBy(b);
+    const note = !(opts && opts.branches) ? '' : held ? 'kept: checked out in ' + held : 'will be deleted';
+    return { id: un ? 'unmerged' : 'merged', label: un ? 'UNMERGED' : 'merged', note };
   }
 
   function stepsOf(result) {
@@ -194,7 +201,7 @@
     };
     option('archive', 'Archive transcripts and run files for the dataset', 'A tar.gz under the dataset home. The dataset events themselves are always preserved first.');
     option('worktrees', 'Remove worktrees', 'Only the run\'s own clean worktrees. Foreign and dirty ones are never touched.');
-    option('branches', 'Delete branches', 'The run\'s branches that are not checked out anywhere.');
+    option('branches', 'Delete branches', 'The run\'s branches, except any still checked out in a worktree that stays.');
     const warnHost = el('ul', undefined, 'del-warnings');
 
     const confirmBox = el('div', undefined, 'del-confirm');
@@ -253,7 +260,7 @@
       const brs = list(r.branches).filter(object);
       if (brs.length) {
         const ul = el('ul', undefined, 'del-list');
-        for (const b of brs) { const pl = branchPlate(b); row(ul, pl, text(b.name), pl.note || text(b.note)); }
+        for (const b of brs) { const pl = branchPlate(b, s.v); row(ul, pl, text(b.name), pl.note || text(b.note)); }
         parts.push(section('Branches', ul));
       }
       previewHost.replaceChildren(...parts);

@@ -550,7 +550,18 @@ def _task_detail(reader, task, run_id, waves, branches):
     task['fail_first'] = _fail_first(reader, prefix + '/failfirst.json')
     shadows = _shadows(reader, ident, execs)
     task['shadow'] = [entry for entry, _, _ in shadows]
+    # What `forge control show` reads of the task. A change there (a write, or a delete: the dir's mtime) moves `updated`,
+    # so the page redraws and the Controls panel asks again.
+    reader.stat(prefix)
+    for name in _TASK_CONTROLS:
+        reader.stat(f'{prefix}/{name}')
     return execs + [item for _, items, _ in shadows for item in items]
+
+
+# The control files (CONTRACT.md) nothing else here reads. `forge control` appends control.log and writes the task's
+# files without touching the run dir, so they are stat'd for `updated` only.
+_RUN_CONTROLS = ('control.log', 'retry_budget', 'infra_budget')
+_TASK_CONTROLS = ('qa_threshold', 'retry_budget', 'retries.used', 'escalation.pin', 'escalation.stop', 'escalation.next')
 
 
 _FAIL_FIRST_RESULTS = ('proven', 'passes_without_change', 'inconclusive', 'error')
@@ -743,6 +754,8 @@ def detail(path, source='plan') -> dict:
     pool = []
     for task in tasks:
         pool += _task_detail(reader, task, result['run_id'], wave_map, branches)
+    for name in _RUN_CONTROLS:
+        reader.stat(name)
     run_execs = _run_execs(reader)
     items, integrations = executions.review_dirs(reader)
     published = _published(reader)

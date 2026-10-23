@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -648,6 +649,37 @@ class SummaryExtensionTests(unittest.TestCase):
         for name, at in (('prompt.md', 800), ('repo', 700), ('request.md', 750), ('goal.txt', 760)):
             os.utime(solo / name, (at, at))
         self.assertEqual(summarize(solo)['created'], 700.0)
+
+
+class ControlChangeTests(unittest.TestCase):
+    """A change made with `forge control` reaches the next poll of the run detail, which is what redraws Controls."""
+
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.base = Path(temp.name)
+        self.plan = Path(shutil.copytree(FIXTURE, self.base / 'plan'))
+        self.env = dict(os.environ, HOME=str(self.base / 'home'), XDG_CONFIG_HOME=str(self.base / 'config'),
+                        FORGE_DATA_HOME=str(self.base / 'data'), FORGE_DATASET='off')
+
+    def control(self, *args):
+        script = Path(__file__).resolve().parents[2] / 'scripts' / 'forge-control.py'
+        done = subprocess.run([sys.executable, str(script), *args], env=self.env, capture_output=True, text=True, timeout=60)
+        self.assertEqual(done.returncode, 0, done.stderr)
+
+    def test_a_task_threshold_set_from_the_cli_changes_the_next_poll(self):
+        # After the first change control.lock and control.log exist: later ones only append to the log and write in the
+        # task dir, so neither the run dir's mtime nor any file read for the detail moves.
+        self.control('set', str(self.plan), 'qa-threshold', 'P2', '--task', 'page')
+        self.assertTrue((self.plan / 'control.lock').is_file() and (self.plan / 'control.log').is_file())
+        for path in [self.plan, *self.plan.rglob('*')]:
+            os.utime(path, (1000, 1000))
+        before = detail(self.plan)
+        self.assertEqual(json.dumps(detail(self.plan)), json.dumps(before), 'nothing changed, nothing moves')
+        self.control('set', str(self.plan), 'qa-threshold', 'P1', '--task', 'page')
+        after = detail(self.plan)
+        self.assertGreater(after['updated'], before['updated'])
+        self.assertNotEqual(json.dumps(after), json.dumps(before))
 
 
 if __name__ == '__main__':

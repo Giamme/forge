@@ -29,9 +29,12 @@ keeps the run dir too.
 
 --json prints one object on stdout, on failure too:
   {run_dir, run_id, dry_run, ok, steps: [{step, ok, detail}], archive, bytes_freed,
-   branches: [{name, sha, status: merged|UNMERGED, checked_out, deleted, note}],
+   branches: [{name, sha, status: merged|UNMERGED, checked_out, stays_checked_out, deleted, note}],
    worktrees: [{path, branch, kind: run|foreign, dirty, removed, note}],
    size_bytes, archive_bytes, archive_estimate_bytes}
+`checked_out` is the worktree that has the branch checked out now, `stays_checked_out` the one that still
+will after the worktrees step as requested (with --worktrees the run's clean, unlocked worktrees go, and
+so does their hold): --branches deletes exactly the branches where it is null.
 `ok` means the requested deletion is complete (a dry run says what a real one would do).
 Exit 0 ok, 2 refused input, 3 busy or active, 4 failed during deletion (or the run dir kept).
 """
@@ -243,6 +246,7 @@ class Run:
         self.git_error = None
         self.worktrees = []
         self.branches = []
+        self.removable = set()   # paths of the worktrees --worktrees removes (or prunes, when missing on disk)
         self.wt_root = None
 
 
@@ -453,6 +457,8 @@ def inspect_git(run):
                     entry['note'] = 'git status failed, treated as dirty: ' + (err or 'exit %d' % code)
             if wt.get('locked'):
                 entry['note'] = (entry['note'] + ' ' if entry['note'] else '') + 'locked'
+            elif not entry['dirty']:
+                run.removable.add(wt['path'])   # a locked one is neither removed nor pruned without --force
         else:
             entry['note'] = 'not this run\'s: ' + ('its branch is not one of the run\'s' if in_root else 'outside the run\'s worktree root')
         run.worktrees.append(entry)
@@ -468,7 +474,7 @@ def inspect_git(run):
         merged = git(run.repo, 'merge-base', '--is-ancestor', sha, 'HEAD')[0] == 0
         run.branches.append(dict(name=ref.replace('refs/heads/', '', 1), sha=sha, merged=merged,
                                  status='merged' if merged else 'UNMERGED', checked_out=checked_out.get(ref),
-                                 deleted=False, note=''))
+                                 stays_checked_out=checked_out.get(ref), deleted=False, note=''))
 
 
 # ------------------------------------------------------------------------------ the steps
@@ -499,7 +505,10 @@ def plan_steps(run, args, dest, keep):
             len(clean), ', keep %d dirty' % len(dirty) if dirty else '')
     branches = 'skipped (no --branches)' + ('; %d run branch(es) stay' % len(names) if names else '')
     if args.branches:
-        branches = 'delete %s, except any checked out in a remaining worktree' % (', '.join(names) or 'no branch (the run has none)')
+        going = [b['name'] for b in run.branches if not b['stays_checked_out']]
+        held = ['%s (checked out in %s)' % (b['name'], b['stays_checked_out']) for b in run.branches if b['stays_checked_out']]
+        branches = 'delete %s%s' % (', '.join(going) or 'no branch' + ('' if names else ' (the run has none)'),
+                                    '; keep ' + ', '.join(held) if held else '')
     return [
         ('preserve', on, 'import the run into the dataset, strictly: every event must be stored' if on else
          'skipped: FORGE_DATASET=off, so this run\'s traces will NOT be kept in the dataset'),
@@ -741,6 +750,10 @@ def run_command(args, report):
         scan(run)
         inspect_git(run)
         report.worktrees, report.branches = run.worktrees, run.branches
+        if args.worktrees:
+            for branch in run.branches:
+                if branch['stays_checked_out'] in run.removable:
+                    branch['stays_checked_out'] = None
         if (args.worktrees or args.branches) and run.git_error:
             raise Refused('cannot clean up worktrees or branches: ' + run.git_error)
         try:

@@ -177,6 +177,16 @@ test('a section is being edited while a text field has focus, an unsaved value, 
   assert.equal(C.isEditing(null), false);
 });
 
+test('controls that arrived during an edit are drawn once it is over and the keyboard has left the section', () => {
+  const drawn = show(), latest = show({ run: { ...show().run, qa_threshold: 'P1' } });
+  assert.equal(C.redrawDue(drawn, latest, false, false), true, 'a CLI change held back by the edit');
+  assert.equal(C.redrawDue(drawn, latest, true, false), false, 'still being edited');
+  assert.equal(C.redrawDue(drawn, latest, false, true), false, 'a key there may be about to take a click');
+  assert.equal(C.redrawDue(latest, latest, false, false), false, 'already drawn');
+  assert.equal(C.redrawDue(null, latest, false, false), false, 'a note, not controls, is on screen');
+  assert.equal(C.redrawDue(drawn, null, false, false), false);
+});
+
 test('the change log reads who, what, previous to new, and when', () => {
   assert.deepEqual(C.logLine({ at: 1760620000.5, actor: 'ui', action: 'set', task: 'graph', key: 'qa-threshold', value: 'P1', previous: 'P2' }),
     { who: 'ui', what: 'QA threshold · graph', from: 'P2', to: 'P1', at: 1760620000.5 });

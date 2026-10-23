@@ -205,6 +205,9 @@
   // Whether the rebuilt tree takes back the section that was being edited: only for the same run and task. Choosing
   // another run or task builds another scope, so what was half typed goes with it.
   const keepEditing = (held, next) => !!(held && next && held.editing && held.scope && held.scope === next.scope);
+  // Controls that arrived while a section was being edited were held back: they are drawn once the edit is over and
+  // the keyboard has left the section (a redraw under a pressed key would swallow its click).
+  const redrawDue = (drawn, latest, editing, inside) => !!drawn && !!latest && drawn !== latest && !editing && !inside;
 
   /* ---------- the page: drawing ---------- */
 
@@ -224,6 +227,8 @@
     const on = isEditing({ focus: !!at && s.contains(at) && typing(at.tagName), dirty: Object.keys(view.draft).length > 0,
       confirm: !!s.querySelector('.ui-confirm'), busy: view.inflight });
     if (on) s.dataset.editing = '1'; else delete s.dataset.editing;
+    const e = store.runs.get(view.run.key);
+    if (s.isConnected && redrawDue(view.drawn, e && e.data, on, !!at && s.contains(at))) show(view);
   }
   // A draft value: the field's text while it differs from what the run holds.
   function touch(view, field, value) {
@@ -237,6 +242,7 @@
   };
 
   function note(view, text) {
+    view.drawn = null;
     view.section.replaceChildren(ui().el('h3', 'Controls'), ui().el('p', text, 'muted ctl-note'));
     sync(view);
   }
@@ -508,7 +514,7 @@
   // Draw a section from `forge control show`.
   function draw(view, c) {
     const s = view.section, mark = focusMark(s);
-    view.base = {};
+    view.base = {}; view.drawn = c;
     s.replaceChildren(ui().el('h3', 'Controls'), view.task ? drawTask(view, c, view.task) : drawRun(view, c));
     refocus(s, mark);
     for (const f of Object.keys(view.draft)) if (!(f in view.base)) delete view.draft[f];   // its row is gone: so is the draft
@@ -564,7 +570,7 @@
     section.dataset.hold = scopeOf(run.key, task && task.id);
     section.append(u.el('h3', 'Controls'));
     host.append(section);
-    const view = { section, run, task: task ? task.id : null, draft: {}, base: {}, inflight: false };
+    const view = { section, run, task: task ? task.id : null, draft: {}, base: {}, inflight: false, drawn: null };
     section.addEventListener('focusin', () => sync(view));
     section.addEventListener('focusout', () => setTimeout(() => sync(view), 0));
     if (store.enabled === null) {
@@ -609,5 +615,5 @@
   }
 
   return { LEVELS, EFFORTS, KEYS, specOf, countOf, secondsOf, minutesOf, valueFor, bodyFor, prepare, savedText, effective, canEdit, logLine, agoText,
-    aliasesOf, scopeOf, typing, isEditing, keepEditing, mountRun, mountTask, hold };
+    aliasesOf, scopeOf, typing, isEditing, keepEditing, redrawDue, mountRun, mountTask, hold };
 });
