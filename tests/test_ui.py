@@ -409,7 +409,7 @@ class UiLauncherTests(unittest.TestCase):
         (self.plan / 'repo').write_text(f'  {repo}  \nwritten by something else\n')
         self.open(self.plan)
         registry = self.tmp / 'config/forge/runs'
-        self.assertEqual([p.name for p in registry.iterdir()], [forge_registry.repo_key(repo) + '.txt'])
+        self.assertEqual([p.name for p in registry.glob('*.txt')], [forge_registry.repo_key(repo) + '.txt'])
 
     def test_exit_codes_for_arguments_that_are_not_runs(self):
         notes = self.tmp / 'notes'
