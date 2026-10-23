@@ -7,10 +7,14 @@ live inside the Jev package.
 
 Two writers change those files: ``register_run_dir`` (every runner, on every start) and
 ``unregister_run_dir`` (``forge runs rm``). Both take an flock on ``<registry dir>/.lock``,
-a stable sibling file that is never replaced, so an unregister's atomic rewrite cannot
-drop a line a register appended meanwhile. Register never blocks: it waits at most
+a stable sibling file that is never replaced. Register never blocks: it waits at most
 ``REGISTER_LOCK_WAIT_S`` for the lock and then appends anyway, because a rare duplicate
-line is harmless and a lost run is not.
+line is harmless and a lost run is not. An unlocked append can then land in the file an
+unregister has read and is about to replace, so the two meet halfway: unregister, once it
+has replaced a file, copies onto the new one whatever was appended to the old one after
+its read, and register, once it has appended, checks that the file it wrote is still the
+registry and appends again to the new one if it is not. Either the append reached the old
+file before unregister looked at it again, or register sees the replacement.
 
 Run as a script, ``forge_registry.py register <run-dir>`` records a run dir from the
 shell runners (forge-ui-options.sh ``forge_ui_register``): every plan, run and solo run
@@ -35,6 +39,9 @@ from pathlib import Path
 # can afford to wait for a busy lock, but not for ever.
 REGISTER_LOCK_WAIT_S = 0.5
 UNREGISTER_LOCK_WAIT_S = 10.0
+# How many times an unlocked register appends again after an unregister replaced the file
+# under it. One is enough unless unregisters keep finishing back to back.
+REGISTER_TRIES = 5
 LOCK_NAME = '.lock'
 
 
@@ -107,7 +114,8 @@ def register_run_dir(repo: Path, run_dir: Path) -> None:
     Never raises and never blocks: failing to note where a run lives must not fail the run,
     and ``forge ui open`` calls this before any of its own timeouts. The registry lock is
     tried for at most ``REGISTER_LOCK_WAIT_S``; if it stays busy the line is appended without
-    it (see the module docstring).
+    it (see the module docstring), and appended again if an unregister replaced the file
+    it went to.
     """
     try:
         # A relative XDG_CONFIG_HOME resolves below the current directory -- for a runner or
@@ -122,21 +130,30 @@ def register_run_dir(repo: Path, run_dir: Path) -> None:
                 held.enter_context(_registry_lock(REGISTER_LOCK_WAIT_S))
             except OSError:
                 pass   # busy past the wait, or no lock file to be had: append unlocked
-            existing = []
-            if registry.is_file():
-                existing = [x.strip() for x in registry.read_text(errors='replace').splitlines()]
-            if line in existing:
-                return
-            header = [] if existing else ['# forge run dirs for ' + str(Path(repo).resolve())]
-            # O_NONBLOCK: a FIFO with no reader fails at once (ENXIO) instead of blocking the
-            # open, and anything that is not a regular file is left alone.
-            fd = os.open(registry, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NONBLOCK, 0o644)
-            with os.fdopen(fd, 'a') as handle:
-                if not stat.S_ISREG(os.fstat(fd).st_mode):
+            for _ in range(REGISTER_TRIES):
+                existing = []
+                if registry.is_file():
+                    existing = [x.strip() for x in registry.read_text(errors='replace').splitlines()]
+                if line in existing:
                     return
-                for entry in header:
-                    handle.write(entry + '\n')
-                handle.write(line + '\n')
+                header = [] if existing else ['# forge run dirs for ' + str(Path(repo).resolve())]
+                # O_NONBLOCK: a FIFO with no reader fails at once (ENXIO) instead of blocking the
+                # open, and anything that is not a regular file is left alone.
+                fd = os.open(registry, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NONBLOCK, 0o644)
+                with os.fdopen(fd, 'a') as handle:
+                    written = os.fstat(fd)
+                    if not stat.S_ISREG(written.st_mode):
+                        return
+                    handle.write(''.join(entry + '\n' for entry in header + [line]))
+                    handle.flush()
+                # Still the registry: the line is in it, or in the old file an unregister copies
+                # from once it has replaced it. Replaced already: the line may be in neither.
+                try:
+                    current = os.lstat(registry)
+                except FileNotFoundError:
+                    continue
+                if (current.st_dev, current.st_ino) == (written.st_dev, written.st_ino):
+                    return
     except (OSError, ValueError, RuntimeError):
         # ValueError: a NUL byte in a path; RuntimeError: a symlink loop (pathlib before 3.13)
         pass
@@ -147,6 +164,10 @@ def _rewrite_without(path: Path, wanted: set) -> bool:
 
     Every other byte is kept as it was. Returns whether the file changed. A registry file
     that is not a regular file is skipped, and read without blocking.
+
+    The caller holds the registry lock, but a register that gave up waiting for it appends
+    anyway, possibly to this file after it was read. So the old file stays open across the
+    replace, and whatever it gained since the read is appended to the new one.
     """
     try:
         fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
@@ -154,30 +175,43 @@ def _rewrite_without(path: Path, wanted: set) -> bool:
         if error.errno in (errno.ENOENT, errno.ELOOP):
             return False
         raise
-    with os.fdopen(fd, 'rb') as handle:
+    with os.fdopen(fd, 'rb') as old:
         info = os.fstat(fd)
         if not stat.S_ISREG(info.st_mode):
             return False
-        lines = handle.read().splitlines(keepends=True)
-    kept = [line for line in lines if os.fsdecode(line).strip() not in wanted]
-    if len(kept) == len(lines):
-        return False
-    temporary = None
-    try:
-        out, temporary = tempfile.mkstemp(dir=str(path.parent), prefix='.' + path.name + '.', suffix='.tmp')
-        with os.fdopen(out, 'wb') as handle:
-            handle.write(b''.join(kept))
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.chmod(temporary, stat.S_IMODE(info.st_mode))
-        os.replace(temporary, path)
+        data = old.read()
+        lines = data.splitlines(keepends=True)
+        kept = [line for line in lines if os.fsdecode(line).strip() not in wanted]
+        if len(kept) == len(lines):
+            return False
+        content = b''.join(kept)
         temporary = None
-    finally:
-        if temporary is not None:
-            try:
-                os.unlink(temporary)
-            except OSError:
-                pass
+        try:
+            out, temporary = tempfile.mkstemp(dir=str(path.parent), prefix='.' + path.name + '.', suffix='.tmp')
+            with os.fdopen(out, 'wb') as handle:
+                handle.write(content)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.chmod(temporary, stat.S_IMODE(info.st_mode))
+            os.replace(temporary, path)
+            temporary = None
+        finally:
+            if temporary is not None:
+                try:
+                    os.unlink(temporary)
+                except OSError:
+                    pass
+        # An append that comes later still is register's to notice: the path no longer
+        # names the file it wrote.
+        late = old.read()
+    if late:
+        extra = [line for line in late.splitlines(keepends=True) if os.fsdecode(line).strip() not in wanted]
+        if extra:
+            if content and not content.endswith(b'\n'):
+                extra.insert(0, b'\n')
+            out = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_NOFOLLOW | os.O_NONBLOCK)
+            with os.fdopen(out, 'ab') as handle:
+                handle.write(b''.join(extra))
     return True
 
 

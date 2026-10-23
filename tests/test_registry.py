@@ -386,6 +386,49 @@ class UnregisterTests(unittest.TestCase):
         self.assertFalse(worker.is_alive(), 'unregister_run_dir blocked')
         self.assertEqual(result, [[forge_registry.runs_registry(self.repos[0])]])
 
+    def test_an_unlocked_append_to_the_file_an_unregister_has_read_survives_its_replace(self):
+        # Unregister read A and C, then stalled before its replace past register's wait: B,
+        # appended without the lock, went to the file that is about to be replaced.
+        repo = self.repos[0]
+        a, b, c = (self.tmp / n for n in 'abc')
+        forge_registry.register_run_dir(repo, a)
+        forge_registry.register_run_dir(repo, c)
+        replace = os.replace
+
+        def stalled_replace(src, dst):
+            started = time.monotonic()
+            forge_registry.register_run_dir(repo, b)   # the lock is unregister's: B is appended unlocked
+            self.assertGreaterEqual(time.monotonic() - started, 0.4)
+            replace(src, dst)
+
+        with patch.object(forge_registry.os, 'replace', side_effect=stalled_replace):
+            forge_registry.unregister_run_dir(a)
+        self.assertEqual(self.entries(repo), [str(c), str(b)])
+
+    def test_an_unlocked_append_that_lands_after_the_replace_is_made_again(self):
+        # Register opened the registry unlocked, then an unregister replaced it and checked the
+        # old file before register wrote: the line went to a file nobody reads any more.
+        repo = self.repos[0]
+        a, b, c = (self.tmp / n for n in 'abc')
+        forge_registry.register_run_dir(repo, a)
+        forge_registry.register_run_dir(repo, c)
+        registry = forge_registry.runs_registry(repo)
+        release = self.hold()
+        real_open, opened = os.open, []
+
+        def open_then_unregister(path, flags, *args, **kwargs):
+            fd = real_open(path, flags, *args, **kwargs)
+            if flags & os.O_APPEND and Path(path) == registry and not opened:
+                opened.append(fd)
+                release()
+                forge_registry.unregister_run_dir(a)
+            return fd
+
+        with patch.object(forge_registry.os, 'open', side_effect=open_then_unregister):
+            forge_registry.register_run_dir(repo, b)
+        self.assertEqual(len(opened), 1)
+        self.assertEqual(self.entries(repo), [str(c), str(b)])
+
     def test_concurrent_register_and_unregister_in_separate_processes_lose_no_other_entries(self):
         worker = (
             'import sys\n'

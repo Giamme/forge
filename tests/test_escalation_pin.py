@@ -237,6 +237,37 @@ class PinTests(unittest.TestCase):
         self.assertEqual(self.dwarf(), 'opus:high')
         self.assertEqual(self.pin_files(), [])
 
+    # --- the claim's destination ------------------------------------------------------------
+    def test_a_claim_symlinked_out_of_the_plan_neither_moves_the_pin_out_nor_drops_it(self):
+        # mv would move the pin INTO the directory the link names, out of the plan.
+        outside = self.root / 'outside'; outside.mkdir()
+        os.symlink(outside, self.tdir / 'escalation.pin.applying')
+        self.pin()
+        result = self.retry()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(list(outside.iterdir()), [])
+        self.assertEqual(self.dwarf(), 'opus:high')               # the stray link was replaced, the pin applied
+        self.assertEqual(self.records()[0][2:], ['sol', 'opus:high', 'pin'])
+        self.assertEqual(self.pin_files(), [])
+
+    def test_a_directory_in_the_claims_place_leaves_the_pin_for_a_later_retry(self):
+        (self.tdir / 'escalation.pin.applying').mkdir()
+        self.pin()
+        result = self.retry()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('could not claim the escalation pin', result.stderr)
+        self.assertEqual(list((self.tdir / 'escalation.pin.applying').iterdir()), [])
+        self.assertEqual((self.tdir / 'escalation.pin').read_text(), 'opus:high\n')
+        self.assertEqual(self.dwarf(), 'sol')
+        self.assertTrue(self.policy_was_asked())
+
+    def test_a_stale_claim_file_is_replaced_by_the_new_claim(self):
+        (self.tdir / 'escalation.pin.applying').write_text('luna:high\n')   # left by a run that died mid-claim
+        self.pin()
+        self.assertEqual(self.retry().returncode, 0)
+        self.assertEqual(self.dwarf(), 'opus:high')
+        self.assertEqual(self.pin_files(), [])
+
     # --- failure keeps the pin ------------------------------------------------------------
     def block_rewrite(self):
         """tasks.tsv cannot be rewritten: the temp file's name is taken by a directory (a
