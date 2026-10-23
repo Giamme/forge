@@ -128,11 +128,17 @@ class UiLauncherTests(unittest.TestCase):
         env = dict(self.env, BROWSER=str(stub))
         env.pop('FORGE_UI_BROWSER')
 
-        self.open(self.plan, env=env)
+        launched = self.ui('open', str(self.plan), env=env)
         first = self.server_json()
-        self.open(self.plan, env=env)
+        repeated = self.ui('open', str(self.plan), env=env)
         self.open(self.solo, env=env)
         second = self.server_json()
+        quiet = self.ui('open', str(self.plan), '--no-browser', env=env)
+
+        # a repeat that opens no browser says why on stderr; a launch and --no-browser stay silent
+        self.assertEqual((launched.stderr, quiet.stderr), ('', ''))
+        self.assertIn('forge-ui:', repeated.stderr)
+        self.assertEqual(repeated.stdout, launched.stdout, 'stdout stays the one link line runners rely on')
 
         self.assertEqual((second['pid'], second['port']), (first['pid'], first['port']))
         keys = [run['key'] for run in get_json(first['port'], '/api/runs')['runs']]
@@ -395,6 +401,15 @@ class UiLauncherTests(unittest.TestCase):
                 self.ui('stop', env=env)
         entry = default / (forge_registry.repo_key(repo) + '.txt')
         self.assertIn(str(self.plan.resolve()), entry.read_text().splitlines())
+
+    def test_open_registers_the_run_under_the_first_line_of_its_repo_file_like_the_runners(self):
+        # forge_registry (what the runners call) reads only the first line; `open` read the whole
+        # file, so a repo file with a second line put the run under a repo that does not exist.
+        repo = (self.plan / 'repo').read_text().strip()
+        (self.plan / 'repo').write_text(f'  {repo}  \nwritten by something else\n')
+        self.open(self.plan)
+        registry = self.tmp / 'config/forge/runs'
+        self.assertEqual([p.name for p in registry.iterdir()], [forge_registry.repo_key(repo) + '.txt'])
 
     def test_exit_codes_for_arguments_that_are_not_runs(self):
         notes = self.tmp / 'notes'

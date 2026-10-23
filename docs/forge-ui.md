@@ -119,7 +119,7 @@ python3 ui/tools/demo_runs.py /tmp/forge-demo
 
 | Command | Purpose |
 | --- | --- |
-| `open [DIR] [--no-browser] [--port N]` | start or reuse the shared forge-ui server (never one in the other mode); print `forge-ui: <url>` for the plan or solo run dir `DIR` (the run list without it) and open a browser the first time |
+| `open [DIR] [--no-browser] [--port N]` | start or reuse the shared forge-ui server (never one in the other mode); print `forge-ui: <url>` for the plan or solo run dir `DIR` (the run list without it) and open a browser the first time (a later `open` of the same run says on stderr that it opened none) |
 | `status [--json]` | exit 0 and describe the server (and whether it is read-only) when it runs, 1 when not |
 | `stop` | stop the server |
 

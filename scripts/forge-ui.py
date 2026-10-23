@@ -298,7 +298,10 @@ def run_info(directory):
         # a FIFO or a device named `repo` would block the read: only a regular file is read
         if not stat.S_ISREG(os.stat(marker).st_mode):
             return None, f'{marker} is not a regular file'
-        repo = marker.read_text().strip()
+        # only the first line names the repo, as in forge_registry._repo_of (the runners register
+        # the same run dir under that line; anything after it must not change where it lands)
+        lines = marker.read_text().splitlines()
+        repo = lines[0].strip() if lines else ''
     except (OSError, ValueError) as exc:  # ValueError: not decodable text
         return None, f'cannot read {marker}: {getattr(exc, "strerror", None) or exc}'
     if not repo:
@@ -375,7 +378,9 @@ def cmd_open(args):
             opened = opened if isinstance(opened, list) else []
             mark = key or ''
             # a key counts as opened only when a browser is really launched for it
-            first = mark not in opened and browser_wanted(args)
+            wanted = browser_wanted(args)
+            first = mark not in opened and wanted
+            again = mark in opened and wanted  # say so, or a repeated `open` looks like it did nothing
             if first:
                 opened.append(mark)
             server['opened'] = opened
@@ -393,6 +398,8 @@ def cmd_open(args):
     print(f'forge-ui: {url}')
     if first:
         launch_browser(url)
+    elif again:
+        _say('a browser tab was already opened for this link, so no new one was opened; use the link above')
     return 0
 
 
