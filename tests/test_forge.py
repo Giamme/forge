@@ -26,7 +26,9 @@ if '--help' in a:
 p = (pathlib.Path(a[a.index('--prompt-file')+1]).read_text() if '--prompt-file' in a
      else sys.stdin.read() if '-p' in a or a[-1] == '-' else a[-1])
 # Continuing a session (`--resume <id>`, `exec resume <id>`) is always a reviewer call.
-cont = a[a.index('--resume')+1] if '--resume' in a else a[a.index('resume')+1] if 'resume' in a else None
+eq = [x for x in a if x.startswith('--resume=')]
+cont = (eq[0].split('=', 1)[1] if eq else a[a.index('--resume')+1] if '--resume' in a
+        else a[a.index('--')+1] if 'resume' in a and '--' in a else a[a.index('resume')+1] if 'resume' in a else None)
 qa = '--disallowed-tools' in a or '--deny' in a or '-s' in a or 'review' in a or cont is not None
 name = 'a.txt' if 'TASK_a' in p else ('b.txt' if 'TASK_b' in p else ('c.txt' if 'TASK_c' in p else ('d.txt' if 'TASK_d' in p else 'change.txt')))
 # A shadow review (forge-shadow.py) is a review the run never reads; it gets its own role so

@@ -293,6 +293,19 @@ class ContinueSessionTests(DispatchBase):
         self.assertEqual(result.returncode, 8, result.stdout)
         self.assertEqual(self.kv('qa.continue')['mode'], 'failed')
 
+    def test_an_id_starting_with_a_dash_is_accepted_and_not_read_as_a_flag(self):
+        sid = '-abcd1234'
+        result = self.dispatch('qa', 'opus', '--continue-session', sid)
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertEqual(self.kv('qa.continue')['requested'], sid)
+        self.assertIn('--resume=' + sid, self.argv())
+        result = self.dispatch('qa', 'sol', '--continue-session', sid)
+        self.assertEqual(result.returncode, 0, result.stdout)
+        argv = self.argv()
+        self.assertEqual(argv[:3], ['codex', 'exec', 'resume'])
+        self.assertEqual(argv[-3:], ['--', sid, '-'])
+        self.assertEqual(self.kv('qa.continue')['mode'], 'continued')
+
     def test_usage_errors_are_exit_2(self):
         sid = self.SESSION
         cases = {
@@ -305,7 +318,6 @@ class ContinueSessionTests(DispatchBase):
             'too long': ('qa', 'opus', '--continue-session', 'a' * 129),
             'bad character': ('qa', 'opus', '--continue-session', 'abcd_1234'),
             'space': ('qa', 'opus', '--continue-session', 'abcd 1234'),
-            'leading dash': ('qa', 'opus', '--continue-session', '-abcd1234'),
             'empty': ('qa', 'opus', '--continue-session', ''),
             'missing value': ('qa', 'opus', '--continue-session'),
         }

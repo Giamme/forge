@@ -216,8 +216,7 @@ fi
 if [ "$CONTINUE_GIVEN" = 1 ]; then
   [ "$ROLE" = qa ] && [ "$NATIVE_REVIEW" != 1 ] && { [ "$HARNESS" = codex ] || [ "$HARNESS" = claude ] || [ "$HARNESS" = openclaude ]; } \
     || die "--continue-session needs the qa role on codex, claude or openclaude, without --native-review"
-  # A leading '-' would be read as a flag by the harness and by the advertised-flag check.
-  case "$CONTINUE_ID" in ''|-*|*[!A-Za-z0-9-]*) die "--continue-session id must be letters, digits and '-' only, not starting with '-'" ;; esac
+  case "$CONTINUE_ID" in ''|*[!A-Za-z0-9-]*) die "--continue-session id must be letters, digits and '-' only" ;; esac
   [ "${#CONTINUE_ID}" -ge 8 ] && [ "${#CONTINUE_ID}" -le 128 ] || die "--continue-session id must be 8 to 128 characters"
 fi
 
@@ -429,10 +428,14 @@ build_cmd() {
         # `codex exec resume` has no -C and no -s, so it runs where it is started (the
         # subshell cd below) and the sandbox is spelled out as a config override instead
         # of being left to what the first turn recorded. The quotes are TOML.
-        CMD=(codex exec resume "$CONTINUE_ID" --json -m "$MODEL" --skip-git-repo-check -o "$LAST")
+        # An id that starts with '-' would be read as a flag, so it goes after a `--`.
+        CMD=(codex exec resume)
+        case "$CONTINUE_ID" in -*) ;; *) CMD+=("$CONTINUE_ID") ;; esac
+        CMD+=(--json -m "$MODEL" --skip-git-repo-check -o "$LAST")
         [ -n "$EFFORT" ] && CMD+=(-c "model_reasoning_effort=$EFFORT")
         if [ "$YOLO" = 1 ]; then CMD+=(--dangerously-bypass-approvals-and-sandbox)
         else CMD+=(-c 'sandbox_mode="read-only"'); fi
+        case "$CONTINUE_ID" in -*) CMD+=(-- "$CONTINUE_ID") ;; esac
         CMD+=(-)
         PROMPT_VIA_STDIN=1
       else
@@ -457,7 +460,12 @@ build_cmd() {
       CMD+=(--output-format stream-json --verbose)
       [ -n "$EFFORT" ] && CMD+=(--effort "$EFFORT")
       # Before the variadic flags below, which would otherwise swallow it.
-      [ -z "$CONTINUE_ID" ] || CMD+=(--resume "$CONTINUE_ID")
+      # --resume takes an optional value, so an id that starts with '-' is joined with '='.
+      case "$CONTINUE_ID" in
+        '') ;;
+        -*) CMD+=("--resume=$CONTINUE_ID") ;;
+        *) CMD+=(--resume "$CONTINUE_ID") ;;
+      esac
       if [ "$YOLO" = 1 ]; then
         CMD+=(--dangerously-skip-permissions)
       else
@@ -547,6 +555,8 @@ unadvertised_flag() { # unadvertised_flag <help text>
   for arg in "${CMD[@]:1}"; do
     [ "$arg" = "$PROMPT" ] && continue
     [ "$arg" = - ] && continue
+    [ "$arg" = -- ] && continue
+    [ -n "$CONTINUE_ID" ] && [ "$arg" = "$CONTINUE_ID" ] && continue
     case "$arg" in
       -*) flag="${arg%%=*}"
           printf '%s\n' "$1" | grep -E -- "(^|[[:space:],|])$flag([=[:space:],|]|$)" >/dev/null || { printf '%s' "$flag"; return 0; } ;;
