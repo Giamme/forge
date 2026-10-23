@@ -895,11 +895,29 @@ do_task_body() (
   # on the review snapshot, like the subset run above; the reviewer gets the evidence.
   rm -f "$tdir/failfirst.json" "$tdir/failfirst.txt"
   [ ! -f "$PLAN/fail_first" ] || forge_fail_first "$review" "$tdir" "$REPO"
+  # What changed since the review whose findings this reviewer is handed. Fractal keeps
+  # today's prompt unless it retries, as changes.prev.diff does. dwarf.last is the reply of
+  # the attempt under review: a dwarf run just rewrote it, or $resume (the validated QA-only
+  # path, never the raw marker) guarantees the reviewed commit is the one it describes.
+  local prompt_extra=()
+  if [ -z "${FORGE_FRACTAL_RUN:-}" ] || [ "${FORGE_FRACTAL_RETRY:-}" = 1 ]; then
+    prompt_extra+=(--role qa)
+    attempt_delta "$tdir" "$wt" "$reviewed"
+    if [ -s "$tdir/changes.since.diff" ]; then
+      prompt_extra+=(--retry-diff "$tdir/changes.since.diff" --retry-stat "$tdir/changes.since.stat"
+        --retry-range "$(awk '{ print substr($1, 1, 7) ".." substr($2, 1, 7) }' "$tdir/changes.since.range")")
+    fi
+    if [ -s "$tdir/retry_findings.md" ] && [ -s "$tdir/dwarf.last" ]; then
+      prompt_extra+=(--reply "$tdir/dwarf.last")
+    fi
+  else
+    rm -f "$tdir/changes.since.diff" "$tdir/changes.since.range" "$tdir/changes.since.stat"
+  fi
   # QA uses the dispatch-time ownership and baseline, never later merge state.
   /bin/bash "$MEMORY" inject "$REPO" qa --task "$tdir/prompt.md" \
       --run-dir "$tdir" > "$tdir/qa.memory"
   {
-    python3 "$SKILL_DIR/scripts/forge-prompt.py" --requirements "$tdir/prompt.md" --capsule "$tdir/baseline.capsule" --approach "$tdir/approach.md" --retry "$tdir/retry_findings.md" --memory "$tdir/dwarf.memory" --memory "$tdir/qa.memory"
+    python3 "$SKILL_DIR/scripts/forge-prompt.py" --requirements "$tdir/prompt.md" --capsule "$tdir/baseline.capsule" --approach "$tdir/approach.md" --retry "$tdir/retry_findings.md" ${prompt_extra[@]+"${prompt_extra[@]}"} --memory "$tdir/dwarf.memory" --memory "$tdir/qa.memory"
     python3 "$SKILL_DIR/scripts/forge-contract.py" qa --part head --kind task
     echo
     if [ -s "$tdir/failfirst.txt" ]; then cat "$tdir/failfirst.txt"; echo; fi
@@ -915,9 +933,10 @@ do_task_body() (
       echo
     fi
     if [ -s "$tdir/guard.txt" ]; then
-      # Facts forge observed about how the implementer worked. The reviewer never sees the
-      # implementer's own report, so this is the only way an unfinished measurement or a
-      # stray process reaches the review.
+      # Facts forge observed about how the implementer worked. On a first attempt the reviewer
+      # never sees the implementer's own report (a retry's reviewer gets the reply, to check
+      # against the code), so this is how an unfinished measurement or a stray process
+      # reaches the review.
       echo "Implementer guard notes (observed by forge, not claimed by the implementer):"
       sed 's/^/  - /' "$tdir/guard.txt"
       echo "A promise of later work means a check may never have run; judge the diff on its own merits."
