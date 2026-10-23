@@ -101,7 +101,9 @@ class DispatchBase(unittest.TestCase):
         return out
 
     def attempt(self, role):
-        found = sorted(self.run_dir.glob('attempts/%s-*' % role))
+        # Attempt names end in a random id, so the newest is told by when it started.
+        found = sorted(self.run_dir.glob('attempts/%s-*' % role),
+                       key=lambda d: json.loads((d / 'metrics.json').read_text())['wall_started'])
         self.assertTrue(found, 'no attempt dir for ' + role)
         return found[-1]
 
@@ -145,6 +147,194 @@ class ExitCodeTests(DispatchBase):
         self.env.pop('FORGE_TIMEOUT')
         self.env['FORGE_REGISTRY'] = str(self.root / 'missing.tsv')
         self.assertEqual(self.dispatch('dwarf', 'sol').returncode, 2)
+
+
+class ContinueSessionTests(DispatchBase):
+    """--continue-session: the argv per harness, exit 9, and the <role>.continue record."""
+    SESSION = 'abcd1234-ef56-7890-abcd-ef1234567890'
+
+    def setUp(self):
+        super().setUp()
+        for name in ('openclaude', 'opencode', 'agy'):
+            shutil.copy(self.bin / 'claude', self.bin / name)
+
+    def cont(self, spec='opus', *args, **kw):
+        return self.dispatch('qa', spec, '--continue-session', self.SESSION, *args, **kw)
+
+    def argv(self):
+        import shlex
+        return shlex.split(self.read('qa.cmd'))
+
+    def test_claude_and_openclaude_argv_is_the_fresh_one_plus_resume(self):
+        for spec in ('opus', 'sol:high:openclaude'):
+            with self.subTest(spec=spec):
+                fresh = self.dispatch('qa', spec)
+                self.assertEqual(fresh.returncode, 0, fresh.stdout)
+                fresh_argv = self.argv()
+                result = self.cont(spec)
+                self.assertEqual(result.returncode, 0, result.stdout)
+                argv = self.argv()
+                at = argv.index('--resume')
+                self.assertEqual(argv[at + 1], self.SESSION)
+                self.assertEqual(argv[:at] + argv[at + 2:], fresh_argv)
+                # The variadic read-only flags stay, and --resume is not swallowed by them.
+                self.assertLess(at, argv.index('--disallowed-tools'))
+                self.assertEqual(argv[argv.index('--disallowed-tools') + 1], 'Edit,Write,NotebookEdit')
+                self.assertEqual(argv[argv.index('--permission-mode') + 1], 'acceptEdits')
+
+    def test_codex_continues_with_the_sandbox_spelled_out(self):
+        cwds = self.root / 'cwds'
+        self.env['CWDS'] = str(cwds)
+        result = self.cont('sol:high')
+        self.assertEqual(result.returncode, 0, result.stdout)
+        argv = self.argv()
+        self.assertEqual(argv[:4], ['codex', 'exec', 'resume', self.SESSION])
+        self.assertEqual(argv[4:], ['--json', '-m', 'gpt-6.1-sol', '--skip-git-repo-check', '-o', str(self.run_dir / 'qa.last'),
+                                    '-c', 'model_reasoning_effort=high', '-c', 'sandbox_mode="read-only"', '-'])
+        for flag in ('-C', '-s', '--cd'):
+            self.assertNotIn(flag, argv)
+        self.assertEqual([os.path.realpath(c) for c in cwds.read_text().split()], [os.path.realpath(self.repo)])
+        self.assertEqual(self.kv('qa.continue')['mode'], 'continued')
+
+    def test_codex_yolo_replaces_the_sandbox_override(self):
+        result = self.cont('sol', '--yolo')
+        self.assertEqual(result.returncode, 0, result.stdout)
+        argv = self.argv()
+        self.assertIn('--dangerously-bypass-approvals-and-sandbox', argv)
+        self.assertFalse([a for a in argv if a.startswith('sandbox_mode')])
+
+    def test_claude_runs_in_the_repo(self):
+        self.env['CWDS'] = str(self.root / 'cwds')
+        self.assertEqual(self.cont().returncode, 0)
+        self.assertEqual([os.path.realpath(c) for c in (self.root / 'cwds').read_text().split()], [os.path.realpath(self.repo)])
+
+    def test_success_record_and_preamble(self):
+        for spec in ('opus', 'sol'):
+            with self.subTest(spec=spec):
+                result = self.cont(spec)
+                self.assertEqual(result.returncode, 0, result.stdout)
+                self.assertEqual(self.read('qa.continue'), 'requested=%s\nmode=continued\n' % self.SESSION)
+                prompt = self.read('qa.prompt')
+                self.assertTrue(prompt.startswith('This continues your earlier review'), prompt)
+                self.assertIn('working directory is now %s' % self.repo, prompt)
+                self.assertIn("this round's instructions win", prompt)
+                self.assertTrue(prompt.endswith('Implement change. REQUIREMENT_SENTINEL\n'))
+                self.assertEqual((self.attempt('qa') / 'qa.prompt').read_text(), prompt)
+                self.assertEqual((self.attempt('qa') / 'qa.continue').read_text(), self.read('qa.continue'))
+                self.assertEqual(self.read('qa.original'), 'Implement change. REQUIREMENT_SENTINEL\n')
+
+    def test_a_fresh_dispatch_has_no_preamble_and_clears_the_record(self):
+        self.assertEqual(self.cont().returncode, 0)
+        self.assertTrue((self.run_dir / 'qa.continue').exists())
+        result = self.dispatch('qa', 'opus')
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertEqual(self.read('qa.prompt'), 'Implement change. REQUIREMENT_SENTINEL\n')
+        self.assertFalse((self.run_dir / 'qa.continue').exists())
+        self.assertFalse((self.attempt('qa') / 'qa.continue').exists())
+
+    def test_the_same_prompt_twice_does_not_stack_preambles(self):
+        self.assertEqual(self.cont().returncode, 0)
+        self.assertEqual(self.cont().returncode, 0)
+        self.assertEqual(self.read('qa.prompt').count('This continues your earlier review'), 1)
+
+    def test_a_failed_continue_is_exit_9_and_not_retried_fresh(self):
+        for spec in ('opus', 'sol'):
+            with self.subTest(spec=spec):
+                (self.root / 'calls').unlink(missing_ok=True)
+                self.scenario({'*.qa.*': {'continue_fails': True}})
+                result = self.cont(spec)
+                self.assertEqual(result.returncode, 9, result.stdout)
+                fields = self.kv('qa.continue')
+                self.assertEqual((fields['requested'], fields['mode']), (self.SESSION, 'failed'))
+                self.assertEqual(fields['reason'], 'No conversation found with session ID: ' + self.SESSION)
+                self.assertEqual(self.calls(), ['qa'])
+                self.assertEqual((self.attempt('qa') / 'qa.continue').read_text(), self.read('qa.continue'))
+                self.assertEqual(json.loads((self.attempt('qa') / 'metrics.json').read_text())['exit_code'], 9)
+
+    def test_a_fresh_failure_is_still_exit_4(self):
+        self.scenario({'*.qa.*': {'rc': 1, 'stderr': 'Traceback: boom'}})
+        self.assertEqual(self.dispatch('qa', 'opus').returncode, 4)
+        self.assertFalse((self.run_dir / 'qa.continue').exists())
+
+    def test_unsupported_is_exit_9_before_any_model_call(self):
+        # Everything a fresh dispatch needs, but nothing about continuing.
+        for spec, cli in (('opus', 'claude'), ('sol', 'codex')):
+            with self.subTest(cli=cli):
+                (self.root / 'calls').unlink(missing_ok=True)
+                self.scenario({})
+                script = (self.bin / cli).read_text()
+                no_resume = self.root / 'no-resume'
+                no_resume.mkdir(exist_ok=True)
+                fake = no_resume / cli
+                fake.write_text(script.replace("print('--resume -p", "print('-p").replace(
+                    "print('-m --model -c --config --json", "print('-m --model"))
+                fake.chmod(0o755)
+                env = dict(self.env, PATH=str(no_resume) + os.pathsep + self.env['PATH'])
+                result = self.cont(spec, env=env)
+                self.assertEqual(result.returncode, 9, result.stdout)
+                self.assertEqual(self.read('qa.continue'), 'requested=%s\nmode=failed\nreason=unsupported\n' % self.SESSION)
+                self.assertEqual(self.calls(), [])
+                self.assertEqual((self.attempt('qa') / 'qa.continue').read_text(), self.read('qa.continue'))
+
+    def test_a_harness_unusable_even_fresh_keeps_exit_3(self):
+        cli = self.bin / 'claude'
+        cli.write_text('#!/bin/sh\necho --model\n')
+        cli.chmod(0o755)
+        result = self.cont()
+        self.assertEqual(result.returncode, 3, result.stdout)
+
+    def test_timeout_and_infrastructure_keep_their_codes(self):
+        self.scenario({'*.qa.*': {'sleep': 30}})
+        result = self.cont('opus', '--timeout', '1')
+        self.assertEqual(result.returncode, 7, result.stdout)
+        self.assertEqual(self.kv('qa.continue')['mode'], 'failed')
+        self.scenario({'*.qa.*': {'rc': 1, 'is_error': True, 'verdict': 'none', 'findings': "You've hit your usage limit. Try again in 2h 5m."}})
+        result = self.cont()
+        self.assertEqual(result.returncode, 8, result.stdout)
+        self.assertEqual(self.kv('qa.continue')['mode'], 'failed')
+
+    def test_usage_errors_are_exit_2(self):
+        sid = self.SESSION
+        cases = {
+            'dwarf role': ('dwarf', 'sol', '--continue-session', sid),
+            'native review': ('qa', 'sol', '--continue-session', sid, '--native-review'),
+            'opencode': ('qa', 'gemini-pro::opencode', '--continue-session', sid),
+            'antigravity': ('qa', 'opus::antigravity', '--continue-session', sid),
+            'grok': ('qa', 'grok:high', '--continue-session', sid),
+            'too short': ('qa', 'opus', '--continue-session', 'abc1234'),
+            'too long': ('qa', 'opus', '--continue-session', 'a' * 129),
+            'bad character': ('qa', 'opus', '--continue-session', 'abcd_1234'),
+            'space': ('qa', 'opus', '--continue-session', 'abcd 1234'),
+            'leading dash': ('qa', 'opus', '--continue-session', '-abcd1234'),
+            'empty': ('qa', 'opus', '--continue-session', ''),
+            'missing value': ('qa', 'opus', '--continue-session'),
+        }
+        for label, args in cases.items():
+            with self.subTest(label):
+                result = self.dispatch(*args)
+                self.assertEqual(result.returncode, 2, result.stdout)
+        self.assertFalse((self.root / 'calls').exists())
+        self.assertFalse((self.run_dir / 'attempts').exists())
+        self.assertEqual(self.dispatch('qa', 'opus', '--continue-session', 'a' * 8).returncode, 0)
+        self.assertEqual(self.dispatch('qa', 'opus', '--continue-session', 'a' * 128).returncode, 0)
+
+    def test_doctor_is_unchanged_without_the_option(self):
+        def doctor(*args, path=None):
+            env = dict(self.env, PATH=path) if path else self.env
+            r = subprocess.run(['bash', str(DISPATCH), 'doctor', '--spec', *args], cwd=self.repo, env=env, text=True,
+                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=60)
+            return r.returncode, r.stdout
+        for spec in ('sol', 'opus', 'sol:high:openclaude'):
+            for role in ('dwarf', 'qa'):
+                with self.subTest(spec=spec, role=role):
+                    code, out = doctor(spec, '--role', role)
+                    self.assertEqual(code, 0, out)
+                    self.assertIn('offline preflight passed', out)
+                    self.assertNotIn('continue', out)
+        code, out = doctor('sol', '--role', 'qa', '--continue-session', self.SESSION)
+        self.assertEqual(code, 0, out)
+        code, out = doctor('sol', '--role', 'dwarf', '--continue-session', self.SESSION)
+        self.assertEqual(code, 2, out)
 
 
 class GrokHarnessTests(DispatchBase):

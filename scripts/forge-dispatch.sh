@@ -9,6 +9,8 @@
 #   forge-dispatch.sh dwarf <spec> --prompt-file <f> [--repo <dir>] [--run-dir <d>] [--yolo] [--dry-run]
 #   forge-dispatch.sh qa    <spec> --prompt-file <f> [--repo <dir>] [--run-dir <d>] [--yolo] [--dry-run]
 #                                  [--native-review [--review-base <ref>]]
+#   forge-dispatch.sh qa <spec> ... --continue-session <id>   continue that reviewer session
+#                                  (claude, openclaude, codex; custom prompt only)
 #   any role: [--no-ripwire] [--ripwire-query-file <requirements>]
 #   any role: [--timeout <seconds>]   0 disables the watchdog
 #
@@ -28,6 +30,9 @@
 #               answer): the model never got to do its work. $ROLE.infra says which.
 #               A DWARF that exits 0 with an empty final message also writes $ROLE.infra
 #               (class=empty) but still exits 0; consult the file only if the diff is empty.
+#             9 the session was not continued (--continue-session only): the harness cannot
+#               continue one, or it ran and failed. The caller may dispatch fresh; dispatch
+#               never does, so each dispatch keeps its own record. $ROLE.continue says why.
 # A process still alive in the harness's group after it exited is killed and listed in
 # $ROLE.orphans (only written when there is something to list).
 set -uo pipefail
@@ -149,7 +154,7 @@ SPEC="$1"; shift
 
 RIPWIRE_QUERY=""
 OUTPUT=full
-REPO="$PWD"; RUN_DIR=""; PROMPT_FILE=""; YOLO=0; DRY=0; REVIEW_BASE=""; PROMPT_VIA_STDIN=0; NATIVE_REVIEW=0; AGY_TIMEOUT="30m"; TIMEOUT_FLAG=""
+REPO="$PWD"; RUN_DIR=""; PROMPT_FILE=""; YOLO=0; DRY=0; REVIEW_BASE=""; PROMPT_VIA_STDIN=0; NATIVE_REVIEW=0; CONTINUE_ID=""; CONTINUE_GIVEN=0; AGY_TIMEOUT="30m"; TIMEOUT_FLAG=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --no-ripwire) export FORGE_RIPWIRE=off; shift ;;
@@ -160,6 +165,7 @@ while [ $# -gt 0 ]; do
     --prompt-file)  PROMPT_FILE="${2:?--prompt-file needs a value}"; shift 2 ;;
     --review-base)  REVIEW_BASE="${2:?--review-base needs a value}"; shift 2 ;;
     --native-review) NATIVE_REVIEW=1; shift ;;
+    --continue-session) [ $# -ge 2 ] || die "--continue-session needs a session id"; CONTINUE_ID="$2"; CONTINUE_GIVEN=1; shift 2 ;;
     --agy-timeout)  AGY_TIMEOUT="${2:?--agy-timeout needs a value}"; shift 2 ;;
     --timeout)      TIMEOUT_FLAG="${2:?--timeout needs a value in seconds, 0 to disable}"; shift 2 ;;
     --yolo)         YOLO=1; shift ;;
@@ -206,6 +212,13 @@ fi
 
 if [ "$NATIVE_REVIEW" = 1 ] && { [ "$ROLE" != qa ] || [ "$HARNESS" != codex ]; }; then
   die "--native-review requires QA on codex"
+fi
+if [ "$CONTINUE_GIVEN" = 1 ]; then
+  [ "$ROLE" = qa ] && [ "$NATIVE_REVIEW" != 1 ] && { [ "$HARNESS" = codex ] || [ "$HARNESS" = claude ] || [ "$HARNESS" = openclaude ]; } \
+    || die "--continue-session needs the qa role on codex, claude or openclaude, without --native-review"
+  # A leading '-' would be read as a flag by the harness and by the advertised-flag check.
+  case "$CONTINUE_ID" in ''|-*|*[!A-Za-z0-9-]*) die "--continue-session id must be letters, digits and '-' only, not starting with '-'" ;; esac
+  [ "${#CONTINUE_ID}" -ge 8 ] && [ "${#CONTINUE_ID}" -le 128 ] || die "--continue-session id must be 8 to 128 characters"
 fi
 
 # --- resolve effort -----------------------------------------------------------
@@ -301,10 +314,11 @@ RUN_DIR="$(cd "$RUN_DIR" && pwd)"   # normalize, so the containment check below 
 case "$RUN_DIR" in "$REPO"|"$REPO"/*) die "--run-dir must be outside --repo, or it lands in the diff under review" ;; esac
 
 # Start an immutable attempt record before preparation, including failures.
+write_continue() { :; }   # redefined below once there is an attempt to archive it into
 ATTEMPT=""
 if [ "$PREFLIGHT" != 1 ] && [ "$DRY" != 1 ]; then
   ATTEMPT="$(python3 "$RUNTIME" begin "$RUN_DIR" "$ROLE")" || exit 3
-  rm -f "$RUN_DIR/$ROLE.last" "$RUN_DIR/$ROLE.log" "$RUN_DIR/$ROLE.resolved" "$RUN_DIR/$ROLE.cmd" "$RUN_DIR/$ROLE.timedout" "$RUN_DIR/$ROLE.infra" "$RUN_DIR/$ROLE.orphans"
+  rm -f "$RUN_DIR/$ROLE.last" "$RUN_DIR/$ROLE.log" "$RUN_DIR/$ROLE.resolved" "$RUN_DIR/$ROLE.cmd" "$RUN_DIR/$ROLE.timedout" "$RUN_DIR/$ROLE.infra" "$RUN_DIR/$ROLE.orphans" "$RUN_DIR/$ROLE.session" "$RUN_DIR/$ROLE.continue"
   trap 'exit 143' TERM
   trap 'exit 130' INT
   # GUARD_ON is 1 only when the harness was started in its own process group (see the
@@ -322,6 +336,14 @@ if [ "$PREFLIGHT" != 1 ] && [ "$DRY" != 1 ]; then
     fi
     if [ -n "${wpid:-}" ]; then pkill -P "$wpid" 2>/dev/null; kill "$wpid" 2>/dev/null; fi
   }
+  # What the EXIT trap's `finish` archives. Pessimistic until an outcome is known, so every
+  # path out of a continue request (a signal, a usage error after this point) leaves a record.
+  write_continue() { # write_continue <continued|failed> [reason]
+    [ -n "$CONTINUE_ID" ] || return 0
+    { echo "requested=$CONTINUE_ID"; echo "mode=$1"; [ -z "${2:-}" ] || echo "reason=$2"; } > "$RUN_DIR/$ROLE.continue.tmp" \
+      && mv "$RUN_DIR/$ROLE.continue.tmp" "$RUN_DIR/$ROLE.continue"
+  }
+  write_continue failed "dispatch did not complete"
   trap 'result=$?; exit_cleanup; python3 "$RUNTIME" finish "$ATTEMPT" "$RUN_DIR" "$ROLE" "$HARNESS" "$result"; exit "$result"' EXIT
 fi
 [ -n "$PROMPT_FILE" ] || die "role '$ROLE' needs --prompt-file"
@@ -372,139 +394,191 @@ if [ -n "$ATTEMPT" ]; then
     --prompt "$PROMPT_FILE" --query "$RIPWIRE_QUERY" --baseline "$REVIEW_BASE" \
     --artifacts "$ATTEMPT" --native "$NATIVE_REVIEW" || note "Ripwire preparation failed; continuing"
 fi
+# A continued reviewer remembers the earlier round, including its instructions. $ROLE.prompt
+# records what was sent, so the preamble goes into the file itself.
+if [ -n "$CONTINUE_ID" ]; then
+  continued_prompt="$(mktemp "$RUN_DIR/.prompt.XXXXXX")" || die "cannot create continued prompt"
+  {
+    printf 'This continues your earlier review of this work. The work has changed since you last\n'
+    printf 'looked. Your working directory is now %s. Re-read files rather than relying on what\n' "$REPO"
+    printf 'you read before. Review this round exactly as instructed below; where it differs from\n'
+    printf "earlier instructions (a threshold, for example), this round's instructions win.\n\n"
+    cat "$PROMPT_FILE"
+  } > "$continued_prompt" && mv "$continued_prompt" "$RUN_DIR/$ROLE.prompt" || { rm -f "$continued_prompt"; die "cannot install continued prompt"; }
+fi
 cp "$PROMPT_FILE" "$RUN_DIR/$ROLE.delivered"
 case "$HARNESS" in opencode|antigravity) PROMPT="$(cat "$PROMPT_FILE")" ;; esac
 
 # --- build argv ---------------------------------------------------------------
-CMD=()
-case "$HARNESS" in
-  codex)
-    if [ "$ROLE" = "qa" ] && [ "$NATIVE_REVIEW" = 1 ]; then
-      # codex's built-in reviewer. Its scope flags are mutually exclusive with a
-      # custom PROMPT, so this mode trades away the goal context: it can judge
-      # whether the diff is correct, but not whether it is the change that was
-      # actually asked for. `codex exec review` also has no --cd, hence the
-      # subshell cd below.
-      CMD=(codex exec review --json -m "$MODEL" --skip-git-repo-check -o "$LAST")
-      [ -n "$EFFORT" ] && CMD+=(-c "model_reasoning_effort=$EFFORT")
-      if [ -n "$REVIEW_BASE" ]; then CMD+=(--base "$REVIEW_BASE"); else CMD+=(--uncommitted); fi
-      if [ "$YOLO" = 1 ]; then CMD+=(--dangerously-bypass-approvals-and-sandbox); fi
-    else
-      CMD=(codex exec --json -m "$MODEL" -C "$REPO" --skip-git-repo-check -o "$LAST")
-      [ -n "$EFFORT" ] && CMD+=(-c "model_reasoning_effort=$EFFORT")
-      # --approve-for-me and --dangerously-bypass-... are mutually exclusive.
-      if [ "$YOLO" = 1 ]; then CMD+=(--dangerously-bypass-approvals-and-sandbox)
-      elif [ "$ROLE" = "dwarf" ]; then CMD+=(--approve-for-me)
-      else CMD+=(-s read-only); fi
-      CMD+=(-)
+# Sets CMD (and PROMPT_VIA_STDIN) for the dispatch, or for the fresh one when CONTINUE_ID is empty.
+build_cmd() {
+  CMD=()
+  case "$HARNESS" in
+    codex)
+      if [ "$ROLE" = "qa" ] && [ "$NATIVE_REVIEW" = 1 ]; then
+        # codex's built-in reviewer. Its scope flags are mutually exclusive with a
+        # custom PROMPT, so this mode trades away the goal context: it can judge
+        # whether the diff is correct, but not whether it is the change that was
+        # actually asked for. `codex exec review` also has no --cd, hence the
+        # subshell cd below.
+        CMD=(codex exec review --json -m "$MODEL" --skip-git-repo-check -o "$LAST")
+        [ -n "$EFFORT" ] && CMD+=(-c "model_reasoning_effort=$EFFORT")
+        if [ -n "$REVIEW_BASE" ]; then CMD+=(--base "$REVIEW_BASE"); else CMD+=(--uncommitted); fi
+        if [ "$YOLO" = 1 ]; then CMD+=(--dangerously-bypass-approvals-and-sandbox); fi
+      elif [ -n "$CONTINUE_ID" ]; then
+        # `codex exec resume` has no -C and no -s, so it runs where it is started (the
+        # subshell cd below) and the sandbox is spelled out as a config override instead
+        # of being left to what the first turn recorded. The quotes are TOML.
+        CMD=(codex exec resume "$CONTINUE_ID" --json -m "$MODEL" --skip-git-repo-check -o "$LAST")
+        [ -n "$EFFORT" ] && CMD+=(-c "model_reasoning_effort=$EFFORT")
+        if [ "$YOLO" = 1 ]; then CMD+=(--dangerously-bypass-approvals-and-sandbox)
+        else CMD+=(-c 'sandbox_mode="read-only"'); fi
+        CMD+=(-)
+        PROMPT_VIA_STDIN=1
+      else
+        CMD=(codex exec --json -m "$MODEL" -C "$REPO" --skip-git-repo-check -o "$LAST")
+        [ -n "$EFFORT" ] && CMD+=(-c "model_reasoning_effort=$EFFORT")
+        # --approve-for-me and --dangerously-bypass-... are mutually exclusive.
+        if [ "$YOLO" = 1 ]; then CMD+=(--dangerously-bypass-approvals-and-sandbox)
+        elif [ "$ROLE" = "dwarf" ]; then CMD+=(--approve-for-me)
+        else CMD+=(-s read-only); fi
+        CMD+=(-)
+        PROMPT_VIA_STDIN=1
+      fi
+      ;;
+    claude|openclaude)
+      # The run dir sits outside the repo (so it stays out of the diff), which also
+      # puts it outside the harness's default reach — without this the agent
+      # refuses to open the very artifacts forge just wrote for it.
+      CMD=("$HARNESS" -p --model "$MODEL" --add-dir "$RUN_DIR")
+      # One JSON message per line: what the agent said and every tool call, so the run keeps
+      # its conversation (forge-ui reads it), ending in the `result` line forge-runtime.py
+      # takes the final message and the tokens from. stream-json needs --verbose with -p.
+      CMD+=(--output-format stream-json --verbose)
+      [ -n "$EFFORT" ] && CMD+=(--effort "$EFFORT")
+      # Before the variadic flags below, which would otherwise swallow it.
+      [ -z "$CONTINUE_ID" ] || CMD+=(--resume "$CONTINUE_ID")
+      if [ "$YOLO" = 1 ]; then
+        CMD+=(--dangerously-skip-permissions)
+      else
+        # `acceptEdits`, not `auto`. Re-measured against this machine's CLIs:
+        # acceptEdits allows both Edit and Bash, whereas `auto` allows Bash but
+        # still prompts for Edit — and a headless dwarf has nobody to answer that
+        # prompt, so it ends with "I need your permission to edit f.py" and an
+        # empty diff. The failure is silent: the harness exits 0 and forge sees a
+        # successful run that changed nothing.
+        CMD+=(--permission-mode acceptEdits)
+        # Neither mode alone is enough, and the gap is silent in both directions:
+        # `auto` allows shell but prompts for Edit, so a dwarf ends with "I need
+        # your permission to edit" and an empty diff; `acceptEdits` allows Edit but
+        # still prompts for any non-trivial shell command, so a dwarf writes code
+        # and then stalls on "awaiting approval to run pytest" without ever
+        # verifying it. acceptEdits plus an explicit Bash allowance gives both, and
+        # QA's --disallowed-tools below still overrides the edit permission.
+        CMD+=(--allowedTools "Bash")
+        # Disable editing tools as defense in depth. Bash can still write files;
+        # runners use disposable snapshots and fingerprint checks for acceptance.
+        read_only_role && CMD+=(--disallowed-tools "Edit,Write,NotebookEdit")
+      fi
+      # The prompt goes on stdin, not argv. --disallowed-tools and friends are
+      # variadic, so any positional after them is silently eaten as another tool
+      # name — the run then dies on "Input must be provided" if you are lucky, or
+      # reviews nothing at all if you are not. stdin also lifts the argv length
+      # limit, which a long goal plus an inlined diff will otherwise hit.
       PROMPT_VIA_STDIN=1
-    fi
-    ;;
-  claude|openclaude)
-    # The run dir sits outside the repo (so it stays out of the diff), which also
-    # puts it outside the harness's default reach — without this the agent
-    # refuses to open the very artifacts forge just wrote for it.
-    CMD=("$HARNESS" -p --model "$MODEL" --add-dir "$RUN_DIR")
-    # One JSON message per line: what the agent said and every tool call, so the run keeps
-    # its conversation (forge-ui reads it), ending in the `result` line forge-runtime.py
-    # takes the final message and the tokens from. stream-json needs --verbose with -p.
-    CMD+=(--output-format stream-json --verbose)
-    [ -n "$EFFORT" ] && CMD+=(--effort "$EFFORT")
-    if [ "$YOLO" = 1 ]; then
-      CMD+=(--dangerously-skip-permissions)
-    else
-      # `acceptEdits`, not `auto`. Re-measured against this machine's CLIs:
-      # acceptEdits allows both Edit and Bash, whereas `auto` allows Bash but
-      # still prompts for Edit — and a headless dwarf has nobody to answer that
-      # prompt, so it ends with "I need your permission to edit f.py" and an
-      # empty diff. The failure is silent: the harness exits 0 and forge sees a
-      # successful run that changed nothing.
-      CMD+=(--permission-mode acceptEdits)
-      # Neither mode alone is enough, and the gap is silent in both directions:
-      # `auto` allows shell but prompts for Edit, so a dwarf ends with "I need
-      # your permission to edit" and an empty diff; `acceptEdits` allows Edit but
-      # still prompts for any non-trivial shell command, so a dwarf writes code
-      # and then stalls on "awaiting approval to run pytest" without ever
-      # verifying it. acceptEdits plus an explicit Bash allowance gives both, and
-      # QA's --disallowed-tools below still overrides the edit permission.
-      CMD+=(--allowedTools "Bash")
-      # Disable editing tools as defense in depth. Bash can still write files;
-      # runners use disposable snapshots and fingerprint checks for acceptance.
-      read_only_role && CMD+=(--disallowed-tools "Edit,Write,NotebookEdit")
-    fi
-    # The prompt goes on stdin, not argv. --disallowed-tools and friends are
-    # variadic, so any positional after them is silently eaten as another tool
-    # name — the run then dies on "Input must be provided" if you are lucky, or
-    # reviews nothing at all if you are not. stdin also lifts the argv length
-    # limit, which a long goal plus an inlined diff will otherwise hit.
-    PROMPT_VIA_STDIN=1
-    ;;
-  opencode)
-    CMD=(opencode run -m "$MODEL" --dir "$REPO")
-    [ -n "$EFFORT" ] && CMD+=(--variant "$EFFORT")
-    # opencode run exposes no sandbox tier — without --auto it blocks on a
-    # permission prompt that nothing can answer headlessly, so it is always set.
-    CMD+=(--auto)
-    read_only_role && [ "$YOLO" != 1 ] && CMD+=(--agent plan)
-    # One JSON event per line (text, tool_use, step_finish, error): the conversation, the
-    # final message and the tokens, read by forge-runtime.py and forge-ui.
-    CMD+=(--format json)
-    CMD+=("$PROMPT")
-    ;;
-  antigravity)
-    # `agy --print` is a Go flag with an OPTIONAL value: written detached it eats
-    # whatever token follows as its prompt ("--print took --print-timeout as its
-    # prompt"). The attached --print=... form is the only safe spelling, and it
-    # goes last so nothing can be captured after it.
-    CMD=(agy --model "$MODEL" --print-timeout "$AGY_TIMEOUT")
-    [ -n "$EFFORT" ] && CMD+=(--effort "$EFFORT")
-    # --add-dir on the repo is not optional. Antigravity is workspace-scoped
-    # rather than cwd-scoped, so without it the agent searches the wrong tree and
-    # the run dies on "Find command timed out: context deadline exceeded".
-    CMD+=(--add-dir "$REPO" --add-dir "$RUN_DIR")
-    if [ "$YOLO" = 1 ]; then CMD+=(--dangerously-skip-permissions)
-    elif read_only_role; then CMD+=(--mode plan)
-    else CMD+=(--mode accept-edits); fi
-    CMD+=(--print="$PROMPT")
-    ;;
-  grok)
-    # Headless grok refuses any tool call that needs approval and still exits 0
-    # ("permission required: Edit calc.py was not run"): the same silent empty diff
-    # claude gives without acceptEdits, so the dwarf gets edits and the whole shell.
-    # The Messages-format stream ends in a claude-shaped `result` line, which
-    # forge-runtime.py reads for the final message and the tokens.
-    CMD=(grok --model "$MODEL" --prompt-file "$PROMPT_FILE" --output-format streaming-messages-json)
-    [ -n "$EFFORT" ] && CMD+=(--reasoning-effort "$EFFORT")
-    if [ "$YOLO" = 1 ]; then
-      CMD+=(--always-approve)
-    else
-      CMD+=(--permission-mode acceptEdits --allow Bash)
-      # A deny rule beats the mode and every allow, so a reviewer keeps its shell for
-      # running tests but cannot edit. Bash can still write files, as with claude.
-      read_only_role && CMD+=(--deny Edit --deny Write)
-    fi
-    ;;
-  *) die "no dispatch recipe for harness '$HARNESS'" ;;
-esac
+      ;;
+    opencode)
+      CMD=(opencode run -m "$MODEL" --dir "$REPO")
+      [ -n "$EFFORT" ] && CMD+=(--variant "$EFFORT")
+      # opencode run exposes no sandbox tier — without --auto it blocks on a
+      # permission prompt that nothing can answer headlessly, so it is always set.
+      CMD+=(--auto)
+      read_only_role && [ "$YOLO" != 1 ] && CMD+=(--agent plan)
+      # One JSON event per line (text, tool_use, step_finish, error): the conversation, the
+      # final message and the tokens, read by forge-runtime.py and forge-ui.
+      CMD+=(--format json)
+      CMD+=("$PROMPT")
+      ;;
+    antigravity)
+      # `agy --print` is a Go flag with an OPTIONAL value: written detached it eats
+      # whatever token follows as its prompt ("--print took --print-timeout as its
+      # prompt"). The attached --print=... form is the only safe spelling, and it
+      # goes last so nothing can be captured after it.
+      CMD=(agy --model "$MODEL" --print-timeout "$AGY_TIMEOUT")
+      [ -n "$EFFORT" ] && CMD+=(--effort "$EFFORT")
+      # --add-dir on the repo is not optional. Antigravity is workspace-scoped
+      # rather than cwd-scoped, so without it the agent searches the wrong tree and
+      # the run dies on "Find command timed out: context deadline exceeded".
+      CMD+=(--add-dir "$REPO" --add-dir "$RUN_DIR")
+      if [ "$YOLO" = 1 ]; then CMD+=(--dangerously-skip-permissions)
+      elif read_only_role; then CMD+=(--mode plan)
+      else CMD+=(--mode accept-edits); fi
+      CMD+=(--print="$PROMPT")
+      ;;
+    grok)
+      # Headless grok refuses any tool call that needs approval and still exits 0
+      # ("permission required: Edit calc.py was not run"): the same silent empty diff
+      # claude gives without acceptEdits, so the dwarf gets edits and the whole shell.
+      # The Messages-format stream ends in a claude-shaped `result` line, which
+      # forge-runtime.py reads for the final message and the tokens.
+      CMD=(grok --model "$MODEL" --prompt-file "$PROMPT_FILE" --output-format streaming-messages-json)
+      [ -n "$EFFORT" ] && CMD+=(--reasoning-effort "$EFFORT")
+      if [ "$YOLO" = 1 ]; then
+        CMD+=(--always-approve)
+      else
+        CMD+=(--permission-mode acceptEdits --allow Bash)
+        # A deny rule beats the mode and every allow, so a reviewer keeps its shell for
+        # running tests but cannot edit. Bash can still write files, as with claude.
+        read_only_role && CMD+=(--deny Edit --deny Write)
+      fi
+      ;;
+    *) die "no dispatch recipe for harness '$HARNESS'" ;;
+  esac
+}
+build_cmd
 
 # Offline validation uses the exact command recipe, never a model request.
-preflight_command() {
-  local bin help arg flag
-  local help_args=(--help)
-  bin="$(command -v "$(binary_for "$HARNESS")")" || die "harness '$HARNESS' is not installed" 3
-  case "$HARNESS" in
-    codex) help_args=(exec --help); [ "$NATIVE_REVIEW" = 1 ] && help_args=(exec review --help) ;;
-    opencode) help_args=(run --help) ;;
-  esac
-  help="$(python3 "$RUNTIME" help "${FORGE_CAPABILITY_CACHE:-$RUN_DIR/capabilities}" "$REGISTRY" "${BASH_SOURCE[0]}" "$bin" "${help_args[@]}")" || die "cannot read $HARNESS help" 3
+capability_help() { # capability_help <binary> <help args...>
+  python3 "$RUNTIME" help "${FORGE_CAPABILITY_CACHE:-$RUN_DIR/capabilities}" "$REGISTRY" "${BASH_SOURCE[0]}" "$@"
+}
+# Prints the first flag of CMD the help text does not advertise; fails when all are.
+unadvertised_flag() { # unadvertised_flag <help text>
+  local arg flag
   for arg in "${CMD[@]:1}"; do
     [ "$arg" = "$PROMPT" ] && continue
     [ "$arg" = - ] && continue
     case "$arg" in
       -*) flag="${arg%%=*}"
-          printf '%s\n' "$help" | grep -E -- "(^|[[:space:],|])$flag([=[:space:],|]|$)" >/dev/null || die "$HARNESS does not advertise required flag $flag" 3 ;;
+          printf '%s\n' "$1" | grep -E -- "(^|[[:space:],|])$flag([=[:space:],|]|$)" >/dev/null || { printf '%s' "$flag"; return 0; } ;;
     esac
   done
+  return 1
+}
+preflight_command() {
+  local bin help flag request="$CONTINUE_ID"
+  local help_args=(--help) continue_args=(--help)
+  bin="$(command -v "$(binary_for "$HARNESS")")" || die "harness '$HARNESS' is not installed" 3
+  case "$HARNESS" in
+    codex) help_args=(exec --help); continue_args=(exec resume --help); [ "$NATIVE_REVIEW" = 1 ] && help_args=(exec review --help) ;;
+    opencode) help_args=(run --help) ;;
+  esac
+  if [ -n "$CONTINUE_ID" ]; then
+    # codex's resume subcommand has its own help, so its flags are checked against that one.
+    if help="$(capability_help "$bin" "${continue_args[@]}" 2>/dev/null)" && ! unadvertised_flag "$help" >/dev/null; then
+      return 0
+    fi
+    # Cannot continue. Say so only if a fresh dispatch would have worked; otherwise this is
+    # the harness being unusable, which keeps its exit 3 below.
+    CONTINUE_ID=""; build_cmd
+    preflight_command
+    CONTINUE_ID="$request"
+    write_continue failed unsupported
+    note "$HARNESS does not advertise what continuing a session needs; the caller may dispatch fresh"
+    exit 9
+  fi
+  help="$(capability_help "$bin" "${help_args[@]}")" || die "cannot read $HARNESS help" 3
+  flag="$(unadvertised_flag "$help")" && die "$HARNESS does not advertise required flag $flag" 3
+  return 0
 }
 [ -z "$ATTEMPT" ] || python3 "$RUNTIME" phase "$ATTEMPT" preflight
 if [ "$DRY" != 1 ] || [ "$PREFLIGHT" = 1 ]; then preflight_command; fi
@@ -631,6 +705,7 @@ echo "duration_s=$DURATION" >> "$RUN_DIR/$ROLE.resolved"
 [ "$OUTPUT" != summary ] || echo "forge: role=$ROLE backend_exit=$rc final=$LAST log=$LOG metrics=$ATTEMPT/metrics.json"
 if [ -f "$RUN_DIR/$ROLE.timedout" ]; then
   note "$HARNESS exceeded the ${LIMIT}s timeout and was killed after ${DURATION}s — see $LOG"
+  write_continue failed timeout
   exit 7
 fi
 # Infrastructure, not the model's work: auth, quota, rate limit, network, or an answer that
@@ -661,11 +736,23 @@ if [ -n "$INFRA" ]; then
     note "$HARNESS cancelled the $ROLE before it finished: $infra_detail — recorded in $RUN_DIR/$ROLE.infra"
   else
     note "$HARNESS failed on infrastructure ($infra_class${infra_after:+, retry after ${infra_after}s}): $infra_detail — see $LOG"
+    write_continue failed "infrastructure: $infra_class"
     exit 8
   fi
 fi
 if [ "$rc" -ne 0 ]; then
   note "$HARNESS exited $rc — see $LOG"
+  if [ -n "$CONTINUE_ID" ]; then
+    # The log's last error-looking line, else its last line, on one line.
+    reason="$(grep -i -E 'error|fail|not found|no conversation|invalid|unknown' "$LOG" 2>/dev/null | tail -n 1)"
+    [ -n "$reason" ] || reason="$(grep '[^[:space:]]' "$LOG" 2>/dev/null | tail -n 1)"
+    reason="$(printf '%s' "$reason" | tr '\r\t\n' '   ')"
+    [ -n "${reason// }" ] || reason="$HARNESS exited $rc"
+    write_continue failed "${reason:0:200}"
+    note "the session was not continued; the caller may dispatch fresh"
+    exit 9
+  fi
   exit 4
 fi
+write_continue continued
 echo "forge: $ROLE done in ${DURATION}s -> $LAST" >&2

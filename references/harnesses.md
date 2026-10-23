@@ -22,6 +22,7 @@ provider test. See [Fractal execution](fractal.md).
 - [opencode](#opencode)
 - [antigravity (agy)](#antigravity-agy)
 - [grok](#grok)
+- [Continuing a reviewer session](#continuing-a-reviewer-session)
 - [Adding a harness](#adding-a-harness)
 
 ## At a glance
@@ -300,6 +301,37 @@ Verified live on 2026-10-19 with a `FORGE_OK` dispatch: exit 0, `permissionMode`
 the answer extracted from the `result` line, tokens recorded, nothing left running. The same
 day, grok-4.7 dwarfs implemented and passed review on real tasks (the forge-ui integration run).
 A grok reviewer has not been proven live yet.
+
+## Continuing a reviewer session
+
+`forge-dispatch.sh qa <spec> ... --continue-session <id>` continues an earlier reviewer session instead of
+starting a fresh one. `<id>` is the session or thread id a dispatch left in `<run-dir>/<role>.session`
+(8 to 128 characters of `[A-Za-z0-9-]`, not starting with `-`). It is accepted for the `qa` role on claude,
+openclaude and codex in custom-prompt mode only; any other role, harness, `--native-review` or a malformed id
+is a usage error (exit 2). Nothing in forge asks for it by default.
+
+Probed 2026-10-22 (claude 2.1.307, codex 0.162.0):
+
+| Harness | Argv | Notes |
+|---|---|---|
+| claude, openclaude | the fresh QA argv plus `--resume <id>` | Continues from a different working directory and keeps the same session id. Permission flags and the read-only restriction stay; the prompt is still on stdin. |
+| codex | `codex exec resume <id> --json -m MODEL --skip-git-repo-check -o LAST [-c model_reasoning_effort=…] -c 'sandbox_mode="read-only"' -` | Continues from a different working directory. `exec resume` has **no `-C/--cd` and no `-s/--sandbox`**, so the dispatch's own `cd "$REPO"` sets the directory and the sandbox is passed as a config override (the quotes are TOML). The first turn's sandbox was inherited when probed (read-only); the override makes it explicit. Under `--yolo` the bypass flag replaces the override. |
+
+The prompt is preceded by a short fixed preamble (this continues your earlier review, the work has changed,
+the working directory is now `<repo>`, re-read files, this round's instructions win). `<role>.prompt` includes
+it. `<role>.continue` records the attempt as `requested=<id>`, then `mode=continued` or `mode=failed` with
+`reason=<one line>`, and is archived with the attempt.
+
+**Exit 9** means the session was not continued and the caller may dispatch fresh. Dispatch never retries fresh
+itself, so each dispatch keeps its own honest record. It happens when:
+
+- the harness does not advertise the flags continuing needs (`codex exec resume --help`, or `--resume` in
+  claude's help) but would pass preflight for a fresh QA dispatch: `reason=unsupported`, before any model call;
+  a harness that fails the fresh preflight too keeps exit 3;
+- the harness ran and exited non-zero: `reason=` the log's last error line.
+
+A timeout stays exit 7 and an infrastructure stop stays exit 8; both still write `mode=failed`. `doctor --spec`
+without `--continue-session` is unchanged.
 
 ## Installing forge into a harness
 
