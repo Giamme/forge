@@ -14,7 +14,9 @@
 # Persisted options become files in the plan dir, like --verify and --setup, so a later
 # `retry` or the scheduler's task processes see them. Cost-bearing options that change
 # what a run is allowed to spend (--retry-failed, --infra-retries) are deliberately NOT
-# persisted: they apply to the invocation that asked for them.
+# persisted: they apply to the invocation that asked for them. While the scheduler runs
+# they are mirrored to $PLAN/retry_budget and $PLAN/infra_budget (plus scheduler.live) so
+# `forge control` can change them live; the scheduler removes those files when it exits.
 #
 #   --timeout S             run retry         $PLAN/timeout        dispatch timeout, seconds (0 = none)
 #   --retry-failed N        run               (this run only)      automatic reviewer-driven retries

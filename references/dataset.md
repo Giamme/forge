@@ -35,7 +35,9 @@ time order: an attempt that PASSed, then a merge that CONFLICTed, then a human `
 | `run_end` | `run` | results per task, the accepted integration commit, `memory.md` |
 | `invocation` | user-facing `forge-parallel.sh` subcommand | argv, exit, duration, plus final review, accept, integrate and split/combine payloads |
 | `event` | point event | `merge` (MERGED, CONFLICT with the files, INVALIDATED and why), `integrate_advanced`, `integrate_conflict`, `combine_conflict`, `sched_terminal`, `subset_run` (every outcome), `memory_record`, `memory_prune` |
-| `event` `escalation` | `retry --dwarf` | the model a retry escalated from and to, recorded at the rewrite, before the retried attempt begins |
+| `event` `escalation` | retry that changes the model | the model a retry escalated from and to, `after_attempt`, and `source` (`policy`, `retry` for an explicit `--dwarf`, or `pin`), recorded at the rewrite, before the retried attempt begins |
+| `event` `control` | `forge control` change | a human's live change: `at`, `actor` (`cli`/`ui`), `action` (`set`, `pin`, `unpin`), `key`, `value`, `previous`; task events carry the task id. Also read back from `control.log` by `import` |
+| `event` `run_delete_started` / `run_deleted` | `forge runs rm` | written strictly around a run's deletion: `path`, `run_id`, `archive`, and for `run_deleted` the bytes freed |
 | `event` `shadow_review` | shadow review | how an opt-in second review ended (`done`, `invalid`, `overtime`, `orphaned`, ...), with the reviewed commit and both specs. Its dispatch is recorded with role `qa_shadow` |
 | `jev` | Jev request | site, answers, usage, latency, mode. Blob: the **full request** (state and questions). Its original sha is `jev.jsonl`'s `key` |
 | `fractal_step` / `fractal_node` | Fractal step, node state | decomposition decision, iteration, resolved model, cost, tokens, candidate diff |
@@ -296,6 +298,21 @@ so the importer will not guess which execution wrote a mutable file:
 - Repos under temp dirs (test runs) are skipped unless `--include-temp` is given.
 - Archives are extracted to a temp dir and mapped back to their original path. The legacy
   run id hashes that original path, so the archive and the original dir agree on it.
+
+- **Import is strict when a caller must know.** `importer.import_run` is strict by default and
+  `forge runs rm` relies on it: it stores through `record_strict`, which raises (and the deletion
+  stops) if any event, blob included, was not stored, or any part of the run could not be read,
+  instead of treating an unreadable file as absent. Live capture stays fail-open. Interventions import by content, not by time of capture:
+  `tasks/<id>/escalations.tsv` (four or five columns; a missing `source` reads as `policy`) and
+  `control.log` produce the same event ids as live capture, so a re-import fills gaps without
+  duplicating. A line that does not parse is reported as failed.
+- **Archives describe themselves.** `archive_run` writes `FORGE_ARCHIVE.json` first
+  (`format`, `original_path`, `run_id`, `dataset_uid`, `created`), then `FORGE_ARCHIVE_EXCLUDED.txt`, then
+  the run dir under its basename. Symlinks, files over 50 MB, `review-*` snapshots and what the
+  importer never reads are left out and listed in the excluded file. Importing such an archive maps
+  it back to `original_path`, so its run id and uid match the original dir's; an unreadable path
+  during archiving is an error, not a silent omission. The archive is written to a temp name, fsynced
+  and renamed.
 
 `~/.local/share/forge/legacy/` holds archives of run dirs taken before live capture, with a
 `MANIFEST.tsv`. Passing that dir to `import` reads every archive, plus the ledger copies

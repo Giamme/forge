@@ -1,6 +1,6 @@
 # forge-ui
 
-forge-ui is a read-only local web page that shows a forge run live: a decomposed plan or a
+forge-ui is a local web page that shows a forge run live and can change it: a decomposed plan or a
 solo run. It is opt-in per run. The orchestrator asks "Open forge-ui to watch this run?
 [y/N]" once at the start of every new interactive run and passes the answer as `--ui` or
 `--no-ui`. Nothing about the run depends on it: a UI that cannot start prints a note and the
@@ -23,6 +23,15 @@ run goes on, with the same exit code.
   review's combined diff, with every P0–P3 finding shown under the line it names.
 - **Fractal child tasks:** the tree a Fractal task was split into, in the inspector and above
   the opened task in 3D, each node with its decision, cost, output and candidate diff.
+- **Controls:** change a live plan from its inspector: QA threshold, timeout, escalate-after,
+  verify retries, and (while a scheduler is live) the retry and infra-retry budgets; per task, a
+  threshold override (`None` exempts it), a retry budget and a one-shot model pin. Each is one
+  `forge control` call; the change is confirmed first and logged in `control.log`.
+- **Open findings and issues:** the findings a run (or all of its repository's runs) left open,
+  filed as GitHub issues or dismissed through `forge issues`.
+- **Delete a run:** a dry run, then `forge runs rm`: the dataset keeps the traces, an archive is
+  written unless declined, and clean worktrees and unchecked-out branches can go with it.
+- **Settings:** `forge config show` in one view, with edits for the per-repo files and Jev.
 - **Export a run:** one HTML file to share that opens without forge-ui; prompts, diffs, reports
   and local paths stay out unless chosen.
 - **Quick jump and notifications:** Ctrl K (⌘K) or `/` searches every run, task, project and
@@ -96,10 +105,23 @@ how the map shows all of a repo's runs. `forge-parallel.sh run` also records the
 
 ## Privacy
 
-The server binds only `127.0.0.1` and serves read-only. It has **no token**: any process on
-the machine, under any user who can reach loopback, can read every run it knows, including
-prompts, diffs and review text from private repos. A running server keeps serving them,
-including runs that were later rerun with `--no-ui`.
+The server binds only `127.0.0.1`. **Reading needs no token**: any process on the machine,
+under any user who can reach loopback, can read every run it knows, including prompts, diffs and
+review text from private repos. A running server keeps serving them, including runs that were
+later rerun with `--no-ui`.
+
+**Changing needs one.** The server never writes a run file, a repo or a config itself: every
+change is a call of forge's own CLI (`forge control`, `forge issues`, `forge runs rm`,
+`forge config`), so validation, locks and the audit log are the CLI's. Each server start makes a
+random token and puts it in the page it serves; every change must send it back, from a `Host` of
+`127.0.0.1` or `localhost` and with an `Origin` equal to that host when the browser sends one, or
+it is refused before any CLI runs. There are no CORS headers, so another site in your browser
+can neither send nor read a change. Any process that can fetch the page can read the token, as
+it can read the runs, so on a shared machine start the server **read-only**: `--read-only`
+(`python3 -m forge_ui`) or `FORGE_UI_READONLY=1` (also for `forge ui open`). A read-only server
+issues no token and answers every change with 405; its `/api/health` says `"controls": false`.
+`forge ui open` never reuses a server in the other mode: it replaces it, as it does one running
+old code, and `forge ui status` shows the mode.
 
 Every run is registered, so a running server shows every run on the machine, not only those
 opened with `--ui`. The 3D view fetches three.js from cdn.jsdelivr.net (no run data is sent;

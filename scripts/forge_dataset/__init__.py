@@ -18,6 +18,8 @@ can still be answered from old runs.
 Capture is fail-open in the same way Jev is. Every entry point swallows its own errors
 into errors.log, never prints, never raises, and bounds its wait on the database with the
 SQLite busy timeout. It uses no signals, because Fractal captures from worker threads.
+record_strict() is the one exception, for a caller that must know an event is stored (it
+raises DatasetError instead of returning 0).
 FORGE_DATASET=off turns it off.
 
 Nothing that builds a prompt may ever read this store: a reviewer that could see earlier
@@ -25,12 +27,14 @@ runs' verdicts would no longer be independent.
 """
 from __future__ import annotations
 
+import contextlib
 import gzip
 import hashlib
 import json
 import os
 import sqlite3
 import subprocess
+import threading
 import time
 import traceback
 import uuid
@@ -253,13 +257,45 @@ def put_blob(data: bytes | str, kind: str = 'text') -> dict:
                 n=len(data), kept=len(stored), cut=span)
 
 
+_BLOB_WATCH = threading.local()
+
+
+@contextlib.contextmanager
+def watch_blob_failures():
+    """Collect this thread's failed blob writes while the block runs (yields the list).
+
+    Only a caller that asks pays for the record: a long-lived process that never watches
+    keeps nothing, and another thread's failed write never lands in this thread's list.
+    """
+    previous = getattr(_BLOB_WATCH, 'failures', None)
+    failures: list[str] = []
+    _BLOB_WATCH.failures = failures
+    try:
+        yield failures
+    finally:
+        _BLOB_WATCH.failures = previous
+
+
 def put_file(path: str | Path, kind: str = 'text') -> dict | None:
+    """Store a file's content; None when it is absent, unreadable, or could not be stored.
+
+    A failed write into the blob store is also noted for a watch_blob_failures() block: the caller
+    still gets None (live capture fails open), but a strict importer can tell "no file" from
+    "content lost" and refuse to let the event win its rid without it.
+    """
     path = Path(path)
     try:
         if not path.is_file():
             return None
-        return put_blob(path.read_bytes(), kind)
+        data = path.read_bytes()
     except OSError:
+        return None
+    try:
+        return put_blob(data, kind)
+    except OSError as error:
+        failures = getattr(_BLOB_WATCH, 'failures', None)
+        if failures is not None:
+            failures.append('%s: cannot store content: %s' % (path, error))
         return None
 
 
@@ -384,13 +420,29 @@ def insert(db: sqlite3.Connection, event: dict) -> bool:
     return cursor.rowcount == 1
 
 
-def record(events: list[dict], repo: str | Path | None = None, where: str = 'record') -> int:
-    """Write events in one transaction. Fail-open: returns how many were new, 0 on error."""
-    if not enabled() or not events:
+class DatasetError(Exception):
+    """An event could not be persisted (or an import/archive could not be completed)."""
+
+
+def _record(events: list[dict], repo: str | Path | None, where: str, strict: bool) -> int:
+    """The one writer behind record() and record_strict(), so the two cannot drift.
+
+    Lenient: any problem is logged (or, for a refused location, ignored) and counts as 0.
+    Strict: the same problems raise DatasetError, because 0 new rows must keep meaning
+    "everything was already there".
+    """
+    if not events:
         return 0
     try:
-        # Refused silently: errors.log lives in the same refused place.
-        if location_refused(repo):
+        if not enabled():
+            if strict:
+                raise DatasetError('the dataset is off (FORGE_DATASET=off)')
+            return 0
+        refused = location_refused(repo)
+        if refused:
+            # Not logged: errors.log lives in the same refused place.
+            if strict:
+                raise DatasetError(refused)
             return 0
         # Fingerprinting the code reads every shipped file and runs git once per process:
         # done under the write lock, it held every other writer past its busy timeout.
@@ -414,9 +466,28 @@ def record(events: list[dict], repo: str | Path | None = None, where: str = 'rec
             raise
         finally:
             db.close()
+    except DatasetError:
+        raise
     except Exception as error:
         log_error(where, error)
+        if strict:
+            raise DatasetError('%s: %s' % (where, error)) from error
         return 0
+
+
+def record(events: list[dict], repo: str | Path | None = None, where: str = 'record') -> int:
+    """Write events in one transaction. Fail-open: returns how many were new, 0 on error."""
+    return _record(events, repo, where, strict=False)
+
+
+def record_strict(events: list[dict], repo: str | Path | None = None, where: str = 'record') -> int:
+    """Like record(), but a failure to persist raises DatasetError instead of returning 0.
+
+    For callers that must know every event is in the store (`forge runs rm` before it
+    deletes a run dir). Covers a refused location, a store that is off or unwritable, a
+    sqlite error and a database still locked after the busy timeout.
+    """
+    return _record(events, repo, where, strict=True)
 
 
 def create_once(path: Path, text: str) -> str:

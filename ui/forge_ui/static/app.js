@@ -1,8 +1,8 @@
-/* forge-ui: read-only API viewer. All API values enter the DOM as text.
+/* forge-ui: the page. It reads the API; a change to a run goes through the write helpers in uikit.js (see controls.js). All API values enter the DOM as text.
    Views: the map of every run (#/), the run cloud (#/cloud, full screen: cloudui.js over cloud3d.js), and a
    run (#/runs/<key>) with its stage (3D, or the 2D graph and chart), the inspector beside it and the task table under it. The stage is one element that moves between views,
    so the 3D scene (and its WebGL context) survives navigation and refreshes. */
-window.ForgeUI = (() => {
+window.ForgeApp = (() => {
   'use strict';
   const RM = window.ForgeRunModel;
   // an exported page (forge_ui/export.py): one run and the API responses it needs, no server behind it
@@ -18,8 +18,9 @@ window.ForgeUI = (() => {
     layers: Object.assign({ cables: true, beads: true, lamps: true, roof: true, labels: true, beacons: true, finish: true, districts: true, halos: true, route: true }, store.get('layers', {})),
     replay: null, playing: null, speed: store.get('speed', 60), stage: null, stageFailed: null, stageLoading: false, timer: null,
     lastStatuses: new Map(), announced: 0, rendered: null, cloud: null, cloudUI: null, cloudPrefs: store.get('cloud', {}),
+    settings: false, lastKey: null, settingsRun: null, settingsPickedAt: null, settingsView: null,
     models: false, modelsData: null, modelsText: null, modelsError: null, modelsPrefs: store.get('models', {}),
-    files: new Map(), filesPrefs: store.get('files', {}), runSort: store.get('run-sort', 'updated'), tablePrefs: store.get('tables', {}),
+    files: new Map(), findingsCount: new Map(), filesPrefs: store.get('files', {}), runSort: store.get('run-sort', 'updated'), tablePrefs: store.get('tables', {}),
     findings: new Map() };
   state.stageMode = state.mode === 'exec' ? 'exec' : 'plan';   // the stage's own mode, kept while Files is shown
   if (state.mode === 'files' && !window.ForgeFiles) state.mode = state.stageMode;
@@ -73,9 +74,11 @@ window.ForgeUI = (() => {
     const c = hash.match(/^#\/cloud(?:\/(runs|projects|models)\/([^/]+))?\/?$/);
     if (c) return { key: null, sel: null, cloud: { sel: c[1] === 'runs' ? decodeURIComponent(c[2]) : null, focus: c[1] === 'projects' ? decodeURIComponent(c[2]) : null, model: c[1] === 'models' ? decodeURIComponent(c[2]) : null } };
     if (/^#\/models\/?$/.test(hash)) return { key: null, sel: null, models: true };
+    if (/^#\/settings\/?$/.test(hash)) return { key: null, sel: null, settings: true };
     const m = hash.match(/^#\/runs\/([^/]+)(\/.*)?$/);
     if (!m) return { key: null, sel: null };
     const d = decodeURIComponent, rest = m[2] || '';
+    if (/^\/findings\/?$/.test(rest)) return { key: d(m[1]), sel: null, findings: true };
     let sel = null, r;
     if ((r = rest.match(/^\/tasks\/([^/]+)\/diff(?:\/(?!file\/|finding\/)([^/]+))?(?:\/finding\/([^/]+))?(?:\/file\/(.+?))?\/?$/))) return { key: d(m[1]), sel: { kind: 'task', id: d(r[1]) }, diff: { kind: 'task', task: d(r[1]), source: r[2] ? d(r[2]) : 'current', finding: r[3] ? d(r[3]) : null, file: r[4] ? d(r[4]) : null } };
     if ((r = rest.match(/^\/tasks\/([^/]+)\/fractal\/([^/]+)\/diff(?:\/file\/(.+?))?\/?$/))) return { key: d(m[1]), sel: { kind: 'task', id: d(r[1]) }, diff: { kind: 'fractal', task: d(r[1]), node: d(r[2]), file: r[3] ? d(r[3]) : null } };
@@ -171,8 +174,10 @@ window.ForgeUI = (() => {
     const active = parent.contains(document.activeElement) ? document.activeElement : null;
     const focusHref = active?.getAttribute('href');
     const own = [parent.scrollLeft, parent.scrollTop];
+    const held = window.ForgeControls ? window.ForgeControls.hold(parent) : null;   // a control being edited rides through the rebuild
     parent.replaceChildren();
     build();
+    if (held) held.restore();
     if (!restore) return;
     for (const node of parent.querySelectorAll('details[data-keep]')) if (open.has(node.dataset.keep)) node.open = open.get(node.dataset.keep);
     for (const node of parent.querySelectorAll('[data-scroll]')) {
@@ -481,6 +486,41 @@ window.ForgeUI = (() => {
     }, 'Could not refresh the model results', error => { state.modelsError = error.message; if (state.models) renderModels(); });
   }
 
+  /* ---------- the settings (#/settings) ---------- */
+  function renderSettings() {
+    const main = $('main');
+    if (main.dataset.view === 'settings') { state.settingsView?.poll(); return; }   // already drawn: its unsaved edits stay
+    setView(main, 'settings'); delete main.dataset.run;
+    main.replaceChildren();
+    const v = el('section', undefined, 'settings-view'); v.id = 'settings-view'; main.append(v);
+    state.settingsView = window.ForgeSettings.render(v, {
+      // a pick holds only while the current run is the one it was made from: the default is the current or most recent run
+      key: state.settingsRun && state.lastKey === state.settingsPickedAt ? state.settingsRun : state.lastKey,
+      runs: () => state.runs, onPick: key => { state.settingsRun = key; state.settingsPickedAt = state.lastKey; },
+    });
+  }
+
+  /* ---------- a run's open findings (#/runs/<key>/findings) ---------- */
+  function renderFindings() {
+    const main = $('main');
+    if (main.dataset.view === 'findings' && main.dataset.run === state.key) return;   // already drawn: a toggle elsewhere must not reload it
+    setView(main, 'findings'); main.dataset.run = state.key;
+    main.replaceChildren();
+    const v = el('section', undefined, 'findings-view'); v.id = 'findings-view'; main.append(v);
+    window.ForgeFindings.render(v, {
+      key: state.key, run: state.cache.get(state.key)?.data, back: '#/runs/' + encodeURIComponent(state.key),
+      tablePrefs: id => state.tablePrefs[id], saveTablePrefs: (id, p) => { state.tablePrefs = { ...state.tablePrefs, [id]: p }; store.set('tables', state.tablePrefs); },
+      onCount: (n, scope) => { if (scope !== 'run') return; state.findingsCount.set(state.key, n); },
+    });
+  }
+  function findingsLink(key) {
+    const a = el('a', undefined, 'details-btn findings-link'); a.href = '#/runs/' + encodeURIComponent(key) + '/findings';
+    a.title = 'The findings this run left unfixed: dismiss them or file them as issues';
+    const n = state.findingsCount.get(key);
+    a.append(icon('panel-right'), el('span', 'Open findings'), el('span', n === undefined ? '' : String(n), 'findings-count'));
+    return a;
+  }
+
   /* ---------- a run ---------- */
   function viewToggle() {
     const g = el('div', undefined, 'seg'); g.setAttribute('role', 'group'); g.setAttribute('aria-label', 'Rendering');
@@ -581,13 +621,31 @@ window.ForgeUI = (() => {
     rec.append(icon('panel-right'), el('span', 'Run details'));
     rec.addEventListener('click', () => { Shell.toggle('insp', true); if (state.sel) select(null); });
     acts.append(rec);
+    if (!SNAP && window.ForgeFindings) acts.append(findingsLink(state.key));
     if (!SNAP) {
       const ex = el('button', undefined, 'export-btn'); ex.type = 'button'; ex.title = 'Download this run as one HTML file to share';
       ex.append(icon('download'), el('span', 'Export…'));
       ex.addEventListener('click', () => { const run = state.cache.get(state.key)?.data; if (run) exportDialog(run); }); acts.append(ex);
     }
+    // the delete key stands apart from the routine ones, and only a server that takes writes shows it
+    if (!SNAP && window.ForgeRunDelete && window.ForgeUI && window.ForgeUI.controlsEnabled) {
+      window.ForgeUI.controlsEnabled().then(on => {
+        if (!on || acts.querySelector('.del-key')) return;
+        const del = el('button', undefined, 'del-key'); del.type = 'button'; del.title = 'Delete this run, after a dry run and a typed confirmation';
+        del.append(el('i', undefined, 'lamp st-fail'), el('span', 'Delete run…'));
+        del.addEventListener('click', () => { const run = state.cache.get(state.key)?.data; if (run) window.ForgeRunDelete.open(run, { onDeleted: runDeleted }); });
+        acts.append(el('span', undefined, 'del-gap'), del);
+      });
+    }
     bar.append(rp, acts);
     header.append(bar);
+  }
+  // after a delete: the run is gone, so the page returns to the run list and drops what it held of the run
+  function runDeleted(run) {
+    state.cache.delete(run.key);
+    if (location.hash !== '#/') location.hash = '#/';
+    state.listText = null;
+    loadList();
   }
   // the View popover's push buttons: pressed in while their part is drawn; the layers are the 3D stage's own
   function syncLayerKeys() {
@@ -862,6 +920,8 @@ window.ForgeUI = (() => {
     if (!state.key) document.body.classList.remove('no-tasks');
     if (state.cloud) { renderCloud(); return; }
     if (state.models) { renderModels(); return; }
+    if (state.settings) { renderSettings(); return; }
+    if (state.key && state.findingsPage) { renderFindings(); return; }
     if (!state.key) { renderMap(); return; }
     const cached = state.cache.get(state.key);
     if (cached) renderRun(cached.data);
@@ -916,16 +976,17 @@ window.ForgeUI = (() => {
       if (window.ForgeNotify) window.ForgeNotify.observe(state.runs);
       renderList();
       if (state.cloud) renderCloud();
-      else if (!state.key) renderMap({ rebuildBar: $('map-filters') ? !$('map-filters').contains(document.activeElement) : true });
+      else if (state.settings) state.settingsView?.poll();       // the picker follows the run list; the page stays
+      else if (!state.key && !state.models) renderMap({ rebuildBar: $('map-filters') ? !$('map-filters').contains(document.activeElement) : true });
     }, 'Could not refresh runs');
   }
   function loadRun(key) {
     return request('/api/runs/' + encodeURIComponent(key), result => {
       const changed = state.cache.get(key)?.text !== result.text;
       state.cache.set(key, result);
-      if (state.key === key && changed) renderRun(result.data);
+      if (state.key === key && changed && !state.findingsPage) renderRun(result.data);
     }, 'Could not refresh run', error => {
-      if (state.key !== key || state.cache.has(key)) return;
+      if (state.key !== key || state.cache.has(key) || state.findingsPage) return;
       if (error.status === 404) state.errors.delete('/api/runs/' + encodeURIComponent(key));
       setView($('main'), 'waiting');
       $('main').replaceChildren(el('p', error.status === 404 ?
@@ -940,7 +1001,7 @@ window.ForgeUI = (() => {
       history.replaceState(null, '', '#/runs/' + encodeURIComponent(SNAP.meta.key));
       parsed = parseHash(location.hash);
     }
-    const keyChanged = parsed.key !== state.key;
+    const keyChanged = parsed.key !== state.key || (!!state.findingsPage && !parsed.findings);   // the findings page replaced the run's DOM
     state.key = parsed.key;
     const selWas = JSON.stringify(state.sel || null);
     state.sel = parsed.sel;
@@ -951,6 +1012,9 @@ window.ForgeUI = (() => {
     state.convo = parsed.convo || null;
     state.cloud = parsed.cloud || null;
     state.models = !!parsed.models;
+    state.settings = !!parsed.settings && !!window.ForgeSettings && !SNAP;
+    if (parsed.key) state.lastKey = parsed.key;
+    state.findingsPage = !!parsed.findings && !!window.ForgeFindings;
     if (state.cloud && state.cloud.model) {                  // a model's runs: the cloud, filtered to it
       cloudFilter({ models: { aliases: [state.cloud.model], role: 'any' } });
       history.replaceState(null, '', '#/cloud'); state.cloud.model = null;
@@ -958,13 +1022,15 @@ window.ForgeUI = (() => {
     document.body.classList.toggle('cloud-mode', !!state.cloud);
     if (!state.key) document.body.classList.remove('no-tasks');
     for (const a of document.querySelectorAll('.topbar .top-link')) {
-      const here = a.getAttribute('href') === (state.cloud ? '#/cloud' : state.models ? '#/models' : !state.key ? '#/' : null);
+      const here = a.getAttribute('href') === (state.cloud ? '#/cloud' : state.models ? '#/models' : state.settings ? '#/settings' : !state.key ? '#/' : null);
       if (here) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
     }
     renderErrors();
     markSelection();
     if (state.cloud) { renderCloud(); return; }
     if (state.models) { renderModels(); loadModels(); return; }
+    if (state.settings) { renderSettings(); return; }
+    if (state.key && state.findingsPage) { renderFindings(); return; }
     if (!state.key) { renderMap(); return; }
     const cached = state.cache.get(state.key);
     if (cached) {
@@ -993,6 +1059,7 @@ window.ForgeUI = (() => {
     loadList();
     if (state.key) loadRun(state.key);
     if (state.models) loadModels();
+    if (state.settings) state.settingsView?.poll();
     for (const node of document.querySelectorAll('[data-epoch]')) { const t = relative(node.dataset.epoch); node.textContent = node.dataset.short !== undefined ? t.replace(/^updated /, '') : t; }
   }
   // Poll faster while something runs, slower otherwise; never with refresh off, and a hidden tab only to notify.
@@ -1008,12 +1075,14 @@ window.ForgeUI = (() => {
       { id: 'cmd:cloud', label: 'Open the run cloud', sub: 'every run in 3D, grouped by project', ids: ['cloud'], href: '#/cloud' },
       { id: 'cmd:map', label: 'Open the map of all runs', sub: 'the front page', ids: ['map', 'home'], href: '#/' },
       { id: 'cmd:models', label: 'Open the model leaderboard', sub: 'pass rates, retries, time and tokens per model', ids: ['models', 'leaderboard'], href: '#/models' },
+      ...(window.ForgeSettings ? [{ id: 'cmd:settings', label: 'Open the settings', sub: 'model registry, Jev, and the .forge files of a repository', ids: ['settings', 'config', 'verify', 'jev'], href: '#/settings' }] : []),
       { id: 'cmd:notify', label: 'Notifications', sub: 'what finished or failed, and browser notifications', ids: ['alerts', 'bell'], action: () => window.ForgeNotify && window.ForgeNotify.open() },
       { id: 'cmd:dim', label: state.dim === '3d' ? 'Switch to 2D' : 'Switch to 3D', sub: state.dim === '3d' ? 'graphs and charts, no WebGL' : 'loads three.js from cdn.jsdelivr.net', ids: ['2d', '3d'],
         action: () => { state.dim = state.dim === '3d' ? '2d' : '3d'; store.set('view', state.dim); if (state.dim === '3d') state.stageFailed = null; renderMain(); } },
       { id: 'cmd:refresh', label: state.paused ? 'Resume live refresh' : 'Pause live refresh', sub: 'polling of the runs', ids: ['refresh', 'pause'],
         action: () => { $('refresh').checked = state.paused; state.paused = !state.paused; refresh(); } },
     ];
+    if (state.key && !SNAP && window.ForgeFindings) out.push({ id: 'cmd:findings', label: 'Open findings of this run…', sub: 'dismiss them or file them as GitHub issues', ids: ['findings', 'issues', 'dismiss'], href: '#/runs/' + encodeURIComponent(state.key) + '/findings' });
     if (run && !SNAP) out.push({ id: 'cmd:export', label: 'Export this run as one HTML file…', sub: 'to share; opens without forge-ui', ids: ['export', 'share'], action: () => exportDialog(run) });
     if (SNAP) return out.filter(c => c.id === 'cmd:dim').concat(run ? [{ id: 'cmd:mode', label: state.mode === 'plan' ? 'Show the execution' : 'Show the planned waves', sub: '', ids: ['exec', 'plan'], action: () => setMode(state.mode === 'plan' ? 'exec' : 'plan') }] : []);
     if (run && window.ForgeFiles) out.push({ id: 'cmd:files', label: 'Show which tasks touched which files', sub: 'the Files view of this run', ids: ['files', 'heatmap'], action: () => setMode('files') });
@@ -1077,3 +1146,6 @@ window.ForgeUI = (() => {
   init();
   return { refresh, state };
 })();
+// window.ForgeUI is uikit.js's shared helpers; the page's own handles (state, refresh) join it, where the browser
+// tests and ui/tools/readme_media.py read them.
+window.ForgeUI = Object.assign(window.ForgeUI || {}, window.ForgeApp);

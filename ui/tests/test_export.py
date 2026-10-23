@@ -6,12 +6,14 @@ import base64
 import hashlib
 from html.parser import HTMLParser
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
 import tempfile
 import threading
 import unittest
+from unittest import mock
 import urllib.error
 import urllib.request
 
@@ -110,6 +112,25 @@ class ExportTests(unittest.TestCase):
             self.assertIn(text, full)
         self.assertTrue(any(path.endswith('/diff') for path in snap['api']))
         self.assertIn(f'/api/runs/{self.key}/executions/{F.READER_DWARF1}/transcript', snap['api'])
+
+    def test_a_root_that_is_a_symlink_is_scrubbed_in_both_spellings(self):
+        real = self.base / 'real-home'
+        (real / 'out').mkdir(parents=True)
+        link = self.base / 'linked-home'
+        link.symlink_to(real, target_is_directory=True)
+        run = self.base / 'linked'
+        shutil.copytree(self.plan, run, symlinks=True)
+        F.write(run / 'goal.txt', f'Read {link}/a.txt then {real}/b.txt\n')
+        F.write(run / 'verification.command', f'python3 {real}/check.py --out {link}/out\n')
+        catalog = reader.Catalog(plans=[run], registry=False)
+        with mock.patch.dict(os.environ, {'HOME': str(link)}):
+            _, body = export.build(catalog, reader.run_key(run))
+            _, shared = export.build(catalog, reader.run_key(run), paths=True)
+        html = body.decode('utf-8')
+        for spelling in (str(link), str(real), os.path.realpath(link)):
+            self.assertNotIn(spelling, html)
+        self.assertIn('python3 ~/check.py --out ~/out', html)
+        self.assertIn(str(real), shared.decode('utf-8'))
 
     def test_a_strange_run_id_makes_a_plain_file_name(self):
         run = self.base / 'odd'

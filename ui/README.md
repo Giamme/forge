@@ -1,6 +1,7 @@
 # forge-ui
 
-forge-ui is a small, read-only local web UI for forge runs. It draws them the way
+forge-ui is a small local web UI for forge runs. It reads everything, and changes things only by
+calling forge's own commands (see [Controls](#controls)). It draws them the way
 [archivision](https://github.com/Giamme/archivision) draws a codebase: a 3D isometric map of
 blocks on a plate, with cables between them and lamps that light up as things happen.
 
@@ -223,7 +224,7 @@ keep one meaning everywhere (amber running, green merged or passed, red failed, 
   carries the same tree floating above it. A node (`…/tasks/<id>/fractal/<node>`) shows its goal,
   paths, timings, cost and tokens, its decomposition and the children it admitted, its last
   messages, and its candidate diff. Fractal's state is read under `$XDG_STATE_HOME/forge/fractal`
-  (default `~/.local/state`), read-only, without following symlinks.
+  (default `~/.local/state`), only read, without following symlinks.
 - **Export:** *Export…* in a run's header downloads the run as one HTML file that opens in any
   browser without forge-ui, offline included (in 2D; in 3D when cdn.jsdelivr.net is reachable).
   It asks each time: by default prompts, reviewer reports, logs, finding details and diffs are
@@ -251,6 +252,37 @@ URLs such as `http://127.0.0.1:8765/#/runs/<key>/tasks/<id>` are shareable withi
 machine while this server is running and discovering that run dir. *Live refresh* pauses
 polling; a hidden tab polls only the run list, every 30 seconds, and only with browser
 notifications on. Failed requests keep the last good data and show a banner.
+
+## Controls
+
+The page can change a run, and every change is one call of a forge CLI; the server writes
+nothing itself, so a change is validated, locked and logged exactly as if typed in a terminal
+(`control.log` records `ui` as the actor). Each change is confirmed first and says when it
+takes effect. The routes are in [docs/api.md](docs/api.md).
+
+- **Run and task controls (`forge control`):** in a plan's inspector, the QA threshold,
+  timeout, escalate-after and verify retries, and while a scheduler is live the retry and
+  infra-retry budgets. A task has a threshold override (`Inherit`, P0–P3 or `None`, which
+  exempts it from the run's threshold), its own retry budget and a **model pin**: the model
+  its next full retry uses, once. A control that cannot apply (no live scheduler, a merged
+  task, a Fractal plan's pin) is disabled and says why.
+- **Open findings (`forge issues`):** the findings a run, or every run of its repository,
+  left open. The list opens from a quick offline listing and then fills in what is already
+  filed; select findings to file as GitHub issues, or dismiss them (and undo that).
+- **Delete a run (`forge runs rm`):** a dry run first, then the deletion. Its traces stay in
+  the dataset; an archive is written unless you decline it; `worktrees` and `branches` remove
+  the run's clean worktrees and its branches that nothing has checked out. Foreign or dirty
+  worktrees are listed and left.
+- **Settings (`forge config`):** the registry, Jev, the repository's `.forge` files, the
+  dataset and `FORGE_*` variables (secrets shown as `<set>`), with edits for `repo.verify`,
+  `repo.setup`, `repo.verify-subset` and `jev.enabled`.
+
+**Protection.** Each server start makes a random token and serves it in the page; every change
+must send it, from a `Host` of `127.0.0.1` or `localhost`, with an `Origin` equal to the host
+when one is sent, as JSON of at most 64 KiB, or it is refused before any CLI runs. There are no
+CORS headers. One write per run at a time (`409 busy`). `--read-only` or `FORGE_UI_READONLY=1`
+turns all of it off: no token is issued, every change is a 405, and the controls say the page cannot change the run.
+`forge ui open` never reuses a server running in the other mode.
 
 ## Layout of the code
 
@@ -335,8 +367,9 @@ python3 tools/readme_media.py                  # writes docs/media/
 ## Privacy
 
 Run dirs can contain prompts, diffs and review text from private repos. The server binds
-only `127.0.0.1`, makes no network requests, and writes nothing to run dirs, repositories or
-forge's config. Outside the runs it reads one kind of file: for a claude execution whose log
+only `127.0.0.1` and makes no network requests. It writes nothing itself; a change you
+confirmed in the page is a call of forge's own CLI, protected by a per-launch token
+(`--read-only` turns that off). Outside the runs it reads one kind of file: for a claude execution whose log
 holds only its final answer, that run's session file, `<session id>.jsonl` under
 `~/.claude/projects/` (or `$CLAUDE_CONFIG_DIR/projects/`). Anyone with access to the local server can read the runs it discovers, and
 forge now registers every run, so that is every run on the machine.
