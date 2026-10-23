@@ -390,7 +390,7 @@ realistic input or a broken existing contract; P2 edge-case bug, unusual-timing 
 hardening; P3 minor. Severity is impact; CONFIRMED/PLAUSIBLE is confidence.
 
 `run`/`retry --qa-threshold Pn` (remembered in `<plan>/qa_threshold`; `none` clears it) sets
-the **least severe level that still blocks**. `tasks/<id>/qa_threshold` overrides it per task —
+the **least severe level that still blocks**. `tasks/<id>/qa_threshold` overrides it per task (the value `none` exempts the task from a plan threshold; `forge control set ... qa-threshold` writes both and takes effect at the next attempt) —
 the way to give a dev-tooling or investigation task a looser bar than production code,
 which otherwise gets a new finding in a new corner of a non-default option every round and
 only a human decision ends it. The orchestrator decides *deterministically* (`forge-contract.py gate`),
@@ -469,6 +469,24 @@ turns it off):
 
 History cannot yet say whether escalating rescues a task (31% of the 29 later attempts on a
 changed spec passed, mostly effort bumps); the attempts this policy makes are what will.
+
+**Live controls.** `forge control show|set|pin|unpin <plan>` changes a run while it works:
+`qa-threshold` (read once per attempt, so an attempt keeps the bar it started with; per task, `none`
+exempts it and `inherit` drops the override), `timeout`, `escalate-after`, `verify-retries`, and,
+only while a scheduler is live, `retry-budget` (plan or `--task`) and `infra-retries`. The budgets
+keep the **per invocation** rule: the flags of `run` are not remembered, and a live scheduler only
+mirrors them into `retry_budget`, `infra_budget` and `tasks/<id>/retry_budget` (re-read at every
+decision, removed when it stops; `tasks/<id>/retries.used` stays), so a change dies with the
+run. `pin <task> <spec>` sets the model the task's next full retry uses, once (checked with
+`forge-dispatch.sh doctor`, no quota): `prepare_retry` claims `escalation.pin` as
+`escalation.pin.applying`, rewrites `tasks.tsv`, appends the `escalations.tsv` row with
+`source=pin`, clears `escalation.stop`/`split.suggested`, then consumes the pin. A QA-only resume
+leaves it for the next full retry; Fractal plans never apply pins; a MERGED task refuses one.
+The last column of `escalations.tsv` says who decided: `policy`, `retry` (an explicit
+`--dwarf`) or `pin`; four-column rows read as `policy`. Every change goes to `control.log` (JSON lines:
+`at`, `actor` `cli|ui`, `action`, `task`, `key`, `value`, `previous`) and to the dataset as a
+`control` event. Exit 2 invalid input, 3 refused (not live, MERGED, Fractal, failing doctor,
+lock busy over 5 s). Report them; never set one yourself unless asked.
 
 **Ordinary execution resume:** run `run` again. Tasks already `MERGED` are skipped. A saved PASS is fingerprint-checked and merged without
 redispatch. PENDING, `INFRA` (paused by an infrastructure failure) and newly unblocked tasks run
