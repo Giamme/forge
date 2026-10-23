@@ -325,8 +325,9 @@ when a spec file is missing, `*.resolved`. It also stats `dwarf.log` and `qa.log
 reading them, so `updated` moves while a model is writing a log. A plan summary reads
 `final-review.verdict` besides the files it always read. For `final_review_outdated` it also
 reads `accepted.integration` and, through the `final-review` link, that dir's `verdict` and
-`review.meta`, and stats each task's `merged` marker. It does not open a review's attempts or
-scan the other review dirs.
+`review.meta`, and stats each task's `merged` marker. Those reads count toward `updated`, the
+same way as every other file the summary reads, so a newer `accepted.integration` moves the
+run's activity time. It does not open a review's attempts or scan the other review dirs.
 
 ## RunDetail
 
@@ -574,15 +575,20 @@ block's 1-based line in the reply. Lists of Findings keep the first 200.
 - `state`: `done` with a verdict, `infra` with `qa.infra`, `running` when it is the newest
   review and has `qa.input`, else `orphaned`.
 - `spec`, `threshold`, `base`, `tip`, `integration` come from `review.meta` (`threshold=none` is
-  `null`; `integration` is `null` when missing or empty). `source` on this object is the dir kind,
-  `review` or `integrate`, not `review.meta`'s `source=` (a worktree path).
+  `null`). `integration` is the integration-branch commit the reviewed result contains, or `null`
+  when missing, empty, or not a commit. A commit is the object name `git rev-parse` writes: 40
+  or 64 lowercase hex digits. Any other `integration=` value is warned on that
+  `review.meta` (`integration is not a commit`; the summary's read of the published dir
+  warns `final-review/review.meta`) and is not a known commit, so freshness uses the next rule.
+  `source` on this object is the dir kind, `review` or `integrate`, not `review.meta`'s
+  `source=` (a worktree path).
 - `outdated`: whether the plan's integration branch has moved since this review. `null` when the
   review has no verdict, or when `accepted.integration` is missing. Otherwise the first rule that
   applies:
-  1. `integration` is known: `true` when it differs from `accepted.integration`.
+  1. `integration` is a commit: `true` when it differs from `accepted.integration`.
   2. Else, for `source` `review`: `true` when `tip` differs from `accepted.integration`.
-  3. Else (an integrate review from an older forge, which has no `integration=`): `true` when any
-     task merged after the review started.
+  3. Else (an integrate review from an older forge, which has no `integration=` commit): `true`
+     when any task merged after the review started.
 - `merged_since`: the ids of tasks merged after the review started, oldest merge first. `[]` when
   the review is not outdated. It may also be `[]` for an outdated review whose only later merge
   fell inside the review's starting second.

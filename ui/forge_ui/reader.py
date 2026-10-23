@@ -357,12 +357,15 @@ def _summary(reader, source):
     final_review = reader.word('final-review.verdict')
     dwarf_models = sorted({task['dwarf'] for task in tasks if task['dwarf']})
     qa_models = sorted({task['qa'] for task in tasks if task['qa']})
+    # Before snapshotting `updated`: these reads are files the summary read, so a newer
+    # accepted.integration (or the published verdict / review.meta) moves the activity time.
+    final_review_outdated = _published_outdated(reader, tasks)
     result.update(updated=reader.updated, created=_created(reader.path, _PLAN_START_FILES),
                   task_count=len(tasks), counts=counts,
                   task_statuses=[dict(id=task['id'], status=task['status'], difficulty=task['difficulty'] or None,
                                       title=_brief(task['title']), accepted=task['accepted']) for task in tasks],
                   models=sorted(set(dwarf_models) | set(qa_models)), dwarf_models=dwarf_models, qa_models=qa_models,
-                  final_review=final_review, final_review_outdated=_published_outdated(reader, tasks))
+                  final_review=final_review, final_review_outdated=final_review_outdated)
     return result, tasks
 
 
@@ -677,14 +680,35 @@ def _merge_pairs(tasks):
     return pairs
 
 
+# What `git rev-parse` writes for a commit: sha1 (40) or sha256 (64), lowercase hex.
+_COMMIT = re.compile(r'(?:[0-9a-f]{40}|[0-9a-f]{64})')
+
+
+def _meta_integration(reader, name, meta):
+    """The `integration=` commit of a review.meta, or None.
+
+    Missing or empty is absent (older runs record no integration commit). Any other value
+    that is not a commit object name is malformed: null, and a warning, so freshness uses
+    the next rule instead of treating the text as the commit the review judged.
+    """
+    value = meta.get('integration') or None
+    if not value:
+        return None
+    if _COMMIT.fullmatch(value):
+        return value
+    reader.warn(name, 'integration is not a commit')
+    return None
+
+
 def _review_freshness(accepted, integration, tip, source, at, merges, verdict):
     """(outdated, merged_since) for one final review.
 
     Null when the review has no verdict or there is no `accepted.integration` to compare with.
     Otherwise the first rule that applies: a known `integration` commit, else `tip` when
     `source` is `review`, else (an older integrate review) any task merged after `at`.
-    A merge counts when its marker mtime is `>= at + 1`. `merged_since` is those ids, oldest
-    first, and is empty unless the review is outdated.
+    `integration` is a commit object name or None (a malformed value is None). A merge counts
+    when its marker mtime is `>= at + 1`. `merged_since` is those ids, oldest first, and is
+    empty unless the review is outdated.
     """
     later = []
     if at is not None:
@@ -721,7 +745,8 @@ def _published_outdated(reader, tasks):
     source, at = found
     verdict = reader.word('final-review/verdict')
     meta = executions.parse_resolved(reader.text('final-review/review.meta'))
-    return _review_freshness(reader.line('accepted.integration'), meta.get('integration') or None,
+    return _review_freshness(reader.line('accepted.integration'),
+                             _meta_integration(reader, 'final-review/review.meta', meta),
                              meta.get('tip') or None, source, at, _merge_pairs(tasks), verdict)[0]
 
 
@@ -749,7 +774,8 @@ def _final_review(reader, item, newest, published):
                    verdict=verdict, state=state, spec=meta.get('spec') or None,
                    threshold=None if threshold == 'none' else threshold,
                    base=meta.get('base') or None, tip=meta.get('tip') or None,
-                   integration=meta.get('integration') or None, outdated=None, merged_since=[],
+                   integration=_meta_integration(reader, rel + '/review.meta', meta),
+                   outdated=None, merged_since=[],
                    gate=_gate(reader, rel + '/qa.gate'), findings=executions.qa_result(reader, rel + '/qa.last')[1],
                    execution=run['id'] if run else None, started=run['started'] if run else None,
                    ended=run['ended'] if run else None, duration_s=run['duration_s'] if run else None)

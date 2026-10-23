@@ -413,6 +413,47 @@ class ExecutionTests(FixtureCase):
         self.assertEqual(data['final_review']['merged_since'], [])
         self.assertIs(summarize(self.plan)['final_review_outdated'], True)
 
+    def test_malformed_integration_is_null_and_does_not_decide_freshness(self):
+        # tip of the published review already equals accepted.integration. A non-commit
+        # integration= must not count as known, or the review looks outdated for the wrong reason.
+        accepted = (self.plan / 'accepted.integration').read_text().strip()
+        old = self.plan / F.REVIEW_OLD / 'review.meta'
+        old.write_text(old.read_text() + 'integration=not-a-commit\n')
+        # The integrate review's tip is the candidate, not the integration tip. The same bad
+        # value must fall through to the merge-time rule, which finds nothing merged after it.
+        integrate = self.plan / F.INTEGRATE / 'final-review' / 'review.meta'
+        integrate.write_text(integrate.read_text() + 'integration=not-a-commit\n')
+
+        data = detail(self.plan)
+        review = self._review(data, F.REVIEW_OLD)
+        self.assertEqual(review['tip'], accepted)
+        self.assertIsNone(review['integration'])
+        self.assertIs(review['outdated'], False)
+        self.assertEqual(review['merged_since'], [])
+        self.assertIn(f'{F.REVIEW_OLD}/review.meta: integration is not a commit', data['warnings'])
+        self.assertIn('final-review/review.meta: integration is not a commit', data['warnings'])
+        integrate_review = self._review(data, F.INTEGRATE)
+        self.assertIsNone(integrate_review['integration'])
+        self.assertNotEqual(integrate_review['tip'], accepted)
+        self.assertIs(integrate_review['outdated'], False)
+        self.assertEqual(integrate_review['merged_since'], [])
+        self.assertIn(f'{F.INTEGRATE}/final-review/review.meta: integration is not a commit', data['warnings'])
+
+        self.assertIs(summarize(self.plan)['final_review_outdated'], False)
+        found = final_review_detail(self.plan, F.REVIEW_OLD)
+        self.assertIsNone(found['integration'])
+        self.assertIs(found['outdated'], False)
+        self.assertIn(f'{F.REVIEW_OLD}/review.meta: integration is not a commit', found['warnings'])
+
+    def test_summary_updated_includes_accepted_integration(self):
+        # Previously read files and the run dir stay at 200. Rewriting accepted.integration
+        # must move `updated`, because the summary reads it for final_review_outdated.
+        for path in [self.plan, *self.plan.rglob('*')]:
+            if not path.is_symlink():
+                os.utime(path, (200, 200))
+        os.utime(self.plan / 'accepted.integration', (300, 300))
+        self.assertEqual(summarize(self.plan)['updated'], 300.0)
+
     def test_matching_integration_commit_is_current_even_when_the_candidate_tip_differs(self):
         meta = self.plan / F.INTEGRATE / 'final-review' / 'review.meta'
         accepted = (self.plan / 'accepted.integration').read_text().strip()
@@ -425,6 +466,14 @@ class ExecutionTests(FixtureCase):
         self.assertIs(review['outdated'], False)
         self.assertEqual(review['merged_since'], [])
         self.assertIs(final_review_detail(self.plan, F.INTEGRATE)['outdated'], False)
+        # A sha256 object name is a commit as well. It still wins over the later merge and the
+        # candidate tip; a length check that only allowed 40 hex digits would call this outdated.
+        sha256 = 'c' * 64
+        meta.write_text(meta.read_text().replace(f'integration={accepted}\n', f'integration={sha256}\n'))
+        self.write(self.plan / 'accepted.integration', sha256 + '\n')
+        review = self._review(detail(self.plan), F.INTEGRATE)
+        self.assertEqual((review['integration'], review['outdated'], review['merged_since']), (sha256, False, []))
+        self.assertEqual(detail(self.plan)['warnings'], [])
 
     def test_same_second_merge_does_not_outdate_an_older_integrate_review(self):
         at = self._review(detail(self.plan), F.INTEGRATE)['at']
