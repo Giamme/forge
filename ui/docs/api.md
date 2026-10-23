@@ -960,6 +960,24 @@ to the server it starts, records it in `server.json` (`read_only`) and never reu
 of the other mode: it replaces it as it does one running other code. `forge ui status` shows the
 mode (`read_only` in its JSON).
 
+**The CLIs' configuration.** The server `forge ui open` starts runs without any `FORGE_*` variable
+of the shell it was started from. The CLIs its writes call still need the forge configuration, so
+`open` hands them these, as that shell has them (an empty value counts as unset; a relative
+`FORGE_REGISTRY` or `FORGE_DATA_HOME` is made absolute against the shell's directory):
+`FORGE_REGISTRY`, `FORGE_DATA_HOME`, `FORGE_DATASET`, `XDG_CONFIG_HOME`, `XDG_DATA_HOME` and
+`XDG_STATE_HOME` (`control.CLI_ENV_NAMES`). It writes them to `cli-env.json` (mode `0600`) in its
+state dir, the server loads that file once when it starts (`_serve --cli-env FILE`) and every CLI
+call gets them on top of the server's own environment; the server's environment itself is not
+changed. No other variable is passed, and none of these is a secret. `server.json` records them as
+`cli_env`. A server started by hand (`python3 -m forge_ui`) passes its own environment unchanged.
+
+`open` never reuses a server whose recorded `cli_env` differs from the current shell's. It names
+each variable that differs and both values, says to run `forge ui stop` and then open again, exits
+`5`, prints no link and leaves the server running (it may be in the middle of another shell's
+write). A server
+running other code, in the other mode or reading another registry directory is still replaced, and
+the new one gets the current shell's configuration.
+
 **Serialization.** One write per run key at a time. A second write to a run whose write is still
 running is `409 {"error": "busy"}`, without reaching the CLI; other runs are not held up.
 

@@ -9,6 +9,7 @@ from pathlib import Path
 import shutil
 import signal
 import socket
+import stat
 import subprocess
 import sys
 import tempfile
@@ -292,6 +293,60 @@ class UiLauncherTests(unittest.TestCase):
         self.assertEqual(self.server_json()['pid'], old['pid'])
         self.open(self.plan, env=dict(self.env, FORGE_UI_READONLY='1'))
         self.assertNotEqual(self.server_json()['pid'], old['pid'])
+
+    def _custom_registry(self, name='custom.tsv'):
+        path = self.tmp / name
+        path.write_text('only-here\tcodex\tgpt-only-here\thigh\t600\n')
+        return path
+
+    def test_the_clis_of_writes_get_the_shells_forge_configuration_and_the_server_does_not(self):
+        repo = self.tmp / 'repo'
+        repo.mkdir()
+        subprocess.run(['git', 'init', '-q', str(repo)], check=True)
+        (self.plan / 'repo').write_text(f'{repo}\n')
+        self._custom_registry()
+        data = self.tmp / 'data'
+        env = dict(self.env, FORGE_REGISTRY='custom.tsv', FORGE_DATA_HOME=str(data), FORGE_DATASET='off',
+                   FORGE_UI_STRAY='1')
+        result = self.ui('open', str(self.plan), env=env, cwd=self.tmp)  # the registry is relative to the shell
+        self.assertEqual(result.returncode, 0, result.stderr)
+        server = self.server_json()
+        self.assertEqual(stat.S_IMODE((self.state / 'forge/ui/cli-env.json').stat().st_mode), 0o600)
+
+        # GET /api/config runs the real `forge config show` through control.run_cli
+        shown = get_json(server['port'], f'/api/config?run={run_key(self.plan)}')
+        registry = os.path.realpath(self.tmp / 'custom.tsv')
+        self.assertEqual((os.path.realpath(shown['registry']['path']), shown['registry']['overridden']), (registry, True))
+        self.assertEqual([row['alias'] for row in shown['registry']['rows']], ['only-here'])
+        self.assertEqual(shown['dataset'], {'path': str(data / 'dataset'), 'enabled': False})
+        # The CLI's environment is the server's plus the configuration: no other FORGE_* reached either.
+        self.assertEqual(sorted(shown['env']), ['FORGE_DATASET', 'FORGE_DATA_HOME', 'FORGE_REGISTRY'])
+        environ = Path(f'/proc/{server["pid"]}/environ')
+        if environ.exists():  # Linux: the server's own environment has none of them
+            names = [entry.split(b'=', 1)[0] for entry in environ.read_bytes().split(b'\0')]
+            self.assertEqual([name for name in names if name.startswith(b'FORGE_')], [])
+
+    def test_a_server_with_another_forge_configuration_is_never_reused(self):
+        first = dict(self.env, FORGE_REGISTRY=str(self._custom_registry()))
+        second = dict(self.env, FORGE_REGISTRY=str(self._custom_registry('other.tsv')))
+        unset = dict(self.env)
+        unset.pop('FORGE_REGISTRY', None)
+        self.open(self.plan, env=first)
+        old = self.server_json()
+        for label, env in (('another registry', second), ('no registry', unset)):
+            with self.subTest(label):
+                result = self.ui('open', str(self.plan), env=env)
+                self.assertEqual((result.returncode, result.stdout), (5, ''), result.stderr)
+                self.assertIn('FORGE_REGISTRY', result.stderr)
+                self.assertIn('forge ui stop', result.stderr)
+                self.assertTrue(alive(old['pid']))
+                self.assertEqual(self.server_json(), old)
+        self.open(self.plan, env=first)  # the same configuration is a reuse
+        self.assertEqual(self.server_json()['pid'], old['pid'])
+
+        self.assertEqual(self.ui('stop', env=second).returncode, 0)
+        self.open(self.plan, env=second)
+        self.assertEqual(self.server_json()['cli_env']['FORGE_REGISTRY'], second['FORGE_REGISTRY'])
 
     def test_a_server_whose_health_reports_another_build_is_replaced(self):
         # server.json still claims the current build; only the live answer says the code is old.

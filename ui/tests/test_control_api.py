@@ -503,6 +503,31 @@ class ReadOnlyTests(ControlApiCase):
         self.assertFalse(read_only_requested(False, {}))
 
 
+class CliEnvTests(unittest.TestCase):
+    """The forge configuration `forge ui open` hands the server reaches every CLI, and nothing else does."""
+
+    def test_every_cli_gets_the_configuration_on_top_of_the_servers_environment(self):
+        given = {'FORGE_REGISTRY': '/elsewhere/custom.tsv', 'FORGE_DATA_HOME': '/elsewhere/data'}
+        before = dict(os.environ)
+        printer = [sys.executable, '-c', 'import json, os; print(json.dumps(dict(os.environ)))']
+        with patch.object(control, 'cli_env', given):
+            seen = json.loads(control.run_cli(printer, 30).stdout)
+        self.assertEqual({name: seen.get(name) for name in given}, given)
+        self.assertEqual(seen.get('PATH'), os.environ.get('PATH'))  # the server's environment is still there
+        self.assertEqual(dict(os.environ), before)  # and the server's own is unchanged
+
+    def test_only_the_named_configuration_is_taken_from_the_shell(self):
+        shell = {'FORGE_REGISTRY': 'custom.tsv', 'FORGE_DATA_HOME': '~/data', 'FORGE_DATASET': 'off',
+                 'XDG_DATA_HOME': '', 'FORGE_UI_PORT': '0', 'FORGE_SHADOW': '1', 'FORGE_TYPESAFE_KEY': 'k', 'HOME': '/h'}
+        self.assertEqual(control.cli_env_from(shell), {
+            'FORGE_REGISTRY': os.path.abspath('custom.tsv'),  # relative to the shell, not to the server
+            'FORGE_DATA_HOME': '~/data', 'FORGE_DATASET': 'off'})
+        self.assertEqual(control.check_cli_env({'FORGE_DATASET': 'off'}), {'FORGE_DATASET': 'off'})
+        for bad in ([], {'FORGE_SHADOW': '1'}, {'FORGE_REGISTRY': 3}, {'FORGE_REGISTRY': ''}, {'FORGE_REGISTRY': 'a\x00b'}):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                control.check_cli_env(bad)
+
+
 class RealForgeTests(ControlApiCase):
     """The actual `forge control` on a copy of plan-full, through the API."""
 
