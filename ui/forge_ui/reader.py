@@ -42,6 +42,17 @@ def _kind(path):
     return None
 
 
+def _default_registry_dir():
+    """forge's run registry, resolved the way forge writes it (scripts/forge_registry.registry_dir).
+
+    ``XDG_CONFIG_HOME`` when set and not empty, otherwise ``~/.config``, with ``~`` expanded. A
+    relative value gives None: forge never registers a run there (it would land in the user's
+    tree), so reading it would only pick up whatever the current directory happens to hold.
+    """
+    base = Path(os.environ.get('XDG_CONFIG_HOME') or str(Path.home() / '.config')).expanduser()
+    return base / 'forge' / 'runs' if base.is_absolute() else None
+
+
 def discover(plans=(), roots=(), registry=True, registry_dir=None):
     found, seen = [], set()
 
@@ -76,10 +87,9 @@ def discover(plans=(), roots=(), registry=True, registry_dir=None):
     for path in roots:
         scan(Path(path))
     if registry:
-        base = Path(registry_dir) if registry_dir is not None else Path(
-            os.environ.get('XDG_CONFIG_HOME') or Path.home() / '.config') / 'forge' / 'runs'
+        base = Path(registry_dir) if registry_dir is not None else _default_registry_dir()
         try:
-            entries = sorted(base.glob('*.txt'))
+            entries = sorted(base.glob('*.txt')) if base is not None else []
         except OSError:
             entries = []
         for entry in entries:

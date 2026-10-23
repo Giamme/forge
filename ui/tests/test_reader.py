@@ -398,6 +398,23 @@ class ReaderTests(unittest.TestCase):
         with patch.dict(os.environ, {'XDG_CONFIG_HOME': str(config)}):
             self.assertEqual(discover(), [(root.resolve() / 'one', 'registry'), (external.resolve(), 'registry')])
 
+    def test_default_registry_resolves_xdg_config_home_like_forge_writes_it(self):
+        # forge_registry.registry_dir() expands ~ and never writes below a relative config home.
+        external = self.copy_plan('external')
+        self.write(self.base / 'home/cfg/forge/runs/repo.txt', f'{external}\n')
+        self.write(self.base / 'cwd/cfg/forge/runs/repo.txt', f'{external}\n')
+        cases = (('~ expanded', '~/cfg', [(external.resolve(), 'registry')]),
+                 ('relative ignored', 'cfg', []))
+        previous = os.getcwd()
+        os.chdir(self.base / 'cwd')
+        try:
+            for name, value, expected in cases:
+                with self.subTest(name), patch.dict(os.environ, {'HOME': str(self.base / 'home'),
+                                                                 'XDG_CONFIG_HOME': value}):
+                    self.assertEqual(discover(), expected)
+        finally:
+            os.chdir(previous)
+
     def test_catalog_refresh_order_and_disappearance(self):
         older, newer = self.copy_plan('old'), self.copy_plan('new')
         # Normalize fixture mtimes so only the deliberately selected file wins.
