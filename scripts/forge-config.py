@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+from pathlib import Path
 import stat
 import subprocess
 import sys
@@ -194,8 +195,16 @@ def forge_dir_ok(root):
 
 
 def dataset_block():
-    from forge_dataset import data_home, enabled
-    return dict(path=str(data_home() / 'dataset'), enabled=enabled())
+    # Mirrors the dataset package's data_home(), dataset_dir() and enabled() without importing it:
+    # outside its package the dataset is only written to, through capture (tests/test_dataset.py).
+    explicit = os.environ.get('FORGE_DATA_HOME')
+    if explicit:
+        home = Path(explicit).expanduser()
+    else:
+        base = os.environ.get('XDG_DATA_HOME') or str(Path.home() / '.local' / 'share')
+        home = Path(base).expanduser() / 'forge'
+    enabled = os.environ.get('FORGE_DATASET', 'on').strip().lower() not in ('off', '0', 'no', 'false')
+    return dict(path=str(home / 'dataset'), enabled=enabled)
 
 
 def env_block():
