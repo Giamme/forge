@@ -142,6 +142,45 @@ set_dwarf() { # set_dwarf <plan> <id> <spec>
 }
 
 # --- retry preparation ----------------------------------------------------------
+# Carries the last review's report forward as the findings of the next attempt, and records
+# which commit that report judged (what reviewed.commit holds now, since qa.last is that
+# review's). The two are written together: the commit first, so a report never sits beside a
+# commit that belongs to an older one. Repeating the call writes the same bytes.
+carry_findings() { # carry_findings <tdir>
+  local tdir="$1"
+  if [ -s "$tdir/reviewed.commit" ]; then
+    cp "$tdir/reviewed.commit" "$tdir/.retry_findings.commit.tmp" \
+      && mv "$tdir/.retry_findings.commit.tmp" "$tdir/retry_findings.commit"
+  else
+    rm -f "$tdir/retry_findings.commit"
+  fi
+  cp "$tdir/qa.last" "$tdir/retry_findings.md"
+}
+
+# The diff between the attempt the carried findings judged and the one under review now, as
+# files a later gate can reuse (tasks/<id>/changes.since.{diff,range,stat}). All three go
+# when there is no valid range: no findings, no recorded commit, a commit that is unknown or
+# no ancestor of the reviewed one, or nothing changed.
+attempt_delta() { # attempt_delta <tdir> <worktree> <reviewed-commit>
+  local tdir="$1" wt="$2" reviewed="$3" from="" to=""
+  rm -f "$tdir/.changes.since.diff" "$tdir/.changes.since.stat"
+  if [ -s "$tdir/retry_findings.md" ] && [ -s "$tdir/retry_findings.commit" ] \
+     && from="$(git -C "$wt" rev-parse --verify -q "$(cat "$tdir/retry_findings.commit")^{commit}")" \
+     && to="$(git -C "$wt" rev-parse --verify -q "$reviewed^{commit}")" \
+     && git -C "$wt" merge-base --is-ancestor "$from" "$to" \
+     && git -C "$wt" diff --binary "$from" "$to" -- . ':(exclude).forge' > "$tdir/.changes.since.diff" 2>/dev/null \
+     && [ -s "$tdir/.changes.since.diff" ] \
+     && git -C "$wt" diff --stat "$from" "$to" -- . ':(exclude).forge' > "$tdir/.changes.since.stat" 2>/dev/null; then
+    printf '%s %s\n' "$from" "$to" > "$tdir/changes.since.range"
+    mv "$tdir/.changes.since.diff" "$tdir/changes.since.diff"
+    mv "$tdir/.changes.since.stat" "$tdir/changes.since.stat"
+    return 0
+  fi
+  rm -f "$tdir/.changes.since.diff" "$tdir/.changes.since.stat" \
+        "$tdir/changes.since.diff" "$tdir/changes.since.range" "$tdir/changes.since.stat"
+  return 0
+}
+
 # Shared by `retry` (a human asked) and the scheduler's automatic retries. The findings
 # are the whole point of retrying rather than re-running: the dwarf is told what was
 # wrong with its own previous attempt.
@@ -163,14 +202,15 @@ prepare_retry() { # prepare_retry <plan> <id> [new-dwarf]
   # all"), and copying that over would throw away the actual findings the previous
   # reviewer gave — the one thing a retry exists to carry forward.
   elif [ "$verdict" = PASS ] || [ "$verdict" = FAIL ]; then
-    cp "$tdir/qa.last" "$tdir/retry_findings.md"
+    carry_findings "$tdir"
   elif grep -q 'FORGE_VERDICT' "$tdir/qa.last" 2>/dev/null; then
-    cp "$tdir/qa.last" "$tdir/retry_findings.md"
+    carry_findings "$tdir"
   elif [ -s "$tdir/retry_findings.md" ]; then
     note "$id: no new review since the last retry — reusing the previous findings"
   else
     note "$id: no previous QA findings to pass on (last status was $st)"
     : > "$tdir/retry_findings.md"
+    rm -f "$tdir/retry_findings.commit"
   fi
   # A QA-only resume (an unreviewed verdict, or a QA-stage infrastructure stop) re-asks the
   # reviewer about work that is already committed; the dwarf does not run, so it is no moment
