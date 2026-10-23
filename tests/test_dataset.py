@@ -1068,8 +1068,8 @@ class IndependenceTests(unittest.TestCase):
         # written to, through capture.
         allowed = {'forge-runtime.py', 'forge-schedule.py', 'forge-dataset.py', 'forge-shadow.py', 'client.py',
                    'cli.py', 'invocation.py', 'pipeline.py', 'predict.py',
-                   # forge control, forge config and forge runs rm: they write to the store, or only locate it
-                   'forge-control.py', 'forge-config.py', 'forge-runs-rm.py'}
+                   # forge control and forge runs rm: they write to the store, or only locate it
+                   'forge-control.py', 'forge-runs-rm.py'}
         for path in (ROOT / 'scripts').rglob('*'):
             if path.suffix not in ('.py', '.sh') or 'forge_dataset' in path.parts:
                 continue
@@ -1086,6 +1086,25 @@ class IndependenceTests(unittest.TestCase):
                 if 'forge_dataset' in line and 'import' in line:
                     self.assertRegex(line, r'from forge_dataset(\.capture)? import (capture|point|jev|fractal_step|'
                                            r'fractal_outcome|mint_run_uid)|from forge_dataset\.cli import main|'
-                                           r'from forge_dataset import data_home, enabled$|'
                                            r'from forge_dataset import DatasetError, data_home, dataset_dir, enabled, '
                                            r'harvest, importer, record_strict', str(path))
+
+    def test_forge_config_locates_the_dataset_as_the_store_does(self):
+        # forge config mirrors data_home() and enabled() rather than import the store; keep them in step.
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp).resolve()
+            cases = {'FORGE_DATA_HOME': dict(FORGE_DATA_HOME='~/fdh', XDG_DATA_HOME=str(home / 'xdg')),
+                     'XDG_DATA_HOME': dict(XDG_DATA_HOME=str(home / 'xdg')),
+                     'neither': {},
+                     'FORGE_DATASET=Off': dict(FORGE_DATA_HOME=str(home / 'fdh'), FORGE_DATASET=' Off ')}
+            for name, extra in cases.items():
+                env = {k: v for k, v in os.environ.items()
+                       if k not in ('FORGE_DATA_HOME', 'XDG_DATA_HOME', 'FORGE_DATASET')}
+                env.update(extra, HOME=str(home), XDG_CONFIG_HOME=str(home / 'cfg'))
+                with self.subTest(name), patch.dict(os.environ, env, clear=True):
+                    out = subprocess.run([str(ROOT / 'forge'), 'config', 'show', '--json'], capture_output=True,
+                                         text=True, env=env, cwd=tmp)
+                    self.assertEqual(out.returncode, 0, out.stderr)
+                    shown = json.loads(out.stdout)['dataset']
+                    self.assertEqual(shown, dict(path=str(store.dataset_dir()), enabled=store.enabled()))
+                    self.assertEqual(shown['enabled'], name != 'FORGE_DATASET=Off')
