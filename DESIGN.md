@@ -255,7 +255,7 @@ The palette is grey-green enamel and ink, with lamp colours reserved for state.
 - **Clear Green** (lamp-green): merged, passed, accepted, no changes. On the Live control it shows that polling is on.
 - **Occupied Amber** (lamp-amber): running and interrupted. It is also the stage accent (`--stage-accent`), the model's own time in the phase bar, the replay range, the text caret, selection highlight, search-match underline and the leaderboard's confidence band. On the plate it draws the critical path, escalation cables and the escalation hop label.
 - **Failed Red** (lamp-red): failed, error, conflict, infra, timeout, blocked. It is also the notification count and bad notifications.
-- **Unlit** (lamp-off): pending, none, unknown, invalidated, and the resting lamp on every push button.
+- **Unlit** (lamp-off): pending, none, unknown, invalidated, and the resting lamp on every push button. Its non-plain case, drawn hollow, is an outdated review.
 - **Lit Green / Lit Amber / Lit Red** (lit-green, lit-amber, lit-red): the same lamps lit on the 3D plate (`--st-lit`). On the pale light-theme panel a lit lamp is saturated, not darkened for text. Amber starts yellower because blending toward the pale panel pulls it toward orange. In dark they equal the text lamps.
 
 ### Tertiary
@@ -279,7 +279,7 @@ The palette is grey-green enamel and ink, with lamp colours reserved for state.
 ### Named Rules
 **The One Lamp, One Meaning Rule.** There are five lamps: green for clear (merged or passed), amber for occupied (running), red for failed, unlit for pending, and route white for a set route or selection. Never use a lamp colour for decoration or for a second meaning.
 
-**The Hollow Lamp Rule.** A lamp drawn as a ring with a transparent fill belongs to its family but is not the plain case. Accepted and no changes are hollow green, interrupted is hollow amber, and infra, timeout and blocked are hollow red.
+**The Hollow Lamp Rule.** A lamp drawn as a ring with a transparent fill belongs to its family but is not the plain case. Accepted and no changes are hollow green, interrupted is hollow amber, infra, timeout and blocked are hollow red, and an outdated review is hollow unlit.
 
 **The Separate Ramp Rule.** Review severity has its own colour ramp and always comes with a shape. It never borrows a status lamp.
 

@@ -113,7 +113,9 @@
     if (f.model && !list(run.models).some(m => alias(m) === f.model)) return false;
     if (f.ageDays && num(now) !== null && !(num(run.updated) !== null && run.updated >= now - f.ageDays * 86400)) return false;
     if (f.verdict) {
-      const v = run.final_review || run.verification_status || null;
+      // An outdated published review matches OUTDATED, not the verdict it gave.
+      const review = runReviewStatus(run);
+      const v = review != null ? review : (run.verification_status || null);
       if (f.verdict === 'none' ? v : v !== f.verdict) return false;
     }
     return true;
@@ -180,16 +182,89 @@
     if (statuses.some(s => s === 'PENDING' || s === 'PASS')) return 'PENDING';
     return 'BLOCKED';
   }
+  // How one final review reads as a stage. OUTDATED only once it is done and the reader says the
+  // integration branch has moved: a running review, and a review the reader still calls current, keep their verdict.
+  function finalStatus(fr) {
+    if (!fr || typeof fr !== 'object') return null;
+    if (fr.state === 'running') return 'RUNNING';
+    if (fr.state === 'infra') return 'INFRA';
+    if (fr.state === 'done' && fr.outdated === true) return 'OUTDATED';
+    return fr.verdict || 'UNKNOWN';
+  }
+  // RunSummary carries the published verdict as a string plus final_review_outdated. Same rule as finalStatus.
+  function runReviewStatus(summary) {
+    if (!summary) return null;
+    const v = summary.final_review;
+    if (v && typeof v === 'object') return finalStatus(v);
+    if (typeof v !== 'string' || !v) return null;
+    return summary.final_review_outdated === true ? 'OUTDATED' : v;
+  }
+  function shortTip(tip) {
+    if (tip === null || tip === undefined || tip === '') return '—';
+    return String(tip).slice(0, 7);
+  }
+  // "<verdict> at <tip7>; N tasks merged since: <ids>", ids cut after 5.
+  function reviewSinceLine(src) {
+    if (!src) return '';
+    const ids = list(src.merged_since).map(id => String(id));
+    const shown = ids.slice(0, 5), extra = ids.length - shown.length;
+    const names = shown.join(', ') + (extra > 0 ? ' +' + extra + ' more' : '');
+    const n = ids.length;
+    return `${src.verdict || 'UNKNOWN'} at ${shortTip(src.tip)}; ${n} ${n === 1 ? 'task' : 'tasks'} merged since` + (names ? ': ' + names : '');
+  }
+  // The newest final review that had started by t. Same pick stateAt has always made.
+  function reviewAt(run, t) {
+    const started = r => num(r && r.started) ?? num(r && r.at);
+    const fr = list(run && run.final_reviews).filter(r => r && (started(r) ?? Infinity) <= t);
+    return fr.sort((a, b) => (a.at || 0) - (b.at || 0)).pop() || null;
+  }
+  // When an outdated review starts to show as OUTDATED. The current flag is the truth; this only places it.
+  // First id in merged_since, else (that list is empty) the first merge at or after the review's `at`,
+  // else the review's end when no merge time is known. A current review (outdated false or null) has no moment.
+  function outdatedMoment(run, review) {
+    if (!review || review.outdated !== true) return null;
+    const merges = list(run && run.integration && run.integration.merged).filter(m => m && num(m.at) !== null);
+    const since = list(review.merged_since);
+    if (since.length) {
+      const times = merges.filter(m => m.id === since[0]).map(m => m.at);
+      if (times.length) return Math.min(...times);
+      return num(review.ended);
+    }
+    const at = num(review.at);
+    if (at !== null) {
+      const later = merges.filter(m => m.at >= at).map(m => m.at);
+      if (later.length) return Math.min(...later);
+    }
+    return num(review.ended);
+  }
+  // Status of one review at time t. Before it ends it is RUNNING. OUTDATED only at and after outdatedMoment,
+  // and only when the review is done and currently outdated, so the present matches finalStatus.
+  function finalAt(run, review, t) {
+    if (!review) return 'NONE';
+    if (review.state === 'running') return 'RUNNING';
+    const ended = num(review.ended);
+    const end = ended !== null ? ended : (review.state === 'done' || review.state === 'infra' ? num(review.at) : null);
+    if (end === null) return finalStatus(review) || 'RUNNING';
+    if (end > t) return 'RUNNING';
+    if (review.state === 'infra') return 'INFRA';
+    if (review.state === 'done' && review.outdated === true) {
+      const from = outdatedMoment(run, review);
+      if (from === null || t >= from) return 'OUTDATED';
+    }
+    return review.verdict || 'UNKNOWN';
+  }
   function finishState(run) {
     const fr = run.final_review, v = run.verification, ig = run.integration;
     const tasks = list(run.tasks), merged = tasks.filter(t => t.status === 'MERGED').length;
+    const frObj = fr && typeof fr === 'object' ? fr : null;
     return {
       integration: { status: integrationStatus(tasks.map(t => t.status)),
         merged, total: tasks.length, base: ig && ig.base || null, accepted: ig && ig.accepted || null },
       verification: { status: v && v.status ? String(v.status).toUpperCase() : 'PENDING', command: v && v.command || null, runs: list(v && v.runs).length },
-      final: { status: !fr ? (run.settings && run.settings.final_qa ? 'PENDING' : 'NONE') : fr.state === 'running' ? 'RUNNING' : fr.state === 'infra' ? 'INFRA' : fr.verdict || 'UNKNOWN',
-        requested: !!(fr || run.settings && run.settings.final_qa), spec: fr && fr.spec || run.settings && run.settings.final_qa || null, findings: fr && fr.findings || null,
-        count: list(run.final_reviews).length },
+      final: { status: !frObj ? (run.settings && run.settings.final_qa ? 'PENDING' : 'NONE') : finalStatus(frObj),
+        requested: !!(fr || run.settings && run.settings.final_qa), spec: frObj && frObj.spec || run.settings && run.settings.final_qa || null, findings: frObj && frObj.findings || null,
+        count: list(run.final_reviews).length,
+        verdict: frObj && frObj.verdict || null, tip: frObj && frObj.tip || null, merged_since: list(frObj && frObj.merged_since) },
     };
   }
   function planModel(run) {
@@ -492,9 +567,8 @@
       }
       tasks[task.id] = { status, role };
     }
-    const fr = list(run && run.final_reviews).filter(r => (num(r.started) ?? num(r.at) ?? Infinity) <= t);
-    const last = fr.sort((a, b) => (a.at || 0) - (b.at || 0)).pop();
-    const final = !last ? 'NONE' : num(last.ended) !== null && last.ended <= t ? (last.verdict || 'UNKNOWN') : 'RUNNING';
+    const last = reviewAt(run, t);
+    const final = finalAt(run, last, t);
     const vs = list(run && run.timeline && run.timeline.verifications).filter(v => num(v.started) !== null && v.started <= t);
     const lv = vs.pop();
     const verification = !lv ? 'PENDING' : num(lv.ended) !== null && lv.ended <= t ? (lv.exit_code === 0 ? 'PASS' : 'FAIL') : 'RUNNING';
@@ -661,7 +735,8 @@
     return { pos, edges, cols, rows: next };
   }
 
-  return { liveNow, runState, execStatus, matchRun, filterOptions, atlasModel, columns, planModel, finishState, taskParts,
+  return { liveNow, runState, execStatus, matchRun, filterOptions, atlasModel, columns, planModel, finishState,
+    finalStatus, runReviewStatus, reviewSinceLine, reviewAt, taskParts,
     taskTimes, metricValue, overlap, projectSchedule, execModel, criticalPath, concurrency, stateAt, timeRange, events, lineage, structureKey, innerKey,
     fmtDur, alias, basename, weight, searchIndex, searchRank, statusEvents, fractalTree };
 });

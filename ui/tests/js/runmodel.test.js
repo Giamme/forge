@@ -215,6 +215,78 @@ test('the projection queues BLOCKED and INFRA tasks and merges a saved PASS firs
   assert.equal(p.graph, undefined, 'a PASS is merged, not run again');
 });
 
+test('a done final review the branch has moved past is OUTDATED, and it keeps its verdict', () => {
+  const fr = { state: 'done', verdict: 'FAIL', outdated: true, tip: '3c4d5e6ffff', merged_since: ['page', 'reader'] };
+  const F = RM.finishState(run({ final_review: fr, final_reviews: [fr] })).final;
+  assert.equal(F.status, 'OUTDATED');
+  assert.equal(F.verdict, 'FAIL');
+  assert.equal(F.tip, '3c4d5e6ffff');
+  assert.deepEqual(F.merged_since, ['page', 'reader']);
+  assert.equal(RM.finalStatus(fr), 'OUTDATED');
+  const current = { state: 'done', verdict: 'FAIL', outdated: false, tip: 'abc', merged_since: [] };
+  assert.equal(RM.finishState(run({ final_review: current })).final.status, 'FAIL');
+  const running = { state: 'running', verdict: null, outdated: true, tip: null, merged_since: [] };
+  const live = RM.finishState(run({ final_review: running })).final;
+  assert.equal(live.status, 'RUNNING');
+  assert.equal(live.verdict, null);
+  assert.equal(live.tip, null);
+  assert.deepEqual(live.merged_since, []);
+  assert.equal(RM.reviewSinceLine({ verdict: 'FAIL', tip: '3c4d5e6ffff', merged_since: ['a', 'b', 'c', 'd', 'e', 'f', 'g'] }),
+    'FAIL at 3c4d5e6; 7 tasks merged since: a, b, c, d, e +2 more');
+  assert.equal(RM.reviewSinceLine({ verdict: 'FAIL', tip: 'abc', merged_since: ['page'] }), 'FAIL at abc; 1 task merged since: page');
+  assert.equal(RM.reviewSinceLine(fr), 'FAIL at 3c4d5e6; 2 tasks merged since: page, reader');
+});
+
+test('replay shows OUTDATED only from the merge that made the review stale, and the present matches finishState', () => {
+  const at = T0 + 1000, ended = at + 100, mergeB = at + 400;
+  const present = mergeB + 50;
+  const fr = { state: 'done', verdict: 'FAIL', outdated: true, at, started: at, ended, tip: 'abcdef123456', merged_since: ['b'] };
+  const r = run({ final_review: fr, final_reviews: [fr], integration: { merged: [{ id: 'a', at: at - 20 }, { id: 'b', at: mergeB }] } });
+  assert.equal(RM.stateAt(r, ended - 1).final, 'RUNNING');
+  assert.equal(RM.stateAt(r, ended).final, 'FAIL');
+  assert.equal(RM.stateAt(r, mergeB - 1).final, 'FAIL');
+  assert.equal(RM.stateAt(r, mergeB).final, 'OUTDATED');
+  assert.equal(RM.stateAt(r, present).final, 'OUTDATED');
+  assert.equal(RM.stateAt(r, present).final, RM.finishState(r).final.status);
+
+  // The only later merge fell inside the review's starting second, so merged_since is empty.
+  const frEmpty = { state: 'done', verdict: 'FAIL', outdated: true, at, started: at, ended: at + 0.2, tip: 'abc1234zz', merged_since: [] };
+  const rEmpty = run({ final_review: frEmpty, final_reviews: [frEmpty], integration: { merged: [{ id: 'a', at: at + 0.5 }] } });
+  assert.equal(RM.stateAt(rEmpty, at + 0.4).final, 'FAIL');
+  assert.equal(RM.stateAt(rEmpty, at + 0.5).final, 'OUTDATED');
+  assert.equal(RM.stateAt(rEmpty, at + 0.5).final, RM.finishState(rEmpty).final.status);
+
+  // No merge time at all: OUTDATED at the review's end. A merge before `at` does not count.
+  const frEnd = { state: 'done', verdict: 'FAIL', outdated: true, at, started: at, ended: at + 30, tip: 'abc', merged_since: [] };
+  const rEnd = run({ final_review: frEnd, final_reviews: [frEnd], integration: { merged: [{ id: 'old', at: at - 5 }] } });
+  assert.equal(RM.stateAt(rEnd, at + 29).final, 'RUNNING');
+  assert.equal(RM.stateAt(rEnd, at + 30).final, 'OUTDATED');
+  assert.equal(RM.stateAt(rEnd, at + 30).final, RM.finishState(rEnd).final.status);
+
+  for (const outdated of [false, null]) {
+    const frCurrent = { state: 'done', verdict: 'FAIL', outdated, at, started: at, ended, tip: 'abc', merged_since: [] };
+    const rCurrent = run({ final_review: frCurrent, final_reviews: [frCurrent], integration: { merged: [{ id: 'b', at: mergeB }] } });
+    assert.equal(RM.stateAt(rCurrent, mergeB - 1).final, 'FAIL');
+    assert.equal(RM.stateAt(rCurrent, present).final, 'FAIL');
+    assert.equal(RM.stateAt(rCurrent, present).final, RM.finishState(rCurrent).final.status);
+  }
+});
+
+test('an outdated review matches the OUTDATED filter, not its verdict', () => {
+  const stale = { final_review: 'FAIL', final_review_outdated: true, verification_status: 'PASS' };
+  assert.equal(RM.runReviewStatus(stale), 'OUTDATED');
+  assert.equal(RM.matchRun(stale, { verdict: 'OUTDATED' }, T0), true);
+  assert.equal(RM.matchRun(stale, { verdict: 'FAIL' }, T0), false);
+  assert.equal(RM.matchRun(stale, { verdict: 'none' }, T0), false);
+  const fresh = { final_review: 'FAIL', final_review_outdated: false };
+  assert.equal(RM.runReviewStatus(fresh), 'FAIL');
+  assert.equal(RM.matchRun(fresh, { verdict: 'FAIL' }, T0), true);
+  assert.equal(RM.matchRun(fresh, { verdict: 'OUTDATED' }, T0), false);
+  const verifyOnly = { final_review: null, final_review_outdated: null, verification_status: 'PASS' };
+  assert.equal(RM.matchRun(verifyOnly, { verdict: 'PASS' }, T0), true);
+  assert.equal(RM.matchRun(verifyOnly, { verdict: 'OUTDATED' }, T0), false);
+});
+
 test('a live execution model keeps its time axis while every block still fits', () => {
   const X1 = RM.execModel(run(), { now: T0 + 400 });
   const X2 = RM.execModel(run(), { now: T0 + 600, scale: { t0: X1.t0, t1: X1.t1 } });     // unscaled, this poll's axis would be longer

@@ -89,12 +89,13 @@ export async function createStage(host, cb = {}) {
     el.col = col || E.statusColor(el.status);
     el.pulse = el.status === 'RUNNING';
   }
-  const PLAIN = new Set(['PENDING', 'NONE', 'UNKNOWN']);
+  const PLAIN = new Set(['PENDING', 'NONE', 'UNKNOWN', 'OUTDATED']);   // unlit: no glow and no tint
   function baseTargets(el) {
     const T = el.tgt, s = el.status, light = E.theme === 'light';
     T.lit = PLAIN.has(s) ? 0 : .32;
     T.tint = PLAIN.has(s) ? 0 : light ? .34 : .1;          // a pale panel shows a lit section by its colour: no glow to carry it
     T.vis = 1; T.op = 1; T.opB = 1;
+    // Not started yet. OUTDATED is a finished review that is no longer current, so it stays solid.
     if (s === 'PENDING' || s === 'NONE') { T.opB = .55; T.op = .8; }
     // parts are small: their status has to read from the colour of the whole piece
     if (el.kind === 'part' && !PLAIN.has(s)) { T.tint = light ? .5 : .32; T.lit = .55; }
@@ -166,7 +167,8 @@ export async function createStage(host, cb = {}) {
     const parts = [r.kind === 'solo' ? (Object.keys(c)[0] || 'solo') : `${merged}/${total} done`];
     if (running) parts.push(`${running} running`);
     if (bad) parts.push(`${bad} failed`);
-    if (r.final_review) parts.push(`review ${r.final_review}`);
+    const reviewStatus = RM.runReviewStatus(r);
+    if (reviewStatus) parts.push(`review ${reviewStatus}`);
     else if (r.verification_status) parts.push(`verify ${r.verification_status}`);
     return parts.join(' · ');
   }
@@ -207,7 +209,7 @@ export async function createStage(host, cb = {}) {
       el.data.run = m.run; el.data.module = m;
       setStatus(el, STATE_STATUS[m.state]); halo(el);
       setLeds(el, m.tasks.map(t => t.status));
-      const sig = JSON.stringify([m.run.goal, m.run.counts, m.run.final_review, m.run.verification_status]);
+      const sig = JSON.stringify([m.run.goal, m.run.counts, m.run.final_review, m.run.final_review_outdated, m.run.verification_status]);
       if (sig !== el.sig) { el.sig = sig; redraw(el); }
     }
     retarget();
@@ -276,9 +278,12 @@ export async function createStage(host, cb = {}) {
     const F = st.plan && st.plan.finish, run = st.run; if (!F) return {};
     if (id === 'f:integration') return { title: 'INTEGRATION', sub: `${F.integration.merged}/${F.integration.total} merged`, status: F.integration.status, line: F.integration.accepted ? 'at ' + String(F.integration.accepted).slice(0, 10) : 'into forge/' + (run.run_id || '…') + '-integration' };
     if (id === 'f:verification') return { title: 'VERIFICATION', sub: F.verification.command || 'no command recorded', status: F.verification.status, line: F.verification.runs ? `${F.verification.runs} run${F.verification.runs > 1 ? 's' : ''}` : 'not run yet' };
+    const status = finishStatus(id, { status: F.final.status });
+    const src = status === 'OUTDATED' && st.replay !== null ? (RM.reviewAt(run, st.replay) || F.final) : F.final;
     const f = F.final.findings;
-    return { title: 'FINAL REVIEW', sub: F.final.requested ? (F.final.spec || 'reviewer not chosen') : 'not requested', status: F.final.status, findings: f,
-      line: F.final.status === 'NONE' ? 'opt-in: forge review <plan>' : F.final.count > 1 ? `${F.final.count} reviews` : F.final.status };
+    const line = status === 'OUTDATED' ? RM.reviewSinceLine(src)
+      : F.final.status === 'NONE' ? 'opt-in: forge review <plan>' : F.final.count > 1 ? `${F.final.count} reviews` : status;
+    return { title: 'FINAL REVIEW', sub: F.final.requested ? (F.final.spec || 'reviewer not chosen') : 'not requested', status, findings: f, line };
   }
   function buildFinish(m, p, g) {
     const [x, y, w, d, h] = p;
@@ -1239,6 +1244,7 @@ export async function createStage(host, cb = {}) {
     const lamps = { title: 'Lamps', rows: [
       { sw: { lamp: 'st-merged' }, label: 'merged · passed · accepted' }, { sw: { lamp: 'st-running' }, label: 'running · interrupted' },
       { sw: { lamp: 'st-fail' }, label: 'failed · conflict · infra · timeout' }, { sw: { lamp: 'st-pending' }, label: 'pending, not started' },
+      { sw: { lamp: 'st-outdated' }, label: 'outdated review' },
       { sw: { route: true }, label: st.view === 'atlas' ? 'chosen run' : 'chosen task' + (L.route ? ' and its route' : '') }] };
     if (st.view === 'atlas') {
       out.push({ title: 'Map', rows: [], note: 'Each block is a run, each district a repository. The lamps on a block are its tasks; the block stands taller the more tasks it has.' }, lamps);

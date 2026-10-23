@@ -9,7 +9,7 @@ window.ForgePanel = (() => {
   const num = v => typeof v === 'number' && Number.isFinite(v) ? v : null;
   const display = v => v === null || v === undefined || v === '' ? '—' : typeof v === 'object' ? JSON.stringify(v, null, 2) : String(v);
   const STATUSES = new Set(['merged', 'pass', 'running', 'pending', 'fail', 'error', 'infra', 'timeout', 'unknown', 'invalidated', 'blocked',
-    'interrupted', 'nochanges', 'conflict', 'accepted', 'none']);
+    'interrupted', 'nochanges', 'conflict', 'accepted', 'none', 'outdated']);
   const cache = new Map();                                  // path → {data, error, at}
   function el(tag, text, className) {
     const node = document.createElement(tag);
@@ -220,9 +220,17 @@ window.ForgePanel = (() => {
     const F = RM.finishState(run);
     if (run.kind === 'solo') fields(f, [['Verdict', chip(list(run.tasks)[0] && list(run.tasks)[0].verdict)]]);
     else {
+      const finalSel = { kind: 'final' }, openFinal = () => ctx.onSelect(finalSel);
+      let finalValue;
+      if (F.final.status === 'OUTDATED') {
+        finalValue = el('a'); finalValue.href = ctx.hash(finalSel);
+        finalValue.addEventListener('click', e => { e.preventDefault(); openFinal(); });
+        finalValue.append(chip('OUTDATED'));
+      } else finalValue = link(F.final.status === 'NONE' ? 'not requested' : F.final.status, ctx.hash(finalSel), openFinal);
       fields(f, [['Integration', link(`${F.integration.merged}/${F.integration.total} merged`, ctx.hash({ kind: 'integration' }), () => ctx.onSelect({ kind: 'integration' }))],
         ['Verification', link(F.verification.status, ctx.hash({ kind: 'verification' }), () => ctx.onSelect({ kind: 'verification' }))],
-        ['Final review', link(F.final.status === 'NONE' ? 'not requested' : F.final.status, ctx.hash({ kind: 'final' }), () => ctx.onSelect({ kind: 'final' }))]]);
+        ['Final review', finalValue]]);
+      if (F.final.status === 'OUTDATED') muted(f, RM.reviewSinceLine(F.final));
       if (F.final.findings) findingCounts(f, F.final.findings);
     }
     if (list(run.deferrals).length) details(host, `Deferred tasks (${run.deferrals.length})`, run.deferrals.join('\n'), 'deferrals');
@@ -475,10 +483,12 @@ window.ForgePanel = (() => {
       return;
     }
     const chips = el('div', undefined, 'chips');
-    chips.append(chip(pick.state === 'running' ? 'RUNNING' : pick.verdict || pick.state || 'unknown'));
+    const status = RM.finalStatus(pick);
+    chips.append(chip(status));
     if (pick.published) chips.append(el('span', 'published', 'tag'));
     chips.append(el('span', pick.source === 'integrate' ? 'during integrate' : 'forge review', 'tag'));
     head.append(chips);
+    if (status === 'OUTDATED') muted(host, RM.reviewSinceLine(pick));
     fields(host, [['Reviewer', plate(pick.spec)], ['Threshold', pick.threshold], ['Reviewed', pick.base || pick.tip ? `${String(pick.base || '?').slice(0, 10)}..${String(pick.tip || '?').slice(0, 10)}` : '—', true],
       ['Started', time(pick.started ?? pick.at)], ['Ended', time(pick.ended)], ['Duration', RM.fmtDur(pick.duration_s)]]);
     if (pick.execution) { const s = { kind: 'execution', task: null, exec: pick.execution }; host.append(link('Model, timings and exact prompt →', ctx.hash(s), () => ctx.onSelect(s))); }
