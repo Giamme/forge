@@ -78,10 +78,19 @@ pin_spec() { # pin_spec <file>
 
 # claim_pin <tdir> -> prints the spec and returns 0 when a pin was claimed; the file is
 # then escalation.pin.applying until settle_pin. A pin with no usable spec is dropped.
+# The claim is a bare rename(2), not mv: mv moves a file INTO a destination that is a
+# directory or a symlink to one (BSD mv has no -T), which could carry the pin out of the
+# plan. rename replaces a stale file or symlink named .applying and fails on a directory,
+# and then the pin stays where it is for a later retry.
 claim_pin() {
   local tdir="$1" spec
   [ -f "$tdir/escalation.pin" ] && [ ! -L "$tdir/escalation.pin" ] || return 1
-  mv -f "$tdir/escalation.pin" "$tdir/escalation.pin.applying" 2>/dev/null || return 1
+  if ! python3 -c 'import os, sys; os.rename(sys.argv[1], sys.argv[2])' \
+      "$tdir/escalation.pin" "$tdir/escalation.pin.applying" 2>/dev/null; then
+    [ -e "$tdir/escalation.pin" ] && \
+      note "$(basename "$tdir"): could not claim the escalation pin (escalation.pin.applying is in the way) — leaving it in place"
+    return 1
+  fi
   spec="$(pin_spec "$tdir/escalation.pin.applying")"
   if [ -z "$spec" ]; then
     rm -f "$tdir/escalation.pin.applying"
