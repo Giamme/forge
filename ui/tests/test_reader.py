@@ -399,12 +399,13 @@ class ReaderTests(unittest.TestCase):
             self.assertEqual(discover(), [(root.resolve() / 'one', 'registry'), (external.resolve(), 'registry')])
 
     def test_default_registry_resolves_xdg_config_home_like_forge_writes_it(self):
-        # forge_registry.registry_dir() expands ~ and never writes below a relative config home.
-        external = self.copy_plan('external')
+        # forge_registry.registry_dir() expands ~ and treats a relative config home as unset.
+        external, default = self.copy_plan('external'), self.copy_plan('default')
         self.write(self.base / 'home/cfg/forge/runs/repo.txt', f'{external}\n')
         self.write(self.base / 'cwd/cfg/forge/runs/repo.txt', f'{external}\n')
+        self.write(self.base / 'home/.config/forge/runs/repo.txt', f'{default}\n')
         cases = (('~ expanded', '~/cfg', [(external.resolve(), 'registry')]),
-                 ('relative ignored', 'cfg', []))
+                 ('relative counts as unset', 'cfg', [(default.resolve(), 'registry')]))
         previous = os.getcwd()
         os.chdir(self.base / 'cwd')
         try:

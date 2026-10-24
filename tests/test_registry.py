@@ -156,12 +156,14 @@ class RegisterCommandTests(unittest.TestCase):
                 self.assertEqual(self.registered(), [])
                 self.assertFalse(self.config.exists())
 
-    def test_a_config_home_that_is_not_absolute_is_never_written_below_the_current_directory(self):
-        # A relative XDG_CONFIG_HOME resolves below the cwd, which for a runner is usually the
-        # user's repo. An empty one counts as unset (XDG spec): the run lands in ~/.config.
+    def test_a_config_home_that_is_not_absolute_counts_as_unset(self):
+        # Taken literally, an empty or relative XDG_CONFIG_HOME resolves below the cwd, which
+        # for a runner is usually the user's repo. Both count as unset (XDG spec): the run
+        # lands in ~/.config, where forge-ui looks for it.
         home = self.tmp / 'home'
         default = home / '.config/forge/runs' / (forge_registry.repo_key(self.repo) + '.txt')
-        for value, expected in (('', [str(self.run_dir.resolve())]), ('relative/config', [])):
+        for value in ('', 'relative/config'):
+            expected = [str(self.run_dir.resolve())]
             with self.subTest(repr(value)):
                 result = subprocess.run([sys.executable, '-I', str(ROOT / 'scripts/forge_registry.py'), 'register',
                                          str(self.run_dir)], env=dict(self.env, XDG_CONFIG_HOME=value, HOME=str(home)),

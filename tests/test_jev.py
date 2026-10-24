@@ -114,10 +114,11 @@ class ConfigTests(JevTestCase):
     def test_config_path_honors_xdg_config_home(self):
         os.environ['XDG_CONFIG_HOME'] = str(self.root / 'somewhere-else')
         self.assertEqual(forge_jev.config_path(), self.root / 'somewhere-else/forge/jev.json')
-        # Empty counts as unset (XDG spec), never as a path below the current directory.
-        os.environ['XDG_CONFIG_HOME'] = ''
-        with patch.dict(os.environ, HOME=str(self.root / 'home')):
-            self.assertEqual(forge_jev.config_path(), self.root / 'home/.config/forge/jev.json')
+        # Empty or relative counts as unset (XDG spec), never as a path below the current directory.
+        for value in ('', 'relative/config'):
+            os.environ['XDG_CONFIG_HOME'] = value
+            with self.subTest(repr(value)), patch.dict(os.environ, HOME=str(self.root / 'home')):
+                self.assertEqual(forge_jev.config_path(), self.root / 'home/.config/forge/jev.json')
 
 
 # 2. Key handling and redaction ------------------------------------------------
