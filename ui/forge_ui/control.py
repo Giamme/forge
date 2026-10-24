@@ -538,6 +538,17 @@ def _config_set(ctx):
 
 # (method, path pattern, handler(ctx) -> (status, body)); group 1 of the pattern is the run key
 # (the config routes name it in the query or body instead). New routes are added here.
+def _reviewer_outcomes(ctx):
+    # How the work each reviewer PASSed held up afterwards (`forge dataset reviewers`): advisory,
+    # read from the run dataset through the CLI, so forge_ui never opens the store itself.
+    ctx.route = 'reviewers'
+    try:
+        _query_params(ctx.query, ())
+    except BadBody as exc:
+        return _invalid(str(exc))
+    return ctx.call('dataset', 'reviewers', '--json')
+
+
 ROUTES = [
     ('GET', re.compile(r'/api/runs/([0-9a-f]{12})/controls'), _show),
     ('POST', re.compile(r'/api/runs/([0-9a-f]{12})/controls'), _change),
@@ -547,6 +558,7 @@ ROUTES = [
     ('POST', re.compile(r'/api/runs/([0-9a-f]{12})/delete'), _delete),
     ('GET', re.compile(r'/api/config()'), _config_get),
     ('POST', re.compile(r'/api/config()'), _config_set),
+    ('GET', re.compile(r'/api/models/reviewers()'), _reviewer_outcomes),
 ]
 
 

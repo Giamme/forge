@@ -161,6 +161,15 @@ class DeleteTests(EndpointCase):
         self.assertEqual(self.calls(), [])
 
 
+class ReviewerOutcomesTests(EndpointCase):
+    def test_reads_the_dataset_report_through_the_cli_and_takes_no_parameters(self):
+        self.behave(stdout='{"reviewers": []}')
+        self.assertEqual(self.get('/api/models/reviewers'), (200, {'reviewers': []}))
+        self.assertEqual(self.last_argv(), ['dataset', 'reviewers', '--json'])
+        self.assertEqual(self.get('/api/models/reviewers?repo=/etc')[0], 400)
+        self.assertEqual(len(self.calls()), 1)
+
+
 class ConfigTests(EndpointCase):
     def cfg(self, **body):
         return self.post({'run': self.key, **body}, '/api/config')

@@ -117,6 +117,7 @@ forge still running keeps writing.
 ./forge dataset export [--slice S]... [--limit N] [--seed N] [--out DIR]   # labeled decision cases
 ./forge dataset outcomes [--horizon-days 14] [--repo PATH] [--dry-run]     # what integrated work became
 ./forge dataset routing [--repo PATH] [--since DAYS] [--json]   # pass rate and runtime per tier and model
+./forge dataset reviewers [--horizon-days 14] [--repo PATH] [--json]   # how each reviewer's PASSed work held up
 ```
 
 `status` runs a different completeness check for each mode, because each mode
@@ -279,6 +280,28 @@ exporter attaches it to that diff's review.
 
 Each verification event also records the commit it verified (`verification.commit`, named
 before any early return), so a FAIL or UNVERIFIED result can be joined to its code too.
+
+## Reviewer report card
+
+`forge dataset reviewers` joins the survival outcomes above to the reviews that let the work
+through. For each reviewed commit with an outcome at the horizon (`--horizon-days`, default 14,
+only outcomes recorded at exactly that horizon), every primary reviewer (role `qa`) that gave
+that attempt a PASS is credited with one landed outcome. A row is keyed by the reviewer's alias,
+or its model when no alias was recorded, as the forge-ui Models view keys it. A landed outcome
+**did not hold** when a later commit reverted it, or when under 80% of its added lines were kept
+(rewritten): the export's `survives` rule.
+
+- The rate of work that did not hold has a Wilson 95% interval, shown only from 10 landed
+  outcomes on. Below that the row reads `not enough data (n/10)`, and the JSON has
+  `enough: false` with `rate` and `ci` null.
+- A shadow review's PASS decided nothing, so it is not credited. Work that landed after a FAIL
+  (the severity gate or a human accepted it) and work with no recorded review are counted as
+  unattributed. `lost` and `no_additions` outcomes are skipped.
+- Survival is only followed for parallel integrations, so solo runs and hand merges are not here.
+- It only advises: nothing that routes a task or builds a prompt reads it.
+
+forge-ui shows the rate as the Reviewers table's **Did not hold** column, through
+`GET /api/models/reviewers`, which runs this command with `--json`.
 
 ## Importing old runs
 
