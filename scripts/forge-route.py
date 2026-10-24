@@ -36,7 +36,10 @@ bias (inverse-propensity weighting needs the probability each choice had).
   forge-route.py record --plan P --task ID (--probe | --line TEXT)
       Internal. Probe or append tasks/<id>/escalations.tsv through forge-control.py, which
       walks from the plan one directory at a time and refuses a symlink at any component.
-      `--probe` exits 0 when the file is absent or a regular file. `--line` appends one record.
+      `--probe` exits 0 when every component below the plan is a real directory and the file
+      is absent or a regular file. `--line` appends one record under those same conditions.
+      A missing parent exits 1 and writes nothing: the walk has no directory descriptor then,
+      and opening the leaf would create it in the process's current directory.
 
 The propensity of the chosen spec is (1-E)*[chosen == SPEC] + E/2. Forge never picks a
 model the user did not name: both helpers read only the pools `plan` stored in
@@ -494,13 +497,23 @@ def _load_control():
 
 
 def record_escalation(args) -> int:
-    """Probe or append tasks/<id>/escalations.tsv. 0 when that is safe; 1 when it is not."""
+    """Probe or append tasks/<id>/escalations.tsv. 0 when that is safe; 1 when it is not.
+
+    A missing parent is a refusal on both paths. probe() reports that as the file being
+    absent, so the check has to look at the walk itself. append_line refuses the same case
+    before it opens the leaf: with no directory descriptor that open would use the process
+    cwd, including when the task directory disappears between this check and the append.
+    """
     if not args.task or args.task in ('.', '..') or '/' in args.task or '\0' in args.task:
         return 1
     try:
         control = _load_control()
         plan = os.path.realpath(args.plan)
         rel = 'tasks/%s/escalations.tsv' % args.task
+        parent, _leaf = control._open_parent(plan, rel)
+        if parent is None:
+            return 1
+        os.close(parent)
         if args.probe:
             control.probe(plan, rel)
         else:

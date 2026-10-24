@@ -525,6 +525,48 @@ class PinTests(unittest.TestCase):
         self.assertFalse((task / 'escalation.pin.applying').exists())
         self.assertFalse((task / 'escalations.tsv').exists())
 
+    def record(self, *args, cwd):
+        return subprocess.run([sys.executable, str(ROUTE), 'record', '--plan', str(self.plan),
+                               '--task', 'a', *args], cwd=cwd, capture_output=True, text=True)
+
+    def test_a_missing_task_dir_does_not_write_escalations_outside_the_plan(self):
+        """`record --line` with tasks/<id> absent must not open escalations.tsv in the cwd.
+
+        _open_parent returns no directory descriptor then. append_line used to create or
+        append the leaf relative to the process cwd and only afterwards fail.
+        """
+        self.tdir.rename(self.root / 'removed-task')
+        seeded = self.root / 'seeded'
+        seeded.mkdir()
+        outside = seeded / 'escalations.tsv'
+        outside.write_text('keep\n')
+        appended = self.record('--line', 'TEXT', cwd=seeded)
+        self.assertEqual(appended.returncode, 1, appended.stderr)
+        self.assertEqual(outside.read_text(), 'keep\n')
+        empty = self.root / 'empty'
+        empty.mkdir()
+        created = self.record('--line', 'TEXT', cwd=empty)
+        self.assertEqual(created.returncode, 1, created.stderr)
+        self.assertEqual(list(empty.iterdir()), [])
+        self.assertFalse((self.plan / 'escalations.tsv').exists())
+        self.assertFalse((self.plan / 'tasks' / 'escalations.tsv').exists())
+        self.assertEqual(self.record('--probe', cwd=seeded).returncode, 1)
+
+    def test_a_record_after_the_task_dir_vanishes_does_not_write_outside(self):
+        """The pin precheck can pass, and the directory can be gone when the line is written."""
+        cwd = self.root / 'cwd'
+        cwd.mkdir()
+        outside = cwd / 'escalations.tsv'
+        outside.write_text('keep\n')
+        probe = self.record('--probe', cwd=cwd)
+        self.assertEqual(probe.returncode, 0, probe.stderr)
+        self.tdir.rename(self.root / 'removed-task')
+        result = self.record('--line', 'TEXT', cwd=cwd)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertEqual(outside.read_text(), 'keep\n')
+        self.assertFalse((self.root / 'removed-task' / 'escalations.tsv').exists())
+        self.assertEqual(list(self.plan.rglob('escalations.tsv')), [])
+
     def test_a_record_that_fails_with_no_way_back_consumes_the_pin_and_goes_on(self):
         self.pin()
         result = self.retry(path=self.break_record_after_rewrite(rollback_fails=True))
