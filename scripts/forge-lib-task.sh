@@ -154,7 +154,42 @@ carry_findings() { # carry_findings <tdir>
   else
     rm -f "$tdir/retry_findings.commit"
   fi
+  # The reviewer session that wrote these findings, and what it ran as, kept beside them for a
+  # plan with --reviewer-session. Removed first, so an older session never sits next to newer
+  # findings; a review that left no session leaves none here.
+  rm -f "$tdir/retry_findings.session" "$tdir/retry_findings.resolved"
   cp "$tdir/qa.last" "$tdir/retry_findings.md"
+  [ ! -f "$tdir/qa.session" ] || cp "$tdir/qa.session" "$tdir/retry_findings.session" 2>/dev/null || true
+  [ ! -f "$tdir/qa.resolved" ] || cp "$tdir/qa.resolved" "$tdir/retry_findings.resolved" 2>/dev/null || true
+}
+
+# --- reviewer-session continuation (plan --reviewer-session, an opt-in experiment) ------------
+# review_session_decide <session-file> <resolved-file> <resolution-file>: whether this review
+# round continues the earlier reviewer's session. Prints `mode<TAB>reason<TAB>session`; the
+# session is the id to continue, and empty for every fresh answer.
+#   session-file     the id the earlier review ran under (retry_findings.session / qa.session)
+#   resolved-file    that review's resolution (retry_findings.resolved / qa.resolved)
+#   resolution-file  this dispatch's resolution (doctor output): harness=, model=, effort=
+# The caller has already handled the cases that need no files (first round, Fractal). Anything
+# that cannot be checked is fresh; nothing here aborts.
+review_session_decide() {
+  local sf="$1" rf="$2" cf="$3" id="" k a b h
+  [ -f "$sf" ] && id="$(head -1 "$sf" 2>/dev/null | tr -d '\r')"
+  if [ -z "$id" ]; then printf 'fresh\tno-session\t\n'; return 0; fi
+  case "$id" in *[!A-Za-z0-9-]*) printf 'fresh\tinvalid-session\t\n'; return 0 ;; esac
+  if [ "${#id}" -lt 8 ] || [ "${#id}" -gt 128 ]; then printf 'fresh\tinvalid-session\t\n'; return 0; fi
+  h="$(sed -n 's/^harness=//p' "$cf" 2>/dev/null | head -1)"
+  if [ -z "$h" ]; then printf 'fresh\tharness-unsupported\t\n'; return 0; fi
+  for k in harness model effort; do
+    a="$(sed -n "s/^$k=//p" "$rf" 2>/dev/null | head -1)"
+    b="$(sed -n "s/^$k=//p" "$cf" 2>/dev/null | head -1)"
+    if [ -z "$a" ] || [ "$a" != "$b" ]; then printf 'fresh\tspec-changed\t\n'; return 0; fi
+  done
+  case "$h" in
+    claude|openclaude|codex) printf 'continued\tsame-spec\t%s\n' "$id" ;;
+    *) printf 'fresh\tharness-unsupported\t\n' ;;
+  esac
+  return 0
 }
 
 # The diff between the attempt the carried findings judged and the one under review now, as
@@ -210,7 +245,7 @@ prepare_retry() { # prepare_retry <plan> <id> [new-dwarf]
   else
     note "$id: no previous QA findings to pass on (last status was $st)"
     : > "$tdir/retry_findings.md"
-    rm -f "$tdir/retry_findings.commit"
+    rm -f "$tdir/retry_findings.commit" "$tdir/retry_findings.session" "$tdir/retry_findings.resolved"
   fi
   # A QA-only resume (an unreviewed verdict, or a QA-stage infrastructure stop) re-asks the
   # reviewer about work that is already committed; the dwarf does not run, so it is no moment

@@ -463,11 +463,41 @@ final_review() {
 
   [ -s "$plan/timeout" ] && tflag="--timeout $(cat "$plan/timeout")"
   note "final review: $spec on $(git -C "$src" diff --shortstat "$base" "$tip" -- . ':(exclude).forge' 2>/dev/null | sed 's/^ *//')"
+  # Opt-in (plan --reviewer-session): continue the previous final review's session when it ran
+  # as this one does, by the same rule as per-task QA. Anything else is a fresh dispatch.
+  local rs_mode=fresh rs_reason="" rs_id="" rs_cont=()
+  if [ -f "$plan/reviewer_session" ]; then
+    if [ -n "${FORGE_FRACTAL_RUN:-}" ] || forge_plan_is_fractal "$plan"; then
+      rs_reason=fractal
+    elif [ -z "$prev" ]; then
+      rs_reason=first-round
+    else
+      IFS=$'\t' read -r rs_mode rs_reason rs_id < <(review_session_decide \
+        "$prev/qa.session" "$prev/qa.resolved" "$out/doctor.out")
+      [ "$rs_mode" = continued ] && rs_cont=(--continue-session "$rs_id")
+    fi
+  fi
+  local qa_cmd=(/bin/bash "$DISPATCH" qa "$spec" --repo "$review" --run-dir "$out"
+      --review-base "$(cat "$out/review.base")" --ripwire-query-file "$out/context.md"
+      --prompt-file "$out/qa.input" ${yolo:+"$yolo"} $tflag --output "${FORGE_OUTPUT:-summary}")
   FORGE_CAPABILITY_CACHE="${FORGE_CAPABILITY_CACHE:-$plan/capabilities}" \
-    /bin/bash "$DISPATCH" qa "$spec" --repo "$review" --run-dir "$out" \
-      --review-base "$(cat "$out/review.base")" --ripwire-query-file "$out/context.md" \
-      --prompt-file "$out/qa.input" $yolo $tflag --output "${FORGE_OUTPUT:-summary}" > "$out/qa.out" 2>&1
+    "${qa_cmd[@]}" ${rs_cont[@]+"${rs_cont[@]}"} > "$out/qa.out" 2>&1
   rc=$?
+  if [ "$rc" = 9 ] && [ "$rs_mode" = continued ]; then
+    # Not continued (unsupported, or it failed): the same input again, fresh. The record of why
+    # is the first dispatch's, which the second one clears.
+    if [ "$(sed -n 's/^reason=//p' "$out/qa.continue" 2>/dev/null | head -1)" = unsupported ]; then
+      rs_reason=continue-unsupported
+    else
+      rs_reason=continue-failed
+    fi
+    rs_mode=fresh
+    mv "$out/qa.out" "$out/qa.continue.out" 2>/dev/null || true
+    FORGE_CAPABILITY_CACHE="${FORGE_CAPABILITY_CACHE:-$plan/capabilities}" \
+      "${qa_cmd[@]}" > "$out/qa.out" 2>&1
+    rc=$?
+  fi
+  [ ! -f "$plan/reviewer_session" ] || { echo "session=$rs_mode"; echo "session_reason=$rs_reason"; } >> "$out/review.meta"
   if [ "${FORGE_OUTPUT:-summary}" = full ]; then cat "$out/qa.out"; fi
   case "$rc" in
     0) ;;
