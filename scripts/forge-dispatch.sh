@@ -475,6 +475,14 @@ case "$HARNESS" in
     # forge-runtime.py reads for the final message and the tokens.
     CMD=(grok --model "$MODEL" --prompt-file "$PROMPT_FILE" --output-format streaming-messages-json)
     [ -n "$EFFORT" ] && CMD+=(--reasoning-effort "$EFFORT")
+    # After its last turn a headless run waits for the background work it started (a test
+    # suite, say) and wakes the model with each result, but by default for only 600 s: then
+    # it stops that work and exits 1, and a dwarf whose suite outlasts the wait ends as an
+    # error. forge's own limit bounds the run instead. grok counts from the last turn and
+    # forge from the start, so forge's watchdog always fires first; a day stands in for no
+    # limit (grok refuses 0).
+    if [ "$LIMIT" = 0 ]; then CMD+=(--background-wait-timeout 86400)
+    else CMD+=(--background-wait-timeout "$LIMIT"); fi
     if [ "$YOLO" = 1 ]; then
       CMD+=(--always-approve)
     else
@@ -502,6 +510,13 @@ preflight_command() {
     [ "$arg" = - ] && continue
     case "$arg" in
       -*) flag="${arg%%=*}"
+          # grok's help hides --background-wait-timeout. grok checks every flag and its value
+          # before it answers --help, so a help call with the flag in front proves it exists.
+          if [ "$HARNESS $flag" = "grok --background-wait-timeout" ]; then
+            python3 "$RUNTIME" help "${FORGE_CAPABILITY_CACHE:-$RUN_DIR/capabilities}" "$REGISTRY" "${BASH_SOURCE[0]}" "$bin" "$flag" 1 --help >/dev/null 2>&1 \
+              || die "$HARNESS does not accept required flag $flag (update $HARNESS)" 3
+            continue
+          fi
           printf '%s\n' "$help" | grep -E -- "(^|[[:space:],|])$flag([=[:space:],|]|$)" >/dev/null || die "$HARNESS does not advertise required flag $flag" 3 ;;
     esac
   done

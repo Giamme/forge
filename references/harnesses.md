@@ -265,7 +265,8 @@ passes 30m and exposes `--agy-timeout` to change it.
 
 ```
 grok --model <model> --prompt-file <prompt> --output-format streaming-messages-json \
-  --reasoning-effort <effort> (--permission-mode acceptEdits --allow Bash [--deny Edit --deny Write] | --always-approve)
+  --reasoning-effort <effort> --background-wait-timeout <limit> \
+  (--permission-mode acceptEdits --allow Bash [--deny Edit --deny Write] | --always-approve)
 ```
 
 The xAI Grok Build CLI, signed in with `grok login` (or `XAI_API_KEY`); `grok models` lists
@@ -294,6 +295,15 @@ GitHub Copilot) as a second row.
   - **Untested:** whether `--permission-mode dontAsk` (deny without cancelling) together with
     explicit Edit/Write/Bash allows would avoid the cancel. Nothing changes until that is
     proven live.
+- **Background work waits as long as forge's limit allows.** After its last turn a headless run
+  waits for the background jobs it started (a test suite run in the background, say) and wakes
+  the model with each result. By default it waits only 600 s, then stops the work and exits 1:
+  a real dwarf whose full suite ran longer ended as an error. forge passes the role's own limit
+  as `--background-wait-timeout`, or a day when the limit is off (`--timeout 0`; grok refuses
+  0). grok counts from the last turn and forge from the start, so forge's watchdog always fires
+  first and the run ends as a timeout. The flag is missing from `grok --help`; preflight checks
+  it with `grok --background-wait-timeout 1 --help` instead, because grok rejects an unknown flag
+  that comes before `--help` (exit 2).
 - The prompt goes by `--prompt-file`, never argv, and stdin is `/dev/null`.
 
 Verified live on 2026-10-19 with a `FORGE_OK` dispatch: exit 0, `permissionMode` acceptEdits,
