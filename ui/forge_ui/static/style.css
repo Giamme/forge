@@ -91,13 +91,14 @@
 :root[data-theme=dark] { color-scheme: dark; }
 
 /* status: the lamp behind each forge state. Five lamps, one meaning each (--st; --st-lit on the 3D plate);
-   a hollow lamp is that lamp's family but not its plain case: passed without a merge, stopped, failed outside the code */
+   a hollow lamp is that lamp's family but not its plain case: passed without a merge, stopped, failed outside the code,
+   an outdated review */
 .st-merged, .st-pass, .st-accepted, .st-nochanges { --st: var(--lamp-green); --st-lit: var(--lit-green); }
 .st-running, .st-interrupted { --st: var(--lamp-amber); --st-lit: var(--lit-amber); }
-.st-pending, .st-none, .st-unknown, .st-invalidated { --st: var(--lamp-off); --st-lit: var(--lamp-off); }
+.st-pending, .st-none, .st-unknown, .st-invalidated, .st-outdated { --st: var(--lamp-off); --st-lit: var(--lamp-off); }
 .st-fail, .st-error, .st-conflict, .st-infra, .st-timeout, .st-blocked { --st: var(--lamp-red); --st-lit: var(--lit-red); }
 [class^="st-"], [class*=" st-"] { --st-fill: var(--st); --st-ring: var(--lamp-edge); }
-.st-accepted, .st-nochanges, .st-interrupted, .st-infra, .st-timeout, .st-blocked { --st-fill: transparent; --st-ring: var(--st); }
+.st-accepted, .st-nochanges, .st-interrupted, .st-infra, .st-timeout, .st-blocked, .st-outdated { --st-fill: transparent; --st-ring: var(--st); }
 /* review severity is a shape (P0 spike, P1 diamond, P2 cone, P3 pin) on a ramp of its own, never a status lamp */
 .sev-P0 { --sev: var(--sev-p0); --sev-shape: polygon(50% 0, 100% 100%, 0 100%); }
 .sev-P1 { --sev: var(--sev-p1); --sev-shape: polygon(50% 0, 100% 50%, 50% 100%, 0 50%); }

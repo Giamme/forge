@@ -106,7 +106,7 @@ window.ForgeApp = (() => {
   function link(text, key, sel) { const a = el('a', text); a.href = hashFor(key, sel); return a; }
 
   const statuses = new Set(['merged', 'pass', 'running', 'pending', 'fail', 'error', 'infra',
-    'timeout', 'unknown', 'invalidated', 'blocked', 'interrupted', 'nochanges', 'conflict']);
+    'timeout', 'unknown', 'invalidated', 'blocked', 'interrupted', 'nochanges', 'conflict', 'outdated']);
   function chip(value) {
     const status = String(value || 'unknown').toLowerCase();
     return el('span', value || '—', 'chip st-' + (statuses.has(status) ? status : 'unknown'));
@@ -251,7 +251,8 @@ window.ForgeApp = (() => {
         if (!solo) {
           const verification = el('span', undefined, 'verification');
           verification.append(document.createTextNode('Verification '), chip(run.verification_status));
-          if (run.final_review) verification.append(document.createTextNode(' Review '), chip(run.final_review));
+          const reviewStatus = RM.runReviewStatus(run);
+          if (reviewStatus) verification.append(document.createTextNode(' Review '), chip(reviewStatus));
           item.append(verification);
         }
         $('run-list').append(item);
@@ -338,7 +339,7 @@ window.ForgeApp = (() => {
     add('Kind', sel('kind', [['', 'any'], ['plan', 'plan'], ['solo', 'solo']]));
     add('Model', sel('model', [['', 'any'], ...opts.models.map(m => [m, m])]));
     add('Age', sel('ageDays', [[0, 'any'], [1, 'last day'], [7, 'last week'], [30, 'last month']]));
-    add('Review', sel('verdict', [['', 'any'], ['PASS', 'passed'], ['FAIL', 'failed'], ['none', 'no verdict']]));
+    add('Review', sel('verdict', [['', 'any'], ['PASS', 'passed'], ['FAIL', 'failed'], ['OUTDATED', 'outdated'], ['none', 'no verdict']]));
     const all = el('input'); all.type = 'checkbox'; all.checked = state.showAll; all.dataset.f = 'showAll';
     const allL = el('label', undefined, 'filter check'); allL.append(all, document.createTextNode(' older runs too')); bar.append(allL);
     const reset = el('button', 'Reset'); reset.type = 'button'; reset.addEventListener('click', () => { Object.assign(state.mapFilter, { text: '', state: '', repo: '', kind: '', model: '', ageDays: 0, verdict: '' }); state.showAll = false; filterChanged(true); });
