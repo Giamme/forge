@@ -49,15 +49,19 @@ def registry_dir() -> Path:
     """The ``runs`` directory under forge's config home.
 
     Resolved the same way ``forge_jev.config_path()`` resolves ``jev.json``:
-    ``XDG_CONFIG_HOME`` when set and not empty, otherwise ``~/.config``, then
-    ``expanduser()``. An empty value counts as unset, as the XDG spec says and as
-    forge-ui's run list reads it; taken literally it named a directory below the
-    current one, usually the user's repo. ``config_path()`` is
-    ``<that>/forge/jev.json``; the registry is the sibling ``runs`` directory.
+    ``XDG_CONFIG_HOME`` (``~`` expanded) when it is an absolute path, otherwise
+    ``~/.config``. An empty or relative value counts as unset, as the XDG spec says
+    ("If an implementation encounters a relative path in any of these variables it
+    should consider the path invalid and ignore it") and as forge-ui's run list reads
+    it; taken literally it named a directory below the current one, usually the
+    user's repo. ``config_path()`` is ``<that>/forge/jev.json``; the registry is the
+    sibling ``runs`` directory.
     """
-    config = (Path(os.environ.get('XDG_CONFIG_HOME') or str(Path.home() / '.config')).expanduser()
-              / 'forge/jev.json')
-    return config.parent / 'runs'
+    value = os.environ.get('XDG_CONFIG_HOME') or ''
+    base = Path(value).expanduser() if value else None
+    if base is None or not base.is_absolute():
+        base = Path.home() / '.config'
+    return base / 'forge' / 'runs'
 
 
 def repo_key(repo) -> str:
@@ -118,8 +122,9 @@ def register_run_dir(repo: Path, run_dir: Path) -> None:
     it went to.
     """
     try:
-        # A relative XDG_CONFIG_HOME resolves below the current directory -- for a runner or
-        # `forge ui open`, usually the user's repo. Forge does not write into the user's tree.
+        # A relative HOME (registry_dir already ignores a relative XDG_CONFIG_HOME) would resolve
+        # below the current directory -- for a runner, usually the user's repo. Forge does not
+        # write into the user's tree.
         if not registry_dir().is_absolute():
             return
         registry = runs_registry(repo)

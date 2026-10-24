@@ -45,11 +45,15 @@ def _kind(path):
 def _default_registry_dir():
     """forge's run registry, resolved the way forge writes it (scripts/forge_registry.registry_dir).
 
-    ``XDG_CONFIG_HOME`` when set and not empty, otherwise ``~/.config``, with ``~`` expanded. A
-    relative value gives None: forge never registers a run there (it would land in the user's
-    tree), so reading it would only pick up whatever the current directory happens to hold.
+    ``XDG_CONFIG_HOME`` (``~`` expanded) when it is an absolute path, otherwise ``~/.config``: an
+    empty or relative value counts as unset (XDG spec), as it does when forge registers a run.
+    None only when even that is not absolute (a relative HOME): forge never registers a run
+    there, so reading it would only pick up whatever the current directory happens to hold.
     """
-    base = Path(os.environ.get('XDG_CONFIG_HOME') or str(Path.home() / '.config')).expanduser()
+    value = os.environ.get('XDG_CONFIG_HOME') or ''
+    base = Path(value).expanduser() if value else None
+    if base is None or not base.is_absolute():
+        base = Path.home() / '.config'
     return base / 'forge' / 'runs' if base.is_absolute() else None
 
 

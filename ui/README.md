@@ -96,7 +96,7 @@ Sources are checked in this order:
 2. `--root DIR` itself, its children and grandchildren. Scanning stops when a plan
    directory is found; hidden children and symlinked child directories are skipped.
 3. Forge's registry: `*.txt` files in `$XDG_CONFIG_HOME/forge/runs/`, defaulting
-   to `~/.config/forge/runs/` when XDG_CONFIG_HOME is unset or empty. Each file
+   to `~/.config/forge/runs/` when XDG_CONFIG_HOME is unset, empty or relative. Each file
    supplies absolute paths, one per line; blank lines and `#` comments are ignored.
    `--registry-dir` replaces this location; `--no-registry` disables it.
 
