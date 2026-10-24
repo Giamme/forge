@@ -1,6 +1,6 @@
 """`forge dataset ...`: inspect the run dataset, import old runs, and the shell's capture hooks.
 
-User-facing: status, dump, import, export, outcomes. Internal (called by forge's shell scripts, fail-open,
+User-facing: status, dump, import, export, outcomes, routing, reviewers. Internal (called by forge's shell scripts, fail-open,
 silent): event, invocation, plan.
 """
 from __future__ import annotations
@@ -163,6 +163,11 @@ def run_routing(args) -> int:
     return routing.main(args)
 
 
+def run_reviewers(args) -> int:
+    from . import reviewers
+    return reviewers.main(args)
+
+
 def parser() -> argparse.ArgumentParser:
     top = argparse.ArgumentParser(prog='forge dataset', description='The run dataset: every run\'s inputs and outcomes.')
     sub = top.add_subparsers(dest='command', required=True)
@@ -204,6 +209,11 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument('--since', type=float, metavar='DAYS', help='only tasks first attempted in the last DAYS days')
     p.add_argument('--json', action='store_true')
     p.set_defaults(func=run_routing)
+    p = sub.add_parser('reviewers', help='how often work each reviewer passed was later reverted or rewritten (advisory)')
+    p.add_argument('--horizon-days', type=int, default=14, help='the outcomes recorded at this horizon (default 14)')
+    p.add_argument('--repo', help='only this repo')
+    p.add_argument('--json', action='store_true')
+    p.set_defaults(func=run_reviewers)
     p = sub.add_parser('event', help=argparse.SUPPRESS)
     p.add_argument('name')
     p.add_argument('--dir')

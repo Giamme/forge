@@ -233,6 +233,7 @@ its last 20,000 behind a leading `…`. Their `truncated` lists the field names 
 | `POST /api/runs/<key>/issues` | file GitHub issues for chosen findings; authenticated, 300 s timeout |
 | `POST /api/runs/<key>/issues/dismiss` | dismiss or (`undo`) restore findings; authenticated |
 | `POST /api/runs/<key>/delete` | dry-run or delete a run with `forge runs rm`; authenticated, 900 s timeout; later requests for the key answer `404` |
+| `GET /api/models/reviewers` | `200` the `forge dataset reviewers --json` report (how each reviewer's PASSed work held up); no parameters |
 | `GET /api/config?run=<key>` | `200` the `forge config show --json` of that run's repo |
 | `POST /api/config` | set or unset one allowed key (`repo.verify`, `repo.setup`, `repo.verify-subset`, `jev.enabled`); authenticated |
 | `GET /api/runs/<key>/export?texts=0\|1&paths=0\|1` | `200` the run as one HTML file (see Export), `Content-Disposition: attachment`, `Content-Security-Policy: default-src 'none'; sandbox`; `404` for an unknown run |
@@ -1060,6 +1061,15 @@ completed): exit 2 `400`, exit 3 (busy or the run is active) `409`, exit 4 (fail
 deletion) `500`. Deletion holds the run's write lock and a server-wide lock on the run's real
 directory (`409 busy` when either is held). The run key is looked up again under the lock, and
 once the directory is gone every later request for that key is `404`. Timeout 900 s.
+
+### `GET /api/models/reviewers`
+
+Runs `dataset reviewers --json` and answers with its object: `horizon_days`, `min_landed`,
+`survives_at`, `reviewers` (per reviewer alias: `landed`, `reverted`, `rewritten`,
+`did_not_hold`, `enough`, and `rate` and `ci` only when `enough`, else `null` with a `note`),
+`unattributed`, `skipped` and `other_horizons`. Any query parameter is a `400`. Not cached: every
+request runs the CLI, and the page asks once per change of `/api/models`. Advisory: it feeds the
+Reviewers table's Did not hold column and nothing else. Timeout 60 s.
 
 ### `GET /api/config?run=<key>` and `POST /api/config`
 

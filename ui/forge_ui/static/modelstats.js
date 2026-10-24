@@ -245,5 +245,23 @@
     return { implementers: imp.rows, reviewers: rev.rows, byDifficulty, totals, caveats, filter: f };
   }
 
-  return { DIFFS, KINDS, SEVERITIES, DEFAULT_MIN_N, wilson, emptyFilter, normFilter, taskMatch, options, leaderboard };
+  // How the work a reviewer PASSed held up, from GET /api/models/reviewers (`forge dataset reviewers --json`):
+  // { state: 'unavailable' } without a report, 'none' when the alias has no landed outcome, 'few' below the
+  // report's minimum (no rate is shown then), else 'rate' with the share that did not hold and its interval.
+  function heldUp(report, alias) {
+    const r = obj(report);
+    if (!r || !Array.isArray(r.reviewers)) return { state: 'unavailable' };
+    const horizon = num(r.horizon_days), row = r.reviewers.find(x => obj(x) && x.reviewer === alias);
+    if (!row) return { state: 'none', horizon };
+    const n = num(row.landed), k = num(row.did_not_hold);
+    if (n === null || k === null) return { state: 'unavailable' };
+    const base = { n, k, reverted: num(row.reverted) || 0, rewritten: num(row.rewritten) || 0, horizon };
+    const ci = list(row.ci);
+    if (row.enough !== true || num(row.rate) === null || num(ci[0]) === null || num(ci[1]) === null) {
+      return { state: 'few', need: num(r.min_landed), ...base };
+    }
+    return { state: 'rate', p: row.rate, lo: ci[0], hi: ci[1], ...base };
+  }
+
+  return { DIFFS, KINDS, SEVERITIES, DEFAULT_MIN_N, wilson, emptyFilter, normFilter, taskMatch, options, leaderboard, heldUp };
 });

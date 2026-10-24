@@ -149,6 +149,7 @@ window.ForgeLeaderboard = (() => {
     ['Verdicts', '', 'PASS and FAIL verdicts over every review'],
     ...MS.SEVERITIES.map(s => [s, 'lb-num', SEV_TITLE(s)]),
     ['Shadow agreement', 'lb-num', 'How often this model\'s shadow verdict matched the primary reviewer\'s (both PASS or FAIL)'],
+    ['Did not hold', 'lb-num', 'Of the work this model PASSed that was integrated, the share later reverted or with under 80% of its lines kept (forge dataset reviewers, every run in the dataset: the filters do not apply). Advisory: routing never reads it'],
     ['Median time', 'lb-num', 'Median duration of a review'],
     ['Tokens in / out', 'lb-num', 'Summed over the reviews that recorded tokens'],
   ];
@@ -182,7 +183,23 @@ window.ForgeLeaderboard = (() => {
     td.title = `${a.k} of ${a.n} shadow verdicts matched the primary's; 95% Wilson interval ${pct(a.lo)}–${pct(a.hi)}${a.unknown ? ` · ${a.unknown} without two comparable verdicts` : ''}`;
     return td;
   }
+  function heldCell(h) {
+    const days = h.horizon ? ` ${h.horizon} days after integrate` : '';
+    if (h.state === 'unavailable') return numCell('—', 'The run dataset could not be read (forge dataset reviewers)');
+    if (h.state === 'none') return numCell('—', `No work this model PASSed has a survival outcome${days} yet (forge dataset outcomes records them)`);
+    const detail = `${h.reverted} reverted, ${h.rewritten} rewritten, of ${h.n} PASSed and integrated${days}`;
+    if (h.state === 'few') {
+      const td = numCell('not enough data', `${detail}; a rate needs ${h.need || 'more'} outcomes`);
+      td.classList.add('muted');
+      return td;
+    }
+    const td = el('td', undefined, 'lb-num');
+    td.append(el('strong', pct(h.p)), document.createTextNode(' '), el('span', `${h.k}/${h.n}`, 'muted'));
+    td.title = `${detail}; 95% Wilson interval ${pct(h.lo)}–${pct(h.hi)}`;
+    return td;
+  }
   function reviewerTable(rows, ctx) {
+    const held = r => MS.heldUp(ctx.reviewerOutcomes, r.alias);
     const columns = colsOf(REV_COLS, [
       { id: 'model', value: r => r.alias, cell: r => modelCell(r.alias, ctx, '') },
       { id: 'primary', value: r => r.reviews.primary, cell: r => numCell(r.reviews.primary) },
@@ -191,6 +208,7 @@ window.ForgeLeaderboard = (() => {
       { id: 'verdicts', value: r => { const v = r.verdicts, t = v.PASS + v.FAIL + v.other; return t ? v.PASS / t : null; }, cell: r => verdictCell(r.verdicts) },
       ...MS.SEVERITIES.map(sv => ({ id: 'sev-' + sv, value: r => r.findings[sv], cell: r => findingCell(r, sv) })),
       { id: 'agreement', value: r => r.agreement.n ? r.agreement.p : null, cell: r => agreementCell(r.agreement) },
+      { id: 'held', value: r => { const h = held(r); return h.state === 'rate' ? h.p : null; }, cell: r => heldCell(held(r)) },
       { id: 'time', value: r => num(r.medianDurationS), cell: r => numCell(dur(r.medianDurationS)) },
       { id: 'tokens', value: r => (r.tokens.attempts ?? r.tokens.reviews) ? (r.tokens.input || 0) + (r.tokens.output || 0) : null, cell: r => tokenCell(r.tokens, r.reviews.total, 'review') },
     ]);
