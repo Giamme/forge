@@ -248,6 +248,9 @@ test('replay shows OUTDATED only from the merge that made the review stale, and 
   assert.equal(RM.stateAt(r, mergeB).final, 'OUTDATED');
   assert.equal(RM.stateAt(r, present).final, 'OUTDATED');
   assert.equal(RM.stateAt(r, present).final, RM.finishState(r).final.status);
+  const range = RM.timeRange(r, null);
+  assert.ok(range.end >= mergeB, 'scrubbing can reach the merge that stales the review');
+  assert.equal(RM.stateAt(r, range.end).final, RM.finishState(r).final.status);
 
   // The only later merge fell inside the review's starting second, so merged_since is empty.
   const frEmpty = { state: 'done', verdict: 'FAIL', outdated: true, at, started: at, ended: at + 0.2, tip: 'abc1234zz', merged_since: [] };
@@ -255,6 +258,9 @@ test('replay shows OUTDATED only from the merge that made the review stale, and 
   assert.equal(RM.stateAt(rEmpty, at + 0.4).final, 'FAIL');
   assert.equal(RM.stateAt(rEmpty, at + 0.5).final, 'OUTDATED');
   assert.equal(RM.stateAt(rEmpty, at + 0.5).final, RM.finishState(rEmpty).final.status);
+  const emptyRange = RM.timeRange(rEmpty, null);
+  assert.ok(emptyRange.end >= at + 0.5);
+  assert.equal(RM.stateAt(rEmpty, emptyRange.end).final, RM.finishState(rEmpty).final.status);
 
   // No merge time at all: OUTDATED at the review's end. A merge before `at` does not count.
   const frEnd = { state: 'done', verdict: 'FAIL', outdated: true, at, started: at, ended: at + 30, tip: 'abc', merged_since: [] };
@@ -269,7 +275,33 @@ test('replay shows OUTDATED only from the merge that made the review stale, and 
     assert.equal(RM.stateAt(rCurrent, mergeB - 1).final, 'FAIL');
     assert.equal(RM.stateAt(rCurrent, present).final, 'FAIL');
     assert.equal(RM.stateAt(rCurrent, present).final, RM.finishState(rCurrent).final.status);
+    const currentRange = RM.timeRange(rCurrent, null);
+    assert.ok(currentRange.end >= mergeB);
+    assert.equal(RM.stateAt(rCurrent, currentRange.end).final, 'FAIL');
   }
+});
+
+test('the replay range reaches a merge that lands after the last execution', () => {
+  // Review ends at 1100, the last execution at 1399, the merge that stales the review at 1400.
+  // The slider used to stop at 1399, still FAIL, while the current view is OUTDATED.
+  const reviewEnd = 1100, execEnded = 1399, mergeAt = 1400;
+  const fr = { state: 'done', verdict: 'FAIL', outdated: true, at: 1000, started: 1000, ended: reviewEnd, tip: 'abcdef1', merged_since: ['b'] };
+  const task = { id: 'b', status: 'MERGED', merged_at: mergeAt, deps: [], executions: [
+    { id: 'task-b', role: 'task', started: 1200, ended: execEnded, state: 'done', attempt: 1 }] };
+  const r = { tasks: [task], final_review: fr, final_reviews: [fr], integration: { merged: [{ id: 'b', at: mergeAt }] } };
+  const range = RM.timeRange(r, null);
+  assert.ok(range && range.end >= mergeAt);
+  assert.equal(RM.stateAt(r, execEnded).final, 'FAIL');
+  assert.equal(RM.stateAt(r, range.end).final, 'OUTDATED');
+  assert.equal(RM.stateAt(r, range.end).final, RM.finishState(r).final.status);
+  // Either record of the marker is enough. outdatedMoment reads integration.merged.
+  const markerOnly = { ...r, tasks: [{ ...task, merged_at: null }] };
+  const markerRange = RM.timeRange(markerOnly, null);
+  assert.ok(markerRange.end >= mergeAt);
+  assert.equal(RM.stateAt(markerOnly, execEnded).final, 'FAIL');
+  assert.equal(RM.stateAt(markerOnly, markerRange.end).final, 'OUTDATED');
+  const taskOnly = { ...r, integration: null };
+  assert.ok(RM.timeRange(taskOnly, null).end >= mergeAt);
 });
 
 test('an outdated review matches the OUTDATED filter, not its verdict', () => {

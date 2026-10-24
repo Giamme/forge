@@ -576,7 +576,15 @@
   }
   function timeRange(run, now) {
     const s = [], e = [];
-    for (const t of list(run && run.tasks)) for (const x of list(t.executions)) { if (num(x.started) !== null) s.push(x.started); const end = execEnd(x, now); if (end !== null) e.push(end); }
+    for (const t of list(run && run.tasks)) {
+      for (const x of list(t.executions)) { if (num(x.started) !== null) s.push(x.started); const end = execEnd(x, now); if (end !== null) e.push(end); }
+      // The merged marker is written after the attempt ends. Leave it out and the slider stops on the
+      // verdict while the current view already shows the review as OUTDATED.
+      if (num(t.merged_at) !== null) e.push(t.merged_at);
+    }
+    // Same marker, as integration.merged. That list is what outdatedMoment reads, and a run detail can carry it
+    // without the task's merged_at matching, so the range has to take it on its own.
+    for (const m of list(run && run.integration && run.integration.merged)) if (num(m && m.at) !== null) e.push(m.at);
     for (const r of list(run && run.final_reviews)) { const v = num(r.started) ?? num(r.at); if (v !== null) s.push(v); if (num(r.ended) !== null) e.push(r.ended); }
     for (const v of list(run && run.timeline && run.timeline.verifications)) { if (num(v.started) !== null) s.push(v.started); if (num(v.ended) !== null) e.push(v.ended); }
     if (!s.length) return null;
