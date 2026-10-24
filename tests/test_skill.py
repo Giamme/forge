@@ -49,6 +49,15 @@ class LauncherTests(unittest.TestCase):
                 self.assertEqual(quiet, '')
         self.assertIn('frobnicate', self.forge('frobnicate').stderr, 'the error names what was typed')
 
+    def test_a_mistyped_command_is_answered_with_the_one_it_most_likely_meant(self):
+        for typed, meant in (('rnus', 'runs'), ('verison', 'version'), ('instal', 'install'),
+                             ('frobnicate', None), ('co', None)):  # nothing close; ambiguous prefix
+            with self.subTest(typed):
+                result = self.forge(typed)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertEqual(re.findall(r'`forge ([a-z]+)`', result.stderr), [meant] if meant else [])
+                self.assertIn('usage: forge', result.stderr)
+
     def test_every_command_the_help_lists_is_routed(self):
         listed = re.findall(r'^  ([a-z]+) ', self.forge('--help').stdout, re.M)
         self.assertTrue(listed)
