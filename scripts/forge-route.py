@@ -16,7 +16,7 @@ bias (inverse-propensity weighting needs the probability each choice had).
       rewritten) and marks a changed pick in tasks/<id>/route.explored for the table. A row
       with no neighbour is not explored and records nothing.
 
-  forge-route.py escalation --plan P --task ID [--check]
+  forge-route.py escalation --plan P --task ID [--check] [--qa-only-next yes|no]
       The retry policy: after <plan>/escalate_after (default 3; 0 = off) failed attempts on
       one spec, the next attempt goes to the next tier up of the user's pools instead of
       repeating the same dispatch. Prints that spec when one is due. When none exists, writes
@@ -25,11 +25,21 @@ bias (inverse-propensity weighting needs the probability each choice had).
       the streak no longer holds. A pending tasks/<id>/escalation.pin (a human's one-shot
       choice, applied by prepare_retry) is what `--check` reports as the next model instead
       (escalation.next = its spec), whatever escalate_after says, unless the next retry is a
-      QA-only resume or the plan is Fractal (pins never apply there). Nothing has applied the
-      pin yet, so the policy's own stop and split markers stay as the policy decided them
-      beneath it: they are what holds again if the pin is withdrawn.
-      The marker writes take <plan>/control.lock and re-read escalate_after inside it: a
-      policy decision made before a human switched the policy off writes nothing.
+      QA-only resume or the plan is Fractal (pins never apply there). `--qa-only-next` is
+      that fact as the caller measured it; without the option, a resume marker or an
+      unreviewed commit is taken as QA-only. Nothing has applied the pin yet, so the policy's
+      own stop and split markers stay as the policy decided them beneath it: they are what
+      holds again if the pin is withdrawn. The marker writes take <plan>/control.lock and
+      re-read escalate_after inside it: a policy decision made before a human switched the
+      policy off writes nothing.
+
+  forge-route.py record --plan P --task ID (--probe | --line TEXT)
+      Internal. Probe or append tasks/<id>/escalations.tsv through forge-control.py, which
+      walks from the plan one directory at a time and refuses a symlink at any component.
+      `--probe` exits 0 when every component below the plan is a real directory and the file
+      is absent or a regular file. `--line` appends one record under those same conditions.
+      A missing parent exits 1 and writes nothing: the walk has no directory descriptor then,
+      and opening the leaf would create it in the process's current directory.
 
 The propensity of the chosen spec is (1-E)*[chosen == SPEC] + E/2. Forge never picks a
 model the user did not name: both helpers read only the pools `plan` stored in
@@ -389,11 +399,10 @@ def _pin(tdir: Path):
 
 
 def _qa_next(tdir: Path) -> bool:
-    """True when the task's next retry only re-runs QA, so it cannot apply a pin.
+    """Fallback when `--qa-only-next` is absent: a resume marker, or an unreviewed commit.
 
-    That is a `resume` marker (a QA-stage infrastructure stop), or a verdict-less review of
-    committed work: prepare_retry turns that into the marker, but it has not run yet when
-    `--check` does, right after the attempt.
+    This does not look at the worktree. Callers that measured it (qa_only_next) pass
+    `--qa-only-next` instead, so a marker the worktree no longer matches is a full retry.
     """
     if (tdir / 'resume').exists():
         return True
@@ -455,8 +464,10 @@ def escalation(args) -> int:
     idle = after <= 0 or fractal or (tdir / 'resume').exists()
     # A pin is a human's choice and outranks the policy, so `--check` reports it as the next
     # model whatever escalate_after says; prepare_retry applies it and claims the file. The
-    # policy is still decided underneath it and its markers kept current.
-    pin = _pin(tdir) if args.check and not fractal and not _qa_next(tdir) else None
+    # policy is still decided underneath it and its markers kept current. The policy's own
+    # idle test above is separate and stays on the raw resume marker.
+    qa_only = _qa_next(tdir) if args.qa_only_next is None else args.qa_only_next == 'yes'
+    pin = _pin(tdir) if args.check and not fractal and not qa_only else None
     clear, writes, shown, rc = (MARKERS if after <= 0 else ()), (), '', 0
     if not idle:
         clear, writes, shown, rc = _decide(plan, tdir, args, after)
@@ -474,6 +485,45 @@ def escalation(args) -> int:
     return rc
 
 
+def _load_control():
+    """forge-control.py, by path: probe and append_line refuse a symlink at any component."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        'forge_control', Path(__file__).resolve().with_name('forge-control.py'))
+    module = importlib.util.module_from_spec(spec)
+    sys.modules['forge_control'] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def record_escalation(args) -> int:
+    """Probe or append tasks/<id>/escalations.tsv. 0 when that is safe; 1 when it is not.
+
+    A missing parent is a refusal on both paths. probe() reports that as the file being
+    absent, so the check has to look at the walk itself. append_line refuses the same case
+    before it opens the leaf: with no directory descriptor that open would use the process
+    cwd, including when the task directory disappears between this check and the append.
+    """
+    if not args.task or args.task in ('.', '..') or '/' in args.task or '\0' in args.task:
+        return 1
+    try:
+        control = _load_control()
+        plan = os.path.realpath(args.plan)
+        rel = 'tasks/%s/escalations.tsv' % args.task
+        parent, _leaf = control._open_parent(plan, rel)
+        if parent is None:
+            return 1
+        os.close(parent)
+        if args.probe:
+            control.probe(plan, rel)
+        else:
+            line = args.line if args.line.endswith('\n') else args.line + '\n'
+            control.append_line(plan, rel, line)
+    except Exception:
+        return 1
+    return 0
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog='forge-route.py')
     sub = ap.add_subparsers(dest='command', required=True)
@@ -484,6 +534,14 @@ def main(argv=None) -> int:
     p.add_argument('--plan', required=True)
     p.add_argument('--task', required=True)
     p.add_argument('--check', action='store_true')
+    p.add_argument('--qa-only-next', choices=('yes', 'no'), default=None,
+                   help='whether the next entry only re-runs QA, as the caller measured it')
+    p = sub.add_parser('record', help=argparse.SUPPRESS)
+    p.add_argument('--plan', required=True)
+    p.add_argument('--task', required=True)
+    mode = p.add_mutually_exclusive_group(required=True)
+    mode.add_argument('--probe', action='store_true')
+    mode.add_argument('--line')
     args = ap.parse_args(argv)
     if args.command == 'explore':
         try:
@@ -491,6 +549,8 @@ def main(argv=None) -> int:
         except Exception:
             print(args.default)
         return 0
+    if args.command == 'record':
+        return record_escalation(args)
     try:
         return escalation(args)
     except Exception:
