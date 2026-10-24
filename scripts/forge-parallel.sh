@@ -1055,7 +1055,8 @@ do_task() {
   record_attempt "$1" "$2"
   # The retry policy's state (escalation.next or escalation.stop), decided now rather than
   # at the next retry so a spent retry budget still reports it and the scheduler sees it.
-  python3 "$SKILL_DIR/scripts/forge-route.py" escalation --plan "$1" --task "$2" --check >/dev/null 2>&1 || true
+  python3 "$SKILL_DIR/scripts/forge-route.py" escalation --plan "$1" --task "$2" --check \
+    --qa-only-next "$(qa_only_next_flag "$1" "$2")" >/dev/null 2>&1 || true
   return $rc
 }
 

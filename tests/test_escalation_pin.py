@@ -61,10 +61,17 @@ class PinTests(unittest.TestCase):
         self.fail_attempts(1)
 
     def stub_skill(self):
-        """A SKILL_DIR whose policy script only records that it was asked."""
+        """A SKILL_DIR whose policy script only records that it was asked.
+
+        `record` writes escalations.tsv; it is not a policy decision, so it runs the real
+        forge-route.py. Counting it would make every applied pin look like the policy ran.
+        """
         skill = self.root / 'skill'; (skill / 'scripts').mkdir(parents=True)
         (skill / 'scripts' / 'forge-route.py').write_text(
-            'import sys\nopen(%r, "a").write("called\\n")\n' % str(self.policy_calls))
+            'import subprocess, sys\n'
+            'if len(sys.argv) > 1 and sys.argv[1] == "record":\n'
+            '    raise SystemExit(subprocess.call([sys.executable, %r, *sys.argv[1:]]))\n'
+            'open(%r, "a").write("called\\n")\n' % (str(ROUTE), str(self.policy_calls)))
         return skill
 
     def fail_attempts(self, n, spec='sol'):
@@ -447,6 +454,77 @@ class PinTests(unittest.TestCase):
         self.assertEqual(self.retry().returncode, 0)
         self.assertEqual(self.records()[0][2:], ['sol', 'opus:high', 'pin'])
 
+    # --- nothing is appended through a symlink, at the file or any parent -----------------
+    def outside_history(self):
+        """escalations.tsv as a symlink to a file outside the plan."""
+        outside = self.root / 'outside.tsv'
+        outside.write_text('keep\n')
+        (self.tdir / 'escalations.tsv').symlink_to(outside)
+        return outside
+
+    def assert_refused(self, result, outside, tasks_before):
+        self.assertEqual(outside.read_text(), 'keep\n')
+        self.assertTrue((self.tdir / 'escalations.tsv').is_symlink())
+        self.assertEqual((self.plan / 'tasks.tsv').read_text(), tasks_before)
+        self.assertEqual((self.tdir / 'escalation.pin').read_text(), 'opus:high\n')
+        self.assertEqual(self.pin_files(), ['escalation.pin'])          # claimed by nobody
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn('escalations.tsv', result.stderr)
+
+    def test_a_symlinked_escalations_file_is_not_written_and_the_pin_stays(self):
+        outside = self.outside_history()
+        before = (self.plan / 'tasks.tsv').read_text()
+        self.pin()
+        self.assert_refused(self.retry(), outside, before)
+
+    def test_a_symlinked_escalations_file_blocks_an_infrastructure_resume(self):
+        outside = self.outside_history()
+        self.infra_stop('dwarf')
+        self.pin()
+        before = (self.plan / 'tasks.tsv').read_text()
+        self.assert_refused(self.resume(), outside, before)
+
+    def test_a_symlinked_escalations_file_is_not_written_by_a_policy_escalation(self):
+        outside = self.outside_history()
+        (self.plan / 'fractal-routing.json').write_text(json.dumps({'low': ['sol'], 'high': ['astra']}))
+        self.fail_attempts(3)
+        result = self.retry(skill=ROOT)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(outside.read_text(), 'keep\n')
+        self.assertTrue((self.tdir / 'escalations.tsv').is_symlink())
+        self.assertEqual(self.dwarf(), 'astra')                       # the rewrite stands, as it does today
+
+    def test_a_symlinked_task_dir_gets_no_escalation_record_outside_the_plan(self):
+        # O_NOFOLLOW on the full path would still follow a swapped tasks/<id>.
+        outside = self.root / 'outside-task'
+        self.tdir.rename(outside)
+        (self.plan / 'tasks' / 'a').symlink_to(outside)
+        self.pin()
+        before = (self.plan / 'tasks.tsv').read_text()
+        result = self.retry()
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn('escalations.tsv', result.stderr)
+        self.assertEqual((self.plan / 'tasks.tsv').read_text(), before)
+        self.assertEqual((outside / 'escalation.pin').read_text(), 'opus:high\n')
+        self.assertFalse((outside / 'escalation.pin.applying').exists())
+        self.assertFalse((outside / 'escalations.tsv').exists())
+
+    def test_a_symlinked_tasks_dir_gets_no_escalation_record_outside_the_plan(self):
+        # The parent of the task dir, one component further up, is the same kind of redirect.
+        outside = self.root / 'outside-tasks'
+        (self.plan / 'tasks').rename(outside)
+        (self.plan / 'tasks').symlink_to(outside)
+        self.pin()
+        before = (self.plan / 'tasks.tsv').read_text()
+        result = self.retry()
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn('escalations.tsv', result.stderr)
+        self.assertEqual((self.plan / 'tasks.tsv').read_text(), before)
+        task = outside / 'a'
+        self.assertEqual((task / 'escalation.pin').read_text(), 'opus:high\n')
+        self.assertFalse((task / 'escalation.pin.applying').exists())
+        self.assertFalse((task / 'escalations.tsv').exists())
+
     def test_a_record_that_fails_with_no_way_back_consumes_the_pin_and_goes_on(self):
         self.pin()
         result = self.retry(path=self.break_record_after_rewrite(rollback_fails=True))
@@ -485,16 +563,52 @@ class PinTests(unittest.TestCase):
 
     def test_the_summary_says_when_the_pin_waits_for_a_qa_only_re_run(self):
         self.pin()
+        self.reviewed_worktree()
         (self.tdir / 'resume').write_text('qa\n')
         self.assertIn('its next retry goes to opus:high (pinned; after the QA-only re-run)', self.report())
 
+    def test_a_resume_marker_the_worktree_no_longer_matches_is_not_a_qa_only_re_run(self):
+        self.pin()
+        (self.reviewed_worktree() / 'a.txt').write_text('edited after the review\n')
+        (self.tdir / 'resume').write_text('qa\n')
+        text = self.report()
+        self.assertIn('its next retry goes to opus:high (pinned)\n', text)
+        self.assertNotIn('QA-only', text)
+        self.assertEqual((self.tdir / 'resume').read_text(), 'qa\n')   # the summary does not clear it
+
     def test_the_summary_sees_an_unreviewed_verdict_as_a_qa_only_re_run_before_the_marker_exists(self):
         (self.tdir / 'status').write_text('UNKNOWN\n')           # prepare_retry has not written `resume` yet
-        (self.tdir / 'reviewed.commit').write_text('abc123\n')
+        self.reviewed_worktree()
         self.pin()
         self.assertIn('its next retry goes to opus:high (pinned; after the QA-only re-run)', self.report())
         (self.tdir / 'reviewed.commit').write_text('')            # nothing was reviewed: a full retry
         self.assertIn('its next retry goes to opus:high (pinned)\n', self.report())
+
+    def test_an_unreviewed_verdict_the_worktree_no_longer_matches_is_not_a_qa_only_re_run(self):
+        (self.tdir / 'status').write_text('UNKNOWN\n')
+        (self.reviewed_worktree() / 'a.txt').write_text('edited after the review\n')
+        self.pin()
+        text = self.report()
+        self.assertIn('its next retry goes to opus:high (pinned)\n', text)
+        self.assertNotIn('QA-only', text)
+        self.assertFalse((self.tdir / 'resume').exists())
+
+    def test_a_qa_stage_stop_on_an_edited_worktree_reports_the_pin_for_a_full_retry(self):
+        wt = self.reviewed_worktree()
+        self.assertEqual(self.sh("infra_stop '%s' a qa 1" % self.tdir).returncode, 0)
+        (wt / 'a.txt').write_text('edited after the review\n')
+        self.pin()
+        text = self.report()
+        self.assertIn('a              its next retry goes to opus:high (pinned)\n', text)
+        self.assertNotIn('QA-only', text)
+        self.assertEqual((self.tdir / 'resume').read_text().strip(), 'qa')
+        # What do_task passes to `escalation --check`: the summary's own answer.
+        result = self.sh(
+            "if qa_only_next '%s' a; then qa=yes; else qa=no; fi\n"
+            "python3 '%s' escalation --plan '%s' --task a --check --qa-only-next \"$qa\""
+            % (self.plan, ROUTE, self.plan))
+        self.assertEqual((result.returncode, result.stdout), (0, 'opus:high\n'), result.stderr)
+        self.assertEqual((self.tdir / 'escalation.next').read_text(), 'opus:high\n')
 
     def test_a_withdrawn_pin_leaves_the_summary_with_the_policys_verdict(self):
         (self.plan / 'fractal-routing.json').write_text(json.dumps({'low': ['sol']}))   # no stronger model
