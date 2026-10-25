@@ -201,8 +201,11 @@ def dataset_block():
     if explicit:
         home = Path(explicit).expanduser()
     else:
-        base = os.environ.get('XDG_DATA_HOME') or str(Path.home() / '.local' / 'share')
-        home = Path(base).expanduser() / 'forge'
+        value = os.environ.get('XDG_DATA_HOME') or ''  # an empty or relative value counts as unset
+        base = Path(value).expanduser() if value else None
+        if base is None or not base.is_absolute():
+            base = Path.home() / '.local' / 'share'
+        home = base / 'forge'
     enabled = os.environ.get('FORGE_DATASET', 'on').strip().lower() not in ('off', '0', 'no', 'false')
     return dict(path=str(home / 'dataset'), enabled=enabled)
 

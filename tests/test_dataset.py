@@ -1096,6 +1096,7 @@ class IndependenceTests(unittest.TestCase):
             cases = {'FORGE_DATA_HOME': dict(FORGE_DATA_HOME='~/fdh', XDG_DATA_HOME=str(home / 'xdg')),
                      'XDG_DATA_HOME': dict(XDG_DATA_HOME=str(home / 'xdg')),
                      'neither': {},
+                     'relative XDG_DATA_HOME': dict(XDG_DATA_HOME='rel/xdg'),
                      'FORGE_DATASET=Off': dict(FORGE_DATA_HOME=str(home / 'fdh'), FORGE_DATASET=' Off ')}
             for name, extra in cases.items():
                 env = {k: v for k, v in os.environ.items()
@@ -1108,3 +1109,6 @@ class IndependenceTests(unittest.TestCase):
                     shown = json.loads(out.stdout)['dataset']
                     self.assertEqual(shown, dict(path=str(store.dataset_dir()), enabled=store.enabled()))
                     self.assertEqual(shown['enabled'], name != 'FORGE_DATASET=Off')
+                    if name in ('neither', 'relative XDG_DATA_HOME'):
+                        # The XDG spec says a relative path is invalid and ignored; it is not the cwd.
+                        self.assertEqual(shown['path'], str(home / '.local/share/forge/dataset'))

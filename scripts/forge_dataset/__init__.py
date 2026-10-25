@@ -94,8 +94,13 @@ def data_home() -> Path:
     explicit = os.environ.get('FORGE_DATA_HOME')
     if explicit:
         return Path(explicit).expanduser()
-    base = os.environ.get('XDG_DATA_HOME') or str(Path.home() / '.local' / 'share')
-    return Path(base).expanduser() / 'forge'
+    # An empty or relative XDG_DATA_HOME counts as unset, as the XDG spec says; taken
+    # literally it named a directory below the current one, usually the user's repo.
+    value = os.environ.get('XDG_DATA_HOME') or ''
+    base = Path(value).expanduser() if value else None
+    if base is None or not base.is_absolute():
+        base = Path.home() / '.local' / 'share'
+    return base / 'forge'
 
 
 def dataset_dir() -> Path:
