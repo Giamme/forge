@@ -13,7 +13,8 @@ __pycache__/
 package-lock.json
 giamme-forge-*.tgz
 
-# Impeccable's working files: review screenshots and decision-page logs (PRODUCT.md, DESIGN.md,
-# .impeccable/design.json and the surface briefs are the record)
+# Impeccable's working files: review screenshots, decision-page logs and its edit hook's cache
+# (PRODUCT.md, DESIGN.md, .impeccable/design.json and the surface briefs are the record)
 .impeccable/review/
 .impeccable/questions/
+.impeccable/hook.cache.json
