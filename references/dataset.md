@@ -14,6 +14,8 @@ ${FORGE_DATA_HOME:-${XDG_DATA_HOME:-~/.local/share}/forge}/dataset/
   errors.log            capture failures
 ```
 
+An empty or relative `XDG_DATA_HOME` counts as unset, as the XDG spec says.
+
 Capture is on by default and costs a few milliseconds per execution. `FORGE_DATASET=off`
 turns it off for one invocation.
 
