@@ -1079,7 +1079,9 @@ class IndependenceTests(unittest.TestCase):
             if path.suffix == '.sh':
                 for line in text.splitlines():
                     if 'forge-dataset.py' in line:
-                        self.assertRegex(line, r'forge-dataset\.py" (event|invocation)', str(path))
+                        # The one read: run's advisory forecast, printed to the operator's stderr only.
+                        self.assertRegex(line, r'forge-dataset\.py" (event|invocation|forecast "\$1" --run 2>/dev/null)',
+                                         str(path))
                 continue
             self.assertIn(path.name, allowed, path)
             for line in text.splitlines():

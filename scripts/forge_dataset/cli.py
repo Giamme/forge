@@ -1,6 +1,6 @@
 """`forge dataset ...`: inspect the run dataset, import old runs, and the shell's capture hooks.
 
-User-facing: status, dump, import, export, outcomes, routing, reviewers. Internal (called by forge's shell scripts, fail-open,
+User-facing: status, dump, import, export, outcomes, routing, reviewers, forecast. Internal (called by forge's shell scripts, fail-open,
 silent): event, invocation, plan.
 """
 from __future__ import annotations
@@ -168,6 +168,11 @@ def run_reviewers(args) -> int:
     return reviewers.main(args)
 
 
+def run_forecast(args) -> int:
+    from . import forecast
+    return forecast.main(args)
+
+
 def parser() -> argparse.ArgumentParser:
     top = argparse.ArgumentParser(prog='forge dataset', description='The run dataset: every run\'s inputs and outcomes.')
     sub = top.add_subparsers(dest='command', required=True)
@@ -214,6 +219,12 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument('--repo', help='only this repo')
     p.add_argument('--json', action='store_true')
     p.set_defaults(func=run_reviewers)
+    p = sub.add_parser('forecast', help="a plan's likely tokens, time and first-try pass rate, from past tasks (advisory)")
+    p.add_argument('plan', help='the plan dir')
+    p.add_argument('--repo', help='only history from this repo')
+    p.add_argument('--json', action='store_true')
+    p.add_argument('--run', action='store_true', help=argparse.SUPPRESS)   # forge-parallel.sh run: budgeted, silent, records
+    p.set_defaults(func=run_forecast)
     p = sub.add_parser('event', help=argparse.SUPPRESS)
     p.add_argument('name')
     p.add_argument('--dir')

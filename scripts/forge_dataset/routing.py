@@ -107,6 +107,7 @@ def tasks(runs: Runs, *, repo=None, since=None) -> list:
             out.append(dict(
                 run=run, task=tid, tier=row.get('declared_difficulty') or row.get('difficulty'),
                 ran=first['events'][0]['d'].get('dwarf') if first else None, model=model,
+                model_id=resolved.get('model'), effort=resolved.get('effort'),
                 first_pass=first['outcome'] if first else None,
                 censored=(first['reason'] if first and first['outcome'] is None else (None if first else 'not_run')),
                 passed=any(a['outcome'] for a in attempts) or (run, tid) in runs.accepted,
