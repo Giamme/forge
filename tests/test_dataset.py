@@ -1116,20 +1116,20 @@ class ReviewerSessionTests(StoreCase):
         # The archived file is the id that was published; metrics only fills a gap.
         self.assertEqual(harvest_one('both', session='from-file', metrics_session='from-metrics')[0], 'from-file')
 
-    def test_a_failed_continue_then_a_fresh_fallback_keeps_only_the_fresh_review(self):
-        # One round, three shapes, each with a shadow of the same attempt number:
-        #   continued — the only primary continued, so it leaves the slices and the pairs
-        #   rerun     — a fresh PASS, then a continued QA-only re-run; the last verdict
-        #               continued, so the pair is dropped and the fresh PASS stays, alone
-        #   fallback  — mode=failed (exit 1, verdict FAIL), then a fresh PASS; the fresh
-        #               one is the last verdict and is the pair
+    def import_shadowed_reviews(self, tasks):
+        """Import one plan of shadowed reviews and mark each shadow done.
+
+        `tasks` is (task id, title, reviewed commit, reviews). A review is
+        (attempt dir name, verdict, continue mode or None, session id or None,
+        exit code, wall_started). Directory names are the import order;
+        wall_started is the time.
+        """
         plan = Path(self.tmp.name) / 'plan'
         plan.mkdir()
         (plan / 'dataset.uid').write_text('uid-session\n')
-        (plan / 'tasks.tsv').write_text(
-            'continued\t-\tlow\ta.txt\tsol\topus\tcontinued only\n'
-            'rerun\t-\tlow\ta.txt\tsol\topus\tfresh then continued\n'
-            'fallback\t-\tlow\ta.txt\tsol\topus\tfailed then fresh\n')
+        (plan / 'tasks.tsv').write_text(''.join(
+            '%s\t-\tlow\ta.txt\tsol\topus\t%s\n' % (tid, title)
+            for tid, title, _, _ in tasks))
         (plan / 'repo').write_text('/nonexistent/repo\n')
         (plan / 'run_id').write_text('session-run\n')
         (plan / 'goal.txt').write_text('goal\n')
@@ -1178,20 +1178,31 @@ class ReviewerSessionTests(StoreCase):
                 run='uid-session', run_id='session-run', mode='parallel', scope='task', task=tid,
                 shadow=dict(attempt=1, reviewed=commit, primary='opus'))))
 
-        task('continued', 'commit-continued', [
-            ('qa-c1', 'FAIL', 'continued', 'sess-c', 0, 2.0)])
-        task('rerun', 'commit-rerun', [
-            ('qa-r1', 'PASS', None, 'sess-fresh', 0, 2.0),
-            ('qa-r2', 'FAIL', 'continued', 'sess-again', 0, 3.0)])
-        task('fallback', 'commit-fallback', [
-            ('qa-f1', 'FAIL', 'failed', 'sess-failed', 1, 2.0),
-            ('qa-f2', 'PASS', None, None, 0, 4.0)])
+        for tid, _, commit, reviews in tasks:
+            task(tid, commit, reviews)
         self.import_dir(plan)
         from forge_dataset.capture import point
-        for tid, commit in (('continued', 'commit-continued'), ('rerun', 'commit-rerun'),
-                            ('fallback', 'commit-fallback')):
+        for tid, _, commit, _ in tasks:
             point('shadow_review', str(plan / 'shadow' / tid / '1-1'), tid,
                   dict(status='done', attempt=1, reviewed=commit))
+
+    def test_a_failed_continue_then_a_fresh_fallback_keeps_only_the_fresh_review(self):
+        # One round, three shapes, each with a shadow of the same attempt number:
+        #   continued — the only primary continued, so it leaves the slices and the pairs
+        #   rerun     — a fresh PASS, then a continued QA-only re-run; the last verdict
+        #               continued, so the pair is dropped and the fresh PASS stays, alone
+        #   fallback  — mode=failed (exit 1, verdict FAIL), then a fresh PASS; the fresh
+        #               one is the last verdict and is the pair
+        self.import_shadowed_reviews([
+            ('continued', 'continued only', 'commit-continued', [
+                ('qa-c1', 'FAIL', 'continued', 'sess-c', 0, 2.0)]),
+            ('rerun', 'fresh then continued', 'commit-rerun', [
+                ('qa-r1', 'PASS', None, 'sess-fresh', 0, 2.0),
+                ('qa-r2', 'FAIL', 'continued', 'sess-again', 0, 3.0)]),
+            ('fallback', 'failed then fresh', 'commit-fallback', [
+                ('qa-f1', 'FAIL', 'failed', 'sess-failed', 1, 2.0),
+                ('qa-f2', 'PASS', None, None, 0, 4.0)]),
+        ])
 
         tagged = {(e['task'], e['data']['verdict'], e['data']['session_continue'], e['data']['session_id'])
                   for e in self.events(kind='dispatch') if e['data']['role'] == 'qa'}
@@ -1224,6 +1235,50 @@ class ReviewerSessionTests(StoreCase):
         self.assertEqual(shadow_event['d']['verdict'], 'FAIL')
         agreement = export.agreement(runs)
         self.assertEqual((agreement['pairs'], agreement['agree']), (1, 0))
+
+    def test_an_earlier_fresh_review_imported_later_is_not_the_one_the_attempt_ended_on(self):
+        # qa-ffff starts at 1.0 and qa-aaaa (continued) starts at 2.0. Import walks
+        # attempt dirs lexicographically, so the later continued review is stored first.
+        self.import_shadowed_reviews([
+            ('later-continued', 'continued imported first', 'commit-later-continued', [
+                ('qa-ffff', 'PASS', None, 'sess-fresh', 0, 1.0),
+                ('qa-aaaa', 'FAIL', 'continued', 'sess-again', 0, 2.0)]),
+        ])
+        from forge_dataset import export
+        runs = export.Runs(export.Store(store.connect()))
+        qa = runs.dispatches[('uid-session', 'later-continued', 'qa')]
+        self.assertEqual({(e['d']['wall_started'], e['d']['session_continue'], e['d']['verdict'])
+                          for e in qa},
+                         {(1.0, None, 'PASS'), (2.0, 'continued', 'FAIL')})
+        pairs = export.shadow_pairs(runs)
+        self.assertEqual([(p['d']['wall_started'], p['d']['session_continue'])
+                          for p, _ in pairs.values()], [])
+        self.assertEqual([(e['d']['wall_started'], e['d']['session_continue']) for e in qa],
+                         [(1.0, None), (2.0, 'continued')])
+
+    def test_an_earlier_failed_continue_imported_later_does_not_drop_the_fresh_fallback(self):
+        # qa-ffff is a failed continue at 1.0; qa-aaaa is the fresh fallback at 2.0.
+        # Lexicographic import stores the fresh review first and the failed continue last.
+        self.import_shadowed_reviews([
+            ('later-fresh', 'fresh imported first', 'commit-later-fresh', [
+                ('qa-ffff', 'FAIL', 'failed', 'sess-failed', 1, 1.0),
+                ('qa-aaaa', 'PASS', None, None, 0, 2.0)]),
+        ])
+        from forge_dataset import export
+        runs = export.Runs(export.Store(store.connect()))
+        qa = runs.dispatches[('uid-session', 'later-fresh', 'qa')]
+        self.assertEqual({(e['d']['wall_started'], e['d']['session_continue'], e['d']['verdict'])
+                          for e in qa},
+                         {(1.0, 'failed', 'FAIL'), (2.0, None, 'PASS')})
+        pairs = export.shadow_pairs(runs)
+        self.assertEqual(set(pairs), {('uid-session', 'later-fresh', 1)})
+        primary, shadow_event = pairs[('uid-session', 'later-fresh', 1)]
+        self.assertEqual(primary['d']['wall_started'], 2.0)
+        self.assertEqual(primary['d']['verdict'], 'PASS')
+        self.assertIsNone(primary['d']['session_continue'])
+        self.assertEqual(shadow_event['d']['verdict'], 'FAIL')
+        self.assertEqual([(e['d']['wall_started'], e['d']['session_continue']) for e in qa],
+                         [(1.0, 'failed'), (2.0, None)])
 
     def test_status_counts_continued_reviews_with_no_shadow_dispatch(self):
         plan = Path(self.tmp.name) / 'counts'
