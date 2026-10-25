@@ -854,6 +854,122 @@ class ForgeIssuesTests(unittest.TestCase):
         self.assertIn('Reason: User: accepted the tradeoff.', free_body)
         self.assertNotIn('below the blocking threshold', free_body)
 
+    def accept_task(self, name, status, reason, findings):
+        task = self.plan / 'tasks' / name
+        task.mkdir()
+        (task / 'status').write_text('PASS\n')
+        (task / 'merged').write_text('abc123\n')
+        (task / 'qa_threshold').write_text('P1\n')
+        (task / 'known_issues.md').write_text(
+            f"## Accepted by a human despite the reviewer's {status} verdict\n\n" + '\n'.join(findings) + '\n')
+        (task / 'accepted.by').write_text(f'status={status}\nreason={reason}\nby=ada\n')
+        return task
+
+    def test_grouped_run_keeps_every_acceptance(self):
+        # alpha and beta share one --group run issue. The body used to keep only the first
+        # finding's verdict and reason; beta's acceptance has to be in the same issue.
+        reason_a, reason_b = 'reason-alpha', 'reason-beta'
+        self.accept_task('alpha', 'FAIL', reason_a, [
+            '- [P2][CONFIRMED] src/alpha.ts:1 — Alpha stays open.',
+            '- [P2][CONFIRMED] src/alpha2.ts:2 — Alpha second stays open.'])
+        self.accept_task('beta', 'UNKNOWN', reason_b, [
+            '- [P2][CONFIRMED] src/beta.ts:3 — Beta stays open.'])
+        grouped = self.run_issues(str(self.plan), '--offline', '--repo', 'o/r', '--group', 'run')
+        body = next(d['body'] for d in grouped['drafts'] if d['origin'] == 'accepted')
+        self.assertIn('[P2] Accepted forge findings: plan', [d['title'] for d in grouped['drafts']])
+        fail = ("A person accepted the work over the reviewer's FAIL verdict, so it was merged without fixing it. "
+                f'Reason: {reason_a}')
+        unknown = ("A person accepted the work over the reviewer's UNKNOWN verdict, so it was merged without fixing it. "
+                   f'Reason: {reason_b}')
+        self.assertIn(fail, body)
+        self.assertIn(unknown, body)
+        self.assertEqual(body.count(fail), 1)  # alpha's two findings share one acceptance
+        self.assertNotIn('below the blocking threshold', body)
+        self.assertLess(body.index('Forge review findings left open'), body.index(fail))
+        self.assertLess(body.index('Forge review findings left open'), body.index(unknown))
+        italian = self.run_issues(str(self.plan), '--offline', '--repo', 'o/r', '--group', 'run', '--lang', 'it')
+        ibody = next(d['body'] for d in italian['drafts'] if d['origin'] == 'accepted')
+        self.assertIn('il verdetto FAIL del revisore', ibody)
+        self.assertIn(f'Motivo: {reason_a}', ibody)
+        self.assertIn('il verdetto UNKNOWN del revisore', ibody)
+        self.assertIn(f'Motivo: {reason_b}', ibody)
+        self.assertNotIn('soglia bloccante', ibody)
+
+    def test_grouped_plausible_keeps_an_outdated_review_warning(self):
+        # A task's P2 PLAUSIBLE sorts ahead of the outdated review's P3 PLAUSIBLE. --group run
+        # puts them in one issue; the warning and the merged ids still have to be in it.
+        at = 1_700_000_000
+        sha, other = 'a' * 40, 'b' * 40
+        task = self.plan / 'tasks' / 'import'
+        (task / 'qa.last').write_text((task / 'qa.last').read_text()
+                                      + '- [P2][PLAUSIBLE] src/lead.ts:2 — Lead names may drop a character.\n')
+        name = f'final-review-{at}-4'
+        review = self.review_dir(self.plan, name, ['- [P3][PLAUSIBLE] src/rev.ts:3 — Review maybe.'])
+        (review / 'verdict').write_text('FAIL\n')
+        (review / 'review.meta').write_text(f'tip={other}\n')
+        (self.plan / 'accepted.integration').write_text(sha + '\n')
+        self.set_merged('import', at + 5)
+        self.set_merged('ui', at)
+        os.symlink(name, self.plan / 'final-review')
+        sentence = ('The review is outdated: 1 task merged into the integration branch after it (import), '
+                    'so check whether they fixed it first.')
+        out = self.run_issues(str(self.plan), '--offline', '--repo', 'o/r', '--include-plausible', '--group', 'run')
+        drafts = [d for d in out['drafts'] if d['origin'] == 'plausible']
+        self.assertEqual(len(drafts), 1, [d['title'] for d in out['drafts']])
+        body = drafts[0]['body']
+        self.assertIn('Lead names may drop a character', body)
+        self.assertIn('Review maybe', body)
+        self.assertIn(sentence, body)
+        self.assertLess(body.index('Forge review findings left open'), body.index(sentence))
+        italian = self.run_issues(str(self.plan), '--offline', '--repo', 'o/r', '--include-plausible',
+                                  '--group', 'run', '--lang', 'it')
+        ibody = next(d['body'] for d in italian['drafts'] if d['origin'] == 'plausible')
+        self.assertIn('1 task è stato integrato nel branch di integrazione dopo di essa (import)', ibody)
+
+        # A current review adds nothing: the same group, without the warning.
+        (review / 'review.meta').write_text(f'tip={other}\nintegration={sha}\n')
+        current = self.run_issues(str(self.plan), '--offline', '--repo', 'o/r', '--include-plausible', '--group', 'run')
+        current_body = next(d['body'] for d in current['drafts'] if d['origin'] == 'plausible')
+        self.assertNotIn('The review is outdated', current_body)
+        self.assertNotIn('merged into the integration branch', current_body)
+
+    def test_listed_underscore_task_outdates_an_older_integrate_review(self):
+        # The UI counts a tasks.tsv id that starts with `_`. tasks/_integration is forge's own
+        # directory and is not a task unless a row lists it, so its marker must not count.
+        at = 1_700_000_000
+        sha = 'a' * 40
+        listed = (self.plan / 'tasks.tsv').read_text()
+        (self.plan / 'tasks.tsv').write_text(
+            listed + '_fix\t-\tlow\tsrc\tsol:high:codex\tastra:xhigh:codex\tFix\n')
+        fix = self.plan / 'tasks' / '_fix'
+        fix.mkdir()
+        (fix / 'merged').write_text('abc123\n')
+        own = self.plan / 'tasks' / '_integration'
+        own.mkdir()
+        (own / 'merged').write_text('abc123\n')
+        os.utime(own / 'merged', (at + 50, at + 50))
+        self.set_merged('import', at)       # inside the review's starting second
+        self.set_merged('ui', at + 0.4)
+        self.set_merged('_fix', at + 0.2)   # same second: not yet a later merge
+        integ = self.plan / f'integrate-{at}-1'
+        integ.mkdir()
+        ireview = self.review_dir(integ, 'final-review', ['- [P1][CONFIRMED] src/a.ts:1 — Broken thing.'])
+        (ireview / 'verdict').write_text('FAIL\n')
+        (ireview / 'review.meta').write_text(f'tip={sha}\n')  # no integration= commit
+        (self.plan / 'accepted.integration').write_text(sha + '\n')
+        mod = self.issues_mod()
+        self.assertEqual(mod.review_outdated(self.plan, ireview), (False, []))
+        self.set_merged('_fix', at + 2)
+        self.assertEqual(mod.review_outdated(self.plan, ireview), (True, ['_fix']))
+        os.symlink(f'integrate-{at}-1/final-review', self.plan / 'final-review')
+        out = self.run_issues(str(self.plan), '--offline', '--repo', 'o/r')
+        row = next(f for f in out['findings'] if f['origin'] == 'review')
+        self.assertEqual(row['review'], {'name': f'integrate-{at}-1/final-review',
+                                         'outdated': True, 'merged_since': ['_fix']})
+        body = next(d['body'] for d in out['drafts'] if d['origin'] == 'review')
+        self.assertIn('(_fix)', body)
+        self.assertNotIn('_integration', body)
+
 
 if __name__ == '__main__':
     unittest.main()

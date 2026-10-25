@@ -9,7 +9,9 @@ finding (or per task/run with `--group`) and creates them only with `--apply`.
 A whole-run review whose integration branch has moved is marked outdated: its findings stay
 listed (a later merge may have fixed only some of them) and the issue names the tasks that
 merged after it. CONFIRMED findings under `## Accepted by a human despite the reviewer's`
-heading are origin `accepted` — a person accepted that verdict — not `tolerated`.
+heading are origin `accepted` — a person accepted that verdict — not `tolerated`. A grouped
+issue repeats every distinct acceptance in the group, and the outdated-review sentence of
+every review in it, not only the first finding's.
 
 <run> is a plan dir, a task dir, a review dir (`<plan>/final-review`), known_issues.md or qa.last.
 Tasks that did not pass are skipped: their findings still block them.
@@ -252,21 +254,49 @@ def _known_integration(meta):
     return value if _COMMIT.fullmatch(value) else None
 
 
+def _task_id_ok(name: str) -> bool:
+    """True for a task id the scheduler and the UI reader both accept.
+
+    Empty, `.`, `..`, a slash, a NUL or U+FFFD are not ids. An id may start with `_`.
+    """
+    return bool(name) and name not in (".", "..") and "/" not in name and "\0" not in name and "\ufffd" not in name
+
+
+def _listed_task_ids(plan_dir: Path):
+    """Task ids from tasks.tsv, in file order.
+
+    Only those rows are tasks: `tasks/` also holds forge's own directories (for example
+    `tasks/_integration`), which are not tasks unless a row lists them. A row needs seven
+    columns, the same minimum the UI reader requires. The first of a duplicate id wins.
+    """
+    found, seen = [], set()
+    for line in read(Path(plan_dir) / "tasks.tsv").splitlines():
+        if not line.strip() or line.startswith("#"):
+            continue
+        parts = line.split("\t")
+        if len(parts) < 7:
+            continue
+        ident = parts[0]
+        if not _task_id_ok(ident) or ident in seen:
+            continue
+        seen.add(ident)
+        found.append(ident)
+    return found
+
+
 def _task_merges(plan_dir: Path):
-    """(id, mtime) of every tasks/<id>/merged, oldest merge first, then id."""
+    """(id, mtime) of every listed task's `merged` marker, oldest merge first, then id.
+
+    The ids are `_listed_task_ids`: a listed `_fix` counts, and an unlisted `tasks/_integration`
+    does not. This is the set whose merge times the UI uses for `merged_since`.
+    """
     root = Path(plan_dir) / "tasks"
     pairs = []
-    try:
-        children = list(root.iterdir())
-    except OSError:
-        return pairs
-    for child in children:
+    for ident in _listed_task_ids(plan_dir):
+        marker = root / ident / "merged"
         try:
-            if not child.is_dir() or child.name.startswith(("_", ".")):
-                continue
-            marker = child / "merged"
             if marker.is_file():
-                pairs.append((child.name, marker.stat().st_mtime))
+                pairs.append((ident, marker.stat().st_mtime))
         except OSError:
             continue
     pairs.sort(key=lambda item: (item[1], item[0]))
@@ -644,13 +674,45 @@ def accepted_line(lang, finding):
     return line
 
 
+def acceptance_lines(lang, items):
+    """One sentence per distinct acceptance, in first-seen order.
+
+    `--group run` puts every accepted finding of the plan in one issue. Tasks record their
+    own verdict and reason (`accepted.by`); each distinct pair is its own sentence, so a
+    later task's acceptance is not replaced by the first finding's.
+    """
+    lines, seen = [], set()
+    for finding in items:
+        line = accepted_line(lang, finding)
+        if line and line not in seen:
+            seen.add(line)
+            lines.append(line)
+    return lines
+
+
+def outdated_lines(lang, items):
+    """The outdated-review sentence for every distinct review in the group, in first-seen order.
+
+    Severity order can put a task's PLAUSIBLE finding ahead of the outdated review's, and
+    that first finding has no review. The warning still follows the context line, once per
+    distinct sentence.
+    """
+    lines, seen = [], set()
+    for finding in items:
+        line = outdated_line(lang, finding.get("review") if finding else None)
+        if line and line not in seen:
+            seen.add(line)
+            lines.append(line)
+    return lines
+
+
 def body_for(slug, repo_path, items, lang, offline=False):
     t = TEXT[lang]
     h = t["headings"]
     first = items[0]
     plan = first["plan"]
     plausible = all(f["origin"] == "plausible" for f in items)
-    accepted = accepted_line(lang, first)
+    accepted = acceptance_lines(lang, items)
     if len(items) > 1:
         context = t["group"].format(plan=plan, n=len(items))
     elif plausible:
@@ -658,17 +720,15 @@ def body_for(slug, repo_path, items, lang, offline=False):
     elif first["origin"] == "review":
         context = t["review"]
     elif accepted:
-        context = accepted
+        context = accepted[0]
     else:
         context = t["tolerated"].format(threshold=first["threshold"])
     commit = f", commit `{first['commit'][:12]}`" if first.get("commit") else ""
     lines = [f"## {h[0]}", context]
-    # A grouped issue's context line is the group intro, so the acceptance sentence follows it.
-    if len(items) > 1 and accepted:
-        lines.append(accepted)
-    extra = outdated_line(lang, first.get("review"))
-    if extra:
-        lines.append(extra)
+    # A grouped issue's context line is the group intro, so every distinct acceptance follows it.
+    if len(items) > 1:
+        lines.extend(accepted)
+    lines.extend(outdated_lines(lang, items))
     lines += ["",
               t["origin"].format(plan=plan, task=first["task"] or "final-review", severity=first["severity"],
                                  reviewer=first["reviewer"], commit=commit), "", f"## {h[1]}"]
