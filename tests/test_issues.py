@@ -247,9 +247,16 @@ class ForgeIssuesTests(unittest.TestCase):
         self.assertEqual([f['severity'] for f in out['findings']], ['P2', 'P3', 'P3'])
         first = out['findings'][0]
         self.assertEqual(sorted(first), sorted(['fp', 'severity', 'confidence', 'origin', 'plan', 'plan_dir', 'task',
-                                               'file', 'summary', 'text', 'reviewer', 'commit', 'filed', 'dismissed']))
+                                               'file', 'summary', 'text', 'reviewer', 'commit', 'review', 'filed',
+                                               'dismissed']))
         self.assertEqual((first['origin'], first['plan'], first['task'], first['filed'], first['dismissed']),
                          ('tolerated', 'plan', 'import', None, None))
+        self.assertIsNone(first['review'])
+        # Fingerprints hash the repo, the file and the text only. These are the values the formula produced
+        # before origin and `review` existed, so a filed issue is still recognised.
+        self.assertEqual(first['fp'], 'cf5d9440c970')
+        persisting = next(f for f in out['findings'] if f['text'] == 'Persisting null loses the list.')
+        self.assertEqual(persisting['fp'], '3f6046d5ed8e')
         self.assertTrue(all(d['same_title'] is None for d in out['drafts']))
         # the commit is in no remote-tracking ref: unpublished wording, still no gh
         self.assertIn('(commit not pushed to GitHub yet)', out['drafts'][0]['body'])
@@ -617,6 +624,235 @@ class ForgeIssuesTests(unittest.TestCase):
         # one process created it; the other's lookup, made after the first one's create, found it
         self.assertEqual(sorted((o['summary']['already_filed'], len([c for c in o['created'] if 'url' in c]))
                                 for o in outs), [(0, 1), (1, 0)])
+
+    def issues_mod(self):
+        spec = importlib.util.spec_from_file_location('forge_issues_under_test', SCRIPT)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def set_merged(self, task, when):
+        os.utime(self.plan / 'tasks' / task / 'merged', (when, when))
+
+    def test_review_outdated_follows_the_final_review_rule(self):
+        # Same cases as forge-ui's FinalReviewSummary: a known integration commit wins, a review with no
+        # integration commit is outdated when its tip moved, an older integrate review only when a task
+        # merged after it, and a merge inside the review's starting second does not count.
+        mod = self.issues_mod()
+        at = 1_700_000_000
+        sha, other = 'a' * 40, 'b' * 40
+        sha256 = 'c' * 64
+        review = self.review_dir(self.plan, f'final-review-{at}-1', ['- [P1][CONFIRMED] src/a.ts:1 — Broken thing.'])
+        (review / 'verdict').write_text('FAIL\n')
+        (review / 'review.meta').write_text(f'tip={sha}\n')
+        (self.plan / 'accepted.integration').write_text(sha + '\n')
+        self.set_merged('import', at + 0.5)  # inside the starting second
+        self.set_merged('ui', at)
+        self.assertEqual(mod.review_outdated(self.plan, review), (False, []))
+        self.set_merged('import', at + 5)
+        # tip still matches the accepted integration: a later merge does not outdate it, and merged_since stays empty
+        self.assertEqual(mod.review_outdated(self.plan, review), (False, []))
+        (review / 'review.meta').write_text(f'tip={other}\n')
+        self.assertEqual(mod.review_outdated(self.plan, review), (True, ['import']))
+        self.set_merged('import', at + 0.5)
+        self.assertEqual(mod.review_outdated(self.plan, review), (True, []))  # tip moved, but that merge does not count
+        self.set_merged('import', at + 5)
+        (review / 'review.meta').write_text(f'tip={other}\nintegration={sha}\n')
+        self.assertEqual(mod.review_outdated(self.plan, review), (False, []))
+        (review / 'review.meta').write_text(f'tip={sha}\nintegration={other}\n')
+        self.assertEqual(mod.review_outdated(self.plan, review), (True, ['import']))
+        (review / 'review.meta').write_text(f'tip={sha}\nintegration=not-a-commit\n')
+        self.assertEqual(mod.review_outdated(self.plan, review), (False, []))  # falls through to the matching tip
+        (review / 'verdict').write_text('')
+        self.assertEqual(mod.review_outdated(self.plan, review), (None, []))
+        (review / 'verdict').write_text('FAIL\n')
+        (self.plan / 'accepted.integration').unlink()
+        self.assertEqual(mod.review_outdated(self.plan, review), (None, []))
+
+        (self.plan / 'accepted.integration').write_text(sha + '\n')
+        integ = self.plan / f'integrate-{at}-2'
+        integ.mkdir()
+        ireview = self.review_dir(integ, 'final-review', ['- [P0][CONFIRMED] src/b.ts:2 — Integrate thing.'])
+        (ireview / 'verdict').write_text('FAIL\n')
+        (ireview / 'review.meta').write_text(f'tip={other}\n')  # the candidate tip, not the integration tip
+        self.set_merged('import', at + 0.5)
+        self.assertEqual(mod.review_outdated(self.plan, ireview), (False, []))
+        self.assertEqual(mod.review_stamp(self.plan, ireview)['name'], f'integrate-{at}-2/final-review')
+        self.set_merged('import', at + 1)  # the first instant that counts
+        self.assertEqual(mod.review_outdated(self.plan, ireview), (True, ['import']))
+        (ireview / 'review.meta').write_text(f'tip={other}\nintegration={sha256}\n')
+        (self.plan / 'accepted.integration').write_text(sha256 + '\n')
+        self.assertEqual(mod.review_outdated(self.plan, ireview), (False, []))
+        self.assertEqual(mod.outdated_line('en', {'outdated': True, 'merged_since': ['a', 'b', 'c', 'd', 'e', 'f']}),
+                         'The review is outdated: 6 tasks merged into the integration branch after it '
+                         '(a, b, c, d, e, +1 more), so check whether they fixed it first.')
+        self.assertEqual(mod.outdated_line('it', {'outdated': True, 'merged_since': ['import']}),
+                         'La review è obsoleta: 1 task è stato integrato nel branch di integrazione dopo di essa '
+                         '(import), quindi verifica prima se l\'hanno già corretta.')
+        self.assertEqual(mod.outdated_line('en', {'outdated': False, 'merged_since': ['import']}), '')
+        self.assertEqual(mod.fingerprint('o/r', {'file': 'src/a.ts', 'text': 'Broken thing.'}), 'aa3c78624139')
+
+    def test_outdated_review_is_the_same_on_every_input_path(self):
+        at = 1_700_000_000
+        sha, other = 'a' * 40, 'b' * 40
+        name = f'final-review-{at}-9'
+        line = '- [P1][CONFIRMED] src/a.ts:1 — Broken thing.'
+        review = self.review_dir(self.plan, name, [line])
+        (review / 'verdict').write_text('FAIL\n')
+        (review / 'review.meta').write_text(f'tip={other}\n')
+        (self.plan / 'accepted.integration').write_text(sha + '\n')
+        self.set_merged('import', at + 5)
+        self.set_merged('ui', at)  # inside the starting second: present, and not "since"
+        os.symlink(name, self.plan / 'final-review')
+        sentence = ('The review is outdated: 1 task merged into the integration branch after it (import), '
+                    'so check whether they fixed it first.')
+        context = ('Forge whole-run review finding left open: check whether it was already fixed before working on it.')
+        stamp = {'name': name, 'outdated': True, 'merged_since': ['import']}
+
+        def review_row(out):
+            rows = [f for f in out['findings'] if f['origin'] == 'review']
+            self.assertEqual(len(rows), 1, out['findings'])
+            return rows[0]
+
+        paths = [str(self.plan), str(self.plan / 'final-review'), str(self.plan / 'final-review' / 'qa.last'),
+                 str(self.plan / name), str(self.plan / name / 'qa.last')]
+        outs = [self.run_issues(path, '--offline', '--repo', 'o/r') for path in paths]
+        first = review_row(outs[0])
+        self.assertEqual(first['review'], stamp)
+        self.assertEqual(first['fp'], 'aa3c78624139')
+        body = next(d['body'] for d in outs[0]['drafts'] if d['origin'] == 'review')
+        self.assertIn(context + '\n' + sentence, body)
+        self.assertIn('import', body)
+        for path, out in zip(paths, outs):
+            row = review_row(out)
+            self.assertEqual(row['review'], stamp, path)
+            self.assertEqual(row['fp'], first['fp'], path)
+            self.assertEqual(next(d['body'] for d in out['drafts'] if d['origin'] == 'review'), body, path)
+        self.assertEqual(outs[0]['summary']['review'], 1)
+        res = subprocess.run([sys.executable, str(SCRIPT), str(self.plan), '--offline', '--repo', 'o/r'],
+                             capture_output=True, text=True, env=self.env, timeout=60)
+        self.assertEqual(res.returncode, 0, res.stderr)
+        marked = [row for row in res.stdout.splitlines() if 'Broken thing' in row]
+        self.assertTrue(marked and all('(outdated review)' in row for row in marked), res.stdout)
+        self.assertTrue(all('(outdated review)' not in row for row in res.stdout.splitlines() if 'Company creation' in row))
+
+        # A current review: integration= matches, so a later merge does not change the issue text.
+        (review / 'review.meta').write_text(f'tip={other}\nintegration={sha}\n')
+        current = self.run_issues(str(self.plan), '--offline', '--repo', 'o/r')
+        row = review_row(current)
+        self.assertEqual(row['review'], {'name': name, 'outdated': False, 'merged_since': []})
+        self.assertEqual(row['fp'], 'aa3c78624139')
+        current_body = next(d['body'] for d in current['drafts'] if d['origin'] == 'review')
+        self.assertIn(context + '\n\nOrigin:', current_body)
+        self.assertNotIn('The review is outdated', current_body)
+        self.assertNotIn('merged into the integration branch', current_body)
+        res = subprocess.run([sys.executable, str(SCRIPT), str(self.plan), '--offline', '--repo', 'o/r'],
+                             capture_output=True, text=True, env=self.env, timeout=60)
+        self.assertEqual(res.returncode, 0, res.stderr)
+        self.assertNotIn('(outdated review)', res.stdout)
+
+        # Italian sentence, and an integrate review reaches the same stamp from the plan, the dir and qa.last.
+        (review / 'review.meta').write_text(f'tip={other}\n')
+        italian = self.run_issues(str(self.plan / name), '--offline', '--repo', 'o/r', '--lang', 'it')
+        ibody = italian['drafts'][0]['body']
+        self.assertIn('1 task è stato integrato nel branch di integrazione dopo di essa (import)', ibody)
+        self.assertIn('quindi verifica prima se l\'hanno già corretta', ibody)
+
+    def test_integrate_review_outdated_agrees_across_inputs(self):
+        at = 1_700_000_000
+        sha, other = 'a' * 40, 'b' * 40
+        integ = self.plan / f'integrate-{at}-3'
+        integ.mkdir()
+        ireview = self.review_dir(integ, 'final-review', ['- [P0][CONFIRMED] src/b.ts:2 — Integrate thing.'])
+        (ireview / 'verdict').write_text('FAIL\n')
+        (ireview / 'review.meta').write_text(f'tip={other}\n')
+        (self.plan / 'accepted.integration').write_text(sha + '\n')
+        self.set_merged('import', at + 2)
+        self.set_merged('ui', at)
+        os.symlink(f'integrate-{at}-3/final-review', self.plan / 'final-review')
+        stamp = {'name': f'integrate-{at}-3/final-review', 'outdated': True, 'merged_since': ['import']}
+        paths = [str(self.plan), str(self.plan / 'final-review'), str(ireview / 'qa.last')]
+        bodies, fps = [], []
+        for path in paths:
+            out = self.run_issues(path, '--offline', '--repo', 'o/r')
+            row = next(f for f in out['findings'] if f['origin'] == 'review')
+            self.assertEqual(row['review'], stamp, path)
+            bodies.append(next(d['body'] for d in out['drafts'] if d['origin'] == 'review'))
+            fps.append(row['fp'])
+        self.assertEqual(len(set(bodies)), 1)
+        self.assertEqual(len(set(fps)), 1)
+        self.assertIn('import', bodies[0])
+        self.assertIn('The review is outdated', bodies[0])
+
+    def test_accepted_findings_are_not_described_as_tolerated(self):
+        reason = 'edge case, tracked in the backlog'
+        tolerated = ('- [P2][CONFIRMED] src/import.ts:645 — Company creation runs before the receipt replay. '
+                     'A retry creates an extra company.')
+        accepted_p0 = '- [P0][CONFIRMED] src/a.ts:10 — First accepted bug stays open.'
+        accepted_p1 = '- [P1][CONFIRMED] src/b.ts:4 — Second accepted bug stays open.'
+        text = ('## Known issues (QA findings below blocking threshold P1)\n\n' + tolerated + '\n\n'
+                "## Accepted by a human despite the reviewer's FAIL verdict\n\n"
+                f'Reason: {reason}\n\n' + accepted_p0 + '\n' + accepted_p1 + '\n')
+        task = self.plan / 'tasks' / 'import'
+        (task / 'known_issues.md').write_text(text)
+        (task / 'accepted.by').write_text(f'status=FAIL\nreason={reason}\nby=ada\nat=2026-01-01T00:00:00+0000\n')
+        sentence = ("A person accepted the work over the reviewer's FAIL verdict, so it was merged without fixing it. "
+                    f'Reason: {reason}')
+        paths = [str(self.plan), str(task), str(task / 'known_issues.md')]
+        listed = []
+        for path in paths:
+            out = self.run_issues(path, '--offline', '--repo', 'o/r')
+            by_origin = {}
+            for finding in out['findings']:
+                by_origin.setdefault(finding['origin'], []).append(finding)
+            self.assertEqual(sorted(f['file'] for f in by_origin['tolerated']), ['src/import.ts'], path)
+            self.assertEqual(sorted(f['file'] for f in by_origin['accepted']), ['src/a.ts', 'src/b.ts'], path)
+            self.assertTrue(all(f['review'] is None for f in out['findings']), path)
+            accepted = {f['file']: f for f in by_origin['accepted']}
+            self.assertEqual(accepted['src/a.ts']['fp'], 'febf4ed2d38f', path)
+            self.assertEqual(accepted['src/b.ts']['fp'], '94c4784087cc', path)
+            self.assertEqual(by_origin['tolerated'][0]['fp'], 'cf5d9440c970', path)
+            for draft in out['drafts']:
+                if draft['origin'] == 'accepted':
+                    self.assertIn(sentence, draft['body'], path)
+                    self.assertNotIn('below the blocking threshold', draft['body'], path)
+                    self.assertNotIn('soglia bloccante', draft['body'], path)
+                if draft['origin'] == 'tolerated':
+                    self.assertIn('below the blocking threshold P1', draft['body'], path)
+            listed.append(out)
+        self.assertEqual([f['fp'] for f in listed[0]['findings'] if f['origin'] == 'accepted'],
+                         [f['fp'] for f in listed[1]['findings'] if f['origin'] == 'accepted'])
+        self.assertEqual(listed[0]['summary']['accepted'], 2)
+        self.assertEqual(listed[0]['summary']['tolerated'], 1)
+
+        grouped = self.run_issues(str(self.plan), '--offline', '--repo', 'o/r', '--group', 'task')
+        titles = [d['title'] for d in grouped['drafts']]
+        self.assertIn('[P0] Accepted forge findings: import', titles)
+        self.assertNotIn('Non-blocking forge findings: import', titles)
+        grouped_body = next(d['body'] for d in grouped['drafts'] if d['origin'] == 'accepted')
+        self.assertIn(sentence, grouped_body)
+        self.assertNotIn('below the blocking threshold', grouped_body)
+        italian = self.run_issues(str(task), '--offline', '--repo', 'o/r', '--lang', 'it', '--group', 'task')
+        self.assertIn('[P0] Segnalazioni forge accettate: import', [d['title'] for d in italian['drafts']])
+        ibody = next(d['body'] for d in italian['drafts'] if d['origin'] == 'accepted')
+        self.assertIn("il verdetto FAIL del revisore", ibody)
+        self.assertIn(f'Motivo: {reason}', ibody)
+        self.assertNotIn('soglia bloccante', ibody)
+
+        long_reason = 'R' * 600
+        (task / 'accepted.by').write_text(f'status=FAIL\nreason={long_reason}\n')
+        cut = self.run_issues(str(task), '--offline', '--repo', 'o/r')
+        cut_body = next(d['body'] for d in cut['drafts'] if 'First accepted' in d['body'])
+        self.assertIn('Reason: ' + 'R' * 500, cut_body)
+        self.assertNotIn('R' * 501, cut_body)
+        self.assertEqual(next(f['fp'] for f in cut['findings'] if f['file'] == 'src/a.ts'), 'febf4ed2d38f')
+
+        (task / 'accepted.by').write_text('User: accepted the tradeoff.\n')
+        free = self.run_issues(str(task / 'known_issues.md'), '--offline', '--repo', 'o/r')
+        free_body = next(d['body'] for d in free['drafts'] if d['origin'] == 'accepted')
+        self.assertIn("reviewer's FAIL verdict", free_body)
+        self.assertIn('Reason: User: accepted the tradeoff.', free_body)
+        self.assertNotIn('below the blocking threshold', free_body)
 
 
 if __name__ == '__main__':

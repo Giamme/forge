@@ -6,6 +6,11 @@ A run can end with findings nobody will act on: CONFIRMED findings `--qa-thresho
 `--include-plausible`), and whatever a whole-run review left open. This drafts one issue per
 finding (or per task/run with `--group`) and creates them only with `--apply`.
 
+A whole-run review whose integration branch has moved is marked outdated: its findings stay
+listed (a later merge may have fixed only some of them) and the issue names the tasks that
+merged after it. CONFIRMED findings under `## Accepted by a human despite the reviewer's`
+heading are origin `accepted` — a person accepted that verdict — not `tolerated`.
+
 <run> is a plan dir, a task dir, a review dir (`<plan>/final-review`), known_issues.md or qa.last.
 Tasks that did not pass are skipped: their findings still block them.
 
@@ -14,7 +19,7 @@ gh-proman computes, and both tools skip a finding either of them already filed, 
 When the gh-proman skill is configured for the repository, prefer `gh-proman findings`: it also
 adds the issues to the team's project board with a priority. This command is the fallback.
 
---json lists every finding in `findings` (fp, severity, origin, plan, task, text, `filed`, ...). --offline never
+--json lists every finding in `findings` (fp, severity, origin, plan, task, text, `filed`, `review`, ...). --offline never
 runs `gh` (no filed state, publication of commits judged from local refs only). --only FP[,FP] keeps those
 fingerprints. --all-runs reads <run> as a repository (or a plan dir naming one) and collects every run in its
 registry, the newest plan winning for a finding present in several. A caller filing an explicit selection
@@ -48,6 +53,7 @@ import errno
 import fcntl
 import hashlib
 import json
+import math
 import os
 import re
 import stat
@@ -76,11 +82,16 @@ TEXT = {
         "plausible": "To verify: ",
         "tolerated": "Forge review finding left open: it was below the blocking threshold {threshold}, so the "
                      "work was merged without fixing it.",
+        "accepted": "A person accepted the work over the reviewer's {status} verdict, so it was merged without fixing it.",
+        "accepted_reason": "Reason: {reason}",
         "review": "Forge whole-run review finding left open: check whether it was already fixed before working on it.",
+        "outdated": "The review is outdated: {n} {tasks} merged into the integration branch after it{ids}, "
+                    "so check whether they fixed it first.",
         "plausible_ctx": "PLAUSIBLE forge review finding (low confidence): verify it before fixing. If it turns out "
                          "to be wrong, close the issue saying why.",
         "group": "Forge review findings left open in run `{plan}` ({n}).",
         "group_title": "Non-blocking forge findings: {scope}",
+        "group_title_accepted": "Accepted forge findings: {scope}",
         "origin": "Origin: forge `{plan}`, task `{task}`, severity {severity}, reviewed by `{reviewer}`{commit}.",
         "headings": ["Context", "Finding", "Tasks", "Closing criteria", "References"],
         "tasks": ["Reproduce the described case", "Fix it", "Add a regression test that fails before the fix"],
@@ -95,12 +106,18 @@ TEXT = {
         "plausible": "Da verificare: ",
         "tolerated": "Segnalazione della review di forge rimasta aperta: era sotto la soglia bloccante {threshold}, "
                      "quindi il lavoro è stato integrato senza correggerla.",
+        "accepted": "Una persona ha accettato il lavoro nonostante il verdetto {status} del revisore, quindi è "
+                    "stato integrato senza correggerlo.",
+        "accepted_reason": "Motivo: {reason}",
         "review": "Segnalazione della review complessiva di forge rimasta aperta: verificare se è già stata "
                   "corretta prima di lavorarci.",
+        "outdated": "La review è obsoleta: {n} {tasks} nel branch di integrazione dopo di essa{ids}, quindi "
+                    "verifica prima se l'hanno già corretta.",
         "plausible_ctx": "Segnalazione PLAUSIBILE della review di forge (confidenza bassa): va verificata prima di "
                          "correggere. Se risulta infondata, chiudi l'issue spiegando perché.",
         "group": "Segnalazioni della review di forge rimaste aperte nel run `{plan}` ({n}).",
         "group_title": "Segnalazioni forge non bloccanti: {scope}",
+        "group_title_accepted": "Segnalazioni forge accettate: {scope}",
         "origin": "Origine: forge `{plan}`, task `{task}`, gravità {severity}, review di `{reviewer}`{commit}.",
         "headings": ["Contesto", "Segnalazione", "Attività", "Criteri di chiusura", "Riferimenti"],
         "tasks": ["Riprodurre il caso descritto", "Correggere",
@@ -166,6 +183,194 @@ def reviewer_spec(task_dir: Path):
     return ":".join(x for x in (kv.get("alias"), kv.get("effort"), kv.get("harness")) if x) or "?"
 
 
+# `final-review-<epoch>-<pid>` or `integrate-<epoch>-<pid>`. `at` is that whole-second epoch.
+_REVIEW_KIND = re.compile(r"(final-review|integrate)-([0-9]+)-([0-9]+)\Z")
+# What `git rev-parse` writes for a commit: sha1 (40) or sha256 (64), lowercase hex.
+_COMMIT = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})\Z")
+# accept appends the reviewer's reply under this heading; findings before it were threshold-tolerated.
+_ACCEPTED_HEADING = re.compile(
+    r"^## Accepted by a human despite the reviewer's(?:\s+(\S+))?\s+verdict\s*$", re.M)
+
+
+def _epoch(text):
+    if len(text) > 15:
+        return None
+    try:
+        at = float(text)
+    except (ValueError, OverflowError):
+        return None
+    return at if math.isfinite(at) else None
+
+
+def review_clock(review_dir: Path):
+    """(source, at) of a whole-run review directory.
+
+    `final-review-<epoch>-<pid>` is source `review`. `integrate-<epoch>-<pid>/final-review` is
+    source `integrate`, and `at` is the epoch in the integrate directory's name. A directory
+    literally named `final-review` with no such parent is a review whose clock is unknown.
+    """
+    review_dir = Path(review_dir).resolve()
+    if review_dir.name == "final-review":
+        match = _REVIEW_KIND.fullmatch(review_dir.parent.name)
+        if match and match.group(1) == "integrate":
+            return "integrate", _epoch(match.group(2))
+        return "review", None
+    match = _REVIEW_KIND.fullmatch(review_dir.name)
+    if match and match.group(1) == "final-review":
+        return "review", _epoch(match.group(2))
+    return "review", None
+
+
+def review_relname(plan_dir, review_dir: Path):
+    """The review directory's path relative to the plan, posix, after resolving links."""
+    review_dir = Path(review_dir).resolve()
+    if plan_dir:
+        try:
+            return review_dir.relative_to(Path(plan_dir).resolve()).as_posix()
+        except ValueError:
+            pass
+    return review_dir.name
+
+
+def _meta_fields(review_dir: Path):
+    fields = {}
+    for line in read(review_dir / "review.meta").splitlines():
+        key, sep, value = line.partition("=")
+        if sep and key.strip():
+            fields[key.strip()] = value.strip()
+    return fields
+
+
+def _known_integration(meta):
+    """The `integration=` commit, or None when it is missing or not a commit object name.
+
+    A malformed value is not the commit the review judged, so freshness uses the next rule.
+    """
+    value = meta.get("integration") or None
+    if not value:
+        return None
+    return value if _COMMIT.fullmatch(value) else None
+
+
+def _task_merges(plan_dir: Path):
+    """(id, mtime) of every tasks/<id>/merged, oldest merge first, then id."""
+    root = Path(plan_dir) / "tasks"
+    pairs = []
+    try:
+        children = list(root.iterdir())
+    except OSError:
+        return pairs
+    for child in children:
+        try:
+            if not child.is_dir() or child.name.startswith(("_", ".")):
+                continue
+            marker = child / "merged"
+            if marker.is_file():
+                pairs.append((child.name, marker.stat().st_mtime))
+        except OSError:
+            continue
+    pairs.sort(key=lambda item: (item[1], item[0]))
+    return pairs
+
+
+def _first_line(path: Path):
+    text = read(path)
+    return text.splitlines()[0].strip() if text else ""
+
+
+def review_freshness(accepted, integration, tip, source, at, merges, verdict):
+    """(outdated, merged_since) for one final review. Same rule as forge-ui's FinalReviewSummary.
+
+    Null when the review has no verdict or the plan has no `accepted.integration`. Otherwise the
+    first rule that applies: a known `integration` commit, else `tip` when `source` is `review`,
+    else (an older integrate review) any task merged after `at`. A merge counts when its marker
+    mtime is `>= at + 1`. `merged_since` is those ids, oldest first, and is empty unless the
+    review is outdated.
+    """
+    later = []
+    if at is not None:
+        later = [item for item in merges if item[1] is not None and item[1] >= at + 1]
+        later.sort(key=lambda item: (item[1], item[0]))
+    ids = [task_id for task_id, _merged_at in later]
+    if not verdict or not accepted:
+        return None, []
+    if integration:
+        moved = integration != accepted
+    elif source == "review":
+        moved = tip != accepted
+    else:
+        moved = bool(ids)
+    return (True, ids) if moved else (False, [])
+
+
+def review_outdated(plan_dir, review_dir):
+    """(outdated, merged_since) for the whole-run review directory `review_dir` in `plan_dir`."""
+    if not plan_dir or not review_dir:
+        return None, []
+    review_dir = Path(review_dir)
+    meta = _meta_fields(review_dir)
+    source, at = review_clock(review_dir)
+    verdict = (_first_line(review_dir / "verdict").split() or [""])[0]
+    return review_freshness(_first_line(Path(plan_dir) / "accepted.integration"), _known_integration(meta),
+                            meta.get("tip") or None, source, at, _task_merges(plan_dir), verdict)
+
+
+def review_stamp(plan_dir, review_dir):
+    """The `review` object a whole-run finding carries, or None when there is no review directory."""
+    if not review_dir:
+        return None
+    outdated, merged_since = review_outdated(plan_dir, review_dir)
+    return {"name": review_relname(plan_dir, review_dir), "outdated": outdated, "merged_since": merged_since}
+
+
+def acceptance_of(task_dir):
+    """(status, reason) recorded in `accepted.by`.
+
+    Key=value (`status`, `reason`, …) is the current record. Free text, which older runs wrote,
+    is a reason and no status. `reason` is cut to REASON_MAX characters.
+    """
+    if not task_dir:
+        return "", ""
+    raw = read(Path(task_dir) / "accepted.by")
+    if not raw:
+        return "", ""
+    fields = {}
+    for line in raw.splitlines():
+        if not line.strip():
+            continue
+        if "=" not in line:
+            return "", raw[:REASON_MAX]
+        key, value = line.split("=", 1)
+        key = key.strip()
+        if not key or re.search(r"\s", key):
+            return "", raw[:REASON_MAX]
+        fields[key] = value.strip()
+    if not fields:
+        return "", raw[:REASON_MAX]
+    return fields.get("status", ""), fields.get("reason", "")[:REASON_MAX]
+
+
+def known_findings(text, task_dir, meta):
+    """CONFIRMED findings of a task's known_issues.md, split at the acceptance heading.
+
+    Findings before `## Accepted by a human despite the reviewer's <status> verdict` stay
+    `tolerated`. Findings after it are `accepted`. The heading's status is used only when
+    `accepted.by` does not record one.
+    """
+    text = text or ""
+    match = _ACCEPTED_HEADING.search(text)
+    before, after = (text[:match.start()], text[match.end():]) if match else (text, "")
+    found = [{**f, **meta, "origin": "tolerated", "review": None}
+             for f in parse_findings(before) if f["confidence"] == "CONFIRMED"]
+    if match:
+        file_status, reason = acceptance_of(task_dir)
+        status = file_status or match.group(1) or "UNKNOWN"
+        found += [{**f, **meta, "origin": "accepted", "review": None,
+                   "accepted_status": status, "accepted_reason": reason}
+                  for f in parse_findings(after) if f["confidence"] == "CONFIRMED"]
+    return found
+
+
 def task_findings(task_dir: Path, plan_dir, include_plausible, reviewers, review=None):
     """`review` True: task_dir is a whole-run review dir (it may hold a known_issues.md when a threshold applied)."""
     status = (read(task_dir / "status").split() or [""])[0]
@@ -184,7 +389,10 @@ def task_findings(task_dir: Path, plan_dir, include_plausible, reviewers, review
         review = not status and task not in results and not (task_dir / "known_issues.md").exists()
     if review:
         # A review with no task behind it (whole-run review): everything it found is still open.
-        found = [{**f, **meta, "task": None if whole_run else task, "origin": "review" if f["confidence"] == "CONFIRMED" else "plausible", "threshold": "-"}
+        stamp = review_stamp(plan_dir, task_dir) if whole_run else None
+        found = [{**f, **meta, "task": None if whole_run else task,
+                  "origin": "review" if f["confidence"] == "CONFIRMED" else "plausible",
+                  "threshold": "-", "review": stamp}
                  for f in parse_findings(read(task_dir / "qa.last"))
                  if f["confidence"] == "CONFIRMED" or include_plausible]
         return found, None
@@ -192,11 +400,10 @@ def task_findings(task_dir: Path, plan_dir, include_plausible, reviewers, review
         return [], f"{task}: status {state or 'unknown'}, its findings still block it"
     threshold = read(task_dir / "qa_threshold") or (read(plan_dir / "qa_threshold") if plan_dir else "") or "?"
     meta["threshold"] = threshold
-    found = [{**f, **meta, "origin": "tolerated"} for f in parse_findings(read(task_dir / "known_issues.md"))
-             if f["confidence"] == "CONFIRMED"]
+    found = known_findings(read(task_dir / "known_issues.md"), task_dir, meta)
     if include_plausible:
-        found += [{**f, **meta, "origin": "plausible"} for f in parse_findings(read(task_dir / "qa.last"))
-                  if f["confidence"] == "PLAUSIBLE"]
+        found += [{**f, **meta, "origin": "plausible", "review": None}
+                  for f in parse_findings(read(task_dir / "qa.last")) if f["confidence"] == "PLAUSIBLE"]
     return found, None
 
 
@@ -314,10 +521,16 @@ def collect(path: Path, include_plausible, all_runs=False):
                 "reviewer": reviewer_spec(parent)}
         meta["plan"], meta["plan_dir"] = (plan_root.name, str(plan_root))
         if is_review:
-            found = [{**f, **meta, "origin": "review" if f["confidence"] == "CONFIRMED" else "plausible"}
+            stamp = review_stamp(plan_root, parent)
+            found = [{**f, **meta, "origin": "review" if f["confidence"] == "CONFIRMED" else "plausible", "review": stamp}
                      for f in parse_findings(read(path)) if f["confidence"] == "CONFIRMED" or include_plausible]
+        elif path.name == "known_issues.md":
+            found = known_findings(read(path), parent, meta)
+            if include_plausible:
+                found += [{**f, **meta, "origin": "plausible", "review": None}
+                          for f in parse_findings(read(path)) if f["confidence"] == "PLAUSIBLE"]
         else:
-            found = [{**f, **meta, "origin": "tolerated" if f["confidence"] == "CONFIRMED" else "plausible"}
+            found = [{**f, **meta, "origin": "tolerated" if f["confidence"] == "CONFIRMED" else "plausible", "review": None}
                      for f in parse_findings(read(path)) if f["confidence"] == "CONFIRMED" or include_plausible]
         # plan_root is the plan dir, or for a file outside any plan (a solo run's) the dir holding it
         return {"plan": plan_root.name, "repo_path": recorded_repo(plan_root)}, found, []
@@ -395,24 +608,70 @@ def published(slug, repo_path, commit, offline=False):
     return run(["gh", "api", f"repos/{slug}/commits/{commit}", "--jq", ".sha"], check=False).returncode == 0
 
 
+def merged_since_text(ids, lang):
+    """Ids cut after 5, as `(a, b, c, d, e, +N more)`, or "" when there are none."""
+    shown = [str(item) for item in ids[:5]]
+    extra = len(ids) - len(shown)
+    names = ", ".join(shown)
+    if extra:
+        more = f"+{extra} altri" if lang == "it" else f"+{extra} more"
+        names = f"{names}, {more}" if names else more
+    return f" ({names})" if names else ""
+
+
+def outdated_line(lang, review):
+    """The sentence an outdated whole-run review adds after the context line, or ""."""
+    if not review or review.get("outdated") is not True:
+        return ""
+    ids = list(review.get("merged_since") or [])
+    n = len(ids)
+    if lang == "it":
+        tasks = "task è stato integrato" if n == 1 else "task sono stati integrati"
+    else:
+        tasks = "task" if n == 1 else "tasks"
+    return TEXT[lang]["outdated"].format(n=n, tasks=tasks, ids=merged_since_text(ids, lang))
+
+
+def accepted_line(lang, finding):
+    """The sentence for a finding a person accepted, including the recorded reason, or ""."""
+    if not finding or finding.get("origin") != "accepted":
+        return ""
+    t = TEXT[lang]
+    line = t["accepted"].format(status=finding.get("accepted_status") or "UNKNOWN")
+    reason = finding.get("accepted_reason") or ""
+    if reason:
+        line += " " + t["accepted_reason"].format(reason=escape(reason))
+    return line
+
+
 def body_for(slug, repo_path, items, lang, offline=False):
     t = TEXT[lang]
     h = t["headings"]
     first = items[0]
     plan = first["plan"]
     plausible = all(f["origin"] == "plausible" for f in items)
+    accepted = accepted_line(lang, first)
     if len(items) > 1:
         context = t["group"].format(plan=plan, n=len(items))
     elif plausible:
         context = t["plausible_ctx"]
     elif first["origin"] == "review":
         context = t["review"]
+    elif accepted:
+        context = accepted
     else:
         context = t["tolerated"].format(threshold=first["threshold"])
     commit = f", commit `{first['commit'][:12]}`" if first.get("commit") else ""
-    lines = [f"## {h[0]}", context, "",
-             t["origin"].format(plan=plan, task=first["task"] or "final-review", severity=first["severity"],
-                                reviewer=first["reviewer"], commit=commit), "", f"## {h[1]}"]
+    lines = [f"## {h[0]}", context]
+    # A grouped issue's context line is the group intro, so the acceptance sentence follows it.
+    if len(items) > 1 and accepted:
+        lines.append(accepted)
+    extra = outdated_line(lang, first.get("review"))
+    if extra:
+        lines.append(extra)
+    lines += ["",
+              t["origin"].format(plan=plan, task=first["task"] or "final-review", severity=first["severity"],
+                                 reviewer=first["reviewer"], commit=commit), "", f"## {h[1]}"]
     for f in items:
         lines += [f"> {escape(f['raw'])}", ""]
     lines.append(f"## {h[2]}")
@@ -670,6 +929,7 @@ def finding_entry(f, filed=None, dismissed=None):
             "plan": f["plan"], "plan_dir": f["plan_dir"], "task": f["task"], "file": f["file"],
             "summary": (f["text"].splitlines() or [""])[0][:160], "text": f["text"],
             "reviewer": f["reviewer"], "commit": f.get("commit") or "",
+            "review": f.get("review"),
             "filed": {"url": filed["url"], "state": filed["state"]} if filed else None,
             "dismissed": dismissed}
 
@@ -725,8 +985,12 @@ def list_and_file(args, meta, found, notes, repo_path, slug, warnings):
             title = title_for(items[0], args.lang)
         else:
             scope = (items[0]["task"] or items[0]["plan"]) if args.group == "task" else items[0]["plan"]
-            prefix = t["plausible"] if items[0]["origin"] == "plausible" else ""
-            title = f"[{items[0]['severity']}] {prefix}{t['group_title'].format(scope=scope)}"
+            origin = items[0]["origin"]
+            if origin == "accepted":
+                title = f"[{items[0]['severity']}] {t['group_title_accepted'].format(scope=scope)}"
+            else:
+                prefix = t["plausible"] if origin == "plausible" else ""
+                title = f"[{items[0]['severity']}] {prefix}{t['group_title'].format(scope=scope)}"
         drafts.append({"title": title, "severity": items[0]["severity"], "origin": items[0]["origin"],
                        "findings": [f["raw"] for f in items], "fingerprints": [f["fp"] for f in items],
                        "same_title": None if offline else open_titles.get(norm_title(title)),
@@ -735,7 +999,8 @@ def list_and_file(args, meta, found, notes, repo_path, slug, warnings):
     out = {"repo": slug, "plan": meta["plan"], "notes": notes, "warnings": warnings,
            "summary": {"findings": len(seen), "already_filed": len(already),
                        "dismissed": sum(1 for e in entries if e["dismissed"]), "drafts": len(drafts),
-                       **{o: sum(1 for f in todo if f["origin"] == o) for o in ("tolerated", "review", "plausible")}},
+                       **{o: sum(1 for f in todo if f["origin"] == o)
+                          for o in ("tolerated", "accepted", "review", "plausible")}},
            "findings": entries, "already_filed": already, "drafts": drafts}
     if args.apply:
         out["created"] = create(slug, drafts, args)
@@ -779,7 +1044,8 @@ def print_human(out, applied):
     s = out["summary"]
     dismissed = f", {s['dismissed']} dismissed" if s["dismissed"] else ""
     print(f"{out['repo']} · run {out['plan']}: {s['findings']} finding(s), {s['already_filed']} already filed{dismissed}, "
-          f"{s['drafts']} draft(s) ({s['tolerated']} tolerated, {s['review']} review, {s['plausible']} plausible)")
+          f"{s['drafts']} draft(s) ({s['tolerated']} tolerated, {s['accepted']} accepted, "
+          f"{s['review']} review, {s['plausible']} plausible)")
     for warning in out["warnings"]:
         print(f"  warning {warning}")
     for note in out["notes"]:
@@ -795,9 +1061,11 @@ def print_human(out, applied):
             else:
                 print(f"  skipped {c['title']}: {c['skipped']}{' ' + c['issue'] if c.get('issue') else ''}")
         return
+    outdated = {e["fp"] for e in out["findings"] if (e.get("review") or {}).get("outdated") is True}
     for d in out["drafts"]:
         flag = f"  (open issue with the same title: {d['same_title']})" if d["same_title"] else ""
-        print(f"  draft   {d['title']}{flag}")
+        mark = " (outdated review)" if any(fp in outdated for fp in d["fingerprints"]) else ""
+        print(f"  draft   {d['title']}{mark}{flag}")
     if out["drafts"]:
         print("Nothing created: add --apply to file these.")
 
