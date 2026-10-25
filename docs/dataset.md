@@ -15,12 +15,19 @@ forge dataset import ~/.local/share/forge/legacy   # runs that predate live capt
 forge dataset export            # labeled decision cases for benchmarks and fine-tuning
 forge dataset outcomes          # which integrated lines survived, read from git history
 forge dataset reviewers         # how often work each reviewer PASSed was later reverted or rewritten
+forge dataset forecast <plan>   # likely tokens, time and first-try PASS rate for a plan's tasks
 ```
 
 `forge dataset reviewers` is a report card for reviewer models, built on those outcomes. It is
 advisory only and never changes routing, and it shows "not enough data" below 10 outcomes per
 reviewer rather than a rate a handful of tasks would make up. See
 [the reviewer report card](../references/dataset.md#reviewer-report-card).
+
+`forge dataset forecast <plan>` estimates a plan from past tasks at the same tier and model:
+median and p90 tokens and time, and the first-try PASS rate with a 95% interval, per task and in
+total. It flags tasks below 50% and says "not enough history" under 5 past tasks. `run` prints
+the same block before it dispatches (`--no-forecast` turns it off) and records it, so its accuracy
+can be checked later. It is advisory only. See [plan forecast](../references/dataset.md#plan-forecast).
 
 Deleting a run keeps what it taught the dataset. `forge runs rm <run-dir>` first imports the run
 **strictly** (every event must be stored, or nothing is deleted), then writes a self-describing

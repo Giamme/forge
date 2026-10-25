@@ -181,6 +181,10 @@ bash scripts/forge-parallel.sh run "$PLAN" --max-parallel 4 --yolo-dwarf
 bash scripts/forge-parallel.sh integrate "$PLAN" --approved
 ```
 
+`run` starts by printing a forecast for the plan from the dataset: likely tokens, time and
+first-try PASS rate per task, with tasks unlikely to pass first time flagged. It is advisory only,
+and `--no-forecast` turns it off. See [plan forecast](../references/dataset.md#plan-forecast).
+
 `integrate` refuses without `--approved`, and refuses on a dirty working tree.
 For Fractal execution, pass tier pools to `plan` and backend/limit flags to `run`.
 `--max-parallel` limits task pipelines; the shared `--fractal-concurrency` limit includes

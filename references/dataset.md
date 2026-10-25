@@ -44,6 +44,7 @@ time order: an attempt that PASSed, then a merge that CONFLICTed, then a human `
 | `jev` | Jev request | site, answers, usage, latency, mode. Blob: the **full request** (state and questions). Its original sha is `jev.jsonl`'s `key` |
 | `fractal_step` / `fractal_node` | Fractal step, node state | decomposition decision, iteration, resolved model, cost, tokens, candidate diff |
 | `ledger` | ledger row | imported `.forge/ledger.tsv` rows |
+| `forecast` | forecast shown by `run` | the plan forecast printed before dispatch (see [plan forecast](#plan-forecast)), once per run and content. Also in the plan as `forecast.json` |
 | `outcome` | integrated task, per horizon | written by `forge dataset outcomes`, never by a run: how many of the lines a task added survive N days after `integrate`, and what reverted it |
 
 Each blob reference carries `sha` (the stored bytes), `original_sha`, `n` (the original
@@ -120,6 +121,7 @@ forge still running keeps writing.
 ./forge dataset outcomes [--horizon-days 14] [--repo PATH] [--dry-run]     # what integrated work became
 ./forge dataset routing [--repo PATH] [--since DAYS] [--json]   # pass rate and runtime per tier and model
 ./forge dataset reviewers [--horizon-days 14] [--repo PATH] [--json]   # how each reviewer's PASSed work held up
+./forge dataset forecast <plan> [--repo PATH] [--json]   # likely cost and first-try PASS rate per task
 ```
 
 `status` runs a different completeness check for each mode, because each mode
@@ -305,6 +307,34 @@ or its model when no alias was recorded, as the forge-ui Models view keys it. A 
 forge-ui shows the rate as the Reviewers table's **Did not hold** column, through
 `GET /api/models/reviewers`, which runs this command with `--json`.
 
+## Plan forecast
+
+`forge dataset forecast <plan>` reads the plan's `tasks.tsv` (the declared tier from
+`tasks.declared.tsv` when there is one) and, for each task not yet MERGED, looks up past tasks
+that ran at the same tier on the same resolved model. The effort must match too when the task's
+spec names one. It uses the same task history as `forge dataset routing`, without the plan's own
+run.
+
+- Tokens are input plus output (cached input is not added again), summed over every implement
+  and review dispatch of the task, retries included. Time is the sum of those dispatches'
+  durations. Both show median and p90 (nearest rank).
+- The first-try PASS rate has a Wilson 95% interval. Tasks below 50% are flagged as likely to
+  need a retry. Under 5 past tasks the row reads `not enough history (n/5)` and the JSON has
+  `enough: false` with no rate.
+- Totals add up the per-task medians and p90s, the wall time by wave (the slowest task of each
+  wave), and the expected number of first-try passes.
+- It never creates the store, and prints nothing when the store is missing or has no history.
+
+`forge-parallel.sh run` prints the same block before it dispatches. It runs with a time budget
+(`FORGE_FORECAST_BUDGET_S`, default 3 seconds), prints one line and moves on if reading the
+history takes longer, never prints errors and never changes the exit code. `--no-forecast` or
+`FORGE_FORECAST=off` turn it off. The block is written to the plan as `forecast.json` and
+recorded once as a `forecast` event, so it can later be compared to what the run did.
+
+The history is observational: harder tasks tend to go to stronger models, so a rate describes
+what happened to similar tasks, not what a model would do on this one. It only advises: nothing
+that routes a task or builds a prompt reads it.
+
 ## Importing old runs
 
 `import` reads run dirs that predate live capture through the same readers. An execution
@@ -350,7 +380,8 @@ listed in `ledgers/REPOS.tsv`.
 - **Never read by a prompt builder.** Memory inject, the capsule and Ripwire must not read
   the store. A reviewer that could see earlier runs' verdicts would not be independent.
   `tests/test_dataset.py` enforces that outside its own package, the dataset is only
-  imported for capture.
+  imported for capture. The one read is `run`'s [plan forecast](#plan-forecast), which goes to
+  the operator's terminal and `forecast.json`, never into a prompt.
 - **Read-only in your repos.** Capture and the harvester run only object-store git queries
   in a repo: `rev-parse`, `rev-list`, `log`, `show`, `ls-tree`, `cat-file`, `diff` between
   commits and `blame` at a commit. All run with `GIT_OPTIONAL_LOCKS=0`. None takes the

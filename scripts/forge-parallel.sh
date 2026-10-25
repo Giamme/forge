@@ -9,7 +9,7 @@
 #   forge-parallel.sh run  <plan-dir> [--max-parallel N] [--yolo-dwarf] [--yolo-qa]
 #                                     [--verify <command>] [--setup <command>] [--dry-run]
 #                                     [--timeout S] [--retry-failed N] [--infra-retries M]
-#                                     [--qa-threshold P0|P1|P2|P3] [--verify-retries N]
+#                                     [--qa-threshold P0|P1|P2|P3] [--verify-retries N] [--no-forecast]
 #   forge-parallel.sh retry <plan-dir> <task-id> [--dwarf <spec>] [--setup <command>]
 #                                     [--timeout S] [--qa-threshold Pn] [--verify-retries N]
 #   forge-parallel.sh integrate <plan-dir> --approved [--verify-retries N] [--final-review <qa-spec>]
@@ -1429,13 +1429,23 @@ write_results() { # write_results <plan>
   done
 }
 
+# forecast_report PLAN: `forge dataset forecast --run`, as note lines. Whatever it does
+# (no dataset, a broken store, a slow read), the run goes on and its exit code is its own.
+forecast_report() {
+  local line
+  python3 "$SKILL_DIR/scripts/forge-dataset.py" forecast "$1" --run 2>/dev/null \
+    | while IFS= read -r line; do note "$line"; done
+  return 0
+}
+
 # --- run ----------------------------------------------------------------------
 do_run() (
   local PLAN="${1:?run needs a plan dir}"; shift
   local fractal_pipeline_args=("$@")
-  local MAXP=3 DRY=0 jev_rc=0
+  local MAXP=3 DRY=0 jev_rc=0 FORECAST=1
   while [ $# -gt 0 ]; do
     case "$1" in
+      --no-forecast) FORECAST=0; shift ;;
       --fractal) forge_fractal_flag on || exit $?; shift ;;
       --fractal-auto-decompose) forge_fractal_flag on || exit $?; FRACTAL_ARGS+=("$1"); shift ;;
       --no-fractal) forge_fractal_flag off || exit $?; shift ;;
@@ -1538,6 +1548,9 @@ do_run() (
   fi
   git -C "$int_wt" rev-parse HEAD > "$PLAN/accepted.integration"
   local id failed=0
+  # Also before any model is paid for: what this plan is likely to cost, and which tasks
+  # history says may bounce. Advisory, budgeted and silent without history; it never stops a run.
+  [ "$FORECAST" = 1 ] && forecast_report "$PLAN"
   # Say now, before any model is paid for, which suites the verify command will not run.
   verify_coverage_report "$REPO" "$(verify_command_for "$PLAN" "$REPO")" "$PLAN/verification.coverage.txt"
   local sched_rc=0 paused=0 sched_args=()
