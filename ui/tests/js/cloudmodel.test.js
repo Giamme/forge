@@ -4,6 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('node:path');
 const CM = require(path.join(__dirname, '..', '..', 'forge_ui', 'static', 'cloudmodel.js'));
+const RM = require(path.join(__dirname, '..', '..', 'forge_ui', 'static', 'runmodel.js'));
 
 const NOW = 1760700000;
 const hex = n => n.toString(16).padStart(12, '0');
@@ -143,3 +144,42 @@ test('constellation: a drag moves only the dragged run (and what it lands on), a
   for (const [a, b] of links) assert.equal(F.find(f => f.key === a).project, F.find(f => f.key === b).project);
   assert.ok(CM.LAYOUTS.every(n => CM.LAYOUT_INFO[n].azimuth !== undefined));
 });
+
+test('an outdated review has review fact OUTDATED, matches OUTDATED filter, and does not match FAIL', () => {
+  const stale = { key: hex(1), final_review: 'FAIL', final_review_outdated: true };
+  const fStale = CM.runFacts(stale, NOW);
+  assert.equal(fStale.review, 'OUTDATED');
+  assert.equal(CM.match(fStale, { review: 'OUTDATED' }, NOW), true);
+  assert.equal(CM.match(fStale, { review: 'FAIL' }, NOW), false);
+  assert.equal(CM.match(fStale, { review: 'none' }, NOW), false);
+
+  const fresh = { key: hex(2), final_review: 'FAIL', final_review_outdated: false };
+  const fFresh = CM.runFacts(fresh, NOW);
+  assert.equal(fFresh.review, 'FAIL');
+  assert.equal(CM.match(fFresh, { review: 'FAIL' }, NOW), true);
+  assert.equal(CM.match(fFresh, { review: 'OUTDATED' }, NOW), false);
+  assert.equal(CM.match(fFresh, { review: 'none' }, NOW), false);
+});
+
+test('outdated review filter matches OUTDATED and excludes from FAIL across runs', () => {
+  const rs = runs(40);
+  for (let i = 0; i < 40; i += 8) {
+    rs[i].final_review_outdated = true;
+  }
+  const F = rs.map(r => CM.runFacts(r, NOW));
+  const pick = f => F.filter(x => CM.match(x, f, NOW));
+  assert.equal(pick({ review: 'OUTDATED' }).length, 5);
+  assert.ok(pick({ review: 'OUTDATED' }).every(x => x.review === 'OUTDATED'));
+  assert.equal(pick({ review: 'FAIL' }).length, 5);
+  assert.ok(pick({ review: 'FAIL' }).every(x => x.review === 'FAIL'));
+});
+
+test('task status helper returns ACCEPTED for a MERGED task with accepted: true', () => {
+  assert.equal(RM.taskStatus({ status: 'MERGED', accepted: true }), 'ACCEPTED');
+  assert.equal(RM.taskStatus({ status: 'MERGED', accepted: false }), 'MERGED');
+  assert.equal(RM.taskStatus({ status: 'MERGED' }), 'MERGED');
+  assert.equal(RM.taskStatus({ status: 'FAIL', accepted: true }), 'FAIL');
+  assert.equal(RM.taskStatus({ status: 'RUNNING', accepted: true }), 'RUNNING');
+  assert.equal(RM.taskStatus(null), 'PENDING');
+});
+
