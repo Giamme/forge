@@ -531,6 +531,14 @@ build_cmd() {
       # forge-runtime.py reads for the final message and the tokens.
       CMD=(grok --model "$MODEL" --prompt-file "$PROMPT_FILE" --output-format streaming-messages-json)
       [ -n "$EFFORT" ] && CMD+=(--reasoning-effort "$EFFORT")
+      # After its last turn a headless run waits for the background work it started (a test
+      # suite, say) and wakes the model with each result, but by default for only 600 s: then
+      # it stops that work and exits 1, and a dwarf whose suite outlasts the wait ends as an
+      # error. forge's own limit bounds the run instead. grok counts from the last turn and
+      # forge from the start, so forge's watchdog always fires first; a day stands in for no
+      # limit (grok refuses 0).
+      if [ "$LIMIT" = 0 ]; then CMD+=(--background-wait-timeout 86400)
+      else CMD+=(--background-wait-timeout "$LIMIT"); fi
       if [ "$YOLO" = 1 ]; then
         CMD+=(--always-approve)
       else
@@ -559,6 +567,8 @@ unadvertised_flag() { # unadvertised_flag <help text>
     [ -n "$CONTINUE_ID" ] && [ "$arg" = "$CONTINUE_ID" ] && continue
     case "$arg" in
       -*) flag="${arg%%=*}"
+          # grok's help hides this one; preflight_command checks it with a probe instead.
+          [ "$HARNESS $flag" = "grok --background-wait-timeout" ] && continue
           printf '%s\n' "$1" | grep -E -- "(^|[[:space:],|])$flag([=[:space:],|]|$)" >/dev/null || { printf '%s' "$flag"; return 0; } ;;
     esac
   done
@@ -572,6 +582,13 @@ preflight_command() {
     codex) help_args=(exec --help); continue_args=(exec resume --help); [ "$NATIVE_REVIEW" = 1 ] && help_args=(exec review --help) ;;
     opencode) help_args=(run --help) ;;
   esac
+  # grok's help hides --background-wait-timeout, which every grok recipe passes. grok checks
+  # every flag and its value before it answers --help, so a help call with the flag in front
+  # proves it exists.
+  if [ "$HARNESS" = grok ]; then
+    capability_help "$bin" --background-wait-timeout 1 --help >/dev/null 2>&1 \
+      || die "$HARNESS does not accept required flag --background-wait-timeout (update $HARNESS)" 3
+  fi
   if [ -n "$CONTINUE_ID" ]; then
     # codex's resume subcommand has its own help, so its flags are checked against that one.
     if help="$(capability_help "$bin" "${continue_args[@]}" 2>/dev/null)" && ! unadvertised_flag "$help" >/dev/null; then

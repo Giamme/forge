@@ -381,6 +381,29 @@ class GrokHarnessTests(DispatchBase):
         self.assertEqual(self.read('qa.last'), 'FORGE_VERDICT: PASS\n')
         self.assertEqual(self.kv('qa.resolved')['clamped'], 'max -> xhigh')
 
+    def test_the_wait_for_background_work_is_forges_own_limit(self):
+        # grok stops its background work 600 s after the last turn and exits 1, so a dwarf
+        # whose test suite outlasts that wait ended as an error (seen in a real run).
+        for limit, wait in (('1234', '1234'), ('0', '86400')):
+            with self.subTest(limit=limit):
+                result = self.dispatch('dwarf', 'grok:high', '--timeout', limit)
+                self.assertEqual(result.returncode, 0, result.stdout)
+                self.assertIn('--background-wait-timeout %s ' % wait, self.read('dwarf.cmd') + ' ')
+
+    def test_a_grok_without_the_wait_flag_is_stopped_before_any_model_call(self):
+        # grok's help does not list the flag, so preflight asks grok itself: like the real
+        # CLI, this older one rejects an unknown flag that comes ahead of --help.
+        (self.bin / 'grok').write_text(
+            '#!/bin/sh\n'
+            'case " $* " in *" --background-wait-timeout "*)\n'
+            '  echo "error: unexpected argument \'--background-wait-timeout\' found" >&2; exit 2 ;;\n'
+            'esac\n'
+            'exec "%s" "$@"\n' % (self.bin / 'claude'))
+        result = self.dispatch('dwarf', 'grok:high')
+        self.assertEqual(result.returncode, 3, result.stdout)
+        self.assertIn('does not accept required flag --background-wait-timeout', result.stdout)
+        self.assertEqual(self.calls(), [])
+
     def test_a_session_grok_cancelled_is_recorded_and_said_not_passed_off_as_finished(self):
         # What the dwarf did before the cancel is still a diff for review, so this is no
         # failure and no infrastructure stop; but a cut-off session must not look finished.
