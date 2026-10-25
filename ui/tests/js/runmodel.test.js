@@ -304,6 +304,55 @@ test('the replay range reaches a merge that lands after the last execution', () 
   assert.ok(RM.timeRange(taskOnly, null).end >= mergeAt);
 });
 
+test('a merged task a human accepted displays as ACCEPTED; any other status stays itself', () => {
+  assert.equal(RM.taskStatus({ status: 'MERGED', accepted: true }), 'ACCEPTED');
+  assert.equal(RM.taskStatus({ status: 'MERGED', accepted: false }), 'MERGED');
+  assert.equal(RM.taskStatus({ status: 'MERGED' }), 'MERGED');
+  assert.equal(RM.taskStatus({ status: 'FAIL', accepted: true }), 'FAIL');
+  assert.equal(RM.taskStatus({ status: 'RUNNING', accepted: true }), 'RUNNING');
+  assert.equal(RM.taskStatus({ status: 'PENDING' }), 'PENDING');
+});
+
+test('the verdict column names what an acceptance was over and the graph draws no failure mark', () => {
+  const over = (accepted_over, verdict) => RM.taskVerdict({ status: 'MERGED', accepted: true, accepted_over, verdict });
+  assert.deepEqual(over('FAIL', 'FAIL'), { text: 'FAIL · accepted', status: 'accepted', mark: null });
+  assert.deepEqual(over('UNKNOWN', 'FAIL'), { text: 'UNKNOWN · accepted', status: 'accepted', mark: null });
+  assert.deepEqual(over(null, 'FAIL'), { text: 'accepted', status: 'accepted', mark: null });
+  // a review that was not accepted still fails, and the 2D graph still draws its cross or tick
+  assert.deepEqual(RM.taskVerdict({ status: 'MERGED', accepted: false, verdict: 'FAIL' }), { text: 'FAIL', status: 'fail', mark: 'FAIL' });
+  assert.deepEqual(RM.taskVerdict({ status: 'MERGED', verdict: 'PASS' }), { text: 'PASS', status: 'pass', mark: 'PASS' });
+  assert.deepEqual(RM.taskVerdict({ status: 'RUNNING', verdict: null }), { text: null, status: 'unknown', mark: null });
+});
+
+test('only the accepted attempt is ACCEPTED; earlier failures and the reviewer verdict stay', () => {
+  const r = run();
+  const reader = r.tasks[0];
+  reader.accepted = true;
+  reader.accepted_attempt = 2;
+  reader.accepted_over = 'FAIL';
+  reader.verdict = 'FAIL';
+  reader.attempts[1].status = 'FAIL';
+  reader.executions.find(e => e.id === 'qa-2').verdict = 'FAIL';
+  const items = RM.execModel(r, { now: T0 + 800 }).items.filter(i => i.task === 'reader');
+  assert.equal(items.find(i => i.attempt === 1).status, 'FAIL');
+  assert.equal(items.find(i => i.attempt === 2).status, 'ACCEPTED');
+  assert.equal(items.find(i => i.attempt === 2).segs.find(s => s.role === 'qa').status, 'FAIL');
+  assert.equal(items.find(i => i.attempt === 2).segs.find(s => s.role === 'dwarf').status, 'PASS');
+  const parts = RM.taskParts(reader);
+  assert.equal(parts.parts.find(p => p.id === 'qa-1').status, 'FAIL');
+  assert.equal(parts.parts.find(p => p.id === 'qa-2').status, 'FAIL');
+  // no attempt number on the acceptance: the history is not relabelled
+  const plain = run();
+  plain.tasks[0].accepted = true;
+  plain.tasks[0].accepted_attempt = null;
+  assert.equal(RM.execModel(plain, { now: T0 + 800 }).items.find(i => i.id === 'task-2').status, 'MERGED');
+  assert.equal(RM.attemptStatus({ status: 'FAIL', accepted: true, accepted_attempt: 1 }, 1, 'FAIL'), 'FAIL');
+  // acceptance does not change the run's counts: reader is still one of the two MERGED tasks
+  const before = RM.finishState(run());
+  assert.equal(RM.finishState(r).integration.merged, before.integration.merged);
+  assert.equal(RM.finishState(r).integration.status, before.integration.status);
+});
+
 test('an outdated review matches the OUTDATED filter, not its verdict', () => {
   const stale = { final_review: 'FAIL', final_review_outdated: true, verification_status: 'PASS' };
   assert.equal(RM.runReviewStatus(stale), 'OUTDATED');

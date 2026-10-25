@@ -199,6 +199,33 @@
     if (typeof v !== 'string' || !v) return null;
     return summary.final_review_outdated === true ? 'OUTDATED' : v;
   }
+  // The lamp and status word for a task. Accepting a merge does not change the recorded status
+  // or the run's counts: only the display says ACCEPTED, and only once the task has merged.
+  function taskStatus(t) {
+    if (!t) return 'PENDING';
+    if (t.status === 'MERGED' && t.accepted === true) return 'ACCEPTED';
+    return t.status || 'PENDING';
+  }
+  // Verdict column and the 2D graph's tick or cross. text is the words, status the lamp class,
+  // mark the cross (FAIL) or tick (PASS). An acceptance names FAIL or UNKNOWN and never invents a FAIL,
+  // and it draws no mark: the graph must not put a red cross on a task a human accepted.
+  function taskVerdict(t) {
+    if (taskStatus(t) === 'ACCEPTED') {
+      const over = t.accepted_over === 'FAIL' || t.accepted_over === 'UNKNOWN' ? t.accepted_over : null;
+      return { text: over ? over + ' · accepted' : 'accepted', status: 'accepted', mark: null };
+    }
+    const v = t && t.verdict ? String(t.verdict) : null;
+    return { text: v, status: v ? v.toLowerCase() : 'unknown', mark: v === 'PASS' || v === 'FAIL' ? v : null };
+  }
+  // One attempt in the history. The attempt that was accepted is ACCEPTED; every earlier attempt
+  // keeps the status it ended with. execStatus itself is unchanged, so a QA part still shows the
+  // reviewer's verdict and an execution detail does too.
+  function attemptStatus(task, attempt, raw) {
+    if (taskStatus(task) !== 'ACCEPTED') return raw;
+    const n = num(attempt), want = num(task.accepted_attempt);
+    if (n !== null && want !== null && n === want) return 'ACCEPTED';
+    return raw;
+  }
   function shortTip(tip) {
     if (tip === null || tip === undefined || tip === '') return '—';
     return String(tip).slice(0, 7);
@@ -296,6 +323,8 @@
     const put = (a, p) => { const k = a == null ? 'other' : String(a); if (!byAttempt.has(k)) byAttempt.set(k, []); byAttempt.get(k).push(p); };
     for (const e of execs) {
       if (e.role !== 'dwarf' && e.role !== 'qa') continue;
+      // The part keeps execStatus. The accepted attempt is relabelled by attemptStatus on the
+      // attempt itself; painting this part ACCEPTED would hide the reviewer's verdict.
       put(e.attempt, { id: e.id, kind: e.role, exec: e, status: execStatus(e), label: e.role === 'dwarf' ? 'DWARF' : 'QA', spec: e.model && e.model.spec || null, attempt: e.attempt });
     }
     for (const s of list(task && task.shadow)) {
@@ -434,11 +463,13 @@
         const start = num(e.started); if (start === null) continue;
         const kids = execs.filter(k => k !== e && (k.parent === e.id || e.synthetic || (tops.length === 1 && !k.parent && (k.role === 'dwarf' || k.role === 'qa'))));
         const row = rows.filter(r => r.attempt === e.attempt).pop();
-        const status = e.state === 'running' ? 'RUNNING' : row ? row.status : e.state === 'orphaned' ? 'INTERRUPTED' : t.status === 'MERGED' && e === tops[tops.length - 1] ? 'MERGED' : execStatus(e);
+        let status = e.state === 'running' ? 'RUNNING' : row ? row.status : e.state === 'orphaned' ? 'INTERRUPTED' : t.status === 'MERGED' && e === tops[tops.length - 1] ? 'MERGED' : execStatus(e);
+        if (e === tops[tops.length - 1] && t.status === 'MERGED') status = 'MERGED';
+        status = attemptStatus(t, e.attempt, status);
         const end = execEnd(e, now);
         const running = kids.find(k => k.state === 'running');
         items.push({ id: e.id, task: t.id, attempt: e.attempt, start, end: end !== null ? Math.max(end, start) : start, running: e.state === 'running',
-          status: e === tops[tops.length - 1] && t.status === 'MERGED' ? 'MERGED' : status, role: running ? running.role : null, phase: running ? running.phase : null,
+          status, role: running ? running.role : null, phase: running ? running.phase : null,
           segs: kids.filter(k => k.role === 'dwarf' || k.role === 'qa').map(k => ({ id: k.id, role: k.role, start: num(k.started), end: execEnd(k, now), status: execStatus(k) })).filter(s => s.start !== null) });
       }
     }
@@ -638,8 +669,9 @@
       if (r.kind === 'solo') continue;
       for (const t of list(r.task_statuses)) {
         if (!t || !t.id) continue;
-        out.push({ id: `task:${r.key}:${t.id}`, kind: 'task', key: r.key, task: t.id, label: t.title ? `${t.id} · ${t.title}` : t.id, sub: `${goal} · ${String(t.status || 'PENDING').toLowerCase()}`,
-          ids: [t.id], words: [r.run_id, basename(r.repo)].filter(Boolean), t: num(r.updated) || 0, status: t.status, subSearch: false,   // not found through its run's goal
+        const shown = taskStatus(t);
+        out.push({ id: `task:${r.key}:${t.id}`, kind: 'task', key: r.key, task: t.id, label: t.title ? `${t.id} · ${t.title}` : t.id, sub: `${goal} · ${String(shown).toLowerCase()}`,
+          ids: [t.id], words: [r.run_id, basename(r.repo)].filter(Boolean), t: num(r.updated) || 0, status: shown, subSearch: false,   // not found through its run's goal
           href: `#/runs/${encodeURIComponent(r.key)}/tasks/${encodeURIComponent(t.id)}` });
       }
     }
@@ -744,7 +776,7 @@
   }
 
   return { liveNow, runState, execStatus, matchRun, filterOptions, atlasModel, columns, planModel, finishState,
-    finalStatus, runReviewStatus, reviewSinceLine, reviewAt, taskParts,
+    finalStatus, runReviewStatus, reviewSinceLine, reviewAt, taskStatus, taskVerdict, attemptStatus, taskParts,
     taskTimes, metricValue, overlap, projectSchedule, execModel, criticalPath, concurrency, stateAt, timeRange, events, lineage, structureKey, innerKey,
     fmtDur, alias, basename, weight, searchIndex, searchRank, statusEvents, fractalTree };
 });
