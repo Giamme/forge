@@ -16,7 +16,7 @@
   const MAX_FPS = 25, MAX_LABELS = 5, MAX_LABEL = 50, MAX_REASON = 500;
   const list = v => Array.isArray(v) ? v : [];
   const SEVERITIES = ['P0', 'P1', 'P2', 'P3'];
-  const ORIGINS = ['tolerated', 'review', 'plausible'];
+  const ORIGINS = ['tolerated', 'accepted', 'review', 'plausible'];
   const STATUSES = ['open', 'filed', 'fixed', 'dismissed'];
 
   /* ---------- pure ---------- */
@@ -106,6 +106,20 @@
   }
   // An untrusted URL becomes a link only when it is a plain https address.
   const safeUrl = u => typeof u === 'string' && /^https:\/\/[^\s"'<>]+$/.test(u) ? u : null;
+  // The marker for a finding whose whole-run review is outdated, or null. The lamp is the hollow unlit
+  // `.st-outdated`. `title` is the same sentence the issue body adds, ids cut after 5, so a row can show it
+  // without building HTML. A current review, and any finding that is not from a whole-run review, has none.
+  function reviewMarker(row) {
+    const review = row && row.review;
+    if (!review || review.outdated !== true) return null;
+    const ids = list(review.merged_since).map(id => String(id));
+    const shown = ids.slice(0, 5), extra = ids.length - shown.length;
+    const names = shown.join(', ') + (extra > 0 ? ', +' + extra + ' more' : '');
+    const n = ids.length;
+    const sentence = `The review is outdated: ${n} ${n === 1 ? 'task' : 'tasks'} merged into the integration branch after it`
+      + (names ? ` (${names})` : '') + ', so check whether they fixed it first.';
+    return { lamp: 'st-outdated', label: 'outdated review', title: sentence, sentence };
+  }
 
   /* ---------- DOM ---------- */
   function render(host, ctx) {
@@ -198,6 +212,16 @@
     }
 
     // cells
+    const originCell = r => {
+      const marker = reviewMarker(r);
+      if (!marker) return r.origin || '—';
+      const box = el('span', undefined, 'fnd-status');
+      const lamp = el('i', undefined, 'lamp ' + marker.lamp);
+      lamp.title = marker.title;
+      box.title = marker.title;
+      box.append(lamp, el('span', r.origin || '—'), el('span', marker.label));
+      return box;
+    };
     const statusCell = r => {
       const st = statusOf(r), box = el('span', undefined, 'fnd-status fnd-' + st);
       box.append(el('i', undefined, 'lamp ' + (st === 'filed' ? 'fnd-amber' : st === 'fixed' ? 'st-pass' : 'lamp-off')));
@@ -223,6 +247,8 @@
       more.append(el('span', '▸', 'fnd-caret'));
       const detail = el('div', undefined, 'fnd-detail'); detail.hidden = true;
       detail.append(el('pre', r.text || r.summary || '', 'fnd-text'));
+      const marker = reviewMarker(r);
+      if (marker) detail.append(el('p', marker.sentence, 'muted'));
       const meta = el('dl', undefined, 'fnd-meta');
       for (const [k, v] of [['Reviewer', r.reviewer], ['Commit', r.commit], ['Fingerprint', r.fp], ['Plan', r.plan_dir || r.plan],
         ['Dismissed', r.dismissed ? `${r.dismissed.at || ''} ${r.dismissed.reason || ''}`.trim() : null]]) {
@@ -245,7 +271,7 @@
       cols.push(
         { id: 'severity', label: 'Severity', value: r => SEVERITIES.indexOf(r.severity), cell: sevCell },
         { id: 'confidence', label: 'Confidence', value: r => r.confidence, cell: r => r.confidence || '—' },
-        { id: 'origin', label: 'Origin', value: r => r.origin, cell: r => r.origin || '—' },
+        { id: 'origin', label: 'Origin', value: r => r.origin, cell: originCell },
         { id: 'task', label: 'Task', value: r => r.task, mono: true, cell: r => r.task || 'whole run' });
       if (s.scope === 'repo') cols.push({ id: 'plan', label: 'Plan', value: r => r.plan, mono: true, cell: r => r.plan || '—' });
       cols.push(
@@ -408,5 +434,5 @@
   }
 
   return { render, statusOf, filterRows, mergeFiled, selectable, selection, issuesUrl, issuesPath, dismissPath, fileBody, dismissBody,
-    parseLabels, resultLines, safeUrl, MAX_FPS };
+    parseLabels, resultLines, safeUrl, reviewMarker, ORIGINS, MAX_FPS };
 });
