@@ -130,7 +130,7 @@ plans_make_integration() { # plans_make_integration <repo> <branch> <commit> <wt
 
 # Per-plan option files carried to a derived plan. The cost-bearing choices a user made
 # for this plan apply to the plan made from it; `planner` does not (nothing plans again).
-PLANS_OPTION_FILES="no_ripwire no_memory yolo_dwarf yolo_qa qa_threshold timeout verify_retries verify_cmd setup_cmd final_qa shadow_qa shadow_rate explore escalate_after fractal-routing.json fractal-selection.json jev-selection.json"
+PLANS_OPTION_FILES="no_ripwire no_memory yolo_dwarf yolo_qa reviewer_session qa_threshold timeout verify_retries verify_cmd setup_cmd final_qa shadow_qa shadow_rate explore escalate_after fractal-routing.json fractal-selection.json jev-selection.json"
 
 # --- accept ---------------------------------------------------------------------
 # A reviewer's FAIL is the QA gate; overriding it is the user's call and never forge's or
@@ -505,7 +505,7 @@ Retry or accept them (or split them off into their own plan) first." 3
   [ "$ok" = 1 ] || { plans_undo; trap - INT TERM; die "could not write the combined plan" 3; }
 
   # Options: a plan-wide choice carries over when every source made it identically; the
-  # two permission flags only when every source granted them.
+  # permission flags and the reviewer-session experiment only when every source chose them.
   local goals="" g
   for p in "${SRC[@]}"; do
     if [ -s "$p/goal.txt" ]; then g="$(tr '\n' ' ' < "$p/goal.txt" | sed 's/  *$//')"; else g="$(basename "$p")"; fi
@@ -520,6 +520,10 @@ Retry or accept them (or split them off into their own plan) first." 3
     all=1; for p in "${SRC[@]}"; do [ -f "$p/$f" ] || all=0; done
     [ "$all" = 1 ] && : > "$NEW/$f"
   done
+  # Same gate as the permission flags. The file holds `on`, which is what `plan` writes
+  # and what the dataset records; readers only test that the file exists.
+  all=1; for p in "${SRC[@]}"; do [ -f "$p/reviewer_session" ] || all=0; done
+  [ "$all" = 1 ] && printf '%s\n' on > "$NEW/reviewer_session"
   for f in qa_threshold timeout verify_retries; do
     same=1
     for p in "${SRC[@]}"; do

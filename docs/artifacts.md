@@ -64,7 +64,7 @@ A decomposed run adds:
   tasks/<id>/retry_budget, retries.used   live per-task retry budget (a number); retries spent (kept after the run)
   results.tsv                          id  status  branch
   timeout, qa_threshold, verify_retries  options remembered from run/retry flags (also escalate_after)
-  reviewer_session                     empty marker; present while plan --reviewer-session is on
+  reviewer_session                     holds on; present while plan --reviewer-session is on
   <final-review-dir>/review.meta       final-review-<epoch>-<pid>/ or integrate-*/final-review/; base=, tip=, source=, spec=, threshold=, integration=, previous=, since=; session= and session_reason= while reviewer_session is set
   control.log                          one JSON line per human change made with forge control
   scheduler.live, control.lock         only while a scheduler runs: {"pid", "started"}; the lock serialises forge control

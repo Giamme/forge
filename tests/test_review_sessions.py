@@ -7,6 +7,7 @@ import os
 import shlex
 import shutil
 import subprocess
+import sys
 import unittest
 from pathlib import Path
 
@@ -14,6 +15,8 @@ import test_forge as fixtures
 import test_escalation_pin as pins
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / 'scripts'))
+from forge_dataset import harvest  # noqa: E402  plan --reviewer-session's marker, as the dataset records it
 SESSION = fixtures.CLAUDE_SESSION
 FAIL = {'verdict': 'FAIL', 'findings': '- [P1][CONFIRMED] a.txt:1 — broken'}
 # Each retry's dwarf writes something new, or the diff is identical and nothing is reviewed again.
@@ -128,9 +131,9 @@ class RoundTests(unittest.TestCase):
     scenario = fixtures.ForgeTests.scenario
     calls = fixtures.ForgeTests.calls
 
-    def plan_of(self, *flags, ids='a'):
-        p = self.root / 'plan'; p.mkdir()
-        files = {'a': 'a.txt', 'b': 'b.txt'}
+    def plan_of(self, *flags, ids='a', name='plan'):
+        p = self.root / name; p.mkdir()
+        files = {'a': 'a.txt', 'b': 'b.txt', 'c': 'c.txt', 'd': 'd.txt'}
         (p / 'tasks.tsv').write_text(''.join('%s\t-\tlow\t%s\tsol\topus\t%s\n' % (i, files[i], i.upper()) for i in ids))
         for i in ids:
             t = p / 'tasks' / i; t.mkdir(parents=True)
@@ -158,12 +161,58 @@ class RoundTests(unittest.TestCase):
     # --- the option --------------------------------------------------------------------------
     def test_the_option_is_a_plan_file_and_one_summary_line(self):
         p = self.plan_of('--reviewer-session')
-        self.assertTrue((p / 'reviewer_session').exists())
+        self.assertEqual((p / 'reviewer_session').read_text(), 'on\n')
         self.assertEqual(sum('reviewer-session' in line for line in self.plan_output.splitlines()), 1)
         p2 = self.root / 'plan'
         self.assertEqual(self.run_script('forge-parallel.sh', 'plan', p2, '--repo', self.repo, '--no-memory',
                                          '--no-reviewer-session').returncode, 0)
         self.assertFalse((p / 'reviewer_session').exists())
+
+    def test_a_plan_made_with_the_flag_harvests_reviewer_session_as_on(self):
+        p = self.plan_of('--reviewer-session')
+        event = harvest.plan_event(p, dict(run='fixed-run'), src='import', inventory=False)
+        self.assertEqual(event['data']['options'].get('reviewer_session'), 'on')
+
+    def test_a_split_retry_continues_the_reviewers_session(self):
+        # Two tasks so split can move the failed one and leave the merged one behind.
+        self.scenario(dict(DWARVES, **{'a.qa.1': FAIL}))
+        p = self.plan_of('--reviewer-session', ids='ab')
+        r = self.run_script('forge-parallel.sh', 'run', p)
+        self.assertEqual(r.returncode, 5, r.stdout)
+        new = self.root / 'second'
+        r = self.run_script('forge-parallel.sh', 'split', p, new, '--tasks', 'a')
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertEqual(self.run_script('forge-parallel.sh', 'retry', new, 'a').returncode, 0)
+        self.assertEqual(rows(new / 'tasks/a/review_sessions.tsv'),
+                         [['1', '1', 'fresh', 'first-round', ''],
+                          ['2', '2', 'continued', 'same-spec', SESSION]])
+        argv = shlex.split((new / 'tasks/a/qa.cmd').read_text())
+        self.assertEqual(argv[argv.index('--resume') + 1], SESSION)
+        self.assertEqual((new / 'reviewer_session').read_text(), 'on\n')
+
+    def test_combine_carries_reviewer_session_only_when_every_source_has_it(self):
+        self.scenario({})
+
+        def merged(name, *flags, task):
+            plan = self.plan_of(*flags, ids=task, name=name)
+            r = self.run_script('forge-parallel.sh', 'run', plan)
+            self.assertEqual(r.returncode, 0, r.stdout)
+            return plan
+
+        one = merged('plan1', '--reviewer-session', task='a')
+        other = merged('plan2', task='b')
+        mixed = self.root / 'mixed'
+        r = self.run_script('forge-parallel.sh', 'combine', mixed, one, other)
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertFalse((mixed / 'reviewer_session').exists())
+
+        both_a = merged('plan3', '--reviewer-session', task='c')
+        both_b = merged('plan4', '--reviewer-session', task='d')
+        both = self.root / 'both'
+        r = self.run_script('forge-parallel.sh', 'combine', both, both_a, both_b)
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertTrue((both / 'reviewer_session').is_file())
+        self.assertEqual((both / 'reviewer_session').read_text(), 'on\n')
 
     def test_off_by_default_nothing_continues_and_nothing_is_logged(self):
         p = self.first_round_fails()
