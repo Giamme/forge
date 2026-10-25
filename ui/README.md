@@ -96,7 +96,7 @@ Sources are checked in this order:
 2. `--root DIR` itself, its children and grandchildren. Scanning stops when a plan
    directory is found; hidden children and symlinked child directories are skipped.
 3. Forge's registry: `*.txt` files in `$XDG_CONFIG_HOME/forge/runs/`, defaulting
-   to `~/.config/forge/runs/` when XDG_CONFIG_HOME is unset or empty. Each file
+   to `~/.config/forge/runs/` when XDG_CONFIG_HOME is unset, empty or relative. Each file
    supplies absolute paths, one per line; blank lines and `#` comments are ignored.
    `--registry-dir` replaces this location; `--no-registry` disables it.
 
@@ -189,8 +189,9 @@ keep one meaning everywhere (amber running, green merged or passed, red failed, 
 - **Models (`#/models`):** a leaderboard of the models forge used. Implementers: tasks, first-attempt
   pass rate with its 95% Wilson interval, censored attempts, retries, escalations away from the
   model, timeouts, gate and human accepts, median model time and tokens. Reviewers: primary,
-  shadow and final reviews, the PASS/FAIL split, findings per review by severity, and how often a
-  shadow review agreed with the primary. Filter by project, difficulty, kind and period, or keep
+  shadow and final reviews, the PASS/FAIL split, findings per review by severity, how often a
+  shadow review agreed with the primary, and how often work it PASSed did not hold (later
+  reverted or rewritten, from `forge dataset reviewers`; "not enough data" below 10 outcomes). Filter by project, difficulty, kind and period, or keep
   only exploratory picks; open a difficulty for its own table. Routing is not random, so the
   numbers compare what happened, not what would have: the page says so. A model's name opens the
   run cloud filtered to its runs.

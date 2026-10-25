@@ -33,6 +33,18 @@ usage() {
     'Runs start from your agent harness (/forge "<goal>" --dwarf <model>); see README.md.'
 }
 
+# suggest WORD — the listed command WORD most likely meant (a unique prefix or a close
+# spelling), read from usage so the two never drift apart; prints nothing when none is close
+# or python3 is missing. -I keeps a stray module in the current directory out of it.
+suggest() {
+  usage | python3 -I -c 'import difflib, re, sys
+word = sys.argv[1].lower()
+names = re.findall(r"^  ([a-z]+) ", sys.stdin.read(), re.M)
+prefixed = [name for name in names if len(word) >= 2 and name.startswith(word)]
+hit = prefixed if len(prefixed) == 1 else difflib.get_close_matches(word, names, 1, 0.6)
+print(hit[0] if hit else "")' "$1" 2>/dev/null
+}
+
 case "${1:-}" in
   install)
     shift
@@ -87,7 +99,10 @@ case "${1:-}" in
     exit 2
     ;;
   *)
-    printf 'forge: unknown command: %s\n\n' "$1" >&2
+    printf 'forge: unknown command: %s\n' "$1" >&2
+    GUESS="$(suggest "$1")"
+    [ -n "$GUESS" ] && printf 'Did you mean `forge %s`?\n' "$GUESS" >&2
+    printf '\n' >&2
     usage >&2
     exit 2
     ;;

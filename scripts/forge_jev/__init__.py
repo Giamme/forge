@@ -149,9 +149,13 @@ _runtime_spec.loader.exec_module(_runtime)
 
 
 def config_path() -> Path:
-    # An empty XDG_CONFIG_HOME counts as unset (XDG spec): taken literally it put jev.json
-    # below the current directory.
-    return Path(os.environ.get('XDG_CONFIG_HOME') or str(Path.home() / '.config')).expanduser() / 'forge/jev.json'
+    # An empty or relative XDG_CONFIG_HOME counts as unset (XDG spec): taken literally it put
+    # jev.json below the current directory. Same rule as forge_registry.registry_dir().
+    value = os.environ.get('XDG_CONFIG_HOME') or ''
+    base = Path(value).expanduser() if value else None
+    if base is None or not base.is_absolute():
+        base = Path.home() / '.config'
+    return base / 'forge/jev.json'
 
 
 def load_config() -> dict:

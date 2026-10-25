@@ -19,7 +19,7 @@ window.ForgeApp = (() => {
     replay: null, playing: null, speed: store.get('speed', 60), stage: null, stageFailed: null, stageLoading: false, timer: null,
     lastStatuses: new Map(), announced: 0, rendered: null, cloud: null, cloudUI: null, cloudPrefs: store.get('cloud', {}),
     settings: false, lastKey: null, settingsRun: null, settingsPickedAt: null, settingsView: null,
-    models: false, modelsData: null, modelsText: null, modelsError: null, modelsPrefs: store.get('models', {}),
+    models: false, modelsData: null, modelsText: null, modelsError: null, reviewerOutcomes: null, modelsPrefs: store.get('models', {}),
     files: new Map(), findingsCount: new Map(), filesPrefs: store.get('files', {}), runSort: store.get('run-sort', 'updated'), tablePrefs: store.get('tables', {}),
     findings: new Map() };
   state.stageMode = state.mode === 'exec' ? 'exec' : 'plan';   // the stage's own mode, kept while Files is shown
@@ -480,8 +480,15 @@ window.ForgeApp = (() => {
       runs: state.runs, prefs: state.modelsPrefs, now: () => Date.now() / 1000,
       savePrefs: p => { state.modelsPrefs = p; store.set('models', p); },
       tablePrefs: id => state.tablePrefs[id], saveTablePrefs: (id, p) => { state.tablePrefs = { ...state.tablePrefs, [id]: p }; store.set('tables', state.tablePrefs); },
-      modelHref: alias => '#/cloud/models/' + encodeURIComponent(alias),
+      modelHref: alias => '#/cloud/models/' + encodeURIComponent(alias), reviewerOutcomes: state.reviewerOutcomes,
     });
+  }
+  // How each reviewer's PASSed work held up (forge dataset reviewers). Advisory and optional: read once per
+  // change of the models data, and a failure (an export, no dataset) only leaves the column empty.
+  function loadReviewerOutcomes() {
+    if (SNAP) return;
+    fetchJSON('/api/models/reviewers').then(result => { state.reviewerOutcomes = result.data; },
+      () => { state.reviewerOutcomes = null; }).then(() => { if (state.models) renderModels(); });
   }
   function loadModels() {
     return request('/api/models', result => {
@@ -489,6 +496,7 @@ window.ForgeApp = (() => {
       if (result.text === state.modelsText) return;
       state.modelsText = result.text; state.modelsData = result.data;
       if (state.models) renderModels();
+      loadReviewerOutcomes();
     }, 'Could not refresh the model results', error => { state.modelsError = error.message; if (state.models) renderModels(); });
   }
 
