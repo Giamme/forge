@@ -199,8 +199,9 @@ do_plan() {
     || printf '%s\n' "$SHADOW_RATE" > "$PLAN/shadow_rate"
   # Fail-first evidence (opt-in, advisory) is part of the plan too: every task's review gets it.
   case "$FAIL_FIRST" in on) : > "$PLAN/fail_first" ;; off) rm -f "$PLAN/fail_first" ;; esac
-  # Reviewer-session continuation (opt-in experiment): read per round by task QA and final reviews.
-  case "$REVIEWER_SESSION" in on) : > "$PLAN/reviewer_session" ;; off) rm -f "$PLAN/reviewer_session" ;; esac
+  # Reviewer-session continuation (opt-in experiment): the file holds `on`. Readers only
+  # test that it exists; the dataset records its content.
+  case "$REVIEWER_SESSION" in on) printf '%s\n' on > "$PLAN/reviewer_session" ;; off) rm -f "$PLAN/reviewer_session" ;; esac
   # Exploration is decided here and only here, so the table and preflight see what will run.
   # On by default: choosing models from measured pass rates needs some randomized picks, and
   # history had almost none (9 tasks ever ran on more than one spec). The flag wins, then
