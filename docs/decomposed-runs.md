@@ -99,8 +99,9 @@ that baseline, and QA sees only baseline membership recorded for that task.
 ## Fresh session per task, plus a capsule
 
 Every dispatch is a **clean slate** — forge never passes `--continue`, `--resume`, or
-`codex exec resume`. One task's confused turn can't poison another, and each task's context
-stays small.
+`codex exec resume`, except the opt-in `plan --reviewer-session` experiment (it continues
+a reviewer's session across rounds on claude, openclaude and codex). One task's confused
+turn can't poison another, and each task's context stays small.
 
 Clean slates alone would leave every dwarf blind to the wider run, so a short `capsule.md` is
 generated from the task's pinned baseline and preserved for both implementation and QA:
@@ -232,7 +233,12 @@ Each change is validated, written under `control.lock`, and says when it applies
   `forge-dispatch.sh doctor`, which spends no quota). A QA-only resume spends no implementer
   attempt and leaves the pin for later. The retry applies it, writes it into `tasks.tsv`, records
   an `escalations.tsv` row with `source` `pin`, clears any `split.suggested` stop and consumes
-  it. Fractal plans never apply pins, and a MERGED task refuses one.
+  it. That row is never written through a symlink: if `escalations.tsv`, or any directory
+  from the plan down to it, is one, the pin stays and nothing is retried. The run summary
+  says a pin waits (`pinned; after the QA-only re-run`) only when the next entry really
+  re-runs QA: a `resume` marker, or an unreviewed verdict, that still matches the
+  worktree. A marker the next retry will discard is reported as `pinned`.
+  Fractal plans never apply pins, and a MERGED task refuses one.
 - **Who decided an escalation.** The last column of `tasks/<id>/escalations.tsv` is `policy`
   (`--escalate-after`), `retry` (a typed `retry --dwarf`) or `pin`; rows from before it was added
   have four columns and read as `policy`.

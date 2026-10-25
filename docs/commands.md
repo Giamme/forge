@@ -51,15 +51,19 @@ deletion or the run directory was kept (the same command finishes the job).
 
 `forge issues <plan dir, task dir, review dir, known_issues.md or qa.last>` drafts one GitHub
 issue per finding the run left open (`--group task|run` for fewer) and files them only with
-`--apply`. The findings are the CONFIRMED ones `--qa-threshold` tolerated, PLAUSIBLE ones with
-`--include-plausible`, and what the whole-run review left open. Each issue carries a hidden
+`--apply`. The findings are the CONFIRMED ones `--qa-threshold` tolerated (origin
+`tolerated`), the CONFIRMED ones a person accepted with `accept` (origin `accepted`, with
+their own issue text: a person accepted the work over the reviewer's verdict), PLAUSIBLE
+ones with `--include-plausible`, and what the whole-run review left open. A whole-run
+review the integration branch has moved past is outdated: the issue says so and names the
+tasks that merged after it. Each issue carries a hidden
 fingerprint, so a finding is never filed twice, by this command or by gh-proman. Also:
 `--min-severity`, `--repo`, `--lang`, `--label`, `--confirm-new`, `--max-issues` (default 10; pass
 the size of a `--only` selection).
 
 | Flag | Does |
 |---|---|
-| `--json` | machine-readable output; `findings` lists each one with its fingerprint, severity, origin, task, `filed` state and `dismissed` mark |
+| `--json` | machine-readable output; `findings` lists each one with its fingerprint, severity, origin (`tolerated`, `accepted`, `review` or `plausible`), task, `review`, `filed` state and `dismissed` mark. A whole-run finding's `review` is `{name, outdated, merged_since}` (`outdated` is null when the review has no verdict or the plan has no accepted integration commit; `merged_since` is empty unless the review is outdated). Every other finding has `review` null |
 | `--offline` | never run `gh`: no filed state, commit publication judged from local refs |
 | `--only FP` | keep only these 12-hex fingerprints (repeatable or comma-separated) |
 | `--all-runs` | read `RUN` as a repository (or a plan dir naming one) and collect every run in its registry; the newest plan wins for a finding in several |
@@ -320,6 +324,7 @@ Bash 3.2 entrypoints use a Python standard-library coordinator to schedule eligi
 ```
 forge-parallel.sh plan      <plan-dir> --repo <dir> [routing flags] [--planner <spec>] [--no-memory]
                                      [--decompose-level L] [--shadow-qa <spec>[,..]|none] [--shadow-rate R]
+                                     [--reviewer-session | --no-reviewer-session]
                                      [--explore E] [--ui | --no-ui] [--fail-first | --no-fail-first]
 forge-parallel.sh run       <plan-dir> [--max-parallel N] [--yolo-dwarf] [--yolo-qa] [--dry-run]
                                      [--verify <cmd>] [--setup <cmd>] [--timeout S]

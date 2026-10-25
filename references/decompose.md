@@ -266,8 +266,10 @@ So:
 ## The capsule
 
 Every dispatch is a clean slate — forge never passes `--continue`, `--resume`, or
-`codex exec resume`. That keeps one task's confused turn from poisoning another and keeps
-each task's context small, but it also leaves each dwarf blind to the wider run.
+`codex exec resume`, except the opt-in `plan --reviewer-session` experiment (it continues
+a reviewer's session across rounds on claude, openclaude and codex). That keeps one task's
+confused turn from poisoning another and keeps each task's context small, but it also
+leaves each dwarf blind to the wider run.
 
 `tasks/<id>/capsule.md` records ownership and baseline context. `baseline.capsule` preserves
 the implementation-time capsule for QA. MERGED means the reviewed commit is an ancestor of
@@ -275,7 +277,8 @@ this task's pinned baseline, not merely that another task finished while QA was 
 Complete requirements, approach, retry findings and distinct memory facts are assembled once
 per role; implementation and review instructions are separate.
 
-It exists to prevent two specific failures that clean slates create:
+It exists to prevent two specific failures that clean slates create, which the opt-in
+`--reviewer-session` experiment does not change:
 
 - a dwarf reimplementing a helper an earlier task already merged, because nothing told it
   that task was done;
@@ -425,7 +428,8 @@ Two details that are load-bearing rather than incidental:
   diff.
 - **An identical retry is not re-reviewed.** If the diff comes back byte-identical to the
   previous attempt, the task fails again without a QA dispatch. Paying a reviewer to read
-  the same code twice buys nothing.
+  the same code twice buys nothing. A retry that only rejects the findings, and leaves
+  that diff unchanged, is still this identical retry.
 
 `retry` is a command a human types. Forge does not loop a dwarf against its own reviewer on
 its own initiative; the one exception is the opt-in `run --retry-failed N` below.
@@ -436,6 +440,14 @@ rejected, so `retry` / `--retry-failed` re-runs **QA only** on the unchanged, al
 work: no dwarf, no new commit, no attempt spent. A `tasks/<id>/resume` marker records this and is
 revalidated against the branch tip and the saved source fingerprint before it is trusted; if the
 worktree changed, the full task runs. Findings are carried only from a real review.
+
+On a retry whose diff changed, QA receives the previous round under **Findings from the
+previous review round**, the diff since that round (`tasks/<id>/changes.since.diff`,
+`changes.since.range` and `changes.since.stat`; omitted when the earlier commit is
+missing or not an ancestor, or when nothing changed) and the implementer's reply. It is
+told to restate only findings that are still open, as `- [Px][CONFIRMED|PLAUSIBLE]`
+lines, because every labelled line is counted. That is the retry's review, not the
+QA-only re-run above.
 
 **In-run retries.** `run <plan> --retry-failed N` re-queues a task whose reviewer said
 `FAIL`/`UNKNOWN` as soon as it ends, up to `N` more times in that run, preparing the retry exactly
@@ -466,6 +478,10 @@ turns it off):
   QA-only resume, which spends no implementer attempt.
 - **Reporting:** the policy's state is decided after every attempt, so a run whose retry budget ran out
   still reports `its next retry goes to <spec>` or the split suggestion under the results.
+  A pending pin is reported ahead of both, as `its next retry goes to <spec> (pinned)`, or
+  `(pinned; after the QA-only re-run)` only when the next entry really re-runs QA (the
+  `resume` marker, or an unreviewed verdict, still matches the worktree). A marker the
+  next retry will discard is not that wait.
 
 History cannot yet say whether escalating rescues a task (31% of the 29 later attempts on a
 changed spec passed, mostly effort bumps); the attempts this policy makes are what will.
@@ -480,8 +496,10 @@ decision, removed when it stops; `tasks/<id>/retries.used` stays), so a change d
 run. `pin <task> <spec>` sets the model the task's next full retry uses, once (checked with
 `forge-dispatch.sh doctor`, no quota): `prepare_retry` claims `escalation.pin` as
 `escalation.pin.applying`, rewrites `tasks.tsv`, appends the `escalations.tsv` row with
-`source=pin`, clears `escalation.stop`/`split.suggested`, then consumes the pin. A QA-only resume
-leaves it for the next full retry; Fractal plans never apply pins; a MERGED task refuses one.
+`source=pin`, clears `escalation.stop`/`split.suggested`, then consumes the pin. A symlinked
+`escalations.tsv`, or a symlink in any directory from the plan down to it, is not written:
+the pin stays and nothing is retried. A QA-only resume leaves it for the next full retry;
+Fractal plans never apply pins; a MERGED task refuses one.
 The last column of `escalations.tsv` says who decided: `policy`, `retry` (an explicit
 `--dwarf`) or `pin`; four-column rows read as `policy`. Every change goes to `control.log` (JSON lines:
 `at`, `actor` `cli|ui`, `action`, `task`, `key`, `value`, `previous`) and to the dataset as a
