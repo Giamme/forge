@@ -213,6 +213,10 @@ class Runs:
         for e in store.of('dispatch'):
             if e['task']:
                 self.dispatches[(e['run'], e['task'], e['d'].get('role'))].append(e)
+        # Store order is import order. A reader that takes [-1] means the dispatch
+        # the attempt ended on, so each list is chronological; a tie keeps store order.
+        for rows in self.dispatches.values():
+            rows.sort(key=lambda e: (e['attempt'] or 0, e['d'].get('wall_started') or e['ts']))
         self.accepted = {(e['run'], e['d'].get('task')) for e in store.of('invocation')
                          if e['d'].get('command') == 'accept' and e['d'].get('exit') == 0}
         self.interrupted = {(e['run'], e['task']) for e in store.of('event')
@@ -622,9 +626,10 @@ def shadow_pairs(runs: Runs) -> dict:
     done), both reviewers gave a verdict, and the shadow reviewed the commit that attempt
     committed. Anything else would count noise in the shadow as disagreement.
 
-    The pair uses the attempt's last verdict-bearing primary. A QA-only re-run keeps the
-    attempt number, so the candidates stay unfiltered until that last one is chosen: an
-    earlier fresh verdict must not stand in for a later continued session. The pair is
+    The pair uses the attempt's last verdict-bearing primary. The dispatch list is
+    chronological, so that entry is the one the attempt ended on. A QA-only re-run keeps
+    the attempt number, so the candidates stay unfiltered until that last one is chosen:
+    an earlier fresh verdict must not stand in for a later continued session. The pair is
     then dropped when that chosen primary continued a session.
     """
     ended = {}
@@ -644,8 +649,9 @@ def shadow_pairs(runs: Runs) -> dict:
             reviewed = (shadow['d'].get('shadow') or {}).get('reviewed')
             if not (primary and reviewed and reviewed == runs.reviewed.get((run, task, n))):
                 continue
-            # Chosen after the list is built: filtering continued reviews out first would
-            # let an earlier fresh verdict stand in for the one the attempt ended on.
+            # Chosen after the list is built, and that list is chronological: filtering
+            # continued reviews out first would let an earlier fresh verdict stand in
+            # for the one the attempt ended on.
             if session_continued(primary[-1]):
                 continue
             out[(run, task, n)] = (primary[-1], shadow)
