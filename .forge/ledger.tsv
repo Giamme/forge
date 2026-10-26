@@ -145,3 +145,54 @@
 2026-10-23T09:00:18Z	ui-controls	fu2-archive-name	qa	opus:high	PASS	-	-	-	86
 2026-10-23T10:09:45Z	ui-controls	fu2-pin-paths	dwarf	opus:high	-	trap	end to end tests put only a fixed list of tools on path no ln so a library call to a tool outside that list fails silently in tests	end-to-end tests put only a fixed list of tools on PATH (no `ln`), so a library call to a tool outside that list fails silently in tests [tests/test_forge.py]	1793	1
 2026-10-23T10:14:18Z	ui-controls	fu2-pin-paths	qa	opus:high	PASS	-	-	-	269
+2026-10-23T21:51:27Z	issues-plan	qa-continuity	dwarf	sonnet:high	-	-	-	-	548
+2026-10-23T21:57:14Z	issues-plan	qa-continuity	qa	sol:high	FAIL	-	-	-	331
+2026-10-23T22:00:26Z	issues-plan	final-continuity	dwarf	sonnet:high	-	-	-	-	1087
+2026-10-23T22:03:40Z	issues-plan	qa-continuity	dwarf	sonnet:high	-	-	-	-	347
+2026-10-23T22:06:16Z	issues-plan	final-continuity	qa	sol:high	PASS	-	-	-	335
+2026-10-23T22:08:26Z	issues-plan	ui-data	dwarf	grok:xhigh	-	trap	ui tests test reader py test read only and summary does not read details summarize open guard allows only filenames run id repo goal txt	ui/tests/test_reader.py test_read_only_and_summary_does_not_read_details summarize() open-guard allows only filenames run_id, repo, goal.txt,… [ui/tests/test_reader.py]	1567	1
+2026-10-23T22:08:26Z	issues-plan	ui-data	dwarf	grok:xhigh	-	trap	plan full tasks reader accepted by is free text user accepted the tradeoff not key value warning on it fails	plan-full tasks/reader/accepted.by is free text ("User: accepted the tradeoff."), not key=value; warning on it fails… [ui/tests/fixtures/plan-full/tasks/reader/accepted.by]	1567	1
+2026-10-23T22:08:55Z	issues-plan	qa-continuity	qa	sol:high	PASS	-	-	-	300
+2026-10-23T22:11:07Z	issues-plan	ui-data	qa	sol:high	FAIL	-	-	-	123
+2026-10-23T22:24:05Z	issues-plan	archive-import	dwarf	grok:xhigh	-	-	-	-	895
+2026-10-23T22:24:45Z	issues-plan	ui-data	dwarf	grok:xhigh	-	-	-	-	779
+2026-10-23T22:26:27Z	issues-plan	ui-data	qa	sol:high	PASS	-	-	-	88
+2026-10-23T22:27:27Z	issues-plan	archive-import	qa	sol:high	PASS	-	-	-	188
+2026-10-23T22:32:04Z	issues-plan	session-record	dwarf	grok:xhigh	-	-	-	-	1533
+2026-10-23T22:37:37Z	issues-plan	session-record	qa	sol:high	PASS	-	-	-	320
+2026-10-23T22:56:15Z	issues-plan	session-dispatch	dwarf	sonnet:high	-	-	-	-	1104
+2026-10-23T22:57:53Z	issues-plan	session-dispatch	qa	sol:high	FAIL	-	-	-	85
+2026-10-23T23:07:17Z	issues-plan	session-dispatch	dwarf	sonnet:high	-	-	-	-	525
+2026-10-23T23:14:57Z	issues-plan	ui-outdated	dwarf	grok:xhigh	-	trap	node test ui tests js on node v24 21 0 loads the directory as a module and fails with module not found ui tests test static js py runs node	`node --test ui/tests/js/` on Node v24.21.0 loads the directory as a module and fails with MODULE_NOT_FOUND; ui/tests/test_static_js.py runs `node… [ui/tests/test_static_js.py]	2837	1
+2026-10-23T23:14:57Z	issues-plan	ui-outdated	dwarf	grok:xhigh	-	verify	python3 m unittest discover s tests from the repo root is the forge suite and takes over 10 minutes the forge ui suite is that same command from	`python3 -m unittest discover -s tests` from the repo root is the forge suite and takes over 10 minutes; the forge-ui suite is that same command from… [ui/tests/test_static_js.py]	2837	1
+2026-10-23T23:16:32Z	issues-plan	session-dispatch	qa	sol:high	PASS	-	-	-	541
+2026-10-23T23:17:44Z	issues-plan	ui-outdated	qa	sol:high	FAIL	-	-	-	131
+2026-10-23T23:55:40Z	issues-plan	session-dataset	dwarf	grok:xhigh	-	-	-	-	2334
+2026-10-23T23:59:09Z	issues-plan	session-dataset	qa	sol:high	PASS	-	-	-	195
+2026-10-23T23:59:25Z	issues-plan	session-rounds	dwarf	sonnet:high	-	trap	the fake cli s scenario call counters live in files beside scenario json and survive a later self scenario so keys like a qa 2 are the task s	the fake CLI's SCENARIO call counters live in files beside scenario.json and survive a later `self.scenario(...)`, so keys like `a.qa.2` are the task's… [tests/test_forge.py]	1950	1
+2026-10-24T00:03:28Z	issues-plan	session-rounds	qa	sol:high	PASS	-	-	-	218
+2026-10-24T08:41:23Z	issues-plan	ui-outdated	dwarf	grok:xhigh	-	-	-	-	1060
+2026-10-24T08:43:07Z	issues-plan	ui-outdated	qa	sol:high	PASS	-	-	-	97
+2026-10-24T09:37:57Z	issues-plan	pin-fixes	dwarf	grok:xhigh	-	-	-	-	943
+2026-10-24T09:40:30Z	issues-plan	pin-fixes	qa	sol:high	FAIL	-	-	-	150
+2026-10-24T10:50:09Z	issues-plan	pin-fixes	dwarf	grok:xhigh	-	trap	probe returns false when a parent directory is missing the same as when the file is absent only a symlink or a non regular file raises invalid	probe() returns False when a parent directory is missing, the same as when the file is absent; only a symlink or a non-regular file raises Invalid [scripts/forge-control.py]	1851	1
+2026-10-24T10:53:01Z	issues-plan	pin-fixes	qa	sol:high	PASS	-	-	-	141
+2026-10-25T12:59:10Z	issues-plan	ui-accepted	dwarf	grok:xhigh	-	-	-	-	2317
+2026-10-25T13:02:37Z	issues-plan	ui-accepted	qa	sol:high	PASS	-	-	-	203
+2026-10-25T13:57:50Z	issues-plan	issues-outdated	dwarf	grok:xhigh	-	-	-	-	1372
+2026-10-25T14:00:19Z	issues-plan	issues-outdated	qa	sol:high	FAIL	-	-	-	145
+2026-10-25T14:42:15Z	issues-plan	ui-cloud	dwarf	gemini-3.8-flash:high:antigravity	-	-	-	-	785
+2026-10-25T14:42:55Z	issues-plan	ui-cloud	qa	sol:medium	PASS	-	-	-	35
+2026-10-25T16:07:21Z	issues-plan	issues-outdated	dwarf	grok:xhigh	-	-	-	-	5890
+2026-10-25T16:10:37Z	issues-plan	issues-outdated	qa	sol:high	PASS	-	-	-	191
+2026-10-25T16:52:42Z	issues-plan	changelog	dwarf	gemini-3.8-flash:high:antigravity	-	-	-	-	27
+2026-10-25T16:56:38Z	issues-plan	docs-ui	dwarf	gemini-3.8-flash:high:antigravity	-	-	-	-	263
+2026-10-25T16:57:12Z	issues-plan	docs-ui	qa	sol:medium	PASS	-	-	-	29
+2026-10-25T17:05:44Z	issues-plan	docs-review	dwarf	grok:xhigh	-	-	-	-	808
+2026-10-25T17:07:11Z	issues-plan	docs-review	qa	sol:high	PASS	-	-	-	80
+2026-10-25T17:40:50Z	issues-plan	changelog	dwarf	sonnet:high	-	-	-	-	34
+2026-10-25T17:41:35Z	issues-plan	changelog	qa	sol:medium	PASS	-	-	-	31
+2026-10-25T18:52:52Z	issues-plan	review-fixes	dwarf	grok:xhigh	-	-	-	-	1247
+2026-10-25T18:56:54Z	issues-plan	review-fixes	qa	sol:high	PASS	-	-	-	228
+2026-10-25T20:36:05Z	issues-plan	dispatch-order	dwarf	grok:xhigh	-	-	-	-	651
+2026-10-25T20:39:25Z	issues-plan	dispatch-order	qa	sol:high	PASS	-	-	-	196
