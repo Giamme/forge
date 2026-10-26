@@ -357,6 +357,41 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
         offsets[name] = len(data)
         print(data[start:].decode('utf-8', 'replace'), end='', flush=True)
 
+    def reap_exited(into: set[str] | None = None) -> None:
+        """Reap every active task whose process has already exited.
+
+        Merging is serial and can take long enough for another task to finish, so
+        repeat until a pass finds nothing. PASS is merged and a process that died
+        still RUNNING becomes ERROR. Once `interrupted` is set, every other status
+        is kept and nothing is requeued: the next `run --retry-failed` decides.
+        """
+        nonlocal paused
+        while True:
+            reaped = False
+            for name, (process, log) in list(active.items()):
+                if process.poll() is None:
+                    continue
+                reaped = True
+                if into is not None:
+                    into.add(name)
+                log.close()
+                del active[name]
+                if os.environ.get('FORGE_OUTPUT') == 'full':
+                    echo_output(name)
+                state = status(name)
+                if state == 'PASS':
+                    merge(name)
+                elif state == 'RUNNING':
+                    mark(name, 'ERROR')
+                elif state == 'INFRA':
+                    paused = True
+                    if name not in infra_seen:
+                        infra_seen.append(name)
+                elif not interrupted and state in ('FAIL', 'UNKNOWN') and retryable(name):
+                    requeue(name)
+            if not reaped:
+                return
+
     def stop(signum: int, frame: object) -> None:
         nonlocal interrupted
         interrupted = True
@@ -375,36 +410,22 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
                 merge(name)
             if state == 'RUNNING':
                 mark(name, 'INTERRUPTED')
-            if state in ('FAIL', 'UNKNOWN') and retryable(name):
+            if state in ('FAIL', 'UNKNOWN') and not interrupted and retryable(name):
                 requeue(name)
-            if state == 'INFRA' and not resume(name):
+            if state == 'INFRA' and not interrupted and not resume(name):
                 pending.remove(name)
                 continue
             if status(name) not in ('PENDING', 'BLOCKED', 'INFRA'):
                 pending.remove(name)
         swept = time.monotonic()
         while pending or active:
+            # Reap before honouring the stop. A signal during the sleep, and a task
+            # that exits while another merge is still running, have already written
+            # a result; breaking first used to skip them and mark them INTERRUPTED.
+            ended = set()
+            reap_exited(ended)
             if interrupted:
                 break
-            ended = set()
-            for name, (process, log) in list(active.items()):
-                if process.poll() is not None:
-                    ended.add(name)
-                    log.close()
-                    del active[name]
-                    if os.environ.get('FORGE_OUTPUT') == 'full':
-                        echo_output(name)
-                    state = status(name)
-                    if state == 'PASS':
-                        merge(name)
-                    elif state == 'RUNNING':
-                        mark(name, 'ERROR')
-                    elif state == 'INFRA':
-                        paused = True
-                        if name not in infra_seen:
-                            infra_seen.append(name)
-                    elif state in ('FAIL', 'UNKNOWN') and retryable(name):
-                        requeue(name)
             if time.monotonic() - swept >= SWEEP_EVERY:
                 # A human can raise a budget after a task already ended FAIL while others
                 # still run. The initial pass's predicate, for tasks nothing else will look
@@ -413,7 +434,7 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
                 for name in tasks:
                     if name in pending or name in active or name in ended:
                         continue
-                    if status(name) in ('FAIL', 'UNKNOWN') and retryable(name) \
+                    if not interrupted and status(name) in ('FAIL', 'UNKNOWN') and retryable(name) \
                             and refused.get(name) != budget(name):
                         requeue(name)
             if paused and not active and infra_seen and infra_cycles < infra_budget():
@@ -432,6 +453,8 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
                 # A pin set before or during the wait applies to the entries that run the
                 # implementer again; a QA-stage stop keeps it for the next full retry.
                 for name in reversed(infra_seen):
+                    if interrupted:
+                        break
                     if name not in pending and resume(name):
                         pending.insert(0, name)
                 infra_seen.clear()
@@ -474,6 +497,9 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
     finally:
         # Not live from here on: a late `forge control` must not edit budgets nobody reads.
         live_stop(plan, tasks)
+        # Poll before any signal. A process that has already exited keeps the result
+        # it wrote (PASS is merged); only a process that is still alive is stopped.
+        reap_exited()
         for process, log in active.values():
             try:
                 os.killpg(process.pid, signal.SIGTERM)
