@@ -17,7 +17,7 @@ harness (`/forge`); this command installs forge and drives its optional tools.
 | `forge fractal …` | opt-in Fractal execution; see [the command group](fractal.md#forge-fractal-command-group) |
 | `forge runs [--repo DIR \| --all] [--limit N] [--json]` | this repo's recent runs, newest first: run id, kind, age, task states, verification and final review, goal, and the run dir. Read-only; the same summaries forge-ui shows |
 | `forge control show\|set\|pin\|unpin PLAN_DIR …` | change a live plan: `set` takes `qa-threshold`, `timeout`, `escalate-after`, `verify-retries`, `retry-budget` or `infra-retries` (the last two only while a scheduler runs; `--task ID` for `qa-threshold` and `retry-budget`, value `inherit` drops the override); `pin PLAN_DIR TASK SPEC` sets the model the task's next full retry uses once, `unpin` drops it; `--json`. Every change is logged in `control.log`. See [live controls](decomposed-runs.md#changing-a-run-while-it-works) |
-| `forge config show\|set\|unset [--repo DIR] [--json]` | one view of every config source (registry, Jev, the repo's `.forge/verify`, `setup` and `verify-subset`, dataset, `FORGE_*` variables with secrets hidden); `set KEY VALUE` / `unset KEY` edit `repo.verify`, `repo.setup`, `repo.verify-subset` (must contain `{files}`) and, for `set`, `jev.enabled true\|false`. `-` as a value reads stdin. Exit 2 on invalid input |
+| `forge config show [--repo DIR] [--json]` / `forge config set <key> <value> --repo DIR [--json]` / `forge config unset <key> --repo DIR [--json]` | one view of every config source (registry, Jev, the repo's `.forge/verify`, `setup` and `verify-subset`, dataset, `FORGE_*` variables with secrets hidden); `set KEY VALUE` / `unset KEY` edit `repo.verify`, `repo.setup`, `repo.verify-subset` (must contain `{files}`) and, for `set`, `jev.enabled true\|false` (that one does not need `--repo`). `-` as a value reads stdin. Exit 2 on invalid input |
 | `forge runs rm RUN_DIR [--dry-run] [--yes] [--no-archive] [--worktrees] [--branches] [--json]` | delete a run directory but keep what it taught the dataset; see [below](#forge-runs-rm) |
 | `forge issues RUN [--apply] …` | file the review findings a run left open as GitHub issues; see [below](#forge-issues) |
 | `forge ui open\|status\|stop` | forge-ui, the run viewer; see [the command group](forge-ui.md#forge-ui-command-group) |
@@ -41,7 +41,8 @@ solo run), so a run started meanwhile fails to start instead of racing the delet
 What counts as the run's is decided from the run id, not read from the run directory: a worktree
 under `<repo>/../.forge-worktrees/<run id>/` on `forge/<run id>/<task>` or
 `forge/<run id>-integration`. Any other worktree there is `foreign`, one with uncommitted changes
-is `dirty`; neither is touched, and a dirty one keeps the run directory too. Branches are reported
+is `dirty`; neither is touched, and a dirty one keeps the run directory only when `--worktrees`
+was asked. Branches are reported
 `merged` or `UNMERGED`, so you see what deleting them would lose. `--dry-run` changes nothing and
 reports; `--yes` skips the prompt for the run id (needed without a terminal); `--json` prints one
 object, on failure too. Exit 0 ok, 2 refused input, 3 busy or the run is active, 4 failed during
