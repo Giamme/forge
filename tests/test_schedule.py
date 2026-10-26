@@ -390,6 +390,52 @@ esac
         self.assertEqual((self.raw_status('late'), self.raw_status('gate')), ('PASS', 'PASS'))
         self.assertNotIn('late prepared', events)
 
+    def test_an_error_during_dispatch_leaves_a_finished_failure_unretried(self):
+        # b has no base_ref, so dispatch blocks in `git rev-parse` after a is already
+        # running. a exits FAIL during that lookup, still unreaped. The exception
+        # then runs `finally`. Requeueing there would delete the FAIL and spend a
+        # retry this run can no longer dispatch.
+        self.task('a', ['FAIL', 'PASS'])
+        self.task('b', ['PASS'])
+        (self.plan / 'tasks' / 'b' / 'base_ref').unlink()
+        bindir = self.root / 'bin'
+        bindir.mkdir()
+        git = bindir / 'git'
+        git.write_text(r'''#!/bin/bash
+echo git-entered >> "$FORGE_TEST_PLAN/events.log"
+parent=$PPID
+for _ in $(seq 1 1500); do
+  [ -e "$FORGE_TEST_PLAN/git-release" ] && exit 1
+  kill -0 "$parent" 2>/dev/null || exit 1
+  sleep 0.02
+done
+exit 1
+''')
+        git.chmod(0o755)
+        self.env = dict(self.env, PATH=str(bindir) + os.pathsep + self.env['PATH'],
+                        FORGE_TEST_PLAN=str(self.plan))
+        proc = self.start('--retry-failed', 1, capacity=2)
+        self.wait_for(lambda: 'a end FAIL' in self.events() and 'git-entered' in self.events(),
+                      'a to finish while the next task looks up its baseline')
+        self.assertEqual(self.raw_status('a'), 'FAIL')
+        self.assertNotIn('a prepared', self.events())
+        (self.plan / 'git-release').write_text('')
+        result = self.finish(proc)
+        # The lookup must actually fail, and finally must run: live_stop drops
+        # scheduler.live before the reaping that used to spend this retry.
+        self.assertNotIn(result.returncode, (0, 130), result.stderr)
+        self.assertIn('rev-parse', result.stderr)
+        self.assertFalse((self.plan / 'scheduler.live').exists())
+        self.assertEqual(self.raw_status('a'), 'FAIL', result.stderr)
+        self.assertEqual(self.status('a'), 'FAIL', result.stderr)
+        self.assertEqual(self.calls('a'), 1)
+        self.assertNotIn('a prepared', self.events())
+        self.assertNotIn('a start 2', self.events())
+        self.assertFalse((self.plan / 'tasks' / 'a' / 'retries.used').exists())
+        self.assertEqual((self.plan / 'outcomes' / 'a').read_text(), 'PASS\n')
+        self.assertEqual(self.calls('b'), 0)
+        self.assertEqual(self.status('b'), 'PENDING')
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -357,13 +357,16 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
         offsets[name] = len(data)
         print(data[start:].decode('utf-8', 'replace'), end='', flush=True)
 
-    def reap_exited(into: set[str] | None = None) -> None:
+    def reap_exited(into: set[str] | None = None, *, allow_requeue: bool = True) -> None:
         """Reap every active task whose process has already exited.
 
         Merging is serial and can take long enough for another task to finish, so
         repeat until a pass finds nothing. PASS is merged and a process that died
         still RUNNING becomes ERROR. Once `interrupted` is set, every other status
         is kept and nothing is requeued: the next `run --retry-failed` decides.
+        `finally` passes allow_requeue=False for the same reason. It also runs when
+        the loop raises, and a retry prepared on the way out would clear a recorded
+        failure that nothing is left to dispatch.
         """
         nonlocal paused
         while True:
@@ -387,7 +390,8 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
                     paused = True
                     if name not in infra_seen:
                         infra_seen.append(name)
-                elif not interrupted and state in ('FAIL', 'UNKNOWN') and retryable(name):
+                elif allow_requeue and not interrupted and state in ('FAIL', 'UNKNOWN') \
+                        and retryable(name):
                     requeue(name)
             if not reaped:
                 return
@@ -499,7 +503,9 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
         live_stop(plan, tasks)
         # Poll before any signal. A process that has already exited keeps the result
         # it wrote (PASS is merged); only a process that is still alive is stopped.
-        reap_exited()
+        # Never requeue here: this block also runs when the loop raises, and a retry
+        # prepared then would erase the recorded failure and spend its budget.
+        reap_exited(allow_requeue=False)
         for process, log in active.values():
             try:
                 os.killpg(process.pid, signal.SIGTERM)
