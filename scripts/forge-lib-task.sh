@@ -408,13 +408,20 @@ prepare_resume() { # prepare_resume <plan> <id>
 
 # The scheduler's `_prepare_retry` target: prepare, then clear the status so the task
 # reads as PENDING again. `retry` clears it itself, after its own preflight. With --resume it
-# prepares an infrastructure stop's resume instead (prepare_resume), and the status stays.
-retry_for_scheduler() { # retry_for_scheduler <plan> <id> [--resume]
+# prepares an infrastructure stop's resume instead (prepare_resume), and the status stays;
+# with --dwarf <spec> the spec is the explicit new implementer.
+retry_for_scheduler() { # retry_for_scheduler <plan> <id> [--resume | --dwarf <spec>]
   if [ "${3:-}" = --resume ]; then
     prepare_resume "$1" "$2"
     return $?
   fi
-  prepare_retry "$1" "$2" || return $?
+  # --dwarf: `forge control retry --dwarf`, the same explicit escalation as `retry --dwarf`.
+  if [ "${3:-}" = --dwarf ]; then
+    [ -n "${4:-}" ] || die "_prepare_retry: --dwarf needs a spec"
+    prepare_retry "$1" "$2" "$4" || return $?
+  else
+    prepare_retry "$1" "$2" || return $?
+  fi
   rm -f "$1/tasks/$2/status"
 }
 

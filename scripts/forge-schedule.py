@@ -406,6 +406,75 @@ def stop_harnesses(plan: object, names: object) -> None:
             _warn(name + ': stopped ' + count + ' process(es) its ' + role + ' harness left running')
 
 
+# --- control requests ----------------------------------------------------------------------
+# `forge control retry|add` queue one JSON file each in control.requests/, under control.lock and
+# only while scheduler.live says a scheduler reads them. The scheduler applies or refuses each,
+# logs one outcome line with the same `request` id, and removes it. live_stop settles whatever
+# is left after it withdraws liveness, under the same lock, so no request outlives its run.
+REQUESTS = 'control.requests'
+REQUEST_MAX = 64 * 1024
+RETRYABLE = ('FAIL', 'UNKNOWN', 'TIMEOUT', 'ERROR', 'INTERRUPTED', 'BLOCKED')
+
+
+def list_requests(plan: object) -> list:
+    """Request file names in order; temp (dot) files and anything not a regular file are skipped."""
+    directory = os.path.join(os.path.realpath(plan), REQUESTS)
+    try:
+        if not stat.S_ISDIR(os.lstat(directory).st_mode):
+            return []
+        with os.scandir(directory) as entries:
+            return sorted(e.name for e in entries
+                          if not e.name.startswith('.') and e.is_file(follow_symlinks=False) and _task_id_ok(e.name))
+    except OSError:
+        return []
+
+
+def read_request(plan: object, name: str) -> dict | None:
+    try:
+        fd = os.open(_resolve(plan, REQUESTS, name), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        try:
+            data = os.read(fd, REQUEST_MAX + 1)
+        finally:
+            os.close(fd)
+        request = json.loads(data.decode('utf-8'))
+    except (OSError, ValueError, UnicodeDecodeError):
+        return None
+    if len(data) > REQUEST_MAX or not isinstance(request, dict) or request.get('verb') not in ('retry', 'add'):
+        return None
+    task, dwarf = request.get('task'), request.get('dwarf')
+    if not isinstance(task, str) or not _task_id_ok(task):
+        return None
+    if dwarf is not None and (not isinstance(dwarf, str) or not dwarf or dwarf.startswith('-')
+                              or any(c.isspace() or c == ',' for c in dwarf)):
+        return None
+    return request
+
+
+def settle_request(plan: object, name: str, request: dict | None, outcome: str, reason: str | None) -> None:
+    """The outcome line in control.log, then the request goes. Called under control.lock."""
+    verb = request.get('verb') if request else None
+    task = request.get('task') if request else None
+    entry = {'at': time.time(), 'actor': 'scheduler', 'action': verb, 'task': task, 'key': None,
+             'value': request.get('dwarf') if request else None, 'previous': None, 'request': name,
+             'outcome': outcome, 'reason': reason}
+    try:
+        fd = os.open(_resolve(plan, 'control.log'), os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o644)
+        try:
+            os.write(fd, (json.dumps(entry) + '\n').encode('utf-8'))
+        finally:
+            os.close(fd)
+    except OSError as error:
+        _warn('could not log the outcome of request ' + name + ': ' + str(error))
+    _remove(plan, REQUESTS, name)
+    print('forge: control: ' + (verb or 'request') + ' ' + (task or name) + ' '
+          + (outcome if outcome == 'applied' else 'refused: ' + (reason or '')), file=sys.stderr, flush=True)
+
+
+def refuse_requests(plan: object, reason: str) -> None:
+    for name in list_requests(plan):
+        settle_request(plan, name, read_request(plan, name), 'refused', reason)
+
+
 def live_start(plan: object, names: object, retry_failed: int, infra_retries: int) -> None:
     """Publish the flags and that this scheduler is live. Stale per-task overrides and
     usage counters from an earlier invocation go first."""
@@ -416,16 +485,20 @@ def live_start(plan: object, names: object, retry_failed: int, infra_retries: in
         _remove(plan, 'infra.paused')
         _remove(plan, 'drain')
         _remove(plan, 'stop')
+        # Queued for a scheduler that died: never applied to this run.
+        refuse_requests(plan, 'left by an earlier run')
         _write_atomic(plan, str(retry_failed), 'retry_budget')
         _write_atomic(plan, str(infra_retries), 'infra_budget')
         _write_atomic(plan, json.dumps({'pid': os.getpid(), 'started': time.time()}), 'scheduler.live')
 
 
 def live_stop(plan: object, names: object) -> None:
-    """Withdraw liveness first, then every budget. retries.used stays for the UI."""
+    """Withdraw liveness first, then every budget. retries.used stays for the UI. A request
+    queued before liveness went is settled here: none can arrive once the lock is released."""
     try:
         with _control_lock(plan):
             _remove(plan, 'scheduler.live')
+            refuse_requests(plan, 'run ended')
             _remove(plan, 'retry_budget')
             _remove(plan, 'infra_budget')
             _remove(plan, 'infra.paused')
@@ -477,6 +550,7 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
     paused_text = None # what infra.paused holds now
     backoff_warned = [] # an invalid infra_backoff file is reported once
     graceful = False   # `forge control stop`: start nothing more, end once running tasks are done
+    human = set()      # tasks whose next dispatch is a `forge control retry` (dataset trigger human)
     drain_told = False # the drained message was printed for this drain
 
     def status(name: str) -> str:
@@ -694,6 +768,89 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
                   + ', '.join(pause['tasks']) + ' (no attempt spent)', file=sys.stderr, flush=True)
         write_paused()
 
+    def apply_retry(request: dict) -> tuple:
+        name, dwarf = request['task'], request.get('dwarf')
+        if name not in tasks:
+            return 'refused', 'this run does not know task ' + name
+        if name in active:
+            return 'refused', 'the task is running'
+        if name in pending:
+            return 'refused', 'the task is already waiting to run'
+        state = status(name)
+        if state == 'MERGED':
+            return 'refused', 'the task is merged'
+        if state == 'INFRA':
+            return 'refused', 'an infrastructure stop is resumed by the scheduler itself'
+        if state not in RETRYABLE:
+            return 'refused', 'a ' + state + ' task is not retried'
+        command = ['/bin/bash', script, '_prepare_retry', str(plan), name] + (['--dwarf', dwarf] if dwarf else [])
+        rc = subprocess.run(command).returncode
+        if rc == 3:
+            try:
+                why = (plan / 'tasks' / name / 'split.suggested').read_text().strip()
+            except OSError:
+                why = ''
+            return 'refused', why or 'the retry policy stopped this task: split it or name a --dwarf'
+        if rc:
+            return 'refused', 'the retry could not be prepared (exit ' + str(rc) + '; see the run output)'
+        # A human's retry: no automatic budget is spent, and a stop marker the
+        # preparation cleared (an explicit --dwarf) no longer holds the task.
+        pairs_cache.pop(name, None)
+        refused.pop(name, None)
+        retried.add(name)
+        human.add(name)
+        pending.insert(0, name)
+        return 'applied', None
+
+    def apply_add(request: dict) -> tuple:
+        name = request['task']
+        if name in tasks:
+            return 'refused', 'the task is already in this run'
+        try:
+            rows = [line.split('\t') for line in (plan / 'tasks.tsv').read_text().splitlines()
+                    if line and not line.startswith('#')]
+        except OSError as error:
+            return 'refused', 'tasks.tsv could not be read: ' + str(error)
+        if any(len(row) != 7 for row in rows):
+            return 'refused', 'tasks.tsv requires seven columns'
+        if len({row[0] for row in rows}) != len(rows):
+            return 'refused', 'tasks.tsv has duplicate task IDs'
+        found = [row for row in rows if row[0] == name]
+        if not found:
+            return 'refused', 'the row is not in tasks.tsv'
+        deps = [d for d in found[0][1].split(',') if d and d != '-']
+        unknown = [d for d in deps if d not in tasks]
+        if unknown:
+            # Every known task was read at start, so a dep among them cannot close a cycle.
+            return 'refused', 'it depends on task(s) this run does not know: ' + ', '.join(unknown)
+        root = plan / 'tasks' / name
+        try:
+            root.mkdir(parents=True, exist_ok=True)
+            if not stat.S_ISDIR(os.lstat(root).st_mode):
+                return 'refused', 'tasks/' + name + ' is not a real directory'
+        except OSError as error:
+            return 'refused', 'tasks/' + name + ' could not be created: ' + str(error)
+        tasks[name] = found[0]
+        pending.append(name)
+        if subprocess.run(['/bin/bash', script, '_waves', str(plan)]).returncode:
+            _warn('waves.tsv was not refreshed for ' + name + '; the task still runs')
+        return 'applied', None
+
+    def handle_requests() -> None:
+        """Apply or refuse each queued request; the outcome is logged under the control lock."""
+        for name in list_requests(plan):
+            request = read_request(plan, name)
+            if request is None:
+                outcome, reason = 'refused', 'not a valid request'
+            elif interrupted or graceful:
+                outcome, reason = 'refused', 'run is stopping'
+            elif request['verb'] == 'retry':
+                outcome, reason = apply_retry(request)
+            else:
+                outcome, reason = apply_add(request)
+            with _control_lock(plan):
+                settle_request(plan, name, request, outcome, reason)
+
     def reap_exited(into: set[str] | None = None, *, allow_requeue: bool = True) -> None:
         """Reap every active task whose process has already exited.
 
@@ -822,6 +979,7 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
                 all_class = ''
                 write_paused()
             end_scoped_waits()
+            handle_requests()
             cap = live_capacity(plan, capacity)
             for name in pending[:]:
                 if paused or len(active) >= cap or interrupted or graceful or draining:
@@ -841,8 +999,10 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
                 log = open(root / 'task.out', 'ab')
                 # A retried task runs with the same environment `retry` gives it, so the
                 # no-progress guard (byte-identical diff) applies under Fractal too.
-                env = (dict(os.environ, FORGE_FRACTAL_RETRY='1', FORGE_DATASET_TRIGGER='auto')
+                env = (dict(os.environ, FORGE_FRACTAL_RETRY='1',
+                            FORGE_DATASET_TRIGGER='human' if name in human else 'auto')
                        if name in retried else None)
+                human.discard(name)
                 process = subprocess.Popen(
                     ['/bin/bash', script, '_task', str(plan), name],
                     stdout=log, stderr=subprocess.STDOUT, start_new_session=True, env=env,

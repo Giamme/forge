@@ -19,6 +19,7 @@
 #   forge-parallel.sh combine <new-plan> <plan-a> <plan-b> [<plan>...] [--verify <command>] [--dry-run]
 #   forge-parallel.sh _task <plan-dir> <task-id>     (internal; coordinator target)
 #   forge-parallel.sh _qa_only <plan-dir> <task-id>  (internal; exit 0 when the next entry only re-runs QA)
+#   forge-parallel.sh _waves <plan-dir>             (internal; rewrite waves.tsv after a live `forge control add`)
 #
 # Routing flags (plan):
 #   --dwarf <spec>          fallback for any difficulty tier not named below
@@ -431,8 +432,9 @@ EOF
 # parallelism: two dwarves editing one file produce a conflict no reviewer can
 # untangle, so they get separate waves no matter how the goal was decomposed.
 compute_waves() {
-  local PLAN="$1" T="$1/tasks.tsv" W="$1/waves.tsv"
-  : > "$W"; : > "$PLAN/deferrals.txt"
+  # Written to temp files and renamed only on success: a cycle leaves the previous files.
+  local PLAN="$1" T="$1/tasks.tsv" W="$1/.waves.tsv.$$" D="$1/.deferrals.txt.$$"
+  : > "$W"; : > "$D"
   local remaining done_ids wave n id deps files wave_files ok d progressed
   remaining="$(all_ids "$T" | tr '\n' ' ')"
   done_ids=" "; wave=0
@@ -451,7 +453,7 @@ compute_waves() {
       if [ "$ok" = 1 ] && lists_overlap "$files" "$wave_files"; then
         ok=0
         printf 'wave %s: %s deferred (file overlap with a task already in this wave)\n' \
-          "$wave" "$id" >> "$PLAN/deferrals.txt"
+          "$wave" "$id" >> "$D"
       fi
       if [ "$ok" = 1 ]; then
         printf '%s\t%s\n' "$wave" "$id" >> "$W"
@@ -461,10 +463,11 @@ compute_waves() {
         next_remaining="$next_remaining $id"
       fi
     done
-    [ "$progressed" = 1 ] || die "dependency cycle or unsatisfiable deps among:$next_remaining"
+    [ "$progressed" = 1 ] || { rm -f "$W" "$D"; die "dependency cycle or unsatisfiable deps among:$next_remaining"; }
     for id in $(awk -F'\t' -v w="$wave" '$1==w {print $2}' "$W"); do done_ids="$done_ids$id "; done
     remaining="$next_remaining"
   done
+  mv -f "$D" "$PLAN/deferrals.txt" && mv -f "$W" "$PLAN/waves.tsv"
 }
 
 render_table() {
@@ -1801,5 +1804,6 @@ case "$CMD" in
   _merge)    merge_task "$@" ;;
   _prepare_retry) retry_for_scheduler "$@" ;;
   _qa_only)  qa_only_next "$@" ;;
+  _waves)    compute_waves "$@" ;;
   *) die "unknown subcommand '$CMD'" ;;
 esac
