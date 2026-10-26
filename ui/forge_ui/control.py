@@ -360,9 +360,16 @@ def _issues_file(ctx):
         if not isinstance(labels, list) or len(labels) > MAX_LABELS:
             raise BadBody(f'labels must be a list of at most {MAX_LABELS} strings')
         for label in labels:
-            if (not isinstance(label, str) or not label.strip() or len(label) > MAX_LABEL
-                    or label.startswith('-') or not _no_control_chars(label)):
-                raise BadBody(f'a label must be a text of 1 to {MAX_LABEL} characters, without control characters')
+            if not isinstance(label, str):
+                raise BadBody('a label must be a text')
+            if not label.strip():
+                raise BadBody('a label cannot be blank')
+            if len(label) > MAX_LABEL:
+                raise BadBody(f'a label is at most {MAX_LABEL} characters')
+            if label.startswith('-'):
+                raise BadBody('a label cannot start with "-"')
+            if not _no_control_chars(label):
+                raise BadBody('a label cannot hold control characters')
     except BadBody as exc:
         return _invalid(str(exc))
     path = ctx.locate()
