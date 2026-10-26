@@ -275,12 +275,17 @@ def lines(fc: dict) -> list:
     return out
 
 
+def _tmp(plan: Path) -> Path:
+    """Where save() writes forecast.json before moving it into place."""
+    return plan / ('.forecast.json.%d' % os.getpid())
+
+
 def save(plan: Path, fc: dict) -> None:
     """Keep what was predicted, so it can be checked against what happened. Fail-open."""
     body = {k: v for k, v in fc.items() if k != 'at'}
     digest = hashlib.sha256(json.dumps(body, sort_keys=True).encode()).hexdigest()[:16]
+    tmp = _tmp(plan)
     try:
-        tmp = plan / ('.forecast.json.%d' % os.getpid())
         tmp.write_text(json.dumps(fc, indent=2, sort_keys=True) + '\n')
         tmp.replace(plan / 'forecast.json')
     except OSError:
@@ -336,6 +341,11 @@ def main(args) -> int:
             if not shown:
                 print('forecast skipped: reading the history took over %gs' % budget())
                 sys.stdout.flush()
+            # os._exit stops save() wherever it is, so a half-written temp file would stay in the plan.
+            try:
+                _tmp(plan).unlink()
+            except OSError:
+                pass
             os._exit(0)
         return 0
     if not (plan / 'tasks.tsv').is_file():

@@ -1,5 +1,8 @@
 """`forge dataset forecast` and the advisory block `forge-parallel.sh run` prints before dispatching."""
 import dataset_isolation  # noqa: F401  keeps the run dataset out of the developer's store
+import argparse
+from contextlib import redirect_stdout
+import io
 import json
 import os
 from pathlib import Path
@@ -7,6 +10,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from unittest.mock import patch
 
@@ -192,6 +196,31 @@ class ForecastReportTests(unittest.TestCase):
         self.assertFalse((p / 'forecast.json').exists())
         self.assertIn('first try', self.forge(p, '--run', env=dict(FORGE_DATASET='off')))
         self.assertEqual(self.forecasts(), [])
+
+    def test_a_budget_that_runs_out_while_saving_leaves_no_temp_file_in_the_plan(self):
+        from forge_dataset import forecast
+        p = self.seed()
+        saving, release = threading.Event(), threading.Event()
+        replace = Path.replace
+
+        def stalled(path, target):      # the budget runs out between writing the temp file and moving it
+            saving.set()
+            release.wait(10)
+            return replace(path, target)
+
+        args = argparse.Namespace(plan=str(p), run=True, repo=None, json=False)
+        with patch.object(Path, 'replace', stalled), patch('os._exit', side_effect=SystemExit), \
+                patch.dict(os.environ, {'FORGE_FORECAST_BUDGET_S': '2'}), redirect_stdout(io.StringIO()) as out:
+            with self.assertRaises(SystemExit):
+                forecast.main(args)
+        try:
+            self.assertTrue(saving.is_set(), out.getvalue())
+            self.assertEqual(sorted(f.name for f in p.iterdir() if 'forecast' in f.name), [])
+        finally:
+            release.set()
+            for t in threading.enumerate():
+                if t.daemon:
+                    t.join(10)
 
 
 class RunForecastTests(unittest.TestCase):
