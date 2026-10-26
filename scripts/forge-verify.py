@@ -48,6 +48,7 @@ KILL_AFTER = 5.0          # seconds between TERM and KILL on an interrupt
 WRITE_EVERY = 1.0         # lanes.json refresh while lanes only print
 TICK = 0.05
 LAST_LINE_MAX = 300
+PUMP_MAX = 4 << 20        # bytes read from one lane's log per look, so a flood cannot starve the loop
 INTERRUPTED = 130
 
 ANSI = re.compile(r'\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[@-Z\\-_]')
@@ -101,6 +102,8 @@ def parse_lane(name: str, text: str) -> tuple[dict | None, list[str]]:
     else:
         body_from = len(lines)
     command = '\n'.join(lines[body_from:]).strip()
+    if '\0' in text:
+        errors.append(f'{name}: contains a NUL byte')
     if not command:
         errors.append(f'{name}: empty command')
     if errors:
@@ -337,7 +340,7 @@ class Verification:
                 proc = subprocess.Popen(['/bin/bash', '-c', lane['command']], cwd=self.checkout,
                                         stdin=subprocess.DEVNULL, stdout=fh,
                                         stderr=subprocess.STDOUT, start_new_session=True)
-        except OSError as exc:
+        except (OSError, ValueError) as exc:  # ValueError: an embedded NUL in the command
             with open(log, 'ab') as fh:
                 fh.write(f'forge-verify: cannot start lane: {exc}\n'.encode())
             self._end(lane, run, 126)
@@ -354,7 +357,9 @@ class Verification:
         if rc is None:  # still there after the KILL: a process stuck in the kernel
             rc = -signal.SIGKILL
         pgid = live.proc.pid
-        self._pump({name: live})
+        # a finished lane's backlog is read in capped steps, so an interrupt still gets through
+        while not self._pump({name: live}) and not (interrupted or self.stop):
+            self.flush()
         live.close()
         if self._group_alive(pgid):
             self._signal(pgid, signal.SIGTERM)
@@ -369,26 +374,36 @@ class Verification:
         self.save()
         self.write_runs()
 
-    def _pump(self, running: dict[str, Live]) -> None:
-        """Read what the lanes printed since the last look: last_line and the step markers."""
+    def _pump(self, running: dict[str, Live], limit: int = PUMP_MAX) -> bool:
+        """Read what the lanes printed since the last look: last_line and the step markers.
+        At most ``limit`` bytes per lane, so the caller gets back to its stop check, the
+        reaping and the refresh however fast a lane prints. True when nothing is left unread."""
+        drained = True
         for name, live in running.items():
             lane = self.by_name[name]
             exited = live.proc.poll() is not None  # asked first: all of its output is then readable
-            while True:
-                chunk = live.reader.read(1 << 20)
+            left = limit
+            eof = False
+            while left > 0:
+                chunk = live.reader.read(min(left, 1 << 20))
                 if not chunk:
+                    eof = True
                     break
+                left -= len(chunk)
                 lane['last_output_at'] = time.time()
                 self.dirty = True
                 parts = re.split(r'[\r\n]', live.partial + live.decoder.decode(chunk))
                 live.partial = parts.pop()[-65536:]
                 for line in parts:
                     self._line(lane, line)
-            if exited:
+            if not eof:
+                drained = False
+            elif exited:
                 tail = live.partial + live.decoder.decode(b'', final=True)
                 live.partial = ''
                 if tail:
                     self._line(lane, tail)
+        return drained
 
     def _line(self, lane: dict, raw: str) -> None:
         line = ANSI.sub('', raw).strip()

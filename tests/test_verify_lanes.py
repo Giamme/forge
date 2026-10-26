@@ -268,6 +268,10 @@ class ConfigurationTests(VerifyLanesCase):
         (self.lanes / 'link').symlink_to(target)
         self.assert_config_error('link')
 
+    def test_nul_byte_in_a_lane(self):
+        (self.lanes / 'bad').write_bytes(b'echo hi\0there\n')
+        self.assert_config_error('NUL')
+
     def test_directory_lane(self):
         (self.lanes / 'sub').mkdir()
         self.assert_config_error('sub')
@@ -328,6 +332,25 @@ class InterruptTests(VerifyLanesCase):
         self.assertEqual([l['state'] for l in doc['lanes']], ['interrupted'] * 3)
         self.assertFalse((self.marks / 'never').exists())
         self.assertNotIn('after', (self.out / 'verification.lane.long.log').read_text())
+
+    def test_sigterm_is_honoured_while_a_lane_floods_its_log(self):
+        self.lane('flood', 'yes xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'
+                           ' | head -c 300000000')
+        self.lane('quick', 'sleep 0.2')
+        proc = subprocess.Popen(self.run_args('--parallel', '2'), stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, text=True)
+        self.addCleanup(proc.kill)
+        log = self.out / 'verification.lane.flood.log'
+        deadline = time.monotonic() + 30
+        while not log.exists() or log.stat().st_size < 200_000_000:
+            self.assertLess(time.monotonic(), deadline, 'the flood never got going')
+            time.sleep(0.05)
+        self.assertEqual(self.lane_doc('quick')['state'], 'pass')  # reaped while the flood runs
+        proc.send_signal(signal.SIGTERM)
+        proc.communicate(timeout=5)
+        self.assertEqual(proc.returncode, 130)
+        self.assertEqual(self.doc()['state'], 'interrupted')
+        self.assertEqual(self.lane_doc('flood')['state'], 'interrupted')
 
 
 def alive(pgid):
