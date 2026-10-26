@@ -43,6 +43,7 @@ _EXITS = {2: (400, 'invalid'), 3: (409, 'refused'), 4: (500, 'failed')}
 # of them is a secret (forge-config.py's SECRET_WORDS), and no other FORGE_* variable is ever passed.
 CLI_ENV_NAMES = ('FORGE_REGISTRY', 'FORGE_DATA_HOME', 'FORGE_DATASET', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_STATE_HOME')
 _CLI_ENV_PATHS = ('FORGE_REGISTRY', 'FORGE_DATA_HOME')  # read relative to the shell's directory, not the server's
+_CLI_ENV_EXPANDS_HOME = ('FORGE_DATA_HOME',)  # the paths whose reader expands a leading ~ itself
 cli_env = {}  # set once, before the server starts; empty when it was started by hand
 
 
@@ -50,14 +51,15 @@ def cli_env_from(environ):
     """The CLI_ENV_NAMES set in `environ` (an empty value counts as unset, as it does for the CLIs).
 
     A relative FORGE_REGISTRY or FORGE_DATA_HOME is made absolute here: the server and its CLIs run in
-    another directory than the shell that named it.
+    another directory than the shell that named it. A leading ~ is kept only where the reader expands it
+    (FORGE_DATA_HOME); a FORGE_REGISTRY of '~/x.tsv' is the relative path ./~/x.tsv to every CLI.
     """
     out = {}
     for name in CLI_ENV_NAMES:
         value = environ.get(name, '')
         if not value:
             continue
-        if name in _CLI_ENV_PATHS and not value.startswith('~'):
+        if name in _CLI_ENV_PATHS and not (name in _CLI_ENV_EXPANDS_HOME and value.startswith('~')):
             value = os.path.abspath(value)
         out[name] = value
     return out
