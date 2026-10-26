@@ -233,6 +233,7 @@ class Live:
         self.reader.seek(offset)
         self.decoder = codecs.getincrementaldecoder('utf-8')('replace')
         self.partial = ''
+        self.exited = False  # the leader has exited and its group was sent the TERM
 
     def close(self) -> None:
         self.reader.close()
@@ -304,8 +305,11 @@ class Verification:
         pending = list(names)
         running = self.running
         while (pending or running) and not self.stop:
-            self._pump(running)
-            for name in [n for n, live in running.items() if live.proc.poll() is not None]:
+            for name, live in running.items():
+                if not live.exited and live.proc.poll() is not None:
+                    self._leader_exited(name, live)
+            drained = self._pump(running)
+            for name in [n for n, live in running.items() if live.exited and n in drained]:
                 self._finish(name, running.pop(name))
             self._reap_lingering()
             busy = {self.by_name[n]['group'] for n in running} - {None}
@@ -349,21 +353,25 @@ class Verification:
         self.save()
         return live
 
-    def _finish(self, name: str, live: Live, interrupted: bool = False) -> None:
+    def _leader_exited(self, name: str, live: Live) -> None:
         """The lane's leader has exited. Whatever it left running in its process group (a
-        background server, a watcher) is terminated: no lane process outlives the script."""
+        background server, a watcher) is terminated now, so a leftover that keeps printing
+        stops: no lane process outlives the script. The lane stays running until its log is
+        read to the end, which the main loop does a capped step at a time."""
+        live.exited = True
+        pgid = live.proc.pid
+        if self._group_alive(pgid):
+            self._signal(pgid, signal.SIGTERM)
+            self.lingering.append((pgid, time.monotonic() + KILL_AFTER))
+
+    def _finish(self, name: str, live: Live, interrupted: bool = False) -> None:
+        """Record the end of a lane whose leader has exited (or was killed)."""
         lane = self.by_name[name]
         rc = live.proc.poll()
         if rc is None:  # still there after the KILL: a process stuck in the kernel
             rc = -signal.SIGKILL
-        pgid = live.proc.pid
-        # a finished lane's backlog is read in capped steps, so an interrupt still gets through
-        while not self._pump({name: live}) and not (interrupted or self.stop):
-            self.flush()
+        self._pump({name: live})  # what is left to read, capped; an interrupt still gets through
         live.close()
-        if self._group_alive(pgid):
-            self._signal(pgid, signal.SIGTERM)
-            self.lingering.append((pgid, time.monotonic() + KILL_AFTER))
         self._end(lane, lane['runs'][-1], rc if rc >= 0 else 128 - rc, interrupted)
 
     def _end(self, lane: dict, run: dict, code: int, interrupted: bool = False) -> None:
@@ -374,11 +382,12 @@ class Verification:
         self.save()
         self.write_runs()
 
-    def _pump(self, running: dict[str, Live], limit: int = PUMP_MAX) -> bool:
+    def _pump(self, running: dict[str, Live], limit: int = PUMP_MAX) -> set[str]:
         """Read what the lanes printed since the last look: last_line and the step markers.
         At most ``limit`` bytes per lane, so the caller gets back to its stop check, the
-        reaping and the refresh however fast a lane prints. True when nothing is left unread."""
-        drained = True
+        reaping and the refresh however fast a lane prints. Returns the names of the lanes whose
+        log was read to the end."""
+        drained: set[str] = set()
         for name, live in running.items():
             lane = self.by_name[name]
             exited = live.proc.poll() is not None  # asked first: all of its output is then readable
@@ -396,9 +405,9 @@ class Verification:
                 live.partial = parts.pop()[-65536:]
                 for line in parts:
                     self._line(lane, line)
-            if not eof:
-                drained = False
-            elif exited:
+            if eof:
+                drained.add(name)
+            if eof and exited:
                 tail = live.partial + live.decoder.decode(b'', final=True)
                 live.partial = ''
                 if tail:

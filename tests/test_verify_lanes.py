@@ -352,6 +352,34 @@ class InterruptTests(VerifyLanesCase):
         self.assertEqual(self.doc()['state'], 'interrupted')
         self.assertEqual(self.lane_doc('flood')['state'], 'interrupted')
 
+    def test_background_writer_of_a_finished_lane_is_stopped_before_its_log_is_drained(self):
+        self.lane('bg', 'yes xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'
+                        f' & echo $! > {self.marks}/pid; echo done')
+        proc = subprocess.Popen(self.run_args(), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                text=True)
+        self.addCleanup(proc.kill)
+        try:
+            proc.communicate(timeout=20)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.communicate()
+            os.killpg(int((self.marks / 'pid').read_text()), signal.SIGKILL)
+            self.fail('the leftover writer was not stopped; the run never finished')
+        self.assertEqual(proc.returncode, 0)
+        self.assertEqual(self.lane_doc('bg')['state'], 'pass')
+        self.assertEqual(len(self.rows()), 1)
+
+    def test_draining_one_lanes_backlog_does_not_hold_up_the_others(self):
+        self.lane('a_flood', 'yes xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'
+                             ' | head -c 400000000')
+        self.lane('b', 'sleep 1')
+        self.lane('c', f'touch {self.marks}/c')
+        done = self.run_verify('--parallel', '2', timeout=120)
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        doc = self.doc()
+        c = self.lane_doc('c')
+        self.assertLess(c['started'] - doc['started'], 3.0)  # when b ends, not when the flood is read
+
 
 def alive(pgid):
     try:
