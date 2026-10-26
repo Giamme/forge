@@ -5,6 +5,36 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and versions follow the format `{major}.{minor}[.{patch}]` ([...] parts appear only when non-zero).
 
+## [0.11] - 2026-10-26
+
+Reviews now remember the last round: a retry's review starts from the previous findings, and a repeated whole-run review from the last report. forge dataset can forecast a plan before it runs and grade how often each reviewer's PASS held, and forge-ui shows a superseded final review as OUTDATED instead of FAIL.
+
+### Highlights
+
+- `forge dataset reviewers`: a report card for reviewer models. For each reviewer, how often work it PASSed was later reverted or mostly rewritten within the outcome horizon (14 days by default), with a 95% interval, or "not enough data" below 10 outcomes. forge-ui's Models view shows it as the Reviewers table's Did not hold column. Advisory only: it never changes routing.
+- `forge dataset forecast <plan>` estimates a plan from past tasks at the same tier and model: median and p90 tokens and time, and the first-try PASS rate with a 95% interval, per task and in total, flagging tasks unlikely to pass first time. `forge-parallel.sh run` prints it before dispatching and records it for later checks (`--no-forecast` turns it off). It is advisory only.
+- On a retry, the per-task reviewer now first checks the previous round's findings, sees the diff between the two attempts and reads the implementer's reply, instead of starting cold. This applies on every harness, so a finding that was fixed is confirmed as fixed and one that was not is raised again.
+- A final review that later merges superseded now shows as OUTDATED in the forge-ui run view and on the cloud map, not as the run's verdict, and tasks merged with `accept` show as accepted instead of failed. `forge issues` and the Open-findings view mark the findings of an outdated review, and accepted findings get their own origin and issue text.
+
+### Added
+
+- `plan --reviewer-session` is an opt-in experiment that continues the reviewer's own session across rounds on claude, openclaude and codex, and falls back to a fresh session whenever it cannot. Those reviews are tagged in the dataset and kept out of the reviewer statistics, so the experiment does not skew the independence numbers.
+
+### Changed
+
+- A mistyped command now says which one you most likely meant, for example `forge rnus` answers "Did you mean `forge runs`?" above the usage.
+- A repeated whole-run review now carries the previous final review's report and the diff since it, so it checks what the earlier review found rather than reviewing the run from scratch.
+
+### Fixed
+
+- forge-ui started directly (`python3 -m forge_ui`) now finds forge's run registry the way forge writes it: an `XDG_CONFIG_HOME` that starts with `~` lists your runs instead of none.
+- A grok dwarf or reviewer that runs its tests in the background no longer ends as an error after 10 minutes: grok now waits for that work as long as forge's own time limit allows, and `forge-dispatch.sh doctor` checks that the installed grok supports this.
+- A relative `XDG_CONFIG_HOME` now counts as unset, as the XDG spec says, so forge registers runs and keeps `jev.json` in `~/.config` instead of recording nothing. Before, `forge ui open` printed a link to a run that forge-ui then did not list.
+- The dataset now imports the traces from the archive of a run whose directory name starts with `review-`; before, nothing from it was imported.
+- An escalation pin, or any escalation, no longer writes through a symlinked `escalations.tsv`.
+- The run summary, and `escalation.next` in the router's `--check`, no longer say a pin waits for a QA-only re-run when the next retry will really be a full attempt.
+- A relative `XDG_DATA_HOME` now counts as unset, as the XDG spec says, so the run dataset, run archives and exports stay in `~/.local/share/forge` instead of a folder inside whichever repo forge ran from. `forge config show` reports the same place.
+
 ## [0.10] - 2026-10-23
 
 forge-ui can now change a run: live QA threshold, retries and timeout, a one-shot model pin, open findings filed as GitHub issues, deleting runs while the dataset keeps them, and every config source in one view. Each control is also a forge CLI: forge control, forge runs rm, forge config and new forge issues modes.
