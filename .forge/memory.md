@@ -11,6 +11,9 @@
 - the full `python3 -m unittest discover -s tests` takes over 10 minutes; run only the modules you touched [tests/check.sh]
 
 ## Known traps
+- bash tests/check.sh fails test_update.RunnerNoticeTests.test_runs_end_with_the_notice when CI=true, because forge-version.py stays quiet in CI and that test… [tests/test_update.py]
+- in ui/tests browser tests, `.fnd-table input[type=checkbox]` also matches ForgeTable's column-chooser boxes; select rows by… [ui/forge_ui/static/findingsview.js]
+- `python3 -m unittest discover -s ui/tests -p 'test_control_api.py'` fails with ModuleNotFoundError from the repo root; run `cd ui && python3 -m… [ui/tests/test_control_api.py]
 - probe() returns False when a parent directory is missing, the same as when the file is absent; only a symlink or a non-regular file raises Invalid [scripts/forge-control.py]
 - the fake CLI's SCENARIO call counters live in files beside scenario.json and survive a later `self.scenario(...)`, so keys like `a.qa.2` are the task's… [tests/test_forge.py]
 - `node --test ui/tests/js/` on Node v24.21.0 loads the directory as a module and fails with MODULE_NOT_FOUND; ui/tests/test_static_js.py runs `node… [ui/tests/test_static_js.py]
@@ -25,7 +28,4 @@
 - on macOS, concurrent `os.open(name, O_CREAT, dir_fd=...)` from two processes fails with ENOENT about 13% of the time; open lock files by full path [scripts/forge-issues.py]
 - put_file() returns None on any OSError, including a failed blob write, so an event can be stored with its content silently dropped [scripts/forge_dataset/__init__.py]
 - forge-issues input forms (plan dir, review dir, qa.last, known_issues.md) each take their own code path, so a fix to one form's plan/task attribution has… [scripts/forge-issues.py]
-- strict import must pre-check every file opens; harvest readers (read_json, text, first_line) turn an unreadable file into absent [scripts/forge_dataset/importer.py]
-- `<plan>/final-review` can point at a review dir with `qa.input` but no `qa.last` (infra stop or dispatch start failure), so code choosing the latest… [scripts/forge-lib-review.sh]
-- ui/forge_ui/export.py inlines a fixed SCRIPTS tuple, so a new static script is absent from exported pages unless that tuple is changed [ui/forge_ui/export.py]
 

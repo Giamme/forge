@@ -196,3 +196,18 @@
 2026-10-25T18:56:54Z	issues-plan	review-fixes	qa	sol:high	PASS	-	-	-	228
 2026-10-25T20:36:05Z	issues-plan	dispatch-order	dwarf	grok:xhigh	-	-	-	-	651
 2026-10-25T20:39:25Z	issues-plan	dispatch-order	qa	sol:high	PASS	-	-	-	196
+2026-10-26T11:40:35Z	p3-plan	ui-env	dwarf	sonnet:high	-	trap	python3 m unittest discover s ui tests p test control api py fails with modulenotfounderror from the repo root run cd ui python3 m	`python3 -m unittest discover -s ui/tests -p 'test_control_api.py'` fails with ModuleNotFoundError from the repo root; run `cd ui && python3 -m… [ui/tests/test_control_api.py]	148	1
+2026-10-26T11:43:08Z	p3-plan	ui-env	qa	sol:high	PASS	-	-	-	148
+2026-10-26T11:46:29Z	p3-plan	settings-view	dwarf	opus:medium	-	-	-	-	503
+2026-10-26T11:47:41Z	p3-plan	ui-labels	dwarf	grok:xhigh	-	-	-	-	270
+2026-10-26T11:49:08Z	p3-plan	settings-view	qa	sol:high	PASS	-	-	-	154
+2026-10-26T11:49:10Z	p3-plan	ui-labels	qa	sol:high	PASS	-	-	-	84
+2026-10-26T11:52:29Z	p3-plan	issues-warning	dwarf	grok:xhigh	-	-	-	-	197
+2026-10-26T11:53:32Z	p3-plan	issues-warning	qa	sol:high	PASS	-	-	-	60
+2026-10-26T12:02:57Z	p3-plan	findings-view	dwarf	sonnet:high	-	trap	in ui tests browser tests fnd table input type checkbox also matches forgetable s column chooser boxes select rows by	in ui/tests browser tests, `.fnd-table input[type=checkbox]` also matches ForgeTable's column-chooser boxes; select rows by… [ui/forge_ui/static/findingsview.js]	1491	1
+2026-10-26T12:02:57Z	p3-plan	findings-view	dwarf	sonnet:high	-	verify	cd ui tests pythonpath uv run quiet with playwright python3 m unittest test browser findings	cd ui/tests && PYTHONPATH=.. uv run --quiet --with playwright python3 -m unittest test_browser_findings [ui/tests/test_browser_findings.py]	1491	1
+2026-10-26T12:04:39Z	p3-plan	findings-view	qa	sol:high	PASS	-	-	-	98
+2026-10-26T12:38:04Z	p3-plan	docs-fixes	dwarf	grok:xhigh	-	trap	test update runnernoticetests fails when ci is set notice stays silent in ci and the test copies os environ	test_update.RunnerNoticeTests fails when CI is set: notice() stays silent in CI, and the test copies os.environ [tests/test_update.py]	2930	1
+2026-10-26T12:38:35Z	p3-plan	docs-fixes	qa	sol:high	PASS	-	-	-	26
+2026-10-26T14:05:28Z	p3-plan	review-fixes	dwarf	grok:xhigh	-	trap	test update runnernoticetests fails when ci is set notice stays silent in ci and the test copies os environ	bash tests/check.sh fails test_update.RunnerNoticeTests.test_runs_end_with_the_notice when CI=true, because forge-version.py stays quiet in CI and that test… [tests/test_update.py]	2986	1
+2026-10-26T14:09:21Z	p3-plan	review-fixes	qa	sol:high	PASS	-	-	-	228
