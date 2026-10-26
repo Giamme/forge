@@ -132,3 +132,23 @@ test('results and links', () => {
   assert.equal(F.safeUrl('http://x'), null);
   assert.equal(F.safeUrl(null), null);
 });
+
+test('a POST that created nothing shows the CLI notes, one that created something does not', () => {
+  const note = '--only 0123456789ab: no such open finding';
+  assert.deepEqual(F.emptyNotes([], [note]), [note]);
+  assert.deepEqual(F.emptyNotes(undefined, [note, '', 7]), [note, '7']);
+  assert.deepEqual(F.emptyNotes([{ skipped: 'same title', title: 'T' }], [note]), [note]);
+  assert.deepEqual(F.emptyNotes([{ title: 'T', url: 'https://g/1' }], [note]), []);
+  assert.deepEqual(F.emptyNotes([], null), []);
+});
+
+test('an action takes the selected rows the filters leave shown', () => {
+  const rows = [row('a'), row('b', { severity: 'P0' }), row('d', { dismissed: { at: 't' } }), row('e', { dismissed: { at: 't' } })];
+  const selected = new Set(['a', 'b', 'd', 'e']);
+  const shown = f => F.filterRows(rows, f);
+  assert.deepEqual(F.selection('undismiss', shown({ dismissed: true }), selected).fps, ['d', 'e']);
+  assert.equal(F.selection('undismiss', shown({ dismissed: false }), selected).enabled, false);
+  assert.equal(F.selection('undismiss', shown({ dismissed: false }), selected).count, 0);
+  assert.deepEqual(F.selection('file', shown({ severity: 'P0' }), selected).fps, ['b']);
+  assert.deepEqual(F.selection('dismiss', shown({ severity: 'P3' }), selected).fps, []);
+});
