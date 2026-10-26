@@ -213,6 +213,10 @@ class Runs:
         for e in store.of('dispatch'):
             if e['task']:
                 self.dispatches[(e['run'], e['task'], e['d'].get('role'))].append(e)
+        # Store order is import order. A reader that takes [-1] means the dispatch
+        # the attempt ended on, so each list is chronological; a tie keeps store order.
+        for rows in self.dispatches.values():
+            rows.sort(key=lambda e: (e['attempt'] or 0, e['d'].get('wall_started') or e['ts']))
         self.accepted = {(e['run'], e['d'].get('task')) for e in store.of('invocation')
                          if e['d'].get('command') == 'accept' and e['d'].get('exit') == 0}
         self.interrupted = {(e['run'], e['task']) for e in store.of('event')
@@ -558,8 +562,23 @@ def _float(value):
         return None
 
 
+def session_continued(event) -> bool:
+    """Whether this dispatch was asked to continue a reviewer session.
+
+    `continued` and `failed` both record the request. A missing field, on a dispatch
+    captured before the experiment, is a fresh session.
+    """
+    return (event.get('d') or {}).get('session_continue') is not None
+
+
 def _qa_rows(runs: Runs):
-    """Every QA dispatch with a verdict, with the diff it was shown and its task text."""
+    """Every independent QA dispatch with a verdict, with the diff it was shown and its task text.
+
+    A dispatch that continued a reviewer session is not an independent judgment, including
+    one whose continue failed after it had already printed a verdict. A fresh fallback in
+    the same round has no `session_continue` and stays. There is no switch to put the
+    continued ones back, so a slice never mixes the two.
+    """
     store = runs.store
     effort = {}
     for (run, task), rows in runs.attempts.items():
@@ -572,6 +591,8 @@ def _qa_rows(runs: Runs):
         if role != 'qa':
             continue
         for e in rows:
+            if session_continued(e):
+                continue
             d = e['d']
             if d.get('verdict') not in ('PASS', 'FAIL'):
                 continue
@@ -604,6 +625,12 @@ def shadow_pairs(runs: Runs) -> dict:
     Usable means the shadow ran to its end on an untouched snapshot (`shadow_review` says
     done), both reviewers gave a verdict, and the shadow reviewed the commit that attempt
     committed. Anything else would count noise in the shadow as disagreement.
+
+    The pair uses the attempt's last verdict-bearing primary. The dispatch list is
+    chronological, so that entry is the one the attempt ended on. A QA-only re-run keeps
+    the attempt number, so the candidates stay unfiltered until that last one is chosen:
+    an earlier fresh verdict must not stand in for a later continued session. The pair is
+    then dropped when that chosen primary continued a session.
     """
     ended = {}
     for e in runs.store.of('event'):
@@ -620,8 +647,14 @@ def shadow_pairs(runs: Runs) -> dict:
             primary = [d for d in runs.dispatches.get((run, task, 'qa'), [])
                        if d['attempt'] == n and d['d'].get('verdict') in ('PASS', 'FAIL')]
             reviewed = (shadow['d'].get('shadow') or {}).get('reviewed')
-            if primary and reviewed and reviewed == runs.reviewed.get((run, task, n)):
-                out[(run, task, n)] = (primary[-1], shadow)
+            if not (primary and reviewed and reviewed == runs.reviewed.get((run, task, n))):
+                continue
+            # Chosen after the list is built, and that list is chronological: filtering
+            # continued reviews out first would let an earlier fresh verdict stand in
+            # for the one the attempt ended on.
+            if session_continued(primary[-1]):
+                continue
+            out[(run, task, n)] = (primary[-1], shadow)
     return out
 
 

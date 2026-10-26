@@ -28,6 +28,24 @@ def _human(n: int) -> str:
     return str(n)
 
 
+def _continued_sessions(db) -> dict:
+    """How many dispatches asked to continue a reviewer session.
+
+    Counted from the dispatch events themselves. A shadow review is not required, and a
+    continue that failed still counts: the file was written because continuing was requested.
+    """
+    continued = failed = 0
+    for (raw,) in db.execute(
+            "SELECT data FROM events WHERE kind = 'dispatch' AND data LIKE ?",
+            ('%"session_continue": "%',)):
+        value = json.loads(raw).get('session_continue')
+        if value == 'continued':
+            continued += 1
+        elif value == 'failed':
+            failed += 1
+    return dict(continued_reviews=continued, failed_continues=failed)
+
+
 def status(args) -> int:
     from . import checks
     directory = dataset_dir()
@@ -43,6 +61,7 @@ def status(args) -> int:
             last = db.execute('SELECT MAX(ts) FROM events').fetchone()[0]
             summary['last_event'] = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(last)) if last else None
             summary['checks'] = checks.run(db, verbose=args.verbose)
+            summary.update(_continued_sessions(db))
             if summary['events'].get('dispatch'):
                 from . import export
                 if db.execute("SELECT 1 FROM events WHERE kind = 'dispatch' AND data LIKE '%qa_shadow%' LIMIT 1").fetchone():
@@ -77,6 +96,9 @@ def status(args) -> int:
                   % (shadow['shadow_reviews'], shadow['pairs'], shadow['agree'], rate))
             for pair, n in shadow['by_pair'].items():
                 print('          %s: %d of %d agree' % (pair, n['agree'], n['pairs']))
+        if summary.get('continued_reviews') or summary.get('failed_continues'):
+            print('  continued reviews: %d' % summary['continued_reviews'])
+            print('  failed continues: %d' % summary['failed_continues'])
     if summary['legacy_archives']:
         print('  legacy: %d archived run dir(s) kept in %s (`forge dataset import %s` re-reads them;'
               ' events already stored are skipped)' % (summary['legacy_archives'], legacy, legacy))

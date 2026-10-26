@@ -38,7 +38,10 @@ run goes on, with the same exit code.
   model; the bell tells you when a run finishes or fails, a task fails or a final review gives its
   verdict, and can raise browser notifications while the tab is in the background.
 - **Plan run:** tasks in their planned waves with dependency cables, then the finish line:
-  integration, verification and the whole-run final review, each a node with its status. The
+  integration, verification and the whole-run final review, each a node with its status. Tasks
+  merged with `accept` show as accepted (hollow green), not failed. A final review superseded
+  by later task merges into the integration branch shows as OUTDATED (hollow unlit) instead of
+  as the run's verdict; changes on the user's own branch after an integrate are not tracked. The
   *Execution* view shows the same run on wall-clock time, one block per attempt in the lane it
   ran in, with projected blocks for what has not started and a strip of busy slots against
   `--max-parallel`.

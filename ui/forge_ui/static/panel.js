@@ -9,7 +9,7 @@ window.ForgePanel = (() => {
   const num = v => typeof v === 'number' && Number.isFinite(v) ? v : null;
   const display = v => v === null || v === undefined || v === '' ? '—' : typeof v === 'object' ? JSON.stringify(v, null, 2) : String(v);
   const STATUSES = new Set(['merged', 'pass', 'running', 'pending', 'fail', 'error', 'infra', 'timeout', 'unknown', 'invalidated', 'blocked',
-    'interrupted', 'nochanges', 'conflict', 'accepted', 'none']);
+    'interrupted', 'nochanges', 'conflict', 'accepted', 'none', 'outdated']);
   const cache = new Map();                                  // path → {data, error, at}
   function el(tag, text, className) {
     const node = document.createElement(tag);
@@ -51,6 +51,7 @@ window.ForgePanel = (() => {
   function section(parent, title) { const s = el('section', undefined, 'insp-section'); s.append(el('h3', title)); parent.append(s); return s; }
   function details(parent, title, value, key, { open = false, cls = '' } = {}) {
     const d = el('details', undefined, cls); d.dataset.keep = key; if (open) d.open = true;
+    if (key && String(key).endsWith('known_issues')) d.id = key;
     const pre = el('pre', value); pre.dataset.scroll = key + '-text';
     d.append(el('summary', title), pre); parent.append(d); return d;
   }
@@ -60,6 +61,21 @@ window.ForgePanel = (() => {
     return a;
   }
   function muted(parent, text) { parent.append(el('p', text, 'muted')); }
+  // The acceptance chip is a key to the Known issues text in this panel, not another route.
+  function acceptedChip(task) {
+    const over = task.accepted_over === 'FAIL' || task.accepted_over === 'UNKNOWN' ? task.accepted_over : null;
+    const id = 'task-' + task.id + '-known_issues';
+    const a = el('a', over ? 'accepted over ' + over : 'accepted', 'chip st-accepted');
+    a.href = '#' + id;
+    a.addEventListener('click', event => {
+      event.preventDefault();
+      const node = document.getElementById(id);
+      if (!node) return;
+      node.open = true;
+      node.scrollIntoView({ block: 'nearest' });
+    });
+    return a;
+  }
   // who decided an escalation: policy, a human's retry --dwarf (retry) or a pin; older rows read as policy
   const sourcePlate = source => el('span', source || 'policy', 'plate src-plate src-' + String(source || 'policy').replace(/[^a-z]/g, ''));
   // the write controls of a plan run (task undefined) or of one of its tasks; a page without controls.js says it is read-only
@@ -218,11 +234,23 @@ window.ForgePanel = (() => {
     }
     const f = section(host, 'Finish');
     const F = RM.finishState(run);
-    if (run.kind === 'solo') fields(f, [['Verdict', chip(list(run.tasks)[0] && list(run.tasks)[0].verdict)]]);
+    if (run.kind === 'solo') {
+      const soloTask = list(run.tasks)[0];
+      const verdict = soloTask ? RM.taskVerdict(soloTask) : { text: null, status: 'unknown' };
+      fields(f, [['Verdict', chip(verdict.text, verdict.status)]]);
+    }
     else {
+      const finalSel = { kind: 'final' }, openFinal = () => ctx.onSelect(finalSel);
+      let finalValue;
+      if (F.final.status === 'OUTDATED') {
+        finalValue = el('a'); finalValue.href = ctx.hash(finalSel);
+        finalValue.addEventListener('click', e => { e.preventDefault(); openFinal(); });
+        finalValue.append(chip('OUTDATED'));
+      } else finalValue = link(F.final.status === 'NONE' ? 'not requested' : F.final.status, ctx.hash(finalSel), openFinal);
       fields(f, [['Integration', link(`${F.integration.merged}/${F.integration.total} merged`, ctx.hash({ kind: 'integration' }), () => ctx.onSelect({ kind: 'integration' }))],
         ['Verification', link(F.verification.status, ctx.hash({ kind: 'verification' }), () => ctx.onSelect({ kind: 'verification' }))],
-        ['Final review', link(F.final.status === 'NONE' ? 'not requested' : F.final.status, ctx.hash({ kind: 'final' }), () => ctx.onSelect({ kind: 'final' }))]]);
+        ['Final review', finalValue]]);
+      if (F.final.status === 'OUTDATED') muted(f, RM.reviewSinceLine(F.final));
       if (F.final.findings) findingCounts(f, F.final.findings);
     }
     if (list(run.deferrals).length) details(host, `Deferred tasks (${run.deferrals.length})`, run.deferrals.join('\n'), 'deferrals');
@@ -236,10 +264,13 @@ window.ForgePanel = (() => {
     const head = el('div', undefined, 'insp-head');
     head.append(el('h2', solo ? (task.title || 'Solo run') : `${task.id} · ${task.title || 'Untitled task'}`), el('div', solo ? 'solo task' : `task · wave ${display(task.wave)}`, 'insp-kind'));
     const chips = el('div', undefined, 'chips');
-    chips.append(chip(task.status));
-    if (task.verdict) chips.append(chip('review ' + task.verdict, task.verdict.toLowerCase()));
+    if (RM.taskStatus(task) === 'ACCEPTED') chips.append(acceptedChip(task));
+    else {
+      chips.append(chip(RM.taskStatus(task)));
+      if (task.accepted === true) chips.append(acceptedChip(task));
+      else if (task.verdict) chips.append(chip('review ' + task.verdict, task.verdict.toLowerCase()));
+    }
     if (task.explored) chips.append(el('span', '* explored', 'tag'));
-    if (task.accepted_by) chips.append(chip('accepted over FAIL', 'nochanges'));
     head.append(chips);
     const dl = diffLink(ctx, solo ? 'View the diff →' : 'View its diff, findings pinned to their lines →', { kind: 'task', task: task.id, source: 'current' }); if (dl) head.append(dl);
     host.append(head);
@@ -270,7 +301,7 @@ window.ForgePanel = (() => {
     for (const z of tp.zones) {
       const box = el('div', undefined, 'attempt');
       const row = list(task.attempts).filter(a => a.attempt === z.attempt).pop();
-      const h = el('div', undefined, 'attempt-head'); h.append(el('strong', z.name.toLowerCase())); if (row) h.append(chip(row.status), el('span', time(row.at), 'muted'));
+      const h = el('div', undefined, 'attempt-head'); h.append(el('strong', z.name.toLowerCase())); if (row) h.append(chip(RM.attemptStatus(task, row.attempt, row.status)), el('span', time(row.at), 'muted'));
       box.append(h);
       for (const pid of z.parts) {
         const p = tp.parts.find(x => x.id === pid); if (!p || p.planned) continue;
@@ -329,7 +360,8 @@ window.ForgePanel = (() => {
       const cs = section(host, 'Clef predictions');
       for (const [label, p] of preds) {
         const n = Number(String(label).match(/\d+/) || 1), outcome = list(task.attempts).filter(a => a.attempt === n).pop();
-        fields(cs, [[label, `p(pass) = ${display(p.p)} → ${outcome ? outcome.status : 'not finished'}`], ['Assignment', p.assignment ? plates([p.assignment.dwarf, p.assignment.qa]) : '—']]);
+        const happened = outcome ? RM.attemptStatus(task, outcome.attempt, outcome.status) : 'not finished';
+        fields(cs, [[label, `p(pass) = ${display(p.p)} → ${happened}`], ['Assignment', p.assignment ? plates([p.assignment.dwarf, p.assignment.qa]) : '—']]);
       }
     }
     // the prompts and the final messages
@@ -338,10 +370,18 @@ window.ForgePanel = (() => {
     else {
       const t = detail.data.texts || {};
       for (const [title, key] of [['Requirements (prompt.md)', 'prompt'], ['Intended approach', 'approach'], ['Retry findings', 'retry_findings'],
-        ['Dwarf prompt as assembled (dwarf.input)', 'dwarf_input'], ['Review prompt as assembled (qa.input)', 'qa_input'], ['Known issues', 'known_issues'], ['Accepted by', 'accepted_by']]) {
+        ['Dwarf prompt as assembled (dwarf.input)', 'dwarf_input'], ['Review prompt as assembled (qa.input)', 'qa_input']]) {
         if (t[key] != null) details(ps, title, t[key], `task-${task.id}-${key}`);
       }
     }
+    // Known issues is the text the acceptance chip opens. Accepted by keeps the reason, who, and when.
+    const texts = detail.data && detail.data.texts || null;
+    if (task.accepted === true || (texts && texts.known_issues != null)) {
+      const known = texts ? texts.known_issues : null;
+      details(ps, 'Known issues', known != null ? known : (detail.data ? '—' : 'Loading…'), `task-${task.id}-known_issues`);
+    }
+    const acceptedBy = texts && texts.accepted_by != null ? texts.accepted_by : task.accepted_by;
+    if (acceptedBy != null) details(ps, 'Accepted by', acceptedBy, `task-${task.id}-accepted_by`);
     if (task.dwarf_tail != null) details(ps, 'Dwarf final message', task.dwarf_tail, `task-${task.id}-dwarf_tail`);
     if (task.qa_tail != null) details(ps, 'Reviewer final message', task.qa_tail, `task-${task.id}-qa_tail`);
   }
@@ -475,10 +515,12 @@ window.ForgePanel = (() => {
       return;
     }
     const chips = el('div', undefined, 'chips');
-    chips.append(chip(pick.state === 'running' ? 'RUNNING' : pick.verdict || pick.state || 'unknown'));
+    const status = RM.finalStatus(pick);
+    chips.append(chip(status));
     if (pick.published) chips.append(el('span', 'published', 'tag'));
     chips.append(el('span', pick.source === 'integrate' ? 'during integrate' : 'forge review', 'tag'));
     head.append(chips);
+    if (status === 'OUTDATED') muted(host, RM.reviewSinceLine(pick));
     fields(host, [['Reviewer', plate(pick.spec)], ['Threshold', pick.threshold], ['Reviewed', pick.base || pick.tip ? `${String(pick.base || '?').slice(0, 10)}..${String(pick.tip || '?').slice(0, 10)}` : '—', true],
       ['Started', time(pick.started ?? pick.at)], ['Ended', time(pick.ended)], ['Duration', RM.fmtDur(pick.duration_s)]]);
     if (pick.execution) { const s = { kind: 'execution', task: null, exec: pick.execution }; host.append(link('Model, timings and exact prompt →', ctx.hash(s), () => ctx.onSelect(s))); }

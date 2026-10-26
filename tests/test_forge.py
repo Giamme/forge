@@ -11,16 +11,25 @@ import shutil
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
+CLAUDE_SESSION = '5f0c2a8e-1d2b-4c3d-9e4f-0123456789ab'
+CODEX_THREAD = '6a1b3c4d-5e6f-7081-92a3-b4c5d6e7f809'
+# Interpolated below. A literal percent sign in the script has to be written %%.
 FAKE = '''#!/usr/bin/env python3
 import os, sys, pathlib, time
 a=sys.argv[1:]
 if '--help' in a:
  if os.environ.get('HELPS'):
   with open(os.environ['HELPS'], 'a') as f: f.write('help\\n')
- print('-p --model --add-dir --effort --permission-mode --allowedTools --disallowed-tools --dangerously-skip-permissions -m -C -o -c -s --skip-git-repo-check --approve-for-me --base --uncommitted --dangerously-bypass-approvals-and-sandbox --dir --variant --auto --agent --print --print-timeout --mode --json --output-format --verbose --format --prompt-file --reasoning-effort --allow --deny --always-approve'); sys.exit()
+ if 'resume' in a:   # codex exec resume --help: no -C, no -s
+  print('-m --model -c --config --json -o --output-last-message --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox'); sys.exit()
+ print('--resume -p --model --add-dir --effort --permission-mode --allowedTools --disallowed-tools --dangerously-skip-permissions -m -C -o -c -s --skip-git-repo-check --approve-for-me --base --uncommitted --dangerously-bypass-approvals-and-sandbox --dir --variant --auto --agent --print --print-timeout --mode --json --output-format --verbose --format --prompt-file --reasoning-effort --allow --deny --always-approve'); sys.exit()
 p = (pathlib.Path(a[a.index('--prompt-file')+1]).read_text() if '--prompt-file' in a
      else sys.stdin.read() if '-p' in a or a[-1] == '-' else a[-1])
-qa = '--disallowed-tools' in a or '--deny' in a or '-s' in a or 'review' in a
+# Continuing a session (`--resume <id>`, `exec resume <id>`) is always a reviewer call.
+eq = [x for x in a if x.startswith('--resume=')]
+cont = (eq[0].split('=', 1)[1] if eq else a[a.index('--resume')+1] if '--resume' in a
+        else a[a.index('--')+1] if 'resume' in a and '--' in a else a[a.index('resume')+1] if 'resume' in a else None)
+qa = '--disallowed-tools' in a or '--deny' in a or '-s' in a or 'review' in a or cont is not None
 name = 'a.txt' if 'TASK_a' in p else ('b.txt' if 'TASK_b' in p else ('c.txt' if 'TASK_c' in p else ('d.txt' if 'TASK_d' in p else 'change.txt')))
 # A shadow review (forge-shadow.py) is a review the run never reads; it gets its own role so
 # it never shifts the primary reviewer's call numbers or counts.
@@ -43,7 +52,12 @@ if os.environ.get('SCENARIO'):
  table = json.loads(sp.read_text()) if sp.exists() else {}
  for k in (task+'.'+role+'.'+str(n), task+'.'+role+'.*', '*.'+role+'.'+str(n), '*.'+role+'.*'):
   if k in table: sc = table[k]; break
+if os.environ.get('CWDS'):
+ with open(os.environ['CWDS'], 'a') as f: f.write(os.getcwd()+'\\n')
 if sc.get('sleep'): time.sleep(sc['sleep'])
+# 'continue_fails': the harness cannot continue the session it was asked to (exit 1, as claude does).
+if cont is not None and sc.get('continue_fails'):
+ sys.stderr.write('No conversation found with session ID: '+cont+'\\n'); sys.exit(1)
 if name == 'b.txt' and not qa and os.environ.get('SLOW_B'): time.sleep(4)
 if not qa:
  if os.environ.get('SLEEP'): time.sleep(10)
@@ -69,12 +83,15 @@ if sc.get('stderr'): sys.stderr.write(sc['stderr']+'\\n')
 if sc.get('stdout') is not None: print(sc['stdout']); sys.exit(sc.get('rc', 0))
 if '-o' in a:
  pathlib.Path(a[a.index('-o')+1]).write_text(result)
- import json; print(json.dumps({'type':'turn.completed','usage':{'input_tokens':20,'cached_input_tokens':5,'output_tokens':3}}))
+ import json
+ # codex exec --json: the thread id is the first line, then the turn's tokens
+ print(json.dumps({'type':'thread.started','thread_id':'%s'}))
+ print(json.dumps({'type':'turn.completed','usage':{'input_tokens':20,'cached_input_tokens':5,'output_tokens':3}}))
 elif '--output-format' in a:
  import json
  # claude's and openclaude's stream-json: the session, what the model said, then the result
  if a[a.index('--output-format')+1] == 'stream-json':
-  print(json.dumps({'type':'system','subtype':'init','session_id':'5f0c2a8e-1d2b-4c3d-9e4f-0123456789ab','model':'fake'}))
+  print(json.dumps({'type':'system','subtype':'init','session_id':'%s','model':'fake'}))
   print(json.dumps({'type':'assistant','message':{'id':'msg_1','role':'assistant','content':[{'type':'text','text':result}],'usage':{'input_tokens':1,'output_tokens':1}}}))
  print(json.dumps({'type':'result', 'is_error':bool(sc.get('is_error')), 'result':result, 'usage':{'input_tokens':10,'cache_read_input_tokens':2,'cache_creation_input_tokens':3,'output_tokens':4}}))
 elif '--format' in a and a[a.index('--format')+1] == 'json':
@@ -87,7 +104,7 @@ elif '--format' in a and a[a.index('--format')+1] == 'json':
   print(json.dumps(dict(e, sessionID='ses_fake')))
 else: print(result)
 sys.exit(sc.get('rc', 0))
-'''
+''' % (CODEX_THREAD, CLAUDE_SESSION)
 
 class ForgeTests(unittest.TestCase):
  def setUp(self):
@@ -464,6 +481,19 @@ class ForgeTests(unittest.TestCase):
   self.assertTrue((run/'dwarf.infra').read_text().startswith('class=auth\n'))
   rows=[line.split('\t') for line in (run/'attempts.tsv').read_text().splitlines()]
   self.assertEqual([row[1:] for row in rows], [['1','INFRA','quota','sol'],['2','INFRA','auth','sol']])
+
+ def test_run_records_each_dispatch_session(self):
+  # codex's thread id and claude's session id, kept for a later round. Nothing reads them yet.
+  p=self.plan(); r=self.run_script('forge-parallel.sh','run',p); self.assertEqual(r.returncode,0,r.stdout)
+  for task in ('a','b'):
+   directory=p/'tasks'/task
+   for role, sid in (('dwarf',CODEX_THREAD),('qa',CLAUDE_SESSION)):
+    self.assertEqual((directory/(role+'.session')).read_text(), sid+'\n', task+' '+role)
+    archives=list((directory/'attempts').glob(role+'-*'))
+    self.assertTrue(archives, task+' '+role)
+    for archive in archives:
+     self.assertEqual((archive/(role+'.session')).read_text(), sid+'\n')
+     self.assertEqual(json.loads((archive/'metrics.json').read_text())['session_id'], sid)
 
  def test_solo_dry_run_writes_no_status(self):
   run=self.root/'solo'

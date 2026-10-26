@@ -32,7 +32,10 @@ and the cloud remembers it.
 
 The page reads like a signal box's desk: engraved plates for headings, push buttons with lamps
 for switches, and lamps that keep one meaning everywhere (amber running, green merged, red failed,
-unlit pending). Two layouts share it. *Immersive*, the default, floats the runs, the inspector and the tasks
+unlit pending). Tasks merged with `accept` show as accepted (hollow green) rather than failed.
+A final review superseded by tasks merged into the integration branch shows as OUTDATED
+(hollow unlit) instead of as the run's verdict; changes on the user's own branch after an
+integrate are not tracked. Two layouts share it. *Immersive*, the default, floats the runs, the inspector and the tasks
 over a full-window stage (on a first visit the inspector and the tasks start folded, so a run
 opens on its plate); *Workbench* docks them beside it with splitters. `1`, `2` and
 `3` fold each module away, the header switches layout and theme (system, light or dark), and the
@@ -69,8 +72,10 @@ indistinguishable from the same command typed in a terminal, except that `contro
   apply (a budget with no live scheduler, a merged task) is disabled and says why.
 - **Open findings:** the review findings a run left open (tolerated by `--qa-threshold`,
   PLAUSIBLE, or left by the whole-run review), for this run or every run of its repository.
-  Select some and file them as GitHub issues, or dismiss the ones that need no work (and take
-  that back). It runs `forge issues`, so a finding is never filed twice.
+  Findings of an outdated review carry an "outdated review" marker, and findings a person
+  accepted have origin `accepted`. Select some and file them as GitHub issues, or dismiss the
+  ones that need no work (and take that back). It runs `forge issues`, so a finding is never
+  filed twice.
 - **Delete a run:** a dialog that first shows a dry run, then deletes the run directory
   through `forge runs rm`. The dataset keeps the run's traces, and by default a `.tar.gz` of
   them too; you can also remove its clean worktrees and its branches that nothing has checked

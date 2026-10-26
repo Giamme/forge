@@ -63,7 +63,7 @@
     const aliases = specs => new Set(list(specs).map(RM.alias).filter(Boolean));
     return { key: run.key, run, project: hashId(run.repo || '?'), n, bucket: bucket(n), diff, dominant, state, t: startOf(run),
       dwarf: aliases(run.dwarf_models || run.models), qa: aliases(run.qa_models || []), all: aliases(run.models),
-      review: run.final_review || null, verification: run.verification_status || null, decompose: run.decompose_level || null, kind: run.kind };
+      review: RM.runReviewStatus(run) || null, verification: run.verification_status || null, decompose: run.decompose_level || null, kind: run.kind };
   }
 
   /* ---------- filters: the cloud shows exactly the runs that match ---------- */

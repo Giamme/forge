@@ -254,7 +254,7 @@ window.ForgeCloudUI = (() => {
       }
       const more = el('fieldset', undefined, 'cloud-field cloud-more'); more.append(el('legend', 'More'));
       more.append(select('Active', 'active', [[0, 'any time'], [1, 'in the last day'], [7, 'in the last week'], [30, 'in the last month'], [90, 'in the last 3 months']], () => f.activeDays, v => { f.activeDays = Number(v) || 0; }));
-      more.append(select('Final review', 'review', [['', 'any'], ['PASS', 'passed'], ['FAIL', 'failed'], ['none', 'no verdict']], () => f.review, v => { f.review = v; }));
+      more.append(select('Final review', 'review', [['', 'any'], ['PASS', 'passed'], ['FAIL', 'failed'], ['OUTDATED', 'outdated'], ['none', 'no verdict']], () => f.review, v => { f.review = v; }));
       more.append(select('Verification', 'verification', [['', 'any'], ['PASS', 'passed'], ['FAIL', 'failed'], ['none', 'not run']], () => f.verification, v => { f.verification = v; }));
       const dec = Object.keys(O.decompose);
       if (dec.length > 1) more.append(chips('Decompose', dec.map(k => [k, k === 'none' ? 'off' : k, O.decompose[k]]), () => f.decompose, v => { f.decompose = v; }));
@@ -290,13 +290,22 @@ window.ForgeCloudUI = (() => {
       head.append(shut);
       card.append(head, el('h2', String(r.goal || 'Untitled run').split('\n')[0]), el('p', r.run_id || '', 'mono muted'));
       const leds = el('span', undefined, 'leds');
-      for (const t of list(r.task_statuses).slice(0, 120)) { const l = el('i', undefined, 'led st-' + String(t.status || 'pending').toLowerCase()); l.title = `${t.id}: ${t.status}${t.title ? ' · ' + t.title : ''}`; leds.append(l); }
+      for (const t of list(r.task_statuses).slice(0, 120)) {
+        const st = RM.taskStatus(t);
+        const l = el('i', undefined, 'led st-' + String(st || 'pending').toLowerCase());
+        l.title = `${t.id}: ${st}${t.title ? ' · ' + t.title : ''}`;
+        leds.append(l);
+      }
       card.append(leds);
       const dl = el('dl', undefined, 'fields');
       const mix = ['high', 'medium', 'low', 'none'].filter(k => f.diff[k]).map(k => `${f.diff[k]} ${k === 'none' ? 'unset' : k}`).join(' · ');
       const plates = specs => { if (!specs.length || !window.ForgeIcons) return specs.join(', ') || '—'; const s = el('span', undefined, 'plates'); for (const x of specs) s.append(window.ForgeIcons.modelPlate(x)); return s; };
+      const verdict = r.final_review && typeof r.final_review === 'object' ? r.final_review.verdict : r.final_review;
+      const isOutdated = verdict && RM.runReviewStatus(r) === 'OUTDATED';
+      const reviewText = verdict ? (isOutdated ? `${verdict} (outdated)` : verdict) : '—';
+      const reviewVal = isOutdated ? el('span', reviewText, 'chip st-outdated') : reviewText;
       for (const [k, v, mono] of [['Tasks', `${f.n}${mix ? ' · ' + mix : ''}`], ['Implementers', plates([...f.dwarf])], ['Reviewers', plates([...f.qa])],
-        ['Started', when(r.created)], ['Updated', when(r.updated)], ['Final review', r.final_review || '—'], ['Verification', r.verification_status || '—'], ['Decompose', r.decompose_level || 'off']]) {
+        ['Started', when(r.created)], ['Updated', when(r.updated)], ['Final review', reviewVal], ['Verification', r.verification_status || '—'], ['Decompose', r.decompose_level || 'off']]) {
         const dd = el('dd', undefined, mono ? 'mono' : ''); dd.append(v instanceof Node ? v : document.createTextNode(String(v))); dl.append(el('dt', k), dd);
       }
       card.append(dl);
@@ -345,7 +354,7 @@ window.ForgeCloudUI = (() => {
           a.href = '#/runs/' + encodeURIComponent(r.key);
           a.append(el('strong', String(r.goal || 'Untitled run').split('\n')[0]), el('span', `${r.run_id || ''} · ${f.n} task${f.n === 1 ? '' : 's'}${r.kind === 'solo' ? ' · solo' : ''}`, 'mono muted'));
           const leds = el('span', undefined, 'leds');
-          for (const t of list(r.task_statuses).slice(0, 60)) leds.append(el('i', undefined, 'led st-' + String(t.status || 'pending').toLowerCase()));
+          for (const t of list(r.task_statuses).slice(0, 60)) leds.append(el('i', undefined, 'led st-' + String(RM.taskStatus(t) || 'pending').toLowerCase()));
           a.append(leds); grid.append(a);
         }
         g.append(grid); listHost.append(g);

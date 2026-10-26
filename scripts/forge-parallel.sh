@@ -30,6 +30,11 @@
 #                           by a listed reviewer of another model family, recorded and
 #                           never read (measures reviewer agreement). `none` turns it off
 #   --shadow-rate R         that share, 0..1 (default 0.1)
+#   --reviewer-session      opt-in experiment: a later review round continues the reviewer's
+#                           earlier session (claude, openclaude, codex) when the QA spec is
+#                           unchanged, and starts fresh whenever it cannot; each round is
+#                           logged in tasks/<id>/review_sessions.tsv and tagged in the
+#                           dataset. `--no-reviewer-session` turns it off (the default)
 #   --explore E             on by default at 0.2 (0 turns it off, and is kept): a row left
 #                           to forge gets, with probability E/2, its neighbouring model
 #                           (one tier away in the given pools) instead of its pool's turn;
@@ -129,7 +134,7 @@ pool_pick() { # pool_pick <comma-list> <index>
 do_plan() {
   local PLAN="${1:?plan needs a plan dir}"; shift
   local REPO="" D_ANY="" D_HI="" D_MD="" D_LO="" Q_ANY="" Q_HI="" Q_MD="" Q_LO=""
-  local PLANNER="" NOMEM=0 jev_rc=0 DLEVEL="" SHADOW_QA="" SHADOW_RATE="" EXPLORE="" FAIL_FIRST=""
+  local PLANNER="" NOMEM=0 jev_rc=0 DLEVEL="" SHADOW_QA="" SHADOW_RATE="" EXPLORE="" FAIL_FIRST="" REVIEWER_SESSION=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --repo)         REPO="${2:?}"; shift 2 ;;
@@ -157,6 +162,8 @@ do_plan() {
       --ui|--no-ui)   forge_ui_flag "$1"; shift ;;
       --fail-first)   FAIL_FIRST=on; shift ;;
       --no-fail-first) FAIL_FIRST=off; shift ;;
+      --reviewer-session)    REVIEWER_SESSION=on; shift ;;
+      --no-reviewer-session) REVIEWER_SESSION=off; shift ;;
       *)
         # `case` is not a loop, so `continue` here belongs to the enclosing while.
         if [ "$JEV_OPTS" = 1 ]; then
@@ -192,6 +199,9 @@ do_plan() {
     || printf '%s\n' "$SHADOW_RATE" > "$PLAN/shadow_rate"
   # Fail-first evidence (opt-in, advisory) is part of the plan too: every task's review gets it.
   case "$FAIL_FIRST" in on) : > "$PLAN/fail_first" ;; off) rm -f "$PLAN/fail_first" ;; esac
+  # Reviewer-session continuation (opt-in experiment): the file holds `on`. Readers only
+  # test that it exists; the dataset records its content.
+  case "$REVIEWER_SESSION" in on) printf '%s\n' on > "$PLAN/reviewer_session" ;; off) rm -f "$PLAN/reviewer_session" ;; esac
   # Exploration is decided here and only here, so the table and preflight see what will run.
   # On by default: choosing models from measured pass rates needs some randomized picks, and
   # history had almost none (9 tasks ever ran on more than one spec). The flag wins, then
@@ -479,6 +489,9 @@ render_table() {
     else
       echo "fail-first: on, but $(cat "$PLAN/repo")/.forge/verify-subset (a test command with {files}) is missing, so nothing will run"
     fi
+  fi
+  if [ -f "$PLAN/reviewer_session" ]; then
+    echo "reviewer-session: a later review round continues the reviewer's earlier session when its QA spec is unchanged (experiment; falls back to a fresh session)"
   fi
   echo
   local w id dws starred=0
@@ -868,8 +881,11 @@ do_task_body() (
   echo "$review_fp" > "$tdir/review.fingerprint"
 
   forge_metric_phase preparation
-  local jev_loaded_qa=0 subset_cmd="" qa_thr
+  local jev_loaded_qa=0 subset_cmd="" qa_thr rs_on=0
   qa_thr="$(qa_threshold_for "$PLAN" "$id")"
+  # Read once per round, like the threshold: continuing the earlier reviewer's session is an
+  # opt-in experiment (plan --reviewer-session), and a round never changes its mind midway.
+  [ -f "$PLAN/reviewer_session" ] && rs_on=1
 
   # A SEPARATE file from .forge/verify, and opt-in. It must contain {files}, because
   # only the project knows how its runner takes a file list -- `pytest -q {files}` works,
@@ -895,11 +911,29 @@ do_task_body() (
   # on the review snapshot, like the subset run above; the reviewer gets the evidence.
   rm -f "$tdir/failfirst.json" "$tdir/failfirst.txt"
   [ ! -f "$PLAN/fail_first" ] || forge_fail_first "$review" "$tdir" "$REPO"
+  # What changed since the review whose findings this reviewer is handed. Fractal keeps
+  # today's prompt unless it retries, as changes.prev.diff does. dwarf.last is the reply of
+  # the attempt under review: a dwarf run just rewrote it, or $resume (the validated QA-only
+  # path, never the raw marker) guarantees the reviewed commit is the one it describes.
+  local prompt_extra=()
+  if [ -z "${FORGE_FRACTAL_RUN:-}" ] || [ "${FORGE_FRACTAL_RETRY:-}" = 1 ]; then
+    prompt_extra+=(--role qa)
+    attempt_delta "$tdir" "$wt" "$reviewed"
+    if [ -s "$tdir/changes.since.diff" ]; then
+      prompt_extra+=(--retry-diff "$tdir/changes.since.diff" --retry-stat "$tdir/changes.since.stat"
+        --retry-range "$(awk '{ print substr($1, 1, 7) ".." substr($2, 1, 7) }' "$tdir/changes.since.range")")
+    fi
+    if [ -s "$tdir/retry_findings.md" ] && [ -s "$tdir/dwarf.last" ]; then
+      prompt_extra+=(--reply "$tdir/dwarf.last")
+    fi
+  else
+    rm -f "$tdir/changes.since.diff" "$tdir/changes.since.range" "$tdir/changes.since.stat"
+  fi
   # QA uses the dispatch-time ownership and baseline, never later merge state.
   /bin/bash "$MEMORY" inject "$REPO" qa --task "$tdir/prompt.md" \
       --run-dir "$tdir" > "$tdir/qa.memory"
   {
-    python3 "$SKILL_DIR/scripts/forge-prompt.py" --requirements "$tdir/prompt.md" --capsule "$tdir/baseline.capsule" --approach "$tdir/approach.md" --retry "$tdir/retry_findings.md" --memory "$tdir/dwarf.memory" --memory "$tdir/qa.memory"
+    python3 "$SKILL_DIR/scripts/forge-prompt.py" --requirements "$tdir/prompt.md" --capsule "$tdir/baseline.capsule" --approach "$tdir/approach.md" --retry "$tdir/retry_findings.md" ${prompt_extra[@]+"${prompt_extra[@]}"} --memory "$tdir/dwarf.memory" --memory "$tdir/qa.memory"
     python3 "$SKILL_DIR/scripts/forge-contract.py" qa --part head --kind task
     echo
     if [ -s "$tdir/failfirst.txt" ]; then cat "$tdir/failfirst.txt"; echo; fi
@@ -915,9 +949,10 @@ do_task_body() (
       echo
     fi
     if [ -s "$tdir/guard.txt" ]; then
-      # Facts forge observed about how the implementer worked. The reviewer never sees the
-      # implementer's own report, so this is the only way an unfinished measurement or a
-      # stray process reaches the review.
+      # Facts forge observed about how the implementer worked. On a first attempt the reviewer
+      # never sees the implementer's own report (a retry's reviewer gets the reply, to check
+      # against the code), so this is how an unfinished measurement or a stray process
+      # reaches the review.
       echo "Implementer guard notes (observed by forge, not claimed by the implementer):"
       sed 's/^/  - /' "$tdir/guard.txt"
       echo "A promise of later work means a check may never have run; judge the diff on its own merits."
@@ -949,9 +984,45 @@ do_task_body() (
     shadow_pid=$!
   fi
   forge_metric_phase dispatch
-  /bin/bash "$DISPATCH" qa "$qa" --repo "$review" --run-dir "$tdir" \
-        --review-base "$(cat "$tdir/review.base")" --ripwire-query-file "$tdir/prompt.md" --prompt-file "$tdir/qa.input" $yq --output "${FORGE_OUTPUT:-summary}" >"$tdir/qa.out" 2>&1
+  # Whether this round continues the reviewer's session. Every answer but "continued" is a
+  # fresh dispatch, and nothing here can abort the round: a doctor that fails means fresh.
+  local rs_mode=fresh rs_reason="" rs_id="" rs_row=1 rs_cont=()
+  if [ "$rs_on" = 1 ]; then
+    if [ -n "${FORGE_FRACTAL_RUN:-}" ] || forge_plan_is_fractal "$PLAN"; then
+      rs_reason=fractal
+    elif [ ! -s "$tdir/retry_findings.md" ]; then
+      rs_reason=first-round
+    else
+      FORGE_CAPABILITY_CACHE="${FORGE_CAPABILITY_CACHE:-$PLAN/capabilities}" \
+        /bin/bash "$DISPATCH" doctor --spec "$qa" --role qa $yq > "$tdir/qa.doctor" 2>&1 || : > "$tdir/qa.doctor"
+      IFS=$'\t' read -r rs_mode rs_reason rs_id < <(review_session_decide \
+        "$tdir/retry_findings.session" "$tdir/retry_findings.resolved" "$tdir/qa.doctor")
+      [ "$rs_mode" = continued ] && rs_cont=(--continue-session "$rs_id")
+    fi
+  fi
+  local qa_cmd=(/bin/bash "$DISPATCH" qa "$qa" --repo "$review" --run-dir "$tdir" \
+        --review-base "$(cat "$tdir/review.base")" --ripwire-query-file "$tdir/prompt.md" --prompt-file "$tdir/qa.input" ${yq:+"$yq"} --output "${FORGE_OUTPUT:-summary}")
+  "${qa_cmd[@]}" ${rs_cont[@]+"${rs_cont[@]}"} >"$tdir/qa.out" 2>&1
   rc=$?
+  if [ "$rc" = 9 ] && [ "$rs_mode" = continued ]; then
+    # The session was not continued (the harness cannot, or it failed). Same input, fresh: the
+    # fresh dispatch decides the task. Why comes from the first dispatch's record, which the
+    # second one clears.
+    if [ "$(sed -n 's/^reason=//p' "$tdir/qa.continue" 2>/dev/null | head -1)" = unsupported ]; then
+      rs_reason=continue-unsupported
+    else
+      rs_reason=continue-failed
+    fi
+    rs_mode=fresh
+    mv "$tdir/qa.out" "$tdir/qa.continue.out" 2>/dev/null || true
+    "${qa_cmd[@]}" >"$tdir/qa.out" 2>&1
+    rc=$?
+  fi
+  if [ "$rs_on" = 1 ]; then
+    # One row per round, describing the dispatch whose result counts.
+    [ ! -f "$tdir/review_sessions.tsv" ] || rs_row=$(( $(wc -l < "$tdir/review_sessions.tsv") + 1 ))
+    printf '%s\t%s\t%s\t%s\t%s\n' "$rs_row" "$attempt" "$rs_mode" "$rs_reason" "$rs_id" >> "$tdir/review_sessions.tsv"
+  fi
   if [ -n "$shadow_pid" ]; then
     # On every path below, before any status is written: the shadow learns the primary is
     # done (which bounds how much longer it may take), and no shadow outlives its task, so
@@ -1036,7 +1107,8 @@ do_task() {
   record_attempt "$1" "$2"
   # The retry policy's state (escalation.next or escalation.stop), decided now rather than
   # at the next retry so a spent retry budget still reports it and the scheduler sees it.
-  python3 "$SKILL_DIR/scripts/forge-route.py" escalation --plan "$1" --task "$2" --check >/dev/null 2>&1 || true
+  python3 "$SKILL_DIR/scripts/forge-route.py" escalation --plan "$1" --task "$2" --check \
+    --qa-only-next "$(qa_only_next_flag "$1" "$2")" >/dev/null 2>&1 || true
   return $rc
 }
 

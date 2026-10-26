@@ -48,7 +48,8 @@ class ReaderTests(unittest.TestCase):
                 {'at': 1760621000.0, 'attempt': 2, 'status': 'PASS', 'infra': None},
                 {'at': 1760621100.0, 'attempt': 2, 'status': 'MERGED', 'infra': None}],
             'escalations': [{'at': 1760620500.0, 'attempt': 2, 'from': 'luna', 'to': 'sol', 'source': 'policy'}],
-            'verdict': 'PASS', 'accepted_by': 'User: accepted the tradeoff.\n', 'explored': True,
+            'verdict': 'PASS', 'accepted_by': 'User: accepted the tradeoff.\n',
+            'accepted': True, 'accepted_attempt': None, 'accepted_over': None, 'explored': True,
             'route': [{'at': 1760619000.0, 'task': 'reader', 'tier': 'high', 'epsilon': 0.5,
                        'candidates': ['astra', 'opus'], 'default': 'opus', 'chosen': 'astra',
                        'explored': False, 'propensity': 0.25, 'inputs': {},
@@ -69,6 +70,7 @@ class ReaderTests(unittest.TestCase):
             'merged_at': (FIXTURE / 'tasks/reader/merged').stat().st_mtime, 'findings': NO_FINDINGS,
             'gate': None, 'known_issues': False, 'fail_first': None,
         })
+        self.assertEqual((page['accepted'], page['accepted_attempt'], page['accepted_over']), (False, None, None))
         self.assertEqual(page['status'], 'RUNNING')
         self.assertEqual(page['branch'], 'forge/20261016-153012-ab12/page')
         self.assertEqual(page['attempt'], 3)
@@ -79,7 +81,9 @@ class ReaderTests(unittest.TestCase):
         self.assertEqual(graph['status'], 'PENDING')
         self.assertEqual(graph['deps'], ['reader', 'page'])
         self.assertEqual(graph['files'], [])
-        for field in ('branch', 'attempt', 'verdict', 'accepted_by', 'prompt', 'approach', 'retry_findings', 'qa_tail', 'qa'):
+        self.assertFalse(graph['accepted'])
+        for field in ('branch', 'attempt', 'verdict', 'accepted_by', 'accepted_attempt', 'accepted_over',
+                      'prompt', 'approach', 'retry_findings', 'qa_tail', 'qa'):
             self.assertIsNone(graph[field], field)
         self.assertEqual(graph['clef'], {'first_pass': None, 'retry_pass': {}})
         for field in ('attempts', 'escalations', 'route', 'shadow'):
@@ -115,6 +119,12 @@ class ReaderTests(unittest.TestCase):
                                                     {'id': 'graph', 'status': 'PENDING'}])
         self.assertEqual(summary['models'], ['astra', 'luna', 'opus'])
         self.assertIsNone(summary['final_review'])
+        self.assertIsNone(summary['final_review_outdated'])
+        self.assertIsNone(data['final_review_outdated'])
+        statuses = {task['id']: task for task in summary['task_statuses']}
+        self.assertTrue(statuses['reader']['accepted'])  # prose accepted.by still counts
+        self.assertFalse(statuses['page']['accepted'])
+        self.assertFalse(statuses['graph']['accepted'])
         for value in (summary, data):
             json.dumps(value, allow_nan=False)
 
@@ -486,7 +496,9 @@ class ReaderTests(unittest.TestCase):
             'attempts': [
                 {'at': 1760620000.0, 'attempt': 1, 'status': 'FAIL', 'infra': None},
                 {'at': 1760621000.0, 'attempt': 2, 'status': 'RUNNING', 'infra': None}],
-            'escalations': [], 'verdict': 'FAIL', 'accepted_by': None, 'explored': False, 'route': [],
+            'escalations': [], 'verdict': 'FAIL', 'accepted_by': None,
+            'accepted': False, 'accepted_attempt': None, 'accepted_over': None,
+            'explored': False, 'route': [],
             'clef': {'first_pass': None, 'retry_pass': {}}, 'shadow': [],
             'prompt': 'Implement the reader.\n', 'approach': None, 'retry_findings': None,
             'qa_tail': 'Looked at the diff.\nFORGE_VERDICT: FAIL\n', 'dwarf_tail': 'Still working.\n',
@@ -516,6 +528,8 @@ class ReaderTests(unittest.TestCase):
         self.assertEqual([{k: t[k] for k in ('id', 'status')} for t in summary['task_statuses']], [{'id': 'solo', 'status': 'RUNNING'}])
         self.assertEqual(summary['models'], ['opus', 'sol:high'])
         self.assertIsNone(summary['final_review'])
+        self.assertIsNone(summary['final_review_outdated'])
+        self.assertIsNone(data['final_review_outdated'])
         for field, value in (('timeline', {'started': None, 'ended': None, 'runs': [], 'verifications': []}),
                              ('integration', None), ('final_review', None), ('final_reviews', []), ('deferrals', [])):
             self.assertEqual(data[field], value, field)
@@ -541,7 +555,8 @@ class ReaderTests(unittest.TestCase):
         self.assertEqual(data['tasks'], [{
             'id': 'solo', 'title': 'Solo run', 'deps': [], 'difficulty': None, 'files': [],
             'dwarf': None, 'qa': None, 'wave': 1, 'status': 'NOCHANGES', 'branch': None, 'attempt': None,
-            'attempts': [], 'escalations': [], 'verdict': None, 'accepted_by': None, 'explored': False,
+            'attempts': [], 'escalations': [], 'verdict': None, 'accepted_by': None,
+            'accepted': False, 'accepted_attempt': None, 'accepted_over': None, 'explored': False,
             'route': [], 'clef': {'first_pass': None, 'retry_pass': {}}, 'shadow': [],
             'prompt': 'Old prompt.\n', 'approach': None, 'retry_findings': None,
             'qa_tail': None, 'dwarf_tail': None, 'executions': [], 'merged_at': None, 'findings': None,

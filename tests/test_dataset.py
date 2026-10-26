@@ -1061,6 +1061,294 @@ class FractalCaptureTests(StoreCase):
         self.assertEqual(self.errors(), '')
 
 
+class ReviewerSessionTests(StoreCase):
+    """A review that continued a session is tagged and kept out of reviewer statistics.
+
+    Attempt dirs are built by hand. The session files are what live capture archives
+    (`<role>.session`, `<role>.continue`); nothing here drives the session-rounds runner.
+    """
+
+    def import_dir(self, path):
+        from forge_dataset import importer
+        args = type('A', (), dict(paths=[str(path)], registry=False, fractal=False, ledger=[],
+                                  include_temp=True, dry_run=False))()
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(importer.main(args), 0)
+
+    def status_text(self) -> str:
+        from forge_dataset import cli
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            self.assertEqual(cli.main(['status']), 0)
+        return buf.getvalue()
+
+    def test_harvest_tags_a_continued_session_a_failed_continue_and_a_fresh_dispatch(self):
+        from forge_dataset import harvest
+        root = Path(self.tmp.name) / 'root'
+        root.mkdir()
+
+        def harvest_one(name, *, continue_body=None, session=None, metrics_session=None):
+            attempt = Path(self.tmp.name) / name
+            attempt.mkdir()
+            metrics = dict(exit_code=0, harness='codex')
+            if metrics_session is not None:
+                metrics['session_id'] = metrics_session
+            (attempt / 'metrics.json').write_text(json.dumps(metrics))
+            (attempt / 'qa.last').write_text('FORGE_VERDICT: FAIL\n')
+            if session is not None:
+                (attempt / 'qa.session').write_text(session + '\n')
+            if continue_body is not None:
+                (attempt / 'qa.continue').write_text(continue_body)
+            event = harvest.dispatch_event(attempt, root, 'qa', 'codex', 0,
+                                           dict(run='r', task='a', attempt_now=1))
+            return event['data']['session_id'], event['data']['session_continue']
+
+        self.assertEqual(harvest_one('continued', session='sess-1',
+                                     continue_body='requested=old\nmode=continued\nreason=ok\n'),
+                         ('sess-1', 'continued'))
+        self.assertEqual(harvest_one('failed', session='sess-2',
+                                     continue_body='requested=old\nmode=failed\nreason=exit\n'),
+                         ('sess-2', 'failed'))
+        self.assertEqual(harvest_one('unknown', continue_body='mode=sideways\n')[1], 'failed')
+        self.assertEqual(harvest_one('no-mode', continue_body='requested=old\n')[1], 'failed')
+        self.assertEqual(harvest_one('absent'), (None, None))
+        self.assertEqual(harvest_one('from-metrics', metrics_session='from-metrics'), ('from-metrics', None))
+        # The archived file is the id that was published; metrics only fills a gap.
+        self.assertEqual(harvest_one('both', session='from-file', metrics_session='from-metrics')[0], 'from-file')
+
+    def import_shadowed_reviews(self, tasks):
+        """Import one plan of shadowed reviews and mark each shadow done.
+
+        `tasks` is (task id, title, reviewed commit, reviews). A review is
+        (attempt dir name, verdict, continue mode or None, session id or None,
+        exit code, wall_started). Directory names are the import order;
+        wall_started is the time.
+        """
+        plan = Path(self.tmp.name) / 'plan'
+        plan.mkdir()
+        (plan / 'dataset.uid').write_text('uid-session\n')
+        (plan / 'tasks.tsv').write_text(''.join(
+            '%s\t-\tlow\ta.txt\tsol\topus\t%s\n' % (tid, title)
+            for tid, title, _, _ in tasks))
+        (plan / 'repo').write_text('/nonexistent/repo\n')
+        (plan / 'run_id').write_text('session-run\n')
+        (plan / 'goal.txt').write_text('goal\n')
+
+        def prompt(tid):
+            diff = 'diff --git a/%s.txt b/%s.txt\n+%s' % (tid, tid, tid)
+            return 'review this\n```diff\n%s\n```\n' % diff
+
+        def qa(tdir, name, verdict, mode, session, exit_code, started):
+            attempt = tdir / 'attempts' / name
+            attempt.mkdir(parents=True)
+            metrics = dict(role='qa', wall_started=started, exit_code=exit_code, harness='codex',
+                           elapsed_s=dict(total=1), input_tokens=11, output_tokens=7)
+            if session:
+                metrics['session_id'] = session
+                (attempt / 'qa.session').write_text(session + '\n')
+            (attempt / 'metrics.json').write_text(json.dumps(metrics))
+            (attempt / 'qa.resolved').write_text('alias=opus\nharness=codex\nmodel=primary\n')
+            (attempt / 'qa.last').write_text('FORGE_VERDICT: %s\n' % verdict)
+            (attempt / 'qa.prompt').write_text(prompt(tdir.name))
+            if mode is not None:
+                (attempt / 'qa.continue').write_text('requested=prev\nmode=%s\nreason=round\n' % mode)
+
+        def task(tid, commit, reviews):
+            tdir = plan / 'tasks' / tid
+            tdir.mkdir(parents=True)
+            (tdir / 'status').write_text('PASS\n')
+            (tdir / 'attempt').write_text('1\n')
+            (tdir / 'reviewed.commit').write_text(commit + '\n')
+            (tdir / 'changes.diff').write_text('diff --git a/%s.txt b/%s.txt\n+%s\n' % (tid, tid, tid))
+            # The dispatch rid is the attempt directory name, so names are unique across tasks.
+            task_attempt = tdir / 'attempts' / ('task-%s' % tid)
+            task_attempt.mkdir(parents=True)
+            (task_attempt / 'metrics.json').write_text(json.dumps(
+                dict(role='task', wall_started=1.0, exit_code=0, harness='pipeline', elapsed_s=dict(total=1))))
+            for spec in reviews:
+                qa(tdir, *spec)
+            shadow = plan / 'shadow' / tid / '1-1' / 'attempts' / ('qa-shadow-%s' % tid)
+            shadow.mkdir(parents=True)
+            (shadow / 'metrics.json').write_text(json.dumps(
+                dict(role='qa', wall_started=9.0, exit_code=0, harness='codex', elapsed_s=dict(total=1))))
+            (shadow / 'qa.resolved').write_text('alias=sol\nharness=codex\nmodel=shadow-model\n')
+            (shadow / 'qa.last').write_text('FORGE_VERDICT: FAIL\n')
+            (shadow / 'qa.prompt').write_text(prompt(tid))
+            (shadow / 'dataset.json').write_text(json.dumps(dict(
+                run='uid-session', run_id='session-run', mode='parallel', scope='task', task=tid,
+                shadow=dict(attempt=1, reviewed=commit, primary='opus'))))
+
+        for tid, _, commit, reviews in tasks:
+            task(tid, commit, reviews)
+        self.import_dir(plan)
+        from forge_dataset.capture import point
+        for tid, _, commit, _ in tasks:
+            point('shadow_review', str(plan / 'shadow' / tid / '1-1'), tid,
+                  dict(status='done', attempt=1, reviewed=commit))
+
+    def test_a_failed_continue_then_a_fresh_fallback_keeps_only_the_fresh_review(self):
+        # One round, three shapes, each with a shadow of the same attempt number:
+        #   continued — the only primary continued, so it leaves the slices and the pairs
+        #   rerun     — a fresh PASS, then a continued QA-only re-run; the last verdict
+        #               continued, so the pair is dropped and the fresh PASS stays, alone
+        #   fallback  — mode=failed (exit 1, verdict FAIL), then a fresh PASS; the fresh
+        #               one is the last verdict and is the pair
+        self.import_shadowed_reviews([
+            ('continued', 'continued only', 'commit-continued', [
+                ('qa-c1', 'FAIL', 'continued', 'sess-c', 0, 2.0)]),
+            ('rerun', 'fresh then continued', 'commit-rerun', [
+                ('qa-r1', 'PASS', None, 'sess-fresh', 0, 2.0),
+                ('qa-r2', 'FAIL', 'continued', 'sess-again', 0, 3.0)]),
+            ('fallback', 'failed then fresh', 'commit-fallback', [
+                ('qa-f1', 'FAIL', 'failed', 'sess-failed', 1, 2.0),
+                ('qa-f2', 'PASS', None, None, 0, 4.0)]),
+        ])
+
+        tagged = {(e['task'], e['data']['verdict'], e['data']['session_continue'], e['data']['session_id'])
+                  for e in self.events(kind='dispatch') if e['data']['role'] == 'qa'}
+        self.assertEqual(tagged, {
+            ('continued', 'FAIL', 'continued', 'sess-c'),
+            ('rerun', 'PASS', None, 'sess-fresh'),
+            ('rerun', 'FAIL', 'continued', 'sess-again'),
+            ('fallback', 'FAIL', 'failed', 'sess-failed'),
+            ('fallback', 'PASS', None, None),
+        })
+        self.assertEqual({e['task']: e['data'].get('reviewed_commit') for e in self.events(kind='attempt')},
+                         {'continued': 'commit-continued', 'rerun': 'commit-rerun', 'fallback': 'commit-fallback'})
+
+        from forge_dataset import export
+        runs = export.Runs(export.Store(store.connect()))
+        cases = {c['task']: c for c in export.review_cases(runs)}
+        self.assertNotIn('continued', cases)
+        self.assertEqual(cases['rerun']['expected']['passes'], True)
+        self.assertNotIn('shadow', cases['rerun']['meta'])
+        self.assertEqual(cases['fallback']['expected']['passes'], True)
+        self.assertEqual(cases['fallback']['meta']['shadow']['verdict'], 'FAIL')
+        self.assertIs(cases['fallback']['meta']['consensus'], False)
+        self.assertEqual(list(export.citation_cases(runs, 7)), [])
+
+        pairs = export.shadow_pairs(runs)
+        self.assertEqual(set(pairs), {('uid-session', 'fallback', 1)})
+        primary, shadow_event = pairs[('uid-session', 'fallback', 1)]
+        self.assertEqual(primary['d']['verdict'], 'PASS')
+        self.assertIsNone(primary['d']['session_continue'])
+        self.assertEqual(shadow_event['d']['verdict'], 'FAIL')
+        agreement = export.agreement(runs)
+        self.assertEqual((agreement['pairs'], agreement['agree']), (1, 0))
+
+    def test_an_earlier_fresh_review_imported_later_is_not_the_one_the_attempt_ended_on(self):
+        # qa-ffff starts at 1.0 and qa-aaaa (continued) starts at 2.0. Import walks
+        # attempt dirs lexicographically, so the later continued review is stored first.
+        self.import_shadowed_reviews([
+            ('later-continued', 'continued imported first', 'commit-later-continued', [
+                ('qa-ffff', 'PASS', None, 'sess-fresh', 0, 1.0),
+                ('qa-aaaa', 'FAIL', 'continued', 'sess-again', 0, 2.0)]),
+        ])
+        from forge_dataset import export
+        runs = export.Runs(export.Store(store.connect()))
+        qa = runs.dispatches[('uid-session', 'later-continued', 'qa')]
+        self.assertEqual({(e['d']['wall_started'], e['d']['session_continue'], e['d']['verdict'])
+                          for e in qa},
+                         {(1.0, None, 'PASS'), (2.0, 'continued', 'FAIL')})
+        pairs = export.shadow_pairs(runs)
+        self.assertEqual([(p['d']['wall_started'], p['d']['session_continue'])
+                          for p, _ in pairs.values()], [])
+        self.assertEqual([(e['d']['wall_started'], e['d']['session_continue']) for e in qa],
+                         [(1.0, None), (2.0, 'continued')])
+
+    def test_an_earlier_failed_continue_imported_later_does_not_drop_the_fresh_fallback(self):
+        # qa-ffff is a failed continue at 1.0; qa-aaaa is the fresh fallback at 2.0.
+        # Lexicographic import stores the fresh review first and the failed continue last.
+        self.import_shadowed_reviews([
+            ('later-fresh', 'fresh imported first', 'commit-later-fresh', [
+                ('qa-ffff', 'FAIL', 'failed', 'sess-failed', 1, 1.0),
+                ('qa-aaaa', 'PASS', None, None, 0, 2.0)]),
+        ])
+        from forge_dataset import export
+        runs = export.Runs(export.Store(store.connect()))
+        qa = runs.dispatches[('uid-session', 'later-fresh', 'qa')]
+        self.assertEqual({(e['d']['wall_started'], e['d']['session_continue'], e['d']['verdict'])
+                          for e in qa},
+                         {(1.0, 'failed', 'FAIL'), (2.0, None, 'PASS')})
+        pairs = export.shadow_pairs(runs)
+        self.assertEqual(set(pairs), {('uid-session', 'later-fresh', 1)})
+        primary, shadow_event = pairs[('uid-session', 'later-fresh', 1)]
+        self.assertEqual(primary['d']['wall_started'], 2.0)
+        self.assertEqual(primary['d']['verdict'], 'PASS')
+        self.assertIsNone(primary['d']['session_continue'])
+        self.assertEqual(shadow_event['d']['verdict'], 'FAIL')
+        self.assertEqual([(e['d']['wall_started'], e['d']['session_continue']) for e in qa],
+                         [(1.0, 'failed'), (2.0, None)])
+
+    def test_status_counts_continued_reviews_with_no_shadow_dispatch(self):
+        plan = Path(self.tmp.name) / 'counts'
+        plan.mkdir()
+        (plan / 'dataset.uid').write_text('uid-counts\n')
+        (plan / 'tasks.tsv').write_text('a\t-\tlow\ta.txt\tsol\topus\tA\n')
+        (plan / 'repo').write_text('/nonexistent/repo\n')
+        (plan / 'run_id').write_text('counts\n')
+        tdir = plan / 'tasks' / 'a'
+        tdir.mkdir(parents=True)
+        (tdir / 'attempt').write_text('1\n')
+
+        def qa(name, mode, started):
+            attempt = tdir / 'attempts' / name
+            attempt.mkdir(parents=True)
+            (attempt / 'metrics.json').write_text(json.dumps(
+                dict(role='qa', wall_started=started, exit_code=0, harness='codex', elapsed_s=dict(total=1))))
+            (attempt / 'qa.last').write_text('FORGE_VERDICT: PASS\n')
+            (attempt / 'qa.session').write_text('sess\n')
+            if mode is not None:
+                (attempt / 'qa.continue').write_text('requested=prev\nmode=%s\n' % mode)
+
+        qa('qa-0001', 'continued', 1.0)
+        qa('qa-0002', 'failed', 2.0)
+        qa('qa-0003', 'sideways', 3.0)   # an unknown mode is a request that failed
+        qa('qa-0004', None, 4.0)         # a fresh review is neither count
+        self.import_dir(plan)
+        text = self.status_text()
+        self.assertIn('\n  continued reviews: 1\n', '\n' + text)
+        self.assertIn('\n  failed continues: 2\n', '\n' + text)
+        self.assertNotIn('shadow:', text)
+
+    def test_status_is_quiet_when_every_review_is_fresh(self):
+        plan = Path(self.tmp.name) / 'fresh'
+        plan.mkdir()
+        (plan / 'dataset.uid').write_text('uid-fresh\n')
+        (plan / 'tasks.tsv').write_text('a\t-\tlow\ta.txt\tsol\topus\tA\n')
+        (plan / 'repo').write_text('/nonexistent/repo\n')
+        (plan / 'run_id').write_text('fresh\n')
+        attempt = plan / 'tasks' / 'a' / 'attempts' / 'qa-0001'
+        attempt.mkdir(parents=True)
+        (attempt / 'metrics.json').write_text(json.dumps(
+            dict(role='qa', wall_started=1.0, exit_code=0, harness='codex')))
+        (attempt / 'qa.last').write_text('FORGE_VERDICT: PASS\n')
+        self.import_dir(plan)
+        text = self.status_text()
+        self.assertNotIn('continued reviews:', text)
+        self.assertNotIn('failed continues:', text)
+        self.assertNotIn('shadow:', text)
+
+    def test_reviewer_session_changes_the_plan_id_only_when_the_file_is_present(self):
+        plan = Path(self.tmp.name) / 'plan'
+        (plan / 'tasks' / 'a').mkdir(parents=True)
+        (plan / 'goal.txt').write_text('keep the plan id\n')
+        (plan / 'tasks.tsv').write_text('a\t-\tlow\ta.txt\tsol\topus\tA title\n')
+        (plan / 'run_id').write_text('plan-rid\n')
+        (plan / 'tasks' / 'a' / 'prompt.md').write_text('do the thing\n')
+        (plan / 'tasks' / 'a' / 'approach.md').write_text('carefully\n')
+        from forge_dataset import harvest
+        bare = harvest.plan_event(plan, dict(run='fixed-run'), src='import', inventory=False)
+        # The id of this fixture before reviewer_session joined the plan hash. A plan
+        # that has no such file must keep it, so a re-import adds nothing.
+        self.assertEqual(bare['rid'], 'plan:fixed-run:26062ad6ab65e2f6')
+        self.assertNotIn('reviewer_session', bare['data']['options'])
+        (plan / 'reviewer_session').write_text('on\n')
+        flagged = harvest.plan_event(plan, dict(run='fixed-run'), src='import', inventory=False)
+        self.assertEqual(flagged['data']['options'].get('reviewer_session'), 'on')
+        self.assertNotEqual(flagged['rid'], 'plan:fixed-run:26062ad6ab65e2f6')
+
+
 class IndependenceTests(unittest.TestCase):
     def test_only_capture_entry_points_import_the_dataset(self):
         # Nothing that builds a prompt may read earlier runs' verdicts, or the reviewer

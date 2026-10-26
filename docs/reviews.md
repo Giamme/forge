@@ -51,7 +51,20 @@ Two things it deliberately does:
   from — not just the fix. Reviewing the fix alone would let the first attempt's code through
   unread.
 - **Refuses to re-review identical code.** If the retry produces a byte-identical diff, the
-  task fails again without spending a QA dispatch.
+  task fails again without spending a QA dispatch. A retry that only rejects the findings,
+  and leaves that diff unchanged, is still this identical retry: it writes
+  `tasks/<id>/noretry` and QA is not dispatched.
+
+When the diff did change, QA on that retry is handed the previous round as well as the
+cumulative diff. The report goes under **Findings from the previous review round**. The
+diff between the two attempts goes under **Changes since that review**, and is kept as
+`tasks/<id>/changes.since.diff`, `changes.since.range` and `changes.since.stat` (the
+range is omitted when the earlier commit is missing, unknown or not an ancestor, or when
+nothing changed; a diff over 100 KB is replaced in the prompt by its stat). The
+implementer's reply goes under **The implementer's reply (its own account; verify
+every claim against the code)**. The prompt tells the reviewer to restate only findings that are still
+open, as `- [Px][CONFIRMED|PLAUSIBLE]` lines, and to mention a fixed or rejected finding
+only in a plain sentence. The gate and `forge issues` count every labelled line.
 
 `retry` is something you run. Forge never loops a dwarf against its own reviewer on its own
 initiative — unless you ask a *run* to with `--retry-failed N`, see
@@ -133,6 +146,16 @@ them on the team's project board; anywhere else forge files them itself with pla
 
 Each issue gets the finding, its severity, the task, reviewer and a code link at the merged
 commit. A hidden fingerprint, shared with gh-proman, keeps a finding from being filed twice.
+Findings a person merged with `accept` are origin `accepted`: the CONFIRMED lines under
+`## Accepted by a human despite the reviewer's <status> verdict` in `known_issues.md`.
+Their issue says a person accepted the work over that verdict, and gives the recorded
+reason. Findings above that heading, which a threshold tolerated, stay origin
+`tolerated`. A whole-run review whose integration branch has moved since it is outdated.
+Its findings stay listed, and the issue says the review is outdated and names the tasks
+that merged after it. In `--json` each whole-run finding carries `review`: `name`,
+`outdated` and `merged_since`. `outdated` is null when the review has no verdict or the
+plan has no accepted integration commit, and `merged_since` is empty unless the review
+is outdated. Every other finding has `review` null.
 
 ## Accepting a task despite its reviewer
 
@@ -149,7 +172,9 @@ it on its own. It accepts only a `FAIL` or `UNKNOWN` task whose reviewed work is
 the branch is still at the reviewed commit and the worktree still has the saved fingerprint —
 otherwise it exits `3` and says to `retry` for a fresh review (accepting would sign off on code
 nobody reviewed). It writes `tasks/<id>/known_issues.md` (your reason, who and when, and the
-reviewer's reply copied verbatim) and `accepted.by`, merges through the same checks as any other
+reviewer's reply copied verbatim, under
+`## Accepted by a human despite the reviewer's <status> verdict`) and `accepted.by`,
+merges through the same checks as any other
 task, and puts everything back if the merge conflicts (exit `6`). Dependents are not touched;
 `run` continues them.
 
@@ -178,6 +203,52 @@ anything else stops with exit `5`; an infrastructure stop exits `8`. The QA spec
 the one remembered in `final_qa`, else the single spec every task shares (otherwise it asks).
 Tasks that are not merged are not in the result, and it says so. `integrate` also names unmerged
 tasks even without a review.
+
+A later whole-run review carries the previous one's report, under **Findings from the
+previous final review**, and the diff since it, under **Changes since that review**
+(inlined up to 200 KB, otherwise its stat). `review.meta` records `integration=` (the
+accepted integration commit, or `none`), `previous=` (that review's directory, or
+`none`) and `since=` (its tip, when that commit is an ancestor of this review;
+otherwise `none`, and the prompt says the range cannot be shown). When the two reviews
+share a commit, `since=` is that commit and the prompt says nothing changed. The same
+labelled-line rule applies: restate only what is still open, because every labelled line
+is filed.
+
+## Reviewer session (opt-in experiment)
+
+`plan --reviewer-session` continues the same reviewer's session across rounds. It is off
+unless you pass it; `--no-reviewer-session` turns it off again and removes the plan's
+`reviewer_session` marker. While the marker is present, per-task QA and a repeated
+whole-run review continue the previous round's session on claude, openclaude and codex,
+when the resolved harness, model and effort are unchanged. The approval table names it.
+Dispatch details are in
+[continuing a reviewer session](../references/harnesses.md#continuing-a-reviewer-session).
+
+Any round that cannot continue starts a fresh session. That is the first round, a missing
+or malformed session id, a resolution that is missing or different, any harness other
+than those three, a Fractal plan, and a continue that the harness refuses or that fails
+(dispatch exit **9**). Exit 9 means the session was not continued. Forge sends the same
+prompt again as a fresh session, and that dispatch decides the round. One row per round
+is appended to `tasks/<id>/review_sessions.tsv`: round, attempt, `continued` or `fresh`,
+the reason, and the session id the round considered (empty when there was none). The
+row describes the dispatch whose result counts, so a failed continue is a single
+`fresh` row. Reasons are `same-spec`, `first-round`, `no-session`, `invalid-session`,
+`spec-changed`, `harness-unsupported`, `fractal`, `continue-unsupported` and
+`continue-failed`. A final review records the same outcome as `session=` and
+`session_reason=` in `review.meta`.
+
+A shadow review never continues a session. It stays a separate fresh review of a copy of
+the prompt.
+
+A review that was asked to continue is tagged `session_continue` in the dataset
+(`continued`, or `failed` when the continue did not succeed) and left out of the
+reviewer slices and the agreement rate. The fresh dispatch after exit 9 is not tagged,
+so it still counts. See [the dataset](../references/dataset.md).
+
+This is separate from a QA-only resume, the re-run after an infrastructure stop. That
+re-run is the `tasks/<id>/resume` marker: forge revalidates it against the worktree,
+then asks QA again about unchanged work, and no attempt is spent. The reviewer session
+continues the reviewer's conversation into a later round, and only when you opt in.
 
 ## Shadow reviews: how much of a verdict is the reviewer?
 

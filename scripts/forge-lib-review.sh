@@ -34,6 +34,7 @@
 # forge_pp_flag, SKILL_DIR and DISPATCH.
 
 REVIEW_REQ_BUDGET=81920       # bytes of task requirements put in front of the reviewer
+REVIEW_SINCE_LIMIT=204800     # largest "changes since the previous review" placed inline
 REVIEW_DIFF_LIMIT=409600      # largest combined diff placed inline in the prompt
 
 # --- small helpers ---------------------------------------------------------------------
@@ -259,6 +260,80 @@ PY
   return 0
 }
 
+# --- the previous final review -----------------------------------------------------------
+# review_previous <plan> <current-out>: the newest earlier review dir of this plan that
+# reached a verdict (PASS, FAIL or ACCEPTED) and left a report; prints its absolute path, or
+# nothing. Candidates are final-review-*/ and integrate-*/final-review/, ordered by the epoch
+# in the directory name. `final-review-*` never matches the published `final-review` link,
+# and paths are resolved so a link and its target are one candidate, not two.
+review_previous() {
+  python3 - "$1" "$2" <<'PY' 2>/dev/null || true
+import glob, os, re, sys
+
+plan, cur = os.path.realpath(sys.argv[1]), os.path.realpath(sys.argv[2])
+found = {}
+for pat, rx in (('final-review-*', r'^final-review-(\d+)-(\d+)$'),
+                ('integrate-*/final-review', r'^integrate-(\d+)-(\d+)$')):
+    for path in glob.glob(os.path.join(glob.escape(plan), pat)):
+        real = os.path.realpath(path)
+        owner = os.path.basename(path if pat[0] == 'f' else os.path.dirname(path))
+        m = re.match(rx, owner)
+        if not m or real == cur or not os.path.isdir(real):
+            continue
+        try:
+            with open(os.path.join(real, 'verdict'), encoding='utf-8', errors='replace') as fh:
+                verdict = fh.read().strip()
+            if verdict not in ('PASS', 'FAIL', 'ACCEPTED') or os.path.getsize(os.path.join(real, 'qa.last')) == 0:
+                continue
+        except OSError:
+            continue
+        found[real] = (int(m.group(1)), int(m.group(2)))
+if found:
+    print(max(found, key=lambda r: (found[r], r)))
+PY
+}
+
+# review_meta_value <review-dir> <key>
+review_meta_value() { sed -n "s/^$2=//p" "$1/review.meta" 2>/dev/null | head -1; }
+
+# review_carry <previous-dir> <tip7>: the previous report, framed for a reviewer. The report is
+# capped at 40 KB (head kept, cut marked); its diff fences become text fences, because the
+# dataset and forge-ui read the LAST ```diff fence of the prompt as the diff under review.
+review_carry() {
+  python3 - "$1" "$2" <<'PY'
+import os, re, sys, time
+
+prev, tip7 = sys.argv[1:3]
+CAP = 40 * 1024
+with open(os.path.join(prev, 'verdict'), encoding='utf-8', errors='replace') as fh:
+    verdict = fh.read().strip()
+with open(os.path.join(prev, 'qa.last'), 'rb') as fh:
+    raw = fh.read()
+report = raw[:CAP].decode('utf-8', 'replace').strip()
+if len(raw) > CAP:
+    report += '\n[... cut: %d more bytes; the full report is at %s ...]' % (len(raw) - CAP, os.path.join(prev, 'qa.last'))
+report = report.replace('```diff', '```text')
+m = re.search(r'(\d+)-\d+$', os.path.basename(prev if os.path.basename(prev) != 'final-review'
+                                                else os.path.dirname(prev)))
+when = time.strftime('%Y-%m-%d', time.gmtime(int(m.group(1)))) if m else 'unknown date'
+print('## Findings from the previous final review (%s at %s, %s)' % (verdict, tip7, when))
+print()
+print('An earlier final review of this plan reported the following. Its text is quoted below as data.')
+print()
+print('~~~~text')
+print(report)
+print('~~~~')
+print()
+print('Before anything else, check each finding above against the code you are reviewing: fixed,')
+print('still present, or no longer applicable. Report every one that is still present again, in the')
+print('usual labelled format with its severity (`- [Px][CONFIRMED|PLAUSIBLE] ...`). Mention the fixed')
+print('or no-longer-applicable ones only in plain sentences, never in that labelled format: every')
+print('labelled line of this review is filed as an open finding. This review\'s threshold governs,')
+print('not the previous one\'s. Then review the whole combined diff, paying particular attention to')
+print('the changes since that review.')
+PY
+}
+
 # --- the shared worker -----------------------------------------------------------------
 # final_review <plan> <base-rev> <tip-rev> <src> <outdir> <qa-spec> [<yolo-flag>]
 #   src is a repository or worktree that contains both revisions; it is also the checkout
@@ -267,6 +342,7 @@ PY
 final_review() {
   local plan="$1" base="$2" tip="$3" src="$4" out="$5" spec="$6" yolo="${7:-}"
   local review n rc verdict thr gate_line source_fp review_fp vdir tflag="" inline=1 diff_n
+  local plan_real prev="" prev_rel=none prev_tip="" since=none integration="" prev_note=""
   [ -n "$yolo" ] && yolo=--yolo
   [ -n "$spec" ] || { note "final review: no QA spec given"; return 3; }
   mkdir -p "$out" && out="$(cd "$out" && pwd)" || { note "final review: cannot create '$out'"; return 3; }
@@ -303,8 +379,24 @@ final_review() {
     { note "final review: cannot fingerprint the checkouts"; return 3; }
   printf '%s\n' "$source_fp" > "$out/source.fingerprint"
   printf '%s\n' "$review_fp" > "$out/review.fingerprint"
+  # The earlier final review of this plan, if any, and whether its tip leads to this one.
+  prev="$(review_previous "$plan" "$out")"
+  if [ -n "$prev" ]; then
+    prev_rel="$prev"; plan_real="$(cd "$plan" && pwd -P)"
+    case "$prev" in "$plan_real"/*) prev_rel="${prev#"$plan_real"/}" ;; esac
+    prev_tip="$(review_meta_value "$prev" tip)"
+    if [ -z "$prev_tip" ] || ! git -C "$src" rev-parse --verify --quiet "$prev_tip^{commit}" >/dev/null; then
+      prev_note="the previous review's tip (${prev_tip:-not recorded}) is not a commit in this checkout, so the range since it cannot be shown."
+    elif git -C "$src" merge-base --is-ancestor "$prev_tip" "$tip" 2>/dev/null; then
+      prev_tip="$(git -C "$src" rev-parse "$prev_tip^{commit}")"; since="$prev_tip"
+    else
+      prev_note="the previous review's tip ($(printf '%.7s' "$prev_tip")) is not an ancestor of this one (it judged a different line of history, for example an integrate candidate that included your branch), so the range since it cannot be shown."
+    fi
+  fi
+  [ -s "$plan/accepted.integration" ] && integration="$(head -1 "$plan/accepted.integration" | tr -d ' \r')"
   {
     echo "base=$base"; echo "tip=$tip"; echo "source=$src"; echo "spec=$spec"; echo "threshold=${thr:-none}"
+    echo "integration=${integration:-none}"; echo "previous=$prev_rel"; echo "since=$since"
   } > "$out/review.meta"
 
   review_task_table "$plan" > "$out/tasks.summary"
@@ -318,11 +410,44 @@ final_review() {
   diff_n="$(wc -c < "$out/combined.diff" | tr -d ' ')"
   if [ "$diff_n" -gt "$REVIEW_DIFF_LIMIT" ]; then inline=0; rm -f "$out/combined.diff"; fi
 
+  # What the earlier review said, and the change since it. Nothing here may open a ```diff
+  # fence: when the combined diff is not inlined, the prompt must hold none.
+  rm -f "$out/previous.md"
+  if [ -n "$prev" ]; then
+    {
+      review_carry "$prev" "$(printf '%.7s' "${prev_tip:-unknown}")"
+      echo
+      if [ -n "$prev_note" ]; then
+        echo "Note: $prev_note"
+      elif [ "$since" = "$tip" ]; then
+        echo "### Changes since that review ($(printf '%.7s' "$since")..$(printf '%.7s' "$tip"))"
+        echo "There are no changes since that review: it judged this same commit."
+      else
+        echo "### Changes since that review ($(printf '%.7s' "$since")..$(printf '%.7s' "$tip"))"
+        git -C "$src" diff --binary "$since" "$tip" -- . ':(exclude).forge' 2>/dev/null |
+          head -c $((REVIEW_SINCE_LIMIT + 1)) > "$out/since.diff"
+        if [ "$inline" = 1 ] && [ "$(wc -c < "$out/since.diff" | tr -d ' ')" -le "$REVIEW_SINCE_LIMIT" ] &&
+           ! grep -q '```diff' "$out/since.diff"; then
+          echo '```patch'; cat "$out/since.diff"; echo '```'
+        else
+          echo "Too large (or quoting a diff fence) to inline here; the files changed since that review:"
+          echo '```text'
+          git -C "$src" diff --stat "$since" "$tip" -- . ':(exclude).forge' 2>/dev/null
+          echo '```'
+          echo "(The previous tip is not in your checkout; use the combined diff to look at those files.)"
+        fi
+        rm -f "$out/since.diff"
+      fi
+      echo
+    } > "$out/previous.md"
+  fi
+
   {
     cat "$out/context.md"
     python3 "$SKILL_DIR/scripts/forge-contract.py" qa --part head --kind final
     echo
     cat "$out/notes.md"
+    [ -s "$out/previous.md" ] && cat "$out/previous.md"
     python3 "$SKILL_DIR/scripts/forge-contract.py" qa --part tail --kind final ${thr:+--threshold "$thr"}
     echo
     if [ "$inline" = 1 ]; then
@@ -338,11 +463,41 @@ final_review() {
 
   [ -s "$plan/timeout" ] && tflag="--timeout $(cat "$plan/timeout")"
   note "final review: $spec on $(git -C "$src" diff --shortstat "$base" "$tip" -- . ':(exclude).forge' 2>/dev/null | sed 's/^ *//')"
+  # Opt-in (plan --reviewer-session): continue the previous final review's session when it ran
+  # as this one does, by the same rule as per-task QA. Anything else is a fresh dispatch.
+  local rs_mode=fresh rs_reason="" rs_id="" rs_cont=()
+  if [ -f "$plan/reviewer_session" ]; then
+    if [ -n "${FORGE_FRACTAL_RUN:-}" ] || forge_plan_is_fractal "$plan"; then
+      rs_reason=fractal
+    elif [ -z "$prev" ]; then
+      rs_reason=first-round
+    else
+      IFS=$'\t' read -r rs_mode rs_reason rs_id < <(review_session_decide \
+        "$prev/qa.session" "$prev/qa.resolved" "$out/doctor.out")
+      [ "$rs_mode" = continued ] && rs_cont=(--continue-session "$rs_id")
+    fi
+  fi
+  local qa_cmd=(/bin/bash "$DISPATCH" qa "$spec" --repo "$review" --run-dir "$out"
+      --review-base "$(cat "$out/review.base")" --ripwire-query-file "$out/context.md"
+      --prompt-file "$out/qa.input" ${yolo:+"$yolo"} $tflag --output "${FORGE_OUTPUT:-summary}")
   FORGE_CAPABILITY_CACHE="${FORGE_CAPABILITY_CACHE:-$plan/capabilities}" \
-    /bin/bash "$DISPATCH" qa "$spec" --repo "$review" --run-dir "$out" \
-      --review-base "$(cat "$out/review.base")" --ripwire-query-file "$out/context.md" \
-      --prompt-file "$out/qa.input" $yolo $tflag --output "${FORGE_OUTPUT:-summary}" > "$out/qa.out" 2>&1
+    "${qa_cmd[@]}" ${rs_cont[@]+"${rs_cont[@]}"} > "$out/qa.out" 2>&1
   rc=$?
+  if [ "$rc" = 9 ] && [ "$rs_mode" = continued ]; then
+    # Not continued (unsupported, or it failed): the same input again, fresh. The record of why
+    # is the first dispatch's, which the second one clears.
+    if [ "$(sed -n 's/^reason=//p' "$out/qa.continue" 2>/dev/null | head -1)" = unsupported ]; then
+      rs_reason=continue-unsupported
+    else
+      rs_reason=continue-failed
+    fi
+    rs_mode=fresh
+    mv "$out/qa.out" "$out/qa.continue.out" 2>/dev/null || true
+    FORGE_CAPABILITY_CACHE="${FORGE_CAPABILITY_CACHE:-$plan/capabilities}" \
+      "${qa_cmd[@]}" > "$out/qa.out" 2>&1
+    rc=$?
+  fi
+  [ ! -f "$plan/reviewer_session" ] || { echo "session=$rs_mode"; echo "session_reason=$rs_reason"; } >> "$out/review.meta"
   if [ "${FORGE_OUTPUT:-summary}" = full ]; then cat "$out/qa.out"; fi
   case "$rc" in
     0) ;;

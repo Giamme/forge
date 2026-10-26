@@ -30,10 +30,10 @@ time order: an attempt that PASSed, then a merge that CONFLICTed, then a human `
 | kind | one per | what it holds |
 |---|---|---|
 | `start` | execution | a receipt written by `begin()`. A start with no matching end is an execution that was killed or is still running |
-| `dispatch` | model call | role, alias, harness, **resolved** model, effort after clamping, timeout and its source, delivery (custom or native review), phase timings, exit, timeout, infra class, tokens, parsed verdict and findings, `FORGE_LEARNING` lines. Blobs: the delivered prompt and the final message |
+| `dispatch` | model call | role, alias, harness, **resolved** model, effort after clamping, timeout and its source, delivery (custom or native review), phase timings, exit, timeout, infra class, tokens, parsed verdict and findings, `FORGE_LEARNING` lines, `session_id`, `session_continue`. Blobs: the delivered prompt and the final message |
 | `attempt` | task attempt or solo run | status, attempt number (with refund and resume flags), trigger (`initial`, `auto`, `human`), dwarf and qa spec, declared vs changed files, numstat, drift, guard notes, gate line, patch key, the files this execution wrote and the ones it only carried. Blobs: the diff, retry findings, memory slices, capsule, Jev task files |
 | `verification` / `verify_run` | verify, and each command execution | command and its source (flag, `.forge/verify`, Jev), status, flaky, Jev triage. One `verify_run` per execution, each with its own log |
-| `plan` | `plan` | goal, original request, decompose level, exploratory routing decisions (`tasks[id].route`, with their odds), author (orchestrator or planner), per-task declared vs executed difficulty and who set it, pools, waves, Jev routing and coupling. Blobs: both task tables, prompts, approaches, excerpts of the declared files at plan time, the file inventory, `memory.md` |
+| `plan` | `plan` | goal, original request, decompose level, exploratory routing decisions (`tasks[id].route`, with their odds), author (orchestrator or planner), per-task declared vs executed difficulty and who set it, pools, waves, Jev routing and coupling, options (including `reviewer_session` when that file is present). Blobs: both task tables, prompts, approaches, excerpts of the declared files at plan time, the file inventory, `memory.md` |
 | `run_end` | `run` | results per task, the accepted integration commit, `memory.md` |
 | `invocation` | user-facing `forge-parallel.sh` subcommand | argv, exit, duration, plus final review, accept, integrate and split/combine payloads |
 | `event` | point event | `merge` (MERGED, CONFLICT with the files, INVALIDATED and why), `integrate_advanced`, `integrate_conflict`, `combine_conflict`, `sched_terminal`, `subset_run` (every outcome), `memory_record`, `memory_prune` |
@@ -46,6 +46,19 @@ time order: an attempt that PASSed, then a merge that CONFLICTed, then a human `
 | `ledger` | ledger row | imported `.forge/ledger.tsv` rows |
 | `forecast` | forecast shown by `run` | the plan forecast printed before dispatch (see [plan forecast](#plan-forecast)), once per run and content. Also in the plan as `forecast.json` |
 | `outcome` | integrated task, per horizon | written by `forge dataset outcomes`, never by a run: how many of the lines a task added survive N days after `integrate`, and what reverted it |
+
+A dispatch carries `session_id` and `session_continue`. `session_id` comes from the attempt
+dir's `<role>.session`, and from `metrics.json` when that file is absent. `session_continue`
+is null when the attempt dir has no `<role>.continue`. That file is written only when the
+dispatch was asked to continue a reviewer session: `mode=continued` is `continued`, and
+`mode=failed`, a missing mode or any other mode is `failed`. The file's presence means
+continuing was requested, so a failed continue that still printed a verdict is tagged too.
+The `attempt` event's `resumed` flag is a different fact: a QA-only re-run after an
+infrastructure stop (the `tasks/<id>/resume` marker).
+
+`plan --reviewer-session` writes `$PLAN/reviewer_session` (`on`). The plan event records
+it in `options`. The file joins the plan id only when it is present, so every plan already
+in a store keeps its id, and turning the experiment on stores a new plan event.
 
 Each blob reference carries `sha` (the stored bytes), `original_sha`, `n` (the original
 size), `kept`, and `cut`. A cut keeps the head and the tail, because a QA prompt ends with
@@ -189,6 +202,18 @@ verdict, reviewer and worst finding) and `consensus` to their metadata. Only a s
 finished on an untouched snapshot and reviewed the same commit counts. The primary
 labels never change, because `qa_shadow` dispatches are not reviews of record.
 `./forge dataset status` prints the agreement rate, overall and per model pair.
+
+A dispatch with `session_continue` set is left out of every slice built from QA rows
+(review cases, citation cases) and out of the shadow agreement pairs. That covers a
+continue that succeeded and one that failed after printing a verdict. A fresh fallback
+dispatch in the same round has `session_continue` null and stays in. The slices have no
+switch that puts the continued reviews back, so a group never mixes the two. Agreement
+still selects the attempt's last verdict-bearing primary, and then drops the pair when
+that primary continued a session: an earlier fresh verdict does not stand in for it.
+`./forge dataset status` prints the number of continued reviews and the number of failed
+continues on their own lines whenever either is non-zero, including in a store with no
+shadow review. The experiment's comparison reads the `dispatch` events (`session_continue`,
+tokens, verdicts, attempts), not these slices.
 
 `meta.jsonl` records each case's slice, run, repo and label source. It also holds hosted
 Jev's own answers where forge recorded them, as baselines that are never part of a case.
@@ -367,7 +392,8 @@ so the importer will not guess which execution wrote a mutable file:
   importer never reads are left out and listed in the excluded file. Importing such an archive maps
   it back to `original_path`, so its run id and uid match the original dir's; an unreadable path
   during archiving is an error, not a silent omission. The archive is written to a temp name, fsynced
-  and renamed.
+  and renamed. `<role>.session` and `<role>.continue` are plain files in the attempt dir, so a
+  run archive carries them and import tags the dispatch from those files.
 
 `~/.local/share/forge/legacy/` holds archives of run dirs taken before live capture, with a
 `MANIFEST.tsv`. Passing that dir to `import` reads every archive, plus the ledger copies

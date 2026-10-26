@@ -201,8 +201,9 @@
       if (drawn[t.id]) return;
       drawn[t.id] = true;
       var p = pos[t.id];
-      var status = str(t.status, 'pending');
-      var stClass = 'st-' + status.toLowerCase().replace(/[^a-z0-9_-]/g, '');
+      var status = window.ForgeRunModel.taskStatus(t);
+      var verdict = window.ForgeRunModel.taskVerdict(t);
+      var stClass = 'st-' + String(status || 'pending').toLowerCase().replace(/[^a-z0-9_-]/g, '');
       var selected = options.selected === t.id;
       var id = String(t.id);
 
@@ -217,7 +218,7 @@
 
       var tip = [str(t.title, id), 'status: ' + status,
         'dwarf: ' + str(t.dwarf, '—') + ' / qa: ' + str(t.qa, '—')];
-      if (t.verdict) tip.push('verdict: ' + t.verdict);
+      if (verdict.text) tip.push('verdict: ' + verdict.text);
       if (t.explored) tip.push('explored');
       var title = el('title', null, g);
       title.textContent = tip.join('\n');
@@ -238,8 +239,8 @@
         x: 12, y: 36, 'font-size': 12, fill: 'currentColor', 'fill-opacity': 0.75
       });
 
-      if (t.verdict === 'PASS' || t.verdict === 'FAIL') {
-        var pass = t.verdict === 'PASS';
+      if (verdict.mark === 'PASS' || verdict.mark === 'FAIL') {
+        var pass = verdict.mark === 'PASS';
         // a drawn tick or cross, in the verdict's colour
         el('path', { 'class': 'fg-verdict' + (pass ? ' fg-pass' : ''), d: pass ? 'M' + (NODE_W - 20) + ' 12l4 4 7-8' : 'M' + (NODE_W - 19) + ' 8l8 8m0-8l-8 8',
           fill: 'none', 'stroke-width': 1.8, 'stroke-linecap': 'round', 'stroke-linejoin': 'round' }, g);

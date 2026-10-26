@@ -176,7 +176,8 @@ class Page(unittest.TestCase):
         self.three_or_skip(page)
         page.wait_for_function("() => window.ForgeUI.state.stage.view === 'run'")
         nodes = dict(page.evaluate("window.ForgeUI.state.stage.debug().nodes.map(n => [n.id, n.status])"))
-        self.assertEqual(nodes['t:reader'], 'MERGED')
+        # reader is merged and accepted.by is set, so the plate says ACCEPTED. The recorded status stays MERGED.
+        self.assertEqual(nodes['t:reader'], 'ACCEPTED')
         self.assertEqual(nodes['t:graph'], 'RUNNING')
         self.assertIn('f:final', nodes)
         page.evaluate("window.ForgeUI.state.stage.debug().settle()")
