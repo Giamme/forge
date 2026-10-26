@@ -132,3 +132,43 @@ test('results and links', () => {
   assert.equal(F.safeUrl('http://x'), null);
   assert.equal(F.safeUrl(null), null);
 });
+
+test('a POST that created nothing shows the CLI notes, one that created something does not', () => {
+  const note = '--only 0123456789ab: no such open finding';
+  assert.deepEqual(F.emptyNotes([], [note]), [note]);
+  assert.deepEqual(F.emptyNotes(undefined, [note, '', 7]), [note, '7']);
+  assert.deepEqual(F.emptyNotes([{ skipped: 'same title', title: 'T' }], [note]), [note]);
+  assert.deepEqual(F.emptyNotes([{ title: 'T', url: 'https://g/1' }], [note]), []);
+  assert.deepEqual(F.emptyNotes([], null), []);
+});
+
+test('an action takes the selected rows the filters leave shown', () => {
+  const rows = [row('a'), row('b', { severity: 'P0' }), row('d', { dismissed: { at: 't' } }), row('e', { dismissed: { at: 't' } })];
+  const selected = new Set(['a', 'b', 'd', 'e']);
+  const shown = f => F.filterRows(rows, f);
+  assert.deepEqual(F.selection('undismiss', shown({ dismissed: true }), selected).fps, ['d', 'e']);
+  assert.equal(F.selection('undismiss', shown({ dismissed: false }), selected).enabled, false);
+  assert.equal(F.selection('undismiss', shown({ dismissed: false }), selected).count, 0);
+  assert.deepEqual(F.selection('file', shown({ severity: 'P0' }), selected).fps, ['b']);
+  assert.deepEqual(F.selection('dismiss', shown({ severity: 'P3' }), selected).fps, []);
+});
+
+test('select shown open caps the shown open rows, not a selection the filter hides', () => {
+  const hidden = new Set(fps(F.MAX_FPS));
+  const p0 = [row('p0p0p0p0p0p0', { severity: 'P0' }), row('p0p0p0p0p0p1', { severity: 'P0' })];
+  assert.deepEqual(F.selectShownOpen(p0, hidden), ['p0p0p0p0p0p0', 'p0p0p0p0p0p1']);
+  assert.equal(hidden.size, F.MAX_FPS);
+
+  const open = fps(F.MAX_FPS + 1).map(fp => row(fp));
+  assert.deepEqual(F.selectShownOpen(open, new Set()), open.slice(0, F.MAX_FPS).map(r => r.fp));
+  const partial = new Set(open.slice(0, 10).map(r => r.fp));
+  assert.deepEqual(F.selectShownOpen(open, partial), open.slice(10, F.MAX_FPS).map(r => r.fp));
+  assert.equal(partial.size, 10);
+  assert.deepEqual(F.selectShownOpen(open, new Set(open.slice(0, F.MAX_FPS).map(r => r.fp))), []);
+
+  // A shown dismissed row is not open, so it is neither added nor counted: File would not take it.
+  const dismissed = fps(F.MAX_FPS).map(fp => row(fp, { dismissed: { at: 't' } }));
+  const one = row('oooooooooooo');
+  assert.deepEqual(F.selectShownOpen(dismissed.concat([one]), new Set(dismissed.map(r => r.fp))), ['oooooooooooo']);
+  assert.deepEqual(F.selectShownOpen([row('dddddddddddd', { dismissed: { at: 't' } }), one], new Set()), ['oooooooooooo']);
+});

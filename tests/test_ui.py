@@ -354,6 +354,21 @@ class UiLauncherTests(unittest.TestCase):
         self.open(self.plan, env=second)
         self.assertEqual(self.server_json()['cli_env']['FORGE_REGISTRY'], second['FORGE_REGISTRY'])
 
+    def test_a_read_only_server_with_another_forge_configuration_is_replaced(self):
+        # no write can be in flight, but its GET routes still run CLIs: it must not keep the old configuration
+        first = dict(self.env, FORGE_UI_READONLY='1', FORGE_DATASET='off')
+        second = dict(first, FORGE_DATASET='on')
+        self.open(self.plan, env=first)
+        old = self.server_json()
+        self.assertEqual(old['cli_env']['FORGE_DATASET'], 'off')
+        result = self.ui('open', str(self.plan), env=second)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('forge-ui: http://', result.stdout)
+        new = self.server_json()
+        self.assertNotEqual(new['pid'], old['pid'])
+        self.assertEqual(new['cli_env']['FORGE_DATASET'], 'on')
+        self.assertTrue(new['read_only'])
+
     def test_a_server_whose_health_reports_another_build_is_replaced(self):
         # server.json still claims the current build; only the live answer says the code is old.
         self.open(self.plan)

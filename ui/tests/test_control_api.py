@@ -523,6 +523,10 @@ class CliEnvTests(unittest.TestCase):
             'FORGE_REGISTRY': os.path.abspath('custom.tsv'),  # relative to the shell, not to the server
             'FORGE_DATA_HOME': '~/data', 'FORGE_DATASET': 'off'})
         self.assertEqual(control.check_cli_env({'FORGE_DATASET': 'off'}), {'FORGE_DATASET': 'off'})
+        # a leading ~ is kept only for the reader that expands it: nothing expands FORGE_REGISTRY's
+        self.assertEqual(control.cli_env_from({'FORGE_REGISTRY': '~/x.tsv', 'FORGE_DATA_HOME': '~/d'}), {
+            'FORGE_REGISTRY': os.path.abspath('~/x.tsv'), 'FORGE_DATA_HOME': '~/d'})
+        self.assertTrue(control.cli_env_from({'FORGE_REGISTRY': '~/x.tsv'})['FORGE_REGISTRY'].endswith('/~/x.tsv'))
         for bad in ([], {'FORGE_SHADOW': '1'}, {'FORGE_REGISTRY': 3}, {'FORGE_REGISTRY': ''}, {'FORGE_REGISTRY': 'a\x00b'}):
             with self.subTest(bad=bad), self.assertRaises(ValueError):
                 control.check_cli_env(bad)

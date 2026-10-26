@@ -355,12 +355,16 @@ def cmd_open(args):
                 # the record and the live answer must both name this code and the mode asked for
                 if (server.get('build') == build and answer.get('build') == build and server.get('registry') == registry
                         and bool(server.get('read_only')) == read_only and is_read_only(answer) == read_only):
-                    # Reused, it would run this shell's writes with another registry and dataset, and a
-                    # restart could cut off a write in flight: say so instead, and how to restart it.
+                    # Reused, its CLIs would run with another registry and dataset. A server that takes
+                    # writes may be in the middle of one, which a restart could cut off: say so instead,
+                    # and how to restart it. A read-only one has none to cut off: replace it.
                     change = config_change(server.get('cli_env'), cli_env)
-                    if change:
+                    if change and read_only:
+                        terminate(server['pid'])
+                        server = None
+                    elif change:
                         _say(f'error: the running forge-ui (pid {server["pid"]}) has another forge configuration '
-                             f'for its writes: {change}. Run `forge ui stop`, then open again.')
+                             f'for its CLIs: {change}. Run `forge ui stop`, then open again.')
                         return 5
                 else:
                     terminate(server['pid'])

@@ -361,9 +361,21 @@ class ForgeIssuesTests(unittest.TestCase):
         self.assertEqual(out['repo'], 'o/r')
         self.assertEqual(len(out['warnings']), 1)
         self.assertIn('records no repository; using the current directory', out['warnings'][0])
+        text = out['warnings'][0]
+        # The listing keeps the two-space indent; a dismissal does not. Both say `warning:`.
+        listed = subprocess.run([sys.executable, str(SCRIPT), str(solo), '--offline', '--include-plausible'],
+                                capture_output=True, text=True, env=self.env, timeout=60, cwd=self.repo)
+        self.assertEqual(listed.returncode, 0, listed.stderr)
+        self.assertEqual([line for line in listed.stdout.splitlines() if line.startswith('  warning')],
+                         [f'  warning: {text}'])
         fp = out['findings'][0]['fp']
         dismissed = self.run_issues(str(solo), '--dismiss', fp, cwd=self.repo)
         self.assertEqual(dismissed['warnings'], out['warnings'])
+        shown = subprocess.run([sys.executable, str(SCRIPT), str(solo), '--dismiss', fp],
+                               capture_output=True, text=True, env=self.env, timeout=60, cwd=self.repo)
+        self.assertEqual(shown.returncode, 0, shown.stderr)
+        self.assertEqual([line for line in shown.stdout.splitlines() if line.startswith('warning')],
+                         [f'warning: {text}'])
         self.assertEqual(list(json.loads(self.store_path().read_text())), [fp])
 
     def test_threshold_review_with_known_issues_is_collected(self):
