@@ -501,13 +501,19 @@ ARCHIVE_FORMAT = 1
 ARCHIVE_MAX_FILE = 50 << 20
 
 
-def _archive_mapper(work: Path, source: Path | None) -> Mapper:
-    """Where an extracted archive's run dir lived: its own FORGE_ARCHIVE.json, else a MANIFEST's source.
+def _archive_mapper(work: Path, source: Path | None) -> tuple[Path, Mapper]:
+    """The run dir in an extracted archive, and where that dir lived.
 
-    The archive's word wins, and it brings the run's dataset.uid along for the case where
-    the run dir it was taken from no longer has one to read.
+    FORGE_ARCHIVE.json names it. A legacy MANIFEST archive holds it under the source
+    path's basename; the extraction root still maps to the source's parent, as before.
+    Import walks that dir, so a run named review-* is read and the review-* skip applies
+    only inside a run. An archive whose layout cannot be identified is unchanged: a bad
+    description or a forge archive with no run dir still raises, and anything else is
+    walked from the extraction root. The archive's word wins, and it brings the run's
+    dataset.uid along when the dir it was taken from no longer has one.
     """
     mapper = Mapper()
+    root = work
     meta_path = work / ARCHIVE_META
     if meta_path.is_file():
         meta = json.loads(meta_path.read_text())
@@ -530,9 +536,13 @@ def _archive_mapper(work: Path, source: Path | None) -> Mapper:
         for rel, value in (legacy.items() if isinstance(legacy, dict) else ()):
             if isinstance(value, str) and value.strip() and not os.path.isabs(rel) and '..' not in Path(rel).parts:
                 mapper.legacy[str(Path(original) / rel)] = value.strip()
+        root = run
     elif source is not None:
         mapper.add(work, source.parent)
-    return mapper
+        named = work / Path(source).name
+        if named.is_dir():
+            root = named
+    return root, mapper
 
 
 def import_run(path, strict: bool = True, include_temp: bool = True) -> dict:
@@ -577,7 +587,8 @@ def import_run(path, strict: bool = True, include_temp: bool = True) -> dict:
             work = Path(tempfile.mkdtemp(prefix='forge-dataset-import-'))
             try:
                 _extract(path, work)
-                write(import_tree(work, _archive_mapper(work, None), args, counts), blob_failures)
+                root, mapper = _archive_mapper(work, None)
+                write(import_tree(root, mapper, args, counts), blob_failures)
             except Exception as error:
                 counts.setdefault('failed', []).append('%s: %s' % (path, error))
             finally:
@@ -789,7 +800,8 @@ def main(args) -> int:
         work = Path(tempfile.mkdtemp(prefix='forge-dataset-import-'))
         try:
             _extract(archive, work)
-            write(import_tree(work, _archive_mapper(work, source), args, counts))
+            root, mapper = _archive_mapper(work, source)
+            write(import_tree(root, mapper, args, counts))
         except Exception as error:
             counts.setdefault('failed', []).append('%s: %s' % (archive, error))
         finally:

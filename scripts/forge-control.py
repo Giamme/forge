@@ -225,6 +225,10 @@ def remove_safe(plan, rel):
 
 def append_line(plan, rel, line):
     fd, leaf = _open_parent(plan, rel)
+    # A missing parent leaves no directory descriptor. Opening the leaf then would pass
+    # dir_fd=None and create it in the process cwd, outside the plan, before the close failed.
+    if fd is None:
+        raise Invalid(f'{rel}: a parent directory is missing')
     try:
         _regular(fd, leaf, rel)
         afd = os.open(leaf, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o644, dir_fd=fd)

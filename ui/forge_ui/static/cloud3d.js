@@ -427,9 +427,12 @@ export function createCloud(E, host, cb = {}) {
   function info(el) {
     const f = el.f, r = f.run, counts = Object.entries(r.counts || {}).map(([s, n]) => `${s.toLowerCase()} ${n}`).join(' · ');
     const proj = st.L && st.L.projects.find(p => p.id === f.project);
+    const verdict = r.final_review && typeof r.final_review === 'object' ? r.final_review.verdict : r.final_review;
+    const isOutdated = verdict && RM.runReviewStatus(r) === 'OUTDATED';
+    const reviewText = verdict ? (isOutdated ? `${verdict} (outdated)` : verdict) : null;
     return [['meta', `${proj ? proj.name : RM.basename(r.repo)} · ${r.run_id || ''} · ${r.kind}`], ['title', String(r.goal || 'Untitled run').split('\n')[0]],
       ['body', `${f.n} task${f.n > 1 ? 's' : ''} · ${counts}`], ['body', `${[...f.dwarf].join(', ') || '—'} → ${[...f.qa].join(', ') || '—'}`],
-      ['foot', `started ${new Date(f.t * 1000).toLocaleString()}${r.final_review ? ' · review ' + r.final_review : ''}${r.verification_status ? ' · verify ' + r.verification_status : ''}`],
+      ['foot', `started ${new Date(f.t * 1000).toLocaleString()}${reviewText ? ' · review ' + reviewText : ''}${r.verification_status ? ' · verify ' + r.verification_status : ''}`],
       ['foot', (store.layouts[st.layout] || {})[el.key] ? 'moved by you · drag to move, Shift = depth, Alt = height' : 'drag to move · double-click to open']];
   }
   function showTip(el, cx, cy) {

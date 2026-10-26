@@ -30,7 +30,7 @@ PIPELINE_ROLES = ('task', 'solo', 'verification', 'parallel')
 TASKS_COLS = ('id', 'deps', 'difficulty', 'files', 'dwarf', 'qa', 'title')
 STRUCTURED = ('codex', 'claude', 'openclaude', 'grok', 'opencode')   # as forge-runtime.py's: .last is the message, not the log
 # Plan files that change what a plan decides, added to its rid only when present (see plan_event).
-PLAN_RID_LATER = ('decompose_level', 'shadow_qa', 'shadow_rate', 'explore')
+PLAN_RID_LATER = ('decompose_level', 'shadow_qa', 'shadow_rate', 'explore', 'reviewer_session')
 
 # Files a task or solo execution may write. begin() snapshots their signatures so
 # finish() can tell this execution's outputs from what an earlier one left behind.
@@ -369,12 +369,32 @@ def intervention_rid(name: str, uid: str | None, task: str | None, values: dict)
 
 # --- dispatch: one model call ----------------------------------------------------------
 
+def session_record(attempt: Path, role: str, metrics: dict) -> tuple[str | None, str | None]:
+    """The harness session, and whether this dispatch was asked to continue one.
+
+    `<role>.session` is the id live capture published; `metrics.json` fills it in when an
+    archive has the id and not the file. `<role>.continue` exists only when continuing was
+    requested. `mode=continued` is the success. Any other mode, or a file with no mode, is
+    `failed`: the request is what makes the judgment not independent, and a failed continue
+    can still have printed a verdict.
+    """
+    recorded = first_line(attempt / (role + '.session'))
+    if not recorded:
+        value = metrics.get('session_id')
+        recorded = value.strip() if isinstance(value, str) and value.strip() else None
+    path = attempt / (role + '.continue')
+    if not path.exists():
+        return recorded, None
+    return recorded, 'continued' if kv(path).get('mode') == 'continued' else 'failed'
+
+
 def dispatch_event(attempt: Path, root: Path, role: str, harness: str, rc, prov: dict, src: str = 'live') -> dict:
     metrics = read_json(attempt / 'metrics.json') or {}
     resolved = kv(attempt / (role + '.resolved'))
     infra = kv(attempt / (role + '.infra'))
     harness = harness or metrics.get('harness') or resolved.get('harness')
     message = text(attempt / (role + '.last'))
+    session_id, session_continue = session_record(attempt, role, metrics)
     final_source = 'structured' if harness in STRUCTURED else 'log_copy'
     delivery = resolved.get('delivery') or 'custom'
     orphans = text(attempt / (role + '.orphans'))
@@ -399,6 +419,7 @@ def dispatch_event(attempt: Path, root: Path, role: str, harness: str, rc, prov:
         prompt_bytes=metrics.get('prompt_bytes'), final_source=final_source,
         verdict=verdict, findings=found, learnings=learnings(message),
         findings_parse=review_completeness(verdict, found, parsed) if role == 'qa' else None,
+        session_id=session_id, session_continue=session_continue,
         root=str(root), scope=prov.get('scope'), trigger=prov.get('trigger'),
         **({'shadow': shadow} if shadow else {}),
     )
@@ -672,7 +693,7 @@ def plan_event(plan: Path, prov: dict, src: str = 'live', inventory: bool = True
         fractal_selection=read_json(plan / 'fractal-selection.json'),
         jev_coupling=read_json(plan / 'jev-coupling.json'),
         options={name: first_line(plan / name) for name in ('qa_threshold', 'verify_retries', 'timeout', 'final_qa',
-                                                            'shadow_qa', 'shadow_rate', 'explore')
+                                                            'shadow_qa', 'shadow_rate', 'explore', 'reviewer_session')
                  if (plan / name).exists()},
         flags=sorted(name for name in ('no_memory', 'no_ripwire', 'yolo_dwarf', 'yolo_qa') if (plan / name).exists()),
         blobs=blobs(goal=put_file(plan / 'goal.txt'), request=put_file(plan / 'request.md', 'prompt'),

@@ -385,9 +385,11 @@ class UiLauncherTests(unittest.TestCase):
         self.assertEqual(old.wait(timeout=5), -signal.SIGTERM)
         self.assertNotEqual(self.server_json()['pid'], old.pid)
 
-    def test_an_empty_config_home_registers_the_run_in_the_default_one_not_the_current_directory(self):
+    def test_an_empty_or_relative_config_home_serves_the_run_from_the_default_one(self):
         # XDG_CONFIG_HOME= taken literally put the registry at ./forge/runs: an untracked
         # forge/ dir in whatever repo `open` ran from, and a server reading a relative path.
+        # A relative one registered nothing, so `open` printed a link to a run the server
+        # did not list.
         home, work = self.tmp / 'home', self.tmp / 'work'
         work.mkdir()
         repo = (self.plan / 'repo').read_text().strip()
@@ -397,6 +399,8 @@ class UiLauncherTests(unittest.TestCase):
                 env = dict(self.env, XDG_CONFIG_HOME=value, HOME=str(home))
                 result = self.ui('open', str(self.plan), env=env, cwd=work)
                 self.assertEqual(result.returncode, 0, result.stderr)
+                port = self.server_json()['port']
+                self.assertIn(run_key(self.plan), [run['key'] for run in get_json(port, '/api/runs')['runs']])
                 self.assertEqual(sorted(work.rglob('*')), [], 'nothing is written below the current directory')
                 self.ui('stop', env=env)
         entry = default / (forge_registry.repo_key(repo) + '.txt')

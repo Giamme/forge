@@ -42,6 +42,21 @@ def _kind(path):
     return None
 
 
+def _default_registry_dir():
+    """forge's run registry, resolved the way forge writes it (scripts/forge_registry.registry_dir).
+
+    ``XDG_CONFIG_HOME`` (``~`` expanded) when it is an absolute path, otherwise ``~/.config``: an
+    empty or relative value counts as unset (XDG spec), as it does when forge registers a run.
+    None only when even that is not absolute (a relative HOME): forge never registers a run
+    there, so reading it would only pick up whatever the current directory happens to hold.
+    """
+    value = os.environ.get('XDG_CONFIG_HOME') or ''
+    base = Path(value).expanduser() if value else None
+    if base is None or not base.is_absolute():
+        base = Path.home() / '.config'
+    return base / 'forge' / 'runs' if base.is_absolute() else None
+
+
 def discover(plans=(), roots=(), registry=True, registry_dir=None):
     found, seen = [], set()
 
@@ -76,10 +91,9 @@ def discover(plans=(), roots=(), registry=True, registry_dir=None):
     for path in roots:
         scan(Path(path))
     if registry:
-        base = Path(registry_dir) if registry_dir is not None else Path(
-            os.environ.get('XDG_CONFIG_HOME') or Path.home() / '.config') / 'forge' / 'runs'
+        base = Path(registry_dir) if registry_dir is not None else _default_registry_dir()
         try:
-            entries = sorted(base.glob('*.txt'))
+            entries = sorted(base.glob('*.txt')) if base is not None else []
         except OSError:
             entries = []
         for entry in entries:
@@ -310,10 +324,14 @@ def _tasks(reader):
             reader.warn(label, 'invalid task id')
             continue
         prefix = f'tasks/{ident}'
-        status = 'MERGED' if reader.exists(prefix + '/merged') else reader.word(prefix + '/status') or 'PENDING'
+        # One stat: the run list needs the mtime, and detail reads the same marker again.
+        merged = reader.stat(prefix + '/merged')
+        status = 'MERGED' if merged is not None else reader.word(prefix + '/status') or 'PENDING'
         tasks.append(dict(id=ident, title='\t'.join(row[6:]), deps=_list(deps),
                           difficulty=difficulty, files=_list(files), dwarf=_nullable(dwarf),
-                          qa=_nullable(qa), status=status))
+                          qa=_nullable(qa), status=status,
+                          merged_at=float(merged.st_mtime) if merged is not None else None,
+                          accepted=_nonempty(reader, prefix + '/accepted.by')))
     return tasks
 
 
@@ -353,12 +371,15 @@ def _summary(reader, source):
     final_review = reader.word('final-review.verdict')
     dwarf_models = sorted({task['dwarf'] for task in tasks if task['dwarf']})
     qa_models = sorted({task['qa'] for task in tasks if task['qa']})
+    # Before snapshotting `updated`: these reads are files the summary read, so a newer
+    # accepted.integration (or the published verdict / review.meta) moves the activity time.
+    final_review_outdated = _published_outdated(reader, tasks)
     result.update(updated=reader.updated, created=_created(reader.path, _PLAN_START_FILES),
                   task_count=len(tasks), counts=counts,
                   task_statuses=[dict(id=task['id'], status=task['status'], difficulty=task['difficulty'] or None,
-                                      title=_brief(task['title'])) for task in tasks],
+                                      title=_brief(task['title']), accepted=task['accepted']) for task in tasks],
                   models=sorted(set(dwarf_models) | set(qa_models)), dwarf_models=dwarf_models, qa_models=qa_models,
-                  final_review=final_review)
+                  final_review=final_review, final_review_outdated=final_review_outdated)
     return result, tasks
 
 
@@ -389,9 +410,10 @@ def _solo_summary(reader, source):
                 decompose_level=None, verification_status=None, updated=reader.updated,
                 created=_created(reader.path, _SOLO_START_FILES),
                 task_count=1, counts={status: 1},
-                task_statuses=[dict(id='solo', status=status, difficulty=None, title=_brief(goal or 'Solo run'))],
+                task_statuses=[dict(id='solo', status=status, difficulty=None, title=_brief(goal or 'Solo run'),
+                                    accepted=False)],
                 models=sorted({dwarf, qa} - {None}), dwarf_models=[dwarf] if dwarf else [],
-                qa_models=[qa] if qa else [], final_review=None)
+                qa_models=[qa] if qa else [], final_review=None, final_review_outdated=None)
 
 
 def summarize(path, source='plan') -> dict:
@@ -502,6 +524,26 @@ def _shadows(reader, ident, task_execs):
     return result
 
 
+def _accepted_fields(reader, name, text):
+    """(attempt, over) from an accepted.by body. A non-integer attempt= is null and warned.
+
+    status= FAIL or UNKNOWN is what was accepted over; any other or missing value is null
+    (a PASS record is an acceptance with nothing to say beyond "accepted").
+    """
+    if not text:
+        return None, None
+    fields = executions.parse_resolved(text)
+    attempt = None
+    raw = fields.get('attempt')
+    if raw:
+        try:
+            attempt = int(raw)
+        except (ValueError, OverflowError):
+            reader.warn(name, 'attempt is not an integer')
+    status = fields.get('status')
+    return attempt, status if status in ('FAIL', 'UNKNOWN') else None
+
+
 def _task_detail(reader, task, run_id, waves, branches):
     """Fill in a plan task; returns every execution it read (its own and its shadows')."""
     ident = task['id']
@@ -520,6 +562,8 @@ def _task_detail(reader, task, run_id, waves, branches):
     task['qa_tail'] = reader.cap(qa, prefix + '/qa_tail', 4000, True)
     task['dwarf_tail'] = reader.cap(reader.text(prefix + '/dwarf.last'), prefix + '/dwarf_tail', 4000, True)
     task['accepted_by'] = reader.text(prefix + '/accepted.by')
+    task['accepted_attempt'], task['accepted_over'] = _accepted_fields(
+        reader, prefix + '/accepted.by', task['accepted_by'])
     for field, filename in [('prompt', 'prompt.md'), ('approach', 'approach.md'), ('retry_findings', 'retry_findings.md')]:
         task[field] = reader.cap(reader.text(prefix + '/' + filename), prefix + '/' + field)
     task['route'] = []
@@ -606,6 +650,120 @@ def _published(reader):
     return real if executions.inside(reader.path, real) else None
 
 
+def _review_clock(reader, name):
+    """(source, at) of a `final-review-<e>-<p>` or `integrate-<e>-<p>` dir name, else None.
+
+    `at` is the whole-second epoch in the name. The same clock `executions.review_dirs` uses,
+    so a summary does not have to scan the plan to know when the published review started.
+    """
+    match = executions._KIND.fullmatch(name)
+    if not match:
+        return None
+    kind, epoch, _pid = match.groups()
+    if len(epoch) > 15:
+        reader.warn(name, 'invalid epoch')
+        return None
+    try:
+        at = float(epoch)
+        if not math.isfinite(at):
+            raise ValueError()
+    except (ValueError, OverflowError):
+        reader.warn(name, 'invalid epoch')
+        return None
+    return ('review' if kind == 'final-review' else 'integrate'), at
+
+
+def _published_identity(reader):
+    """(source, at) of the dir `final-review` links to, when the link stays inside the plan."""
+    real = _published(reader)
+    if real is None:
+        return None
+    path = Path(real)
+    # An integrate review is `<integrate-dir>/final-review`; a final-review dir is named itself.
+    if path.name == 'final-review':
+        found = _review_clock(reader, path.parent.name)
+        return found if found is not None and found[0] == 'integrate' else None
+    found = _review_clock(reader, path.name)
+    return found if found is not None and found[0] == 'review' else None
+
+
+def _merge_pairs(tasks):
+    """(id, merged_at) of every merged task, oldest merge first, then id."""
+    pairs = [(task['id'], task['merged_at']) for task in tasks if task.get('merged_at') is not None]
+    pairs.sort(key=lambda item: (item[1], item[0]))
+    return pairs
+
+
+# What `git rev-parse` writes for a commit: sha1 (40) or sha256 (64), lowercase hex.
+_COMMIT = re.compile(r'(?:[0-9a-f]{40}|[0-9a-f]{64})')
+
+
+def _meta_integration(reader, name, meta):
+    """The `integration=` commit of a review.meta, or None.
+
+    Missing or empty is absent (older runs record no integration commit). Any other value
+    that is not a commit object name is malformed: null, and a warning, so freshness uses
+    the next rule instead of treating the text as the commit the review judged.
+    """
+    value = meta.get('integration') or None
+    if not value:
+        return None
+    if _COMMIT.fullmatch(value):
+        return value
+    reader.warn(name, 'integration is not a commit')
+    return None
+
+
+def _review_freshness(accepted, integration, tip, source, at, merges, verdict):
+    """(outdated, merged_since) for one final review.
+
+    Null when the review has no verdict or there is no `accepted.integration` to compare with.
+    Otherwise the first rule that applies: a known `integration` commit, else `tip` when
+    `source` is `review`, else (an older integrate review) any task merged after `at`.
+    `integration` is a commit object name or None (a malformed value is None). A merge counts
+    when its marker mtime is `>= at + 1`. `merged_since` is those ids, oldest first, and is
+    empty unless the review is outdated.
+    """
+    later = []
+    if at is not None:
+        later = [item for item in merges if item[1] is not None and item[1] >= at + 1]
+        later.sort(key=lambda item: (item[1], item[0]))
+    ids = [task_id for task_id, _merged_at in later]
+    if not verdict or not accepted:
+        return None, []
+    if integration:
+        moved = integration != accepted
+    elif source == 'review':
+        moved = tip != accepted
+    else:
+        moved = bool(ids)
+    return (True, ids) if moved else (False, [])
+
+
+def _stamp_review(summary, accepted, merges):
+    summary['outdated'], summary['merged_since'] = _review_freshness(
+        accepted, summary['integration'], summary['tip'], summary['source'], summary['at'], merges,
+        summary['verdict'])
+    return summary
+
+
+def _published_outdated(reader, tasks):
+    """final_review_outdated for the published review only.
+
+    Reads `accepted.integration` and, through the `final-review` link, that dir's `verdict`
+    and `review.meta`. Does not scan other review dirs or open a review's attempts.
+    """
+    found = _published_identity(reader)
+    if found is None:
+        return None
+    source, at = found
+    verdict = reader.word('final-review/verdict')
+    meta = executions.parse_resolved(reader.text('final-review/review.meta'))
+    return _review_freshness(reader.line('accepted.integration'),
+                             _meta_integration(reader, 'final-review/review.meta', meta),
+                             meta.get('tip') or None, source, at, _merge_pairs(tasks), verdict)[0]
+
+
 def _final_review(reader, item, newest, published):
     """(FinalReviewSummary, its executions, review.meta) of one review dir."""
     name, source, at, rel = item
@@ -630,6 +788,8 @@ def _final_review(reader, item, newest, published):
                    verdict=verdict, state=state, spec=meta.get('spec') or None,
                    threshold=None if threshold == 'none' else threshold,
                    base=meta.get('base') or None, tip=meta.get('tip') or None,
+                   integration=_meta_integration(reader, rel + '/review.meta', meta),
+                   outdated=None, merged_since=[],
                    gate=_gate(reader, rel + '/qa.gate'), findings=executions.qa_result(reader, rel + '/qa.last')[1],
                    execution=run['id'] if run else None, started=run['started'] if run else None,
                    ended=run['ended'] if run else None, duration_s=run['duration_s'] if run else None)
@@ -701,6 +861,7 @@ def _solo_detail(reader, source):
                 dwarf=_role_spec(reader, 'dwarf'), qa=_role_spec(reader, 'qa'), wave=1, status=status,
                 branch=None, attempt=max((item['attempt'] for item in attempts), default=None),
                 attempts=attempts, escalations=[], verdict=_verdict(qa), accepted_by=None,
+                accepted=False, accepted_attempt=None, accepted_over=None,
                 explored=False, route=[], clef={'first_pass': None, 'retry_pass': {}}, shadow=[],
                 prompt=reader.cap(reader.text('prompt.md'), 'tasks/solo/prompt'), approach=None,
                 retry_findings=None, qa_tail=reader.cap(qa, 'tasks/solo/qa_tail', 4000, True),
@@ -767,6 +928,10 @@ def detail(path, source='plan') -> dict:
     result['timeline'] = _timeline(pool + run_execs, [item for item in run_execs if item['role'] == 'parallel'],
                                    [item for item in run_execs if item['role'] == 'verification'])
     result['integration'] = _integration(reader, tasks, integrations, reviews, published)
+    accepted = result['integration']['accepted'] if result['integration'] is not None else None
+    merges = [(item['id'], item['at']) for item in result['integration']['merged']] if result['integration'] else []
+    for summary in reviews:
+        _stamp_review(summary, accepted, merges)
     result['final_review'] = reviews[0] if reviews else None
     result['final_reviews'] = reviews
     result['deferrals'] = [line.strip() for line in (reader.text('deferrals.txt') or '').splitlines() if line.strip()]
@@ -943,6 +1108,7 @@ def final_review_detail(path, name, source='plan'):
     if index is None:
         return None
     summary, _, meta = _final_review(reader, items[index], index == 0, _published(reader))
+    _stamp_review(summary, reader.line('accepted.integration'), _merge_pairs(_tasks(reader)))
     rel = items[index][3]
     qa_last = reader.text(rel + '/qa.last')
     result = dict(summary)
@@ -1215,8 +1381,13 @@ def run_findings(path, source='plan'):
     if kind is None:
         return None
     keys = ('kind', 'execution', 'attempt', 'spec', 'verdict')
+    if kind == 'solo':
+        task_ids, merges, accepted = ['solo'], [], None
+    else:
+        rows = _tasks(reader)
+        task_ids, merges, accepted = [task['id'] for task in rows], _merge_pairs(rows), reader.line('accepted.integration')
     tasks = []
-    for task_id in ['solo'] if kind == 'solo' else [task['id'] for task in _tasks(reader)]:
+    for task_id in task_ids:
         ctx = _diff_task(reader, task_id)
         reviews = [dict({key: review[key] for key in keys}, findings=found)
                    for review in (ctx['reviews'] if ctx else []) for found in [_findings_of(reader, review)] if found]
@@ -1227,13 +1398,15 @@ def run_findings(path, source='plan'):
         items, published = executions.review_dirs(reader)[0], _published(reader)
         for index, item in enumerate(items[:_MAX_REVIEWS]):
             summary = _final_review(reader, item, index == 0, published)[0]
+            _stamp_review(summary, accepted, merges)
             # the same review final_review_diff pins, so a Finding's id opens it there
             review = _diff_review('final', None, None, summary['spec'], summary['verdict'], item[3] + '/qa.last', [],
                                   summary['execution'])
             found = _findings_of(reader, review)
             if found:
                 finals.append(dict(name=item[0], execution=summary['execution'], spec=summary['spec'],
-                                   verdict=summary['verdict'], findings=found))
+                                   verdict=summary['verdict'], outdated=summary['outdated'],
+                                   merged_since=summary['merged_since'], findings=found))
     return dict(run=run_key(reader.path), available=findings.available(), tasks=tasks, final_reviews=finals,
                 truncated=reader.truncated, warnings=reader.warnings)
 

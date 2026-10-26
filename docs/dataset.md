@@ -14,7 +14,13 @@ forge dataset status            # size, counts, and anything that looks incomple
 forge dataset import ~/.local/share/forge/legacy   # runs that predate live capture
 forge dataset export            # labeled decision cases for benchmarks and fine-tuning
 forge dataset outcomes          # which integrated lines survived, read from git history
+forge dataset reviewers         # how often work each reviewer PASSed was later reverted or rewritten
 ```
+
+`forge dataset reviewers` is a report card for reviewer models, built on those outcomes. It is
+advisory only and never changes routing, and it shows "not enough data" below 10 outcomes per
+reviewer rather than a rate a handful of tasks would make up. See
+[the reviewer report card](../references/dataset.md#reviewer-report-card).
 
 Deleting a run keeps what it taught the dataset. `forge runs rm <run-dir>` first imports the run
 **strictly** (every event must be stored, or nothing is deleted), then writes a self-describing

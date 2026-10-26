@@ -306,3 +306,145 @@ class ClassifyTests(unittest.TestCase):
         # A classifier that cannot run says nothing and does not fail.
         self.assertEqual(subprocess.run([sys.executable, str(ROOT / 'scripts/forge-runtime.py'), 'classify', str(self.dir / 'absent'), 'codex', 'x', ''],
                                         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=30).stdout, '')
+
+
+class SessionTests(unittest.TestCase):
+    """Each dispatch's harness session is recorded so a later round can continue it."""
+
+    def setUp(self):
+        self.runtime = module('forge-runtime')
+
+    def test_session_id_from_init_result_or_codex_thread(self):
+        init = '11111111-1111-1111-1111-111111111111'
+        result = '22222222-2222-2222-2222-222222222222'
+        thread = '33333333-3333-3333-3333-333333333333'
+        table = [
+            ('claude init line', jsonl([
+                {'type': 'system', 'subtype': 'init', 'session_id': init},
+                {'type': 'assistant', 'session_id': 'nope'},
+                {'type': 'result', 'session_id': result, 'result': 'done'}]), 'claude', init),
+            ('openclaude init line', jsonl([
+                {'type': 'system', 'subtype': 'init', 'session_id': init},
+                {'type': 'result', 'session_id': result}]), 'openclaude', init),
+            ('init line lacks one, result has it', jsonl([
+                {'type': 'system', 'subtype': 'init', 'model': 'x'},
+                {'type': 'result', 'session_id': result, 'result': 'done'}]), 'claude', result),
+            ('no init line, result has it', jsonl([
+                {'type': 'result', 'session_id': result, 'result': 'done'}]), 'claude', result),
+            ('codex thread.started', 'warning\n' + jsonl([
+                {'type': 'thread.started', 'thread_id': thread},
+                {'type': 'thread.started', 'thread_id': 'later'},
+                {'type': 'turn.completed'}]), 'codex', thread),
+            ('malformed log', 'not json\n{"type":\n', 'claude', None),
+            ('id missing', jsonl([
+                {'type': 'system', 'subtype': 'init'},
+                {'type': 'result', 'result': 'done'}]), 'claude', None),
+            ('init id is not a string', jsonl([
+                {'type': 'system', 'subtype': 'init', 'session_id': 12},
+                {'type': 'result', 'session_id': result}]), 'claude', None),
+            ('result id is not a string', jsonl([
+                {'type': 'system', 'subtype': 'init'},
+                {'type': 'result', 'session_id': {'id': result}}]), 'claude', None),
+            ('codex thread_id is not a string', jsonl([
+                {'type': 'thread.started', 'thread_id': None},
+                {'type': 'thread.started', 'thread_id': thread}]), 'codex', None),
+            ('codex thread_id missing', jsonl([{'type': 'thread.started'}]), 'codex', None),
+            ('grok is not continued', jsonl([
+                {'type': 'system', 'subtype': 'init', 'session_id': init},
+                {'type': 'result', 'session_id': result}]), 'grok', None),
+            ('opencode is not continued', jsonl([
+                {'type': 'step_start', 'sessionID': init}]), 'opencode', None),
+        ]
+        for name, log, harness, expected in table:
+            with self.subTest(name):
+                self.assertEqual(self.runtime.session_id(log, harness), expected)
+
+    def _finish(self, role, harness, log, session=None, continue_text=None, rc='0'):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        if log is not None:
+            (root / (role + '.log')).write_text(log)
+        if session is not None:
+            (root / (role + '.session')).write_text(session + '\n')
+        if continue_text is not None:
+            (root / (role + '.continue')).write_text(continue_text)
+        attempt = self.runtime.begin(str(root), role)
+        self.runtime.finish(str(attempt), str(root), role, harness, rc)
+        return root, attempt
+
+    def test_finish_writes_the_session_and_archives_continue(self):
+        init = '11111111-1111-1111-1111-111111111111'
+        result = '22222222-2222-2222-2222-222222222222'
+        continued = 'requested=old\nmode=continued\nreason=\n'
+        log = jsonl([
+            {'type': 'system', 'subtype': 'init', 'session_id': init},
+            {'type': 'result', 'session_id': result, 'result': 'FORGE_VERDICT: PASS', 'usage': {
+                'input_tokens': 10, 'cache_read_input_tokens': 2,
+                'cache_creation_input_tokens': 3, 'output_tokens': 4}}])
+        root, attempt = self._finish('qa', 'claude', log, session='stale-session', continue_text=continued)
+        self.assertEqual((root / 'qa.session').read_text(), init + '\n')
+        self.assertEqual((attempt / 'qa.session').read_text(), init + '\n')
+        self.assertEqual((root / 'qa.continue').read_text(), continued)
+        self.assertEqual((attempt / 'qa.continue').read_text(), continued)
+        metrics = json.loads((attempt / 'metrics.json').read_text())
+        self.assertEqual(metrics['session_id'], init)
+        self.assertEqual((metrics['input_tokens'], metrics['cached_input_tokens'], metrics['output_tokens']), (15, 2, 4))
+        self.assertEqual((root / 'qa.last').read_text(), 'FORGE_VERDICT: PASS\n')
+        self.assertEqual(metrics['exit_code'], 0)
+
+        # The init line named no session, so the result line's id is the one recorded.
+        log = jsonl([
+            {'type': 'system', 'subtype': 'init', 'model': 'x'},
+            {'type': 'result', 'session_id': result, 'result': 'done', 'usage': {
+                'input_tokens': 1, 'cache_read_input_tokens': 0,
+                'cache_creation_input_tokens': 0, 'output_tokens': 1}}])
+        root, attempt = self._finish('qa', 'openclaude', log, session='stale-session')
+        self.assertEqual((root / 'qa.session').read_text(), result + '\n')
+        self.assertEqual(json.loads((attempt / 'metrics.json').read_text())['session_id'], result)
+        self.assertEqual((attempt / 'qa.session').read_text(), result + '\n')
+        self.assertFalse((attempt / 'qa.continue').exists())
+
+        thread = '33333333-3333-3333-3333-333333333333'
+        log = jsonl([
+            {'type': 'thread.started', 'thread_id': thread},
+            {'type': 'item.completed', 'item': {'type': 'agent_message', 'text': 'implemented'}},
+            {'type': 'turn.completed', 'usage': {'input_tokens': 20, 'cached_input_tokens': 5, 'output_tokens': 3}}])
+        root, attempt = self._finish('dwarf', 'codex', log)
+        self.assertEqual((root / 'dwarf.session').read_text(), thread + '\n')
+        self.assertEqual((attempt / 'dwarf.session').read_text(), thread + '\n')
+        metrics = json.loads((attempt / 'metrics.json').read_text())
+        self.assertEqual(metrics['session_id'], thread)
+        self.assertEqual((root / 'dwarf.last').read_text(), 'implemented\n')
+        self.assertEqual((metrics['input_tokens'], metrics['cached_input_tokens'], metrics['output_tokens']), (20, 5, 3))
+
+    def test_finish_without_an_id_removes_a_stale_session(self):
+        result = '22222222-2222-2222-2222-222222222222'
+        usage = {'input_tokens': 1, 'cache_read_input_tokens': 0, 'cache_creation_input_tokens': 0, 'output_tokens': 1}
+        failed = 'requested=\nmode=failed\nreason=no-session\n'
+        cases = [
+            ('malformed', 'not json\n{"type":\n', 'claude'),
+            ('no log', None, 'claude'),
+            ('init id is not a string', jsonl([
+                {'type': 'system', 'subtype': 'init', 'session_id': 12},
+                {'type': 'result', 'session_id': result, 'result': 'x', 'usage': usage}]), 'claude'),
+            ('id missing', jsonl([
+                {'type': 'system', 'subtype': 'init'},
+                {'type': 'result', 'result': 'done', 'usage': usage}]), 'claude'),
+            ('codex thread_id is not a string', jsonl([
+                {'type': 'thread.started', 'thread_id': None},
+                {'type': 'turn.completed', 'usage': {}}]), 'codex'),
+            ('grok is not continued', jsonl([
+                {'type': 'system', 'subtype': 'init', 'session_id': result},
+                {'type': 'result', 'result': 'done', 'usage': usage}]), 'grok'),
+        ]
+        for name, log, harness in cases:
+            with self.subTest(name):
+                root, attempt = self._finish('qa', harness, log, session='stale-session', continue_text=failed)
+                self.assertFalse((root / 'qa.session').exists(), name)
+                self.assertFalse((attempt / 'qa.session').exists(), name)
+                metrics = json.loads((attempt / 'metrics.json').read_text())
+                self.assertIn('session_id', metrics)
+                self.assertIsNone(metrics['session_id'])
+                self.assertEqual((attempt / 'qa.continue').read_text(), failed)
+                self.assertEqual((root / 'qa.continue').read_text(), failed)

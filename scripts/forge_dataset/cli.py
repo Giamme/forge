@@ -1,6 +1,6 @@
 """`forge dataset ...`: inspect the run dataset, import old runs, and the shell's capture hooks.
 
-User-facing: status, dump, import, export, outcomes. Internal (called by forge's shell scripts, fail-open,
+User-facing: status, dump, import, export, outcomes, routing, reviewers. Internal (called by forge's shell scripts, fail-open,
 silent): event, invocation, plan.
 """
 from __future__ import annotations
@@ -28,6 +28,24 @@ def _human(n: int) -> str:
     return str(n)
 
 
+def _continued_sessions(db) -> dict:
+    """How many dispatches asked to continue a reviewer session.
+
+    Counted from the dispatch events themselves. A shadow review is not required, and a
+    continue that failed still counts: the file was written because continuing was requested.
+    """
+    continued = failed = 0
+    for (raw,) in db.execute(
+            "SELECT data FROM events WHERE kind = 'dispatch' AND data LIKE ?",
+            ('%"session_continue": "%',)):
+        value = json.loads(raw).get('session_continue')
+        if value == 'continued':
+            continued += 1
+        elif value == 'failed':
+            failed += 1
+    return dict(continued_reviews=continued, failed_continues=failed)
+
+
 def status(args) -> int:
     from . import checks
     directory = dataset_dir()
@@ -43,6 +61,7 @@ def status(args) -> int:
             last = db.execute('SELECT MAX(ts) FROM events').fetchone()[0]
             summary['last_event'] = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(last)) if last else None
             summary['checks'] = checks.run(db, verbose=args.verbose)
+            summary.update(_continued_sessions(db))
             if summary['events'].get('dispatch'):
                 from . import export
                 if db.execute("SELECT 1 FROM events WHERE kind = 'dispatch' AND data LIKE '%qa_shadow%' LIMIT 1").fetchone():
@@ -77,6 +96,9 @@ def status(args) -> int:
                   % (shadow['shadow_reviews'], shadow['pairs'], shadow['agree'], rate))
             for pair, n in shadow['by_pair'].items():
                 print('          %s: %d of %d agree' % (pair, n['agree'], n['pairs']))
+        if summary.get('continued_reviews') or summary.get('failed_continues'):
+            print('  continued reviews: %d' % summary['continued_reviews'])
+            print('  failed continues: %d' % summary['failed_continues'])
     if summary['legacy_archives']:
         print('  legacy: %d archived run dir(s) kept in %s (`forge dataset import %s` re-reads them;'
               ' events already stored are skipped)' % (summary['legacy_archives'], legacy, legacy))
@@ -163,6 +185,11 @@ def run_routing(args) -> int:
     return routing.main(args)
 
 
+def run_reviewers(args) -> int:
+    from . import reviewers
+    return reviewers.main(args)
+
+
 def parser() -> argparse.ArgumentParser:
     top = argparse.ArgumentParser(prog='forge dataset', description='The run dataset: every run\'s inputs and outcomes.')
     sub = top.add_subparsers(dest='command', required=True)
@@ -204,6 +231,11 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument('--since', type=float, metavar='DAYS', help='only tasks first attempted in the last DAYS days')
     p.add_argument('--json', action='store_true')
     p.set_defaults(func=run_routing)
+    p = sub.add_parser('reviewers', help='how often work each reviewer passed was later reverted or rewritten (advisory)')
+    p.add_argument('--horizon-days', type=int, default=14, help='the outcomes recorded at this horizon (default 14)')
+    p.add_argument('--repo', help='only this repo')
+    p.add_argument('--json', action='store_true')
+    p.set_defaults(func=run_reviewers)
     p = sub.add_parser('event', help=argparse.SUPPRESS)
     p.add_argument('name')
     p.add_argument('--dir')

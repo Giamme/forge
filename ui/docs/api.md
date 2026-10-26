@@ -50,7 +50,7 @@ written), and the reader must never raise because of one.
 | `deferrals.txt` | one line per task the wave planner deferred |
 | `integration.base`, `accepted.integration` | one commit each: where the integration branch started, the revision the run accepted |
 | `attempts/<role>-<uuid>/` | one *execution* (below) of the run itself: `parallel` (a `run`) or `verification` |
-| `final-review-<epoch>-<pid>/` | one whole-run review: `qa.input`, `qa.last`, `verdict` (`PASS FAIL UNKNOWN INVALIDATED ACCEPTED`; absent while it runs or when nothing was judged), `qa.infra`, `qa.gate`, `known_issues.md`, `review.meta` (`key=value`: `base tip source spec threshold`, `threshold=none` when unset), `tasks.summary`, `attempts/qa-<uuid>/` |
+| `final-review-<epoch>-<pid>/` | one whole-run review: `qa.input`, `qa.last`, `verdict` (`PASS FAIL UNKNOWN INVALIDATED ACCEPTED`; absent while it runs or when nothing was judged), `qa.infra`, `qa.gate`, `known_issues.md`, `review.meta` (`key=value`: `base tip source spec threshold integration`, `threshold=none` when unset; `integration` is the integration-branch commit the reviewed result contains and is absent on older runs), `tasks.summary`, `attempts/qa-<uuid>/` |
 | `final-review` | a symlink to the newest *published* review dir; `final-review.verdict` a copy of its verdict |
 | `integrate-<epoch>-<pid>/` | one `integrate`: `setup.log`, `merge.log`, `verification.*`, `attempts/verification-<uuid>/`, and `final-review/` (a review dir as above) when it ran one |
 | `tasks/<id>/merged` | exists when the task was merged; its mtime is when |
@@ -60,7 +60,7 @@ written), and the reader must never raise because of one.
 | `tasks/<id>/escalations.tsv` | `epoch<TAB>attempt<TAB>from_spec<TAB>to_spec[<TAB>source]` per line; `source` (who decided: `policy`, a human's `retry --dwarf` as `retry`, or a `pin`) is missing on older rows, which read as `policy` |
 | `tasks/<id>/qa.last` | the reviewer's final message; its last line matching `FORGE_VERDICT: PASS` or `FORGE_VERDICT: FAIL` is the verdict |
 | `tasks/<id>/prompt.md`, `approach.md`, `retry_findings.md` | free text |
-| `tasks/<id>/accepted.by` | who accepted a task over a reviewer's FAIL, and why (`key=value` lines in current forge; returned as text) |
+| `tasks/<id>/accepted.by` | who accepted a task over a reviewer's FAIL, and why (`key=value`: `task`, `status`, `reason`, `by`, `at`, `epoch`, `attempt`, `reviewed_commit`; older runs are free text; returned as text) |
 | `tasks/<id>/qa.gate` | `threshold<TAB>decision<TAB>worst<TAB>n_confirmed<TAB>n_unlabelled<TAB>n_below` (`decision` is `accept` or `keep`, `-` for none) |
 | `tasks/<id>/known_issues.md` | the confirmed findings a threshold tolerated |
 | `tasks/<id>/dwarf.input`, `qa.input` | the prompts forge assembled; `<role>.delivered`, `<role>.resolved` the live dispatch files |
@@ -233,6 +233,7 @@ its last 20,000 behind a leading `…`. Their `truncated` lists the field names 
 | `POST /api/runs/<key>/issues` | file GitHub issues for chosen findings; authenticated, 300 s timeout |
 | `POST /api/runs/<key>/issues/dismiss` | dismiss or (`undo`) restore findings; authenticated |
 | `POST /api/runs/<key>/delete` | dry-run or delete a run with `forge runs rm`; authenticated, 900 s timeout; later requests for the key answer `404` |
+| `GET /api/models/reviewers` | `200` the `forge dataset reviewers --json` report (how each reviewer's PASSed work held up); no parameters |
 | `GET /api/config?run=<key>` | `200` the `forge config show --json` of that run's repo |
 | `POST /api/config` | set or unset one allowed key (`repo.verify`, `repo.setup`, `repo.verify-subset`, `jev.enabled`); authenticated |
 | `GET /api/runs/<key>/export?texts=0\|1&paths=0\|1` | `200` the run as one HTML file (see Export), `Content-Disposition: attachment`, `Content-Security-Policy: default-src 'none'; sandbox`; `404` for an unknown run |
@@ -286,18 +287,20 @@ nothing when there is none. Every other response keeps
   "counts": {"MERGED": 3, "RUNNING": 1, "PENDING": 1},
   "verification_status": "PASS",
   "created": 1760619000.0,
-  "task_statuses": [{"id": "reader", "status": "MERGED", "difficulty": "high", "title": "Read plan dirs"},
-                    {"id": "page", "status": "RUNNING", "difficulty": "medium", "title": "Draw the page"}],
+  "task_statuses": [{"id": "reader", "status": "MERGED", "difficulty": "high", "title": "Read plan dirs", "accepted": true},
+                    {"id": "page", "status": "RUNNING", "difficulty": "medium", "title": "Draw the page", "accepted": false}],
   "models": ["opus", "sol:xhigh"],
   "dwarf_models": ["sol:xhigh"],
   "qa_models": ["opus"],
-  "final_review": "FAIL"
+  "final_review": "FAIL",
+  "final_review_outdated": false
 }
 ```
 
-- `task_statuses`: every task in `tasks.tsv` order, with its `difficulty` (`null` when empty) and
-  `title` (its first 160 characters, then `…`). A solo run: `[{"id": "solo", "status": <solo status>,
-  "difficulty": null, "title": <goal or "Solo run">}]`.
+- `task_statuses`: every task in `tasks.tsv` order, with its `difficulty` (`null` when empty),
+  `title` (its first 160 characters, then `…`) and `accepted` (`true` when `tasks/<id>/accepted.by`
+  is a non-empty file). A solo run: `[{"id": "solo", "status": <solo status>, "difficulty": null,
+  "title": <goal or "Solo run">, "accepted": false}]`. `accepted` does not change `status` or `counts`.
 - `created`: when the run began: the earliest birth time (else mtime) of the files a run writes
   once at its start (plan: `run_id`, `repo`, `request.md`, `goal.txt`, `tasks.tsv`; solo: `prompt.md`,
   `repo`, `request.md`, `goal.txt`), else `null`. These are stat'ed only, and never move `updated`.
@@ -306,6 +309,11 @@ nothing when there is none. Every other response keeps
   and `qa` specs as its task has them), nulls left out.
 - `final_review`: the first word of `final-review.verdict`, else `null`; always `null` for a
   solo run. (RunDetail replaces it with an object, below.)
+- `final_review_outdated`: `true`, `false` or `null`, for the published review only (the dir the
+  `final-review` link points to, when that link stays inside the plan). The same rule as
+  FinalReviewSummary `outdated`, below. `null` when there is no such review, it has no verdict, or
+  `accepted.integration` is missing; always `null` for a solo run. RunDetail keeps this field
+  (it is not replaced by the newest review's `outdated`).
 
 `kind` is `"plan"` or `"solo"`. `updated` is the newest mtime (epoch seconds, float) among
 the run dir and the files the reader read. Any field it cannot determine is `null`
@@ -316,7 +324,11 @@ are `null`, `task_count` is 1, and `counts` is `{<status>: 1}` using the solo st
 The summary reads only `repo`, `goal.txt`, `status`, `verdict`, `dwarf.spec`, `qa.spec` and,
 when a spec file is missing, `*.resolved`. It also stats `dwarf.log` and `qa.log` without
 reading them, so `updated` moves while a model is writing a log. A plan summary reads
-`final-review.verdict` besides the files it always read.
+`final-review.verdict` besides the files it always read. For `final_review_outdated` it also
+reads `accepted.integration` and, through the `final-review` link, that dir's `verdict` and
+`review.meta`, and stats each task's `merged` marker. Those reads count toward `updated`, the
+same way as every other file the summary reads, so a newer `accepted.integration` moves the
+run's activity time. It does not open a review's attempts or scan the other review dirs.
 
 ## RunDetail
 
@@ -370,7 +382,9 @@ Every RunSummary field, plus:
   path of its review dir or `null`, `ended` the latest end of its verification and review
   executions (`null` while one is unfinished or there is none).
 - `final_review` is the newest FinalReviewSummary (review and integrate dirs together, by the
-  epoch in the name), or `null`; `final_reviews` lists the newest 20, newest first.
+  epoch in the name), or `null`; `final_reviews` lists the newest 20, newest first. That newest
+  review's `outdated` is its own. `final_review_outdated` stays the published review's flag, so
+  the two differ when a newer review exists than the one `final-review` links to.
 - `deferrals`: the non-empty lines of `deferrals.txt`, `[]` when it is missing.
 - `findings_available`: whether `scripts/forge-contract.py` could be loaded.
 - `fractal`: `null` without `fractal-selection.json`, else `{"enabled", "run", "available", "reason"}`
@@ -403,6 +417,9 @@ Every RunSummary field, plus:
   "escalations": [{"at": 1760620500.0, "attempt": 2, "from": "luna", "to": "sol", "source": "policy"}],
   "verdict": "PASS",
   "accepted_by": null,
+  "accepted": false,
+  "accepted_attempt": null,
+  "accepted_over": null,
   "explored": true,
   "route": [{"at": 1760619000.0, "task": "reader", "tier": "high", "epsilon": 0.5,
              "candidates": ["astra", "opus"], "default": "opus", "chosen": "astra",
@@ -437,6 +454,14 @@ Every RunSummary field, plus:
 - `infra` in an attempt: `null` for empty, `-` or missing.
 - `source` in an escalation: the 5th column of `escalations.tsv` (`policy`, `retry` or `pin`, as forge wrote it); `policy` when the row has only 4 columns or the cell is empty.
 - `verdict`: `"PASS"`, `"FAIL"` or `null`, from `qa.last` as described above.
+- `accepted`: `true` when `accepted.by` is a non-empty file, on `task_statuses` and on the task.
+  `status` stays what the merged marker or `status` file says (`MERGED` when the marker is there)
+  and `counts` do not change.
+- `accepted_attempt`: the integer `attempt=` of `accepted.by`, or `null` when the key is missing
+  or not an integer (not an integer is warned). On the task, not on `task_statuses`.
+- `accepted_over`: `"FAIL"` or `"UNKNOWN"` when `status=` in `accepted.by` says so; `null` for any
+  other or missing value, including `PASS` (the panel then says plain "accepted"). On the task,
+  not on `task_statuses`. A free-text `accepted.by` from an older forge has both null.
 - `dwarf_tail`: the last 4,000 characters of `dwarf.last` (`tasks/<id>/dwarf.last` for a
   plan task, the run dir's `dwarf.last` for a solo run), or `null` when the file is missing.
   Capped like `qa_tail`.
@@ -468,8 +493,9 @@ it is missing or `<harness default>`). `wave` is 1, `branch` is `null`, and `att
 from the run dir's `attempts.tsv`. `status` is the solo status; `attempt` is the highest `n`
 in `attempts.tsv`, or `null`. `escalations`, `route` and `shadow` are empty. `verdict` and
 `qa_tail` come from `qa.last`, and `prompt` comes from `prompt.md`. `deps` and `files` are
-`[]`; `difficulty`, `accepted_by`, `approach` and `retry_findings` are `null`; `explored` is
-false; `clef` is `{first_pass: null, retry_pass: {}}`. `request` on the detail is `request.md`.
+`[]`; `difficulty`, `accepted_by`, `approach` and `retry_findings` are `null`; `accepted` is
+false; `accepted_attempt` and `accepted_over` are `null`; `explored` is false; `clef` is
+`{first_pass: null, retry_pass: {}}`. `request` on the detail is `request.md`.
 
 ## Execution
 
@@ -538,6 +564,7 @@ block's 1-based line in the reply. Lists of Findings keep the first 200.
 ```json
 {"name": "final-review-1760622000-4242", "source": "review", "at": 1760622000.0, "published": true,
  "verdict": "FAIL", "state": "done", "spec": "opus", "threshold": "P2", "base": "1a2b...", "tip": "3c4d...",
+ "integration": "3c4d...", "outdated": false, "merged_since": [],
  "gate": {...}, "findings": FindingsSummary, "execution": "qa-...",
  "started": 1760622010.0, "ended": 1760622400.0, "duration_s": 390.0}
 ```
@@ -548,7 +575,29 @@ block's 1-based line in the reply. Lists of Findings keep the first 200.
   publishes nothing).
 - `state`: `done` with a verdict, `infra` with `qa.infra`, `running` when it is the newest
   review and has `qa.input`, else `orphaned`.
-- `spec`, `threshold`, `base`, `tip` come from `review.meta` (`threshold=none` is `null`).
+- `spec`, `threshold`, `base`, `tip`, `integration` come from `review.meta` (`threshold=none` is
+  `null`). `integration` is the integration-branch commit the reviewed result contains, or `null`
+  when missing, empty, or not a commit. A commit is the object name `git rev-parse` writes: 40
+  or 64 lowercase hex digits. Any other `integration=` value is warned on that
+  `review.meta` (`integration is not a commit`; the summary's read of the published dir
+  warns `final-review/review.meta`) and is not a known commit, so freshness uses the next rule.
+  `source` on this object is the dir kind, `review` or `integrate`, not `review.meta`'s
+  `source=` (a worktree path).
+- `outdated`: whether the plan's integration branch has moved since this review. `null` when the
+  review has no verdict, or when `accepted.integration` is missing. Otherwise the first rule that
+  applies:
+  1. `integration` is a commit: `true` when it differs from `accepted.integration`.
+  2. Else, for `source` `review`: `true` when `tip` differs from `accepted.integration`.
+  3. Else (an integrate review from an older forge, which has no `integration=` commit): `true`
+     when any task merged after the review started.
+- `merged_since`: the ids of tasks merged after the review started, oldest merge first. `[]` when
+  the review is not outdated. It may also be `[]` for an outdated review whose only later merge
+  fell inside the review's starting second.
+- A task merged after the review when the mtime of its `merged` marker is `>= at + 1`, where `at`
+  is the whole-second epoch in the review dir's name. A merge inside that starting second is
+  ambiguous and is not counted. The execution's `started` is not used.
+- `outdated` means tasks merged into the plan's integration branch since the review. Changes on
+  the user's own branch after an integrate are not tracked.
 - `execution` is its newest `attempts/qa-*`; `started`, `ended`, `duration_s` are that
   execution's.
 
@@ -662,13 +711,15 @@ lists, for all tasks and final reviews at once, without `text` or `line`.
             "verdict": "FAIL", "findings": [{"id": "qa-…:0", "severity": "P1", "status": "CONFIRMED",
                                              "location": "ui/reader.py:42", "summary": "…"}]}]}],
  "final_reviews": [{"name": "final-review-…", "execution": "qa-…", "spec": "sol", "verdict": "FAIL",
+                    "outdated": true, "merged_since": ["reader"],
                     "findings": [{"id": "qa-…:0", "severity": "P2", "status": "CONFIRMED", "location": null, "summary": "…"}]}],
  "truncated": [], "warnings": []}
 ```
 
 A task's `reviews` are every primary and shadow review of every attempt that listed a Finding
-(a solo run has one task, `solo`); `final_reviews` the newest 20 final reviews that did. A
-Finding's `id` is `<execution>:<n>`, `n` its 0-based place in the reply (`primary:<n>` or
+(a solo run has one task, `solo`); `final_reviews` the newest 20 final reviews that did. Each
+of those carries `outdated` and `merged_since`, the same values as that review's
+FinalReviewSummary. A Finding's `id` is `<execution>:<n>`, `n` its 0-based place in the reply (`primary:<n>` or
 `final:<n>` for a reply without an execution); the DiffDetail that pins it gives it the same
 `id`, so a mark on the stage opens that Finding in the diff. `available` is `false` without the
 contract module, and the lists are then empty.
@@ -1060,6 +1111,15 @@ completed): exit 2 `400`, exit 3 (busy or the run is active) `409`, exit 4 (fail
 deletion) `500`. Deletion holds the run's write lock and a server-wide lock on the run's real
 directory (`409 busy` when either is held). The run key is looked up again under the lock, and
 once the directory is gone every later request for that key is `404`. Timeout 900 s.
+
+### `GET /api/models/reviewers`
+
+Runs `dataset reviewers --json` and answers with its object: `horizon_days`, `min_landed`,
+`survives_at`, `reviewers` (per reviewer alias: `landed`, `reverted`, `rewritten`,
+`did_not_hold`, `enough`, and `rate` and `ci` only when `enough`, else `null` with a `note`),
+`unattributed`, `skipped` and `other_horizons`. Any query parameter is a `400`. Not cached: every
+request runs the CLI, and the page asks once per change of `/api/models`. Advisory: it feeds the
+Reviewers table's Did not hold column and nothing else. Timeout 60 s.
 
 ### `GET /api/config?run=<key>` and `POST /api/config`
 

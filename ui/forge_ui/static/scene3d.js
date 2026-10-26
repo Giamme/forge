@@ -89,12 +89,13 @@ export async function createStage(host, cb = {}) {
     el.col = col || E.statusColor(el.status);
     el.pulse = el.status === 'RUNNING';
   }
-  const PLAIN = new Set(['PENDING', 'NONE', 'UNKNOWN']);
+  const PLAIN = new Set(['PENDING', 'NONE', 'UNKNOWN', 'OUTDATED']);   // unlit: no glow and no tint
   function baseTargets(el) {
     const T = el.tgt, s = el.status, light = E.theme === 'light';
     T.lit = PLAIN.has(s) ? 0 : .32;
     T.tint = PLAIN.has(s) ? 0 : light ? .34 : .1;          // a pale panel shows a lit section by its colour: no glow to carry it
     T.vis = 1; T.op = 1; T.opB = 1;
+    // Not started yet. OUTDATED is a finished review that is no longer current, so it stays solid.
     if (s === 'PENDING' || s === 'NONE') { T.opB = .55; T.op = .8; }
     // parts are small: their status has to read from the colour of the whole piece
     if (el.kind === 'part' && !PLAIN.has(s)) { T.tint = light ? .5 : .32; T.lit = .55; }
@@ -166,7 +167,8 @@ export async function createStage(host, cb = {}) {
     const parts = [r.kind === 'solo' ? (Object.keys(c)[0] || 'solo') : `${merged}/${total} done`];
     if (running) parts.push(`${running} running`);
     if (bad) parts.push(`${bad} failed`);
-    if (r.final_review) parts.push(`review ${r.final_review}`);
+    const reviewStatus = RM.runReviewStatus(r);
+    if (reviewStatus) parts.push(`review ${reviewStatus}`);
     else if (r.verification_status) parts.push(`verify ${r.verification_status}`);
     return parts.join(' · ');
   }
@@ -191,7 +193,7 @@ export async function createStage(host, cb = {}) {
         cx.fillText(E.ellipsis(`${RM.basename(r.repo)} · ${r.run_id || ''}${r.kind === 'solo' ? ' · solo' : ''}`, Math.floor((w - 30) / (7 * E.CW))), 2 * s, 44 * s);
       }, 'cover', { x: x + 12, y: y + 8, z: h });
       leds(el, Math.min(60, m.tasks.length), x + 17, y + d - 14, h + .16, { step: 8, s: 2.4, perRow: Math.max(4, Math.floor((w - 30) / 8)) });
-      setLeds(el, m.tasks.map(t => t.status));
+      setLeds(el, m.tasks.map(t => RM.taskStatus(t)));
       display(el, e => runInfo(e.data.run), { w: w - 24, x: x + 12, y: y + d, z: h - 8 });
       halo(el);
     }
@@ -206,17 +208,28 @@ export async function createStage(host, cb = {}) {
       const el = EL.get('r:' + m.id); if (!el) continue;
       el.data.run = m.run; el.data.module = m;
       setStatus(el, STATE_STATUS[m.state]); halo(el);
-      setLeds(el, m.tasks.map(t => t.status));
-      const sig = JSON.stringify([m.run.goal, m.run.counts, m.run.final_review, m.run.verification_status]);
+      setLeds(el, m.tasks.map(t => RM.taskStatus(t)));
+      const sig = JSON.stringify([m.run.goal, m.run.counts, m.run.final_review, m.run.final_review_outdated, m.run.verification_status]);
       if (sig !== el.sig) { el.sig = sig; redraw(el); }
     }
     retarget();
   }
 
   /* ---------- plan: waves, tasks, the finish line ---------- */
-  function taskStatus(t) {
-    if (st.replay !== null && st.replayState) { const s = st.replayState.tasks[t.id]; return s ? s.status : 'PENDING'; }
-    return t.status || 'PENDING';
+  // During a replay the recorded status is what it was then; acceptance shows only once that status is MERGED.
+  function shownTask(t) {
+    if (t && st.replay !== null && st.replayState) {
+      const s = st.replayState.tasks[t.id];
+      return Object.assign({}, t, { status: s ? s.status : 'PENDING' });
+    }
+    return t;
+  }
+  function taskStatus(t) { return RM.taskStatus(shownTask(t)); }
+  function attemptLamps(t) {
+    const shown = shownTask(t);
+    const rows = list(t.attempts).map(a => RM.attemptStatus(shown, a.attempt, a.status));
+    if (st.replay === null && t.status === 'RUNNING') rows.push('RUNNING');
+    return rows;
   }
   function taskLine(el) {
     const t = el.data.task, s = el.status;
@@ -256,6 +269,7 @@ export async function createStage(host, cb = {}) {
     const tries = Math.max(1, list(t.attempts).length);
     leds(el, Math.min(20, tries), x + 17, y + d - 13, h + .16, { step: 9, s: 2.8 });
     el.ledCount = tries;
+    setLeds(el, attemptLamps(t).slice(-el.ledCount));
     display(el, taskLine, { w: w - 24, x: x + 12, y: y + d, z: h - 8 });
     // the Clef ring: how likely the first try was to pass, in the colour of what happened
     const p0 = t.clef && t.clef.first_pass && num(t.clef.first_pass.p);
@@ -276,9 +290,12 @@ export async function createStage(host, cb = {}) {
     const F = st.plan && st.plan.finish, run = st.run; if (!F) return {};
     if (id === 'f:integration') return { title: 'INTEGRATION', sub: `${F.integration.merged}/${F.integration.total} merged`, status: F.integration.status, line: F.integration.accepted ? 'at ' + String(F.integration.accepted).slice(0, 10) : 'into forge/' + (run.run_id || '…') + '-integration' };
     if (id === 'f:verification') return { title: 'VERIFICATION', sub: F.verification.command || 'no command recorded', status: F.verification.status, line: F.verification.runs ? `${F.verification.runs} run${F.verification.runs > 1 ? 's' : ''}` : 'not run yet' };
+    const status = finishStatus(id, { status: F.final.status });
+    const src = status === 'OUTDATED' && st.replay !== null ? (RM.reviewAt(run, st.replay) || F.final) : F.final;
     const f = F.final.findings;
-    return { title: 'FINAL REVIEW', sub: F.final.requested ? (F.final.spec || 'reviewer not chosen') : 'not requested', status: F.final.status, findings: f,
-      line: F.final.status === 'NONE' ? 'opt-in: forge review <plan>' : F.final.count > 1 ? `${F.final.count} reviews` : F.final.status };
+    const line = status === 'OUTDATED' ? RM.reviewSinceLine(src)
+      : F.final.status === 'NONE' ? 'opt-in: forge review <plan>' : F.final.count > 1 ? `${F.final.count} reviews` : status;
+    return { title: 'FINAL REVIEW', sub: F.final.requested ? (F.final.spec || 'reviewer not chosen') : 'not requested', status, findings: f, line };
   }
   function buildFinish(m, p, g) {
     const [x, y, w, d, h] = p;
@@ -308,7 +325,7 @@ export async function createStage(host, cb = {}) {
   }
   function finishLeds(el) {
     if (el.id === 'f:final') { const f = finishInfo(el.id).findings || {}; setLeds(el, ['P0', 'P1', 'P2', 'P3'].map(s => f[s] ? E.sevColor(s) : null)); }
-    else if (el.id === 'f:integration') setLeds(el, list(st.run.tasks).map(t => taskStatus(t) === 'MERGED' ? 'MERGED' : null));
+    else if (el.id === 'f:integration') setLeds(el, list(st.run.tasks).map(t => { const s = taskStatus(t); return s === 'MERGED' || s === 'ACCEPTED' ? s : null; }));
     else setLeds(el, list(st.run.verification && st.run.verification.runs).map(r => r.exit === 0 ? 'PASS' : 'FAIL'));
   }
   function buildPlan(g) {
@@ -954,7 +971,7 @@ export async function createStage(host, cb = {}) {
       if (c.tint > .001) el.M.body.color.lerp(TMP2.copy(col), c.tint * c.vis);
       if (el.tintMat) { el.tintMat.color.copy(col); el.tintMat.opacity = (c.tint * (E.theme === 'light' ? 1.45 : 1.1) + .08 * c.sel) * ob * gf * c.vis; }
       if (el.haloMat) el.haloMat.uniforms.opacity.value = (c.halo + (el.pulse ? .12 * pulseK : 0)) * gf * c.vis;
-      if (el.clef) el.clef.fgM.color.copy(E.statusColor(['MERGED', 'PASS'].includes(el.status) ? 'pass' : ['FAIL', 'ERROR', 'CONFLICT'].includes(el.status) ? 'fail' : 'pending'));
+      if (el.clef) el.clef.fgM.color.copy(E.statusColor(['MERGED', 'PASS', 'ACCEPTED'].includes(el.status) ? 'pass' : ['FAIL', 'ERROR', 'CONFLICT'].includes(el.status) ? 'fail' : 'pending'));
       if (el.inner) {
         const p = pr ? pr.p : 0, vis = p > .002;
         if (!vis && el.inner.visible) { E.release(el.inner); }
@@ -1239,6 +1256,7 @@ export async function createStage(host, cb = {}) {
     const lamps = { title: 'Lamps', rows: [
       { sw: { lamp: 'st-merged' }, label: 'merged · passed · accepted' }, { sw: { lamp: 'st-running' }, label: 'running · interrupted' },
       { sw: { lamp: 'st-fail' }, label: 'failed · conflict · infra · timeout' }, { sw: { lamp: 'st-pending' }, label: 'pending, not started' },
+      { sw: { lamp: 'st-outdated' }, label: 'outdated review' },
       { sw: { route: true }, label: st.view === 'atlas' ? 'chosen run' : 'chosen task' + (L.route ? ' and its route' : '') }] };
     if (st.view === 'atlas') {
       out.push({ title: 'Map', rows: [], note: 'Each block is a run, each district a repository. The lamps on a block are its tasks; the block stands taller the more tasks it has.' }, lamps);
@@ -1318,8 +1336,7 @@ export async function createStage(host, cb = {}) {
         if (el.kind === 'task') {
           const t = byId.get(el.data.task.id); if (!t) continue;
           el.data.task = t; setStatus(el, taskStatus(t)); halo(el);
-          const rows = list(t.attempts).map(a => a.status);
-          if (st.replay === null && t.status === 'RUNNING') rows.push('RUNNING');
+          const rows = attemptLamps(t);
           if (rows.length > el.ledCount) { /* more tries than lamps: the newest show */ }
           setLeds(el, rows.slice(-el.ledCount));
           const sig = JSON.stringify([t.status, t.findings, t.gate, list(t.shadow).map(s => s.agreement), t.dwarf, t.accepted_by, el.status]);
@@ -1385,7 +1402,7 @@ export async function createStage(host, cb = {}) {
       E.invalidate(100);                                    // marks a replay reaches drop in
       st.replayState = st.replay !== null ? RM.stateAt(st.run, st.replay) : null;
       for (const el of EL.values()) {
-        if (el.kind === 'task') setStatus(el, taskStatus(el.data.task));
+        if (el.kind === 'task') { setStatus(el, taskStatus(el.data.task)); setLeds(el, attemptLamps(el.data.task).slice(-el.ledCount)); }
         else if (el.kind === 'finish') setStatus(el, finishStatus(el.id, finishInfo(el.id)));
         else if (el.data && el.data.item) setStatus(el, st.replay !== null ? replayItemStatus(el.data.item) : el.data.item.status);
         else continue;

@@ -95,6 +95,34 @@ test('labels: at most 5, 1 to 50 characters, no leading dash, no control charact
   assert.ok(F.parseLabels('a\u0007b').error);
 });
 
+test('origin filter offers accepted, and an outdated review carries a hollow lamp', () => {
+  assert.ok(F.ORIGINS.includes('accepted'));
+  const rows = [row('a', { origin: 'accepted' }), row('b', { origin: 'tolerated' }), row('c', { origin: 'review' })];
+  assert.deepEqual(F.filterRows(rows, { origin: 'accepted' }).map(r => r.fp), ['a']);
+  assert.equal(F.reviewMarker(row('c')), null);
+  assert.equal(F.reviewMarker(row('c', { review: null })), null);
+  assert.equal(F.reviewMarker(row('c', { review: { name: 'final-review-1-1', outdated: false, merged_since: ['page'] } })), null);
+  assert.equal(F.reviewMarker(row('c', { review: { outdated: null, merged_since: [] } })), null);
+
+  const one = F.reviewMarker(row('c', { origin: 'review', review: { name: 'final-review-1-1', outdated: true, merged_since: ['page'] } }));
+  assert.equal(one.lamp, 'st-outdated');
+  assert.equal(one.label, 'outdated review');
+  assert.equal(one.sentence, 'The review is outdated: 1 task merged into the integration branch after it (page), so check whether they fixed it first.');
+  assert.equal(one.title, one.sentence);
+
+  const two = F.reviewMarker(row('c', { review: { outdated: true, merged_since: ['page', 'reader'] } }));
+  assert.equal(two.sentence, 'The review is outdated: 2 tasks merged into the integration branch after it (page, reader), so check whether they fixed it first.');
+  assert.match(two.title, /page/);
+  assert.match(two.title, /reader/);
+
+  const none = F.reviewMarker(row('c', { review: { outdated: true, merged_since: [] } }));
+  assert.equal(none.sentence, 'The review is outdated: 0 tasks merged into the integration branch after it, so check whether they fixed it first.');
+
+  const many = F.reviewMarker(row('c', { review: { outdated: true, merged_since: ['a', 'b', 'c', 'd', 'e', 'f'] } }));
+  assert.equal(many.sentence, 'The review is outdated: 6 tasks merged into the integration branch after it (a, b, c, d, e, +1 more), so check whether they fixed it first.');
+  assert.equal(many.title, many.sentence);
+});
+
 test('results and links', () => {
   const lines = F.resultLines([{ title: 'T', url: 'https://g/1' }, { title: 'U', skipped: 'same title', issue: 'https://g/2' }, { note: 'labels left off' }]);
   assert.deepEqual(lines.map(l => l.kind), ['created', 'skipped', 'note']);

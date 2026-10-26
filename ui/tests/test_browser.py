@@ -176,7 +176,8 @@ class Page(unittest.TestCase):
         self.three_or_skip(page)
         page.wait_for_function("() => window.ForgeUI.state.stage.view === 'run'")
         nodes = dict(page.evaluate("window.ForgeUI.state.stage.debug().nodes.map(n => [n.id, n.status])"))
-        self.assertEqual(nodes['t:reader'], 'MERGED')
+        # reader is merged and accepted.by is set, so the plate says ACCEPTED. The recorded status stays MERGED.
+        self.assertEqual(nodes['t:reader'], 'ACCEPTED')
         self.assertEqual(nodes['t:graph'], 'RUNNING')
         self.assertIn('f:final', nodes)
         page.evaluate("window.ForgeUI.state.stage.debug().settle()")
@@ -362,6 +363,29 @@ class Page(unittest.TestCase):
         page.wait_for_selector('.cloud-list .map-card')
         self.assertEqual(page.locator('.cloud-list .map-card').count(), 1)    # only the plan used luna
         self.assertClean(page)
+
+    def test_the_reviewers_table_shows_how_a_reviewers_passed_work_held_up(self):
+        # The column reads `forge dataset reviewers` through /api/models/reviewers; the report is
+        # faked here so the page is checked, not the box's own run dataset.
+        cell = """() => {
+          const table = [...document.querySelectorAll('.lb table')].find(t => [...t.querySelectorAll('th')].some(th => th.textContent.trim() === 'Did not hold'));
+          if (!table) return null;
+          const col = [...table.querySelectorAll('th')].findIndex(th => th.textContent.trim() === 'Did not hold');
+          const row = [...table.querySelectorAll('tbody tr')].find(tr => tr.querySelector('.model-plate[title="opus"]'));
+          return row ? row.children[col].textContent.trim() : null;
+        }"""
+        for report, shown in (
+            ({'horizon_days': 14, 'min_landed': 10, 'reviewers': [{'reviewer': 'opus', 'landed': 10, 'reverted': 1, 'rewritten': 1, 'did_not_hold': 2, 'enough': True, 'rate': 0.2, 'ci': [0.06, 0.51]}]}, '20% 2/10'),
+            ({'horizon_days': 14, 'min_landed': 10, 'reviewers': [{'reviewer': 'opus', 'landed': 2, 'reverted': 0, 'rewritten': 1, 'did_not_hold': 1, 'enough': False, 'rate': None, 'ci': None}]}, 'not enough data'),
+        ):
+            with self.subTest(shown=shown):
+                page = self.open(cdn=False)
+                body = json.dumps(report)
+                page.route('**/api/models/reviewers', lambda route: route.fulfill(status=200, content_type='application/json', body=body))
+                page.goto(self.url + '#/models')
+                page.wait_for_function(f"() => ({cell})() === {json.dumps(shown)}", timeout=10000)
+                self.assertEqual(page.evaluate(cell), shown)
+                self.assertClean(page)
 
     def test_the_export_dialog_leaves_private_texts_out_by_default(self):
         page = self.open(cdn=False)

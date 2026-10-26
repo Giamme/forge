@@ -40,15 +40,22 @@ infra_stop() { # infra_stop <tdir> <id> <role> <attempt>
   note "$id: $role dispatch hit an infrastructure failure (${cls:-unknown}) — no attempt spent; re-run to resume"
 }
 
-# A QA-only resume is trusted only while the worktree is still exactly what was
-# reviewed. Anything else clears the marker and the full path runs.
-resume_valid() { # resume_valid <tdir> <wt>
+# True when the worktree is still exactly what was reviewed. Reads and deletes nothing:
+# the reviewed commit, the fingerprint and changes.diff are present, and the worktree's
+# HEAD and fingerprint equal them.
+reviewed_state_matches() { # reviewed_state_matches <tdir> <wt>
   local tdir="$1" wt="$2"
-  [ "$(cat "$tdir/resume" 2>/dev/null)" = qa ] || return 1
   [ -s "$tdir/reviewed.commit" ] && [ -s "$tdir/source.fingerprint" ] && [ -s "$tdir/changes.diff" ] || return 1
   [ -e "$wt/.git" ] || return 1
   [ "$(git -C "$wt" rev-parse HEAD 2>/dev/null)" = "$(cat "$tdir/reviewed.commit")" ] || return 1
   [ "$(forge_fingerprint "$wt")" = "$(cat "$tdir/source.fingerprint")" ]
+}
+
+# A QA-only resume is trusted only while the worktree is still exactly what was
+# reviewed. Anything else clears the marker and the full path runs.
+resume_valid() { # resume_valid <tdir> <wt>
+  [ "$(cat "$1/resume" 2>/dev/null)" = qa ] || return 1
+  reviewed_state_matches "$1" "$2"
 }
 
 # The next entry's kind, decided before it starts with the test do_task_body applies
@@ -128,10 +135,37 @@ settle_pin() {
 # True when the task's next retry only re-runs QA: a `resume` marker (a QA-stage infrastructure
 # stop), or a verdict-less review of committed work, which prepare_retry turns into the marker
 # but has not yet when the run summary is printed. Such a retry leaves a pin in place.
+# Both are believed only while the worktree is still what was reviewed — the comparison
+# resume_valid uses, and the marker prepare_retry is about to write gets the same test.
+# This never deletes the marker; resume_check owns that.
 qa_only_next() { # qa_only_next <plan> <id>
-  local tdir="$1/tasks/$2"
-  [ "$(cat "$tdir/resume" 2>/dev/null)" = qa ] && return 0
-  [ "$(task_status "$1" "$2")" = UNKNOWN ] && [ -s "$tdir/reviewed.commit" ]
+  local tdir="$1/tasks/$2" root="" wt=""
+  root="$(cat "$1/wt_root" 2>/dev/null)"
+  [ -n "$root" ] && wt="$root/$2"
+  if [ "$(cat "$tdir/resume" 2>/dev/null)" = qa ]; then
+    [ -n "$wt" ] && reviewed_state_matches "$tdir" "$wt"
+    return
+  fi
+  if [ "$(task_status "$1" "$2")" = UNKNOWN ] && [ -s "$tdir/reviewed.commit" ]; then
+    [ -n "$wt" ] && reviewed_state_matches "$tdir" "$wt"
+    return
+  fi
+  return 1
+}
+
+qa_only_next_flag() { # qa_only_next_flag <plan> <id> -> yes | no, for `escalation --check`
+  if qa_only_next "$1" "$2"; then printf 'yes\n'; else printf 'no\n'; fi
+}
+
+# tasks/<id>/escalations.tsv, probed and appended the way forge-control writes a plan file
+# (forge-route.py record loads that code): every component below the plan is a real
+# directory, and the file is absent or a regular file. A symlink at any level is a refusal.
+escalation_record_ok() { # escalation_record_ok <plan> <id>
+  python3 "$SKILL_DIR/scripts/forge-route.py" record --plan "$1" --task "$2" --probe
+}
+
+escalation_record_line() { # escalation_record_line <plan> <id> <line>
+  python3 "$SKILL_DIR/scripts/forge-route.py" record --plan "$1" --task "$2" --line "$3"
 }
 
 # Writes the task's implementer column in tasks.tsv: a temp file, then a rename.
@@ -142,6 +176,80 @@ set_dwarf() { # set_dwarf <plan> <id> <spec>
 }
 
 # --- retry preparation ----------------------------------------------------------
+# Carries the last review's report forward as the findings of the next attempt, and records
+# which commit that report judged (what reviewed.commit holds now, since qa.last is that
+# review's). The two are written together: the commit first, so a report never sits beside a
+# commit that belongs to an older one. Repeating the call writes the same bytes.
+carry_findings() { # carry_findings <tdir>
+  local tdir="$1"
+  if [ -s "$tdir/reviewed.commit" ]; then
+    cp "$tdir/reviewed.commit" "$tdir/.retry_findings.commit.tmp" \
+      && mv "$tdir/.retry_findings.commit.tmp" "$tdir/retry_findings.commit"
+  else
+    rm -f "$tdir/retry_findings.commit"
+  fi
+  # The reviewer session that wrote these findings, and what it ran as, kept beside them for a
+  # plan with --reviewer-session. Removed first, so an older session never sits next to newer
+  # findings; a review that left no session leaves none here.
+  rm -f "$tdir/retry_findings.session" "$tdir/retry_findings.resolved"
+  cp "$tdir/qa.last" "$tdir/retry_findings.md"
+  [ ! -f "$tdir/qa.session" ] || cp "$tdir/qa.session" "$tdir/retry_findings.session" 2>/dev/null || true
+  [ ! -f "$tdir/qa.resolved" ] || cp "$tdir/qa.resolved" "$tdir/retry_findings.resolved" 2>/dev/null || true
+}
+
+# --- reviewer-session continuation (plan --reviewer-session, an opt-in experiment) ------------
+# review_session_decide <session-file> <resolved-file> <resolution-file>: whether this review
+# round continues the earlier reviewer's session. Prints `mode<TAB>reason<TAB>session`; the
+# session is the id to continue, and empty for every fresh answer.
+#   session-file     the id the earlier review ran under (retry_findings.session / qa.session)
+#   resolved-file    that review's resolution (retry_findings.resolved / qa.resolved)
+#   resolution-file  this dispatch's resolution (doctor output): harness=, model=, effort=
+# The caller has already handled the cases that need no files (first round, Fractal). Anything
+# that cannot be checked is fresh; nothing here aborts.
+review_session_decide() {
+  local sf="$1" rf="$2" cf="$3" id="" k a b h
+  [ -f "$sf" ] && id="$(head -1 "$sf" 2>/dev/null | tr -d '\r')"
+  if [ -z "$id" ]; then printf 'fresh\tno-session\t\n'; return 0; fi
+  case "$id" in *[!A-Za-z0-9-]*) printf 'fresh\tinvalid-session\t\n'; return 0 ;; esac
+  if [ "${#id}" -lt 8 ] || [ "${#id}" -gt 128 ]; then printf 'fresh\tinvalid-session\t\n'; return 0; fi
+  h="$(sed -n 's/^harness=//p' "$cf" 2>/dev/null | head -1)"
+  if [ -z "$h" ]; then printf 'fresh\tharness-unsupported\t\n'; return 0; fi
+  for k in harness model effort; do
+    a="$(sed -n "s/^$k=//p" "$rf" 2>/dev/null | head -1)"
+    b="$(sed -n "s/^$k=//p" "$cf" 2>/dev/null | head -1)"
+    if [ -z "$a" ] || [ "$a" != "$b" ]; then printf 'fresh\tspec-changed\t\n'; return 0; fi
+  done
+  case "$h" in
+    claude|openclaude|codex) printf 'continued\tsame-spec\t%s\n' "$id" ;;
+    *) printf 'fresh\tharness-unsupported\t\n' ;;
+  esac
+  return 0
+}
+
+# The diff between the attempt the carried findings judged and the one under review now, as
+# files a later gate can reuse (tasks/<id>/changes.since.{diff,range,stat}). All three go
+# when there is no valid range: no findings, no recorded commit, a commit that is unknown or
+# no ancestor of the reviewed one, or nothing changed.
+attempt_delta() { # attempt_delta <tdir> <worktree> <reviewed-commit>
+  local tdir="$1" wt="$2" reviewed="$3" from="" to=""
+  rm -f "$tdir/.changes.since.diff" "$tdir/.changes.since.stat"
+  if [ -s "$tdir/retry_findings.md" ] && [ -s "$tdir/retry_findings.commit" ] \
+     && from="$(git -C "$wt" rev-parse --verify -q "$(cat "$tdir/retry_findings.commit")^{commit}")" \
+     && to="$(git -C "$wt" rev-parse --verify -q "$reviewed^{commit}")" \
+     && git -C "$wt" merge-base --is-ancestor "$from" "$to" \
+     && git -C "$wt" diff --binary "$from" "$to" -- . ':(exclude).forge' > "$tdir/.changes.since.diff" 2>/dev/null \
+     && [ -s "$tdir/.changes.since.diff" ] \
+     && git -C "$wt" diff --stat "$from" "$to" -- . ':(exclude).forge' > "$tdir/.changes.since.stat" 2>/dev/null; then
+    printf '%s %s\n' "$from" "$to" > "$tdir/changes.since.range"
+    mv "$tdir/.changes.since.diff" "$tdir/changes.since.diff"
+    mv "$tdir/.changes.since.stat" "$tdir/changes.since.stat"
+    return 0
+  fi
+  rm -f "$tdir/.changes.since.diff" "$tdir/.changes.since.stat" \
+        "$tdir/changes.since.diff" "$tdir/changes.since.range" "$tdir/changes.since.stat"
+  return 0
+}
+
 # Shared by `retry` (a human asked) and the scheduler's automatic retries. The findings
 # are the whole point of retrying rather than re-running: the dwarf is told what was
 # wrong with its own previous attempt.
@@ -163,14 +271,15 @@ prepare_retry() { # prepare_retry <plan> <id> [new-dwarf]
   # all"), and copying that over would throw away the actual findings the previous
   # reviewer gave — the one thing a retry exists to carry forward.
   elif [ "$verdict" = PASS ] || [ "$verdict" = FAIL ]; then
-    cp "$tdir/qa.last" "$tdir/retry_findings.md"
+    carry_findings "$tdir"
   elif grep -q 'FORGE_VERDICT' "$tdir/qa.last" 2>/dev/null; then
-    cp "$tdir/qa.last" "$tdir/retry_findings.md"
+    carry_findings "$tdir"
   elif [ -s "$tdir/retry_findings.md" ]; then
     note "$id: no new review since the last retry — reusing the previous findings"
   else
     note "$id: no previous QA findings to pass on (last status was $st)"
     : > "$tdir/retry_findings.md"
+    rm -f "$tdir/retry_findings.commit" "$tdir/retry_findings.session" "$tdir/retry_findings.resolved"
   fi
   # A QA-only resume (an unreviewed verdict, or a QA-stage infrastructure stop) re-asks the
   # reviewer about work that is already committed; the dwarf does not run, so it is no moment
@@ -197,6 +306,10 @@ prepare_retry() { # prepare_retry <plan> <id> [new-dwarf]
     note "$id: the escalation pin waits for the next full retry (this one only re-runs QA)"
   elif [ "$has_pin" = 1 ] && forge_plan_is_fractal "$PLAN"; then
     note "$id: an escalation pin is set, but Fractal plans never apply pins — leaving it in place"
+  elif [ "$has_pin" = 1 ] && ! escalation_record_ok "$PLAN" "$id"; then
+    # Before the claim: a refused record leaves the pin unclaimed and tasks.tsv as it was.
+    note "$id: could not record the escalation in escalations.tsv; nothing was retried"
+    return 1
   elif [ "$has_pin" = 1 ] && pinned="$(claim_pin "$tdir")"; then
     esc_source=pin
     newdwarf="$pinned"
@@ -225,10 +338,10 @@ prepare_retry() { # prepare_retry <plan> <id> [new-dwarf]
 # Puts the next implementer in place: tasks.tsv, the escalations.tsv record and the dataset
 # event. Returns 1, with tasks.tsv and a claimed pin given back, when nothing was changed.
 write_escalation() { # write_escalation <plan> <id> <from> <to> <retry|pin|policy>
-  local PLAN="$1" id="$2" cur="$3" newdwarf="$4" esc_source="$5" tdir="$1/tasks/$2"
+  local PLAN="$1" id="$2" cur="$3" newdwarf="$4" esc_source="$5" tdir="$1/tasks/$2" line
   # A pin is held to its record: whether the record can be written is learned before
   # anything is changed, so a failure there leaves tasks.tsv and the pin as they were.
-  if [ "$esc_source" = pin ] && ! : >> "$tdir/escalations.tsv" 2>/dev/null; then
+  if [ "$esc_source" = pin ] && ! escalation_record_ok "$PLAN" "$id"; then
     note "$id: could not record the escalation in escalations.tsv; nothing was retried"
     settle_pin "$tdir" restore
     return 1
@@ -247,8 +360,9 @@ write_escalation() { # write_escalation <plan> <id> <from> <to> <retry|pin|polic
   # The rewrite loses which model failed first, and an escalation is exactly the record
   # of "this tier was too weak for this task". The last column says who decided: forge's
   # policy, a human's `retry --dwarf`, or a pin.
-  if ! printf '%s\t%s\t%s\t%s\t%s\n' "$(date +%s)" "$(cat "$tdir/attempt" 2>/dev/null || echo 0)" \
-      "$cur" "$newdwarf" "$esc_source" >> "$tdir/escalations.tsv" && [ "$esc_source" = pin ]; then
+  line="$(printf '%s\t%s\t%s\t%s\t%s' "$(date +%s)" "$(cat "$tdir/attempt" 2>/dev/null || echo 0)" \
+      "$cur" "$newdwarf" "$esc_source")"
+  if ! escalation_record_line "$PLAN" "$id" "$line" && [ "$esc_source" = pin ]; then
     # The rewrite is undone with the record, so the pin given back is still a real
     # escalation next time, not a same-spec one that hides the model it replaced.
     if [ "$newdwarf" = "$cur" ] || set_dwarf "$PLAN" "$id" "$cur"; then
@@ -282,6 +396,9 @@ prepare_resume() { # prepare_resume <plan> <id>
     note "$id: the escalation pin waits for the next full retry (this resume only re-runs QA)"
   elif forge_plan_is_fractal "$PLAN"; then
     note "$id: an escalation pin is set, but Fractal plans never apply pins — leaving it in place"
+  elif ! escalation_record_ok "$PLAN" "$id"; then
+    note "$id: could not record the escalation in escalations.tsv; nothing was retried"
+    return 1
   elif pinned="$(claim_pin "$tdir")"; then
     note "$id: applying the pinned escalation to $pinned"
     write_escalation "$PLAN" "$id" "$(field "$PLAN/tasks.tsv" "$id" dwarf)" "$pinned" pin || return 1
@@ -466,7 +583,8 @@ report_escalations() { # report_escalations <plan>
       continue
     fi
     if [ -s "$plan/tasks/$id/escalation.next" ] && [ "$(task_status "$plan" "$id")" != MERGED ]; then
-      python3 "$SKILL_DIR/scripts/forge-route.py" escalation --plan "$plan" --task "$id" --check >/dev/null 2>&1 || true
+      python3 "$SKILL_DIR/scripts/forge-route.py" escalation --plan "$plan" --task "$id" --check \
+        --qa-only-next "$(qa_only_next_flag "$plan" "$id")" >/dev/null 2>&1 || true
     fi
     if [ -s "$plan/tasks/$id/split.suggested" ]; then
       [ "$n" = 0 ] && echo "$head"

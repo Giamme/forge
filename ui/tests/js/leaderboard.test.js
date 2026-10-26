@@ -177,6 +177,17 @@ test('reviewers: counts by kind, verdicts, findings per review, shadow agreement
   assert.ok(L.caveats.some(c => c.startsWith('1 review with no recorded model')));
 });
 
+test('heldUp: a rate only from the report\'s minimum on, "few" below it, nothing without a report', () => {
+  const report = { horizon_days: 14, min_landed: 10, reviewers: [
+    { reviewer: 'opus', landed: 10, reverted: 1, rewritten: 1, did_not_hold: 2, enough: true, rate: 0.2, ci: [0.05, 0.51] },
+    { reviewer: 'sol', landed: 2, reverted: 0, rewritten: 1, did_not_hold: 1, enough: false, rate: null, ci: null },
+  ] };
+  assert.deepEqual(MS.heldUp(report, 'opus'), { state: 'rate', p: 0.2, lo: 0.05, hi: 0.51, n: 10, k: 2, reverted: 1, rewritten: 1, horizon: 14 });
+  assert.deepEqual(MS.heldUp(report, 'sol'), { state: 'few', need: 10, n: 2, k: 1, reverted: 0, rewritten: 1, horizon: 14 });
+  assert.deepEqual(MS.heldUp(report, 'luna'), { state: 'none', horizon: 14 });
+  for (const bad of [null, undefined, {}, { error: 'bad gateway' }, []]) assert.deepEqual(MS.heldUp(bad, 'opus'), { state: 'unavailable' });
+});
+
 test('options: projects named by folder (parent added on a clash), difficulties, kinds, dates', () => {
   const data = { tasks: [
     task('r1', 'a', [], { repo: '/w/forge', difficulty: 'low', created: NOW - 5 * DAY, explored: true }),

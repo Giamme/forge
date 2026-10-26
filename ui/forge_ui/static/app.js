@@ -19,7 +19,7 @@ window.ForgeApp = (() => {
     replay: null, playing: null, speed: store.get('speed', 60), stage: null, stageFailed: null, stageLoading: false, timer: null,
     lastStatuses: new Map(), announced: 0, rendered: null, cloud: null, cloudUI: null, cloudPrefs: store.get('cloud', {}),
     settings: false, lastKey: null, settingsRun: null, settingsPickedAt: null, settingsView: null,
-    models: false, modelsData: null, modelsText: null, modelsError: null, modelsPrefs: store.get('models', {}),
+    models: false, modelsData: null, modelsText: null, modelsError: null, reviewerOutcomes: null, modelsPrefs: store.get('models', {}),
     files: new Map(), findingsCount: new Map(), filesPrefs: store.get('files', {}), runSort: store.get('run-sort', 'updated'), tablePrefs: store.get('tables', {}),
     findings: new Map() };
   state.stageMode = state.mode === 'exec' ? 'exec' : 'plan';   // the stage's own mode, kept while Files is shown
@@ -106,9 +106,9 @@ window.ForgeApp = (() => {
   function link(text, key, sel) { const a = el('a', text); a.href = hashFor(key, sel); return a; }
 
   const statuses = new Set(['merged', 'pass', 'running', 'pending', 'fail', 'error', 'infra',
-    'timeout', 'unknown', 'invalidated', 'blocked', 'interrupted', 'nochanges', 'conflict']);
-  function chip(value) {
-    const status = String(value || 'unknown').toLowerCase();
+    'timeout', 'unknown', 'invalidated', 'blocked', 'interrupted', 'nochanges', 'conflict', 'accepted', 'outdated']);
+  function chip(value, cls) {
+    const status = String(cls || value || 'unknown').toLowerCase();
     return el('span', value || '—', 'chip st-' + (statuses.has(status) ? status : 'unknown'));
   }
   function time(value) {
@@ -251,7 +251,8 @@ window.ForgeApp = (() => {
         if (!solo) {
           const verification = el('span', undefined, 'verification');
           verification.append(document.createTextNode('Verification '), chip(run.verification_status));
-          if (run.final_review) verification.append(document.createTextNode(' Review '), chip(run.final_review));
+          const reviewStatus = RM.runReviewStatus(run);
+          if (reviewStatus) verification.append(document.createTextNode(' Review '), chip(reviewStatus));
           item.append(verification);
         }
         $('run-list').append(item);
@@ -338,7 +339,7 @@ window.ForgeApp = (() => {
     add('Kind', sel('kind', [['', 'any'], ['plan', 'plan'], ['solo', 'solo']]));
     add('Model', sel('model', [['', 'any'], ...opts.models.map(m => [m, m])]));
     add('Age', sel('ageDays', [[0, 'any'], [1, 'last day'], [7, 'last week'], [30, 'last month']]));
-    add('Review', sel('verdict', [['', 'any'], ['PASS', 'passed'], ['FAIL', 'failed'], ['none', 'no verdict']]));
+    add('Review', sel('verdict', [['', 'any'], ['PASS', 'passed'], ['FAIL', 'failed'], ['OUTDATED', 'outdated'], ['none', 'no verdict']]));
     const all = el('input'); all.type = 'checkbox'; all.checked = state.showAll; all.dataset.f = 'showAll';
     const allL = el('label', undefined, 'filter check'); allL.append(all, document.createTextNode(' older runs too')); bar.append(allL);
     const reset = el('button', 'Reset'); reset.type = 'button'; reset.addEventListener('click', () => { Object.assign(state.mapFilter, { text: '', state: '', repo: '', kind: '', model: '', ageDays: 0, verdict: '' }); state.showAll = false; filterChanged(true); });
@@ -368,7 +369,12 @@ window.ForgeApp = (() => {
         card.className = `map-card st-${({ live: 'running', failed: 'fail', done: 'merged', pending: 'pending' })[m.state]}${m.match ? '' : ' dim'}`;
         card.append(el('strong', String(r.goal || 'Untitled run').split('\n')[0]), el('span', `${r.run_id || ''}${r.kind === 'solo' ? ' · solo' : ''}`, 'mono muted'));
         const leds = el('span', undefined, 'leds');
-        for (const t of m.tasks.slice(0, 60)) { const l = el('i', undefined, 'led st-' + String(t.status || 'pending').toLowerCase()); l.title = `${t.id}: ${t.status}`; leds.append(l); }
+        for (const t of m.tasks.slice(0, 60)) {
+          const status = RM.taskStatus(t);
+          const l = el('i', undefined, 'led st-' + String(status || 'pending').toLowerCase());
+          l.title = `${t.id}: ${status}`;
+          leds.append(l);
+        }
         card.append(leds, el('span', relative(r.updated), 'muted'));
         grid.append(card);
       }
@@ -474,8 +480,15 @@ window.ForgeApp = (() => {
       runs: state.runs, prefs: state.modelsPrefs, now: () => Date.now() / 1000,
       savePrefs: p => { state.modelsPrefs = p; store.set('models', p); },
       tablePrefs: id => state.tablePrefs[id], saveTablePrefs: (id, p) => { state.tablePrefs = { ...state.tablePrefs, [id]: p }; store.set('tables', state.tablePrefs); },
-      modelHref: alias => '#/cloud/models/' + encodeURIComponent(alias),
+      modelHref: alias => '#/cloud/models/' + encodeURIComponent(alias), reviewerOutcomes: state.reviewerOutcomes,
     });
+  }
+  // How each reviewer's PASSed work held up (forge dataset reviewers). Advisory and optional: read once per
+  // change of the models data, and a failure (an export, no dataset) only leaves the column empty.
+  function loadReviewerOutcomes() {
+    if (SNAP) return;
+    fetchJSON('/api/models/reviewers').then(result => { state.reviewerOutcomes = result.data; },
+      () => { state.reviewerOutcomes = null; }).then(() => { if (state.models) renderModels(); });
   }
   function loadModels() {
     return request('/api/models', result => {
@@ -483,6 +496,7 @@ window.ForgeApp = (() => {
       if (result.text === state.modelsText) return;
       state.modelsText = result.text; state.modelsData = result.data;
       if (state.models) renderModels();
+      loadReviewerOutcomes();
     }, 'Could not refresh the model results', error => { state.modelsError = error.message; if (state.models) renderModels(); });
   }
 
@@ -741,11 +755,11 @@ window.ForgeApp = (() => {
       { id: 'title', label: 'Title', value: t => t.title },
       { id: 'difficulty', label: 'Difficulty', value: t => DIFF_RANK[t.difficulty] ?? null, cell: t => display(t.difficulty) },
       { id: 'wave', label: 'Wave', value: t => Number.isFinite(Number(t.wave)) && t.wave !== null && t.wave !== '' ? Number(t.wave) : null, cell: t => display(t.wave) },
-      { id: 'status', label: 'Status', value: t => t.status, cell: t => chip(t.status) },
+      { id: 'status', label: 'Status', value: t => RM.taskStatus(t), cell: t => chip(RM.taskStatus(t)) },
       { id: 'dwarf', label: 'Dwarf', value: t => t.dwarf, cell: t => window.ForgeIcons.modelPlate(t.dwarf) },
       { id: 'qa', label: 'QA', value: t => t.qa, cell: t => window.ForgeIcons.modelPlate(t.qa) },
       { id: 'attempt', label: 'Attempt', value: t => Number(t.attempt) || null, cell: t => display(t.attempt) },
-      { id: 'verdict', label: 'Verdict', value: t => t.verdict, cell: t => chip(t.verdict) },
+      { id: 'verdict', label: 'Verdict', value: t => RM.taskVerdict(t).text, cell: t => { const v = RM.taskVerdict(t); return chip(v.text, v.status); } },
       { id: 'findings', label: 'Findings', title: 'The worst confirmed severity and how many; ~n plausible only',
         value: t => t.findings && t.findings.worst ? SEV_RANK[t.findings.worst] * 1000 - (t.findings[t.findings.worst] || 0) : t.findings && t.findings.plausible ? 4000 : null,
         cell: t => { const f = t.findings, v = sev(f); if (!f || !f.worst) return v; const n = el('span', v, 'sev-chip sev-' + f.worst); return n; } },

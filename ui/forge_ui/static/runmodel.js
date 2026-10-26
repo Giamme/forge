@@ -113,7 +113,9 @@
     if (f.model && !list(run.models).some(m => alias(m) === f.model)) return false;
     if (f.ageDays && num(now) !== null && !(num(run.updated) !== null && run.updated >= now - f.ageDays * 86400)) return false;
     if (f.verdict) {
-      const v = run.final_review || run.verification_status || null;
+      // An outdated published review matches OUTDATED, not the verdict it gave.
+      const review = runReviewStatus(run);
+      const v = review != null ? review : (run.verification_status || null);
       if (f.verdict === 'none' ? v : v !== f.verdict) return false;
     }
     return true;
@@ -180,16 +182,116 @@
     if (statuses.some(s => s === 'PENDING' || s === 'PASS')) return 'PENDING';
     return 'BLOCKED';
   }
+  // How one final review reads as a stage. OUTDATED only once it is done and the reader says the
+  // integration branch has moved: a running review, and a review the reader still calls current, keep their verdict.
+  function finalStatus(fr) {
+    if (!fr || typeof fr !== 'object') return null;
+    if (fr.state === 'running') return 'RUNNING';
+    if (fr.state === 'infra') return 'INFRA';
+    if (fr.state === 'done' && fr.outdated === true) return 'OUTDATED';
+    return fr.verdict || 'UNKNOWN';
+  }
+  // RunSummary carries the published verdict as a string plus final_review_outdated. Same rule as finalStatus.
+  function runReviewStatus(summary) {
+    if (!summary) return null;
+    const v = summary.final_review;
+    if (v && typeof v === 'object') return finalStatus(v);
+    if (typeof v !== 'string' || !v) return null;
+    return summary.final_review_outdated === true ? 'OUTDATED' : v;
+  }
+  // The lamp and status word for a task. Accepting a merge does not change the recorded status
+  // or the run's counts: only the display says ACCEPTED, and only once the task has merged.
+  function taskStatus(t) {
+    if (!t) return 'PENDING';
+    if (t.status === 'MERGED' && t.accepted === true) return 'ACCEPTED';
+    return t.status || 'PENDING';
+  }
+  // Verdict column and the 2D graph's tick or cross. text is the words, status the lamp class,
+  // mark the cross (FAIL) or tick (PASS). An acceptance names FAIL or UNKNOWN and never invents a FAIL,
+  // and it draws no mark: the graph must not put a red cross on a task a human accepted.
+  function taskVerdict(t) {
+    if (taskStatus(t) === 'ACCEPTED') {
+      const over = t.accepted_over === 'FAIL' || t.accepted_over === 'UNKNOWN' ? t.accepted_over : null;
+      return { text: over ? over + ' · accepted' : 'accepted', status: 'accepted', mark: null };
+    }
+    const v = t && t.verdict ? String(t.verdict) : null;
+    return { text: v, status: v ? v.toLowerCase() : 'unknown', mark: v === 'PASS' || v === 'FAIL' ? v : null };
+  }
+  // One attempt in the history. The attempt that was accepted is ACCEPTED; every earlier attempt
+  // keeps the status it ended with. execStatus itself is unchanged, so a QA part still shows the
+  // reviewer's verdict and an execution detail does too.
+  function attemptStatus(task, attempt, raw) {
+    if (taskStatus(task) !== 'ACCEPTED') return raw;
+    const n = num(attempt), want = num(task.accepted_attempt);
+    if (n !== null && want !== null && n === want) return 'ACCEPTED';
+    return raw;
+  }
+  function shortTip(tip) {
+    if (tip === null || tip === undefined || tip === '') return '—';
+    return String(tip).slice(0, 7);
+  }
+  // "<verdict> at <tip7>; N tasks merged since: <ids>", ids cut after 5.
+  function reviewSinceLine(src) {
+    if (!src) return '';
+    const ids = list(src.merged_since).map(id => String(id));
+    const shown = ids.slice(0, 5), extra = ids.length - shown.length;
+    const names = shown.join(', ') + (extra > 0 ? ' +' + extra + ' more' : '');
+    const n = ids.length;
+    return `${src.verdict || 'UNKNOWN'} at ${shortTip(src.tip)}; ${n} ${n === 1 ? 'task' : 'tasks'} merged since` + (names ? ': ' + names : '');
+  }
+  // The newest final review that had started by t. Same pick stateAt has always made.
+  function reviewAt(run, t) {
+    const started = r => num(r && r.started) ?? num(r && r.at);
+    const fr = list(run && run.final_reviews).filter(r => r && (started(r) ?? Infinity) <= t);
+    return fr.sort((a, b) => (a.at || 0) - (b.at || 0)).pop() || null;
+  }
+  // When an outdated review starts to show as OUTDATED. The current flag is the truth; this only places it.
+  // First id in merged_since, else (that list is empty) the first merge at or after the review's `at`,
+  // else the review's end when no merge time is known. A current review (outdated false or null) has no moment.
+  function outdatedMoment(run, review) {
+    if (!review || review.outdated !== true) return null;
+    const merges = list(run && run.integration && run.integration.merged).filter(m => m && num(m.at) !== null);
+    const since = list(review.merged_since);
+    if (since.length) {
+      const times = merges.filter(m => m.id === since[0]).map(m => m.at);
+      if (times.length) return Math.min(...times);
+      return num(review.ended);
+    }
+    const at = num(review.at);
+    if (at !== null) {
+      const later = merges.filter(m => m.at >= at).map(m => m.at);
+      if (later.length) return Math.min(...later);
+    }
+    return num(review.ended);
+  }
+  // Status of one review at time t. Before it ends it is RUNNING. OUTDATED only at and after outdatedMoment,
+  // and only when the review is done and currently outdated, so the present matches finalStatus.
+  function finalAt(run, review, t) {
+    if (!review) return 'NONE';
+    if (review.state === 'running') return 'RUNNING';
+    const ended = num(review.ended);
+    const end = ended !== null ? ended : (review.state === 'done' || review.state === 'infra' ? num(review.at) : null);
+    if (end === null) return finalStatus(review) || 'RUNNING';
+    if (end > t) return 'RUNNING';
+    if (review.state === 'infra') return 'INFRA';
+    if (review.state === 'done' && review.outdated === true) {
+      const from = outdatedMoment(run, review);
+      if (from === null || t >= from) return 'OUTDATED';
+    }
+    return review.verdict || 'UNKNOWN';
+  }
   function finishState(run) {
     const fr = run.final_review, v = run.verification, ig = run.integration;
     const tasks = list(run.tasks), merged = tasks.filter(t => t.status === 'MERGED').length;
+    const frObj = fr && typeof fr === 'object' ? fr : null;
     return {
       integration: { status: integrationStatus(tasks.map(t => t.status)),
         merged, total: tasks.length, base: ig && ig.base || null, accepted: ig && ig.accepted || null },
       verification: { status: v && v.status ? String(v.status).toUpperCase() : 'PENDING', command: v && v.command || null, runs: list(v && v.runs).length },
-      final: { status: !fr ? (run.settings && run.settings.final_qa ? 'PENDING' : 'NONE') : fr.state === 'running' ? 'RUNNING' : fr.state === 'infra' ? 'INFRA' : fr.verdict || 'UNKNOWN',
-        requested: !!(fr || run.settings && run.settings.final_qa), spec: fr && fr.spec || run.settings && run.settings.final_qa || null, findings: fr && fr.findings || null,
-        count: list(run.final_reviews).length },
+      final: { status: !frObj ? (run.settings && run.settings.final_qa ? 'PENDING' : 'NONE') : finalStatus(frObj),
+        requested: !!(fr || run.settings && run.settings.final_qa), spec: frObj && frObj.spec || run.settings && run.settings.final_qa || null, findings: frObj && frObj.findings || null,
+        count: list(run.final_reviews).length,
+        verdict: frObj && frObj.verdict || null, tip: frObj && frObj.tip || null, merged_since: list(frObj && frObj.merged_since) },
     };
   }
   function planModel(run) {
@@ -221,6 +323,8 @@
     const put = (a, p) => { const k = a == null ? 'other' : String(a); if (!byAttempt.has(k)) byAttempt.set(k, []); byAttempt.get(k).push(p); };
     for (const e of execs) {
       if (e.role !== 'dwarf' && e.role !== 'qa') continue;
+      // The part keeps execStatus. The accepted attempt is relabelled by attemptStatus on the
+      // attempt itself; painting this part ACCEPTED would hide the reviewer's verdict.
       put(e.attempt, { id: e.id, kind: e.role, exec: e, status: execStatus(e), label: e.role === 'dwarf' ? 'DWARF' : 'QA', spec: e.model && e.model.spec || null, attempt: e.attempt });
     }
     for (const s of list(task && task.shadow)) {
@@ -359,11 +463,13 @@
         const start = num(e.started); if (start === null) continue;
         const kids = execs.filter(k => k !== e && (k.parent === e.id || e.synthetic || (tops.length === 1 && !k.parent && (k.role === 'dwarf' || k.role === 'qa'))));
         const row = rows.filter(r => r.attempt === e.attempt).pop();
-        const status = e.state === 'running' ? 'RUNNING' : row ? row.status : e.state === 'orphaned' ? 'INTERRUPTED' : t.status === 'MERGED' && e === tops[tops.length - 1] ? 'MERGED' : execStatus(e);
+        let status = e.state === 'running' ? 'RUNNING' : row ? row.status : e.state === 'orphaned' ? 'INTERRUPTED' : t.status === 'MERGED' && e === tops[tops.length - 1] ? 'MERGED' : execStatus(e);
+        if (e === tops[tops.length - 1] && t.status === 'MERGED') status = 'MERGED';
+        status = attemptStatus(t, e.attempt, status);
         const end = execEnd(e, now);
         const running = kids.find(k => k.state === 'running');
         items.push({ id: e.id, task: t.id, attempt: e.attempt, start, end: end !== null ? Math.max(end, start) : start, running: e.state === 'running',
-          status: e === tops[tops.length - 1] && t.status === 'MERGED' ? 'MERGED' : status, role: running ? running.role : null, phase: running ? running.phase : null,
+          status, role: running ? running.role : null, phase: running ? running.phase : null,
           segs: kids.filter(k => k.role === 'dwarf' || k.role === 'qa').map(k => ({ id: k.id, role: k.role, start: num(k.started), end: execEnd(k, now), status: execStatus(k) })).filter(s => s.start !== null) });
       }
     }
@@ -492,9 +598,8 @@
       }
       tasks[task.id] = { status, role };
     }
-    const fr = list(run && run.final_reviews).filter(r => (num(r.started) ?? num(r.at) ?? Infinity) <= t);
-    const last = fr.sort((a, b) => (a.at || 0) - (b.at || 0)).pop();
-    const final = !last ? 'NONE' : num(last.ended) !== null && last.ended <= t ? (last.verdict || 'UNKNOWN') : 'RUNNING';
+    const last = reviewAt(run, t);
+    const final = finalAt(run, last, t);
     const vs = list(run && run.timeline && run.timeline.verifications).filter(v => num(v.started) !== null && v.started <= t);
     const lv = vs.pop();
     const verification = !lv ? 'PENDING' : num(lv.ended) !== null && lv.ended <= t ? (lv.exit_code === 0 ? 'PASS' : 'FAIL') : 'RUNNING';
@@ -502,7 +607,15 @@
   }
   function timeRange(run, now) {
     const s = [], e = [];
-    for (const t of list(run && run.tasks)) for (const x of list(t.executions)) { if (num(x.started) !== null) s.push(x.started); const end = execEnd(x, now); if (end !== null) e.push(end); }
+    for (const t of list(run && run.tasks)) {
+      for (const x of list(t.executions)) { if (num(x.started) !== null) s.push(x.started); const end = execEnd(x, now); if (end !== null) e.push(end); }
+      // The merged marker is written after the attempt ends. Leave it out and the slider stops on the
+      // verdict while the current view already shows the review as OUTDATED.
+      if (num(t.merged_at) !== null) e.push(t.merged_at);
+    }
+    // Same marker, as integration.merged. That list is what outdatedMoment reads, and a run detail can carry it
+    // without the task's merged_at matching, so the range has to take it on its own.
+    for (const m of list(run && run.integration && run.integration.merged)) if (num(m && m.at) !== null) e.push(m.at);
     for (const r of list(run && run.final_reviews)) { const v = num(r.started) ?? num(r.at); if (v !== null) s.push(v); if (num(r.ended) !== null) e.push(r.ended); }
     for (const v of list(run && run.timeline && run.timeline.verifications)) { if (num(v.started) !== null) s.push(v.started); if (num(v.ended) !== null) e.push(v.ended); }
     if (!s.length) return null;
@@ -556,8 +669,9 @@
       if (r.kind === 'solo') continue;
       for (const t of list(r.task_statuses)) {
         if (!t || !t.id) continue;
-        out.push({ id: `task:${r.key}:${t.id}`, kind: 'task', key: r.key, task: t.id, label: t.title ? `${t.id} · ${t.title}` : t.id, sub: `${goal} · ${String(t.status || 'PENDING').toLowerCase()}`,
-          ids: [t.id], words: [r.run_id, basename(r.repo)].filter(Boolean), t: num(r.updated) || 0, status: t.status, subSearch: false,   // not found through its run's goal
+        const shown = taskStatus(t);
+        out.push({ id: `task:${r.key}:${t.id}`, kind: 'task', key: r.key, task: t.id, label: t.title ? `${t.id} · ${t.title}` : t.id, sub: `${goal} · ${String(shown).toLowerCase()}`,
+          ids: [t.id], words: [r.run_id, basename(r.repo)].filter(Boolean), t: num(r.updated) || 0, status: shown, subSearch: false,   // not found through its run's goal
           href: `#/runs/${encodeURIComponent(r.key)}/tasks/${encodeURIComponent(t.id)}` });
       }
     }
@@ -661,7 +775,8 @@
     return { pos, edges, cols, rows: next };
   }
 
-  return { liveNow, runState, execStatus, matchRun, filterOptions, atlasModel, columns, planModel, finishState, taskParts,
+  return { liveNow, runState, execStatus, matchRun, filterOptions, atlasModel, columns, planModel, finishState,
+    finalStatus, runReviewStatus, reviewSinceLine, reviewAt, taskStatus, taskVerdict, attemptStatus, taskParts,
     taskTimes, metricValue, overlap, projectSchedule, execModel, criticalPath, concurrency, stateAt, timeRange, events, lineage, structureKey, innerKey,
     fmtDur, alias, basename, weight, searchIndex, searchRank, statusEvents, fractalTree };
 });

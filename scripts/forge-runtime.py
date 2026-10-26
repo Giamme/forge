@@ -175,6 +175,43 @@ def extract(log: str, harness: str) -> tuple[str | None, dict[str, int | None]]:
     return final, usage
 
 
+def session_id(log: str, harness: str) -> str | None:
+    """The harness session this dispatch ran in, or None.
+
+    claude and openclaude name it session_id on the stream-json init line and
+    again on the result line. The init line wins. The result line is used when
+    there is no init line, or that line has no session_id. A session_id that is
+    present but not a string is not a session, and the result line does not
+    replace it. codex names it thread_id on the first thread.started line.
+    Any other harness, a missing id, or an id that is not a plain string is None.
+    """
+    if harness not in ('claude', 'openclaude', 'codex'):
+        return None
+    saw_init = False
+    result_id = None
+    for line in log.splitlines():
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(event, dict):
+            continue
+        if harness == 'codex':
+            if event.get('type') == 'thread.started':
+                value = event.get('thread_id')
+                return value if type(value) is str else None
+            continue
+        kind = event.get('type')
+        if not saw_init and kind == 'system' and event.get('subtype') == 'init':
+            saw_init = True
+            if 'session_id' in event:
+                value = event.get('session_id')
+                return value if type(value) is str else None
+        elif kind == 'result' and 'session_id' in event:
+            result_id = event.get('session_id')
+    return result_id if type(result_id) is str else None
+
+
 def finish(attempt: str, root: str, role: str, harness: str, rc: str) -> None:
     try:
         _finish(Path(attempt), Path(root), role, harness, rc)
@@ -189,6 +226,7 @@ def _finish(attempt: Path, root: Path, role: str, harness: str, rc: str) -> None
     structured = harness in STRUCTURED
     text = log.read_text(errors='replace') if structured and log.exists() else ''
     final, usage = extract(text, harness)
+    found = session_id(text, harness)
     if not last.exists() or not last.stat().st_size:
         if final is not None:
             last.write_text(final + '\n')
@@ -201,6 +239,7 @@ def _finish(attempt: Path, root: Path, role: str, harness: str, rc: str) -> None
     data.update(
         harness=harness,
         prompt_bytes=prompt.stat().st_size if prompt_ready else None,
+        session_id=found,
         **usage,
     )
     infra = root / (role + '.infra')
@@ -209,7 +248,14 @@ def _finish(attempt: Path, root: Path, role: str, harness: str, rc: str) -> None
         for line in infra.read_text(errors='replace').splitlines():
             if line.startswith('class='):
                 data['infra_class'] = line[len('class='):].strip() or None
-    for suffix in ('prompt', 'last', 'log', 'resolved', 'cmd', 'timedout', 'infra', 'orphans'):
+    # Drop a stale id first. A dispatch that published none must not leave the
+    # previous one for a later round to continue.
+    session_path = root / (role + '.session')
+    session_path.unlink(missing_ok=True)
+    if found is not None:
+        session_path.write_text(found + '\n')
+    for suffix in ('prompt', 'last', 'log', 'resolved', 'cmd', 'timedout', 'infra', 'orphans',
+                   'session', 'continue'):
         if suffix == 'prompt' and not prompt_ready:
             continue
         source = root / (role + '.' + suffix)

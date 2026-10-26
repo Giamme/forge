@@ -17,6 +17,8 @@ as if the dwarf had written it.
   <role>.last         the final message — read this first
   <role>.infra        only after an infrastructure failure: class, retry_after, detail
   <role>.orphans      only when processes were left running after the harness exited
+  <role>.session      session id reported by claude, openclaude or codex; absent when the dispatch published none
+  <role>.continue     only when the dispatch was asked to continue a reviewer session: requested=, mode=continued|failed, reason=
   changes.diff        the dwarf's real diff, which is qa's input
 ```
 
@@ -52,9 +54,18 @@ A decomposed run adds:
   tasks/<id>/escalations.tsv           epoch, attempt, from-spec, to-spec, source (policy|retry|pin); older rows have 4 columns
   tasks/<id>/escalation.pin            a human's one-shot model for the next full retry: one dwarf spec on one line
   tasks/<id>/escalation.pin.applying   the pin while a retry has claimed it; removed once the retry is recorded
+  tasks/<id>/retry_findings.commit     commit the carried review judged
+  tasks/<id>/retry_findings.session    session id of that review, when it recorded one
+  tasks/<id>/retry_findings.resolved   that review's resolution (harness=, model=, effort=)
+  tasks/<id>/changes.since.diff        diff from that commit to the one under review; omitted when there is no such range
+  tasks/<id>/changes.since.range       the two commits, full hashes
+  tasks/<id>/changes.since.stat        diff --stat of that range
+  tasks/<id>/review_sessions.tsv       one row per review round while plan --reviewer-session is on: round, attempt, mode, reason, session id
   tasks/<id>/retry_budget, retries.used   live per-task retry budget (a number); retries spent (kept after the run)
   results.tsv                          id  status  branch
   timeout, qa_threshold, verify_retries  options remembered from run/retry flags (also escalate_after)
+  reviewer_session                     holds on; present while plan --reviewer-session is on
+  <final-review-dir>/review.meta       final-review-<epoch>-<pid>/ or integrate-*/final-review/; base=, tip=, source=, spec=, threshold=, integration=, previous=, since=; session= and session_reason= while reviewer_session is set
   control.log                          one JSON line per human change made with forge control
   scheduler.live, control.lock         only while a scheduler runs: {"pid", "started"}; the lock serialises forge control
   retry_budget, infra_budget           only while a scheduler runs: its live budgets (a number each)

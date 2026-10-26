@@ -4,8 +4,10 @@
 
 What forge learns about a repository, where it keeps it, what each role is told, and what forge has spent there.
 
-Every forge dispatch is a clean slate, so without help the tenth run in a repo rediscovers
-what the first one learned. forge keeps that in the repo, in two files:
+Every forge dispatch is a clean slate — the opt-in `plan --reviewer-session` experiment,
+which continues a reviewer's session across rounds, is the exception — so without help the
+tenth run in a repo rediscovers what the first one learned. forge keeps that in the repo,
+in two files:
 
 ```
 .forge/memory.md     small, capped, injected into every prompt
