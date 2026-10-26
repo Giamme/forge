@@ -152,3 +152,23 @@ test('an action takes the selected rows the filters leave shown', () => {
   assert.deepEqual(F.selection('file', shown({ severity: 'P0' }), selected).fps, ['b']);
   assert.deepEqual(F.selection('dismiss', shown({ severity: 'P3' }), selected).fps, []);
 });
+
+test('select shown open caps the shown open rows, not a selection the filter hides', () => {
+  const hidden = new Set(fps(F.MAX_FPS));
+  const p0 = [row('p0p0p0p0p0p0', { severity: 'P0' }), row('p0p0p0p0p0p1', { severity: 'P0' })];
+  assert.deepEqual(F.selectShownOpen(p0, hidden), ['p0p0p0p0p0p0', 'p0p0p0p0p0p1']);
+  assert.equal(hidden.size, F.MAX_FPS);
+
+  const open = fps(F.MAX_FPS + 1).map(fp => row(fp));
+  assert.deepEqual(F.selectShownOpen(open, new Set()), open.slice(0, F.MAX_FPS).map(r => r.fp));
+  const partial = new Set(open.slice(0, 10).map(r => r.fp));
+  assert.deepEqual(F.selectShownOpen(open, partial), open.slice(10, F.MAX_FPS).map(r => r.fp));
+  assert.equal(partial.size, 10);
+  assert.deepEqual(F.selectShownOpen(open, new Set(open.slice(0, F.MAX_FPS).map(r => r.fp))), []);
+
+  // A shown dismissed row is not open, so it is neither added nor counted: File would not take it.
+  const dismissed = fps(F.MAX_FPS).map(fp => row(fp, { dismissed: { at: 't' } }));
+  const one = row('oooooooooooo');
+  assert.deepEqual(F.selectShownOpen(dismissed.concat([one]), new Set(dismissed.map(r => r.fp))), ['oooooooooooo']);
+  assert.deepEqual(F.selectShownOpen([row('dddddddddddd', { dismissed: { at: 't' } }), one], new Set()), ['oooooooooooo']);
+});

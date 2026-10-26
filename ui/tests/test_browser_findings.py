@@ -10,6 +10,7 @@ import re
 import tempfile
 import unittest
 from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
 
 from forge_ui import reader
 import run_fixture as F
@@ -40,9 +41,10 @@ class Findings(unittest.TestCase):
         self.addCleanup(lambda: (self.server.shutdown(), self.server.server_close(), self.thread.join(timeout=2)))
         self.drafts, self.posts, self.gets, self.released = [], [], [], []
 
-    def view(self):
+    def view(self, findings=None):
         """The findings page, its issues endpoints stubbed: listings answer at once, the drafts GET (`only=`) is held."""
         page = self.open(cdn=False, view='2d')
+        rows = ROWS if findings is None else findings
 
         def issues(route):
             req = route.request
@@ -53,7 +55,7 @@ class Findings(unittest.TestCase):
                 self.gets.append(req.url)
                 self.drafts.append(route)
             else:
-                route.fulfill(status=200, content_type='application/json', body=json.dumps({'findings': ROWS, 'notes': [], 'drafts': []}))
+                route.fulfill(status=200, content_type='application/json', body=json.dumps({'findings': rows, 'notes': [], 'drafts': []}))
         self.addCleanup(lambda: [r.fulfill(status=200, body='{}') for r in self.drafts if r not in self.released])
         page.route(re.compile(r'/api/runs/[^/]+/issues(\?.*)?$'), issues)
         page.goto(f'{self.url}#/runs/{self.key}/findings')
@@ -122,6 +124,43 @@ class Findings(unittest.TestCase):
         self.assertEqual(page.locator('.fnd-actions button:has-text("File")').text_content(), 'File issues')
         self.assertTrue(page.locator('.fnd-actions button:has-text("File")').is_disabled())
         self.assertTrue(page.locator('.fnd-actions button:text-is("Dismiss")').is_disabled())
+        self.assertClean(page)
+
+    def test_select_shown_open_counts_only_the_rows_on_screen_toward_its_cap(self):
+        """A full selection hidden by a filter must not stop "Select shown open" from ticking the rows still shown.
+
+        25 is MAX_FPS. The first click fills it with P2 rows. Severity P0 hides those, so the second click has to
+        tick P0 rows (and stop at 25 of them). File then counts and requests those, not the hidden P2 rows.
+        """
+        cap = 25
+
+        def row(i, severity):
+            base = 0 if severity == 'P2' else 0x100
+            return {'fp': f'{base + i:012x}', 'severity': severity, 'origin': 'review', 'plan': 'p', 'task': None,
+                    'file': 'a.py', 'summary': f'{severity} row {i}', 'filed': None, 'dismissed': None}
+
+        page = self.view([row(i, 'P2') for i in range(cap)] + [row(i, 'P0') for i in range(cap + 1)])
+        page.wait_for_function('() => document.querySelector(".fnd-lamp").textContent.includes("GitHub status checked")')
+        page.click('.fnd-actions button:has-text("Select shown open")')
+        self.assertEqual(page.locator('input[aria-label^="Select finding: P2 row"]:checked').count(), cap)
+        self.assertEqual(page.locator('input[aria-label^="Select finding: P0 row"]:checked').count(), 0)
+
+        page.select_option('.fnd-field:has-text("Severity") select', 'P0')
+        page.wait_for_function('() => !document.querySelector(\'input[aria-label^="Select finding: P2 row"]\')')
+        self.assertTrue(page.locator('.fnd-actions button:text-is("File issues")').is_disabled())
+        page.click('.fnd-actions button:has-text("Select shown open")')
+        self.assertEqual(page.locator('input[aria-label^="Select finding: P0 row"]:checked').count(), cap,
+                         'hidden P2 rows filled the cap, so no P0 row was ticked')
+        self.assertFalse(page.locator('input[aria-label="Select finding: P0 row 25"]').is_checked())
+        file_key = page.locator('.fnd-actions button:has-text("File 25 issues")')
+        self.assertEqual(file_key.text_content(), 'File 25 issues')
+        self.assertTrue(file_key.is_enabled())
+        self.assertTrue(page.locator('.fnd-actions button:text-is("Dismiss")').is_enabled())
+        file_key.click()
+        while not self.gets:
+            page.wait_for_timeout(20)
+        only = parse_qs(urlsplit(self.gets[0]).query)['only'][0].split(',')
+        self.assertEqual(only, [f'{0x100 + i:012x}' for i in range(cap)])
         self.assertClean(page)
 
 

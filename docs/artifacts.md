@@ -68,7 +68,7 @@ A decomposed run adds:
   <final-review-dir>/review.meta       final-review-<epoch>-<pid>/ or integrate-*/final-review/; base=, tip=, source=, spec=, threshold=, integration=, previous=, since=; session= and session_reason= while reviewer_session is set
   control.log                          one JSON line per human change made with forge control
   scheduler.live                       only while a scheduler runs: {"pid", "started"}
-  control.lock                         the lock file forge control creates on its first change and leaves in place
+  control.lock                         the lock that serialises changes to the plan's control files, created by whichever takes it first (forge control, the scheduler or an escalation record) and left in place
   retry_budget, infra_budget           only while a scheduler runs: its live budgets (a number each)
   integration.base                     commit the integration branch started from
   verification.{status,exit,log,command,fingerprint}   the combined verification

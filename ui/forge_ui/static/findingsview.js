@@ -64,6 +64,20 @@
     const note = n > MAX_FPS ? `${n} selected: at most ${MAX_FPS} per action` : '';
     return { fps, count: n, enabled: n >= 1 && n <= MAX_FPS, note };
   }
+  // Fingerprints "Select shown open" adds. `rows` are the rows the filters leave shown. The cap is how many of
+  // those are already selected and open — the same rows File and Dismiss take — so a selection a filter hides stays
+  // selected and does not count. A shown row that is not open is not added.
+  function selectShownOpen(rows, selected) {
+    const chosen = new Set(selected instanceof Set || Array.isArray(selected) ? selected : []);
+    const add = [];
+    for (const r of list(rows)) {
+      if (!selectable('file', r) || chosen.has(r.fp)) continue;
+      if (selection('file', rows, chosen).count >= MAX_FPS) break;
+      chosen.add(r.fp);
+      add.push(r.fp);
+    }
+    return add;
+  }
   const bit = v => v ? '1' : '0';
   // The GET path: `o` = { scope, offline, plausible, dismissed, only (fingerprints) }.
   function issuesUrl(key, o) {
@@ -181,7 +195,7 @@
     const dismissKey = key_('Dismiss', undefined, () => openDismiss());
     const undismissKey = key_('Undismiss', undefined, () => doDismiss(true, ''));
     const allKey = key_('Select shown open', undefined, () => {
-      for (const r of shown()) if (selectable('file', r) && s.selected.size < MAX_FPS) s.selected.add(r.fp);
+      for (const fp of selectShownOpen(shown(), s.selected)) s.selected.add(fp);
       drawTable(); syncActions();
     });
     const noneKey = key_('Clear selection', undefined, () => { s.selected.clear(); drawTable(); syncActions(); });
@@ -444,6 +458,6 @@
     return { reload: load };
   }
 
-  return { render, statusOf, filterRows, mergeFiled, selectable, selection, issuesUrl, issuesPath, dismissPath, fileBody, dismissBody,
+  return { render, statusOf, filterRows, mergeFiled, selectable, selection, selectShownOpen, issuesUrl, issuesPath, dismissPath, fileBody, dismissBody,
     parseLabels, resultLines, emptyNotes, safeUrl, reviewMarker, ORIGINS, MAX_FPS };
 });
