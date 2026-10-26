@@ -18,6 +18,7 @@
 #   forge-parallel.sh split <plan-dir> <new-plan> --tasks <id,id> [--dry-run]
 #   forge-parallel.sh combine <new-plan> <plan-a> <plan-b> [<plan>...] [--verify <command>] [--dry-run]
 #   forge-parallel.sh _task <plan-dir> <task-id>     (internal; coordinator target)
+#   forge-parallel.sh _qa_only <plan-dir> <task-id>  (internal; exit 0 when the next entry only re-runs QA)
 #
 # Routing flags (plan):
 #   --dwarf <spec>          fallback for any difficulty tier not named below
@@ -1799,5 +1800,6 @@ case "$CMD" in
   _task)     do_task "$@" ;;
   _merge)    merge_task "$@" ;;
   _prepare_retry) retry_for_scheduler "$@" ;;
+  _qa_only)  qa_only_next "$@" ;;
   *) die "unknown subcommand '$CMD'" ;;
 esac

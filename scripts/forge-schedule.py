@@ -89,6 +89,61 @@ def infra_wait(info: dict, cycle: int) -> float:
     return min(base * (2 ** cycle), max(base, 1800.0))
 
 
+# --- pause scopes ----------------------------------------------------------------------
+# A capacity error on one model says nothing about another, and a quota or auth stop is one
+# harness's account; only the remaining classes (network, empty output, ...) stop everything.
+def infra_scope(info: dict) -> tuple:
+    """(scope, harness, model) for a stop's infra.txt."""
+    cls, harness, model = info.get('class', ''), info.get('harness', ''), info.get('model', '')
+    if cls == 'rate_limit' and harness and model:
+        return 'model:%s/%s' % (harness, model), harness, model
+    if cls in ('quota', 'auth') and harness:
+        return 'harness:' + harness, harness, ''
+    return 'all', harness, model
+
+
+def load_registry() -> list:
+    path = os.environ.get('FORGE_REGISTRY') or str(Path(__file__).resolve().parent.parent / 'registry.tsv')
+    rows = []
+    try:
+        with open(path, errors='replace') as handle:
+            for line in handle:
+                columns = line.rstrip('\n').split('\t')
+                if not line.startswith('#') and len(columns) >= 3:
+                    rows.append(columns)
+    except OSError:
+        pass
+    return rows
+
+
+def spec_pair(registry: list, spec: str) -> tuple | None:
+    """(harness, model) for a spec, resolved the way forge-dispatch.sh's lookup does: an
+    alias's first row is its default harness, alias:effort:harness picks that row, and an
+    unknown alias with a harness is a literal model id. None when it cannot be resolved."""
+    if not spec or spec in ('-', 'UNASSIGNED') or ',' in spec:
+        return None
+    parts = spec.split(':')
+    alias, harness = parts[0], ':'.join(parts[2:])
+    if not alias:
+        return None
+    for row in registry:
+        if row[0] == alias and (not harness or row[1] == harness):
+            return row[1], row[2]
+    return (harness, alias) if harness else None
+
+
+def holds(pause: dict, pairs: list) -> bool:
+    """True when a task whose next dispatch uses these pairs falls under this pause."""
+    for pair in pairs:
+        if pair is None:
+            continue
+        if pause['model'] is not None and pair == (pause['harness'], pause['model']):
+            return True
+        if pause['model'] is None and pair[0] == pause['harness']:
+            return True
+    return False
+
+
 # --- live control files ------------------------------------------------------------------
 # Created at start and removed at exit, so a later `run` never inherits a budget it did not
 # ask for. Writers replace files atomically, so readers need no lock; the control lock only
@@ -282,6 +337,7 @@ def live_start(plan: object, names: object, retry_failed: int, infra_retries: in
         for name in _task_dirs(plan, names):
             _remove(plan, 'tasks', name, 'retry_budget')
             _remove(plan, 'tasks', name, 'retries.used')
+        _remove(plan, 'infra.paused')
         _write_atomic(plan, str(retry_failed), 'retry_budget')
         _write_atomic(plan, str(infra_retries), 'infra_budget')
         _write_atomic(plan, json.dumps({'pid': os.getpid(), 'started': time.time()}), 'scheduler.live')
@@ -294,6 +350,7 @@ def live_stop(plan: object, names: object) -> None:
             _remove(plan, 'scheduler.live')
             _remove(plan, 'retry_budget')
             _remove(plan, 'infra_budget')
+            _remove(plan, 'infra.paused')
             for name in _task_dirs(plan, names):
                 _remove(plan, 'tasks', name, 'retry_budget')
     except Exception as error:
@@ -330,8 +387,14 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
     infra_seen = []    # tasks stopped by an infrastructure failure, awaiting resume
     held = set()       # INFRA tasks not resumed: their pin could not be applied
     infra_cycles = 0   # how many times this run already waited out an infrastructure pause
-    paused = False     # an infrastructure failure was seen: dispatch nothing new
+    paused = False     # an `all`-scope infrastructure failure was seen: dispatch nothing new
     resume_at = 0.0
+    all_class = ''     # the class of the first `all`-scope stop, for infra.paused
+    pauses = {}        # scope -> its pause, for model: and harness: scopes; `all` is the above
+    scope_waits = {}   # scope -> waits it already completed this run
+    pairs_cache = {}   # task -> (harness, model) pairs its next dispatch uses
+    registry = load_registry()
+    paused_text = None # what infra.paused holds now
 
     def status(name: str) -> str:
         root = plan / 'tasks' / name
@@ -417,6 +480,112 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
         offsets[name] = len(data)
         print(data[start:].decode('utf-8', 'replace'), end='', flush=True)
 
+    def row_now(name: str) -> list:
+        """The task's tasks.tsv row as it is now: an escalation rewrites its dwarf column."""
+        try:
+            for line in (plan / 'tasks.tsv').read_text().splitlines():
+                columns = line.split('\t')
+                if len(columns) == 7 and columns[0] == name:
+                    return columns
+        except OSError:
+            pass
+        return tasks[name]
+
+    def next_pairs(name: str) -> list:
+        """The pairs the task's next dispatch uses: QA only when its next entry is a QA-only
+        resume (decided by forge-parallel.sh's own check), the implementer and QA otherwise."""
+        if name not in pairs_cache:
+            row = row_now(name)
+            qa_only = (plan / 'tasks' / name / 'resume').exists() and subprocess.run(
+                ['/bin/bash', script, '_qa_only', str(plan), name],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
+            pairs_cache[name] = [spec_pair(registry, spec) for spec in ([row[5]] if qa_only else [row[4], row[5]])]
+        return pairs_cache[name]
+
+    def scope_held(name: str) -> bool:
+        return any(holds(pause, next_pairs(name)) for pause in pauses.values())
+
+    def waiting_scopes() -> bool:
+        return any(not pause['exhausted'] for pause in pauses.values())
+
+    def write_paused(until_all: float | None = None) -> None:
+        """infra.paused for forge-ui and `forge control show`; gone when nothing is paused."""
+        nonlocal paused_text
+        scopes = []
+        if paused:
+            scopes.append({'scope': 'all', 'class': all_class or None, 'harness': None, 'model': None,
+                           'tasks': list(infra_seen), 'cycle': infra_cycles + (1 if until_all else 0),
+                           'until': until_all, 'exhausted': not until_all and infra_cycles >= infra_budget()})
+        for pause in pauses.values():
+            scopes.append({key: pause[key] for key in
+                           ('scope', 'class', 'harness', 'model', 'tasks', 'cycle', 'until', 'exhausted')})
+        text = json.dumps({'scopes': scopes}) if scopes else None
+        if text == paused_text:
+            return
+        if text is None:
+            _remove(plan, 'infra.paused')
+        else:
+            _write_atomic(plan, text, 'infra.paused')
+        paused_text = text
+
+    def start_wait(pause: dict, info: dict, name: str) -> None:
+        """Begin the scope's next wait, or mark it exhausted when its budget is spent."""
+        done, budget = scope_waits.get(pause['scope'], 0), infra_budget()
+        where = pause['harness'] + ('/' + pause['model'] if pause['model'] else '')
+        head = 'forge: infrastructure failure (' + pause['class'] + ') on ' + where + ' for ' + name
+        if done >= budget:
+            pause.update(cycle=done, until=None, exhausted=True)
+            print(head + '; its waits are used up (' + str(done) + ' of ' + str(budget)
+                  + '), so it stays paused; other tasks continue (no attempt spent)', file=sys.stderr, flush=True)
+            return
+        wait = infra_wait(info, done)
+        pause.update(cycle=done + 1, until=time.time() + wait, exhausted=False)
+        print(head + '; pausing it, waiting ' + ('%g' % wait) + 's before resuming (wait ' + str(done + 1)
+              + ' of ' + str(budget) + '); other tasks continue (no attempt spent)', file=sys.stderr, flush=True)
+
+    def infra_stopped(name: str) -> None:
+        nonlocal paused, all_class
+        pairs_cache.pop(name, None)
+        info = infra_info(plan / 'tasks' / name)
+        scope, harness, model = infra_scope(info)
+        if scope == 'all':
+            paused = True
+            all_class = all_class or info.get('class', '')
+            if name not in infra_seen:
+                infra_seen.append(name)
+        elif scope in pauses:
+            # A stop in a scope already paused joins its wait and is not counted again.
+            if name not in pauses[scope]['tasks']:
+                pauses[scope]['tasks'].append(name)
+        else:
+            pauses[scope] = {'scope': scope, 'class': info.get('class', ''), 'harness': harness,
+                             'model': model if scope.startswith('model:') else None, 'tasks': [name],
+                             'cycle': 0, 'until': None, 'exhausted': False, 'info': info}
+            start_wait(pauses[scope], info, name)
+        write_paused()
+
+    def end_scoped_waits() -> None:
+        """Resume the tasks of every scope whose wait is over; an exhausted scope whose
+        budget was raised meanwhile starts its next wait."""
+        for scope, pause in list(pauses.items()):
+            if interrupted:
+                return
+            if pause['exhausted']:
+                if scope_waits.get(scope, 0) < infra_budget():
+                    start_wait(pause, pause['info'], ', '.join(pause['tasks']))
+                continue
+            if time.time() < pause['until']:
+                continue
+            scope_waits[scope] = scope_waits.get(scope, 0) + 1
+            del pauses[scope]
+            for name in reversed(pause['tasks']):
+                pairs_cache.pop(name, None)
+                if name not in pending and status(name) == 'INFRA' and resume(name):
+                    pending.insert(0, name)
+            print('forge: the pause on ' + scope.partition(':')[2] + ' is over; resuming '
+                  + ', '.join(pause['tasks']) + ' (no attempt spent)', file=sys.stderr, flush=True)
+        write_paused()
+
     def reap_exited(into: set[str] | None = None, *, allow_requeue: bool = True) -> None:
         """Reap every active task whose process has already exited.
 
@@ -428,7 +597,6 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
         the loop raises, and a retry prepared on the way out would clear a recorded
         failure that nothing is left to dispatch.
         """
-        nonlocal paused
         while True:
             reaped = False
             for name, (process, log) in list(active.items()):
@@ -447,9 +615,7 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
                 elif state == 'RUNNING':
                     mark(name, 'ERROR')
                 elif state == 'INFRA':
-                    paused = True
-                    if name not in infra_seen:
-                        infra_seen.append(name)
+                    infra_stopped(name)
                 elif allow_requeue and not interrupted and state in ('FAIL', 'UNKNOWN') \
                         and retryable(name):
                     requeue(name)
@@ -485,7 +651,7 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
             if status(name) not in ('PENDING', 'BLOCKED', 'INFRA'):
                 pending.remove(name)
         swept = time.monotonic()
-        while pending or active:
+        while pending or active or waiting_scopes():
             # Reap before honouring the stop. A signal during the sleep, and a task
             # that exits while another merge is still running, have already written
             # a result; breaking first used to skip them and mark them INTERRUPTED.
@@ -513,6 +679,7 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
                       + '; waiting ' + ('%g' % wait) + 's before resuming (no attempt spent)',
                       file=sys.stderr, flush=True)
                 resume_at = time.time() + wait
+                write_paused(resume_at)
                 while time.time() < resume_at and not interrupted:
                     time.sleep(min(0.05, max(resume_at - time.time(), 0)))
                 if interrupted:
@@ -526,6 +693,9 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
                         pending.insert(0, name)
                 infra_seen.clear()
                 paused = False
+                all_class = ''
+                write_paused()
+            end_scoped_waits()
             for name in pending[:]:
                 if paused or len(active) >= capacity or interrupted:
                     break
@@ -533,6 +703,8 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
                 if any(status(dep) != 'MERGED' for dep in deps):
                     continue
                 if any(overlap(tasks[name][3], tasks[other][3]) for other in active):
+                    continue
+                if pauses and scope_held(name):
                     continue
                 root = plan / 'tasks' / name
                 if not (root / 'base_ref').exists():
@@ -551,8 +723,8 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
                 active[name] = process, log
                 pending.remove(name)
                 print('forge: dispatched ' + name + ' -> ' + str(root), file=sys.stderr, flush=True)
-            if not active:
-                if paused or held:
+            if not active and not waiting_scopes():
+                if paused or held or pauses:
                     # Infrastructure stop: leave everything not yet run PENDING. Marking it
                     # BLOCKED would turn "the provider was down" into a recorded failure.
                     # A task held back by its pin is still an infrastructure stop.
@@ -608,7 +780,7 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
                 _warn('could not mark ' + name + ' INTERRUPTED: ' + str(error))
     if interrupted:
         return 130
-    if paused or any(status(name) == 'INFRA' for name in tasks):
+    if paused or pauses or any(status(name) == 'INFRA' for name in tasks):
         return INFRA_EXIT
     return 0 if all(status(name) == 'MERGED' for name in tasks) else 5
 

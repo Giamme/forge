@@ -357,6 +357,20 @@ def nullable(value):
     return None if value in (None, '', '-', 'UNASSIGNED') else value
 
 
+PAUSE_KEYS = ('scope', 'class', 'harness', 'model', 'tasks', 'cycle', 'until', 'exhausted')
+
+
+def paused_scopes(text):
+    """The scheduler's infra.paused scopes; [] when nothing is paused or the file is unreadable."""
+    try:
+        scopes = json.loads(text or '')['scopes']
+    except (ValueError, KeyError, TypeError):
+        return []
+    if not isinstance(scopes, list):
+        return []
+    return [{key: scope.get(key) for key in PAUSE_KEYS} for scope in scopes if isinstance(scope, dict)]
+
+
 def show(plan, rows):
     live = is_live(plan)
 
@@ -369,6 +383,7 @@ def show(plan, rows):
     run = dict(qa_threshold=level(get('qa_threshold')), timeout=number(get('timeout')),
                escalate_after=number(get('escalate_after')), verify_retries=number(get('verify_retries')),
                retry_budget=budget('retry_budget'), infra_budget=budget('infra_budget'))
+    run['infra_paused'] = paused_scopes(get('infra.paused')) if live else None
     if run['escalate_after'] is None:
         run['escalate_after'] = DEFAULT_ESCALATE_AFTER
     if run['verify_retries'] is None:
@@ -575,7 +590,16 @@ def cmd_show(args):
     run = controls['run']
     print(f"{plan}  run {cell(controls['run_id'])}  live {'yes' if controls['live'] else 'no'}"
           f"  fractal {'yes' if controls['fractal'] else 'no'}")
-    print('  ' + '  '.join(f"{k.replace('_', '-')} {cell(v)}" for k, v in run.items()))
+    print('  ' + '  '.join(f"{k.replace('_', '-')} {cell(v)}" for k, v in run.items() if k != 'infra_paused'))
+    for p in run['infra_paused'] or []:
+        tasks = ','.join(t for t in (p['tasks'] or []) if isinstance(t, str)) or '-'
+        if p['exhausted']:
+            when = 'waits used up'
+        elif isinstance(p['until'], (int, float)):
+            when = f"wait {cell(p['cycle'])} until {stamp(p['until'])}"
+        else:
+            when = 'waiting for running tasks to finish'
+        print(f"  paused {p['scope']} ({cell(p['class'])})  tasks {tasks}  {when}")
     columns = ('task', 'status', 'dwarf', 'qa', 'threshold', 'budget', 'used', 'pin', 'stop', 'next')
     table = [columns]
     for task, t in controls['tasks'].items():
