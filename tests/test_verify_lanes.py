@@ -1,5 +1,6 @@
 """forge-verify.py: parallel verification lanes, groups, first lanes, live state, interrupts."""
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -327,6 +328,112 @@ class InterruptTests(VerifyLanesCase):
         self.assertEqual([l['state'] for l in doc['lanes']], ['interrupted'] * 3)
         self.assertFalse((self.marks / 'never').exists())
         self.assertNotIn('after', (self.out / 'verification.lane.long.log').read_text())
+
+
+def alive(pgid):
+    try:
+        os.killpg(pgid, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
+class CleanupTests(VerifyLanesCase):
+    def gone(self, pgid, timeout=3):
+        self.addCleanup(lambda: alive(pgid) and os.killpg(pgid, signal.SIGKILL))
+        deadline = time.monotonic() + timeout
+        while alive(pgid) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        return not alive(pgid)
+
+    def test_background_process_of_a_finished_lane_does_not_outlive_the_script(self):
+        self.lane('bg', f'echo $$ > {self.marks}/pid; sleep 300 & echo started')
+        done = self.run_verify()
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        pid = int((self.marks / 'pid').read_text())
+        self.assertTrue(self.gone(pid), 'the lane\'s background sleep is still running')
+
+    def test_background_process_ignoring_term_is_killed(self):
+        self.lane('bg', f'echo $$ > {self.marks}/pid; (trap "" TERM; exec sleep 300) & echo started')
+        done = self.run_verify()
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        pid = int((self.marks / 'pid').read_text())
+        self.assertTrue(self.gone(pid), 'the TERM-ignoring background process survived')
+
+    def test_unexpected_error_kills_lanes_and_finishes_lanes_json(self):
+        spec = importlib.util.spec_from_file_location('forge_verify', SCRIPT)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        real, failed = mod.write_atomic, []
+
+        def flaky(path, text):
+            if path.name == 'verification.lanes.json' and not failed and '"last_line": "hi"' in text:
+                failed.append(1)
+                raise OSError(28, 'No space left on device')
+            real(path, text)
+
+        mod.write_atomic = flaky
+        self.lane('long', f'echo $$ > {self.marks}/pid; echo hi; sleep 300')
+        self.lane('zlater', f'touch {self.marks}/never')
+        lanes, errors = mod.load_lanes(str(self.lanes))
+        self.assertEqual(errors, [])
+        verification = mod.Verification(str(self.checkout), str(self.out), lanes, 1)
+        self.assertEqual(verification.run(), 1)
+        self.assertTrue(failed)
+        pid = int((self.marks / 'pid').read_text())
+        self.assertTrue(self.gone(pid), 'the lane survived the error')
+        doc = self.doc()
+        self.assertEqual(doc['state'], 'fail')
+        self.assertEqual([l['state'] for l in doc['lanes']], ['interrupted', 'skipped'])
+        self.assertFalse((self.marks / 'never').exists())
+
+
+class PreRunTests(VerifyLanesCase):
+    def stale(self):
+        self.out.mkdir()
+        (self.out / 'verification.lanes.json').write_text('{"state": "running", "lanes": []}')
+
+    def test_failing_fingerprint_exits_2_and_does_not_leave_running_state(self):
+        self.stale()
+        self.lane('a', f'touch {self.marks}/ran')
+        done = self.run_verify('--fingerprint-cmd', 'exit 1')
+        self.assertEqual(done.returncode, 2, done.stdout + done.stderr)
+        self.assertIn('cannot fingerprint', done.stderr)
+        self.assertFalse((self.marks / 'ran').exists())
+        doc = self.doc()
+        self.assertEqual(doc['state'], 'fail')
+        self.assertEqual([l['state'] for l in doc['lanes']], ['skipped'])
+
+    def test_non_git_checkout_is_not_left_running(self):
+        self.stale()
+        self.lane('a', 'true')
+        plain = self.base / 'plain'; plain.mkdir()
+        done = subprocess.run(self.argv('run', '--checkout', str(plain), '--out', str(self.out)),
+                              capture_output=True, text=True, timeout=60)
+        self.assertEqual(done.returncode, 2)
+        self.assertNotEqual(self.doc()['state'], 'running')
+
+    def test_fingerprint_output_that_is_not_utf8_is_accepted(self):
+        self.lane('a', 'true')
+        done = self.run_verify('--fingerprint-cmd', "printf '\\xff\\xfe'")
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertNotIn('Traceback', done.stderr)
+        self.assertEqual(self.doc()['state'], 'pass')
+
+
+class OutputFileTests(VerifyLanesCase):
+    def test_multibyte_character_split_across_reads_is_kept_whole(self):
+        self.lane('a', "printf 'caf\\xc3'; sleep 0.5; printf '\\xa9 ok\\n'")
+        self.assertEqual(self.run_verify().returncode, 0)
+        self.assertEqual(self.lane_doc('a')['last_line'], 'caf\u00e9 ok')
+
+    def test_state_files_get_the_umask_mode_like_the_logs(self):
+        old = os.umask(0o022)
+        self.addCleanup(os.umask, old)
+        self.lane('a', 'echo hi')
+        self.assertEqual(self.run_verify().returncode, 0)
+        for name in ('verification.lane.a.log', 'verification.lanes.json', 'verification.runs.tsv'):
+            self.assertEqual((self.out / name).stat().st_mode & 0o777, 0o644, name)
 
 
 if __name__ == '__main__':

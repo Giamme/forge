@@ -30,6 +30,7 @@ Structure, for the tasks that extend this: a lane's result is plain data in
 from __future__ import annotations
 
 import argparse
+import codecs
 import json
 import os
 from pathlib import Path
@@ -141,11 +142,15 @@ def load_lanes(lanes_dir: str) -> tuple[list[dict], list[str]]:
 
 # --- mutation check --------------------------------------------------------------------
 
+def _text(data: bytes) -> str:
+    return data.decode('utf-8', 'replace').strip()
+
+
 def _git(checkout: str, *args: str, env: dict | None = None) -> str:
-    done = subprocess.run(['git', '-C', checkout, *args], capture_output=True, text=True, env=env)
+    done = subprocess.run(['git', '-C', checkout, *args], capture_output=True, env=env)
     if done.returncode != 0:
-        raise RuntimeError(f'git {" ".join(args)}: {done.stderr.strip()}')
-    return done.stdout.strip()
+        raise RuntimeError(f'git {" ".join(args)}: {_text(done.stderr)}')
+    return _text(done.stdout)
 
 
 def default_fingerprint(checkout: str) -> str:
@@ -180,17 +185,27 @@ def fingerprint(checkout: str, command: str | None) -> str:
     if not command:
         return default_fingerprint(checkout)
     done = subprocess.run(['/bin/bash', '-c', command], cwd=checkout, capture_output=True,
-                          text=True, stdin=subprocess.DEVNULL)
+                          stdin=subprocess.DEVNULL)
     if done.returncode != 0:
-        raise RuntimeError(f'fingerprint command exited {done.returncode}: {done.stderr.strip()}')
-    return done.stdout.strip()
+        raise RuntimeError(f'fingerprint command exited {done.returncode}: {_text(done.stderr)}')
+    return _text(done.stdout)
 
 
 # --- running ---------------------------------------------------------------------------
 
+def _file_mode() -> int:
+    mask = os.umask(0)
+    os.umask(mask)
+    return 0o666 & ~mask
+
+
 def write_atomic(path: Path, text: str) -> None:
+    """Write through a temp file and rename. mkstemp makes the file 0600; the lane logs
+    follow the umask, so the state files get the same mode (a forge-ui server may read them
+    as another user)."""
     fd, tmp = tempfile.mkstemp(prefix='.' + path.name + '.', dir=path.parent)
     try:
+        os.fchmod(fd, _file_mode())
         with os.fdopen(fd, 'w') as fh:
             fh.write(text)
         os.replace(tmp, path)
@@ -213,6 +228,7 @@ class Live:
         self.proc = proc
         self.reader = open(log, 'rb')
         self.reader.seek(offset)
+        self.decoder = codecs.getincrementaldecoder('utf-8')('replace')
         self.partial = ''
 
     def close(self) -> None:
@@ -227,6 +243,8 @@ class Verification:
         self.parallel = parallel
         self.fingerprint_cmd = fingerprint_cmd
         self.stop = False
+        self.running: dict[str, Live] = {}
+        self.lingering: list[tuple[int, float]] = []  # (pgid, KILL time) of finished lanes
         self.dirty = False
         self.written = 0.0
         self.doc: dict = {
@@ -239,7 +257,6 @@ class Verification:
                        'tests': None} for lane in lanes],
         }
         self.by_name = {lane['name']: lane for lane in self.doc['lanes']}
-        self.live: dict[str, Live] = {}
 
     # state files ----------------------------------------------------------------------
 
@@ -282,12 +299,12 @@ class Verification:
         in the order given. Returns when all have finished, or when stopped (the running
         ones are then terminated and finished as interrupted, the others stay waiting)."""
         pending = list(names)
-        running: dict[str, Live] = {}
+        running = self.running
         while (pending or running) and not self.stop:
             self._pump(running)
             for name in [n for n, live in running.items() if live.proc.poll() is not None]:
-                self._pump({name: running[name]})
                 self._finish(name, running.pop(name))
+            self._reap_lingering()
             busy = {self.by_name[n]['group'] for n in running} - {None}
             for name in list(pending):
                 if len(running) >= self.parallel:
@@ -296,18 +313,17 @@ class Verification:
                 if group in busy:
                     continue
                 pending.remove(name)
-                live = self._start(name, kind)
-                if live:
-                    running[name] = live
-                    if group:
-                        busy.add(group)
+                if self._start(name, kind) and group:
+                    busy.add(group)
             self.flush()
             if pending or running:
                 time.sleep(TICK)
-        if running:
-            self._terminate(running)
+        if self.stop and running:
+            self._terminate()
 
     def _start(self, name: str, kind: str) -> Live | None:
+        """Start one lane run; the process is in ``self.running`` from the moment it exists,
+        so no later failure can leave it unaccounted for."""
         lane = self.by_name[name]
         now = time.time()
         log = self.out / lane['log']
@@ -326,13 +342,23 @@ class Verification:
                 fh.write(f'forge-verify: cannot start lane: {exc}\n'.encode())
             self._end(lane, run, 126)
             return None
+        live = self.running[name] = Live(proc, log, offset)
         self.save()
-        return Live(proc, log, offset)
+        return live
 
     def _finish(self, name: str, live: Live, interrupted: bool = False) -> None:
+        """The lane's leader has exited. Whatever it left running in its process group (a
+        background server, a watcher) is terminated: no lane process outlives the script."""
         lane = self.by_name[name]
-        rc = live.proc.returncode
+        rc = live.proc.poll()
+        if rc is None:  # still there after the KILL: a process stuck in the kernel
+            rc = -signal.SIGKILL
+        pgid = live.proc.pid
+        self._pump({name: live})
         live.close()
+        if self._group_alive(pgid):
+            self._signal(pgid, signal.SIGTERM)
+            self.lingering.append((pgid, time.monotonic() + KILL_AFTER))
         self._end(lane, lane['runs'][-1], rc if rc >= 0 else 128 - rc, interrupted)
 
     def _end(self, lane: dict, run: dict, code: int, interrupted: bool = False) -> None:
@@ -347,19 +373,22 @@ class Verification:
         """Read what the lanes printed since the last look: last_line and the step markers."""
         for name, live in running.items():
             lane = self.by_name[name]
+            exited = live.proc.poll() is not None  # asked first: all of its output is then readable
             while True:
                 chunk = live.reader.read(1 << 20)
                 if not chunk:
                     break
                 lane['last_output_at'] = time.time()
                 self.dirty = True
-                parts = re.split(r'[\r\n]', live.partial + chunk.decode('utf-8', 'replace'))
+                parts = re.split(r'[\r\n]', live.partial + live.decoder.decode(chunk))
                 live.partial = parts.pop()[-65536:]
                 for line in parts:
                     self._line(lane, line)
-            if live.proc.poll() is not None and live.partial:
-                self._line(lane, live.partial)
+            if exited:
+                tail = live.partial + live.decoder.decode(b'', final=True)
                 live.partial = ''
+                if tail:
+                    self._line(lane, tail)
 
     def _line(self, lane: dict, raw: str) -> None:
         line = ANSI.sub('', raw).strip()
@@ -374,36 +403,60 @@ class Verification:
             elif lane['step'] and lane['step']['name'] == step:
                 lane['step'] = None
 
-    def _terminate(self, running: dict[str, Live]) -> None:
-        """TERM every process group, KILL what is left after KILL_AFTER seconds, and wait
-        until no process of any group is left."""
-        for live in running.values():
-            self._signal(live, signal.SIGTERM)
-        deadline = time.monotonic() + KILL_AFTER
-        while time.monotonic() < deadline and any(self._alive(live) for live in running.values()):
-            time.sleep(TICK)
-        for live in running.values():
-            if self._alive(live):
-                self._signal(live, signal.SIGKILL)
-        while any(self._alive(live) for live in running.values()):
-            time.sleep(TICK)
-        self._pump(running)
+    # process groups ---------------------------------------------------------------------
+
+    def _terminate(self) -> None:
+        """Interrupt: stop every lane, then finish the running ones as interrupted."""
+        running = dict(self.running)
+        self._kill_all()
         for name, live in running.items():
             self._finish(name, live, interrupted=True)
-        running.clear()
+        self.running.clear()
+
+    def _kill_all(self) -> None:
+        """TERM every lane process group (running lanes and what finished lanes left), KILL
+        what is left after KILL_AFTER seconds, and wait until no process of any group is
+        left. Safe to call again; used on every way out of ``run``."""
+        groups = {live.proc.pid for live in self.running.values()} | {g for g, _ in self.lingering}
+        for pgid in groups:
+            self._signal(pgid, signal.SIGTERM)
+        deadline = time.monotonic() + KILL_AFTER
+        while time.monotonic() < deadline and any(self._group_alive(g) for g in groups):
+            time.sleep(TICK)
+        for pgid in groups:
+            if self._group_alive(pgid):
+                self._signal(pgid, signal.SIGKILL)
+        deadline = time.monotonic() + 3 * KILL_AFTER  # SIGKILL cannot be caught; do not hang on D state
+        while time.monotonic() < deadline and any(self._group_alive(g) for g in groups):
+            time.sleep(TICK)
+        self.lingering.clear()
+
+    def _reap_lingering(self) -> None:
+        """KILL a finished lane's leftover processes that ignored the TERM sent at its end."""
+        now = time.monotonic()
+        keep = []
+        for pgid, deadline in self.lingering:
+            if not self._group_alive(pgid):
+                continue
+            if now >= deadline:
+                self._signal(pgid, signal.SIGKILL)
+                continue
+            keep.append((pgid, deadline))
+        self.lingering = keep
 
     @staticmethod
-    def _signal(live: Live, sig: int) -> None:
+    def _signal(pgid: int, sig: int) -> None:
         try:
-            os.killpg(live.proc.pid, sig)
+            os.killpg(pgid, sig)
         except (ProcessLookupError, PermissionError):
             pass
 
-    @staticmethod
-    def _alive(live: Live) -> bool:
-        live.proc.poll()
+    def _group_alive(self, pgid: int) -> bool:
+        for live in self.running.values():
+            if live.proc.pid == pgid:
+                live.proc.poll()  # reap a leader that exited, or it stays a zombie of the group
         try:
-            os.killpg(live.proc.pid, 0)
+            os.killpg(pgid, 0)
         except (ProcessLookupError, PermissionError):
             return False
         return True
@@ -411,13 +464,44 @@ class Verification:
     # the whole verification ------------------------------------------------------------
 
     def run(self) -> int:
+        """Run everything. Whatever happens, no lane process is left behind; an unexpected
+        error finishes lanes.json as failed instead of leaving it saying ``running``."""
+        try:
+            return self._run()
+        except Exception as exc:
+            print(f'forge-verify: {type(exc).__name__}: {exc}', file=sys.stderr)
+            self._kill_all()
+            self._abort()
+            return 1
+        finally:
+            self._kill_all()
+            for live in self.running.values():
+                live.close()
+
+    def _abort(self) -> None:
+        now = time.time()
+        for lane in self.doc['lanes']:
+            if lane['state'] == 'running':
+                lane.update(state='interrupted', ended=now, step=None)
+                lane['runs'][-1]['ended'] = now
+            elif lane['state'] == 'waiting':
+                lane['state'] = 'skipped'
+        self.doc.update(state='fail', ended=now)
+        for write in (self.save, self.write_runs):  # best effort: the disk may be what failed
+            try:
+                write()
+            except OSError:
+                pass
+
+    def _run(self) -> int:
         self.out.mkdir(parents=True, exist_ok=True)
-        self.save()
         try:
             before = fingerprint(self.checkout, self.fingerprint_cmd)
         except (RuntimeError, OSError) as exc:
             print(f'forge-verify: cannot fingerprint {self.checkout}: {exc}', file=sys.stderr)
+            self._abort()
             return 2
+        self.save()
         lanes = self.doc['lanes']
         names = [lane['name'] for lane in lanes]
         firsts = [n for n in names if self.by_name[n]['first']]
@@ -436,6 +520,7 @@ class Verification:
                     lane['state'] = 'interrupted'
             self.doc['state'] = 'interrupted'
         else:
+            self._kill_all()  # leftovers of the last lanes, before the tree is looked at again
             try:
                 self.doc['mutated'] = fingerprint(self.checkout, self.fingerprint_cmd) != before
             except (RuntimeError, OSError):
