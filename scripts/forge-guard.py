@@ -17,6 +17,19 @@
       bounded ~2s, KILL, print how many were found. Never exits nonzero for an ordinary
       outcome, and never touches its own or its caller's group.
 
+  forge-guard.py identity <pid>
+      Print the process's start time, which survives exec. Dispatch records it with the
+      harness pid right after `$!`, when that pid may still be the subshell or this helper
+      before the exec into the harness, so the command name cannot identify it.
+
+  forge-guard.py stop <record-file>
+      The backstop for a harness its dispatch could not stop. The record is
+      `<pid><TAB><identity>`. A live pid with the recorded start time gets its group
+      signalled (or itself alone, before setsid made it a leader): TERM, ~2s, KILL. A live
+      pid with another start time was reused and is left alone. A dead pid's group may
+      still hold the harness's background jobs, and cannot have been reused while they
+      live, so it is reaped. The record is removed; prints how many processes were signalled.
+
   forge-guard.py promises <file> [--tail-bytes N]
       Scan the tail of an implementer's final message for promises of later work ("it is
       still running in the background", "I'll check back"). One `pattern<TAB>excerpt`
@@ -115,39 +128,153 @@ def wait_gone(pgid: int, seconds: float) -> bool:
     return (not members) if members is not None else not group_exists(pgid)
 
 
-def reap(pgid: int, orphans_file: str) -> int:
-    # Never signal ourselves, the dispatcher that called us, or init.
+def _forbidden() -> set:
+    # Never signal ourselves, the process that called us, or init.
     forbidden = {0, 1, os.getpgrp()}
     try:
         forbidden.add(os.getpgid(os.getppid()))
     except OSError:
         pass
-    if pgid in forbidden or pgid < 0:
-        print(0)
+    return forbidden
+
+
+def _reap_group(pgid: int, orphans_file: str | None) -> int:
+    """TERM, then KILL, whatever is alive in the group; how many were found."""
+    if pgid in _forbidden() or pgid < 0:
         return 0
     if not group_exists(pgid):
-        print(0)
         return 0
     members = list_group(pgid)
     if members is not None and not members:
         # Only zombies (or nothing visible) left; nothing worth reporting or killing.
-        print(0)
         return 0
     found = members if members is not None else [(0, '(unknown: ps unavailable; process group %d still has live members)' % pgid)]
-    try:
-        with open(orphans_file, 'w') as handle:
-            for pid, command in found:
-                handle.write('%s\t%s\n' % (pid or '?', ' '.join(command.split()) or '?'))
-    except OSError:
-        pass
+    if orphans_file:
+        try:
+            with open(orphans_file, 'w') as handle:
+                for pid, command in found:
+                    handle.write('%s\t%s\n' % (pid or '?', ' '.join(command.split()) or '?'))
+        except OSError:
+            pass
     for sig, wait in ((signal.SIGTERM, TERM_WAIT_S), (signal.SIGKILL, KILL_WAIT_S)):
         try:
             os.killpg(pgid, sig)
-        except (ProcessLookupError, PermissionError, OSError):
+        except OSError:
             break
         if wait_gone(pgid, wait):
             break
-    print(len(found))
+    return len(found)
+
+
+def reap(pgid: int, orphans_file: str) -> int:
+    print(_reap_group(pgid, orphans_file))
+    return 0
+
+
+# --- identity / stop ----------------------------------------------------------
+def _ps_field(pid: int, field: str) -> str | None:
+    """One ps column for one pid, whitespace-normalised; None when the pid is gone or ps
+    is unavailable. LC_ALL=C keeps lstart's format the same for every caller."""
+    if pid <= 0:
+        return None
+    for ps in PS_CANDIDATES:
+        if not os.access(ps, os.X_OK):
+            continue
+        try:
+            out = subprocess.run([ps, '-p', str(pid), '-o', field + '='], stdout=subprocess.PIPE,
+                                 stderr=subprocess.DEVNULL, timeout=5,
+                                 env=dict(os.environ, LC_ALL='C')).stdout.decode(errors='replace')
+        except (OSError, subprocess.SubprocessError):
+            continue
+        return ' '.join(out.split()) or None
+    return None
+
+
+def identity(pid: int) -> str | None:
+    return _ps_field(pid, 'lstart')
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    # A zombie still answers kill(0) until its parent waits for it.
+    return not (_ps_field(pid, 'stat') or 'Z').startswith('Z')
+
+
+def _wait_pid_gone(pid: int, seconds: float) -> bool:
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        if not _pid_alive(pid):
+            return True
+        time.sleep(0.05)
+    return not _pid_alive(pid)
+
+
+def _stop_live(pid: int) -> int:
+    try:
+        leader = os.getpgid(pid) == pid
+    except OSError:
+        leader = False
+    if leader:
+        if pid in _forbidden():
+            return 0
+        members = list_group(pid)
+        count = len(members) if members else 1
+        for sig, wait in ((signal.SIGTERM, TERM_WAIT_S), (signal.SIGKILL, KILL_WAIT_S)):
+            try:
+                os.killpg(pid, sig)
+            except OSError:
+                break
+            if wait_gone(pid, wait):
+                break
+        return count
+    # Recorded before setsid: the pid is still in its dispatcher's group, so only it is ours.
+    for sig, wait in ((signal.SIGTERM, TERM_WAIT_S), (signal.SIGKILL, KILL_WAIT_S)):
+        try:
+            os.kill(pid, sig)
+        except OSError:
+            break
+        if _wait_pid_gone(pid, wait):
+            break
+    return 1
+
+
+def stop(record: str) -> int:
+    try:
+        with open(record) as handle:
+            line = handle.readline()
+    except FileNotFoundError:
+        print(0)
+        return 0
+    except OSError as error:
+        print('forge-guard: cannot read %s: %s' % (record, error), file=sys.stderr)
+        print(0)
+        return 0
+    pid_text, _, recorded = line.rstrip('\n').partition('\t')
+    try:
+        pid = int(pid_text)
+    except ValueError:
+        pid = 0
+    recorded = ' '.join(recorded.split())
+    count = 0
+    if pid > 1:
+        if _pid_alive(pid):
+            # A mismatch, or no way to tell, means the pid now belongs to someone else.
+            if recorded and identity(pid) == recorded:
+                count = _stop_live(pid)
+        else:
+            count = _reap_group(pid, None)
+    try:
+        os.unlink(record)
+    except OSError:
+        pass
+    print(count)
     return 0
 
 
@@ -229,7 +356,7 @@ def promises(path: str, tail_bytes: int = 3000) -> int:
 def main(argv: list[str]) -> int:
     if not argv:
         print('usage: forge-guard.py ping | session -- CMD... | reap <pgid> <orphans-file> | '
-              'promises <file> [--tail-bytes N]', file=sys.stderr)
+              'identity <pid> | stop <record-file> | promises <file> [--tail-bytes N]', file=sys.stderr)
         return 2
     command, rest = argv[0], argv[1:]
     try:
@@ -245,6 +372,20 @@ def main(argv: list[str]) -> int:
                 print('usage: forge-guard.py reap <pgid> <orphans-file>', file=sys.stderr)
                 return 2
             return reap(int(rest[0]), rest[1])
+        if command == 'identity':
+            if len(rest) != 1:
+                print('usage: forge-guard.py identity <pid>', file=sys.stderr)
+                return 2
+            found = identity(int(rest[0]))
+            if found is None:
+                return 1
+            print(found)
+            return 0
+        if command == 'stop':
+            if len(rest) != 1:
+                print('usage: forge-guard.py stop <record-file>', file=sys.stderr)
+                return 2
+            return stop(rest[0])
         if command == 'promises':
             tail = 3000
             if '--tail-bytes' in rest:

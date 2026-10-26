@@ -215,6 +215,66 @@ def _pinned(plan: object, name: str) -> bool:
         return False
 
 
+# --- interrupted tasks ---------------------------------------------------------------------
+# A task's harness leads its own session (forge-guard.py session), so the SIGTERM sent to the
+# task's group reaches dispatch but not the harness: dispatch's EXIT trap stops it. The grace
+# lets that trap finish; the guard's `stop` then acts on whatever <role>.harness record a
+# dispatch that died too early left behind.
+GUARD = str(Path(__file__).resolve().parent / 'forge-guard.py')
+HARNESS_ROLES = ('dwarf', 'qa')
+GUARD_STOP_WAIT = 15.0    # seconds; the guard's own bound is about 3 s plus two ps calls
+
+
+def interrupt_grace() -> float:
+    """Seconds an interrupted task group gets to empty before SIGKILL."""
+    try:
+        value = float(os.environ.get('FORGE_INTERRUPT_GRACE', '10'))
+    except ValueError:
+        return 10.0
+    return value if 0 <= value < float('inf') else 10.0
+
+
+def _group_alive(pgid: int) -> bool:
+    try:
+        os.killpg(pgid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def stop_harnesses(plan: object, names: object) -> None:
+    """Run the guard's identity-checked `stop` on every harness record of these tasks, all
+    at once, so the bound does not grow with the number of tasks. Never raises."""
+    stopping = []
+    for name in names:
+        for role in HARNESS_ROLES:
+            try:
+                record = _resolve(plan, 'tasks', name, role + '.harness')
+                if not os.path.lexists(record):
+                    continue
+                stopping.append((name, role, subprocess.Popen(
+                    [sys.executable, GUARD, 'stop', record], stdin=subprocess.DEVNULL,
+                    stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)))
+            except (OSError, ValueError) as error:
+                _warn('could not stop the ' + role + ' harness of ' + name + ': ' + str(error))
+    deadline = time.monotonic() + GUARD_STOP_WAIT
+    for name, role, process in stopping:
+        try:
+            out, _ = process.communicate(timeout=max(deadline - time.monotonic(), 0.1))
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.communicate()
+            _warn('stopping the ' + role + ' harness of ' + name + ' took too long; gave up')
+            continue
+        count = (out or '').strip()
+        if count.isdigit() and count != '0':
+            _warn(name + ': stopped ' + count + ' process(es) its ' + role + ' harness left running')
+
+
 def live_start(plan: object, names: object, retry_failed: int, infra_retries: int) -> None:
     """Publish the flags and that this scheduler is live. Stale per-task overrides and
     usage counters from an earlier invocation go first."""
@@ -408,6 +468,9 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
         # Saved PASS results use the same fingerprint checks without paying for
         # implementation or QA again; an INFRA stop is not a failure of the work, so it
         # is simply dispatched again.
+        # RUNNING at start means a scheduler was killed without its cleanup: its tasks'
+        # harnesses may still be running and editing their worktrees.
+        stop_harnesses(plan, [name for name in pending if status(name) == 'RUNNING'])
         for name in pending[:]:
             state = status(name)
             if state == 'PASS':
@@ -506,24 +569,43 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
         # Never requeue here: this block also runs when the loop raises, and a retry
         # prepared then would erase the recorded failure and spend its budget.
         reap_exited(allow_requeue=False)
-        for process, log in active.values():
+        stopping = list(active.items())
+        for name, (process, log) in stopping:
             try:
                 os.killpg(process.pid, signal.SIGTERM)
-            except ProcessLookupError:
+            except OSError:
                 pass
-        for name, (process, log) in active.items():
+        # The group outlives its leader while dispatch's EXIT trap stops the harness, so wait
+        # for the group to empty, not for the leader. Reaping the leader matters too: its
+        # zombie would keep the group alive.
+        deadline = time.monotonic() + interrupt_grace()
+        waiting = {name for name, _ in stopping}
+        while waiting:
+            for name, (process, log) in stopping:
+                if name in waiting:
+                    process.poll()
+                    if not _group_alive(process.pid):
+                        waiting.discard(name)
+            if not waiting or time.monotonic() >= deadline:
+                break
+            time.sleep(0.05)
+        for name, (process, log) in stopping:
+            if name in waiting:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except OSError:
+                    pass
             try:
                 process.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 pass
-            # Remove descendants even if the shell exited before its backend.
-            try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-            process.wait()
             log.close()
-            mark(name, 'INTERRUPTED')
+        stop_harnesses(plan, [name for name, _ in stopping])
+        for name, _ in stopping:
+            try:
+                mark(name, 'INTERRUPTED')
+            except OSError as error:
+                _warn('could not mark ' + name + ' INTERRUPTED: ' + str(error))
     if interrupted:
         return 130
     if paused or any(status(name) == 'INFRA' for name in tasks):
