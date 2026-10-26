@@ -105,3 +105,23 @@ test('dirty editor: unsaved text survives a refresh, and a change on disk is fla
   assert.equal(r.dirty, false);
   assert.equal(S.shown(r.editor), 'make\n');
 });
+
+test('typing on text a read moved on since the textarea was drawn counts as moved', () => {
+  // drawn from 'make\n'; a held body was not redrawn when the disk became 'make all\n'
+  const polled = S.dirtyState(S.editorOf('make\n'), 'make all\n').editor;
+  let r = S.typed(polled, 'make\n# mine', 'make\n');
+  assert.equal(r.dirty, true);
+  assert.equal(r.moved, true);
+  assert.deepEqual(r.editor, { base: 'make all\n', draft: 'make\n# mine' });
+  r = S.typed(polled, 'make all\n# mine', 'make all');               // drawn from the current text: not moved
+  assert.deepEqual([r.dirty, r.moved], [true, false]);
+  r = S.typed(polled, 'make all', 'make\n');                         // typed to the disk text: clean, nothing to warn of
+  assert.deepEqual([r.dirty, r.moved], [false, false]);
+});
+
+test('a failed read keeps a good page with a note, and replaces the page only before any good read', () => {
+  assert.deepEqual(S.readFailure({ ok: false, status: 504, detail: 'forge config show timed out' }, true), { keep: true, message: 'forge config show timed out' });
+  assert.deepEqual(S.readFailure({ ok: false, status: 500, error: 'boom' }, false), { keep: false, message: 'boom' });
+  assert.deepEqual(S.readFailure({ ok: false, status: 0, error: 'network' }, true), { keep: true, message: 'could not reach forge-ui' });
+  assert.deepEqual(S.readFailure({ ok: false, status: 0 }, false), { keep: false, message: 'could not reach forge-ui' });
+});

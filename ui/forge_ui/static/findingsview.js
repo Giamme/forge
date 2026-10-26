@@ -64,6 +64,20 @@
     const note = n > MAX_FPS ? `${n} selected: at most ${MAX_FPS} per action` : '';
     return { fps, count: n, enabled: n >= 1 && n <= MAX_FPS, note };
   }
+  // Fingerprints "Select shown open" adds. `rows` are the rows the filters leave shown. The cap is how many of
+  // those are already selected and open — the same rows File and Dismiss take — so a selection a filter hides stays
+  // selected and does not count. A shown row that is not open is not added.
+  function selectShownOpen(rows, selected) {
+    const chosen = new Set(selected instanceof Set || Array.isArray(selected) ? selected : []);
+    const add = [];
+    for (const r of list(rows)) {
+      if (!selectable('file', r) || chosen.has(r.fp)) continue;
+      if (selection('file', rows, chosen).count >= MAX_FPS) break;
+      chosen.add(r.fp);
+      add.push(r.fp);
+    }
+    return add;
+  }
   const bit = v => v ? '1' : '0';
   // The GET path: `o` = { scope, offline, plausible, dismissed, only (fingerprints) }.
   function issuesUrl(key, o) {
@@ -103,6 +117,11 @@
       if (c && c.skipped) return { kind: 'skipped', text: `${c.title || 'finding'}: skipped, ${c.skipped}`, url: c.issue || null };
       return { kind: 'note', text: c && c.note ? c.note : 'no detail' };
     });
+  }
+  // The CLI's `notes` as lines for the dialog, only when the POST created nothing: a bare "0 created" says no reason, the
+  // notes ("--only fp: no such open finding") do. When something was created the notes are not about the dialog.
+  function emptyNotes(created, notes) {
+    return list(created).some(c => c && c.url) ? [] : list(notes).map(n => String(n)).filter(Boolean);
   }
   // An untrusted URL becomes a link only when it is a plain https address.
   const safeUrl = u => typeof u === 'string' && /^https:\/\/[^\s"'<>]+$/.test(u) ? u : null;
@@ -176,7 +195,7 @@
     const dismissKey = key_('Dismiss', undefined, () => openDismiss());
     const undismissKey = key_('Undismiss', undefined, () => doDismiss(true, ''));
     const allKey = key_('Select shown open', undefined, () => {
-      for (const r of shown()) if (selectable('file', r) && s.selected.size < MAX_FPS) s.selected.add(r.fp);
+      for (const fp of selectShownOpen(shown(), s.selected)) s.selected.add(fp);
       drawTable(); syncActions();
     });
     const noneKey = key_('Clear selection', undefined, () => { s.selected.clear(); drawTable(); syncActions(); });
@@ -193,6 +212,9 @@
     host.append(dlg);
 
     const shown = () => filterRows(s.rows, { ...s.filter, dismissed: s.dismissed });
+    // What an action takes: the selected rows the filters leave visible. Rows hidden by a filter stay in s.selected, so
+    // they come back with the filter, but no button counts them and no action reaches them.
+    const picked = action => selection(action, shown(), s.selected);
     function syncScope() {
       for (const [v, b] of Object.entries(scopeKeys)) b.setAttribute('aria-pressed', String(s.scope === v));
       lede.textContent = s.scope === 'run' ? `Findings this run left unfixed${ctx.run && ctx.run.goal ? ': ' + String(ctx.run.goal).split('\n')[0] : ''}.`
@@ -201,11 +223,11 @@
     function syncActions() {
       actions.hidden = !s.writes;
       if (!s.writes) return;
-      const f = selection('file', s.rows, s.selected), d = selection('dismiss', s.rows, s.selected), u = selection('undismiss', s.rows, s.selected);
+      const f = picked('file'), d = picked('dismiss'), u = picked('undismiss');
       fileKey.textContent = f.count ? `File ${f.count} issue${f.count === 1 ? '' : 's'}` : 'File issues';
       fileKey.disabled = !f.enabled || s.busy; dismissKey.disabled = !d.enabled || s.busy;
       undismissKey.textContent = u.count ? `Undismiss ${u.count}` : 'Undismiss'; undismissKey.disabled = !u.enabled || s.busy;
-      actionNote.textContent = f.note || d.note || u.note || (s.selected.size ? `${f.count} open, ${u.count} dismissed selected` : '');
+      actionNote.textContent = f.note || d.note || u.note || (f.count + u.count ? `${f.count} open, ${u.count} dismissed selected` : '');
     }
     function setLamp(cls, text) {
       lamp.replaceChildren(el('i', undefined, 'lamp ' + cls), el('span', text));
@@ -330,7 +352,7 @@
     // dismiss: an optional reason, then the call
     async function openDismiss() {
       reasonHost.replaceChildren();
-      const sel = selection('dismiss', s.rows, s.selected);
+      const sel = picked('dismiss');
       if (!sel.enabled) return;
       const l = el('label', undefined, 'fnd-field fnd-reason-field'), input = el('input');
       input.type = 'text'; input.maxLength = MAX_REASON; input.placeholder = 'why (optional)';
@@ -345,7 +367,7 @@
       input.focus();
     }
     async function doDismiss(undo, reason) {
-      const sel = selection(undo ? 'undismiss' : 'dismiss', s.rows, s.selected);
+      const sel = picked(undo ? 'undismiss' : 'dismiss');
       if (!sel.enabled || s.busy) return;
       s.busy = true; syncActions(); outcomeHost.replaceChildren();
       const res = await UI.post(dismissPath(key), dismissBody(sel.fps, reason, undo));
@@ -356,17 +378,19 @@
 
     // filing: drafts for exactly the selection, a preview, then the POST
     async function openFile() {
-      const sel = selection('file', s.rows, s.selected);
+      const sel = picked('file');
       if (!sel.enabled || s.busy) return;
       s.busy = true; syncActions(); outcomeHost.replaceChildren();
       setLamp('st-running', 'preparing the issue drafts…');
-      const res = await UI.get(issuesUrl(key, { scope: s.scope, offline: false, plausible: s.plausible, only: sel.fps }));
+      // The scope and the toggle stay usable while the drafts are made: the preview files what these drafts were made for.
+      const scope = s.scope, plausible = s.plausible;
+      const res = await UI.get(issuesUrl(key, { scope, offline: false, plausible, only: sel.fps }));
       s.busy = false; syncActions();
       if (!res.ok) { setLamp('st-fail', 'could not prepare the drafts'); UI.outcome(outcomeHost, res); return; }
       setLamp('st-pass', 'drafts ready');
-      preview(sel.fps, list(res.data.drafts));
+      preview(sel.fps, list(res.data.drafts), { scope, plausible });
     }
-    function preview(fps, drafts) {
+    function preview(fps, drafts, made) {
       dlg.replaceChildren();
       dlg.append(el('h2', 'File issues on GitHub'));
       const warn = el('p', undefined, 'fnd-warn');
@@ -399,7 +423,7 @@
         labelNote.hidden = !parsed.error; labelNote.textContent = parsed.error || '';
         if (parsed.error) return;
         go.disabled = true; cancel.disabled = true; labels.disabled = true; results.replaceChildren(); posting = true;
-        const res = await UI.post(issuesPath(key), fileBody(s.scope, fps, s.plausible, parsed.labels));
+        const res = await UI.post(issuesPath(key), fileBody(made.scope, fps, made.plausible, parsed.labels));
         posting = false;
         if (!res.ok) { go.disabled = false; cancel.disabled = false; labels.disabled = false; UI.outcome(results, res); return; }
         const lines = resultLines(res.data.created), ul = el('ul', undefined, 'fnd-created');
@@ -410,6 +434,7 @@
           ul.append(li);
         }
         results.replaceChildren(el('p', `${lines.filter(l => l.kind === 'created').length} created`, 'fnd-done'), ul);
+        for (const n of emptyNotes(res.data.created, res.data.notes)) results.append(el('p', n, 'muted fnd-result-note'));
         go.remove(); cancel.textContent = 'Close'; cancel.disabled = false;
         for (const fp of fps) s.selected.delete(fp);
         load();
@@ -433,6 +458,6 @@
     return { reload: load };
   }
 
-  return { render, statusOf, filterRows, mergeFiled, selectable, selection, issuesUrl, issuesPath, dismissPath, fileBody, dismissBody,
-    parseLabels, resultLines, safeUrl, reviewMarker, ORIGINS, MAX_FPS };
+  return { render, statusOf, filterRows, mergeFiled, selectable, selection, selectShownOpen, issuesUrl, issuesPath, dismissPath, fileBody, dismissBody,
+    parseLabels, resultLines, emptyNotes, safeUrl, reviewMarker, ORIGINS, MAX_FPS };
 });

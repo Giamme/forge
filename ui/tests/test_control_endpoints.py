@@ -88,11 +88,18 @@ class IssuesWriteTests(EndpointCase):
         many = [f'{n:012x}' for n in range(26)]
         bad = [{'fingerprints': ['xyz']}, {'fingerprints': many}, {'fingerprints': []}, {},
                {'fingerprints': [FP], 'labels': ['a\nb']}, {'fingerprints': [FP], 'labels': ['x' * 51]}, {'fingerprints': [FP], 'labels': ['\ud800']},
+               {'fingerprints': [FP], 'labels': ['-wip']}, {'fingerprints': [FP], 'labels': ['   ']},
                {'fingerprints': [FP], 'labels': ['a'] * 6}, {'fingerprints': [FP], 'labels': [3]},
                {'fingerprints': [FP], 'scope': 'all'}, {'fingerprints': [FP], 'include_plausible': 'yes'},
                {'fingerprints': [FP], 'repo': '/tmp'}]
         for body in bad:
             self.assertEqual(self.post(body, self.issues())[0], 400, body)
+        # One rule each, so the detail names the rule that body actually breaks.
+        named = [(['-wip'], '-'), (['   '], 'blank'), (['x' * 51], '50'), (['a\nb'], 'control')]
+        for labels, word in named:
+            status, body = self.post({'fingerprints': [FP], 'labels': labels}, self.issues())
+            self.assertEqual(status, 400, labels)
+            self.assertIn(word, body['detail'], labels)
         self.assertEqual(self.calls(), [])
 
     def test_dismiss_and_undo_argv(self):

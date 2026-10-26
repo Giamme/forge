@@ -266,7 +266,7 @@ takes effect. The routes are in [docs/api.md](docs/api.md).
   infra-retry budgets. A task has a threshold override (`Inherit`, P0–P3 or `None`, which
   exempts it from the run's threshold), its own retry budget and a **model pin**: the model
   its next full retry uses, once. A control that cannot apply (no live scheduler, a merged
-  task, a Fractal plan's pin) is disabled and says why.
+  task) is disabled and says why. A Fractal plan's pin control is hidden.
 - **Open findings (`forge issues`):** the findings a run, or every run of its repository,
   left open. The list opens from a quick offline listing and then fills in what is already
   filed; select findings to file as GitHub issues, or dismiss them (and undo that).
