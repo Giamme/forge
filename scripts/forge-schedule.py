@@ -333,6 +333,22 @@ def drained(plan: object) -> bool:
     return _read_small(plan, 'drain') is not None
 
 
+def _fractal_plan(plan: object) -> bool:
+    """fractal-selection.json enabled (unreadable counts: fail closed, as forge-control does)."""
+    try:
+        text = Path(_resolve(plan, 'fractal-selection.json')).read_text()
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return True
+    if not text.strip():
+        return False
+    try:
+        return bool(json.loads(text).get('enabled'))
+    except (ValueError, AttributeError):
+        return True
+
+
 def live_capacity(plan: object, default: int) -> int:
     """`forge control set max-parallel` (1-64), else the argument the run started with."""
     text = _read_small(plan, 'max_parallel')
@@ -551,6 +567,7 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
     backoff_warned = [] # an invalid infra_backoff file is reported once
     graceful = False   # `forge control stop`: start nothing more, end once running tasks are done
     human = set()      # tasks whose next dispatch is a `forge control retry` (dataset trigger human)
+    fractal = _fractal_plan(plan)
     drain_told = False # the drained message was printed for this drain
 
     def status(name: str) -> str:
@@ -662,8 +679,31 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
     def scope_held(name: str) -> bool:
         return any(holds(pause, next_pairs(name)) for pause in pauses.values())
 
+    def live_pause(pause: dict) -> bool:
+        """A pause still holding something: its own stopped tasks, or a pending task on its pair.
+        One whose tasks all fell back to another model holds nothing."""
+        return bool(pause['tasks']) or any(holds(pause, next_pairs(name)) for name in pending)
+
     def waiting_scopes() -> bool:
-        return any(not pause['exhausted'] for pause in pauses.values())
+        return any(not pause['exhausted'] and live_pause(pause) for pause in pauses.values())
+
+    def fall_back(name: str, info: dict, scope: str) -> None:
+        """--infra-fallback: a dwarf-stage capacity stop moves to the next healthy model of its
+        tier pool. The stop was already recorded as its scope's pause, so every paused or
+        exhausted pair is excluded and a pool all at capacity cannot bounce the task forever."""
+        if fractal or _read_small(plan, 'infra_fallback') != 'on' or _pinned(plan, name):
+            return
+        if info.get('stage') != 'dwarf' or info.get('class') != 'rate_limit' or not scope.startswith('model:'):
+            return
+        excluded = {(info['harness'], info['model'])}
+        excluded.update((p['harness'], p['model'] or '*') for p in pauses.values())
+        command = ['/bin/bash', script, '_prepare_retry', str(plan), name, '--fallback',
+                   ','.join(sorted(h + '/' + m for h, m in excluded))]
+        if subprocess.run(command).returncode:
+            return
+        pauses[scope]['tasks'].remove(name)
+        pairs_cache.pop(name, None)
+        pending.insert(0, name)
 
     def write_paused(until_all: float | None = None) -> None:
         """infra.paused for forge-ui and `forge control show`; gone when nothing is paused."""
@@ -744,6 +784,8 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
                              'model': model if scope.startswith('model:') else None, 'tasks': [name],
                              'cycle': 0, 'until': None, 'exhausted': False, 'info': info}
             start_wait(pauses[scope], info, name)
+        if scope != 'all':
+            fall_back(name, info, scope)
         write_paused()
 
     def end_scoped_waits() -> None:
@@ -764,8 +806,9 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
                 pairs_cache.pop(name, None)
                 if name not in pending and status(name) == 'INFRA' and resume(name):
                     pending.insert(0, name)
-            print('forge: the pause on ' + scope.partition(':')[2] + ' is over; resuming '
-                  + ', '.join(pause['tasks']) + ' (no attempt spent)', file=sys.stderr, flush=True)
+            print('forge: the pause on ' + scope.partition(':')[2] + ' is over'
+                  + ('; resuming ' + ', '.join(pause['tasks']) + ' (no attempt spent)' if pause['tasks'] else ''),
+                  file=sys.stderr, flush=True)
         write_paused()
 
     def apply_retry(request: dict) -> tuple:
@@ -1021,7 +1064,7 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
                     print('forge: drained — ' + str(len(pending)) + ' task(s) waiting; forge control resume '
                           + str(plan) + ' continues', file=sys.stderr, flush=True)
             elif not active and not waiting_scopes():
-                if paused or held or pauses:
+                if paused or held or any(live_pause(pause) for pause in pauses.values()):
                     # Infrastructure stop: leave everything not yet run PENDING. Marking it
                     # BLOCKED would turn "the provider was down" into a recorded failure.
                     # A task held back by its pin is still an infrastructure stop.
@@ -1077,7 +1120,8 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
                 _warn('could not mark ' + name + ' INTERRUPTED: ' + str(error))
     if interrupted or (graceful and not all(status(name) == 'MERGED' for name in tasks)):
         return 130
-    if paused or pauses or any(status(name) == 'INFRA' for name in tasks):
+    if paused or any(live_pause(pause) for pause in pauses.values()) \
+            or any(status(name) == 'INFRA' for name in tasks):
         return INFRA_EXIT
     return 0 if all(status(name) == 'MERGED' for name in tasks) else 5
 

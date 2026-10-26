@@ -23,6 +23,8 @@
 #   --infra-retries M       run               (this run only)      waits out quota/auth/network stops
 #   --infra-backoff SHAPE   run               $PLAN/infra_backoff  waits between those stops: exp:B[,C],
 #                                                                  linear:S,T[,C] or list:a,b,... (default exp:60)
+#   --infra-fallback        run               $PLAN/infra_fallback a dwarf's capacity stop moves it to the next healthy
+#   --no-infra-fallback                                            model of its tier pool (off by default)
 #   --qa-threshold Pn|none  run retry         $PLAN/qa_threshold   least severe finding that still blocks
 #   --verify-retries N      run retry integrate  $PLAN/verify_retries  reruns of a failed verify command
 #   --escalate-after N      run retry         $PLAN/escalate_after failed attempts on one model before the
@@ -51,6 +53,12 @@ forge_pp_flag() {
     --infra-retries)
       [ "$cmd" = run ] || return 1
       pp_nonneg --infra-retries "${2:-}"; PP_INFRA_RETRIES="$2" ;;
+    --infra-fallback)
+      [ "$cmd" = run ] || return 1
+      PP_SHIFT=1; printf 'on\n' > "$plan/infra_fallback" ;;
+    --no-infra-fallback)
+      [ "$cmd" = run ] || return 1
+      PP_SHIFT=1; rm -f "$plan/infra_fallback" ;;
     --infra-backoff)
       [ "$cmd" = run ] || return 1
       PP_MSG="$(python3 "$SKILL_DIR/scripts/forge-schedule.py" backoff-check "${2:-}" 2>&1)" || die "${PP_MSG#forge: }"

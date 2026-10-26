@@ -209,6 +209,64 @@ def stronger(spec: str, pools: dict, registry: dict):
     return None, 'it is already in the highest tier of this plan\'s pools (%s)' % TIERS[rank]
 
 
+# --- capacity fallback ---------------------------------------------------------------
+
+def pair_of(spec: str, registry: dict):
+    """(harness, model id) a spec runs on, as forge-dispatch.sh's lookup resolves it; None when it cannot."""
+    parts = str(spec).split(':')
+    alias, harness = parts[0], ':'.join(parts[2:])
+    rows = registry.get(alias)
+    if rows:
+        if not harness:
+            return next(iter(rows.items()))
+        return harness, rows.get(harness, alias)
+    return (harness, alias) if harness else None
+
+
+def parse_excluded(text: str) -> set:
+    """`harness/model` items, comma-separated; `harness/*` excludes every model on that harness."""
+    out = set()
+    for item in (text or '').split(','):
+        harness, slash, model = item.strip().partition('/')
+        if harness and slash and model:
+            out.add((harness, model))
+    return out
+
+
+def fallback_pick(current: str, pools: dict, registry: dict, excluded: set):
+    """The next member of the current dwarf's own tier pool, in pool order and wrapping around,
+    that runs another model on a pair nobody paused; None when there is none."""
+    rank = rank_of(current, pools, registry)
+    if rank is None:
+        return None
+    pool = pools[TIERS[rank]]
+    own = canonical(current, registry)
+    keys = [canonical(s, registry) for s in pool]
+    start = keys.index(own) if own in keys else -1
+    for step in range(1, len(pool) + 1):
+        candidate = pool[(start + step) % len(pool)]
+        pair = pair_of(candidate, registry)
+        if canonical(candidate, registry) == own or pair is None:
+            continue
+        if pair in excluded or (pair[0], '*') in excluded:
+            continue
+        return candidate
+    return None
+
+
+def fallback(args) -> int:
+    plan = Path(os.path.realpath(args.plan))
+    current = _dwarf_of(plan, args.task)
+    if not current or current in ('-', 'UNASSIGNED'):
+        return 1
+    pick = fallback_pick(current, load_pools(plan / 'fractal-routing.json'), registry_models(),
+                         parse_excluded(args.exclude))
+    if not pick:
+        return 1
+    print(pick)
+    return 0
+
+
 # --- exploration -------------------------------------------------------------------
 
 def explore(args) -> str:
@@ -536,6 +594,10 @@ def main(argv=None) -> int:
     p.add_argument('--check', action='store_true')
     p.add_argument('--qa-only-next', choices=('yes', 'no'), default=None,
                    help='whether the next entry only re-runs QA, as the caller measured it')
+    p = sub.add_parser('fallback', help='the same-tier model a capacity stop moves to')
+    p.add_argument('--plan', required=True)
+    p.add_argument('--task', required=True)
+    p.add_argument('--exclude', default='', help='harness/model pairs to skip, comma-separated (harness/* for all)')
     p = sub.add_parser('record', help=argparse.SUPPRESS)
     p.add_argument('--plan', required=True)
     p.add_argument('--task', required=True)
@@ -551,6 +613,11 @@ def main(argv=None) -> int:
         return 0
     if args.command == 'record':
         return record_escalation(args)
+    if args.command == 'fallback':
+        try:
+            return fallback(args)
+        except Exception:
+            return 1
     try:
         return escalation(args)
     except Exception:
