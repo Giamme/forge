@@ -350,7 +350,9 @@ run.
   wave), and the expected number of first-try passes.
 - It never creates the store, and prints nothing when the store is missing or has no history.
 
-`forge-parallel.sh run` prints the same block before it dispatches. It runs with a time budget
+`forge-parallel.sh run` prints the same block before it dispatches, shortened: the tasks without
+enough history share one line instead of a row each, and when no task has enough, the whole block
+is one line pointing at `forge dataset forecast <plan>`. It runs with a time budget
 (`FORGE_FORECAST_BUDGET_S`, default 3 seconds), prints one line and moves on if reading the
 history takes longer, never prints errors and never changes the exit code. `--no-forecast` or
 `FORGE_FORECAST=off` turn it off. The block is written to the plan as `forecast.json` and
