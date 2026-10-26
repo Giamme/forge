@@ -187,6 +187,22 @@ class ForecastReportTests(unittest.TestCase):
         self.assertEqual(self.forge(p, '--run'), out)      # a resumed run with the same forecast adds no event
         self.assertEqual(len(self.forecasts()), 1)
 
+    def test_the_run_block_puts_tasks_without_enough_history_on_one_line(self):
+        p = self.seed()
+        out = self.forge(p, '--run').splitlines()
+        rows = [line.split()[0] for line in out if line.split()[:1] in (['a'], ['b'], ['c'], ['d'])]
+        self.assertEqual(rows, ['a', 'b'])             # c and d have 2 and 0 past tasks: no row each
+        [thin] = [line for line in out if 'without enough history' in line]
+        self.assertTrue(thin.startswith('  2 task(s)') and thin.endswith(': c, d'), thin)
+        self.assertIn('not enough history (2/5)', self.forge(p))   # the command itself still shows every task
+
+        (self.root / 'thin').mkdir()
+        q = plan_dir(self.root / 'thin', [('c', 'medium', 'sol', 1), ('d', 'low', 'sol:medium', 1)])
+        [line] = self.forge(q, '--run').splitlines()   # a plan with no history to show is one line, not a table
+        self.assertIn('2 task(s)', line)
+        self.assertIn('forge dataset forecast %s' % q.resolve(), line)
+        self.assertTrue((q / 'forecast.json').exists())
+
     def test_the_run_block_can_be_turned_off_and_never_waits_past_its_budget(self):
         p = self.seed()
         self.assertEqual(self.forge(p, '--run', env=dict(FORGE_FORECAST='off')), '')
