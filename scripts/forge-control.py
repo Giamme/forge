@@ -3,7 +3,7 @@
 
   show  <plan> [--json]                          every control, per-task overrides, pins and the change log
   set   <plan> <key> <value> [--task ID]         qa-threshold, timeout, escalate-after, verify-retries,
-                                                 retry-budget, infra-retries
+                                                 retry-budget, infra-retries, infra-backoff (none drops it)
   pin   <plan> <task> <spec>                     the model the task's next FULL implementer retry uses
   unpin <plan> <task>
 
@@ -54,6 +54,7 @@ NEXT_ATTEMPT = "at the task's next attempt"
 NEXT_DECISION = 'at the next retry decision'
 NEXT_RETRY = 'at the next full retry (not QA-only resumes)'
 NEXT_VERIFY = 'at the next verification'
+NEXT_INFRA_WAIT = 'at the next infrastructure wait'
 
 
 class Invalid(Exception):
@@ -383,6 +384,7 @@ def show(plan, rows):
     run = dict(qa_threshold=level(get('qa_threshold')), timeout=number(get('timeout')),
                escalate_after=number(get('escalate_after')), verify_retries=number(get('verify_retries')),
                retry_budget=budget('retry_budget'), infra_budget=budget('infra_budget'))
+    run['infra_backoff'] = get('infra_backoff') or default_backoff()
     run['infra_paused'] = paused_scopes(get('infra.paused')) if live else None
     if run['escalate_after'] is None:
         run['escalate_after'] = DEFAULT_ESCALATE_AFTER
@@ -429,6 +431,34 @@ def _int(value, task):
     raise Invalid('needs a non-negative integer (up to 9 digits)')
 
 
+_SCHEDULE = None
+
+
+def schedule_module():
+    """forge-schedule.py, loaded by path: the one owner of the backoff shape grammar."""
+    global _SCHEDULE
+    if _SCHEDULE is None:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location('forge_schedule', os.path.join(SKILL, 'scripts', 'forge-schedule.py'))
+        _SCHEDULE = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(_SCHEDULE)
+    return _SCHEDULE
+
+
+def _backoff(value, task):
+    if value == 'none':
+        return value
+    try:
+        schedule_module().parse_backoff(value)
+    except ValueError as error:
+        raise Invalid(str(error).replace('backoff ', '', 1))
+    return value.strip()
+
+
+def default_backoff():
+    return schedule_module().default_backoff()[1]
+
+
 def _budget(value, task):
     return value if task and value == 'inherit' else _int(value, task)
 
@@ -441,6 +471,7 @@ KEYS = {
     'verify-retries': ('plan', _int, 'verify_retries', False, NEXT_VERIFY),
     'retry-budget': ('both', _budget, 'retry_budget', True, NEXT_DECISION),
     'infra-retries': ('plan', _int, 'infra_budget', True, NEXT_DECISION),
+    'infra-backoff': ('plan', _backoff, 'infra_backoff', False, NEXT_INFRA_WAIT),
 }
 
 

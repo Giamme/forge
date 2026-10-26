@@ -21,6 +21,8 @@
 #   --timeout S             run retry         $PLAN/timeout        dispatch timeout, seconds (0 = none)
 #   --retry-failed N        run               (this run only)      automatic reviewer-driven retries
 #   --infra-retries M       run               (this run only)      waits out quota/auth/network stops
+#   --infra-backoff SHAPE   run               $PLAN/infra_backoff  waits between those stops: exp:B[,C],
+#                                                                  linear:S,T[,C] or list:a,b,... (default exp:60)
 #   --qa-threshold Pn|none  run retry         $PLAN/qa_threshold   least severe finding that still blocks
 #   --verify-retries N      run retry integrate  $PLAN/verify_retries  reruns of a failed verify command
 #   --escalate-after N      run retry         $PLAN/escalate_after failed attempts on one model before the
@@ -49,6 +51,10 @@ forge_pp_flag() {
     --infra-retries)
       [ "$cmd" = run ] || return 1
       pp_nonneg --infra-retries "${2:-}"; PP_INFRA_RETRIES="$2" ;;
+    --infra-backoff)
+      [ "$cmd" = run ] || return 1
+      PP_MSG="$(python3 "$SKILL_DIR/scripts/forge-schedule.py" backoff-check "${2:-}" 2>&1)" || die "${PP_MSG#forge: }"
+      printf '%s\n' "$2" > "$plan/infra_backoff" ;;
     --qa-threshold)
       case "$cmd" in run|retry|review) ;; *) return 1 ;; esac
       case "${2:-}" in

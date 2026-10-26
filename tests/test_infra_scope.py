@@ -50,7 +50,9 @@ esac
 SOL_LIMIT = 'INFRA rate_limit codex gpt-6.1-sol'
 
 
-class InfraScopeTests(unittest.TestCase):
+class InfraScopeBase(unittest.TestCase):
+    """A plan, the worker and the scheduler; no tests of its own."""
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(); self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name); self.plan = self.root / 'plan'; self.plan.mkdir()
@@ -88,6 +90,8 @@ class InfraScopeTests(unittest.TestCase):
         f = self.plan / 'tasks' / name / 'calls'
         return int(f.read_text()) if f.exists() else 0
 
+
+class InfraScopeTests(InfraScopeBase):
     def test_a_rate_limited_model_waits_alone_while_tasks_on_another_model_finish(self):
         self.task('a', [SOL_LIMIT] * 3, dwarf='sol')
         self.task('b', ['PASS'], dwarf='astra')

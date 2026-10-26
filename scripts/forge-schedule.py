@@ -23,6 +23,7 @@ import errno
 import fcntl
 import json
 import os
+import re
 from pathlib import Path
 import posixpath
 import signal
@@ -74,19 +75,66 @@ def infra_info(root: Path) -> dict:
     return info
 
 
-def infra_wait(info: dict, cycle: int) -> float:
-    """Seconds to wait before re-dispatching after an infrastructure failure."""
+# --- backoff shapes ----------------------------------------------------------------------
+# One parser for the --infra-backoff flag (through `forge-schedule.py backoff-check`), for
+# `forge control set infra-backoff` (which loads this file) and for the waits themselves.
+BACKOFF_FORMS = 'exp:<base>[,<cap>], linear:<start>,<step>[,<cap>], list:<a>,<b>,... or <a>,<b>,... (seconds, positive)'
+_NUMBER = re.compile(r'(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)')
+_COUNTS = {'exp': (1, 2), 'linear': (2, 3), 'list': (1, 1000)}
+
+
+def parse_backoff(text: str) -> tuple:
+    """(kind, numbers) for a backoff shape; ValueError naming the forms when malformed."""
+    shape = (text or '').strip()
+    kind, colon, rest = shape.partition(':')
+    if not colon:
+        kind, rest = 'list', shape
+    if kind not in _COUNTS:
+        raise ValueError('unknown backoff shape %r: use %s' % (shape, BACKOFF_FORMS))
+    numbers = []
+    for part in rest.split(','):
+        part = part.strip()
+        if not _NUMBER.fullmatch(part) or float(part) <= 0:
+            raise ValueError('backoff %r needs positive numbers: use %s' % (shape, BACKOFF_FORMS))
+        numbers.append(float(part))
+    low, high = _COUNTS[kind]
+    if not low <= len(numbers) <= high:
+        raise ValueError('backoff %r has the wrong number of values: use %s' % (shape, BACKOFF_FORMS))
+    return kind, numbers
+
+
+def backoff_wait(shape: tuple, cycle: int) -> float:
+    """Seconds to wait before resuming for a 0-based wait number."""
+    kind, numbers = shape
+    if kind == 'exp':
+        cap = numbers[1] if len(numbers) > 1 else max(numbers[0], 1800.0)
+        return min(numbers[0] * 2 ** min(cycle, 64), cap)
+    if kind == 'linear':
+        wait = numbers[0] + numbers[1] * cycle
+        return min(wait, numbers[2]) if len(numbers) > 2 else wait
+    return numbers[min(cycle, len(numbers) - 1)]
+
+
+def default_backoff() -> tuple:
+    """Today's shape: exp with FORGE_INFRA_BACKOFF (60 s) as the base. (shape, its name)"""
     try:
         base = float(os.environ.get('FORGE_INFRA_BACKOFF', '60'))
     except ValueError:
         base = 60.0
+    return ('exp', [base]), 'exp:%g' % base
+
+
+def infra_wait(info: dict, cycle: int, backoff: tuple | None = None) -> tuple:
+    """(seconds, what decided it) before re-dispatching after an infrastructure failure. A
+    provider's retry-after wins; otherwise the backoff shape (shape, name) for this wait."""
     try:
         hinted = float(info.get('retry_after', ''))
     except ValueError:
         hinted = None
     if hinted is not None and hinted >= 0:
-        return min(hinted, INFRA_WAIT_CAP)
-    return min(base * (2 ** cycle), max(base, 1800.0))
+        return min(hinted, INFRA_WAIT_CAP), 'provider retry-after'
+    shape, name = backoff or default_backoff()
+    return backoff_wait(shape, cycle), 'backoff ' + name
 
 
 # --- pause scopes ----------------------------------------------------------------------
@@ -395,6 +443,7 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
     pairs_cache = {}   # task -> (harness, model) pairs its next dispatch uses
     registry = load_registry()
     paused_text = None # what infra.paused holds now
+    backoff_warned = [] # an invalid infra_backoff file is reported once
 
     def status(name: str) -> str:
         root = plan / 'tasks' / name
@@ -528,6 +577,30 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
             _write_atomic(plan, text, 'infra.paused')
         paused_text = text
 
+    def backoff() -> tuple:
+        """The plan's infra_backoff, read at every wait so a change applies to the next one."""
+        try:
+            fd = os.open(_resolve(plan, 'infra_backoff'), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            try:
+                text = os.read(fd, 4097).decode('ascii').strip()
+            finally:
+                os.close(fd)
+        except FileNotFoundError:
+            return default_backoff()
+        except (OSError, UnicodeDecodeError) as error:
+            text, problem = None, str(error)
+        else:
+            problem = None
+        if text is not None:
+            try:
+                return parse_backoff(text), text
+            except ValueError as error:
+                problem = str(error)
+        if not backoff_warned:
+            backoff_warned.append(problem)
+            _warn('infra_backoff ignored, using the default: ' + problem)
+        return default_backoff()
+
     def start_wait(pause: dict, info: dict, name: str) -> None:
         """Begin the scope's next wait, or mark it exhausted when its budget is spent."""
         done, budget = scope_waits.get(pause['scope'], 0), infra_budget()
@@ -538,10 +611,11 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
             print(head + '; its waits are used up (' + str(done) + ' of ' + str(budget)
                   + '), so it stays paused; other tasks continue (no attempt spent)', file=sys.stderr, flush=True)
             return
-        wait = infra_wait(info, done)
+        wait, source = infra_wait(info, done, backoff())
         pause.update(cycle=done + 1, until=time.time() + wait, exhausted=False)
-        print(head + '; pausing it, waiting ' + ('%g' % wait) + 's before resuming (wait ' + str(done + 1)
-              + ' of ' + str(budget) + '); other tasks continue (no attempt spent)', file=sys.stderr, flush=True)
+        print(head + '; pausing it, waiting ' + ('%g' % wait) + 's before resuming (' + source + ', wait '
+              + str(done + 1) + ' of ' + str(budget) + '); other tasks continue (no attempt spent)',
+              file=sys.stderr, flush=True)
 
     def infra_stopped(name: str) -> None:
         nonlocal paused, all_class
@@ -673,10 +747,12 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
             if paused and not active and infra_seen and infra_cycles < infra_budget():
                 # Everything running has drained. Wait out the outage once for all the
                 # tasks it stopped, then dispatch them again.
-                wait = max(infra_wait(infra_info(plan / 'tasks' / n), infra_cycles) for n in infra_seen)
+                shape = backoff()
+                wait, source = max(infra_wait(infra_info(plan / 'tasks' / n), infra_cycles, shape) for n in infra_seen)
                 infra_cycles += 1
                 print('forge: infrastructure failure on ' + ', '.join(infra_seen)
-                      + '; waiting ' + ('%g' % wait) + 's before resuming (no attempt spent)',
+                      + '; waiting ' + ('%g' % wait) + 's before resuming (' + source + ', wait '
+                      + str(infra_cycles) + ' of ' + str(infra_budget()) + ') (no attempt spent)',
                       file=sys.stderr, flush=True)
                 resume_at = time.time() + wait
                 write_paused(resume_at)
@@ -787,6 +863,14 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
 
 def main() -> None:
     try:
+        if sys.argv[1] == 'backoff-check':
+            # The --infra-backoff flag's validation: one parser for every reader of the shape.
+            try:
+                parse_backoff(sys.argv[2] if len(sys.argv) > 2 else '')
+            except ValueError as error:
+                print('forge: --infra-backoff: ' + str(error), file=sys.stderr)
+                sys.exit(2)
+            sys.exit(0)
         if sys.argv[1] == 'lock':
             _, script, command, plan, *args = sys.argv[1:]
             # The shell inherits the lock for its entire operation, including

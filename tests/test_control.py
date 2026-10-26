@@ -93,7 +93,8 @@ class ControlTests(unittest.TestCase):
         self.assertEqual((shown['plan'], shown['run_id'], shown['live'], shown['fractal']),
                          (str(self.plan), 'r-7', False, False))
         self.assertEqual(shown['run'], dict(qa_threshold='P2', timeout=90, escalate_after=3, verify_retries=1,
-                                            retry_budget=None, infra_budget=None, infra_paused=None))
+                                            retry_budget=None, infra_budget=None, infra_backoff='exp:60',
+                                            infra_paused=None))
         self.assertEqual(list(shown['tasks']), ['a', 'b'])
         self.assertEqual(shown['tasks']['a'], dict(
             status='FAIL', dwarf='sol:high:codex', qa='astra:xhigh:codex', qa_threshold='none', retry_budget=2,
