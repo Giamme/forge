@@ -1107,7 +1107,7 @@ def print_human(out, applied):
           f"{s['drafts']} draft(s) ({s['tolerated']} tolerated, {s['accepted']} accepted, "
           f"{s['review']} review, {s['plausible']} plausible)")
     for warning in out["warnings"]:
-        print(f"  warning {warning}")
+        print(f"  warning: {warning}")
     for note in out["notes"]:
         print(f"  skipped {note}")
     for a in out["already_filed"]:
