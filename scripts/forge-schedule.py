@@ -311,6 +311,34 @@ def _task_dirs(plan: object, names: object) -> list[str]:
     return sorted(found)
 
 
+def _read_small(plan: object, name: str) -> str | None:
+    """A short plan-level control file's stripped text; None when missing or unsafe."""
+    try:
+        fd = os.open(_resolve(plan, name), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        try:
+            return os.read(fd, 65).decode('ascii').strip()
+        finally:
+            os.close(fd)
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
+def stop_mode(plan: object) -> str | None:
+    """`forge control stop` wrote `graceful` or `now`; anything else is no stop."""
+    text = _read_small(plan, 'stop')
+    return text if text in ('graceful', 'now') else None
+
+
+def drained(plan: object) -> bool:
+    return _read_small(plan, 'drain') is not None
+
+
+def live_capacity(plan: object, default: int) -> int:
+    """`forge control set max-parallel` (1-64), else the argument the run started with."""
+    text = _read_small(plan, 'max_parallel')
+    return int(text) if text and text.isdigit() and 1 <= int(text) <= 64 else default
+
+
 def _pinned(plan: object, name: str) -> bool:
     try:
         return os.path.lexists(_resolve(plan, 'tasks', name, 'escalation.pin'))
@@ -386,6 +414,8 @@ def live_start(plan: object, names: object, retry_failed: int, infra_retries: in
             _remove(plan, 'tasks', name, 'retry_budget')
             _remove(plan, 'tasks', name, 'retries.used')
         _remove(plan, 'infra.paused')
+        _remove(plan, 'drain')
+        _remove(plan, 'stop')
         _write_atomic(plan, str(retry_failed), 'retry_budget')
         _write_atomic(plan, str(infra_retries), 'infra_budget')
         _write_atomic(plan, json.dumps({'pid': os.getpid(), 'started': time.time()}), 'scheduler.live')
@@ -399,6 +429,8 @@ def live_stop(plan: object, names: object) -> None:
             _remove(plan, 'retry_budget')
             _remove(plan, 'infra_budget')
             _remove(plan, 'infra.paused')
+            _remove(plan, 'drain')
+            _remove(plan, 'stop')
             for name in _task_dirs(plan, names):
                 _remove(plan, 'tasks', name, 'retry_budget')
     except Exception as error:
@@ -444,6 +476,8 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
     registry = load_registry()
     paused_text = None # what infra.paused holds now
     backoff_warned = [] # an invalid infra_backoff file is reported once
+    graceful = False   # `forge control stop`: start nothing more, end once running tasks are done
+    drain_told = False # the drained message was printed for this drain
 
     def status(name: str) -> str:
         root = plan / 'tasks' / name
@@ -690,8 +724,8 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
                     mark(name, 'ERROR')
                 elif state == 'INFRA':
                     infra_stopped(name)
-                elif allow_requeue and not interrupted and state in ('FAIL', 'UNKNOWN') \
-                        and retryable(name):
+                elif allow_requeue and not interrupted and not graceful \
+                        and state in ('FAIL', 'UNKNOWN') and retryable(name):
                     requeue(name)
             if not reaped:
                 return
@@ -730,9 +764,16 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
             # that exits while another merge is still running, have already written
             # a result; breaking first used to skip them and mark them INTERRUPTED.
             ended = set()
+            # `stop --now` is SIGTERM by another route; a graceful stop lets the running finish.
+            mode = stop_mode(plan)
+            if mode == 'now':
+                interrupted = True
+            graceful = graceful or mode == 'graceful'
             reap_exited(ended)
             if interrupted:
                 break
+            draining = drained(plan)
+            drain_told = drain_told and draining
             if time.monotonic() - swept >= SWEEP_EVERY:
                 # A human can raise a budget after a task already ended FAIL while others
                 # still run. The initial pass's predicate, for tasks nothing else will look
@@ -741,10 +782,10 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
                 for name in tasks:
                     if name in pending or name in active or name in ended:
                         continue
-                    if not interrupted and status(name) in ('FAIL', 'UNKNOWN') and retryable(name) \
-                            and refused.get(name) != budget(name):
+                    if not interrupted and not graceful and status(name) in ('FAIL', 'UNKNOWN') \
+                            and retryable(name) and refused.get(name) != budget(name):
                         requeue(name)
-            if paused and not active and infra_seen and infra_cycles < infra_budget():
+            if paused and not active and infra_seen and not graceful and infra_cycles < infra_budget():
                 # Everything running has drained. Wait out the outage once for all the
                 # tasks it stopped, then dispatch them again.
                 shape = backoff()
@@ -757,8 +798,17 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
                 resume_at = time.time() + wait
                 write_paused(resume_at)
                 while time.time() < resume_at and not interrupted:
+                    # A stop of either kind ends the wait: nothing is active, so it ends the run.
+                    mode = stop_mode(plan)
+                    if mode:
+                        interrupted = interrupted or mode == 'now'
+                        graceful = graceful or mode == 'graceful'
+                        break
                     time.sleep(min(0.05, max(resume_at - time.time(), 0)))
-                if interrupted:
+                if interrupted or graceful:
+                    if graceful:
+                        print('forge: stopped by forge control stop; ' + str(len(pending) + len(infra_seen))
+                              + ' task(s) not started', file=sys.stderr, flush=True)
                     break
                 # A pin set before or during the wait applies to the entries that run the
                 # implementer again; a QA-stage stop keeps it for the next full retry.
@@ -772,8 +822,9 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
                 all_class = ''
                 write_paused()
             end_scoped_waits()
+            cap = live_capacity(plan, capacity)
             for name in pending[:]:
-                if paused or len(active) >= capacity or interrupted:
+                if paused or len(active) >= cap or interrupted or graceful or draining:
                     break
                 deps = [d for d in tasks[name][1].split(',') if d and d != '-']
                 if any(status(dep) != 'MERGED' for dep in deps):
@@ -799,7 +850,17 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
                 active[name] = process, log
                 pending.remove(name)
                 print('forge: dispatched ' + name + ' -> ' + str(root), file=sys.stderr, flush=True)
-            if not active and not waiting_scopes():
+            if not active and graceful:
+                # Not BLOCKED: a stop is not a dependency failure, so the next run starts them.
+                print('forge: stopped by forge control stop; ' + str(len(pending)) + ' task(s) not started',
+                      file=sys.stderr, flush=True)
+                break
+            if not active and draining and (pending or waiting_scopes()):
+                if not drain_told:
+                    drain_told = True
+                    print('forge: drained — ' + str(len(pending)) + ' task(s) waiting; forge control resume '
+                          + str(plan) + ' continues', file=sys.stderr, flush=True)
+            elif not active and not waiting_scopes():
                 if paused or held or pauses:
                     # Infrastructure stop: leave everything not yet run PENDING. Marking it
                     # BLOCKED would turn "the provider was down" into a recorded failure.
@@ -854,7 +915,7 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
                 mark(name, 'INTERRUPTED')
             except OSError as error:
                 _warn('could not mark ' + name + ' INTERRUPTED: ' + str(error))
-    if interrupted:
+    if interrupted or (graceful and not all(status(name) == 'MERGED' for name in tasks)):
         return 130
     if paused or pauses or any(status(name) == 'INFRA' for name in tasks):
         return INFRA_EXIT

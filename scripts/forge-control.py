@@ -6,6 +6,10 @@
                                                  retry-budget, infra-retries, infra-backoff (none drops it)
   pin   <plan> <task> <spec>                     the model the task's next FULL implementer retry uses
   unpin <plan> <task>
+  drain <plan>                                   start nothing new; running tasks finish and the scheduler waits
+  resume <plan>                                  end a drain
+  stop  <plan> [--now]                           start nothing new and end the run once running tasks are done
+                                                 (exit 130, no verification); --now interrupts them like SIGTERM
 
 `show` reports escalate-after and verify-retries at their defaults (3 and 1) when unset, and the two
 budgets only while a scheduler is live.
@@ -14,7 +18,7 @@ Every change is validated, written atomically under the plan's control lock (`co
 appended to `control.log` and recorded as a dataset `control` event. This is the only writer of
 human changes to a running plan; forge-ui calls it and never writes run files itself. Some
 controls can only change while a scheduler is live (`scheduler.live` names a live pid):
-retry-budget and infra-retries. A task-level change or a pin on a MERGED task, and a pin on a
+retry-budget, infra-retries, max-parallel, drain, resume and stop. A task-level change or a pin on a MERGED task, and a pin on a
 Fractal plan, are refused.
 
 A pin is checked with `forge-dispatch.sh doctor --spec <spec> --role dwarf`, which spends no
@@ -55,6 +59,7 @@ NEXT_DECISION = 'at the next retry decision'
 NEXT_RETRY = 'at the next full retry (not QA-only resumes)'
 NEXT_VERIFY = 'at the next verification'
 NEXT_INFRA_WAIT = 'at the next infrastructure wait'
+NEXT_DISPATCH = "at the scheduler's next dispatch decision"
 
 
 class Invalid(Exception):
@@ -385,6 +390,11 @@ def show(plan, rows):
                escalate_after=number(get('escalate_after')), verify_retries=number(get('verify_retries')),
                retry_budget=budget('retry_budget'), infra_budget=budget('infra_budget'))
     run['infra_backoff'] = get('infra_backoff') or default_backoff()
+    parallel = number(get('max_parallel'))
+    run['max_parallel'] = parallel if parallel and parallel <= 64 else None
+    stopping = get('stop') if live else None
+    run['drained'] = live and has(plan, 'drain')
+    run['stopping'] = stopping if stopping in ('graceful', 'now') else None
     run['infra_paused'] = paused_scopes(get('infra.paused')) if live else None
     if run['escalate_after'] is None:
         run['escalate_after'] = DEFAULT_ESCALATE_AFTER
@@ -459,6 +469,12 @@ def default_backoff():
     return schedule_module().default_backoff()[1]
 
 
+def _parallel(value, task):
+    if re.fullmatch(r'[0-9]{1,2}', value) and 1 <= int(value) <= 64:
+        return str(int(value))
+    raise Invalid('needs an integer from 1 to 64')
+
+
 def _budget(value, task):
     return value if task and value == 'inherit' else _int(value, task)
 
@@ -472,6 +488,7 @@ KEYS = {
     'retry-budget': ('both', _budget, 'retry_budget', True, NEXT_DECISION),
     'infra-retries': ('plan', _int, 'infra_budget', True, NEXT_DECISION),
     'infra-backoff': ('plan', _backoff, 'infra_backoff', False, NEXT_INFRA_WAIT),
+    'max-parallel': ('plan', _parallel, 'max_parallel', True, NEXT_DISPATCH),
 }
 
 
@@ -503,7 +520,7 @@ def change(args, plan, rows, action, task, key, work, applies, summary, live_onl
     with control_lock(plan):
         probe(plan, 'control.log')   # an unsafe log refuses the change instead of leaving it unaudited
         if live_only and not is_live(plan):
-            raise Refused(f'{key} can only change while a run is live (no live scheduler for this plan)')
+            raise Refused(f'{key or action} can only change while a run is live (no live scheduler for this plan)')
         if task:
             refuse_task(plan, task, pin_guard)
         value, previous, changed = work()
@@ -515,8 +532,8 @@ def change(args, plan, rows, action, task, key, work, applies, summary, live_onl
         json.dump(dict(ok=True, changed=record, applies=applies, controls=controls), sys.stdout, indent=2)
         sys.stdout.write('\n')
     else:
-        print(f"{summary(value)} (was {'unset' if previous is None else previous}); applies {applies}"
-              + ('' if changed else ' (nothing changed, not logged)'))
+        was = '' if key is None else f" (was {'unset' if previous is None else previous})"
+        print(f"{summary(value)}{was}; applies {applies}" + ('' if changed else ' (nothing changed, not logged)'))
     return 0
 
 
@@ -601,6 +618,36 @@ def cmd_unpin(args):
                   lambda v: f'unpinned task {args.task}')
 
 
+def run_command(args, action, rel, value, summary):
+    """drain, resume and stop: a live-only plan file the scheduler reads at every pass.
+    value None removes the file; logged with the action and no key."""
+    plan, rows = load(args.plan)
+
+    def work():
+        previous = text_of(plan, rel, strict=True)
+        present = previous is not None or has(plan, rel)
+        if value is None:
+            return None, previous, remove_safe(plan, rel)
+        write_atomic(plan, rel, value + ('\n' if value else ''))
+        return value or None, previous, not present or (previous or '') != value
+
+    return change(args, plan, rows, action, None, None, work, NEXT_DISPATCH, summary, live_only=True)
+
+
+def cmd_drain(args):
+    return run_command(args, 'drain', 'drain', '', lambda v: 'drained the plan: nothing new starts')
+
+
+def cmd_resume(args):
+    return run_command(args, 'resume', 'drain', None, lambda v: 'resumed the plan')
+
+
+def cmd_stop(args):
+    mode = 'now' if args.now else 'graceful'
+    return run_command(args, 'stop', 'stop', mode, lambda v: 'stopping the run now' if args.now else
+                       'stopping the run once running tasks are done')
+
+
 # ------------------------------------------------------------------------------------ show
 
 def stamp(epoch):
@@ -654,7 +701,7 @@ def cmd_show(args):
 
 def parser():
     top = argparse.ArgumentParser(prog='forge control', description="Show and change a plan's live controls.")
-    sub = top.add_subparsers(dest='command', required=True, metavar='{show,set,pin,unpin}')
+    sub = top.add_subparsers(dest='command', required=True, metavar='{show,set,pin,unpin,drain,resume,stop}')
 
     def common(p, mutator=True):
         p.add_argument('plan', metavar='PLAN_DIR', help="the plan dir (the one with tasks.tsv)")
@@ -666,7 +713,7 @@ def parser():
     common(p, mutator=False)
     p.set_defaults(func=cmd_show)
     p = sub.add_parser('set', help='change a control', description='Keys: ' + ', '.join(KEYS) + '. '
-                       'retry-budget and infra-retries change only while a run is live. '
+                       'retry-budget, infra-retries and max-parallel change only while a run is live. '
                        'qa-threshold and retry-budget also take --task (value inherit drops the override).')
     common(p)
     p.add_argument('key', choices=list(KEYS))
@@ -682,6 +729,16 @@ def parser():
     common(p)
     p.add_argument('task')
     p.set_defaults(func=cmd_unpin)
+    p = sub.add_parser('drain', help='start nothing new; running tasks finish and the scheduler waits (live only)')
+    common(p)
+    p.set_defaults(func=cmd_drain)
+    p = sub.add_parser('resume', help='end a drain (live only)')
+    common(p)
+    p.set_defaults(func=cmd_resume)
+    p = sub.add_parser('stop', help='end the run once running tasks finish, exit 130 without verifying (live only)')
+    common(p)
+    p.add_argument('--now', action='store_true', help='interrupt running tasks, as SIGTERM does')
+    p.set_defaults(func=cmd_stop)
     return top
 
 

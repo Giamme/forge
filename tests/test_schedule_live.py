@@ -36,6 +36,7 @@ case "$cmd" in
     case "$outcome" in
       PASS|FAIL|UNKNOWN) echo "$outcome" > "$t/status" ;;
       INFRA) echo INFRA > "$t/status"; printf 'class=quota\nstage=dwarf\n' > "$t/infra.txt" ;;
+      INFRA_LONG) echo INFRA > "$t/status"; printf 'class=quota\nretry_after=600\nstage=dwarf\n' > "$t/infra.txt" ;;
     esac
     echo "$name end $outcome" >> "$plan/events.log"
     ;;
@@ -329,6 +330,96 @@ waitfor "$plan/tasks/x/retries.used"
         self.assertEqual(r.returncode, 5, r.stderr)
         self.assertEqual(sorted(p.name for p in elsewhere.iterdir()), ['retry_budget', 'status'])
         self.assertEqual((elsewhere / 'retry_budget').read_text(), '5')
+
+
+    # --- drain, stop and a live max-parallel (forge control writes these files) -----------
+    def test_a_drain_holds_new_dispatches_and_the_scheduler_waits_until_resume(self):
+        self.task('a', ['PASS'])
+        self.task('b', ['PASS'])
+        self.hook('a', 1, 'put "$plan/drain" ""\n')
+        proc = self.start(capacity=1)
+        self.wait_for(lambda: self.status('a') == 'MERGED', 'a to merge')
+        time.sleep(0.5)
+        self.assertIsNone(proc.poll(), 'a drained scheduler must wait, not exit')
+        self.assertEqual((self.calls('b'), self.status('b')), (0, 'PENDING'))
+        (self.plan / 'drain').unlink()
+        r = self.finish(proc)
+        self.assertEqual((r.returncode, self.status('b')), (0, 'MERGED'), r.stderr)
+        self.assertEqual(r.stderr.count('drained — 1 task(s) waiting'), 1, r.stderr)
+
+    def test_a_graceful_stop_finishes_the_running_and_leaves_the_rest_pending(self):
+        self.task('a', ['PASS'])
+        self.task('x', ['FAIL', 'PASS'])
+        self.task('b', ['PASS'])
+        self.task('c', ['PASS'], deps='a')
+        self.hook('a', 1, 'put "$plan/stop" graceful\n')
+        self.hook('x', 1, 'waitfor "$plan/stop"\n')     # x fails after the stop: it is not retried
+        r = self.run_scheduler('--retry-failed', 1, capacity=2)
+        self.assertEqual(r.returncode, 130, r.stderr)
+        self.assertEqual((self.status('a'), self.status('x'), self.calls('x')), ('MERGED', 'FAIL', 1))
+        self.assertNotIn('x prepared', self.events())
+        self.assertEqual((self.status('b'), self.status('c')), ('PENDING', 'PENDING'))
+        self.assertFalse((self.plan / 'tasks/b/status').exists())
+        self.assertIn('stopped by forge control stop; 2 task(s) not started', r.stderr)
+        self.assertEqual([n for n in ('drain', 'stop') if (self.plan / n).exists()], [])
+
+    def test_stop_now_interrupts_the_running_task(self):
+        self.task('a', ['PASS'])
+        self.task('b', ['PASS'])
+        self.hook('a', 1, 'put "$plan/stop" now\nsleep 30\n')
+        self.env['FORGE_INTERRUPT_GRACE'] = '1'
+        r = self.run_scheduler(capacity=1)
+        self.assertEqual(r.returncode, 130, r.stderr)
+        self.assertEqual((self.status('a'), self.calls('b')), ('INTERRUPTED', 0))
+        self.assertFalse((self.plan / 'stop').exists())
+
+    def test_a_stop_ends_a_long_infrastructure_wait(self):
+        for mode in ('graceful', 'now'):
+            with self.subTest(mode):
+                self.reset()
+                self.task('a', ['INFRA_LONG', 'PASS'])
+                proc = self.start('--infra-retries', 1)
+                paused = self.plan / 'infra.paused'
+                self.wait_for(lambda: paused.exists() and json.loads(paused.read_text())['scopes'][0]['until'],
+                              'the 600 s wait to start')
+                (self.plan / 'stop').write_text(mode)
+                started = time.monotonic()
+                r = self.finish(proc, timeout=20)
+                self.assertLess(time.monotonic() - started, 5)
+                self.assertEqual((r.returncode, self.status('a'), self.calls('a')), (130, 'INFRA', 1), r.stderr)
+
+    def test_a_drained_idle_scheduler_exits_promptly_on_stop(self):
+        self.task('a', ['PASS'])
+        self.task('b', ['PASS'])
+        self.hook('a', 1, 'put "$plan/drain" ""\n')
+        proc = self.start(capacity=1)
+        self.wait_for(lambda: self.status('a') == 'MERGED', 'a to merge')
+        time.sleep(0.3)
+        self.assertIsNone(proc.poll())
+        (self.plan / 'stop').write_text('graceful')
+        started = time.monotonic()
+        r = self.finish(proc, timeout=20)
+        self.assertLess(time.monotonic() - started, 3)
+        self.assertEqual((r.returncode, self.status('b')), (130, 'PENDING'), r.stderr)
+
+    def test_raising_max_parallel_mid_run_lets_the_next_tasks_run_together(self):
+        for name in 'abc':
+            self.task(name, ['PASS'])
+        self.hook('a', 1, 'put "$plan/max_parallel" 3\nwaitfor "$plan/tasks/b/calls"\n')
+        r = self.run_scheduler(capacity=1)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        events = self.events()
+        first_end = next(i for i, e in enumerate(events) if ' end ' in e)
+        self.assertGreaterEqual(sum(' start ' in e for e in events[:first_end]), 2, events)
+
+    def test_an_invalid_max_parallel_falls_back_to_the_argument(self):
+        for name in 'ab':
+            self.task(name, ['PASS'])
+        (self.plan / 'max_parallel').write_text('65')
+        self.hook('a', 1, 'sleep 0.5\n')
+        r = self.run_scheduler(capacity=1)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.events()[:2], ['a start 1', 'a end PASS'])
 
 
 if __name__ == '__main__':
