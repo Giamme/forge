@@ -5,6 +5,19 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and versions follow the format `{major}.{minor}[.{patch}]` ([...] parts appear only when non-zero).
 
+## [0.11.1] - 2026-10-26
+
+A bug-fix release for forge-ui and forge issues: the Settings and Open findings views keep your edits and selections honest, forge ui open handles a read-only server with another configuration, and refused labels and warnings say what's wrong.
+
+### Fixed
+
+- forge-ui's Open findings view files exactly what its preview showed, even if you change the scope or the plausible toggle while the drafts load, and shows forge's notes when nothing was filed. Findings hidden by a filter are no longer counted or acted on, and "Select shown open" counts only shown findings toward its limit of 25.
+- forge-ui's Settings page no longer drops a repository-switch confirm when the run list changes. It warns before saving over a file that changed on disk while a confirm was open, and a failed read keeps your unsaved edits on screen with a note instead of replacing the page with an error.
+- `forge ui open` resolves a `FORGE_REGISTRY` that starts with `~` the same way forge's commands do, and replaces a read-only forge-ui running with another configuration instead of refusing to open.
+- The docs now match the code on who creates `control.lock`, `forge config set` and `unset` needing `--repo`, when `forge runs rm` keeps a run directory, and a Fractal plan's hidden pin control.
+- `forge issues` prints its warnings as `warning: …` in the listing too, as it already did for dismissals.
+- When forge-ui refuses an issue label, its message now names the rule the label broke (blank, over 50 characters, starting with `-`, or holding control characters).
+
 ## [0.11] - 2026-10-26
 
 Reviews now remember the last round: a retry's review starts from the previous findings, and a repeated whole-run review from the last report. forge dataset can forecast a plan before it runs and grade how often each reviewer's PASS held, and forge-ui shows a superseded final review as OUTDATED instead of FAIL.
