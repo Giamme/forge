@@ -85,13 +85,25 @@
     return { editor: { base: fresh, draft: e.draft }, dirty: true, moved: norm(fresh) !== norm(e.base) };
   }
   const edited = (editor, draft) => ({ base: editor.base, draft: text(draft) });
+  // The editor after typing in a textarea drawn from the file text `from`. When a read moved `base` on since the textarea
+  // was drawn (a held body is not redrawn), the typing sits on the old text, so the save would overwrite the new file.
+  function typed(editor, draft, from) {
+    const e = edited(editor, draft), dirty = isDirty(e);
+    return { editor: e, dirty, moved: dirty && norm(from) !== norm(e.base) };
+  }
   const shown = editor => editor.draft !== null ? editor.draft : editor.base;
+  // What a failed GET /api/config does: with a good read of this run on the page, it stays and a note names the
+  // failure; with none yet, the message replaces the page. Status 0 is no answer at all.
+  function readFailure(res, hasData) {
+    const message = (res && res.status !== 0 && (res.detail || res.error)) || 'could not reach forge-ui';
+    return { keep: !!hasData, message };
+  }
 
   /* ---------- DOM ---------- */
   function render(host, ctx) {
     const UI = root.ForgeUI, c = ctx || {};
     const el = (tag, t, cls) => UI.el(tag, t, cls);
-    const s = { run: null, data: null, dataText: null, error: null, writes: false, loading: true, editors: {}, moved: {}, hold: 0, redraw: false, seq: 0, gen: 0, runsSig: null, ready: false, loadedAt: 0, repo: null, gone: false };
+    const s = { run: null, data: null, dataText: null, error: null, writes: false, loading: true, editors: {}, moved: {}, hold: 0, redraw: false, seq: 0, gen: 0, runsSig: null, ready: false, loadedAt: 0, repo: null, gone: false, asking: 0, asks: 0, pickerLate: false };
     const key_ = (label, cls, onclick) => { const b = el('button', label, cls); b.type = 'button'; if (onclick) b.addEventListener('click', onclick); return b; };
 
     const head = el('header', undefined, 'set-head');
@@ -101,10 +113,17 @@
     const body = el('div', undefined, 'set-body');
     const note = el('p', 'This page is read-only: this server has no write token, or has controls off.', 'muted set-readonly');
     note.hidden = true;
-    host.replaceChildren(head, picker, note, body);
+    // A failed read over a good one: the page stays, and this says the shown values may be old. Outside the body, so a
+    // held body (an open confirm) still gets it.
+    const stale = el('p', undefined, 'warn set-problem set-stale'); stale.setAttribute('role', 'status');
+    stale.hidden = true;
+    host.replaceChildren(head, picker, note, stale, body);
+    const staleNote = msg => { stale.hidden = !msg; stale.textContent = msg ? `The last read of the configuration failed: ${msg}. This shows the read before it; the next refresh tries again.` : ''; };
 
     /* the repository picker */
     function drawPicker() {
+      // The switch confirm lives in the picker: while it is open the rebuild waits, and runs when it is answered.
+      if (s.asking) { s.pickerLate = true; return; }
       const runs = c.runs ? c.runs() : [];
       const groups = groupRuns(runs);
       const before = s.run, usable = withRepo(runs);
@@ -138,7 +157,14 @@
       }
       sel.addEventListener('change', async () => {
         const unsaved = FILES.filter(n => s.editors[n] && isDirty(s.editors[n]));
-        if (unsaved.length && !(await UI.confirmInline(picker, `Switch repository and discard the unsaved edits to ${unsaved.map(n => '.forge/' + n).join(', ')}?`, { danger: true }))) { sel.value = s.gone ? '' : s.run; return; }
+        if (unsaved.length) {
+          const ask = s.asking = ++s.asks;
+          const yes = await UI.confirmInline(picker, `Switch repository and discard the unsaved edits to ${unsaved.map(n => '.forge/' + n).join(', ')}?`, { danger: true });
+          if (s.asking !== ask) return;                           // a later change asked again, and that confirm decides
+          const late = s.pickerLate;
+          s.asking = 0; s.pickerLate = false;
+          if (!yes) { sel.value = s.gone ? '' : s.run; if (late) drawPicker(); return; }
+        }
         pick(sel.value);
       });
       const lab = el('label', undefined, 'set-field'); lab.htmlFor = 'set-run';
@@ -151,11 +177,13 @@
     }
     // A new run: nothing of the old one stays, and confirms of the old body (now detached) no longer hold a redraw.
     function resetRun() {
+      staleNote(null);
       s.data = null; s.dataText = null; s.error = null; s.editors = {}; s.moved = {}; s.loading = s.run != null;
       s.gen++; s.hold = 0; s.redraw = false;
     }
     function pick(key) {
       s.run = key; resetRun();
+      s.asking = 0; s.pickerLate = false;                         // a switch confirm still open goes with the old picker
       s.runsSig = null; drawPicker(); drawBody();
       if (c.onPick) c.onPick(key);
       load();
@@ -171,12 +199,12 @@
       if (seq !== s.seq || run !== s.run) return;                 // a later pick or load answered
       s.loading = false;
       if (!res.ok) {
-        const msg = res.status === 0 ? null : res.detail || res.error;
-        if (msg === null && s.data) return;                       // a poll that did not reach the server keeps the last good page
+        const failed = readFailure(res, s.data);
+        if (failed.keep) { staleNote(failed.message); return; }   // the last good page, its editors and their unsaved text stay
         if (s.hold > 0) return;                                   // a confirm or a write is open: its strip must not be torn down
-        s.error = msg || 'could not reach forge-ui'; s.data = null; s.dataText = null; drawBody(); return;
+        s.error = failed.message; s.data = null; s.dataText = null; drawBody(); return;
       }
-      s.error = null;
+      s.error = null; staleNote(null);
       const files = object(object(res.data.repo).files);
       for (const name of FILES) {
         const next = dirtyState(s.editors[name], object(files[name]).content);
@@ -305,7 +333,9 @@
       const top = el('div', undefined, 'set-file-head'); top.append(h, status);
       art.append(top, el('p', blurb, 'muted set-file-blurb'));
       if (file.note) art.append(el('p', text(file.note), 'warn set-file-note'));
-      if (isDirty(ed) && s.moved[name]) art.append(el('p', 'The file changed on disk after you began editing; saving replaces it with your text.', 'warn set-file-note'));
+      const movedNote = el('p', 'The file changed on disk after you began editing; saving replaces it with your text.', 'warn set-file-note');
+      movedNote.hidden = !(isDirty(ed) && s.moved[name]);              // sync() keeps it current as the text is typed
+      art.append(movedNote);
       if (!s.writes) {
         status.replaceChildren(el('i', undefined, 'lamp ' + (file.exists ? 'st-pass' : '')), el('span', file.exists ? (unreadable ? 'present, not shown' : 'present') : 'absent'));
         art.append(unreadable ? el('p', file.exists ? 'The content is not shown.' : 'Not set.', 'muted') : el('pre', text(file.content), 'set-pre'));
@@ -316,6 +346,7 @@
       ta.dataset.editor = name; ta.rows = Math.max(3, Math.min(14, shown(ed).split('\n').length + 1));
       ta.spellcheck = false; ta.setAttribute('autocapitalize', 'off'); ta.setAttribute('autocomplete', 'off');
       ta.value = shown(ed);
+      let from = ed.base;                                         // the file text this textarea was drawn from
       if (unreadable && file.exists) { ta.disabled = true; ta.placeholder = 'The content is not shown, so it cannot be edited here.'; }
       const problem = el('p', undefined, 'warn set-problem'); problem.hidden = true; problem.id = id + '-problem';
       const result = el('div', undefined, 'set-result');
@@ -328,10 +359,15 @@
         if (bad) { ta.setAttribute('aria-invalid', 'true'); ta.setAttribute('aria-describedby', problem.id); }
         else { ta.removeAttribute('aria-invalid'); ta.removeAttribute('aria-describedby'); }
         save.disabled = !dirtyNow || !!bad;
+        movedNote.hidden = !(dirtyNow && s.moved[name]);
         status.replaceChildren(el('i', undefined, 'lamp ' + (dirtyNow ? 'set-amber' : file.exists ? 'st-pass' : '')),
           el('span', dirtyNow ? 'unsaved edits' : file.exists ? (unreadable ? 'present, not shown' : 'present') : 'absent'));
       };
-      ta.addEventListener('input', () => { s.editors[name] = edited(s.editors[name], ta.value); sync(); });
+      ta.addEventListener('input', () => {
+        const next = typed(s.editors[name], ta.value, from);
+        s.editors[name] = next.editor; s.moved[name] = next.moved || (next.dirty && !!s.moved[name]);
+        sync();
+      });
       remove.disabled = !file.exists;
       save.addEventListener('click', async () => {
         const cur = s.editors[name], bad = valueProblem(name, cur.draft);
@@ -342,7 +378,7 @@
         if (!yes) { ta.readOnly = false; remove.disabled = !file.exists; release(); sync(); save.focus({ preventScroll: true }); return; }
         const res = await UI.post('/api/config', configBody(s.run, repoKey(name), cur.draft));
         UI.outcome(result, res, `Saved ${target}.`);
-        if (res.ok && gen === s.gen) s.editors[name] = editorOf(cur.draft.endsWith('\n') ? cur.draft : cur.draft + '\n');
+        if (res.ok && gen === s.gen) { s.editors[name] = editorOf(cur.draft.endsWith('\n') ? cur.draft : cur.draft + '\n'); s.moved[name] = false; from = s.editors[name].base; }
         ta.readOnly = false; remove.disabled = !file.exists; release(); sync();
         if (res.ok && gen === s.gen) await reload();
       });
@@ -353,7 +389,7 @@
         if (!yes) { ta.readOnly = false; release(); sync(); remove.disabled = !file.exists; remove.focus({ preventScroll: true }); return; }
         const res = await UI.post('/api/config', configBody(s.run, repoKey(name), null, true));
         UI.outcome(result, res, `Removed ${target}.`);
-        if (res.ok && gen === s.gen) s.editors[name] = editorOf('');
+        if (res.ok && gen === s.gen) { s.editors[name] = editorOf(''); s.moved[name] = false; from = ''; }
         ta.readOnly = false; release();
         if (res.ok && gen === s.gen) await reload(); else if (!res.ok) { remove.disabled = !file.exists; sync(); }
       });
@@ -395,5 +431,5 @@
   }
 
   return { render, configBody, repoKey, targetPath, subsetOk, valueProblem, pickDefault, groupRuns, optionLabel,
-    editorOf, isDirty, dirtyState, edited, shown, FILES, VALUE_MAX };
+    editorOf, isDirty, dirtyState, edited, typed, shown, readFailure, FILES, VALUE_MAX };
 });
