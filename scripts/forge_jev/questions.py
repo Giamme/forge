@@ -3,7 +3,7 @@
 Every rubric Jev is ever asked lives in this one file, not scattered at each call site.
 That is deliberate: a human auditing what gets sent to an external API, and what
 probability threshold decides anything, should be able to read one file top to bottom
-instead of hunting through backtest.py, client.py and cli.py for scattered prompts.
+instead of hunting through client.py and cli.py for scattered prompts.
 """
 from __future__ import annotations
 

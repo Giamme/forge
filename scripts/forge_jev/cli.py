@@ -66,15 +66,6 @@ def parser() -> argparse.ArgumentParser:
     doctor.add_argument('--live', action='store_true')
     doctor.add_argument('--json', action='store_true')
 
-    backtest = sub.add_parser('backtest')
-    backtest.add_argument('--repo', required=True)
-    backtest.add_argument('--limit', type=int, default=None)
-    backtest.add_argument('--execute', action='store_true')
-    backtest.add_argument('--max-requests', type=int, default=200)
-    backtest.add_argument('--out', default=None)
-    backtest.add_argument('--capability', choices=('tests', 'drift'), default='tests')
-    backtest.add_argument('--json', action='store_true')
-
     verify_discover = sub.add_parser('verify-discover')
     verify_discover.add_argument('--repo', required=True)
     verify_discover.add_argument('--json', action='store_true')
@@ -373,39 +364,6 @@ def cmd_doctor(args) -> int:
     return 0 if ready else 3
 
 
-def cmd_backtest(args) -> int:
-    repo = Path(args.repo)
-    if not repo.is_dir() or not (repo / '.git').exists():
-        print(f'forge jev backtest: --repo {args.repo!r} is not a git repository', file=sys.stderr)
-        return 2
-
-    # Imported lazily so cli.py keeps working (and status/doctor keep paying nothing)
-    # even while backtest.py is mid-edit by another agent, and so a missing module is a
-    # clean exit rather than a traceback.
-    try:
-        from . import backtest
-    except ImportError as error:
-        print('forge jev backtest: backtest module unavailable (' + str(error) + ')', file=sys.stderr)
-        return 3
-
-    config = load_config()
-    if args.execute and api_key(config) is None:
-        print('forge jev backtest: no API key configured. Run `forge jev setup` first.', file=sys.stderr)
-        return 3
-
-    if not args.execute:
-        print('Dry estimate only -- no API call was made (pass --execute to run one).', file=sys.stderr)
-
-    summary = backtest.run(repo, limit=args.limit, execute=args.execute,
-                           max_requests=args.max_requests, out_dir=args.out,
-                           capability=args.capability, config=config)
-    if args.json:
-        print(json.dumps(summary, indent=2))
-    else:
-        print(backtest.report(summary))
-    return 0
-
-
 def cmd_verify_discover(args) -> int:
     repo = Path(args.repo)
     if not repo.is_dir():
@@ -413,7 +371,7 @@ def cmd_verify_discover(args) -> int:
         return 2
 
     # Imported lazily so cli.py keeps working, and status/doctor keep paying nothing,
-    # even while verify.py is mid-edit -- same reasoning as cmd_backtest's import.
+    # even while verify.py is mid-edit, and so a missing module is a clean exit.
     try:
         from . import verify
     except ImportError as error:
@@ -685,7 +643,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         args = parser().parse_args(argv)
         return dict(setup=cmd_setup, sites=cmd_sites, enable=cmd_enable, disable=cmd_disable,
-                    status=cmd_status, doctor=cmd_doctor, backtest=cmd_backtest,
+                    status=cmd_status, doctor=cmd_doctor,
                     **{'score-plan': cmd_score_plan,
                        'coupling': cmd_coupling,
                        'memory-curate': cmd_memory_curate,

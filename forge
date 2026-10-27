@@ -19,7 +19,7 @@ usage() {
     'commands:' \
     '  install   link forge into each agent harness on this machine; --dry-run previews' \
     '  fractal   opt-in Fractal execution: install, doctor, runs, status, tree, logs, open, report, ...' \
-    '  jev       optional Jev advice: setup, status, doctor, enable, disable, backtest' \
+    '  jev       optional Jev advice: setup, status, doctor, enable, disable' \
     '  dataset   every run'"'"'s inputs and outcomes: status, dump, import, export, outcomes, ...' \
     '  issues    file the review findings a run left open as GitHub issues (plain gh)' \
     '  ui        forge-ui, the run viewer: open [DIR], status, stop' \
