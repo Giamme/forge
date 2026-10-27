@@ -4,6 +4,8 @@
      overwritten. Facts only, one per line. -->
 
 ## Verify
+- a single scheduler module can be run from tests/ with `python3 -m unittest test_schedule` in about 5s, so use that rather than the full suite [tests/test_schedule.py]
+- cd ui/tests && PYTHONPATH=.. uv run --quiet --with playwright python3 -m unittest test_browser_findings [ui/tests/test_browser_findings.py]
 - `python3 -m unittest discover -s tests` from the repo root is the forge suite and takes over 10 minutes; the forge-ui suite is that same command from… [ui/tests/test_static_js.py]
 - `bash tests/check.sh` takes over 10 minutes; run it detached with a long timeout, since a 120s foreground call moves it to the background where it can be killed [tests/check.sh]
 - tests/test_dataset.py must be run from tests/ (`cd tests && python3 -m unittest test_dataset_preserve`); `python3 -m unittest… [tests/test_dataset_preserve.py]
@@ -11,6 +13,8 @@
 - the full `python3 -m unittest discover -s tests` takes over 10 minutes; run only the modules you touched [tests/check.sh]
 
 ## Known traps
+- `forge-guard.py session` calls setsid only after the python startup, so `kill -- -$!` right after launching it signals nothing (ESRCH) and the stop is… [scripts/forge-guard.py]
+- a trapped signal in a bash `( ) &` subshell is deferred until its foreground command ends, so a cancellable `sleep` timer in a subshell can be orphaned… [scripts/forge-parallel.sh]
 - bash tests/check.sh fails test_update.RunnerNoticeTests.test_runs_end_with_the_notice when CI=true, because forge-version.py stays quiet in CI and that test… [tests/test_update.py]
 - in ui/tests browser tests, `.fnd-table input[type=checkbox]` also matches ForgeTable's column-chooser boxes; select rows by… [ui/forge_ui/static/findingsview.js]
 - `python3 -m unittest discover -s ui/tests -p 'test_control_api.py'` fails with ModuleNotFoundError from the repo root; run `cd ui && python3 -m… [ui/tests/test_control_api.py]
@@ -24,8 +28,4 @@
 - ForgeUI.confirmInline never resolves a strip whose host is detached, so code that holds a redraw until a confirm answers must not redraw that host [ui/forge_ui/static/uikit.js]
 - forge-ui's write lock (`ctx.locked`) answers 409 busy at once instead of waiting, so a page that fires a new request before the previous one to the same… [ui/forge_ui/control.py]
 - `forge runs rm --json` prints nothing to stderr, so control.py's error `detail` is always "the forge CLI exited N"; the real reason is only in… [scripts/forge-runs-rm.py]
-- a test class in ui/tests/test_browser.py that calls `_serve(self, …)` must set `.temp` first, or its skip paths raise AttributeError instead of SkipTest [ui/tests/test_browser.py]
-- on macOS, concurrent `os.open(name, O_CREAT, dir_fd=...)` from two processes fails with ENOENT about 13% of the time; open lock files by full path [scripts/forge-issues.py]
-- put_file() returns None on any OSError, including a failed blob write, so an event can be stored with its content silently dropped [scripts/forge_dataset/__init__.py]
-- forge-issues input forms (plan dir, review dir, qa.last, known_issues.md) each take their own code path, so a fix to one form's plan/task attribution has… [scripts/forge-issues.py]
 
