@@ -18,6 +18,13 @@ blocks on a plate, with cables between them and lamps that light up as things ha
 - **Verification as it happens:** the step each lane is in, its last line, the failing tests
   first (new or known, from the lanes' test reports) with a link into the log at each one, and
   every lane's output a click away.
+- **Where each task is, and what it checked:** the command a running dwarf or reviewer is
+  running and for how long, flagged when its log has been quiet for five minutes; why a task
+  that is not running waits (its dependencies, shared files, a full run, a drain, an
+  infrastructure pause with its countdown, the retry policy); each attempt's tests, type checks,
+  lints and builds with their exits, times and counts, against the commands its acceptance
+  criteria name; and one banner for an environment problem (Docker, a sandbox's EPERM, a port in
+  use) that several tasks met.
 - **Click to open.** A task opens to show its attempts, each with its dwarf, its reviewer and
   any shadow reviews, linked; an escalation is a labelled cable between attempts. The
   inspector beside the stage shows what launched each step and what came of it: the exact
@@ -172,15 +179,34 @@ keep one meaning everywhere (amber running, green merged or passed, red failed, 
   a lamp: their severity is a shape (P0 spike, P1 diamond, P2 cone, P3 pin).
 - **Tables:** the task table and the leaderboard's tables sort by any column (click its header:
   ascending, descending, off), reorder by dragging a header (or Alt+← → on it), and show or hide
-  columns from *Columns*, which also resets them. Each table remembers its columns.
+  columns from *Columns*, which also resets them. Each table remembers its columns. The task
+  table's *Now* column says what each running task runs (and for how long), or why one waits.
 
   <img src="docs/media/run.png" width="49%" alt="Planned waves: a run's tasks on a 3D plate with dependency cables, finding marks and the finish nodes, between the runs list and the run's inspector."> <img src="docs/media/execution.png" width="49%" alt="Execution: one block per attempt on wall-clock time, failed attempts in red, with the timeline and critical path in the inspector.">
-- **Inspector:** for the run, its timeline, critical path, peak concurrency and finish line;
-  for a task, its models and routing, escalations, timings (busy, model time, overhead,
-  queue wait after its dependencies merged), attempts and their executions, review findings
-  with the gate decision, Clef predictions against outcomes, and its prompts; for one
-  execution, its model, phases, tokens, exact prompt and final message; for the final
-  review, its verdict, findings, report, prompt and history.
+- **Inspector:** for the run, its timeline, critical path, peak concurrency, what its scheduler
+  is doing (dispatching, drained or stopping, how many tasks wait and on what, each pause with its
+  countdown) and finish line; for a task, *Now* (below), its models and routing, escalations,
+  timings (busy, model time, overhead, queue wait after its dependencies merged), attempts and
+  their executions with the checks each ran, review findings with the gate decision, Clef
+  predictions against outcomes, and its prompts; for one execution, its model, phases, tokens,
+  checks, exact prompt and final message; for the final review, its verdict, findings, report,
+  prompt and history.
+- **Now and checks:** a running task's *Now* names the agent at work and its attempt, the phase
+  and for how long, the command it is running (its first line, and whether it is a test, type
+  check, lint or build) and for how long, when its log last moved, and *quiet N min* once that is
+  over five minutes; it links to the conversation. A task that is not running says why: the
+  tasks it waits on (a stopped one marked), the running task it shares files with, no free slot,
+  a drain or stop, an infrastructure pause with its countdown, or the retry policy's stop with
+  the split it suggests. Under each attempt's dwarf and reviewer are the checks they ran, from
+  their logs: a lamp, the kind, the command (opening the conversation at it), its exit, time and
+  counts (passed, failed, skipped; or errors and warnings), and a failed one's last lines; then
+  the environment problems its failed commands met, and which of the commands the brief's
+  `## Acceptance criteria` names ran, ran another way, or never ran. A codex or grok log carries
+  no times, so the times come from the clock forge keeps beside each log (runs from before it
+  show none). The run header's *Environment* banner lists a problem (Docker down or out of
+  address pools, a missing container, a port in use, the sandbox's EPERM, a refused local
+  service, no network, a full disk, a missing command) that the failed commands of more than one
+  task met, with those tasks and, folded, each command and the line that showed it.
 - **Verification (its finish node):** while it runs, how long it has run, the step a lane
   announced (`::forge step name=… state=start`) and for how long, the last line it printed, a
   warning after five minutes with no output, and the live output of the lane that printed last
@@ -223,7 +249,7 @@ keep one meaning everywhere (amber running, green merged or passed, red failed, 
   from a finding's mark on the stage (`/finding/<id>` scrolls to that finding and focuses it).
 
   <img src="docs/media/diff.png" width="760" alt="The diff a reviewer read, with a P1 finding under the line that compares token digests and a P2 finding under the revoke function.">
-- **Conversations (`…/tasks/<id>/executions/<dwarf-or-qa>/conversation`, `…/executions/<id>/conversation`):**
+- **Conversations (`…/tasks/<id>/executions/<dwarf-or-qa>/conversation[/event/<n>]`, `…/executions/<id>/conversation`):**
   what one dwarf or reviewer said and did, read from its agent CLI's `<role>.log`, in the diff's
   place: its messages, its thinking folded, each command with its exit and output, each edit with
   its patch and a link to the file in the diff its review read, other tool calls, and the final
@@ -232,7 +258,8 @@ keep one meaning everywhere (amber running, green merged or passed, red failed, 
   *Follow* keeps the newest event in view. codex, grok, claude, openclaude and opencode logs are
   read event by event; when a claude run logged only its final answer, the conversation comes from
   Claude's own session file for that run, if it is still on this machine; any other log is shown
-  as it is. Open it from an attempt's dwarf or reviewer in the inspector.
+  as it is. Open it from an attempt's dwarf or reviewer in the inspector, or at one command from a
+  check or an environment problem (`/event/<n>` opens it there and stops following the end).
 
   <img src="docs/media/conversation.png" width="760" alt="A dwarf's conversation: its thinking, the files it wrote, a test run that failed with exit 1 and the run that passed after the fix.">
 - **Fractal child tasks:** when a run used Fractal, a task's inspector shows the tree it was split
@@ -322,6 +349,9 @@ turns all of it off: no token is issued, every change is a 405, and the controls
 - `forge_ui/static/diffview.js`: the diff viewer, with findings pinned to their lines.
 - `forge_ui/static/convo.js`, `forge_ui/transcripts.py`: an execution's conversation, and the
   reader of each agent CLI's log format behind it.
+- `forge_ui/static/checksview.js`, `forge_ui/checks.py`: where each task stands and the checks its
+  agents ran (the Now column and section, each attempt's checks, the environment banner), and
+  the reading of checks, counts, acceptance criteria and environment problems from a transcript.
 - `forge_ui/static/files.js`: the files heatmap (`matrix()` is pure and node-tested).
 - `forge_ui/export.py`: a run as one HTML file (the page's scripts and styles inlined, the API
   responses it reads, the 3D stage's modules as one module text, a hash-based policy).

@@ -1233,8 +1233,6 @@ def detail(path, source='plan') -> dict:
     for name in _RUN_CONTROLS:
         reader.stat(name)
     result['scheduler'] = _scheduler(reader)
-    if result['scheduler']['max_parallel'] is None and result['scheduler']['live']:
-        result['scheduler']['max_parallel'] = result['settings']['max_parallel']
     _waiting(reader, tasks, result['scheduler'])
     run_execs = _run_execs(reader)
     result['verification'] = _verification(reader, result['verification_status'],

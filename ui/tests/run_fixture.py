@@ -609,6 +609,152 @@ def make_fractal(state: Path, run_dir: Path, task_id: str) -> Path:
     return task
 
 
+
+# ---------- a live run, for where each task stands and the checks its agents ran ----------
+
+LIVE = {'api_task': 'task-' + uid(70), 'api_dwarf1': 'dwarf-' + uid(71), 'api_qa1': 'qa-' + uid(72), 'api_task2': 'task-' + uid(73),
+        'api_dwarf2': 'dwarf-' + uid(74), 'ui_task': 'task-' + uid(75), 'ui_dwarf': 'dwarf-' + uid(76), 'ui_qa': 'qa-' + uid(77),
+        'schema_task': 'task-' + uid(78), 'schema_dwarf': 'dwarf-' + uid(79), 'schema_qa': 'qa-' + uid(80)}
+POOLS = 'Error response from daemon: all predefined address pools have been fully subnetted\n'
+LIVE_BRIEF = """Serve the run API.
+
+## Acceptance criteria
+
+- `npm test` passes.
+- `npm run lint` is clean.
+- `npx tsc --noEmit` reports no errors.
+"""
+
+
+def codex_steps(start, steps):
+    """A codex --json log and its clock (the text of each) from steps at seconds after `start`: ('say', at, text) or
+    ('run', at, end, command, output, exit); a run with end None is still running."""
+    lines = [(start, {'type': 'thread.started', 'thread_id': '0199e000-0000-7000-8000-0000000000' + uid(len(steps))[-2:]})]
+    for n, step in enumerate(steps):
+        if step[0] == 'say':
+            lines.append((start + step[1], {'type': 'item.completed', 'item': {'id': f'm{n}', 'type': 'agent_message', 'text': step[2]}}))
+            continue
+        _, at, end, command, output, code = step
+        item = {'id': f'c{n}', 'type': 'command_execution', 'command': f"/bin/zsh -lc '{command}'"}
+        lines.append((start + at, {'type': 'item.started', 'item': dict(item, aggregated_output='', exit_code=None, status='in_progress')}))
+        if end is not None:
+            lines.append((start + end, {'type': 'item.completed', 'item': dict(item, aggregated_output=output, exit_code=code,
+                                                                                    status='completed' if code == 0 else 'failed')}))
+    lines.sort(key=lambda item: item[0])
+    log, clock, size = '', '', 0
+    for t, value in lines:
+        line = json.dumps(value) + '\n'
+        log += line
+        size += len(line.encode())
+        clock += f'{t:.3f} {size}\n'
+    return log, clock, lines[-1][0]
+
+
+def live_agent(owner, name, role, spec, start, steps, end=None, parent=None, last=None):
+    """A dwarf or reviewer execution whose codex log and clock hold `steps`; running when end is None (its log and
+    clock are then the owner dir's)."""
+    log, clock, moved = codex_steps(start, steps)
+    root = owner / 'attempts' / name
+    data = metrics(role, 0.0, None if end is None else end - start, exit_code=0)
+    data.update(wall_started=start)
+    write(root / 'metrics.json', data)
+    write(root / 'dataset.json', dict(schema=1, role=role, root=str(owner), parent=parent, trigger=None, inv=None,
+                                      wall_started_ns=int(start * 1e9)))
+    where = owner if end is None else root
+    write(root / f'{role}.resolved', resolved(role, spec[0], spec[1], str(owner), 'codex'))
+    if end is None:
+        write(owner / f'{role}.resolved', resolved(role, spec[0], spec[1], str(owner), 'codex'))
+    else:
+        write(root / f'{role}.prompt', prompt_text(role, name))
+        if last is not None:
+            write(root / f'{role}.last', last)
+    write(where / f'{role}.log', log, moved)
+    write(where / f'{role}.clock', clock, moved)
+    return root
+
+
+def live_task(owner, name, start, end=None, attempt_start=0):
+    data = metrics('task', 0.0, None if end is None else end - start, phase='dispatch')
+    data.update(wall_started=start)
+    write(owner / 'attempts' / name / 'metrics.json', data)
+    write(owner / 'attempts' / name / 'dataset.json', dict(schema=1, role='task', root=str(owner), parent=None, trigger='initial',
+                                                            inv=None, attempt_start=attempt_start, resume=None,
+                                                            wall_started_ns=int(start * 1e9)))
+
+
+def make_live(base: Path, now: float, pid: int) -> Path:
+    """A plan run a live scheduler (pid) is dispatching at `now`: api's dwarf runs `npm test` on its second attempt,
+    ui's reviewer has been quiet for nine minutes, docs waits on api, cli shares files with api, db was stopped by the
+    retry policy, perf is paused on a rate limit and schema merged. api and schema both met Docker's address pools."""
+    plan = Path(base) / 'plan-live'
+    write(plan / 'run_id', '20261027-100000-live\n')
+    write(plan / 'repo', '/example/live-repo\n')
+    write(plan / 'goal.txt', 'Serve the run API with a CLI and docs\n')
+    write(plan / 'request.md', 'Add a run API.\n')
+    write(plan / 'tasks.tsv', ''.join('\t'.join(row) + '\n' for row in [
+        ('schema', '-', 'low', 'src/schema', 'luna', 'opus', 'Define the schema'),
+        ('api', 'schema', 'high', 'src/api', 'sol:xhigh', 'opus', 'Serve the run API'),
+        ('ui', 'schema', 'medium', 'web', 'luna', 'opus', 'Show the runs'),
+        ('docs', 'api', 'low', 'docs', 'luna', 'opus', 'Document the API'),
+        ('cli', 'schema', 'medium', 'src/api/cli.py', 'luna', 'opus', 'A CLI over the API'),
+        ('db', '-', 'medium', 'src/db', 'luna', 'opus', 'Migrate the database'),
+        ('perf', 'schema', 'low', 'bench', 'luna', 'opus', 'Benchmark the API')]))
+    write(plan / 'waves.tsv', '1\tschema\n1\tdb\n2\tapi\n2\tui\n2\tcli\n2\tperf\n3\tdocs\n')
+    write(plan / 'max_parallel', '3\n')
+    write(plan / 'scheduler.live', {'pid': pid})
+    write(plan / 'infra.paused', {'scopes': [{'scope': 'model:codex/luna-model', 'class': 'rate_limit', 'harness': 'codex',
+                                              'model': 'luna-model', 'tasks': ['perf'], 'cycle': 1, 'until': now + 1800, 'exhausted': False}]})
+    statuses = dict(schema='MERGED', api='RUNNING', ui='RUNNING', docs='PENDING', cli='PENDING', db='FAIL', perf='INFRA')
+    for ident, status in statuses.items():
+        write(plan / f'tasks/{ident}/status', status + '\n')
+        write(plan / f'tasks/{ident}/prompt.md', LIVE_BRIEF if ident == 'api' else f'Do {ident}.\n')
+    write(plan / 'tasks/schema/merged', '', now - 3000)
+    write(plan / 'tasks/db/escalation.stop', '3\tluna\n')
+    write(plan / 'tasks/db/split.suggested', 'Split the migration from the backfill: two tasks, the backfill after.\n')
+
+    # schema: merged; its dwarf met Docker's address pools, then type-checked and tested
+    sdir, t = plan / 'tasks/schema', now - 4000
+    live_task(sdir, LIVE['schema_task'], t, t + 900)
+    live_agent(sdir, LIVE['schema_dwarf'], 'dwarf', ('luna', None), t + 10, [
+        ('run', 20, 31, 'npm run db:up', POOLS, 1),
+        ('run', 60, 79, 'npx tsc --noEmit', '', 0),
+        ('run', 90, 132, 'npm test', 'Tests:       12 passed, 12 total\n', 0),
+        ('say', 140, 'Defined the schema.')], end=t + 600, parent=LIVE['schema_task'], last='Defined the schema.\n')
+    live_agent(sdir, LIVE['schema_qa'], 'qa', ('opus', None), t + 610, [
+        ('run', 20, 61, 'npm test', 'Tests:       12 passed, 12 total\n', 0),
+        ('say', 70, 'FORGE_VERDICT: PASS')], end=t + 890, parent=LIVE['schema_task'], last='FORGE_VERDICT: PASS\n')
+    write(sdir / 'attempt', '1\n')
+    write(sdir / 'attempts.tsv', f'{int(t + 902)}\t1\tPASS\t\tluna\n')
+
+    # api: attempt 1 failed (the database never came up); attempt 2's dwarf runs npm test now
+    adir, t = plan / 'tasks/api', now - 2400
+    live_task(adir, LIVE['api_task'], t, t + 1500)
+    live_agent(adir, LIVE['api_dwarf1'], 'dwarf', ('sol', 'xhigh'), t + 10, [
+        ('run', 30, 41, 'npm run db:up', POOLS, 1),
+        ('run', 50, 64, 'npm run lint', '\n✖ 2 problems (1 error, 1 warning)\n', 1),
+        ('run', 80, 212, 'npm test', 'connect ECONNREFUSED 127.0.0.1:5432\nTests:       3 failed, 41 passed, 44 total\n', 1),
+        ('say', 220, 'The tests need the database.')], end=t + 700, parent=LIVE['api_task'], last='The tests need the database.\n')
+    live_agent(adir, LIVE['api_qa1'], 'qa', ('opus', None), t + 710, [
+        ('run', 15, 140, 'npm test', 'Tests:       3 failed, 41 passed, 44 total\n', 1),
+        ('say', 150, 'FORGE_VERDICT: FAIL')], end=t + 1490, parent=LIVE['api_task'], last='FORGE_VERDICT: FAIL\n')
+    live_task(adir, LIVE['api_task2'], now - 800, attempt_start=1)
+    live_agent(adir, LIVE['api_dwarf2'], 'dwarf', ('sol', 'xhigh'), now - 790, [
+        ('run', 20, 35, 'npm run lint', '', 0),
+        ('run', 600, None, 'npm test', '', None)], parent=LIVE['api_task2'])
+    write(adir / 'attempt', '2\n')
+    write(adir / 'attempts.tsv', f'{int(now - 900)}\t1\tFAIL\t\tsol:xhigh\n')
+
+    # ui: its reviewer started bash tests/check.sh nine minutes ago and has printed nothing since
+    udir, t = plan / 'tasks/ui', now - 1500
+    live_task(udir, LIVE['ui_task'], t)
+    live_agent(udir, LIVE['ui_dwarf'], 'dwarf', ('luna', None), t + 10, [
+        ('run', 40, 70, 'npm run build', '', 0), ('say', 300, 'Built the page.')], end=t + 900, parent=LIVE['ui_task'], last='Built the page.\n')
+    live_agent(udir, LIVE['ui_qa'], 'qa', ('opus', None), t + 910, [
+        ('run', now - 540 - (t + 910), None, 'bash tests/check.sh', '', None)], parent=LIVE['ui_task'])
+    write(udir / 'attempt', '1\n')
+    return plan
+
+
 if __name__ == '__main__':
     if len(sys.argv) != 2:
         sys.exit('usage: run_fixture.py DIR')

@@ -13,6 +13,7 @@ forge_ui/diffs.py       unified diffs: parsing, the ```diff fence of a review pr
 forge_ui/models.py      per-run model facts (attempts and reviews) for the leaderboard, cached per run
 forge_ui/fractal.py     Fractal child tasks under $XDG_STATE_HOME/forge/fractal, read through dir fds
 forge_ui/transcripts.py an agent CLI's `<role>.log` read as one conversation, whichever harness wrote it
+forge_ui/checks.py      the checks an agent ran, its running call and the environment problems it met, from a transcript
 forge_ui/server.py      serves those dicts as JSON plus the static page, 127.0.0.1 only; authenticates writes
 forge_ui/control.py     the write routes: each one is a forge CLI call (see Controls)
 forge_ui/static/        the page: index.html, app.js, style.css, graph.js and the scripts they load
@@ -66,6 +67,10 @@ written), and the reader must never raise because of one.
 | `tasks/<id>/qa.gate` | `threshold<TAB>decision<TAB>worst<TAB>n_confirmed<TAB>n_unlabelled<TAB>n_below` (`decision` is `accept` or `keep`, `-` for none) |
 | `tasks/<id>/known_issues.md` | the confirmed findings a threshold tolerated |
 | `tasks/<id>/dwarf.input`, `qa.input` | the prompts forge assembled; `<role>.delivered`, `<role>.resolved` the live dispatch files |
+| `tasks/<id>/<role>.log`, `<role>.clock` | the running dispatch's harness log and its clock: one `<epoch> <bytes>` line each time the log grew (forge-dispatch.sh samples it every second; `FORGE_LOG_CLOCK=off` writes none) |
+| `tasks/<id>/escalation.stop`, `split.suggested` | the retry policy stopped the task: `<attempts><TAB><model>`, and the split it suggests (free text) |
+| `scheduler.live` | `{"pid": n}`: the scheduler running the plan; it is live while that process is |
+| `drain`, `stop`, `max_parallel`, `infra.paused` | a live scheduler's controls (Controls below): a drain, a stop (`graceful` or `now`), a capacity, and its infrastructure pauses as `{"scopes": [{scope, class, harness, model, tasks, cycle, until, exhausted}]}` |
 | `tasks/<id>/attempts/<role>-<uuid>/` | one execution of the task: `task`, `dwarf` or `qa` |
 | `tasks/<id>/changes.diff` | `git diff --binary` of the task's work since its base, cumulative, rewritten every attempt; `changes.prev.diff` the previous attempt's; `committed.diff` base..the reviewed commit |
 | `tasks/<id>/drift.txt`, `conflict.files` | one path per line: files the diff changed without declaring them; files that conflicted on merge |
@@ -88,10 +93,11 @@ one of `task dwarf qa solo verification parallel` and `<uuid>` 32 lowercase hex 
 |---|---|
 | `metrics.json` | `role`, `started` (monotonic), `wall_started` (epoch), `phase`, `phase_started` (monotonic), `elapsed_s` (seconds per phase, `total` once done), `exit_code` (`null` while in flight), `harness`, `prompt_bytes`, `input_tokens`, `cached_input_tokens`, `output_tokens`, `infra_class`, `shadow` |
 | `dataset.json` | may be absent: `parent` (the execution that started this one, e.g. `task-<uuid>`), `trigger`, `attempt_start` and `resume` (task executions) |
-| `<role>.resolved`, `.prompt`, `.last`, `.timedout` | copies made when it finished: the model resolution (`key=value`), the prompt, the final message, the timeout marker |
+| `<role>.resolved`, `.prompt`, `.last`, `.timedout`, `.log`, `.clock` | copies made when it finished: the model resolution (`key=value`), the prompt, the final message, the timeout marker, the harness log and its clock |
 
-Only the transcript endpoint opens an execution's `.log` (a `dwarf`'s or `qa`'s, see
-ExecutionTranscript); no read opens a `.cmd`.
+Only the transcript, checks and environment endpoints open an execution's `.log` and `.clock` (a
+`dwarf`'s or `qa`'s, see ExecutionTranscript and Checks), and RunDetail reads the last 256 KB of a
+running one's log for its `now`; no read opens a `.cmd`.
 
 **Task status** is `MERGED` if `tasks/<id>/merged` exists, otherwise the first word of
 `tasks/<id>/status`, otherwise `PENDING`.
@@ -166,6 +172,9 @@ def final_review_diff(path, name, source='plan') -> dict | None    # a DiffDetai
 def files_detail(path, source='plan') -> dict | None               # Files
 def run_findings(path, source='plan') -> dict | None               # RunFindings
 def execution_transcript(path, name, source='plan') -> dict | None # an ExecutionTranscript
+def execution_checks(path, name, source='plan') -> dict | None   # ExecutionChecks
+def task_checks(path, task_id, source='plan') -> dict | None     # TaskChecks
+def run_environment(path, source='plan') -> dict | None          # RunEnvironment
 def fractal_detail(path, task_id, source='plan') -> dict | None    # a TaskFractal
 def fractal_node(path, task_id, node, source='plan') -> dict | None       # a FractalNodeDetail
 def fractal_node_diff(path, task_id, node, source='plan') -> dict | None  # a DiffDetail
@@ -180,6 +189,7 @@ class Catalog:
     def final_review(self, key, name) -> dict | None
     def diff(self, key, task_id, which='current'), execution_diff(self, key, name),
         final_review_diff(self, key, name), files(self, key), findings(self, key), transcript(self, key, name),
+        execution_checks(self, key, name), task_checks(self, key, task_id), environment(self, key),
         fractal(self, key, task_id),
         fractal_node(self, key, task_id, node), fractal_node_diff(self, key, task_id, node),
         verification_log(self, key, lane=None, k=None, first=None) -> dict | None
@@ -229,6 +239,9 @@ its last 20,000 behind a leading `…`. Their `truncated` lists the field names 
 | `GET /api/runs/<key>/files` | `200 Files` |
 | `GET /api/runs/<key>/findings` | `200 RunFindings` |
 | `GET /api/runs/<key>/executions/<qa-or-dwarf>/transcript` | `200 ExecutionTranscript` |
+| `GET /api/runs/<key>/executions/<qa-or-dwarf>/checks` | `200 ExecutionChecks`; another role is a 404 |
+| `GET /api/runs/<key>/tasks/<id>/checks` | `200 TaskChecks`; `<id>` as for TaskDetail |
+| `GET /api/runs/<key>/environment` | `200 RunEnvironment` |
 | `GET /api/runs/<key>/verification/log[/lines/<n>]` | `200 VerificationLog` of `verification.log`: its tail, or with `/lines/<n>` a range |
 | `GET /api/runs/<key>/verification/retry/log[/lines/<n>]` | `200 VerificationLog` of `verification.retry.log`, a single command's rerun |
 | `GET /api/runs/<key>/verification/lanes/<lane>/log[/lines/<n>]` | `200 VerificationLog` of `verification.lane.<lane>.log` |
@@ -372,6 +385,9 @@ Every RunSummary field, plus:
                                     "ended": 1760622300.0}]},
   "final_review": FinalReviewSummary,
   "final_reviews": [FinalReviewSummary, ...],
+  "scheduler": {"live": true, "drained": false, "stopping": null, "max_parallel": 3,
+                "pauses": [{"scope": "model:codex/gpt-6", "class": "rate_limit", "harness": "codex", "model": "gpt-6",
+                            "tasks": ["perf"], "cycle": 1, "until": 1760622130.0, "exhausted": false}]},
   "deferrals": ["wave 2: docs deferred (file overlap with a task already in this wave)"],
   "findings_available": true,
   "warnings": ["tasks/graph/route.jsonl line 2: not JSON"],
@@ -448,6 +464,11 @@ Every RunSummary field, plus:
   epoch in the name), or `null`; `final_reviews` lists the newest 20, newest first. That newest
   review's `outdated` is its own. `final_review_outdated` stays the published review's flag, so
   the two differ when a newer review exists than the one `final-review` links to.
+- `scheduler`: `live` is whether the pid in `scheduler.live` is a running process. Only then are the
+  rest read: `drained` (a `drain` file), `stopping` (`stop` holds `graceful` or `now`, else `null`),
+  `max_parallel` (the `max_parallel` file when it holds 1 to 64, else `null`) and `pauses` (the scopes of
+  `infra.paused`, `[]` without it); while no scheduler runs they are `false`, `null`, `null` and `[]`.
+  A solo run's `scheduler` is `null`.
 - `deferrals`: the non-empty lines of `deferrals.txt`, `[]` when it is missing.
 - `findings_available`: whether `scripts/forge-contract.py` could be loaded.
 - `fractal`: `null` without `fractal-selection.json`, else `{"enabled", "run", "available", "reason"}`
@@ -503,7 +524,11 @@ Every RunSummary field, plus:
   "findings": FindingsSummary,
   "gate": {"threshold": "P2", "decision": "keep", "worst": "P3", "n_confirmed": 1,
            "n_unlabelled": 0, "n_below": 1},
-  "known_issues": true
+  "known_issues": true,
+  "now": {"role": "dwarf", "execution": "dwarf-…", "attempt": 2, "phase": "model", "phase_started": 1760621200.0,
+          "started": 1760621195.0, "last_output_at": 1760621410.2,
+          "call": {"kind": "command", "command": "npm test", "tool": null, "started": 1760621390.0, "check": "test"}},
+  "waiting": null
 }
 ```
 
@@ -547,6 +572,22 @@ Every RunSummary field, plus:
 - `gate`: the parsed `qa.gate` (`n_*` integers, `-` is `null`), or `null` when missing or
   malformed (malformed is warned).
 - `known_issues`: whether `known_issues.md` is a non-empty file.
+- `now`: `null` unless the task is `RUNNING`. Then where it is: the newest running non-shadow `dwarf`
+  or `qa` execution (`role`, `execution`, `attempt`, `phase`, `phase_started`, `started`), else the
+  running task execution, and, for an agent, `last_output_at` (its log's mtime) and `call`: the call
+  it is making, read from the last 256 KB of `tasks/<id>/<role>.log` (the run dir's for a solo run),
+  or `null` while it thinks or writes. `call.kind` is `command`, `tool` or `edit`; `command` keeps
+  400 characters; `check` is the command's kind as Checks below tells it (`null` for none);
+  `started` comes from the harness's own times, from `<role>.clock`, or, when the call is the log's
+  last line, the log's mtime. Every value but the call is `null` when unknown.
+- `waiting`: why a task that is not running waits, as far as the run dir says, or `null`:
+  `{"kind": "escalation", "attempts", "model", "split"}` when `escalation.stop` exists (whether or
+  not a scheduler runs); else, while `scheduler.live` is true, for a `PENDING` or `INFRA` task:
+  `infra` (a pause in `scheduler.pauses` holds it: scope `all`, or its id in `tasks`; the pause's
+  keys plus `kind`), then for a `PENDING` task `deps` (`on`: its deps not merged, `stopped`: those
+  in a stopped status such as `FAIL`), `stopping` (`mode`), `drained`, `overlap` (`on`: running
+  tasks whose files overlap its own, as forge-schedule.py tells overlap), `slot` (`running`,
+  `max_parallel`: the run is at its capacity) or `next` (nothing holds it).
 - Text fields are `null` when the file is missing.
 
 A solo run's one task uses this same shape. `id` is `solo` and `title` is the goal, or
@@ -558,7 +599,7 @@ in `attempts.tsv`, or `null`. `escalations`, `route` and `shadow` are empty. `ve
 `qa_tail` come from `qa.last`, and `prompt` comes from `prompt.md`. `deps` and `files` are
 `[]`; `difficulty`, `accepted_by`, `approach` and `retry_findings` are `null`; `accepted` is
 false; `accepted_attempt` and `accepted_over` are `null`; `explored` is false; `clef` is
-`{first_pass: null, retry_pass: {}}`. `request` on the detail is `request.md`.
+`{first_pass: null, retry_pass: {}}`; `waiting` is `null`. `request` on the detail is `request.md`.
 
 ## Execution
 
@@ -829,12 +870,90 @@ or `input` when there are none), `tool` (`tool`, `input`, `output`), `result` (`
 with `same: true` when the last message said it; `tokens`), `error` (`text`), `text` (`text`,
 `stream: "stderr"` for lines between JSON events) and `gap` (`count` events left out). Any event
 may have `t` (epoch seconds), `id` (the harness's call id), `error` (`true` for a failed call or a
-non-zero exit, `false` for a call answered without one) and `running: true` (a call not finished yet). `tokens` are the run's totals
+non-zero exit, `false` for a call answered without one) and `running: true` (a call not finished yet); an
+answered `command`, `edit` or `tool` may have `ended` (epoch seconds). Times are the harness's own when
+its lines carry them (claude's and opencode's), else read from `<role>.clock` beside the log: a line
+is timed by the first sample that saw the log reach its end, to within the clock's second (codex and
+grok write no times; a run from before the clock has none). `tokens` are the run's totals
 (`input` counts cached input too). A message, a reasoning or a result keeps 20,000 characters, a
 command, an input or an output its first two thirds and last third of 8,000 around `… n
 characters …` (`<key>_cut` holds n). A log over 32 MB is read from its end; past 5,000 events or
 4,000,000 characters the middle is left out (a `gap` event, `truncated: true`). Parses are kept by
-the log's `(path, size, mtime_ns)` and the session file's.
+the log's `(path, size, mtime_ns)`, its clock's and the session file's.
+
+## Checks (`forge_ui/checks.py`)
+
+The checks an agent ran are the `command` events of its transcript that are tests, type checks,
+lints or builds. A command is split on `&&`, `||`, `;`, `|` and newlines; each part loses its
+environment assignments and wrappers (`env`, `timeout 600`, `uv run`, `npx`, `poetry run`, a
+`sh -c '…'` around it, …) and a `cd` part is left out. `kind` is the first of `test`, `typecheck`,
+`lint`, `build` that some part is (pytest and `python -m unittest`, `npm test`, `node --test`, jest,
+vitest, mocha, `go test`, `cargo test`, a `test`/`check` shell script; tsc, mypy, pyright, `bash -n`,
+`cargo check`, `go vet`; eslint, ruff, flake8, shellcheck, `cargo clippy`, a formatter with
+`--check`; `npm run build`, `cargo build`, plain `make`, …).
+
+ExecutionChecks (a `dwarf` or `qa` execution):
+
+```json
+{"run": "3f9a0c1d2e4b", "execution": "dwarf-…", "role": "dwarf", "state": "done", "attempt": 1, "spec": "luna",
+ "harness": "codex", "source": "log", "truncated": false, "last_output_at": null,
+ "owner": {"kind": "task", "id": "api"},
+ "checks": [{"index": 4, "command": "npm test", "kind": "test", "exit": 1, "failed": true, "running": false,
+             "started": 1760620100.0, "ended": 1760620232.0, "duration_s": 132.0,
+             "counts": {"passed": 41, "failed": 3, "skipped": 0}, "tail": "…last lines…"}],
+ "call": null,
+ "environment": [{"index": 2, "command": "npm run db:up", "problem": "docker-pools",
+                  "label": "Docker ran out of network address pools", "line": "Error response from daemon: …"}],
+ "criteria": [{"command": "npm test", "kind": "test", "status": "ran", "by": {"index": 4}}],
+ "warnings": []}
+```
+
+- `index` is the event's place in the ExecutionTranscript (the conversation view's `ev-<index>`);
+  `command` keeps 1,000 characters. `failed` is a failed call or a non-zero exit; `duration_s` is
+  `ended` minus `started` when both are known. `counts` is what the output's summary says:
+  `{passed, failed, skipped}` (pytest, unittest, forge's `tests/run_tests.py`, `node --test`, jest,
+  vitest, mocha, Playwright, cargo, `go test -v`) or `{errors, warnings}` (tsc, mypy, eslint, ruff,
+  pyright), else `null`. `tail` is a failed check's last 6 non-empty output lines, else `null`.
+- `call` is the call not answered yet (`{index, kind, command, tool, started, check}`; the newest
+  when several run at once), or `null`. `last_output_at` is the log's mtime while it runs, else `null`.
+- `environment`: each problem a failed command met that is not only a reader (`rg`, `grep`, `cat`,
+  `git`, `ls`, …): `docker-daemon`, `docker-pools`, `container`, `port` (EADDRINUSE), `sandbox`
+  (EPERM, `Operation not permitted`), `refused` (ECONNREFUSED), `network` (DNS, unreachable), `disk`
+  (ENOSPC) and `missing-tool` (`command not found`), with `label` and the first line that shows it
+  (240 characters).
+- `criteria`: the check commands the owner task's `prompt.md` names under an `## Acceptance
+  criteria` heading (in code spans, or a fenced block's lines), each once, against this execution's
+  checks: `status` is `ran` (a check had every word of it), `similar` (one by the same program, of
+  the same kind) or `missing`; `by` names the matching check. `[]` for a final review or a shadow.
+
+TaskChecks:
+
+```json
+{"run": "3f9a0c1d2e4b", "task": "api",
+ "criteria": [{"command": "npm test", "kind": "test"}, {"command": "npx tsc --noEmit", "kind": "typecheck"}],
+ "attempts": [{"attempt": 1, "running": false, "executions": [ExecutionChecks without run/owner/criteria/warnings, ...],
+               "criteria": [{"command": "npm test", "kind": "test", "status": "ran",
+                             "by": {"execution": "qa-…", "role": "qa", "index": 1}},
+                            {"command": "npx tsc --noEmit", "kind": "typecheck", "status": "missing", "by": null}]}],
+ "truncated": [], "warnings": []}
+```
+
+Every non-shadow `dwarf` and `qa` execution of the task, by attempt; an attempt's `criteria` hold
+against the checks of all its agents, and `running` is whether one of them runs.
+
+RunEnvironment: the environment problems of every task's agents, each once, in the order above:
+
+```json
+{"run": "3f9a0c1d2e4b",
+ "problems": [{"problem": "docker-pools", "label": "Docker ran out of network address pools",
+               "tasks": ["schema", "api"], "count": 2,
+               "hits": [{"task": "schema", "attempt": 1, "role": "dwarf", "execution": "dwarf-…", "index": 0,
+                         "command": "npm run db:up", "line": "Error response from daemon: …"}]}],
+ "warnings": []}
+```
+
+`tasks` in plan order, `count` every failed command that met it, `hits` the first 50. A finished
+execution's problems are kept by its log's and clock's signature.
 
 ## VerificationLog
 
@@ -1019,8 +1138,8 @@ difficulty paths deps model` each), `decomposition_history` (its newest 20, each
 
 - It holds `style.css` (with the labels' face, `D-DINCondensed-Bold.woff2`, inlined as a `data:`
   URL) and the classic scripts the run view uses (`theme.js icons.js datatable.js shell.js
-  runmodel.js cloudmodel.js graph.js gantt.js panel.js diffview.js convo.js files.js map3d.js search.js
-  app.js`), inline; the import map; a `<script type="application/json" id="forge-snapshot">` with
+  runmodel.js cloudmodel.js graph.js gantt.js verifyview.js checksview.js panel.js diffview.js convo.js files.js
+  map3d.js search.js app.js`), inline; the import map; a `<script type="application/json" id="forge-snapshot">` with
   `{meta, api}`; and a `<script type="text/plain" id="forge-stage">` holding `iso.js`,
   `cloud3d.js`, `findings3d.js`, `stagectl.js` and `scene3d.js` bundled into one module (each
   module in its own scope, relative imports bound to the earlier ones' exports, `createStage`
@@ -1029,13 +1148,14 @@ difficulty paths deps model` each), `decomposition_history` (its newest 20, each
   it (server.api_get): `/api/runs` (this run only), the RunDetail, every TaskDetail, every
   ExecutionDetail the RunDetail names, every FinalReviewDetail, Files, RunFindings, and the
   Fractal trees and nodes. With `texts=1` also every diff the page can open (each task's diff and its `sources`,
-  each final review's, each Fractal node's), every `dwarf` and `qa` ExecutionTranscript (at most 2 MB each),
+  each final review's, each Fractal node's), every `dwarf` and `qa` ExecutionTranscript (at most 2 MB each)
+  and ExecutionChecks, every TaskChecks, the RunEnvironment,
   and the VerificationLog tail of `verification.log`, of each lane's log and of each lane run's log
   (under their tail paths; line ranges are not stored, so the page shows the tail).
 - `texts=0` (the default) nulls these keys wherever they hold a string, list or object: `prompt
   last request log_tail dwarf_tail qa_tail qa_last qa_input tasks_summary known_issues texts text
-  planning_last approach retry_findings dwarf_input error last_line message excerpt tail lines`, and stores no
-  diff and no transcript. A finding keeps its `summary`, a failing test its `name`.
+  planning_last approach retry_findings dwarf_input error last_line message excerpt tail lines call split`,
+  and stores no diff, no transcript, no checks and no environment problems (a command is a text). A finding keeps its `summary`, a failing test its `name`.
 - `paths=0` (the default) makes every string that is a whole absolute path (but `/api/…`, `url`s
   and `command`s) its last component, and replaces the run dir, the repo and the home dir inside other
   strings with their last component (`~` for home).
@@ -1292,8 +1412,9 @@ Plain scripts unless noted; each defines one global and none parses API text as 
 | `gantt.js` | `ForgeGantt` | `render(container, run, {now, onSelect, sel, replay, critical, ghosts})`: attempts on wall-clock time in lanes; `strip(container, run, {now, replay})`: busy attempts and model calls against `max_parallel`. Under the attempts, the finish rows: `verify` (single-command verifications; the newest split into its runs back to back from its start, dashed because that placement is approximate), a `verify · <lane>` row per lane of a lanes verification (each run and rerun at its own time; a run with no exit is UNKNOWN once it ended, never FAIL) and `final review`. A lane or run item opens the verification inspector |
 | `panel.js` | `ForgePanel` | `render(host, ctx)`: the inspector for a run, task, execution, final review, verification, integration or Fractal node; fetches the lazy endpoints once per node; `ctx.diffHash(spec)` links into the diff viewer, `ctx.onFractal(task, TaskFractal)` hands a task's tree to the stage |
 | `verifyview.js` | `ForgeVerify` | `render(host, {run, now, fetchJSON, rerender})`: the verification inspector panel.js delegates to: while it runs, the elapsed time, step, last line and a flag past 5 minutes without output, and a live tail of the followed lane's log (or the single log) read again each poll; when it failed, the failing tests first, grouped by lane with new or known, each opening its lane's log at its line (in an export, the tail); a lanes table (state, time, reruns, counts). Pure helpers (`model`, `laneRow`, `groupFailing`, `idleWarning`, `openStep`, `tailLane`, `logPath`, `linesPath`, `tailLines`) are a CommonJS module too |
+| `checksview.js` | `ForgeChecks` | where each task stands and the checks its agents ran: `cell(task, now, ctx)` (the task table's Now column: the running call and for how long, a `quiet N min` flag past 5 minutes without output, or why it waits), `nowSection`, `execSection` and the attempts' checks and acceptance-criteria lines (`taskChecks`, `underExecution`, `attemptCriteria`) for panel.js, `schedulerFields` (the run inspector), `banner(head, ctx)` (the run header: environment problems more than one task met, read again at most every 15 s while tasks run) and `tick(root, now)`, which app.js calls each refresh to move `data-since`, `data-until` and `data-quiet` times. Pure helpers (`nowModel`, `waitingModel`, `nowRank`, `checkRow`, `countsText`, `coverageModel`, `bannerProblems`, `schedulerModel`, `quietText`, `untilText`) are a CommonJS module too |
 | `diffview.js` | `ForgeDiff` | `render(host, {run, spec, fetchJSON, rerender, href, closeHref})`: a DiffDetail with its findings under their lines; `spec` is `{kind: task, task, source, file}`, `{kind: final, name, file}` or `{kind: fractal, task, node, file}` |
-| `convo.js` | `ForgeConvo` | `render(host, {run, spec: {task, exec}, brief, live, fetchJSON, rerender, diffHash, closeHref})`: an ExecutionTranscript as a timeline, with search, the errors and, while the execution runs, a read of its log every 2.5 s |
+| `convo.js` | `ForgeConvo` | `render(host, {run, spec: {task, exec}, brief, live, fetchJSON, rerender, diffHash, closeHref, focus})`: an ExecutionTranscript as a timeline, with search, the errors and, while the execution runs, a read of its log every 2.5 s; `focus` (an event index) opens it at that event once and stops following the end |
 | `files.js` | `ForgeFiles` | `matrix(data, run, opts)` (pure: Files as rows of dirs and files against task columns by wave) and `render(host, data, {run, sel, onSelectTask, diffHref, prefs, savePrefs})`: the run's Files mode. Also a CommonJS module |
 | `cloudmodel.js` | `ForgeCloudModel` | pure: projects, per-run facts, the cloud's filters, its five layouts (anchors from every run, dragged runs kept), label picking, layout files. Also a CommonJS module |
 | `cloudui.js` | `ForgeCloudUI` | `create(root, ctx)`: the cloud's filter panel, layout and shape switches, position tools, legend and run card; a list of the same runs without 3D |
@@ -1310,7 +1431,7 @@ Routes (the URL hash): `#/` the map of every run; `#/cloud`, `#/cloud/runs/<key>
 selected), `#/cloud/projects/<id>` (a project in focus), `#/cloud/models/<alias>` (the cloud
 filtered to that model); `#/models` the leaderboard; `#/runs/<key>`; `…/tasks/<id>`;
 `…/tasks/<id>/executions/<name>`; `…/executions/<name>` (an execution that belongs to no
-task); `…/final-review[/<name>]`; `…/verification`; `…/integration`; `…/tasks/<id>/fractal/<node>`;
+task); an agent's conversation, `…/executions/<name>/conversation[/event/<n>]` after either; `…/final-review[/<name>]`; `…/verification`; `…/integration`; `…/tasks/<id>/fractal/<node>`;
 and the diff viewer: `…/tasks/<id>/diff[/<source>][/file/<path>]` (`source` is `current`, `prev`,
 `committed`, `existing` or an execution), `…/final-review/<name>/diff[/file/<path>]`,
 `…/tasks/<id>/fractal/<node>/diff[/file/<path>]` (`path` percent-encoded whole).

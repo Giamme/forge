@@ -120,6 +120,7 @@ class Analyze(unittest.TestCase):
         self.assertEqual(result['call'], {'index': 6, 'kind': 'command', 'command': 'bash tests/check.sh', 'tool': None, 'started': 200.0, 'check': 'test'})
         # the search for EPERM failed too, but a reader's output is the file it read, not the environment
         self.assertEqual(result['environment'], [{'index': 2, 'command': 'npm run db:up', 'problem': 'docker-pools',
+                                                  'label': 'Docker ran out of network address pools',
                                                   'line': 'Error response from daemon: all predefined address pools have been fully subnetted'}])
 
     def test_nothing_running_is_no_call(self):

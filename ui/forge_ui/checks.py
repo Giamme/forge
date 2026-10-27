@@ -245,7 +245,7 @@ def analyze(events):
       is the event's place in the transcript (the conversation view's `ev-<index>`).
     call: the call not answered yet ({index, kind: command|tool, command, tool, check, started}), the newest when
       several run at once, or None.
-    environment: [{index, command, problem, line}] for each problem a failed command met.
+    environment: [{index, command, problem, label, line}] for each problem a failed command met.
     """
     checks, problems, call = [], [], None
     for index, ev in enumerate(events):
@@ -268,7 +268,7 @@ def analyze(events):
                                counts=counts(ev.get('output'), check), tail=_tail(ev.get('output')) if failed else None))
         if failed and not _readonly(command):
             for key, line in environment(ev.get('output')):
-                problems.append(dict(index=index, command=_command(command), problem=key, line=line))
+                problems.append(dict(index=index, command=_command(command), problem=key, label=LABELS[key], line=line))
     return dict(checks=checks, call=call, environment=problems)
 
 

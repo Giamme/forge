@@ -611,6 +611,52 @@ pre.cmd { max-height: none; }
 .vfy-note { font-size: var(--t-xs); margin: var(--s-1) 0 0; }
 .vfy-summary, .vfy-endstep, .vfy-mutated { margin: var(--s-3) 0 0; font-size: var(--t-sm); }
 .vfy-lanes + .fields, .vfy-tail + .fields { margin-top: var(--s-4); }
+/* where a task stands and the checks its agents ran (checksview.js) */
+.now-cell { display: inline-flex; align-items: baseline; gap: 6px; max-width: 46ch; min-width: 0; font-size: var(--t-xs); white-space: nowrap; }
+.now-call { min-width: 0; overflow: hidden; text-overflow: ellipsis; font-family: var(--mono); font-size: var(--t-xs); color: var(--ink); }
+.now-cell .now-call { max-width: 30ch; }
+.now-time, .now-until { color: var(--muted); font-variant-numeric: tabular-nums; }
+.now-who, .now-why { color: var(--ink-2); }
+.now-waiting { white-space: normal; flex-wrap: wrap; column-gap: 4px; }
+.now-quiet { font-size: var(--t-xs); }
+.now-live { display: grid; gap: 4px; margin-top: 0; }
+.now-live .vfy-now { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 6px; }
+.now-doing .now-call { flex: 0 1 auto; max-width: 100%; white-space: nowrap; }
+.now-role { font-weight: 650; }
+.now-live .vfy-idle { margin: 0; }
+.now-live .vfy-idle[hidden] { display: none; }
+.now-split summary { cursor: pointer; font-size: var(--t-xs); color: var(--muted); }
+.checks-of { margin: 0 0 6px 2px; padding-left: 10px; border-left: 1px solid var(--rule-2); }
+.checks { gap: 2px; margin: 2px 0; }
+/* a check: its lamp, kind and command on one line, what it printed under them */
+.check-head { display: grid; grid-template-columns: 9px auto minmax(0, 1fr); align-items: center; gap: 1px 8px; min-width: 0; }
+.check-head .tag { align-self: center; }
+.check-cmd { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--t-xs); }
+a.check-cmd { color: var(--ink); text-underline-offset: 2px; }
+.check-meta { grid-column: 2 / -1; display: flex; flex-wrap: wrap; gap: 0 8px; color: var(--muted); font-size: var(--t-xs); }
+.check-meta .warn { font-weight: 600; }
+.check-tail { border: 0; padding: 0 0 0 17px; }
+.check-tail summary { cursor: pointer; font-size: var(--t-xs); color: var(--muted); }
+.check-tail pre { margin: 4px 0 0; max-height: 12em; }
+.checks-none { margin: 2px 0 4px; font-size: var(--t-xs); }
+.check-env { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 6px; margin: 4px 0 0; font-size: var(--t-xs); color: var(--ink-2); }
+.check-env-what { color: var(--warn-ink); font-weight: 600; }
+.check-env .mono { min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink); text-underline-offset: 2px; }
+.checks-criteria { margin: 6px 0 0; padding-top: 6px; border-top: 1px solid var(--rule); font-size: var(--t-xs); }
+.checks-cov { margin: 0; }
+.checks-missing { gap: 2px; margin: 4px 0 0; font-size: var(--t-xs); }
+.checks-missing code { overflow-wrap: anywhere; }
+.checks-section .checks-of { border: 0; padding: 0; margin: 0; }
+.env-banner { display: flex; align-items: flex-start; gap: var(--s-2) var(--s-3); padding: 6px 10px; border-radius: var(--r-key); background: var(--warn-wash); color: var(--ink); font-size: var(--t-sm); }
+.env-banner > .plate { flex: none; margin-top: 1px; }
+.env-list { flex: 1 1 auto; min-width: 0; gap: 2px; margin: 0; font-size: inherit; }
+.env-head strong { color: var(--warn-ink); font-weight: 650; }
+.env-head a { color: var(--ink); }
+.env-hits { border: 0; padding: 0; font-size: var(--t-xs); }
+.env-hits summary { cursor: pointer; color: var(--ink-2); }
+.env-hits[open] { max-height: 30vh; overflow: auto; }
+.env-hit-list { gap: 6px; margin: 4px 0 2px; font-size: var(--t-xs); }
+.env-line { color: var(--ink-2); overflow-wrap: anywhere; white-space: pre-wrap; }
 .phase-bar { display: flex; height: 8px; border-radius: 4px; overflow: hidden; margin: 6px 0; background: var(--module-2); }
 .phase { min-width: 2px; }
 .phase-legend { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: var(--t-xs); color: var(--muted); }

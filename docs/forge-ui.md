@@ -69,6 +69,25 @@ view the verification has rows of its own after the tasks, one per lane with a b
 reruns marked (a single command's runs sit back to back, dashed, because only their durations
 are known), and its finish node counts the lanes and reruns.
 
+The task table's *Now* column, and *Now* at the top of a task's inspector, say where each task
+is. A running task names the dwarf or reviewer at work, the command it is running (and whether
+it is a test, type check, lint or build) and for how long, and flags *quiet N min* once its log
+has said nothing for five minutes. A task that is not running says why: the tasks it waits on, a
+running task it shares files with, no free slot, a drain or stop, an infrastructure pause with
+its countdown, or the retry policy's stop with the split it suggests. The run's inspector says
+what the scheduler is doing and how many tasks wait on what.
+
+Under each attempt's dwarf and reviewer are the checks they ran, read from their logs: each
+test, type check, lint or build with its exit, its time and the counts it printed, a failed
+one's last lines, and a link to that command in the conversation. Each attempt then says which
+of the commands its brief's `## Acceptance criteria` names ran, ran another way, or never ran.
+When a failed command met an environment problem (Docker down or out of address pools, a port in
+use, the sandbox's EPERM, a refused local service, no network, a full disk, a missing command)
+the attempt says so, and when more than one task met the same one, a banner in the run's header
+lists them. codex and grok log no times, so forge keeps a small clock beside each agent's log
+(`<role>.clock`, off with `FORGE_LOG_CLOCK=off`); runs from before it show their checks without
+times.
+
 ### Controls
 
 forge-ui reads everything, and it changes things only by calling forge's own commands: it

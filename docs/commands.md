@@ -241,6 +241,10 @@ is started in its own session, and after it exits any process still alive in tha
 listed in `<role>.orphans` and stopped, so a backgrounded measurement cannot outlive the
 dispatch. The timeout watchdog and the exit trap signal the whole session too.
 
+**Log clock.** Beside the log, `<role>.clock` records when it grew (one `<epoch> <bytes>` line for
+each second it did), so forge-ui can time the commands of a harness that logs no times (codex,
+grok). It never changes a dispatch's outcome; `FORGE_LOG_CLOCK=off` turns it off.
+
 ```bash
 # what would this actually run?
 bash scripts/forge-dispatch.sh dwarf sol:ultra --prompt-file /tmp/p --dry-run
