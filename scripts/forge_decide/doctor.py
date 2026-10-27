@@ -1,0 +1,185 @@
+"""Doctor's checks for decision-model settings that went stale.
+
+    checks(repo=None, *, env=None) -> [{"kind", "message", ...fields}]
+
+Offline, read-only and never raises. No item holds a key: they name files, gates, providers
+and thresholds only. Kinds:
+
+    threshold-override  a stored threshold differs from the measured default
+                        ({gate | source: 'jev.json', name, value, default}, plus `model`
+                        for a per-model value)
+    retired-threshold   a threshold nothing reads any more, in jev.json or in a gate
+    unknown-provider    a gate names a provider that is not configured
+    unused-provider     a configured provider no gate uses
+    shadowed            a repo value the user file overrides
+    misplaced           a user-only key in a repo file, or `privacy` in a user file
+    key-file            a provider's key file is missing or not mode 0600
+    privacy-floor       the repo has `privacy: never-send`
+    not-migrated        jev.json exists but decide.json does not
+    config-error        anything else wrong with reading the files
+
+A stored value equal to the default is not an override. A value is compared against
+DEFAULT_THRESHOLDS after THRESHOLD_FALLBACK, so a stored drift_warn is compared with gate_warn.
+"""
+from __future__ import annotations
+
+from pathlib import Path
+
+from . import GATES, config_dir, load_repo, load_user, repo_path, user_path
+from .migrate import retired_thresholds
+from .resolve import resolve
+
+MISPLACED_MARKERS = ('user file only', 'only in a repo file')
+
+
+def _default(name: str):
+    import forge_jev
+    name = forge_jev.THRESHOLD_FALLBACK.get(name, name)
+    return forge_jev.DEFAULT_THRESHOLDS.get(name)
+
+
+def _number(value) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _thresholds(values, retired: frozenset, where: dict, items: list, label: str) -> None:
+    if not isinstance(values, dict):
+        return
+    for name, value in sorted(values.items()):
+        if name in retired:
+            items.append(dict(kind='retired-threshold', name=name, value=value, **where,
+                              message=f'{label}: threshold {name} is retired; safe to delete'))
+            continue
+        default = _default(name)
+        if default is not None and _number(value) and value != default:
+            items.append(dict(kind='threshold-override', name=name, value=value, default=default, **where,
+                              message=f'{label}: {name} is {value}, the measured default is {default}'))
+
+
+def _jev_json(retired: frozenset, items: list) -> bool:
+    """Check jev.json; True when the file exists."""
+    import forge_jev
+    path = forge_jev.config_path()
+    if not path.exists():
+        return False
+    try:
+        stored = forge_jev.read_json(path)
+    except (OSError, ValueError, RecursionError) as exc:
+        items.append(dict(kind='config-error', message=f'{path}: unreadable ({type(exc).__name__})'))
+        return True
+    if not isinstance(stored, dict):
+        return True
+    where = dict(source='jev.json')
+    _thresholds(stored.get('thresholds'), retired, where, items, str(path))
+    per_model = stored.get('model_thresholds')
+    if isinstance(per_model, dict):
+        for model, values in sorted(per_model.items()):
+            _thresholds(values, retired, dict(where, model=model), items, f'{path} [{model}]')
+    return True
+
+
+def _provider_names(data: dict) -> set:
+    names = set()
+    gates = data.get('gates')
+    if isinstance(gates, dict):
+        names.update(g.get('provider') for g in gates.values() if isinstance(g, dict))
+    return {n for n in names if isinstance(n, str)}
+
+
+def _used_providers(user: dict, repo: dict, resolved: dict) -> set:
+    used = {gate['provider'] for gate in resolved['gates'].values() if gate.get('provider')}
+    for data in (user, repo):
+        used |= _provider_names(data)
+        profiles = data.get('profiles')
+        if isinstance(profiles, dict):
+            for profile in profiles.values():
+                if isinstance(profile, dict):
+                    used |= _provider_names(profile)
+    return used
+
+
+def _key_path(value: str) -> Path:
+    path = Path(value).expanduser()
+    return path if path.is_absolute() else config_dir() / path
+
+
+def _key_files(providers: dict, items: list) -> None:
+    for name, provider in sorted(providers.items()):
+        key_file = provider.get('key_file') if isinstance(provider, dict) else None
+        if not isinstance(key_file, str) or not key_file:
+            continue
+        path = _key_path(key_file)
+        try:
+            mode = path.stat().st_mode & 0o777
+        except OSError:
+            items.append(dict(kind='key-file', provider=name, path=str(path),
+                              message=f'provider {name}: key file {path} is missing'))
+            continue
+        if mode != 0o600:
+            items.append(dict(kind='key-file', provider=name, path=str(path), mode=format(mode, '04o'),
+                              message=f'provider {name}: key file {path} is mode {mode:04o}, expected 0600'))
+
+
+def _checks(repo, env, items: list) -> None:
+    retired = retired_thresholds()
+    has_jev = _jev_json(retired, items)
+    migrated = user_path().exists()
+    if has_jev and not migrated:
+        items.append(dict(kind='not-migrated',
+                          message='jev.json exists but decide.json does not; run `forge decide migrate`'))
+
+    user, error = load_user()
+    if error:
+        items.append(dict(kind='config-error', message=error))
+    repo_data = {}
+    if repo is not None:
+        repo_data, error = load_repo(repo)
+        if error:
+            items.append(dict(kind='config-error', message=error))
+    resolved = resolve(repo, env=env)
+
+    for label, data in ((str(user_path()), user), (str(repo_path(repo)) if repo is not None else '', repo_data)):
+        gates = data.get('gates')
+        if not isinstance(gates, dict):
+            continue
+        for gate in GATES:
+            entry = gates.get(gate)
+            if isinstance(entry, dict):
+                _thresholds(entry.get('thresholds'), retired, dict(gate=gate), items, f'{label} gates.{gate}')
+
+    providers = user.get('providers')
+    providers = providers if isinstance(providers, dict) else {}
+    for gate in GATES:
+        name = resolved['gates'][gate].get('provider')
+        if name and name not in providers:
+            items.append(dict(kind='unknown-provider', gate=gate, provider=name,
+                              message=f'gate {gate} names provider {name!r}, which is not configured'))
+    used = _used_providers(user, repo_data, resolved)
+    for name in sorted(providers):
+        if name not in used:
+            items.append(dict(kind='unused-provider', provider=name,
+                              message=f'provider {name!r} is configured but no gate uses it'))
+
+    for entry in resolved['shadowed']:
+        items.append(dict(kind='shadowed', **entry,
+                          message=f"{entry['key']}: the repo sets {entry['repo']!r}, the user file's "
+                                  f"{entry['user']!r} wins"))
+    for error in resolved['errors']:
+        if any(marker in error for marker in MISPLACED_MARKERS):
+            items.append(dict(kind='misplaced', message=error))
+    _key_files(providers, items)
+
+    privacy = resolved['privacy']
+    if privacy.get('floor'):
+        items.append(dict(kind='privacy-floor', path=privacy.get('path'),
+                          message=f"{privacy.get('path')}: privacy is {privacy['floor']}; every gate is off"))
+
+
+def checks(repo=None, *, env=None) -> list:
+    """Every stale or inconsistent setting found. Never raises."""
+    items: list = []
+    try:
+        _checks(repo, env, items)
+    except Exception as exc:  # doctor must keep going; the type alone cannot leak a key
+        items.append(dict(kind='config-error', message=f'decision-model checks failed ({type(exc).__name__})'))
+    return items
