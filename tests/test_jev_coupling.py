@@ -1,5 +1,9 @@
-"""Plan-time semantic wave coupling: warns on same-wave pairs, never edits the plan."""
+"""Plan-time forward-dependency check: warns on earlier-wave tasks written against later ones, never edits the plan."""
 import dataset_isolation  # noqa: F401  keeps the run dataset out of the developer's store
+import argparse
+import contextlib
+import io
+import json
 import sys
 import tempfile
 import unittest
@@ -8,41 +12,11 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / 'scripts'))
 
-from forge_jev import DEFAULT_THRESHOLDS, coupling  # noqa: E402
+from forge_jev import DEFAULT_THRESHOLDS, RETIRED_THRESHOLDS, SITE_CAPABILITY, cli, coupling  # noqa: E402
 
 
 def task(task_id, title='t', files='-', difficulty='low', deps='-'):
     return dict(id=task_id, title=title, files=files, difficulty=difficulty, deps=deps)
-
-
-class PairsTests(unittest.TestCase):
-    def test_pairs_only_form_within_a_wave(self):
-        tasks = {i: task(i) for i in ('a', 'b', 'c', 'd')}
-        waves = {'1': ['a', 'b'], '2': ['c', 'd']}
-        found = coupling.pairs(tasks, waves)
-        self.assertEqual(sorted(found), [('a', 'b'), ('c', 'd')])
-        # Never across waves: 'b' and 'c' are in different waves and must not appear.
-        self.assertNotIn(('b', 'c'), found)
-
-    def test_a_single_task_wave_produces_no_pairs(self):
-        tasks = {'a': task('a')}
-        waves = {'1': ['a']}
-        self.assertEqual(coupling.pairs(tasks, waves), [])
-
-    def test_unknown_ids_in_a_wave_are_ignored_rather_than_raising(self):
-        tasks = {'a': task('a'), 'b': task('b')}
-        waves = {'1': ['a', 'b', 'ghost']}
-        self.assertEqual(coupling.pairs(tasks, waves), [('a', 'b')])
-
-    def test_max_pairs_cap_is_deterministic(self):
-        ids = [f't{i:03d}' for i in range(15)]  # 15 choose 2 = 105 > MAX_PAIRS
-        tasks = {i: task(i) for i in ids}
-        waves = {'1': ids}
-        first = coupling.pairs(tasks, waves)
-        second = coupling.pairs(tasks, waves)
-        self.assertEqual(len(first), coupling.MAX_PAIRS)
-        self.assertEqual(first, second)
-        self.assertEqual(first, sorted(first))
 
 
 class ParseTasksTests(unittest.TestCase):
@@ -77,139 +51,8 @@ class ParseTasksTests(unittest.TestCase):
         self.assertEqual(coupling.parse_waves(self.plan), {'1': ['a', 'b'], '2': ['c']})
 
 
-class CoupledPairsTests(unittest.TestCase):
-    def setUp(self):
-        self.dir = tempfile.TemporaryDirectory()
-        self.addCleanup(self.dir.cleanup)
-        self.repo = Path(self.dir.name)
-
-    def test_a_single_task_wave_asks_nothing(self):
-        tasks = [task('a')]
-        waves = {'1': ['a']}
-        with patch('forge_jev.coupling.ask') as mocked:
-            self.assertEqual(coupling.coupled_pairs(self.repo, tasks=tasks, waves=waves), [])
-        mocked.assert_not_called()
-
-    def test_a_failed_request_is_none_not_an_empty_list(self):
-        tasks = [task('a'), task('b')]
-        waves = {'1': ['a', 'b']}
-        with patch('forge_jev.coupling.ask', return_value=None):
-            found = coupling.coupled_pairs(self.repo, tasks=tasks, waves=waves)
-        self.assertIsNone(found)
-
-    def test_only_pairs_at_or_above_threshold_are_returned_highest_first(self):
-        tasks = [task('a'), task('b'), task('c'), task('d')]
-        waves = {'1': ['a', 'b', 'c', 'd']}
-        candidate_pairs = coupling.pairs({t['id']: t for t in tasks}, waves)
-        # 6 pairs for 4 tasks; give distinct probabilities so ranking is unambiguous.
-        values = [0.95, 0.10, 0.61, 0.60, 0.59, 0.80]
-        answers = {f'p{i}': dict(type='noul', noul=v) for i, v in enumerate(values[:len(candidate_pairs)])}
-        with patch('forge_jev.coupling.ask', return_value=dict(answers=answers)):
-            found = coupling.coupled_pairs(self.repo, tasks=tasks, waves=waves)
-        # coupling_warn, not gate_warn: this rubric's own measured scale. Everything
-        # above it is ranked, then capped -- the ordering is the signal, and a plan that
-        # warns about half its pairs teaches people to ignore the warning.
-        warn = DEFAULT_THRESHOLDS['coupling_warn']
-        probabilities = [p for _a, _b, p in found]
-        self.assertEqual(probabilities, sorted(probabilities, reverse=True))
-        self.assertTrue(all(p >= warn for p in probabilities))
-        above = sorted((v for v in values[:len(candidate_pairs)] if v >= warn), reverse=True)
-        self.assertEqual(probabilities, above[:coupling.MAX_WARNINGS])
-
-    def test_pairs_are_never_formed_across_waves(self):
-        tasks = [task('a'), task('b'), task('c')]
-        waves = {'1': ['a', 'b'], '2': ['c']}
-        captured = {}
-
-        def fake_ask(state, questions, **kwargs):
-            captured['questions'] = questions
-            return dict(answers={qid: dict(type='noul', noul=0.9) for qid in questions})
-
-        with patch('forge_jev.coupling.ask', side_effect=fake_ask):
-            found = coupling.coupled_pairs(self.repo, tasks=tasks, waves=waves)
-        self.assertEqual(len(captured['questions']), 1)  # only the (a, b) pair
-        pair_ids = {(a, b) for a, b, _p in found}
-        self.assertEqual(pair_ids, {('a', 'b')})
-
-    def test_max_pairs_cap_is_respected_in_a_real_request(self):
-        ids = [f't{i:03d}' for i in range(15)]
-        tasks = [task(i) for i in ids]
-        waves = {'1': ids}
-        captured = {}
-
-        def fake_ask(state, questions, **kwargs):
-            captured['questions'] = questions
-            return dict(answers={qid: dict(type='noul', noul=0.0) for qid in questions})
-
-        with patch('forge_jev.coupling.ask', side_effect=fake_ask):
-            coupling.coupled_pairs(self.repo, tasks=tasks, waves=waves)
-        self.assertEqual(len(captured['questions']), coupling.MAX_PAIRS)
-
-
-if __name__ == '__main__':
-    unittest.main()
-
-
-class MeasuredThresholdTests(unittest.TestCase):
-    """This gate borrowed gate_warn and therefore never fired, on any plan, ever."""
-
-    def setUp(self):
-        self.dir = tempfile.TemporaryDirectory()
-        self.addCleanup(self.dir.cleanup)
-        self.plan = Path(self.dir.name)
-
-    def _tasks(self, n):
-        return [dict(id=f't{i}', title=f'Task {i}', files=f'f{i}.py', difficulty='low',
-                     prompt=f'requirements for t{i}') for i in range(n)]
-
-    def _found(self, probabilities):
-        tasks = self._tasks(len(probabilities) + 1)
-        waves = {'1': [task['id'] for task in tasks]}
-        captured = {}
-
-        def fake_ask(state, questions, **kwargs):
-            captured['state'] = state
-            answers = {qid: dict(type='noul', noul=p)
-                       for qid, p in zip(sorted(questions), probabilities)}
-            return dict(answers=answers)
-
-        with patch('forge_jev.coupling.ask', side_effect=fake_ask):
-            found = coupling.coupled_pairs(self.plan, tasks=tasks, waves=waves)
-        return found, captured.get('state')
-
-    def test_coupling_has_its_own_threshold_far_below_gate_warn(self):
-        # Measured over 11 same-wave pairs from a real plan with known outcomes, 5 runs
-        # each: coupling probabilities live at 0.09-0.27. gate_warn's 0.60 was not a
-        # strict threshold, it was unreachable -- the feature had never fired once.
-        warn = DEFAULT_THRESHOLDS['coupling_warn']
-        self.assertLess(warn, DEFAULT_THRESHOLDS['gate_warn'])
-        self.assertGreater(warn, 0.18, 'must clear the highest measured independent pair')
-        self.assertLess(warn, 0.22, 'must stay under the lowest measured coupled pair')
-
-    def test_the_requirements_reach_the_model(self):
-        # Without them this rubric had no signal at all: the two pairs that produced a
-        # defect that really shipped scored lowest of everything measured.
-        _found, state = self._found([0.9])
-        self.assertIn('requirements for t0', str(state))
-
-    def test_no_more_than_three_pairs_are_reported(self):
-        # Rank is the signal, not the absolute value, and the distribution moves with the
-        # plan. At a fixed threshold a real 8-task plan warned about 12 of its 21 pairs.
-        found, _state = self._found([0.9] * 10)
-        self.assertLessEqual(len(found), coupling.MAX_WARNINGS)
-
-    def test_the_three_reported_are_the_highest_scoring(self):
-        found, _state = self._found([0.21, 0.95, 0.22, 0.80, 0.60])
-        self.assertEqual([p for _a, _b, p in found], [0.95, 0.8, 0.6])
-
-    def test_a_plan_with_nothing_above_the_threshold_reports_nothing(self):
-        found, _state = self._found([0.19, 0.10, 0.05])
-        self.assertEqual(found, [])
-
-
-
 class ForwardPairTests(unittest.TestCase):
-    """The ordering question `pairs()` structurally could not ask.
+    """The ordering question: an earlier-wave task written against a later one.
 
     jevscope's `readme` ran in wave 1 documenting the CLI that wave 2 built. It passed
     its own review -- the thing it was wrong about did not exist yet -- and shipped
@@ -221,7 +64,7 @@ class ForwardPairTests(unittest.TestCase):
         waves = {'1': ['a', 'b'], '2': ['c']}
         found = coupling.forward_pairs(tasks, waves)
         self.assertEqual(sorted(found), [('a', 'c'), ('b', 'c')])
-        # Never the safe direction, and never within a wave -- that is coupled_pairs.
+        # Never the safe direction, and never within a wave.
         self.assertNotIn(('c', 'a'), found)
         self.assertNotIn(('a', 'b'), found)
 
@@ -243,9 +86,7 @@ class ForwardPairTests(unittest.TestCase):
         tasks = {i: task(i) for i in ('a', 'b')}
         self.assertEqual(coupling.forward_pairs(tasks, {'1': ['a', 'b']}), [])
 
-    def test_the_pair_budget_is_separate_and_deterministic(self):
-        # Sharing MAX_PAIRS would let one large first wave spend the whole allowance
-        # inside itself and never ask the ordering question at all.
+    def test_the_pair_budget_is_capped_and_deterministic(self):
         early = [f'e{i:03d}' for i in range(30)]
         late = [f'l{i:03d}' for i in range(30)]
         tasks = {i: task(i) for i in early + late}
@@ -290,8 +131,8 @@ class ForwardDependencyTests(unittest.TestCase):
                 waves={'1': ['a'], '2': ['b']}))
 
     def test_it_is_logged_under_its_own_site(self):
-        # Sharing jev-coupling's site would make the two rubrics indistinguishable in
-        # the run log, and the log is the only place a threshold can be re-measured.
+        # The run log is the only place a threshold can be re-measured, so the site
+        # name is part of the contract.
         _found, captured = self._ask([0.9])
         self.assertEqual(captured['site'], 'jev-forward')
 
@@ -345,9 +186,72 @@ class ForwardThresholdTests(unittest.TestCase):
         self.assertGreater(warn, 0.15 + 0.07, 'must clear the worst true negative by more than noise')
         self.assertLess(warn, 0.88 - 0.07, 'must stay clear of the one known positive by the same')
 
-    def test_forward_and_coupling_are_separate_keys(self):
-        # Different rubrics, different questions, measured separately: same-wave
-        # probabilities live at 0.09-0.38, forward ones at 0.05-0.90. Sharing a number
-        # is how coupling itself ended up never firing.
-        self.assertNotEqual(DEFAULT_THRESHOLDS['forward_warn'],
-                            DEFAULT_THRESHOLDS['coupling_warn'])
+    def test_coupling_warn_is_retired_not_a_live_threshold(self):
+        # The same-wave rubric is gone: a stored coupling_warn is safe to delete, and
+        # doctor must say so rather than call it unknown.
+        self.assertNotIn('coupling_warn', DEFAULT_THRESHOLDS)
+        self.assertIn('coupling_warn', RETIRED_THRESHOLDS)
+
+
+class CmdCouplingTests(unittest.TestCase):
+    """`forge-jev.py coupling` asks only the forward rubric."""
+
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        self.plan = Path(self.dir.name)
+        # a and b share wave 1 (the removed same-wave pair); c is wave 2, so a->c and
+        # b->c are the only candidates for the forward rubric.
+        (self.plan / 'tasks.tsv').write_text('\n'.join([
+            'a\t-\tlow\ta.py\topus\topus\tTask a',
+            'b\t-\tlow\tb.py\topus\topus\tTask b',
+            'c\t-\tlow\tc.py\topus\topus\tTask c',
+        ]) + '\n')
+        (self.plan / 'waves.tsv').write_text('1\ta\n1\tb\n2\tc\n')
+
+    def _run(self, answer_for, ready=True, as_json=False):
+        calls = []
+
+        def fake_ask(state, questions, **kwargs):
+            calls.append((kwargs.get('site'), dict(questions)))
+            return dict(answers={qid: dict(type='noul', noul=answer_for(qid))
+                                 for qid in questions})
+
+        def fake_ready(site, config=None):
+            return ready and site == 'jev-forward'
+
+        args = argparse.Namespace(plan=str(self.plan), repo=str(self.plan), json=as_json)
+        out = io.StringIO()
+        with patch('forge_jev.cli.load_config', return_value={}), \
+                patch('forge_jev.cli.site_ready', side_effect=fake_ready), \
+                patch('forge_jev.coupling.ask', side_effect=fake_ask), \
+                contextlib.redirect_stdout(out):
+            rc = cli.cmd_coupling(args)
+        return rc, out.getvalue(), calls
+
+    def test_only_the_forward_rubric_is_asked_and_only_forward_rows_come_back(self):
+        # f0 is (a, c), f1 is (b, c). The same-wave pair (a, b) must never be asked.
+        rc, out, calls = self._run(lambda qid: 0.9 if qid == 'f0' else 0.1)
+        self.assertEqual(rc, 0)
+        self.assertEqual([site for site, _q in calls], ['jev-forward'])
+        self.assertEqual(sorted(calls[0][1]), ['f0', 'f1'])
+        self.assertEqual(out.strip().split('\t')[3], 'forward')
+        self.assertEqual(out.strip().split('\t')[:2], ['a', 'c'])
+        written = json.loads((self.plan / 'jev-coupling.json').read_text())
+        self.assertEqual([(r['a'], r['b'], r['kind']) for r in written], [('a', 'c', 'forward')])
+
+    def test_nothing_found_exits_3_and_writes_nothing(self):
+        rc, out, _calls = self._run(lambda qid: 0.05)
+        self.assertEqual((rc, out), (3, ''))
+        self.assertFalse((self.plan / 'jev-coupling.json').exists())
+
+    def test_it_is_gated_on_jev_forward_even_when_other_gates_sites_are_ready(self):
+        # jev-drift is also a gates site; only jev-forward readiness may let this run.
+        self.assertEqual(SITE_CAPABILITY['jev-forward'], 'gates')
+        self.assertNotIn('jev-coupling', SITE_CAPABILITY)
+        rc, out, calls = self._run(lambda qid: 0.9, ready=False)
+        self.assertEqual((rc, out, calls), (3, '', []))
+
+
+if __name__ == '__main__':
+    unittest.main()
