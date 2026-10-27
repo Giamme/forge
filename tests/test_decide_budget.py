@@ -121,6 +121,14 @@ class CapTests(BudgetTestCase):
         self.assertEqual(self.check(run, run_usd=1), 'budget')
         self.assertEqual(self.check(self.run_dir('b'), daily_usd=1), 'budget')
 
+    def test_small_charges_are_not_rounded_away(self):
+        run = self.run_dir()
+        for _ in range(16):
+            budget.charge({'price_usd_per_mtok': 0.0625}, {'total_tokens': 1001}, run_dir=run, now=NOON)
+        self.assertEqual(self.check(run, run_usd=0.001001), 'budget')
+        self.assertEqual(self.check(self.run_dir('b'), daily_usd=0.001001), 'budget')
+        self.assertIsNone(self.check(run, run_usd=0.00101, daily_usd=0.00101))
+
     def test_local_provider_spends_no_usd(self):
         run = self.run_dir()
         budget.charge({**PRICED, 'local': True}, {'total_tokens': 5_000_000}, run_dir=run, now=NOON)

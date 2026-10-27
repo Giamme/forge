@@ -25,7 +25,7 @@ from . import state_dir
 RUN_FILE = 'decide.budget.json'
 RUN_DIR_ENV = 'FORGE_DECIDE_RUN_DIR'
 SKIP = 'budget'
-USD_DIGITS = 9  # stored dollars are rounded so float drift (ten $0.10 charges) cannot miss a cap
+USD_SLACK = 1e-9  # relative: float drift in summed charges (ten $0.10 ones) must not miss a cap
 
 
 def _number(value) -> float:
@@ -74,7 +74,7 @@ def _read(path: Path | None) -> dict:
         return zero
     try:
         data = json.loads(path.read_text())
-        return {'tokens': int(_number(data['tokens'])), 'usd': round(float(_number(data['usd'])), USD_DIGITS)}
+        return {'tokens': int(_number(data['tokens'])), 'usd': float(_number(data['usd']))}
     except (OSError, ValueError, KeyError, TypeError, OverflowError, RecursionError):
         return zero
 
@@ -86,7 +86,7 @@ def _add(path: Path, tokens: int, usd: float) -> None:
             fcntl.flock(lock, fcntl.LOCK_EX)
             total = _read(path)
             total['tokens'] += tokens
-            total['usd'] = round(total['usd'] + usd, USD_DIGITS)
+            total['usd'] += usd
             tmp = path.with_name(f'{path.name}.{os.getpid()}.tmp')
             try:
                 tmp.write_text(json.dumps(total))
@@ -99,7 +99,7 @@ def _add(path: Path, tokens: int, usd: float) -> None:
 
 def _reached(counter: dict, tokens, usd) -> bool:
     return ((tokens is not None and counter['tokens'] >= tokens)
-            or (usd is not None and counter['usd'] >= usd))
+            or (usd is not None and counter['usd'] >= usd * (1 - USD_SLACK)))
 
 
 def check(caps, *, run_dir=None, now=None) -> str | None:
