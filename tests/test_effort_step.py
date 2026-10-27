@@ -69,12 +69,18 @@ class EffortsTests(unittest.TestCase):
                 result = self.efforts(spec)
                 self.assertEqual((result.returncode, result.stdout), (0, ''), result.stderr)
 
-    def test_an_unknown_alias_exits_2(self):
-        for spec in ('not-a-model', 'not-a-model:high:codex'):
+    def test_an_unknown_alias_with_no_harness_exits_2(self):
+        result = self.efforts('not-a-model')
+        self.assertEqual((result.returncode, result.stdout), (2, ''), result.stderr)
+
+    def test_a_literal_model_id_takes_its_harness_ladder_as_a_dispatch_does(self):
+        # A dispatch runs an alias with no row for the named harness as a literal model id, with
+        # no ceiling: any word of that harness's ladder.
+        for spec, ladder in (('not-a-model:high:codex', 'low\nmedium\nhigh\nxhigh\nmax\nultra\n'),
+                             ('sol:high:claude', 'low\nmedium\nhigh\nxhigh\nmax\n')):
             with self.subTest(spec=spec):
                 result = self.efforts(spec)
-                self.assertEqual(result.returncode, 2, result.stderr)
-                self.assertEqual(result.stdout, '')
+                self.assertEqual((result.returncode, result.stdout), (0, ladder), result.stderr)
 
 
 class RouteTests(unittest.TestCase):
@@ -100,10 +106,10 @@ class RouteTests(unittest.TestCase):
         elif path.exists():
             path.unlink()
 
-    def route(self, *extra):
+    def route(self, *extra, env=None):
         return subprocess.run([sys.executable, str(ROUTE), 'escalation', '--plan', str(self.plan),
                                '--task', 'a', *extra],
-                              capture_output=True, text=True, timeout=30, env=clean_env())
+                              capture_output=True, text=True, timeout=30, env=env or clean_env())
 
     def test_three_failures_at_the_top_tier_step_to_the_next_effort(self):
         self.task('astra:medium', TOP, self.rows('astra:medium', 3), effort=True)
@@ -147,6 +153,14 @@ class RouteTests(unittest.TestCase):
         self.task('gemini-pro', {'high': ['gemini-pro']}, self.rows('gemini-pro', 3), effort=True)
         result = self.route('--check')
         self.assertEqual((result.returncode, result.stdout), (0, 'gemini-pro:high\n'), result.stderr)
+
+    def test_the_step_starts_above_the_effort_a_dispatch_actually_ran(self):
+        # deep accepts only high and xhigh: a bare spec asks for medium, and dispatch runs high.
+        registry = self.plan.parent / 'registry.tsv'
+        registry.write_text('deep\tcodex\tdeep-model\thigh,xhigh\n')
+        self.task('deep', {'high': ['deep']}, self.rows('deep', 3), effort=True)
+        result = self.route('--check', env=dict(clean_env(), FORGE_REGISTRY=str(registry)))
+        self.assertEqual((result.returncode, result.stdout), (0, 'deep:xhigh\n'), result.stderr)
 
     def test_a_stronger_model_still_wins_over_the_effort_step(self):
         self.task('sol', {'low': ['sol'], 'high': ['astra']}, self.rows('sol', 3), effort=True)
@@ -210,6 +224,16 @@ class ControlEffortTests(unittest.TestCase):
                          [('set', None, 'escalate-effort', 'on', None),
                           ('set', None, 'escalate-effort', 'off', 'on')])
 
+    def test_turning_the_step_on_releases_tasks_the_policy_stopped(self):
+        stopped = self.plan / 'tasks' / 'a'
+        stopped.mkdir()
+        for name in ('escalation.stop', 'split.suggested', 'escalation.next'):
+            (stopped / name).write_text('x\n')
+        self.ok('set', self.plan, 'escalate-effort', 'off')                # off keeps them
+        self.assertTrue((stopped / 'escalation.stop').exists())
+        self.ok('set', self.plan, 'escalate-effort', 'on')
+        self.assertEqual(sorted(p.name for p in stopped.iterdir()), [])
+
     def test_a_bad_value_or_a_task_scope_is_refused_and_not_logged(self):
         self.assertEqual(self.run_control('set', self.plan, 'escalate-effort', 'maybe').returncode, 2)
         self.assertEqual(self.run_control('set', self.plan, 'escalate-effort', 'on', '--task', 'a').returncode, 2)
@@ -261,6 +285,30 @@ class EffortEndToEndTests(unittest.TestCase):
         self.assertIn('effort=high', (p / 'tasks/a/dwarf.resolved').read_text())
         self.assertIn('escalating from sol to sol:high', r.stdout)
         self.assertEqual((p / 'escalate_effort').read_text(), 'on\n')
+
+    def stopped_at_the_top_tier(self):
+        """A plan whose task the policy stopped after three failures, with the step off."""
+        p = self.pooled_plan('--dwarf-low', 'sol')
+        self.three_failures()
+        r = self.run_script('forge-parallel.sh', 'run', p, '--retry-failed', 3)
+        self.assertEqual(r.returncode, 5, r.stdout)
+        self.assertTrue((p / 'tasks/a/escalation.stop').exists())
+        return p
+
+    def test_the_run_switch_releases_a_task_stopped_with_the_step_off(self):
+        p = self.stopped_at_the_top_tier()
+        r = self.run_script('forge-parallel.sh', 'run', p, '--retry-failed', 3, '--escalate-effort')
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertEqual(self.spent_on(p)[-1], ('4', 'PASS', 'sol:high'))
+
+    def test_the_control_releases_a_task_stopped_with_the_step_off(self):
+        p = self.stopped_at_the_top_tier()
+        done = subprocess.run([sys.executable, str(CONTROL), 'set', str(p), 'escalate-effort', 'on'],
+                              capture_output=True, text=True, env=self.env, timeout=60)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        r = self.run_script('forge-parallel.sh', 'run', p, '--retry-failed', 3)
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertEqual(self.spent_on(p)[-1], ('4', 'PASS', 'sol:high'))
 
     def test_run_and_retry_persist_the_switch_and_integrate_rejects_it(self):
         p = self.plan_of([('a', '-', 'a.txt')])

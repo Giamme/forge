@@ -355,13 +355,26 @@ def _accepted_efforts(spec: str) -> list:
     return [line.strip() for line in done.stdout.splitlines() if line.strip()]
 
 
+def _effective_effort(requested: str, accepted: list):
+    """The effort a dwarf dispatch runs when `requested` is asked of a pairing accepting
+    `accepted`: as asked when accepted, else the strongest accepted at or below it, else the
+    weakest accepted (forge-dispatch.sh's clamp)."""
+    if requested in accepted:
+        return requested
+    want = EFFORT_RANK.get(requested)
+    below = [e for e in accepted if want is not None and EFFORT_RANK.get(e, 99) <= want]
+    return below[-1] if below else (accepted[0] if accepted else None)
+
+
 def _next_effort_spec(spec: str):
-    """The same alias and harness at the next accepted effort above the current one, or None."""
+    """The same alias and harness at the next accepted effort above the one a dispatch of
+    `spec` actually runs, or None."""
     alias, _effort, harness = _spec_parts(spec)
-    rank = EFFORT_RANK.get(_effort_of(spec))
+    accepted = _accepted_efforts(spec)
+    rank = EFFORT_RANK.get(_effective_effort(_effort_of(spec), accepted) or '')
     if not alias or rank is None:
         return None
-    for effort in _accepted_efforts(spec):
+    for effort in accepted:
         other = EFFORT_RANK.get(effort)
         if other is not None and other > rank:
             return '%s:%s:%s' % (alias, effort, harness) if harness else '%s:%s' % (alias, effort)

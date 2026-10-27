@@ -16,8 +16,11 @@
 #   forge-dispatch.sh efforts --spec <spec>
 #                                  the efforts this pairing accepts, weakest first, one per
 #                                  line. Prints nothing when the pairing has no ladder or no
-#                                  effort dial. Exit 2 for an unknown alias. Never dispatches,
-#                                  never needs the harness installed, and never writes a file.
+#                                  effort dial. A literal model id (an alias with no row for the
+#                                  named harness) takes its harness's whole ladder, as on a
+#                                  dispatch. Exit 2 for an alias the registry does not know when
+#                                  no harness is named. Never dispatches, never needs the
+#                                  harness installed, and never writes a file.
 #
 # Timeout precedence: --timeout, then FORGE_TIMEOUT (both used as given, 0 included),
 #   then the registry row's optional 5th `timeout` column, then the built-in 2700 (45m).
@@ -129,18 +132,20 @@ efforts_cmd() { # efforts_cmd --spec <spec>
   fi
   ROW="$(lookup "$ALIAS" "$HARNESS")"
   if [ -z "$ROW" ]; then
-    # A known alias with no row for this harness is a literal model id on a dispatch, and a
-    # literal has no effort dial. An alias the registry does not know at all is an error.
-    if [ -n "$(awk -F'\t' -v a="$ALIAS" '!/^#/ && NF >= 3 && $1 == a { print "yes"; exit }' "$REGISTRY")" ]; then
-      exit 0
-    fi
-    die "'$ALIAS' is not a known alias"
+    # As on a dispatch: with a harness named, an alias with no row for it is a literal model
+    # id with no ceiling; with none named, an alias the registry does not know is an error.
+    [ -n "$HARNESS" ] || die "'$ALIAS' is not a known alias"
+    CEILING="-"
+  else
+    IFS=$'\t' read -r HARNESS MODEL CEILING timeout <<< "$ROW"
   fi
-  IFS=$'\t' read -r HARNESS MODEL CEILING timeout <<< "$ROW"
   LADDER="$(ladder_for "$HARNESS")"
   [ -n "$LADDER" ] || exit 0          # opencode and anything else with no effort dial
   case "$CEILING" in
-    -|none) exit 0 ;;
+    none) exit 0 ;;
+    -)  # no ceiling: a dispatch takes any word of the harness's ladder
+      for w in $LADDER; do printf '%s\n' "$w"; done
+      ;;
     "<="*)
       top="${CEILING#<=}"
       for w in $LADDER; do
@@ -149,15 +154,12 @@ efforts_cmd() { # efforts_cmd --spec <spec>
       done
       ;;
     *)
-      # The list form, weakest first. Ladder order is that order; a word the ladder does
-      # not know is still accepted (dispatch keeps it) and is printed after those.
+      # The list form, weakest first in ladder order. A listed word the ladder does not know
+      # is not printed: a dispatch at it stops with "invalid effort".
       ALLOWED="$(printf '%s' "$CEILING" | tr ',' ' ')"
       pad=" $ALLOWED "
       for w in $LADDER; do
         case "$pad" in *" $w "*) printf '%s\n' "$w" ;; esac
-      done
-      for w in $ALLOWED; do
-        case " $LADDER " in *" $w "*) ;; *) printf '%s\n' "$w" ;; esac
       done
       ;;
   esac

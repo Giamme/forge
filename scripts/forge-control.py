@@ -571,7 +571,9 @@ def cmd_set(args):
         raise Invalid(f'{args.key}: {error}')
     rel = f'tasks/{task}/{name}' if task else name
     drop = value == 'inherit' or (value == 'none' and not task) or (args.key == 'escalate-effort' and value == 'off')
-    wide = args.key == 'escalate-after' and value == '0'
+    # Plan-wide stop markers go when the policy that wrote them changes: the policy turned off
+    # (escalate-after 0), or the effort step turned on, which may yet have a move for them.
+    wide = (args.key == 'escalate-after' and value == '0') or (args.key == 'escalate-effort' and value == 'on')
     markers = [f'tasks/{row[0]}/{m}' for row in rows if valid_task_id(row[0]) for m in STOP_MARKERS] if wide else []
 
     def work():
@@ -583,7 +585,7 @@ def cmd_set(args):
         else:
             write_atomic(plan, rel, value + '\n')
             changed = previous != value
-        swept = [remove_safe(plan, target) for target in markers]   # as `run --escalate-after 0`: off means off
+        swept = [remove_safe(plan, target) for target in markers]   # as `run --escalate-after 0` and `--escalate-effort`
         return value, previous, changed or any(swept)
 
     where = f'task {task}' if task else 'the plan'

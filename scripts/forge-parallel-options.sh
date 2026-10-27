@@ -30,7 +30,8 @@
 #   --escalate-after N      run retry         $PLAN/escalate_after failed attempts on one model before the
 #                                                                  next goes a tier up (default 3; 0 = off)
 #   --escalate-effort       run retry         $PLAN/escalate_effort  on: before the stop, retry the same
-#                                                                  model at the next effort its pairing accepts
+#                                                                  model at the next effort its pairing accepts;
+#                                                                  tasks already stopped are decided again
 #   --no-escalate-effort    run retry         (removes the file)   turn that step off (the default)
 #   --final-review SPEC     integrate         $PLAN/final_qa       QA spec for the whole-run review
 #   --verify-lane L=CMD     run retry         $PLAN/verify.d/<L>   a verification lane: name[options]=command,
@@ -106,7 +107,9 @@ forge_pp_flag() {
     --escalate-effort)
       case "$cmd" in run|retry) ;; *) return 1 ;; esac
       PP_SHIFT=1                                  # a switch, not --escalate-after's N
-      printf 'on\n' > "$plan/escalate_effort" ;;
+      printf 'on\n' > "$plan/escalate_effort"
+      # A task the policy stopped with the step off is decided again: the step may have a move.
+      rm -f "$plan"/tasks/*/escalation.stop "$plan"/tasks/*/split.suggested "$plan"/tasks/*/escalation.next ;;
     --no-escalate-effort)
       case "$cmd" in run|retry) ;; *) return 1 ;; esac
       PP_SHIFT=1
