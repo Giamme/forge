@@ -16,7 +16,7 @@ from forge_registry import register_run_dir, runs_registry
 from . import (CAPABILITIES, CLOUDFLARE_DEFAULT_SITES, CLOUDFLARE_TOKEN_FILE,
               DEFAULT_THRESHOLDS, PROVIDERS, RETIRED_THRESHOLDS, SITE_CAPABILITY, THRESHOLD_FALLBACK, api_key,
               capability_ready, cloudflare, config_path, enabled, load_config, provider_for, provider_ready,
-              redact, save_config, secrets, site_ready)
+              redact, save_config, secrets, site_ready, threshold)
 from . import client, questions
 
 PRIVACY_STATEMENT = """\
@@ -439,18 +439,19 @@ def cmd_verify_discover(args) -> int:
     return 0
 
 
-# Enough of a task prompt for the rubrics to judge it. The longest prompt in forge's
-# own test plan is about 3.5KB; this leaves room without letting one enormous task
-# prompt dominate a request that also carries file excerpts and memory.
+# Enough of a task prompt for the gates to judge it. The longest prompt in forge's own
+# test plan is about 3.5KB; this leaves room without letting one enormous task prompt
+# dominate a request that also carries file excerpts and memory.
 PROMPT_CHARS = 8000
 
 
 def cmd_score_plan(args) -> int:
-    """Rate every task in a plan. Advisory output only: nothing ever writes it into tasks.tsv.
+    """The plan-time gates: prompt adequacy (jev-prompt) and drift (jev-drift), per task.
 
-    Writing a Jev tier into the plan (`--jev-act`, gated on a per-repo calibration) was
-    removed on 2026-10-17 without ever having acted: no repo reached the calibration bar,
-    and model choice is now measured from `plan --explore` draws (`forge dataset routing`).
+    Advisory output only: nothing here writes into tasks.tsv, and no answer changes a
+    plan. Each task's answers go to tasks/<id>/jev.json; stdout carries one
+    `id<TAB>warnings<TAB>drift` row per task that got any answer. (This command used to
+    rate routing rubrics into a suggested tier; that was removed in milestone C1.)
     """
     plan, repo = Path(args.plan), Path(args.repo)
     if not plan.is_dir():
@@ -464,10 +465,11 @@ def cmd_score_plan(args) -> int:
         print(f'forge jev score-plan: no tasks.tsv in {args.plan!r}', file=sys.stderr)
         return 2
     config = load_config()
-    if not site_ready('jev-score-plan', config):
+    ask_prompt, ask_drift = site_ready('jev-prompt', config), site_ready('jev-drift', config)
+    if not (ask_prompt or ask_drift):
         return 3
 
-    from . import gates, routing
+    from . import gates
 
     goal = ''
     goal_file = plan / 'goal.txt'
@@ -483,44 +485,49 @@ def cmd_score_plan(args) -> int:
             continue
         rows.append(parts)
 
-    # The whole plan, once, for every task's state. independently_verifiable asks
-    # whether confirming a task needs another task in the plan to land first; it had
-    # never been shown another task, so it was guessing whether one existed.
+    # The whole plan, once, for every task's state: prompt_warn was measured with it there.
     siblings = [dict(id=p[0], deps=p[1], files=p[3], title=p[6]) for p in rows]
+    warn_at = threshold('prompt_warn', config=config)
 
     for parts in rows:
-        task_id, task_deps, declared, files, _dwarf, _qa, title = parts[:7]
+        task_id, task_deps, _declared, files, _dwarf, _qa, title = parts[:7]
         approach = ''
         approach_file = plan / 'tasks' / task_id / 'approach.md'
         if approach_file.is_file():
             approach = approach_file.read_text(errors='replace')[:4000]
         # The requirements themselves. decompose.md makes this file mandatory and
-        # SKILL.md says a short title is insufficient for QA -- so scoring a task
-        # without it was scoring the one thing both documents say is not the task.
+        # SKILL.md says a short title is insufficient for QA.
         prompt_text = ''
         prompt_file = plan / 'tasks' / task_id / 'prompt.md'
         if prompt_file.is_file():
             prompt_text = prompt_file.read_text(errors='replace')[:PROMPT_CHARS]
-        judgment = routing.score_task(repo, goal=goal, task_id=task_id, title=title,
-                                      files=files, approach=approach, prompt=prompt_text,
-                                      declared_difficulty=declared, deps=task_deps,
-                                      siblings=siblings, run_dir=str(plan),
-                                      config=config)
-        if judgment is None:
-            continue
 
-        # A second request per task, and the only one Phase 4 adds -- the adequacy and
-        # verifiability gates ride inside the routing request above. This one cannot,
-        # because it asks about a different universe (every tracked file) rather than
-        # about the task itself.
-        if enabled('gates', config=config):
+        adequacy = None
+        if ask_prompt:
+            adequacy = gates.prompt_adequacy(repo, goal=goal, task_id=task_id, title=title,
+                                             files=files, deps=task_deps, approach=approach,
+                                             prompt=prompt_text, siblings=siblings,
+                                             run_dir=str(plan), config=config)
+        # A second request, asked whether or not the first answered: it asks about a
+        # different universe (every tracked file) rather than about the task itself.
+        predicted = None
+        if ask_drift:
             predicted = gates.predict_drift(repo, goal=goal, task_id=task_id, title=title,
                                             declared=files, approach=approach,
                                             prompt=prompt_text,
                                             run_dir=str(plan), config=config)
-            if predicted:
-                judgment['predicted_drift'] = [dict(file=name, probability=probability)
-                                               for name, probability in predicted]
+        if adequacy is None and predicted is None:
+            continue
+
+        # A warning, not a gate: recorded below the threshold and silent above it.
+        warnings = {}
+        if adequacy is not None and adequacy < warn_at:
+            warnings['prompt_adequacy'] = round(adequacy, 3)
+        judgment = dict(id=task_id,
+                        prompt_adequacy=None if adequacy is None else round(adequacy, 3),
+                        warnings=warnings,
+                        predicted_drift=[dict(file=name, probability=probability)
+                                         for name, probability in predicted or ()])
         judgments.append(judgment)
         out = plan / 'tasks' / task_id
         try:
@@ -542,14 +549,11 @@ def cmd_score_plan(args) -> int:
         print(json.dumps(judgments, indent=2, sort_keys=True))
     else:
         for judgment in judgments:
-            # Two extra columns for the Phase 4 gates. '-' rather than an empty field so
-            # a `read` in bash cannot silently shift the columns after it.
-            warnings = ','.join(sorted(judgment.get('warnings') or {})) or '-'
-            drift = ','.join(item['file'] for item in judgment.get('predicted_drift') or ()) or '-'
-            print('\t'.join((judgment['id'], judgment['tier'],
-                             str(judgment['confidence']), str(judgment['composite']),
-                             judgment['escalated'] or '-',
-                             judgment['declared'], warnings, drift)))
+            # '-' rather than an empty field so a `read` in bash cannot silently shift the
+            # columns after it.
+            warnings = ','.join(sorted(judgment['warnings'])) or '-'
+            drift = ','.join(item['file'] for item in judgment['predicted_drift']) or '-'
+            print('\t'.join((judgment['id'], warnings, drift)))
     return 0
 
 

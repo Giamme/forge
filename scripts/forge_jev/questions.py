@@ -148,110 +148,11 @@ def drift_prediction(file_path: str) -> dict:
         ),
     )
 
-# --- routing (Phase 3 rubrics, recorded in shadow mode before they decide anything) ---
-#
-# Five Scores rather than one Choice asking for the tier directly. Two reasons. First,
-# `decompose.md` already defines difficulty as a conjunction of distinct properties
-# ("design judgment ... cross-cutting ... subtle edge cases or state/concurrency ... the
-# right approach is not obvious"), and asking about each separately is what lets code,
-# not the model, decide how to weigh them. Second, the composite is then computed here,
-# so re-tuning weights against accrued outcomes costs nothing -- no re-inference.
-#
-# The levels below are quoted from decompose.md's difficulty table wherever it says the
-# same thing, so that the rubric and the human-facing spec cannot drift apart.
-
-
-def design_judgment() -> dict:
-    """How much design judgment does this task demand? (decompose.md's primary axis.)"""
-    instructions = (
-        'Given the task and its context (in state), how much design judgment does '
-        'carrying it out demand? Rate what the task demands of whoever does it, NOT how '
-        'much code it produces: a five-hundred-line mechanical rename demands little, a '
-        'ten-line concurrency fix demands a lot.'
-    )
-    return Score(instructions, [
-        'none -- mechanical and local: a rename, a move, a docs edit, or a test for '
-        'behaviour that already exists. A mistake would be obvious.',
-        'some -- a self-contained implementation against a clear spec. A few choices to '
-        'make, all of them local and reversible.',
-        'substantial -- several defensible approaches exist and the choice between them '
-        'changes the shape of the result.',
-        'the approach must be invented -- the right way to do this is not obvious from '
-        'the goal, and getting it wrong means the work is wasted rather than merely '
-        'imperfect.',
-    ])
-
-
-def blast_radius() -> dict:
-    """How far can a mistake in this task reach?"""
-    instructions = (
-        'If this task were done wrong, how far would the damage reach through the rest '
-        'of the codebase (state describes the repo and the files the task declares)?'
-    )
-    return Score(instructions, [
-        'local -- confined to the lines the task edits; nothing else observes the change.',
-        'one module -- other code in the same module or package is affected, but the '
-        'boundary holds.',
-        'cross-module -- behaviour other parts of the project depend on changes, so a '
-        'mistake surfaces somewhere the task never touched.',
-        'a public contract -- an API, schema, wire format, CLI surface or file format '
-        'that callers outside this repo, or already-stored data, depend on.',
-    ])
-
-
-def state_subtlety() -> dict:
-    """Concurrency and state -- called out by name in decompose.md's `high` row."""
-    instructions = (
-        'How much subtle state or concurrency does this task involve? decompose.md '
-        'names this on its own because it is the property most often underrated: a very '
-        'small diff can still be the hardest kind of change.'
-    )
-    return Score(instructions, [
-        'none -- pure or straight-line code; no shared state, no ordering, no time.',
-        'sequential state -- state is read and written, but in one place, in a '
-        'predictable order, by one caller at a time.',
-        'shared or asynchronous state -- concurrency, locks, retries, caching, '
-        'cross-process coordination, or ordering that is not obvious from reading the '
-        'code, where a wrong interleaving produces a bug that does not reproduce.',
-    ])
-
-
-def spec_clarity() -> dict:
-    """Is the approach given, or must it be worked out? Note the inverted direction."""
-    instructions = (
-        'How clearly does the task (and its approach.md, if state carries one) state '
-        'HOW the work should be done, as opposed to only what outcome is wanted?'
-    )
-    return Score(instructions, [
-        'the approach is stated -- the task says which files change and what to do in '
-        'them; carrying it out is following instructions.',
-        'the approach is implied -- the outcome is clear and there is an obvious way to '
-        'reach it, but nobody has written it down.',
-        'the approach must be invented -- the task states a goal and leaves the means '
-        'open, so the first real work is deciding what to build.',
-    ])
-
-
-def test_coverage() -> dict:
-    """Would a mistake here be caught? Coverage is why a wrong `low` is survivable."""
-    instructions = (
-        'How well is the behaviour this task touches already covered by tests in this '
-        'repo (state lists the repo\'s files and the files the task declares)?'
-    )
-    return Score(instructions, [
-        'none -- nothing exercises this behaviour; a regression ships silently.',
-        'partial -- some tests touch the area, but not the specific behaviour being '
-        'changed.',
-        'well covered -- the behaviour has direct tests that would fail on a mistake.',
-    ])
-
 # --- pre-dispatch gates (Phase 4) --------------------------------------------------
 #
-# These ride in the SAME request as the routing rubrics. The state a gate needs -- goal,
-# task, declared files, approach -- is exactly the state routing already sends, and
-# questions in one request evaluate in parallel, so asking them costs no extra round
-# trip. They warn and never block: a gate that can stop a dispatch is a gate that will
-# eventually stop a good one.
+# Asked by `score-plan` before a plan's table is printed (gates.prompt_adequacy, site
+# jev-prompt). They warn and never block: a gate that can stop a dispatch is a gate that
+# will eventually stop a good one.
 
 
 def prompt_adequacy() -> dict:
@@ -284,35 +185,6 @@ def prompt_adequacy() -> dict:
         ),
     )
 
-
-def independently_verifiable() -> dict:
-    """decompose.md's hard rule, checked: can this task be verified on its own?"""
-    instructions = (
-        'Forge runs this task in its own worktree and verifies it alone, before any '
-        'other task in the plan is merged. state.plan_tasks lists the other tasks in '
-        'the plan with their file scopes; state.task.deps names the ones that are '
-        'guaranteed to land BEFORE this one. Judge against that list, not against '
-        'imagined work: can this task be verified on its own?'
-    )
-    return Noul(
-        instructions,
-        true=(
-            'Something observable proves this task once it is done -- a test that can '
-            'run, a command that behaves differently, a check that passes -- using only '
-            'this task\'s own files, what already exists in the repo, and anything '
-            'named in state.task.deps. A task that needs nothing from plan_tasks is '
-            'verifiable; so is one whose only needs are already its declared deps.'
-        ),
-        false=(
-            'Verifying this task requires a specific OTHER task in state.plan_tasks '
-            'that is not among its declared deps -- name it to yourself before '
-            'answering. This is the fragment case: one half of a rename, a caller whose '
-            'callee is a sibling task, an interface whose only implementation is a '
-            'sibling task. decompose.md forbids splitting this finely for exactly this '
-            'reason. Do not answer false merely because the task is small, or because '
-            'its value is only visible once the whole plan lands.'
-        ),
-    )
 
 # --- post-review annotation (Phase 4, item 6) -------------------------------
 #

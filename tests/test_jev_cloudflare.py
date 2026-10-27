@@ -128,13 +128,13 @@ class RoutingTests(CloudflareCase):
         self.configure()
         server = Server(lambda body: dict(answers=nouls(body['questions']), model='jev-1'))
         with patch('urllib.request.urlopen', side_effect=server):
-            client.ask('s', {'q': NOUL}, site='jev-score-plan')
+            client.ask('s', {'q': NOUL}, site='jev-prompt')
         self.assertEqual(server.requests[0]['url'], forge_jev.ENDPOINT)
 
     def test_env_overrides(self):
         config = self.configure()
         os.environ['FORGE_JEV_PROVIDER'] = 'cloudflare'
-        self.assertEqual(forge_jev.provider_for('jev-score-plan', config), 'cloudflare')
+        self.assertEqual(forge_jev.provider_for('jev-prompt', config), 'cloudflare')
         os.environ['FORGE_CLEF'] = 'off'
         self.assertEqual(forge_jev.provider_for('jev-drift', config), 'typesafe')
         os.environ.pop('FORGE_CLEF')
@@ -259,7 +259,7 @@ class TransportTests(CloudflareCase):
         run_dir.mkdir()
         body = ('y' * 190 + key + ' tail').encode()
         with patch('urllib.request.urlopen', side_effect=http_error(400, body)):
-            client.ask('s', {'q': NOUL}, site='jev-score-plan', run_dir=run_dir)
+            client.ask('s', {'q': NOUL}, site='jev-prompt', run_dir=run_dir)
         self.assertNotIn(key[:6], (run_dir / 'jev.jsonl').read_text())
 
     def test_the_log_names_the_provider(self):

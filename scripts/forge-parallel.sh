@@ -264,16 +264,14 @@ PY
     note "         if the tasks depend on them."
   fi
 
-  # --- jev: advisory difficulty scoring ------------------------------------------
-  # Advisory only: a suggested tier, and gate warnings about the task text. Writing a Jev
-  # tier into the difficulty column (`--jev-act`, gated on a per-repo calibration) was
-  # removed on 2026-10-17 without ever having acted; models are chosen from measured pass
-  # rates instead (plan --explore, `forge dataset routing`).
+  # --- jev: plan-time gates ------------------------------------------------------
+  # Prompt adequacy and drift, advisory: warnings about the task text and its declared
+  # files. Nothing here changes tasks.tsv.
   local jev_loaded=0
   if [ -f "$SKILL_DIR/scripts/forge-jev-options.sh" ]; then
     source "$SKILL_DIR/scripts/forge-jev-options.sh" 2>/dev/null && jev_loaded=1
   fi
-  if [ "$jev_loaded" = 1 ] && forge_jev_active routing; then
+  if [ "$jev_loaded" = 1 ] && forge_jev_active gates; then
     local jev_scores jev_rc
     jev_scores="$(python3 "$SKILL_DIR/scripts/forge-jev.py" score-plan \
       --plan "$PLAN" --repo "$REPO" 2>/dev/null)"
@@ -281,26 +279,16 @@ PY
     if [ "$jev_rc" -eq 0 ] && [ -n "$jev_scores" ]; then
       # Shadow mode records the judgment and prints nothing per task.
       if [ "${FORGE_JEV_SHADOW:-}" = on ]; then
-        note "jev: scored $(printf '%s\n' "$jev_scores" | grep -c . ) task(s) in shadow mode (no change)"
+        note "jev: checked $(printf '%s\n' "$jev_scores" | grep -c . ) task(s) in shadow mode (no change)"
       else
-        local jid jtier jconf jcomp jesc jdecl jwarn jdrift
-        # The columns score-plan prints: id, tier, confidence, composite, escalated,
-        # declared, warnings, drift. Read in lockstep with cmd_score_plan.
-        while IFS="$(printf '\t')" read -r jid jtier jconf jcomp jesc jdecl jwarn jdrift; do
+        local jid jwarn jdrift
+        # The columns score-plan prints: id, warnings, drift. Read in lockstep with
+        # cmd_score_plan.
+        while IFS="$(printf '\t')" read -r jid jwarn jdrift; do
           [ -n "$jid" ] || continue
-          # score-plan writes "-" for "not escalated"; only a real reason is worth showing.
-          [ "$jesc" = "-" ] && jesc=""
-          note "jev: $jid suggests $jtier (confidence $jconf${jesc:+, escalated: $jesc}) — declared $jdecl"
-          # Gates are warnings: they are about the task text and its declared files, not
-          # about which model runs it.
-          if [ -n "$jwarn" ] && [ "$jwarn" != "-" ]; then
-            case "$jwarn" in
-              *prompt_adequacy*) note "jev: $jid — the prompt may be too vague for QA to judge correctness against" ;;
-            esac
-            case "$jwarn" in
-              *independently_verifiable*) note "jev: $jid — may not be verifiable on its own (decompose.md forbids splitting this finely)" ;;
-            esac
-          fi
+          case "$jwarn" in
+            *prompt_adequacy*) note "jev: $jid — the prompt may be too vague for QA to judge correctness against" ;;
+          esac
           if [ -n "$jdrift" ] && [ "$jdrift" != "-" ]; then
             note "jev: $jid may also edit undeclared files: $jdrift"
             note "     undeclared files break wave disjointness — add them to the files column or split the task"
