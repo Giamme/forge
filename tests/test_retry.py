@@ -194,6 +194,9 @@ class RetryTests(unittest.TestCase):
         self.assertEqual(r.returncode, 5, r.stdout)
         self.assertEqual(self.text(p, 'verification.status'), 'FAIL')
         self.assertFalse((p / 'verification.flaky').exists())
+        self.assertFalse((p / 'verification.retry.log').exists())
+        self.assertNotIn('jev_retry', (p / 'verification.runs.tsv').read_text())
+        self.assertFalse((p / 'verification.jev.json').exists())
 
     def test_a_consistently_failing_verify_still_fails_after_the_rerun(self):
         p = self.plan_of([('a', '-', 'a.txt')])
