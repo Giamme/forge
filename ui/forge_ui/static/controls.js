@@ -375,9 +375,10 @@
     const res = await u.post(path(view.run.key), plan.body);
     view.inflight = false; view.section.removeAttribute('aria-busy');
     remember(view, r, res, savedText(res.data));
+    // sent: the fields are no longer an edit, also when the answer (a queued request) carries no controls
+    if (res.ok) for (const f of fields) delete view.draft[f];
     if (res.ok && done) done(res.data);
     if (res.ok && obj(res.data).controls && res.data.controls.run) {
-      for (const f of fields) delete view.draft[f];
       accept(view.run.key, res.data.controls, view.run.updated);
       draw(view, res.data.controls);
     } else sync(view);

@@ -67,15 +67,16 @@ class VerificationTests(unittest.TestCase):
         live = v['live']
         # build ended, unit opened and ended inside test: test is the open one
         self.assertEqual(live['step'], {'name': 'test', 'started': None})
-        self.assertEqual((live['started'], live['last_line'], live['last_output_at']),
-                         (T0 + 1300, 'test_reader ok', T0 + 1340))
+        self.assertEqual((live['started'], live['last_line'], live['last_output_at'], live['log']),
+                         (T0 + 1300, 'test_reader ok', T0 + 1340, 'verification.log'))
         self.assertIdle(live['idle_s'], T0 + 1340)
 
     def test_a_rerun_is_read_from_the_newer_retry_log(self):
         F.single_running(self.plan, retry=True)
         live = self.verification()[0]['live']
-        self.assertEqual((live['step'], live['last_line'], live['last_output_at']),
-                         ({'name': 'rerun', 'started': None}, 'rerunning the failed lane', T0 + 1350))
+        self.assertEqual((live['step'], live['last_line'], live['last_output_at'], live['log']),
+                         ({'name': 'rerun', 'started': None}, 'rerunning the failed lane', T0 + 1350,
+                          'verification.retry.log'))
 
     def test_running_lanes_speak_through_the_lane_that_printed_last(self):
         F.lanes_verification(self.plan, running=True)
@@ -96,6 +97,14 @@ class VerificationTests(unittest.TestCase):
         F.execution(self.plan, 'verification-' + F.uid(5), 1500.0, phase='verification', parent=F.PARALLEL)
         v, _ = self.verification()
         self.assertEqual((v['state'], v['mode'], v['lanes'], v['failing']), ('running', 'single', None, []))
+
+    def test_lists_that_are_not_lists_in_a_lanes_tests_read_as_empty(self):
+        F.lanes_verification(self.plan, running=True)
+        F.write(self.plan / 'verification.lanes.json',
+                '{"lanes": [{"name": "unit", "tests": {"pass": 3, "reports": 1, "notes": 1}}]}', T0 + 1360)
+        v, _ = self.verification()
+        [unit] = v['lanes']
+        self.assertEqual((unit['tests']['pass'], unit['tests']['reports'], unit['tests']['notes']), (3, [], []))
 
     def test_an_unreadable_lanes_file_is_warned_and_never_fails_the_request(self):
         F.lanes_verification(self.plan, running=True)

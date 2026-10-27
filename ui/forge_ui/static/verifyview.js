@@ -120,8 +120,10 @@
     };
   }
   const runsBase = key => `/api/runs/${encodeURIComponent(key)}/verification`;
-  // the log endpoint of the single command (lane null), a lane, or one run k of a lane
+  // the log endpoint of the single command (lane null; RETRY for its rerun's log), a lane, or one run k of a lane
+  const RETRY = { retry: true };
   function logPath(key, lane, k) {
+    if (lane === RETRY) return runsBase(key) + '/retry/log';
     if (!lane) return runsBase(key) + '/log';
     return `${runsBase(key)}/lanes/${encodeURIComponent(lane)}${num(k) !== null ? '/runs/' + k : ''}/log`;
   }
@@ -308,13 +310,15 @@
     if (m.lanes.length) lanesTable(host, ctx, m, view, followed);
     if (m.running) {
       const s = section(host, m.mode === 'lanes' && followed ? `Live output: ${followed}` : 'Live output', 'vfy-tail');
-      tail(s, ctx, m.mode === 'lanes' && followed ? followed : null, fresh, 'vfy-live-tail');
+      // a single command's rerun writes its own log: the live output follows the one that moved last
+      const single = v.live && v.live.log === 'verification.retry.log' ? RETRY : null;
+      tail(s, ctx, m.mode === 'lanes' && followed ? followed : single, fresh, 'vfy-live-tail');
     } else if (m.mode === 'lanes' && view.lane) {
       const s = section(host, `Output: ${view.lane}`, 'vfy-tail');
       tail(s, ctx, view.lane, fresh, 'vfy-lane-tail');
     }
   }
 
-  return { render, model, laneRow, groupFailing, idleWarning, openStep, countsText, runsText, tailLane, logPath, linesPath,
+  return { render, model, laneRow, groupFailing, idleWarning, openStep, countsText, runsText, tailLane, logPath, linesPath, RETRY,
     tailLines, dur, IDLE_WARN_S };
 });

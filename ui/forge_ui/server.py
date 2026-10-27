@@ -46,7 +46,7 @@ _FILES_PATH = re.compile(r'/api/runs/([0-9a-f]{12})/files')
 _FINDINGS_PATH = re.compile(r'/api/runs/([0-9a-f]{12})/findings')
 _EXPORT_PATH = re.compile(r'/api/runs/([0-9a-f]{12})/export')
 _FRACTAL_PATH = re.compile(_TASK_PATH.pattern + r'/fractal(?:/nodes/([A-Za-z0-9][A-Za-z0-9_-]{0,100})(/diff)?)?')
-_VERIFY_LOG_PATH = re.compile(r'/api/runs/([0-9a-f]{12})/verification(?:/lanes/([^/]+)(?:/runs/([^/]+))?)?/log'
+_VERIFY_LOG_PATH = re.compile(r'/api/runs/([0-9a-f]{12})/verification(?:/(retry)|/lanes/([^/]+)(?:/runs/([^/]+))?)?/log'
                               r'(?:/lines/([^/]+))?')
 _STATIC_PATH = re.compile(r'/([A-Za-z0-9_.-]+\.(?:html|js|css|svg|woff2))')
 _TYPES = {
@@ -152,11 +152,11 @@ def api_get(catalog, path):
         return catalog.findings(match.group(1))
     match = _VERIFY_LOG_PATH.fullmatch(path)
     if match:
-        key, lane, k, first = match.groups()
+        key, retry, lane, k, first = match.groups()
         k, first = _count(k), _count(first)
         if k is False or first is False:
             return None
-        return catalog.verification_log(key, lane, k, first)
+        return catalog.verification_log(key, lane, k, first, retry=bool(retry))
     match = _FRACTAL_PATH.fullmatch(path)
     if match:
         key, task_id, node, diff = match.group(1), _task_id(match.group(2)), match.group(3), match.group(4)

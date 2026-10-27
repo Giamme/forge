@@ -19,10 +19,11 @@ class Verification(unittest.TestCase):
     """A plan and a server per test, with a lanes verification running or finished."""
     open, assertClean = tb.Page.open, tb.Page.assertClean
 
-    def serve(self, running):
+    def serve(self, running, build=None):
         self.temp = temp = tempfile.TemporaryDirectory(prefix='forge-ui-verify-')       # _serve cleans it up on its skip paths
         self.addCleanup(temp.cleanup)
-        self.plan = F.lanes_verification(F.make_plan(Path(temp.name) / 'p'), running=running)
+        plan = F.make_plan(Path(temp.name) / 'p')
+        self.plan = build(plan) if build else F.lanes_verification(plan, running=running)
         # e2e's log names its failing test on line 12, where the reader's failing entry points
         F.write(self.plan / 'verification.lane.e2e.log',
                 ''.join(f'e2e line {n}\n' if n != 12 else 'FAIL checkout.Pay.test_card\n' for n in range(1, 41)))
@@ -51,6 +52,16 @@ class Verification(unittest.TestCase):
         page.click('#inspector .vfy-lane button:has-text("lint")')        # follow another lane
         page.wait_for_function("() => document.querySelector('#inspector .vfy-tail h3').textContent.includes('lint')")
         page.wait_for_function("() => document.querySelector('#inspector .vfy-tail .vfy-log')?.textContent.includes('lint output')")
+        self.assertClean(page)
+
+    def test_a_running_single_command_shows_the_log_its_rerun_writes(self):
+        self.serve(running=True, build=lambda plan: F.single_running(plan, retry=True))
+        page = self.open(cdn=False, view='2d')
+        page.goto(f'{self.url}#/runs/{self.key}/verification')
+        page.wait_for_selector('#inspector .vfy-tail .vfy-log')
+        output = page.text_content('#inspector .vfy-tail .vfy-log')
+        self.assertIn('rerunning the failed lane', output)
+        self.assertNotIn('test_reader ok', output)
         self.assertClean(page)
 
     def test_a_failed_verification_lists_its_failing_tests_first(self):

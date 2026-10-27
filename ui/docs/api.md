@@ -169,7 +169,7 @@ def execution_transcript(path, name, source='plan') -> dict | None # an Executio
 def fractal_detail(path, task_id, source='plan') -> dict | None    # a TaskFractal
 def fractal_node(path, task_id, node, source='plan') -> dict | None       # a FractalNodeDetail
 def fractal_node_diff(path, task_id, node, source='plan') -> dict | None  # a DiffDetail
-def verification_log(path, lane=None, k=None, first=None, source='plan') -> dict | None  # a VerificationLog
+def verification_log(path, lane=None, k=None, first=None, retry=False, source='plan') -> dict | None  # a VerificationLog
 
 class Catalog:
     def __init__(self, plans=(), roots=(), registry=True, registry_dir=None): ...
@@ -230,6 +230,7 @@ its last 20,000 behind a leading `…`. Their `truncated` lists the field names 
 | `GET /api/runs/<key>/findings` | `200 RunFindings` |
 | `GET /api/runs/<key>/executions/<qa-or-dwarf>/transcript` | `200 ExecutionTranscript` |
 | `GET /api/runs/<key>/verification/log[/lines/<n>]` | `200 VerificationLog` of `verification.log`: its tail, or with `/lines/<n>` a range |
+| `GET /api/runs/<key>/verification/retry/log[/lines/<n>]` | `200 VerificationLog` of `verification.retry.log`, a single command's rerun |
 | `GET /api/runs/<key>/verification/lanes/<lane>/log[/lines/<n>]` | `200 VerificationLog` of `verification.lane.<lane>.log` |
 | `GET /api/runs/<key>/verification/lanes/<lane>/runs/<k>/log[/lines/<n>]` | `200 VerificationLog` of `verification.lane.<lane>.run-<k>.log` |
 | `GET /api/models` | `200 Models` |
@@ -395,13 +396,15 @@ Every RunSummary field, plus:
   after the newest verification execution started (or there is none), else `single`. A lanes file
   an earlier verification left is not read.
 - `verification.live` is `null` unless `state` is `running`; then `{started, step, last_line,
-  last_output_at, idle_s}`. `started` is the execution's start. In `single` mode the live log is
+  last_output_at, idle_s, log}`. `started` is the execution's start. In `single` mode the live log is
   whichever of `verification.log` and `verification.retry.log` was modified last: `step` is
   `{name, started: null}` for the last `::forge step name=<x> state=start` in its last 64 KB
   that no later `state=end` closed (a line holds no time), `last_line` its last non-empty line
   without ANSI codes (at most 300 characters), and `last_output_at` its mtime. In `lanes` mode
   they are the running lane's that printed last, with its recorded `step.started`. `idle_s` is
-  now minus `last_output_at` (minus `started` before any output).
+  now minus `last_output_at` (minus `started` before any output). `log` names the live log in
+  `single` mode (`verification.log` or `verification.retry.log`; `null` before either exists) and is
+  `null` in `lanes` mode.
 - `verification.lanes` is `null` in `single` mode and when the lanes file is unreadable, not a
   JSON object, has no `lanes` list or is over 4 MB (each warned; the request never fails). In
   `lanes` mode it is every lane:

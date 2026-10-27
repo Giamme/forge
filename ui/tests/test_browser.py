@@ -865,6 +865,24 @@ class Controls(unittest.TestCase):
         self.assertFalse((self.plan / 'tasks/graph/escalation.pin').exists())
         self.assertClean(page)
 
+    def test_a_queued_retry_follows_the_scheduler_to_its_outcome(self):
+        page = self.open(cdn=False, view='2d')
+        self.inspect(page, 'docs')
+        row = '#inspector [data-row=retry]'
+        page.fill(row + ' .ctl-alias input', 'sol')
+        page.click(row + ' button.primary')
+        page.click('#inspector .ui-confirm button:text-is("Confirm")')
+        page.wait_for_selector(row + ' .ctl-request-queued')
+        [request] = os.listdir(self.plan / 'control.requests')
+        with open(self.plan / 'control.log', 'a', encoding='utf-8') as log:      # what the scheduler writes
+            log.write(json.dumps({'at': time.time(), 'actor': 'scheduler', 'action': 'retry', 'task': 'docs', 'key': None,
+                                  'value': 'sol', 'previous': None, 'request': request, 'outcome': 'applied',
+                                  'reason': None}) + '\n')
+        self.poll()
+        page.wait_for_selector(row + ' .ctl-request-applied', timeout=20000)
+        self.assertEqual(page.input_value(row + ' .ctl-alias input'), '')
+        self.assertClean(page)
+
     def test_a_merged_task_has_nothing_to_change_and_a_stopped_policy_says_so(self):
         (self.plan / 'tasks/docs').mkdir(exist_ok=True)
         (self.plan / 'tasks/docs/escalation.stop').write_text('')

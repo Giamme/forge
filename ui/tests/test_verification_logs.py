@@ -88,6 +88,13 @@ class VerificationLogTests(unittest.TestCase):
         self.assertEqual((rerun['name'], rerun['tail']), ('verification.lane.unit.run-2.log', 'unit, the rerun\n'))
         self.assertEqual(self.ok('/lanes/unit/runs/2/log/lines/1')['lines'], ['unit, the rerun'])
 
+    def test_the_single_commands_rerun_log(self):
+        F.write(self.plan / 'verification.retry.log', 'the rerun\n')
+        body = self.ok('/retry/log')
+        self.assertEqual((body['name'], body['tail']), ('verification.retry.log', 'the rerun\n'))
+        self.assertEqual(self.ok('/retry/log/lines/1')['lines'], ['the rerun'])
+        self.assertEqual(self.get('/retry/lanes/unit/log')[0], 404)
+
     def test_not_found(self):
         F.write(self.plan / 'verification.log', 'ok\n')
         F.write(self.plan / 'verification.lane.unit.log', 'unit\n')

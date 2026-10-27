@@ -881,6 +881,11 @@ def _lanes_doc(reader):
     return doc, info
 
 
+def _items(value):
+    """A JSON list, or nothing in place of anything else."""
+    return value if isinstance(value, list) else []
+
+
 def _tests(reader, value, field):
     if not isinstance(value, dict):
         return None
@@ -898,8 +903,8 @@ def _tests(reader, value, field):
                             known=entry.get('known') is True,
                             log_line=line if isinstance(line, int) and not isinstance(line, bool) and line > 0 else None))
     return dict(counts, failing=failing,
-                reports=[r for r in value.get('reports') or [] if isinstance(r, str)][:200],
-                notes=[reader.cap(n, field + '.notes', 500) for n in value.get('notes') or [] if isinstance(n, str)][:50],
+                reports=[r for r in _items(value.get('reports')) if isinstance(r, str)][:200],
+                notes=[reader.cap(n, field + '.notes', 500) for n in _items(value.get('notes')) if isinstance(n, str)][:50],
                 truncated=value.get('truncated') is True)
 
 
@@ -947,12 +952,12 @@ def _live_single(reader, started, now):
             for info in [reader.stat(name)] if info is not None]
     if not logs:
         return dict(started=started, step=None, last_line=None, last_output_at=None,
-                    idle_s=(now - started) if started is not None else None)
+                    idle_s=(now - started) if started is not None else None, log=None)
     mtime, name = max(logs)
     text = reader.text(name, _LIVE_TAIL)
     step = _open_step(text)
     return dict(started=started, step=dict(name=step, started=None) if step else None,
-                last_line=_last_line(text), last_output_at=float(mtime), idle_s=max(0.0, now - mtime))
+                last_line=_last_line(text), last_output_at=float(mtime), idle_s=max(0.0, now - mtime), log=name)
 
 
 def _live_lanes(lanes, started, now):
@@ -963,7 +968,7 @@ def _live_lanes(lanes, started, now):
     last = lane['last_output_at'] if lane else None
     return dict(started=started, step=lane['step'] if lane else None, last_line=lane['last_line'] if lane else None,
                 last_output_at=last, idle_s=max(0.0, now - (last if last is not None else started))
-                if (last is not None or started is not None) else None)
+                if (last is not None or started is not None) else None, log=None)
 
 
 def _verification(reader, status, verifications):
@@ -1740,7 +1745,9 @@ LOG_LINES = 400                # lines in one range
 LOG_LINE_MAX = 4000            # characters kept of one line in a range
 
 
-def _log_name(lane, k):
+def _log_name(lane, k, retry=False):
+    if retry:
+        return 'verification.retry.log'
     if lane is None:
         return 'verification.log'
     return f'verification.lane.{lane}.log' if k is None else f'verification.lane.{lane}.run-{k}.log'
@@ -1817,15 +1824,16 @@ def _log_range(stream, info, name, first):
     return dict(name=name, size=info.st_size, first_line=first, lines=lines, truncated=True)
 
 
-def verification_log(path, lane=None, k=None, first=None, source='plan'):
-    """The run's own verification log, a lane's or one run of a lane's: its last 64 KB from a line
-    start, with that line's number, or LOG_LINES lines from line `first`. None (a 404) for a solo
-    run, a name no lane can have, and a log that is missing, a symlink or not a regular file."""
+def verification_log(path, lane=None, k=None, first=None, retry=False, source='plan'):
+    """The run's own verification log (with `retry`, its rerun's), a lane's or one run of a lane's:
+    its last 64 KB from a line start, with that line's number, or LOG_LINES lines from line `first`.
+    None (a 404) for a solo run, a name no lane can have, and a log that is missing, a symlink or
+    not a regular file."""
     if _kind(path) != 'plan' or (lane is not None and not LANE_NAME.fullmatch(lane)):
         return None
-    if (k is not None and (lane is None or k < 1)) or (first is not None and first < 1):
+    if (k is not None and (lane is None or k < 1)) or (first is not None and first < 1) or (retry and lane is not None):
         return None
-    name = _log_name(lane, k)
+    name = _log_name(lane, k, retry)
     opened = _open_log(path, name)
     if opened is None:
         return None
@@ -1902,8 +1910,8 @@ class Catalog:
     def fractal_node_diff(self, key, task_id, node):
         return self._find(key, fractal_node_diff, task_id, node)
 
-    def verification_log(self, key, lane=None, k=None, first=None):
-        return self._find(key, verification_log, lane, k, first)
+    def verification_log(self, key, lane=None, k=None, first=None, retry=False):
+        return self._find(key, verification_log, lane, k, first, retry)
 
     def models(self):
         from forge_ui import models  # it reads runs through this module
