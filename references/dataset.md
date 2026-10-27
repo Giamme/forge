@@ -353,7 +353,7 @@ run.
 `forge-parallel.sh run` prints the same block before it dispatches, shortened: the tasks without
 enough history share one line instead of a row each, and when no task has enough, the whole block
 is one line pointing at `forge dataset forecast <plan>`. It runs with a time budget
-(`FORGE_FORECAST_BUDGET_S`, default 3 seconds), prints one line and moves on if reading the
+(`FORGE_FORECAST_BUDGET_S`, default 3 seconds; `inf` means no limit), prints one line and moves on if reading the
 history takes longer, never prints errors and never changes the exit code. `--no-forecast` or
 `FORGE_FORECAST=off` turn it off. The block is written to the plan as `forecast.json` and
 recorded once as a `forecast` event, so it can later be compared to what the run did.

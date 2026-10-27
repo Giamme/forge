@@ -219,6 +219,14 @@ class ForecastReportTests(unittest.TestCase):
         self.assertIn('first try', self.forge(p, '--run', env=dict(FORGE_DATASET='off')))
         self.assertEqual(self.forecasts(), [])
 
+    def test_a_budget_too_large_to_wait_for_means_no_limit(self):
+        p = self.seed()
+        for value in ('inf', '1e10'):   # past threading.TIMEOUT_MAX, which Thread.join rejects
+            with self.subTest(budget=value):
+                (p / 'forecast.json').unlink(missing_ok=True)
+                self.assertIn('first try', self.forge(p, '--run', env=dict(FORGE_FORECAST_BUDGET_S=value)))
+                self.assertTrue((p / 'forecast.json').exists())
+
     def test_a_budget_that_runs_out_while_saving_leaves_no_temp_file_in_the_plan(self):
         from forge_dataset import forecast
         p = self.seed()
