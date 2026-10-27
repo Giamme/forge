@@ -4,7 +4,7 @@
   show  <plan> [--json]                          every control, per-task overrides, pins and the change log
   set   <plan> <key> <value> [--task ID]         qa-threshold, timeout, escalate-after, escalate-effort,
                                                  verify-retries, retry-budget, infra-retries, infra-backoff
-                                                 (none drops it)
+                                                 (none drops it), max-parallel (1-64)
   pin   <plan> <task> <spec>                     the model the task's next FULL implementer retry uses
   unpin <plan> <task>
   retry <plan> <task> [--dwarf SPEC]             queue a retry of a stopped or failed task into the live run
