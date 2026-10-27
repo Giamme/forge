@@ -701,6 +701,59 @@ def transcript(log, harness=None, running=False, home=None, environ=None):
     return out
 
 
+LIVE_TAIL = 256 << 10       # bytes of a running log read for what it does now
+_LIVE: dict = {}
+
+
+def live(log, harness=None):
+    """What the agent writing `log` does now, read from the log's end: {call, last_output_at}.
+
+    `call` is the newest call not answered yet, {kind: command|tool|edit, command, tool, started}, or None while the
+    agent thinks or writes. `started` comes from the harness, the clock or, for a call on the log's last line, the
+    log's mtime (nothing was written after it). None when `log` is not a readable file.
+    """
+    try:
+        st = log.stat()
+    except (OSError, AttributeError):
+        return None
+    if not stat.S_ISREG(st.st_mode):
+        return None
+    clock_path = log.with_name(log.stem + '.clock')
+    key = (str(log), st.st_size, st.st_mtime_ns, harness, _signature(clock_path))
+    if key in _LIVE:
+        return dict(_LIVE[key])
+    base = max(0, st.st_size - LIVE_TAIL)
+    try:
+        with open(log, 'rb') as fh:
+            fh.seek(base)
+            data = fh.read(LIVE_TAIL)
+    except OSError:
+        return None
+    if base:
+        skip = data.find(b'\n') + 1
+        data, base = data[skip:], base + skip
+    data = data[:data.rfind(b'\n') + 1]                        # a line still being written is not an event yet
+    text = data.decode('utf-8', 'replace')
+    fmt = detect(text)
+    call = None
+    if fmt in ('codex', 'claude', 'opencode'):
+        events = PARSERS[fmt](text)[0]
+        running = next((ev for ev in reversed(events) if ev.get('running')), None)
+        if running is not None:
+            at = running.get('_at')
+            last_line = at is not None and at >= len(data)
+            _time([running], clock_of(log), base)
+            started = running.get('t')
+            if started is None and last_line:
+                started = st.st_mtime
+            call = dict(kind=running['kind'], command=running.get('command'), tool=running.get('tool'), started=started)
+    answer = dict(call=call, last_output_at=st.st_mtime)
+    if len(_LIVE) > 64:
+        _LIVE.clear()
+    _LIVE[key] = answer
+    return dict(answer)
+
+
 def _signature(path):
     try:
         st = path.stat() if path is not None else None

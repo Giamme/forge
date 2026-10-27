@@ -37,7 +37,7 @@ _EXEC = re.compile(r'(?:task|dwarf|qa|solo|verification|parallel)-[0-9a-f]{32}')
 # texts that can hold code, prompts or private notes: nulled unless texts=True
 _TEXT_KEYS = frozenset(('prompt', 'last', 'request', 'log_tail', 'dwarf_tail', 'qa_tail', 'qa_last', 'qa_input',
                         'tasks_summary', 'known_issues', 'texts', 'text', 'planning_last', 'approach', 'retry_findings',
-                        'dwarf_input', 'error', 'last_line', 'message', 'excerpt', 'tail', 'lines'))
+                        'dwarf_input', 'error', 'last_line', 'message', 'excerpt', 'tail', 'lines', 'call', 'split'))
 
 
 def _enc(value):
@@ -188,10 +188,14 @@ def build(catalog, key, texts=False, paths=False, now=None):
                     snap.add(url, cap=DIFF_CAP)
         for name in reviews:
             snap.add(f'{base}/final-reviews/{_enc(name)}/diff', cap=DIFF_CAP)
-        # what each dwarf and reviewer said and ran: its conversation is all text
+        # what each dwarf and reviewer said and ran: its conversation is all text, and so are the commands it ran
         for name in names:
             if name.startswith(('dwarf-', 'qa-')):
                 snap.add(f'{base}/executions/{name}/transcript', cap=TRANSCRIPT_CAP)
+                snap.add(f'{base}/executions/{name}/checks')
+        for task in tasks:
+            snap.add(f"{base}/tasks/{_enc(task['id'])}/checks")
+        snap.add(f'{base}/environment')
         # the verification's log tails: its own, each lane's and each lane run's (line ranges stay out)
         verification = run.get('verification') or {}
         if verification:

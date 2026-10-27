@@ -99,7 +99,7 @@ class ExportTests(unittest.TestCase):
         self.assertNotIn('The read is not wrapped', html)                 # a finding's details
         self.assertIn('a missing status file raises', html)               # its headline stays
         self.assertNotIn('A task without a status file has not started', html)   # a diff
-        self.assertFalse(any(path.endswith(('/diff', '/transcript')) for path in snap['api']))
+        self.assertFalse(any(path.endswith(('/diff', '/transcript', '/checks', '/environment')) for path in snap['api']))
         self.assertNotIn('Finding where the status is read', html)        # what a dwarf thought
         self.assertNotIn(str(self.base), html)
         self.assertNotIn(str(Path.home()) + '/', html.replace('~/', ''))
@@ -112,6 +112,8 @@ class ExportTests(unittest.TestCase):
             self.assertIn(text, full)
         self.assertTrue(any(path.endswith('/diff') for path in snap['api']))
         self.assertIn(f'/api/runs/{self.key}/executions/{F.READER_DWARF1}/transcript', snap['api'])
+        for path in (f'/executions/{F.READER_DWARF1}/checks', '/tasks/reader/checks', '/environment'):
+            self.assertIn(f'/api/runs/{self.key}' + path, snap['api'])
 
     def test_a_root_that_is_a_symlink_is_scrubbed_in_both_spellings(self):
         real = self.base / 'real-home'

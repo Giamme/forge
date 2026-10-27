@@ -68,7 +68,7 @@ class ReaderTests(unittest.TestCase):
             'qa_tail': 'FORGE_VERDICT: FAIL\nFixed now.\nFORGE_VERDICT: PASS\n',
             'dwarf_tail': None, 'executions': [],
             'merged_at': (FIXTURE / 'tasks/reader/merged').stat().st_mtime, 'findings': NO_FINDINGS,
-            'gate': None, 'known_issues': False, 'fail_first': None,
+            'gate': None, 'known_issues': False, 'fail_first': None, 'now': None, 'waiting': None,
         })
         self.assertEqual((page['accepted'], page['accepted_attempt'], page['accepted_over']), (False, None, None))
         self.assertEqual(page['status'], 'RUNNING')
@@ -504,7 +504,7 @@ class ReaderTests(unittest.TestCase):
             'prompt': 'Implement the reader.\n', 'approach': None, 'retry_findings': None,
             'qa_tail': 'Looked at the diff.\nFORGE_VERDICT: FAIL\n', 'dwarf_tail': 'Still working.\n',
             'executions': [], 'merged_at': None, 'findings': NO_FINDINGS, 'gate': None, 'known_issues': False,
-            'fail_first': None,
+            'fail_first': None, 'now': None, 'waiting': None,
         }])
         self.assertEqual(data['kind'], 'solo')
         self.assertEqual(data['run_id'], 'solo-full')
@@ -561,7 +561,7 @@ class ReaderTests(unittest.TestCase):
             'route': [], 'clef': {'first_pass': None, 'retry_pass': {}}, 'shadow': [],
             'prompt': 'Old prompt.\n', 'approach': None, 'retry_findings': None,
             'qa_tail': None, 'dwarf_tail': None, 'executions': [], 'merged_at': None, 'findings': None,
-            'gate': None, 'known_issues': False, 'fail_first': None,
+            'gate': None, 'known_issues': False, 'fail_first': None, 'now': None, 'waiting': None,
         }])
         json.dumps(data, allow_nan=False)
         run = self.base / 'neither'
