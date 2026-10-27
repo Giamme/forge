@@ -1,5 +1,6 @@
 """forge-verify.py: parallel verification lanes, groups, first lanes, live state, interrupts."""
 import hashlib
+import contextlib
 import importlib.util
 import json
 import os
@@ -363,7 +364,12 @@ class InterruptTests(VerifyLanesCase):
         except subprocess.TimeoutExpired:
             proc.kill()
             proc.communicate()
-            os.killpg(int((self.marks / 'pid').read_text()), signal.SIGKILL)
+            # $! is the writer's pid; its group is the lane's, led by the lane's shell.
+            writer = int((self.marks / 'pid').read_text())
+            with contextlib.suppress(OSError):
+                os.killpg(os.getpgid(writer), signal.SIGKILL)
+            with contextlib.suppress(OSError):
+                os.kill(writer, signal.SIGKILL)
             self.fail('the leftover writer was not stopped; the run never finished')
         self.assertEqual(proc.returncode, 0)
         self.assertEqual(self.lane_doc('bg')['state'], 'pass')
@@ -379,6 +385,11 @@ class InterruptTests(VerifyLanesCase):
         doc = self.doc()
         c = self.lane_doc('c')
         self.assertLess(c['started'] - doc['started'], 3.0)  # when b ends, not when the flood is read
+        # The finished lane's backlog is not read through at all: it ends with its writer,
+        # however slowly a capped reader would get through 400 MB.
+        flood = self.lane_doc('a_flood')
+        self.assertLess(flood['ended'] - flood['started'], 3.0)
+        self.assertEqual(flood['last_line'], 'x' * 49)   # head cuts the last line: 400000000 % 81
 
 
 def alive(pgid):

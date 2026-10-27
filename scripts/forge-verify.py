@@ -49,6 +49,7 @@ WRITE_EVERY = 1.0         # lanes.json refresh while lanes only print
 TICK = 0.05
 LAST_LINE_MAX = 300
 PUMP_MAX = 4 << 20        # bytes read from one lane's log per look, so a flood cannot starve the loop
+TAIL_KEEP = 64 << 10      # what is still read of a finished lane's backlog: its last line and markers
 INTERRUPTED = 130
 
 ANSI = re.compile(r'\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[@-Z\\-_]')
@@ -391,6 +392,8 @@ class Verification:
         for name, live in running.items():
             lane = self.by_name[name]
             exited = live.proc.poll() is not None  # asked first: all of its output is then readable
+            if exited and live.exited:
+                self._skip_backlog(live)
             left = limit
             eof = False
             while left > 0:
@@ -413,6 +416,20 @@ class Verification:
                 if tail:
                     self._line(lane, tail)
         return drained
+
+    @staticmethod
+    def _skip_backlog(live: Live) -> None:
+        """A finished lane's unread backlog is not read through: only its last line matters
+        now, and the log keeps every byte. Otherwise a leftover that ignores the TERM and
+        floods until its KILL would keep the lane draining long after it ended."""
+        try:
+            size = os.fstat(live.reader.fileno()).st_size
+        except OSError:
+            return
+        if size - live.reader.tell() > TAIL_KEEP + PUMP_MAX:
+            live.reader.seek(size - TAIL_KEEP)
+            live.decoder.reset()
+            live.partial = ''
 
     def _line(self, lane: dict, raw: str) -> None:
         line = ANSI.sub('', raw).strip()
