@@ -98,6 +98,36 @@ def _used_providers(user: dict, repo: dict, resolved: dict) -> set:
     return used
 
 
+def _unknown_providers(user: dict, repo: dict, resolved: dict, providers: dict, items: list) -> None:
+    """A gate naming a provider that is not configured: in the resolved gates, and in every stored
+    gate of the user file, the repo file and their profiles, active or not."""
+    seen: set = set()
+
+    def report(gate: str, name, where: dict) -> None:
+        if not isinstance(name, str) or not name or name in providers or (gate, name) in seen:
+            return
+        seen.add((gate, name))
+        suffix = f' (profile {where["profile"]})' if 'profile' in where else ''
+        items.append(dict(kind='unknown-provider', gate=gate, provider=name, **where,
+                          message=f'gate {gate}{suffix} names provider {name!r}, which is not configured'))
+
+    for gate in GATES:
+        report(gate, resolved['gates'][gate].get('provider'), {})
+    for data in (user, repo):
+        bodies = [({}, data)]
+        profiles = data.get('profiles')
+        if isinstance(profiles, dict):
+            bodies += [(dict(profile=name), body) for name, body in sorted(profiles.items())]
+        for where, body in bodies:
+            gates = body.get('gates') if isinstance(body, dict) else None
+            if not isinstance(gates, dict):
+                continue
+            for gate in GATES:
+                entry = gates.get(gate)
+                if isinstance(entry, dict):
+                    report(gate, entry.get('provider'), where)
+
+
 def _key_path(value: str) -> Path:
     path = Path(value).expanduser()
     return path if path.is_absolute() else config_dir() / path
@@ -159,11 +189,7 @@ def _checks(repo, env, items: list) -> None:
 
     providers = user.get('providers')
     providers = providers if isinstance(providers, dict) else {}
-    for gate in GATES:
-        name = resolved['gates'][gate].get('provider')
-        if name and name not in providers:
-            items.append(dict(kind='unknown-provider', gate=gate, provider=name,
-                              message=f'gate {gate} names provider {name!r}, which is not configured'))
+    _unknown_providers(user, repo_data, resolved, providers, items)
     used = _used_providers(user, repo_data, resolved)
     for name in sorted(providers):
         if name not in used:

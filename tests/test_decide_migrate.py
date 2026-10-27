@@ -106,6 +106,14 @@ class MigrateTests(MigrateTestCase):
         self.assertEqual(resolved['gates']['verify-discover']['mode'], 'on')
         self.assertEqual(resolved['gates']['drift']['provider'], 'cloudflare')
 
+    def test_an_existing_keys_directory_is_made_private(self):
+        keys = self.forge / 'keys'
+        keys.mkdir(parents=True)
+        keys.chmod(0o755)
+        self.write_jev(legacy())
+        self.assertEqual(self.migrate()['status'], 'migrated')
+        self.assertEqual(stat.S_IMODE(keys.stat().st_mode), 0o700)
+
     def test_a_second_run_is_a_no_op(self):
         self.write_jev(legacy())
         self.migrate()
@@ -235,6 +243,12 @@ class DoctorTests(MigrateTestCase):
         forge_decide.save_user({'gates': {'drift': {'provider': 'nope'}}})
         (item,) = self.kinds(doctor.checks(), 'unknown-provider')
         self.assertEqual((item['gate'], item['provider']), ('drift', 'nope'))
+
+    def test_a_missing_provider_in_an_inactive_profile_is_reported(self):
+        forge_decide.save_user({'providers': {}, 'profiles': {'broken': {'gates': {
+            'drift': {'provider': 'nope'}}}}})
+        (item,) = self.kinds(doctor.checks(env={}), 'unknown-provider')
+        self.assertEqual((item['gate'], item['provider'], item['profile']), ('drift', 'nope', 'broken'))
 
     def test_a_provider_no_gate_uses(self):
         forge_decide.save_user({'providers': {'idle': {'type': 'jev', 'url': 'http://x', 'model': 'm'}},

@@ -138,9 +138,8 @@ def derive(jev_cfg: dict, cloudflare: dict | None) -> tuple[dict, dict]:
 
 def _write_key(name: str, secret: str) -> None:
     directory = config_dir() / KEYS_DIR
-    if not directory.exists():
-        directory.mkdir(parents=True, exist_ok=True)
-        directory.chmod(0o700)
+    directory.mkdir(parents=True, exist_ok=True)
+    directory.chmod(0o700)  # also for a keys/ directory that was already there
     path = directory / f'{name}.key'
     temporary = path.with_name(path.name + '.' + uuid.uuid4().hex)
     fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
