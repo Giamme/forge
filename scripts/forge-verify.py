@@ -196,20 +196,49 @@ def _text(data: bytes) -> str:
     return data.decode('utf-8', 'replace').strip()
 
 
-def _git(checkout: str, *args: str, env: dict | None = None) -> str:
-    done = subprocess.run(['git', '-C', checkout, *args], capture_output=True, env=env)
-    if done.returncode != 0:
-        raise RuntimeError(f'git {" ".join(args)}: {_text(done.stderr)}')
-    return _text(done.stdout)
+class Stopped(Exception):
+    """A stop arrived while a fingerprint command ran; the command was stopped."""
 
 
-def default_fingerprint(checkout: str) -> str:
+def run_stoppable(argv: list[str], stopped=None, **kwargs) -> tuple[int, bytes, bytes]:
+    """Run a command in its own process group and wait for it, stopping the group (TERM, then
+    KILL after KILL_AFTER seconds) and raising Stopped as soon as ``stopped()`` is true."""
+    proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE, start_new_session=True, **kwargs)
+    while True:
+        try:
+            out, err = proc.communicate(timeout=TICK)
+            return proc.returncode, out, err
+        except subprocess.TimeoutExpired:
+            if stopped is None or not stopped():
+                continue
+        for sig, wait in ((signal.SIGTERM, KILL_AFTER), (signal.SIGKILL, KILL_AFTER)):
+            try:
+                os.killpg(proc.pid, sig)
+            except (ProcessLookupError, PermissionError):
+                pass
+            try:
+                proc.communicate(timeout=wait)
+                break
+            except subprocess.TimeoutExpired:
+                continue
+        raise Stopped()
+
+
+def _git(checkout: str, *args: str, env: dict | None = None, stopped=None) -> str:
+    rc, out, err = run_stoppable(['git', '-C', checkout, *args], stopped, env=env)
+    if rc != 0:
+        raise RuntimeError(f'git {" ".join(args)}: {_text(err)}')
+    return _text(out)
+
+
+def default_fingerprint(checkout: str, stopped=None) -> str:
     """HEAD plus the tree id of the whole working tree (tracked and untracked, ignored files
     left out), by content: the status labels do not change when an already modified file
     is edited again. It is built in a temporary copy of the index, so the real one is
     never touched. ``.forge`` is left out, as in forge_tree."""
     try:
-        head = _git(checkout, 'rev-parse', 'HEAD')
+        head = _git(checkout, 'rev-parse', 'HEAD', stopped=stopped)
     except RuntimeError:
         head = '-'
     real = Path(checkout) / _git(checkout, 'rev-parse', '--git-path', 'index')
@@ -221,8 +250,8 @@ def default_fingerprint(checkout: str) -> str:
         else:
             os.unlink(tmp)
         env = dict(os.environ, GIT_INDEX_FILE=tmp)
-        _git(checkout, 'add', '-A', '--', '.', ':(exclude).forge', env=env)
-        tree = _git(checkout, 'write-tree', env=env)
+        _git(checkout, 'add', '-A', '--', '.', ':(exclude).forge', env=env, stopped=stopped)
+        tree = _git(checkout, 'write-tree', env=env, stopped=stopped)
     finally:
         try:
             os.unlink(tmp)
@@ -231,14 +260,14 @@ def default_fingerprint(checkout: str) -> str:
     return f'{head} {tree}'
 
 
-def fingerprint(checkout: str, command: str | None) -> str:
+def fingerprint(checkout: str, command: str | None, stopped=None) -> str:
+    """The checkout's fingerprint; Stopped when ``stopped()`` turns true meanwhile."""
     if not command:
-        return default_fingerprint(checkout)
-    done = subprocess.run(['/bin/bash', '-c', command], cwd=checkout, capture_output=True,
-                          stdin=subprocess.DEVNULL)
-    if done.returncode != 0:
-        raise RuntimeError(f'fingerprint command exited {done.returncode}: {_text(done.stderr)}')
-    return _text(done.stdout)
+        return default_fingerprint(checkout, stopped)
+    rc, out, err = run_stoppable(['/bin/bash', '-c', command], stopped, cwd=checkout)
+    if rc != 0:
+        raise RuntimeError(f'fingerprint command exited {rc}: {_text(err)}')
+    return _text(out)
 
 
 # --- running ---------------------------------------------------------------------------
@@ -303,7 +332,8 @@ class Verification:
         self.fingerprint_cmd = fingerprint_cmd
         self.stop = False
         self.running: dict[str, Live] = {}
-        self.lingering: list[tuple[int, float]] = []  # (pgid, KILL time) of finished lanes
+        # (pgid, KILL time, the lane's group, give-up time) of finished lanes whose leftovers still run
+        self.lingering: list[tuple[int, float, str | None, float]] = []
         self.dirty = False
         self.written = 0.0
         self.doc: dict = {
@@ -368,7 +398,9 @@ class Verification:
             for name in [n for n, live in running.items() if live.exited and n in drained]:
                 self._finish(name, running.pop(name))
             self._reap_lingering()
-            busy = {self.by_name[n]['group'] for n in running} - {None}
+            # a group is free once no process of its last lane is left (a server still shutting
+            # down can hold the port the next lane of the group needs)
+            busy = ({self.by_name[n]['group'] for n in running} | {g for _, _, g, _ in self.lingering}) - {None}
             for name in list(pending):
                 if len(running) >= self.parallel:
                     break
@@ -396,7 +428,10 @@ class Verification:
         lane['runs'].append(run)
         lane.update(state='running', started=now, ended=None, exit=None, step=None)
         try:
-            with open(log, 'ab') as fh:
+            if os.path.islink(log):
+                os.unlink(log)   # the log name is ours: never written through a link left in --out
+            fd = os.open(log, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o666)
+            with os.fdopen(fd, 'ab') as fh:
                 offset = fh.tell()
                 proc = subprocess.Popen(['/bin/bash', '-c', lane['command']], cwd=self.checkout,
                                         stdin=subprocess.DEVNULL, stdout=fh,
@@ -419,7 +454,8 @@ class Verification:
         pgid = live.proc.pid
         if self._group_alive(pgid):
             self._signal(pgid, signal.SIGTERM)
-            self.lingering.append((pgid, time.monotonic() + KILL_AFTER))
+            now = time.monotonic()
+            self.lingering.append((pgid, now + KILL_AFTER, self.by_name[name]['group'], now + 4 * KILL_AFTER))
 
     def _finish(self, name: str, live: Live, interrupted: bool = False) -> None:
         """Record the end of a lane whose leader has exited (or was killed)."""
@@ -567,7 +603,10 @@ class Verification:
         if not self.doc['mutated']:
             self._kill_all()
             try:
-                self.doc['mutated'] = fingerprint(self.checkout, self.fingerprint_cmd) != self.before
+                self.doc['mutated'] = fingerprint(self.checkout, self.fingerprint_cmd,
+                                                  lambda: self.stop) != self.before
+            except Stopped:
+                return False          # interrupted: nothing is judged, the caller sees self.stop
             except (RuntimeError, OSError):
                 self.doc['mutated'] = True
             if self.doc['mutated']:
@@ -578,6 +617,8 @@ class Verification:
         """Rounds of reruns of the failed lanes among ``names`` with budget left, each round
         under the same parallel and group rules; a pass on a rerun is flaky."""
         while not self.stop and not self.changed():
+            if self.stop:     # it came during that look at the tree
+                return
             due = [n for n in names if self.by_name[n]['state'] == 'fail'
                    and len(self.by_name[n]['runs']) - 1 < self.budget(n)]
             if not due:
@@ -598,11 +639,12 @@ class Verification:
             return
         live, kept = self.out / lane['log'], self.out / lane['runs'][-1]['log']
         try:
+            if os.path.islink(live) or os.path.islink(kept):
+                raise OSError('a symbolic link is not written through')
             if live.exists() and not kept.exists():
                 shutil.copyfile(live, kept)
             if truncate:
-                with open(live, 'wb'):
-                    pass
+                os.close(os.open(live, os.O_WRONLY | os.O_TRUNC | os.O_NOFOLLOW))
         except OSError as exc:
             print(f'forge-verify: cannot keep {kept.name}: {exc}', file=sys.stderr)
 
@@ -620,7 +662,7 @@ class Verification:
         """TERM every lane process group (running lanes and what finished lanes left), KILL
         what is left after KILL_AFTER seconds, and wait until no process of any group is
         left. Safe to call again; used on every way out of ``run``."""
-        groups = {live.proc.pid for live in self.running.values()} | {g for g, _ in self.lingering}
+        groups = {live.proc.pid for live in self.running.values()} | {entry[0] for entry in self.lingering}
         for pgid in groups:
             self._signal(pgid, signal.SIGTERM)
         deadline = time.monotonic() + KILL_AFTER
@@ -635,16 +677,16 @@ class Verification:
         self.lingering.clear()
 
     def _reap_lingering(self) -> None:
-        """KILL a finished lane's leftover processes that ignored the TERM sent at its end."""
+        """KILL a finished lane's leftover processes that ignored the TERM sent at its end, and
+        forget them once they are gone (or, stuck in the kernel, after the give-up time)."""
         now = time.monotonic()
         keep = []
-        for pgid, deadline in self.lingering:
-            if not self._group_alive(pgid):
+        for pgid, deadline, group, give_up in self.lingering:
+            if not self._group_alive(pgid) or now >= give_up:
                 continue
             if now >= deadline:
                 self._signal(pgid, signal.SIGKILL)
-                continue
-            keep.append((pgid, deadline))
+            keep.append((pgid, deadline, group, give_up))
         self.lingering = keep
 
     @staticmethod
@@ -699,7 +741,9 @@ class Verification:
     def _run(self) -> int:
         self.out.mkdir(parents=True, exist_ok=True)
         try:
-            self.before = fingerprint(self.checkout, self.fingerprint_cmd)
+            self.before = fingerprint(self.checkout, self.fingerprint_cmd, lambda: self.stop)
+        except Stopped:
+            pass                      # self.stop is set: no lane starts, every lane ends interrupted
         except (RuntimeError, OSError) as exc:
             print(f'forge-verify: cannot fingerprint {self.checkout}: {exc}', file=sys.stderr)
             self._abort()
@@ -719,13 +763,14 @@ class Verification:
             else:
                 self.run_round(rest)
                 self.rerun(rest)
-        if self.stop:
+        if not self.stop:
+            self.changed()   # stops the last lanes' leftovers, then looks at the tree again
+        if self.stop:        # also when the stop came during that last look
             for lane in lanes:
                 if lane['state'] in ('waiting', 'running'):
                     lane['state'] = 'interrupted'
             self.doc['state'] = 'interrupted'
         else:
-            self.changed()   # stops the last lanes' leftovers, then looks at the tree again
             ok = all(lane['state'] in PASSING for lane in lanes) and not self.doc['mutated']
             self.doc['state'] = 'pass' if ok else 'fail'
         for name in names:

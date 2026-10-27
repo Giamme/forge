@@ -89,6 +89,27 @@ class SchedulingTests(VerifyLanesCase):
         self.assertLessEqual(a['ended'], b['started'])
         self.assertLess(c['started'], a['ended'])
 
+    def test_a_group_waits_for_what_its_last_lane_left_running(self):
+        gone = self.marks / 'a.gone'
+        # a leaves a server that takes a while to shut down once TERMed at a's end
+        self.lane('a', '#forge: group=db\n'
+                  f"( trap 'sleep 1; touch {gone}; exit 0' TERM; while :; do sleep 0.1; done ) &\necho started")
+        self.lane('b', f'#forge: group=db\ntest -f {gone}')
+        done = self.run_verify('--parallel', '2', '--retries', '0')
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertEqual(self.lane_doc('b')['state'], 'pass')
+
+    def test_logs_left_as_symlinks_in_out_are_not_written_through(self):
+        outside = self.base / 'outside.txt'; outside.write_text('keep me\n')
+        self.out.mkdir()
+        (self.out / 'verification.lane.unit.log').symlink_to(outside)
+        (self.out / 'verification.lane.unit.run-1.log').symlink_to(self.base / 'dangling.txt')
+        self.lane('unit', 'echo failing; exit 1')
+        self.assertEqual(self.run_verify().returncode, 1)          # with its default rerun
+        self.assertEqual(outside.read_text(), 'keep me\n')
+        self.assertFalse((self.base / 'dangling.txt').exists())
+        self.assertEqual(len(self.lane_doc('unit')['runs']), 2)
+
     def test_lanes_start_in_declaration_order(self):
         for name in ('c', 'a', 'b'):
             self.lane(name, 'sleep 0.1')
@@ -334,6 +355,25 @@ class InterruptTests(VerifyLanesCase):
         self.assertEqual([l['state'] for l in doc['lanes']], ['interrupted'] * 3)
         self.assertFalse((self.marks / 'never').exists())
         self.assertNotIn('after', (self.out / 'verification.lane.long.log').read_text())
+
+    def test_sigterm_during_a_slow_fingerprint_stops_it_and_exits_130(self):
+        self.lane('unit', f'touch {self.marks}/never')
+        fp = f'echo $$ > {self.marks}/fp; sleep 600; echo stable'
+        proc = subprocess.Popen(self.run_args('--fingerprint-cmd', fp), stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, text=True)
+        self.addCleanup(proc.kill)
+        self.wait_for(self.marks / 'fp')
+        time.sleep(0.2)
+        pid = int((self.marks / 'fp').read_text())
+        started = time.monotonic()
+        proc.send_signal(signal.SIGTERM)
+        proc.communicate(timeout=30)
+        self.assertLess(time.monotonic() - started, 8)
+        self.assertEqual(proc.returncode, 130)
+        with self.assertRaises(ProcessLookupError):
+            os.killpg(pid, 0)
+        self.assertEqual((self.doc()['state'], self.lane_doc('unit')['state']), ('interrupted', 'interrupted'))
+        self.assertFalse((self.marks / 'never').exists())
 
     def test_sigterm_is_honoured_while_a_lane_floods_its_log(self):
         self.lane('flood', 'yes xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'
