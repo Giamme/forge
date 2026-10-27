@@ -265,7 +265,7 @@ that is missing, a symlink or not a regular file.
 
 JSON responses: `Content-Type: application/json; charset=utf-8`,
 `Cache-Control: no-store`. The page loads `style.css`, `runmodel.js`, `graph.js`, `gantt.js`,
-`panel.js`, `map3d.js` and `app.js` by those relative names, and `scene3d.js` and `iso.js`
+`verifyview.js`, `panel.js`, `map3d.js` and `app.js` by those relative names, and `scene3d.js` and `iso.js`
 (ES modules) only when the 3D view is used.
 
 Every response carries `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`
@@ -355,7 +355,7 @@ Every RunSummary field, plus:
                              "duration_s": 12.3, "log": "verification.lane.unit.run-1.log",
                              "lane": "unit", "started": 1760622000.5}],
                    "commit": "9c1e4b7a...",
-                   "state": "done", "mode": "lanes", "live": null,
+                   "state": "done", "mode": "lanes", "live": null, "mutated": false,
                    "lanes": [VerificationLane, ...],
                    "failing": [{"lane": "e2e", "name": "checkout.Pay.test_refund", "suite": "checkout",
                                 "file": "e2e.xml", "message": "expected 200, got 500", "excerpt": "...",
@@ -428,6 +428,8 @@ Every RunSummary field, plus:
   lane's log that first names the test, or `null`.
 - `verification.failing` is every lane's `tests.failing`, in lane order, each with its `lane`:
   at most 200 entries, `[]` in `single` mode.
+- `verification.mutated` is `true` when the checkout changed under the verification (the lanes
+  file's `mutated`, or in `single` mode a run with `tree_changed`): reruns after it were skipped.
 - `timeline.started` is the earliest `started` of every execution the detail shows (tasks
   and their shadows, the listed final reviews, the run's own); `ended` is the latest `ended`,
   or `null` while any of them is `running` or when none has ended. `runs` and
@@ -1267,6 +1269,7 @@ Plain scripts unless noted; each defines one global and none parses API text as 
 | `runmodel.js` | `ForgeRunModel` | pure data, no DOM: the plate layout (archivision's `plate()`), the atlas, plan and execution models, forge-schedule's rules projected forward, the critical path, concurrency, the state of every node at a time `t` (replay), filters. Also a CommonJS module, for `node --test` |
 | `gantt.js` | `ForgeGantt` | `render(container, run, {now, onSelect, sel, replay, critical, ghosts})`: attempts on wall-clock time in lanes; `strip(container, run, {now, replay})`: busy attempts and model calls against `max_parallel` |
 | `panel.js` | `ForgePanel` | `render(host, ctx)`: the inspector for a run, task, execution, final review, verification, integration or Fractal node; fetches the lazy endpoints once per node; `ctx.diffHash(spec)` links into the diff viewer, `ctx.onFractal(task, TaskFractal)` hands a task's tree to the stage |
+| `verifyview.js` | `ForgeVerify` | `render(host, {run, now, fetchJSON, rerender})`: the verification inspector panel.js delegates to: while it runs, the elapsed time, step, last line and a flag past 5 minutes without output, and a live tail of the followed lane's log (or the single log) read again each poll; when it failed, the failing tests first, grouped by lane with new or known, each opening its lane's log at its line (in an export, the tail); a lanes table (state, time, reruns, counts). Pure helpers (`model`, `laneRow`, `groupFailing`, `idleWarning`, `openStep`, `tailLane`, `logPath`, `linesPath`, `tailLines`) are a CommonJS module too |
 | `diffview.js` | `ForgeDiff` | `render(host, {run, spec, fetchJSON, rerender, href, closeHref})`: a DiffDetail with its findings under their lines; `spec` is `{kind: task, task, source, file}`, `{kind: final, name, file}` or `{kind: fractal, task, node, file}` |
 | `convo.js` | `ForgeConvo` | `render(host, {run, spec: {task, exec}, brief, live, fetchJSON, rerender, diffHash, closeHref})`: an ExecutionTranscript as a timeline, with search, the errors and, while the execution runs, a read of its log every 2.5 s |
 | `files.js` | `ForgeFiles` | `matrix(data, run, opts)` (pure: Files as rows of dirs and files against task columns by wave) and `render(host, data, {run, sel, onSelectTask, diffHref, prefs, savePrefs})`: the run's Files mode. Also a CommonJS module |

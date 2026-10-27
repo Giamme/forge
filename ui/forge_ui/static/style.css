@@ -99,6 +99,9 @@
 .st-fail, .st-error, .st-conflict, .st-infra, .st-timeout, .st-blocked { --st: var(--lamp-red); --st-lit: var(--lit-red); }
 [class^="st-"], [class*=" st-"] { --st-fill: var(--st); --st-ring: var(--lamp-edge); }
 .st-accepted, .st-nochanges, .st-interrupted, .st-infra, .st-timeout, .st-blocked, .st-outdated { --st-fill: transparent; --st-ring: var(--st); }
+/* verification lanes: flaky passed on a rerun (amber, hollow), known passed with only baseline failures (green, hollow) */
+.st-flaky { --st: var(--lamp-amber); --st-lit: var(--lit-amber); --st-fill: transparent; --st-ring: var(--st); }
+.st-known { --st: var(--lamp-green); --st-lit: var(--lit-green); --st-fill: transparent; --st-ring: var(--st); }
 /* review severity is a shape (P0 spike, P1 diamond, P2 cone, P3 pin) on a ramp of its own, never a status lamp */
 .sev-P0 { --sev: var(--sev-p0); --sev-shape: polygon(50% 0, 100% 100%, 0 100%); }
 .sev-P1 { --sev: var(--sev-p1); --sev-shape: polygon(50% 0, 100% 50%, 50% 100%, 0 50%); }
@@ -563,6 +566,51 @@ summary:hover { color: var(--ink-2); }
 ul.plain { list-style: none; padding: 0; margin: 4px 0; display: grid; gap: 4px; font-size: var(--t-sm); }
 ul.plain li.current { font-weight: 650; }
 pre.cmd { max-height: none; }
+/* the verification inspector (verifyview.js): live state, failing tests, lanes and their logs */
+.vfy-num { font-variant-numeric: tabular-nums; }
+.vfy-live { margin: var(--s-3) 0 0; padding: var(--s-3); border-radius: var(--r-key); background: var(--module-2); box-shadow: inset 0 0 0 1px var(--rule); }
+.vfy-now { margin: 0; font-size: var(--t-sm); }
+.vfy-step { font-weight: 600; }
+.vfy-last { margin: var(--s-2) 0 0; font-size: var(--t-xs); color: var(--ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.vfy-idle { margin: var(--s-2) 0 0; padding: 2px var(--s-2); border-radius: var(--r-small); background: var(--warn-wash); font-size: var(--t-xs); width: fit-content; }
+.vfy-group { margin: var(--s-3) 0 0; }
+.vfy-group-head { display: flex; gap: var(--s-2); align-items: baseline; margin: 0 0 var(--s-1); font-size: var(--t-sm); }
+.vfy-tests { gap: var(--s-2); }
+.vfy-test { padding: var(--s-2) var(--s-3); border-radius: var(--r-key); background: var(--module-2); box-shadow: inset 3px 0 0 var(--lamp-red); }
+.vfy-test.vfy-known { box-shadow: inset 3px 0 0 var(--lamp-off); }
+.vfy-test-head { display: flex; flex-wrap: wrap; gap: var(--s-2); align-items: baseline; }
+.vfy-test-name { overflow-wrap: anywhere; font-size: var(--t-xs); }
+.vfy-badge { padding: 0 6px; border-radius: var(--r-small); font-size: var(--t-xs); font-weight: 650; text-transform: uppercase; letter-spacing: .04em; }
+.vfy-badge-new { background: var(--lamp-red); color: var(--plate-ink); }
+.vfy-badge-known { box-shadow: inset 0 0 0 1px var(--rule-2); color: var(--muted); }
+.vfy-message { margin: var(--s-1) 0 0; font-size: var(--t-sm); overflow-wrap: anywhere; }
+.vfy-excerpt summary { cursor: pointer; font-size: var(--t-xs); color: var(--muted); }
+/* a link-like button: none of the key's plate type, face or press */
+.vfy-link { display: inline; min-height: 0; padding: 0; border: 0; background: none; box-shadow: none; color: var(--ink); text-decoration: underline; text-underline-offset: 2px;
+  font-family: var(--font-ui); font-weight: 400; font-size: var(--t-xs); letter-spacing: normal; text-transform: none; line-height: inherit; white-space: normal; text-align: left; }
+.vfy-link.mono { font-family: var(--mono); }
+.vfy-link:hover:not(:disabled) { background: none; color: var(--ink-2); }
+.vfy-section-head { display: flex; align-items: center; justify-content: space-between; gap: var(--s-2); margin: 0 0 var(--s-2); }
+.vfy-section-head h3 { margin: 0; }
+.vfy-nowrap { white-space: nowrap; }
+.vfy-table-wrap { overflow-x: auto; }
+.vfy-table { width: 100%; border-collapse: collapse; font-size: var(--t-sm); }
+.vfy-table th { text-align: left; font-weight: 600; color: var(--muted); font-size: var(--t-xs); padding: 0 var(--s-2) var(--s-1) 0; }
+.vfy-table td { padding: var(--s-1) var(--s-2) var(--s-1) 0; border-top: 1px solid var(--rule); vertical-align: top; }
+.vfy-table tr.vfy-followed td { background: var(--module-2); }
+.vfy-lane .vfy-link { font-size: var(--t-sm); }
+.vfy-label { margin-left: var(--s-1); font-size: var(--t-xs); }
+.vfy-lane-now { display: grid; gap: 2px; margin-top: 2px; max-width: 28ch; }
+.vfy-lane-now .vfy-last { margin: 0; }
+.vfy-log { display: grid; padding: var(--s-2) 0; font-family: var(--mono); font-size: var(--t-xs); line-height: 1.5; white-space: pre; overflow: auto; }
+.vfy-line { display: flex; gap: var(--s-3); padding: 0 var(--s-3); }
+.vfy-line.vfy-hl { background: var(--warn-wash); color: var(--warn-ink); }
+.vfy-ln { flex: none; min-width: 5ch; text-align: right; color: var(--glass-dim); font-variant-numeric: tabular-nums; user-select: none; }
+.vfy-line.vfy-hl .vfy-ln { color: inherit; }
+.vfy-lt { white-space: pre-wrap; overflow-wrap: anywhere; }
+.vfy-note { font-size: var(--t-xs); margin: var(--s-1) 0 0; }
+.vfy-summary, .vfy-endstep, .vfy-mutated { margin: var(--s-3) 0 0; font-size: var(--t-sm); }
+.vfy-lanes + .fields, .vfy-tail + .fields { margin-top: var(--s-4); }
 .phase-bar { display: flex; height: 8px; border-radius: 4px; overflow: hidden; margin: 6px 0; background: var(--module-2); }
 .phase { min-width: 2px; }
 .phase-legend { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: var(--t-xs); color: var(--muted); }

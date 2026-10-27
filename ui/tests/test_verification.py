@@ -45,6 +45,7 @@ class VerificationTests(unittest.TestCase):
         self.assertEqual([(f['lane'], f['name'], f['known'], f['log_line']) for f in v['failing']],
                          [('e2e', 'checkout.Pay.test_card', True, 12), ('e2e', 'checkout.Pay.test_refund', False, None)])
         self.assertEqual(v['failing'][1]['message'], 'expected 200, got 500')
+        self.assertFalse(v['mutated'])
         self.assertEqual(v['runs'][0], {'n': 1, 'kind': 'initial', 'exit': 1, 'tree_changed': False, 'duration_s': 30.0,
                                         'log': 'verification.lane.e2e.run-1.log', 'lane': 'e2e', 'started': T0 + 1300})
         self.assertEqual(len(v['runs']), 5)
@@ -53,6 +54,9 @@ class VerificationTests(unittest.TestCase):
         v, warnings = self.verification()
         self.assertEqual(len(v['runs']), 5)
         self.assertEqual(warnings, ['verification.runs.tsv line 6: invalid verification run'])
+        doc = json.loads((self.plan / 'verification.lanes.json').read_text())
+        F.write(self.plan / 'verification.lanes.json', dict(doc, mutated=True), T0 + 1400)
+        self.assertTrue(self.verification()[0]['mutated'])           # a lane changed the checkout
 
     def test_a_running_single_command_shows_its_open_step_and_last_line(self):
         F.single_running(self.plan)

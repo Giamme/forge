@@ -988,11 +988,13 @@ def _verification(reader, status, verifications):
         for entry in (lane['tests'] or {}).get('failing', []):
             if len(failing) < _FAILING_MAX:
                 failing.append(dict(entry, lane=lane['name']))
+    runs = _verification_runs(reader)
+    # A lane or a run of the command changed the checkout: later reruns were skipped.
+    mutated = doc.get('mutated') is True if lanes is not None else any(run['tree_changed'] for run in runs)
     return dict(status='RUNNING' if state == 'running' else status,
                 command=command.strip() if command is not None else None,
-                log_tail=log_tail,
-                runs=_verification_runs(reader), commit=reader.line('verification.commit'),
-                state=state, mode=mode, live=live, lanes=lanes, failing=failing)
+                log_tail=log_tail, runs=runs, commit=reader.line('verification.commit'),
+                state=state, mode=mode, live=live, lanes=lanes, failing=failing, mutated=mutated)
 
 
 def _integration(reader, tasks, integrations, reviews, published):

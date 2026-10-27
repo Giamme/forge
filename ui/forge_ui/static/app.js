@@ -1062,7 +1062,8 @@ window.ForgeApp = (() => {
   function busy() {
     if (state.key) {
       const run = state.cache.get(state.key)?.data;
-      return !!run && (list(run.tasks).some(t => t.status === 'RUNNING') || (run.final_review && run.final_review.state === 'running'));
+      return !!run && (list(run.tasks).some(t => t.status === 'RUNNING') || (run.final_review && run.final_review.state === 'running')
+        || (run.verification && run.verification.state === 'running'));
     }
     return state.runs.some(r => r.counts && r.counts.RUNNING);
   }

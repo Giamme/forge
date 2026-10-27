@@ -26,7 +26,7 @@ from forge_ui import __version__, reader, server
 
 STATIC = server.STATIC_DIR
 # what the exported page runs, in index.html's order; the cloud, the leaderboard and notifications need a server
-SCRIPTS = ('theme.js', 'icons.js', 'datatable.js', 'shell.js', 'runmodel.js', 'cloudmodel.js', 'graph.js', 'gantt.js', 'panel.js', 'diffview.js', 'convo.js', 'files.js', 'map3d.js',
+SCRIPTS = ('theme.js', 'icons.js', 'datatable.js', 'shell.js', 'runmodel.js', 'cloudmodel.js', 'graph.js', 'gantt.js', 'verifyview.js', 'panel.js', 'diffview.js', 'convo.js', 'files.js', 'map3d.js',
            'search.js', 'app.js')
 MODULES = ('iso.js', 'cloud3d.js', 'findings3d.js', 'stagectl.js', 'scene3d.js')   # bundled in dependency order
 DIFF_CAP = 1 << 20                                          # one diff's JSON
