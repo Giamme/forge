@@ -52,7 +52,7 @@ def bounded(command, cwd, deadline, limit=16384):
         # Also kill descendants that closed their pipes before the parent exited.
         try:
             os.killpg(process.pid, signal.SIGKILL)
-        except ProcessLookupError:
+        except (ProcessLookupError, PermissionError):   # macOS: EPERM for a group of zombies only
             pass
         process.wait()
         streams.close()

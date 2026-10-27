@@ -65,11 +65,10 @@ class SchedulingTests(VerifyLanesCase):
     def test_independent_lanes_overlap(self):
         for name in 'abc':
             self.lane(name, 'sleep 1')
-        t0 = time.monotonic()
         done = self.run_verify('--parallel', '3')
-        took = time.monotonic() - t0
         self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
-        self.assertLess(took, 2.5)
+        lanes = [self.lane_doc(name) for name in 'abc']
+        self.assertLess(max(l['started'] for l in lanes), min(l['ended'] for l in lanes))   # all three at once
         self.assertEqual(self.doc()['state'], 'pass')
 
     def test_parallel_one_runs_lanes_one_at_a_time(self):
@@ -417,19 +416,20 @@ class InterruptTests(VerifyLanesCase):
         self.assertEqual(len(self.rows()), 1)
 
     def test_draining_one_lanes_backlog_does_not_hold_up_the_others(self):
+        written = self.marks / 'written'
         self.lane('a_flood', 'yes xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'
-                             ' | head -c 400000000')
+                             f' | head -c 400000000; python3 -c "import time; print(time.time())" > {written}')
         self.lane('b', 'sleep 1')
         self.lane('c', f'touch {self.marks}/c')
         done = self.run_verify('--parallel', '2', timeout=120)
         self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
-        doc = self.doc()
-        c = self.lane_doc('c')
-        self.assertLess(c['started'] - doc['started'], 3.0)  # when b ends, not when the flood is read
+        # Measured against the events, not the wall clock: on a busy machine the 400 MB alone take a while.
+        b, c = self.lane_doc('b'), self.lane_doc('c')
+        self.assertLess(c['started'] - b['ended'], 1.5)       # when b ends, not when the flood is read
         # The finished lane's backlog is not read through at all: it ends with its writer,
         # however slowly a capped reader would get through 400 MB.
         flood = self.lane_doc('a_flood')
-        self.assertLess(flood['ended'] - flood['started'], 3.0)
+        self.assertLess(flood['ended'] - float(written.read_text()), 1.5)
         self.assertEqual(flood['last_line'], 'x' * 49)   # head cuts the last line: 400000000 % 81
 
 

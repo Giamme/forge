@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from unittest.mock import patch
 
@@ -206,9 +207,14 @@ class ForecastReportTests(unittest.TestCase):
     def test_the_run_block_can_be_turned_off_and_never_waits_past_its_budget(self):
         p = self.seed()
         self.assertEqual(self.forge(p, '--run', env=dict(FORGE_FORECAST='off')), '')
-        late = self.forge(p, '--run', env=dict(FORGE_FORECAST_BUDGET_S='0.000001'))
-        self.assertEqual(len(late.splitlines()), 1, late)
-        self.assertIn('skipped', late)
+        # Reading the history is made to take 10 s: the run goes on at its budget, with one line.
+        slow = self.root / 'slow'; slow.mkdir()
+        (slow / 'sitecustomize.py').write_text('import sqlite3, time\n_connect = sqlite3.connect\n'
+                                               'sqlite3.connect = lambda *a, **k: (time.sleep(10), _connect(*a, **k))[1]\n')
+        started = time.monotonic()
+        late = self.forge(p, '--run', env=dict(FORGE_FORECAST_BUDGET_S='0.5', PYTHONPATH=str(slow)))
+        self.assertLess(time.monotonic() - started, 8)
+        self.assertEqual(late.splitlines(), ['forecast skipped: reading the history took over 0.5s'])
         self.assertFalse((p / 'forecast.json').exists())
         self.assertIn('first try', self.forge(p, '--run', env=dict(FORGE_DATASET='off')))
         self.assertEqual(self.forecasts(), [])
