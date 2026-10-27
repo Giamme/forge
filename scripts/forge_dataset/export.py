@@ -233,20 +233,6 @@ class Runs:
                 held = self.survival.get(d['reviewed'])
                 if held is None or d['horizon_days'] > held['horizon_days']:
                     self.survival[d['reviewed']] = d
-        # Live Clef predictions (forge_jev/predict.py), recorded before the attempt they are
-        # about: {(run, task, attempt): [(ts, p, model, assignment)]}, oldest first.
-        self.clef = defaultdict(list)
-        for e in sorted(store.of('jev'), key=lambda e: e['ts']):
-            d = e['d']
-            site = d.get('site')
-            if site not in ('clef-first-pass', 'clef-retry-pass') or not d.get('ok'):
-                continue
-            qid = 'first_pass' if site == 'clef-first-pass' else 'retry_pass'
-            p = ((d.get('answers') or {}).get(qid) or {}).get('noul')
-            n = d.get('intended_attempt') if site == 'clef-first-pass' else d.get('attempt')
-            if isinstance(p, (int, float)) and n:
-                self.clef[(e['run'], e['task'] or d.get('task'), int(n))].append(
-                    (e['ts'], float(p), d.get('model'), d.get('assignment') or {}))
         self.integrate_verification = {}
         for e in sorted(store.of('verification'), key=lambda e: e['ts']):
             if e['d'].get('scope') == 'integrate' and e['d'].get('status'):
@@ -452,12 +438,6 @@ def routing_cases(runs: Runs):
         if declared in ('low', 'medium', 'high'):
             baseline.setdefault('first_pass_declared', dict(source='declared difficulty', risk=
                                 dict(low=0.0, medium=0.5, high=1.0)[declared]))
-        live = _clef_before(runs, run, task, 1, first['d'].get('wall_started') or first['ts'])
-        if live:
-            # Followed: attempt 1 ran the dwarf the prediction was about. A gate edit or a
-            # `retry --dwarf` in between makes it a prediction about a model that never ran.
-            baseline['first_pass_clef'] = dict(source='live clef first-pass', p=live[1], model=live[2],
-                                               followed=live[3].get('dwarf') == first['d'].get('dwarf'))
         yield dict(slice='routing', key=(run, task), run=run, repo=first['repo'], task=task,
                    state=state, questions=questions, expected=expected, baseline=baseline,
                    label_source=dict(first_pass='final status of the first real attempt',
@@ -534,25 +514,9 @@ def retry_cases(runs: Runs):
             state = outcome.retry(state, attempt=a['n'], previous_review=findings)
             yield dict(slice='retry', key=(run, task, a['n']), run=run, repo=start['repo'], task=task,
                        state=state, questions=dict(retry_pass=retry_pass()),
-                       expected=dict(retry_pass=a['outcome']), baseline=_retry_baseline(runs, run, task, a['n']),
+                       expected=dict(retry_pass=a['outcome']), baseline={},
                        label_source=dict(retry_pass='final status of this retry attempt'),
                        dwarf=state['dwarf'].get('model'), meta=_meta(runs, run, plan, a['events'][-1]))
-
-
-def _clef_before(runs: Runs, run, task, attempt, started):
-    """The last plan-time Clef prediction about attempt 1 made before it started, or None."""
-    found = None
-    for item in runs.clef.get((run, task, attempt), []):
-        if item[0] <= (started or 0):
-            found = item
-    return found
-
-
-def _retry_baseline(runs: Runs, run, task, n) -> dict:
-    """The Clef prediction about retry attempt n. It is made once, as the attempt begins
-    (after its receipt opened, so not timed against it): the attempt number is the join."""
-    live = (runs.clef.get((run, task, n)) or [None])[0]
-    return dict(retry_pass_clef=dict(source='live clef retry-pass', p=live[1], model=live[2])) if live else {}
 
 
 def _float(value):

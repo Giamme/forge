@@ -380,15 +380,6 @@ EOF
 
   compute_waves "$PLAN"
 
-  # --- clef: silent first-attempt predictions -------------------------------------
-  # Recorded only (tasks/<id>/clef.first_pass and the run dataset), so a later export can
-  # measure whether Clef tells which tasks a first attempt will fail. Nothing in a run
-  # reads them. Without a Cloudflare provider the command returns at once; with one it
-  # bounds itself (one deadline for the plan, an in-process watchdog).
-  if [ "${FORGE_JEV:-}" != off ]; then
-    python3 "$SKILL_DIR/scripts/forge-jev.py" first-pass --plan "$PLAN" --repo "$REPO" >/dev/null 2>&1 || true
-  fi
-
   # --- jev: advisory forward dependency -------------------------------------------
   # Wave order is structural, but it cannot see an earlier-wave task written against
   # an interface a later-wave task builds. This is advisory only: it never edits
@@ -786,13 +777,6 @@ do_task_body() (
   if [ -z "$resume" ]; then
     attempt=$(( attempt + 1 ))
     echo "$attempt" > "$tdir/attempt"
-    # Silent: Clef's guess at whether this retry passes with the findings it was handed.
-    # Only a real new dwarf attempt (not a QA-only resume); recorded in clef.retry_pass.<n>
-    # and the run dataset, never read by the run, and it can never fail the task.
-    if [ "$attempt" -gt 1 ] && [ -s "$tdir/retry_findings.md" ] && [ "${FORGE_JEV:-}" != off ]; then
-      python3 "$SKILL_DIR/scripts/forge-jev.py" retry-pass --plan "$PLAN" --repo "$REPO" --task "$id" \
-        --attempt "$attempt" >/dev/null 2>&1 || true
-    fi
   fi
 
   # The base is pinned per task on first creation and reused by every retry. The

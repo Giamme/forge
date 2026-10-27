@@ -10,7 +10,6 @@ import io
 import json
 import math
 import os
-import time
 from pathlib import Path
 import sys
 import unittest
@@ -96,8 +95,6 @@ class DefaultUnchangedTests(JevTestCase):
         server = Server(lambda body: dict(answers=nouls(body['questions']), model='jev-1'))
         with patch('urllib.request.urlopen', side_effect=server):
             for site in forge_jev.SITE_CAPABILITY:
-                if site in forge_jev.CLEF_ONLY_SITES:
-                    continue
                 self.assertIsNotNone(client.ask('s', {'q': NOUL}, site=site))
         for request in server.requests:
             self.assertEqual(request['url'], forge_jev.ENDPOINT)
@@ -140,12 +137,9 @@ class RoutingTests(CloudflareCase):
         self.assertEqual(forge_jev.provider_for('jev-score-plan', config), 'cloudflare')
         os.environ['FORGE_CLEF'] = 'off'
         self.assertEqual(forge_jev.provider_for('jev-drift', config), 'typesafe')
-        self.assertFalse(forge_jev.site_ready('clef-first-pass', config))
         os.environ.pop('FORGE_CLEF')
         os.environ.pop('FORGE_JEV_PROVIDER')
-        self.assertTrue(forge_jev.site_ready('clef-first-pass', config))
-        os.environ['FORGE_JEV_OUTCOMES'] = 'off'
-        self.assertFalse(forge_jev.site_ready('clef-first-pass', config))
+        self.assertEqual(forge_jev.provider_for('jev-drift', config), 'cloudflare')
         os.environ['FORGE_JEV'] = 'off'
         self.assertFalse(forge_jev.site_ready('jev-drift', config))
 
@@ -162,6 +156,13 @@ class RoutingTests(CloudflareCase):
         self.assertFalse(data['capability_ready']['memory'])
         self.assertEqual(data['sites']['jev-drift'], dict(provider='cloudflare', ready=True))
         self.assertEqual(data['sites']['jev-memory-slice'], dict(provider='typesafe', ready=False))
+
+    def test_a_stored_outcomes_key_is_ignored(self):
+        config = self.configure(outcomes=False)
+        self.assertTrue(forge_jev.site_ready('jev-drift', config))
+        for argv in (['status', '--json'], ['doctor', '--json']):
+            with contextlib.redirect_stdout(io.StringIO()) as out:
+                self.assertEqual(cli.main(argv), 0, out.getvalue())
 
     def test_the_token_file_is_read_from_the_config_dir_not_home(self):
         config = forge_jev.load_config()
@@ -353,7 +354,6 @@ class SetupTests(JevTestCase):
         self.assertEqual(rc, 0)
         self.assertEqual(forge_jev.load_config()['sites'], {'jev-memory-slice': 'cloudflare'})
         self.assertEqual(self.run_cli('sites', 'jev-nope=cloudflare')[0], 2)
-        self.assertEqual(self.run_cli('sites', 'clef-first-pass=typesafe')[0], 2)
 
 
 class ThresholdTests(CloudflareCase):
@@ -379,62 +379,6 @@ class ThresholdTests(CloudflareCase):
                                             config=forge_jev.load_config())
         # 0.4 is under gate_warn (0.6) but over Clef's own 0.35.
         self.assertEqual([name for name, _ in predicted], ['src/a.py', 'src/b.py'])
-
-
-class OutcomeRubricTests(JevTestCase):
-    # Frozen: each is part of every exported case's body and of what Clef was measured on.
-    PINNED = dict(first_pass='4dfe07c3d2dea4ab606e4e7ebd59742b5ec14d67e7ac8bff3bc6acd1457e88b5',
-                  retry_pass='aab27f377484fb8d4725ed9b8fd8de4d370031dcdf9eb02fb145b068337d988d')
-
-    def test_the_outcome_rubrics_never_change(self):
-        import hashlib
-        for name, digest in self.PINNED.items():
-            text = json.dumps(getattr(questions, name)(), sort_keys=True).encode()
-            self.assertEqual(hashlib.sha256(text).hexdigest(), digest, name)
-
-    def test_the_export_asks_the_same_rubrics_live_forge_asks(self):
-        from forge_dataset import export
-        self.assertIs(export.first_pass, questions.first_pass)
-        self.assertIs(export.retry_pass, questions.retry_pass)
-
-    def test_the_retry_state_adds_the_attempt_and_capped_findings(self):
-        from forge_jev import outcome
-        base = outcome.assemble(goal='g', task_id='a', title='A', files='a.txt', deps='-', prompt='p', approach='',
-                                plan_tasks=[], file_excerpts={}, memory='m' * 5000, dwarf={}, reviewer={}, size={})
-        self.assertEqual(len(base['memory']), outcome.MEMORY_CHARS)
-        state = outcome.retry(base, attempt=2, previous_review='r' * 13000)
-        self.assertEqual((state['attempt'], len(state['previous_review']), state['previous_review_truncated']),
-                         (2, outcome.REVIEW_CHARS, True))
-        self.assertNotIn('attempt', base)
-
-    def test_resolution_runs_dispatch_once_per_role_and_spec(self):
-        from forge_jev import predict
-        calls = []
-
-        def fake_run(argv, **kw):
-            calls.append(argv[2:4])
-            return type('R', (), dict(stdout='model=m-%s\neffort=high\nharness=h\n' % argv[3]))()
-        resolve = predict.Resolver(time.time() + 30)
-        with patch('subprocess.run', side_effect=fake_run):
-            for _ in range(3):
-                self.assertEqual(resolve('dwarf', 'sol'), dict(model='m-sol', effort='high', harness='h'))
-            resolve('qa', 'sol')
-        self.assertEqual(calls, [['dwarf', 'sol'], ['qa', 'sol']])
-
-    def test_a_retry_prediction_is_asked_once_and_only_for_a_real_retry(self):
-        from forge_jev import predict
-        plan = self.root / 'plan'
-        (plan / 'tasks' / 'a').mkdir(parents=True)
-        (plan / 'tasks.tsv').write_text('a\t-\tlow\ta.txt\tsol\topus\tA\n')
-        (plan / 'tasks' / 'a' / 'prompt.md').write_text('do it')
-        config = forge_jev.load_config()
-        config.update(enabled=True, providers=dict(cloudflare=dict(account_id=ACCOUNT, token=TOKEN)))
-        with patch('urllib.request.urlopen', side_effect=AssertionError('network')):
-            self.assertFalse(predict.retry_pass(plan, self.root, 'a', 2, config=config))   # no findings
-            (plan / 'tasks' / 'a' / 'retry_findings.md').write_text('fix it')
-            self.assertFalse(predict.retry_pass(plan, self.root, 'a', 1, config=config))   # not a retry
-            (plan / 'tasks' / 'a' / 'clef.retry_pass.2').write_text('{}')
-            self.assertFalse(predict.retry_pass(plan, self.root, 'a', 2, config=config))   # already asked
 
 
 class DriftBaselineJoinTests(unittest.TestCase):

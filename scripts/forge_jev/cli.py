@@ -13,7 +13,7 @@ import urllib.parse
 
 from forge_registry import register_run_dir, runs_registry
 
-from . import (CAPABILITIES, CLEF_ONLY_SITES, CLOUDFLARE_DEFAULT_SITES, CLOUDFLARE_TOKEN_FILE,
+from . import (CAPABILITIES, CLOUDFLARE_DEFAULT_SITES, CLOUDFLARE_TOKEN_FILE,
               DEFAULT_THRESHOLDS, PROVIDERS, RETIRED_THRESHOLDS, SITE_CAPABILITY, THRESHOLD_FALLBACK, api_key,
               capability_ready, cloudflare, config_path, enabled, load_config, provider_for, provider_ready,
               redact, save_config, secrets, site_ready)
@@ -51,15 +51,6 @@ def parser() -> argparse.ArgumentParser:
     setup.add_argument('--account-id', help='Cloudflare account id (else CLOUDFLARE_ACCOUNT_ID)')
     setup.add_argument('--model', choices=('clef', 'clef-flash'), default='clef')
     setup.add_argument('--sites', help='comma-separated sites to send to Cloudflare (default: the measured ones)')
-
-    first = sub.add_parser('first-pass', help=argparse.SUPPRESS)
-    first.add_argument('--plan', required=True)
-    first.add_argument('--repo', required=True)
-    retry = sub.add_parser('retry-pass', help=argparse.SUPPRESS)
-    retry.add_argument('--plan', required=True)
-    retry.add_argument('--repo', required=True)
-    retry.add_argument('--task', required=True)
-    retry.add_argument('--attempt', type=int, required=True)
 
     sites = sub.add_parser('sites', help='show or set which provider answers each site')
     sites.add_argument('assign', nargs='*', metavar='SITE=PROVIDER')
@@ -204,7 +195,7 @@ def _setup_cloudflare(args) -> int:
             handle.write('CLOUDFLARE_API_TOKEN=%s\n' % token)
         os.chmod(token_file, 0o600)
     chosen = [s for s in (args.sites.split(',') if args.sites else CLOUDFLARE_DEFAULT_SITES) if s]
-    unknown = [s for s in chosen if s not in SITE_CAPABILITY or s in CLEF_ONLY_SITES]
+    unknown = [s for s in chosen if s not in SITE_CAPABILITY]
     if unknown:
         print('forge jev: unknown site(s): ' + ', '.join(unknown), file=sys.stderr)
         return 2
@@ -221,51 +212,19 @@ def _setup_cloudflare(args) -> int:
     return 0
 
 
-def _watchdog(seconds: float) -> None:
-    """Exit this process, whatever it is doing, `seconds` from now. A separate CLI process
-    with no worker threads of its own to protect, so SIGALRM is safe here (unlike in
-    Fractal's threads); the shell hooks that call it then never wait past the bound."""
-    import signal
-
-    signal.signal(signal.SIGALRM, lambda *_: os._exit(3))
-    signal.setitimer(signal.ITIMER_REAL, seconds)
-
-
-def cmd_first_pass(args) -> int:
-    """Silent first-attempt predictions for a freshly planned table (forge_jev/predict.py)."""
-    from . import predict
-    config = load_config()
-    if not site_ready('clef-first-pass', config):
-        return 3
-    _watchdog(2 * config.get('deadline_s', 5.0) + 5)
-    return predict.main_first_pass(args)
-
-
-def cmd_retry_pass(args) -> int:
-    """Silent prediction for a dwarf attempt above 1 (forge_jev/predict.py)."""
-    from . import predict
-    config = load_config()
-    if not site_ready('clef-retry-pass', config):
-        return 3
-    _watchdog(2 * config.get('deadline_s', 5.0) + 5)
-    return predict.main_retry_pass(args)
-
-
 def cmd_sites(args) -> int:
     config = load_config()
     if args.assign:
         for item in args.assign:
             site, _, provider = item.partition('=')
-            if site not in SITE_CAPABILITY or site in CLEF_ONLY_SITES or provider not in PROVIDERS:
+            if site not in SITE_CAPABILITY or provider not in PROVIDERS:
                 print('forge jev sites: expected SITE=PROVIDER with SITE one of %s and PROVIDER one of %s; got %r'
-                      % (', '.join(s for s in SITE_CAPABILITY if s not in CLEF_ONLY_SITES), ', '.join(PROVIDERS), item),
+                      % (', '.join(SITE_CAPABILITY), ', '.join(PROVIDERS), item),
                       file=sys.stderr)
                 return 2
             config['sites'][site] = provider
         save_config(config)
     for site in SITE_CAPABILITY:
-        if site in CLEF_ONLY_SITES and cloudflare(config) is None:
-            continue
         print('%-20s %-10s %s' % (site, provider_for(site, config), 'ready' if site_ready(site, config) else 'not ready'))
     return 0
 
@@ -323,7 +282,7 @@ def cmd_status(args) -> int:
     config = load_config()
     overrides = {var: os.environ[var] for var in ('FORGE_JEV', 'FORGE_JEV_ACT', 'FORGE_JEV_SHADOW',
                 *_CAP_ENV.values()) if var in os.environ}
-    overrides.update({var: os.environ[var] for var in ('FORGE_CLEF', 'FORGE_JEV_PROVIDER', 'FORGE_JEV_OUTCOMES')
+    overrides.update({var: os.environ[var] for var in ('FORGE_CLEF', 'FORGE_JEV_PROVIDER')
                       if var in os.environ})
     remote = cloudflare(config)
     # Offline by contract: the shell's forge_jev_active reads this before every Jev step.
@@ -351,7 +310,7 @@ def cmd_status(args) -> int:
         if cf['configured']:
             print('cloudflare: ready=%s model=%s' % (cf['ready'], cf['model']))
         moved = {s: v for s, v in data['sites'].items()
-                 if v['provider'] != 'typesafe' and (cf['configured'] or s not in CLEF_ONLY_SITES)}
+                 if v['provider'] != 'typesafe'}
         for site, value in sorted(moved.items()):
             print(f"  {site}: {value['provider']}{'' if value['ready'] else ' (not ready)'}")
         print('thresholds: ' + json.dumps(data['thresholds']))
@@ -375,12 +334,7 @@ def cmd_doctor(args) -> int:
     else:
         checks.append(('config readable', True, 'no config file; using defaults'))
     key = api_key(config)
-    # The Clef-only sites count once a Cloudflare provider is configured, not before:
-    # a TypeSafe-only setup is as ready as it ever was.
-    used = {provider_for(s, config) for s in SITE_CAPABILITY
-            if enabled(SITE_CAPABILITY[s], config=config) and s not in CLEF_ONLY_SITES}
-    if cloudflare(config) is not None:
-        used.add('cloudflare')
+    used = {provider_for(s, config) for s in SITE_CAPABILITY if enabled(SITE_CAPABILITY[s], config=config)}
     if 'typesafe' in used or not used:
         checks.append(('key present', key is not None, None))
     if 'cloudflare' in used:
@@ -922,7 +876,6 @@ def main(argv: list[str] | None = None) -> int:
     try:
         args = parser().parse_args(argv)
         return dict(setup=cmd_setup, sites=cmd_sites, enable=cmd_enable, disable=cmd_disable,
-                    **{'first-pass': cmd_first_pass, 'retry-pass': cmd_retry_pass},
                     status=cmd_status, doctor=cmd_doctor, backtest=cmd_backtest,
                     **{'score-plan': cmd_score_plan,
                        'coupling': cmd_coupling,

@@ -454,121 +454,37 @@ class EndToEndTests(StoreCase):
     def text_of(self, plan, task):
         return (plan / 'tasks' / task / 'status').read_text().strip()
 
-    def clef_server(self, p=0.42):
-        """A local stand-in for Workers AI's Clef: answers every question, records each request."""
-        import http.server
-        seen = []
-
-        class Handler(http.server.BaseHTTPRequestHandler):
-            def do_POST(handler):
-                body = json.loads(handler.rfile.read(int(handler.headers['Content-Length'])))
-                seen.append(dict(path=handler.path, body=body, auth=handler.headers.get('Authorization')))
-                answers = {q: dict(type='noul', noul=p) for q in body['questions']}
-                out = json.dumps(dict(result=dict(model='clef', answers=answers, usage=dict(input_tokens=1)),
-                                      success=True)).encode()
-                handler.send_response(200)
-                handler.send_header('Content-Type', 'application/json')
-                handler.send_header('Content-Length', str(len(out)))
-                handler.end_headers()
-                handler.wfile.write(out)
-
-            def log_message(handler, *args):
-                pass
-
-        server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Handler)
-        threading.Thread(target=server.serve_forever, daemon=True).start()
-        self.addCleanup(server.server_close)
-        self.addCleanup(server.shutdown)
-        return 'http://127.0.0.1:%d/{account}/{model}' % server.server_address[1], seen
-
-    def with_clef(self, url):
-        """Jev on with only a Cloudflare provider: no TypeSafe key, so no other site is ready."""
-        config = self.root / 'xdg'
-        (config / 'forge').mkdir(parents=True)
-        (config / 'forge' / 'jev.json').write_text(json.dumps(dict(
-            enabled=True, providers=dict(cloudflare=dict(account_id='acc', token='tok-test', url=url)))))
-        self.env['XDG_CONFIG_HOME'] = str(config)
-        self.env.pop('FORGE_JEV', None)
-
-    def test_clef_predictions_are_recorded_after_assignment_and_change_nothing(self):
-        # Silent outcome predictions: one per task once the table has its models, one per
-        # retry with the findings it was handed. Nothing in the run reads them.
+    def test_the_export_skips_rows_recorded_by_the_removed_clef_sites(self):
+        # Stores written before #35 hold clef-first-pass and clef-retry-pass `jev` events.
+        # They are neither an error nor a baseline, and the cases keep their ids.
         from forge_dataset import export
-        url, seen = self.clef_server()
-        self.with_clef(url)
-        self.scenario({'a.qa.1': {'verdict': 'FAIL', 'findings': '- [P1][CONFIRMED] a.txt:1 — FINDING_SENTINEL'},
+        self.scenario({'a.qa.1': {'verdict': 'FAIL', 'findings': '- [P1][CONFIRMED] a.txt:1 — broken'},
                        'a.dwarf.2': {'content': 'fixed'}})
         p = self.plan_of([('a', '-', 'a.txt'), ('b', '-', 'b.txt')])
-        predicted = {t: json.loads((p / 'tasks' / t / 'clef.first_pass').read_text()) for t in 'ab'}
-        self.assertEqual({t: (v['p'], v['assignment']) for t, v in predicted.items()},
-                         {t: (0.42, dict(dwarf='sol', qa='opus')) for t in 'ab'})
-        first = [r for r in seen if 'first_pass' in r['body']['questions']]
-        self.assertEqual(len(first), 2)
-        self.assertEqual({(r['path'], r['auth']) for r in first}, {('/acc/clef', 'Bearer tok-test')})
-        state = first[0]['body']['state']
-        self.assertEqual(state['dwarf']['model'], 'gpt-6.1-sol')
-        self.assertTrue(state['reviewer']['model'] and state['reviewer']['harness'])
-        self.assertIn('REQUIREMENT_SENTINEL', state['prompt'])
-        self.assertIn('size', state)
-
-        # The same plan without Clef: byte-identical table and waves.
-        q = self.root / 'plan-off'
-        q.mkdir()
-        (q / 'tasks.tsv').write_text(''.join(f'{i}\t-\tlow\t{i}.txt\tsol\topus\t{i.upper()}\n' for i in 'ab'))
-        for i in 'ab':
-            (q / 'tasks' / i).mkdir(parents=True)
-            (q / 'tasks' / i / 'prompt.md').write_text('Implement change. REQUIREMENT_SENTINEL TASK_' + i)
-        self.env['FORGE_JEV'] = 'off'
-        r = self.run_script('forge-parallel.sh', 'plan', q, '--repo', self.repo, '--no-memory', '--decompose-level', 'low')
-        self.env.pop('FORGE_JEV')
-        self.assertEqual(r.returncode, 0, r.stdout)
-        for name in ('tasks.tsv', 'waves.tsv'):
-            self.assertEqual((p / name).read_text(), (q / name).read_text(), name)
-
         r = self.run_script('forge-parallel.sh', 'run', p, '--retry-failed', 1)
         self.assertEqual(r.returncode, 0, r.stdout)
-        self.assertEqual({t: self.text_of(p, t) for t in 'ab'}, {'a': 'PASS', 'b': 'PASS'})
-        self.assertEqual(json.loads((p / 'tasks' / 'a' / 'clef.retry_pass.2').read_text())['p'], 0.42)
-        [retry] = [r for r in seen if 'retry_pass' in r['body']['questions']]
-        self.assertEqual(retry['body']['state']['attempt'], 2)
-        self.assertIn('FINDING_SENTINEL', retry['body']['state']['previous_review'])
-        self.assertFalse((p / 'tasks' / 'b' / 'clef.retry_pass.2').exists())
-        # No prompt any model was given carries a prediction.
-        for prompt in p.rglob('*.prompt'):
-            self.assertNotIn('0.42', prompt.read_text(errors='replace'), prompt)
-            self.assertNotIn('clef', prompt.read_text(errors='replace').lower(), prompt)
+        self.assertEqual(list(p.rglob('clef.*')), [])
         uid = (p / 'dataset.uid').read_text().strip()
         shutil.rmtree(p)
 
-        jev = [e for e in self.events(kind='jev') if e['data']['site'].startswith('clef-')]
-        self.assertEqual(sorted((e['data']['site'], e['task'], e['run'] == uid, e['data']['provider']) for e in jev),
-                         [('clef-first-pass', 'a', True, 'cloudflare'), ('clef-first-pass', 'b', True, 'cloudflare'),
-                          ('clef-retry-pass', 'a', True, 'cloudflare')])
-        routing = {c['task']: c for c in export.build(store.connect(), slices=('routing', 'retry'))
-                   if c['slice'] == 'routing'}
-        self.assertEqual({t: (c['baseline']['first_pass_clef']['p'], c['baseline']['first_pass_clef']['followed'])
-                          for t, c in routing.items()}, {'a': (0.42, True), 'b': (0.42, True)})
-        [retry_case] = export.build(store.connect(), slices=('retry',))
-        self.assertEqual(retry_case['baseline']['retry_pass_clef']['p'], 0.42)
+        before = export.build(store.connect(), slices=('routing', 'retry'))
+        answers = lambda qid: {qid: dict(type='noul', noul=0.42)}  # noqa: E731
+        store.record([
+            dict(rid='jev:old-first-a', kind='jev', ts=1.0, run=uid, task='a',
+                 data=dict(site='clef-first-pass', ok=True, model='clef', intended_attempt=1,
+                           answers=answers('first_pass'), assignment=dict(dwarf='sol', qa='opus'))),
+            dict(rid='jev:old-retry-a', kind='jev', ts=2.0, run=uid, task='a',
+                 data=dict(site='clef-retry-pass', ok=True, model='clef', attempt=2,
+                           answers=answers('retry_pass')))])
+        self.assertEqual(len([e for e in self.events(kind='jev') if e['data']['site'].startswith('clef-')]), 2)
+        after = export.build(store.connect(), slices=('routing', 'retry'))
+        self.assertEqual([c['id'] for c in after], [c['id'] for c in before])
+        self.assertEqual({c['slice'] for c in after}, {'routing', 'retry'})
+        for case in after:
+            self.assertEqual([k for k in case['baseline'] if k.endswith('_clef')], [], case['id'])
+        [retry_case] = [c for c in after if c['slice'] == 'retry']
+        self.assertEqual(retry_case['baseline'], {})
         self.assertEqual(self.errors(), '')
-
-    def test_clef_out_of_reach_changes_nothing_and_costs_no_time(self):
-        # Connection refused on every request: the plan and the run go exactly as without it.
-        import socket
-        sock = socket.socket()
-        sock.bind(('127.0.0.1', 0))
-        port = sock.getsockname()[1]
-        sock.close()
-        self.with_clef('http://127.0.0.1:%d/{account}/{model}' % port)
-        self.scenario({'a.qa.1': {'verdict': 'FAIL', 'findings': '- [P1][CONFIRMED] a.txt:1 — broken'},
-                       'a.dwarf.2': {'content': 'fixed'}})
-        started = time.monotonic()
-        p = self.plan_of([('a', '-', 'a.txt')])
-        r = self.run_script('forge-parallel.sh', 'run', p, '--retry-failed', 1)
-        self.assertEqual(r.returncode, 0, r.stdout)
-        self.assertEqual(self.text_of(p, 'a'), 'PASS')
-        self.assertLess(time.monotonic() - started, 60)
-        self.assertEqual(list(p.rglob('clef.*')), [])
 
     def test_a_shadow_review_is_recorded_beside_the_run_and_changes_nothing(self):
         # A second reviewer of another model family, sampled (here every attempt), measures
