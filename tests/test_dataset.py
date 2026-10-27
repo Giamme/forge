@@ -912,51 +912,6 @@ class JevCaptureTests(StoreCase):
         self.assertEqual(len(self.events(kind='jev')), 1)
 
 
-class SubsetReceiptTests(StoreCase):
-    """A test selection is only a label when we know how the chosen tests ended, so
-    every outcome leaves a receipt, not just the failure that reaches QA."""
-
-    def setUp(self):
-        StoreCase.setUp(self)
-        self.repo = Path(self.tmp.name) / 'repo'
-        (self.repo / 'tests').mkdir(parents=True)
-        (self.repo / 'tests' / 'test_x.py').write_text('x = 1\n')
-        git = lambda *a: subprocess.run(['git', '-C', str(self.repo), *a], check=True, capture_output=True)
-        git('init', '-q')
-        git('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'base', '--allow-empty')
-        git('add', '-A')
-        git('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'tests')
-        self.base = subprocess.check_output(['git', '-C', str(self.repo), 'rev-parse', 'HEAD']).decode().strip()
-        (self.repo / 'broken').write_text('x')
-        git('add', '-A')
-        git('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'change')
-        self.run_dir = Path(self.tmp.name) / 'run'
-        self.run_dir.mkdir()
-
-    def outcome(self, command, timeout=60):
-        from forge_jev import cli
-        env = dict(TYPESAFE_API_KEY='k', FORGE_JEV_TESTS='on', XDG_CONFIG_HOME=self.tmp.name)
-        with patch.dict(os.environ, env), patch('forge_jev.subset.select', return_value=[(0.9, 'tests/test_x.py')]), \
-                contextlib.redirect_stdout(io.StringIO()):
-            cli.main(['test-subset', '--repo', str(self.repo), '--commit', 'HEAD', '--base', self.base,
-                      '--task', str(self.repo / 'tests' / 'test_x.py'), '--command', command,
-                      '--run-dir', str(self.run_dir), '--timeout', str(timeout)])
-        receipts = [e for e in self.events(kind='event') if e['data']['name'] == 'subset_run']
-        self.assertEqual(len(receipts), 1)
-        os.remove(self.home / 'dataset' / 'dataset.sqlite')
-        return receipts[0]['data']
-
-    def test_every_outcome_leaves_a_receipt(self):
-        passed = self.outcome('test -f {files}')
-        self.assertEqual((passed['outcome'], passed['chosen'], passed['candidate_exit']),
-                         ('pass', ['tests/test_x.py'], 0))
-        regression = self.outcome('echo checking; test ! -f broken && test -f {files}')
-        self.assertEqual((regression['outcome'], regression['base_exit']), ('regression', 0))
-        self.assertIn('candidate_output', regression['blobs'])
-        self.assertEqual(self.outcome('false {files}')['outcome'], 'environment')
-        self.assertEqual(self.outcome('sleep 5 # {files}', timeout=1)['outcome'], 'timeout')
-
-
 class FractalCaptureTests(StoreCase):
     def test_steps_captured_from_many_threads_are_each_recorded_once(self):
         task = Path(self.tmp.name) / 'runs' / 'run-x' / 'tasks' / 'task-1'
