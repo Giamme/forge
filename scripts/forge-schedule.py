@@ -620,6 +620,7 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
             refused[name] = budget(name)
             return False
         refused.pop(name, None)
+        pairs_cache.pop(name, None)   # the preparation may have escalated the implementer
         retries[name] = retries.get(name, 0) + 1
         _write_atomic(plan, str(retries[name]), 'tasks', name, 'retries.used')
         retried.add(name)
@@ -691,7 +692,7 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
         """--infra-fallback: a dwarf-stage capacity stop moves to the next healthy model of its
         tier pool. The stop was already recorded as its scope's pause, so every paused or
         exhausted pair is excluded and a pool all at capacity cannot bounce the task forever."""
-        if fractal or _read_small(plan, 'infra_fallback') != 'on' or _pinned(plan, name):
+        if interrupted or graceful or fractal or _read_small(plan, 'infra_fallback') != 'on' or _pinned(plan, name):
             return
         if info.get('stage') != 'dwarf' or info.get('class') != 'rate_limit' or not scope.startswith('model:'):
             return
@@ -1024,6 +1025,7 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
             end_scoped_waits()
             handle_requests()
             cap = live_capacity(plan, capacity)
+            draining = drained(plan)   # again: the infrastructure wait above can last minutes
             for name in pending[:]:
                 if paused or len(active) >= cap or interrupted or graceful or draining:
                     break

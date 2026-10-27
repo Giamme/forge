@@ -37,6 +37,7 @@ case "$cmd" in
       PASS|FAIL|UNKNOWN) echo "$outcome" > "$t/status" ;;
       INFRA) echo INFRA > "$t/status"; printf 'class=quota\nstage=dwarf\n' > "$t/infra.txt" ;;
       INFRA_LONG) echo INFRA > "$t/status"; printf 'class=quota\nretry_after=600\nstage=dwarf\n' > "$t/infra.txt" ;;
+      INFRA_RATE) echo INFRA > "$t/status"; printf 'class=rate_limit\nharness=codex\nmodel=gpt-6-astra\nstage=dwarf\n' > "$t/infra.txt" ;;
     esac
     echo "$name end $outcome" >> "$plan/events.log"
     ;;
@@ -46,6 +47,7 @@ case "$cmd" in
   _prepare_retry)
     echo "$name prepared" >> "$plan/events.log"
     [ -e "$plan/prepare_fails/$name" ] && exit 1
+    [ -f "$plan/hooks/$name.prepare" ] && . "$plan/hooks/$name.prepare"
     rm -f "$t/status" "$t/noretry"
     ;;
 esac
@@ -387,6 +389,40 @@ waitfor "$plan/tasks/x/retries.used"
                 r = self.finish(proc, timeout=20)
                 self.assertLess(time.monotonic() - started, 5)
                 self.assertEqual((r.returncode, self.status('a'), self.calls('a')), (130, 'INFRA', 1), r.stderr)
+
+    def test_a_drain_set_during_an_infrastructure_wait_holds_the_dispatch_after_it(self):
+        self.env['FORGE_INFRA_BACKOFF'] = '2'
+        self.task('a', ['INFRA', 'PASS'])               # no harness named: everything pauses
+        self.task('b', ['PASS'])
+        proc = self.start('--infra-retries', 1, capacity=1)
+        paused = self.plan / 'infra.paused'
+        self.wait_for(lambda: paused.exists() and json.loads(paused.read_text())['scopes'][0]['until'],
+                      'the wait to start')
+        (self.plan / 'drain').write_text('')
+        self.wait_for(lambda: not paused.exists(), 'the wait to end')
+        time.sleep(0.3)
+        self.assertEqual((self.calls('a'), self.calls('b')), (1, 0))
+        (self.plan / 'drain').unlink()
+        r = self.finish(proc)
+        self.assertEqual((r.returncode, self.status('a'), self.status('b')), (0, 'MERGED', 'MERGED'), r.stderr)
+
+    def test_an_automatic_retry_onto_a_paused_model_waits_for_it(self):
+        # p's rate limit pauses astra; t then fails on sol, and its retry is escalated to astra
+        self.task('p', ['INFRA_RATE'])
+        self.task('t', ['FAIL', 'PASS'])
+        self.hook('t', 'prepare', "awk -F'\\t' -v OFS='\\t' '$1==\"t\" {$5=\"astra\"} 1' \"$plan/tasks.tsv\" > \"$plan/tasks.tsv.new\"\n"
+                                  'mv "$plan/tasks.tsv.new" "$plan/tasks.tsv"\n')
+        r = self.run_scheduler('--retry-failed', 1, capacity=1)
+        self.assertIn('t prepared', self.events())
+        self.assertEqual((r.returncode, self.calls('t')), (8, 1), r.stderr)
+
+    def test_a_stopping_run_does_not_fall_back_to_another_model(self):
+        self.task('a', ['INFRA_RATE'])
+        (self.plan / 'infra_fallback').write_text('on')
+        self.hook('a', 1, 'put "$plan/stop" graceful\n')
+        r = self.run_scheduler(capacity=1)
+        self.assertEqual((r.returncode, self.status('a')), (130, 'INFRA'), r.stderr)
+        self.assertNotIn('a prepared', self.events())
 
     def test_a_drained_idle_scheduler_exits_promptly_on_stop(self):
         self.task('a', ['PASS'])
