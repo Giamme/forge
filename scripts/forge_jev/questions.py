@@ -33,48 +33,6 @@ PROBE_STATE = 'yes'
 PROBE = {'probe': Noul('Is the state the word "yes"?')}
 
 
-def test_relevance(test_path: str, header: str = '') -> dict:
-    """Could this test plausibly be broken by the change under review?
-
-    Asked once per candidate test, with the task description and the changed source
-    files supplied as state. Used both by backtest (scored against which tests a human
-    actually touched in the same commit) and, eventually, by live test selection.
-
-    The true/false split is deliberately asymmetric: a missed test is a missed
-    regression (the change ships broken and nobody notices until later), while an
-    extra test only costs a few seconds of runtime. So "true" is written to capture
-    genuine uncertainty, not just confident matches — a test that touches the same
-    module, calls the same function, or exercises adjacent behavior should land on the
-    "true" side even without a slam-dunk import-graph connection. Calibration should
-    reflect that a borderline-relevant test is still worth running.
-    """
-    instructions = (
-        'A change is being made to a codebase. Given the task description and the '
-        f'source files it changed (in state), could the test at {test_path!r} '
-        'plausibly be broken by that change?'
-    )
-    if header:
-        instructions += f'\n\nFirst lines of that test file:\n{header}'
-    return Noul(
-        instructions,
-        true=(
-            'The test exercises the same module, function, class, route, or behavior '
-            'that the change touches, directly or through a dependency; the test name '
-            'or file path names the same feature area as the change; or the '
-            'relationship is genuinely uncertain rather than clearly absent. Missing a '
-            'test that should have run is a missed regression, so borderline cases '
-            'belong here.'
-        ),
-        false=(
-            'The test exercises an unrelated module, feature, or layer with no '
-            'plausible dependency on the changed files — for example a test for the '
-            'CLI when only a database migration changed, or a test fixture that is '
-            'unaffected by the change. Only mark false when the lack of relevance is '
-            'clear, since an unnecessary extra test only costs runtime.'
-        ),
-    )
-
-
 def verify_selection(candidates: list[str]) -> dict:
     """Which existing command, if any, actually verifies this repo by running its tests?
 

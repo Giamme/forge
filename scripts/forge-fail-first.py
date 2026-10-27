@@ -38,8 +38,8 @@ import sys
 import tempfile
 import time
 
-# The same two conditions as forge_jev/subset.py: a test path, and for the files that are run,
-# a source suffix (README.md and JSON fixtures under tests/ are carried over, never run).
+# Two conditions: a test path, and for the files that are run, a source suffix
+# (README.md and JSON fixtures under tests/ are carried over, never run).
 TEST_PATH = re.compile(r'(^|/)(tests?|spec|specs|__tests__)/'
                        r'|(^|/)test_[^/]*$|_test\.[^/]+$|\.(test|spec)\.[^/]+$')
 CODE_SUFFIXES = ('.py', '.go', '.js', '.jsx', '.ts', '.tsx', '.rb', '.rs', '.java',

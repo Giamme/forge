@@ -111,17 +111,6 @@ def parser() -> argparse.ArgumentParser:
     memory_stale.add_argument('--text', required=True)
     memory_stale.add_argument('--anchor', required=True)
     memory_stale.add_argument('--run-dir', default=None)
-
-    test_subset = sub.add_parser('test-subset')
-    test_subset.add_argument('--repo', required=True)
-    test_subset.add_argument('--commit', required=True)
-    test_subset.add_argument('--task', required=True)
-    test_subset.add_argument('--command', dest='subset_command', required=True)
-    test_subset.add_argument('--changed', default=None)
-    test_subset.add_argument('--base', default=None)
-    test_subset.add_argument('--run-dir', default=None)
-    test_subset.add_argument('--max', type=int, default=8)
-    test_subset.add_argument('--timeout', type=int, default=600)
     return p
 
 
@@ -687,146 +676,6 @@ def cmd_memory_stale(args) -> int:
     return 0 if result['stale'] else 1
 
 
-def cmd_test_subset(args) -> int:
-    """Run the likely-affected tests in a throwaway export of the reviewed commit.
-
-    Exit 0 only when the subset RAN AND FAILED -- that is the one outcome worth telling
-    a reviewer about. Exit 1 covers "ran and passed", which proves nothing here because
-    the subset is not the suite, and exit 3 covers everything else. The task worktree is
-    never touched, so no fingerprint can change.
-    """
-    import subprocess
-    import tempfile
-
-    receipt_values: dict = {}
-
-    def receipt(outcome: str, **values) -> None:
-        """Record how the subset run ended, every outcome, not just a failure. A selection
-        is only trainable when we know whether the chosen tests passed, failed on this
-        diff, or could not run. Fail-open."""
-        receipt_values.update(values)
-        try:
-            scripts = str(Path(__file__).resolve().parent.parent)
-            if scripts not in sys.path:
-                sys.path.insert(0, scripts)
-            from forge_dataset.capture import point
-            texts = {k: receipt_values.pop(k) for k in ('candidate_output', 'base_output') if k in receipt_values}
-            point('subset_run', args.run_dir, None, dict(receipt_values, outcome=outcome), texts=texts)
-        except Exception:
-            pass
-
-    # Usage errors come first and need neither a key nor a config: a caller who gets
-    # exit 3 ("Jev is unavailable") for a malformed command would conclude the wrong
-    # thing and never fix the command.
-    if '{files}' not in args.subset_command:
-        # Without the placeholder there is nowhere to put the selection, and appending
-        # blindly is what broke this before. Do nothing rather than run the full suite
-        # twice under a name that says "subset".
-        return 2
-    repo = Path(args.repo)
-    if not repo.is_dir():
-        return 2
-    config = load_config()
-    if not site_ready('jev-test-subset', config):
-        return 3
-    from . import subset
-
-    try:
-        task = Path(args.task).read_text(errors='replace')[:6000]
-    except OSError:
-        return 3
-    changed = []
-    if args.changed:
-        try:
-            changed = Path(args.changed).read_text(errors='replace').split()[:200]
-        except OSError:
-            changed = []
-
-    candidates = subset.candidate_tests(repo)
-    if not candidates:
-        return 3
-    scored = subset.select(repo, task=task, changed=changed, candidates=candidates,
-                           run_dir=args.run_dir, config=config)
-    if not scored:
-        return 3
-
-    # No measured per-repo threshold exists, so rather than invent one this takes the
-    # highest-scoring few. Over-selecting only costs runtime in a throwaway directory;
-    # the result is advisory either way and never decides verification.
-    chosen = [name for _p, name in scored[:max(1, args.max)]]
-    receipt_values.update(chosen=chosen, scored=[[p, name] for p, name in scored[:40]], changed=changed,
-                          commit=args.commit, base=args.base)
-    export_dir = tempfile.mkdtemp(prefix='forge-subset-')
-    try:
-        if not subset.export(repo, args.commit, export_dir):
-            receipt('export_failed')
-            return 3
-        # The template says how THIS project's runner takes a file list, because there
-        # is no general answer. `pytest -q <files>` works; `npm test <files>` does not
-        # (it needs `--`), `go test ./...` and `bash tests/check.sh` take no file list at
-        # all, and `python -m unittest discover -s tests` rejects paths outright. Guessing
-        # produced a command that failed for a reason having nothing to do with the diff.
-        command = args.subset_command.replace('{files}', ' '.join(chosen))
-        receipt_values['command'] = command
-        started = time.time()
-        try:
-            completed = subprocess.run(command, shell=True, cwd=export_dir,
-                                       capture_output=True, text=True,
-                                       timeout=max(1, args.timeout))
-        except (OSError, subprocess.SubprocessError) as error:
-            receipt('timeout' if isinstance(error, subprocess.TimeoutExpired) else 'candidate_error',
-                    candidate_s=round(time.time() - started, 3))
-            return 3
-        tail = (completed.stdout or '') + (completed.stderr or '')
-        receipt_values.update(candidate_exit=completed.returncode, candidate_s=round(time.time() - started, 3),
-                              candidate_output=tail[-65536:])
-        if completed.returncode == 0:
-            receipt('pass')
-            return 1
-    finally:
-        subset.cleanup(export_dir)
-
-    # It failed. That is not yet evidence against the diff. A throwaway export has no
-    # installed dependencies of its own, so `No module named pytest` looks exactly like
-    # a broken test -- and reporting an environment failure to a reviewer as "your diff
-    # breaks tests" is worse than saying nothing at all. Pre-existing failures have the
-    # same shape. So run the identical subset against the BASE commit and only speak up
-    # when the base passes: that is the one case where this diff is implicated.
-    if not args.base:
-        receipt('fail_no_base')
-        return 3
-    control_dir = tempfile.mkdtemp(prefix='forge-subset-base-')
-    try:
-        if not subset.export(repo, args.base, control_dir):
-            receipt('base_export_failed')
-            return 3
-        started = time.time()
-        try:
-            control = subprocess.run(command, shell=True, cwd=control_dir,
-                                     capture_output=True, text=True,
-                                     timeout=max(1, args.timeout))
-        except (OSError, subprocess.SubprocessError) as error:
-            receipt('base_timeout' if isinstance(error, subprocess.TimeoutExpired) else 'base_error',
-                    base_s=round(time.time() - started, 3))
-            return 3
-        receipt_values.update(base_exit=control.returncode, base_s=round(time.time() - started, 3),
-                              base_output=((control.stdout or '') + (control.stderr or ''))[-65536:])
-        if control.returncode != 0:
-            # Same failure without the diff: environment or pre-existing, not this change.
-            receipt('environment')
-            return 3
-    finally:
-        subset.cleanup(control_dir)
-    receipt('regression')
-
-    print('The likely-affected tests were run against this diff and FAILED.')
-    print('The same tests PASS on the commit this task started from, so the failure')
-    print('is attributable to this diff rather than to the environment.')
-    print('Command: ' + command)
-    print(redact(tail[-3000:]))
-    return 0
-
-
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     try:
@@ -835,7 +684,6 @@ def main(argv: list[str] | None = None) -> int:
                     status=cmd_status, doctor=cmd_doctor, backtest=cmd_backtest,
                     **{'score-plan': cmd_score_plan,
                        'coupling': cmd_coupling,
-                       'test-subset': cmd_test_subset,
                        'memory-curate': cmd_memory_curate,
                        'memory-slice': cmd_memory_slice,
                        'memory-stale': cmd_memory_stale,

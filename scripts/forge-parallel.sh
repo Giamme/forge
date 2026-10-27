@@ -899,34 +899,14 @@ do_task_body() (
   echo "$review_fp" > "$tdir/review.fingerprint"
 
   forge_metric_phase preparation
-  local jev_loaded_qa=0 subset_cmd="" qa_thr rs_on=0
+  local qa_thr rs_on=0
   qa_thr="$(qa_threshold_for "$PLAN" "$id")"
   # Read once per round, like the threshold: continuing the earlier reviewer's session is an
   # opt-in experiment (plan --reviewer-session), and a round never changes its mind midway.
   [ -f "$PLAN/reviewer_session" ] && rs_on=1
 
-  # A SEPARATE file from .forge/verify, and opt-in. It must contain {files}, because
-  # only the project knows how its runner takes a file list -- `pytest -q {files}` works,
-  # `npm test -- {files}` needs the dashes, and `go test ./...` cannot do it at all.
-  # Absent, this whole feature stays off and nothing extra runs.
-  [ -s "$REPO/.forge/verify-subset" ] && subset_cmd="$(cat "$REPO/.forge/verify-subset")"
-  if [ -f "$SKILL_DIR/scripts/forge-jev-options.sh" ]; then
-    source "$SKILL_DIR/scripts/forge-jev-options.sh" 2>/dev/null && jev_loaded_qa=1
-  fi
-  # Early feedback for the reviewer: run the tests this change most likely broke, in a
-  # throwaway export. Requires a configured verify command -- without one there is no
-  # runner to point at a file list, and inventing one is not this feature's job.
-  if [ -n "$subset_cmd" ] && [ "$jev_loaded_qa" = 1 ] && forge_jev_active tests; then
-    git -C "$wt" diff --name-only "$(cat "$tdir/review.base")" "$reviewed" \
-        > "$tdir/changed.txt" 2>/dev/null || : > "$tdir/changed.txt"
-    python3 "$SKILL_DIR/scripts/forge-jev.py" test-subset --repo "$wt" \
-        --commit "$reviewed" --task "$tdir/prompt.md" --command "$subset_cmd" \
-        --changed "$tdir/changed.txt" --base "$(cat "$tdir/review.base")" \
-        --run-dir "$tdir" > "$tdir/subset.jev.txt" 2>/dev/null \
-      || : > "$tdir/subset.jev.txt"
-  fi
   # Opt-in (plan --fail-first): do this attempt's new tests fail without its change? Read-only
-  # on the review snapshot, like the subset run above; the reviewer gets the evidence.
+  # on the review snapshot, so the task worktree is untouched; the reviewer gets the evidence.
   rm -f "$tdir/failfirst.json" "$tdir/failfirst.txt"
   [ ! -f "$PLAN/fail_first" ] || forge_fail_first "$review" "$tdir" "$REPO"
   # What changed since the review whose findings this reviewer is handed. Fractal keeps
@@ -959,17 +939,6 @@ do_task_body() (
     echo
     [ ! -f "$PLAN/sweep_ahead" ] || python3 "$SKILL_DIR/scripts/forge-sweep.py" ahead "$PLAN" "$id" --role qa 2>/dev/null
     if [ -s "$tdir/failfirst.txt" ]; then cat "$tdir/failfirst.txt"; echo; fi
-    # A subset failure is the one thing a reviewer most wants to know and cannot see
-    # from the diff. It runs in a throwaway export of the reviewed commit, so the task
-    # worktree is untouched and no fingerprint can change. It never replaces
-    # verification -- the full suite still runs at integration exactly as before.
-    if [ -s "$tdir/subset.jev.txt" ]; then
-      cat "$tdir/subset.jev.txt"
-      echo
-      echo "That is a subset chosen by relevance, not the full suite, so a pass would"
-      echo "prove nothing and is not reported. A failure here is real."
-      echo
-    fi
     if [ -s "$tdir/guard.txt" ]; then
       # Facts forge observed about how the implementer worked. On a first attempt the reviewer
       # never sees the implementer's own report (a retry's reviewer gets the reply, to check

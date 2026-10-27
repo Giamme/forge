@@ -122,7 +122,7 @@ SITE_CAPABILITY = {
     'jev-score-plan': 'routing',
     'jev-drift': 'gates', 'jev-forward': 'gates',
     'jev-memory-curate': 'memory', 'jev-memory-stale': 'memory', 'jev-memory-slice': 'memory',
-    'jev-test-subset': 'tests', 'jev-verify-discover': 'tests',
+    'jev-verify-discover': 'tests',
 }
 
 # Loaded via importlib rather than a package-relative import: forge-runtime.py lives one
