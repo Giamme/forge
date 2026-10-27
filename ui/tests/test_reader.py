@@ -96,7 +96,8 @@ class ReaderTests(unittest.TestCase):
         self.assertEqual(data['settings'], {'explore': 0.5, 'shadow_rate': 0.25,
                                            'shadow_qa': ['opus', 'sol:xhigh'], 'timeout': 3600, **NEW_SETTINGS})
         self.assertEqual(data['verification'], {'status': 'PASS', 'command': 'python3 -m unittest',
-                                               'log_tail': 'All tests passed.\n', 'runs': [], 'commit': None})
+                                               'log_tail': 'All tests passed.\n', 'runs': [], 'commit': None,
+                                               'state': None, 'mode': 'single', 'live': None, 'lanes': None, 'failing': []})
         self.assertEqual(data['timeline'], {'started': None, 'ended': None, 'runs': [], 'verifications': []})
         self.assertIsNotNone(data['integration'])  # the merged marker
         self.assertEqual(data['integration']['merged'], [{'id': 'reader', 'at': reader['merged_at']}])
@@ -303,7 +304,7 @@ class ReaderTests(unittest.TestCase):
         self.write(self.base / 'verification.log', '')
         data = detail(self.base)
         self.assertEqual(data['verification'], {'status': None, 'command': None, 'log_tail': '', 'runs': [],
-                                                'commit': None})
+                                                'commit': None, 'state': None, 'mode': 'single', 'live': None, 'lanes': None, 'failing': []})
         self.assertEqual(len(data['warnings']), 1)
 
     def test_text_caps_and_the_verdict_of_a_capped_reply(self):

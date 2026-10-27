@@ -409,6 +409,87 @@ def make_plan(base: Path) -> Path:
     return plan
 
 
+LANES_VERIFY = 'verification-' + uid(4)   # a verification started after make_plan's
+
+
+def lane(name, state, runs, tests=None, group=None, first=False, step=None, last_line=None, last_output_at=None,
+         command=None, options=None):
+    """One lane of verification.lanes.json as scripts/forge-verify.py writes it; runs are (kind, start, end, exit),
+    T0-relative, end None while running."""
+    entries = [dict(k=k, kind=kind, started=T0 + start, ended=None if end is None else T0 + end, exit=code,
+                    log=f'verification.lane.{name}.run-{k}.log') for k, (kind, start, end, code) in enumerate(runs, 1)]
+    return dict(name=name, command=command or f'make {name}', group=group, first=first, options=options or {},
+                state=state, exit=entries[-1]['exit'] if entries else None,
+                started=entries[0]['started'] if entries else None,
+                ended=entries[-1]['ended'] if entries and state not in ('waiting', 'running') else None,
+                runs=entries, step=step, last_line=last_line, last_output_at=last_output_at,
+                log=f'verification.lane.{name}.log', tests=tests)
+
+
+E2E_TESTS = dict(**{'pass': 30, 'fail': 2, 'skip': 1, 'error': 0}, failing=[
+    dict(name='checkout.Pay.test_card', suite='checkout', file='e2e.xml', message='timed out after 30s',
+         excerpt='Traceback: waiting for #pay', known=True, log_line=12),
+    dict(name='checkout.Pay.test_refund', suite='checkout', file='e2e.xml', message='expected 200, got 500',
+         excerpt='POST /refund returned 500', known=False, log_line=None)],
+    reports=['e2e.xml'], notes=[], truncated=False)
+
+
+def lanes_verification(plan, running=False):
+    """A lanes verification on top of make_plan's single-command one, started at T0+1300.
+
+    Finished: unit is flaky (failed, then passed on its rerun), e2e fails with one known and one new
+    failing test, lint passes. Running: unit has passed, e2e is on its browser step and printed last,
+    lint printed earlier and is still going. The lanes file, its logs and runs.tsv are written at
+    T0+1400 (finished) or T0+1360 (running)."""
+    at = T0 + (1360 if running else 1400)
+    if running:
+        lanes = [lane('unit', 'pass', [('initial', 1300, 1320, 0)]),
+                 lane('e2e', 'running', [('initial', 1300, None, None)], group='browser',
+                      step=dict(name='browser', started=T0 + 1340), last_line='checkout: 12 of 33',
+                      last_output_at=T0 + 1355, command=f'{plan}/bin/e2e --out {plan}/out'),
+                 lane('lint', 'running', [('initial', 1300, None, None)], last_line='linting ui/',
+                      last_output_at=T0 + 1330)]
+    else:
+        lanes = [lane('unit', 'flaky', [('initial', 1300, 1320, 1), ('rerun', 1340, 1350, 0)],
+                      tests=dict(**{'pass': 120, 'fail': 0, 'skip': 0, 'error': 0}, failing=[], reports=['unit.xml'],
+                                 notes=[], truncated=False)),
+                 lane('e2e', 'fail', [('initial', 1300, 1330, 1), ('rerun', 1340, 1370, 1)], group='browser',
+                      tests=E2E_TESTS, last_line='2 failed, 30 passed', command=f'{plan}/bin/e2e --out {plan}/out'),
+                 lane('lint', 'pass', [('initial', 1300, 1310, 0)], last_line='clean')]
+    write(plan / 'verification.lanes.json', dict(version=1, state='running' if running else 'fail', started=T0 + 1300,
+                                                 ended=None if running else T0 + 1370, parallel=3, mutated=False,
+                                                 lanes=lanes), at)
+    rows = []
+    for item in lanes:
+        write(plan / item['log'], f'{item["name"]} output\n', at)
+        for run in item['runs']:
+            if run['ended'] is not None:
+                rows.append((run['started'], item['name'], run))
+    rows.sort(key=lambda row: (row[0], row[1]))
+    write(plan / 'verification.runs.tsv', ''.join(
+        f'{n}\t{run["kind"]}\t{run["exit"]}\t0\t{int(run["ended"] - run["started"])}\t{run["log"]}\t{name}\t{started}\n'
+        for n, (started, name, run) in enumerate(rows, 1)), at)
+    execution(plan, LANES_VERIFY, 1300.0, None if running else 1372.0, phase='verification',
+              exit_code=1, parent=PARALLEL)
+    if not running:
+        write(plan / 'verification.status', 'FAIL\n', at)
+    return plan
+
+
+def single_running(plan, retry=False):
+    """make_plan's run with a single-command verification started at T0+1300 and still going; its log
+    (and, with retry, a newer verification.retry.log a rerun writes) carries step markers."""
+    write(plan / 'verification.log', '::forge step name=build state=start\nbuilt\n'
+          '::forge step name=build state=end exit=0\n::forge step name=test state=start\n'
+          '::forge step name=unit state=start\nrunning 40 tests\n::forge step name=unit state=end exit=0\n'
+          '\x1b[32mtest_reader ok\x1b[0m\n\n', T0 + 1340)
+    if retry:
+        write(plan / 'verification.retry.log', '::forge step name=rerun state=start\nrerunning the failed lane\n',
+              T0 + 1350)
+    execution(plan, LANES_VERIFY, 1300.0, phase='verification', parent=PARALLEL)
+    return plan
+
+
 def make_solo(base: Path) -> Path:
     run = Path(base) / 'solo-rich'
     run.mkdir(parents=True)

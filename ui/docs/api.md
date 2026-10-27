@@ -43,7 +43,9 @@ written), and the reader must never raise because of one.
 | `shadow_qa` | a comma list of specs |
 | `timeout` | seconds |
 | `verification.status` | `PASS`, `FAIL` or another word; `verification.command` the command; `verification.log` its output |
-| `verification.runs.tsv` | `n<TAB>kind<TAB>exit<TAB>tree_changed<TAB>duration_s<TAB>logfile` per run of the command; `kind` is `initial`, `rerun` or `jev_retry`, `exit` may be empty, `tree_changed` is `0` or `1` |
+| `verification.runs.tsv` | `n<TAB>kind<TAB>exit<TAB>tree_changed<TAB>duration_s<TAB>logfile` per run of the command; `kind` is `initial`, `rerun` or `jev_retry`, `exit` may be empty, `tree_changed` is `0` or `1`. A lanes verification adds `<TAB>lane<TAB>started` (an epoch) |
+| `verification.retry.log` | the output of a deterministic or Jev rerun of a single command |
+| `verification.lanes.json` | a lanes verification's live and final state, written by `scripts/forge-verify.py` (read up to 4 MB); `verification.lane.<name>.log` and `verification.lane.<name>.run-<k>.log` each lane's output |
 | `verification.commit` | one line, the commit verified |
 | `max_parallel`, `escalate_after`, `verify_retries` | one integer each |
 | `qa_threshold` | `P0`..`P3`, the least severe finding that still blocks; `final_qa` the final review's QA spec |
@@ -342,8 +344,14 @@ Every RunSummary field, plus:
                "final_qa": "opus"},
   "verification": {"status": "PASS", "command": "python3 -m unittest", "log_tail": "...",
                    "runs": [{"n": 1, "kind": "initial", "exit": 0, "tree_changed": false,
-                             "duration_s": 12.3, "log": "verification.run-1.log"}],
-                   "commit": "9c1e4b7a..."},
+                             "duration_s": 12.3, "log": "verification.lane.unit.run-1.log",
+                             "lane": "unit", "started": 1760622000.5}],
+                   "commit": "9c1e4b7a...",
+                   "state": "done", "mode": "lanes", "live": null,
+                   "lanes": [VerificationLane, ...],
+                   "failing": [{"lane": "e2e", "name": "checkout.Pay.test_refund", "suite": "checkout",
+                                "file": "e2e.xml", "message": "expected 200, got 500", "excerpt": "...",
+                                "known": false, "log_line": 12}]},
   "waves": [["reader", "page", "graph"], ["server"], ["readme"]],
   "tasks": [Task, ...],
   "timeline": {"started": 1760620000.25, "ended": null, "runs": [Execution], "verifications": [Execution]},
@@ -369,7 +377,49 @@ Every RunSummary field, plus:
 - `verification` is `null` when none of `verification.status`, `.command`, `.log` exists. A
   solo run's `verification` is always `null`. `runs` comes from `verification.runs.tsv`
   (malformed rows are warned and skipped; an empty `exit` is `null`), `commit` is the first
-  line of `verification.commit` or `null`.
+  line of `verification.commit` or `null`. A run's lanes runs carry `lane` and `started`; a
+  single command's have `null` for both. A row of neither 6 nor 8 columns is warned and skipped.
+- `verification.state` is `running` when the run's newest `verification` execution (the newest
+  of `timeline.verifications`) is running, `done` when it has ended, and `null` when the run has
+  none. While it runs, `status` is `RUNNING`, whatever a `verification.status` left by an earlier
+  verification says.
+- `verification.mode` is `lanes` when `verification.lanes.json` exists and was written at or
+  after the newest verification execution started (or there is none), else `single`. A lanes file
+  an earlier verification left is not read.
+- `verification.live` is `null` unless `state` is `running`; then `{started, step, last_line,
+  last_output_at, idle_s}`. `started` is the execution's start. In `single` mode the live log is
+  whichever of `verification.log` and `verification.retry.log` was modified last: `step` is
+  `{name, started: null}` for the last `::forge step name=<x> state=start` in its last 64 KB
+  that no later `state=end` closed (a line holds no time), `last_line` its last non-empty line
+  without ANSI codes (at most 300 characters), and `last_output_at` its mtime. In `lanes` mode
+  they are the running lane's that printed last, with its recorded `step.started`. `idle_s` is
+  now minus `last_output_at` (minus `started` before any output).
+- `verification.lanes` is `null` in `single` mode and when the lanes file is unreadable, not a
+  JSON object, has no `lanes` list or is over 4 MB (each warned; the request never fails). In
+  `lanes` mode it is every lane:
+
+  ```
+  VerificationLane = {"name": "e2e", "command": "npm run test:e2e", "group": "browser", "first": false,
+                      "retries": 2, "options": {"retries": 2, "reports": "reports"},
+                      "state": "fail", "exit": 1, "started": 1760622000.5, "ended": 1760622070.0,
+                      "duration_s": 69.5, "idle_s": null,
+                      "runs": [{"k": 1, "kind": "initial", "started": 1760622000.5, "ended": 1760622030.0,
+                                "exit": 1, "log": "verification.lane.e2e.run-1.log"}],
+                      "step": {"name": "browser", "started": 1760622010.0} | null,
+                      "last_line": "2 failed, 30 passed", "last_output_at": 1760622069.8,
+                      "log": "verification.lane.e2e.log",
+                      "tests": {"pass": 30, "fail": 2, "skip": 1, "error": 0, "failing": [...],
+                                "reports": ["e2e.xml"], "notes": [], "truncated": false} | null}
+  ```
+
+  `state` is one of `waiting running pass fail flaky known skipped interrupted`; `duration_s`
+  runs from `started` to `ended`, or to now while the lane runs; `idle_s` is now minus
+  `last_output_at` for a running lane, else `null`. `tests` is `null` when the lane wrote no
+  report; its `failing` holds at most 200 entries (`truncated` says more failed), a `message` at
+  most 500 characters and an `excerpt` at most 2,000; `log_line` is the 1-based line of the
+  lane's log that first names the test, or `null`.
+- `verification.failing` is every lane's `tests.failing`, in lane order, each with its `lane`:
+  at most 200 entries, `[]` in `single` mode.
 - `timeline.started` is the earliest `started` of every execution the detail shows (tasks
   and their shadows, the listed final reviews, the run's own); `ended` is the latest `ended`,
   or `null` while any of them is `running` or when none has ended. `runs` and
@@ -945,10 +995,10 @@ difficulty paths deps model` each), `decomposition_history` (its newest 20, each
   each final review's, each Fractal node's) and every `dwarf` and `qa` ExecutionTranscript (at most 2 MB each).
 - `texts=0` (the default) nulls these keys wherever they hold a string, list or object: `prompt
   last request log_tail dwarf_tail qa_tail qa_last qa_input tasks_summary known_issues texts text
-  planning_last approach retry_findings dwarf_input error`, and stores no diff and no transcript. A
-  finding keeps its `summary`.
-- `paths=0` (the default) makes every string that is a whole absolute path (but `/api/…` and
-  `url`s) its last component, and replaces the run dir, the repo and the home dir inside other
+  planning_last approach retry_findings dwarf_input error last_line message excerpt`, and stores no
+  diff and no transcript. A finding keeps its `summary`, a failing test its `name`.
+- `paths=0` (the default) makes every string that is a whole absolute path (but `/api/…`, `url`s
+  and `command`s) its last component, and replaces the run dir, the repo and the home dir inside other
   strings with their last component (`~` for home).
 - At most 1 MB of JSON per diff and 25 MB in all; what did not fit is listed in `meta.omitted`
   (`path`, `bytes`, `why`). `meta`: `format` `forge-ui-export`, `version` 1, `app`, `key`,

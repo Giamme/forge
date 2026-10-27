@@ -37,7 +37,7 @@ _EXEC = re.compile(r'(?:task|dwarf|qa|solo|verification|parallel)-[0-9a-f]{32}')
 # texts that can hold code, prompts or private notes: nulled unless texts=True
 _TEXT_KEYS = frozenset(('prompt', 'last', 'request', 'log_tail', 'dwarf_tail', 'qa_tail', 'qa_last', 'qa_input',
                         'tasks_summary', 'known_issues', 'texts', 'text', 'planning_last', 'approach', 'retry_findings',
-                        'dwarf_input', 'error'))
+                        'dwarf_input', 'error', 'last_line', 'message', 'excerpt'))
 
 
 def _enc(value):
@@ -113,12 +113,13 @@ class _Snapshot:
         if isinstance(value, list):
             return [self.clean(v, key) for v in value]
         if isinstance(value, str) and not self.paths and key != 'url':
-            return self.hide(value)
+            return self.hide(value, key)
         return value
 
-    def hide(self, text):
-        # a whole absolute path becomes its last component; known roots inside longer texts are replaced too
-        if re.fullmatch(r'(/|[A-Za-z]:[\\/])[^\n]*', text) and not text.startswith('/api/'):
+    def hide(self, text, key=None):
+        # a whole absolute path becomes its last component; known roots inside longer texts are replaced too.
+        # A command that starts with a path is not one path: only its known roots go.
+        if key != 'command' and re.fullmatch(r'(/|[A-Za-z]:[\\/])[^\n]*', text) and not text.startswith('/api/'):
             return os.path.basename(text.rstrip('/\\')) or text
         for root, name in self.roots:
             if root in text:
