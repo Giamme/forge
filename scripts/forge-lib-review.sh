@@ -424,7 +424,7 @@ final_review() {
     { note "final review: cannot assemble the review context"; return 3; }
 
   # At most the limit plus one byte is ever read, so an enormous change cannot fill the disk.
-  git -C "$src" diff --binary "$base" "$tip" -- . ':(exclude).forge' 2>/dev/null |
+  git -C "$src" diff --binary --irreversible-delete "$base" "$tip" -- . ':(exclude).forge' 2>/dev/null |
     head -c $((REVIEW_DIFF_LIMIT + 1)) > "$out/combined.diff"
   diff_n="$(wc -c < "$out/combined.diff" | tr -d ' ')"
   if [ "$diff_n" -gt "$REVIEW_DIFF_LIMIT" ]; then inline=0; rm -f "$out/combined.diff"; fi
@@ -443,7 +443,7 @@ final_review() {
         echo "There are no changes since that review: it judged this same commit."
       else
         echo "### Changes since that review ($(printf '%.7s' "$since")..$(printf '%.7s' "$tip"))"
-        git -C "$src" diff --binary "$since" "$tip" -- . ':(exclude).forge' 2>/dev/null |
+        git -C "$src" diff --binary --irreversible-delete "$since" "$tip" -- . ':(exclude).forge' 2>/dev/null |
           head -c $((REVIEW_SINCE_LIMIT + 1)) > "$out/since.diff"
         if [ "$inline" = 1 ] && [ "$(wc -c < "$out/since.diff" | tr -d ' ')" -le "$REVIEW_SINCE_LIMIT" ] &&
            ! grep -q '```diff' "$out/since.diff"; then

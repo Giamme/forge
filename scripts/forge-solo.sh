@@ -300,7 +300,9 @@ fi
   if [ -s "$RUN/failfirst.txt" ]; then cat "$RUN/failfirst.txt"; echo; fi
   python3 "$SKILL_DIR/scripts/forge-contract.py" qa --part tail --kind solo
   echo
-  echo '```diff'; cat "$RUN/changes.diff"; echo '```'
+  # --irreversible-delete: a deleted file shows as a header, not every line it had (one deleted
+  # data directory once made a 7.1M-character prompt that the reviewer's CLI refused).
+  echo '```diff'; git -C "$REPO" diff --binary --irreversible-delete "$START" "$END" -- . ':(exclude).forge'; echo '```'
   echo; /bin/bash "$MEMORY" note qa
   echo "Place any learning notes before the final FORGE_VERDICT: PASS or FORGE_VERDICT: FAIL line."
 } > "$RUN/qa.input"

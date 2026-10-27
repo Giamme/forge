@@ -237,7 +237,7 @@ attempt_delta() { # attempt_delta <tdir> <worktree> <reviewed-commit>
      && from="$(git -C "$wt" rev-parse --verify -q "$(cat "$tdir/retry_findings.commit")^{commit}")" \
      && to="$(git -C "$wt" rev-parse --verify -q "$reviewed^{commit}")" \
      && git -C "$wt" merge-base --is-ancestor "$from" "$to" \
-     && git -C "$wt" diff --binary "$from" "$to" -- . ':(exclude).forge' > "$tdir/.changes.since.diff" 2>/dev/null \
+     && git -C "$wt" diff --binary --irreversible-delete "$from" "$to" -- . ':(exclude).forge' > "$tdir/.changes.since.diff" 2>/dev/null \
      && [ -s "$tdir/.changes.since.diff" ] \
      && git -C "$wt" diff --stat "$from" "$to" -- . ':(exclude).forge' > "$tdir/.changes.since.stat" 2>/dev/null; then
     printf '%s %s\n' "$from" "$to" > "$tdir/changes.since.range"
