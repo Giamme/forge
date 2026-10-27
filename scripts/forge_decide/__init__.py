@@ -82,7 +82,7 @@ def _load(path: Path) -> tuple[dict, str | None]:
         return {}, f'{path}: {exc}'
     try:
         data = json.loads(text)
-    except ValueError as exc:
+    except (ValueError, RecursionError) as exc:  # RecursionError: nested too deep to parse
         return {}, f'{path}: not valid JSON ({exc})'
     if not isinstance(data, dict):
         return {}, f'{path}: not a JSON object'

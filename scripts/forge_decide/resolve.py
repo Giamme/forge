@@ -11,7 +11,8 @@ Levels, lowest to highest; each sets a gate's fields only where it names them:
                forge_jev.enabled(capability) from jev.json and the FORGE_JEV* variables, and
                turns a gate `on` when its capability is enabled. It never sets `off`.
 4. profile  -- `profile`, else FORGE_DECIDE_PROFILE; looked up in the user file's `profiles`
-               first, then the repo file's. Sets `gates` and `budget.run_*`.
+               first, then the repo file's. Sets `gates` and `budget` (`budget.daily_*` only
+               from a user-file profile).
 5. env      -- FORGE_DECIDE_GATE_<NAME>=off|shadow|on (NAME upper-cased, `-` -> `_`). Once a
                user decide.json exists, the legacy FORGE_JEV_<CAP> variables can only restrict:
                `off` turns that capability's gates off, and any `on` turns off the gates of
@@ -39,7 +40,10 @@ Choices the interface left open:
 - `repo=None` means no repo level and no privacy floor.
 - `profile` in the result is the selected profile's name, or None when none was selected or
   the name was not found.
-- A profile's budget sets only `run_*`, wherever the profile is defined.
+- A profile in the user file sets all of `budget`; one in the repo file sets only `run_*`,
+  like the repo file itself.
+- Budgets are any int, or a finite float; a value too large for a float is still a valid
+  budget, but not a valid threshold.
 
 Pure apart from reading the two decide.json files and jev.json: never writes, never touches
 the network, never raises.
@@ -71,8 +75,20 @@ def _result(errors: list) -> dict:
 
 
 def _number(value) -> bool:
-    return (isinstance(value, (int, float)) and not isinstance(value, bool)
-            and math.isfinite(value))
+    """A finite JSON number. An int of any size counts: math.isfinite would overflow on it."""
+    if isinstance(value, bool):
+        return False
+    return isinstance(value, int) or (isinstance(value, float) and math.isfinite(value))
+
+
+def _threshold(value):
+    """`value` as a finite float, or None when it is not a number or too large for one."""
+    if not _number(value):
+        return None
+    try:
+        return float(value)
+    except OverflowError:
+        return None
 
 
 def _parse_gates(obj, label: str, errors: list) -> dict:
@@ -114,8 +130,9 @@ def _parse_gates(obj, label: str, errors: list) -> dict:
             else:
                 kept = {}
                 for key, number in thresholds.items():
-                    if _number(number):
-                        kept[key] = float(number)
+                    number = _threshold(number)
+                    if number is not None:
+                        kept[key] = number
                     else:
                         errors.append(f'{label}: gates.{name}.thresholds.{key} is not a number')
                 if kept:
@@ -270,22 +287,28 @@ def _resolve(repo, profile, env, flags, errors: list) -> dict:
     name = profile if profile is not None else (env.get('FORGE_DECIDE_PROFILE') or None)
     if name is not None:
         found = None
-        for data, label in ((user_data, user_label), (repo_data, repo_label)):
+        for data, label, in_user in ((user_data, user_label, True), (repo_data, repo_label, False)):
             profiles = data.get('profiles')
             if isinstance(profiles, dict) and name in profiles:
-                found = (profiles[name], f'{label}: profile {name!r}')
+                found = (profiles[name], f'{label}: profile {name!r}', in_user)
                 break
         if found is None:
             errors.append(f'profile {name!r} not found; ignored')
         elif not isinstance(found[0], dict):
             errors.append(f'{found[1]} is not an object; ignored')
         else:
-            body, label = found
+            body, label, in_user = found
             if 'privacy' in body:
                 errors.append(f'{label}: privacy counts only in a repo file; ignored')
+            budget_keys = RUN_BUDGET + DAILY_BUDGET if in_user else RUN_BUDGET
+            budget = body.get('budget')
+            if not in_user and isinstance(budget, dict):
+                for key in DAILY_BUDGET:
+                    if key in budget:
+                        errors.append(f'{label}: budget.{key} is read from the user file only; ignored')
             result['profile'] = name
             _apply(result, _parse_gates(body.get('gates'), label, errors),
-                   _parse_budget(body.get('budget'), label, errors, RUN_BUDGET), 'profile')
+                   _parse_budget(budget, label, errors, budget_keys), 'profile')
 
     # 5. env
     for gate in GATES:
@@ -315,7 +338,7 @@ def _resolve(repo, profile, env, flags, errors: list) -> dict:
     if flags is None and env.get('FORGE_DECIDE_FLAGS'):
         try:
             flags = json.loads(env['FORGE_DECIDE_FLAGS'])
-        except ValueError as exc:
+        except (ValueError, RecursionError) as exc:
             errors.append(f'FORGE_DECIDE_FLAGS: not valid JSON ({exc}); ignored')
             flags = None
     if flags is not None:

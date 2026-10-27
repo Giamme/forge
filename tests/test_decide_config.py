@@ -301,6 +301,32 @@ class PlacementTests(DecideTestCase):
         result = resolve(self.repo, env={})
         self.assertEqual((result['budget']['daily_tokens'], result['budget']['daily_usd']), (5, 0.5))
 
+    def test_daily_budget_from_a_user_profile_counts_and_from_a_repo_profile_does_not(self):
+        self.write_user({'budget': {'daily_tokens': 1000},
+                         'profiles': {'tight': {'budget': {'daily_tokens': 100}}}})
+        self.write_repo({'profiles': {'shared': {'budget': {'daily_tokens': 1, 'run_tokens': 9}}}})
+        self.assertEqual(resolve(self.repo, profile='tight', env={})['budget']['daily_tokens'], 100)
+        result = resolve(self.repo, profile='shared', env={})
+        self.assertEqual((result['budget']['daily_tokens'], result['budget']['run_tokens']), (1000, 9))
+        self.assertTrue(any('daily_tokens' in e for e in result['errors']))
+
+    def test_deeply_nested_file_counts_as_malformed(self):
+        forge_decide.repo_path(self.repo).parent.mkdir(parents=True)
+        forge_decide.repo_path(self.repo).write_text('{"unknown":' + '[' * 100000)
+        self.assertEqual(forge_decide.load_repo(self.repo)[0], {})
+        self.assertIsNotNone(forge_decide.load_repo(self.repo)[1])
+        result = resolve(self.repo, env={}, flags={'gates': {'drift': 'on'}})
+        self.assertEqual(self.on(result), {'drift'})
+
+    def test_huge_integers_do_not_reset_resolution(self):
+        self.write_user({'budget': {'run_tokens': 10 ** 400},
+                         'gates': {'forward': {'thresholds': {'x': 10 ** 400, 'y': 0.5}}}})
+        result = resolve(self.repo, env={}, flags={'gates': {'drift': 'on'}})
+        self.assertEqual(self.on(result), {'drift'})
+        self.assertEqual(result['budget']['run_tokens'], 10 ** 400)
+        self.assertEqual(result['gates']['forward']['thresholds'], {'y': 0.5})
+        self.assertTrue(any('thresholds.x' in e for e in result['errors']))
+
     def test_malformed_user_file_counts_as_empty(self):
         self.write_jev({'enabled': True})
         path = forge_decide.user_path()
