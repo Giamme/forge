@@ -337,7 +337,10 @@ def budget() -> float:
         value = float(os.environ.get('FORGE_FORECAST_BUDGET_S') or BUDGET_S)
     except ValueError:
         return BUDGET_S
-    return value if value > 0 else BUDGET_S
+    if not value > 0:
+        return BUDGET_S
+    # Thread.join refuses a timeout past TIMEOUT_MAX (inf, 1e10, ...): that budget means no limit.
+    return min(value, threading.TIMEOUT_MAX)
 
 
 def main(args) -> int:
