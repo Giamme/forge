@@ -99,11 +99,6 @@ def parser() -> argparse.ArgumentParser:
     coupling.add_argument('--repo', required=True)
     coupling.add_argument('--json', action='store_true')
 
-    review_triage = sub.add_parser('review-triage')
-    review_triage.add_argument('--review', required=True)
-    review_triage.add_argument('--diff', required=True)
-    review_triage.add_argument('--run-dir', default=None)
-    review_triage.add_argument('--json', action='store_true')
 
     memory_curate = sub.add_parser('memory-curate')
     memory_curate.add_argument('--repo', required=True)
@@ -660,11 +655,12 @@ def cmd_score_plan(args) -> int:
 
 
 def cmd_coupling(args) -> int:
-    """Warn about same-wave task pairs that may conflict despite disjoint files.
+    """Warn about earlier-wave tasks written against what a later wave builds.
 
     Advisory only -- like cmd_score_plan, this never edits tasks.tsv or waves.tsv. It
     reads both (waves.tsv must already exist; forge-parallel.sh runs this after
     compute_waves) and writes jev-coupling.json for a human or a later run to inspect.
+    Every row has kind 'forward'; the file keeps its name for old consumers.
     """
     plan, repo = Path(args.plan), Path(args.repo)
     if not plan.is_dir():
@@ -678,27 +674,19 @@ def cmd_coupling(args) -> int:
         print(f'forge jev coupling: no waves.tsv in {args.plan!r} -- run compute_waves first', file=sys.stderr)
         return 2
     config = load_config()
-    if not site_ready('jev-coupling', config):
+    if not site_ready('jev-forward', config):
         return 3
 
     from . import coupling
 
     tasks = list(coupling.parse_tasks(plan).values())
     waves = coupling.parse_waves(plan)
-    found = coupling.coupled_pairs(repo, tasks=tasks, waves=waves, run_dir=str(plan), config=config)
-    # The other half of the same question. `pairs()` only looks inside a wave, so "task A
-    # is written against an interface task B builds later" was structurally out of reach
-    # -- and that is what shipped: jevscope's `readme` ran in wave 1 documenting the
-    # wave-2 CLI and passed its own review, because the thing it was wrong about did not
-    # exist yet. Asked here rather than in a separate command so a plan gets both
-    # warnings or neither.
     forward = coupling.forward_dependencies(repo, tasks=tasks, waves=waves,
                                             run_dir=str(plan), config=config)
-    if not found and not forward:
+    if not forward:
         return 3
 
-    payload = ([dict(a=a, b=b, probability=p, kind='same-wave') for a, b, p in (found or [])]
-               + [dict(a=a, b=b, probability=p, kind='forward') for a, b, p in (forward or [])])
+    payload = [dict(a=a, b=b, probability=p, kind='forward') for a, b, p in forward]
     try:
         (plan / 'jev-coupling.json').write_text(json.dumps(payload, indent=2, sort_keys=True) + '\n')
     except OSError:
@@ -712,30 +700,6 @@ def cmd_coupling(args) -> int:
         for row in payload:
             print(f"{row['a']}\t{row['b']}\t{row['probability']}\t{row['kind']}")
     return 0
-
-
-def cmd_review_triage(args) -> int:
-    """Annotate a FAIL. Exit 0 only when the review looks SUSPECT.
-
-    The exit code carries the whole signal so the caller stays a one-liner, and it is
-    deliberately the narrow case that exits 0: anything else -- a sound review, no key,
-    no judgment, a crash -- leaves the verdict to speak for itself.
-    """
-    config = load_config()
-    if not site_ready('jev-review-triage', config):
-        return 3
-    from . import review
-
-    result = review.annotate_failure(review_path=args.review, diff_path=args.diff,
-                                     run_dir=args.run_dir, config=config)
-    if result is None:
-        return 3
-    if args.json:
-        print(json.dumps(result, indent=2, sort_keys=True))
-    elif result['suspect']:
-        for reason in result['reasons']:
-            print(reason)
-    return 0 if result['suspect'] else 1
 
 
 def cmd_memory_curate(args) -> int:
@@ -962,7 +926,6 @@ def main(argv: list[str] | None = None) -> int:
                     status=cmd_status, doctor=cmd_doctor, backtest=cmd_backtest,
                     **{'score-plan': cmd_score_plan,
                        'coupling': cmd_coupling,
-                       'review-triage': cmd_review_triage,
                        'test-subset': cmd_test_subset,
                        'memory-curate': cmd_memory_curate,
                        'memory-slice': cmd_memory_slice,

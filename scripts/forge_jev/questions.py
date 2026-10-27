@@ -400,39 +400,12 @@ def independently_verifiable() -> dict:
         ),
     )
 
-# --- post-review annotation (Phase 4, items 5 and 6) -------------------------------
+# --- post-review annotation (Phase 4, item 6) -------------------------------
 #
-# These read a FAIL and say whether it looks sound. They NEVER overturn it. Forge's
+# This reads a FAIL and says whether the review is grounded. It NEVER overturns it. Forge's
 # second invariant is reviewer independence: a model that can talk another model out of
 # a FAIL is worth less than no reviewer at all, because it produces confident PASSes on
 # code nobody checked. So the only output here is an annotation a human reads.
-
-
-def failure_is_correctness() -> dict:
-    """Does this FAIL rest on a correctness bug, or on taste?
-
-    The QA prompt is explicit that "style nits are not failures", and a reviewer that
-    fails a diff over naming or structure costs a whole retry cycle for nothing.
-    """
-    instructions = (
-        'A reviewer failed a code change. Given the review text and the diff it '
-        'reviewed (in state), does the review identify at least one genuine correctness '
-        'problem -- behaviour that is wrong, an edge case that breaks, a requirement not '
-        'met -- as opposed to only preferences about how the code is written?'
-    )
-    return Noul(
-        instructions,
-        true=(
-            'At least one finding describes something that would produce a wrong result, '
-            'a crash, data loss, a security hole, or a plain failure to do what the task '
-            'asked. It would still be a bug if the code were formatted perfectly.'
-        ),
-        false=(
-            'Every finding is about style, naming, structure, duplication, comments, '
-            'idiom, or a preference for a different approach that would work no better. '
-            'A reader could apply none of them and the code would still behave correctly.'
-        ),
-    )
 
 
 def findings_cite_the_diff() -> dict:
@@ -461,14 +434,13 @@ def findings_cite_the_diff() -> dict:
         ),
     )
 
-# --- semantic wave coupling (Phase 4, item 4) --------------------------------------
+# --- forward dependency (Phase 4, item 4) --------------------------------------
 
 
 def forward_dependency(earlier: str, later: str) -> dict:
     """Is an earlier-wave task written against something a LATER task has not built yet?
 
-    Distinct from wave_coupling, which asks about two tasks running at the same time and
-    breaking on merge. This asks about ordering: a task that runs in wave 1 is reviewed,
+    This asks about ordering: a task that runs in wave 1 is reviewed,
     verified and merged before wave 2 exists, so if it was written against wave 2's work
     it is wrong at the moment anyone checks it -- and its own review cannot tell, because
     the thing it is wrong about is not in the tree yet.
@@ -496,38 +468,6 @@ def forward_dependency(earlier: str, later: str) -> dict:
             'EARLIER stands on its own. It depends only on what already exists in the '
             'repo or on its own files, and nothing in LATER can make it wrong. LATER '
             'building on EARLIER is the normal, safe direction and is not this.'
-        ),
-    )
-
-
-def wave_coupling(first: str, second: str) -> dict:
-    """Would running these two tasks concurrently produce an integration conflict?
-
-    `compute_waves` bounds parallelism structurally: two tasks share a wave only when
-    their file sets are disjoint. Disjointness cannot see the conflict where task A
-    changes an interface that task B consumes -- both diffs are clean, both pass review
-    against their own baseline, and the merge is broken. This asks about exactly that.
-    """
-    instructions = (
-        f'Two Forge tasks are about to run at the same time, in separate worktrees '
-        f'branched from the same commit, each reviewed only against its own baseline. '
-        f'Task A: {first!r}. Task B: {second!r}. Their declared files do not overlap. '
-        'Would running them concurrently still produce a broken result once both are '
-        'merged?'
-    )
-    return Noul(
-        instructions,
-        true=(
-            'One task changes something the other depends on -- a function signature, a '
-            'return type, a schema, a config key, an interface, a shared constant -- so '
-            'the second task is written against a version of the code that will no '
-            'longer exist. Both diffs can be individually correct and the merge still '
-            'broken.'
-        ),
-        false=(
-            'The two tasks touch genuinely independent behaviour. Neither one changes '
-            'anything the other reads, calls, or relies on, so the order they land in '
-            'does not matter.'
         ),
     )
 

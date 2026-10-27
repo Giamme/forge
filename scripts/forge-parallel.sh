@@ -389,11 +389,10 @@ EOF
     python3 "$SKILL_DIR/scripts/forge-jev.py" first-pass --plan "$PLAN" --repo "$REPO" >/dev/null 2>&1 || true
   fi
 
-  # --- jev: advisory wave coupling ------------------------------------------------
-  # Disjoint files bound parallelism structurally, but they cannot see the conflict
-  # where one task in a wave changes an interface another task in the SAME wave
-  # consumes -- both diffs are clean against their own baseline, and the merge is
-  # broken. This is advisory only: it never edits tasks.tsv, never adds a dep, and
+  # --- jev: advisory forward dependency -------------------------------------------
+  # Wave order is structural, but it cannot see an earlier-wave task written against
+  # an interface a later-wave task builds. This is advisory only: it never edits
+  # tasks.tsv, never adds a dep, and
   # never changes waves.tsv, so it must run after compute_waves and before the table
   # that reports the plan is printed.
   if [ "$jev_loaded" = 1 ] && forge_jev_active gates; then
@@ -408,13 +407,10 @@ EOF
         local ca cb cp ckind
         while IFS="$(printf '\t')" read -r ca cb cp ckind; do
           [ -n "$ca" ] || continue
-          # Two different failures, so two different sentences. same-wave is a broken
-          # merge between concurrent tasks; forward is an earlier task written against
-          # work that has not been built yet, which its own review cannot catch.
+          # Forward: an earlier task written against work that has not been built yet,
+          # which its own review cannot catch.
           if [ "$ckind" = forward ]; then
             note "jev: task '$ca' runs before '$cb' and may depend on what it builds ($cp) — consider a dep"
-          else
-            note "jev: tasks '$ca' and '$cb' may conflict despite disjoint files ($cp) — consider a dep"
           fi
         done <<EOF
 $jev_coupling
@@ -1105,39 +1101,6 @@ do_task_body() (
   # accepted PASS-with-known-issues. No threshold, no change. qa_thr is the value the review
   # prompt was built with, so the prompt and the gate of one attempt agree.
   qa_gate "$PLAN" "$id" "$tdir" "$verdict" "$qa_thr"
-
-  # Annotate a FAIL that looks unsound. Note what this does NOT do: the status file is
-  # already written above and nothing below rewrites it. A model that could talk a
-  # reviewer out of a FAIL would produce confident PASSes on code nobody checked, which
-  # is worth less than having no reviewer at all. Only a human acts on this line.
-  if [ "$verdict" = FAIL ] && [ "$(cat "$tdir/status")" = FAIL ]; then
-    # do_task is a subshell and does not inherit do_plan's copy, so source it here.
-    # A missing or broken options file leaves jev_loaded=0 and this block does nothing.
-    local jev_loaded=0 jev_rc
-    if [ -f "$SKILL_DIR/scripts/forge-jev-options.sh" ]; then
-      source "$SKILL_DIR/scripts/forge-jev-options.sh" 2>/dev/null && jev_loaded=1
-    fi
-    if [ "$jev_loaded" = 1 ] && forge_jev_active gates; then
-      # One request, not two: asking the same question twice costs twice and can come
-      # back with two different answers, and the record must match what was printed.
-      python3 "$SKILL_DIR/scripts/forge-jev.py" review-triage --review "$tdir/qa.last" \
-          --diff "$tdir/changes.diff" --run-dir "$tdir" --json > "$tdir/qa.jev.json" 2>/dev/null
-      jev_rc=$?
-      if [ "$jev_rc" -eq 0 ]; then
-        note "$id: FAIL stands, but jev flags the review — $(python3 -c '
-import json, sys
-try:
-    data = json.load(open(sys.argv[1]))
-except Exception:
-    sys.exit(0)
-print("; ".join(data.get("reasons") or []))
-' "$tdir/qa.jev.json" 2>/dev/null)"
-      else
-        # Exit 1 means the review looked sound; there is nothing to say and no file to keep.
-        rm -f "$tdir/qa.jev.json" 2>/dev/null || true
-      fi
-    fi
-  fi
   return 0
 )
 
@@ -1286,39 +1249,8 @@ do_retry() {
   echo
   printf '  %-14s %-9s %s\n' id status branch
   awk -F'\t' '{printf "  %-14s %-9s %s\n", $1, $2, $3}' "$PLAN/results.tsv"
-  forge_jev_review_flags "$PLAN"
   run_report_extras "$PLAN"
   [ "$(task_status "$PLAN" "$id")" = "MERGED" ] || return 5
-  return 0
-}
-
-# Print any Jev review-triage flags under the results table.
-#
-# do_task's notes go to tasks/<id>/task.out, which the scheduler only echoes when
-# FORGE_OUTPUT=full -- the right call for parallel dispatch, where interleaved output is
-# unreadable. But it meant this particular note was written where nobody would read it,
-# and it is the only signal that a FAIL may not be sound. A human has to see it to act
-# on it, and the default output mode is `summary`.
-#
-# qa.jev.json exists only when the review was flagged: review-triage deletes it when the
-# review looks sound, so its presence is the signal and no new file is needed.
-forge_jev_review_flags() {
-  local plan="$1" id notice printed=0
-  for id in $(all_ids "$plan/tasks.tsv"); do
-    [ -s "$plan/tasks/$id/qa.jev.json" ] || continue
-    notice="$(python3 -c '
-import json, sys
-try:
-    data = json.load(open(sys.argv[1]))
-except Exception:
-    sys.exit(0)
-print("; ".join(data.get("reasons") or []))
-' "$plan/tasks/$id/qa.jev.json" 2>/dev/null)"
-    [ -n "$notice" ] || continue
-    [ "$printed" = 0 ] && { echo; printed=1; }
-    printf '  jev: %s — the FAIL stands; %s\n' "$id" "$notice"
-  done
-  [ "$printed" = 1 ] && printf '  A flagged review is not an overturned one. Read it before retrying.\n'
   return 0
 }
 
@@ -1855,7 +1787,6 @@ do_run() {
   echo "artifacts: $PLAN/tasks/<id>/{dwarf,qa}.{last,log}; results: $PLAN/results.tsv"
   printf '  %-14s %-9s %s\n' id status branch
   awk -F'\t' '{printf "  %-14s %-9s %s\n", $1, $2, $3}' "$PLAN/results.tsv"
-  forge_jev_review_flags "$PLAN"
   echo
   run_report_extras "$PLAN"
 

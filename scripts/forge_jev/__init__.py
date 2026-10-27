@@ -63,19 +63,7 @@ DEFAULT_THRESHOLDS = dict(tests_act=0.70, flake_act=0.90,
                           # stay separate keys; collapsing them into one constant is the
                           # exact mistake this file has now recorded six times.
                           verifiable_warn=0.55,
-                          # Coupling borrowed gate_warn (0.60) and therefore never fired
-                          # once, on any plan. Measured over 11 same-wave pairs from a
-                          # real 8-task plan, 5 runs each, with ground truth taken from
-                          # the run itself -- two of those pairs produced a defect that
-                          # actually shipped. Coupling probabilities live at 0.09-0.27.
-                          # 0.60 was not a strict threshold, it was unreachable.
-                          #
-                          # At 0.20: 4 of 5 genuinely coupled pairs warn, 0 of 6
-                          # independent ones do. Provisional -- one plan, one repo, and
-                          # margins of about 0.02 either side -- but a gate that fires on
-                          # the right pairs 4 times in 5 beats one that cannot fire.
-                          coupling_warn=0.20,
-                          # The ordering question coupling could not ask: an earlier-wave
+                          # The ordering question: an earlier-wave
                           # task written against what a LATER task builds. jevscope's
                           # `readme` ran in wave 1 documenting the wave-2 CLI, passed its
                           # own review because the thing it was wrong about did not exist
@@ -134,8 +122,7 @@ CLOUDFLARE_TOKEN_FILE = 'cloudflare.env'
 SITE_CAPABILITY = {
     'jev-score-plan': 'routing',
     'clef-first-pass': 'routing', 'clef-retry-pass': 'routing',
-    'jev-drift': 'gates', 'jev-coupling': 'gates', 'jev-forward': 'gates',
-    'jev-review-triage': 'gates',
+    'jev-drift': 'gates', 'jev-forward': 'gates',
     'jev-memory-curate': 'memory', 'jev-memory-stale': 'memory', 'jev-memory-slice': 'memory',
     'jev-test-subset': 'tests', 'jev-verify-discover': 'tests', 'jev-verify-triage': 'tests',
 }
@@ -349,10 +336,10 @@ def threshold(name: str, *, config: dict | None = None, model: str | None = None
 # Rubric thresholds introduced after a shared one: until measured separately they read the
 # old shared value, so a config that never named them behaves exactly as before.
 THRESHOLD_FALLBACK = dict(drift_warn='gate_warn')
-# Thresholds whose only reader was removed on 2026-10-17 (routing's --jev-act tier rewrite
-# and `forge jev calibrate`). A config written before then still holds them: they are
-# ignored, and `doctor` names them as safe to delete rather than as unknown.
-RETIRED_THRESHOLDS = frozenset(('routing_act', 'calibrate_floor'))
+# Thresholds whose only reader was removed (routing's --jev-act tier rewrite and `forge jev
+# calibrate` on 2026-10-17; same-wave coupling in milestone C1). A config written before
+# then still holds them: they are ignored, and `doctor` names them as safe to delete rather than as unknown.
+RETIRED_THRESHOLDS = frozenset(('routing_act', 'calibrate_floor', 'coupling_warn'))
 # Per-model cutoffs, only where a replay justified one. Clef has none yet:
 #
 # Replayed 2026-10-16 on the 38 live jev-drift requests whose task outcome could be joined
@@ -367,7 +354,7 @@ DEFAULT_MODEL_THRESHOLDS: dict = {}
 
 # The sites a replay showed Clef non-inferior on, which `forge jev setup --provider
 # cloudflare` maps by default. jev-memory-slice tied (AUC 0.951 vs 0.953) on too few held-out
-# runs (5) to clear the rule; jev-review-triage has no live label for its correctness half.
+# runs (5) to clear the rule.
 CLOUDFLARE_DEFAULT_SITES = ('jev-drift',)
 
 
