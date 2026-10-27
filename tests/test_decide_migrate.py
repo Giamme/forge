@@ -142,6 +142,31 @@ class MigrateTests(MigrateTestCase):
         self.assertEqual(stat.S_IMODE(key_file.stat().st_mode), 0o600)
         self.assertNotIn(TOKEN, (self.forge / 'decide.json').read_text())
 
+    def test_a_relative_token_file_keeps_pointing_at_the_same_file(self):
+        secrets = self.root / 'cwd' / 'secrets'
+        secrets.mkdir(parents=True)
+        (secrets / 'cloudflare.env').write_text(f'CLOUDFLARE_API_TOKEN={TOKEN}\n')
+        self.write_jev(legacy(providers=dict(cloudflare=dict(account_id='a', token_file='secrets/cloudflare.env'))),
+                       token=None)
+        before = Path.cwd()
+        os.chdir(self.root / 'cwd')
+        self.addCleanup(os.chdir, before)
+        self.migrate()
+        key_file = Path(self.decide()['providers']['cloudflare']['key_file'])
+        self.assertTrue(key_file.is_absolute())
+        self.assertIn(TOKEN, key_file.read_text())
+
+    def test_a_standalone_cloudflare_env_is_migrated(self):
+        self.forge.mkdir(parents=True)
+        (self.forge / 'cloudflare.env').write_text(
+            f'CLOUDFLARE_API_TOKEN={TOKEN}\nCLOUDFLARE_ACCOUNT_ID=acct9\n')
+        result = self.migrate()
+        self.assertEqual((result['status'], result['providers']), ('migrated', ['cloudflare']))
+        provider = self.decide()['providers']['cloudflare']
+        self.assertEqual((provider['type'], provider['key_file']), ('clef', 'cloudflare.env'))
+        self.assertIn('acct9', provider['url'])
+        self.assertNotIn(TOKEN, (self.forge / 'decide.json').read_text())
+
     def test_a_gate_whose_provider_is_not_configured_has_none(self):
         self.write_jev(legacy(key=''), token=TOKEN)
         self.migrate()
@@ -177,6 +202,16 @@ class DoctorTests(MigrateTestCase):
         self.assertEqual(self.kinds(items, 'not-migrated'), [])
         self.assertEqual(self.kinds(items, 'unknown-provider'), [])
         self.assertEqual(self.kinds(items, 'unused-provider'), [])
+
+    def test_thresholds_inside_profiles_are_reported(self):
+        forge_decide.save_user({'profiles': {'tight': {'gates': {
+            'prompt': {'thresholds': {'prompt_warn': 0.3, 'coupling_warn': 0.2}}}}}})
+        items = doctor.checks(env={'FORGE_DECIDE_PROFILE': 'tight'})
+        (override,) = self.kinds(items, 'threshold-override')
+        self.assertEqual((override['profile'], override['gate'], override['name'], override['value'],
+                          override['default']), ('tight', 'prompt', 'prompt_warn', 0.3, 0.55))
+        (retired,) = self.kinds(items, 'retired-threshold')
+        self.assertEqual((retired['profile'], retired['name']), ('tight', 'coupling_warn'))
 
     def test_jev_json_without_decide_json_is_not_migrated(self):
         self.write_jev(legacy())

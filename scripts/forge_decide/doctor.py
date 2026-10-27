@@ -7,7 +7,7 @@ and thresholds only. Kinds:
 
     threshold-override  a stored threshold differs from the measured default
                         ({gate | source: 'jev.json', name, value, default}, plus `model`
-                        for a per-model value)
+                        for a per-model value, `profile` for a value inside a profile)
     retired-threshold   a threshold nothing reads any more, in jev.json or in a gate
     unknown-provider    a gate names a provider that is not configured
     unused-provider     a configured provider no gate uses
@@ -120,6 +120,17 @@ def _key_files(providers: dict, items: list) -> None:
                               message=f'provider {name}: key file {path} is mode {mode:04o}, expected 0600'))
 
 
+def _gate_thresholds(data: dict, label: str, prefix: str, where: dict, retired: frozenset, items: list) -> None:
+    gates = data.get('gates')
+    if not isinstance(gates, dict):
+        return
+    for gate in GATES:
+        entry = gates.get(gate)
+        if isinstance(entry, dict):
+            _thresholds(entry.get('thresholds'), retired, dict(where, gate=gate), items,
+                        f'{label} {prefix}gates.{gate}')
+
+
 def _checks(repo, env, items: list) -> None:
     retired = retired_thresholds()
     has_jev = _jev_json(retired, items)
@@ -139,13 +150,12 @@ def _checks(repo, env, items: list) -> None:
     resolved = resolve(repo, env=env)
 
     for label, data in ((str(user_path()), user), (str(repo_path(repo)) if repo is not None else '', repo_data)):
-        gates = data.get('gates')
-        if not isinstance(gates, dict):
-            continue
-        for gate in GATES:
-            entry = gates.get(gate)
-            if isinstance(entry, dict):
-                _thresholds(entry.get('thresholds'), retired, dict(gate=gate), items, f'{label} gates.{gate}')
+        _gate_thresholds(data, label, '', {}, retired, items)
+        profiles = data.get('profiles')
+        if isinstance(profiles, dict):
+            for profile, body in sorted(profiles.items()):
+                if isinstance(body, dict):
+                    _gate_thresholds(body, label, f'profiles.{profile}.', dict(profile=profile), retired, items)
 
     providers = user.get('providers')
     providers = providers if isinstance(providers, dict) else {}

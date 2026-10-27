@@ -64,7 +64,9 @@ def _token_source(config: dict, cf: dict) -> tuple[str, str | None]:
     if entry.get('token') == token:
         return 'key', None
     if in_file == token:
-        path = Path(configured).expanduser()
+        # forge_jev reads a relative token_file against the working directory; the provider's
+        # key_file is read against config_dir(), so pin the path down before it is stored.
+        path = Path(os.path.abspath(Path(configured).expanduser()))
         try:
             return 'file', str(path.relative_to(config_dir()))
         except ValueError:
@@ -179,6 +181,11 @@ def run(*, force: bool = False) -> dict:
         return {'status': 'exists'}
     config = forge_jev.load_config()
     cloudflare = forge_jev.cloudflare(config)
+    if cloudflare is None and forge_jev._env_file(
+            str(forge_jev.config_path().parent / forge_jev.CLOUDFLARE_TOKEN_FILE)).get('CLOUDFLARE_API_TOKEN'):
+        # A standalone cloudflare.env (no jev.json entry, no environment token) is still a credential.
+        config = dict(config, providers=dict(config.get('providers') or {}, cloudflare={}))
+        cloudflare = forge_jev.cloudflare(config)
     if not forge_jev.config_path().exists() and not (cloudflare and cloudflare.get('token')):
         return {'status': 'nothing'}
     decide, keys = derive(dict(config, thresholds=_stored_thresholds(config)), cloudflare)
