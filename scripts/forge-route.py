@@ -20,9 +20,15 @@ bias (inverse-propensity weighting needs the probability each choice had).
       The retry policy: after <plan>/escalate_after (default 3; 0 = off) failed attempts on
       one spec, the next attempt goes to the next tier up of the user's pools instead of
       repeating the same dispatch. Prints that spec when one is due. When none exists, writes
-      tasks/<id>/escalation.stop and split.suggested and exits 3. `--check` (run after every
-      attempt) also records a due escalation in escalation.next, and clears the markers once
-      the streak no longer holds. A pending tasks/<id>/escalation.pin (a human's one-shot
+      tasks/<id>/escalation.stop and split.suggested and exits 3. When <plan>/escalate_effort
+      contains `on` and no higher tier has another model, the same alias and harness is tried
+      once more at the next effort its pairing accepts (weakest above the current one; a spec
+      that names no effort counts as medium, a dwarf dispatch's default) before that stop.
+      The streak then counts per effort, so the new effort starts again. At the pairing's
+      highest effort the task still stops, and split.suggested says that effort was tried too.
+      With the file absent the streak and the stop are exactly as before. `--check` (run after
+      every attempt) also records a due escalation in escalation.next, and clears the markers
+      once the streak no longer holds. A pending tasks/<id>/escalation.pin (a human's one-shot
       choice, applied by prepare_retry) is what `--check` reports as the next model instead
       (escalation.next = its spec), whatever escalate_after says, unless the next retry is a
       QA-only resume or the plan is Fractal (pins never apply there). `--qa-only-next` is
@@ -60,6 +66,7 @@ import os
 import random
 import secrets
 import stat
+import subprocess
 import sys
 import tempfile
 import time
@@ -71,7 +78,12 @@ REGISTRY = SCRIPTS.parent / 'registry.tsv'
 FAILED = ('FAIL', 'TIMEOUT')                       # a judgment against the spec that ran
 NEUTRAL = ('INFRA', 'UNKNOWN', 'ERROR', 'RUNNING', 'INTERRUPTED')   # say nothing about it
 DEFAULT_ESCALATE_AFTER = 3
+DEFAULT_EFFORT = 'medium'                         # forge-dispatch.sh dwarf default
 LOCK_WAIT = 5.0                                    # seconds to wait for P/control.lock
+# forge-dispatch.sh rank_of. Only for "which accepted effort is above this one"; the set of
+# efforts a pairing accepts comes from `forge-dispatch.sh efforts`, not from this table.
+# ultra and ultracode share a rank: each is its own harness's top, under different names.
+EFFORT_RANK = {'low': 0, 'medium': 1, 'high': 2, 'xhigh': 3, 'max': 4, 'ultra': 5, 'ultracode': 5}
 
 
 def rng_for(task: str):
@@ -250,19 +262,73 @@ def _dwarf_of(plan: Path, task: str) -> str:
     return ''
 
 
-def failed_streak(rows: list, current: str, registry: dict) -> int:
+def _spec_parts(spec: str):
+    """(alias, effort, harness) of alias[:effort[:harness]]. Effort and harness are '' when unnamed."""
+    alias, sep, rest = str(spec).partition(':')
+    if not sep:
+        return alias, '', ''
+    effort, sep, harness = rest.partition(':')
+    return alias, effort, harness if sep else ''
+
+
+def _effort_of(spec: str) -> str:
+    """The effort a spec names, or medium when it names none (what a dwarf dispatch runs)."""
+    _alias, effort, _harness = _spec_parts(spec)
+    return effort or DEFAULT_EFFORT
+
+
+def _effort_step(plan: Path) -> bool:
+    try:
+        return (plan / 'escalate_effort').read_text().strip() == 'on'
+    except OSError:
+        return False
+
+
+def _accepted_efforts(spec: str) -> list:
+    """Efforts `spec`'s pairing accepts, weakest first. Empty when dispatch cannot say."""
+    try:
+        done = subprocess.run(
+            ['bash', str(SCRIPTS / 'forge-dispatch.sh'), 'efforts', '--spec', spec],
+            capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return []
+    if done.returncode != 0:
+        return []
+    return [line.strip() for line in done.stdout.splitlines() if line.strip()]
+
+
+def _next_effort_spec(spec: str):
+    """The same alias and harness at the next accepted effort above the current one, or None."""
+    alias, _effort, harness = _spec_parts(spec)
+    rank = EFFORT_RANK.get(_effort_of(spec))
+    if not alias or rank is None:
+        return None
+    for effort in _accepted_efforts(spec):
+        other = EFFORT_RANK.get(effort)
+        if other is not None and other > rank:
+            return '%s:%s:%s' % (alias, effort, harness) if harness else '%s:%s' % (alias, effort)
+    return None
+
+
+def failed_streak(rows: list, current: str, registry: dict, by_effort: bool = False) -> int:
     """Distinct trailing attempt numbers that failed on `current`'s model.
 
     rows: (attempt, status, spec-or-None) oldest first. A row without a spec predates the
     column and is taken as the current spec. Infra stops, missing verdicts and forge errors
     judge nothing and are skipped; a pass, a merge or another model ends the streak.
+    With by_effort, another effort of the same model ends it too (a bump starts a new
+    streak). A spec that names no effort counts as medium. With by_effort off the count
+    is by model only, as before.
     """
     model = canonical(current, registry)
+    effort = _effort_of(current) if by_effort else None
     seen = set()
     for attempt, status, spec in reversed(rows):
         if status in NEUTRAL:
             continue
         if spec and canonical(spec, registry) != model:
+            break
+        if effort is not None and _effort_of(spec or current) != effort:
             break
         if status not in FAILED:
             break
@@ -439,13 +505,19 @@ def _decide(plan: Path, tdir: Path, args, after: int):
     if not current or current in ('-', 'UNASSIGNED'):
         return (), (), '', 0
     registry = registry_models()
-    streak = failed_streak(attempt_rows(tdir), current, registry)
+    step = _effort_step(plan)
+    streak = failed_streak(attempt_rows(tdir), current, registry, by_effort=step)
     if streak < after:
         return MARKERS, (), '', 0
     target, why = stronger(current, load_pools(plan / 'fractal-routing.json'), registry)
+    # Only once no higher tier has a model. A tier-up is still the stronger move.
+    if target is None and step:
+        target = _next_effort_spec(current)
     if target:
         writes = (('escalation.next', target + '\n'),) if args.check else ()
         return ('escalation.stop', 'split.suggested'), writes, target, 0
+    if step:
+        why = '%s. The highest effort this pairing accepts was tried as well' % why
     split = ('%s failed %d attempts on %s, and %s. Another attempt on the same model rarely passes, '
              'so split the task into smaller ones, or retry it with an explicit --dwarf <spec>.\n'
              % (args.task, streak, current, why))

@@ -13,6 +13,11 @@
 #                                  (claude, openclaude, codex; custom prompt only)
 #   any role: [--no-ripwire] [--ripwire-query-file <requirements>]
 #   any role: [--timeout <seconds>]   0 disables the watchdog
+#   forge-dispatch.sh efforts --spec <spec>
+#                                  the efforts this pairing accepts, weakest first, one per
+#                                  line. Prints nothing when the pairing has no ladder or no
+#                                  effort dial. Exit 2 for an unknown alias. Never dispatches,
+#                                  never needs the harness installed, and never writes a file.
 #
 # Timeout precedence: --timeout, then FORGE_TIMEOUT (both used as given, 0 included),
 #   then the registry row's optional 5th `timeout` column, then the built-in 2700 (45m).
@@ -103,6 +108,62 @@ known_harness() {
   case "$1" in codex|claude|openclaude|opencode|antigravity|grok) return 0 ;; *) return 1 ;; esac
 }
 
+# Read-only listing of the efforts a pairing accepts. Resolves alias, default harness and the
+# effort column the same way a dispatch does, then prints. No harness binary, no run dir.
+efforts_cmd() { # efforts_cmd --spec <spec>
+  if [ "${1:-}" != --spec ] || [ $# -ne 2 ]; then
+    die "usage: forge-dispatch.sh efforts --spec <spec>"
+  fi
+  local SPEC="$2" ALIAS="" REST="" H="" HARNESS="" ROW="" MODEL="" CEILING="" timeout=""
+  local LADDER="" ALLOWED="" top="" w="" pad=""
+  ALIAS="${SPEC%%:*}"
+  REST="${SPEC#*:}"
+  if [ "$REST" = "$SPEC" ]; then HARNESS=""
+  else
+    H="${REST#*:}"
+    if [ "$H" = "$REST" ]; then HARNESS=""; else HARNESS="$H"; fi
+  fi
+  [ -n "$ALIAS" ] || die "empty alias in spec '$SPEC'"
+  if [ -n "$HARNESS" ] && ! known_harness "$HARNESS"; then
+    die "unknown harness '$HARNESS' (expected codex, claude, openclaude, opencode, antigravity or grok)"
+  fi
+  ROW="$(lookup "$ALIAS" "$HARNESS")"
+  if [ -z "$ROW" ]; then
+    # A known alias with no row for this harness is a literal model id on a dispatch, and a
+    # literal has no effort dial. An alias the registry does not know at all is an error.
+    if [ -n "$(awk -F'\t' -v a="$ALIAS" '!/^#/ && NF >= 3 && $1 == a { print "yes"; exit }' "$REGISTRY")" ]; then
+      exit 0
+    fi
+    die "'$ALIAS' is not a known alias"
+  fi
+  IFS=$'\t' read -r HARNESS MODEL CEILING timeout <<< "$ROW"
+  LADDER="$(ladder_for "$HARNESS")"
+  [ -n "$LADDER" ] || exit 0          # opencode and anything else with no effort dial
+  case "$CEILING" in
+    -|none) exit 0 ;;
+    "<="*)
+      top="${CEILING#<=}"
+      for w in $LADDER; do
+        printf '%s\n' "$w"
+        [ "$w" = "$top" ] && break
+      done
+      ;;
+    *)
+      # The list form, weakest first. Ladder order is that order; a word the ladder does
+      # not know is still accepted (dispatch keeps it) and is printed after those.
+      ALLOWED="$(printf '%s' "$CEILING" | tr ',' ' ')"
+      pad=" $ALLOWED "
+      for w in $LADDER; do
+        case "$pad" in *" $w "*) printf '%s\n' "$w" ;; esac
+      done
+      for w in $ALLOWED; do
+        case " $LADDER " in *" $w "*) ;; *) printf '%s\n' "$w" ;; esac
+      done
+      ;;
+  esac
+  exit 0
+}
+
 # --- doctor -------------------------------------------------------------------
 doctor() {
   local rc=0 h bin
@@ -127,7 +188,8 @@ EOT
   return $rc
 }
 
-[ $# -ge 1 ] || die "usage: forge-dispatch.sh <doctor|dwarf|qa|planner> [spec] [options]"
+[ $# -ge 1 ] || die "usage: forge-dispatch.sh <doctor|dwarf|qa|planner|efforts> [spec] [options]"
+if [ "$1" = efforts ]; then shift; efforts_cmd "$@"; exit $?; fi
 ROLE="$1"; shift
 if [ "$ROLE" = report ]; then python3 "$RUNTIME" report "${1:?report needs a run directory}"; exit $?; fi
 PREFLIGHT=0
