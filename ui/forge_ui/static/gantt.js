@@ -20,10 +20,13 @@ window.ForgeGantt = (() => {
     const X = RM.execModel(run, { now, ghosts });
     const all = X.items.concat(X.extra);
     if (!all.length) { const p = document.createElement('p'); p.className = 'fg-empty'; p.textContent = 'Nothing has run yet: no attempt timings are recorded for this run.'; container.append(p); return; }
-    const width = Math.max(640, container.clientWidth || 900), plot = width - LABEL - 12;
-    const xs = t => LABEL + (t - X.t0) / (X.t1 - X.t0) * plot;
-    const laneOf = it => typeof it.lane === 'number' ? it.lane : X.lanes + (it.kind === 'verification' ? 0 : X.finishLanes.length > 1 ? 1 : 0);
+    const laneOf = it => typeof it.lane === 'number' ? it.lane : X.lanes + Number(String(it.lane).slice(1));
     const rows = X.lanes + X.finishLanes.length;
+    const laneName = i => { const fl = X.finishLanes[i - X.lanes]; return i < X.lanes ? `lane ${i + 1}${i >= X.cap ? ' !' : ''}` : fl.label || fl.name.toLowerCase(); };
+    // the label column fits the longest row name ("verify · <lane>" can be long)
+    const lw = Math.max(LABEL, Math.ceil(12 + 6.6 * Math.max(...Array.from({ length: rows }, (_, i) => laneName(i).length))));
+    const width = Math.max(640, container.clientWidth || 900), plot = width - lw - 12;
+    const xs = t => lw + (t - X.t0) / (X.t1 - X.t0) * plot;
     const height = TOP + rows * LANE + 8;
     const root = svg('svg', { class: 'gantt', viewBox: `0 0 ${width} ${height}`, width, height, role: 'group', 'aria-label': 'Attempts on wall-clock time' });
     for (const r of X.ruler) {
@@ -32,8 +35,8 @@ window.ForgeGantt = (() => {
     }
     for (let i = 0; i < rows; i++) {
       const over = i < X.lanes && i >= X.cap, y = TOP + i * LANE;
-      svg('rect', { class: 'gt-lane' + (over ? ' gt-over' : ''), x: LABEL, y: y + 2, width: plot, height: LANE - 4, rx: 4 }, root);
-      const name = i < X.lanes ? `lane ${i + 1}${over ? ' !' : ''}` : X.finishLanes[i - X.lanes].name.toLowerCase();
+      svg('rect', { class: 'gt-lane' + (over ? ' gt-over' : ''), x: lw, y: y + 2, width: plot, height: LANE - 4, rx: 4 }, root);
+      const name = laneName(i);
       const t = svg('text', { class: 'gt-lane-label' + (over ? ' gt-over' : ''), x: 6, y: y + LANE / 2 + 4 }, root); t.textContent = name;
       if (over) svg('title', {}, t).textContent = `More attempts overlapped than --max-parallel ${X.cap} allows: separate run invocations, or a resumed run.`;
     }
@@ -41,19 +44,21 @@ window.ForgeGantt = (() => {
     for (const it of all) {
       const y = TOP + laneOf(it) * LANE + 5, x = xs(it.start), w = Math.max(3, xs(it.end) - x);
       const future = replay !== null && it.start > replay;
-      const g = svg('g', { class: `gt-item ${stc(it.status)}${it.ghost ? ' gt-ghost' : ''}${future ? ' gt-future' : ''}${critSet.has(it.task) && !it.ghost ? ' gt-crit' : ''}${sel && (sel.exec === it.id || (sel.kind === 'task' && sel.id === it.task)) ? ' gt-sel' : ''}`, tabindex: 0, role: 'button' }, root);
+      const picked = sel && (sel.exec === it.id || (sel.kind === 'task' && sel.id === it.task) || (sel.kind === 'verification' && it.kind === 'verification'));
+      const g = svg('g', { class: `gt-item ${stc(it.status)}${it.ghost ? ' gt-ghost' : ''}${it.approx ? ' gt-approx' : ''}${it.rerun ? ' gt-rerun' : ''}${future ? ' gt-future' : ''}${critSet.has(it.task) && !it.ghost ? ' gt-crit' : ''}${picked ? ' gt-sel' : ''}`, tabindex: 0, role: 'button' }, root);
       svg('rect', { class: 'gt-box', x, y, width: w, height: LANE - 10, rx: 3 }, g);
       for (const s of it.segs) {
         const sx = xs(s.start), sw = Math.max(1.5, xs(s.end ?? it.end) - sx);
         svg('rect', { class: `gt-seg gt-${s.role} ${stc(s.status)}`, x: sx, y: y + LANE - 17, width: sw, height: 5, rx: 1.5 }, g);
       }
-      const label = it.kind === 'verification' ? 'verify' : it.kind === 'review' ? 'review' : `${it.task}${it.attempt ? ' A' + it.attempt : ''}`;
+      const label = it.vlane ? (it.rerun ? `rerun ${it.k - 1}` : `run ${it.k}`) : it.kind === 'verification' ? (it.rerun ? 'rerun' : 'verify') : it.kind === 'review' ? 'review' : `${it.task}${it.attempt ? ' A' + it.attempt : ''}`;
       if (w > label.length * 6.4 + 6) svg('text', { class: 'gt-label', x: x + 4, y: y + 11 }, g).textContent = label;
-      svg('title', {}, g).textContent = `${label} · ${it.status} · ${RM.fmtDur(it.end - it.start)}${it.ghost ? ' (projected)' : ''}`;
+      svg('title', {}, g).textContent = it.title ? `${it.title} · ${it.status} · ${RM.fmtDur(it.end - it.start)}`
+        : `${label} · ${it.status} · ${RM.fmtDur(it.end - it.start)}${it.ghost ? ' (projected)' : ''}`;
       const pick = () => {
         if (!onSelect) return;
         if (it.kind === 'review') onSelect({ kind: 'final', name: it.review });
-        else if (it.kind === 'verification') onSelect({ kind: 'execution', task: null, exec: it.id });
+        else if (it.kind === 'verification') onSelect(it.vlane || it.approx ? { kind: 'verification' } : { kind: 'execution', task: null, exec: it.id });
         else if (it.ghost || String(it.id).startsWith('span:')) onSelect({ kind: 'task', id: it.task });
         else onSelect({ kind: 'execution', task: it.task, id: it.task, exec: it.id });
       };

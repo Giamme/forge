@@ -375,3 +375,74 @@ test('a live execution model keeps its time axis while every block still fits', 
   const X3 = RM.execModel(run(), { now: X1.t1 + 10, scale: { t0: X1.t0, t1: X1.t1 } });
   assert.ok(X3.t1 > X1.t1, 'a block past the axis rescales it');
 });
+
+// verification lanes and runs on the finish rows (#33)
+const VEXEC = (started, dur, extra = {}) => ({ id: 'verification-1', role: 'verification', started, ended: dur === null ? null : started + dur,
+  state: dur === null ? 'running' : 'done', exit_code: dur === null ? null : 1, ...extra });
+const vlane = (name, state, runs, extra = {}) => ({ name, state, group: null, first: false, runs: runs.map(([kind, s, e, exit], i) =>
+  ({ k: i + 1, kind, started: s === null ? null : T0 + s, ended: e === null ? null : T0 + e, exit })), ...extra });
+function lanesRun(state, lanes) {
+  return run({ timeline: { started: T0, verifications: [VEXEC(T0 + 800, state === 'running' ? null : 200)] },
+    verification: { status: 'PASS', state, mode: 'lanes', runs: [], lanes } });
+}
+
+test('lanes mode: a finish row per lane, an item per run at its time, a running lane grows to now', () => {
+  const r = lanesRun('running', [
+    vlane('unit', 'flaky', [['initial', 810, 840, 1], ['rerun', 850, 870, 0]], { group: 'db', first: true }),
+    vlane('e2e', 'running', [['initial', 810, null, null]])]);
+  const X = RM.execModel(r, { now: T0 + 900 });
+  assert.deepEqual(X.finishLanes.map(f => f.label), ['verify · unit', 'verify · e2e']);
+  const v = X.extra.filter(e => e.kind === 'verification');
+  assert.deepEqual(v.map(e => [e.id, e.lane, e.start - T0, e.end - T0, e.status, !!e.rerun]),
+    [['vlane:unit:1', 'f0', 810, 840, 'FAIL', false], ['vlane:unit:2', 'f0', 850, 870, 'FLAKY', true],
+     ['vlane:e2e:1', 'f1', 810, 900, 'RUNNING', false]]);
+  assert.equal(v[0].title, 'verify · unit · run 1 · group db · runs first');
+  assert.equal(v[1].title, 'verify · unit · rerun 1 · group db · runs first');
+  assert.ok(!X.extra.some(e => e.id === 'verification-1'), 'the lanes stand for their execution');
+});
+
+test('single mode: runs back to back from the execution start, approximate; no runs is one box', () => {
+  const runs = [{ n: 1, kind: 'initial', exit: 1, duration_s: 60, tree_changed: false }, { n: 2, kind: 'rerun', exit: 0, duration_s: 45, tree_changed: false }];
+  const r = run({ timeline: { started: T0, verifications: [VEXEC(T0 + 800, 120, { exit_code: 0 })] },
+    verification: { status: 'PASS', state: 'done', mode: 'single', runs, lanes: null } });
+  const X = RM.execModel(r, { now: T0 + 1000 });
+  assert.deepEqual(X.finishLanes.map(f => f.name), ['VERIFY']);
+  assert.deepEqual(X.extra.map(e => [e.start - T0, e.end - T0, e.status, e.approx, !!e.rerun]), [[800, 860, 'FAIL', true, false], [860, 905, 'PASS', true, true]]);
+  assert.match(X.extra[1].title, /approximate placement/);
+  const box = RM.execModel(run({ timeline: { started: T0, verifications: [VEXEC(T0 + 800, 120, { exit_code: 0 })] },
+    verification: { status: 'PASS', state: 'done', mode: 'single', runs: [], lanes: null } }), { now: T0 + 1000 }).extra;
+  assert.deepEqual(box.map(e => [e.id, e.start - T0, e.end - T0, e.status, !!e.approx]), [['verification-1', 800, 920, 'PASS', false]]);
+});
+
+test('a run with no exit is UNKNOWN once ended and RUNNING while it runs, never FAIL', () => {
+  const ended = lanesRun('done', [vlane('unit', 'interrupted', [['initial', 810, 830, null]])]);
+  assert.equal(RM.execModel(ended, { now: T0 + 2000 }).extra[0].status, 'UNKNOWN');
+  const going = lanesRun('running', [vlane('unit', 'running', [['initial', 810, null, null]])]);
+  assert.equal(RM.execModel(going, { now: T0 + 900 }).extra[0].status, 'RUNNING');
+  const single = run({ timeline: { started: T0, verifications: [VEXEC(T0 + 800, 100, { exit_code: null })] },
+    verification: { status: null, state: 'done', mode: 'single', runs: [{ n: 1, kind: 'initial', exit: null, duration_s: 90 }], lanes: null } });
+  assert.equal(RM.execModel(single, { now: T0 + 2000 }).extra[0].status, 'UNKNOWN');
+  assert.deepEqual(RM.verifyLeds(single), ['UNKNOWN']);
+  assert.equal(RM.stateAt(single, T0 + 950).verification, 'UNKNOWN');
+});
+
+test('finishState reads RUNNING while the verification runs, whatever a stale status says', () => {
+  const r = lanesRun('running', [vlane('unit', 'running', [['initial', 810, null, null]])]);
+  assert.equal(r.verification.status, 'PASS');
+  const V = RM.finishState(r).verification;
+  assert.deepEqual([V.status, V.mode, V.lanes, V.reruns], ['RUNNING', 'lanes', [{ name: 'unit', state: 'running' }], 0]);
+  assert.equal(RM.finishState(lanesRun('done', [vlane('unit', 'pass', [['initial', 810, 830, 0]])])).verification.status, 'PASS');
+});
+
+test('replay: a lane is pending before its run, running during it, its own state after', () => {
+  const r = lanesRun('done', [vlane('unit', 'flaky', [['initial', 810, 840, 1], ['rerun', 850, 870, 0]]), vlane('e2e', 'fail', [['initial', 815, 860, 2]])]);
+  const at = t => RM.stateAt(r, T0 + t).lanes.map(l => l.status);
+  assert.deepEqual(at(805), ['PENDING', 'PENDING']);
+  assert.deepEqual(at(820), ['RUNNING', 'RUNNING']);
+  assert.deepEqual(at(845), ['FAIL', 'RUNNING']);
+  assert.deepEqual(at(880), ['FLAKY', 'FAIL']);
+  assert.deepEqual(RM.verifyLeds(r, RM.stateAt(r, T0 + 820)), ['RUNNING', 'RUNNING']);
+  assert.deepEqual(RM.verifyLeds(r, RM.stateAt(r, T0 + 805)), [null, null]);
+  assert.deepEqual(RM.verifyLeds(r), ['FLAKY', 'FAIL']);
+  assert.equal(RM.stateAt(run(), T0).lanes, null);
+});

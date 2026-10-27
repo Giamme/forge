@@ -750,6 +750,7 @@ th:hover .th-sort, .th-sort.on { color: var(--ink); }
 .gt-item.gt-sel .gt-box { stroke: var(--route); stroke-width: 2.5; }
 .gt-item.gt-crit .gt-box { stroke-width: 2.4; }
 .gt-ghost .gt-box { fill-opacity: .04; stroke-dasharray: 4 3; }
+.gt-item.gt-approx .gt-box { stroke-dasharray: 2 2; }   /* a verification run placed from durations, not from its own times */
 .gt-future { opacity: .3; }
 .gt-seg { fill: var(--st, var(--lamp-off)); }
 .gt-seg.gt-dwarf { fill-opacity: .55; }
