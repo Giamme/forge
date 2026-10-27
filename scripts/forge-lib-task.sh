@@ -568,7 +568,26 @@ report_guard_notes() { # report_guard_notes <plan>
 
 report_verify_notes() { # report_verify_notes <dir holding verification.*>
   local d="$1"
-  if [ -s "$d/verification.flaky" ]; then
+  if [ -s "$d/verification.lanes.json" ]; then
+    # Lanes: per lane, from the runner's own record
+    python3 - "$d" <<'PY'
+import json, os, sys
+d = sys.argv[1]
+try:
+    with open(os.path.join(d, 'verification.lanes.json'), encoding='utf-8') as fh:
+        lanes = [l for l in json.load(fh).get('lanes') or [] if isinstance(l, dict) and l.get('name')]
+except (OSError, ValueError, AttributeError):
+    sys.exit(0)
+lines = ['FLAKY: lane %s failed once and passed on rerun' % l['name'] for l in lanes if l.get('state') == 'flaky']
+lines += ['known failures only: lane %s' % l['name'] for l in lanes if l.get('state') == 'known']
+failed = [l['name'] for l in lanes if l.get('state') == 'fail']
+if failed:
+    lines.append('verification failed in lane%s %s: read %s' % ('s' if len(failed) > 1 else '', ', '.join(failed),
+                                                                 os.path.join(d, 'verification.log')))
+if lines:
+    print('\n'.join(lines) + '\n')
+PY
+  elif [ -s "$d/verification.flaky" ]; then
     echo "FLAKY verification: the command failed once and passed on rerun — read $d/verification.log"
     echo "  before trusting this result; an intermittent failure can be a real bug."
     echo

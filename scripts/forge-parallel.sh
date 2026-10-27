@@ -1389,7 +1389,8 @@ verify_result_body() { # plan, checkout, artifact directory
   forge_metric_phase verification
   repo="$(cat "$plan/repo")"
   rm -f "$out/verification.flaky" "$out/verification.retry.log" "$out/verification.coverage.txt" \
-    "$out/verification.runs.tsv" "$out"/verification.run-*.log "$out/verification.commit"
+    "$out/verification.runs.tsv" "$out"/verification.run-*.log "$out/verification.commit" \
+    "$out/verification.lanes.json" "$out"/verification.lane.*.log
   # The commit being verified, named before any early return, so every outcome (FAIL and
   # UNVERIFIED included) can be joined to the code it judged.
   git -C "$wt" rev-parse HEAD > "$out/verification.commit" 2>/dev/null || rm -f "$out/verification.commit"
@@ -1411,6 +1412,14 @@ verify_result_body() { # plan, checkout, artifact directory
     echo FAIL > "$out/verification.status"
     note "verification checkout has source changes outside its commit"; return 1
   fi
+  case "$vsource" in
+    lanes:*)
+      if [ "$jev_loaded" = 1 ] && forge_jev_active tests; then
+        note "jev: flake triage applies to a single verify command; lanes rerun their own failures"
+      fi
+      verify_lanes_run "$plan" "$wt" "$out" "${vsource#*$'\t'}" "$vretries"
+      return $? ;;
+  esac
   # Only when nothing is configured: ask Jev to name a command that actually exists
   # in the repo. Its exit code, not its stdout text, decides whether a judgment was
   # produced — any non-zero exit (no key, disabled, nothing suitable, a traceback)

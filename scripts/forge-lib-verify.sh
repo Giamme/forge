@@ -88,3 +88,74 @@ verify_coverage_report() { # verify_coverage_report <checkout> <command> <out-fi
   fi
   return 0
 }
+
+# Lanes mode of verify_result: the lane runner (forge-verify.py) through the same stoppable
+# path as a single command, then verification.* from what it wrote. No whole-command rerun
+# and no Jev triage: the runner reruns a failed lane itself. Returns 0 pass, 1 fail, 130
+# interrupted.
+verify_lanes_run() { # verify_lanes_run <plan> <checkout> <out> <lanes dir> <retries>
+  local plan="$1" wt="$2" out="$3" dir="$4" retries="$5" parallel rc=0 cmd fpcmd
+  parallel="$(cat "$plan/verify_parallel" 2>/dev/null)"
+  case "$parallel" in ''|*[!0-9]*) parallel=3 ;; esac
+  [ "$retries" -le 9 ] 2>/dev/null || retries=9          # the runner takes 0 to 9
+  python3 "$SKILL_DIR/scripts/forge-verify.py" lanes --lanes-dir "$dir" 2>/dev/null \
+    | awk -F'\t' '{ print $1 ": " $3 }' > "$out/verification.command"
+  verify_coverage_report "$wt" "$(verify_command_for "$plan" "$(cat "$plan/repo")")" "$out/verification.coverage.txt"
+  forge_fingerprint "$wt" > "$out/verification.fingerprint" || return 1
+  # The runner judges "a lane changed the checkout" by forge's own fingerprint.
+  fpcmd="source $(printf %q "$SKILL_DIR/scripts/forge-artifact.sh") && forge_fingerprint ."
+  cmd="exec python3 $(printf %q "$SKILL_DIR/scripts/forge-verify.py") run --checkout $(printf %q "$wt")"
+  cmd="$cmd --out $(printf %q "$out") --lanes-dir $(printf %q "$dir") --parallel $parallel --retries $retries"
+  cmd="$cmd --fingerprint-cmd $(printf %q "$fpcmd")"
+  verify_stopped "$out" && return 130
+  # The runner stops its own lanes (TERM, then KILL 5 s later; each lane is a session the
+  # outer KILL cannot reach), so its grace here outlasts that.
+  verify_exec "$wt" "$cmd" "$out/verification.log" 15 || rc=$?
+  [ "$FORGE_VERIFY_STOP" = 1 ] && rc=130
+  echo "$rc" > "$out/verification.exit"
+  # verification.flaky per flaky lane; then each failed lane's last 200 lines under the summary
+  python3 - "$out" <<'PY'
+import json, os, sys
+out = sys.argv[1]
+try:
+    with open(os.path.join(out, 'verification.lanes.json'), encoding='utf-8') as fh:
+        doc = json.load(fh)
+except (OSError, ValueError):
+    sys.exit(0)
+lanes = [l for l in doc.get('lanes') or [] if isinstance(l, dict) and l.get('name')]
+flaky = [l for l in lanes if l.get('state') == 'flaky']
+if flaky:
+    with open(os.path.join(out, 'verification.flaky'), 'w', encoding='utf-8') as fh:
+        fh.write('lanes=%s\n' % ','.join(l['name'] for l in flaky))
+        for l in flaky:
+            runs = l.get('runs') or [{}]
+            fh.write('%s.first_exit=%s\n%s.retries_used=%d\n' % (l['name'], runs[0].get('exit'), l['name'], len(runs) - 1))
+
+def tail(name, lines=200, size=256 << 10):
+    try:
+        with open(os.path.join(out, os.path.basename(name or '')), 'rb') as fh:
+            fh.seek(max(0, os.fstat(fh.fileno()).st_size - size))
+            return fh.read().decode('utf-8', 'replace').splitlines()[-lines:]
+    except OSError:
+        return []
+
+with open(os.path.join(out, 'verification.log'), 'a', encoding='utf-8') as fh:
+    for l in lanes:
+        if l.get('state') != 'fail':
+            continue
+        runs = l.get('runs') or []
+        lines = tail(runs[-1].get('log') if runs else l.get('log'))
+        fh.write('\n== lane %s failed (exit %s); the last %d lines of its output:\n' % (l['name'], l.get('exit'), len(lines)))
+        fh.write(''.join(line + '\n' for line in lines))
+PY
+  case "$rc" in
+    0) echo PASS > "$out/verification.status" ;;
+    130) verify_mark_interrupted "$out"; return 130 ;;
+    *) echo FAIL > "$out/verification.status" ;;
+  esac
+  local flaky; flaky="$(sed -n 's/^lanes=//p' "$out/verification.flaky" 2>/dev/null)"
+  [ -z "$flaky" ] || note "FLAKY: lane ${flaky//,/, lane } failed once and passed on rerun; this is not a clean pass"
+  [ "$rc" = 0 ] && return 0
+  note "verification failed ($( [ "$rc" = 2 ] && echo 'the lane runner refused its configuration' || echo 'see the lanes below' )): $out/verification.log"
+  return 1
+}

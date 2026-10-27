@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import signal
 import subprocess
+import sys
 import time
 import unittest
 
@@ -238,6 +239,26 @@ class InterruptTests(unittest.TestCase):
         p = self.plan()
         r = self.run_script('forge-parallel.sh', 'run', p, '--verify', 'mv .git .git.gone; exit 3')
         self.assertEqual(self.text(p, 'verification.exit'), '3', r.stdout)
+
+    def test_a_graceful_control_stop_ends_the_run_without_verifying(self):
+        # a's dwarf is busy when the stop comes: it finishes and merges; b never starts.
+        self.scenario({'a.dwarf.1': {'sleep': 3}})
+        p = self.plan()
+        ran = self.root / 'verify-ran'
+        run = self.start(p, '--verify', f'touch {ran}')
+        self.wait_for(lambda: 'dwarf' in self.calls(), what='the dwarf to start')
+        stop = subprocess.run([sys.executable, str(SCRIPTS / 'forge-control.py'), 'stop', str(p)],
+                              capture_output=True, text=True, env=self.env, timeout=60)
+        self.assertEqual(stop.returncode, 0, stop.stderr)
+        self.assertEqual(self.finish(run, 60), 130, (self.root / 'run.out').read_text())
+        self.assertFalse(ran.exists(), 'the verify command ran')
+        results = (p / 'results.tsv').read_text()
+        self.assertIn('a\tMERGED', results)
+        self.assertIn('b\tPENDING', results)
+        out = (self.root / 'run.out').read_text()
+        self.assertIn('stopped by forge control stop; 1 task(s) not started', out)
+        self.assertIn('verification was skipped', out)
+        self.assertLockFree(p)
 
     def test_a_failing_verify_is_still_rerun_when_nothing_interrupts(self):
         self.scenario({})

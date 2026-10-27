@@ -43,7 +43,7 @@ WATCHED = (
     'verification.status', 'verification.exit', 'verification.command', 'verification.log',
     'verification.retry.log', 'verification.flaky', 'verification.coverage.txt',
     'verification.jev.json', 'verification.runs.tsv', 'verification.commit', 'verification.fingerprint',
-    'results.tsv',
+    'verification.lanes.json', 'results.tsv',
 )
 
 _VERDICT = re.compile(r'^FORGE_VERDICT: (PASS|FAIL)([ \t]+(—|–|-)( .*)?)?[ \t]*$')
@@ -544,8 +544,11 @@ def verification_events(attempt: Path, out: Path, rc, prov: dict, src: str = 'li
     repo = first_line(plan / 'repo')
     command = first_line(out / 'verification.command') if made('verification.command') else None
     jev = read_json(out / 'verification.jev.json') if made('verification.jev.json') else None
+    lanes = made('verification.lanes.json')
     if not command:
         source = None
+    elif lanes:
+        source = 'lanes:plan' if (plan / 'verify.d').is_dir() else 'lanes:repo'
     elif (plan / 'verify_cmd').exists():
         source = 'flag'
     elif jev and jev.get('discovered'):
@@ -559,9 +562,12 @@ def verification_events(attempt: Path, out: Path, rc, prov: dict, src: str = 'li
         for line in (text(out / 'verification.runs.tsv') or '').splitlines():
             cells = line.split('\t')
             if len(cells) >= 5 and cells[0].isdigit():
-                runs.append(dict(n=int(cells[0]), kind=cells[1], exit=as_int(cells[2]),
-                                 tree_changed=cells[3] == '1', duration_s=as_int(cells[4]),
-                                 log=cells[5] if len(cells) > 5 else None))
+                run = dict(n=int(cells[0]), kind=cells[1], exit=as_int(cells[2]),
+                           tree_changed=cells[3] == '1', duration_s=as_int(cells[4]),
+                           log=cells[5] if len(cells) > 5 else None)
+                if len(cells) >= 8:          # a lane's run: n kind exit tree_changed duration_s log lane started
+                    run['lane'] = cells[6] or None
+                runs.append(run)
     elif command and made('verification.log'):
         runs.append(dict(n=1, kind='initial', exit=as_int(first_line(out / 'verification.exit')),
                          tree_changed=None, duration_s=None, log='verification.log'))
