@@ -1175,7 +1175,7 @@ do_retry() {
       --dwarf) NEWDWARF="${2:?--dwarf needs a spec}"; shift 2 ;;
       --yolo-dwarf) touch "$PLAN/yolo_dwarf"; shift ;;
       --yolo-qa)    touch "$PLAN/yolo_qa"; shift ;;
-      --verify)     printf '%s' "${2:?--verify needs a command}" > "$PLAN/verify_cmd"; shift 2 ;;
+      --verify)     printf '%s' "${2:?--verify needs a command}" > "$PLAN/verify_cmd"; rm -rf "$PLAN/verify.d"; shift 2 ;;
       --setup)      printf '%s' "${2:?--setup needs a command}" > "$PLAN/setup_cmd"; shift 2 ;;
       *)
         # `case` is not a loop, so `continue` here belongs to the enclosing while.
@@ -1214,6 +1214,9 @@ do_retry() {
   fi
   [ "${FORGE_RIPWIRE:-}" != off ] || touch "$PLAN/no_ripwire"
   dependencies_ready "$PLAN" "$id" || { write_results "$PLAN"; return 5; }
+  local vrepo vcheckout; vrepo="$(cat "$PLAN/repo" 2>/dev/null)"; vcheckout="$(cat "$PLAN/wt_root")/_integration"
+  [ -d "$vcheckout" ] || vcheckout="$vrepo"
+  verify_lanes_check "$PLAN" "$vrepo" "$vcheckout"
   [ ! -f "$PLAN/no_ripwire" ] || export FORGE_RIPWIRE=off
   preflight_plan "$PLAN" || return $?
   /bin/bash "$SKILL_DIR/scripts/forge-install-ripwire.sh" || true
@@ -1313,8 +1316,8 @@ verify_result() ( # plan, checkout, artifact directory
   if [ -f "$SKILL_DIR/scripts/forge-jev-options.sh" ]; then
     source "$SKILL_DIR/scripts/forge-jev-options.sh" 2>/dev/null && jev_loaded=1
   fi
-  if [ -s "$plan/verify_cmd" ]; then cmd="$(cat "$plan/verify_cmd")"
-  elif [ -s "$repo/.forge/verify" ]; then cmd="$(cat "$repo/.forge/verify")"; fi
+  local vsource; vsource="$(verify_source_for "$plan" "$repo")"
+  case "$vsource" in command:*) cmd="$(cat "${vsource#*$'\t'}")" ;; esac
   if [ "$(forge_tree "$wt")" != "$(git -C "$wt" rev-parse HEAD^{tree})" ]; then
     echo FAIL > "$out/verification.status"
     note "verification checkout has source changes outside its commit"; return 1
@@ -1531,7 +1534,7 @@ do_run() (
       --max-parallel) MAXP="${2:?}"; shift 2 ;;
       --yolo-dwarf)   touch "$PLAN/yolo_dwarf"; shift ;;
       --yolo-qa)      touch "$PLAN/yolo_qa"; shift ;;
-      --verify)     printf '%s' "${2:?--verify needs a command}" > "$PLAN/verify_cmd"; shift 2 ;;
+      --verify)     printf '%s' "${2:?--verify needs a command}" > "$PLAN/verify_cmd"; rm -rf "$PLAN/verify.d"; shift 2 ;;
       --setup)        printf '%s' "${2:?--setup needs a command}" > "$PLAN/setup_cmd"; shift 2 ;;
       --dry-run)      DRY=1; shift ;;
       *)
@@ -1627,6 +1630,8 @@ do_run() (
   # Also before any model is paid for: what this plan is likely to cost, and which tasks
   # history says may bounce. Advisory, budgeted and silent without history; it never stops a run.
   [ "$FORECAST" = 1 ] && forecast_report "$PLAN"
+  # Invalid verification lanes stop the run here, before any model is paid for.
+  verify_lanes_check "$PLAN" "$REPO" "$int_wt"
   # Say now, before any model is paid for, which suites the verify command will not run.
   verify_coverage_report "$REPO" "$(verify_command_for "$PLAN" "$REPO")" "$PLAN/verification.coverage.txt"
   local sched_rc=0 paused=0 sched_args=()

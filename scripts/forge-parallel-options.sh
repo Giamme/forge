@@ -30,10 +30,32 @@
 #   --escalate-after N      run retry         $PLAN/escalate_after failed attempts on one model before the
 #                                                                  next goes a tier up (default 3; 0 = off)
 #   --final-review SPEC     integrate         $PLAN/final_qa       QA spec for the whole-run review
+#   --verify-lane L=CMD     run retry         $PLAN/verify.d/<L>   a verification lane: name[options]=command,
+#                                                                  options as in a lane file (group=g,first,...);
+#                                                                  repeatable; replaces --verify and the lanes
+#                                                                  of an earlier invocation
+#   --verify-parallel N     run retry integrate  $PLAN/verify_parallel  lanes run at once (1-32, default 3)
 PP_SHIFT=2
 PP_RETRY_FAILED=0
 PP_INFRA_RETRIES=0
 PP_FINAL_REVIEW=""
+PP_LANES_FRESH=0   # the first --verify-lane of an invocation starts a fresh verify.d/
+
+# --verify-lane 'name[opt,opt]=command' -> $PLAN/verify.d/name: the options become the lane
+# file's first line, `#forge: opt opt`, and the command follows, as in a lane file.
+pp_lane() { # pp_lane <plan> <argument>
+  local plan="$1" arg="$2" re='^([A-Za-z0-9][A-Za-z0-9_-]{0,63})(\[([^]]*)\])?=(.*)$'
+  [[ "$arg" =~ $re ]] \
+    || die "--verify-lane '$arg': expected name[options]=command (a name of letters, digits, _ and -, at most 64; options in closed brackets)"
+  local name="${BASH_REMATCH[1]}" opts="${BASH_REMATCH[3]}" cmd="${BASH_REMATCH[4]}"
+  [ -n "${cmd//[[:space:]]/}" ] || die "--verify-lane '$arg': the command is empty"
+  if [ "$PP_LANES_FRESH" = 0 ]; then
+    rm -rf "$plan/verify.d" && mkdir "$plan/verify.d" || die "could not create $plan/verify.d"
+    PP_LANES_FRESH=1
+  fi
+  { [ -z "$opts" ] || printf '#forge: %s\n' "${opts//,/ }"; printf '%s\n' "$cmd"; } > "$plan/verify.d/$name"
+  rm -f "$plan/verify_cmd"
+}
 
 pp_nonneg() { # pp_nonneg <flag> <value>
   case "$2" in ''|*[!0-9]*) die "$1 needs a non-negative integer" ;; esac
@@ -82,6 +104,14 @@ forge_pp_flag() {
       case "$cmd" in run|retry|integrate) ;; *) return 1 ;; esac
       pp_nonneg --verify-retries "${2:-}"
       printf '%s' "$2" > "$plan/verify_retries" ;;
+    --verify-lane)
+      case "$cmd" in run|retry) ;; *) return 1 ;; esac
+      pp_lane "$plan" "${2-}" ;;
+    --verify-parallel)
+      case "$cmd" in run|retry|integrate) ;; *) return 1 ;; esac
+      case "${2:-}" in ''|*[!0-9]*) die "--verify-parallel needs an integer from 1 to 32" ;; esac
+      [ "$2" -ge 1 ] && [ "$2" -le 32 ] || die "--verify-parallel needs an integer from 1 to 32"
+      printf '%s' "$2" > "$plan/verify_parallel" ;;
     --final-review)
       [ "$cmd" = integrate ] || return 1
       PP_FINAL_REVIEW="${2:?--final-review needs a QA spec}"
