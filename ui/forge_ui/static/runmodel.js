@@ -832,6 +832,22 @@
     return out;
   }
 
+  /* ---------- the finding sweep (run --sweep): what it fixed, and each finding's lamp ---------- */
+  // RunDetail.sweep → the run's one-line account, or null when the run was never swept
+  function sweepLine(sweep) {
+    if (!sweep) return null;
+    const tasks = list(sweep.tasks).length, n = num(sweep.findings) || 0, fixed = num(sweep.fixed) || 0;
+    const left = list(sweep.dropped).length + n - fixed;
+    if (!tasks) return `nothing to fix; ${left} left for forge issues`;
+    return `${tasks} fix task${tasks === 1 ? '' : 's'} · ${fixed} of ${n} finding${n === 1 ? '' : 's'} fixed · ${left} left for forge issues`;
+  }
+  // a swept finding's status → its lamp state (style.css .st-*) and what it says
+  const SWEEP_STATES = { fixed: ['pass', 'fixed'], 'not-fixed': ['fail', 'not fixed'], unreported: ['unknown', 'not reported by the review'] };
+  function sweepState(status) {
+    const s = SWEEP_STATES[status];
+    return s ? { lamp: s[0], text: s[1] } : { lamp: 'pending', text: 'its fix task has not merged' };
+  }
+
   /* ---------- Fractal: a task's child tasks as a tidy tree (depth across, siblings down) ---------- */
   // nodes: TaskFractal.nodes (tree order, parent ids); returns {pos: {id: {col, row, depth}}, edges: [[parent, child]], cols, rows}
   function fractalTree(nodes) {
@@ -859,5 +875,5 @@
   return { liveNow, runState, execStatus, matchRun, filterOptions, atlasModel, columns, planModel, finishState,
     finalStatus, runReviewStatus, reviewSinceLine, reviewAt, taskStatus, taskVerdict, attemptStatus, taskParts,
     taskTimes, metricValue, overlap, projectSchedule, execModel, verifyLeds, criticalPath, concurrency, stateAt, timeRange, events, lineage, structureKey, innerKey,
-    fmtDur, alias, basename, weight, searchIndex, searchRank, statusEvents, fractalTree };
+    fmtDur, alias, basename, weight, searchIndex, searchRank, statusEvents, fractalTree, sweepLine, sweepState };
 });

@@ -185,10 +185,11 @@ keep one meaning everywhere (amber running, green merged or passed, red failed, 
   <img src="docs/media/run.png" width="49%" alt="Planned waves: a run's tasks on a 3D plate with dependency cables, finding marks and the finish nodes, between the runs list and the run's inspector."> <img src="docs/media/execution.png" width="49%" alt="Execution: one block per attempt on wall-clock time, failed attempts in red, with the timeline and critical path in the inspector.">
 - **Inspector:** for the run, its timeline, critical path, peak concurrency, what its scheduler
   is doing (dispatching, drained or stopping, how many tasks wait and on what, each pause with its
-  countdown) and finish line; for a task, *Now* (below), its models and routing, escalations,
+  countdown) and finish line, with what the finding sweep fixed and left; for a task, *Now* (below), its models and routing, escalations,
   timings (busy, model time, overhead, queue wait after its dependencies merged), attempts and
-  their executions with the checks each ran, review findings with the gate decision, Clef
-  predictions against outcomes, and its prompts; for one execution, its model, phases, tokens,
+  their executions with the checks each ran, review findings with the gate decision, what the
+  finding sweep did with its findings (or, for a fix task, each finding it took and whether its
+  review found it fixed), Clef predictions against outcomes, and its prompts; for one execution, its model, phases, tokens,
   checks, exact prompt and final message; for the final review, its verdict, findings, report,
   prompt and history.
 - **Now and checks:** a running task's *Now* names the agent at work and its attempt, the phase

@@ -721,6 +721,8 @@ def _task_detail(reader, task, run_id, waves, branches):
     task['gate'] = _gate(reader, prefix + '/qa.gate')
     task['known_issues'] = _nonempty(reader, prefix + '/known_issues.md')
     task['fail_first'] = _fail_first(reader, prefix + '/failfirst.json')
+    task['sweep'] = _sweep_task(reader, prefix, task['status'])
+    task['swept'] = []
     shadows = _shadows(reader, ident, execs)
     task['shadow'] = [entry for entry, _, _ in shadows]
     # What `forge control show` reads of the task. A change there (a write, or a delete: the dir's mtime) moves `updated`,
@@ -729,6 +731,73 @@ def _task_detail(reader, task, run_id, waves, branches):
     for name in _TASK_CONTROLS:
         reader.stat(f'{prefix}/{name}')
     return execs + [item for _, items, _ in shadows for item in items]
+
+
+# --- the finding sweep (run --sweep): its plan, each fix task's findings and what became of them ------------------
+
+_MAX_SWEEP = 200
+_SWEEP_STATES = ('fixed', 'not-fixed', 'unreported')
+
+
+def _text_or_none(value, size=400):
+    return value[:size] if isinstance(value, str) and value else None
+
+
+def _sweep_task(reader, prefix, status):
+    """A fix task's file and findings: each with what its review said (fixed, not-fixed, or unreported when the
+    task merged without a line for it), or None while the task has not merged; None for any other task."""
+    obj = reader.object(prefix + '/sweep.json')
+    if obj is None or not isinstance(obj.get('findings'), list):
+        return None
+    said = {}
+    if status == 'MERGED':
+        for item in list((reader.object(prefix + '/sweep.outcome.json') or {}).get('findings') or []):
+            if isinstance(item, dict) and item.get('status') in _SWEEP_STATES and isinstance(item.get('id'), str):
+                said[item['id']] = (item['status'], _text_or_none(item.get('note')))
+    found = []
+    for item in obj['findings'][:_MAX_SWEEP]:
+        if not isinstance(item, dict) or not isinstance(item.get('id'), str):
+            continue
+        state, note = said.get(item['id'], ('unreported' if status == 'MERGED' else None, None))
+        found.append(dict(id=item['id'], severity=_text_or_none(item.get('severity'), 8),
+                          confidence=_text_or_none(item.get('confidence'), 16), task=_text_or_none(item.get('task'), 200),
+                          location=_text_or_none(item.get('location')),
+                          summary=_text_or_none((item.get('text') or '').split('\n')[0] if isinstance(item.get('text'), str) else None),
+                          status=state, note=note))
+    return dict(file=_text_or_none(obj.get('file')), findings=found)
+
+
+def _sweep(reader, tasks):
+    """RunDetail.sweep: the run's finding sweep, from sweep/plan.json and its fix tasks; None when it was never
+    swept. Also fills each source task's `swept`: its findings a fix task took, and what became of them."""
+    by_id = {task['id']: task for task in tasks}
+    fix = [task for task in tasks if task.get('sweep')]
+    for task in fix:
+        for item in task['sweep']['findings']:
+            source = by_id.get(item['task'])
+            if source is not None and len(source['swept']) < _MAX_SWEEP:
+                source['swept'].append(dict(item, by=task['id']))
+    obj = reader.object('sweep/plan.json')
+    if obj is None:
+        return None
+    found = [item for task in fix for item in task['sweep']['findings']]
+    dropped = []
+    for item in list(obj.get('dropped') or [])[:_MAX_SWEEP]:
+        if not isinstance(item, dict):
+            continue
+        line = item.get('line') if isinstance(item.get('line'), int) and not isinstance(item.get('line'), bool) else None
+        where = _text_or_none(item.get('file'))
+        detail = item.get('detail') if isinstance(item.get('detail'), dict) else {}
+        dropped.append(dict(task=_text_or_none(item.get('task'), 200), severity=_text_or_none(item.get('severity'), 8),
+                            location=f'{where}:{line}' if where and line else where,
+                            summary=_text_or_none((item.get('text') or '').split('\n')[0] if isinstance(item.get('text'), str) else None),
+                            reason=_text_or_none(item.get('reason'), 40),
+                            merged_since=[x for x in list(detail.get('merged_since') or []) if isinstance(x, str)][:20]))
+    at = obj.get('at')
+    return dict(at=float(at) if isinstance(at, (int, float)) and not isinstance(at, bool) else None,
+                severity=_text_or_none(obj.get('severity'), 8), plausible=obj.get('plausible') is True,
+                tasks=[task['id'] for task in fix], findings=len(found),
+                fixed=sum(1 for item in found if item['status'] == 'fixed'), dropped=dropped)
 
 
 # The control files (CONTRACT.md) nothing else here reads. `forge control` appends control.log and writes the task's
@@ -1190,10 +1259,10 @@ def _solo_detail(reader, source):
                 executions=execs, merged_at=None, findings=executions.summary_of(qa),
                 gate=_gate(reader, 'qa.gate'), known_issues=_nonempty(reader, 'known_issues.md'),
                 fail_first=_fail_first(reader, 'failfirst.json'),
-                now=_now(reader, '', execs) if status == 'RUNNING' else None, waiting=None)
+                now=_now(reader, '', execs) if status == 'RUNNING' else None, waiting=None, sweep=None, swept=[])
     result.update(timeline=_timeline(execs, [], []), integration=None, final_review=None, final_reviews=[],
                   deferrals=[], findings_available=findings.available(), fractal=fractal.summary(reader),
-                  scheduler=None)
+                  scheduler=None, sweep=None)
     result.update(tasks=[task], warnings=reader.warnings, truncated=reader.truncated, updated=reader.updated)
     return result
 
@@ -1234,6 +1303,7 @@ def detail(path, source='plan') -> dict:
         reader.stat(name)
     result['scheduler'] = _scheduler(reader)
     _waiting(reader, tasks, result['scheduler'])
+    result['sweep'] = _sweep(reader, tasks)
     run_execs = _run_execs(reader)
     result['verification'] = _verification(reader, result['verification_status'],
                                            [item for item in run_execs if item['role'] == 'verification'])
