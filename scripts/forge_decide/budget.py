@@ -25,12 +25,16 @@ from . import state_dir
 RUN_FILE = 'decide.budget.json'
 RUN_DIR_ENV = 'FORGE_DECIDE_RUN_DIR'
 SKIP = 'budget'
+USD_DIGITS = 9  # stored dollars are rounded so float drift (ten $0.10 charges) cannot miss a cap
 
 
 def _number(value) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return 0
-    return value if math.isfinite(value) and value > 0 else 0
+    try:
+        return value if math.isfinite(value) and value > 0 else 0
+    except OverflowError:  # an integer too big for a float is corrupt, not a huge spend
+        return 0
 
 
 def usage_tokens(usage) -> int:
@@ -70,8 +74,8 @@ def _read(path: Path | None) -> dict:
         return zero
     try:
         data = json.loads(path.read_text())
-        return {'tokens': int(_number(data['tokens'])), 'usd': float(_number(data['usd']))}
-    except (OSError, ValueError, KeyError, TypeError, RecursionError):
+        return {'tokens': int(_number(data['tokens'])), 'usd': round(float(_number(data['usd'])), USD_DIGITS)}
+    except (OSError, ValueError, KeyError, TypeError, OverflowError, RecursionError):
         return zero
 
 
@@ -82,7 +86,7 @@ def _add(path: Path, tokens: int, usd: float) -> None:
             fcntl.flock(lock, fcntl.LOCK_EX)
             total = _read(path)
             total['tokens'] += tokens
-            total['usd'] += usd
+            total['usd'] = round(total['usd'] + usd, USD_DIGITS)
             tmp = path.with_name(f'{path.name}.{os.getpid()}.tmp')
             try:
                 tmp.write_text(json.dumps(total))

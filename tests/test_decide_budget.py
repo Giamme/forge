@@ -114,6 +114,13 @@ class CapTests(BudgetTestCase):
         self.assertEqual(self.check(self.run_dir('b'), daily_usd=1.0), 'budget')
         self.assertIsNone(self.check(self.run_dir('b'), run_usd=1.0))
 
+    def test_usd_cap_is_reached_despite_float_drift(self):
+        run = self.run_dir()
+        for _ in range(10):
+            budget.charge(PRICED, {'total_tokens': 50_000}, run_dir=run, now=NOON)
+        self.assertEqual(self.check(run, run_usd=1), 'budget')
+        self.assertEqual(self.check(self.run_dir('b'), daily_usd=1), 'budget')
+
     def test_local_provider_spends_no_usd(self):
         run = self.run_dir()
         budget.charge({**PRICED, 'local': True}, {'total_tokens': 5_000_000}, run_dir=run, now=NOON)
@@ -139,6 +146,15 @@ class FailOpenTests(BudgetTestCase):
                 self.charge(5, run)
                 self.assertEqual(json.loads(counter.read_text())['tokens'], 5)
                 shutil.rmtree(forge_decide.state_dir() / 'spend', ignore_errors=True)
+
+    def test_oversized_integer_counts_as_zero_and_is_repaired(self):
+        run = self.run_dir()
+        counter = run / budget.RUN_FILE
+        counter.write_text('{"tokens": %s, "usd": 0}' % ('9' * 401))
+        self.assertEqual(budget.spend(run_dir=run, now=NOON)['run'], {'tokens': 0, 'usd': 0.0})
+        self.assertIsNone(self.check(run, run_tokens=1))
+        self.charge(5, run)
+        self.assertEqual(json.loads(counter.read_text())['tokens'], 5)
 
     def test_unwritable_run_dir_skips_without_raising(self):
         missing_parent = self.root / 'file'
