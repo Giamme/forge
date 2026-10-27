@@ -122,16 +122,6 @@ def parser() -> argparse.ArgumentParser:
     test_subset.add_argument('--run-dir', default=None)
     test_subset.add_argument('--max', type=int, default=8)
     test_subset.add_argument('--timeout', type=int, default=600)
-
-    verify_triage = sub.add_parser('verify-triage')
-    verify_triage.add_argument('--repo', required=True)
-    # dest is deliberately not 'command': the top-level subparsers already own that dest
-    # name for the subcommand itself ('verify-triage'), and letting --command collide
-    # with it would overwrite the dispatch key in main().
-    verify_triage.add_argument('--command', dest='verify_command', required=True)
-    verify_triage.add_argument('--log', required=True)
-    verify_triage.add_argument('--json', action='store_true')
-    verify_triage.add_argument('--run-dir')
     return p
 
 
@@ -457,40 +447,6 @@ def cmd_verify_discover(args) -> int:
         print(result['command'])
         print(f"forge jev verify-discover: picked {result['command']!r} "
              f"(confidence {result['confidence']:.2f}, source {result['source']})", file=sys.stderr)
-    return 0
-
-
-def cmd_verify_triage(args) -> int:
-    repo = Path(args.repo)
-    if not repo.is_dir():
-        print(f'forge jev verify-triage: --repo {args.repo!r} is not a directory', file=sys.stderr)
-        return 2
-    try:
-        log_tail = Path(args.log).read_text(errors='replace')
-    except OSError as error:
-        print(f'forge jev verify-triage: cannot read --log {args.log!r}: {error}', file=sys.stderr)
-        return 2
-
-    try:
-        from . import verify
-    except ImportError as error:
-        print('forge jev verify-triage: verify module unavailable (' + str(error) + ')', file=sys.stderr)
-        return 3
-
-    config = load_config()
-    traps = verify.known_traps(repo)
-    result = verify.triage(repo, command=args.verify_command, log_tail=log_tail, traps=traps, config=config,
-                           run_dir=args.run_dir)
-    if result is None:
-        if args.json:
-            print(json.dumps(None))
-        else:
-            print('forge jev verify-triage: no judgment produced', file=sys.stderr)
-        return 3
-    if args.json:
-        print(json.dumps(result, indent=2))
-    else:
-        print(f"{result['verdict']} (confidence {result['confidence']:.2f})")
     return 0
 
 
@@ -883,8 +839,7 @@ def main(argv: list[str] | None = None) -> int:
                        'memory-curate': cmd_memory_curate,
                        'memory-slice': cmd_memory_slice,
                        'memory-stale': cmd_memory_stale,
-                       'verify-discover': cmd_verify_discover,
-                       'verify-triage': cmd_verify_triage})[args.command](args)
+                       'verify-discover': cmd_verify_discover})[args.command](args)
     except SystemExit as exit:
         # argparse exits the process on a usage error; return the code instead so the
         # shim owns exiting and main() stays callable from a test.

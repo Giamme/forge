@@ -1370,9 +1370,6 @@ verify_result_body() { # plan, checkout, artifact directory
   fi
   case "$vsource" in
     lanes:*)
-      if [ "$jev_loaded" = 1 ] && forge_jev_active tests; then
-        note "jev: flake triage applies to a single verify command; lanes rerun their own failures"
-      fi
       verify_lanes_run "$plan" "$wt" "$out" "${vsource#*$'\t'}" "$vretries"
       return $? ;;
   esac
@@ -1432,11 +1429,10 @@ with open(out + "/verification.jev.json", "w") as fh:
   verify_stopped "$out" && return 130
   echo "$before" > "$out/verification.fingerprint"
   if [ "$rc" != 0 ] || [ "$before" != "$after" ]; then
-    local flaked=0 det_retried=0 n_retry=0 rc3 b3 a3
-    # Deterministic rerun first: the rerun itself is the evidence, so unlike Jev's triage
-    # below it needs no model and no recorded trap. A tree change is never retried.
+    local flaked=0 n_retry=0 rc3 b3 a3
+    # The rerun itself is the evidence: it needs no model and no recorded trap. A tree
+    # change is never retried.
     if [ "$rc" != 0 ] && [ "$before" = "$after" ] && [ "$vretries" -gt 0 ]; then
-      det_retried=1
       while [ "$n_retry" -lt "$vretries" ] && [ "$flaked" = 0 ]; do
         n_retry=$((n_retry+1)); rc3=0
         note "verification failed (exit $rc); rerunning to tell a flaky lane from a regression ($n_retry/$vretries)"
@@ -1457,96 +1453,6 @@ with open(out + "/verification.jev.json", "w") as fh:
           note "FLAKY: verification failed once (exit $rc) and passed on rerun — the first failure is in $out/verification.log; this is not a clean pass"
         fi
       done
-    fi
-    # A tree change is never a flake — it stays FAIL immediately, no triage. Beyond
-    # that, act on a "known_flake" verdict ONLY when Forge's own memory already
-    # records a `trap` for this repo: a model alone deciding a failure was a flake
-    # is exactly how a real regression ships, so the verdict needs corroboration
-    # from Forge's own records, not just the model's word.
-    if [ "$rc" != 0 ] && [ "$before" = "$after" ] && [ "$jev_loaded" = 1 ] \
-      && [ "$det_retried" = 0 ] \
-      && forge_jev_active tests \
-      && [ -s "$repo/.forge/memory.md" ] \
-      && awk '/^## Known traps$/{f=1;next} /^## /{f=0} f && NF{c++} END{exit !(c>0)}' "$repo/.forge/memory.md"
-    then
-      local triage_json triage_rc verdict="" confidence="" flake_act="0.90" parsed corroborated=0 retried=0 rc2="" before2 after2
-      triage_json="$(python3 "$SKILL_DIR/scripts/forge-jev.py" verify-triage --repo "$repo" \
-        --command "$cmd" --log "$out/verification.log" --json --run-dir "$out" 2>/dev/null)"
-      triage_rc=$?
-      if [ "$triage_rc" -eq 0 ] && [ -n "$triage_json" ]; then
-        parsed="$(printf '%s' "$triage_json" | python3 -c '
-import json, sys
-try:
-    data = json.load(sys.stdin)
-except ValueError:
-    data = {}
-print(data.get("verdict") or "")
-c = data.get("confidence")
-print(c if c is not None else "")
-print(bool(data.get("corroborated")))
-' 2>/dev/null)"
-        verdict="$(printf '%s\n' "$parsed" | sed -n 1p)"
-        confidence="$(printf '%s\n' "$parsed" | sed -n 2p)"
-        # triage() reports whether a recorded trap shares a distinctive token with this
-        # failure's output. Without that, one flaky test noted months ago would excuse
-        # every future failure in the repo.
-        [ "$(printf '%s\n' "$parsed" | sed -n 3p)" = "True" ] && corroborated=1 || corroborated=0
-        if [ -n "$FORGE_JEV_STATUS_JSON" ]; then
-          local threshold_read
-          threshold_read="$(printf '%s' "$FORGE_JEV_STATUS_JSON" | python3 -c '
-import json, sys
-try:
-    data = json.load(sys.stdin)
-except ValueError:
-    data = {}
-v = (data.get("thresholds") or {}).get("flake_act")
-print(v if v is not None else "0.90")
-' 2>/dev/null)"
-          [ -n "$threshold_read" ] && flake_act="$threshold_read"
-        fi
-        if [ "$verdict" = known_flake ] && [ -n "$confidence" ] && [ "$corroborated" = 1 ] \
-          && awk -v a="$confidence" -v b="$flake_act" 'BEGIN{exit !(a+0 >= b+0)}'
-        then
-          retried=1
-          note "jev: known_flake (confidence $confidence >= $flake_act), corroborated by a recorded trap — retrying once"
-          before2="$(forge_fingerprint "$wt")" || return 1
-          vt0="$(date +%s)"
-          verify_stopped "$out" && return 130
-          verify_exec "$wt" "$cmd" "$out/verification.retry.log" || rc2=$?
-          rc2="${rc2:-0}"
-          after2="$(forge_fingerprint "$wt")" || { verify_stopped "$out" && return 130; return 1; }
-          verify_run_note "$out" jev_retry "$rc2" "$before2" "$after2" verification.retry.log "$vt0"
-          verify_stopped "$out" && return 130
-          if [ "$rc2" = 0 ] && [ "$before2" = "$after2" ]; then
-            flaked=1
-            note "jev: retry passed — treating as a corroborated flake, not a regression"
-          else
-            note "jev: retry also failed (exit $rc2) — keeping FAIL"
-          fi
-        fi
-        python3 -c '
-import json, sys
-out, verdict, confidence, threshold, corroborated, retried, first_rc, retry_rc = sys.argv[1:9]
-path = out + "/verification.jev.json"
-try:
-    with open(path) as fh:
-        data = json.load(fh)
-except (OSError, ValueError):
-    data = {}
-data["triage"] = {
-    "verdict": verdict or None,
-    "confidence": float(confidence) if confidence else None,
-    "flake_act_threshold": float(threshold),
-    "trap_corroboration": corroborated == "1",
-    "retried": retried == "1",
-    "first_exit": int(first_rc),
-    "retry_exit": int(retry_rc) if retry_rc != "" else None,
-}
-with open(path, "w") as fh:
-    json.dump(data, fh, indent=2, sort_keys=True)
-    fh.write("\n")
-' "$out" "$verdict" "$confidence" "$flake_act" "$corroborated" "$retried" "$rc" "$rc2" 2>/dev/null || true
-      fi
     fi
     if [ "$flaked" = 1 ]; then
       echo PASS > "$out/verification.status"

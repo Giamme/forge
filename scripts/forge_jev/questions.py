@@ -154,50 +154,6 @@ def verify_runtime(command: str) -> dict:
     return Score(instructions, criteria)
 
 
-def failure_triage(traps: list[str]) -> dict:
-    """Why did verification fail: a real regression, a known flake, environment, or drift?
-
-    Asked once per verification failure. Getting this wrong ships a regression, so
-    'real_regression' is written as the default reading and 'known_flake' is written to
-    require positive evidence -- a named trap, or an error signature characteristic of
-    flakiness (timeout, ordering, port in use, a race) -- never just "it failed and a
-    rerun might pass."
-    """
-    named = '; '.join(traps) if traps else '(none recorded)'
-    instructions = (
-        'Verification just failed. Given the command that was run, the tail of its '
-        f'output, and this repo\'s known traps (in state -- recorded traps: {named}), '
-        'classify why it failed.'
-    )
-    criteria = {
-        'real_regression': (
-            'DEFAULT reading. The failure looks like the change under test actually '
-            'broke something: a specific assertion, a new error, or a changed output '
-            'tied to the kind of change being verified. Pick this whenever the failure '
-            'is not clearly explained by one of the other options -- an ambiguous '
-            'failure is a regression until proven otherwise.'
-        ),
-        'known_flake': (
-            'Requires positive evidence, not just an unwanted failure: the failing test '
-            'or command is named among the recorded traps above, OR the error signature '
-            'is characteristic of flakiness with no link to the change under test -- a '
-            'timeout, a test-ordering or isolation failure, "address already in use" / '
-            'port in use, or an evident race condition.'
-        ),
-        'environment': (
-            'The failure is about the environment, not the code or a flaky test: a '
-            'missing binary, dependency, credential, network resource, or a disk or '
-            'permission error unrelated to test logic.'
-        ),
-        'generated_drift': (
-            'The failure is a diff against a generated or derived artifact (a lockfile, '
-            'a snapshot, generated bindings or code) that is expected to regenerate, not '
-            'a behavioral failure.'
-        ),
-    }
-    return Choice(instructions, criteria)
-
-
 def drift_prediction(file_path: str) -> dict:
     """Is this file likely to need editing to complete the described task?
 

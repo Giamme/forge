@@ -12,7 +12,7 @@ SCRIPTS = Path(__file__).resolve().parents[1]
 ENDPOINT = 'https://api.typesafe.ai/v1/systemone'
 MODEL = 'jev-latest'
 CAPABILITIES = ('routing', 'tests', 'gates', 'memory')
-DEFAULT_THRESHOLDS = dict(tests_act=0.70, flake_act=0.90,
+DEFAULT_THRESHOLDS = dict(tests_act=0.70,
                           gate_warn=0.60,
                           # Measured twice. The first 15 prompts were hand-written and
                           # scored with only a task TITLE in state, because prompt.md did
@@ -122,7 +122,7 @@ SITE_CAPABILITY = {
     'jev-score-plan': 'routing',
     'jev-drift': 'gates', 'jev-forward': 'gates',
     'jev-memory-curate': 'memory', 'jev-memory-stale': 'memory', 'jev-memory-slice': 'memory',
-    'jev-test-subset': 'tests', 'jev-verify-discover': 'tests', 'jev-verify-triage': 'tests',
+    'jev-test-subset': 'tests', 'jev-verify-discover': 'tests',
 }
 
 # Loaded via importlib rather than a package-relative import: forge-runtime.py lives one
@@ -329,7 +329,7 @@ THRESHOLD_FALLBACK = dict(drift_warn='gate_warn')
 # Thresholds whose only reader was removed (routing's --jev-act tier rewrite and `forge jev
 # calibrate` on 2026-10-17; same-wave coupling in milestone C1). A config written before
 # then still holds them: they are ignored, and `doctor` names them as safe to delete rather than as unknown.
-RETIRED_THRESHOLDS = frozenset(('routing_act', 'calibrate_floor', 'coupling_warn'))
+RETIRED_THRESHOLDS = frozenset(('routing_act', 'calibrate_floor', 'coupling_warn', 'flake_act'))
 # Per-model cutoffs, only where a replay justified one. Clef has none yet:
 #
 # Replayed 2026-10-16 on the 38 live jev-drift requests whose task outcome could be joined

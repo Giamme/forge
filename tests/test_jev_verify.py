@@ -1,4 +1,4 @@
-"""Offline contracts for verify-command discovery and flake triage (forge_jev.verify).
+"""Offline contracts for verify-command discovery (forge_jev.verify).
 
 Runs with no network access and no API key, mirroring tests/test_jev.py's hermetic
 setup. Fixture repos are real temp directories with real files -- candidates() must
@@ -365,80 +365,6 @@ class DiscoverGatingTests(JevVerifyTestCase):
         self.assertIn(result['source'], {c['source'] for c in cand})
 
 
-# 3. triage() -------------------------------------------------------------------------
-
-class TriageTests(JevVerifyTestCase):
-    def test_disabled_capability_returns_none(self):
-        config = self._enabled_config()
-        config['capabilities']['tests'] = False
-        with patch('forge_jev.verify.ask', side_effect=AssertionError('must not call ask')):
-            self.assertIsNone(verify.triage(self.repo, command='pytest -q', log_tail='boom',
-                                            traps=[], config=config))
-
-    def test_ask_unavailable_returns_none(self):
-        config = self._enabled_config()
-        with patch('forge_jev.verify.ask', return_value=None):
-            self.assertIsNone(verify.triage(self.repo, command='pytest -q', log_tail='boom',
-                                            traps=[], config=config))
-
-    def test_each_verdict_from_fixture(self):
-        config = self._enabled_config()
-        for verdict in ('real_regression', 'known_flake', 'environment', 'generated_drift'):
-            def fake_ask(state, questions, *, verdict=verdict, **kwargs):
-                answers = {'triage': dict(type='choice', choice=verdict, confidence=0.77)}
-                return dict(answers=answers, usage=None, model='jev-latest', latency_s=0.0,
-                           site=kwargs['site'])
-            with patch('forge_jev.verify.ask', side_effect=fake_ask):
-                result = verify.triage(self.repo, command='pytest -q', log_tail='boom',
-                                       traps=['test_x is flaky'], config=config)
-            self.assertEqual(result['verdict'], verdict)
-            self.assertAlmostEqual(result['confidence'], 0.77)
-
-    def test_log_tail_is_truncated(self):
-        config = self._enabled_config()
-        huge_log = 'x' * 50000
-        captured = {}
-
-        def fake_ask(state, questions, **kwargs):
-            captured['state'] = state
-            answers = {'triage': dict(type='choice', choice='real_regression', confidence=0.5)}
-            return dict(answers=answers, usage=None, model='jev-latest', latency_s=0.0, site=kwargs['site'])
-
-        with patch('forge_jev.verify.ask', side_effect=fake_ask):
-            verify.triage(self.repo, command='pytest -q', log_tail=huge_log, traps=[], config=config)
-        self.assertEqual(len(captured['state']['log_tail']), verify.LOG_TAIL_CHARS)
-        self.assertEqual(captured['state']['log_tail'], huge_log[-verify.LOG_TAIL_CHARS:])
-
-    def test_never_sends_a_diff(self):
-        config = self._enabled_config()
-        captured = {}
-
-        def fake_ask(state, questions, **kwargs):
-            captured['state'] = state
-            answers = {'triage': dict(type='choice', choice='real_regression', confidence=0.5)}
-            return dict(answers=answers, usage=None, model='jev-latest', latency_s=0.0, site=kwargs['site'])
-
-        with patch('forge_jev.verify.ask', side_effect=fake_ask):
-            verify.triage(self.repo, command='pytest -q', log_tail='some output', traps=[], config=config)
-        self.assertEqual(set(captured['state']), {'command', 'log_tail', 'known_traps'})
-        self.assertNotIn('diff', json.dumps(captured['state']).lower().replace('command', ''))
-
-    def test_known_traps_reads_memory_md(self):
-        (self.repo / '.forge').mkdir()
-        # The rendered file, as forge-memory.sh `rebuild` writes it. This fixture used
-        # to hold a raw FORGE_LEARNING line, which is a model's reply format, not this
-        # file's -- so it asserted that the parser read something memory.md never holds.
-        (self.repo / '.forge' / 'memory.md').write_text(
-            '# forge project memory\n\n## Known traps\n'
-            '- test_api.py::test_timeout is flaky under -n auto [tests/test_api.py]\n')
-        traps = verify.known_traps(self.repo)
-        self.assertEqual(len(traps), 1)
-        self.assertIn('test_timeout', traps[0])
-
-    def test_known_traps_empty_when_no_memory_file(self):
-        self.assertEqual(verify.known_traps(self.repo), [])
-
-
 # 4. CLI ---------------------------------------------------------------------------
 
 class CliTests(JevVerifyTestCase):
@@ -482,97 +408,13 @@ class CliTests(JevVerifyTestCase):
         rc, out, err = self._run(['verify-discover', '--repo', str(self.repo / 'nope')])
         self.assertEqual(rc, 2)
 
-    def test_verify_triage_json_parses(self):
-        log = self.root / 'log.txt'
-        log.write_text('boom\n')
-        fake_result = dict(verdict='known_flake', confidence=0.8)
-        with patch('forge_jev.verify.triage', return_value=fake_result):
-            rc, out, err = self._run(['verify-triage', '--repo', str(self.repo), '--command',
-                                     'pytest -q', '--log', str(log), '--json'])
-        self.assertEqual(rc, 0)
-        self.assertEqual(json.loads(out), fake_result)
-
-    def test_verify_triage_none_result_exits_3(self):
-        log = self.root / 'log.txt'
-        log.write_text('boom\n')
-        with patch('forge_jev.verify.triage', return_value=None):
-            rc, out, err = self._run(['verify-triage', '--repo', str(self.repo), '--command',
-                                     'pytest -q', '--log', str(log)])
-        self.assertEqual(rc, 3)
-
-    def test_verify_triage_missing_log_file_returns_2(self):
-        rc, out, err = self._run(['verify-triage', '--repo', str(self.repo), '--command',
-                                 'pytest -q', '--log', str(self.root / 'missing.txt')])
-        self.assertEqual(rc, 2)
-
-
-class TrapCorroborationTests(JevVerifyTestCase):
-    """A recorded trap may only excuse THIS failure, not any failure in the repo."""
-
-    TRAPS = ['test_api.py::test_timeout is flaky under -n auto [tests/test_api.py]',
-             'schema.sql is generated; never edit by hand [db/schema.sql]']
-
-    def test_trap_matching_the_failure_corroborates(self):
-        log = 'FAILED tests/test_api.py::test_timeout - TimeoutError after 30s'
-        self.assertEqual(verify.corroborating_traps(log, self.TRAPS), [self.TRAPS[0]])
-
-    def test_unrelated_failure_is_not_corroborated(self):
-        # The repo HAS a trap, but not one about this test. Without this distinction a
-        # single flaky test noted once would excuse every later regression.
-        log = 'FAILED tests/test_billing.py::test_refund - AssertionError: 3 != 4'
-        self.assertEqual(verify.corroborating_traps(log, self.TRAPS), [])
-
-    def test_shared_english_words_do_not_corroborate(self):
-        self.assertEqual(
-            verify.corroborating_traps('the build is flaky and under load it fails', self.TRAPS), [])
-
-    def test_bare_common_path_segment_does_not_corroborate(self):
-        # "tests" appears in almost every failure log and in most traps.
-        self.assertEqual(verify.corroborating_traps('error in tests dir', ['flaky thing [tests/]']), [])
-
-    def test_empty_inputs(self):
-        self.assertEqual(verify.corroborating_traps('', self.TRAPS), [])
-        self.assertEqual(verify.corroborating_traps('anything', []), [])
-        self.assertEqual(verify.corroborating_traps(None, None), [])
-
-    def _fake_ask(self, verdict='known_flake'):
-        def fake_ask(state, questions, **kwargs):
-            return dict(answers={'triage': dict(type='choice', choice=verdict, confidence=0.99)},
-                       usage=None, model='jev-latest', latency_s=0.0, site=kwargs['site'])
-        return fake_ask
-
-    def test_triage_reports_corroboration_for_a_matching_trap(self):
-        config = self._enabled_config()
-        with patch('forge_jev.verify.ask', side_effect=self._fake_ask()):
-            result = verify.triage(self.repo, command='pytest -q', traps=self.TRAPS, config=config,
-                                   log_tail='FAILED tests/test_api.py::test_timeout - TimeoutError')
-        self.assertTrue(result['corroborated'])
-        self.assertEqual(result['corroborating_traps'], [self.TRAPS[0]])
-
-    def test_triage_withholds_corroboration_for_an_unrelated_failure(self):
-        config = self._enabled_config()
-        with patch('forge_jev.verify.ask', side_effect=self._fake_ask()):
-            result = verify.triage(self.repo, command='pytest -q', traps=self.TRAPS, config=config,
-                                   log_tail='FAILED tests/test_billing.py::test_refund - 3 != 4')
-        # Jev still says known_flake at 0.99; the gate must not fire on that alone.
-        self.assertEqual(result['verdict'], 'known_flake')
-        self.assertFalse(result['corroborated'])
-        self.assertEqual(result['corroborating_traps'], [])
-
-    def test_triage_without_any_traps_is_never_corroborated(self):
-        config = self._enabled_config()
-        with patch('forge_jev.verify.ask', side_effect=self._fake_ask()):
-            result = verify.triage(self.repo, command='pytest -q', traps=[], config=config,
-                                   log_tail='FAILED tests/test_api.py::test_timeout')
-        self.assertFalse(result['corroborated'])
-
 
 if __name__ == '__main__':
     unittest.main()
 
 
 class MemoryFactParsingTests(unittest.TestCase):
-    """Both readers parsed the ledger row format against the rendered memory file."""
+    """The reader parsed the ledger row format against the rendered memory file."""
 
     RENDERED = """# forge project memory
 <!-- Maintained by forge. -->
@@ -602,13 +444,6 @@ class MemoryFactParsingTests(unittest.TestCase):
         self.assertEqual(len(facts), 1)
         self.assertIn('check.sh', facts[0])
 
-    def test_traps_are_read_from_the_rendered_file(self):
-        # Same bug, and worse: the flake re-run requires a corroborating trap, so an
-        # always-empty trap list made flake_act unreachable.
-        traps = verify.known_traps(str(self.repo))
-        self.assertEqual(len(traps), 2)
-        self.assertTrue(any('fixed port' in trap for trap in traps))
-
     def test_a_section_does_not_leak_into_the_next(self):
         self.assertNotIn('schema.sql',
                          ' '.join(verify._memory_verify_lines(self.repo)))
@@ -621,7 +456,6 @@ class MemoryFactParsingTests(unittest.TestCase):
     def test_a_missing_memory_file_is_empty_not_an_error(self):
         empty = Path(self.dir.name) / 'nope'
         self.assertEqual(verify._memory_verify_lines(empty), [])
-        self.assertEqual(verify.known_traps(str(empty)), [])
 
 
 class EvidenceExcerptTests(unittest.TestCase):
