@@ -30,6 +30,8 @@ ANSI = re.compile(r'\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x
 # Refused before parsing: no external entities, no entity expansion bombs.
 DECLARATIONS = re.compile(rb'<!\s*(?:DOCTYPE|ENTITY)', re.I)
 TAP_LINE = re.compile(r'(not\s+)?ok\b\s*(\d+)?\s*(?:-\s*)?(.*)$')
+TAP_PLAN = re.compile(r'1\.\.(\d+)\b')
+TAP_BAIL = re.compile(r'Bail out!\s*(.*)$')
 TAP_DIRECTIVE = re.compile(r'\s*(?<!\\)#\s*(SKIP|TODO)\b', re.I)
 
 
@@ -46,6 +48,10 @@ def first_line(text: str | None) -> str:
 
 def junit_cases(data: bytes) -> list[dict]:
     """[{name, suite, outcome, message, excerpt}] from a JUnit XML document; ValueError when unusable."""
+    # The declaration check reads bytes, so only an ASCII-compatible encoding is let through:
+    # UTF-16 or UTF-32 (a byte-order mark, or NUL bytes) could hide a DOCTYPE from it.
+    if data[:2] in (b'\xff\xfe', b'\xfe\xff') or b'\x00' in data:
+        raise ValueError('only UTF-8 reports are read')
     if DECLARATIONS.search(data):
         raise ValueError('DOCTYPE or ENTITY declarations are refused')
     try:
@@ -77,14 +83,17 @@ def junit_cases(data: bytes) -> list[dict]:
     return cases
 
 
-def tap_cases(data: bytes) -> list[dict]:
-    """Top-level test points of a TAP stream, each with its YAML diagnostic block if any."""
+def tap_cases(data: bytes) -> tuple[list[dict], str | None]:
+    """Top-level test points of a TAP stream, each with its YAML diagnostic block if any, and
+    why the stream is incomplete (a `Bail out!`, no plan, or fewer or more points than its
+    plan), else None. An incomplete stream's points still count, but cannot prove a baseline."""
     try:
         text = data.decode('utf-8')
     except UnicodeDecodeError:
         raise ValueError('not UTF-8 text')
     cases: list[dict] = []
     block: list[str] | None = None
+    planned = bail = None
     for line in text.splitlines():
         if block is not None:
             if line.strip() == '...':
@@ -101,6 +110,14 @@ def tap_cases(data: bytes) -> list[dict]:
         if line.strip() == '---' and line.startswith(' ') and cases:
             block = []
             continue
+        stop = TAP_BAIL.match(line)
+        if stop:
+            bail = stop.group(1).strip() or 'no reason given'
+            break
+        plan = TAP_PLAN.match(line)
+        if plan and planned is None:
+            planned = int(plan.group(1))
+            continue
         match = TAP_LINE.match(line)     # top level only: subtests are indented
         if not match:
             continue
@@ -115,7 +132,13 @@ def tap_cases(data: bytes) -> list[dict]:
                       'outcome': outcome, 'message': '', 'excerpt': ''})
     if not cases:
         raise ValueError('no TAP test points')
-    return cases
+    if bail is not None:
+        return cases, 'it bailed out (%s)' % clean(bail, MESSAGE_MAX)
+    if planned is None:
+        return cases, 'it has no plan line (1..N)'
+    if planned != len(cases):
+        return cases, 'its plan says %d tests and it has %d' % (planned, len(cases))
+    return cases, None
 
 
 def scan(directory: str, since: float) -> tuple[dict, list[str], bool]:
@@ -145,12 +168,15 @@ def scan(directory: str, since: float) -> tuple[dict, list[str], bool]:
                 data = handle.read(FILE_MAX + 1)
             if len(data) > FILE_MAX:
                 raise ValueError('larger than %d MB' % (FILE_MAX >> 20))
-            cases = junit_cases(data) if rel.endswith('.xml') else tap_cases(data)
+            cases, problem = (junit_cases(data), None) if rel.endswith('.xml') else tap_cases(data)
         except (OSError, ValueError, RecursionError) as error:
             tests['notes'].append('%s skipped: %s' % (rel, error))
             complete = False
             continue
         tests['reports'].append(rel)
+        if problem:
+            tests['notes'].append('%s is incomplete: %s' % (rel, problem))
+            complete = False
         for case in cases:
             tests[case['outcome']] += 1
             if case['outcome'] not in ('fail', 'error'):

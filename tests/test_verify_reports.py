@@ -65,6 +65,28 @@ class ParserTests(unittest.TestCase):
         self.assertEqual(failing['message'], 'expected an error')
         self.assertIn('file: parser.js', failing['excerpt'])
 
+    def test_a_utf16_report_is_refused_before_it_is_parsed(self):
+        doc = ('<?xml version="1.0" encoding="UTF-16"?><!DOCTYPE t [<!ENTITY e "expanded">]>'
+               '<testsuite><testcase name="a"><failure>&e;</failure></testcase></testsuite>')
+        (self.dir / 'r.xml').write_bytes(doc.encode('utf-16'))
+        tests, names, complete = reports.scan(str(self.dir), 0)
+        self.assertEqual((complete, names, tests['reports']), (False, [], []))
+        self.assertIn('only UTF-8 reports are read', ' '.join(tests['notes']))
+
+    def test_a_tap_stream_that_bailed_out_or_misses_its_plan_is_incomplete(self):
+        cases = {
+            'bailed out': ('1..2\nnot ok 1 - known_failure\nBail out! database unavailable\n', 'bailed out (database unavailable)'),
+            'short of its plan': ('1..2\nnot ok 1 - known_failure\n', 'its plan says 2 tests and it has 1'),
+            'no plan': ('not ok 1 - known_failure\n', 'no plan line'),
+        }
+        for what, (text, note) in cases.items():
+            with self.subTest(what):
+                (self.dir / 'r.tap').write_text(text)
+                tests, names, complete = reports.scan(str(self.dir), 0)
+                self.assertFalse(complete)
+                self.assertEqual(names, ['known_failure'])            # its failures still show
+                self.assertIn(note, ' '.join(tests['notes']))
+
     def test_malformed_and_doctype_reports_are_skipped_with_a_note(self):
         tests, names, complete = self.scan('malformed.xml', 'doctype.xml', 'junit.xml')
         self.assertFalse(complete)
