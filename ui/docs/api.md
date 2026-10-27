@@ -169,6 +169,7 @@ def execution_transcript(path, name, source='plan') -> dict | None # an Executio
 def fractal_detail(path, task_id, source='plan') -> dict | None    # a TaskFractal
 def fractal_node(path, task_id, node, source='plan') -> dict | None       # a FractalNodeDetail
 def fractal_node_diff(path, task_id, node, source='plan') -> dict | None  # a DiffDetail
+def verification_log(path, lane=None, k=None, first=None, source='plan') -> dict | None  # a VerificationLog
 
 class Catalog:
     def __init__(self, plans=(), roots=(), registry=True, registry_dir=None): ...
@@ -180,7 +181,8 @@ class Catalog:
     def diff(self, key, task_id, which='current'), execution_diff(self, key, name),
         final_review_diff(self, key, name), files(self, key), findings(self, key), transcript(self, key, name),
         fractal(self, key, task_id),
-        fractal_node(self, key, task_id, node), fractal_node_diff(self, key, task_id, node) -> dict | None
+        fractal_node(self, key, task_id, node), fractal_node_diff(self, key, task_id, node),
+        verification_log(self, key, lane=None, k=None, first=None) -> dict | None
     def models(self) -> dict            # Models, over every run
     def locate(self, key) -> tuple[str, str] | None  # (run dir, 'plan' | 'solo'); None for an unknown key
 ```
@@ -227,6 +229,9 @@ its last 20,000 behind a leading `…`. Their `truncated` lists the field names 
 | `GET /api/runs/<key>/files` | `200 Files` |
 | `GET /api/runs/<key>/findings` | `200 RunFindings` |
 | `GET /api/runs/<key>/executions/<qa-or-dwarf>/transcript` | `200 ExecutionTranscript` |
+| `GET /api/runs/<key>/verification/log[/lines/<n>]` | `200 VerificationLog` of `verification.log`: its tail, or with `/lines/<n>` a range |
+| `GET /api/runs/<key>/verification/lanes/<lane>/log[/lines/<n>]` | `200 VerificationLog` of `verification.lane.<lane>.log` |
+| `GET /api/runs/<key>/verification/lanes/<lane>/runs/<k>/log[/lines/<n>]` | `200 VerificationLog` of `verification.lane.<lane>.run-<k>.log` |
 | `GET /api/models` | `200 Models` |
 | `GET /api/health` | `200 {"app": "forge-ui", "version", "build", "pid", "controls": true\|false}`; `controls` is `false` in read-only mode |
 | `GET /api/runs/<key>/controls` | `200` the `forge control show --json` object of a plan run (see Controls); `404` for a solo or unknown run |
@@ -253,7 +258,10 @@ Fractal node endpoints for an unknown node or a task whose Fractal state is not 
 diff that is not there yet is a `200` with `available: false`. An execution is looked for only where executions are written:
 `attempts/`, `tasks/<id>/attempts/`, `shadow/<id>/<a>-<k>/attempts/`,
 `final-review-*/attempts/` and `integrate-*/final-review/attempts/`, in that order; a dir
-that resolves outside the run dir (a symlinked `attempts/`, say) is ignored.
+that resolves outside the run dir (a symlinked `attempts/`, say) is ignored. The verification
+log endpoints answer `404` for a solo run, a `<lane>` not matching `[A-Za-z0-9][A-Za-z0-9_-]{0,63}`
+(so no `..`), a `<k>` or `<n>` that is not a positive decimal without a leading zero, and a log
+that is missing, a symlink or not a regular file.
 
 JSON responses: `Content-Type: application/json; charset=utf-8`,
 `Cache-Control: no-store`. The page loads `style.css`, `runmodel.js`, `graph.js`, `gantt.js`,
@@ -823,6 +831,30 @@ characters …` (`<key>_cut` holds n). A log over 32 MB is read from its end; pa
 4,000,000 characters the middle is left out (a `gap` event, `truncated: true`). Parses are kept by
 the log's `(path, size, mtime_ns)` and the session file's.
 
+## VerificationLog
+
+The run's own verification logs, read by path (an integration's lane logs are not served yet):
+
+```
+{"name": "verification.lane.e2e.log", "size": 220000, "mtime": 1760622070.0,
+ "tail": "line 14044\n...", "tail_first_line": 14044, "truncated": true}
+```
+
+`tail` is the file's last 64 KB, from the first line that starts inside them (when no line
+does, from the first whole character), decoded as UTF-8 with invalid bytes replaced.
+`tail_first_line` is the 1-based number of the tail's first line, found by counting the newlines
+before it, or `null` when that would read past 64 MB. `truncated` says the tail is not the whole
+file. With `/lines/<n>`:
+
+```
+{"name": "verification.log", "size": 11000, "first_line": 700, "lines": ["line 00700", ...],
+ "truncated": false}
+```
+
+up to 400 lines from line `n` (1-based), each without its line ending and cut to 4,000
+characters (ending `…`). Lines past the end give `lines: []`. `truncated` is `true` when more
+lines follow, a line was cut, or reaching them took more than 64 MB of reading.
+
 ## Files
 
 `GET /api/runs/<key>/files`: who planned, changed, drifted into or conflicted on each file.
@@ -992,10 +1024,12 @@ difficulty paths deps model` each), `decomposition_history` (its newest 20, each
   it (server.api_get): `/api/runs` (this run only), the RunDetail, every TaskDetail, every
   ExecutionDetail the RunDetail names, every FinalReviewDetail, Files, RunFindings, and the
   Fractal trees and nodes. With `texts=1` also every diff the page can open (each task's diff and its `sources`,
-  each final review's, each Fractal node's) and every `dwarf` and `qa` ExecutionTranscript (at most 2 MB each).
+  each final review's, each Fractal node's), every `dwarf` and `qa` ExecutionTranscript (at most 2 MB each),
+  and the VerificationLog tail of `verification.log`, of each lane's log and of each lane run's log
+  (under their tail paths; line ranges are not stored, so the page shows the tail).
 - `texts=0` (the default) nulls these keys wherever they hold a string, list or object: `prompt
   last request log_tail dwarf_tail qa_tail qa_last qa_input tasks_summary known_issues texts text
-  planning_last approach retry_findings dwarf_input error last_line message excerpt`, and stores no
+  planning_last approach retry_findings dwarf_input error last_line message excerpt tail lines`, and stores no
   diff and no transcript. A finding keeps its `summary`, a failing test its `name`.
 - `paths=0` (the default) makes every string that is a whole absolute path (but `/api/…`, `url`s
   and `command`s) its last component, and replaces the run dir, the repo and the home dir inside other

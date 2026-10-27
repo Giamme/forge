@@ -22,7 +22,7 @@ import re
 import time
 import urllib.parse
 
-from forge_ui import __version__, server
+from forge_ui import __version__, reader, server
 
 STATIC = server.STATIC_DIR
 # what the exported page runs, in index.html's order; the cloud, the leaderboard and notifications need a server
@@ -37,7 +37,7 @@ _EXEC = re.compile(r'(?:task|dwarf|qa|solo|verification|parallel)-[0-9a-f]{32}')
 # texts that can hold code, prompts or private notes: nulled unless texts=True
 _TEXT_KEYS = frozenset(('prompt', 'last', 'request', 'log_tail', 'dwarf_tail', 'qa_tail', 'qa_last', 'qa_input',
                         'tasks_summary', 'known_issues', 'texts', 'text', 'planning_last', 'approach', 'retry_findings',
-                        'dwarf_input', 'error', 'last_line', 'message', 'excerpt'))
+                        'dwarf_input', 'error', 'last_line', 'message', 'excerpt', 'tail', 'lines'))
 
 
 def _enc(value):
@@ -192,6 +192,18 @@ def build(catalog, key, texts=False, paths=False, now=None):
         for name in names:
             if name.startswith(('dwarf-', 'qa-')):
                 snap.add(f'{base}/executions/{name}/transcript', cap=TRANSCRIPT_CAP)
+        # the verification's log tails: its own, each lane's and each lane run's (line ranges stay out)
+        verification = run.get('verification') or {}
+        if verification:
+            snap.add(f'{base}/verification/log')
+        for lane in verification.get('lanes') or []:
+            name = lane.get('name') if isinstance(lane, dict) else None
+            if isinstance(name, str) and reader.LANE_NAME.fullmatch(name):
+                snap.add(f'{base}/verification/lanes/{name}/log')
+                for item in lane.get('runs') or []:
+                    k = item.get('k') if isinstance(item, dict) else None
+                    if isinstance(k, int) and not isinstance(k, bool) and k > 0:
+                        snap.add(f'{base}/verification/lanes/{name}/runs/{k}/log')
     meta = {'format': 'forge-ui-export', 'version': 1, 'app': __version__, 'key': key,
             'generated': now if now is not None else time.time(), 'texts': bool(texts), 'paths': bool(paths),
             'omitted': snap.omitted}

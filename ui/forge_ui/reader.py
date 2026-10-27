@@ -1726,6 +1726,109 @@ def fractal_node_diff(path, task_id, node, source='plan'):
     return _fractal(path, task_id, fractal.node_diff, node)
 
 
+# --- verification logs by path ---------------------------------------------------------------
+
+LANE_NAME = re.compile(r'[A-Za-z0-9][A-Za-z0-9_-]{0,63}')
+LOG_TAIL = 65536               # the tail a log endpoint serves
+LOG_SCAN_MAX = 64 << 20        # what is read to number lines or reach a line range
+LOG_LINES = 400                # lines in one range
+LOG_LINE_MAX = 4000            # characters kept of one line in a range
+
+
+def _log_name(lane, k):
+    if lane is None:
+        return 'verification.log'
+    return f'verification.lane.{lane}.log' if k is None else f'verification.lane.{lane}.run-{k}.log'
+
+
+def _open_log(path, name):
+    """The open log and its stat, or None: a missing file, a symlink, anything not regular."""
+    try:
+        fd = os.open(os.path.join(os.path.realpath(path), name), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError:
+        return None
+    try:
+        info = os.fstat(fd)
+        if stat.S_ISREG(info.st_mode):
+            return os.fdopen(fd, 'rb'), info
+    except OSError:
+        pass
+    os.close(fd)
+    return None
+
+
+def _newlines(stream, end):
+    """How many newlines the first `end` bytes hold, or None past LOG_SCAN_MAX."""
+    if end > LOG_SCAN_MAX:
+        return None
+    stream.seek(0)
+    count = 0
+    while end > 0:
+        chunk = stream.read(min(1 << 20, end))
+        if not chunk:
+            break
+        count += chunk.count(b'\n')
+        end -= len(chunk)
+    return count
+
+
+def _log_tail(stream, info, name):
+    offset = max(0, info.st_size - LOG_TAIL)
+    stream.seek(offset)
+    raw = stream.read(LOG_TAIL)
+    if offset:
+        # Start on a line: drop the line the cut went through, or at least a split character.
+        cut = raw.find(b'\n')
+        skip = cut + 1 if cut >= 0 else 0
+        if cut < 0:
+            while skip < min(3, len(raw)) and raw[skip] & 0xC0 == 0x80:
+                skip += 1
+        raw, offset = raw[skip:], offset + skip
+    before = _newlines(stream, offset)
+    return dict(name=name, size=info.st_size, mtime=float(info.st_mtime), tail=raw.decode('utf-8', 'replace'),
+                tail_first_line=None if before is None else before + 1, truncated=offset > 0)
+
+
+def _log_range(stream, info, name, first):
+    """LOG_LINES lines from line `first`: (lines, whether more follow or a line or the read was cut)."""
+    lines, number, read, cut = [], 1, 0, False
+    while read < LOG_SCAN_MAX:
+        part = stream.readline(LOG_LINE_MAX * 4)
+        if not part:
+            return dict(name=name, size=info.st_size, first_line=first, lines=lines, truncated=cut)
+        read += len(part)
+        line, long = part, False
+        while not part.endswith(b'\n') and len(part) == LOG_LINE_MAX * 4 and read < LOG_SCAN_MAX:
+            part, long = stream.readline(LOG_LINE_MAX * 4), True
+            read += len(part)
+        if number >= first:
+            if len(lines) == LOG_LINES:
+                return dict(name=name, size=info.st_size, first_line=first, lines=lines, truncated=True)
+            text = line.rstrip(b'\n').rstrip(b'\r').decode('utf-8', 'replace')
+            if long or len(text) > LOG_LINE_MAX:
+                text, cut = text[:LOG_LINE_MAX].rstrip('\ufffd') + '…', True
+            lines.append(text)
+        number += 1
+    return dict(name=name, size=info.st_size, first_line=first, lines=lines, truncated=True)
+
+
+def verification_log(path, lane=None, k=None, first=None, source='plan'):
+    """The run's own verification log, a lane's or one run of a lane's: its last 64 KB from a line
+    start, with that line's number, or LOG_LINES lines from line `first`. None (a 404) for a solo
+    run, a name no lane can have, and a log that is missing, a symlink or not a regular file."""
+    if _kind(path) != 'plan' or (lane is not None and not LANE_NAME.fullmatch(lane)):
+        return None
+    if (k is not None and (lane is None or k < 1)) or (first is not None and first < 1):
+        return None
+    name = _log_name(lane, k)
+    opened = _open_log(path, name)
+    if opened is None:
+        return None
+    stream, info = opened
+    with stream:
+        return _log_tail(stream, info, name) if first is None else _log_range(stream, info, name, first)
+
+
 class Catalog:
     def __init__(self, plans=(), roots=(), registry=True, registry_dir=None):
         self.options = dict(plans=tuple(plans), roots=tuple(roots), registry=registry, registry_dir=registry_dir)
@@ -1793,6 +1896,9 @@ class Catalog:
 
     def fractal_node_diff(self, key, task_id, node):
         return self._find(key, fractal_node_diff, task_id, node)
+
+    def verification_log(self, key, lane=None, k=None, first=None):
+        return self._find(key, verification_log, lane, k, first)
 
     def models(self):
         from forge_ui import models  # it reads runs through this module

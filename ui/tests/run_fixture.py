@@ -463,6 +463,7 @@ def lanes_verification(plan, running=False):
     for item in lanes:
         write(plan / item['log'], f'{item["name"]} output\n', at)
         for run in item['runs']:
+            write(plan / run['log'], f'{item["name"]} run {run["k"]}\n', at)
             if run['ended'] is not None:
                 rows.append((run['started'], item['name'], run))
     rows.sort(key=lambda row: (row[0], row[1]))
