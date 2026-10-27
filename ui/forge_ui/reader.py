@@ -702,16 +702,6 @@ def _task_detail(reader, task, run_id, waves, branches):
                 task['route'].append(obj)
     task['explored'] = reader.exists(prefix + '/route.explored') or any(
         item.get('explored') is True for item in task['route'])
-    task['clef'] = {'first_pass': reader.object(prefix + '/clef.first_pass'), 'retry_pass': {}}
-    for child in reader.children(prefix):
-        if child.name.startswith('clef.retry_pass.'):
-            suffix = child.name[len('clef.retry_pass.'):]
-            if not re.fullmatch(r'[0-9]+', suffix):
-                reader.warn(prefix + '/' + child.name, 'invalid attempt suffix')
-                continue
-            obj = reader.object(prefix + '/' + child.name)
-            if obj is not None:
-                task['clef']['retry_pass'][suffix] = obj
     execs = _task_execs(reader, task)
     task['executions'] = execs
     task['now'] = _now(reader, prefix, execs) if task['status'] == 'RUNNING' else None
@@ -1252,7 +1242,7 @@ def _solo_detail(reader, source):
                 branch=None, attempt=max((item['attempt'] for item in attempts), default=None),
                 attempts=attempts, escalations=[], verdict=_verdict(qa), accepted_by=None,
                 accepted=False, accepted_attempt=None, accepted_over=None,
-                explored=False, route=[], clef={'first_pass': None, 'retry_pass': {}}, shadow=[],
+                explored=False, route=[], shadow=[],
                 prompt=reader.cap(reader.text('prompt.md'), 'tasks/solo/prompt'), approach=None,
                 retry_findings=None, qa_tail=reader.cap(qa, 'tasks/solo/qa_tail', 4000, True),
                 dwarf_tail=reader.cap(reader.text('dwarf.last'), 'tasks/solo/dwarf_tail', 4000, True),

@@ -79,8 +79,6 @@ written), and the reader must never raise because of one.
 | `fractal-selection.json` | `{"enabled": true, "run": "run-<20 hex>"}` (or `enabled: false`): the run's Fractal choice, see Fractal below |
 | `tasks/<id>/route.jsonl` | one JSON object per line, one per routing decision: `at` (epoch), `task`, `tier`, `epsilon`, `candidates` (list of specs), `default` (spec), `chosen` (spec), `explored` (bool), `propensity` (probability the chosen spec had), `inputs` (object), `decision` (a short hash identifying the decision). Keep unknown fields |
 | `tasks/<id>/route.explored` | exists when the task's route was an exploratory pick |
-| `tasks/<id>/clef.first_pass` | JSON: `p` (predicted probability the first attempt passes), `model`, `at`, `plan_table`, `assignment` (`{dwarf, qa}`) |
-| `tasks/<id>/clef.retry_pass.<n>` | JSON, same shape plus `attempt` = n |
 | `shadow/<id>/<attempt>-<k>/shadow.json` | JSON: `task`, `attempt`, `reviewed`, `primary`, `spec`, `pick`, `started`. A second, never-read review of attempt `<attempt>` |
 | `shadow/<id>/<attempt>-<k>/shadow.status` | one word |
 | `shadow/<id>/<attempt>-<k>/qa.last` | the shadow reviewer's final message, verdict as above |
@@ -517,10 +515,6 @@ Every RunSummary field, plus:
   "route": [{"at": 1760619000.0, "task": "reader", "tier": "high", "epsilon": 0.5,
              "candidates": ["astra", "opus"], "default": "opus", "chosen": "astra",
              "explored": true, "propensity": 0.25, "inputs": {}, "decision": "9c1e4b7a0d2f3e58"}],
-  "clef": {"first_pass": {"p": 0.71, "model": "clef", "at": 1760619100.0,
-                          "assignment": {"dwarf": "astra", "qa": "opus"}},
-           "retry_pass": {"2": {"p": 0.64, "model": "clef", "at": 1760620600.0, "attempt": 2,
-                                "assignment": {"dwarf": "sol", "qa": "opus"}}}},
   "shadow": [{"attempt": 1, "k": 0, "spec": "sol:xhigh", "primary": "opus",
               "status": "PASS", "verdict": "FAIL", "started": 1760620100.0}],
   "prompt": "full prompt.md text",
@@ -566,8 +560,6 @@ Every RunSummary field, plus:
   plan task, the run dir's `dwarf.last` for a solo run), or `null` when the file is missing.
   Capped like `qa_tail`.
 - `explored`: `true` if `route.explored` exists or any `route` entry has `explored: true`.
-- `clef.first_pass` is `null` when absent; `clef.retry_pass` is `{}` when there are none;
-  its keys are the attempt numbers as strings.
 - `shadow`: one entry per `shadow/<id>/<attempt>-<k>/` dir, sorted by attempt then k.
   `status` is `shadow.status`, `verdict` is parsed from that dir's `qa.last`; fields from
   `shadow.json` (`spec`, `primary`, `started`, `reviewed`, `pick`, as they are) that are
@@ -616,8 +608,7 @@ from the run dir's `attempts.tsv`. `status` is the solo status; `attempt` is the
 in `attempts.tsv`, or `null`. `escalations`, `route` and `shadow` are empty. `verdict` and
 `qa_tail` come from `qa.last`, and `prompt` comes from `prompt.md`. `deps` and `files` are
 `[]`; `difficulty`, `accepted_by`, `approach` and `retry_findings` are `null`; `accepted` is
-false; `accepted_attempt` and `accepted_over` are `null`; `explored` is false; `clef` is
-`{first_pass: null, retry_pass: {}}`; `waiting` and `sweep` are `null`, `swept` is `[]`. `request` on
+false; `accepted_attempt` and `accepted_over` are `null`; `explored` is false; `waiting` and `sweep` are `null`, `swept` is `[]`. `request` on
 the detail is `request.md`.
 
 ## Execution
