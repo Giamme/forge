@@ -424,6 +424,28 @@ class GrokHarnessTests(DispatchBase):
         self.assertEqual(self.kv('dwarf.infra')['class'], 'auth')
 
 
+class ClockTests(DispatchBase):
+    """Beside each harness log, when it grew: forge-ui times the events of a log that carries no times from it."""
+
+    def test_the_clock_reaches_the_logs_last_byte_and_is_kept_with_the_attempt(self):
+        result = self.dispatch('dwarf', 'sol')
+        self.assertEqual(result.returncode, 0, result.stdout)
+        size = (self.run_dir / 'dwarf.log').stat().st_size
+        self.assertGreater(size, 0)
+        for clock in (self.run_dir / 'dwarf.clock', self.attempt('dwarf') / 'dwarf.clock'):
+            samples = [line.split() for line in clock.read_text().splitlines()]
+            self.assertEqual(int(samples[-1][1]), size, clock)
+        self.assertEqual((self.attempt('dwarf') / 'dwarf.clock').read_text(), self.read('dwarf.clock'))
+
+    def test_off_leaves_no_clock_and_a_new_dispatch_drops_the_old_one(self):
+        self.assertEqual(self.dispatch('dwarf', 'sol').returncode, 0)
+        self.assertTrue((self.run_dir / 'dwarf.clock').exists())
+        self.env['FORGE_LOG_CLOCK'] = 'off'
+        self.assertEqual(self.dispatch('dwarf', 'sol').returncode, 0)
+        self.assertFalse((self.run_dir / 'dwarf.clock').exists())
+        self.assertFalse((self.attempt('dwarf') / 'dwarf.clock').exists())
+
+
 class StreamTests(DispatchBase):
     """claude, openclaude and opencode write one JSON event per line, so a run keeps its conversation; the final
     message and the tokens still come out of it."""

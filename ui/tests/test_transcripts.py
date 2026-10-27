@@ -1,3 +1,4 @@
+import json
 import os
 from pathlib import Path
 import shutil
@@ -139,6 +140,92 @@ class Formats(unittest.TestCase):
         for log in (None, self.home / 'missing.log', self.home):
             result = transcripts.transcript(log)
             self.assertEqual((result['source'], result['events'], len(result['warnings'])), ('none', [], 1), log)
+
+
+def jsonl(*values):
+    return [json.dumps(v, ensure_ascii=False) + '\n' for v in values]
+
+
+def ends(lines):
+    """The byte offset just past each line."""
+    out, pos = [], 0
+    for line in lines:
+        pos += len(line.encode('utf-8'))
+        out.append(pos)
+    return out
+
+
+class Times(unittest.TestCase):
+    """When each event happened: the harness's own times, else the clock dispatch keeps beside the log."""
+
+    def setUp(self):
+        transcripts._CACHE.clear()
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.dir = Path(temp.name)
+
+    def write(self, lines, clock=None):
+        log = self.dir / 'dwarf.log'
+        log.write_bytes(''.join(lines).encode('utf-8'))
+        if clock is not None:
+            (self.dir / 'dwarf.clock').write_text(''.join(f'{t} {size}\n' for t, size in clock))
+        return log
+
+    def commands(self, log, harness='codex', **kw):
+        result = transcripts.transcript(log, harness, environ={}, home=self.dir, **kw)
+        self.assertFalse([k for ev in result['events'] for k in ev if k.startswith('_')], 'places leak into the answer')
+        return [ev for ev in result['events'] if ev['kind'] == 'command']
+
+    def test_codex_commands_are_timed_by_the_clock_from_their_start_line_to_their_end_line(self):
+        lines = (LOGS / 'codex.jsonl').read_text().splitlines(keepends=True)
+        end = ends(lines)
+        # the log reached the rg command's start line at 100, its end line at 112, everything after at 130
+        log = self.write(lines, [(90.0, 0), (100.0, end[4]), (112.0, end[5]), (130.0, end[-1])])
+        rg, unittest_run = self.commands(log)
+        self.assertEqual((rg['t'], rg['ended']), (100.0, 112.0))
+        self.assertEqual((unittest_run['t'], unittest_run['ended']), (130.0, 130.0))   # within one sample
+
+    def test_without_a_clock_or_past_its_last_sample_there_is_no_time(self):
+        lines = (LOGS / 'codex.jsonl').read_text().splitlines(keepends=True)
+        self.assertEqual([('t' in ev, 'ended' in ev) for ev in self.commands(self.write(lines))], [(False, False)] * 2)
+        transcripts._CACHE.clear()
+        log = self.write(lines, [(100.0, ends(lines)[4])])                # the clock has not seen the rest yet
+        rg, later = self.commands(log)
+        self.assertEqual((rg['t'], 'ended' in rg, 't' in later), (100.0, False, False))
+
+    def test_the_harnesss_own_times_win_over_the_clock(self):
+        lines = jsonl(
+            {'type': 'assistant', 'timestamp': '2026-10-27T10:00:00Z',
+             'message': {'id': 'm1', 'content': [{'type': 'tool_use', 'id': 'tu1', 'name': 'Bash', 'input': {'command': 'npm test'}}]}},
+            {'type': 'user', 'timestamp': '2026-10-27T10:03:20Z',
+             'message': {'content': [{'type': 'tool_result', 'tool_use_id': 'tu1', 'content': 'Tests: 1 failed, 4 passed, 5 total', 'is_error': True}]}})
+        command, = self.commands(self.write(lines, [(5.0, 0), (6.0, ends(lines)[-1])]), 'claude')
+        self.assertEqual(command['ended'] - command['t'], 200.0)
+
+    def test_opencode_gives_a_calls_start_and_end(self):
+        lines = jsonl({'type': 'tool_use', 'timestamp': 1792600050000, 'sessionID': 's', 'part': {
+            'tool': 'bash', 'callID': 'c1', 'state': {'status': 'completed', 'input': {'command': 'pytest -q'}, 'output': '3 passed in 1.20s',
+                                                      'metadata': {'exit': 0}, 'time': {'start': 1792600000000, 'end': 1792600045000}}}})
+        command, = self.commands(self.write(lines), 'opencode')
+        self.assertEqual((command['t'], command['ended']), (1792600000.0, 1792600045.0))
+
+    def test_a_log_read_from_its_end_is_still_timed_where_its_lines_really_are(self):
+        filler = jsonl(*({'type': 'item.completed', 'item': {'id': f'r{i}', 'type': 'reasoning', 'text': 'x' * 200}} for i in range(20)))
+        tail = jsonl({'type': 'item.started', 'item': {'id': 'c', 'type': 'command_execution', 'command': 'make test', 'status': 'in_progress'}},
+                     {'type': 'item.completed', 'item': {'id': 'c', 'type': 'command_execution', 'command': 'make test', 'exit_code': 2, 'status': 'failed'}})
+        end = ends(filler + tail)
+        log = self.write(filler + tail, [(1.0, end[19] - 1), (50.0, end[20]), (75.0, end[21])])
+        with patch.object(transcripts, 'LOG_CAP', len(''.join(tail)) + 300):
+            command, = self.commands(log)
+        self.assertEqual((command['t'], command['ended'], command['exit']), (50.0, 75.0, 2))
+
+    def test_a_double_quoted_codex_wrapper_is_taken_off_and_a_line_separator_splits_nothing(self):
+        lines = jsonl({'type': 'item.completed', 'item': {'id': 'c', 'type': 'command_execution', 'exit_code': 0,
+                                                          'command': '/bin/zsh -lc "pytest -q \\"tests/a b.py\\" && echo \\$HOME"'}},
+                      {'type': 'item.completed', 'item': {'id': 'm', 'type': 'agent_message', 'text': 'one\u2028two'}})
+        result = transcripts.transcript(self.write(lines), 'codex')
+        self.assertEqual([(ev['kind'], ev.get('command') or ev.get('text')) for ev in result['events']],
+                         [('command', 'pytest -q "tests/a b.py" && echo $HOME'), ('message', 'one\u2028two')])
 
 
 if __name__ == '__main__':

@@ -24,11 +24,15 @@ An event is a dict with `kind` and the keys that kind uses:
   gap        count                              events left out of the middle of a very long transcript
 Every event may carry `t` (epoch seconds), `id` (the harness's own id for a tool call), `error` (true for a call
 that failed, false for one answered without an error) and, while the execution runs, `running` (a call not
-answered yet). Texts are capped.
-Nothing here opens any path but the log given and, for a Claude result, that one session file.
+answered yet). A command, edit or tool call that was answered may carry `ended` (epoch seconds). Texts are capped.
+Times come from the harness when its lines carry them (claude, opencode); otherwise from `<role>.clock` beside the
+log, which forge-dispatch.sh writes while the harness runs: `<epoch> <bytes>` each time the log grew, so a line is
+timed by the first sample that saw the log reach its end (to within the clock's one second).
+Nothing here opens any path but the log given, its clock and, for a Claude result, that one session file.
 """
 from __future__ import annotations
 
+import bisect
 from datetime import datetime
 import json
 import os
@@ -44,6 +48,8 @@ CHARS_CAP = 4_000_000
 _SESSION_ID = re.compile(r'[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}')
 _ANSI = re.compile(r'\x1b\[[0-9;?]*[ -/]*[@-~]')
 _SHELL = re.compile(r"(?:/\S+/)?(?:ba|z)?sh -l?c '((?:[^']|'\\'')*)'", re.S)   # codex's wrapper around a command
+_SHELL_DQ = re.compile(r'(?:/\S+/)?(?:ba|z)?sh -l?c "((?:[^"\\]|\\.)*)"', re.S)    # the same, double-quoted
+_DQ_ESCAPE = re.compile(r'\\([$`"\\\n])')
 _TARGETS = ('file_path', 'filePath', 'target_file', 'notebook_path', 'path', 'target_directory', 'pattern', 'query', 'url')
 _SHELL_TOOLS = frozenset(('bash', 'shell', 'run_terminal_command', 'run_shell_command', 'exec_command', 'terminal'))
 _EDIT_TOOLS = frozenset(('edit', 'write', 'multiedit', 'notebookedit', 'search_replace', 'write_file', 'edit_file',
@@ -81,9 +87,14 @@ def _event(kind, **fields):
 
 
 def _unwrap(command):
-    """A command without the `bash -lc '…'` codex runs it in."""
-    m = _SHELL.fullmatch(command) if isinstance(command, str) else None
-    return m.group(1).replace("'\\''", "'") if m else command
+    """A command without the `bash -lc '…'` (or `"…"`) codex runs it in."""
+    if not isinstance(command, str):
+        return command
+    m = _SHELL.fullmatch(command)
+    if m:
+        return m.group(1).replace("'\\''", "'")
+    m = _SHELL_DQ.fullmatch(command)
+    return _DQ_ESCAPE.sub(r'\1', m.group(1)) if m else command
 
 
 def _tool_event(name, args, ident=None, t=None):
@@ -151,19 +162,32 @@ def _tokens(total, usage):
 
 # ---------- the formats ----------
 
+class _Lines:
+    """(json or None, raw line) for each non-empty line; `end` is then the byte offset just past that line, so
+    an event can be timed by when the log reached it."""
+
+    def __init__(self, text):
+        self.text, self.end = text, 0
+
+    def __iter__(self):
+        pos = 0
+        for raw in self.text.split('\n'):
+            pos += len(raw.encode('utf-8', 'surrogatepass')) + 1
+            line = raw.strip()
+            if not line:
+                continue
+            self.end = pos
+            value = None
+            if line[0] == '{':
+                try:
+                    value = json.loads(line)
+                except ValueError:
+                    value = None
+            yield (value if isinstance(value, dict) else None), raw.rstrip('\r')
+
+
 def _lines(text):
-    """(json or None, raw line) for each non-empty line."""
-    for raw in text.splitlines():
-        line = raw.strip()
-        if not line:
-            continue
-        value = None
-        if line[0] == '{':
-            try:
-                value = json.loads(line)
-            except ValueError:
-                value = None
-        yield (value if isinstance(value, dict) else None), raw
+    return iter(_Lines(text))
 
 
 def detect(text):
@@ -208,38 +232,55 @@ def _stderr(events, pending):
         pending.clear()
 
 
+def _placed(events, mark, end):
+    """The events a line added are placed at its end in the log (their `_at`), for the clock to time."""
+    for ev in events[mark:]:
+        ev.setdefault('_at', end)
+
+
 def parse_codex(text):
     events, by_id, tokens, meta, pending = [], {}, {}, {}, []
-    for value, raw in _lines(text):
+    lines = _Lines(text)
+    for value, raw in lines:
         if value is None:
             pending.append(raw)
             continue
         _stderr(events, pending)
-        kind = value.get('type')
-        if kind == 'thread.started':
-            meta['session'] = value.get('thread_id')
-        elif kind in ('item.started', 'item.updated', 'item.completed'):
-            item = value.get('item') or {}
-            ev = _codex_item(item)
-            if ev is None:
-                continue
-            if kind != 'item.completed':
-                ev['running'] = True
-            ident = item.get('id')
-            if ident in by_id:                       # started, then completed: the same place in the list
-                events[by_id[ident]] = ev
-            else:
-                if ident:
-                    by_id[ident] = len(events)
-                events.append(ev)
-        elif kind == 'turn.completed':
-            _tokens(tokens, value.get('usage'))
-        elif kind == 'turn.failed':
-            events.append(_event('error', text=(value.get('error') or {}).get('message') or 'the turn failed'))
-        elif kind == 'error':
-            events.append(_event('error', text=value.get('message') or 'error'))
+        mark = len(events)
+        _codex_line(value, events, by_id, tokens, meta, lines.end)
+        _placed(events, mark, lines.end)
     _stderr(events, pending)
     return events, tokens, meta
+
+
+def _codex_line(value, events, by_id, tokens, meta, end):
+    """One codex event into the list: an item replaces the one it updates, in place."""
+    kind = value.get('type')
+    if kind == 'thread.started':
+        meta['session'] = value.get('thread_id')
+    elif kind in ('item.started', 'item.updated', 'item.completed'):
+        item = value.get('item') or {}
+        ev = _codex_item(item)
+        if ev is None:
+            return
+        if kind != 'item.completed':
+            ev['running'] = True
+        else:
+            ev['_done'] = end
+        ident = item.get('id')
+        if ident in by_id:                       # started, then completed: the same place in the list
+            ev['_at'] = events[by_id[ident]].get('_at', end)
+            events[by_id[ident]] = ev
+        else:
+            if ident:
+                by_id[ident] = len(events)
+            events.append(ev)
+    elif kind == 'turn.completed':
+        _tokens(tokens, value.get('usage'))
+    elif kind == 'turn.failed':
+        events.append(_event('error', text=(value.get('error') or {}).get('message') or 'the turn failed'))
+    elif kind == 'error':
+        events.append(_event('error', text=value.get('message') or 'error'))
 
 
 def _codex_item(item):
@@ -277,7 +318,10 @@ def _codex_item(item):
 def parse_claude(text, session_file=False):
     """Claude's message shape: grok's and claude's streams, and Claude's session files (one block per line there)."""
     events, by_id, tokens, meta, pending, counted = [], {}, {}, {}, [], set()
-    for value, raw in _lines(text):
+    lines, mark, at = _Lines(text), 0, 0
+    for value, raw in lines:
+        _placed(events, mark, at)                   # the previous line's events
+        mark, at = len(events), lines.end
         if value is None:
             if not session_file:
                 pending.append(raw)
@@ -309,8 +353,10 @@ def parse_claude(text, session_file=False):
                         ev['running'] = True                # until its result comes
                     events.append(ev)
                 elif bt.endswith('_tool_result') and block.get('tool_use_id') in by_id:   # a server tool's result
-                    by_id[block['tool_use_id']].pop('running', None)
-                    _put(by_id[block['tool_use_id']], 'output', _payload(block.get('content'))[0], OUTPUT_CAP)
+                    done = by_id[block['tool_use_id']]
+                    done.pop('running', None)
+                    _answered(done, lines.end, t)
+                    _put(done, 'output', _payload(block.get('content'))[0], OUTPUT_CAP)
         elif kind == 'user' and message:
             for block in _blocks(message.get('content')):
                 bt = block.get('type')
@@ -321,6 +367,7 @@ def parse_claude(text, session_file=False):
                         events.append(_event('tool', tool='result', output=out, t=t))
                         continue
                     ev.pop('running', None)
+                    _answered(ev, lines.end, t)
                     _put(ev, 'output', out, OUTPUT_CAP)
                     if code is not None and ev['kind'] == 'command':
                         ev['exit'] = code
@@ -341,8 +388,16 @@ def parse_claude(text, session_file=False):
             if error and not res:
                 res = '; '.join(str(e) for e in value.get('errors') or []) or value.get('subtype') or 'error'
             _close(events, _event('result', text=res, error=True if error else None, tokens=dict(tokens) or None))
+    _placed(events, mark, at)
     _stderr(events, pending)
     return events, tokens, meta
+
+
+def _answered(ev, end, t):
+    """A call's answer came at the line ending at `end`, at `t` when the line says."""
+    ev['_done'] = end
+    if t is not None:
+        ev['ended'] = t
 
 
 def _close(events, result):
@@ -391,7 +446,10 @@ def _payload(content):
 
 def parse_opencode(text):
     events, tokens, meta, pending = [], {}, {}, []
-    for value, raw in _lines(text):
+    lines, mark, at = _Lines(text), 0, 0
+    for value, raw in lines:
+        _placed(events, mark, at)
+        mark, at = len(events), lines.end
         if value is None:
             pending.append(raw)
             continue
@@ -404,7 +462,10 @@ def parse_opencode(text):
             events.append(_event('reasoning', text=part.get('text'), t=t))
         elif kind == 'tool_use':
             state = part.get('state') if isinstance(part.get('state'), dict) else {}
-            ev = _tool_event(part.get('tool'), state.get('input'), part.get('callID'), t)
+            span = state.get('time') if isinstance(state.get('time'), dict) else {}
+            ev = _tool_event(part.get('tool'), state.get('input'), part.get('callID'), _when(span.get('start')) or t)
+            if _when(span.get('end')) is not None:
+                ev['ended'] = _when(span.get('end'))
             _put(ev, 'output', state.get('output') if state.get('status') != 'error' else state.get('error'), OUTPUT_CAP)
             meta_ = state.get('metadata') if isinstance(state.get('metadata'), dict) else {}
             if ev['kind'] == 'command' and isinstance(meta_.get('exit'), int):
@@ -420,6 +481,7 @@ def parse_opencode(text):
             err = value.get('error') if isinstance(value.get('error'), dict) else {}
             data = err.get('data') if isinstance(err.get('data'), dict) else {}
             events.append(_event('error', text=data.get('message') or err.get('name') or 'error', t=t))
+    _placed(events, mark, at)
     _stderr(events, pending)
     return events, tokens, meta
 
@@ -427,7 +489,10 @@ def parse_opencode(text):
 def parse_json(text):
     """JSON lines of a shape not known here (agy's stream, say): each shown as it is, text kept readable."""
     events = []
-    for value, raw in _lines(text):
+    lines, mark, at = _Lines(text), 0, 0
+    for value, raw in lines:
+        _placed(events, mark, at)
+        mark, at = len(events), lines.end
         if value is None:
             events.append(_event('text', text=_ANSI.sub('', raw)))
             continue
@@ -445,6 +510,7 @@ def parse_json(text):
             events.append(_event('error' if 'error' in kind else 'message', text=body, source=kind))
         else:
             events.append(_event('tool', tool=kind, input=value))
+    _placed(events, mark, at)
     return _merge_text(events), {}, {}
 
 
@@ -497,19 +563,69 @@ def session_file(session_id, home=None, environ=None):
 # ---------- one execution's transcript ----------
 
 def _read(path):
-    """The log's text (its end when it is over LOG_CAP) and whether it was cut."""
+    """The log's text (its end when it is over LOG_CAP), whether it was cut, and the byte offset it starts at."""
+    base = 0
     try:
         size = path.stat().st_size
         with open(path, 'rb') as fh:
             if size > LOG_CAP:
                 fh.seek(size - LOG_CAP)
                 data = fh.read()
-                data = data[data.find(b'\n') + 1:]
+                skip = data.find(b'\n') + 1
+                data, base = data[skip:], size - LOG_CAP + skip
             else:
                 data = fh.read()
     except OSError:
-        return None, False
-    return data.decode('utf-8', 'replace'), size > LOG_CAP
+        return None, False, 0
+    return data.decode('utf-8', 'replace'), size > LOG_CAP, base
+
+
+CLOCK_CAP = 8 << 20         # bytes of a clock read
+
+
+def clock_of(log):
+    """The clock beside `log` (`<role>.clock` for `<role>.log`) as (sizes, times), sizes ascending; None without one."""
+    try:
+        path = log.with_name(log.stem + '.clock')
+        with open(path, 'rb') as fh:
+            if not stat.S_ISREG(os.fstat(fh.fileno()).st_mode):
+                return None
+            text = fh.read(CLOCK_CAP).decode('ascii', 'replace')
+    except (OSError, ValueError):
+        return None
+    sizes, times = [], []
+    for line in text.splitlines():
+        parts = line.split()
+        try:
+            t, size = float(parts[0]), int(parts[1])
+        except (IndexError, ValueError):
+            continue
+        if len(parts) == 2 and (not sizes or size > sizes[-1]) and t >= (times[-1] if times else 0):
+            sizes.append(size)
+            times.append(t)
+    return (sizes, times) if sizes else None
+
+
+def _when_written(clock, offset):
+    """When the log first reached `offset` bytes, by its clock; None past its last sample."""
+    i = bisect.bisect_left(clock[0], offset)
+    return clock[1][i] if i < len(clock[0]) else None
+
+
+def _time(events, clock, base):
+    """Fills in `t` and a call's `ended` from where its lines are in the log, then drops those places."""
+    for ev in events:
+        at, done = ev.pop('_at', None), ev.pop('_done', None)
+        if clock is None:
+            continue
+        if ev.get('t') is None and at is not None:
+            when = _when_written(clock, base + at)
+            if when is not None:
+                ev['t'] = when
+        if ev.get('ended') is None and done is not None and ev['kind'] in ('command', 'edit', 'tool'):
+            when = _when_written(clock, base + done)
+            if when is not None:
+                ev['ended'] = when
 
 
 def transcript(log, harness=None, running=False, home=None, environ=None):
@@ -528,12 +644,12 @@ def transcript(log, harness=None, running=False, home=None, environ=None):
     if st is None or not stat.S_ISREG(st.st_mode):
         out['warnings'].append(f'{log.name} is not readable')
         return out
-    key = (str(log), st.st_size, st.st_mtime_ns, harness, running)
+    key = (str(log), st.st_size, st.st_mtime_ns, harness, running, _signature(log.with_name(log.stem + '.clock')))
     if key in _CACHE:
         answer, sid, seen = _CACHE[key]
         if sid is None or _signature(session_file(sid, home, environ)) == seen:
             return json.loads(answer)
-    text, cut = _read(log)
+    text, cut, base = _read(log)
     if text is None:
         out['warnings'].append(f'{log.name} is not readable')
         return out
@@ -552,7 +668,7 @@ def transcript(log, harness=None, running=False, home=None, environ=None):
         tail = parse_claude(json.dumps(result))[0]
         events, tokens, meta = tail, {}, {}
         if path is not None:
-            stext, scut = _read(path)
+            stext, scut, _ = _read(path)
             if stext is not None:
                 events, tokens, meta = parse_claude(stext, session_file=True)
                 _close(events, tail[-1])                     # the run's own result closes it
@@ -568,6 +684,8 @@ def transcript(log, harness=None, running=False, home=None, environ=None):
             meta['cost'] = result['total_cost_usd']
     else:
         events, tokens, meta = PARSERS[fmt](text)
+    # a session file's lines carry their own times, and its places are not the log's
+    _time(events, clock_of(log) if out['source'] == 'log' else None, base)
     if not running:
         for ev in events:                                    # a call cut off when the agent stopped
             ev.pop('running', None)
