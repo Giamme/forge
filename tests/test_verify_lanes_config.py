@@ -40,6 +40,10 @@ class LanesConfigTests(unittest.TestCase):
         self.run_script('forge-parallel.sh', 'run', p, '--verify', 'true', '--verify-lane', 'x=true')
         self.assertFalse((p / 'verify_cmd').exists())
         self.assertEqual(self.files(p / 'verify.d'), {'x': 'true\n'})
+        r = self.run_script('forge-parallel.sh', 'run', p, '--verify-lane', 'a=true', '--verify', 'false',
+                            '--verify-lane', 'b=false')
+        self.assertFalse((p / 'verify_cmd').exists(), r.stdout)
+        self.assertEqual(self.files(p / 'verify.d'), {'b': 'false\n'})
         self.run_script('forge-parallel.sh', 'run', p, '--verify-parallel', '5')
         self.assertEqual((p / 'verify_parallel').read_text(), '5')
 

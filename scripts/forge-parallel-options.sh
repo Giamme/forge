@@ -43,7 +43,7 @@ PP_SHIFT=2
 PP_RETRY_FAILED=0
 PP_INFRA_RETRIES=0
 PP_FINAL_REVIEW=""
-PP_LANES_FRESH=0   # the first --verify-lane of an invocation starts a fresh verify.d/
+PP_LANES_FRESH=0   # the first --verify-lane of an invocation, or the first after a --verify, starts a fresh verify.d/
 
 # --verify-lane 'name[opt,opt]=command' -> $PLAN/verify.d/name: the options become the lane
 # file's first line, `#forge: opt opt`, and the command follows, as in a lane file.
@@ -57,7 +57,8 @@ pp_lane() { # pp_lane <plan> <argument>
     rm -rf "$plan/verify.d" && mkdir "$plan/verify.d" || die "could not create $plan/verify.d"
     PP_LANES_FRESH=1
   fi
-  { [ -z "$opts" ] || printf '#forge: %s\n' "${opts//,/ }"; printf '%s\n' "$cmd"; } > "$plan/verify.d/$name"
+  { [ -z "$opts" ] || printf '#forge: %s\n' "${opts//,/ }"; printf '%s\n' "$cmd"; } > "$plan/verify.d/$name" \
+    || die "could not write $plan/verify.d/$name"
   rm -f "$plan/verify_cmd"
 }
 
