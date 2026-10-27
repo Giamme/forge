@@ -62,10 +62,9 @@ def _log(run_dir, site, key, ok, reason, latency_s, model, usage, questions, ans
         _skip(run_dir, site, reason)
 
 
-# Not decisions about a real run: replays of recorded answers, the setup key probe, and
-# backtests over history. Kept out of the run dataset so it only holds live judgments.
+# Not decisions about a real run: replays of recorded answers and the setup key probe.
+# Kept out of the run dataset so it only holds live judgments.
 _DATASET_SKIP_SITES = ('setup-probe',)
-_DATASET_SKIP_PREFIXES = ('jev-backtest',)
 
 
 def _dataset(site, key, canonical, ok, reason, latency, model, usage, qids, answers, run_dir, extra=None) -> None:
@@ -75,7 +74,7 @@ def _dataset(site, key, canonical, ok, reason, latency, model, usage, qids, answ
     against another model, or used to train one. The blob's original sha IS that key,
     so the two records join. Fail-open: never raises, never prints.
     """
-    if os.environ.get('FORGE_JEV_FIXTURES') or site in _DATASET_SKIP_SITES or site.startswith(_DATASET_SKIP_PREFIXES):
+    if os.environ.get('FORGE_JEV_FIXTURES') or site in _DATASET_SKIP_SITES:
         return
     try:
         scripts = str(Path(__file__).resolve().parent.parent)
