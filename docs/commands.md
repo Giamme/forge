@@ -64,7 +64,7 @@ the size of a `--only` selection).
 
 | Flag | Does |
 |---|---|
-| `--json` | machine-readable output; `findings` lists each one with its fingerprint, severity, origin (`tolerated`, `accepted`, `review` or `plausible`), task, `review`, `filed` state and `dismissed` mark. A whole-run finding's `review` is `{name, outdated, merged_since}` (`outdated` is null when the review has no verdict or the plan has no accepted integration commit; `merged_since` is empty unless the review is outdated). Every other finding has `review` null |
+| `--json` | machine-readable output; `findings` lists each one with its fingerprint, severity, origin (`tolerated`, `accepted`, `review` or `plausible`), task, `review`, `swept` (`{task, finding}` when the run's finding sweep fixed it; such a finding is never drafted), `filed` state and `dismissed` mark. A whole-run finding's `review` is `{name, outdated, merged_since}` (`outdated` is null when the review has no verdict or the plan has no accepted integration commit; `merged_since` is empty unless the review is outdated). Every other finding has `review` null |
 | `--offline` | never run `gh`: no filed state, commit publication judged from local refs |
 | `--only FP` | keep only these 12-hex fingerprints (repeatable or comma-separated) |
 | `--all-runs` | read `RUN` as a repository (or a plan dir naming one) and collect every run in its registry; the newest plan wins for a finding in several |
@@ -343,6 +343,8 @@ forge-parallel.sh run       <plan-dir> [--max-parallel N] [--yolo-dwarf] [--yolo
                                      [--infra-fallback | --no-infra-fallback]
                                      [--qa-threshold P0|P1|P2|P3|none] [--verify-retries N]
                                      [--escalate-after N] [--escalate-effort | --no-escalate-effort]
+                                     [--sweep P0|P1|P2|P3 [--sweep-plausible] [--sweep-max N]]
+                                     [--sweep-ahead | --no-sweep-ahead]
                                      [--fractal | --no-fractal] [--fractal-<limit> <n>]
 forge-parallel.sh retry     <plan-dir> <task-id> [--dwarf <spec>] [--timeout S]
                                      [--qa-threshold Pn|none] [--verify-retries N]
@@ -378,6 +380,10 @@ forge-parallel.sh combine   <new-plan-dir> <plan-dir> <plan-dir>... [--verify <c
 | `--verify-lane 'name[opts]=cmd'` | run, retry | `verify.d/<name>` | one verification lane; repeatable. Options as in a lane file, comma-separated (`group=g`, `first`, `retries=n`, `reports=dir`, `baseline=file`). The first one of an invocation replaces the plan's earlier lanes and `--verify`; see [verification lanes](../references/decompose.md#execution-checks-and-integration-verification) |
 | `--verify-parallel N` | run, retry, integrate | `verify_parallel` | lanes run at once, 1 to 32 (default `3`) |
 | `--escalate-after N` | run, retry | `escalate_after` | failed attempts on one model before the next goes a tier up (default `3`, `0` = off) |
+| `--sweep Pn` | run | no — this run only | once every task has merged, fix the open findings at `Pn` or worse in a few extra tasks, one per file, each with a narrow review; the plan goes to `sweep/plan.md`. Once per plan; what it does not fix stays for `forge issues`. See [the finding sweep](reviews.md#fixing-them-in-the-run-the-finding-sweep-opt-in) |
+| `--sweep-plausible` | run | no — this run only | the sweep also takes PLAUSIBLE findings of passed tasks |
+| `--sweep-max N` | run | no — this run only | at most `N` fix tasks (default `5`) |
+| `--sweep-ahead` | run | `sweep_ahead` | a task is also told the open findings in files it owns, to fix on its way (off by default; `--no-sweep-ahead` turns it off) |
 | `--escalate-effort` | run, retry | `escalate_effort` | at the top tier, retry the same model once more at its next accepted effort before stopping (off by default; `--no-escalate-effort` turns it off) |
 
 **Exit codes:** `0` ok · `2` usage or validation · `3` precondition (not a git repo, …) ·

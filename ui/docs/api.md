@@ -388,6 +388,9 @@ Every RunSummary field, plus:
   "scheduler": {"live": true, "drained": false, "stopping": null, "max_parallel": 3,
                 "pauses": [{"scope": "model:codex/gpt-6", "class": "rate_limit", "harness": "codex", "model": "gpt-6",
                             "tasks": ["perf"], "cycle": 1, "until": 1760622130.0, "exhausted": false}]},
+  "sweep": {"at": 1760622050.0, "severity": "P3", "plausible": false, "tasks": ["sweep-1"], "findings": 2, "fixed": 1,
+            "dropped": [{"task": "page", "severity": "P3", "location": "ui/page.html:3", "summary": "Old markup.",
+                         "reason": "changed", "merged_since": ["graph"]}]},
   "deferrals": ["wave 2: docs deferred (file overlap with a task already in this wave)"],
   "findings_available": true,
   "warnings": ["tasks/graph/route.jsonl line 2: not JSON"],
@@ -469,6 +472,12 @@ Every RunSummary field, plus:
   `max_parallel` (the `max_parallel` file when it holds 1 to 64, else `null`) and `pauses` (the scopes of
   `infra.paused`, `[]` without it); while no scheduler runs they are `false`, `null`, `null` and `[]`.
   A solo run's `scheduler` is `null`.
+- `sweep`: the run's finding sweep (`run --sweep`), `null` without `sweep/plan.json` (and for a solo
+  run). `tasks` are its fix tasks (tasks with a `sweep.json`), `findings` how many findings they took
+  and `fixed` how many of those their reviews marked fixed (a fix task counts once it merged).
+  `dropped` lists, from the plan, at most 200 findings the sweep left for `forge issues`, each with
+  its `reason` (`below-severity`, `dismissed`, `no-location`, `file-gone`, `changed`, `duplicate`,
+  `group-cap`, `over-max`, `no-model`) and, for `changed`, the tasks that `merged_since` the review.
 - `deferrals`: the non-empty lines of `deferrals.txt`, `[]` when it is missing.
 - `findings_available`: whether `scripts/forge-contract.py` could be loaded.
 - `fractal`: `null` without `fractal-selection.json`, else `{"enabled", "run", "available", "reason"}`
@@ -528,7 +537,10 @@ Every RunSummary field, plus:
   "now": {"role": "dwarf", "execution": "dwarf-…", "attempt": 2, "phase": "model", "phase_started": 1760621200.0,
           "started": 1760621195.0, "last_output_at": 1760621410.2,
           "call": {"kind": "command", "command": "npm test", "tool": null, "started": 1760621390.0, "check": "test"}},
-  "waiting": null
+  "waiting": null,
+  "sweep": null,
+  "swept": [{"id": "S1", "severity": "P2", "confidence": "CONFIRMED", "task": "reader", "location": "ui/reader.py:12",
+             "summary": "Status is read twice.", "status": "fixed", "note": null, "by": "sweep-1"}]
 }
 ```
 
@@ -588,6 +600,12 @@ Every RunSummary field, plus:
   in a stopped status such as `FAIL`), `stopping` (`mode`), `drained`, `overlap` (`on`: running
   tasks whose files overlap its own, as forge-schedule.py tells overlap), `slot` (`running`,
   `max_parallel`: the run is at its capacity) or `next` (nothing holds it).
+- `sweep`: `null` unless the task is a finding sweep's fix task (it has a `sweep.json`). Then `file`
+  and `findings`, each `{id, severity, confidence, task, location, summary, status, note}`: `task` is
+  the task the finding came from, `status` what the fix task's review said of it (`fixed`,
+  `not-fixed`, or `unreported` when it merged without a line for it; read from `sweep.outcome.json`)
+  and `null` until the fix task merged, `note` the review's words on it.
+- `swept`: this task's findings a fix task took, the same objects plus `by` (the fix task); `[]`.
 - Text fields are `null` when the file is missing.
 
 A solo run's one task uses this same shape. `id` is `solo` and `title` is the goal, or
@@ -599,7 +617,8 @@ in `attempts.tsv`, or `null`. `escalations`, `route` and `shadow` are empty. `ve
 `qa_tail` come from `qa.last`, and `prompt` comes from `prompt.md`. `deps` and `files` are
 `[]`; `difficulty`, `accepted_by`, `approach` and `retry_findings` are `null`; `accepted` is
 false; `accepted_attempt` and `accepted_over` are `null`; `explored` is false; `clef` is
-`{first_pass: null, retry_pass: {}}`; `waiting` is `null`. `request` on the detail is `request.md`.
+`{first_pass: null, retry_pass: {}}`; `waiting` and `sweep` are `null`, `swept` is `[]`. `request` on
+the detail is `request.md`.
 
 ## Execution
 

@@ -49,6 +49,11 @@ A decomposed run adds:
   tasks/<id>/{capsule.md,prompt.md,dwarf.*,qa.*,changes.diff,status}
   tasks/<id>/attempt, attempts.tsv     attempts spent; one audit row per entry (incl. refunded stops)
   tasks/<id>/known_issues.md, qa.gate  findings tolerated by --qa-threshold, and the gate's decision
+  sweep/plan.json, plan.md             run --sweep: the fix tasks, their findings, and every finding left out with its reason
+  tasks/<id>/sweep.json                a fix task's findings (S1, S2, ...), each with its source task and key
+  tasks/<id>/sweep.outcome.json        what the fix task's review said of each, written when it merged; forge issues reads it
+  tasks/<id>/sweep.ahead.json          run --sweep-ahead: the open findings this task was handed
+  sweep_ahead                          run --sweep-ahead is on for this plan
   tasks/<id>/guard.txt                 what forge observed about the implementer (self-commit, orphans, promises)
   tasks/<id>/infra.txt, resume, noretry  infrastructure stop record (<role>.infra plus stage=); QA-only resume marker; no-progress marker
   tasks/<id>/<role>.harness            only while a guarded dispatch runs: its harness's pid and start time, for forge-guard.py stop

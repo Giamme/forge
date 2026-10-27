@@ -172,6 +172,39 @@ that merged after it. In `--json` each whole-run finding carries `review`: `name
 plan has no accepted integration commit, and `merged_since` is empty unless the review
 is outdated. Every other finding has `review` null.
 
+## Fixing them in the run: the finding sweep (opt-in)
+
+`run --sweep P3` fixes the tolerated findings while the run's context is fresh, instead of leaving
+them for issues. Once every task has merged, and before the combined verification, forge plans one
+sweep:
+
+- **Which findings.** The CONFIRMED findings `--qa-threshold` tolerated at `P3` or worse, and
+  PLAUSIBLE ones too with `--sweep-plausible`. Left out:
+  - findings a person accepted;
+  - dismissed ones (`forge issues --dismiss`), and ones with no file or whose file is gone;
+  - ones whose code a later task changed after the review.
+- **How many tasks.** One fix task per file, worst first, at most 8 findings each and
+  `--sweep-max N` tasks (default 5). They run in parallel up to `--max-parallel`.
+- **Which models.** Each fix task's implementer is your low tier (`--dwarf-low`, else `--dwarf`),
+  or the implementer of the task the finding came from. Its reviewer is that task's reviewer.
+- **The plan.** It lists the groups, the findings, the dispatches and everything left out with
+  its reason. It is printed and kept in `<plan>/sweep/plan.md`.
+
+A fix task's review is narrow. The reviewer says, for each finding, whether the change fixed it
+(`S1: FIXED`, `S2: NOT FIXED — why`), and reports only regressions the change introduced. It passes
+when at least one finding is fixed and nothing blocking broke. A finding the sweep fixed is no
+longer offered as an issue. One it did not fix still is, and so is anything a sweep review found:
+there is only one round. A fix task that fails does not fail the run.
+
+The sweep uses the same `--retry-failed` budget and controls as the rest of the run, and a plan is
+swept once. A run without `--sweep` behaves as before. The cost is at least two dispatches per file,
+plus retries, spent on findings the threshold had said could wait, and changes land right before
+the final review. That is why it is off by default.
+
+`run --sweep-ahead` is the cheaper first step and needs no extra dispatch. A task dispatched after
+others merged is told the open findings in the files it owns, at most three, to fix only when its
+change already goes through that code. Its reviewer is told the same.
+
 ## Accepting a task despite its reviewer
 
 ```bash

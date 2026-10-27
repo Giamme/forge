@@ -11,6 +11,11 @@ Two opt-in behaviours live here, both off by default so a plain `run` is unchang
   stops dispatching, lets running tasks drain and exits 8: nothing was the task's fault
   and no attempt was spent, so the next `run` simply resumes.
 
+A third, ``--sweep Pn``, also per invocation: once every task has merged, the open review
+findings at Pn or worse become fix tasks (``forge-parallel.sh _sweep``, forge-sweep.py) that
+this run then dispatches like any other, once per plan. A fix task that fails leaves its
+findings for ``forge issues`` and does not fail the run.
+
 Both numbers are per invocation, but while the scheduler runs they are mirrored into the
 plan dir (retry_budget, infra_budget, tasks/<id>/retry_budget) and re-read at every
 decision, so `forge control` can change them mid-run. See "live control files" below.
@@ -527,7 +532,8 @@ def live_stop(plan: object, names: object) -> None:
 
 
 def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
-             infra_retries: int = 0) -> int:
+             infra_retries: int = 0, sweep: str | None = None, sweep_max: int = 5,
+             sweep_plausible: bool = False) -> int:
     if capacity <= 0:
         raise ValueError('capacity must be positive')
     if retry_failed < 0 or infra_retries < 0:
@@ -569,6 +575,7 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
     human = set()      # tasks whose next dispatch is a `forge control retry` (dataset trigger human)
     fractal = _fractal_plan(plan)
     drain_told = False # the drained message was printed for this drain
+    sweep_asked = False  # this invocation already asked for the finding sweep
 
     def status(name: str) -> str:
         root = plan / 'tasks' / name
@@ -880,6 +887,38 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
             _warn('waves.tsv was not refreshed for ' + name + '; the task still runs')
         return 'applied', None
 
+    def is_fix(name: str) -> bool:
+        """A finding sweep's fix task."""
+        return (plan / 'tasks' / name / 'sweep.json').is_file()
+
+    def sweep_due() -> bool:
+        """--sweep was given, every task merged, nothing stops or holds the run, and this plan was
+        never swept (sweep/plan.json is the planner's record, and its marker)."""
+        return (bool(sweep) and not sweep_asked and not interrupted and not graceful and not paused
+                and not drained(plan) and not (plan / 'sweep' / 'plan.json').exists()
+                and all(status(name) == 'MERGED' for name in tasks))
+
+    def start_sweep() -> int:
+        """Plan the finding sweep and queue its fix tasks; how many were queued. Whatever goes
+        wrong here ends the run without a sweep, never with a failure."""
+        nonlocal sweep_asked
+        sweep_asked = True
+        command = ['/bin/bash', script, '_sweep', str(plan), '--severity', sweep, '--max', str(sweep_max)]
+        result = subprocess.run(command + (['--plausible'] if sweep_plausible else []),
+                                stdout=subprocess.PIPE, text=True)
+        if result.returncode:
+            _warn('the finding sweep could not be planned (exit ' + str(result.returncode)
+                  + '); its findings stay for forge issues')
+            return 0
+        queued = 0
+        for name in result.stdout.split():
+            outcome, reason = apply_add({'task': name})
+            if outcome == 'applied':
+                queued += 1
+            else:
+                _warn('sweep task ' + name + ' was not queued: ' + str(reason))
+        return queued
+
     def handle_requests() -> None:
         """Apply or refuse each queued request; the outcome is logged under the control lock."""
         for name in list_requests(plan):
@@ -960,7 +999,7 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
             if status(name) not in ('PENDING', 'BLOCKED', 'INFRA'):
                 pending.remove(name)
         swept = time.monotonic()
-        while pending or active or waiting_scopes():
+        while pending or active or waiting_scopes() or sweep_due():
             # Reap before honouring the stop. A signal during the sleep, and a task
             # that exits while another merge is still running, have already written
             # a result; breaking first used to skip them and mark them INTERRUPTED.
@@ -1071,6 +1110,8 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
                     # BLOCKED would turn "the provider was down" into a recorded failure.
                     # A task held back by its pin is still an infrastructure stop.
                     break
+                if not pending and sweep_due() and start_sweep():
+                    continue
                 for name in pending:
                     mark(name, 'BLOCKED')
                 break
@@ -1125,7 +1166,8 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
     if paused or any(live_pause(pause) for pause in pauses.values()) \
             or any(status(name) == 'INFRA' for name in tasks):
         return INFRA_EXIT
-    return 0 if all(status(name) == 'MERGED' for name in tasks) else 5
+    # A fix task that did not merge leaves its findings for `forge issues`; the run's own work is done.
+    return 0 if all(status(name) == 'MERGED' for name in tasks if not is_fix(name)) else 5
 
 
 def main() -> None:
@@ -1153,9 +1195,12 @@ def main() -> None:
         parser.add_argument('capacity', type=int)
         parser.add_argument('--retry-failed', type=int, default=0, metavar='N')
         parser.add_argument('--infra-retries', type=int, default=0, metavar='M')
+        parser.add_argument('--sweep', choices=('P0', 'P1', 'P2', 'P3'))
+        parser.add_argument('--sweep-max', type=int, default=5, metavar='N')
+        parser.add_argument('--sweep-plausible', action='store_true')
         args = parser.parse_args(sys.argv[1:])
         sys.exit(schedule(args.script, args.plan, args.capacity, args.retry_failed,
-                          args.infra_retries))
+                          args.infra_retries, args.sweep, args.sweep_max, args.sweep_plausible))
     except (OSError, ValueError, KeyError) as error:
         print('forge scheduler: ' + str(error), file=sys.stderr)
         sys.exit(3)

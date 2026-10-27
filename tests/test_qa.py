@@ -340,10 +340,10 @@ class PromptTextTests(unittest.TestCase):
     def test_the_verdict_lines_still_parse(self):
         # Reviewers copy the verdict line with its gloss; forge_verdict must accept every variant.
         artifact = ROOT / 'scripts' / 'forge-artifact.sh'
-        for threshold in (None, 'P0', 'P2', 'P3'):
-            lines = contract.qa_text('tail', 'task', threshold).splitlines()[-2:]
+        for kind, threshold in [(kind, t) for kind in ('task', 'sweep') for t in (None, 'P0', 'P2', 'P3')]:
+            lines = contract.qa_text('tail', kind, threshold).splitlines()[-2:]
             for line, expected in zip(lines, ('PASS', 'FAIL')):
-                with self.subTest(threshold=threshold, expected=expected):
+                with self.subTest(kind=kind, threshold=threshold, expected=expected):
                     with tempfile.TemporaryDirectory() as tmp:
                         last = Path(tmp) / 'qa.last'
                         last.write_text('review\n' + line.strip() + '\n', encoding='utf-8')

@@ -254,11 +254,43 @@ window.ForgePanel = (() => {
         ['Final review', finalValue]]);
       if (F.final.status === 'OUTDATED') muted(f, RM.reviewSinceLine(F.final));
       if (F.final.findings) findingCounts(f, F.final.findings);
+      const sweep = RM.sweepLine(run.sweep);
+      if (sweep) {
+        fields(f, [['Finding sweep', `${sweep} (${display(run.sweep.severity)} and worse)`]]);
+        const left = list(run.sweep.dropped);
+        if (left.length) details(f, `Left for forge issues by the sweep (${left.length})`,
+          left.map(d => `[${display(d.severity)}] ${display(d.location)} — ${display(d.summary)} (task ${display(d.task)}): ${display(d.reason)}${list(d.merged_since).length ? ' after ' + d.merged_since.join(', ') : ''}`).join('\n'),
+          'sweep-left');
+      }
     }
     if (list(run.deferrals).length) details(host, `Deferred tasks (${run.deferrals.length})`, run.deferrals.join('\n'), 'deferrals');
     controlsSection(host, ctx);
     runRecord(host, ctx);
     muted(host, 'Select a task, an attempt or a finish node on the map or in the table to see its prompts, models, timings and findings.');
+  }
+
+  // A finding sweep's fix task: the findings it took and what its review said of each. A task whose findings a
+  // fix task took: which, and where that stands.
+  function sweepSection(host, ctx, task) {
+    const own = task.sweep && list(task.sweep.findings), took = list(task.swept);
+    if (!(own && own.length) && !took.length) return;
+    const s = section(host, own && own.length ? 'Finding sweep' : 'Taken by the finding sweep');
+    if (own && own.length) muted(s, `A fix task: the open findings of earlier tasks in ${display(task.sweep.file)}, with a narrow review of each.`);
+    const ul = el('ul', undefined, 'plain sweep-list');
+    for (const f of own && own.length ? own : took) {
+      const st = RM.sweepState(f.status), li = el('li', undefined, 'sweep-item');
+      const head = el('div', undefined, 'sweep-head');
+      head.append(el('i', undefined, 'lamp st-' + st.lamp), sevChip(f.severity || '—', f.severity), el('span', f.location || '—', 'mono sweep-where'));
+      li.append(head, el('p', f.summary || '', 'sweep-what'));
+      const meta = el('p', undefined, 'sweep-meta');
+      meta.append(document.createTextNode(`${f.id} · ${st.text}`));
+      const other = own && own.length ? f.task : f.by;
+      if (other) { meta.append(document.createTextNode(own && own.length ? ' · from ' : ' · by ')); meta.append(link(other, ctx.hash({ kind: 'task', id: other }), () => ctx.onSelect({ kind: 'task', id: other }))); }
+      if (f.note) meta.append(document.createTextNode(' — ' + f.note));
+      li.append(meta);
+      ul.append(li);
+    }
+    s.append(ul);
   }
 
   function taskView(host, ctx, task) {
@@ -278,6 +310,7 @@ window.ForgePanel = (() => {
     host.append(head);
     if (!solo) fields(host, [['Difficulty', task.difficulty], ['Depends on', depLinks(task.deps, ctx)], ['Files', list(task.files).join('\n') || '—', true], ['Branch', task.branch, true]]);
     if (C) C.nowSection(host, ctx, task);
+    sweepSection(host, ctx, task);
 
     // the models: who owned it, how it was routed, what it was escalated to
     const ms = section(host, 'Models');

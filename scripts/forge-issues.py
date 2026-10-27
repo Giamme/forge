@@ -21,7 +21,11 @@ gh-proman computes, and both tools skip a finding either of them already filed, 
 When the gh-proman skill is configured for the repository, prefer `gh-proman findings`: it also
 adds the issues to the team's project board with a priority. This command is the fallback.
 
---json lists every finding in `findings` (fp, severity, origin, plan, task, text, `filed`, `review`, ...). --offline never
+A finding a run's finding sweep (`run --sweep`) fixed stays listed, with `swept` = {task, finding} (null
+otherwise), and is never drafted: the sweep task that merged and whose reviewer marked it FIXED is its record.
+One the sweep did not fix is drafted as before.
+
+--json lists every finding in `findings` (fp, severity, origin, plan, task, text, `filed`, `review`, `swept`, ...). --offline never
 runs `gh` (no filed state, publication of commits judged from local refs only). --only FP[,FP] keeps those
 fingerprints. --all-runs reads <run> as a repository (or a plan dir naming one) and collects every run in its
 registry, the newest plan winning for a finding present in several. A caller filing an explicit selection
@@ -611,6 +615,41 @@ def fingerprint(slug, f):
     return hashlib.sha1(f"{slug.lower()}|{f['file']}|{norm}".encode("utf-8")).hexdigest()[:12]
 
 
+def finding_key(f):
+    """A finding's fingerprint without the repository, for what is recorded before any slug is known: the
+    finding sweep (forge-sweep.py) keys its findings by it."""
+    return fingerprint("", f)
+
+
+def swept(plan_dir):
+    """{finding_key: {task, finding}} for the findings a merged sweep task's reviewer marked FIXED."""
+    fixed = {}
+    tasks = Path(plan_dir) / "tasks"
+    if not tasks.is_dir():
+        return fixed
+    for task_dir in sorted(tasks.iterdir()):
+        if not (task_dir / "merged").exists() or not (task_dir / "sweep.outcome.json").is_file():
+            continue
+        try:
+            items = json.loads(read(task_dir / "sweep.outcome.json"))["findings"]
+        except (ValueError, KeyError, TypeError):
+            continue
+        for item in items if isinstance(items, list) else []:
+            if isinstance(item, dict) and item.get("status") == "fixed" and isinstance(item.get("key"), str):
+                fixed.setdefault(item["key"], {"task": task_dir.name, "finding": item.get("id")})
+    return fixed
+
+
+def mark_swept(found):
+    """Set `swept` on each finding a sweep of its own plan fixed (None otherwise)."""
+    plans = {}
+    for f in found:
+        plan_dir = f.get("plan_dir")
+        if plan_dir not in plans:
+            plans[plan_dir] = swept(plan_dir) if plan_dir else {}
+        f["swept"] = plans[plan_dir].get(finding_key(f)) if f.get("task") else None
+
+
 def github_slug(repo_path):
     res = run(["git", "-C", repo_path, "remote", "get-url", "origin"], check=False)
     m = re.search(r"github\.com[:/]([^/\s]+)/([^/\s]+?)(?:\.git)?/?$", res.stdout.strip())
@@ -989,13 +1028,14 @@ def finding_entry(f, filed=None, dismissed=None):
             "plan": f["plan"], "plan_dir": f["plan_dir"], "task": f["task"], "file": f["file"],
             "summary": (f["text"].splitlines() or [""])[0][:160], "text": f["text"],
             "reviewer": f["reviewer"], "commit": f.get("commit") or "",
-            "review": f.get("review"),
+            "review": f.get("review"), "swept": f.get("swept"),
             "filed": {"url": filed["url"], "state": filed["state"]} if filed else None,
             "dismissed": dismissed}
 
 
 def file_findings(args):
     meta, found, notes = collect(Path(args.run), args.include_plausible, args.all_runs)
+    mark_swept(found)
     repo_path, warnings = run_repository(meta)
     slug = args.repo or github_slug(repo_path)
     if not slug:
@@ -1028,6 +1068,8 @@ def list_and_file(args, meta, found, notes, repo_path, slug, warnings):
         entries.append(finding_entry(f, issue, mark))
         if issue:
             already.append({"finding": f["raw"], "issue": issue["url"], "state": issue["state"]})
+        elif f.get("swept"):
+            continue                       # fixed in the run by its finding sweep
         elif not mark or args.include_dismissed:
             todo.append(f)
     notes = notes + [f"--only {fp}: no such open finding" for fp in args.only if fp not in known]
@@ -1058,7 +1100,8 @@ def list_and_file(args, meta, found, notes, repo_path, slug, warnings):
     drafts.sort(key=lambda d: SEVERITIES.index(d["severity"]))
     out = {"repo": slug, "plan": meta["plan"], "notes": notes, "warnings": warnings,
            "summary": {"findings": len(seen), "already_filed": len(already),
-                       "dismissed": sum(1 for e in entries if e["dismissed"]), "drafts": len(drafts),
+                       "dismissed": sum(1 for e in entries if e["dismissed"]),
+                       "swept": sum(1 for e in entries if e["swept"]), "drafts": len(drafts),
                        **{o: sum(1 for f in todo if f["origin"] == o)
                           for o in ("tolerated", "accepted", "review", "plausible")}},
            "findings": entries, "already_filed": already, "drafts": drafts}
@@ -1103,6 +1146,7 @@ def create(slug, drafts, args):
 def print_human(out, applied):
     s = out["summary"]
     dismissed = f", {s['dismissed']} dismissed" if s["dismissed"] else ""
+    dismissed += f", {s['swept']} fixed by the run's finding sweep" if s.get("swept") else ""
     print(f"{out['repo']} · run {out['plan']}: {s['findings']} finding(s), {s['already_filed']} already filed{dismissed}, "
           f"{s['drafts']} draft(s) ({s['tolerated']} tolerated, {s['accepted']} accepted, "
           f"{s['review']} review, {s['plausible']} plausible)")

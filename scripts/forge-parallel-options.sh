@@ -34,6 +34,12 @@
 #                                                                  tasks already stopped are decided again
 #   --no-escalate-effort    run retry         (removes the file)   turn that step off (the default)
 #   --final-review SPEC     integrate         $PLAN/final_qa       QA spec for the whole-run review
+#   --sweep Pn              run               (this run only)      once every task merged, fix the open findings
+#                                                                  at Pn or worse in a few tasks, one per file
+#   --sweep-plausible       run               (this run only)      the sweep takes PLAUSIBLE findings too
+#   --sweep-max N           run               (this run only)      at most N sweep tasks (default 5)
+#   --sweep-ahead           run               $PLAN/sweep_ahead    a task is told the open findings in files it
+#   --no-sweep-ahead                                               owns, to fix on its way (off by default)
 #   --verify-lane L=CMD     run retry         $PLAN/verify.d/<L>   a verification lane: name[options]=command,
 #                                                                  options as in a lane file (group=g,first,...);
 #                                                                  repeatable; replaces --verify and the lanes
@@ -43,6 +49,10 @@ PP_SHIFT=2
 PP_RETRY_FAILED=0
 PP_INFRA_RETRIES=0
 PP_FINAL_REVIEW=""
+PP_SWEEP=""
+PP_SWEEP_MAX=5
+PP_SWEEP_MAX_SET=0
+PP_SWEEP_PLAUSIBLE=0
 PP_LANES_FRESH=0   # the first --verify-lane of an invocation, or the first after a --verify, starts a fresh verify.d/
 
 # --verify-lane 'name[opt,opt]=command' -> $PLAN/verify.d/name: the options become the lane
@@ -127,6 +137,22 @@ forge_pp_flag() {
       case "${2:-}" in ''|*[!0-9]*) die "--verify-parallel needs an integer from 1 to 32" ;; esac
       [ "$2" -ge 1 ] && [ "$2" -le 32 ] || die "--verify-parallel needs an integer from 1 to 32"
       printf '%s' "$2" > "$plan/verify_parallel" ;;
+    --sweep)
+      [ "$cmd" = run ] || return 1
+      case "${2:-}" in P0|P1|P2|P3) PP_SWEEP="$2" ;; *) die "--sweep needs P0, P1, P2 or P3: the least severe finding it fixes" ;; esac ;;
+    --sweep-max)
+      [ "$cmd" = run ] || return 1
+      case "${2:-}" in ''|*[!0-9]*|0) die "--sweep-max needs a positive integer" ;; esac
+      PP_SWEEP_MAX="$2"; PP_SWEEP_MAX_SET=1 ;;
+    --sweep-plausible)
+      [ "$cmd" = run ] || return 1
+      PP_SHIFT=1; PP_SWEEP_PLAUSIBLE=1 ;;
+    --sweep-ahead)
+      [ "$cmd" = run ] || return 1
+      PP_SHIFT=1; printf 'on\n' > "$plan/sweep_ahead" ;;
+    --no-sweep-ahead)
+      [ "$cmd" = run ] || return 1
+      PP_SHIFT=1; rm -f "$plan/sweep_ahead" ;;
     --final-review)
       [ "$cmd" = integrate ] || return 1
       PP_FINAL_REVIEW="${2:?--final-review needs a QA spec}"

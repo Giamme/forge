@@ -88,6 +88,12 @@ lists them. codex and grok log no times, so forge keeps a small clock beside eac
 (`<role>.clock`, off with `FORGE_LOG_CLOCK=off`); runs from before it show their checks without
 times.
 
+A run with a [finding sweep](reviews.md#fixing-them-in-the-run-the-finding-sweep-opt-in) shows its fix
+tasks like any other. A fix task's inspector lists the findings it took, each with a lamp for what
+its review said (fixed, not fixed, not reported), and links each to the task it came from. That task
+shows which of its findings the sweep took and where they stand. The run's *Finish* says how many
+the sweep fixed and lists what it left for `forge issues`, with each reason.
+
 ### Controls
 
 forge-ui reads everything, and it changes things only by calling forge's own commands: it
@@ -112,8 +118,9 @@ indistinguishable from the same command typed in a terminal, except that `contro
   says why.
 - **Open findings:** the review findings a run left open (tolerated by `--qa-threshold`,
   PLAUSIBLE, or left by the whole-run review), for this run or every run of its repository.
-  Findings of an outdated review carry an "outdated review" marker, and findings a person
-  accepted have origin `accepted`. Select some and file them as GitHub issues, or dismiss the
+  Findings of an outdated review carry an "outdated review" marker, findings a person
+  accepted have origin `accepted`, and findings the run's finding sweep fixed are *swept*: listed,
+  never filed. Select some and file them as GitHub issues, or dismiss the
   ones that need no work (and take that back). It runs `forge issues`, so a finding is never
   filed twice.
 - **Delete a run:** a dialog that first shows a dry run, then deletes the run directory

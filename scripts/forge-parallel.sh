@@ -10,6 +10,8 @@
 #                                     [--verify <command>] [--setup <command>] [--dry-run]
 #                                     [--timeout S] [--retry-failed N] [--infra-retries M]
 #                                     [--qa-threshold P0|P1|P2|P3] [--verify-retries N] [--no-forecast]
+#                                     [--sweep P0|P1|P2|P3 [--sweep-plausible] [--sweep-max N]]
+#                                     [--sweep-ahead | --no-sweep-ahead]
 #   forge-parallel.sh retry <plan-dir> <task-id> [--dwarf <spec>] [--setup <command>]
 #                                     [--timeout S] [--qa-threshold Pn] [--verify-retries N]
 #   forge-parallel.sh integrate <plan-dir> --approved [--verify-retries N] [--final-review <qa-spec>]
@@ -20,6 +22,8 @@
 #   forge-parallel.sh _task <plan-dir> <task-id>     (internal; coordinator target)
 #   forge-parallel.sh _qa_only <plan-dir> <task-id>  (internal; exit 0 when the next entry only re-runs QA)
 #   forge-parallel.sh _waves <plan-dir>             (internal; rewrite waves.tsv after a live `forge control add`)
+#   forge-parallel.sh _sweep <plan-dir> --severity Pn [--plausible] [--max N]
+#                                                   (internal; plan the finding sweep, print its task ids)
 #
 # Routing flags (plan):
 #   --dwarf <spec>          fallback for any difficulty tier not named below
@@ -49,6 +53,13 @@
 #   --infra-retries M       wait out quota/auth/network stops up to M times instead of pausing
 #   --qa-threshold Pn       a reviewer FAIL made only of findings less severe than Pn is
 #                           accepted as PASS-with-known-issues (P0 worst ... P3 mildest)
+#   --sweep Pn              once every task has merged, before verification: the open findings
+#                           at Pn or worse (tolerated, and PLAUSIBLE with --sweep-plausible) become
+#                           at most --sweep-max N fix tasks (default 5), one per file, each with a
+#                           narrow review; the sweep plan is printed and kept in sweep/. Once per
+#                           plan; what it does not fix stays for `forge issues`
+#   --sweep-ahead           a task is also told the open findings in files it owns, to fix only
+#                           on its way (kept for the plan; --no-sweep-ahead turns it off)
 #
 # Exit codes: 0 ok | 2 usage/validation | 3 precondition (not a git repo, etc.)
 #             5 some task failed QA or verification failed | 6 integration conflict
@@ -584,6 +595,28 @@ preflight_plan() {
   fi
 }
 
+# The implementer a sweep task gets when the plan has a low tier (or a plain --dwarf pool): checked
+# with the rest, before any model is paid for, since no task may have used it yet.
+sweep_preflight() { # sweep_preflight <plan>
+  local spec flags=""
+  spec="$(python3 -c 'import json, sys
+try:
+    data = json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit()
+for tier in ("low", "any"):
+    specs = data.get(tier) if isinstance(data, dict) else None
+    if isinstance(specs, list) and specs and isinstance(specs[0], str) and specs[0]:
+        print(specs[0]); break' "$1/fractal-routing.json" 2>/dev/null)"
+  [ -n "$spec" ] || return 0
+  [ -f "$1/yolo_dwarf" ] && flags=--yolo
+  /bin/bash "$DISPATCH" doctor --spec "$spec" --role dwarf $flags
+}
+
+sweep_plan() { # sweep_plan <plan> --severity Pn [--plausible] [--max N]: the scheduler's _sweep
+  python3 "$SKILL_DIR/scripts/forge-sweep.py" plan "$@"
+}
+
 write_capsule() { # write_capsule <plan> <id> <role>
   local PLAN="$1" me="$2" role="$3" T="$1/tasks.tsv"
   local run_id; run_id="$(cat "$PLAN/run_id")"
@@ -798,6 +831,7 @@ do_task_body() (
         --run-dir "$tdir" > "$tdir/dwarf.memory"
     {
       python3 "$SKILL_DIR/scripts/forge-prompt.py" --requirements "$tdir/prompt.md" --capsule "$tdir/baseline.capsule" --approach "$tdir/approach.md" --retry "$tdir/retry_findings.md" --memory "$tdir/dwarf.memory"
+      [ ! -f "$PLAN/sweep_ahead" ] || python3 "$SKILL_DIR/scripts/forge-sweep.py" ahead "$PLAN" "$id" --role dwarf 2>/dev/null
       echo "Implement this task in the repository. Follow the intended approach unless it is wrong; explain deviations. Run the task's requested verification and report results."
       echo "On retry, fix the findings in the existing work; preserve parts not criticised. Explain any finding you reject."
       echo; python3 "$SKILL_DIR/scripts/forge-contract.py" dwarf
@@ -933,13 +967,17 @@ do_task_body() (
   else
     rm -f "$tdir/changes.since.diff" "$tdir/changes.since.range" "$tdir/changes.since.stat"
   fi
+  # A finding sweep's fix task gets the narrow review: one FIXED / NOT FIXED line per finding.
+  local qa_kind=task
+  [ ! -f "$tdir/sweep.json" ] || qa_kind=sweep
   # QA uses the dispatch-time ownership and baseline, never later merge state.
   /bin/bash "$MEMORY" inject "$REPO" qa --task "$tdir/prompt.md" \
       --run-dir "$tdir" > "$tdir/qa.memory"
   {
     python3 "$SKILL_DIR/scripts/forge-prompt.py" --requirements "$tdir/prompt.md" --capsule "$tdir/baseline.capsule" --approach "$tdir/approach.md" --retry "$tdir/retry_findings.md" ${prompt_extra[@]+"${prompt_extra[@]}"} --memory "$tdir/dwarf.memory" --memory "$tdir/qa.memory"
-    python3 "$SKILL_DIR/scripts/forge-contract.py" qa --part head --kind task
+    python3 "$SKILL_DIR/scripts/forge-contract.py" qa --part head --kind "$qa_kind"
     echo
+    [ ! -f "$PLAN/sweep_ahead" ] || python3 "$SKILL_DIR/scripts/forge-sweep.py" ahead "$PLAN" "$id" --role qa 2>/dev/null
     if [ -s "$tdir/failfirst.txt" ]; then cat "$tdir/failfirst.txt"; echo; fi
     # A subset failure is the one thing a reviewer most wants to know and cannot see
     # from the diff. It runs in a throwaway export of the reviewed commit, so the task
@@ -971,7 +1009,7 @@ do_task_body() (
       echo "matters because another task may own those files."
       echo
     fi
-    python3 "$SKILL_DIR/scripts/forge-contract.py" qa --part tail --kind task ${qa_thr:+--threshold "$qa_thr"}
+    python3 "$SKILL_DIR/scripts/forge-contract.py" qa --part tail --kind "$qa_kind" ${qa_thr:+--threshold "$qa_thr"}
     echo
     echo '```diff'; cat "$tdir/changes.diff"; echo '```'
     echo; /bin/bash "$MEMORY" note qa
@@ -1147,6 +1185,8 @@ merge_task() { # merge_task <plan> <id> -> 0 merged, 1 conflicted
     git -C "$int_wt" rev-parse HEAD > "$PLAN/accepted.integration"
     touch "$PLAN/tasks/$id/merged"
     rm -f "$tdir/conflict.files"
+    # Which of a sweep task's findings its reviewer marked fixed: what `forge issues` leaves out.
+    [ ! -f "$tdir/sweep.json" ] || python3 "$SKILL_DIR/scripts/forge-sweep.py" settle "$PLAN" "$id" >/dev/null 2>&1 || true
     forge_dataset_event merge --dir "$PLAN" --task "$id" --set status=MERGED --set commit="$reviewed" \
       --set integration="$(cat "$PLAN/accepted.integration")"
     return 0
@@ -1678,6 +1718,7 @@ do_run() {
     esac
   done
   [ "$JEV_OPTS" = 1 ] && forge_jev_settle "$PLAN"
+  [ -n "$PP_SWEEP" ] || [ "$PP_SWEEP_PLAUSIBLE$PP_SWEEP_MAX_SET" = 00 ] || die "--sweep-plausible and --sweep-max go with --sweep"
   case "$OUTPUT" in summary|full) ;; *) die "--output must be summary or full" ;; esac
   export FORGE_OUTPUT="$OUTPUT"
   case "$MAXP" in ''|*[!0-9]*) die "--max-parallel must be positive" ;; esac
@@ -1723,6 +1764,7 @@ do_run() {
   [ "${FORGE_RIPWIRE:-}" != off ] || touch "$PLAN/no_ripwire"
   [ ! -f "$PLAN/no_ripwire" ] || export FORGE_RIPWIRE=off
   preflight_plan "$PLAN" || return $?
+  [ -z "$PP_SWEEP" ] || sweep_preflight "$PLAN" || return $?
   /bin/bash "$SKILL_DIR/scripts/forge-install-ripwire.sh" || true
   forge_metric_phase preparation
   mkdir -p "$wt_root"
@@ -1763,6 +1805,8 @@ do_run() {
   local sched_rc=0 paused=0 sched_args=()
   [ "$PP_RETRY_FAILED" -gt 0 ] && sched_args+=(--retry-failed "$PP_RETRY_FAILED")
   [ "$PP_INFRA_RETRIES" -gt 0 ] && sched_args+=(--infra-retries "$PP_INFRA_RETRIES")
+  [ -n "$PP_SWEEP" ] && sched_args+=(--sweep "$PP_SWEEP" --sweep-max "$PP_SWEEP_MAX")
+  [ "$PP_SWEEP_PLAUSIBLE" = 1 ] && sched_args+=(--sweep-plausible)
   forge_metric_phase dispatch
   # In the background so a signal to this shell ends the wait; the scheduler gets it as TERM,
   # stops its tasks and returns 130.
@@ -1983,5 +2027,6 @@ case "$CMD" in
   _prepare_retry) retry_for_scheduler "$@" ;;
   _qa_only)  qa_only_next "$@" ;;
   _waves)    compute_waves "$@" ;;
+  _sweep)    sweep_plan "$@" ;;
   *) die "unknown subcommand '$CMD'" ;;
 esac

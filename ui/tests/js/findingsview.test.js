@@ -14,6 +14,8 @@ test('status: open, filed while OPEN, fixed when CLOSED, dismissed', () => {
   assert.equal(F.statusOf(row('a', { filed: { url: 'u', state: 'CLOSED' } })), 'fixed');
   assert.equal(F.statusOf(row('a', { filed: { url: 'u' } })), 'filed');
   assert.equal(F.statusOf(row('a', { dismissed: { at: 't', reason: 'dup' } })), 'dismissed');
+  assert.equal(F.statusOf(row('a', { swept: { task: 'sweep-1', finding: 'S1' } })), 'swept');      // fixed in the run
+  assert.equal(F.selectable('file', row('a', { swept: { task: 'sweep-1', finding: 'S1' } })), false);
   assert.equal(F.statusOf(row('a', { dismissed: { at: 't' }, filed: { url: 'u', state: 'OPEN' } })), 'dismissed');
 });
 

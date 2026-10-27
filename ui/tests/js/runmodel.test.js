@@ -446,3 +446,12 @@ test('replay: a lane is pending before its run, running during it, its own state
   assert.deepEqual(RM.verifyLeds(r), ['FLAKY', 'FAIL']);
   assert.equal(RM.stateAt(run(), T0).lanes, null);
 });
+
+test('the finding sweep reads as one line, and each swept finding as a lamp', () => {
+  const sweep = { tasks: ['sweep-1', 'sweep-2'], findings: 3, fixed: 2, dropped: [{}, {}] };
+  assert.equal(RM.sweepLine(sweep), '2 fix tasks · 2 of 3 findings fixed · 3 left for forge issues');
+  assert.equal(RM.sweepLine({ tasks: ['sweep-1'], findings: 1, fixed: 1, dropped: [] }), '1 fix task · 1 of 1 finding fixed · 0 left for forge issues');
+  assert.equal(RM.sweepLine({ tasks: [], findings: 0, fixed: 0, dropped: [{}] }), 'nothing to fix; 1 left for forge issues');
+  assert.equal(RM.sweepLine(null), null);
+  assert.deepEqual(['fixed', 'not-fixed', 'unreported', null].map(s => RM.sweepState(s).lamp), ['pass', 'fail', 'unknown', 'pending']);
+});

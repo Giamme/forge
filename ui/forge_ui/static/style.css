@@ -657,6 +657,13 @@ a.check-cmd { color: var(--ink); text-underline-offset: 2px; }
 .env-hits[open] { max-height: 30vh; overflow: auto; }
 .env-hit-list { gap: 6px; margin: 4px 0 2px; font-size: var(--t-xs); }
 .env-line { color: var(--ink-2); overflow-wrap: anywhere; white-space: pre-wrap; }
+/* the finding sweep: a finding's lamp, severity and place on one line, what it says under them */
+.sweep-list { gap: 6px; margin: 4px 0 0; }
+.sweep-head { display: grid; grid-template-columns: 9px auto minmax(0, 1fr); align-items: center; gap: 0 8px; min-width: 0; }
+.sweep-where { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--t-xs); }
+.sweep-what { margin: 2px 0 0 17px; font-size: var(--t-sm); color: var(--ink); text-wrap: pretty; }
+.sweep-meta { margin: 0 0 0 17px; font-size: var(--t-xs); color: var(--muted); }
+.sweep-meta a { color: var(--ink-2); text-underline-offset: 2px; }
 .phase-bar { display: flex; height: 8px; border-radius: 4px; overflow: hidden; margin: 6px 0; background: var(--module-2); }
 .phase { min-width: 2px; }
 .phase-legend { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: var(--t-xs); color: var(--muted); }

@@ -17,14 +17,15 @@
   const list = v => Array.isArray(v) ? v : [];
   const SEVERITIES = ['P0', 'P1', 'P2', 'P3'];
   const ORIGINS = ['tolerated', 'accepted', 'review', 'plausible'];
-  const STATUSES = ['open', 'filed', 'fixed', 'dismissed'];
+  const STATUSES = ['open', 'filed', 'fixed', 'swept', 'dismissed'];
 
   /* ---------- pure ---------- */
-  // open | filed (its issue is OPEN, or its state is not known yet) | fixed (CLOSED) | dismissed. A dismissal wins, so
-  // that an Undismiss reaches every dismissed row.
+  // open | filed (its issue is OPEN, or its state is not known yet) | fixed (CLOSED) | swept (the run's finding sweep
+  // fixed it: nothing to file) | dismissed. A dismissal wins, so that an Undismiss reaches every dismissed row.
   function statusOf(f) {
     if (f && f.dismissed) return 'dismissed';
     if (f && f.filed) return String(f.filed.state || '').toUpperCase() === 'CLOSED' ? 'fixed' : 'filed';
+    if (f && f.swept) return 'swept';
     return 'open';
   }
   // filter = { status: 'open' (default) | 'all' | one of STATUSES, severity: 'all' | P0..P3, origin: 'all' | ORIGINS }
@@ -246,9 +247,10 @@
     };
     const statusCell = r => {
       const st = statusOf(r), box = el('span', undefined, 'fnd-status fnd-' + st);
-      box.append(el('i', undefined, 'lamp ' + (st === 'filed' ? 'fnd-amber' : st === 'fixed' ? 'st-pass' : 'lamp-off')));
+      box.append(el('i', undefined, 'lamp ' + (st === 'filed' ? 'fnd-amber' : st === 'fixed' || st === 'swept' ? 'st-pass' : 'lamp-off')));
       if (st === 'dismissed') { box.title = r.dismissed.reason ? String(r.dismissed.reason) : 'dismissed'; box.append(el('span', 'dismissed')); return box; }
       if (st === 'open') { box.append(el('span', 'open')); return box; }
+      if (st === 'swept') { box.title = `fixed in the run by ${r.swept.task} (${r.swept.finding})`; box.append(el('span', 'swept')); return box; }
       const url = safeUrl(r.filed && r.filed.url), word = st === 'filed' ? 'filed' : 'fixed';
       if (url) { const a = el('a', word); a.href = url; a.target = '_blank'; a.rel = 'noopener noreferrer'; a.title = 'the GitHub issue (' + String(r.filed.state || 'state unknown').toLowerCase() + ')'; box.append(a); }
       else box.append(el('span', word));
