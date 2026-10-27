@@ -1,5 +1,8 @@
 """`forge dataset forecast` and the advisory block `forge-parallel.sh run` prints before dispatching."""
 import dataset_isolation  # noqa: F401  keeps the run dataset out of the developer's store
+import argparse
+from contextlib import redirect_stdout
+import io
 import json
 import os
 from pathlib import Path
@@ -7,6 +10,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from unittest.mock import patch
@@ -184,6 +188,22 @@ class ForecastReportTests(unittest.TestCase):
         self.assertEqual(self.forge(p, '--run'), out)      # a resumed run with the same forecast adds no event
         self.assertEqual(len(self.forecasts()), 1)
 
+    def test_the_run_block_puts_tasks_without_enough_history_on_one_line(self):
+        p = self.seed()
+        out = self.forge(p, '--run').splitlines()
+        rows = [line.split()[0] for line in out if line.split()[:1] in (['a'], ['b'], ['c'], ['d'])]
+        self.assertEqual(rows, ['a', 'b'])             # c and d have 2 and 0 past tasks: no row each
+        [thin] = [line for line in out if 'without enough history' in line]
+        self.assertTrue(thin.startswith('  2 task(s)') and thin.endswith(': c, d'), thin)
+        self.assertIn('not enough history (2/5)', self.forge(p))   # the command itself still shows every task
+
+        (self.root / 'thin').mkdir()
+        q = plan_dir(self.root / 'thin', [('c', 'medium', 'sol', 1), ('d', 'low', 'sol:medium', 1)])
+        [line] = self.forge(q, '--run').splitlines()   # a plan with no history to show is one line, not a table
+        self.assertIn('2 task(s)', line)
+        self.assertIn('forge dataset forecast %s' % q.resolve(), line)
+        self.assertTrue((q / 'forecast.json').exists())
+
     def test_the_run_block_can_be_turned_off_and_never_waits_past_its_budget(self):
         p = self.seed()
         self.assertEqual(self.forge(p, '--run', env=dict(FORGE_FORECAST='off')), '')
@@ -198,6 +218,31 @@ class ForecastReportTests(unittest.TestCase):
         self.assertFalse((p / 'forecast.json').exists())
         self.assertIn('first try', self.forge(p, '--run', env=dict(FORGE_DATASET='off')))
         self.assertEqual(self.forecasts(), [])
+
+    def test_a_budget_that_runs_out_while_saving_leaves_no_temp_file_in_the_plan(self):
+        from forge_dataset import forecast
+        p = self.seed()
+        saving, release = threading.Event(), threading.Event()
+        replace = Path.replace
+
+        def stalled(path, target):      # the budget runs out between writing the temp file and moving it
+            saving.set()
+            release.wait(10)
+            return replace(path, target)
+
+        args = argparse.Namespace(plan=str(p), run=True, repo=None, json=False)
+        with patch.object(Path, 'replace', stalled), patch('os._exit', side_effect=SystemExit), \
+                patch.dict(os.environ, {'FORGE_FORECAST_BUDGET_S': '2'}), redirect_stdout(io.StringIO()) as out:
+            with self.assertRaises(SystemExit):
+                forecast.main(args)
+        try:
+            self.assertTrue(saving.is_set(), out.getvalue())
+            self.assertEqual(sorted(f.name for f in p.iterdir() if 'forecast' in f.name), [])
+        finally:
+            release.set()
+            for t in threading.enumerate():
+                if t.daemon:
+                    t.join(10)
 
 
 class RunForecastTests(unittest.TestCase):
