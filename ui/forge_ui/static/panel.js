@@ -5,6 +5,7 @@
 window.ForgePanel = (() => {
   'use strict';
   const RM = window.ForgeRunModel;
+  const C = window.ForgeChecks || null;                     // checksview.js: Now, checks, the scheduler
   const list = v => Array.isArray(v) ? v : [];
   const num = v => typeof v === 'number' && Number.isFinite(v) ? v : null;
   const display = v => v === null || v === undefined || v === '' ? '—' : typeof v === 'object' ? JSON.stringify(v, null, 2) : String(v);
@@ -220,6 +221,7 @@ window.ForgePanel = (() => {
     const s = section(host, 'Timeline');
     fields(s, [['Started', time(tr && tr.start)], ['Last activity', time(tr && tr.end)], ['Wall time', tr ? RM.fmtDur(tr.end - tr.start) : '—'],
       ['Concurrency limit', run.settings && run.settings.max_parallel != null ? run.settings.max_parallel : (run.kind === 'solo' ? '—' : '3 (default; not recorded)')]]);
+    if (C) C.schedulerFields(s, run, now);
     if (run.kind !== 'solo') {
       const cp = RM.criticalPath(run, { now });
       if (cp.ids.length) {
@@ -275,6 +277,7 @@ window.ForgePanel = (() => {
     const dl = diffLink(ctx, solo ? 'View the diff →' : 'View its diff, findings pinned to their lines →', { kind: 'task', task: task.id, source: 'current' }); if (dl) head.append(dl);
     host.append(head);
     if (!solo) fields(host, [['Difficulty', task.difficulty], ['Depends on', depLinks(task.deps, ctx)], ['Files', list(task.files).join('\n') || '—', true], ['Branch', task.branch, true]]);
+    if (C) C.nowSection(host, ctx, task);
 
     // the models: who owned it, how it was routed, what it was escalated to
     const ms = section(host, 'Models');
@@ -298,6 +301,9 @@ window.ForgePanel = (() => {
     const as = section(host, 'Attempts');
     const tp = RM.taskParts(task), usedEscalations = new Set();
     if (!list(task.executions).length) muted(as, 'No executions recorded yet' + (task.status === 'PENDING' ? ': this task has not started.' : '.'));
+    // the checks each agent ran, read once for the whole task
+    const checks = C && list(task.executions).length ? C.taskChecks(ctx, task) : null;
+    if (checks) C.loadingLine(as, checks);
     for (const z of tp.zones) {
       const box = el('div', undefined, 'attempt');
       const row = list(task.attempts).filter(a => a.attempt === z.attempt).pop();
@@ -320,7 +326,9 @@ window.ForgePanel = (() => {
         if ((p.kind === 'qa' || p.kind === 'shadow') && p.exec && p.exec.id) { const a = diffLink(ctx, 'diff it read', { kind: 'task', task: task.id, source: p.exec.id }, 'diff-link small'); if (a) go.append(a); }
         if (go.childElementCount) line.append(go);
         box.append(line);
+        if (checks && (p.kind === 'dwarf' || p.kind === 'qa') && p.exec && p.exec.id) C.underExecution(box, ctx, task, checks, z.attempt, p.exec.id);
       }
+      if (checks) C.attemptCriteria(box, checks, z.attempt);
       for (const l of tp.links.filter(l => l.kind === 'escalation' && z.parts.includes(l.to))) {
         const line = el('p', `escalated: ${l.label} `, 'muted');
         const e = list(task.escalations).find(x => !usedEscalations.has(x) && `${x.from || '?'} → ${x.to || '?'}` === l.label);   // the link carries only its label
@@ -418,6 +426,7 @@ window.ForgePanel = (() => {
         if (entry.data) findingsList(rs, entry.data.findings, `exec-${sel.exec}`); else loading(rs, entry, 'the findings');
       }
     }
+    if (C) C.execSection(host, ctx, task, sel, e);
     const ps = section(host, 'Prompt and output');
     if (loading(ps, entry, 'the prompt')) return;
     const d = entry.data;

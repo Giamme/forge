@@ -55,6 +55,17 @@ run goes on, with the same exit code.
   output; after a failure, the failing tests first, by lane, new or known (from JUnit/TAP
   reports), each opening the lane's log at its line, or a reportless lane's log tail; then every
   lane's state, time, runs and tests; a lane's name opens its output.
+- **Where each task is:** the task table's *Now* column and a task's *Now* section: the command a
+  running dwarf or reviewer runs and for how long, flagged *quiet* after five minutes with no
+  output, or why a task waits (dependencies, shared files, no free slot, a drain or stop, an
+  infrastructure pause with its countdown, the retry policy's stop and its split). The run
+  inspector says what the scheduler is doing.
+- **Checks:** each attempt's tests, type checks, lints and builds, read from its dwarf's and
+  reviewer's logs, with exits, times and counts, a failed one's last lines, and which of the
+  commands its `## Acceptance criteria` name never ran. codex and grok logs carry no times, so
+  `forge-dispatch.sh` keeps `<role>.clock` (when the log grew, each second) beside each log for
+  them; `FORGE_LOG_CLOCK=off` turns it off. An environment problem (Docker, a sandbox's EPERM, a
+  port in use, …) that several tasks' failed commands met gets one banner in the run header.
 - **Opening a node** shows its attempts, dwarves and reviews, and an inspector with the prompt
   that launched each one, the model, timings by phase, tokens, verdicts and the P0–P3 findings
   of every review (the final review's included).

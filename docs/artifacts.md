@@ -14,6 +14,7 @@ as if the dwarf had written it.
   <role>.prompt       the exact prompt sent
   <role>.cmd          the exact command line executed
   <role>.log          full transcript
+  <role>.clock        when the log grew: one `<epoch> <bytes>` line per second it grew (forge-ui times codex and grok events by it; FORGE_LOG_CLOCK=off)
   <role>.last         the final message — read this first
   <role>.infra        only after an infrastructure failure: class, retry_after, detail, harness, model
   <role>.orphans      only when processes were left running after the harness exited

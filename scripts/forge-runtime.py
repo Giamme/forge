@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -95,6 +96,51 @@ def phase(attempt: str, name: str, rc: str | None = None) -> None:
         data['exit_code'] = int(rc)
         data['elapsed_s']['total'] = now - data['started']
     write_json(path, data)
+
+
+CLOCK_EVERY_S = 1.0
+
+
+class _ClockStop(Exception):
+    pass
+
+
+def clock(log: str, out: str, every: str | None = None) -> None:
+    """When the harness log grew: one `<epoch seconds> <bytes>` line in `out` for each sample that saw a new
+    size, the first at the start. codex's and grok's events carry no time of their own, so forge-ui times them
+    from this. Runs beside the harness until a TERM (dispatch sends it once the harness exited) or until the
+    dispatch that started it is gone, and ends with one last sample. Advisory: nothing reads its exit."""
+    def stop(signum: int, frame: object) -> None:
+        raise _ClockStop()
+
+    signal.signal(signal.SIGTERM, stop)
+    signal.signal(signal.SIGINT, stop)
+    parent, period, last = os.getppid(), float(every) if every else CLOCK_EVERY_S, -1
+
+    def sample() -> None:
+        nonlocal last
+        # A TERM waits until the line is whole: it is delivered when the mask is lifted.
+        signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGTERM})
+        try:
+            size = os.stat(log).st_size
+            if size != last:
+                with open(out, 'a') as stream:
+                    stream.write('%.3f %d\n' % (time.time(), size))
+                last = size
+        except OSError:
+            pass
+        finally:
+            signal.pthread_sigmask(signal.SIG_UNBLOCK, {signal.SIGTERM})
+
+    try:
+        while os.getppid() == parent:
+            sample()
+            time.sleep(period)
+    except _ClockStop:
+        pass
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+    sample()
 
 
 def token_count(value: object) -> int | None:
@@ -254,7 +300,7 @@ def _finish(attempt: Path, root: Path, role: str, harness: str, rc: str) -> None
     session_path.unlink(missing_ok=True)
     if found is not None:
         session_path.write_text(found + '\n')
-    for suffix in ('prompt', 'last', 'log', 'resolved', 'cmd', 'timedout', 'infra', 'orphans',
+    for suffix in ('prompt', 'last', 'log', 'clock', 'resolved', 'cmd', 'timedout', 'infra', 'orphans',
                    'session', 'continue'):
         if suffix == 'prompt' and not prompt_ready:
             continue
@@ -621,6 +667,8 @@ def main() -> None:
             report(*args)
         elif command == 'classify':
             classify_command(*args)
+        elif command == 'clock':
+            clock(*args)
         else:
             raise ValueError('unknown runtime command: ' + command)
     except (OSError, ValueError, RuntimeError) as error:

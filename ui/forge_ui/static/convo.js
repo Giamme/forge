@@ -4,7 +4,7 @@
    apart, and while the agent runs a poll every few seconds that follows the end. Defines window.ForgeConvo.render(host, ctx).
    All API values enter the DOM as text.
    ctx = { run, spec: {task, exec}, brief (the Execution, when the run lists it), live (false in an export), fetchJSON(path),
-           rerender(), closeHref, diffHash(spec) → hash } */
+           rerender(), closeHref, diffHash(spec) → hash, focus (the index of an event to open it at, or null) } */
 window.ForgeConvo = (() => {
   'use strict';
   const list = v => Array.isArray(v) ? v : [];
@@ -248,7 +248,10 @@ window.ForgeConvo = (() => {
     if (!errs.length) return;
     v.err = (v.err == null ? -1 : v.err) + 1;
     if (v.err >= errs.length) v.err = 0;
-    const n = errs[v.err];
+    reveal(f, v, errs[v.err]);
+  }
+  // an event brought into view: shown whatever the filter, its folds open, focused and flashed
+  function reveal(f, v, n) {
     if (n.hidden) { v.query = ''; v.show = 'all'; f.search.value = ''; filter(f, v); }
     for (const d of n.querySelectorAll('details')) d.open = true;
     n.scrollIntoView({ block: 'center' }); n.focus({ preventScroll: true });
@@ -282,6 +285,12 @@ window.ForgeConvo = (() => {
     f.status.replaceChildren(...status);
     const grew = events(f, ctx, D, v);
     filter(f, v);
+    // opened at one event (a check, an environment problem): brought into view once, and the end is no longer followed
+    const at = Number.isInteger(ctx.focus) ? f.nodes[ctx.focus] : null;
+    if (at && f.focused !== ctx.focus) {
+      f.focused = ctx.focus; v.follow = false; f.follow.setAttribute('aria-pressed', 'false');
+      requestAnimationFrame(() => { if (at.isConnected) reveal(f, v, at); });
+    }
     if (running && v.follow && (grew || fresh)) requestAnimationFrame(() => end(f));
     // a log still being written: read it again shortly, while this view shows it
     if (running && !entry.timer) {

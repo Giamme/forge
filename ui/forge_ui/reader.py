@@ -12,7 +12,7 @@ import stat
 import time
 import urllib.parse
 
-from forge_ui import diffs, executions, findings, fractal, transcripts
+from forge_ui import checks, diffs, executions, findings, fractal, transcripts
 from forge_ui.findings import verdict as _verdict
 
 
@@ -545,6 +545,133 @@ def _accepted_fields(reader, name, text):
     return attempt, status if status in ('FAIL', 'UNKNOWN') else None
 
 
+def _log_path(reader, rel):
+    """The regular file `rel` of the run dir as a Path, or None; a path that resolves outside the run is never read."""
+    try:
+        real = Path(os.path.realpath(reader.path / rel))
+        if executions.inside(reader.path, str(real)) and stat.S_ISREG(real.stat().st_mode):
+            return real
+        if real.exists():
+            reader.warn(rel, 'outside the run dir or not a regular file')
+    except (OSError, ValueError):
+        pass
+    return None
+
+
+_CALL_CAP = 400                # characters of the running command in RunDetail
+
+
+def _now(reader, owner_dir, execs):
+    """Task.now: where a running task (or solo run) is. The dwarf or reviewer running in it, with the call it is
+    making and when its log last moved; else the task execution's own phase."""
+    running = [item for item in execs if item['state'] == 'running' and not item['shadow']]
+    agent = next((item for item in reversed(running) if item['role'] in ('dwarf', 'qa')), None)
+    item = agent or next((item for item in reversed(running) if item['role'] in executions.CONTAINERS), None)
+    if item is None:
+        return None
+    now = dict(role=item['role'], execution=item['id'], attempt=item['attempt'], phase=item['phase'],
+               phase_started=item['phase_started'], started=item['started'], last_output_at=None, call=None)
+    if agent is not None:
+        rel = posixpath.join(owner_dir, agent['role'] + '.log')
+        reader.stat(rel)                       # the page redraws while the agent writes
+        log = _log_path(reader, rel)
+        state = transcripts.live(log, (agent['model'] or {}).get('harness')) if log is not None else None
+        if state is not None:
+            call = state['call']
+            if call is not None:
+                command = call['command']
+                call = dict(call, command=command if not command or len(command) <= _CALL_CAP else command[:_CALL_CAP] + '…',
+                            check=checks.classify(command) if command else None)
+            now.update(last_output_at=state['last_output_at'], call=call)
+    return now
+
+
+def _scheduler(reader):
+    """RunDetail.scheduler: whether a scheduler runs this plan now, and, while one does, what holds it: a drain, a
+    stop, infrastructure pauses (scheduler-written infra.paused) and the capacity it dispatches up to."""
+    pid = (reader.object('scheduler.live') or {}).get('pid') if reader.exists('scheduler.live') else None
+    live = False
+    if type(pid) is int and pid > 0:
+        try:
+            os.kill(pid, 0)
+            live = True
+        except PermissionError:
+            live = True
+        except (OSError, OverflowError):
+            live = False
+    result = dict(live=live, drained=False, stopping=None, pauses=[], max_parallel=None)
+    if not live:
+        return result
+    stop = reader.line('stop')
+    capacity = reader.number('max_parallel', int)
+    result.update(drained=reader.exists('drain'), stopping=stop if stop in ('graceful', 'now') else None,
+                  max_parallel=capacity if capacity is not None and 1 <= capacity <= 64 else None)
+    paused = reader.object('infra.paused') if reader.exists('infra.paused') else None
+    for scope in (paused or {}).get('scopes') or []:
+        if isinstance(scope, dict):
+            result['pauses'].append({key: scope.get(key) for key in
+                                     ('scope', 'class', 'harness', 'model', 'tasks', 'cycle', 'until', 'exhausted')})
+    return result
+
+
+_STOPPED = ('FAIL', 'BLOCKED', 'INFRA', 'INTERRUPTED', 'TIMEOUT', 'ERROR', 'CONFLICT', 'NOCHANGES', 'INVALIDATED', 'UNKNOWN')
+
+
+def _escalation_stop(reader, ident):
+    """The retry policy stopped this task: {attempts, model, split} from escalation.stop and split.suggested."""
+    text = reader.text(f'tasks/{ident}/escalation.stop')
+    if text is None:
+        return None
+    cells = (text.splitlines() or [''])[0].split('\t')
+    attempts = int(cells[0]) if cells[0].strip().isdigit() else None
+    split = (reader.text(f'tasks/{ident}/split.suggested') or '').strip()
+    return dict(kind='escalation', attempts=attempts, model=cells[1].strip() if len(cells) > 1 and cells[1].strip() else None,
+                split=reader.cap(split, f'tasks/{ident}/split.suggested', 600) or None)
+
+
+def _waiting(reader, tasks, scheduler):
+    """Task.waiting: why a task that is not running is not, as far as the run dir tells.
+
+    escalation (the retry policy stopped it, whether or not a scheduler runs); and while one runs: infra (a pause
+    holds it), deps (on tasks not merged yet), drained, stopping, overlap (it shares files with a running task),
+    slot (the run is at its capacity) or next (nothing holds it: it starts at the scheduler's next turn)."""
+    status = {task['id']: task['status'] for task in tasks}
+    running = [task for task in tasks if task['status'] == 'RUNNING']
+    for task in tasks:
+        task['waiting'] = None
+        if task['status'] in ('RUNNING', 'MERGED'):
+            continue
+        stop = _escalation_stop(reader, task['id'])
+        if stop is not None:
+            task['waiting'] = stop
+            continue
+        if not scheduler['live'] or task['status'] not in ('PENDING', 'INFRA'):
+            continue
+        pause = next((p for p in scheduler['pauses'] if p['scope'] == 'all' or task['id'] in (p['tasks'] or [])), None)
+        if pause is not None:
+            task['waiting'] = dict(pause, kind='infra')
+            continue
+        if task['status'] != 'PENDING':
+            continue
+        on = [dep for dep in task['deps'] if status.get(dep) != 'MERGED']
+        if on:
+            task['waiting'] = dict(kind='deps', on=on, stopped=[dep for dep in on if status.get(dep) in _STOPPED])
+        elif scheduler['stopping']:
+            task['waiting'] = dict(kind='stopping', mode=scheduler['stopping'])
+        elif scheduler['drained']:
+            task['waiting'] = dict(kind='drained')
+        else:
+            mine = [_scope(path) for path in task['files'] if path and path != '-']
+            shared = [other['id'] for other in running if _overlap(mine, [_scope(p) for p in other['files'] if p and p != '-'])]
+            cap = scheduler['max_parallel']
+            if shared:
+                task['waiting'] = dict(kind='overlap', on=shared)
+            elif cap is not None and len(running) >= cap:
+                task['waiting'] = dict(kind='slot', running=len(running), max_parallel=cap)
+            else:
+                task['waiting'] = dict(kind='next')
+
+
 def _task_detail(reader, task, run_id, waves, branches):
     """Fill in a plan task; returns every execution it read (its own and its shadows')."""
     ident = task['id']
@@ -587,6 +714,7 @@ def _task_detail(reader, task, run_id, waves, branches):
                 task['clef']['retry_pass'][suffix] = obj
     execs = _task_execs(reader, task)
     task['executions'] = execs
+    task['now'] = _now(reader, prefix, execs) if task['status'] == 'RUNNING' else None
     merged = reader.stat(prefix + '/merged') if task['status'] == 'MERGED' else None
     task['merged_at'] = float(merged.st_mtime) if merged is not None else None
     task['findings'] = executions.summary_of(qa)
@@ -1061,9 +1189,11 @@ def _solo_detail(reader, source):
                 dwarf_tail=reader.cap(reader.text('dwarf.last'), 'tasks/solo/dwarf_tail', 4000, True),
                 executions=execs, merged_at=None, findings=executions.summary_of(qa),
                 gate=_gate(reader, 'qa.gate'), known_issues=_nonempty(reader, 'known_issues.md'),
-                fail_first=_fail_first(reader, 'failfirst.json'))
+                fail_first=_fail_first(reader, 'failfirst.json'),
+                now=_now(reader, '', execs) if status == 'RUNNING' else None, waiting=None)
     result.update(timeline=_timeline(execs, [], []), integration=None, final_review=None, final_reviews=[],
-                  deferrals=[], findings_available=findings.available(), fractal=fractal.summary(reader))
+                  deferrals=[], findings_available=findings.available(), fractal=fractal.summary(reader),
+                  scheduler=None)
     result.update(tasks=[task], warnings=reader.warnings, truncated=reader.truncated, updated=reader.updated)
     return result
 
@@ -1102,6 +1232,8 @@ def detail(path, source='plan') -> dict:
         pool += _task_detail(reader, task, result['run_id'], wave_map, branches)
     for name in _RUN_CONTROLS:
         reader.stat(name)
+    result['scheduler'] = _scheduler(reader)
+    _waiting(reader, tasks, result['scheduler'])
     run_execs = _run_execs(reader)
     result['verification'] = _verification(reader, result['verification_status'],
                                            [item for item in run_execs if item['role'] == 'verification'])
@@ -1264,16 +1396,7 @@ def execution_transcript(path, name, source='plan'):
     item, owner, owner_dir = found
     role, running = item['role'], item['state'] == 'running'
     # A finished execution's log is its copy; the owner dir's is the one being written, or the next one's.
-    rel = posixpath.join(owner_dir, role + '.log') if running else f'{item.rel}/{role}.log'
-    log = None
-    try:
-        real = Path(os.path.realpath(reader.path / rel))
-        if executions.inside(reader.path, str(real)) and stat.S_ISREG(real.stat().st_mode):
-            log = real
-        elif real.exists():
-            reader.warn(rel, 'outside the run dir or not a regular file')
-    except (OSError, ValueError):
-        pass
+    log = _agent_log(reader, item, owner_dir)
     resolved = executions.resolved_of(reader, f'{item.rel}/{role}.resolved')
     if resolved is None and running:
         resolved = executions.parse_resolved(reader.text(posixpath.join(owner_dir, role + '.resolved'))) or None
@@ -1283,6 +1406,141 @@ def execution_transcript(path, name, source='plan'):
                   spec=model.get('spec'), harness=model.get('harness'), repo=(resolved or {}).get('repo') or None,
                   owner=owner, warnings=reader.warnings + result['warnings'])
     return result
+
+
+def _agent_log(reader, item, owner_dir):
+    """The log of a dwarf or reviewer execution: its copy once it ended, the one being written while it runs."""
+    role = item['role']
+    return _log_path(reader, posixpath.join(owner_dir, role + '.log') if item['state'] == 'running' else f'{item.rel}/{role}.log')
+
+
+def _checks_of(reader, item, owner_dir):
+    """checks.analyze() of one dwarf or reviewer execution, with what it is and, while it runs, when its log moved."""
+    log = _agent_log(reader, item, owner_dir)
+    model = item['model'] or {}
+    running = item['state'] == 'running'
+    result = transcripts.transcript(log, model.get('harness'), running)
+    found = checks.analyze(result['events'])
+    moved = None
+    if running and log is not None:
+        try:
+            moved = log.stat().st_mtime
+        except OSError:
+            pass
+    found.update(execution=item['id'], role=item['role'], state=item['state'], attempt=item['attempt'],
+                 spec=model.get('spec'), harness=model.get('harness'), source=result['source'],
+                 truncated=result['truncated'], last_output_at=moved)
+    return found
+
+
+def _brief_dir(kind, owner):
+    """Where the brief of an execution's owner is, or None for a final review or a shadow."""
+    if owner['kind'] == 'task':
+        return '' if owner['id'] == 'solo' and kind == 'solo' else f"tasks/{owner['id']}"
+    return None
+
+
+def execution_checks(path, name, source='plan'):
+    """ExecutionChecks: the checks a dwarf or reviewer ran, the call it makes now, the environment problems it met
+    and, for a task's execution, its brief's acceptance-criteria commands against them. None for another role."""
+    reader = _Read(path)
+    found = _execution(reader, name)
+    if found is None or found[0]['role'] not in ('dwarf', 'qa'):
+        return None
+    item, owner, owner_dir = found
+    result = _checks_of(reader, item, owner_dir)
+    brief = _brief_dir(_kind(reader.path), owner)
+    wanted = checks.criteria(reader.text(posixpath.join(brief, 'prompt.md'))) if brief is not None else []
+    result.update(run=run_key(reader.path), owner=owner,
+                  criteria=checks.coverage(wanted, [(c['command'], dict(index=c['index'])) for c in result['checks']]),
+                  warnings=reader.warnings)
+    return result
+
+
+def _owners(reader):
+    """(task id, owner dir, executions) of each task of the run (the one `solo` of a solo run), or None."""
+    kind = _kind(reader.path)
+    if kind == 'solo':
+        return [('solo', '', _solo_execs(reader, _solo_status(reader), _history(reader, 'attempts.tsv')))]
+    if kind != 'plan':
+        return None
+    out = []
+    for task in _tasks(reader):
+        task['attempts'], task['attempt'] = _attempt_state(reader, f"tasks/{task['id']}")
+        out.append((task['id'], f"tasks/{task['id']}", _task_execs(reader, task)))
+    return out
+
+
+def task_checks(path, task_id, source='plan'):
+    """TaskChecks: attempt by attempt, the checks each dwarf and reviewer ran, and which of the commands the task's
+    acceptance criteria name ran, ran another way, or did not run."""
+    reader = _Read(path)
+    owners = _owners(reader)
+    owner = next((item for item in owners or [] if item[0] == task_id), None)
+    if owner is None:
+        return None
+    _, owner_dir, execs = owner
+    wanted = checks.criteria(reader.text(posixpath.join(owner_dir, 'prompt.md')))
+    by_attempt = {}
+    for item in execs:
+        if item['role'] in ('dwarf', 'qa') and not item['shadow']:
+            by_attempt.setdefault(item['attempt'], []).append(_checks_of(reader, item, owner_dir))
+    attempts = []
+    for attempt in sorted(by_attempt, key=lambda value: (value is None, value or 0)):
+        runs = by_attempt[attempt]
+        ran = [(c['command'], dict(execution=r['execution'], role=r['role'], index=c['index'])) for r in runs for c in r['checks']]
+        attempts.append(dict(attempt=attempt, running=any(r['state'] == 'running' for r in runs), executions=runs,
+                             criteria=checks.coverage(wanted, ran)))
+    return dict(run=run_key(reader.path), task=task_id, criteria=wanted, attempts=attempts,
+                truncated=reader.truncated, warnings=reader.warnings)
+
+
+_ENVIRONMENT_HITS = 50         # a problem's hits answered (its tasks are all named)
+_ENV_CACHE = executions._SigCache(4096)
+
+
+def _environment_of(reader, item, owner_dir):
+    """The environment problems one execution's failed commands met, cached while its log is unchanged."""
+    log = _agent_log(reader, item, owner_dir)
+    if log is None:
+        return []
+    try:
+        info = log.stat()
+    except OSError:
+        return []
+    clock = log.with_name(log.stem + '.clock')
+    sig = (executions._signature(info), item['state'], transcripts._signature(clock))
+    hit = _ENV_CACHE.get(('environment', str(log)), sig)
+    if hit is None:
+        result = transcripts.transcript(log, (item['model'] or {}).get('harness'), item['state'] == 'running')
+        hit = checks.analyze(result['events'])['environment']
+        _ENV_CACHE.put(('environment', str(log)), sig, hit)
+    return hit
+
+
+def run_environment(path, source='plan'):
+    """RunEnvironment: each environment problem the run's dwarfs and reviewers met (Docker, a sandbox's EPERM, a
+    port in use, …), with the tasks it hit and where: the commands that failed on it."""
+    reader = _Read(path)
+    owners = _owners(reader)
+    if owners is None:
+        return None
+    found = {}
+    for task_id, owner_dir, execs in owners:
+        for item in execs:
+            if item['role'] not in ('dwarf', 'qa'):
+                continue
+            for hit in _environment_of(reader, item, owner_dir):
+                entry = found.setdefault(hit['problem'], dict(problem=hit['problem'], label=checks.LABELS[hit['problem']],
+                                                              tasks=[], count=0, hits=[]))
+                entry['count'] += 1
+                if task_id not in entry['tasks']:
+                    entry['tasks'].append(task_id)
+                if len(entry['hits']) < _ENVIRONMENT_HITS:
+                    entry['hits'].append(dict(task=task_id, attempt=item['attempt'], role=item['role'], execution=item['id'],
+                                              index=hit['index'], command=hit['command'], line=hit['line']))
+    problems = [found[key] for key, _, _ in checks.ENVIRONMENT if key in found]
+    return dict(run=run_key(reader.path), problems=problems, warnings=reader.warnings)
 
 
 def final_review_detail(path, name, source='plan'):
@@ -1891,6 +2149,15 @@ class Catalog:
 
     def transcript(self, key, name):
         return self._find(key, execution_transcript, name)
+
+    def execution_checks(self, key, name):
+        return self._find(key, execution_checks, name)
+
+    def task_checks(self, key, task_id):
+        return self._find(key, task_checks, task_id)
+
+    def environment(self, key):
+        return self._find(key, run_environment)
 
     def final_review_diff(self, key, name):
         return self._find(key, final_review_diff, name)

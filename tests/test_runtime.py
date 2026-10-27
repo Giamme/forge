@@ -448,3 +448,69 @@ class SessionTests(unittest.TestCase):
                 self.assertIsNone(metrics['session_id'])
                 self.assertEqual((attempt / 'qa.continue').read_text(), failed)
                 self.assertEqual((root / 'qa.continue').read_text(), failed)
+
+
+class ClockTests(unittest.TestCase):
+    """`clock` writes when the harness log grew, for forge-ui to time events that carry no time of their own."""
+
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.dir = Path(temp.name)
+        self.log, self.out = self.dir / 'dwarf.log', self.dir / 'dwarf.clock'
+        self.log.write_text('')
+
+    def samples(self):
+        text = self.out.read_text() if self.out.exists() else ''
+        return [(float(t), int(size)) for t, size in (line.split() for line in text.splitlines())]
+
+    def wait(self, predicate, seconds=10.0):
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline and not predicate():
+            time.sleep(0.02)
+        return predicate()
+
+    def start(self, every):
+        process = subprocess.Popen([sys.executable, str(ROOT / 'scripts/forge-runtime.py'), 'clock', str(self.log), str(self.out), every])
+        self.addCleanup(lambda: process.poll() is None and process.kill())
+        return process
+
+    def test_each_size_the_log_reached_is_written_once_with_when(self):
+        process = self.start('0.02')
+        for text, size in (('', 0), ('one\n', 4), ('two\n', 8)):
+            with self.log.open('a') as stream:
+                stream.write(text)
+            self.assertTrue(self.wait(lambda: self.samples() and self.samples()[-1][1] == size), self.samples())
+        process.terminate()
+        self.assertEqual(process.wait(timeout=10), 0)
+        samples = self.samples()
+        self.assertEqual([size for _, size in samples], [0, 4, 8])             # a size that did not change is not written again
+        self.assertEqual([t for t, _ in samples], sorted(t for t, _ in samples))
+
+    def test_a_term_takes_one_last_sample_so_the_end_of_the_log_is_timed(self):
+        process = self.start('60')                                             # no sample between the first and the TERM
+        self.assertTrue(self.wait(lambda: bool(self.samples())))
+        self.log.write_text('the final answer\n')
+        process.terminate()
+        self.assertEqual(process.wait(timeout=10), 0)
+        self.assertEqual([size for _, size in self.samples()], [0, 17])
+
+    def test_it_ends_when_the_dispatch_that_started_it_is_gone(self):
+        parent = subprocess.Popen(['bash', '-c', '"$1" "$2" clock "$3" "$4" 0.02 </dev/null & echo $!; sleep 60',
+                                   'x', sys.executable, str(ROOT / 'scripts/forge-runtime.py'), str(self.log), str(self.out)],
+                                  stdout=subprocess.PIPE, text=True)
+        self.addCleanup(lambda: parent.poll() is None and parent.kill())
+        self.addCleanup(parent.stdout.close)
+        pid = int(parent.stdout.readline())
+        self.addCleanup(lambda: subprocess.run(['kill', '-9', str(pid)], stderr=subprocess.DEVNULL))
+        self.assertTrue(self.wait(lambda: bool(self.samples())))
+        parent.kill()
+        parent.wait(timeout=10)
+
+        def gone():
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                return True
+            return False
+        self.assertTrue(self.wait(gone), 'the clock outlived its dispatch')

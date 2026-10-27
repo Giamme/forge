@@ -64,8 +64,8 @@ window.ForgeApp = (() => {
     if (spec.kind === 'fractal') return `${base}/tasks/${e(spec.task)}/fractal/${e(spec.node)}/diff${file}`;
     return `${base}/tasks/${e(spec.task)}/diff${spec.source && spec.source !== 'current' ? '/' + e(spec.source) : ''}${file}`;
   }
-  // an execution's conversation, in the stage's place like a diff
-  const convoHash = (key, sel) => hashFor(key, sel) + '/conversation';
+  // an execution's conversation, in the stage's place like a diff; opened at one of its events when given
+  const convoHash = (key, sel, event) => hashFor(key, sel) + '/conversation' + (Number.isInteger(event) && event >= 0 ? '/event/' + event : '');
   function cloudHash(sel, focus) {
     if (sel) return '#/cloud/runs/' + encodeURIComponent(sel);
     return focus ? '#/cloud/projects/' + encodeURIComponent(focus) : '#/cloud';
@@ -83,11 +83,11 @@ window.ForgeApp = (() => {
     if ((r = rest.match(/^\/tasks\/([^/]+)\/diff(?:\/(?!file\/|finding\/)([^/]+))?(?:\/finding\/([^/]+))?(?:\/file\/(.+?))?\/?$/))) return { key: d(m[1]), sel: { kind: 'task', id: d(r[1]) }, diff: { kind: 'task', task: d(r[1]), source: r[2] ? d(r[2]) : 'current', finding: r[3] ? d(r[3]) : null, file: r[4] ? d(r[4]) : null } };
     if ((r = rest.match(/^\/tasks\/([^/]+)\/fractal\/([^/]+)\/diff(?:\/file\/(.+?))?\/?$/))) return { key: d(m[1]), sel: { kind: 'task', id: d(r[1]) }, diff: { kind: 'fractal', task: d(r[1]), node: d(r[2]), file: r[3] ? d(r[3]) : null } };
     if ((r = rest.match(/^\/final-review\/([^/]+)\/diff(?:\/finding\/([^/]+))?(?:\/file\/(.+?))?\/?$/))) return { key: d(m[1]), sel: { kind: 'final', name: d(r[1]) }, diff: { kind: 'final', name: d(r[1]), finding: r[2] ? d(r[2]) : null, file: r[3] ? d(r[3]) : null } };
-    if ((r = rest.match(/^\/(?:tasks\/([^/]+)\/)?executions\/([^/]+)\/conversation\/?$/))) {
+    if ((r = rest.match(/^\/(?:tasks\/([^/]+)\/)?executions\/([^/]+)\/conversation(?:\/event\/(\d{1,7}))?\/?$/))) {
       const s = r[1] ? { kind: 'execution', task: d(r[1]), id: d(r[1]), exec: d(r[2]) } : { kind: 'execution', task: null, exec: d(r[2]) };
       const run = s.task && state.cache.get(d(m[1]))?.data, t = run && list(run.tasks).find(x => x.id === s.task);
       if (t && list(t.shadow).some(x => x.execution === s.exec)) s.shadow = true;
-      return { key: d(m[1]), sel: s, convo: { task: s.task, exec: s.exec } };
+      return { key: d(m[1]), sel: s, convo: { task: s.task, exec: s.exec, event: r[3] ? Number(r[3]) : null } };
     }
     if ((r = rest.match(/^\/tasks\/([^/]+)\/executions\/([^/]+)\/?$/))) sel = { kind: 'execution', task: d(r[1]), id: d(r[1]), exec: d(r[2]) };
     if (sel && sel.kind === 'execution' && sel.task) {
@@ -740,6 +740,10 @@ window.ForgeApp = (() => {
       if (run.updated != null) { upd.dataset.epoch = run.updated; upd.dataset.short = ''; }
       desc.append(upd);
       row.append(lamp, title, where, desc); head.append(row);
+      // an environment problem several tasks met, read lazily
+      if (window.ForgeChecks && !solo) window.ForgeChecks.banner(head, { run, fetchJSON: path => fetchJSON(path).then(r => r.data),
+        rerender: () => { const cur = state.cache.get(state.key)?.data; if (cur && cur.key === run.key) renderHeader(cur); },
+        hash: s => hashFor(run.key, s), convoHash: (s, event) => convoHash(run.key, s, event) });
       if (list(run.warnings).length) details(head, `Reader warnings (${run.warnings.length})`, run.warnings.join('\n'), 'warnings');
       if (list(run.truncated).length) details(head, 'Truncated fields', run.truncated.join('\n'), 'truncated');
       scoped(head, run.key + ':');
@@ -756,6 +760,8 @@ window.ForgeApp = (() => {
       { id: 'difficulty', label: 'Difficulty', value: t => DIFF_RANK[t.difficulty] ?? null, cell: t => display(t.difficulty) },
       { id: 'wave', label: 'Wave', value: t => Number.isFinite(Number(t.wave)) && t.wave !== null && t.wave !== '' ? Number(t.wave) : null, cell: t => display(t.wave) },
       { id: 'status', label: 'Status', value: t => RM.taskStatus(t), cell: t => chip(RM.taskStatus(t)) },
+      ...(window.ForgeChecks ? [{ id: 'now', label: 'Now', title: 'What a running task is doing, or why one that is not running waits',
+        value: t => window.ForgeChecks.nowRank(t), cell: t => window.ForgeChecks.cell(t, now(), { hash: s => hashFor(run.key, s) }) }] : []),
       { id: 'dwarf', label: 'Dwarf', value: t => t.dwarf, cell: t => window.ForgeIcons.modelPlate(t.dwarf) },
       { id: 'qa', label: 'QA', value: t => t.qa, cell: t => window.ForgeIcons.modelPlate(t.qa) },
       { id: 'attempt', label: 'Attempt', value: t => Number(t.attempt) || null, cell: t => display(t.attempt) },
@@ -802,7 +808,7 @@ window.ForgeApp = (() => {
         fetchJSON: path => fetchJSON(path).then(r => r.data),
         rerender: () => { const r = state.cache.get(state.key)?.data; if (r) renderInspector(r); },
         hash: s => hashFor(run.key, s), onSelect: s => select(s), diffHash: spec => diffHash(run.key, spec),
-        convoHash: s => convoHash(run.key, s),
+        convoHash: (s, event) => convoHash(run.key, s, event),
         onFractal: (id, data) => { if (state.stage && state.stage.setFractal) state.stage.setFractal(id, data); },
       });
       scoped(host, run.key + ':');
@@ -874,7 +880,7 @@ window.ForgeApp = (() => {
     if (kind === 'convo') {
       const sel = state.sel, task = sel.task ? list(run.tasks).find(t => t.id === sel.task) : run.kind === 'solo' ? list(run.tasks)[0] : null;
       const brief = list(task && task.executions).find(e => e.id === state.convo.exec) || null;
-      window.ForgeConvo.render(host, { run, spec: { task: task ? task.id : null, exec: state.convo.exec }, brief, live: !SNAP,
+      window.ForgeConvo.render(host, { run, spec: { task: task ? task.id : null, exec: state.convo.exec }, brief, live: !SNAP, focus: state.convo.event,
         fetchJSON: path => fetchJSON(path).then(r => r.data), rerender, diffHash: spec => diffHash(run.key, spec), closeHref: hashFor(run.key, state.sel) });
       return;
     }
@@ -1076,6 +1082,7 @@ window.ForgeApp = (() => {
     if (state.models) loadModels();
     if (state.settings) state.settingsView?.poll();
     for (const node of document.querySelectorAll('[data-epoch]')) { const t = relative(node.dataset.epoch); node.textContent = node.dataset.short !== undefined ? t.replace(/^updated /, '') : t; }
+    if (window.ForgeChecks) window.ForgeChecks.tick(document, now());
   }
   // Poll faster while something runs, slower otherwise; never with refresh off, and a hidden tab only to notify.
   function schedule() {

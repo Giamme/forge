@@ -41,6 +41,9 @@ _REVIEW_PATH = re.compile(r'/api/runs/([0-9a-f]{12})/final-reviews/((?:final-rev
 _TASK_DIFF_PATH = re.compile(_TASK_PATH.pattern + r'/diff(?:/(current|prev|committed|existing))?')
 _EXEC_DIFF_PATH = re.compile(_EXEC_PATH.pattern + '/diff')
 _TRANSCRIPT_PATH = re.compile(_EXEC_PATH.pattern + '/transcript')
+_EXEC_CHECKS_PATH = re.compile(_EXEC_PATH.pattern + '/checks')
+_TASK_CHECKS_PATH = re.compile(_TASK_PATH.pattern + '/checks')
+_ENVIRONMENT_PATH = re.compile(r'/api/runs/([0-9a-f]{12})/environment')
 _REVIEW_DIFF_PATH = re.compile(_REVIEW_PATH.pattern + '/diff')
 _FILES_PATH = re.compile(r'/api/runs/([0-9a-f]{12})/files')
 _FINDINGS_PATH = re.compile(r'/api/runs/([0-9a-f]{12})/findings')
@@ -144,6 +147,16 @@ def api_get(catalog, path):
     match = _TRANSCRIPT_PATH.fullmatch(path)
     if match:
         return catalog.transcript(*match.groups())
+    match = _EXEC_CHECKS_PATH.fullmatch(path)
+    if match:
+        return catalog.execution_checks(*match.groups())
+    match = _TASK_CHECKS_PATH.fullmatch(path)
+    if match:
+        task_id = _task_id(match.group(2))
+        return None if task_id is None else catalog.task_checks(match.group(1), task_id)
+    match = _ENVIRONMENT_PATH.fullmatch(path)
+    if match:
+        return catalog.environment(match.group(1))
     match = _FILES_PATH.fullmatch(path)
     if match:
         return catalog.files(match.group(1))
