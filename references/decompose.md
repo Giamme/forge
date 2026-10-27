@@ -404,6 +404,38 @@ any blocking finding, or a `FAIL` with no CONFIRMED finding stays a failure. The
 then the literal `PASS`; `known_issues.md`, `qa.gate` and the summary say what was tolerated.
 Without a threshold none of this applies.
 
+### The finding sweep (opt-in)
+
+Tolerated findings are recorded, not fixed. `run --sweep Pn` fixes them inside the run instead: once
+every task has merged, and before the combined verification, the scheduler runs `forge-sweep.py plan`
+once. It collects the open findings at `Pn` or worse (the ones `--qa-threshold` tolerated, plus
+PLAUSIBLE ones with `--sweep-plausible`), with `forge issues`' own collector, and leaves out:
+
+- findings a person accepted with `accept`, and findings of fix tasks (one round: what a sweep review
+  finds goes to `forge issues`, never into another sweep);
+- dismissed ones (`forge issues --dismiss`), ones with no file, and ones whose file is gone;
+- ones whose line, as the reviewer saw it, a later merge changed (`changed`, naming those merges).
+
+Every finding left out is listed in the plan with its reason. The rest become fix tasks, one per file,
+worst first, at most 8 findings each and `--sweep-max N` (default 5) tasks. Each fix task is a row
+`sweep-<n>` in `tasks.tsv` with `prompt.md` and `sweep.json`. Its implementer is the plan's low tier
+(the first spec of `--dwarf-low`, else of `--dwarf`; checked at `run` start), else the implementer of
+the task the worst finding came from. Its reviewer is that task's reviewer. The plan (groups, findings,
+dispatches) is printed and kept in `<plan>/sweep/plan.md` and `plan.json`. A plan is swept at most once.
+
+Fix tasks share the run's scheduling, controls and `--retry-failed` budget. Their review is narrow
+(`forge-contract.py qa --kind sweep`): one `S<n>: FIXED` or `S<n>: NOT FIXED` line per finding, plus
+regressions as findings. It passes when at least one finding is fixed and there is no blocking
+regression. When a fix task merges, its review's lines go to `tasks/<id>/sweep.outcome.json`, and
+`forge issues` leaves out what it fixed (`swept` in `--json`). A fix task that fails leaves its
+findings for `forge issues` and does not fail the run. The run's summary says what the sweep fixed,
+and the whole-run review that follows reads the sweep's changes like any other task's.
+
+`run --sweep-ahead` (kept in `<plan>/sweep_ahead`; `--no-sweep-ahead` turns it off) is the cheaper
+first step. A task dispatched after others merged is told the open findings in files it owns (at
+most 3, picked once in `tasks/<id>/sweep.ahead.json`), to fix only on its way, and its reviewer is
+told the same. It adds no dispatch. A later sweep counts the ones whose line changed as `changed`.
+
 ## Retrying, and resuming an interrupted run
 
 A failed task keeps its branch and its worktree. `retry` is what acts on them:

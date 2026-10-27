@@ -3,7 +3,7 @@
 
 Three subcommands, stdlib only, no network:
 
-  qa --part head|tail [--kind task|final|solo] [--threshold P0|P1|P2|P3]
+  qa --part head|tail [--kind task|final|solo|sweep] [--threshold P0|P1|P2|P3]
       Prints one piece of the QA prompt. The caller prints everything between and
       after the pieces itself (scope notes, the diff fence, the memory note and the
       "Place any learning notes before the final FORGE_VERDICT ..." sentence).
@@ -73,7 +73,7 @@ import sys
 
 SEVERITIES = ('P0', 'P1', 'P2', 'P3')
 PLACEHOLDER = 'path/file.py:123'
-KINDS = ('task', 'final', 'solo')
+KINDS = ('task', 'final', 'solo', 'sweep')
 
 Finding = collections.namedtuple('Finding', 'status severity located line text')
 Finding.__doc__ = (
@@ -114,6 +114,14 @@ _HEAD = {
         'behaviour versus what was asked. Also say if it solved a different problem than the',
         "one stated, or changed files outside the goal's scope.",
     ] + _NO_TRUST,
+    'sweep': [
+        'This is a finding sweep. The implementer was asked to fix only the review findings listed in',
+        'the task above (S1, S2, ...), which reviews of earlier tasks in this run left open. Your review',
+        'is narrow: for each listed finding, decide from the diff below whether it is fixed, or no longer',
+        'applies to the code; and check that the change breaks nothing it touches. Do not review code the',
+        'diff did not change, and do not report other problems you notice there: they are not this',
+        "task's work.",
+    ] + _NO_TRUST,
     'final': [
         'This is the final, whole-run review. The diff below is the COMBINED result of several',
         'tasks that were implemented independently and each reviewed on its own slice only.',
@@ -148,11 +156,25 @@ _SEVERITY = [
 
 _NO_THRESHOLD = ['The severity tag does not change the verdict rule below.']
 
+_SWEEP_FINDINGS = [
+    'Report findings only — do not edit any file. A finding here is a regression the change',
+    'introduced: give its file and line, what breaks, and a concrete input that triggers it. Mark it',
+    'CONFIRMED if you traced it in the code, or PLAUSIBLE if you could not fully verify it.',
+]
+
+_SWEEP_STATUS = [
+    'Then give one line for every listed finding, in exactly this form (its own S number):',
+    '  - S<n>: FIXED',
+    '  - S<n>: NOT FIXED — what is still wrong',
+    'FIXED means the diff removes the problem, or the code it pointed at no longer has it. Do not',
+    'repeat a NOT FIXED finding as a finding bullet; its line is enough.',
+]
+
 _PASS = '  FORGE_VERDICT: PASS   — no confirmed correctness bug (style nits are not failures)'
 _FAIL = '  FORGE_VERDICT: FAIL   — at least one CONFIRMED correctness bug'
 
 
-def _threshold_clause(rank: int) -> list:
+def _threshold_clause(rank: int, kind: str = 'task') -> list:
     name = SEVERITIES[rank]
     blocking = ', '.join(SEVERITIES[:rank + 1])
     if rank == len(SEVERITIES) - 1:
@@ -164,6 +186,8 @@ def _threshold_clause(rank: int) -> list:
                  'CONFIRMED finding at a lower severity (%s) is recorded as a known issue and does' % tolerated,
                  'not by itself justify FAIL. Give FAIL if and only if at least one CONFIRMED',
                  'finding is blocking.']
+        if kind == 'sweep':                 # the verdict lines below say when a sweep fails
+            lines[-2:] = ['not by itself justify FAIL.']
     return lines + ['A CONFIRMED finding without a severity tag counts as blocking.']
 
 
@@ -176,10 +200,15 @@ def qa_text(part: str, kind: str = 'task', threshold=None) -> str:
         return '\n'.join(_HEAD[kind]) + '\n'
     if part != 'tail':
         raise ValueError('part must be head or tail')
-    lines = list(_FINDINGS) + (_SOLO_EXTRA if kind == 'solo' else [])
+    lines = list(_SWEEP_FINDINGS if kind == 'sweep' else _FINDINGS) + (_SOLO_EXTRA if kind == 'solo' else [])
     lines += [''] + _SEVERITY
-    lines += [''] + (_NO_THRESHOLD if rank is None else _threshold_clause(rank))
-    if rank is None:
+    lines += [''] + (_NO_THRESHOLD if rank is None else _threshold_clause(rank, kind))
+    if kind == 'sweep':
+        lines += [''] + _SWEEP_STATUS
+        where = '' if rank is None else ' at the blocking threshold (%s or worse)' % SEVERITIES[rank]
+        verdicts = ['  FORGE_VERDICT: PASS   — at least one listed finding is FIXED, and no CONFIRMED regression%s' % where,
+                    '  FORGE_VERDICT: FAIL   — no listed finding is FIXED, or a CONFIRMED regression%s' % where]
+    elif rank is None:
         verdicts = [_PASS, _FAIL]
     else:
         where = '%s or worse' % SEVERITIES[rank]
@@ -378,7 +407,8 @@ def _parser() -> argparse.ArgumentParser:
     qa.add_argument('--part', required=True, choices=('head', 'tail'),
                     help='head = review preamble, tail = findings format + verdict contract')
     qa.add_argument('--kind', choices=KINDS, default='task',
-                    help='task (default), final (whole-run review) or solo (solo wording)')
+                    help='task (default), final (whole-run review), solo (solo wording) or sweep (a finding '
+                         'sweep task: per-finding FIXED lines, regressions only)')
     qa.add_argument('--threshold', type=_threshold_arg, default=None, metavar='P0..P3',
                     help='least severe level that still blocks (default: none)')
     sub.add_parser('dwarf', help='print the implementer rules block')

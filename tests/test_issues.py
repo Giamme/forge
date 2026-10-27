@@ -247,8 +247,8 @@ class ForgeIssuesTests(unittest.TestCase):
         self.assertEqual([f['severity'] for f in out['findings']], ['P2', 'P3', 'P3'])
         first = out['findings'][0]
         self.assertEqual(sorted(first), sorted(['fp', 'severity', 'confidence', 'origin', 'plan', 'plan_dir', 'task',
-                                               'file', 'summary', 'text', 'reviewer', 'commit', 'review', 'filed',
-                                               'dismissed']))
+                                               'file', 'summary', 'text', 'reviewer', 'commit', 'review', 'swept',
+                                               'filed', 'dismissed']))
         self.assertEqual((first['origin'], first['plan'], first['task'], first['filed'], first['dismissed']),
                          ('tolerated', 'plan', 'import', None, None))
         self.assertIsNone(first['review'])

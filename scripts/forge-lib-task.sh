@@ -649,6 +649,7 @@ run_report_extras() { # run_report_extras <plan> [<verification dir>]
   report_infra "$1"
   report_escalations "$1"
   report_known_issues "$1"
+  python3 "$SKILL_DIR/scripts/forge-sweep.py" report "$1" 2>/dev/null || true
   report_guard_notes "$1"
   report_verify_notes "${2:-$1}"
 }
