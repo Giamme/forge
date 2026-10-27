@@ -1147,7 +1147,14 @@ for them only unknown keys and runs the catalog does not hold are `404`. Every w
 `forge control show <plan dir> --json`: `200` with its object (`plan`, `run_id`, `live`, `fractal`,
 `run` (the plan-wide controls), `tasks` (per task: `status`, `dwarf`, `qa`, `qa_threshold`,
 `retry_budget`, `retries_used`, `pin`, `escalation_stop`, `escalation_next`) and `log`). No token
-is needed to read it.
+is needed to read it. Of `run` the page also reads `max_parallel` (1–64 or `null`), `infra_backoff`
+(the shape, `exp:60` when unset), `escalate_effort` (`on`/`off`), `drained` and `stopping`
+(`graceful`, `now` or `null`) while live, and `infra_paused` while live: one
+`{scope, class, harness, model, tasks, cycle, until, exhausted}` per paused scope (`scope` is
+`all`, `harness:<h>` or `model:<h>/<m>`; `until` an epoch, `exhausted` true once its retries are
+spent). `log` is the newest `control.log` lines first; a scheduler's answer to a queued request
+is a line with `actor: "scheduler"`, the request's `request` id, `outcome` (`applied` or
+`refused`) and `reason`.
 
 ### `POST /api/runs/<key>/controls`
 
@@ -1162,10 +1169,22 @@ known or a spec runs is for the CLI to say (its `400` or `409` comes back as abo
 | `{"action": "set", "key": "retry-budget", "value": "inherit", "task": "reader"}` | `control set <dir> retry-budget inherit --task reader --actor ui --json` |
 | `{"action": "pin", "task": "graph", "spec": "sol:high:codex"}` | `control pin <dir> graph sol:high:codex --actor ui --json` |
 | `{"action": "unpin", "task": "graph"}` | `control unpin <dir> graph --actor ui --json` |
+| `{"action": "drain"}` | `control drain <dir> --actor ui --json` |
+| `{"action": "resume"}` | `control resume <dir> --actor ui --json` |
+| `{"action": "stop"}` (or `"now": false`) | `control stop <dir> --actor ui --json` |
+| `{"action": "stop", "now": true}` | `control stop <dir> --now --actor ui --json` |
+| `{"action": "retry", "task": "graph"}` | `control retry <dir> graph --actor ui --json` |
+| `{"action": "retry", "task": "graph", "dwarf": "sol:high:codex"}` | `control retry <dir> graph --dwarf sol:high:codex --actor ui --json` |
 
 `value` is always a string. `task` is optional on `set`, and only for the keys the CLI allows it
-for. A success is `200 {"ok": true, "changed": {...}, "applies": "...", "controls": {...}}`, where
-`controls` is the `GET` object after the change.
+for; the page sets `max-parallel`, `infra-backoff` (`none` drops it) and `escalate-effort`
+(`on`/`off`) plan-wide. `now` is a boolean. `add` is not exposed: a row is added to `tasks.tsv` by
+hand, so its CLI is the place to queue it. A success is
+`200 {"ok": true, "changed": {...}, "applies": "...", "controls": {...}}`, where `controls` is the
+`GET` object after the change; `drain`, `resume` and `stop` answer the same way and are refused
+(`409`) when no scheduler is live. A `retry` only queues: `200 {"queued": true, "request": "<id>"}`.
+Its refusals before queueing (not live, a MERGED task, a spec that fails doctor) are the CLI's
+`409`/`400`; the scheduler applies or refuses it later, in the `log` line with that `request` id.
 
 ### `GET /api/runs/<key>/issues`
 

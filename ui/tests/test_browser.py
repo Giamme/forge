@@ -870,7 +870,7 @@ class Controls(unittest.TestCase):
         (self.plan / 'tasks/docs/escalation.stop').write_text('')
         page = self.open(cdn=False, view='2d')
         self.inspect(page, 'docs')
-        self.assertIn('policy stopped: split or pin a model', page.text_content('#inspector [data-row=pin]'))
+        self.assertIn('policy stopped', page.text_content('#inspector [data-row=pin] .ctl-stop'))
         page.goto(self.url + '#/runs/' + self.key + '/tasks/reader')
         page.wait_for_selector('#inspector .ctl .ctl-note')
         self.assertIn('Merged', page.text_content('#inspector .ctl'))

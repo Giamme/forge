@@ -25,7 +25,13 @@
     'verify-retries': { label: 'Verify retries', run: 'at the next verification', planOnly: true },
     'retry-budget': { label: 'Retry budget', run: 'at the next retry decision', task: 'at the next retry decision', live: true },
     'infra-retries': { label: 'Infra retries', run: 'at the next retry decision', planOnly: true, live: true },
+    'max-parallel': { label: 'Max parallel', run: 'at the next dispatch', planOnly: true, live: true },
+    'infra-backoff': { label: 'Infra backoff', run: 'at the next infrastructure wait', planOnly: true },
+    'escalate-effort': { label: 'Effort step', run: 'at the next retry decision', planOnly: true },
   };
+  const BACKOFF_FORMS = 'exp:<base>[,<cap>], linear:<start>,<step>[,<cap>] or list:<a>,<b>,… (seconds)';
+  // A task status after which "Retry now" applies (or the policy stopped it).
+  const RETRYABLE = ['FAIL', 'UNKNOWN', 'TIMEOUT', 'ERROR', 'INTERRUPTED', 'BLOCKED'];
 
   const obj = v => v && typeof v === 'object' && !Array.isArray(v) ? v : {};
   const num = v => typeof v === 'number' && Number.isFinite(v) ? v : null;
@@ -80,6 +86,16 @@
       return LEVELS.includes(text) || text === 'none' || (task && text === 'inherit') ? { ok: true, value: text } : bad('P0, P1, P2, P3 or none');
     }
     if (task && key === 'retry-budget' && text === 'inherit') return { ok: true, value: 'inherit' };
+    if (key === 'max-parallel') {
+      return /^[0-9]{1,2}$/.test(text) && Number(text) >= 1 && Number(text) <= 64 ? { ok: true, value: String(Number(text)) } : bad('a whole number, 1 to 64');
+    }
+    if (key === 'escalate-effort') return text === 'on' || text === 'off' ? { ok: true, value: text } : bad('on or off');
+    if (key === 'infra-backoff') {
+      // The shape itself is the CLI's to check; here only what can never be one. "default" drops the setting.
+      if (text === 'default' || text === 'none') return { ok: true, value: 'none' };
+      return text && !/[\s\u0000-\u001f\u007f]/.test(text) && !text.startsWith('-') && text.length <= MAX_FIELD
+        ? { ok: true, value: text } : bad('a backoff shape: ' + BACKOFF_FORMS);
+    }
     return key === 'timeout' ? secondsOf(text) : countOf(text);
   }
 
@@ -92,11 +108,15 @@
     }
     if (action === 'pin') return { action: 'pin', task: a.task, spec: a.spec };
     if (action === 'unpin') return { action: 'unpin', task: a.task };
+    if (action === 'drain' || action === 'resume') return { action };
+    if (action === 'stop') return a && a.now ? { action: 'stop', now: true } : { action: 'stop' };
+    if (action === 'retry') return a.dwarf ? { action: 'retry', task: a.task, dwarf: a.dwarf } : { action: 'retry', task: a.task };
     throw new Error('unknown action ' + action);
   }
 
   const shown = (key, value, task) => key === 'timeout' ? `${minutesOf(Number(value))} min`
-    : key === 'qa-threshold' && value === 'none' && task ? 'none (no threshold for this task)' : value;
+    : key === 'qa-threshold' && value === 'none' && task ? 'none (no threshold for this task)'
+    : key === 'infra-backoff' && value === 'none' ? 'the default (exp:60)' : value;
   const inTask = task => task ? ` for task \`${task}\`` : '';
 
   // A draft change → {ok, body, confirm} or {ok: false, error}. change: {kind: 'set', key, input, task?} |
@@ -120,6 +140,21 @@
       return c.task ? { ok: true, body: bodyFor('unpin', { task: c.task }),
         confirm: `Remove the pin on task \`${c.task}\`? Its next retry goes back to the escalation policy` } : bad('no task');
     }
+    if (c.kind === 'drain') return { ok: true, body: bodyFor('drain'), confirm: 'Drain the run? Running tasks finish; nothing new starts until you resume' };
+    if (c.kind === 'resume') return { ok: true, body: bodyFor('resume'), confirm: 'Resume the run? The scheduler starts tasks again' };
+    if (c.kind === 'stop') {
+      return { ok: true, body: bodyFor('stop', { now: !!c.now }), confirm: c.now
+        ? 'Stop the run now? Running tasks are interrupted, as Ctrl-C does; the run ends with no verification'
+        : 'Stop the run once its running tasks finish? Nothing new starts, and the run ends with no verification' };
+    }
+    if (c.kind === 'retry') {
+      if (!c.task) return bad('no task');
+      const named = String(c.alias === undefined || c.alias === null ? '' : c.alias).trim();
+      const s = named ? specOf(c) : { ok: true, spec: null };
+      if (!s.ok) return s;
+      return { ok: true, body: bodyFor('retry', { task: c.task, dwarf: s.spec }),
+        confirm: `Retry task \`${c.task}\` now${s.spec ? ` on \`${s.spec}\`` : ''}? It is queued into the live run` };
+    }
     return bad('unknown change');
   }
 
@@ -129,6 +164,7 @@
     if (d.changed && String(rec.previous === undefined || rec.previous === null ? '' : rec.previous) === String(rec.value === undefined || rec.value === null ? '' : rec.value)) {
       return 'Nothing changed: it was already so.';
     }
+    if (d.queued === true) return 'Queued: the scheduler applies or refuses it at its next turn.';
     return typeof d.applies === 'string' && d.applies ? `Saved. Applies ${d.applies}.` : 'Saved.';
   }
 
@@ -139,8 +175,46 @@
       qa: LEVELS.includes(run.qa_threshold) ? run.qa_threshold : 'none',
       timeout: num(run.timeout), timeoutMin: minutesOf(run.timeout),
       escalateAfter: num(run.escalate_after), verifyRetries: num(run.verify_retries),
-      retryBudget: num(run.retry_budget), infraBudget: num(run.infra_budget) };
+      retryBudget: num(run.retry_budget), infraBudget: num(run.infra_budget),
+      maxParallel: num(run.max_parallel), infraBackoff: typeof run.infra_backoff === 'string' ? run.infra_backoff : null,
+      escalateEffort: run.escalate_effort === 'on' ? 'on' : 'off', drained: run.drained === true,
+      stopping: run.stopping === 'graceful' || run.stopping === 'now' ? run.stopping : null,
+      pauses: Array.isArray(run.infra_paused) ? run.infra_paused.filter(x => x && typeof x === 'object') : [] };
   }
+  // "3m05s" to a moment, from `now` (epoch seconds); "now" once it has come.
+  function countdown(until, now) {
+    const s = num(until) === null || num(now) === null ? null : Math.ceil(until - now);
+    if (s === null) return null;
+    if (s <= 0) return 'now';
+    return s < 60 ? `${s}s` : s < 3600 ? `${Math.floor(s / 60)}m${String(s % 60).padStart(2, '0')}s` : `${Math.floor(s / 3600)}h${String(Math.floor(s % 3600 / 60)).padStart(2, '0')}m`;
+  }
+  // One line per infrastructure pause (`run.infra_paused`): what is paused, why, its tasks, the wait, and the time to
+  // its end, or "budget used up" once its retries are spent.
+  function pauseLines(controls, now) {
+    return runValues(controls).pauses.map(x => {
+      const scope = String(x.scope || '');
+      const what = scope === 'all' ? 'every task' : scope.startsWith('model:') ? `model ${x.model || scope.slice(6)}${x.harness ? ' on ' + x.harness : ''}`
+        : scope.startsWith('harness:') ? `harness ${x.harness || scope.slice(8)}` : scope || 'a scope';
+      const tasks = Array.isArray(x.tasks) && x.tasks.length ? x.tasks.map(String).join(', ') : null;
+      const left = x.exhausted === true ? 'budget used up' : countdown(x.until, now);
+      return { scope, exhausted: x.exhausted === true, text: [what, x.class ? String(x.class) : null, tasks ? 'tasks ' + tasks : null,
+        num(x.cycle) !== null ? `wait ${x.cycle}` : null, left === null ? null : left === 'budget used up' ? left : left === 'now' ? 'resuming' : `resumes in ${left}`]
+        .filter(Boolean).join(' · ') };
+    });
+  }
+  // Where a queued retry stands: {state: 'queued'} until the scheduler's line with the same request id is in the log,
+  // then {state: 'applied'} or {state: 'refused', reason}. Only the request id matches a line.
+  function requestState(request, log) {
+    const line = (Array.isArray(log) ? log : []).find(e => e && e.actor === 'scheduler' && e.request === request);
+    if (!request || !line) return { state: 'queued' };
+    return line.outcome === 'applied' ? { state: 'applied' } : { state: 'refused', reason: typeof line.reason === 'string' ? line.reason : null };
+  }
+  const requestText = st => st.state === 'refused' ? `refused${st.reason ? ': ' + st.reason : ''}` : st.state;
+  // Whether "Retry now" shows for a task: live only, after it ended without passing or once the policy stopped it.
+  const canRetry = (controls, id) => {
+    const c = obj(controls), v = taskValues(c, id);
+    return c.live === true && v.known && v.status !== 'MERGED' && (RETRYABLE.includes(v.status) || v.stop);
+  };
   // A task's controls with the effective value of each: an override wins, else the run's value is inherited.
   function taskValues(controls, id) {
     const c = obj(controls), t = obj(obj(c.tasks)[id]), run = runValues(c);
@@ -211,7 +285,8 @@
 
   /* ---------- the page: drawing ---------- */
 
-  const store = { enabled: null, runs: new Map(), models: null, modelsAsked: false, lists: new Set(), recent: new Map() };
+  // requests: `<run key>|<task>` → the id of the retry this page queued, until the scheduler's line answers it
+  const store = { enabled: null, runs: new Map(), models: null, modelsAsked: false, lists: new Set(), recent: new Map(), requests: new Map() };
   const RECENT_MS = 9000;                                    // how long a result line stays after the section is rebuilt
   const STALE_MS = 20000;
   let seq = 0;
@@ -284,8 +359,9 @@
     return seg;
   }
 
-  // Ask, send, show the answer. A success redraws every row from the controls the answer carries.
-  async function commit(view, r, change, fields, button) {
+  // Ask, send, show the answer. A success redraws every row from the controls the answer carries; `done` gets a
+  // success's answer (a queued retry keeps its request id).
+  async function commit(view, r, change, fields, button, done) {
     const u = ui();
     if (view.inflight) { u.outcome(r.out, { ok: false, status: 409, error: 'busy' }); return; }
     clearOutcome(view, r);
@@ -299,6 +375,7 @@
     const res = await u.post(path(view.run.key), plan.body);
     view.inflight = false; view.section.removeAttribute('aria-busy');
     remember(view, r, res, savedText(res.data));
+    if (res.ok && done) done(res.data);
     if (res.ok && obj(res.data).controls && res.data.controls.run) {
       for (const f of fields) delete view.draft[f];
       accept(view.run.key, res.data.controls, view.run.updated);
@@ -332,10 +409,65 @@
   }
 
   function liveLamp(view, c) {
-    const u = ui(), live = c.live === true, box = u.el('p', undefined, 'ctl-live');
+    const u = ui(), live = c.live === true, box = u.el('p', undefined, 'ctl-live'), v = runValues(c);
     box.append(u.el('i', undefined, 'lamp ' + (live ? 'st-running' : 'st-pending')),
-      u.el('span', live ? 'live' : 'not running', 'plate'), u.el('span', live ? 'a scheduler is running this plan' : 'no scheduler is running this plan', 'muted'));
+      u.el('span', live ? 'live' : 'not running', 'plate'));
+    if (live && v.stopping) box.append(u.el('span', v.stopping === 'now' ? 'stopping now' : 'stopping', 'tag ctl-state ctl-stopping'));
+    else if (live && v.drained) box.append(u.el('span', 'drained', 'tag ctl-state ctl-drained'));
+    box.append(u.el('span', !live ? 'no scheduler is running this plan' : v.stopping ? 'the run ends once its running tasks are done'
+      : v.drained ? 'running tasks finish; nothing new starts until resumed' : 'a scheduler is running this plan', 'muted'));
     return box;
+  }
+
+  // Drain or Resume, Stop and Stop now: live only, each asked first.
+  function runKeys(view, c) {
+    const u = ui(), v = runValues(c), r = shell(view, 'run', 'Run', false);
+    const keys = u.el('div', undefined, 'ctl-keys');
+    const key = (label, change, title, cls) => {
+      const b = u.el('button', label, cls); b.type = 'button'; b.title = title;
+      b.addEventListener('click', () => commit(view, r, change, [], b));
+      keys.append(b);
+    };
+    if (v.drained) key('Resume', { kind: 'resume' }, 'Start tasks again');
+    else key('Drain', { kind: 'drain' }, 'Start nothing new; running tasks finish and the run waits');
+    if (!v.stopping) {
+      key('Stop', { kind: 'stop' }, 'Let running tasks finish, then end the run (no verification)');
+      key('Stop now', { kind: 'stop', now: true }, 'Interrupt running tasks and end the run', 'ui-danger');
+    }
+    r.control.append(keys);
+    help(r, v.stopping ? 'Stopping: nothing more to ask of the run.' : 'Stop lets running tasks finish; Stop now interrupts them.');
+    return r.box;
+  }
+
+  // One line per infrastructure pause; its countdown ticks from the page's clock between polls.
+  function pauseBox(view, c) {
+    const u = ui(), box = u.el('div', undefined, 'ctl-pauses');
+    box.append(u.el('span', 'Paused on infrastructure', 'ctl-label'));
+    const ul = u.el('ul', undefined, 'ctl-pause-list');
+    const paint = () => {
+      const lines = pauseLines(c, Date.now() / 1000);
+      ul.replaceChildren(...lines.map(l => {
+        const li = u.el('li', undefined, 'ctl-pause' + (l.exhausted ? ' ctl-exhausted' : ''));
+        li.append(u.el('i', undefined, 'lamp ' + (l.exhausted ? 'st-fail' : 'st-running')), u.el('span', l.text, 'ctl-pause-text'));
+        return li;
+      }));
+    };
+    paint();
+    if (view.ticker) clearInterval(view.ticker);
+    view.ticker = setInterval(() => { if (box.isConnected) paint(); else { clearInterval(view.ticker); view.ticker = null; } }, 1000);
+    box.append(ul);
+    return box;
+  }
+
+  // An on/off setting as a two-key bank.
+  function switchRow(view, c, o) {
+    const r = shell(view, o.key, o.label, false), perm = o.perm;
+    r.control.append(bank(r, [{ value: 'off', label: 'Off' }, { value: 'on', label: 'On' }], o.current, perm.enabled, (value, button) => {
+      if (value !== o.current) commit(view, r, { kind: 'set', key: o.key, input: value }, [], button);
+    }));
+    help(r, o.help);
+    if (!perm.enabled) why(r, perm.why);
+    return r.box;
   }
 
   // An integer or minutes setting: a field and a Set key; Enter sets.
@@ -344,7 +476,7 @@
     const form = u.el('form', undefined, 'ctl-set');
     form.noValidate = true;
     const input = u.el('input');
-    input.type = 'text'; input.inputMode = o.decimal ? 'decimal' : 'numeric'; input.autocomplete = 'off'; input.spellcheck = false;
+    input.type = 'text'; input.inputMode = o.text ? 'text' : o.decimal ? 'decimal' : 'numeric'; input.autocomplete = 'off'; input.spellcheck = false;
     input.id = r.id + '-in'; input.placeholder = o.placeholder || ''; input.disabled = !perm.enabled;
     const name = o.key + (o.task ? '@' + o.task : '');
     input.value = field(view, name, o.value === null ? '' : String(o.value));
@@ -403,6 +535,10 @@
     const v = runValues(c), body = ui().el('div', undefined, 'ctl-body');
     const perm = key => canEdit(c, key);
     body.append(liveLamp(view, c));
+    if (c.live === true) {
+      body.append(runKeys(view, c));
+      if (v.pauses.length) body.append(pauseBox(view, c));
+    }
     body.append(levelRow(view, c, { key: 'qa-threshold', label: 'QA threshold', current: v.qa, perm: perm('qa-threshold'),
       help: v.qa === 'none' ? 'The least severe finding that still blocks: no threshold is set.'
         : `The least severe finding that still blocks: ${v.qa} (${LEVELS.slice(0, LEVELS.indexOf(v.qa) + 1).join(', ')} block).`, noneTitle: 'No threshold' }));
@@ -416,6 +552,13 @@
       help: 'Retries a task may use, run-wide.' }));
     body.append(countRow(view, c, { key: 'infra-retries', label: 'Infra retries', unit: 'retries', value: v.infraBudget, placeholder: 'not set', perm: perm('infra-retries'),
       help: 'Retries for infrastructure failures (auth, quota, network), run-wide.' }));
+    body.append(countRow(view, c, { key: 'max-parallel', label: 'Max parallel', unit: 'tasks', value: v.maxParallel, placeholder: 'as started', perm: perm('max-parallel'),
+      help: 'Tasks running at once, 1 to 64. A lower limit lets running tasks finish; it never stops one.' }));
+    body.append(countRow(view, c, { key: 'infra-backoff', label: 'Infra backoff', text: true, value: v.infraBackoff, placeholder: 'exp:60', perm: perm('infra-backoff'),
+      help: `The wait between infrastructure retries: ${BACKOFF_FORMS}. "default" goes back to exp:60.` }));
+    body.append(switchRow(view, c, { key: 'escalate-effort', label: 'Effort step', current: v.escalateEffort, perm: perm('escalate-effort'),
+      help: v.escalateEffort === 'on' ? 'On: at the top tier, a task is retried once more at the next effort its model accepts before it stops.'
+        : 'Off: at the top tier, a task that used up its escalation stops with a split suggestion.' }));
     body.append(changeLog(c));
     return body;
   }
@@ -435,7 +578,64 @@
       inherit: rb.mode === 'inherit' ? 'pressed' : 'ready', perm: canEdit(c, 'retry-budget', id),
       help: `${rb.mode === 'inherit' ? (rb.effective === null ? 'Inherits the run\'s budget.' : `Inherits ${rb.effective} from the run.`) : `${rb.own} for this task.`} ${used}.` }));
     if (!canEdit(c, 'pin', id).hidden) body.append(pinRow(view, c, v));
+    if (canRetry(c, id) || store.requests.has(view.run.key + '|' + id)) body.append(retryRow(view, c, v));
     return body;
+  }
+
+  // The implementer picker the pin and Retry now share: alias (suggestions from the models seen in runs, free text too),
+  // effort, optional harness. Drafts live under `<prefix>.alias|effort|harness`; read() gives the change's parts.
+  function modelFields(view, r, prefix) {
+    const u = ui(), alias = u.el('input'), harness = u.el('input'), list = u.el('datalist');
+    alias.type = 'text'; harness.type = 'text';
+    for (const i of [alias, harness]) { i.autocomplete = 'off'; i.spellcheck = false; }
+    alias.setAttribute('list', r.id + '-models');
+    list.id = r.id + '-models'; fillList(list);
+    if (!store.models) trackList(list);
+    alias.value = field(view, prefix + '.alias', ''); harness.value = field(view, prefix + '.harness', '');
+    alias.addEventListener('input', () => touch(view, prefix + '.alias', alias.value));
+    harness.addEventListener('input', () => touch(view, prefix + '.harness', harness.value));
+    const captioned = (caption, control, cls) => { const l = u.el('label', undefined, 'filter ' + cls); l.append(u.el('span', caption), control); return l; };
+    const effortCaption = u.el('span', 'Effort'), effortBox = u.el('div', undefined, 'filter ctl-effort');
+    effortCaption.id = r.id + '-effort';
+    const effortBank = bank(r, EFFORTS.map(e => ({ value: e, label: e })), field(view, prefix + '.effort', 'default'), true, value => {
+      touch(view, prefix + '.effort', value);
+      for (const b of effortBank.children) b.setAttribute('aria-pressed', String(b.dataset.value === value));
+    });
+    effortBank.setAttribute('aria-labelledby', effortCaption.id);
+    effortBox.append(effortCaption, effortBank);
+    loadModels();
+    return { nodes: [captioned('Model alias', alias, 'ctl-alias'), list, captioned('Harness (optional)', harness, 'ctl-harness'), effortBox],
+      read: () => ({ alias: alias.value, effort: view.draft[prefix + '.effort'] || 'default', harness: harness.value }),
+      fields: [prefix + '.alias', prefix + '.effort', prefix + '.harness'] };
+  }
+
+  // Retry now: queue a retry of a failed or stopped task into the live run, on its policy's model or one named here.
+  function retryRow(view, c, v) {
+    const u = ui(), r = shell(view, 'retry', 'Retry now', false), id = v.id, hold = view.run.key + '|' + id;
+    const request = store.requests.get(hold);
+    if (request) {
+      const st = requestState(request, c.log);
+      const line = u.el('p', undefined, 'ctl-request ctl-request-' + st.state);
+      line.append(u.el('i', undefined, 'lamp ' + (st.state === 'applied' ? 'st-pass' : st.state === 'refused' ? 'st-fail' : 'st-running')),
+        u.el('span', requestText(st)));
+      r.status.append(line);
+    }
+    if (!canRetry(c, id)) return r.box;
+    const form = u.el('form', undefined, 'ctl-pin ctl-retry');
+    form.noValidate = true;
+    const picker = modelFields(view, r, 'retry');
+    const go = u.el('button', 'Retry now', 'primary'); go.type = 'submit';
+    form.append(...picker.nodes, go);
+    form.addEventListener('submit', e => {
+      e.preventDefault();
+      commit(view, r, Object.assign({ kind: 'retry', task: id }, picker.read()), picker.fields, go, data => {
+        if (data && data.queued === true && typeof data.request === 'string') store.requests.set(hold, data.request);
+        show(view);
+      });
+    });
+    r.control.append(form);
+    help(r, 'Leave the model empty for the escalation policy\'s choice.');
+    return r.box;
   }
 
   function pinRow(view, c, v) {
@@ -455,39 +655,21 @@
     }
     if (v.stop) {
       const stop = u.el('p', undefined, 'ctl-stop');
-      stop.append(u.el('i', undefined, 'lamp st-fail'), u.el('span', 'policy stopped: split or pin a model'));
+      // "Retry now" is only offered while the run is live
+      stop.append(u.el('i', undefined, 'lamp st-fail'), u.el('span', canRetry(c, id) ? 'policy stopped: split, pin a model, or Retry now' : 'policy stopped: split or pin a model'));
       r.status.append(stop);
     }
-    // alias (suggestions from the models seen in runs, free text too), effort, optional harness
     const form = u.el('form', undefined, 'ctl-pin');
     form.noValidate = true;
-    const alias = u.el('input'), harness = u.el('input'), list = u.el('datalist');
-    alias.type = 'text'; harness.type = 'text';
-    for (const i of [alias, harness]) { i.autocomplete = 'off'; i.spellcheck = false; }
-    alias.setAttribute('list', r.id + '-models');
-    list.id = r.id + '-models'; fillList(list);
-    if (!store.models) trackList(list);
-    alias.value = field(view, 'pin.alias', ''); harness.value = field(view, 'pin.harness', '');
-    alias.addEventListener('input', () => touch(view, 'pin.alias', alias.value));
-    harness.addEventListener('input', () => touch(view, 'pin.harness', harness.value));
-    const captioned = (caption, control, cls) => { const l = u.el('label', undefined, 'filter ' + cls); l.append(u.el('span', caption), control); return l; };
-    const effortCaption = u.el('span', 'Effort'), effortBox = u.el('div', undefined, 'filter ctl-effort');
-    effortCaption.id = r.id + '-effort';
-    const effortBank = bank(r, EFFORTS.map(e => ({ value: e, label: e })), field(view, 'pin.effort', 'default'), true, value => {
-      touch(view, 'pin.effort', value);
-      for (const b of effortBank.children) b.setAttribute('aria-pressed', String(b.dataset.value === value));
-    });
-    effortBank.setAttribute('aria-labelledby', effortCaption.id);
-    effortBox.append(effortCaption, effortBank);
+    const picker = modelFields(view, r, 'pin');
     const go = u.el('button', 'Pin', 'primary'); go.type = 'submit';
-    form.append(captioned('Model alias', alias, 'ctl-alias'), list, captioned('Harness (optional)', harness, 'ctl-harness'), effortBox, go);
+    form.append(...picker.nodes, go);
     form.addEventListener('submit', e => {
       e.preventDefault();
-      commit(view, r, { kind: 'pin', task: id, alias: alias.value, effort: view.draft['pin.effort'] || 'default', harness: harness.value }, ['pin.alias', 'pin.effort', 'pin.harness'], go);
+      commit(view, r, Object.assign({ kind: 'pin', task: id }, picker.read()), picker.fields, go);
     });
     r.control.append(form);
     help(r, 'Applies at the next full retry, not a QA-only resume.');
-    loadModels();
     return r.box;
   }
   function fillList(list) {
@@ -615,5 +797,6 @@
   }
 
   return { LEVELS, EFFORTS, KEYS, specOf, countOf, secondsOf, minutesOf, valueFor, bodyFor, prepare, savedText, effective, canEdit, logLine, agoText,
-    aliasesOf, scopeOf, typing, isEditing, keepEditing, redrawDue, mountRun, mountTask, hold };
+    aliasesOf, scopeOf, typing, isEditing, keepEditing, redrawDue, countdown, pauseLines, requestState, requestText, canRetry,
+    mountRun, mountTask, hold };
 });

@@ -605,7 +605,10 @@ def _task_detail(reader, task, run_id, waves, branches):
 
 # The control files (CONTRACT.md) nothing else here reads. `forge control` appends control.log and writes the task's
 # files without touching the run dir, so they are stat'd for `updated` only.
-_RUN_CONTROLS = ('control.log', 'retry_budget', 'infra_budget')
+# Read only for their mtimes, so the run's `updated` stamp moves when a control changes.
+# control.requests is a directory: its mtime moves when a request is queued or settled.
+_RUN_CONTROLS = ('control.log', 'retry_budget', 'infra_budget', 'drain', 'stop', 'max_parallel', 'infra.paused',
+                 'infra_backoff', 'escalate_effort', 'control.requests')
 _TASK_CONTROLS = ('qa_threshold', 'retry_budget', 'retries.used', 'escalation.pin', 'escalation.stop', 'escalation.next')
 
 

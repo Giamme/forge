@@ -672,6 +672,17 @@ p.ctl-why::before { content: ''; width: 7px; height: 7px; border-radius: 50%; ba
 .ctl-pin-now { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; }
 p.ctl-stop { display: flex; align-items: center; gap: 7px; margin: 0; padding: 4px var(--s-2); border-radius: var(--r-small); background: var(--warn-wash); color: var(--warn-ink); font-weight: 600; }
 .ctl-log { margin-top: var(--s-1); }
+/* the run's keys (drain, resume, stop), its drained or stopping state, pauses and a queued retry's answer */
+.ctl-keys { display: flex; flex-wrap: wrap; gap: var(--s-2); }
+.ctl-state { font-variant-numeric: tabular-nums; }
+.ctl-stopping, .ctl-drained { background: var(--warn-wash); color: var(--warn-ink); border-color: transparent; }
+.ctl-pauses { display: grid; gap: var(--s-1); }
+.ctl-pause-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; font-size: var(--t-xs); }
+.ctl-pause { display: flex; align-items: baseline; gap: 7px; }
+.ctl-pause-text { font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.ctl-exhausted .ctl-pause-text { color: var(--warn-ink); font-weight: 600; }
+p.ctl-request { display: flex; align-items: center; gap: 7px; margin: 0; font-size: var(--t-sm); }
+p.ctl-request-refused { color: var(--warn-ink); font-weight: 600; }
 .ctl-changes { list-style: none; margin: 4px 0 0; padding: 0; display: grid; gap: 4px; font-size: var(--t-xs); }
 .ctl-changes li { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; }
 .ctl-what { color: var(--ink); font-weight: 600; }

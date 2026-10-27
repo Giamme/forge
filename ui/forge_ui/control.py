@@ -199,9 +199,13 @@ def validate_body(body):
     action = body.get('action')
     shapes = {'set': ({'action', 'key', 'value', 'task'}, ('key', 'value')),
               'pin': ({'action', 'task', 'spec'}, ('task', 'spec')),
-              'unpin': ({'action', 'task'}, ('task',))}
+              'unpin': ({'action', 'task'}, ('task',)),
+              'retry': ({'action', 'task', 'dwarf'}, ('task',)),
+              'drain': ({'action'}, ()),
+              'resume': ({'action'}, ()),
+              'stop': ({'action', 'now'}, ())}
     if not isinstance(action, str) or action not in shapes:
-        raise BadBody('action must be one of set, pin, unpin')
+        raise BadBody('action must be one of ' + ', '.join(shapes))
     allowed, required = shapes[action]
     extra = sorted(set(body) - allowed)
     if extra:
@@ -209,6 +213,12 @@ def validate_body(body):
     tail = [_text(body, name) for name in required]
     if action == 'set' and 'task' in body:
         tail += ['--task', _text(body, 'task')]
+    if action == 'retry' and 'dwarf' in body:
+        tail += ['--dwarf', _text(body, 'dwarf')]
+    if action == 'stop' and 'now' in body:
+        if not isinstance(body['now'], bool):
+            raise BadBody('now must be true or false')
+        tail += ['--now'] if body['now'] else []
     return action, tail
 
 

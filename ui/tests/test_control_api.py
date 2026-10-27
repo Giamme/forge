@@ -299,6 +299,23 @@ class ArgvAndMappingTests(ControlApiCase):
         self.assertEqual((status, json.loads(data)['ok'], self.last()['argv']), (200, True, ['control', 'show', plan, '--json']))
         self.assertEqual(headers['content-type'], 'application/json; charset=utf-8')
 
+    def test_the_run_actions_and_retry_build_their_exact_argv(self):
+        plan = str(Path(os.path.realpath(self.plan)))
+        self.behave(stdout='{"ok": true}')
+        cases = [
+            ({'action': 'drain'}, ['control', 'drain', plan, '--actor', 'ui', '--json']),
+            ({'action': 'resume'}, ['control', 'resume', plan, '--actor', 'ui', '--json']),
+            ({'action': 'stop'}, ['control', 'stop', plan, '--actor', 'ui', '--json']),
+            ({'action': 'stop', 'now': False}, ['control', 'stop', plan, '--actor', 'ui', '--json']),
+            ({'action': 'stop', 'now': True}, ['control', 'stop', plan, '--now', '--actor', 'ui', '--json']),
+            ({'action': 'retry', 'task': 'graph'}, ['control', 'retry', plan, 'graph', '--actor', 'ui', '--json']),
+            ({'action': 'retry', 'task': 'graph', 'dwarf': 'sol:high:codex'},
+             ['control', 'retry', plan, 'graph', '--dwarf', 'sol:high:codex', '--actor', 'ui', '--json']),
+        ]
+        for body, argv in cases:
+            status, _answer = self.post(body)
+            self.assertEqual((status, self.last()['argv']), (200, argv), body)
+
     def test_the_cli_is_called_by_argv_with_values_it_cannot_misread(self):
         self.behave(stdout='{"ok": true}')
         value = 'x; touch /tmp/pwned $(id) `id` "\' *'
@@ -354,6 +371,10 @@ class ArgvAndMappingTests(ControlApiCase):
             {'action': 'pin', 'task': 'page', 'spec': 'sol', 'value': 'x'},
             {'action': 'unpin'}, {'action': 'unpin', 'task': ''}, {'action': 'unpin', 'task': 'page', 'spec': 'sol'},
             {'action': 'unpin', 'task': True},
+            {'action': 'stop', 'now': 'yes'}, {'action': 'stop', 'now': 1}, {'action': 'stop', 'now': None},
+            {'action': 'retry'}, {'action': 'retry', 'task': ''}, {'action': 'retry', 'task': 'graph', 'dwarf': '-x'},
+            {'action': 'retry', 'task': 'graph', 'dwarf': 5}, {'action': 'retry', 'task': 'graph', 'spec': 'sol'},
+            {'action': 'drain', 'task': 'graph'}, {'action': 'resume', 'now': True}, {'action': 'add', 'task': 'graph'},
         ]
         for body in bad:
             status, answer = self.post(body)
@@ -576,6 +597,10 @@ class RealForgeTests(ControlApiCase):
         status, answer = self.post({'action': 'unpin', 'task': 'reader'})  # MERGED: refused by the CLI
         self.assertEqual((status, answer['error']), (409, 'refused'))
         self.assertIn('MERGED', answer['detail'])
+        status, answer = self.post({'action': 'drain'})                    # no live scheduler to drain
+        self.assertEqual((status, answer['error']), (409, 'refused'))
+        self.assertIn('live', answer['detail'])
+        self.assertFalse((self.plan / 'drain').exists())
 
 
 if __name__ == '__main__':
