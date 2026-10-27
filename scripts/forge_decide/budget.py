@@ -97,20 +97,28 @@ def _add(path: Path, tokens: int, usd: float) -> None:
         pass
 
 
-def _reached(counter: dict, tokens, usd) -> bool:
-    return ((tokens is not None and counter['tokens'] >= tokens)
-            or (usd is not None and counter['usd'] >= usd * (1 - USD_SLACK)))
+def _reached(spent, cap, slack=0.0) -> bool:
+    # The slack scales the (finite) spend, never the cap: an int cap too big for a float
+    # still compares exactly. A cap that cannot be compared never blocks, and never stops
+    # the other caps from being checked.
+    if cap is None:
+        return False
+    try:
+        return spent * (1 + slack) >= cap
+    except Exception:
+        return False
 
 
 def check(caps, *, run_dir=None, now=None) -> str | None:
     """'budget' once any set cap (run or day, tokens or usd) has been reached, else None."""
     try:
         now = time.time() if now is None else now
-        caps = caps or {}
-        if _reached(_read(_run_path(run_dir)), caps.get('run_tokens'), caps.get('run_usd')):
-            return SKIP
-        if _reached(_read(_daily_path(now)), caps.get('daily_tokens'), caps.get('daily_usd')):
-            return SKIP
+        caps = caps if isinstance(caps, dict) else {}
+        run, day = _read(_run_path(run_dir)), _read(_daily_path(now))
+        for counter, scope in ((run, 'run'), (day, 'daily')):
+            if (_reached(counter['tokens'], caps.get(f'{scope}_tokens'))
+                    or _reached(counter['usd'], caps.get(f'{scope}_usd'), USD_SLACK)):
+                return SKIP
     except Exception:
         pass
     return None

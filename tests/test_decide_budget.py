@@ -135,6 +135,15 @@ class CapTests(BudgetTestCase):
         self.assertIsNone(self.check(run, run_usd=0.01, daily_usd=0.01))
         self.assertEqual(self.check(run, run_tokens=1000), 'budget')
 
+    def test_huge_or_bad_cap_does_not_hide_the_others(self):
+        run = self.run_dir()
+        self.charge(1, run)
+        for odd in (10**400, 'x'):
+            with self.subTest(odd=odd):
+                self.assertIsNone(self.check(run, run_usd=odd, run_tokens=odd))
+                self.assertEqual(self.check(run, run_usd=odd, daily_tokens=1), 'budget')
+                self.assertEqual(self.check(run, daily_usd=odd, run_tokens=1), 'budget')
+
     def test_none_cap_never_blocks(self):
         run = self.run_dir()
         self.charge(10**9, run)
