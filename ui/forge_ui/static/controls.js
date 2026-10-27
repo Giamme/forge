@@ -145,7 +145,7 @@
     if (c.kind === 'stop') {
       return { ok: true, body: bodyFor('stop', { now: !!c.now }), confirm: c.now
         ? 'Stop the run now? Running tasks are interrupted, as Ctrl-C does; the run ends with no verification'
-        : 'Stop the run once its running tasks finish? Nothing new starts, and the run ends with no verification' };
+        : 'Stop the run once its running tasks finish? Nothing new starts, and the run ends with no verification (unless every task has merged by then)' };
     }
     if (c.kind === 'retry') {
       if (!c.task) return bad('no task');
@@ -431,7 +431,7 @@
     if (v.drained) key('Resume', { kind: 'resume' }, 'Start tasks again');
     else key('Drain', { kind: 'drain' }, 'Start nothing new; running tasks finish and the run waits');
     if (!v.stopping) {
-      key('Stop', { kind: 'stop' }, 'Let running tasks finish, then end the run (no verification)');
+      key('Stop', { kind: 'stop' }, 'Let running tasks finish, then end the run (no verification, unless every task merged)');
       key('Stop now', { kind: 'stop', now: true }, 'Interrupt running tasks and end the run', 'ui-danger');
     }
     r.control.append(keys);

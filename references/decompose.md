@@ -523,10 +523,13 @@ Five more commands steer a live scheduler (exit 3 when none is live):
 
 - `drain <plan>` starts nothing new: running tasks finish, the scheduler waits (it prints
   `drained — N task(s) waiting` once) and infrastructure waits keep counting down. `resume <plan>`
-  ends the drain. This is the supported way to pause a run; nothing has to be signalled.
+  ends the drain. This is the supported way to pause a run; nothing has to be signalled. A drain
+  holds only tasks still to start: when none is left (or waiting on infrastructure), the run
+  ends as it would without the drain, verification included.
 - `stop <plan>` starts nothing new and ends the run once the running tasks are done: a waiting
   infrastructure pause ends too, unstarted tasks stay `PENDING`, verification is skipped and `run`
-  exits 130 (0 when every task had already merged). `stop --now` interrupts the running tasks
+  exits 130. When every task has merged by then, nothing was cut short: the run ends as usual,
+  verifies and exits 0. `stop --now` interrupts the running tasks
   as SIGTERM would.
 - `retry <plan> <task> [--dwarf <spec>]` and `add <plan> <task>` only queue a request, one JSON
   file in `control.requests/`. At its next pass the scheduler applies or refuses it and appends

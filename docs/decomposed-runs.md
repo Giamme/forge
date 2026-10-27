@@ -236,7 +236,7 @@ forge control unpin <plan-dir> <task>
 And to steer the scheduler itself (each needs a live run, exit 3 otherwise):
 
 ```bash
-forge control drain <plan-dir>                    # start nothing new; running tasks finish, the run waits
+forge control drain <plan-dir>                    # start nothing new; running tasks finish, the run waits for resume
 forge control resume <plan-dir>                   # end the drain
 forge control stop <plan-dir>                     # finish what runs, start nothing, end the run (exit 130)
 forge control stop <plan-dir> --now               # interrupt the running tasks too, like Ctrl-C
@@ -244,6 +244,8 @@ forge control retry <plan-dir> docs --dwarf sol:high   # queue a retry of a stop
 forge control add <plan-dir> docs-fix             # queue a row you appended to tasks.tsv (with its prompt.md)
 ```
 
+A stop skips verification and exits 130, unless every task had merged by then, and a drain
+with nothing left to start lets the run end as usual: both act on work still to do.
 `retry` and `add` only queue a request in `control.requests/`; the scheduler applies or refuses
 it at its next pass and logs the outcome in `control.log` under the same request id (`forge
 control show` lists the log). A retry is prepared exactly as `forge-parallel.sh retry` prepares one,

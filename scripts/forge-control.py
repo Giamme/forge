@@ -10,9 +10,12 @@
   retry <plan> <task> [--dwarf SPEC]             queue a retry of a stopped or failed task into the live run
   add   <plan> <task>                            queue a row added to tasks.tsv (with its prompt.md) into the live run
   drain <plan>                                   start nothing new; running tasks finish and the scheduler waits
+                                                 while tasks remain (with none left to start, the run ends as usual)
   resume <plan>                                  end a drain
   stop  <plan> [--now]                           start nothing new and end the run once running tasks are done
-                                                 (exit 130, no verification); --now interrupts them like SIGTERM
+                                                 (exit 130, no verification; when every task has merged by then,
+                                                 the run ends as usual: it verifies and exits 0); --now interrupts
+                                                 them like SIGTERM
 
 `show` reports escalate-after and verify-retries at their defaults (3 and 1) when unset,
 escalate-effort as on or off (off when the file is absent), and the two budgets only while a
@@ -857,13 +860,13 @@ def parser():
     common(p)
     p.add_argument('task')
     p.set_defaults(func=cmd_add)
-    p = sub.add_parser('drain', help='start nothing new; running tasks finish and the scheduler waits (live only)')
+    p = sub.add_parser('drain', help='start nothing new; running tasks finish and the scheduler waits while tasks remain (live only)')
     common(p)
     p.set_defaults(func=cmd_drain)
     p = sub.add_parser('resume', help='end a drain (live only)')
     common(p)
     p.set_defaults(func=cmd_resume)
-    p = sub.add_parser('stop', help='end the run once running tasks finish, exit 130 without verifying (live only)')
+    p = sub.add_parser('stop', help='end the run once running tasks finish, exit 130 without verifying unless every task merged (live only)')
     common(p)
     p.add_argument('--now', action='store_true', help='interrupt running tasks, as SIGTERM does')
     p.set_defaults(func=cmd_stop)
