@@ -29,6 +29,9 @@
 #   --verify-retries N      run retry integrate  $PLAN/verify_retries  reruns of a failed verify command
 #   --escalate-after N      run retry         $PLAN/escalate_after failed attempts on one model before the
 #                                                                  next goes a tier up (default 3; 0 = off)
+#   --escalate-effort       run retry         $PLAN/escalate_effort  on: before the stop, retry the same
+#                                                                  model at the next effort its pairing accepts
+#   --no-escalate-effort    run retry         (removes the file)   turn that step off (the default)
 #   --final-review SPEC     integrate         $PLAN/final_qa       QA spec for the whole-run review
 #   --verify-lane L=CMD     run retry         $PLAN/verify.d/<L>   a verification lane: name[options]=command,
 #                                                                  options as in a lane file (group=g,first,...);
@@ -100,6 +103,14 @@ forge_pp_flag() {
       if [ "$2" = 0 ]; then
         rm -f "$plan"/tasks/*/escalation.stop "$plan"/tasks/*/split.suggested "$plan"/tasks/*/escalation.next
       fi ;;
+    --escalate-effort)
+      case "$cmd" in run|retry) ;; *) return 1 ;; esac
+      PP_SHIFT=1                                  # a switch, not --escalate-after's N
+      printf 'on\n' > "$plan/escalate_effort" ;;
+    --no-escalate-effort)
+      case "$cmd" in run|retry) ;; *) return 1 ;; esac
+      PP_SHIFT=1
+      rm -f "$plan/escalate_effort" ;;
     --verify-retries)
       case "$cmd" in run|retry|integrate) ;; *) return 1 ;; esac
       pp_nonneg --verify-retries "${2:-}"

@@ -2,8 +2,9 @@
 """forge control <command> <plan-dir> ...: show and change a plan's live controls.
 
   show  <plan> [--json]                          every control, per-task overrides, pins and the change log
-  set   <plan> <key> <value> [--task ID]         qa-threshold, timeout, escalate-after, verify-retries,
-                                                 retry-budget, infra-retries, infra-backoff (none drops it)
+  set   <plan> <key> <value> [--task ID]         qa-threshold, timeout, escalate-after, escalate-effort,
+                                                 verify-retries, retry-budget, infra-retries, infra-backoff
+                                                 (none drops it)
   pin   <plan> <task> <spec>                     the model the task's next FULL implementer retry uses
   unpin <plan> <task>
   retry <plan> <task> [--dwarf SPEC]             queue a retry of a stopped or failed task into the live run
@@ -13,8 +14,9 @@
   stop  <plan> [--now]                           start nothing new and end the run once running tasks are done
                                                  (exit 130, no verification); --now interrupts them like SIGTERM
 
-`show` reports escalate-after and verify-retries at their defaults (3 and 1) when unset, and the two
-budgets only while a scheduler is live.
+`show` reports escalate-after and verify-retries at their defaults (3 and 1) when unset,
+escalate-effort as on or off (off when the file is absent), and the two budgets only while a
+scheduler is live.
 
 Every change is validated, written atomically under the plan's control lock (`control.lock`),
 appended to `control.log` and recorded as a dataset `control` event. This is the only writer of
@@ -395,7 +397,9 @@ def show(plan, rows):
         return number(get(rel)) if live else None
 
     run = dict(qa_threshold=level(get('qa_threshold')), timeout=number(get('timeout')),
-               escalate_after=number(get('escalate_after')), verify_retries=number(get('verify_retries')),
+               escalate_after=number(get('escalate_after')),
+               escalate_effort='on' if get('escalate_effort') == 'on' else 'off',
+               verify_retries=number(get('verify_retries')),
                retry_budget=budget('retry_budget'), infra_budget=budget('infra_budget'))
     run['infra_backoff'] = get('infra_backoff') or default_backoff()
     parallel = number(get('max_parallel'))
@@ -487,11 +491,18 @@ def _budget(value, task):
     return value if task and value == 'inherit' else _int(value, task)
 
 
+def _onoff(value, _task):
+    if value in ('on', 'off'):
+        return value
+    raise Invalid('needs on or off')
+
+
 # key -> (plan only or both, validator, file, live only, when it applies)
 KEYS = {
     'qa-threshold': ('both', _qa, 'qa_threshold', False, NEXT_ATTEMPT),
     'timeout': ('plan', _int, 'timeout', False, NEXT_ATTEMPT),
     'escalate-after': ('plan', _int, 'escalate_after', False, NEXT_DECISION),
+    'escalate-effort': ('plan', _onoff, 'escalate_effort', False, NEXT_DECISION),
     'verify-retries': ('plan', _int, 'verify_retries', False, NEXT_VERIFY),
     'retry-budget': ('both', _budget, 'retry_budget', True, NEXT_DECISION),
     'infra-retries': ('plan', _int, 'infra_budget', True, NEXT_DECISION),
@@ -559,7 +570,7 @@ def cmd_set(args):
     except Invalid as error:
         raise Invalid(f'{args.key}: {error}')
     rel = f'tasks/{task}/{name}' if task else name
-    drop = value == 'inherit' or (value == 'none' and not task)
+    drop = value == 'inherit' or (value == 'none' and not task) or (args.key == 'escalate-effort' and value == 'off')
     wide = args.key == 'escalate-after' and value == '0'
     markers = [f'tasks/{row[0]}/{m}' for row in rows if valid_task_id(row[0]) for m in STOP_MARKERS] if wide else []
 
