@@ -5,6 +5,40 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and versions follow the format `{major}.{minor}[.{patch}]` ([...] parts appear only when non-zero).
 
+## [0.12] - 2026-10-27
+
+Decomposed runs can now be steered while they run and stop cleanly when interrupted: drain, stop, retry or resize a live run from forge control or forge-ui, an infrastructure stop pauses only the model or CLI it hit, and verification can run as parallel lanes that rerun only what failed and name the failing tests.
+
+### Highlights
+
+- A running decomposed plan can be steered: `forge control drain` lets running tasks finish and starts nothing new until `forge control resume`; `forge control stop` ends the run once running tasks are done (exit 130 without verifying, unless every task merged; not-started tasks stay pending for the next `run`), and `stop --now` interrupts them; `forge control set <plan> max-parallel N` changes how many tasks run at once.
+- Verification can run as lanes: declare them in `.forge/verify.d/` (one file per lane) or with `run --verify-lane 'name[options]=command'`, and forge runs them side by side (`--verify-parallel`, 3 by default), reruns only a lane that failed, and calls a lane that passed on rerun flaky. Lanes can read JUnit or TAP reports to name the failing tests, and a baseline of known failures keeps those from failing the run. The run summary and the whole-run review name each lane and its state.
+- An infrastructure stop no longer pauses the whole decomposed run: a rate limit pauses only that model and a quota or sign-in stop only that CLI, each with its own wait and --infra-retries budget, while tasks routed elsewhere keep running. `forge control show` lists the active pauses.
+
+### Added
+
+- `run --infra-backoff` sets how long forge waits between infrastructure retries: `exp:<base>[,<cap>]` (the default, `exp:60`), `linear:<start>,<step>[,<cap>]` or a list of waits such as `10,20,30`. `forge control set <plan> infra-backoff` changes it while the run goes on, and each wait message names the shape it used.
+- A running decomposed plan can retry a stopped or failed task, optionally on another model (`forge control retry <plan> <task> [--dwarf <spec>]`), and pick up a row you added to tasks.tsv (`forge control add <plan> <task>`) without ending the run. The scheduler applies or refuses each request at its next pass and records the outcome in control.log.
+- `run --infra-fallback`: when an implementer's model is at capacity, the task moves at once to the next model of its own tier pool instead of waiting, and the move is recorded like an escalation. The busy model is still paused and counted, so a pool that is entirely at capacity still ends the run.
+- forge-ui now shows a verification while it runs: its current step, last output line and idle time, and, for a lanes verification, each lane's state, runs, test counts and failing tests, with known failures marked.
+- forge-ui serves every verification log, each lane's and each rerun's, as a numbered tail or in 400-line pages, so the cause of a failed verification can be read without opening the run dir.
+- The verification panel in forge-ui now follows a running verification live (current step, last line, elapsed time, a warning after five silent minutes, the log's tail) and, when it fails, opens on the failing tests, marked new or known, each linking to its line in the log.
+- forge-ui's Execution view shows verification lanes as their own rows, with every run and rerun at its real time, and the 3D finish node shows one light per lane; a verification that is still running reads RUNNING instead of its previous result.
+- `--escalate-effort` (on `run` and `retry`, or `forge control set <plan> escalate-effort on`): when a task has failed its escalation limit on the top tier's model, forge retries it once more at the next effort that model accepts before stopping it with a split suggestion. Turning it on also releases tasks the policy already stopped.
+- forge-ui's Controls panel can now drain, resume and stop a live run (gracefully or at once), change max parallel, the infrastructure backoff and the effort step, and retry a stopped task now with a chosen model. It also shows each infrastructure pause with a countdown, and whether a queued retry was applied or refused.
+
+### Changed
+
+- The forecast `run` prints before dispatching lists the tasks that don't have enough history yet on one line instead of a row each, and is a single line when no task has enough history, so a new setup no longer opens every run with a table of "not enough history" rows. `forge dataset forecast <plan>` still shows every task.
+
+### Fixed
+
+- When the plan forecast that `run` prints runs out of its time budget while saving, it no longer leaves a stray `.forecast.json.<pid>` file in the plan.
+- Interrupting a decomposed run no longer leaves an implementer or reviewer CLI running: forge waits up to 10 s (FORGE_INTERRUPT_GRACE) for each task to stop its harness, and a harness left behind by a killed run is stopped when the next run starts.
+- Interrupting `forge-parallel.sh run` (Ctrl-C or SIGTERM) no longer goes on to verify a half-merged integration branch: the run stops, frees the plan lock within seconds, exits 130 and prints the command that continues each interrupted task. A signal during verification stops the whole verify command and skips its rerun.
+- A task that finished just as a decomposed run was interrupted is now reaped first: its passing work still merges and its result is kept, and only the tasks still running are marked INTERRUPTED.
+- On macOS, a Ripwire context call whose output was too long or that ran too long no longer fails with a PermissionError; it is skipped with its reason, as intended.
+
 ## [0.11.1] - 2026-10-26
 
 A bug-fix release for forge-ui and forge issues: the Settings and Open findings views keep your edits and selections honest, forge ui open handles a read-only server with another configuration, and refused labels and warnings say what's wrong.

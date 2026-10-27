@@ -1,6 +1,6 @@
 {
   "name": "@giamme/forge",
-  "version": "0.11.1",
+  "version": "0.12.0",
   "description": "Multi-model coding with a reviewer that reads the code: plan, build in parallel worktrees, review every real diff, merge only what passes.",
   "keywords": ["claude-code", "codex", "opencode", "agent-skill", "code-review", "multi-model"],
   "license": "MIT",
