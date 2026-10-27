@@ -117,16 +117,13 @@ CLOUDFLARE_MAX_QUESTIONS = 64
 CLOUDFLARE_TOKEN_FILE = 'cloudflare.env'
 
 # Which capability each site belongs to, so a site on a provider with no credentials is
-# not ready even when its capability is on. clef-* sites exist only on Cloudflare: they
-# ask rubrics TypeSafe was never measured on, and record silently.
+# not ready even when its capability is on.
 SITE_CAPABILITY = {
     'jev-score-plan': 'routing',
-    'clef-first-pass': 'routing', 'clef-retry-pass': 'routing',
     'jev-drift': 'gates', 'jev-forward': 'gates',
     'jev-memory-curate': 'memory', 'jev-memory-stale': 'memory', 'jev-memory-slice': 'memory',
     'jev-test-subset': 'tests', 'jev-verify-discover': 'tests', 'jev-verify-triage': 'tests',
 }
-CLEF_ONLY_SITES = ('clef-first-pass', 'clef-retry-pass')
 
 # Loaded via importlib rather than a package-relative import: forge-runtime.py lives one
 # directory up and is not itself part of a package (same trick as forge_fractal).
@@ -249,8 +246,6 @@ def secrets(config: dict | None = None) -> list:
 
 def provider_for(site: str, config: dict | None = None) -> str:
     """Which provider answers `site`: the site map, unless an env override says otherwise."""
-    if site in CLEF_ONLY_SITES:
-        return 'cloudflare'
     if os.environ.get('FORGE_CLEF') == 'off':
         return 'typesafe'
     forced = os.environ.get('FORGE_JEV_PROVIDER')
@@ -275,11 +270,6 @@ def site_ready(site: str, config: dict | None = None) -> bool:
     capability = SITE_CAPABILITY.get(site)
     if not enabled(capability, config=config):
         return False
-    if site in CLEF_ONLY_SITES:
-        entry = (config.get('providers') or {}).get('cloudflare')
-        if (os.environ.get('FORGE_CLEF') == 'off' or os.environ.get('FORGE_JEV_OUTCOMES') == 'off'
-                or (isinstance(entry, dict) and entry.get('outcomes') is False)):
-            return False
     return provider_ready(provider_for(site, config), config)
 
 
@@ -287,7 +277,7 @@ def capability_ready(capability: str, config: dict | None = None) -> bool:
     """Some site of this capability can be asked: what the shell's forge_jev_active tests."""
     config = config if config is not None else load_config()
     return any(site_ready(site, config) for site, cap in SITE_CAPABILITY.items()
-               if cap == capability and site not in CLEF_ONLY_SITES)
+               if cap == capability)
 
 
 def _capability_overrides() -> dict[str, str]:
