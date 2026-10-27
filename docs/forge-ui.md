@@ -55,6 +55,20 @@ following its log as it grows. It is read from the agent CLI's own log, whicheve
 wrote it (as plain text for those that log no events yet), or for an older claude run from
 Claude's session file on this machine.
 
+The *Verification* node opens the run's verification in the inspector. While it runs you see
+for how long, the step a lane announced (`::forge step`, see
+[verification lanes](../references/decompose.md#execution-checks-and-integration-verification))
+and its last printed line, a warning after five minutes with no output, and the live output of
+the lane that printed last (or of the one you choose). Once it fails, the failing tests come
+first, by lane and marked new or known (from the lanes' JUnit or TAP reports), each with its
+message, an excerpt and a link that opens the lane's log at that line; a lane without reports
+shows the end of its log and the step it ended in. Below, every lane with its state (flaky and
+known called out), time, runs and test counts; a lane's name opens its output. A single verify
+command shows the newest of its logs. On the *Execution*
+view the verification has rows of its own after the tasks, one per lane with a bar per run and
+reruns marked (a single command's runs sit back to back, dashed, because only their durations
+are known), and its finish node counts the lanes and reruns.
+
 ### Controls
 
 forge-ui reads everything, and it changes things only by calling forge's own commands: it

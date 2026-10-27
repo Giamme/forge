@@ -12,9 +12,12 @@ blocks on a plate, with cables between them and lamps that light up as things ha
   dependency cables, and ends in a *finish* line of three nodes: integration, verification
   and the whole-run **final review**. *Execution* lays the same work out on wall-clock time:
   one block per attempt, in the lane it really ran in, with its dwarf and review inside, the
-  attempts that have not started projected by forge-schedule's own rules, and a strip of how
-  many slots were busy against `--max-parallel`. Switching between the two moves each task
-  from its wave to where it ran.
+  attempts that have not started projected by forge-schedule's own rules, a strip of how
+  many slots were busy against `--max-parallel`, and the verification's lanes and reruns on
+  rows of their own. Switching between the two moves each task from its wave to where it ran.
+- **Verification as it happens:** the step each lane is in, its last line, the failing tests
+  first (new or known, from the lanes' test reports) with a link into the log at each one, and
+  every lane's output a click away.
 - **Click to open.** A task opens to show its attempts, each with its dwarf, its reviewer and
   any shadow reviews, linked; an escalation is a labelled cable between attempts. The
   inspector beside the stage shows what launched each step and what came of it: the exact
@@ -178,6 +181,18 @@ keep one meaning everywhere (amber running, green merged or passed, red failed, 
   with the gate decision, Clef predictions against outcomes, and its prompts; for one
   execution, its model, phases, tokens, exact prompt and final message; for the final
   review, its verdict, findings, report, prompt and history.
+- **Verification (its finish node):** while it runs, how long it has run, the step a lane
+  announced (`::forge step name=… state=start`) and for how long, the last line it printed, a
+  warning after five minutes with no output, and the live output of the lane that printed last
+  (choose a lane to follow it instead). Once it failed, the failing tests come first, grouped by
+  lane and marked *new* or *known* (from the lane's JUnit or TAP reports and its baseline), each
+  with its message, an excerpt and *open in log* at its line; a lane without reports shows the
+  end of its log, and the step it ended in is named. A table lists every lane with its state
+  (flaky and known marked), time, runs and test counts; a lane's name opens its output. A
+  changed checkout is called out. A single verify command shows the newest of its logs live.
+  In *Execution*, the verification gets rows after the tasks: one per lane, with a bar per run
+  and reruns marked, or a single command's runs back to back (dashed: only their durations are
+  recorded). The finish node counts the lanes and reruns and lights one lamp per lane.
 - **Files (the run toolbar's third mode):** a heatmap of files (grouped and collapsible by
   directory) against tasks (grouped by wave): planned files outlined, touched files filled by how
   many attempts changed them, drift hatched, merge conflicts ringed, and a dot where another task

@@ -48,7 +48,13 @@ run goes on, with the same exit code.
   as the run's verdict; changes on the user's own branch after an integrate are not tracked. The
   *Execution* view shows the same run on wall-clock time, one block per attempt in the lane it
   ran in, with projected blocks for what has not started and a strip of busy slots against
-  `--max-parallel`.
+  `--max-parallel`; the verification follows on rows of its own, one per verification lane
+  with each run and rerun.
+- **Verification** (its finish node): live, the elapsed time, a lane's announced step
+  (`::forge step`), its last line, a warning after five minutes without output and the live
+  output; after a failure, the failing tests first, by lane, new or known (from JUnit/TAP
+  reports), each opening the lane's log at its line, or a reportless lane's log tail; then every
+  lane's state, time, runs and tests; a lane's name opens its output.
 - **Opening a node** shows its attempts, dwarves and reviews, and an inspector with the prompt
   that launched each one, the model, timings by phase, tokens, verdicts and the P0–P3 findings
   of every review (the final review's included).

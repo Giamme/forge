@@ -79,9 +79,25 @@ A decomposed run adds:
   retry_budget, infra_budget           only while a scheduler runs: its live budgets (a number each)
   integration.base                     commit the integration branch started from
   verification.{status,exit,log,command,fingerprint}   the combined verification; status PASS, FAIL or INTERRUPTED (a signal stopped it)
-  verification.{flaky,retry.log}       only when a failing command passed on rerun
+  verification.{flaky,retry.log}       only when a failing command passed on rerun (lanes: flaky alone, per lane)
+  verification.commit                  the integration commit that was verified
+  verification.runs.tsv                one row per run of the verify command or of a lane (below)
+  verification.run-<n>.log             single command: each run's own copy of its log
+  verification.lanes.json              lanes only: every lane's state, runs, step and tests, rewritten as they change
+  verification.lane.<name>.log         lanes only: the lane's run in progress
+  verification.lane.<name>.run-<k>.log lanes only: each finished run of the lane
   verification.coverage.txt            suites the verify command does not run (advisory)
+  verify_cmd, verify.d/                the plan's --verify command, or its --verify-lane lanes (one file per lane)
+  verify_parallel                      lanes run at once (--verify-parallel; default 3)
 ```
+
+`verification.runs.tsv` is tab-separated, one row per run: `n`, `kind` (`initial`, `rerun`, or
+`jev_retry` for a single command), `exit`, `tree_changed` (`0`/`1`), `duration_s` and `log`. With
+lanes each row has two more columns, `lane` and `started` (epoch seconds); lanes run side by
+side, so `tree_changed` is `1` only when the whole verification was a single lane run that
+changed the tree (`verification.lanes.json`'s `mutated` says whether it changed at all). In lanes
+mode `verification.flaky` holds `lanes=<names>` and, per flaky lane, `<lane>.first_exit=` and
+`<lane>.retries_used=`.
 
 with worktrees and branches at:
 

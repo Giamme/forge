@@ -333,7 +333,8 @@ forge-parallel.sh plan      <plan-dir> --repo <dir> [routing flags] [--planner <
                                      [--reviewer-session | --no-reviewer-session]
                                      [--explore E] [--ui | --no-ui] [--fail-first | --no-fail-first]
 forge-parallel.sh run       <plan-dir> [--max-parallel N] [--yolo-dwarf] [--yolo-qa] [--dry-run]
-                                     [--verify <cmd>] [--setup <cmd>] [--timeout S]
+                                     [--verify <cmd> | --verify-lane 'name[opts]=cmd' ...]
+                                     [--verify-parallel N] [--setup <cmd>] [--timeout S]
                                      [--retry-failed N] [--infra-retries M] [--infra-backoff SHAPE]
                                      [--infra-fallback | --no-infra-fallback]
                                      [--qa-threshold P0|P1|P2|P3|none] [--verify-retries N]
@@ -341,10 +342,12 @@ forge-parallel.sh run       <plan-dir> [--max-parallel N] [--yolo-dwarf] [--yolo
                                      [--fractal | --no-fractal] [--fractal-<limit> <n>]
 forge-parallel.sh retry     <plan-dir> <task-id> [--dwarf <spec>] [--timeout S]
                                      [--qa-threshold Pn|none] [--verify-retries N]
+                                     [--verify <cmd> | --verify-lane 'name[opts]=cmd' ...] [--verify-parallel N]
                                      [--escalate-after N] [--escalate-effort | --no-escalate-effort]
 forge-parallel.sh accept    <plan-dir> <task-id> --reason "<why>" --approved
 forge-parallel.sh review    <plan-dir> [--qa <spec>] [--yolo-qa] [--qa-threshold Pn]
 forge-parallel.sh integrate <plan-dir> --approved [--final-review <qa-spec>] [--verify-retries N]
+                                     [--verify-parallel N]
 forge-parallel.sh split     <plan-dir> <new-plan-dir> --tasks <id,id> [--dry-run]
 forge-parallel.sh combine   <new-plan-dir> <plan-dir> <plan-dir>... [--verify <cmd>] [--dry-run]
 ```
@@ -367,7 +370,9 @@ forge-parallel.sh combine   <new-plan-dir> <plan-dir> <plan-dir>... [--verify <c
 | `--infra-backoff SHAPE` | run | `infra_backoff` | the waits between those stops when the provider gave no retry-after: `exp:B[,C]`, `linear:S,T[,C]` or `list:a,b,...` in seconds (default `exp:60`) |
 | `--infra-fallback` | run | `infra_fallback` | a dwarf stopped by a rate limit moves to the next healthy model of its tier pool instead of waiting (off by default; `--no-infra-fallback` turns it off) |
 | `--qa-threshold Pn` | run, retry | `qa_threshold` | least severe finding that still blocks; milder ones become known issues; `none` clears |
-| `--verify-retries N` | run, retry, integrate | `verify_retries` | reruns of a failed verify command (default `1`, `0` = strict single run) |
+| `--verify-retries N` | run, retry, integrate | `verify_retries` | reruns of a failed verify command, or of each failed lane (default `1`, `0` = strict single run) |
+| `--verify-lane 'name[opts]=cmd'` | run, retry | `verify.d/<name>` | one verification lane; repeatable. Options as in a lane file, comma-separated (`group=g`, `first`, `retries=n`, `reports=dir`, `baseline=file`). The first one of an invocation replaces the plan's earlier lanes and `--verify`; see [verification lanes](../references/decompose.md#execution-checks-and-integration-verification) |
+| `--verify-parallel N` | run, retry, integrate | `verify_parallel` | lanes run at once, 1 to 32 (default `3`) |
 | `--escalate-after N` | run, retry | `escalate_after` | failed attempts on one model before the next goes a tier up (default `3`, `0` = off) |
 | `--escalate-effort` | run, retry | `escalate_effort` | at the top tier, retry the same model once more at its next accepted effort before stopping (off by default; `--no-escalate-effort` turns it off) |
 
@@ -379,6 +384,25 @@ spent and nothing was judged — fix the cause and run the same command again ·
 `INTERRUPTED` and verification was skipped or stopped; the summary prints the `retry` for each.
 
 The full plan → run → integrate walkthrough is in [decomposed runs](decomposed-runs.md#plan-run-integrate). `retry`, `accept` and `review` are covered in [reviews, retries and recovery](reviews.md); resuming, `split`/`combine`, scope drift and `tasks.tsv` in [decomposed runs](decomposed-runs.md).
+
+## `scripts/forge-verify.py`
+
+The verification lane runner `run`, `retry` and `integrate` use when lanes are declared. You can
+run it by hand to check or try a lanes directory:
+
+```
+forge-verify.py lanes --lanes-dir DIR [--checkout DIR] [--json]
+forge-verify.py run   --checkout DIR --out DIR --lanes-dir DIR [--parallel N] [--retries N]
+                      [--fingerprint-cmd CMD]
+```
+
+`lanes` lists the lanes with their options and checks them (with `--checkout`, also that
+`reports=` and `baseline=` stay inside it and the baseline exists). `run` runs them in the
+checkout as a forge run does and writes `verification.lanes.json`, `verification.runs.tsv` and
+the per-lane logs into `--out` (`--parallel` default 3, `--retries` default 1).
+
+**Exit codes:** `0` every lane passed and the tree is unchanged · `1` a lane failed, or the tree
+changed · `2` configuration error (nothing ran) · `130` interrupted.
 
 ## `scripts/forge-memory.sh` and `scripts/forge-install.sh`
 

@@ -771,6 +771,62 @@ in `verification.retry.log`, and prints a loud `FLAKY` line in `run`/`retry`/`in
 a command that changes the tree is never retried. This runs before Jev's optional model-assisted
 triage, which then does not.
 
+**Verification lanes.** Instead of one command, verification can be several named **lanes**
+that run side by side, each rerun on its own. A lane is a file whose name is the lane's name
+(letters, digits, `_` and `-`, at most 64) and whose text is a Bash command, run from the
+integration checkout like the single command; leading `#forge:` lines give it options. Declare
+them in the repository as `.forge/verify.d/<name>` files, or for one plan with
+`run --verify-lane 'name[opt,opt]=command'` (also `retry`; repeatable, written to
+`<plan>/verify.d/`; the first one of an invocation replaces the plan's earlier lanes and its
+`--verify`, as `--verify` replaces the plan's lanes). The first source that exists wins: the
+plan's lanes, the plan's `--verify`, the repository's `.forge/verify.d/`, then
+`.forge/verify` (ignored, with a note, when the repository also has lanes). `run` checks the
+lanes before any model is paid for and exits 2 on an invalid one (an unknown or repeated
+option, an empty command, a path outside the checkout, a missing baseline).
+
+| Option | Means |
+|---|---|
+| `group=<name>` | lanes of one group never run at the same time (a shared database, a port) |
+| `first` | runs before every other lane; if a `first` lane fails (after its reruns) or changes the tree, the rest are `skipped` |
+| `retries=<0-9>` | reruns of this lane when it fails; otherwise `--verify-retries` (default `1`) |
+| `reports=<dir>` | JUnit `*.xml` and TAP `*.tap` reports the lane writes under `<dir>` (inside the checkout). Only reports written during that run count; they give the lane's test counts and failing tests, and are re-read every 10 s while it runs |
+| `baseline=<file>` | known failing test names, one per line (`#` comments), inside the checkout. A lane whose every failing test is in it ends `known`, which passes. A report that could not be read, or a failure no report names, is judged by the exit code |
+
+Up to `--verify-parallel N` lanes run at once (`run`, `retry` and `integrate`, kept as
+`verify_parallel`, 1 to 32, default 3), started in name order. A lane that fails is rerun alone,
+after the round, up to its budget; a pass on a rerun makes it `flaky`, which passes but is named
+in the run output (`FLAKY: lane <name> failed once and passed on rerun`), in
+`verification.flaky` and in the whole-run review. Nothing reruns once the tree changed: the
+checkout's fingerprint is compared after every round, and a change fails the verification
+(`mutated`; with lanes in parallel it cannot be pinned to one of them). A lane's states are
+`waiting`, `running`, `pass`, `fail`, `flaky`, `known`, `skipped` and `interrupted`. Lanes mode
+replaces the whole-command rerun above and Jev's flake triage (a note says so when Jev's tests
+site is on); the single-command mode is unchanged.
+
+A lane may print `::forge step name=<step> state=start` and `::forge step name=<step>
+state=end [exit=<n>]`, each on a line of its own, to say which step it is in; forge-ui shows the
+open step live. A signal stops the running lanes' process groups (TERM, then KILL after 5 s),
+marks them and the verification `INTERRUPTED`, and exits 130 like a single command.
+
+The runner is `scripts/forge-verify.py` (`lanes` lists and checks a directory's lanes; `run`
+runs them). In lanes mode `verification.command` holds one `<lane>: <first line>` per lane,
+`verification.log` the runner's summary plus the last 200 lines of each lane that failed, and
+`verification.lanes.json` the live state of every lane; each lane writes
+`verification.lane.<name>.log` and keeps each finished run as `verification.lane.<name>.run-<k>.log`.
+
+```
+.forge/verify.d/lint     #forge: first
+                         npm run lint && npm run typecheck
+.forge/verify.d/unit     #forge: reports=reports/unit
+                         npm test -- --reporter=junit --outputFile=reports/unit/junit.xml
+.forge/verify.d/db       #forge: group=postgres retries=2 reports=reports/db baseline=.forge/known-db-failures.txt
+                         docker compose up -d postgres && npm run test:db
+```
+
+Here `lint` runs alone first; `unit` and `db` then run together, another lane in the
+`postgres` group would wait for `db`, and a `db` run whose only failures are listed in the
+baseline ends `known`.
+
 `scripts/forge-verify-coverage.py` reads the project's own test configuration and **warns**
 (never fails) about suites the command does not run — at `run` start before any model is paid
 for, again in `verify_result`, and at `integrate` — recording the lines in
