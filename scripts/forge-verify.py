@@ -7,10 +7,15 @@ optional leading ``#forge: key[=value] ...`` lines:
 
 * ``group=<name>``  lanes of one group never run at the same time
 * ``first``         the lane runs before all others; if one fails nothing else starts
-* ``retries=<n>``, ``reports=<dir>``, ``baseline=<file>`` are validated for form only and
-  kept in the lane's ``options`` for the tasks that rerun lanes and read test reports.
+* ``retries=<n>``   reruns of the lane when it fails (else ``--retries``)
+* ``reports=<dir>``  JUnit (``*.xml``) and TAP (``*.tap``) reports the lane writes, relative to
+  the checkout: only files written during a run count, re-read at most every 10 s while it
+  runs, and the result is the lane's ``tests`` (counts and failing tests)
+* ``baseline=<file>`` known failing test names, one per line, relative to the checkout: a
+  lane whose every failing test is known ends ``known``, which passes; incomplete
+  evidence (a report that could not be read) never does
 
-    forge-verify.py lanes --lanes-dir DIR [--json]
+    forge-verify.py lanes --lanes-dir DIR [--checkout DIR] [--json]
     forge-verify.py run --checkout DIR --out DIR --lanes-dir DIR [--parallel N]
                         [--retries N] [--fingerprint-cmd CMD]
 
@@ -42,16 +47,22 @@ from pathlib import Path
 import re
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
 import time
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import forge_verify_reports as reports  # noqa: E402  next to this script
 
 LANE_NAME = re.compile(r'[A-Za-z0-9][A-Za-z0-9_-]{0,63}')
 HEADER = '#forge:'
 KILL_AFTER = 5.0          # seconds between TERM and KILL on an interrupt
 WRITE_EVERY = 1.0         # lanes.json refresh while lanes only print
 TICK = 0.05
+SCAN_EVERY = 10.0         # seconds between looks at a running lane's reports
+PASSING = ('pass', 'flaky', 'known')
 LAST_LINE_MAX = 300
 PUMP_MAX = 4 << 20        # bytes read from one lane's log per look, so a flood cannot starve the loop
 TAIL_KEEP = 64 << 10      # what is still read of a finished lane's backlog: its last line and markers
@@ -118,7 +129,34 @@ def parse_lane(name: str, text: str) -> tuple[dict | None, list[str]]:
             'options': options}, []
 
 
-def load_lanes(lanes_dir: str) -> tuple[list[dict], list[str]]:
+def path_errors(lane: dict, checkout: str | None) -> list[str]:
+    """reports= and baseline= stay inside the checkout; with one, the baseline must exist."""
+    errors = []
+    for key in ('reports', 'baseline'):
+        value = lane['options'].get(key)
+        if value is None:
+            continue
+        norm = os.path.normpath(value)
+        if os.path.isabs(value) or norm == '..' or norm.startswith('..' + os.sep):
+            errors.append(f'{lane["name"]}: {key}={value} must be a path inside the checkout')
+            continue
+        if not checkout:
+            continue
+        root = os.path.realpath(checkout)
+        real = os.path.realpath(os.path.join(checkout, value))
+        if real != root and not real.startswith(root + os.sep):
+            errors.append(f'{lane["name"]}: {key}={value} leads out of the checkout')
+        elif key == 'baseline':
+            try:
+                regular = stat.S_ISREG(os.lstat(os.path.join(checkout, value)).st_mode)
+            except OSError:
+                regular = False
+            if not regular:
+                errors.append(f'{lane["name"]}: baseline={value} is not a regular file in the checkout')
+    return errors
+
+
+def load_lanes(lanes_dir: str, checkout: str | None = None) -> tuple[list[dict], list[str]]:
     """Every lane in the directory, in declaration order (sorted names), and the errors."""
     root = Path(lanes_dir)
     if not root.is_dir():
@@ -143,7 +181,10 @@ def load_lanes(lanes_dir: str) -> tuple[list[dict], list[str]]:
         lane, problems = parse_lane(entry, text)
         errors.extend(problems)
         if lane:
-            lanes.append(lane)
+            problems = path_errors(lane, checkout)
+            errors.extend(problems)
+            if not problems:
+                lanes.append(lane)
     if not lanes and not errors:
         errors.append(f'{lanes_dir}: no lanes declared')
     return lanes, errors
@@ -245,6 +286,7 @@ class Live:
         self.decoder = codecs.getincrementaldecoder('utf-8')('replace')
         self.partial = ''
         self.exited = False  # the leader has exited and its group was sent the TERM
+        self.scanned = time.monotonic()   # its reports are first looked at after SCAN_EVERY
 
     def close(self) -> None:
         self.reader.close()
@@ -322,6 +364,7 @@ class Verification:
                 if not live.exited and live.proc.poll() is not None:
                     self._leader_exited(name, live)
             drained = self._pump(running)
+            self._scan_running(running)
             for name in [n for n, live in running.items() if live.exited and n in drained]:
                 self._finish(name, running.pop(name))
             self._reap_lingering()
@@ -391,7 +434,7 @@ class Verification:
     def _end(self, lane: dict, run: dict, code: int, interrupted: bool = False) -> None:
         now = time.time()
         run.update(ended=now, exit=code)
-        lane.update(state='interrupted' if interrupted else 'pass' if code == 0 else 'fail',
+        lane.update(state='interrupted' if interrupted else self._judge(lane, run, code),
                     exit=code, ended=now, step=None)
         self.save()
         self.write_runs()
@@ -456,6 +499,62 @@ class Verification:
                 lane['step'] = {'name': step, 'started': time.time()}
             elif lane['step'] and lane['step']['name'] == step:
                 lane['step'] = None
+
+    # reports and the baseline -------------------------------------------------------------
+
+    def _scan(self, lane: dict, run: dict):
+        """The run's reports (written since it started) as the lane's tests; None without reports=."""
+        rel = lane['options'].get('reports')
+        if not rel:
+            return None
+        tests, names, complete = reports.scan(os.path.join(self.checkout, rel), run['started'])
+        # Counts once a report exists: a run that wrote none has nothing to count.
+        lane['tests'] = tests if tests['reports'] or tests['notes'] else None
+        return tests, names, complete
+
+    def _scan_running(self, running: dict) -> None:
+        now = time.monotonic()
+        for name, live in running.items():
+            lane = self.by_name[name]
+            if live.exited or not lane['options'].get('reports') or now - live.scanned < SCAN_EVERY:
+                continue
+            live.scanned = now
+            previous = lane['tests']
+            self._scan(lane, lane['runs'][-1])
+            if lane['tests'] != previous:
+                self.save(force=False)
+
+    def _judge(self, lane: dict, run: dict, code: int) -> str:
+        """pass, fail, or known: a non-zero exit whose every failing test, on complete
+        evidence, is in the lane's baseline."""
+        scanned = self._scan(lane, run)
+        if scanned is None:
+            return 'pass' if code == 0 else 'fail'
+        tests, names, complete = scanned
+        if code != 0 and lane['options'].get('baseline') and lane['tests'] is None:
+            lane['tests'] = tests     # where the note below can be read
+        if tests['failing']:
+            at = reports.log_lines(str(self.out / lane['log']), [f['name'] for f in tests['failing']])
+            for entry in tests['failing']:
+                entry['log_line'] = at.get(entry['name'])
+        baseline = lane['options'].get('baseline')
+        if code == 0 or not baseline:
+            return 'pass' if code == 0 else 'fail'
+        try:
+            known = reports.load_baseline(os.path.join(self.checkout, baseline))
+        except OSError as exc:
+            tests['notes'].append(f'judged by its exit code: the baseline could not be read ({exc})')
+            return 'fail'
+        for entry in tests['failing']:
+            entry['known'] = entry['name'] in known
+        if not complete:
+            tests['notes'].append('judged by its exit code: a report written during this run could not be read')
+            return 'fail'
+        if not names:
+            tests['notes'].append('judged by its exit code: no failing test was found in its reports')
+            return 'fail'
+        # Over every failure, not only the 200 kept for display.
+        return 'known' if all(name.strip() in known for name in names) else 'fail'
 
     # reruns ---------------------------------------------------------------------------------
 
@@ -614,7 +713,7 @@ class Verification:
             self.run_round(firsts)
             self.rerun(firsts)   # before the gate: a flaky first lane lets the rest run
         if not self.stop:
-            if any(self.by_name[n]['state'] not in ('pass', 'flaky') for n in firsts) or self.doc['mutated']:
+            if any(self.by_name[n]['state'] not in PASSING for n in firsts) or self.doc['mutated']:
                 for n in rest:
                     self.by_name[n]['state'] = 'skipped'
             else:
@@ -627,7 +726,7 @@ class Verification:
             self.doc['state'] = 'interrupted'
         else:
             self.changed()   # stops the last lanes' leftovers, then looks at the tree again
-            ok = all(lane['state'] in ('pass', 'flaky') for lane in lanes) and not self.doc['mutated']
+            ok = all(lane['state'] in PASSING for lane in lanes) and not self.doc['mutated']
             self.doc['state'] = 'pass' if ok else 'fail'
         for name in names:
             self._archive(name)   # every run has its own log, the last one included
@@ -642,8 +741,15 @@ class Verification:
             took = '' if lane['started'] is None or lane['ended'] is None \
                 else f'{int(lane["ended"] - lane["started"])}s'
             runs = len(lane['runs'])
-            extra = f'({runs} runs)' if runs > 1 else ''
-            print(f'  {lane["name"]:<24} {lane["state"]:<12} {took:<6} {extra}'.rstrip())
+            extra = [f'({runs} runs)'] if runs > 1 else []
+            tests = lane['tests']
+            if tests:
+                extra.append(f'tests {tests["pass"]} passed, {tests["fail"] + tests["error"]} failed, '
+                             f'{tests["skip"]} skipped')
+                known = sum(1 for f in tests['failing'] if f['known'])
+                if known:
+                    extra.append(f'known {known}')
+            print(f'  {lane["name"]:<24} {lane["state"]:<12} {took:<6} {" ".join(extra)}'.rstrip())
         flaky = [lane['name'] for lane in self.doc['lanes'] if lane['state'] == 'flaky']
         if flaky:
             print('  flaky (failed, then passed on a rerun): ' + ', '.join(flaky))
@@ -668,7 +774,7 @@ def retries_value(value: str) -> int:
 
 
 def cmd_lanes(args: argparse.Namespace) -> int:
-    lanes, errors = load_lanes(args.lanes_dir)
+    lanes, errors = load_lanes(args.lanes_dir, args.checkout)
     if errors:
         print('\n'.join(errors), file=sys.stderr)
         return 2
@@ -687,7 +793,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     if not Path(args.checkout).is_dir():
         print(f'{args.checkout}: not a directory', file=sys.stderr)
         return 2
-    lanes, errors = load_lanes(args.lanes_dir)
+    lanes, errors = load_lanes(args.lanes_dir, args.checkout)
     if errors:
         print('\n'.join(errors), file=sys.stderr)
         return 2
@@ -707,6 +813,7 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest='command', required=True)
     lanes = sub.add_parser('lanes', help='validate and list the declared lanes')
     lanes.add_argument('--lanes-dir', required=True)
+    lanes.add_argument('--checkout', help='also check reports= and baseline= against this checkout')
     lanes.add_argument('--json', action='store_true')
     lanes.set_defaults(func=cmd_lanes)
     run = sub.add_parser('run', help='run the lanes')

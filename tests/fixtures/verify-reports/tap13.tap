@@ -1,0 +1,14 @@
+TAP version 13
+1..5
+ok 1 - parses an empty file
+not ok 2 - rejects a bad header
+  ---
+  message: 'expected an error'
+  severity: fail
+  at:
+    file: parser.js
+    line: 40
+  ...
+ok 3 - reads unicode # SKIP no locale here
+not ok 4 - streams large files # TODO not done yet
+ok 5 - closes the file

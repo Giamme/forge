@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites>
+  <testsuite name="calc" tests="5">
+    <testcase classname="calc.AddTests" name="test_adds" time="0.01"/>
+    <testcase classname="calc.AddTests" name="test_negative" time="0.01"/>
+    <testcase classname="calc.DivTests" name="test_divides">
+      <failure message="expected 2, got 3" type="AssertionError">Traceback (most recent call last):
+  File "calc.py", line 9, in divide
+AssertionError: expected 2, got 3</failure>
+      <system-out>dividing 6 by 3</system-out>
+    </testcase>
+    <testcase classname="calc.DivTests" name="test_zero">
+      <error type="ZeroDivisionError">ZeroDivisionError: division by zero
+  at calc.py:12</error>
+    </testcase>
+    <testcase name="test_later">
+      <skipped message="not yet"/>
+    </testcase>
+  </testsuite>
+</testsuites>

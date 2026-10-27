@@ -137,6 +137,7 @@ class ResultTests(VerifyLanesCase):
 
     def test_lanes_json_describes_lanes(self):
         self.lane('unit', '#forge: group=g retries=2 reports=out baseline=b.json\necho hi')
+        (self.checkout / 'b.json').write_text('')   # run checks that the baseline exists
         self.assertEqual(self.run_verify().returncode, 0)
         doc = self.doc()
         self.assertEqual((doc['version'], doc['state'], doc['parallel'], doc['mutated']),
