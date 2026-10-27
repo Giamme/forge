@@ -1265,6 +1265,110 @@ class ReviewerSessionTests(StoreCase):
         self.assertNotEqual(flagged['rid'], 'plan:fixed-run:26062ad6ab65e2f6')
 
 
+class ExportStateIdentityTests(StoreCase):
+    """The routing and retry cases this fixture exported before the assemblers left forge_jev.
+
+    The ids were captured from export.build (default seed 7) at that base. The state is what
+    siblings, assemble, retry and task_size produced, and the question text is the frozen rubric.
+    """
+
+    PROMPT = 'Ship the widget.\n\n## Acceptance criteria\n\n- widget exists\n'
+    FINDINGS = '- [P1][CONFIRMED] a.txt:1 — broken\n'
+
+    def test_the_move_leaves_the_routing_and_retry_cases(self):
+        from forge_dataset import export
+        prompt, findings = self.PROMPT, self.FINDINGS
+        goal, memory, approach = 'Make widgets.', 'Widgets live in widgets/.', 'Add a widget module.'
+        snapshot = json.dumps({'a.txt': 'print(1)\n'})
+
+        def blob(text, kind='text'):
+            return store.put_blob(text, kind)
+
+        events = [
+            dict(rid='plan1', kind='plan', src='import', repo='fixture', run='run-1', mode='parallel', ts=1000,
+                 data=dict(decompose_level='low', goal=goal,
+                           blobs=dict(goal=blob(goal), memory=blob(memory), snapshot=blob(snapshot)),
+                           tasks={'a': dict(title='Add widget', files='a.txt, b.txt', deps='sib',
+                                            prompt=blob(prompt, 'prompt'), approach=blob(approach),
+                                            declared_difficulty='low', difficulty_source='orchestrator',
+                                            dwarf='sol:high', qa='opus:high'),
+                                  'sib': dict(title='Sibling ' + 'T' * 200, files='s.txt', deps='-')})),
+            dict(rid='att1', kind='attempt', src='import', repo='fixture', run='run-1', mode='parallel',
+                 task='a', attempt=1, ts=1100,
+                 data=dict(status='FAIL', wall_started=1100, dwarf='sol:high', qa='opus:high')),
+            dict(rid='d1', kind='dispatch', src='import', repo='fixture', run='run-1', mode='parallel',
+                 task='a', attempt=1, ts=1100,
+                 data=dict(role='dwarf', model='gpt-6.1-sol', effort='high', harness='codex')),
+            dict(rid='q1', kind='dispatch', src='import', repo='fixture', run='run-1', mode='parallel',
+                 task='a', attempt=1, ts=1100,
+                 data=dict(role='qa', model='opus', effort='high', harness='claude', verdict='FAIL')),
+            dict(rid='att2', kind='attempt', src='import', repo='fixture', run='run-1', mode='parallel',
+                 task='a', attempt=2, ts=1200,
+                 data=dict(status='PASS', wall_started=1200, dwarf='sol:high', qa='opus:high',
+                           blobs=dict(retry_findings=blob(findings)))),
+            dict(rid='d2', kind='dispatch', src='import', repo='fixture', run='run-1', mode='parallel',
+                 task='a', attempt=2, ts=1200,
+                 data=dict(role='dwarf', model='gpt-6.1-sol', effort='high', harness='codex')),
+            dict(rid='q2', kind='dispatch', src='import', repo='fixture', run='run-1', mode='parallel',
+                 task='a', attempt=2, ts=1200,
+                 data=dict(role='qa', model='opus', effort='high', harness='claude', verdict='PASS')),
+        ]
+        self.assertEqual(store.record(events), len(events))
+        cases = export.build(store.connect(), slices=('routing', 'retry'))
+        self.assertEqual(len(cases), 2)
+        by_slice = {c['slice']: c for c in cases}
+        routing, retry = by_slice['routing'], by_slice['retry']
+
+        # Captured before the move.
+        self.assertEqual(routing['id'], 'routing-f23eac86963c')
+        self.assertEqual(list(routing['state']),
+                         ['goal', 'task', 'prompt', 'approach', 'plan_tasks', 'file_excerpts', 'memory',
+                          'dwarf', 'reviewer', 'size'])
+        self.assertEqual(routing['state'], dict(
+            goal=goal,
+            task=dict(id='a', title='Add widget', files='a.txt, b.txt', deps='sib'),
+            prompt=prompt, approach=approach,
+            plan_tasks=[dict(id='sib', title='Sibling ' + 'T' * 112, files='s.txt', deps='-')],
+            file_excerpts={'a.txt': 'print(1)\n', 'b.txt': '(does not exist yet)'},
+            memory=memory,
+            dwarf=dict(model='gpt-6.1-sol', effort='high', harness='codex'),
+            reviewer=dict(model='opus', effort='high', harness='claude'),
+            size=dict(prompt_chars=58, declared_files=2, plan_tasks=2, deps=1, decompose_level='low')))
+        self.assertEqual(routing['questions']['first_pass'], dict(
+            type='noul',
+            instructions=('This Forge task is dispatched to the model in state.dwarf, at the effort shown, in its '
+                          'own worktree. An independent model (state.reviewer) then reviews the resulting diff '
+                          'against the task. Will that FIRST attempt pass review, with no retry needed?'),
+            criteria={
+                'true': 'The task is within reach of this model at this effort on the first try: the '
+                        'requirements are clear, the change is contained, and nothing in it is likely '
+                        'to be missed or subtly wrong.',
+                'false': 'The first attempt is likely to fail review: the task has edge cases, '
+                         'cross-cutting effects, unclear requirements or subtle state that a first '
+                         'attempt by this model at this effort typically gets wrong, so a retry would '
+                         'be needed.'}))
+        self.assertEqual(routing['expected'], dict(first_pass=False, tier='low'))
+
+        self.assertEqual(retry['id'], 'retry-9aa1fee49f43')
+        self.assertEqual(list(retry['state']),
+                         list(routing['state']) + ['attempt', 'previous_review', 'previous_review_truncated'])
+        self.assertEqual(retry['state'], dict(routing['state'], attempt=2, previous_review=findings,
+                                               previous_review_truncated=False))
+        self.assertEqual(retry['questions']['retry_pass'], dict(
+            type='noul',
+            instructions=('An earlier attempt at this Forge task failed review. The task is now dispatched again, to '
+                          'the model in state.dwarf at the effort shown, with that review\'s findings '
+                          '(state.previous_review) to fix; state.attempt is which try this is, and the model in '
+                          'state.reviewer reviews the result. Will this attempt pass review?'),
+            criteria={
+                'true': 'The findings are specific and fixable, and this model at this effort can address '
+                        'them without breaking something else: the retry is likely to pass.',
+                'false': 'The findings point at a design problem, an unclear requirement or a recurring '
+                         'mistake that another attempt by this model at this effort is likely to repeat: '
+                         'the retry is likely to fail again and should be escalated or rethought.'}))
+        self.assertEqual(retry['expected'], dict(retry_pass=True))
+
+
 class IndependenceTests(unittest.TestCase):
     def test_only_capture_entry_points_import_the_dataset(self):
         # Nothing that builds a prompt may read earlier runs' verdicts, or the reviewer
@@ -1286,6 +1390,11 @@ class IndependenceTests(unittest.TestCase):
                         # The one read: run's advisory forecast, printed to the operator's stderr only.
                         self.assertRegex(line, r'forge-dataset\.py" (event|invocation|forecast "\$1" --run 2>/dev/null)',
                                          str(path))
+                continue
+            if path.name == 'forge-plan-check.py':
+                # task_size does not read the store. The size advisory may import it and nothing else.
+                imports = [line.strip() for line in text.splitlines() if 'forge_dataset' in line and 'import' in line]
+                self.assertEqual(imports, ['from forge_dataset.states import task_size  # noqa: E402'])
                 continue
             self.assertIn(path.name, allowed, path)
             for line in text.splitlines():

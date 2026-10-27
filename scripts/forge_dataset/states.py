@@ -1,12 +1,14 @@
-"""The state forge's outcome rubrics (first_pass, retry_pass) are asked on.
+"""State assemblers for the dataset export's routing and retry slices.
 
-One assembler for both sides of the measurement: the export rebuilds this state from
-stored events, live forge builds it from a plan dir. Each side hands over evidence it
-has already read; this only caps and arranges it, so the state a model is scored on and
-the state it answers in production cannot drift apart in shape. Pure: no file reads.
+`siblings`, `assemble` and `retry` build the state of those slices from events the
+export has already read. `task_size` is the size block on that state. This only caps
+and arranges what callers pass in. Pure: no file reads.
 
-The caps are the export's (`forge dataset export`), because those are the states
-Clef was measured on: goal and prompt are NOT cut here, unlike score-plan's request.
+The caps are the export's (`forge dataset export`): goal and prompt are not cut.
+
+A task's size is the strongest regime signal in forge's run history: the median prompt of
+the newest runs is twice the older ones' and their first-pass rate is half. A model reading
+prose and a 40-entry sibling list can only estimate that, so the state spells it out.
 """
 from __future__ import annotations
 
@@ -47,3 +49,15 @@ def retry(state: dict, *, attempt: int, previous_review: str) -> dict:
     review = previous_review or ''
     return dict(state, attempt=attempt, previous_review=review[:REVIEW_CHARS],
                 previous_review_truncated=len(review) > REVIEW_CHARS)
+
+
+def _count(value) -> int:
+    if isinstance(value, (list, tuple)):
+        return len([v for v in value if v])
+    return len([w for w in str(value or '').replace(',', ' ').split() if w and w != '-'])
+
+
+def task_size(*, prompt: str, declared_files, plan_tasks: int, deps, decompose_level: str | None) -> dict:
+    return dict(prompt_chars=len(prompt or ''), declared_files=_count(declared_files),
+                plan_tasks=int(plan_tasks), deps=_count(deps),
+                decompose_level=decompose_level if decompose_level in ('low', 'medium', 'high') else None)
