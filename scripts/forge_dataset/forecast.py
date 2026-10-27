@@ -243,13 +243,25 @@ def _pct(v):
     return '%.0f%%' % (v * 100)
 
 
-def lines(fc: dict) -> list:
+def _names(rows: list, most: int = 8) -> str:
+    names = [r['task'] for r in rows]
+    return ', '.join(names[:most]) + (', ...' if len(names) > most else '')
+
+
+def lines(fc: dict, brief: bool = False) -> list:
+    """The forecast as text. brief (the block `run` prints) gives tasks without enough history
+    one line together instead of one row each, and no table at all when no task has enough."""
+    thin = [r for r in fc['tasks'] if not r['enough']]
+    if brief and len(thin) == len(fc['tasks']):
+        return ['no forecast yet: none of the %d task(s) has %d past tasks at its tier and model '
+                '(forge dataset forecast %s shows each count)' % (len(thin), MIN_HISTORY, fc['plan'])]
     out = ['forecast from %d past task(s) at the same tier and model (advisory; routing never reads it)'
            % fc['history_tasks']]
     for r in fc['tasks']:
         where = '%s %s' % (r['tier'] or '?', r['spec'] or '?')
         if not r['enough']:
-            out.append('  %-14s %-22s %s' % (r['task'], where, r['note']))
+            if not brief:
+                out.append('  %-14s %-22s %s' % (r['task'], where, r['note']))
             continue
         fp = r['first_pass']
         t, s = r['tokens'], r['time_s']
@@ -257,6 +269,9 @@ def lines(fc: dict) -> list:
             r['task'], where, _pct(fp['rate']), _pct(fp['ci'][0]), _pct(fp['ci'][1]), fp['k'], fp['n'],
             _tokens(t['median']), _tokens(t['p90']), _time(s['median']), _time(s['p90']),
             '  <- likely to need a retry' if r['flag'] else ''))
+    if brief and thin:
+        out.append('  %d task(s) without enough history yet (under %d past tasks): %s'
+                   % (len(thin), MIN_HISTORY, _names(thin)))
     if fc['merged']:
         out.append('  %d task(s) already merged, not forecast' % len(fc['merged']))
     tot = fc['total']
@@ -275,12 +290,17 @@ def lines(fc: dict) -> list:
     return out
 
 
+def _tmp(plan: Path) -> Path:
+    """Where save() writes forecast.json before moving it into place."""
+    return plan / ('.forecast.json.%d' % os.getpid())
+
+
 def save(plan: Path, fc: dict) -> None:
     """Keep what was predicted, so it can be checked against what happened. Fail-open."""
     body = {k: v for k, v in fc.items() if k != 'at'}
     digest = hashlib.sha256(json.dumps(body, sort_keys=True).encode()).hexdigest()[:16]
+    tmp = _tmp(plan)
     try:
-        tmp = plan / ('.forecast.json.%d' % os.getpid())
         tmp.write_text(json.dumps(fc, indent=2, sort_keys=True) + '\n')
         tmp.replace(plan / 'forecast.json')
     except OSError:
@@ -302,7 +322,7 @@ def advise(plan: Path, shown: list) -> None:
         return
     if not fc or not fc['tasks']:
         return
-    for line in lines(fc):
+    for line in lines(fc, brief=True):
         print(line)
     sys.stdout.flush()
     shown.append(True)
@@ -336,6 +356,11 @@ def main(args) -> int:
             if not shown:
                 print('forecast skipped: reading the history took over %gs' % budget())
                 sys.stdout.flush()
+            # os._exit stops save() wherever it is, so a half-written temp file would stay in the plan.
+            try:
+                _tmp(plan).unlink()
+            except OSError:
+                pass
             os._exit(0)
         return 0
     if not (plan / 'tasks.tsv').is_file():
