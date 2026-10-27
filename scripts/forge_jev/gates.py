@@ -1,4 +1,12 @@
-"""Plan-time `files` drift prediction.
+"""Plan-time gates: prompt adequacy (site jev-prompt) and `files` drift (site jev-drift).
+
+Both are advisory. `score-plan` asks them before `plan` prints its table, and nothing
+they answer is ever written into tasks.tsv.
+
+Prompt adequacy asks whether a reviewer could judge correctness from the task's own
+text. Its `prompt_warn` cutoff was measured on exactly the state `task_state` builds --
+goal, task (id, title, files, deps), prompt, approach, plan_tasks, file_excerpts and
+memory -- so that state must not change shape without re-measuring it.
 
 `decompose.md` calls the `files` column "a promise, not a prediction": a task that edits
 a file it never declared breaks wave disjointness, which is the only thing bounding
@@ -18,7 +26,7 @@ from pathlib import Path
 
 from . import threshold
 from .client import ask, noul
-from .questions import drift_prediction
+from .questions import drift_prediction, prompt_adequacy as prompt_adequacy_question
 
 # One request per task holds this many questions comfortably, and a plan-time gate must
 # not turn into the slowest thing in `forge plan`.
@@ -34,6 +42,89 @@ _SKIP_SUFFIXES = ('.lock', '.min.js', '.map', '.png', '.jpg', '.jpeg', '.gif', '
 # about them both technically true and completely useless.
 _SKIP_NAMES = ('package-lock.json', 'npm-shrinkwrap.json', 'composer.lock',
                'Gemfile.lock', 'go.sum', 'pnpm-lock.yaml', 'yarn.lock')
+
+
+FILE_EXCERPT_CHARS = 600
+MAX_EXCERPT_FILES = 6
+MEMORY_CHARS = 4000
+
+# The other tasks in the plan, as sent to the model. Capped because a large plan would
+# otherwise dominate the payload, and truncated per field for the same reason: the model
+# needs their identity and file scope, not their full text.
+MAX_SIBLINGS = 40
+SIBLING_TITLE_CHARS = 120
+
+
+def _excerpt(repo: Path, files: str) -> dict:
+    out = {}
+    for rel in (files or '').replace(',', ' ').split():
+        if len(out) >= MAX_EXCERPT_FILES:
+            break
+        path = repo / rel
+        if not path.is_file():
+            # A file the task will CREATE is normal and informative in itself.
+            out[rel] = '(does not exist yet)'
+            continue
+        try:
+            out[rel] = path.read_text(errors='replace')[:FILE_EXCERPT_CHARS]
+        except OSError:
+            continue
+    return out
+
+
+def _memory(repo: Path) -> str:
+    path = repo / '.forge' / 'memory.md'
+    try:
+        return path.read_text(errors='replace')[:MEMORY_CHARS] if path.is_file() else ''
+    except OSError:
+        return ''
+
+
+def _siblings(siblings, task_id: str) -> list[dict]:
+    """Compact view of the rest of the plan, excluding the task being asked about."""
+    out = []
+    for sibling in siblings or []:
+        if sibling.get('id') == task_id:
+            continue
+        out.append(dict(id=sibling.get('id', ''),
+                        title=str(sibling.get('title', ''))[:SIBLING_TITLE_CHARS],
+                        files=sibling.get('files', ''),
+                        deps=sibling.get('deps', '')))
+        if len(out) >= MAX_SIBLINGS:
+            break
+    return out
+
+
+def task_state(repo, *, goal: str, task_id: str, title: str, files: str, deps: str = '',
+               approach: str = '', prompt: str = '', siblings=None) -> dict:
+    """The state prompt adequacy is asked against: the one `prompt_warn` was measured on.
+
+    `prompt` is tasks/<id>/prompt.md, the text the dwarf is dispatched with and the
+    reviewer reads. With only a title in state, the honest answer to "could a reviewer
+    judge correctness" is no, so a 460-word spec once scored 0.23 and tripped its own
+    warning. The planner's declared difficulty is deliberately not sent.
+    """
+    repo_path = Path(repo)
+    return dict(goal=goal, task=dict(id=task_id, title=title, files=files, deps=deps),
+                prompt=prompt, approach=approach, plan_tasks=_siblings(siblings, task_id),
+                file_excerpts=_excerpt(repo_path, files), memory=_memory(repo_path))
+
+
+def prompt_adequacy(repo, *, goal: str, task_id: str, title: str, files: str, deps: str = '',
+                    approach: str = '', prompt: str = '', siblings=None, run_dir=None,
+                    config: dict | None = None) -> float | None:
+    """The probability that a reviewer could judge this task's work from its text.
+
+    One request, one rubric. None on any failure: a plan that cannot be checked must
+    still be a plan.
+    """
+    state = task_state(repo, goal=goal, task_id=task_id, title=title, files=files, deps=deps,
+                       approach=approach, prompt=prompt, siblings=siblings)
+    result = ask(state, dict(prompt_adequacy=prompt_adequacy_question()), site='jev-prompt',
+                 run_dir=run_dir, config=config)
+    if result is None:
+        return None
+    return noul(result, 'prompt_adequacy')
 
 
 def _tracked(repo: Path) -> list[str]:

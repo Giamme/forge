@@ -28,41 +28,8 @@ DEFAULT_THRESHOLDS = dict(tests_act=0.70,
                           # both sides, against a measured repeat-noise of 0.07.
                           # 0.30 also classified every case correctly, but sat 0.03 above
                           # the worst true positive -- correct by luck, not by margin.
+                          # That state is what gates.task_state builds for jev-prompt.
                           prompt_warn=0.55,
-                          # The rubric asked whether verifying a task needs "work
-                          # declared in a different task" while the state contained no
-                          # other task, so the model could only guess whether one
-                          # existed. That, not the wording, is why the classes used to
-                          # overlap. The plan is now in state (routing._siblings) and the
-                          # rubric points at it by name.
-                          #
-                          # Re-measured on the 8 real jevscope tasks, ground truth taken
-                          # from the import graph and wave position rather than from the
-                          # titles: `server` (wave 1, imports discover/events/stats and
-                          # serves page's index.html, none declared) 0.26-0.34; `page`
-                          # (consumes server's API -- both defects that shipped were
-                          # page<->events shape mismatches) 0.43-0.53; `readme`
-                          # (documents the wave-2 CLI, and shipped wrong) 0.60-0.65.
-                          # Genuinely self-contained tasks scored 0.65-0.96.
-                          #
-                          # At the old 0.38 this gate caught NOTHING on a real plan, the
-                          # same way coupling never fired: every fragment scored above
-                          # it. 0.55 catches server (0.21 clear) and page (0.02 clear --
-                          # marginal, counted as recall but not relied on), misses readme
-                          # entirely, and keeps 0.10 to the nearest true negative, which
-                          # is the only margin here that beats the 0.07 noise floor.
-                          # Precision is what an advisory gate must hold: a gate that
-                          # cries wolf is one people switch off.
-                          #
-                          # `readme` is not separable from a real task by this rubric --
-                          # it sits at 0.65 alongside `cli` at 0.65 -- so silence above
-                          # 0.55 still means "no evidence", not "verifiable".
-                          #
-                          # Equal to prompt_warn by coincidence, not by kinship. They
-                          # were measured separately against different rubrics and must
-                          # stay separate keys; collapsing them into one constant is the
-                          # exact mistake this file has now recorded six times.
-                          verifiable_warn=0.55,
                           # The ordering question: an earlier-wave
                           # task written against what a LATER task builds. jevscope's
                           # `readme` ran in wave 1 documenting the wave-2 CLI, passed its
@@ -119,8 +86,7 @@ CLOUDFLARE_TOKEN_FILE = 'cloudflare.env'
 # Which capability each site belongs to, so a site on a provider with no credentials is
 # not ready even when its capability is on.
 SITE_CAPABILITY = {
-    'jev-score-plan': 'routing',
-    'jev-drift': 'gates', 'jev-forward': 'gates',
+    'jev-prompt': 'gates', 'jev-drift': 'gates', 'jev-forward': 'gates',
     'jev-memory-curate': 'memory', 'jev-memory-stale': 'memory', 'jev-memory-slice': 'memory',
     'jev-verify-discover': 'tests',
 }
@@ -327,9 +293,11 @@ def threshold(name: str, *, config: dict | None = None, model: str | None = None
 # old shared value, so a config that never named them behaves exactly as before.
 THRESHOLD_FALLBACK = dict(drift_warn='gate_warn')
 # Thresholds whose only reader was removed (routing's --jev-act tier rewrite and `forge jev
-# calibrate` on 2026-10-17; same-wave coupling in milestone C1). A config written before
-# then still holds them: they are ignored, and `doctor` names them as safe to delete rather than as unknown.
-RETIRED_THRESHOLDS = frozenset(('routing_act', 'calibrate_floor', 'coupling_warn', 'flake_act'))
+# calibrate` on 2026-10-17; same-wave coupling, flake triage and the verifiability gate
+# in milestone C1). A config written before then still holds them: they are ignored, and
+# `doctor` names them as safe to delete rather than as unknown.
+RETIRED_THRESHOLDS = frozenset(('routing_act', 'calibrate_floor', 'coupling_warn', 'flake_act',
+                                'verifiable_warn'))
 # Per-model cutoffs, only where a replay justified one. Clef has none yet:
 #
 # Replayed 2026-10-16 on the 38 live jev-drift requests whose task outcome could be joined
