@@ -143,6 +143,15 @@ class RipwireBoundsTests(unittest.TestCase):
                 rw.prepare(args)
             self.assertIn('missing', json.loads((root / 'ripwire.json').read_text())['reason'])
 
+    def test_a_child_that_already_exited_is_not_an_error(self):
+        # macOS answers EPERM, not ESRCH, to killpg on a group whose only member is an unreaped zombie
+        def eperm(*_):
+            raise PermissionError(1, 'Operation not permitted')
+        with tempfile.TemporaryDirectory() as tmp, patch.object(rw.os, 'killpg', eperm):
+            with self.assertRaisesRegex(RuntimeError, 'excessive output'):
+                rw.bounded([sys.executable, '-c', "print('x'*20000)"], tmp, time.monotonic() + 5)
+            self.assertEqual(rw.bounded([sys.executable, '-c', "print('ok')"], tmp, time.monotonic() + 5), 'ok\n')
+
     def test_output_and_timeout_bounds(self):
         with tempfile.TemporaryDirectory() as tmp:
             for code, reason in [("print('x'*20000)", 'excessive output'),
