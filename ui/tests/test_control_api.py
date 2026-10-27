@@ -441,7 +441,9 @@ class TimeoutAndBusyTests(ControlApiCase):
     def test_a_call_that_ignores_sigterm_is_killed_and_reaped_before_the_lock_is_released(self):
         pid_file = self.base / 'pid'
         self.behave(sleep=30, ignore_term=True, pid_file=str(pid_file))
-        with patch.object(control, 'TIMEOUT_S', 1), patch.object(control, 'TERM_WAIT_S', 0.5):
+        # long enough for the fake to start and ignore TERM even on a busy machine: a fake TERMed
+        # before that dies at once and the path under test is never taken
+        with patch.object(control, 'TIMEOUT_S', 4), patch.object(control, 'TERM_WAIT_S', 0.5):
             status, answer = self.post({'action': 'unpin', 'task': 'page'})
         self.assertEqual((status, answer['error']), (504, 'timeout'))
         pid = int(pid_file.read_text())

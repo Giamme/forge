@@ -36,7 +36,11 @@ the standard dependency-free check when Playwright is absent. For interactive in
 [Fractal verification](fractal-verification.md) for earlier implementation evidence.
 
 Run `bash tests/check.sh`. Python's standard-library unittest suite uses temporary Git
-repositories and fake model CLIs. PATH is restricted to those fakes and an explicit utility
+repositories and fake model CLIs. `tests/run_tests.py` runs it and forge-ui's suite with every
+test class in a process of its own, several at a time (the CPU count, at most 8;
+`FORGE_TEST_JOBS=1` runs them one after another, `-j N` sets it). It prints the slowest tests,
+and `python3 tests/run_tests.py PATTERN` runs only the classes whose id contains the pattern.
+A single module still runs as usual: `cd tests && python3 -m unittest test_interrupt`. PATH is restricted to those fakes and an explicit utility
 allowlist, so installed model clients cannot be used accidentally. No provider account is needed.
 There is currently no CI workflow; run the suite on macOS (system Bash 3.2) and Linux yourself.
 

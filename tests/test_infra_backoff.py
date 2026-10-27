@@ -90,8 +90,8 @@ class FlagTests(unittest.TestCase):
 
     def test_a_valid_shape_is_kept_in_the_plan(self):
         p = self.plan()
-        r = self.run_script('forge-parallel.sh', 'run', p, '--infra-backoff', 'linear:10,10')
-        self.assertEqual(r.returncode, 0, r.stdout)
+        r = self.run_script('forge-parallel.sh', 'run', p, '--dry-run', '--infra-backoff', 'linear:10,10')
+        self.assertEqual(r.returncode, 0, r.stdout)              # flags are kept before anything is dispatched
         self.assertEqual((p / 'infra_backoff').read_text(), 'linear:10,10\n')
 
 

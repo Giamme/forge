@@ -27,24 +27,24 @@ class LanesConfigTests(unittest.TestCase):
         return {p.name: p.read_text() for p in sorted(Path(directory).iterdir())} if Path(directory).exists() else None
 
     def test_verify_lane_writes_lane_files_and_the_last_kind_given_wins(self):
-        p = self.plan()
-        r = self.run_script('forge-parallel.sh', 'run', p, '--verify-lane', 'a=echo a',
+        p = self.plan()          # dry runs: the flags are kept before anything is dispatched
+        r = self.run_script('forge-parallel.sh', 'run', p, '--dry-run', '--verify-lane', 'a=echo a',
                             '--verify-lane', 'b[group=g,first]=echo b && echo c')
         self.assertNotIn('syntax error', r.stdout)
         self.assertEqual(self.files(p / 'verify.d'), {'a': 'echo a\n', 'b': '#forge: group=g first\necho b && echo c\n'})
-        self.run_script('forge-parallel.sh', 'run', p, '--verify-lane', 'only=true')
+        self.run_script('forge-parallel.sh', 'run', p, '--dry-run', '--verify-lane', 'only=true')
         self.assertEqual(self.files(p / 'verify.d'), {'only': 'true\n'})
-        self.run_script('forge-parallel.sh', 'run', p, '--verify', 'true')
+        self.run_script('forge-parallel.sh', 'run', p, '--dry-run', '--verify', 'true')
         self.assertIsNone(self.files(p / 'verify.d'))
         self.assertEqual((p / 'verify_cmd').read_text(), 'true')
-        self.run_script('forge-parallel.sh', 'run', p, '--verify', 'true', '--verify-lane', 'x=true')
+        self.run_script('forge-parallel.sh', 'run', p, '--dry-run', '--verify', 'true', '--verify-lane', 'x=true')
         self.assertFalse((p / 'verify_cmd').exists())
         self.assertEqual(self.files(p / 'verify.d'), {'x': 'true\n'})
-        r = self.run_script('forge-parallel.sh', 'run', p, '--verify-lane', 'a=true', '--verify', 'false',
+        r = self.run_script('forge-parallel.sh', 'run', p, '--dry-run', '--verify-lane', 'a=true', '--verify', 'false',
                             '--verify-lane', 'b=false')
         self.assertFalse((p / 'verify_cmd').exists(), r.stdout)
         self.assertEqual(self.files(p / 'verify.d'), {'b': 'false\n'})
-        self.run_script('forge-parallel.sh', 'run', p, '--verify-parallel', '5')
+        self.run_script('forge-parallel.sh', 'run', p, '--dry-run', '--verify-parallel', '5')
         self.assertEqual((p / 'verify_parallel').read_text(), '5')
 
     def test_malformed_arguments_stop_before_any_dispatch(self):

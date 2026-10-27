@@ -42,7 +42,7 @@ class InterruptTests(unittest.TestCase):
         except ProcessLookupError:
             pass
 
-    def wait_for(self, condition, seconds=30, what='the condition'):
+    def wait_for(self, condition, seconds=120, what='the condition'):   # a ceiling: a busy machine is slow to get there
         deadline = time.time() + seconds
         while not condition():
             self.assertLess(time.time(), deadline, 'timed out waiting for ' + what)

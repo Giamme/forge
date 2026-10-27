@@ -8,6 +8,8 @@ evals/results/
 # Offline Python checks
 __pycache__/
 *.pyc
+# tests/run_tests.py: how long each test class took last time, to start the slowest first
+tests/.durations.json
 
 # npm: forge has no dependencies to lock, and `npm pack` leaves its tarball here
 package-lock.json

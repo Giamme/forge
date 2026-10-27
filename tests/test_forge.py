@@ -58,7 +58,11 @@ if sc.get('sleep'): time.sleep(sc['sleep'])
 # 'continue_fails': the harness cannot continue the session it was asked to (exit 1, as claude does).
 if cont is not None and sc.get('continue_fails'):
  sys.stderr.write('No conversation found with session ID: '+cont+'\\n'); sys.exit(1)
-if name == 'b.txt' and not qa and os.environ.get('SLOW_B'): time.sleep(4)
+# B_UNTIL_C: b's implementer runs until c's has started (at most 60 s), so a scheduler that
+# held c back until b finished would show it, on a slow machine as on a fast one.
+if name == 'b.txt' and not qa and os.environ.get('B_UNTIL_C'):
+ waited = time.time() + 60
+ while time.time() < waited and 'c.txt dwarf' not in pathlib.Path(os.environ['EVENTS']).read_text(): time.sleep(0.05)
 if not qa:
  if os.environ.get('SLEEP'): time.sleep(10)
  if not sc.get('no_edit'): pathlib.Path(name).write_text(sc.get('content', os.environ.get('CONTENT','implemented'))+'\\n')
@@ -340,7 +344,7 @@ class ForgeTests(unittest.TestCase):
   p=self.plan('-')
   with (p/'tasks.tsv').open('a') as f: f.write('c\ta\tlow\tc.txt\tsol\topus\tC\n')
   t=p/'tasks/c'; t.mkdir(); (t/'prompt.md').write_text('Implement TASK_c')
-  self.env['EVENTS']=str(self.root/'events'); self.env['SLOW_B']='1'
+  self.env['EVENTS']=str(self.root/'events'); self.env['B_UNTIL_C']='1'
   r=self.run_script('forge-parallel.sh','run',p,'--max-parallel','2'); self.assertEqual(r.returncode,0,r.stdout)
   events=(self.root/'events').read_text().splitlines()
   c=next(float(x.split()[-1]) for x in events if x.startswith('c.txt dwarf'))
