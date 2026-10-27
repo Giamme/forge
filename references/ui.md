@@ -24,9 +24,13 @@ run goes on, with the same exit code.
 - **Fractal child tasks:** the tree a Fractal task was split into, in the inspector and above
   the opened task in 3D, each node with its decision, cost, output and candidate diff.
 - **Controls:** change a live plan from its inspector: QA threshold, timeout, escalate-after,
-  verify retries, and (while a scheduler is live) the retry and infra-retry budgets; per task, a
-  threshold override (`None` exempts it), a retry budget and a one-shot model pin. Each is one
-  `forge control` call; the change is confirmed first and logged in `control.log`.
+  the effort step, verify retries, the infrastructure backoff, and (while a scheduler is live)
+  the retry and infra-retry budgets, max parallel, Drain/Resume, Stop and Stop now; per task, a
+  threshold override (`None` exempts it), a retry budget, a one-shot model pin and, on a live run,
+  *Retry now* for a stopped or failed task (optionally on a chosen model), which shows its queued
+  request until the scheduler applies or refuses it. Each infrastructure pause gets a line: what
+  is paused, why, its tasks and the time left. Each is one `forge control` call; the change is
+  confirmed first and logged in `control.log`.
 - **Open findings and issues:** the findings a run (or all of its repository's runs) left open,
   filed as GitHub issues or dismissed through `forge issues`.
 - **Delete a run:** a dry run, then `forge runs rm`: the dataset keeps the traces, an archive is

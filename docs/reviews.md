@@ -103,15 +103,30 @@ decomposed task then ends as **`INFRA`**, not `ERROR`/`FAIL`, and:
 - **no attempt is spent** — a dwarf-stage stop refunds the counter; a QA-stage stop keeps the
   dwarf's committed work and re-runs **QA only** next time (`tasks/<id>/resume`, revalidated
   against the branch tip and fingerprint before it is trusted);
-- the scheduler stops dispatching, lets running tasks drain, leaves unstarted ones `PENDING`
-  (never `BLOCKED`) and `run` exits **8**: fix the cause, then run the same command again;
-- `run --infra-retries M` waits instead — up to `M` times, using the provider's retry-after
-  hint when it gave one (capped at 6 hours) and otherwise 60 s doubling to 30 min
-  (`FORGE_INFRA_BACKOFF` sets the base) — and resumes in the same run;
+- the scheduler pauses only what the stop is about: a **rate limit** pauses that model on that
+  harness, a **quota** or **auth** stop pauses that harness, and anything else (network, an
+  empty answer) pauses everything, letting running tasks drain. A task whose next dispatch
+  needs a paused model or harness waits; the others keep running. Unstarted tasks stay
+  `PENDING` (never `BLOCKED`), and once nothing else can run `run` exits **8**: fix the cause,
+  then run the same command again;
+- `run --infra-retries M` waits instead — up to `M` waits per paused scope, using the provider's
+  retry-after hint when it gave one (capped at 6 hours) and otherwise the backoff shape — and
+  resumes that scope's tasks in the same run. `--infra-backoff` picks the shape: `exp:60` by
+  default (60 s doubling to 30 min; `FORGE_INFRA_BACKOFF` sets that base), `exp:<base>,<cap>`,
+  `linear:<start>,<step>[,<cap>]` or `list:<a>,<b>,...`. `forge control set infra-backoff`
+  changes it for the next wait, and `forge control show` (and forge-ui) list each pause with
+  the time left;
+- `run --infra-fallback` moves an implementer stopped by a rate limit to the next model of its
+  own tier pool that nobody paused, at once and with no attempt spent (recorded in
+  `escalations.tsv` with source `fallback`); a pinned task, or a pool with no healthy member,
+  waits as above;
 - verification is skipped for a paused run (it is unfinished); the next `run` verifies at its end.
 
+For a planned outage, `forge control drain <plan>` lets the running tasks finish and starts
+nothing new until `forge control resume <plan>`, inside the same run.
+
 `.infra` (`dwarf.infra`/`qa.infra`) holds `class=`, `retry_after=`, `detail=`, `rc=`,
-`role=`. Detection is deliberately strict: strong phrases only, and ordinary text that merely
+`role=`, `harness=`, `model=`. Detection is deliberately strict: strong phrases only, and ordinary text that merely
 mentions "rate limit" in a reply that otherwise succeeded is never classified. A false
 positive costs a pause, not a spent attempt. Under Fractal a dwarf-side infrastructure stop
 still collapses to Fractal's own "failed" handling; QA-side stops propagate as above.

@@ -57,8 +57,10 @@ For explanation requests, explain the workflow without spending model quota.
   overrides a reviewer, so run it (with the user's `--reason` and
   `--approved`) only on the user's explicit instruction; never self-accept.
 - When you report a run, read `<plan>/control.log` and mention any human change made mid-run
-  (a threshold, a budget, a model pin; `forge control show <plan>` lists them). Never set a
-  control, pin or delete a run with `forge control` / `forge runs rm` unless the user asks.
+  (a threshold, a budget, a model pin, a drain, stop or queued retry; `forge control show <plan>`
+  lists them). Never set a control, pin, `drain|stop|retry` or delete a run with `forge control` /
+  `forge runs rm` unless the user asks. Exit `130` / `INTERRUPTED`: the run was signalled or
+  stopped; relay the `retry` lines it printed.
 - Exit `8` / status `INFRA` is a quota, auth or network stop, not a task failure and no
   attempt was spent: report it, say what to fix, and re-run only when told. For a multi-task
   plan, offer the opt-in whole-run review (`review`, or `integrate --final-review <qa-spec>`);

@@ -53,7 +53,9 @@ looking for strong phrases (usage/session limit, quota, insufficient balance/cre
 429/529, unauthorized/401/403, invalid API key, not logged in, ECONNRESET/ENOTFOUND/…). An
 `empty` answer (exit 0, nothing said) is the fifth class. codex's non-fatal reconnect notices
 followed by a normal reply never classify. `<role>.infra` holds `class=`, `retry_after=` (parsed
-from "resets 3pm", "try again in 2h", `|<epoch>`, capped at 24 h), `detail=`, `rc=`, `role=`.
+from "resets 3pm", "try again in 2h", `|<epoch>`, capped at 24 h), `detail=`, `rc=`, `role=`,
+`harness=`, `model=` (the scheduler pauses by them: a rate limit pauses that model on that
+harness, a quota or auth stop that harness).
 A dwarf that exits 0 with nothing said writes the file but still exits 0; callers consult it
 only when the diff is empty.
 
@@ -67,6 +69,16 @@ group in addition to `pkill -P`, and after a normal exit `forge-guard.py reap` l
 anything still alive in it (`<role>.orphans`). This is proven offline only; verify a new harness
 with one live dispatch before relying on it, and use the kill switch if a harness deliberately
 leaves a helper running.
+
+On an interrupt the harness leads its own session, so the TERM a decomposed run's scheduler
+sends to a task's process group reaches the dispatch, whose exit trap stops the harness. The
+scheduler waits up to `FORGE_INTERRUPT_GRACE` seconds (default 10) for each task's group to
+empty before KILLing it. As a backstop, a guarded dispatch records its harness right after
+launch in `<role>.harness` (`<pid><TAB><start time>`, from `forge-guard.py identity`; removed when
+the dispatch ends). For a task whose dispatch could not stop its harness, and at the next
+scheduler start for tasks a killed scheduler left `RUNNING`, `forge-guard.py stop <record>`
+signals the recorded group (TERM, about 2 s, KILL) only when the pid still has the recorded
+start time, so a reused pid is left alone.
 
 Effort ladders, low to high:
 

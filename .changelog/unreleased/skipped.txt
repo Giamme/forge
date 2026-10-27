@@ -1,0 +1,1 @@
+1f70e52	docs(control): the module docstring lists max-parallel
