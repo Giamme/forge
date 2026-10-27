@@ -2,24 +2,41 @@
 """forge control <command> <plan-dir> ...: show and change a plan's live controls.
 
   show  <plan> [--json]                          every control, per-task overrides, pins and the change log
-  set   <plan> <key> <value> [--task ID]         qa-threshold, timeout, escalate-after, verify-retries,
-                                                 retry-budget, infra-retries
+  set   <plan> <key> <value> [--task ID]         qa-threshold, timeout, escalate-after, escalate-effort,
+                                                 verify-retries, retry-budget, infra-retries, infra-backoff
+                                                 (none drops it), max-parallel (1-64)
   pin   <plan> <task> <spec>                     the model the task's next FULL implementer retry uses
   unpin <plan> <task>
+  retry <plan> <task> [--dwarf SPEC]             queue a retry of a stopped or failed task into the live run
+  add   <plan> <task>                            queue a row added to tasks.tsv (with its prompt.md) into the live run
+  drain <plan>                                   start nothing new; running tasks finish and the scheduler waits
+                                                 while tasks remain (with none left to start, the run ends as usual)
+  resume <plan>                                  end a drain
+  stop  <plan> [--now]                           start nothing new and end the run once running tasks are done
+                                                 (exit 130, no verification; when every task has merged by then,
+                                                 the run ends as usual: it verifies and exits 0); --now interrupts
+                                                 them like SIGTERM
 
-`show` reports escalate-after and verify-retries at their defaults (3 and 1) when unset, and the two
-budgets only while a scheduler is live.
+`show` reports escalate-after and verify-retries at their defaults (3 and 1) when unset,
+escalate-effort as on or off (off when the file is absent), and the two budgets only while a
+scheduler is live.
 
 Every change is validated, written atomically under the plan's control lock (`control.lock`),
 appended to `control.log` and recorded as a dataset `control` event. This is the only writer of
 human changes to a running plan; forge-ui calls it and never writes run files itself. Some
 controls can only change while a scheduler is live (`scheduler.live` names a live pid):
-retry-budget and infra-retries. A task-level change or a pin on a MERGED task, and a pin on a
+retry-budget, infra-retries, max-parallel, drain, resume, stop, retry and add.
+
+retry and add only queue a request in control.requests/ (one JSON file each): the scheduler
+applies or refuses it at its next pass and logs the outcome in control.log, with the same
+`request` id, as actor `scheduler`. A request never outlives the scheduler that was live
+when it was queued. A task-level change or a pin on a MERGED task, and a pin on a
 Fractal plan, are refused.
 
-A pin is checked with `forge-dispatch.sh doctor --spec <spec> --role dwarf`, which spends no
-quota, before the lock is taken. FORGE_CONTROL_DOCTOR replaces `bash forge-dispatch.sh doctor`
-with another command line, which then gets `--spec <spec> --role dwarf`; tests use it.
+A pin, a retry's --dwarf and an added row's specs are checked with `forge-dispatch.sh doctor
+--spec <spec> --role <role>`, which spends no quota, before the lock is taken.
+FORGE_CONTROL_DOCTOR replaces `bash forge-dispatch.sh doctor` with another command line, which
+then gets `--spec <spec> --role <role>`; tests use it.
 
 Exit codes: 0 ok, 2 usage or invalid input (including an unsafe path), 3 refused (not live, MERGED,
 Fractal, a spec that fails doctor, the control lock busy for over 5 s).
@@ -54,6 +71,8 @@ NEXT_ATTEMPT = "at the task's next attempt"
 NEXT_DECISION = 'at the next retry decision'
 NEXT_RETRY = 'at the next full retry (not QA-only resumes)'
 NEXT_VERIFY = 'at the next verification'
+NEXT_INFRA_WAIT = 'at the next infrastructure wait'
+NEXT_DISPATCH = "at the scheduler's next dispatch decision"
 
 
 class Invalid(Exception):
@@ -357,6 +376,20 @@ def nullable(value):
     return None if value in (None, '', '-', 'UNASSIGNED') else value
 
 
+PAUSE_KEYS = ('scope', 'class', 'harness', 'model', 'tasks', 'cycle', 'until', 'exhausted')
+
+
+def paused_scopes(text):
+    """The scheduler's infra.paused scopes; [] when nothing is paused or the file is unreadable."""
+    try:
+        scopes = json.loads(text or '')['scopes']
+    except (ValueError, KeyError, TypeError):
+        return []
+    if not isinstance(scopes, list):
+        return []
+    return [{key: scope.get(key) for key in PAUSE_KEYS} for scope in scopes if isinstance(scope, dict)]
+
+
 def show(plan, rows):
     live = is_live(plan)
 
@@ -367,8 +400,17 @@ def show(plan, rows):
         return number(get(rel)) if live else None
 
     run = dict(qa_threshold=level(get('qa_threshold')), timeout=number(get('timeout')),
-               escalate_after=number(get('escalate_after')), verify_retries=number(get('verify_retries')),
+               escalate_after=number(get('escalate_after')),
+               escalate_effort='on' if get('escalate_effort') == 'on' else 'off',
+               verify_retries=number(get('verify_retries')),
                retry_budget=budget('retry_budget'), infra_budget=budget('infra_budget'))
+    run['infra_backoff'] = get('infra_backoff') or default_backoff()
+    parallel = number(get('max_parallel'))
+    run['max_parallel'] = parallel if parallel and parallel <= 64 else None
+    stopping = get('stop') if live else None
+    run['drained'] = live and has(plan, 'drain')
+    run['stopping'] = stopping if stopping in ('graceful', 'now') else None
+    run['infra_paused'] = paused_scopes(get('infra.paused')) if live else None
     if run['escalate_after'] is None:
         run['escalate_after'] = DEFAULT_ESCALATE_AFTER
     if run['verify_retries'] is None:
@@ -414,8 +456,48 @@ def _int(value, task):
     raise Invalid('needs a non-negative integer (up to 9 digits)')
 
 
+_SCHEDULE = None
+
+
+def schedule_module():
+    """forge-schedule.py, loaded by path: the one owner of the backoff shape grammar."""
+    global _SCHEDULE
+    if _SCHEDULE is None:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location('forge_schedule', os.path.join(SKILL, 'scripts', 'forge-schedule.py'))
+        _SCHEDULE = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(_SCHEDULE)
+    return _SCHEDULE
+
+
+def _backoff(value, task):
+    if value == 'none':
+        return value
+    try:
+        schedule_module().parse_backoff(value)
+    except ValueError as error:
+        raise Invalid(str(error).replace('backoff ', '', 1))
+    return value.strip()
+
+
+def default_backoff():
+    return schedule_module().default_backoff()[1]
+
+
+def _parallel(value, task):
+    if re.fullmatch(r'[0-9]{1,2}', value) and 1 <= int(value) <= 64:
+        return str(int(value))
+    raise Invalid('needs an integer from 1 to 64')
+
+
 def _budget(value, task):
     return value if task and value == 'inherit' else _int(value, task)
+
+
+def _onoff(value, _task):
+    if value in ('on', 'off'):
+        return value
+    raise Invalid('needs on or off')
 
 
 # key -> (plan only or both, validator, file, live only, when it applies)
@@ -423,9 +505,12 @@ KEYS = {
     'qa-threshold': ('both', _qa, 'qa_threshold', False, NEXT_ATTEMPT),
     'timeout': ('plan', _int, 'timeout', False, NEXT_ATTEMPT),
     'escalate-after': ('plan', _int, 'escalate_after', False, NEXT_DECISION),
+    'escalate-effort': ('plan', _onoff, 'escalate_effort', False, NEXT_DECISION),
     'verify-retries': ('plan', _int, 'verify_retries', False, NEXT_VERIFY),
     'retry-budget': ('both', _budget, 'retry_budget', True, NEXT_DECISION),
     'infra-retries': ('plan', _int, 'infra_budget', True, NEXT_DECISION),
+    'infra-backoff': ('plan', _backoff, 'infra_backoff', False, NEXT_INFRA_WAIT),
+    'max-parallel': ('plan', _parallel, 'max_parallel', True, NEXT_DISPATCH),
 }
 
 
@@ -436,7 +521,7 @@ def emit(plan, entry):
     cmd = [sys.executable, os.path.join(SKILL, 'scripts', 'forge-dataset.py'), 'event', 'control', '--dir', plan]
     if entry['task']:
         cmd += ['--task', entry['task']]
-    for field in ('at', 'actor', 'action', 'key', 'value', 'previous'):
+    for field in ('at', 'actor', 'action', 'key', 'value', 'previous') + tuple(k for k in ('request',) if k in entry):
         value = entry[field]
         cmd += ['--set', f"{field}={'' if value is None else value}"]
     try:
@@ -445,8 +530,9 @@ def emit(plan, entry):
         pass
 
 
-def audit(plan, actor, action, task, key, value, previous):
-    entry = dict(at=time.time(), actor=actor, action=action, task=task, key=key, value=value, previous=previous)
+def audit(plan, actor, action, task, key, value, previous, **extra):
+    entry = dict(at=time.time(), actor=actor, action=action, task=task, key=key, value=value, previous=previous,
+                 **extra)
     append_line(plan, 'control.log', json.dumps(entry) + '\n')
     emit(plan, entry)
     return entry
@@ -457,7 +543,7 @@ def change(args, plan, rows, action, task, key, work, applies, summary, live_onl
     with control_lock(plan):
         probe(plan, 'control.log')   # an unsafe log refuses the change instead of leaving it unaudited
         if live_only and not is_live(plan):
-            raise Refused(f'{key} can only change while a run is live (no live scheduler for this plan)')
+            raise Refused(f'{key or action} can only change while a run is live (no live scheduler for this plan)')
         if task:
             refuse_task(plan, task, pin_guard)
         value, previous, changed = work()
@@ -469,8 +555,8 @@ def change(args, plan, rows, action, task, key, work, applies, summary, live_onl
         json.dump(dict(ok=True, changed=record, applies=applies, controls=controls), sys.stdout, indent=2)
         sys.stdout.write('\n')
     else:
-        print(f"{summary(value)} (was {'unset' if previous is None else previous}); applies {applies}"
-              + ('' if changed else ' (nothing changed, not logged)'))
+        was = '' if key is None else f" (was {'unset' if previous is None else previous})"
+        print(f"{summary(value)}{was}; applies {applies}" + ('' if changed else ' (nothing changed, not logged)'))
     return 0
 
 
@@ -487,8 +573,10 @@ def cmd_set(args):
     except Invalid as error:
         raise Invalid(f'{args.key}: {error}')
     rel = f'tasks/{task}/{name}' if task else name
-    drop = value == 'inherit' or (value == 'none' and not task)
-    wide = args.key == 'escalate-after' and value == '0'
+    drop = value == 'inherit' or (value == 'none' and not task) or (args.key == 'escalate-effort' and value == 'off')
+    # Plan-wide stop markers go when the policy that wrote them changes: the policy turned off
+    # (escalate-after 0), or the effort step turned on, which may yet have a move for them.
+    wide = (args.key == 'escalate-after' and value == '0') or (args.key == 'escalate-effort' and value == 'on')
     markers = [f'tasks/{row[0]}/{m}' for row in rows if valid_task_id(row[0]) for m in STOP_MARKERS] if wide else []
 
     def work():
@@ -500,7 +588,7 @@ def cmd_set(args):
         else:
             write_atomic(plan, rel, value + '\n')
             changed = previous != value
-        swept = [remove_safe(plan, target) for target in markers]   # as `run --escalate-after 0`: off means off
+        swept = [remove_safe(plan, target) for target in markers]   # as `run --escalate-after 0` and `--escalate-effort`
         return value, previous, changed or any(swept)
 
     where = f'task {task}' if task else 'the plan'
@@ -508,12 +596,12 @@ def cmd_set(args):
                   lambda v: f'set {args.key} {v} on {where}', live_only=live_only)
 
 
-def doctor(spec):
-    """Offline capability check of a dwarf spec: Refused when it fails, no quota spent."""
+def doctor(spec, role='dwarf'):
+    """Offline capability check of a spec: Refused when it fails, no quota spent."""
     override = os.environ.get('FORGE_CONTROL_DOCTOR')
     base = shlex.split(override) if override else ['bash', os.path.join(SKILL, 'scripts', 'forge-dispatch.sh'), 'doctor']
     try:
-        done = subprocess.run(base + ['--spec', spec, '--role', 'dwarf'], capture_output=True, text=True,
+        done = subprocess.run(base + ['--spec', spec, '--role', role], capture_output=True, text=True,
                               stdin=subprocess.DEVNULL, timeout=60)
     except (OSError, subprocess.SubprocessError, ValueError) as error:
         raise Refused(f'could not check the spec: {error}')
@@ -555,6 +643,132 @@ def cmd_unpin(args):
                   lambda v: f'unpinned task {args.task}')
 
 
+def run_command(args, action, rel, value, summary):
+    """drain, resume and stop: a live-only plan file the scheduler reads at every pass.
+    value None removes the file; logged with the action and no key."""
+    plan, rows = load(args.plan)
+
+    def work():
+        previous = text_of(plan, rel, strict=True)
+        present = previous is not None or has(plan, rel)
+        if value is None:
+            return None, previous, remove_safe(plan, rel)
+        write_atomic(plan, rel, value + ('\n' if value else ''))
+        return value or None, previous, not present or (previous or '') != value
+
+    return change(args, plan, rows, action, None, None, work, NEXT_DISPATCH, summary, live_only=True)
+
+
+def cmd_drain(args):
+    return run_command(args, 'drain', 'drain', '', lambda v: 'drained the plan: nothing new starts')
+
+
+def cmd_resume(args):
+    return run_command(args, 'resume', 'drain', None, lambda v: 'resumed the plan')
+
+
+def cmd_stop(args):
+    mode = 'now' if args.now else 'graceful'
+    return run_command(args, 'stop', 'stop', mode, lambda v: 'stopping the run now' if args.now else
+                       'stopping the run once running tasks are done')
+
+
+# ------------------------------------------------------------------------------------ requests
+
+REQUESTS = 'control.requests'
+DIFFICULTIES = ('low', 'medium', 'high')
+
+
+def clean_spec(spec, what):
+    if not spec or re.search(r'[\s\x00-\x1f\x7f,]', spec) or spec in ('-', 'UNASSIGNED') or spec.startswith('-'):
+        raise Invalid(f'{what} must be one explicit spec such as sol:high:codex')
+    return spec
+
+
+def check_row(plan, rows, task):
+    """The checks `plan` would need before a row may join a live run; Invalid otherwise."""
+    if not valid_task_id(task):
+        raise Invalid(f'invalid task id: {task!r}')
+    found = [row for row in rows if row[0] == task]
+    if not found:
+        raise Invalid(f'task {task!r} is not in tasks.tsv')
+    if len(found) > 1:
+        raise Invalid(f'task {task!r} appears more than once in tasks.tsv')
+    row = found[0]
+    if len(row) != 7:
+        raise Invalid(f'task {task!r}: tasks.tsv rows need 7 tab-separated columns, this one has {len(row)}')
+    _, deps, difficulty, files, dwarf, qa, _ = row
+    if difficulty not in DIFFICULTIES:
+        raise Invalid(f'task {task!r}: difficulty must be low, medium or high')
+    ids = {r[0] for r in rows}
+    wanted = [d for d in deps.split(',') if d and d != '-']
+    missing = [d for d in wanted if d not in ids]
+    if missing:
+        raise Invalid(f'task {task!r} depends on unknown task(s): {", ".join(missing)}')
+    graph = {r[0]: [d for d in (r[1].split(',') if len(r) > 1 else []) if d and d != '-'] for r in rows}
+    state = {}
+
+    def cyclic(node):
+        state[node] = 1
+        for dep in graph.get(node, []):
+            if state.get(dep) == 1 or (dep not in state and dep in graph and cyclic(dep)):
+                return True
+        state[node] = 2
+        return False
+
+    if cyclic(task):
+        raise Invalid(f'task {task!r}: its dependencies form a cycle')
+    if not files.strip() or files.strip() == '-':
+        raise Invalid(f'task {task!r}: the files column is empty')
+    clean_spec(dwarf, f'task {task!r}: the dwarf column')
+    clean_spec(qa, f'task {task!r}: the qa column')
+    prompt = read_file(plan, f'tasks/{task}/prompt.md', strict=True)
+    if not (prompt or '').strip():
+        raise Invalid(f'task {task!r}: tasks/{task}/prompt.md is missing or empty')
+    return dwarf, qa
+
+
+def queue(args, plan, verb, task, dwarf):
+    """Write the request under the control lock, live only; log it with its id."""
+    with control_lock(plan):
+        probe(plan, 'control.log')
+        if not is_live(plan):
+            raise Refused(f'{verb} needs a live run (no live scheduler for this plan)')
+        if verb == 'retry':
+            refuse_task(plan, task, pin=True)
+        name = f'{time.time_ns()}-{os.getpid()}.json'
+        request = dict(verb=verb, task=task, dwarf=dwarf, at=time.time(), actor=args.actor)
+        write_atomic(plan, f'{REQUESTS}/{name}', json.dumps(request) + '\n')
+        audit(plan, args.actor, verb, task, None, dwarf, None, request=name)
+    if args.json:
+        json.dump(dict(queued=True, request=name), sys.stdout)
+        sys.stdout.write('\n')
+    else:
+        print(f'queued {verb} of task {task}' + (f' on {dwarf}' if dwarf else '') + f' (request {name}); '
+              'the scheduler applies or refuses it at its next pass and logs the outcome in control.log')
+    return 0
+
+
+def cmd_retry(args):
+    plan, rows = load(args.plan)
+    require_task(rows, args.task)
+    dwarf = None
+    if args.dwarf is not None:
+        dwarf = clean_spec(args.dwarf, '--dwarf')
+    refuse_task(plan, args.task, pin=True)   # before the doctor: MERGED and Fractal need no model check
+    if dwarf:
+        doctor(dwarf)
+    return queue(args, plan, 'retry', args.task, dwarf)
+
+
+def cmd_add(args):
+    plan, rows = load(args.plan)
+    dwarf, qa = check_row(plan, rows, args.task)
+    doctor(dwarf, 'dwarf')
+    doctor(qa, 'qa')
+    return queue(args, plan, 'add', args.task, None)
+
+
 # ------------------------------------------------------------------------------------ show
 
 def stamp(epoch):
@@ -575,7 +789,16 @@ def cmd_show(args):
     run = controls['run']
     print(f"{plan}  run {cell(controls['run_id'])}  live {'yes' if controls['live'] else 'no'}"
           f"  fractal {'yes' if controls['fractal'] else 'no'}")
-    print('  ' + '  '.join(f"{k.replace('_', '-')} {cell(v)}" for k, v in run.items()))
+    print('  ' + '  '.join(f"{k.replace('_', '-')} {cell(v)}" for k, v in run.items() if k != 'infra_paused'))
+    for p in run['infra_paused'] or []:
+        tasks = ','.join(t for t in (p['tasks'] or []) if isinstance(t, str)) or '-'
+        if p['exhausted']:
+            when = 'waits used up'
+        elif isinstance(p['until'], (int, float)):
+            when = f"wait {cell(p['cycle'])} until {stamp(p['until'])}"
+        else:
+            when = 'waiting for running tasks to finish'
+        print(f"  paused {p['scope']} ({cell(p['class'])})  tasks {tasks}  {when}")
     columns = ('task', 'status', 'dwarf', 'qa', 'threshold', 'budget', 'used', 'pin', 'stop', 'next')
     table = [columns]
     for task, t in controls['tasks'].items():
@@ -599,7 +822,8 @@ def cmd_show(args):
 
 def parser():
     top = argparse.ArgumentParser(prog='forge control', description="Show and change a plan's live controls.")
-    sub = top.add_subparsers(dest='command', required=True, metavar='{show,set,pin,unpin}')
+    sub = top.add_subparsers(dest='command', required=True,
+                             metavar='{show,set,pin,unpin,retry,add,drain,resume,stop}')
 
     def common(p, mutator=True):
         p.add_argument('plan', metavar='PLAN_DIR', help="the plan dir (the one with tasks.tsv)")
@@ -611,7 +835,7 @@ def parser():
     common(p, mutator=False)
     p.set_defaults(func=cmd_show)
     p = sub.add_parser('set', help='change a control', description='Keys: ' + ', '.join(KEYS) + '. '
-                       'retry-budget and infra-retries change only while a run is live. '
+                       'retry-budget, infra-retries and max-parallel change only while a run is live. '
                        'qa-threshold and retry-budget also take --task (value inherit drops the override).')
     common(p)
     p.add_argument('key', choices=list(KEYS))
@@ -627,6 +851,25 @@ def parser():
     common(p)
     p.add_argument('task')
     p.set_defaults(func=cmd_unpin)
+    p = sub.add_parser('retry', help='queue a retry of a stopped or failed task into the live run')
+    common(p)
+    p.add_argument('task')
+    p.add_argument('--dwarf', metavar='SPEC', help='the implementer for this retry (an explicit escalation)')
+    p.set_defaults(func=cmd_retry)
+    p = sub.add_parser('add', help='queue a row added to tasks.tsv into the live run')
+    common(p)
+    p.add_argument('task')
+    p.set_defaults(func=cmd_add)
+    p = sub.add_parser('drain', help='start nothing new; running tasks finish and the scheduler waits while tasks remain (live only)')
+    common(p)
+    p.set_defaults(func=cmd_drain)
+    p = sub.add_parser('resume', help='end a drain (live only)')
+    common(p)
+    p.set_defaults(func=cmd_resume)
+    p = sub.add_parser('stop', help='end the run once running tasks finish, exit 130 without verifying unless every task merged (live only)')
+    common(p)
+    p.add_argument('--now', action='store_true', help='interrupt running tasks, as SIGTERM does')
+    p.set_defaults(func=cmd_stop)
     return top
 
 

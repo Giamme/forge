@@ -193,12 +193,23 @@ all their child invocations and QA. See [decomposed Fractal execution](../refere
 
 ## Resuming an interrupted run
 
+Ctrl-C (or a SIGTERM) on `run` stops the running tasks' process groups, waiting up to
+`FORGE_INTERRUPT_GRACE` seconds (10 by default) before killing what is left, and stops any
+harness that outlived its dispatch. A task that had already finished is reaped first (a PASS
+still merges); only the tasks still running become `INTERRUPTED`, with their partial work kept
+in the worktree. Verification is skipped, or stopped if it had started (`verification.status`
+`INTERRUPTED`, not rerun). The summary lists each interrupted task with its `retry` command,
+the plan lock is released, and `run` exits 130.
+
 Run `run` again to skip MERGED tasks, merge saved PASS results after fingerprint checks,
 and dispatch eligible pending tasks. Tasks paused on an infrastructure failure (`INFRA`) are
 dispatched again without any flag, since nothing was wrong with the work. Failed and
 interrupted tasks need an explicit `retry` (or `run --retry-failed N` for rejected ones).
 Their worktrees and pinned baselines remain available. Concurrent run/retry/integrate
 operations for the same plan are excluded by an advisory lock.
+
+To pause a run on purpose, drain it instead of signalling it (see below): nothing is
+interrupted, and `forge control resume` continues the same run.
 
 For a Fractal-backed run, use `forge fractal resume RUN_ID` to recover recorded execution
 and pipeline checkpoints. A task/subtree selector resumes only that execution scope.
@@ -213,11 +224,34 @@ belong to that pool. See [recovery](../references/fractal.md#limits-and-lifecycl
 forge control show <plan-dir> [--json]                    # every control, per-task overrides, pins, recent changes
 forge control set <plan-dir> qa-threshold P2              # also --task <id>; P0-P3, none, or inherit (task only)
 forge control set <plan-dir> retry-budget 3 [--task <id>] # automatic retries; live scheduler only
-forge control set <plan-dir> infra-retries 2              # infrastructure waits; live scheduler only
+forge control set <plan-dir> infra-retries 2              # infrastructure waits per scope; live scheduler only
+forge control set <plan-dir> max-parallel 2               # tasks at once, 1-64; live scheduler only
+forge control set <plan-dir> infra-backoff linear:60,60   # the next infrastructure wait; none = exp:60
+forge control set <plan-dir> escalate-effort on           # the effort step before a policy stop
 forge control set <plan-dir> timeout|escalate-after|verify-retries <n>
 forge control pin <plan-dir> <task> sol:high:codex        # the model the next full retry uses, once
 forge control unpin <plan-dir> <task>
 ```
+
+And to steer the scheduler itself (each needs a live run, exit 3 otherwise):
+
+```bash
+forge control drain <plan-dir>                    # start nothing new; running tasks finish, the run waits for resume
+forge control resume <plan-dir>                   # end the drain
+forge control stop <plan-dir>                     # finish what runs, start nothing, end the run (exit 130)
+forge control stop <plan-dir> --now               # interrupt the running tasks too, like Ctrl-C
+forge control retry <plan-dir> docs --dwarf sol:high   # queue a retry of a stopped or failed task
+forge control add <plan-dir> docs-fix             # queue a row you appended to tasks.tsv (with its prompt.md)
+```
+
+A stop skips verification and exits 130, unless every task had merged by then, and a drain
+with nothing left to start lets the run end as usual: both act on work still to do.
+`retry` and `add` only queue a request in `control.requests/`; the scheduler applies or refuses
+it at its next pass and logs the outcome in `control.log` under the same request id (`forge
+control show` lists the log). A retry is prepared exactly as `forge-parallel.sh retry` prepares one,
+so a task the policy stopped needs `--dwarf`; it spends no automatic retry budget. An added row
+may depend only on tasks the run already knows. Neither outlives the run that was live when it
+was queued, and both are refused once the run is stopping.
 
 Each change is validated, written under `control.lock`, and says when it applies:
 
@@ -244,8 +278,15 @@ Each change is validated, written under `control.lock`, and says when it applies
   worktree. A marker the next retry will discard is reported as `pinned`.
   Fractal plans never apply pins, and a MERGED task refuses one.
 - **Who decided an escalation.** The last column of `tasks/<id>/escalations.tsv` is `policy`
-  (`--escalate-after`), `retry` (a typed `retry --dwarf`) or `pin`; rows from before it was added
+  (`--escalate-after`), `retry` (a typed `retry --dwarf`), `pin` or `fallback`
+  (`--infra-fallback` moved a task off a model at capacity); rows from before it was added
   have four columns and read as `policy`.
+- **Max parallel and the backoff apply at the next decision.** A lower `max-parallel` lets the
+  running tasks finish and never stops one; `infra-backoff` shapes the next infrastructure wait,
+  not the one already counting down.
+- **The effort step re-decides stopped tasks.** Turning `escalate-effort` on clears the policy's
+  stop markers, so a task stopped at the top tier is tried at its model's next effort on its
+  next retry.
 
 Every change is appended to `control.log` (one JSON line: `at`, `actor` `cli` or `ui`, `action`,
 `task`, `key`, `value`, `previous`) and recorded in the dataset as a `control` event, so a run's

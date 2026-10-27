@@ -55,6 +55,20 @@ following its log as it grows. It is read from the agent CLI's own log, whicheve
 wrote it (as plain text for those that log no events yet), or for an older claude run from
 Claude's session file on this machine.
 
+The *Verification* node opens the run's verification in the inspector. While it runs you see
+for how long, the step a lane announced (`::forge step`, see
+[verification lanes](../references/decompose.md#execution-checks-and-integration-verification))
+and its last printed line, a warning after five minutes with no output, and the live output of
+the lane that printed last (or of the one you choose). Once it fails, the failing tests come
+first, by lane and marked new or known (from the lanes' JUnit or TAP reports), each with its
+message, an excerpt and a link that opens the lane's log at that line; a lane without reports
+shows the end of its log and the step it ended in. Below, every lane with its state (flaky and
+known called out), time, runs and test counts; a lane's name opens its output. A single verify
+command shows the newest of its logs. On the *Execution*
+view the verification has rows of its own after the tasks, one per lane with a bar per run and
+reruns marked (a single command's runs sit back to back, dashed, because only their durations
+are known), and its finish node counts the lanes and reruns.
+
 ### Controls
 
 forge-ui reads everything, and it changes things only by calling forge's own commands: it
@@ -64,12 +78,19 @@ indistinguishable from the same command typed in a terminal, except that `contro
 `ui` instead of `cli`. Every change asks you to confirm and says when it takes effect.
 
 - **Run controls** (a plan's inspector): the QA threshold, the per-attempt timeout, how many
-  failures before escalating, verification retries, and, while a scheduler is live, the retry
-  and infrastructure-retry budgets. A task has its own panel for a threshold override
-  (including *None*, which exempts it from the run's threshold), its own retry budget, and a
-  **model pin**: the model its next full retry uses, once. Each is `forge control`; see
-  [decomposed runs](decomposed-runs.md#changing-a-run-while-it-works). A control that cannot
-  apply (a budget with no live scheduler, a merged task) is disabled and says why.
+  failures before escalating, the effort step, verification retries, the infrastructure backoff,
+  and, while a scheduler is live, the retry and infrastructure-retry budgets and max parallel.
+  A live run also gets **Drain** (start nothing new; *Resume* ends it), **Stop** (finish what
+  runs, then end the run) and **Stop now** (interrupt the running tasks), and one line per
+  infrastructure pause: the model or harness it holds, the class, its tasks, and a countdown to
+  its next try, or *budget used up*. A task has its own panel for a threshold override
+  (including *None*, which exempts it from the run's threshold), its own retry budget, a
+  **model pin**: the model its next full retry uses, once, and, on a live run, **Retry now**
+  for a task that stopped or failed, on the policy's choice or a model you name. A retry is
+  queued; the panel says *queued*, then *applied* or *refused* with the scheduler's reason.
+  Each is `forge control`; see [decomposed runs](decomposed-runs.md#changing-a-run-while-it-works).
+  A control that cannot apply (a budget with no live scheduler, a merged task) is disabled and
+  says why.
 - **Open findings:** the review findings a run left open (tolerated by `--qa-threshold`,
   PLAUSIBLE, or left by the whole-run review), for this run or every run of its repository.
   Findings of an outdated review carry an "outdated review" marker, and findings a person

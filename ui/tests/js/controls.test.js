@@ -210,3 +210,70 @@ test('the pin suggestions are the implementer aliases seen in runs', () => {
   assert.deepEqual(C.aliasesOf(null), []);
   assert.deepEqual(C.aliasesOf({ tasks: 'x' }), []);
 });
+
+// --- drain, resume, stop, retry and the keys max-parallel, infra-backoff, escalate-effort -------------------------
+
+test('the run actions and a retry become the bodies the server takes', () => {
+  assert.deepEqual(C.prepare({ kind: 'drain' }).body, { action: 'drain' });
+  assert.deepEqual(C.prepare({ kind: 'resume' }).body, { action: 'resume' });
+  assert.deepEqual(C.prepare({ kind: 'stop' }).body, { action: 'stop' });
+  assert.deepEqual(C.prepare({ kind: 'stop', now: true }).body, { action: 'stop', now: true });
+  assert.match(C.prepare({ kind: 'stop', now: true }).confirm, /interrupted/);
+  assert.match(C.prepare({ kind: 'stop' }).confirm, /running tasks finish/);
+  assert.deepEqual(C.prepare({ kind: 'retry', task: 'graph', alias: '' }).body, { action: 'retry', task: 'graph' });
+  assert.deepEqual(C.prepare({ kind: 'retry', task: 'graph', alias: 'sol', effort: 'high', harness: 'codex' }).body,
+    { action: 'retry', task: 'graph', dwarf: 'sol:high:codex' });
+  assert.equal(C.prepare({ kind: 'retry', task: 'graph', alias: 'so l' }).ok, false);   // validated like a pin
+  assert.equal(C.prepare({ kind: 'retry', alias: 'sol' }).ok, false);
+});
+
+test('the new keys are checked before they are sent', () => {
+  const set = (key, input) => C.prepare({ kind: 'set', key, input });
+  assert.deepEqual(set('max-parallel', ' 4 ').body, { action: 'set', key: 'max-parallel', value: '4' });
+  for (const v of ['0', '65', 'x', '2.5', '']) assert.equal(set('max-parallel', v).ok, false, v);
+  assert.equal(set('max-parallel', '64').ok, true);
+  assert.deepEqual(set('escalate-effort', 'on').body, { action: 'set', key: 'escalate-effort', value: 'on' });
+  assert.equal(set('escalate-effort', 'yes').ok, false);
+  assert.deepEqual(set('infra-backoff', 'linear:30,30,600').body, { action: 'set', key: 'infra-backoff', value: 'linear:30,30,600' });
+  assert.deepEqual(set('infra-backoff', 'default').body, { action: 'set', key: 'infra-backoff', value: 'none' });
+  assert.match(set('infra-backoff', 'default').confirm, /default \(exp:60\)/);
+  for (const v of ['', 'exp: 60', '-x']) assert.equal(set('infra-backoff', v).ok, false, v);
+  assert.equal(C.prepare({ kind: 'set', key: 'max-parallel', input: '3', task: 'graph' }).ok, false);   // plan-wide
+  assert.equal(C.canEdit(idle(), 'max-parallel').enabled, false);                                           // live only
+  assert.equal(C.canEdit(show(), 'max-parallel').enabled, true);
+});
+
+test('each infrastructure pause is one line with its countdown, or its spent budget', () => {
+  const now = 1000;
+  const c = show({ run: { infra_paused: [
+    { scope: 'model:codex/gpt-6.1-sol', class: 'rate_limit', harness: 'codex', model: 'gpt-6.1-sol', tasks: ['graph', 'docs'], cycle: 2, until: 1185, exhausted: false },
+    { scope: 'harness:claude', class: 'quota', harness: 'claude', model: '', tasks: ['page'], cycle: 4, until: null, exhausted: true },
+    { scope: 'all', class: 'network', harness: null, model: null, tasks: [], cycle: 1, until: 999, exhausted: false }] } });
+  assert.deepEqual(C.pauseLines(c, now).map(l => l.text), [
+    'model gpt-6.1-sol on codex · rate_limit · tasks graph, docs · wait 2 · resumes in 3m05s',
+    'harness claude · quota · tasks page · wait 4 · budget used up',
+    'every task · network · wait 1 · resuming']);
+  assert.equal(C.pauseLines(c, now + 180)[0].text.endsWith('resumes in 5s'), true);       // ticks with the clock
+  assert.deepEqual(C.pauseLines(show(), now), []);
+  assert.equal(C.countdown(4000 + 3600 * 2, 4000), '2h00m');
+});
+
+test('a queued retry reads applied or refused from the scheduler line with its own request id', () => {
+  const log = [
+    { actor: 'scheduler', action: 'retry', task: 'graph', request: '2-other.json', outcome: 'applied', reason: null },
+    { actor: 'ui', action: 'retry', task: 'graph', request: '1-mine.json' }];
+  assert.deepEqual(C.requestState('1-mine.json', log), { state: 'queued' });              // another id answers nothing
+  const refused = [{ actor: 'scheduler', request: '1-mine.json', outcome: 'refused', reason: 'the task is running' }].concat(log);
+  assert.deepEqual(C.requestState('1-mine.json', refused), { state: 'refused', reason: 'the task is running' });
+  assert.equal(C.requestText(C.requestState('1-mine.json', refused)), 'refused: the task is running');
+  assert.deepEqual(C.requestState('2-other.json', log), { state: 'applied' });
+  assert.equal(C.savedText({ queued: true, request: '1-mine.json' }).startsWith('Queued'), true);
+});
+
+test('Retry now shows for an ended or policy-stopped task while the run is live', () => {
+  const c = show({ tasks: Object.assign({}, show().tasks, { timed: { status: 'TIMEOUT', escalation_stop: false } }) });
+  assert.deepEqual(['reader', 'page', 'graph', 'docs', 'timed'].map(id => C.canRetry(c, id)), [false, false, true, false, true]);
+  assert.equal(C.canRetry(idle(), 'graph'), false);
+  const stopped = show({ tasks: { page: Object.assign({}, show().tasks.page, { status: 'PENDING', escalation_stop: true }) } });
+  assert.equal(C.canRetry(stopped, 'page'), true);
+});

@@ -1,0 +1,4 @@
+1f70e52	docs(control): the module docstring lists max-parallel
+c76f038	docs: interrupts, live controls and infrastructure pauses
+5ef0221	docs: verification lanes and the verification view
+daa945d	docs(control): a stop with everything merged verifies; a drain with nothing left ends

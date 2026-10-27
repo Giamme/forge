@@ -289,7 +289,11 @@ export async function createStage(host, cb = {}) {
   function finishInfo(id) {
     const F = st.plan && st.plan.finish, run = st.run; if (!F) return {};
     if (id === 'f:integration') return { title: 'INTEGRATION', sub: `${F.integration.merged}/${F.integration.total} merged`, status: F.integration.status, line: F.integration.accepted ? 'at ' + String(F.integration.accepted).slice(0, 10) : 'into forge/' + (run.run_id || '…') + '-integration' };
-    if (id === 'f:verification') return { title: 'VERIFICATION', sub: F.verification.command || 'no command recorded', status: F.verification.status, line: F.verification.runs ? `${F.verification.runs} run${F.verification.runs > 1 ? 's' : ''}` : 'not run yet' };
+    if (id === 'f:verification') {
+      const V = F.verification, n = V.lanes.length, plural = (k, w) => `${k} ${w}${k === 1 ? '' : 's'}`;
+      const line = V.mode === 'lanes' ? `${plural(n, 'lane')} · ${plural(V.reruns, 'rerun')}` : V.runs ? plural(V.runs, 'run') : 'not run yet';
+      return { title: 'VERIFICATION', sub: V.command || (V.mode === 'lanes' ? V.lanes.map(l => l.name).join(' · ') : 'no command recorded'), status: V.status, line };
+    }
     const status = finishStatus(id, { status: F.final.status });
     const src = status === 'OUTDATED' && st.replay !== null ? (RM.reviewAt(run, st.replay) || F.final) : F.final;
     const f = F.final.findings;
@@ -313,7 +317,7 @@ export async function createStage(host, cb = {}) {
     }, 'cover', { x: x + 12, y: y + 8, z: h });
     if (m.id === 'f:final') { leds(el, 4, x + 18, y + d - 13, h + .16, { step: 11, s: 3 }); }
     else if (m.id === 'f:integration') leds(el, Math.min(40, list(st.run.tasks).length), x + 17, y + d - 13, h + .16, { step: 8, s: 2.4, perRow: 22 });
-    else leds(el, Math.max(1, Math.min(12, list(st.run.verification && st.run.verification.runs).length)), x + 17, y + d - 13, h + .16, { step: 9, s: 2.8 });
+    else leds(el, Math.max(1, Math.min(12, RM.verifyLeds(st.run).length)), x + 17, y + d - 13, h + .16, { step: 9, s: 2.8 });
     finishLeds(el);
     display(el, e => finishInfo(e.id).line || '', { w: w - 24, x: x + 12, y: y + d, z: h - 8 });
     halo(el);
@@ -326,7 +330,7 @@ export async function createStage(host, cb = {}) {
   function finishLeds(el) {
     if (el.id === 'f:final') { const f = finishInfo(el.id).findings || {}; setLeds(el, ['P0', 'P1', 'P2', 'P3'].map(s => f[s] ? E.sevColor(s) : null)); }
     else if (el.id === 'f:integration') setLeds(el, list(st.run.tasks).map(t => { const s = taskStatus(t); return s === 'MERGED' || s === 'ACCEPTED' ? s : null; }));
-    else setLeds(el, list(st.run.verification && st.run.verification.runs).map(r => r.exit === 0 ? 'PASS' : 'FAIL'));
+    else setLeds(el, RM.verifyLeds(st.run, st.replay !== null ? st.replayState : null));
   }
   function buildPlan(g) {
     const P = RM.planModel(st.run); st.plan = P;
@@ -512,7 +516,7 @@ export async function createStage(host, cb = {}) {
     const lw = Math.max(10, it.w - 10);
     el.roof = label(el, lw, it.d - 14, 4, (cx, s, C, e) => {
       const item = e.data.item, sel = e.cur.sel > .5;
-      const title = item.kind === 'verification' ? 'verification' : item.kind === 'review' ? 'final review' : item.task + (item.attempt ? ' · A' + item.attempt : '');
+      const title = item.vlane ? 'verify · ' + item.vlane : item.kind === 'verification' ? 'verification' : item.kind === 'review' ? 'final review' : item.task + (item.attempt ? ' · A' + item.attempt : '');
       const f = Math.min(11, Math.max(4, (lw - 4) / Math.max(4, title.length * E.CW)));
       E.font(cx, f, s, 600); cx.fillStyle = sel ? C.accHi : item.ghost ? C.ink : C.inkHi; cx.fillText(E.ellipsis(title, Math.floor((lw - 2) / (f * E.CW))), 1 * s, (f + 1) * s);
       // segments: when the dwarf and the review ran inside this attempt
@@ -1135,7 +1139,7 @@ export async function createStage(host, cb = {}) {
     if (el.kind === 'finish') return { kind: el.id === 'f:final' ? 'final' : el.id === 'f:verification' ? 'verification' : 'integration' };
     const it = el.data.item; if (!it) return null;
     if (it.kind === 'review') return { kind: 'final', name: it.review };
-    if (it.kind === 'verification') return { kind: 'execution', task: null, exec: it.id };
+    if (it.kind === 'verification') return it.vlane || it.approx ? { kind: 'verification' } : { kind: 'execution', task: null, exec: it.id };
     if (it.ghost || String(it.id).startsWith('span:')) return { kind: 'task', id: it.task };
     return { kind: 'execution', task: it.task, id: it.task, exec: it.id };
   }

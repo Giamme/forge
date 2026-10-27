@@ -24,9 +24,13 @@ run goes on, with the same exit code.
 - **Fractal child tasks:** the tree a Fractal task was split into, in the inspector and above
   the opened task in 3D, each node with its decision, cost, output and candidate diff.
 - **Controls:** change a live plan from its inspector: QA threshold, timeout, escalate-after,
-  verify retries, and (while a scheduler is live) the retry and infra-retry budgets; per task, a
-  threshold override (`None` exempts it), a retry budget and a one-shot model pin. Each is one
-  `forge control` call; the change is confirmed first and logged in `control.log`.
+  the effort step, verify retries, the infrastructure backoff, and (while a scheduler is live)
+  the retry and infra-retry budgets, max parallel, Drain/Resume, Stop and Stop now; per task, a
+  threshold override (`None` exempts it), a retry budget, a one-shot model pin and, on a live run,
+  *Retry now* for a stopped or failed task (optionally on a chosen model), which shows its queued
+  request until the scheduler applies or refuses it. Each infrastructure pause gets a line: what
+  is paused, why, its tasks and the time left. Each is one `forge control` call; the change is
+  confirmed first and logged in `control.log`.
 - **Open findings and issues:** the findings a run (or all of its repository's runs) left open,
   filed as GitHub issues or dismissed through `forge issues`.
 - **Delete a run:** a dry run, then `forge runs rm`: the dataset keeps the traces, an archive is
@@ -44,7 +48,13 @@ run goes on, with the same exit code.
   as the run's verdict; changes on the user's own branch after an integrate are not tracked. The
   *Execution* view shows the same run on wall-clock time, one block per attempt in the lane it
   ran in, with projected blocks for what has not started and a strip of busy slots against
-  `--max-parallel`.
+  `--max-parallel`; the verification follows on rows of its own, one per verification lane
+  with each run and rerun.
+- **Verification** (its finish node): live, the elapsed time, a lane's announced step
+  (`::forge step`), its last line, a warning after five minutes without output and the live
+  output; after a failure, the failing tests first, by lane, new or known (from JUnit/TAP
+  reports), each opening the lane's log at its line, or a reportless lane's log tail; then every
+  lane's state, time, runs and tests; a lane's name opens its output.
 - **Opening a node** shows its attempts, dwarves and reviews, and an inspector with the prompt
   that launched each one, the model, timings by phase, tokens, verdicts and the P0–P3 findings
   of every review (the final review's included).

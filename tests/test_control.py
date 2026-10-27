@@ -92,8 +92,10 @@ class ControlTests(unittest.TestCase):
         shown = self.show()
         self.assertEqual((shown['plan'], shown['run_id'], shown['live'], shown['fractal']),
                          (str(self.plan), 'r-7', False, False))
-        self.assertEqual(shown['run'], dict(qa_threshold='P2', timeout=90, escalate_after=3, verify_retries=1,
-                                            retry_budget=None, infra_budget=None))
+        self.assertEqual(shown['run'], dict(qa_threshold='P2', timeout=90, escalate_after=3, escalate_effort='off',
+                                            verify_retries=1, retry_budget=None, infra_budget=None, infra_backoff='exp:60',
+                                            max_parallel=None, drained=False, stopping=None,
+                                            infra_paused=None))
         self.assertEqual(list(shown['tasks']), ['a', 'b'])
         self.assertEqual(shown['tasks']['a'], dict(
             status='FAIL', dwarf='sol:high:codex', qa='astra:xhigh:codex', qa_threshold='none', retry_budget=2,
@@ -475,6 +477,68 @@ class ControlTests(unittest.TestCase):
         shown = subprocess.run([str(ROOT / 'forge'), 'control', 'show', str(self.plan), '--json'], capture_output=True,
                                text=True, env=self.env)
         self.assertEqual(json.loads(shown.stdout)['plan'], str(self.plan))
+
+    # ------------------------------------------------------------------------------------ drain, resume, stop, max-parallel
+
+    def test_drain_resume_and_stop_write_and_remove_their_files(self):
+        self.live()
+        self.ok('drain', self.plan)
+        self.assertEqual((self.plan / 'drain').read_text(), '')
+        self.assertTrue(self.show()['run']['drained'])
+        self.ok('resume', self.plan)
+        self.assertFalse((self.plan / 'drain').exists())
+        self.assertFalse(self.show()['run']['drained'])
+        self.ok('stop', self.plan)
+        self.assertEqual((self.plan / 'stop').read_text(), 'graceful\n')
+        self.assertEqual(self.show()['run']['stopping'], 'graceful')
+        self.ok('stop', self.plan, '--now')
+        self.assertEqual((self.plan / 'stop').read_text(), 'now\n')
+        self.assertEqual(self.show()['run']['stopping'], 'now')
+        self.assertEqual([(e['action'], e['key'], e['value'], e['actor']) for e in self.log()],
+                         [('drain', None, None, 'cli'), ('resume', None, None, 'cli'),
+                          ('stop', None, 'graceful', 'cli'), ('stop', None, 'now', 'cli')])
+
+    def test_a_repeated_drain_or_a_resume_of_nothing_is_not_logged(self):
+        self.live()
+        self.ok('drain', self.plan)
+        self.assertIn('nothing changed', self.ok('drain', self.plan).stdout)
+        self.ok('resume', self.plan)
+        self.assertIn('nothing changed', self.ok('resume', self.plan).stdout)
+        self.assertEqual([e['action'] for e in self.log()], ['drain', 'resume'])
+
+    def test_each_is_refused_when_no_scheduler_is_live(self):
+        for args in (('drain',), ('resume',), ('stop',), ('stop', '--now'), ('set', '{plan}', 'max-parallel', '2')):
+            with self.subTest(args):
+                argv = [a.replace('{plan}', str(self.plan)) for a in args]
+                if args[0] != 'set':
+                    argv.append(str(self.plan))
+                self.code(3, *argv)
+        self.assertEqual(self.files(self.plan), ['control.lock', 'tasks', 'tasks.tsv'])
+        self.assertEqual(self.log(), [])
+
+    def test_max_parallel_takes_1_to_64_while_live(self):
+        self.live()
+        for bad in ('0', '65', 'x', '-1', ''):
+            with self.subTest(bad):
+                self.code(2, 'set', self.plan, 'max-parallel', bad)
+        self.ok('set', self.plan, 'max-parallel', '64')
+        self.ok('set', self.plan, 'max-parallel', '1')
+        self.assertEqual((self.plan / 'max_parallel').read_text(), '1\n')
+        self.assertEqual(self.show()['run']['max_parallel'], 1)
+        self.assertEqual([(e['key'], e['value'], e['previous']) for e in self.log()],
+                         [('max-parallel', '64', None), ('max-parallel', '1', '64')])
+
+    def test_the_actor_and_json_work_as_on_the_other_commands(self):
+        self.live()
+        out = json.loads(self.ok('stop', self.plan, '--json', '--actor', 'ui').stdout)
+        self.assertEqual(out['changed'], dict(action='stop', task=None, key=None, value='graceful', previous=None))
+        self.assertEqual(out['controls']['run']['stopping'], 'graceful')
+        self.assertEqual(self.log()[-1]['actor'], 'ui')
+
+    def test_show_reports_no_drain_or_stop_when_not_live(self):
+        self.put('drain', ''); self.put('stop', 'now\n'); self.put('max_parallel', '4')
+        run = self.show()['run']
+        self.assertEqual((run['drained'], run['stopping'], run['max_parallel']), (False, None, 4))
 
 
 if __name__ == '__main__':

@@ -28,6 +28,12 @@ def alive(pid):
     return True
 
 
+def running(pid):
+    """False once the pid is dead or a zombie; ps knows, kill(0) does not."""
+    state = subprocess.run(['/bin/ps', '-p', str(pid), '-o', 'stat='], stdout=subprocess.PIPE, text=True).stdout.strip()
+    return bool(state) and not state.startswith('Z')
+
+
 def wait_until(predicate, seconds=10.0):
     deadline = time.monotonic() + seconds
     while time.monotonic() < deadline:
@@ -231,6 +237,111 @@ class ReapTests(unittest.TestCase):
     def test_bad_usage(self):
         self.assertEqual(run('reap').returncode, 2)
         self.assertEqual(run('reap', 'notanumber', '/dev/null').returncode, 2)
+
+
+
+class IdentityStopTests(unittest.TestCase):
+    """`identity` names a pid by its start time; `stop` acts on a `<pid>\t<identity>` record."""
+
+    def session(self, script):
+        """A process leading its own group, as dispatch's guarded harness does."""
+        process = subprocess.Popen([sys.executable, str(GUARD), 'session', '--', '/bin/sh', '-c', script],
+                                   stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, text=True)
+        def cleanup():
+            if process.poll() is None:
+                os.killpg(process.pid, signal.SIGKILL)
+                process.wait()
+            process.stdout.close()
+        self.addCleanup(cleanup)
+        return process
+
+    def record(self, tmp, pid, ident):
+        path = Path(tmp) / 'dwarf.harness'
+        path.write_text('%d\t%s\n' % (pid, ident))
+        return path
+
+    def gone(self, process):
+        # The test is the parent: a killed child stays a zombie until it is waited for.
+        return process.poll() is not None
+
+    def test_identity_is_unchanged_across_an_exec(self):
+        process = subprocess.Popen(['/bin/bash', '-c', 'read _; exec sleep 30'], stdin=subprocess.PIPE, text=True)
+        self.addCleanup(lambda: process.poll() is None and process.kill())
+        before = run('identity', process.pid)
+        self.assertEqual(before.returncode, 0, before.stderr)
+        process.stdin.write('go\n'); process.stdin.close()
+        self.assertTrue(wait_until(lambda: 'sleep' in subprocess.run(['/bin/ps', '-p', str(process.pid), '-o', 'comm='],
+                                                                      stdout=subprocess.PIPE, text=True).stdout, 5))
+        after = run('identity', process.pid)
+        self.assertEqual((after.returncode, after.stdout), (0, before.stdout))
+        self.assertTrue(before.stdout.strip())
+
+    def test_identity_of_a_dead_pid_fails(self):
+        process = subprocess.Popen(['/usr/bin/true']); process.wait()
+        self.assertEqual(run('identity', process.pid).returncode, 1)
+
+    def test_a_matching_record_stops_a_term_ignoring_harness_after_the_grace(self):
+        process = self.session("trap '' TERM; exec sleep 120")
+        time.sleep(0.3)
+        ident = guard.identity(process.pid)
+        with tempfile.TemporaryDirectory() as tmp:
+            record = self.record(tmp, process.pid, ident)
+            started = time.monotonic()
+            result = run('stop', record)
+            self.assertEqual((result.returncode, result.stdout.strip()), (0, '1'), result.stderr)
+            self.assertGreaterEqual(time.monotonic() - started, guard.TERM_WAIT_S - 0.5)
+            self.assertFalse(record.exists())
+        self.assertTrue(wait_until(lambda: self.gone(process), 5))
+        self.assertEqual(process.returncode, -signal.SIGKILL)
+
+    def test_a_reused_pid_is_left_alone(self):
+        process = self.session('exec sleep 120')
+        with tempfile.TemporaryDirectory() as tmp:
+            record = self.record(tmp, process.pid, 'Thu Jan  1 00:00:00 1970')
+            result = run('stop', record)
+            self.assertEqual((result.returncode, result.stdout.strip()), (0, '0'), result.stderr)
+            self.assertFalse(record.exists())
+        time.sleep(0.3)
+        self.assertIsNone(process.poll())
+
+    def test_a_pid_recorded_before_setsid_is_signalled_alone(self):
+        # The leader's group also holds the recorded child, which is not a group leader yet:
+        # only that child may be signalled, never the group it still shares.
+        leader = self.session('sleep 120 >/dev/null 2>&1 </dev/null & echo $!; exec sleep 120')
+        child = int(leader.stdout.readline())
+        self.addCleanup(lambda: alive(child) and os.kill(child, signal.SIGKILL))
+        self.assertEqual(os.getpgid(child), leader.pid)
+        with tempfile.TemporaryDirectory() as tmp:
+            record = self.record(tmp, child, guard.identity(child))
+            result = run('stop', record)
+            self.assertEqual((result.returncode, result.stdout.strip()), (0, '1'), result.stderr)
+            self.assertFalse(record.exists())
+        # The leader exec'd a sleep that never waits for it, so the child stays a zombie.
+        self.assertTrue(wait_until(lambda: running(child) is False, 5))
+        self.assertIsNone(leader.poll())
+
+    def test_a_dead_leaders_group_is_reaped(self):
+        # The harness exited but its background job lives on in its group.
+        leader = self.session('sleep 120 >/dev/null 2>&1 </dev/null & echo $!')
+        orphan = int(leader.stdout.readline())
+        self.addCleanup(lambda: alive(orphan) and os.kill(orphan, signal.SIGKILL))
+        ident = 'recorded while it ran'
+        leader.wait(timeout=30)
+        with tempfile.TemporaryDirectory() as tmp:
+            record = self.record(tmp, leader.pid, ident)
+            result = run('stop', record)
+            self.assertEqual((result.returncode, result.stdout.strip()), (0, '1'), result.stderr)
+            self.assertFalse(record.exists())
+        self.assertTrue(wait_until(lambda: not alive(orphan), 5))
+
+    def test_a_missing_or_malformed_record_prints_zero(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(run('stop', Path(tmp) / 'none').stdout.strip(), '0')
+            bad = Path(tmp) / 'bad'; bad.write_text('not a pid\n')
+            self.assertEqual(run('stop', bad).stdout.strip(), '0')
+            self.assertFalse(bad.exists())
+        self.assertEqual(run('stop').returncode, 2)
+        self.assertEqual(run('identity').returncode, 2)
 
 
 if __name__ == '__main__':

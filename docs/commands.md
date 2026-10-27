@@ -16,7 +16,7 @@ harness (`/forge`); this command installs forge and drives its optional tools.
 | `forge version [--check]` | the installed version, and whether a newer release is out |
 | `forge fractal …` | opt-in Fractal execution; see [the command group](fractal.md#forge-fractal-command-group) |
 | `forge runs [--repo DIR \| --all] [--limit N] [--json]` | this repo's recent runs, newest first: run id, kind, age, task states, verification and final review, goal, and the run dir. Read-only; the same summaries forge-ui shows |
-| `forge control show\|set\|pin\|unpin PLAN_DIR …` | change a live plan: `set` takes `qa-threshold`, `timeout`, `escalate-after`, `verify-retries`, `retry-budget` or `infra-retries` (the last two only while a scheduler runs; `--task ID` for `qa-threshold` and `retry-budget`, value `inherit` drops the override); `pin PLAN_DIR TASK SPEC` sets the model the task's next full retry uses once, `unpin` drops it; `--json`. Every change is logged in `control.log`. See [live controls](decomposed-runs.md#changing-a-run-while-it-works) |
+| `forge control show\|set\|pin\|unpin\|drain\|resume\|stop\|retry\|add PLAN_DIR …` | change a live plan: `set` takes `qa-threshold`, `timeout`, `escalate-after`, `escalate-effort` (`on`/`off`), `verify-retries`, `infra-backoff` (a backoff shape; `none` drops it), `retry-budget`, `infra-retries` or `max-parallel` (1-64) (the last three only while a scheduler runs; `--task ID` for `qa-threshold` and `retry-budget`, value `inherit` drops the override); `pin PLAN_DIR TASK SPEC` sets the model the task's next full retry uses once, `unpin` drops it. While a scheduler runs: `drain` starts nothing new until `resume` (a run with nothing left to start ends as usual); `stop [--now]` ends the run once the running tasks finish (`--now` interrupts them; `run` exits 130 without verifying, unless every task had merged by then: it then verifies and exits 0 as usual); `retry PLAN_DIR TASK [--dwarf SPEC]` and `add PLAN_DIR TASK` (a row appended to `tasks.tsv`) queue a request the scheduler applies or refuses. `show` (`--json` for JSON) also says whether the run is drained or stopping and lists its infrastructure pauses. Every change and every request's outcome is logged in `control.log`. Exit 2 invalid input, 3 refused. See [live controls](decomposed-runs.md#changing-a-run-while-it-works) |
 | `forge config show [--repo DIR] [--json]` / `forge config set <key> <value> --repo DIR [--json]` / `forge config unset <key> --repo DIR [--json]` | one view of every config source (registry, Jev, the repo's `.forge/verify`, `setup` and `verify-subset`, dataset, `FORGE_*` variables with secrets hidden); `set KEY VALUE` / `unset KEY` edit `repo.verify`, `repo.setup`, `repo.verify-subset` (must contain `{files}`) and, for `set`, `jev.enabled true\|false` (that one does not need `--repo`). `-` as a value reads stdin. Exit 2 on invalid input |
 | `forge runs rm RUN_DIR [--dry-run] [--yes] [--no-archive] [--worktrees] [--branches] [--json]` | delete a run directory but keep what it taught the dataset; see [below](#forge-runs-rm) |
 | `forge issues RUN [--apply] …` | file the review findings a run left open as GitHub issues; see [below](#forge-issues) |
@@ -191,7 +191,12 @@ forge-dispatch.sh dwarf   <spec> --prompt-file <f> [--repo <dir>] [--run-dir <d>
 forge-dispatch.sh qa      <spec> --prompt-file <f> [--repo <dir>] [--run-dir <d>] [--yolo] [--dry-run]
                                  [--native-review [--review-base <ref>]]
 forge-dispatch.sh planner <spec> --prompt-file <f> [--repo <dir>] [--run-dir <d>] [--dry-run]
+forge-dispatch.sh efforts --spec <spec>
 ```
+
+`efforts` prints the efforts the spec's pairing accepts, weakest first, one per line (nothing
+when the pairing has no effort dial); a literal model id with a harness takes that harness's
+whole ladder. It never dispatches and spends no quota. The retry policy's effort step reads it.
 
 | Option | Meaning |
 |---|---|
@@ -210,7 +215,7 @@ forge-dispatch.sh planner <spec> --prompt-file <f> [--repo <dir>] [--run-dir <d>
 `8` an **infrastructure failure** (quota or usage limit, auth, rate limit, network, or an
 empty answer) — nothing about the work was judged, so callers pause instead of counting a
 failure. On `8`, `<run-dir>/<role>.infra` holds `class=`, `retry_after=`, `detail=`, `rc=`,
-`role=`.
+`role=`, `harness=`, `model=`.
 
 **Timeout precedence.** An explicit `--timeout`, then `FORGE_TIMEOUT` (an explicit `0` wins
 and disables the watchdog), then the optional fifth `timeout` column of the model's
@@ -328,15 +333,21 @@ forge-parallel.sh plan      <plan-dir> --repo <dir> [routing flags] [--planner <
                                      [--reviewer-session | --no-reviewer-session]
                                      [--explore E] [--ui | --no-ui] [--fail-first | --no-fail-first]
 forge-parallel.sh run       <plan-dir> [--max-parallel N] [--yolo-dwarf] [--yolo-qa] [--dry-run]
-                                     [--verify <cmd>] [--setup <cmd>] [--timeout S]
-                                     [--retry-failed N] [--infra-retries M]
+                                     [--verify <cmd> | --verify-lane 'name[opts]=cmd' ...]
+                                     [--verify-parallel N] [--setup <cmd>] [--timeout S]
+                                     [--retry-failed N] [--infra-retries M] [--infra-backoff SHAPE]
+                                     [--infra-fallback | --no-infra-fallback]
                                      [--qa-threshold P0|P1|P2|P3|none] [--verify-retries N]
+                                     [--escalate-after N] [--escalate-effort | --no-escalate-effort]
                                      [--fractal | --no-fractal] [--fractal-<limit> <n>]
 forge-parallel.sh retry     <plan-dir> <task-id> [--dwarf <spec>] [--timeout S]
                                      [--qa-threshold Pn|none] [--verify-retries N]
+                                     [--verify <cmd> | --verify-lane 'name[opts]=cmd' ...] [--verify-parallel N]
+                                     [--escalate-after N] [--escalate-effort | --no-escalate-effort]
 forge-parallel.sh accept    <plan-dir> <task-id> --reason "<why>" --approved
 forge-parallel.sh review    <plan-dir> [--qa <spec>] [--yolo-qa] [--qa-threshold Pn]
 forge-parallel.sh integrate <plan-dir> --approved [--final-review <qa-spec>] [--verify-retries N]
+                                     [--verify-parallel N]
 forge-parallel.sh split     <plan-dir> <new-plan-dir> --tasks <id,id> [--dry-run]
 forge-parallel.sh combine   <new-plan-dir> <plan-dir> <plan-dir>... [--verify <cmd>] [--dry-run]
 ```
@@ -355,16 +366,43 @@ forge-parallel.sh combine   <new-plan-dir> <plan-dir> <plan-dir>... [--verify <c
 |---|---|---|---|
 | `--timeout S` | run, retry | `timeout` | per-dispatch timeout in seconds (`0` disables); wins over `FORGE_TIMEOUT` |
 | `--retry-failed N` | run | no — this run only | re-queue a task the reviewer rejected up to `N` more times inside the run |
-| `--infra-retries M` | run | no — this run only | wait out up to `M` infrastructure stops instead of pausing |
+| `--infra-retries M` | run | no — this run only | wait out up to `M` infrastructure stops per paused scope (a model, a harness, or everything) instead of ending the run |
+| `--infra-backoff SHAPE` | run | `infra_backoff` | the waits between those stops when the provider gave no retry-after: `exp:B[,C]`, `linear:S,T[,C]` or `list:a,b,...` in seconds (default `exp:60`) |
+| `--infra-fallback` | run | `infra_fallback` | a dwarf stopped by a rate limit moves to the next healthy model of its tier pool instead of waiting (off by default; `--no-infra-fallback` turns it off) |
 | `--qa-threshold Pn` | run, retry | `qa_threshold` | least severe finding that still blocks; milder ones become known issues; `none` clears |
-| `--verify-retries N` | run, retry, integrate | `verify_retries` | reruns of a failed verify command (default `1`, `0` = strict single run) |
+| `--verify-retries N` | run, retry, integrate | `verify_retries` | reruns of a failed verify command, or of each failed lane (default `1`, `0` = strict single run) |
+| `--verify-lane 'name[opts]=cmd'` | run, retry | `verify.d/<name>` | one verification lane; repeatable. Options as in a lane file, comma-separated (`group=g`, `first`, `retries=n`, `reports=dir`, `baseline=file`). The first one of an invocation replaces the plan's earlier lanes and `--verify`; see [verification lanes](../references/decompose.md#execution-checks-and-integration-verification) |
+| `--verify-parallel N` | run, retry, integrate | `verify_parallel` | lanes run at once, 1 to 32 (default `3`) |
+| `--escalate-after N` | run, retry | `escalate_after` | failed attempts on one model before the next goes a tier up (default `3`, `0` = off) |
+| `--escalate-effort` | run, retry | `escalate_effort` | at the top tier, retry the same model once more at its next accepted effort before stopping (off by default; `--no-escalate-effort` turns it off) |
 
 **Exit codes:** `0` ok · `2` usage or validation · `3` precondition (not a git repo, …) ·
 `5` some task failed QA, or the combined verification failed · `6` integration conflict ·
 `8` **paused on an infrastructure failure** (quota, auth, rate limit, network): no attempt was
-spent and nothing was judged — fix the cause and run the same command again.
+spent and nothing was judged — fix the cause and run the same command again ·
+`130` **interrupted or stopped** (a signal, or `forge control stop`): the running tasks are
+`INTERRUPTED` and verification was skipped or stopped; the summary prints the `retry` for each.
 
 The full plan → run → integrate walkthrough is in [decomposed runs](decomposed-runs.md#plan-run-integrate). `retry`, `accept` and `review` are covered in [reviews, retries and recovery](reviews.md); resuming, `split`/`combine`, scope drift and `tasks.tsv` in [decomposed runs](decomposed-runs.md).
+
+## `scripts/forge-verify.py`
+
+The verification lane runner `run`, `retry` and `integrate` use when lanes are declared. You can
+run it by hand to check or try a lanes directory:
+
+```
+forge-verify.py lanes --lanes-dir DIR [--checkout DIR] [--json]
+forge-verify.py run   --checkout DIR --out DIR --lanes-dir DIR [--parallel N] [--retries N]
+                      [--fingerprint-cmd CMD]
+```
+
+`lanes` lists the lanes with their options and checks them (with `--checkout`, also that
+`reports=` and `baseline=` stay inside it and the baseline exists). `run` runs them in the
+checkout as a forge run does and writes `verification.lanes.json`, `verification.runs.tsv` and
+the per-lane logs into `--out` (`--parallel` default 3, `--retries` default 1).
+
+**Exit codes:** `0` every lane passed and the tree is unchanged · `1` a lane failed, or the tree
+changed · `2` configuration error (nothing ran) · `130` interrupted.
 
 ## `scripts/forge-memory.sh` and `scripts/forge-install.sh`
 

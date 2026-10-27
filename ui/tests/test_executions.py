@@ -307,9 +307,9 @@ class ExecutionTests(FixtureCase):
         self.assertEqual(data['verification']['commit'], 'b' * 40)
         self.assertEqual(data['verification']['runs'], [
             {'n': 1, 'kind': 'initial', 'exit': 1, 'tree_changed': False, 'duration_s': 30.0,
-             'log': 'verification.run-1.log'},
+             'log': 'verification.run-1.log', 'lane': None, 'started': None},
             {'n': 2, 'kind': 'rerun', 'exit': 0, 'tree_changed': False, 'duration_s': 28.5,
-             'log': 'verification.run-2.log'}])
+             'log': 'verification.run-2.log', 'lane': None, 'started': None}])
         self.assertEqual(data['deferrals'], ['wave 1: docs deferred (file overlap with a task already in this wave)'])
         self.assertTrue(data['findings_available'])
         self.assertEqual(data['warnings'], [])
@@ -321,7 +321,8 @@ class ExecutionTests(FixtureCase):
         data = detail(self.plan)
         self.assertEqual(data['verification']['runs'][2], {'n': 4, 'kind': 'jev_retry', 'exit': None,
                                                            'tree_changed': True, 'duration_s': 2.0,
-                                                           'log': 'verification.run-4.log'})
+                                                           'log': 'verification.run-4.log', 'lane': None,
+                                                           'started': None})
         self.assertEqual(len(data['verification']['runs']), 3)
         self.assertEqual(sum('verification.runs.tsv line' in warning for warning in data['warnings']), 4)
         self.assertIsNone(data['settings']['max_parallel'])

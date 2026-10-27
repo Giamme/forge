@@ -94,7 +94,7 @@ review_warn_unmerged() { # review_warn_unmerged <plan>
 #   notes  what forge observed that no per-task reviewer was shown
 review_context() { # review_context <pre|notes> <plan> <tasks.summary> <verification-dir>
   python3 - "$1" "$2" "$3" "$4" "$REVIEW_REQ_BUDGET" <<'PY'
-import os, re, sys
+import json, os, re, sys
 
 mode, plan, summary, vdir, budget = sys.argv[1:6]
 BUDGET = int(budget)
@@ -195,13 +195,32 @@ else:
              'A promise of later work means a check may never have run.')
     ver = []
     status = read(os.path.join(vdir, 'verification.status'))
+    lanes = None
+    try:
+        doc = json.loads(read(os.path.join(vdir, 'verification.lanes.json')) or b'null')
+        lanes = [l for l in doc.get('lanes') or [] if isinstance(l, dict) and l.get('name')]
+    except (ValueError, AttributeError):
+        pass
     if status and status.strip():
         ver.append('status: %s' % text(status))
         cmd = read(os.path.join(vdir, 'verification.command'))
-        if cmd and cmd.strip():
+        if lanes is not None:
+            # Lanes: each one's state; a flaky lane passed only on its rerun, a known lane failed
+            # only tests the project's baseline lists.
+            ver.append('lanes (each ran on its own; a failed lane was rerun alone):')
+            for l in lanes:
+                ver.append('  %s: %s' % (l['name'], l.get('state') or 'unknown'))
+            by = lambda state: [l['name'] for l in lanes if l.get('state') == state]
+            if by('fail'):
+                ver.append('failed: ' + ', '.join('lane ' + n for n in by('fail')))
+            for n in by('flaky'):
+                ver.append('FLAKY: lane %s failed once and passed on rerun, so its pass is not clean' % n)
+            for n in by('known'):
+                ver.append('known failures only: lane %s (every failing test is in its baseline)' % n)
+        elif cmd and cmd.strip():
             ver.append('command: %s' % text(cmd))
     flaky = read(os.path.join(vdir, 'verification.flaky'))
-    if flaky and flaky.strip():
+    if flaky and flaky.strip() and lanes is None:
         ver.append('FLAKY: the command failed once and passed on rerun, so the pass is not clean:')
         ver += ['  ' + l for l in text(flaky).splitlines() if not l.startswith(('first_log=', 'retry_log='))]
     cover = read(os.path.join(vdir, 'verification.coverage.txt'))

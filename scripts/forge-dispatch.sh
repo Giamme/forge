@@ -13,6 +13,14 @@
 #                                  (claude, openclaude, codex; custom prompt only)
 #   any role: [--no-ripwire] [--ripwire-query-file <requirements>]
 #   any role: [--timeout <seconds>]   0 disables the watchdog
+#   forge-dispatch.sh efforts --spec <spec>
+#                                  the efforts this pairing accepts, weakest first, one per
+#                                  line. Prints nothing when the pairing has no ladder or no
+#                                  effort dial. A literal model id (an alias with no row for the
+#                                  named harness) takes its harness's whole ladder, as on a
+#                                  dispatch. Exit 2 for an alias the registry does not know when
+#                                  no harness is named. Never dispatches, never needs the
+#                                  harness installed, and never writes a file.
 #
 # Timeout precedence: --timeout, then FORGE_TIMEOUT (both used as given, 0 included),
 #   then the registry row's optional 5th `timeout` column, then the built-in 2700 (45m).
@@ -103,6 +111,61 @@ known_harness() {
   case "$1" in codex|claude|openclaude|opencode|antigravity|grok) return 0 ;; *) return 1 ;; esac
 }
 
+# Read-only listing of the efforts a pairing accepts. Resolves alias, default harness and the
+# effort column the same way a dispatch does, then prints. No harness binary, no run dir.
+efforts_cmd() { # efforts_cmd --spec <spec>
+  if [ "${1:-}" != --spec ] || [ $# -ne 2 ]; then
+    die "usage: forge-dispatch.sh efforts --spec <spec>"
+  fi
+  local SPEC="$2" ALIAS="" REST="" H="" HARNESS="" ROW="" MODEL="" CEILING="" timeout=""
+  local LADDER="" ALLOWED="" top="" w="" pad=""
+  ALIAS="${SPEC%%:*}"
+  REST="${SPEC#*:}"
+  if [ "$REST" = "$SPEC" ]; then HARNESS=""
+  else
+    H="${REST#*:}"
+    if [ "$H" = "$REST" ]; then HARNESS=""; else HARNESS="$H"; fi
+  fi
+  [ -n "$ALIAS" ] || die "empty alias in spec '$SPEC'"
+  if [ -n "$HARNESS" ] && ! known_harness "$HARNESS"; then
+    die "unknown harness '$HARNESS' (expected codex, claude, openclaude, opencode, antigravity or grok)"
+  fi
+  ROW="$(lookup "$ALIAS" "$HARNESS")"
+  if [ -z "$ROW" ]; then
+    # As on a dispatch: with a harness named, an alias with no row for it is a literal model
+    # id with no ceiling; with none named, an alias the registry does not know is an error.
+    [ -n "$HARNESS" ] || die "'$ALIAS' is not a known alias"
+    CEILING="-"
+  else
+    IFS=$'\t' read -r HARNESS MODEL CEILING timeout <<< "$ROW"
+  fi
+  LADDER="$(ladder_for "$HARNESS")"
+  [ -n "$LADDER" ] || exit 0          # opencode and anything else with no effort dial
+  case "$CEILING" in
+    none) exit 0 ;;
+    -)  # no ceiling: a dispatch takes any word of the harness's ladder
+      for w in $LADDER; do printf '%s\n' "$w"; done
+      ;;
+    "<="*)
+      top="${CEILING#<=}"
+      for w in $LADDER; do
+        printf '%s\n' "$w"
+        [ "$w" = "$top" ] && break
+      done
+      ;;
+    *)
+      # The list form, weakest first in ladder order. A listed word the ladder does not know
+      # is not printed: a dispatch at it stops with "invalid effort".
+      ALLOWED="$(printf '%s' "$CEILING" | tr ',' ' ')"
+      pad=" $ALLOWED "
+      for w in $LADDER; do
+        case "$pad" in *" $w "*) printf '%s\n' "$w" ;; esac
+      done
+      ;;
+  esac
+  exit 0
+}
+
 # --- doctor -------------------------------------------------------------------
 doctor() {
   local rc=0 h bin
@@ -127,7 +190,8 @@ EOT
   return $rc
 }
 
-[ $# -ge 1 ] || die "usage: forge-dispatch.sh <doctor|dwarf|qa|planner> [spec] [options]"
+[ $# -ge 1 ] || die "usage: forge-dispatch.sh <doctor|dwarf|qa|planner|efforts> [spec] [options]"
+if [ "$1" = efforts ]; then shift; efforts_cmd "$@"; exit $?; fi
 ROLE="$1"; shift
 if [ "$ROLE" = report ]; then python3 "$RUNTIME" report "${1:?report needs a run directory}"; exit $?; fi
 PREFLIGHT=0
@@ -317,7 +381,7 @@ write_continue() { :; }   # redefined below once there is an attempt to archive 
 ATTEMPT=""
 if [ "$PREFLIGHT" != 1 ] && [ "$DRY" != 1 ]; then
   ATTEMPT="$(python3 "$RUNTIME" begin "$RUN_DIR" "$ROLE")" || exit 3
-  rm -f "$RUN_DIR/$ROLE.last" "$RUN_DIR/$ROLE.log" "$RUN_DIR/$ROLE.resolved" "$RUN_DIR/$ROLE.cmd" "$RUN_DIR/$ROLE.timedout" "$RUN_DIR/$ROLE.infra" "$RUN_DIR/$ROLE.orphans" "$RUN_DIR/$ROLE.session" "$RUN_DIR/$ROLE.continue"
+  rm -f "$RUN_DIR/$ROLE.last" "$RUN_DIR/$ROLE.log" "$RUN_DIR/$ROLE.resolved" "$RUN_DIR/$ROLE.cmd" "$RUN_DIR/$ROLE.timedout" "$RUN_DIR/$ROLE.infra" "$RUN_DIR/$ROLE.orphans" "$RUN_DIR/$ROLE.session" "$RUN_DIR/$ROLE.continue" "$RUN_DIR/$ROLE.harness"
   trap 'exit 143' TERM
   trap 'exit 130' INT
   # GUARD_ON is 1 only when the harness was started in its own process group (see the
@@ -334,6 +398,7 @@ if [ "$PREFLIGHT" != 1 ] && [ "$DRY" != 1 ]; then
       python3 "$GUARD" reap "$hpid" "$RUN_DIR/$ROLE.orphans" >/dev/null 2>&1
     fi
     if [ -n "${wpid:-}" ]; then pkill -P "$wpid" 2>/dev/null; kill "$wpid" 2>/dev/null; fi
+    rm -f "$RUN_DIR/$ROLE.harness"
   }
   # What the EXIT trap's `finish` archives. Pessimistic until an outcome is known, so every
   # path out of a continue request (a signal, a usage error after this point) leaves a record.
@@ -661,7 +726,7 @@ fi
 # when a stale $LAST is already there. That is harmless when each run gets a fresh
 # run-dir, and silently wrong for `forge-parallel.sh retry`, which reuses the task
 # directory — it would read the first attempt's result and never notice.
-rm -f "$LAST" "$LOG" "$RUN_DIR/$ROLE.timedout" "$RUN_DIR/$ROLE.infra" "$RUN_DIR/$ROLE.orphans"
+rm -f "$LAST" "$LOG" "$RUN_DIR/$ROLE.timedout" "$RUN_DIR/$ROLE.infra" "$RUN_DIR/$ROLE.orphans" "$RUN_DIR/$ROLE.harness"
 python3 "$RUNTIME" phase "$ATTEMPT" model
 t0="$(date +%s)"
 # Process-group guard. A dwarf that starts `npm test &` and ends its turn leaves that
@@ -683,6 +748,17 @@ else
   ( cd "$REPO" && exec "${RUNCMD[@]}" </dev/null ) > "$LOG" 2>&1 &
 fi
 hpid=$!
+# The harness leads its own session, so a scheduler's signal to this dispatch's group never
+# reaches it; only the EXIT trap below does. Record it for the scheduler's backstop
+# (forge-guard.py stop) in case this dispatch dies before the trap finishes. The start time
+# tells the pid apart from a later reuse, and survives the exec chain $! still goes through.
+if [ "$GUARD_ON" = 1 ]; then
+  hident="$(python3 "$GUARD" identity "$hpid" 2>/dev/null)" || hident=""
+  if [ -n "$hident" ]; then
+    printf '%s\t%s\n' "$hpid" "$hident" > "$RUN_DIR/.$ROLE.harness.tmp" \
+      && mv -f "$RUN_DIR/.$ROLE.harness.tmp" "$RUN_DIR/$ROLE.harness"
+  fi
+fi
 
 # Watchdog. Only antigravity has a time bound of its own, and `timeout` is not
 # present on stock macOS, so without this a hung backend blocks forever — and under
@@ -725,6 +801,7 @@ if [ "$GUARD_ON" = 1 ]; then
   case "$orphans_found" in ''|*[!0-9]*|0) ;; *) note "$HARNESS left $orphans_found process(es) running after it exited; killed — see $RUN_DIR/$ROLE.orphans" ;; esac
 fi
 reaped=1
+rm -f "$RUN_DIR/$ROLE.harness"
 python3 "$RUNTIME" phase "$ATTEMPT" finalization
 DURATION=$(( $(date +%s) - t0 ))
 echo "duration_s=$DURATION" >> "$RUN_DIR/$ROLE.resolved"

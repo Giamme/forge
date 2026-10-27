@@ -559,10 +559,11 @@ window.ForgePanel = (() => {
     head.append(el('h2', 'Verification'), el('div', 'finish', 'insp-kind'), chip(v && v.status || 'pending'));
     host.append(head);
     if (!v) { muted(host, 'Verification has not run: it runs after every task is merged into the integration branch.'); return; }
+    if (window.ForgeVerify) window.ForgeVerify.render(host, ctx);     // live state, lanes and failing tests
     fields(host, [['Command', v.command, true], ['Commit', v.commit, true]]);
     if (list(v.runs).length) {
       const ul = el('ul', undefined, 'plain');
-      for (const r of v.runs) ul.append(el('li', `#${display(r.n)} ${display(r.kind)} · exit ${display(r.exit)} · ${RM.fmtDur(r.duration_s)}${r.tree_changed ? ' · changed the tree' : ''}`));
+      for (const r of v.runs) ul.append(el('li', `#${display(r.n)} ${display(r.kind)}${r.lane ? ' · ' + r.lane : ''} · exit ${display(r.exit)} · ${RM.fmtDur(r.duration_s)}${r.tree_changed ? ' · changed the tree' : ''}`));
       section(host, 'Runs').append(ul);
     }
     for (const x of list(run.timeline && run.timeline.verifications)) { const s = { kind: 'execution', task: null, exec: x.id }; host.append(el('p'), link(`Timings of the verification started ${time(x.started)} →`, ctx.hash(s), () => ctx.onSelect(s))); }

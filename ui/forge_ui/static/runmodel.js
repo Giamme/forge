@@ -287,7 +287,9 @@
     return {
       integration: { status: integrationStatus(tasks.map(t => t.status)),
         merged, total: tasks.length, base: ig && ig.base || null, accepted: ig && ig.accepted || null },
-      verification: { status: v && v.status ? String(v.status).toUpperCase() : 'PENDING', command: v && v.command || null, runs: list(v && v.runs).length },
+      verification: { status: v && v.state === 'running' ? 'RUNNING' : v && v.status ? String(v.status).toUpperCase() : 'PENDING',
+        command: v && v.command || null, runs: list(v && v.runs).length, mode: v && v.mode === 'lanes' && list(v.lanes).length ? 'lanes' : 'single',
+        lanes: list(v && v.lanes).map(l => ({ name: l.name, state: l.state })), reruns: list(v && v.runs).filter(r => r.kind !== 'initial').length },
       final: { status: !frObj ? (run.settings && run.settings.final_qa ? 'PENDING' : 'NONE') : finalStatus(frObj),
         requested: !!(fr || run.settings && run.settings.final_qa), spec: frObj && frObj.spec || run.settings && run.settings.final_qa || null, findings: frObj && frObj.findings || null,
         count: list(run.final_reviews).length,
@@ -475,20 +477,68 @@
     }
     return items;
   }
+  // A verification run's status: exit 0 passed, any other exit failed, no exit is RUNNING while it runs and UNKNOWN after.
+  const runStatus = (exit, running) => exit === 0 ? 'PASS' : num(exit) !== null ? 'FAIL' : running ? 'RUNNING' : 'UNKNOWN';
+  const LANE_STATUS = { flaky: 'FLAKY', known: 'KNOWN' };
+  // The finish rows' verification items, each with its `row`: in lanes mode a row per lane of the newest verification,
+  // one item per run of it (the newest verification's earlier executions stay boxes on a VERIFY row); in single mode
+  // the newest verification split into its runs, back to back from its start (`approx`: the execution also covers
+  // discovery and fingerprinting, and a run's duration its fingerprint), else one box per execution.
+  function verifyItems(run, now) {
+    const v = run && run.verification, execs = list(run && run.timeline && run.timeline.verifications).filter(e => num(e.started) !== null);
+    const newest = execs.reduce((a, e) => !a || e.started >= a.started ? e : a, null);
+    const lanes = v && v.mode === 'lanes' ? list(v.lanes).filter(l => l && l.name) : [];
+    const out = [];
+    for (const e of execs) {
+      if (e === newest && lanes.length) continue;
+      const runs = e === newest ? list(v && v.runs) : [];
+      const running = e.state === 'running';
+      if (!runs.length) {
+        out.push({ id: e.id, kind: 'verification', row: 'verification', start: e.started, end: execEnd(e, now) || e.started,
+          status: running ? 'RUNNING' : e.exit_code === 0 ? 'PASS' : e.exit_code == null ? 'UNKNOWN' : 'FAIL', segs: [] });
+        continue;
+      }
+      let t = e.started;
+      runs.forEach((r, i) => {
+        const d = Math.max(0, num(r.duration_s) || 0), rerun = r.kind !== 'initial';
+        out.push({ id: `vrun:${e.id}:${r.n ?? i + 1}`, kind: 'verification', row: 'verification', exec: e.id, approx: true, rerun,
+          start: t, end: t + d, status: runStatus(num(r.exit), false), segs: [],
+          title: `verify · run ${r.n ?? i + 1}${rerun ? ' (' + String(r.kind).replace('_', ' ') + ')' : ''} · approximate placement` });
+        t += d;
+      });
+      // runs.tsv gains a row when a run ends: a verification still going is in a run that is not listed yet
+      if (running && num(now) !== null && now > t) out.push({ id: `vrun:${e.id}:now`, kind: 'verification', row: 'verification', exec: e.id, approx: true,
+        start: t, end: now, status: 'RUNNING', segs: [], title: 'verify · the current run · approximate placement' });
+    }
+    for (const l of lanes) {
+      const runs = list(l.runs);
+      runs.forEach((r, i) => {
+        const s = num(r.started); if (s === null) return;
+        const last = i === runs.length - 1, running = last && l.state === 'running' && num(r.ended) === null;
+        const end = num(r.ended) ?? (running && num(now) !== null ? Math.max(s, now) : s);
+        const status = last && LANE_STATUS[l.state] ? LANE_STATUS[l.state] : runStatus(num(r.exit), running);
+        const k = num(r.k) ?? i + 1, rerun = r.kind === 'rerun';
+        const notes = [l.group ? 'group ' + l.group : null, l.first ? 'runs first' : null].filter(Boolean);
+        out.push({ id: `vlane:${l.name}:${k}`, kind: 'verification', row: 'vlane:' + l.name, vlane: l.name, k, rerun, exec: newest ? newest.id : null,
+          start: s, end, running, status, segs: [], title: `verify · ${l.name} · ${rerun ? 'rerun ' + (k - 1) : 'run ' + k}${notes.length ? ' · ' + notes.join(' · ') : ''}` });
+      });
+    }
+    return { items: out, lanes: lanes.map(l => l.name) };
+  }
   // scale: {t0, t1} of a previous model, kept while every block still fits inside it, so a live run does not
   // change the time axis (and so every block) on each poll
   function execModel(run, { now = null, ghosts = true, maxParallel = null, scale = null } = {}) {
     const items = execItems(run, now);
     const cap = Math.max(1, num(maxParallel) || num(run && run.settings && run.settings.max_parallel) || 3);
-    const live = items.some(i => i.running) || list(run && run.tasks).some(t => t.status === 'RUNNING');
+    const live = items.some(i => i.running) || list(run && run.tasks).some(t => t.status === 'RUNNING')
+      || !!(run && run.verification && run.verification.state === 'running');
     const proj = ghosts && run && run.kind !== 'solo' ? projectSchedule(run, { now: now !== null ? now : undefined, maxParallel: cap }) : {};
     for (const [id, p] of Object.entries(proj)) if (p.ghost && p.start !== null) items.push({ id: 'ghost:' + id, task: id, ghost: true, start: p.start, end: p.end, status: 'PENDING', segs: [] });
-    const extra = [];
-    for (const v of list(run && run.timeline && run.timeline.verifications)) if (num(v.started) !== null) extra.push({ id: v.id, kind: 'verification', start: v.started, end: execEnd(v, now) || v.started, status: v.state === 'running' ? 'RUNNING' : v.exit_code === 0 ? 'PASS' : v.exit_code == null ? 'UNKNOWN' : 'FAIL', segs: [] });
+    const verify = verifyItems(run, now), extra = verify.items;
     for (const r of list(run && run.final_reviews)) {
       const s = num(r.started) ?? num(r.at); if (s === null) continue;
       const e = num(r.ended) ?? (r.state === 'running' && num(now) !== null ? now : s + 1);
-      extra.push({ id: 'review:' + r.name, kind: 'review', review: r.name, start: s, end: Math.max(s, e), status: r.state === 'running' ? 'RUNNING' : r.verdict || 'UNKNOWN', findings: r.findings || null, segs: [] });
+      extra.push({ id: 'review:' + r.name, kind: 'review', row: 'review', review: r.name, start: s, end: Math.max(s, e), status: r.state === 'running' ? 'RUNNING' : r.verdict || 'UNKNOWN', findings: r.findings || null, segs: [] });
     }
     const all = items.concat(extra);
     if (!all.length) return { items: [], extra: [], lanes: 0, cap, overLimit: false, t0: null, t1: null, k: 1, px: 900, py: 300, ruler: [], live, nowX: null };
@@ -515,13 +565,15 @@
     const x = t => EXEC_PAD + (t - t0) * k;
     for (const it of items) { it.x = x(it.start); it.w = Math.max(22, (it.end - it.start) * k); it.y = RULER + it.lane * LANE_D + (LANE_D - BLOCK_D) / 2; it.d = BLOCK_D; }
     const fy = RULER + lanes * LANE_D + 24;
-    const finishLanes = [['verification', 'VERIFY'], ['review', 'FINAL REVIEW']].filter(([k]) => extra.some(e => e.kind === k));
-    finishLanes.forEach(([kind], i) => extra.filter(e => e.kind === kind).forEach(e => { e.lane = 'f' + i; e.x = x(e.start); e.w = Math.max(22, (e.end - e.start) * k); e.y = fy + i * LANE_D + (LANE_D - BLOCK_D) / 2; e.d = BLOCK_D; }));
+    // finish rows: VERIFY (single-command verifications), a row per verification lane, FINAL REVIEW
+    const finishLanes = [['verification', 'verification', 'VERIFY', 'verify'], ...verify.lanes.map(n => ['vlane:' + n, 'verification', 'VERIFY · ' + n, 'verify · ' + n]),
+      ['review', 'review', 'FINAL REVIEW', 'final review']].filter(([row]) => extra.some(e => e.row === row));
+    finishLanes.forEach(([row], i) => extra.filter(e => e.row === row).forEach(e => { e.lane = 'f' + i; e.x = x(e.start); e.w = Math.max(22, (e.end - e.start) * k); e.y = fy + i * LANE_D + (LANE_D - BLOCK_D) / 2; e.d = BLOCK_D; }));
     const steps = [60, 300, 600, 900, 1800, 3600, 7200, 14400, 43200, 86400];
     const step = steps.find(s => span / s <= 10) || 86400;
     const ruler = [];
     for (let t = Math.ceil(t0 / step) * step; t <= t0 + span; t += step) ruler.push({ t, x: x(t), label: fmtDur(t - t0) });
-    return { items, extra, lanes, finishLanes: finishLanes.map(([k, name], i) => ({ kind: k, name, y: fy + i * LANE_D })), cap, overLimit: lanes > cap, t0, t1: t0 + span, k,
+    return { items, extra, lanes, finishLanes: finishLanes.map(([row, kind, name, label], i) => ({ kind, row, name, label, y: fy + i * LANE_D })), cap, overLimit: lanes > cap, t0, t1: t0 + span, k,
       px: EXEC_PAD * 2 + W, py: fy + finishLanes.length * LANE_D + 10, laneD: LANE_D, ruler, live, nowX: num(now) !== null && live ? x(now) : null, x };
   }
 
@@ -602,8 +654,36 @@
     const final = finalAt(run, last, t);
     const vs = list(run && run.timeline && run.timeline.verifications).filter(v => num(v.started) !== null && v.started <= t);
     const lv = vs.pop();
-    const verification = !lv ? 'PENDING' : num(lv.ended) !== null && lv.ended <= t ? (lv.exit_code === 0 ? 'PASS' : 'FAIL') : 'RUNNING';
-    return { t, tasks, final, verification, integration: integrationStatus(Object.values(tasks).map(s => s.status)) };
+    const verification = !lv ? 'PENDING' : num(lv.ended) !== null && lv.ended <= t ? runStatus(num(lv.exit_code), false) : 'RUNNING';
+    return { t, tasks, final, verification, lanes: lanesAt(run, t), integration: integrationStatus(Object.values(tasks).map(s => s.status)) };
+  }
+  // The finish node's verification LEDs: one per lane coloured by its state (at the replay time when `at` is
+  // stateAt's), else one per run of the command by its exit; a run with no exit is UNKNOWN, never FAIL.
+  const LED_STATE = { pass: 'PASS', fail: 'FAIL', running: 'RUNNING', flaky: 'FLAKY', known: 'KNOWN', interrupted: 'INTERRUPTED' };
+  function verifyLeds(run, at) {
+    const v = run && run.verification;
+    if (v && v.mode === 'lanes' && list(v.lanes).length) {
+      if (at && at.lanes) return at.lanes.map(l => l.status === 'PENDING' ? null : l.status);
+      return list(v.lanes).filter(l => l && l.name).map(l => LED_STATE[l.state] || null);
+    }
+    return list(v && v.runs).map(r => runStatus(num(r.exit), false));
+  }
+  // Each verification lane at time t (lanes mode, else null): PENDING before its first run, RUNNING during a run,
+  // between runs and after the last the status of the run that ended last, a flaky or known lane's own at its end.
+  function lanesAt(run, t) {
+    const v = run && run.verification;
+    if (!v || v.mode !== 'lanes' || !list(v.lanes).length) return null;
+    return list(v.lanes).filter(l => l && l.name).map(l => {
+      let status = 'PENDING';
+      const runs = list(l.runs);
+      runs.forEach((r, i) => {
+        const s = num(r.started), e = num(r.ended), last = i === runs.length - 1;
+        if (s === null || s > t) return;
+        if (e === null || e > t) { status = 'RUNNING'; return; }
+        status = last && LANE_STATUS[l.state] ? LANE_STATUS[l.state] : runStatus(num(r.exit), false);
+      });
+      return { name: l.name, status };
+    });
   }
   function timeRange(run, now) {
     const s = [], e = [];
@@ -618,6 +698,7 @@
     for (const m of list(run && run.integration && run.integration.merged)) if (num(m && m.at) !== null) e.push(m.at);
     for (const r of list(run && run.final_reviews)) { const v = num(r.started) ?? num(r.at); if (v !== null) s.push(v); if (num(r.ended) !== null) e.push(r.ended); }
     for (const v of list(run && run.timeline && run.timeline.verifications)) { if (num(v.started) !== null) s.push(v.started); if (num(v.ended) !== null) e.push(v.ended); }
+    for (const l of list(run && run.verification && run.verification.lanes)) for (const r of list(l && l.runs)) if (num(r && r.ended) !== null) e.push(r.ended);
     if (!s.length) return null;
     return { start: Math.min(...s), end: Math.max(...e, ...s) };
   }
@@ -777,6 +858,6 @@
 
   return { liveNow, runState, execStatus, matchRun, filterOptions, atlasModel, columns, planModel, finishState,
     finalStatus, runReviewStatus, reviewSinceLine, reviewAt, taskStatus, taskVerdict, attemptStatus, taskParts,
-    taskTimes, metricValue, overlap, projectSchedule, execModel, criticalPath, concurrency, stateAt, timeRange, events, lineage, structureKey, innerKey,
+    taskTimes, metricValue, overlap, projectSchedule, execModel, verifyLeds, criticalPath, concurrency, stateAt, timeRange, events, lineage, structureKey, innerKey,
     fmtDur, alias, basename, weight, searchIndex, searchRank, statusEvents, fractalTree };
 });

@@ -43,7 +43,9 @@ written), and the reader must never raise because of one.
 | `shadow_qa` | a comma list of specs |
 | `timeout` | seconds |
 | `verification.status` | `PASS`, `FAIL` or another word; `verification.command` the command; `verification.log` its output |
-| `verification.runs.tsv` | `n<TAB>kind<TAB>exit<TAB>tree_changed<TAB>duration_s<TAB>logfile` per run of the command; `kind` is `initial`, `rerun` or `jev_retry`, `exit` may be empty, `tree_changed` is `0` or `1` |
+| `verification.runs.tsv` | `n<TAB>kind<TAB>exit<TAB>tree_changed<TAB>duration_s<TAB>logfile` per run of the command; `kind` is `initial`, `rerun` or `jev_retry`, `exit` may be empty, `tree_changed` is `0` or `1`. A lanes verification adds `<TAB>lane<TAB>started` (an epoch) |
+| `verification.retry.log` | the output of a deterministic or Jev rerun of a single command |
+| `verification.lanes.json` | a lanes verification's live and final state, written by `scripts/forge-verify.py` (read up to 4 MB); `verification.lane.<name>.log` and `verification.lane.<name>.run-<k>.log` each lane's output |
 | `verification.commit` | one line, the commit verified |
 | `max_parallel`, `escalate_after`, `verify_retries` | one integer each |
 | `qa_threshold` | `P0`..`P3`, the least severe finding that still blocks; `final_qa` the final review's QA spec |
@@ -167,6 +169,7 @@ def execution_transcript(path, name, source='plan') -> dict | None # an Executio
 def fractal_detail(path, task_id, source='plan') -> dict | None    # a TaskFractal
 def fractal_node(path, task_id, node, source='plan') -> dict | None       # a FractalNodeDetail
 def fractal_node_diff(path, task_id, node, source='plan') -> dict | None  # a DiffDetail
+def verification_log(path, lane=None, k=None, first=None, retry=False, source='plan') -> dict | None  # a VerificationLog
 
 class Catalog:
     def __init__(self, plans=(), roots=(), registry=True, registry_dir=None): ...
@@ -178,7 +181,8 @@ class Catalog:
     def diff(self, key, task_id, which='current'), execution_diff(self, key, name),
         final_review_diff(self, key, name), files(self, key), findings(self, key), transcript(self, key, name),
         fractal(self, key, task_id),
-        fractal_node(self, key, task_id, node), fractal_node_diff(self, key, task_id, node) -> dict | None
+        fractal_node(self, key, task_id, node), fractal_node_diff(self, key, task_id, node),
+        verification_log(self, key, lane=None, k=None, first=None) -> dict | None
     def models(self) -> dict            # Models, over every run
     def locate(self, key) -> tuple[str, str] | None  # (run dir, 'plan' | 'solo'); None for an unknown key
 ```
@@ -225,6 +229,10 @@ its last 20,000 behind a leading `…`. Their `truncated` lists the field names 
 | `GET /api/runs/<key>/files` | `200 Files` |
 | `GET /api/runs/<key>/findings` | `200 RunFindings` |
 | `GET /api/runs/<key>/executions/<qa-or-dwarf>/transcript` | `200 ExecutionTranscript` |
+| `GET /api/runs/<key>/verification/log[/lines/<n>]` | `200 VerificationLog` of `verification.log`: its tail, or with `/lines/<n>` a range |
+| `GET /api/runs/<key>/verification/retry/log[/lines/<n>]` | `200 VerificationLog` of `verification.retry.log`, a single command's rerun |
+| `GET /api/runs/<key>/verification/lanes/<lane>/log[/lines/<n>]` | `200 VerificationLog` of `verification.lane.<lane>.log` |
+| `GET /api/runs/<key>/verification/lanes/<lane>/runs/<k>/log[/lines/<n>]` | `200 VerificationLog` of `verification.lane.<lane>.run-<k>.log` |
 | `GET /api/models` | `200 Models` |
 | `GET /api/health` | `200 {"app": "forge-ui", "version", "build", "pid", "controls": true\|false}`; `controls` is `false` in read-only mode |
 | `GET /api/runs/<key>/controls` | `200` the `forge control show --json` object of a plan run (see Controls); `404` for a solo or unknown run |
@@ -251,11 +259,14 @@ Fractal node endpoints for an unknown node or a task whose Fractal state is not 
 diff that is not there yet is a `200` with `available: false`. An execution is looked for only where executions are written:
 `attempts/`, `tasks/<id>/attempts/`, `shadow/<id>/<a>-<k>/attempts/`,
 `final-review-*/attempts/` and `integrate-*/final-review/attempts/`, in that order; a dir
-that resolves outside the run dir (a symlinked `attempts/`, say) is ignored.
+that resolves outside the run dir (a symlinked `attempts/`, say) is ignored. The verification
+log endpoints answer `404` for a solo run, a `<lane>` not matching `[A-Za-z0-9][A-Za-z0-9_-]{0,63}`
+(so no `..`), a `<k>` or `<n>` that is not a positive decimal without a leading zero, and a log
+that is missing, a symlink or not a regular file.
 
 JSON responses: `Content-Type: application/json; charset=utf-8`,
 `Cache-Control: no-store`. The page loads `style.css`, `runmodel.js`, `graph.js`, `gantt.js`,
-`panel.js`, `map3d.js` and `app.js` by those relative names, and `scene3d.js` and `iso.js`
+`verifyview.js`, `panel.js`, `map3d.js` and `app.js` by those relative names, and `scene3d.js` and `iso.js`
 (ES modules) only when the 3D view is used.
 
 Every response carries `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`
@@ -342,8 +353,14 @@ Every RunSummary field, plus:
                "final_qa": "opus"},
   "verification": {"status": "PASS", "command": "python3 -m unittest", "log_tail": "...",
                    "runs": [{"n": 1, "kind": "initial", "exit": 0, "tree_changed": false,
-                             "duration_s": 12.3, "log": "verification.run-1.log"}],
-                   "commit": "9c1e4b7a..."},
+                             "duration_s": 12.3, "log": "verification.lane.unit.run-1.log",
+                             "lane": "unit", "started": 1760622000.5}],
+                   "commit": "9c1e4b7a...",
+                   "state": "done", "mode": "lanes", "live": null, "mutated": false,
+                   "lanes": [VerificationLane, ...],
+                   "failing": [{"lane": "e2e", "name": "checkout.Pay.test_refund", "suite": "checkout",
+                                "file": "e2e.xml", "message": "expected 200, got 500", "excerpt": "...",
+                                "known": false, "log_line": 12}]},
   "waves": [["reader", "page", "graph"], ["server"], ["readme"]],
   "tasks": [Task, ...],
   "timeline": {"started": 1760620000.25, "ended": null, "runs": [Execution], "verifications": [Execution]},
@@ -369,7 +386,53 @@ Every RunSummary field, plus:
 - `verification` is `null` when none of `verification.status`, `.command`, `.log` exists. A
   solo run's `verification` is always `null`. `runs` comes from `verification.runs.tsv`
   (malformed rows are warned and skipped; an empty `exit` is `null`), `commit` is the first
-  line of `verification.commit` or `null`.
+  line of `verification.commit` or `null`. A run's lanes runs carry `lane` and `started`; a
+  single command's have `null` for both. A row of neither 6 nor 8 columns is warned and skipped.
+- `verification.state` is `running` when the run's newest `verification` execution (the newest
+  of `timeline.verifications`) is running, `done` when it has ended, and `null` when the run has
+  none. While it runs, `status` is `RUNNING`, whatever a `verification.status` left by an earlier
+  verification says.
+- `verification.mode` is `lanes` when `verification.lanes.json` exists and was written at or
+  after the newest verification execution started (or there is none), else `single`. A lanes file
+  an earlier verification left is not read.
+- `verification.live` is `null` unless `state` is `running`; then `{started, step, last_line,
+  last_output_at, idle_s, log}`. `started` is the execution's start. In `single` mode the live log is
+  whichever of `verification.log` and `verification.retry.log` was modified last: `step` is
+  `{name, started: null}` for the last `::forge step name=<x> state=start` in its last 64 KB
+  that no later `state=end` closed (a line holds no time), `last_line` its last non-empty line
+  without ANSI codes (at most 300 characters), and `last_output_at` its mtime. In `lanes` mode
+  they are the running lane's that printed last, with its recorded `step.started`. `idle_s` is
+  now minus `last_output_at` (minus `started` before any output). `log` names the live log in
+  `single` mode (`verification.log` or `verification.retry.log`; `null` before either exists) and is
+  `null` in `lanes` mode.
+- `verification.lanes` is `null` in `single` mode and when the lanes file is unreadable, not a
+  JSON object, has no `lanes` list or is over 4 MB (each warned; the request never fails). In
+  `lanes` mode it is every lane:
+
+  ```
+  VerificationLane = {"name": "e2e", "command": "npm run test:e2e", "group": "browser", "first": false,
+                      "retries": 2, "options": {"retries": 2, "reports": "reports"},
+                      "state": "fail", "exit": 1, "started": 1760622000.5, "ended": 1760622070.0,
+                      "duration_s": 69.5, "idle_s": null,
+                      "runs": [{"k": 1, "kind": "initial", "started": 1760622000.5, "ended": 1760622030.0,
+                                "exit": 1, "log": "verification.lane.e2e.run-1.log"}],
+                      "step": {"name": "browser", "started": 1760622010.0} | null,
+                      "last_line": "2 failed, 30 passed", "last_output_at": 1760622069.8,
+                      "log": "verification.lane.e2e.log",
+                      "tests": {"pass": 30, "fail": 2, "skip": 1, "error": 0, "failing": [...],
+                                "reports": ["e2e.xml"], "notes": [], "truncated": false} | null}
+  ```
+
+  `state` is one of `waiting running pass fail flaky known skipped interrupted`; `duration_s`
+  runs from `started` to `ended`, or to now while the lane runs; `idle_s` is now minus
+  `last_output_at` for a running lane, else `null`. `tests` is `null` when the lane wrote no
+  report; its `failing` holds at most 200 entries (`truncated` says more failed), a `message` at
+  most 500 characters and an `excerpt` at most 2,000; `log_line` is the 1-based line of the
+  lane's log that first names the test, or `null`.
+- `verification.failing` is every lane's `tests.failing`, in lane order, each with its `lane`:
+  at most 200 entries, `[]` in `single` mode.
+- `verification.mutated` is `true` when the checkout changed under the verification (the lanes
+  file's `mutated`, or in `single` mode a run with `tree_changed`): reruns after it were skipped.
 - `timeline.started` is the earliest `started` of every execution the detail shows (tasks
   and their shadows, the listed final reviews, the run's own); `ended` is the latest `ended`,
   or `null` while any of them is `running` or when none has ended. `runs` and
@@ -773,6 +836,30 @@ characters …` (`<key>_cut` holds n). A log over 32 MB is read from its end; pa
 4,000,000 characters the middle is left out (a `gap` event, `truncated: true`). Parses are kept by
 the log's `(path, size, mtime_ns)` and the session file's.
 
+## VerificationLog
+
+The run's own verification logs, read by path (an integration's lane logs are not served yet):
+
+```
+{"name": "verification.lane.e2e.log", "size": 220000, "mtime": 1760622070.0,
+ "tail": "line 14044\n...", "tail_first_line": 14044, "truncated": true}
+```
+
+`tail` is the file's last 64 KB, from the first line that starts inside them (when no line
+does, from the first whole character), decoded as UTF-8 with invalid bytes replaced.
+`tail_first_line` is the 1-based number of the tail's first line, found by counting the newlines
+before it, or `null` when that would read past 64 MB. `truncated` says the tail is not the whole
+file. With `/lines/<n>`:
+
+```
+{"name": "verification.log", "size": 11000, "first_line": 700, "lines": ["line 00700", ...],
+ "truncated": false}
+```
+
+up to 400 lines from line `n` (1-based), each without its line ending and cut to 4,000
+characters (ending `…`). Lines past the end give `lines: []`. `truncated` is `true` when more
+lines follow, a line was cut, or reaching them took more than 64 MB of reading.
+
 ## Files
 
 `GET /api/runs/<key>/files`: who planned, changed, drifted into or conflicted on each file.
@@ -942,13 +1029,15 @@ difficulty paths deps model` each), `decomposition_history` (its newest 20, each
   it (server.api_get): `/api/runs` (this run only), the RunDetail, every TaskDetail, every
   ExecutionDetail the RunDetail names, every FinalReviewDetail, Files, RunFindings, and the
   Fractal trees and nodes. With `texts=1` also every diff the page can open (each task's diff and its `sources`,
-  each final review's, each Fractal node's) and every `dwarf` and `qa` ExecutionTranscript (at most 2 MB each).
+  each final review's, each Fractal node's), every `dwarf` and `qa` ExecutionTranscript (at most 2 MB each),
+  and the VerificationLog tail of `verification.log`, of each lane's log and of each lane run's log
+  (under their tail paths; line ranges are not stored, so the page shows the tail).
 - `texts=0` (the default) nulls these keys wherever they hold a string, list or object: `prompt
   last request log_tail dwarf_tail qa_tail qa_last qa_input tasks_summary known_issues texts text
-  planning_last approach retry_findings dwarf_input error`, and stores no diff and no transcript. A
-  finding keeps its `summary`.
-- `paths=0` (the default) makes every string that is a whole absolute path (but `/api/…` and
-  `url`s) its last component, and replaces the run dir, the repo and the home dir inside other
+  planning_last approach retry_findings dwarf_input error last_line message excerpt tail lines`, and stores no
+  diff and no transcript. A finding keeps its `summary`, a failing test its `name`.
+- `paths=0` (the default) makes every string that is a whole absolute path (but `/api/…`, `url`s
+  and `command`s) its last component, and replaces the run dir, the repo and the home dir inside other
   strings with their last component (`~` for home).
 - At most 1 MB of JSON per diff and 25 MB in all; what did not fit is listed in `meta.omitted`
   (`path`, `bytes`, `why`). `meta`: `format` `forge-ui-export`, `version` 1, `app`, `key`,
@@ -1061,7 +1150,14 @@ for them only unknown keys and runs the catalog does not hold are `404`. Every w
 `forge control show <plan dir> --json`: `200` with its object (`plan`, `run_id`, `live`, `fractal`,
 `run` (the plan-wide controls), `tasks` (per task: `status`, `dwarf`, `qa`, `qa_threshold`,
 `retry_budget`, `retries_used`, `pin`, `escalation_stop`, `escalation_next`) and `log`). No token
-is needed to read it.
+is needed to read it. Of `run` the page also reads `max_parallel` (1–64 or `null`), `infra_backoff`
+(the shape, `exp:60` when unset), `escalate_effort` (`on`/`off`), `drained` and `stopping`
+(`graceful`, `now` or `null`) while live, and `infra_paused` while live: one
+`{scope, class, harness, model, tasks, cycle, until, exhausted}` per paused scope (`scope` is
+`all`, `harness:<h>` or `model:<h>/<m>`; `until` an epoch, `exhausted` true once its retries are
+spent). `log` is the newest `control.log` lines first; a scheduler's answer to a queued request
+is a line with `actor: "scheduler"`, the request's `request` id, `outcome` (`applied` or
+`refused`) and `reason`.
 
 ### `POST /api/runs/<key>/controls`
 
@@ -1076,10 +1172,22 @@ known or a spec runs is for the CLI to say (its `400` or `409` comes back as abo
 | `{"action": "set", "key": "retry-budget", "value": "inherit", "task": "reader"}` | `control set <dir> retry-budget inherit --task reader --actor ui --json` |
 | `{"action": "pin", "task": "graph", "spec": "sol:high:codex"}` | `control pin <dir> graph sol:high:codex --actor ui --json` |
 | `{"action": "unpin", "task": "graph"}` | `control unpin <dir> graph --actor ui --json` |
+| `{"action": "drain"}` | `control drain <dir> --actor ui --json` |
+| `{"action": "resume"}` | `control resume <dir> --actor ui --json` |
+| `{"action": "stop"}` (or `"now": false`) | `control stop <dir> --actor ui --json` |
+| `{"action": "stop", "now": true}` | `control stop <dir> --now --actor ui --json` |
+| `{"action": "retry", "task": "graph"}` | `control retry <dir> graph --actor ui --json` |
+| `{"action": "retry", "task": "graph", "dwarf": "sol:high:codex"}` | `control retry <dir> graph --dwarf sol:high:codex --actor ui --json` |
 
 `value` is always a string. `task` is optional on `set`, and only for the keys the CLI allows it
-for. A success is `200 {"ok": true, "changed": {...}, "applies": "...", "controls": {...}}`, where
-`controls` is the `GET` object after the change.
+for; the page sets `max-parallel`, `infra-backoff` (`none` drops it) and `escalate-effort`
+(`on`/`off`) plan-wide. `now` is a boolean. `add` is not exposed: a row is added to `tasks.tsv` by
+hand, so its CLI is the place to queue it. A success is
+`200 {"ok": true, "changed": {...}, "applies": "...", "controls": {...}}`, where `controls` is the
+`GET` object after the change; `drain`, `resume` and `stop` answer the same way and are refused
+(`409`) when no scheduler is live. A `retry` only queues: `200 {"queued": true, "request": "<id>"}`.
+Its refusals before queueing (not live, a MERGED task, a spec that fails doctor) are the CLI's
+`409`/`400`; the scheduler applies or refuses it later, in the `log` line with that `request` id.
 
 ### `GET /api/runs/<key>/issues`
 
@@ -1180,9 +1288,10 @@ Plain scripts unless noted; each defines one global and none parses API text as 
 
 | File | Global | What it is |
 |---|---|---|
-| `runmodel.js` | `ForgeRunModel` | pure data, no DOM: the plate layout (archivision's `plate()`), the atlas, plan and execution models, forge-schedule's rules projected forward, the critical path, concurrency, the state of every node at a time `t` (replay), filters. Also a CommonJS module, for `node --test` |
-| `gantt.js` | `ForgeGantt` | `render(container, run, {now, onSelect, sel, replay, critical, ghosts})`: attempts on wall-clock time in lanes; `strip(container, run, {now, replay})`: busy attempts and model calls against `max_parallel` |
+| `runmodel.js` | `ForgeRunModel` | pure data, no DOM: the plate layout (archivision's `plate()`), the atlas, plan and execution models, forge-schedule's rules projected forward, the critical path, concurrency, the state of every node at a time `t` (replay, verification lanes included), the finish node's verification LEDs (`verifyLeds`: one per lane in lanes mode, else one per run), filters. Also a CommonJS module, for `node --test` |
+| `gantt.js` | `ForgeGantt` | `render(container, run, {now, onSelect, sel, replay, critical, ghosts})`: attempts on wall-clock time in lanes; `strip(container, run, {now, replay})`: busy attempts and model calls against `max_parallel`. Under the attempts, the finish rows: `verify` (single-command verifications; the newest split into its runs back to back from its start, dashed because that placement is approximate), a `verify · <lane>` row per lane of a lanes verification (each run and rerun at its own time; a run with no exit is UNKNOWN once it ended, never FAIL) and `final review`. A lane or run item opens the verification inspector |
 | `panel.js` | `ForgePanel` | `render(host, ctx)`: the inspector for a run, task, execution, final review, verification, integration or Fractal node; fetches the lazy endpoints once per node; `ctx.diffHash(spec)` links into the diff viewer, `ctx.onFractal(task, TaskFractal)` hands a task's tree to the stage |
+| `verifyview.js` | `ForgeVerify` | `render(host, {run, now, fetchJSON, rerender})`: the verification inspector panel.js delegates to: while it runs, the elapsed time, step, last line and a flag past 5 minutes without output, and a live tail of the followed lane's log (or the single log) read again each poll; when it failed, the failing tests first, grouped by lane with new or known, each opening its lane's log at its line (in an export, the tail); a lanes table (state, time, reruns, counts). Pure helpers (`model`, `laneRow`, `groupFailing`, `idleWarning`, `openStep`, `tailLane`, `logPath`, `linesPath`, `tailLines`) are a CommonJS module too |
 | `diffview.js` | `ForgeDiff` | `render(host, {run, spec, fetchJSON, rerender, href, closeHref})`: a DiffDetail with its findings under their lines; `spec` is `{kind: task, task, source, file}`, `{kind: final, name, file}` or `{kind: fractal, task, node, file}` |
 | `convo.js` | `ForgeConvo` | `render(host, {run, spec: {task, exec}, brief, live, fetchJSON, rerender, diffHash, closeHref})`: an ExecutionTranscript as a timeline, with search, the errors and, while the execution runs, a read of its log every 2.5 s |
 | `files.js` | `ForgeFiles` | `matrix(data, run, opts)` (pure: Files as rows of dirs and files against task columns by wave) and `render(host, data, {run, sel, onSelectTask, diffHref, prefs, savePrefs})`: the run's Files mode. Also a CommonJS module |

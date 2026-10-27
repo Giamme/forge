@@ -22,11 +22,11 @@ import re
 import time
 import urllib.parse
 
-from forge_ui import __version__, server
+from forge_ui import __version__, reader, server
 
 STATIC = server.STATIC_DIR
 # what the exported page runs, in index.html's order; the cloud, the leaderboard and notifications need a server
-SCRIPTS = ('theme.js', 'icons.js', 'datatable.js', 'shell.js', 'runmodel.js', 'cloudmodel.js', 'graph.js', 'gantt.js', 'panel.js', 'diffview.js', 'convo.js', 'files.js', 'map3d.js',
+SCRIPTS = ('theme.js', 'icons.js', 'datatable.js', 'shell.js', 'runmodel.js', 'cloudmodel.js', 'graph.js', 'gantt.js', 'verifyview.js', 'panel.js', 'diffview.js', 'convo.js', 'files.js', 'map3d.js',
            'search.js', 'app.js')
 MODULES = ('iso.js', 'cloud3d.js', 'findings3d.js', 'stagectl.js', 'scene3d.js')   # bundled in dependency order
 DIFF_CAP = 1 << 20                                          # one diff's JSON
@@ -37,7 +37,7 @@ _EXEC = re.compile(r'(?:task|dwarf|qa|solo|verification|parallel)-[0-9a-f]{32}')
 # texts that can hold code, prompts or private notes: nulled unless texts=True
 _TEXT_KEYS = frozenset(('prompt', 'last', 'request', 'log_tail', 'dwarf_tail', 'qa_tail', 'qa_last', 'qa_input',
                         'tasks_summary', 'known_issues', 'texts', 'text', 'planning_last', 'approach', 'retry_findings',
-                        'dwarf_input', 'error'))
+                        'dwarf_input', 'error', 'last_line', 'message', 'excerpt', 'tail', 'lines'))
 
 
 def _enc(value):
@@ -113,12 +113,13 @@ class _Snapshot:
         if isinstance(value, list):
             return [self.clean(v, key) for v in value]
         if isinstance(value, str) and not self.paths and key != 'url':
-            return self.hide(value)
+            return self.hide(value, key)
         return value
 
-    def hide(self, text):
-        # a whole absolute path becomes its last component; known roots inside longer texts are replaced too
-        if re.fullmatch(r'(/|[A-Za-z]:[\\/])[^\n]*', text) and not text.startswith('/api/'):
+    def hide(self, text, key=None):
+        # a whole absolute path becomes its last component; known roots inside longer texts are replaced too.
+        # A command that starts with a path is not one path: only its known roots go.
+        if key != 'command' and re.fullmatch(r'(/|[A-Za-z]:[\\/])[^\n]*', text) and not text.startswith('/api/'):
             return os.path.basename(text.rstrip('/\\')) or text
         for root, name in self.roots:
             if root in text:
@@ -191,6 +192,18 @@ def build(catalog, key, texts=False, paths=False, now=None):
         for name in names:
             if name.startswith(('dwarf-', 'qa-')):
                 snap.add(f'{base}/executions/{name}/transcript', cap=TRANSCRIPT_CAP)
+        # the verification's log tails: its own, each lane's and each lane run's (line ranges stay out)
+        verification = run.get('verification') or {}
+        if verification:
+            snap.add(f'{base}/verification/log')
+        for lane in verification.get('lanes') or []:
+            name = lane.get('name') if isinstance(lane, dict) else None
+            if isinstance(name, str) and reader.LANE_NAME.fullmatch(name):
+                snap.add(f'{base}/verification/lanes/{name}/log')
+                for item in lane.get('runs') or []:
+                    k = item.get('k') if isinstance(item, dict) else None
+                    if isinstance(k, int) and not isinstance(k, bool) and k > 0:
+                        snap.add(f'{base}/verification/lanes/{name}/runs/{k}/log')
     meta = {'format': 'forge-ui-export', 'version': 1, 'app': __version__, 'key': key,
             'generated': now if now is not None else time.time(), 'texts': bool(texts), 'paths': bool(paths),
             'omitted': snap.omitted}

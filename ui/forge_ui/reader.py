@@ -9,6 +9,7 @@ from pathlib import Path
 import posixpath
 import re
 import stat
+import time
 import urllib.parse
 
 from forge_ui import diffs, executions, findings, fractal, transcripts
@@ -604,7 +605,10 @@ def _task_detail(reader, task, run_id, waves, branches):
 
 # The control files (CONTRACT.md) nothing else here reads. `forge control` appends control.log and writes the task's
 # files without touching the run dir, so they are stat'd for `updated` only.
-_RUN_CONTROLS = ('control.log', 'retry_budget', 'infra_budget')
+# Read only for their mtimes, so the run's `updated` stamp moves when a control changes.
+# control.requests is a directory: its mtime moves when a request is queued or settled.
+_RUN_CONTROLS = ('control.log', 'retry_budget', 'infra_budget', 'drain', 'stop', 'max_parallel', 'infra.paused',
+                 'infra_backoff', 'escalate_effort', 'control.requests')
 _TASK_CONTROLS = ('qa_threshold', 'retry_budget', 'retries.used', 'escalation.pin', 'escalation.stop', 'escalation.next')
 
 
@@ -797,19 +801,208 @@ def _final_review(reader, item, newest, published):
 
 
 def _verification_runs(reader):
+    """6 columns from a single command, 8 (adding lane and started) from lanes."""
     runs = []
     for label, row in reader.rows('verification.runs.tsv', 6):
         try:
+            if len(row) not in (6, 8):
+                raise ValueError()
             n, duration = int(row[0]), float(row[4])
             code = int(row[2]) if row[2].strip() else None
-            if row[3].strip() not in ('0', '1') or not math.isfinite(duration):
+            started = float(row[7]) if len(row) == 8 else None
+            if row[3].strip() not in ('0', '1') or not math.isfinite(duration) \
+                    or (started is not None and not math.isfinite(started)):
                 raise ValueError()
         except (ValueError, OverflowError):
             reader.warn(label, 'invalid verification run')
             continue
         runs.append(dict(n=n, kind=row[1], exit=code, tree_changed=row[3].strip() == '1',
-                         duration_s=duration, log=row[5].strip() or None))
+                         duration_s=duration, log=row[5].strip() or None,
+                         lane=(row[6].strip() or None) if len(row) == 8 else None, started=started))
     return runs
+
+
+# --- live verification and lanes -----------------------------------------------------------
+
+_LANES_MAX = 4 << 20           # verification.lanes.json beyond this is not read
+_LIVE_TAIL = 65536             # what is read of a single-command log for its step and last line
+_FAILING_MAX = 200
+_LAST_LINE_MAX = 300
+_STEP = re.compile(r'::forge step name=(\S+) state=(start|end)(?: exit=(-?\d+))?')
+_ANSI = re.compile(r'\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[@-Z\\-_]')
+_LANE_STATES = ('waiting', 'running', 'pass', 'fail', 'flaky', 'known', 'skipped', 'interrupted')
+
+
+def _finite(value):
+    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) \
+        and math.isfinite(value) else None
+
+
+def _str(value):
+    return value if isinstance(value, str) else None
+
+
+def _last_line(text):
+    for line in reversed((text or '').splitlines()):
+        line = _ANSI.sub('', line).strip()
+        if line:
+            return line[:_LAST_LINE_MAX]
+    return None
+
+
+def _open_step(text):
+    """The last step marker started and not yet ended in the text, or None."""
+    open_steps = []
+    for line in (text or '').splitlines():
+        match = _STEP.fullmatch(_ANSI.sub('', line).strip())
+        if not match:
+            continue
+        if match.group(2) == 'start':
+            open_steps.append(match.group(1))
+        elif match.group(1) in open_steps:
+            del open_steps[len(open_steps) - 1 - open_steps[::-1].index(match.group(1))]
+    return open_steps[-1] if open_steps else None
+
+
+def _lanes_doc(reader):
+    """(the lanes document, its stat) or (None, stat): a missing, oversized or invalid file
+    is warned about and never fails the request."""
+    name = 'verification.lanes.json'
+    info = reader.stat(name)
+    if info is None:
+        return None, None
+    if info.st_size > _LANES_MAX:
+        reader.warn(name, 'larger than 4 MB, not read')
+        return None, info
+    doc = reader.object(name)
+    if doc is not None and not isinstance(doc.get('lanes'), list):
+        reader.warn(name, 'no lanes list')
+        doc = None
+    return doc, info
+
+
+def _items(value):
+    """A JSON list, or nothing in place of anything else."""
+    return value if isinstance(value, list) else []
+
+
+def _tests(reader, value, field):
+    if not isinstance(value, dict):
+        return None
+    counts = {key: int(value[key]) if isinstance(value.get(key), int) and not isinstance(value.get(key), bool)
+              else 0 for key in ('pass', 'fail', 'skip', 'error')}
+    failing = []
+    for entry in value.get('failing') if isinstance(value.get('failing'), list) else []:
+        if not isinstance(entry, dict) or len(failing) >= _FAILING_MAX:
+            continue
+        line = entry.get('log_line')
+        failing.append(dict(name=reader.cap(_str(entry.get('name')), field + '.name', 500),
+                            suite=_str(entry.get('suite')), file=_str(entry.get('file')),
+                            message=reader.cap(_str(entry.get('message')), field + '.message', 500),
+                            excerpt=reader.cap(_str(entry.get('excerpt')), field + '.excerpt', 2000),
+                            known=entry.get('known') is True,
+                            log_line=line if isinstance(line, int) and not isinstance(line, bool) and line > 0 else None))
+    return dict(counts, failing=failing,
+                reports=[r for r in _items(value.get('reports')) if isinstance(r, str)][:200],
+                notes=[reader.cap(n, field + '.notes', 500) for n in _items(value.get('notes')) if isinstance(n, str)][:50],
+                truncated=value.get('truncated') is True)
+
+
+def _lanes(reader, doc, now):
+    lanes = []
+    for index, lane in enumerate(doc['lanes']):
+        if not isinstance(lane, dict) or not _str(lane.get('name')):
+            reader.warn('verification.lanes.json', f'lane {index + 1} is not a lane')
+            continue
+        name = lane['name']
+        started, ended = _finite(lane.get('started')), _finite(lane.get('ended'))
+        state = lane.get('state') if lane.get('state') in _LANE_STATES else _str(lane.get('state'))
+        last_output = _finite(lane.get('last_output_at'))
+        step = lane.get('step') if isinstance(lane.get('step'), dict) else None
+        runs = []
+        for run in lane.get('runs') if isinstance(lane.get('runs'), list) else []:
+            if isinstance(run, dict):
+                runs.append(dict(k=run.get('k') if isinstance(run.get('k'), int) else None, kind=_str(run.get('kind')),
+                                 started=_finite(run.get('started')), ended=_finite(run.get('ended')),
+                                 exit=run.get('exit') if isinstance(run.get('exit'), int) else None,
+                                 log=_str(run.get('log'))))
+        options = lane.get('options') if isinstance(lane.get('options'), dict) else {}
+        lanes.append(dict(
+            name=name, command=reader.cap(_str(lane.get('command')), f'verification.lanes.{name}.command'),
+            group=_str(lane.get('group')), first=lane.get('first') is True,
+            retries=options.get('retries') if isinstance(options.get('retries'), int) else None,
+            options={k: v for k, v in options.items() if isinstance(v, (str, int)) and not isinstance(v, bool)},
+            state=state, exit=lane.get('exit') if isinstance(lane.get('exit'), int) else None,
+            started=started, ended=ended,
+            duration_s=((ended if ended is not None else now) - started) if started is not None else None,
+            runs=runs,
+            step=dict(name=_str(step.get('name')), started=_finite(step.get('started'))) if step else None,
+            last_line=reader.cap(_str(lane.get('last_line')), f'verification.lanes.{name}.last_line', _LAST_LINE_MAX),
+            last_output_at=last_output,
+            idle_s=(now - last_output) if state == 'running' and last_output is not None else None,
+            log=_str(lane.get('log')),
+            tests=_tests(reader, lane.get('tests'), f'verification.lanes.{name}.tests')))
+    return lanes
+
+
+def _live_single(reader, started, now):
+    """The running command's live state from whichever of its two logs moved last: a rerun
+    writes verification.retry.log."""
+    logs = [(info.st_mtime, name) for name in ('verification.log', 'verification.retry.log')
+            for info in [reader.stat(name)] if info is not None]
+    if not logs:
+        return dict(started=started, step=None, last_line=None, last_output_at=None,
+                    idle_s=(now - started) if started is not None else None, log=None)
+    mtime, name = max(logs)
+    text = reader.text(name, _LIVE_TAIL)
+    step = _open_step(text)
+    return dict(started=started, step=dict(name=step, started=None) if step else None,
+                last_line=_last_line(text), last_output_at=float(mtime), idle_s=max(0.0, now - mtime), log=name)
+
+
+def _live_lanes(lanes, started, now):
+    """The running lane that printed most recently speaks for the verification."""
+    running = [lane for lane in lanes if lane['state'] == 'running']
+    printed = [lane for lane in running if lane['last_output_at'] is not None]
+    lane = max(printed, key=lambda item: item['last_output_at']) if printed else (running[0] if running else None)
+    last = lane['last_output_at'] if lane else None
+    return dict(started=started, step=lane['step'] if lane else None, last_line=lane['last_line'] if lane else None,
+                last_output_at=last, idle_s=max(0.0, now - (last if last is not None else started))
+                if (last is not None or started is not None) else None, log=None)
+
+
+def _verification(reader, status, verifications):
+    """RunDetail.verification: the result files, plus whether it is running now, in which
+    mode, its live state, its lanes and every failing test."""
+    now = time.time()
+    newest = max(verifications, key=lambda item: (item['started'] is not None, item['started'] or 0.0), default=None)
+    state = None if newest is None else 'running' if newest['state'] == 'running' else 'done'
+    started = newest['started'] if newest is not None else None
+    doc, info = _lanes_doc(reader)
+    lanes_file = info is not None
+    mode = 'lanes' if lanes_file and (started is None or info.st_mtime >= started) else 'single'
+    command = reader.text('verification.command')
+    log_tail = reader.cap(reader.text('verification.log', 65536), 'verification.log_tail', 4000, True)
+    present = any('verification.' + suffix in reader.present_files for suffix in ('status', 'command', 'log'))
+    if not (present or state or lanes_file):
+        return None
+    lanes = _lanes(reader, doc, now) if mode == 'lanes' and doc is not None else None
+    if state == 'running':
+        live = _live_lanes(lanes or [], started, now) if mode == 'lanes' else _live_single(reader, started, now)
+    else:
+        live = None
+    failing = []
+    for lane in lanes or []:
+        for entry in (lane['tests'] or {}).get('failing', []):
+            if len(failing) < _FAILING_MAX:
+                failing.append(dict(entry, lane=lane['name']))
+    runs = _verification_runs(reader)
+    # A lane or a run of the command changed the checkout: later reruns were skipped.
+    mutated = doc.get('mutated') is True if lanes is not None else any(run['tree_changed'] for run in runs)
+    return dict(status='RUNNING' if state == 'running' else status,
+                command=command.strip() if command is not None else None,
+                log_tail=log_tail, runs=runs, commit=reader.line('verification.commit'),
+                state=state, mode=mode, live=live, lanes=lanes, failing=failing, mutated=mutated)
 
 
 def _integration(reader, tasks, integrations, reviews, published):
@@ -901,14 +1094,6 @@ def detail(path, source='plan') -> dict:
                               max_parallel=reader.number('max_parallel', int), qa_threshold=reader.line('qa_threshold'),
                               escalate_after=reader.number('escalate_after', int),
                               verify_retries=reader.number('verify_retries', int), final_qa=reader.line('final_qa'))
-    command = reader.text('verification.command')
-    verification = dict(status=result['verification_status'], command=command.strip() if command is not None else None,
-                        log_tail=reader.cap(reader.text('verification.log', 65536), 'verification.log_tail', 4000, True))
-    if any('verification.' + suffix in reader.present_files for suffix in ('status', 'command', 'log')):
-        verification.update(runs=_verification_runs(reader), commit=reader.line('verification.commit'))
-        result['verification'] = verification
-    else:
-        result['verification'] = None
     waves, wave_map = _waves(reader)
     result['waves'] = [waves.get(n, []) for n in range(1, max(waves, default=0) + 1)]
     branches = {row[0]: _nullable(row[2]) for _, row in reader.rows('results.tsv', 3)}
@@ -918,6 +1103,8 @@ def detail(path, source='plan') -> dict:
     for name in _RUN_CONTROLS:
         reader.stat(name)
     run_execs = _run_execs(reader)
+    result['verification'] = _verification(reader, result['verification_status'],
+                                           [item for item in run_execs if item['role'] == 'verification'])
     items, integrations = executions.review_dirs(reader)
     published = _published(reader)
     reviews = []
@@ -1549,6 +1736,112 @@ def fractal_node_diff(path, task_id, node, source='plan'):
     return _fractal(path, task_id, fractal.node_diff, node)
 
 
+# --- verification logs by path ---------------------------------------------------------------
+
+LANE_NAME = re.compile(r'[A-Za-z0-9][A-Za-z0-9_-]{0,63}')
+LOG_TAIL = 65536               # the tail a log endpoint serves
+LOG_SCAN_MAX = 64 << 20        # what is read to number lines or reach a line range
+LOG_LINES = 400                # lines in one range
+LOG_LINE_MAX = 4000            # characters kept of one line in a range
+
+
+def _log_name(lane, k, retry=False):
+    if retry:
+        return 'verification.retry.log'
+    if lane is None:
+        return 'verification.log'
+    return f'verification.lane.{lane}.log' if k is None else f'verification.lane.{lane}.run-{k}.log'
+
+
+def _open_log(path, name):
+    """The open log and its stat, or None: a missing file, a symlink, anything not regular."""
+    try:
+        fd = os.open(os.path.join(os.path.realpath(path), name), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError:
+        return None
+    try:
+        info = os.fstat(fd)
+        if stat.S_ISREG(info.st_mode):
+            return os.fdopen(fd, 'rb'), info
+    except OSError:
+        pass
+    os.close(fd)
+    return None
+
+
+def _newlines(stream, end):
+    """How many newlines the first `end` bytes hold, or None past LOG_SCAN_MAX."""
+    if end > LOG_SCAN_MAX:
+        return None
+    stream.seek(0)
+    count = 0
+    while end > 0:
+        chunk = stream.read(min(1 << 20, end))
+        if not chunk:
+            break
+        count += chunk.count(b'\n')
+        end -= len(chunk)
+    return count
+
+
+def _log_tail(stream, info, name):
+    offset = max(0, info.st_size - LOG_TAIL)
+    stream.seek(offset)
+    raw = stream.read(LOG_TAIL)
+    if offset:
+        # Start on a line: drop the line the cut went through, or at least a split character.
+        cut = raw.find(b'\n')
+        skip = cut + 1 if cut >= 0 else 0
+        if cut < 0:
+            while skip < min(3, len(raw)) and raw[skip] & 0xC0 == 0x80:
+                skip += 1
+        raw, offset = raw[skip:], offset + skip
+    before = _newlines(stream, offset)
+    return dict(name=name, size=info.st_size, mtime=float(info.st_mtime), tail=raw.decode('utf-8', 'replace'),
+                tail_first_line=None if before is None else before + 1, truncated=offset > 0)
+
+
+def _log_range(stream, info, name, first):
+    """LOG_LINES lines from line `first`: (lines, whether more follow or a line or the read was cut)."""
+    lines, number, read, cut = [], 1, 0, False
+    while read < LOG_SCAN_MAX:
+        part = stream.readline(LOG_LINE_MAX * 4)
+        if not part:
+            return dict(name=name, size=info.st_size, first_line=first, lines=lines, truncated=cut)
+        read += len(part)
+        line, long = part, False
+        while not part.endswith(b'\n') and len(part) == LOG_LINE_MAX * 4 and read < LOG_SCAN_MAX:
+            part, long = stream.readline(LOG_LINE_MAX * 4), True
+            read += len(part)
+        if number >= first:
+            if len(lines) == LOG_LINES:
+                return dict(name=name, size=info.st_size, first_line=first, lines=lines, truncated=True)
+            text = line.rstrip(b'\n').rstrip(b'\r').decode('utf-8', 'replace')
+            if long or len(text) > LOG_LINE_MAX:
+                text, cut = text[:LOG_LINE_MAX].rstrip('\ufffd') + '…', True
+            lines.append(text)
+        number += 1
+    return dict(name=name, size=info.st_size, first_line=first, lines=lines, truncated=True)
+
+
+def verification_log(path, lane=None, k=None, first=None, retry=False, source='plan'):
+    """The run's own verification log (with `retry`, its rerun's), a lane's or one run of a lane's:
+    its last 64 KB from a line start, with that line's number, or LOG_LINES lines from line `first`.
+    None (a 404) for a solo run, a name no lane can have, and a log that is missing, a symlink or
+    not a regular file."""
+    if _kind(path) != 'plan' or (lane is not None and not LANE_NAME.fullmatch(lane)):
+        return None
+    if (k is not None and (lane is None or k < 1)) or (first is not None and first < 1) or (retry and lane is not None):
+        return None
+    name = _log_name(lane, k, retry)
+    opened = _open_log(path, name)
+    if opened is None:
+        return None
+    stream, info = opened
+    with stream:
+        return _log_tail(stream, info, name) if first is None else _log_range(stream, info, name, first)
+
+
 class Catalog:
     def __init__(self, plans=(), roots=(), registry=True, registry_dir=None):
         self.options = dict(plans=tuple(plans), roots=tuple(roots), registry=registry, registry_dir=registry_dir)
@@ -1616,6 +1909,9 @@ class Catalog:
 
     def fractal_node_diff(self, key, task_id, node):
         return self._find(key, fractal_node_diff, task_id, node)
+
+    def verification_log(self, key, lane=None, k=None, first=None, retry=False):
+        return self._find(key, verification_log, lane, k, first, retry)
 
     def models(self):
         from forge_ui import models  # it reads runs through this module
