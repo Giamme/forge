@@ -79,11 +79,11 @@ def _jev_json(retired: frozenset, items: list) -> bool:
 
 
 def _provider_names(data: dict) -> set:
-    names = set()
     gates = data.get('gates')
-    if isinstance(gates, dict):
-        names.update(g.get('provider') for g in gates.values() if isinstance(g, dict))
-    return {n for n in names if isinstance(n, str)}
+    if not isinstance(gates, dict):
+        return set()
+    providers = (g.get('provider') for g in gates.values() if isinstance(g, dict))
+    return {name for name in providers if isinstance(name, str)}
 
 
 def _used_providers(user: dict, repo: dict, resolved: dict) -> set:

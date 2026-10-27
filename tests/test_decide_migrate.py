@@ -250,6 +250,16 @@ class DoctorTests(MigrateTestCase):
         (item,) = self.kinds(doctor.checks(env={}), 'unknown-provider')
         self.assertEqual((item['gate'], item['provider'], item['profile']), ('drift', 'nope', 'broken'))
 
+    def test_a_malformed_provider_in_an_inactive_profile_does_not_stop_the_other_checks(self):
+        self.forge.mkdir(parents=True)
+        (self.forge / 'decide.json').write_text(json.dumps({
+            'profiles': {'broken': {'gates': {'drift': {'provider': ['nope']}}}},
+            'providers': {'idle': {'key_file': 'keys/missing.key'}}}))
+        repo = self.root / 'repo'
+        forge_decide.save_repo(repo, {'privacy': 'never-send'})
+        kinds = {item['kind'] for item in doctor.checks(repo, env={})}
+        self.assertTrue({'unused-provider', 'key-file', 'privacy-floor'} <= kinds, kinds)
+
     def test_a_provider_no_gate_uses(self):
         forge_decide.save_user({'providers': {'idle': {'type': 'jev', 'url': 'http://x', 'model': 'm'}},
                                 'gates': {'drift': {'mode': 'on'}}})
