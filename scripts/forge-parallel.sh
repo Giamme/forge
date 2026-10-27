@@ -1300,15 +1300,22 @@ verify_run_note() { # verify_run_note <out> <kind> <rc> <before> <after> <log> <
 # keep the plain foreground command.
 verify_group_stop() { # TERM the verify command's group; KILL it after FORGE_VERIFY_GRACE seconds
   [ -n "$FORGE_VERIFY_GROUP" ] && [ -z "$FORGE_VERIFY_TIMER" ] || return 0
-  local group="$FORGE_VERIFY_GROUP"
-  kill -TERM -- "-$group" 2>/dev/null
+  local group="$FORGE_VERIFY_GROUP" termed=1
+  # Until the guard's setsid there is no group: the TERM goes to the guard itself, which dies
+  # of it before it starts the command. A group that forms all the same gets its TERM from
+  # the timer.
+  kill -TERM -- "-$group" 2>/dev/null || { termed=0; kill -TERM "$group" 2>/dev/null; }
   # The timer polls in short naps rather than sleeping the whole grace in one: it ends by
   # itself within a nap of the group's last member, and a long sleep left behind would hold
   # the plan lock it inherited.
   ( trap - TERM INT
     ticks=$((FORGE_VERIFY_GRACE * 10))
-    while kill -0 -- "-$group" 2>/dev/null; do
-      if [ "$ticks" -le 0 ]; then kill -KILL -- "-$group" 2>/dev/null; break; fi
+    while kill -0 -- "-$group" 2>/dev/null || { [ "$termed" = 0 ] && kill -0 "$group" 2>/dev/null; }; do
+      if [ "$termed" = 0 ] && kill -TERM -- "-$group" 2>/dev/null; then termed=1; fi
+      if [ "$ticks" -le 0 ]; then
+        if [ "$termed" = 1 ]; then kill -KILL -- "-$group" 2>/dev/null; else kill -KILL "$group" 2>/dev/null; fi
+        break
+      fi
       sleep 0.1
       ticks=$((ticks - 1))
     done ) &
@@ -1359,6 +1366,13 @@ verify_mark_interrupted() { # verify_mark_interrupted <out>
   echo INTERRUPTED > "$1/verification.status"
   echo 130 > "$1/verification.exit"
   note "verification interrupted; the verify command was stopped and is not rerun"
+}
+
+# True, once the verification is marked INTERRUPTED, when a stop has arrived. Checked before
+# each run of the command (a stop that came first runs nothing and records no run) and after.
+verify_stopped() { # verify_stopped <out>
+  [ "$FORGE_VERIFY_STOP" = 1 ] || return 1
+  verify_mark_interrupted "$1"
 }
 
 verify_result() ( verify_result_body "$@" ) # plan, checkout, artifact directory
@@ -1445,11 +1459,12 @@ with open(out + "/verification.jev.json", "w") as fh:
   printf '%s\n' "$cmd" > "$out/verification.command"
   before="$(forge_fingerprint "$wt")" || return 1
   local vt0; vt0="$(date +%s)"
+  verify_stopped "$out" && return 130
   verify_exec "$wt" "$cmd" "$out/verification.log" || rc=$?
-  after="$(forge_fingerprint "$wt")" || return 1
+  [ "$FORGE_VERIFY_STOP" = 1 ] || echo "$rc" > "$out/verification.exit"
+  after="$(forge_fingerprint "$wt")" || { verify_stopped "$out" && return 130; return 1; }
   verify_run_note "$out" initial "$rc" "$before" "$after" verification.log "$vt0"
-  if [ "$FORGE_VERIFY_STOP" = 1 ]; then verify_mark_interrupted "$out"; return 130; fi
-  echo "$rc" > "$out/verification.exit"
+  verify_stopped "$out" && return 130
   echo "$before" > "$out/verification.fingerprint"
   if [ "$rc" != 0 ] || [ "$before" != "$after" ]; then
     local flaked=0 det_retried=0 n_retry=0 rc3 b3 a3
@@ -1462,10 +1477,11 @@ with open(out + "/verification.jev.json", "w") as fh:
         note "verification failed (exit $rc); rerunning to tell a flaky lane from a regression ($n_retry/$vretries)"
         b3="$(forge_fingerprint "$wt")" || return 1
         vt0="$(date +%s)"
+        verify_stopped "$out" && return 130
         verify_exec "$wt" "$cmd" "$out/verification.retry.log" || rc3=$?
-        a3="$(forge_fingerprint "$wt")" || return 1
+        a3="$(forge_fingerprint "$wt")" || { verify_stopped "$out" && return 130; return 1; }
         verify_run_note "$out" rerun "$rc3" "$b3" "$a3" verification.retry.log "$vt0"
-        if [ "$FORGE_VERIFY_STOP" = 1 ]; then verify_mark_interrupted "$out"; return 130; fi
+        verify_stopped "$out" && return 130
         if [ "$rc3" = 0 ] && [ "$b3" = "$a3" ]; then
           flaked=1
           {
@@ -1530,11 +1546,12 @@ print(v if v is not None else "0.90")
           note "jev: known_flake (confidence $confidence >= $flake_act), corroborated by a recorded trap — retrying once"
           before2="$(forge_fingerprint "$wt")" || return 1
           vt0="$(date +%s)"
+          verify_stopped "$out" && return 130
           verify_exec "$wt" "$cmd" "$out/verification.retry.log" || rc2=$?
           rc2="${rc2:-0}"
-          after2="$(forge_fingerprint "$wt")" || return 1
+          after2="$(forge_fingerprint "$wt")" || { verify_stopped "$out" && return 130; return 1; }
           verify_run_note "$out" jev_retry "$rc2" "$before2" "$after2" verification.retry.log "$vt0"
-          if [ "$FORGE_VERIFY_STOP" = 1 ]; then verify_mark_interrupted "$out"; return 130; fi
+          verify_stopped "$out" && return 130
           if [ "$rc2" = 0 ] && [ "$before2" = "$after2" ]; then
             flaked=1
             note "jev: retry passed — treating as a corroborated flake, not a regression"
@@ -1616,7 +1633,7 @@ run_signal() {
 # background job and the home of its signal handler. A function called with `&` would be a
 # second subshell level, and an async function does not run its EXIT trap.
 do_run() {
-  local run_child="" run_stop=0 run_phase=pre run_rc=0 interrupted=0
+  local run_child="" run_stop=0 run_phase=pre run_rc=0 interrupted=0 vstopped=0
   FORGE_RUN_STOPPABLE=1
   trap run_signal TERM INT
   local PLAN="${1:?run needs a plan dir}"; shift
@@ -1748,9 +1765,11 @@ do_run() {
   run_child=""
   [ "$sched_rc" != 0 ] && failed=1
   [ "$sched_rc" = 8 ] && paused=1
-  [ "$sched_rc" = 130 ] || [ "$run_stop" = 1 ] && interrupted=1
 
   forge_metric_phase verification
+  # Counted after that phase call: a signal that arrived while it ran is handled only once it
+  # returned, and must still keep verification from starting.
+  [ "$sched_rc" = 130 ] || [ "$run_stop" = 1 ] && interrupted=1
   # An infrastructure pause leaves the run unfinished, so there is nothing yet worth
   # verifying; the next `run` resumes and verifies at its end. An interrupted run has
   # merged only part of its work: a verification of that is not worth its minutes, and it
@@ -1762,8 +1781,10 @@ do_run() {
     [ "$run_stop" = 1 ] && kill -TERM "$run_child" 2>/dev/null
     run_wait "$run_child"
     [ "$run_rc" != 0 ] && failed=1
-    [ "$run_rc" = 130 ] && interrupted=1
+    [ "$run_rc" = 130 ] && vstopped=1
     run_child=""
+    # A stop that killed the subshell before its handler was set leaves no record: it counts too.
+    [ "$vstopped" = 1 ] || [ "$run_stop" = 1 ] && interrupted=1
   fi
   run_phase=results
   write_results "$PLAN"
@@ -1797,27 +1818,27 @@ do_run() {
   done
   [ "$drift" = 1 ] && echo
 
+  # From this run's own flags, never from a verification.status an earlier run left.
   if [ "$interrupted" = 1 ]; then
-    if [ "$(cat "$PLAN/verification.status" 2>/dev/null)" = INTERRUPTED ]; then
-      echo "interrupted during verification, which was stopped and not rerun."
-    else
-      echo "interrupted; verification was skipped."
-    fi
-    echo "A later run does not dispatch an interrupted task; continue each one with:"
-    for id in $(awk -F'\t' '$2=="INTERRUPTED" {print $1}' "$PLAN/results.tsv"); do
-      echo "  forge-parallel.sh retry $PLAN $id"
-    done
-    echo
+    if [ "$vstopped" = 1 ]; then echo "interrupted during verification, which was stopped and not rerun."
+    else echo "interrupted; verification was skipped."; fi
   fi
+  local stopped_ids; stopped_ids="$(awk -F'\t' '$2=="INTERRUPTED" {print $1}' "$PLAN/results.tsv")"
+  if [ -n "$stopped_ids" ]; then
+    echo "A later run does not dispatch an interrupted task; continue each one with:"
+    for id in $stopped_ids; do echo "  forge-parallel.sh retry $PLAN $id"; done
+  fi
+  [ "$interrupted" = 1 ] || [ -n "$stopped_ids" ] && echo
   # The retry hint is for tasks that actually failed; a run that only failed verification,
-  # or only paused on infrastructure, has nothing to retry task by task.
-  if [ "$(awk -F'\t' '$2!="MERGED" && $2!="INFRA" && $2!="PENDING" && $2!="BLOCKED" {n++} END {print n+0}' "$PLAN/results.tsv")" -gt 0 ]; then
+  # or only paused on infrastructure, has nothing to retry task by task. An interrupted task
+  # has its own hint above.
+  if [ "$(awk -F'\t' '$2!="MERGED" && $2!="INFRA" && $2!="PENDING" && $2!="BLOCKED" && $2!="INTERRUPTED" {n++} END {print n+0}' "$PLAN/results.tsv")" -gt 0 ]; then
     echo "retry a failed task with its reviewer's findings:"
     echo "  forge-parallel.sh retry $PLAN <task-id> [--dwarf <spec>]"
     echo "or let a run retry them itself:  forge-parallel.sh run $PLAN --retry-failed 1"
     echo
   fi
-  if [ "$failed" = 1 ] && [ "$paused" = 0 ] && [ "$(cat "$PLAN/verification.status" 2>/dev/null)" = FAIL ]; then
+  if [ "$failed" = 1 ] && [ "$paused" = 0 ] && [ "$interrupted" = 0 ] && [ "$(cat "$PLAN/verification.status" 2>/dev/null)" = FAIL ]; then
     echo "combined verification failed: see $PLAN/verification.log"
     echo
   fi

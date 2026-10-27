@@ -70,6 +70,27 @@ class InterruptTests(unittest.TestCase):
     def text(self, plan, name):
         return (plan / name).read_text().strip()
 
+    def slow_python(self, when, seconds=3):
+        """Hold one python3 step of the run for `seconds`, so a signal lands inside it on purpose.
+
+        `when` is a Python expression over `argv` (that process's sys.argv), evaluated in a
+        sitecustomize on PYTHONPATH. The first process it matches creates <root>/slow and sleeps;
+        later matches do not. Returns that marker's path."""
+        site = self.root / 'site'
+        site.mkdir(exist_ok=True)
+        marker = self.root / 'slow'
+        (site / 'sitecustomize.py').write_text(
+            'import os, sys, time\n'
+            'argv = sys.argv\n'
+            f'if {when}:\n'
+            '    try:\n'
+            f'        os.close(os.open({str(marker)!r}, os.O_CREAT | os.O_EXCL | os.O_WRONLY))\n'
+            f'        time.sleep({seconds})\n'
+            '    except FileExistsError:\n'
+            '        pass\n')
+        self.env['PYTHONPATH'] = os.pathsep.join(filter(None, [str(site), self.env.get('PYTHONPATH')]))
+        return marker
+
     def sleeping_dwarf(self):
         """A plan whose first dwarf call sleeps, with a verify command that must never run."""
         self.scenario({'a.dwarf.1': {'sleep': 60}})
@@ -87,6 +108,8 @@ class InterruptTests(unittest.TestCase):
         out = (self.root / 'run.out').read_text()
         self.assertIn(f'forge-parallel.sh retry {p} a', out)
         self.assertIn('results (integration branch', out)
+        self.assertIn('interrupted; verification was skipped.', out)
+        self.assertNotIn("retry a failed task with its reviewer's findings", out)   # its own hint only
 
     def test_sigterm_to_the_runner_while_a_dwarf_sleeps_skips_verification(self):
         p, marker, verify = self.sleeping_dwarf()
@@ -123,6 +146,9 @@ class InterruptTests(unittest.TestCase):
         self.assertEqual(self.pgrep(unique), [])
         self.assertEqual(self.pgrep(r'sleep 60[01]\.%d' % os.getpid()), [])
         self.assertLockFree(p)
+        out = (self.root / 'run.out').read_text()
+        self.assertIn('interrupted during verification, which was stopped and not rerun.', out)
+        self.assertNotIn('continue each one with', out)            # every task merged: none to continue
 
     def test_a_verify_command_that_ignores_term_is_killed_after_the_grace(self):
         self.scenario({})
@@ -138,6 +164,80 @@ class InterruptTests(unittest.TestCase):
         self.assertEqual(self.pgrep(unique), [])
         self.assertEqual(self.text(p, 'verification.status'), 'INTERRUPTED')
         self.assertLockFree(p)
+
+    def test_a_stop_before_the_guard_made_its_session_runs_nothing(self):
+        # The guard is held before its setsid: there is no process group to signal yet.
+        unique = 'early-stop-%d' % os.getpid()
+        held = self.slow_python(f"argv[0].endswith('forge-guard.py') and any({unique!r} in a for a in argv)")
+        self.scenario({})
+        p = self.plan()
+        ran = self.root / 'verify-ran'
+        run = self.start(p, '--verify', f'touch {ran}; sleep 30 # {unique}')
+        self.wait_for(held.exists, what='the guard to start')
+        os.kill(run.pid, signal.SIGTERM)
+        self.assertEqual(self.finish(run), 130, (self.root / 'run.out').read_text())
+        time.sleep(3.5)                                    # past the hold: a guard left alive would start it now
+        self.assertFalse(ran.exists(), 'the verify command ran after the stop')
+        self.assertEqual(self.pgrep(unique), [])
+        self.assertEqual(self.text(p, 'verification.status'), 'INTERRUPTED')
+        self.assertLockFree(p)
+
+    def test_a_signal_while_verification_is_being_entered_still_skips_it(self):
+        # run records its verification phase (a python3 call) just before it verifies; bash runs
+        # the handler only once that call returns.
+        held = self.slow_python("argv[0].endswith('forge-runtime.py') and argv[1:2] == ['phase'] and argv[-1] == 'verification'"
+                                " and '/attempts/parallel-' in argv[2]")     # the run's own record, not a task's
+        self.scenario({})
+        p = self.plan()
+        ran = self.root / 'verify-ran'
+        run = self.start(p, '--verify', f'touch {ran}')
+        self.wait_for(held.exists, what='the verification phase to be recorded')
+        os.kill(run.pid, signal.SIGTERM)
+        self.assertEqual(self.finish(run), 130, (self.root / 'run.out').read_text())
+        self.assertFalse(ran.exists(), 'the verify command ran')
+        self.assertFalse((p / 'verification.status').exists())
+        self.assertFalse((p / 'verification.runs.tsv').exists())
+        self.assertIn('interrupted; verification was skipped.', (self.root / 'run.out').read_text())
+        self.assertLockFree(p)
+
+    def test_a_stop_before_the_command_records_no_run_of_it(self):
+        # Held while the verification records its own start, before the command is launched.
+        held = self.slow_python("argv[0].endswith('forge-runtime.py') and argv[1:2] == ['begin'] and argv[-1] == 'verification'")
+        self.scenario({})
+        p = self.plan()
+        ran = self.root / 'verify-ran'
+        run = self.start(p, '--verify', f'touch {ran}')
+        self.wait_for(held.exists, what='the verification to start')
+        os.kill(run.pid, signal.SIGTERM)
+        self.assertEqual(self.finish(run), 130, (self.root / 'run.out').read_text())
+        self.assertFalse(ran.exists(), 'the verify command ran')
+        self.assertEqual(self.text(p, 'verification.status'), 'INTERRUPTED')
+        self.assertFalse((p / 'verification.runs.tsv').exists(), 'a run of a command that never started')
+        self.assertLockFree(p)
+
+    def interrupted_over_a_stale_status(self, stale):
+        """The run's output after a SIGTERM during the dwarf, over a verification.status an earlier run left."""
+        p, marker, verify = self.sleeping_dwarf()
+        (p / 'verification.status').write_text(stale + '\n')
+        run = self.start(p, '--verify', verify)
+        self.wait_for(lambda: 'dwarf' in self.calls(), what='the dwarf to start')
+        os.kill(run.pid, signal.SIGTERM)
+        self.assertEqual(self.finish(run), 130)
+        out = (self.root / 'run.out').read_text()
+        self.assertIn('interrupted; verification was skipped.', out)
+        return out
+
+    def test_a_stale_failed_verification_is_not_reported_as_this_runs(self):
+        self.assertNotIn('combined verification failed', self.interrupted_over_a_stale_status('FAIL'))
+
+    def test_a_stale_interrupted_verification_is_not_reported_as_this_runs(self):
+        self.assertNotIn('interrupted during verification', self.interrupted_over_a_stale_status('INTERRUPTED'))
+
+    def test_the_exit_code_is_kept_when_the_tree_cannot_be_read_after_the_command(self):
+        self.scenario({})
+        p = self.plan()
+        r = self.run_script('forge-parallel.sh', 'run', p, '--verify', 'mv .git .git.gone; exit 3')
+        self.assertEqual(self.text(p, 'verification.exit'), '3', r.stdout)
 
     def test_a_failing_verify_is_still_rerun_when_nothing_interrupts(self):
         self.scenario({})
