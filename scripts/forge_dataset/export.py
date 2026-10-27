@@ -32,12 +32,9 @@ import time
 from collections import Counter, defaultdict
 from pathlib import Path
 
-from forge_jev import outcome
-from forge_jev.features import task_size
-from forge_jev.questions import first_pass, retry_pass  # noqa: F401  shared with live forge
-
 from . import SKILL, connect, data_home, read_blob
 from .harvest import review_completeness
+from .states import assemble, retry, siblings, task_size
 
 SLICES = ('routing', 'retry', 'review', 'drift', 'citation', 'memory')
 
@@ -148,6 +145,37 @@ def declared_tier() -> dict:
                       'bounded blast radius.',
             'high': 'needs design judgment, touches cross-cutting behaviour, has subtle edge cases '
                     'or state/concurrency, or the right approach is not obvious from the goal.'})
+
+
+# Frozen: these strings are part of every exported routing and retry case.
+
+def first_pass() -> dict:
+    return dict(type='noul', instructions=(
+        'This Forge task is dispatched to the model in state.dwarf, at the effort shown, in its '
+        'own worktree. An independent model (state.reviewer) then reviews the resulting diff '
+        'against the task. Will that FIRST attempt pass review, with no retry needed?'),
+        criteria={
+            'true': 'The task is within reach of this model at this effort on the first try: the '
+                    'requirements are clear, the change is contained, and nothing in it is likely '
+                    'to be missed or subtly wrong.',
+            'false': 'The first attempt is likely to fail review: the task has edge cases, '
+                     'cross-cutting effects, unclear requirements or subtle state that a first '
+                     'attempt by this model at this effort typically gets wrong, so a retry would '
+                     'be needed.'})
+
+
+def retry_pass() -> dict:
+    return dict(type='noul', instructions=(
+        'An earlier attempt at this Forge task failed review. The task is now dispatched again, to '
+        'the model in state.dwarf at the effort shown, with that review\'s findings '
+        '(state.previous_review) to fix; state.attempt is which try this is, and the model in '
+        'state.reviewer reviews the result. Will this attempt pass review?'),
+        criteria={
+            'true': 'The findings are specific and fixable, and this model at this effort can address '
+                    'them without breaking something else: the retry is likely to pass.',
+            'false': 'The findings point at a design problem, an unclear requirement or a recurring '
+                     'mistake that another attempt by this model at this effort is likely to repeat: '
+                     'the retry is likely to fail again and should be escalated or rethought.'})
 
 
 def review_passes() -> dict:
@@ -294,7 +322,7 @@ def _file_excerpts(store: Store, plan, files) -> dict:
 
 
 def _siblings(plan, task_id) -> list:
-    return outcome.siblings([dict(row, id=tid) for tid, row in (plan['d'].get('tasks') or {}).items()], task_id)
+    return siblings([dict(row, id=tid) for tid, row in (plan['d'].get('tasks') or {}).items()], task_id)
 
 
 def _attempts(runs: Runs, run, task, rows) -> list:
@@ -384,7 +412,7 @@ def _task_state(runs: Runs, run, task, attempt):
         return None, None, None
     dwarf = runs.resolved(run, task, 'dwarf', attempt['attempt']) or _spec(attempt['d'].get('dwarf'))
     reviewer = runs.resolved(run, task, 'qa', attempt['attempt']) or _spec(attempt['d'].get('qa'))
-    state = outcome.assemble(
+    state = assemble(
         goal=store.text((plan['d'].get('blobs') or {}).get('goal')) or plan['d'].get('goal') or '',
         task_id=task, title=row.get('title', ''), files=row.get('files', ''), deps=row.get('deps', ''),
         prompt=prompt, approach=store.text(row.get('approach')), plan_tasks=_siblings(plan, task),
@@ -511,7 +539,7 @@ def retry_cases(runs: Runs):
             state, _row, plan = _task_state(runs, run, task, start)
             if state is None:
                 continue
-            state = outcome.retry(state, attempt=a['n'], previous_review=findings)
+            state = retry(state, attempt=a['n'], previous_review=findings)
             yield dict(slice='retry', key=(run, task, a['n']), run=run, repo=start['repo'], task=task,
                        state=state, questions=dict(retry_pass=retry_pass()),
                        expected=dict(retry_pass=a['outcome']), baseline={},

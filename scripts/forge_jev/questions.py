@@ -523,35 +523,3 @@ def memory_relevant(text: str, task: str) -> dict:
               'context on every dispatch, so a fact that will not change what the model '
               'does here should be left out.',
     )
-
-# --- outcome rubrics: asked live by the clef-first-pass and clef-retry-pass sites, and by
-# the export on rebuilt states (forge_jev/outcome.py builds both). Text is frozen: it is
-# part of every exported case's body and of what Clef was measured answering.
-
-def first_pass() -> dict:
-    return dict(type='noul', instructions=(
-        'This Forge task is dispatched to the model in state.dwarf, at the effort shown, in its '
-        'own worktree. An independent model (state.reviewer) then reviews the resulting diff '
-        'against the task. Will that FIRST attempt pass review, with no retry needed?'),
-        criteria={
-            'true': 'The task is within reach of this model at this effort on the first try: the '
-                    'requirements are clear, the change is contained, and nothing in it is likely '
-                    'to be missed or subtly wrong.',
-            'false': 'The first attempt is likely to fail review: the task has edge cases, '
-                     'cross-cutting effects, unclear requirements or subtle state that a first '
-                     'attempt by this model at this effort typically gets wrong, so a retry would '
-                     'be needed.'})
-
-
-def retry_pass() -> dict:
-    return dict(type='noul', instructions=(
-        'An earlier attempt at this Forge task failed review. The task is now dispatched again, to '
-        'the model in state.dwarf at the effort shown, with that review\'s findings '
-        '(state.previous_review) to fix; state.attempt is which try this is, and the model in '
-        'state.reviewer reviews the result. Will this attempt pass review?'),
-        criteria={
-            'true': 'The findings are specific and fixable, and this model at this effort can address '
-                    'them without breaking something else: the retry is likely to pass.',
-            'false': 'The findings point at a design problem, an unclear requirement or a recurring '
-                     'mistake that another attempt by this model at this effort is likely to repeat: '
-                     'the retry is likely to fail again and should be escalated or rethought.'})
