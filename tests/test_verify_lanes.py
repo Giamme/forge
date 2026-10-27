@@ -116,14 +116,14 @@ class ResultTests(VerifyLanesCase):
     def test_failure_exits_1_and_rows_have_eight_columns(self):
         self.lane('bad', 'echo broken; exit 4')
         self.lane('good', 'echo fine')
-        done = self.run_verify()
+        done = self.run_verify('--retries', '0')   # reruns have their own tests (test_verify_reruns.py)
         self.assertEqual(done.returncode, 1)
         rows = self.rows()
         self.assertEqual(len(rows), 2)
         self.assertTrue(all(len(r) == 8 for r in rows))
         bad = next(r for r in rows if r[6] == 'bad')
         self.assertEqual(bad[:6], ['1', 'initial', '4', '0', '0',
-                                   'verification.lane.bad.log'])
+                                   'verification.lane.bad.run-1.log'])
         float(bad[7])
         self.assertEqual(self.lane_doc('bad')['exit'], 4)
         self.assertIn('broken', (self.out / 'verification.lane.bad.log').read_text())

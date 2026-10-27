@@ -12,12 +12,17 @@ optional leading ``#forge: key[=value] ...`` lines:
 
     forge-verify.py lanes --lanes-dir DIR [--json]
     forge-verify.py run --checkout DIR --out DIR --lanes-dir DIR [--parallel N]
-                        [--fingerprint-cmd CMD]
+                        [--retries N] [--fingerprint-cmd CMD]
 
-``run`` writes, into ``--out``: one log per lane (``verification.lane.<name>.log``),
+``run`` writes, into ``--out``: one log per lane (``verification.lane.<name>.log``, the run in
+progress, and ``verification.lane.<name>.run-<k>.log`` for each finished run),
 ``verification.lanes.json`` (rewritten atomically on every state change and at most once
 a second while lanes print) and ``verification.runs.tsv``
 (``n kind exit tree_changed duration_s log lane started``, one row per lane run).
+
+A failed lane is rerun alone, in rounds after the initial one, up to its budget
+(``--retries``, default 1, or the lane's ``retries=``); a pass on a rerun makes it ``flaky``.
+Nothing reruns once the checkout changed: a rerun on another tree proves nothing.
 
 Exit codes: 0 every lane passed and nothing mutated, 1 otherwise, 130 interrupted,
 2 configuration error (nothing ran).
@@ -225,6 +230,11 @@ def lane_log(name: str) -> str:
     return f'verification.lane.{name}.log'
 
 
+def run_log(name: str, k: int) -> str:
+    """Where run k of a lane is kept once it is over; no dots in names, so no collision."""
+    return f'verification.lane.{name}.run-{k}.log'
+
+
 class Live:
     """A started lane process and what is read from its log so far."""
 
@@ -242,10 +252,12 @@ class Live:
 
 class Verification:
     def __init__(self, checkout: str, out: str, lanes: list[dict], parallel: int,
-                 fingerprint_cmd: str | None = None):
+                 fingerprint_cmd: str | None = None, retries: int = 1):
         self.checkout = checkout
         self.out = Path(out)
         self.parallel = parallel
+        self.retries = retries
+        self.before: str | None = None
         self.fingerprint_cmd = fingerprint_cmd
         self.stop = False
         self.running: dict[str, Live] = {}
@@ -335,8 +347,9 @@ class Verification:
         lane = self.by_name[name]
         now = time.time()
         log = self.out / lane['log']
-        run = {'k': len(lane['runs']) + 1, 'kind': kind, 'started': now, 'ended': None,
-               'exit': None, 'log': lane['log']}
+        k = len(lane['runs']) + 1
+        run = {'k': k, 'kind': kind, 'started': now, 'ended': None, 'exit': None,
+               'log': run_log(name, k)}
         lane['runs'].append(run)
         lane.update(state='running', started=now, ended=None, exit=None, step=None)
         try:
@@ -444,6 +457,56 @@ class Verification:
             elif lane['step'] and lane['step']['name'] == step:
                 lane['step'] = None
 
+    # reruns ---------------------------------------------------------------------------------
+
+    def budget(self, name: str) -> int:
+        return self.by_name[name]['options'].get('retries', self.retries)
+
+    def changed(self) -> bool:
+        """The mutation check, after a round: leftovers are stopped first, and once the tree
+        changed it stays changed."""
+        if not self.doc['mutated']:
+            self._kill_all()
+            try:
+                self.doc['mutated'] = fingerprint(self.checkout, self.fingerprint_cmd) != self.before
+            except (RuntimeError, OSError):
+                self.doc['mutated'] = True
+            if self.doc['mutated']:
+                self.save()
+        return self.doc['mutated']
+
+    def rerun(self, names: list[str]) -> None:
+        """Rounds of reruns of the failed lanes among ``names`` with budget left, each round
+        under the same parallel and group rules; a pass on a rerun is flaky."""
+        while not self.stop and not self.changed():
+            due = [n for n in names if self.by_name[n]['state'] == 'fail'
+                   and len(self.by_name[n]['runs']) - 1 < self.budget(n)]
+            if not due:
+                return
+            for name in due:
+                self._archive(name, truncate=True)
+            self.run_round(due, kind='rerun')
+            for name in due:
+                lane = self.by_name[name]
+                if lane['state'] == 'pass':
+                    lane['state'] = 'flaky'
+            self.save()
+
+    def _archive(self, name: str, truncate: bool = False) -> None:
+        """Keep the lane's last run under its run-<k> name; a rerun then starts a fresh log."""
+        lane = self.by_name[name]
+        if not lane['runs']:
+            return
+        live, kept = self.out / lane['log'], self.out / lane['runs'][-1]['log']
+        try:
+            if live.exists() and not kept.exists():
+                shutil.copyfile(live, kept)
+            if truncate:
+                with open(live, 'wb'):
+                    pass
+        except OSError as exc:
+            print(f'forge-verify: cannot keep {kept.name}: {exc}', file=sys.stderr)
+
     # process groups ---------------------------------------------------------------------
 
     def _terminate(self) -> None:
@@ -537,7 +600,7 @@ class Verification:
     def _run(self) -> int:
         self.out.mkdir(parents=True, exist_ok=True)
         try:
-            before = fingerprint(self.checkout, self.fingerprint_cmd)
+            self.before = fingerprint(self.checkout, self.fingerprint_cmd)
         except (RuntimeError, OSError) as exc:
             print(f'forge-verify: cannot fingerprint {self.checkout}: {exc}', file=sys.stderr)
             self._abort()
@@ -549,25 +612,25 @@ class Verification:
         rest = [n for n in names if n not in firsts]
         if firsts:
             self.run_round(firsts)
+            self.rerun(firsts)   # before the gate: a flaky first lane lets the rest run
         if not self.stop:
-            if any(self.by_name[n]['state'] != 'pass' for n in firsts):
+            if any(self.by_name[n]['state'] not in ('pass', 'flaky') for n in firsts) or self.doc['mutated']:
                 for n in rest:
                     self.by_name[n]['state'] = 'skipped'
             else:
                 self.run_round(rest)
+                self.rerun(rest)
         if self.stop:
             for lane in lanes:
                 if lane['state'] in ('waiting', 'running'):
                     lane['state'] = 'interrupted'
             self.doc['state'] = 'interrupted'
         else:
-            self._kill_all()  # leftovers of the last lanes, before the tree is looked at again
-            try:
-                self.doc['mutated'] = fingerprint(self.checkout, self.fingerprint_cmd) != before
-            except (RuntimeError, OSError):
-                self.doc['mutated'] = True
-            ok = all(lane['state'] == 'pass' for lane in lanes) and not self.doc['mutated']
+            self.changed()   # stops the last lanes' leftovers, then looks at the tree again
+            ok = all(lane['state'] in ('pass', 'flaky') for lane in lanes) and not self.doc['mutated']
             self.doc['state'] = 'pass' if ok else 'fail'
+        for name in names:
+            self._archive(name)   # every run has its own log, the last one included
         self.doc['ended'] = time.time()
         self.save()
         self.write_runs()
@@ -578,7 +641,12 @@ class Verification:
         for lane in self.doc['lanes']:
             took = '' if lane['started'] is None or lane['ended'] is None \
                 else f'{int(lane["ended"] - lane["started"])}s'
-            print(f'  {lane["name"]:<24} {lane["state"]:<12} {took}'.rstrip())
+            runs = len(lane['runs'])
+            extra = f'({runs} runs)' if runs > 1 else ''
+            print(f'  {lane["name"]:<24} {lane["state"]:<12} {took:<6} {extra}'.rstrip())
+        flaky = [lane['name'] for lane in self.doc['lanes'] if lane['state'] == 'flaky']
+        if flaky:
+            print('  flaky (failed, then passed on a rerun): ' + ', '.join(flaky))
         if self.doc['mutated']:
             print('  the working tree changed while the lanes ran; with lanes in parallel the '
                   'change cannot be pinned to one lane (mutated: true)')
@@ -590,6 +658,12 @@ class Verification:
 def positive(value: str) -> int:
     if not re.fullmatch(r'[0-9]+', value) or int(value) < 1:
         raise argparse.ArgumentTypeError('must be an integer of at least 1')
+    return int(value)
+
+
+def retries_value(value: str) -> int:
+    if not re.fullmatch(r'[0-9]', value):
+        raise argparse.ArgumentTypeError('must be an integer from 0 to 9')
     return int(value)
 
 
@@ -617,7 +691,8 @@ def cmd_run(args: argparse.Namespace) -> int:
     if errors:
         print('\n'.join(errors), file=sys.stderr)
         return 2
-    verification = Verification(args.checkout, args.out, lanes, args.parallel, args.fingerprint_cmd)
+    verification = Verification(args.checkout, args.out, lanes, args.parallel, args.fingerprint_cmd,
+                                args.retries)
 
     def interrupt(signum, frame):
         verification.stop = True
@@ -639,6 +714,8 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument('--out', required=True)
     run.add_argument('--lanes-dir', required=True)
     run.add_argument('--parallel', type=positive, default=3)
+    run.add_argument('--retries', type=retries_value, default=1,
+                     help='reruns of a failed lane (default 1; a lane\'s retries= wins)')
     run.add_argument('--fingerprint-cmd')
     run.set_defaults(func=cmd_run)
     args = parser.parse_args(argv)
