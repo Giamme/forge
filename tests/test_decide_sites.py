@@ -243,6 +243,17 @@ class VerifyTestCase(unittest.TestCase):
         self.assertEqual(record.score(answers, 'runs_1', body=body), 0.1)
         self.assertEqual(record.fired(answers, 0.7, body=body), ['runs_0'])
 
+    def test_candidates_from_the_logged_questions_alone(self):
+        # A jev.jsonl entry keeps the questions, not the state: the choice criteria carry the order.
+        record = sites.site('jev-verify-discover')
+        logged = dict(questions=dict(choice=dict(type='choice', criteria={
+            'make test': 'a', 'bash tests/check.sh': 'b', 'none': 'c'})))
+        answers = {'choice': choice('make test', {'bash tests/check.sh': 0.1, 'make test': 0.8, 'none': 0.1}),
+                   'runs_0': noul(0.9), 'runs_1': noul(0.1)}
+        self.assertEqual(record.fired(answers, 0.7, body=logged), ['runs_0'])
+        self.assertEqual(record.score(answers, 'runs_0', body=logged), 0.8)
+        self.assertEqual(record.decisions(logged), ['runs_0', 'runs_1'])
+
     def test_the_verifiability_gate_not_the_winners_confidence(self):
         record = sites.site('jev-verify-discover')
         # A split between two right commands: the winner's confidence is 0.49, P(none) 0.07.

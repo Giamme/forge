@@ -11,7 +11,8 @@
 
 `fired` and `score` also accept `body=` (the request the answers belong to). Verify-discover
 needs it: `runs_<i>` is the i-th candidate of the request, which the answers do not record,
-so without it nothing is reported fired and the score is None. Memory-slice uses it to know
+so without it nothing is reported fired and the score is None. `body` may be a stored
+request body or just `{'questions': ...}` as a jev.jsonl entry keeps them. Memory-slice uses it to know
 the lines a skipped tail of the answers left unscored.
 - `label`: one sentence naming the label, or None with the issue that will define it.
 - `baseline(body, qid)`: the cheap heuristic the site must not lose to; higher = more
@@ -127,8 +128,15 @@ def _fired_slice(answers, threshold_value=None, *, body=None, **_):
 def _commands(body) -> list:
     """The candidates' commands in the request's order: what `runs_<i>` index into. Only the
     request knows it; the order of the answer's probability map is not a record of it."""
-    return [candidate.get('command') if isinstance(candidate, dict) else None
-            for candidate in _candidates(body)]
+    found = [candidate.get('command') if isinstance(candidate, dict) else None
+             for candidate in _candidates(body)]
+    if found:
+        return found
+    # A jev.jsonl entry keeps the questions but not the state: the choice's criteria are the
+    # candidate commands in request order, then `none`.
+    choice = _questions(body).get('choice')
+    criteria = choice.get('criteria') if isinstance(choice, dict) else None
+    return [command for command in criteria if command != 'none'] if isinstance(criteria, dict) else []
 
 
 def _fired_verify(answers, threshold_value, *, body=None, **_):
@@ -192,7 +200,7 @@ def _score_verify(answers, qid, *, body=None):
 
 
 def _decisions_verify(body):
-    return [f'runs_{i}' for i in range(len(_candidates(body)))]
+    return [f'runs_{i}' for i in range(len(_commands(body)))]
 
 
 # --- baselines ---------------------------------------------------------------------------
@@ -237,7 +245,7 @@ def _baseline_slice(body, qid) -> float:
 def _baseline_verify(body, qid) -> float:
     """Candidate order: the first candidate scores highest."""
     index = _index(qid)
-    count = len(_candidates(body))
+    count = len(_commands(body))
     return float(count - index) if 0 <= index < count else 0.0
 
 
