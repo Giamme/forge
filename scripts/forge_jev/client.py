@@ -1,9 +1,10 @@
 """Stdlib-only decision-model HTTP client; every failure degrades to None, never raises.
 
-Two providers answer the same request shape ({state, model, questions}): TypeSafe's
-hosted Jev, and Cloudflare Workers AI's hosted Clef. Which one a call goes to is the
-site's (`provider_for`); without a Cloudflare provider configured every site asks
-TypeSafe exactly as it always has.
+Two transports answer the same request shape ({state, model, questions}): Jev-compatible
+(TypeSafe's hosted Jev, or a local server speaking its API) and Clef-compatible (Cloudflare
+Workers AI's envelope, hosted or local). Which provider a call goes to is the site's spec
+(forge_decide.providers.spec_for_site); without a decide.json every site asks exactly as it
+always has: TypeSafe, or Cloudflare where jev.json's site map says so.
 """
 from __future__ import annotations
 
@@ -19,8 +20,14 @@ import urllib.error
 import urllib.request
 import uuid
 
-from . import (CLOUDFLARE_CONTEXT, CLOUDFLARE_MAX_QUESTIONS, CLOUDFLARE_MODEL, CLOUDFLARE_URL, DEFAULTS,
-               acting, api_key, cloudflare, load_config, provider_for, redact, secrets, shadow, write_json)
+from . import (CLOUDFLARE_CONTEXT, CLOUDFLARE_MAX_QUESTIONS, CLOUDFLARE_MODEL, acting, load_config, redact,
+               secrets, shadow, write_json)
+
+_SCRIPTS = str(Path(__file__).resolve().parent.parent)
+if _SCRIPTS not in sys.path:
+    sys.path.insert(0, _SCRIPTS)
+from forge_decide import budget as _budget, providers as _providers  # noqa: E402
+from forge_decide.resolve import resolve as _resolve  # noqa: E402
 
 _BACKOFFS = (0.2, 0.4, 0.8)
 _RETRYABLE_CODES = (429, 529)
@@ -121,15 +128,16 @@ def _tokens(text: str) -> int:
     return (len(text) + 2) // 3
 
 
-def chunks(state, questions: dict, model: str) -> list[dict] | None:
+def chunks(state, questions: dict, model: str, context: int | None = None) -> list[dict] | None:
     """Questions packed into requests Cloudflare will evaluate whole, or None if none fits.
 
     Each request carries the full state, at most CLOUDFLARE_MAX_QUESTIONS questions, and
-    stays under 90% of the model's context, which counts state and questions together.
+    stays under 90% of the context limit (`context`, else the model's), which counts state
+    and questions together.
     Past that the service cuts the state silently, so a request that cannot fit even one
     question is refused here instead of being answered on evidence it never saw.
     """
-    budget = int(CLOUDFLARE_CONTEXT.get(model, CLOUDFLARE_CONTEXT[CLOUDFLARE_MODEL]) * 0.9)
+    budget = int((context or CLOUDFLARE_CONTEXT.get(model, CLOUDFLARE_CONTEXT[CLOUDFLARE_MODEL])) * 0.9)
     base = _tokens(_canonical(state).decode())
     out, current, cost = [], {}, base
     for qid, question in questions.items():
@@ -163,7 +171,15 @@ def _retry_after(error) -> float | None:
     return value if math.isfinite(value) and value >= 0 else None
 
 
-def _cloudflare_post(url: str, body: bytes, token: str, deadline_at: float, hidden: list) -> tuple:
+def _headers(key: str | None) -> dict:
+    """A local provider may need no key: then no Authorization header at all."""
+    headers = {'Content-Type': 'application/json'}
+    if key:
+        headers['Authorization'] = 'Bearer ' + key
+    return headers
+
+
+def _cloudflare_post(url: str, body: bytes, token: str | None, deadline_at: float, hidden: list) -> tuple:
     """One request to Workers AI: (result dict, None) or (None, reason)."""
     backoffs = iter(_BACKOFFS)
     reason = 'timeout'
@@ -171,8 +187,7 @@ def _cloudflare_post(url: str, body: bytes, token: str, deadline_at: float, hidd
         remaining = deadline_at - time.time()
         if remaining <= 0:
             return None, reason
-        request = urllib.request.Request(url, data=body, method='POST', headers={
-            'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json'})
+        request = urllib.request.Request(url, data=body, method='POST', headers=_headers(token))
         wait = None
         try:
             with urllib.request.urlopen(request, timeout=remaining) as response:
@@ -217,11 +232,12 @@ def _cloudflare_post(url: str, body: bytes, token: str, deadline_at: float, hidd
 
 
 def _cloudflare_ask(state, questions: dict, provider: dict, deadline_at: float, hidden: list) -> tuple:
-    """(result, None, chunk hashes) or (None, reason, chunk hashes); chunks run concurrently."""
-    parts = chunks(state, questions, provider['model'])
+    """(result, None, chunk hashes) or (None, reason, chunk hashes); chunks run concurrently.
+    `provider` is a spec: its url is already formatted, its key may be None (local)."""
+    parts = chunks(state, questions, provider['model'], provider.get('context'))
     if parts is None:
         return None, 'too-large', []
-    url = (provider.get('url') or CLOUDFLARE_URL).format(account=provider['account_id'], model=provider['model'])
+    url = provider['url']
     bodies = [_canonical(dict(model=provider['model'], state=state, questions=part)) for part in parts]
     hashes = [hashlib.sha256(body).hexdigest() for body in bodies]
     results, reasons = [None] * len(bodies), ['timeout'] * len(bodies)
@@ -230,7 +246,7 @@ def _cloudflare_ask(state, questions: dict, provider: dict, deadline_at: float, 
     def work(i):
         with gate:
             if time.time() < deadline_at:
-                results[i], reasons[i] = _cloudflare_post(url, bodies[i], provider['token'], deadline_at, hidden)
+                results[i], reasons[i] = _cloudflare_post(url, bodies[i], provider['key'], deadline_at, hidden)
 
     if len(bodies) == 1:
         work(0)
@@ -257,18 +273,16 @@ def _cloudflare_ask(state, questions: dict, provider: dict, deadline_at: float, 
 
 
 def ask(state, questions: dict, *, site: str, run_dir=None, config: dict | None = None,
-        deadline_s: float | None = None, context: dict | None = None) -> dict | None:
+        deadline_s: float | None = None, context: dict | None = None, repo=None) -> dict | None:
     """One judgment, or None. `context` (task, stage, attempt, assignment) is recorded with
-    the request in the run dataset, for sites whose run dir does not say which task it is."""
+    the request in the run dataset, for sites whose run dir does not say which task it is.
+    `repo` is the repo whose .forge/decide.json applies (else FORGE_DECIDE_REPO, else the
+    working directory's): its privacy floor skips every request, before fixtures too."""
     config = config or load_config()
-    provider = provider_for(site, config)
-    remote = cloudflare(config) if provider == 'cloudflare' else None
-    if provider == 'cloudflare':
-        key = remote['token'] if remote and remote['account_id'] else None
-        model = remote['model'] if remote else CLOUDFLARE_MODEL
-    else:
-        key = api_key(config)
-        model = config.get('model', DEFAULTS['model'])
+    repo = _providers.find_repo(repo)
+    resolved = _resolve(repo)
+    spec = _providers.spec_for_site(site, config=config, repo=repo, resolved=resolved)
+    provider, key, model = spec['name'], spec['key'], spec['model']
     qids = list(questions)
     started = time.time()
     extra = dict(context or {}, provider=provider, occurrence=uuid.uuid4().hex)
@@ -292,7 +306,12 @@ def ask(state, questions: dict, *, site: str, run_dir=None, config: dict | None 
         return done(False, 'unserializable-state: ' + str(error), None)
     fixture_key = hashlib.sha256(canonical).hexdigest()
 
-    if not key:
+    # `repo` is already looked up: no second git call once the deadline is running.
+    if repo is not None and _providers.privacy_floor(repo):
+        return done(False, 'privacy', None)
+    if _budget.check(resolved.get('budget'), run_dir=run_dir):
+        return done(False, _budget.SKIP, None)
+    if not key and not spec['local']:
         return done(False, 'no-key', None)
 
     fixtures_dir = os.environ.get('FORGE_JEV_FIXTURES')
@@ -311,37 +330,40 @@ def ask(state, questions: dict, *, site: str, run_dir=None, config: dict | None 
                       model=payload.get('model', model), latency_s=0.0, site=site)
         return done(True, None, result, model=result['model'], usage=result['usage'], latency=0.0)
 
-    budget = deadline_s if deadline_s is not None else config.get('deadline_s', DEFAULTS['deadline_s'])
+    budget = deadline_s if deadline_s is not None else spec['deadline_s']
     deadline_at = started + budget
-    hidden = secrets(config)
-    if provider == 'cloudflare':
-        payload, reason, extra['chunks'] = _cloudflare_ask(state, questions, remote, deadline_at, hidden)
+    hidden = [s for s in secrets(config) + [key] if s]
+    if not spec['url']:
+        return done(False, 'no-url', None)
+    if spec['type'] == 'clef':
+        payload, reason, extra['chunks'] = _cloudflare_ask(state, questions, spec, deadline_at, hidden)
         if payload is None:
             return done(False, reason, None)
     else:
-        url = config.get('endpoint', DEFAULTS['endpoint'])
+        if spec['context'] and _tokens(canonical.decode()) > spec['context'] * 0.9:
+            return done(False, 'too-large', None)
+        url = spec['url']
         backoffs = iter(_BACKOFFS)
         reason = 'timeout'
         while True:
             remaining = deadline_at - time.time()
             if remaining <= 0:
                 return done(False, reason, None)
-            request = urllib.request.Request(url, data=canonical, method='POST', headers={
-                'Authorization': 'Bearer ' + key, 'Content-Type': 'application/json'})
+            request = urllib.request.Request(url, data=canonical, method='POST', headers=_headers(key))
             try:
                 with urllib.request.urlopen(request, timeout=remaining) as response:
                     payload = json.loads(response.read().decode())
                 break
             except urllib.error.HTTPError as error:
                 # Redacted before it is cut, so a key straddling the cut leaves no prefix.
-                detail = redact(error.read().decode(errors='replace'), key)[:200]
+                detail = redact(error.read().decode(errors='replace'), *hidden)[:200]
                 reason = f'http-{error.code}: {detail}'
                 if error.code not in _RETRYABLE_CODES:
                     return done(False, reason, None)
             except urllib.error.URLError as error:
-                reason = redact('network: ' + str(error.reason), key)
+                reason = redact('network: ' + str(error.reason), *hidden)
             except (TimeoutError, ValueError) as error:
-                return done(False, redact('network: ' + str(error), key), None)
+                return done(False, redact('network: ' + str(error), *hidden), None)
             delay = next(backoffs, None)
             remaining = deadline_at - time.time()
             if delay is None or remaining <= 0:
@@ -361,6 +383,7 @@ def ask(state, questions: dict, *, site: str, run_dir=None, config: dict | None 
     latency = time.time() - started
     result = dict(answers=payload['answers'], usage=payload.get('usage'),
                   model=payload.get('model', model), latency_s=latency, site=site)
+    _budget.charge(spec, result['usage'], run_dir=run_dir)
     return done(True, None, result, model=result['model'], usage=result['usage'], latency=latency)
 
 
@@ -404,6 +427,7 @@ def score(result, qid: str) -> tuple[float | None, float]:
     if not answer or answer.get('type') != 'score':
         return (None, 0.0)
     return (answer.get('score'), answer.get('confidence', 0.0))
+
 
 
 def normalized(result, qid: str) -> float | None:
