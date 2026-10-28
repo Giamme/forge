@@ -199,6 +199,16 @@ class ForwardTests(LabelsCase):
         self.assertEqual(row['labels'], dict(f0=True, f1=False))
         self.assertEqual(row['live'], dict(f0=0.8, f1=0.2))
 
+    def test_only_earlier_waiting_on_later_is_the_dependency(self):
+        self.plan('run1', T0 - 10, dict(api='', ui=''))
+        self.ask('jev-forward', self.body([('api', 'ui')]), dict(f0=noul(0.7)), run='run1', ts=T0)
+        # LATER naming EARLIER is the order the waves already run in, not the question's dependency.
+        self.plan('run1', T0 + 10, dict(api='', ui='api'))
+        self.merge('run1', 'api')
+        self.merge('run1', 'ui')
+        [row] = self.collect('jev-forward')
+        self.assertEqual(row['labels'], dict(f0=False))
+
     def test_a_pair_not_both_merged_is_unlabelled(self):
         self.plan('run1', T0 - 10, dict(api='', ui=''))
         self.ask('jev-forward', self.body([('api', 'ui')]), dict(f0=noul(0.2)), run='run1', ts=T0)

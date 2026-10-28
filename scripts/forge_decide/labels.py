@@ -202,7 +202,10 @@ def _verify_discover(index: _Index, record, event, body) -> dict:
 
 def _depends(plan, earlier, later) -> bool:
     """Whether the plan revision lists `later` in `earlier`'s deps: the dependency the
-    forward question is about (coupling.forward_pairs drops a pair that already has it)."""
+    forward question is about. The question asks whether EARLIER depends on what LATER
+    builds ("LATER is not a declared dependency of EARLIER"), and coupling.forward_pairs
+    drops a pair that already has it. `later` naming `earlier` is the order the waves
+    already run in, so it confirms nothing."""
     row = (plan['d'].get('tasks') or {}).get(earlier) or {}
     return later in export.words(row.get('deps'))
 
