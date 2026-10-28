@@ -437,7 +437,11 @@ def cmd_verify_discover(args) -> int:
 
     use_repo(repo)
     config = load_config()
-    result = verify.discover(repo, config=config, run_dir=args.run_dir)
+    # Asked only when the gate's provider is usable. discover() does not check that, and a
+    # gate naming a missing provider would send the repo's commands to the hosted TypeSafe.
+    result = None
+    if site_ready('jev-verify-discover', config):
+        result = verify.discover(repo, config=config, run_dir=args.run_dir)
     # Shadow: asked and recorded like `on`, then the path a run takes with no command.
     if result is None or gate_mode('jev-verify-discover') == 'shadow':
         if not args.json:

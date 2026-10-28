@@ -263,6 +263,27 @@ class VerifyDiscoverShadowTests(WireCase):
         self.assertEqual((rc, out), (0, 'make test\n'))
 
 
+class VerifyDiscoverProviderTests(WireCase):
+    def test_a_gate_naming_a_missing_provider_sends_nothing(self):
+        # A typo'd name must not fall back to the hosted TypeSafe that TYPESAFE_API_KEY unlocks.
+        self.write_user({'version': 1, 'gates': {'verify-discover': {'mode': 'on', 'provider': 'mylocal'}}})
+        self.assertFalse(forge_jev.site_ready('jev-verify-discover'))
+        with patch.object(client, '_canonical', side_effect=AssertionError('a request was built')), \
+                patch('urllib.request.urlopen', side_effect=AssertionError('network')):
+            rc, out, _ = self.call(self.verify_discover())
+        self.assertEqual((rc, out), (3, ''))
+        self.assertEqual(self.log(), [])
+
+    def test_a_gate_naming_a_configured_provider_asks_it(self):
+        self.write_user({'version': 1,
+                         'providers': {'mylocal': dict(type='jev', url='http://127.0.0.1:9/', local=True)},
+                         'gates': {'verify-discover': {'mode': 'on', 'provider': 'mylocal'}}})
+        rc, out, _ = self.run_cli(self.verify_discover(), logs=[self.run_dir])
+        self.assertEqual((rc, out), (0, 'make test\n'))
+        [entry] = self.log()
+        self.assertEqual(entry['provider'], 'mylocal')
+
+
 class PerModelThresholdTests(WireCase):
     def drift_gate(self, thresholds_model):
         self.write_user({'version': 1, 'gates': dict(
