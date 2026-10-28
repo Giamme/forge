@@ -284,6 +284,76 @@ def _cloudflare_ask(state, questions: dict, provider: dict, deadline_at: float, 
     return dict(answers=answers, usage=usage or None, model=model or provider['model']), None, hashes
 
 
+def _transport(spec: dict, state, questions: dict, canonical: bytes, deadline_at: float, hidden: list) -> tuple:
+    """The network part of one request to `spec`: (payload, None, chunk hashes) or (None,
+    reason, chunk hashes). `canonical` is the Jev body; a Clef spec is sent in chunks, whose
+    hashes are a list (None for Jev). A payload always holds an `answers` dict."""
+    if not spec['url']:
+        return None, 'no-url', None
+    hashes = None
+    if spec['type'] == 'clef':
+        payload, reason, hashes = _cloudflare_ask(state, questions, spec, deadline_at, hidden)
+        if payload is None:
+            return None, reason, hashes
+    else:
+        if spec['context'] and _tokens(canonical.decode()) > spec['context'] * 0.9:
+            return None, 'too-large', None
+        url = spec['url']
+        backoffs = iter(_BACKOFFS)
+        reason = 'timeout'
+        while True:
+            remaining = deadline_at - time.time()
+            if remaining <= 0:
+                return None, reason, None
+            request = urllib.request.Request(url, data=canonical, method='POST', headers=_headers(spec['key']))
+            try:
+                with urllib.request.urlopen(request, timeout=remaining) as response:
+                    payload = json.loads(response.read().decode())
+                break
+            except urllib.error.HTTPError as error:
+                # Redacted before it is cut, so a key straddling the cut leaves no prefix.
+                detail = redact(error.read().decode(errors='replace'), *hidden)[:200]
+                reason = f'http-{error.code}: {detail}'
+                if error.code not in _RETRYABLE_CODES:
+                    return None, reason, None
+            except urllib.error.URLError as error:
+                reason = redact('network: ' + str(error.reason), *hidden)
+            except (TimeoutError, ValueError) as error:
+                return None, redact('network: ' + str(error), *hidden), None
+            delay = next(backoffs, None)
+            remaining = deadline_at - time.time()
+            if delay is None or remaining <= 0:
+                return None, reason, None
+            time.sleep(min(delay, remaining))
+    if not (isinstance(payload, dict) and isinstance(payload.get('answers'), dict)):
+        return None, 'malformed', hashes
+    return payload, None, hashes
+
+
+def send(spec: dict, state, questions: dict, *, deadline_s: float | None = None) -> tuple:
+    """One request straight to provider `spec`, model spec['model']: (result, None, usage) or
+    (None, reason, None). The transport of ask() (Jev POST or Clef chunks, the context
+    limit, retries, validation, redaction) and nothing else: no gate, privacy floor, budget,
+    cache, fixtures, jev.jsonl or dataset. For `forge decide replay`, which re-asks stored
+    requests on a named provider as deliberate, user-run spend."""
+    started = time.time()
+    key = spec.get('key')
+    if not key and not spec.get('local'):
+        return None, 'no-key', None
+    try:
+        canonical = _canonical(dict(state=state, model=spec['model'], questions=questions))
+    except (TypeError, ValueError) as error:
+        return None, 'unserializable-state: ' + str(error), None
+    budget = deadline_s if deadline_s is not None else spec.get('deadline_s') or _providers.DEFAULT_DEADLINE_S
+    hidden = [s for s in secrets() + [key] if s]
+    payload, reason, _hashes = _transport(spec, state, questions, canonical, started + budget, hidden)
+    if payload is None:
+        return None, reason, None
+    result = dict(answers=payload['answers'], usage=payload.get('usage'),
+                  model=payload.get('model', spec['model']), latency_s=time.time() - started)
+    return result, None, result['usage']
+
+
 def ask(state, questions: dict, *, site: str, run_dir=None, config: dict | None = None,
         deadline_s: float | None = None, context: dict | None = None, repo=None) -> dict | None:
     """One judgment, or None. `context` (task, stage, attempt, assignment) is recorded with
@@ -350,47 +420,12 @@ def ask(state, questions: dict, *, site: str, run_dir=None, config: dict | None 
         return done(True, None, result, model=result['model'], usage=result['usage'], latency=0.0)
 
     budget = deadline_s if deadline_s is not None else spec['deadline_s']
-    deadline_at = started + budget
     hidden = [s for s in secrets(config) + [key] if s]
-    if not spec['url']:
-        return done(False, 'no-url', None)
-    if spec['type'] == 'clef':
-        payload, reason, extra['chunks'] = _cloudflare_ask(state, questions, spec, deadline_at, hidden)
-        if payload is None:
-            return done(False, reason, None)
-    else:
-        if spec['context'] and _tokens(canonical.decode()) > spec['context'] * 0.9:
-            return done(False, 'too-large', None)
-        url = spec['url']
-        backoffs = iter(_BACKOFFS)
-        reason = 'timeout'
-        while True:
-            remaining = deadline_at - time.time()
-            if remaining <= 0:
-                return done(False, reason, None)
-            request = urllib.request.Request(url, data=canonical, method='POST', headers=_headers(key))
-            try:
-                with urllib.request.urlopen(request, timeout=remaining) as response:
-                    payload = json.loads(response.read().decode())
-                break
-            except urllib.error.HTTPError as error:
-                # Redacted before it is cut, so a key straddling the cut leaves no prefix.
-                detail = redact(error.read().decode(errors='replace'), *hidden)[:200]
-                reason = f'http-{error.code}: {detail}'
-                if error.code not in _RETRYABLE_CODES:
-                    return done(False, reason, None)
-            except urllib.error.URLError as error:
-                reason = redact('network: ' + str(error.reason), *hidden)
-            except (TimeoutError, ValueError) as error:
-                return done(False, redact('network: ' + str(error), *hidden), None)
-            delay = next(backoffs, None)
-            remaining = deadline_at - time.time()
-            if delay is None or remaining <= 0:
-                return done(False, reason, None)
-            time.sleep(min(delay, remaining))
-
-    if not (isinstance(payload, dict) and isinstance(payload.get('answers'), dict)):
-        return done(False, 'malformed', None)
+    payload, reason, hashes = _transport(spec, state, questions, canonical, started + budget, hidden)
+    if hashes is not None:
+        extra['chunks'] = hashes
+    if payload is None:
+        return done(False, reason, None)
 
     record_dir = os.environ.get('FORGE_JEV_RECORD')
     if record_dir:

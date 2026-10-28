@@ -11,11 +11,21 @@
     doctor   [--live] [--json] [--repo DIR]
     migrate  [--force] [--json]
     report   [--runs N] [--run DIR]... [--site S] [--all] [--json]
+    replay   --site S --provider P --model M [--runs N] [--send] [--workers 3] [--seed 7]
+             [--margin 0.02] [--json]
 
 `report` sums each site's jev.jsonl calls, cache hits, skips, tokens and cost over the newest
 N (default 10) registered runs of the repo (--all: of every repo; --run: those dirs), with how
 often it fired and was right on the dataset's free labels (forge_decide.report). Its --json
 is {runs: [{dir, uid}], skipped_runs, sites: {site: {...}}, totals: {...}}; keys are stable.
+
+`replay` re-asks the site's labelled live requests from the dataset on provider P (a user
+provider, else the legacy typesafe/cloudflare transport) with model M (forge_decide.replay).
+Without --send it only prints the count, estimated input tokens and cost. With --send it asks
+the unanswered ones, outside any budget, then judges replay, baseline and live answers on the
+newer half of the runs and records the result in replays/<gate>.json, which `gate on` reads.
+Its --json is the dry run's estimate, or the evaluation (also `sent`). An unknown provider is
+exit 2, a provider with no key that is not local exit 1.
 
 Every subcommand works offline and with no key, except `doctor --live`. Exit codes: 0 ok,
 2 usage or invalid input, 1 a failed check (doctor) or a config file that cannot be read.
@@ -655,12 +665,59 @@ def cmd_report(args) -> int:
     return 0
 
 
+def cmd_replay(args) -> int:
+    from . import replay as replay_module
+    from . import sites as sites_module
+    record = sites_module.site(args.site)
+    if record is None:
+        raise Usage('unknown site %s (one of: %s)' % (args.site, ', '.join(sorted(sites_module.SITES))))
+    if record.label is None:
+        raise Usage('%s has no free label yet (%s): nothing to judge a replay on' % (args.site, record.label_issue))
+    if args.runs is not None and args.runs < 1:
+        raise Usage('--runs must be at least 1')
+    if args.workers < 1:
+        raise Usage('--workers must be at least 1')
+    if args.margin < 0:
+        raise Usage('--margin must not be negative')
+    try:
+        spec = providers_module.spec_for_provider(args.provider, args.model)
+    except KeyError as error:
+        raise Failed('the %s provider url cannot be formatted: stray brace %s' % (args.provider, error))
+    if spec is None:
+        raise Usage('unknown provider %s (configured: %s)' % (args.provider, ', '.join(providers_module.provider_names())))
+    if not spec['key'] and not spec['local']:
+        raise Failed('provider %s has no key (forge decide provider add ... --key-stdin, or its key_env)'
+                     % args.provider)
+    plan = replay_module.plan(args.site, spec['name'], spec['model'], spec, runs=args.runs)
+    if not args.send:
+        data = replay_module.estimate(plan)
+        print(json.dumps(data, indent=2) if args.json else replay_module.render_estimate(data))
+        return 0
+    sent = replay_module.send_all(plan, workers=args.workers)
+    if not args.json:
+        failed = ', '.join('%s %d' % item for item in sorted(sent['failed'].items()))
+        print('sent %d, answered %d%s' % (sent['sent'], sent['answered'], ' (failed: %s)' % failed if failed else ''))
+    result = replay_module.evaluate(plan, seed=args.seed, margin=args.margin)
+    if result['judged']['decisions']:
+        result['recorded'] = str(replay_module.record(record.gate, result))
+    else:
+        result['recorded'] = None
+    result['sent'] = sent
+    if args.json:
+        print(json.dumps(result, indent=2))
+    else:
+        print(replay_module.render(result))
+        print('recorded in %s' % result['recorded'] if result['recorded']
+              else 'nothing judged yet: not recorded')
+    return 0
+
+
 # ------------------------------------------------------------------------------- parser
 
 def parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog='forge decide', allow_abbrev=False,
                                 description='Decision-model gates: status, gate, provider, budget, '
-                                            'privacy, doctor, migrate, report')
+                                            'privacy, doctor, migrate, report, replay')
     sub = p.add_subparsers(dest='command', required=True)
 
     s = sub.add_parser('status', allow_abbrev=False, help='what is on, and why')
@@ -729,6 +786,19 @@ def parser() -> argparse.ArgumentParser:
     s.add_argument('--all', action='store_true', help="every repo's registered runs")
     s.add_argument('--json', action='store_true')
     s.set_defaults(fn=cmd_report)
+
+    s = sub.add_parser('replay', allow_abbrev=False,
+                       help='re-ask stored requests on a provider and model; judge them on the labels')
+    s.add_argument('--site', required=True, metavar='S', help='a live site, such as jev-drift')
+    s.add_argument('--provider', required=True, metavar='P')
+    s.add_argument('--model', required=True, metavar='M')
+    s.add_argument('--runs', type=int, metavar='N', help='only the newest N dataset runs')
+    s.add_argument('--send', action='store_true', help='ask the provider (without it: a dry run)')
+    s.add_argument('--workers', type=int, default=3)
+    s.add_argument('--seed', type=int, default=7, help='bootstrap seed of the reported interval')
+    s.add_argument('--margin', type=float, default=0.02)
+    s.add_argument('--json', action='store_true')
+    s.set_defaults(fn=cmd_replay)
     return p
 
 
