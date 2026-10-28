@@ -374,11 +374,17 @@ class CliTests(JevVerifyTestCase):
             rc = cli.main(argv)
         return rc, out.getvalue(), err.getvalue()
 
+    def _usable_site(self):
+        # verify-discover is asked only when its provider is usable: the tests capability on,
+        # and a key for the hosted TypeSafe it falls back to.
+        os.environ.update(FORGE_JEV_TESTS='on', TYPESAFE_API_KEY='test-key')
+
     def test_verify_discover_exits_3_with_no_key(self):
         rc, out, err = self._run(['verify-discover', '--repo', str(self.repo)])
         self.assertEqual(rc, 3)
 
     def test_verify_discover_prints_only_command_on_stdout(self):
+        self._usable_site()
         fake_result = dict(command='pytest -q', confidence=0.9, runs_tests=0.95,
                            runtime_level='under a minute', source='pytest.ini',
                            evidence=str(self.repo / 'pytest.ini'))
@@ -389,6 +395,7 @@ class CliTests(JevVerifyTestCase):
         self.assertIn('pytest -q', err)
 
     def test_verify_discover_json_parses(self):
+        self._usable_site()
         fake_result = dict(command='pytest -q', confidence=0.9, runs_tests=0.95,
                            runtime_level='under a minute', source='pytest.ini',
                            evidence=str(self.repo / 'pytest.ini'))
