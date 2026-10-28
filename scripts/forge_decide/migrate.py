@@ -45,33 +45,30 @@ def retired_thresholds() -> frozenset:
     return frozenset(forge_jev.RETIRED_THRESHOLDS) | REMOVED_THRESHOLDS
 
 
-def _token_source(config: dict, cf: dict) -> tuple[str, str | None]:
-    """(kind, where) of Cloudflare's token: 'file' (a path as the provider should name it),
-    'key' (stored inline in jev.json, so it needs a key file), 'env' (the variable name) or
-    'none'. The token Cloudflare would use today decides, so no key is lost; a persistent
-    source wins over the environment when both hold the same token."""
+def _token_sources(config: dict, cf: dict) -> tuple[str | None, tuple[str, str] | None]:
+    """Cloudflare's token sources in forge_jev's order: the variable name for `key_env` when
+    CLOUDFLARE_API_TOKEN is set, then the persistent fallback forge_jev reads when it is not,
+    as ('key', token) for a token stored inline in jev.json (it needs a key file) or ('file',
+    path) for a token file, the path as the provider should name it. Both are kept when both
+    exist, so the migrated provider reads the environment first and the file second."""
     import forge_jev
-    token = cf.get('token')
-    if not token:
-        return 'none', None
+    if not cf.get('token'):
+        return None, None
+    env = 'CLOUDFLARE_API_TOKEN' if os.environ.get('CLOUDFLARE_API_TOKEN') else None
     entry = (config.get('providers') or {}).get('cloudflare')
     entry = entry if isinstance(entry, dict) else {}
+    if entry.get('token'):
+        return env, ('key', entry['token'])
     configured = entry.get('token_file') or str(forge_jev.config_path().parent / forge_jev.CLOUDFLARE_TOKEN_FILE)
-    in_file = forge_jev._env_file(configured).get('CLOUDFLARE_API_TOKEN')
-    env = os.environ.get('CLOUDFLARE_API_TOKEN')
-    if env and env == token and token not in (entry.get('token'), in_file):
-        return 'env', 'CLOUDFLARE_API_TOKEN'
-    if entry.get('token') == token:
-        return 'key', None
-    if in_file == token:
-        # forge_jev reads a relative token_file against the working directory; the provider's
-        # key_file is read against config_dir(), so pin the path down before it is stored.
-        path = Path(os.path.abspath(Path(configured).expanduser()))
-        try:
-            return 'file', str(path.relative_to(config_dir()))
-        except ValueError:
-            return 'file', str(path)
-    return 'env', 'CLOUDFLARE_API_TOKEN'
+    if not forge_jev._env_file(configured).get('CLOUDFLARE_API_TOKEN'):
+        return env, None
+    # forge_jev reads a relative token_file against the working directory; the provider's
+    # key_file is read against config_dir(), so pin the path down before it is stored.
+    path = Path(os.path.abspath(Path(configured).expanduser()))
+    try:
+        return env, ('file', str(path.relative_to(config_dir())))
+    except ValueError:
+        return env, ('file', str(path))
 
 
 def derive(jev_cfg: dict, cloudflare: dict | None) -> tuple[dict, dict]:
@@ -100,14 +97,14 @@ def derive(jev_cfg: dict, cloudflare: dict | None) -> tuple[dict, dict]:
             url = url.replace('{account}', cloudflare['account_id'])
         url = url.replace('{model}', cloudflare['model'])
         entry = dict(type='clef', url=url, model=cloudflare['model'])
-        kind, where = _token_source(jev_cfg, cloudflare)
-        if kind == 'file':
-            entry['key_file'] = where
-        elif kind == 'env':
-            entry['key_env'] = where
-        elif kind == 'key':
+        key_env, fallback = _token_sources(jev_cfg, cloudflare)
+        if key_env:
+            entry['key_env'] = key_env
+        if fallback and fallback[0] == 'file':
+            entry['key_file'] = fallback[1]
+        elif fallback:
             entry['key_file'] = f'{KEYS_DIR}/cloudflare.key'
-            keys['cloudflare'] = cloudflare['token']
+            keys['cloudflare'] = fallback[1]
         entry['local'] = False
         providers['cloudflare'] = entry
 

@@ -144,6 +144,23 @@ class MigrateTests(MigrateTestCase):
         self.assertNotIn('key_file', provider)
         self.assertNotIn(TOKEN, (self.forge / 'decide.json').read_text())
 
+    def test_an_environment_token_comes_first_and_the_file_stays_the_fallback(self):
+        # forge_jev reads CLOUDFLARE_API_TOKEN first and the token file only when it is unset,
+        # so the migrated provider names both, even when they hold the same token.
+        self.write_jev(legacy())
+        with patch.dict(os.environ, {'CLOUDFLARE_API_TOKEN': TOKEN}):
+            self.migrate()
+        provider = self.decide()['providers']['cloudflare']
+        self.assertEqual((provider['key_env'], provider['key_file']), ('CLOUDFLARE_API_TOKEN', 'cloudflare.env'))
+
+    def test_an_environment_token_never_replaces_the_stored_one(self):
+        self.write_jev(legacy(providers=dict(cloudflare=dict(account_id='a', token=TOKEN))), token=None)
+        with patch.dict(os.environ, {'CLOUDFLARE_API_TOKEN': 'cf-env-token'}):
+            self.migrate()
+        provider = self.decide()['providers']['cloudflare']
+        self.assertEqual((provider['key_env'], provider['key_file']), ('CLOUDFLARE_API_TOKEN', 'keys/cloudflare.key'))
+        self.assertEqual((self.forge / 'keys' / 'cloudflare.key').read_text(), TOKEN)
+
     def test_a_token_stored_in_jev_json_moves_to_a_key_file(self):
         self.write_jev(legacy(providers=dict(cloudflare=dict(account_id='a', token=TOKEN))), token=None)
         self.migrate()

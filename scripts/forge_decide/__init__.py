@@ -12,11 +12,13 @@ File schema, the same at both levels (unknown keys are kept and ignored):
      "gates": {"<gate>": {"mode", "provider", "model", "thresholds": {name: float},
                           "thresholds_model"}},
      "budget": {"run_tokens", "run_usd", "daily_tokens", "daily_usd"},
-     "providers": {"<name>": {"type", "url", "model", "key_file" | "key_env", "context",
+     "providers": {"<name>": {"type", "url", "model", "key_env", "key_file", "context",
                               "price_usd_per_mtok", "local"}},
      "profiles": {"<name>": {"gates", "budget"}},
      "privacy": "never-send"}
 
+A provider's key comes from `key_env` when that variable is set, else from `key_file`; it
+may name both, or neither (a local server may need no key).
 A gate may also be written as a bare mode string ("drift": "on"). USER_ONLY keys count only
 in the user file and REPO_ONLY keys only in the repo file.
 """
