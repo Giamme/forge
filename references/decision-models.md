@@ -5,17 +5,19 @@ probability, a single choice) over state forge supplies, in about a second. forg
 TypeSafe's **Jev** and Cloudflare's **Clef**, which takes Jev's request shape. Both are
 optional. Read this when turning one on, when changing a site, or before proposing a new one.
 
-- **Off by default.** Nothing is sent until a key is stored and Jev is enabled.
+- **Off by default.** Nothing is sent until a gate is `shadow` or `on` and its provider can be
+  asked. See [Setup](#setup).
 - **Always fail-open.** A timeout, an error, a refusal or a missing key is logged as a skip
   reason, and the run proceeds exactly as it would with the model off. A decision-model call
   can never fail a run.
 - **Advisory.** A decision model never changes a `FORGE_VERDICT`, a task's tier or the model a
-  task runs on, and it never marks anything verified itself. The memory sites do act when on
-  (what `memory.md` keeps, files and injects), and verify discover picks the command that runs
-  when none is configured; that command's own result decides verification. `--jev-shadow` is
-  narrower than it sounds, see [Setup today](#setup-today).
-- **`FORGE_JEV=off` sends nothing.** It is a hard kill switch and wins over every flag, every
-  per-capability variable and the stored config.
+  task runs on, and it never marks anything verified itself. With the gate `on`, the memory
+  sites act (what `memory.md` keeps, files and injects) and verify discover picks the command
+  that runs when none is configured; that command's own result decides verification. Drift,
+  forward and prompt only print a note. `shadow` asks and records, and changes nothing. See
+  [Setup](#setup).
+- **`FORGE_JEV=off` sends nothing.** It turns every gate off. A repo privacy floor does the
+  same and is applied after it. See [Setup](#setup).
 
 Which models do which work is measured instead of asked: exploratory routing and
 `forge dataset routing` compare models per tier from randomized assignments (see
@@ -92,86 +94,250 @@ targets with their recipes, tox/nox, runner scripts, workflow `run:` steps, `## 
 remains the outcome whenever nothing is chosen: a model may find a command, never declare
 something verified.
 
-## Setup today
+## Setup
 
-> **About to change.** `forge decide` (#36) replaces this setup with per-gate configuration
-> (off, shadow or on, a provider and a model per gate, user and per-repo config, budgets).
-> This section describes what works until that lands.
+`forge decide` is the setup command. `forge jev` is an alias for this release and then goes
+away. For `setup`, `sites`, `enable`, `disable`, `status` and `doctor` the launcher names the
+`forge decide` command and then runs the old one. Command lines are also in
+[the command reference](../docs/commands.md#forge-decide).
+
+### Quick start
 
 ```sh
-forge jev setup                          # store a TypeSafe key, validate it, enable Jev
-forge jev setup --provider cloudflare --account-id <id> [--model clef|clef-flash] [--sites a,b]
-forge jev sites [SITE=typesafe|cloudflare]   # which provider answers each site, and whether it is ready
-forge jev enable | disable [--capability tests|gates|memory]
-forge jev status                         # resolved config, enabled capabilities
-forge jev doctor [--live]                # config and key checks; --live probes every provider in use
+# hosted TypeSafe. The key is one line on stdin, stored mode 0600.
+printf '%s\n' "$TYPESAFE_API_KEY" | forge decide provider add jev --name typesafe --key-stdin
+
+# or a local server: --local needs --url, sends no key and costs nothing
+forge decide provider add jev --name local --url http://127.0.0.1:8080 --local
+
+forge decide gate memory-curate on --provider typesafe
+forge decide status
 ```
 
-**`--jev-shadow` only silences the plan-time warnings** (prompt, drift, forward): `plan`
-records the judgments and prints "checked N task(s) in shadow mode (no change)". It does not
-stop the memory and verify-discover consumers. With `memory` on, `forge-memory.sh` still
-applies curate, slice and stale answers in shadow mode, and with `tests` on, a discovered
-command still runs when no verify command is configured, so a `PASS` can follow from a
-command forge chose (a loud `jev chose a verification command` note says so). To judge without
-acting on those, leave `memory` and `tests` off (`--no-jev-memory --no-jev-tests`) rather than
-relying on shadow.
+A gate uses only the provider it names. The local server above is
+`forge decide gate memory-curate on --provider local`. A gate with no `--provider` does not
+read the key file `provider add` wrote, and no request is sent.
 
-Run flags (`run`, `plan`, solo): `--jev` / `--no-jev` (mutually exclusive), `--jev-shadow`,
-`--jev-<cap>` / `--no-jev-<cap>` for `tests`, `gates` and `memory`. `--jev-routing` still parses
-so old commands keep working, but the `routing` capability has no sites. `--jev-act` is a
-no-op that prints one deprecation line. The resolved selection is frozen in
-`jev-selection.json`, so resume and retry decide as the original run did. Old selections stay
-readable.
+`status` prints each gate's effective mode and which level set it, the providers (key
+`present` or `missing`), today's spend, and whether a privacy floor is on. It never writes.
+forge-ui's Settings page has the same fields under Decision models; a change there writes the
+user file.
 
-Precedence, implemented identically by `scripts/forge-jev-options.sh` and `scripts/forge_jev/`:
+### Gates and modes
 
-1. `FORGE_JEV=off` wins over everything.
-2. Any `FORGE_JEV_<CAP>=on` is an allowlist: only those capabilities run.
-3. Otherwise `FORGE_JEV=on` (from `--jev`) or the stored config's `enabled` turns it on, and a
-   capability explicitly off is subtracted.
-4. Default: off.
+Seven gates, each `off` (the default), `shadow` or `on`:
 
-Environment: `FORGE_JEV`, `FORGE_JEV_<CAP>`, `FORGE_CLEF=off` (every site back to TypeSafe),
-`FORGE_JEV_PROVIDER=typesafe|cloudflare` (force one provider for every site),
-`TYPESAFE_API_KEY` (overrides the stored key for that invocation).
+`drift`, `forward`, `prompt`, `memory-curate`, `memory-slice`, `memory-stale`, `verify-discover`.
 
-**Privacy.** Each enabled capability sends a narrow slice of state to an external API:
-`gates` sends the task prompt, goal, a title/files/deps view of sibling tasks, file excerpts
-(the first 4000 characters of the task's declared files) and diff hunks; `memory` sends the
-memory entries under consideration (curate: the new fact and the existing entries; slice: the
-task and the fact lines; stale: the fact and the anchor file's content); `tests` sends the
-repo's file list, candidate commands with an excerpt of what each runs, and the bullets under
-the `## Verify` heading of `.forge/memory.md`. Treat all of it as leaving the machine.
+`off` asks nothing. `shadow`, on every gate, asks and records the answer, then leaves the run
+as it would have been with the gate off: no note, no memory edit, no verify command.
 
-The `.forge/` and `.git` exclusion is narrower than "everything": it filters the **candidate
-file list** drift builds from the diff, and nothing else. **`.forge/memory.md` is sent**: prompt
-adequacy puts its first 4000 characters in the request state for every task, memory curate,
-slice and stale send entries from it, and verify discover sends its `## Verify` bullets.
-Private text in `.forge/memory.md` therefore reaches the provider whenever `gates`, `memory` or
-`tests` is on. Keep such text out of that file, or leave all three capabilities off for the
-repo. Files a task declares are excerpted whatever their path.
+`on` in this release:
 
-The TypeSafe key lives in `${XDG_CONFIG_HOME:-$HOME/.config}/forge/jev.json`, mode `0600`. A
-Cloudflare token (Account > Workers AI > Read) lives in `cloudflare.env` beside it, mode
-`0600`, or in `CLOUDFLARE_API_TOKEN`; the account id is in config or `CLOUDFLARE_ACCOUNT_ID`.
-Neither is ever written to a run dir, a prompt, a log or argv. A site mapped to Cloudflare
-sends it what it would have sent TypeSafe.
+| gate | what `on` does |
+|---|---|
+| `drift` | prints the "may also edit undeclared files" note |
+| `forward` | prints the note that a task runs before another and may depend on what it builds |
+| `prompt` | prints the "prompt may be too vague" note |
+| `memory-curate` | refiles, merges or withholds the fact |
+| `memory-slice` | removes lines from the injected slice |
+| `memory-stale` | drops a fact that went false |
+| `verify-discover` | runs the chosen command when none is configured |
+
+Drift, forward and prompt stay advisory when `on`. The three memory gates and verify discover
+act. Verify discover still does not mark anything verified: the command it picked does, or
+`UNVERIFIED` stands.
+
+Set one with `forge decide gate <gate> off|shadow|on [--provider P] [--model M]`. `--repo DIR`
+writes `<repo>/.forge/decide.json`; `--profile NAME` writes that profile in the user file.
+The two flags are exclusive. `--provider` must already be configured, and the gate uses only
+that provider.
+
+### Where settings live, and which wins
+
+Two files. The user file is `${XDG_CONFIG_HOME:-~/.config}/forge/decide.json`, mode `0600`.
+An empty or relative `XDG_CONFIG_HOME` counts as unset. The repo file is
+`<repo>/.forge/decide.json`, mode `0644`, and is the one a checkout shares.
+`--repo` defaults to `FORGE_DECIDE_REPO`, else the git top level of the working directory.
+
+Six levels, lowest first. A level sets only the fields it names. The user file wins over the
+repo on any field both set; `status` lists those as shadowed.
+
+1. **default.** Every gate `off`, no budget.
+2. **repo.** `<repo>/.forge/decide.json`: `gates`, and the per-run budget (`run_tokens`,
+   `run_usd`).
+3. **user.** `decide.json`: `gates`, providers, and the whole budget, including the daily caps.
+   While that file does not exist, the legacy level stands here (source `legacy`): `jev.json`
+   plus `FORGE_JEV*` turn a gate `on` when its old capability is enabled. A fresh install, with
+   neither file and no `FORGE_JEV*`, stays at `default`.
+4. **profile.** `FORGE_DECIDE_PROFILE`, looked up in the user file's `profiles` first, then the
+   repo file's. A profile in the user file may set the daily budget; one in the repo file may
+   set only the per-run budget.
+5. **env.** `FORGE_DECIDE_GATE_<NAME>=off|shadow|on`, with `NAME` upper-cased and `-` written
+   `_` (`FORGE_DECIDE_GATE_MEMORY_CURATE`, `FORGE_DECIDE_GATE_VERIFY_DISCOVER`). Once the user
+   `decide.json` exists, `FORGE_JEV_<CAP>` can only turn gates off, and any `=on` is an
+   allowlist of the capabilities left on. `FORGE_JEV_SHADOW=on` (`--jev-shadow`) turns every
+   `on` into `shadow`.
+6. **flags.** `--gate`, `--no-gates` and `--decide-budget` on `plan` or a solo run, frozen in
+   `<plan-or-run>/jev-selection.json`. `--no-gates` turns every gate off after `--gate` is
+   applied. A re-plan replaces the file. Solo again on the same run dir keeps it. `run` and
+   `retry` keep it too, and say so when flags are passed again. A plan with no selection file
+   takes the flags on `run` or `retry` and freezes them then.
+
+After those six, `FORGE_JEV=off` turns every gate off (skip `kill`). A repo privacy floor then
+turns every gate off (skip `privacy`) and wins over the kill switch. Both send nothing.
+
+`providers` and `budget.daily_*` count only in the user file. `privacy` counts only in the repo
+file. Anywhere else they are ignored, and `doctor` reports them as misplaced.
+
+### Providers
+
+Two types, each hosted or local. `jev` is TypeSafe's request shape; hosted, the URL defaults
+to `https://api.typesafe.ai/v1/systemone` and the model to `jev-latest`. `clef` is Cloudflare's
+envelope; hosted, pass `--url`, or `--account-id` (else `CLOUDFLARE_ACCOUNT_ID`) to build the
+Workers AI URL. The default model is `clef`.
+
+```sh
+forge decide provider add jev --name typesafe --key-stdin
+forge decide provider add clef --name cloudflare --account-id <id> --key-env CLOUDFLARE_API_TOKEN
+forge decide provider add jev --name local --url http://127.0.0.1:8080 --local
+forge decide provider list
+forge decide provider rm local
+```
+
+`--context N` is the context limit in tokens. A request over 90% of it is skipped `too-large`
+and the state is not cut to fit. `--price X` is USD per million tokens, which the budget uses.
+`--deadline S` is seconds per request; the default is 5. `--local` requires `--url`, sends no
+key and adds no cost.
+
+A key is never an argument. `provider add` reads one line from `--key-stdin` and writes
+`${XDG_CONFIG_HOME:-~/.config}/forge/keys/<name>.key` (mode `0600`, the `keys/` directory
+`0700`), stores a variable name with `--key-env VAR` and reads it when a request is made, or
+prompts on a terminal. Adding the same name again without a key keeps the key it has. `status`
+and `provider list` show `present` or `missing`. `provider rm` refuses while a gate names that
+provider, and deletes the `keys/<name>.key` it wrote.
+
+### Budgets
+
+Two caps, each in tokens and estimated USD. Unset means no cap.
+
+```sh
+forge decide budget                              # caps, and what today has spent
+forge decide budget --run tokens=20000,usd=0.50  # this run
+forge decide budget --daily tokens=200000,usd=5  # user level; a repo file cannot set it
+forge decide budget --run none                   # clear the per-run cap
+forge decide budget --repo DIR --run tokens=5000 # per-run cap for one repo
+```
+
+`--daily` is refused together with `--repo`. `none`, or `tokens=none` / `usd=none`, clears
+that cap. A number is zero or more.
+
+Today's spend is `${XDG_STATE_HOME:-~/.local/state}/forge/decide/spend/<YYYY-MM-DD>.json`
+(local date; a new day is a new file). The run's own counter is `<run-dir>/decide.budget.json`
+and shows up in `status` when `FORGE_DECIDE_RUN_DIR` is set. `forge decide budget` and
+`forge decide status` both print today's tokens and USD.
+
+Once any set cap is reached, every later decision-model call is skipped with reason `budget`
+and the run continues. A local provider, or one with no `--price`, adds tokens and zero USD.
+`--decide-budget tokens=N[,usd=X]` on a run sets that run's cap at the flags level and does
+not change the daily cap.
+
+### Privacy floor
+
+```sh
+forge decide privacy never-send --repo DIR
+forge decide privacy allow --repo DIR
+```
+
+`never-send` writes `"privacy": "never-send"` into `<DIR>/.forge/decide.json`. Every gate is
+then off (skip `privacy`): no decision-model request leaves that repo, and `doctor --live`
+does not probe. The floor beats every level, including run flags and `FORGE_JEV=off`.
+
+Removing it is a per-repo edit: `privacy allow --repo DIR` deletes the key from that repo's
+file. The user `decide.json` cannot set or clear it.
+
+With no floor, a gate that is `shadow` or `on` sends that site's state to its provider.
+`.forge/memory.md` is part of it: prompt adequacy includes its first 4000 characters, the
+memory gates send the entries they are judging, and verify discover sends the bullets under
+`## Verify`. Drift's candidate file list leaves out `.forge/` and `.git`; that filter applies
+to the candidate list only. Keep private text out of `.forge/memory.md`, or set the floor.
+
+### Migration
+
+```sh
+forge decide migrate            # once
+forge decide migrate --force    # replace the user decide.json from jev.json again
+```
+
+`migrate` reads `${XDG_CONFIG_HOME:-~/.config}/forge/jev.json` and a Cloudflare token
+(`cloudflare.env` beside it, or `CLOUDFLARE_API_TOKEN`) and writes the user `decide.json`:
+
+- A TypeSafe key becomes the provider `typesafe` (`type` `jev`, URL and model from
+  `jev.json`). The key moves to `keys/typesafe.key`.
+- Cloudflare becomes the provider `cloudflare` (`type` `clef`). A token already in
+  `cloudflare.env` stays in that file; one stored in `jev.json` moves to
+  `keys/cloudflare.key`; one that lives only in the environment is referenced as
+  `key_env` `CLOUDFLARE_API_TOKEN`.
+- When `jev.json` is `enabled`, the `memory` gates and `verify-discover` are set `on`, and
+  `drift`, `forward` and `prompt` are set `shadow`. A capability switched off is left unset,
+  so its gates stay `off`.
+- A site mapped to `cloudflare` points at that provider; every other site points at
+  `typesafe`, when that provider was created. `forge jev setup --provider cloudflare` mapped
+  `jev-drift` by default, and migrate copies that map.
+- Each stored threshold is copied onto the gates that read it (`drift_warn` onto `drift`,
+  `forward_warn` onto `forward`, `prompt_warn` onto `prompt`, `memory_merge`,
+  `memory_recategorize` and `gate_warn` onto `memory-curate`, `gate_warn` also onto `drift`,
+  `stale_drop` onto `memory-stale`, `tests_act` onto `verify-discover`). Per-model values for
+  the provider's model override those and set `thresholds_model`. Retired thresholds are not
+  copied.
+
+While the user `decide.json` does not exist, runs still follow `jev.json` and `FORGE_JEV*`.
+On that path `FORGE_CLEF=off` sends every site to TypeSafe, `FORGE_JEV_PROVIDER` forces
+`typesafe` or `cloudflare`, and `TYPESAFE_API_KEY` overrides the stored key.
+`status`, `doctor`, `provider list` and a bare `budget` never write, so they do not migrate.
+The migration runs before a write to the user file: `gate` without `--repo`, `provider add`,
+`provider rm`, `budget` with `--run` or `--daily` and without `--repo`, and `migrate`.
+A repo-only write (`privacy`, `gate --repo`, `budget --repo`) leaves `jev.json` in place.
+After `decide.json` exists, which gates are on comes from it.
+
+`forge jev` remains an alias for this release. Next release it is gone.
+
+### Doctor
+
+```sh
+forge decide doctor [--repo DIR] [--json]
+forge decide doctor --live
+```
+
+Offline, it reports settings that went stale. Nothing it prints contains a key. Exit 0 when
+the only findings are advice, exit 1 when a problem is found or a live probe fails.
+
+Advice, which does not fail the command: `threshold-override` (a stored threshold differs from
+the measured default), `shadowed` (the user file wins over the repo), `privacy-floor`.
+
+Problems: `retired-threshold`, `unknown-provider` (a gate names a provider that is not
+configured), `unused-provider`, `misplaced` (providers or a daily budget in a repo file, or
+`privacy` in the user file), `key-file` (missing, or not mode `0600`), `not-migrated`
+(`jev.json` exists and `decide.json` does not), `config-error`.
+
+`--live` sends one fixed synthetic request, with no repo data, to each configured provider.
+It is the only `forge decide` subcommand that uses the network, and it is skipped when the
+repo has a privacy floor.
 
 ### Cloudflare Clef
 
-Without a Cloudflare provider configured, every site asks TypeSafe. `setup --provider
-cloudflare` maps only `jev-drift` by default, because a paired replay (2026-10-16) found Clef
-non-inferior there: AUC 0.985 against Jev's 0.972, paired difference +0.013 [0.000, +0.028], on
-4560 decisions from 17 runs. A site moves only if Clef is non-inferior on at least 30 labeled
-decisions from at least 8 held-out runs; `jev-memory-slice` tied (0.951 against 0.953) on 5
-runs and stays on TypeSafe. Thresholds can be set per model with
-`model_thresholds.<model>.<name>`; none is set, so Clef reads the shared ones.
+Point a gate at that provider with `forge decide gate drift on --provider <name>`. A paired
+replay on 2026-10-16 found hosted Clef non-inferior on drift: AUC 0.985 against
+Jev's 0.972, paired difference [0.000, +0.028], on 4560 decisions from 17 runs. A site moves
+only after Clef is non-inferior on at least 30 labeled decisions from at least 8 held-out
+runs. `jev-memory-slice` tied (AUC 0.951 against 0.953) on 5 runs and stays on a `jev`
+provider. No per-model threshold is set, so Clef reads the shared ones.
 
-The client handles Clef's limits: at most 64 questions per request (drift asks up to 120, so it
-goes as two concurrent requests); a context of 64K tokens (`clef`) or 24K (`clef-flash`), beyond
-which the service cuts state silently, so the client refuses (`too-large`) rather than send it;
-allocation and plan errors are final, rate limits are retried inside the deadline. Every
-requested answer must be present and in range or the call is `malformed`.
+The client sends at most 64 questions per request (drift asks up to 120, so that request is
+two concurrent chunks) and refuses `too-large` past the context, 64K tokens for `clef` and
+24K for `clef-flash`, or whatever `--context` set. The service would otherwise cut the state.
+Rate limits are retried inside the deadline; quota and plan errors are final. A response
+missing an answer, or with one out of range, is `malformed`.
 
 ## Adding a site
 
@@ -184,9 +350,10 @@ A new site takes this path, in this order. Skipping a step is how the sites in
 2. **Asked through `client.ask` with a site name** (`jev-<name>`). `client.ask` is the only
    place that talks to a provider; it handles the key, the deadline, the provider mapping and
    the fail-open skip, and it records the request.
-3. **Gated through `site_ready`.** Add the site to `SITE_CAPABILITY`. The shell asks
-   `forge_jev_active <capability>` and the Python side asks `site_ready(site)`; both must be
-   false when the capability is off, `FORGE_JEV=off` is set, or the provider has no credentials.
+3. **Gated through `site_ready`.** Add the site to `SITE_CAPABILITY` and as a gate in
+   `forge_decide.GATES`. The shell asks `forge_decide_active <gate>` and the Python side asks
+   `site_ready(site)`; both must be false when the gate is off, `FORGE_JEV=off` is set, the
+   privacy floor is on, or the provider cannot be asked.
 4. **Recorded in the dataset.** The request must land in `jev.jsonl` and the run dataset whole,
    and the export (`forge dataset export`) needs a slice that labels it from what happened
    afterwards.
@@ -196,8 +363,8 @@ A new site takes this path, in this order. Skipping a step is how the sites in
    number measured on state the model is not sent describes nothing: it has bitten this file
    seven times.
 6. **Ships advisory first.** It prints or records and cannot block a dispatch. A new site must
-   also honour `--jev-shadow` itself (today only the plan-time warnings do). It acts on
-   something only after step 5 holds on live runs, and never on a verdict, a tier or a model.
+   treat `shadow` as ask-and-record (the kept sites do). It acts on something only after step 5
+   holds on live runs, and never on a verdict, a tier or a model.
 
 ## Tried and removed
 

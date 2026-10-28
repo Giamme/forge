@@ -17,12 +17,13 @@ harness (`/forge`); this command installs forge and drives its optional tools.
 | `forge fractal …` | opt-in Fractal execution; see [the command group](fractal.md#forge-fractal-command-group) |
 | `forge runs [--repo DIR \| --all] [--limit N] [--json]` | this repo's recent runs, newest first: run id, kind, age, task states, verification and final review, goal, and the run dir. Read-only; the same summaries forge-ui shows |
 | `forge control show\|set\|pin\|unpin\|drain\|resume\|stop\|retry\|add PLAN_DIR …` | change a live plan: `set` takes `qa-threshold`, `timeout`, `escalate-after`, `escalate-effort` (`on`/`off`), `verify-retries`, `infra-backoff` (a backoff shape; `none` drops it), `retry-budget`, `infra-retries` or `max-parallel` (1-64) (the last three only while a scheduler runs; `--task ID` for `qa-threshold` and `retry-budget`, value `inherit` drops the override); `pin PLAN_DIR TASK SPEC` sets the model the task's next full retry uses once, `unpin` drops it. While a scheduler runs: `drain` starts nothing new until `resume` (a run with nothing left to start ends as usual); `stop [--now]` ends the run once the running tasks finish (`--now` interrupts them; `run` exits 130 without verifying, unless every task had merged by then: it then verifies and exits 0 as usual); `retry PLAN_DIR TASK [--dwarf SPEC]` and `add PLAN_DIR TASK` (a row appended to `tasks.tsv`) queue a request the scheduler applies or refuses. `show` (`--json` for JSON) also says whether the run is drained or stopping and lists its infrastructure pauses. Every change and every request's outcome is logged in `control.log`. Exit 2 invalid input, 3 refused. See [live controls](decomposed-runs.md#changing-a-run-while-it-works) |
-| `forge config show [--repo DIR] [--json]` / `forge config set <key> <value> --repo DIR [--json]` / `forge config unset <key> --repo DIR [--json]` | one view of every config source (registry, Jev, the repo's `.forge/verify`, `setup` and `verify-subset`, dataset, `FORGE_*` variables with secrets hidden); `set KEY VALUE` / `unset KEY` edit `repo.verify`, `repo.setup`, `repo.verify-subset` (must contain `{files}`) and, for `set`, `jev.enabled true\|false` (that one does not need `--repo`). `-` as a value reads stdin. Exit 2 on invalid input |
+| `forge config show [--repo DIR] [--json]` / `forge config set <key> <value> [--repo DIR] [--json]` / `forge config unset <key> [--repo DIR] [--json]` | one view of every config source (registry, the legacy Jev file, decide, the repo's `.forge/verify`, `setup` and `verify-subset`, dataset, `FORGE_*` variables with secrets hidden); `set` / `unset` edit `repo.verify`, `repo.setup`, `repo.verify-subset` (must contain `{files}`; `--repo` required) and `decide.gate.<gate>`, `decide.gate.<gate>.provider`, `decide.gate.<gate>.model` (`off`, `shadow` or `on`; those write the user level and do not need `--repo`). Unset of a `decide.gate.*` key is refused: set the mode to `off`. `-` as a value reads stdin for the per-repo files. Exit 2 on invalid input |
 | `forge runs rm RUN_DIR [--dry-run] [--yes] [--no-archive] [--worktrees] [--branches] [--json]` | delete a run directory but keep what it taught the dataset; see [below](#forge-runs-rm) |
 | `forge issues RUN [--apply] …` | file the review findings a run left open as GitHub issues; see [below](#forge-issues) |
 | `forge ui open\|status\|stop` | forge-ui, the run viewer; see [the command group](forge-ui.md#forge-ui-command-group) |
 | `forge dataset …` | every run's inputs and outcomes; see [run dataset](dataset.md) |
-| `forge jev …` | optional Jev advice: setup, sites, status, doctor, enable, disable; see [Jev](add-ons.md#jev) |
+| `forge decide …` | decision-model gates, providers, budgets and the privacy floor; see [below](#forge-decide) |
+| `forge jev …` | deprecated alias of the old decision-model commands, kept for one release; see [below](#forge-decide) |
 | `forge --help` | list the commands; `forge <command> --help` shows each one's options |
 
 ### `forge runs rm`
@@ -76,6 +77,46 @@ repository lock from the issue lookup to the last `gh issue create`, and each di
 around its write. A busy lock is retried for 10 s, then exit 3. Exit 0 ok, 2 usage or a `gh` or
 dismissal-store error, 3 busy.
 
+### `forge decide`
+
+Per-gate decision models. The setup — precedence, what each gate does, budgets, the privacy
+floor and migration — is in [Decision models](../references/decision-models.md#setup).
+
+| Command | Does |
+|---|---|
+| `status [--repo DIR] [--json]` | each gate's effective mode and which level set it, providers (`present` or `missing` key), caps and today's spend, privacy floor. Never writes |
+| `gate GATE off\|shadow\|on [--provider P] [--model M] [--profile NAME \| --repo DIR]` | set one gate. Gates: `drift`, `forward`, `prompt`, `memory-curate`, `memory-slice`, `memory-stale`, `verify-discover`. A gate uses only the provider it names. Without `--repo`, writes the user file and migrates `jev.json` first. `--profile` writes that profile in the user file |
+| `provider add jev\|clef --name N [--url U] [--account-id A] [--model M] [--context N] [--price X] [--deadline S] [--local] [--key-stdin \| --key-env VAR]` | add a hosted or local provider. A key is never an argument: one line on stdin or a terminal prompt is written to `keys/<N>.key` mode `0600`, or `--key-env VAR` stores the variable name and reads it at request time |
+| `provider list [--json]` | configured providers |
+| `provider rm N` | remove a provider no gate uses, and the `keys/<N>.key` it wrote |
+| `budget [--run tokens=N,usd=X] [--daily tokens=N,usd=X] [--repo DIR]` | show the caps and today's spend, or set them. `--daily` is user-level; a repo file takes only `--run`. `none` clears a cap |
+| `privacy never-send\|allow --repo DIR` | set or remove that repo's privacy floor. `never-send` turns every gate off for that repo and beats every other level |
+| `doctor [--live] [--json] [--repo DIR]` | stale settings. Exit 1 on a problem. `--live` probes each provider unless the privacy floor is on |
+| `migrate [--force] [--json]` | copy `jev.json` into the user `decide.json`, once. `--force` replaces that file from `jev.json` again |
+
+`--repo` defaults to `FORGE_DECIDE_REPO`, else the git top level. Exit 0 ok, 2 usage, 1 a
+failed doctor check or a config file that cannot be read. `forge config set` writes the same
+user-level gate fields as `decide.gate.<gate>`, `decide.gate.<gate>.provider` and
+`decide.gate.<gate>.model`.
+
+A write to the user file migrates `jev.json` first: `gate` without `--repo`, `provider add`,
+`provider rm`, and `budget` when `--run` or `--daily` changes the user file. `provider list`,
+a bare `budget`, `status` and `doctor` do not.
+
+`forge jev` is the deprecated alias, kept for one release. `setup`, `sites`, `enable`,
+`disable`, `status` and `doctor` print the `forge decide` command and then run the old one.
+
+Run flags, on `forge-solo.sh` and `forge-parallel.sh plan`, are frozen in `jev-selection.json`.
+A re-plan replaces the file. Solo again on the same run dir keeps it. When the file exists,
+`run` and `retry` keep it and say so when flags are passed again. A plan with no selection
+file takes the flags on `run` or `retry` and freezes them then.
+
+| Flag | Does |
+|---|---|
+| `--gate NAME=MODE[,NAME=MODE...]` | set those gates `off`, `shadow` or `on` for this run. Repeatable; a later one wins for the same gate |
+| `--no-gates` | every gate off: no decision-model request |
+| `--decide-budget tokens=N[,usd=X]` | cap this run's decision-model tokens, and optionally USD. Does not change the daily cap |
+
 ## The `/forge` slash command
 
 ```
@@ -83,7 +124,9 @@ dismissal-store error, 3 busy.
                 [--qa <alias>[:<effort>[:<harness>]]]
                 [--planner <alias>[:<effort>[:<harness>]]]
                 [--yolo-dwarf] [--yolo-qa] [--repo <dir>] [--native-review]
-                [--no-memory] [--timeout <seconds>] [--ui | --no-ui] [--fractal | --no-fractal]
+                [--no-memory] [--gate NAME=MODE[,...]] [--no-gates]
+                [--decide-budget tokens=N[,usd=X]]
+                [--timeout <seconds>] [--ui | --no-ui] [--fractal | --no-fractal]
                 [--fractal-auto-decompose] [--fractal-planner <spec>]
                 [--fractal-depth <n>] [--fractal-children <n>] [--fractal-nodes <n>]
                 [--fractal-iterations <n>] [--fractal-concurrency <n>] [--fractal-deadline <s>]
@@ -98,6 +141,9 @@ dismissal-store error, 3 busy.
 | `--qa <spec>` | `opus` at `xhigh` | the model that reviews the dwarf's diff |
 | `--planner <spec>` | orchestrator plans | dispatch planning to a model; one dispatch per run, effort defaults to `xhigh` |
 | `--no-memory` | memory on | write and inject nothing in `.forge/` |
+| `--gate NAME=MODE` | the configured gates | set decision-model gates for this run (`off`, `shadow` or `on`); repeatable, a later one wins. Frozen in `jev-selection.json`. See [`forge decide`](#forge-decide) |
+| `--no-gates` | gates as configured | every decision-model gate off for this run |
+| `--decide-budget tokens=N[,usd=X]` | the configured cap | cap this run's decision-model spend |
 | `--timeout <s>` | `2700` (45m) | kill any single dispatch that runs longer. `0` disables |
 | `--yolo-dwarf` | off | drop the dwarf's sandbox and approval gates |
 | `--yolo-qa` | off | drop the reviewer's sandbox |
@@ -264,6 +310,7 @@ capture, the QA dispatch, and the ledger writes.
 forge-solo.sh <run-dir> --repo <dir> --dwarf <spec> [--qa <spec>]
               [--approach <file>] [--yolo-dwarf] [--yolo-qa]
               [--native-review] [--no-memory] [--timeout <s>] [--dry-run] [--ui | --no-ui]
+              [--gate NAME=MODE[,...]] [--no-gates] [--decide-budget tokens=N[,usd=X]]
               [--fail-first]
               [--fractal | --no-fractal] [--fractal-<limit> <n>]
               [--dwarf-low <pool>] [--dwarf-medium <pool>] [--dwarf-high <pool>] [--retry]
@@ -333,6 +380,7 @@ Bash 3.2 entrypoints use a Python standard-library coordinator to schedule eligi
 
 ```
 forge-parallel.sh plan      <plan-dir> --repo <dir> [routing flags] [--planner <spec>] [--no-memory]
+                                     [--gate NAME=MODE[,...]] [--no-gates] [--decide-budget tokens=N[,usd=X]]
                                      [--decompose-level L] [--shadow-qa <spec>[,..]|none] [--shadow-rate R]
                                      [--reviewer-session | --no-reviewer-session]
                                      [--explore E] [--ui | --no-ui] [--fail-first | --no-fail-first]
@@ -370,6 +418,9 @@ forge-parallel.sh combine   <new-plan-dir> <plan-dir> <plan-dir>... [--verify <c
 
 | Flag | Subcommands | Remembered in the plan | Means |
 |---|---|---|---|
+| `--gate NAME=MODE[,NAME=MODE...]` | plan | `jev-selection.json` | set decision-model gates for this run; repeatable, a later one wins. When the file exists, `run` and `retry` keep it; with no file they apply the flags passed then and freeze them |
+| `--no-gates` | plan | `jev-selection.json` | every decision-model gate off |
+| `--decide-budget tokens=N[,usd=X]` | plan | `jev-selection.json` | cap this run's decision-model spend |
 | `--timeout S` | run, retry | `timeout` | per-dispatch timeout in seconds (`0` disables); wins over `FORGE_TIMEOUT` |
 | `--retry-failed N` | run | no — this run only | re-queue a task the reviewer rejected up to `N` more times inside the run |
 | `--infra-retries M` | run | no — this run only | wait out up to `M` infrastructure stops per paused scope (a model, a harness, or everything) instead of ending the run |
