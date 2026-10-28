@@ -97,8 +97,8 @@ A decomposed run adds:
   verify_parallel                      lanes run at once (--verify-parallel; default 3)
 ```
 
-`verification.runs.tsv` is tab-separated, one row per run: `n`, `kind` (`initial`, `rerun`, or
-`jev_retry` for a single command), `exit`, `tree_changed` (`0`/`1`), `duration_s` and `log`. With
+`verification.runs.tsv` is tab-separated, one row per run: `n`, `kind` (`initial` or `rerun`; runs
+from before 2026-10-27 can also hold `jev_retry`), `exit`, `tree_changed` (`0`/`1`), `duration_s` and `log`. With
 lanes each row has two more columns, `lane` and `started` (epoch seconds); lanes run side by
 side, so `tree_changed` is `1` only when the whole verification was a single lane run that
 changed the tree (`verification.lanes.json`'s `mutated` says whether it changed at all). In lanes

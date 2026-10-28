@@ -184,15 +184,17 @@ class GatingTests(JevTestCase):
         os.environ['FORGE_JEV'] = 'on'
         config = dict(forge_jev.DEFAULTS)
         for cap in forge_jev.CAPABILITIES:
-            self.assertTrue(forge_jev.enabled(cap, config=config), cap)
+            # A retired capability has no gate, so nothing can enable it any more.
+            self.assertEqual(forge_jev.enabled(cap, config=config), cap != 'routing', cap)
 
     def test_global_on_one_capability_off_via_env(self):
         os.environ['FORGE_JEV'] = 'on'
         os.environ['FORGE_JEV_MEMORY'] = 'off'
         config = dict(forge_jev.DEFAULTS)
         self.assertFalse(forge_jev.enabled('memory', config=config))
-        for cap in ('routing', 'tests', 'gates'):
+        for cap in ('tests', 'gates'):
             self.assertTrue(forge_jev.enabled(cap, config=config), cap)
+        self.assertFalse(forge_jev.enabled('routing', config=config))
 
     def test_config_enabled_true_capability_false_in_config(self):
         config = dict(forge_jev.DEFAULTS, enabled=True)
@@ -201,12 +203,13 @@ class GatingTests(JevTestCase):
         for cap in ('tests', 'gates', 'memory'):
             self.assertTrue(forge_jev.enabled(cap, config=config), cap)
 
-    def test_acting_and_shadow_reflect_env(self):
+    def test_acting_is_always_false_and_shadow_reflects_env(self):
+        # acting() stays so jev.jsonl keeps its acting field. The flag cannot turn it on.
         self.assertFalse(forge_jev.acting())
         self.assertFalse(forge_jev.shadow())
         os.environ['FORGE_JEV_ACT'] = 'on'
         os.environ['FORGE_JEV_SHADOW'] = 'on'
-        self.assertTrue(forge_jev.acting())
+        self.assertFalse(forge_jev.acting())
         self.assertTrue(forge_jev.shadow())
         os.environ['FORGE_JEV_ACT'] = 'nope'
         self.assertFalse(forge_jev.acting())
@@ -524,14 +527,34 @@ class CliTests(JevTestCase):
         rc, out, _ = self._run(['doctor'])
         self.assertIn('[ok] thresholds all known', out)
 
-    def test_a_config_from_before_the_tier_rewrite_was_removed_is_still_clean(self):
-        # Every config written before 2026-10-17 holds both keys; they are not a typo.
+    def test_doctor_lists_every_retired_threshold_as_safe_to_delete(self):
+        # A stored key whose reader is gone is retired, not an unknown typo.
+        retired = ('routing_act', 'calibrate_floor', 'coupling_warn', 'flake_act', 'verifiable_warn')
+        self.assertEqual(forge_jev.RETIRED_THRESHOLDS, frozenset(retired))
+        for name in retired:
+            self.assertNotIn(name, forge_jev.DEFAULT_THRESHOLDS)
+        os.environ['TYPESAFE_API_KEY'] = 'DOCTOR-RETIRED-KEY'
         config = forge_jev.load_config()
-        config['thresholds'].update(routing_act=0.85, calibrate_floor=0.8)
+        config['thresholds'].update({name: 0.5 for name in retired})
         forge_jev.save_config(config)
         rc, out, _ = self._run(['doctor'])
+        self.assertEqual(rc, 0, out)
         self.assertIn('[ok] thresholds all known', out)
-        self.assertIn('safe to delete: calibrate_floor, routing_act', out)
+        self.assertNotIn('not read by anything', out)
+        self.assertIn('[ok] retired thresholds:', out)
+        for name in retired:
+            self.assertIn(name, out.split('safe to delete:', 1)[1])
+        rc, raw, _ = self._run(['doctor', '--json'])
+        self.assertEqual(rc, 0, raw)
+        data = json.loads(raw)
+        by_name = {check['name']: check for check in data['checks']}
+        self.assertTrue(by_name['thresholds all known']['ok'])
+        self.assertIsNone(by_name['thresholds all known']['detail'])
+        detail = by_name['retired thresholds']['detail']
+        self.assertIn('safe to delete', detail)
+        self.assertTrue(by_name['retired thresholds']['ok'])
+        for name in retired:
+            self.assertIn(name, detail)
 
     def test_enable_then_disable_global_flag(self):
         rc, _, _ = self._run(['enable'])
@@ -560,6 +583,37 @@ class CliTests(JevTestCase):
     # main() converts argparse's SystemExit into a return code, so a usage error is
     # reported the same way as every other exit status and main() stays callable
     # from a test without unwinding the interpreter.
+    def test_status_marks_routing_retired_with_no_sites(self):
+        os.environ['FORGE_JEV'] = 'on'
+        os.environ['TYPESAFE_API_KEY'] = 'k'
+        os.environ['FORGE_JEV_ROUTING'] = 'on'
+        self.assertFalse(forge_jev.enabled('routing'))
+        self.assertFalse(forge_jev.capability_ready('routing'))
+        rc, out, _ = self._run(['status'])
+        self.assertEqual(rc, 0)
+        self.assertIn('routing: False (retired, no sites)', out)
+        rc, raw, _ = self._run(['status', '--json'])
+        self.assertEqual(rc, 0)
+        data = json.loads(raw)
+        self.assertIn('routing', data['capabilities'])
+        self.assertFalse(data['capabilities']['routing'])
+        self.assertEqual(data['capability_sites']['routing'], [])
+        self.assertEqual(data['retired_capabilities'], ['routing'])
+        self.assertFalse(data['capability_ready']['routing'])
+        self.assertIn('jev-verify-discover', data['capability_sites']['tests'])
+        self.assertNotIn('FORGE_JEV_ACT', data['env_overrides'])
+
+    def test_enable_routing_reports_no_sites_and_exits_0(self):
+        rc, _, err = self._run(['enable', '--capability', 'routing'])
+        self.assertEqual(rc, 0)
+        self.assertEqual(err.strip(), 'forge: routing has no sites any more')
+        self.assertTrue(forge_jev.load_config()['capabilities']['routing'])
+        rc, _, err = self._run(['enable', '--capability', 'routing', '--capability', 'tests',
+                                '--capability', 'routing'])
+        self.assertEqual(rc, 0)
+        self.assertEqual(err.strip(), 'forge: routing has no sites any more')
+        self.assertTrue(forge_jev.load_config()['capabilities']['tests'])
+
     def test_enable_unknown_capability_returns_2(self):
         rc, _, _ = self._run(['enable', '--capability', 'nope'])
         self.assertEqual(rc, 2)
@@ -621,6 +675,10 @@ class ShimTests(JevTestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
 
+JEV_ACT_DEPRECATION = (
+    "forge: --jev-act no longer does anything; decision models never change a task's tier or model")
+
+
 class OptionsShellTests(unittest.TestCase):
     """The options file is bash, so `bash -n` is otherwise its only coverage."""
 
@@ -679,7 +737,45 @@ class OptionsShellTests(unittest.TestCase):
     def test_flags_map_to_environment(self):
         r = self._shell(self.PARSE_ALL + '\nforge_jev_export\n' + self.SHOW)
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertEqual(r.stdout.strip(), 'on on on off')
+        # --jev-act is accepted and exports nothing.
+        self.assertEqual(r.stdout.strip(), 'on unset on off')
+        self.assertEqual(r.stderr.strip().splitlines().count(JEV_ACT_DEPRECATION), 1)
+
+    def test_jev_act_warns_once_and_exports_nothing(self):
+        r = self._shell(
+            'forge_jev_flag --jev-act || exit 9\n'
+            'forge_jev_flag --jev-act || exit 9\n'
+            'forge_jev_export\n'
+            'echo "act=${FORGE_JEV_ACT:-unset}"')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout.strip(), 'act=unset')
+        self.assertEqual(r.stderr.strip().splitlines(), [JEV_ACT_DEPRECATION])
+
+    def test_help_keeps_jev_act_as_a_no_op(self):
+        r = self._shell('forge_jev_help')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn('--jev-act', r.stdout)
+        self.assertIn('(no effect; kept for old commands)', r.stdout)
+
+    def test_a_frozen_act_selection_restores_silently(self):
+        with tempfile.TemporaryDirectory() as run_dir:
+            (Path(run_dir) / 'jev-selection.json').write_text(json.dumps({
+                'choice': 'on', 'act': True, 'shadow': False,
+                'capabilities': {'routing': 'on', 'tests': 'off'},
+            }))
+            # run and retry call settle on a fresh shell, which restores the file.
+            r = self._shell(
+                'forge_jev_settle "%s"\n'
+                'echo "jev=${FORGE_JEV:-unset} act=${FORGE_JEV_ACT:-unset} '
+                'routing=${FORGE_JEV_ROUTING:-unset} tests=${FORGE_JEV_TESTS:-unset}"' % run_dir)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertNotIn(JEV_ACT_DEPRECATION, r.stderr)
+            self.assertNotIn('ignoring the flags', r.stderr)
+            self.assertEqual(r.stdout.strip(), 'jev=on act=unset routing=on tests=off')
+            restored = self._shell('forge_jev_restore "%s"; echo "act=${FORGE_JEV_ACT:-unset}"' % run_dir)
+            self.assertEqual(restored.returncode, 0, restored.stderr)
+            self.assertEqual(restored.stderr, '')
+            self.assertEqual(restored.stdout.strip(), 'act=unset')
 
     def test_capability_flag_alone_needs_no_general_flag(self):
         r = self._shell('forge_jev_flag --jev-tests && forge_jev_export && '
@@ -711,7 +807,8 @@ class OptionsShellTests(unittest.TestCase):
             ])
             r = self._shell(body)
             self.assertEqual(r.returncode, 0, r.stderr)
-            self.assertEqual(r.stdout.strip(), 'on on on off', 'restore lost the frozen selection')
+            self.assertEqual(r.stdout.strip(), 'on unset on off', 'restore lost the frozen selection')
+            self.assertEqual(r.stderr.strip().splitlines().count(JEV_ACT_DEPRECATION), 1)
             frozen = json.loads((Path(run_dir) / 'jev-selection.json').read_text())
             self.assertEqual(frozen['choice'], 'on')
             self.assertTrue(frozen['act'])
@@ -721,6 +818,47 @@ class OptionsShellTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as run_dir:
             r = self._shell('forge_jev_restore "%s"; echo "rc=$? jev=${FORGE_JEV:-unset}"' % run_dir)
             self.assertEqual(r.stdout.strip(), 'rc=0 jev=unset')
+
+
+class JevActRunnerTests(unittest.TestCase):
+    """plan accepts --jev-act once; a later run of that frozen selection stays quiet."""
+
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        self.root = Path(self.dir.name)
+        self.repo = self.root / 'repo'
+        self.repo.mkdir()
+        (self.repo / 'a.txt').write_text('a\n')
+        subprocess.run(['git', '-C', str(self.repo), 'init', '-q'], check=True)
+        subprocess.run(['git', '-C', str(self.repo), 'add', '-A'], check=True)
+        subprocess.run(['git', '-C', str(self.repo), '-c', 'user.email=t@t', '-c', 'user.name=t',
+                        'commit', '-qm', 'init'], check=True)
+        self.plan = self.root / 'plan'
+        self.plan.mkdir()
+        (self.plan / 'tasks.tsv').write_text('a\t-\tlow\ta.txt\tsol\topus\tEdit a\n')
+        self.env = dict(os.environ, FORGE_RIPWIRE='off', FORGE_JEV='off',
+                        XDG_CONFIG_HOME=str(self.root / 'config'))
+        for name in ('FORGE_JEV_ACT', 'FORGE_JEV_ENV_CAPTURED', 'FORGE_JEV_ROUTING'):
+            self.env.pop(name, None)
+
+    def _run(self, *args):
+        return subprocess.run(
+            ['bash', str(ROOT / 'scripts' / 'forge-parallel.sh'), *map(str, args)],
+            capture_output=True, text=True, env=self.env)
+
+    def test_plan_warns_once_and_a_frozen_run_does_not(self):
+        planned = self._run('plan', self.plan, '--repo', self.repo, '--no-memory', '--explore', '0',
+                            '--jev-act', '--jev-routing')
+        self.assertEqual(planned.returncode, 0, planned.stdout + planned.stderr)
+        self.assertEqual(planned.stderr.count(JEV_ACT_DEPRECATION), 1)
+        frozen = json.loads((self.plan / 'jev-selection.json').read_text())
+        self.assertTrue(frozen['act'])
+        self.assertEqual(frozen['capabilities'].get('routing'), 'on')
+        ran = self._run('run', self.plan, '--dry-run')
+        self.assertEqual(ran.returncode, 0, ran.stdout + ran.stderr)
+        self.assertNotIn(JEV_ACT_DEPRECATION, ran.stderr)
+        self.assertNotIn(JEV_ACT_DEPRECATION, ran.stdout)
 
 
 if __name__ == '__main__':

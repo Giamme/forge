@@ -8,16 +8,18 @@ import os
 from pathlib import Path
 import sys
 import tempfile
-import time
 import urllib.parse
 
-from forge_registry import register_run_dir, runs_registry
+from forge_registry import register_run_dir
 
-from . import (CAPABILITIES, CLEF_ONLY_SITES, CLOUDFLARE_DEFAULT_SITES, CLOUDFLARE_TOKEN_FILE,
-              DEFAULT_THRESHOLDS, PROVIDERS, RETIRED_THRESHOLDS, SITE_CAPABILITY, THRESHOLD_FALLBACK, api_key,
-              capability_ready, cloudflare, config_path, enabled, load_config, provider_for, provider_ready,
-              redact, save_config, secrets, site_ready)
+from . import (CAPABILITIES, CLOUDFLARE_DEFAULT_SITES, CLOUDFLARE_TOKEN_FILE,
+              DEFAULT_THRESHOLDS, PROVIDERS, RETIRED_CAPABILITIES, RETIRED_THRESHOLDS,
+              SITE_CAPABILITY, THRESHOLD_FALLBACK, api_key,
+              capability_ready, cloudflare, config_path, enabled, gate_mode, gate_reason, load_config,
+              provider_for, provider_ready, redact, save_config, secrets, site_ready, threshold, use_repo,
+              _resolved)
 from . import client, questions
+import forge_decide
 
 PRIVACY_STATEMENT = """\
 Jev (TypeSafe System One) sends task prompts, diff hunks, file excerpts, test names,
@@ -52,15 +54,6 @@ def parser() -> argparse.ArgumentParser:
     setup.add_argument('--model', choices=('clef', 'clef-flash'), default='clef')
     setup.add_argument('--sites', help='comma-separated sites to send to Cloudflare (default: the measured ones)')
 
-    first = sub.add_parser('first-pass', help=argparse.SUPPRESS)
-    first.add_argument('--plan', required=True)
-    first.add_argument('--repo', required=True)
-    retry = sub.add_parser('retry-pass', help=argparse.SUPPRESS)
-    retry.add_argument('--plan', required=True)
-    retry.add_argument('--repo', required=True)
-    retry.add_argument('--task', required=True)
-    retry.add_argument('--attempt', type=int, required=True)
-
     sites = sub.add_parser('sites', help='show or set which provider answers each site')
     sites.add_argument('assign', nargs='*', metavar='SITE=PROVIDER')
 
@@ -74,15 +67,6 @@ def parser() -> argparse.ArgumentParser:
     doctor = sub.add_parser('doctor')
     doctor.add_argument('--live', action='store_true')
     doctor.add_argument('--json', action='store_true')
-
-    backtest = sub.add_parser('backtest')
-    backtest.add_argument('--repo', required=True)
-    backtest.add_argument('--limit', type=int, default=None)
-    backtest.add_argument('--execute', action='store_true')
-    backtest.add_argument('--max-requests', type=int, default=200)
-    backtest.add_argument('--out', default=None)
-    backtest.add_argument('--capability', choices=('tests', 'drift'), default='tests')
-    backtest.add_argument('--json', action='store_true')
 
     verify_discover = sub.add_parser('verify-discover')
     verify_discover.add_argument('--repo', required=True)
@@ -99,11 +83,6 @@ def parser() -> argparse.ArgumentParser:
     coupling.add_argument('--repo', required=True)
     coupling.add_argument('--json', action='store_true')
 
-    review_triage = sub.add_parser('review-triage')
-    review_triage.add_argument('--review', required=True)
-    review_triage.add_argument('--diff', required=True)
-    review_triage.add_argument('--run-dir', default=None)
-    review_triage.add_argument('--json', action='store_true')
 
     memory_curate = sub.add_parser('memory-curate')
     memory_curate.add_argument('--repo', required=True)
@@ -125,27 +104,6 @@ def parser() -> argparse.ArgumentParser:
     memory_stale.add_argument('--text', required=True)
     memory_stale.add_argument('--anchor', required=True)
     memory_stale.add_argument('--run-dir', default=None)
-
-    test_subset = sub.add_parser('test-subset')
-    test_subset.add_argument('--repo', required=True)
-    test_subset.add_argument('--commit', required=True)
-    test_subset.add_argument('--task', required=True)
-    test_subset.add_argument('--command', dest='subset_command', required=True)
-    test_subset.add_argument('--changed', default=None)
-    test_subset.add_argument('--base', default=None)
-    test_subset.add_argument('--run-dir', default=None)
-    test_subset.add_argument('--max', type=int, default=8)
-    test_subset.add_argument('--timeout', type=int, default=600)
-
-    verify_triage = sub.add_parser('verify-triage')
-    verify_triage.add_argument('--repo', required=True)
-    # dest is deliberately not 'command': the top-level subparsers already own that dest
-    # name for the subcommand itself ('verify-triage'), and letting --command collide
-    # with it would overwrite the dispatch key in main().
-    verify_triage.add_argument('--command', dest='verify_command', required=True)
-    verify_triage.add_argument('--log', required=True)
-    verify_triage.add_argument('--json', action='store_true')
-    verify_triage.add_argument('--run-dir')
     return p
 
 
@@ -209,7 +167,7 @@ def _setup_cloudflare(args) -> int:
             handle.write('CLOUDFLARE_API_TOKEN=%s\n' % token)
         os.chmod(token_file, 0o600)
     chosen = [s for s in (args.sites.split(',') if args.sites else CLOUDFLARE_DEFAULT_SITES) if s]
-    unknown = [s for s in chosen if s not in SITE_CAPABILITY or s in CLEF_ONLY_SITES]
+    unknown = [s for s in chosen if s not in SITE_CAPABILITY]
     if unknown:
         print('forge jev: unknown site(s): ' + ', '.join(unknown), file=sys.stderr)
         return 2
@@ -226,51 +184,19 @@ def _setup_cloudflare(args) -> int:
     return 0
 
 
-def _watchdog(seconds: float) -> None:
-    """Exit this process, whatever it is doing, `seconds` from now. A separate CLI process
-    with no worker threads of its own to protect, so SIGALRM is safe here (unlike in
-    Fractal's threads); the shell hooks that call it then never wait past the bound."""
-    import signal
-
-    signal.signal(signal.SIGALRM, lambda *_: os._exit(3))
-    signal.setitimer(signal.ITIMER_REAL, seconds)
-
-
-def cmd_first_pass(args) -> int:
-    """Silent first-attempt predictions for a freshly planned table (forge_jev/predict.py)."""
-    from . import predict
-    config = load_config()
-    if not site_ready('clef-first-pass', config):
-        return 3
-    _watchdog(2 * config.get('deadline_s', 5.0) + 5)
-    return predict.main_first_pass(args)
-
-
-def cmd_retry_pass(args) -> int:
-    """Silent prediction for a dwarf attempt above 1 (forge_jev/predict.py)."""
-    from . import predict
-    config = load_config()
-    if not site_ready('clef-retry-pass', config):
-        return 3
-    _watchdog(2 * config.get('deadline_s', 5.0) + 5)
-    return predict.main_retry_pass(args)
-
-
 def cmd_sites(args) -> int:
     config = load_config()
     if args.assign:
         for item in args.assign:
             site, _, provider = item.partition('=')
-            if site not in SITE_CAPABILITY or site in CLEF_ONLY_SITES or provider not in PROVIDERS:
+            if site not in SITE_CAPABILITY or provider not in PROVIDERS:
                 print('forge jev sites: expected SITE=PROVIDER with SITE one of %s and PROVIDER one of %s; got %r'
-                      % (', '.join(s for s in SITE_CAPABILITY if s not in CLEF_ONLY_SITES), ', '.join(PROVIDERS), item),
+                      % (', '.join(SITE_CAPABILITY), ', '.join(PROVIDERS), item),
                       file=sys.stderr)
                 return 2
             config['sites'][site] = provider
         save_config(config)
     for site in SITE_CAPABILITY:
-        if site in CLEF_ONLY_SITES and cloudflare(config) is None:
-            continue
         print('%-20s %-10s %s' % (site, provider_for(site, config), 'ready' if site_ready(site, config) else 'not ready'))
     return 0
 
@@ -302,7 +228,27 @@ def cmd_setup(args) -> int:
     return 0
 
 
+def _migrated(args, mode: str) -> bool:
+    """Once a user decide.json exists, jev.json no longer controls runs: refuse to write it
+    and name the `forge decide gate` commands that do what was asked."""
+    if not forge_decide.user_path().exists():
+        return False
+    caps = set(args.capability or ())
+    gates = [g for g in forge_decide.GATES if not caps or forge_decide.GATE_CAPABILITY[g] in caps]
+    print('forge jev: %s exists, so jev.json no longer controls runs; nothing was written.'
+          % forge_decide.user_path(), file=sys.stderr)
+    if gates:
+        print('use instead:', file=sys.stderr)
+        for gate in gates:
+            print('  forge decide gate %s %s' % (gate, mode), file=sys.stderr)
+    else:
+        print('%s has no gates any more' % ', '.join(sorted(caps)), file=sys.stderr)
+    return True
+
+
 def cmd_enable(args) -> int:
+    if _migrated(args, 'on'):
+        return 1
     config = load_config()
     if args.capability:
         for name in args.capability:
@@ -310,10 +256,16 @@ def cmd_enable(args) -> int:
     else:
         config['enabled'] = True
     save_config(config)
+    # Accepted so old commands keep working. Nothing is left to ask.
+    for name in dict.fromkeys(args.capability or ()):
+        if name in RETIRED_CAPABILITIES:
+            print('forge: %s has no sites any more' % name, file=sys.stderr)
     return 0
 
 
 def cmd_disable(args) -> int:
+    if _migrated(args, 'off'):
+        return 1
     config = load_config()
     if args.capability:
         for name in args.capability:
@@ -324,18 +276,41 @@ def cmd_disable(args) -> int:
     return 0
 
 
+def _capability_sites() -> dict:
+    sites = {cap: [] for cap in CAPABILITIES}
+    for site, cap in SITE_CAPABILITY.items():
+        sites.setdefault(cap, []).append(site)
+    return sites
+
+
+def _gates_block(config: dict) -> dict:
+    """Each gate's resolved mode and source, and whether its site can be asked (reason:
+    None, off, privacy, kill, no-provider or no-key)."""
+    resolved = _resolved(config)
+    out = {}
+    for name, gate in resolved['gates'].items():
+        reason = gate_reason(forge_decide.GATE_SITE[name], config)
+        out[name] = dict(mode=gate['mode'], source=gate['source'], ready=reason is None, reason=reason)
+    return out
+
+
 def cmd_status(args) -> int:
     config = load_config()
-    overrides = {var: os.environ[var] for var in ('FORGE_JEV', 'FORGE_JEV_ACT', 'FORGE_JEV_SHADOW',
+    # FORGE_JEV_ACT is not read: --jev-act no longer changes anything.
+    overrides = {var: os.environ[var] for var in ('FORGE_JEV', 'FORGE_JEV_SHADOW',
                 *_CAP_ENV.values()) if var in os.environ}
-    overrides.update({var: os.environ[var] for var in ('FORGE_CLEF', 'FORGE_JEV_PROVIDER', 'FORGE_JEV_OUTCOMES')
+    overrides.update({var: os.environ[var] for var in ('FORGE_CLEF', 'FORGE_JEV_PROVIDER')
                       if var in os.environ})
     remote = cloudflare(config)
-    # Offline by contract: the shell's forge_jev_active reads this before every Jev step.
+    sites_by_cap = _capability_sites()
+    # Offline by contract: the shell's forge_decide_active reads `gates` (each gate's `ready`)
+    # from this before every decision-model step.
     data = dict(config_path=str(config_path()), key_present=api_key(config) is not None,
                enabled=enabled(config=config),
                capabilities={c: enabled(c, config=config) for c in CAPABILITIES},
                capability_ready={c: capability_ready(c, config) for c in CAPABILITIES},
+               capability_sites=sites_by_cap,
+               retired_capabilities=sorted(RETIRED_CAPABILITIES),
                providers=dict(typesafe=dict(ready=provider_ready('typesafe', config)),
                               cloudflare=dict(configured=remote is not None,
                                               ready=provider_ready('cloudflare', config),
@@ -343,7 +318,7 @@ def cmd_status(args) -> int:
                sites={s: dict(provider=provider_for(s, config), ready=site_ready(s, config))
                       for s in SITE_CAPABILITY},
                thresholds=config['thresholds'], model_thresholds=config.get('model_thresholds') or {},
-               env_overrides=overrides)
+               env_overrides=overrides, gates=_gates_block(config))
     if args.json:
         print(json.dumps(data, indent=2))
     else:
@@ -351,15 +326,22 @@ def cmd_status(args) -> int:
         print('key present: ' + str(data['key_present']))
         print('enabled: ' + str(data['enabled']))
         for name, state in data['capabilities'].items():
-            print(f'  {name}: {state}')
+            if name in RETIRED_CAPABILITIES:
+                print(f'  {name}: {state} (retired, no sites)')
+            else:
+                print(f'  {name}: {state}')
         cf = data['providers']['cloudflare']
         if cf['configured']:
             print('cloudflare: ready=%s model=%s' % (cf['ready'], cf['model']))
         moved = {s: v for s, v in data['sites'].items()
-                 if v['provider'] != 'typesafe' and (cf['configured'] or s not in CLEF_ONLY_SITES)}
+                 if v['provider'] != 'typesafe'}
         for site, value in sorted(moved.items()):
             print(f"  {site}: {value['provider']}{'' if value['ready'] else ' (not ready)'}")
         print('thresholds: ' + json.dumps(data['thresholds']))
+        print('gates:')
+        for name, gate in data['gates'].items():
+            print('  %-16s %-6s (%s) %s' % (name, gate['mode'], gate['source'],
+                                            'ready' if gate['ready'] else 'not ready: ' + gate['reason']))
         if overrides:
             print('env overrides: ' + ', '.join(f'{k}={v}' for k, v in overrides.items()))
     return 0
@@ -380,12 +362,7 @@ def cmd_doctor(args) -> int:
     else:
         checks.append(('config readable', True, 'no config file; using defaults'))
     key = api_key(config)
-    # The Clef-only sites count once a Cloudflare provider is configured, not before:
-    # a TypeSafe-only setup is as ready as it ever was.
-    used = {provider_for(s, config) for s in SITE_CAPABILITY
-            if enabled(SITE_CAPABILITY[s], config=config) and s not in CLEF_ONLY_SITES}
-    if cloudflare(config) is not None:
-        used.add('cloudflare')
+    used = {provider_for(s, config) for s in SITE_CAPABILITY if enabled(SITE_CAPABILITY[s], config=config)}
     if 'typesafe' in used or not used:
         checks.append(('key present', key is not None, None))
     if 'cloudflare' in used:
@@ -445,39 +422,6 @@ def cmd_doctor(args) -> int:
     return 0 if ready else 3
 
 
-def cmd_backtest(args) -> int:
-    repo = Path(args.repo)
-    if not repo.is_dir() or not (repo / '.git').exists():
-        print(f'forge jev backtest: --repo {args.repo!r} is not a git repository', file=sys.stderr)
-        return 2
-
-    # Imported lazily so cli.py keeps working (and status/doctor keep paying nothing)
-    # even while backtest.py is mid-edit by another agent, and so a missing module is a
-    # clean exit rather than a traceback.
-    try:
-        from . import backtest
-    except ImportError as error:
-        print('forge jev backtest: backtest module unavailable (' + str(error) + ')', file=sys.stderr)
-        return 3
-
-    config = load_config()
-    if args.execute and api_key(config) is None:
-        print('forge jev backtest: no API key configured. Run `forge jev setup` first.', file=sys.stderr)
-        return 3
-
-    if not args.execute:
-        print('Dry estimate only -- no API call was made (pass --execute to run one).', file=sys.stderr)
-
-    summary = backtest.run(repo, limit=args.limit, execute=args.execute,
-                           max_requests=args.max_requests, out_dir=args.out,
-                           capability=args.capability, config=config)
-    if args.json:
-        print(json.dumps(summary, indent=2))
-    else:
-        print(backtest.report(summary))
-    return 0
-
-
 def cmd_verify_discover(args) -> int:
     repo = Path(args.repo)
     if not repo.is_dir():
@@ -485,16 +429,22 @@ def cmd_verify_discover(args) -> int:
         return 2
 
     # Imported lazily so cli.py keeps working, and status/doctor keep paying nothing,
-    # even while verify.py is mid-edit -- same reasoning as cmd_backtest's import.
+    # even while verify.py is mid-edit, and so a missing module is a clean exit.
     try:
         from . import verify
     except ImportError as error:
         print('forge jev verify-discover: verify module unavailable (' + str(error) + ')', file=sys.stderr)
         return 3
 
+    use_repo(repo)
     config = load_config()
-    result = verify.discover(repo, config=config, run_dir=args.run_dir)
-    if result is None:
+    # Asked only when the gate's provider is usable. discover() does not check that, and a
+    # gate naming a missing provider would send the repo's commands to the hosted TypeSafe.
+    result = None
+    if site_ready('jev-verify-discover', config):
+        result = verify.discover(repo, config=config, run_dir=args.run_dir)
+    # Shadow: asked and recorded like `on`, then the path a run takes with no command.
+    if result is None or gate_mode('jev-verify-discover') == 'shadow':
         if not args.json:
             print('forge jev verify-discover: no verified candidate found', file=sys.stderr)
         else:
@@ -511,52 +461,22 @@ def cmd_verify_discover(args) -> int:
     return 0
 
 
-def cmd_verify_triage(args) -> int:
-    repo = Path(args.repo)
-    if not repo.is_dir():
-        print(f'forge jev verify-triage: --repo {args.repo!r} is not a directory', file=sys.stderr)
-        return 2
-    try:
-        log_tail = Path(args.log).read_text(errors='replace')
-    except OSError as error:
-        print(f'forge jev verify-triage: cannot read --log {args.log!r}: {error}', file=sys.stderr)
-        return 2
-
-    try:
-        from . import verify
-    except ImportError as error:
-        print('forge jev verify-triage: verify module unavailable (' + str(error) + ')', file=sys.stderr)
-        return 3
-
-    config = load_config()
-    traps = verify.known_traps(repo)
-    result = verify.triage(repo, command=args.verify_command, log_tail=log_tail, traps=traps, config=config,
-                           run_dir=args.run_dir)
-    if result is None:
-        if args.json:
-            print(json.dumps(None))
-        else:
-            print('forge jev verify-triage: no judgment produced', file=sys.stderr)
-        return 3
-    if args.json:
-        print(json.dumps(result, indent=2))
-    else:
-        print(f"{result['verdict']} (confidence {result['confidence']:.2f})")
-    return 0
-
-
-# Enough of a task prompt for the rubrics to judge it. The longest prompt in forge's
-# own test plan is about 3.5KB; this leaves room without letting one enormous task
-# prompt dominate a request that also carries file excerpts and memory.
+# Enough of a task prompt for the gates to judge it. The longest prompt in forge's own
+# test plan is about 3.5KB; this leaves room without letting one enormous task prompt
+# dominate a request that also carries file excerpts and memory.
 PROMPT_CHARS = 8000
 
 
 def cmd_score_plan(args) -> int:
-    """Rate every task in a plan. Advisory output only: nothing ever writes it into tasks.tsv.
+    """The plan-time gates: prompt adequacy (jev-prompt) and drift (jev-drift), per task.
 
-    Writing a Jev tier into the plan (`--jev-act`, gated on a per-repo calibration) was
-    removed on 2026-10-17 without ever having acted: no repo reached the calibration bar,
-    and model choice is now measured from `plan --explore` draws (`forge dataset routing`).
+    Advisory output only: nothing here writes into tasks.tsv, and no answer changes a
+    plan. Each task's answers go to tasks/<id>/jev.json; stdout carries one
+    `id<TAB>warnings<TAB>drift` row per task that got any answer. (This command used to
+    rate routing rubrics into a suggested tier; that was removed in milestone C1.)
+
+    A gate in shadow is asked and its answer kept in jev.json, but it adds `-` to the row;
+    a task whose every answer is shadowed prints no row, and exit 3 means no row at all.
     """
     plan, repo = Path(args.plan), Path(args.repo)
     if not plan.is_dir():
@@ -569,18 +489,22 @@ def cmd_score_plan(args) -> int:
     if not tasks.is_file():
         print(f'forge jev score-plan: no tasks.tsv in {args.plan!r}', file=sys.stderr)
         return 2
+    use_repo(repo)
     config = load_config()
-    if not site_ready('jev-score-plan', config):
+    ask_prompt, ask_drift = site_ready('jev-prompt', config), site_ready('jev-drift', config)
+    if not (ask_prompt or ask_drift):
         return 3
+    shadow_prompt = gate_mode('jev-prompt') == 'shadow'
+    shadow_drift = gate_mode('jev-drift') == 'shadow'
 
-    from . import gates, routing
+    from . import gates
 
     goal = ''
     goal_file = plan / 'goal.txt'
     if goal_file.is_file():
         goal = goal_file.read_text(errors='replace')[:2000]
 
-    rows, judgments = [], []
+    rows, judgments, shown = [], [], []
     for line in tasks.read_text(errors='replace').splitlines():
         if not line.strip() or line.startswith('#'):
             continue
@@ -589,44 +513,54 @@ def cmd_score_plan(args) -> int:
             continue
         rows.append(parts)
 
-    # The whole plan, once, for every task's state. independently_verifiable asks
-    # whether confirming a task needs another task in the plan to land first; it had
-    # never been shown another task, so it was guessing whether one existed.
+    # The whole plan, once, for every task's state: prompt_warn was measured with it there.
     siblings = [dict(id=p[0], deps=p[1], files=p[3], title=p[6]) for p in rows]
+    warn_at = threshold('prompt_warn', config=config, site='jev-prompt')
 
     for parts in rows:
-        task_id, task_deps, declared, files, _dwarf, _qa, title = parts[:7]
+        task_id, task_deps, _declared, files, _dwarf, _qa, title = parts[:7]
         approach = ''
         approach_file = plan / 'tasks' / task_id / 'approach.md'
         if approach_file.is_file():
             approach = approach_file.read_text(errors='replace')[:4000]
         # The requirements themselves. decompose.md makes this file mandatory and
-        # SKILL.md says a short title is insufficient for QA -- so scoring a task
-        # without it was scoring the one thing both documents say is not the task.
+        # SKILL.md says a short title is insufficient for QA.
         prompt_text = ''
         prompt_file = plan / 'tasks' / task_id / 'prompt.md'
         if prompt_file.is_file():
             prompt_text = prompt_file.read_text(errors='replace')[:PROMPT_CHARS]
-        judgment = routing.score_task(repo, goal=goal, task_id=task_id, title=title,
-                                      files=files, approach=approach, prompt=prompt_text,
-                                      declared_difficulty=declared, deps=task_deps,
-                                      siblings=siblings, run_dir=str(plan),
-                                      config=config)
-        if judgment is None:
-            continue
 
-        # A second request per task, and the only one Phase 4 adds -- the adequacy and
-        # verifiability gates ride inside the routing request above. This one cannot,
-        # because it asks about a different universe (every tracked file) rather than
-        # about the task itself.
-        if enabled('gates', config=config):
+        adequacy = None
+        if ask_prompt:
+            adequacy = gates.prompt_adequacy(repo, goal=goal, task_id=task_id, title=title,
+                                             files=files, deps=task_deps, approach=approach,
+                                             prompt=prompt_text, siblings=siblings,
+                                             run_dir=str(plan), config=config)
+        # A second request, asked whether or not the first answered: it asks about a
+        # different universe (every tracked file) rather than about the task itself.
+        predicted = None
+        if ask_drift:
             predicted = gates.predict_drift(repo, goal=goal, task_id=task_id, title=title,
                                             declared=files, approach=approach,
                                             prompt=prompt_text,
                                             run_dir=str(plan), config=config)
-            if predicted:
-                judgment['predicted_drift'] = [dict(file=name, probability=probability)
-                                               for name, probability in predicted]
+        if adequacy is None and predicted is None:
+            continue
+
+        # A warning, not a gate: recorded below the threshold and silent above it.
+        warnings = {}
+        if adequacy is not None and adequacy < warn_at:
+            warnings['prompt_adequacy'] = round(adequacy, 3)
+        judgment = dict(id=task_id,
+                        prompt_adequacy=None if adequacy is None else round(adequacy, 3),
+                        warnings=warnings,
+                        predicted_drift=[dict(file=name, probability=probability)
+                                         for name, probability in predicted or ()])
+        shadowed = [name for name, value, hidden in (('prompt', adequacy, shadow_prompt),
+                                                       ('drift', predicted, shadow_drift))
+                    if value is not None and hidden]
+        if shadowed:
+            judgment['shadow'] = shadowed
         judgments.append(judgment)
         out = plan / 'tasks' / task_id
         try:
@@ -634,6 +568,14 @@ def cmd_score_plan(args) -> int:
             (out / 'jev.json').write_text(json.dumps(judgment, indent=2, sort_keys=True) + '\n')
         except OSError:
             pass
+        # What the run sees: a shadowed answer counts as no answer.
+        if (adequacy is not None and not shadow_prompt) or (predicted is not None and not shadow_drift):
+            visible = {k: v for k, v in judgment.items() if k != 'shadow'}
+            if shadow_prompt:
+                visible.update(prompt_adequacy=None, warnings={})
+            if shadow_drift:
+                visible['predicted_drift'] = []
+            shown.append(visible)
 
     if not judgments:
         return 3
@@ -643,28 +585,28 @@ def cmd_score_plan(args) -> int:
     # A registry rather than moving the file: plan dirs are the user's to place, and
     # relocating them would orphan every run already on disk.
     register_run_dir(repo, plan)
+    if not shown:
+        return 3
 
     if args.json:
-        print(json.dumps(judgments, indent=2, sort_keys=True))
+        print(json.dumps(shown, indent=2, sort_keys=True))
     else:
-        for judgment in judgments:
-            # Two extra columns for the Phase 4 gates. '-' rather than an empty field so
-            # a `read` in bash cannot silently shift the columns after it.
-            warnings = ','.join(sorted(judgment.get('warnings') or {})) or '-'
-            drift = ','.join(item['file'] for item in judgment.get('predicted_drift') or ()) or '-'
-            print('\t'.join((judgment['id'], judgment['tier'],
-                             str(judgment['confidence']), str(judgment['composite']),
-                             judgment['escalated'] or '-',
-                             judgment['declared'], warnings, drift)))
+        for judgment in shown:
+            # '-' rather than an empty field so a `read` in bash cannot silently shift the
+            # columns after it.
+            warnings = ','.join(sorted(judgment['warnings'])) or '-'
+            drift = ','.join(item['file'] for item in judgment['predicted_drift']) or '-'
+            print('\t'.join((judgment['id'], warnings, drift)))
     return 0
 
 
 def cmd_coupling(args) -> int:
-    """Warn about same-wave task pairs that may conflict despite disjoint files.
+    """Warn about earlier-wave tasks written against what a later wave builds.
 
     Advisory only -- like cmd_score_plan, this never edits tasks.tsv or waves.tsv. It
     reads both (waves.tsv must already exist; forge-parallel.sh runs this after
     compute_waves) and writes jev-coupling.json for a human or a later run to inspect.
+    Every row has kind 'forward'; the file keeps its name for old consumers.
     """
     plan, repo = Path(args.plan), Path(args.repo)
     if not plan.is_dir():
@@ -677,32 +619,28 @@ def cmd_coupling(args) -> int:
     if not waves_file.is_file():
         print(f'forge jev coupling: no waves.tsv in {args.plan!r} -- run compute_waves first', file=sys.stderr)
         return 2
+    use_repo(repo)
     config = load_config()
-    if not site_ready('jev-coupling', config):
+    if not site_ready('jev-forward', config):
         return 3
 
     from . import coupling
 
     tasks = list(coupling.parse_tasks(plan).values())
     waves = coupling.parse_waves(plan)
-    found = coupling.coupled_pairs(repo, tasks=tasks, waves=waves, run_dir=str(plan), config=config)
-    # The other half of the same question. `pairs()` only looks inside a wave, so "task A
-    # is written against an interface task B builds later" was structurally out of reach
-    # -- and that is what shipped: jevscope's `readme` ran in wave 1 documenting the
-    # wave-2 CLI and passed its own review, because the thing it was wrong about did not
-    # exist yet. Asked here rather than in a separate command so a plan gets both
-    # warnings or neither.
     forward = coupling.forward_dependencies(repo, tasks=tasks, waves=waves,
                                             run_dir=str(plan), config=config)
-    if not found and not forward:
+    if not forward:
         return 3
 
-    payload = ([dict(a=a, b=b, probability=p, kind='same-wave') for a, b, p in (found or [])]
-               + [dict(a=a, b=b, probability=p, kind='forward') for a, b, p in (forward or [])])
+    payload = [dict(a=a, b=b, probability=p, kind='forward') for a, b, p in forward]
     try:
         (plan / 'jev-coupling.json').write_text(json.dumps(payload, indent=2, sort_keys=True) + '\n')
     except OSError:
         pass
+    # Shadow: recorded in the file above, and the run hears nothing.
+    if gate_mode('jev-forward') == 'shadow':
+        return 3
 
     if args.json:
         print(json.dumps(payload, indent=2, sort_keys=True))
@@ -714,30 +652,6 @@ def cmd_coupling(args) -> int:
     return 0
 
 
-def cmd_review_triage(args) -> int:
-    """Annotate a FAIL. Exit 0 only when the review looks SUSPECT.
-
-    The exit code carries the whole signal so the caller stays a one-liner, and it is
-    deliberately the narrow case that exits 0: anything else -- a sound review, no key,
-    no judgment, a crash -- leaves the verdict to speak for itself.
-    """
-    config = load_config()
-    if not site_ready('jev-review-triage', config):
-        return 3
-    from . import review
-
-    result = review.annotate_failure(review_path=args.review, diff_path=args.diff,
-                                     run_dir=args.run_dir, config=config)
-    if result is None:
-        return 3
-    if args.json:
-        print(json.dumps(result, indent=2, sort_keys=True))
-    elif result['suspect']:
-        for reason in result['reasons']:
-            print(reason)
-    return 0 if result['suspect'] else 1
-
-
 def cmd_memory_curate(args) -> int:
     """Curate one learning line. Prints `category<TAB>injectable<TAB>matched_key`.
 
@@ -745,6 +659,7 @@ def cmd_memory_curate(args) -> int:
     learning and parsing JSON in bash for three fields is not worth the subprocess. Exit
     3 means "no opinion", and the caller keeps exactly what the model said.
     """
+    use_repo(args.repo)
     config = load_config()
     if not site_ready('jev-memory-curate', config):
         return 3
@@ -761,7 +676,8 @@ def cmd_memory_curate(args) -> int:
 
     result = memory_module.curate(category=args.category, text=args.text,
                                   existing=existing, run_dir=args.run_dir, config=config)
-    if result is None:
+    # Shadow: asked and recorded, then the path a failed request takes.
+    if result is None or gate_mode('jev-memory-curate') == 'shadow':
         return 3
     if args.json:
         print(json.dumps(result, indent=2, sort_keys=True))
@@ -792,7 +708,7 @@ def cmd_memory_slice(args) -> int:
         task=task, lines=lines, run_dir=args.run_dir,
         keep=args.keep if args.keep and args.keep > 0 else memory_module.SLICE_KEEP,
         config=config)
-    if kept is None:
+    if kept is None or gate_mode('jev-memory-slice') == 'shadow':
         return 3
     for line in kept:
         print(line)
@@ -800,7 +716,9 @@ def cmd_memory_slice(args) -> int:
 
 
 def cmd_memory_stale(args) -> int:
-    """Exit 0 when the fact looks stale, 1 when it still holds, 3 when unknown."""
+    """Exit 0 when the fact looks stale, 1 when it still holds, 3 when unknown (and in
+    shadow, which asks and records but keeps the fact as an unknown does)."""
+    use_repo(_anchor_repo(args.anchor))
     config = load_config()
     if not site_ready('jev-memory-stale', config):
         return 3
@@ -808,149 +726,22 @@ def cmd_memory_stale(args) -> int:
 
     result = memory_module.still_true(text=args.text, anchor_path=args.anchor,
                                       run_dir=args.run_dir, config=config)
-    if result is None:
+    if result is None or gate_mode('jev-memory-stale') == 'shadow':
         return 3
     return 0 if result['stale'] else 1
 
 
-def cmd_test_subset(args) -> int:
-    """Run the likely-affected tests in a throwaway export of the reviewed commit.
-
-    Exit 0 only when the subset RAN AND FAILED -- that is the one outcome worth telling
-    a reviewer about. Exit 1 covers "ran and passed", which proves nothing here because
-    the subset is not the suite, and exit 3 covers everything else. The task worktree is
-    never touched, so no fingerprint can change.
-    """
+def _anchor_repo(anchor: str) -> str | None:
+    """The repo an anchor file lives in: FORGE_DECIDE_REPO when set, else its git top level."""
+    if os.environ.get('FORGE_DECIDE_REPO'):
+        return None
     import subprocess
-    import tempfile
-
-    receipt_values: dict = {}
-
-    def receipt(outcome: str, **values) -> None:
-        """Record how the subset run ended, every outcome, not just a failure. A selection
-        is only trainable when we know whether the chosen tests passed, failed on this
-        diff, or could not run. Fail-open."""
-        receipt_values.update(values)
-        try:
-            scripts = str(Path(__file__).resolve().parent.parent)
-            if scripts not in sys.path:
-                sys.path.insert(0, scripts)
-            from forge_dataset.capture import point
-            texts = {k: receipt_values.pop(k) for k in ('candidate_output', 'base_output') if k in receipt_values}
-            point('subset_run', args.run_dir, None, dict(receipt_values, outcome=outcome), texts=texts)
-        except Exception:
-            pass
-
-    # Usage errors come first and need neither a key nor a config: a caller who gets
-    # exit 3 ("Jev is unavailable") for a malformed command would conclude the wrong
-    # thing and never fix the command.
-    if '{files}' not in args.subset_command:
-        # Without the placeholder there is nowhere to put the selection, and appending
-        # blindly is what broke this before. Do nothing rather than run the full suite
-        # twice under a name that says "subset".
-        return 2
-    repo = Path(args.repo)
-    if not repo.is_dir():
-        return 2
-    config = load_config()
-    if not site_ready('jev-test-subset', config):
-        return 3
-    from . import subset
-
     try:
-        task = Path(args.task).read_text(errors='replace')[:6000]
-    except OSError:
-        return 3
-    changed = []
-    if args.changed:
-        try:
-            changed = Path(args.changed).read_text(errors='replace').split()[:200]
-        except OSError:
-            changed = []
-
-    candidates = subset.candidate_tests(repo)
-    if not candidates:
-        return 3
-    scored = subset.select(repo, task=task, changed=changed, candidates=candidates,
-                           run_dir=args.run_dir, config=config)
-    if not scored:
-        return 3
-
-    # No measured per-repo threshold exists, so rather than invent one this takes the
-    # highest-scoring few. Over-selecting only costs runtime in a throwaway directory;
-    # the result is advisory either way and never decides verification.
-    chosen = [name for _p, name in scored[:max(1, args.max)]]
-    receipt_values.update(chosen=chosen, scored=[[p, name] for p, name in scored[:40]], changed=changed,
-                          commit=args.commit, base=args.base)
-    export_dir = tempfile.mkdtemp(prefix='forge-subset-')
-    try:
-        if not subset.export(repo, args.commit, export_dir):
-            receipt('export_failed')
-            return 3
-        # The template says how THIS project's runner takes a file list, because there
-        # is no general answer. `pytest -q <files>` works; `npm test <files>` does not
-        # (it needs `--`), `go test ./...` and `bash tests/check.sh` take no file list at
-        # all, and `python -m unittest discover -s tests` rejects paths outright. Guessing
-        # produced a command that failed for a reason having nothing to do with the diff.
-        command = args.subset_command.replace('{files}', ' '.join(chosen))
-        receipt_values['command'] = command
-        started = time.time()
-        try:
-            completed = subprocess.run(command, shell=True, cwd=export_dir,
-                                       capture_output=True, text=True,
-                                       timeout=max(1, args.timeout))
-        except (OSError, subprocess.SubprocessError) as error:
-            receipt('timeout' if isinstance(error, subprocess.TimeoutExpired) else 'candidate_error',
-                    candidate_s=round(time.time() - started, 3))
-            return 3
-        tail = (completed.stdout or '') + (completed.stderr or '')
-        receipt_values.update(candidate_exit=completed.returncode, candidate_s=round(time.time() - started, 3),
-                              candidate_output=tail[-65536:])
-        if completed.returncode == 0:
-            receipt('pass')
-            return 1
-    finally:
-        subset.cleanup(export_dir)
-
-    # It failed. That is not yet evidence against the diff. A throwaway export has no
-    # installed dependencies of its own, so `No module named pytest` looks exactly like
-    # a broken test -- and reporting an environment failure to a reviewer as "your diff
-    # breaks tests" is worse than saying nothing at all. Pre-existing failures have the
-    # same shape. So run the identical subset against the BASE commit and only speak up
-    # when the base passes: that is the one case where this diff is implicated.
-    if not args.base:
-        receipt('fail_no_base')
-        return 3
-    control_dir = tempfile.mkdtemp(prefix='forge-subset-base-')
-    try:
-        if not subset.export(repo, args.base, control_dir):
-            receipt('base_export_failed')
-            return 3
-        started = time.time()
-        try:
-            control = subprocess.run(command, shell=True, cwd=control_dir,
-                                     capture_output=True, text=True,
-                                     timeout=max(1, args.timeout))
-        except (OSError, subprocess.SubprocessError) as error:
-            receipt('base_timeout' if isinstance(error, subprocess.TimeoutExpired) else 'base_error',
-                    base_s=round(time.time() - started, 3))
-            return 3
-        receipt_values.update(base_exit=control.returncode, base_s=round(time.time() - started, 3),
-                              base_output=((control.stdout or '') + (control.stderr or ''))[-65536:])
-        if control.returncode != 0:
-            # Same failure without the diff: environment or pre-existing, not this change.
-            receipt('environment')
-            return 3
-    finally:
-        subset.cleanup(control_dir)
-    receipt('regression')
-
-    print('The likely-affected tests were run against this diff and FAILED.')
-    print('The same tests PASS on the commit this task started from, so the failure')
-    print('is attributable to this diff rather than to the environment.')
-    print('Command: ' + command)
-    print(redact(tail[-3000:]))
-    return 0
+        out = subprocess.run(['git', '-C', str(Path(anchor).parent), 'rev-parse', '--show-toplevel'],
+                             capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return (out.stdout.strip() or None) if out.returncode == 0 else None
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -958,17 +749,13 @@ def main(argv: list[str] | None = None) -> int:
     try:
         args = parser().parse_args(argv)
         return dict(setup=cmd_setup, sites=cmd_sites, enable=cmd_enable, disable=cmd_disable,
-                    **{'first-pass': cmd_first_pass, 'retry-pass': cmd_retry_pass},
-                    status=cmd_status, doctor=cmd_doctor, backtest=cmd_backtest,
+                    status=cmd_status, doctor=cmd_doctor,
                     **{'score-plan': cmd_score_plan,
                        'coupling': cmd_coupling,
-                       'review-triage': cmd_review_triage,
-                       'test-subset': cmd_test_subset,
                        'memory-curate': cmd_memory_curate,
                        'memory-slice': cmd_memory_slice,
                        'memory-stale': cmd_memory_stale,
-                       'verify-discover': cmd_verify_discover,
-                       'verify-triage': cmd_verify_triage})[args.command](args)
+                       'verify-discover': cmd_verify_discover})[args.command](args)
     except SystemExit as exit:
         # argparse exits the process on a usage error; return the code instead so the
         # shim owns exiting and main() stays callable from a test.
@@ -978,3 +765,5 @@ def main(argv: list[str] | None = None) -> int:
     except (OSError, ValueError, RuntimeError, KeyError) as error:
         print('forge jev: ' + redact(str(error)), file=sys.stderr)
         return 3
+    finally:
+        use_repo(None)

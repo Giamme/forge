@@ -54,10 +54,6 @@ class ReaderTests(unittest.TestCase):
                        'candidates': ['astra', 'opus'], 'default': 'opus', 'chosen': 'astra',
                        'explored': False, 'propensity': 0.25, 'inputs': {},
                        'decision': '9c1e4b7a0d2f3e58', 'future_field': {'keep': True}}],
-            'clef': {'first_pass': {'p': 0.71, 'model': 'clef', 'at': 1760619100.0,
-                                    'plan_table': 'tasks.tsv', 'assignment': {'dwarf': 'astra', 'qa': 'opus'}},
-                     'retry_pass': {'2': {'p': 0.64, 'model': 'clef', 'at': 1760620600.0,
-                                          'attempt': 2, 'assignment': {'dwarf': 'sol', 'qa': 'opus'}}}},
             'shadow': [
                 {'attempt': 1, 'k': 2, 'spec': 'sol:xhigh', 'primary': 'opus', 'started': 1760620100.0,
                  'status': 'PASS', 'verdict': 'FAIL', 'reviewed': True, 'pick': 2, **SHADOW_EXTRA},
@@ -85,7 +81,7 @@ class ReaderTests(unittest.TestCase):
         for field in ('branch', 'attempt', 'verdict', 'accepted_by', 'accepted_attempt', 'accepted_over',
                       'prompt', 'approach', 'retry_findings', 'qa_tail', 'qa'):
             self.assertIsNone(graph[field], field)
-        self.assertEqual(graph['clef'], {'first_pass': None, 'retry_pass': {}})
+        self.assertNotIn('clef', graph)
         for field in ('attempts', 'escalations', 'route', 'shadow'):
             self.assertEqual(graph[field], [])
         self.assertFalse(graph['explored'])
@@ -142,14 +138,27 @@ class ReaderTests(unittest.TestCase):
         self.assertIsNone(data['tasks'][0]['wave'])
         self.assertIsNone(data['tasks'][0]['branch'])
 
+    def test_old_clef_files_are_not_read(self):
+        # runs from before #35 keep clef.first_pass and clef.retry_pass.<n> in the task dir
+        self.assertTrue((FIXTURE / 'tasks/reader/clef.first_pass').exists())
+        self.assertTrue((FIXTURE / 'tasks/reader/clef.retry_pass.2').exists())
+        data = detail(FIXTURE)
+        for task in data['tasks']:
+            self.assertNotIn('clef', task)
+        self.assertFalse(any('clef' in w for w in data['warnings']))
+        plan = self.copy_plan()
+        self.write(plan / 'tasks/reader/clef.first_pass', 'not JSON')
+        self.write(plan / 'tasks/reader/clef.retry_pass.x', '[]')
+        self.assertEqual(detail(plan)['warnings'], data['warnings'])
+
     def test_invalid_json_objects_and_unreadable_file(self):
         plan = self.copy_plan()
         for value in ('', 'null', '[]', '{"p":NaN}', '{"p":Infinity}', '{"p":1e9999}'):
             with self.subTest(value=value):
-                self.write(plan / 'tasks/reader/clef.first_pass', value)
+                self.write(plan / 'shadow/reader/1-2/shadow.json', value)
                 data = detail(plan)
-                self.assertIsNone(data['tasks'][0]['clef']['first_pass'])
-                self.assertTrue(any('clef.first_pass' in w for w in data['warnings']))
+                self.assertIsNone(data['tasks'][0]['shadow'][0]['spec'])
+                self.assertTrue(any('shadow.json' in w for w in data['warnings']))
                 json.dumps(data, allow_nan=False)
         original = Path.open
         def deny_request(path, *args, **kwargs):
@@ -357,8 +366,6 @@ class ReaderTests(unittest.TestCase):
             'tasks/reader/attempts.tsv': ('bad\t1\tFAIL\n1\tbad\tPASS\n', lambda d: self.assertEqual(d['tasks'][0]['attempts'], [])),
             'tasks/reader/escalations.tsv': ('bad\t2\tluna\tsol', lambda d: self.assertEqual(d['tasks'][0]['escalations'], [])),
             'tasks/reader/route.jsonl': ('{"chosen":"sol"}\n{"chosen":', lambda d: self.assertEqual(d['tasks'][0]['route'], [{'chosen': 'sol'}])),
-            'tasks/reader/clef.first_pass': ('not JSON', lambda d: self.assertIsNone(d['tasks'][0]['clef']['first_pass'])),
-            'tasks/reader/clef.retry_pass.2': ('[]', lambda d: self.assertEqual(d['tasks'][0]['clef']['retry_pass'], {})),
             'waves.tsv': ('oops\treader\n0\tpage', lambda d: self.assertEqual(d['waves'], [])),
             'results.tsv': ('reader\tMERGED', lambda d: self.assertEqual(d['tasks'][0]['branch'], 'forge/20261016-153012-ab12/reader')),
             'explore': ('NaN', lambda d: self.assertIsNone(d['settings']['explore'])),
@@ -500,7 +507,7 @@ class ReaderTests(unittest.TestCase):
             'escalations': [], 'verdict': 'FAIL', 'accepted_by': None,
             'accepted': False, 'accepted_attempt': None, 'accepted_over': None,
             'explored': False, 'route': [],
-            'clef': {'first_pass': None, 'retry_pass': {}}, 'shadow': [],
+            'shadow': [],
             'prompt': 'Implement the reader.\n', 'approach': None, 'retry_findings': None,
             'qa_tail': 'Looked at the diff.\nFORGE_VERDICT: FAIL\n', 'dwarf_tail': 'Still working.\n',
             'executions': [], 'merged_at': None, 'findings': NO_FINDINGS, 'gate': None, 'known_issues': False,
@@ -558,7 +565,7 @@ class ReaderTests(unittest.TestCase):
             'dwarf': None, 'qa': None, 'wave': 1, 'status': 'NOCHANGES', 'branch': None, 'attempt': None,
             'attempts': [], 'escalations': [], 'verdict': None, 'accepted_by': None,
             'accepted': False, 'accepted_attempt': None, 'accepted_over': None, 'explored': False,
-            'route': [], 'clef': {'first_pass': None, 'retry_pass': {}}, 'shadow': [],
+            'route': [], 'shadow': [],
             'prompt': 'Old prompt.\n', 'approach': None, 'retry_findings': None,
             'qa_tail': None, 'dwarf_tail': None, 'executions': [], 'merged_at': None, 'findings': None,
             'gate': None, 'known_issues': False, 'fail_first': None, 'now': None, 'waiting': None, 'sweep': None, 'swept': [],

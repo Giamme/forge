@@ -74,7 +74,7 @@ is. A running task names the dwarf or reviewer at work, the command it is runnin
 it is a test, type check, lint or build) and for how long, and flags *quiet N min* once its log
 has said nothing for five minutes. A task that is not running says why: the tasks it waits on, a
 running task it shares files with, no free slot, a drain or stop, an infrastructure pause with
-its countdown, or the retry policy's stop with the split it suggests. The run's inspector says
+its countdown, or the retry policy's stop with the split it proposes. The run's inspector says
 what the scheduler is doing and how many tasks wait on what.
 
 Under each attempt's dwarf and reviewer are the checks they ran, read from their logs: each

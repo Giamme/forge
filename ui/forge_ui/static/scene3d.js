@@ -271,18 +271,6 @@ export async function createStage(host, cb = {}) {
     el.ledCount = tries;
     setLeds(el, attemptLamps(t).slice(-el.ledCount));
     display(el, taskLine, { w: w - 24, x: x + 12, y: y + d, z: h - 8 });
-    // the Clef ring: how likely the first try was to pass, in the colour of what happened
-    const p0 = t.clef && t.clef.first_pass && num(t.clef.first_pass.p);
-    if (p0 !== null) {
-      const cx0 = x + w - 22, cy0 = y + 22, rIn = 8, rOut = 11.5;
-      const bgM = new THREE.MeshBasicMaterial({ color: E.DETAIL.clone(), toneMapped: false, transparent: true, polygonOffset: true, polygonOffsetFactor: -4, polygonOffsetUnits: -12 });
-      const fgM = new THREE.MeshBasicMaterial({ color: 0xffffff, toneMapped: false, transparent: true, polygonOffset: true, polygonOffsetFactor: -5, polygonOffsetUnits: -14 });
-      for (const [m, len] of [[bgM, Math.PI * 2], [fgM, Math.max(.05, Math.min(1, p0)) * Math.PI * 2]]) {
-        const ring = E.noRay(new THREE.Mesh(new THREE.RingGeometry(rIn * TS, rOut * TS, 40, 1, Math.PI / 2, len), m));
-        ring.rotation.x = -Math.PI / 2; ring.position.copy(W(cx0, cy0, h + .2)); el.cover.add(ring); el.M.labs.push(m);
-      }
-      el.clef = { fgM, p: p0 };
-    }
     halo(el);
     return el;
   }
@@ -975,7 +963,6 @@ export async function createStage(host, cb = {}) {
       if (c.tint > .001) el.M.body.color.lerp(TMP2.copy(col), c.tint * c.vis);
       if (el.tintMat) { el.tintMat.color.copy(col); el.tintMat.opacity = (c.tint * (E.theme === 'light' ? 1.45 : 1.1) + .08 * c.sel) * ob * gf * c.vis; }
       if (el.haloMat) el.haloMat.uniforms.opacity.value = (c.halo + (el.pulse ? .12 * pulseK : 0)) * gf * c.vis;
-      if (el.clef) el.clef.fgM.color.copy(E.statusColor(['MERGED', 'PASS', 'ACCEPTED'].includes(el.status) ? 'pass' : ['FAIL', 'ERROR', 'CONFLICT'].includes(el.status) ? 'fail' : 'pending'));
       if (el.inner) {
         const p = pr ? pr.p : 0, vis = p > .002;
         if (!vis && el.inner.visible) { E.release(el.inner); }
@@ -1283,7 +1270,6 @@ export async function createStage(host, cb = {}) {
       if (fs.some(it => it.plausible)) rows.push({ sw: { sev: 'P2', pale: true }, label: 'plausible: smaller, paler' });
       out.push({ title: 'Findings', rows, note: 'A click opens the diff at the finding.' });
     }
-    if (o.arcs && list(st.run.tasks).some(t => t.clef && t.clef.first_pass)) out.push({ title: 'Review marks', rows: [{ sw: { ring: true }, label: 'Clef ring: the chance the first try passes' }] });
     if (o.height !== 'none') {
       const mx = st.metricMax && st.metricMax[o.height];
       out.push({ title: 'Height', rows: [{ sw: { height: true }, label: `${o.height}: up to ${fmtMetric(o.height, mx)}` }] });

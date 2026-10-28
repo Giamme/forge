@@ -1,4 +1,4 @@
-"""Verify-command discovery and failure triage: select, never generate, and judge flakes."""
+"""Verify-command discovery: select, never generate."""
 from __future__ import annotations
 
 import json
@@ -7,12 +7,10 @@ import re
 
 from . import enabled, load_config, threshold
 from .client import ask, choice, noul, probabilities, score
-from .questions import failure_triage, runs_tests, verify_runtime, verify_selection
+from .questions import runs_tests, verify_runtime, verify_selection
 
 CANDIDATE_CAP = 25  # keeps one discover() request small; deterministic order means the
                     # cap always drops the same (least-likely) tail, never a random one.
-LOG_TAIL_CHARS = 4000  # the failure signature (assertion, traceback) is at the end of a
-                       # log; the setup/build noise at the start is not needed to triage it.
 
 _PKG_SCRIPT_RE = re.compile(r'^(test|check|ci|verify)(?:[:\-]|$)', re.I)
 _MAKE_TARGETS = ('test', 'tests', 'check', 'verify', 'ci')
@@ -214,13 +212,11 @@ def _repo_files(repo: Path, limit: int = 200) -> list[str]:
     return entries[:limit]
 
 
-# The headings forge-memory.sh:93 renders. Both readers below looked for the LEDGER row
+# The headings forge-memory.sh:93 renders. The reader below looked for the LEDGER row
 # format instead -- `verify |` and `trap |` -- which is what ledger.tsv holds, not what
 # `rebuild` writes into memory.md. No line in a rendered memory.md has ever contained
-# either, so both lists were empty for every repo, always, while jev.md documented them
-# as working. Verification discovery never saw a recorded verify command, and
-# known_traps never corroborated anything -- which made the flake re-run unreachable,
-# since its third condition is a trap sharing a distinctive token with the failure.
+# either, so the list was empty for every repo, always, while jev.md documented it as
+# working. Verification discovery never saw a recorded verify command.
 _MEMORY_SECTIONS = {'verify': '## Verify', 'trap': '## Known traps',
                     'finding': '## Recurring QA findings'}
 
@@ -254,19 +250,6 @@ def _memory_facts(repo: Path, category: str) -> list[str]:
 
 def _memory_verify_lines(repo: Path) -> list[str]:
     return _memory_facts(repo, 'verify')
-
-
-def known_traps(repo) -> list[str]:
-    """Recorded 'trap' facts from .forge/memory.md (flaky tests, generated files, sharp
-    edges), for the CLI to hand to triage() -- see references/memory.md."""
-    path = Path(repo) / '.forge' / 'memory.md'
-    if not path.is_file():
-        return []
-    try:
-        lines = path.read_text(errors='replace').splitlines()
-    except OSError:
-        return []
-    return _memory_facts(path.parent.parent, 'trap')
 
 
 # Enough of an evidence file to tell a test command from a build one, and no more: the
@@ -359,7 +342,7 @@ def discover(repo, *, config=None, run_dir=None) -> dict | None:
     # correct commands leaves it high; genuine doubt piles onto `none` and drops it.
     # Ties are then broken by the winner, which is what Choice is for.
     distribution = probabilities(result, 'choice')
-    act_at = threshold('tests_act', config=config)
+    act_at = threshold('tests_act', config=config, site='jev-verify-discover')
     if distribution:
         if (1.0 - distribution.get('none', 0.0)) < act_at:
             return None
@@ -395,59 +378,3 @@ def discover(repo, *, config=None, run_dir=None) -> dict | None:
                runtime_level=runtime_level, source=picked_candidate['source'],
                evidence=picked_candidate['evidence'])
 
-
-# A token is distinctive enough to corroborate only if it looks like an identifier or a
-# path -- `test_timeout`, `tests/test_api.py`, `CamelCase` -- rather than an English word
-# that any failure log would contain.
-_TOKEN_RE = re.compile(r'[A-Za-z_][A-Za-z0-9_./:-]{3,}')
-
-
-def _distinctive(text: str) -> set[str]:
-    tokens = set()
-    for match in _TOKEN_RE.findall(text or ''):
-        # Split on path and node-id separators: a trap says `test_api.py::test_timeout`
-        # while the log says `tests/test_api.py::test_timeout`, which never compare equal
-        # as whole tokens. Atoms do.
-        for token in re.split(r'[/:]+', match):
-            token = token.strip('.-_')
-            if len(token) < 4:
-                continue
-            # A bare short word like `tests` matches every repo; require either an
-            # identifier/path shape or enough length to be specific.
-            if '_' in token or '.' in token or len(token) >= 8:
-                tokens.add(token)
-    return tokens
-
-
-def corroborating_traps(log_tail: str, traps) -> list[str]:
-    """Traps that share a distinctive token with the failure output.
-
-    The re-run gate needs evidence that THIS failure matches a recorded trap, not merely
-    that the repo has recorded some trap at some point. Without that, one flaky test
-    noted months ago would excuse every future failure in the repo -- which is precisely
-    how a real regression gets waved through.
-    """
-    haystack = _distinctive(log_tail)
-    return [trap for trap in (traps or []) if _distinctive(trap) & haystack]
-
-
-def triage(repo, *, command, log_tail, traps, config=None, run_dir=None) -> dict | None:
-    """Classify a verification failure. -> {'verdict', 'confidence'} or None."""
-    config = config or load_config()
-    if not enabled('tests', config=config):
-        return None
-    tail = (log_tail or '')[-LOG_TAIL_CHARS:]
-    # The diff is never sent: recognising a flake needs the failure signature (timeout,
-    # ordering, port-in-use, a named trap), not the change itself, and the diff is a
-    # larger payload for no benefit here.
-    state = dict(command=command, log_tail=tail, known_traps=list(traps or []))
-    result = ask(state, {'triage': failure_triage(list(traps or []))}, site='jev-verify-triage',
-                run_dir=run_dir, config=config)
-    if result is None:
-        return None
-    verdict, confidence = choice(result, 'triage')
-    if verdict is None:
-        return None
-    matched = corroborating_traps(tail, traps)
-    return dict(verdict=verdict, confidence=confidence,
-                corroborated=bool(matched), corroborating_traps=matched)

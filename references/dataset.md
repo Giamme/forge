@@ -32,11 +32,11 @@ time order: an attempt that PASSed, then a merge that CONFLICTed, then a human `
 | `start` | execution | a receipt written by `begin()`. A start with no matching end is an execution that was killed or is still running |
 | `dispatch` | model call | role, alias, harness, **resolved** model, effort after clamping, timeout and its source, delivery (custom or native review), phase timings, exit, timeout, infra class, tokens, parsed verdict and findings, `FORGE_LEARNING` lines, `session_id`, `session_continue`. Blobs: the delivered prompt and the final message |
 | `attempt` | task attempt or solo run | status, attempt number (with refund and resume flags), trigger (`initial`, `auto`, `human`), dwarf and qa spec, declared vs changed files, numstat, drift, guard notes, gate line, patch key, the files this execution wrote and the ones it only carried. Blobs: the diff, retry findings, memory slices, capsule, Jev task files |
-| `verification` / `verify_run` | verify, and each command execution | command and its source (flag, `.forge/verify`, Jev), status, flaky, Jev triage. One `verify_run` per execution, each with its own log |
-| `plan` | `plan` | goal, original request, decompose level, exploratory routing decisions (`tasks[id].route`, with their odds), author (orchestrator or planner), per-task declared vs executed difficulty and who set it, pools, waves, Jev routing and coupling, options (including `reviewer_session` when that file is present). Blobs: both task tables, prompts, approaches, excerpts of the declared files at plan time, the file inventory, `memory.md` |
+| `verification` / `verify_run` | verify, and each command execution | command and its source (flag, `.forge/verify`, Jev), status, flaky. One `verify_run` per execution, each with its own log |
+| `plan` | `plan` | goal, original request, decompose level, exploratory routing decisions (`tasks[id].route`, with their odds), author (orchestrator or planner), per-task declared vs executed difficulty and who set it, pools, waves, Jev's plan-time judgments (stores from before 2026-10-27 also hold routing and coupling), options (including `reviewer_session` when that file is present). Blobs: both task tables, prompts, approaches, excerpts of the declared files at plan time, the file inventory, `memory.md` |
 | `run_end` | `run` | results per task, the accepted integration commit, `memory.md` |
 | `invocation` | user-facing `forge-parallel.sh` subcommand | argv, exit, duration, plus final review, accept, integrate and split/combine payloads |
-| `event` | point event | `merge` (MERGED, CONFLICT with the files, INVALIDATED and why), `integrate_advanced`, `integrate_conflict`, `combine_conflict`, `sched_terminal`, `subset_run` (every outcome), `memory_record`, `memory_prune` |
+| `event` | point event | `merge` (MERGED, CONFLICT with the files, INVALIDATED and why), `integrate_advanced`, `integrate_conflict`, `combine_conflict`, `sched_terminal`, `memory_record`, `memory_prune` |
 | `event` `escalation` | retry that changes the model | the model a retry escalated from and to, `after_attempt`, and `source` (`policy`, `retry` for an explicit `--dwarf`, or `pin`), recorded at the rewrite, before the retried attempt begins |
 | `event` `control` | `forge control` change | a human's live change: `at`, `actor` (`cli`/`ui`), `action` (`set`, `pin`, `unpin`), `key`, `value`, `previous`; task events carry the task id. Also read back from `control.log` by `import` |
 | `event` `run_delete_started` / `run_deleted` | `forge runs rm` | written strictly around a run's deletion: `path`, `run_id`, `archive`, and for `run_deleted` the bytes freed |
@@ -90,8 +90,7 @@ to `errors.log`, nothing is printed, and nothing changes an exit code.
 - **An EXIT trap in `forge-parallel.sh`** records every user-facing subcommand, `die`
   included.
 - **`forge_jev/client.py`** keeps the canonical request bytes of every live Jev call,
-  including calls made without a run dir. It skips fixture replays, the setup probe and
-  backtests.
+  including calls made without a run dir. It skips fixture replays and the setup probe.
 
 Run identity is a uuid in `<plan-or-run-dir>/dataset.uid`, created once (`O_EXCL`) by
 `plan` or by the first `begin()`. Split and combine copy attempt dirs unchanged, so a
@@ -171,7 +170,7 @@ The reviewer is part of the review state because strictness differs by reviewer:
 same kind of diff passes far more often under one reviewer than another, so a label
 means little without knowing who gave it. Routing and retry states also carry a `size`
 block (`prompt_chars`, `declared_files`, `plan_tasks`, `deps`, `decompose_level`, from
-`forge_jev/features.py`), since task size moves the first-pass rate more than anything
+`forge_dataset/states.py`), since task size moves the first-try pass rate more than anything
 else in the history.
 
 An attempt is labeled by the last execution that carries its number, because a QA-only
@@ -187,8 +186,10 @@ under `censored` in `manifest.json`:
 A later success is never labeled as the first attempt's.
 
 Decisions with no outcome to label them are left out rather than labeled by opinion.
-These are QA effort sizing (recorded until 2026-10-17), the five routing rubrics, failure triage, and coupling, since
-no merge has conflicted yet.
+These are QA effort sizing (recorded until 2026-10-17) and the sites removed on 2026-10-27
+(the five routing rubrics, review triage, verify flake triage, same-wave coupling), which stores from
+before then still hold but no export labels. See
+[decision models](decision-models.md#tried-and-removed).
 
 Routing cases of tasks routed with `plan --explore` add `route` to their metadata: the
 candidates, the pool's own pick, the choice, its propensity, and `followed`, which says
@@ -243,7 +244,7 @@ tables kept apart because they answer different questions.
 
 **Observational.** Every task's first attempt, by declared tier and the model and effort that
 ran it (resolved, so `sol` and `gpt-6.1-sol:medium:codex` share a row):
-- first-pass rate with a Wilson 95% interval
+- first-try pass rate with a Wilson 95% interval
 - the share that passed review at some attempt, or that a human accepted
 - unfinished tasks
 - attempts per task
@@ -256,7 +257,7 @@ Fractal runs are left out, since their dispatches have identities of their own.
 Round-robin pools make the pair differ between rows, and a model has no chance at all
 outside its own pairs, so pairs are never pooled. For each arm:
 - assigned tasks
-- first-pass as a Hajek (self-normalized inverse-propensity) mean
+- first-try pass as a Hajek (self-normalized inverse-propensity) mean
 - Kish's effective n
 - attrition: tasks not run as assigned, and tasks with no outcome
 - runtime

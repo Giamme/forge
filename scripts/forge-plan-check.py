@@ -20,7 +20,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from forge_jev.features import task_size  # noqa: E402
+from forge_dataset.states import task_size  # noqa: E402
 
 LARGE_CHARS = 7000
 LARGE_FILES = 9
