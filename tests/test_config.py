@@ -207,6 +207,50 @@ class ConfigTests(unittest.TestCase):
         self.assertIn('unknown provider', missing.stderr)
         self.assertEqual(json.loads((self.cfg / 'forge/decide.json').read_text())['gates']['drift']['mode'], 'shadow')
 
+    def test_provider_edit_stores_no_mode_the_user_never_set(self):
+        added = self.run_decide('provider', 'add', 'jev', '--name', 'box', '--local', '--url', 'http://127.0.0.1:9')
+        self.assertEqual(added.returncode, 0, added.stderr)
+        (self.repo / '.forge').mkdir()
+        (self.repo / '.forge/decide.json').write_text(json.dumps({'gates': {'drift': 'on'}}))
+        out = self.run_cfg('set', 'decide.gate.drift.provider', 'box', '--repo', str(self.repo), '--json')
+        self.assertEqual(out.returncode, 0, out.stderr)
+        stored = json.loads((self.cfg / 'forge/decide.json').read_text())['gates']['drift']
+        self.assertEqual(stored, {'provider': 'box'})  # the repo's `on` stays the repo's
+        status = json.loads(self.run_decide('status', '--repo', str(self.repo), '--json').stdout)
+        self.assertEqual((status['gates']['drift']['mode'], status['gates']['drift']['source']), ('on', 'repo'))
+        self.assertEqual(json.loads(self.run_decide('status', '--json').stdout)['gates']['drift']['mode'], 'off')
+        # An environment variable is a session's setting: a model edit in that session stores no mode either.
+        self.env['FORGE_DECIDE_GATE_DRIFT'] = 'shadow'
+        status = json.loads(self.run_decide('status', '--repo', str(self.repo), '--json').stdout)
+        self.assertEqual((status['gates']['drift']['mode'], status['gates']['drift']['source']), ('shadow', 'env'))
+        self.assertEqual(self.run_cfg('set', 'decide.gate.drift.model', 'clef', '--json').returncode, 0)
+        stored = json.loads((self.cfg / 'forge/decide.json').read_text())['gates']['drift']
+        self.assertEqual(stored, {'provider': 'box', 'model': 'clef'})
+
+    def test_gate_without_a_provider_is_ready_on_the_legacy_key(self):
+        self.env.pop('TYPESAFE_API_KEY', None)  # a key in the developer's environment would count too
+        (self.cfg / 'forge').mkdir(parents=True)
+        (self.cfg / 'forge/decide.json').write_text(json.dumps({'gates': {'drift': 'on'}}))
+
+        def drift():
+            out = self.run_cfg('show', '--repo', str(self.repo), '--json')
+            self.assertEqual(out.returncode, 0, out.stderr)
+            return json.loads(out.stdout)['decide']['gates']['drift']
+
+        self.assertFalse(drift()['ready'])
+        (self.cfg / 'forge/jev.json').write_text(json.dumps({'key': 'legacy-key'}))
+        self.assertTrue(drift()['ready'])
+
+    def test_show_survives_a_legacy_cloudflare_url_it_cannot_fill_in(self):
+        (self.cfg / 'forge').mkdir(parents=True)
+        (self.cfg / 'forge/decide.json').write_text(json.dumps({'gates': {'drift': 'on'}}))
+        (self.cfg / 'forge/jev.json').write_text(json.dumps({
+            'sites': {'jev-drift': 'cloudflare'},
+            'providers': {'cloudflare': {'account_id': 'acct', 'url': 'https://gw.example/{account}/{nope}'}}}))
+        out = self.run_cfg('show', '--repo', str(self.repo), '--json')
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertFalse(json.loads(out.stdout)['decide']['gates']['drift']['ready'])
+
     def test_show_never_includes_a_provider_key(self):
         secret = 'decide-ui-secret-7c41e9\n'
         added = self.run_decide('provider', 'add', 'clef', '--name', 'hosted', '--url', 'http://127.0.0.1:9',
