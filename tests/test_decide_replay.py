@@ -11,8 +11,10 @@ import io
 import json
 import os
 from pathlib import Path
+import random
 import sys
 import unittest
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'scripts'))
@@ -224,6 +226,16 @@ class SendAllTests(ReplayCase):
         self.assertTrue(json.loads(line)['reason'].startswith('http-400'))
         self.assertEqual(self.replay_json()['to_send'], 1)
 
+    def test_a_resume_after_a_cut_line_keeps_the_next_answer_whole(self):
+        self.local_provider(self.server('jev', reply=separating))
+        self.runs(1)
+        path = replay.answers_path('jev-drift', 'local', 'm1')
+        replay._private_dir(path.parent)
+        path.write_text('{"key": "interrupted", "ans')
+        self.assertEqual(self.replay_json('--send')['answered'], 1)
+        self.assertEqual(len(replay.answered(path)), 1)
+        self.assertEqual(self.replay_json()['to_send'], 0)
+
     def test_replays_are_not_charged_to_the_budget(self):
         self.configure({'local': dict(type='jev', url=self.server('jev', reply=separating).url('/x'), local=True,
                                       price_usd_per_mtok=5.0)},
@@ -260,6 +272,21 @@ class EvaluationTests(ReplayCase):
         self.assertFalse(result['passes'])
         self.assertIn('judged runs', result['reason'])
         self.assertFalse(replay.recorded('drift', 'local', 'm1')['passes'])
+
+    def test_the_verdict_uses_the_interval_of_the_given_seed(self):
+        # Random replay scores whose interval lower bound straddles -0.02 between seeds 1 and 7.
+        rng = random.Random(58)
+        judged = [dict(run='r%d' % (i // 4), ts=i, label=i % 2 == 0, replay=round(.85 * rng.random() + .15 * (i % 2 == 0), 3),
+                       baseline=0.5, live=None, live_model=None, key='k%d' % i, qid='q') for i in range(32)]
+        plan = replay.Plan(site='jev-memory-slice', provider='local', model='m1', spec={}, rows=[], usage={})
+        verdicts = {}
+        with mock.patch.object(replay, 'rows', return_value=[dict(r, run='old' + r['run'], ts=r['ts'] - 100)
+                                                              for r in judged] + judged):
+            for seed in (1, 7):
+                result = replay.evaluate(plan, seed=seed)
+                self.assertEqual(result['passes'], result['diff']['ci'][0] > -0.02, (seed, result))
+                verdicts[seed] = result['passes']
+        self.assertEqual(verdicts, {1: True, 7: False})
 
     def test_the_text_output_is_a_table(self):
         self.local_provider(self.server('jev', reply=separating))

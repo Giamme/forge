@@ -141,6 +141,19 @@ def estimate(plan_: Plan) -> dict:
                 input_tokens=tokens, cost_usd=None if price is None else tokens * price / 1e6)
 
 
+def _cut(path: Path) -> bool:
+    """Whether `path` ends inside a line."""
+    try:
+        with open(path, 'rb') as handle:
+            handle.seek(0, os.SEEK_END)
+            if not handle.tell():
+                return False
+            handle.seek(-1, os.SEEK_END)
+            return handle.read(1) != b'\n'
+    except OSError:
+        return False
+
+
 def send_all(plan_: Plan, *, workers: int = 3, send=None) -> dict:
     """Ask every unanswered request on the plan's spec, `workers` at a time, appending one line
     per answer or failure. {sent, answered, failed: {reason: count}}; plan_.answered grows."""
@@ -154,6 +167,8 @@ def send_all(plan_: Plan, *, workers: int = 3, send=None) -> dict:
     deadline = max(float(plan_.spec.get('deadline_s') or 0.0), MIN_DEADLINE_S)
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
     os.chmod(path, 0o600)
+    if _cut(path):
+        os.write(fd, b'\n')   # end a line cut by an interrupted write, so the next answer stays whole
 
     def one(row):
         body = row['body']
@@ -195,6 +210,30 @@ def rows(plan_: Plan) -> list:
     return out
 
 
+def _promotes(judged, interval, *, margin, floor, threshold):
+    """metrics.promotes, judged on `interval` (paired_bootstrap at --seed) instead of the
+    default seed's, so the recorded verdict and the reported interval always agree."""
+    labelled = [row for row in judged if row.get('label') is not None]
+    runs = {row['run'] for row in labelled}
+    if len(labelled) < metrics.MIN_DECISIONS or len(runs) < metrics.MIN_RUNS:
+        return metrics.promotes(labelled)   # its count reasons; it fails before any bootstrap
+    if interval is None:
+        return False, 'the replay and the baseline cannot be compared (a class is missing or too few resamples)'
+    if not interval[0] > -margin:
+        return False, (f'replay is worse than the cheap baseline: AUC difference lower bound '
+                       f'{interval[0]:.3f} is not above -{margin}')
+    if floor is not None:
+        if threshold is None:
+            return False, 'the precision floor needs a threshold'
+        got = metrics.precision_at([(row['replay'], row['label']) for row in labelled
+                                    if row.get('replay') is not None], threshold)['precision']
+        if got is None:
+            return False, f'the replay flags nothing at {threshold}, so precision cannot reach {floor}'
+        if got < floor:
+            return False, f'precision {got:.3f} at {threshold} is below the floor {floor}'
+    return True, 'passes'
+
+
 def evaluate(plan_: Plan, *, seed: int = 7, margin: float = 0.02) -> dict:
     """The replay judged on the newer half of the runs, against the baseline and the live answers."""
     import forge_jev
@@ -210,7 +249,7 @@ def evaluate(plan_: Plan, *, seed: int = 7, margin: float = 0.02) -> dict:
     precision = (metrics.precision_at(answered_pairs, threshold) if threshold is not None
                  else dict(precision=None, recall=None, flagged=None))
     interval = metrics.paired_bootstrap(judged, metrics._difference, seed=seed) if judged else None
-    passes, reason = metrics.promotes(judged, margin=margin, floor=record.floor, threshold=threshold)
+    passes, reason = _promotes(judged, interval, margin=margin, floor=record.floor, threshold=threshold)
     return dict(at=time.time(), site=plan_.site, gate=record.gate, provider=plan_.provider, model=plan_.model,
                 passes=passes, reason=reason,
                 judged=dict(decisions=len(judged), runs=len({r['run'] for r in judged}),
