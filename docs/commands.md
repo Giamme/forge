@@ -22,7 +22,7 @@ harness (`/forge`); this command installs forge and drives its optional tools.
 | `forge issues RUN [--apply] …` | file the review findings a run left open as GitHub issues; see [below](#forge-issues) |
 | `forge ui open\|status\|stop` | forge-ui, the run viewer; see [the command group](forge-ui.md#forge-ui-command-group) |
 | `forge dataset …` | every run's inputs and outcomes; see [run dataset](dataset.md) |
-| `forge jev …` | optional Jev advice: setup, status, doctor, enable, disable, backtest; see [Jev](add-ons.md#jev) |
+| `forge jev …` | optional Jev advice: setup, sites, status, doctor, enable, disable; see [Jev](add-ons.md#jev) |
 | `forge --help` | list the commands; `forge <command> --help` shows each one's options |
 
 ### `forge runs rm`

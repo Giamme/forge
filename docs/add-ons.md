@@ -15,13 +15,18 @@ and retries. See [installation, controls and attempt artifacts](../references/ri
 ## Jev
 
 Jev is TypeSafe's "System One" model. It answers narrow, typed questions over the state it is
-given, quickly and with calibrated probabilities. forge can ask it for advice on routing, test
-selection, gates and memory curation. That advice sits beside forge's own decisions and never
-replaces a model choice, a test run, a review or verification.
+given, quickly and with calibrated probabilities. forge can ask it for advice on plan-time
+warnings (drift, a forward dependency, a vague prompt), memory curation and finding a verify
+command. That advice sits beside forge's own decisions and never replaces a model choice, a
+test run, a review or verification. A failed request behaves as if Jev were off.
 
 It is **off by default**. Each enabled capability sends a narrow slice of the run to an external
-API: task prompts, diff hunks, test names or memory text, and never `.forge/` or `.git`. The
-installer offers setup and declines by default.
+API: task prompts, file excerpts, diff hunks, candidate commands or memory text. Drift's
+candidate file list leaves out `.forge/` and `.git`, but nothing else does: **`.forge/memory.md`
+is sent**. Prompt adequacy puts its first 4000 characters in every `gates` request, memory
+curation sends entries from it, and verify discover (`tests`) sends the bullets under its
+`## Verify` heading. Keep private text out of that file, or leave `gates`, `memory` and `tests`
+off for the repo. The installer offers setup and declines by default.
 
 ```sh
 forge jev setup                        # store an API key
@@ -30,4 +35,4 @@ forge jev enable [--capability NAME]   # turn it on, optionally for one capabili
 ```
 
 Chosen sites can go to Cloudflare's hosted Clef instead (`forge jev setup --provider cloudflare`).
-The [full Jev reference](../references/jev.md) covers capabilities, privacy and backtests.
+The [decision-models reference](../references/decision-models.md) covers the sites, privacy and what was tried and removed.
