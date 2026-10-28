@@ -20,3 +20,7 @@ giamme-forge-*.tgz
 .impeccable/review/
 .impeccable/questions/
 .impeccable/hook.cache.json
+
+# September routing-research output. Untracked so a review export does not copy it
+# into every run dir (#35).
+jev-backtests/

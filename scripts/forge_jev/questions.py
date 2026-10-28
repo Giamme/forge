@@ -3,7 +3,7 @@
 Every rubric Jev is ever asked lives in this one file, not scattered at each call site.
 That is deliberate: a human auditing what gets sent to an external API, and what
 probability threshold decides anything, should be able to read one file top to bottom
-instead of hunting through backtest.py, client.py and cli.py for scattered prompts.
+instead of hunting through client.py and cli.py for scattered prompts.
 """
 from __future__ import annotations
 
@@ -31,48 +31,6 @@ def Score(instructions: str, criteria: list) -> dict:
 # about the expected answer.
 PROBE_STATE = 'yes'
 PROBE = {'probe': Noul('Is the state the word "yes"?')}
-
-
-def test_relevance(test_path: str, header: str = '') -> dict:
-    """Could this test plausibly be broken by the change under review?
-
-    Asked once per candidate test, with the task description and the changed source
-    files supplied as state. Used both by backtest (scored against which tests a human
-    actually touched in the same commit) and, eventually, by live test selection.
-
-    The true/false split is deliberately asymmetric: a missed test is a missed
-    regression (the change ships broken and nobody notices until later), while an
-    extra test only costs a few seconds of runtime. So "true" is written to capture
-    genuine uncertainty, not just confident matches — a test that touches the same
-    module, calls the same function, or exercises adjacent behavior should land on the
-    "true" side even without a slam-dunk import-graph connection. Calibration should
-    reflect that a borderline-relevant test is still worth running.
-    """
-    instructions = (
-        'A change is being made to a codebase. Given the task description and the '
-        f'source files it changed (in state), could the test at {test_path!r} '
-        'plausibly be broken by that change?'
-    )
-    if header:
-        instructions += f'\n\nFirst lines of that test file:\n{header}'
-    return Noul(
-        instructions,
-        true=(
-            'The test exercises the same module, function, class, route, or behavior '
-            'that the change touches, directly or through a dependency; the test name '
-            'or file path names the same feature area as the change; or the '
-            'relationship is genuinely uncertain rather than clearly absent. Missing a '
-            'test that should have run is a missed regression, so borderline cases '
-            'belong here.'
-        ),
-        false=(
-            'The test exercises an unrelated module, feature, or layer with no '
-            'plausible dependency on the changed files — for example a test for the '
-            'CLI when only a database migration changed, or a test fixture that is '
-            'unaffected by the change. Only mark false when the lack of relevance is '
-            'clear, since an unnecessary extra test only costs runtime.'
-        ),
-    )
 
 
 def verify_selection(candidates: list[str]) -> dict:
@@ -154,50 +112,6 @@ def verify_runtime(command: str) -> dict:
     return Score(instructions, criteria)
 
 
-def failure_triage(traps: list[str]) -> dict:
-    """Why did verification fail: a real regression, a known flake, environment, or drift?
-
-    Asked once per verification failure. Getting this wrong ships a regression, so
-    'real_regression' is written as the default reading and 'known_flake' is written to
-    require positive evidence -- a named trap, or an error signature characteristic of
-    flakiness (timeout, ordering, port in use, a race) -- never just "it failed and a
-    rerun might pass."
-    """
-    named = '; '.join(traps) if traps else '(none recorded)'
-    instructions = (
-        'Verification just failed. Given the command that was run, the tail of its '
-        f'output, and this repo\'s known traps (in state -- recorded traps: {named}), '
-        'classify why it failed.'
-    )
-    criteria = {
-        'real_regression': (
-            'DEFAULT reading. The failure looks like the change under test actually '
-            'broke something: a specific assertion, a new error, or a changed output '
-            'tied to the kind of change being verified. Pick this whenever the failure '
-            'is not clearly explained by one of the other options -- an ambiguous '
-            'failure is a regression until proven otherwise.'
-        ),
-        'known_flake': (
-            'Requires positive evidence, not just an unwanted failure: the failing test '
-            'or command is named among the recorded traps above, OR the error signature '
-            'is characteristic of flakiness with no link to the change under test -- a '
-            'timeout, a test-ordering or isolation failure, "address already in use" / '
-            'port in use, or an evident race condition.'
-        ),
-        'environment': (
-            'The failure is about the environment, not the code or a flaky test: a '
-            'missing binary, dependency, credential, network resource, or a disk or '
-            'permission error unrelated to test logic.'
-        ),
-        'generated_drift': (
-            'The failure is a diff against a generated or derived artifact (a lockfile, '
-            'a snapshot, generated bindings or code) that is expected to regenerate, not '
-            'a behavioral failure.'
-        ),
-    }
-    return Choice(instructions, criteria)
-
-
 def drift_prediction(file_path: str) -> dict:
     """Is this file likely to need editing to complete the described task?
 
@@ -234,110 +148,11 @@ def drift_prediction(file_path: str) -> dict:
         ),
     )
 
-# --- routing (Phase 3 rubrics, recorded in shadow mode before they decide anything) ---
-#
-# Five Scores rather than one Choice asking for the tier directly. Two reasons. First,
-# `decompose.md` already defines difficulty as a conjunction of distinct properties
-# ("design judgment ... cross-cutting ... subtle edge cases or state/concurrency ... the
-# right approach is not obvious"), and asking about each separately is what lets code,
-# not the model, decide how to weigh them. Second, the composite is then computed here,
-# so re-tuning weights against accrued outcomes costs nothing -- no re-inference.
-#
-# The levels below are quoted from decompose.md's difficulty table wherever it says the
-# same thing, so that the rubric and the human-facing spec cannot drift apart.
-
-
-def design_judgment() -> dict:
-    """How much design judgment does this task demand? (decompose.md's primary axis.)"""
-    instructions = (
-        'Given the task and its context (in state), how much design judgment does '
-        'carrying it out demand? Rate what the task demands of whoever does it, NOT how '
-        'much code it produces: a five-hundred-line mechanical rename demands little, a '
-        'ten-line concurrency fix demands a lot.'
-    )
-    return Score(instructions, [
-        'none -- mechanical and local: a rename, a move, a docs edit, or a test for '
-        'behaviour that already exists. A mistake would be obvious.',
-        'some -- a self-contained implementation against a clear spec. A few choices to '
-        'make, all of them local and reversible.',
-        'substantial -- several defensible approaches exist and the choice between them '
-        'changes the shape of the result.',
-        'the approach must be invented -- the right way to do this is not obvious from '
-        'the goal, and getting it wrong means the work is wasted rather than merely '
-        'imperfect.',
-    ])
-
-
-def blast_radius() -> dict:
-    """How far can a mistake in this task reach?"""
-    instructions = (
-        'If this task were done wrong, how far would the damage reach through the rest '
-        'of the codebase (state describes the repo and the files the task declares)?'
-    )
-    return Score(instructions, [
-        'local -- confined to the lines the task edits; nothing else observes the change.',
-        'one module -- other code in the same module or package is affected, but the '
-        'boundary holds.',
-        'cross-module -- behaviour other parts of the project depend on changes, so a '
-        'mistake surfaces somewhere the task never touched.',
-        'a public contract -- an API, schema, wire format, CLI surface or file format '
-        'that callers outside this repo, or already-stored data, depend on.',
-    ])
-
-
-def state_subtlety() -> dict:
-    """Concurrency and state -- called out by name in decompose.md's `high` row."""
-    instructions = (
-        'How much subtle state or concurrency does this task involve? decompose.md '
-        'names this on its own because it is the property most often underrated: a very '
-        'small diff can still be the hardest kind of change.'
-    )
-    return Score(instructions, [
-        'none -- pure or straight-line code; no shared state, no ordering, no time.',
-        'sequential state -- state is read and written, but in one place, in a '
-        'predictable order, by one caller at a time.',
-        'shared or asynchronous state -- concurrency, locks, retries, caching, '
-        'cross-process coordination, or ordering that is not obvious from reading the '
-        'code, where a wrong interleaving produces a bug that does not reproduce.',
-    ])
-
-
-def spec_clarity() -> dict:
-    """Is the approach given, or must it be worked out? Note the inverted direction."""
-    instructions = (
-        'How clearly does the task (and its approach.md, if state carries one) state '
-        'HOW the work should be done, as opposed to only what outcome is wanted?'
-    )
-    return Score(instructions, [
-        'the approach is stated -- the task says which files change and what to do in '
-        'them; carrying it out is following instructions.',
-        'the approach is implied -- the outcome is clear and there is an obvious way to '
-        'reach it, but nobody has written it down.',
-        'the approach must be invented -- the task states a goal and leaves the means '
-        'open, so the first real work is deciding what to build.',
-    ])
-
-
-def test_coverage() -> dict:
-    """Would a mistake here be caught? Coverage is why a wrong `low` is survivable."""
-    instructions = (
-        'How well is the behaviour this task touches already covered by tests in this '
-        'repo (state lists the repo\'s files and the files the task declares)?'
-    )
-    return Score(instructions, [
-        'none -- nothing exercises this behaviour; a regression ships silently.',
-        'partial -- some tests touch the area, but not the specific behaviour being '
-        'changed.',
-        'well covered -- the behaviour has direct tests that would fail on a mistake.',
-    ])
-
 # --- pre-dispatch gates (Phase 4) --------------------------------------------------
 #
-# These ride in the SAME request as the routing rubrics. The state a gate needs -- goal,
-# task, declared files, approach -- is exactly the state routing already sends, and
-# questions in one request evaluate in parallel, so asking them costs no extra round
-# trip. They warn and never block: a gate that can stop a dispatch is a gate that will
-# eventually stop a good one.
+# Asked by `score-plan` before a plan's table is printed (gates.prompt_adequacy, site
+# jev-prompt). They warn and never block: a gate that can stop a dispatch is a gate that
+# will eventually stop a good one.
 
 
 def prompt_adequacy() -> dict:
@@ -371,68 +186,12 @@ def prompt_adequacy() -> dict:
     )
 
 
-def independently_verifiable() -> dict:
-    """decompose.md's hard rule, checked: can this task be verified on its own?"""
-    instructions = (
-        'Forge runs this task in its own worktree and verifies it alone, before any '
-        'other task in the plan is merged. state.plan_tasks lists the other tasks in '
-        'the plan with their file scopes; state.task.deps names the ones that are '
-        'guaranteed to land BEFORE this one. Judge against that list, not against '
-        'imagined work: can this task be verified on its own?'
-    )
-    return Noul(
-        instructions,
-        true=(
-            'Something observable proves this task once it is done -- a test that can '
-            'run, a command that behaves differently, a check that passes -- using only '
-            'this task\'s own files, what already exists in the repo, and anything '
-            'named in state.task.deps. A task that needs nothing from plan_tasks is '
-            'verifiable; so is one whose only needs are already its declared deps.'
-        ),
-        false=(
-            'Verifying this task requires a specific OTHER task in state.plan_tasks '
-            'that is not among its declared deps -- name it to yourself before '
-            'answering. This is the fragment case: one half of a rename, a caller whose '
-            'callee is a sibling task, an interface whose only implementation is a '
-            'sibling task. decompose.md forbids splitting this finely for exactly this '
-            'reason. Do not answer false merely because the task is small, or because '
-            'its value is only visible once the whole plan lands.'
-        ),
-    )
-
-# --- post-review annotation (Phase 4, items 5 and 6) -------------------------------
+# --- post-review annotation (Phase 4, item 6) -------------------------------
 #
-# These read a FAIL and say whether it looks sound. They NEVER overturn it. Forge's
+# This reads a FAIL and says whether the review is grounded. It NEVER overturns it. Forge's
 # second invariant is reviewer independence: a model that can talk another model out of
 # a FAIL is worth less than no reviewer at all, because it produces confident PASSes on
 # code nobody checked. So the only output here is an annotation a human reads.
-
-
-def failure_is_correctness() -> dict:
-    """Does this FAIL rest on a correctness bug, or on taste?
-
-    The QA prompt is explicit that "style nits are not failures", and a reviewer that
-    fails a diff over naming or structure costs a whole retry cycle for nothing.
-    """
-    instructions = (
-        'A reviewer failed a code change. Given the review text and the diff it '
-        'reviewed (in state), does the review identify at least one genuine correctness '
-        'problem -- behaviour that is wrong, an edge case that breaks, a requirement not '
-        'met -- as opposed to only preferences about how the code is written?'
-    )
-    return Noul(
-        instructions,
-        true=(
-            'At least one finding describes something that would produce a wrong result, '
-            'a crash, data loss, a security hole, or a plain failure to do what the task '
-            'asked. It would still be a bug if the code were formatted perfectly.'
-        ),
-        false=(
-            'Every finding is about style, naming, structure, duplication, comments, '
-            'idiom, or a preference for a different approach that would work no better. '
-            'A reader could apply none of them and the code would still behave correctly.'
-        ),
-    )
 
 
 def findings_cite_the_diff() -> dict:
@@ -461,14 +220,13 @@ def findings_cite_the_diff() -> dict:
         ),
     )
 
-# --- semantic wave coupling (Phase 4, item 4) --------------------------------------
+# --- forward dependency (Phase 4, item 4) --------------------------------------
 
 
 def forward_dependency(earlier: str, later: str) -> dict:
     """Is an earlier-wave task written against something a LATER task has not built yet?
 
-    Distinct from wave_coupling, which asks about two tasks running at the same time and
-    breaking on merge. This asks about ordering: a task that runs in wave 1 is reviewed,
+    This asks about ordering: a task that runs in wave 1 is reviewed,
     verified and merged before wave 2 exists, so if it was written against wave 2's work
     it is wrong at the moment anyone checks it -- and its own review cannot tell, because
     the thing it is wrong about is not in the tree yet.
@@ -496,38 +254,6 @@ def forward_dependency(earlier: str, later: str) -> dict:
             'EARLIER stands on its own. It depends only on what already exists in the '
             'repo or on its own files, and nothing in LATER can make it wrong. LATER '
             'building on EARLIER is the normal, safe direction and is not this.'
-        ),
-    )
-
-
-def wave_coupling(first: str, second: str) -> dict:
-    """Would running these two tasks concurrently produce an integration conflict?
-
-    `compute_waves` bounds parallelism structurally: two tasks share a wave only when
-    their file sets are disjoint. Disjointness cannot see the conflict where task A
-    changes an interface that task B consumes -- both diffs are clean, both pass review
-    against their own baseline, and the merge is broken. This asks about exactly that.
-    """
-    instructions = (
-        f'Two Forge tasks are about to run at the same time, in separate worktrees '
-        f'branched from the same commit, each reviewed only against its own baseline. '
-        f'Task A: {first!r}. Task B: {second!r}. Their declared files do not overlap. '
-        'Would running them concurrently still produce a broken result once both are '
-        'merged?'
-    )
-    return Noul(
-        instructions,
-        true=(
-            'One task changes something the other depends on -- a function signature, a '
-            'return type, a schema, a config key, an interface, a shared constant -- so '
-            'the second task is written against a version of the code that will no '
-            'longer exist. Both diffs can be individually correct and the merge still '
-            'broken.'
-        ),
-        false=(
-            'The two tasks touch genuinely independent behaviour. Neither one changes '
-            'anything the other reads, calls, or relies on, so the order they land in '
-            'does not matter.'
         ),
     )
 
@@ -627,35 +353,3 @@ def memory_relevant(text: str, task: str) -> dict:
               'context on every dispatch, so a fact that will not change what the model '
               'does here should be left out.',
     )
-
-# --- outcome rubrics: asked live by the clef-first-pass and clef-retry-pass sites, and by
-# the export on rebuilt states (forge_jev/outcome.py builds both). Text is frozen: it is
-# part of every exported case's body and of what Clef was measured answering.
-
-def first_pass() -> dict:
-    return dict(type='noul', instructions=(
-        'This Forge task is dispatched to the model in state.dwarf, at the effort shown, in its '
-        'own worktree. An independent model (state.reviewer) then reviews the resulting diff '
-        'against the task. Will that FIRST attempt pass review, with no retry needed?'),
-        criteria={
-            'true': 'The task is within reach of this model at this effort on the first try: the '
-                    'requirements are clear, the change is contained, and nothing in it is likely '
-                    'to be missed or subtly wrong.',
-            'false': 'The first attempt is likely to fail review: the task has edge cases, '
-                     'cross-cutting effects, unclear requirements or subtle state that a first '
-                     'attempt by this model at this effort typically gets wrong, so a retry would '
-                     'be needed.'})
-
-
-def retry_pass() -> dict:
-    return dict(type='noul', instructions=(
-        'An earlier attempt at this Forge task failed review. The task is now dispatched again, to '
-        'the model in state.dwarf at the effort shown, with that review\'s findings '
-        '(state.previous_review) to fix; state.attempt is which try this is, and the model in '
-        'state.reviewer reviews the result. Will this attempt pass review?'),
-        criteria={
-            'true': 'The findings are specific and fixable, and this model at this effort can address '
-                    'them without breaking something else: the retry is likely to pass.',
-            'false': 'The findings point at a design problem, an unclear requirement or a recurring '
-                     'mistake that another attempt by this model at this effort is likely to repeat: '
-                     'the retry is likely to fail again and should be escalated or rethought.'})

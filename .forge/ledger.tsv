@@ -227,3 +227,83 @@
 2026-10-26T23:44:13Z	ab-plan	interrupt-run	qa	sonnet:xhigh	FAIL	trap	forge guard py session calls setsid only after the python startup so kill right after launching it signals nothing esrch and the stop is	`forge-guard.py session` calls setsid only after the python startup, so `kill -- -$!` right after launching it signals nothing (ESRCH) and the stop is… [scripts/forge-guard.py]	416	1
 2026-10-27T00:44:45Z	ab-plan	effort-step	dwarf	grok:xhigh	-	-	-	-	875
 2026-10-27T00:46:20Z	ab-plan	effort-step	qa	sonnet:high	FAIL	-	-	-	91
+2026-10-27T20:24:07Z	c1-plan	rm-clef-ui	dwarf	sonnet:high	-	-	-	-	1330
+2026-10-27T20:26:48Z	c1-plan	rm-clef-ui	qa	sol:high	PASS	-	-	-	133
+2026-10-27T20:29:19Z	c1-plan	decide-config	dwarf	opus:medium	-	trap	bash tests check sh slows down and its end to end classes fail when another worktree s suite runs at the same time re run a failing class alone with	`bash tests/check.sh` slows down and its end-to-end classes fail when another worktree's suite runs at the same time; re-run a failing class alone with… [tests/run_tests.py]	1643	1
+2026-10-27T20:29:50Z	c1-plan	rm-backtest	dwarf	grok:xhigh	-	-	-	-	1674
+2026-10-27T20:32:45Z	c1-plan	decide-config	qa	sol:high	FAIL	-	-	-	181
+2026-10-27T20:51:01Z	c1-plan	decide-config	dwarf	opus:medium	-	-	-	-	1056
+2026-10-27T20:52:26Z	c1-plan	rm-triage-coupling	dwarf	sonnet:high	-	-	-	-	1324
+2026-10-27T20:52:53Z	c1-plan	decide-config	qa	sol:high	PASS	-	-	-	91
+2026-10-27T20:53:28Z	c1-plan	rm-triage-coupling	qa	sol:high	PASS	-	-	-	47
+2026-10-27T21:15:05Z	c1-plan	decide-budget	dwarf	sonnet:high	-	trap	bash tests check sh does not finish inside the 600s tool limit and gets killed when moved to background other worktrees check sh runs share the machine and	`bash tests/check.sh` does not finish inside the 600s tool limit and gets killed when moved to background; other worktrees' check.sh runs share the machine and… [tests/check.sh]	1317	0
+2026-10-27T21:16:17Z	c1-plan	decide-migrate	dwarf	sonnet:high	-	-	-	-	1388
+2026-10-27T21:17:00Z	c1-plan	decide-budget	qa	sol:high	FAIL	-	-	-	79
+2026-10-27T21:18:14Z	c1-plan	decide-migrate	qa	sol:high	FAIL	-	-	-	101
+2026-10-27T21:29:50Z	c1-plan	rm-clef-preds	dwarf	sonnet:high	-	trap	tests check sh pipes into tail so a run cut off by the background limit leaves an empty output file run python3 tests run tests py pattern file per	`tests/check.sh` pipes into `tail`, so a run cut off by the background limit leaves an empty output file; run `python3 tests/run_tests.py <pattern> > file` per… [tests/check.sh]	2167	1
+2026-10-27T21:31:37Z	c1-plan	rm-clef-preds	qa	sol:high	PASS	-	-	-	62
+2026-10-27T21:39:12Z	c1-plan	decide-budget	dwarf	sonnet:high	-	-	-	-	1293
+2026-10-27T21:39:42Z	c1-plan	decide-migrate	dwarf	sonnet:high	-	trap	bash tests check sh exceeds the 10 minute foreground limit gets killed exit 144 and leaves run tests py child processes running kill them with pkill f	`bash tests/check.sh` exceeds the 10-minute foreground limit, gets killed (exit 144) and leaves `run_tests.py --child` processes running; kill them with `pkill -f… [tests/check.sh]	1247	1
+2026-10-27T21:40:57Z	c1-plan	decide-budget	qa	sol:high	FAIL	-	-	-	90
+2026-10-27T21:41:57Z	c1-plan	decide-migrate	qa	sol:high	FAIL	-	-	-	109
+2026-10-27T21:42:09Z	c1-plan	decide-budget	dwarf	sonnet:high	-	-	-	-	32
+2026-10-27T21:43:57Z	c1-plan	decide-budget	qa	sol:high	FAIL	-	-	-	92
+2026-10-27T21:53:38Z	c1-plan	decide-migrate	dwarf	sonnet:high	-	-	-	-	661
+2026-10-27T21:57:25Z	c1-plan	decide-migrate	qa	sol:high	FAIL	-	-	-	194
+2026-10-27T22:11:14Z	c1-plan	decide-budget	dwarf	opus:medium	-	-	-	-	1593
+2026-10-27T22:11:10Z	c1-plan	decide-migrate	dwarf	opus:medium	-	trap	bash tests check sh exceeds the 10 minute foreground limit gets killed exit 144 and leaves run tests py child processes running kill them with pkill f	`bash tests/check.sh` exceeds the 10-minute foreground limit, gets killed (exit 144) and leaves `run_tests.py --child` processes running; kill them with `pkill -f… [tests/check.sh]	776	1
+2026-10-27T22:13:04Z	c1-plan	decide-budget	qa	sol:high	FAIL	-	-	-	95
+2026-10-27T22:14:00Z	c1-plan	decide-migrate	qa	sol:high	FAIL	-	-	-	144
+2026-10-27T22:43:17Z	c1-plan	rm-verify-triage	dwarf	sonnet:high	-	verify	bash tests check sh exceeds the 10 minute foreground limit and gets moved to the background run the touched modules with python3 tests run tests py pattern	`bash tests/check.sh` exceeds the 10-minute foreground limit and gets moved to the background; run the touched modules with `python3 tests/run_tests.py <pattern>`… [tests/check.sh]	1788	1
+2026-10-27T22:48:27Z	c1-plan	rm-verify-triage	qa	sol:high	PASS	-	-	-	304
+2026-10-27T22:52:52Z	c1-plan	rm-test-subset	dwarf	sonnet:high	-	-	-	-	259
+2026-10-27T22:53:28Z	c1-plan	rm-test-subset	qa	sol:high	FAIL	-	-	-	30
+2026-10-27T22:57:07Z	c1-plan	rm-test-subset	dwarf	sonnet:high	-	-	-	-	212
+2026-10-27T22:59:00Z	c1-plan	move-dataset-states	dwarf	grok:xhigh	-	trap	bash tests check sh fails test update runnernoticetests test runs end with the notice when ci true because forge version py stays quiet in ci and that test	CI=true makes forge-version notice() print nothing, so test_update.RunnerNoticeTests fails until CI is unset [tests/test_update.py]	5217	1
+2026-10-27T22:59:00Z	c1-plan	move-dataset-states	dwarf	grok:xhigh	-	trap	tests durations json splits any class that last took over 90s into one process per test so the next check sh runs those classes as hundreds of units	tests/.durations.json splits any class that last took over 90s into one process per test, so the next check.sh runs those classes as hundreds of units [tests/run_tests.py]	5217	1
+2026-10-27T23:00:39Z	c1-plan	move-dataset-states	qa	sol:high	PASS	-	-	-	93
+2026-10-27T23:00:47Z	c1-plan	rm-test-subset	qa	sol:high	PASS	-	-	-	215
+2026-10-27T23:21:13Z	c1-plan	score-plan-gates	dwarf	opus:medium	-	trap	forge parallel sh plan resets forge jev from its own flags so a test enabling jev must write enabled true into	`forge-parallel.sh plan` resets FORGE_JEV from its own flags, so a test enabling Jev must write `enabled: true` into… [scripts/forge-jev-options.sh]	1222	1
+2026-10-27T23:22:23Z	c1-plan	score-plan-gates	qa	sol:high	PASS	-	-	-	65
+2026-10-27T23:48:42Z	c1-plan	rm-backtest	dwarf	grok:xhigh	-	trap	tests test update py runnernoticetests fails when ci true because forge version py notice stays silent and that class does not pop ci versiontests does	tests/test_update.py RunnerNoticeTests fails when CI=true because forge-version.py notice stays silent and that class does not pop CI (VersionTests does) [tests/test_update.py]	911	1
+2026-10-27T23:49:14Z	c1-plan	rm-backtest	qa	sol:high	PASS	-	-	-	27
+2026-10-28T00:30:09Z	c1-plan	decide-transports	dwarf	opus:medium	-	trap	test jev cloudflare transporttests test retry after is honoured measures time left before a deadline so slow work inside client ask after	`test_jev_cloudflare.TransportTests.test_retry_after_is_honoured` measures time left before a deadline, so slow work inside `client.ask` after… [tests/test_jev_cloudflare.py]	1555	1
+2026-10-28T00:31:58Z	c1-plan	decide-transports	qa	sol:high	FAIL	-	-	-	99
+2026-10-28T00:36:19Z	c1-plan	retire-cleanup	dwarf	grok:xhigh	-	trap	ci true makes forge update notice silent and runnernoticetests inherits that env so tests check sh fails that class until ci is unset	CI=true makes forge_update_notice silent, and RunnerNoticeTests inherits that env, so tests/check.sh fails that class until CI is unset [tests/test_update.py]	1925	1
+2026-10-28T00:38:09Z	c1-plan	retire-cleanup	qa	sol:high	PASS	-	-	-	100
+2026-10-28T00:41:24Z	c1-plan	decide-transports	dwarf	opus:medium	-	-	-	-	556
+2026-10-28T00:42:04Z	c1-plan	decision-models-doc	dwarf	sonnet:high	-	-	-	-	227
+2026-10-28T00:44:24Z	c1-plan	decide-transports	qa	sol:high	FAIL	-	-	-	176
+2026-10-28T00:44:25Z	c1-plan	decision-models-doc	qa	sol:high	FAIL	-	-	-	137
+2026-10-28T00:45:32Z	c1-plan	decision-models-doc	dwarf	sonnet:high	-	-	-	-	60
+2026-10-28T00:46:39Z	c1-plan	decision-models-doc	qa	sol:high	FAIL	-	-	-	61
+2026-10-28T00:47:35Z	c1-plan	decision-models-doc	dwarf	sonnet:high	-	-	-	-	47
+2026-10-28T00:49:06Z	c1-plan	decision-models-doc	qa	sol:high	FAIL	-	-	-	84
+2026-10-28T00:56:46Z	c1-plan	decide-transports	dwarf	opus:medium	-	-	-	-	735
+2026-10-28T01:00:29Z	c1-plan	decide-transports	qa	sol:high	FAIL	-	-	-	216
+2026-10-28T01:01:39Z	c1-plan	decision-models-doc	dwarf	opus:medium	-	-	-	-	745
+2026-10-28T01:03:07Z	c1-plan	decision-models-doc	qa	sol:high	PASS	-	-	-	83
+2026-10-28T07:50:03Z	c1-plan	decide-cli	dwarf	opus:medium	-	-	-	-	876
+2026-10-28T08:26:11Z	c1-plan	decide-cli	qa	opus:high	PASS	-	-	-	137
+2026-10-28T08:49:10Z	c1-plan	decide-wire-py	dwarf	opus:medium	-	verify	bash tests check sh takes about 12 minutes so a 600s foreground call is moved to the background redirect its output to a file and it still finishes there	`bash tests/check.sh` takes about 12 minutes, so a 600s foreground call is moved to the background. Redirect its output to a file, and it still finishes there [tests/check.sh]	1375	1
+2026-10-28T08:53:26Z	c1-plan	decide-wire-py	qa	opus:high	PASS	-	-	-	250
+2026-10-28T09:31:19Z	c1-plan	decide-ui	dwarf	grok:xhigh	-	-	-	-	3904
+2026-10-28T09:33:22Z	c1-plan	decide-ui	qa	opus:high	PASS	-	-	-	115
+2026-10-28T09:41:52Z	c1-plan	decide-wire-sh	dwarf	opus:medium	-	trap	bash tests check sh exceeds the 10 minute foreground limit and the background copy is killed at its limit too run python3 tests run tests py in chunks	`bash tests/check.sh` exceeds the 10-minute foreground limit, and the background copy is killed at its limit too; run `python3 tests/run_tests.py` in chunks… [tests/run_tests.py]	2901	1
+2026-10-28T09:44:26Z	c1-plan	decide-wire-sh	qa	opus:high	PASS	-	-	-	147
+2026-10-28T10:14:52Z	c1-plan	decide-docs	dwarf	grok:xhigh	-	trap	runnernoticetests fails when ci is set the update notice is silent in ci so the last stderr line is not the version line	RunnerNoticeTests fails when CI is set: the update notice is silent in CI, so the last stderr line is not the version line [tests/test_update.py]	1822	1
+2026-10-28T10:16:51Z	c1-plan	decide-docs	qa	opus:high	FAIL	finding	a gate set without provider falls back to the legacy jev json typesafe api key transport and ignores providers added with forge decide	a gate set without `--provider` falls back to the legacy jev.json/TYPESAFE_API_KEY transport and ignores providers added with `forge decide… [scripts/forge_decide/providers.py]	113	1
+2026-10-28T10:23:30Z	c1-plan	decide-docs	dwarf	grok:xhigh	-	-	-	-	391
+2026-10-28T10:24:56Z	c1-plan	decide-docs	qa	opus:high	PASS	-	-	-	81
+2026-10-28T10:36:58Z	c1-plan	sweep-2	dwarf	haiku:max	-	trap	spec for site routes only gate sites to decide providers setup probe and other non gate sites fall back to the legacy jev json route	spec_for_site routes only gate sites to decide providers; setup-probe and other non-gate sites fall back to the legacy jev.json route [scripts/forge_decide/providers.py]	407	1
+2026-10-28T10:37:47Z	c1-plan	sweep-2	qa	opus:high	PASS	-	-	-	44
+2026-10-28T10:41:21Z	c1-plan	sweep-1	dwarf	haiku:max	-	trap	providers legacy raises keyerror from url format on a stray brace in providers cloudflare url callers of spec for site must catch it	providers._legacy raises KeyError from url.format() on a stray brace in providers.cloudflare.url; callers of spec_for_site must catch it [scripts/forge_decide/providers.py]	670	1
+2026-10-28T10:42:30Z	c1-plan	sweep-1	qa	opus:high	PASS	-	-	-	63
+2026-10-28T10:43:11Z	c1-plan	sweep-3	dwarf	haiku:max	-	-	-	-	780
+2026-10-28T10:43:49Z	c1-plan	sweep-3	qa	opus:high	PASS	-	-	-	33
+2026-10-28T10:44:43Z	c1-plan	sweep-4	dwarf	haiku:max	-	trap	a gate naming a provider missing from user providers falls back to the legacy hosted typesafe so every jev cli caller must check site ready	a gate naming a provider missing from user providers falls back to the legacy hosted TypeSafe, so every Jev CLI caller must check site_ready… [scripts/forge_decide/providers.py]	410	1
+2026-10-28T10:45:34Z	c1-plan	sweep-4	qa	opus:high	PASS	-	-	-	46
+2026-10-28T10:52:02Z	c1-plan	sweep-5	dwarf	haiku:max	-	trap	settings sets self fail which hides testcase fail failed assertions there report typeerror nonetype object is not callable	Settings sets self.fail, which hides TestCase.fail: failed assertions there report TypeError: 'NoneType' object is not callable [ui/tests/test_browser_settings.py]	567	1
+2026-10-28T10:53:10Z	c1-plan	sweep-5	qa	opus:high	PASS	-	-	-	62
+2026-10-28T11:36:51Z	c1-plan	final-fixes	dwarf	opus:medium	-	-	-	-	1396
+2026-10-28T11:39:20Z	c1-plan	final-fixes	qa	opus:high	PASS	trap	python3 m unittest tests module from the repo root fails every test with import errors run python3 m unittest module from inside tests	`python3 -m unittest tests.<module>` from the repo root fails every test with import errors; run `python3 -m unittest <module>` from inside `tests/` [tests/run_tests.py]	140	1

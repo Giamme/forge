@@ -1,18 +1,23 @@
 #!/usr/bin/env python3
 """forge config <command>: one view of every config source, and safe edits for the per-repo ones.
 
-  show  [--repo DIR] [--json]            registry, Jev, the repo's .forge files, dataset and FORGE_* env
-  set   <key> <value> --repo DIR [--json]   repo.verify | repo.setup | repo.verify-subset | jev.enabled
-  unset <key> --repo DIR [--json]           repo.verify | repo.setup | repo.verify-subset
+  show  [--repo DIR] [--json]               registry, Jev, decide, the repo's .forge files, dataset and FORGE_* env
+  set   <key> <value> [--repo DIR] [--json]   repo.verify | repo.setup | repo.verify-subset | decide.gate.<gate>[.provider|.model]
+  unset <key> [--repo DIR] [--json]           repo.verify | repo.setup | repo.verify-subset
 
-A value of `-` reads stdin. repo.verify-subset must contain `{files}`. jev.enabled true|false is
-delegated to `forge jev enable|disable`. The registry is read-only here: the skill dir is often a
-live symlink to a checkout, so an edit would change runs already in progress; edit the checkout.
+A value of `-` reads stdin for the per-repo files. repo.verify-subset must contain `{files}`.
+decide.gate.<gate> (off, shadow or on) is delegated to `forge decide gate` and writes the user
+level. decide.gate.<gate>.provider and decide.gate.<gate>.model write the user level with no mode,
+so the gate keeps the mode the other levels give it. Unset of those keys is refused: set the mode
+to off. jev.enabled is gone; set a gate with decide.gate.<gate>. The registry is
+read-only here: the skill dir is often a live symlink to a checkout, so an edit would change
+runs already in progress; edit the checkout.
 
 Only the three per-repo files are ever read for content; cloudflare.env never is. Values of FORGE_*
-variables whose name contains TOKEN, KEY, SECRET or PASSWORD show as "<set>".
+variables whose name contains TOKEN, KEY, SECRET or PASSWORD show as "<set>". A provider key never
+appears in show.
 
-Exit codes: 0 ok, 2 usage or invalid input (including an unsafe path); any other code is the jev
+Exit codes: 0 ok, 2 usage or invalid input (including an unsafe path); any other code is the decide
 CLI's own, passed through.
 """
 from __future__ import annotations
@@ -21,6 +26,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import re
 import stat
 import subprocess
 import sys
@@ -28,8 +34,16 @@ import sys
 SKILL = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 sys.path.insert(0, os.path.join(SKILL, 'scripts'))
 
+from forge_decide import GATES, MODES, load_user, save_user, user_path
+from forge_decide.migrate import run as migrate_run
+from forge_decide.providers import spec_for_site
+
 REPO_FILES = ('verify', 'setup', 'verify-subset')
-KEYS = tuple('repo.' + n for n in REPO_FILES) + ('jev.enabled',)
+KEYS = tuple('repo.' + n for n in REPO_FILES)
+# decide.gate.<gate>, and the same with .provider or .model. The gate is checked against GATES.
+_DECIDE_KEY = re.compile(r'^decide\.gate\.([A-Za-z0-9_-]+?)(?:\.(provider|model))?$')
+MAX_DECIDE_VALUE = 256
+_SECRET_PROVIDER_FIELDS = ('key', 'key_source', 'key_file', 'key_env')
 CONTENT_MAX = 64 * 1024
 SECRET_WORDS = ('TOKEN', 'KEY', 'SECRET', 'PASSWORD')
 REGISTRY_NOTE = ('read-only here: the skill dir is often a live symlink to a checkout, so an edit '
@@ -170,6 +184,47 @@ def jev_block():
     return dict(path=str(path), exists=path.is_file(), enabled=bool(load_config().get('enabled')))
 
 
+def _gate_ready(gate, providers):
+    """A gate can run when it is shadow or on, nothing skips it, and its provider is local or has a key.
+
+    With no provider the run uses the legacy client, so the gate is ready when that client has a key.
+    """
+    if gate.get('mode') not in ('shadow', 'on') or gate.get('skip'):
+        return False
+    if not gate.get('provider'):
+        # resolved={} names no provider, so spec_for_site gives the legacy spec the run would use
+        try:
+            return bool(spec_for_site(gate['site'], resolved={}).get('key'))
+        except Exception:  # a legacy config the run cannot describe; show must still print (resolve.py too)
+            return False
+    row = providers.get(gate['provider'])
+    if not isinstance(row, dict):
+        return False
+    if row.get('local') is True:
+        return True
+    return row.get('key') == 'present'
+
+
+def decide_block(root):
+    """The full `forge decide status --json` object for `root`, plus `ready` on each gate.
+
+    Provider rows drop every key field. `ready` is computed before that, so a hosted provider
+    with a key on file still counts. The key itself is never copied.
+    """
+    from forge_decide.cli import status_data
+    data = status_data(root)
+    full = data.get('providers') if isinstance(data.get('providers'), dict) else {}
+    gates = data.get('gates') if isinstance(data.get('gates'), dict) else {}
+    for gate in gates.values():
+        if isinstance(gate, dict):
+            gate['ready'] = _gate_ready(gate, full)
+    data['providers'] = {
+        name: {k: v for k, v in row.items() if k not in _SECRET_PROVIDER_FIELDS}
+        for name, row in full.items() if isinstance(row, dict)
+    }
+    return data
+
+
 def repo_block(root):
     files = {}
     for name in REPO_FILES:
@@ -218,9 +273,54 @@ def env_block():
     return out
 
 
+def _print_decide(decide):
+    """The human view of a status object. A provider key is not among these fields."""
+    privacy = decide.get('privacy') if isinstance(decide.get('privacy'), dict) else {}
+    print('decide: %s (%s, migrated %s, privacy floor %s)' % (
+        decide.get('user_path'), 'present' if decide.get('migrated') else 'absent',
+        'yes' if decide.get('migrated') else 'no',
+        'yes' if privacy.get('floor') else 'no'))
+    gates = decide.get('gates') if isinstance(decide.get('gates'), dict) else {}
+    for name, gate in gates.items():
+        if not isinstance(gate, dict):
+            print('  gate %s: %s' % (name, gate))
+            continue
+        bits = [str(gate.get('mode')), 'source %s' % gate.get('source')]
+        if gate.get('provider'):
+            bits.append('provider %s' % gate['provider'])
+        if gate.get('model'):
+            bits.append('model %s' % gate['model'])
+        if gate.get('skip'):
+            bits.append('skip %s' % gate['skip'])
+        bits.append('ready %s' % ('yes' if gate.get('ready') else 'no'))
+        print('  gate %s: %s' % (name, ', '.join(bits)))
+    providers = decide.get('providers') if isinstance(decide.get('providers'), dict) else {}
+    if providers:
+        parts = []
+        for name, row in providers.items():
+            row = row if isinstance(row, dict) else {}
+            kind = row.get('type') or ''
+            local = ' local' if row.get('local') else ''
+            parts.append('%s (%s%s)' % (name, kind, local) if kind or row.get('local') else name)
+        print('  providers: %s' % ', '.join(parts))
+    else:
+        print('  providers: none')
+    budget = decide.get('budget') if isinstance(decide.get('budget'), dict) else {}
+    caps = budget.get('caps') if isinstance(budget.get('caps'), dict) else {}
+    shown = ', '.join('%s=%s' % (key, value) for key, value in caps.items() if value is not None)
+    print('  budget: %s' % (shown or 'none'))
+    spend = budget.get('spend') if isinstance(budget.get('spend'), dict) else None
+    if spend and isinstance(spend.get('today'), dict):
+        today = spend['today']
+        print('  today (%s): %s tokens, $%s' % (spend.get('date'), today.get('tokens'), today.get('usd')))
+    for entry in decide.get('shadowed') or []:
+        if isinstance(entry, dict):
+            print('  shadowed: %s: repo %r, user %r' % (entry.get('key'), entry.get('repo'), entry.get('user')))
+
+
 def cmd_show(args):
     root = repo_root(args.repo, required=False)
-    data = dict(registry=registry_block(), jev=jev_block())
+    data = dict(registry=registry_block(), jev=jev_block(), decide=decide_block(root))
     if root:
         data['repo'] = repo_block(root)
     data['dataset'] = dataset_block()
@@ -236,6 +336,7 @@ def cmd_show(args):
     jev = data['jev']
     print('jev: %s (%s, %s)' % ('enabled' if jev['enabled'] else 'disabled', jev['path'],
                                'present' if jev['exists'] else 'absent'))
+    _print_decide(data['decide'])
     if root:
         print('repo: %s' % root)
         for name, entry in data['repo']['files'].items():
@@ -252,7 +353,66 @@ def cmd_show(args):
 
 def check_key(key):
     if key not in KEYS:
-        raise Invalid('unknown key %r; valid keys: %s' % (key, ', '.join(KEYS)))
+        raise Invalid('unknown key %r; valid keys: %s, decide.gate.<gate>, '
+                      'decide.gate.<gate>.provider, decide.gate.<gate>.model' % (key, ', '.join(KEYS)))
+
+
+def decide_target(key):
+    """(gate, field) for a decide key. field is None, 'provider' or 'model'.
+
+    None when `key` is not that shape. Invalid when the shape names a gate that does not exist.
+    """
+    match = _DECIDE_KEY.fullmatch(key or '')
+    if not match:
+        return None
+    gate, field = match.group(1), match.group(2)
+    if gate not in GATES:
+        raise Invalid('unknown gate %r; gates: %s' % (gate, ', '.join(GATES)))
+    return gate, field
+
+
+def _no_control(value):
+    return not any(ord(ch) < 32 or ord(ch) == 127 or 0xD800 <= ord(ch) <= 0xDFFF for ch in value)
+
+
+def _decide_value(field, value):
+    """The mode, or a provider or model name. A decide value is never read from stdin."""
+    if field is None:
+        if value not in MODES:
+            raise Invalid('mode must be off, shadow or on')
+        return value
+    if (not isinstance(value, str) or not value or value != value.strip()
+            or len(value) > MAX_DECIDE_VALUE or value.startswith('-') or not _no_control(value)):
+        raise Invalid('short single-line text, not starting with "-"')
+    return value
+
+
+def _write_user_field(gate, field, value):
+    """Set a gate's provider or model in the user file, storing no mode.
+
+    `forge decide gate` always writes a mode, and a mode written here would outlive the repo, profile
+    or environment variable that set it. So the field is written here, after the jev.json migration
+    and the provider check that `forge decide gate` makes. A mode the user file holds is kept as it is.
+    """
+    result = migrate_run()
+    if result['status'] == 'migrated':
+        print('forge config: migrated jev.json into %s first' % user_path(), file=sys.stderr)
+    data, error = load_user()
+    if error:
+        raise Invalid(error)
+    providers = data.get('providers')
+    providers = providers if isinstance(providers, dict) else {}
+    if field == 'provider' and value not in providers:
+        raise Invalid('unknown provider %r; configured: %s (add one with `forge decide provider add`)'
+                      % (value, ', '.join(sorted(providers)) or 'none'))
+    gates = data.get('gates') if isinstance(data.get('gates'), dict) else {}
+    entry = gates.get(gate)
+    entry = dict(mode=entry) if isinstance(entry, str) else dict(entry) if isinstance(entry, dict) else {}
+    entry[field] = value
+    gates[gate] = entry
+    data['gates'] = gates
+    data.setdefault('version', 1)
+    save_user(data)
 
 
 def emit(args, key, previous, value):
@@ -263,9 +423,10 @@ def emit(args, key, previous, value):
 
 
 def cmd_set(args):
-    check_key(args.key)
     if args.key == 'jev.enabled':
-        return set_jev(args)
+        raise Invalid('jev.enabled is gone; set a gate with decide.gate.<gate>')
+    if args.key not in KEYS:
+        return set_decide(args)
     root = repo_root(args.repo, required=True)
     if root is None:
         raise Invalid('--repo DIR is required for %s' % args.key)
@@ -285,9 +446,11 @@ def cmd_set(args):
 
 
 def cmd_unset(args):
-    check_key(args.key)
     if args.key == 'jev.enabled':
-        raise Invalid('jev.enabled cannot be unset; use `set jev.enabled true|false`')
+        raise Invalid('jev.enabled is gone; set a gate with decide.gate.<gate>')
+    if decide_target(args.key):
+        raise Invalid('set the mode to off')
+    check_key(args.key)
     root = repo_root(args.repo, required=True)
     if root is None:
         raise Invalid('--repo DIR is required for %s' % args.key)
@@ -303,16 +466,29 @@ def cmd_unset(args):
     return 0
 
 
-def set_jev(args):
-    if args.value not in ('true', 'false'):
-        raise Invalid('jev.enabled takes true or false')
-    previous = jev_block()['enabled']
-    verb = 'enable' if args.value == 'true' else 'disable'
-    run = subprocess.run([sys.executable, os.path.join(SKILL, 'scripts', 'forge-jev.py'), verb],
-                         stdout=subprocess.DEVNULL, stderr=None)
-    if run.returncode != 0:
-        return run.returncode
-    emit(args, args.key, previous, args.value == 'true')
+def set_decide(args):
+    """Write one decide key at the user level: a mode through `forge decide gate`, a provider or model
+    through _write_user_field. --repo is only the repo whose effective settings are read for `previous`."""
+    found = decide_target(args.key)
+    if found is None:
+        check_key(args.key)
+    gate, field = found
+    value = _decide_value(field, args.value)
+    root = repo_root(args.repo, required=True) if args.repo is not None else None
+    from forge_decide.cli import status_data
+    before = status_data(root)
+    row = (before.get('gates') or {}).get(gate) or {}
+    if field is None:
+        previous = row.get('mode')
+        script = os.path.join(SKILL, 'scripts', 'forge-decide.py')
+        run = subprocess.run([sys.executable, script, 'gate', gate, value],
+                             stdout=subprocess.DEVNULL, stderr=None)
+        if run.returncode != 0:
+            return run.returncode
+    else:
+        previous = row.get(field)
+        _write_user_field(gate, field, value)
+    emit(args, args.key, previous, value)
     return 0
 
 

@@ -1,7 +1,7 @@
 ---
 name: forge
 description: Dispatch implementation and independent diff review to user-selected models through local agent CLIs. Use for /forge or explicit requests to delegate coding or review; explanation-only questions do not authorize dispatch.
-argument-hint: '"<goal>" --dwarf <alias>[:effort[:harness]] [--qa <alias>] [--planner <alias>] [--yolo-dwarf] [--yolo-qa] [--decompose-level low|medium|high] [--fractal|--no-fractal|--fractal-auto-decompose] [--fractal-planner <spec>] [--jev|--no-jev] [--jev-shadow] [--no-memory] [--no-ripwire] [--ui|--no-ui] [--timeout <seconds>] [--retry-failed <n>] [--escalate-after <n>] [--qa-threshold P0|P1|P2|P3] [--file-issues ask|auto|off] [--shadow-qa <spec>[,<spec>]] [--shadow-rate <0..1>] [--reviewer-session] [--explore <0..0.5>] [--fail-first]'
+argument-hint: '"<goal>" --dwarf <alias>[:effort[:harness]] [--qa <alias>] [--planner <alias>] [--yolo-dwarf] [--yolo-qa] [--decompose-level low|medium|high] [--fractal|--no-fractal|--fractal-auto-decompose] [--fractal-planner <spec>] [--jev|--no-jev] [--jev-shadow] [--gate NAME=MODE] [--no-gates] [--decide-budget tokens=N[,usd=X]] [--no-memory] [--no-ripwire] [--ui|--no-ui] [--timeout <seconds>] [--retry-failed <n>] [--escalate-after <n>] [--qa-threshold P0|P1|P2|P3] [--file-issues ask|auto|off] [--shadow-qa <spec>[,<spec>]] [--shadow-rate <0..1>] [--reviewer-session] [--explore <0..0.5>] [--fail-first]'
 allowed-tools: [Bash, Read]
 ---
 
@@ -82,10 +82,10 @@ For explanation requests, explain the workflow without spending model quota.
   - `off`: never offer.
 
   `--file-issues` is an instruction to you: never forward it to a runner. Skip INFRA, interrupted and still-failing runs. Both filers mark each issue with the same finding fingerprint and skip a finding either one already filed, so offering again after a retry only brings up new ones. A draft flagged as a possible duplicate is skipped on `--apply`: show it, and file it (`--confirm-new`) only if the user says it is different.
-- Jev is optional, off unless configured and enabled, and always advisory: it never
-  changes a task's tier, never selects a model, and never substitutes for QA acceptance
+- Decision models (Jev, Clef) are optional, off until a gate is opted in with `forge decide`,
+  fail-open, and never change a task's tier, select a model, or substitute for QA acceptance
   or repository verification (`--jev-act` is still accepted and changes nothing). Read
-  [Jev](references/jev.md) when selected.
+  [Decision models](references/decision-models.md) when selected.
 
 ## Common workflow
 
@@ -137,9 +137,10 @@ Runners offer installation once before agents; dispatch never prompts. See
   `FORGE_UI=off`, one shared server, privacy.
 - [Dataset](references/dataset.md): every run's inputs and outcomes, kept outside the repo
   for training decision models; `forge dataset status|import|export|outcomes`, `FORGE_DATASET=off`.
-- [Jev](references/jev.md): optional TypeSafe System One judgments for routing, test
-  selection and memory curation; off by default. Chosen sites can go to Cloudflare's hosted
-  Clef instead (`forge jev setup --provider cloudflare`, `forge jev sites`, `FORGE_CLEF=off`).
+- [Decision models](references/decision-models.md): optional TypeSafe Jev or Cloudflare Clef
+  judgments (drift, forward dependency, prompt adequacy, memory curation, verify discovery);
+  off until a gate is opted in with `forge decide`; the criteria a site must meet, and what
+  was tried and removed.
 
 The common invocation is `/forge "<goal>" --dwarf <spec> [--qa <spec>]`. Advanced flags and
 commands live with their mode reference. Use [offline tests and evaluation cases](tests/README.md)

@@ -19,7 +19,8 @@ usage() {
     'commands:' \
     '  install   link forge into each agent harness on this machine; --dry-run previews' \
     '  fractal   opt-in Fractal execution: install, doctor, runs, status, tree, logs, open, report, ...' \
-    '  jev       optional Jev advice: setup, status, doctor, enable, disable, backtest' \
+    '  decide    decision-model gates: status, gate, provider, budget, privacy, doctor, migrate' \
+    '  jev       the old decision-model commands, replaced by decide (kept for one release)' \
     '  dataset   every run'"'"'s inputs and outcomes: status, dump, import, export, outcomes, ...' \
     '  issues    file the review findings a run left open as GitHub issues (plain gh)' \
     '  ui        forge-ui, the run viewer: open [DIR], status, stop' \
@@ -54,8 +55,23 @@ case "${1:-}" in
     shift
     exec python3 "$ROOT/scripts/forge-fractal.py" "$@"
     ;;
+  decide)
+    shift
+    exec python3 "$ROOT/scripts/forge-decide.py" "$@"
+    ;;
   jev)
     shift
+    # Only the launcher says so: forge's own callers run forge-jev.py directly.
+    case "${1:-}" in
+      setup) NEW='forge decide provider add …' ;;
+      sites) NEW='forge decide gate <gate> <mode> --provider <name>' ;;
+      enable) NEW='forge decide gate <gate> on' ;;
+      disable) NEW='forge decide gate <gate> off' ;;
+      status) NEW='forge decide status' ;;
+      doctor) NEW='forge decide doctor' ;;
+      *) NEW='' ;;
+    esac
+    [ -n "$NEW" ] && printf 'forge jev is replaced by forge decide (this alias stays for one release): %s\n' "$NEW" >&2
     exec python3 "$ROOT/scripts/forge-jev.py" "$@"
     ;;
   dataset)

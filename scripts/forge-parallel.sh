@@ -180,7 +180,7 @@ do_plan() {
       *)
         # `case` is not a loop, so `continue` here belongs to the enclosing while.
         if [ "$JEV_OPTS" = 1 ]; then
-          forge_jev_flag "$1"; jev_rc=$?
+          forge_jev_flag "$@"; jev_rc=$?
           case "$jev_rc" in
             0) shift "$JEV_SHIFT"; continue ;;
             2) exit 2 ;;
@@ -239,6 +239,8 @@ do_plan() {
   fi
   [ -s "$PLAN/repo" ] || die "plan needs --repo the first time"
   REPO="$(cat "$PLAN/repo")"
+  # Before any decision-model step: the privacy floor and the run budget read these.
+  [ "$JEV_OPTS" = 1 ] && forge_decide_env "$REPO" "$PLAN"
   [ -s "$PLAN/run_id" ] || basename "$PLAN" | sed 's/^forge-//' > "$PLAN/run_id"
   # Every plan, --ui or not: forge-ui's view of this repo's runs reads the registry.
   forge_ui_register "$PLAN"
@@ -264,51 +266,39 @@ PY
     note "         if the tasks depend on them."
   fi
 
-  # --- jev: advisory difficulty scoring ------------------------------------------
-  # Advisory only: a suggested tier, and gate warnings about the task text. Writing a Jev
-  # tier into the difficulty column (`--jev-act`, gated on a per-repo calibration) was
-  # removed on 2026-10-17 without ever having acted; models are chosen from measured pass
-  # rates instead (plan --explore, `forge dataset routing`).
+  # --- jev: plan-time gates ------------------------------------------------------
+  # Prompt adequacy and drift, advisory: warnings about the task text and its declared
+  # files. Nothing here changes tasks.tsv.
   local jev_loaded=0
   if [ -f "$SKILL_DIR/scripts/forge-jev-options.sh" ]; then
     source "$SKILL_DIR/scripts/forge-jev-options.sh" 2>/dev/null && jev_loaded=1
   fi
-  if [ "$jev_loaded" = 1 ] && forge_jev_active routing; then
+  if [ "$jev_loaded" = 1 ] && { forge_decide_active prompt || forge_decide_active drift; }; then
     local jev_scores jev_rc
     jev_scores="$(python3 "$SKILL_DIR/scripts/forge-jev.py" score-plan \
       --plan "$PLAN" --repo "$REPO" 2>/dev/null)"
     jev_rc=$?
-    if [ "$jev_rc" -eq 0 ] && [ -n "$jev_scores" ]; then
-      # Shadow mode records the judgment and prints nothing per task.
-      if [ "${FORGE_JEV_SHADOW:-}" = on ]; then
-        note "jev: scored $(printf '%s\n' "$jev_scores" | grep -c . ) task(s) in shadow mode (no change)"
-      else
-        local jid jtier jconf jcomp jesc jdecl jwarn jdrift
-        # The columns score-plan prints: id, tier, confidence, composite, escalated,
-        # declared, warnings, drift. Read in lockstep with cmd_score_plan.
-        while IFS="$(printf '\t')" read -r jid jtier jconf jcomp jesc jdecl jwarn jdrift; do
-          [ -n "$jid" ] || continue
-          # score-plan writes "-" for "not escalated"; only a real reason is worth showing.
-          [ "$jesc" = "-" ] && jesc=""
-          note "jev: $jid suggests $jtier (confidence $jconf${jesc:+, escalated: $jesc}) — declared $jdecl"
-          # Gates are warnings: they are about the task text and its declared files, not
-          # about which model runs it.
-          if [ -n "$jwarn" ] && [ "$jwarn" != "-" ]; then
-            case "$jwarn" in
-              *prompt_adequacy*) note "jev: $jid — the prompt may be too vague for QA to judge correctness against" ;;
-            esac
-            case "$jwarn" in
-              *independently_verifiable*) note "jev: $jid — may not be verifiable on its own (decompose.md forbids splitting this finely)" ;;
-            esac
-          fi
-          if [ -n "$jdrift" ] && [ "$jdrift" != "-" ]; then
-            note "jev: $jid may also edit undeclared files: $jdrift"
-            note "     undeclared files break wave disjointness — add them to the files column or split the task"
-          fi
-        done <<EOF
+    # A gate in shadow is asked and recorded by score-plan, which leaves it out of
+    # these rows: what is printed here is only what an `on` gate has to say.
+    # --jev-shadow before migration keeps its gates `on` and prints a count, as it always did.
+    if [ "$jev_rc" -eq 0 ] && [ -n "$jev_scores" ] && [ "${FORGE_JEV_SHADOW:-}" = on ]; then
+      note "jev: scored $(printf '%s\n' "$jev_scores" | grep -c .) task(s) in shadow mode (no change)"
+    elif [ "$jev_rc" -eq 0 ] && [ -n "$jev_scores" ]; then
+      local jid jwarn jdrift
+      # The columns score-plan prints: id, warnings, drift. Read in lockstep with
+      # cmd_score_plan.
+      while IFS="$(printf '\t')" read -r jid jwarn jdrift; do
+        [ -n "$jid" ] || continue
+        case "$jwarn" in
+          *prompt_adequacy*) note "jev: $jid — the prompt may be too vague for QA to judge correctness against" ;;
+        esac
+        if [ -n "$jdrift" ] && [ "$jdrift" != "-" ]; then
+          note "jev: $jid may also edit undeclared files: $jdrift"
+          note "     undeclared files break wave disjointness — add them to the files column or split the task"
+        fi
+      done <<EOF
 $jev_scores
 EOF
-      fi
     fi
   fi
 
@@ -380,50 +370,40 @@ EOF
 
   compute_waves "$PLAN"
 
-  # --- clef: silent first-attempt predictions -------------------------------------
-  # Recorded only (tasks/<id>/clef.first_pass and the run dataset), so a later export can
-  # measure whether Clef tells which tasks a first attempt will fail. Nothing in a run
-  # reads them. Without a Cloudflare provider the command returns at once; with one it
-  # bounds itself (one deadline for the plan, an in-process watchdog).
-  if [ "${FORGE_JEV:-}" != off ]; then
-    python3 "$SKILL_DIR/scripts/forge-jev.py" first-pass --plan "$PLAN" --repo "$REPO" >/dev/null 2>&1 || true
-  fi
-
-  # --- jev: advisory wave coupling ------------------------------------------------
-  # Disjoint files bound parallelism structurally, but they cannot see the conflict
-  # where one task in a wave changes an interface another task in the SAME wave
-  # consumes -- both diffs are clean against their own baseline, and the merge is
-  # broken. This is advisory only: it never edits tasks.tsv, never adds a dep, and
+  # --- jev: advisory forward dependency -------------------------------------------
+  # Wave order is structural, but it cannot see an earlier-wave task written against
+  # an interface a later-wave task builds. This is advisory only: it never edits
+  # tasks.tsv, never adds a dep, and
   # never changes waves.tsv, so it must run after compute_waves and before the table
   # that reports the plan is printed.
-  if [ "$jev_loaded" = 1 ] && forge_jev_active gates; then
+  if [ "$jev_loaded" = 1 ] && forge_decide_active forward; then
     local jev_coupling jev_coupling_rc
     jev_coupling="$(python3 "$SKILL_DIR/scripts/forge-jev.py" coupling \
       --plan "$PLAN" --repo "$REPO" 2>/dev/null)"
     jev_coupling_rc=$?
-    if [ "$jev_coupling_rc" -eq 0 ] && [ -n "$jev_coupling" ]; then
-      if [ "${FORGE_JEV_SHADOW:-}" = on ]; then
-        note "jev: found $(printf '%s\n' "$jev_coupling" | grep -c .) coupled pair(s) in shadow mode (no change)"
-      else
-        local ca cb cp ckind
-        while IFS="$(printf '\t')" read -r ca cb cp ckind; do
-          [ -n "$ca" ] || continue
-          # Two different failures, so two different sentences. same-wave is a broken
-          # merge between concurrent tasks; forward is an earlier task written against
-          # work that has not been built yet, which its own review cannot catch.
-          if [ "$ckind" = forward ]; then
-            note "jev: task '$ca' runs before '$cb' and may depend on what it builds ($cp) — consider a dep"
-          else
-            note "jev: tasks '$ca' and '$cb' may conflict despite disjoint files ($cp) — consider a dep"
-          fi
-        done <<EOF
+    # A shadowed forward gate is recorded in jev-coupling.json and prints no row; --jev-shadow
+    # before migration prints a count, as it always did.
+    if [ "$jev_coupling_rc" -eq 0 ] && [ -n "$jev_coupling" ] && [ "${FORGE_JEV_SHADOW:-}" = on ]; then
+      note "jev: found $(printf '%s\n' "$jev_coupling" | grep -c .) coupled pair(s) in shadow mode (no change)"
+    elif [ "$jev_coupling_rc" -eq 0 ] && [ -n "$jev_coupling" ]; then
+      local ca cb cp ckind
+      while IFS="$(printf '\t')" read -r ca cb cp ckind; do
+        [ -n "$ca" ] || continue
+        # Forward: an earlier task written against work that has not been built yet,
+        # which its own review cannot catch.
+        if [ "$ckind" = forward ]; then
+          note "jev: task '$ca' runs before '$cb' and may depend on what it builds ($cp) — consider a dep"
+        fi
+      done <<EOF
 $jev_coupling
 EOF
-      fi
     fi
   fi
 
   render_table "$PLAN"
+  # Advisory, under the table: a privacy floor that silences every gate, and which
+  # gates this plan's runs will ask. Prints nothing when it cannot tell.
+  [ "$jev_loaded" = 1 ] && forge_decide_plan_lines "${FORGE_DECIDE_REPO:-$REPO}"
   # Before the UNASSIGNED return, so the URL prints under the table either way.
   forge_ui_launch "$PLAN"
 
@@ -790,13 +770,6 @@ do_task_body() (
   if [ -z "$resume" ]; then
     attempt=$(( attempt + 1 ))
     echo "$attempt" > "$tdir/attempt"
-    # Silent: Clef's guess at whether this retry passes with the findings it was handed.
-    # Only a real new dwarf attempt (not a QA-only resume); recorded in clef.retry_pass.<n>
-    # and the run dataset, never read by the run, and it can never fail the task.
-    if [ "$attempt" -gt 1 ] && [ -s "$tdir/retry_findings.md" ] && [ "${FORGE_JEV:-}" != off ]; then
-      python3 "$SKILL_DIR/scripts/forge-jev.py" retry-pass --plan "$PLAN" --repo "$REPO" --task "$id" \
-        --attempt "$attempt" >/dev/null 2>&1 || true
-    fi
   fi
 
   # The base is pinned per task on first creation and reused by every retry. The
@@ -919,34 +892,14 @@ do_task_body() (
   echo "$review_fp" > "$tdir/review.fingerprint"
 
   forge_metric_phase preparation
-  local jev_loaded_qa=0 subset_cmd="" qa_thr rs_on=0
+  local qa_thr rs_on=0
   qa_thr="$(qa_threshold_for "$PLAN" "$id")"
   # Read once per round, like the threshold: continuing the earlier reviewer's session is an
   # opt-in experiment (plan --reviewer-session), and a round never changes its mind midway.
   [ -f "$PLAN/reviewer_session" ] && rs_on=1
 
-  # A SEPARATE file from .forge/verify, and opt-in. It must contain {files}, because
-  # only the project knows how its runner takes a file list -- `pytest -q {files}` works,
-  # `npm test -- {files}` needs the dashes, and `go test ./...` cannot do it at all.
-  # Absent, this whole feature stays off and nothing extra runs.
-  [ -s "$REPO/.forge/verify-subset" ] && subset_cmd="$(cat "$REPO/.forge/verify-subset")"
-  if [ -f "$SKILL_DIR/scripts/forge-jev-options.sh" ]; then
-    source "$SKILL_DIR/scripts/forge-jev-options.sh" 2>/dev/null && jev_loaded_qa=1
-  fi
-  # Early feedback for the reviewer: run the tests this change most likely broke, in a
-  # throwaway export. Requires a configured verify command -- without one there is no
-  # runner to point at a file list, and inventing one is not this feature's job.
-  if [ -n "$subset_cmd" ] && [ "$jev_loaded_qa" = 1 ] && forge_jev_active tests; then
-    git -C "$wt" diff --name-only "$(cat "$tdir/review.base")" "$reviewed" \
-        > "$tdir/changed.txt" 2>/dev/null || : > "$tdir/changed.txt"
-    python3 "$SKILL_DIR/scripts/forge-jev.py" test-subset --repo "$wt" \
-        --commit "$reviewed" --task "$tdir/prompt.md" --command "$subset_cmd" \
-        --changed "$tdir/changed.txt" --base "$(cat "$tdir/review.base")" \
-        --run-dir "$tdir" > "$tdir/subset.jev.txt" 2>/dev/null \
-      || : > "$tdir/subset.jev.txt"
-  fi
   # Opt-in (plan --fail-first): do this attempt's new tests fail without its change? Read-only
-  # on the review snapshot, like the subset run above; the reviewer gets the evidence.
+  # on the review snapshot, so the task worktree is untouched; the reviewer gets the evidence.
   rm -f "$tdir/failfirst.json" "$tdir/failfirst.txt"
   [ ! -f "$PLAN/fail_first" ] || forge_fail_first "$review" "$tdir" "$REPO"
   # What changed since the review whose findings this reviewer is handed. Fractal keeps
@@ -979,17 +932,6 @@ do_task_body() (
     echo
     [ ! -f "$PLAN/sweep_ahead" ] || python3 "$SKILL_DIR/scripts/forge-sweep.py" ahead "$PLAN" "$id" --role qa 2>/dev/null
     if [ -s "$tdir/failfirst.txt" ]; then cat "$tdir/failfirst.txt"; echo; fi
-    # A subset failure is the one thing a reviewer most wants to know and cannot see
-    # from the diff. It runs in a throwaway export of the reviewed commit, so the task
-    # worktree is untouched and no fingerprint can change. It never replaces
-    # verification -- the full suite still runs at integration exactly as before.
-    if [ -s "$tdir/subset.jev.txt" ]; then
-      cat "$tdir/subset.jev.txt"
-      echo
-      echo "That is a subset chosen by relevance, not the full suite, so a pass would"
-      echo "prove nothing and is not reported. A failure here is real."
-      echo
-    fi
     if [ -s "$tdir/guard.txt" ]; then
       # Facts forge observed about how the implementer worked. On a first attempt the reviewer
       # never sees the implementer's own report (a retry's reviewer gets the reply, to check
@@ -1107,39 +1049,6 @@ do_task_body() (
   # accepted PASS-with-known-issues. No threshold, no change. qa_thr is the value the review
   # prompt was built with, so the prompt and the gate of one attempt agree.
   qa_gate "$PLAN" "$id" "$tdir" "$verdict" "$qa_thr"
-
-  # Annotate a FAIL that looks unsound. Note what this does NOT do: the status file is
-  # already written above and nothing below rewrites it. A model that could talk a
-  # reviewer out of a FAIL would produce confident PASSes on code nobody checked, which
-  # is worth less than having no reviewer at all. Only a human acts on this line.
-  if [ "$verdict" = FAIL ] && [ "$(cat "$tdir/status")" = FAIL ]; then
-    # do_task is a subshell and does not inherit do_plan's copy, so source it here.
-    # A missing or broken options file leaves jev_loaded=0 and this block does nothing.
-    local jev_loaded=0 jev_rc
-    if [ -f "$SKILL_DIR/scripts/forge-jev-options.sh" ]; then
-      source "$SKILL_DIR/scripts/forge-jev-options.sh" 2>/dev/null && jev_loaded=1
-    fi
-    if [ "$jev_loaded" = 1 ] && forge_jev_active gates; then
-      # One request, not two: asking the same question twice costs twice and can come
-      # back with two different answers, and the record must match what was printed.
-      python3 "$SKILL_DIR/scripts/forge-jev.py" review-triage --review "$tdir/qa.last" \
-          --diff "$tdir/changes.diff" --run-dir "$tdir" --json > "$tdir/qa.jev.json" 2>/dev/null
-      jev_rc=$?
-      if [ "$jev_rc" -eq 0 ]; then
-        note "$id: FAIL stands, but jev flags the review — $(python3 -c '
-import json, sys
-try:
-    data = json.load(open(sys.argv[1]))
-except Exception:
-    sys.exit(0)
-print("; ".join(data.get("reasons") or []))
-' "$tdir/qa.jev.json" 2>/dev/null)"
-      else
-        # Exit 1 means the review looked sound; there is nothing to say and no file to keep.
-        rm -f "$tdir/qa.jev.json" 2>/dev/null || true
-      fi
-    fi
-  fi
   return 0
 )
 
@@ -1223,7 +1132,7 @@ do_retry() {
         # `case` is not a loop, so `continue` here belongs to the enclosing while.
         if forge_pp_flag retry "$PLAN" "$@"; then shift "$PP_SHIFT"; continue; fi
         if [ "$JEV_OPTS" = 1 ]; then
-          forge_jev_flag "$1"; jev_rc=$?
+          forge_jev_flag "$@"; jev_rc=$?
           case "$jev_rc" in
             0) shift "$JEV_SHIFT"; continue ;;
             2) exit 2 ;;
@@ -1234,6 +1143,8 @@ do_retry() {
     esac
   done
   [ "$JEV_OPTS" = 1 ] && forge_jev_settle "$PLAN"
+  # Before any decision-model step: the privacy floor and the run budget read these.
+  [ "$JEV_OPTS" = 1 ] && [ -s "$PLAN/repo" ] && forge_decide_env "$(cat "$PLAN/repo")" "$PLAN"
   case "$OUTPUT" in summary|full) ;; *) die "--output must be summary or full" ;; esac
   export FORGE_OUTPUT="$OUTPUT"
   local T="$PLAN/tasks.tsv" tdir="$PLAN/tasks/$id"
@@ -1288,39 +1199,8 @@ do_retry() {
   echo
   printf '  %-14s %-9s %s\n' id status branch
   awk -F'\t' '{printf "  %-14s %-9s %s\n", $1, $2, $3}' "$PLAN/results.tsv"
-  forge_jev_review_flags "$PLAN"
   run_report_extras "$PLAN"
   [ "$(task_status "$PLAN" "$id")" = "MERGED" ] || return 5
-  return 0
-}
-
-# Print any Jev review-triage flags under the results table.
-#
-# do_task's notes go to tasks/<id>/task.out, which the scheduler only echoes when
-# FORGE_OUTPUT=full -- the right call for parallel dispatch, where interleaved output is
-# unreadable. But it meant this particular note was written where nobody would read it,
-# and it is the only signal that a FAIL may not be sound. A human has to see it to act
-# on it, and the default output mode is `summary`.
-#
-# qa.jev.json exists only when the review was flagged: review-triage deletes it when the
-# review looks sound, so its presence is the signal and no new file is needed.
-forge_jev_review_flags() {
-  local plan="$1" id notice printed=0
-  for id in $(all_ids "$plan/tasks.tsv"); do
-    [ -s "$plan/tasks/$id/qa.jev.json" ] || continue
-    notice="$(python3 -c '
-import json, sys
-try:
-    data = json.load(open(sys.argv[1]))
-except Exception:
-    sys.exit(0)
-print("; ".join(data.get("reasons") or []))
-' "$plan/tasks/$id/qa.jev.json" 2>/dev/null)"
-    [ -n "$notice" ] || continue
-    [ "$printed" = 0 ] && { echo; printed=1; }
-    printf '  jev: %s — the FAIL stands; %s\n' "$id" "$notice"
-  done
-  [ "$printed" = 1 ] && printf '  A flagged review is not an overturned one. Read it before retrying.\n'
   return 0
 }
 
@@ -1442,7 +1322,7 @@ verify_result_body() { # plan, checkout, artifact directory
   vretries="$(cat "$plan/verify_retries" 2>/dev/null)"
   case "$vretries" in ''|*[!0-9]*) vretries=1 ;; esac
   # Sourced unconditionally (cheap: local function/var definitions, no network) so
-  # forge_jev_active is available below. verify_result is itself a subshell, so this
+  # forge_decide_active is available below. verify_result is itself a subshell, so this
   # never leaks state into the caller. A missing or broken options file just leaves
   # jev_loaded=0 and every Jev branch below falls through to today's behaviour.
   if [ -f "$SKILL_DIR/scripts/forge-jev-options.sh" ]; then
@@ -1456,9 +1336,6 @@ verify_result_body() { # plan, checkout, artifact directory
   fi
   case "$vsource" in
     lanes:*)
-      if [ "$jev_loaded" = 1 ] && forge_jev_active tests; then
-        note "jev: flake triage applies to a single verify command; lanes rerun their own failures"
-      fi
       verify_lanes_run "$plan" "$wt" "$out" "${vsource#*$'\t'}" "$vretries"
       return $? ;;
   esac
@@ -1467,7 +1344,7 @@ verify_result_body() { # plan, checkout, artifact directory
   # produced — any non-zero exit (no key, disabled, nothing suitable, a traceback)
   # falls straight through to the exact UNVERIFIED behaviour below. A Jev failure
   # must never change the outcome of a run.
-  if [ -z "$cmd" ] && [ "$jev_loaded" = 1 ] && forge_jev_active tests; then
+  if [ -z "$cmd" ] && [ "$jev_loaded" = 1 ] && forge_decide_active verify-discover; then
     local jev_json jev_rc jev_cmd
     # --json rather than the bare form: the record exists so a human can audit why a
     # command ran, and "confidence: null" answers nothing. The exit code still decides.
@@ -1518,11 +1395,10 @@ with open(out + "/verification.jev.json", "w") as fh:
   verify_stopped "$out" && return 130
   echo "$before" > "$out/verification.fingerprint"
   if [ "$rc" != 0 ] || [ "$before" != "$after" ]; then
-    local flaked=0 det_retried=0 n_retry=0 rc3 b3 a3
-    # Deterministic rerun first: the rerun itself is the evidence, so unlike Jev's triage
-    # below it needs no model and no recorded trap. A tree change is never retried.
+    local flaked=0 n_retry=0 rc3 b3 a3
+    # The rerun itself is the evidence: it needs no model and no recorded trap. A tree
+    # change is never retried.
     if [ "$rc" != 0 ] && [ "$before" = "$after" ] && [ "$vretries" -gt 0 ]; then
-      det_retried=1
       while [ "$n_retry" -lt "$vretries" ] && [ "$flaked" = 0 ]; do
         n_retry=$((n_retry+1)); rc3=0
         note "verification failed (exit $rc); rerunning to tell a flaky lane from a regression ($n_retry/$vretries)"
@@ -1543,96 +1419,6 @@ with open(out + "/verification.jev.json", "w") as fh:
           note "FLAKY: verification failed once (exit $rc) and passed on rerun — the first failure is in $out/verification.log; this is not a clean pass"
         fi
       done
-    fi
-    # A tree change is never a flake — it stays FAIL immediately, no triage. Beyond
-    # that, act on a "known_flake" verdict ONLY when Forge's own memory already
-    # records a `trap` for this repo: a model alone deciding a failure was a flake
-    # is exactly how a real regression ships, so the verdict needs corroboration
-    # from Forge's own records, not just the model's word.
-    if [ "$rc" != 0 ] && [ "$before" = "$after" ] && [ "$jev_loaded" = 1 ] \
-      && [ "$det_retried" = 0 ] \
-      && forge_jev_active tests \
-      && [ -s "$repo/.forge/memory.md" ] \
-      && awk '/^## Known traps$/{f=1;next} /^## /{f=0} f && NF{c++} END{exit !(c>0)}' "$repo/.forge/memory.md"
-    then
-      local triage_json triage_rc verdict="" confidence="" flake_act="0.90" parsed corroborated=0 retried=0 rc2="" before2 after2
-      triage_json="$(python3 "$SKILL_DIR/scripts/forge-jev.py" verify-triage --repo "$repo" \
-        --command "$cmd" --log "$out/verification.log" --json --run-dir "$out" 2>/dev/null)"
-      triage_rc=$?
-      if [ "$triage_rc" -eq 0 ] && [ -n "$triage_json" ]; then
-        parsed="$(printf '%s' "$triage_json" | python3 -c '
-import json, sys
-try:
-    data = json.load(sys.stdin)
-except ValueError:
-    data = {}
-print(data.get("verdict") or "")
-c = data.get("confidence")
-print(c if c is not None else "")
-print(bool(data.get("corroborated")))
-' 2>/dev/null)"
-        verdict="$(printf '%s\n' "$parsed" | sed -n 1p)"
-        confidence="$(printf '%s\n' "$parsed" | sed -n 2p)"
-        # triage() reports whether a recorded trap shares a distinctive token with this
-        # failure's output. Without that, one flaky test noted months ago would excuse
-        # every future failure in the repo.
-        [ "$(printf '%s\n' "$parsed" | sed -n 3p)" = "True" ] && corroborated=1 || corroborated=0
-        if [ -n "$FORGE_JEV_STATUS_JSON" ]; then
-          local threshold_read
-          threshold_read="$(printf '%s' "$FORGE_JEV_STATUS_JSON" | python3 -c '
-import json, sys
-try:
-    data = json.load(sys.stdin)
-except ValueError:
-    data = {}
-v = (data.get("thresholds") or {}).get("flake_act")
-print(v if v is not None else "0.90")
-' 2>/dev/null)"
-          [ -n "$threshold_read" ] && flake_act="$threshold_read"
-        fi
-        if [ "$verdict" = known_flake ] && [ -n "$confidence" ] && [ "$corroborated" = 1 ] \
-          && awk -v a="$confidence" -v b="$flake_act" 'BEGIN{exit !(a+0 >= b+0)}'
-        then
-          retried=1
-          note "jev: known_flake (confidence $confidence >= $flake_act), corroborated by a recorded trap — retrying once"
-          before2="$(forge_fingerprint "$wt")" || return 1
-          vt0="$(date +%s)"
-          verify_stopped "$out" && return 130
-          verify_exec "$wt" "$cmd" "$out/verification.retry.log" || rc2=$?
-          rc2="${rc2:-0}"
-          after2="$(forge_fingerprint "$wt")" || { verify_stopped "$out" && return 130; return 1; }
-          verify_run_note "$out" jev_retry "$rc2" "$before2" "$after2" verification.retry.log "$vt0"
-          verify_stopped "$out" && return 130
-          if [ "$rc2" = 0 ] && [ "$before2" = "$after2" ]; then
-            flaked=1
-            note "jev: retry passed — treating as a corroborated flake, not a regression"
-          else
-            note "jev: retry also failed (exit $rc2) — keeping FAIL"
-          fi
-        fi
-        python3 -c '
-import json, sys
-out, verdict, confidence, threshold, corroborated, retried, first_rc, retry_rc = sys.argv[1:9]
-path = out + "/verification.jev.json"
-try:
-    with open(path) as fh:
-        data = json.load(fh)
-except (OSError, ValueError):
-    data = {}
-data["triage"] = {
-    "verdict": verdict or None,
-    "confidence": float(confidence) if confidence else None,
-    "flake_act_threshold": float(threshold),
-    "trap_corroboration": corroborated == "1",
-    "retried": retried == "1",
-    "first_exit": int(first_rc),
-    "retry_exit": int(retry_rc) if retry_rc != "" else None,
-}
-with open(path, "w") as fh:
-    json.dump(data, fh, indent=2, sort_keys=True)
-    fh.write("\n")
-' "$out" "$verdict" "$confidence" "$flake_act" "$corroborated" "$retried" "$rc" "$rc2" 2>/dev/null || true
-      fi
     fi
     if [ "$flaked" = 1 ]; then
       echo PASS > "$out/verification.status"
@@ -1709,7 +1495,7 @@ do_run() {
         # `case` is not a loop, so `continue` here belongs to the enclosing while.
         if forge_pp_flag run "$PLAN" "$@"; then shift "$PP_SHIFT"; continue; fi
         if [ "$JEV_OPTS" = 1 ]; then
-          forge_jev_flag "$1"; jev_rc=$?
+          forge_jev_flag "$@"; jev_rc=$?
           case "$jev_rc" in
             0) shift "$JEV_SHIFT"; continue ;;
             2) exit 2 ;;
@@ -1732,6 +1518,8 @@ do_run() {
   compute_waves "$PLAN"
   local REPO run_id wt_root int_wt int_br
   REPO="$(cat "$PLAN/repo")"; run_id="$(cat "$PLAN/run_id")"
+  # Before any decision-model step: the privacy floor and the run budget read these.
+  [ "$JEV_OPTS" = 1 ] && forge_decide_env "$REPO" "$PLAN"
   if [ "$DRY" != 1 ]; then
     # The concurrency limit this run was given, for forge-ui to draw; a later run rewrites it.
     printf '%s\n' "$MAXP" > "$PLAN/max_parallel"
@@ -1857,7 +1645,6 @@ do_run() {
   echo "artifacts: $PLAN/tasks/<id>/{dwarf,qa}.{last,log}; results: $PLAN/results.tsv"
   printf '  %-14s %-9s %s\n' id status branch
   awk -F'\t' '{printf "  %-14s %-9s %s\n", $1, $2, $3}' "$PLAN/results.tsv"
-  forge_jev_review_flags "$PLAN"
   echo
   run_report_extras "$PLAN"
 

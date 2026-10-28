@@ -5,14 +5,18 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import sys
+import time
 import uuid
 
 SCRIPTS = Path(__file__).resolve().parents[1]
+if str(SCRIPTS) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS))
 
 ENDPOINT = 'https://api.typesafe.ai/v1/systemone'
 MODEL = 'jev-latest'
 CAPABILITIES = ('routing', 'tests', 'gates', 'memory')
-DEFAULT_THRESHOLDS = dict(tests_act=0.70, flake_act=0.90,
+DEFAULT_THRESHOLDS = dict(tests_act=0.70,
                           gate_warn=0.60,
                           # Measured twice. The first 15 prompts were hand-written and
                           # scored with only a task TITLE in state, because prompt.md did
@@ -28,54 +32,9 @@ DEFAULT_THRESHOLDS = dict(tests_act=0.70, flake_act=0.90,
                           # both sides, against a measured repeat-noise of 0.07.
                           # 0.30 also classified every case correctly, but sat 0.03 above
                           # the worst true positive -- correct by luck, not by margin.
+                          # That state is what gates.task_state builds for jev-prompt.
                           prompt_warn=0.55,
-                          # The rubric asked whether verifying a task needs "work
-                          # declared in a different task" while the state contained no
-                          # other task, so the model could only guess whether one
-                          # existed. That, not the wording, is why the classes used to
-                          # overlap. The plan is now in state (routing._siblings) and the
-                          # rubric points at it by name.
-                          #
-                          # Re-measured on the 8 real jevscope tasks, ground truth taken
-                          # from the import graph and wave position rather than from the
-                          # titles: `server` (wave 1, imports discover/events/stats and
-                          # serves page's index.html, none declared) 0.26-0.34; `page`
-                          # (consumes server's API -- both defects that shipped were
-                          # page<->events shape mismatches) 0.43-0.53; `readme`
-                          # (documents the wave-2 CLI, and shipped wrong) 0.60-0.65.
-                          # Genuinely self-contained tasks scored 0.65-0.96.
-                          #
-                          # At the old 0.38 this gate caught NOTHING on a real plan, the
-                          # same way coupling never fired: every fragment scored above
-                          # it. 0.55 catches server (0.21 clear) and page (0.02 clear --
-                          # marginal, counted as recall but not relied on), misses readme
-                          # entirely, and keeps 0.10 to the nearest true negative, which
-                          # is the only margin here that beats the 0.07 noise floor.
-                          # Precision is what an advisory gate must hold: a gate that
-                          # cries wolf is one people switch off.
-                          #
-                          # `readme` is not separable from a real task by this rubric --
-                          # it sits at 0.65 alongside `cli` at 0.65 -- so silence above
-                          # 0.55 still means "no evidence", not "verifiable".
-                          #
-                          # Equal to prompt_warn by coincidence, not by kinship. They
-                          # were measured separately against different rubrics and must
-                          # stay separate keys; collapsing them into one constant is the
-                          # exact mistake this file has now recorded six times.
-                          verifiable_warn=0.55,
-                          # Coupling borrowed gate_warn (0.60) and therefore never fired
-                          # once, on any plan. Measured over 11 same-wave pairs from a
-                          # real 8-task plan, 5 runs each, with ground truth taken from
-                          # the run itself -- two of those pairs produced a defect that
-                          # actually shipped. Coupling probabilities live at 0.09-0.27.
-                          # 0.60 was not a strict threshold, it was unreachable.
-                          #
-                          # At 0.20: 4 of 5 genuinely coupled pairs warn, 0 of 6
-                          # independent ones do. Provisional -- one plan, one repo, and
-                          # margins of about 0.02 either side -- but a gate that fires on
-                          # the right pairs 4 times in 5 beats one that cannot fire.
-                          coupling_warn=0.20,
-                          # The ordering question coupling could not ask: an earlier-wave
+                          # The ordering question: an earlier-wave
                           # task written against what a LATER task builds. jevscope's
                           # `readme` ran in wave 1 documenting the wave-2 CLI, passed its
                           # own review because the thing it was wrong about did not exist
@@ -113,7 +72,7 @@ DEFAULTS = dict(enabled=False, key='', model=MODEL, endpoint=ENDPOINT, deadline_
                 capabilities={c: True for c in CAPABILITIES},
                 thresholds=dict(DEFAULT_THRESHOLDS),
                 # A second provider, per site. Empty means every site asks TypeSafe exactly
-                # as before; see "Cloudflare Clef" in references/jev.md.
+                # as before; see "Cloudflare Clef" in references/decision-models.md.
                 providers={}, sites={}, model_thresholds={})
 
 # Cloudflare Workers AI's hosted Clef: Jev's request shape, a different envelope and
@@ -129,17 +88,15 @@ CLOUDFLARE_MAX_QUESTIONS = 64
 CLOUDFLARE_TOKEN_FILE = 'cloudflare.env'
 
 # Which capability each site belongs to, so a site on a provider with no credentials is
-# not ready even when its capability is on. clef-* sites exist only on Cloudflare: they
-# ask rubrics TypeSafe was never measured on, and record silently.
+# not ready even when its capability is on.
 SITE_CAPABILITY = {
-    'jev-score-plan': 'routing',
-    'clef-first-pass': 'routing', 'clef-retry-pass': 'routing',
-    'jev-drift': 'gates', 'jev-coupling': 'gates', 'jev-forward': 'gates',
-    'jev-review-triage': 'gates',
+    'jev-prompt': 'gates', 'jev-drift': 'gates', 'jev-forward': 'gates',
     'jev-memory-curate': 'memory', 'jev-memory-stale': 'memory', 'jev-memory-slice': 'memory',
-    'jev-test-subset': 'tests', 'jev-verify-discover': 'tests', 'jev-verify-triage': 'tests',
+    'jev-verify-discover': 'tests',
 }
-CLEF_ONLY_SITES = ('clef-first-pass', 'clef-retry-pass')
+# routing's rubrics are gone. The name stays in CAPABILITIES so old configs, frozen
+# selections and --jev-routing keep parsing, but the capability has no sites.
+RETIRED_CAPABILITIES = frozenset(('routing',))
 
 # Loaded via importlib rather than a package-relative import: forge-runtime.py lives one
 # directory up and is not itself part of a package (same trick as forge_fractal).
@@ -262,8 +219,6 @@ def secrets(config: dict | None = None) -> list:
 
 def provider_for(site: str, config: dict | None = None) -> str:
     """Which provider answers `site`: the site map, unless an env override says otherwise."""
-    if site in CLEF_ONLY_SITES:
-        return 'cloudflare'
     if os.environ.get('FORGE_CLEF') == 'off':
         return 'typesafe'
     forced = os.environ.get('FORGE_JEV_PROVIDER')
@@ -282,60 +237,170 @@ def provider_ready(name: str, config: dict | None = None) -> bool:
     return api_key(config) is not None
 
 
+# Each site now answers to its own gate (forge_decide): off, shadow or on, resolved across
+# six levels. Without a user decide.json the resolver's legacy level reproduces jev.json and
+# the FORGE_JEV* variables, so the capability switches above still decide there.
+#
+# The repo whose .forge/decide.json applies: a command that knows it (--repo, --anchor)
+# sets it for its own duration; otherwise FORGE_DECIDE_REPO, else none (no repo level and
+# no privacy floor here; client.ask still checks the floor of the repo it finds).
+_repo_override: str | None = None
+# One command asks several gates; it reads the files once. The key holds everything the
+# resolution reads, so a changed file or variable is never served stale.
+_CACHE_S = 2.0
+_cache: dict = {}
+
+
+def use_repo(repo) -> None:
+    global _repo_override
+    _repo_override = str(Path(repo).resolve()) if repo else None
+
+
+def current_repo() -> str | None:
+    return _repo_override or os.environ.get('FORGE_DECIDE_REPO') or None
+
+
+def _stamp(path: Path):
+    try:
+        st = path.stat()
+    except OSError:
+        return None
+    return st.st_mtime_ns, st.st_size
+
+
+def _resolved(config: dict | None = None) -> dict:
+    """forge_decide.resolve.resolve() for current_repo(), cached for _CACHE_S. With an
+    explicit `config` that is not jev.json's (tests, a probe), the legacy level is
+    re-derived from it, as enabled(config=) always did."""
+    import forge_decide
+    from forge_decide import resolve as resolve_module
+    repo = current_repo()
+    env = tuple(sorted((k, v) for k, v in os.environ.items()
+                       if k.startswith(('FORGE_', 'XDG_')) or k == 'HOME'))
+    files = (_stamp(forge_decide.user_path()), _stamp(config_path()),
+             _stamp(forge_decide.repo_path(repo)) if repo else None)
+    key = (repo, env, files)
+    hit = _cache.get('entry')
+    if hit and hit[0] == key and time.monotonic() - hit[1] < _CACHE_S:
+        result = hit[2]
+    else:
+        result = resolve_module.resolve(repo)
+        _cache['entry'] = (key, time.monotonic(), result)
+    if config is None or forge_decide.user_path().exists() or config == load_config():
+        return result
+    result = json.loads(json.dumps(result))
+    for gate, value in result['gates'].items():
+        if value['skip'] or value['source'] not in ('default', 'legacy', 'repo'):
+            continue
+        if resolve_module._legacy_enabled(forge_decide.GATE_CAPABILITY[gate], os.environ, config):
+            # Before migration FORGE_JEV_SHADOW marks records only: the gate stays on.
+            value['mode'], value['source'] = 'on', 'legacy'
+        elif value['source'] != 'repo':
+            value['mode'], value['source'] = 'off', 'legacy'
+    return result
+
+
+def _gate(site: str, resolved: dict) -> dict | None:
+    import forge_decide
+    return resolved['gates'].get(forge_decide.SITE_GATE.get(site))
+
+
+def gate_mode(site: str) -> str:
+    """'off', 'shadow' or 'on': the resolved mode of the site's gate. An unknown site is off."""
+    gate = _gate(site, _resolved())
+    return gate['mode'] if gate else 'off'
+
+
+def _spec(site: str, config: dict | None, resolved: dict) -> dict:
+    from forge_decide import providers
+    return providers.spec_for_site(site, config=config, repo=current_repo(), resolved=resolved)
+
+
+def gate_reason(site: str, config: dict | None = None) -> str | None:
+    """Why the site cannot be asked: None when it can, else 'privacy', 'kill', 'off',
+    'no-provider' (the gate names a provider that is not configured, or one with no
+    address) or 'no-key'."""
+    import forge_decide
+    resolved = _resolved(config)
+    gate = _gate(site, resolved)
+    if gate is None:
+        return 'off'
+    if gate['skip']:
+        return gate['skip']
+    if gate['mode'] == 'off':
+        return 'off'
+    if gate['provider']:
+        user, _ = forge_decide.load_user()
+        stored = user.get('providers')
+        if not isinstance(stored, dict) or not isinstance(stored.get(gate['provider']), dict):
+            return 'no-provider'
+    spec = _spec(site, config, resolved)
+    if not spec['url']:
+        return 'no-provider'
+    if not spec['key'] and not spec['local']:
+        return 'no-key'
+    return None
+
+
 def site_ready(site: str, config: dict | None = None) -> bool:
-    """The site's capability is on and its provider has credentials. Offline: reads config only."""
-    config = config if config is not None else load_config()
-    capability = SITE_CAPABILITY.get(site)
-    if not enabled(capability, config=config):
-        return False
-    if site in CLEF_ONLY_SITES:
-        entry = (config.get('providers') or {}).get('cloudflare')
-        if (os.environ.get('FORGE_CLEF') == 'off' or os.environ.get('FORGE_JEV_OUTCOMES') == 'off'
-                or (isinstance(entry, dict) and entry.get('outcomes') is False)):
-            return False
-    return provider_ready(provider_for(site, config), config)
+    """The site's gate is shadow or on, nothing skips it, and its provider can be asked: a
+    key, or a local provider. Offline: reads config only."""
+    return gate_reason(site, config) is None
 
 
 def capability_ready(capability: str, config: dict | None = None) -> bool:
-    """Some site of this capability can be asked: what the shell's forge_jev_active tests."""
-    config = config if config is not None else load_config()
+    """Some site of this capability can be asked: `forge jev status`'s capability_ready,
+    kept for older readers. The shell's forge_decide_active reads the per-gate `ready`
+    in that status's `gates` block instead."""
+    if capability in RETIRED_CAPABILITIES:
+        return False
     return any(site_ready(site, config) for site, cap in SITE_CAPABILITY.items()
-               if cap == capability and site not in CLEF_ONLY_SITES)
-
-
-def _capability_overrides() -> dict[str, str]:
-    names = dict(routing='FORGE_JEV_ROUTING', tests='FORGE_JEV_TESTS', gates='FORGE_JEV_GATES', memory='FORGE_JEV_MEMORY')
-    return {cap: os.environ[var] for cap, var in names.items() if os.environ.get(var) in ('on', 'off')}
+               if cap == capability)
 
 
 def enabled(capability: str | None = None, *, config: dict | None = None) -> bool:
-    if os.environ.get('FORGE_JEV') == 'off':
+    """Some gate of this capability (any gate, for None) is not off. Retired capabilities
+    have no gates, so they are never enabled."""
+    if capability in RETIRED_CAPABILITIES:
         return False
-    overrides = _capability_overrides()
-    # An explicit --jev-<cap> is an allowlist, so naming one capability does not
-    # silently enable the rest.
-    if 'on' in overrides.values():
-        return capability is None or overrides.get(capability) == 'on'
-    if overrides.get(capability) == 'off':
-        return False
-    stored = config if config is not None else load_config()
-    if os.environ.get('FORGE_JEV') != 'on' and not stored['enabled']:
-        return False
-    return capability is None or stored['capabilities'].get(capability, True)
+    import forge_decide
+    resolved = _resolved(config)
+    return any(value['mode'] != 'off' for gate, value in resolved['gates'].items()
+               if capability is None or forge_decide.GATE_CAPABILITY.get(gate) == capability)
 
 
 def acting() -> bool:
-    return os.environ.get('FORGE_JEV_ACT') == 'on'
+    # Keeps jev.jsonl's acting field.
+    return False
 
 
 def shadow() -> bool:
+    """The run-wide FORGE_JEV_SHADOW. Per site, shadow is gate_mode(site) == 'shadow'."""
     return os.environ.get('FORGE_JEV_SHADOW') == 'on'
 
 
-def threshold(name: str, *, config: dict | None = None, model: str | None = None) -> float:
-    """A rubric's cutoff. `model` is the model that answered: a threshold measured on one
-    model's probabilities means nothing on another's, so a per-model value wins."""
+def threshold(name: str, *, config: dict | None = None, site: str | None = None,
+              model: str | None = None) -> float:
+    """A rubric's cutoff. `model` is the model that answered (else the site's provider
+    model): a threshold measured on one model's probabilities means nothing on another's.
+
+    1. A gate's `thresholds` override, only while its `thresholds_model` is that model.
+    2. Without a user decide.json: jev.json's thresholds and model_thresholds, as before.
+    3. With one: the measured defaults, per model where a replay justified one.
+    """
+    import forge_decide
     config = config or load_config()
+    if site is not None:
+        resolved = _resolved(config)
+        gate = _gate(site, resolved)
+        # The override may sit under the name a fallback reads: migration saves jev.json's
+        # gate_warn on the drift gate, which drift_warn reads.
+        for key in (name, THRESHOLD_FALLBACK.get(name, name)):
+            if gate and key in gate['thresholds'] and gate['thresholds_model']:
+                if gate['thresholds_model'] == (model or _spec(site, config, resolved)['model']):
+                    return gate['thresholds'][key]
+    if forge_decide.user_path().exists():
+        config = dict(config, thresholds=dict(DEFAULT_THRESHOLDS), model_thresholds={})
     if model:
         per_model = dict(DEFAULT_MODEL_THRESHOLDS.get(model, {}),
                          **((config.get('model_thresholds') or {}).get(model) or {}))
@@ -349,10 +414,12 @@ def threshold(name: str, *, config: dict | None = None, model: str | None = None
 # Rubric thresholds introduced after a shared one: until measured separately they read the
 # old shared value, so a config that never named them behaves exactly as before.
 THRESHOLD_FALLBACK = dict(drift_warn='gate_warn')
-# Thresholds whose only reader was removed on 2026-10-17 (routing's --jev-act tier rewrite
-# and `forge jev calibrate`). A config written before then still holds them: they are
-# ignored, and `doctor` names them as safe to delete rather than as unknown.
-RETIRED_THRESHOLDS = frozenset(('routing_act', 'calibrate_floor'))
+# Thresholds whose only reader was removed (routing's --jev-act tier rewrite and `forge jev
+# calibrate` on 2026-10-17; same-wave coupling, flake triage and the verifiability gate
+# in milestone C1). A config written before then still holds them: they are ignored, and
+# `doctor` names them as safe to delete rather than as unknown.
+RETIRED_THRESHOLDS = frozenset(('routing_act', 'calibrate_floor', 'coupling_warn', 'flake_act',
+                                'verifiable_warn'))
 # Per-model cutoffs, only where a replay justified one. Clef has none yet:
 #
 # Replayed 2026-10-16 on the 38 live jev-drift requests whose task outcome could be joined
@@ -367,7 +434,7 @@ DEFAULT_MODEL_THRESHOLDS: dict = {}
 
 # The sites a replay showed Clef non-inferior on, which `forge jev setup --provider
 # cloudflare` maps by default. jev-memory-slice tied (AUC 0.951 vs 0.953) on too few held-out
-# runs (5) to clear the rule; jev-review-triage has no live label for its correctness half.
+# runs (5) to clear the rule.
 CLOUDFLARE_DEFAULT_SITES = ('jev-drift',)
 
 

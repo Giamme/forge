@@ -128,7 +128,7 @@ while [ $# -gt 0 ]; do
     *)
       # `case` is not a loop, so `continue` here belongs to the enclosing while.
       if [ "$JEV_OPTS" = 1 ]; then
-        forge_jev_flag "$1"; jev_rc=$?
+        forge_jev_flag "$@"; jev_rc=$?
         case "$jev_rc" in
           0) shift "$JEV_SHIFT"; continue ;;
           2) exit 2 ;;
@@ -163,6 +163,8 @@ RUN="$(cd "$RUN" && pwd)"
 # same run dir restores it rather than re-reading whatever flags are passed then.
 [ "$JEV_OPTS" = 1 ] && { forge_jev_restore "$RUN" || true; forge_jev_record "$RUN"; }
 REPO="$(cd "$REPO" && pwd)"
+# Before any decision-model step: the privacy floor and the run budget read these.
+[ "$JEV_OPTS" = 1 ] && forge_decide_env "$REPO" "$RUN"
 if [ "$DRY" != 1 ] && [ "${FORGE_SOLO_LOCK:-}" != "$RUN" ]; then
   exec python3 "$SKILL_DIR/scripts/forge-fractal.py" _lock "$RUN" "$0" "${ORIGINAL_ARGS[@]}"
 fi

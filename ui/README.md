@@ -34,7 +34,7 @@ blocks on a plate, with cables between them and lamps that light up as things ha
   otherwise); running nodes pulse and show their current phase.
 - **Extras:** replay a run from its recorded times, light its critical path, set block height
   and colour by duration, tokens, attempts or model, and mark shadow reviews that disagreed
-  with the primary and how sure Clef was that each task would pass.
+  with the primary.
 - **Beyond one run:** a full-screen **run cloud** of every run, grouped by project, in five
   layouts with filters and runs you can drag anywhere; **diffs** with each finding under the
   line it names; each dwarf's and reviewer's **conversation**, read from its CLI's log; a
@@ -189,7 +189,7 @@ keep one meaning everywhere (amber running, green merged or passed, red failed, 
   timings (busy, model time, overhead, queue wait after its dependencies merged), attempts and
   their executions with the checks each ran, review findings with the gate decision, what the
   finding sweep did with its findings (or, for a fix task, each finding it took and whether its
-  review found it fixed), Clef predictions against outcomes, and its prompts; for one execution, its model, phases, tokens,
+  review found it fixed), and its prompts; for one execution, its model, phases, tokens,
   checks, exact prompt and final message; for the final review, its verdict, findings, report,
   prompt and history.
 - **Now and checks:** a running task's *Now* names the agent at work and its attempt, the phase

@@ -79,8 +79,6 @@ written), and the reader must never raise because of one.
 | `fractal-selection.json` | `{"enabled": true, "run": "run-<20 hex>"}` (or `enabled: false`): the run's Fractal choice, see Fractal below |
 | `tasks/<id>/route.jsonl` | one JSON object per line, one per routing decision: `at` (epoch), `task`, `tier`, `epsilon`, `candidates` (list of specs), `default` (spec), `chosen` (spec), `explored` (bool), `propensity` (probability the chosen spec had), `inputs` (object), `decision` (a short hash identifying the decision). Keep unknown fields |
 | `tasks/<id>/route.explored` | exists when the task's route was an exploratory pick |
-| `tasks/<id>/clef.first_pass` | JSON: `p` (predicted probability the first attempt passes), `model`, `at`, `plan_table`, `assignment` (`{dwarf, qa}`) |
-| `tasks/<id>/clef.retry_pass.<n>` | JSON, same shape plus `attempt` = n |
 | `shadow/<id>/<attempt>-<k>/shadow.json` | JSON: `task`, `attempt`, `reviewed`, `primary`, `spec`, `pick`, `started`. A second, never-read review of attempt `<attempt>` |
 | `shadow/<id>/<attempt>-<k>/shadow.status` | one word |
 | `shadow/<id>/<attempt>-<k>/qa.last` | the shadow reviewer's final message, verdict as above |
@@ -256,7 +254,7 @@ its last 20,000 behind a leading `…`. Their `truncated` lists the field names 
 | `POST /api/runs/<key>/delete` | dry-run or delete a run with `forge runs rm`; authenticated, 900 s timeout; later requests for the key answer `404` |
 | `GET /api/models/reviewers` | `200` the `forge dataset reviewers --json` report (how each reviewer's PASSed work held up); no parameters |
 | `GET /api/config?run=<key>` | `200` the `forge config show --json` of that run's repo |
-| `POST /api/config` | set or unset one allowed key (`repo.verify`, `repo.setup`, `repo.verify-subset`, `jev.enabled`); authenticated |
+| `POST /api/config` | set or unset one allowed key (`repo.verify`, `repo.setup`, `repo.verify-subset`, `decide.gate.<gate>`, `decide.gate.<gate>.provider`, `decide.gate.<gate>.model`); `jev.enabled` is gone; authenticated |
 | `GET /api/runs/<key>/export?texts=0\|1&paths=0\|1` | `200` the run as one HTML file (see Export), `Content-Disposition: attachment`, `Content-Security-Policy: default-src 'none'; sandbox`; `404` for an unknown run |
 | `GET /api/runs/<key>/tasks/<id>/fractal` | `200 TaskFractal` |
 | `GET /api/runs/<key>/tasks/<id>/fractal/nodes/<node>[/diff]` | `200 FractalNodeDetail`, or with `/diff` a `DiffDetail` of its `candidate.diff`; `<node>` matches `[A-Za-z0-9][A-Za-z0-9_-]{0,100}` |
@@ -517,10 +515,6 @@ Every RunSummary field, plus:
   "route": [{"at": 1760619000.0, "task": "reader", "tier": "high", "epsilon": 0.5,
              "candidates": ["astra", "opus"], "default": "opus", "chosen": "astra",
              "explored": true, "propensity": 0.25, "inputs": {}, "decision": "9c1e4b7a0d2f3e58"}],
-  "clef": {"first_pass": {"p": 0.71, "model": "clef", "at": 1760619100.0,
-                          "assignment": {"dwarf": "astra", "qa": "opus"}},
-           "retry_pass": {"2": {"p": 0.64, "model": "clef", "at": 1760620600.0, "attempt": 2,
-                                "assignment": {"dwarf": "sol", "qa": "opus"}}}},
   "shadow": [{"attempt": 1, "k": 0, "spec": "sol:xhigh", "primary": "opus",
               "status": "PASS", "verdict": "FAIL", "started": 1760620100.0}],
   "prompt": "full prompt.md text",
@@ -566,8 +560,6 @@ Every RunSummary field, plus:
   plan task, the run dir's `dwarf.last` for a solo run), or `null` when the file is missing.
   Capped like `qa_tail`.
 - `explored`: `true` if `route.explored` exists or any `route` entry has `explored: true`.
-- `clef.first_pass` is `null` when absent; `clef.retry_pass` is `{}` when there are none;
-  its keys are the attempt numbers as strings.
 - `shadow`: one entry per `shadow/<id>/<attempt>-<k>/` dir, sorted by attempt then k.
   `status` is `shadow.status`, `verdict` is parsed from that dir's `qa.last`; fields from
   `shadow.json` (`spec`, `primary`, `started`, `reviewed`, `pick`, as they are) that are
@@ -616,8 +608,7 @@ from the run dir's `attempts.tsv`. `status` is the solo status; `attempt` is the
 in `attempts.tsv`, or `null`. `escalations`, `route` and `shadow` are empty. `verdict` and
 `qa_tail` come from `qa.last`, and `prompt` comes from `prompt.md`. `deps` and `files` are
 `[]`; `difficulty`, `accepted_by`, `approach` and `retry_findings` are `null`; `accepted` is
-false; `accepted_attempt` and `accepted_over` are `null`; `explored` is false; `clef` is
-`{first_pass: null, retry_pass: {}}`; `waiting` and `sweep` are `null`, `swept` is `[]`. `request` on
+false; `accepted_attempt` and `accepted_over` are `null`; `explored` is false; `waiting` and `sweep` are `null`, `swept` is `[]`. `request` on
 the detail is `request.md`.
 
 ## Execution
@@ -1377,12 +1368,22 @@ Reviewers table's Did not hold column and nothing else. Timeout 60 s.
 
 The repository is the run's own `repo` file (first line, an existing absolute directory; else
 `409`), never a client field. `GET` runs `config show --repo <repo> --json` and answers with its
-object. `POST` takes `{"run": <key>, "key": one of repo.verify, repo.setup, repo.verify-subset,
-jev.enabled, "value": text | "unset": true}` (exactly one of the two; any other field, `repo`
-included, is a `400`) and runs `config set <key> <value> --repo <repo> --json` or `config unset
-<key> --repo <repo> --json`. A value is a non-empty text of at most 4096 characters without
-control characters (newline and tab are allowed), not starting with `-`; `jev.enabled` takes
-`true` or `false` and cannot be unset; `repo.verify-subset` must contain `{files}`. `200` with the
+object. The `decide` block is the `forge decide status --json` object for that repo, plus `ready`
+on each gate (`true` when the gate is `shadow` or `on`, nothing skips it, and its provider is
+local or has a key on file). Provider objects keep the status fields except `key`, `key_source`,
+`key_file` and `key_env`: a key never reaches this response. `jev.enabled` is gone.
+
+`POST` takes `{"run": <key>, "key": one of repo.verify, repo.setup, repo.verify-subset,
+decide.gate.<gate>, decide.gate.<gate>.provider, decide.gate.<gate>.model, "value": text | "unset": true}`
+(exactly one of the two; any other field, `repo` included, is a `400`) and runs
+`config set <key> <value> --repo <repo> --json` or `config unset <key> --repo <repo> --json`.
+The gates are `drift`, `forward`, `prompt`, `memory-curate`, `memory-slice`, `memory-stale` and
+`verify-discover`. `decide.gate.<gate>` takes `off`, `shadow` or `on`. A provider or model is a
+non-empty single line of at most 256 characters, with no control characters and no leading or
+trailing whitespace, and not starting with `-`. Those three keys write the user level through
+`forge decide gate` and cannot be unset (the answer says to set the mode to off). A repo file
+value is a non-empty text of at most 4096 characters without control characters (newline and tab
+are allowed), not starting with `-`; `repo.verify-subset` must contain `{files}`. `200` with the
 CLI's object (`ok`, `key`, `previous`, `value`). Writes serialize on one server-wide config lock
 (`409 busy`). Unknown run `404`. Timeout 60 s.
 

@@ -454,121 +454,37 @@ class EndToEndTests(StoreCase):
     def text_of(self, plan, task):
         return (plan / 'tasks' / task / 'status').read_text().strip()
 
-    def clef_server(self, p=0.42):
-        """A local stand-in for Workers AI's Clef: answers every question, records each request."""
-        import http.server
-        seen = []
-
-        class Handler(http.server.BaseHTTPRequestHandler):
-            def do_POST(handler):
-                body = json.loads(handler.rfile.read(int(handler.headers['Content-Length'])))
-                seen.append(dict(path=handler.path, body=body, auth=handler.headers.get('Authorization')))
-                answers = {q: dict(type='noul', noul=p) for q in body['questions']}
-                out = json.dumps(dict(result=dict(model='clef', answers=answers, usage=dict(input_tokens=1)),
-                                      success=True)).encode()
-                handler.send_response(200)
-                handler.send_header('Content-Type', 'application/json')
-                handler.send_header('Content-Length', str(len(out)))
-                handler.end_headers()
-                handler.wfile.write(out)
-
-            def log_message(handler, *args):
-                pass
-
-        server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Handler)
-        threading.Thread(target=server.serve_forever, daemon=True).start()
-        self.addCleanup(server.server_close)
-        self.addCleanup(server.shutdown)
-        return 'http://127.0.0.1:%d/{account}/{model}' % server.server_address[1], seen
-
-    def with_clef(self, url):
-        """Jev on with only a Cloudflare provider: no TypeSafe key, so no other site is ready."""
-        config = self.root / 'xdg'
-        (config / 'forge').mkdir(parents=True)
-        (config / 'forge' / 'jev.json').write_text(json.dumps(dict(
-            enabled=True, providers=dict(cloudflare=dict(account_id='acc', token='tok-test', url=url)))))
-        self.env['XDG_CONFIG_HOME'] = str(config)
-        self.env.pop('FORGE_JEV', None)
-
-    def test_clef_predictions_are_recorded_after_assignment_and_change_nothing(self):
-        # Silent outcome predictions: one per task once the table has its models, one per
-        # retry with the findings it was handed. Nothing in the run reads them.
+    def test_the_export_skips_rows_recorded_by_the_removed_clef_sites(self):
+        # Stores written before #35 hold clef-first-pass and clef-retry-pass `jev` events.
+        # They are neither an error nor a baseline, and the cases keep their ids.
         from forge_dataset import export
-        url, seen = self.clef_server()
-        self.with_clef(url)
-        self.scenario({'a.qa.1': {'verdict': 'FAIL', 'findings': '- [P1][CONFIRMED] a.txt:1 — FINDING_SENTINEL'},
+        self.scenario({'a.qa.1': {'verdict': 'FAIL', 'findings': '- [P1][CONFIRMED] a.txt:1 — broken'},
                        'a.dwarf.2': {'content': 'fixed'}})
         p = self.plan_of([('a', '-', 'a.txt'), ('b', '-', 'b.txt')])
-        predicted = {t: json.loads((p / 'tasks' / t / 'clef.first_pass').read_text()) for t in 'ab'}
-        self.assertEqual({t: (v['p'], v['assignment']) for t, v in predicted.items()},
-                         {t: (0.42, dict(dwarf='sol', qa='opus')) for t in 'ab'})
-        first = [r for r in seen if 'first_pass' in r['body']['questions']]
-        self.assertEqual(len(first), 2)
-        self.assertEqual({(r['path'], r['auth']) for r in first}, {('/acc/clef', 'Bearer tok-test')})
-        state = first[0]['body']['state']
-        self.assertEqual(state['dwarf']['model'], 'gpt-6.1-sol')
-        self.assertTrue(state['reviewer']['model'] and state['reviewer']['harness'])
-        self.assertIn('REQUIREMENT_SENTINEL', state['prompt'])
-        self.assertIn('size', state)
-
-        # The same plan without Clef: byte-identical table and waves.
-        q = self.root / 'plan-off'
-        q.mkdir()
-        (q / 'tasks.tsv').write_text(''.join(f'{i}\t-\tlow\t{i}.txt\tsol\topus\t{i.upper()}\n' for i in 'ab'))
-        for i in 'ab':
-            (q / 'tasks' / i).mkdir(parents=True)
-            (q / 'tasks' / i / 'prompt.md').write_text('Implement change. REQUIREMENT_SENTINEL TASK_' + i)
-        self.env['FORGE_JEV'] = 'off'
-        r = self.run_script('forge-parallel.sh', 'plan', q, '--repo', self.repo, '--no-memory', '--decompose-level', 'low')
-        self.env.pop('FORGE_JEV')
-        self.assertEqual(r.returncode, 0, r.stdout)
-        for name in ('tasks.tsv', 'waves.tsv'):
-            self.assertEqual((p / name).read_text(), (q / name).read_text(), name)
-
         r = self.run_script('forge-parallel.sh', 'run', p, '--retry-failed', 1)
         self.assertEqual(r.returncode, 0, r.stdout)
-        self.assertEqual({t: self.text_of(p, t) for t in 'ab'}, {'a': 'PASS', 'b': 'PASS'})
-        self.assertEqual(json.loads((p / 'tasks' / 'a' / 'clef.retry_pass.2').read_text())['p'], 0.42)
-        [retry] = [r for r in seen if 'retry_pass' in r['body']['questions']]
-        self.assertEqual(retry['body']['state']['attempt'], 2)
-        self.assertIn('FINDING_SENTINEL', retry['body']['state']['previous_review'])
-        self.assertFalse((p / 'tasks' / 'b' / 'clef.retry_pass.2').exists())
-        # No prompt any model was given carries a prediction.
-        for prompt in p.rglob('*.prompt'):
-            self.assertNotIn('0.42', prompt.read_text(errors='replace'), prompt)
-            self.assertNotIn('clef', prompt.read_text(errors='replace').lower(), prompt)
+        self.assertEqual(list(p.rglob('clef.*')), [])
         uid = (p / 'dataset.uid').read_text().strip()
         shutil.rmtree(p)
 
-        jev = [e for e in self.events(kind='jev') if e['data']['site'].startswith('clef-')]
-        self.assertEqual(sorted((e['data']['site'], e['task'], e['run'] == uid, e['data']['provider']) for e in jev),
-                         [('clef-first-pass', 'a', True, 'cloudflare'), ('clef-first-pass', 'b', True, 'cloudflare'),
-                          ('clef-retry-pass', 'a', True, 'cloudflare')])
-        routing = {c['task']: c for c in export.build(store.connect(), slices=('routing', 'retry'))
-                   if c['slice'] == 'routing'}
-        self.assertEqual({t: (c['baseline']['first_pass_clef']['p'], c['baseline']['first_pass_clef']['followed'])
-                          for t, c in routing.items()}, {'a': (0.42, True), 'b': (0.42, True)})
-        [retry_case] = export.build(store.connect(), slices=('retry',))
-        self.assertEqual(retry_case['baseline']['retry_pass_clef']['p'], 0.42)
+        before = export.build(store.connect(), slices=('routing', 'retry'))
+        answers = lambda qid: {qid: dict(type='noul', noul=0.42)}  # noqa: E731
+        store.record([
+            dict(rid='jev:old-first-a', kind='jev', ts=1.0, run=uid, task='a',
+                 data=dict(site='clef-first-pass', ok=True, model='clef', intended_attempt=1,
+                           answers=answers('first_pass'), assignment=dict(dwarf='sol', qa='opus'))),
+            dict(rid='jev:old-retry-a', kind='jev', ts=2.0, run=uid, task='a',
+                 data=dict(site='clef-retry-pass', ok=True, model='clef', attempt=2,
+                           answers=answers('retry_pass')))])
+        self.assertEqual(len([e for e in self.events(kind='jev') if e['data']['site'].startswith('clef-')]), 2)
+        after = export.build(store.connect(), slices=('routing', 'retry'))
+        self.assertEqual([c['id'] for c in after], [c['id'] for c in before])
+        self.assertEqual({c['slice'] for c in after}, {'routing', 'retry'})
+        for case in after:
+            self.assertEqual([k for k in case['baseline'] if k.endswith('_clef')], [], case['id'])
+        [retry_case] = [c for c in after if c['slice'] == 'retry']
+        self.assertEqual(retry_case['baseline'], {})
         self.assertEqual(self.errors(), '')
-
-    def test_clef_out_of_reach_changes_nothing_and_costs_no_time(self):
-        # Connection refused on every request: the plan and the run go exactly as without it.
-        import socket
-        sock = socket.socket()
-        sock.bind(('127.0.0.1', 0))
-        port = sock.getsockname()[1]
-        sock.close()
-        self.with_clef('http://127.0.0.1:%d/{account}/{model}' % port)
-        self.scenario({'a.qa.1': {'verdict': 'FAIL', 'findings': '- [P1][CONFIRMED] a.txt:1 — broken'},
-                       'a.dwarf.2': {'content': 'fixed'}})
-        started = time.monotonic()
-        p = self.plan_of([('a', '-', 'a.txt')])
-        r = self.run_script('forge-parallel.sh', 'run', p, '--retry-failed', 1)
-        self.assertEqual(r.returncode, 0, r.stdout)
-        self.assertEqual(self.text_of(p, 'a'), 'PASS')
-        self.assertLess(time.monotonic() - started, 60)
-        self.assertEqual(list(p.rglob('clef.*')), [])
 
     def test_a_shadow_review_is_recorded_beside_the_run_and_changes_nothing(self):
         # A second reviewer of another model family, sampled (here every attempt), measures
@@ -996,51 +912,6 @@ class JevCaptureTests(StoreCase):
         self.assertEqual(len(self.events(kind='jev')), 1)
 
 
-class SubsetReceiptTests(StoreCase):
-    """A test selection is only a label when we know how the chosen tests ended, so
-    every outcome leaves a receipt, not just the failure that reaches QA."""
-
-    def setUp(self):
-        StoreCase.setUp(self)
-        self.repo = Path(self.tmp.name) / 'repo'
-        (self.repo / 'tests').mkdir(parents=True)
-        (self.repo / 'tests' / 'test_x.py').write_text('x = 1\n')
-        git = lambda *a: subprocess.run(['git', '-C', str(self.repo), *a], check=True, capture_output=True)
-        git('init', '-q')
-        git('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'base', '--allow-empty')
-        git('add', '-A')
-        git('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'tests')
-        self.base = subprocess.check_output(['git', '-C', str(self.repo), 'rev-parse', 'HEAD']).decode().strip()
-        (self.repo / 'broken').write_text('x')
-        git('add', '-A')
-        git('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'change')
-        self.run_dir = Path(self.tmp.name) / 'run'
-        self.run_dir.mkdir()
-
-    def outcome(self, command, timeout=60):
-        from forge_jev import cli
-        env = dict(TYPESAFE_API_KEY='k', FORGE_JEV_TESTS='on', XDG_CONFIG_HOME=self.tmp.name)
-        with patch.dict(os.environ, env), patch('forge_jev.subset.select', return_value=[(0.9, 'tests/test_x.py')]), \
-                contextlib.redirect_stdout(io.StringIO()):
-            cli.main(['test-subset', '--repo', str(self.repo), '--commit', 'HEAD', '--base', self.base,
-                      '--task', str(self.repo / 'tests' / 'test_x.py'), '--command', command,
-                      '--run-dir', str(self.run_dir), '--timeout', str(timeout)])
-        receipts = [e for e in self.events(kind='event') if e['data']['name'] == 'subset_run']
-        self.assertEqual(len(receipts), 1)
-        os.remove(self.home / 'dataset' / 'dataset.sqlite')
-        return receipts[0]['data']
-
-    def test_every_outcome_leaves_a_receipt(self):
-        passed = self.outcome('test -f {files}')
-        self.assertEqual((passed['outcome'], passed['chosen'], passed['candidate_exit']),
-                         ('pass', ['tests/test_x.py'], 0))
-        regression = self.outcome('echo checking; test ! -f broken && test -f {files}')
-        self.assertEqual((regression['outcome'], regression['base_exit']), ('regression', 0))
-        self.assertIn('candidate_output', regression['blobs'])
-        self.assertEqual(self.outcome('false {files}')['outcome'], 'environment')
-        self.assertEqual(self.outcome('sleep 5 # {files}', timeout=1)['outcome'], 'timeout')
-
-
 class FractalCaptureTests(StoreCase):
     def test_steps_captured_from_many_threads_are_each_recorded_once(self):
         task = Path(self.tmp.name) / 'runs' / 'run-x' / 'tasks' / 'task-1'
@@ -1349,6 +1220,110 @@ class ReviewerSessionTests(StoreCase):
         self.assertNotEqual(flagged['rid'], 'plan:fixed-run:26062ad6ab65e2f6')
 
 
+class ExportStateIdentityTests(StoreCase):
+    """The routing and retry cases this fixture exported before the assemblers left forge_jev.
+
+    The ids were captured from export.build (default seed 7) at that base. The state is what
+    siblings, assemble, retry and task_size produced, and the question text is the frozen rubric.
+    """
+
+    PROMPT = 'Ship the widget.\n\n## Acceptance criteria\n\n- widget exists\n'
+    FINDINGS = '- [P1][CONFIRMED] a.txt:1 — broken\n'
+
+    def test_the_move_leaves_the_routing_and_retry_cases(self):
+        from forge_dataset import export
+        prompt, findings = self.PROMPT, self.FINDINGS
+        goal, memory, approach = 'Make widgets.', 'Widgets live in widgets/.', 'Add a widget module.'
+        snapshot = json.dumps({'a.txt': 'print(1)\n'})
+
+        def blob(text, kind='text'):
+            return store.put_blob(text, kind)
+
+        events = [
+            dict(rid='plan1', kind='plan', src='import', repo='fixture', run='run-1', mode='parallel', ts=1000,
+                 data=dict(decompose_level='low', goal=goal,
+                           blobs=dict(goal=blob(goal), memory=blob(memory), snapshot=blob(snapshot)),
+                           tasks={'a': dict(title='Add widget', files='a.txt, b.txt', deps='sib',
+                                            prompt=blob(prompt, 'prompt'), approach=blob(approach),
+                                            declared_difficulty='low', difficulty_source='orchestrator',
+                                            dwarf='sol:high', qa='opus:high'),
+                                  'sib': dict(title='Sibling ' + 'T' * 200, files='s.txt', deps='-')})),
+            dict(rid='att1', kind='attempt', src='import', repo='fixture', run='run-1', mode='parallel',
+                 task='a', attempt=1, ts=1100,
+                 data=dict(status='FAIL', wall_started=1100, dwarf='sol:high', qa='opus:high')),
+            dict(rid='d1', kind='dispatch', src='import', repo='fixture', run='run-1', mode='parallel',
+                 task='a', attempt=1, ts=1100,
+                 data=dict(role='dwarf', model='gpt-6.1-sol', effort='high', harness='codex')),
+            dict(rid='q1', kind='dispatch', src='import', repo='fixture', run='run-1', mode='parallel',
+                 task='a', attempt=1, ts=1100,
+                 data=dict(role='qa', model='opus', effort='high', harness='claude', verdict='FAIL')),
+            dict(rid='att2', kind='attempt', src='import', repo='fixture', run='run-1', mode='parallel',
+                 task='a', attempt=2, ts=1200,
+                 data=dict(status='PASS', wall_started=1200, dwarf='sol:high', qa='opus:high',
+                           blobs=dict(retry_findings=blob(findings)))),
+            dict(rid='d2', kind='dispatch', src='import', repo='fixture', run='run-1', mode='parallel',
+                 task='a', attempt=2, ts=1200,
+                 data=dict(role='dwarf', model='gpt-6.1-sol', effort='high', harness='codex')),
+            dict(rid='q2', kind='dispatch', src='import', repo='fixture', run='run-1', mode='parallel',
+                 task='a', attempt=2, ts=1200,
+                 data=dict(role='qa', model='opus', effort='high', harness='claude', verdict='PASS')),
+        ]
+        self.assertEqual(store.record(events), len(events))
+        cases = export.build(store.connect(), slices=('routing', 'retry'))
+        self.assertEqual(len(cases), 2)
+        by_slice = {c['slice']: c for c in cases}
+        routing, retry = by_slice['routing'], by_slice['retry']
+
+        # Captured before the move.
+        self.assertEqual(routing['id'], 'routing-f23eac86963c')
+        self.assertEqual(list(routing['state']),
+                         ['goal', 'task', 'prompt', 'approach', 'plan_tasks', 'file_excerpts', 'memory',
+                          'dwarf', 'reviewer', 'size'])
+        self.assertEqual(routing['state'], dict(
+            goal=goal,
+            task=dict(id='a', title='Add widget', files='a.txt, b.txt', deps='sib'),
+            prompt=prompt, approach=approach,
+            plan_tasks=[dict(id='sib', title='Sibling ' + 'T' * 112, files='s.txt', deps='-')],
+            file_excerpts={'a.txt': 'print(1)\n', 'b.txt': '(does not exist yet)'},
+            memory=memory,
+            dwarf=dict(model='gpt-6.1-sol', effort='high', harness='codex'),
+            reviewer=dict(model='opus', effort='high', harness='claude'),
+            size=dict(prompt_chars=58, declared_files=2, plan_tasks=2, deps=1, decompose_level='low')))
+        self.assertEqual(routing['questions']['first_pass'], dict(
+            type='noul',
+            instructions=('This Forge task is dispatched to the model in state.dwarf, at the effort shown, in its '
+                          'own worktree. An independent model (state.reviewer) then reviews the resulting diff '
+                          'against the task. Will that FIRST attempt pass review, with no retry needed?'),
+            criteria={
+                'true': 'The task is within reach of this model at this effort on the first try: the '
+                        'requirements are clear, the change is contained, and nothing in it is likely '
+                        'to be missed or subtly wrong.',
+                'false': 'The first attempt is likely to fail review: the task has edge cases, '
+                         'cross-cutting effects, unclear requirements or subtle state that a first '
+                         'attempt by this model at this effort typically gets wrong, so a retry would '
+                         'be needed.'}))
+        self.assertEqual(routing['expected'], dict(first_pass=False, tier='low'))
+
+        self.assertEqual(retry['id'], 'retry-9aa1fee49f43')
+        self.assertEqual(list(retry['state']),
+                         list(routing['state']) + ['attempt', 'previous_review', 'previous_review_truncated'])
+        self.assertEqual(retry['state'], dict(routing['state'], attempt=2, previous_review=findings,
+                                               previous_review_truncated=False))
+        self.assertEqual(retry['questions']['retry_pass'], dict(
+            type='noul',
+            instructions=('An earlier attempt at this Forge task failed review. The task is now dispatched again, to '
+                          'the model in state.dwarf at the effort shown, with that review\'s findings '
+                          '(state.previous_review) to fix; state.attempt is which try this is, and the model in '
+                          'state.reviewer reviews the result. Will this attempt pass review?'),
+            criteria={
+                'true': 'The findings are specific and fixable, and this model at this effort can address '
+                        'them without breaking something else: the retry is likely to pass.',
+                'false': 'The findings point at a design problem, an unclear requirement or a recurring '
+                         'mistake that another attempt by this model at this effort is likely to repeat: '
+                         'the retry is likely to fail again and should be escalated or rethought.'}))
+        self.assertEqual(retry['expected'], dict(retry_pass=True))
+
+
 class IndependenceTests(unittest.TestCase):
     def test_only_capture_entry_points_import_the_dataset(self):
         # Nothing that builds a prompt may read earlier runs' verdicts, or the reviewer
@@ -1370,6 +1345,11 @@ class IndependenceTests(unittest.TestCase):
                         # The one read: run's advisory forecast, printed to the operator's stderr only.
                         self.assertRegex(line, r'forge-dataset\.py" (event|invocation|forecast "\$1" --run 2>/dev/null)',
                                          str(path))
+                continue
+            if path.name == 'forge-plan-check.py':
+                # task_size does not read the store. The size advisory may import it and nothing else.
+                imports = [line.strip() for line in text.splitlines() if 'forge_dataset' in line and 'import' in line]
+                self.assertEqual(imports, ['from forge_dataset.states import task_size  # noqa: E402'])
                 continue
             self.assertIn(path.name, allowed, path)
             for line in text.splitlines():

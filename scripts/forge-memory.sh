@@ -172,7 +172,7 @@ rebuild() { # rebuild <repo> -> prints "kept<TAB>pruned_stale<TAB>pruned_cap"
       # An unreachable or undecided answer keeps the entry -- dropping a fact on a
       # failed request would erode memory over time with nothing recording why.
       if [ "${FORGE_MEMORY_DEEP_PRUNE:-0}" = 1 ] && [ -n "$anchor" ] \
-         && [ "$jev_loaded" = 1 ] && forge_jev_active memory; then
+         && [ "$jev_loaded" = 1 ] && forge_decide_active memory-stale; then
         if python3 "$SKILL_DIR/scripts/forge-jev.py" memory-stale \
              --text "$text" --anchor "$repo/$anchor" \
              ${JEV_RUN_DIR:+--run-dir "$JEV_RUN_DIR"} >/dev/null 2>&1; then
@@ -295,7 +295,7 @@ do_inject() {
     if [ -f "$SKILL_DIR/scripts/forge-jev-options.sh" ]; then
       source "$SKILL_DIR/scripts/forge-jev-options.sh" 2>/dev/null && jev_loaded=1
     fi
-    if [ "$jev_loaded" = 1 ] && forge_jev_active memory; then
+    if [ "$jev_loaded" = 1 ] && forge_decide_active memory-slice; then
       local facts sliced
       facts="$(printf '%s\n' "$body" | grep '^- ' || true)"
       if [ -n "$facts" ]; then
@@ -425,7 +425,7 @@ do_record() {
       # exactly as the model emitted them. The row is written either way -- the ledger
       # is append-only and never injected, so this gates injection, never recording.
       inject=1; ecat="$cat"; jcat=""; jinject=""; jmatch=""
-      if [ "$jev_loaded" = 1 ] && forge_jev_active memory; then
+      if [ "$jev_loaded" = 1 ] && forge_decide_active memory-curate; then
         curated="$(python3 "$SKILL_DIR/scripts/forge-jev.py" memory-curate \
             --repo "$repo" --category "$cat" --text "$text" \
             ${JEV_RUN_DIR:+--run-dir "$JEV_RUN_DIR"} 2>/dev/null)"

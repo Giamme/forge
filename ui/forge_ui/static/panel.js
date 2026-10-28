@@ -392,19 +392,6 @@ window.ForgePanel = (() => {
         rs.append(box);
       });
     }
-    // Clef: what was predicted, against what happened
-    const clef = task.clef || {};
-    const preds = [];
-    if (clef.first_pass) preds.push(['First attempt', clef.first_pass]);
-    for (const [a, p] of Object.entries(clef.retry_pass || {})) preds.push([`Retry · attempt ${a}`, p]);
-    if (preds.length) {
-      const cs = section(host, 'Clef predictions');
-      for (const [label, p] of preds) {
-        const n = Number(String(label).match(/\d+/) || 1), outcome = list(task.attempts).filter(a => a.attempt === n).pop();
-        const happened = outcome ? RM.attemptStatus(task, outcome.attempt, outcome.status) : 'not finished';
-        fields(cs, [[label, `p(pass) = ${display(p.p)} → ${happened}`], ['Assignment', p.assignment ? plates([p.assignment.dwarf, p.assignment.qa]) : '—']]);
-      }
-    }
     // the prompts and the final messages
     const ps = section(host, 'Prompts and output');
     if (!detail.data) details(ps, 'Requirements (prompt.md)', task.prompt, `task-${task.id}-prompt`);

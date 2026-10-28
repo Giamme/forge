@@ -593,7 +593,7 @@ window.ForgeApp = (() => {
       ['labels', 'Readouts', 'The status line on the front of each block'], ['beacons', 'Findings', 'A mark over the block per review finding, shaped by its severity'],
       ['finish', 'Finish line', 'Integration, verification and the final review'], ['districts', 'Districts', 'The wave and repository names on the plate'],
       ['halos', 'Halos', 'The glow under running and chosen blocks'], ['route', 'Route', 'A chosen task keeps its route lit: what it waits on and what waits on it (I)']], 'layer');
-    bankOf('Marks', [['critical', 'Critical path', 'The chain of dependencies that bounded the wall time'], ['arcs', 'Review marks', 'Shadow disagreements and Clef rings'],
+    bankOf('Marks', [['critical', 'Critical path', 'The chain of dependencies that bounded the wall time'], ['arcs', 'Review marks', 'Shadow disagreements'],
       ['ghosts', 'Projected', 'Where the tasks that have not started would run, by forge-schedule\'s rules']], 'ov');
     ov.addEventListener('click', e => {
       const b = e.target.closest('.layer-key'); if (!b) return;

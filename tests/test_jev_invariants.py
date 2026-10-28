@@ -5,6 +5,8 @@ end-to-end and shell-level: the properties are about what the runner writes to d
 exits with, and a mock cannot prove those.
 """
 import dataset_isolation  # noqa: F401  keeps the run dataset out of the developer's store
+import hashlib
+import json
 import os
 import subprocess
 import sys
@@ -55,7 +57,8 @@ class PlanInvariantCase(unittest.TestCase):
 
 
 class InvariantOneTests(PlanInvariantCase):
-    """Jev never changes a task's tier: it suggests one, and the plan keeps the declared one."""
+    """Jev never changes a task's tier: its plan-time gates only warn, and the plan keeps
+    the declared one."""
 
     def test_jev_off_leaves_the_difficulty_column_byte_identical(self):
         rows = [f'a1{TAB}-{TAB}low{TAB}src/a.py{TAB}-{TAB}-{TAB}Edit a',
@@ -68,6 +71,48 @@ class InvariantOneTests(PlanInvariantCase):
         after = [line.split('\t')[2] for line in
                  (plan / 'tasks.tsv').read_text().splitlines()[1:]]
         self.assertEqual(before, after)
+
+
+    def test_jev_on_prints_the_gate_notes_and_leaves_tasks_tsv_byte_identical(self):
+        from forge_jev import gates, questions  # noqa: WPS433
+        (self.repo / 'src' / 'b.py').write_text('y = 2\n')
+        _git(self.repo, 'add', '-A')
+        _git(self.repo, 'commit', '-qm', 'b')
+        rows = [f'a1{TAB}-{TAB}low{TAB}src/a.py{TAB}-{TAB}-{TAB}Edit a']
+        plan, plain = self._plan(rows), self._plan(rows, name='plain')
+        fixtures = self.root / 'fixtures'
+        fixtures.mkdir()
+        prompt_state = gates.task_state(self.repo, goal='a goal\n', task_id='a1', title='Edit a',
+                                        files='src/a.py', deps='-',
+                                        siblings=[dict(id='a1', deps='-', files='src/a.py', title='Edit a')])
+        drift_state = dict(goal='a goal\n', task=dict(id='a1', title='Edit a', declared_files='src/a.py'),
+                           prompt='', approach='')
+        for state, asked, answers in (
+                (prompt_state, dict(prompt_adequacy=questions.prompt_adequacy()),
+                 dict(prompt_adequacy=dict(type='noul', noul=0.10))),
+                (drift_state, dict(f0=questions.drift_prediction('src/b.py')),
+                 dict(f0=dict(type='noul', noul=0.95)))):
+            body = json.dumps(dict(state=state, model='jev-latest', questions=asked),
+                              sort_keys=True, separators=(',', ':')).encode()
+            (fixtures / (hashlib.sha256(body).hexdigest() + '.json')).write_text(
+                json.dumps(dict(answers=answers)))
+        # Jev on the way a user turns it on: `plan` resets FORGE_JEV to what its flags say.
+        config = self.root / 'config'
+        (config / 'forge').mkdir(parents=True)
+        (config / 'forge' / 'jev.json').write_text(json.dumps(dict(enabled=True, key='ts-test-key')))
+        result = self._run(plan, '--dwarf-low', 'luna', '--qa', 'opus', env=dict(
+            FORGE_JEV_FIXTURES=str(fixtures), XDG_CONFIG_HOME=str(config)))
+        off = self._run(plain, '--dwarf-low', 'luna', '--qa', 'opus', env=dict(
+            FORGE_JEV='off', FORGE_JEV_FIXTURES=str(fixtures), XDG_CONFIG_HOME=str(config)))
+        output = result.stdout + result.stderr
+        self.assertIn('jev: a1 — the prompt may be too vague for QA to judge correctness against', output)
+        self.assertIn('jev: a1 may also edit undeclared files: src/b.py', output)
+        self.assertNotIn('suggests', output)
+        self.assertTrue((plan / 'tasks' / 'a1' / 'jev.json').is_file())
+        # The same plan with Jev off: no request, no note, and the same tasks.tsv to the byte.
+        self.assertNotIn('jev:', off.stdout + off.stderr)
+        self.assertFalse((plain / 'jev.jsonl').exists())
+        self.assertEqual((plan / 'tasks.tsv').read_bytes(), (plain / 'tasks.tsv').read_bytes())
 
 
 class InvariantThreeTests(unittest.TestCase):
