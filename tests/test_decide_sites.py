@@ -78,6 +78,9 @@ class DriftTestCase(unittest.TestCase):
         self.assertEqual(record.score({'f1': noul(0.4)}, 'f1'), 0.4)
         self.assertIsNone(record.score({}, 'f1'))
 
+    def test_a_logged_entry_lists_its_file_questions(self):
+        self.assertEqual(sites.site('jev-drift').decisions(['f1', 'f0', 'other']), ['f0', 'f1'])
+
     def test_baseline_near(self):
         record = sites.site('jev-drift')
         body = drift_body(declared='src/a.py,docs/x.md', prompt='Please fix the Helper module',
@@ -174,19 +177,32 @@ class MemoryTestCase(unittest.TestCase):
         expected = self.kept(probabilities, count)
         self.assertEqual(len(expected), SLICE_KEEP)
         self.assertIn('l3', expected)
-        # With the body, the unanswered l3 is a line like any other, scored 1.0.
-        self.assertEqual(record.fired(answers, None, body=self.body(count=count)), expected)
-        # Without it, the skipped l3 between answered lines is the same unscored line.
-        self.assertEqual(record.fired(answers, None), expected)
+        # The body, or the id list jev.jsonl logs, says which lines were asked: the
+        # unanswered l3 is a line like any other, scored 1.0.
+        body = self.body(count=count)
+        self.assertEqual(record.fired(answers, None, body), expected)
+        self.assertEqual(record.fired(answers, None, list(body['questions'])), expected)
         # An answered-but-not-Noul l3 is unscored too.
         answers['l3'] = dict(type='score', score=2)
-        self.assertEqual(record.fired(answers, None), expected)
+        self.assertEqual(record.fired(answers, None, body), expected)
+
+    def test_a_skipped_tail_is_kept_as_unscored(self):
+        # Only the request knows the lines the answers stop short of: l10 and l11 count 1.0.
+        record = sites.site('jev-memory-slice')
+        ids = [f'l{i}' for i in range(12)]
+        answers = {f'l{i}': noul(0.5) for i in range(10)}
+        kept = record.fired(answers, None, ids)
+        self.assertEqual(len(kept), SLICE_KEEP)
+        self.assertEqual(kept, sorted(['l10', 'l11'] + [f'l{i}' for i in range(SLICE_KEEP - 2)],
+                                      key=lambda qid: int(qid[1:])))
+        self.assertIsNone(record.fired(answers, None))
 
     def test_fewer_lines_than_the_keep_all_are_kept(self):
         record = sites.site('jev-memory-slice')
-        answers = {f'l{i}': noul(0.0) for i in range(SLICE_KEEP)}
-        self.assertEqual(record.fired(answers, None), [f'l{i}' for i in range(SLICE_KEEP)])
-        self.assertEqual(record.fired({'l0': noul(0.2)}, None), ['l0'])
+        ids = [f'l{i}' for i in range(SLICE_KEEP)]
+        answers = {qid: noul(0.0) for qid in ids}
+        self.assertEqual(record.fired(answers, None, ids), ids)
+        self.assertEqual(record.fired({'l0': noul(0.2)}, None, ['l0']), ['l0'])
 
     def test_decisions_score_and_baseline_named(self):
         record = sites.site('jev-memory-slice')
@@ -214,9 +230,9 @@ class MemoryTestCase(unittest.TestCase):
 class VerifyTestCase(unittest.TestCase):
     COMMANDS = ['bash tests/check.sh', 'python3 -m unittest', 'make lint']
 
-    def body(self):
-        return dict(state=dict(candidates=[dict(command=c) for c in self.COMMANDS]), model='jev-latest',
-                    questions={})
+    def body(self, commands=None):
+        return dict(state=dict(candidates=[dict(command=c) for c in commands or self.COMMANDS]),
+                    model='jev-latest', questions={})
 
     def answers(self, picked, distribution, runs=(0.9, 0.9, 0.2)):
         out = {'choice': choice(picked, distribution)}
@@ -228,95 +244,77 @@ class VerifyTestCase(unittest.TestCase):
         distribution = {self.COMMANDS[0]: 0.5, self.COMMANDS[1]: 0.3, self.COMMANDS[2]: 0.1, 'none': 0.1}
         answers = self.answers(self.COMMANDS[0], distribution)
         # 1 - P(none) = 0.9 >= 0.7 and runs_0 = 0.9 >= 0.5
-        self.assertEqual(record.fired(answers, 0.7, body=self.body()), ['runs_0'])
-        # The answers do not record which candidate is runs_<i>: no body, no guess.
-        self.assertEqual(record.fired(answers, 0.7), [])
+        self.assertEqual(record.fired(answers, 0.7, self.body()), ['runs_0'])
+
+    def test_candidates_follow_the_state_not_the_distributions_order(self):
+        # The client sorts the choice criteria before sending, so the probability map's order
+        # (and the logged question ids) cannot say which command runs_<i> is.
+        record = sites.site('jev-verify-discover')
+        body = self.body(['make test', 'bash tests/check.sh'])
+        answers = {'choice': choice('make test', {'bash tests/check.sh': 0.1, 'make test': 0.8, 'none': 0.1}),
+                   'runs_0': noul(0.9), 'runs_1': noul(0.1)}
+        self.assertEqual(record.score(answers, 'runs_0', body), 0.8)
+        self.assertEqual(record.score(answers, 'runs_1', body), 0.1)
+        self.assertEqual(record.fired(answers, 0.7, body), ['runs_0'])
+        # The other way round: the chosen command is the second candidate.
+        body = self.body(['bash tests/check.sh', 'make test'])
+        self.assertEqual(record.score(answers, 'runs_0', body), 0.1)
+        self.assertEqual(record.fired(answers, 0.7, body), [])  # runs_1 is 0.1
+        answers['runs_1'] = noul(0.6)
+        self.assertEqual(record.fired(answers, 0.7, body), ['runs_1'])
+
+    def test_only_logged_question_ids_leave_it_unknown(self):
+        record = sites.site('jev-verify-discover')
+        logged = ['choice', 'runs_0', 'runtime_0', 'runs_1', 'runtime_1']
+        answers = {'choice': choice('make test', {'bash tests/check.sh': 0.1, 'make test': 0.8, 'none': 0.1}),
+                   'runs_0': noul(0.9), 'runs_1': noul(0.1)}
+        self.assertIsNone(record.fired(answers, 0.7, logged))
+        self.assertIsNone(record.fired(answers, 0.7))
+        self.assertIsNone(record.score(answers, 'runs_0', logged))
         self.assertIsNone(record.score(answers, 'runs_0'))
-
-    def test_candidates_are_the_requests_not_the_distributions_order(self):
-        record = sites.site('jev-verify-discover')
-        body = dict(state=dict(candidates=[dict(command='make test'), dict(command='bash tests/check.sh')]),
-                    questions={})
-        answers = {'choice': choice('make test', {'bash tests/check.sh': 0.1, 'make test': 0.8, 'none': 0.1}),
-                   'runs_0': noul(0.9), 'runs_1': noul(0.1)}
-        self.assertEqual(record.score(answers, 'runs_0', body=body), 0.8)
-        self.assertEqual(record.score(answers, 'runs_1', body=body), 0.1)
-        self.assertEqual(record.fired(answers, 0.7, body=body), ['runs_0'])
-
-    def test_candidates_from_the_logged_questions_alone(self):
-        # A jev.jsonl entry keeps the questions, not the state: the choice criteria carry the order.
-        record = sites.site('jev-verify-discover')
-        logged = dict(questions=dict(choice=dict(type='choice', criteria={
-            'make test': 'a', 'bash tests/check.sh': 'b', 'none': 'c'})))
-        answers = {'choice': choice('make test', {'bash tests/check.sh': 0.1, 'make test': 0.8, 'none': 0.1}),
-                   'runs_0': noul(0.9), 'runs_1': noul(0.1)}
-        self.assertEqual(record.fired(answers, 0.7, body=logged), ['runs_0'])
-        self.assertEqual(record.score(answers, 'runs_0', body=logged), 0.8)
-        self.assertEqual(record.decisions(logged), ['runs_0', 'runs_1'])
-
-    def test_a_logged_jev_jsonl_entry(self):
-        # client.ask logs questions=list(questions): only the ids. The choice answer's
-        # probability map then gives the candidates, in the order the criteria sent them.
-        record = sites.site('jev-verify-discover')
-        logged = dict(questions=['choice', 'runs_0', 'runtime_0', 'runs_1', 'runtime_1'])
-        answers = {'choice': choice('make test', {'make test': 0.8, 'bash tests/check.sh': 0.1, 'none': 0.1}),
-                   'runs_0': noul(0.9), 'runs_1': noul(0.1)}
-        self.assertEqual(record.fired(answers, 0.7, body=logged), ['runs_0'])
-        self.assertEqual(record.score(answers, 'runs_0', body=logged), 0.8)
-        self.assertEqual(record.score(answers, 'runs_1', body=logged), 0.1)
-        self.assertEqual(record.decisions(logged), ['runs_0', 'runs_1'])
-        self.assertEqual(record.baseline(logged, 'runs_0'), 2)
-        # A map that does not name one command per runs_<i> is not read as the order.
-        short = dict(answers, choice=choice('make test', {'make test': 0.9, 'none': 0.1}))
-        self.assertEqual(record.fired(short, 0.7, body=logged), [])
-        self.assertIsNone(record.score(short, 'runs_0', body=logged))
-
-    def test_a_logged_drift_entry_lists_its_file_questions(self):
-        logged = dict(questions=['f1', 'f0', 'other'])
-        self.assertEqual(sites.site('jev-drift').decisions(logged), ['f0', 'f1'])
+        # A body of the questions alone has no candidates either.
+        self.assertIsNone(record.fired(answers, 0.7, dict(questions=logged)))
 
     def test_the_verifiability_gate_not_the_winners_confidence(self):
         record = sites.site('jev-verify-discover')
         # A split between two right commands: the winner's confidence is 0.49, P(none) 0.07.
         distribution = {self.COMMANDS[0]: 0.49, self.COMMANDS[1]: 0.40, self.COMMANDS[2]: 0.04, 'none': 0.07}
         answers = self.answers(self.COMMANDS[0], distribution)
-        self.assertEqual(record.fired(answers, 0.7, body=self.body()), ['runs_0'])
+        self.assertEqual(record.fired(answers, 0.7, self.body()), ['runs_0'])
         # Piling onto none drops below the gate.
         distribution = {self.COMMANDS[0]: 0.4, self.COMMANDS[1]: 0.1, self.COMMANDS[2]: 0.0, 'none': 0.5}
-        self.assertEqual(record.fired(self.answers(self.COMMANDS[0], distribution), 0.7,
-                                      body=self.body()), [])
+        self.assertEqual(record.fired(self.answers(self.COMMANDS[0], distribution), 0.7, self.body()), [])
 
     def test_runs_tests_must_be_at_least_half(self):
         record = sites.site('jev-verify-discover')
         distribution = {self.COMMANDS[0]: 0.1, self.COMMANDS[1]: 0.1, self.COMMANDS[2]: 0.8, 'none': 0.0}
-        self.assertEqual(record.fired(self.answers(self.COMMANDS[2], distribution), 0.7,
-                                      body=self.body()), [])
+        self.assertEqual(record.fired(self.answers(self.COMMANDS[2], distribution), 0.7, self.body()), [])
         answers = self.answers(self.COMMANDS[1], {self.COMMANDS[1]: 0.9, 'none': 0.1}, runs=(0.9, 0.5, 0.9))
-        self.assertEqual(record.fired(answers, 0.7, body=self.body()), ['runs_1'])
+        self.assertEqual(record.fired(answers, 0.7, self.body()), ['runs_1'])
 
     def test_none_or_missing_choice_acts_on_nothing(self):
         record = sites.site('jev-verify-discover')
-        self.assertEqual(record.fired(self.answers('none', {self.COMMANDS[0]: 0.2, 'none': 0.8}), 0.7,
-                                      body=self.body()), [])
-        self.assertEqual(record.fired({}, 0.7, body=self.body()), [])
-        self.assertEqual(record.fired(self.answers('rm -rf /', {'rm -rf /': 1.0}), 0.7, body=self.body()), [])
+        body = self.body()
+        self.assertEqual(record.fired(self.answers('none', {self.COMMANDS[0]: 0.2, 'none': 0.8}), 0.7, body), [])
+        self.assertEqual(record.fired({}, 0.7, body), [])
+        self.assertEqual(record.fired(self.answers('rm -rf /', {'rm -rf /': 1.0}), 0.7, body), [])
 
     def test_missing_distribution_falls_back_to_the_confidence(self):
         record = sites.site('jev-verify-discover')
         answers = self.answers(self.COMMANDS[0], {self.COMMANDS[0]: 0.9})
         answers['choice'] = dict(type='choice', choice=self.COMMANDS[0], confidence=0.8)
-        self.assertEqual(record.fired(answers, 0.7, body=self.body()), ['runs_0'])
+        self.assertEqual(record.fired(answers, 0.7, self.body()), ['runs_0'])
         answers['choice']['confidence'] = 0.6
-        self.assertEqual(record.fired(answers, 0.7, body=self.body()), [])
+        self.assertEqual(record.fired(answers, 0.7, self.body()), [])
 
     def test_decisions_score_and_baseline(self):
         record, body = sites.site('jev-verify-discover'), self.body()
         answers = self.answers(self.COMMANDS[1], {self.COMMANDS[0]: 0.2, self.COMMANDS[1]: 0.7,
                                                   self.COMMANDS[2]: 0.05, 'none': 0.05})
         self.assertEqual(record.decisions(body), ['runs_0', 'runs_1', 'runs_2'])
-        self.assertEqual(record.score(answers, 'runs_1', body=body), 0.7)
-        self.assertEqual(record.score(answers, 'runs_0', body=body), 0.2)
-        self.assertIsNone(record.score(answers, 'runs_9', body=body))
+        self.assertEqual(record.score(answers, 'runs_1', body), 0.7)
+        self.assertEqual(record.score(answers, 'runs_0', body), 0.2)
+        self.assertIsNone(record.score(answers, 'runs_9', body))
         self.assertEqual([record.baseline(body, q) for q in record.decisions(body)], [3, 2, 1])
 
 

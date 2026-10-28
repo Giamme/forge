@@ -2,19 +2,16 @@
 
 `forge decide report` and `replay` read this registry. A record holds, per site:
 
-- `fired(answers, threshold_value)`: the question ids the site acted on, mirroring the
-  site's own code (forge_jev/gates.py, coupling.py, memory.py, verify.py). `answers` is a
+- `fired(answers, threshold_value, request)`: the question ids the site acted on, mirroring
+  the site's own code (forge_jev/gates.py, coupling.py, memory.py, verify.py). `answers` is a
   request's answers, {question id: answer}, as jev.jsonl and the dataset keep them.
-- `decisions(body)`: the question ids of a stored request body {state, model, questions}
-  that are scored decisions (a label can exist for them).
-- `score(answers, qid)`: the decision's probability.
-
-`fired` and `score` also accept `body=` (the request the answers belong to). Verify-discover
-needs it: `runs_<i>` is the i-th candidate of the request, which the answers do not record,
-so without it nothing is reported fired and the score is None. `body` may be a stored
-request body or a jev.jsonl entry, whose `questions` is the list of question ids (see
-_commands). Memory-slice uses it to know the lines a skipped tail of the answers left
-unscored.
+  `request` is the stored request body {state, model, questions}, or the list of question ids
+  jev.jsonl logs: the answers alone cannot say which lines were asked or which `runs_<i>` is
+  which command. A site that cannot be read without the body (verify-discover) returns None
+  for "unknown" when it lacks it.
+- `decisions(body)`: the question ids of a stored request body that are scored decisions
+  (a label can exist for them).
+- `score(answers, qid, request)`: the decision's probability.
 - `label`: one sentence naming the label, or None with the issue that will define it.
 - `baseline(body, qid)`: the cheap heuristic the site must not lose to; higher = more
   likely positive.
@@ -62,12 +59,19 @@ def _ids(answers, prefix: str) -> list[str]:
 
 
 def _questions(body) -> dict:
-    """The body's questions by id. A jev.jsonl entry logs only their ids, as a list: those
-    become ids with no definition."""
-    questions = (body or {}).get('questions')
-    if isinstance(questions, list):
-        return {str(qid): {} for qid in questions}
+    """The body's questions by id. Anything but a stored body, which has them as a dict, has
+    none: a jev.jsonl entry's id list is read by _asked."""
+    questions = body.get('questions') if isinstance(body, dict) else None
     return questions if isinstance(questions, dict) else {}
+
+
+def _asked(request) -> list[str]:
+    """The question ids a request asked: a stored body's questions, or the id list jev.jsonl
+    logs. Empty when the caller has neither."""
+    if isinstance(request, dict):
+        questions = request.get('questions')
+        request = list(questions) if isinstance(questions, (dict, list)) else []
+    return [str(qid) for qid in request] if isinstance(request, (list, tuple)) else []
 
 
 def _state(body) -> dict:
@@ -75,8 +79,8 @@ def _state(body) -> dict:
     return state if isinstance(state, dict) else {}
 
 
-def _question_ids(body, prefix: str) -> list[str]:
-    return sorted((qid for qid in _questions(body) if re.fullmatch(prefix + r'\d+', str(qid))), key=_index)
+def _question_ids(request, prefix: str) -> list[str]:
+    return sorted((qid for qid in _asked(request) if re.fullmatch(prefix + r'\d+', qid)), key=_index)
 
 
 def _instructions(body, qid) -> str:
@@ -91,7 +95,7 @@ def _files(text) -> list[str]:
 # --- fired ------------------------------------------------------------------------------
 
 def _fired_at_least(prefix: str, keep: int | None = None):
-    def fired(answers, threshold_value, **_):
+    def fired(answers, threshold_value, request=None):
         found = []
         for qid in _ids(answers, prefix):
             probability = _noul(answers, qid)
@@ -103,23 +107,20 @@ def _fired_at_least(prefix: str, keep: int | None = None):
     return fired
 
 
-def _fired_prompt(answers, threshold_value, **_):
+def _fired_prompt(answers, threshold_value, request=None):
     # `forge jev score-plan` warns BELOW prompt_warn: the probability is that a reviewer
     # could judge the task from its text, and the site acts when it is too low.
     probability = _noul(answers, 'prompt_adequacy')
     return ['prompt_adequacy'] if probability is not None and probability < threshold_value else []
 
 
-def _fired_slice(answers, threshold_value=None, *, body=None, **_):
+def _fired_slice(answers, threshold_value=None, request=None):
     """The lines relevant_lines keeps: the top SLICE_KEEP by p, an unscored line as 1.0,
-    ties by index. With `body`, its facts are the lines. Without it the lines are
-    l0..l<highest answered index>: a line the answers skip in between is unscored, and so
-    kept as 1.0, as in the live site (only a skipped tail needs the body to be known)."""
-    if body is not None:
-        ids = _question_ids(body, 'l')
-    else:
-        answered = _ids(answers, 'l')
-        ids = [f'l{i}' for i in range(_index(answered[-1]) + 1)] if answered else []
+    ties by index; every line when it was asked about no more than SLICE_KEEP. The asked
+    lines are the `l<i>` ids of the request. None without it."""
+    if request is None:
+        return None
+    ids = _question_ids(request, 'l')
     if len(ids) <= SLICE_KEEP:
         return ids
     scored = []
@@ -130,37 +131,27 @@ def _fired_slice(answers, threshold_value=None, *, body=None, **_):
     return sorted((qid for _p, _i, qid in scored[:SLICE_KEEP]), key=_index)
 
 
-def _commands(body, answers=None) -> list:
-    """The candidates' commands in the request's order: what `runs_<i>` index into.
-
-    The request's state.candidates say it; failing those, the choice question's criteria
-    (the commands in request order, then `none`). A jev.jsonl entry logs neither, only the
-    question ids: then the choice answer's probability map is read in its own order, which
-    is the criteria's (the response lists the options as the question sent them), and only
-    when it names exactly one command per `runs_<i>` the request asked."""
-    found = [candidate.get('command') if isinstance(candidate, dict) else None
-             for candidate in _candidates(body)]
-    if found:
-        return found
-    choice = _questions(body).get('choice')
-    criteria = choice.get('criteria') if isinstance(choice, dict) else None
-    if isinstance(criteria, dict):
-        return [command for command in criteria if command != 'none']
-    runs = _question_ids(body, 'runs_')
-    options = [option for option in probabilities({'answers': answers or {}}, 'choice') if option != 'none']
-    if runs and len(options) == len(runs) and runs == [f'runs_{i}' for i in range(len(runs))]:
-        return options
-    return []
+def _commands(request) -> list | None:
+    """The candidates' commands in the order `runs_<i>` follows: the request's
+    state.candidates. The choice question's criteria are sorted when sent and the answer's
+    probability map follows them, so neither says which command `runs_<i>` is. None when
+    the caller has no stored body."""
+    if not isinstance(request, dict):
+        return None
+    candidates = _state(request).get('candidates')
+    if not isinstance(candidates, list):
+        return None
+    return [candidate.get('command') if isinstance(candidate, dict) else None for candidate in candidates]
 
 
-def _fired_verify(answers, threshold_value, *, body=None, **_):
+def _fired_verify(answers, threshold_value, request=None):
     """The chosen candidate's runs_<i>, when 1 - P(none) >= tests_act and its runs_<i> Noul
     is >= 0.5, as verify.discover gates it. Without a distribution it falls back to the
-    choice's own confidence, as discover does. `runs_<i>` names a candidate by its place in
-    the request, so without `body` the chosen candidate cannot be named and nothing fired
-    is reported rather than a guess."""
-    if body is None:
-        return []
+    choice's own confidence, as discover does. None without the body: `runs_<i>` names a
+    candidate by its place in the request, which the answers do not record."""
+    commands = _commands(request)
+    if commands is None:
+        return None
     answers = answers or {}
     answer = answers.get('choice')
     if not isinstance(answer, dict) or answer.get('type') != 'choice':
@@ -174,7 +165,6 @@ def _fired_verify(answers, threshold_value, *, body=None, **_):
             return []
     elif (answer.get('confidence') or 0.0) < threshold_value:
         return []
-    commands = _commands(body, answers)
     if picked not in commands:
         return []
     qid = f'runs_{commands.index(picked)}'
@@ -189,35 +179,27 @@ def _decisions_prefix(prefix: str):
 
 
 def _decisions_prompt(body):
-    return ['prompt_adequacy'] if 'prompt_adequacy' in _questions(body) else []
+    return ['prompt_adequacy'] if 'prompt_adequacy' in _asked(body) else []
 
 
-def _candidates(body) -> list:
-    found = _state(body).get('candidates')
-    return found if isinstance(found, list) else []
-
-
-def _score_noul(answers, qid, **_):
+def _score_noul(answers, qid, request=None):
     return _noul(answers, qid)
 
 
-def _score_verify(answers, qid, *, body=None):
-    """The choice distribution's probability of the candidate's command. None without `body`
-    (see _fired_verify)."""
-    if body is None:
-        return None
-    commands = _commands(body, answers)
+def _score_verify(answers, qid, request=None):
+    """The choice distribution's probability of the candidate's command. None without the
+    body (see _fired_verify)."""
+    commands = _commands(request)
     index = _index(qid)
-    if not 0 <= index < len(commands) or commands[index] is None:
+    if commands is None or not 0 <= index < len(commands) or commands[index] is None:
         return None
     return probabilities({'answers': answers or {}}, 'choice').get(commands[index])
 
 
 def _decisions_verify(body):
+    """One `runs_<i>` per candidate of the body."""
     commands = _commands(body)
-    # A logged entry's commands are only known with its answers; its runs_<i> ids are the
-    # candidates all the same.
-    return [f'runs_{i}' for i in range(len(commands))] if commands else _question_ids(body, 'runs_')
+    return [f'runs_{i}' for i in range(len(commands))] if commands is not None else _question_ids(body, 'runs_')
 
 
 # --- baselines ---------------------------------------------------------------------------
@@ -303,7 +285,7 @@ def _site(name, threshold, fired, decisions, score, label, baseline, floor=None,
     return Site(name, SITE_GATE[name], threshold, fired, decisions, score, label, baseline, floor, label_issue)
 
 
-def _no_fire(answers, threshold_value=None, **_):
+def _no_fire(answers, threshold_value=None, request=None):
     return []
 
 
