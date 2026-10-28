@@ -19,7 +19,7 @@ usage() {
     'commands:' \
     '  install   link forge into each agent harness on this machine; --dry-run previews' \
     '  fractal   opt-in Fractal execution: install, doctor, runs, status, tree, logs, open, report, ...' \
-    '  decide    decision-model gates: status, gate, provider, budget, privacy, doctor, migrate, report' \
+    '  decide    decision-model gates: status, gate, provider, budget, privacy, doctor, migrate, report, replay' \
     '  jev       the old decision-model commands, replaced by decide (kept for one release)' \
     '  dataset   every run'"'"'s inputs and outcomes: status, dump, import, export, outcomes, ...' \
     '  issues    file the review findings a run left open as GitHub issues (plain gh)' \

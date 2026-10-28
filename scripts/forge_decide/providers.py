@@ -1,6 +1,7 @@
 """Which transport a decision-model site's request takes, and whether it may be sent at all.
 
     spec_for_site(site, *, config=None, repo=None, resolved=None) -> dict
+    spec_for_provider(name, model=None, *, config=None) -> dict | None
     privacy_floor(repo=None) -> bool
 
 A spec is {name, type: 'jev'|'clef', url, model, key, context, price_usd_per_mtok, local,
@@ -127,22 +128,19 @@ def _positive(value) -> float | None:
     return value
 
 
-def _configured(site: str, config: dict, resolved: dict) -> dict | None:
-    """The spec decide.json gives `site`, or None when it does not configure it."""
-    gate = (resolved.get('gates') or {}).get(SITE_GATE.get(site)) or {}
-    name = gate.get('provider')
-    if not name:
-        return None
+def _user_providers() -> dict:
     user, _ = load_user()
-    entry = (user.get('providers') or {}) if isinstance(user, dict) else {}
-    entry = entry.get(name) if isinstance(entry, dict) else None
-    if not isinstance(entry, dict):
-        return None
+    entries = user.get('providers') if isinstance(user, dict) else None
+    return entries if isinstance(entries, dict) else {}
+
+
+def _from_entry(name: str, entry: dict, model: str | None, config: dict) -> dict:
+    """The spec of the user decide.json provider `name`, asking `model` (else the entry's
+    own model, else its transport's default)."""
     import forge_jev
     kind = entry.get('type') if entry.get('type') in ('jev', 'clef') else 'jev'
     default_model = forge_jev.CLOUDFLARE_MODEL if kind == 'clef' else forge_jev.MODEL
-    model = gate.get('model') or (entry.get('model') if isinstance(entry.get('model'), str) else None) \
-        or default_model
+    model = model or (entry.get('model') if isinstance(entry.get('model'), str) else None) or default_model
     url = entry.get('url') if isinstance(entry.get('url'), str) and entry.get('url') else None
     # Only hosted TypeSafe has a default address: a local provider without one is `no-url`,
     # never the hosted service unauthenticated.
@@ -160,23 +158,68 @@ def _configured(site: str, config: dict, resolved: dict) -> dict | None:
                 local=entry.get('local') is True, deadline_s=float(deadline))
 
 
+def _configured(site: str, config: dict, resolved: dict) -> dict | None:
+    """The spec decide.json gives `site`, or None when it does not configure it."""
+    gate = (resolved.get('gates') or {}).get(SITE_GATE.get(site)) or {}
+    name = gate.get('provider')
+    if not name:
+        return None
+    entry = _user_providers().get(name)
+    if not isinstance(entry, dict):
+        return None
+    return _from_entry(name, entry, gate.get('model'), config)
+
+
+def _cloudflare(config: dict, model: str | None = None) -> dict:
+    """The legacy Cloudflare transport of jev.json, asking `model` (else jev.json's)."""
+    import forge_jev
+    deadline = config.get('deadline_s', forge_jev.DEFAULTS['deadline_s'])
+    remote = forge_jev.cloudflare(config)
+    model = model or (remote['model'] if remote else forge_jev.CLOUDFLARE_MODEL)
+    url = (remote.get('url') if remote else None) or forge_jev.CLOUDFLARE_URL
+    key = remote['token'] if remote and remote['account_id'] else None
+    if remote and remote['account_id']:
+        url = url.format(account=remote['account_id'], model=model)
+    return dict(name='cloudflare', type='clef', url=url, model=model, key=key,
+                context=forge_jev.CLOUDFLARE_CONTEXT.get(model), price_usd_per_mtok=None,
+                local=False, deadline_s=deadline)
+
+
+def _typesafe(config: dict, model: str | None = None) -> dict:
+    """The legacy hosted TypeSafe transport of jev.json, asking `model` (else jev.json's)."""
+    import forge_jev
+    deadline = config.get('deadline_s', forge_jev.DEFAULTS['deadline_s'])
+    return dict(name='typesafe', type='jev', url=config.get('endpoint', forge_jev.DEFAULTS['endpoint']),
+                model=model or config.get('model', forge_jev.DEFAULTS['model']), key=forge_jev.api_key(config),
+                context=None, price_usd_per_mtok=None, local=False, deadline_s=deadline)
+
+
+LEGACY = {'typesafe': _typesafe, 'cloudflare': _cloudflare}
+
+
 def _legacy(site: str, config: dict) -> dict:
     """What forge_jev.client.ask asked before decide.json: TypeSafe, or Cloudflare by site map."""
     import forge_jev
-    deadline = config.get('deadline_s', forge_jev.DEFAULTS['deadline_s'])
-    if forge_jev.provider_for(site, config) == 'cloudflare':
-        remote = forge_jev.cloudflare(config)
-        model = remote['model'] if remote else forge_jev.CLOUDFLARE_MODEL
-        url = (remote.get('url') if remote else None) or forge_jev.CLOUDFLARE_URL
-        key = remote['token'] if remote and remote['account_id'] else None
-        if remote and remote['account_id']:
-            url = url.format(account=remote['account_id'], model=model)
-        return dict(name='cloudflare', type='clef', url=url, model=model, key=key,
-                    context=forge_jev.CLOUDFLARE_CONTEXT.get(model), price_usd_per_mtok=None,
-                    local=False, deadline_s=deadline)
-    return dict(name='typesafe', type='jev', url=config.get('endpoint', forge_jev.DEFAULTS['endpoint']),
-                model=config.get('model', forge_jev.DEFAULTS['model']), key=forge_jev.api_key(config),
-                context=None, price_usd_per_mtok=None, local=False, deadline_s=deadline)
+    return LEGACY[forge_jev.provider_for(site, config)](config)
+
+
+def provider_names() -> list[str]:
+    """The names spec_for_provider knows: the user decide.json providers, then the legacy ones."""
+    return sorted(_user_providers()) + [name for name in LEGACY if name not in _user_providers()]
+
+
+def spec_for_provider(name: str, model: str | None = None, *, config: dict | None = None) -> dict | None:
+    """The transport of provider `name` asking `model`, whatever any gate says: a provider of
+    the user decide.json, else the legacy `typesafe`/`cloudflare` transport of jev.json; None
+    for an unknown name. The legacy cloudflare url may raise KeyError on a stray brace."""
+    entry = _user_providers().get(name)
+    if isinstance(entry, dict):
+        import forge_jev
+        return _from_entry(name, entry, model, config or forge_jev.load_config())
+    if name in LEGACY:
+        import forge_jev
+        return LEGACY[name](config or forge_jev.load_config(), model)
+    return None
 
 
 def spec_for_site(site: str, *, config: dict | None = None, repo=None, resolved: dict | None = None) -> dict:
