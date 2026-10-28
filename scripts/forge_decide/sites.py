@@ -12,8 +12,9 @@
 `fired` and `score` also accept `body=` (the request the answers belong to). Verify-discover
 needs it: `runs_<i>` is the i-th candidate of the request, which the answers do not record,
 so without it nothing is reported fired and the score is None. `body` may be a stored
-request body or just `{'questions': ...}` as a jev.jsonl entry keeps them. Memory-slice uses it to know
-the lines a skipped tail of the answers left unscored.
+request body or a jev.jsonl entry, whose `questions` is the list of question ids (see
+_commands). Memory-slice uses it to know the lines a skipped tail of the answers left
+unscored.
 - `label`: one sentence naming the label, or None with the issue that will define it.
 - `baseline(body, qid)`: the cheap heuristic the site must not lose to; higher = more
   likely positive.
@@ -61,7 +62,11 @@ def _ids(answers, prefix: str) -> list[str]:
 
 
 def _questions(body) -> dict:
+    """The body's questions by id. A jev.jsonl entry logs only their ids, as a list: those
+    become ids with no definition."""
     questions = (body or {}).get('questions')
+    if isinstance(questions, list):
+        return {str(qid): {} for qid in questions}
     return questions if isinstance(questions, dict) else {}
 
 
@@ -125,18 +130,27 @@ def _fired_slice(answers, threshold_value=None, *, body=None, **_):
     return sorted((qid for _p, _i, qid in scored[:SLICE_KEEP]), key=_index)
 
 
-def _commands(body) -> list:
-    """The candidates' commands in the request's order: what `runs_<i>` index into. Only the
-    request knows it; the order of the answer's probability map is not a record of it."""
+def _commands(body, answers=None) -> list:
+    """The candidates' commands in the request's order: what `runs_<i>` index into.
+
+    The request's state.candidates say it; failing those, the choice question's criteria
+    (the commands in request order, then `none`). A jev.jsonl entry logs neither, only the
+    question ids: then the choice answer's probability map is read in its own order, which
+    is the criteria's (the response lists the options as the question sent them), and only
+    when it names exactly one command per `runs_<i>` the request asked."""
     found = [candidate.get('command') if isinstance(candidate, dict) else None
              for candidate in _candidates(body)]
     if found:
         return found
-    # A jev.jsonl entry keeps the questions but not the state: the choice's criteria are the
-    # candidate commands in request order, then `none`.
     choice = _questions(body).get('choice')
     criteria = choice.get('criteria') if isinstance(choice, dict) else None
-    return [command for command in criteria if command != 'none'] if isinstance(criteria, dict) else []
+    if isinstance(criteria, dict):
+        return [command for command in criteria if command != 'none']
+    runs = _question_ids(body, 'runs_')
+    options = [option for option in probabilities({'answers': answers or {}}, 'choice') if option != 'none']
+    if runs and len(options) == len(runs) and runs == [f'runs_{i}' for i in range(len(runs))]:
+        return options
+    return []
 
 
 def _fired_verify(answers, threshold_value, *, body=None, **_):
@@ -160,7 +174,7 @@ def _fired_verify(answers, threshold_value, *, body=None, **_):
             return []
     elif (answer.get('confidence') or 0.0) < threshold_value:
         return []
-    commands = _commands(body)
+    commands = _commands(body, answers)
     if picked not in commands:
         return []
     qid = f'runs_{commands.index(picked)}'
@@ -192,7 +206,7 @@ def _score_verify(answers, qid, *, body=None):
     (see _fired_verify)."""
     if body is None:
         return None
-    commands = _commands(body)
+    commands = _commands(body, answers)
     index = _index(qid)
     if not 0 <= index < len(commands) or commands[index] is None:
         return None
@@ -200,7 +214,10 @@ def _score_verify(answers, qid, *, body=None):
 
 
 def _decisions_verify(body):
-    return [f'runs_{i}' for i in range(len(_commands(body)))]
+    commands = _commands(body)
+    # A logged entry's commands are only known with its answers; its runs_<i> ids are the
+    # candidates all the same.
+    return [f'runs_{i}' for i in range(len(commands))] if commands else _question_ids(body, 'runs_')
 
 
 # --- baselines ---------------------------------------------------------------------------
@@ -245,7 +262,7 @@ def _baseline_slice(body, qid) -> float:
 def _baseline_verify(body, qid) -> float:
     """Candidate order: the first candidate scores highest."""
     index = _index(qid)
-    count = len(_commands(body))
+    count = len(_decisions_verify(body))
     return float(count - index) if 0 <= index < count else 0.0
 
 

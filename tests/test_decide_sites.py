@@ -254,6 +254,27 @@ class VerifyTestCase(unittest.TestCase):
         self.assertEqual(record.score(answers, 'runs_0', body=logged), 0.8)
         self.assertEqual(record.decisions(logged), ['runs_0', 'runs_1'])
 
+    def test_a_logged_jev_jsonl_entry(self):
+        # client.ask logs questions=list(questions): only the ids. The choice answer's
+        # probability map then gives the candidates, in the order the criteria sent them.
+        record = sites.site('jev-verify-discover')
+        logged = dict(questions=['choice', 'runs_0', 'runtime_0', 'runs_1', 'runtime_1'])
+        answers = {'choice': choice('make test', {'make test': 0.8, 'bash tests/check.sh': 0.1, 'none': 0.1}),
+                   'runs_0': noul(0.9), 'runs_1': noul(0.1)}
+        self.assertEqual(record.fired(answers, 0.7, body=logged), ['runs_0'])
+        self.assertEqual(record.score(answers, 'runs_0', body=logged), 0.8)
+        self.assertEqual(record.score(answers, 'runs_1', body=logged), 0.1)
+        self.assertEqual(record.decisions(logged), ['runs_0', 'runs_1'])
+        self.assertEqual(record.baseline(logged, 'runs_0'), 2)
+        # A map that does not name one command per runs_<i> is not read as the order.
+        short = dict(answers, choice=choice('make test', {'make test': 0.9, 'none': 0.1}))
+        self.assertEqual(record.fired(short, 0.7, body=logged), [])
+        self.assertIsNone(record.score(short, 'runs_0', body=logged))
+
+    def test_a_logged_drift_entry_lists_its_file_questions(self):
+        logged = dict(questions=['f1', 'f0', 'other'])
+        self.assertEqual(sites.site('jev-drift').decisions(logged), ['f0', 'f1'])
+
     def test_the_verifiability_gate_not_the_winners_confidence(self):
         record = sites.site('jev-verify-discover')
         # A split between two right commands: the winner's confidence is 0.49, P(none) 0.07.
