@@ -6,9 +6,10 @@
   unset <key> [--repo DIR] [--json]           repo.verify | repo.setup | repo.verify-subset
 
 A value of `-` reads stdin for the per-repo files. repo.verify-subset must contain `{files}`.
-decide.gate.<gate> (off, shadow or on), decide.gate.<gate>.provider and decide.gate.<gate>.model
-are delegated to `forge decide gate` and write the user level. Unset of those keys is refused:
-set the mode to off. jev.enabled is gone; set a gate with decide.gate.<gate>. The registry is
+decide.gate.<gate> (off, shadow or on) is delegated to `forge decide gate` and writes the user
+level. decide.gate.<gate>.provider and decide.gate.<gate>.model write the user level with no mode,
+so the gate keeps the mode the other levels give it. Unset of those keys is refused: set the mode
+to off. jev.enabled is gone; set a gate with decide.gate.<gate>. The registry is
 read-only here: the skill dir is often a live symlink to a checkout, so an edit would change
 runs already in progress; edit the checkout.
 
@@ -33,7 +34,9 @@ import sys
 SKILL = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 sys.path.insert(0, os.path.join(SKILL, 'scripts'))
 
-from forge_decide import GATES, MODES, load_repo, load_user
+from forge_decide import GATES, MODES, load_user, save_user, user_path
+from forge_decide.migrate import run as migrate_run
+from forge_decide.providers import spec_for_site
 
 REPO_FILES = ('verify', 'setup', 'verify-subset')
 KEYS = tuple('repo.' + n for n in REPO_FILES)
@@ -182,10 +185,19 @@ def jev_block():
 
 
 def _gate_ready(gate, providers):
-    """A gate can run when it is shadow or on, nothing skips it, and its provider is local or has a key."""
+    """A gate can run when it is shadow or on, nothing skips it, and its provider is local or has a key.
+
+    With no provider the run uses the legacy client, so the gate is ready when that client has a key.
+    """
     if gate.get('mode') not in ('shadow', 'on') or gate.get('skip'):
         return False
-    row = providers.get(gate.get('provider') or '')
+    if not gate.get('provider'):
+        # resolved={} names no provider, so spec_for_site gives the legacy spec the run would use
+        try:
+            return bool(spec_for_site(gate['site'], resolved={}).get('key'))
+        except Exception:  # a legacy config the run cannot describe; show must still print (resolve.py too)
+            return False
+    row = providers.get(gate['provider'])
     if not isinstance(row, dict):
         return False
     if row.get('local') is True:
@@ -375,37 +387,32 @@ def _decide_value(field, value):
     return value
 
 
-def _stored_mode(data, gate):
-    gates = data.get('gates') if isinstance(data, dict) else None
-    entry = gates.get(gate) if isinstance(gates, dict) else None
-    mode = entry if isinstance(entry, str) else entry.get('mode') if isinstance(entry, dict) else None
-    return mode if mode in MODES else None
+def _write_user_field(gate, field, value):
+    """Set a gate's provider or model in the user file, storing no mode.
 
-
-def mode_for_write(gate, root, status):
-    """The mode `forge decide gate` must restate so a provider or model edit does not change it.
-
-    The user file wins, then the effective mode when nothing is forcing the gate off (a privacy
-    floor or FORGE_JEV=off), then the repo file. Writing the forced-off effective mode would
-    store off over a mode the user had set.
+    `forge decide gate` always writes a mode, and a mode written here would outlive the repo, profile
+    or environment variable that set it. So the field is written here, after the jev.json migration
+    and the provider check that `forge decide gate` makes. A mode the user file holds is kept as it is.
     """
-    user, error = load_user()
+    result = migrate_run()
+    if result['status'] == 'migrated':
+        print('forge config: migrated jev.json into %s first' % user_path(), file=sys.stderr)
+    data, error = load_user()
     if error:
         raise Invalid(error)
-    stored = _stored_mode(user, gate)
-    if stored:
-        return stored
-    row = (status.get('gates') or {}).get(gate) or {}
-    if row.get('skip') is None and row.get('mode') in MODES:
-        return row['mode']
-    if root is not None:
-        repo, repo_error = load_repo(root)
-        if repo_error:
-            raise Invalid(repo_error)
-        stored = _stored_mode(repo, gate)
-        if stored:
-            return stored
-    return 'off'
+    providers = data.get('providers')
+    providers = providers if isinstance(providers, dict) else {}
+    if field == 'provider' and value not in providers:
+        raise Invalid('unknown provider %r; configured: %s (add one with `forge decide provider add`)'
+                      % (value, ', '.join(sorted(providers)) or 'none'))
+    gates = data.get('gates') if isinstance(data.get('gates'), dict) else {}
+    entry = gates.get(gate)
+    entry = dict(mode=entry) if isinstance(entry, str) else dict(entry) if isinstance(entry, dict) else {}
+    entry[field] = value
+    gates[gate] = entry
+    data['gates'] = gates
+    data.setdefault('version', 1)
+    save_user(data)
 
 
 def emit(args, key, previous, value):
@@ -460,7 +467,8 @@ def cmd_unset(args):
 
 
 def set_decide(args):
-    """Write one decide key at the user level, through `forge decide gate`. --repo is only the repo whose current mode is read."""
+    """Write one decide key at the user level: a mode through `forge decide gate`, a provider or model
+    through _write_user_field. --repo is only the repo whose effective settings are read for `previous`."""
     found = decide_target(args.key)
     if found is None:
         check_key(args.key)
@@ -471,16 +479,15 @@ def set_decide(args):
     before = status_data(root)
     row = (before.get('gates') or {}).get(gate) or {}
     if field is None:
-        mode, previous = value, row.get('mode')
-        argv = ['gate', gate, mode]
+        previous = row.get('mode')
+        script = os.path.join(SKILL, 'scripts', 'forge-decide.py')
+        run = subprocess.run([sys.executable, script, 'gate', gate, value],
+                             stdout=subprocess.DEVNULL, stderr=None)
+        if run.returncode != 0:
+            return run.returncode
     else:
-        mode = mode_for_write(gate, root, before)
         previous = row.get(field)
-        argv = ['gate', gate, mode, '--' + field, value]
-    script = os.path.join(SKILL, 'scripts', 'forge-decide.py')
-    run = subprocess.run([sys.executable, script, *argv], stdout=subprocess.DEVNULL, stderr=None)
-    if run.returncode != 0:
-        return run.returncode
+        _write_user_field(gate, field, value)
     emit(args, args.key, previous, value)
     return 0
 
