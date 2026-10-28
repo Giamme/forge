@@ -13,8 +13,8 @@ a path with a `jev-backtests` component is never read. Per site:
     input_tokens, output_tokens
         from the entry's usage
     cost_usd
-        tokens x the user decide.json price of the entry's provider; None when an entry that
-        spent tokens names a provider with no price (a cache hit or a skip spends nothing)
+        tokens x the user decide.json price of the entry's provider; None when any entry
+        names a provider with no price
     fired, fired_unknown
         calls the site's `fired` turns into a non-empty list at the threshold for the entry's
         model. verify-discover needs the stored request body, looked up in the dataset by
@@ -101,9 +101,9 @@ def collect_runs(*, repo=None, dirs=(), every=False, limit=DEFAULT_RUNS) -> tupl
 def jev_logs(run_dir) -> list[Path]:
     """The run dir's jev.jsonl files: its own, tasks/*/ and integrate-*/, none under
     jev-backtests."""
-    root = Path(run_dir)
+    root = Path(os.path.abspath(run_dir))
     found = [root / 'jev.jsonl', *sorted(root.glob('tasks/*/jev.jsonl')), *sorted(root.glob('integrate-*/jev.jsonl'))]
-    return [path for path in found if path.is_file() and BACKTESTS not in path.relative_to(root).parts]
+    return [path for path in found if path.is_file() and BACKTESTS not in path.parts]
 
 
 def run_uid(run_dir) -> str | None:
@@ -130,6 +130,12 @@ def _entries(path: Path):
 
 
 # ------------------------------------------------------------------------------- summary
+
+def _at(entry: dict) -> float:
+    """The entry's log time; an entry without one sorts last."""
+    value = entry.get('at')
+    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else float('inf')
+
 
 def _tokens(usage, field) -> int:
     value = usage.get(field) if isinstance(usage, dict) else None
@@ -193,7 +199,8 @@ def summarize(run_dirs, *, repo=None, site=None) -> dict:
     store = _Store()
     thresholds = {}
     rows: dict = {}
-    # (site, run uid, key) -> the fired list of the run's first answered entry for that key
+    # (site, run uid, key) -> (at, fired list) of the run's earliest answered entry for that
+    # key by `at`, the request labels.collect labels (the first per key by ts)
     answered: dict = {}
     runs = []
     for run_dir in run_dirs:
@@ -218,7 +225,10 @@ def summarize(run_dirs, *, repo=None, site=None) -> dict:
                     row['fired'] += 1
                 key = entry.get('key')
                 if fired is not None and entry.get('ok') is True and uid and key:
-                    answered.setdefault((name, uid, key), set(fired))
+                    at = _at(entry)
+                    held = answered.get((name, uid, key))
+                    if held is None or at < held[0]:
+                        answered[(name, uid, key)] = (at, set(fired))
 
     if site is not None and site not in rows and sites_module.site(site) is not None:
         rows[site] = _blank(False)
@@ -250,7 +260,7 @@ def _count(row: dict, entry: dict, prices: dict) -> None:
     tokens_in, tokens_out = _tokens(usage, 'input_tokens'), _tokens(usage, 'output_tokens')
     row['input_tokens'] += tokens_in
     row['output_tokens'] += tokens_out
-    if tokens_in + tokens_out and row['cost_usd'] is not None:
+    if row['cost_usd'] is not None:
         price = prices.get(entry.get('provider'))
         row['cost_usd'] = None if price is None else row['cost_usd'] + (tokens_in + tokens_out) * price / 1e6
 
@@ -283,9 +293,10 @@ def _labelled(name: str, uids: set, answered: dict, store: _Store) -> dict:
     if data is None:
         return out
     for row in labels_module.collect(name, store=data, runs=uids):
-        fired = answered.get((name, row['run'], row['key']))
-        if fired is None:
+        held = answered.get((name, row['run'], row['key']))
+        if held is None:
             continue
+        fired = held[1]
         for qid, truth in row['labels'].items():
             out['decisions'] += 1
             if qid in fired:

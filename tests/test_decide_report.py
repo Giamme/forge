@@ -28,8 +28,8 @@ def noul(p):
 
 
 def entry(site, *, key='k', ok=True, reason=None, model='jev-live', provider='jevp', tokens=(100, 10),
-          answers=None, questions=None, cached=False):
-    return dict(at=T0, site=site, key=key, ok=ok, reason=reason, latency_s=0.1, model=model,
+          answers=None, questions=None, cached=False, at=T0):
+    return dict(at=at, site=site, key=key, ok=ok, reason=reason, latency_s=0.1, model=model,
                 usage=dict(input_tokens=tokens[0], output_tokens=tokens[1]), questions=questions or list(answers or {}),
                 answers=answers if ok else None, provider=provider, gate=None, mode='shadow', shadow=True,
                 cached=cached)
@@ -144,6 +144,24 @@ class CountingTests(ReportCase):
         self.assertIn('skipped: budget 2', out)
         self.assertIn('runs read: 1', out)
 
+    def test_a_run_dir_under_jev_backtests_is_not_read(self):
+        copy = self.run_dir('jev-backtests', {})
+        copy = copy / 'copy'
+        (copy / 'tasks' / 'a').mkdir(parents=True)
+        (copy / 'tasks' / 'a' / 'jev.jsonl').write_text(json.dumps(entry('jev-drift', answers={})) + '\n')
+        (copy / 'jev.jsonl').write_text(json.dumps(entry('jev-drift', answers={})) + '\n')
+        data = self.data_json('--run', str(copy))
+        self.assertEqual(data['sites'], {})
+        self.assertEqual(data['totals']['calls'], 0)
+
+    def test_an_unpriced_entry_without_tokens_still_makes_cost_unknown(self):
+        plan = self.run_dir('plan', {'': [entry('jev-drift', key='d1', answers=dict(f0=noul(0.1))),
+                                          entry('jev-drift', key='d1', provider='unpriced', tokens=(0, 0),
+                                                answers=dict(f0=noul(0.1)), cached=True)]})
+        drift = self.data_json('--run', str(plan))['sites']['jev-drift']
+        self.assertEqual(drift['input_tokens'], 100)
+        self.assertIsNone(drift['cost_usd'])
+
     def test_verify_discover_without_a_stored_body_is_fired_unknown(self):
         plan = self.run_dir('plan', {'': [entry('jev-verify-discover', key='nope', answers=dict(
             choice=dict(type='choice', choice='make test', confidence=0.9), runs_0=noul(0.9)))]})
@@ -157,17 +175,20 @@ class CountingTests(ReportCase):
         self.report(code=2)
 
 
+ANSWERS = dict(f0=noul(0.9), f1=noul(0.8), f2=noul(0.1), f3=noul(0.1))
+
+
 class LabelTests(ReportCase):
-    def test_labelled_counts_fired_right_wrong_and_missed(self):
+    def store_drift_label(self):
+        """One stored drift request K of run UID; its task edited src/b.py (f0) and src/d.py (f2)."""
         with patch.dict(os.environ, {'FORGE_DATA_HOME': str(self.data)}):
             db = dataset.connect()
             try:
                 canonical = json.dumps(drift_body(), sort_keys=True)
                 ref = dataset.put_blob(canonical, 'request')
-                answers = dict(f0=noul(0.9), f1=noul(0.8), f2=noul(0.1), f3=noul(0.1))
                 dataset.insert(db, dict(rid='jev:1', kind='jev', ts=T0, run=UID, run_id='id', repo='r1',
                                         mode='parallel', task=None, attempt=None,
-                                        data=dict(site='jev-drift', ok=True, model='jev-live', answers=answers,
+                                        data=dict(site='jev-drift', ok=True, model='jev-live', answers=ANSWERS,
                                                   key='K', blobs=dict(request=ref))))
                 dataset.insert(db, dict(rid='attempt:1', kind='attempt', ts=T0 + 10, run=UID, run_id='id',
                                         repo='r1', mode='parallel', task='t1', attempt=1,
@@ -176,14 +197,27 @@ class LabelTests(ReportCase):
                 db.commit()
             finally:
                 db.close()
-        plan = self.run_dir('plan', {'': [entry('jev-drift', key='K', answers=answers)]}, uid=UID)
-        other = self.run_dir('other', {'': [entry('jev-drift', key='K', answers=answers)]}, uid='uid-other')
+
+    def test_labelled_counts_fired_right_wrong_and_missed(self):
+        self.store_drift_label()
+        plan = self.run_dir('plan', {'': [entry('jev-drift', key='K', answers=ANSWERS)]}, uid=UID)
+        other = self.run_dir('other', {'': [entry('jev-drift', key='K', answers=ANSWERS)]}, uid='uid-other')
         labelled = self.data_json('--run', str(plan))['sites']['jev-drift']['labelled']
         # f0 fired and edited, f1 fired and not, f2 edited without firing, f3 neither.
         self.assertEqual(labelled, dict(decisions=4, fired_right=1, fired_wrong=1, missed=1))
         # Joined on the run uid: another run's entry with the same key gets none of them.
         labelled = self.data_json('--run', str(other))['sites']['jev-drift']['labelled']
         self.assertEqual(labelled, dict(decisions=0, fired_right=0, fired_wrong=0, missed=0))
+
+    def test_the_earliest_answer_of_a_key_is_the_labelled_one(self):
+        self.store_drift_label()
+        quiet = dict(f0=noul(0.1), f1=noul(0.1), f2=noul(0.1), f3=noul(0.1))
+        # integrate-10 is read before integrate-2, but its answer is the later one.
+        plan = self.run_dir('plan', {'integrate-2': [entry('jev-drift', key='K', answers=ANSWERS, at=T0)],
+                                     'integrate-10': [entry('jev-drift', key='K', answers=quiet, at=T0 + 60)]},
+                            uid=UID)
+        labelled = self.data_json('--run', str(plan))['sites']['jev-drift']['labelled']
+        self.assertEqual(labelled, dict(decisions=4, fired_right=1, fired_wrong=1, missed=1))
 
 
 class RegistryTests(ReportCase):
