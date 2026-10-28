@@ -180,7 +180,7 @@ do_plan() {
       *)
         # `case` is not a loop, so `continue` here belongs to the enclosing while.
         if [ "$JEV_OPTS" = 1 ]; then
-          forge_jev_flag "$1"; jev_rc=$?
+          forge_jev_flag "$@"; jev_rc=$?
           case "$jev_rc" in
             0) shift "$JEV_SHIFT"; continue ;;
             2) exit 2 ;;
@@ -239,6 +239,8 @@ do_plan() {
   fi
   [ -s "$PLAN/repo" ] || die "plan needs --repo the first time"
   REPO="$(cat "$PLAN/repo")"
+  # Before any decision-model step: the privacy floor and the run budget read these.
+  [ "$JEV_OPTS" = 1 ] && forge_decide_env "$REPO" "$PLAN"
   [ -s "$PLAN/run_id" ] || basename "$PLAN" | sed 's/^forge-//' > "$PLAN/run_id"
   # Every plan, --ui or not: forge-ui's view of this repo's runs reads the registry.
   forge_ui_register "$PLAN"
@@ -271,32 +273,29 @@ PY
   if [ -f "$SKILL_DIR/scripts/forge-jev-options.sh" ]; then
     source "$SKILL_DIR/scripts/forge-jev-options.sh" 2>/dev/null && jev_loaded=1
   fi
-  if [ "$jev_loaded" = 1 ] && forge_jev_active gates; then
+  if [ "$jev_loaded" = 1 ] && { forge_decide_active prompt || forge_decide_active drift; }; then
     local jev_scores jev_rc
     jev_scores="$(python3 "$SKILL_DIR/scripts/forge-jev.py" score-plan \
       --plan "$PLAN" --repo "$REPO" 2>/dev/null)"
     jev_rc=$?
+    # A gate in shadow is asked and recorded by score-plan, which leaves it out of
+    # these rows: what is printed here is only what an `on` gate has to say.
     if [ "$jev_rc" -eq 0 ] && [ -n "$jev_scores" ]; then
-      # Shadow mode records the judgment and prints nothing per task.
-      if [ "${FORGE_JEV_SHADOW:-}" = on ]; then
-        note "jev: checked $(printf '%s\n' "$jev_scores" | grep -c . ) task(s) in shadow mode (no change)"
-      else
-        local jid jwarn jdrift
-        # The columns score-plan prints: id, warnings, drift. Read in lockstep with
-        # cmd_score_plan.
-        while IFS="$(printf '\t')" read -r jid jwarn jdrift; do
-          [ -n "$jid" ] || continue
-          case "$jwarn" in
-            *prompt_adequacy*) note "jev: $jid — the prompt may be too vague for QA to judge correctness against" ;;
-          esac
-          if [ -n "$jdrift" ] && [ "$jdrift" != "-" ]; then
-            note "jev: $jid may also edit undeclared files: $jdrift"
-            note "     undeclared files break wave disjointness — add them to the files column or split the task"
-          fi
-        done <<EOF
+      local jid jwarn jdrift
+      # The columns score-plan prints: id, warnings, drift. Read in lockstep with
+      # cmd_score_plan.
+      while IFS="$(printf '\t')" read -r jid jwarn jdrift; do
+        [ -n "$jid" ] || continue
+        case "$jwarn" in
+          *prompt_adequacy*) note "jev: $jid — the prompt may be too vague for QA to judge correctness against" ;;
+        esac
+        if [ -n "$jdrift" ] && [ "$jdrift" != "-" ]; then
+          note "jev: $jid may also edit undeclared files: $jdrift"
+          note "     undeclared files break wave disjointness — add them to the files column or split the task"
+        fi
+      done <<EOF
 $jev_scores
 EOF
-      fi
     fi
   fi
 
@@ -374,31 +373,31 @@ EOF
   # tasks.tsv, never adds a dep, and
   # never changes waves.tsv, so it must run after compute_waves and before the table
   # that reports the plan is printed.
-  if [ "$jev_loaded" = 1 ] && forge_jev_active gates; then
+  if [ "$jev_loaded" = 1 ] && forge_decide_active forward; then
     local jev_coupling jev_coupling_rc
     jev_coupling="$(python3 "$SKILL_DIR/scripts/forge-jev.py" coupling \
       --plan "$PLAN" --repo "$REPO" 2>/dev/null)"
     jev_coupling_rc=$?
+    # A shadowed forward gate is recorded in jev-coupling.json and prints no row.
     if [ "$jev_coupling_rc" -eq 0 ] && [ -n "$jev_coupling" ]; then
-      if [ "${FORGE_JEV_SHADOW:-}" = on ]; then
-        note "jev: found $(printf '%s\n' "$jev_coupling" | grep -c .) coupled pair(s) in shadow mode (no change)"
-      else
-        local ca cb cp ckind
-        while IFS="$(printf '\t')" read -r ca cb cp ckind; do
-          [ -n "$ca" ] || continue
-          # Forward: an earlier task written against work that has not been built yet,
-          # which its own review cannot catch.
-          if [ "$ckind" = forward ]; then
-            note "jev: task '$ca' runs before '$cb' and may depend on what it builds ($cp) — consider a dep"
-          fi
-        done <<EOF
+      local ca cb cp ckind
+      while IFS="$(printf '\t')" read -r ca cb cp ckind; do
+        [ -n "$ca" ] || continue
+        # Forward: an earlier task written against work that has not been built yet,
+        # which its own review cannot catch.
+        if [ "$ckind" = forward ]; then
+          note "jev: task '$ca' runs before '$cb' and may depend on what it builds ($cp) — consider a dep"
+        fi
+      done <<EOF
 $jev_coupling
 EOF
-      fi
     fi
   fi
 
   render_table "$PLAN"
+  # Advisory, under the table: a privacy floor that silences every gate, and which
+  # gates this plan's runs will ask. Prints nothing when it cannot tell.
+  [ "$jev_loaded" = 1 ] && forge_decide_plan_lines "${FORGE_DECIDE_REPO:-$REPO}"
   # Before the UNASSIGNED return, so the URL prints under the table either way.
   forge_ui_launch "$PLAN"
 
@@ -1125,7 +1124,7 @@ do_retry() {
         # `case` is not a loop, so `continue` here belongs to the enclosing while.
         if forge_pp_flag retry "$PLAN" "$@"; then shift "$PP_SHIFT"; continue; fi
         if [ "$JEV_OPTS" = 1 ]; then
-          forge_jev_flag "$1"; jev_rc=$?
+          forge_jev_flag "$@"; jev_rc=$?
           case "$jev_rc" in
             0) shift "$JEV_SHIFT"; continue ;;
             2) exit 2 ;;
@@ -1136,6 +1135,8 @@ do_retry() {
     esac
   done
   [ "$JEV_OPTS" = 1 ] && forge_jev_settle "$PLAN"
+  # Before any decision-model step: the privacy floor and the run budget read these.
+  [ "$JEV_OPTS" = 1 ] && [ -s "$PLAN/repo" ] && forge_decide_env "$(cat "$PLAN/repo")" "$PLAN"
   case "$OUTPUT" in summary|full) ;; *) die "--output must be summary or full" ;; esac
   export FORGE_OUTPUT="$OUTPUT"
   local T="$PLAN/tasks.tsv" tdir="$PLAN/tasks/$id"
@@ -1313,7 +1314,7 @@ verify_result_body() { # plan, checkout, artifact directory
   vretries="$(cat "$plan/verify_retries" 2>/dev/null)"
   case "$vretries" in ''|*[!0-9]*) vretries=1 ;; esac
   # Sourced unconditionally (cheap: local function/var definitions, no network) so
-  # forge_jev_active is available below. verify_result is itself a subshell, so this
+  # forge_decide_active is available below. verify_result is itself a subshell, so this
   # never leaks state into the caller. A missing or broken options file just leaves
   # jev_loaded=0 and every Jev branch below falls through to today's behaviour.
   if [ -f "$SKILL_DIR/scripts/forge-jev-options.sh" ]; then
@@ -1335,7 +1336,7 @@ verify_result_body() { # plan, checkout, artifact directory
   # produced — any non-zero exit (no key, disabled, nothing suitable, a traceback)
   # falls straight through to the exact UNVERIFIED behaviour below. A Jev failure
   # must never change the outcome of a run.
-  if [ -z "$cmd" ] && [ "$jev_loaded" = 1 ] && forge_jev_active tests; then
+  if [ -z "$cmd" ] && [ "$jev_loaded" = 1 ] && forge_decide_active verify-discover; then
     local jev_json jev_rc jev_cmd
     # --json rather than the bare form: the record exists so a human can audit why a
     # command ran, and "confidence: null" answers nothing. The exit code still decides.
@@ -1486,7 +1487,7 @@ do_run() {
         # `case` is not a loop, so `continue` here belongs to the enclosing while.
         if forge_pp_flag run "$PLAN" "$@"; then shift "$PP_SHIFT"; continue; fi
         if [ "$JEV_OPTS" = 1 ]; then
-          forge_jev_flag "$1"; jev_rc=$?
+          forge_jev_flag "$@"; jev_rc=$?
           case "$jev_rc" in
             0) shift "$JEV_SHIFT"; continue ;;
             2) exit 2 ;;
@@ -1509,6 +1510,8 @@ do_run() {
   compute_waves "$PLAN"
   local REPO run_id wt_root int_wt int_br
   REPO="$(cat "$PLAN/repo")"; run_id="$(cat "$PLAN/run_id")"
+  # Before any decision-model step: the privacy floor and the run budget read these.
+  [ "$JEV_OPTS" = 1 ] && forge_decide_env "$REPO" "$PLAN"
   if [ "$DRY" != 1 ]; then
     # The concurrency limit this run was given, for forge-ui to draw; a later run rewrites it.
     printf '%s\n' "$MAXP" > "$PLAN/max_parallel"
