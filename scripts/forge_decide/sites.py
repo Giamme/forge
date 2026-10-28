@@ -8,6 +8,11 @@
 - `decisions(body)`: the question ids of a stored request body {state, model, questions}
   that are scored decisions (a label can exist for them).
 - `score(answers, qid)`: the decision's probability.
+
+`fired` and `score` also accept `body=` (the request the answers belong to). Verify-discover
+needs it: `runs_<i>` is the i-th candidate of the request, which the answers do not record,
+so without it nothing is reported fired and the score is None. Memory-slice uses it to know
+the lines a skipped tail of the answers left unscored.
 - `label`: one sentence naming the label, or None with the issue that will define it.
 - `baseline(body, qid)`: the cheap heuristic the site must not lose to; higher = more
   likely positive.
@@ -101,9 +106,14 @@ def _fired_prompt(answers, threshold_value, **_):
 
 def _fired_slice(answers, threshold_value=None, *, body=None, **_):
     """The lines relevant_lines keeps: the top SLICE_KEEP by p, an unscored line as 1.0,
-    ties by index. With `body`, its facts are the lines (a line the answers omit is
-    unscored); without, the lines are the answered `l<i>` ids."""
-    ids = _question_ids(body, 'l') if body is not None else _ids(answers, 'l')
+    ties by index. With `body`, its facts are the lines. Without it the lines are
+    l0..l<highest answered index>: a line the answers skip in between is unscored, and so
+    kept as 1.0, as in the live site (only a skipped tail needs the body to be known)."""
+    if body is not None:
+        ids = _question_ids(body, 'l')
+    else:
+        answered = _ids(answers, 'l')
+        ids = [f'l{i}' for i in range(_index(answered[-1]) + 1)] if answered else []
     if len(ids) <= SLICE_KEEP:
         return ids
     scored = []
@@ -114,19 +124,21 @@ def _fired_slice(answers, threshold_value=None, *, body=None, **_):
     return sorted((qid for _p, _i, qid in scored[:SLICE_KEEP]), key=_index)
 
 
-def _commands(answers, body=None) -> list[str]:
-    """The candidates' commands in order: the request's, else the choice distribution's
-    options without 'none' (the order the request listed them in)."""
-    if body is not None:
-        return [candidate.get('command') if isinstance(candidate, dict) else None
-                for candidate in _candidates(body)]
-    return [option for option in probabilities({'answers': answers or {}}, 'choice') if option != 'none']
+def _commands(body) -> list:
+    """The candidates' commands in the request's order: what `runs_<i>` index into. Only the
+    request knows it; the order of the answer's probability map is not a record of it."""
+    return [candidate.get('command') if isinstance(candidate, dict) else None
+            for candidate in _candidates(body)]
 
 
 def _fired_verify(answers, threshold_value, *, body=None, **_):
     """The chosen candidate's runs_<i>, when 1 - P(none) >= tests_act and its runs_<i> Noul
     is >= 0.5, as verify.discover gates it. Without a distribution it falls back to the
-    choice's own confidence, as discover does."""
+    choice's own confidence, as discover does. `runs_<i>` names a candidate by its place in
+    the request, so without `body` the chosen candidate cannot be named and nothing fired
+    is reported rather than a guess."""
+    if body is None:
+        return []
     answers = answers or {}
     answer = answers.get('choice')
     if not isinstance(answer, dict) or answer.get('type') != 'choice':
@@ -140,7 +152,7 @@ def _fired_verify(answers, threshold_value, *, body=None, **_):
             return []
     elif (answer.get('confidence') or 0.0) < threshold_value:
         return []
-    commands = _commands(answers, body)
+    commands = _commands(body)
     if picked not in commands:
         return []
     qid = f'runs_{commands.index(picked)}'
@@ -168,7 +180,11 @@ def _score_noul(answers, qid, **_):
 
 
 def _score_verify(answers, qid, *, body=None):
-    commands = _commands(answers, body)
+    """The choice distribution's probability of the candidate's command. None without `body`
+    (see _fired_verify)."""
+    if body is None:
+        return None
+    commands = _commands(body)
     index = _index(qid)
     if not 0 <= index < len(commands) or commands[index] is None:
         return None

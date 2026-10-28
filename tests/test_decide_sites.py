@@ -176,7 +176,9 @@ class MemoryTestCase(unittest.TestCase):
         self.assertIn('l3', expected)
         # With the body, the unanswered l3 is a line like any other, scored 1.0.
         self.assertEqual(record.fired(answers, None, body=self.body(count=count)), expected)
-        # Without it, an answered-but-not-Noul l3 is the same unscored line.
+        # Without it, the skipped l3 between answered lines is the same unscored line.
+        self.assertEqual(record.fired(answers, None), expected)
+        # An answered-but-not-Noul l3 is unscored too.
         answers['l3'] = dict(type='score', score=2)
         self.assertEqual(record.fired(answers, None), expected)
 
@@ -227,8 +229,19 @@ class VerifyTestCase(unittest.TestCase):
         answers = self.answers(self.COMMANDS[0], distribution)
         # 1 - P(none) = 0.9 >= 0.7 and runs_0 = 0.9 >= 0.5
         self.assertEqual(record.fired(answers, 0.7, body=self.body()), ['runs_0'])
-        # The distribution's own option order stands in for the body.
-        self.assertEqual(record.fired(answers, 0.7), ['runs_0'])
+        # The answers do not record which candidate is runs_<i>: no body, no guess.
+        self.assertEqual(record.fired(answers, 0.7), [])
+        self.assertIsNone(record.score(answers, 'runs_0'))
+
+    def test_candidates_are_the_requests_not_the_distributions_order(self):
+        record = sites.site('jev-verify-discover')
+        body = dict(state=dict(candidates=[dict(command='make test'), dict(command='bash tests/check.sh')]),
+                    questions={})
+        answers = {'choice': choice('make test', {'bash tests/check.sh': 0.1, 'make test': 0.8, 'none': 0.1}),
+                   'runs_0': noul(0.9), 'runs_1': noul(0.1)}
+        self.assertEqual(record.score(answers, 'runs_0', body=body), 0.8)
+        self.assertEqual(record.score(answers, 'runs_1', body=body), 0.1)
+        self.assertEqual(record.fired(answers, 0.7, body=body), ['runs_0'])
 
     def test_the_verifiability_gate_not_the_winners_confidence(self):
         record = sites.site('jev-verify-discover')
@@ -270,7 +283,7 @@ class VerifyTestCase(unittest.TestCase):
                                                   self.COMMANDS[2]: 0.05, 'none': 0.05})
         self.assertEqual(record.decisions(body), ['runs_0', 'runs_1', 'runs_2'])
         self.assertEqual(record.score(answers, 'runs_1', body=body), 0.7)
-        self.assertEqual(record.score(answers, 'runs_0'), 0.2)
+        self.assertEqual(record.score(answers, 'runs_0', body=body), 0.2)
         self.assertIsNone(record.score(answers, 'runs_9', body=body))
         self.assertEqual([record.baseline(body, q) for q in record.decisions(body)], [3, 2, 1])
 
