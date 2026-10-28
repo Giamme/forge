@@ -159,6 +159,22 @@ class LocalJevTests(TransportCase):
                 self.assertIsNotNone(self.ask())
                 self.assertEqual(server.requests[0]['auth'], 'Bearer ' + KEY)
 
+    def test_a_raw_base64_key_with_padding_is_sent_whole(self):
+        server = self.server('jev')
+        for raw in ('YWJjZGVmZw==', 'YWJjZGU=', 'export MY_KEY=YWJjZGU='):
+            with self.subTest(raw=raw):
+                server.requests.clear()
+                self.configure({'mine': dict(type='jev', url=server.url('/'), key_file=self.key_file(raw + '\n'))})
+                self.assertIsNotNone(self.ask())
+                self.assertEqual(server.requests[0]['auth'], 'Bearer ' + raw.removeprefix('export MY_KEY='))
+
+    def test_an_empty_assignment_is_no_key(self):
+        server = self.server('jev')
+        self.configure({'mine': dict(type='jev', url=server.url('/'), key_file=self.key_file('MY_KEY=\n'))})
+        self.assertIsNone(self.ask())
+        self.assertEqual(server.requests, [])
+        self.assertEqual(self.log()[-1]['reason'], 'no-key')
+
     def test_key_env_wins_over_key_file_and_the_file_is_the_fallback(self):
         server = self.server('jev')
         self.configure({'mine': dict(type='jev', url=server.url('/'), key_env='LOCAL_JEV_KEY',
@@ -215,6 +231,20 @@ class TooLargeTests(TransportCase):
         self.assertIsNone(self.ask(self.BIG))
         self.assertEqual(server.requests, [])
         self.assertEqual(self.log()[-1]['reason'], 'too-large')
+
+    def test_a_non_finite_context_counts_as_undeclared(self):
+        server = self.server('jev')
+        path = forge_decide.user_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        for raw in ('1e309', 'NaN'):
+            with self.subTest(context=raw):
+                server.requests.clear()
+                path.write_text('{"version": 1, "providers": {"j": {"type": "jev", "url": "%s", "local": true, '
+                                '"context": %s}}, "gates": {"drift": {"mode": "on", "provider": "j"}}}'
+                                % (server.url('/'), raw))
+                self.assertIsNone(providers.spec_for_site('jev-drift')['context'])
+                self.assertIsNotNone(self.ask(self.BIG))
+                self.assertEqual(len(server.requests), 1)
 
     def test_jev_without_a_context_sends_it_whole(self):
         server = self.server('jev')

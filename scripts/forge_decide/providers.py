@@ -17,6 +17,7 @@ Never raises on a bad config file; a key is never logged or returned anywhere bu
 """
 from __future__ import annotations
 
+import math
 import os
 from pathlib import Path
 import re
@@ -25,7 +26,8 @@ import subprocess
 from . import SITE_GATE, config_dir, load_repo, load_user
 
 DEFAULT_DEADLINE_S = 5.0
-_NAME = re.compile(r'^\s*(?:export\s+)?[A-Za-z_][A-Za-z0-9_]*\s*=')
+_NAME = re.compile(r'^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=(.*)$')
+_ENV_NAME = re.compile(r'^[A-Z_][A-Z0-9_]*$')
 
 
 def find_repo(repo=None):
@@ -54,6 +56,21 @@ def privacy_floor(repo=None) -> bool:
     return data.get('privacy') == 'never-send'
 
 
+def _assignment(line: str) -> tuple[str, str] | None:
+    """(NAME, value) for a NAME=value line, None for a raw token. Base64 keeps `=` for its
+    trailing padding only, so a value starting with `=` (`YWJjZGVmZw==`) is a raw token, and
+    so is an empty value unless the name is an environment-style CAPS name (`YWJjZGU=`)."""
+    match = _NAME.match(line)
+    if not match:
+        return None
+    name, value = match.group(1), match.group(2).strip()
+    if value.startswith('='):
+        return None
+    if not value and not _ENV_NAME.match(name):
+        return None
+    return name, value.strip('"').strip("'")
+
+
 def _read_key_file(path: str, key_env: str | None) -> str | None:
     """A raw token, or the value of one NAME=value line. A file of several such lines (a
     cloudflare.env with the account id beside the token) gives key_env's line, else the
@@ -69,15 +86,10 @@ def _read_key_file(path: str, key_env: str | None) -> str | None:
              if line.strip() and not line.strip().startswith('#')]
     if not lines:
         return None
-    if not all(_NAME.match(line) for line in lines):
+    pairs = [_assignment(line) for line in lines]
+    if not all(pairs):
         return lines[0] if len(lines) == 1 else None
-    values = {}
-    for line in lines:
-        name, _, value = line.partition('=')
-        name = name.strip()
-        if name.startswith('export '):
-            name = name[len('export '):].strip()
-        values[name] = value.strip().strip('"').strip("'")
+    values = dict(pairs)
     if key_env and values.get(key_env):
         return values[key_env]
     if len(values) == 1:
@@ -100,7 +112,9 @@ def _key(entry: dict) -> str | None:
 
 
 def _positive(value) -> float | None:
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
+    """A finite number above zero, else None: JSON's 1e309 or NaN must not reach int()."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) \
+            or value <= 0:
         return None
     return value
 
