@@ -163,7 +163,7 @@ def forward_dependencies(repo, *, tasks, waves, run_dir=None, config: dict | Non
     if result is None:
         return None
 
-    warn_at = threshold('forward_warn', config=config)
+    warn_at = threshold('forward_warn', config=config, site='jev-forward')
     found = []
     for i, (earlier, later) in enumerate(candidates):
         probability = noul(result, f'f{i}')

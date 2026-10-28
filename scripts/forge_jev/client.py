@@ -20,13 +20,13 @@ import urllib.error
 import urllib.request
 import uuid
 
-from . import (CLOUDFLARE_CONTEXT, CLOUDFLARE_MAX_QUESTIONS, CLOUDFLARE_MODEL, acting, load_config, redact,
-               secrets, shadow, write_json)
+from . import (CLOUDFLARE_CONTEXT, CLOUDFLARE_MAX_QUESTIONS, CLOUDFLARE_MODEL, acting, current_repo, gate_mode,
+               load_config, redact, secrets, write_json)
 
 _SCRIPTS = str(Path(__file__).resolve().parent.parent)
 if _SCRIPTS not in sys.path:
     sys.path.insert(0, _SCRIPTS)
-from forge_decide import budget as _budget, providers as _providers  # noqa: E402
+from forge_decide import SITE_GATE, budget as _budget, providers as _providers  # noqa: E402
 from forge_decide.resolve import resolve as _resolve  # noqa: E402
 
 _BACKOFFS = (0.2, 0.4, 0.8)
@@ -53,12 +53,18 @@ def _skip(run_dir: Path | str | None, site: str, reason: str) -> None:
         pass
 
 
+def _gate_fields(site) -> dict:
+    """The gate a site answers to and its resolved mode; `shadow` is that mode."""
+    mode = gate_mode(site)
+    return dict(gate=SITE_GATE.get(site), mode=mode, shadow=mode == 'shadow')
+
+
 def _log(run_dir, site, key, ok, reason, latency_s, model, usage, questions, answers, provider='typesafe') -> None:
     if run_dir is None:
         return
     entry = dict(at=time.time(), site=site, key=key, ok=ok, reason=reason, latency_s=latency_s,
                 model=model, usage=usage, questions=questions, answers=answers,
-                acting=acting(), shadow=shadow(), provider=provider)
+                acting=acting(), provider=provider, **_gate_fields(site))
     try:
         with (Path(run_dir) / 'jev.jsonl').open('a') as handle:
             handle.write(json.dumps(entry) + '\n')
@@ -88,9 +94,10 @@ def _dataset(site, key, canonical, ok, reason, latency, model, usage, qids, answ
         if scripts not in sys.path:
             sys.path.insert(0, scripts)
         from forge_dataset.capture import jev
+        fields = _gate_fields(site)
         jev(site=site, key=key, canonical=canonical, ok=ok, reason=reason, latency=latency, model=model,
-            usage=usage, questions=qids, answers=answers, run_dir=run_dir, acting=acting(), shadow=shadow(),
-            extra=extra)
+            usage=usage, questions=qids, answers=answers, run_dir=run_dir, acting=acting(),
+            shadow=fields.pop('shadow'), extra=dict(extra or {}, **fields))
     except Exception:
         pass
 
@@ -277,9 +284,10 @@ def ask(state, questions: dict, *, site: str, run_dir=None, config: dict | None 
     """One judgment, or None. `context` (task, stage, attempt, assignment) is recorded with
     the request in the run dataset, for sites whose run dir does not say which task it is.
     `repo` is the repo whose .forge/decide.json applies (else FORGE_DECIDE_REPO, else the
-    working directory's): its privacy floor skips every request, before fixtures too."""
+    working directory's; a command that knows its repo sets current_repo()): its privacy
+    floor skips every request, before fixtures too."""
     config = config or load_config()
-    repo = _providers.find_repo(repo)
+    repo = _providers.find_repo(repo or current_repo())
     resolved = _resolve(repo)
     spec = _providers.spec_for_site(site, config=config, repo=repo, resolved=resolved)
     provider, key, model = spec['name'], spec['key'], spec['model']

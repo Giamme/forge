@@ -15,9 +15,11 @@ from forge_registry import register_run_dir
 from . import (CAPABILITIES, CLOUDFLARE_DEFAULT_SITES, CLOUDFLARE_TOKEN_FILE,
               DEFAULT_THRESHOLDS, PROVIDERS, RETIRED_CAPABILITIES, RETIRED_THRESHOLDS,
               SITE_CAPABILITY, THRESHOLD_FALLBACK, api_key,
-              capability_ready, cloudflare, config_path, enabled, load_config, provider_for, provider_ready,
-              redact, save_config, secrets, site_ready, threshold)
+              capability_ready, cloudflare, config_path, enabled, gate_mode, gate_reason, load_config,
+              provider_for, provider_ready, redact, save_config, secrets, site_ready, threshold, use_repo,
+              _resolved)
 from . import client, questions
+import forge_decide
 
 PRIVACY_STATEMENT = """\
 Jev (TypeSafe System One) sends task prompts, diff hunks, file excerpts, test names,
@@ -226,7 +228,27 @@ def cmd_setup(args) -> int:
     return 0
 
 
+def _migrated(args, mode: str) -> bool:
+    """Once a user decide.json exists, jev.json no longer controls runs: refuse to write it
+    and name the `forge decide gate` commands that do what was asked."""
+    if not forge_decide.user_path().exists():
+        return False
+    caps = set(args.capability or ())
+    gates = [g for g in forge_decide.GATES if not caps or forge_decide.GATE_CAPABILITY[g] in caps]
+    print('forge jev: %s exists, so jev.json no longer controls runs; nothing was written.'
+          % forge_decide.user_path(), file=sys.stderr)
+    if gates:
+        print('use instead:', file=sys.stderr)
+        for gate in gates:
+            print('  forge decide gate %s %s' % (gate, mode), file=sys.stderr)
+    else:
+        print('%s has no gates any more' % ', '.join(sorted(caps)), file=sys.stderr)
+    return True
+
+
 def cmd_enable(args) -> int:
+    if _migrated(args, 'on'):
+        return 1
     config = load_config()
     if args.capability:
         for name in args.capability:
@@ -242,6 +264,8 @@ def cmd_enable(args) -> int:
 
 
 def cmd_disable(args) -> int:
+    if _migrated(args, 'off'):
+        return 1
     config = load_config()
     if args.capability:
         for name in args.capability:
@@ -257,6 +281,17 @@ def _capability_sites() -> dict:
     for site, cap in SITE_CAPABILITY.items():
         sites.setdefault(cap, []).append(site)
     return sites
+
+
+def _gates_block(config: dict) -> dict:
+    """Each gate's resolved mode and source, and whether its site can be asked (reason:
+    None, off, privacy, kill, no-provider or no-key)."""
+    resolved = _resolved(config)
+    out = {}
+    for name, gate in resolved['gates'].items():
+        reason = gate_reason(forge_decide.GATE_SITE[name], config)
+        out[name] = dict(mode=gate['mode'], source=gate['source'], ready=reason is None, reason=reason)
+    return out
 
 
 def cmd_status(args) -> int:
@@ -282,7 +317,7 @@ def cmd_status(args) -> int:
                sites={s: dict(provider=provider_for(s, config), ready=site_ready(s, config))
                       for s in SITE_CAPABILITY},
                thresholds=config['thresholds'], model_thresholds=config.get('model_thresholds') or {},
-               env_overrides=overrides)
+               env_overrides=overrides, gates=_gates_block(config))
     if args.json:
         print(json.dumps(data, indent=2))
     else:
@@ -302,6 +337,10 @@ def cmd_status(args) -> int:
         for site, value in sorted(moved.items()):
             print(f"  {site}: {value['provider']}{'' if value['ready'] else ' (not ready)'}")
         print('thresholds: ' + json.dumps(data['thresholds']))
+        print('gates:')
+        for name, gate in data['gates'].items():
+            print('  %-16s %-6s (%s) %s' % (name, gate['mode'], gate['source'],
+                                            'ready' if gate['ready'] else 'not ready: ' + gate['reason']))
         if overrides:
             print('env overrides: ' + ', '.join(f'{k}={v}' for k, v in overrides.items()))
     return 0
@@ -396,9 +435,11 @@ def cmd_verify_discover(args) -> int:
         print('forge jev verify-discover: verify module unavailable (' + str(error) + ')', file=sys.stderr)
         return 3
 
+    use_repo(repo)
     config = load_config()
     result = verify.discover(repo, config=config, run_dir=args.run_dir)
-    if result is None:
+    # Shadow: asked and recorded like `on`, then the path a run takes with no command.
+    if result is None or gate_mode('jev-verify-discover') == 'shadow':
         if not args.json:
             print('forge jev verify-discover: no verified candidate found', file=sys.stderr)
         else:
@@ -428,6 +469,9 @@ def cmd_score_plan(args) -> int:
     plan. Each task's answers go to tasks/<id>/jev.json; stdout carries one
     `id<TAB>warnings<TAB>drift` row per task that got any answer. (This command used to
     rate routing rubrics into a suggested tier; that was removed in milestone C1.)
+
+    A gate in shadow is asked and its answer kept in jev.json, but it adds `-` to the row;
+    a task whose every answer is shadowed prints no row, and exit 3 means no row at all.
     """
     plan, repo = Path(args.plan), Path(args.repo)
     if not plan.is_dir():
@@ -440,10 +484,13 @@ def cmd_score_plan(args) -> int:
     if not tasks.is_file():
         print(f'forge jev score-plan: no tasks.tsv in {args.plan!r}', file=sys.stderr)
         return 2
+    use_repo(repo)
     config = load_config()
     ask_prompt, ask_drift = site_ready('jev-prompt', config), site_ready('jev-drift', config)
     if not (ask_prompt or ask_drift):
         return 3
+    shadow_prompt = gate_mode('jev-prompt') == 'shadow'
+    shadow_drift = gate_mode('jev-drift') == 'shadow'
 
     from . import gates
 
@@ -452,7 +499,7 @@ def cmd_score_plan(args) -> int:
     if goal_file.is_file():
         goal = goal_file.read_text(errors='replace')[:2000]
 
-    rows, judgments = [], []
+    rows, judgments, shown = [], [], []
     for line in tasks.read_text(errors='replace').splitlines():
         if not line.strip() or line.startswith('#'):
             continue
@@ -463,7 +510,7 @@ def cmd_score_plan(args) -> int:
 
     # The whole plan, once, for every task's state: prompt_warn was measured with it there.
     siblings = [dict(id=p[0], deps=p[1], files=p[3], title=p[6]) for p in rows]
-    warn_at = threshold('prompt_warn', config=config)
+    warn_at = threshold('prompt_warn', config=config, site='jev-prompt')
 
     for parts in rows:
         task_id, task_deps, _declared, files, _dwarf, _qa, title = parts[:7]
@@ -504,6 +551,11 @@ def cmd_score_plan(args) -> int:
                         warnings=warnings,
                         predicted_drift=[dict(file=name, probability=probability)
                                          for name, probability in predicted or ()])
+        shadowed = [name for name, value, hidden in (('prompt', adequacy, shadow_prompt),
+                                                       ('drift', predicted, shadow_drift))
+                    if value is not None and hidden]
+        if shadowed:
+            judgment['shadow'] = shadowed
         judgments.append(judgment)
         out = plan / 'tasks' / task_id
         try:
@@ -511,6 +563,14 @@ def cmd_score_plan(args) -> int:
             (out / 'jev.json').write_text(json.dumps(judgment, indent=2, sort_keys=True) + '\n')
         except OSError:
             pass
+        # What the run sees: a shadowed answer counts as no answer.
+        if (adequacy is not None and not shadow_prompt) or (predicted is not None and not shadow_drift):
+            visible = {k: v for k, v in judgment.items() if k != 'shadow'}
+            if shadow_prompt:
+                visible.update(prompt_adequacy=None, warnings={})
+            if shadow_drift:
+                visible['predicted_drift'] = []
+            shown.append(visible)
 
     if not judgments:
         return 3
@@ -520,11 +580,13 @@ def cmd_score_plan(args) -> int:
     # A registry rather than moving the file: plan dirs are the user's to place, and
     # relocating them would orphan every run already on disk.
     register_run_dir(repo, plan)
+    if not shown:
+        return 3
 
     if args.json:
-        print(json.dumps(judgments, indent=2, sort_keys=True))
+        print(json.dumps(shown, indent=2, sort_keys=True))
     else:
-        for judgment in judgments:
+        for judgment in shown:
             # '-' rather than an empty field so a `read` in bash cannot silently shift the
             # columns after it.
             warnings = ','.join(sorted(judgment['warnings'])) or '-'
@@ -552,6 +614,7 @@ def cmd_coupling(args) -> int:
     if not waves_file.is_file():
         print(f'forge jev coupling: no waves.tsv in {args.plan!r} -- run compute_waves first', file=sys.stderr)
         return 2
+    use_repo(repo)
     config = load_config()
     if not site_ready('jev-forward', config):
         return 3
@@ -570,6 +633,9 @@ def cmd_coupling(args) -> int:
         (plan / 'jev-coupling.json').write_text(json.dumps(payload, indent=2, sort_keys=True) + '\n')
     except OSError:
         pass
+    # Shadow: recorded in the file above, and the run hears nothing.
+    if gate_mode('jev-forward') == 'shadow':
+        return 3
 
     if args.json:
         print(json.dumps(payload, indent=2, sort_keys=True))
@@ -588,6 +654,7 @@ def cmd_memory_curate(args) -> int:
     learning and parsing JSON in bash for three fields is not worth the subprocess. Exit
     3 means "no opinion", and the caller keeps exactly what the model said.
     """
+    use_repo(args.repo)
     config = load_config()
     if not site_ready('jev-memory-curate', config):
         return 3
@@ -604,7 +671,8 @@ def cmd_memory_curate(args) -> int:
 
     result = memory_module.curate(category=args.category, text=args.text,
                                   existing=existing, run_dir=args.run_dir, config=config)
-    if result is None:
+    # Shadow: asked and recorded, then the path a failed request takes.
+    if result is None or gate_mode('jev-memory-curate') == 'shadow':
         return 3
     if args.json:
         print(json.dumps(result, indent=2, sort_keys=True))
@@ -635,7 +703,7 @@ def cmd_memory_slice(args) -> int:
         task=task, lines=lines, run_dir=args.run_dir,
         keep=args.keep if args.keep and args.keep > 0 else memory_module.SLICE_KEEP,
         config=config)
-    if kept is None:
+    if kept is None or gate_mode('jev-memory-slice') == 'shadow':
         return 3
     for line in kept:
         print(line)
@@ -643,7 +711,9 @@ def cmd_memory_slice(args) -> int:
 
 
 def cmd_memory_stale(args) -> int:
-    """Exit 0 when the fact looks stale, 1 when it still holds, 3 when unknown."""
+    """Exit 0 when the fact looks stale, 1 when it still holds, 3 when unknown (and in
+    shadow, which asks and records but keeps the fact as an unknown does)."""
+    use_repo(_anchor_repo(args.anchor))
     config = load_config()
     if not site_ready('jev-memory-stale', config):
         return 3
@@ -651,9 +721,22 @@ def cmd_memory_stale(args) -> int:
 
     result = memory_module.still_true(text=args.text, anchor_path=args.anchor,
                                       run_dir=args.run_dir, config=config)
-    if result is None:
+    if result is None or gate_mode('jev-memory-stale') == 'shadow':
         return 3
     return 0 if result['stale'] else 1
+
+
+def _anchor_repo(anchor: str) -> str | None:
+    """The repo an anchor file lives in: FORGE_DECIDE_REPO when set, else its git top level."""
+    if os.environ.get('FORGE_DECIDE_REPO'):
+        return None
+    import subprocess
+    try:
+        out = subprocess.run(['git', '-C', str(Path(anchor).parent), 'rev-parse', '--show-toplevel'],
+                             capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return (out.stdout.strip() or None) if out.returncode == 0 else None
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -677,3 +760,5 @@ def main(argv: list[str] | None = None) -> int:
     except (OSError, ValueError, RuntimeError, KeyError) as error:
         print('forge jev: ' + redact(str(error)), file=sys.stderr)
         return 3
+    finally:
+        use_repo(None)

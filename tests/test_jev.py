@@ -184,15 +184,17 @@ class GatingTests(JevTestCase):
         os.environ['FORGE_JEV'] = 'on'
         config = dict(forge_jev.DEFAULTS)
         for cap in forge_jev.CAPABILITIES:
-            self.assertTrue(forge_jev.enabled(cap, config=config), cap)
+            # A retired capability has no gate, so nothing can enable it any more.
+            self.assertEqual(forge_jev.enabled(cap, config=config), cap != 'routing', cap)
 
     def test_global_on_one_capability_off_via_env(self):
         os.environ['FORGE_JEV'] = 'on'
         os.environ['FORGE_JEV_MEMORY'] = 'off'
         config = dict(forge_jev.DEFAULTS)
         self.assertFalse(forge_jev.enabled('memory', config=config))
-        for cap in ('routing', 'tests', 'gates'):
+        for cap in ('tests', 'gates'):
             self.assertTrue(forge_jev.enabled(cap, config=config), cap)
+        self.assertFalse(forge_jev.enabled('routing', config=config))
 
     def test_config_enabled_true_capability_false_in_config(self):
         config = dict(forge_jev.DEFAULTS, enabled=True)
@@ -585,16 +587,16 @@ class CliTests(JevTestCase):
         os.environ['FORGE_JEV'] = 'on'
         os.environ['TYPESAFE_API_KEY'] = 'k'
         os.environ['FORGE_JEV_ROUTING'] = 'on'
-        self.assertTrue(forge_jev.enabled('routing'))
+        self.assertFalse(forge_jev.enabled('routing'))
         self.assertFalse(forge_jev.capability_ready('routing'))
         rc, out, _ = self._run(['status'])
         self.assertEqual(rc, 0)
-        self.assertIn('routing: True (retired, no sites)', out)
+        self.assertIn('routing: False (retired, no sites)', out)
         rc, raw, _ = self._run(['status', '--json'])
         self.assertEqual(rc, 0)
         data = json.loads(raw)
         self.assertIn('routing', data['capabilities'])
-        self.assertTrue(data['capabilities']['routing'])
+        self.assertFalse(data['capabilities']['routing'])
         self.assertEqual(data['capability_sites']['routing'], [])
         self.assertEqual(data['retired_capabilities'], ['routing'])
         self.assertFalse(data['capability_ready']['routing'])
