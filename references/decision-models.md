@@ -9,9 +9,11 @@ optional. Read this when turning one on, when changing a site, or before proposi
 - **Always fail-open.** A timeout, an error, a refusal or a missing key is logged as a skip
   reason, and the run proceeds exactly as it would with the model off. A decision-model call
   can never fail a run.
-- **Advisory.** A decision model never changes a `FORGE_VERDICT`, a task's tier, the model a
-  task runs on, or whether something counts as verified. `--jev-shadow` records judgments and
-  changes nothing at all.
+- **Advisory.** A decision model never changes a `FORGE_VERDICT`, a task's tier or the model a
+  task runs on, and it never marks anything verified itself. The memory sites do act when on
+  (what `memory.md` keeps, files and injects), and verify discover picks the command that runs
+  when none is configured; that command's own result decides verification. `--jev-shadow` is
+  narrower than it sounds, see [Setup today](#setup-today).
 - **`FORGE_JEV=off` sends nothing.** It is a hard kill switch and wins over every flag, every
   per-capability variable and the stored config.
 
@@ -105,6 +107,15 @@ forge jev status                         # resolved config, enabled capabilities
 forge jev doctor [--live]                # config and key checks; --live probes every provider in use
 ```
 
+**`--jev-shadow` only silences the plan-time warnings** (prompt, drift, forward): `plan`
+records the judgments and prints "checked N task(s) in shadow mode (no change)". It does not
+stop the memory and verify-discover consumers. With `memory` on, `forge-memory.sh` still
+applies curate, slice and stale answers in shadow mode, and with `tests` on, a discovered
+command still runs when no verify command is configured, so a `PASS` can follow from a
+command forge chose (a loud `jev chose a verification command` note says so). To judge without
+acting on those, leave `memory` and `tests` off (`--no-jev-memory --no-jev-tests`) rather than
+relying on shadow.
+
 Run flags (`run`, `plan`, solo): `--jev` / `--no-jev` (mutually exclusive), `--jev-shadow`,
 `--jev-<cap>` / `--no-jev-<cap>` for `tests`, `gates` and `memory`. `--jev-routing` still parses
 so old commands keep working, but the `routing` capability has no sites. `--jev-act` is a
@@ -125,14 +136,24 @@ Environment: `FORGE_JEV`, `FORGE_JEV_<CAP>`, `FORGE_CLEF=off` (every site back t
 `TYPESAFE_API_KEY` (overrides the stored key for that invocation).
 
 **Privacy.** Each enabled capability sends a narrow slice of state to an external API:
-`gates` sends task prompts, file lists and diff hunks or file excerpts; `memory` sends the
-memory entries under consideration; `tests` sends candidate commands with an excerpt of what
-each runs. `.forge/` and `.git` are excluded from every payload, with no exception. The TypeSafe
-key lives in `${XDG_CONFIG_HOME:-$HOME/.config}/forge/jev.json`, mode `0600`. A Cloudflare token
-(Account > Workers AI > Read) lives in `cloudflare.env` beside it, mode `0600`, or in
-`CLOUDFLARE_API_TOKEN`; the account id is in config or `CLOUDFLARE_ACCOUNT_ID`. Neither is ever
-written to a run dir, a prompt, a log or argv. A site mapped to Cloudflare sends it what it
-would have sent TypeSafe.
+`gates` sends the task prompt, goal, a title/files/deps view of sibling tasks, file excerpts
+(the first 4000 characters of the task's declared files) and diff hunks; `memory` sends the
+memory entries under consideration (curate: the new fact and the existing entries; slice: the
+task and the fact lines; stale: the fact and the anchor file's content); `tests` sends
+candidate commands with an excerpt of what each runs. Treat all of it as leaving the machine.
+
+The `.forge/` and `.git` exclusion is narrower than "everything": it filters the **candidate
+file list** drift builds from the diff, and nothing else. **`.forge/memory.md` is sent**: prompt
+adequacy puts its first 4000 characters in the request state for every task, and memory curate,
+slice and stale send entries from it. Private text in `.forge/memory.md` therefore reaches the
+provider whenever `gates` or `memory` is on. Keep such text out of that file, or leave those
+capabilities off for the repo. Files a task declares are excerpted whatever their path.
+
+The TypeSafe key lives in `${XDG_CONFIG_HOME:-$HOME/.config}/forge/jev.json`, mode `0600`. A
+Cloudflare token (Account > Workers AI > Read) lives in `cloudflare.env` beside it, mode
+`0600`, or in `CLOUDFLARE_API_TOKEN`; the account id is in config or `CLOUDFLARE_ACCOUNT_ID`.
+Neither is ever written to a run dir, a prompt, a log or argv. A site mapped to Cloudflare
+sends it what it would have sent TypeSafe.
 
 ### Cloudflare Clef
 
@@ -172,9 +193,9 @@ A new site takes this path, in this order. Skipping a step is how the sites in
    noise floor from repeated identical requests, and the baseline from the criteria above. A
    number measured on state the model is not sent describes nothing: it has bitten this file
    seven times.
-6. **Ships advisory first.** It prints or records, it cannot block a dispatch, and
-   `--jev-shadow` silences it. It acts on something only after step 5 holds on live runs, and
-   never on a verdict, a tier or a model.
+6. **Ships advisory first.** It prints or records and cannot block a dispatch. A new site must
+   also honour `--jev-shadow` itself (today only the plan-time warnings do). It acts on
+   something only after step 5 holds on live runs, and never on a verdict, a tier or a model.
 
 ## Tried and removed
 
