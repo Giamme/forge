@@ -4,6 +4,8 @@
      overwritten. Facts only, one per line. -->
 
 ## Verify
+- `bash tests/check.sh` takes about 12 minutes, so a 600s foreground call is moved to the background. Redirect its output to a file, and it still finishes there [tests/check.sh]
+- `bash tests/check.sh` exceeds the 10-minute foreground limit and gets moved to the background; run the touched modules with `python3 tests/run_tests.py <pattern>`… [tests/check.sh]
 - a single scheduler module can be run from tests/ with `python3 -m unittest test_schedule` in about 5s, so use that rather than the full suite [tests/test_schedule.py]
 - cd ui/tests && PYTHONPATH=.. uv run --quiet --with playwright python3 -m unittest test_browser_findings [ui/tests/test_browser_findings.py]
 - `python3 -m unittest discover -s tests` from the repo root is the forge suite and takes over 10 minutes; the forge-ui suite is that same command from… [ui/tests/test_static_js.py]
@@ -13,19 +15,17 @@
 - the full `python3 -m unittest discover -s tests` takes over 10 minutes; run only the modules you touched [tests/check.sh]
 
 ## Known traps
-- `forge-guard.py session` calls setsid only after the python startup, so `kill -- -$!` right after launching it signals nothing (ESRCH) and the stop is… [scripts/forge-guard.py]
-- a trapped signal in a bash `( ) &` subshell is deferred until its foreground command ends, so a cancellable `sleep` timer in a subshell can be orphaned… [scripts/forge-parallel.sh]
-- bash tests/check.sh fails test_update.RunnerNoticeTests.test_runs_end_with_the_notice when CI=true, because forge-version.py stays quiet in CI and that test… [tests/test_update.py]
-- in ui/tests browser tests, `.fnd-table input[type=checkbox]` also matches ForgeTable's column-chooser boxes; select rows by… [ui/forge_ui/static/findingsview.js]
-- `python3 -m unittest discover -s ui/tests -p 'test_control_api.py'` fails with ModuleNotFoundError from the repo root; run `cd ui && python3 -m… [ui/tests/test_control_api.py]
-- probe() returns False when a parent directory is missing, the same as when the file is absent; only a symlink or a non-regular file raises Invalid [scripts/forge-control.py]
-- the fake CLI's SCENARIO call counters live in files beside scenario.json and survive a later `self.scenario(...)`, so keys like `a.qa.2` are the task's… [tests/test_forge.py]
-- `node --test ui/tests/js/` on Node v24.21.0 loads the directory as a module and fails with MODULE_NOT_FOUND; ui/tests/test_static_js.py runs `node… [ui/tests/test_static_js.py]
-- plan-full tasks/reader/accepted.by is free text ("User: accepted the tradeoff."), not key=value; warning on it fails… [ui/tests/fixtures/plan-full/tasks/reader/accepted.by]
-- ui/tests/test_reader.py test_read_only_and_summary_does_not_read_details summarize() open-guard allows only filenames run_id, repo, goal.txt,… [ui/tests/test_reader.py]
-- end-to-end tests put only a fixed list of tools on PATH (no `ln`), so a library call to a tool outside that list fails silently in tests [tests/test_forge.py]
-- harvest.legacy_uid_for's `review-` skip tests the attempts dir's parent name ('attempts'), so attempts under review-* snapshots still count… [scripts/forge_dataset/harvest.py]
-- ForgeUI.confirmInline never resolves a strip whose host is detached, so code that holds a redraw until a confirm answers must not redraw that host [ui/forge_ui/static/uikit.js]
-- forge-ui's write lock (`ctx.locked`) answers 409 busy at once instead of waiting, so a page that fires a new request before the previous one to the same… [ui/forge_ui/control.py]
-- `forge runs rm --json` prints nothing to stderr, so control.py's error `detail` is always "the forge CLI exited N"; the real reason is only in… [scripts/forge-runs-rm.py]
+- `python3 -m unittest tests.<module>` from the repo root fails every test with import errors; run `python3 -m unittest <module>` from inside `tests/` [tests/run_tests.py]
+- Settings sets self.fail, which hides TestCase.fail: failed assertions there report TypeError: 'NoneType' object is not callable [ui/tests/test_browser_settings.py]
+- RunnerNoticeTests fails when CI is set: the update notice is silent in CI, so the last stderr line is not the version line [tests/test_update.py]
+- `bash tests/check.sh` exceeds the 10-minute foreground limit, and the background copy is killed at its limit too; run `python3 tests/run_tests.py` in chunks… [tests/run_tests.py]
+- CI=true makes forge_update_notice silent, and RunnerNoticeTests inherits that env, so tests/check.sh fails that class until CI is unset [tests/test_update.py]
+- `test_jev_cloudflare.TransportTests.test_retry_after_is_honoured` measures time left before a deadline, so slow work inside `client.ask` after… [tests/test_jev_cloudflare.py]
+- tests/test_update.py RunnerNoticeTests fails when CI=true because forge-version.py notice stays silent and that class does not pop CI (VersionTests does) [tests/test_update.py]
+- `forge-parallel.sh plan` resets FORGE_JEV from its own flags, so a test enabling Jev must write `enabled: true` into… [scripts/forge-jev-options.sh]
+- CI=true makes forge-version notice() print nothing, so test_update.RunnerNoticeTests fails until CI is unset [tests/test_update.py]
+- tests/.durations.json splits any class that last took over 90s into one process per test, so the next check.sh runs those classes as hundreds of units [tests/run_tests.py]
+- `bash tests/check.sh` exceeds the 10-minute foreground limit, gets killed (exit 144) and leaves `run_tests.py --child` processes running; kill them with `pkill -f… [tests/check.sh]
+- `tests/check.sh` pipes into `tail`, so a run cut off by the background limit leaves an empty output file; run `python3 tests/run_tests.py <pattern> > file` per… [tests/check.sh]
+- `bash tests/check.sh` slows down and its end-to-end classes fail when another worktree's suite runs at the same time; re-run a failing class alone with… [tests/run_tests.py]
 
