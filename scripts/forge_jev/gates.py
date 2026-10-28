@@ -14,7 +14,7 @@ parallelism. Forge already detects this, but afterwards, in `drift.txt` -- by wh
 the wave has run. Asking at plan time converts a post-mortem into a warning while the
 plan can still change.
 
-Measured before shipping (see references/jev.md): at the default `gate_warn` of 0.60 this
+Measured before shipping (see references/decision-models.md): at the default `gate_warn` of 0.60 this
 rubric scored precision 1.000 on one repo and 0.934 on another, over 50 commits. Precision
 is the number that matters here -- a warning that fires on files nobody edits teaches
 people to ignore every future warning.

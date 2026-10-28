@@ -37,7 +37,7 @@ if [ -z "${FORGE_JEV_ENV_CAPTURED:-}" ]; then
 fi
 
 JEV_CHOICE=""          # "" | on | off
-JEV_ACT=0              # --jev-act
+JEV_ACT=0              # --jev-act: still frozen as "act", no longer exported
 JEV_SHADOW=0           # --jev-shadow
 JEV_CAPS=()            # entries like "tests=on" / "routing=off"
 
@@ -45,7 +45,7 @@ forge_jev_help() {
   cat <<'HELP'
 Optional Jev (TypeSafe System One) advisory judgments (solo or parallel run):
   --jev | --no-jev           Explicit choice; unattended defaults off
-  --jev-act                  Kept for old commands: only marks judgments as acting
+  --jev-act                  (no effect; kept for old commands)
   --jev-shadow               Record judgments only; changes nothing
   --jev-<cap> | --no-jev-<cap>  Per-capability on/off: routing tests gates memory
 FORGE_JEV=off is a hard kill switch and wins over every other setting.
@@ -71,7 +71,15 @@ forge_jev_flag() {
       JEV_CHOICE=off; JEV_SHIFT=1; return 0
       ;;
     --jev-act)
-      JEV_ACT=1; JEV_SHIFT=1; return 0
+      # Once per command. Restore and settle of a frozen selection set JEV_ACT
+      # without coming through here, so they stay silent.
+      JEV_ACT=1
+      if [ "${JEV_ACT_WARNED:-}" != 1 ]; then
+        echo "forge: --jev-act no longer does anything; decision models never change a task's tier or model" >&2
+        JEV_ACT_WARNED=1
+      fi
+      JEV_SHIFT=1
+      return 0
       ;;
     --jev-shadow)
       JEV_SHADOW=1; JEV_SHIFT=1; return 0
@@ -126,7 +134,8 @@ forge_jev_export() {
       memory)  export FORGE_JEV_MEMORY="$val" ;;
     esac
   done
-  if [ "$JEV_ACT" = 1 ]; then export FORGE_JEV_ACT=on; else unset FORGE_JEV_ACT 2>/dev/null || true; fi
+  # Recorded in jev-selection.json and never exported: nothing reads it any more.
+  unset FORGE_JEV_ACT 2>/dev/null || true
   if [ "$JEV_SHADOW" = 1 ]; then export FORGE_JEV_SHADOW=on; else unset FORGE_JEV_SHADOW 2>/dev/null || true; fi
 }
 

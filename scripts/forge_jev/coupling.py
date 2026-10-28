@@ -6,7 +6,7 @@ questions.forward_dependency). This asks about the cross-wave pairs nothing decl
 the waves run, so the warning still lands while the plan can change.
 
 Nothing here writes to tasks.tsv or waves.tsv. Scoring is advisory and silent in shadow
-mode, exactly like routing.py and gates.py.
+mode, the same way the other plan-time gates are. The same-wave rubric is gone.
 """
 from __future__ import annotations
 
