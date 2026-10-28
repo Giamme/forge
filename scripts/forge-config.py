@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """forge config <command>: one view of every config source, and safe edits for the per-repo ones.
 
-  show  [--repo DIR] [--json]            registry, Jev, the repo's .forge files, dataset and FORGE_* env
+  show  [--repo DIR] [--json]            registry, Jev, decide, the repo's .forge files, dataset and FORGE_* env
   set   <key> <value> --repo DIR [--json]   repo.verify | repo.setup | repo.verify-subset | jev.enabled
   unset <key> --repo DIR [--json]           repo.verify | repo.setup | repo.verify-subset
 
@@ -170,6 +170,12 @@ def jev_block():
     return dict(path=str(path), exists=path.is_file(), enabled=bool(load_config().get('enabled')))
 
 
+def decide_block(root):
+    # The cwd's or --repo's git top level, so the gates shown are the ones a run there gets.
+    from forge_decide.cli import config_block
+    return config_block(root)
+
+
 def repo_block(root):
     files = {}
     for name in REPO_FILES:
@@ -220,7 +226,7 @@ def env_block():
 
 def cmd_show(args):
     root = repo_root(args.repo, required=False)
-    data = dict(registry=registry_block(), jev=jev_block())
+    data = dict(registry=registry_block(), jev=jev_block(), decide=decide_block(root))
     if root:
         data['repo'] = repo_block(root)
     data['dataset'] = dataset_block()
@@ -236,6 +242,15 @@ def cmd_show(args):
     jev = data['jev']
     print('jev: %s (%s, %s)' % ('enabled' if jev['enabled'] else 'disabled', jev['path'],
                                'present' if jev['exists'] else 'absent'))
+    decide = data['decide']
+    print('decide: %s (%s, migrated %s, privacy floor %s)' % (
+        decide['path'], 'present' if decide['exists'] else 'absent', 'yes' if decide['migrated'] else 'no',
+        'yes' if decide['privacy_floor'] else 'no'))
+    for gate, mode in decide['gates'].items():
+        print('  gate %s: %s' % (gate, mode))
+    print('  providers: %s' % (', '.join(decide['providers']) or 'none'))
+    caps = decide['budget']
+    print('  budget: %s' % (', '.join('%s=%s' % (k, v) for k, v in caps.items() if v is not None) or 'none'))
     if root:
         print('repo: %s' % root)
         for name, entry in data['repo']['files'].items():

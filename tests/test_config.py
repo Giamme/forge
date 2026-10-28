@@ -59,6 +59,34 @@ class ConfigTests(unittest.TestCase):
         self.assertNotIn('hunter2', out.stdout)
         self.assertNotIn('zzz', out.stdout)
 
+    def test_show_decide_block(self):
+        gates = ('drift', 'forward', 'prompt', 'memory-curate', 'memory-slice', 'memory-stale', 'verify-discover')
+        data = json.loads(self.run_cfg('show', '--repo', str(self.repo), '--json').stdout)
+        decide = data['decide']
+        self.assertEqual(decide['gates'], {g: 'off' for g in gates})
+        self.assertEqual((decide['exists'], decide['migrated'], decide['providers'], decide['privacy_floor']),
+                         (False, False, [], False))
+        self.assertEqual(decide['path'], str(self.cfg / 'forge/decide.json'))
+        (self.cfg / 'forge').mkdir(parents=True)
+        (self.cfg / 'forge/decide.json').write_text(json.dumps(dict(
+            gates=dict(drift='shadow'), budget=dict(daily_usd=2),
+            providers=dict(ts=dict(type='jev', key_file='keys/ts.key')))))
+        (self.repo / '.forge').mkdir()
+        (self.repo / '.forge/decide.json').write_text(json.dumps(dict(privacy='never-send')))
+        data = json.loads(self.run_cfg('show', '--json').stdout)  # no repo: no floor
+        self.assertEqual(data['decide']['gates']['drift'], 'shadow')
+        self.assertEqual(data['decide']['providers'], ['ts'])
+        self.assertEqual(data['decide']['budget']['daily_usd'], 2)
+        self.assertTrue(data['decide']['migrated'])
+        decide = json.loads(self.run_cfg('show', '--repo', str(self.repo), '--json').stdout)['decide']
+        self.assertTrue(decide['privacy_floor'])
+        self.assertEqual(decide['gates']['drift'], 'off')
+        text = self.run_cfg('show').stdout
+        for gate in gates:
+            self.assertIn('  gate %s: ' % gate, text)
+        self.assertIn('gate drift: shadow', text)
+        self.assertIn('jev: ', text)
+
     def test_oversize_content_is_withheld(self):
         (self.repo / '.forge').mkdir()
         (self.repo / '.forge/setup').write_text('x' * 70000)
