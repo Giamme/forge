@@ -10,6 +10,12 @@
     privacy  never-send|allow --repo DIR
     doctor   [--live] [--json] [--repo DIR]
     migrate  [--force] [--json]
+    report   [--runs N] [--run DIR]... [--site S] [--all] [--json]
+
+`report` sums each site's jev.jsonl calls, cache hits, skips, tokens and cost over the newest
+N (default 10) registered runs of the repo (--all: of every repo; --run: those dirs), with how
+often it fired and was right on the dataset's free labels (forge_decide.report). Its --json
+is {runs: [{dir, uid}], skipped_runs, sites: {site: {...}}, totals: {...}}; keys are stable.
 
 Every subcommand works offline and with no key, except `doctor --live`. Exit codes: 0 ok,
 2 usage or invalid input, 1 a failed check (doctor) or a config file that cannot be read.
@@ -629,12 +635,32 @@ def cmd_migrate(args) -> int:
     return 0
 
 
+def cmd_report(args) -> int:
+    from . import report as report_module
+    if args.runs is not None and args.runs < 1:
+        raise Usage('--runs must be at least 1')
+    if args.run and (args.all or args.runs is not None):
+        raise Usage('--run names the runs itself; drop --all and --runs')
+    repo = _repo(None)
+    if not args.run and not args.all and repo is None:
+        raise Usage('not inside a git repo: run it from one, or use --run DIR or --all')
+    dirs, missing = report_module.collect_runs(repo=repo, dirs=args.run or (), every=args.all,
+                                               limit=args.runs or report_module.DEFAULT_RUNS)
+    summary = report_module.summarize(dirs, repo=repo, site=args.site)
+    data = dict(runs=summary['runs'], skipped_runs=missing, sites=summary['sites'], totals=summary['totals'])
+    if args.json:
+        print(json.dumps(data, indent=2))
+    else:
+        print(report_module.render(data))
+    return 0
+
+
 # ------------------------------------------------------------------------------- parser
 
 def parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog='forge decide', allow_abbrev=False,
                                 description='Decision-model gates: status, gate, provider, budget, '
-                                            'privacy, doctor, migrate')
+                                            'privacy, doctor, migrate, report')
     sub = p.add_subparsers(dest='command', required=True)
 
     s = sub.add_parser('status', allow_abbrev=False, help='what is on, and why')
@@ -695,6 +721,14 @@ def parser() -> argparse.ArgumentParser:
     s.add_argument('--force', action='store_true')
     s.add_argument('--json', action='store_true')
     s.set_defaults(fn=cmd_migrate)
+
+    s = sub.add_parser('report', allow_abbrev=False, help='calls, tokens, cost and hit rate per site')
+    s.add_argument('--runs', type=int, metavar='N', help='the newest N registered runs (default 10)')
+    s.add_argument('--run', action='append', metavar='DIR', help='read this run dir (repeatable)')
+    s.add_argument('--site', metavar='S', help='only this site')
+    s.add_argument('--all', action='store_true', help="every repo's registered runs")
+    s.add_argument('--json', action='store_true')
+    s.set_defaults(fn=cmd_report)
     return p
 
 
