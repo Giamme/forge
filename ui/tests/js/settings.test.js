@@ -167,6 +167,8 @@ test('decision models: gates, sources, the privacy banner and the budget line', 
     ['on', 'flags', '', '', ''],
     ['off', 'default', '', '', ''],
   ]);
+  // The user level's mode, where the status shows it: the user file set it and no override applies.
+  assert.deepEqual(view.gates.map(g => g.userMode), ['shadow', null, null, null, null, null, null]);
   assert.equal(view.gates[0].ready, true);
   assert.equal(view.privacyFloor, false);
   assert.equal(view.banner, '');
@@ -185,6 +187,7 @@ test('decision models: gates, sources, the privacy banner and the budget line', 
   assert.equal(floored.banner, 'Nothing is sent. This repository is under a privacy floor.');
   assert.equal(floored.privacyFloor, true);
   assert.deepEqual(floored.gates.map(g => g.skip), ['privacy', 'privacy', 'privacy', 'privacy', 'privacy', 'privacy', 'privacy']);
+  assert.deepEqual(floored.gates.map(g => g.userMode), Array(7).fill(null));
   assert.equal(floored.noProviders, true);
   assert.equal(floored.addCommand, 'forge decide provider add …');
 });
