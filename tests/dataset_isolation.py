@@ -42,6 +42,11 @@ for name in ('CLOUDFLARE_API_TOKEN', 'CLOUDFLARE_ACCOUNT_ID', 'FORGE_CLEF', 'FOR
              'FORGE_JEV_OUTCOMES'):
     os.environ.pop(name, None)
 
+# The decision-model request cache answers a repeated question from the run dir, so tests that
+# ask the same thing twice and count requests would see one. They start with it off;
+# test_decide_cache turns it on.
+os.environ['FORGE_DECIDE_CACHE'] = 'off'
+
 # A forge runner exports state for its own children (Jev's captured environment, the
 # capability cache, the dataset's invocation chain, the fractal run ids). The suite also runs
 # inside a forge run, as a plan's --verify: there the outer run's FORGE_JEV_ENV_CAPTURED made
