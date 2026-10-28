@@ -191,6 +191,16 @@ class MigrateTests(MigrateTestCase):
         self.assertEqual(decide['gates']['verify-discover']['thresholds'], {'tests_act': 0.9})
         self.assertNotIn('routing_act', json.dumps(decide))
 
+    def test_a_migrated_gate_warn_is_still_the_drift_cutoff(self):
+        # drift_warn falls back to gate_warn, and migration saves jev.json's gate_warn on the
+        # drift gate under that name: the cutoff reads the same once decide.json exists.
+        self.write_jev(dict(enabled=True, key=KEY, thresholds=dict(gate_warn=0.8)), token=None)
+        cutoff = dict(site='jev-drift', model=forge_jev.MODEL)
+        self.assertEqual(forge_jev.threshold('drift_warn', **cutoff), 0.8)
+        self.assertEqual(self.migrate()['status'], 'migrated')
+        self.assertEqual(self.decide()['gates']['drift']['thresholds'], {'gate_warn': 0.8})
+        self.assertEqual(forge_jev.threshold('drift_warn', **cutoff), 0.8)
+
 
 class DoctorTests(MigrateTestCase):
     def test_a_migrated_config_with_jev_json_still_present(self):

@@ -391,9 +391,12 @@ def threshold(name: str, *, config: dict | None = None, site: str | None = None,
     if site is not None:
         resolved = _resolved(config)
         gate = _gate(site, resolved)
-        if gate and name in gate['thresholds'] and gate['thresholds_model']:
-            if gate['thresholds_model'] == (model or _spec(site, config, resolved)['model']):
-                return gate['thresholds'][name]
+        # The override may sit under the name a fallback reads: migration saves jev.json's
+        # gate_warn on the drift gate, which drift_warn reads.
+        for key in (name, THRESHOLD_FALLBACK.get(name, name)):
+            if gate and key in gate['thresholds'] and gate['thresholds_model']:
+                if gate['thresholds_model'] == (model or _spec(site, config, resolved)['model']):
+                    return gate['thresholds'][key]
     if forge_decide.user_path().exists():
         config = dict(config, thresholds=dict(DEFAULT_THRESHOLDS), model_thresholds={})
     if model:
