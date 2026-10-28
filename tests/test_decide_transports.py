@@ -16,6 +16,7 @@ import sys
 import tempfile
 import threading
 import unittest
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'scripts'))
@@ -161,19 +162,29 @@ class LocalJevTests(TransportCase):
 
     def test_a_raw_base64_key_with_padding_is_sent_whole(self):
         server = self.server('jev')
-        for raw in ('YWJjZGVmZw==', 'YWJjZGU=', 'export MY_KEY=YWJjZGU='):
+        for raw in ('YWJjZGVmZw==', 'YWJjZGU=', 'QUJDREU=', 'export MY_KEY=YWJjZGU='):
             with self.subTest(raw=raw):
                 server.requests.clear()
                 self.configure({'mine': dict(type='jev', url=server.url('/'), key_file=self.key_file(raw + '\n'))})
                 self.assertIsNotNone(self.ask())
                 self.assertEqual(server.requests[0]['auth'], 'Bearer ' + raw.removeprefix('export MY_KEY='))
 
-    def test_an_empty_assignment_is_no_key(self):
+    def test_an_empty_assignment_to_key_env_is_no_key(self):
         server = self.server('jev')
-        self.configure({'mine': dict(type='jev', url=server.url('/'), key_file=self.key_file('MY_KEY=\n'))})
+        os.environ.pop('MY_KEY', None)
+        self.configure({'mine': dict(type='jev', url=server.url('/'), key_env='MY_KEY',
+                                     key_file=self.key_file('MY_KEY=\n'))})
         self.assertIsNone(self.ask())
         self.assertEqual(server.requests, [])
         self.assertEqual(self.log()[-1]['reason'], 'no-key')
+
+    def test_a_local_jev_provider_without_a_url_is_not_sent_to_the_hosted_service(self):
+        self.configure({'mine': dict(type='jev', local=True)})
+        self.assertIsNone(providers.spec_for_site('jev-drift')['url'])
+        with mock.patch.object(client.urllib.request, 'urlopen') as urlopen:
+            self.assertIsNone(self.ask())
+        urlopen.assert_not_called()
+        self.assertEqual(self.log()[-1]['reason'], 'no-url')
 
     def test_key_env_wins_over_key_file_and_the_file_is_the_fallback(self):
         server = self.server('jev')
@@ -236,7 +247,7 @@ class TooLargeTests(TransportCase):
         server = self.server('jev')
         path = forge_decide.user_path()
         path.parent.mkdir(parents=True, exist_ok=True)
-        for raw in ('1e309', 'NaN'):
+        for raw in ('1e309', 'NaN', '1' + '0' * 400):
             with self.subTest(context=raw):
                 server.requests.clear()
                 path.write_text('{"version": 1, "providers": {"j": {"type": "jev", "url": "%s", "local": true, '

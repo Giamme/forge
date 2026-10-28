@@ -56,17 +56,18 @@ def privacy_floor(repo=None) -> bool:
     return data.get('privacy') == 'never-send'
 
 
-def _assignment(line: str) -> tuple[str, str] | None:
+def _assignment(line: str, key_env: str | None, single: bool) -> tuple[str, str] | None:
     """(NAME, value) for a NAME=value line, None for a raw token. Base64 keeps `=` for its
-    trailing padding only, so a value starting with `=` (`YWJjZGVmZw==`) is a raw token, and
-    so is an empty value unless the name is an environment-style CAPS name (`YWJjZGU=`)."""
+    trailing padding only, so a value starting with `=` (`YWJjZGVmZw==`) is a raw token. An
+    empty value (`YWJjZGU=`, `QUJDREU=`) is a raw token too when it is the file's only line,
+    unless the name is key_env's; beside other lines, a CAPS name is an empty assignment."""
     match = _NAME.match(line)
     if not match:
         return None
     name, value = match.group(1), match.group(2).strip()
     if value.startswith('='):
         return None
-    if not value and not _ENV_NAME.match(name):
+    if not value and (name != key_env if single else not _ENV_NAME.match(name)):
         return None
     return name, value.strip('"').strip("'")
 
@@ -86,7 +87,7 @@ def _read_key_file(path: str, key_env: str | None) -> str | None:
              if line.strip() and not line.strip().startswith('#')]
     if not lines:
         return None
-    pairs = [_assignment(line) for line in lines]
+    pairs = [_assignment(line, key_env, len(lines) == 1) for line in lines]
     if not all(pairs):
         return lines[0] if len(lines) == 1 else None
     values = dict(pairs)
@@ -112,9 +113,14 @@ def _key(entry: dict) -> str | None:
 
 
 def _positive(value) -> float | None:
-    """A finite number above zero, else None: JSON's 1e309 or NaN must not reach int()."""
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) \
-            or value <= 0:
+    """A finite number above zero, else None: JSON's 1e309, NaN or an integer too big for a
+    float must not reach int() or crash ask()."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    try:
+        if not math.isfinite(value) or value <= 0:
+            return None
+    except OverflowError:
         return None
     return value
 
@@ -136,7 +142,9 @@ def _configured(site: str, config: dict, resolved: dict) -> dict | None:
     model = gate.get('model') or (entry.get('model') if isinstance(entry.get('model'), str) else None) \
         or default_model
     url = entry.get('url') if isinstance(entry.get('url'), str) and entry.get('url') else None
-    if url is None and kind == 'jev':
+    # Only hosted TypeSafe has a default address: a local provider without one is `no-url`,
+    # never the hosted service unauthenticated.
+    if url is None and kind == 'jev' and entry.get('local') is not True:
         url = forge_jev.ENDPOINT
     if url is not None and '{model}' in url:
         url = url.replace('{model}', model)
