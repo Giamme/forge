@@ -1317,7 +1317,7 @@ dialog.del-dialog::backdrop { background: light-dark(rgb(17 22 19 / .35), rgb(0 
 .del-archive { margin: var(--s-2) 0 0; font-size: var(--t-xs); overflow-wrap: anywhere; }
 .del-actions { display: flex; justify-content: flex-end; gap: var(--s-2); margin-top: var(--s-3); }
 
-/* ---------- settings (#/settings): registry, Jev and the repository's .forge files ---------- */
+/* ---------- settings (#/settings): registry, decision models and the repository's .forge files ---------- */
 .settings-view { display: grid; gap: var(--s-4); max-width: 1100px; }
 .set-head { display: flex; align-items: baseline; gap: var(--s-4); flex-wrap: wrap; }
 .set-lede { margin: 0; font-size: var(--t-sm); }
@@ -1342,7 +1342,7 @@ button.set-switch { gap: 8px; padding: 0 10px 0 4px; }
 .set-switch-knob::after { content: ''; position: absolute; top: 2px; left: 2px; width: 10px; height: 10px; border-radius: 50%; background: var(--key); box-shadow: 0 0 0 1px var(--lamp-edge); transition: translate var(--relay); }
 button.set-switch[aria-checked=true] .set-switch-knob { background: var(--lamp-green); }
 button.set-switch[aria-checked=true] .set-switch-knob::after { translate: 12px 0; }
-button.set-switch:focus-visible, .set-editor:focus-visible, .set-picker select:focus-visible { outline: 2px solid var(--route); outline-offset: 2px; }
+button.set-switch:focus-visible, .set-editor:focus-visible, .set-picker select:focus-visible, .set-gate select:focus-visible, .set-gate input:focus-visible { outline: 2px solid var(--route); outline-offset: 2px; }
 .set-file { display: grid; gap: var(--s-2); width: 100%; padding: var(--s-3); border: 1px solid var(--rule); border-radius: var(--r-key); background: var(--module-2); }
 .set-file > * { margin-block: 0; }
 .set-file-head { display: flex; align-items: baseline; justify-content: space-between; gap: var(--s-3); flex-wrap: wrap; }
@@ -1363,3 +1363,9 @@ button.set-remove:focus-visible { outline: 2px solid var(--lamp-red); outline-of
 .set-env dt, .set-env dd { margin: 0; overflow-wrap: anywhere; }
 .set-env dt { color: var(--ink-2); }
 .set-readonly { margin: 0; }
+.set-banner { display: flex; align-items: flex-start; gap: 7px; width: 100%; padding: 6px var(--s-2); border: 1px solid var(--rule-2); border-radius: var(--r-key); background: var(--warn-wash); color: var(--warn-ink); font-size: var(--t-sm); font-weight: 600; overflow-wrap: anywhere; }
+.set-budget { max-width: 72ch; font-variant-numeric: tabular-nums; }
+.set-gates { display: grid; gap: var(--s-3); width: 100%; }
+.set-gate select { min-width: 9em; max-width: 100%; }
+.set-gate input[type=text] { width: 14em; max-width: 100%; }
+.set-gate-skip { font-family: var(--mono); font-size: var(--t-xs); color: var(--warn-ink); }

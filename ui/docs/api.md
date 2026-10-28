@@ -254,7 +254,7 @@ its last 20,000 behind a leading `…`. Their `truncated` lists the field names 
 | `POST /api/runs/<key>/delete` | dry-run or delete a run with `forge runs rm`; authenticated, 900 s timeout; later requests for the key answer `404` |
 | `GET /api/models/reviewers` | `200` the `forge dataset reviewers --json` report (how each reviewer's PASSed work held up); no parameters |
 | `GET /api/config?run=<key>` | `200` the `forge config show --json` of that run's repo |
-| `POST /api/config` | set or unset one allowed key (`repo.verify`, `repo.setup`, `repo.verify-subset`, `jev.enabled`); authenticated |
+| `POST /api/config` | set or unset one allowed key (`repo.verify`, `repo.setup`, `repo.verify-subset`, `decide.gate.<gate>`, `decide.gate.<gate>.provider`, `decide.gate.<gate>.model`); `jev.enabled` is gone; authenticated |
 | `GET /api/runs/<key>/export?texts=0\|1&paths=0\|1` | `200` the run as one HTML file (see Export), `Content-Disposition: attachment`, `Content-Security-Policy: default-src 'none'; sandbox`; `404` for an unknown run |
 | `GET /api/runs/<key>/tasks/<id>/fractal` | `200 TaskFractal` |
 | `GET /api/runs/<key>/tasks/<id>/fractal/nodes/<node>[/diff]` | `200 FractalNodeDetail`, or with `/diff` a `DiffDetail` of its `candidate.diff`; `<node>` matches `[A-Za-z0-9][A-Za-z0-9_-]{0,100}` |
@@ -1368,12 +1368,22 @@ Reviewers table's Did not hold column and nothing else. Timeout 60 s.
 
 The repository is the run's own `repo` file (first line, an existing absolute directory; else
 `409`), never a client field. `GET` runs `config show --repo <repo> --json` and answers with its
-object. `POST` takes `{"run": <key>, "key": one of repo.verify, repo.setup, repo.verify-subset,
-jev.enabled, "value": text | "unset": true}` (exactly one of the two; any other field, `repo`
-included, is a `400`) and runs `config set <key> <value> --repo <repo> --json` or `config unset
-<key> --repo <repo> --json`. A value is a non-empty text of at most 4096 characters without
-control characters (newline and tab are allowed), not starting with `-`; `jev.enabled` takes
-`true` or `false` and cannot be unset; `repo.verify-subset` must contain `{files}`. `200` with the
+object. The `decide` block is the `forge decide status --json` object for that repo, plus `ready`
+on each gate (`true` when the gate is `shadow` or `on`, nothing skips it, and its provider is
+local or has a key on file). Provider objects keep the status fields except `key`, `key_source`,
+`key_file` and `key_env`: a key never reaches this response. `jev.enabled` is gone.
+
+`POST` takes `{"run": <key>, "key": one of repo.verify, repo.setup, repo.verify-subset,
+decide.gate.<gate>, decide.gate.<gate>.provider, decide.gate.<gate>.model, "value": text | "unset": true}`
+(exactly one of the two; any other field, `repo` included, is a `400`) and runs
+`config set <key> <value> --repo <repo> --json` or `config unset <key> --repo <repo> --json`.
+The gates are `drift`, `forward`, `prompt`, `memory-curate`, `memory-slice`, `memory-stale` and
+`verify-discover`. `decide.gate.<gate>` takes `off`, `shadow` or `on`. A provider or model is a
+non-empty single line of at most 256 characters, with no control characters and no leading or
+trailing whitespace, and not starting with `-`. Those three keys write the user level through
+`forge decide gate` and cannot be unset (the answer says to set the mode to off). A repo file
+value is a non-empty text of at most 4096 characters without control characters (newline and tab
+are allowed), not starting with `-`; `repo.verify-subset` must contain `{files}`. `200` with the
 CLI's object (`ok`, `key`, `previous`, `value`). Writes serialize on one server-wide config lock
 (`409 busy`). Unknown run `404`. Timeout 60 s.
 

@@ -29,8 +29,16 @@ MAX_LABELS = 5
 MAX_LABEL = 50
 MAX_REASON = 500
 MAX_CONFIG_VALUE = 4096
+MAX_DECIDE_VALUE = 256
 FP_RE = re.compile(r'[0-9a-f]{12}')
-CONFIG_KEYS = ('repo.verify', 'repo.setup', 'repo.verify-subset', 'jev.enabled')
+# Mirrored from forge_decide.GATES and MODES. The ui tests do not put scripts/ on the path, so this
+# module does not import forge_decide; ConfigTests.test_decide_names_match_forge_decide keeps them equal.
+DECIDE_GATES = ('drift', 'forward', 'prompt', 'memory-curate', 'memory-slice', 'memory-stale',
+                'verify-discover')
+DECIDE_MODES = ('off', 'shadow', 'on')
+REPO_CONFIG_KEYS = ('repo.verify', 'repo.setup', 'repo.verify-subset')
+CONFIG_KEYS = REPO_CONFIG_KEYS
+_DECIDE_KEY = re.compile(r'^decide\.gate\.([A-Za-z0-9_-]+?)(?:\.(provider|model))?$')
 DETAIL_MAX = 300
 TIMEOUT_DETAIL = 'the operation may have partly completed; reload to see the current state'
 
@@ -511,20 +519,49 @@ def _config_get(ctx):
     return ctx.call('config', 'show', '--repo', repo, '--json')
 
 
-def _config_value(key, body):
+def _classify_config_key(key):
+    """('repo'|'mode'|'provider'|'model', gate or None). BadBody when the key is not one of those shapes."""
+    if key == 'jev.enabled':
+        raise BadBody('jev.enabled is gone; set a gate with decide.gate.<gate>')
+    if key in REPO_CONFIG_KEYS:
+        return 'repo', None
+    if isinstance(key, str) and key.startswith('decide.'):
+        match = _DECIDE_KEY.fullmatch(key)
+        if match and match.group(1) in DECIDE_GATES:
+            return match.group(2) or 'mode', match.group(1)
+        if match:
+            raise BadBody('unknown gate %r; gates: %s' % (match.group(1), ', '.join(DECIDE_GATES)))
+        raise BadBody('key must be decide.gate.<gate>, decide.gate.<gate>.provider or decide.gate.<gate>.model')
+    raise BadBody('key must be one of ' + ', '.join(REPO_CONFIG_KEYS)
+                  + ', decide.gate.<gate>, decide.gate.<gate>.provider, decide.gate.<gate>.model')
+
+
+def _decide_text(value):
+    """A provider or model: one short line, so it cannot become an option on the decide CLI's argv."""
+    if (not isinstance(value, str) or not value or value != value.strip()
+            or len(value) > MAX_DECIDE_VALUE or value.startswith('-') or not _no_control_chars(value)):
+        raise BadBody('value must be short single-line text, not starting with "-"')
+    return value
+
+
+def _config_value(key, body, kind):
     if 'unset' in body:
         if body['unset'] is not True or 'value' in body:
             raise BadBody('give value, or unset: true, not both')
-        if key == 'jev.enabled':
-            raise BadBody('jev.enabled cannot be unset')
+        if kind != 'repo':
+            raise BadBody('set the mode to off')
         return 'unset', None
     value = body.get('value')
+    if kind == 'mode':
+        if value not in DECIDE_MODES:
+            raise BadBody('mode must be off, shadow or on')
+        return 'set', value
+    if kind in ('provider', 'model'):
+        return 'set', _decide_text(value)
     if not isinstance(value, str) or not value.strip():
         raise BadBody('value must be a non-empty string')
     if len(value) > MAX_CONFIG_VALUE or value.startswith('-') or not _no_control_chars(value.replace('\n', ' ').replace('\t', ' ')):
         raise BadBody('value is not an acceptable text')
-    if key == 'jev.enabled' and value not in ('true', 'false'):
-        raise BadBody('jev.enabled takes true or false')
     if key == 'repo.verify-subset' and '{files}' not in value:
         raise BadBody('repo.verify-subset must contain {files}')
     return 'set', value
@@ -537,9 +574,8 @@ def _config_set(ctx):
     try:
         _check_fields(body, ('run', 'key', 'value', 'unset'))
         key = body.get('key')
-        if key not in CONFIG_KEYS:
-            raise BadBody('key must be one of ' + ', '.join(CONFIG_KEYS))
-        verb, value = _config_value(key, body)
+        kind, _gate = _classify_config_key(key)
+        verb, value = _config_value(key, body, kind)
     except BadBody as exc:
         return _invalid(str(exc))
     repo, error = _config_run(ctx, body.get('run'))

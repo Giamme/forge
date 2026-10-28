@@ -21,11 +21,19 @@ class ConfigTests(unittest.TestCase):
         subprocess.run(['git', 'init', '-q', str(self.repo)], check=True)
         self.registry = self.base / 'registry.tsv'
         self.registry.write_text('# c\nsol\tcodex\tgpt-x\thigh\t900\nastra\tclaude\topus\tlow,high\t\n')
-        self.env = dict(os.environ, HOME=str(self.base), XDG_CONFIG_HOME=str(self.cfg),
+        # A developer's FORGE_DECIDE_* or FORGE_JEV would change the gates this class reads.
+        self.env = {k: v for k, v in os.environ.items()
+                    if not k.startswith(('FORGE_DECIDE', 'FORGE_JEV'))}
+        self.env.update(HOME=str(self.base), XDG_CONFIG_HOME=str(self.cfg),
+                        XDG_STATE_HOME=str(self.base / 'state'),
                         FORGE_REGISTRY=str(self.registry), FORGE_TEST_TOKEN='hunter2')
 
     def run_cfg(self, *args, stdin=None):
         return subprocess.run([str(FORGE), 'config', *args], capture_output=True, text=True,
+                              env=self.env, input=stdin, cwd=str(self.base))
+
+    def run_decide(self, *args, stdin=None):
+        return subprocess.run([str(FORGE), 'decide', *args], capture_output=True, text=True,
                               env=self.env, input=stdin, cwd=str(self.base))
 
     def test_show_symlinked_forge_dir_reports_files_without_reading(self):
@@ -61,31 +69,46 @@ class ConfigTests(unittest.TestCase):
 
     def test_show_decide_block(self):
         gates = ('drift', 'forward', 'prompt', 'memory-curate', 'memory-slice', 'memory-stale', 'verify-discover')
-        data = json.loads(self.run_cfg('show', '--repo', str(self.repo), '--json').stdout)
-        decide = data['decide']
-        self.assertEqual(decide['gates'], {g: 'off' for g in gates})
-        self.assertEqual((decide['exists'], decide['migrated'], decide['providers'], decide['privacy_floor']),
-                         (False, False, [], False))
-        self.assertEqual(decide['path'], str(self.cfg / 'forge/decide.json'))
+        out = self.run_cfg('show', '--repo', str(self.repo), '--json')
+        self.assertEqual(out.returncode, 0, out.stderr)
+        decide = json.loads(out.stdout)['decide']
+        self.assertEqual(list(decide['gates']), list(gates))
+        for name in gates:
+            gate = decide['gates'][name]
+            self.assertEqual((gate['mode'], gate['source'], gate['provider'], gate['model'], gate['skip'], gate['ready']),
+                             ('off', 'default', None, None, None, False))
+            self.assertIn('site', gate)
+        self.assertEqual(decide['providers'], {})
+        self.assertFalse(decide['privacy']['floor'])
+        self.assertFalse(decide['migrated'])
+        self.assertEqual(decide['user_path'], str(self.cfg / 'forge/decide.json'))
+        self.assertEqual(decide['budget']['spend']['today'], {'tokens': 0, 'usd': 0.0})
+        self.assertEqual(decide['shadowed'], [])
         (self.cfg / 'forge').mkdir(parents=True)
         (self.cfg / 'forge/decide.json').write_text(json.dumps(dict(
             gates=dict(drift='shadow'), budget=dict(daily_usd=2),
             providers=dict(ts=dict(type='jev', key_file='keys/ts.key')))))
         (self.repo / '.forge').mkdir()
         (self.repo / '.forge/decide.json').write_text(json.dumps(dict(privacy='never-send')))
-        data = json.loads(self.run_cfg('show', '--json').stdout)  # no repo: no floor
-        self.assertEqual(data['decide']['gates']['drift'], 'shadow')
-        self.assertEqual(data['decide']['providers'], ['ts'])
-        self.assertEqual(data['decide']['budget']['daily_usd'], 2)
+        data = json.loads(self.run_cfg('show', '--json').stdout)  # cwd is not a git top: no floor
+        self.assertEqual(data['decide']['gates']['drift']['mode'], 'shadow')
+        self.assertEqual(data['decide']['gates']['drift']['source'], 'user')
+        self.assertEqual(data['decide']['providers']['ts']['type'], 'jev')
+        self.assertNotIn('key', data['decide']['providers']['ts'])
+        self.assertNotIn('key_file', data['decide']['providers']['ts'])
+        self.assertEqual(data['decide']['budget']['caps']['daily_usd'], 2)
         self.assertTrue(data['decide']['migrated'])
         decide = json.loads(self.run_cfg('show', '--repo', str(self.repo), '--json').stdout)['decide']
-        self.assertTrue(decide['privacy_floor'])
-        self.assertEqual(decide['gates']['drift'], 'off')
+        self.assertTrue(decide['privacy']['floor'])
+        self.assertEqual(decide['gates']['drift']['mode'], 'off')
+        self.assertEqual(decide['gates']['drift']['skip'], 'privacy')
+        self.assertFalse(decide['gates']['drift']['ready'])
         text = self.run_cfg('show').stdout
         for gate in gates:
             self.assertIn('  gate %s: ' % gate, text)
         self.assertIn('gate drift: shadow', text)
         self.assertIn('jev: ', text)
+        self.assertNotIn('keys/ts.key', text)
 
     def test_oversize_content_is_withheld(self):
         (self.repo / '.forge').mkdir()
@@ -145,14 +168,107 @@ class ConfigTests(unittest.TestCase):
         for cmd in (('set', 'repo.verify', 'x'), ('unset', 'repo.verify')):
             self.assertEqual(self.run_cfg(*cmd, '--repo', str(self.repo)).returncode, 2)
 
-    def test_jev_enabled(self):
-        out = self.run_cfg('set', 'jev.enabled', 'true', '--json')
+    def test_set_gate_mode_shows_in_decide_status(self):
+        out = self.run_cfg('set', 'decide.gate.drift', 'shadow', '--repo', str(self.repo), '--json')
         self.assertEqual(out.returncode, 0, out.stderr)
-        self.assertTrue(json.loads((self.cfg / 'forge/jev.json').read_text())['enabled'])
-        out = self.run_cfg('set', 'jev.enabled', 'false', '--json')
-        self.assertTrue(json.loads(out.stdout)['previous'])
-        self.assertFalse(json.loads((self.cfg / 'forge/jev.json').read_text())['enabled'])
-        self.assertEqual(self.run_cfg('set', 'jev.enabled', 'maybe').returncode, 2)
+        body = json.loads(out.stdout)
+        self.assertEqual((body['key'], body['previous'], body['value']), ('decide.gate.drift', 'off', 'shadow'))
+        status = json.loads(self.run_decide('status', '--repo', str(self.repo), '--json').stdout)
+        self.assertEqual(status['gates']['drift']['mode'], 'shadow')
+        self.assertEqual(status['gates']['drift']['source'], 'user')
+        user = json.loads((self.cfg / 'forge/decide.json').read_text())
+        self.assertEqual(user['gates']['drift']['mode'], 'shadow')
+        self.assertFalse((self.repo / '.forge/decide.json').exists())
+
+    def test_set_provider_and_model_keep_the_mode_and_drop_the_key(self):
+        added = self.run_decide('provider', 'add', 'jev', '--name', 'box', '--local', '--url', 'http://127.0.0.1:9')
+        self.assertEqual(added.returncode, 0, added.stderr)
+        self.assertEqual(self.run_cfg('set', 'decide.gate.drift', 'shadow', '--json').returncode, 0)
+        out = self.run_cfg('set', 'decide.gate.drift.provider', 'box', '--repo', str(self.repo), '--json')
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertIsNone(json.loads(out.stdout)['previous'])
+        out = self.run_cfg('set', 'decide.gate.drift.model', 'clef', '--json')
+        self.assertEqual(out.returncode, 0, out.stderr)
+        shown = json.loads(self.run_cfg('show', '--repo', str(self.repo), '--json').stdout)['decide']
+        gate = shown['gates']['drift']
+        self.assertEqual((gate['mode'], gate['provider'], gate['model'], gate['ready']), ('shadow', 'box', 'clef', True))
+        self.assertEqual(shown['providers']['box']['type'], 'jev')
+        self.assertTrue(shown['providers']['box']['local'])
+        self.assertNotIn('key', shown['providers']['box'])
+        status = json.loads(self.run_decide('status', '--repo', str(self.repo), '--json').stdout)
+        self.assertEqual((status['gates']['drift']['mode'], status['gates']['drift']['provider'],
+                          status['gates']['drift']['model']), ('shadow', 'box', 'clef'))
+        long = 'm' * 256
+        out = self.run_cfg('set', 'decide.gate.forward.model', long, '--json')
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertEqual(json.loads(self.run_decide('status', '--json').stdout)['gates']['forward']['model'], long)
+        missing = self.run_cfg('set', 'decide.gate.drift.provider', 'missing', '--json')
+        self.assertEqual(missing.returncode, 2)
+        self.assertIn('unknown provider', missing.stderr)
+        self.assertEqual(json.loads((self.cfg / 'forge/decide.json').read_text())['gates']['drift']['mode'], 'shadow')
+
+    def test_show_never_includes_a_provider_key(self):
+        secret = 'decide-ui-secret-7c41e9\n'
+        added = self.run_decide('provider', 'add', 'clef', '--name', 'hosted', '--url', 'http://127.0.0.1:9',
+                                '--key-stdin', stdin=secret)
+        self.assertEqual(added.returncode, 0, added.stderr)
+        self.assertNotIn(secret.strip(), added.stdout)
+        self.assertEqual(self.run_cfg('set', 'decide.gate.prompt', 'on', '--json').returncode, 0)
+        self.assertEqual(self.run_cfg('set', 'decide.gate.prompt.provider', 'hosted', '--json').returncode, 0)
+        shown = self.run_cfg('show', '--repo', str(self.repo), '--json')
+        self.assertEqual(shown.returncode, 0, shown.stderr)
+        self.assertNotIn(secret.strip(), shown.stdout)
+        text = self.run_cfg('show', '--repo', str(self.repo))
+        self.assertNotIn(secret.strip(), text.stdout)
+        self.assertNotIn(secret.strip(), text.stderr)
+        decide = json.loads(shown.stdout)['decide']
+        self.assertTrue(decide['gates']['prompt']['ready'])
+        row = decide['providers']['hosted']
+        self.assertEqual((row['type'], row['local']), ('clef', False))
+        self.assertNotIn('key', row)
+        self.assertNotIn('key_source', row)
+
+    def test_provider_change_under_a_privacy_floor_keeps_the_stored_mode(self):
+        added = self.run_decide('provider', 'add', 'jev', '--name', 'box', '--local', '--url', 'http://127.0.0.1:9')
+        self.assertEqual(added.returncode, 0, added.stderr)
+        self.assertEqual(self.run_cfg('set', 'decide.gate.drift', 'shadow', '--repo', str(self.repo)).returncode, 0)
+        (self.repo / '.forge').mkdir()
+        (self.repo / '.forge/decide.json').write_text(json.dumps({'privacy': 'never-send', 'gates': {'drift': 'on'}}))
+        out = self.run_cfg('set', 'decide.gate.drift.provider', 'box', '--repo', str(self.repo), '--json')
+        self.assertEqual(out.returncode, 0, out.stderr)
+        stored = json.loads((self.cfg / 'forge/decide.json').read_text())['gates']['drift']
+        self.assertEqual((stored['mode'], stored['provider']), ('shadow', 'box'))
+        status = json.loads(self.run_decide('status', '--repo', str(self.repo), '--json').stdout)
+        self.assertEqual(status['gates']['drift']['mode'], 'off')
+        self.assertEqual(status['gates']['drift']['skip'], 'privacy')
+        self.assertEqual(status['gates']['drift']['provider'], 'box')
+
+    def test_retired_and_invalid_decide_keys_exit_2(self):
+        cases = {
+            ('set', 'jev.enabled', 'true'): 'decide.gate.<gate>',
+            ('set', 'decide.gate.routing', 'on'): 'unknown gate',
+            ('set', 'decide.gate.drift', 'maybe'): 'mode must be off, shadow or on',
+            ('set', 'decide.gate.drift.provider', ' -box'): 'not starting with "-"',
+            ('set', 'decide.gate.drift.model', 'a\nb'): 'not starting with "-"',
+            ('set', 'decide.gate.drift.model', 'm' * 257): 'not starting with "-"',
+            ('unset', 'decide.gate.drift'): 'set the mode to off',
+            ('unset', 'decide.gate.drift.model'): 'set the mode to off',
+        }
+        for args, needle in cases.items():
+            out = self.run_cfg(*args, '--repo', str(self.repo))
+            self.assertEqual(out.returncode, 2, (args, out.stderr))
+            self.assertIn(needle, out.stderr, args)
+        dashed = self.run_cfg('set', 'decide.gate.drift.model', '-', '--repo', str(self.repo), stdin='not-a-model\n')
+        self.assertEqual(dashed.returncode, 2)
+        self.assertNotIn('not-a-model', dashed.stdout)
+        # A leading "-" is an option to argparse, so it never becomes the value passed to decide.
+        leading = self.run_cfg('set', 'decide.gate.drift.provider', '-box', '--repo', str(self.repo))
+        self.assertEqual(leading.returncode, 2)
+        plain = self.base / 'plain'
+        plain.mkdir()
+        self.assertEqual(self.run_cfg('set', 'decide.gate.drift', 'on', '--repo', str(plain)).returncode, 2)
+        self.assertFalse((self.cfg / 'forge/jev.json').exists())
+        self.assertFalse((self.cfg / 'forge/decide.json').exists())
 
     def test_launcher(self):
         self.assertEqual(self.run_cfg('--help').returncode, 0)
