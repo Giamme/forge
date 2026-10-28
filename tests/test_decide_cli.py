@@ -6,6 +6,7 @@ import dataset_isolation  # noqa: F401  keeps forge's dataset and config out of 
 import json
 import os
 from pathlib import Path
+import sqlite3
 import stat
 import subprocess
 import sys
@@ -116,6 +117,19 @@ class ProviderTests(DecideCliTestCase):
         row = self.status()['providers']['local']
         self.assertEqual((row['type'], row['url'], row['local'], row['key']),
                          ('jev', 'http://127.0.0.1:9/x', True, 'missing'))
+
+    def test_price_and_deadline_must_be_finite(self):
+        # inf passes a bare `> 0`; status --json would then print Infinity, which is not JSON.
+        for flag in ('--price', '--deadline'):
+            for value in ('inf', 'nan', '1e309'):
+                out = self.decide('provider', 'add', 'jev', '--name', 't', '--local', '--url', 'http://x',
+                                  flag, value, code=2)
+                self.assertIn(flag + ' must be a finite number above zero', out.stderr)
+        self.assertFalse((self.cfg / 'forge' / 'decide.json').exists())
+        self.decide('provider', 'add', 'jev', '--name', 't', '--local', '--url', 'http://x', '--price', '0.5',
+                    '--deadline', '30')
+        row = self.status()['providers']['t']
+        self.assertEqual((row['price_usd_per_mtok'], row['deadline_s']), (0.5, 30.0))
 
     def test_key_from_stdin_lands_only_in_a_0600_key_file(self):
         self.decide('provider', 'add', 'jev', '--name', 'ts', '--key-stdin', stdin=KEY + '\n')
@@ -257,6 +271,20 @@ class MigrateAndDoctorTests(DecideCliTestCase):
         out = self.decide('doctor', '--live', '--repo', str(self.repo), code=None)
         self.assertIn('privacy floor', out.stdout)
         self.assertNotIn('live probe spare', out.stdout)
+
+    def test_doctor_live_probe_stays_out_of_the_dataset(self):
+        self.env['FORGE_DATA_HOME'] = str(self.base / 'data')
+        self.write_user(dict(version=1, providers=dict(spare=dict(type='jev', url='http://127.0.0.1:9/x',
+                                                                  local=True))))
+        out = self.decide('doctor', '--live', code=1)
+        self.assertIn('live probe spare', out.stdout)
+        store = self.base / 'data' / 'dataset' / 'dataset.sqlite'
+        kinds = []
+        if store.exists():
+            db = sqlite3.connect(str(store))
+            kinds = [row[0] for row in db.execute('SELECT kind FROM events')]
+            db.close()
+        self.assertNotIn('jev', kinds)
 
 
 class LauncherTests(DecideCliTestCase):
