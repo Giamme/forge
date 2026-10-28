@@ -5,6 +5,28 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and versions follow the format `{major}.{minor}[.{patch}]` ([...] parts appear only when non-zero).
 
+## [0.12.1] - 2026-10-28
+
+A run can now fix the review findings it tolerated before it ends (`run --sweep Pn`), and forge-ui shows where each task stands, the checks each attempt ran and the environment problems several tasks hit. A task that deletes large files no longer breaks its review.
+
+### Highlights
+
+- forge-ui shows where each task of a decomposed run is: the task table's Now column and a task's Now section name the command a running dwarf or reviewer is running and for how long, flag it once its log has been quiet for five minutes, and say why a task that is not running waits (its dependencies, a task it shares files with, no free slot, a drain or stop, an infrastructure pause with its countdown, or the retry policy's stop with the split it suggests). The run's inspector says what the scheduler is doing.
+- `run --sweep Pn` fixes the review findings a run tolerated while its context is fresh. Once every task has merged, and before the combined verification, the open findings at Pn or worse become a few extra fix tasks, one per file (at most 8 findings each, `--sweep-max N` tasks, default 5; `--sweep-plausible` adds PLAUSIBLE ones). Each fix task runs on the plan's low tier, with a narrow review that says, finding by finding, whether it was fixed. The sweep plan, with every finding it left out and why, is printed and kept in `sweep/plan.md`. `forge issues` no longer offers a finding the sweep fixed, and a fix task that fails does not fail the run.
+
+### Added
+
+- Each attempt in forge-ui lists the tests, type checks, lints and builds its dwarf and reviewer ran, read from their logs, with each one's exit code, time and pass/fail counts and a link to that command in the conversation, and says which commands of the brief's acceptance criteria were never run. forge now keeps a clock beside each agent's log (<role>.clock; FORGE_LOG_CLOCK=off turns it off) so codex and grok commands are timed too.
+- A banner in a run's header names an environment problem that more than one task ran into (Docker down or out of address pools, a missing container, a port in use, the sandbox's EPERM, a refused local service, no network, a full disk, a missing command), with the tasks it hit and the commands that failed on it.
+- forge-ui shows a run's finding sweep: a fix task lists the findings it took with what its review said of each, the task a finding came from shows where it stands, the run's Finish says what the sweep fixed and left, and Open findings marks findings the sweep fixed as swept instead of offering to file them.
+- `run --sweep-ahead` tells a task the open review findings in files it owns, to fix only when its change already goes through that code; its reviewer is told the same, and no dispatch is added.
+
+### Fixed
+
+- A codex command run through zsh -lc "…" now shows without its shell wrapper in a conversation, and a message containing a Unicode line separator no longer breaks the reading of its log.
+- `FORGE_FORECAST_BUDGET_S=inf` (or any budget too large to wait for, such as `1e10`) now means no time limit for the plan forecast that `run` prints, instead of silently dropping the forecast.
+- A task that deletes large files no longer breaks its review: deleted files now appear in the reviewer's diff by name only, without their contents. Previously, deleting a big data directory could make the prompt too long for the reviewer's CLI, which refused it and left the task in ERROR.
+
 ## [0.12] - 2026-10-27
 
 Decomposed runs can now be steered while they run and stop cleanly when interrupted: drain, stop, retry or resize a live run from forge control or forge-ui, an infrastructure stop pauses only the model or CLI it hit, and verification can run as parallel lanes that rerun only what failed and name the failing tests.

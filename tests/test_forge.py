@@ -67,6 +67,7 @@ if not qa:
  if os.environ.get('SLEEP'): time.sleep(10)
  if not sc.get('no_edit'): pathlib.Path(name).write_text(sc.get('content', os.environ.get('CONTENT','implemented'))+'\\n')
  for k, v in (sc.get('files') or {}).items(): pathlib.Path(k).parent.mkdir(parents=True, exist_ok=True); pathlib.Path(k).write_text(v)
+ for k in sc.get('delete') or []: pathlib.Path(k).unlink()
  if sc.get('background'):
   import subprocess; q = subprocess.Popen(['sleep','60'], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
   pathlib.Path(os.environ['SCENARIO']+'.bgpid').write_text(str(q.pid))
@@ -177,6 +178,20 @@ class ForgeTests(unittest.TestCase):
   self.assertEqual((self.repo/'change.txt').read_text(),'implemented\n')
  def test_source_mutation_invalidated(self):
   self.env['SOURCE']=str(self.repo); r=self.solo(); self.assertEqual(r.returncode,5,r.stdout)
+ def test_solo_review_prompt_lists_deleted_files_without_their_contents(self):
+  # Deleting a 7 MB data directory once made a 7.1M-character review prompt that codex refused
+  # outright. The reviewer needs to know a file is gone, not to read every deleted line.
+  (self.repo/'data.txt').write_text('DELETED_SENTINEL\n'*3); self.git('add','data.txt'); self.git('commit','-qm','data')
+  self.scenario({'change.dwarf.*':{'delete':['data.txt']}})
+  r=self.solo(); self.assertEqual(r.returncode,0,r.stdout)
+  qa=(self.root/'solo/qa.input').read_text()
+  self.assertIn('deleted file mode',qa); self.assertNotIn('DELETED_SENTINEL',qa)
+ def test_task_review_prompt_lists_deleted_files_without_their_contents(self):
+  (self.repo/'data.txt').write_text('DELETED_SENTINEL\n'*3); self.git('add','data.txt'); self.git('commit','-qm','data')
+  p=self.plan('-'); self.scenario({'a.dwarf.*':{'delete':['data.txt']}})
+  r=self.run_script('forge-parallel.sh','run',p); self.assertEqual(r.returncode,0,r.stdout)
+  qa=(p/'tasks/a/qa.input').read_text()
+  self.assertIn('deleted file mode',qa); self.assertNotIn('DELETED_SENTINEL',qa)
  def test_complete_requirements(self):
   r=self.solo(); self.assertEqual(r.returncode,0,r.stdout)
   self.assertIn('REQUIREMENT_SENTINEL',(self.root/'solo/qa.input').read_text())
