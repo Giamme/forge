@@ -1011,7 +1011,9 @@ do_task_body() (
     fi
     python3 "$SKILL_DIR/scripts/forge-contract.py" qa --part tail --kind "$qa_kind" ${qa_thr:+--threshold "$qa_thr"}
     echo
-    echo '```diff'; cat "$tdir/changes.diff"; echo '```'
+    # --irreversible-delete: a deleted file shows as a header, not every line it had (one deleted
+    # data directory once made a 7.1M-character prompt that the reviewer's CLI refused).
+    echo '```diff'; git -C "$wt" diff --binary --irreversible-delete "$base" "$reviewed" -- . ':(exclude).forge'; echo '```'
     echo; /bin/bash "$MEMORY" note qa
     echo "Place any learning notes before the final FORGE_VERDICT: PASS or FORGE_VERDICT: FAIL line."
   } > "$tdir/qa.input"
