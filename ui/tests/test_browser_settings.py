@@ -175,6 +175,32 @@ class Settings(unittest.TestCase):
         self.assertEqual(posted['body'], {'run': self.a, 'key': 'decide.gate.drift', 'value': 'shadow'})
         self.assertClean(page)
 
+    def test_under_a_privacy_floor_a_gate_still_writes_the_user_level(self):
+        # The user file sets drift on and the floor keeps it off here. The select shows the mode in effect, and choosing
+        # that same mode must still write the user level, which is where the control writes.
+        self.configs[self.a] = config('/r/one', 'make test\n', floor=True)
+        self.configs[self.a]['decide']['gates']['drift'].update(mode='off', source='user', skip='privacy')
+        page = self.page()
+        # Nothing shows the user level's mode here, so the select holds no mode: choosing the one in effect is a change.
+        self.assertNotIn(page.input_value('#set-gate-drift-mode'), ('off', 'shadow', 'on'))
+        posted = {}
+
+        def capture(route):
+            if route.request.method != 'POST':
+                return route.fallback()
+            posted['body'] = route.request.post_data_json
+            route.fulfill(status=200, content_type='application/json',
+                          body=json.dumps({'ok': True, 'key': posted['body']['key'],
+                                           'previous': 'on', 'value': posted['body']['value']}))
+
+        page.route('**/api/config', capture)
+        page.select_option('#set-gate-drift-mode', 'off')
+        page.wait_for_selector('#set-decide .ui-confirm')
+        with page.expect_response(lambda r: r.request.method == 'POST' and r.url.split('?', 1)[0].endswith('/api/config')):
+            page.click('#set-decide .ui-confirm button:text-is("Confirm")')
+        self.assertEqual(posted['body'], {'run': self.a, 'key': 'decide.gate.drift', 'value': 'off'})
+        self.assertClean(page)
+
     def test_a_privacy_floor_says_nothing_is_sent_and_the_gates_stay_editable(self):
         self.configs[self.a] = config('/r/one', 'make test\n', floor=True)
         page = self.page()

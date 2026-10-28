@@ -97,10 +97,14 @@
     const gates = GATES.map(name => {
       const g = object(gatesIn[name]);
       const skip = floor ? 'privacy' : (typeof g.skip === 'string' ? g.skip : '');
+      const mode = MODES.includes(g.mode) ? g.mode : 'off';
+      const source = text(g.source) || 'default';
       return {
         name,
-        mode: MODES.includes(g.mode) ? g.mode : 'off',
-        source: text(g.source) || 'default',
+        mode,
+        source,
+        // The mode the user level holds, where the status shows it: the user file set it and no override applies.
+        userMode: source === 'user' && !skip ? mode : null,
         provider: typeof g.provider === 'string' ? g.provider : '',
         model: typeof g.model === 'string' ? g.model : '',
         skip,
@@ -419,26 +423,34 @@
       const sel = el('select');
       sel.id = 'set-gate-' + gate.name + '-mode';
       sel.setAttribute('aria-label', 'Mode for ' + gate.name);
+      // The select shows the user level's mode when the status has it. Otherwise the mode in effect is a label that no
+      // choice matches, so every mode is a choice that writes the user level, the one in effect included.
+      const rest = gate.userMode || '';                             // the value the select goes back to
+      if (!gate.userMode) {
+        const effect = el('option', 'in effect: ' + gate.mode);
+        effect.value = ''; effect.disabled = true; effect.selected = true;
+        sel.append(effect);
+      }
       for (const mode of MODES) {
         const o = el('option', mode);
         o.value = mode;
-        o.selected = mode === gate.mode;
+        o.selected = mode === gate.userMode;
         sel.append(o);
       }
       sel.addEventListener('change', async () => {
         const next = sel.value;
-        if (!MODES.includes(next) || next === gate.mode) { sel.value = gate.mode; return; }
+        if (!MODES.includes(next) || next === gate.userMode) { sel.value = rest; return; }
         const gen = s.gen, release = grab();
         sel.disabled = true;
         const yes = await UI.confirmInline(result, `Set ${gate.name} to ${next}? This writes your forge config (the user level) for every repository.`);
         if (!yes || gen !== s.gen) {
-          sel.value = gate.mode; sel.disabled = false; release();
+          sel.value = rest; sel.disabled = false; release();
           if (!yes && gen === s.gen) sel.focus({ preventScroll: true });
           return;
         }
         const res = await UI.post('/api/config', configBody(s.run, gateKey(gate.name), next));
         UI.outcome(result, res, `${gate.name} is set to ${next}.`);
-        if (!res.ok) sel.value = gate.mode;
+        if (!res.ok) sel.value = rest;
         sel.disabled = false; release();
         if (res.ok && gen === s.gen) await reload();
       });
