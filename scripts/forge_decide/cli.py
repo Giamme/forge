@@ -368,8 +368,9 @@ def cmd_provider_add(args) -> int:
     if args.key_env is not None and not ENV_NAME.match(args.key_env):
         raise Usage('--key-env %r is not a variable name' % args.key_env)
     for flag, value in (('--context', args.context), ('--price', args.price), ('--deadline', args.deadline)):
-        if value is not None and not value > 0:
-            raise Usage('%s must be above zero' % flag)
+        # Not just `> 0`: inf passes that, and json.dumps would write Infinity, which is not JSON.
+        if value is not None and not 0 < value < float('inf'):
+            raise Usage('%s must be a finite number above zero' % flag)
     if args.type == 'jev':
         url = args.url or (None if args.local else _jev_endpoint())
         model = args.model or JEV_MODEL
@@ -546,13 +547,16 @@ def cmd_privacy(args) -> int:
 
 def _live_probe(name: str, repo) -> tuple[bool, str | None]:
     """One fixed, synthetic request (no repo data) to provider `name`, through its transport:
-    ask() for the drift site, with the drift gate pointed at `name`."""
+    ask() for the drift site, with the drift gate pointed at `name`. Not a judgment, so
+    client._dataset is silenced for the call: the setup-probe site is skipped there too, but it
+    cannot name a provider."""
     from forge_jev import client, questions
     real = resolve(repo)
     fake = copy.deepcopy(real)
     fake['gates']['drift'].update(provider=name, model=None)
-    original = client._resolve
+    original, original_dataset = client._resolve, client._dataset
     client._resolve = lambda _repo=None, **_: fake
+    client._dataset = lambda *_, **__: None
     try:
         with tempfile.TemporaryDirectory() as run_dir:
             result = client.ask(questions.PROBE_STATE, questions.PROBE, site=GATE_SITE['drift'],
@@ -568,6 +572,7 @@ def _live_probe(name: str, repo) -> tuple[bool, str | None]:
             return False, reason or 'no answer'
     finally:
         client._resolve = original
+        client._dataset = original_dataset
 
 
 def cmd_doctor(args) -> int:
