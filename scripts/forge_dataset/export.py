@@ -931,6 +931,13 @@ def memory_cases(runs: Runs, rng_seed: int):
                                                       'or in an area it never touched (false)'))
 
 
+# The joins forge_decide.labels reuses to label live requests the same way.
+final_pass = _final_pass
+area = _area
+words = _words
+ANCHOR = _ANCHOR
+
+
 # --- sampling and output ---------------------------------------------------------------
 
 def _sample(cases: list, limit: int | None, seed: int) -> list:

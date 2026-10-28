@@ -1351,6 +1351,11 @@ class IndependenceTests(unittest.TestCase):
                 imports = [line.strip() for line in text.splitlines() if 'forge_dataset' in line and 'import' in line]
                 self.assertEqual(imports, ['from forge_dataset.states import task_size  # noqa: E402'])
                 continue
+            if path.parent.name == 'forge_decide' and path.name == 'labels.py':
+                # `forge decide report`/`replay` measure gates on the store, read-only; no prompt is built there.
+                imports = [line.strip() for line in text.splitlines() if 'forge_dataset' in line and 'import' in line]
+                self.assertEqual(imports, ['from forge_dataset import dataset_dir', 'from forge_dataset import export'])
+                continue
             self.assertIn(path.name, allowed, path)
             for line in text.splitlines():
                 if 'forge_dataset' in line and 'import' in line:
