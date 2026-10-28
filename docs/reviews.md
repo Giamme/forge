@@ -342,8 +342,7 @@ run) when the source fingerprint is unchanged. If the rerun passes the status is
 `verification.flaky` is written, `verification.log` keeps the first (failing) run,
 `verification.retry.log` the second, and `run`/`integrate` print a loud `FLAKY` line — an
 intermittent failure can be a real bug, so it is never passed off as a clean pass. A command
-that changes the tree is never retried. This deterministic rerun comes before Jev's optional
-model-assisted triage, which then does not run.
+that changes the tree is never retried.
 
 With [verification lanes](../references/decompose.md#execution-checks-and-integration-verification)
 the rerun is per lane: only a lane that failed runs again, alone, and a lane that passes on its
@@ -353,7 +352,7 @@ such lane (`lanes=`, `<lane>.first_exit=`, `<lane>.retries_used=`); a lane whose
 test is in its baseline prints `known failures only: lane <name>`. A whole-run review's
 verification summary lists every lane with its state (`unit: pass`, `db: flaky`, ...) and says
 again which lane failed, which passed only on a rerun ("so its pass is not clean") and which
-failed only on known tests. In lanes mode there is no whole-command rerun and no Jev triage.
+failed only on known tests. In lanes mode there is no whole-command rerun.
 
 ## Native review
 

@@ -159,7 +159,7 @@ needs some randomized picks, so `plan` makes a few: `--explore E`, with E betwee
   keeps such a task in the arm it was assigned and reports it as not followed.
 
 `forge dataset routing` reads the draws back: per (tier, pool pick, neighbour) pair, each
-arm's first-pass rate (inverse-propensity weighted, every task in the arm it was assigned),
+arm's first-try pass rate (inverse-propensity weighted, every task in the arm it was assigned),
 attrition, runtime and a run-clustered interval, judged at the first of 30, 60 or 120
 neighbour assignments it reaches. See [Dataset](dataset.md#routing). At the default rate
 that is weeks of normal use per pair; a pair that matters can be given more with
@@ -337,8 +337,10 @@ review; the implementer rules appended to every dwarf prompt come from the same 
 `plan --fail-first` (and `forge-solo.sh --fail-first`) checks that the tests a change adds
 or edits can fail. Before each review, forge exports the reviewed commit and, separately,
 the task's base plus only the change's test-path files (tests, their fixtures and helpers),
-then runs `.forge/verify-subset` (the per-file test command with `{files}`, see
-[Jev](jev.md)) once per new or edited test file in each. Every file gets one result in
+then runs `.forge/verify-subset` (a per-file test command that contains `{files}`, such as
+`pytest -q {files}` or `npm test -- {files}`; it is a separate file from `.forge/verify` because
+there is no general way to restrict an arbitrary command to a file list) once per new or
+edited test file in each. Every file gets one result in
 `tasks/<id>/failfirst.json` (solo: `<run>/failfirst.json`):
 
 - `proven`: passes with the change, fails without it;
@@ -803,8 +805,7 @@ A failed command whose source fingerprint is unchanged is rerun (`--verify-retri
 `1`, `0` = strict single run). A rerun that passes leaves status `PASS` but writes
 `verification.flaky` (both exit codes), keeps the first run in `verification.log` and the second
 in `verification.retry.log`, and prints a loud `FLAKY` line in `run`/`retry`/`integrate` output;
-a command that changes the tree is never retried. This runs before Jev's optional model-assisted
-triage, which then does not.
+a command that changes the tree is never retried.
 
 **Verification lanes.** Instead of one command, verification can be several named **lanes**
 that run side by side, each rerun on its own. A lane is a file whose name is the lane's name
@@ -835,8 +836,7 @@ in the run output (`FLAKY: lane <name> failed once and passed on rerun`), in
 checkout's fingerprint is compared after every round, and a change fails the verification
 (`mutated`; with lanes in parallel it cannot be pinned to one of them). A lane's states are
 `waiting`, `running`, `pass`, `fail`, `flaky`, `known`, `skipped` and `interrupted`. Lanes mode
-replaces the whole-command rerun above and Jev's flake triage (a note says so when Jev's tests
-site is on); the single-command mode is unchanged.
+replaces the whole-command rerun above; the single-command mode is unchanged.
 
 A lane may print `::forge step name=<step> state=start` and `::forge step name=<step>
 state=end [exit=<n>]`, each on a line of its own, to say which step it is in; forge-ui shows the
