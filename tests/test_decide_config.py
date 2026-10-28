@@ -280,10 +280,22 @@ class ShadowVariableTests(DecideTestCase):
         self.assertEqual(self.modes(result), dict({g: 'off' for g in forge_decide.GATES},
                                                   drift='shadow', prompt='shadow'))
 
-    def test_also_before_migration(self):
-        self.write_jev({'enabled': True})
+    def test_changes_no_mode_before_migration(self):
+        # No user decide.json: every run behaves as before #36, where --jev-shadow only
+        # marked the records and the sites still acted.
+        self.write_jev({'enabled': True, 'capabilities': {'gates': False}})
         result = resolve(self.repo, env={'FORGE_JEV_SHADOW': 'on'})
-        self.assertEqual(set(self.modes(result).values()), {'shadow'})
+        self.assertEqual(self.on(result), set(MEMORY) | {'verify-discover'})
+        self.assertEqual({g['source'] for g in result['gates'].values()}, {'legacy'})
+
+    def test_memory_and_verify_sites_act_before_migration(self):
+        self.write_jev({'enabled': True})
+        sites = ('jev-memory-curate', 'jev-memory-slice', 'jev-memory-stale', 'jev-verify-discover')
+        with patch.dict(os.environ, {'FORGE_JEV_SHADOW': 'on'}):
+            self.assertEqual({forge_jev.gate_mode(site) for site in sites}, {'on'})
+            # An explicit config re-derives the legacy level the same way.
+            resolved = forge_jev._resolved({'enabled': True, 'key': 'k'})
+            self.assertEqual({resolved['gates'][g]['mode'] for g in MEMORY}, {'on'})
 
 
 class PlacementTests(DecideTestCase):

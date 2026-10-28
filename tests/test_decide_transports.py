@@ -328,6 +328,31 @@ class BudgetTests(TransportCase):
                 self.assertEqual((spent['run']['tokens'], spent['today']['tokens']), (15, 15))
                 self.assertEqual(spent['today']['usd'] > 0, priced)
 
+    def test_the_run_counter_is_the_run_dirs_whatever_dir_a_site_logs_to(self):
+        # The memory sites log to a task dir, verify-discover to an integrate dir; the
+        # runners export the plan dir, and every call of the run counts against it.
+        server = self.server('jev')
+        self.configure({'j': dict(type='jev', url=server.url('/'), local=True)}, budget={'run_tokens': 30})
+        plan = self.root / 'plan'
+        tasks = [plan / 'tasks' / name for name in ('a', 'b', 'c')]
+        for task in tasks:
+            task.mkdir(parents=True)
+        os.environ['FORGE_DECIDE_RUN_DIR'] = str(plan)
+        for task in tasks[:2]:
+            self.assertIsNotNone(client.ask('small state', QUESTIONS, site='jev-drift', run_dir=task))
+        self.assertEqual(json.loads((plan / budget.RUN_FILE).read_text())['tokens'], 30)
+        self.assertFalse([t for t in tasks if (t / budget.RUN_FILE).exists()])
+        self.assertIsNone(client.ask('small state', QUESTIONS, site='jev-drift', run_dir=tasks[2]))
+        self.assertEqual(len(server.requests), 2)
+        logged = json.loads((tasks[2] / 'jev.jsonl').read_text().splitlines()[-1])
+        self.assertEqual(logged['reason'], 'budget')
+
+    def test_without_the_variable_the_callers_dir_holds_the_counter(self):
+        server = self.server('jev')
+        self.configure({'j': dict(type='jev', url=server.url('/'), local=True)})
+        self.assertIsNotNone(self.ask())
+        self.assertEqual(json.loads((self.run_dir / budget.RUN_FILE).read_text())['tokens'], 15)
+
 
 class KeyLeakTests(TransportCase):
     def test_a_key_echoed_by_the_server_is_redacted_everywhere(self):

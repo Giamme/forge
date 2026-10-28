@@ -303,7 +303,8 @@ def cmd_status(args) -> int:
                       if var in os.environ})
     remote = cloudflare(config)
     sites_by_cap = _capability_sites()
-    # Offline by contract: the shell's forge_jev_active reads this before every Jev step.
+    # Offline by contract: the shell's forge_decide_active reads `gates` (each gate's `ready`)
+    # from this before every decision-model step.
     data = dict(config_path=str(config_path()), key_present=api_key(config) is not None,
                enabled=enabled(config=config),
                capabilities={c: enabled(c, config=config) for c in CAPABILITIES},

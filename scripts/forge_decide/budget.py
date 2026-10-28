@@ -1,7 +1,7 @@
 """Spend caps for decision-model requests, in tokens and estimated cost (GitHub #36).
 
 Two counters, each a JSON file {"tokens": int, "usd": float}: one per run
-(<run_dir>/decide.budget.json) and one per day for the user
+(<run_dir>/decide.budget.json, where FORGE_DECIDE_RUN_DIR beats the caller's run_dir) and one per day for the user
 (<state_dir>/spend/<YYYY-MM-DD>.json, local date; a new day is a new file and old files are
 left alone). The transports call check() before a request and charge() after it; a cap that
 has been reached turns every remaining call into a skip with reason 'budget'.
@@ -56,7 +56,9 @@ def cost(provider, usage) -> float:
 
 
 def _run_path(run_dir) -> Path | None:
-    run_dir = run_dir or os.environ.get(RUN_DIR_ENV)
+    # The runners export the run's directory; it wins over a caller's own (a task or
+    # integrate dir, where jev.jsonl goes), so every site of one run shares one counter.
+    run_dir = os.environ.get(RUN_DIR_ENV) or run_dir
     return Path(run_dir) / RUN_FILE if run_dir else None
 
 
