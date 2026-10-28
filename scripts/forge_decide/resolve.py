@@ -16,7 +16,8 @@ Levels, lowest to highest; each sets a gate's fields only where it names them:
 5. env      -- FORGE_DECIDE_GATE_<NAME>=off|shadow|on (NAME upper-cased, `-` -> `_`). Once a
                user decide.json exists, the legacy FORGE_JEV_<CAP> variables can only restrict:
                `off` turns that capability's gates off, and any `on` turns off the gates of
-               every capability not named `on`. FORGE_JEV_SHADOW=on turns `on` into `shadow`.
+               every capability not named `on`. FORGE_JEV_SHADOW=on turns `on` into `shadow`,
+               except, with no user decide.json, a gate the legacy level turned on.
 6. flags    -- `flags`, else json.loads(env['FORGE_DECIDE_FLAGS']), shaped
                {"gates": {gate: mode}, "no_gates": bool, "budget": {"run_tokens", "run_usd"}}.
                `no_gates` turns every gate off, after `gates` is applied.
@@ -329,11 +330,13 @@ def _resolve(repo, profile, env, flags, errors: list) -> dict:
                 continue
             if overrides.get(cap) == 'off' or (allowlist and overrides.get(cap) != 'on'):
                 _set_mode(result, gate, 'off', 'env')
-    # Before migration --jev-shadow only marks records shadow, as it always did; the sites
-    # still act. Once a user decide.json exists, it turns every `on` gate into `shadow`.
-    if migrated and env.get('FORGE_JEV_SHADOW') == 'on':
+    # --jev-shadow turns `on` into `shadow`, except, before migration, a gate the legacy level
+    # turned on: that one acts as it always did, and its records are marked shadow
+    # (client._gate_fields).
+    if env.get('FORGE_JEV_SHADOW') == 'on':
         for gate in GATES:
-            if result['gates'][gate]['mode'] == 'on':
+            state = result['gates'][gate]
+            if state['mode'] == 'on' and (migrated or state['source'] != 'legacy'):
                 _set_mode(result, gate, 'shadow', 'env')
 
     # 6. flags

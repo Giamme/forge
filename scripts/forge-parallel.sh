@@ -280,7 +280,10 @@ PY
     jev_rc=$?
     # A gate in shadow is asked and recorded by score-plan, which leaves it out of
     # these rows: what is printed here is only what an `on` gate has to say.
-    if [ "$jev_rc" -eq 0 ] && [ -n "$jev_scores" ]; then
+    # --jev-shadow before migration keeps its gates `on` and prints a count, as it always did.
+    if [ "$jev_rc" -eq 0 ] && [ -n "$jev_scores" ] && [ "${FORGE_JEV_SHADOW:-}" = on ]; then
+      note "jev: scored $(printf '%s\n' "$jev_scores" | grep -c .) task(s) in shadow mode (no change)"
+    elif [ "$jev_rc" -eq 0 ] && [ -n "$jev_scores" ]; then
       local jid jwarn jdrift
       # The columns score-plan prints: id, warnings, drift. Read in lockstep with
       # cmd_score_plan.
@@ -378,8 +381,11 @@ EOF
     jev_coupling="$(python3 "$SKILL_DIR/scripts/forge-jev.py" coupling \
       --plan "$PLAN" --repo "$REPO" 2>/dev/null)"
     jev_coupling_rc=$?
-    # A shadowed forward gate is recorded in jev-coupling.json and prints no row.
-    if [ "$jev_coupling_rc" -eq 0 ] && [ -n "$jev_coupling" ]; then
+    # A shadowed forward gate is recorded in jev-coupling.json and prints no row; --jev-shadow
+    # before migration prints a count, as it always did.
+    if [ "$jev_coupling_rc" -eq 0 ] && [ -n "$jev_coupling" ] && [ "${FORGE_JEV_SHADOW:-}" = on ]; then
+      note "jev: found $(printf '%s\n' "$jev_coupling" | grep -c .) coupled pair(s) in shadow mode (no change)"
+    elif [ "$jev_coupling_rc" -eq 0 ] && [ -n "$jev_coupling" ]; then
       local ca cb cp ckind
       while IFS="$(printf '\t')" read -r ca cb cp ckind; do
         [ -n "$ca" ] || continue

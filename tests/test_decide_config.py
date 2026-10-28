@@ -288,6 +288,15 @@ class ShadowVariableTests(DecideTestCase):
         self.assertEqual(self.on(result), set(MEMORY) | {'verify-discover'})
         self.assertEqual({g['source'] for g in result['gates'].values()}, {'legacy'})
 
+    def test_before_migration_it_still_shadows_gates_other_levels_turned_on(self):
+        # Only what the legacy level turned on keeps acting; a repo file or a gate variable
+        # is not today's behaviour, so --jev-shadow shadows it as it does after migration.
+        self.write_jev({'enabled': True, 'capabilities': {'memory': False, 'gates': False}})
+        self.write_repo({'gates': {'memory-curate': 'on'}})
+        result = resolve(self.repo, env={'FORGE_JEV_SHADOW': 'on', 'FORGE_DECIDE_GATE_DRIFT': 'on'})
+        self.assertEqual({g: v['mode'] for g, v in result['gates'].items() if v['mode'] != 'off'},
+                         {'memory-curate': 'shadow', 'drift': 'shadow', 'verify-discover': 'on'})
+
     def test_memory_and_verify_sites_act_before_migration(self):
         self.write_jev({'enabled': True})
         sites = ('jev-memory-curate', 'jev-memory-slice', 'jev-memory-stale', 'jev-verify-discover')

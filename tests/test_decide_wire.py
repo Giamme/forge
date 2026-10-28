@@ -168,6 +168,19 @@ class AKeyAloneDoesNothingTests(WireCase):
         self.assertEqual(self.log(self.plan), [])
 
 
+class LegacyShadowTests(WireCase):
+    def test_before_migration_a_site_acts_and_its_record_is_marked_shadow(self):
+        # No user decide.json: --jev-shadow marks records as it always did, and the site acts.
+        path = forge_jev.config_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({'enabled': True}))
+        os.environ['FORGE_JEV_SHADOW'] = 'on'
+        self.run_cli(self.memory_curate(), logs=[self.run_dir])
+        [entry] = self.log()
+        self.assertEqual((entry['gate'], entry['ok'], entry['mode'], entry['shadow']),
+                         ('memory-curate', True, 'on', True))
+
+
 class DriftModeTests(WireCase):
     def test_on_prints_drift_in_the_row(self):
         self.gates(drift='on')

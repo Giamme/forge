@@ -119,7 +119,7 @@ Name a provider to choose where a gate's requests go. The local server above is
 read the key file `provider add` wrote: it uses the legacy transport, `jev.json`'s endpoint
 with `TYPESAFE_API_KEY` or `jev.json`'s key (or Cloudflare, for a site `jev.json` maps
 there). Migration leaves `jev.json` in place, so with either key present such a gate still
-sends requests to hosted TypeSafe.
+sends requests, wherever `jev.json` points.
 
 `status` prints each gate's effective mode and which level set it, the providers (key
 `present` or `missing`), today's spend, and whether a privacy floor is on. It never writes.
@@ -179,9 +179,10 @@ repo on any field both set; `status` lists those as shadowed.
 5. **env.** `FORGE_DECIDE_GATE_<NAME>=off|shadow|on`, with `NAME` upper-cased and `-` written
    `_` (`FORGE_DECIDE_GATE_MEMORY_CURATE`, `FORGE_DECIDE_GATE_VERIFY_DISCOVER`). Once the user
    `decide.json` exists, `FORGE_JEV_<CAP>` can only turn gates off, and any `=on` is an
-   allowlist of the capabilities left on. Once the user `decide.json` exists,
-   `FORGE_JEV_SHADOW=on` (`--jev-shadow`) turns every `on` into `shadow`. At the legacy level
-   it changes no gate's mode, so every site acts as it did before #36.
+   allowlist of the capabilities left on. `FORGE_JEV_SHADOW=on` (`--jev-shadow`) turns every
+   `on` into `shadow`, except, before the user `decide.json` exists, a gate the legacy level
+   turned on: that site acts as it did before #36, its records are marked shadow, and `plan`
+   prints a count in shadow mode instead of its warnings.
 6. **flags.** `--gate`, `--no-gates` and `--decide-budget` on `plan` or a solo run, frozen in
    `<plan-or-run>/jev-selection.json`. `--no-gates` turns every gate off after `--gate` is
    applied. A re-plan replaces the file. Solo again on the same run dir keeps it. `run` and

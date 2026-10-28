@@ -264,9 +264,10 @@ class PlanFlagTests(unittest.TestCase):
         self.assertFalse((self.plan / 'jev.jsonl').exists())
         self.assertNotIn('decide: on:', planned.stderr)
 
-    def drift_fixture(self):
+    def drift_fixture(self, legacy=False):
         """Answer the drift request plan will make: score-plan run in-process once with drift
-        on, its request captured and answered (src/b.py at 0.9), its traces removed."""
+        on, its request captured and answered (src/b.py at 0.9), its traces removed. `legacy`
+        turns the gates on from jev.json instead of a user decide.json, so prompt is asked too."""
         bodies = []
         real = client._canonical
 
@@ -279,14 +280,19 @@ class PlanFlagTests(unittest.TestCase):
         self.addCleanup(lambda: (os.environ.clear(), os.environ.update(saved)))
         os.environ.clear()
         os.environ.update(self.env)
-        self.user_gates(drift='on')
+        if legacy:
+            self.config.joinpath('forge').mkdir(parents=True, exist_ok=True)
+            self.config.joinpath('forge', 'jev.json').write_text(json.dumps(dict(enabled=True)))
+        else:
+            self.user_gates(drift='on')
         with patch.object(client, '_canonical', side_effect=spy), \
                 contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
             cli.main(['score-plan', '--plan', str(self.plan), '--repo', str(self.repo)])
-        [body] = bodies
-        answers = {qid: dict(type='noul', noul=0.9) for qid in body['questions']}
-        (self.fixtures / (hashlib.sha256(real(body)).hexdigest() + '.json')).write_text(
-            json.dumps(dict(answers=answers, model=body['model'])))
+        self.assertEqual(len(bodies), 2 if legacy else 1)
+        for body in bodies:
+            answers = {qid: dict(type='noul', noul=0.9) for qid in body['questions']}
+            (self.fixtures / (hashlib.sha256(real(body)).hexdigest() + '.json')).write_text(
+                json.dumps(dict(answers=answers, model=body['model'])))
         (self.plan / 'jev.jsonl').unlink(missing_ok=True)
         shutil.rmtree(self.plan / 'tasks', ignore_errors=True)
 
@@ -308,6 +314,17 @@ class PlanFlagTests(unittest.TestCase):
         self.assertNotIn('undeclared files', planned.stderr)
         self.assertNotIn('shadow mode', planned.stderr)
         self.assertIn('forge: decide: on: none; shadow: drift', planned.stderr)
+
+    def test_jev_shadow_before_migration_prints_a_count_instead_of_the_rows(self):
+        # No user decide.json: the gates act as they always did, and --jev-shadow prints
+        # what it printed before #36.
+        self.drift_fixture(legacy=True)
+        planned = self.plan_cmd('--jev-shadow')
+        self.assertEqual(planned.returncode, 0, planned.stderr)
+        self.assertIn('jev: scored 1 task(s) in shadow mode (no change)', planned.stderr)
+        self.assertNotIn('undeclared files', planned.stderr)
+        self.assertEqual(sorted((r['site'], r['mode'], r['shadow']) for r in self.requests()),
+                         [('jev-drift', 'on', True), ('jev-prompt', 'on', True)])
 
     def test_every_gate_off_prints_no_summary(self):
         self.user_gates()

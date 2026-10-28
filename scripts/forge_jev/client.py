@@ -20,8 +20,8 @@ import urllib.error
 import urllib.request
 import uuid
 
-from . import (CLOUDFLARE_CONTEXT, CLOUDFLARE_MAX_QUESTIONS, CLOUDFLARE_MODEL, acting, current_repo, gate_mode,
-               load_config, redact, secrets, write_json)
+from . import (CLOUDFLARE_CONTEXT, CLOUDFLARE_MAX_QUESTIONS, CLOUDFLARE_MODEL, _gate, _resolved, acting,
+               current_repo, load_config, redact, secrets, shadow, write_json)
 
 _SCRIPTS = str(Path(__file__).resolve().parent.parent)
 if _SCRIPTS not in sys.path:
@@ -54,9 +54,13 @@ def _skip(run_dir: Path | str | None, site: str, reason: str) -> None:
 
 
 def _gate_fields(site) -> dict:
-    """The gate a site answers to and its resolved mode; `shadow` is that mode."""
-    mode = gate_mode(site)
-    return dict(gate=SITE_GATE.get(site), mode=mode, shadow=mode == 'shadow')
+    """The gate a site answers to and its resolved mode. `shadow` is that mode, or --jev-shadow
+    on a gate the legacy level turned on (no user decide.json yet), which acts as it always
+    did and is marked shadow as it always was."""
+    gate = _gate(site, _resolved())
+    mode = gate['mode'] if gate else 'off'
+    legacy = mode == 'on' and gate.get('source') == 'legacy' and shadow()
+    return dict(gate=SITE_GATE.get(site), mode=mode, shadow=mode == 'shadow' or legacy)
 
 
 def _log(run_dir, site, key, ok, reason, latency_s, model, usage, questions, answers, provider='typesafe') -> None:
