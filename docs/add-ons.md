@@ -23,9 +23,10 @@ test run, a review or verification. A failed request behaves as if Jev were off.
 It is **off by default**. Each enabled capability sends a narrow slice of the run to an external
 API: task prompts, file excerpts, diff hunks, candidate commands or memory text. Drift's
 candidate file list leaves out `.forge/` and `.git`, but nothing else does: **`.forge/memory.md`
-is sent**. Prompt adequacy puts its first 4000 characters in every `gates` request, and memory
-curation sends entries from it. Keep private text out of that file, or leave `gates` and
-`memory` off for the repo. The installer offers setup and declines by default.
+is sent**. Prompt adequacy puts its first 4000 characters in every `gates` request, memory
+curation sends entries from it, and verify discover (`tests`) sends the bullets under its
+`## Verify` heading. Keep private text out of that file, or leave `gates`, `memory` and `tests`
+off for the repo. The installer offers setup and declines by default.
 
 ```sh
 forge jev setup                        # store an API key

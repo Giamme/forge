@@ -139,15 +139,17 @@ Environment: `FORGE_JEV`, `FORGE_JEV_<CAP>`, `FORGE_CLEF=off` (every site back t
 `gates` sends the task prompt, goal, a title/files/deps view of sibling tasks, file excerpts
 (the first 4000 characters of the task's declared files) and diff hunks; `memory` sends the
 memory entries under consideration (curate: the new fact and the existing entries; slice: the
-task and the fact lines; stale: the fact and the anchor file's content); `tests` sends
-candidate commands with an excerpt of what each runs. Treat all of it as leaving the machine.
+task and the fact lines; stale: the fact and the anchor file's content); `tests` sends the
+repo's file list, candidate commands with an excerpt of what each runs, and the bullets under
+the `## Verify` heading of `.forge/memory.md`. Treat all of it as leaving the machine.
 
 The `.forge/` and `.git` exclusion is narrower than "everything": it filters the **candidate
 file list** drift builds from the diff, and nothing else. **`.forge/memory.md` is sent**: prompt
-adequacy puts its first 4000 characters in the request state for every task, and memory curate,
-slice and stale send entries from it. Private text in `.forge/memory.md` therefore reaches the
-provider whenever `gates` or `memory` is on. Keep such text out of that file, or leave those
-capabilities off for the repo. Files a task declares are excerpted whatever their path.
+adequacy puts its first 4000 characters in the request state for every task, memory curate,
+slice and stale send entries from it, and verify discover sends its `## Verify` bullets.
+Private text in `.forge/memory.md` therefore reaches the provider whenever `gates`, `memory` or
+`tests` is on. Keep such text out of that file, or leave all three capabilities off for the
+repo. Files a task declares are excerpted whatever their path.
 
 The TypeSafe key lives in `${XDG_CONFIG_HOME:-$HOME/.config}/forge/jev.json`, mode `0600`. A
 Cloudflare token (Account > Workers AI > Read) lives in `cloudflare.env` beside it, mode
