@@ -26,7 +26,7 @@ from . import (CLOUDFLARE_CONTEXT, CLOUDFLARE_MAX_QUESTIONS, CLOUDFLARE_MODEL, _
 _SCRIPTS = str(Path(__file__).resolve().parent.parent)
 if _SCRIPTS not in sys.path:
     sys.path.insert(0, _SCRIPTS)
-from forge_decide import SITE_GATE, budget as _budget, providers as _providers  # noqa: E402
+from forge_decide import SITE_GATE, budget as _budget, cache as _cache, providers as _providers  # noqa: E402
 from forge_decide.resolve import resolve as _resolve  # noqa: E402
 
 _BACKOFFS = (0.2, 0.4, 0.8)
@@ -63,12 +63,13 @@ def _gate_fields(site) -> dict:
     return dict(gate=SITE_GATE.get(site), mode=mode, shadow=mode == 'shadow' or legacy)
 
 
-def _log(run_dir, site, key, ok, reason, latency_s, model, usage, questions, answers, provider='typesafe') -> None:
+def _log(run_dir, site, key, ok, reason, latency_s, model, usage, questions, answers, provider='typesafe',
+         cached=False) -> None:
     if run_dir is None:
         return
     entry = dict(at=time.time(), site=site, key=key, ok=ok, reason=reason, latency_s=latency_s,
                 model=model, usage=usage, questions=questions, answers=answers,
-                acting=acting(), provider=provider, **_gate_fields(site))
+                acting=acting(), provider=provider, cached=cached, **_gate_fields(site))
     try:
         with (Path(run_dir) / 'jev.jsonl').open('a') as handle:
             handle.write(json.dumps(entry) + '\n')
@@ -299,11 +300,12 @@ def ask(state, questions: dict, *, site: str, run_dir=None, config: dict | None 
     started = time.time()
     extra = dict(context or {}, provider=provider, occurrence=uuid.uuid4().hex)
 
-    def done(ok, reason, result, model=None, usage=None, latency=None):
+    def done(ok, reason, result, model=None, usage=None, latency=None, cached=False):
         latency = latency if latency is not None else time.time() - started
         answers = result['answers'] if result else None
-        _log(run_dir, site, fixture_key, ok, reason, latency, model, usage, qids, answers, provider)
-        if canonical is not None:
+        _log(run_dir, site, fixture_key, ok, reason, latency, model, usage, qids, answers, provider, cached)
+        # A cache hit is not a new judgment: the dataset keeps live ones, as it does for fixtures.
+        if canonical is not None and not cached:
             _dataset(site, fixture_key, canonical, ok, reason, latency, model, usage, qids, answers, run_dir,
                      extra)
         return result
@@ -321,6 +323,11 @@ def ask(state, questions: dict, *, site: str, run_dir=None, config: dict | None 
     # `repo` is already looked up: no second git call once the deadline is running.
     if repo is not None and _providers.privacy_floor(repo):
         return done(False, 'privacy', None)
+    hit = _cache.get(run_dir, fixture_key, spec)
+    if hit:
+        result = dict(answers=hit['answers'], usage=hit.get('usage'), model=hit.get('model') or model)
+        return done(True, None, result, model=result['model'], usage=dict(input_tokens=0, output_tokens=0),
+                    latency=0.0, cached=True)
     if _budget.check(resolved.get('budget'), run_dir=run_dir):
         return done(False, _budget.SKIP, None)
     if not key and not spec['local']:
@@ -396,6 +403,7 @@ def ask(state, questions: dict, *, site: str, run_dir=None, config: dict | None 
     result = dict(answers=payload['answers'], usage=payload.get('usage'),
                   model=payload.get('model', model), latency_s=latency, site=site)
     _budget.charge(spec, result['usage'], run_dir=run_dir)
+    _cache.put(run_dir, fixture_key, spec, site, result['model'], result['answers'], result['usage'])
     return done(True, None, result, model=result['model'], usage=result['usage'], latency=latency)
 
 
