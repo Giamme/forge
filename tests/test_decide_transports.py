@@ -178,6 +178,15 @@ class LocalJevTests(TransportCase):
         self.assertEqual(server.requests, [])
         self.assertEqual(self.log()[-1]['reason'], 'no-key')
 
+    def test_a_key_file_path_that_cannot_be_read_is_no_key(self):
+        server = self.server('jev')
+        for path in ('~forge-no-such-user/token', 'keys/bad\x00name'):
+            with self.subTest(path=path):
+                self.configure({'mine': dict(type='jev', url=server.url('/'), key_file=path)})
+                self.assertIsNone(self.ask())
+                self.assertEqual(server.requests, [])
+                self.assertEqual(self.log()[-1]['reason'], 'no-key')
+
     def test_a_local_jev_provider_without_a_url_is_not_sent_to_the_hosted_service(self):
         self.configure({'mine': dict(type='jev', local=True)})
         self.assertIsNone(providers.spec_for_site('jev-drift')['url'])

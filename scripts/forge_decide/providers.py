@@ -76,12 +76,14 @@ def _read_key_file(path: str, key_env: str | None) -> str | None:
     """A raw token, or the value of one NAME=value line. A file of several such lines (a
     cloudflare.env with the account id beside the token) gives key_env's line, else the
     line whose name ends in _TOKEN or _KEY."""
-    full = Path(path).expanduser()
-    if not full.is_absolute():
-        full = config_dir() / full
+    # A path that cannot be read gives no key: `~user` with no such user raises RuntimeError, a
+    # NUL byte ValueError (as does undecodable text), and ask() must still reach its skips.
     try:
+        full = Path(path).expanduser()
+        if not full.is_absolute():
+            full = config_dir() / full
         text = full.read_text()
-    except (OSError, UnicodeDecodeError):
+    except (OSError, RuntimeError, ValueError):
         return None
     lines = [line.strip() for line in text.splitlines()
              if line.strip() and not line.strip().startswith('#')]
