@@ -293,8 +293,8 @@ def _resolved(config: dict | None = None) -> dict:
         if value['skip'] or value['source'] not in ('default', 'legacy', 'repo'):
             continue
         if resolve_module._legacy_enabled(forge_decide.GATE_CAPABILITY[gate], os.environ, config):
-            value['mode'] = 'shadow' if os.environ.get('FORGE_JEV_SHADOW') == 'on' else 'on'
-            value['source'] = 'legacy'
+            # Before migration FORGE_JEV_SHADOW marks records only: the gate stays on.
+            value['mode'], value['source'] = 'on', 'legacy'
         elif value['source'] != 'repo':
             value['mode'], value['source'] = 'off', 'legacy'
     return result
@@ -349,7 +349,9 @@ def site_ready(site: str, config: dict | None = None) -> bool:
 
 
 def capability_ready(capability: str, config: dict | None = None) -> bool:
-    """Some site of this capability can be asked: what the shell's forge_jev_active tests."""
+    """Some site of this capability can be asked: `forge jev status`'s capability_ready,
+    kept for older readers. The shell's forge_decide_active reads the per-gate `ready`
+    in that status's `gates` block instead."""
     if capability in RETIRED_CAPABILITIES:
         return False
     return any(site_ready(site, config) for site, cap in SITE_CAPABILITY.items()

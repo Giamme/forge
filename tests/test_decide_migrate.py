@@ -47,6 +47,7 @@ class MigrateTestCase(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
         os.environ.pop('CLOUDFLARE_API_TOKEN', None)
+        os.environ.pop('TYPESAFE_API_KEY', None)
         self.forge = self.config / 'forge'
 
     def write_jev(self, data, token=TOKEN):
@@ -79,6 +80,8 @@ class MigrateTests(MigrateTestCase):
         providers, gates = data['providers'], data['gates']
         self.assertEqual((providers['typesafe']['type'], providers['cloudflare']['type']), ('jev', 'clef'))
         self.assertEqual(providers['cloudflare']['key_file'], 'cloudflare.env')
+        self.assertEqual(providers['typesafe']['key_file'], 'keys/typesafe.key')
+        self.assertNotIn('key_env', providers['typesafe'])
         self.assertIn('acct1', providers['cloudflare']['url'])
         self.assertEqual({g: v['provider'] for g, v in gates.items()},
                          {g: 'cloudflare' if g == 'drift' else 'typesafe' for g in forge_decide.GATES})
@@ -181,6 +184,28 @@ class MigrateTests(MigrateTestCase):
         gates = self.decide()['gates']
         self.assertNotIn('provider', gates['prompt'])
         self.assertEqual(gates['drift']['provider'], 'cloudflare')
+
+    def test_a_key_only_in_the_environment_keeps_the_thresholds(self):
+        # The reviewer's config: jev.json thresholds, the key in TYPESAFE_API_KEY alone.
+        self.write_jev(dict(enabled=True, thresholds=dict(stale_drop=0.4, prompt_warn=0.3)), token=None)
+        os.environ['TYPESAFE_API_KEY'] = KEY
+        cutoffs = (('stale_drop', 'jev-memory-stale'), ('prompt_warn', 'jev-prompt'))
+        before = [forge_jev.threshold(name, site=site) for name, site in cutoffs]
+        self.assertEqual(before, [0.4, 0.3])
+        self.assertEqual(self.migrate()['status'], 'migrated')
+        provider = self.decide()['providers']['typesafe']
+        self.assertEqual(provider['key_env'], 'TYPESAFE_API_KEY')
+        self.assertNotIn('key_file', provider)
+        self.assertFalse((self.forge / 'keys' / 'typesafe.key').exists())
+        self.assertEqual(self.decide()['gates']['memory-stale']['thresholds_model'], forge_jev.MODEL)
+        self.assertEqual([forge_jev.threshold(name, site=site) for name, site in cutoffs], before)
+
+    def test_a_key_in_both_places_names_both(self):
+        os.environ['TYPESAFE_API_KEY'] = 'ts-env-key'
+        decide, keys = migrate.derive(dict(forge_jev.DEFAULTS, key=KEY), None)
+        provider = decide['providers']['typesafe']
+        self.assertEqual((provider['key_env'], provider['key_file']), ('TYPESAFE_API_KEY', 'keys/typesafe.key'))
+        self.assertEqual(keys, {'typesafe': KEY})
 
     def test_derive_copies_retired_thresholds_nowhere(self):
         cfg = dict(forge_jev.DEFAULTS, key=KEY, enabled=True,

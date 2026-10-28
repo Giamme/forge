@@ -82,11 +82,18 @@ def derive(jev_cfg: dict, cloudflare: dict | None) -> tuple[dict, dict]:
     retired = retired_thresholds()
     providers: dict = {}
     keys: dict = {}
-    if jev_cfg.get('key'):
-        providers['typesafe'] = dict(type='jev', url=jev_cfg.get('endpoint') or forge_jev.ENDPOINT,
-                                     model=jev_cfg.get('model') or forge_jev.MODEL,
-                                     key_file=f'{KEYS_DIR}/typesafe.key', local=False)
-        keys['typesafe'] = jev_cfg['key']
+    # The key is looked up as forge_jev.api_key() does: TYPESAFE_API_KEY, then jev.json's key.
+    # The provider names each source found; providers.py reads key_env before key_file.
+    if os.environ.get('TYPESAFE_API_KEY') or jev_cfg.get('key'):
+        entry = dict(type='jev', url=jev_cfg.get('endpoint') or forge_jev.ENDPOINT,
+                     model=jev_cfg.get('model') or forge_jev.MODEL)
+        if os.environ.get('TYPESAFE_API_KEY'):
+            entry['key_env'] = 'TYPESAFE_API_KEY'
+        if jev_cfg.get('key'):
+            entry['key_file'] = f'{KEYS_DIR}/typesafe.key'
+            keys['typesafe'] = jev_cfg['key']
+        entry['local'] = False
+        providers['typesafe'] = entry
     if cloudflare is not None:
         url = (cloudflare.get('url') or forge_jev.CLOUDFLARE_URL)
         if cloudflare.get('account_id'):

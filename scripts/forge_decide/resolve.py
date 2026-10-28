@@ -329,7 +329,9 @@ def _resolve(repo, profile, env, flags, errors: list) -> dict:
                 continue
             if overrides.get(cap) == 'off' or (allowlist and overrides.get(cap) != 'on'):
                 _set_mode(result, gate, 'off', 'env')
-    if env.get('FORGE_JEV_SHADOW') == 'on':
+    # Before migration --jev-shadow only marks records shadow, as it always did; the sites
+    # still act. Once a user decide.json exists, it turns every `on` gate into `shadow`.
+    if migrated and env.get('FORGE_JEV_SHADOW') == 'on':
         for gate in GATES:
             if result['gates'][gate]['mode'] == 'on':
                 _set_mode(result, gate, 'shadow', 'env')

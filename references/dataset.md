@@ -170,7 +170,7 @@ The reviewer is part of the review state because strictness differs by reviewer:
 same kind of diff passes far more often under one reviewer than another, so a label
 means little without knowing who gave it. Routing and retry states also carry a `size`
 block (`prompt_chars`, `declared_files`, `plan_tasks`, `deps`, `decompose_level`, from
-`forge_jev/features.py`), since task size moves the first-try pass rate more than anything
+`forge_dataset/states.py`), since task size moves the first-try pass rate more than anything
 else in the history.
 
 An attempt is labeled by the last execution that carries its number, because a QA-only
