@@ -8,13 +8,13 @@ import os
 from pathlib import Path
 import sys
 import tempfile
-import time
 import urllib.parse
 
-from forge_registry import register_run_dir, runs_registry
+from forge_registry import register_run_dir
 
 from . import (CAPABILITIES, CLOUDFLARE_DEFAULT_SITES, CLOUDFLARE_TOKEN_FILE,
-              DEFAULT_THRESHOLDS, PROVIDERS, RETIRED_THRESHOLDS, SITE_CAPABILITY, THRESHOLD_FALLBACK, api_key,
+              DEFAULT_THRESHOLDS, PROVIDERS, RETIRED_CAPABILITIES, RETIRED_THRESHOLDS,
+              SITE_CAPABILITY, THRESHOLD_FALLBACK, api_key,
               capability_ready, cloudflare, config_path, enabled, load_config, provider_for, provider_ready,
               redact, save_config, secrets, site_ready, threshold)
 from . import client, questions
@@ -234,6 +234,10 @@ def cmd_enable(args) -> int:
     else:
         config['enabled'] = True
     save_config(config)
+    # Accepted so old commands keep working. Nothing is left to ask.
+    for name in dict.fromkeys(args.capability or ()):
+        if name in RETIRED_CAPABILITIES:
+            print('forge: %s has no sites any more' % name, file=sys.stderr)
     return 0
 
 
@@ -248,18 +252,29 @@ def cmd_disable(args) -> int:
     return 0
 
 
+def _capability_sites() -> dict:
+    sites = {cap: [] for cap in CAPABILITIES}
+    for site, cap in SITE_CAPABILITY.items():
+        sites.setdefault(cap, []).append(site)
+    return sites
+
+
 def cmd_status(args) -> int:
     config = load_config()
-    overrides = {var: os.environ[var] for var in ('FORGE_JEV', 'FORGE_JEV_ACT', 'FORGE_JEV_SHADOW',
+    # FORGE_JEV_ACT is not read: --jev-act no longer changes anything.
+    overrides = {var: os.environ[var] for var in ('FORGE_JEV', 'FORGE_JEV_SHADOW',
                 *_CAP_ENV.values()) if var in os.environ}
     overrides.update({var: os.environ[var] for var in ('FORGE_CLEF', 'FORGE_JEV_PROVIDER')
                       if var in os.environ})
     remote = cloudflare(config)
+    sites_by_cap = _capability_sites()
     # Offline by contract: the shell's forge_jev_active reads this before every Jev step.
     data = dict(config_path=str(config_path()), key_present=api_key(config) is not None,
                enabled=enabled(config=config),
                capabilities={c: enabled(c, config=config) for c in CAPABILITIES},
                capability_ready={c: capability_ready(c, config) for c in CAPABILITIES},
+               capability_sites=sites_by_cap,
+               retired_capabilities=sorted(RETIRED_CAPABILITIES),
                providers=dict(typesafe=dict(ready=provider_ready('typesafe', config)),
                               cloudflare=dict(configured=remote is not None,
                                               ready=provider_ready('cloudflare', config),
@@ -275,7 +290,10 @@ def cmd_status(args) -> int:
         print('key present: ' + str(data['key_present']))
         print('enabled: ' + str(data['enabled']))
         for name, state in data['capabilities'].items():
-            print(f'  {name}: {state}')
+            if name in RETIRED_CAPABILITIES:
+                print(f'  {name}: {state} (retired, no sites)')
+            else:
+                print(f'  {name}: {state}')
         cf = data['providers']['cloudflare']
         if cf['configured']:
             print('cloudflare: ready=%s model=%s' % (cf['ready'], cf['model']))

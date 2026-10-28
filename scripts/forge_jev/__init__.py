@@ -68,7 +68,7 @@ DEFAULTS = dict(enabled=False, key='', model=MODEL, endpoint=ENDPOINT, deadline_
                 capabilities={c: True for c in CAPABILITIES},
                 thresholds=dict(DEFAULT_THRESHOLDS),
                 # A second provider, per site. Empty means every site asks TypeSafe exactly
-                # as before; see "Cloudflare Clef" in references/jev.md.
+                # as before; see "Cloudflare Clef" in references/decision-models.md.
                 providers={}, sites={}, model_thresholds={})
 
 # Cloudflare Workers AI's hosted Clef: Jev's request shape, a different envelope and
@@ -90,6 +90,9 @@ SITE_CAPABILITY = {
     'jev-memory-curate': 'memory', 'jev-memory-stale': 'memory', 'jev-memory-slice': 'memory',
     'jev-verify-discover': 'tests',
 }
+# routing's rubrics are gone. The name stays in CAPABILITIES so old configs, frozen
+# selections and --jev-routing keep parsing, but the capability has no sites.
+RETIRED_CAPABILITIES = frozenset(('routing',))
 
 # Loaded via importlib rather than a package-relative import: forge-runtime.py lives one
 # directory up and is not itself part of a package (same trick as forge_fractal).
@@ -241,6 +244,8 @@ def site_ready(site: str, config: dict | None = None) -> bool:
 
 def capability_ready(capability: str, config: dict | None = None) -> bool:
     """Some site of this capability can be asked: what the shell's forge_jev_active tests."""
+    if capability in RETIRED_CAPABILITIES:
+        return False
     config = config if config is not None else load_config()
     return any(site_ready(site, config) for site, cap in SITE_CAPABILITY.items()
                if cap == capability)
@@ -268,7 +273,8 @@ def enabled(capability: str | None = None, *, config: dict | None = None) -> boo
 
 
 def acting() -> bool:
-    return os.environ.get('FORGE_JEV_ACT') == 'on'
+    # Keeps jev.jsonl's acting field.
+    return False
 
 
 def shadow() -> bool:
