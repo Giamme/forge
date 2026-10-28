@@ -1,11 +1,13 @@
 /* forge-ui settings view (window.ForgeSettings, and a CommonJS module under node:test). Route #/settings: the model
-   registry (read-only), Jev, the three per-repo .forge files of one repository, the dataset and the FORGE_* environment.
-   The pure helpers (request bodies, value checks, the repository picker, the editors' unsaved-text state) are tested in
-   ui/tests/js/settings.test.js; render(host, ctx) is thin DOM over them. Every value from the server enters the page as text.
+   registry (read-only), the decision-model gates, the three per-repo .forge files of one repository, the dataset and
+   the FORGE_* environment. The pure helpers (request bodies, value checks, the decision-model view, the repository
+   picker, the editors' unsaved-text state) are tested in ui/tests/js/settings.test.js; render(host, ctx) is thin DOM
+   over them. Every value from the server enters the page as text.
    ctx = { key (the run whose repo to show, or null), runs() (the run list), onPick?(key) }. render returns { poll() }:
    the page calls it on each refresh, and unsaved editor text survives it.
    The calls are GET /api/config?run=<key> and POST /api/config, see ui/docs/api.md, "Controls (write endpoints)". A write
-   changes a file in the repository's working tree (or forge's own Jev config) and is only offered with controls on. */
+   changes a file in the repository's working tree, or a decision-model gate in forge's user config, and is only offered
+   with controls on. */
 (function (root, factory) {
   'use strict';
   const api = factory(root);
@@ -16,6 +18,11 @@
 
   const FILES = ['verify', 'setup', 'verify-subset'];
   const VALUE_MAX = 4096;
+  const DECIDE_VALUE_MAX = 256;
+  // The same names as forge_decide.GATES. The section renders this list, not whatever keys a payload happens to carry.
+  const GATES = ['drift', 'forward', 'prompt', 'memory-curate', 'memory-slice', 'memory-stale', 'verify-discover'];
+  const MODES = ['off', 'shadow', 'on'];
+  const ADD_COMMAND = 'forge decide provider add …';
   const POLL_MS = 20000;                                         // the config rarely changes, and each read starts a CLI process
   const list = v => Array.isArray(v) ? v : [];
   const object = v => v && typeof v === 'object' && !Array.isArray(v) ? v : {};
@@ -23,13 +30,14 @@
   const basename = p => String(p || '').replace(/\/+$/, '').split('/').pop() || String(p || '');
 
   /* ---------- pure ---------- */
-  // The POST body: a set carries `value`, an unset carries `unset: true`, never both. jev.enabled's value is the text
-  // 'true' or 'false', as the CLI takes it.
+  // The POST body: a set carries `value`, an unset carries `unset: true`, never both.
   function configBody(run, key, value, unset) {
     if (unset) return { run: String(run), key: String(key), unset: true };
     return { run: String(run), key: String(key), value: String(value) };
   }
   const repoKey = name => 'repo.' + name;
+  // decide.gate.<gate>, or the same with .provider or .model.
+  const gateKey = (name, field) => 'decide.gate.' + name + (field ? '.' + field : '');
   // The file a save or remove touches, as the confirm names it.
   const targetPath = (repo, name) => String(repo || '').replace(/\/+$/, '') + '/.forge/' + name;
 
@@ -46,6 +54,82 @@
     if (v.startsWith('-')) return 'The text cannot start with "-".';
     if (name === 'verify-subset' && !subsetOk(v)) return 'verify-subset must contain {files}: the per-file command needs the place for the file list.';
     return null;
+  }
+
+  // Why a provider or model would be refused: empty, too long, a control character (newline and tab included),
+  // leading or trailing whitespace, or a leading '-'. The same rules as the server, so a bad value is never posted.
+  function decideTextProblem(value) {
+    const v = text(value);
+    if (!v.trim()) return 'Empty.';
+    if (v !== v.trim()) return 'The text cannot start or end with a space.';
+    const chars = Array.from(v).length;
+    if (chars > DECIDE_VALUE_MAX) return `Too long: ${chars} of ${DECIDE_VALUE_MAX} characters.`;
+    if (/[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/.test(v)) return 'The text has an unpaired surrogate, which cannot be saved.';
+    if (/[\u0000-\u001f\u007f]/.test(v)) return 'Control characters are not allowed.';
+    if (v.startsWith('-')) return 'The text cannot start with "-".';
+    return null;
+  }
+
+  const finite = n => typeof n === 'number' && Number.isFinite(n);
+  const capTokens = n => finite(n) ? String(n) : 'none';
+  const capMoney = n => finite(n) ? n.toFixed(4) : 'none';
+  const money = n => finite(n) ? n.toFixed(4) : '0.0000';
+  const count = n => finite(n) ? String(n) : '0';
+  // How a shadowed value is named in the note. Strings keep their JSON quotes so a mode is not a bare word.
+  function literal(value) {
+    if (value == null) return 'nothing';
+    if (typeof value === 'string') return JSON.stringify(value);
+    if (typeof value === 'number' && Number.isFinite(value)) return String(value);
+    if (typeof value === 'boolean') return String(value);
+    return 'a value';
+  }
+
+  // The Decision models section, as data. render() draws only this, so the page and the test share one reading of the
+  // status object. Provider key fields are dropped here and never reach a string the page shows.
+  function describeDecide(decide) {
+    const d = object(decide);
+    const gatesIn = object(d.gates);
+    const floor = object(d.privacy).floor === true;
+    const providers = Object.keys(object(d.providers)).sort().map(name => {
+      const row = object(object(d.providers)[name]);
+      return { name, type: text(row.type), local: row.local === true };
+    });
+    const gates = GATES.map(name => {
+      const g = object(gatesIn[name]);
+      const skip = floor ? 'privacy' : (typeof g.skip === 'string' ? g.skip : '');
+      return {
+        name,
+        mode: MODES.includes(g.mode) ? g.mode : 'off',
+        source: text(g.source) || 'default',
+        provider: typeof g.provider === 'string' ? g.provider : '',
+        model: typeof g.model === 'string' ? g.model : '',
+        skip,
+        ready: g.ready === true,
+      };
+    });
+    const caps = object(object(d.budget).caps);
+    const spend = object(object(d.budget).spend);
+    const today = object(spend.today);
+    const date = text(spend.date) || '—';
+    const line = 'run cap ' + capTokens(caps.run_tokens) + ' tokens, $' + capMoney(caps.run_usd)
+      + '; daily cap ' + capTokens(caps.daily_tokens) + ' tokens, $' + capMoney(caps.daily_usd)
+      + '; today (' + date + '): ' + count(today.tokens) + ' tokens of ' + capTokens(caps.daily_tokens)
+      + ', $' + money(today.usd) + ' of $' + capMoney(caps.daily_usd);
+    const shadowed = list(d.shadowed).filter(e => e && typeof e === 'object').map(e => ({
+      key: text(e.key),
+      note: text(e.key) + ': the repo sets ' + literal(e.repo) + ', the user file\'s ' + literal(e.user) + ' wins',
+    }));
+    return {
+      gates, privacyFloor: floor,
+      banner: floor ? 'Nothing is sent. This repository is under a privacy floor.' : '',
+      budget: {
+        run: { tokens: caps.run_tokens == null ? null : caps.run_tokens, usd: caps.run_usd == null ? null : caps.run_usd },
+        daily: { tokens: caps.daily_tokens == null ? null : caps.daily_tokens, usd: caps.daily_usd == null ? null : caps.daily_usd },
+        today: { tokens: today.tokens == null ? 0 : today.tokens, usd: today.usd == null ? 0 : today.usd, date },
+        line,
+      },
+      shadowed, providers, noProviders: providers.length === 0, addCommand: ADD_COMMAND,
+    };
   }
 
   // The runs a repository can be taken from (those that name one), newest first.
@@ -103,12 +187,12 @@
   function render(host, ctx) {
     const UI = root.ForgeUI, c = ctx || {};
     const el = (tag, t, cls) => UI.el(tag, t, cls);
-    const s = { run: null, data: null, dataText: null, error: null, writes: false, loading: true, editors: {}, moved: {}, hold: 0, redraw: false, seq: 0, gen: 0, runsSig: null, ready: false, loadedAt: 0, repo: null, gone: false, asking: 0, asks: 0, pickerLate: false };
+    const s = { run: null, data: null, dataText: null, error: null, writes: false, loading: true, editors: {}, moved: {}, models: {}, modelMoved: {}, hold: 0, redraw: false, seq: 0, gen: 0, runsSig: null, ready: false, loadedAt: 0, repo: null, gone: false, asking: 0, asks: 0, pickerLate: false };
     const key_ = (label, cls, onclick) => { const b = el('button', label, cls); b.type = 'button'; if (onclick) b.addEventListener('click', onclick); return b; };
 
     const head = el('header', undefined, 'set-head');
     head.append(el('h1', 'Settings', 'module-title'),
-      el('p', 'What forge reads when it runs: its model registry and Jev switch, and the three files a repository can keep in .forge.', 'muted set-lede'));
+      el('p', 'What forge reads when it runs: its model registry, the decision-model gates, and the three files a repository can keep in .forge.', 'muted set-lede'));
     const picker = el('div', undefined, 'set-picker');
     const body = el('div', undefined, 'set-body');
     const note = el('p', 'This page is read-only: this server has no write token, or has controls off.', 'muted set-readonly');
@@ -178,7 +262,7 @@
     // A new run: nothing of the old one stays, and confirms of the old body (now detached) no longer hold a redraw.
     function resetRun() {
       staleNote(null);
-      s.data = null; s.dataText = null; s.error = null; s.editors = {}; s.moved = {}; s.loading = s.run != null;
+      s.data = null; s.dataText = null; s.error = null; s.editors = {}; s.moved = {}; s.models = {}; s.modelMoved = {}; s.loading = s.run != null;
       s.gen++; s.hold = 0; s.redraw = false;
     }
     function pick(key) {
@@ -210,6 +294,10 @@
         const next = dirtyState(s.editors[name], object(files[name]).content);
         s.editors[name] = next.editor; s.moved[name] = next.moved || (next.dirty && !!s.moved[name]);
       }
+      for (const g of describeDecide(res.data.decide).gates) {
+        const next = dirtyState(s.models[g.name], g.model);
+        s.models[g.name] = next.editor; s.modelMoved[g.name] = next.moved || (next.dirty && !!s.modelMoved[g.name]);
+      }
       const t = JSON.stringify(res.data);
       if (t === s.dataText && !s.redraw) return;
       s.data = res.data; s.dataText = t;
@@ -224,13 +312,14 @@
 
     function drawBody() {
       const focus = document.activeElement && body.contains(document.activeElement) ? document.activeElement : null;
-      const at = focus && focus.dataset.editor ? { name: focus.dataset.editor, a: focus.selectionStart, b: focus.selectionEnd } : null;
+      const at = focus && focus.dataset.editor ? { kind: 'editor', name: focus.dataset.editor, a: focus.selectionStart, b: focus.selectionEnd }
+        : focus && focus.dataset.model ? { kind: 'model', name: focus.dataset.model, a: focus.selectionStart, b: focus.selectionEnd } : null;
       if (s.loading) { body.replaceChildren(el('p', 'Reading the configuration…', 'muted')); return; }
       if (s.error) { body.replaceChildren(el('p', 'Could not read the configuration: ' + s.error, 'warn')); return; }
       if (!s.data) { body.replaceChildren(); return; }
-      body.replaceChildren(registrySection(), jevSection(), repoSection(), datasetSection(), envSection());
+      body.replaceChildren(registrySection(), decideSection(), repoSection(), datasetSection(), envSection());
       if (at) {
-        const t = body.querySelector(`textarea[data-editor="${at.name}"]`);
+        const t = at.kind === 'model' ? body.querySelector(`input[data-model="${at.name}"]`) : body.querySelector(`textarea[data-editor="${at.name}"]`);
         if (t) { t.focus({ preventScroll: true }); try { t.setSelectionRange(at.a, at.b); } catch (_) { /* not selectable */ } }
       }
     }
@@ -274,35 +363,187 @@
       return sec;
     }
 
-    function jevSection() {
-      const jev = object(s.data.jev), on = !!jev.enabled;
-      const sec = section('jev', 'Jev', 'Forge\'s own switch for its decision model. It lives in forge\'s config, so it applies to every repository and run, not only this one.');
-      sec.append(pathLine('config', text(jev.path), jev.exists ? null : 'absent'));
-      const row = el('div', undefined, 'set-switch-row');
-      const lamp = el('i', undefined, 'lamp ' + (on ? 'st-pass' : ''));
-      const state = el('span', on ? 'Jev is enabled' : 'Jev is disabled', 'set-state');
-      row.append(lamp, state);
-      const result = el('div', undefined, 'set-result');
-      if (s.writes) {
-        const sw = el('button', undefined, 'set-switch'); sw.type = 'button';
-        sw.setAttribute('role', 'switch'); sw.setAttribute('aria-checked', String(on));
-        sw.append(el('span', undefined, 'set-switch-knob'), el('span', on ? 'On' : 'Off', 'set-switch-label'));
-        sw.setAttribute('aria-label', 'Jev enabled');
-        sw.addEventListener('click', async () => {
-          const next = !on;
-          const gen = s.gen, release = grab();
-          sw.disabled = true;
-          const yes = await UI.confirmInline(result, `Turn Jev ${next ? 'on' : 'off'}? This changes forge's own config (${text(jev.path)}) for every repository.`);
-          if (!yes) { sw.disabled = false; release(); sw.focus({ preventScroll: true }); return; }
-          const res = await UI.post('/api/config', configBody(s.run, 'jev.enabled', next));
-          UI.outcome(result, res, `Jev is now ${next ? 'enabled' : 'disabled'}.`);
-          sw.disabled = false; release();
-          if (res.ok && gen === s.gen) await reload();
-        });
-        row.append(sw);
+    function decideSection() {
+      const view = describeDecide(s.data.decide);
+      const sec = section('decide', 'Decision models', 'Each gate is off, shadow or on, with a provider and a model. A change writes your forge config (the user level), so it applies to every repository. The mode shown is the one in effect for this repository, and where it came from.');
+      const where = text(object(s.data.decide).user_path);
+      if (where) sec.append(pathLine('config', where));
+      if (view.privacyFloor) {
+        const banner = el('p', view.banner, 'set-banner');
+        banner.id = 'set-decide-privacy';
+        sec.append(banner);
       }
-      sec.append(row, result);
+      const budget = el('p', view.budget.line, 'muted set-budget');
+      budget.id = 'set-decide-budget';
+      sec.append(budget);
+      if (view.noProviders) {
+        const note = el('p', undefined, 'muted');
+        note.append(el('span', 'No provider is configured. Add one with '), el('span', view.addCommand, 'mono'), el('span', '.'));
+        sec.append(note);
+      }
+      for (const item of view.shadowed) sec.append(el('p', item.note, 'muted'));
+      const gates = el('div', undefined, 'set-gates');
+      for (const gate of view.gates) gates.append(gateRow(gate, view.providers));
+      sec.append(gates);
       return sec;
+    }
+
+    const providerLabel = p => [p.name, p.type, p.local ? 'local' : ''].filter(Boolean).join(' · ');
+
+    function gateRow(gate, providers) {
+      const art = el('article', undefined, 'set-file set-gate');
+      art.id = 'set-gate-' + gate.name;
+      const h = el('h3', gate.name, 'set-file-name');
+      const status = el('p', undefined, 'set-file-status');
+      const source = el('span', gate.source, 'tag');
+      source.id = 'set-gate-' + gate.name + '-source';
+      status.append(source);
+      if (gate.skip) status.append(el('span', 'skip: ' + gate.skip, 'set-gate-skip'));
+      const top = el('div', undefined, 'set-file-head');
+      top.append(h, status);
+      art.append(top);
+      if (!s.writes) {
+        const bits = ['mode ' + gate.mode, gate.provider ? 'provider ' + gate.provider : 'no provider', gate.model ? 'model ' + gate.model : 'no model'];
+        art.append(el('p', bits.join(', '), 'muted'));
+        return art;
+      }
+      const result = el('div', undefined, 'set-result');
+      const row = el('div', undefined, 'filters');
+      row.append(modeField(gate, result), providerField(gate, providers, result), modelField(gate, result));
+      art.append(row, result);
+      return art;
+    }
+
+    function modeField(gate, result) {
+      const lab = el('label', undefined, 'filter');
+      const sel = el('select');
+      sel.id = 'set-gate-' + gate.name + '-mode';
+      sel.setAttribute('aria-label', 'Mode for ' + gate.name);
+      for (const mode of MODES) {
+        const o = el('option', mode);
+        o.value = mode;
+        o.selected = mode === gate.mode;
+        sel.append(o);
+      }
+      sel.addEventListener('change', async () => {
+        const next = sel.value;
+        if (!MODES.includes(next) || next === gate.mode) { sel.value = gate.mode; return; }
+        const gen = s.gen, release = grab();
+        sel.disabled = true;
+        const yes = await UI.confirmInline(result, `Set ${gate.name} to ${next}? This writes your forge config (the user level) for every repository.`);
+        if (!yes || gen !== s.gen) {
+          sel.value = gate.mode; sel.disabled = false; release();
+          if (!yes && gen === s.gen) sel.focus({ preventScroll: true });
+          return;
+        }
+        const res = await UI.post('/api/config', configBody(s.run, gateKey(gate.name), next));
+        UI.outcome(result, res, `${gate.name} is set to ${next}.`);
+        if (!res.ok) sel.value = gate.mode;
+        sel.disabled = false; release();
+        if (res.ok && gen === s.gen) await reload();
+      });
+      lab.append(el('span', 'Mode'), sel);
+      return lab;
+    }
+
+    function providerField(gate, providers, result) {
+      const lab = el('label', undefined, 'filter');
+      const sel = el('select');
+      sel.id = 'set-gate-' + gate.name + '-provider';
+      sel.setAttribute('aria-label', 'Provider for ' + gate.name);
+      const blank = el('option', providers.length ? 'Default' : 'No provider');
+      blank.value = '';
+      if (gate.provider) blank.disabled = true;
+      sel.append(blank);
+      const known = new Set(providers.map(p => p.name));
+      for (const p of providers) {
+        const o = el('option', providerLabel(p));
+        o.value = p.name;
+        o.selected = p.name === gate.provider;
+        sel.append(o);
+      }
+      if (gate.provider && !known.has(gate.provider)) {
+        const o = el('option', gate.provider + ' · not configured');
+        o.value = gate.provider;
+        o.selected = true;
+        sel.append(o);
+      }
+      if (!providers.length) sel.disabled = true;
+      sel.addEventListener('change', async () => {
+        const next = sel.value;
+        if (!next || next === gate.provider) { sel.value = gate.provider; return; }
+        if (decideTextProblem(next)) { sel.value = gate.provider; return; }
+        const gen = s.gen, release = grab();
+        sel.disabled = true;
+        const yes = await UI.confirmInline(result, `Set the provider for ${gate.name} to ${next}? This writes your forge config (the user level) for every repository.`);
+        if (!yes || gen !== s.gen) {
+          sel.value = gate.provider;
+          sel.disabled = providers.length === 0;
+          release();
+          if (!yes && gen === s.gen) sel.focus({ preventScroll: true });
+          return;
+        }
+        const res = await UI.post('/api/config', configBody(s.run, gateKey(gate.name, 'provider'), next));
+        UI.outcome(result, res, `The provider for ${gate.name} is set to ${next}.`);
+        if (!res.ok) sel.value = gate.provider;
+        sel.disabled = false; release();
+        if (res.ok && gen === s.gen) await reload();
+      });
+      lab.append(el('span', 'Provider'), sel);
+      return lab;
+    }
+
+    function modelField(gate, result) {
+      const id = 'set-gate-' + gate.name + '-model';
+      const ed = s.models[gate.name] || (s.models[gate.name] = editorOf(gate.model));
+      const wrap = el('div', undefined, 'filter');
+      const input = el('input', undefined, 'mono');
+      input.type = 'text'; input.id = id; input.dataset.model = gate.name;
+      input.spellcheck = false; input.setAttribute('autocomplete', 'off'); input.setAttribute('autocapitalize', 'off');
+      input.setAttribute('aria-label', 'Model for ' + gate.name);
+      input.value = shown(ed);
+      let from = ed.base;
+      const movedNote = el('p', 'The model changed on disk after you began editing; saving replaces it with your text.', 'warn set-file-note');
+      movedNote.hidden = !(isDirty(ed) && s.modelMoved[gate.name]);
+      const problem = el('p', undefined, 'warn set-problem');
+      problem.hidden = true; problem.id = id + '-problem';
+      const set = key_('Set', 'primary');
+      set.setAttribute('aria-label', 'Set model for ' + gate.name);
+      const sync = () => {
+        const cur = s.models[gate.name], dirtyNow = isDirty(cur), bad = dirtyNow ? decideTextProblem(cur.draft) : null;
+        problem.hidden = !bad; problem.textContent = bad || '';
+        if (bad) { input.setAttribute('aria-invalid', 'true'); input.setAttribute('aria-describedby', problem.id); }
+        else { input.removeAttribute('aria-invalid'); input.removeAttribute('aria-describedby'); }
+        set.disabled = !dirtyNow || !!bad;
+        movedNote.hidden = !(dirtyNow && s.modelMoved[gate.name]);
+      };
+      input.addEventListener('input', () => {
+        const next = typed(s.models[gate.name], input.value, from);
+        s.models[gate.name] = next.editor;
+        s.modelMoved[gate.name] = next.moved || (next.dirty && !!s.modelMoved[gate.name]);
+        sync();
+      });
+      set.addEventListener('click', async () => {
+        const cur = s.models[gate.name], bad = decideTextProblem(shown(cur));
+        if (!isDirty(cur) || bad) { sync(); return; }
+        const draft = cur.draft;
+        const gen = s.gen, release = grab();
+        set.disabled = true; input.readOnly = true;
+        const yes = await UI.confirmInline(result, `Set the model for ${gate.name} to ${draft}? This writes your forge config (the user level) for every repository.`);
+        if (!yes || gen !== s.gen) {
+          input.readOnly = false; release(); sync();
+          if (!yes && gen === s.gen) set.focus({ preventScroll: true });
+          return;
+        }
+        const res = await UI.post('/api/config', configBody(s.run, gateKey(gate.name, 'model'), draft));
+        UI.outcome(result, res, `The model for ${gate.name} is set.`);
+        if (res.ok && gen === s.gen) { s.models[gate.name] = editorOf(draft); s.modelMoved[gate.name] = false; from = draft; }
+        input.readOnly = false; release(); sync();
+        if (res.ok && gen === s.gen) await reload();
+      });
+      wrap.append(el('span', 'Model'), input, problem, movedNote, set);
+      sync();
+      return wrap;
     }
 
     function repoSection() {
@@ -430,6 +671,7 @@
     return { poll, pick };
   }
 
-  return { render, configBody, repoKey, targetPath, subsetOk, valueProblem, pickDefault, groupRuns, optionLabel,
-    editorOf, isDirty, dirtyState, edited, typed, shown, readFailure, FILES, VALUE_MAX };
+  return { render, configBody, repoKey, gateKey, targetPath, subsetOk, valueProblem, decideTextProblem, describeDecide,
+    pickDefault, groupRuns, optionLabel, editorOf, isDirty, dirtyState, edited, typed, shown, readFailure,
+    FILES, GATES, MODES, VALUE_MAX, DECIDE_VALUE_MAX, ADD_COMMAND };
 });

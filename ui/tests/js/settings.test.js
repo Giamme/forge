@@ -12,8 +12,10 @@ test('config request bodies: a set carries value, an unset carries unset:true, n
   assert.deepEqual(S.configBody('r1', 'repo.verify', 'make test', false), { run: 'r1', key: 'repo.verify', value: 'make test' });
   assert.deepEqual(S.configBody('r1', 'repo.setup', null, true), { run: 'r1', key: 'repo.setup', unset: true });
   assert.deepEqual(S.configBody('r1', 'repo.setup', 'ignored', true), { run: 'r1', key: 'repo.setup', unset: true });
-  assert.deepEqual(S.configBody('r1', 'jev.enabled', true), { run: 'r1', key: 'jev.enabled', value: 'true' });
-  assert.deepEqual(S.configBody('r1', 'jev.enabled', false), { run: 'r1', key: 'jev.enabled', value: 'false' });
+  assert.equal(S.gateKey('drift'), 'decide.gate.drift');
+  assert.equal(S.gateKey('drift', 'provider'), 'decide.gate.drift.provider');
+  assert.equal(S.gateKey('memory-curate', 'model'), 'decide.gate.memory-curate.model');
+  assert.deepEqual(S.configBody('r1', S.gateKey('drift'), 'shadow'), { run: 'r1', key: 'decide.gate.drift', value: 'shadow' });
   assert.equal(S.repoKey('verify-subset'), 'repo.verify-subset');
   assert.deepEqual(S.FILES.map(S.repoKey), ['repo.verify', 'repo.setup', 'repo.verify-subset']);
 });
@@ -117,6 +119,74 @@ test('typing on text a read moved on since the textarea was drawn counts as move
   assert.deepEqual([r.dirty, r.moved], [true, false]);
   r = S.typed(polled, 'make all', 'make\n');                         // typed to the disk text: clean, nothing to warn of
   assert.deepEqual([r.dirty, r.moved], [false, false]);
+});
+
+test('a provider or model is one short line and cannot become a CLI option', () => {
+  assert.equal(S.decideTextProblem('clef'), null);
+  assert.equal(S.decideTextProblem('m'.repeat(256)), null);
+  assert.match(S.decideTextProblem('m'.repeat(257)), /Too long/);
+  assert.match(S.decideTextProblem(''), /Empty/);
+  assert.match(S.decideTextProblem(' clef'), /space/);
+  assert.match(S.decideTextProblem('clef '), /space/);
+  assert.match(S.decideTextProblem('-clef'), /cannot start/);
+  assert.match(S.decideTextProblem('a\nb'), /Control/);
+  assert.match(S.decideTextProblem('a\tb'), /Control/);
+  assert.match(S.decideTextProblem('a\ud800b'), /surrogate/);
+});
+
+test('decision models: gates, sources, the privacy banner and the budget line', () => {
+  const decide = {
+    gates: {
+      drift: { mode: 'shadow', source: 'user', provider: 'box', model: 'jev-latest', skip: null, ready: true },
+      forward: { mode: 'on', source: 'repo', provider: null, model: null, skip: null },
+      prompt: { mode: 'on', source: 'legacy', provider: 'box', model: null, skip: null },
+      'memory-curate': { mode: 'shadow', source: 'profile', provider: null, model: 'clef', skip: null },
+      'memory-slice': { mode: 'off', source: 'env', provider: null, model: null, skip: 'kill' },
+      'memory-stale': { mode: 'on', source: 'flags', provider: null, model: null, skip: null },
+    },
+    providers: {
+      hosted: { type: 'clef', local: false, url: 'http://127.0.0.1:9', key: 'super-secret-key', key_source: 'file' },
+      box: { type: 'jev', local: true, key: 'super-secret-key' },
+    },
+    budget: {
+      caps: { run_tokens: 1000, run_usd: null, daily_tokens: 40000, daily_usd: 2 },
+      spend: { date: '2026-10-28', today: { tokens: 12, usd: 0.25 }, run: null },
+    },
+    privacy: { floor: false, path: null },
+    shadowed: [{ key: 'gates.drift.mode', repo: 'on', user: 'shadow' }],
+  };
+  const view = S.describeDecide(decide);
+  assert.deepEqual(view.gates.map(g => g.name),
+    ['drift', 'forward', 'prompt', 'memory-curate', 'memory-slice', 'memory-stale', 'verify-discover']);
+  assert.deepEqual(view.gates.map(g => [g.mode, g.source, g.provider, g.model, g.skip]), [
+    ['shadow', 'user', 'box', 'jev-latest', ''],
+    ['on', 'repo', '', '', ''],
+    ['on', 'legacy', 'box', '', ''],
+    ['shadow', 'profile', '', 'clef', ''],
+    ['off', 'env', '', '', 'kill'],
+    ['on', 'flags', '', '', ''],
+    ['off', 'default', '', '', ''],
+  ]);
+  assert.equal(view.gates[0].ready, true);
+  assert.equal(view.privacyFloor, false);
+  assert.equal(view.banner, '');
+  assert.deepEqual(view.providers, [
+    { name: 'box', type: 'jev', local: true },
+    { name: 'hosted', type: 'clef', local: false },
+  ]);
+  assert.equal(view.noProviders, false);
+  assert.match(view.budget.line, /run cap 1000 tokens, \$none/);
+  assert.match(view.budget.line, /daily cap 40000 tokens, \$2\.0000/);
+  assert.match(view.budget.line, /today \(2026-10-28\): 12 tokens of 40000, \$0\.2500 of \$2\.0000/);
+  assert.equal(view.shadowed[0].note, 'gates.drift.mode: the repo sets "on", the user file\'s "shadow" wins');
+  assert.equal(JSON.stringify(view).includes('super-secret-key'), false);
+
+  const floored = S.describeDecide({ ...decide, privacy: { floor: true, path: '/r/.forge/decide.json' }, providers: {} });
+  assert.equal(floored.banner, 'Nothing is sent. This repository is under a privacy floor.');
+  assert.equal(floored.privacyFloor, true);
+  assert.deepEqual(floored.gates.map(g => g.skip), ['privacy', 'privacy', 'privacy', 'privacy', 'privacy', 'privacy', 'privacy']);
+  assert.equal(floored.noProviders, true);
+  assert.equal(floored.addCommand, 'forge decide provider add …');
 });
 
 test('a failed read keeps a good page with a note, and replaces the page only before any good read', () => {

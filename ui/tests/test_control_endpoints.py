@@ -188,15 +188,49 @@ class ConfigTests(EndpointCase):
         self.assertEqual(self.last_argv(), ['config', 'set', 'repo.verify', 'make test', '--repo', self.rrepo, '--json'])
         self.cfg(key='repo.setup', unset=True)
         self.assertEqual(self.last_argv(), ['config', 'unset', 'repo.setup', '--repo', self.rrepo, '--json'])
-        self.cfg(key='jev.enabled', value='true')
-        self.assertEqual(self.last_argv()[:4], ['config', 'set', 'jev.enabled', 'true'])
+        self.cfg(key='decide.gate.drift', value='shadow')
+        self.assertEqual(self.last_argv(),
+                         ['config', 'set', 'decide.gate.drift', 'shadow', '--repo', self.rrepo, '--json'])
+        self.cfg(key='decide.gate.forward.provider', value='box')
+        self.assertEqual(self.last_argv(),
+                         ['config', 'set', 'decide.gate.forward.provider', 'box', '--repo', self.rrepo, '--json'])
+        self.cfg(key='decide.gate.prompt.model', value='m' * 256)
+        self.assertEqual(self.last_argv(),
+                         ['config', 'set', 'decide.gate.prompt.model', 'm' * 256, '--repo', self.rrepo, '--json'])
+        self.cfg(key='repo.verify', value='x' * 300)
+        self.assertEqual(self.last_argv()[3], 'x' * 300)
         self.cfg(key='repo.verify-subset', value='pytest {files}')
         self.assertEqual(self.last_argv()[3], 'pytest {files}')
+
+    def test_decide_names_match_forge_decide(self):
+        scripts = str(ROOT / 'scripts')
+        sys.path.insert(0, scripts)
+        try:
+            import forge_decide
+        finally:
+            sys.path.remove(scripts)
+        self.assertEqual(control.DECIDE_GATES, forge_decide.GATES)
+        self.assertEqual(control.DECIDE_MODES, forge_decide.MODES)
+
+    def test_config_without_the_token_is_refused(self):
+        status, _body = self.post({'run': self.key, 'key': 'decide.gate.drift', 'value': 'on'},
+                                  '/api/config', **{'X-Forge-UI-Token': None})
+        self.assertEqual(status, 403)
+        self.assertEqual(self.calls(), [])
 
     def test_refusals(self):
         bad = [dict(key='repo.other', value='x'), dict(key='repo.verify'), dict(key='repo.verify', value=''),
                dict(key='repo.verify', value='x', unset=True), dict(key='repo.verify', unset=False),
-               dict(key='jev.enabled', value='maybe'), dict(key='jev.enabled', unset=True),
+               dict(key='jev.enabled', value='true'), dict(key='jev.enabled', unset=True),
+               dict(key='decide.gate.routing', value='on'), dict(key='decide.gate.drift', value='maybe'),
+               dict(key='decide.gate.drift', value='off\n'), dict(key='decide.gate.drift', unset=True),
+               dict(key='decide.gate.drift.provider', unset=True),
+               dict(key='decide.gate.drift.provider', value='-box'),
+               dict(key='decide.gate.drift.provider', value='a\nb'),
+               dict(key='decide.gate.drift.model', value='m' * 257),
+               dict(key='decide.gate.drift.model', value=' ok'),
+               dict(key='decide.gate.drift.model', value='a\ud800b'),
+               dict(key='decide.gate.drift.provider.extra', value='box'),
                dict(key='repo.verify-subset', value='pytest'), dict(key='repo.verify', value='-rf'),
                dict(key='repo.verify', value='a\x00b'), dict(key='repo.verify', value=3),
                dict(key='repo.verify', value='x', repo='/etc'), dict(key='repo.verify', value='x', path='/etc')]

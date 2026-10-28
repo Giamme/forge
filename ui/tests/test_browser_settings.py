@@ -26,11 +26,28 @@ def tearDownModule():
     tb.tearDownModule()
 
 
-def config(repo, verify, jev=False):
+_GATES = ('drift', 'forward', 'prompt', 'memory-curate', 'memory-slice', 'memory-stale', 'verify-discover')
+
+
+def decide(floor=False):
+    gates = {name: {'mode': 'off', 'source': 'default', 'provider': None, 'model': None,
+                    'skip': None, 'ready': False, 'site': 'jev-' + name} for name in _GATES}
+    return {
+        'user_path': '/cfg/forge/decide.json', 'repo_path': None, 'migrated': False, 'legacy': False,
+        'profile': None, 'gates': gates, 'providers': {},
+        'budget': {'caps': {'run_tokens': 1000, 'run_usd': None, 'daily_tokens': 40000, 'daily_usd': 2},
+                   'spend': {'date': '2026-10-28', 'today': {'tokens': 12, 'usd': 0.25}, 'run': None}},
+        'privacy': {'floor': floor, 'path': '/r/one/.forge/decide.json' if floor else None},
+        'shadowed': [], 'errors': [],
+    }
+
+
+def config(repo, verify, jev=False, floor=False):
     file = lambda content: {'exists': content is not None, 'content': content}
     return {
         'registry': {'path': '/cfg/registry.tsv', 'rows': [], 'reason': 'Read-only here.'},
         'jev': {'enabled': jev, 'path': '/cfg/forge.json', 'exists': True},
+        'decide': decide(floor),
         'repo': {'path': repo, 'files': {'verify': file(verify), 'setup': file(None), 'verify-subset': file(None)}},
         'dataset': {'path': '/data', 'enabled': False}, 'env': {},
     }
@@ -119,8 +136,8 @@ class Settings(unittest.TestCase):
 
     def test_typing_on_text_a_held_read_replaced_warns_that_the_file_changed(self):
         page = self.page()
-        page.click('#set-jev .set-switch')                               # the Jev confirm holds the body
-        page.wait_for_selector('#set-jev .ui-confirm')
+        page.select_option('#set-gate-drift-mode', 'shadow')             # the mode confirm holds the body
+        page.wait_for_selector('#set-decide .ui-confirm')
         self.configs[self.a] = config('/r/one', 'make all\n')
         with page.expect_response('**/api/config?**'):
             self.next_read(page)
@@ -128,9 +145,47 @@ class Settings(unittest.TestCase):
         page.click('#set-f-verify'); page.keyboard.press('End'); page.keyboard.type('# mine')
         note = page.locator('#set-f-verify').locator('xpath=..').locator('.set-file-note', has_text='changed on disk')
         self.assertTrue(note.is_visible(), 'the save would overwrite make all: the warning shows')
-        page.click('#set-jev .ui-confirm button:text-is("Cancel")')
+        page.click('#set-decide .ui-confirm button:text-is("Cancel")')
         self.assertEqual(page.input_value('#set-f-verify'), 'make test\n# mine')
         self.assertTrue(note.is_visible(), 'and stays after the redraw')
+        self.assertClean(page)
+
+    def test_changing_drift_records_the_same_mode_the_cli_would(self):
+        page = self.page()
+        posted = {}
+
+        def capture(route):
+            if route.request.method != 'POST':
+                return route.fallback()
+            posted['body'] = route.request.post_data_json
+            gate = self.configs[self.a]['decide']['gates']['drift']
+            gate['mode'] = posted['body']['value']
+            gate['source'] = 'user'
+            route.fulfill(status=200, content_type='application/json',
+                          body=json.dumps({'ok': True, 'key': posted['body']['key'],
+                                           'previous': 'off', 'value': posted['body']['value']}))
+
+        page.route('**/api/config', capture)
+        page.select_option('#set-gate-drift-mode', 'shadow')
+        page.wait_for_selector('#set-decide .ui-confirm')
+        with page.expect_response(lambda r: r.request.method == 'POST' and r.url.split('?', 1)[0].endswith('/api/config')):
+            page.click('#set-decide .ui-confirm button:text-is("Confirm")')
+        page.wait_for_function("() => document.querySelector('#set-gate-drift-source')?.textContent === 'user'")
+        self.assertEqual(page.input_value('#set-gate-drift-mode'), 'shadow')
+        self.assertEqual(posted['body'], {'run': self.a, 'key': 'decide.gate.drift', 'value': 'shadow'})
+        self.assertClean(page)
+
+    def test_a_privacy_floor_says_nothing_is_sent_and_the_gates_stay_editable(self):
+        self.configs[self.a] = config('/r/one', 'make test\n', floor=True)
+        page = self.page()
+        self.assertEqual(page.text_content('#set-decide-privacy'),
+                         'Nothing is sent. This repository is under a privacy floor.')
+        self.assertEqual(page.locator('.set-gate-skip').all_text_contents(), ['skip: privacy'] * 7)
+        self.assertTrue(page.is_enabled('#set-gate-drift-mode'))
+        self.assertIn('forge decide provider add …', page.text_content('#set-decide'))
+        budget = page.text_content('#set-decide-budget')
+        self.assertIn('run cap 1000 tokens', budget)
+        self.assertIn('today (2026-10-28): 12 tokens of 40000', budget)
         self.assertClean(page)
 
     def test_a_failed_read_after_a_good_one_keeps_the_page_and_the_unsaved_text(self):
