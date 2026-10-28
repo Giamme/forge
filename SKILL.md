@@ -82,10 +82,10 @@ For explanation requests, explain the workflow without spending model quota.
   - `off`: never offer.
 
   `--file-issues` is an instruction to you: never forward it to a runner. Skip INFRA, interrupted and still-failing runs. Both filers mark each issue with the same finding fingerprint and skip a finding either one already filed, so offering again after a retry only brings up new ones. A draft flagged as a possible duplicate is skipped on `--apply`: show it, and file it (`--confirm-new`) only if the user says it is different.
-- Decision models (Jev, Clef) are optional, off unless configured and enabled, fail-open and
-  always advisory: they never change a task's tier, never select a model, and never substitute
-  for QA acceptance or repository verification (`--jev-act` is still accepted and changes
-  nothing). Read [Decision models](references/decision-models.md) when selected.
+- Decision models (Jev, Clef) are optional, off until a gate is opted in with `forge decide`,
+  fail-open, and never change a task's tier, select a model, or substitute for QA acceptance
+  or repository verification (`--jev-act` is still accepted and changes nothing). Read
+  [Decision models](references/decision-models.md) when selected.
 
 ## Common workflow
 
@@ -139,8 +139,8 @@ Runners offer installation once before agents; dispatch never prompts. See
   for training decision models; `forge dataset status|import|export|outcomes`, `FORGE_DATASET=off`.
 - [Decision models](references/decision-models.md): optional TypeSafe Jev or Cloudflare Clef
   judgments (drift, forward dependency, prompt adequacy, memory curation, verify discovery);
-  off by default; the criteria a site must meet, and what was tried and removed
-  (`forge jev setup --provider cloudflare`, `forge jev sites`, `FORGE_CLEF=off`).
+  off until a gate is opted in with `forge decide`; the criteria a site must meet, and what
+  was tried and removed.
 
 The common invocation is `/forge "<goal>" --dwarf <spec> [--qa <spec>]`. Advanced flags and
 commands live with their mode reference. Use [offline tests and evaluation cases](tests/README.md)
