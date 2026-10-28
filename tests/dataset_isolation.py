@@ -53,6 +53,12 @@ for name in ('FORGE_JEV_ENV_CAPTURED', 'FORGE_JEV_ENV_KILL', 'FORGE_JEV_ENV_ROUT
              'FORGE_CAPABILITY_CACHE', 'FORGE_DATASET_INVOCATION', 'FORGE_DATASET_PARENT',
              'FORGE_DATASET_TRIGGER', 'FORGE_FRACTAL_RUN', 'FORGE_FRACTAL_RETRY'):
     os.environ.pop(name, None)
+# forge decide's run state (FORGE_DECIDE_RUN_DIR, _REPO, _FLAGS) and a developer's own
+# settings (FORGE_DECIDE_PROFILE, FORGE_DECIDE_GATE_<NAME>) would decide a test's gates, budget
+# counter and cache instead of the test: inside a plan's --verify the budget tests charged the
+# outer plan's counter. A test that needs one sets it itself.
+for name in [name for name in os.environ if name.startswith('FORGE_DECIDE_')]:
+    os.environ.pop(name, None)
 
 # `forge ui open` starts a detached server that outlives the command, and keeps its state
 # under XDG_STATE_HOME. Tests get a private state home, never open a browser, ask for a free
