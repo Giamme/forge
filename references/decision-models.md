@@ -110,9 +110,13 @@ printf '%s\n' "$TYPESAFE_API_KEY" | forge decide provider add jev --name typesaf
 # or a local server: --local needs --url, sends no key and costs nothing
 forge decide provider add jev --name local --url http://127.0.0.1:8080 --local
 
-forge decide gate memory-curate on
+forge decide gate memory-curate on --provider typesafe
 forge decide status
 ```
+
+A gate uses only the provider it names. The local server above is
+`forge decide gate memory-curate on --provider local`. A gate with no `--provider` does not
+read the key file `provider add` wrote, and no request is sent.
 
 `status` prints each gate's effective mode and which level set it, the providers (key
 `present` or `missing`), today's spend, and whether a privacy floor is on. It never writes.
@@ -146,7 +150,8 @@ act. Verify discover still does not mark anything verified: the command it picke
 
 Set one with `forge decide gate <gate> off|shadow|on [--provider P] [--model M]`. `--repo DIR`
 writes `<repo>/.forge/decide.json`; `--profile NAME` writes that profile in the user file.
-The two flags are exclusive. A `--provider` must already be configured.
+The two flags are exclusive. `--provider` must already be configured, and the gate uses only
+that provider.
 
 ### Where settings live, and which wins
 
@@ -289,10 +294,11 @@ forge decide migrate --force    # replace the user decide.json from jev.json aga
 While the user `decide.json` does not exist, runs still follow `jev.json` and `FORGE_JEV*`.
 On that path `FORGE_CLEF=off` sends every site to TypeSafe, `FORGE_JEV_PROVIDER` forces
 `typesafe` or `cloudflare`, and `TYPESAFE_API_KEY` overrides the stored key.
-`status` and `doctor` never write, so they do not migrate. The first command that writes the
-user file runs the migration first: `gate` without `--repo`, `provider`, `budget` without
-`--repo`, and `migrate`. A repo-only write (`privacy`, `gate --repo`, `budget --repo`) leaves
-`jev.json` in place. After `decide.json` exists, which gates are on comes from it.
+`status`, `doctor`, `provider list` and a bare `budget` never write, so they do not migrate.
+The migration runs before a write to the user file: `gate` without `--repo`, `provider add`,
+`provider rm`, `budget` with `--run` or `--daily` and without `--repo`, and `migrate`.
+A repo-only write (`privacy`, `gate --repo`, `budget --repo`) leaves `jev.json` in place.
+After `decide.json` exists, which gates are on comes from it.
 
 `forge jev` remains an alias for this release. Next release it is gone.
 
@@ -320,8 +326,8 @@ repo has a privacy floor.
 
 ### Cloudflare Clef
 
-Adding a `clef` provider points no gate at it. `forge decide gate drift on --provider <name>`
-does. A paired replay on 2026-10-16 found hosted Clef non-inferior on drift: AUC 0.985 against
+Point a gate at that provider with `forge decide gate drift on --provider <name>`. A paired
+replay on 2026-10-16 found hosted Clef non-inferior on drift: AUC 0.985 against
 Jev's 0.972, paired difference [0.000, +0.028], on 4560 decisions from 17 runs. A site moves
 only after Clef is non-inferior on at least 30 labeled decisions from at least 8 held-out
 runs. `jev-memory-slice` tied (AUC 0.951 against 0.953) on 5 runs and stays on a `jev`

@@ -85,7 +85,7 @@ floor and migration — is in [Decision models](../references/decision-models.md
 | Command | Does |
 |---|---|
 | `status [--repo DIR] [--json]` | each gate's effective mode and which level set it, providers (`present` or `missing` key), caps and today's spend, privacy floor. Never writes |
-| `gate GATE off\|shadow\|on [--provider P] [--model M] [--profile NAME \| --repo DIR]` | set one gate. Gates: `drift`, `forward`, `prompt`, `memory-curate`, `memory-slice`, `memory-stale`, `verify-discover`. Without `--repo`, writes the user file and migrates `jev.json` first. `--profile` writes that profile in the user file |
+| `gate GATE off\|shadow\|on [--provider P] [--model M] [--profile NAME \| --repo DIR]` | set one gate. Gates: `drift`, `forward`, `prompt`, `memory-curate`, `memory-slice`, `memory-stale`, `verify-discover`. A gate uses only the provider it names. Without `--repo`, writes the user file and migrates `jev.json` first. `--profile` writes that profile in the user file |
 | `provider add jev\|clef --name N [--url U] [--account-id A] [--model M] [--context N] [--price X] [--deadline S] [--local] [--key-stdin \| --key-env VAR]` | add a hosted or local provider. A key is never an argument: one line on stdin or a terminal prompt is written to `keys/<N>.key` mode `0600`, or `--key-env VAR` stores the variable name and reads it at request time |
 | `provider list [--json]` | configured providers |
 | `provider rm N` | remove a provider no gate uses, and the `keys/<N>.key` it wrote |
@@ -99,11 +99,17 @@ failed doctor check or a config file that cannot be read. `forge config set` wri
 user-level gate fields as `decide.gate.<gate>`, `decide.gate.<gate>.provider` and
 `decide.gate.<gate>.model`.
 
+A write to the user file migrates `jev.json` first: `gate` without `--repo`, `provider add`,
+`provider rm`, and `budget` when `--run` or `--daily` changes the user file. `provider list`,
+a bare `budget`, `status` and `doctor` do not.
+
 `forge jev` is the deprecated alias, kept for one release. `setup`, `sites`, `enable`,
 `disable`, `status` and `doctor` print the `forge decide` command and then run the old one.
 
-Run flags, on `forge-solo.sh` and `forge-parallel.sh plan`, frozen in `jev-selection.json`.
-`run` and `retry` keep that selection.
+Run flags, on `forge-solo.sh` and `forge-parallel.sh plan`, are frozen in `jev-selection.json`.
+A re-plan replaces the file. Solo again on the same run dir keeps it. When the file exists,
+`run` and `retry` keep it and say so when flags are passed again. A plan with no selection
+file takes the flags on `run` or `retry` and freezes them then.
 
 | Flag | Does |
 |---|---|
@@ -412,7 +418,7 @@ forge-parallel.sh combine   <new-plan-dir> <plan-dir> <plan-dir>... [--verify <c
 
 | Flag | Subcommands | Remembered in the plan | Means |
 |---|---|---|---|
-| `--gate NAME=MODE[,NAME=MODE...]` | plan | `jev-selection.json` | set decision-model gates for this run; repeatable, a later one wins. `run` and `retry` keep the frozen selection |
+| `--gate NAME=MODE[,NAME=MODE...]` | plan | `jev-selection.json` | set decision-model gates for this run; repeatable, a later one wins. When the file exists, `run` and `retry` keep it; with no file they apply the flags passed then and freeze them |
 | `--no-gates` | plan | `jev-selection.json` | every decision-model gate off |
 | `--decide-budget tokens=N[,usd=X]` | plan | `jev-selection.json` | cap this run's decision-model spend |
 | `--timeout S` | run, retry | `timeout` | per-dispatch timeout in seconds (`0` disables); wins over `FORGE_TIMEOUT` |
