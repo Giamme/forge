@@ -181,7 +181,7 @@ def predict_drift(repo, *, goal: str, task_id: str, title: str, declared: str,
 
     # drift_warn reads gate_warn until a model has its own measured value: a cutoff fitted
     # to one model's probabilities is not a cutoff on another's.
-    warn_at = threshold('drift_warn', config=config, model=result.get('model'))
+    warn_at = threshold('drift_warn', config=config, site='jev-drift', model=result.get('model'))
     predicted = []
     for i, name in enumerate(pool):
         probability = noul(result, f'f{i}')

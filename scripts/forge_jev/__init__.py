@@ -5,9 +5,13 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import sys
+import time
 import uuid
 
 SCRIPTS = Path(__file__).resolve().parents[1]
+if str(SCRIPTS) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS))
 
 ENDPOINT = 'https://api.typesafe.ai/v1/systemone'
 MODEL = 'jev-latest'
@@ -233,43 +237,134 @@ def provider_ready(name: str, config: dict | None = None) -> bool:
     return api_key(config) is not None
 
 
+# Each site now answers to its own gate (forge_decide): off, shadow or on, resolved across
+# six levels. Without a user decide.json the resolver's legacy level reproduces jev.json and
+# the FORGE_JEV* variables, so the capability switches above still decide there.
+#
+# The repo whose .forge/decide.json applies: a command that knows it (--repo, --anchor)
+# sets it for its own duration; otherwise FORGE_DECIDE_REPO, else none (no repo level and
+# no privacy floor here; client.ask still checks the floor of the repo it finds).
+_repo_override: str | None = None
+# One command asks several gates; it reads the files once. The key holds everything the
+# resolution reads, so a changed file or variable is never served stale.
+_CACHE_S = 2.0
+_cache: dict = {}
+
+
+def use_repo(repo) -> None:
+    global _repo_override
+    _repo_override = str(Path(repo).resolve()) if repo else None
+
+
+def current_repo() -> str | None:
+    return _repo_override or os.environ.get('FORGE_DECIDE_REPO') or None
+
+
+def _stamp(path: Path):
+    try:
+        st = path.stat()
+    except OSError:
+        return None
+    return st.st_mtime_ns, st.st_size
+
+
+def _resolved(config: dict | None = None) -> dict:
+    """forge_decide.resolve.resolve() for current_repo(), cached for _CACHE_S. With an
+    explicit `config` that is not jev.json's (tests, a probe), the legacy level is
+    re-derived from it, as enabled(config=) always did."""
+    import forge_decide
+    from forge_decide import resolve as resolve_module
+    repo = current_repo()
+    env = tuple(sorted((k, v) for k, v in os.environ.items()
+                       if k.startswith(('FORGE_', 'XDG_')) or k == 'HOME'))
+    files = (_stamp(forge_decide.user_path()), _stamp(config_path()),
+             _stamp(forge_decide.repo_path(repo)) if repo else None)
+    key = (repo, env, files)
+    hit = _cache.get('entry')
+    if hit and hit[0] == key and time.monotonic() - hit[1] < _CACHE_S:
+        result = hit[2]
+    else:
+        result = resolve_module.resolve(repo)
+        _cache['entry'] = (key, time.monotonic(), result)
+    if config is None or forge_decide.user_path().exists() or config == load_config():
+        return result
+    result = json.loads(json.dumps(result))
+    for gate, value in result['gates'].items():
+        if value['skip'] or value['source'] not in ('default', 'legacy', 'repo'):
+            continue
+        if resolve_module._legacy_enabled(forge_decide.GATE_CAPABILITY[gate], os.environ, config):
+            value['mode'] = 'shadow' if os.environ.get('FORGE_JEV_SHADOW') == 'on' else 'on'
+            value['source'] = 'legacy'
+        elif value['source'] != 'repo':
+            value['mode'], value['source'] = 'off', 'legacy'
+    return result
+
+
+def _gate(site: str, resolved: dict) -> dict | None:
+    import forge_decide
+    return resolved['gates'].get(forge_decide.SITE_GATE.get(site))
+
+
+def gate_mode(site: str) -> str:
+    """'off', 'shadow' or 'on': the resolved mode of the site's gate. An unknown site is off."""
+    gate = _gate(site, _resolved())
+    return gate['mode'] if gate else 'off'
+
+
+def _spec(site: str, config: dict | None, resolved: dict) -> dict:
+    from forge_decide import providers
+    return providers.spec_for_site(site, config=config, repo=current_repo(), resolved=resolved)
+
+
+def gate_reason(site: str, config: dict | None = None) -> str | None:
+    """Why the site cannot be asked: None when it can, else 'privacy', 'kill', 'off',
+    'no-provider' (the gate names a provider that is not configured, or one with no
+    address) or 'no-key'."""
+    import forge_decide
+    resolved = _resolved(config)
+    gate = _gate(site, resolved)
+    if gate is None:
+        return 'off'
+    if gate['skip']:
+        return gate['skip']
+    if gate['mode'] == 'off':
+        return 'off'
+    if gate['provider']:
+        user, _ = forge_decide.load_user()
+        stored = user.get('providers')
+        if not isinstance(stored, dict) or not isinstance(stored.get(gate['provider']), dict):
+            return 'no-provider'
+    spec = _spec(site, config, resolved)
+    if not spec['url']:
+        return 'no-provider'
+    if not spec['key'] and not spec['local']:
+        return 'no-key'
+    return None
+
+
 def site_ready(site: str, config: dict | None = None) -> bool:
-    """The site's capability is on and its provider has credentials. Offline: reads config only."""
-    config = config if config is not None else load_config()
-    capability = SITE_CAPABILITY.get(site)
-    if not enabled(capability, config=config):
-        return False
-    return provider_ready(provider_for(site, config), config)
+    """The site's gate is shadow or on, nothing skips it, and its provider can be asked: a
+    key, or a local provider. Offline: reads config only."""
+    return gate_reason(site, config) is None
 
 
 def capability_ready(capability: str, config: dict | None = None) -> bool:
     """Some site of this capability can be asked: what the shell's forge_jev_active tests."""
     if capability in RETIRED_CAPABILITIES:
         return False
-    config = config if config is not None else load_config()
     return any(site_ready(site, config) for site, cap in SITE_CAPABILITY.items()
                if cap == capability)
 
 
-def _capability_overrides() -> dict[str, str]:
-    names = dict(routing='FORGE_JEV_ROUTING', tests='FORGE_JEV_TESTS', gates='FORGE_JEV_GATES', memory='FORGE_JEV_MEMORY')
-    return {cap: os.environ[var] for cap, var in names.items() if os.environ.get(var) in ('on', 'off')}
-
-
 def enabled(capability: str | None = None, *, config: dict | None = None) -> bool:
-    if os.environ.get('FORGE_JEV') == 'off':
+    """Some gate of this capability (any gate, for None) is not off. Retired capabilities
+    have no gates, so they are never enabled."""
+    if capability in RETIRED_CAPABILITIES:
         return False
-    overrides = _capability_overrides()
-    # An explicit --jev-<cap> is an allowlist, so naming one capability does not
-    # silently enable the rest.
-    if 'on' in overrides.values():
-        return capability is None or overrides.get(capability) == 'on'
-    if overrides.get(capability) == 'off':
-        return False
-    stored = config if config is not None else load_config()
-    if os.environ.get('FORGE_JEV') != 'on' and not stored['enabled']:
-        return False
-    return capability is None or stored['capabilities'].get(capability, True)
+    import forge_decide
+    resolved = _resolved(config)
+    return any(value['mode'] != 'off' for gate, value in resolved['gates'].items()
+               if capability is None or forge_decide.GATE_CAPABILITY.get(gate) == capability)
 
 
 def acting() -> bool:
@@ -278,13 +373,29 @@ def acting() -> bool:
 
 
 def shadow() -> bool:
+    """The run-wide FORGE_JEV_SHADOW. Per site, shadow is gate_mode(site) == 'shadow'."""
     return os.environ.get('FORGE_JEV_SHADOW') == 'on'
 
 
-def threshold(name: str, *, config: dict | None = None, model: str | None = None) -> float:
-    """A rubric's cutoff. `model` is the model that answered: a threshold measured on one
-    model's probabilities means nothing on another's, so a per-model value wins."""
+def threshold(name: str, *, config: dict | None = None, site: str | None = None,
+              model: str | None = None) -> float:
+    """A rubric's cutoff. `model` is the model that answered (else the site's provider
+    model): a threshold measured on one model's probabilities means nothing on another's.
+
+    1. A gate's `thresholds` override, only while its `thresholds_model` is that model.
+    2. Without a user decide.json: jev.json's thresholds and model_thresholds, as before.
+    3. With one: the measured defaults, per model where a replay justified one.
+    """
+    import forge_decide
     config = config or load_config()
+    if site is not None:
+        resolved = _resolved(config)
+        gate = _gate(site, resolved)
+        if gate and name in gate['thresholds'] and gate['thresholds_model']:
+            if gate['thresholds_model'] == (model or _spec(site, config, resolved)['model']):
+                return gate['thresholds'][name]
+    if forge_decide.user_path().exists():
+        config = dict(config, thresholds=dict(DEFAULT_THRESHOLDS), model_thresholds={})
     if model:
         per_model = dict(DEFAULT_MODEL_THRESHOLDS.get(model, {}),
                          **((config.get('model_thresholds') or {}).get(model) or {}))

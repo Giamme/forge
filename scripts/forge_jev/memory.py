@@ -58,7 +58,7 @@ def curate(*, category: str, text: str, existing=None, run_dir=None,
     # alike loses one of them permanently, while a duplicate is only untidy -- so the
     # bar sits on the side of keeping both.
     if (matched and matched != 'none' and match_confidence is not None
-            and match_confidence >= threshold('memory_merge', config=config)):
+            and match_confidence >= threshold('memory_merge', config=config, site='jev-memory-curate')):
         out['matched'] = matched
         out['match_confidence'] = match_confidence
 
@@ -66,12 +66,12 @@ def curate(*, category: str, text: str, existing=None, run_dir=None,
     # place it, which is a reason to leave the recorded category alone, not to discard it.
     if (suggested in CATEGORIES and suggested != category
             and category_confidence is not None
-            and category_confidence >= threshold('memory_recategorize', config=config)):
+            and category_confidence >= threshold('memory_recategorize', config=config, site='jev-memory-curate')):
         out['category'] = suggested
 
     # The quality gate. Silence is the safe direction: a rejected line still lands in the
     # ledger in full, so the only thing lost is injection into future prompts.
-    out['injectable'] = not (durable is not None and durable < threshold('gate_warn', config=config))
+    out['injectable'] = not (durable is not None and durable < threshold('gate_warn', config=config, site='jev-memory-curate'))
 
     # A line that merged onto an existing entry is exempt, and the two judgments have to
     # be read together to see why. `rebuild` skips a non-injectable row before it counts
@@ -128,7 +128,7 @@ def still_true(*, text: str, anchor_path, run_dir=None, config: dict | None = No
     # keeping a stale one costs a line until someone notices, so the bar sits low enough
     # that only a confident "this went false" acts.
     return dict(probability=probability,
-                stale=probability < threshold('stale_drop', config=config))
+                stale=probability < threshold('stale_drop', config=config, site='jev-memory-stale'))
 
 
 def relevant_lines(*, task: str, lines: list, keep: int = SLICE_KEEP,

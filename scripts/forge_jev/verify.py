@@ -342,7 +342,7 @@ def discover(repo, *, config=None, run_dir=None) -> dict | None:
     # correct commands leaves it high; genuine doubt piles onto `none` and drops it.
     # Ties are then broken by the winner, which is what Choice is for.
     distribution = probabilities(result, 'choice')
-    act_at = threshold('tests_act', config=config)
+    act_at = threshold('tests_act', config=config, site='jev-verify-discover')
     if distribution:
         if (1.0 - distribution.get('none', 0.0)) < act_at:
             return None
