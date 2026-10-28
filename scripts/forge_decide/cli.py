@@ -1,7 +1,7 @@
 """forge decide: the decision-model gates, their providers, budgets and the privacy floor (#36).
 
     status   [--repo DIR] [--json]
-    gate     <gate> off|shadow|on [--provider P] [--model M] [--profile NAME | --repo DIR]
+    gate     <gate> off|shadow|on [--force] [--provider P] [--model M] [--profile NAME | --repo DIR]
     provider add jev|clef --name N [--url U] [--account-id A] [--model M] [--context N]
                           [--price X] [--deadline S] [--local] [--key-stdin | --key-env VAR]
     provider list [--json]
@@ -27,8 +27,14 @@ newer half of the runs and records the result in replays/<gate>.json, which `gat
 Its --json is the dry run's estimate, or the evaluation (also `sent`). An unknown provider is
 exit 2, a provider with no key that is not local exit 1.
 
+`gate G on` is the promotion rule: it writes `on` only when replays/<gate>.json holds a
+passing replay for the provider and model the written entry would use (providers.identity).
+Otherwise it writes nothing and exits 3, naming the replay command to run; --force writes it
+anyway with "force": true. Writing off or shadow, or `on` with a passing replay, drops `force`.
+
 Every subcommand works offline and with no key, except `doctor --live`. Exit codes: 0 ok,
-2 usage or invalid input, 1 a failed check (doctor) or a config file that cannot be read.
+2 usage or invalid input, 1 a failed check (doctor) or a config file that cannot be read,
+3 refused (`gate on` with no passing replay and no --force).
 --repo defaults to FORGE_DECIDE_REPO, else the git top level of the working directory.
 
 Commands that write the user file (`gate` without --repo, `provider`, `budget` without
@@ -48,7 +54,9 @@ a terminal. No output of this command holds a key; providers show `key: present|
      "profile": str | null,
      "gates": {"<gate>": {"mode": "off"|"shadow"|"on", "source": "default"|"legacy"|"repo"|
                           "user"|"profile"|"env"|"flags", "provider": str | null,
-                          "model": str | null, "skip": null|"privacy"|"kill", "site": str}},
+                          "model": str | null, "skip": null|"privacy"|"kill", "site": str,
+                          "replay": {"provider", "model", "passes": bool, "at": epoch} | null,
+                          "forced": bool}},
      "providers": {"<name>": {"type", "url", "model", "local": bool,
                               "key": "present"|"missing", "key_source": "file"|"env"|null,
                               "context", "price_usd_per_mtok", "deadline_s"}},
@@ -59,7 +67,9 @@ a terminal. No output of this command holds a key; providers show `key: present|
      "shadowed": [{"key", "repo", "user"}],
      "errors": [str]}
 
-The run spend is filled when FORGE_DECIDE_RUN_DIR is set. New keys may be added; none of
+A gate's `replay` is the recorded replay for the provider and model it would use (null: none);
+`forced` is true when its mode is `on` and that replay is missing or does not pass, whatever
+level turned it on. The run spend is filled when FORGE_DECIDE_RUN_DIR is set. New keys may be added; none of
 these is removed or changes meaning.
 """
 from __future__ import annotations
@@ -73,6 +83,7 @@ from pathlib import Path
 import re
 import sys
 import tempfile
+import time
 
 from . import (GATE_SITE, GATES, MODES, PROVIDER_TYPES, config_dir, load_repo, load_user,
                repo_path, save_repo, save_user, user_path)
@@ -97,6 +108,10 @@ class Usage(Exception):
 
 class Failed(Exception):
     """A config file that cannot be read safely, or another failure: exit 1."""
+
+
+class Refused(Exception):
+    """A gate turned `on` without a passing replay or --force: exit 3."""
 
 
 def _err(message: str) -> None:
@@ -143,15 +158,34 @@ def _legacy_exists() -> bool:
     return forge_jev.config_path().exists()
 
 
+def _replay_row(name: str, gate: dict, config: dict, errors: list) -> dict | None:
+    """The recorded replay of `gate`'s effective provider and model, as status shows it."""
+    from . import replay as replay_module
+    try:
+        provider, model = providers_module.identity(GATE_SITE[name], gate, config=config)
+    except Exception as error:  # status never fails on a broken config
+        errors.append('%s: provider and model unknown (%r)' % (name, error))
+        return None
+    stored = replay_module.recorded(name, provider, model)
+    if stored is None:
+        return None
+    return dict(provider=provider, model=model, passes=stored.get('passes') is True, at=stored.get('at'))
+
+
 def status_data(repo=None, *, profile=None) -> dict:
     """The `status --json` object (shape in the module docstring)."""
+    import forge_jev
     resolved = resolve(repo, profile=profile)
     user, _ = load_user()
     caps = resolved['budget']
     spend = budget_module.spend()
-    gates = {name: dict(mode=gate['mode'], source=gate['source'], provider=gate['provider'],
-                        model=gate['model'], skip=gate['skip'], site=GATE_SITE[name])
-             for name, gate in resolved['gates'].items()}
+    config = forge_jev.load_config()
+    gates = {}
+    for name, gate in resolved['gates'].items():
+        replay = _replay_row(name, gate, config, resolved['errors'])
+        gates[name] = dict(mode=gate['mode'], source=gate['source'], provider=gate['provider'],
+                           model=gate['model'], skip=gate['skip'], site=GATE_SITE[name], replay=replay,
+                           forced=gate['mode'] == 'on' and not (replay and replay['passes']))
     privacy = resolved['privacy']
     return dict(repo=repo, user_path=str(user_path()),
                 repo_path=str(repo_path(repo)) if repo is not None else None,
@@ -197,6 +231,15 @@ def _provider_line(name: str, row: dict) -> str:
         ' (%s)' % row['key_source'] if row['key_source'] else '')
 
 
+def _date(at) -> str:
+    if isinstance(at, bool) or not isinstance(at, (int, float)):
+        return '?'
+    try:
+        return time.strftime('%Y-%m-%d', time.localtime(at))
+    except (OverflowError, OSError, ValueError):
+        return '?'
+
+
 def _gate_line(name: str, gate: dict) -> str:
     extra = []
     if gate['provider']:
@@ -205,6 +248,10 @@ def _gate_line(name: str, gate: dict) -> str:
         extra.append('model ' + gate['model'])
     if gate['skip']:
         extra.append('skip ' + gate['skip'])
+    if gate['forced']:
+        extra.append('forced')
+    elif gate['replay'] and gate['replay']['passes']:
+        extra.append('replayed ' + _date(gate['replay']['at']))
     return '  %-16s %-6s (%s)%s' % (name, gate['mode'], gate['source'],
                                     ('  ' + ', '.join(extra)) if extra else '')
 
@@ -276,9 +323,30 @@ def _user_providers() -> dict:
     return stored if isinstance(stored, dict) else {}
 
 
+def _promotion(gate: str, entry: dict, force: bool) -> str | None:
+    """The promotion rule for `entry`, about to be written `on`: why it may be ('replayed
+    <date>' or 'forced'), else Refused."""
+    from . import replay as replay_module
+    site = GATE_SITE[gate]
+    provider, model = providers_module.identity(site, entry)
+    stored = replay_module.recorded(gate, provider, model)
+    if stored is not None and stored.get('passes') is True:
+        return 'replayed %s on %s/%s' % (_date(stored.get('at')), provider, model)
+    if force:
+        return 'forced: no passing replay on %s/%s' % (provider, model)
+    why = ('no replay is recorded for it' if stored is None else
+           'its replay of %s does not pass: %s' % (_date(stored.get('at')), stored.get('reason') or 'no reason recorded'))
+    raise Refused('%s on refused: provider %s, model %s: %s.\n'
+                  'Run `forge decide replay --site %s --provider %s --model %s --send`, '
+                  'or turn it on anyway with --force (shown as forced).'
+                  % (gate, provider, model, why, site, provider, model))
+
+
 def cmd_gate(args) -> int:
     if args.profile is not None and args.repo is not None:
         raise Usage('--profile and --repo are exclusive')
+    if args.force and args.mode != 'on':
+        raise Usage('--force only applies to `on`')
     repo = _repo(args.repo) if args.repo is not None else None
     if args.provider is not None:
         # A legacy provider exists only once migrated; a --repo write never touches the user
@@ -308,6 +376,11 @@ def cmd_gate(args) -> int:
         entry['provider'] = args.provider
     if args.model is not None:
         entry['model'] = args.model
+    # Kept unknown keys must not carry an old force: only --force writes it.
+    entry.pop('force', None)
+    promotion = _promotion(args.gate, entry, args.force) if args.mode == 'on' else None
+    if args.force:
+        entry['force'] = True
     gates[args.gate] = entry
     if repo is not None:
         save_repo(repo, data)
@@ -319,6 +392,8 @@ def cmd_gate(args) -> int:
     resolved = resolve(effective_repo, profile=args.profile)
     gate = resolved['gates'][args.gate]
     print('%s: %s written to %s' % (args.gate, args.mode, where))
+    if promotion:
+        print(promotion)
     print('effective: %s (source %s)%s' % (gate['mode'], gate['source'],
                                            ', skip ' + gate['skip'] if gate['skip'] else ''))
     if gate['skip'] == 'privacy':
@@ -728,6 +803,8 @@ def parser() -> argparse.ArgumentParser:
     s = sub.add_parser('gate', allow_abbrev=False, help='set one gate off, shadow or on')
     s.add_argument('gate', choices=GATES)
     s.add_argument('mode', choices=MODES)
+    s.add_argument('--force', action='store_true',
+                   help='turn it on without a passing replay (shown as forced)')
     s.add_argument('--provider')
     s.add_argument('--model')
     s.add_argument('--profile')
@@ -821,6 +898,9 @@ def main(argv: list[str] | None = None) -> int:
     except Failed as error:
         _err(str(error))
         return 1
+    except Refused as error:
+        _err(str(error))
+        return 3
     except OSError as error:
         # The type and the file name only: an OSError's text never carries a key here, but a
         # path is enough to act on.

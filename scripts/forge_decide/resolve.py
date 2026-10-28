@@ -37,7 +37,9 @@ Choices the interface left open:
 - A user decide.json that exists but is malformed counts as an empty user level, not as
   missing: the legacy level does not come back because the file broke.
 - A gate may be a bare mode string or an object. A null field counts as not set. Thresholds
-  merge name by name across levels. Budgets are numbers >= 0; null means not set.
+  merge name by name across levels. `force` (a bool: the gate was turned on with --force, without
+  a passing replay) is kept like any other field, but is not a value the repo and user files can
+  disagree on, so it is never reported as shadowed. Budgets are numbers >= 0; null means not set.
 - `repo=None` means no repo level and no privacy floor.
 - `profile` in the result is the selected profile's name, or None when none was selected or
   the name was not found.
@@ -66,7 +68,7 @@ PRIVACY_FLOOR = 'never-send'
 
 def _gate_default() -> dict:
     return dict(mode='off', source='default', provider=None, model=None, thresholds={},
-                thresholds_model=None, skip=None)
+                thresholds_model=None, skip=None, force=False)
 
 
 def _result(errors: list) -> dict:
@@ -124,6 +126,12 @@ def _parse_gates(obj, label: str, errors: list) -> dict:
                 parsed[field] = field_value
             else:
                 errors.append(f'{label}: gates.{name}.{field} is not a string')
+        force = value.get('force')
+        if force is not None:
+            if isinstance(force, bool):
+                parsed['force'] = force
+            else:
+                errors.append(f'{label}: gates.{name}.force is not true or false')
         thresholds = value.get('thresholds')
         if thresholds is not None:
             if not isinstance(thresholds, dict):

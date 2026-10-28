@@ -4,11 +4,15 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 FORGE = ROOT / 'forge'
+sys.path.insert(0, str(ROOT / 'scripts'))
+from forge_decide import replay  # noqa: E402
 
 
 class ConfigTests(unittest.TestCase):
@@ -35,6 +39,11 @@ class ConfigTests(unittest.TestCase):
     def run_decide(self, *args, stdin=None):
         return subprocess.run([str(FORGE), 'decide', *args], capture_output=True, text=True,
                               env=self.env, input=stdin, cwd=str(self.base))
+
+    def record_replay(self, gate, provider, model):
+        """A passing `forge decide replay` result, in this test's state dir."""
+        with mock.patch.dict(os.environ, XDG_STATE_HOME=self.env['XDG_STATE_HOME']):
+            replay.record(gate, dict(at=0.0, site=gate, provider=provider, model=model, passes=True, reason='passes'))
 
     def test_show_symlinked_forge_dir_reports_files_without_reading(self):
         outside = self.base / 'elsewhere'
@@ -257,6 +266,8 @@ class ConfigTests(unittest.TestCase):
                                 '--key-stdin', stdin=secret)
         self.assertEqual(added.returncode, 0, added.stderr)
         self.assertNotIn(secret.strip(), added.stdout)
+        # `on` needs a passing replay of the gate's provider and model (#37): the legacy default here.
+        self.record_replay('prompt', 'typesafe', 'jev-latest')
         self.assertEqual(self.run_cfg('set', 'decide.gate.prompt', 'on', '--json').returncode, 0)
         self.assertEqual(self.run_cfg('set', 'decide.gate.prompt.provider', 'hosted', '--json').returncode, 0)
         shown = self.run_cfg('show', '--repo', str(self.repo), '--json')

@@ -6,7 +6,8 @@
 The legacy settings are jev.json (the TypeSafe key, `enabled`, the capability map, thresholds,
 `model_thresholds`, `providers.cloudflare` and the `sites` map), cloudflare.env and the
 CLOUDFLARE_API_TOKEN variable. TypeSafe becomes the `jev` provider `typesafe`, Cloudflare the
-`clef` provider `cloudflare`.
+`clef` provider `cloudflare`. A gate the legacy config turned `on` is written with
+"force": true: it keeps acting as before, and shows as forced until a replay passes.
 
 Keys are secrets. A key lives in a mode-0600 file under config_dir()/keys/, or stays where it
 already is (a token in cloudflare.env, or in the environment) with the provider pointing at it.
@@ -121,6 +122,8 @@ def derive(jev_cfg: dict, cloudflare: dict | None) -> tuple[dict, dict]:
         capability = GATE_CAPABILITY[gate]
         if jev_cfg.get('enabled') and capability in CAPABILITY_MODE and capabilities.get(capability, True):
             entry['mode'] = CAPABILITY_MODE[capability]
+            if entry['mode'] == 'on':
+                entry['force'] = True
         model = providers.get(name, {}).get('model')
         values = {key: value for key, value in thresholds.items()
                   if key not in retired and gate in THRESHOLD_GATES.get(key, ())}
