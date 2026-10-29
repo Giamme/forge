@@ -15,6 +15,10 @@
 - the full `python3 -m unittest discover -s tests` takes over 10 minutes; run only the modules you touched [tests/check.sh]
 
 ## Known traps
+- a sub-second clock needs python3: macOS date has no %N and /bin/bash is 3.2 (no EPOCHREALTIME) [scripts/forge-lib-task.sh]
+- tests/test_skill.py checks file links only in SKILL.md and references/*.md, never docs/ links or #anchors [tests/test_skill.py]
+- runner notes from a task worker land in tasks/<id>/task.out, not the run's stdout; only `_integration` and do_run notes reach stdout [scripts/forge-parallel.sh]
+- `python3 run_tests.py <module>` from `tests/` also runs the matching `ui:` modules, so a forge-side contract change can fail a ui test you don't own [tests/run_tests.py]
 - a test that moves a gate to another provider with `forge config set decide.gate.G.provider|.model` while the gate is `on` now needs a passing replay… [scripts/forge-config.py]
 - forge runs export FORGE_DECIDE_RUN_DIR into the implementer's shell, so tests/test_decide_budget fails and charges the live run's… [scripts/forge_decide/budget.py]
 - inside a forge run the harness exports FORGE_DECIDE_RUN_DIR, which makes tests/test_decide_budget.py read the live run's spend and fail; run check.sh… [tests/test_decide_budget.py]
@@ -24,8 +28,4 @@
 - the harness exports FORGE_DECIDE_RUN_DIR, which makes tests/test_decide_budget.py fail; run `env -u FORGE_DECIDE_RUN_DIR -u FORGE_DATASET_PARENT -u… [tests/test_decide_budget.py]
 - tests that send the same Jev request twice from one run dir now need FORGE_DECIDE_CACHE=off, which tests/dataset_isolation.py sets; test_decide_cache… [tests/dataset_isolation.py]
 - `python3 -m unittest tests.<module>` from the repo root fails every test with import errors; run `python3 -m unittest <module>` from inside `tests/` [tests/run_tests.py]
-- Settings sets self.fail, which hides TestCase.fail: failed assertions there report TypeError: 'NoneType' object is not callable [ui/tests/test_browser_settings.py]
-- a gate naming a provider missing from user providers falls back to the legacy hosted TypeSafe, so every Jev CLI caller must check site_ready… [scripts/forge_decide/providers.py]
-- providers._legacy raises KeyError from url.format() on a stray brace in providers.cloudflare.url; callers of spec_for_site must catch it [scripts/forge_decide/providers.py]
-- spec_for_site routes only gate sites to decide providers; setup-probe and other non-gate sites fall back to the legacy jev.json route [scripts/forge_decide/providers.py]
 

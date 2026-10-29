@@ -222,7 +222,7 @@ belong to that pool. See [recovery](../references/fractal.md#limits-and-lifecycl
 
 ```bash
 forge control show <plan-dir> [--json]                    # every control, per-task overrides, pins, recent changes
-forge control set <plan-dir> qa-threshold P2              # also --task <id>; P0-P3, none, or inherit (task only)
+forge control set <plan-dir> qa-threshold P2              # also --task <id>; P0-P3, none (P3), default (plan only; P2) or inherit (task only)
 forge control set <plan-dir> retry-budget 3 [--task <id>] # automatic retries; live scheduler only
 forge control set <plan-dir> infra-retries 2              # infrastructure waits per scope; live scheduler only
 forge control set <plan-dir> max-parallel 2               # tasks at once, 1-64; live scheduler only
@@ -257,8 +257,8 @@ Each change is validated, written under `control.lock`, and says when it applies
 
 - **The QA threshold is read once per attempt**, at the start of the task's next attempt; the
   attempt already running keeps the one it began with, so a verdict is never judged by a bar that
-  moved under it. A per-task `none` exempts that task from the plan's threshold; `inherit` drops
-  the override. A plan-level `none` clears the threshold.
+  moved under it. A `none` (P3) exempts that task from a looser plan threshold; `inherit` drops
+  the override. A plan-level `default` removes the setting, so the threshold is P2 again.
 - **Budgets stay "per invocation".** `run --retry-failed N` and `--infra-retries M` still apply
   only to the invocation that was given them and are not remembered; the next `run` starts
   from its own flags. A rule that came back from an old file would silently spend money nobody

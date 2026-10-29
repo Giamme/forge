@@ -51,10 +51,13 @@ test('effective values: inherit, an override and none for the threshold', () => 
   const c = show();
   assert.deepEqual(C.effective(c, 'docs').threshold, { mode: 'inherit', effective: 'P2', from: 'run' });
   assert.deepEqual(C.effective(c, 'page').threshold, { mode: 'P0', effective: 'P0', from: 'task' });
-  assert.deepEqual(C.effective(c, 'graph').threshold, { mode: 'none', effective: 'none', from: 'task' }, 'none is an override: no threshold for this task');
-  assert.deepEqual(C.effective(idle(), 'docs').threshold, { mode: 'inherit', effective: 'none', from: 'run' }, 'an unset run threshold is none');
+  assert.deepEqual(C.effective(c, 'graph').threshold, { mode: 'none', effective: 'P3', from: 'task' }, 'none is an override: no threshold for this task');
+  assert.deepEqual(C.effective(idle(), 'docs').threshold, { mode: 'inherit', effective: 'P2', from: 'run' }, 'an unset run threshold is the default P2');
   assert.equal(C.effective(c).qa, 'P2');
-  assert.equal(C.effective(idle()).qa, 'none');
+  assert.equal(C.effective(idle()).qa, 'P2');
+  assert.equal(C.effective(idle()).qaText, 'P2 (default)');
+  assert.equal(C.effective({ run: { qa_threshold: 'P1', qa_threshold_source: 'set' } }).qaText, 'P1 (set)');
+  assert.equal(C.effective({ run: { qa_threshold: 'P2', qa_threshold_source: 'default' } }).qaText, 'P2 (default)');
 });
 
 test('effective values: the retry budget, what a task used and the run values', () => {
@@ -114,6 +117,7 @@ test('a draft the server would refuse never leaves the page', () => {
   const refused = change => { const p = C.prepare(change); assert.equal(p.ok, false, JSON.stringify(change)); assert.ok(p.error); };
   refused({ kind: 'set', key: 'qa-threshold', input: 'P4' });
   refused({ kind: 'set', key: 'qa-threshold', input: 'inherit' });                  // inherit is for a task
+  refused({ kind: 'set', key: 'qa-threshold', input: 'default', task: 'x' });         // default is for the run
   refused({ kind: 'set', key: 'retry-budget', input: 'inherit' });
   refused({ kind: 'set', key: 'retry-budget', input: '-1', task: 'a' });
   refused({ kind: 'set', key: 'retry-budget', input: '1.5', task: 'a' });
@@ -133,7 +137,7 @@ test('a draft the server would refuse never leaves the page', () => {
 test('the confirm names what changes and when it takes effect', () => {
   assert.equal(C.prepare({ kind: 'set', key: 'qa-threshold', input: 'P2', task: 'x' }).confirm, 'Set QA threshold for task `x` to P2? Takes effect at its next attempt');
   assert.equal(C.prepare({ kind: 'set', key: 'qa-threshold', input: 'P1' }).confirm, "Set QA threshold to P1? Takes effect at each task's next attempt");
-  assert.equal(C.prepare({ kind: 'set', key: 'qa-threshold', input: 'none', task: 'x' }).confirm, 'Set QA threshold for task `x` to none (no threshold for this task)? Takes effect at its next attempt');
+  assert.equal(C.prepare({ kind: 'set', key: 'qa-threshold', input: 'none', task: 'x' }).confirm, 'Set QA threshold for task `x` to P3 for this task? Takes effect at its next attempt');
   assert.equal(C.prepare({ kind: 'set', key: 'timeout', input: '45' }).confirm, "Set Timeout to 45 min? Takes effect at each task's next attempt");
   assert.equal(C.prepare({ kind: 'set', key: 'retry-budget', input: '2', task: 'x' }).confirm, 'Set Retry budget for task `x` to 2? Takes effect at the next retry decision');
   assert.equal(C.prepare({ kind: 'set', key: 'verify-retries', input: '2' }).confirm, 'Set Verify retries to 2? Takes effect at the next verification');
@@ -276,4 +280,13 @@ test('Retry now shows for an ended or policy-stopped task while the run is live'
   assert.equal(C.canRetry(idle(), 'graph'), false);
   const stopped = show({ tasks: { page: Object.assign({}, show().tasks.page, { status: 'PENDING', escalation_stop: true }) } });
   assert.equal(C.canRetry(stopped, 'page'), true);
+});
+
+test('qa-threshold accepts default at run level and none at both', () => {
+  assert.deepEqual(C.valueFor('qa-threshold', 'default'), { ok: true, value: 'default' });
+  assert.equal(C.valueFor('qa-threshold', 'default', 'x').ok, false);
+  assert.equal(C.valueFor('qa-threshold', 'none').ok, true);
+  assert.equal(C.valueFor('qa-threshold', 'none', 'x').ok, true);
+  assert.match(C.prepare({ kind: 'set', key: 'qa-threshold', input: 'none' }).confirm, /to P3 \(nothing tolerated\)\?/);
+  assert.match(C.prepare({ kind: 'set', key: 'qa-threshold', input: 'default' }).confirm, /to the default \(P2\)\?/);
 });

@@ -83,6 +83,7 @@ def _attempts(rows, execs, plan_spec):
         verdict = reviews[-1]['verdict'] if reviews else None
         result.append(dict(n=n, alias=model['alias'] if model else _alias(spec), spec=spec, source=source,
                            outcome=outcome, reason=reason, gate=outcome == 'pass' and verdict == 'FAIL',
+                           gate_fail=outcome == 'fail' and verdict == 'PASS',
                            model_s=last['phases'].get('model') if last is not None else None,
                            duration_s=last['duration_s'] if last is not None else None,
                            tokens=dict(last['tokens']) if last is not None and last['tokens'] else None,

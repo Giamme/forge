@@ -428,6 +428,39 @@ class EndToEndTests(StoreCase):
         export.write(cases, out, seed=7, limit=None)
         self.assertEqual((out.stat().st_mode & 0o777, (out / 'dataset.jsonl').stat().st_mode & 0o777), (0o700, 0o600))
 
+    def test_a_flipped_review_is_recorded_as_the_gate_and_kept_as_the_raw_verdict(self):
+        from forge_dataset import export
+        p = self.plan_of([('a', '-', 'a.txt')])
+        self.scenario({'a.qa.1': {'verdict': 'PASS', 'findings': '- [P2][CONFIRMED] a.txt:1 — wrong'},
+                       'a.dwarf.2': {'content': 'fixed'}})
+        r = self.run_script('forge-parallel.sh', 'run', p, '--retry-failed', 1)
+        self.assertEqual(r.returncode, 0, r.stdout)
+        first = self.attempts('a')[0]
+        self.assertEqual(first['data']['gate'].split('\t')[1], 'fail')
+        cases = export.build(store.connect())
+        course = {c['task']: c for c in cases if c['slice'] == 'routing'}['a']['meta']
+        self.assertEqual((course['gate_fail'], course['gate_pass'], course['raw_verdict']), (True, False, 'PASS'))
+        rows = [r for r in export._qa_rows(export.Runs(export.Store(store.connect()))) if r['attempt'] == first['attempt']]
+        self.assertEqual([(r['gate'], r['verdict']) for r in rows], [('fail', 'PASS')])
+
+    def test_a_solo_run_records_its_gate_and_the_tolerated_findings(self):
+        self.scenario({'*.qa.*': {'verdict': 'PASS', 'findings': '- [P3][CONFIRMED] change.txt:1 — nit'}})
+        r = self.solo()
+        self.assertEqual(r.returncode, 0, r.stdout)
+        [attempt] = self.events(kind='attempt', mode='solo')
+        self.assertEqual(attempt['data']['gate'].split('\t')[1], 'keep')
+        self.assertIn('nit', store.read_blob(attempt['data']['blobs']['known_issues']['sha']).decode())
+
+    def test_a_plan_records_its_threshold_and_whether_it_was_the_default(self):
+        self.plan_of([('a', '-', 'a.txt')])
+        self.assertEqual({k: self.events(kind='plan')[-1]['data']['options'][k]
+                          for k in ('qa_threshold', 'qa_threshold_source')},
+                         dict(qa_threshold='P2', qa_threshold_source='default'))
+        (self.root / 'plan').rename(self.root / 'plan0')
+        self.plan_of([('a', '-', 'a.txt')], '--qa-threshold', 'P1')
+        options = self.events(kind='plan')[-1]['data']['options']
+        self.assertEqual((options['qa_threshold'], options['qa_threshold_source']), ('P1', 'set'))
+
     def test_an_attempt_that_says_nothing_about_the_implementer_is_never_labeled(self):
         # A later success must not stand in for the first attempt, and a reviewer's or a
         # harness's failure is no evidence about the task: only an implementer that ran out

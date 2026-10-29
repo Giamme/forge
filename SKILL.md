@@ -1,7 +1,7 @@
 ---
 name: forge
 description: Dispatch implementation and independent diff review to user-selected models through local agent CLIs. Use for /forge or explicit requests to delegate coding or review; explanation-only questions do not authorize dispatch.
-argument-hint: '"<goal>" --dwarf <alias>[:effort[:harness]] [--qa <alias>] [--planner <alias>] [--yolo-dwarf] [--yolo-qa] [--decompose-level low|medium|high] [--fractal|--no-fractal|--fractal-auto-decompose] [--fractal-planner <spec>] [--jev|--no-jev] [--jev-shadow] [--gate NAME=MODE] [--no-gates] [--decide-budget tokens=N[,usd=X]] [--no-memory] [--no-ripwire] [--ui|--no-ui] [--timeout <seconds>] [--retry-failed <n>] [--escalate-after <n>] [--qa-threshold P0|P1|P2|P3] [--file-issues ask|auto|off] [--shadow-qa <spec>[,<spec>]] [--shadow-rate <0..1>] [--reviewer-session] [--explore <0..0.5>] [--fail-first]'
+argument-hint: '"<goal>" --dwarf <alias>[:effort[:harness]] [--qa <alias>] [--planner <alias>] [--yolo-dwarf] [--yolo-qa] [--decompose-level low|medium|high] [--fractal|--no-fractal|--fractal-auto-decompose] [--fractal-planner <spec>] [--jev|--no-jev] [--jev-shadow] [--gate NAME=MODE] [--no-gates] [--decide-budget tokens=N[,usd=X]] [--no-memory] [--no-ripwire] [--ui|--no-ui] [--timeout <seconds>] [--retry-failed <n>] [--escalate-after <n>] [--qa-threshold P0|P1|P2|P3|none|default] [--file-issues ask|auto|off] [--shadow-qa <spec>[,<spec>]] [--shadow-rate <0..1>] [--reviewer-session] [--explore <0..0.5>] [--fail-first]'
 allowed-tools: [Bash, Read]
 ---
 
@@ -41,9 +41,12 @@ For explanation requests, explain the workflow without spending model quota.
 - One implementer per tree. Solo edits remain uncommitted. Decomposed runs may commit
   and merge on Forge task and integration branches. Updating the user's branch requires
   separate authorization and `integrate --approved`. Never push automatically.
+- The QA threshold defaults to `P2`: a CONFIRMED finding at P2 or worse blocks, so a PASS that
+  lists one becomes FAIL, and milder CONFIRMED findings are recorded as known issues. `--qa-threshold`
+  changes it (see [the verdict rule](docs/reviews.md#verdicts-and-failure)).
 - Show the decomposed task/model table and wait for approval before dispatch. Retry only
   when requested; preserve failed task branches and worktrees. `run --retry-failed N`,
-  `--infra-retries M`, `--qa-threshold Pn`, `plan --shadow-qa` (a second review of a
+  `--infra-retries M`, `plan --shadow-qa` (a second review of a
   sampled share of attempts, never read, to measure reviewer agreement) and
   `plan --reviewer-session` (continue the reviewer's session across rounds) and `run --sweep Pn`
   (once every task merged, fix the tolerated findings at Pn or worse in a few extra tasks, one per
@@ -68,7 +71,7 @@ For explanation requests, explain the workflow without spending model quota.
   plan, offer the opt-in whole-run review (`review`, or `integrate --final-review <qa-spec>`);
   it spends QA quota, so never run it unprompted.
 - **Leftover findings become issues.** A run can finish with review findings nobody will act on:
-  - CONFIRMED findings that `--qa-threshold` tolerated (`tasks/<id>/known_issues.md`);
+  - CONFIRMED findings the threshold tolerated, from a PASS or a FAIL (`tasks/<id>/known_issues.md`);
   - PLAUSIBLE findings in a passed task's `qa.last`;
   - whatever a whole-run review left open.
 

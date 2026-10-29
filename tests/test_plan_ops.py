@@ -121,6 +121,31 @@ class PlanOpsTests(unittest.TestCase):
         self.assertIn('P1 is a known limitation', after)
         self.assertIn(P1, after[len(before):])
 
+    def test_accept_after_a_flipped_pass_says_forge_failed_it_not_the_reviewer(self):
+        p = self.plan_of([('a', '-', 'a.txt')])
+        self.scenario({'a.qa.*': {'verdict': 'PASS', 'findings': P2}})
+        r = self.forge('run', p)
+        self.assertEqual(r.returncode, 5, r.stdout)
+        self.assertEqual(self.status(p, 'a'), 'FAIL')
+        r = self.forge('accept', p, 'a', '--reason', 'edge case is fine', '--approved')
+        self.assertEqual(r.returncode, 0, r.stdout)
+        issues = (p / 'tasks/a/known_issues.md').read_text()
+        self.assertIn("## Accepted by a human despite forge's FAIL (the reviewer said PASS, "
+                      "but listed findings at or above P2)", issues)
+        self.assertNotIn("despite the reviewer's", issues)
+        by = (p / 'tasks/a/accepted.by').read_text().splitlines()
+        self.assertIn('gate=fail', by)
+        self.assertIn('status=FAIL', by)
+
+    def test_accept_on_a_plain_fail_has_no_gate_line(self):
+        p = self.plan_of([('a', '-', 'a.txt')])
+        self.scenario({'a.qa.*': {'verdict': 'FAIL', 'findings': P2}})
+        self.forge('run', p)
+        r = self.forge('accept', p, 'a', '--reason', 'tracked', '--approved')
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertNotIn('gate=fail', (p / 'tasks/a/accepted.by').read_text())
+        self.assertIn("despite the reviewer's FAIL verdict", (p / 'tasks/a/known_issues.md').read_text())
+
     def test_accept_also_takes_a_review_that_never_reached_a_verdict(self):
         p = self.plan_of([('a', '-', 'a.txt')])
         self.scenario({'a.qa.1': {'verdict': 'none', 'findings': 'looks fine, but no verdict line'}})

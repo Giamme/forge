@@ -6,16 +6,17 @@
 #
 # Usage:
 #   forge-parallel.sh plan <plan-dir> --repo <dir> [routing flags] [--decompose-level low|medium|high] [--ui]
+#                                     [--qa-threshold P0|P1|P2|P3|none|default]
 #   forge-parallel.sh run  <plan-dir> [--max-parallel N] [--yolo-dwarf] [--yolo-qa]
 #                                     [--verify <command>] [--setup <command>] [--dry-run]
 #                                     [--timeout S] [--retry-failed N] [--infra-retries M]
-#                                     [--qa-threshold P0|P1|P2|P3] [--verify-retries N] [--no-forecast]
+#                                     [--qa-threshold P0|P1|P2|P3|none|default] [--verify-retries N] [--no-forecast]
 #                                     [--sweep P0|P1|P2|P3 [--sweep-plausible] [--sweep-max N]]
 #                                     [--sweep-ahead | --no-sweep-ahead]
 #   forge-parallel.sh retry <plan-dir> <task-id> [--dwarf <spec>] [--setup <command>]
-#                                     [--timeout S] [--qa-threshold Pn] [--verify-retries N]
+#                                     [--timeout S] [--qa-threshold Pn|none|default] [--verify-retries N]
 #   forge-parallel.sh integrate <plan-dir> --approved [--verify-retries N] [--final-review <qa-spec>]
-#   forge-parallel.sh review <plan-dir> [--qa <spec>] [--yolo-qa] [--qa-threshold Pn]
+#   forge-parallel.sh review <plan-dir> [--qa <spec>] [--yolo-qa] [--qa-threshold Pn|none|default]
 #   forge-parallel.sh accept <plan-dir> <task-id> --reason "<why>" --approved
 #   forge-parallel.sh split <plan-dir> <new-plan> --tasks <id,id> [--dry-run]
 #   forge-parallel.sh combine <new-plan> <plan-a> <plan-b> [<plan>...] [--verify <command>] [--dry-run]
@@ -47,12 +48,19 @@
 #                           each decision and its odds go to tasks/<id>/route.jsonl
 #                           (precedence: flag, this plan's earlier choice, FORGE_ROUTE_EXPLORE)
 #
+# The QA threshold (plan, run, retry, review; kept for the plan):
+#   --qa-threshold Pn       the least severe CONFIRMED finding that still blocks (P0 worst ...
+#                           P3 mildest; P2 when not set). forge decides the verdict from the
+#                           findings: a PASS that lists a CONFIRMED finding at Pn or worse (or
+#                           one with no severity) becomes FAIL; a FAIL made only of findings
+#                           less severe than Pn is accepted as PASS-with-known-issues, and those
+#                           are recorded in known_issues.md. `none` (or `off`) = P3, every
+#                           CONFIRMED finding blocks; `default` goes back to P2
+#
 # Opt-in run behaviour (all off unless asked):
 #   --retry-failed N        re-queue a task whose reviewer said FAIL up to N more times,
 #                           inside the same run, while the other tasks keep going
 #   --infra-retries M       wait out quota/auth/network stops up to M times instead of pausing
-#   --qa-threshold Pn       a reviewer FAIL made only of findings less severe than Pn is
-#                           accepted as PASS-with-known-issues (P0 worst ... P3 mildest)
 #   --sweep Pn              once every task has merged, before verification: the open findings
 #                           at Pn or worse (tolerated, and PLAUSIBLE with --sweep-plausible) become
 #                           at most --sweep-max N fix tasks (default 5), one per file, each with a
@@ -179,6 +187,9 @@ do_plan() {
       --no-reviewer-session) REVIEWER_SESSION=off; shift ;;
       *)
         # `case` is not a loop, so `continue` here belongs to the enclosing while.
+        # The shared flags write into the plan dir (--qa-threshold), so it must exist first.
+        [ -d "$PLAN" ] || die "plan dir '$PLAN' does not exist"
+        if forge_pp_flag plan "$PLAN" "$@"; then shift "$PP_SHIFT"; continue; fi
         if [ "$JEV_OPTS" = 1 ]; then
           forge_jev_flag "$@"; jev_rc=$?
           case "$jev_rc" in
@@ -488,6 +499,17 @@ render_table() {
   if [ -f "$PLAN/reviewer_session" ]; then
     echo "reviewer-session: a later review round continues the reviewer's earlier session when its QA spec is unchanged (experiment; falls back to a fresh session)"
   fi
+  # The plan-level threshold: at plan time no per-task file exists yet.
+  local qa_level qa_src
+  read -r qa_level qa_src <<EOF
+$(qa_threshold_walk "$PLAN" "")
+EOF
+  case "$qa_level" in
+    P3) echo "QA threshold: P3 ($qa_src) — every CONFIRMED finding blocks" ;;
+    P0) echo "QA threshold: P0 ($qa_src) — P0 blocks; a CONFIRMED P1–P3 is recorded as a known issue" ;;
+    P1) echo "QA threshold: P1 ($qa_src) — P0–P1 block; a CONFIRMED P2–P3 is recorded as a known issue" ;;
+    *)  echo "QA threshold: P2 ($qa_src) — P0–P2 block; a CONFIRMED P3 is recorded as a known issue" ;;
+  esac
   echo
   local w id dws starred=0
   for w in $(awk -F'\t' '{print $1}' "$W" | sort -un); do
@@ -635,6 +657,16 @@ write_capsule() { # write_capsule <plan> <id> <role>
     echo "- MERGED means present in this task's pinned baseline; later merges are not included."
     echo "- The review diff is only this task's work against that baseline."
     echo "- Implementation must respect other tasks' ownership; report necessary scope changes."
+    if [ -s "$PLAN/tasks/$me/submodules.txt" ]; then
+      local sm_st sm_path
+      while IFS="$(printf '\t')" read -r sm_st sm_path _; do
+        if [ "$sm_st" = missing ]; then
+          echo "- Submodule \`$sm_path\` is not available in this worktree (its directory is empty)."
+        else
+          echo "- \`$sm_path\` is a submodule: its files are here to read and build with. Changes there are not part of your change and are never committed or reviewed."
+        fi
+      done < "$PLAN/tasks/$me/submodules.txt"
+    fi
 
   } > "$out"
   echo "$out"
@@ -675,11 +707,29 @@ worktree_setup_command() { # worktree_setup_command <plan> <repo>
   return 0
 }
 
+# Exports each submodule's files into a fresh worktree (offline, no `.git`, so they stay
+# invisible to every diff and fingerprint). Never fatal: a failure leaves the directory empty.
+populate_submodules() { # populate_submodules <repo> <wt> <tdir> <id>
+  local repo="$1" wt="$2" tdir="$3" id="$4" st path _sha detail err
+  rm -f "$tdir/submodules.txt"
+  err="$(python3 "$SKILL_DIR/scripts/forge-submodules.py" populate --source "$repo" --worktree "$wt" \
+    --out "$tdir/submodules.txt" 2>&1 >/dev/null)" \
+    || note "$id: submodule population failed (continuing): $(printf '%s' "$err" | tail -1)"
+  [ -s "$tdir/submodules.txt" ] || return 0
+  while IFS="$(printf '\t')" read -r st path _sha detail; do
+    [ "$st" = missing ] && note "$id: submodule $path is not available in this worktree ($detail)"
+  done < "$tdir/submodules.txt"
+  return 0
+}
+
 # Non-fatal by design. A setup step that fails leaves a worktree the dwarf can still
 # work in — it just has to install things itself, which is the status quo this exists
 # to improve on. Failing the task instead would turn a slow run into a dead one.
 run_worktree_setup() { # run_worktree_setup <plan> <repo> <wt> <tdir> <id>
   local PLAN="$1" REPO="$2" wt="$3" tdir="$4" id="$5" cmd
+  # Every worktree forge makes reaches here once, right after it exists, so the submodules'
+  # files are in place before `.forge/setup` runs. The outcome lands in <tdir>/submodules.txt.
+  populate_submodules "$REPO" "$wt" "$tdir" "$id"
   cmd="$(worktree_setup_command "$PLAN" "$REPO")"
   [ -n "$cmd" ] || return 0
   if (cd "$wt" && eval "$cmd") >"$tdir/setup.out" 2>&1; then
@@ -771,6 +821,10 @@ do_task_body() (
     attempt=$(( attempt + 1 ))
     echo "$attempt" > "$tdir/attempt"
   fi
+  # The gate's decision belongs to the review that made it. A review that ends before the gate
+  # (invalidated, timed out, no changes) must not leave an earlier attempt's decision for the
+  # next retry note or `accept` to read; prepare_retry has already carried it forward.
+  rm -f "$tdir/qa.gate" "$tdir/known_issues.md"
 
   # The base is pinned per task on first creation and reused by every retry. The
   # integration branch moves as later waves land, so re-reading the run-level
@@ -951,7 +1005,7 @@ do_task_body() (
       echo "matters because another task may own those files."
       echo
     fi
-    python3 "$SKILL_DIR/scripts/forge-contract.py" qa --part tail --kind "$qa_kind" ${qa_thr:+--threshold "$qa_thr"}
+    python3 "$SKILL_DIR/scripts/forge-contract.py" qa --part tail --kind "$qa_kind" --threshold "$qa_thr"
     echo
     # --irreversible-delete: a deleted file shows as a header, not every line it had (one deleted
     # data directory once made a 7.1M-character prompt that the reviewer's CLI refused).
@@ -1045,9 +1099,10 @@ do_task_body() (
     # pass would merge unreviewed code, so it is fail-safe by construction.
     *)    echo UNKNOWN > "$tdir/status" ;;
   esac
-  # With an explicit --qa-threshold a FAIL made only of tolerated findings becomes an
-  # accepted PASS-with-known-issues. No threshold, no change. qa_thr is the value the review
-  # prompt was built with, so the prompt and the gate of one attempt agree.
+  # The gate at the effective threshold: a FAIL made only of tolerated findings becomes an
+  # accepted PASS-with-known-issues, a PASS that lists a blocking CONFIRMED finding becomes
+  # FAIL. qa_thr is the value the review prompt was built with, so the prompt and the gate of
+  # one attempt agree. Before record_attempt, so attempts.tsv shows the gated status.
   qa_gate "$PLAN" "$id" "$tdir" "$verdict" "$qa_thr"
   return 0
 )
@@ -1118,6 +1173,7 @@ merge_task() { # merge_task <plan> <id> -> 0 merged, 1 conflicted
 # repair loop, which is what keeps forge's one-dwarf-then-QA rule intact.
 do_retry() {
   local PLAN="${1:?retry needs a plan dir}" id="${2:?retry needs a task id}"; shift 2
+  FORGE_RUN_STARTED="$(forge_now)"
   local NEWDWARF="" jev_rc=0
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -1474,6 +1530,7 @@ do_run() {
   FORGE_RUN_STOPPABLE=1
   trap run_signal TERM INT
   local PLAN="${1:?run needs a plan dir}"; shift
+  FORGE_RUN_STARTED="$(forge_now)"   # the summary's overridden verdicts are this run's
   local fractal_pipeline_args=("$@")
   local MAXP=3 DRY=0 jev_rc=0 FORECAST=1
   while [ $# -gt 0 ]; do

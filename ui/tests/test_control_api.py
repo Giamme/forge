@@ -574,7 +574,7 @@ class RealForgeTests(ControlApiCase):
         path = f'/api/runs/{self.key}/controls'
         status, _, data = self.send('GET', path)
         shown = json.loads(data)
-        self.assertEqual((status, shown['run']['qa_threshold'], shown['live']), (200, None, False))
+        self.assertEqual((status, shown['run']['qa_threshold'], shown['live']), (200, 'P2', False))
         self.assertEqual(sorted(shown['tasks']), ['graph', 'page', 'reader'])
 
         status, answer = self.post({'action': 'set', 'key': 'qa-threshold', 'value': 'P2'})
