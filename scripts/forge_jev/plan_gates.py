@@ -174,7 +174,7 @@ def mark_pending(data: dict, kind: str, key: str) -> bool:
 def _prompt_warn() -> float:
     try:
         import forge_jev
-        return float(forge_jev.threshold('prompt_warn'))
+        return float(forge_jev.threshold('prompt_warn', site='jev-prompt'))
     except Exception:
         return DEFAULT_PROMPT_WARN
 

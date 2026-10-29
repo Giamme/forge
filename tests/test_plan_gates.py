@@ -262,6 +262,23 @@ class MarksTests(PlanCase):
         plan_gates.save(self.plan, data)
         self.assertNotIn('  prompt still below 0.55 after its rewrite: t1 (0.42)', plan_gates.marks(self.plan))
 
+    def test_the_prompt_gates_own_threshold_override_decides_the_listing(self):
+        import forge_decide
+        import forge_jev
+        saved = dict(os.environ)
+        self.addCleanup(lambda: (os.environ.clear(), os.environ.update(saved)))
+        config = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: __import__('shutil').rmtree(config, ignore_errors=True))
+        os.environ['XDG_CONFIG_HOME'] = str(config)
+        forge_decide.user_path().parent.mkdir(parents=True, exist_ok=True)
+        forge_decide.user_path().write_text(json.dumps({'version': 1, 'gates': dict(
+            {g: 'off' for g in forge_decide.GATES},
+            prompt={'mode': 'on', 'thresholds': {'prompt_warn': 0.8}, 'thresholds_model': forge_jev.MODEL})}))
+        data = json.loads(json.dumps(self.RECORD))
+        data['prompt']['t1']['after'] = 0.7
+        plan_gates.save(self.plan, data)
+        self.assertIn('  prompt still below 0.8 after its rewrite: t1 (0.70)', plan_gates.marks(self.plan))
+
     def test_empty_missing_or_unreadable_records_give_nothing(self):
         self.assertEqual(plan_gates.marks(self.plan), [])
         (self.plan / 'plan-gates.json').write_text('{}')
