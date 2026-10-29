@@ -236,7 +236,10 @@ def _promotes(judged, interval, *, margin, floor, threshold):
 
 
 def evaluate(plan_: Plan, *, seed: int = 7, margin: float = 0.02) -> dict:
-    """The replay judged on the newer half of the runs, against the baseline and the live answers."""
+    """The replay judged on the newer half of the runs, against the baseline and the live answers.
+
+    The threshold is the one the score is compared with: an inverted site (sites.Site.invert)
+    flags a score at or above 1 - threshold; `threshold_name` stays the config name."""
     import forge_jev
     record = sites.site(plan_.site)
     _calibrate, judged = metrics.split(rows(plan_))
@@ -246,6 +249,8 @@ def evaluate(plan_: Plan, *, seed: int = 7, margin: float = 0.02) -> dict:
             live.setdefault(row['live_model'] or '-', []).append((row['live'], row['label']))
     threshold = (forge_jev.threshold(record.threshold, site=plan_.site, model=plan_.model)
                  if record.threshold else None)
+    if threshold is not None and record.invert:
+        threshold = 1.0 - threshold
     answered_pairs = [(r['replay'], r['label']) for r in judged if r['replay'] is not None]
     precision = (metrics.precision_at(answered_pairs, threshold) if threshold is not None
                  else dict(precision=None, recall=None, flagged=None))

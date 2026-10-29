@@ -18,6 +18,10 @@ The labels, per site (forge_decide.sites names each in one sentence):
   forward          a later plan revision added the dependency (true); both tasks merged
                    with no such dependency (false)
 
+The gate modules' labellers (label_prompt, label_coverage, label_addressed, label_message,
+label_attribution) are read lazily: until a module exists its site has no rows. The memory
+sites and findings have none.
+
 The joins are the export's (forge_dataset.export: Store, Runs, the final passing
 attempt, the memory rule), not a copy. The store is only read: never opened by
 connect(), which creates and migrates it. Imported only by `forge decide` commands: the
@@ -234,6 +238,12 @@ LABELLERS = {
     'jev-memory-slice': _memory_slice,
     'jev-verify-discover': _verify_discover,
     'jev-forward': _forward,
+    # The gate modules' own labellers, read lazily: `{}` (no rows) while a module is missing.
+    'jev-prompt': sites._lazy('forge_decide.label_prompt', 'label', {}),
+    'jev-coverage': sites._lazy('forge_decide.label_coverage', 'label', {}),
+    'jev-retry-addressed': sites._lazy('forge_decide.label_addressed', 'label', {}),
+    'jev-dwarf-message': sites._lazy('forge_decide.label_message', 'label', {}),
+    'jev-attribution': sites._lazy('forge_decide.label_attribution', 'label', {}),
 }
 
 
