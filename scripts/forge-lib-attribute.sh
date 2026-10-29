@@ -24,6 +24,7 @@
 # failure belongs to the tip, so it only stands for prefix n when the two are the same commit.
 attribute_commit() { # attribute_commit <k>
   if [ "$1" = 0 ]; then printf '%s\n' "$ATTR_BASE"
+  elif [ "$1" -gt "$ATTR_N" ]; then printf '%s\n' "$ATTR_TIP"     # prefix n+1: commits follow the last merge
   else awk -F'\t' -v k="$1" '$1 == k { print $2; exit }' "$ATTR_DIR/merges.tsv"
   fi
 }
@@ -281,9 +282,17 @@ attribute_search() { # attribute_search <plan> <force 0|1>
   [ "$rc" != 2 ] || { note "attribute: $ATTR_REASON"; return 1; }
   if [ "$rc" = 1 ]; then attribute_conclude "" 0 "$ATTR_REASON"; return 0; fi
   if [ "$ATTR_STATUS" = FAIL ]; then attribute_conclude "" 1 ""; return 0; fi
-  # 2. the tip: FAIL from the run's own verification when it is the last merge commit itself;
-  # otherwise (a commit follows the last merge, or --force) prefix n is verified here, so a
-  # boundary is always between two verified merge commits.
+  # 2. the tip: FAIL from the run's own verification when it is the last merge commit itself.
+  # With --force the tip is verified here, and when commits follow the last merge it is its own
+  # step (prefix n+1): a tip that passes ends the search whatever the last merge does. Prefix n
+  # is verified whenever the run's FAIL cannot stand for it, so a boundary is always between two
+  # verified merge commits.
+  if [ "$force" = 1 ] && [ "$(attribute_commit "$ATTR_N")" != "$ATTR_TIP" ]; then
+    attribute_verify "$((ATTR_N + 1))"; rc=$?
+    [ "$rc" != 2 ] || { note "attribute: $ATTR_REASON"; return 1; }
+    if [ "$rc" = 1 ]; then attribute_conclude "" 0 "$ATTR_REASON"; return 0; fi
+    if [ "$ATTR_STATUS" = PASS ]; then attribute_conclude "" 0 "the tip passes"; return 0; fi
+  fi
   if [ "$force" = 1 ] || [ "$(attribute_commit "$ATTR_N")" != "$ATTR_TIP" ]; then
     attribute_verify "$ATTR_N"; rc=$?
     [ "$rc" != 2 ] || { note "attribute: $ATTR_REASON"; return 1; }

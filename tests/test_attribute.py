@@ -278,6 +278,23 @@ class AttributeTests(unittest.TestCase):
         self.assertEqual(self.status_of(found['steps'], 3), ['PASS'])
         self.assertNotIn('breaks verification', r.stdout)
 
+    def test_forced_a_repair_after_the_last_merge_makes_the_tip_pass(self):
+        # the last merge breaks verification, a commit after it repairs it: the tip passes
+        self.failed_run(ALWAYS)
+        script = self.root / 'verify.sh'
+        script.write_text('[ -e c.txt ] && [ ! -e fix.txt ] && { echo "c breaks it"; exit 1; }\nexit 0\n')
+        wt = Path((self.plan / 'wt_root').read_text().strip()) / '_integration'
+        (wt / 'fix.txt').write_text('fix\n')
+        subprocess.check_call(['git', 'add', 'fix.txt'], cwd=wt, env=self.env)
+        subprocess.check_call(['git', 'commit', '-q', '-m', 'hand repair'], cwd=wt, env=self.env)
+        r = self.attribute('--force')
+        self.assertEqual(r.returncode, 0, r.stdout)
+        found = self.result()
+        self.assertIsNone(found['culprit'])
+        self.assertEqual(found['inconclusive'], 'the tip passes')
+        self.assertEqual(self.status_of(found['steps'], 4), ['PASS'])
+        self.assertIn('the tip passes', r.stdout)
+
     def test_a_stop_during_a_long_setup_ends_the_search_and_removes_its_worktree(self):
         self.failed_run(CLASH)
         marker = self.root / 'setup.started'
