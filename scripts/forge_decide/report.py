@@ -18,7 +18,13 @@ a path with a `jev-backtests` component is never read. Per site:
     fired, fired_unknown
         calls the site's `fired` turns into a non-empty list at the threshold for the entry's
         model. verify-discover needs the stored request body, looked up in the dataset by
-        `key`; a call whose body is not there counts under fired_unknown instead
+        `key`; a call whose body is not there counts under fired_unknown instead. The
+        request a `fired` gets is {model, questions: the ids asked}, so one that resolves its
+        own thresholds reads them for the model the entry was measured on
+    effects: {prefix: n}
+        what the fired ids did: the count of fired qids by prefix (the letters before any
+        digits) -- drift {f: n}, memory-curate {durable: n, same: n}, memory-stale {still: n};
+        None for a retired site
     labelled: {decisions, fired_right, fired_wrong, missed}
         labels.collect's labelled decisions of these runs (run uid = first line of the run
         dir's dataset.uid), joined to the run's entry by key; None for a site with no label
@@ -37,6 +43,7 @@ from collections import Counter
 import json
 import os
 from pathlib import Path
+import re
 
 from . import load_user
 from . import labels as labels_module
@@ -185,9 +192,9 @@ class _Store:
 
 def _blank(retired: bool) -> dict:
     row = dict(calls=0, cached=0, errors=0, skipped={}, input_tokens=0, output_tokens=0, cost_usd=0.0,
-               fired=0, fired_unknown=0, labelled=None, mode=None, forced=None, retired=retired)
+               fired=0, fired_unknown=0, effects={}, labelled=None, mode=None, forced=None, retired=retired)
     if retired:
-        row.update(fired=None, fired_unknown=None)
+        row.update(fired=None, fired_unknown=None, effects=None)
     return row
 
 
@@ -224,6 +231,9 @@ def summarize(run_dirs, *, repo=None, site=None) -> dict:
                     row['fired_unknown'] += 1
                 elif fired:
                     row['fired'] += 1
+                    for qid in fired:
+                        effect = re.match(r'[^0-9]*', str(qid)).group()
+                        row['effects'][effect] = row['effects'].get(effect, 0) + 1
                 key = entry.get('key')
                 if fired is not None and entry.get('ok') is True and uid and key:
                     at = _at(entry)
@@ -287,7 +297,8 @@ def _fired(record, entry: dict, thresholds: dict, store: _Store) -> list | None:
     value = thresholds[(record.name, model)]
     if record.threshold and value is None:
         return None
-    request = entry.get('questions') if isinstance(entry.get('questions'), list) else []
+    asked = entry.get('questions') if isinstance(entry.get('questions'), list) else []
+    request = dict(model=model, questions=asked)
     if record.name == 'jev-verify-discover':
         request = store.body(entry.get('key'))
         if request is None:
@@ -332,7 +343,7 @@ def _totals(rows) -> dict:
 # ------------------------------------------------------------------------------- text
 
 COLUMNS = ('site', 'mode', 'calls', 'cached', 'errors', 'skipped', 'in tokens', 'out tokens', 'cost $',
-           'fired', 'right', 'wrong', 'missed')
+           'fired', 'effects', 'right', 'wrong', 'missed')
 
 
 def _cells(name: str, row: dict, mode=True) -> list[str]:
@@ -342,10 +353,12 @@ def _cells(name: str, row: dict, mode=True) -> list[str]:
     fired = number(row.get('fired'))
     if row.get('fired_unknown'):
         fired += f' (+{row["fired_unknown"]}?)'
+    effects = ', '.join(f'{name} {n}' for name, n in sorted((row.get('effects') or {}).items())) or '-'
     shown = (row.get('mode') or '-') + (' (forced)' if row.get('forced') else '')
     return [name, shown if mode else '', number(row['calls']), number(row['cached']),
             number(row['errors']), number(sum(row['skipped'].values())), number(row['input_tokens']),
             number(row['output_tokens']), '-' if row['cost_usd'] is None else '%.4f' % row['cost_usd'], fired,
+            effects,
             *(number(labelled[field]) if labelled else '-' for field in LABELLED[1:])]
 
 
