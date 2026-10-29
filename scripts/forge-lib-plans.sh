@@ -225,10 +225,16 @@ do_accept() {
   sha="$(cat "$tdir/reviewed.commit")"
   body="$(plans_reviewer_text "$tdir" "$st")"
   n="$(printf '%s\n' "$body" | grep -c '^- ')"
+  local gthr gdec
+  IFS="$(printf '\t')" read -r gthr gdec _ < "$tdir/qa.gate" 2>/dev/null || true
   rm -f "$kibak"; [ -f "$ki" ] && cp -p "$ki" "$kibak"
   {
     if [ -s "$ki" ]; then cat "$ki"; echo; fi
-    echo "## Accepted by a human despite the reviewer's $st verdict"
+    if [ "${gdec:-}" = fail ]; then
+      echo "## Accepted by a human despite forge's FAIL (the reviewer said PASS, but listed findings at or above $gthr)"
+    else
+      echo "## Accepted by a human despite the reviewer's $st verdict"
+    fi
     echo
     echo "Reason: $reason"
     echo "Accepted by $who on $when (task $id, attempt $attempt, reviewed commit ${sha:0:12})."
@@ -249,6 +255,7 @@ do_accept() {
     echo "epoch=$(date +%s)"
     echo "attempt=$attempt"
     echo "reviewed_commit=$sha"
+    [ "${gdec:-}" != fail ] || echo "gate=fail"
   } > "$tdir/accepted.by"
   echo PASS > "$tdir/status"
 

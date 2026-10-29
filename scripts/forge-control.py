@@ -372,6 +372,25 @@ def level(text, task_level=False):
     return text if text in LEVELS or (task_level and text == 'none') else None
 
 
+_CONTRACT = None
+
+
+def run_threshold(text):
+    """(effective level, 'set' | 'default') of the plan file's text; `none` means P3."""
+    global _CONTRACT
+    if _CONTRACT is None:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location('forge_contract', os.path.join(SKILL, 'scripts', 'forge-contract.py'))
+        _CONTRACT = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(_CONTRACT)
+    value = (text.splitlines()[0].replace(' ', '').upper() if text else '')
+    if value == 'NONE':
+        return LEVELS[-1], 'set'
+    if value in LEVELS:
+        return value, 'set'
+    return _CONTRACT.DEFAULT_THRESHOLD, 'default'
+
+
 def nullable(value):
     return None if value in (None, '', '-', 'UNASSIGNED') else value
 
@@ -399,7 +418,8 @@ def show(plan, rows):
     def budget(rel):
         return number(get(rel)) if live else None
 
-    run = dict(qa_threshold=level(get('qa_threshold')), timeout=number(get('timeout')),
+    threshold, source = run_threshold(get('qa_threshold'))
+    run = dict(qa_threshold=threshold, qa_threshold_source=source, timeout=number(get('timeout')),
                escalate_after=number(get('escalate_after')),
                escalate_effort='on' if get('escalate_effort') == 'on' else 'off',
                verify_retries=number(get('verify_retries')),
@@ -445,9 +465,10 @@ def show(plan, rows):
 # ------------------------------------------------------------------------------------ changes
 
 def _qa(value, task):
-    if value in LEVELS or value == 'none' or (task and value == 'inherit'):
+    if value in LEVELS or value == 'none' or (task and value == 'inherit') or (not task and value == 'default'):
         return value
-    raise Invalid('qa-threshold needs P0, P1, P2, P3 or none' + (' (or inherit for a task)' if task else ''))
+    raise Invalid('qa-threshold needs P0, P1, P2, P3 or none (none means P3)'
+                  + (' (or inherit to drop the override)' if task else ', or default to drop the file'))
 
 
 def _int(value, task):
@@ -573,7 +594,7 @@ def cmd_set(args):
     except Invalid as error:
         raise Invalid(f'{args.key}: {error}')
     rel = f'tasks/{task}/{name}' if task else name
-    drop = value == 'inherit' or (value == 'none' and not task) or (args.key == 'escalate-effort' and value == 'off')
+    drop = value in ('inherit', 'default') or (args.key == 'escalate-effort' and value == 'off')
     # Plan-wide stop markers go when the policy that wrote them changes: the policy turned off
     # (escalate-after 0), or the effort step turned on, which may yet have a move for them.
     wide = (args.key == 'escalate-after' and value == '0') or (args.key == 'escalate-effort' and value == 'on')
@@ -789,7 +810,8 @@ def cmd_show(args):
     run = controls['run']
     print(f"{plan}  run {cell(controls['run_id'])}  live {'yes' if controls['live'] else 'no'}"
           f"  fractal {'yes' if controls['fractal'] else 'no'}")
-    print('  ' + '  '.join(f"{k.replace('_', '-')} {cell(v)}" for k, v in run.items() if k != 'infra_paused'))
+    print('  ' + '  '.join(f"{k.replace('_', '-')} {cell(v)}" + (' (default)' if k == 'qa_threshold' and run['qa_threshold_source'] == 'default' else '')
+                           for k, v in run.items() if k not in ('infra_paused', 'qa_threshold_source')))
     for p in run['infra_paused'] or []:
         tasks = ','.join(t for t in (p['tasks'] or []) if isinstance(t, str)) or '-'
         if p['exhausted']:
@@ -836,7 +858,7 @@ def parser():
     p.set_defaults(func=cmd_show)
     p = sub.add_parser('set', help='change a control', description='Keys: ' + ', '.join(KEYS) + '. '
                        'retry-budget, infra-retries and max-parallel change only while a run is live. '
-                       'qa-threshold and retry-budget also take --task (value inherit drops the override).')
+                       'qa-threshold and retry-budget also take --task (value inherit drops the override; at run level, default drops the file and none means P3).')
     common(p)
     p.add_argument('key', choices=list(KEYS))
     p.add_argument('value')

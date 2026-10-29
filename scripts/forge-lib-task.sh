@@ -192,7 +192,15 @@ carry_findings() { # carry_findings <tdir>
   # plan with --reviewer-session. Removed first, so an older session never sits next to newer
   # findings; a review that left no session leaves none here.
   rm -f "$tdir/retry_findings.session" "$tdir/retry_findings.resolved"
-  cp "$tdir/qa.last" "$tdir/retry_findings.md"
+  local gthr gdec
+  IFS="$(printf '\t')" read -r gthr gdec _ < "$tdir/qa.gate" 2>/dev/null || true
+  if [ "${gdec:-}" = fail ]; then
+    # forge, not the reviewer, failed this attempt: say so above the copied report.
+    { printf "forge: the reviewer's verdict was PASS, but this report lists CONFIRMED findings at or above the \`%s\` blocking threshold, so forge failed the attempt. Fix those findings.\n\n" "$gthr"
+      cat "$tdir/qa.last"; } > "$tdir/.retry_findings.md.tmp" && mv "$tdir/.retry_findings.md.tmp" "$tdir/retry_findings.md"
+  else
+    cp "$tdir/qa.last" "$tdir/retry_findings.md"
+  fi
   [ ! -f "$tdir/qa.session" ] || cp "$tdir/qa.session" "$tdir/retry_findings.session" 2>/dev/null || true
   [ ! -f "$tdir/qa.resolved" ] || cp "$tdir/qa.resolved" "$tdir/retry_findings.resolved" 2>/dev/null || true
 }
