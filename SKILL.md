@@ -48,7 +48,8 @@ For explanation requests, explain the workflow without spending model quota.
   when requested; preserve failed task branches and worktrees. `run --retry-failed N`,
   `--infra-retries M`, `plan --shadow-qa` (a second review of a
   sampled share of attempts, never read, to measure reviewer agreement) and
-  `plan --reviewer-session` (continue the reviewer's session across rounds) and `run --sweep Pn`
+  `plan --reviewer-session` (continue the reviewer's session across rounds),
+  `plan --implementer-session` (a retry continues the implementer's session) and `run --sweep Pn`
   (once every task merged, fix the tolerated findings at Pn or worse in a few extra tasks, one per
   file; `--sweep-ahead` instead hands a task the open findings in its files) are opt-in: offer
   them, never add them unprompted. So is `--fail-first` (solo or `plan`): the change's new

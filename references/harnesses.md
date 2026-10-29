@@ -22,7 +22,7 @@ provider test. See [Fractal execution](fractal.md).
 - [opencode](#opencode)
 - [antigravity (agy)](#antigravity-agy)
 - [grok](#grok)
-- [Continuing a reviewer session](#continuing-a-reviewer-session)
+- [Continuing a reviewer session](#continuing-a-reviewer-session) (and an implementer's)
 - [Adding a harness](#adding-a-harness)
 
 ## At a glance
@@ -329,8 +329,15 @@ A grok reviewer has not been proven live yet.
 `forge-dispatch.sh qa <spec> ... --continue-session <id>` continues an earlier reviewer session instead of
 starting a fresh one. `<id>` is the session or thread id a dispatch left in `<run-dir>/<role>.session`
 (8 to 128 characters of `[A-Za-z0-9-]`, not starting with `-`). It is accepted for the `qa` role on claude,
-openclaude and codex in custom-prompt mode only; any other role, harness, `--native-review` or a malformed id
-is a usage error (exit 2). Nothing in forge asks for it by default.
+openclaude and codex in custom-prompt mode only, and for the `dwarf` role on claude and openclaude
+(`plan --implementer-session`); any other role or harness, `--native-review` or a malformed id is a usage
+error (exit 2). Nothing in forge asks for it by default.
+
+An implementer continues with the fresh dwarf argv plus `--resume <id>`, so it keeps `acceptEdits` and its
+Bash allowance. codex is reviewer-only: `exec resume` has no `-s` and no `--approve-for-me` (checked against
+codex-cli 0.164.0), so its write access would rest on a config override that nothing verifies, and a
+sandbox it silently lacked would end in an empty diff. Its preamble says the work has been reviewed since,
+is in `<repo>` as the implementer left it and need not be re-read, and that this attempt's instructions win.
 
 Probed 2026-10-22 (claude 2.1.307, codex 0.162.0):
 

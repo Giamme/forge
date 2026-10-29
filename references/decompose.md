@@ -271,7 +271,8 @@ So:
 
 Every dispatch is a clean slate — forge never passes `--continue`, `--resume`, or
 `codex exec resume`, except the opt-in `plan --reviewer-session` experiment (it continues
-a reviewer's session across rounds on claude, openclaude and codex). That keeps one task's
+a reviewer's session across rounds on claude, openclaude and codex) and the opt-in
+`plan --implementer-session` (a retry continues its implementer's session). That keeps one task's
 confused turn from poisoning another and keeps each task's context small, but it also
 leaves each dwarf blind to the wider run.
 
@@ -282,7 +283,7 @@ Complete requirements, approach, retry findings and distinct memory facts are as
 per role; implementation and review instructions are separate.
 
 It exists to prevent two specific failures that clean slates create, which the opt-in
-`--reviewer-session` experiment does not change:
+`--reviewer-session` and `--implementer-session` do not change:
 
 - a dwarf reimplementing a helper an earlier task already merged, because nothing told it
   that task was done;
@@ -412,6 +413,36 @@ check of the commit it re-reviews. `tasks/<id>/prereview.json` records the selec
 and the outcome; forge-ui shows it under the task's review findings, and the dataset records a
 `pre_review` event. `forge control set <plan> pre-review-tests on|off` and `pre-review-parallel N`
 change both while a run works; `plan --no-pre-review-tests` turns it off.
+
+### Implementer session (opt-in)
+
+`plan --implementer-session` makes a retry **continue the implementer's own session** instead of
+starting one that re-reads the same files: the dwarf keeps what it learned, and the retry's prompt
+(the task, the findings, the rules) arrives as the next turn, after a short note that its work is
+as it left it. It applies to claude and openclaude. codex's `exec resume` takes no sandbox flag, so
+a codex implementer could be resumed only by a config override nobody verifies, and it stays fresh.
+
+A retry continues only when all of these hold; anything else is a fresh session, as without the
+option:
+
+- it carries findings from a review, or from pre-review tests, of a commit this session made;
+- the worktree is still exactly that commit: no edits since (a timed-out or interrupted attempt
+  leaves some), nothing committed on top;
+- the dwarf resolves to the same harness, model and effort, so an escalation (`--escalate-after`,
+  a pin, `retry --dwarf`) starts fresh;
+- the plan is not Fractal.
+
+A continue the harness refuses or that fails at once (dispatch exit **9**, nothing changed in the
+worktree) is followed by a fresh dispatch of the same prompt, which decides the attempt. One that
+fails after it already changed files is a failed implementer (`ERROR`), as a fresh one would be:
+running another on top would pay for the attempt twice. One row per attempt goes to
+`tasks/<id>/implementer_sessions.tsv`: row, attempt, `continued`, `fresh` or `failed`, the reason
+(`same-spec`, `first-attempt`, `no-findings`, `work-changed`, `no-session`, `invalid-session`,
+`spec-changed`, `harness-unsupported`, `fractal`, `continue-unsupported`, `continue-failed`) and
+the session id it considered. The dataset tags a continued dwarf dispatch `session_continue`, and
+`forge dataset status` counts implementer continues apart from reviewer ones.
+`plan --no-implementer-session` turns it off; `split` and `combine` carry it (combine only when
+every source has it).
 
 ### Shadow reviews (opt-in)
 

@@ -389,6 +389,7 @@ forge-parallel.sh plan      <plan-dir> --repo <dir> [routing flags] [--planner <
                                      [--gate NAME=MODE[,...]] [--no-gates] [--decide-budget tokens=N[,usd=X]]
                                      [--decompose-level L] [--shadow-qa <spec>[,..]|none] [--shadow-rate R]
                                      [--reviewer-session | --no-reviewer-session]
+                                     [--implementer-session | --no-implementer-session]
                                      [--explore E] [--ui | --no-ui] [--fail-first | --no-fail-first]
                                      [--pre-review-tests | --no-pre-review-tests] [--pre-review-parallel N]
                                      [--qa-threshold P0|P1|P2|P3|none|default]

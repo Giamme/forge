@@ -106,7 +106,9 @@ that baseline, and QA sees only baseline membership recorded for that task.
 
 Every dispatch is a **clean slate** — forge never passes `--continue`, `--resume`, or
 `codex exec resume`, except the opt-in `plan --reviewer-session` experiment (it continues
-a reviewer's session across rounds on claude, openclaude and codex). One task's confused
+a reviewer's session across rounds on claude, openclaude and codex) and the opt-in
+`plan --implementer-session` (a retry continues its implementer's session on claude and
+openclaude when the work is as the review left it). One task's confused
 turn can't poison another, and each task's context stays small.
 
 Clean slates alone would leave every dwarf blind to the wider run, so a short `capsule.md` is

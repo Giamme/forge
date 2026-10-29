@@ -42,6 +42,11 @@
 #                           unchanged, and starts fresh whenever it cannot; each round is
 #                           logged in tasks/<id>/review_sessions.tsv and tagged in the
 #                           dataset. `--no-reviewer-session` turns it off (the default)
+#   --implementer-session   opt-in: a retry continues the implementer's earlier session
+#                           (claude, openclaude) when its spec is unchanged and its work is
+#                           still what the review judged, and starts fresh whenever it cannot;
+#                           each attempt is logged in tasks/<id>/implementer_sessions.tsv.
+#                           `--no-implementer-session` turns it off (the default)
 #   --explore E             on by default at 0.2 (0 turns it off, and is kept): a row left
 #                           to forge gets, with probability E/2, its neighbouring model
 #                           (one tier away in the given pools) instead of its pool's turn;
@@ -155,7 +160,7 @@ pool_pick() { # pool_pick <comma-list> <index>
 do_plan() {
   local PLAN="${1:?plan needs a plan dir}"; shift
   local REPO="" D_ANY="" D_HI="" D_MD="" D_LO="" Q_ANY="" Q_HI="" Q_MD="" Q_LO=""
-  local PLANNER="" NOMEM=0 jev_rc=0 DLEVEL="" SHADOW_QA="" SHADOW_RATE="" EXPLORE="" FAIL_FIRST="" REVIEWER_SESSION="" PRE_REVIEW="" PRE_REVIEW_PARALLEL=""
+  local PLANNER="" NOMEM=0 jev_rc=0 DLEVEL="" SHADOW_QA="" SHADOW_RATE="" EXPLORE="" FAIL_FIRST="" REVIEWER_SESSION="" IMPLEMENTER_SESSION="" PRE_REVIEW="" PRE_REVIEW_PARALLEL=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --repo)         REPO="${2:?}"; shift 2 ;;
@@ -191,6 +196,8 @@ do_plan() {
         PRE_REVIEW_PARALLEL="$((10#$2))"; shift 2 ;;
       --reviewer-session)    REVIEWER_SESSION=on; shift ;;
       --no-reviewer-session) REVIEWER_SESSION=off; shift ;;
+      --implementer-session)    IMPLEMENTER_SESSION=on; shift ;;
+      --no-implementer-session) IMPLEMENTER_SESSION=off; shift ;;
       *)
         # `case` is not a loop, so `continue` here belongs to the enclosing while.
         # The shared flags write into the plan dir (--qa-threshold), so it must exist first.
@@ -237,6 +244,8 @@ do_plan() {
   # Reviewer-session continuation (opt-in experiment): the file holds `on`. Readers only
   # test that it exists; the dataset records its content.
   case "$REVIEWER_SESSION" in on) printf '%s\n' on > "$PLAN/reviewer_session" ;; off) rm -f "$PLAN/reviewer_session" ;; esac
+  # Implementer-session continuation (opt-in, #90): the same `on` file, read the same way.
+  case "$IMPLEMENTER_SESSION" in on) printf '%s\n' on > "$PLAN/implementer_session" ;; off) rm -f "$PLAN/implementer_session" ;; esac
   # Exploration is decided here and only here, so the table and preflight see what will run.
   # On by default: choosing models from measured pass rates needs some randomized picks, and
   # history had almost none (9 tasks ever ran on more than one spec). The flag wins, then
@@ -516,6 +525,9 @@ render_table() {
   fi
   if [ -f "$PLAN/reviewer_session" ]; then
     echo "reviewer-session: a later review round continues the reviewer's earlier session when its QA spec is unchanged (experiment; falls back to a fresh session)"
+  fi
+  if [ -f "$PLAN/implementer_session" ]; then
+    echo "implementer-session: a retry continues the implementer's earlier session when its spec is unchanged and its work is as the review left it (claude, openclaude; falls back to a fresh session)"
   fi
   # The plan-level threshold: at plan time no per-task file exists yet.
   local qa_level qa_src
@@ -887,10 +899,65 @@ do_task_body() (
       echo; /bin/bash "$MEMORY" note dwarf
     } > "$tdir/dwarf.input"
     guard_before_dwarf "$wt" "$tdir"
+    # Whether this attempt continues the implementer's earlier session (plan
+    # --implementer-session, #90): only a retry of judged work that is still exactly what was
+    # judged, on the harness, model and effort that made it. Every other answer is a fresh
+    # dispatch, and nothing here can abort the attempt: a doctor that fails means fresh.
+    local is_mode=fresh is_reason="" is_id="" is_fp="" is_cont=()
+    if [ -f "$PLAN/implementer_session" ]; then
+      if [ -n "${FORGE_FRACTAL_RUN:-}" ] || forge_plan_is_fractal "$PLAN"; then
+        is_reason=fractal
+      elif [ "$attempt" = 1 ]; then
+        is_reason=first-attempt
+      elif [ ! -s "$tdir/retry_findings.md" ]; then
+        is_reason=no-findings
+      elif ! implementer_work_unchanged "$tdir" "$wt"; then
+        is_reason=work-changed
+      else
+        FORGE_CAPABILITY_CACHE="${FORGE_CAPABILITY_CACHE:-$PLAN/capabilities}" \
+          /bin/bash "$DISPATCH" doctor --spec "$dw" --role dwarf $yd > "$tdir/dwarf.doctor" 2>&1 || : > "$tdir/dwarf.doctor"
+        IFS=$'\t' read -r is_mode is_reason is_id < <(review_session_decide \
+          "$tdir/retry_findings.dwarf.session" "$tdir/retry_findings.dwarf.resolved" "$tdir/dwarf.doctor" "claude openclaude")
+        if [ "$is_mode" = continued ]; then
+          is_cont=(--continue-session "$is_id")
+          is_fp="$(forge_fingerprint "$wt")" || is_fp=""
+        fi
+      fi
+    fi
     forge_metric_phase dispatch
-    /bin/bash "$DISPATCH" dwarf "$dw" --repo "$wt" --run-dir "$tdir" \
-          --ripwire-query-file "$tdir/prompt.md" --prompt-file "$tdir/dwarf.input" $yd --output "${FORGE_OUTPUT:-summary}" >"$tdir/dwarf.out" 2>&1
+    local dwarf_cmd=(/bin/bash "$DISPATCH" dwarf "$dw" --repo "$wt" --run-dir "$tdir" \
+          --ripwire-query-file "$tdir/prompt.md" --prompt-file "$tdir/dwarf.input" ${yd:+"$yd"} --output "${FORGE_OUTPUT:-summary}")
+    "${dwarf_cmd[@]}" ${is_cont[@]+"${is_cont[@]}"} >"$tdir/dwarf.out" 2>&1
     rc=$?
+    if [ "$rc" = 9 ] && [ "$is_mode" = continued ]; then
+      # The session was not continued (the harness cannot, or it failed). Why comes from the
+      # continued dispatch's record, which a fresh one clears.
+      if [ "$(sed -n 's/^reason=//p' "$tdir/dwarf.continue" 2>/dev/null | head -1)" = unsupported ]; then
+        is_reason=continue-unsupported
+      else
+        is_reason=continue-failed
+      fi
+      mv "$tdir/dwarf.out" "$tdir/dwarf.continue.out" 2>/dev/null || true
+      if [ -n "$is_fp" ] && [ "$(forge_fingerprint "$wt")" = "$is_fp" ]; then
+        # It changed nothing, so the same input goes to a fresh session, which decides the attempt.
+        is_mode=fresh
+        "${dwarf_cmd[@]}" >"$tdir/dwarf.out" 2>&1
+        rc=$?
+      else
+        # It worked on the task before it failed: that is a failed implementer, as when a fresh
+        # one fails, and running a fresh one on top would pay for the attempt twice.
+        is_mode=failed
+        cp "$tdir/dwarf.continue.out" "$tdir/dwarf.out" 2>/dev/null || true
+        rc=4
+        note "$id: the continued implementer session failed after changing files — not running a fresh one on top"
+      fi
+    fi
+    if [ -f "$PLAN/implementer_session" ]; then
+      # One row per attempt, describing the dispatch whose result counts.
+      local is_row=1
+      [ ! -f "$tdir/implementer_sessions.tsv" ] || is_row=$(( $(wc -l < "$tdir/implementer_sessions.tsv") + 1 ))
+      printf '%s\t%s\t%s\t%s\t%s\n' "$is_row" "$attempt" "$is_mode" "$is_reason" "$is_id" >> "$tdir/implementer_sessions.tsv"
+    fi
     if [ "${FORGE_OUTPUT:-summary}" = full ]; then cat "$tdir/dwarf.out"; fi
     if [ "$rc" -ne 0 ]; then
       case "$rc" in
@@ -957,6 +1024,11 @@ do_task_body() (
       echo INVALIDATED > "$tdir/status"; return 1
     fi
     echo "$reviewed" > "$tdir/reviewed.commit"
+    # The implementer session that made this commit, and what it ran as: the one a retry of
+    # these findings may continue (plan --implementer-session; carried with the findings).
+    rm -f "$tdir/reviewed.dwarf.session" "$tdir/reviewed.dwarf.resolved"
+    [ ! -s "$tdir/dwarf.session" ] || cp "$tdir/dwarf.session" "$tdir/reviewed.dwarf.session"
+    [ ! -s "$tdir/dwarf.resolved" ] || cp "$tdir/dwarf.resolved" "$tdir/reviewed.dwarf.resolved"
   else
     reviewed="$(cat "$tdir/reviewed.commit")"
   fi

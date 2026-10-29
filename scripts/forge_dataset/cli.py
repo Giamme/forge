@@ -29,21 +29,24 @@ def _human(n: int) -> str:
 
 
 def _continued_sessions(db) -> dict:
-    """How many dispatches asked to continue a reviewer session.
+    """How many dispatches asked to continue a session: reviewers' and implementers' apart.
 
     Counted from the dispatch events themselves. A shadow review is not required, and a
     continue that failed still counts: the file was written because continuing was requested.
     """
-    continued = failed = 0
+    counts = dict(continued_reviews=0, failed_continues=0,
+                  continued_implementers=0, failed_implementer_continues=0)
     for (raw,) in db.execute(
             "SELECT data FROM events WHERE kind = 'dispatch' AND data LIKE ?",
             ('%"session_continue": "%',)):
-        value = json.loads(raw).get('session_continue')
+        data = json.loads(raw)
+        value = data.get('session_continue')
+        dwarf = data.get('role') == 'dwarf'
         if value == 'continued':
-            continued += 1
+            counts['continued_implementers' if dwarf else 'continued_reviews'] += 1
         elif value == 'failed':
-            failed += 1
-    return dict(continued_reviews=continued, failed_continues=failed)
+            counts['failed_implementer_continues' if dwarf else 'failed_continues'] += 1
+    return counts
 
 
 def status(args) -> int:
@@ -99,6 +102,9 @@ def status(args) -> int:
         if summary.get('continued_reviews') or summary.get('failed_continues'):
             print('  continued reviews: %d' % summary['continued_reviews'])
             print('  failed continues: %d' % summary['failed_continues'])
+        if summary.get('continued_implementers') or summary.get('failed_implementer_continues'):
+            print('  continued implementers: %d' % summary['continued_implementers'])
+            print('  failed implementer continues: %d' % summary['failed_implementer_continues'])
     if summary['legacy_archives']:
         print('  legacy: %d archived run dir(s) kept in %s (`forge dataset import %s` re-reads them;'
               ' events already stored are skipped)' % (summary['legacy_archives'], legacy, legacy))

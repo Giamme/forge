@@ -193,6 +193,7 @@ carry_findings() { # carry_findings <tdir>
   # plan with --reviewer-session. Removed first, so an older session never sits next to newer
   # findings; a review that left no session leaves none here.
   rm -f "$tdir/retry_findings.session" "$tdir/retry_findings.resolved"
+  carry_implementer_session "$tdir"
   local gthr gdec
   IFS="$(printf '\t')" read -r gthr gdec _ < "$tdir/qa.gate" 2>/dev/null || true
   if [ "${gdec:-}" = fail ]; then
@@ -217,20 +218,34 @@ carry_prereview() { # carry_prereview <tdir>
     rm -f "$tdir/retry_findings.commit"
   fi
   rm -f "$tdir/retry_findings.session" "$tdir/retry_findings.resolved"
+  carry_implementer_session "$tdir"
   cp "$tdir/prereview.md" "$tdir/.retry_findings.md.tmp" && mv "$tdir/.retry_findings.md.tmp" "$tdir/retry_findings.md"
 }
 
+# The implementer session that produced the judged commit (reviewed.dwarf.*, recorded with
+# reviewed.commit), kept beside the findings for a plan with --implementer-session, as
+# carry_findings keeps the reviewer's.
+carry_implementer_session() { # carry_implementer_session <tdir>
+  local tdir="$1" n
+  for n in session resolved; do
+    rm -f "$tdir/retry_findings.dwarf.$n"
+    [ ! -f "$tdir/reviewed.dwarf.$n" ] || cp "$tdir/reviewed.dwarf.$n" "$tdir/retry_findings.dwarf.$n" 2>/dev/null || true
+  done
+}
+
 # --- reviewer-session continuation (plan --reviewer-session, an opt-in experiment) ------------
-# review_session_decide <session-file> <resolved-file> <resolution-file>: whether this review
-# round continues the earlier reviewer's session. Prints `mode<TAB>reason<TAB>session`; the
-# session is the id to continue, and empty for every fresh answer.
-#   session-file     the id the earlier review ran under (retry_findings.session / qa.session)
-#   resolved-file    that review's resolution (retry_findings.resolved / qa.resolved)
+# review_session_decide <session-file> <resolved-file> <resolution-file> [harnesses]: whether this
+# round continues the earlier session. Prints `mode<TAB>reason<TAB>session`; the session is the
+# id to continue, and empty for every fresh answer.
+#   session-file     the id the earlier round ran under (retry_findings.session / qa.session)
+#   resolved-file    that round's resolution (retry_findings.resolved / qa.resolved)
 #   resolution-file  this dispatch's resolution (doctor output): harness=, model=, effort=
+#   harnesses        the ones that can continue this role (default: a reviewer's, claude
+#                    openclaude codex; an implementer passes claude openclaude)
 # The caller has already handled the cases that need no files (first round, Fractal). Anything
 # that cannot be checked is fresh; nothing here aborts.
 review_session_decide() {
-  local sf="$1" rf="$2" cf="$3" id="" k a b h
+  local sf="$1" rf="$2" cf="$3" can="${4:-claude openclaude codex}" id="" k a b h
   [ -f "$sf" ] && id="$(head -1 "$sf" 2>/dev/null | tr -d '\r')"
   if [ -z "$id" ]; then printf 'fresh\tno-session\t\n'; return 0; fi
   case "$id" in *[!A-Za-z0-9-]*) printf 'fresh\tinvalid-session\t\n'; return 0 ;; esac
@@ -242,11 +257,22 @@ review_session_decide() {
     b="$(sed -n "s/^$k=//p" "$cf" 2>/dev/null | head -1)"
     if [ -z "$a" ] || [ "$a" != "$b" ]; then printf 'fresh\tspec-changed\t\n'; return 0; fi
   done
-  case "$h" in
-    claude|openclaude|codex) printf 'continued\tsame-spec\t%s\n' "$id" ;;
+  case " $can " in
+    *" $h "*) printf 'continued\tsame-spec\t%s\n' "$id" ;;
     *) printf 'fresh\tharness-unsupported\t\n' ;;
   esac
   return 0
+}
+
+# Whether the task's worktree is still exactly the commit the carried findings judged: nothing
+# committed or edited since (a timed-out or interrupted implementer leaves edits behind). Only
+# then does the implementer session that made that commit know the work it would continue.
+implementer_work_unchanged() { # implementer_work_unchanged <tdir> <worktree>
+  local tdir="$1" wt="$2" head
+  [ -s "$tdir/retry_findings.commit" ] || return 1
+  head="$(git -C "$wt" rev-parse -q --verify HEAD 2>/dev/null)" || return 1
+  [ "$head" = "$(cat "$tdir/retry_findings.commit")" ] || return 1
+  [ -z "$(git -C "$wt" status --porcelain --untracked-files=all -- . ':(exclude).forge' 2>/dev/null)" ]
 }
 
 # The diff between the attempt the carried findings judged and the one under review now, as
@@ -306,7 +332,8 @@ prepare_retry() { # prepare_retry <plan> <id> [new-dwarf]
   else
     note "$id: no previous QA findings to pass on (last status was $st)"
     : > "$tdir/retry_findings.md"
-    rm -f "$tdir/retry_findings.commit" "$tdir/retry_findings.session" "$tdir/retry_findings.resolved"
+    rm -f "$tdir/retry_findings.commit" "$tdir/retry_findings.session" "$tdir/retry_findings.resolved" \
+          "$tdir/retry_findings.dwarf.session" "$tdir/retry_findings.dwarf.resolved"
   fi
   # A QA-only resume (an unreviewed verdict, or a QA-stage infrastructure stop) re-asks the
   # reviewer about work that is already committed; the dwarf does not run, so it is no moment

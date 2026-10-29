@@ -162,9 +162,9 @@ class ContinueSessionTests(DispatchBase):
     def cont(self, spec='opus', *args, **kw):
         return self.dispatch('qa', spec, '--continue-session', self.SESSION, *args, **kw)
 
-    def argv(self):
+    def argv(self, role='qa'):
         import shlex
-        return shlex.split(self.read('qa.cmd'))
+        return shlex.split(self.read(role + '.cmd'))
 
     def test_claude_and_openclaude_argv_is_the_fresh_one_plus_resume(self):
         for spec in ('opus', 'sol:high:openclaude'):
@@ -182,6 +182,21 @@ class ContinueSessionTests(DispatchBase):
                 self.assertLess(at, argv.index('--disallowed-tools'))
                 self.assertEqual(argv[argv.index('--disallowed-tools') + 1], 'Edit,Write,NotebookEdit')
                 self.assertEqual(argv[argv.index('--permission-mode') + 1], 'acceptEdits')
+
+    def test_a_claude_implementer_continues_with_its_edit_permission(self):
+        for spec in ('opus', 'sol:high:openclaude'):
+            with self.subTest(spec=spec):
+                fresh = self.dispatch('dwarf', spec)
+                self.assertEqual(fresh.returncode, 0, fresh.stdout)
+                fresh_argv = self.argv('dwarf')
+                result = self.dispatch('dwarf', spec, '--continue-session', self.SESSION)
+                self.assertEqual(result.returncode, 0, result.stdout)
+                argv = self.argv('dwarf')
+                at = argv.index('--resume')
+                self.assertEqual(argv[at + 1], self.SESSION)
+                self.assertEqual(argv[:at] + argv[at + 2:], fresh_argv)
+                self.assertNotIn('--disallowed-tools', argv)
+                self.assertEqual(self.kv('dwarf.continue')['mode'], 'continued')
 
     def test_codex_continues_with_the_sandbox_spelled_out(self):
         cwds = self.root / 'cwds'
@@ -310,7 +325,8 @@ class ContinueSessionTests(DispatchBase):
     def test_usage_errors_are_exit_2(self):
         sid = self.SESSION
         cases = {
-            'dwarf role': ('dwarf', 'sol', '--continue-session', sid),
+            'dwarf on codex': ('dwarf', 'sol', '--continue-session', sid),
+            'dwarf with native review': ('dwarf', 'opus', '--continue-session', sid, '--native-review'),
             'native review': ('qa', 'sol', '--continue-session', sid, '--native-review'),
             'opencode': ('qa', 'gemini-pro::opencode', '--continue-session', sid),
             'antigravity': ('qa', 'opus::antigravity', '--continue-session', sid),
