@@ -1,7 +1,8 @@
 """Plan-time gates: prompt adequacy (site jev-prompt) and `files` drift (site jev-drift).
 
-Both are advisory. `score-plan` asks them before `plan` prints its table, and nothing
-they answer is ever written into tasks.tsv.
+Prompt adequacy is advisory. `score-plan` asks both before `plan` prints its table; drift
+is advisory too unless its gate is `on`, when `score-plan` adds the files drift predicts to
+the task's `files` column in tasks.tsv. Nothing in this module writes there.
 
 Prompt adequacy asks whether a reviewer could judge correctness from the task's own
 text. Its `prompt_warn` cutoff was measured on exactly the state `task_state` builds --

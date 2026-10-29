@@ -498,16 +498,78 @@ def cmd_verify_discover(args) -> int:
 PROMPT_CHARS = 8000
 
 
+def _column(plan: Path, task_id: str) -> list:
+    """The names in the task's `files` column right now (tasks.tsv column 4)."""
+    try:
+        for line in (plan / 'tasks.tsv').read_text(errors='replace').splitlines():
+            cells = line.split('\t')
+            if len(cells) >= 7 and not line.startswith('#') and cells[0] == task_id:
+                return [name.strip() for name in cells[3].split(',') if name.strip() not in ('', '-')]
+    except OSError:
+        pass
+    return []
+
+
+def _drift_act(plan: Path, task_id: str, predicted, mode: str) -> list:
+    """What the drift gate does with an answer, and records in plan-gates.json.
+
+    `on` appends the predicted files to the task's `files` column and records them under
+    `drift.<task>.added`; `shadow` records them under `would_add` and touches nothing else.
+    `added` entries from an earlier plan stay while their file is still in the column: the
+    labels need to know the planner did not declare it. Returns the files added now. Any
+    failure behaves as `off`, so a plan never fails because of this gate.
+    """
+    if mode not in ('on', 'shadow'):
+        return []
+    try:
+        from . import plan_gates
+        files = [dict(file=name, p=probability) for name, probability in predicted]
+        added = []
+        if mode == 'on' and files:
+            done = set(plan_gates.add_files(plan, task_id, [item['file'] for item in files]))
+            added = [item for item in files if item['file'] in done]
+        data = plan_gates.load(plan)
+        drift = data.get('drift') if isinstance(data.get('drift'), dict) else {}
+        entry = drift.get(task_id) if isinstance(drift.get(task_id), dict) else {}
+        column = set(_column(plan, task_id))
+        kept = [item for item in entry.get('added') or []
+                if isinstance(item, dict) and item.get('file') in column
+                and item['file'] not in {a['file'] for a in added}]
+        fresh = {}
+        if kept or added:
+            fresh['added'] = kept + added
+        if mode == 'shadow' and files:
+            fresh['would_add'] = files
+        if fresh != entry:
+            if fresh:
+                drift[task_id] = fresh
+            else:
+                drift.pop(task_id, None)
+            data['drift'] = drift
+            if not drift:
+                data.pop('drift')
+            if data or (plan / plan_gates.GATES_FILE).exists():
+                plan_gates.save(plan, data)
+        return [item['file'] for item in added]
+    except Exception:
+        return []
+
+
 def cmd_score_plan(args) -> int:
     """The plan-time gates: prompt adequacy (jev-prompt) and drift (jev-drift), per task.
 
-    Advisory output only: nothing here writes into tasks.tsv, and no answer changes a
-    plan. Each task's answers go to tasks/<id>/jev.json; stdout carries one
-    `id<TAB>warnings<TAB>drift` row per task that got any answer. (This command used to
-    rate routing rubrics into a suggested tier; that was removed in milestone C1.)
+    Prompt adequacy is advisory. Drift is too unless the gate is `on`: then each file it
+    predicts at or above `drift_warn` is appended to the task's `files` column in tasks.tsv
+    (before the shell computes waves, so the waves treat it as declared) and recorded under
+    `drift.<task>.added` in plan-gates.json. In `shadow` the files are recorded as
+    `would_add` and tasks.tsv is left alone. Each task's answers go to tasks/<id>/jev.json;
+    stdout carries one `id<TAB>warnings<TAB>drift` row per task that got any answer, and in
+    `on` the drift field lists the files that were added. (This command used to rate routing
+    rubrics into a suggested tier; that was removed in milestone C1.)
 
     A gate in shadow is asked and its answer kept in jev.json, but it adds `-` to the row;
     a task whose every answer is shadowed prints no row, and exit 3 means no row at all.
+    A gate that cannot write its change behaves as `off`: the plan goes on unchanged.
     """
     plan, repo = Path(args.plan), Path(args.repo)
     if not plan.is_dir():
@@ -577,6 +639,7 @@ def cmd_score_plan(args) -> int:
                                             run_dir=str(plan), config=config)
         if adequacy is None and predicted is None:
             continue
+        added = _drift_act(plan, task_id, predicted, gate_mode('jev-drift')) if predicted is not None else []
 
         # A warning, not a gate: recorded below the threshold and silent above it.
         warnings = {}
@@ -606,6 +669,10 @@ def cmd_score_plan(args) -> int:
                 visible.update(prompt_adequacy=None, warnings={})
             if shadow_drift:
                 visible['predicted_drift'] = []
+            else:
+                # In `on` the row names what the gate added to the column.
+                visible['predicted_drift'] = [item for item in visible['predicted_drift']
+                                              if item['file'] in added]
             shown.append(visible)
 
     if not judgments:

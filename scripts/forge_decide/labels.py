@@ -148,6 +148,19 @@ class _Index:
 
 # --- labellers: (index, site record, event, body) -> {qid: bool} -------------------------
 
+def _drift_added(index: _Index, run, task) -> set:
+    """The files any plan revision of the run recorded as added by the drift gate to `task`."""
+    out = set()
+    for plan in index.runs.plans.get(run, []) if run else []:
+        gates = plan['d'].get('plan_gates')
+        entry = ((gates.get('drift') or {}).get(task) if isinstance(gates, dict)
+                 and isinstance(gates.get('drift'), dict) else None)
+        for item in (entry.get('added') if isinstance(entry, dict) else None) or []:
+            if isinstance(item, dict) and item.get('file'):
+                out.add(str(item['file']))
+    return out
+
+
 def _drift(index: _Index, record, event, body) -> dict:
     state = _state(body)
     task = state.get('task') if isinstance(state.get('task'), dict) else {}
@@ -158,7 +171,11 @@ def _drift(index: _Index, record, event, body) -> dict:
     if final is None:
         return {}
     changed = set(export.words(final['d'].get('changed_files')))
-    declared = set(export.words(task.get('declared_files'))) | set(export.words(final['d'].get('declared_files')))
+    # A file the gate added to the column is declared in the attempt but not by the planner:
+    # whether the task edited it is still the label. Adding it changes the waves, not the edit.
+    added = _drift_added(index, final['run'], task_id)
+    declared = (set(export.words(task.get('declared_files')))
+                | (set(export.words(final['d'].get('declared_files'))) - added))
     out = {}
     for qid in record.decisions(body):
         path = sites._drift_file(body, qid)

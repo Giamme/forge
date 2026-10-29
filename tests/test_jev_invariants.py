@@ -73,7 +73,9 @@ class InvariantOneTests(PlanInvariantCase):
         self.assertEqual(before, after)
 
 
-    def test_jev_on_prints_the_gate_notes_and_leaves_tasks_tsv_byte_identical(self):
+    def _gated_plans(self, drift):
+        """Plan the same one-task plan twice, once with the gates on (prompt `on`, drift
+        `drift`) and once with Jev off. Returns (gated plan dir, plain plan dir, output)."""
         from forge_jev import gates, questions  # noqa: WPS433
         (self.repo / 'src' / 'b.py').write_text('y = 2\n')
         _git(self.repo, 'add', '-A')
@@ -96,23 +98,47 @@ class InvariantOneTests(PlanInvariantCase):
                               sort_keys=True, separators=(',', ':')).encode()
             (fixtures / (hashlib.sha256(body).hexdigest() + '.json')).write_text(
                 json.dumps(dict(answers=answers)))
-        # Jev on the way a user turns it on: `plan` resets FORGE_JEV to what its flags say.
+        # The gates the way a user sets them: the other gates stay off.
         config = self.root / 'config'
         (config / 'forge').mkdir(parents=True)
-        (config / 'forge' / 'jev.json').write_text(json.dumps(dict(enabled=True, key='ts-test-key')))
-        result = self._run(plan, '--dwarf-low', 'luna', '--qa', 'opus', env=dict(
-            FORGE_JEV_FIXTURES=str(fixtures), XDG_CONFIG_HOME=str(config)))
-        off = self._run(plain, '--dwarf-low', 'luna', '--qa', 'opus', env=dict(
-            FORGE_JEV='off', FORGE_JEV_FIXTURES=str(fixtures), XDG_CONFIG_HOME=str(config)))
-        output = result.stdout + result.stderr
+        import forge_decide  # noqa: WPS433
+        modes = {g: 'off' for g in forge_decide.GATES}
+        modes.update(prompt='on', drift=drift)
+        (config / 'forge' / 'decide.json').write_text(json.dumps(dict(version=1, gates=modes)))
+        env = dict(FORGE_JEV_FIXTURES=str(fixtures), XDG_CONFIG_HOME=str(config),
+                   TYPESAFE_API_KEY='ts-test-key')
+        result = self._run(plan, '--dwarf-low', 'luna', '--qa', 'opus', env=env)
+        off = self._run(plain, '--dwarf-low', 'luna', '--qa', 'opus', env=dict(env, FORGE_JEV='off'))
+        # The same plan with Jev off: no request, no note.
+        self.assertNotIn('jev:', off.stdout + off.stderr)
+        self.assertFalse((plain / 'jev.jsonl').exists())
+        self.assertTrue((plan / 'tasks' / 'a1' / 'jev.json').is_file())
+        return plan, plain, result.stdout + result.stderr
+
+    def test_jev_shadow_drift_prints_the_prompt_note_and_leaves_tasks_tsv_byte_identical(self):
+        plan, plain, output = self._gated_plans('shadow')
+        self.assertIn('jev: a1 — the prompt may be too vague for QA to judge correctness against', output)
+        self.assertNotIn('undeclared files', output)
+        self.assertNotIn('suggests', output)
+        self.assertEqual((plan / 'tasks.tsv').read_bytes(), (plain / 'tasks.tsv').read_bytes())
+        self.assertEqual(json.loads((plan / 'plan-gates.json').read_text())['drift']['a1']['would_add'],
+                         [dict(file='src/b.py', p=0.95)])
+
+    def test_jev_on_drift_prints_the_notes_and_changes_exactly_the_added_files_column(self):
+        plan, plain, output = self._gated_plans('on')
         self.assertIn('jev: a1 — the prompt may be too vague for QA to judge correctness against', output)
         self.assertIn('jev: a1 may also edit undeclared files: src/b.py', output)
         self.assertNotIn('suggests', output)
-        self.assertTrue((plan / 'tasks' / 'a1' / 'jev.json').is_file())
-        # The same plan with Jev off: no request, no note, and the same tasks.tsv to the byte.
-        self.assertNotIn('jev:', off.stdout + off.stderr)
-        self.assertFalse((plain / 'jev.jsonl').exists())
-        self.assertEqual((plan / 'tasks.tsv').read_bytes(), (plain / 'tasks.tsv').read_bytes())
+        gated = [l.split('\t') for l in (plan / 'tasks.tsv').read_text().splitlines()]
+        kept = [l.split('\t') for l in (plain / 'tasks.tsv').read_text().splitlines()]
+        self.assertEqual(len(gated), len(kept))
+        self.assertEqual(gated[0], kept[0])
+        # Only a1's files cell differs, by the file the gate added.
+        self.assertEqual(kept[1][3], 'src/a.py')
+        self.assertEqual(gated[1][3], 'src/a.py,src/b.py')
+        self.assertEqual(gated[1][:3] + gated[1][4:], kept[1][:3] + kept[1][4:])
+        self.assertEqual(json.loads((plan / 'plan-gates.json').read_text())['drift']['a1']['added'],
+                         [dict(file='src/b.py', p=0.95)])
 
 
 class InvariantThreeTests(unittest.TestCase):
