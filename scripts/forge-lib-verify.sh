@@ -132,6 +132,9 @@ verify_lanes_run() { # verify_lanes_run <plan> <checkout> <out> <lanes dir> <ret
     echo FAIL > "$out/verification.status"
     note "could not copy the verification lanes to $out/verification.lanes.d"; return 1
   }
+  # From here on the frozen copy is the lanes' only source: an edit to the live directory
+  # after the copy must not change what runs, or the snapshot would not be its predicate.
+  dir="$out/verification.lanes.d"
   python3 "$SKILL_DIR/scripts/forge-verify.py" lanes --lanes-dir "$dir" 2>/dev/null \
     | awk -F'\t' '{ print $1 ": " $3 }' > "$out/verification.command"
   verify_coverage_report "$wt" "$(verify_lanes_command "$dir")" "$out/verification.coverage.txt"

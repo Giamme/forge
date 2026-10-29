@@ -26,6 +26,11 @@ python3() {
   esac
   command python3 "$@"
 }
+# A lane edited in the window between the snapshot and the runner's start (the coverage report
+# runs there, so the hook lives in it).
+if [ -n "$EDIT_LIVE_LANE" ]; then
+  verify_coverage_report() { printf 'exit 9\n' > "$EDIT_LIVE_LANE"; }
+fi
 verify_result_body "$@"
 '''
 
@@ -53,10 +58,12 @@ class FrozenVerificationTests(unittest.TestCase):
         self.git('worktree', 'add', '-q', '--detach', str(wt), 'HEAD')
         return wt
 
+    edit_live_lane = ''
+
     def body(self, plan, out, *fixed):
         """verify_result_body on a clean checkout of HEAD, writing to out; returns the process."""
         self.discover_log = self.root / 'discover.log'
-        env = dict(self.env, SKILL=str(ROOT), DISCOVER_LOG=str(self.discover_log))
+        env = dict(self.env, SKILL=str(ROOT), DISCOVER_LOG=str(self.discover_log), EDIT_LIVE_LANE=self.edit_live_lane)
         env['PATH'] = self.env['PATH']
         return subprocess.run(['bash', '-c', HARNESS, 'harness', str(plan), str(self.checkout()), str(out), *fixed],
                               cwd=self.repo, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
@@ -81,6 +88,20 @@ class FrozenVerificationTests(unittest.TestCase):
         self.assertEqual(sorted(f.name for f in snap.iterdir()), ['lint', 'unit'])
         for name in ('lint', 'unit'):
             self.assertEqual((snap / name).read_text(), (self.repo / '.forge' / 'verify.d' / name).read_text())
+
+    def test_the_runner_reads_the_snapshot_not_the_live_directory(self):
+        # A lane edited after the copy and before the runner starts must not change the verdict:
+        # the snapshot would no longer be the predicate the verification used.
+        self.scenario({})
+        self.lanes(unit='test -f base.txt')
+        p = self.plan()
+        self.edit_live_lane = str(self.repo / '.forge' / 'verify.d' / 'unit')
+        out = self.root / 'raced'
+        r = self.body(p, out)
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertEqual((out / 'verification.status').read_text().strip(), 'PASS')
+        self.assertEqual((self.repo / '.forge' / 'verify.d' / 'unit').read_text(), 'exit 9\n')
+        self.assertEqual((out / 'verification.lanes.d' / 'unit').read_text(), 'test -f base.txt\n')
 
     def test_a_verification_on_a_command_leaves_no_snapshot(self):
         self.scenario({})
