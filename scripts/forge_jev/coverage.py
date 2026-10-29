@@ -31,7 +31,7 @@ MIN_WORDS = 4
 REQUEST_CHARS = 6000
 CRITERIA_CHARS = 1200
 
-_FENCE = re.compile(r'^\s*(```|~~~)')
+_FENCE = re.compile(r'^\s*(`{3,}|~{3,})(.*)$')
 _HEADING = re.compile(r'^\s{0,3}#{1,6}(\s|$)')
 _ITEM = re.compile(r'^\s*(?:[-*+]|\d+[.)])\s+(.*)$')
 _SENTENCE_END = re.compile(r'(?<=[.?!])\s+(?=[A-Z])')
@@ -40,6 +40,21 @@ _CRITERIA_HEADING = re.compile(r'^(#{1,6})\s+acceptance criteria\s*:?\s*$', re.I
 _ANY_HEADING = re.compile(r'^(#{1,6})\s')
 _WORD = re.compile(r'[a-z]{4,}')
 _QID = re.compile(r'r(\d+)')
+
+
+def _fence(line, open_fence):
+    """The fence state after `line`: None outside a fence, else (marker char, length). A fence
+    closes only on a marker of the same character, at least as long, with nothing after it, so a
+    shorter or different marker inside a block is content."""
+    found = _FENCE.match(line)
+    if not found:
+        return open_fence
+    marker, rest = found.group(1), found.group(2)
+    if open_fence is None:
+        return None if marker[0] == '`' and '`' in rest else (marker[0], len(marker))
+    if marker[0] == open_fence[0] and len(marker) >= open_fence[1] and not rest.strip():
+        return None
+    return open_fence
 
 
 def _collapse(text) -> str:
@@ -78,13 +93,12 @@ def split_requirements(text) -> list[str]:
         items.clear()
         prose.clear()
 
-    fenced = False
+    fence = None
     for line in str(text or '').splitlines():
-        if _FENCE.match(line):
+        after = _fence(line, fence)
+        if fence is not None or after is not None:
             flush()
-            fenced = not fenced
-            continue
-        if fenced:
+            fence = after
             continue
         if not line.strip() or _HEADING.match(line):
             flush()
@@ -114,16 +128,13 @@ def acceptance_criteria(prompt_text) -> str:
     """The body of the first non-empty `## Acceptance criteria` section, up to the next heading
     of the same or a higher level, at most CRITERIA_CHARS. Headings inside fences do not count
     (the rule of forge-plan-check.py), but fenced lines under the heading are part of the body."""
-    fenced = False
+    fence = None
     level = None
     body: list[str] = []
     for line in str(prompt_text or '').splitlines():
-        if _FENCE.match(line):
-            fenced = not fenced
-            if level is not None:
-                body.append(line)
-            continue
-        if fenced:
+        after = _fence(line, fence)
+        if fence is not None or after is not None:
+            fence = after
             if level is not None:
                 body.append(line)
             continue
@@ -186,7 +197,12 @@ def _p_none(answers, qid) -> float | None:
     picked, confidence = choice(result, qid)
     if picked is None:
         return None
-    return confidence if picked == 'none' else 0.0
+    if picked != 'none':
+        return 0.0
+    try:
+        return float(confidence)
+    except (TypeError, ValueError):
+        return None
 
 
 def score(answers, qid, request=None) -> float | None:

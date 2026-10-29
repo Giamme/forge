@@ -55,9 +55,15 @@ def label(index, record, event, body) -> dict:
 
     later = [_criteria(index, plan) for plan in plans if plan['ts'] > event['ts']]
     # A task the request never saw counts as changed when its criteria say anything.
+    # A task the request saw and a later revision dropped counts as changed too.
     changed = any(text != asked.get(task, '') for criteria in later for task, text in criteria.items())
-    final = plans[-1]['d'].get('tasks')
-    merged = bool(final) and all(index.merged(run, task) for task in final)
+    changed = changed or any(task not in criteria for criteria in later for task in asked)
+    # Every task of the run, in any revision, must have merged: a dropped task did not.
+    every = set(asked)
+    for plan in plans:
+        tasks = plan['d'].get('tasks')
+        every.update(tasks if isinstance(tasks, dict) else ())
+    merged = bool(every) and all(index.merged(run, task) for task in every)
 
     out = {}
     for qid in record.decisions(body):

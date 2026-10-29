@@ -69,6 +69,12 @@ class SplitTests(unittest.TestCase):
                 'Yes.\n')
         self.assertEqual(coverage.split_requirements(text), ['Long enough to be a requirement'])
 
+    def test_a_shorter_fence_inside_a_longer_one_does_not_end_it(self):
+        text = ('````markdown\n```\n- This is example data only\n```\n- Still inside the outer fence\n````\n\n'
+                '~~~\n```\n- Tilde fence holds backticks too\n~~~\n\n'
+                '- Real requirement after the fences\n')
+        self.assertEqual(coverage.split_requirements(text), ['Real requirement after the fences'])
+
     def test_duplicates_after_whitespace_collapse_are_dropped_and_order_is_kept(self):
         text = ('- Write the report to disk\n- Read the input first\n'
                 '- Write   the report\tto disk\n')
@@ -91,6 +97,10 @@ class CriteriaTests(unittest.TestCase):
         text = ('## Acceptance criteria\n\n- first\n```\n## Notes\n```\n- last\n')
         self.assertEqual(coverage.acceptance_criteria(text), '- first\n```\n## Notes\n```\n- last')
         self.assertEqual(coverage.acceptance_criteria('```\n## Acceptance criteria\n- fenced\n```\n'), '')
+
+    def test_a_longer_fence_is_not_closed_by_a_shorter_marker(self):
+        text = '## Acceptance criteria\n\n````\n```\n## Notes\n````\n- last\n\n## Notes\n\n- no\n'
+        self.assertEqual(coverage.acceptance_criteria(text), '````\n```\n## Notes\n````\n- last')
 
     def test_it_is_capped_and_a_missing_or_empty_section_is_empty(self):
         self.assertEqual(len(coverage.acceptance_criteria('## Acceptance criteria\n\n' + 'x' * 5000)), 1200)
@@ -313,6 +323,13 @@ class MeasurementTests(unittest.TestCase):
         self.assertEqual([coverage.score(answers, q, None) for q in ('r0', 'r1', 'r2', 'x')], [0.2, 0.7, 0.0, None])
         self.assertEqual(coverage.fired(answers, 0.5, None), ['r1', 'r10'])
 
+    def test_a_malformed_confidence_is_no_opinion_not_a_crash(self):
+        answers = {'r0': dict(type='choice', choice='none', confidence='invalid'),
+                   'r1': dict(type='choice', choice='none', confidence=None),
+                   'r2': dict(type='choice', choice='none', confidence=0.8)}
+        self.assertEqual([coverage.score(answers, q, None) for q in ('r0', 'r1', 'r2')], [None, None, 0.8])
+        self.assertEqual(coverage.fired(answers, 0.5, None), ['r2'])
+
 
 class LabelCase(unittest.TestCase):
     REQUIREMENTS = ['The tool lists every stale branch in the repository',
@@ -391,6 +408,14 @@ class LabelTests(LabelCase):
     def test_a_task_not_merged_gives_no_false(self):
         self.ask(ASKED)
         self.plan(ASKED, ts=T0 + 1)
+        self.assertEqual(self.collect(), [])
+
+    def test_a_task_a_later_revision_removed_and_never_merged_gives_no_false(self):
+        asked = dict(ASKED, extra=['Output is sorted by name'])
+        self.ask(asked)
+        self.plan(asked, ts=T0 + 1)
+        self.plan(ASKED, ts=T0 + 50)
+        self.merge('list')
         self.assertEqual(self.collect(), [])
 
     def test_a_sent_back_requirement_gets_no_label_while_the_others_keep_theirs(self):
