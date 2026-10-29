@@ -941,7 +941,9 @@ do_task_body() (
   review="$tdir/review-$attempt-$$"
   forge_review_snapshot "$wt" "$base" "$reviewed" "$review" || { echo ERROR > "$tdir/status"; return 1; }
   source_fp="$(forge_fingerprint "$wt")" || return 1
-  review_fp="$(forge_fingerprint "$review")" || return 1
+  # The review copy is a commit: an untracked file the reviewer leaves there (a test run's
+  # bytecode) changes nothing that merges, so only tracked content counts (#95).
+  review_fp="$(forge_fingerprint "$review" --tracked)" || return 1
   echo "$source_fp" > "$tdir/source.fingerprint"
   echo "$review_fp" > "$tdir/review.fingerprint"
 
@@ -1082,7 +1084,7 @@ do_task_body() (
   rm -f "$tdir/resume"
 
   forge_metric_phase verification
-  if [ "$(forge_fingerprint "$wt")" != "$source_fp" ] || [ "$(forge_fingerprint "$review")" != "$review_fp" ]; then
+  if [ "$(forge_fingerprint "$wt")" != "$source_fp" ] || [ "$(forge_fingerprint "$review" --tracked)" != "$review_fp" ]; then
     echo INVALIDATED > "$tdir/status"; note "$id: artifact changed during review"; return 1
   fi
   local verdict

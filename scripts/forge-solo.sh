@@ -289,7 +289,9 @@ REVIEW="$RUN/review-$(date +%s)-$$"
 forge_review_snapshot "$REPO" "$START" "$END" "$REVIEW" || die "cannot create review snapshot" 3
 SOURCE_FP="$(forge_fingerprint "$REPO")" || exit 3
 [ "$(forge_tree "$REPO")" = "$END" ] || { echo INVALIDATED > "$RUN/verdict"; die "source changed while preparing QA" 5; }
-REVIEW_FP="$(forge_fingerprint "$REVIEW")" || exit 3
+# The review snapshot is a commit; the reviewer's untracked leftovers there do not count (#95).
+# The source keeps them: in a solo run the implementer's new files are untracked.
+REVIEW_FP="$(forge_fingerprint "$REVIEW" --tracked)" || exit 3
 printf '%s\n' "$SOURCE_FP" > "$RUN/source.fingerprint"
 printf '%s\n' "$REVIEW_FP" > "$RUN/review.fingerprint"
 forge_metric_phase preparation
@@ -328,7 +330,7 @@ rc=$?
 forge_metric_phase verification
 verdict="$(forge_verdict "$RUN/qa.last")"
 [ -n "$NATIVE" ] && verdict=UNKNOWN
-if [ "$(forge_fingerprint "$REPO")" != "$SOURCE_FP" ] || [ "$(forge_fingerprint "$REVIEW")" != "$REVIEW_FP" ]; then
+if [ "$(forge_fingerprint "$REPO")" != "$SOURCE_FP" ] || [ "$(forge_fingerprint "$REVIEW" --tracked)" != "$REVIEW_FP" ]; then
   echo INVALIDATED > "$RUN/verdict"
   die "source or review artifact changed during QA; review invalidated" 5
 fi

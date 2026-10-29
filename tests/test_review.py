@@ -236,6 +236,13 @@ class ReviewTests(unittest.TestCase):
         self.assertEqual(r.returncode, 5, r.stdout)
         self.assertEqual(self.text(self.latest(p), 'verdict'), 'INVALIDATED')
 
+    def test_files_a_reviewer_leaves_untracked_do_not_void_the_review(self):
+        p = self.merged_plan()
+        self.scenario({'*.qa.*': {'writes': {'__pycache__/a.cpython-312.pyc': 'bytecode'}}})   # its test run's bytecode
+        r = self.review(p)
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertEqual(self.text(p, 'final-review.verdict'), 'PASS')
+
     @unittest.skipUnless(HAS_INFRA, 'the dispatch layer does not classify infrastructure failures yet')
     def test_an_infrastructure_stop_judges_nothing_and_says_how_to_retry(self):
         p = self.merged_plan()

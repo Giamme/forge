@@ -197,7 +197,7 @@ def run(args) -> int:
         if bash('forge_review_snapshot', args.worktree, args.base, args.reviewed, str(review)).returncode:
             status = 'error'
             return 0
-        before = bash('forge_fingerprint', str(review)).stdout.strip()
+        before = bash('forge_fingerprint', str(review), '--tracked').stdout.strip()
         shutil.copyfile(Path(args.tdir) / 'qa.input', out / 'qa.input')
         env = dict(os.environ, FORGE_SHADOW='1', FORGE_SHADOW_ATTEMPT=args.attempt,
                    FORGE_SHADOW_REVIEWED=args.reviewed, FORGE_SHADOW_FROM=args.qa)
@@ -211,7 +211,7 @@ def run(args) -> int:
             STATE['child'] = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
                                               env=env, close_fds=True)
         status = watch(STATE['child'], parent)
-        after = bash('forge_fingerprint', str(review)).stdout.strip()
+        after = bash('forge_fingerprint', str(review), '--tracked').stdout.strip()
         if status == 'done' and (not before or after != before):
             status = 'invalid'          # the reviewer changed its snapshot: its verdict counts for nothing
     except Stopped:
