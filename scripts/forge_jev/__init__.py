@@ -100,11 +100,14 @@ CLOUDFLARE_MAX_QUESTIONS = 64
 CLOUDFLARE_TOKEN_FILE = 'cloudflare.env'
 
 # Which capability each site belongs to, so a site on a provider with no credentials is
-# not ready even when its capability is on.
+# not ready even when its capability is on. A site with None has no legacy capability: its
+# gate's own mode alone makes it ready (#43-#47).
 SITE_CAPABILITY = {
     'jev-prompt': 'gates', 'jev-drift': 'gates', 'jev-forward': 'gates',
     'jev-memory-curate': 'memory', 'jev-memory-stale': 'memory', 'jev-memory-slice': 'memory',
     'jev-verify-discover': 'tests',
+    'jev-coverage': None, 'jev-retry-addressed': None, 'jev-dwarf-message': None,
+    'jev-attribution': None, 'jev-findings': None,
 }
 # routing's rubrics are gone. The name stays in CAPABILITIES so old configs, frozen
 # selections and --jev-routing keep parsing, but the capability has no sites.

@@ -279,7 +279,8 @@ def cmd_disable(args) -> int:
 def _capability_sites() -> dict:
     sites = {cap: [] for cap in CAPABILITIES}
     for site, cap in SITE_CAPABILITY.items():
-        sites.setdefault(cap, []).append(site)
+        if cap is not None:  # a site with no capability belongs to no capability's list
+            sites.setdefault(cap, []).append(site)
     return sites
 
 
@@ -362,7 +363,9 @@ def cmd_doctor(args) -> int:
     else:
         checks.append(('config readable', True, 'no config file; using defaults'))
     key = api_key(config)
-    used = {provider_for(s, config) for s in SITE_CAPABILITY if enabled(SITE_CAPABILITY[s], config=config)}
+    # enabled(None) means any gate on, so a site with no capability counts by its own gate.
+    used = {provider_for(s, config) for s, cap in SITE_CAPABILITY.items()
+            if (enabled(cap, config=config) if cap is not None else gate_mode(s) != 'off')}
     if 'typesafe' in used or not used:
         checks.append(('key present', key is not None, None))
     if 'cloudflare' in used:

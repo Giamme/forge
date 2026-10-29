@@ -97,6 +97,42 @@ class StatusTests(GateTestCase):
                 self.assertEqual((gates[gate]['mode'], gates[gate]['source']), ('off', 'default'))
 
 
+class JevSiteTests(GateTestCase):
+    """`forge jev`'s site lists name the five new sites, which have no capability."""
+
+    def jev(self, *args):
+        return subprocess.run([sys.executable, str(ROOT / 'scripts' / 'forge-jev.py'), *args],
+                              capture_output=True, text=True, env=self.env, cwd=str(self.outside))
+
+    def test_status_sites_list_the_new_ones_and_capability_sites_has_no_null_key(self):
+        out = self.jev('status', '--json')
+        self.assertEqual(out.returncode, 0, out.stderr)
+        data = json.loads(out.stdout)
+        for gate in NEW:
+            with self.subTest(gate):
+                self.assertFalse(data['sites']['jev-' + gate]['ready'])
+        self.assertNotIn('null', data['capability_sites'])
+
+    def test_sites_accepts_a_new_site_and_still_refuses_an_unknown_one(self):
+        assigned = self.jev('sites', 'jev-coverage=cloudflare')
+        self.assertEqual(assigned.returncode, 0, assigned.stderr)
+        self.assertIn('jev-coverage', assigned.stdout)
+        refused = self.jev('sites', 'jev-nosuch=cloudflare')
+        self.assertEqual(refused.returncode, 2)
+
+    def test_doctor_asks_for_cloudflare_only_while_a_new_gate_is_on(self):
+        self.jev('sites', 'jev-coverage=cloudflare')
+        self.decide('gate', 'drift', 'shadow')  # another gate on: enabled(None) would be true
+
+        def cloudflare_checked():
+            checks = json.loads(self.jev('doctor', '--json').stdout)['checks']
+            return any(check['name'] == 'cloudflare credentials' for check in checks)
+
+        self.assertFalse(cloudflare_checked())  # coverage is off, so its site is not used
+        self.decide('gate', 'coverage', 'shadow')
+        self.assertTrue(cloudflare_checked())
+
+
 class LegacyTests(GateTestCase):
     """A jev.json or FORGE_JEV variable with no user decide.json: the legacy level."""
 
