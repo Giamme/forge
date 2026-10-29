@@ -130,7 +130,8 @@ class ReaderTests(unittest.TestCase):
         solo = Path(shutil.copytree(SOLO, self.base / 'solo'))
         for run in (plan, solo):
             (run / 'qa_threshold').unlink(missing_ok=True)
-        for text, want in ((None, ('P2', 'default')), ('P1\n', ('P1', 'set')), ('none\n', ('P3', 'set'))):
+        for text, want in ((None, ('P2', 'default')), ('P1\n', ('P1', 'set')), ('none\n', ('P3', 'set')),
+                           ('garbage\n', ('P2', 'default')), ('P9\n', ('P2', 'default'))):
             for run in (plan, solo):
                 if text is not None:
                     self.write(run / 'qa_threshold', text)
