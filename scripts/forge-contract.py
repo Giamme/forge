@@ -3,13 +3,13 @@
 
 Three subcommands, stdlib only, no network:
 
-  qa --part head|tail [--kind task|final|solo|sweep] [--threshold P0|P1|P2|P3]
+  qa --part head|tail [--kind task|final|solo|sweep] [--threshold P0|P1|P2|P3|none]
       Prints one piece of the QA prompt. The caller prints everything between and
       after the pieces itself (scope notes, the diff fence, the memory note and the
       "Place any learning notes before the final FORGE_VERDICT ..." sentence).
   dwarf
       Prints the implementer rules block that callers append to the dwarf prompt.
-  gate --verdict PASS|FAIL|UNKNOWN --qa-last FILE [--threshold Pn] [--known-issues OUT]
+  gate --verdict PASS|FAIL|UNKNOWN --qa-last FILE [--threshold Pn|none] [--known-issues OUT]
       Prints ONE tab-separated line
           decision <TAB> worst_confirmed <TAB> n_confirmed <TAB> n_unlabelled <TAB> n_below
       and, when findings were tolerated, writes them to OUT.
@@ -19,25 +19,29 @@ result on the main path), P1 (wrong behaviour on realistic input, breaks an exis
 contract), P2 (edge-case bug, unusual-timing race, missing hardening) or P3 (minor).
 Severity is impact; confidence stays CONFIRMED vs PLAUSIBLE.
 
-Threshold. Without one nothing changes: any CONFIRMED finding means FAIL and the gate
-never overrides a verdict. The threshold is the LEAST severe level that still blocks:
-`P2` means P0, P1 and P2 block and only P3 is tolerated; `P0` means only P0 blocks;
-`P3` means everything blocks (nothing is ever tolerated). A threshold of "" is "unset".
+Threshold. The threshold is the LEAST severe level that still blocks: `P2` means P0, P1
+and P2 block and only P3 is tolerated; `P0` means only P0 blocks; `P3` means everything
+blocks (nothing is ever tolerated). There is always one: unset (None or "") means
+DEFAULT_THRESHOLD, P2, and `none` (any case) means P3, nothing tolerated.
 
-The gate. decision is `accept` only when ALL of these hold, otherwise `keep`:
-  - a threshold is set and the verdict is FAIL (PASS and UNKNOWN are always `keep`);
-  - at least one CONFIRMED finding exists (a FAIL with none stays a FAIL);
-  - n_unlabelled == 0, and every CONFIRMED finding carries a P0-P3 label strictly less
-    severe than the threshold.
-`accept` is a statement about the findings only; wiring it into a verdict is the
+The gate. A finding is BLOCKING when it is CONFIRMED with a severity at the threshold or
+worse, CONFIRMED with no severity, or UNSTATED with a severity at the threshold or worse.
+PLAUSIBLE findings never block. decision is one of:
+  - `fail` when the verdict is PASS and at least one finding is blocking;
+  - `accept` when ALL of these hold: the verdict is FAIL; at least one CONFIRMED finding
+    exists (a FAIL with none stays a FAIL); n_unlabelled == 0, and every CONFIRMED
+    finding carries a P0-P3 label strictly less severe than the threshold;
+  - `keep` otherwise, and always for UNKNOWN.
+The decision is a statement about the findings only; wiring it into a verdict is the
 caller's job. Fail-safe means blocking: anything the parser cannot read confidently
-pushes toward `keep`, never toward `accept`.
+pushes toward `keep` for a FAIL and toward `fail` for a PASS, never toward `accept`.
 
 Fields: worst_confirmed is the most severe label among CONFIRMED labelled findings
 (`-` if none); n_confirmed counts CONFIRMED findings; n_unlabelled counts CONFIRMED
 findings with no recognisable severity, plus located findings carrying a severity but
 no CONFIRMED/PLAUSIBLE tag at all (neither can ever be tolerated); n_below counts
-CONFIRMED labelled findings below the threshold (0 with no threshold).
+CONFIRMED labelled findings strictly below the threshold. They are the tolerated ones,
+listed in OUT whenever n_below >= 1, whatever the decision.
 
 Parsing. The reply is cut into finding blocks. A block starts at a bullet (`-`, `*`,
 `+`, `1.`, `1)`), a markdown heading, a table row, or a flush line that leads with a
@@ -74,6 +78,7 @@ import sys
 SEVERITIES = ('P0', 'P1', 'P2', 'P3')
 PLACEHOLDER = 'path/file.py:123'
 KINDS = ('task', 'final', 'solo', 'sweep')
+DEFAULT_THRESHOLD = 'P2'
 
 Finding = collections.namedtuple('Finding', 'status severity located line text')
 Finding.__doc__ = (
@@ -83,18 +88,19 @@ Finding.__doc__ = (
 GateResult = collections.namedtuple(
     'GateResult', 'decision worst n_confirmed n_unlabelled n_below tolerated')
 GateResult.__doc__ = (
-    'decision accept|keep, worst most severe confirmed label or "-", counters, and the '
+    'decision accept|fail|keep, worst most severe confirmed label or "-", counters, and the '
     'tuple of tolerated Findings (CONFIRMED, labelled, below the threshold).')
 
 
 # --- prompt text -----------------------------------------------------------------
 
-def _rank(threshold) -> 'int | None':
-    if threshold is None or str(threshold).strip() == '':
-        return None
-    value = str(threshold).strip().upper()
+def _rank(threshold) -> int:
+    """The threshold's index (P0 = 0): None or "" is the default, `none` is P3."""
+    value = str(threshold if threshold is not None else '').strip().upper() or DEFAULT_THRESHOLD
+    if value == 'NONE':
+        value = SEVERITIES[-1]
     if value not in SEVERITIES:
-        raise ValueError('threshold must be one of ' + ', '.join(SEVERITIES))
+        raise ValueError('threshold must be one of ' + ', '.join(SEVERITIES) + ' or none')
     return int(value[1])
 
 
@@ -154,8 +160,6 @@ _SEVERITY = [
     '  P3  minor: cosmetic, naming, nit-level correctness',
 ]
 
-_NO_THRESHOLD = ['The severity tag does not change the verdict rule below.']
-
 _SWEEP_FINDINGS = [
     'Report findings only — do not edit any file. A finding here is a regression the change',
     'introduced: give its file and line, what breaks, and a concrete input that triggers it. Mark it',
@@ -170,8 +174,11 @@ _SWEEP_STATUS = [
     'repeat a NOT FIXED finding as a finding bullet; its line is enough.',
 ]
 
-_PASS = '  FORGE_VERDICT: PASS   — no confirmed correctness bug (style nits are not failures)'
-_FAIL = '  FORGE_VERDICT: FAIL   — at least one CONFIRMED correctness bug'
+_CHECKED = [
+    'forge checks the verdict against your findings: a PASS that lists a blocking CONFIRMED',
+    'finding is turned into FAIL. List only problems still present in the code under review;',
+    'never list a fixed problem as a finding.',
+]
 
 
 def _threshold_clause(rank: int, kind: str = 'task') -> list:
@@ -202,14 +209,12 @@ def qa_text(part: str, kind: str = 'task', threshold=None) -> str:
         raise ValueError('part must be head or tail')
     lines = list(_SWEEP_FINDINGS if kind == 'sweep' else _FINDINGS) + (_SOLO_EXTRA if kind == 'solo' else [])
     lines += [''] + _SEVERITY
-    lines += [''] + (_NO_THRESHOLD if rank is None else _threshold_clause(rank, kind))
+    lines += [''] + _threshold_clause(rank, kind) + _CHECKED
     if kind == 'sweep':
         lines += [''] + _SWEEP_STATUS
-        where = '' if rank is None else ' at the blocking threshold (%s or worse)' % SEVERITIES[rank]
+        where = ' at the blocking threshold (%s or worse)' % SEVERITIES[rank]
         verdicts = ['  FORGE_VERDICT: PASS   — at least one listed finding is FIXED, and no CONFIRMED regression%s' % where,
                     '  FORGE_VERDICT: FAIL   — no listed finding is FIXED, or a CONFIRMED regression%s' % where]
-    elif rank is None:
-        verdicts = [_PASS, _FAIL]
     else:
         where = '%s or worse' % SEVERITIES[rank]
         verdicts = ['  FORGE_VERDICT: PASS   — no CONFIRMED finding at the blocking threshold (%s)' % where,
@@ -262,7 +267,7 @@ def _contract_flat() -> str:
     parts = [dwarf_text()]
     for kind in KINDS:
         for part in ('head', 'tail'):
-            for threshold in (None,) + SEVERITIES:
+            for threshold in SEVERITIES:    # None and `none` render one of these
                 parts.append(qa_text(part, kind, threshold))
     return _collapse(' '.join(parts))
 
@@ -352,7 +357,8 @@ def parse_findings(text: str) -> list:
 # --- the gate --------------------------------------------------------------------
 
 def gate(verdict: str, text: str, threshold=None) -> GateResult:
-    """Decide whether a QA FAIL may be accepted as PASS-with-known-issues."""
+    """Check a QA verdict against its findings: a FAIL may be accepted as
+    PASS-with-known-issues, a PASS that lists a blocking finding fails."""
     rank = _rank(threshold)
     findings = parse_findings(text)
     confirmed = [f for f in findings if f.status == 'CONFIRMED']
@@ -360,11 +366,17 @@ def gate(verdict: str, text: str, threshold=None) -> GateResult:
     unlabelled = (len(confirmed) - len(labelled)
                   + sum(1 for f in findings if f.status == 'UNSTATED'))
     worst = 'P%d' % min(f.severity for f in labelled) if labelled else '-'
-    below = tuple(f for f in labelled if rank is not None and f.severity > rank)
-    accept = (rank is not None and verdict == 'FAIL' and bool(confirmed)
-              and unlabelled == 0 and len(below) == len(confirmed))
-    return GateResult('accept' if accept else 'keep', worst, len(confirmed),
-                      unlabelled, len(below), below)
+    below = tuple(f for f in labelled if f.severity > rank)
+    blocking = any(f.status in ('CONFIRMED', 'UNSTATED')
+                   and (f.severity is None or f.severity <= rank) for f in findings)
+    if verdict == 'PASS' and blocking:
+        decision = 'fail'
+    elif (verdict == 'FAIL' and confirmed and unlabelled == 0
+          and len(below) == len(confirmed)):
+        decision = 'accept'
+    else:
+        decision = 'keep'
+    return GateResult(decision, worst, len(confirmed), unlabelled, len(below), below)
 
 
 def known_issues_text(threshold, tolerated) -> str:
@@ -380,13 +392,12 @@ def known_issues_text(threshold, tolerated) -> str:
 
 # --- command line ----------------------------------------------------------------
 
-def _threshold_arg(value: str):
-    value = value.strip().upper()
-    if value == '':
-        return None
-    if value not in SEVERITIES:
-        raise argparse.ArgumentTypeError('invalid threshold %r (choose P0, P1, P2 or P3)' % value)
-    return value
+def _threshold_arg(value: str) -> str:
+    try:
+        return SEVERITIES[_rank(value)]
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            'invalid threshold %r (choose P0, P1, P2, P3 or none)' % value.strip()) from None
 
 
 def _emit(text: str) -> None:
@@ -400,8 +411,10 @@ def _parser() -> argparse.ArgumentParser:
         prog='forge-contract.py', formatter_class=argparse.RawDescriptionHelpFormatter,
         description='Shared QA contract, implementer rules and severity gate for forge.',
         epilog='threshold: the LEAST severe level that still blocks. P2 = P0, P1 and P2 '
-               'block, only P3 is tolerated; P0 = only P0 blocks; P3 = everything blocks. '
-               'Unset (or empty) = no gate, today\'s semantics.')
+               'block, only P3 is tolerated; P0 = only P0 blocks; P3 = everything blocks; '
+               'none = P3. Unset (or empty) = the default, %s. The gate turns a FAIL whose '
+               'findings are all tolerated into accept, and a PASS that lists a blocking '
+               'finding into fail.' % DEFAULT_THRESHOLD)
     sub = parser.add_subparsers(dest='command', required=True)
     qa = sub.add_parser('qa', help='print one piece of the QA prompt')
     qa.add_argument('--part', required=True, choices=('head', 'tail'),
@@ -409,15 +422,16 @@ def _parser() -> argparse.ArgumentParser:
     qa.add_argument('--kind', choices=KINDS, default='task',
                     help='task (default), final (whole-run review), solo (solo wording) or sweep (a finding '
                          'sweep task: per-finding FIXED lines, regressions only)')
-    qa.add_argument('--threshold', type=_threshold_arg, default=None, metavar='P0..P3',
-                    help='least severe level that still blocks (default: none)')
+    qa.add_argument('--threshold', type=_threshold_arg, default=None, metavar='P0..P3|none',
+                    help='least severe level that still blocks; none = P3 (default: %s)' % DEFAULT_THRESHOLD)
     sub.add_parser('dwarf', help='print the implementer rules block')
     gate_parser = sub.add_parser(
-        'gate', help='print: decision, worst_confirmed, n_confirmed, n_unlabelled, n_below')
+        'gate', help='print: decision (accept|fail|keep), worst_confirmed, n_confirmed, n_unlabelled, n_below')
     gate_parser.add_argument('--verdict', required=True, choices=('PASS', 'FAIL', 'UNKNOWN'))
     gate_parser.add_argument('--qa-last', required=True, metavar='FILE', help="the QA reply")
-    gate_parser.add_argument('--threshold', type=_threshold_arg, default=None, metavar='P0..P3',
-                             help='least severe level that still blocks (default: none)')
+    gate_parser.add_argument('--threshold', type=_threshold_arg, default=None, metavar='P0..P3|none',
+                             help='least severe level that still blocks; none = P3 (default: %s)'
+                                  % DEFAULT_THRESHOLD)
     gate_parser.add_argument('--known-issues', metavar='OUT', default=None,
                              help='write tolerated findings here when there are any')
     return parser
