@@ -885,6 +885,12 @@ class ForgeIssuesTests(unittest.TestCase):
         self.assertEqual((by_file['a.py']['severity'], by_file['a.py']['text']), ('P3', 'x'))
         self.assertEqual(by_file['src/import.ts']['fp'], 'cf5d9440c970')
 
+    def test_nested_plausible_bullet_does_not_replace_its_confirmed_parent(self):
+        self.tolerated_task('nested', '## Known issues\n\n* (P3) CONFIRMED a.py:7 — Parent defect.\n'
+                            '  - [P3][PLAUSIBLE] b.py:9 — Related suspicion.\n')
+        out = self.run_issues(str(self.plan / 'tasks' / 'nested'), '--offline', '--repo', 'o/r')
+        self.assertEqual([(f['file'], f['text']) for f in out['findings']], [('a.py', 'Parent defect.')])
+
     def test_threshold_is_the_effective_one(self):
         known = '## Known issues\n\n- [P3][CONFIRMED] a.py:1 — x\n'
         self.tolerated_task('plain', known)

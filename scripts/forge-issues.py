@@ -208,11 +208,12 @@ def parse_known(text):
     for block in contract().parse_findings(text or ""):
         if block.status != "CONFIRMED" or block.severity is None:
             continue
-        canonical = parse_findings(block.text)
+        first = block.text.splitlines()[0]
+        # Only the block's own first line: a nested bullet under it is another finding, not this one.
+        canonical = parse_findings(first)
         if canonical:
             out.append(canonical[0])
             continue
-        first = block.text.splitlines()[0]
         body = _BULLET_RE.sub("", first, count=1)
         lm = _LOCATION_RE.search(body)
         if lm:
