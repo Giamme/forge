@@ -146,7 +146,8 @@ qa_only_next() { # qa_only_next <plan> <id>
     [ -n "$wt" ] && reviewed_state_matches "$tdir" "$wt"
     return
   fi
-  if [ "$(task_status "$1" "$2")" = UNKNOWN ] && [ -s "$tdir/reviewed.commit" ]; then
+  case "$(task_status "$1" "$2")" in UNKNOWN|INVALIDATED) ;; *) return 1 ;; esac
+  if [ -s "$tdir/reviewed.commit" ]; then
     [ -n "$wt" ] && reviewed_state_matches "$tdir" "$wt"
     return
   fi
@@ -269,10 +270,11 @@ prepare_retry() { # prepare_retry <plan> <id> [new-dwarf]
     # Nothing was judged, so there is nothing new to carry forward; the stop already
     # recorded where to resume (a `resume` marker for a QA-stage stop).
     note "$id: resuming after an infrastructure stop"
-  elif [ "$st" = UNKNOWN ] && [ -s "$tdir/reviewed.commit" ]; then
-    # The reviewer never reached a verdict, so the code was not rejected. Re-asking QA is
-    # cheaper and more honest than paying an implementer to rewrite unjudged work; the
-    # marker is validated against the worktree below before it is believed.
+  elif { [ "$st" = UNKNOWN ] || [ "$st" = INVALIDATED ]; } && [ -s "$tdir/reviewed.commit" ]; then
+    # The reviewer never reached a verdict, or its verdict was voided because something changed
+    # during the review: either way the code was not rejected. Re-asking QA is cheaper and more
+    # honest than paying an implementer to rewrite unjudged work; the marker is validated
+    # against the worktree below before it is believed (a changed worktree runs the full task).
     echo qa > "$tdir/resume"
   # Only a real review replaces the findings. The runner also writes explanatory text
   # into qa.last when it fails a task without dispatching QA ("produced no changes at
@@ -297,6 +299,7 @@ prepare_retry() { # prepare_retry <plan> <id> [new-dwarf]
   if resume_check "$PLAN" "$id"; then
     qa_only=1
     [ "$st" = UNKNOWN ] && note "$id: the reviewer gave no verdict — re-running QA on the unchanged work"
+    [ "$st" = INVALIDATED ] && note "$id: the last review was voided — re-running QA on the unchanged work"
   fi
   # Who decides the next implementer, in this order: an explicit --dwarf (the human's call,
   # source `retry`), a pin (the human's call, applied once, source `pin`), then the retry

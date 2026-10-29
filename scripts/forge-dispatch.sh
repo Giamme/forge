@@ -727,7 +727,7 @@ fi
 # when a stale $LAST is already there. That is harmless when each run gets a fresh
 # run-dir, and silently wrong for `forge-parallel.sh retry`, which reuses the task
 # directory — it would read the first attempt's result and never notice.
-rm -f "$LAST" "$LOG" "$RUN_DIR/$ROLE.clock" "$RUN_DIR/$ROLE.timedout" "$RUN_DIR/$ROLE.infra" "$RUN_DIR/$ROLE.orphans" "$RUN_DIR/$ROLE.harness"
+rm -f "$LAST" "$LOG" "$RUN_DIR/$ROLE.clock" "$RUN_DIR/$ROLE.clock.stop" "$RUN_DIR/$ROLE.timedout" "$RUN_DIR/$ROLE.infra" "$RUN_DIR/$ROLE.orphans" "$RUN_DIR/$ROLE.harness"
 python3 "$RUNTIME" phase "$ATTEMPT" model
 t0="$(date +%s)"
 # Process-group guard. A dwarf that starts `npm test &` and ends its turn leaves that
@@ -794,8 +794,11 @@ if [ "${LIMIT:-0}" != "0" ]; then
 fi
 
 wait "$hpid"; rc=$?
-# Its last sample is in before `finish` copies the clock into the attempt.
-if [ -n "$cpid" ]; then kill "$cpid" 2>/dev/null; wait "$cpid" 2>/dev/null; cpid=""; fi
+# Its last sample is in before `finish` copies the clock into the attempt. A stop file, not a TERM:
+# a signal could reach a sampler still starting up and kill it before its first sample (#84).
+if [ -n "$cpid" ]; then
+  : > "$RUN_DIR/$ROLE.clock.stop"; wait "$cpid" 2>/dev/null; cpid=""; rm -f "$RUN_DIR/$ROLE.clock.stop"
+fi
 if [ -n "$wpid" ]; then
   # The watchdog is asleep in a child of its own; kill that too or it outlives the
   # run as an orphan holding the timer.

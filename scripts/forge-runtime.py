@@ -99,6 +99,7 @@ def phase(attempt: str, name: str, rc: str | None = None) -> None:
 
 
 CLOCK_EVERY_S = 1.0
+CLOCK_STOP_POLL_S = 0.05   # how soon the sampler notices `<out>.stop`
 
 
 class _ClockStop(Exception):
@@ -108,14 +109,17 @@ class _ClockStop(Exception):
 def clock(log: str, out: str, every: str | None = None) -> None:
     """When the harness log grew: one `<epoch seconds> <bytes>` line in `out` for each sample that saw a new
     size, the first at the start. codex's and grok's events carry no time of their own, so forge-ui times them
-    from this. Runs beside the harness until a TERM (dispatch sends it once the harness exited) or until the
-    dispatch that started it is gone, and ends with one last sample. Advisory: nothing reads its exit."""
+    from this. Runs beside the harness until `<out>.stop` exists (dispatch creates it once the harness exited),
+    a TERM, or the dispatch that started it is gone, and ends with one last sample. A stop file, unlike a
+    signal, cannot arrive before the sampler is ready: one that starts late still records the log's final
+    size (#84). Advisory: nothing reads its exit."""
     def stop(signum: int, frame: object) -> None:
         raise _ClockStop()
 
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
     parent, period, last = os.getppid(), float(every) if every else CLOCK_EVERY_S, -1
+    stop_file = out + '.stop'
 
     def sample() -> None:
         nonlocal last
@@ -133,9 +137,11 @@ def clock(log: str, out: str, every: str | None = None) -> None:
             signal.pthread_sigmask(signal.SIG_UNBLOCK, {signal.SIGTERM})
 
     try:
-        while os.getppid() == parent:
+        while os.getppid() == parent and not os.path.exists(stop_file):
             sample()
-            time.sleep(period)
+            deadline = time.monotonic() + period
+            while time.monotonic() < deadline and not os.path.exists(stop_file):
+                time.sleep(min(CLOCK_STOP_POLL_S, period))
     except _ClockStop:
         pass
     signal.signal(signal.SIGTERM, signal.SIG_IGN)

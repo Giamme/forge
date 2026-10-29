@@ -393,7 +393,7 @@ final_review() {
   while [ -e "$review" ]; do n=$((n+1)); review="$out/review-$$-$n"; done
   forge_review_snapshot "$src" "$base" "$tip" "$review" > "$out/snapshot.log" 2>&1 ||
     { note "final review: cannot build the review snapshot (see $out/snapshot.log)"; return 3; }
-  source_fp="$(forge_fingerprint "$src")" && review_fp="$(forge_fingerprint "$review")" ||
+  source_fp="$(forge_fingerprint "$src")" && review_fp="$(forge_fingerprint "$review" --tracked)" ||
     { note "final review: cannot fingerprint the checkouts"; return 3; }
   printf '%s\n' "$source_fp" > "$out/source.fingerprint"
   printf '%s\n' "$review_fp" > "$out/review.fingerprint"
@@ -536,7 +536,7 @@ final_review() {
        return 5 ;;
   esac
 
-  if [ "$(forge_fingerprint "$src")" != "$source_fp" ] || [ "$(forge_fingerprint "$review")" != "$review_fp" ]; then
+  if [ "$(forge_fingerprint "$src")" != "$source_fp" ] || [ "$(forge_fingerprint "$review" --tracked)" != "$review_fp" ]; then
     printf 'INVALIDATED\n' > "$out/verdict"
     note "final review: the checkout changed while the reviewer ran; the review is invalid"
     echo

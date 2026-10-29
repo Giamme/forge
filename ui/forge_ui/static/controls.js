@@ -32,7 +32,7 @@
   };
   const BACKOFF_FORMS = 'exp:<base>[,<cap>], linear:<start>,<step>[,<cap>] or list:<a>,<b>,… (seconds)';
   // A task status after which "Retry now" applies (or the policy stopped it).
-  const RETRYABLE = ['FAIL', 'UNKNOWN', 'TIMEOUT', 'ERROR', 'INTERRUPTED', 'BLOCKED'];
+  const RETRYABLE = ['FAIL', 'UNKNOWN', 'TIMEOUT', 'ERROR', 'INTERRUPTED', 'BLOCKED', 'INVALIDATED'];   // scripts/forge-schedule.py RETRYABLE
 
   const obj = v => v && typeof v === 'object' && !Array.isArray(v) ? v : {};
   const num = v => typeof v === 'number' && Number.isFinite(v) ? v : null;

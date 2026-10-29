@@ -76,7 +76,9 @@ if not qa:
  if os.environ.get('STAGED'):
   import subprocess; subprocess.run(['git','add',name], check=True)
 else:
- if os.environ.get('MUTATE'): pathlib.Path(name).write_text('tampered\\n')
+ if os.environ.get('MUTATE') or sc.get('mutate'): pathlib.Path(name).write_text('tampered\\n')
+ # 'writes': files the reviewer leaves in its copy, as a test run's bytecode or caches do.
+ for k, v in (sc.get('writes') or {}).items(): pathlib.Path(k).parent.mkdir(parents=True, exist_ok=True); pathlib.Path(k).write_text(v)
  if os.environ.get('SOURCE'): pathlib.Path(os.environ['SOURCE'],'change.txt').write_text('source tampered\\n')
 verdict = 'FAIL' if name == 'a.txt' and os.environ.get('FAIL_A') else os.environ.get('VERDICT','PASS')
 result = ('FORGE_VERDICT: '+verdict) if qa else 'implemented'
@@ -176,6 +178,14 @@ class ForgeTests(unittest.TestCase):
   self.env['MUTATE']='1'; r=self.solo(); self.assertEqual(r.returncode,5,r.stdout)
   self.assertEqual((self.root/'solo/verdict').read_text().strip(),'INVALIDATED')
   self.assertEqual((self.repo/'change.txt').read_text(),'implemented\n')
+ def test_files_a_reviewer_leaves_untracked_in_its_copy_do_not_void_the_review(self):
+  # A reviewer that runs the tests leaves bytecode behind; in a repository with no .gitignore
+  # that is an untracked file in the review copy, not a change to the reviewed artifact (#95).
+  self.scenario({'*.qa.*':{'writes':{'__pycache__/change.cpython-312.pyc':'bytecode'}}})
+  r=self.solo(); self.assertEqual(r.returncode,0,r.stdout)
+  self.assertEqual((self.root/'solo/verdict').read_text().strip(),'PASS')
+  p=self.plan(); r=self.run_script('forge-parallel.sh','run',p); self.assertEqual(r.returncode,0,r.stdout)
+  self.assertTrue((p/'tasks/a/merged').exists())
  def test_source_mutation_invalidated(self):
   self.env['SOURCE']=str(self.repo); r=self.solo(); self.assertEqual(r.returncode,5,r.stdout)
  def test_solo_review_prompt_lists_deleted_files_without_their_contents(self):

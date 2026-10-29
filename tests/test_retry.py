@@ -66,23 +66,19 @@ class RetryTests(unittest.TestCase):
         self.assertNotIn('forge: the reviewer', (p / 'tasks/a/retry_findings.md').read_text())
         self.assertNotIn('forge: the reviewer', (p / 'tasks/a/dwarf.input').read_text())
 
-    def test_a_later_attempt_that_never_reached_the_gate_does_not_inherit_the_flip_note(self):
-        # Attempt 1 is a flipped PASS; attempt 2's own FAIL is invalidated before the gate runs.
-        # The retry after it carries attempt 2's report, which no forge decision touched.
+    def test_a_later_attempt_that_never_reached_the_gate_leaves_no_gate_decision(self):
+        # Attempt 1 is a flipped PASS (qa.gate says `fail`); attempt 2's review is voided before the
+        # gate runs. Its retry note and `accept` read qa.gate, so none may be left from attempt 1.
         p = self.plan_of([('a', '-', 'a.txt')])
         self.scenario({'a.qa.1': {'verdict': 'PASS', 'findings': '- [P2][CONFIRMED] a.txt:1 — edge case breaks'},
                        'a.dwarf.2': {'content': 'fixed'},
-                       'a.qa.2': {'verdict': 'FAIL', 'findings': '- [P1][CONFIRMED] a.txt:1 — still broken'},
-                       'a.dwarf.3': {'content': 'fixed again'}})
+                       'a.qa.2': {'verdict': 'FAIL', 'findings': '- [P1][CONFIRMED] a.txt:1 — still broken'}})
         self.run_script('forge-parallel.sh', 'run', p)
+        self.assertTrue(self.text(p, 'tasks/a/qa.gate').startswith('P2\tfail'))
         self.env['MUTATE'] = '1'
         self.run_script('forge-parallel.sh', 'retry', p, 'a')
-        self.assertEqual(self.text(p, 'tasks/a/status'), 'INVALIDATED')
-        del self.env['MUTATE']
-        self.run_script('forge-parallel.sh', 'retry', p, 'a')
-        carried = (p / 'tasks/a/retry_findings.md').read_text()
-        self.assertIn('still broken', carried)
-        self.assertNotIn('forge: the reviewer', carried)
+        self.assertEqual((self.text(p, 'tasks/a/status'), self.text(p, 'tasks/a/attempt')), ('INVALIDATED', '2'))
+        self.assertFalse((p / 'tasks/a/qa.gate').exists())
 
     def test_without_the_flag_the_failure_still_waits_for_a_human(self):
         p = self.plan_of([('a', '-', 'a.txt'), ('b', 'a', 'b.txt')])
@@ -128,6 +124,26 @@ class RetryTests(unittest.TestCase):
         r = self.run_script('forge-parallel.sh', 'run', p, '--retry-failed', 1)
         self.assertEqual(r.returncode, 0, r.stdout)
         self.assertEqual(self.calls(), ['dwarf', 'qa', 'qa'])
+
+    def test_retry_failed_reviews_an_invalidated_attempt_again_without_rerunning_the_dwarf(self):
+        # The reviewer changed its review copy, so its verdict counts for nothing; the committed
+        # work did not change, so the retry is a fresh review of it, not a new attempt (#95).
+        p = self.plan_of([('a', '-', 'a.txt')])
+        self.scenario({'a.qa.1': {'mutate': True}})
+        r = self.run_script('forge-parallel.sh', 'run', p, '--retry-failed', 1)
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertEqual(self.calls(), ['dwarf', 'qa', 'qa'])
+        self.assertEqual(self.text(p, 'tasks/a/attempt'), '1')
+        self.assertTrue((p / 'tasks/a/merged').exists())
+
+    def test_retry_failed_leaves_an_invalidation_from_outside_the_review_to_a_human(self):
+        p = self.plan_of([('a', '-', 'a.txt')])
+        self.scenario({'a.qa.1': {'mutate': True}})
+        self.run_script('forge-parallel.sh', 'run', p)
+        (p / 'tasks/a/invalidated.reason').unlink()       # as a merge-time invalidation leaves it
+        self.run_script('forge-parallel.sh', 'run', p, '--retry-failed', 1)
+        self.assertEqual(self.text(p, 'tasks/a/status'), 'INVALIDATED')
+        self.assertEqual(self.calls(), ['dwarf', 'qa'])
 
     def test_a_stale_resume_marker_falls_back_to_the_full_task(self):
         p = self.plan_of([('a', '-', 'a.txt')])

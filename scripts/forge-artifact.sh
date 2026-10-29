@@ -1,14 +1,18 @@
 #!/usr/bin/env bash
 # Shared artifact operations. A private index never stages or unstages user work.
+# forge_tree <dir> [--tracked]: the tree of everything in <dir> that is not ignored. --tracked
+# leaves untracked files out, for a copy whose artifact is a commit: there an untracked file
+# (a test run's __pycache__/ in a repository with no .gitignore) cannot reach what merges.
 forge_tree() (
   cd "$1" || exit 1
-  local idx tree actual_index f
+  local idx tree actual_index f add=-A
+  [ "${2:-}" = --tracked ] && add=-u
   idx="$(mktemp "${TMPDIR:-/tmp}/forge-index.XXXXXX")" || exit 1
   rm -f "$idx"
   trap 'rm -f "$idx"' EXIT
   actual_index="$(git rev-parse --git-path index)" || exit 1
   export GIT_INDEX_FILE="$idx"
-  git read-tree HEAD && git add -A -- . ':(exclude).forge' || exit 1
+  git read-tree HEAD && git add "$add" -- . ':(exclude).forge' || exit 1
   # Force-added ignored files are tracked in the real index, but not in HEAD yet.
   GIT_INDEX_FILE="$actual_index" git diff --cached --name-only --diff-filter=A -z HEAD |
     while IFS= read -r -d '' f; do
@@ -55,9 +59,9 @@ forge_review_snapshot() ( # source, baseline tree, final tree, destination
 
 )
 
-forge_fingerprint() {
+forge_fingerprint() { # forge_fingerprint <dir> [--tracked], as forge_tree
   local tree head index
-  tree="$(forge_tree "$1")" || return 1
+  tree="$(forge_tree "$1" "${2:-}")" || return 1
   head="$(git -C "$1" rev-parse HEAD)" || return 1
   index="$(git -C "$1" diff --cached --binary HEAD | git -C "$1" hash-object --stdin)" || return 1
   printf '%s %s %s\n' "$head" "$tree" "$index"
