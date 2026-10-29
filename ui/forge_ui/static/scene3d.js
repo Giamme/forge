@@ -167,6 +167,7 @@ export async function createStage(host, cb = {}) {
     const parts = [r.kind === 'solo' ? (Object.keys(c)[0] || 'solo') : `${merged}/${total} done`];
     if (running) parts.push(`${running} running`);
     if (bad) parts.push(`${bad} failed`);
+    if (c.NEEDS_INPUT) parts.push(`${c.NEEDS_INPUT} waiting for you`);     // not in the failed count: it waits for an answer
     const reviewStatus = RM.runReviewStatus(r);
     if (reviewStatus) parts.push(`review ${reviewStatus}`);
     else if (r.verification_status) parts.push(`verify ${r.verification_status}`);
@@ -1247,7 +1248,7 @@ export async function createStage(host, cb = {}) {
     const lamps = { title: 'Lamps', rows: [
       { sw: { lamp: 'st-merged' }, label: 'merged · passed · accepted' }, { sw: { lamp: 'st-running' }, label: 'running · interrupted' },
       { sw: { lamp: 'st-fail' }, label: 'failed · conflict · infra · timeout' }, { sw: { lamp: 'st-pending' }, label: 'pending, not started' },
-      { sw: { lamp: 'st-outdated' }, label: 'outdated review' },
+      { sw: { lamp: 'st-outdated' }, label: 'outdated review' }, { sw: { lamp: 'st-needs_input' }, label: 'waiting for you' },
       { sw: { route: true }, label: st.view === 'atlas' ? 'chosen run' : 'chosen task' + (L.route ? ' and its route' : '') }] };
     if (st.view === 'atlas') {
       out.push({ title: 'Map', rows: [], note: 'Each block is a run, each district a repository. The lamps on a block are its tasks; the block stands taller the more tasks it has.' }, lamps);

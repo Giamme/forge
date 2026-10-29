@@ -10,7 +10,7 @@ window.ForgePanel = (() => {
   const num = v => typeof v === 'number' && Number.isFinite(v) ? v : null;
   const display = v => v === null || v === undefined || v === '' ? '—' : typeof v === 'object' ? JSON.stringify(v, null, 2) : String(v);
   const STATUSES = new Set(['merged', 'pass', 'running', 'pending', 'fail', 'error', 'infra', 'timeout', 'unknown', 'invalidated', 'blocked',
-    'interrupted', 'nochanges', 'conflict', 'accepted', 'none', 'outdated']);
+    'interrupted', 'nochanges', 'conflict', 'accepted', 'none', 'outdated', 'needs_input', 'waiting']);
   const cache = new Map();                                  // path → {data, error, at}
   function el(tag, text, className) {
     const node = document.createElement(tag);
@@ -85,6 +85,31 @@ window.ForgePanel = (() => {
     if (window.ForgeControls && window.ForgeUI && window.ForgeUI.confirmInline) { window.ForgeControls[task ? 'mountTask' : 'mountRun'](host, ctx, task); return; }
     const s = section(host, 'Controls');
     muted(s, 'Read-only: this page cannot change the run.');
+  }
+  // A task that stopped NEEDS_INPUT: the question it asked, and the command that answers it. forge-ui shows the
+  // command and never runs it; only the user's answer, passed to retry, resumes the task.
+  const shellWord = s => /^[\w@%+=:,./-]+$/.test(s) ? s : "'" + String(s).replace(/'/g, "'\\''") + "'";
+  function waitingSection(host, ctx, task) {
+    const s = section(host, 'Waiting for you');
+    muted(s, 'This task stopped for an answer only you can give. Nothing retries it until you answer.');
+    s.append(el('pre', task.needs_input != null ? task.needs_input : `The question is not recorded: tasks/${task.id}/needs_input.md is missing.`));
+    if (ctx.run.kind === 'solo') return;
+    const plan = ctx.run.path ? shellWord(ctx.run.path) : '<plan>';
+    const text = `forge-parallel.sh retry ${plan} ${shellWord(task.id)} --answer "…"`;
+    const copy = el('button', 'Copy command'); copy.type = 'button';
+    copy.addEventListener('click', async () => {
+      try { await navigator.clipboard.writeText(text); copy.textContent = 'Copied'; }
+      catch (_) { copy.textContent = 'Copy failed: select the command instead'; }
+    });
+    const line = el('div', undefined, 'waiting-cmd');
+    line.append(el('pre', text, 'cmd'), copy);
+    s.append(line);
+  }
+  // An attempt's chip. A failed attempt is red whatever its words; a send-back says what forge did in its title.
+  function attemptChip(word) {
+    const c = chip(word, RM.attemptFailed(word) ? 'fail' : undefined), note = RM.attemptNote(word);
+    if (note) c.title = note;
+    return c;
   }
   // a link into the diff viewer (ctx.diffHash is absent where there is no viewer)
   function diffLink(ctx, text, spec, cls = 'diff-link') { if (!ctx.diffHash) return null; const a = el('a', text, cls); a.href = ctx.diffHash(spec); return a; }
@@ -280,6 +305,8 @@ window.ForgePanel = (() => {
       fields(f, [['Integration', link(`${F.integration.merged}/${F.integration.total} merged`, ctx.hash({ kind: 'integration' }), () => ctx.onSelect({ kind: 'integration' }))],
         ['Verification', link(F.verification.status, ctx.hash({ kind: 'verification' }), () => ctx.onSelect({ kind: 'verification' }))],
         ['Final review', finalValue]]);
+      const attribution = RM.attributionLine(run.attribution);
+      if (attribution) f.append(el('p', attribution, 'warn'));
       if (F.final.status === 'OUTDATED') muted(f, RM.reviewSinceLine(F.final));
       if (F.final.findings) findingCounts(f, F.final.findings);
       const sweep = RM.sweepLine(run.sweep);
@@ -336,6 +363,7 @@ window.ForgePanel = (() => {
     head.append(chips);
     const dl = diffLink(ctx, solo ? 'View the diff →' : 'View its diff, findings pinned to their lines →', { kind: 'task', task: task.id, source: 'current' }); if (dl) head.append(dl);
     host.append(head);
+    if (RM.isWaiting(task.status)) waitingSection(host, ctx, task);
     if (!solo) fields(host, [['Difficulty', task.difficulty], ['Depends on', depLinks(task.deps, ctx)], ['Files', list(task.files).join('\n') || '—', true], ['Branch', task.branch, true]]);
     if (C) C.nowSection(host, ctx, task);
     sweepSection(host, ctx, task);
@@ -368,7 +396,7 @@ window.ForgePanel = (() => {
     for (const z of tp.zones) {
       const box = el('div', undefined, 'attempt');
       const row = list(task.attempts).filter(a => a.attempt === z.attempt).pop();
-      const h = el('div', undefined, 'attempt-head'); h.append(el('strong', z.name.toLowerCase())); if (row) h.append(chip(RM.attemptStatus(task, row.attempt, row.status)), el('span', time(row.at), 'muted'));
+      const h = el('div', undefined, 'attempt-head'); h.append(el('strong', z.name.toLowerCase())); if (row) h.append(attemptChip(RM.attemptStatus(task, row.attempt, row.status)), el('span', time(row.at), 'muted'));
       box.append(h);
       for (const pid of z.parts) {
         const p = tp.parts.find(x => x.id === pid); if (!p || p.planned) continue;
@@ -616,6 +644,8 @@ window.ForgePanel = (() => {
     const head = el('div', undefined, 'insp-head');
     head.append(el('h2', 'Verification'), el('div', 'finish', 'insp-kind'), chip(v && v.status || 'pending'));
     host.append(head);
+    const attribution = RM.attributionLine(run.attribution);
+    if (attribution) host.append(el('p', attribution, 'warn'));
     if (!v) { muted(host, 'Verification has not run: it runs after every task is merged into the integration branch.'); return; }
     if (window.ForgeVerify) window.ForgeVerify.render(host, ctx);     // live state, lanes and failing tests
     fields(host, [['Command', v.command, true], ['Commit', v.commit, true]]);
