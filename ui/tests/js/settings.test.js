@@ -4,6 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('node:path');
 const S = require(path.join(__dirname, '..', '..', 'forge_ui', 'static', 'settings.js'));
+const U = require(path.join(__dirname, '..', '..', 'forge_ui', 'static', 'uikit.js'));
 
 const run = (key, repo, updated, extra = {}) => ({ key, run_id: key, repo, updated, goal: 'goal of ' + key, ...extra });
 
@@ -190,6 +191,55 @@ test('decision models: gates, sources, the privacy banner and the budget line', 
   assert.deepEqual(floored.gates.map(g => g.userMode), Array(7).fill(null));
   assert.equal(floored.noProviders, true);
   assert.equal(floored.addCommand, 'forge decide provider add …');
+});
+
+const noon = new Date(2026, 9, 28, 12).getTime() / 1000;        // local noon, so the local date is the 28th anywhere
+
+test('describeDecide keeps forced and replay per gate, and reads their absence as false and null', () => {
+  const view = S.describeDecide({ gates: {
+    drift: { mode: 'on', source: 'user', forced: true, replay: null },
+    forward: { mode: 'on', source: 'user', forced: false, replay: { provider: 'box', model: 'jev-latest', passes: true, at: noon } },
+    prompt: { mode: 'on', source: 'user', forced: true, replay: { provider: 'box', model: 'jev-latest', passes: false, at: noon } },
+    'memory-curate': { mode: 'shadow', source: 'user' },
+    'memory-slice': { mode: 'on', source: 'user', forced: 'yes', replay: 'later' },
+  } });
+  const by = name => view.gates.find(g => g.name === name);
+  assert.deepEqual([by('drift').forced, by('drift').replay], [true, null]);
+  assert.deepEqual(by('forward').replay, { provider: 'box', model: 'jev-latest', passes: true, at: noon });
+  assert.equal(by('forward').forced, false);
+  assert.equal(by('prompt').replay.passes, false);
+  assert.deepEqual([by('memory-curate').forced, by('memory-curate').replay], [false, null]);
+  assert.deepEqual([by('memory-slice').forced, by('memory-slice').replay], [false, null], 'a malformed field is unknown, not an error');
+  assert.deepEqual(S.describeDecide(undefined).gates.map(g => [g.forced, g.replay]), Array(7).fill([false, null]));
+});
+
+test('a gate row shows a forced tag on a forced on gate, the replay date on a replayed one, and nothing on a plain one', () => {
+  const gate = (extra) => S.describeDecide({ gates: { drift: { mode: 'on', source: 'user', ...extra } } }).gates[0];
+  const forced = S.gateTags(gate({ forced: true }));
+  assert.deepEqual(forced.map(t => [t.suffix, t.text]), [['forced', 'forced']]);
+  assert.match(forced[0].title, /without a recorded replay/);
+
+  const replay = { provider: 'box', model: 'jev-latest', passes: true, at: noon };
+  const replayed = S.gateTags(gate({ forced: false, replay }));
+  assert.deepEqual(replayed.map(t => [t.suffix, t.text]), [['replay', 'replayed 2026-10-28']]);
+  assert.match(replayed[0].title, /box\/jev-latest/);
+  assert.equal(replayed[0].bad, false);
+
+  const failed = S.gateTags(gate({ forced: true, replay: { ...replay, passes: false } }));
+  assert.deepEqual(failed.map(t => [t.suffix, t.text]), [['forced', 'forced'], ['replay', 'replay failed']]);
+  assert.match(failed[1].title, /box\/jev-latest/);
+
+  assert.deepEqual(S.gateTags(gate({ forced: false, replay: null })), []);
+  assert.deepEqual(S.gateTags(gate({})), [], 'an older forge sends neither field');
+  const shadow = S.describeDecide({ gates: { drift: { mode: 'shadow', source: 'user', forced: true } } }).gates[0];
+  assert.deepEqual(S.gateTags(shadow), [], 'only an on gate is forced');
+  assert.equal(S.replayDate(undefined), '?');
+});
+
+test('a refused turn-on shows the CLI message whole', () => {
+  const detail = 'drift has no passing replay on box/jev-latest. Run forge decide replay drift, or turn it on anyway with --force (shown as forced).';
+  const shown = U.outcomeText({ ok: false, status: 409, error: 'refused', detail });
+  assert.deepEqual(shown, { tone: 'bad', text: detail });
 });
 
 test('a failed read keeps a good page with a note, and replaces the page only before any good read', () => {
