@@ -401,7 +401,7 @@ forge-parallel.sh run       <plan-dir> [--max-parallel N] [--yolo-dwarf] [--yolo
                                      [--qa-threshold P0|P1|P2|P3|none|default] [--verify-retries N]
                                      [--escalate-after N] [--escalate-effort | --no-escalate-effort]
                                      [--sweep P0|P1|P2|P3 [--sweep-plausible] [--sweep-max N]]
-                                     [--sweep-ahead | --no-sweep-ahead]
+                                     [--sweep-ahead | --no-sweep-ahead] [--attribute | --no-attribute]
                                      [--fractal | --no-fractal] [--fractal-<limit> <n>]
 forge-parallel.sh retry     <plan-dir> <task-id> [--dwarf <spec>] [--answer <text> | --answer-file <file>]
                                      [--timeout S]
@@ -410,6 +410,7 @@ forge-parallel.sh retry     <plan-dir> <task-id> [--dwarf <spec>] [--answer <tex
                                      [--escalate-after N] [--escalate-effort | --no-escalate-effort]
 forge-parallel.sh accept    <plan-dir> <task-id> --reason "<why>" --approved
 forge-parallel.sh review    <plan-dir> [--qa <spec>] [--yolo-qa] [--qa-threshold P0|P1|P2|P3|none|default]
+forge-parallel.sh attribute <plan-dir> [--force]
 forge-parallel.sh integrate <plan-dir> --approved [--final-review <qa-spec>] [--verify-retries N]
                                      [--verify-parallel N]
 forge-parallel.sh split     <plan-dir> <new-plan-dir> --tasks <id,id> [--dry-run]
@@ -421,6 +422,7 @@ forge-parallel.sh combine   <new-plan-dir> <plan-dir> <plan-dir>... [--verify <c
 | `plan` | validate `tasks.tsv`, resolve difficulty → concrete dwarf/qa specs, compute waves, render the approval table |
 | `run` | schedule ready tasks; per task: worktree → dwarf → diff → QA → status; merge passing tasks onto the integration branch |
 | `retry` | re-run **one** failed task in the worktree it already has, with its reviewer's findings in the prompt |
+| `attribute` | after a failed combined verification, search the merge order for **a merge that breaks it**; merges, revises and accepts nothing. See below |
 | `integrate` | **never automatic** — merge the integration branch into your branch |
 | `accept` | **only on your explicit instruction** — merge a `FAIL`/`UNKNOWN` task's reviewed work anyway, recording why |
 | `review` | **opt-in, spends QA quota** — one reviewer reads the whole combined result; read-only |
@@ -448,6 +450,7 @@ forge-parallel.sh combine   <new-plan-dir> <plan-dir> <plan-dir>... [--verify <c
 | `--sweep-plausible` | run | no — this run only | the sweep also takes PLAUSIBLE findings of passed tasks |
 | `--sweep-max N` | run | no — this run only | at most `N` fix tasks (default `5`) |
 | `--sweep-ahead` | run | `sweep_ahead` | a task is also told the open findings in files it owns, to fix on its way (off by default; `--no-sweep-ahead` turns it off) |
+| `--attribute` | run | `attribute_on` | when the run's combined verification fails, search the merge order for a merge that breaks it, right after the failure is reported (off by default; `--no-attribute` turns it off). Without it the summary says how to run `attribute` later |
 | `--escalate-effort` | run, retry | `escalate_effort` | at the top tier, retry the same model once more at its next accepted effort before stopping (off by default; `--no-escalate-effort` turns it off) |
 
 **Exit codes:** `0` ok · `2` usage or validation · `3` precondition (not a git repo, …) ·
@@ -456,6 +459,33 @@ forge-parallel.sh combine   <new-plan-dir> <plan-dir> <plan-dir>... [--verify <c
 spent and nothing was judged — fix the cause and run the same command again ·
 `130` **interrupted or stopped** (a signal, or `forge control stop`): the running tasks are
 `INTERRUPTED` and verification was skipped or stopped; the summary prints the `retry` for each.
+
+**`attribute`** answers the question a failed combined verification leaves open: every task passed
+its own review, so which merge broke the whole? It verifies *prefixes* of the merge order in a
+scratch worktree (`<worktree root>/_attribute`, detached at the prefix commit, after the plan's
+setup command): prefix 0 is the integration base, prefix `n` the tip. The tip is known to fail
+from the run itself; the search verifies the base and then halves the interval until it has a
+merge `k` whose prefix `k − 1` verified PASS and whose prefix `k` verified FAIL. Verification is an
+arbitrary command, so failure need not be monotonic over the merges: this is *a* merge that breaks
+verification, not necessarily the earliest. Each step runs the verification the run used, frozen:
+the lanes in `verification.lanes.d/` or the command in `verification.command`, never a config
+changed since and never discovery. A run that recorded neither is inconclusive unless `--force`,
+which uses today's source. On this repo one verification takes about 10 minutes, so a search of
+`n` merges costs `1 + ⌈log₂ n⌉` of them.
+
+It takes the plan lock like `retry`, so a second `attribute`, or one started while a run holds the
+plan, is refused. It refuses (exit `2`) a plan whose `verification.status` is not `FAIL` and one
+whose `verification.commit` is not `accepted.integration`, the commit being searched; `--force`
+skips both checks and verifies the tip itself (a passing tip is inconclusive). A step that ends
+`UNVERIFIED`, is interrupted or whose setup fails ends the search inconclusive with no culprit.
+
+It writes `attribution.json` (`culprit`, `base_fails`, `inconclusive`, `merges`, `steps` of
+`{prefix, commit, status, seconds, source}`, `verification_runs`, `gate`), each step's output in
+`attribute/<prefix>-<sha>/`, the failing log's last 200 lines in `tasks/<culprit>/verification.md`,
+and an `attribution` event in the [run dataset](dataset.md). It prints one line,
+`integration failure: merge <id> breaks verification (prefix k−1 passes, k fails; M verification
+runs)`, or the variant `the base already fails verification` or `attribution inconclusive — <reason>`.
+Exit `0` when the search finished, culprit or not, `1` when a step could not run at all.
 
 **`NEEDS_INPUT`** is a task status that is not a failure: the implementer ended with a question
 only the user can answer, kept in `tasks/<id>/needs_input.md`. The run summary lists it under

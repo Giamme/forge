@@ -12,12 +12,13 @@
 #                                     [--timeout S] [--retry-failed N] [--infra-retries M]
 #                                     [--qa-threshold P0|P1|P2|P3|none|default] [--verify-retries N] [--no-forecast]
 #                                     [--sweep P0|P1|P2|P3 [--sweep-plausible] [--sweep-max N]]
-#                                     [--sweep-ahead | --no-sweep-ahead]
+#                                     [--sweep-ahead | --no-sweep-ahead] [--attribute | --no-attribute]
 #   forge-parallel.sh retry <plan-dir> <task-id> [--dwarf <spec>] [--setup <command>]
 #                                     [--answer <text> | --answer-file <file>]   (a NEEDS_INPUT task)
 #                                     [--timeout S] [--qa-threshold Pn|none|default] [--verify-retries N]
 #   forge-parallel.sh integrate <plan-dir> --approved [--verify-retries N] [--final-review <qa-spec>]
 #   forge-parallel.sh review <plan-dir> [--qa <spec>] [--yolo-qa] [--qa-threshold Pn|none|default]
+#   forge-parallel.sh attribute <plan-dir> [--force]   (find a merge that breaks the failed verification)
 #   forge-parallel.sh accept <plan-dir> <task-id> --reason "<why>" --approved
 #   forge-parallel.sh split <plan-dir> <new-plan> --tasks <id,id> [--dry-run]
 #   forge-parallel.sh combine <new-plan> <plan-a> <plan-b> [<plan>...] [--verify <command>] [--dry-run]
@@ -74,6 +75,8 @@
 #                           plan; what it does not fix stays for `forge issues`
 #   --sweep-ahead           a task is also told the open findings in files it owns, to fix only
 #                           on its way (kept for the plan; --no-sweep-ahead turns it off)
+#   --attribute             when the run's combined verification fails, search the merge order for
+#                           a merge that breaks it (kept for the plan; --no-attribute turns it off)
 #
 # Exit codes: 0 ok | 2 usage/validation | 3 precondition (not a git repo, etc.)
 #             5 some task failed QA or verification failed | 6 integration conflict
@@ -98,7 +101,7 @@ JEV_OPTS=0
 # Flags shared by several subcommands, then the helper libraries. Functions only, resolved
 # at call time, so they may use die/note/field and friends defined below.
 source "$SKILL_DIR/scripts/forge-parallel-options.sh"
-for forge_lib in task gates verify plans review; do
+for forge_lib in task gates verify attribute plans review; do
   [ -f "$SKILL_DIR/scripts/forge-lib-$forge_lib.sh" ] && source "$SKILL_DIR/scripts/forge-lib-$forge_lib.sh"
 done
 OUTPUT=summary
@@ -2013,6 +2016,20 @@ do_run() {
   if [ "$failed" = 1 ] && [ "$paused" = 0 ] && [ "$interrupted" = 0 ] && [ "$(cat "$PLAN/verification.status" 2>/dev/null)" = FAIL ]; then
     echo "combined verification failed: see $PLAN/verification.log"
     echo
+    if [ -f "$PLAN/attribute_on" ] && declare -F attribute_search >/dev/null; then
+      # This run holds the plan lock: the search function, never the subcommand.
+      run_phase=attribute
+      ( attribute_search "$PLAN" 0 ) <&0 &
+      run_child=$!
+      [ "$run_stop" = 1 ] && kill -TERM "$run_child" 2>/dev/null
+      run_wait "$run_child"
+      run_child=""
+      [ "$run_stop" = 1 ] && interrupted=1
+      echo
+    else
+      echo "find a merge that broke it: forge-parallel.sh attribute $PLAN"
+      echo
+    fi
   fi
 
   if [ ! -f "$PLAN/no_memory" ]; then
@@ -2095,7 +2112,7 @@ if [ "${1:-}" = --help ] || [ "${1:-}" = -h ]; then
   forge_fractal_help
   exit 0
 fi
-[ $# -ge 1 ] || die "usage: forge-parallel.sh <plan|run|retry|accept|review|integrate|split|combine> <plan-dir> [...]"
+[ $# -ge 1 ] || die "usage: forge-parallel.sh <plan|run|retry|accept|review|integrate|split|attribute|combine> <plan-dir> [...]"
 CMD="$1"; shift
 [ ! -f "${1:-}/no_ripwire" ] || export FORGE_RIPWIRE=off
 if [ -d "${1:-}" ]; then
@@ -2103,7 +2120,7 @@ if [ -d "${1:-}" ]; then
 fi
 case "$CMD" in
   # `combine` takes a plan dir that does not exist yet and locks its sources itself.
-  run|retry|integrate|accept|review|split)
+  run|retry|integrate|accept|review|split|attribute)
     if [ "${FORGE_PLAN_LOCK:-}" != "${1:-}" ]; then
       exec python3 "$SKILL_DIR/scripts/forge-schedule.py" lock "$SELF" "$CMD" "$@"
     fi ;;
@@ -2112,7 +2129,7 @@ esac
 # path (die included). Installed after the lock re-exec, so it fires once, in the process
 # that did the work; `_task` and `_merge` are parts of a `run` and are not recorded alone.
 case "$CMD" in
-  plan|run|retry|integrate|accept|review|split|combine)
+  plan|run|retry|integrate|accept|review|split|attribute|combine)
     FORGE_DATASET_INVOCATION="inv-$(date +%s)-$$-$RANDOM"; export FORGE_DATASET_INVOCATION
     FORGE_DATASET_STARTED="$(date +%s)"
     FORGE_DATASET_ARGV=("$@")
@@ -2140,6 +2157,7 @@ case "$CMD" in
   accept)    need_fn do_accept;  do_accept "$@" ;;
   review)    need_fn do_review;  do_review "$@" ;;
   split)     need_fn do_split;   do_split "$@" ;;
+  attribute) need_fn do_attribute; do_attribute "$@" ;;
   combine)   need_fn do_combine; do_combine "$@" ;;
   _task)     do_task "$@" ;;
   _merge)    merge_task "$@" ;;
