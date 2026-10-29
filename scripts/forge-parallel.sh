@@ -1169,7 +1169,7 @@ merge_task() { # merge_task <plan> <id> -> 0 merged, 1 conflicted
 # repair loop, which is what keeps forge's one-dwarf-then-QA rule intact.
 do_retry() {
   local PLAN="${1:?retry needs a plan dir}" id="${2:?retry needs a task id}"; shift 2
-  FORGE_RUN_STARTED="$(date +%s)"
+  FORGE_RUN_STARTED="$(forge_now)"
   local NEWDWARF="" jev_rc=0
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -1526,7 +1526,7 @@ do_run() {
   FORGE_RUN_STOPPABLE=1
   trap run_signal TERM INT
   local PLAN="${1:?run needs a plan dir}"; shift
-  FORGE_RUN_STARTED="$(date +%s)"   # the summary's overridden verdicts are this run's
+  FORGE_RUN_STARTED="$(forge_now)"   # the summary's overridden verdicts are this run's
   local fractal_pipeline_args=("$@")
   local MAXP=3 DRY=0 jev_rc=0 FORECAST=1
   while [ $# -gt 0 ]; do

@@ -135,5 +135,49 @@ class QaGateOnceTests(unittest.TestCase):
         self.assertIn('qa_gate "$PLAN" "$id" "$tdir" "$verdict" "$qa_thr"', source)
 
 
+class GateFlipsTests(unittest.TestCase):
+    """The summary's "forge overrode the reviewer" lines. qa_gate logs each PASS-to-FAIL flip and
+    report_gate_flips shows the ones logged at or after the run's FORGE_RUN_STARTED. Both stamps are
+    sub-second: in whole seconds a flip from just before a run started reads as this run's."""
+    sh = QaGateOnceTests.sh
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(); self.addCleanup(self.tmp.cleanup)
+        self.plan = Path(self.tmp.name) / 'plan'
+        self.tdir = self.plan / 'tasks' / 't1'
+        self.tdir.mkdir(parents=True)
+        (self.plan / 'tasks.tsv').write_text('t1\t-\tlow\ta.txt\tsol\topus\tT1\n', encoding='utf-8')
+
+    def report(self, flips, started):
+        (self.tdir / 'qa.flips').write_text(flips, encoding='utf-8')
+        # all_ids lives in forge-parallel.sh, which this unit test does not source.
+        result = self.sh("all_ids() { awk -F'\\t' '!/^#/ && NF {print $1}' \"$1\"; }; "
+                         "FORGE_RUN_STARTED='%s'; report_gate_flips '%s'" % (started, self.plan))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return result.stdout
+
+    def test_a_flip_logged_after_the_run_started_in_the_same_second_is_reported(self):
+        out = self.report('1700000000.950\t2\tP2\tP2\n', '1700000000.100')
+        self.assertIn('attempt 2: PASS -> FAIL at the P2 threshold (worst P2)', out)
+
+    def test_a_flip_logged_just_before_the_run_started_is_not_reported(self):
+        out = self.report('1700000000.100\t1\tP2\tP2\n', '1700000000.900')
+        self.assertEqual(out, '')
+
+    def test_qa_gate_stamps_the_flip_to_the_millisecond(self):
+        (self.tdir / 'qa.last').write_text('Review.\n\n- [P2][CONFIRMED] a.py:1 — edge\n\nFORGE_VERDICT: PASS\n',
+                                           encoding='utf-8')
+        result = self.sh("qa_gate '%s' t1 '%s' PASS P2" % (self.plan, self.tdir))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        stamp, attempt, thr, worst = (self.tdir / 'qa.flips').read_text(encoding='utf-8').rstrip('\n').split('\t')
+        self.assertRegex(stamp, r'^\d+\.\d{3}$')
+        self.assertEqual((attempt, thr, worst), ('0', 'P2', 'P2'))
+
+    def test_run_and_retry_stamp_the_run_start_with_the_same_clock(self):
+        self.assertRegex(self.sh('forge_now').stdout, r'^\d+\.\d{3}$')
+        source = (ROOT / 'scripts' / 'forge-parallel.sh').read_text(encoding='utf-8')
+        self.assertEqual(source.count('FORGE_RUN_STARTED="$(forge_now)"'), 2)
+
+
 if __name__ == '__main__':
     unittest.main()
