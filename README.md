@@ -80,7 +80,7 @@ Inside any agent CLI where forge is installed:
 ```
 
 That's the whole minimum. `sol` builds it at `high` effort on Codex, `opus` reviews the diff at
-`xhigh` (the default reviewer), and you get back a summary of the change plus qa's findings.
+`high` (the default reviewer), and you get back a summary of the change plus qa's findings.
 
 ```text
 # pick both sides

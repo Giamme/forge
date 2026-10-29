@@ -19,7 +19,7 @@ as if the dwarf had written it.
   <role>.infra        only after an infrastructure failure: class, retry_after, detail, harness, model
   <role>.orphans      only when processes were left running after the harness exited
   <role>.session      session id reported by claude, openclaude or codex; absent when the dispatch published none
-  <role>.continue     only when the dispatch was asked to continue a reviewer session: requested=, mode=continued|failed, reason=
+  <role>.continue     only when the dispatch was asked to continue a session (a reviewer's, or an implementer's): requested=, mode=continued|failed, reason=
   changes.diff        the dwarf's real diff, which is qa's input
 ```
 
@@ -70,6 +70,9 @@ A decomposed run adds:
   tasks/<id>/changes.since.range       the two commits, full hashes
   tasks/<id>/changes.since.stat        diff --stat of that range
   tasks/<id>/review_sessions.tsv       one row per review round while plan --reviewer-session is on: round, attempt, mode, reason, session id
+  tasks/<id>/implementer_sessions.tsv  one row per attempt while plan --implementer-session is on: row, attempt, mode (continued|fresh|failed), reason, session id
+  tasks/<id>/reviewed.dwarf.{session,resolved}   the implementer session that made reviewed.commit, and what it ran as
+  tasks/<id>/retry_findings.dwarf.{session,resolved}   the same, carried beside the retry findings; what --implementer-session continues
   tasks/<id>/retry_budget, retries.used   live per-task retry budget (a number); retries spent (kept after the run)
   results.tsv                          id  status  branch
   timeout, qa_threshold, verify_retries  options remembered from plan/run/retry/review flags (also escalate_after); no qa_threshold file means the default P2
@@ -77,6 +80,7 @@ A decomposed run adds:
   infra_backoff, infra_fallback        --infra-backoff's shape; on while --infra-fallback is set
   max_parallel                         the concurrency limit: written by each run from --max-parallel, changed live by forge control
   reviewer_session                     holds on; present while plan --reviewer-session is on
+  implementer_session                  holds on; present while plan --implementer-session is on
   <final-review-dir>/review.meta       final-review-<epoch>-<pid>/ or integrate-*/final-review/; base=, tip=, source=, spec=, threshold=, integration=, previous=, since=; session= and session_reason= while reviewer_session is set
   control.log                          one JSON line per human change made with forge control, and per request outcome
   control.requests/                    retry and add requests queued by forge control: one JSON file each, removed once settled

@@ -711,6 +711,7 @@ def _task_detail(reader, task, run_id, waves, branches):
     task['gate'] = _gate(reader, prefix + '/qa.gate')
     task['known_issues'] = _nonempty(reader, prefix + '/known_issues.md')
     task['fail_first'] = _fail_first(reader, prefix + '/failfirst.json')
+    task['pre_review'] = _pre_review(reader, prefix + '/prereview.json')
     task['sweep'] = _sweep_task(reader, prefix, task['status'])
     task['swept'] = []
     shadows = _shadows(reader, ident, execs)
@@ -800,6 +801,35 @@ _TASK_CONTROLS = ('qa_threshold', 'retry_budget', 'retries.used', 'escalation.pi
 
 
 _FAIL_FIRST_RESULTS = ('proven', 'passes_without_change', 'inconclusive', 'error')
+
+
+_PRE_REVIEW_STATUSES = ('passed', 'flaky', 'pre-existing', 'failed', 'skipped', 'error')
+
+
+def _pre_review(reader, name):
+    """prereview.json (forge-pre-review.py, opt-in #85): the tests the attempt affects, run before its review."""
+    obj = reader.object(name)
+    if obj is None:
+        return None
+    if obj.get('status') not in _PRE_REVIEW_STATUSES:
+        reader.warn(name, 'unknown pre-review status')
+        return None
+
+    def paths(key):
+        value = obj.get(key)
+        return [p for p in value if isinstance(p, str)] if isinstance(value, list) else []
+
+    tail = None
+    for run in reversed(obj.get('runs') if isinstance(obj.get('runs'), list) else []):
+        if isinstance(run, dict) and type(run.get('rc')) is int and run['rc'] != 0 and isinstance(run.get('tail'), str):
+            tail = run['tail'][-2000:]
+            break
+    seconds = obj.get('seconds')
+    return dict(status=obj['status'], reason=obj.get('reason') if isinstance(obj.get('reason'), str) else None,
+                command=obj.get('command') if isinstance(obj.get('command'), str) else None,
+                selected=paths('selected'), failing=paths('failing'), preexisting=paths('preexisting'),
+                flaky=paths('flaky'), seconds=seconds if isinstance(seconds, (int, float)) and not isinstance(seconds, bool) else None,
+                tail=tail)
 
 
 def _fail_first(reader, name):
@@ -1264,7 +1294,7 @@ def _solo_detail(reader, source):
                 dwarf_tail=reader.cap(reader.text('dwarf.last'), 'tasks/solo/dwarf_tail', 4000, True),
                 executions=execs, merged_at=None, findings=executions.summary_of(qa),
                 gate=_gate(reader, 'qa.gate'), known_issues=_nonempty(reader, 'known_issues.md'),
-                fail_first=_fail_first(reader, 'failfirst.json'),
+                fail_first=_fail_first(reader, 'failfirst.json'), pre_review=None,
                 now=_now(reader, '', execs) if status == 'RUNNING' else None, waiting=None, sweep=None, swept=[])
     result.update(timeline=_timeline(execs, [], []), integration=None, final_review=None, final_reviews=[],
                   deferrals=[], findings_available=findings.available(), fractal=fractal.summary(reader),

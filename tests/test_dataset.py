@@ -1195,24 +1195,30 @@ class ReviewerSessionTests(StoreCase):
         tdir.mkdir(parents=True)
         (tdir / 'attempt').write_text('1\n')
 
-        def qa(name, mode, started):
+        def dispatch(name, mode, started, role='qa'):
             attempt = tdir / 'attempts' / name
             attempt.mkdir(parents=True)
             (attempt / 'metrics.json').write_text(json.dumps(
-                dict(role='qa', wall_started=started, exit_code=0, harness='codex', elapsed_s=dict(total=1))))
-            (attempt / 'qa.last').write_text('FORGE_VERDICT: PASS\n')
-            (attempt / 'qa.session').write_text('sess\n')
+                dict(role=role, wall_started=started, exit_code=0, harness='claude', elapsed_s=dict(total=1))))
+            (attempt / (role + '.last')).write_text('FORGE_VERDICT: PASS\n' if role == 'qa' else 'implemented\n')
+            (attempt / (role + '.session')).write_text('sess\n')
             if mode is not None:
-                (attempt / 'qa.continue').write_text('requested=prev\nmode=%s\n' % mode)
+                (attempt / (role + '.continue')).write_text('requested=prev\nmode=%s\n' % mode)
 
-        qa('qa-0001', 'continued', 1.0)
-        qa('qa-0002', 'failed', 2.0)
-        qa('qa-0003', 'sideways', 3.0)   # an unknown mode is a request that failed
-        qa('qa-0004', None, 4.0)         # a fresh review is neither count
+        dispatch('qa-0001', 'continued', 1.0)
+        dispatch('qa-0002', 'failed', 2.0)
+        dispatch('qa-0003', 'sideways', 3.0)   # an unknown mode is a request that failed
+        dispatch('qa-0004', None, 4.0)         # a fresh review is neither count
+        # plan --implementer-session: an implementer's continues are counted apart from reviews.
+        dispatch('dwarf-0001', 'continued', 5.0, role='dwarf')
+        dispatch('dwarf-0002', 'continued', 6.0, role='dwarf')
+        dispatch('dwarf-0003', 'failed', 7.0, role='dwarf')
         self.import_dir(plan)
         text = self.status_text()
         self.assertIn('\n  continued reviews: 1\n', '\n' + text)
         self.assertIn('\n  failed continues: 2\n', '\n' + text)
+        self.assertIn('\n  continued implementers: 2\n', '\n' + text)
+        self.assertIn('\n  failed implementer continues: 1\n', '\n' + text)
         self.assertNotIn('shadow:', text)
 
     def test_status_is_quiet_when_every_review_is_fresh(self):

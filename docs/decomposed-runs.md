@@ -48,7 +48,13 @@ exist yet. Naming a dwarf per task would mean guessing how the goal will split. 
 ```
 
 `--qa`, `--qa-high`, `--qa-medium`, `--qa-low` mirror it exactly. QA has no tier rules by
-default and falls back to `opus`.
+default and falls back to `opus` (at `high`). Sizing the reviewer to the task's risk costs less
+for the same verdicts: the SWE-bench Pro benchmark (#89) saw no false PASS from Sonnet reviewers,
+at about a seventh of an `opus:xhigh` review's cost. A set to start from:
+
+```bash
+--qa-low sonnet:medium --qa-medium sonnet:high --qa-high opus:high
+```
 
 Resolution order per task: **explicit column value → the tier's rule → plain `--dwarf` →
 `UNASSIGNED`**. An `UNASSIGNED` task makes `plan` exit `2` and `run` refuse outright. forge
@@ -100,7 +106,9 @@ that baseline, and QA sees only baseline membership recorded for that task.
 
 Every dispatch is a **clean slate** — forge never passes `--continue`, `--resume`, or
 `codex exec resume`, except the opt-in `plan --reviewer-session` experiment (it continues
-a reviewer's session across rounds on claude, openclaude and codex). One task's confused
+a reviewer's session across rounds on claude, openclaude and codex) and the opt-in
+`plan --implementer-session` (a retry continues its implementer's session on claude and
+openclaude when the work is as the review left it). One task's confused
 turn can't poison another, and each task's context stays small.
 
 Clean slates alone would leave every dwarf blind to the wider run, so a short `capsule.md` is

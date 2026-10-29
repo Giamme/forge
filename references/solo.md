@@ -46,7 +46,7 @@ Statuses: PASS, FAIL, UNKNOWN, NOCHANGES, INVALIDATED. Exit codes: 0 completed r
 review, 7 timeout, 8 infrastructure failure (quota, auth, rate limit, network, empty output:
 nothing was judged — fix the cause and run again; a dwarf that returns nothing *and* changes
 nothing is reported as 8, not 5). The default dispatch timeout is 2700 seconds, scaled up for
-`xhigh`/`max` effort (so the default QA/planner effort gets 3600), overridable per model in the
+`xhigh`/`max` effort (so the default planner effort gets 3600; QA defaults to `high`), overridable per model in the
 registry; 0 disables that dispatch timeout, but an enabled Fractal task still has its own attempt
 deadline. See [dispatch timeouts](../docs/commands.md#scriptsforge-dispatchsh).
 

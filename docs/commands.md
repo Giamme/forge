@@ -16,8 +16,8 @@ harness (`/forge`); this command installs forge and drives its optional tools.
 | `forge version [--check]` | the installed version, and whether a newer release is out |
 | `forge fractal …` | opt-in Fractal execution; see [the command group](fractal.md#forge-fractal-command-group) |
 | `forge runs [--repo DIR \| --all] [--limit N] [--json]` | this repo's recent runs, newest first: run id, kind, age, task states, verification and final review, goal, and the run dir. Read-only; the same summaries forge-ui shows |
-| `forge control show\|set\|pin\|unpin\|drain\|resume\|stop\|retry\|add PLAN_DIR …` | change a live plan: `set` takes `qa-threshold` (`P0`..`P3`, `none` or `default` for the plan, `inherit` per task), `timeout`, `escalate-after`, `escalate-effort` (`on`/`off`), `verify-retries`, `infra-backoff` (a backoff shape; `none` drops it), `retry-budget`, `infra-retries` or `max-parallel` (1-64) (the last three only while a scheduler runs; `--task ID` for `qa-threshold` and `retry-budget`, value `inherit` drops the override); `pin PLAN_DIR TASK SPEC` sets the model the task's next full retry uses once, `unpin` drops it. While a scheduler runs: `drain` starts nothing new until `resume` (a run with nothing left to start ends as usual); `stop [--now]` ends the run once the running tasks finish (`--now` interrupts them; `run` exits 130 without verifying, unless every task had merged by then: it then verifies and exits 0 as usual); `retry PLAN_DIR TASK [--dwarf SPEC]` and `add PLAN_DIR TASK` (a row appended to `tasks.tsv`) queue a request the scheduler applies or refuses. `show` (`--json` for JSON) also says whether the run is drained or stopping and lists its infrastructure pauses. Every change and every request's outcome is logged in `control.log`. Exit 2 invalid input, 3 refused. See [live controls](decomposed-runs.md#changing-a-run-while-it-works) |
-| `forge config show [--repo DIR] [--json]` / `forge config set <key> <value> [--repo DIR] [--json]` / `forge config unset <key> [--repo DIR] [--json]` | one view of every config source (registry, the legacy Jev file, decide, the repo's `.forge/verify`, `setup` and `verify-subset`, dataset, `FORGE_*` variables with secrets hidden); `set` / `unset` edit `repo.verify`, `repo.setup`, `repo.verify-subset` (must contain `{files}`; `--repo` required) and `decide.gate.<gate>`, `decide.gate.<gate>.provider`, `decide.gate.<gate>.model` (`off`, `shadow` or `on`; those write the user level and do not need `--repo`). Unset of a `decide.gate.*` key is refused: set the mode to `off`. `-` as a value reads stdin for the per-repo files. Exit 2 on invalid input |
+| `forge control show\|set\|pin\|unpin\|drain\|resume\|stop\|retry\|add PLAN_DIR …` | change a live plan: `set` takes `qa-threshold` (`P0`..`P3`, `none` or `default` for the plan, `inherit` per task), `timeout`, `escalate-after`, `escalate-effort` (`on`/`off`), `verify-retries`, `infra-backoff` (a backoff shape; `none` drops it), `pre-review-tests` (`on`/`off`), `pre-review-parallel` (1-64), `retry-budget`, `infra-retries` or `max-parallel` (1-64) (the last three only while a scheduler runs; `--task ID` for `qa-threshold` and `retry-budget`, value `inherit` drops the override); `pin PLAN_DIR TASK SPEC` sets the model the task's next full retry uses once, `unpin` drops it. While a scheduler runs: `drain` starts nothing new until `resume` (a run with nothing left to start ends as usual); `stop [--now]` ends the run once the running tasks finish (`--now` interrupts them; `run` exits 130 without verifying, unless every task had merged by then: it then verifies and exits 0 as usual); `retry PLAN_DIR TASK [--dwarf SPEC]` and `add PLAN_DIR TASK` (a row appended to `tasks.tsv`) queue a request the scheduler applies or refuses. `show` (`--json` for JSON) also says whether the run is drained or stopping and lists its infrastructure pauses. Every change and every request's outcome is logged in `control.log`. Exit 2 invalid input, 3 refused. See [live controls](decomposed-runs.md#changing-a-run-while-it-works) |
+| `forge config show [--repo DIR] [--json]` / `forge config set <key> <value> [--repo DIR] [--json]` / `forge config unset <key> [--repo DIR] [--json]` | one view of every config source (registry, the legacy Jev file, decide, the repo's `.forge/verify`, `setup` and `verify-subset`, dataset, `FORGE_*` variables with secrets hidden); `set` / `unset` edit `repo.verify`, `repo.setup`, `repo.verify-subset` (must contain `{files}` or `{changed}`; `--repo` required) and `decide.gate.<gate>`, `decide.gate.<gate>.provider`, `decide.gate.<gate>.model` (`off`, `shadow` or `on`; those write the user level and do not need `--repo`). Unset of a `decide.gate.*` key is refused: set the mode to `off`. `-` as a value reads stdin for the per-repo files. Exit 2 on invalid input |
 | `forge runs rm RUN_DIR [--dry-run] [--yes] [--no-archive] [--worktrees] [--branches] [--json]` | delete a run directory but keep what it taught the dataset; see [below](#forge-runs-rm) |
 | `forge issues RUN [--apply] …` | file the review findings a run left open as GitHub issues; see [below](#forge-issues) |
 | `forge ui open\|status\|stop` | forge-ui, the run viewer; see [the command group](forge-ui.md#forge-ui-command-group) |
@@ -142,7 +142,7 @@ file takes the flags on `run` or `retry` and freezes them then.
 | Flag | Default | Meaning |
 |---|---|---|
 | `--dwarf <spec>` | *asks* | the model that implements the change |
-| `--qa <spec>` | `opus` at `xhigh` | the model that reviews the dwarf's diff |
+| `--qa <spec>` | `opus` at `high` | the model that reviews the dwarf's diff |
 | `--planner <spec>` | orchestrator plans | dispatch planning to a model; one dispatch per run, effort defaults to `xhigh` |
 | `--no-memory` | memory on | write and inject nothing in `.forge/` |
 | `--gate NAME=MODE` | the configured gates | set decision-model gates for this run (`off`, `shadow` or `on`); repeatable, a later one wins. Frozen in `jev-selection.json`. See [`forge decide`](#forge-decide) |
@@ -271,8 +271,8 @@ failure. On `8`, `<run-dir>/<role>.infra` holds `class=`, `retry_after=`, `detai
 and disables the watchdog), then the optional fifth `timeout` column of the model's
 [registry](models.md#model-registry) row, then the built-in `2700` (45 min). A value that was *not*
 explicit is scaled by the resolved (post-clamp) effort: up to `high` ×1, `xhigh` ×4/3,
-`max`/`ultra`/`ultracode` ×2. QA and planner default to `xhigh`, so their built-in limit is
-3600 s; dwarves default to `medium` and keep 2700 s. `<role>.resolved` records `timeout=` and
+`max`/`ultra`/`ultracode` ×2. The planner defaults to `xhigh`, so its built-in limit is 3600 s;
+QA defaults to `high` and dwarves to `medium`, and both keep 2700 s. `<role>.resolved` records `timeout=` and
 `timeout_source=` (`explicit`, `env`, `registry` or `default`, plus `+effort-scaled`).
 `forge-parallel.sh run`/`retry --timeout S` sets it for a decomposed run (kept in the plan).
 `FORGE_REGISTRY` points the dispatcher at an alternative registry file.
@@ -389,7 +389,9 @@ forge-parallel.sh plan      <plan-dir> --repo <dir> [routing flags] [--planner <
                                      [--gate NAME=MODE[,...]] [--no-gates] [--decide-budget tokens=N[,usd=X]]
                                      [--decompose-level L] [--shadow-qa <spec>[,..]|none] [--shadow-rate R]
                                      [--reviewer-session | --no-reviewer-session]
+                                     [--implementer-session | --no-implementer-session]
                                      [--explore E] [--ui | --no-ui] [--fail-first | --no-fail-first]
+                                     [--pre-review-tests | --no-pre-review-tests] [--pre-review-parallel N]
                                      [--qa-threshold P0|P1|P2|P3|none|default]
 forge-parallel.sh run       <plan-dir> [--max-parallel N] [--yolo-dwarf] [--yolo-qa] [--dry-run]
                                      [--verify <cmd> | --verify-lane 'name[opts]=cmd' ...]
@@ -438,6 +440,8 @@ forge-parallel.sh combine   <new-plan-dir> <plan-dir> <plan-dir>... [--verify <c
 | `--verify-lane 'name[opts]=cmd'` | run, retry | `verify.d/<name>` | one verification lane; repeatable. Options as in a lane file, comma-separated (`group=g`, `first`, `retries=n`, `reports=dir`, `baseline=file`). The first one of an invocation replaces the plan's earlier lanes and `--verify`; see [verification lanes](../references/decompose.md#execution-checks-and-integration-verification) |
 | `--verify-parallel N` | run, retry, integrate | `verify_parallel` | lanes run at once, 1 to 32 (default `3`) |
 | `--escalate-after N` | run, retry | `escalate_after` | failed attempts on one model before the next goes a tier up (default `3`, `0` = off) |
+| `--pre-review-tests` | plan | `pre_review_tests` | before each review, run only the tests the attempt affects; a red attempt goes back to its implementer unreviewed (off by default; `--no-pre-review-tests` turns it off). See [pre-review tests](../references/decompose.md#pre-review-tests-opt-in) |
+| `--pre-review-parallel N` | plan | `pre_review_parallel` | how many of those checks run at once across tasks, 1 to 64 (default `2`) |
 | `--sweep Pn` | run | no — this run only | once every task has merged, fix the open findings at `Pn` or worse in a few extra tasks, one per file, each with a narrow review; the plan goes to `sweep/plan.md`. Once per plan; what it does not fix stays for `forge issues`. See [the finding sweep](reviews.md#fixing-them-in-the-run-the-finding-sweep-opt-in) |
 | `--sweep-plausible` | run | no — this run only | the sweep also takes PLAUSIBLE findings of passed tasks |
 | `--sweep-max N` | run | no — this run only | at most `N` fix tasks (default `5`) |

@@ -142,12 +142,13 @@ class ConfigTests(unittest.TestCase):
         self.run_cfg('set', 'repo.setup', '-', '--repo', str(self.repo), stdin='npm ci\n')
         self.assertEqual((self.repo / '.forge/setup').read_text(), 'npm ci\n')
 
-    def test_verify_subset_needs_files_placeholder(self):
+    def test_verify_subset_needs_a_files_or_changed_placeholder(self):
         bad = self.run_cfg('set', 'repo.verify-subset', 'pytest', '--repo', str(self.repo))
         self.assertEqual(bad.returncode, 2)
         self.assertFalse((self.repo / '.forge/verify-subset').exists())
-        ok = self.run_cfg('set', 'repo.verify-subset', 'pytest {files}', '--repo', str(self.repo))
-        self.assertEqual(ok.returncode, 0, ok.stderr)
+        for value in ('pytest {files}', 'npx jest --findRelatedTests {changed}'):   # {changed}: pre-review tests (#85)
+            ok = self.run_cfg('set', 'repo.verify-subset', value, '--repo', str(self.repo))
+            self.assertEqual(ok.returncode, 0, ok.stderr)
 
     def test_unknown_key_lists_valid_keys(self):
         out = self.run_cfg('set', 'repo.nope', 'x', '--repo', str(self.repo))

@@ -95,7 +95,7 @@ class ControlTests(unittest.TestCase):
         self.assertEqual(shown['run'], dict(qa_threshold='P2', qa_threshold_source='set', timeout=90, escalate_after=3, escalate_effort='off',
                                             verify_retries=1, retry_budget=None, infra_budget=None, infra_backoff='exp:60',
                                             max_parallel=None, drained=False, stopping=None,
-                                            infra_paused=None))
+                                            infra_paused=None, pre_review_tests='off', pre_review_parallel=2))
         self.assertEqual(list(shown['tasks']), ['a', 'b'])
         self.assertEqual(shown['tasks']['a'], dict(
             status='FAIL', dwarf='sol:high:codex', qa='astra:xhigh:codex', qa_threshold='none', retry_budget=2,
@@ -173,6 +173,21 @@ class ControlTests(unittest.TestCase):
                            ('qa-threshold', 'off'), ('retry-budget', 'inherit')):
             self.code(2, 'set', self.plan, key, value)
         self.assertEqual(self.run_control('set', self.plan, 'colour', 'red').returncode, 2)   # argparse
+        self.assertEqual(len(self.log()), 3)
+
+    def test_pre_review_tests_turn_on_and_off_and_run_1_to_64_at_a_time(self):
+        said = self.ok('set', self.plan, 'pre-review-tests', 'on').stdout
+        self.assertIn("at the task's next attempt", said)
+        self.assertTrue((self.plan / 'pre_review_tests').exists())
+        self.ok('set', self.plan, 'pre-review-parallel', '3')
+        self.assertEqual((self.plan / 'pre_review_parallel').read_text().strip(), '3')
+        pick = lambda: {k: self.show()['run'][k] for k in ('pre_review_tests', 'pre_review_parallel')}  # noqa: E731
+        self.assertEqual(pick(), dict(pre_review_tests='on', pre_review_parallel=3))
+        self.ok('set', self.plan, 'pre-review-tests', 'off')
+        self.assertFalse((self.plan / 'pre_review_tests').exists())
+        for key, value in (('pre-review-parallel', '0'), ('pre-review-parallel', '65'), ('pre-review-tests', 'yes')):
+            self.code(2, 'set', self.plan, key, value)
+        self.code(2, 'set', self.plan, 'pre-review-tests', 'on', '--task', 'a')
         self.assertEqual(len(self.log()), 3)
 
     def test_plan_only_keys_refuse_a_task_and_the_task_must_be_a_plan_row(self):

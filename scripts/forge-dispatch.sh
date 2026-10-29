@@ -11,6 +11,8 @@
 #                                  [--native-review [--review-base <ref>]]
 #   forge-dispatch.sh qa <spec> ... --continue-session <id>   continue that reviewer session
 #                                  (claude, openclaude, codex; custom prompt only)
+#   forge-dispatch.sh dwarf <spec> ... --continue-session <id>   continue that implementer session
+#                                  (claude, openclaude)
 #   any role: [--no-ripwire] [--ripwire-query-file <requirements>]
 #   any role: [--timeout <seconds>]   0 disables the watchdog
 #   forge-dispatch.sh efforts --spec <spec>
@@ -278,8 +280,10 @@ if [ "$NATIVE_REVIEW" = 1 ] && { [ "$ROLE" != qa ] || [ "$HARNESS" != codex ]; }
   die "--native-review requires QA on codex"
 fi
 if [ "$CONTINUE_GIVEN" = 1 ]; then
-  [ "$ROLE" = qa ] && [ "$NATIVE_REVIEW" != 1 ] && { [ "$HARNESS" = codex ] || [ "$HARNESS" = claude ] || [ "$HARNESS" = openclaude ]; } \
-    || die "--continue-session needs the qa role on codex, claude or openclaude, without --native-review"
+  # codex's `exec resume` takes no sandbox flag, so only a read-only reviewer continues there:
+  # an implementer's write access would rest on a config override nothing verifies.
+  [ "$NATIVE_REVIEW" != 1 ] && case "$ROLE:$HARNESS" in qa:codex|qa:claude|qa:openclaude|dwarf:claude|dwarf:openclaude) true ;; *) false ;; esac \
+    || die "--continue-session needs the qa role on codex, claude or openclaude, or the dwarf role on claude or openclaude, without --native-review"
   case "$CONTINUE_ID" in ''|*[!A-Za-z0-9-]*) die "--continue-session id must be letters, digits and '-' only" ;; esac
   [ "${#CONTINUE_ID}" -ge 8 ] && [ "${#CONTINUE_ID}" -le 128 ] || die "--continue-session id must be 8 to 128 characters"
 fi
@@ -307,11 +311,13 @@ if [ "$NO_EFFORT" = 1 ]; then
   EFFORT=""
 else
   if [ -z "$EFFORT" ]; then
-    # Build at medium, review high: a reviewer that thinks less than the
-    # implementer tends to rubber-stamp, which defeats the point of a second model.
-    # Planning is the stage where thinking pays for itself most cheaply — a bad
-    # plan is executed at full cost by every dwarf downstream of it.
-    case "$ROLE" in dwarf) EFFORT="medium" ;; qa|planner) EFFORT="xhigh" ;; esac
+    # Build at medium, review at high: a reviewer that thinks less than the
+    # implementer tends to rubber-stamp, which defeats the point of a second model;
+    # xhigh reviews cost about twice as much for the same verdicts (#89). Planning is
+    # the stage where thinking pays for itself most cheaply — a bad plan is executed
+    # at full cost by every dwarf downstream of it. forge-parallel.sh's approval
+    # table names the QA default (render_table).
+    case "$ROLE" in dwarf) EFFORT="medium" ;; qa) EFFORT="high" ;; planner) EFFORT="xhigh" ;; esac
     DEFAULTED=1
     [ -n "$LADDER" ] || EFFORT=""   # opencode: no ladder, let the provider choose
   else
@@ -459,15 +465,25 @@ if [ -n "$ATTEMPT" ]; then
     --prompt "$PROMPT_FILE" --query "$RIPWIRE_QUERY" --baseline "$REVIEW_BASE" \
     --artifacts "$ATTEMPT" --native "$NATIVE_REVIEW" || note "Ripwire preparation failed; continuing"
 fi
-# A continued reviewer remembers the earlier round, including its instructions. $ROLE.prompt
-# records what was sent, so the preamble goes into the file itself.
+# A continued session remembers the earlier round, including its instructions. $ROLE.prompt
+# records what was sent, so the preamble goes into the file itself. A continued implementer's
+# work is exactly as it left it (forge-parallel.sh continues only then), so it need not re-read
+# it; a continued reviewer is looking at changed work.
 if [ -n "$CONTINUE_ID" ]; then
   continued_prompt="$(mktemp "$RUN_DIR/.prompt.XXXXXX")" || die "cannot create continued prompt"
   {
-    printf 'This continues your earlier review of this work. The work has changed since you last\n'
-    printf 'looked. Your working directory is now %s. Re-read files rather than relying on what\n' "$REPO"
-    printf 'you read before. Review this round exactly as instructed below; where it differs from\n'
-    printf "earlier instructions (a threshold, for example), this round's instructions win.\n\n"
+    if [ "$ROLE" = dwarf ]; then
+      printf 'This continues your earlier work on this task, which has been reviewed since. Your\n'
+      printf 'working directory is %s; your changes are there as you left them,\n' "$REPO"
+      printf 'committed on the task branch, so you need not read them again. Work this attempt\n'
+      printf "exactly as instructed below; where it differs from earlier instructions, this attempt's\n"
+      printf 'instructions win.\n\n'
+    else
+      printf 'This continues your earlier review of this work. The work has changed since you last\n'
+      printf 'looked. Your working directory is now %s. Re-read files rather than relying on what\n' "$REPO"
+      printf 'you read before. Review this round exactly as instructed below; where it differs from\n'
+      printf "earlier instructions (a threshold, for example), this round's instructions win.\n\n"
+    fi
     cat "$PROMPT_FILE"
   } > "$continued_prompt" && mv "$continued_prompt" "$RUN_DIR/$ROLE.prompt" || { rm -f "$continued_prompt"; die "cannot install continued prompt"; }
 fi

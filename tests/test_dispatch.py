@@ -162,9 +162,9 @@ class ContinueSessionTests(DispatchBase):
     def cont(self, spec='opus', *args, **kw):
         return self.dispatch('qa', spec, '--continue-session', self.SESSION, *args, **kw)
 
-    def argv(self):
+    def argv(self, role='qa'):
         import shlex
-        return shlex.split(self.read('qa.cmd'))
+        return shlex.split(self.read(role + '.cmd'))
 
     def test_claude_and_openclaude_argv_is_the_fresh_one_plus_resume(self):
         for spec in ('opus', 'sol:high:openclaude'):
@@ -182,6 +182,21 @@ class ContinueSessionTests(DispatchBase):
                 self.assertLess(at, argv.index('--disallowed-tools'))
                 self.assertEqual(argv[argv.index('--disallowed-tools') + 1], 'Edit,Write,NotebookEdit')
                 self.assertEqual(argv[argv.index('--permission-mode') + 1], 'acceptEdits')
+
+    def test_a_claude_implementer_continues_with_its_edit_permission(self):
+        for spec in ('opus', 'sol:high:openclaude'):
+            with self.subTest(spec=spec):
+                fresh = self.dispatch('dwarf', spec)
+                self.assertEqual(fresh.returncode, 0, fresh.stdout)
+                fresh_argv = self.argv('dwarf')
+                result = self.dispatch('dwarf', spec, '--continue-session', self.SESSION)
+                self.assertEqual(result.returncode, 0, result.stdout)
+                argv = self.argv('dwarf')
+                at = argv.index('--resume')
+                self.assertEqual(argv[at + 1], self.SESSION)
+                self.assertEqual(argv[:at] + argv[at + 2:], fresh_argv)
+                self.assertNotIn('--disallowed-tools', argv)
+                self.assertEqual(self.kv('dwarf.continue')['mode'], 'continued')
 
     def test_codex_continues_with_the_sandbox_spelled_out(self):
         cwds = self.root / 'cwds'
@@ -310,7 +325,8 @@ class ContinueSessionTests(DispatchBase):
     def test_usage_errors_are_exit_2(self):
         sid = self.SESSION
         cases = {
-            'dwarf role': ('dwarf', 'sol', '--continue-session', sid),
+            'dwarf on codex': ('dwarf', 'sol', '--continue-session', sid),
+            'dwarf with native review': ('dwarf', 'opus', '--continue-session', sid, '--native-review'),
             'native review': ('qa', 'sol', '--continue-session', sid, '--native-review'),
             'opencode': ('qa', 'gemini-pro::opencode', '--continue-session', sid),
             'antigravity': ('qa', 'opus::antigravity', '--continue-session', sid),
@@ -661,7 +677,11 @@ class TimeoutResolutionTests(DispatchBase):
 
     def test_role_default_effort_decides_the_default(self):
         self.assertEqual(self.resolve('sol'), ('2700', 'default'))                  # dwarf: medium
-        self.assertEqual(self.resolve('sol', role='qa'), ('3600', 'default+effort-scaled'))   # qa: xhigh
+        # qa reviews at high (#89: xhigh cost twice as much for the same verdicts); planning stays at xhigh
+        self.assertEqual(self.resolve('sol', role='qa'), ('2700', 'default'))
+        self.assertEqual(self.kv('qa.resolved')['effort'], 'high')
+        self.assertEqual(self.resolve('sol', role='planner'), ('3600', 'default+effort-scaled'))
+        self.assertEqual(self.kv('planner.resolved')['effort'], 'xhigh')
 
     def test_scaling_uses_the_clamped_effort(self):
         # gemini tops out at high on antigravity: asking for ultra costs nothing extra.

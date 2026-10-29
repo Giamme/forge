@@ -5,7 +5,8 @@
 What forge learns about a repository, where it keeps it, what each role is told, and what forge has spent there.
 
 Every forge dispatch is a clean slate — the opt-in `plan --reviewer-session` experiment,
-which continues a reviewer's session across rounds, is the exception — so without help the
+which continues a reviewer's session across rounds, and `plan --implementer-session`, which
+continues an implementer's on a retry, are the exceptions — so without help the
 tenth run in a repo rediscovers what the first one learned. forge keeps that in the repo,
 in two files:
 

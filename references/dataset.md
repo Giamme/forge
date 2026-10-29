@@ -50,7 +50,8 @@ time order: an attempt that PASSed, then a merge that CONFLICTed, then a human `
 A dispatch carries `session_id` and `session_continue`. `session_id` comes from the attempt
 dir's `<role>.session`, and from `metrics.json` when that file is absent. `session_continue`
 is null when the attempt dir has no `<role>.continue`. That file is written only when the
-dispatch was asked to continue a reviewer session: `mode=continued` is `continued`, and
+dispatch was asked to continue a session (a reviewer's, or with `plan --implementer-session` an
+implementer's): `mode=continued` is `continued`, and
 `mode=failed`, a missing mode or any other mode is `failed`. The file's presence means
 continuing was requested, so a failed continue that still printed a verdict is tagged too.
 The `attempt` event's `resumed` flag is a different fact: a QA-only re-run after an
@@ -59,6 +60,10 @@ infrastructure stop (the `tasks/<id>/resume` marker).
 `plan --reviewer-session` writes `$PLAN/reviewer_session` (`on`). The plan event records
 it in `options`. The file joins the plan id only when it is present, so every plan already
 in a store keeps its id, and turning the experiment on stores a new plan event.
+`plan --implementer-session` (`$PLAN/implementer_session`, `on`) is recorded the same way, and
+`plan --pre-review-tests` joins the plan id the same way and is listed in `flags`.
+`forge dataset status` counts continued and failed continues for reviewers and implementers
+apart.
 
 Each blob reference carries `sha` (the stored bytes), `original_sha`, `n` (the original
 size), `kept`, and `cut`. A cut keeps the head and the tail, because a QA prompt ends with

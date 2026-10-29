@@ -327,6 +327,21 @@ class PromptTextTests(unittest.TestCase):
         for line in (LEGACY_HEAD + LEGACY_FINDINGS).splitlines():
             self.assertIn('echo "%s"' % line, source, line)
 
+    def test_every_review_kind_bounds_the_reviewers_own_verification(self):
+        # #89: an opus:xhigh reviewer re-ran a whole repository suite (2,000 tests) to review one change.
+        for kind in contract.KINDS:
+            tail = ' '.join(contract.qa_text('tail', kind).split())
+            for phrase in ('only the tests that touch the changed code', 'never the whole suite',
+                           '%d minutes' % contract.QA_TEST_MINUTES, 'say so instead of running everything'):
+                self.assertIn(phrase, tail, (kind, phrase))
+
+    def test_the_implementer_verifies_within_its_change(self):
+        # #90: dwarves ran repo-wide lint, format and type checks no task asked for.
+        rules = ' '.join(contract.dwarf_text().split())
+        for phrase in ('the tests the change affects', 'do not run the whole suite',
+                       'lint, format or type checks unless the task asks'):
+            self.assertIn(phrase, rules.lower(), phrase)
+
     def test_new_head_sentence_and_final_kind(self):
         task = contract.qa_text('head', 'task')
         self.assertIn("Do not trust the implementer's own reports", task)
@@ -426,7 +441,7 @@ class DwarfRulesTests(unittest.TestCase):
                        'actual', 'say so explicitly instead of claiming it passed',
                        'which verification commands you ran'):
             self.assertIn(phrase, ' '.join(text.split()), phrase)
-        self.assertLessEqual(len(text.splitlines()), 8)
+        self.assertLessEqual(len(text.splitlines()), 10)          # 8 until #90's verification-scope rule
         self.assertFalse(any(line != line.rstrip() for line in text.splitlines()))
 
 

@@ -121,7 +121,11 @@ none of those exist, `UNASSIGNED`. An `UNASSIGNED` task makes `plan` exit 2 and 
 outright. Forge does not invent a model when the user has not said which one should spend
 their quota.
 
-QA has no tier rules by default and falls back to `opus`, matching single-task forge.
+QA has no tier rules by default and falls back to `opus` at `high`, matching single-task forge.
+When the user names no reviewers, offer reviewers sized to the task's risk (never add them
+unprompted): `--qa-low sonnet:medium --qa-medium sonnet:high --qa-high opus:high`. In the
+SWE-bench Pro benchmark (#89) Sonnet reviewers gave no false PASS at about a seventh of an
+`opus:xhigh` review's cost.
 
 ### Exploratory routing (on by default)
 
@@ -267,7 +271,8 @@ So:
 
 Every dispatch is a clean slate — forge never passes `--continue`, `--resume`, or
 `codex exec resume`, except the opt-in `plan --reviewer-session` experiment (it continues
-a reviewer's session across rounds on claude, openclaude and codex). That keeps one task's
+a reviewer's session across rounds on claude, openclaude and codex) and the opt-in
+`plan --implementer-session` (a retry continues its implementer's session). That keeps one task's
 confused turn from poisoning another and keeps each task's context small, but it also
 leaves each dwarf blind to the wider run.
 
@@ -278,7 +283,7 @@ Complete requirements, approach, retry findings and distinct memory facts are as
 per role; implementation and review instructions are separate.
 
 It exists to prevent two specific failures that clean slates create, which the opt-in
-`--reviewer-session` experiment does not change:
+`--reviewer-session` and `--implementer-session` do not change:
 
 - a dwarf reimplementing a helper an earlier task already merged, because nothing told it
   that task was done;
@@ -364,6 +369,80 @@ shows the evidence under the task's review findings, and each check is recorded 
 run dataset as a `fail_first` event with the JSON attached. Without
 `.forge/verify-subset` the check records `skipped` and the prompt says nothing.
 `plan --no-fail-first` turns it off again.
+
+### Pre-review tests (opt-in)
+
+`plan --pre-review-tests` runs **only the tests an attempt affects** before paying for its
+review, never the whole suite (that stays the run's end-of-run verification). After an attempt is
+committed, forge exports the reviewed commit and runs `.forge/verify-subset` on a selection:
+
+1. the test files the change adds or edits;
+2. for each changed source file, the tests from the first source that answers: `.forge/test-map`,
+   then the naming convention (`foo.py` → `test_foo.py`, `foo_test.py`, `foo.test.js`, ...), then
+   a reverse lookup (test files that name the changed module);
+3. with `{changed}` in the command instead of `{files}`, the changed paths themselves, for a runner
+   that finds the related tests on its own (`npx jest --findRelatedTests {changed}`).
+
+`.forge/test-map` is the reliable source; one rule per line, `#` comments, globs where `*` also
+matches `/`, and `-` for "no tests":
+
+```
+scripts/forge-issues.py   tests/test_issues.py tests/test_sweep.py
+ui/forge_ui/*.py          ui/tests/test_*.py
+docs/*                    -
+```
+
+A change to shared test infrastructure (a conftest, a test helper, a lockfile, a build file),
+more than 20 selected files (`FORGE_PRE_REVIEW_MAX_FILES`) or a run past 120 s
+(`FORGE_PRE_REVIEW_TIMEOUT`) makes the check `skipped` as too broad. A failing run is rerun file
+by file (a file that passes alone is `flaky`), and each file that still fails is run on the task
+base: one that fails there too is `pre-existing` and does not count against the attempt.
+
+- **Red** (`failed`): the attempt is `FAIL` without a review. Its retry findings are the failing
+  tests and the end of their output, labelled as forge's (`tasks/<id>/prereview.md`). It counts
+  toward `--retry-failed` and `--escalate-after` like a rejected attempt.
+- **Green**, `flaky` or `pre-existing`: the review runs, and the reviewer's prompt says what forge
+  ran and found.
+- **Skipped or broken** (no `.forge/verify-subset`, nothing selected, too broad, a command error):
+  the review runs exactly as without the option. The check never blocks on its own failure.
+
+The implementer is told forge will run them, so it need not repeat them exhaustively. Checks run
+in throwaway exports, so neither the task worktree nor any fingerprint changes; at most 2 run at
+once across the plan's tasks (`plan --pre-review-parallel N`, 1-64). A QA-only resume reuses the
+check of the commit it re-reviews. `tasks/<id>/prereview.json` records the selection, every run
+and the outcome; forge-ui shows it under the task's review findings, and the dataset records a
+`pre_review` event. `forge control set <plan> pre-review-tests on|off` and `pre-review-parallel N`
+change both while a run works; `plan --no-pre-review-tests` turns it off.
+
+### Implementer session (opt-in)
+
+`plan --implementer-session` makes a retry **continue the implementer's own session** instead of
+starting one that re-reads the same files: the dwarf keeps what it learned, and the retry's prompt
+(the task, the findings, the rules) arrives as the next turn, after a short note that its work is
+as it left it. It applies to claude and openclaude. codex's `exec resume` takes no sandbox flag, so
+a codex implementer could be resumed only by a config override nobody verifies, and it stays fresh.
+
+A retry continues only when all of these hold; anything else is a fresh session, as without the
+option:
+
+- it carries findings from a review, or from pre-review tests, of a commit this session made;
+- the worktree is still exactly that commit: no edits since (a timed-out or interrupted attempt
+  leaves some), nothing committed on top;
+- the dwarf resolves to the same harness, model and effort, so an escalation (`--escalate-after`,
+  a pin, `retry --dwarf`) starts fresh;
+- the plan is not Fractal.
+
+A continue the harness refuses or that fails at once (dispatch exit **9**, nothing changed in the
+worktree) is followed by a fresh dispatch of the same prompt, which decides the attempt. One that
+fails after it already changed files is a failed implementer (`ERROR`), as a fresh one would be:
+running another on top would pay for the attempt twice. One row per attempt goes to
+`tasks/<id>/implementer_sessions.tsv`: row, attempt, `continued`, `fresh` or `failed`, the reason
+(`same-spec`, `first-attempt`, `no-findings`, `work-changed`, `no-session`, `invalid-session`,
+`spec-changed`, `harness-unsupported`, `fractal`, `continue-unsupported`, `continue-failed`) and
+the session id it considered. The dataset tags a continued dwarf dispatch `session_continue`, and
+`forge dataset status` counts implementer continues apart from reviewer ones.
+`plan --no-implementer-session` turns it off; `split` and `combine` carry it (combine only when
+every source has it).
 
 ### Shadow reviews (opt-in)
 
