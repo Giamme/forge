@@ -67,6 +67,28 @@ forge_fingerprint() { # forge_fingerprint <dir> [--tracked], as forge_tree
   printf '%s %s %s\n' "$head" "$tree" "$index"
 }
 
+forge_pre_review() { # review snapshot, task dir, repo, plan dir: 1 when the affected tests fail (#85)
+  # Runs only the tests the attempt affects, in throwaway exports of the review snapshot, so no
+  # fingerprint changes. Writes <dir>/prereview.json, the reviewer's evidence to prereview.txt
+  # and, when they fail, the implementer's findings to prereview.md. Anything but a red check
+  # (nothing selected, too broad, a broken check) returns 0: the review runs as usual.
+  local cmd="" map="" reviewed rc
+  rm -f "$2/prereview.json" "$2/prereview.txt" "$2/prereview.md"
+  [ -s "$3/.forge/verify-subset" ] && cmd="$(cat "$3/.forge/verify-subset")"
+  [ -s "$3/.forge/test-map" ] && map="$3/.forge/test-map"
+  reviewed="$(git -C "$1" rev-parse HEAD)" || return 0
+  python3 "$SKILL_DIR/scripts/forge-pre-review.py" run --repo "$1" --base "$(cat "$2/review.base")" \
+      --reviewed "$reviewed" --command "$cmd" ${map:+--map "$map"} --out "$2/prereview.json" \
+      --report "$2/prereview.md" --deps-from "$3" --slots-dir "$4/.prereview-slots" \
+      --slots "$(cat "$4/pre_review_parallel" 2>/dev/null || echo 2)" --log "$2/prereview.log" \
+      > "$2/prereview.txt" 2>/dev/null
+  rc=$?
+  forge_dataset_event pre_review --dir "$2" --file prereview="$2/prereview.json"
+  [ "$rc" = 1 ] && [ -s "$2/prereview.md" ] && return 1
+  [ "$rc" = 0 ] || : > "$2/prereview.txt"
+  return 0
+}
+
 forge_fail_first() { # review snapshot, run or task dir, repo: advisory fail-first evidence for QA
   # Writes <dir>/failfirst.json and the reviewer's section to <dir>/failfirst.txt; never fails
   # the run and never touches the snapshot (forge-fail-first.py exports through its own index).

@@ -4,7 +4,8 @@
   show  <plan> [--json]                          every control, per-task overrides, pins and the change log
   set   <plan> <key> <value> [--task ID]         qa-threshold, timeout, escalate-after, escalate-effort,
                                                  verify-retries, retry-budget, infra-retries, infra-backoff
-                                                 (none drops it), max-parallel (1-64)
+                                                 (none drops it), max-parallel (1-64), pre-review-tests
+                                                 (on/off), pre-review-parallel (1-64)
   pin   <plan> <task> <spec>                     the model the task's next FULL implementer retry uses
   unpin <plan> <task>
   retry <plan> <task> [--dwarf SPEC]             queue a retry of a stopped or failed task into the live run
@@ -18,8 +19,8 @@
                                                  them like SIGTERM
 
 `show` reports escalate-after and verify-retries at their defaults (3 and 1) when unset,
-escalate-effort as on or off (off when the file is absent), and the two budgets only while a
-scheduler is live.
+escalate-effort and pre-review-tests as on or off (off when the file is absent), pre-review-parallel
+at its default (2) when unset, and the two budgets only while a scheduler is live.
 
 Every change is validated, written atomically under the plan's control lock (`control.lock`),
 appended to `control.log` and recorded as a dataset `control` event. This is the only writer of
@@ -63,6 +64,7 @@ LOG_TAIL = 256 * 1024
 READ_MAX = 8 * 1024 * 1024
 DEFAULT_ESCALATE_AFTER = 3   # forge-route.py
 DEFAULT_VERIFY_RETRIES = 1   # forge-parallel.sh
+DEFAULT_PRE_REVIEW_PARALLEL = 2   # forge-artifact.sh forge_pre_review
 LEVELS = ('P0', 'P1', 'P2', 'P3')
 STOP_MARKERS = ('escalation.stop', 'split.suggested', 'escalation.next')
 DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
@@ -435,6 +437,10 @@ def show(plan, rows):
         run['escalate_after'] = DEFAULT_ESCALATE_AFTER
     if run['verify_retries'] is None:
         run['verify_retries'] = DEFAULT_VERIFY_RETRIES
+    # Pre-review tests (#85): the plan file's presence turns them on (`plan --pre-review-tests`).
+    run['pre_review_tests'] = 'on' if has(plan, 'pre_review_tests') else 'off'
+    slots = number(get('pre_review_parallel'))
+    run['pre_review_parallel'] = slots if slots and slots <= 64 else DEFAULT_PRE_REVIEW_PARALLEL
     tasks = {}
     for row in rows:
         task = row[0]
@@ -532,6 +538,8 @@ KEYS = {
     'infra-retries': ('plan', _int, 'infra_budget', True, NEXT_DECISION),
     'infra-backoff': ('plan', _backoff, 'infra_backoff', False, NEXT_INFRA_WAIT),
     'max-parallel': ('plan', _parallel, 'max_parallel', True, NEXT_DISPATCH),
+    'pre-review-tests': ('plan', _onoff, 'pre_review_tests', False, NEXT_ATTEMPT),
+    'pre-review-parallel': ('plan', _parallel, 'pre_review_parallel', False, NEXT_ATTEMPT),
 }
 
 
@@ -594,7 +602,7 @@ def cmd_set(args):
     except Invalid as error:
         raise Invalid(f'{args.key}: {error}')
     rel = f'tasks/{task}/{name}' if task else name
-    drop = (value in ('inherit', 'default') or (args.key == 'escalate-effort' and value == 'off')
+    drop = (value in ('inherit', 'default') or (args.key in ('escalate-effort', 'pre-review-tests') and value == 'off')
             or (args.key == 'infra-backoff' and value == 'none'))
     # Plan-wide stop markers go when the policy that wrote them changes: the policy turned off
     # (escalate-after 0), or the effort step turned on, which may yet have a move for them.

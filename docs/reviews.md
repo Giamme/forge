@@ -390,3 +390,14 @@ the reviewer the result: `proven`, `passes_without_change`, `inconclusive` or `e
 reviewer is asked for a P2 finding for every test that passes without the change. It is advice
 only: forge never changes a status or verdict from it. forge-ui shows the evidence under the
 review findings. See [fail-first evidence](../references/decompose.md#fail-first-evidence-opt-in).
+
+## Pre-review tests (opt-in)
+
+`plan --pre-review-tests` runs only the tests an attempt affects, with `.forge/verify-subset`,
+before forge pays for its review: the tests the change adds or edits, and the tests of the files it
+changes (from `.forge/test-map`, the naming convention or a reverse lookup). Never the whole suite:
+a change to shared test infrastructure, more than 20 files or more than 120 s is skipped as too
+broad. A red attempt goes back to its implementer without a review, with the failing tests and
+their output as its findings; a test that also fails on the task base is not blamed, and a failure
+that passes when rerun alone is recorded as flaky. Green, the reviewer gets the result as
+evidence. See [pre-review tests](../references/decompose.md#pre-review-tests-opt-in).

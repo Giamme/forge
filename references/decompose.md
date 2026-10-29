@@ -369,6 +369,50 @@ run dataset as a `fail_first` event with the JSON attached. Without
 `.forge/verify-subset` the check records `skipped` and the prompt says nothing.
 `plan --no-fail-first` turns it off again.
 
+### Pre-review tests (opt-in)
+
+`plan --pre-review-tests` runs **only the tests an attempt affects** before paying for its
+review, never the whole suite (that stays the run's end-of-run verification). After an attempt is
+committed, forge exports the reviewed commit and runs `.forge/verify-subset` on a selection:
+
+1. the test files the change adds or edits;
+2. for each changed source file, the tests from the first source that answers: `.forge/test-map`,
+   then the naming convention (`foo.py` → `test_foo.py`, `foo_test.py`, `foo.test.js`, ...), then
+   a reverse lookup (test files that name the changed module);
+3. with `{changed}` in the command instead of `{files}`, the changed paths themselves, for a runner
+   that finds the related tests on its own (`npx jest --findRelatedTests {changed}`).
+
+`.forge/test-map` is the reliable source; one rule per line, `#` comments, globs where `*` also
+matches `/`, and `-` for "no tests":
+
+```
+scripts/forge-issues.py   tests/test_issues.py tests/test_sweep.py
+ui/forge_ui/*.py          ui/tests/test_*.py
+docs/*                    -
+```
+
+A change to shared test infrastructure (a conftest, a test helper, a lockfile, a build file),
+more than 20 selected files (`FORGE_PRE_REVIEW_MAX_FILES`) or a run past 120 s
+(`FORGE_PRE_REVIEW_TIMEOUT`) makes the check `skipped` as too broad. A failing run is rerun file
+by file (a file that passes alone is `flaky`), and each file that still fails is run on the task
+base: one that fails there too is `pre-existing` and does not count against the attempt.
+
+- **Red** (`failed`): the attempt is `FAIL` without a review. Its retry findings are the failing
+  tests and the end of their output, labelled as forge's (`tasks/<id>/prereview.md`). It counts
+  toward `--retry-failed` and `--escalate-after` like a rejected attempt.
+- **Green**, `flaky` or `pre-existing`: the review runs, and the reviewer's prompt says what forge
+  ran and found.
+- **Skipped or broken** (no `.forge/verify-subset`, nothing selected, too broad, a command error):
+  the review runs exactly as without the option. The check never blocks on its own failure.
+
+The implementer is told forge will run them, so it need not repeat them exhaustively. Checks run
+in throwaway exports, so neither the task worktree nor any fingerprint changes; at most 2 run at
+once across the plan's tasks (`plan --pre-review-parallel N`, 1-64). A QA-only resume reuses the
+check of the commit it re-reviews. `tasks/<id>/prereview.json` records the selection, every run
+and the outcome; forge-ui shows it under the task's review findings, and the dataset records a
+`pre_review` event. `forge control set <plan> pre-review-tests on|off` and `pre-review-parallel N`
+change both while a run works; `plan --no-pre-review-tests` turns it off.
+
 ### Shadow reviews (opt-in)
 
 `plan --shadow-qa <spec>[,<spec>...] [--shadow-rate R]` sends a sampled share of

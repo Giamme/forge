@@ -53,7 +53,9 @@ For explanation requests, explain the workflow without spending model quota.
   file; `--sweep-ahead` instead hands a task the open findings in its files) are opt-in: offer
   them, never add them unprompted. So is `--fail-first` (solo or `plan`): the change's new
   tests also run without its non-test changes, and the reviewer is asked to report any that
-  still pass as P2; it needs `.forge/verify-subset` and never changes a result by itself. `plan` explores by default (`--explore 0.2`: now and then
+  still pass as P2; it needs `.forge/verify-subset` and never changes a result by itself. So is
+  `plan --pre-review-tests`: before each review forge runs only the tests the attempt affects
+  (`.forge/verify-subset`), and a red attempt goes back to its implementer unreviewed. `plan` explores by default (`--explore 0.2`: now and then
   a row left to forge gets its neighbouring tier's model from the user's pools, odds
   recorded for `forge dataset routing`); say so with the table and pass `--explore 0` when
   the user declines. Retries follow a policy: after three failed attempts on one model the

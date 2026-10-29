@@ -154,6 +154,32 @@ window.ForgePanel = (() => {
     box.append(ul);
     parent.append(box);
   }
+  // forge's own run of the tests the attempt affects, before its review (opt-in plan --pre-review-tests).
+  const PRE_REVIEW = { passed: ['passed', 'pass'], flaky: ['flaky: passed when rerun alone', 'unknown'],
+    'pre-existing': ['failing already on the task base', 'unknown'], failed: ['failed: sent back without a review', 'fail'],
+    skipped: ['skipped', 'unknown'], error: ['could not run', 'unknown'] };
+  function preReview(parent, pr) {
+    if (!pr) return;
+    const box = el('div', undefined, 'review');
+    const h = el('div', undefined, 'attempt-head');
+    const [label, cls] = PRE_REVIEW[pr.status] || [pr.status, 'unknown'];
+    h.append(el('strong', 'forge pre-review tests'), chip(label, cls));
+    if (typeof pr.seconds === 'number') h.append(el('span', `${pr.seconds.toFixed(1)}s`, 'muted'));
+    box.append(h);
+    if (pr.reason) muted(box, pr.reason);
+    if (pr.command) box.append(el('p', pr.command, 'mono muted'));
+    const ul = el('ul', undefined, 'findings');
+    for (const path of list(pr.selected)) {
+      const li = el('li');
+      li.append(el('span', path, 'mono'));
+      if (list(pr.failing).includes(path)) li.append(document.createTextNode(' '), chip('fails', 'fail'));
+      else if (list(pr.preexisting).includes(path)) li.append(document.createTextNode(' '), chip('fails on the base too', 'unknown'));
+      ul.append(li);
+    }
+    if (ul.childNodes.length) box.append(ul);
+    if (pr.status === 'failed' && pr.tail) box.append(el('pre', pr.tail, 'mono'));
+    parent.append(box);
+  }
   function findingsList(parent, findings, key) {
     if (findings === null || findings === undefined) { muted(parent, 'Findings could not be parsed (forge-contract.py was not available to the server).'); return; }
     if (!findings.length) { muted(parent, 'The reviewer reported no findings in the expected `- [P1][CONFIRMED] file:line — …` form.'); return; }
@@ -380,6 +406,7 @@ window.ForgePanel = (() => {
     gateLine(rs, task.gate);
     findingCounts(rs, task.findings);
     failFirst(rs, task.fail_first);
+    preReview(rs, task.pre_review);
     const detail = lazy(ctx, `/api/runs/${encodeURIComponent(run.key)}/tasks/${encodeURIComponent(task.id)}`, run.updated);
     if (!loading(rs, detail, 'the full findings')) {
       const reviews = list(detail.data.reviews);

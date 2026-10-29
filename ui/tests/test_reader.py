@@ -64,7 +64,7 @@ class ReaderTests(unittest.TestCase):
             'qa_tail': 'FORGE_VERDICT: FAIL\nFixed now.\nFORGE_VERDICT: PASS\n',
             'dwarf_tail': None, 'executions': [],
             'merged_at': (FIXTURE / 'tasks/reader/merged').stat().st_mtime, 'findings': NO_FINDINGS,
-            'gate': None, 'known_issues': False, 'fail_first': None, 'now': None, 'waiting': None, 'sweep': None, 'swept': [],
+            'gate': None, 'known_issues': False, 'fail_first': None, 'pre_review': None, 'now': None, 'waiting': None, 'sweep': None, 'swept': [],
         })
         self.assertEqual((page['accepted'], page['accepted_attempt'], page['accepted_over']), (False, None, None))
         self.assertEqual(page['status'], 'RUNNING')
@@ -282,6 +282,25 @@ class ReaderTests(unittest.TestCase):
                 data = detail(root)
                 self.assertIsNone(data['tasks'][0]['fail_first'])
                 self.assertEqual(len(data['warnings']), 1)
+
+    def test_pre_review_tests_are_shown_beside_the_findings(self):
+        # forge-pre-review.py writes prereview.json next to qa.last (opt-in plan --pre-review-tests, #85).
+        result = {'version': 1, 'status': 'failed', 'reason': None, 'command': 'pytest -q {files}',
+                  'selected': ['tests/test_a.py', 'tests/test_b.py', 7], 'why': {'tests/test_a.py': 'changed'},
+                  'failing': ['tests/test_a.py'], 'preexisting': ['tests/test_b.py'], 'flaky': [],
+                  'runs': [{'kind': 'all', 'rc': 1, 'seconds': 2.5, 'tail': 'E   assert 2 == 3'}], 'seconds': 4.25}
+        expected = {'status': 'failed', 'reason': None, 'command': 'pytest -q {files}',
+                    'selected': ['tests/test_a.py', 'tests/test_b.py'], 'failing': ['tests/test_a.py'],
+                    'preexisting': ['tests/test_b.py'], 'flaky': [], 'seconds': 4.25, 'tail': 'E   assert 2 == 3'}
+        plan = self.copy_plan()
+        self.write(plan / 'tasks/reader/prereview.json', json.dumps(result))
+        data = detail(plan)
+        self.assertEqual(data['tasks'][0]['pre_review'], expected)
+        self.assertEqual(data['warnings'], [])
+        self.write(plan / 'tasks/reader/prereview.json', '{"status": "maybe"}')
+        data = detail(plan)
+        self.assertIsNone(data['tasks'][0]['pre_review'])
+        self.assertEqual(len(data['warnings']), 1)
 
     def test_wave_numbers_are_bounded(self):
         plan = self.copy_plan()
@@ -524,7 +543,7 @@ class ReaderTests(unittest.TestCase):
             'prompt': 'Implement the reader.\n', 'approach': None, 'retry_findings': None,
             'qa_tail': 'Looked at the diff.\nFORGE_VERDICT: FAIL\n', 'dwarf_tail': 'Still working.\n',
             'executions': [], 'merged_at': None, 'findings': NO_FINDINGS, 'gate': None, 'known_issues': False,
-            'fail_first': None, 'now': None, 'waiting': None, 'sweep': None, 'swept': [],
+            'fail_first': None, 'pre_review': None, 'now': None, 'waiting': None, 'sweep': None, 'swept': [],
         }])
         self.assertEqual(data['kind'], 'solo')
         self.assertEqual(data['run_id'], 'solo-full')
@@ -581,7 +600,7 @@ class ReaderTests(unittest.TestCase):
             'route': [], 'shadow': [],
             'prompt': 'Old prompt.\n', 'approach': None, 'retry_findings': None,
             'qa_tail': None, 'dwarf_tail': None, 'executions': [], 'merged_at': None, 'findings': None,
-            'gate': None, 'known_issues': False, 'fail_first': None, 'now': None, 'waiting': None, 'sweep': None, 'swept': [],
+            'gate': None, 'known_issues': False, 'fail_first': None, 'pre_review': None, 'now': None, 'waiting': None, 'sweep': None, 'swept': [],
         }])
         json.dumps(data, allow_nan=False)
         run = self.base / 'neither'

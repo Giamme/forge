@@ -7,8 +7,9 @@ Three subcommands, stdlib only, no network:
       Prints one piece of the QA prompt. The caller prints everything between and
       after the pieces itself (scope notes, the diff fence, the memory note and the
       "Place any learning notes before the final FORGE_VERDICT ..." sentence).
-  dwarf
-      Prints the implementer rules block that callers append to the dwarf prompt.
+  dwarf [--pre-review]
+      Prints the implementer rules block that callers append to the dwarf prompt;
+      --pre-review adds that forge runs the affected tests before the review (#85).
   gate --verdict PASS|FAIL|UNKNOWN --qa-last FILE [--threshold Pn|none] [--known-issues OUT]
       Prints ONE tab-separated line
           decision <TAB> worst_confirmed <TAB> n_confirmed <TAB> n_unlabelled <TAB> n_below
@@ -251,9 +252,15 @@ _DWARF = [
 ]
 
 
-def dwarf_text() -> str:
+_DWARF_PRE_REVIEW = [
+    '- forge runs the tests this change affects before the review, and a failure comes back to',
+    '  you instead of a review: you need not repeat them exhaustively, but report what you ran.',
+]
+
+
+def dwarf_text(pre_review: bool = False) -> str:
     """The implementer rules block, newline-terminated."""
-    return '\n'.join(_DWARF) + '\n'
+    return '\n'.join(_DWARF + (_DWARF_PRE_REVIEW if pre_review else [])) + '\n'
 
 
 # --- parsing ---------------------------------------------------------------------
@@ -441,7 +448,8 @@ def _parser() -> argparse.ArgumentParser:
                          'sweep task: per-finding FIXED lines, regressions only)')
     qa.add_argument('--threshold', type=_threshold_arg, default=None, metavar='P0..P3|none',
                     help='least severe level that still blocks; none = P3 (default: %s)' % DEFAULT_THRESHOLD)
-    sub.add_parser('dwarf', help='print the implementer rules block')
+    dwarf = sub.add_parser('dwarf', help='print the implementer rules block')
+    dwarf.add_argument('--pre-review', action='store_true', help='forge runs the affected tests before the review')
     gate_parser = sub.add_parser(
         'gate', help='print: decision (accept|fail|keep), worst_confirmed, n_confirmed, n_unlabelled, n_below')
     gate_parser.add_argument('--verdict', required=True, choices=('PASS', 'FAIL', 'UNKNOWN'))
@@ -460,7 +468,7 @@ def main(argv=None) -> int:
         _emit(qa_text(args.part, args.kind, args.threshold))
         return 0
     if args.command == 'dwarf':
-        _emit(dwarf_text())
+        _emit(dwarf_text(args.pre_review))
         return 0
     try:
         with open(args.qa_last, 'rb') as handle:

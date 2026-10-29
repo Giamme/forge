@@ -155,7 +155,7 @@ pool_pick() { # pool_pick <comma-list> <index>
 do_plan() {
   local PLAN="${1:?plan needs a plan dir}"; shift
   local REPO="" D_ANY="" D_HI="" D_MD="" D_LO="" Q_ANY="" Q_HI="" Q_MD="" Q_LO=""
-  local PLANNER="" NOMEM=0 jev_rc=0 DLEVEL="" SHADOW_QA="" SHADOW_RATE="" EXPLORE="" FAIL_FIRST="" REVIEWER_SESSION=""
+  local PLANNER="" NOMEM=0 jev_rc=0 DLEVEL="" SHADOW_QA="" SHADOW_RATE="" EXPLORE="" FAIL_FIRST="" REVIEWER_SESSION="" PRE_REVIEW="" PRE_REVIEW_PARALLEL=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --repo)         REPO="${2:?}"; shift 2 ;;
@@ -183,6 +183,12 @@ do_plan() {
       --ui|--no-ui)   forge_ui_flag "$1"; shift ;;
       --fail-first)   FAIL_FIRST=on; shift ;;
       --no-fail-first) FAIL_FIRST=off; shift ;;
+      --pre-review-tests)    PRE_REVIEW=on; shift ;;
+      --no-pre-review-tests) PRE_REVIEW=off; shift ;;
+      --pre-review-parallel)
+        printf '%s' "${2:-}" | grep -Eq '^[0-9]{1,2}$' && [ "$2" -ge 1 ] && [ "$2" -le 64 ] \
+          || die "--pre-review-parallel needs an integer from 1 to 64" 2
+        PRE_REVIEW_PARALLEL="$((10#$2))"; shift 2 ;;
       --reviewer-session)    REVIEWER_SESSION=on; shift ;;
       --no-reviewer-session) REVIEWER_SESSION=off; shift ;;
       *)
@@ -223,6 +229,11 @@ do_plan() {
     || printf '%s\n' "$SHADOW_RATE" > "$PLAN/shadow_rate"
   # Fail-first evidence (opt-in, advisory) is part of the plan too: every task's review gets it.
   case "$FAIL_FIRST" in on) : > "$PLAN/fail_first" ;; off) rm -f "$PLAN/fail_first" ;; esac
+  # Pre-review tests (opt-in, #85): each attempt's affected tests run before its review, and a
+  # red result goes back to the implementer without one.
+  case "$PRE_REVIEW" in on) : > "$PLAN/pre_review_tests" ;; off) rm -f "$PLAN/pre_review_tests" ;; esac
+  # How many checks run at once across the plan's tasks (forge_pre_review's slots; default 2).
+  [ -z "$PRE_REVIEW_PARALLEL" ] || printf '%s\n' "$PRE_REVIEW_PARALLEL" > "$PLAN/pre_review_parallel"
   # Reviewer-session continuation (opt-in experiment): the file holds `on`. Readers only
   # test that it exists; the dataset records its content.
   case "$REVIEWER_SESSION" in on) printf '%s\n' on > "$PLAN/reviewer_session" ;; off) rm -f "$PLAN/reviewer_session" ;; esac
@@ -494,6 +505,13 @@ render_table() {
       echo "fail-first: each task's new tests also run without its change (advice for the reviewer; never changes a result)"
     else
       echo "fail-first: on, but $(cat "$PLAN/repo")/.forge/verify-subset (a test command with {files}) is missing, so nothing will run"
+    fi
+  fi
+  if [ -f "$PLAN/pre_review_tests" ]; then
+    if [ -s "$(cat "$PLAN/repo")/.forge/verify-subset" ]; then
+      echo "pre-review tests: on — each attempt's affected tests run before its review; a red attempt goes back to its implementer unreviewed"
+    else
+      echo "pre-review tests: on, but $(cat "$PLAN/repo")/.forge/verify-subset (a test command with {files} or {changed}) is missing, so nothing will run"
     fi
   fi
   if [ -f "$PLAN/reviewer_session" ]; then
@@ -828,7 +846,7 @@ do_task_body() (
   # The gate's decision belongs to the review that made it. A review that ends before the gate
   # (invalidated, timed out, no changes) must not leave an earlier attempt's decision for the
   # next retry note or `accept` to read; prepare_retry has already carried it forward.
-  rm -f "$tdir/qa.gate" "$tdir/known_issues.md" "$tdir/invalidated.reason"
+  rm -f "$tdir/qa.gate" "$tdir/known_issues.md" "$tdir/invalidated.reason" "$tdir/prereview.failed"
 
   # The base is pinned per task on first creation and reused by every retry. The
   # integration branch moves as later waves land, so re-reading the run-level
@@ -865,7 +883,7 @@ do_task_body() (
       [ ! -f "$PLAN/sweep_ahead" ] || python3 "$SKILL_DIR/scripts/forge-sweep.py" ahead "$PLAN" "$id" --role dwarf 2>/dev/null
       echo "Implement this task in the repository. Follow the intended approach unless it is wrong; explain deviations. Run the task's requested verification and report results."
       echo "On retry, fix the findings in the existing work; preserve parts not criticised. Explain any finding you reject."
-      echo; python3 "$SKILL_DIR/scripts/forge-contract.py" dwarf
+      echo; python3 "$SKILL_DIR/scripts/forge-contract.py" dwarf $([ ! -f "$PLAN/pre_review_tests" ] || echo --pre-review)
       echo; /bin/bash "$MEMORY" note dwarf
     } > "$tdir/dwarf.input"
     guard_before_dwarf "$wt" "$tdir"
@@ -962,6 +980,17 @@ do_task_body() (
   # on the review snapshot, so the task worktree is untouched; the reviewer gets the evidence.
   rm -f "$tdir/failfirst.json" "$tdir/failfirst.txt"
   [ ! -f "$PLAN/fail_first" ] || forge_fail_first "$review" "$tdir" "$REPO"
+  # Opt-in (plan --pre-review-tests, #85): the tests this attempt affects, before paying for a
+  # review. Red: the attempt fails unreviewed and its findings are the test output. A QA-only
+  # resume re-reviews work that already passed this check, and keeps its evidence.
+  [ -f "$PLAN/pre_review_tests" ] || rm -f "$tdir/prereview.json" "$tdir/prereview.txt" "$tdir/prereview.md"
+  if [ -f "$PLAN/pre_review_tests" ] && [ -z "$resume" ] && ! forge_pre_review "$review" "$tdir" "$REPO" "$PLAN"; then
+    : > "$tdir/prereview.failed"
+    rm -f "$tdir/qa.last"                  # an earlier attempt's review describes other code
+    echo FAIL > "$tdir/status"
+    note "$id: the tests this attempt affects fail — sent back to the implementer without a review (see $tdir/prereview.md)"
+    return 0
+  fi
   # What changed since the review whose findings this reviewer is handed. Fractal keeps
   # today's prompt unless it retries, as changes.prev.diff does. dwarf.last is the reply of
   # the attempt under review: a dwarf run just rewrote it, or $resume (the validated QA-only
@@ -992,6 +1021,7 @@ do_task_body() (
     echo
     [ ! -f "$PLAN/sweep_ahead" ] || python3 "$SKILL_DIR/scripts/forge-sweep.py" ahead "$PLAN" "$id" --role qa 2>/dev/null
     if [ -s "$tdir/failfirst.txt" ]; then cat "$tdir/failfirst.txt"; echo; fi
+    if [ -s "$tdir/prereview.txt" ]; then cat "$tdir/prereview.txt"; echo; fi
     if [ -s "$tdir/guard.txt" ]; then
       # Facts forge observed about how the implementer worked. On a first attempt the reviewer
       # never sees the implementer's own report (a retry's reviewer gets the reply, to check
@@ -1713,6 +1743,11 @@ do_run() {
   awk -F'\t' '{printf "  %-14s %-9s %s\n", $1, $2, $3}' "$PLAN/results.tsv"
   echo
   run_report_extras "$PLAN"
+  # Pre-review tests (#85): every check of the plan, and the reviews the red ones saved.
+  local pre_review
+  pre_review="$(cat "$PLAN"/tasks/*/prereview.log 2>/dev/null | awk -F'\t' 'NF >= 3 { n++; if ($2 == "failed") f++; s += $3 }
+    END { if (n) printf "pre-review tests: %d check(s), %d attempt(s) sent back without a review, %ds of test time\n", n, f, s }')"
+  [ -z "$pre_review" ] || { echo "$pre_review"; echo; }
 
   # Undeclared files are reported here rather than buried in a task log, because
   # this is the list that explains any CONFLICT above.

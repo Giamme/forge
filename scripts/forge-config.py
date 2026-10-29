@@ -5,7 +5,8 @@
   set   <key> <value> [--repo DIR] [--json]   repo.verify | repo.setup | repo.verify-subset | decide.gate.<gate>[.provider|.model]
   unset <key> [--repo DIR] [--json]           repo.verify | repo.setup | repo.verify-subset
 
-A value of `-` reads stdin for the per-repo files. repo.verify-subset must contain `{files}`.
+A value of `-` reads stdin for the per-repo files. repo.verify-subset must contain `{files}` (the
+selected test files) or `{changed}` (the changed paths, for a runner with a related-tests mode).
 decide.gate.<gate> (off, shadow or on) is delegated to `forge decide gate` and writes the user
 level. decide.gate.<gate>.provider and decide.gate.<gate>.model write the user level with no mode,
 so the gate keeps the mode the other levels give it. Unset of those keys is refused: set the mode
@@ -461,8 +462,8 @@ def cmd_set(args):
     name = args.key[len('repo.'):]
     if not value.strip():
         raise Invalid('empty value; use `forge config unset %s` to remove it' % args.key)
-    if name == 'verify-subset' and '{files}' not in value:
-        raise Invalid('repo.verify-subset must contain {files}')
+    if name == 'verify-subset' and '{files}' not in value and '{changed}' not in value:
+        raise Invalid('repo.verify-subset must contain {files} or {changed}')
     d, target = safe_target(root, name)
     previous = read_small(target)[0] if d else None
     if not value.endswith('\n'):

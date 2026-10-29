@@ -206,6 +206,20 @@ carry_findings() { # carry_findings <tdir>
   [ ! -f "$tdir/qa.resolved" ] || cp "$tdir/qa.resolved" "$tdir/retry_findings.resolved" 2>/dev/null || true
 }
 
+# The retry findings of an attempt that failed forge's pre-review tests: the failing tests and
+# the end of their output, against the commit they ran on. No reviewer session goes with them.
+carry_prereview() { # carry_prereview <tdir>
+  local tdir="$1"
+  if [ -s "$tdir/reviewed.commit" ]; then
+    cp "$tdir/reviewed.commit" "$tdir/.retry_findings.commit.tmp" \
+      && mv "$tdir/.retry_findings.commit.tmp" "$tdir/retry_findings.commit"
+  else
+    rm -f "$tdir/retry_findings.commit"
+  fi
+  rm -f "$tdir/retry_findings.session" "$tdir/retry_findings.resolved"
+  cp "$tdir/prereview.md" "$tdir/.retry_findings.md.tmp" && mv "$tdir/.retry_findings.md.tmp" "$tdir/retry_findings.md"
+}
+
 # --- reviewer-session continuation (plan --reviewer-session, an opt-in experiment) ------------
 # review_session_decide <session-file> <resolved-file> <resolution-file>: whether this review
 # round continues the earlier reviewer's session. Prints `mode<TAB>reason<TAB>session`; the
@@ -276,6 +290,9 @@ prepare_retry() { # prepare_retry <plan> <id> [new-dwarf]
     # honest than paying an implementer to rewrite unjudged work; the marker is validated
     # against the worktree below before it is believed (a changed worktree runs the full task).
     echo qa > "$tdir/resume"
+  elif [ "$st" = FAIL ] && [ -f "$tdir/prereview.failed" ] && [ -s "$tdir/prereview.md" ]; then
+    # No reviewer ran: forge's own pre-review tests failed (#85), and their output is the finding.
+    carry_prereview "$tdir"
   # Only a real review replaces the findings. The runner also writes explanatory text
   # into qa.last when it fails a task without dispatching QA ("produced no changes at
   # all"), and copying that over would throw away the actual findings the previous
