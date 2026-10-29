@@ -6,6 +6,7 @@ they wait on conditions with generous deadlines.
 """
 import json
 import os
+import shlex
 import shutil
 import signal
 import subprocess
@@ -436,6 +437,21 @@ class ClockTests(DispatchBase):
             samples = [line.split() for line in clock.read_text().splitlines()]
             self.assertEqual(int(samples[-1][1]), size, clock)
         self.assertEqual((self.attempt('dwarf') / 'dwarf.clock').read_text(), self.read('dwarf.clock'))
+
+    def test_a_sampler_that_starts_after_the_harness_exited_still_leaves_the_clock(self):
+        # #84: the sampler was stopped with a TERM, which killed one still starting (a busy machine) before
+        # its first sample. Here every sampler starts a second late, after the fake harness is long done.
+        python = os.path.realpath(self.bin / 'python3')
+        (self.bin / 'python3').unlink()
+        (self.bin / 'python3').write_text('#!/bin/sh\n[ "$2" = clock ] && sleep 1\nexec %s "$@"\n' % shlex.quote(python))
+        (self.bin / 'python3').chmod(0o755)
+        result = self.dispatch('dwarf', 'sol')
+        self.assertEqual(result.returncode, 0, result.stdout)
+        size = (self.run_dir / 'dwarf.log').stat().st_size
+        for clock in (self.run_dir / 'dwarf.clock', self.attempt('dwarf') / 'dwarf.clock'):
+            self.assertTrue(clock.exists(), clock)
+            self.assertEqual(int(clock.read_text().split()[-1]), size, clock)
+        self.assertFalse((self.run_dir / 'dwarf.clock.stop').exists())
 
     def test_off_leaves_no_clock_and_a_new_dispatch_drops_the_old_one(self):
         self.assertEqual(self.dispatch('dwarf', 'sol').returncode, 0)
