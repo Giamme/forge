@@ -565,10 +565,46 @@ def _drift_act(plan: Path, task_id: str, predicted, mode: str) -> list:
         return []
 
 
+def _prompt_act(plan: Path, scores: dict, mode: str, warn_at: float) -> None:
+    """What the prompt gate does with the plan's adequacy scores, recorded in plan-gates.json.
+
+    `on` records `prompt.<task> = {p, shadow: false}` and queues a task below `warn_at` for
+    the planner (plan_gates.mark_pending). A task that was already sent back is never queued
+    again: its new score goes under `after`, and the table lists it when still below the
+    threshold. `shadow` records `{p, shadow: true}` and queues nothing. `sendback` is not
+    called here: `plan` runs it once after every gate. Any failure behaves as `off`, so a
+    plan never fails because of this gate.
+    """
+    if mode not in ('on', 'shadow') or not scores:
+        return
+    try:
+        from . import plan_gates
+        data = plan_gates.load(plan)
+        before = json.dumps(data, sort_keys=True)
+        prompt = data.get('prompt') if isinstance(data.get('prompt'), dict) else {}
+        sent = (data.get('sent_back') or {}).get('prompt') or []
+        for task_id, p in scores.items():
+            entry = dict(p=round(p, 3), shadow=mode == 'shadow')
+            if mode == 'on':
+                if task_id in sent:
+                    entry['after'] = entry['p']
+                elif p < warn_at:
+                    plan_gates.mark_pending(data, 'prompt', task_id)
+            prompt[task_id] = entry
+        data['prompt'] = prompt
+        if json.dumps(data, sort_keys=True) != before:
+            plan_gates.save(plan, data)
+    except Exception:
+        pass
+
+
 def cmd_score_plan(args) -> int:
     """The plan-time gates: prompt adequacy (jev-prompt) and drift (jev-drift), per task.
 
-    Prompt adequacy is advisory. Drift is too unless the gate is `on`: then each file it
+    Prompt adequacy is advisory unless the gate is `on`: then a task below `prompt_warn` is
+    queued for the planner once (plan_gates.mark_pending) and its score recorded under
+    `prompt.<task>`; in `shadow` the score is recorded and nothing queued. Drift is advisory
+    too unless the gate is `on`: then each file it
     predicts at or above `drift_warn` is appended to the task's `files` column in tasks.tsv
     (before the shell computes waves, so the waves treat it as declared) and recorded under
     `drift.<task>.added` in plan-gates.json. In `shadow` the files are recorded as
@@ -607,7 +643,7 @@ def cmd_score_plan(args) -> int:
     if goal_file.is_file():
         goal = goal_file.read_text(errors='replace')[:2000]
 
-    rows, judgments, shown = [], [], []
+    rows, judgments, shown, adequacies = [], [], [], {}
     for line in tasks.read_text(errors='replace').splitlines():
         if not line.strip() or line.startswith('#'):
             continue
@@ -647,6 +683,8 @@ def cmd_score_plan(args) -> int:
                                             declared=files, approach=approach,
                                             prompt=prompt_text,
                                             run_dir=str(plan), config=config)
+        if adequacy is not None:
+            adequacies[task_id] = adequacy
         if adequacy is None and predicted is None:
             continue
         added = _drift_act(plan, task_id, predicted, gate_mode('jev-drift')) if predicted is not None else []
@@ -687,6 +725,7 @@ def cmd_score_plan(args) -> int:
 
     if not judgments:
         return 3
+    _prompt_act(plan, adequacies, gate_mode('jev-prompt'), warn_at)
 
     # Tell the repo where its own run data lives: forge keeps plan dirs wherever the user put
     # them, and `forge dataset import --registry` (and forge-ui) find them through this list.
