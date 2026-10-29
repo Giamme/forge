@@ -136,12 +136,15 @@ class LabelTests(LabelsCase):
         self.add('dispatch', run=run, ts=T0 + 60, task=task, attempt=attempt, role='qa', verdict='FAIL',
                  findings_parse=parse, blobs=dict(message=ref))
 
-    def ask(self, task='t1', run='run1', p=0.3, **kw):
-        body = dict(self.BODY, state=dict(self.BODY['state'], task=dict(id=task, title='T')))
+    def ask(self, task='t1', run='run1', p=0.3, prompt='fix it', **kw):
+        body = dict(self.BODY, state=dict(self.BODY['state'], task=dict(id=task, title='T'), prompt=prompt))
         super().ask('jev-prompt', body, dict(prompt_adequacy=noul(p)), run=run, ts=T0, **kw)
 
     def ran(self, task='t1', run='run1'):
         self.attempt(run, task, 'FAIL', ts=T0 + 50)
+
+    def dwarf(self, started, *, task='t1', run='run1'):
+        self.add('dispatch', run=run, ts=started + 80, task=task, attempt=1, role='dwarf', wall_started=started)
 
     def labels(self):
         return [row['labels'] for row in self.collect('jev-prompt')]
@@ -151,6 +154,7 @@ class LabelTests(LabelsCase):
         self.ask()
         self.plan(T0 + 10, dict(t1='fix it, and say how the errors read'))
         self.ran()
+        self.review('VERDICT: PASS\n')
         self.assertEqual(self.labels(), [dict(prompt_adequacy=True)])
 
     def test_a_rewrite_after_the_first_attempt_started_does_not_count(self):
@@ -213,6 +217,50 @@ class LabelTests(LabelsCase):
         self.ask(task='t2')
         self.ran(task='t2')   # t1 never ran; t2 ran but has no review
         self.assertEqual(self.labels(), [])
+
+    def rewritten_then_run(self):
+        self.plan(T0 - 10, dict(t1='fix it'))
+        self.ask()
+        self.plan(T0 + 10, dict(t1='fix it, and say how'))
+        self.ran()
+
+    def test_a_rewrite_without_a_review_gives_no_label(self):
+        self.rewritten_then_run()
+        self.assertEqual(self.labels(), [])
+
+    def test_a_rewrite_with_an_unparseable_review_gives_no_label(self):
+        self.rewritten_then_run()
+        self.review('no verdict here', parse='unparseable')
+        self.assertEqual(self.labels(), [])
+
+    def test_a_prompt_rewritten_before_the_request_was_scored_is_not_a_rewrite(self):
+        # Shadow: the user rewrote the prompt by hand, the gate scored the new text, and the
+        # snapshot of it was taken after. The older snapshot is not the baseline.
+        self.plan(T0 - 10, dict(t1='fix it'))
+        self.ask(prompt='fix it, and say how')
+        self.plan(T0 + 10, dict(t1='fix it, and say how'))
+        self.ran()
+        self.review('VERDICT: PASS\n')
+        self.assertEqual(self.labels(), [dict(prompt_adequacy=False)])
+
+    def test_a_revision_taken_while_the_first_attempt_ran_does_not_count(self):
+        # A real attempt event carries no wall_started and its ts is when it ended.
+        self.plan(T0 - 10, dict(t1='fix it'))
+        self.ask()
+        self.dwarf(T0 + 20)
+        self.plan(T0 + 40, dict(t1='fix it, and say how'))
+        self.add('attempt', run='run1', ts=T0 + 100, task='t1', attempt=1, repo='r1', status='FAIL')
+        self.review('VERDICT: PASS\n')
+        self.assertEqual(self.labels(), [dict(prompt_adequacy=False)])
+
+    def test_a_revision_before_the_dwarf_started_counts_with_a_real_attempt_event(self):
+        self.plan(T0 - 10, dict(t1='fix it'))
+        self.ask()
+        self.plan(T0 + 10, dict(t1='fix it, and say how'))
+        self.dwarf(T0 + 20)
+        self.add('attempt', run='run1', ts=T0 + 100, task='t1', attempt=1, repo='r1', status='FAIL')
+        self.review('VERDICT: PASS\n')
+        self.assertEqual(self.labels(), [dict(prompt_adequacy=True)])
 
     def test_the_label_function_is_the_labellers_signature(self):
         self.assertEqual(label_prompt.label.__code__.co_varnames[:4], ('index', 'record', 'event', 'body'))
