@@ -706,7 +706,7 @@ removes what it created.
 <repo>/../.forge-worktrees/<run-id>/<task-id>   task worktree
 <repo>/../.forge-worktrees/<run-id>/_integration integration worktree
 forge/<run-id>/<task-id>                        task branch
-forge/<run-id>                                  integration branch
+forge/<run-id>-integration                      integration branch
 ```
 
 Fractal also keeps control repositories, isolated product candidates and per-step logs
@@ -735,6 +735,21 @@ one checkout holding every task's merged work is the one checkout that cannot bu
 
 Failure is reported and non-fatal: the dwarf gets a worktree it can still install into itself,
 which is the status quo this replaces. Output lands in `tasks/<id>/setup.out`.
+
+**Submodules.** `git worktree add` leaves every submodule directory empty. Before the setup step,
+forge fills them offline from the source checkout (no fetch, no `git submodule`), so `.forge/setup`
+sees a complete tree. Each submodule gets one state in `tasks/<id>/submodules.txt`:
+
+- `exported` — the recorded commit was extracted from the source's submodule repository;
+- `copied` — that commit was not available, so the source checkout's files were copied;
+- `kept` — the directory already held files (a resume), left as they are;
+- `missing` — nothing was available; the directory stays empty and the runner prints a note.
+
+The files carry no `.git`, so git ignores them: they never appear in `changes.diff`, a commit, a
+review snapshot or a fingerprint, and the worktree still moves and is removed normally. The capsule
+tells the dwarf which submodules are present. Integration worktrees (`run`, `integrate`, `combine`,
+`split`) get the same treatment. Out of scope: a task that moves a gitlink's recorded commit (its
+worktree keeps the old content) and nested submodules (left empty).
 
 Forge does not guess this step, and the obvious guess is worth naming because it looks right and
 is not: symlinking the source repo's `node_modules` into the worktree. In a workspace monorepo the

@@ -657,6 +657,16 @@ write_capsule() { # write_capsule <plan> <id> <role>
     echo "- MERGED means present in this task's pinned baseline; later merges are not included."
     echo "- The review diff is only this task's work against that baseline."
     echo "- Implementation must respect other tasks' ownership; report necessary scope changes."
+    if [ -s "$PLAN/tasks/$me/submodules.txt" ]; then
+      local sm_st sm_path
+      while IFS="$(printf '\t')" read -r sm_st sm_path _; do
+        if [ "$sm_st" = missing ]; then
+          echo "- Submodule \`$sm_path\` is not available in this worktree (its directory is empty)."
+        else
+          echo "- \`$sm_path\` is a submodule: its files are here to read and build with. Changes there are not part of your change and are never committed or reviewed."
+        fi
+      done < "$PLAN/tasks/$me/submodules.txt"
+    fi
 
   } > "$out"
   echo "$out"
@@ -697,11 +707,29 @@ worktree_setup_command() { # worktree_setup_command <plan> <repo>
   return 0
 }
 
+# Exports each submodule's files into a fresh worktree (offline, no `.git`, so they stay
+# invisible to every diff and fingerprint). Never fatal: a failure leaves the directory empty.
+populate_submodules() { # populate_submodules <repo> <wt> <tdir> <id>
+  local repo="$1" wt="$2" tdir="$3" id="$4" st path _sha detail err
+  rm -f "$tdir/submodules.txt"
+  err="$(python3 "$SKILL_DIR/scripts/forge-submodules.py" populate --source "$repo" --worktree "$wt" \
+    --out "$tdir/submodules.txt" 2>&1 >/dev/null)" \
+    || note "$id: submodule population failed (continuing): $(printf '%s' "$err" | tail -1)"
+  [ -s "$tdir/submodules.txt" ] || return 0
+  while IFS="$(printf '\t')" read -r st path _sha detail; do
+    [ "$st" = missing ] && note "$id: submodule $path is not available in this worktree ($detail)"
+  done < "$tdir/submodules.txt"
+  return 0
+}
+
 # Non-fatal by design. A setup step that fails leaves a worktree the dwarf can still
 # work in — it just has to install things itself, which is the status quo this exists
 # to improve on. Failing the task instead would turn a slow run into a dead one.
 run_worktree_setup() { # run_worktree_setup <plan> <repo> <wt> <tdir> <id>
   local PLAN="$1" REPO="$2" wt="$3" tdir="$4" id="$5" cmd
+  # Every worktree forge makes reaches here once, right after it exists, so the submodules'
+  # files are in place before `.forge/setup` runs. The outcome lands in <tdir>/submodules.txt.
+  populate_submodules "$REPO" "$wt" "$tdir" "$id"
   cmd="$(worktree_setup_command "$PLAN" "$REPO")"
   [ -n "$cmd" ] || return 0
   if (cd "$wt" && eval "$cmd") >"$tdir/setup.out" 2>&1; then
