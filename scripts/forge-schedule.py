@@ -434,7 +434,10 @@ def stop_harnesses(plan: object, names: object) -> None:
 # is left after it withdraws liveness, under the same lock, so no request outlives its run.
 REQUESTS = 'control.requests'
 REQUEST_MAX = 64 * 1024
-RETRYABLE = ('FAIL', 'UNKNOWN', 'TIMEOUT', 'ERROR', 'INTERRUPTED', 'BLOCKED')
+RETRYABLE = ('FAIL', 'UNKNOWN', 'TIMEOUT', 'ERROR', 'INTERRUPTED', 'BLOCKED', 'INVALIDATED')
+# What --retry-failed retries on its own. INVALIDATED only for a review voided while the committed
+# work stayed as it was (tasks/<id>/invalidated.reason is `review`): that retry is a fresh review.
+AUTO_RETRY = ('FAIL', 'UNKNOWN', 'INVALIDATED')
 
 
 def list_requests(plan: object) -> list:
@@ -606,10 +609,18 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
         value = _read_budget(plan, 'infra_budget')
         return infra_retries if value is None else value
 
+    def review_voided(name: str) -> bool:
+        file = plan / 'tasks' / name / 'invalidated.reason'
+        try:
+            return file.read_text().strip() == 'review'
+        except OSError:
+            return False
+
     def retryable(name: str) -> bool:
         root = plan / 'tasks' / name
         return (
-            status(name) in ('FAIL', 'UNKNOWN')
+            status(name) in AUTO_RETRY
+            and (status(name) != 'INVALIDATED' or review_voided(name))
             and retries.get(name, 0) < budget(name)
             # A task that produced no new work (empty diff, byte-identical retry) would
             # only repeat itself; its marker says so and it is left for a human.
@@ -965,7 +976,7 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
                 elif state == 'INFRA':
                     infra_stopped(name)
                 elif allow_requeue and not interrupted and not graceful \
-                        and state in ('FAIL', 'UNKNOWN') and retryable(name):
+                        and state in AUTO_RETRY and retryable(name):
                     requeue(name)
             if not reaped:
                 return
@@ -991,7 +1002,7 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
                 merge(name)
             if state == 'RUNNING':
                 mark(name, 'INTERRUPTED')
-            if state in ('FAIL', 'UNKNOWN') and not interrupted and retryable(name):
+            if state in AUTO_RETRY and not interrupted and retryable(name):
                 requeue(name)
             if state == 'INFRA' and not interrupted and not resume(name):
                 pending.remove(name)
@@ -1022,7 +1033,7 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
                 for name in tasks:
                     if name in pending or name in active or name in ended:
                         continue
-                    if not interrupted and not graceful and status(name) in ('FAIL', 'UNKNOWN') \
+                    if not interrupted and not graceful and status(name) in AUTO_RETRY \
                             and retryable(name) and refused.get(name) != budget(name):
                         requeue(name)
             if paused and not active and infra_seen and not graceful and infra_cycles < infra_budget():

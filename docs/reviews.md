@@ -35,7 +35,11 @@ type `retry`, or when you opt in for a run with `--retry-failed N` ([below](#ret
 An `UNKNOWN` task is different from a rejected one: the reviewer never judged the code, so
 `retry` (or `--retry-failed`) asks **QA again on the unchanged work** instead of paying an
 implementer to rewrite something nobody rejected. No attempt is spent and no dwarf runs. If
-the worktree no longer matches what was reviewed, the full task runs instead.
+the worktree no longer matches what was reviewed, the full task runs instead. A task
+`INVALIDATED` because its review copy changed during the review (the reviewer edited a tracked
+file) is retried the same way: its verdict counts for nothing, but the committed work is intact.
+Untracked files a reviewer leaves in its copy, such as a test run's `__pycache__/`, do not void
+the review.
 
 ## Retrying a failed task
 
@@ -93,8 +97,10 @@ as `retry` does. Other tasks keep running meanwhile; dependents still wait for t
 run (verification included) to finish before a human could retry it.
 
 It is opt-in and per invocation: it is not remembered by the plan, and the orchestrator never
-adds it unprompted. Only reviewer rejections are retried automatically — `TIMEOUT`, `ERROR`,
-`INVALIDATED` and `CONFLICT` still need a human. A retry that changes nothing (empty diff, or
+adds it unprompted. Reviewer rejections, reviews with no verdict and reviews voided by a
+change to the review copy are retried automatically (the last two as a fresh review of the same
+work) — `TIMEOUT`, `ERROR`, `CONFLICT` and an `INVALIDATED` merge (the task or integration
+branch moved) still need a human. A retry that changes nothing (empty diff, or
 a diff byte-identical to the previous attempt) writes a `noretry` marker and is **not**
 retried again, so a stuck task cannot burn its whole budget repeating itself.
 `tasks/<id>/attempts.tsv` records every entry (epoch, attempt number, resulting status, infra

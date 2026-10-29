@@ -275,8 +275,9 @@ test('a queued retry reads applied or refused from the scheduler line with its o
 });
 
 test('Retry now shows for an ended or policy-stopped task while the run is live', () => {
-  const c = show({ tasks: Object.assign({}, show().tasks, { timed: { status: 'TIMEOUT', escalation_stop: false } }) });
-  assert.deepEqual(['reader', 'page', 'graph', 'docs', 'timed'].map(id => C.canRetry(c, id)), [false, false, true, false, true]);
+  const c = show({ tasks: Object.assign({}, show().tasks, { timed: { status: 'TIMEOUT', escalation_stop: false },
+    voided: { status: 'INVALIDATED', escalation_stop: false } }) });   // the scheduler re-runs its review
+  assert.deepEqual(['reader', 'page', 'graph', 'docs', 'timed', 'voided'].map(id => C.canRetry(c, id)), [false, false, true, false, true, true]);
   assert.equal(C.canRetry(idle(), 'graph'), false);
   const stopped = show({ tasks: { page: Object.assign({}, show().tasks.page, { status: 'PENDING', escalation_stop: true }) } });
   assert.equal(C.canRetry(stopped, 'page'), true);

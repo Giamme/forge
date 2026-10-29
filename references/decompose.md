@@ -494,10 +494,10 @@ lines, because every labelled line is counted. That is the retry's review, not t
 QA-only re-run above.
 
 **In-run retries.** `run <plan> --retry-failed N` re-queues a task whose reviewer said
-`FAIL`/`UNKNOWN` as soon as it ends, up to `N` more times in that run, preparing the retry exactly
+`FAIL`/`UNKNOWN`, or whose review was `INVALIDATED` by a change to the review copy, as soon as it ends, up to `N` more times in that run, preparing the retry exactly
 as `retry` does (same findings carry-forward, same pinned base, same cumulative review). Other
 tasks keep running; dependents wait for the task to merge. It applies per invocation (not
-remembered), never to `TIMEOUT`/`ERROR`/`INVALIDATED`/`CONFLICT`, and never after a retry that
+remembered), never to `TIMEOUT`/`ERROR`/`CONFLICT` or an `INVALIDATED` merge, and never after a retry that
 changed nothing (`tasks/<id>/noretry`). Every entry is logged in `tasks/<id>/attempts.tsv`.
 
 **Escalation after repeated failures.** In forge's history the first three attempts at a task
@@ -818,8 +818,9 @@ retried after its prerequisites merge. A fresh task then branches from current i
 
 QA receives complete implementation input, approach, capsule and cumulative binary diff.
 It runs in a disposable repository. Both source and review fingerprints must remain unchanged,
-and the task branch must still point at the reviewed commit when merged. INVALIDATED results
-never merge. Disposable snapshots detect mutation; they do not confine unrestricted shell access.
+and the task branch must still point at the reviewed commit when merged; the review copy is a
+commit, so only its tracked content counts (a test run's untracked `__pycache__/` there changes
+nothing). INVALIDATED results never merge; `retry` re-runs only QA while the work is unchanged. Disposable snapshots detect mutation; they do not confine unrestricted shell access.
 
 Configure combined executable checks with `run <plan> --verify '<command>'` (also accepted by
 `retry`), or a shell command file at `<repo>/.forge/verify`. Commands execute under Bash from
