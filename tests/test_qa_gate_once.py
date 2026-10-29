@@ -1,9 +1,11 @@
 """One QA threshold per attempt: qa_gate takes the value the review prompt was built with,
-and qa_threshold_for understands a per-task `none` and ignores invalid values.
+and qa_threshold_for resolves the effective threshold (per-task file, plan file, default P2;
+`none` is P3, invalid values fall through), with qa_threshold_source telling set from default.
 
 Sources forge-lib-task.sh in a temp plan directory and calls the shell functions directly,
 with a fake qa.last holding labelled findings."""
 from pathlib import Path
+import re
 import subprocess
 import tempfile
 import unittest
@@ -48,6 +50,12 @@ class QaGateOnceTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         return result.stdout.strip()
 
+    def resolved(self, task='t1'):
+        result = self.sh("qa_threshold_for '%s' '%s'; qa_threshold_source '%s' '%s'"
+                         % (self.plan, task, self.plan, task))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return tuple(result.stdout.split())
+
     def test_the_gate_uses_the_threshold_the_prompt_was_built_with(self):
         (self.plan / 'qa_threshold').write_text('P3\n')
         prompt_threshold = self.threshold()
@@ -64,11 +72,11 @@ class QaGateOnceTests(unittest.TestCase):
         self.assertEqual(self.recorded(), 'P1')
         self.assertEqual(self.status(), 'PASS')            # both findings are below P1
 
-    def test_an_empty_explicit_threshold_is_not_reread(self):
+    def test_an_empty_explicit_threshold_reads_the_files(self):
         (self.plan / 'qa_threshold').write_text('P1\n')
         self.gate('')
-        self.assertIsNone(self.recorded())
-        self.assertEqual(self.status(), 'FAIL')
+        self.assertEqual(self.recorded(), 'P1')
+        self.assertEqual(self.status(), 'PASS')
 
     def test_four_arguments_still_read_the_files(self):
         (self.plan / 'qa_threshold').write_text('P1\n')
@@ -77,33 +85,49 @@ class QaGateOnceTests(unittest.TestCase):
         self.assertEqual(self.status(), 'PASS')
 
     def test_per_task_none_exempts_the_task_from_the_plan_threshold(self):
-        (self.plan / 'qa_threshold').write_text('P2\n')
+        (self.plan / 'qa_threshold').write_text('P1\n')
         (self.tdir / 'qa_threshold').write_text('none\n')
-        self.assertEqual(self.threshold(), '')
+        self.assertEqual(self.resolved(), ('P3', 'set'))
         self.gate()
-        self.assertIsNone(self.recorded())
-        self.assertEqual(self.status(), 'FAIL')
+        self.assertEqual(self.recorded(), 'P3')
+        self.assertEqual(self.status(), 'FAIL')           # nothing tolerated: both findings block
 
-    def test_plan_none_is_unset(self):
+    def test_plan_none_is_p3(self):
         (self.plan / 'qa_threshold').write_text('none\n')
-        self.assertEqual(self.threshold(), '')
+        self.assertEqual(self.resolved(), ('P3', 'set'))
+
+    def test_no_file_is_the_default(self):
+        self.assertEqual(self.resolved(), ('P2', 'default'))
         self.gate()
-        self.assertIsNone(self.recorded())
+        self.assertEqual(self.recorded(), 'P2')
+        self.assertEqual(self.status(), 'FAIL')           # the P2 finding blocks at P2
 
     def test_per_task_garbage_falls_back_to_the_plan_value(self):
-        (self.plan / 'qa_threshold').write_text('P2\n')
+        (self.plan / 'qa_threshold').write_text('P1\n')
         (self.tdir / 'qa_threshold').write_text('high\n')
-        self.assertEqual(self.threshold(), 'P2')
+        self.assertEqual(self.resolved(), ('P1', 'set'))
 
-    def test_garbage_in_both_files_is_unset(self):
+    def test_garbage_in_both_files_is_the_default(self):
         (self.plan / 'qa_threshold').write_text('P9\n')
         (self.tdir / 'qa_threshold').write_text('high\n')
-        self.assertEqual(self.threshold(), '')
+        self.assertEqual(self.resolved(), ('P2', 'default'))
+
+    def test_an_empty_id_reads_the_plan_level_only(self):
+        (self.plan / 'tasks' / 'qa_threshold').write_text('P0\n')
+        self.assertEqual(self.resolved(''), ('P2', 'default'))
+        (self.plan / 'qa_threshold').write_text('P3\n')
+        self.assertEqual(self.resolved(''), ('P3', 'set'))
+
+    def test_the_bash_default_mirrors_the_contract(self):
+        contract = (ROOT / 'scripts' / 'forge-contract.py').read_text(encoding='utf-8')
+        python_default = re.search(r"^DEFAULT_THRESHOLD = '(P[0-3])'", contract, re.M).group(1)
+        result = self.sh('printf %s "$FORGE_QA_THRESHOLD_DEFAULT"')
+        self.assertEqual(result.stdout, python_default)
 
     def test_per_task_value_wins_over_the_plan_value(self):
         (self.plan / 'qa_threshold').write_text('P2\n')
         (self.tdir / 'qa_threshold').write_text('P0\n')
-        self.assertEqual(self.threshold(), 'P0')
+        self.assertEqual(self.resolved(), ('P0', 'set'))
 
     def test_the_task_attempt_passes_the_threshold_it_already_read(self):
         source = (ROOT / 'scripts' / 'forge-parallel.sh').read_text(encoding='utf-8')
