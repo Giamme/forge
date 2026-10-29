@@ -298,8 +298,8 @@ PY
   fi
 
   # --- jev: plan-time gates ------------------------------------------------------
-  # Prompt adequacy and drift, advisory: warnings about the task text and its declared
-  # files. Nothing here changes tasks.tsv.
+  # Prompt adequacy and drift: warnings about the task text and its declared files. Drift
+  # `on` adds the files it predicts to tasks.tsv (inside score-plan); `shadow` only records.
   local jev_loaded=0
   if [ -f "$SKILL_DIR/scripts/forge-jev-options.sh" ]; then
     source "$SKILL_DIR/scripts/forge-jev-options.sh" 2>/dev/null && jev_loaded=1
@@ -311,25 +311,51 @@ PY
     jev_rc=$?
     # A gate in shadow is asked and recorded by score-plan, which leaves it out of
     # these rows: what is printed here is only what an `on` gate has to say.
-    # --jev-shadow before migration keeps its gates `on` and prints a count, as it always did.
-    if [ "$jev_rc" -eq 0 ] && [ -n "$jev_scores" ] && [ "${FORGE_JEV_SHADOW:-}" = on ]; then
-      note "jev: scored $(printf '%s\n' "$jev_scores" | grep -c .) task(s) in shadow mode (no change)"
-    elif [ "$jev_rc" -eq 0 ] && [ -n "$jev_scores" ]; then
+    # --jev-shadow before migration keeps its gates `on` and prints a count for the
+    # warnings, as it always did; what a gate ADDED is still said, whatever the flag.
+    if [ "$jev_rc" -eq 0 ] && [ -n "$jev_scores" ]; then
       local jid jwarn jdrift
       # The columns score-plan prints: id, warnings, drift. Read in lockstep with
       # cmd_score_plan.
       while IFS="$(printf '\t')" read -r jid jwarn jdrift; do
         [ -n "$jid" ] || continue
-        case "$jwarn" in
-          *prompt_adequacy*) note "jev: $jid — the prompt may be too vague for QA to judge correctness against" ;;
-        esac
+        if [ "${FORGE_JEV_SHADOW:-}" != on ]; then
+          case "$jwarn" in
+            *prompt_adequacy*) note "jev: $jid — the prompt may be too vague for QA to judge correctness against" ;;
+          esac
+        fi
         if [ -n "$jdrift" ] && [ "$jdrift" != "-" ]; then
-          note "jev: $jid may also edit undeclared files: $jdrift"
-          note "     undeclared files break wave disjointness — add them to the files column or split the task"
+          # The drift field only names files score-plan ADDED (drift `on`): a shadowed gate
+          # prints '-', so there is no "may edit undeclared files" case left to hint at.
+          note "drift added to $jid: $jdrift"
         fi
       done <<EOF
 $jev_scores
 EOF
+      if [ "${FORGE_JEV_SHADOW:-}" = on ]; then
+        note "jev: scored $(printf '%s\n' "$jev_scores" | grep -c .) task(s) in shadow mode (no change)"
+      fi
+    fi
+  fi
+
+  # Coverage: does some task's acceptance criteria deliver each requirement of request.md?
+  # `on` marks the ones no task covers pending in plan-gates.json; the send-back file below
+  # says which, so nothing is printed here.
+  if [ "$jev_loaded" = 1 ] && forge_decide_active coverage; then
+    python3 "$SKILL_DIR/scripts/forge-jev.py" coverage --plan "$PLAN" --repo "$REPO" >/dev/null 2>&1 || true
+  fi
+
+  # The one send-back step of this call, after every pre-resolve gate: prompt and coverage
+  # mark what to rewrite, and exit 4 hands it back before validation, waves and the table.
+  # An item is sent back once; the re-plan lists what is still wrong under the table.
+  if [ "$jev_loaded" = 1 ] && { forge_decide_active prompt || forge_decide_active coverage; }; then
+    local sendback_out sendback_rc=0 sendback_n
+    sendback_out="$(python3 "$SKILL_DIR/scripts/forge-plan-check.py" sendback "$PLAN" 2>/dev/null)" || sendback_rc=$?
+    if [ "$sendback_rc" -eq 4 ]; then
+      printf '%s\n' "$sendback_out"
+      sendback_n="$(printf '%s\n' "$sendback_out" | grep -c '^- ')"
+      note "plan gates sent $sendback_n item(s) back: rewrite them as $PLAN/plan.sendback.md says, then run plan again (once)"
+      return 4
     fi
   fi
 
@@ -401,37 +427,50 @@ EOF
 
   compute_waves "$PLAN"
 
-  # --- jev: advisory forward dependency -------------------------------------------
+  # --- jev: forward dependency ----------------------------------------------------
   # Wave order is structural, but it cannot see an earlier-wave task written against
-  # an interface a later-wave task builds. This is advisory only: it never edits
-  # tasks.tsv, never adds a dep, and
-  # never changes waves.tsv, so it must run after compute_waves and before the table
-  # that reports the plan is printed.
+  # an interface a later-wave task builds. Forward `on` adds that dep to tasks.tsv (inside
+  # `coupling`, refusing a cycle), so the waves are computed again below when it did;
+  # otherwise the gate only advises. It runs after compute_waves and before the table.
   if [ "$jev_loaded" = 1 ] && forge_decide_active forward; then
     local jev_coupling jev_coupling_rc
     jev_coupling="$(python3 "$SKILL_DIR/scripts/forge-jev.py" coupling \
       --plan "$PLAN" --repo "$REPO" 2>/dev/null)"
     jev_coupling_rc=$?
     # A shadowed forward gate is recorded in jev-coupling.json and prints no row; --jev-shadow
-    # before migration prints a count, as it always did.
-    if [ "$jev_coupling_rc" -eq 0 ] && [ -n "$jev_coupling" ] && [ "${FORGE_JEV_SHADOW:-}" = on ]; then
-      note "jev: found $(printf '%s\n' "$jev_coupling" | grep -c .) coupled pair(s) in shadow mode (no change)"
-    elif [ "$jev_coupling_rc" -eq 0 ] && [ -n "$jev_coupling" ]; then
-      local ca cb cp ckind
+    # before migration counts the advisory rows, as it always did. Rows an `on` gate acted
+    # on (`added`, `cycle`) are said and acted on whatever the flag.
+    if [ "$jev_coupling_rc" -eq 0 ] && [ -n "$jev_coupling" ]; then
+      local ca cb cp ckind dep_added=0 advisory=0
       while IFS="$(printf '\t')" read -r ca cb cp ckind; do
         [ -n "$ca" ] || continue
-        # Forward: an earlier task written against work that has not been built yet,
-        # which its own review cannot catch.
-        if [ "$ckind" = forward ]; then
-          note "jev: task '$ca' runs before '$cb' and may depend on what it builds ($cp) — consider a dep"
-        fi
+        # An earlier task written against work that has not been built yet, which its own
+        # review cannot catch. The last column says what `on` did about it.
+        case "$ckind" in
+          added)
+            dep_added=1
+            note "forward: task '$ca' now waits for '$cb' ($cp) — it may depend on what '$cb' builds" ;;
+          cycle)
+            note "forward: '$ca' may depend on '$cb' ($cp), but that dependency would form a cycle — not added" ;;
+          *)
+            advisory=$((advisory+1))
+            [ "${FORGE_JEV_SHADOW:-}" = on ] ||
+              note "jev: task '$ca' runs before '$cb' and may depend on what it builds ($cp) — consider a dep" ;;
+        esac
       done <<EOF
 $jev_coupling
 EOF
+      if [ "$advisory" -gt 0 ] && [ "${FORGE_JEV_SHADOW:-}" = on ]; then
+        note "jev: found $advisory coupled pair(s) in shadow mode (no change)"
+      fi
+      if [ "$dep_added" = 1 ]; then compute_waves "$PLAN"; fi
     fi
   fi
 
   render_table "$PLAN"
+  # What the gates did, from plan-gates.json: files and deps they added, prompts and
+  # requirements still flagged. Prints nothing when no gate recorded anything.
+  python3 "$SKILL_DIR/scripts/forge-plan-check.py" gates "$PLAN" 2>/dev/null || true
   # Advisory, under the table: a privacy floor that silences every gate, and which
   # gates this plan's runs will ask. Prints nothing when it cannot tell.
   [ "$jev_loaded" = 1 ] && forge_decide_plan_lines "${FORGE_DECIDE_REPO:-$REPO}"

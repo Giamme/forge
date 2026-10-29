@@ -302,7 +302,7 @@ class PlanFlagTests(unittest.TestCase):
         planned = self.plan_cmd('--gate', 'drift=on')
         self.assertEqual(planned.returncode, 0, planned.stderr)
         self.assertEqual([(r['site'], r['ok']) for r in self.requests()], [('jev-drift', True)])
-        self.assertIn('jev: a1 may also edit undeclared files: src/b.py', planned.stderr)
+        self.assertIn('drift added to a1: src/b.py', planned.stderr)
         self.assertIn('forge: decide: on: drift (forced); shadow: none', planned.stderr)
 
     def replayed(self, passes=True):

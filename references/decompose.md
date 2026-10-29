@@ -14,6 +14,7 @@ run leaves branches behind.
 - [Fractal within decomposed tasks](#fractal-within-decomposed-tasks)
 - [Waves and disjointness](#waves-and-disjointness)
 - [Task size and acceptance criteria](#task-size-and-acceptance-criteria)
+- [Plan gates: sent back, and the block under the table](#plan-gates-sent-back-and-the-block-under-the-table)
 - [The capsule](#the-capsule)
 - [Planning](#planning)
 - [QA verdicts](#qa-verdicts)
@@ -266,6 +267,36 @@ So:
   declared files and over, with the history for their size, and tasks with no acceptance
   criteria. A heading inside a code fence, or with nothing under it, does not count. The
   block never changes the table or the exit code.
+
+## Plan gates: sent back, and the block under the table
+
+With the prompt or coverage gate `on` (`forge decide gate <gate> on`; see
+[decision models](decision-models.md)), `plan` can **exit 4**. That means: the gates sent work
+back, nothing was validated and no `waves.tsv` was written by this call. Read
+`<plan>/plan.sendback.md`, which `plan` also prints:
+
+- **Task prompts a reviewer could not judge** (prompt gate): rewrite each listed
+  `tasks/<id>/prompt.md` so a reviewer can verify it, with checkable acceptance criteria.
+- **Requirements no task covers** (coverage gate): extend a task's `## Acceptance criteria`
+  or add a task for each listed requirement of `request.md`.
+
+Then run `plan` again, **once**. Forge sends each task and requirement back only once: what
+is still flagged on the second call is listed under the table instead, and `plan` goes on.
+With a dispatched planner (`--planner`), re-dispatch it with `plan.sendback.md` appended to
+its prompt rather than editing the tasks yourself. In `shadow` a gate records and sends
+nothing back, and with the gates `off` or decision models off `plan` never exits 4.
+
+Under the table, `plan` prints a `decision-model gates:` block from `plan-gates.json` when a
+gate recorded anything:
+
+- `drift added to <task>: <files>`: drift `on` appended files to the task's `files` column
+  (`tasks.declared.tsv` keeps your table), so waves treat them as declared. Shadow lines say
+  *would add* and change nothing.
+- `forward added a dependency: <a> now waits for <b>`: forward `on` made `a` depend on `b`
+  and recomputed the waves; a pair that would form a cycle is listed as skipped. Delete the
+  dep from `tasks.tsv` to undo it.
+- `prompt still below … after its rewrite` and `requirements no task covers`: flagged items
+  that were already sent back once.
 
 ## The capsule
 
