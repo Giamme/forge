@@ -190,7 +190,9 @@ def decisions(body) -> list[str]:
 def _p_none(answers, qid) -> float | None:
     """P(`none`) of a question: the Choice's distribution, else its confidence when it chose
     `none`, else 0.0 for a choice of a task. None when the question has no choice answer."""
-    result = dict(answers=answers or {})
+    if not isinstance(answers, dict) or not isinstance(answers.get(qid), dict):
+        return None
+    result = dict(answers=answers)
     found = probabilities(result, qid)
     if 'none' in found:
         return found['none']

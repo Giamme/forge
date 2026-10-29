@@ -330,6 +330,13 @@ class MeasurementTests(unittest.TestCase):
         self.assertEqual([coverage.score(answers, q, None) for q in ('r0', 'r1', 'r2')], [None, None, 0.8])
         self.assertEqual(coverage.fired(answers, 0.5, None), ['r2'])
 
+    def test_an_answer_that_is_not_an_object_is_no_opinion_not_a_crash(self):
+        answers = {'r0': 'none', 'r1': None, 'r2': ['none'],
+                   'r3': dict(type='choice', choice='none', confidence=0.8)}
+        self.assertEqual([coverage.score(answers, q, None) for q in ('r0', 'r1', 'r2', 'r3')],
+                         [None, None, None, 0.8])
+        self.assertEqual(coverage.fired(answers, 0.5, None), ['r3'])
+
 
 class LabelCase(unittest.TestCase):
     REQUIREMENTS = ['The tool lists every stale branch in the repository',
