@@ -1330,6 +1330,28 @@ do_retry() {
   local PLAN="${1:?retry needs a plan dir}" id="${2:?retry needs a task id}"; shift 2
   FORGE_RUN_STARTED="$(forge_now)"
   local NEWDWARF="" jev_rc=0 ANSWER="" ANSWER_FILE="" HAVE_ANSWER=0
+  # An answer is validated before any option below writes into the plan: a rejected answer
+  # changes nothing, --setup and --verify included. Only a NEEDS_INPUT task takes one.
+  local pre_a pre_n=0 pre_skip=0 pre_have=0 pre_val=""
+  for pre_a in "$@"; do
+    if [ "$pre_skip" = 1 ]; then pre_val="$pre_a"; pre_skip=0; continue; fi
+    case "$pre_a" in
+      --answer|--answer-file) pre_n=$((pre_n + 1)); pre_have="$pre_a"; pre_skip=1 ;;
+    esac
+  done
+  if [ "$pre_n" != 0 ]; then
+    [ "$pre_n" = 1 ] || die "retry: give --answer or --answer-file once"
+    [ "$pre_skip" = 0 ] || die "retry: $pre_have needs a value"
+    [ -s "$PLAN/tasks.tsv" ] && all_ids "$PLAN/tasks.tsv" | grep -qx "$id" || die "no task '$id' in this plan"
+    local pre_st; pre_st="$(task_status "$PLAN" "$id")"
+    [ "$pre_st" = NEEDS_INPUT ] || die "retry: '$id' is $pre_st, not waiting for an answer; --answer and --answer-file only answer a NEEDS_INPUT task"
+    if [ "$pre_have" = --answer-file ]; then
+      [ -f "$pre_val" ] && [ -r "$pre_val" ] || die "retry: --answer-file '$pre_val' is not a readable file"
+      [ -s "$pre_val" ] || die "retry: --answer-file '$pre_val' is empty"
+    else
+      [ -n "$pre_val" ] || die "retry: the answer is empty"
+    fi
+  fi
   while [ $# -gt 0 ]; do
     case "$1" in
       --no-ripwire) export FORGE_RIPWIRE=off; shift ;;
@@ -1368,17 +1390,13 @@ do_retry() {
   [ -s "$PLAN/wt_root" ] || die "this plan has never been run — use 'run', not 'retry'"
   local st; st="$(task_status "$PLAN" "$id")"
   [ "$st" = "MERGED" ] && die "task '$id' already merged — nothing to retry"
-  # The user's answer to a NEEDS_INPUT task's question: written before anything else is
-  # prepared, atomically, and kept when the preparation then refuses (the same answer can be
-  # retried). Only that status takes one.
+  # The user's answer to a NEEDS_INPUT task's question (validated above): written before
+  # anything else is prepared, atomically, and kept when the preparation then refuses (the
+  # same answer can be retried).
   if [ "$HAVE_ANSWER" != 0 ]; then
-    [ "$st" = NEEDS_INPUT ] || die "retry: '$id' is $st, not waiting for an answer; --answer and --answer-file only answer a NEEDS_INPUT task"
     if [ "$HAVE_ANSWER" = 2 ]; then
-      [ -f "$ANSWER_FILE" ] && [ -r "$ANSWER_FILE" ] || die "retry: --answer-file '$ANSWER_FILE' is not a readable file"
-      [ -s "$ANSWER_FILE" ] || die "retry: --answer-file '$ANSWER_FILE' is empty"
       cp "$ANSWER_FILE" "$tdir/.answer.md.tmp" || { rm -f "$tdir/.answer.md.tmp"; die "retry: could not write the answer" 1; }
     else
-      [ -n "$ANSWER" ] || die "retry: the answer is empty"
       printf '%s\n' "$ANSWER" > "$tdir/.answer.md.tmp" || { rm -f "$tdir/.answer.md.tmp"; die "retry: could not write the answer" 1; }
     fi
     mv "$tdir/.answer.md.tmp" "$tdir/answer.md" || die "retry: could not write the answer" 1

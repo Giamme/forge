@@ -315,13 +315,13 @@ attempt_delta() { # attempt_delta <tdir> <worktree> <reviewed-commit>
 
 # --- NEEDS_INPUT (#44) ------------------------------------------------------------
 # A task stopped for the user's answer (needs_input.md holds the question). It resumes only
-# when answer.md is non-empty and not older than the question; a stale answer, left over from
-# before the question was asked, is no answer. Compared in nanoseconds: the shell's -nt looks
+# when answer.md is non-empty and strictly newer than the question; a stale answer, left over
+# from before the question was asked, is no answer. Compared in nanoseconds: the shell's -nt looks
 # at whole seconds on some systems.
 answer_ready() { # answer_ready <tdir>
   [ -s "$1/answer.md" ] || return 1
   [ -f "$1/needs_input.md" ] || return 0   # no question left to be older than
-  python3 -c 'import os, sys; sys.exit(0 if os.stat(sys.argv[1]).st_mtime_ns >= os.stat(sys.argv[2]).st_mtime_ns else 1)' \
+  python3 -c 'import os, sys; sys.exit(0 if os.stat(sys.argv[1]).st_mtime_ns > os.stat(sys.argv[2]).st_mtime_ns else 1)' \
     "$1/answer.md" "$1/needs_input.md" 2>/dev/null
 }
 

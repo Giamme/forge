@@ -207,6 +207,16 @@ class RefusalTests(NeedsInputCase):
                 self.assertFalse((p / 'tasks/a/answer.md').exists())
                 self.assert_nothing_changed(p, before, dwarfs)
 
+    def test_a_rejected_answer_leaves_the_other_options_unapplied_too(self):
+        p = self.failed_plan()
+        before, dwarfs = self.snapshot(p), self.dwarf_count()
+        (p / 'setup_cmd').write_text('original setup')
+        r = self.run_script('forge-parallel.sh', 'retry', p, 'a', '--answer', 'use UTC', '--setup', 'replacement setup')
+        self.assertEqual(r.returncode, 2, r.stdout)
+        self.assertEqual((p / 'setup_cmd').read_text(), 'original setup')
+        self.assertFalse((p / 'tasks/a/answer.md').exists())
+        self.assert_nothing_changed(p, before, dwarfs)
+
     def test_an_empty_answer_exits_2_and_changes_nothing(self):
         p = self.waiting_plan()
         before, dwarfs = self.snapshot(p), self.dwarf_count()
@@ -223,14 +233,18 @@ class RefusalTests(NeedsInputCase):
         before, dwarfs = self.snapshot(p), self.dwarf_count()
         findings = self.read(p, 'retry_findings.md')
         answer = p / 'tasks/a/answer.md'
-        for what in ('missing', 'empty', 'older than the question'):
+        for what in ('missing', 'empty', 'older than the question', 'as old as the question'):
             with self.subTest(what):
                 if what == 'empty':
                     answer.write_text('')
-                if what == 'older than the question':
+                if what in ('older than the question', 'as old as the question'):
                     answer.write_text('use UTC\n')
-                    stamp = (p / 'tasks/a/needs_input.md').stat().st_mtime - 60
-                    os.utime(answer, (stamp, stamp))
+                    question = (p / 'tasks/a/needs_input.md').stat()
+                    if what == 'as old as the question':
+                        os.utime(answer, ns=(question.st_atime_ns, question.st_mtime_ns))
+                    else:
+                        stamp = question.st_mtime - 60
+                        os.utime(answer, (stamp, stamp))
                 r = self.run_script('forge-parallel.sh', '_prepare_retry', p, 'a')
                 self.assertEqual(r.returncode, 2, r.stdout)
                 self.assertIn('a is waiting for an answer', r.stdout)
