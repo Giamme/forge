@@ -800,6 +800,14 @@ def cmd_coupling(args) -> int:
     waves = coupling.parse_waves(plan)
     forward = coupling.forward_dependencies(repo, tasks=tasks, waves=waves,
                                             run_dir=str(plan), config=config)
+    if forward is None:
+        return 3
+
+    mode = gate_mode('jev-forward')
+    # An answer of "nothing to flag" is still an answer: the record of an earlier plan
+    # (a stale would_add, a dependency the planner has since dropped) is reconciled with it.
+    # `shadow` is recorded under would_add, and the run hears nothing.
+    acted = _forward_act(plan, forward, mode)
     if not forward:
         return 3
 
@@ -808,9 +816,6 @@ def cmd_coupling(args) -> int:
         (plan / 'jev-coupling.json').write_text(json.dumps(payload, indent=2, sort_keys=True) + '\n')
     except OSError:
         pass
-    mode = gate_mode('jev-forward')
-    # `shadow` is recorded in the file above and under would_add, and the run hears nothing.
-    acted = _forward_act(plan, forward, mode)
     if mode == 'shadow':
         return 3
     if mode == 'on':

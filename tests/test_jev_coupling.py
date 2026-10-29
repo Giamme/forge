@@ -346,6 +346,13 @@ class ForwardActingTests(unittest.TestCase):
         self.run_gate('on', flagged=('lib', 'cli'))
         self.assertEqual(self.recorded()['forward']['added'][0]['earlier'], 'readme')
 
+    def test_an_empty_answer_clears_the_stale_would_add_of_an_earlier_plan(self):
+        self.run_gate('shadow')
+        self.assertIn('would_add', self.recorded()['forward'])
+        rc, out = self.run_gate('shadow', flagged=('none', 'none'))
+        self.assertEqual((rc, out), (3, ''))
+        self.assertNotIn('forward', self.recorded())
+
     def test_the_waves_put_the_earlier_task_after_the_later_one(self):
         self.run_gate('on')
         (self.plan / 'waves.tsv').unlink()
