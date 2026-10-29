@@ -517,12 +517,17 @@ def _drift_act(plan: Path, task_id: str, predicted, mode: str) -> list:
     `drift.<task>.added`; `shadow` records them under `would_add` and touches nothing else.
     `added` entries from an earlier plan stay while their file is still in the column: the
     labels need to know the planner did not declare it. Returns the files added now. Any
-    failure behaves as `off`, so a plan never fails because of this gate.
+    failure behaves as `off`, so a plan never fails because of this gate: when the record
+    cannot be saved, tasks.tsv goes back to the bytes it had, so no file is added without
+    its provenance.
     """
     if mode not in ('on', 'shadow'):
         return []
+    original = None
     try:
         from . import plan_gates
+        if mode == 'on':
+            original = (plan / 'tasks.tsv').read_bytes()
         files = [dict(file=name, p=probability) for name, probability in predicted]
         added = []
         if mode == 'on' and files:
@@ -552,6 +557,11 @@ def _drift_act(plan: Path, task_id: str, predicted, mode: str) -> list:
                 plan_gates.save(plan, data)
         return [item['file'] for item in added]
     except Exception:
+        if original is not None:
+            try:
+                plan_gates._atomic_write(plan / 'tasks.tsv', original)
+            except Exception:
+                pass
         return []
 
 

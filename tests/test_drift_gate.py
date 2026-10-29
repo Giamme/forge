@@ -153,6 +153,16 @@ class ActingTests(DriftCase):
         self.assertEqual((plan / 'tasks.tsv').read_text(), HEADER + row('a1', 'src/a.py,src/b.py'))
         self.assertEqual(self.recorded(plan)['drift']['a1']['added'], [dict(file='src/b.py', p=0.9)])
 
+    def test_a_record_that_cannot_be_saved_leaves_tasks_tsv_as_it_was(self):
+        plan = self.one_task()
+        (plan / 'plan-gates.json').mkdir()   # the record cannot be written
+        before = (plan / 'tasks.tsv').read_bytes()
+        self.gates(drift='on')
+        rc, out = self.score(plan)
+        # Behaves as off: no file is added without its provenance, and none is reported.
+        self.assertEqual((plan / 'tasks.tsv').read_bytes(), before)
+        self.assertEqual((rc, out), (0, 'a1\t-\t-\n'))
+
     def test_an_entry_whose_file_left_the_column_is_dropped(self):
         plan = self.one_task()
         self.gates(drift='on')
