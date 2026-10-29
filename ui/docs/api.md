@@ -1257,8 +1257,10 @@ routes, so their configuration matters too.
 running is `409 {"error": "busy"}`, without reaching the CLI; other runs are not held up.
 
 **Errors.** For a CLI that exits non-zero the answer is `{"error", "detail", "result"?}`: `detail`
-is the last line of its stderr (at most 300 characters; the rest of stderr is not echoed) and
-`result` the object its stdout holds, when that parses as one.
+is the last line of its stderr (at most 300 characters; the rest of stderr is not echoed), except for
+a refusal (exit 3): forge's own message, kept whole (its non-blank lines, joined by `\n`, at most 2000
+characters), since it names what was refused and why, then what to run instead. `result` is the
+object its stdout holds, when that parses as one.
 
 | CLI exit | Status | `error` |
 |---|---|---|
