@@ -29,6 +29,7 @@ FINAL_AGAIN = 'a.qa.3'    # the second
 ANY_REVIEW = 'a.qa.*'     # every review, once the per-task QA calls are over
 P1 = '- [P1][CONFIRMED] a.txt:1 — the combined result drops the write (a then b)'
 P3 = '- [P3][CONFIRMED] a.txt:1 — cosmetic naming (none)'
+P2 = '- [P2][CONFIRMED] a.txt:1 — the result loses a line (b)'
 UNLABELLED = '- [CONFIRMED] a.txt:1 — no severity given (x)'
 FOUR = ['dwarf', 'qa', 'dwarf', 'qa']      # a merged two-task plan, before any review
 
@@ -184,11 +185,14 @@ class ReviewTests(unittest.TestCase):
         cases = [   # (what the reviewer says, extra args, exit code, verdict file)
             ({'verdict': 'FAIL', 'findings': P1}, [], 5, 'FAIL'),
             ({'verdict': 'none', 'findings': 'looks fine, but no verdict line'}, [], 5, 'UNKNOWN'),
-            ({'verdict': 'FAIL', 'findings': P3}, [], 5, 'FAIL'),                     # no threshold: a FAIL is a FAIL
+            ({'verdict': 'FAIL', 'findings': P3}, [], 0, 'ACCEPTED'),                 # no flag: the default P2 tolerates a P3
+            ({'verdict': 'PASS', 'findings': P2}, [], 5, 'FAIL'),                     # forge overrides a PASS that lists a P2
+            ({'verdict': 'PASS', 'findings': P3}, [], 0, 'PASS'),                     # tolerated: kept as a known issue
             ({'verdict': 'FAIL', 'findings': P3}, ['--qa-threshold', 'P2'], 0, 'ACCEPTED'),
             ({'verdict': 'FAIL', 'findings': P1 + '\n' + P3}, [], 5, 'FAIL'),         # P1 beats the persisted P2
             ({'verdict': 'FAIL', 'findings': UNLABELLED}, [], 5, 'FAIL'),             # unlabelled is never tolerated
             ({}, [], 0, 'PASS'),
+            ({'verdict': 'PASS', 'findings': P3}, ['--qa-threshold', 'P3'], 5, 'FAIL'),   # persists P3: keep it last
         ]
         seen = []
         for said, args, code, verdict in cases:
@@ -206,6 +210,12 @@ class ReviewTests(unittest.TestCase):
                 if code == 5:
                     self.assertIn('follow-up', r.stdout)
                     self.assertIn('retry', r.stdout)
+                if said.get('verdict') == 'PASS' and verdict == 'FAIL' and not args:
+                    self.assertIn('the reviewer said PASS, but listed a CONFIRMED finding at or above the P2 threshold'
+                                  ' — forge made it FAIL', r.stdout)
+                    self.assertTrue(self.text(out, 'qa.gate').startswith('P2\tfail'))
+                if said.get('verdict') == 'PASS' and verdict == 'PASS':
+                    self.assertIn('cosmetic naming', (out / 'known_issues.md').read_text())
                 if verdict == 'ACCEPTED':
                     self.assertIn('cosmetic naming', (out / 'known_issues.md').read_text())
                     self.assertTrue(self.text(out, 'qa.gate').startswith('P2\taccept'))
