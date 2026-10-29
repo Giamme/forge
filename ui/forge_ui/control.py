@@ -40,6 +40,9 @@ REPO_CONFIG_KEYS = ('repo.verify', 'repo.setup', 'repo.verify-subset')
 CONFIG_KEYS = REPO_CONFIG_KEYS
 _DECIDE_KEY = re.compile(r'^decide\.gate\.([A-Za-z0-9_-]+?)(?:\.(provider|model))?$')
 DETAIL_MAX = 300
+# A refusal (exit 3) is forge's own message, kept whole: what was refused and why, then what to run
+# instead (`forge decide replay ...`, `--force`), with a provider and model of up to 256 characters each.
+REFUSAL_MAX = 2000
 TIMEOUT_DETAIL = 'the operation may have partly completed; reload to see the current state'
 
 # forge control's exit codes (scripts/forge-control.py) and the HTTP status each one gets.
@@ -159,9 +162,17 @@ def _stdout_object(text):
     return value if isinstance(value, dict) else None
 
 
+def _lines(text):
+    return [line.strip() for line in text.splitlines() if line.strip()]
+
+
 def _last_line(text):
-    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    lines = _lines(text)
     return lines[-1][:DETAIL_MAX] if lines else ''
+
+
+def _message(text):
+    return '\n'.join(_lines(text))[:REFUSAL_MAX]
 
 
 def map_exit(result):
@@ -176,7 +187,8 @@ def map_exit(result):
             return 502, {'error': 'bad gateway', 'detail': 'the forge CLI printed no JSON object'}
         return 200, obj
     status, error = _EXITS.get(result.code, (502, 'bad gateway'))
-    body = {'error': error, 'detail': _last_line(result.stderr) or f'the forge CLI exited {result.code}'}
+    detail = _message(result.stderr) if result.code == 3 else _last_line(result.stderr)
+    body = {'error': error, 'detail': detail or f'the forge CLI exited {result.code}'}
     if obj is not None:
         body['result'] = obj
     return status, body

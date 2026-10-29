@@ -80,12 +80,14 @@ dismissal-store error, 3 busy.
 ### `forge decide`
 
 Per-gate decision models. The setup — precedence, what each gate does, budgets, the privacy
-floor and migration — is in [Decision models](../references/decision-models.md#setup).
+floor and migration — is in [Decision models](../references/decision-models.md#setup). How a
+gate is measured before it turns on (labels, `report`, `replay`, the promotion rule and the
+request cache) is in [Measuring a gate](../references/decision-models.md#measuring-a-gate).
 
 | Command | Does |
 |---|---|
-| `status [--repo DIR] [--json]` | each gate's effective mode and which level set it, providers (`present` or `missing` key), caps and today's spend, privacy floor. Never writes |
-| `gate GATE off\|shadow\|on [--provider P] [--model M] [--profile NAME \| --repo DIR]` | set one gate. Gates: `drift`, `forward`, `prompt`, `memory-curate`, `memory-slice`, `memory-stale`, `verify-discover`. With no `--provider`, a gate uses the legacy transport (`jev.json`'s endpoint with `TYPESAFE_API_KEY` or `jev.json`'s key, or Cloudflare for a site `jev.json` maps there); name a provider to choose where requests go. Without `--repo`, writes the user file and migrates `jev.json` first. `--profile` writes that profile in the user file |
+| `status [--repo DIR] [--json]` | each gate's effective mode and which level set it, providers (`present` or `missing` key), caps and today's spend, privacy floor. A gate that is `on` without a passing replay is shown as `forced`. Never writes |
+| `gate GATE off\|shadow\|on [--force] [--provider P] [--model M] [--profile NAME \| --repo DIR]` | set one gate. Gates: `drift`, `forward`, `prompt`, `memory-curate`, `memory-slice`, `memory-stale`, `verify-discover`. With no `--provider`, a gate uses the legacy transport (`jev.json`'s endpoint with `TYPESAFE_API_KEY` or `jev.json`'s key, or Cloudflare for a site `jev.json` maps there); name a provider to choose where requests go. Without `--repo`, writes the user file and migrates `jev.json` first. `--profile` writes that profile in the user file. `on` needs a passing replay for the provider and model it resolves to, else it is refused (exit 3). `--force` turns it on anyway, and it shows as forced (see [measuring a gate](../references/decision-models.md#promotion)) |
 | `provider add jev\|clef --name N [--url U] [--account-id A] [--model M] [--context N] [--price X] [--deadline S] [--local] [--key-stdin \| --key-env VAR]` | add a hosted or local provider. A key is never an argument: one line on stdin or a terminal prompt is written to `keys/<N>.key` mode `0600`, or `--key-env VAR` stores the variable name and reads it at request time |
 | `provider list [--json]` | configured providers |
 | `provider rm N` | remove a provider no gate uses, and the `keys/<N>.key` it wrote |
@@ -93,10 +95,12 @@ floor and migration — is in [Decision models](../references/decision-models.md
 | `privacy never-send\|allow --repo DIR` | set or remove that repo's privacy floor. `never-send` turns every gate off for that repo and beats every other level |
 | `doctor [--live] [--json] [--repo DIR]` | stale settings. Exit 1 on a problem. `--live` probes each provider unless the privacy floor is on |
 | `migrate [--force] [--json]` | copy `jev.json` into the user `decide.json`, once. `--force` replaces that file from `jev.json` again |
+| `report [--runs N] [--run DIR]... [--site S] [--all] [--json]` | per site, over the newest N runs of this repo (default 10; `--run` names directories, `--all` reads every repo): calls, cache hits, errors, skips, tokens, cost, and how often the gate fired and was right on the free labels. Read-only, asks no model. See [measuring a gate](../references/decision-models.md#forge-decide-report) |
+| `replay --site S --provider P --model M [--runs N] [--send] [--workers 3] [--seed 7] [--margin 0.02] [--json]` | re-asks the site's labelled requests on provider P and model M. Without `--send` it is a dry run that sends nothing; with it, it asks the unanswered requests, judges the answers on the newer half of the runs, and records the result that `gate on` reads. Charged to no budget. See [measuring a gate](../references/decision-models.md#forge-decide-replay) |
 
 `--repo` defaults to `FORGE_DECIDE_REPO`, else the git top level. Exit 0 ok, 2 usage, 1 a
-failed doctor check or a config file that cannot be read. `forge config set` writes the same
-user-level gate fields as `decide.gate.<gate>`, `decide.gate.<gate>.provider` and
+failed doctor check or a config file that cannot be read, 3 a refused `gate on`.
+`forge config set` writes the same user-level gate fields as `decide.gate.<gate>`, `decide.gate.<gate>.provider` and
 `decide.gate.<gate>.model`.
 
 A write to the user file migrates `jev.json` first: `gate` without `--repo`, `provider add`,

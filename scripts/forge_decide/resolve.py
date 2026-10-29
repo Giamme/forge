@@ -1,6 +1,6 @@
 """Resolve every gate's effective setting from the six configuration levels.
 
-    resolve(repo=None, *, profile=None, env=None, flags=None) -> dict
+    resolve(repo=None, *, profile=None, env=None, flags=None, user_data=None, repo_data=None) -> dict
 
 Levels, lowest to highest; each sets a gate's fields only where it names them:
 
@@ -37,8 +37,13 @@ Choices the interface left open:
 - A user decide.json that exists but is malformed counts as an empty user level, not as
   missing: the legacy level does not come back because the file broke.
 - A gate may be a bare mode string or an object. A null field counts as not set. Thresholds
-  merge name by name across levels. Budgets are numbers >= 0; null means not set.
+  merge name by name across levels. `force` (a bool: the gate was turned on with --force, without
+  a passing replay) is kept like any other field, but is not a value the repo and user files can
+  disagree on, so it is never reported as shadowed. Budgets are numbers >= 0; null means not set.
 - `repo=None` means no repo level and no privacy floor.
+- `user_data` / `repo_data` stand in for the user / repo decide.json as a writer is about to
+  save it (`user_data` counts as an existing user file), so the effect of a write can be
+  checked before anything is written.
 - `profile` in the result is the selected profile's name, or None when none was selected or
   the name was not found.
 - A profile in the user file sets all of `budget`; one in the repo file sets only `run_*`,
@@ -66,7 +71,7 @@ PRIVACY_FLOOR = 'never-send'
 
 def _gate_default() -> dict:
     return dict(mode='off', source='default', provider=None, model=None, thresholds={},
-                thresholds_model=None, skip=None)
+                thresholds_model=None, skip=None, force=False)
 
 
 def _result(errors: list) -> dict:
@@ -124,6 +129,12 @@ def _parse_gates(obj, label: str, errors: list) -> dict:
                 parsed[field] = field_value
             else:
                 errors.append(f'{label}: gates.{name}.{field} is not a string')
+        force = value.get('force')
+        if force is not None:
+            if isinstance(force, bool):
+                parsed['force'] = force
+            else:
+                errors.append(f'{label}: gates.{name}.force is not true or false')
         thresholds = value.get('thresholds')
         if thresholds is not None:
             if not isinstance(thresholds, dict):
@@ -241,14 +252,14 @@ def _shadowed(repo_gates: dict, repo_budget: dict, user_gates: dict, user_budget
     return out
 
 
-def _resolve(repo, profile, env, flags, errors: list) -> dict:
+def _resolve(repo, profile, env, flags, errors: list, user_data=None, repo_data=None) -> dict:
     result = _result(errors)
 
     # 2. repo
-    repo_data, repo_label = {}, None
+    override, repo_data, repo_label = repo_data, {}, None
     if repo is not None:
         repo_label = str(repo_path(repo))
-        repo_data, error = load_repo(repo)
+        repo_data, error = (override, None) if override is not None else load_repo(repo)
         if error:
             errors.append(error)
         if 'providers' in repo_data:
@@ -269,8 +280,8 @@ def _resolve(repo, profile, env, flags, errors: list) -> dict:
 
     # 3. user, or legacy in its place
     user_label = str(user_path())
-    migrated = user_path().exists()
-    user_data, error = load_user()
+    migrated = user_data is not None or user_path().exists()
+    user_data, error = (user_data, None) if user_data is not None else load_user()
     if error:
         errors.append(error)
     user_gates, user_budget = {}, {}
@@ -366,7 +377,7 @@ def _resolve(repo, profile, env, flags, errors: list) -> dict:
     return result
 
 
-def resolve(repo=None, *, profile=None, env=None, flags=None) -> dict:
+def resolve(repo=None, *, profile=None, env=None, flags=None, user_data=None, repo_data=None) -> dict:
     """Every gate's effective mode, provider, model and thresholds, the budget, the privacy
     floor, the selected profile, the repo values the user file shadows, and every problem
     found on the way. `env` defaults to os.environ. Never raises: an unexpected failure
@@ -374,7 +385,7 @@ def resolve(repo=None, *, profile=None, env=None, flags=None) -> dict:
     env = os.environ if env is None else env
     errors: list = []
     try:
-        return _resolve(repo, profile, env, flags, errors)
+        return _resolve(repo, profile, env, flags, errors, user_data, repo_data)
     except Exception as exc:
         errors.append(f'resolve failed: {exc!r}; every gate off')
         return _result(errors)

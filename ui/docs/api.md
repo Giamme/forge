@@ -1257,8 +1257,10 @@ routes, so their configuration matters too.
 running is `409 {"error": "busy"}`, without reaching the CLI; other runs are not held up.
 
 **Errors.** For a CLI that exits non-zero the answer is `{"error", "detail", "result"?}`: `detail`
-is the last line of its stderr (at most 300 characters; the rest of stderr is not echoed) and
-`result` the object its stdout holds, when that parses as one.
+is the last line of its stderr (at most 300 characters; the rest of stderr is not echoed), except for
+a refusal (exit 3): forge's own message, kept whole (its non-blank lines, joined by `\n`, at most 2000
+characters), since it names what was refused and why, then what to run instead. `result` is the
+object its stdout holds, when that parses as one.
 
 | CLI exit | Status | `error` |
 |---|---|---|
@@ -1370,7 +1372,11 @@ The repository is the run's own `repo` file (first line, an existing absolute di
 `409`), never a client field. `GET` runs `config show --repo <repo> --json` and answers with its
 object. The `decide` block is the `forge decide status --json` object for that repo, plus `ready`
 on each gate (`true` when the gate is `shadow` or `on`, nothing skips it, and its provider is
-local or has a key on file). Provider objects keep the status fields except `key`, `key_source`,
+local or has a key on file), plus two fields from `forge decide status --json`: `forced` (bool: the
+gate is `on` and has no passing replay for its provider and model) and `replay` (`{"provider",
+"model", "passes", "at"}`, `at` in epoch seconds, or `null` when `forge decide replay` has recorded
+none). An older forge sends neither; the page reads that as `forced: false` and `replay: null`. The
+Settings page shows `forced` and `replayed <date>` or `replay failed` as tags on the gate. Provider objects keep the status fields except `key`, `key_source`,
 `key_file` and `key_env`: a key never reaches this response. `jev.enabled` is gone.
 
 `POST` takes `{"run": <key>, "key": one of repo.verify, repo.setup, repo.verify-subset,
@@ -1378,7 +1384,10 @@ decide.gate.<gate>, decide.gate.<gate>.provider, decide.gate.<gate>.model, "valu
 (exactly one of the two; any other field, `repo` included, is a `400`) and runs
 `config set <key> <value> --repo <repo> --json` or `config unset <key> --repo <repo> --json`.
 The gates are `drift`, `forward`, `prompt`, `memory-curate`, `memory-slice`, `memory-stale` and
-`verify-discover`. `decide.gate.<gate>` takes `off`, `shadow` or `on`. A provider or model is a
+`verify-discover`. `decide.gate.<gate>` takes `off`, `shadow` or `on`. Turning a gate `on` with no passing replay for
+its provider and model makes the CLI exit 3, which answers `409 {"error": "refused", "detail": <the
+CLI's message>}`; the message names `forge decide replay` and `--force` and the page shows it whole.
+A provider or model is a
 non-empty single line of at most 256 characters, with no control characters and no leading or
 trailing whitespace, and not starting with `-`. Those three keys write the user level through
 `forge decide gate` and cannot be unset (the answer says to set the mode to off). A repo file

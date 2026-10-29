@@ -325,16 +325,18 @@ class ArgvAndMappingTests(ControlApiCase):
     def test_exit_codes_map_to_statuses_and_keep_the_result(self):
         result = {'ok': False, 'why': 'x'}
         body = {'action': 'unpin', 'task': 'page'}
-        long = 'z' * 500
-        cases = [(2, 400, 'invalid'), (3, 409, 'refused'), (4, 500, 'failed'), (1, 502, 'bad gateway'),
-                 (7, 502, 'bad gateway'), (127, 502, 'bad gateway')]
-        for code, status, error in cases:
-            self.behave(code=code, stdout=json.dumps(result), stderr='first line\nlast line\n')
+        long = 'z' * 3000
+        # A refusal (exit 3) keeps its whole message: what was refused, then what to run instead.
+        cases = [(2, 400, 'invalid', 'last line', 300), (3, 409, 'refused', 'first line\nlast line', 2000),
+                 (4, 500, 'failed', 'last line', 300), (1, 502, 'bad gateway', 'last line', 300),
+                 (7, 502, 'bad gateway', 'last line', 300), (127, 502, 'bad gateway', 'last line', 300)]
+        for code, status, error, detail, cap in cases:
+            self.behave(code=code, stdout=json.dumps(result), stderr='first line\n\n  last line  \n')
             got, answer = self.post(body)
-            self.assertEqual((got, answer), (status, {'error': error, 'detail': 'last line', 'result': result}), code)
+            self.assertEqual((got, answer), (status, {'error': error, 'detail': detail, 'result': result}), code)
             self.behave(code=code, stdout='not json', stderr=long + '\n\n')
             got, answer = self.post(body)
-            self.assertEqual((got, answer), (status, {'error': error, 'detail': 'z' * 300}), code)
+            self.assertEqual((got, answer), (status, {'error': error, 'detail': 'z' * cap}), code)
             self.behave(code=code, stdout='[1, 2]')  # JSON, but not an object
             got, answer = self.post(body)
             self.assertEqual((got, 'result' in answer, answer['detail'] != ''), (status, False, True), code)

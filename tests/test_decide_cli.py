@@ -75,14 +75,14 @@ class StatusAndGateTests(DecideCliTestCase):
         self.assertEqual(data['gates']['drift']['source'], 'user')
         self.assertTrue(data['migrated'])
 
-        out = self.decide('gate', 'drift', 'on', '--repo', str(self.repo))
+        out = self.decide('gate', 'drift', 'on', '--repo', str(self.repo), '--force')
         self.assertIn('wins', out.stdout)
         data = self.status('--repo', str(self.repo))
         self.assertEqual(self.modes(data), dict({g: 'off' for g in GATES}, drift='shadow'))
         self.assertEqual(data['gates']['drift']['source'], 'user')
         self.assertEqual(data['shadowed'], [dict(key='gates.drift.mode', repo='on', user='shadow')])
         self.assertEqual(json.loads((self.repo / '.forge/decide.json').read_text())['gates'],
-                         dict(drift=dict(mode='on')))
+                         dict(drift=dict(mode='on', force=True)))
 
     def test_status_defaults_to_the_cwd_repo(self):
         self.decide('privacy', 'never-send', '--repo', str(self.repo))
@@ -170,7 +170,7 @@ class ProviderTests(DecideCliTestCase):
 
     def test_rm_refuses_while_a_gate_uses_it(self):
         self.decide('provider', 'add', 'jev', '--name', 'ts', '--key-stdin', stdin=KEY)
-        self.decide('gate', 'drift', 'on', '--provider', 'ts')
+        self.decide('gate', 'drift', 'on', '--provider', 'ts', '--force')
         self.assertEqual(self.status()['gates']['drift']['provider'], 'ts')
         out = self.decide('provider', 'rm', 'ts', code=2)
         self.assertIn('drift', out.stderr)
@@ -207,7 +207,7 @@ class BudgetAndPrivacyTests(DecideCliTestCase):
 
     def test_privacy_floor_beats_a_gate(self):
         self.decide('privacy', 'never-send', '--repo', str(self.repo))
-        out = self.decide('gate', 'drift', 'on', cwd=self.repo)
+        out = self.decide('gate', 'drift', 'on', '--force', cwd=self.repo)
         self.assertIn('privacy floor', out.stdout)
         data = self.status('--repo', str(self.repo))
         self.assertTrue(data['privacy']['floor'])

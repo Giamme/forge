@@ -59,6 +59,10 @@ for name in ('FORGE_JEV_ENV_CAPTURED', 'FORGE_JEV_ENV_KILL', 'FORGE_JEV_ENV_ROUT
 # outer plan's counter. A test that needs one sets it itself.
 for name in [name for name in os.environ if name.startswith('FORGE_DECIDE_')]:
     os.environ.pop(name, None)
+# The decision-model request cache answers a repeated question from the run dir, so tests that
+# ask the same thing twice and count requests would see one. They start with it off;
+# test_decide_cache turns it on.
+os.environ['FORGE_DECIDE_CACHE'] = 'off'
 
 # `forge ui open` starts a detached server that outlives the command, and keeps its state
 # under XDG_STATE_HOME. Tests get a private state home, never open a browser, ask for a free
