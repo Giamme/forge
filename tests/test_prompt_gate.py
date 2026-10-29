@@ -262,6 +262,33 @@ class LabelTests(LabelsCase):
         self.review('VERDICT: PASS\n')
         self.assertEqual(self.labels(), [dict(prompt_adequacy=True)])
 
+    def test_an_unchanged_prompt_longer_than_the_scored_cut_is_not_a_rewrite(self):
+        # cmd_score_plan sends the first PROMPT_CHARS; the plan snapshot holds all of it.
+        from forge_jev.cli import PROMPT_CHARS
+        long = 'x' * (PROMPT_CHARS + 431)
+        self.plan(T0 - 10, dict(t1=long))
+        self.ask(prompt=long[:PROMPT_CHARS])
+        self.plan(T0 + 10, dict(t1=long))
+        self.ran()
+        self.review('VERDICT: PASS\n')
+        self.assertEqual(self.labels(), [dict(prompt_adequacy=False)])
+
+    def test_an_empty_scored_prompt_later_filled_in_is_true(self):
+        self.plan(T0 - 10, dict(t1=''))
+        self.ask(prompt='')
+        self.plan(T0 + 10, dict(t1='fix it, and say how the errors read'))
+        self.ran()
+        self.review('VERDICT: PASS\n')
+        self.assertEqual(self.labels(), [dict(prompt_adequacy=True)])
+
+    def test_an_empty_scored_prompt_left_empty_is_false(self):
+        self.plan(T0 - 10, dict(t1=''))
+        self.ask(prompt='')
+        self.plan(T0 + 10, dict(t1=''))
+        self.ran()
+        self.review('VERDICT: PASS\n')
+        self.assertEqual(self.labels(), [dict(prompt_adequacy=False)])
+
     def test_the_label_function_is_the_labellers_signature(self):
         self.assertEqual(label_prompt.label.__code__.co_varnames[:4], ('index', 'record', 'event', 'body'))
 

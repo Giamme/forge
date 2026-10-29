@@ -53,9 +53,11 @@ def _sent_back(plans, task) -> bool:
 
 
 def _text(index, plan, task) -> str:
-    """The prompt of `task` in a revision: its plan-event blob, '' without one."""
+    """The prompt of `task` in a revision as the gate saw prompts: its plan-event blob, cut to
+    the first PROMPT_CHARS (`cmd_score_plan` sends no more) and stripped; '' without one."""
+    from forge_jev.cli import PROMPT_CHARS
     row = (plan['d'].get('tasks') or {}).get(task)
-    return index.store.text(row.get('prompt') if isinstance(row, dict) else None).strip()
+    return index.store.text(row.get('prompt') if isinstance(row, dict) else None)[:PROMPT_CHARS].strip()
 
 
 def _started(index, first, run, task):
@@ -72,8 +74,9 @@ def _rewritten(index, plans, task, scored, asked, started):
     scored: the last revision holding the task at or before `started`, if later than the
     request, has other text than `scored` (state.prompt). Snapshots are taken after the gate
     scores, so the request's own text, not an earlier snapshot, is the baseline. None when
-    that cannot be told: no scored text, or an unknown start."""
-    if not scored or started is None:
+    that cannot be told: the request has no prompt text (`scored` None; an empty string is a
+    prompt the gate scored empty), or the start is unknown."""
+    if scored is None or started is None:
         return None
     held = [plan for plan in plans if task in (plan['d'].get('tasks') or {}) and plan['ts'] <= started]
     if not held or held[-1]['ts'] <= asked:
@@ -109,6 +112,6 @@ def label(index, record, event, body) -> dict:
     if any(AMBIGUOUS.search(item.get('text') or '') for item in found):
         return {QID: True}
     scored = state.get('prompt')
-    rewritten = _rewritten(index, plans, task, scored.strip() if isinstance(scored, str) else '',
+    rewritten = _rewritten(index, plans, task, scored.strip() if isinstance(scored, str) else None,
                            event['ts'], _started(index, first, run, task))
     return {} if rewritten is None else {QID: rewritten}
