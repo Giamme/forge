@@ -66,6 +66,24 @@ class RetryTests(unittest.TestCase):
         self.assertNotIn('forge: the reviewer', (p / 'tasks/a/retry_findings.md').read_text())
         self.assertNotIn('forge: the reviewer', (p / 'tasks/a/dwarf.input').read_text())
 
+    def test_a_later_attempt_that_never_reached_the_gate_does_not_inherit_the_flip_note(self):
+        # Attempt 1 is a flipped PASS; attempt 2's own FAIL is invalidated before the gate runs.
+        # The retry after it carries attempt 2's report, which no forge decision touched.
+        p = self.plan_of([('a', '-', 'a.txt')])
+        self.scenario({'a.qa.1': {'verdict': 'PASS', 'findings': '- [P2][CONFIRMED] a.txt:1 — edge case breaks'},
+                       'a.dwarf.2': {'content': 'fixed'},
+                       'a.qa.2': {'verdict': 'FAIL', 'findings': '- [P1][CONFIRMED] a.txt:1 — still broken'},
+                       'a.dwarf.3': {'content': 'fixed again'}})
+        self.run_script('forge-parallel.sh', 'run', p)
+        self.env['MUTATE'] = '1'
+        self.run_script('forge-parallel.sh', 'retry', p, 'a')
+        self.assertEqual(self.text(p, 'tasks/a/status'), 'INVALIDATED')
+        del self.env['MUTATE']
+        self.run_script('forge-parallel.sh', 'retry', p, 'a')
+        carried = (p / 'tasks/a/retry_findings.md').read_text()
+        self.assertIn('still broken', carried)
+        self.assertNotIn('forge: the reviewer', carried)
+
     def test_without_the_flag_the_failure_still_waits_for_a_human(self):
         p = self.plan_of([('a', '-', 'a.txt'), ('b', 'a', 'b.txt')])
         self.scenario({'a.qa.1': {'verdict': 'FAIL'}})

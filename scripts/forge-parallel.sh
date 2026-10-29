@@ -821,6 +821,10 @@ do_task_body() (
     attempt=$(( attempt + 1 ))
     echo "$attempt" > "$tdir/attempt"
   fi
+  # The gate's decision belongs to the review that made it. A review that ends before the gate
+  # (invalidated, timed out, no changes) must not leave an earlier attempt's decision for the
+  # next retry note or `accept` to read; prepare_retry has already carried it forward.
+  rm -f "$tdir/qa.gate" "$tdir/known_issues.md"
 
   # The base is pinned per task on first creation and reused by every retry. The
   # integration branch moves as later waves land, so re-reading the run-level
