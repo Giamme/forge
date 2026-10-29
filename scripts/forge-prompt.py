@@ -20,6 +20,17 @@ differ from the last round's. Then review the full task diff below: the changes 
 round are where new problems are most likely."""
 
 
+# The dwarf's heading for the retry findings, by where they came from (retry_findings.source).
+# An unknown word reads as a review, as a plan from before the source existed does.
+RETRY_HEADINGS = {
+    'review': 'Your previous attempt was reviewed and rejected',
+    'prereview': "Your previous attempt failed forge's tests before any review",
+    'bounce': 'Your previous attempt left blocking review findings unaddressed',
+    'message': 'Your previous attempt said it did not finish',
+    'answer': 'The user answered your question',
+}
+
+
 def read(path: str | None, errors: str = 'strict') -> str:
     if path and Path(path).is_file():
         with Path(path).open(newline="", errors=errors) as source:
@@ -33,8 +44,14 @@ def carried(text: str) -> str:
     return text.replace('```diff', '```text')
 
 
-def qa_round(findings: str, diff: str | None, span: str | None, stat: str | None, reply: str | None) -> str:
-    parts = ['## Findings from the previous review round\n' + carried(findings).rstrip('\n') + '\n\n' + QA_ROUND_NOTE]
+def qa_round(findings: str, diff: str | None, span: str | None, stat: str | None, reply: str | None,
+             source: str = 'review') -> str:
+    if source == 'review':
+        head = '## Findings from the previous review round\n'
+    else:
+        head = ('## forge sent the previous attempt back without a review (' + source
+                + '); what it was told:\n')
+    parts = [head + carried(findings).rstrip('\n') + '\n\n' + QA_ROUND_NOTE]
     # A git diff carries raw source bytes, so a file that is not UTF-8 must not abort the prompt.
     patch = read(diff, 'replace')
     if patch:
@@ -59,17 +76,19 @@ def context(
     requirements: str, approach: str | None = None, capsule: str | None = None,
     retry: str | None = None, goal: str | None = None, memories: tuple[str, ...] = (),
     role: str = 'dwarf', retry_diff: str | None = None, retry_range: str | None = None,
-    retry_stat: str | None = None, reply: str | None = None,
+    retry_stat: str | None = None, reply: str | None = None, retry_source: str = 'review',
 ) -> str:
+    if retry_source not in RETRY_HEADINGS:
+        retry_source = 'review'
     chunks = []
     for title, path in [('Ownership and baseline', capsule), ('Overall goal', goal),
                         ('Complete implementation requirements', requirements),
                         ('Intended approach', approach),
-                        ('Your previous attempt was reviewed and rejected', retry)]:
+                        (RETRY_HEADINGS[retry_source], retry)]:
         data = read(path) if path and Path(path).is_file() else ''
         if data:
             if role == 'qa' and path == retry:
-                chunks.append(qa_round(data, retry_diff, retry_range, retry_stat, reply).rstrip('\n'))
+                chunks.append(qa_round(data, retry_diff, retry_range, retry_stat, reply, retry_source).rstrip('\n'))
             else:
                 chunks.append('## ' + title + '\n' + data)
     # Memory injection emits headings and prose around bullet facts. Union only
@@ -97,6 +116,7 @@ if __name__ == '__main__':
     parser.add_argument('--retry-range')
     parser.add_argument('--retry-stat')
     parser.add_argument('--reply')
+    parser.add_argument('--retry-source', default='review')
     args = vars(parser.parse_args())
     args['memories'] = args.pop('memory')
     print(context(**args), end='')
