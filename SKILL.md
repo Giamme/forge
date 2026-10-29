@@ -111,6 +111,10 @@ For explanation requests, explain the workflow without spending model quota.
    Pass the recorded Fractal choice and requested limits to the execution runner; tier
    pools go to solo directly or decomposed `plan`. Fractal does not replace planner dispatch.
    `--timeout` applies to decomposed runs too (kept in the plan).
+   When `plan` exits 4, the prompt or coverage gate sent work back: read `<plan>/plan.sendback.md`,
+   rewrite each listed task's `prompt.md`, and extend or add tasks for each uncovered
+   requirement (with `--planner`, re-dispatch it with that file appended), then run `plan`
+   again, once. Forge never sends the same task or requirement back twice.
 4. Runners default to summary output. Read each `dwarf.last` and `qa.last` once; retrieve raw
    logs only when needed. Report findings faithfully, and identify verification
    limits. Source or review mutations invalidate acceptance. Missing verdicts are UNKNOWN.

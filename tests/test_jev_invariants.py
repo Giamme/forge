@@ -107,7 +107,13 @@ class InvariantOneTests(PlanInvariantCase):
         (config / 'forge' / 'decide.json').write_text(json.dumps(dict(version=1, gates=modes)))
         env = dict(FORGE_JEV_FIXTURES=str(fixtures), XDG_CONFIG_HOME=str(config),
                    TYPESAFE_API_KEY='ts-test-key')
+        # Prompt `on` sends the vague task back once (exit 4, before the table); the plan goes
+        # through on the second call, and both calls' notes are the output.
+        sent = self._run(plan, '--dwarf-low', 'luna', '--qa', 'opus', env=env)
+        self.assertEqual(sent.returncode, 4, sent.stderr)
         result = self._run(plan, '--dwarf-low', 'luna', '--qa', 'opus', env=env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        result.stdout, result.stderr = sent.stdout + result.stdout, sent.stderr + result.stderr
         off = self._run(plain, '--dwarf-low', 'luna', '--qa', 'opus', env=dict(env, FORGE_JEV='off'))
         # The same plan with Jev off: no request, no note.
         self.assertNotIn('jev:', off.stdout + off.stderr)
@@ -127,7 +133,7 @@ class InvariantOneTests(PlanInvariantCase):
     def test_jev_on_drift_prints_the_notes_and_changes_exactly_the_added_files_column(self):
         plan, plain, output = self._gated_plans('on')
         self.assertIn('jev: a1 — the prompt may be too vague for QA to judge correctness against', output)
-        self.assertIn('jev: a1 may also edit undeclared files: src/b.py', output)
+        self.assertIn('drift added to a1: src/b.py', output)
         self.assertNotIn('suggests', output)
         gated = [l.split('\t') for l in (plan / 'tasks.tsv').read_text().splitlines()]
         kept = [l.split('\t') for l in (plain / 'tasks.tsv').read_text().splitlines()]
