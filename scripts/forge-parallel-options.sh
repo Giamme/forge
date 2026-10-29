@@ -25,7 +25,9 @@
 #                                                                  linear:S,T[,C] or list:a,b,... (default exp:60)
 #   --infra-fallback        run               $PLAN/infra_fallback a dwarf's capacity stop moves it to the next healthy
 #   --no-infra-fallback                                            model of its tier pool (off by default)
-#   --qa-threshold Pn|none  run retry         $PLAN/qa_threshold   least severe finding that still blocks
+#   --qa-threshold Pn|none|default  plan run retry review  $PLAN/qa_threshold  least severe CONFIRMED
+#                                                                  finding that still blocks; none (or off) =
+#                                                                  P3, default removes the file (P2)
 #   --verify-retries N      run retry integrate  $PLAN/verify_retries  reruns of a failed verify command
 #   --escalate-after N      run retry         $PLAN/escalate_after failed attempts on one model before the
 #                                                                  next goes a tier up (default 3; 0 = off)
@@ -101,11 +103,13 @@ forge_pp_flag() {
       PP_MSG="$(python3 "$SKILL_DIR/scripts/forge-schedule.py" backoff-check "${2:-}" 2>&1)" || die "${PP_MSG#forge: }"
       printf '%s\n' "$2" > "$plan/infra_backoff" ;;
     --qa-threshold)
-      case "$cmd" in run|retry|review) ;; *) return 1 ;; esac
+      case "$cmd" in plan|run|retry|review) ;; *) return 1 ;; esac
+      # none (or off) means nothing is tolerated, the same as P3; no file means the default.
       case "${2:-}" in
-        P0|P1|P2|P3) printf '%s' "$2" > "$plan/qa_threshold" ;;
-        none|off) rm -f "$plan/qa_threshold" ;;
-        *) die "--qa-threshold needs P0, P1, P2, P3 or none" ;;
+        P0|P1|P2|P3) printf '%s' "$2" > "$plan/qa_threshold" || die "could not write $plan/qa_threshold" ;;
+        none|off) printf 'none' > "$plan/qa_threshold" || die "could not write $plan/qa_threshold" ;;
+        default) rm -f "$plan/qa_threshold" ;;
+        *) die "--qa-threshold needs P0, P1, P2, P3, none or default" ;;
       esac ;;
     --escalate-after)
       case "$cmd" in run|retry) ;; *) return 1 ;; esac

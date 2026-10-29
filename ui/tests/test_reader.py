@@ -15,7 +15,7 @@ from forge_ui.reader import Catalog, detail, discover, run_key, summarize
 FIXTURE = Path(__file__).parent / 'fixtures' / 'plan-full'
 SOLO = Path(__file__).parent / 'fixtures' / 'solo-full'
 LEGACY = Path(__file__).parent / 'fixtures' / 'solo-legacy'
-NEW_SETTINGS = dict(max_parallel=None, qa_threshold=None, escalate_after=None, verify_retries=None, final_qa=None)
+NEW_SETTINGS = dict(max_parallel=None, qa_threshold='P2', qa_threshold_source='default', escalate_after=None, verify_retries=None, final_qa=None)
 SOLO_SETTINGS = dict(explore=None, shadow_rate=None, shadow_qa=None, timeout=None, **NEW_SETTINGS)
 # A reply with verdict lines and no finding blocks.
 NO_FINDINGS = dict(P0=0, P1=0, P2=0, P3=0, unlabelled=0, plausible=0, confirmed=0, worst=None)
@@ -124,6 +124,19 @@ class ReaderTests(unittest.TestCase):
         self.assertFalse(statuses['graph']['accepted'])
         for value in (summary, data):
             json.dumps(value, allow_nan=False)
+
+    def test_threshold_reads_as_effective_level_with_source(self):
+        plan = self.copy_plan()
+        solo = Path(shutil.copytree(SOLO, self.base / 'solo'))
+        for run in (plan, solo):
+            (run / 'qa_threshold').unlink(missing_ok=True)
+        for text, want in ((None, ('P2', 'default')), ('P1\n', ('P1', 'set')), ('none\n', ('P3', 'set')),
+                           ('garbage\n', ('P2', 'default')), ('P9\n', ('P2', 'default'))):
+            for run in (plan, solo):
+                if text is not None:
+                    self.write(run / 'qa_threshold', text)
+                settings = detail(run)['settings']
+                self.assertEqual((settings['qa_threshold'], settings['qa_threshold_source']), want, (run.name, text))
 
     def test_missing_optional_files(self):
         self.write(self.base / 'tasks.tsv', 'one\t-\tlow\t-\t\t-\tTask\n')

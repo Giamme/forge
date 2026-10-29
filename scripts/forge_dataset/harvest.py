@@ -508,6 +508,16 @@ def task_event(attempt: Path, tdir: Path, rc, prov: dict, src: str = 'live') -> 
                 attempt=number, parent=prov.get('parent'), inv=prov.get('inv'), data=data)
 
 
+def effective_threshold(plan: Path):
+    """The blocking threshold a plan ran with and whether the plan set it: file, else the default."""
+    value = (first_line(plan / 'qa_threshold') or '').strip().upper() if (plan / 'qa_threshold').exists() else ''
+    if value == 'NONE':
+        value = 'P3'
+    if value in ('P0', 'P1', 'P2', 'P3'):
+        return value, 'set'
+    return contract().DEFAULT_THRESHOLD, 'default'
+
+
 def solo_event(attempt: Path, run: Path, rc, prov: dict, src: str = 'live') -> dict:
     before = prov.get('files')
     made = lambda name: produced(run, before, name)
@@ -521,6 +531,7 @@ def solo_event(attempt: Path, run: Path, rc, prov: dict, src: str = 'live') -> d
         guard=(text(run / 'guard.txt') or '').splitlines() if made('guard.txt') else [],
         start_tree=first_line(run / 'start.tree') if made('start.tree') else None,
         reviewed_tree=first_line(run / 'reviewed.tree') if made('reviewed.tree') else None,
+        gate=first_line(run / 'qa.gate') if made('qa.gate') else None,
         produced=sorted(n for n in WATCHED if made(n)), children=children(run, attempt.name),
         **(diff_summary(diff) if diff is not None else dict(changed_files=[], numstat={}, binary=[], patch_key=None)),
     )
@@ -531,6 +542,7 @@ def solo_event(attempt: Path, run: Path, rc, prov: dict, src: str = 'live') -> d
         request=put_file(run / 'request.md', 'prompt'),
         dwarf_memory=put_file(run / 'dwarf.memory') if made('dwarf.memory') else None,
         qa_memory=put_file(run / 'qa.memory') if made('qa.memory') else None,
+        known_issues=put_file(run / 'known_issues.md') if made('known_issues.md') else None,
     )
     return dict(rid=attempt.name, kind='attempt', ts=prov.get('wall_ended') or time.time(), src=src,
                 run=prov.get('run'), run_id=prov.get('run_id'), mode='solo', task=None, attempt=number,
@@ -688,6 +700,7 @@ def plan_event(plan: Path, prov: dict, src: str = 'live', inventory: bool = True
     inputs = json.dumps([text(plan / 'goal.txt'), text(plan / 'tasks.tsv'), text(declared_path),
                          {t: [r['prompt'], r['approach']] for t, r in per_task.items()}] + ([later] if later else []),
                         sort_keys=True, default=str)
+    threshold, threshold_source = effective_threshold(plan)
     snapshot_excerpts = decision_snapshot(repo, rows, head) if repo else None
     listing = _git(repo, 'ls-tree', '-r', '--name-only', head) if inventory and repo and head else None
     data = dict(
@@ -698,9 +711,9 @@ def plan_event(plan: Path, prov: dict, src: str = 'live', inventory: bool = True
         pools=read_json(plan / 'fractal-routing.json'), jev_selection=read_json(plan / 'jev-selection.json'),
         fractal_selection=read_json(plan / 'fractal-selection.json'),
         jev_coupling=read_json(plan / 'jev-coupling.json'),
-        options={name: first_line(plan / name) for name in ('qa_threshold', 'verify_retries', 'timeout', 'final_qa',
+        options=dict({name: first_line(plan / name) for name in ('verify_retries', 'timeout', 'final_qa',
                                                             'shadow_qa', 'shadow_rate', 'explore', 'reviewer_session')
-                 if (plan / name).exists()},
+                 if (plan / name).exists()}, qa_threshold=threshold, qa_threshold_source=threshold_source),
         flags=sorted(name for name in ('no_memory', 'no_ripwire', 'yolo_dwarf', 'yolo_qa') if (plan / name).exists()),
         blobs=blobs(goal=put_file(plan / 'goal.txt'), request=put_file(plan / 'request.md', 'prompt'),
                     tasks=put_file(plan / 'tasks.tsv'), tasks_declared=put_file(declared_path),

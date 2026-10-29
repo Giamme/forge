@@ -2,7 +2,7 @@
 contract and the verify-coverage warning, through forge-parallel.sh with the fake CLI.
 
 Unit coverage of the gate/contract/coverage modules lives in test_qa.py and
-test_verify_coverage.py; this file proves they are wired in and change nothing by default."""
+test_verify_coverage.py; this file proves they are wired in, at the default P2 threshold and at a set one."""
 import json
 from pathlib import Path
 import unittest
@@ -52,12 +52,61 @@ class PolicyTests(unittest.TestCase):
         self.assertIn('known issues accepted', r.stdout)
         self.assertIn('tasks/a/known_issues.md', r.stdout)
 
-    def test_without_a_threshold_the_same_review_still_fails(self):
+    def test_without_a_threshold_a_fail_made_only_of_p3_findings_is_accepted(self):
         p, r = self.one(P3)
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertTrue((p / 'tasks/a/merged').exists())
+        self.assertIn('cosmetic problem', (p / 'tasks/a/known_issues.md').read_text())
+        self.assertTrue((p / 'tasks/a/qa.gate').read_text().startswith('P2\taccept'))
+        self.assertFalse((p / 'qa_threshold').exists())
+
+    def test_a_pass_listing_a_confirmed_p2_is_made_fail_and_retried(self):
+        p = self.plan_of([('a', '-', 'a.txt')])
+        self.scenario({'a.qa.1': {'verdict': 'PASS', 'findings': P2}, 'a.dwarf.2': {'content': 'fixed'}})
+        r = self.run_script('forge-parallel.sh', 'run', p, '--retry-failed', '1')
+        self.assertIn("forge overrode the reviewer's verdict", r.stdout)
+        self.assertIn('attempt 1: PASS -> FAIL at the P2 threshold (worst P2)', r.stdout)
+        self.assertIn('a: the reviewer said PASS but listed a CONFIRMED finding at or above the P2 threshold '
+                      '(worst P2) — forge made it FAIL', (p / 'tasks/a/task.out').read_text())
+        first, second = [line.split('\t')[2] for line in self.text(p, 'tasks/a/attempts.tsv').splitlines()]
+        self.assertEqual((first, second), ('FAIL', 'PASS'), r.stdout)
+        self.assertTrue((p / 'tasks/a/merged').exists())
+
+    def test_a_pass_listing_a_confirmed_p2_is_not_merged(self):
+        p, r = self.one(P2, verdict='PASS')
         self.assertEqual(r.returncode, 5, r.stdout)
         self.assertEqual(self.text(p, 'tasks/a/status'), 'FAIL')
-        self.assertFalse((p / 'tasks/a/known_issues.md').exists())
-        self.assertFalse((p / 'tasks/a/qa.gate').exists())
+        self.assertFalse((p / 'tasks/a/merged').exists())
+        self.assertTrue((p / 'tasks/a/qa.gate').read_text().startswith('P2\tfail'))
+        self.assertIn('attempt 1: PASS -> FAIL at the P2 threshold (worst P2)', r.stdout)
+        self.assertNotIn('known issues accepted', r.stdout)
+
+    def test_a_pass_listing_only_a_confirmed_p3_merges_with_the_finding_recorded(self):
+        p, r = self.one(P3, verdict='PASS')
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertTrue((p / 'tasks/a/merged').exists())
+        self.assertIn('cosmetic problem', (p / 'tasks/a/known_issues.md').read_text())
+        self.assertIn('known issues accepted', r.stdout)
+
+    def test_threshold_p3_fails_a_pass_with_a_confirmed_p3(self):
+        p, r = self.one(P3, '--qa-threshold', 'P3', verdict='PASS')
+        self.assertEqual(r.returncode, 5, r.stdout)
+        self.assertEqual(self.text(p, 'tasks/a/status'), 'FAIL')
+        self.assertTrue((p / 'tasks/a/qa.gate').read_text().startswith('P3\tfail'))
+        self.scenario({'a.qa.*': {'verdict': 'PASS', 'findings': P3}, 'a.dwarf.2': {'content': 'v2'}})
+        r = self.run_script('forge-parallel.sh', 'retry', p, 'a')     # a retry runs in the foreground
+        self.assertEqual(r.returncode, 5, r.stdout)
+        self.assertIn('a: the reviewer said PASS but listed a CONFIRMED finding at or above the P3 threshold '
+                      '(worst P3) — forge made it FAIL', r.stdout)
+        self.assertIn('attempt 2: PASS -> FAIL', r.stdout)
+        self.assertNotIn('attempt 1:', r.stdout)                      # the earlier run's flip is not this one's
+
+    def test_a_failed_task_is_not_listed_as_accepting_known_issues(self):
+        # P1 blocks at P2; the P3 beside it is still written to known_issues.md, but nothing was accepted.
+        p, r = self.one(P3 + '\n' + P1, verdict='PASS')
+        self.assertEqual(self.text(p, 'tasks/a/status'), 'FAIL', r.stdout)
+        self.assertTrue((p / 'tasks/a/known_issues.md').exists())
+        self.assertNotIn('known issues accepted', r.stdout)
 
     def test_a_finding_at_the_threshold_still_blocks(self):
         p, r = self.one(P2, '--qa-threshold', 'P2')
@@ -95,11 +144,31 @@ class PolicyTests(unittest.TestCase):
         self.assertTrue((p / 'tasks/a/merged').exists())
         self.assertEqual(self.text(p, 'qa_threshold'), 'P2')
 
-    def test_none_clears_a_threshold(self):
-        p, r = self.one(P3, '--qa-threshold', 'P2')
+    def test_none_is_the_same_as_p3(self):
+        p, r = self.one(P3, '--qa-threshold', 'none', verdict='PASS')
+        self.assertEqual(self.text(p, 'qa_threshold'), 'none')
+        self.assertEqual(self.text(p, 'tasks/a/status'), 'FAIL', r.stdout)
+        self.assertTrue((p / 'tasks/a/qa.gate').read_text().startswith('P3\tfail'))
+
+    def test_default_removes_the_threshold(self):
+        p, r = self.one(P3, '--qa-threshold', 'P1')
         self.assertTrue((p / 'qa_threshold').exists())
-        self.run_script('forge-parallel.sh', 'run', p, '--qa-threshold', 'none')
+        self.run_script('forge-parallel.sh', 'run', p, '--qa-threshold', 'default')
         self.assertFalse((p / 'qa_threshold').exists())
+
+    def test_plan_takes_the_threshold_and_the_table_shows_it(self):
+        p = self.plan_of([('a', '-', 'a.txt')])
+        self.assertFalse((p / 'qa_threshold').exists())
+        r = self.run_script('forge-parallel.sh', 'plan', p, '--qa-threshold', 'P1')
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertEqual(self.text(p, 'qa_threshold'), 'P1')
+        self.assertIn('QA threshold: P1 (set)', r.stdout)
+
+    def test_a_bad_threshold_is_refused(self):
+        p = self.plan_of([('a', '-', 'a.txt')])
+        r = self.run_script('forge-parallel.sh', 'plan', p, '--qa-threshold', 'high')
+        self.assertEqual(r.returncode, 2, r.stdout)
+        self.assertIn('--qa-threshold needs P0, P1, P2, P3, none or default', r.stdout)
 
     # --- the shared prompt contract -------------------------------------------------
     def test_qa_prompt_asks_for_severity_labels_and_keeps_the_legacy_wording(self):
@@ -112,10 +181,10 @@ class PolicyTests(unittest.TestCase):
         self.assertIn('FORGE_VERDICT: PASS', qa)
         self.assertIn('Place any learning notes before the final FORGE_VERDICT', qa)
 
-    def test_without_a_threshold_the_prompt_has_no_threshold_clause(self):
+    def test_without_a_threshold_the_prompt_carries_the_default_clause(self):
         p, r = self.one(P3)
         qa = (p / 'tasks/a/qa.input').read_text()
-        self.assertNotIn('Blocking threshold', qa)
+        self.assertIn('Blocking threshold: P2', qa)
         self.assertIn('[P1][CONFIRMED]', qa)
 
     def test_the_dwarf_is_told_not_to_commit_or_leave_processes_running(self):

@@ -31,9 +31,9 @@ time order: an attempt that PASSed, then a merge that CONFLICTed, then a human `
 |---|---|---|
 | `start` | execution | a receipt written by `begin()`. A start with no matching end is an execution that was killed or is still running |
 | `dispatch` | model call | role, alias, harness, **resolved** model, effort after clamping, timeout and its source, delivery (custom or native review), phase timings, exit, timeout, infra class, tokens, parsed verdict and findings, `FORGE_LEARNING` lines, `session_id`, `session_continue`. Blobs: the delivered prompt and the final message |
-| `attempt` | task attempt or solo run | status, attempt number (with refund and resume flags), trigger (`initial`, `auto`, `human`), dwarf and qa spec, declared vs changed files, numstat, drift, guard notes, gate line, patch key, the files this execution wrote and the ones it only carried. Blobs: the diff, retry findings, memory slices, capsule, Jev task files |
+| `attempt` | task attempt or solo run | status, attempt number (with refund and resume flags), trigger (`initial`, `auto`, `human`), dwarf and qa spec, declared vs changed files, numstat, drift, guard notes, gate line (`thr<TAB>decision<TAB>worst<TAB>n_confirmed<TAB>n_unlabelled<TAB>n_below`; a solo attempt has it too, with the `known_issues` blob; null when the run wrote none), patch key, the files this execution wrote and the ones it only carried. Blobs: the diff, retry findings, memory slices, capsule, Jev task files |
 | `verification` / `verify_run` | verify, and each command execution | command and its source (flag, `.forge/verify`, Jev), status, flaky. One `verify_run` per execution, each with its own log |
-| `plan` | `plan` | goal, original request, decompose level, exploratory routing decisions (`tasks[id].route`, with their odds), author (orchestrator or planner), per-task declared vs executed difficulty and who set it, pools, waves, Jev's plan-time judgments (stores from before 2026-10-27 also hold routing and coupling), options (including `reviewer_session` when that file is present). Blobs: both task tables, prompts, approaches, excerpts of the declared files at plan time, the file inventory, `memory.md` |
+| `plan` | `plan` | goal, original request, decompose level, exploratory routing decisions (`tasks[id].route`, with their odds), author (orchestrator or planner), per-task declared vs executed difficulty and who set it, pools, waves, Jev's plan-time judgments (stores from before 2026-10-27 also hold routing and coupling), options (`qa_threshold`, the effective blocking threshold, and `qa_threshold_source`, `set` when the plan's file held a valid value and `default` otherwise; plus `reviewer_session` when that file is present). Blobs: both task tables, prompts, approaches, excerpts of the declared files at plan time, the file inventory, `memory.md` |
 | `run_end` | `run` | results per task, the accepted integration commit, `memory.md` |
 | `invocation` | user-facing `forge-parallel.sh` subcommand | argv, exit, duration, plus final review, accept, integrate and split/combine payloads |
 | `event` | point event | `merge` (MERGED, CONFLICT with the files, INVALIDATED and why), `integrate_advanced`, `integrate_conflict`, `combine_conflict`, `sched_terminal`, `memory_record`, `memory_prune` |
@@ -198,6 +198,12 @@ replace it). `assignments.jsonl` lists every such decision with its first attemp
 or censoring reason, including tasks no case was exported for. It is the randomized cohort,
 free of the export's own filters.
 
+Review cases carry `gate` in their metadata: what forge's severity gate decided for that attempt's review, per
+attempt (`accept`: reviewer FAIL, forge PASS; `fail`: reviewer PASS, forge FAIL; `keep`: forge agreed), or null
+when the attempt has no `qa.gate` (a run from before the gate was always written). The label stays the reviewer's
+raw verdict, so counting reviews with `passes` true and `gate` `fail` per reviewer measures how often a reviewer
+applies a threshold of its own.
+
 Review cases whose attempt also had a shadow review (`plan --shadow-qa`) add `shadow` (its
 verdict, reviewer and worst finding) and `consensus` to their metadata. Only a shadow that
 finished on an untouched snapshot and reviewed the same commit counts. The primary
@@ -228,6 +234,7 @@ Routing cases also add how the task went:
 - `attempts_observed`
 - `raw_verdict`
 - `gate_pass`, a reviewer FAIL the severity gate accepted
+- `gate_fail`, a reviewer PASS the gate turned into FAIL (a blocking CONFIRMED finding); false when there is no first attempt
 - `first_raw_pass_attempt`
 - `human_accept`
 - `stop_reason`: `passed`, `accepted`, `noretry`, `interrupted` or `no_pass_observed`

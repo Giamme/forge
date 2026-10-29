@@ -192,7 +192,15 @@ carry_findings() { # carry_findings <tdir>
   # plan with --reviewer-session. Removed first, so an older session never sits next to newer
   # findings; a review that left no session leaves none here.
   rm -f "$tdir/retry_findings.session" "$tdir/retry_findings.resolved"
-  cp "$tdir/qa.last" "$tdir/retry_findings.md"
+  local gthr gdec
+  IFS="$(printf '\t')" read -r gthr gdec _ < "$tdir/qa.gate" 2>/dev/null || true
+  if [ "${gdec:-}" = fail ]; then
+    # forge, not the reviewer, failed this attempt: say so above the copied report.
+    { printf "forge: the reviewer's verdict was PASS, but this report lists CONFIRMED findings at or above the \`%s\` blocking threshold, so forge failed the attempt. Fix those findings.\n\n" "$gthr"
+      cat "$tdir/qa.last"; } > "$tdir/.retry_findings.md.tmp" && mv "$tdir/.retry_findings.md.tmp" "$tdir/retry_findings.md"
+  else
+    cp "$tdir/qa.last" "$tdir/retry_findings.md"
+  fi
   [ ! -f "$tdir/qa.session" ] || cp "$tdir/qa.session" "$tdir/retry_findings.session" 2>/dev/null || true
   [ ! -f "$tdir/qa.resolved" ] || cp "$tdir/qa.resolved" "$tdir/retry_findings.resolved" 2>/dev/null || true
 }
@@ -486,42 +494,69 @@ guard_after_dwarf() { # guard_after_dwarf <wt> <tdir> <id>
 }
 
 # --- QA severity gate -----------------------------------------------------------
-qa_threshold_for() { # per-task file wins over the plan-level default; prints nothing if unset
-  # A per-task "none" exempts the task from a plan-wide threshold (prints nothing, no fallback).
-  # A plan-level "none" is the same as no file. Anything but P0-P3 or none is ignored, so a
-  # garbage per-task value falls back to the plan file.
+# The bash mirror of forge-contract.py's DEFAULT_THRESHOLD; a test asserts the two agree.
+FORGE_QA_THRESHOLD_DEFAULT=P2
+
+# qa_threshold_walk <plan> <id> -> "<level> <set|default>": the per-task file, then the plan
+# file, then the default. "none" in a file means nothing is tolerated, the same as P3 (so a
+# per-task none still exempts a task from a plan-wide tolerant threshold). Anything but P0-P3
+# or none is ignored: a garbage per-task value falls through to the plan file, a garbage plan
+# value to the default. An empty id reads the plan level only (the approval table).
+qa_threshold_walk() {
   local f v
   for f in "$1/tasks/$2/qa_threshold" "$1/qa_threshold"; do
+    [ -n "$2" ] || [ "$f" = "$1/qa_threshold" ] || continue
     [ -s "$f" ] || continue
     v="$(head -1 "$f" | tr -d ' \r' | tr 'a-z' 'A-Z')"
     case "$v" in
-      P0|P1|P2|P3) printf '%s\n' "$v"; return 0 ;;
-      NONE) [ "$f" = "$1/qa_threshold" ] || return 0 ;;
+      P0|P1|P2|P3) printf '%s set\n' "$v"; return 0 ;;
+      NONE) printf 'P3 set\n'; return 0 ;;
     esac
   done
-  return 0
+  printf '%s default\n' "$FORGE_QA_THRESHOLD_DEFAULT"
 }
 
-# With an explicit threshold, a reviewer's FAIL whose confirmed findings are all labelled
-# and less severe than the threshold is accepted as PASS-with-known-issues. The literal
-# status stays PASS, so the merge path, the scheduler and Fractal need no new vocabulary.
-# Anything unlabelled stays blocking: a finding the gate cannot place is not tolerated.
+qa_threshold_for() { # qa_threshold_for <plan> <id> -> the effective threshold, always a value
+  local v; v="$(qa_threshold_walk "$1" "$2")"; printf '%s\n' "${v%% *}"
+}
+
+qa_threshold_source() { # qa_threshold_source <plan> <id> -> set | default
+  local v; v="$(qa_threshold_walk "$1" "$2")"; printf '%s\n' "${v##* }"
+}
+
+# Epoch seconds with milliseconds, for the flip log and FORGE_RUN_STARTED. Whole seconds cannot
+# tell a flip from just before a run started apart from one in the same second after it.
+forge_now() { python3 -c 'import time; print("%.3f" % time.time())' 2>/dev/null || date +%s; }
+
+# The gate goes both ways, at the effective threshold. A reviewer's FAIL whose confirmed
+# findings are all labelled and less severe than the threshold is accepted as
+# PASS-with-known-issues; the literal status stays PASS, so the merge path, the scheduler
+# and Fractal need no new vocabulary. A PASS that lists a blocking CONFIRMED finding (at the
+# threshold or worse, or with no severity) becomes FAIL.
 # The optional 5th argument is the threshold the caller already used for this attempt's review
-# prompt; when given (even empty) it is used as-is, so a change to the files between the prompt
-# and the gate cannot split one attempt across two thresholds. Absent, the files are read.
+# prompt; when given it is used as-is, so a change to the files between the prompt and the
+# gate cannot split one attempt across two thresholds. Absent (or empty), the files are read.
 qa_gate() { # qa_gate <plan> <id> <tdir> <verdict> [threshold]
-  local plan="$1" id="$2" tdir="$3" verdict="$4" thr line
+  local plan="$1" id="$2" tdir="$3" verdict="$4" thr="${5:-}" line worst
   rm -f "$tdir/qa.gate" "$tdir/known_issues.md"
-  if [ "$#" -ge 5 ]; then thr="$5"; else thr="$(qa_threshold_for "$plan" "$id")"; fi
-  [ -n "$thr" ] || return 0
+  [ -n "$thr" ] || thr="$(qa_threshold_for "$plan" "$id")"
   line="$(python3 "$SKILL_DIR/scripts/forge-contract.py" gate --verdict "${verdict:-UNKNOWN}" \
       --qa-last "$tdir/qa.last" --threshold "$thr" --known-issues "$tdir/known_issues.md" 2>/dev/null)" || return 0
   [ -n "$line" ] || return 0
   printf '%s\t%s\n' "$thr" "$line" > "$tdir/qa.gate"
-  if [ "$(printf '%s' "$line" | awk -F'\t' '{print $1}')" = accept ]; then
-    echo PASS > "$tdir/status"
-    note "$id: the reviewer said FAIL, but every confirmed finding is less severe than the $thr threshold — accepted with known issues ($tdir/known_issues.md)"
-  fi
+  case "$(printf '%s' "$line" | awk -F'\t' '{print $1}')" in
+    accept)
+      echo PASS > "$tdir/status"
+      note "$id: the reviewer said FAIL, but every confirmed finding is less severe than the $thr threshold — accepted with known issues ($tdir/known_issues.md)" ;;
+    fail)
+      echo FAIL > "$tdir/status"
+      worst="$(printf '%s' "$line" | awk -F'\t' '{print $2}')"
+      note "$id: the reviewer said PASS but listed a CONFIRMED finding at or above the $thr threshold (worst $worst) — forge made it FAIL"
+      # A scheduled task's notes go to its task.out, and a later attempt replaces qa.gate: this
+      # log is what lets the run's summary say forge overrode a verdict (report_gate_flips).
+      printf '%s\t%s\t%s\t%s\n' "$(forge_now)" "$(cat "$tdir/attempt" 2>/dev/null || echo 0)" "$thr" "$worst" \
+        >> "$tdir/qa.flips" ;;
+  esac
   return 0
 }
 
@@ -546,9 +581,29 @@ report_known_issues() { # report_known_issues <plan>
   local plan="$1" id n=0
   for id in $(all_ids "$plan/tasks.tsv"); do
     [ -s "$plan/tasks/$id/known_issues.md" ] || continue
+    # A FAIL task's tolerated findings are on disk too (the gate writes them whatever its
+    # decision), but nothing was accepted: only a passed or merged task's are.
+    case "$(task_status "$plan" "$id")" in PASS|MERGED) ;; *) continue ;; esac
     [ "$n" = 0 ] && echo "known issues accepted (findings below the QA threshold, or accepted by a human):"
     n=$((n+1))
     printf '  %-14s %s finding(s)  %s\n' "$id" "$(grep -c '^- ' "$plan/tasks/$id/known_issues.md" 2>/dev/null || echo 0)" "$plan/tasks/$id/known_issues.md"
+  done
+  [ "$n" -gt 0 ] && echo
+  return 0
+}
+
+# The PASS verdicts forge turned into FAIL, since FORGE_RUN_STARTED (set by run and retry;
+# unset shows them all), including those whose task a later attempt fixed.
+report_gate_flips() { # report_gate_flips <plan>
+  local plan="$1" id n=0 at attempt thr worst
+  for id in $(all_ids "$plan/tasks.tsv"); do
+    [ -s "$plan/tasks/$id/qa.flips" ] || continue
+    while IFS="$(printf '\t')" read -r at attempt thr worst; do
+      awk -v at="${at:-0}" -v since="${FORGE_RUN_STARTED:-0}" 'BEGIN { exit !(at + 0 >= since + 0) }' || continue
+      [ "$n" = 0 ] && echo "forge overrode the reviewer's verdict (PASS, but it listed a CONFIRMED finding at or above the threshold):"
+      n=$((n+1))
+      printf '  %-14s attempt %s: PASS -> FAIL at the %s threshold (worst %s)\n' "$id" "$attempt" "$thr" "$worst"
+    done < "$plan/tasks/$id/qa.flips"
   done
   [ "$n" -gt 0 ] && echo
   return 0
@@ -648,6 +703,7 @@ report_escalations() { # report_escalations <plan>
 run_report_extras() { # run_report_extras <plan> [<verification dir>]
   report_infra "$1"
   report_escalations "$1"
+  report_gate_flips "$1"
   report_known_issues "$1"
   python3 "$SKILL_DIR/scripts/forge-sweep.py" report "$1" 2>/dev/null || true
   report_guard_notes "$1"

@@ -170,9 +170,11 @@ window.ForgePanel = (() => {
     });
     parent.append(ul);
   }
+  const gateChip = decision => decision === 'accept' ? chip('accept', 'pass')
+    : decision === 'fail' ? chip('forge: FAIL (reviewer said PASS)', 'fail') : chip(decision || '—', 'unknown');
   function gateLine(parent, gate) {
     if (!gate) return;
-    fields(parent, [['Blocking threshold', gate.threshold], ['Gate decision', gate.decision === 'accept' ? chip('accept', 'pass') : chip(gate.decision || '—', 'unknown')],
+    fields(parent, [['Blocking threshold', gate.threshold], ['Gate decision', gateChip(gate.decision)],
       ['Worst confirmed', gate.worst], ['Confirmed / unlabelled / tolerated', `${display(gate.n_confirmed)} / ${display(gate.n_unlabelled)} / ${display(gate.n_below)}`]]);
   }
 

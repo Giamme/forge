@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from forge_ui import executions, findings, reader
+from forge_ui import executions, findings, models, reader
 from forge_ui.reader import (detail, execution_detail, execution_transcript, final_review_detail, run_findings,
                              summarize, task_detail)
 import run_fixture as F
@@ -206,6 +206,18 @@ class ExecutionTests(FixtureCase):
         self.assertIsNone(self.task(data, 'page')['gate'])
         self.assertTrue(any('tasks/page/qa.gate' in warning for warning in data['warnings']))
 
+    def test_forge_flipped_gate(self):
+        # the reviewer said PASS, forge made it FAIL: the API shows the decision, the models row says whose FAIL
+        self.write(self.plan / 'tasks/page/qa.gate', 'P2\tfail\tP2\t1\t0\t0\n')
+        self.write(self.plan / 'tasks/page/status', 'FAIL\n')
+        self.write(self.plan / 'tasks/page/attempts.tsv', f'{int(T0 + 917)}\t1\tFAIL\t\tluna:low\n')
+        self.assertEqual(self.task(detail(self.plan), 'page')['gate']['decision'], 'fail')
+        models._RUNS.clear()
+        self.addCleanup(models._RUNS.clear)
+        rows = {row['task']: row for row in reader.Catalog(plans=(self.plan,), registry=False).models()['tasks']}
+        attempt = rows['page']['attempts'][0]
+        self.assertEqual((attempt['outcome'], attempt['gate_fail'], attempt['gate']), ('fail', True, False))
+
     def test_shadow_disagreement(self):
         data = detail(self.plan)
         self.assertEqual(self.task(data, 'page')['shadow'], [{
@@ -295,7 +307,7 @@ class ExecutionTests(FixtureCase):
     def test_settings_integration_verification_and_deferrals(self):
         data = detail(self.plan)
         self.assertEqual(data['settings'], {'explore': 0.25, 'shadow_rate': 0.5, 'shadow_qa': ['sol:xhigh'],
-                                            'timeout': 3600, 'max_parallel': 2, 'qa_threshold': 'P2',
+                                            'timeout': 3600, 'max_parallel': 2, 'qa_threshold': 'P2', 'qa_threshold_source': 'set',
                                             'escalate_after': 1, 'verify_retries': 1, 'final_qa': 'opus'})
         self.assertEqual(data['integration'], {
             'base': 'a' * 40, 'accepted': 'b' * 40,
@@ -556,7 +568,8 @@ class ExecutionTests(FixtureCase):
         self.assertEqual(task['findings'], counts(plausible=1))
         for field, value in (('integration', None), ('final_review', None), ('final_reviews', []), ('deferrals', [])):
             self.assertEqual(data[field], value, field)
-        self.assertEqual(set(data['settings'].values()), {None})
+        self.assertEqual({k: v for k, v in data['settings'].items() if not k.startswith('qa_threshold')}, dict.fromkeys([k for k in data['settings'] if not k.startswith('qa_threshold')]))
+        self.assertEqual((data['settings']['qa_threshold'], data['settings']['qa_threshold_source']), ('P2', 'default'))
         result = execution_detail(self.solo, F.SOLO_QA)
         self.assertEqual(result['owner'], {'kind': 'task', 'id': 'solo'})
         self.assertEqual(result['findings'][0]['location'], 'src/solo.py:3')
