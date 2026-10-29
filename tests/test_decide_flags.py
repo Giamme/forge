@@ -303,7 +303,32 @@ class PlanFlagTests(unittest.TestCase):
         self.assertEqual(planned.returncode, 0, planned.stderr)
         self.assertEqual([(r['site'], r['ok']) for r in self.requests()], [('jev-drift', True)])
         self.assertIn('jev: a1 may also edit undeclared files: src/b.py', planned.stderr)
+        self.assertIn('forge: decide: on: drift (forced); shadow: none', planned.stderr)
+
+    def replayed(self, passes=True):
+        """A recorded replay of the drift gate on the provider and model it asks now."""
+        from forge_decide import providers, replay
+        with patch.dict(os.environ, self.env):
+            provider, model = providers.identity('jev-drift', dict(mode='on'))
+            replay.record('drift', dict(at=0.0, site='jev-drift', provider=provider, model=model, passes=passes,
+                                        reason='fixture'))
+
+    def test_the_decide_line_marks_an_on_gate_without_a_passing_replay_as_forced(self):
+        self.drift_fixture()
+        self.user_gates()
+        self.replayed(passes=False)
+        planned = self.plan_cmd('--gate', 'drift=on')
+        self.assertEqual(planned.returncode, 0, planned.stderr)
+        self.assertIn('forge: decide: on: drift (forced); shadow: none', planned.stderr)
+
+    def test_the_decide_line_does_not_mark_an_on_gate_with_a_passing_replay(self):
+        self.drift_fixture()
+        self.user_gates()
+        self.replayed()
+        planned = self.plan_cmd('--gate', 'drift=on')
+        self.assertEqual(planned.returncode, 0, planned.stderr)
         self.assertIn('forge: decide: on: drift; shadow: none', planned.stderr)
+        self.assertNotIn('(forced)', planned.stderr)
 
     def test_a_shadowed_gate_asks_and_prints_nothing(self):
         self.drift_fixture()

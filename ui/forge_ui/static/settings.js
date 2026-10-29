@@ -84,6 +84,38 @@
     return 'a value';
   }
 
+  // The replay a gate carries, or null: `forge decide replay`'s recorded result for the gate's provider and model. An older
+  // forge sends none, which reads as no replay, never as an error.
+  function describeReplay(replay) {
+    if (!replay || typeof replay !== 'object' || Array.isArray(replay)) return null;
+    return { provider: text(replay.provider), model: text(replay.model), passes: replay.passes === true, at: finite(replay.at) ? replay.at : null };
+  }
+  // The day a replay was recorded, in local time like the CLI's `replayed <date>`; '?' when the time is unusable.
+  function replayDate(at) {
+    const d = finite(at) ? new Date(at * 1000) : null;
+    if (!d || Number.isNaN(d.getTime())) return '?';
+    const two = n => String(n).padStart(2, '0');
+    return d.getFullYear() + '-' + two(d.getMonth() + 1) + '-' + two(d.getDate());
+  }
+  // The tags a gate row shows beside its source tag: [{suffix, text, title, bad}], the element id being
+  // set-gate-<name>-<suffix>. A forced gate acts on without a passing replay; a replay shows when it was recorded and
+  // whether it passed. A gate with neither has none.
+  function gateTags(gate) {
+    const tags = [];
+    const replay = gate.replay;
+    const on = replay ? replay.provider + '/' + replay.model : '';
+    if (gate.forced && gate.mode === 'on') {
+      tags.push({ suffix: 'forced', text: 'forced', bad: true,
+        title: 'This gate acts without a recorded replay for its provider and model that passes.' });
+    }
+    if (replay) {
+      tags.push(replay.passes
+        ? { suffix: 'replay', text: 'replayed ' + replayDate(replay.at), title: 'Replay on ' + on + ' passed.', bad: false }
+        : { suffix: 'replay', text: 'replay failed', title: 'Replay on ' + on + ' did not pass (' + replayDate(replay.at) + ').', bad: true });
+    }
+    return tags;
+  }
+
   // The Decision models section, as data. render() draws only this, so the page and the test share one reading of the
   // status object. Provider key fields are dropped here and never reach a string the page shows.
   function describeDecide(decide) {
@@ -109,6 +141,8 @@
         model: typeof g.model === 'string' ? g.model : '',
         skip,
         ready: g.ready === true,
+        forced: g.forced === true,
+        replay: describeReplay(g.replay),
       };
     });
     const caps = object(object(d.budget).caps);
@@ -402,6 +436,12 @@
       const source = el('span', gate.source, 'tag');
       source.id = 'set-gate-' + gate.name + '-source';
       status.append(source);
+      for (const t of gateTags(gate)) {
+        const tag = el('span', t.text, t.bad ? 'tag tag-bad' : 'tag');
+        tag.id = 'set-gate-' + gate.name + '-' + t.suffix;
+        tag.title = t.title;
+        status.append(tag);
+      }
       if (gate.skip) status.append(el('span', 'skip: ' + gate.skip, 'set-gate-skip'));
       const top = el('div', undefined, 'set-file-head');
       top.append(h, status);
@@ -683,7 +723,7 @@
     return { poll, pick };
   }
 
-  return { render, configBody, repoKey, gateKey, targetPath, subsetOk, valueProblem, decideTextProblem, describeDecide,
+  return { render, configBody, repoKey, gateKey, targetPath, subsetOk, valueProblem, decideTextProblem, describeDecide, gateTags, replayDate,
     pickDefault, groupRuns, optionLabel, editorOf, isDirty, dirtyState, edited, typed, shown, readFailure,
     FILES, GATES, MODES, VALUE_MAX, DECIDE_VALUE_MAX, ADD_COMMAND };
 });

@@ -4,11 +4,16 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 FORGE = ROOT / 'forge'
+sys.path.insert(0, str(ROOT / 'scripts'))
+import forge_jev  # noqa: E402
+from forge_decide import replay  # noqa: E402
 
 
 class ConfigTests(unittest.TestCase):
@@ -35,6 +40,11 @@ class ConfigTests(unittest.TestCase):
     def run_decide(self, *args, stdin=None):
         return subprocess.run([str(FORGE), 'decide', *args], capture_output=True, text=True,
                               env=self.env, input=stdin, cwd=str(self.base))
+
+    def record_replay(self, gate, provider, model):
+        """A passing `forge decide replay` result, in this test's state dir."""
+        with mock.patch.dict(os.environ, XDG_STATE_HOME=self.env['XDG_STATE_HOME']):
+            replay.record(gate, dict(at=0.0, site=gate, provider=provider, model=model, passes=True, reason='passes'))
 
     def test_show_symlinked_forge_dir_reports_files_without_reading(self):
         outside = self.base / 'elsewhere'
@@ -257,7 +267,11 @@ class ConfigTests(unittest.TestCase):
                                 '--key-stdin', stdin=secret)
         self.assertEqual(added.returncode, 0, added.stderr)
         self.assertNotIn(secret.strip(), added.stdout)
+        # `on` needs a passing replay of the gate's provider and model (#37): the legacy default here.
+        self.record_replay('prompt', 'typesafe', 'jev-latest')
         self.assertEqual(self.run_cfg('set', 'decide.gate.prompt', 'on', '--json').returncode, 0)
+        # ... and so does moving it to another provider: hosted is a clef provider, asking the cloudflare model.
+        self.record_replay('prompt', 'hosted', forge_jev.CLOUDFLARE_MODEL)
         self.assertEqual(self.run_cfg('set', 'decide.gate.prompt.provider', 'hosted', '--json').returncode, 0)
         shown = self.run_cfg('show', '--repo', str(self.repo), '--json')
         self.assertEqual(shown.returncode, 0, shown.stderr)
@@ -286,6 +300,57 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(status['gates']['drift']['mode'], 'off')
         self.assertEqual(status['gates']['drift']['skip'], 'privacy')
         self.assertEqual(status['gates']['drift']['provider'], 'box')
+
+    def promoted_drift(self, mode='on', **entry):
+        """Providers `box` and `other` (both asking jev-box), and the drift gate on `box` in `mode`."""
+        for name in ('box', 'other'):
+            added = self.run_decide('provider', 'add', 'jev', '--name', name, '--local', '--url', 'http://127.0.0.1:9',
+                                    '--model', 'jev-box')
+            self.assertEqual(added.returncode, 0, added.stderr)
+        path = self.cfg / 'forge/decide.json'
+        data = json.loads(path.read_text())
+        data['gates'] = dict(drift=dict(mode=mode, provider='box', **entry))
+        path.write_text(json.dumps(data))
+        return path
+
+    def test_provider_or_model_change_of_an_on_gate_needs_a_passing_replay(self):
+        path = self.promoted_drift()
+        before = path.read_text()
+        for key, value in (('provider', 'other'), ('model', 'jev-next')):
+            out = self.run_cfg('set', 'decide.gate.drift.' + key, value)
+            self.assertEqual(out.returncode, 3, out.stderr)
+            self.assertEqual(path.read_text(), before)
+            self.assertIn('forge decide replay --site jev-drift --provider %s --model %s --send'
+                          % (('other', 'jev-box') if key == 'provider' else ('box', 'jev-next')), out.stderr)
+            self.assertIn('forge decide gate drift on --force', out.stderr)
+        out = self.run_cfg('set', 'decide.gate.drift.provider', 'other', '--json')
+        self.assertEqual(out.returncode, 3, out.stderr)
+        self.assertEqual(path.read_text(), before)
+        error = json.loads(out.stdout)
+        self.assertFalse(error['ok'])
+        self.assertIn('forge decide gate drift on --force', error['error'])
+        self.record_replay('drift', 'other', 'jev-next')  # the wrong model: still refused
+        self.assertEqual(self.run_cfg('set', 'decide.gate.drift.provider', 'other').returncode, 3)
+        self.assertEqual(path.read_text(), before)
+
+    def test_provider_or_model_change_is_written_with_a_passing_replay(self):
+        path = self.promoted_drift()
+        self.record_replay('drift', 'other', 'jev-box')
+        out = self.run_cfg('set', 'decide.gate.drift.provider', 'other', '--json')
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertEqual(json.loads(path.read_text())['gates']['drift'], dict(mode='on', provider='other'))
+        self.record_replay('drift', 'other', 'jev-next')
+        self.assertEqual(self.run_cfg('set', 'decide.gate.drift.model', 'jev-next').returncode, 0)
+        self.assertEqual(json.loads(path.read_text())['gates']['drift']['model'], 'jev-next')
+
+    def test_provider_change_of_a_forced_or_unpromoted_gate_is_written(self):
+        for mode, entry in (('on', dict(force=True)), ('shadow', {}), ('off', {})):
+            path = self.promoted_drift(mode, **entry)
+            out = self.run_cfg('set', 'decide.gate.drift.provider', 'other')
+            self.assertEqual(out.returncode, 0, (mode, out.stderr))
+            stored = json.loads(path.read_text())['gates']['drift']
+            self.assertEqual((stored['mode'], stored['provider'], stored.get('force')),
+                             (mode, 'other', entry.get('force')))
 
     def test_retired_and_invalid_decide_keys_exit_2(self):
         cases = {
