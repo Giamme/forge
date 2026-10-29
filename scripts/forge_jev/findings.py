@@ -163,8 +163,7 @@ def main(args) -> int:
         duplicate_of, dup_p = _duplicate(result, f"d{item['i']}", ids) if ids else (None, None)
         concrete = _concreteness(noul(result, f"c{item['i']}")) if item['status'] == 'PLAUSIBLE' else None
         out.append(dict(fp=item['fp'], duplicate_of=duplicate_of,
-                        dup_p=None if dup_p is None else round(dup_p, 3),
-                        concrete=None if concrete is None else round(concrete, 3)))
+                        dup_p=dup_p, concrete=concrete))
     print(json.dumps(out, indent=2))
     return 0
 

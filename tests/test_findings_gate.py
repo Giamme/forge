@@ -267,6 +267,14 @@ class DuplicateTests(GateCase):
         self.assertEqual(len(out['drafts']), 2)
         self.assertIsNone(self.entry(out, 'receipt is replayed')['gate']['duplicate_of'])
 
+    def test_a_probability_just_under_the_threshold_is_not_rounded_up_to_it(self):
+        self.stub(dup={'receipt is replayed': ['4', 0.8499]})
+        self.gate('on')
+        out = self.forge_issues(str(self.plan), '--apply')
+        self.assertEqual(out['comments'], [])
+        self.assertEqual(self.calls('comment'), [])
+        self.assertEqual(len(self.calls('create')), 2)
+
     def test_a_corrupt_receipt_store_stops_filing_like_a_corrupt_dismissal_store(self):
         base = self.state_home / 'forge' / 'findings'
         base.mkdir(parents=True)
@@ -291,10 +299,12 @@ class ConcreteTests(GateCase):
         self.gate('on')
         out = self.forge_issues(str(self.plan), '--include-plausible')
         style = self.entry(out, 'renaming x')['gate']
-        self.assertEqual((style['preselect'], style['concrete'], style['mode']), (False, 0.2, 'on'))
+        self.assertEqual((style['preselect'], style['mode']), (False, 'on'))
+        self.assertAlmostEqual(style['concrete'], 0.2)
         self.assertEqual(style['reason'], 'reads as a preference, not a defect (p=0.20)')
         trigger = self.entry(out, 'Returns None')['gate']
-        self.assertEqual((trigger['preselect'], trigger['concrete'], trigger['reason']), (True, 0.9, None))
+        self.assertEqual((trigger['preselect'], trigger['reason']), (True, None))
+        self.assertAlmostEqual(trigger['concrete'], 0.9)
         # a CONFIRMED finding is never asked about, and never deselected
         confirmed = self.entry(out, 'Button does nothing')['gate']
         self.assertEqual((confirmed['preselect'], confirmed['concrete'], confirmed['reason']), (True, None, None))
@@ -321,12 +331,18 @@ class ConcreteTests(GateCase):
         self.assertTrue(self.entry(out, 'renaming x')['gate']['preselect'])
         self.assertFalse(self.entry(out, 'Returns None')['gate']['preselect'])
 
+    def test_a_concreteness_just_under_the_threshold_is_not_rounded_up_to_it(self):
+        self.stub(concrete={'renaming x': 0.4999})
+        self.gate('on')
+        out = self.forge_issues(str(self.plan), '--include-plausible')
+        self.assertFalse(self.entry(out, 'renaming x')['gate']['preselect'])
+
     def test_a_group_is_pre_selected_when_any_finding_in_it_is(self):
         self.gate('on')
         out = self.forge_issues(str(self.plan), '--include-plausible', '--group', 'run')
         [plausible] = [d for d in out['drafts'] if d['origin'] == 'plausible']
         self.assertTrue(plausible['gate']['preselect'])
-        self.assertEqual(plausible['gate']['concrete'], 0.2)
+        self.assertAlmostEqual(plausible['gate']['concrete'], 0.2)
 
 
 class RequestTests(GateCase):
@@ -438,9 +454,10 @@ class VerbTests(GateCase):
         self.gate('shadow')
         res = self.run_verb(self.payload(), '--run-dir', str(self.plan))
         self.assertEqual(res.returncode, 0, res.stderr)
-        self.assertEqual(json.loads(res.stdout), [
-            dict(fp='a' * 12, duplicate_of='4', dup_p=0.95, concrete=None),
-            dict(fp='b' * 12, duplicate_of=None, dup_p=0.0, concrete=0.2)])
+        first, second = json.loads(res.stdout)
+        self.assertEqual(first, dict(fp='a' * 12, duplicate_of='4', dup_p=0.95, concrete=None))
+        self.assertEqual((second['fp'], second['duplicate_of'], second['dup_p']), ('b' * 12, None, 0.0))
+        self.assertAlmostEqual(second['concrete'], 0.2)
         [body] = self.asked()
         self.assertEqual(sorted(body['questions']), ['c1', 'd0', 'd1'])
 
@@ -450,7 +467,9 @@ class VerbTests(GateCase):
         payload = self.payload()
         payload['candidates'] = []
         res = self.run_verb(payload)
-        self.assertEqual(json.loads(res.stdout)[1], dict(fp='b' * 12, duplicate_of=None, dup_p=None, concrete=0.2))
+        second = json.loads(res.stdout)[1]
+        self.assertEqual((second['fp'], second['duplicate_of'], second['dup_p']), ('b' * 12, None, None))
+        self.assertAlmostEqual(second['concrete'], 0.2)
         [body] = self.asked()
         self.assertEqual(sorted(body['questions']), ['c1'])
 
