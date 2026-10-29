@@ -5,8 +5,10 @@ earlier-wave task is written against an interface a later-wave task builds (see
 questions.forward_dependency). This asks about the cross-wave pairs nothing declares, before
 the waves run, so the warning still lands while the plan can change.
 
-Nothing here writes to tasks.tsv or waves.tsv. Scoring is advisory and silent in shadow
-mode, the same way the other plan-time gates are. The same-wave rubric is gone.
+Nothing here writes to tasks.tsv or waves.tsv: scoring is advisory and silent in shadow mode,
+the same way the other plan-time gates are. When the gate is `on`, `cmd_coupling` (cli.py)
+turns each warned pair into a dependency through plan_gates.add_dep; the waves are recomputed
+by the caller. The same-wave rubric is gone.
 """
 from __future__ import annotations
 
