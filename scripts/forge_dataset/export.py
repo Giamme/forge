@@ -372,6 +372,12 @@ def _verdicts(runs: Runs, run, task) -> dict:
     return out
 
 
+def _gate_decision(line) -> str | None:
+    """The decision cell of a `qa.gate` line (`thr<TAB>decision<TAB>...`), None when absent or unknown."""
+    cells = (line or '').split('\t')
+    return cells[1] if len(cells) > 1 and cells[1] in ('accept', 'fail', 'keep') else None
+
+
 def _course(runs: Runs, run, task, attempts) -> dict:
     """How the task went, for meta: what a single first-pass bit leaves out."""
     raw = _verdicts(runs, run, task)
@@ -388,7 +394,9 @@ def _course(runs: Runs, run, task, attempts) -> dict:
         stop = 'interrupted'
     else:
         stop = 'no_pass_observed'
+    gate = _gate_decision(attempts[0]['events'][-1]['d'].get('gate')) if attempts else None
     return dict(attempts_observed=len(attempts), raw_verdict=raw.get(first),
+                gate_fail=gate == 'fail',
                 gate_pass=bool(attempts) and attempts[0]['events'][-1]['d'].get('status') == 'PASS'
                 and raw.get(first) == 'FAIL',
                 first_raw_pass_attempt=min((n for n, v in raw.items() if v == 'PASS'), default=None),
@@ -573,8 +581,10 @@ def _qa_rows(runs: Runs):
     """
     store = runs.store
     effort = {}
+    gates = {}
     for (run, task), rows in runs.attempts.items():
         for e in rows:
+            gates[(run, task, e['attempt'])] = _gate_decision(e['d'].get('gate'))
             text = store.text((e['d'].get('blobs') or {}).get('qa_effort_jev'))
             if text.strip():
                 word, _, conf = text.strip().partition('\t')
@@ -594,6 +604,7 @@ def _qa_rows(runs: Runs):
                 continue
             found = d.get('findings') or []
             yield dict(run=run, task=task, attempt=e['attempt'], repo=e['repo'], verdict=d['verdict'],
+                       gate=gates.get((run, task, e['attempt'])),
                        diff=blocks[-1], review=store.text((d.get('blobs') or {}).get('message')),
                        effort=effort.get((run, task, e['attempt'])), model=d.get('model'),
                        reviewer=dict(model=d.get('model'), effort=d.get('effort'), harness=d.get('harness')),
@@ -699,7 +710,7 @@ def review_cases(runs: Runs):
                 len({item['worst'] for item, _ in items}) == 1:
             questions['severity'], expected['severity'] = review_severity(), r['worst']
             label_source['severity'] = 'worst CONFIRMED finding (%s)' % r['completeness']
-        meta = dict(completeness=r['completeness'])
+        meta = dict(completeness=r['completeness'], gate=r['gate'])
         # A second reviewer of the same diff, never consulted by the run: agreement is how
         # much of this label is the diff and how much is who happened to review it.
         paired = next((shadows[k] for k in ((i['run'], i['task'], i['attempt']) for i, _ in items) if k in shadows), None)
