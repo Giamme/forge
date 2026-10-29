@@ -110,12 +110,13 @@ printf '%s\n' "$TYPESAFE_API_KEY" | forge decide provider add jev --name typesaf
 # or a local server: --local needs --url, sends no key and costs nothing
 forge decide provider add jev --name local --url http://127.0.0.1:8080 --local
 
-forge decide gate memory-curate on --provider typesafe
+forge decide gate memory-curate shadow --provider typesafe
 forge decide status
 ```
 
 Name a provider to choose where a gate's requests go. The local server above is
-`forge decide gate memory-curate on --provider local`. A gate with no `--provider` does not
+`forge decide gate memory-curate shadow --provider local`. `on` waits for a passing replay
+(see [Measuring a gate](#measuring-a-gate)). A gate with no `--provider` does not
 read the key file `provider add` wrote: it uses the legacy transport, `jev.json`'s endpoint
 with `TYPESAFE_API_KEY` or `jev.json`'s key (or Cloudflare, for a site `jev.json` maps
 there). Migration leaves `jev.json` in place, so with either key present such a gate still
@@ -150,6 +151,9 @@ as it would have been with the gate off: no note, no memory edit, no verify comm
 Drift, forward and prompt stay advisory when `on`. The three memory gates and verify discover
 act. Verify discover still does not mark anything verified: the command it picked does, or
 `UNVERIFIED` stands.
+
+`on` for any gate needs a passing replay for the provider and model it uses, or `--force`.
+See [Measuring a gate](#measuring-a-gate).
 
 Set one with `forge decide gate <gate> off|shadow|on [--provider P] [--model M]`. `--repo DIR`
 writes `<repo>/.forge/decide.json`; `--profile NAME` writes that profile in the user file.
@@ -244,6 +248,8 @@ and shows up in `status` when `FORGE_DECIDE_RUN_DIR` is set. `forge decide budge
 
 Once any set cap is reached, every later decision-model call is skipped with reason `budget`
 and the run continues. A local provider, or one with no `--price`, adds tokens and zero USD.
+A replay (`forge decide replay --send`) is charged to neither cap, and a request-cache hit
+costs nothing. See [Measuring a gate](#measuring-a-gate).
 `--decide-budget tokens=N[,usd=X]` on a run sets that run's cap at the flags level and does
 not change the daily cap.
 
@@ -256,7 +262,8 @@ forge decide privacy allow --repo DIR
 
 `never-send` writes `"privacy": "never-send"` into `<DIR>/.forge/decide.json`. Every gate is
 then off (skip `privacy`): no decision-model request leaves that repo, and `doctor --live`
-does not probe. The floor beats every level, including run flags and `FORGE_JEV=off`.
+does not probe. The floor beats every level, including run flags and `FORGE_JEV=off`. A
+replay skips that repo's stored requests too.
 
 Removing it is a per-repo edit: `privacy allow --repo DIR` deletes the key from that repo's
 file. The user `decide.json` cannot set or clear it.
@@ -285,7 +292,8 @@ forge decide migrate --force    # replace the user decide.json from jev.json aga
   `key_env` `CLOUDFLARE_API_TOKEN`.
 - When `jev.json` is `enabled`, the `memory` gates and `verify-discover` are set `on`, and
   `drift`, `forward` and `prompt` are set `shadow`. A capability switched off is left unset,
-  so its gates stay `off`.
+  so its gates stay `off`. The `on` gates are written with `"force": true`, so they show as
+  forced until a replay passes for them.
 - A site mapped to `cloudflare` points at that provider; every other site points at
   `typesafe`, when that provider was created. `forge jev setup --provider cloudflare` mapped
   `jev-drift` by default, and migrate copies that map.
@@ -331,18 +339,221 @@ repo has a privacy floor.
 
 ### Cloudflare Clef
 
-Point a gate at that provider with `forge decide gate drift on --provider <name>`. A paired
-replay on 2026-10-16 found hosted Clef non-inferior on drift: AUC 0.985 against
+Point a gate at that provider with `forge decide gate drift on --provider <name>`, once a
+replay has passed for it (see [Measuring a gate](#measuring-a-gate)). A paired replay on
+2026-10-16 found hosted Clef non-inferior on drift: AUC 0.985 against
 Jev's 0.972, paired difference [0.000, +0.028], on 4560 decisions from 17 runs. A site moves
-only after Clef is non-inferior on at least 30 labeled decisions from at least 8 held-out
-runs. `jev-memory-slice` tied (AUC 0.951 against 0.953) on 5 runs and stays on a `jev`
-provider. No per-model threshold is set, so Clef reads the shared ones.
+on the rule in [Promotion](#promotion). `jev-memory-slice` tied (AUC 0.951 against 0.953) on
+5 runs and stays on a `jev` provider. No per-model threshold is set, so Clef reads the shared ones.
 
 The client sends at most 64 questions per request (drift asks up to 120, so that request is
 two concurrent chunks) and refuses `too-large` past the context, 64K tokens for `clef` and
 24K for `clef-flash`, or whatever `--context` set. The service would otherwise cut the state.
 Rate limits are retried inside the deadline; quota and plan errors are final. A response
 missing an answer, or with one out of range, is `malformed`.
+
+## Measuring a gate
+
+A gate becomes `on` by the same path for every site:
+
+1. **Shadow records.** With the gate `shadow`, the site asks. The answers go to `jev.jsonl`,
+   and the full request and its answers go to the run dataset. The run goes on as it would
+   with the gate off.
+2. **Labels arrive for free.** After the run, the dataset shows what happened next: which
+   undeclared file the task edited, which command the repo documents. Nobody labels anything.
+   See [Labels](#labels).
+3. **Replay compares.** `forge decide replay` re-asks the stored requests on one provider and
+   model, and scores the answers against those labels and against the site's baseline, a cheap
+   heuristic that uses no model.
+4. **Promotion.** The gate may be `on` for a provider and model only when the replay for them
+   passes. Otherwise `forge decide gate G on` is refused, unless it is forced. See
+   [Promotion](#promotion).
+
+A replay measures one provider and model. A passing replay on `typesafe` does not cover `local`.
+
+### Labels
+
+Each site's label is one sentence in its record in `forge_decide/sites.py`.
+`forge_decide/labels.py` computes it from the run dataset with the joins of `forge dataset
+export`, so a run the dataset did not capture has no labels.
+
+| site | label | precision floor |
+|---|---|---|
+| `jev-drift` | the undeclared file was edited by the task's final passing attempt (true), or was not (false) | 0.5 |
+| `jev-forward` | a later plan revision of the same run added the dependency (true); both tasks merged with no such dependency (false) | 0.5 |
+| `jev-verify-discover` | the candidate is the command the repo documents: its `.forge/verify`, or the command a later run of the same repo verified with, from `--verify` or `repo.verify` | 0.7 |
+| `jev-memory-slice` | the fact's anchor was edited by the task (true), or lies in an area the task never touched (false) | none |
+| `jev-prompt` | none yet (#40) | none |
+| `jev-memory-curate`, `jev-memory-stale` | none yet (#41: needs a contradiction record) | none |
+
+Verify discover has a label only for a repo that documents a command. Memory slice labels a
+request only when it has both classes. The three sites with no label cannot be replayed:
+`forge decide replay` refuses them, so their `on` needs `--force`.
+
+### forge decide report
+
+`forge decide report` reads the `jev.jsonl` files of past runs and the dataset's labels. It
+asks no model.
+
+It reads these runs:
+
+- by default, the newest 10 runs in this repo's run registry, by the run directory's
+  modification time. `--runs N` changes the count;
+- with `--all`, every repo's registered runs;
+- with `--run DIR` (repeatable), just those directories. It cannot be combined with `--all` or
+  `--runs`.
+
+In each run directory it reads every `jev.jsonl`: the run's own, and those under `tasks/*/`
+and `integrate-*/`. Anything under `jev-backtests/` is ignored. `--site S` keeps one site.
+
+It prints one row per site, sorted by input tokens, then a `total` row:
+
+| column | meaning |
+|---|---|
+| `mode` | the gate's mode for this repo, with `(forced)` when it is `on` without a passing replay. `-` for a site with no gate |
+| `calls` | every logged request, including cache hits and skips |
+| `cached` | requests answered from the request cache, at no cost |
+| `errors` | failed requests with no skip reason |
+| `skipped` | failed requests with a reason. The line under the table counts each reason |
+| `in tokens`, `out tokens` | from each request's usage. A cache hit has none |
+| `cost $` | tokens times the provider's price per million tokens, from the user `decide.json` (`provider add --price`). `-` when a provider in use has no price |
+| `fired` | requests the site acted on at its threshold for the model used. `(+N?)` counts requests it could not judge, since verify discover needs the stored request body |
+| `right` | decisions the site fired on whose label is true |
+| `wrong` | decisions the site fired on whose label is false |
+| `missed` | decisions the site did not fire on whose label is true |
+
+`right`, `wrong` and `missed` count decisions, one per question, not requests. They read `-`
+for a site with no label, and `0` when the runs carry no dataset or no labelled decision yet.
+`--json` also gives `labelled.decisions`, which the table does not show.
+
+An example, from a small test run directory with no dataset. Drift's label columns read `0`
+because there is no dataset; prompt has no label, so its columns read `-`:
+
+```text
+site        mode         calls  cached  errors  skipped  in tokens  out tokens  cost $  fired  right  wrong  missed
+jev-drift   on (forced)      3       1       0        1      1,200          80  0.0019      2      0      0       0
+jev-prompt  off              1       0       0        0        300          20  0.0005      1      -      -       -
+total                        4       1       0        1      1,500         100  0.0024      3      0      0       0
+skipped: budget 1
+runs read: 1: …/run
+```
+
+### forge decide replay
+
+```sh
+forge decide replay --site jev-drift --provider typesafe --model jev-latest           # dry run
+forge decide replay --site jev-drift --provider typesafe --model jev-latest --send    # ask, judge, record
+```
+
+Run the dry run first. It counts the labelled requests the replay would ask, and prints how
+many are already answered, how many would be sent, how many the privacy floor skips, the input
+tokens and the cost at the provider's price. It sends nothing and writes nothing.
+
+`--send` asks each unanswered request, `--workers` at a time (default 3), then judges the
+answers. A request already answered is never sent again, so an interrupted replay resumes. A
+failed request is asked again by the next `--send`.
+
+It takes the site's labelled live requests from the dataset, the first per request key.
+`--runs N` keeps the newest N dataset runs. A request from a repo with the privacy floor is
+never sent. The floor is read from that repo's `.forge/decide.json` at replay time, and the
+request is counted under `privacy floor`.
+
+The answers and the result are stored under `${XDG_STATE_HOME:-~/.local/state}/forge/decide/`:
+
+- `replay/<site>/<provider>/<model>.jsonl`: one line per request, with its answers or its
+  failure reason;
+- `replays/<gate>.json`: the result, under `"<provider>/<model>"`. `forge decide gate G on`
+  reads this file. A result is recorded only when at least one labelled decision was judged.
+
+On the judged half of the runs (the newer half, see [Promotion](#promotion)), `--send` reports:
+
+- requests answered, and requests skipped by the privacy floor;
+- decisions, positives and runs;
+- the AUC of the replay, of the baseline, and of the live answers, one per live model;
+- replay minus baseline, with its 95% interval and the margin;
+- precision, recall and the number flagged at the site's threshold, against its floor;
+- `PASSES: passes`, or `does not pass:` with the first rule that failed.
+
+A replay is not charged to the run or daily budget, and its requests are not written to
+`jev.jsonl` or the dataset. Each `--send` is a deliberate call to the provider.
+
+Exit codes: 2 for an unknown site, a site with no label, an unknown provider or a bad flag; 1
+when the provider has no key and is not local.
+
+### Promotion
+
+`forge decide gate G on`, for the provider and model the gate resolves to, writes `on` only when
+the replay of G on that provider and model passes, or when it is forced (see
+[Forced gates](#forced-gates)). It passes when, on the judged half:
+
+1. there are at least 30 labelled decisions;
+2. they come from at least 8 judged runs. Runs are ordered by their first labelled request,
+   and the older half calibrates while the newer half is judged. So a site needs 15 runs before
+   it has 8 to judge;
+3. the lower bound of the 95% paired interval of AUC(replay) − AUC(baseline) is above −0.02.
+   The interval resamples whole runs 2,000 times. `--seed` (default 7) sets the resamples and
+   `--margin` (default 0.02) the bound. The verdict uses the interval that is reported;
+4. for `drift`, `forward` and `verify-discover`, the replay's precision at the site's
+   threshold is at least the floor: 0.5, 0.5 and 0.7. The threshold is `drift_warn`,
+   `forward_warn` or `tests_act`, for the model replayed. `memory-slice` has no floor, so it
+   passes on rules 1 to 3.
+
+A passing replay shows as `replayed <date>` in `status`.
+
+### Forced gates
+
+`--force` turns a gate on without a passing replay:
+
+```sh
+forge decide gate drift on --provider typesafe --force
+```
+
+It writes `"force": true` into the gate's entry. That lets the write through, and lets
+`forge config set decide.gate.<gate>.provider` or `.model` change an `on` gate without a
+replay.
+
+"Forced" describes the state, not the flag. A gate is forced when it is `on` and no passing
+replay exists for its provider and model, whichever level turned it on: the user file, the
+repo, a profile, an environment variable, a flag, the legacy `jev.json`, or `migrate`. It stays
+forced until a replay passes. Setting it to `off` or `shadow`, or to `on` with a passing
+replay, drops the flag too.
+
+Forced shows in:
+
+- `forge decide status`: `forced` after the gate's provider, as in
+  `drift on (user) provider typesafe, forced`. `status --json` has `"forced": true` for the gate;
+- `forge decide report`: the mode column reads `on (forced)`;
+- `forge config show --json`: the same `forced` field. The text view does not print it;
+- the plan's decide line, as in `forge: decide: on: drift (forced); shadow: none`;
+- forge-ui: a `forced` tag on the gate, in Settings under Decision models. A recorded replay
+  shows as `replayed <date>`, or as `replay failed` when it did not pass.
+
+`forge decide migrate` writes each gate it turns on with `"force": true`. Those gates keep
+acting, and show as forced until a replay passes.
+
+### The request cache
+
+Each decision-model request is keyed by its body: the state, the model and the questions.
+Answers from live calls are kept in `<run dir>/decide.cache/`, one file per request and
+provider (name and URL). Each file holds the request's hash and the answers, not the request.
+The run dir is the plan dir or the solo run dir (`FORGE_DECIDE_RUN_DIR`), so every task of a
+plan shares one cache.
+
+The cache answers a repeated request in the same run dir:
+
+- a `run` that resumes a plan, and a `retry`;
+- a re-`plan` of the same plan dir;
+- a QA-only resume, where the dwarf's work is kept and only QA runs again.
+
+A changed state, model or question is a miss, and so is a different provider or URL.
+
+A hit costs nothing and is not charged to a budget, even when a cap is reached. It is logged in
+`jev.jsonl` with `"cached": true`, counts under `cached` in `forge decide report`, and is not
+written to the dataset a second time. Only live answers are cached: failures, fixtures and
+replays are not. The privacy floor is checked before the cache, so a hit cannot get past it.
+
+To turn the cache off, set `FORGE_DECIDE_CACHE=off` (`0`, `no` and `false` work too) in the
+run's environment. Every request is then sent, and nothing is written to the cache.
 
 ## Adding a site
 
@@ -362,11 +573,13 @@ A new site takes this path, in this order. Skipping a step is how the sites in
 4. **Recorded in the dataset.** The request must land in `jev.jsonl` and the run dataset whole,
    and the export (`forge dataset export`) needs a slice that labels it from what happened
    afterwards.
-5. **Replayed against labelled outcomes before it may act.** Measure on the state production
-   sends, with a label that comes from outside the model, and report the class separation, the
-   noise floor from repeated identical requests, and the baseline from the criteria above. A
-   number measured on state the model is not sent describes nothing: it has bitten this file
-   seven times.
+5. **Replayed against labelled outcomes before it may act.** Give the site a label that comes
+   from outside the model, a record in `forge_decide/sites.py` (label, baseline and floor) and a
+   labeller in `forge_decide/labels.py`. Then measure it on the state production sends, and
+   report the class separation, the noise floor from repeated identical requests, and the
+   baseline from the criteria above. `forge decide replay` judges it by the rule in
+   [Measuring a gate](#measuring-a-gate). A number measured on state the model is not sent
+   describes nothing: it has bitten this file seven times.
 6. **Ships advisory first.** It prints or records and cannot block a dispatch. A new site must
    treat `shadow` as ask-and-record (the kept sites do). It acts on something only after step 5
    holds on live runs, and never on a verdict, a tier or a model.
