@@ -1464,12 +1464,16 @@ verify_stopped() { # verify_stopped <out>
   verify_mark_interrupted "$1"
 }
 
-verify_result() ( verify_result_body "$@" ) # plan, checkout, artifact directory
+verify_result() ( verify_result_body "$@" ) # plan, checkout, artifact directory[, fixed source]
 
 # The body is a function of its own so `run` can start it as `( verify_result_body ... ) &`:
 # that one subshell is the background job, the home of the signal handler above and of
 # forge_metric_begin's EXIT trap.
-verify_result_body() { # plan, checkout, artifact directory
+# An optional fourth argument fixes the verification: "command:<file>" or "lanes:<dir>" (a
+# finished verification's verification.command or verification.lanes.d/). It replaces
+# verify_source_for and verify-discover, so a re-run judges by the predicate that verification
+# used, whatever the plan, the repository or discovery would say now.
+verify_result_body() { # plan, checkout, artifact directory[, fixed source]
   local plan="$1" wt="$2" out="$3" cmd="" before after rc=0 repo jev_loaded=0 vretries
   FORGE_VERIFY_STOP=0 FORGE_VERIFY_GROUP="" FORGE_VERIFY_TIMER="" FORGE_VERIFY_GRACE=5
   [ "${FORGE_RUN_STOPPABLE:-0}" = 1 ] && trap verify_signal TERM INT
@@ -1495,8 +1499,26 @@ verify_result_body() { # plan, checkout, artifact directory
   if [ -f "$SKILL_DIR/scripts/forge-jev-options.sh" ]; then
     source "$SKILL_DIR/scripts/forge-jev-options.sh" 2>/dev/null && jev_loaded=1
   fi
-  local vsource; vsource="$(verify_source_for "$plan" "$repo")"
+  local vsource fixed="${4:-}"
+  if [ -n "$fixed" ]; then
+    vsource="$(verify_fixed_source "$fixed")" || { echo UNVERIFIED > "$out/verification.status"
+      note "combined result UNVERIFIED: unusable fixed verification source: $fixed"; return 0; }
+    # A fixed source that is missing or empty is not a reason to look elsewhere.
+    case "$vsource" in
+      lanes:*) verify_lanes_present "${vsource#*$'\t'}" || vsource="none" ;;
+      *) [ -s "${vsource#*$'\t'}" ] || vsource="none" ;;
+    esac
+    if [ "$vsource" = none ]; then
+      echo UNVERIFIED > "$out/verification.status"
+      note "combined result UNVERIFIED: the fixed verification source $fixed is missing or empty"; return 0
+    fi
+  else
+    vsource="$(verify_source_for "$plan" "$repo")"
+  fi
   case "$vsource" in command:*) cmd="$(cat "${vsource#*$'\t'}")" ;; esac
+  # A lanes snapshot belongs to the verification that wrote it: a run on a command, or on
+  # other lanes, leaves none behind (verify_lanes_run makes the new one).
+  case "$vsource" in lanes:*) ;; *) rm -rf "$out/verification.lanes.d" ;; esac
   if [ "$(forge_tree "$wt")" != "$(git -C "$wt" rev-parse HEAD^{tree})" ]; then
     echo FAIL > "$out/verification.status"
     note "verification checkout has source changes outside its commit"; return 1
@@ -1511,7 +1533,7 @@ verify_result_body() { # plan, checkout, artifact directory
   # produced — any non-zero exit (no key, disabled, nothing suitable, a traceback)
   # falls straight through to the exact UNVERIFIED behaviour below. A Jev failure
   # must never change the outcome of a run.
-  if [ -z "$cmd" ] && [ "$jev_loaded" = 1 ] && forge_decide_active verify-discover; then
+  if [ -z "$cmd" ] && [ -z "$fixed" ] && [ "$jev_loaded" = 1 ] && forge_decide_active verify-discover; then
     local jev_json jev_rc jev_cmd
     # --json rather than the bare form: the record exists so a human can audit why a
     # command ran, and "confidence: null" answers nothing. The exit code still decides.
