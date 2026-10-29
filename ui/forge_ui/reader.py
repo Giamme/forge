@@ -1223,6 +1223,18 @@ def _timeline(pool, runs, verifications):
                 runs=runs, verifications=verifications)
 
 
+# scripts/forge-contract.py DEFAULT_THRESHOLD: what a run with no qa_threshold file blocks on.
+_DEFAULT_THRESHOLD = 'P2'
+
+
+def _threshold(reader):
+    """(effective level, 'set' | 'default') from the qa_threshold file; `none` in a file means P3."""
+    value = reader.line('qa_threshold')
+    if value is None:
+        return _DEFAULT_THRESHOLD, 'default'
+    return ('P3' if value.lower() == 'none' else value.upper()), 'set'
+
+
 _SOLO_SETTINGS = ('explore', 'shadow_rate', 'shadow_qa', 'timeout', 'max_parallel', 'qa_threshold',
                   'escalate_after', 'verify_retries', 'final_qa')
 
@@ -1232,6 +1244,7 @@ def _solo_detail(reader, source):
     status = next(iter(result['counts']))
     result['request'] = reader.cap(reader.text('request.md'), 'request')
     result['settings'] = dict.fromkeys(_SOLO_SETTINGS)
+    result['settings']['qa_threshold'], result['settings']['qa_threshold_source'] = _threshold(reader)
     result['verification'] = None
     result['waves'] = [['solo']]
     attempts = _history(reader, 'attempts.tsv')
@@ -1278,9 +1291,11 @@ def detail(path, source='plan') -> dict:
         return _solo_detail(reader, source)
     result, tasks = _summary(reader, source)
     result['request'] = reader.cap(reader.text('request.md'), 'request')
+    threshold = _threshold(reader)
     result['settings'] = dict(explore=reader.number('explore'), shadow_rate=reader.number('shadow_rate'),
                               shadow_qa=_list(reader.text('shadow_qa') or ''), timeout=reader.number('timeout', int),
-                              max_parallel=reader.number('max_parallel', int), qa_threshold=reader.line('qa_threshold'),
+                              max_parallel=reader.number('max_parallel', int),
+                              qa_threshold=threshold[0], qa_threshold_source=threshold[1],
                               escalate_after=reader.number('escalate_after', int),
                               verify_retries=reader.number('verify_retries', int), final_qa=reader.line('final_qa'))
     waves, wave_map = _waves(reader)

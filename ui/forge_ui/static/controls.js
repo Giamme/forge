@@ -13,6 +13,7 @@
   'use strict';
 
   const LEVELS = ['P0', 'P1', 'P2', 'P3'];
+  const DEFAULT_LEVEL = 'P2';   // scripts/forge-contract.py DEFAULT_THRESHOLD
   const EFFORTS = ['default', 'low', 'medium', 'high', 'xhigh', 'max'];
   const MAX_FIELD = 256;                                     // control.py: a body string is at most this long
   const LIVE_ONLY = 'only while a run is in progress';
@@ -83,7 +84,8 @@
     if (task && info.planOnly) return bad(`${info.label} applies to the whole run, not a task`);
     const text = String(input === undefined || input === null ? '' : input).trim();
     if (key === 'qa-threshold') {
-      return LEVELS.includes(text) || text === 'none' || (task && text === 'inherit') ? { ok: true, value: text } : bad('P0, P1, P2, P3 or none');
+      return LEVELS.includes(text) || text === 'none' || (task ? text === 'inherit' : text === 'default') ? { ok: true, value: text }
+        : bad(task ? 'P0, P1, P2, P3, none or inherit' : 'P0, P1, P2, P3, none or default');
     }
     if (task && key === 'retry-budget' && text === 'inherit') return { ok: true, value: 'inherit' };
     if (key === 'max-parallel') {
@@ -115,7 +117,8 @@
   }
 
   const shown = (key, value, task) => key === 'timeout' ? `${minutesOf(Number(value))} min`
-    : key === 'qa-threshold' && value === 'none' && task ? 'none (no threshold for this task)'
+    : key === 'qa-threshold' && value === 'none' ? (task ? 'P3 for this task' : 'P3 (nothing tolerated)')
+    : key === 'qa-threshold' && value === 'default' ? 'the default (P2)'
     : key === 'infra-backoff' && value === 'none' ? 'the default (exp:60)' : value;
   const inTask = task => task ? ` for task \`${task}\`` : '';
 
@@ -172,7 +175,9 @@
   function runValues(controls) {
     const c = obj(controls), run = obj(c.run);
     return { live: c.live === true, fractal: c.fractal === true,
-      qa: LEVELS.includes(run.qa_threshold) ? run.qa_threshold : 'none',
+      qa: LEVELS.includes(run.qa_threshold) ? run.qa_threshold : run.qa_threshold === 'none' ? 'P3' : DEFAULT_LEVEL,
+      qaSource: run.qa_threshold_source === 'set' ? 'set' : 'default',
+      qaText: `${LEVELS.includes(run.qa_threshold) ? run.qa_threshold : run.qa_threshold === 'none' ? 'P3' : DEFAULT_LEVEL} (${run.qa_threshold_source === 'set' ? 'set' : 'default'})`,
       timeout: num(run.timeout), timeoutMin: minutesOf(run.timeout),
       escalateAfter: num(run.escalate_after), verifyRetries: num(run.verify_retries),
       retryBudget: num(run.retry_budget), infraBudget: num(run.infra_budget),
@@ -220,7 +225,7 @@
     const c = obj(controls), t = obj(obj(c.tasks)[id]), run = runValues(c);
     const level = t.qa_threshold;
     const threshold = LEVELS.includes(level) ? { mode: level, effective: level, from: 'task' }
-      : level === 'none' ? { mode: 'none', effective: 'none', from: 'task' }
+      : level === 'none' ? { mode: 'none', effective: 'P3', from: 'task' }
       : { mode: 'inherit', effective: run.qa, from: 'run' };
     const own = num(t.retry_budget), eff = own !== null ? own : run.retryBudget;
     return { id, known: !!c.tasks && id in c.tasks, status: typeof t.status === 'string' ? t.status : 'PENDING',
@@ -505,7 +510,8 @@
 
   function levelRow(view, c, o) {
     const r = shell(view, o.key, o.label, false), perm = o.perm;
-    const options = (o.inherit ? [{ value: 'inherit', label: 'Inherit', title: "Use the run's threshold" }] : [])
+    const options = (o.inherit ? [{ value: 'inherit', label: 'Inherit', title: "Use the run's threshold" }]
+      : [{ value: 'default', label: 'Default', title: 'Remove the setting: the default (P2) applies' }])
       .concat(LEVELS.map(l => ({ value: l, label: l })), [{ value: 'none', label: 'None', title: o.noneTitle }]);
     r.control.append(bank(r, options, o.current, perm.enabled, (value, button) => {
       if (value !== o.current) commit(view, r, { kind: 'set', key: 'qa-threshold', input: value, task: o.task }, [], button);
@@ -540,9 +546,9 @@
       body.append(runKeys(view, c));
       if (v.pauses.length) body.append(pauseBox(view, c));
     }
-    body.append(levelRow(view, c, { key: 'qa-threshold', label: 'QA threshold', current: v.qa, perm: perm('qa-threshold'),
-      help: v.qa === 'none' ? 'The least severe finding that still blocks: no threshold is set.'
-        : `The least severe finding that still blocks: ${v.qa} (${LEVELS.slice(0, LEVELS.indexOf(v.qa) + 1).join(', ')} block).`, noneTitle: 'No threshold' }));
+    body.append(levelRow(view, c, { key: 'qa-threshold', label: 'QA threshold', current: v.qaSource === 'set' ? v.qa : 'default', perm: perm('qa-threshold'),
+      help: `The least severe finding that still blocks: ${v.qaText} (${LEVELS.slice(0, LEVELS.indexOf(v.qa) + 1).join(', ')} block).`,
+      noneTitle: 'P3: nothing is tolerated' }));
     body.append(countRow(view, c, { key: 'timeout', label: 'Timeout', unit: 'minutes', decimal: true, value: v.timeoutMin, placeholder: 'default', perm: perm('timeout'),
       help: v.timeoutMin === null ? "Not set: each model's own limit applies. 0 turns the limit off." : `Each model call stops after ${v.timeoutMin} min. 0 turns the limit off.` }));
     body.append(countRow(view, c, { key: 'escalate-after', label: 'Escalate after', unit: 'failures', value: v.escalateAfter, perm: perm('escalate-after'),
@@ -571,9 +577,9 @@
     if (v.status === 'MERGED') { body.append(u.el('p', 'Merged: there is nothing left to change for this task.', 'muted ctl-note')); return body; }
     const th = v.threshold, task = id;
     body.append(levelRow(view, c, { key: 'qa-threshold', label: 'Threshold override', inherit: true, task, current: th.mode, perm: canEdit(c, 'qa-threshold', id),
-      noneTitle: 'No threshold for this task',
-      help: th.mode === 'inherit' ? `Inherits ${v.run.qa === 'none' ? 'no threshold' : v.run.qa} from the run.`
-        : th.mode === 'none' ? 'No threshold for this task, whatever the run sets.' : `${th.mode} for this task, whatever the run sets.` }));
+      noneTitle: 'P3 for this task: nothing is tolerated',
+      help: th.mode === 'inherit' ? `Inherits ${v.run.qa} from the run.`
+        : th.mode === 'none' ? 'P3 for this task, whatever the run sets.' : `${th.mode} for this task, whatever the run sets.` }));
     const rb = v.retry, used = rb.effective === null ? `used ${rb.used}` : `used ${rb.used} of ${rb.effective}`;
     body.append(countRow(view, c, { key: 'retry-budget', label: 'Retry budget', unit: 'retries', task, value: rb.own, placeholder: rb.effective === null ? 'inherit' : String(rb.effective),
       inherit: rb.mode === 'inherit' ? 'pressed' : 'ready', perm: canEdit(c, 'retry-budget', id),

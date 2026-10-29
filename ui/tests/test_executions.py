@@ -307,7 +307,7 @@ class ExecutionTests(FixtureCase):
     def test_settings_integration_verification_and_deferrals(self):
         data = detail(self.plan)
         self.assertEqual(data['settings'], {'explore': 0.25, 'shadow_rate': 0.5, 'shadow_qa': ['sol:xhigh'],
-                                            'timeout': 3600, 'max_parallel': 2, 'qa_threshold': 'P2',
+                                            'timeout': 3600, 'max_parallel': 2, 'qa_threshold': 'P2', 'qa_threshold_source': 'set',
                                             'escalate_after': 1, 'verify_retries': 1, 'final_qa': 'opus'})
         self.assertEqual(data['integration'], {
             'base': 'a' * 40, 'accepted': 'b' * 40,
@@ -568,7 +568,8 @@ class ExecutionTests(FixtureCase):
         self.assertEqual(task['findings'], counts(plausible=1))
         for field, value in (('integration', None), ('final_review', None), ('final_reviews', []), ('deferrals', [])):
             self.assertEqual(data[field], value, field)
-        self.assertEqual(set(data['settings'].values()), {None})
+        self.assertEqual({k: v for k, v in data['settings'].items() if not k.startswith('qa_threshold')}, dict.fromkeys([k for k in data['settings'] if not k.startswith('qa_threshold')]))
+        self.assertEqual((data['settings']['qa_threshold'], data['settings']['qa_threshold_source']), ('P2', 'default'))
         result = execution_detail(self.solo, F.SOLO_QA)
         self.assertEqual(result['owner'], {'kind': 'task', 'id': 'solo'})
         self.assertEqual(result['findings'][0]['location'], 'src/solo.py:3')
