@@ -48,6 +48,7 @@ written), and the reader must never raise because of one.
 | `verification.retry.log` | the output of a deterministic or Jev rerun of a single command |
 | `verification.lanes.json` | a lanes verification's live and final state, written by `scripts/forge-verify.py` (read up to 4 MB); `verification.lane.<name>.log` and `verification.lane.<name>.run-<k>.log` each lane's output |
 | `verification.commit` | one line, the commit verified |
+| `attribution.json` | the result of `forge-parallel.sh attribute`: `culprit` (a task id or `null`), `base_fails`, `inconclusive` (a reason or `null`), `merges`, `steps`, `verification_runs`, `gate` (`null` without the gate, else `{mode, ranking, tried, outcome}`); returned as `attribution`, see RunDetail |
 | `max_parallel`, `escalate_after`, `verify_retries` | one integer each |
 | `qa_threshold` | `P0`..`P3`, the least severe finding that still blocks; `final_qa` the final review's QA spec |
 | `deferrals.txt` | one line per task the wave planner deferred |
@@ -57,12 +58,13 @@ written), and the reader must never raise because of one.
 | `final-review` | a symlink to the newest *published* review dir; `final-review.verdict` a copy of its verdict |
 | `integrate-<epoch>-<pid>/` | one `integrate`: `setup.log`, `merge.log`, `verification.*`, `attempts/verification-<uuid>/`, and `final-review/` (a review dir as above) when it ran one |
 | `tasks/<id>/merged` | exists when the task was merged; its mtime is when |
-| `tasks/<id>/status` | one word: `RUNNING PASS FAIL ERROR INFRA TIMEOUT UNKNOWN INVALIDATED BLOCKED INTERRUPTED NOCHANGES CONFLICT` |
+| `tasks/<id>/status` | one word: `RUNNING PASS FAIL ERROR INFRA TIMEOUT UNKNOWN INVALIDATED BLOCKED INTERRUPTED NOCHANGES CONFLICT NEEDS_INPUT` |
 | `tasks/<id>/attempt` | the current attempt number |
-| `tasks/<id>/attempts.tsv` | `epoch<TAB>attempt<TAB>status<TAB>infra_class` per line, one per attempt entry; status may also be `MERGED`, `infra_class` may be empty, `-` or missing |
+| `tasks/<id>/attempts.tsv` | `epoch<TAB>attempt<TAB>status<TAB>infra_class` per line, one per attempt entry; status may also be `MERGED`, `BOUNCED` or `INCOMPLETE` (a send-back that no reviewer judged: the task status stays `FAIL`), `infra_class` may be empty, `-` or missing |
 | `tasks/<id>/escalations.tsv` | `epoch<TAB>attempt<TAB>from_spec<TAB>to_spec[<TAB>source]` per line; `source` (who decided: `policy`, a human's `retry --dwarf` as `retry`, or a `pin`) is missing on older rows, which read as `policy` |
 | `tasks/<id>/qa.last` | the reviewer's final message; its last line matching `FORGE_VERDICT: PASS` or `FORGE_VERDICT: FAIL` is the verdict |
 | `tasks/<id>/prompt.md`, `approach.md`, `retry_findings.md` | free text |
+| `tasks/<id>/needs_input.md` | the question for the user, written when the task stopped `NEEDS_INPUT`: `The implementer asked:`, then the end of the dwarf's last message; free text, returned as `needs_input` |
 | `tasks/<id>/accepted.by` | who accepted a task over a reviewer's FAIL, and why (`key=value`: `task`, `status`, `reason`, `by`, `at`, `epoch`, `attempt`, `reviewed_commit`; older runs are free text; returned as text) |
 | `tasks/<id>/qa.gate` | `threshold<TAB>decision<TAB>worst<TAB>n_confirmed<TAB>n_unlabelled<TAB>n_below` (`decision` is `accept` (the reviewer said FAIL, every CONFIRMED finding was below the threshold), `fail` (the reviewer said PASS, but listed a blocking CONFIRMED finding) or `keep`, `-` for none) |
 | `tasks/<id>/known_issues.md` | the confirmed findings a threshold tolerated |
@@ -212,7 +214,7 @@ loaded. When it cannot be loaded, `findings_available` is `false` and every find
 is `null`; verdicts and `gate` do not need it.
 
 Text fields are capped so one huge file cannot blow up a response: `request`, `prompt`,
-`approach`, `retry_findings` keep their first 20,000 characters; `qa_tail`, `dwarf_tail`
+`approach`, `retry_findings`, `needs_input` keep their first 20,000 characters; `qa_tail`, `dwarf_tail`
 and `verification.log_tail` keep their last 4,000. A capped field ends (or, for tails,
 starts) with `…` and the value of `truncated` lists the field names that were cut.
 
@@ -363,6 +365,8 @@ Every RunSummary field, plus:
   "settings": {"explore": 0.5, "shadow_rate": 0.5, "shadow_qa": ["opus", "sol:xhigh"], "timeout": 3600,
                "max_parallel": 2, "qa_threshold": "P2", "escalate_after": 3, "verify_retries": 1,
                "final_qa": "opus"},
+  "attribution": {"culprit": "page", "base_fails": false, "inconclusive": null, "verification_runs": 4,
+                  "gate_outcome": "confirmed"},
   "verification": {"status": "PASS", "command": "python3 -m unittest", "log_tail": "...",
                    "runs": [{"n": 1, "kind": "initial", "exit": 0, "tree_changed": false,
                              "duration_s": 12.3, "log": "verification.lane.unit.run-1.log",
@@ -403,6 +407,14 @@ Every RunSummary field, plus:
   a missing file reads `P2` (forge's default) with `qa_threshold_source` `default`; a file reads
   with source `set`, and `none` in it reads `P3`. A solo run has no plan settings: every value
   is `null`, including `shadow_qa`, except `qa_threshold` and its source, which read the same way.
+- `attribution` is the result of `forge-parallel.sh attribute` from `attribution.json`, or `null` when
+  the file is missing. `culprit` is the merged task's id or `null`; `base_fails` is `true` only when the
+  base verified FAIL; `inconclusive` is the reason the search stopped without a culprit, or `null`;
+  `verification_runs` is how many verifications the search ran; `gate_outcome` is `gate.outcome`
+  (`confirmed` or `refuted`), `null` without the gate. A file that is not a JSON object, or lacks any of
+  `culprit`, `base_fails`, `inconclusive`, `verification_runs` or `gate`, or has a value of the wrong type
+  (`culprit` and `inconclusive` a string or `null`, `base_fails` a boolean, `verification_runs` an integer,
+  `gate` `null` or an object whose `outcome` is a string or `null`), is `null` and warned.
 - `verification` is `null` when none of `verification.status`, `.command`, `.log` exists. A
   solo run's `verification` is always `null`. `runs` comes from `verification.runs.tsv`
   (malformed rows are warned and skipped; an empty `exit` is `null`), `commit` is the first
@@ -523,6 +535,7 @@ Every RunSummary field, plus:
   "prompt": "full prompt.md text",
   "approach": null,
   "retry_findings": "...",
+  "needs_input": "the question in tasks/<id>/needs_input.md, or null",
   "qa_tail": "last 4000 chars of qa.last",
   "dwarf_tail": "last 4000 chars of dwarf.last",
   "executions": [Execution, ...],
@@ -578,6 +591,8 @@ Every RunSummary field, plus:
 - `findings`: FindingsSummary of the current `qa.last`, or `null`.
 - `gate`: the parsed `qa.gate` (`decision` `accept`, `fail` or `keep`; `n_*` integers, `-` is `null`), or `null` when missing or
   malformed (malformed is warned).
+- `needs_input`: the text of `tasks/<id>/needs_input.md`, capped like `prompt`, or `null` when the file is
+  missing. The question a task stopped `NEEDS_INPUT` for; the export leaves it out unless texts are chosen.
 - `known_issues`: whether `known_issues.md` is a non-empty file.
 - `now`: `null` unless the task is `RUNNING`. Then where it is: the newest running non-shadow `dwarf`
   or `qa` execution (`role`, `execution`, `attempt`, `phase`, `phase_started`, `started`), else the
@@ -610,7 +625,7 @@ it is missing or `<harness default>`). `wave` is 1, `branch` is `null`, and `att
 from the run dir's `attempts.tsv`. `status` is the solo status; `attempt` is the highest `n`
 in `attempts.tsv`, or `null`. `escalations`, `route` and `shadow` are empty. `verdict` and
 `qa_tail` come from `qa.last`, and `prompt` comes from `prompt.md`. `deps` and `files` are
-`[]`; `difficulty`, `accepted_by`, `approach` and `retry_findings` are `null`; `accepted` is
+`[]`; `difficulty`, `accepted_by`, `approach`, `retry_findings` and `needs_input` are `null`; `accepted` is
 false; `accepted_attempt` and `accepted_over` are `null`; `explored` is false; `waiting` and `sweep` are `null`, `swept` is `[]`. `request` on
 the detail is `request.md`.
 
@@ -1167,7 +1182,7 @@ difficulty paths deps model` each), `decomposition_history` (its newest 20, each
   (under their tail paths; line ranges are not stored, so the page shows the tail).
 - `texts=0` (the default) nulls these keys wherever they hold a string, list or object: `prompt
   last request log_tail dwarf_tail qa_tail qa_last qa_input tasks_summary known_issues texts text
-  planning_last approach retry_findings dwarf_input error last_line message excerpt tail lines call split`,
+  planning_last approach retry_findings needs_input dwarf_input error last_line message excerpt tail lines call split`,
   and stores no diff, no transcript, no checks and no environment problems (a command is a text). A finding keeps its `summary`, a failing test its `name`.
 - `paths=0` (the default) makes every string that is a whole absolute path (but `/api/…`, `url`s
   and `command`s) its last component, and replaces the run dir, the repo and the home dir inside other
