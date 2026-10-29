@@ -86,8 +86,10 @@ class MigrateTests(MigrateTestCase):
         self.assertEqual({g: v['provider'] for g, v in gates.items()},
                          {g: 'cloudflare' if g == 'drift' else 'typesafe' for g in forge_decide.GATES})
         self.assertEqual(gates['verify-discover']['mode'], 'on')
+        self.assertIs(gates['verify-discover']['force'], True)  # on with no replay: forced
         for gate in ('drift', 'forward', 'prompt'):
             self.assertEqual(gates[gate]['mode'], 'shadow')
+            self.assertNotIn('force', gates[gate])
         for gate in MEMORY:
             self.assertNotIn('mode', gates[gate])
         self.assertEqual(gates['prompt']['thresholds'], {'prompt_warn': 0.3})
@@ -107,6 +109,7 @@ class MigrateTests(MigrateTestCase):
             self.assertNotIn(secret, json.dumps(result))
         resolved = forge_decide.resolve.resolve(env={})
         self.assertEqual(resolved['gates']['verify-discover']['mode'], 'on')
+        self.assertIs(resolved['gates']['verify-discover']['force'], True)
         self.assertEqual(resolved['gates']['drift']['provider'], 'cloudflare')
 
     def test_an_existing_keys_directory_is_made_private(self):
