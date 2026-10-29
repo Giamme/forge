@@ -25,24 +25,36 @@ _WORKFLOW_TEST_HINT_RE = re.compile(
 # its author wrote it, so its content is taken whole, quotes and option values included. Prose is
 # scanned for a runner and the arguments after it, and an argument is a flag, a path or a quoted
 # string: a plain word ends the command, so "cargo test --workspace runs all tests" names
-# `cargo test --workspace`. The rendered source tag ("[tests/]") matches none of these forms.
+# `cargo test --workspace`. A bare flag followed by a plain word may take that word as its value
+# ("--features integration"), and half an option is a command cargo rejects, so the command ends
+# before such a flag unless the word is plain prose ("runs", "also"). The rendered source tag
+# ("[tests/]") matches none of these forms.
 _CODE_SPAN_RE = re.compile(r'`([^`\n]+)`')
-_PROSE_ARG = r'''(?:-{1,2}[^\s`'"\[\]]+|[\w.-]*/[\w./-]*|"[^"\n]*"|'[^'\n]*')'''
+_PROSE_WORD = r'[A-Za-z][\w-]*(?![\w/-]|\.\w)'
+_PROSE_STOP = (r'(?:runs?|running|also|and|or|then|which|that|for|to|in|on|with|before|after|if|'
+               r'when|but|is|are|will|should|must|can|takes?|checks?|covers?|lints?|builds?|'
+               r'executes?|needs?|requires?)(?![\w/-]|\.\w)')
+_PROSE_FLAG = (r'-{1,2}[^\s`\'"\[\]=]+(?![^\s`\'"\[\]=])(?:=[^\s`\'"\[\]]*|(?!\s+(?!' + _PROSE_STOP + r')' + _PROSE_WORD + r'))')
+_PROSE_ARG = r'''(?:''' + _PROSE_FLAG + r'''|[\w.-]*/[\w./-]*|"[^"\n]*"|'[^'\n]*')'''
+# A runner is a whole word: "pytest.ini" and "tests/pytest/" are files, not the pytest command.
+_HEAD_START = r'(?<![\w./-])'
+_HEAD_END = r'(?![\w/-]|\.\w)'
 _MEMORY_HEADS = (
-    r'\bpytest\b',
-    r'\bmake\s+\w[\w-]*',
-    r'\bnpm run\s+[\w:_-]+',
-    r'\bnpm test\b',
-    r'\byarn(?:\s+run)?\s+[\w:_-]+',
-    r'\bgo test\b',
-    r'\bcargo test\b',
-    r'\btox\b',
-    r'\bnox\b',
-    r'\bbash\s+[\w./-]+\.sh\b',
-    r'\bpython3?\s+[\w./-]+\.py\b',
+    r'pytest',
+    r'make\s+\w[\w-]*',
+    r'npm run\s+[\w:_-]+',
+    r'npm test',
+    r'yarn(?:\s+run)?\s+[\w:_-]+',
+    r'go test',
+    r'cargo test',
+    r'tox',
+    r'nox',
+    r'bash\s+[\w./-]+\.sh',
+    r'python3?\s+[\w./-]+\.py',
 )
-_MEMORY_HEAD_RES = tuple(re.compile(head) for head in _MEMORY_HEADS)
-_MEMORY_PROSE_RES = tuple(re.compile(head + r'(?:\s+' + _PROSE_ARG + r')*') for head in _MEMORY_HEADS)
+_MEMORY_HEAD_RES = tuple(re.compile(_HEAD_START + head + _HEAD_END) for head in _MEMORY_HEADS)
+_MEMORY_PROSE_RES = tuple(re.compile(_HEAD_START + head + _HEAD_END + r'(?:\s+' + _PROSE_ARG + r')*')
+                          for head in _MEMORY_HEADS)
 # Punctuation that ends the sentence a command sits in: "pytest -q." names `pytest -q`, but
 # "go test ./..." keeps its dots.
 _SENTENCE_END_RE = re.compile(r'(?:[,;:!?)]|(?<=[^.])\.)+$')

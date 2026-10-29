@@ -250,6 +250,23 @@ class CandidateSourceTests(JevVerifyTestCase):
         found = verify.candidates(self.repo)
         self.assertEqual([c['command'] for c in found], ['cargo test --workspace'])
 
+    def test_prose_never_ends_a_command_on_half_an_option(self):
+        # "--features integration" is one option; cargo rejects "--features" alone.
+        (self.repo / '.forge').mkdir()
+        (self.repo / '.forge' / 'memory.md').write_text(
+            '## Verify\n- cargo test --features integration runs the suite [Cargo.toml]\n'
+            '- pytest -q --maxfail=1 also lints [tests/]\n')
+        found = verify.candidates(self.repo)
+        self.assertEqual([c['command'] for c in found], ['cargo test', 'pytest -q --maxfail=1'])
+
+    def test_a_filename_in_a_code_span_is_not_a_runner(self):
+        (self.repo / '.forge').mkdir()
+        (self.repo / '.forge' / 'memory.md').write_text(
+            '## Verify\n- pytest -q runs with the settings in `pytest.ini` [pytest.ini]\n'
+            '- see `tests/pytest/conftest.py` and `tox.ini` [tox.ini]\n')
+        found = verify.candidates(self.repo)
+        self.assertEqual([c['command'] for c in found], ['pytest -q'])
+
     def test_a_code_span_keeps_its_quoted_option_value(self):
         # Quotes end a word in prose, but a code span is the command as written.
         (self.repo / '.forge').mkdir()
