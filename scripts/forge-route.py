@@ -75,8 +75,8 @@ from pathlib import Path
 TIERS = ('low', 'medium', 'high')
 SCRIPTS = Path(__file__).resolve().parent
 REGISTRY = SCRIPTS.parent / 'registry.tsv'
-FAILED = ('FAIL', 'TIMEOUT')                       # a judgment against the spec that ran
-NEUTRAL = ('INFRA', 'UNKNOWN', 'ERROR', 'RUNNING', 'INTERRUPTED')   # say nothing about it
+FAILED = ('FAIL', 'TIMEOUT', 'BOUNCED', 'INCOMPLETE')   # a judgment against the spec that ran
+NEUTRAL = ('INFRA', 'UNKNOWN', 'ERROR', 'RUNNING', 'INTERRUPTED', 'NEEDS_INPUT')   # say nothing about it
 DEFAULT_ESCALATE_AFTER = 3
 DEFAULT_EFFORT = 'medium'                         # forge-dispatch.sh dwarf default
 LOCK_WAIT = 5.0                                    # seconds to wait for P/control.lock

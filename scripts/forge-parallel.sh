@@ -97,7 +97,7 @@ JEV_OPTS=0
 # Flags shared by several subcommands, then the helper libraries. Functions only, resolved
 # at call time, so they may use die/note/field and friends defined below.
 source "$SKILL_DIR/scripts/forge-parallel-options.sh"
-for forge_lib in task verify plans review; do
+for forge_lib in task gates verify plans review; do
   [ -f "$SKILL_DIR/scripts/forge-lib-$forge_lib.sh" ] && source "$SKILL_DIR/scripts/forge-lib-$forge_lib.sh"
 done
 OUTPUT=summary
@@ -858,7 +858,8 @@ do_task_body() (
   # The gate's decision belongs to the review that made it. A review that ends before the gate
   # (invalidated, timed out, no changes) must not leave an earlier attempt's decision for the
   # next retry note or `accept` to read; prepare_retry has already carried it forward.
-  rm -f "$tdir/qa.gate" "$tdir/known_issues.md" "$tdir/invalidated.reason" "$tdir/prereview.failed"
+  rm -f "$tdir/qa.gate" "$tdir/known_issues.md" "$tdir/invalidated.reason" "$tdir/prereview.failed" \
+        "$tdir/bounced" "$tdir/message.failed"
 
   # The base is pinned per task on first creation and reused by every retry. The
   # integration branch moves as later waves land, so re-reading the run-level
@@ -891,7 +892,7 @@ do_task_body() (
     /bin/bash "$MEMORY" inject "$REPO" dwarf --task "$tdir/prompt.md" \
         --run-dir "$tdir" > "$tdir/dwarf.memory"
     {
-      python3 "$SKILL_DIR/scripts/forge-prompt.py" --requirements "$tdir/prompt.md" --capsule "$tdir/baseline.capsule" --approach "$tdir/approach.md" --retry "$tdir/retry_findings.md" --memory "$tdir/dwarf.memory"
+      python3 "$SKILL_DIR/scripts/forge-prompt.py" --requirements "$tdir/prompt.md" --capsule "$tdir/baseline.capsule" --approach "$tdir/approach.md" --retry "$tdir/retry_findings.md" --retry-source "$(cat "$tdir/retry_findings.source" 2>/dev/null || echo review)" --memory "$tdir/dwarf.memory"
       [ ! -f "$PLAN/sweep_ahead" ] || python3 "$SKILL_DIR/scripts/forge-sweep.py" ahead "$PLAN" "$id" --role dwarf 2>/dev/null
       echo "Implement this task in the repository. Follow the intended approach unless it is wrong; explain deviations. Run the task's requested verification and report results."
       echo "On retry, fix the findings in the existing work; preserve parts not criticised. Explain any finding you reject."
@@ -973,6 +974,8 @@ do_task_body() (
         --duration "$(dispatch_duration "$tdir" dwarf)" >/dev/null 2>&1
 
     guard_after_dwarf "$wt" "$tdir" "$id"
+    # Before the snapshot, so a dwarf that only asked a question (and changed nothing) still reaches it.
+    forge_post_dwarf_gates "$PLAN" "$id" "$tdir" "$wt" "$attempt" || return 0
     forge_metric_phase snapshot
     # Capture the real diff, including new files, then commit on the task branch.
     # Diffed against the task's pinned base rather than the branch head, so a retry
@@ -1029,6 +1032,7 @@ do_task_body() (
     rm -f "$tdir/reviewed.dwarf.session" "$tdir/reviewed.dwarf.resolved"
     [ ! -s "$tdir/dwarf.session" ] || cp "$tdir/dwarf.session" "$tdir/reviewed.dwarf.session"
     [ ! -s "$tdir/dwarf.resolved" ] || cp "$tdir/dwarf.resolved" "$tdir/reviewed.dwarf.resolved"
+    forge_pre_qa_gates "$PLAN" "$id" "$tdir" "$wt" "$attempt" "$reviewed" || return 0
   else
     reviewed="$(cat "$tdir/reviewed.commit")"
   fi
@@ -1088,7 +1092,7 @@ do_task_body() (
   /bin/bash "$MEMORY" inject "$REPO" qa --task "$tdir/prompt.md" \
       --run-dir "$tdir" > "$tdir/qa.memory"
   {
-    python3 "$SKILL_DIR/scripts/forge-prompt.py" --requirements "$tdir/prompt.md" --capsule "$tdir/baseline.capsule" --approach "$tdir/approach.md" --retry "$tdir/retry_findings.md" ${prompt_extra[@]+"${prompt_extra[@]}"} --memory "$tdir/dwarf.memory" --memory "$tdir/qa.memory"
+    python3 "$SKILL_DIR/scripts/forge-prompt.py" --requirements "$tdir/prompt.md" --capsule "$tdir/baseline.capsule" --approach "$tdir/approach.md" --retry "$tdir/retry_findings.md" --retry-source "$(cat "$tdir/retry_findings.source" 2>/dev/null || echo review)" ${prompt_extra[@]+"${prompt_extra[@]}"} --memory "$tdir/dwarf.memory" --memory "$tdir/qa.memory"
     python3 "$SKILL_DIR/scripts/forge-contract.py" qa --part head --kind "$qa_kind"
     echo
     [ ! -f "$PLAN/sweep_ahead" ] || python3 "$SKILL_DIR/scripts/forge-sweep.py" ahead "$PLAN" "$id" --role qa 2>/dev/null

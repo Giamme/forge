@@ -45,7 +45,11 @@ WATCHED = (
     'verification.retry.log', 'verification.flaky', 'verification.coverage.txt',
     'verification.jev.json', 'verification.runs.tsv', 'verification.commit', 'verification.fingerprint',
     'verification.lanes.json', 'results.tsv',
+    'prereview.failed', 'bounced', 'message.failed', 'needs_input.md',
 )
+
+# The markers of an attempt forge sent back without a review, and the kind each one records.
+SENT_BACK = (('prereview.failed', 'prereview'), ('bounced', 'bounce'), ('message.failed', 'message'))
 
 _VERDICT = re.compile(r'^FORGE_VERDICT: (PASS|FAIL)([ \t]+(—|–|-)( .*)?)?[ \t]*$')
 _LEARNING = re.compile(r'^\s*FORGE_LEARNING:\s*(.+)$')
@@ -482,6 +486,8 @@ def task_event(attempt: Path, tdir: Path, rc, prov: dict, src: str = 'live') -> 
         drift=(text(tdir / 'drift.txt') or '').split() if made('drift.txt') else [],
         guard=(text(tdir / 'guard.txt') or '').splitlines() if made('guard.txt') else [],
         noretry=made('noretry'), gate=gate, infra=infra or None,
+        sent_back=next((kind for marker, kind in SENT_BACK if made(marker)), None),
+        retry_source=first_line(tdir / 'retry_findings.source'),
         identical_retry=bool(diff) and made('changes.prev.diff') and diff == text(tdir / 'changes.prev.diff'),
         produced=sorted(n for n in WATCHED if made(n)),
         carried=sorted(n for n in WATCHED if (tdir / n).exists() and not made(n)),

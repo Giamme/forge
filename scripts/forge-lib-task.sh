@@ -16,8 +16,12 @@ record_attempt() { # record_attempt <plan> <id>
   local tdir="$1/tasks/$2" cls=""
   [ "$(task_status "$1" "$2")" = BLOCKED ] && return 0   # never started: nothing to audit
   [ "$(task_status "$1" "$2")" = INFRA ] && cls="$(sed -n 's/^class=//p' "$tdir/infra.txt" 2>/dev/null | head -1)"
+  # A send-back that no reviewer judged keeps the task status FAIL; attempts.tsv names its kind.
+  local st; st="$(task_status "$1" "$2")"
+  if [ -f "$tdir/bounced" ]; then st=BOUNCED
+  elif [ -f "$tdir/message.failed" ]; then st=INCOMPLETE; fi
   printf '%s\t%s\t%s\t%s\t%s\n' "$(date +%s)" "$(cat "$tdir/attempt" 2>/dev/null || echo 0)" \
-    "$(task_status "$1" "$2")" "$cls" "$(field "$1/tasks.tsv" "$2" dwarf)" >> "$tdir/attempts.tsv"
+    "$st" "$cls" "$(field "$1/tasks.tsv" "$2" dwarf)" >> "$tdir/attempts.tsv"
 }
 
 # --- infrastructure stops -------------------------------------------------------
@@ -187,13 +191,14 @@ carry_findings() { # carry_findings <tdir>
     cp "$tdir/reviewed.commit" "$tdir/.retry_findings.commit.tmp" \
       && mv "$tdir/.retry_findings.commit.tmp" "$tdir/retry_findings.commit"
   else
-    rm -f "$tdir/retry_findings.commit"
+    rm -f "$tdir/retry_findings.commit" "$tdir/retry_findings.source"
   fi
   # The reviewer session that wrote these findings, and what it ran as, kept beside them for a
   # plan with --reviewer-session. Removed first, so an older session never sits next to newer
   # findings; a review that left no session leaves none here.
   rm -f "$tdir/retry_findings.session" "$tdir/retry_findings.resolved"
   carry_implementer_session "$tdir"
+  printf 'review\n' > "$tdir/retry_findings.source"
   local gthr gdec
   IFS="$(printf '\t')" read -r gthr gdec _ < "$tdir/qa.gate" 2>/dev/null || true
   if [ "${gdec:-}" = fail ]; then
@@ -207,20 +212,29 @@ carry_findings() { # carry_findings <tdir>
   [ ! -f "$tdir/qa.resolved" ] || cp "$tdir/qa.resolved" "$tdir/retry_findings.resolved" 2>/dev/null || true
 }
 
-# The retry findings of an attempt that failed forge's pre-review tests: the failing tests and
-# the end of their output, against the commit they ran on. No reviewer session goes with them.
-carry_prereview() { # carry_prereview <tdir>
-  local tdir="$1"
+# The retry findings of an attempt forge sent back without a review: <file> (prereview.md,
+# bounce.md or message.md) is copied to retry_findings.md and <source> names where it came from.
+# They are kept against the commit they were written about, and no reviewer session goes with them.
+carry_sent_back() { # carry_sent_back <tdir> <file> <source>
+  local tdir="$1" file="$2" source="$3"
   if [ -s "$tdir/reviewed.commit" ]; then
     cp "$tdir/reviewed.commit" "$tdir/.retry_findings.commit.tmp" \
       && mv "$tdir/.retry_findings.commit.tmp" "$tdir/retry_findings.commit"
   else
-    rm -f "$tdir/retry_findings.commit"
+    rm -f "$tdir/retry_findings.commit" "$tdir/retry_findings.source"
   fi
   rm -f "$tdir/retry_findings.session" "$tdir/retry_findings.resolved"
   carry_implementer_session "$tdir"
-  cp "$tdir/prereview.md" "$tdir/.retry_findings.md.tmp" && mv "$tdir/.retry_findings.md.tmp" "$tdir/retry_findings.md"
+  printf '%s\n' "$source" > "$tdir/.retry_findings.source.tmp" && mv "$tdir/.retry_findings.source.tmp" "$tdir/retry_findings.source"
+  cp "$tdir/$file" "$tdir/.retry_findings.md.tmp" && mv "$tdir/.retry_findings.md.tmp" "$tdir/retry_findings.md"
 }
+
+# The failing tests and the end of their output (#85).
+carry_prereview() { carry_sent_back "$1" prereview.md prereview; }   # carry_prereview <tdir>
+# The blocking findings a retry left unaddressed (#43).
+carry_bounce() { carry_sent_back "$1" bounce.md bounce; }            # carry_bounce <tdir>
+# What the implementer's final message said about not finishing (#44).
+carry_message() { carry_sent_back "$1" message.md message; }         # carry_message <tdir>
 
 # The implementer session that produced the judged commit (reviewed.dwarf.*, recorded with
 # reviewed.commit), kept beside the findings for a plan with --implementer-session, as
@@ -319,6 +333,12 @@ prepare_retry() { # prepare_retry <plan> <id> [new-dwarf]
   elif [ "$st" = FAIL ] && [ -f "$tdir/prereview.failed" ] && [ -s "$tdir/prereview.md" ]; then
     # No reviewer ran: forge's own pre-review tests failed (#85), and their output is the finding.
     carry_prereview "$tdir"
+  elif [ "$st" = FAIL ] && [ -f "$tdir/bounced" ] && [ -s "$tdir/bounce.md" ]; then
+    # No reviewer ran: the retry left the blocking findings it was sent unaddressed (#43).
+    carry_bounce "$tdir"
+  elif [ "$st" = FAIL ] && [ -f "$tdir/message.failed" ] && [ -s "$tdir/message.md" ]; then
+    # No reviewer ran: the implementer's own final message said it did not finish (#44).
+    carry_message "$tdir"
   # Only a real review replaces the findings. The runner also writes explanatory text
   # into qa.last when it fails a task without dispatching QA ("produced no changes at
   # all"), and copying that over would throw away the actual findings the previous
@@ -332,7 +352,7 @@ prepare_retry() { # prepare_retry <plan> <id> [new-dwarf]
   else
     note "$id: no previous QA findings to pass on (last status was $st)"
     : > "$tdir/retry_findings.md"
-    rm -f "$tdir/retry_findings.commit" "$tdir/retry_findings.session" "$tdir/retry_findings.resolved" \
+    rm -f "$tdir/retry_findings.commit" "$tdir/retry_findings.source" "$tdir/retry_findings.session" "$tdir/retry_findings.resolved" \
           "$tdir/retry_findings.dwarf.session" "$tdir/retry_findings.dwarf.resolved"
   fi
   # A QA-only resume (an unreviewed verdict, or a QA-stage infrastructure stop) re-asks the
