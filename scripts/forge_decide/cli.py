@@ -28,8 +28,9 @@ Its --json is the dry run's estimate, or the evaluation (also `sent`). An unknow
 exit 2, a provider with no key that is not local exit 1.
 
 `gate G on` is the promotion rule: it writes `on` only when replays/<gate>.json holds a
-passing replay for the provider and model the written entry would use (providers.identity).
-Otherwise it writes nothing and exits 3, naming the replay command to run; --force writes it
+passing replay for the provider and model the gate resolves to once written (providers.identity
+of the resolved gate, so a provider or model inherited from another level counts). Otherwise it
+writes nothing, not even the jev.json migration, and exits 3, naming the replay command to run; --force writes it
 anyway with "force": true. Writing off or shadow, or `on` with a passing replay, drops `force`.
 
 Every subcommand works offline and with no key, except `doctor --live`. Exit codes: 0 ok,
@@ -323,12 +324,49 @@ def _user_providers() -> dict:
     return stored if isinstance(stored, dict) else {}
 
 
-def _promotion(gate: str, entry: dict, force: bool) -> str | None:
-    """The promotion rule for `entry`, about to be written `on`: why it may be ('replayed
-    <date>' or 'forced'), else Refused."""
+def _user_preview() -> dict:
+    """The user decide.json a write would start from: the file, or, before migration, what
+    migrating jev.json would write. Writes nothing (a refused write must leave no trace)."""
+    if user_path().exists():
+        data, error = load_user()
+        if error:
+            raise Failed(error + '; fix or remove it before changing settings')
+        return data
+    return migrate_module.preview() or {}
+
+
+def _gates_for(data: dict, args, repo) -> tuple[dict, str]:
+    """(the `gates` object `gate` writes into, where that is, for the message)."""
+    if repo is not None:
+        return _section(data, 'gates'), str(repo_path(repo))
+    if args.profile is not None:
+        return (_section(_section(_section(data, 'profiles'), args.profile), 'gates'),
+                '%s profile %s' % (user_path(), args.profile))
+    return _section(data, 'gates'), str(user_path())
+
+
+def _write_entry(gates: dict, args) -> dict:
+    """Set the mode, provider and model of `args.gate` in `gates`; never a `force`."""
+    entry = gates.get(args.gate)
+    entry = dict(mode=entry) if isinstance(entry, str) else dict(entry) if isinstance(entry, dict) else {}
+    entry['mode'] = args.mode
+    if args.provider is not None:
+        entry['provider'] = args.provider
+    if args.model is not None:
+        entry['model'] = args.model
+    # Kept unknown keys must not carry an old force: only --force writes it.
+    entry.pop('force', None)
+    gates[args.gate] = entry
+    return entry
+
+
+def _promotion(gate: str, effective: dict, force: bool, providers: dict) -> str | None:
+    """The promotion rule for `gate` turned `on`, `effective` being its resolved setting once
+    written (so a provider or model inherited from another level counts): why it may be
+    ('replayed <date>' or 'forced'), else Refused."""
     from . import replay as replay_module
     site = GATE_SITE[gate]
-    provider, model = providers_module.identity(site, entry)
+    provider, model = providers_module.identity(site, effective, providers=providers)
     stored = replay_module.recorded(gate, provider, model)
     if stored is not None and stored.get('passes') is True:
         return 'replayed %s on %s/%s' % (_date(stored.get('at')), provider, model)
@@ -348,47 +386,40 @@ def cmd_gate(args) -> int:
     if args.force and args.mode != 'on':
         raise Usage('--force only applies to `on`')
     repo = _repo(args.repo) if args.repo is not None else None
-    if args.provider is not None:
-        # A legacy provider exists only once migrated; a --repo write never touches the user
-        # file, so there it has to be migrated already.
-        if repo is None:
-            _migrate_first()
-        configured = _user_providers()
-        if args.provider not in configured:
-            raise Usage('unknown provider %r; configured: %s (add one with `forge decide provider add`)'
-                        % (args.provider, ', '.join(sorted(configured)) or 'none'))
+    # Everything is checked on the files as they would be written, before anything is: a
+    # refused `on` writes nothing, not even the migration.
     if repo is not None:
         data = _repo_for_write(repo)
-        gates = _section(data, 'gates')
-        where = str(repo_path(repo))
+        configured = _user_providers()
     else:
+        data = _user_preview()
+        configured = data.get('providers') if isinstance(data.get('providers'), dict) else {}
+    if args.provider is not None and args.provider not in configured:
+        # A legacy provider exists only once migrated; a --repo write never touches the user
+        # file, so there it has to be migrated already.
+        raise Usage('unknown provider %r; configured: %s (add one with `forge decide provider add`)'
+                    % (args.provider, ', '.join(sorted(configured)) or 'none'))
+    gates, where = _gates_for(data, args, repo)
+    entry = _write_entry(gates, args)
+    effective_repo = repo if repo is not None else _repo(None)
+    promotion = None
+    if args.mode == 'on':
+        written = dict(repo_data=data) if repo is not None else dict(user_data=data)
+        proposed = resolve(effective_repo, profile=args.profile, **written)
+        promotion = _promotion(args.gate, proposed['gates'][args.gate], args.force, configured)
+    if repo is None and not user_path().exists():
+        # Allowed: migrate for real (key files too), then write the entry into the result.
         data = _user_for_write()
-        where = str(user_path())
-        holder = data
-        if args.profile is not None:
-            holder = _section(_section(data, 'profiles'), args.profile)
-            where += ' profile %s' % args.profile
-        gates = _section(holder, 'gates')
-    entry = gates.get(args.gate)
-    entry = dict(mode=entry) if isinstance(entry, str) else dict(entry) if isinstance(entry, dict) else {}
-    entry['mode'] = args.mode
-    if args.provider is not None:
-        entry['provider'] = args.provider
-    if args.model is not None:
-        entry['model'] = args.model
-    # Kept unknown keys must not carry an old force: only --force writes it.
-    entry.pop('force', None)
-    promotion = _promotion(args.gate, entry, args.force) if args.mode == 'on' else None
+        gates, where = _gates_for(data, args, None)
+        entry = _write_entry(gates, args)
     if args.force:
         entry['force'] = True
-    gates[args.gate] = entry
     if repo is not None:
         save_repo(repo, data)
     else:
         data.setdefault('version', 1)
         save_user(data)
 
-    effective_repo = repo if repo is not None else _repo(None)
     resolved = resolve(effective_repo, profile=args.profile)
     gate = resolved['gates'][args.gate]
     print('%s: %s written to %s' % (args.gate, args.mode, where))

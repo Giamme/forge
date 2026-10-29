@@ -104,6 +104,32 @@ class GateOnTests(PromotionCase):
         self.decide('gate', 'drift', 'on', '--profile', 'fast', '--force')
         self.assertEqual(self.user_file()['profiles']['fast']['gates']['drift'], dict(mode='on', force=True))
 
+    def test_an_inherited_provider_and_model_count(self):
+        # The profile entry names no provider: the user level's ts (model m1) is what acts.
+        self.decide('provider', 'add', 'jev', '--name', 'ts', '--model', 'm1', '--key-stdin', stdin=KEY)
+        self.decide('gate', 'drift', 'shadow', '--provider', 'ts')
+        self.record('typesafe', 'jev-latest', True)
+        out = self.decide('gate', 'drift', 'on', '--profile', 'fast', code=3)
+        self.assertIn('--provider ts --model m1', out.stderr)
+        self.assertNotIn('fast', self.user_file().get('profiles', {}))
+        self.record('ts', 'm1', True)
+        self.decide('gate', 'drift', 'on', '--profile', 'fast')
+        self.assertEqual(self.user_file()['profiles']['fast']['gates']['drift'], dict(mode='on'))
+
+    def test_a_refusal_does_not_migrate(self):
+        (self.cfg / 'forge').mkdir(parents=True)
+        (self.cfg / 'forge' / 'jev.json').write_text(json.dumps(dict(enabled=True, key=KEY)))
+        before = self.drift()
+        self.decide('gate', 'drift', 'on', code=3)
+        self.assertEqual(sorted(p.name for p in (self.cfg / 'forge').iterdir()), ['jev.json'])
+        self.assertEqual(self.drift(), before)
+        # Allowed, the write migrates first, then sets the gate.
+        self.decide('gate', 'drift', 'on', '--force')
+        data = self.user_file()
+        self.assertIn('typesafe', data['providers'])
+        self.assertEqual(data['gates']['drift']['force'], True)
+        self.assertTrue((self.cfg / 'forge' / 'keys' / 'typesafe.key').exists())
+
 
 class ForcedStatusTests(PromotionCase):
     def test_an_env_on_with_no_replay_is_forced(self):

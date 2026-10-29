@@ -1,6 +1,7 @@
 """One-time migration of the legacy decision-model settings into the user decide.json.
 
     derive(jev_cfg, cloudflare) -> (decide_dict, keys)
+    preview()                   -> decide_dict | None
     run(*, force=False)         -> {"status": "exists" | "nothing" | "migrated", ...}
 
 The legacy settings are jev.json (the TypeSafe key, `enabled`, the capability map, thresholds,
@@ -175,16 +176,10 @@ def _stored_thresholds(config: dict) -> dict:
         if isinstance(stored, dict) else {}
 
 
-def run(*, force: bool = False) -> dict:
-    """Write decide.json (and key files) from the legacy settings, once.
-
-    {"status": "exists"} when decide.json is already there (and `force` is false), nothing
-    written; {"status": "nothing"} when there is no jev.json and no Cloudflare token;
-    otherwise {"status": "migrated", "providers": [names], "gates": {gate: settings}}. No
-    key is in the result."""
+def _derived() -> tuple[dict, dict] | None:
+    """derive()'s (decide_dict, keys) for the legacy settings on disk, or None when there is
+    no jev.json and no Cloudflare token. Writes nothing."""
     import forge_jev
-    if user_path().exists() and not force:
-        return {'status': 'exists'}
     config = forge_jev.load_config()
     cloudflare = forge_jev.cloudflare(config)
     if cloudflare is None and forge_jev._env_file(
@@ -193,8 +188,32 @@ def run(*, force: bool = False) -> dict:
         config = dict(config, providers=dict(config.get('providers') or {}, cloudflare={}))
         cloudflare = forge_jev.cloudflare(config)
     if not forge_jev.config_path().exists() and not (cloudflare and cloudflare.get('token')):
+        return None
+    return derive(dict(config, thresholds=_stored_thresholds(config)), cloudflare)
+
+
+def preview() -> dict | None:
+    """The decide.json run() would write, without writing it or any key file; None when
+    decide.json already exists or there is nothing to migrate."""
+    if user_path().exists():
+        return None
+    derived = _derived()
+    return derived[0] if derived else None
+
+
+def run(*, force: bool = False) -> dict:
+    """Write decide.json (and key files) from the legacy settings, once.
+
+    {"status": "exists"} when decide.json is already there (and `force` is false), nothing
+    written; {"status": "nothing"} when there is no jev.json and no Cloudflare token;
+    otherwise {"status": "migrated", "providers": [names], "gates": {gate: settings}}. No
+    key is in the result."""
+    if user_path().exists() and not force:
+        return {'status': 'exists'}
+    derived = _derived()
+    if derived is None:
         return {'status': 'nothing'}
-    decide, keys = derive(dict(config, thresholds=_stored_thresholds(config)), cloudflare)
+    decide, keys = derived
     for name, secret in keys.items():
         _write_key(name, secret)
     save_user(decide)

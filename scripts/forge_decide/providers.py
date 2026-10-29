@@ -2,7 +2,7 @@
 
     spec_for_site(site, *, config=None, repo=None, resolved=None) -> dict
     spec_for_provider(name, model=None, *, config=None) -> dict | None
-    identity(site, entry=None, *, config=None, repo=None, resolved=None) -> (provider, model)
+    identity(site, entry=None, *, config=None, repo=None, resolved=None, providers=None) -> (provider, model)
     privacy_floor(repo=None) -> bool
 
 A spec is {name, type: 'jev'|'clef', url, model, key, context, price_usd_per_mtok, local,
@@ -169,13 +169,14 @@ def _from_entry(name: str, entry: dict, model: str | None, config: dict) -> dict
                 local=entry.get('local') is True, deadline_s=float(deadline))
 
 
-def _provider_entry(gate: dict) -> tuple[str, dict] | None:
+def _provider_entry(gate: dict, providers: dict | None = None) -> tuple[str, dict] | None:
     """(name, user provider entry) of the provider `gate` names, or None when it names none
-    the user decide.json has: such a gate takes the legacy route."""
+    the user decide.json (or `providers`, standing in for its `providers`) has: such a gate
+    takes the legacy route."""
     name = gate.get('provider')
     if not name:
         return None
-    entry = _user_providers().get(name)
+    entry = (_user_providers() if providers is None else providers).get(name)
     return (name, entry) if isinstance(entry, dict) else None
 
 
@@ -263,12 +264,13 @@ def spec_for_site(site: str, *, config: dict | None = None, repo=None, resolved:
 
 
 def identity(site: str, entry: dict | None = None, *, config: dict | None = None, repo=None,
-             resolved: dict | None = None) -> tuple[str, str]:
+             resolved: dict | None = None, providers: dict | None = None) -> tuple[str, str]:
     """(provider, model) that spec_for_site would use for `site`, with `entry` (a gate entry:
     {provider, model}) in place of the resolved gate when given. A provider of the user
     decide.json asks the entry's model, else its own; without one, the legacy typesafe or
     cloudflare transport asks its jev.json model. Builds no spec: no key is read and no
-    url formatted, so it does not raise on a stray brace."""
+    url formatted, so it does not raise on a stray brace. `providers` stands in for the user
+    decide.json's providers (a decide.json about to be written)."""
     import forge_jev
     config = config or forge_jev.load_config()
     if entry is None:
@@ -278,7 +280,7 @@ def identity(site: str, entry: dict | None = None, *, config: dict | None = None
         entry = (resolved.get('gates') or {}).get(SITE_GATE.get(site)) or {}
     elif SITE_GATE.get(site) is None:
         entry = {}  # spec_for_site routes only gate sites to decide providers
-    found = _provider_entry(entry)
+    found = _provider_entry(entry, providers)
     if found is not None:
         model = entry.get('model') if isinstance(entry.get('model'), str) else None
         return found[0], _entry_model(found[1], model)
