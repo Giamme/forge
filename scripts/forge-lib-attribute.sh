@@ -18,6 +18,12 @@
 # State of one search, in files under $PLAN/attribute/ (the flag file is $PLAN/attribute_on):
 #   merges.tsv   k, commit, task id        steps.tsv   prefix, commit, status, seconds, source
 # Each verified step writes into $PLAN/attribute/<prefix>-<short sha>/.
+#
+# The gate (`attribution`, #45): before the binary search, a decision model ranks the merged tasks
+# by how likely each broke the failing verification. In `on`, the top suspect's boundary is probed
+# first (prefix k-1, then prefix k): a pass->fail pair names it, anything else narrows the bounds
+# of the search. In `shadow` only the ranking is recorded. $PLAN/attribute/gate.json holds what
+# attribution.json reports as `gate`.
 
 # The prefix's commit: the base, or the k-th first-parent merge commit. The last merge commit is
 # the tip unless something follows it (a `forge: combine` commit, a hand commit); the run's
@@ -150,6 +156,11 @@ def rows(name):
         return []
 
 merges = [{'id': r[2], 'commit': r[1]} for r in rows('merges.tsv')]
+try:
+    with open(os.path.join(adir, 'gate.json'), encoding='utf-8') as fh:
+        gate = json.load(fh)
+except (OSError, ValueError):
+    gate = None
 steps = []
 for r in rows('steps.tsv'):
     steps.append({'prefix': int(r[0]), 'commit': r[1], 'status': r[2],
@@ -161,7 +172,7 @@ doc = {
     'merges': merges,
     'steps': steps,
     'verification_runs': sum(1 for s in steps if s['source'] == 'search' and not s['status'].startswith('SETUP_')),
-    'gate': None,
+    'gate': gate,
 }
 tmp = os.path.join(plan, '.attribution.json.tmp')
 with open(tmp, 'w', encoding='utf-8') as fh:
@@ -200,8 +211,9 @@ attribute_conclude() { # attribute_conclude <culprit prefix or empty> <base_fail
   forge_dataset_event attribution --dir "$ATTR_PLAN" --file attribution="$ATTR_PLAN/attribution.json"
   runs="$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["verification_runs"])' "$ATTR_PLAN/attribution.json" 2>/dev/null)"
   if [ -n "$1" ]; then
-    printf 'integration failure: merge %s breaks verification (prefix %s passes, %s fails; %s verification runs)\n' \
-      "$(awk -F'\t' -v k="$1" '$1 == k { print $3; exit }' "$ATTR_DIR/merges.tsv")" "$(( $1 - 1 ))" "$1" "$runs"
+    printf 'integration failure: merge %s breaks verification (prefix %s passes, %s fails; %s verification runs)%s\n' \
+      "$(awk -F'\t' -v k="$1" '$1 == k { print $3; exit }' "$ATTR_DIR/merges.tsv")" "$(( $1 - 1 ))" "$1" "$runs" \
+      "$([ "$ATTR_GATE_OUTCOME" = confirmed ] && printf " (the decision model's first guess)")"
   elif [ "$2" = 1 ]; then
     printf 'integration failure: the base already fails verification (%s runs)\n' "$runs"
   else
@@ -232,11 +244,86 @@ attribute_evidence() { # attribute_evidence <plan> <force>
   return 0
 }
 
+# The log of the failing verification the model reads: the tip's own step when it was verified
+# here (--force), else the run's verification.log. May not exist, and the verb then has no opinion.
+attribute_tip_log() {
+  local c dir
+  for c in "$((ATTR_N + 1))" "$ATTR_N"; do
+    dir="$ATTR_DIR/$c-$(attribute_short "$c")"
+    if [ -f "$dir/verification.log" ]; then printf '%s\n' "$dir/verification.log"; return 0; fi
+  done
+  printf '%s\n' "$ATTR_PLAN/verification.log"
+}
+attribute_short() { local commit; commit="$(attribute_commit "$1")"; printf '%s\n' "${commit:0:12}"; }
+
+# The gate's mode (on or shadow) from the status forge_decide_active cached; empty when unknown.
+attribute_gate_mode() {
+  printf '%s' "${FORGE_DECIDE_STATUS_JSON:-}" | python3 -c '
+import json, sys
+try:
+    print(json.load(sys.stdin)["gates"]["attribution"]["mode"])
+except Exception:
+    pass' 2>/dev/null
+}
+
+# gate.json (atomically) from ATTR_GATE_*: the mode alone when the verb gave no ranking.
+attribute_gate_save() {
+  [ -n "$ATTR_GATE_MODE" ] || return 0
+  python3 - "$ATTR_DIR/gate.json" "$ATTR_GATE_MODE" "$ATTR_GATE_RANK" "$ATTR_GATE_TRIED" "$ATTR_GATE_OUTCOME" <<'PY'
+import json, os, sys
+path, mode, rank, tried, outcome = sys.argv[1:6]
+gate = {'mode': mode}
+if rank:
+    ranking = []
+    for line in rank.splitlines():
+        ident, _, p = line.partition('\t')
+        try:
+            ranking.append({'id': ident, 'p': float(p)})
+        except ValueError:
+            continue
+    gate.update(ranking=ranking, tried=tried or None, outcome=outcome or None)
+tmp = path + '.tmp'
+with open(tmp, 'w', encoding='utf-8') as fh:
+    json.dump(gate, fh)
+os.replace(tmp, path)
+PY
+  return 0
+}
+
+# Ask the decision model who broke the tip. Sets ATTR_GATE_MODE (empty: no gate), ATTR_GATE_RANK
+# (`id<TAB>p` lines, highest first) and ATTR_GUESS, the merge number of the top suspect when the
+# gate is `on` and the suspect is a merged task (not `none`). A failed verb leaves the mode alone.
+attribute_gate_ask() {
+  local mode rc=0 top
+  ATTR_GATE_MODE="" ATTR_GATE_RANK="" ATTR_GATE_TRIED="" ATTR_GATE_OUTCOME="" ATTR_GUESS=""
+  declare -F forge_decide_active >/dev/null || return 0
+  declare -F forge_decide_env >/dev/null && forge_decide_env "$ATTR_REPO" "$ATTR_PLAN"
+  forge_decide_active attribution || return 0
+  mode="$(attribute_gate_mode)"
+  case "$mode" in on|shadow) ;; *) return 0 ;; esac
+  ATTR_GATE_MODE="$mode"
+  # In the background like a verification: a stop reaches the verb and ends the wait.
+  ( exec python3 "$SKILL_DIR/scripts/forge-jev.py" attribution \
+      --plan "$ATTR_PLAN" --repo "$ATTR_REPO" --log "$(attribute_tip_log)" \
+      > "$ATTR_DIR/gate.out" 2>/dev/null ) </dev/null &
+  ATTR_CHILD=$!
+  [ "$ATTR_STOP" = 1 ] && kill -TERM "$ATTR_CHILD" 2>/dev/null
+  run_wait "$ATTR_CHILD"; rc=$run_rc
+  ATTR_CHILD=""
+  [ "$ATTR_STOP" = 1 ] && return 0
+  if [ "$rc" = 0 ]; then ATTR_GATE_RANK="$(cat "$ATTR_DIR/gate.out" 2>/dev/null)"; fi
+  attribute_gate_save
+  [ "$mode" = on ] && [ -n "$ATTR_GATE_RANK" ] || return 0
+  top="${ATTR_GATE_RANK%%$'\t'*}"
+  ATTR_GUESS="$(ID="$top" awk -F'\t' '$3 == ENVIRON["ID"] { print $1; exit }' "$ATTR_DIR/merges.tsv")"
+  return 0
+}
+
 # The search. Runs as a subshell of its caller (`( attribute_search ... )`): it owns its scratch
 # worktree, its traps and its globals. Exit 0 when it finished (a culprit or not), 1 when a step
 # could not run at all, 2 on a refusal.
 attribute_search() { # attribute_search <plan> <force 0|1>
-  ATTR_PLAN="$1"; local force="$2" run_id rc=0 line k=0 src kind loc
+  ATTR_PLAN="$1"; local force="$2" run_id rc=0 line k=0 src kind loc lo=0 hi
   attribute_evidence "$ATTR_PLAN" "$force"
   ATTR_REPO="$(cat "$ATTR_PLAN/repo")"; run_id="$(cat "$ATTR_PLAN/run_id")"
   ATTR_DIR="$ATTR_PLAN/attribute"
@@ -244,6 +331,7 @@ attribute_search() { # attribute_search <plan> <force 0|1>
   ATTR_TIP="$(git -C "$ATTR_REPO" rev-parse "forge/$run_id-integration^{commit}")"
   ATTR_SCRATCH="" ATTR_SCRATCH_OWNED=0
   ATTR_STOP=0 ATTR_CHILD="" ATTR_STATUS="" ATTR_REASON="" ATTR_LO="" ATTR_HI="" ATTR_SOURCE=""
+  ATTR_GATE_MODE="" ATTR_GATE_RANK="" ATTR_GATE_TRIED="" ATTR_GATE_OUTCOME="" ATTR_GUESS=""
   trap 'ATTR_STOP=1; [ -n "$ATTR_CHILD" ] && kill -TERM "$ATTR_CHILD" 2>/dev/null' TERM INT
   trap 'attribute_scratch_remove' EXIT
   attribute_scratch_pick "$(cat "$ATTR_PLAN/wt_root")"
@@ -305,8 +393,29 @@ attribute_search() { # attribute_search <plan> <force 0|1>
   else
     attribute_record "$ATTR_N" "$ATTR_TIP" FAIL "" run
   fi
-  # 3. the boundary between the passing base and the failing tip
-  attribute_bisect 0 "$ATTR_N"; rc=$?
+  # 3. the boundary between the passing base and the failing tip. In `on` the model's top suspect
+  # is probed first: prefix k-1 then prefix k. A pass->fail pair is a breaking merge; otherwise the
+  # bounds of the search narrow to the side of the suspect the failure is on.
+  hi="$ATTR_N"
+  attribute_gate_ask
+  if [ "$ATTR_STOP" = 1 ]; then attribute_conclude "" 0 "interrupted while asking the decision model"; return 0; fi
+  if [ -n "$ATTR_GUESS" ]; then
+    ATTR_GATE_TRIED="$(awk -F'\t' -v k="$ATTR_GUESS" '$1 == k { print $3; exit }' "$ATTR_DIR/merges.tsv")"
+    attribute_verify "$((ATTR_GUESS - 1))"; rc=$?
+    if [ "$rc" = 0 ] && [ "$ATTR_STATUS" = PASS ]; then
+      lo="$((ATTR_GUESS - 1))"
+      attribute_verify "$ATTR_GUESS"; rc=$?
+      if [ "$rc" = 0 ] && [ "$ATTR_STATUS" = FAIL ]; then
+        ATTR_GATE_OUTCOME=confirmed; attribute_gate_save
+        attribute_conclude "$ATTR_GUESS" 0 ""
+        return 0
+      elif [ "$rc" = 0 ]; then lo="$ATTR_GUESS"; ATTR_GATE_OUTCOME=refuted; fi
+    elif [ "$rc" = 0 ]; then hi="$((ATTR_GUESS - 1))"; ATTR_GATE_OUTCOME=refuted; fi
+    attribute_gate_save
+    [ "$rc" != 2 ] || { note "attribute: $ATTR_REASON"; return 1; }
+    if [ "$rc" = 1 ]; then attribute_conclude "" 0 "$ATTR_REASON"; return 0; fi
+  fi
+  attribute_bisect "$lo" "$hi"; rc=$?
   [ "$rc" != 2 ] || { note "attribute: $ATTR_REASON"; return 1; }
   if [ "$rc" = 1 ]; then attribute_conclude "" 0 "$ATTR_REASON"; return 0; fi
   attribute_conclude "$ATTR_HI" 0 ""
