@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 from pathlib import Path
 
@@ -187,24 +188,34 @@ def decisions(body) -> list[str]:
     return sorted((q for q in questions or () if _index(q) >= 0), key=_index)
 
 
+def _probability(value) -> float | None:
+    """`value` as a probability: a finite number in [0, 1], else None. A malformed score is
+    no opinion, so the gate fails open instead of sending a requirement back."""
+    if isinstance(value, bool):
+        return None
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return None
+    return value if math.isfinite(value) and 0.0 <= value <= 1.0 else None
+
+
 def _p_none(answers, qid) -> float | None:
     """P(`none`) of a question: the Choice's distribution, else its confidence when it chose
-    `none`, else 0.0 for a choice of a task. None when the question has no choice answer."""
+    `none`, else 0.0 for a choice of a task. None when the question has no choice answer or
+    its score is not a probability."""
     if not isinstance(answers, dict) or not isinstance(answers.get(qid), dict):
         return None
     result = dict(answers=answers)
     found = probabilities(result, qid)
     if 'none' in found:
-        return found['none']
+        return _probability(found['none'])
     picked, confidence = choice(result, qid)
     if picked is None:
         return None
     if picked != 'none':
         return 0.0
-    try:
-        return float(confidence)
-    except (TypeError, ValueError):
-        return None
+    return _probability(confidence)
 
 
 def score(answers, qid, request=None) -> float | None:

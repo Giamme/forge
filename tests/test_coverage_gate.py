@@ -330,6 +330,19 @@ class MeasurementTests(unittest.TestCase):
         self.assertEqual([coverage.score(answers, q, None) for q in ('r0', 'r1', 'r2')], [None, None, 0.8])
         self.assertEqual(coverage.fired(answers, 0.5, None), ['r2'])
 
+    def test_a_score_that_is_not_a_probability_is_no_opinion(self):
+        # Fail open: a score outside [0, 1], non-finite or boolean never sends a requirement back.
+        answers = {'r0': dict(type='choice', choice='none', confidence=2.0),
+                   'r1': dict(type='choice', choice='none', confidence='Infinity'),
+                   'r2': dict(type='choice', choice='none', confidence=-0.1),
+                   'r3': dict(type='choice', choice='none', confidence=True),
+                   'r4': dict(type='choice', choice='none', confidence=0.9, probabilities=dict(a=0.1, none=2.0)),
+                   'r5': dict(type='choice', choice='none', confidence=0.9, probabilities=dict(a=0.1, none='nan')),
+                   'r6': dict(type='choice', choice='none', confidence=1.0)}
+        self.assertEqual([coverage.score(answers, 'r%d' % i, None) for i in range(7)],
+                         [None, None, None, None, None, None, 1.0])
+        self.assertEqual(coverage.fired(answers, 0.5, None), ['r6'])
+
     def test_an_answer_that_is_not_an_object_is_no_opinion_not_a_crash(self):
         answers = {'r0': 'none', 'r1': None, 'r2': ['none'],
                    'r3': dict(type='choice', choice='none', confidence=0.8)}

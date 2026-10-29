@@ -273,6 +273,18 @@ class LabelTests(LabelsCase):
         self.review('VERDICT: PASS\n')
         self.assertEqual(self.labels(), [dict(prompt_adequacy=False)])
 
+    def test_a_rewrite_past_the_scored_cut_is_true(self):
+        # The gate saw only the first PROMPT_CHARS; the plan snapshots hold the whole prompt.
+        from forge_jev.cli import PROMPT_CHARS
+        scored = 'x' * PROMPT_CHARS
+        self.plan(T0 - 10, dict(t1=scored + ' vague tail'))
+        self.ask(prompt=scored)
+        self.plan(T0 + 5, dict(t1=scored + ' vague tail'))
+        self.plan(T0 + 10, dict(t1=scored + ' and the acceptance criteria, spelled out'))
+        self.ran()
+        self.review('VERDICT: PASS\n')
+        self.assertEqual(self.labels(), [dict(prompt_adequacy=True)])
+
     def test_an_empty_scored_prompt_later_filled_in_is_true(self):
         self.plan(T0 - 10, dict(t1=''))
         self.ask(prompt='')

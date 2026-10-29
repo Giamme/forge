@@ -53,11 +53,16 @@ def _sent_back(plans, task) -> bool:
 
 
 def _text(index, plan, task) -> str:
-    """The prompt of `task` in a revision as the gate saw prompts: its plan-event blob, cut to
-    the first PROMPT_CHARS (`cmd_score_plan` sends no more) and stripped; '' without one."""
-    from forge_jev.cli import PROMPT_CHARS
+    """The whole prompt of `task` in a revision, its plan-event blob; '' without one."""
     row = (plan['d'].get('tasks') or {}).get(task)
-    return index.store.text(row.get('prompt') if isinstance(row, dict) else None)[:PROMPT_CHARS].strip()
+    return index.store.text(row.get('prompt') if isinstance(row, dict) else None)
+
+
+def _seen(text: str) -> str:
+    """What the gate saw of a prompt: the first PROMPT_CHARS (`cmd_score_plan` sends no
+    more), stripped."""
+    from forge_jev.cli import PROMPT_CHARS
+    return text[:PROMPT_CHARS].strip()
 
 
 def _started(index, first, run, task):
@@ -71,17 +76,29 @@ def _started(index, first, run, task):
 
 def _rewritten(index, plans, task, scored, asked, started):
     """Whether the prompt the first attempt was dispatched with is not the one the request
-    scored: the last revision holding the task at or before `started`, if later than the
-    request, has other text than `scored` (state.prompt). Snapshots are taken after the gate
-    scores, so the request's own text, not an earlier snapshot, is the baseline. None when
-    that cannot be told: the request has no prompt text (`scored` None; an empty string is a
-    prompt the gate scored empty), or the start is unknown."""
+    scored. The dispatched prompt is the last revision holding the task at or before
+    `started`; no revision after the request means no rewrite.
+
+    The request holds only what the gate saw (`_seen`), so a different seen part is a
+    rewrite. A rewrite past the cut is read from the whole prompts: the scored plan's own
+    snapshot is the first revision at or after the request (snapshots are taken after the
+    gate scores), and a dispatched prompt that differs from it was rewritten.
+
+    None when that cannot be told: the request has no prompt text (`scored` None; an empty
+    string is a prompt the gate scored empty), the start is unknown, or the snapshot after
+    the request is not the text the gate saw."""
     if scored is None or started is None:
         return None
     held = [plan for plan in plans if task in (plan['d'].get('tasks') or {}) and plan['ts'] <= started]
     if not held or held[-1]['ts'] <= asked:
         return False
-    return _text(index, held[-1], task) != scored
+    dispatched = _text(index, held[-1], task)
+    if _seen(dispatched) != scored:
+        return True
+    snapshot = _text(index, next(plan for plan in held if plan['ts'] >= asked), task)
+    if _seen(snapshot) != scored:
+        return None
+    return snapshot.strip() != dispatched.strip()
 
 
 def _review(index, run, task):
