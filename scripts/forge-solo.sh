@@ -19,20 +19,22 @@
 #   forge-solo.sh <run-dir> --repo <dir> --dwarf <spec> [--qa <spec>]
 #                 [--approach <file>] [--yolo-dwarf] [--yolo-qa]
 #                 [--native-review] [--no-memory] [--timeout <s>] [--dry-run] [--ui]
-#                 [--fail-first]
+#                 [--fail-first] [--qa-threshold P0|P1|P2|P3|none]
 #
 # Reads  <run-dir>/prompt.md   the implementation instruction (required)
 #        <run-dir>/goal.txt    one line, what the user asked for (optional)
 # Writes <run-dir>/dwarf.{input,last,log,resolved}
 #        <run-dir>/changes.diff
 #        <run-dir>/qa.{input,last,log,resolved}
-#        <run-dir>/verdict      PASS | FAIL | UNKNOWN, when qa emitted one
+#        <run-dir>/verdict      PASS | FAIL | UNKNOWN, when qa emitted one (after the severity gate)
+#        <run-dir>/qa.gate, known_issues.md   the gate's decision and the tolerated findings
+#        <run-dir>/qa_threshold  with --qa-threshold: the blocking level (default P2)
 #        <run-dir>/failfirst.json  with --fail-first: do the change's tests fail without it?
 #        <run-dir>/status       RUNNING, then this invocation's outcome
 #        <run-dir>/dwarf.spec, qa.spec and attempts.tsv
 #
 # Exit codes: 0 ok | 2 usage | 3 precondition | 4 a dispatch failed
-#             5 the dwarf produced no changes | 7 a dispatch timed out
+#             5 the dwarf produced no changes, or forge turned a PASS into FAIL | 7 a dispatch timed out
 #             8 a dispatch hit an infrastructure failure (quota, auth, rate limit, network,
 #               empty output): nothing about the work was judged, fix the cause and re-run
 set -uo pipefail
@@ -93,7 +95,7 @@ forge_metric_on_exit() {
 }
 
 if [ "${1:-}" = --help ] || [ "${1:-}" = -h ]; then
-  sed -n '18,33s/^# *//p' "$0"
+  sed -n '18,39s/^# *//p' "$0"
   forge_fractal_help
   echo 'Explicit Fractal retry: repeat the original command with --retry.'
   exit 0
@@ -103,7 +105,7 @@ case "$RUN" in -*) die "first argument must be the run directory, got '$RUN'" ;;
 shift
 
 OUTPUT=summary
-REPO="$PWD"; DWARF=""; QA="opus"; APPROACH=""; YD=""; YQ=""; NATIVE=""; TIMEOUT=""; DRY=0; FAIL_FIRST=0
+REPO="$PWD"; DWARF=""; QA="opus"; APPROACH=""; YD=""; YQ=""; NATIVE=""; TIMEOUT=""; DRY=0; FAIL_FIRST=0; QA_THR=
 while [ $# -gt 0 ]; do
   case "$1" in
     --fractal) forge_fractal_flag on || exit $?; shift ;;
@@ -124,6 +126,10 @@ while [ $# -gt 0 ]; do
     --timeout)    TIMEOUT="${2:?--timeout needs seconds}"; shift 2 ;;
     --dry-run)    DRY=1; shift ;;
     --fail-first) FAIL_FIRST=1; shift ;;
+    --qa-threshold)
+      QA_THR="$(printf '%s' "${2:?--qa-threshold needs P0, P1, P2, P3 or none}" | tr 'a-z' 'A-Z')"
+      case "$QA_THR" in P0|P1|P2|P3) ;; NONE) QA_THR=none ;; *) die "--qa-threshold must be P0, P1, P2, P3 or none, got '$2'" 2 ;; esac
+      shift 2 ;;
     --ui|--no-ui) forge_ui_flag "$1"; shift ;;
     *)
       # `case` is not a loop, so `continue` here belongs to the enclosing while.
@@ -288,6 +294,11 @@ printf '%s\n' "$SOURCE_FP" > "$RUN/source.fingerprint"
 printf '%s\n' "$REVIEW_FP" > "$RUN/review.fingerprint"
 forge_metric_phase preparation
 # --- qa -----------------------------------------------------------------------
+# The blocking threshold: this invocation's flag (kept in the run dir), else the file, else P2.
+[ -z "$QA_THR" ] || printf '%s\n' "$QA_THR" > "$RUN/qa_threshold"
+THR="$(head -1 "$RUN/qa_threshold" 2>/dev/null | tr -d ' \r' | tr 'a-z' 'A-Z')"
+case "$THR" in P0|P1|P2|P3) ;; NONE) THR=P3 ;; *) THR="$FORGE_QA_THRESHOLD_DEFAULT" ;; esac
+rm -f "$RUN/qa.gate" "$RUN/known_issues.md"
 rm -f "$RUN/failfirst.json" "$RUN/failfirst.txt"
 if [ "$FAIL_FIRST" = 1 ]; then
   # Opt-in and advisory: the reviewer reads the evidence; nothing here changes a verdict.
@@ -300,7 +311,7 @@ fi
   python3 "$SKILL_DIR/scripts/forge-contract.py" qa --part head --kind solo
   echo
   if [ -s "$RUN/failfirst.txt" ]; then cat "$RUN/failfirst.txt"; echo; fi
-  python3 "$SKILL_DIR/scripts/forge-contract.py" qa --part tail --kind solo
+  python3 "$SKILL_DIR/scripts/forge-contract.py" qa --part tail --kind solo --threshold "$THR"
   echo
   # --irreversible-delete: a deleted file shows as a header, not every line it had (one deleted
   # data directory once made a 7.1M-character prompt that the reviewer's CLI refused).
@@ -331,11 +342,25 @@ dur_qa="$(sed -n 's/^duration_s=//p' "$RUN/qa.resolved" 2>/dev/null | tail -1)"
 
 # --native-review is codex's own reviewer, which refuses a custom prompt alongside
 # its scope flags — so it never sees the verdict instruction and cannot emit one.
+# Otherwise forge enforces the severity rule itself, as a decomposed task's gate does; a gate
+# that cannot run (no output) keeps the reviewer's verdict.
+gate_note=""
+if [ -z "$NATIVE" ]; then
+  gate_line="$(python3 "$SKILL_DIR/scripts/forge-contract.py" gate --verdict "${verdict:-UNKNOWN}" \
+      --qa-last "$RUN/qa.last" --threshold "$THR" --known-issues "$RUN/known_issues.md" 2>/dev/null)" || gate_line=""
+  if [ -n "$gate_line" ]; then
+    printf '%s\t%s\n' "$THR" "$gate_line" > "$RUN/qa.gate"
+    case "$(printf '%s' "$gate_line" | awk -F'\t' '{print $1}')" in
+      accept) verdict=PASS; gate_note=" (accepted with known issues: $RUN/known_issues.md)" ;;
+      fail)   verdict=FAIL; gate_note=" (the reviewer said PASS, but listed a CONFIRMED finding at or above the $THR threshold — forge made it FAIL)" ;;
+    esac
+  fi
+fi
 echo "${verdict:-UNKNOWN}" > "$RUN/verdict"
 
 echo
 echo "dwarf:  $DWARF   ${dur_dwarf:-?}s"
-echo "qa:     $QA   ${dur_qa:-?}s   verdict: ${verdict:-UNKNOWN}"
+echo "qa:     $QA   ${dur_qa:-?}s   verdict: ${verdict:-UNKNOWN}$gate_note"
 echo "diff:   $RUN/changes.diff"
 echo "read:   $RUN/dwarf.last and $RUN/qa.last"
 echo
@@ -349,3 +374,5 @@ else
 fi
 [ ! -s "$RUN/guard.txt" ] || { echo; echo "implementer guard notes:"; sed 's/^/  /' "$RUN/guard.txt"; }
 forge_update_notice
+[ "${verdict:-UNKNOWN}" != FAIL ] || exit 5
+exit 0
