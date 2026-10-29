@@ -40,6 +40,7 @@ class ReportReplayTests(unittest.TestCase):
         (p / 'goal.txt').write_text('Make the board fast, safely\n')
         r = self.run_script('forge-parallel.sh', 'plan', p, '--repo', self.repo, '--no-memory')
         self.assertEqual(r.returncode, 0, r.stdout)
+        self.plan_out = r.stdout
         return p
 
     def text(self, plan, name):
@@ -137,16 +138,30 @@ class ReportReplayTests(unittest.TestCase):
             self.assertTrue((self.repo / f'{t}.txt').exists(), t)
 
     def test_nothing_in_the_replay_happens_without_being_asked(self):
-        """The same plan with no flags is today's forge: one dwarf, one reviewer, a failure waits."""
+        """The same plan with no flags: one dwarf, one reviewer, a failure waits. The gate runs at
+        the default P2 threshold, so a blocking finding is kept as a FAIL, never retried or reviewed again."""
         p = self.plan_of([('a', '-', 'a.txt'), ('b', 'a', 'b.txt')])
+        self.assertIn('QA threshold: P2 (default) — P0–P2 block; a CONFIRMED P3 is recorded as a known issue',
+                      self.plan_out)
         self.scenario({'a.qa.1': {'verdict': 'FAIL', 'findings': P1}})
         r = self.run_script('forge-parallel.sh', 'run', p)
         self.assertEqual(r.returncode, 5, r.stdout)
         self.assertEqual(self.calls(), ['dwarf', 'qa'])
         self.assertEqual(self.text(p, 'tasks/a/status'), 'FAIL')
         self.assertEqual(self.text(p, 'tasks/b/status'), 'BLOCKED')
-        self.assertFalse((p / 'tasks/a/known_issues.md').exists())
+        self.assertTrue((p / 'tasks/a/qa.gate').read_text().startswith('P2\tkeep'))
+        self.assertFalse((p / 'qa_threshold').exists())
+        self.assertNotIn('known issues accepted', r.stdout)
         self.assertFalse((p / 'final-review').exists())
+
+    def test_the_approval_table_shows_a_set_threshold(self):
+        p = self.plan_of([('a', '-', 'a.txt')])
+        for level, line in (('P3', 'QA threshold: P3 (set) — every CONFIRMED finding blocks'),
+                            ('P0', 'QA threshold: P0 (set) — P0 blocks; a CONFIRMED P1–P3 is recorded as a known issue'),
+                            ('none', 'QA threshold: P3 (set) — every CONFIRMED finding blocks')):
+            r = self.run_script('forge-parallel.sh', 'plan', p, '--qa-threshold', level)
+            self.assertEqual(r.returncode, 0, r.stdout)
+            self.assertIn(line, r.stdout)
 
 
 if __name__ == '__main__':
