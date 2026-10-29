@@ -360,24 +360,32 @@ def _write_entry(gates: dict, args) -> dict:
     return entry
 
 
-def _promotion(gate: str, effective: dict, force: bool, providers: dict) -> str | None:
-    """The promotion rule for `gate` turned `on`, `effective` being its resolved setting once
-    written (so a provider or model inherited from another level counts): why it may be
-    ('replayed <date>' or 'forced'), else Refused."""
+def _promotion(gate: str, settings: list, force: bool, providers: dict) -> str | None:
+    """The promotion rule for `gate` turned `on`. `settings` are its resolved settings once
+    written (so a provider or model inherited from a lower level counts): the written level's
+    own, then the effective one when it acts. Each identity they name needs a passing replay;
+    why it may be ('replayed <date>' or 'forced'), else Refused."""
     from . import replay as replay_module
     site = GATE_SITE[gate]
-    provider, model = providers_module.identity(site, effective, providers=providers)
-    stored = replay_module.recorded(gate, provider, model)
-    if stored is not None and stored.get('passes') is True:
-        return 'replayed %s on %s/%s' % (_date(stored.get('at')), provider, model)
-    if force:
-        return 'forced: no passing replay on %s/%s' % (provider, model)
-    why = ('no replay is recorded for it' if stored is None else
-           'its replay of %s does not pass: %s' % (_date(stored.get('at')), stored.get('reason') or 'no reason recorded'))
-    raise Refused('%s on refused: provider %s, model %s: %s.\n'
-                  'Run `forge decide replay --site %s --provider %s --model %s --send`, '
-                  'or turn it on anyway with --force (shown as forced).'
-                  % (gate, provider, model, why, site, provider, model))
+    seen, passing = [], None
+    for setting in settings:
+        provider, model = providers_module.identity(site, setting, providers=providers)
+        if (provider, model) in seen:
+            continue
+        seen.append((provider, model))
+        stored = replay_module.recorded(gate, provider, model)
+        if stored is not None and stored.get('passes') is True:
+            passing = passing or 'replayed %s on %s/%s' % (_date(stored.get('at')), provider, model)
+            continue
+        if force:
+            return 'forced: no passing replay on %s/%s' % (provider, model)
+        why = ('no replay is recorded for it' if stored is None else
+               'its replay of %s does not pass: %s' % (_date(stored.get('at')), stored.get('reason') or 'no reason recorded'))
+        raise Refused('%s on refused: provider %s, model %s: %s.\n'
+                      'Run `forge decide replay --site %s --provider %s --model %s --send`, '
+                      'or turn it on anyway with --force (shown as forced).'
+                      % (gate, provider, model, why, site, provider, model))
+    return passing
 
 
 def cmd_gate(args) -> int:
@@ -404,9 +412,15 @@ def cmd_gate(args) -> int:
     effective_repo = repo if repo is not None else _repo(None)
     promotion = None
     if args.mode == 'on':
+        # The written level on its own (lower levels under it, nothing above): what acts once
+        # a profile or env override above it goes away. Then what acts now, if it does.
         written = dict(repo_data=data) if repo is not None else dict(user_data=data)
-        proposed = resolve(effective_repo, profile=args.profile, **written)
-        promotion = _promotion(args.gate, proposed['gates'][args.gate], args.force, configured)
+        alone = dict(repo_data=data, user_data={}) if repo is not None else dict(user_data=data)
+        settings = [resolve(effective_repo, profile=args.profile, env={}, **alone)['gates'][args.gate]]
+        effective = resolve(effective_repo, profile=args.profile, **written)['gates'][args.gate]
+        if effective['mode'] == 'on':
+            settings.append(effective)
+        promotion = _promotion(args.gate, settings, args.force, configured)
     if repo is None and not user_path().exists():
         # Allowed: migrate for real (key files too), then write the entry into the result.
         data = _user_for_write()

@@ -116,6 +116,23 @@ class GateOnTests(PromotionCase):
         self.decide('gate', 'drift', 'on', '--profile', 'fast')
         self.assertEqual(self.user_file()['profiles']['fast']['gates']['drift'], dict(mode='on'))
 
+    def test_an_override_above_the_written_level_does_not_vouch_for_it(self):
+        # The active profile puts drift on good/m1, which passes; the user entry being written
+        # names bad/m2, which acts as soon as the profile is unset.
+        for name, model in (('good', 'm1'), ('bad', 'm2')):
+            self.decide('provider', 'add', 'jev', '--name', name, '--model', model, '--key-stdin', stdin=KEY)
+        self.record('good', 'm1', True)
+        self.decide('gate', 'drift', 'on', '--profile', 'fast', '--provider', 'good')
+        self.env['FORGE_DECIDE_PROFILE'] = 'fast'
+        before = (self.cfg / 'forge' / 'decide.json').read_bytes()
+        out = self.decide('gate', 'drift', 'on', '--provider', 'bad', code=3)
+        self.assertIn('--provider bad --model m2', out.stderr)
+        self.assertEqual((self.cfg / 'forge' / 'decide.json').read_bytes(), before)
+        self.decide('gate', 'drift', 'on', '--provider', 'bad', '--force')
+        self.assertEqual(self.user_file()['gates']['drift'], dict(mode='on', provider='bad', force=True))
+        del self.env['FORGE_DECIDE_PROFILE']
+        self.assertTrue(self.drift()['forced'])
+
     def test_a_refusal_does_not_migrate(self):
         (self.cfg / 'forge').mkdir(parents=True)
         (self.cfg / 'forge' / 'jev.json').write_text(json.dumps(dict(enabled=True, key=KEY)))
