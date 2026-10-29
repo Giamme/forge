@@ -217,7 +217,7 @@ def parse_known(text):
         body = _BULLET_RE.sub("", first, count=1)
         lm = _LOCATION_RE.search(body)
         if lm:
-            file, line = lm.group(1).strip("`"), int(lm.group(2))
+            file, line = lm.group(1).strip("`*"), int(lm.group(2))
             rest = body[lm.end():]
         else:
             file, line = (body.split() or ["?"])[0].strip("`*:"), None

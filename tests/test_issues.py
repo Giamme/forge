@@ -885,6 +885,12 @@ class ForgeIssuesTests(unittest.TestCase):
         self.assertEqual((by_file['a.py']['severity'], by_file['a.py']['text']), ('P3', 'x'))
         self.assertEqual(by_file['src/import.ts']['fp'], 'cf5d9440c970')
 
+    def test_emphasis_around_a_noncanonical_location_is_not_part_of_the_file(self):
+        self.tolerated_task('emphasis', '## Known issues\n\n* (P3) CONFIRMED *a.py:7* — Italic location.\n'
+                            '* (P3) CONFIRMED **b.py:9** — Bold location.\n')
+        out = self.run_issues(str(self.plan / 'tasks' / 'emphasis'), '--offline', '--repo', 'o/r')
+        self.assertEqual(sorted(f['file'] for f in out['findings']), ['a.py', 'b.py'])
+
     def test_nested_plausible_bullet_does_not_replace_its_confirmed_parent(self):
         self.tolerated_task('nested', '## Known issues\n\n* (P3) CONFIRMED a.py:7 — Parent defect.\n'
                             '  - [P3][PLAUSIBLE] b.py:9 — Related suspicion.\n')
