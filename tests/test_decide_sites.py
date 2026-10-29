@@ -231,10 +231,27 @@ class MemoryTestCase(unittest.TestCase):
         body['state']['facts'][0] = 'a fact with no anchor'
         self.assertEqual(sites.site('jev-memory-slice').baseline(body, 'l0'), 0)
 
-    def test_curate_and_stale_act_on_nothing(self):
+    def test_curate_and_stale_have_no_decisions(self):
         for name in ('jev-memory-curate', 'jev-memory-stale'):
-            self.assertEqual(sites.site(name).fired({'durable': noul(0.0)}, 0.5), [])
             self.assertEqual(sites.site(name).decisions(self.body()), [])
+
+    def test_curate_fires_what_curate_acts_on(self):
+        record = sites.site('jev-memory-curate')
+        merged = choice('a fact', {'a fact': 0.9, 'none': 0.1})
+        self.assertIsNone(record.threshold)
+        self.assertEqual(record.fired({'durable': noul(0.3)}, None, ['durable', 'category']), ['durable'])
+        self.assertEqual(record.fired({'durable': noul(0.3), 'same': merged}, None, ['durable', 'same']),
+                         ['same'])
+        self.assertEqual(record.fired({'durable': noul(0.9), 'same': merged}, None), ['same'])
+        self.assertEqual(record.fired({'durable': noul(0.9)}, None), [])
+
+    def test_stale_fires_below_stale_drop(self):
+        record = sites.site('jev-memory-stale')
+        drop = forge_jev.threshold('stale_drop', site='jev-memory-stale')
+        self.assertEqual(record.threshold, 'stale_drop')
+        self.assertEqual(record.fired({'still': noul(0.1)}, drop), ['still'])
+        self.assertEqual(record.fired({'still': noul(drop)}, drop), [])
+        self.assertEqual(record.fired({}, drop), [])
 
 
 class VerifyTestCase(unittest.TestCase):

@@ -90,6 +90,46 @@ def curate(*, category: str, text: str, existing=None, run_dir=None,
     return out
 
 
+def _request_model(request) -> str | None:
+    """The model a request was measured for: a stored body's or a {model, questions} dict's;
+    None for a bare list of ids."""
+    model = request.get('model') if isinstance(request, dict) else None
+    return model if isinstance(model, str) and model else None
+
+
+def fired_curate(answers, threshold_value, request=None) -> list[str]:
+    """The question ids `curate` acted on, `same` first: what the decision model changed.
+
+    `same` is a merge (the choice is not `none` and its confidence reaches `memory_merge`).
+    `durable` is the durability refusal: the Noul is below `gate_warn` and no merge happened,
+    since a merged line is exempt and stays injectable. A category correction is not counted:
+    the request does not carry the recorded category, so a correction cannot be told from
+    agreement. `threshold_value` is None for this site; both thresholds are resolved here,
+    for the request's model when it names one, as `curate` reads them."""
+    model = _request_model(request)
+    result = dict(answers=answers if isinstance(answers, dict) else {})
+    out = []
+    matched, confidence = choice(result, 'same')
+    merged = (bool(matched) and matched != 'none' and confidence is not None
+              and confidence >= threshold('memory_merge', site='jev-memory-curate', model=model))
+    if merged:
+        out.append('same')
+    durable = noul(result, 'durable')
+    if (not merged and durable is not None
+            and durable < threshold('gate_warn', site='jev-memory-curate', model=model)):
+        out.append('durable')
+    return out
+
+
+def fired_stale(answers, threshold_value, request=None) -> list[str]:
+    """['still'] when `still_true` would call the fact stale: its probability is below
+    `threshold_value` (`stale_drop`)."""
+    probability = noul(dict(answers=answers if isinstance(answers, dict) else {}), 'still')
+    if probability is None or threshold_value is None:
+        return []
+    return ['still'] if probability < threshold_value else []
+
+
 # The number of facts a single dispatch is likely to act on. The existing 40-line / 4KB
 # cap stays the outer bound -- this only narrows within it, and never adds a line.
 SLICE_KEEP = 8
