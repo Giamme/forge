@@ -34,7 +34,7 @@
 #        <run-dir>/dwarf.spec, qa.spec and attempts.tsv
 #
 # Exit codes: 0 ok | 2 usage | 3 precondition | 4 a dispatch failed
-#             5 the dwarf produced no changes, or forge turned a PASS into FAIL | 7 a dispatch timed out
+#             5 the dwarf produced no changes | 7 a dispatch timed out
 #             8 a dispatch hit an infrastructure failure (quota, auth, rate limit, network,
 #               empty output): nothing about the work was judged, fix the cause and re-run
 set -uo pipefail
@@ -374,5 +374,3 @@ else
 fi
 [ ! -s "$RUN/guard.txt" ] || { echo; echo "implementer guard notes:"; sed 's/^/  /' "$RUN/guard.txt"; }
 forge_update_notice
-[ "${verdict:-UNKNOWN}" != FAIL ] || exit 5
-exit 0

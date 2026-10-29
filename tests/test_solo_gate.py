@@ -31,17 +31,13 @@ class SoloGateTests(unittest.TestCase):
         run, r = self.review(P2, 'PASS')
         self.assertEqual(self.verdict(run), 'FAIL', r.stdout)
         self.assertEqual((run / 'status').read_text().strip(), 'FAIL')
-        self.assertEqual(r.returncode, 5, r.stdout)
+        # A completed review exits 0 whatever the verdict, as a reviewer's own FAIL does (test_forge).
+        self.assertEqual(r.returncode, 0, r.stdout)
         self.assertIn('verdict: FAIL (' + OVERRIDE % 'P2' + ')', r.stdout)
         fields = (run / 'qa.gate').read_text().rstrip('\n').split('\t')
         self.assertEqual(fields[:2], ['P2', 'fail'])
         self.assertEqual(len(fields), 6)
         self.assertFalse((run / 'qa_threshold').exists())
-
-    def test_a_reviewer_fail_exits_like_a_gated_fail(self):
-        run, r = self.review(P2, 'FAIL')
-        self.assertEqual(self.verdict(run), 'FAIL', r.stdout)
-        self.assertEqual(r.returncode, 5, r.stdout)
 
     def test_a_pass_with_only_a_confirmed_p3_stays_pass_and_records_it(self):
         run, r = self.review(P3, 'PASS')
