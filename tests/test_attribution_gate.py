@@ -237,6 +237,32 @@ class OtherModeTests(GateCase):
         self.assertTrue(self.result()['base_fails'])
         self.assertEqual(self.asked(), [])
 
+    def freeze(self, **selection):
+        (self.plan / 'jev-selection.json').write_text(json.dumps(dict(choice=None, act=False, shadow=False,
+                                                                        capabilities={}, **selection)))
+
+    def test_a_plan_frozen_with_no_gates_asks_nothing_whatever_the_global_setting(self):
+        self.failed_run(CLASH)
+        self.gate('on', ranking(b=0.8))
+        self.freeze(no_gates=True, gates={})
+        r = self.attribute()
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertEqual(self.asked(), [])
+        found = self.result()
+        self.assertIsNone(found['gate'])
+        self.assertEqual(found['culprit'], 'b')
+
+    def test_a_gate_frozen_on_acts_although_the_global_setting_is_off(self):
+        self.failed_run(CLASH)
+        self.gate('off', ranking(b=0.8))
+        self.freeze(no_gates=False, gates={'attribution': 'on'})
+        r = self.attribute()
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertEqual(len(self.asked()), 1)
+        found = self.result()
+        self.assertEqual((found['gate']['mode'], found['gate']['tried'], found['gate']['outcome']),
+                         ('on', 'b', 'confirmed'))
+
 
 class StateTests(GateCase):
     def test_the_merges_are_the_ones_the_search_found(self):
@@ -299,6 +325,15 @@ class MeasurementTests(unittest.TestCase):
         self.assertEqual(attribution.fired({}), [])
         # a tie keeps the order the options were asked in
         self.assertEqual(attribution.fired(self.answers(b=0.4, a=0.4, none=0.2), None, self.body()), ['culprit:a'])
+
+    def test_a_tie_breaks_by_merge_order_whatever_order_the_request_stores_its_criteria_in(self):
+        # the stored request sorts its criteria (a, none, z); the run asked z first
+        body = dict(state=dict(run='r', log='', tasks=[dict(id='z', files=[]), dict(id='a', files=[])]),
+                    model='jev-latest', questions=dict(culprit=dict(criteria={'a': '', 'none': '', 'z': ''})))
+        answers = self.answers(none=0.5, z=0.5, a=0.0)
+        self.assertEqual(attribution.fired(answers, None, body), ['culprit:z'])
+        self.assertEqual(attribution.ranking(attribution.probabilities({'answers': answers}, 'culprit'),
+                                             ['z', 'a', 'none'])[0][0], 'z')
 
     def test_the_baseline_counts_the_tasks_files_named_in_the_log(self):
         self.assertEqual(attribution.baseline(self.body(), 'culprit:a'), 1.0)

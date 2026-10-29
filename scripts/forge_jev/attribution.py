@@ -151,10 +151,25 @@ def score(answers, qid, request=None) -> float | None:
     return probs.get(str(qid)[len(PREFIX):])
 
 
+def _asked_order(request) -> list[str]:
+    """The options in the order the run asked them: the merge order of the request's tasks, then
+    `none`. A stored request sorts its criteria, so they cannot say; its state's task list does."""
+    if not isinstance(request, dict):
+        return []
+    state = request.get('state')
+    tasks = state.get('tasks') if isinstance(state, dict) else None
+    if isinstance(tasks, list):
+        ids = [str(item['id']) for item in tasks if isinstance(item, dict) and 'id' in item]
+        if ids:
+            return ids + ['none']
+    return _options(request)
+
+
 def fired(answers, threshold_value=None, request=None) -> list[str]:
-    """The top option when it is not `none` (there is no threshold)."""
+    """The top option when it is not `none` (there is no threshold). Ties break as `main` ranks
+    them, by the order the run asked the options in."""
     probs = probabilities({'answers': answers or {}}, 'culprit')
-    ordered = ranking(probs, _options(request) if isinstance(request, dict) else [])
+    ordered = ranking(probs, _asked_order(request))
     if not ordered or ordered[0][0] == 'none':
         return []
     return [PREFIX + ordered[0][0]]

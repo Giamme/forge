@@ -432,6 +432,9 @@ do_attribute() {
       *) die "attribute: unknown option '$1'" ;;
     esac
   done
+  # The plan's frozen decision selection (--gate, --no-gates, budget), as `run` and `retry` restore it:
+  # the gate resolves as it did in the run, never from whatever this shell has today.
+  [ "${JEV_OPTS:-0}" = 1 ] && [ -d "$PLAN" ] && forge_jev_restore "$PLAN"
   # A job this shell can stop: a TERM here reaches the search, which stops its verification.
   trap 'stopped=1; [ -n "$job" ] && kill -TERM "$job" 2>/dev/null' TERM INT
   ( attribute_search "$PLAN" "$force" ) <&0 &
