@@ -217,6 +217,22 @@ class RefusalTests(NeedsInputCase):
         self.assertFalse((p / 'tasks/a/answer.md').exists())
         self.assert_nothing_changed(p, before, dwarfs)
 
+    def test_another_options_value_is_not_taken_for_an_answer_flag(self):
+        # `--setup '--answer'` is a setup command; the empty --answer after it is the answer.
+        p = self.waiting_plan()
+        before, dwarfs = self.snapshot(p), self.dwarf_count()
+        (p / 'setup_cmd').write_text('original setup')
+        for args in (('--setup', '--answer', '--answer', ''),
+                     ('--setup', '--answer-file', '--answer', ''),
+                     ('--dwarf', '--answer', '--answer', '')):
+            with self.subTest(args):
+                r = self.run_script('forge-parallel.sh', 'retry', p, 'a', *args)
+                self.assertEqual(r.returncode, 2, r.stdout)
+                self.assertEqual((p / 'setup_cmd').read_text(), 'original setup')
+                self.assertFalse((p / 'tasks/a/answer.md').exists())
+                self.assert_nothing_changed(p, before, dwarfs)
+                self.assertFalse(list(p.glob('.answer-scan.*')))
+
     def test_an_empty_answer_exits_2_and_changes_nothing(self):
         p = self.waiting_plan()
         before, dwarfs = self.snapshot(p), self.dwarf_count()

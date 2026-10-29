@@ -1323,6 +1323,36 @@ merge_task() { # merge_task <plan> <id> -> 0 merged, 1 conflicted
 }
 
 # --- retry --------------------------------------------------------------------
+# The answer arguments of `retry`, found by walking the option list as do_retry's own loop does,
+# so the value of another option (--setup '--answer') is never mistaken for one. Run it in a
+# subshell with a scratch directory as the plan: the shared option parsers write into it, not
+# into the real plan. Leaves n (how many answer flags), flag, val and novalue in the scratch dir.
+_retry_answer_scan() { # _retry_answer_scan <scratch-dir> <retry args...>
+  local sd="$1"; shift
+  local n=0 flag="" val="" novalue=0 rc=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --no-ripwire|--yolo-dwarf|--yolo-qa) shift ;;
+      --output|--dwarf|--verify|--setup) [ $# -ge 2 ] || break; shift 2 ;;
+      --answer|--answer-file)
+        n=$((n + 1)); flag="$1"
+        if [ $# -ge 2 ]; then val="$2"; shift 2; else novalue=1; shift; fi ;;
+      *)
+        if forge_pp_flag retry "$sd" "$@"; then shift "$PP_SHIFT"; continue; fi
+        if [ "${JEV_OPTS:-0}" = 1 ]; then
+          forge_jev_flag "$@"; rc=$?
+          case "$rc" in
+            0) shift "$JEV_SHIFT"; continue ;;
+            2) exit 2 ;;
+          esac
+        fi
+        break ;;
+    esac
+  done
+  printf '%s' "$n" > "$sd/n"; printf '%s' "$flag" > "$sd/flag"; printf '%s' "$val" > "$sd/val"
+  [ "$novalue" = 0 ] || : > "$sd/novalue"
+}
+
 # A failed task keeps its branch and worktree "so there is something to inspect and
 # retry from" — this is the retry. It is a command a human types, not an automatic
 # repair loop, which is what keeps forge's one-dwarf-then-QA rule intact.
@@ -1331,17 +1361,24 @@ do_retry() {
   FORGE_RUN_STARTED="$(forge_now)"
   local NEWDWARF="" jev_rc=0 ANSWER="" ANSWER_FILE="" HAVE_ANSWER=0
   # An answer is validated before any option below writes into the plan: a rejected answer
-  # changes nothing, --setup and --verify included. Only a NEEDS_INPUT task takes one.
-  local pre_a pre_n=0 pre_skip=0 pre_have=0 pre_val=""
-  for pre_a in "$@"; do
-    if [ "$pre_skip" = 1 ]; then pre_val="$pre_a"; pre_skip=0; continue; fi
-    case "$pre_a" in
-      --answer|--answer-file) pre_n=$((pre_n + 1)); pre_have="$pre_a"; pre_skip=1 ;;
-    esac
-  done
-  if [ "$pre_n" != 0 ]; then
+  # changes nothing, --setup and --verify included. Only a NEEDS_INPUT task takes one. The
+  # arguments are walked the way the loop below walks them (a value is never taken for a flag),
+  # in a subshell against a scratch plan dir, so nothing real is written by the walk.
+  local pre_dir="$PLAN/.answer-scan.$$" pre_n=0 pre_have="" pre_val="" pre_novalue=0 pre_ok=0
+  rm -rf "$pre_dir"
+  if mkdir "$pre_dir" 2>/dev/null; then
+    if ( _retry_answer_scan "$pre_dir" "$@" ) >/dev/null 2>&1; then
+      pre_ok=1
+      pre_n="$(<"$pre_dir/n")"; pre_have="$(<"$pre_dir/flag")"; pre_val="$(<"$pre_dir/val")"
+      [ ! -f "$pre_dir/novalue" ] || pre_novalue=1
+      # `$(<f)` drops trailing newlines, so an answer of only newlines needs the size check.
+      [ -s "$pre_dir/val" ] || pre_val=""
+    fi
+    rm -rf "$pre_dir"
+  fi
+  if [ "$pre_ok" = 1 ] && [ "$pre_n" != 0 ]; then
     [ "$pre_n" = 1 ] || die "retry: give --answer or --answer-file once"
-    [ "$pre_skip" = 0 ] || die "retry: $pre_have needs a value"
+    [ "$pre_novalue" = 0 ] || die "retry: $pre_have needs a value"
     [ -s "$PLAN/tasks.tsv" ] && all_ids "$PLAN/tasks.tsv" | grep -qx "$id" || die "no task '$id' in this plan"
     local pre_st; pre_st="$(task_status "$PLAN" "$id")"
     [ "$pre_st" = NEEDS_INPUT ] || die "retry: '$id' is $pre_st, not waiting for an answer; --answer and --answer-file only answer a NEEDS_INPUT task"
@@ -1390,6 +1427,7 @@ do_retry() {
   [ -s "$PLAN/wt_root" ] || die "this plan has never been run — use 'run', not 'retry'"
   local st; st="$(task_status "$PLAN" "$id")"
   [ "$st" = "MERGED" ] && die "task '$id' already merged — nothing to retry"
+  [ "$HAVE_ANSWER" = 0 ] || [ "$st" = NEEDS_INPUT ] || die "retry: '$id' is $st, not waiting for an answer; --answer and --answer-file only answer a NEEDS_INPUT task"
   # The user's answer to a NEEDS_INPUT task's question (validated above): written before
   # anything else is prepared, atomically, and kept when the preparation then refuses (the
   # same answer can be retried).
