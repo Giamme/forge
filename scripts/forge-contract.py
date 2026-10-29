@@ -79,6 +79,7 @@ SEVERITIES = ('P0', 'P1', 'P2', 'P3')
 PLACEHOLDER = 'path/file.py:123'
 KINDS = ('task', 'final', 'solo', 'sweep')
 DEFAULT_THRESHOLD = 'P2'
+QA_TEST_MINUTES = 5        # the reviewer's own test time, beyond which it says the check is too broad (#89)
 
 Finding = collections.namedtuple('Finding', 'status severity located line text')
 Finding.__doc__ = (
@@ -149,6 +150,18 @@ _FINDINGS = [
 ]
 _SOLO_EXTRA = ['If the diff is correct, say so plainly rather than inventing something to report.']
 
+# The reviewer's own verification, bounded to the change (#89): one reviewer re-ran a whole
+# repository suite to review a one-file patch. The evidence is what the caller prints between
+# the head and the tail (fail-first, pre-review tests).
+_VERIFY = [
+    'Verify within the change: run only the tests that touch the changed code (the tests the',
+    'diff adds or edits, and the tests of the modules it changes), never the whole suite, and',
+    'spend at most about %d minutes running tests. Use any test evidence forge gives you above' % QA_TEST_MINUTES,
+    'before running a test yourself. When the targeted tests would take longer, or the change',
+    'touches shared infrastructure (a test helper, a build file, a lockfile), say so instead of',
+    'running everything.',
+]
+
 _SEVERITY = [
     'Label every finding with its severity at the start of its own bullet, in exactly this form:',
     '  - [P1][CONFIRMED] path/file.py:123 — what breaks (trigger input)',
@@ -208,6 +221,7 @@ def qa_text(part: str, kind: str = 'task', threshold=None) -> str:
     if part != 'tail':
         raise ValueError('part must be head or tail')
     lines = list(_SWEEP_FINDINGS if kind == 'sweep' else _FINDINGS) + (_SOLO_EXTRA if kind == 'solo' else [])
+    lines += [''] + _VERIFY
     lines += [''] + _SEVERITY
     lines += [''] + _threshold_clause(rank, kind) + _CHECKED
     if kind == 'sweep':
@@ -228,6 +242,9 @@ _DWARF = [
     '- Do not run git commit, checkout, switch, reset, stash or rebase. The harness captures',
     '  the working tree itself; a self-commit makes the change set ambiguous.',
     '- Do not start background processes, and leave nothing running when you finish.',
+    '- Verify within your change: run the tests the change affects (the task\'s own tests and the',
+    '  tests of the modules you changed). Do not run the whole suite or repo-wide lint, format or',
+    '  type checks unless the task asks for them.',
     '- Finish every measurement and test run BEFORE your last message and report its actual',
     '  result. If you could not run something, say so explicitly instead of claiming it passed.',
     '- State precisely which verification commands you ran and what each one returned.',

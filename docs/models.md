@@ -26,8 +26,10 @@ the wrong provider.
 - `--dwarf` missing → forge **asks**. Every dispatch spends real quota on your account, so
   picking for you isn't its call.
 - `--qa` missing → `opus`, which runs locally through `claude` and adds no cost surprise.
-- effort missing → dwarf builds at `medium`, qa reviews at `xhigh`. A reviewer thinking
-  *less* than the implementer tends to wave things through, which wastes the stage entirely.
+- effort missing → dwarf builds at `medium`, qa reviews at `high`, a planner plans at `xhigh`. A
+  reviewer thinking *less* than the implementer tends to wave things through, which wastes the
+  stage entirely; `xhigh` reviews cost about twice as much as `high` ones for the same verdicts in
+  the SWE-bench Pro benchmark (#89), so `high` is the default and `xhigh` is yours to ask for.
 
 ## Effort, ceilings and clamping
 

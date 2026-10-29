@@ -164,6 +164,15 @@ class PolicyTests(unittest.TestCase):
         self.assertEqual(self.text(p, 'qa_threshold'), 'P1')
         self.assertIn('QA threshold: P1 (set)', r.stdout)
 
+    def test_the_table_says_which_effort_a_reviewer_with_none_reviews_at(self):
+        p = self.plan_of([('a', '-', 'a.txt')])                           # qa `opus`: no effort named
+        r = self.run_script('forge-parallel.sh', 'plan', p)
+        self.assertIn('QA effort: high where a reviewer spec names none', r.stdout)
+        (p / 'tasks.tsv').write_text((p / 'tasks.tsv').read_text().replace('\topus\t', '\topus:xhigh\t'))
+        r = self.run_script('forge-parallel.sh', 'plan', p)
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertNotIn('QA effort:', r.stdout)
+
     def test_a_bad_threshold_is_refused(self):
         p = self.plan_of([('a', '-', 'a.txt')])
         r = self.run_script('forge-parallel.sh', 'plan', p, '--qa-threshold', 'high')

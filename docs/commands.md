@@ -142,7 +142,7 @@ file takes the flags on `run` or `retry` and freezes them then.
 | Flag | Default | Meaning |
 |---|---|---|
 | `--dwarf <spec>` | *asks* | the model that implements the change |
-| `--qa <spec>` | `opus` at `xhigh` | the model that reviews the dwarf's diff |
+| `--qa <spec>` | `opus` at `high` | the model that reviews the dwarf's diff |
 | `--planner <spec>` | orchestrator plans | dispatch planning to a model; one dispatch per run, effort defaults to `xhigh` |
 | `--no-memory` | memory on | write and inject nothing in `.forge/` |
 | `--gate NAME=MODE` | the configured gates | set decision-model gates for this run (`off`, `shadow` or `on`); repeatable, a later one wins. Frozen in `jev-selection.json`. See [`forge decide`](#forge-decide) |
@@ -271,8 +271,8 @@ failure. On `8`, `<run-dir>/<role>.infra` holds `class=`, `retry_after=`, `detai
 and disables the watchdog), then the optional fifth `timeout` column of the model's
 [registry](models.md#model-registry) row, then the built-in `2700` (45 min). A value that was *not*
 explicit is scaled by the resolved (post-clamp) effort: up to `high` ×1, `xhigh` ×4/3,
-`max`/`ultra`/`ultracode` ×2. QA and planner default to `xhigh`, so their built-in limit is
-3600 s; dwarves default to `medium` and keep 2700 s. `<role>.resolved` records `timeout=` and
+`max`/`ultra`/`ultracode` ×2. The planner defaults to `xhigh`, so its built-in limit is 3600 s;
+QA defaults to `high` and dwarves to `medium`, and both keep 2700 s. `<role>.resolved` records `timeout=` and
 `timeout_source=` (`explicit`, `env`, `registry` or `default`, plus `+effort-scaled`).
 `forge-parallel.sh run`/`retry --timeout S` sets it for a decomposed run (kept in the plan).
 `FORGE_REGISTRY` points the dispatcher at an alternative registry file.

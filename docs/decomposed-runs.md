@@ -48,7 +48,13 @@ exist yet. Naming a dwarf per task would mean guessing how the goal will split. 
 ```
 
 `--qa`, `--qa-high`, `--qa-medium`, `--qa-low` mirror it exactly. QA has no tier rules by
-default and falls back to `opus`.
+default and falls back to `opus` (at `high`). Sizing the reviewer to the task's risk costs less
+for the same verdicts: the SWE-bench Pro benchmark (#89) saw no false PASS from Sonnet reviewers,
+at about a seventh of an `opus:xhigh` review's cost. A set to start from:
+
+```bash
+--qa-low sonnet:medium --qa-medium sonnet:high --qa-high opus:high
+```
 
 Resolution order per task: **explicit column value → the tier's rule → plain `--dwarf` →
 `UNASSIGNED`**. An `UNASSIGNED` task makes `plan` exit `2` and `run` refuse outright. forge

@@ -121,7 +121,11 @@ none of those exist, `UNASSIGNED`. An `UNASSIGNED` task makes `plan` exit 2 and 
 outright. Forge does not invent a model when the user has not said which one should spend
 their quota.
 
-QA has no tier rules by default and falls back to `opus`, matching single-task forge.
+QA has no tier rules by default and falls back to `opus` at `high`, matching single-task forge.
+When the user names no reviewers, offer reviewers sized to the task's risk (never add them
+unprompted): `--qa-low sonnet:medium --qa-medium sonnet:high --qa-high opus:high`. In the
+SWE-bench Pro benchmark (#89) Sonnet reviewers gave no false PASS at about a seventh of an
+`opus:xhigh` review's cost.
 
 ### Exploratory routing (on by default)
 

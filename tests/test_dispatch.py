@@ -661,7 +661,11 @@ class TimeoutResolutionTests(DispatchBase):
 
     def test_role_default_effort_decides_the_default(self):
         self.assertEqual(self.resolve('sol'), ('2700', 'default'))                  # dwarf: medium
-        self.assertEqual(self.resolve('sol', role='qa'), ('3600', 'default+effort-scaled'))   # qa: xhigh
+        # qa reviews at high (#89: xhigh cost twice as much for the same verdicts); planning stays at xhigh
+        self.assertEqual(self.resolve('sol', role='qa'), ('2700', 'default'))
+        self.assertEqual(self.kv('qa.resolved')['effort'], 'high')
+        self.assertEqual(self.resolve('sol', role='planner'), ('3600', 'default+effort-scaled'))
+        self.assertEqual(self.kv('planner.resolved')['effort'], 'xhigh')
 
     def test_scaling_uses_the_clamped_effort(self):
         # gemini tops out at high on antigravity: asking for ultra costs nothing extra.

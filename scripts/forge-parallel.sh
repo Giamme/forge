@@ -510,6 +510,10 @@ EOF
     P1) echo "QA threshold: P1 ($qa_src) — P0–P1 block; a CONFIRMED P2–P3 is recorded as a known issue" ;;
     *)  echo "QA threshold: P2 ($qa_src) — P0–P2 block; a CONFIRMED P3 is recorded as a known issue" ;;
   esac
+  # A reviewer spec that names no effort reviews at forge-dispatch.sh's QA default (#89).
+  if awk -F'\t' '$0 !~ /^#/ && NF >= 6 { split($6, s, ":"); if (s[2] == "") found = 1 } END { exit !found }' "$T"; then
+    echo "QA effort: high where a reviewer spec names none (forge-dispatch.sh's default; planning stays at xhigh)"
+  fi
   echo
   local w id dws starred=0
   for w in $(awk -F'\t' '{print $1}' "$W" | sort -un); do

@@ -307,11 +307,13 @@ if [ "$NO_EFFORT" = 1 ]; then
   EFFORT=""
 else
   if [ -z "$EFFORT" ]; then
-    # Build at medium, review high: a reviewer that thinks less than the
-    # implementer tends to rubber-stamp, which defeats the point of a second model.
-    # Planning is the stage where thinking pays for itself most cheaply — a bad
-    # plan is executed at full cost by every dwarf downstream of it.
-    case "$ROLE" in dwarf) EFFORT="medium" ;; qa|planner) EFFORT="xhigh" ;; esac
+    # Build at medium, review at high: a reviewer that thinks less than the
+    # implementer tends to rubber-stamp, which defeats the point of a second model;
+    # xhigh reviews cost about twice as much for the same verdicts (#89). Planning is
+    # the stage where thinking pays for itself most cheaply — a bad plan is executed
+    # at full cost by every dwarf downstream of it. forge-parallel.sh's approval
+    # table names the QA default (render_table).
+    case "$ROLE" in dwarf) EFFORT="medium" ;; qa) EFFORT="high" ;; planner) EFFORT="xhigh" ;; esac
     DEFAULTED=1
     [ -n "$LADDER" ] || EFFORT=""   # opencode: no ladder, let the provider choose
   else

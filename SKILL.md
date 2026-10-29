@@ -14,7 +14,7 @@ For explanation requests, explain the workflow without spending model quota.
 ## Choices and boundaries
 
 - A dwarf model must be chosen by the user. Ask when it is missing; never invent one.
-- QA defaults to `opus`; effort defaults to `medium` for dwarf and `xhigh` for QA/planner.
+- QA defaults to `opus`; effort defaults to `medium` for dwarf, `high` for QA and `xhigh` for the planner.
 - Specs are `alias[:effort[:harness]]`, e.g. `sol:xhigh:openclaude`. Resolve using
   [registry.tsv](registry.tsv); report any effort clamp. Literal model IDs require a harness.
 - Bypass flags apply only when explicitly requested for that role (`--yolo-dwarf`,
