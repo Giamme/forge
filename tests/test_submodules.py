@@ -4,6 +4,7 @@ Every test builds its own repositories in a temporary directory, with no global 
 config. Before populating, every submodule URL (in .gitmodules, the superproject's config and the
 submodule's own remote) points at https://invalid.invalid/x, so a fetch would fail.
 """
+import importlib.util
 import os
 from pathlib import Path
 import subprocess
@@ -198,6 +199,24 @@ class SubmodulesCase(unittest.TestCase):
         self.assertEqual(self.populate(wt), [['kept', 'vendor/lib', recorded, '']])
         self.assertEqual(os.listdir(wt / 'vendor/lib'), ['mine.txt'])
         self.assertEqual((wt / 'vendor/lib/mine.txt').read_text(), 'from an earlier attempt\n')
+
+    @unittest.skipIf(os.geteuid() == 0, 'root can write into a read-only directory')
+    def test_clear_empties_a_copy_with_a_read_only_directory(self):
+        # copy_tree keeps the 0555 mode of a source directory, which blocks removing what it holds
+        spec = importlib.util.spec_from_file_location('forge_submodules_under_test', SCRIPT)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        src, dest = self.root / 'src', self.root / 'dest'
+        (src / 'ro/deeper').mkdir(parents=True)
+        (src / 'ro/readable.txt').write_text('r\n')
+        (src / 'ro/deeper/x.txt').write_text('x\n')
+        os.chmod(src / 'ro/deeper', 0o555)
+        os.chmod(src / 'ro', 0o555)
+        dest.mkdir()
+        module.copy_tree(str(src), str(dest))
+        self.assertEqual(os.listdir(dest / 'ro'), ['deeper', 'readable.txt'])
+        module.clear(str(dest))
+        self.assertEqual(os.listdir(dest), [])
 
     def test_each_submodule_on_its_own(self):
         lib, recorded = self.library()

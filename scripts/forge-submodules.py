@@ -31,6 +31,7 @@ from __future__ import annotations
 import argparse
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import tarfile
@@ -166,10 +167,21 @@ def inside(path: str, root: str) -> bool:
     return path == root or path.startswith(root.rstrip(os.sep) + os.sep)
 
 
+def make_writable(path: str) -> None:
+    """Give `path` and the directories under it their owner's rwx: copy_tree keeps a source
+    directory's mode, and a read-only directory cannot have its entries removed."""
+    os.chmod(path, os.stat(path).st_mode | stat.S_IRWXU)
+    with os.scandir(path) as it:
+        for entry in it:
+            if entry.is_dir(follow_symlinks=False):
+                make_writable(entry.path)
+
+
 def clear(dest: str) -> None:
     """Empty `dest` after a failed attempt, so it is left as it was found."""
     for entry in os.scandir(dest):
         if entry.is_dir(follow_symlinks=False):
+            make_writable(entry.path)
             shutil.rmtree(entry.path, ignore_errors=True)
         else:
             try:
