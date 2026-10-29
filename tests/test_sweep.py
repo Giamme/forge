@@ -147,6 +147,16 @@ class Planner(PlanBase):
         self.assertIn('the code it points at changed after the review (merged since: c)',
                       (self.plan / 'sweep/plan.md').read_text())
 
+    def test_a_location_that_lists_lines_or_adds_a_note_is_swept_under_its_file(self):
+        self.task('a', {'a.txt': 'alpha\nbeta\ngamma\n'}, known(
+            '- [P2][CONFIRMED] a.txt:2,3 — Beta and gamma disagree.',
+            '- [P2][CONFIRMED] a.txt:1-2 (also a.txt:3, "the header") — Alpha drifts from the header.',
+            '- [P2][CONFIRMED] general — Logging is too chatty.'))
+        self.assertEqual(self.sweep('--severity', 'P2').stdout.split(), ['sweep-1'])
+        swept = json.loads((self.plan / 'tasks/sweep-1/sweep.json').read_text())['findings']
+        self.assertEqual(sorted(i['location'] for i in swept), ['a.txt:1', 'a.txt:2'])
+        self.assertEqual(self.dropped(), [('a', 'general:None', 'no-location')])
+
     def test_a_line_that_only_moved_is_still_swept(self):
         self.task('a', {'a.txt': 'alpha\nbeta\n'}, known('- [P3][CONFIRMED] a.txt:2 — Beta is spelled wrong.'))
         self.task('c', {'a.txt': 'new first line\nalpha\nbeta\n'})

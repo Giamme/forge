@@ -178,7 +178,9 @@ def parse_findings(text):
         loc = m.group(3).strip()
         link = re.fullmatch(r"\[([^\]]+)\]\([^)]*\)", loc)
         loc = (link.group(1) if link else loc).strip("` ")
-        lm = re.match(r"(.+?):(\d+)(?:[-:]\d+)?$", loc)
+        # `path:12`, `path:12-14`, `path:12:3`; else a path with more after its first line (a list
+        # `:442,674`, a range then a note): the path runs to its first `:<digit>`, the line is that number.
+        lm = re.match(r"(.+?):(\d+)(?:[-:]\d+)?$", loc) or re.match(r"([^\s,;()]+?):(\d+)(?=[-:,;\s(]|$)", loc)
         out.append({"severity": m.group(1), "confidence": m.group(2), "file": lm.group(1) if lm else loc,
                     "line": int(lm.group(2)) if lm else None, "text": clean_markdown(m.group(4)),
                     "raw": f"[{m.group(1)}][{m.group(2)}] {loc} — {m.group(4).strip()}"})

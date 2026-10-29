@@ -885,6 +885,25 @@ class ForgeIssuesTests(unittest.TestCase):
         self.assertEqual((by_file['a.py']['severity'], by_file['a.py']['text']), ('P3', 'x'))
         self.assertEqual(by_file['src/import.ts']['fp'], 'cf5d9440c970')
 
+    def test_a_location_that_lists_lines_or_adds_a_note_keeps_its_file_and_first_line(self):
+        # #83: reviewers write these, and they used to become a "file" named after the whole location.
+        self.tolerated_task('locations', '## Known issues\n\n'
+                            '- [P3][CONFIRMED] scripts/cli.py:442,674,706 — Several lines.\n'
+                            '- [P3][CONFIRMED] docs/models.md:117-119 (also docs/commands.md:88, "one provider") — A note.\n'
+                            '- [P3][CONFIRMED] src/range.ts:12-14 — A range.\n'
+                            '- [P3][CONFIRMED] src/column.ts:12:3 — A column.\n'
+                            '- [P3][CONFIRMED] [src/link.ts:5](https://example.com/x) — A markdown link.\n'
+                            '- [P3][CONFIRMED] `src/tick.ts:9` — Backticks.\n'
+                            '- [P3][CONFIRMED] general — No file at all.\n')
+        out = self.run_issues(str(self.plan / 'tasks' / 'locations'), '--offline', '--repo', 'o/r')
+        self.assertEqual(sorted(f['file'] for f in out['findings']),
+                         ['docs/models.md', 'general', 'scripts/cli.py', 'src/column.ts', 'src/link.ts', 'src/range.ts',
+                          'src/tick.ts'])
+        references = '\n'.join(d['body'] for d in out['drafts'])
+        for location in ('scripts/cli.py:442', 'docs/models.md:117', 'src/range.ts:12', 'src/column.ts:12',
+                         'src/link.ts:5', 'src/tick.ts:9'):
+            self.assertIn('`%s`' % location, references)
+
     def test_emphasis_around_a_noncanonical_location_is_not_part_of_the_file(self):
         self.tolerated_task('emphasis', '## Known issues\n\n* (P3) CONFIRMED *a.py:7* — Italic location.\n'
                             '* (P3) CONFIRMED **b.py:9** — Bold location.\n')
