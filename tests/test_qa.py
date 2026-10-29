@@ -28,10 +28,10 @@ LEGACY_FINDINGS = (
     'Report findings only — do not edit any file. For each finding give the file and line,\n'
     'what breaks, and a concrete input that triggers it. Mark each CONFIRMED if you traced\n'
     'it in the code, or PLAUSIBLE if you could not fully verify it.\n')
-LEGACY_VERDICT = (
-    'End your reply with exactly one line:\n'
-    '  FORGE_VERDICT: PASS   — no confirmed correctness bug (style nits are not failures)\n'
-    '  FORGE_VERDICT: FAIL   — at least one CONFIRMED correctness bug\n')
+# The two lines every kind carries after the threshold clause (DESIGN.md, verbatim).
+CHECKED = ('forge checks the verdict against your findings: a PASS that lists a blocking CONFIRMED finding '
+           'is turned into FAIL. List only problems still present in the code under review; never list a '
+           'fixed problem as a finding.')
 
 
 def bullet(severity, status='CONFIRMED', where='a.py:1', what='breaks', tags=None):
@@ -72,12 +72,42 @@ class GateTableTests(unittest.TestCase):
                 got = decide('FAIL', self.reply(*severities), threshold)
                 self.assertEqual(got, (decision, worst, len(severities), 0, below))
 
-    def test_no_threshold_never_accepts(self):
-        for severities in (['P3'], ['P3', 'P3'], ['P0']):
-            with self.subTest(severities=severities):
-                got = decide('FAIL', self.reply(*severities))
-                self.assertEqual((got[0], got[3], got[4]), ('keep', 0, 0))
-        self.assertEqual(decide('FAIL', self.reply('P3'), ''), decide('FAIL', self.reply('P3')))
+    def test_both_ways(self):
+        unstated = lambda severity: '- [%s] b.py:2 — breaks (input x)\n' % severity
+        plausible = bullet('P0', status='PLAUSIBLE') + '\n'
+        cases = [
+            # verdict, threshold, reply, (decision, worst, n_confirmed, n_unlabelled, n_below)
+            ('PASS', None, self.reply(verdict='PASS'), ('keep', '-', 0, 0, 0)),
+            ('PASS', None, self.reply('P3', verdict='PASS'), ('keep', 'P3', 1, 0, 1)),
+            ('PASS', None, self.reply('P2', verdict='PASS'), ('fail', 'P2', 1, 0, 0)),
+            ('PASS', None, self.reply('P1', 'P3', verdict='PASS'), ('fail', 'P1', 2, 0, 1)),
+            ('PASS', None, bullet(None) + '\n', ('fail', '-', 1, 1, 0)),
+            ('PASS', None, unstated('P1'), ('fail', '-', 0, 1, 0)),
+            ('PASS', 'P2', unstated('P3'), ('keep', '-', 0, 1, 0)),
+            ('PASS', None, plausible, ('keep', '-', 0, 0, 0)),
+            ('FAIL', None, self.reply('P3'), ('accept', 'P3', 1, 0, 1)),
+            ('FAIL', 'P3', self.reply('P3'), ('keep', 'P3', 1, 0, 0)),
+            ('PASS', 'P3', self.reply('P3', verdict='PASS'), ('fail', 'P3', 1, 0, 0)),
+            ('PASS', 'none', self.reply('P3', verdict='PASS'), ('fail', 'P3', 1, 0, 0)),
+            ('FAIL', 'None', self.reply('P3'), ('keep', 'P3', 1, 0, 0)),
+            ('UNKNOWN', None, self.reply('P0', verdict='UNKNOWN'), ('keep', 'P0', 1, 0, 0)),
+            ('UNKNOWN', 'P3', bullet(None) + '\n', ('keep', '-', 1, 1, 0)),
+        ]
+        for verdict, threshold, text, expected in cases:
+            with self.subTest(verdict=verdict, threshold=threshold, text=text):
+                self.assertEqual(decide(verdict, text, threshold), expected)
+
+    def test_default_is_p2_and_none_is_p3(self):
+        self.assertEqual(contract.DEFAULT_THRESHOLD, 'P2')
+        texts = [self.reply('P3'), self.reply('P2'), self.reply('P1', 'P3'), bullet(None) + '\n',
+                 '- [P3] b.py:2 — x\n', '- [P2] b.py:2 — x\n', '']
+        for verdict in ('PASS', 'FAIL', 'UNKNOWN'):
+            for text in texts:
+                with self.subTest(verdict=verdict, text=text):
+                    self.assertEqual(contract.gate(verdict, text), contract.gate(verdict, text, 'P2'))
+                    self.assertEqual(contract.gate(verdict, text, ''), contract.gate(verdict, text, 'P2'))
+                    for none in ('none', 'NONE', ' None '):
+                        self.assertEqual(contract.gate(verdict, text, none), contract.gate(verdict, text, 'P3'))
 
     def test_unlabelled_confirmed_always_blocks(self):
         self.assertEqual(decide('FAIL', bullet(None) + '\n', 'P0'), ('keep', '-', 1, 1, 0))
@@ -191,12 +221,28 @@ class GateTableTests(unittest.TestCase):
                      '- P0: data loss, security hole, crash or wrong result on the main path\n')
         self.assertEqual(contract.parse_findings(rewrapped), [])
         cases = [(self.reply('P3'), 'P2'), (self.reply('P1', 'P3'), 'P2'),
-                 ('- [P3][PLAUSIBLE] a.py:1 — maybe\n', 'P2'), ('', 'P2'), (self.reply('P3'), None)]
-        for text, threshold in cases:
-            with self.subTest(text=text, threshold=threshold):
-                self.assertEqual(decide('FAIL', echo + '\n' + text, threshold), decide('FAIL', text, threshold))
-                self.assertEqual(decide('FAIL', text + '\n' + echo, threshold), decide('FAIL', text, threshold))
-                self.assertEqual(decide('FAIL', rewrapped + text, threshold), decide('FAIL', text, threshold))
+                 ('- [P3][PLAUSIBLE] a.py:1 — maybe\n', 'P2'), ('', 'P2'), (self.reply('P3'), None),
+                 ('', 'P3'), (self.reply('P3'), 'none')]
+        for verdict in ('FAIL', 'PASS'):
+            for text, threshold in cases:
+                with self.subTest(verdict=verdict, text=text, threshold=threshold):
+                    alone = decide(verdict, text, threshold)
+                    self.assertEqual(decide(verdict, echo + '\n' + text, threshold), alone)
+                    self.assertEqual(decide(verdict, text + '\n' + echo, threshold), alone)
+                    self.assertEqual(decide(verdict, rewrapped + text, threshold), alone)
+
+    def test_a_quoted_verdict_check_is_not_a_finding(self):
+        # The check lines say "CONFIRMED": quoted back, they must not become a blocking finding.
+        first, rest = CHECKED.split(' List only')
+        quotes = [CHECKED + '\n', '- ' + CHECKED + '\n', '> ' + CHECKED + '\n',
+                  '- ' + first + '\n- List only' + rest + '\n',
+                  '* forge checks the verdict against your findings: a PASS\n'
+                  '  that lists a blocking CONFIRMED finding is turned into FAIL.\n',
+                  '1. a PASS that lists a blocking CONFIRMED finding is turned into FAIL.\n']
+        for quote in quotes:
+            with self.subTest(quote=quote):
+                self.assertEqual(contract.parse_findings('Noted:\n\n' + quote), [])
+                self.assertEqual(decide('PASS', quote + '\nFORGE_VERDICT: PASS\n'), ('keep', '-', 0, 0, 0))
 
     def test_tolerated_findings_are_in_the_result(self):
         result = contract.gate('FAIL', self.reply('P3', 'P1'), 'P2')
@@ -243,12 +289,20 @@ class KnownIssuesFileTests(unittest.TestCase):
                 self.assertEqual(self.gate(verdict, 'P1').stdout, 'keep\tP2\t2\t0\t2\n')
                 self.assertTrue(self.out.exists())
 
+    def test_written_for_a_pass_turned_into_fail(self):
+        # Default threshold P2: the CONFIRMED P2 blocks the PASS, the P3 is still recorded.
+        self.assertEqual(self.gate('PASS', None).stdout, 'fail\tP2\t2\t0\t1\n')
+        text = self.out.read_text(encoding='utf-8')
+        self.assertTrue(text.startswith('## Known issues (QA findings below blocking threshold P2)\n'))
+        self.assertIn('a.py:1', text); self.assertNotIn('b.py:2', text)
+
     def test_not_created_without_tolerated_findings(self):
         self.assertEqual(self.gate('FAIL', 'P3').stdout, 'keep\tP2\t2\t0\t0\n')
-        self.gate('FAIL', None)
+        self.assertEqual(self.gate('PASS', 'none').stdout, 'fail\tP2\t2\t0\t0\n')
         self.assertFalse(self.out.exists())
         self.qa.write_text('- [P1][CONFIRMED] a.py:1 — bad\n', encoding='utf-8')
         self.assertEqual(self.gate('FAIL', 'P2').stdout, 'keep\tP1\t1\t0\t0\n')
+        self.assertEqual(self.gate('FAIL', None).stdout, 'keep\tP1\t1\t0\t0\n')
         self.assertFalse(self.out.exists())
 
     def test_unwritable_destination_is_exit_3(self):
@@ -259,19 +313,18 @@ class KnownIssuesFileTests(unittest.TestCase):
 
 
 class PromptTextTests(unittest.TestCase):
-    def test_legacy_wording_is_kept(self):
+    def test_legacy_head_and_findings_are_kept(self):
         self.assertIn(LEGACY_HEAD, contract.qa_text('head', 'task'))
         for threshold in (None, 'P2'):
             tail = contract.qa_text('tail', 'task', threshold)
             self.assertTrue(tail.startswith(LEGACY_FINDINGS))
-        self.assertTrue(contract.qa_text('tail', 'task').endswith(LEGACY_VERDICT))
 
     def test_legacy_wording_matches_the_parallel_script(self):
         # While forge-parallel.sh still carries its own copy, the two must not drift.
         source = (ROOT / 'scripts' / 'forge-parallel.sh').read_text(encoding='utf-8')
         if 'The implementer was asked to do the task above' not in source:
             self.skipTest('forge-parallel.sh builds the contract through forge-contract.py')
-        for line in (LEGACY_HEAD + LEGACY_FINDINGS + LEGACY_VERDICT).splitlines():
+        for line in (LEGACY_HEAD + LEGACY_FINDINGS).splitlines():
             self.assertIn('echo "%s"' % line, source, line)
 
     def test_new_head_sentence_and_final_kind(self):
@@ -302,10 +355,24 @@ class PromptTextTests(unittest.TestCase):
         self.assertIn('One finding per bullet', tail)
         self.assertIn('impact, not confidence', tail)
 
-    def test_threshold_clause_only_with_a_threshold(self):
-        plain = contract.qa_text('tail')
-        self.assertNotIn('BLOCKING', plain); self.assertNotIn('Blocking threshold', plain)
-        self.assertNotIn('known issue', plain)
+    def test_every_prompt_has_one_verdict_wording(self):
+        for kind in contract.KINDS:
+            with self.subTest(kind=kind):
+                tail = contract.qa_text('tail', kind)
+                self.assertEqual(tail, contract.qa_text('tail', kind, 'P2'))
+                self.assertEqual(contract.qa_text('tail', kind, 'none'), contract.qa_text('tail', kind, 'P3'))
+                flat = ' '.join(tail.split())
+                self.assertIn('Blocking threshold: P2. Findings at P2 or worse (P0, P1, P2) are BLOCKING.', flat)
+                self.assertIn('without a severity tag counts as blocking. ' + CHECKED, flat)
+                self.assertIn('blocking threshold (P2 or worse)', tail.splitlines()[-1])
+                self.assertFalse(any(len(line) > 95 for line in tail.splitlines()[:-2]))
+                for threshold in (None,) + contract.SEVERITIES:
+                    text = contract.qa_text('tail', kind, threshold)
+                    self.assertNotIn('style nits are not failures', text)
+                    self.assertNotIn('no confirmed correctness bug', text)
+                    self.assertNotIn('does not change the verdict rule', text)
+
+    def test_threshold_clause(self):
         expected = {'P0': '(P0)', 'P1': '(P0, P1)', 'P2': '(P0, P1, P2)', 'P3': '(P0, P1, P2, P3)'}
         for threshold, blocking in expected.items():
             with self.subTest(threshold=threshold):
@@ -317,7 +384,6 @@ class PromptTextTests(unittest.TestCase):
                               else 'any CONFIRMED finding justifies FAIL', flat)
                 self.assertIn('without a severity tag counts as blocking', tail)
                 self.assertIn('blocking threshold (%s or worse)' % threshold, tail)
-                self.assertNotIn('no confirmed correctness bug', tail)
         self.assertIn('recorded as a known issue', contract.qa_text('tail', 'task', 'P2'))
         self.assertIn('(P3) is recorded', contract.qa_text('tail', 'task', 'P2'))
 
@@ -374,6 +440,9 @@ class CommandLineTests(unittest.TestCase):
                     self.assertEqual(result.stdout, contract.qa_text(part, kind, 'P2'))
         self.assertEqual(run('qa', '--part', 'tail').stdout, contract.qa_text('tail'))
         self.assertEqual(run('qa', '--part', 'tail', '--threshold', '').stdout, contract.qa_text('tail'))
+        self.assertEqual(run('qa', '--part', 'tail').stdout, contract.qa_text('tail', 'task', 'P2'))
+        self.assertEqual(run('qa', '--part', 'tail', '--threshold', 'None').stdout,
+                         contract.qa_text('tail', 'task', 'P3'))
         self.assertEqual(run('qa', '--part', 'head', '--kind', 'final').stdout, contract.qa_text('head', 'final'))
         self.assertEqual(run('dwarf').stdout, contract.dwarf_text())
 
@@ -401,13 +470,27 @@ class CommandLineTests(unittest.TestCase):
             last.write_bytes(b'- [P3][CONFIRMED] a.py:1 \xe2\x80\x94 nit\r\n\r\nFORGE_VERDICT: FAIL\r\n')
             result = run('gate', '--verdict', 'FAIL', '--qa-last', last, '--threshold', 'P2')
             self.assertEqual((result.returncode, result.stdout), (0, 'accept\tP3\t1\t0\t1\n'))
-            result = run('gate', '--verdict', 'FAIL', '--qa-last', last)
+            result = run('gate', '--verdict', 'FAIL', '--qa-last', last, '--threshold', 'none')
             self.assertEqual((result.returncode, result.stdout), (0, 'keep\tP3\t1\t0\t0\n'))
+            result = run('gate', '--verdict', 'PASS', '--qa-last', last, '--threshold', 'NONE')
+            self.assertEqual((result.returncode, result.stdout), (0, 'fail\tP3\t1\t0\t0\n'))
             last.write_bytes(b'\xff\xfe- [P3][CONFIRMED] a.py:1 invalid utf-8\n')
             self.assertEqual(run('gate', '--verdict', 'FAIL', '--qa-last', last, '--threshold', 'P2').returncode, 0)
             last.write_bytes(b'')
             self.assertEqual(run('gate', '--verdict', 'UNKNOWN', '--qa-last', last, '--threshold', 'p2').stdout,
                              'keep\t-\t0\t0\t0\n')
+
+    def test_gate_without_a_threshold_is_p2(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            last = Path(tmp) / 'qa.last'
+            for reply, verdict, line in (('- [P2][CONFIRMED] a.py:1 — x\n', 'PASS', 'fail\tP2\t1\t0\t0\n'),
+                                         ('- [P3][CONFIRMED] a.py:1 — x\n', 'PASS', 'keep\tP3\t1\t0\t1\n'),
+                                         ('- [P3][CONFIRMED] a.py:1 — x\n', 'FAIL', 'accept\tP3\t1\t0\t1\n')):
+                with self.subTest(reply=reply, verdict=verdict):
+                    last.write_text(reply, encoding='utf-8')
+                    self.assertEqual(run('gate', '--verdict', verdict, '--qa-last', last).stdout, line)
+                    self.assertEqual(run('gate', '--verdict', verdict, '--qa-last', last,
+                                         '--threshold', 'P2').stdout, line)
 
     def test_executable_with_a_python3_shebang(self):
         self.assertTrue(SCRIPT.stat().st_mode & 0o100)
