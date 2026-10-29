@@ -270,6 +270,18 @@ class EffectsTests(ReportCase):
         row = self.data_json('--run', str(quiet))['sites']['jev-memory-stale']
         self.assertEqual((row['fired'], row['effects']), (0, {}))
 
+    def test_a_malformed_logged_answer_does_not_crash_the_report(self):
+        bad = dict(type='noul', noul='0.3')
+        plan = self.run_dir('plan', {'': [
+            entry('jev-memory-curate', key='m1', answers=dict(durable=bad)),
+            entry('jev-memory-curate', key='m2', answers=dict(durable=noul(0.3))),
+            entry('jev-memory-stale', key='m3', answers=dict(still=bad)),
+        ]})
+        sites_ = self.data_json('--run', str(plan))['sites']
+        self.assertEqual((sites_['jev-memory-curate']['fired'], sites_['jev-memory-curate']['effects']),
+                         (1, dict(durable=1)))
+        self.assertEqual(sites_['jev-memory-stale']['fired'], 0)
+
     def gate_warn_for(self, model):
         path = self.cfg / 'forge' / 'decide.json'
         data = json.loads(path.read_text())

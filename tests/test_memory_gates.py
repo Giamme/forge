@@ -110,6 +110,19 @@ class FiredTests(unittest.TestCase):
                         dict(model='jev-latest', questions=dict(durable={}))):
             self.assertEqual(self.curate(answers, request), ['durable'], request)
 
+    def test_malformed_answer_values_are_not_fired_and_do_not_raise(self):
+        bad = ('0.3', None, True, float('nan'), [0.1], {})
+        for value in bad:
+            self.assertEqual(self.curate(dict(durable=dict(type='noul', noul=value))), [], value)
+            self.assertEqual(self.curate(dict(durable=noul(0.3), same=choice('a fact', value))), ['durable'], value)
+            self.assertEqual(sites.site('jev-memory-stale').fired(dict(still=dict(type='noul', noul=value)), 0.4),
+                             [], value)
+        for answer in ('0.3', 0.3, None, [], dict(type='noul')):
+            self.assertEqual(self.curate(dict(durable=answer, same=answer)), [])
+            self.assertEqual(sites.site('jev-memory-stale').fired(dict(still=answer), 0.4), [])
+        self.assertEqual(self.curate(dict(durable=noul(0.3), same=choice(['x'], 0.9))), ['durable'])
+        self.assertEqual(self.curate(['not', 'a', 'dict']), [])
+
     def test_stale_fires_below_stale_drop(self):
         drop = forge_jev.threshold('stale_drop', site='jev-memory-stale')
         self.assertEqual(drop, forge_jev.DEFAULT_THRESHOLDS['stale_drop'])
