@@ -221,10 +221,9 @@ def _named(text: str, name: str) -> bool:
 
 
 def _name_score(name: str, text: str) -> int:
-    """8 when the full path is named in the text, else 4 when only the basename is."""
-    if _named(text, name):
-        return 8
-    return 4 if _named(text, posixpath.basename(name)) else 0
+    """8 when the full path is named in the text, and 4 more when its basename is."""
+    score = 8 if _named(text, name) else 0
+    return score + (4 if _named(text, posixpath.basename(name)) else 0)
 
 
 def _excluded(name: str, declared: set[str]) -> bool:
@@ -239,7 +238,7 @@ def candidates(repo, declared: str, text: str = '') -> list[str]:
     """Tracked files the task probably touches but does not declare: the best CANDIDATE_CAP.
 
     Each file scores on cheap signals, and a file scoring zero is not a candidate:
-      its full path named in `text` (+8), or else its basename (+4);
+      its full path named in `text` (+8), and its basename named in `text` (+4) on top;
       a test file paired with a declared file (+3);
       committed with a declared file in the last CO_CHANGE_COMMITS commits (+1 each, up to
       CO_CHANGE_CAP);

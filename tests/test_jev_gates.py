@@ -97,6 +97,16 @@ class CandidateTests(unittest.TestCase):
         found = gates.candidates(self.repo, 'src/main.py', 'Update zzz/guide.md')
         self.assertEqual(found, ['zzz/guide.md', 'aaa/guide.md'])
 
+    def test_a_named_full_path_adds_to_its_basename_score(self):
+        # The DESIGN table is additive. docs/guide.md is named by path (+8) and basename (+4),
+        # 12; tests/test_main.py has basename (+4), pair (+3) and co-change (+3), 10.
+        for _ in range(3):
+            self._commit('src/main.py', 'tests/test_main.py')
+        self._commit('docs/guide.md')
+        text = 'Update docs/guide.md and test_main.py'
+        self.assertEqual(gates.candidates(self.repo, 'src/main.py', text),
+                         ['docs/guide.md', 'tests/test_main.py'])
+
     def test_a_name_inside_a_longer_name_is_not_named(self):
         self._commit('src/main.py')
         self._commit('tools/forge', 'tools/forge.py')
