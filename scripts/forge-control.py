@@ -594,7 +594,8 @@ def cmd_set(args):
     except Invalid as error:
         raise Invalid(f'{args.key}: {error}')
     rel = f'tasks/{task}/{name}' if task else name
-    drop = value in ('inherit', 'default') or (args.key == 'escalate-effort' and value == 'off')
+    drop = (value in ('inherit', 'default') or (args.key == 'escalate-effort' and value == 'off')
+            or (args.key == 'infra-backoff' and value == 'none'))
     # Plan-wide stop markers go when the policy that wrote them changes: the policy turned off
     # (escalate-after 0), or the effort step turned on, which may yet have a move for them.
     wide = (args.key == 'escalate-after' and value == '0') or (args.key == 'escalate-effort' and value == 'on')
