@@ -9,9 +9,16 @@ What a reviewer must answer, what forge does when it fails a task, how to retry,
 Decompose-mode QA must end with a sentinel line:
 
 ```
-FORGE_VERDICT: PASS     no confirmed correctness bug (style nits are not failures)
-FORGE_VERDICT: FAIL     at least one CONFIRMED correctness bug
+FORGE_VERDICT: PASS   — no CONFIRMED finding at the blocking threshold (P2 or worse)
+FORGE_VERDICT: FAIL   — at least one CONFIRMED finding at the blocking threshold (P2 or worse)
 ```
+
+forge decides the verdict from the findings, at a blocking threshold: `P2` unless
+`--qa-threshold` sets another. A CONFIRMED finding at the threshold or worse, or one with no
+severity, blocks: a PASS that lists one becomes FAIL. A CONFIRMED finding below the threshold
+never blocks: a FAIL made only of those is accepted, and either way they are recorded in
+`known_issues.md`, which `forge issues` and the sweep pick up. PLAUSIBLE findings never block.
+`--qa-threshold P3` (or `none`) makes every CONFIRMED finding block.
 
 Only a standalone final line counts, and the parser is shared by every runner (solo,
 decomposed, Fractal's QA checkpoint). The prompt shows each verdict with a dash and its
@@ -135,18 +142,21 @@ still collapses to Fractal's own "failed" handling; QA-side stops propagate as a
 
 QA is asked to label every finding `- [P0..P3][CONFIRMED|PLAUSIBLE] file:line — what breaks`
 (P0 data loss/security/crash on the main path, P1 wrong behaviour on realistic input, P2
-edge-case bug, P3 minor). By default the verdict rule is unchanged — any CONFIRMED bug fails.
+edge-case bug, P3 minor). [The verdict rule](#verdicts-and-failure) says which of them block.
 
-`--qa-threshold Pn` (on `run` or `retry`; remembered in the plan; `none` clears it) names the
-**least severe level that still blocks**: `P2` means P0–P2 block and only P3 is tolerated.
+`--qa-threshold Pn` (on `plan`, `run`, `retry`, `review` and solo; a plan remembers it) changes
+the default `P2`, the **least severe level that still blocks**: `P2` means P0–P2 block and only P3
+is tolerated. `none` means P3, so every CONFIRMED finding blocks; `default` removes the setting.
 A task-specific `tasks/<id>/qa_threshold` file beats the plan-level value, which is how a
-dev-tooling or investigation task gets a looser bar than production code. With a threshold, a
-reviewer `FAIL` made only of CONFIRMED findings that are all labelled and strictly milder than
-the threshold is accepted as **PASS with known issues**: the task merges, `tasks/<id>/known_issues.md`
-keeps the findings, `qa.gate` records the decision, and every run/retry/integrate summary
+dev-tooling or investigation task gets a looser bar than production code. A reviewer `FAIL` made
+only of CONFIRMED findings that are all labelled and strictly milder than the threshold is
+accepted as **PASS with known issues**: the task merges, `tasks/<id>/known_issues.md`
+keeps the findings, `qa.gate` records the decision (`accept`), and every run/retry/integrate summary
 lists them. The literal status stays `PASS`, so nothing downstream needed a new vocabulary.
+The same gate runs the other way: a PASS that lists a blocking finding becomes FAIL (`qa.gate`
+decision `fail`), and the next attempt starts with a note saying why.
 It fails safe: an unlabelled CONFIRMED finding, or a FAIL with no CONFIRMED finding at all,
-is never tolerated, and without a threshold nothing changes.
+is never tolerated.
 
 Tolerated findings are recorded, not fixed. After a run, the skill offers once to file them as
 GitHub issues, together with PLAUSIBLE findings of passed tasks and whatever a whole-run review
@@ -162,7 +172,8 @@ them on the team's project board; anywhere else forge files them itself with pla
 Each issue gets the finding, its severity, the task, reviewer and a code link at the merged
 commit. A hidden fingerprint, shared with gh-proman, keeps a finding from being filed twice.
 Findings a person merged with `accept` are origin `accepted`: the CONFIRMED lines under
-`## Accepted by a human despite the reviewer's <status> verdict` in `known_issues.md`.
+`## Accepted by a human despite the reviewer's <status> verdict` in `known_issues.md`, or under
+`## Accepted by a human despite forge's FAIL (…)` when `accept` followed a PASS that forge made FAIL.
 Their issue says a person accepted the work over that verdict, and gives the recorded
 reason. Findings above that heading, which a threshold tolerated, stay origin
 `tolerated`. A whole-run review whose integration branch has moved since it is outdated.
@@ -178,7 +189,7 @@ is outdated. Every other finding has `review` null.
 them for issues. Once every task has merged, and before the combined verification, forge plans one
 sweep:
 
-- **Which findings.** The CONFIRMED findings `--qa-threshold` tolerated at `P3` or worse, and
+- **Which findings.** The CONFIRMED findings the threshold tolerated, at `P3` or worse, and
   PLAUSIBLE ones too with `--sweep-plausible`. Left out:
   - findings a person accepted;
   - dismissed ones (`forge issues --dismiss`), and ones with no file or whose file is gone;
@@ -221,7 +232,8 @@ the branch is still at the reviewed commit and the worktree still has the saved 
 otherwise it exits `3` and says to `retry` for a fresh review (accepting would sign off on code
 nobody reviewed). It writes `tasks/<id>/known_issues.md` (your reason, who and when, and the
 reviewer's reply copied verbatim, under
-`## Accepted by a human despite the reviewer's <status> verdict`) and `accepted.by`,
+`## Accepted by a human despite the reviewer's <status> verdict`, or after forge's flip under
+`## Accepted by a human despite forge's FAIL (…)`) and `accepted.by` (with `gate=fail` after a flip),
 merges through the same checks as any other
 task, and puts everything back if the merge conflicts (exit `6`). Dependents are not touched;
 `run` continues them.
@@ -246,7 +258,7 @@ reads `integration.base..integration tip` from a disposable checkout, writes
 `<plan>/final-review-<epoch>-<pid>/` (`qa.input`, `qa.last`, `verdict`, `qa.gate`, …), keeps
 `<plan>/final-review` and `final-review.verdict` pointing at the newest, and never touches your
 branch or the integration branch. With `integrate --final-review`, it runs after verification
-and before your branch can move: `PASS` (or a `FAIL` accepted by `--qa-threshold`) continues,
+and before your branch can move: `PASS` (or a `FAIL` the threshold accepts) continues,
 anything else stops with exit `5`; an infrastructure stop exits `8`. The QA spec is `--qa`, else
 the one remembered in `final_qa`, else the single spec every task shares (otherwise it asks).
 Tasks that are not merged are not in the result, and it says so. `integrate` also names unmerged

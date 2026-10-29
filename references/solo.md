@@ -54,8 +54,18 @@ The dwarf prompt carries implementer rules (no commits, no background processes,
 measurement before the last message). forge records what it observes: if the dwarf committed
 anyway the run still reviews its changes, says so, and prints `git reset --soft <old HEAD>` —
 it never resets anything itself; leftover processes (stopped) and promises of later work appear
-under "implementer guard notes". The QA prompt asks for `P0..P3`-labelled findings; solo has no
-threshold gate, so any CONFIRMED finding still fails.
+under "implementer guard notes". The QA prompt asks for `P0..P3`-labelled findings.
+
+forge decides the verdict from the findings, at a blocking threshold: `P2` unless
+`--qa-threshold` sets another. A CONFIRMED finding at the threshold or worse, or one with no
+severity, blocks: a PASS that lists one becomes FAIL. A CONFIRMED finding below the threshold
+never blocks: a FAIL made only of those is accepted, and either way they are recorded in
+`known_issues.md`, which `forge issues` and the sweep pick up. PLAUSIBLE findings never block.
+`--qa-threshold P3` (or `none`) makes every CONFIRMED finding block.
+
+`--qa-threshold P0|P1|P2|P3|none` sets this run's threshold and is written to `<run>/qa_threshold`
+only when given. The gate, the same as in a decomposed run, writes `qa.gate` and `known_issues.md`
+in the run directory. See [the verdict rule](decompose.md#qa-verdicts).
 
 `--native-review` is an explicit Codex-only alternative: native review cannot accept the
 custom requirements prompt or verdict instruction. Its result is informational and UNKNOWN;
