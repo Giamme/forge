@@ -311,18 +311,19 @@ PY
     jev_rc=$?
     # A gate in shadow is asked and recorded by score-plan, which leaves it out of
     # these rows: what is printed here is only what an `on` gate has to say.
-    # --jev-shadow before migration keeps its gates `on` and prints a count, as it always did.
-    if [ "$jev_rc" -eq 0 ] && [ -n "$jev_scores" ] && [ "${FORGE_JEV_SHADOW:-}" = on ]; then
-      note "jev: scored $(printf '%s\n' "$jev_scores" | grep -c .) task(s) in shadow mode (no change)"
-    elif [ "$jev_rc" -eq 0 ] && [ -n "$jev_scores" ]; then
+    # --jev-shadow before migration keeps its gates `on` and prints a count for the
+    # warnings, as it always did; what a gate ADDED is still said, whatever the flag.
+    if [ "$jev_rc" -eq 0 ] && [ -n "$jev_scores" ]; then
       local jid jwarn jdrift
       # The columns score-plan prints: id, warnings, drift. Read in lockstep with
       # cmd_score_plan.
       while IFS="$(printf '\t')" read -r jid jwarn jdrift; do
         [ -n "$jid" ] || continue
-        case "$jwarn" in
-          *prompt_adequacy*) note "jev: $jid — the prompt may be too vague for QA to judge correctness against" ;;
-        esac
+        if [ "${FORGE_JEV_SHADOW:-}" != on ]; then
+          case "$jwarn" in
+            *prompt_adequacy*) note "jev: $jid — the prompt may be too vague for QA to judge correctness against" ;;
+          esac
+        fi
         if [ -n "$jdrift" ] && [ "$jdrift" != "-" ]; then
           # The drift field only names files score-plan ADDED (drift `on`): a shadowed gate
           # prints '-', so there is no "may edit undeclared files" case left to hint at.
@@ -331,6 +332,9 @@ PY
       done <<EOF
 $jev_scores
 EOF
+      if [ "${FORGE_JEV_SHADOW:-}" = on ]; then
+        note "jev: scored $(printf '%s\n' "$jev_scores" | grep -c .) task(s) in shadow mode (no change)"
+      fi
     fi
   fi
 
@@ -434,11 +438,10 @@ EOF
       --plan "$PLAN" --repo "$REPO" 2>/dev/null)"
     jev_coupling_rc=$?
     # A shadowed forward gate is recorded in jev-coupling.json and prints no row; --jev-shadow
-    # before migration prints a count, as it always did.
-    if [ "$jev_coupling_rc" -eq 0 ] && [ -n "$jev_coupling" ] && [ "${FORGE_JEV_SHADOW:-}" = on ]; then
-      note "jev: found $(printf '%s\n' "$jev_coupling" | grep -c .) coupled pair(s) in shadow mode (no change)"
-    elif [ "$jev_coupling_rc" -eq 0 ] && [ -n "$jev_coupling" ]; then
-      local ca cb cp ckind dep_added=0
+    # before migration counts the advisory rows, as it always did. Rows an `on` gate acted
+    # on (`added`, `cycle`) are said and acted on whatever the flag.
+    if [ "$jev_coupling_rc" -eq 0 ] && [ -n "$jev_coupling" ]; then
+      local ca cb cp ckind dep_added=0 advisory=0
       while IFS="$(printf '\t')" read -r ca cb cp ckind; do
         [ -n "$ca" ] || continue
         # An earlier task written against work that has not been built yet, which its own
@@ -450,11 +453,16 @@ EOF
           cycle)
             note "forward: '$ca' may depend on '$cb' ($cp), but that dependency would form a cycle — not added" ;;
           *)
-            note "jev: task '$ca' runs before '$cb' and may depend on what it builds ($cp) — consider a dep" ;;
+            advisory=$((advisory+1))
+            [ "${FORGE_JEV_SHADOW:-}" = on ] ||
+              note "jev: task '$ca' runs before '$cb' and may depend on what it builds ($cp) — consider a dep" ;;
         esac
       done <<EOF
 $jev_coupling
 EOF
+      if [ "$advisory" -gt 0 ] && [ "${FORGE_JEV_SHADOW:-}" = on ]; then
+        note "jev: found $advisory coupled pair(s) in shadow mode (no change)"
+      fi
       if [ "$dep_added" = 1 ]; then compute_waves "$PLAN"; fi
     fi
   fi

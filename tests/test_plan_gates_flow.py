@@ -201,6 +201,18 @@ class ForwardTests(FlowCase):
         self.assertIn("forward: task 'a' now waits for 'b' (0.9) — it may depend on what 'b' builds", planned.stderr)
         self.assertIn('forward added a dependency: a now waits for b', planned.stdout)
 
+    def test_an_added_dep_recomputes_the_waves_under_jev_shadow_too(self):
+        # --jev-shadow marks records and counts advisory rows, but a gate set `on` still adds.
+        self.gates(forward='off')
+        plan = self.make_plan('plan', [row('a'), row('b')])
+        self.learn(plan, self.answer, '--gate', 'forward=on')
+        planned = self.plan_cmd(plan, '--jev-shadow', '--gate', 'forward=on')
+        self.assertEqual(planned.returncode, 0, planned.stderr)
+        self.assertEqual({t[0]: t[1] for t in self.tasks(plan)}, {'a': 'b', 'b': '-'})
+        waves = self.waves(plan)
+        self.assertLess(waves['b'], waves['a'])
+        self.assertIn("forward: task 'a' now waits for 'b' (0.9)", planned.stderr)
+
     def test_a_pair_whose_dep_would_form_a_cycle_is_not_added(self):
         self.gates(forward='on')
         plan = self.make_plan('plan', [row('a', files='src/a.py'), row('b', deps='a', files='src/b.py')])
