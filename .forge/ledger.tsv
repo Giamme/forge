@@ -349,3 +349,45 @@
 2026-10-29T07:43:38Z	c2-plan	sweep-1	qa	sol:medium	PASS	-	-	-	14
 2026-10-29T07:44:23Z	c2-plan	sweep-2	dwarf	haiku:xhigh	-	-	-	-	120
 2026-10-29T07:45:34Z	c2-plan	sweep-2	qa	sol:high	PASS	-	-	-	65
+2026-10-29T09:35:52Z	e0-plan	gate-contract	dwarf	opus:high	-	-	-	-	222
+2026-10-29T09:37:00Z	e0-plan	gate-contract	qa	sol:high	PASS	-	-	-	62
+2026-10-29T09:44:22Z	e0-plan	gate-issues	dwarf	sonnet:medium	-	-	-	-	435
+2026-10-29T09:45:47Z	e0-plan	gate-issues	qa	sol:medium	FAIL	-	-	-	75
+2026-10-29T09:47:44Z	e0-plan	gate-issues	dwarf	sonnet:medium	-	-	-	-	111
+2026-10-29T09:48:02Z	e0-plan	submodules-populate	dwarf	opus:high	-	-	-	-	952
+2026-10-29T09:48:51Z	e0-plan	gate-issues	qa	sol:medium	PASS	-	-	-	63
+2026-10-29T09:51:23Z	e0-plan	submodules-populate	qa	sol:high	PASS	-	-	-	197
+2026-10-29T10:02:00Z	e0-plan	gate-plan	dwarf	opus:high	-	-	-	-	1493
+2026-10-29T10:07:55Z	e0-plan	gate-plan	qa	sol:high	PASS	-	-	-	349
+2026-10-29T10:14:18Z	e0-plan	gate-retry-accept	dwarf	sonnet:medium	-	trap	python3 run tests py module from tests also runs the matching ui modules so a forge side contract change can fail a ui test you don t own	`python3 run_tests.py <module>` from `tests/` also runs the matching `ui:` modules, so a forge-side contract change can fail a ui test you don't own [tests/run_tests.py]	378	1
+2026-10-29T10:15:22Z	e0-plan	gate-retry-accept	qa	sol:medium	FAIL	-	-	-	57
+2026-10-29T10:15:52Z	e0-plan	gate-review	dwarf	sonnet:medium	-	-	-	-	471
+2026-10-29T10:16:32Z	e0-plan	gate-review	qa	sol:medium	PASS	-	-	-	29
+2026-10-29T10:17:43Z	e0-plan	gate-solo	dwarf	sonnet:medium	-	-	-	-	583
+2026-10-29T10:18:17Z	e0-plan	gate-retry-accept	dwarf	sonnet:medium	-	-	-	-	171
+2026-10-29T10:18:19Z	e0-plan	gate-solo	qa	sol:medium	FAIL	-	-	-	29
+2026-10-29T10:19:04Z	e0-plan	gate-retry-accept	qa	sol:medium	PASS	-	-	-	42
+2026-10-29T10:20:44Z	e0-plan	gate-solo	dwarf	sonnet:medium	-	-	-	-	140
+2026-10-29T10:21:25Z	e0-plan	gate-solo	qa	sol:medium	FAIL	-	-	-	36
+2026-10-29T10:29:21Z	e0-plan	gate-solo	dwarf	sonnet:medium	-	-	-	-	473
+2026-10-29T10:30:31Z	e0-plan	submodules-wire	dwarf	sonnet:medium	-	trap	runner notes from a task worker land in tasks id task out not the run s stdout only integration and do run notes reach stdout	runner notes from a task worker land in tasks/<id>/task.out, not the run's stdout; only `_integration` and do_run notes reach stdout [scripts/forge-parallel.sh]	681	1
+2026-10-29T10:31:15Z	e0-plan	submodules-wire	qa	sol:medium	PASS	-	-	-	39
+2026-10-29T10:35:13Z	e0-plan	gate-solo	qa	sol:medium	PASS	-	-	-	348
+2026-10-29T10:38:20Z	e0-plan	gate-ui-flip	dwarf	sonnet:medium	-	-	-	-	182
+2026-10-29T10:39:01Z	e0-plan	gate-ui-flip	qa	sol:medium	PASS	-	-	-	36
+2026-10-29T10:41:44Z	e0-plan	gate-docs	dwarf	haiku:xhigh	-	trap	tests test skill py checks file links only in skill md and references md never docs links or anchors	tests/test_skill.py checks file links only in SKILL.md and references/*.md, never docs/ links or #anchors [tests/test_skill.py]	386	1
+2026-10-29T10:42:22Z	e0-plan	gate-docs	qa	sol:medium	PASS	-	-	-	32
+2026-10-29T10:43:28Z	e0-plan	gate-dataset	dwarf	sonnet:medium	-	-	-	-	490
+2026-10-29T10:44:32Z	e0-plan	gate-dataset	qa	sol:medium	PASS	-	-	-	59
+2026-10-29T10:46:00Z	e0-plan	gate-ui-threshold	dwarf	sonnet:medium	-	-	-	-	414
+2026-10-29T10:46:56Z	e0-plan	gate-ui-threshold	qa	sol:medium	PASS	-	-	-	51
+2026-10-29T10:47:44Z	e0-plan	sweep-2	dwarf	haiku:xhigh	-	-	-	-	40
+2026-10-29T10:47:59Z	e0-plan	sweep-2	qa	sol:medium	PASS	-	-	-	11
+2026-10-29T10:48:54Z	e0-plan	sweep-1	dwarf	haiku:xhigh	-	-	-	-	110
+2026-10-29T10:49:33Z	e0-plan	sweep-1	qa	sol:medium	PASS	-	-	-	33
+2026-10-29T10:50:59Z	e0-plan	sweep-3	dwarf	haiku:xhigh	-	-	-	-	235
+2026-10-29T10:51:24Z	e0-plan	sweep-3	qa	sol:medium	PASS	-	-	-	21
+2026-10-29T10:53:37Z	e0-plan	sweep-5	dwarf	haiku:xhigh	-	trap	scandir order decides which entry copy tree reaches first so an end to end permission failure test cannot force a read only directory to be copied	scandir order decides which entry copy_tree reaches first, so an end-to-end permission-failure test cannot force a read-only directory to be copied… [scripts/forge-submodules.py]	240	1
+2026-10-29T10:55:10Z	e0-plan	sweep-5	qa	sol:high	PASS	-	-	-	86
+2026-10-29T10:58:24Z	e0-plan	sweep-4	dwarf	haiku:xhigh	-	trap	a sub second clock needs python3 macos date has no n and bin bash is 3 2 no epochrealtime	a sub-second clock needs python3: macOS date has no %N and /bin/bash is 3.2 (no EPOCHREALTIME) [scripts/forge-lib-task.sh]	619	1
+2026-10-29T10:59:20Z	e0-plan	sweep-4	qa	sol:high	PASS	-	-	-	51
