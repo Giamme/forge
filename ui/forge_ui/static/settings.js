@@ -20,7 +20,8 @@
   const VALUE_MAX = 4096;
   const DECIDE_VALUE_MAX = 256;
   // The same names as forge_decide.GATES. The section renders this list, not whatever keys a payload happens to carry.
-  const GATES = ['drift', 'forward', 'prompt', 'memory-curate', 'memory-slice', 'memory-stale', 'verify-discover'];
+  const GATES = ['drift', 'forward', 'prompt', 'memory-curate', 'memory-slice', 'memory-stale', 'verify-discover',
+    'coverage', 'retry-addressed', 'dwarf-message', 'attribution', 'findings'];
   const MODES = ['off', 'shadow', 'on'];
   const ADD_COMMAND = 'forge decide provider add …';
   const POLL_MS = 20000;                                         // the config rarely changes, and each read starts a CLI process

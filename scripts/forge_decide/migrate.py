@@ -33,6 +33,12 @@ THRESHOLD_GATES = {
     'memory_recategorize': ('memory-curate',),
     'stale_drop': ('memory-stale',),
     'tests_act': ('verify-discover',),
+    'coverage_warn': ('coverage',),
+    'untouched_warn': ('retry-addressed',),
+    'message_warn': ('dwarf-message',),
+    'message_ask': ('dwarf-message',),
+    'findings_dup': ('findings',),
+    'findings_concrete': ('findings',),
 }
 # Thresholds whose reader #35 removed (routing, review triage, coupling, verify triage),
 # on top of forge_jev.RETIRED_THRESHOLDS: stored values are ignored, never copied.

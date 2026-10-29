@@ -9,15 +9,17 @@ Levels, lowest to highest; each sets a gate's fields only where it names them:
 3. user     -- ~/.config/forge/decide.json: `gates` and all of `budget`. When that file does
                not exist the legacy level takes its place (source `legacy`): it reproduces
                forge_jev.enabled(capability) from jev.json and the FORGE_JEV* variables, and
-               turns a gate `on` when its capability is enabled. It never sets `off`.
+               turns a gate `on` when its capability is enabled. It never sets `off`, and a
+               gate with no capability (None) is never turned on there.
 4. profile  -- `profile`, else FORGE_DECIDE_PROFILE; looked up in the user file's `profiles`
                first, then the repo file's. Sets `gates` and `budget` (`budget.daily_*` only
                from a user-file profile).
 5. env      -- FORGE_DECIDE_GATE_<NAME>=off|shadow|on (NAME upper-cased, `-` -> `_`). Once a
                user decide.json exists, the legacy FORGE_JEV_<CAP> variables can only restrict:
                `off` turns that capability's gates off, and any `on` turns off the gates of
-               every capability not named `on`. FORGE_JEV_SHADOW=on turns `on` into `shadow`,
-               except, with no user decide.json, a gate the legacy level turned on.
+               every capability not named `on` (a gate with no capability included).
+               FORGE_JEV_SHADOW=on turns `on` into `shadow`, except, with no user decide.json,
+               a gate the legacy level turned on.
 6. flags    -- `flags`, else json.loads(env['FORGE_DECIDE_FLAGS']), shaped
                {"gates": {gate: mode}, "no_gates": bool, "budget": {"run_tokens", "run_usd"}}.
                `no_gates` turns every gate off, after `gates` is applied.
@@ -229,7 +231,11 @@ def _legacy(result: dict, env, errors: list) -> None:
     if not active:
         return
     for name in GATES:
-        if _legacy_enabled(GATE_CAPABILITY[name], env, config):
+        capability = GATE_CAPABILITY[name]
+        # A gate with no legacy capability is outside the legacy level: it keeps source `default`.
+        if capability is None:
+            continue
+        if _legacy_enabled(capability, env, config):
             _set_mode(result, name, 'on', 'legacy')
         elif result['gates'][name]['source'] == 'default':
             result['gates'][name]['source'] = 'legacy'
