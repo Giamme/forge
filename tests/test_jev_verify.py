@@ -242,6 +242,22 @@ class CandidateSourceTests(JevVerifyTestCase):
         for c in found:
             self.assertEqual(c['source'], 'memory')
 
+    def test_prose_after_an_unquoted_command_is_not_part_of_it(self):
+        # "runs all tests" is the sentence the command sits in, not an argument to cargo.
+        (self.repo / '.forge').mkdir()
+        (self.repo / '.forge' / 'memory.md').write_text(
+            '## Verify\n- cargo test --workspace runs all tests [Cargo.toml]\n')
+        found = verify.candidates(self.repo)
+        self.assertEqual([c['command'] for c in found], ['cargo test --workspace'])
+
+    def test_a_code_span_keeps_its_quoted_option_value(self):
+        # Quotes end a word in prose, but a code span is the command as written.
+        (self.repo / '.forge').mkdir()
+        (self.repo / '.forge' / 'memory.md').write_text(
+            '## Verify\n- run `cargo test --features "integration"` before merging [Cargo.toml]\n')
+        found = verify.candidates(self.repo)
+        self.assertEqual([c['command'] for c in found], ['cargo test --features "integration"'])
+
     def test_deduplicates_across_sources(self):
         (self.repo / '.forge').mkdir()
         (self.repo / '.forge' / 'verify').write_text('pytest -q\n')

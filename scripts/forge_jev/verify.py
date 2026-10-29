@@ -21,23 +21,28 @@ _WORKFLOW_TEST_HINT_RE = re.compile(
     r'\b(pytest|npm (?:test|run\s+test\S*)|yarn (?:test|run\s+test\S*)|go test|cargo test|'
     r'make test|tox\b|jest|vitest|mvn test|gradle test|rspec|phpunit|ctest|go\s+vet\s+&&\s+go\s+test)\b',
     re.I)
-# An argument of a remembered command is a word that ends at the Markdown around it: a code
-# span ends at its backtick, a quote ends the word, and a rendered fact's source tag ("[tests/]")
-# is bookkeeping, not an argument. Without this, `pytest -q` came out as "pytest -q`" (#42).
-_ARG = r"[^\s`'\"\[\]]+"
-_MEMORY_CMD_RES = (
-    re.compile(r'\bpytest(?:\s+-{1,2}' + _ARG + ')*'),
-    re.compile(r'\bmake\s+\w[\w-]*'),
-    re.compile(r'\bnpm run\s+[\w:_-]+'),
-    re.compile(r'\bnpm test\b'),
-    re.compile(r'\byarn(?:\s+run)?\s+[\w:_-]+'),
-    re.compile(r'\bgo test(?:\s+' + _ARG + ')*'),
-    re.compile(r'\bcargo test(?:\s+' + _ARG + ')*'),
-    re.compile(r'\btox\b'),
-    re.compile(r'\bnox\b'),
-    re.compile(r'\bbash\s+[\w./-]+\.sh\b'),
-    re.compile(r'\bpython3?\s+[\w./-]+\.py\b'),
+# A remembered command is read off a rendered fact two ways (#42). A code span is the command as
+# its author wrote it, so its content is taken whole, quotes and option values included. Prose is
+# scanned for a runner and the arguments after it, and an argument is a flag, a path or a quoted
+# string: a plain word ends the command, so "cargo test --workspace runs all tests" names
+# `cargo test --workspace`. The rendered source tag ("[tests/]") matches none of these forms.
+_CODE_SPAN_RE = re.compile(r'`([^`\n]+)`')
+_PROSE_ARG = r'''(?:-{1,2}[^\s`'"\[\]]+|[\w.-]*/[\w./-]*|"[^"\n]*"|'[^'\n]*')'''
+_MEMORY_HEADS = (
+    r'\bpytest\b',
+    r'\bmake\s+\w[\w-]*',
+    r'\bnpm run\s+[\w:_-]+',
+    r'\bnpm test\b',
+    r'\byarn(?:\s+run)?\s+[\w:_-]+',
+    r'\bgo test\b',
+    r'\bcargo test\b',
+    r'\btox\b',
+    r'\bnox\b',
+    r'\bbash\s+[\w./-]+\.sh\b',
+    r'\bpython3?\s+[\w./-]+\.py\b',
 )
+_MEMORY_HEAD_RES = tuple(re.compile(head) for head in _MEMORY_HEADS)
+_MEMORY_PROSE_RES = tuple(re.compile(head + r'(?:\s+' + _PROSE_ARG + r')*') for head in _MEMORY_HEADS)
 # Punctuation that ends the sentence a command sits in: "pytest -q." names `pytest -q`, but
 # "go test ./..." keeps its dots.
 _SENTENCE_END_RE = re.compile(r'(?:[,;:!?)]|(?<=[^.])\.)+$')
@@ -208,16 +213,28 @@ def _workflows(repo: Path, found, seen) -> None:
                 _add(found, seen, command, 'workflow', str(path))
 
 
+def _remembered_commands(fact: str) -> list[str]:
+    """The runner invocations one memory fact names (#42): code spans first, then the prose."""
+    commands = []
+    for span in _CODE_SPAN_RE.findall(fact):
+        if any(pattern.search(span) for pattern in _MEMORY_HEAD_RES):
+            commands.append(span.strip())
+    # The prose with each span blanked out, so a span's text is not read a second time.
+    prose = _CODE_SPAN_RE.sub(lambda match: ' ' * len(match.group(0)), fact)
+    for pattern in _MEMORY_PROSE_RES:
+        for match in pattern.finditer(prose):
+            commands.append(_SENTENCE_END_RE.sub('', match.group(0)))
+    return commands
+
+
 def _memory_verify(repo: Path, found, seen) -> None:
     path = repo / '.forge' / 'memory.md'
     for fact in _memory_facts(repo, 'verify'):
         # A memory fact is prose ("pytest -q runs the suite; make test also lints and
         # is 4x slower"), not a bare command -- pull out anything that looks like a
         # known runner invocation rather than treating the whole sentence as a command.
-        for pattern in _MEMORY_CMD_RES:
-            for match in pattern.finditer(fact):
-                command = _SENTENCE_END_RE.sub('', match.group(0))
-                _add(found, seen, command, 'memory', str(path), excerpt=fact)
+        for command in _remembered_commands(fact):
+            _add(found, seen, command, 'memory', str(path), excerpt=fact)
 
 
 def candidates(repo) -> list[dict]:
