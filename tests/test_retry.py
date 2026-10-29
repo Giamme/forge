@@ -44,6 +44,28 @@ class RetryTests(unittest.TestCase):
         self.assertIn('previous attempt was reviewed', (p / 'tasks/a/dwarf.input').read_text())
         self.assertIn('[P1][CONFIRMED]', (p / 'tasks/a/dwarf.input').read_text())
 
+    def test_a_flipped_pass_is_retried_with_the_forge_note_above_the_report_and_a_plain_fail_has_none(self):
+        finding = '- [P2][CONFIRMED] a.txt:1 — edge case breaks (empty input)'
+        note = ("forge: the reviewer's verdict was PASS, but this report lists CONFIRMED findings at or above "
+                "the `P2` blocking threshold, so forge failed the attempt. Fix those findings.")
+        p = self.plan_of([('a', '-', 'a.txt')])
+        self.scenario({'a.qa.1': {'verdict': 'PASS', 'findings': finding}, 'a.dwarf.2': {'content': 'fixed'}})
+        r = self.run_script('forge-parallel.sh', 'run', p, '--retry-failed', 1)
+        self.assertEqual(r.returncode, 0, r.stdout)
+        carried = (p / 'tasks/a/retry_findings.md').read_text()
+        self.assertTrue(carried.startswith(note + '\n\n'), carried)
+        self.assertIn(finding, carried)
+        self.assertIn(note, (p / 'tasks/a/dwarf.input').read_text())
+
+    def test_a_plain_fails_retry_findings_carry_no_forge_note(self):
+        p = self.plan_of([('a', '-', 'a.txt')])
+        self.scenario({'a.qa.1': {'verdict': 'FAIL', 'findings': '- [P1][CONFIRMED] a.txt:1 — broken'},
+                       'a.dwarf.2': {'content': 'fixed'}})
+        r = self.run_script('forge-parallel.sh', 'run', p, '--retry-failed', 1)
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertNotIn('forge: the reviewer', (p / 'tasks/a/retry_findings.md').read_text())
+        self.assertNotIn('forge: the reviewer', (p / 'tasks/a/dwarf.input').read_text())
+
     def test_without_the_flag_the_failure_still_waits_for_a_human(self):
         p = self.plan_of([('a', '-', 'a.txt'), ('b', 'a', 'b.txt')])
         self.scenario({'a.qa.1': {'verdict': 'FAIL'}})

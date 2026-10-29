@@ -92,7 +92,7 @@ class ControlTests(unittest.TestCase):
         shown = self.show()
         self.assertEqual((shown['plan'], shown['run_id'], shown['live'], shown['fractal']),
                          (str(self.plan), 'r-7', False, False))
-        self.assertEqual(shown['run'], dict(qa_threshold='P2', timeout=90, escalate_after=3, escalate_effort='off',
+        self.assertEqual(shown['run'], dict(qa_threshold='P2', qa_threshold_source='set', timeout=90, escalate_after=3, escalate_effort='off',
                                             verify_retries=1, retry_budget=None, infra_budget=None, infra_backoff='exp:60',
                                             max_parallel=None, drained=False, stopping=None,
                                             infra_paused=None))
@@ -140,15 +140,28 @@ class ControlTests(unittest.TestCase):
         self.assertFalse((self.plan / 'tasks/a/qa_threshold').exists())
         self.ok('set', self.plan, 'qa-threshold', 'P3', '--task', 'b')
         self.ok('set', self.plan, 'qa-threshold', 'none')
+        self.assertEqual((self.plan / 'qa_threshold').read_text().strip(), 'none')
+        self.assertEqual({k: self.show()['run'][k] for k in ('qa_threshold', 'qa_threshold_source')},
+                         dict(qa_threshold='P3', qa_threshold_source='set'))
+        self.ok('set', self.plan, 'qa-threshold', 'default')
         self.assertFalse((self.plan / 'qa_threshold').exists())
+        self.assertEqual({k: self.show()['run'][k] for k in ('qa_threshold', 'qa_threshold_source')},
+                         dict(qa_threshold='P2', qa_threshold_source='default'))
         rows = [(e['actor'], e['action'], e['task'], e['key'], e['value'], e['previous']) for e in self.log()]
         self.assertEqual(rows, [('cli', 'set', None, 'qa-threshold', 'P2', None),
                                 ('ui', 'set', None, 'qa-threshold', 'P1', 'P2'),
                                 ('cli', 'set', 'a', 'qa-threshold', 'none', None),
                                 ('cli', 'set', 'a', 'qa-threshold', 'inherit', 'none'),
                                 ('cli', 'set', 'b', 'qa-threshold', 'P3', None),
-                                ('cli', 'set', None, 'qa-threshold', 'none', 'P1')])
+                                ('cli', 'set', None, 'qa-threshold', 'none', 'P1'),
+                                ('cli', 'set', None, 'qa-threshold', 'default', 'none')])
         self.assertTrue(all(isinstance(e['at'], float) for e in self.log()))
+
+    def test_show_gives_the_effective_run_threshold_and_where_it_came_from(self):
+        pick = lambda: {k: self.show()['run'][k] for k in ('qa_threshold', 'qa_threshold_source')}  # noqa: E731
+        self.assertEqual(pick(), dict(qa_threshold='P2', qa_threshold_source='default'))
+        self.put('qa_threshold', 'P1')
+        self.assertEqual(pick(), dict(qa_threshold='P1', qa_threshold_source='set'))
 
     def test_plan_level_numbers_are_written_and_validated(self):
         for key, name in (('timeout', 'timeout'), ('escalate-after', 'escalate_after'), ('verify-retries', 'verify_retries')):
@@ -393,7 +406,8 @@ class ControlTests(unittest.TestCase):
     def test_show_does_not_read_through_symlinks(self):
         secret = self.base / 'secret'; secret.write_text('P0\n')
         (self.plan / 'qa_threshold').symlink_to(secret)
-        self.assertIsNone(self.show()['run']['qa_threshold'])
+        run = self.show()['run']   # the symlink is ignored: the default, not P0
+        self.assertEqual((run['qa_threshold'], run['qa_threshold_source']), ('P2', 'default'))
 
     # ------------------------------------------------------------------------------------ pins
 
