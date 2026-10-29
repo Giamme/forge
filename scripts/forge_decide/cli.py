@@ -369,7 +369,7 @@ def _promotion(gate: str, settings: list, force: bool, providers: dict) -> str |
     site = GATE_SITE[gate]
     seen, passing = [], None
     for setting in settings:
-        provider, model = providers_module.identity(site, setting, providers=providers)
+        provider, model = providers_module.identity(site, setting, providers=providers, env={})
         if (provider, model) in seen:
             continue
         seen.append((provider, model))

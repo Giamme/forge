@@ -217,11 +217,13 @@ def secrets(config: dict | None = None) -> list:
     return [s for s in out if s]
 
 
-def provider_for(site: str, config: dict | None = None) -> str:
-    """Which provider answers `site`: the site map, unless an env override says otherwise."""
-    if os.environ.get('FORGE_CLEF') == 'off':
+def provider_for(site: str, config: dict | None = None, env=None) -> str:
+    """Which provider answers `site`: the site map, unless an env override says otherwise.
+    `env` stands in for os.environ (an empty one gives the configured provider alone)."""
+    env = os.environ if env is None else env
+    if env.get('FORGE_CLEF') == 'off':
         return 'typesafe'
-    forced = os.environ.get('FORGE_JEV_PROVIDER')
+    forced = env.get('FORGE_JEV_PROVIDER')
     if forced in PROVIDERS:
         return forced
     config = config if config is not None else load_config()

@@ -2,7 +2,7 @@
 
     spec_for_site(site, *, config=None, repo=None, resolved=None) -> dict
     spec_for_provider(name, model=None, *, config=None) -> dict | None
-    identity(site, entry=None, *, config=None, repo=None, resolved=None, providers=None) -> (provider, model)
+    identity(site, entry=None, *, config=None, repo=None, resolved=None, providers=None, env=None) -> (provider, model)
     privacy_floor(repo=None) -> bool
 
 A spec is {name, type: 'jev'|'clef', url, model, key, context, price_usd_per_mtok, local,
@@ -264,13 +264,15 @@ def spec_for_site(site: str, *, config: dict | None = None, repo=None, resolved:
 
 
 def identity(site: str, entry: dict | None = None, *, config: dict | None = None, repo=None,
-             resolved: dict | None = None, providers: dict | None = None) -> tuple[str, str]:
+             resolved: dict | None = None, providers: dict | None = None, env=None) -> tuple[str, str]:
     """(provider, model) that spec_for_site would use for `site`, with `entry` (a gate entry:
     {provider, model}) in place of the resolved gate when given. A provider of the user
     decide.json asks the entry's model, else its own; without one, the legacy typesafe or
     cloudflare transport asks its jev.json model. Builds no spec: no key is read and no
     url formatted, so it does not raise on a stray brace. `providers` stands in for the user
-    decide.json's providers (a decide.json about to be written)."""
+    decide.json's providers (a decide.json about to be written). `env` stands in for
+    os.environ in the legacy choice (FORGE_CLEF, FORGE_JEV_PROVIDER): a check of what is
+    written passes an empty one, since this shell's overrides do not outlive it."""
     import forge_jev
     config = config or forge_jev.load_config()
     if entry is None:
@@ -284,7 +286,7 @@ def identity(site: str, entry: dict | None = None, *, config: dict | None = None
     if found is not None:
         model = entry.get('model') if isinstance(entry.get('model'), str) else None
         return found[0], _entry_model(found[1], model)
-    name = forge_jev.provider_for(site, config)
+    name = forge_jev.provider_for(site, config, env)
     if name == 'cloudflare':
         return name, _cloudflare_model(forge_jev.cloudflare(config))
     return name, _typesafe_model(config)

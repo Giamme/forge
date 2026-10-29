@@ -404,7 +404,7 @@ def _check_replayed(gate, entry, providers):
     from forge_decide.providers import identity
     from forge_decide.replay import recorded
     site = GATE_SITE[gate]
-    provider, model = identity(site, entry, providers=providers)
+    provider, model = identity(site, entry, providers=providers, env={})
     stored = recorded(gate, provider, model)
     if stored is not None and stored.get('passes') is True:
         return

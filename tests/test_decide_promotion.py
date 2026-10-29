@@ -133,6 +133,16 @@ class GateOnTests(PromotionCase):
         del self.env['FORGE_DECIDE_PROFILE']
         self.assertTrue(self.drift()['forced'])
 
+    def test_a_provider_override_in_the_environment_does_not_vouch_for_it(self):
+        # FORGE_JEV_PROVIDER routes the legacy sites to cloudflare for this shell only. The
+        # entry written names no provider, so it acts on typesafe once the variable is unset.
+        self.decide('gate', 'drift', 'shadow')
+        self.record('cloudflare', 'clef', True)
+        self.env['FORGE_JEV_PROVIDER'] = 'cloudflare'
+        out = self.decide('gate', 'drift', 'on', code=3)
+        self.assertIn('typesafe', out.stderr)
+        self.assertEqual(self.user_file()['gates']['drift'], dict(mode='shadow'))
+
     def test_a_refusal_does_not_migrate(self):
         (self.cfg / 'forge').mkdir(parents=True)
         (self.cfg / 'forge' / 'jev.json').write_text(json.dumps(dict(enabled=True, key=KEY)))

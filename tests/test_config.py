@@ -343,6 +343,22 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(self.run_cfg('set', 'decide.gate.drift.model', 'jev-next').returncode, 0)
         self.assertEqual(json.loads(path.read_text())['gates']['drift']['model'], 'jev-next')
 
+    def test_a_provider_override_in_the_environment_does_not_vouch_for_a_change(self):
+        # FORGE_JEV_PROVIDER routes the legacy sites to cloudflare for this shell only. The on
+        # entry names no provider, so once written it acts on typesafe, which has no passing replay.
+        self.assertEqual(self.run_decide('gate', 'drift', 'shadow').returncode, 0)
+        path = self.cfg / 'forge/decide.json'
+        data = json.loads(path.read_text())
+        data['gates'] = dict(drift=dict(mode='on'))
+        path.write_text(json.dumps(data))
+        before = path.read_text()
+        self.record_replay('drift', 'cloudflare', forge_jev.CLOUDFLARE_MODEL)
+        self.env['FORGE_JEV_PROVIDER'] = 'cloudflare'
+        out = self.run_cfg('set', 'decide.gate.drift.model', 'jev-next')
+        self.assertEqual(out.returncode, 3, out.stderr)
+        self.assertIn('provider typesafe', out.stderr)
+        self.assertEqual(path.read_text(), before)
+
     def test_provider_change_of_a_forced_or_unpromoted_gate_is_written(self):
         for mode, entry in (('on', dict(force=True)), ('shadow', {}), ('off', {})):
             path = self.promoted_drift(mode, **entry)
