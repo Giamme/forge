@@ -307,3 +307,45 @@
 2026-10-28T10:53:10Z	c1-plan	sweep-5	qa	opus:high	PASS	-	-	-	62
 2026-10-28T11:36:51Z	c1-plan	final-fixes	dwarf	opus:medium	-	-	-	-	1396
 2026-10-28T11:39:20Z	c1-plan	final-fixes	qa	opus:high	PASS	trap	python3 m unittest tests module from the repo root fails every test with import errors run python3 m unittest module from inside tests	`python3 -m unittest tests.<module>` from the repo root fails every test with import errors; run `python3 -m unittest <module>` from inside `tests/` [tests/run_tests.py]	140	1
+2026-10-28T15:08:13Z	c2-plan	decide-sites	dwarf	sonnet:high	-	-	-	-	250
+2026-10-28T15:09:07Z	c2-plan	decide-sites	qa	sol:medium	FAIL	-	-	-	49
+2026-10-28T15:11:01Z	c2-plan	decide-sites	dwarf	sonnet:high	-	-	-	-	107
+2026-10-28T15:11:02Z	c2-plan	decide-cache	dwarf	sonnet:high	-	trap	a forge run exports forge decide run dir into the shell so test decide budget fails there unless you run it with env u forge decide run dir	a forge run exports FORGE_DECIDE_RUN_DIR into the shell, so `test_decide_budget` fails there unless you run it with `env -u FORGE_DECIDE_RUN_DIR` [tests/test_decide_budget.py]	420	1
+2026-10-28T15:11:02Z	c2-plan	decide-cache	dwarf	sonnet:high	-	trap	tests that send the same jev request twice from one run dir now need forge decide cache off which tests dataset isolation py sets test decide cache	tests that send the same Jev request twice from one run dir now need FORGE_DECIDE_CACHE=off, which tests/dataset_isolation.py sets; test_decide_cache… [tests/dataset_isolation.py]	420	1
+2026-10-28T15:12:29Z	c2-plan	decide-sites	qa	sol:medium	FAIL	-	-	-	83
+2026-10-28T15:12:59Z	c2-plan	decide-cache	qa	sol:medium	PASS	-	-	-	110
+2026-10-28T15:13:23Z	c2-plan	decide-sites	dwarf	sonnet:high	-	-	-	-	50
+2026-10-28T15:15:12Z	c2-plan	decide-sites	qa	sol:medium	FAIL	-	-	-	104
+2026-10-28T15:26:48Z	c2-plan	decide-sites	dwarf	opus:medium	-	-	-	-	692
+2026-10-28T15:27:30Z	c2-plan	decide-sites	qa	sol:medium	FAIL	-	-	-	38
+2026-10-28T16:40:50Z	c2-plan	decide-sites	dwarf	sonnet:high	-	trap	a forge run exports forge decide run dir into the shell so test decide budget fails there unless you run it with env u forge decide run dir	the harness exports FORGE_DECIDE_RUN_DIR, which makes tests/test_decide_budget.py fail; run `env -u FORGE_DECIDE_RUN_DIR -u FORGE_DATASET_PARENT -u… [tests/test_decide_budget.py]	122	1
+2026-10-28T16:41:43Z	c2-plan	decide-sites	qa	sol:medium	FAIL	-	-	-	48
+2026-10-28T18:22:09Z	c2-plan	decide-sites	dwarf	sonnet:high	-	-	-	-	32
+2026-10-28T19:01:41Z	c2-plan	decide-labels	dwarf	opus:medium	-	trap	tests test dataset py independencetests fails any module outside forge dataset that imports forge dataset unless it is allowlisted there	tests/test_dataset.py IndependenceTests fails any module outside forge_dataset that imports forge_dataset unless it is allowlisted there [tests/test_dataset.py]	1083	1
+2026-10-28T19:31:39Z	c2-plan	decide-labels	qa	sol:high	FAIL	-	-	-	1773
+2026-10-28T19:43:15Z	c2-plan	decide-labels	dwarf	opus:medium	-	-	-	-	691
+2026-10-28T19:47:35Z	c2-plan	decide-labels	qa	sol:high	PASS	-	-	-	254
+2026-10-28T20:00:36Z	c2-plan	decide-report	dwarf	opus:medium	-	-	-	-	777
+2026-10-28T20:03:48Z	c2-plan	decide-report	qa	sol:high	FAIL	-	-	-	181
+2026-10-28T20:15:11Z	c2-plan	decide-report	dwarf	opus:medium	-	-	-	-	679
+2026-10-28T20:17:03Z	c2-plan	decide-report	qa	sol:high	PASS	-	-	-	107
+2026-10-28T20:34:41Z	c2-plan	decide-replay	dwarf	opus:medium	-	trap	test decide wire fails memory slice no key when run in one unittest process with test jev test decide transports and others at baseline too run it	test_decide_wire fails (memory-slice no-key) when run in one unittest process with test_jev/test_decide_transports and others, at baseline too; run it… [tests/test_decide_wire.py]	1053	1
+2026-10-28T20:39:15Z	c2-plan	decide-replay	qa	sol:high	FAIL	-	-	-	268
+2026-10-28T20:49:01Z	c2-plan	decide-replay	dwarf	opus:medium	-	-	-	-	580
+2026-10-28T20:51:49Z	c2-plan	decide-replay	qa	sol:high	PASS	-	-	-	164
+2026-10-28T23:33:08Z	c2-plan	decide-promotion	dwarf	opus:medium	-	trap	the harness exports forge decide run dir which makes tests test decide budget py fail run env u forge decide run dir u forge dataset parent u	inside a forge task the inherited FORGE_DECIDE_RUN_DIR points at the live run, so test_decide_budget fails on its real spend; unset the FORGE_*… [tests/test_decide_budget.py]	9672	1
+2026-10-28T23:50:07Z	c2-plan	decide-promotion	qa	sol:high	FAIL	-	-	-	1013
+2026-10-29T00:10:54Z	c2-plan	decide-promotion	dwarf	opus:medium	-	trap	inside a forge task the inherited forge decide run dir points at the live run so test decide budget fails on its real spend unset the forge	inside a forge run the harness exports FORGE_DECIDE_RUN_DIR, which makes tests/test_decide_budget.py read the live run's spend and fail; run check.sh… [tests/test_decide_budget.py]	1243	1
+2026-10-29T00:13:41Z	c2-plan	decide-promotion	qa	sol:high	FAIL	-	-	-	160
+2026-10-29T00:24:43Z	c2-plan	decide-promotion	dwarf	opus:medium	-	trap	inside a forge run the harness exports forge decide run dir which makes tests test decide budget py read the live run s spend and fail run check sh	forge runs export FORGE_DECIDE_RUN_DIR into the implementer's shell, so tests/test_decide_budget fails and charges the live run's… [scripts/forge_decide/budget.py]	658	1
+2026-10-29T00:47:16Z	c2-plan	decide-promotion	qa	sol:high	FAIL	-	-	-	1342
+2026-10-29T07:16:04Z	c2-plan	decide-ui-forced	dwarf	sonnet:high	-	-	-	-	103
+2026-10-29T07:16:42Z	c2-plan	decide-ui-forced	qa	sol:medium	PASS	-	-	-	32
+2026-10-29T07:20:46Z	c2-plan	decide-forced-surfaces	dwarf	sonnet:high	-	trap	a test that moves a gate to another provider with forge config set decide gate g provider model while the gate is on now needs a passing replay	a test that moves a gate to another provider with `forge config set decide.gate.G.provider|.model` while the gate is `on` now needs a passing replay… [scripts/forge-config.py]	385	1
+2026-10-29T07:21:26Z	c2-plan	decide-forced-surfaces	qa	sol:medium	PASS	-	-	-	35
+2026-10-29T07:41:17Z	c2-plan	decide-measure-docs	dwarf	haiku:xhigh	-	-	-	-	1186
+2026-10-29T07:42:17Z	c2-plan	decide-measure-docs	qa	sol:medium	PASS	-	-	-	55
+2026-10-29T07:43:19Z	c2-plan	sweep-1	dwarf	haiku:xhigh	-	-	-	-	56
+2026-10-29T07:43:38Z	c2-plan	sweep-1	qa	sol:medium	PASS	-	-	-	14
+2026-10-29T07:44:23Z	c2-plan	sweep-2	dwarf	haiku:xhigh	-	-	-	-	120
+2026-10-29T07:45:34Z	c2-plan	sweep-2	qa	sol:high	PASS	-	-	-	65
