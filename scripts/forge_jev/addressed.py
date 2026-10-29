@@ -30,7 +30,6 @@ _issues = None
 _INDEXED = re.compile(r'u(\d+)$')
 _LOCATION = re.compile(r'(.+):\d+$')
 _DIFF_FILE = re.compile(r'^\+\+\+ b/(.+)$', re.M)
-_DIFF_GIT = re.compile(r'^diff --git a/.+ b/(.+)$', re.M)
 
 
 def parse_findings(text: str) -> list[dict]:
@@ -168,5 +167,5 @@ def baseline(body, qid) -> float:
     diff = str(state.get('diff') or '') if isinstance(state, dict) else ''
     if not path:
         return 0.0
-    touched = set(_DIFF_FILE.findall(diff)) | set(_DIFF_GIT.findall(diff))
+    touched = set(_DIFF_FILE.findall(diff))
     return 0.0 if path in touched else 1.0

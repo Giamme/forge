@@ -57,9 +57,11 @@ def label(index, record, event, body) -> dict:
     if review is None:
         return {}
     d = review['d']
+    if d.get('findings_parse') not in ('clean', 'graded'):
+        return {}
     ref = (d.get('blobs') or {}).get('message')
     raised = parse_findings(index.store.text(ref))
-    readable = d.get('findings_parse') in ('clean', 'graded') and not (isinstance(ref, dict) and ref.get('cut'))
+    complete = not (isinstance(ref, dict) and ref.get('cut'))
     items = {item.get('i'): item for item in state.get('findings') or [] if isinstance(item, dict)}
     out = {}
     for qid in record.decisions(body):
@@ -68,6 +70,6 @@ def label(index, record, event, body) -> dict:
             continue
         if any(_same(item, found) for found in raised):
             out[qid] = True
-        elif readable:
+        elif complete:
             out[qid] = False
     return out

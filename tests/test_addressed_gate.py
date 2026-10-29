@@ -252,6 +252,10 @@ class MeasurementTests(unittest.TestCase):
         self.assertEqual(addressed.baseline(self.body(diff.replace('a.txt', 'other.txt')), 'u0'), 1.0)
         self.assertEqual(addressed.baseline(self.body(diff, location='./a.txt'), 'u0'), 0.0)
 
+    def test_the_baseline_reads_only_plus_headers(self):
+        deletion = 'diff --git a/a.txt b/a.txt\ndeleted file mode 100644\n--- a/a.txt\n+++ /dev/null\n'
+        self.assertEqual(addressed.baseline(self.body(deletion), 'u0'), 1.0)
+
 
 def review(*findings):
     return '\n'.join('- [%s][CONFIRMED] %s — %s' % f for f in findings) + '\nFORGE_VERDICT: FAIL\n'
@@ -326,10 +330,12 @@ class LabelTests(LabelsCase):
         self.reviewed(review(('P2', 'src/z.py:1', 'something else entirely different')), 'graded', cut=True)
         self.assertEqual(self.collect('jev-retry-addressed'), [])
 
-    def test_a_review_that_shows_the_finding_labels_it_true_whatever_its_parse(self):
-        self.request()
-        self.reviewed(review(self.FINDING), 'ungraded')
-        self.assertEqual(self.only()['labels'], dict(u0=True))
+    def test_a_review_the_parser_cannot_read_in_full_gives_no_label_even_when_it_repeats_the_finding(self):
+        for parse, task in (('unparseable', 'a'), ('ungraded', 'b')):
+            self.ask('jev-retry-addressed', self.body(task=task), dict(u0=dict(type='noul', noul=0.8)),
+                     run='run1', ts=T0, task=task)
+            self.reviewed(review(self.FINDING), parse, task=task)
+        self.assertEqual(self.collect('jev-retry-addressed'), [])
 
     def test_each_finding_is_labelled_on_its_own(self):
         findings = [dict(i=0, severity='P1', location='src/a.py:12', text='broken parser drops the trailing newline character'),
