@@ -82,6 +82,60 @@ class ReportCase(unittest.TestCase):
         return json.loads(self.report('--json', *args, **kw).stdout)
 
 
+class ForcedTests(ReportCase):
+    def gate(self, mode, **entry):
+        path = self.cfg / 'forge' / 'decide.json'
+        data = json.loads(path.read_text())
+        data['gates'] = dict(drift=dict(mode=mode, provider='jevp', **entry))
+        path.write_text(json.dumps(data))
+
+    def replayed(self, passes):
+        from forge_decide import replay
+        with patch.dict(os.environ, XDG_STATE_HOME=self.env['XDG_STATE_HOME']):
+            replay.record('drift', dict(at=0.0, site='jev-drift', provider='jevp', model='jev-live', passes=passes,
+                                        reason='fixture'))
+
+    def setUp(self):
+        super().setUp()
+        self.plan = self.run_dir('plan', {'': [entry('jev-drift', answers=dict(f0=noul(0.6)))]}, uid=UID)
+
+    def fixture(self):
+        return self.plan
+
+    def forced(self, **kw):
+        data = self.data_json('--run', str(self.fixture()), **kw)
+        return data['sites']['jev-drift']['forced'], data
+
+    def test_an_on_gate_without_a_passing_replay_is_forced(self):
+        self.gate('on')
+        self.assertTrue(self.forced()[0])
+        self.replayed(False)
+        self.assertTrue(self.forced()[0])
+        text = self.report('--run', str(self.fixture())).stdout
+        self.assertRegex(text, r'jev-drift +on \(forced\)')
+
+    def test_an_on_gate_with_a_passing_replay_is_not_forced(self):
+        self.gate('on')
+        self.replayed(True)
+        forced, data = self.forced()
+        self.assertIs(forced, False)
+        self.assertEqual(data['sites']['jev-drift']['mode'], 'on')
+        self.assertNotIn('(forced)', self.report('--run', str(self.fixture())).stdout)
+
+    def test_a_forced_entry_and_other_modes(self):
+        self.gate('on', force=True)
+        self.assertTrue(self.forced()[0])
+        for mode in ('shadow', 'off'):
+            self.gate(mode)
+            self.assertIs(self.forced()[0], False)
+        self.assertNotIn('(forced)', self.report('--run', str(self.fixture())).stdout)
+
+    def test_a_retired_site_has_no_forced(self):
+        self.gate('on')
+        plan = self.run_dir('retired', {'': [entry('jev-score-plan')]}, uid=UID)
+        self.assertIsNone(self.data_json('--run', str(plan))['sites']['jev-score-plan']['forced'])
+
+
 class CountingTests(ReportCase):
     def fixture(self):
         drift = dict(f0=noul(0.6), f1=noul(0.2))
