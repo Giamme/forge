@@ -698,6 +698,10 @@ def plan_event(plan: Path, prov: dict, src: str = 'live', inventory: bool = True
     routes = {tid: [d.get('decision') for d in r['route']] for tid, r in per_task.items() if r.get('route')}
     if routes:
         later['route'] = routes
+    # PLAN_RID_LATER hashes a file's first line, which is `{` for any JSON record: hash the content.
+    plan_gates = read_json(plan / 'plan-gates.json')
+    if plan_gates is not None:
+        later['plan_gates'] = plan_gates
     inputs = json.dumps([text(plan / 'goal.txt'), text(plan / 'tasks.tsv'), text(declared_path),
                          {t: [r['prompt'], r['approach']] for t, r in per_task.items()}] + ([later] if later else []),
                         sort_keys=True, default=str)
@@ -725,6 +729,8 @@ def plan_event(plan: Path, prov: dict, src: str = 'live', inventory: bool = True
                     inventory=put_blob(listing, 'request') if listing else None,
                     memory=put_file(Path(repo) / '.forge' / 'memory.md') if repo else None),
     )
+    if plan_gates is not None:
+        data['plan_gates'] = plan_gates
     return dict(rid='plan:%s:%s' % (prov.get('run'), sha256(inputs.encode())[:16]), kind='plan',
                 ts=time.time(), src=src, run=prov.get('run'), run_id=prov.get('run_id'), mode='parallel',
                 inv=prov.get('inv'), data=data)
