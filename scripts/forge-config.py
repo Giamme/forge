@@ -17,8 +17,12 @@ Only the three per-repo files are ever read for content; cloudflare.env never is
 variables whose name contains TOKEN, KEY, SECRET or PASSWORD show as "<set>". A provider key never
 appears in show.
 
-Exit codes: 0 ok, 2 usage or invalid input (including an unsafe path); any other code is the decide
-CLI's own, passed through.
+A provider or model written to a gate that is `on` and not forced needs a passing replay of the
+new provider and model, as `forge decide gate G on` does; without one nothing is written and the
+exit code is 3 (with --json, an error object on stdout too).
+
+Exit codes: 0 ok, 2 usage or invalid input (including an unsafe path), 3 refused by the promotion
+rule; any other code is the decide CLI's own, passed through.
 """
 from __future__ import annotations
 
@@ -48,6 +52,10 @@ CONTENT_MAX = 64 * 1024
 SECRET_WORDS = ('TOKEN', 'KEY', 'SECRET', 'PASSWORD')
 REGISTRY_NOTE = ('read-only here: the skill dir is often a live symlink to a checkout, so an edit '
                  'changes runs already in progress; edit registry.tsv in the checkout instead')
+
+
+class Refused(Exception):
+    """A change the promotion rule refuses (#37): exit 3."""
 
 
 class Invalid(Exception):
@@ -387,6 +395,24 @@ def _decide_value(field, value):
     return value
 
 
+def _check_replayed(gate, entry, providers):
+    """Refuse (before anything is written) an `on` entry, not forced, whose provider and model, as
+    `entry` will have them, have no passing replay: the rule `forge decide gate G on` applies."""
+    if entry.get('mode') != 'on' or entry.get('force'):
+        return
+    from forge_decide import GATE_SITE
+    from forge_decide.providers import identity
+    from forge_decide.replay import recorded
+    site = GATE_SITE[gate]
+    provider, model = identity(site, entry, providers=providers)
+    stored = recorded(gate, provider, model)
+    if stored is not None and stored.get('passes') is True:
+        return
+    raise Refused('%s is on and has no passing replay on provider %s, model %s.\n'
+                  'Run `forge decide replay --site %s --provider %s --model %s --send`, '
+                  'or turn it on without one with `forge decide gate %s on --force` (shown as forced).' % (gate, provider, model, site, provider, model, gate))
+
+
 def _write_user_field(gate, field, value):
     """Set a gate's provider or model in the user file, storing no mode.
 
@@ -409,6 +435,7 @@ def _write_user_field(gate, field, value):
     entry = gates.get(gate)
     entry = dict(mode=entry) if isinstance(entry, str) else dict(entry) if isinstance(entry, dict) else {}
     entry[field] = value
+    _check_replayed(gate, entry, providers)
     gates[gate] = entry
     data['gates'] = gates
     data.setdefault('version', 1)
@@ -520,6 +547,11 @@ def main(argv=None):
     except Invalid as err:
         print('forge config: %s' % err, file=sys.stderr)
         return 2
+    except Refused as err:
+        print('forge config: %s' % err, file=sys.stderr)
+        if getattr(args, 'json', False):
+            print(json.dumps(dict(ok=False, key=args.key, error=str(err))))
+        return 3
 
 
 if __name__ == '__main__':

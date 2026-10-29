@@ -22,8 +22,9 @@ a path with a `jev-backtests` component is never read. Per site:
     labelled: {decisions, fired_right, fired_wrong, missed}
         labels.collect's labelled decisions of these runs (run uid = first line of the run
         dir's dataset.uid), joined to the run's entry by key; None for a site with no label
-    mode
-        the gate's resolved mode for the current repo
+    mode, forced
+        the gate's resolved mode for the current repo, and whether it is `on` with no passing
+        replay of its provider and model (cli.status_data's rule)
 
 A site with no registry entry (retired: jev-score-plan, clef-first-pass, ...) gets calls,
 tokens and cost; its fired, labelled and mode are None.
@@ -184,7 +185,7 @@ class _Store:
 
 def _blank(retired: bool) -> dict:
     row = dict(calls=0, cached=0, errors=0, skipped={}, input_tokens=0, output_tokens=0, cost_usd=0.0,
-               fired=0, fired_unknown=0, labelled=None, mode=None, retired=retired)
+               fired=0, fired_unknown=0, labelled=None, mode=None, forced=None, retired=retired)
     if retired:
         row.update(fired=None, fired_unknown=None)
     return row
@@ -234,12 +235,20 @@ def summarize(run_dirs, *, repo=None, site=None) -> dict:
         rows[site] = _blank(False)
     uids = {run['uid'] for run in runs if run['uid']}
     resolved = resolve(repo)['gates']
+    forced = None
     for name, row in rows.items():
         record = sites_module.site(name)
         if record is None:
             continue
         gate = resolved.get(record.gate)
         row['mode'] = gate['mode'] if gate else None
+        if gate and gate['mode'] == 'on':
+            if forced is None:
+                from .cli import status_data
+                forced = {g: v['forced'] for g, v in status_data(repo)['gates'].items()}
+            row['forced'] = forced.get(record.gate, False)
+        elif gate:
+            row['forced'] = False
         if record.label is not None:
             row['labelled'] = _labelled(name, uids, answered, store)
     ordered = dict(sorted(rows.items(), key=lambda item: (-item[1]['input_tokens'], item[0])))
@@ -333,7 +342,8 @@ def _cells(name: str, row: dict, mode=True) -> list[str]:
     fired = number(row.get('fired'))
     if row.get('fired_unknown'):
         fired += f' (+{row["fired_unknown"]}?)'
-    return [name, (row.get('mode') or '-') if mode else '', number(row['calls']), number(row['cached']),
+    shown = (row.get('mode') or '-') + (' (forced)' if row.get('forced') else '')
+    return [name, shown if mode else '', number(row['calls']), number(row['cached']),
             number(row['errors']), number(sum(row['skipped'].values())), number(row['input_tokens']),
             number(row['output_tokens']), '-' if row['cost_usd'] is None else '%.4f' % row['cost_usd'], fired,
             *(number(labelled[field]) if labelled else '-' for field in LABELLED[1:])]

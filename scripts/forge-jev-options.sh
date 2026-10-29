@@ -468,7 +468,8 @@ try:
         lines.append("decide: %s is under a privacy floor (.forge/decide.json): "
                      "no decision-model request will be sent" % repo)
     gates = data.get("gates") or {}
-    on = [name for name, gate in gates.items() if gate.get("mode") == "on"]
+    on = [name + (" (forced)" if gate.get("forced") else "")
+          for name, gate in gates.items() if gate.get("mode") == "on"]
     shadow = [name for name, gate in gates.items() if gate.get("mode") == "shadow"]
     if on or shadow:
         lines.append("decide: on: %s; shadow: %s" % (", ".join(on) or "none",
