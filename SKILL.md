@@ -91,6 +91,8 @@ For explanation requests, explain the workflow without spending model quota.
   - `auto`: file them without asking (`--apply`, PLAUSIBLE included as "to verify" issues) and report what was created and skipped.
   - `off`: never offer.
 
+  With the `findings` gate on (`forge decide gate findings on`), forge's filer adds `preselect` and `reason` to each finding in the dry-run JSON, and `--apply` turns a reworded duplicate of an open issue into a comment on it (`comments`, `commented`). `ask` shows the pre-selected findings and the reason for each one left out, and files the ones the user keeps with `--only <fps> --max-issues <count>`. `auto` files only the pre-selected ones the same way.
+
   `--file-issues` is an instruction to you: never forward it to a runner. Skip INFRA, interrupted and still-failing runs. Both filers mark each issue with the same finding fingerprint and skip a finding either one already filed, so offering again after a retry only brings up new ones. A draft flagged as a possible duplicate is skipped on `--apply`: show it, and file it (`--confirm-new`) only if the user says it is different.
 - Decision models (Jev, Clef) are optional, off until a gate is opted in with `forge decide`,
   fail-open, and never change a task's tier, select a model, or substitute for QA acceptance

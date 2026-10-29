@@ -49,6 +49,18 @@ holds `<repo_key>.lock` (next to the store, `flock`) from the `gh issue list` lo
 and each --dismiss/--undismiss holds it around its read-modify-write. A busy lock is retried for 10 s. Listing
 without --apply takes no lock.
 
+With the `findings` decision-model gate on or in shadow (`forge decide gate findings`; ready per `forge-jev.py status
+--json`), the findings left to file are sent to `forge-jev.py findings`, once per plan with `--run-dir <plan>`, and each
+finding entry and draft carries `gate` = {mode, duplicate_of, concrete, preselect, reason}. A PLAUSIBLE finding that
+reads as a preference (`concrete` below `findings_concrete`) has `preselect` false and the reason; every other finding
+has it true, and CONFIRMED is never deselected. In `on`, a finding that restates an open issue in other words
+(`dup_p` >= `findings_dup`) leaves the drafts for `comments` [{issue, finding, fp}]; --apply posts each with
+`gh issue comment <url> --body-file`, carrying the finding and its `forge:finding` marker, and records a receipt
+`{fp: {issue, at}}` in `<repo_key>.comments.json` next to the dismissal store (written under the same lock). A comment's
+marker is invisible to the issue-body index, so receipts are honoured with the gate on or off: a finding with one is
+never drafted, filed or commented again, and shows `commented` = {issue, at}. Shadow adds the same fields and changes
+nothing; off or not ready adds none and runs no model request.
+
 Exit codes: 0 ok, 2 usage, `gh` or dismissal store error, 3 busy (another filing or dismissal holds the lock).
 """
 from __future__ import annotations
@@ -108,6 +120,7 @@ TEXT = {
         "closing_plausible": ["The problem is fixed, or refuted with the reasoning in a comment"],
         "code": "Code",
         "unpublished": "(commit not pushed to GitHub yet)",
+        "duplicate_comment": "A forge review finding that looks like this issue, in other words:",
     },
     "it": {
         "plausible": "Da verificare: ",
@@ -135,6 +148,7 @@ TEXT = {
         "closing_plausible": ["Il problema è corretto, oppure smentito con motivazione in un commento"],
         "code": "Codice",
         "unpublished": "(commit non ancora pubblicato su GitHub)",
+        "duplicate_comment": "Una segnalazione della review di forge che sembra questa issue, con altre parole:",
     },
 }
 
@@ -904,13 +918,17 @@ def store_dir(create):
     return path
 
 
-def load_dismissed(key):
-    """The repository's dismissals, `{fp: {"at": epoch, "reason": str}}`; empty when it has none yet."""
+def _read_store(name, noun, shape, valid):
+    """The parsed JSON of `<findings dir>/<name>`, `{}` when it does not exist yet.
+
+    Read with the checks every store gets: a regular file (no symlink, FIFO or device), no larger than
+    STORE_MAX, a JSON object of fingerprints whose values `valid` accepts. `noun` and `shape` word the errors.
+    """
     base = store_dir(create=False)
     if base is None:
         return {}
-    path = base / f"{key}.json"
-    not_regular = f"{path}: the dismissal store must be a regular file, not a symlink or special file"
+    path = base / name
+    not_regular = f"{path}: the {noun} must be a regular file, not a symlink or special file"
     try:
         if not stat.S_ISREG(os.lstat(path).st_mode):
             raise Fail(not_regular)
@@ -922,24 +940,22 @@ def load_dismissed(key):
     except FileNotFoundError:
         return {}
     except OSError as exc:
-        raise Fail(f"{path}: cannot read the dismissal store: {exc.strerror}")
+        raise Fail(f"{path}: cannot read the {noun}: {exc.strerror}")
     try:
         data = json.loads(raw.decode("utf-8")) if len(raw) <= STORE_MAX else None
     except ValueError:
         data = None
-    if not (isinstance(data, dict) and all(
-            FP_RE.fullmatch(fp) and isinstance(v, dict) and isinstance(v.get("reason"), str)
-            and isinstance(v.get("at"), (int, float)) and not isinstance(v["at"], bool) for fp, v in data.items())):
-        raise Fail(f"{path}: not a dismissal store ({{fingerprint: {{at, reason}}}}); fix or remove it")
-    return {fp: {"at": v["at"], "reason": v["reason"]} for fp, v in data.items()}
+    if not (isinstance(data, dict) and all(FP_RE.fullmatch(fp) and valid(v) for fp, v in data.items())):
+        raise Fail(f"{path}: not a {noun} ({shape}); fix or remove it")
+    return data
 
 
-def save_dismissed(key, data):
-    """Replace the store atomically: a temp file in the same directory, fsynced, then renamed over it."""
+def _write_store(name, noun, data):
+    """Replace `<findings dir>/<name>` atomically: a temp file in the same directory, fsynced, then renamed over it."""
     base = store_dir(create=True)
-    path = base / f"{key}.json"
+    path = base / name
     try:
-        fd, tmp = tempfile.mkstemp(prefix=f".{key}.", suffix=".tmp", dir=base)
+        fd, tmp = tempfile.mkstemp(prefix=f".{name.removesuffix('.json')}.", suffix=".tmp", dir=base)
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as fh:
                 json.dump(data, fh, indent=2, sort_keys=True, ensure_ascii=False)
@@ -952,7 +968,34 @@ def save_dismissed(key, data):
                 os.unlink(tmp)
             raise
     except OSError as exc:
-        raise Fail(f"{path}: cannot write the dismissal store: {exc.strerror}")
+        raise Fail(f"{path}: cannot write the {noun}: {exc.strerror}")
+
+def load_dismissed(key):
+    """The repository's dismissals, `{fp: {"at": epoch, "reason": str}}`; empty when it has none yet."""
+    data = _read_store(f"{key}.json", "dismissal store", "{fingerprint: {at, reason}}",
+                       lambda v: isinstance(v, dict) and isinstance(v.get("reason"), str)
+                       and isinstance(v.get("at"), (int, float)) and not isinstance(v["at"], bool))
+    return {fp: {"at": v["at"], "reason": v["reason"]} for fp, v in data.items()}
+
+
+def save_dismissed(key, data):
+    _write_store(f"{key}.json", "dismissal store", data)
+
+
+def load_comments(key):
+    """The repository's comment receipts, `{fp: {"issue": url, "at": epoch}}`; empty when it has none yet.
+
+    A comment's fingerprint marker is invisible to the issue-body index that guards filing, so this record is
+    what keeps one duplicate from being commented on every run. It sits next to the dismissal store.
+    """
+    data = _read_store(f"{key}.comments.json", "comment-receipt store", "{fingerprint: {issue, at}}",
+                       lambda v: isinstance(v, dict) and isinstance(v.get("issue"), str)
+                       and isinstance(v.get("at"), (int, float)) and not isinstance(v["at"], bool))
+    return {fp: {"issue": v["issue"], "at": v["at"]} for fp, v in data.items()}
+
+
+def save_comments(key, data):
+    _write_store(f"{key}.comments.json", "comment-receipt store", data)
 
 
 @contextlib.contextmanager
@@ -1005,6 +1048,139 @@ def dismiss(args):
         if json.dumps(data, sort_keys=True) != before:
             save_dismissed(key, data)
     return {"ok": True, "dismissed": args.dismiss, "undismissed": args.undismiss, "warnings": warnings}
+
+
+# ---------------------------------------------------------------------------------------------- findings gate
+
+GATE_SITE = "jev-findings"
+GATE_CANDIDATES = 5   # open issues with the most words in common with a finding, besides its same-title one
+GATE_DEFAULTS = {"findings_dup": 0.85, "findings_concrete": 0.50}
+_CONTENT_WORD_RE = re.compile(r"[a-z]{4,}")
+
+
+def content_words(text):
+    return set(_CONTENT_WORD_RE.findall((text or "").lower()))
+
+
+def number(value):
+    """`value` when it is a finite number that is not a bool, else None."""
+    ok = isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+    return float(value) if ok else None
+
+
+def findings_gate(cwd):
+    """(mode, {threshold: value}) when the findings gate is shadow or on and can be asked, else None.
+
+    Readiness is `forge-jev.py status --json` -> gates.findings.ready, the way the shell reads it, so the run
+    flags, the kill switch, the privacy floor and a missing key all count. A gate that cannot answer behaves as
+    off: any failure here is None, and nothing about filing changes.
+    """
+    here = Path(__file__).resolve().parent
+    try:
+        res = run([sys.executable, str(here / "forge-jev.py"), "status", "--json"], cwd=cwd, check=False)
+        found = json.loads(res.stdout)["gates"]["findings"] if res.returncode == 0 else None
+        if not (isinstance(found, dict) and found.get("ready") is True and found.get("mode") in ("shadow", "on")):
+            return None
+        limits = dict(GATE_DEFAULTS)
+        try:
+            from forge_jev import threshold
+            limits = {name: threshold(name, site=GATE_SITE) for name in GATE_DEFAULTS}
+        except Exception:  # a threshold that cannot be read keeps its default
+            pass
+        return found["mode"], limits
+    except (Fail, OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
+        return None
+
+
+def ask_findings(cwd, todo, open_issues, open_titles, lang):
+    """{fp: {duplicate_of, dup_p, concrete}} from `forge-jev.py findings`, one subprocess per plan.
+
+    Each finding is compared with the open issue that has its title, if one does, and with the open issues
+    sharing the most content words with it. A plan whose call fails (no answer, bad output) adds nothing.
+    """
+    here = Path(__file__).resolve().parent
+    words = {i["number"]: content_words(f"{i.get('title')} {i.get('body')}") for i in open_issues}
+    by_url = {i["url"]: i for i in open_issues}
+    plans = {}
+    for f in todo:
+        plans.setdefault(f["plan_dir"], []).append(f)
+    answers = {}
+    for plan_dir, items in plans.items():
+        candidates, entries = {}, []
+        for f in items:
+            chosen = []
+            titled = by_url.get(open_titles.get(norm_title(title_for(f, lang))))
+            if titled:
+                chosen.append(titled)
+            mine = content_words(f["text"])
+            ranked = sorted(((len(mine & words[i["number"]]), i["number"], i) for i in open_issues if i is not titled),
+                            key=lambda r: (-r[0], r[1]))
+            chosen += [i for shared, _n, i in ranked if shared][:GATE_CANDIDATES]
+            for i in chosen:
+                candidates.setdefault(str(i["number"]), {"id": str(i["number"]), "title": i.get("title") or "",
+                                                         "body": i.get("body") or ""})
+            entries.append({"fp": f["fp"], "plan": f["plan"], "severity": f["severity"], "status": f["confidence"],
+                            "location": f"{f['file']}:{f['line']}" if f["line"] else f["file"], "text": f["text"],
+                            "candidates": [str(i["number"]) for i in chosen]})
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as fh:
+            json.dump({"findings": entries, "candidates": list(candidates.values())}, fh)
+        try:
+            res = run([sys.executable, str(here / "forge-jev.py"), "findings", "--repo", cwd, "--input", fh.name,
+                       "--run-dir", plan_dir], cwd=cwd, check=False)
+            rows = json.loads(res.stdout) if res.returncode == 0 else []
+        except (ValueError, Fail, OSError, subprocess.SubprocessError):
+            rows = []
+        finally:
+            os.unlink(fh.name)
+        for row in rows if isinstance(rows, list) else []:
+            if isinstance(row, dict) and isinstance(row.get("fp"), str):
+                answers[row["fp"]] = row
+    return answers
+
+
+def gate_fields(f, row, mode, limits, urls):
+    """The `gate` object of one finding from its answer row, as the module docstring of the verb defines it."""
+    dup_p, concrete = number(row.get("dup_p")), number(row.get("concrete"))
+    duplicate = urls.get(str(row.get("duplicate_of"))) if dup_p is not None and dup_p >= limits["findings_dup"] else None
+    deselect = f["confidence"] == "PLAUSIBLE" and concrete is not None and concrete < limits["findings_concrete"]
+    return {"mode": mode, "duplicate_of": duplicate, "concrete": concrete, "preselect": not deselect,
+            "reason": f"reads as a preference, not a defect (p={concrete:.2f})" if deselect else None}
+
+
+def draft_gate(fields):
+    """The gate object of a draft that groups several findings: pre-selected when any of them is."""
+    kept = [g for g in fields if g["preselect"]]
+    levels = [g["concrete"] for g in fields if g["concrete"] is not None]
+    return {"mode": fields[0]["mode"], "duplicate_of": next((g["duplicate_of"] for g in fields if g["duplicate_of"]), None),
+            "concrete": min(levels) if levels else None, "preselect": bool(kept),
+            "reason": None if kept else fields[0]["reason"]}
+
+
+def comment_body(f, lang):
+    return "\n".join([TEXT[lang]["duplicate_comment"], "", f"> {escape(f['raw'])}", "",
+                      f"<!-- forge:finding fp={f['fp']} source=forge:{f['plan']}/{f['task'] or 'final-review'} -->"])
+
+
+def post_comments(key, comments, by_fp, lang):
+    """Comment on the issue each reworded duplicate restates, and record a receipt for each: the marker in a
+    comment is invisible to the issue-body index, so without the receipt the next run would comment again.
+    Runs under the repository lock `--apply` holds. A comment that fails is reported and gets no receipt."""
+    receipts = load_comments(key)
+    done = []
+    for c in comments:
+        with tempfile.NamedTemporaryFile("w", suffix=".md", delete=False, encoding="utf-8") as fh:
+            fh.write(comment_body(by_fp[c["fp"]], lang))
+        try:
+            run(["gh", "issue", "comment", c["issue"], "--body-file", fh.name])
+        except Fail as exc:
+            done.append({**c, "error": str(exc)})
+            continue
+        finally:
+            os.unlink(fh.name)
+        receipts[c["fp"]] = {"issue": c["issue"], "at": int(time.time())}
+        save_comments(key, receipts)
+        done.append(dict(c))
+    return done
 
 
 # ---------------------------------------------------------------------------------------------- main
@@ -1085,14 +1261,17 @@ def main(argv=None):
     return 0
 
 
-def finding_entry(f, filed=None, dismissed=None):
-    return {"fp": f["fp"], "severity": f["severity"], "confidence": f["confidence"], "origin": f["origin"],
+def finding_entry(f, filed=None, dismissed=None, commented=None):
+    entry = {"fp": f["fp"], "severity": f["severity"], "confidence": f["confidence"], "origin": f["origin"],
             "plan": f["plan"], "plan_dir": f["plan_dir"], "task": f["task"], "file": f["file"],
             "summary": (f["text"].splitlines() or [""])[0][:160], "text": f["text"],
             "reviewer": f["reviewer"], "commit": f.get("commit") or "",
             "review": f.get("review"), "swept": f.get("swept"),
             "filed": {"url": filed["url"], "state": filed["state"]} if filed else None,
             "dismissed": dismissed}
+    if commented:
+        entry["commented"] = commented    # only a finding with a receipt has the key: the rest is as before
+    return entry
 
 
 def file_findings(args):
@@ -1113,7 +1292,9 @@ def file_findings(args):
 
 def list_and_file(args, meta, found, notes, repo_path, slug, warnings):
     offline = args.offline
-    dismissed = load_dismissed(repo_key(repo_path))
+    store_key = repo_key(repo_path)
+    dismissed = load_dismissed(store_key)
+    receipts = load_comments(store_key)
     issues = [] if offline else existing_issues(slug)
     filed = {fp: issue for issue in issues for fp in FP_MARK_RE.findall(issue.get("body") or "")}
     only = set(args.only)
@@ -1127,20 +1308,40 @@ def list_and_file(args, meta, found, notes, repo_path, slug, warnings):
         seen.add(f["fp"])
         issue = filed.get(f["fp"])
         mark = dismissed.get(f["fp"])
-        entries.append(finding_entry(f, issue, mark))
+        receipt = receipts.get(f["fp"])
+        entries.append(finding_entry(f, issue, mark, receipt))
         if issue:
             already.append({"finding": f["raw"], "issue": issue["url"], "state": issue["state"]})
+        elif receipt:                      # commented on an issue as a duplicate: as good as filed
+            state = next((i["state"] for i in issues if i["url"] == receipt["issue"]), "UNKNOWN")
+            already.append({"finding": f["raw"], "issue": receipt["issue"], "state": state})
         elif f.get("swept"):
             continue                       # fixed in the run by its finding sweep
         elif not mark or args.include_dismissed:
             todo.append(f)
     notes = notes + [f"--only {fp}: no such open finding" for fp in args.only if fp not in known]
     entries.sort(key=lambda e: SEVERITIES.index(e["severity"]))
+    open_issues = [i for i in issues if i.get("state") == "OPEN"]
+    open_titles = {norm_title(i["title"]): i["url"] for i in open_issues}
+    gates, comments = {}, None
+    ready = findings_gate(repo_path) if todo else None
+    if ready:
+        mode, limits = ready
+        urls = {str(i["number"]): i["url"] for i in open_issues}
+        answers = ask_findings(repo_path, todo, open_issues, open_titles, args.lang)
+        gates = {f["fp"]: gate_fields(f, answers[f["fp"]], mode, limits, urls) for f in todo if f["fp"] in answers}
+        for entry in entries:
+            if entry["fp"] in gates:
+                entry["gate"] = gates[entry["fp"]]
+        comments = [] if gates else None
+        if mode == "on" and gates:
+            comments = [{"issue": gates[f["fp"]]["duplicate_of"], "finding": f["raw"], "fp": f["fp"]}
+                        for f in todo if f["fp"] in gates and gates[f["fp"]]["duplicate_of"]]
+            todo = [f for f in todo if f["fp"] not in {c["fp"] for c in comments}]
     keyed = {}
     for f in todo:
         key = id(f) if args.group == "finding" else (f["plan"], f["origin"], f["task"] if args.group == "task" else "")
         keyed.setdefault(key, []).append(f)
-    open_titles = {norm_title(i["title"]): i["url"] for i in issues if i.get("state") == "OPEN"}
     t = TEXT[args.lang]
     drafts = []
     for items in keyed.values():
@@ -1159,6 +1360,8 @@ def list_and_file(args, meta, found, notes, repo_path, slug, warnings):
                        "findings": [f["raw"] for f in items], "fingerprints": [f["fp"] for f in items],
                        "same_title": None if offline else open_titles.get(norm_title(title)),
                        "body": body_for(slug, repo_path if meta["repo_path"] else None, items, args.lang, offline)})
+        if any(f["fp"] in gates for f in items):
+            drafts[-1]["gate"] = draft_gate([gates[f["fp"]] for f in items if f["fp"] in gates])
     drafts.sort(key=lambda d: SEVERITIES.index(d["severity"]))
     out = {"repo": slug, "plan": meta["plan"], "notes": notes, "warnings": warnings,
            "summary": {"findings": len(seen), "already_filed": len(already),
@@ -1167,10 +1370,15 @@ def list_and_file(args, meta, found, notes, repo_path, slug, warnings):
                        **{o: sum(1 for f in todo if f["origin"] == o)
                           for o in ("tolerated", "accepted", "review", "plausible")}},
            "findings": entries, "already_filed": already, "drafts": drafts}
+    if comments is not None:
+        out["comments"] = comments
     if args.apply:
         out["created"] = create(slug, drafts, args)
         for d in drafts:
             d.pop("body")
+        if comments:
+            by_fp = {f["fp"]: f for f in found}
+            out["commented"] = post_comments(store_key, comments, by_fp, args.lang)
     return out
 
 
@@ -1219,6 +1427,8 @@ def print_human(out, applied):
     for a in out["already_filed"]:
         print(f"  filed   {a['issue']} ({a['state'].lower()}): {a['finding'][:100]}")
     if applied:
+        for c in out.get("commented", []):
+            print(f"  comment failed {c['issue']}: {c['error']}" if "error" in c else f"  commented {c['issue']}")
         for c in out["created"]:
             if "note" in c:
                 print(f"  note    {c['note']}")
@@ -1227,12 +1437,15 @@ def print_human(out, applied):
             else:
                 print(f"  skipped {c['title']}: {c['skipped']}{' ' + c['issue'] if c.get('issue') else ''}")
         return
+    for c in out.get("comments", []):
+        print(f"  comment {c['issue']}: {c['finding'][:100]}")
     outdated = {e["fp"] for e in out["findings"] if (e.get("review") or {}).get("outdated") is True}
     for d in out["drafts"]:
         flag = f"  (open issue with the same title: {d['same_title']})" if d["same_title"] else ""
         mark = " (outdated review)" if any(fp in outdated for fp in d["fingerprints"]) else ""
-        print(f"  draft   {d['title']}{mark}{flag}")
-    if out["drafts"]:
+        skip = f"  (not pre-selected: {d['gate']['reason']})" if d.get("gate") and not d["gate"]["preselect"] else ""
+        print(f"  draft   {d['title']}{mark}{flag}{skip}")
+    if out["drafts"] or out.get("comments"):
         print("Nothing created: add --apply to file these.")
 
 
