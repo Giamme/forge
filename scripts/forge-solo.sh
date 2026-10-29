@@ -34,7 +34,7 @@
 #        <run-dir>/dwarf.spec, qa.spec and attempts.tsv
 #
 # Exit codes: 0 ok | 2 usage | 3 precondition | 4 a dispatch failed
-#             5 the dwarf produced no changes | 7 a dispatch timed out
+#             5 the dwarf produced no changes, or forge turned a PASS into FAIL | 7 a dispatch timed out
 #             8 a dispatch hit an infrastructure failure (quota, auth, rate limit, network,
 #               empty output): nothing about the work was judged, fix the cause and re-run
 set -uo pipefail
@@ -352,7 +352,7 @@ if [ -z "$NATIVE" ]; then
     printf '%s\t%s\n' "$THR" "$gate_line" > "$RUN/qa.gate"
     case "$(printf '%s' "$gate_line" | awk -F'\t' '{print $1}')" in
       accept) verdict=PASS; gate_note=" (accepted with known issues: $RUN/known_issues.md)" ;;
-      fail)   verdict=FAIL; gate_note=" (the reviewer said PASS, but listed a CONFIRMED finding at or above the $THR threshold — forge made it FAIL)" ;;
+      fail)   verdict=FAIL; gate_rc=5; gate_note=" (the reviewer said PASS, but listed a CONFIRMED finding at or above the $THR threshold — forge made it FAIL)" ;;
     esac
   fi
 fi
@@ -374,3 +374,4 @@ else
 fi
 [ ! -s "$RUN/guard.txt" ] || { echo; echo "implementer guard notes:"; sed 's/^/  /' "$RUN/guard.txt"; }
 forge_update_notice
+exit "${gate_rc:-0}"

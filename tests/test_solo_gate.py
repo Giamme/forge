@@ -31,7 +31,7 @@ class SoloGateTests(unittest.TestCase):
         run, r = self.review(P2, 'PASS')
         self.assertEqual(self.verdict(run), 'FAIL', r.stdout)
         self.assertEqual((run / 'status').read_text().strip(), 'FAIL')
-        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertEqual(r.returncode, 5, r.stdout)
         self.assertIn('verdict: FAIL (' + OVERRIDE % 'P2' + ')', r.stdout)
         fields = (run / 'qa.gate').read_text().rstrip('\n').split('\t')
         self.assertEqual(fields[:2], ['P2', 'fail'])
