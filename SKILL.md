@@ -69,6 +69,10 @@ For explanation requests, explain the workflow without spending model quota.
   lists them). Never set a control, pin, `drain|stop|retry` or delete a run with `forge control` /
   `forge runs rm` unless the user asks. Exit `130` / `INTERRUPTED`: the run was signalled or
   stopped; relay the `retry` lines it printed.
+- A run that ends with a `waiting for your answer:` block has tasks in status `NEEDS_INPUT`: the
+  implementer asked a question only the user can answer. Relay each question to the user
+  verbatim, and pass the reply with `retry <plan> <id> --answer "<reply>"`. Never answer for the
+  user, and never retry such a task without an answer: nothing else resumes it.
 - Exit `8` / status `INFRA` is a quota, auth or network stop, not a task failure and no
   attempt was spent: report it, say what to fix, and re-run only when told. For a multi-task
   plan, offer the opt-in whole-run review (`review`, or `integrate --final-review <qa-spec>`);

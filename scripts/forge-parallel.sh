@@ -14,6 +14,7 @@
 #                                     [--sweep P0|P1|P2|P3 [--sweep-plausible] [--sweep-max N]]
 #                                     [--sweep-ahead | --no-sweep-ahead]
 #   forge-parallel.sh retry <plan-dir> <task-id> [--dwarf <spec>] [--setup <command>]
+#                                     [--answer <text> | --answer-file <file>]   (a NEEDS_INPUT task)
 #                                     [--timeout S] [--qa-threshold Pn|none|default] [--verify-retries N]
 #   forge-parallel.sh integrate <plan-dir> --approved [--verify-retries N] [--final-review <qa-spec>]
 #   forge-parallel.sh review <plan-dir> [--qa <spec>] [--yolo-qa] [--qa-threshold Pn|none|default]
@@ -1328,12 +1329,16 @@ merge_task() { # merge_task <plan> <id> -> 0 merged, 1 conflicted
 do_retry() {
   local PLAN="${1:?retry needs a plan dir}" id="${2:?retry needs a task id}"; shift 2
   FORGE_RUN_STARTED="$(forge_now)"
-  local NEWDWARF="" jev_rc=0
+  local NEWDWARF="" jev_rc=0 ANSWER="" ANSWER_FILE="" HAVE_ANSWER=0
   while [ $# -gt 0 ]; do
     case "$1" in
       --no-ripwire) export FORGE_RIPWIRE=off; shift ;;
       --output) OUTPUT="${2:?}"; shift 2 ;;
       --dwarf) NEWDWARF="${2:?--dwarf needs a spec}"; shift 2 ;;
+      --answer) [ "$HAVE_ANSWER" = 0 ] || die "retry: give --answer or --answer-file once"
+                ANSWER="${2?--answer needs the answer text}"; HAVE_ANSWER=1; shift 2 ;;
+      --answer-file) [ "$HAVE_ANSWER" = 0 ] || die "retry: give --answer or --answer-file once"
+                ANSWER_FILE="${2:?--answer-file needs a file}"; HAVE_ANSWER=2; shift 2 ;;
       --yolo-dwarf) touch "$PLAN/yolo_dwarf"; shift ;;
       --yolo-qa)    touch "$PLAN/yolo_qa"; shift ;;
       --verify)     printf '%s' "${2:?--verify needs a command}" > "$PLAN/verify_cmd"; rm -rf "$PLAN/verify.d"; PP_LANES_FRESH=0; shift 2 ;;
@@ -1363,6 +1368,21 @@ do_retry() {
   [ -s "$PLAN/wt_root" ] || die "this plan has never been run — use 'run', not 'retry'"
   local st; st="$(task_status "$PLAN" "$id")"
   [ "$st" = "MERGED" ] && die "task '$id' already merged — nothing to retry"
+  # The user's answer to a NEEDS_INPUT task's question: written before anything else is
+  # prepared, atomically, and kept when the preparation then refuses (the same answer can be
+  # retried). Only that status takes one.
+  if [ "$HAVE_ANSWER" != 0 ]; then
+    [ "$st" = NEEDS_INPUT ] || die "retry: '$id' is $st, not waiting for an answer; --answer and --answer-file only answer a NEEDS_INPUT task"
+    if [ "$HAVE_ANSWER" = 2 ]; then
+      [ -f "$ANSWER_FILE" ] && [ -r "$ANSWER_FILE" ] || die "retry: --answer-file '$ANSWER_FILE' is not a readable file"
+      [ -s "$ANSWER_FILE" ] || die "retry: --answer-file '$ANSWER_FILE' is empty"
+      cp "$ANSWER_FILE" "$tdir/.answer.md.tmp" || { rm -f "$tdir/.answer.md.tmp"; die "retry: could not write the answer" 1; }
+    else
+      [ -n "$ANSWER" ] || die "retry: the answer is empty"
+      printf '%s\n' "$ANSWER" > "$tdir/.answer.md.tmp" || { rm -f "$tdir/.answer.md.tmp"; die "retry: could not write the answer" 1; }
+    fi
+    mv "$tdir/.answer.md.tmp" "$tdir/answer.md" || die "retry: could not write the answer" 1
+  fi
 
   # Findings carry-forward, the optional --dwarf escalation and the QA-only resume
   # decision are shared with the scheduler's automatic retries.
@@ -1909,10 +1929,21 @@ do_run() {
     for id in $stopped_ids; do echo "  forge-parallel.sh retry $PLAN $id"; done
   fi
   [ "$interrupted" = 1 ] || [ -n "$stopped_ids" ] && echo
+  # Tasks stopped for the user's answer: the question as it was asked, and the command that
+  # answers it. Not failures, so the retry hint below does not count them.
+  local waiting; waiting="$(awk -F'\t' '$2=="NEEDS_INPUT" {print $1}' "$PLAN/results.tsv")"
+  if [ -n "$waiting" ]; then
+    echo "waiting for your answer:"
+    for id in $waiting; do
+      printf '  %s: %s\n' "$id" "$(awk 'NF { print substr($0, 1, 120); exit }' "$PLAN/tasks/$id/needs_input.md" 2>/dev/null)"
+      echo "    answer with: forge-parallel.sh retry $PLAN $id --answer \"<text>\""
+    done
+    echo
+  fi
   # The retry hint is for tasks that actually failed; a run that only failed verification,
   # or only paused on infrastructure, has nothing to retry task by task. An interrupted task
-  # has its own hint above.
-  if [ "$(awk -F'\t' '$2!="MERGED" && $2!="INFRA" && $2!="PENDING" && $2!="BLOCKED" && $2!="INTERRUPTED" {n++} END {print n+0}' "$PLAN/results.tsv")" -gt 0 ]; then
+  # has its own hint above, a task waiting for an answer its own block.
+  if [ "$(awk -F'\t' '$2!="MERGED" && $2!="INFRA" && $2!="PENDING" && $2!="BLOCKED" && $2!="INTERRUPTED" && $2!="NEEDS_INPUT" {n++} END {print n+0}' "$PLAN/results.tsv")" -gt 0 ]; then
     echo "retry a failed task with its reviewer's findings:"
     echo "  forge-parallel.sh retry $PLAN <task-id> [--dwarf <spec>]"
     echo "or let a run retry them itself:  forge-parallel.sh run $PLAN --retry-failed 1"
