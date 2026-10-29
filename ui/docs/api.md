@@ -412,9 +412,9 @@ Every RunSummary field, plus:
   base verified FAIL; `inconclusive` is the reason the search stopped without a culprit, or `null`;
   `verification_runs` is how many verifications the search ran; `gate_outcome` is `gate.outcome`
   (`confirmed` or `refuted`), `null` without the gate. A file that is not a JSON object, or lacks any of
-  `culprit`, `base_fails`, `inconclusive`, `verification_runs` or `gate`, is `null` and warned. In an
-  object that has them all, a value of the wrong type reads `null` (`base_fails` reads `false` unless
-  it is `true`).
+  `culprit`, `base_fails`, `inconclusive`, `verification_runs` or `gate`, or has a value of the wrong type
+  (`culprit` and `inconclusive` a string or `null`, `base_fails` a boolean, `verification_runs` an integer,
+  `gate` `null` or an object whose `outcome` is a string or `null`), is `null` and warned.
 - `verification` is `null` when none of `verification.status`, `.command`, `.log` exists. A
   solo run's `verification` is always `null`. `runs` comes from `verification.runs.tsv`
   (malformed rows are warned and skipped; an empty `exit` is `null`), `commit` is the first

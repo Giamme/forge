@@ -742,6 +742,16 @@ class ReaderTests(unittest.TestCase):
                 data = detail(plan)
                 self.assertIsNone(data['attribution'], text)
                 self.assertTrue(any(warning.startswith('attribution.json') for warning in data['warnings']), text)
+        with self.subTest('wrong types'):
+            wrong = [dict(found, base_fails='true', culprit=None, gate=None),
+                     dict(found, verification_runs='3'), dict(found, verification_runs=True),
+                     dict(found, culprit=7), dict(found, inconclusive=['step 2']), dict(found, gate=[]),
+                     dict(found, gate={'outcome': 3})]
+            for obj in wrong:
+                self.write(plan / 'attribution.json', json.dumps(obj))
+                data = detail(plan)
+                self.assertIsNone(data['attribution'], obj)
+                self.assertTrue(any(warning.startswith('attribution.json') for warning in data['warnings']), obj)
 
     def test_the_export_leaves_the_question_out_unless_texts_are_chosen(self):
         plan = self.copy_plan()

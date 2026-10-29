@@ -1326,21 +1326,30 @@ def _waves(reader):
 _ATTRIBUTION_KEYS = ('culprit', 'base_fails', 'inconclusive', 'verification_runs', 'gate')
 
 
+def _is_text_or_null(value):
+    return value is None or isinstance(value, str)
+
+
 def _attribution(reader):
-    """RunDetail.attribution from attribution.json, or null when there is none or it is not one (warned)."""
+    """RunDetail.attribution from attribution.json, or null when there is none or any field is missing or of the
+    wrong type (warned): a half-valid file is not evidence for a culprit."""
     name = 'attribution.json'
     obj = reader.object(name)
     if obj is None:
         return None
-    if not all(key in obj for key in _ATTRIBUTION_KEYS):
+    gate = obj.get('gate')
+    outcome = gate.get('outcome') if isinstance(gate, dict) else None
+    runs = obj.get('verification_runs')
+    if not (all(key in obj for key in _ATTRIBUTION_KEYS)
+            and _is_text_or_null(obj['culprit']) and _is_text_or_null(obj['inconclusive'])
+            and isinstance(obj['base_fails'], bool)
+            and isinstance(runs, int) and not isinstance(runs, bool)
+            and (gate is None or isinstance(gate, dict)) and _is_text_or_null(outcome)):
         reader.warn(name, 'not an attribution')
         return None
-    runs = obj['verification_runs']
-    gate = obj['gate'] if isinstance(obj['gate'], dict) else {}
-    return dict(culprit=_text_or_none(obj['culprit'], 200), base_fails=obj['base_fails'] is True,
-                inconclusive=_text_or_none(obj['inconclusive'], 400),
-                verification_runs=runs if isinstance(runs, int) and not isinstance(runs, bool) else None,
-                gate_outcome=_text_or_none(gate.get('outcome'), 40))
+    return dict(culprit=_text_or_none(obj['culprit'], 200), base_fails=obj['base_fails'],
+                inconclusive=_text_or_none(obj['inconclusive'], 400), verification_runs=runs,
+                gate_outcome=_text_or_none(outcome, 40))
 
 
 def detail(path, source='plan') -> dict:
