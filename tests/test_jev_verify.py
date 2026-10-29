@@ -227,6 +227,21 @@ class CandidateSourceTests(JevVerifyTestCase):
         # Only the Verify section is read: the trap's `cargo test` is not a candidate.
         self.assertEqual([(c['command'], c['source']) for c in found], [('bash tests/check.sh', 'memory')])
 
+    def test_a_remembered_command_ends_at_its_markdown_and_its_source_tag(self):
+        # The backtick closing a code span and the rendered [source] tag are not arguments:
+        # "pytest -q`" would be handed to Bash and fail before any test ran.
+        (self.repo / '.forge').mkdir()
+        (self.repo / '.forge' / 'memory.md').write_text(
+            '## Verify\n- run `pytest -q` before merging\n'
+            '- run `go test ./...` before merging\n'
+            '- cargo test --workspace [Cargo.toml]\n'
+            '- then run pytest --lf.\n')
+        found = verify.candidates(self.repo)
+        self.assertEqual([c['command'] for c in found],
+                         ['pytest -q', 'go test ./...', 'cargo test --workspace', 'pytest --lf'])
+        for c in found:
+            self.assertEqual(c['source'], 'memory')
+
     def test_deduplicates_across_sources(self):
         (self.repo / '.forge').mkdir()
         (self.repo / '.forge' / 'verify').write_text('pytest -q\n')

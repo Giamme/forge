@@ -21,19 +21,26 @@ _WORKFLOW_TEST_HINT_RE = re.compile(
     r'\b(pytest|npm (?:test|run\s+test\S*)|yarn (?:test|run\s+test\S*)|go test|cargo test|'
     r'make test|tox\b|jest|vitest|mvn test|gradle test|rspec|phpunit|ctest|go\s+vet\s+&&\s+go\s+test)\b',
     re.I)
+# An argument of a remembered command is a word that ends at the Markdown around it: a code
+# span ends at its backtick, a quote ends the word, and a rendered fact's source tag ("[tests/]")
+# is bookkeeping, not an argument. Without this, `pytest -q` came out as "pytest -q`" (#42).
+_ARG = r"[^\s`'\"\[\]]+"
 _MEMORY_CMD_RES = (
-    re.compile(r'\bpytest(?:\s+-{1,2}\S+)*'),
+    re.compile(r'\bpytest(?:\s+-{1,2}' + _ARG + ')*'),
     re.compile(r'\bmake\s+\w[\w-]*'),
     re.compile(r'\bnpm run\s+[\w:_-]+'),
     re.compile(r'\bnpm test\b'),
     re.compile(r'\byarn(?:\s+run)?\s+[\w:_-]+'),
-    re.compile(r'\bgo test(?:\s+\S+)*'),
-    re.compile(r'\bcargo test(?:\s+\S+)*'),
+    re.compile(r'\bgo test(?:\s+' + _ARG + ')*'),
+    re.compile(r'\bcargo test(?:\s+' + _ARG + ')*'),
     re.compile(r'\btox\b'),
     re.compile(r'\bnox\b'),
     re.compile(r'\bbash\s+[\w./-]+\.sh\b'),
     re.compile(r'\bpython3?\s+[\w./-]+\.py\b'),
 )
+# Punctuation that ends the sentence a command sits in: "pytest -q." names `pytest -q`, but
+# "go test ./..." keeps its dots.
+_SENTENCE_END_RE = re.compile(r'(?:[,;:!?)]|(?<=[^.])\.)+$')
 
 # Extension -> language, for languages_present (#42). Anything else is not code here.
 _LANGUAGE_BY_EXTENSION = {
@@ -209,7 +216,8 @@ def _memory_verify(repo: Path, found, seen) -> None:
         # known runner invocation rather than treating the whole sentence as a command.
         for pattern in _MEMORY_CMD_RES:
             for match in pattern.finditer(fact):
-                _add(found, seen, match.group(0), 'memory', str(path), excerpt=fact)
+                command = _SENTENCE_END_RE.sub('', match.group(0))
+                _add(found, seen, command, 'memory', str(path), excerpt=fact)
 
 
 def candidates(repo) -> list[dict]:
