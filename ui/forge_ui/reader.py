@@ -694,6 +694,8 @@ def _task_detail(reader, task, run_id, waves, branches):
         reader, prefix + '/accepted.by', task['accepted_by'])
     for field, filename in [('prompt', 'prompt.md'), ('approach', 'approach.md'), ('retry_findings', 'retry_findings.md')]:
         task[field] = reader.cap(reader.text(prefix + '/' + filename), prefix + '/' + field)
+    # the implementer's question for the user, when the task stopped NEEDS_INPUT
+    task['needs_input'] = reader.cap(reader.text(prefix + '/needs_input.md'), prefix + '/needs_input')
     task['route'] = []
     for n, line in enumerate((reader.text(prefix + '/route.jsonl') or '').splitlines(), 1):
         if line.strip():
@@ -1279,6 +1281,7 @@ def _solo_detail(reader, source):
     result['settings'] = dict.fromkeys(_SOLO_SETTINGS)
     result['settings']['qa_threshold'], result['settings']['qa_threshold_source'] = _threshold(reader)
     result['verification'] = None
+    result['attribution'] = _attribution(reader)
     result['waves'] = [['solo']]
     attempts = _history(reader, 'attempts.tsv')
     qa = reader.text('qa.last')
@@ -1290,7 +1293,7 @@ def _solo_detail(reader, source):
                 accepted=False, accepted_attempt=None, accepted_over=None,
                 explored=False, route=[], shadow=[],
                 prompt=reader.cap(reader.text('prompt.md'), 'tasks/solo/prompt'), approach=None,
-                retry_findings=None, qa_tail=reader.cap(qa, 'tasks/solo/qa_tail', 4000, True),
+                retry_findings=None, needs_input=None, qa_tail=reader.cap(qa, 'tasks/solo/qa_tail', 4000, True),
                 dwarf_tail=reader.cap(reader.text('dwarf.last'), 'tasks/solo/dwarf_tail', 4000, True),
                 executions=execs, merged_at=None, findings=executions.summary_of(qa),
                 gate=_gate(reader, 'qa.gate'), known_issues=_nonempty(reader, 'known_issues.md'),
@@ -1316,6 +1319,28 @@ def _waves(reader):
         waves.setdefault(wave, []).append(row[1])
         wave_map[row[1]] = wave
     return waves, wave_map
+
+
+# --- attribution: the result of `forge-parallel.sh attribute` ------------------------------------
+
+_ATTRIBUTION_KEYS = ('culprit', 'base_fails', 'inconclusive', 'verification_runs', 'gate')
+
+
+def _attribution(reader):
+    """RunDetail.attribution from attribution.json, or null when there is none or it is not one (warned)."""
+    name = 'attribution.json'
+    obj = reader.object(name)
+    if obj is None:
+        return None
+    if not all(key in obj for key in _ATTRIBUTION_KEYS):
+        reader.warn(name, 'not an attribution')
+        return None
+    runs = obj['verification_runs']
+    gate = obj['gate'] if isinstance(obj['gate'], dict) else {}
+    return dict(culprit=_text_or_none(obj['culprit'], 200), base_fails=obj['base_fails'] is True,
+                inconclusive=_text_or_none(obj['inconclusive'], 400),
+                verification_runs=runs if isinstance(runs, int) and not isinstance(runs, bool) else None,
+                gate_outcome=_text_or_none(gate.get('outcome'), 40))
 
 
 def detail(path, source='plan') -> dict:
@@ -1345,6 +1370,7 @@ def detail(path, source='plan') -> dict:
     run_execs = _run_execs(reader)
     result['verification'] = _verification(reader, result['verification_status'],
                                            [item for item in run_execs if item['role'] == 'verification'])
+    result['attribution'] = _attribution(reader)
     items, integrations = executions.review_dirs(reader)
     published = _published(reader)
     reviews = []
