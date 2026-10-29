@@ -64,7 +64,7 @@ written), and the reader must never raise because of one.
 | `tasks/<id>/qa.last` | the reviewer's final message; its last line matching `FORGE_VERDICT: PASS` or `FORGE_VERDICT: FAIL` is the verdict |
 | `tasks/<id>/prompt.md`, `approach.md`, `retry_findings.md` | free text |
 | `tasks/<id>/accepted.by` | who accepted a task over a reviewer's FAIL, and why (`key=value`: `task`, `status`, `reason`, `by`, `at`, `epoch`, `attempt`, `reviewed_commit`; older runs are free text; returned as text) |
-| `tasks/<id>/qa.gate` | `threshold<TAB>decision<TAB>worst<TAB>n_confirmed<TAB>n_unlabelled<TAB>n_below` (`decision` is `accept` or `keep`, `-` for none) |
+| `tasks/<id>/qa.gate` | `threshold<TAB>decision<TAB>worst<TAB>n_confirmed<TAB>n_unlabelled<TAB>n_below` (`decision` is `accept` (the reviewer said FAIL, every CONFIRMED finding was below the threshold), `fail` (the reviewer said PASS, but listed a blocking CONFIRMED finding) or `keep`, `-` for none) |
 | `tasks/<id>/known_issues.md` | the confirmed findings a threshold tolerated |
 | `tasks/<id>/dwarf.input`, `qa.input` | the prompts forge assembled; `<role>.delivered`, `<role>.resolved` the live dispatch files |
 | `tasks/<id>/<role>.log`, `<role>.clock` | the running dispatch's harness log and its clock: one `<epoch> <bytes>` line each time the log grew (forge-dispatch.sh samples it every second; `FORGE_LOG_CLOCK=off` writes none) |
@@ -573,7 +573,7 @@ Every RunSummary field, plus:
   run, the run dir's `attempts/` (`solo`, `dwarf`, `qa`). Shadow executions are not in it.
 - `merged_at`: the mtime of `tasks/<id>/merged`, or `null`.
 - `findings`: FindingsSummary of the current `qa.last`, or `null`.
-- `gate`: the parsed `qa.gate` (`n_*` integers, `-` is `null`), or `null` when missing or
+- `gate`: the parsed `qa.gate` (`decision` `accept`, `fail` or `keep`; `n_*` integers, `-` is `null`), or `null` when missing or
   malformed (malformed is warned).
 - `known_issues`: whether `known_issues.md` is a non-empty file.
 - `now`: `null` unless the task is `RUNNING`. Then where it is: the newest running non-shadow `dwarf`
@@ -1031,7 +1031,7 @@ lines follow, a line was cut, or reaching them took more than 64 MB of reading.
             "created": 1760619000.0, "explored": true, "propensity": 0.125, "final_status": "MERGED",
             "accepted": true,
             "attempts": [{"n": 1, "alias": "luna", "spec": "luna", "source": "execution", "outcome": "fail",
-                          "reason": null, "gate": false, "model_s": 297.0, "duration_s": 300.0,
+                          "reason": null, "gate": false, "gate_fail": false, "model_s": 297.0, "duration_s": 300.0,
                           "tokens": {"input": 120000, "cached": 90000, "output": 8000}, "timed_out": false}],
             "escalations": [{"n": 1, "from": "luna", "to": "sol:xhigh"}]}],
  "reviews": [{"run": "3f9a0c1d2e4b", "task": "reader", "n": 1, "kind": "primary", "alias": "opus", "spec": "opus",
@@ -1055,7 +1055,7 @@ lines follow, a line was cut, or reaching them took more than 64 MB of reading.
 - `alias`/`spec`/`source`: the last dwarf execution's model (`execution`), else the fifth
   `attempts.tsv` column (`attempts.tsv`), else for attempt 1 only the `tasks.tsv` dwarf (a solo
   run's `dwarf.spec`/`dwarf.resolved`) (`plan`), else all `null`.
-- `gate`: the attempt passed although its (last) primary review said FAIL. `model_s`,
+- `gate`: the attempt passed although its (last) primary review said FAIL. `gate_fail`: the attempt failed although that review said PASS (forge turned it into FAIL). `model_s`,
   `duration_s`, `tokens`, `timed_out`: that dwarf execution's `phases.model`, `duration_s`,
   `tokens`, `timed_out`, else `null`/`false`.
 - `reviews[]`: every finished primary qa execution (`n` its attempt); every shadow whose

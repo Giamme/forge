@@ -94,6 +94,8 @@ its review said (fixed, not fixed, not reported), and links each to the task it 
 shows which of its findings the sweep took and where they stand. The run's *Finish* says how many
 the sweep fixed and lists what it left for `forge issues`, with each reason.
 
+A review the reviewer passed but forge failed, because it listed a blocking CONFIRMED finding, shows a red `forge: FAIL (reviewer said PASS)` chip in the *Review findings* section.
+
 ### Controls
 
 forge-ui reads everything, and it changes things only by calling forge's own commands: it

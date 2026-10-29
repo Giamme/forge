@@ -130,6 +130,7 @@ class ModelsTests(unittest.TestCase):
                          (387.0, 390.0, {'input': 100, 'cached': 10, 'output': 5}))
         self.assertEqual((rows['gate']['accepted'], rows['human']['accepted']), (False, True))
         self.assertEqual(rows['human']['attempts'][0]['gate'], False)
+        self.assertFalse(gate['gate_fail'])
         self.assertEqual([(item['alias'], item['spec'], item['source']) for item in rows['logged']['attempts']],
                          [('sol', 'sol:high', 'attempts.tsv'), (None, None, None)])
         self.assertEqual([(item['alias'], item['spec'], item['source']) for item in rows['planned']['attempts']],
