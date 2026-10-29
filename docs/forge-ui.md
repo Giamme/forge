@@ -104,14 +104,16 @@ locks, the audit log) whichever way you change something, and a change from the 
 indistinguishable from the same command typed in a terminal, except that `control.log` says
 `ui` instead of `cli`. Every change asks you to confirm and says when it takes effect.
 
-- **Run controls** (a plan's inspector): the QA threshold, the per-attempt timeout, how many
+- **Run controls** (a plan's inspector): the QA threshold (shown with its source, `P2 (default)`
+  or `P1 (set)`); it accepts `P0`–`P3`, *Default* (drop the setting; P2) and *None* (P3, nothing
+  tolerated), the per-attempt timeout, how many
   failures before escalating, the effort step, verification retries, the infrastructure backoff,
   and, while a scheduler is live, the retry and infrastructure-retry budgets and max parallel.
   A live run also gets **Drain** (start nothing new; *Resume* ends it), **Stop** (finish what
   runs, then end the run) and **Stop now** (interrupt the running tasks), and one line per
   infrastructure pause: the model or harness it holds, the class, its tasks, and a countdown to
   its next try, or *budget used up*. A task has its own panel for a threshold override
-  (including *None*, which exempts it from the run's threshold), its own retry budget, a
+  (*Inherit*, or a level; *None* means P3 for that task), its own retry budget, a
   **model pin**: the model its next full retry uses, once, and, on a live run, **Retry now**
   for a task that stopped or failed, on the policy's choice or a model you name. A retry is
   queued; the panel says *queued*, then *applied* or *refused* with the scheduler's reason.

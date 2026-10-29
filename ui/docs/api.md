@@ -398,8 +398,10 @@ Every RunSummary field, plus:
 
 - `settings` values are `null` when the file is missing or unparsable; `shadow_qa` is a
   list (empty when missing). `max_parallel`, `escalate_after`, `verify_retries` are integers,
-  `qa_threshold` and `final_qa` the first line of their file. A solo run has no plan
-  settings: every value is `null`, including `shadow_qa`.
+  `final_qa` the first line of their file. `qa_threshold` is the effective level (`P0`..`P3`):
+  a missing file reads `P2` (forge's default) with `qa_threshold_source` `default`; a file reads
+  with source `set`, and `none` in it reads `P3`. A solo run has no plan settings: every value
+  is `null`, including `shadow_qa`, except `qa_threshold` and its source, which read the same way.
 - `verification` is `null` when none of `verification.status`, `.command`, `.log` exists. A
   solo run's `verification` is always `null`. `runs` comes from `verification.runs.tsv`
   (malformed rows are warned and skipped; an empty `exit` is `null`), `commit` is the first
@@ -1280,7 +1282,7 @@ for them only unknown keys and runs the catalog does not hold are `404`. Every w
 ### `GET /api/runs/<key>/controls`
 
 `forge control show <plan dir> --json`: `200` with its object (`plan`, `run_id`, `live`, `fractal`,
-`run` (the plan-wide controls), `tasks` (per task: `status`, `dwarf`, `qa`, `qa_threshold`,
+`run` (the plan-wide controls; `qa_threshold` is the effective level and `qa_threshold_source` is `set` or `default`), `tasks` (per task: `status`, `dwarf`, `qa`, `qa_threshold`,
 `retry_budget`, `retries_used`, `pin`, `escalation_stop`, `escalation_next`) and `log`). No token
 is needed to read it. Of `run` the page also reads `max_parallel` (1–64 or `null`), `infra_backoff`
 (the shape, `exp:60` when unset), `escalate_effort` (`on`/`off`), `drained` and `stopping`
@@ -1300,7 +1302,7 @@ known or a spec runs is for the CLI to say (its `400` or `409` comes back as abo
 
 | Body | CLI call (after `forge`) |
 |---|---|
-| `{"action": "set", "key": "qa-threshold", "value": "P2"}` | `control set <dir> qa-threshold P2 --actor ui --json` |
+| `{"action": "set", "key": "qa-threshold", "value": "P2"}` (`default` at run level removes the setting, `none` is P3; for a task `inherit` drops the override) | `control set <dir> qa-threshold P2 --actor ui --json` |
 | `{"action": "set", "key": "retry-budget", "value": "inherit", "task": "reader"}` | `control set <dir> retry-budget inherit --task reader --actor ui --json` |
 | `{"action": "pin", "task": "graph", "spec": "sol:high:codex"}` | `control pin <dir> graph sol:high:codex --actor ui --json` |
 | `{"action": "unpin", "task": "graph"}` | `control unpin <dir> graph --actor ui --json` |
