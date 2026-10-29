@@ -1661,7 +1661,7 @@ verify_result_body() { # plan, checkout, artifact directory[, fixed source]
   # falls straight through to the exact UNVERIFIED behaviour below. A Jev failure
   # must never change the outcome of a run.
   if [ -z "$cmd" ] && [ -z "$fixed" ] && [ "$jev_loaded" = 1 ] && forge_decide_active verify-discover; then
-    local jev_json jev_rc jev_cmd
+    local jev_json jev_rc jev_cmd jev_note
     # --json rather than the bare form: the record exists so a human can audit why a
     # command ran, and "confidence: null" answers nothing. The exit code still decides.
     jev_json="$(python3 "$SKILL_DIR/scripts/forge-jev.py" verify-discover --repo "$repo" --json --run-dir "$out" 2>/dev/null)"
@@ -1678,9 +1678,22 @@ except ValueError:
     fi
     if [ -n "$jev_cmd" ]; then
       cmd="$jev_cmd"
+      # Coverage (#42): the pick's evidence names fewer languages than the repo has. The
+      # pick stands and its run still decides; only the announcement says so.
+      jev_note="$(printf '%s' "$jev_json" | python3 -c '
+import json, sys
+try:
+    coverage = (json.load(sys.stdin) or {}).get("coverage") or {}
+except ValueError:
+    coverage = {}
+covered = coverage.get("covered") or []
+missing = [language for language in coverage.get("present") or [] if language not in covered]
+if covered and missing:
+    print(" — it may cover only part of the repo (covers %s; the repo also has %s)" % (", ".join(covered), ", ".join(missing)))
+' 2>/dev/null)"
       # Loud on purpose: an unreviewed command is about to run on the user's behalf,
       # and they must never discover that later from a log instead of right here.
-      note "jev chose a verification command (no --verify or .forge/verify configured): $cmd"
+      note "jev chose a verification command (no --verify or .forge/verify configured): $cmd$jev_note"
       printf '%s' "$jev_json" | python3 -c '
 import json, sys
 out = sys.argv[1]
