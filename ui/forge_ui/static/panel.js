@@ -209,7 +209,7 @@ window.ForgePanel = (() => {
     const s = section(host, 'Settings');
     fields(s, [['Repo', midPath(run.repo), true], ['Run ID', run.run_id, true], ['Path', midPath(run.path), true], ['Source', run.source],
       ['Decompose', run.decompose_level], ['Updated', time(run.updated)], ['Explore', run.settings && run.settings.explore], ['Shadow rate', run.settings && run.settings.shadow_rate],
-      ['Shadow reviewers', run.settings && plates(list(run.settings.shadow_qa))], ['QA threshold', run.settings && run.settings.qa_threshold],
+      ['Shadow reviewers', run.settings && plates(list(run.settings.shadow_qa))], ['QA threshold', run.settings && run.settings.qa_threshold && run.settings.qa_threshold + (run.settings.qa_threshold_source === 'default' ? ' (default)' : '')],
       ['Max parallel', run.settings && run.settings.max_parallel], ['Final reviewer', run.settings && run.settings.final_qa ? plate(run.settings.final_qa) : undefined],
       ['Timeout (seconds)', run.settings && run.settings.timeout], ['Verification', chip((run.verification && run.verification.status) || run.verification_status)],
       ['Command', run.verification && run.verification.command, true]]);

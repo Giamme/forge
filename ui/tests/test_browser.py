@@ -762,6 +762,18 @@ class Controls(unittest.TestCase):
         self.assertTrue(page.is_enabled('#inspector [data-row=qa-threshold] button[data-value=P1]'))
         self.assertClean(page)
 
+    def test_the_run_record_says_when_the_threshold_is_the_default(self):
+        page = self.open(cdn=False, view='2d')
+        self.inspect(page)
+        value = "() => [...document.querySelectorAll('#inspector dt')].find(d => d.textContent === 'QA threshold').nextElementSibling.textContent"
+        self.assertEqual(page.evaluate(value), 'P2')                      # the fixture's file sets it
+        self.mark(page)
+        (self.plan / 'qa_threshold').unlink()
+        self.poll()
+        self.rebuilt(page)
+        self.assertEqual(page.evaluate(value), 'P2 (default)')
+        self.assertClean(page)
+
     def test_a_change_is_confirmed_sent_to_the_cli_and_shown(self):
         page = self.open(cdn=False, view='2d')
         self.inspect(page)
