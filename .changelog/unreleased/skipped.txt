@@ -1,2 +1,3 @@
 01743bb	test: clear forge decide's run state from the suite's environment
 6435363	chore(forge): forge's project memory from the E0 run
+b5d69a1	test(ui): wait for a hanging browser command's pid instead of racing it
