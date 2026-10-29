@@ -135,6 +135,18 @@ class SendBackTests(MessageCase):
         self.assertEqual(self.statuses(self.plan), ['INCOMPLETE'])
         self.assertIn('(blocked, 0.900)', self.text(self.plan, 'message.md'))
 
+    def test_a_long_multibyte_message_is_quoted_whole_characters_and_still_sent_back(self):
+        # 3000 bytes would land inside a three-byte character; the cut is in characters
+        said = 'I am blocked\n' + '詳' * 1001 + 'a'
+        self.gate('on', blocked=0.9)
+        self.start(**{'a.dwarf.1': {'message': said}})
+        result = self.run_retries(0)
+        self.assertEqual(result.returncode, 5, result.stdout)
+        self.assertEqual(self.calls(), ['dwarf'])
+        self.assertEqual(self.statuses(self.plan), ['INCOMPLETE'])
+        quoted = self.text(self.plan, 'message.md').split('\n\n', 1)[1].rstrip('\n')
+        self.assertEqual(quoted, '\n'.join('> ' + line for line in said[-3000:].split('\n')))
+
     def test_a_question_stops_the_task_for_the_user_even_when_nothing_changed(self):
         self.gate('on', question=0.9)
         self.start(**{'a.dwarf.1': {'no_edit': True, 'message': QUESTION}})

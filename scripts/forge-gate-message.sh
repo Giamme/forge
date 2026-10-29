@@ -19,7 +19,12 @@ forge_gate_message() { # forge_gate_message <plan> <id> <tdir> <wt> <attempt>
     --plan "$plan" --task "$id" --attempt "$attempt" --repo "$REPO" 2>/dev/null)" || rc=$?
   [ "$rc" -eq 0 ] && [ -n "$row" ] || return 0
   IFS=$'\t' read -r which p <<< "$row"
-  said="$(tail -c 3000 "$tdir/dwarf.last" 2>/dev/null)"
+  # the last 3000 characters, not bytes: a byte cut can split a UTF-8 character, and sed then
+  # fails on the illegal byte sequence (invalid input bytes become U+FFFD)
+  said="$(python3 -c '
+import sys
+text = open(sys.argv[1], "rb").read().decode("utf-8", "replace")[-3000:]
+sys.stdout.buffer.write(text.encode("utf-8"))' "$tdir/dwarf.last" 2>/dev/null)"
 
   case "$which" in
     question)
