@@ -313,9 +313,16 @@ renders both — the last moment the plan can be changed for free.
 Decompose-mode QA prompts require a final line:
 
 ```
-FORGE_VERDICT: PASS    no confirmed correctness bug (style nits are not failures)
-FORGE_VERDICT: FAIL    at least one CONFIRMED correctness bug
+FORGE_VERDICT: PASS   — no CONFIRMED finding at the blocking threshold (P2 or worse)
+FORGE_VERDICT: FAIL   — at least one CONFIRMED finding at the blocking threshold (P2 or worse)
 ```
+
+forge decides the verdict from the findings, at a blocking threshold: `P2` unless
+`--qa-threshold` sets another. A CONFIRMED finding at the threshold or worse, or one with no
+severity, blocks: a PASS that lists one becomes FAIL. A CONFIRMED finding below the threshold
+never blocks: a FAIL made only of those is accepted, and either way they are recorded in
+`known_issues.md`, which `forge issues` and the sweep pick up. PLAUSIBLE findings never block.
+`--qa-threshold P3` (or `none`) makes every CONFIRMED finding block.
 
 The runner accepts only a standalone verdict on the final nonempty line (the shared parser
 also tolerates the dash gloss the prompt prints after each verdict, trailing whitespace and
@@ -351,7 +358,7 @@ edited test file in each. Every file gets one result in
 The reviewer's prompt lists the results and asks for a `[P2][CONFIRMED]` finding for each
 test that passes without the change, unless the reviewer explains why it need not fail
 (a refactor kept green). It is advice: forge never changes a status or verdict from it, and
-a P2 only blocks through the reviewer and the usual `--qa-threshold` gate. The exports are
+a P2 only blocks through the reviewer and the usual threshold gate (`P2` by default, see [QA verdicts](#qa-verdicts)). The exports are
 throwaway directories outside the review snapshot, so no fingerprint changes. forge-ui
 shows the evidence under the task's review findings, and each check is recorded in the
 run dataset as a `fail_first` event with the JSON attached. Without
@@ -394,23 +401,26 @@ P0 data loss, security hole, crash or wrong result on the main path; P1 wrong be
 realistic input or a broken existing contract; P2 edge-case bug, unusual-timing race, missing
 hardening; P3 minor. Severity is impact; CONFIRMED/PLAUSIBLE is confidence.
 
-`run`/`retry --qa-threshold Pn` (remembered in `<plan>/qa_threshold`; `none` clears it) sets
-the **least severe level that still blocks**. `tasks/<id>/qa_threshold` overrides it per task (the value `none` exempts the task from a plan threshold; `forge control set ... qa-threshold` writes both and takes effect at the next attempt) —
+`--qa-threshold Pn` on `plan`, `run`, `retry` or `review` (remembered in `<plan>/qa_threshold`; `none`
+means P3, `default` removes the setting) changes the default `P2`, the **least severe level that
+still blocks** (see [QA verdicts](#qa-verdicts)). `tasks/<id>/qa_threshold` overrides it per task (a
+per-task `none` means P3, so it exempts the task from a looser plan threshold; `forge control set ... qa-threshold`
+writes both and takes effect at the next attempt) —
 the way to give a dev-tooling or investigation task a looser bar than production code,
 which otherwise gets a new finding in a new corner of a non-default option every round and
 only a human decision ends it. The orchestrator decides *deterministically* (`forge-contract.py gate`),
-it does not take the reviewer's word: with a threshold set, a `FAIL` becomes `PASS` with known
+and does not take the reviewer's word in either direction: a `FAIL` becomes `PASS` with known
 issues only when there is at least one CONFIRMED finding, every CONFIRMED finding carries a
-`P0..P3` label, and all of them are strictly milder than the threshold. Anything unlabelled,
-any blocking finding, or a `FAIL` with no CONFIRMED finding stays a failure. The task's status is
-then the literal `PASS`; `known_issues.md`, `qa.gate` and the summary say what was tolerated.
-Without a threshold none of this applies.
+`P0..P3` label, and all of them are strictly milder than the threshold; a `PASS` that lists a
+blocking finding becomes `FAIL`. Anything unlabelled, any blocking finding, or a `FAIL` with no
+CONFIRMED finding stays a failure. The task's status is then the literal `PASS`; `known_issues.md`,
+`qa.gate` and the summary say what was tolerated.
 
 ### The finding sweep (opt-in)
 
 Tolerated findings are recorded, not fixed. `run --sweep Pn` fixes them inside the run instead: once
 every task has merged, and before the combined verification, the scheduler runs `forge-sweep.py plan`
-once. It collects the open findings at `Pn` or worse (the ones `--qa-threshold` tolerated, plus
+once. It collects the open findings at `Pn` or worse (the ones the threshold tolerated, plus
 PLAUSIBLE ones with `--sweep-plausible`), with `forge issues`' own collector, and leaves out:
 
 - findings a person accepted with `accept`, and findings of fix tasks (one round: what a sweep review
@@ -531,7 +541,7 @@ changed spec passed, mostly effort bumps); the attempts this policy makes are wh
 
 **Live controls.** `forge control show|set|pin|unpin <plan>` changes a run while it works:
 `qa-threshold` (read once per attempt, so an attempt keeps the bar it started with; per task, `none`
-exempts it and `inherit` drops the override), `timeout`, `escalate-after`, `escalate-effort`
+(P3) exempts it from a looser plan threshold and `inherit` drops the override; at plan level, `default` restores P2), `timeout`, `escalate-after`, `escalate-effort`
 (`on|off`), `verify-retries`, `infra-backoff` (a shape as for `--infra-backoff`; `none` drops it,
 read at the next infrastructure wait), and, only while a scheduler is live, `retry-budget` (plan
 or `--task`), `infra-retries` and `max-parallel` (1 to 64, at the next dispatch decision; a lower
@@ -685,7 +695,7 @@ Four subcommands act on plans after tasks have run. Full usage and refusal condi
   over the combined result (`integration.base..tip`, or `parent..candidate`) in a disposable
   checkout with the goal, every task's requirements, known issues, drift, guard notes and the
   verification result in front of the reviewer. Same verdict/severity contract and
-  `--qa-threshold` gate as per-task QA; a mutation during the review is `INVALIDATED`; a `FAIL`
+  threshold gate as per-task QA; a mutation during the review is `INVALIDATED`; a `FAIL`
   or missing verdict blocks `integrate` with exit `5`, an infrastructure stop with `8`, and the
   user's branch is never touched. Nothing runs unless one of them is invoked.
 - **`split <plan> <new-plan> --tasks a,b`** copies the selected tasks' saved state to a new plan,
@@ -783,7 +793,8 @@ The user's own branch and working tree are untouched for the whole run.
 | task status `INFRA`, `run` exits `8` | quota/auth/rate limit/network/empty output stopped a dispatch; no attempt spent. See `tasks/<id>/infra.txt`, fix the cause, run again (or `--infra-retries M`, `--infra-fallback`) |
 | task status `INTERRUPTED`, `run` exits `130` | the run was signalled or stopped with `forge control stop --now`; verification was skipped. The summary prints `forge-parallel.sh retry <plan> <id>` for each one; a plain `run` does not dispatch them |
 | a run that sits idle with tasks `PENDING` | `forge control drain` is in effect (`forge control show` says `drained`; `forge control resume` continues), every scope a task needs is paused on infrastructure (`infra.paused`), or `max-parallel` is lower than you think |
-| a `FAIL` task merged anyway | an explicit `--qa-threshold` tolerated its findings; see `known_issues.md` and `qa.gate` |
+| a `FAIL` task merged anyway | the threshold (`P2` by default) tolerated its findings, or a person ran `accept`; see `known_issues.md` and `qa.gate` |
+| a task `FAIL`ed although its reviewer said `PASS` | forge's gate: a CONFIRMED finding at or above the threshold was listed (`qa.gate` decision `fail`); the retry starts with a note saying so |
 | task status `CONFLICT` | QA passed but the merge onto the integration branch conflicted — `files` was understated somewhere |
 | every wave has one task | `files` sets overlap across most tasks; the decomposition is not actually parallel |
 | dwarves ignore existing work | `goal.txt` or `files` missing, so the capsule carries no useful status |

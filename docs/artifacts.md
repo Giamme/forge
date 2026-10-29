@@ -30,6 +30,8 @@ A solo run also records, for forge-ui and for you:
   status              RUNNING, then PASS|FAIL|UNKNOWN|NOCHANGES|INVALIDATED|TIMEOUT|INFRA|INTERRUPTED|ERROR
   dwarf.spec, qa.spec the specs the run was given
   attempts.tsv        epoch, attempt number, status, infrastructure class, dwarf spec; one row per invocation
+  qa.gate, known_issues.md  the gate's decision (accept, fail or keep) and the findings the threshold tolerated
+  qa_threshold        only with --qa-threshold: P0-P3 or none; without it the default P2 applies
 ```
 
 Plus, in the repo itself and surviving the run:
@@ -48,7 +50,7 @@ A decomposed run adds:
   waves.tsv, deferrals.txt
   tasks/<id>/{capsule.md,prompt.md,dwarf.*,qa.*,changes.diff,status}
   tasks/<id>/attempt, attempts.tsv     attempts spent; one audit row per entry (incl. refunded stops)
-  tasks/<id>/known_issues.md, qa.gate  findings tolerated by --qa-threshold, and the gate's decision
+  tasks/<id>/known_issues.md, qa.gate  findings the threshold tolerated, and the gate's decision (accept, fail or keep)
   sweep/plan.json, plan.md             run --sweep: the fix tasks, their findings, and every finding left out with its reason
   tasks/<id>/sweep.json                a fix task's findings (S1, S2, ...), each with its source task and key
   tasks/<id>/sweep.outcome.json        what the fix task's review said of each, written when it merged; forge issues reads it
@@ -57,7 +59,7 @@ A decomposed run adds:
   tasks/<id>/guard.txt                 what forge observed about the implementer (self-commit, orphans, promises)
   tasks/<id>/infra.txt, resume, noretry  infrastructure stop record (<role>.infra plus stage=); QA-only resume marker; no-progress marker
   tasks/<id>/<role>.harness            only while a guarded dispatch runs: its harness's pid and start time, for forge-guard.py stop
-  tasks/<id>/qa_threshold              optional per-task blocking threshold: P0-P3, or none (exempt from the plan's)
+  tasks/<id>/qa_threshold              optional per-task blocking threshold: P0-P3, or none (P3; exempt from a looser plan threshold)
   tasks/<id>/escalations.tsv           epoch, attempt, from-spec, to-spec, source (policy|retry|pin|fallback); older rows have 4 columns
   tasks/<id>/escalation.pin            a human's one-shot model for the next full retry: one dwarf spec on one line
   tasks/<id>/escalation.pin.applying   the pin while a retry has claimed it; removed once the retry is recorded
@@ -70,7 +72,7 @@ A decomposed run adds:
   tasks/<id>/review_sessions.tsv       one row per review round while plan --reviewer-session is on: round, attempt, mode, reason, session id
   tasks/<id>/retry_budget, retries.used   live per-task retry budget (a number); retries spent (kept after the run)
   results.tsv                          id  status  branch
-  timeout, qa_threshold, verify_retries  options remembered from run/retry flags (also escalate_after)
+  timeout, qa_threshold, verify_retries  options remembered from plan/run/retry/review flags (also escalate_after); no qa_threshold file means the default P2
   escalate_effort                      on: the retry policy's effort step (--escalate-effort; absent = off)
   infra_backoff, infra_fallback        --infra-backoff's shape; on while --infra-fallback is set
   max_parallel                         the concurrency limit: written by each run from --max-parallel, changed live by forge control
