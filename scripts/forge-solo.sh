@@ -352,7 +352,7 @@ if [ -z "$NATIVE" ]; then
     printf '%s\t%s\n' "$THR" "$gate_line" > "$RUN/qa.gate"
     case "$(printf '%s' "$gate_line" | awk -F'\t' '{print $1}')" in
       accept) verdict=PASS; gate_note=" (accepted with known issues: $RUN/known_issues.md)" ;;
-      fail)   verdict=FAIL; gate_rc=5; gate_note=" (the reviewer said PASS, but listed a CONFIRMED finding at or above the $THR threshold — forge made it FAIL)" ;;
+      fail)   verdict=FAIL; gate_note=" (the reviewer said PASS, but listed a CONFIRMED finding at or above the $THR threshold — forge made it FAIL)" ;;
     esac
   fi
 fi
@@ -374,4 +374,5 @@ else
 fi
 [ ! -s "$RUN/guard.txt" ] || { echo; echo "implementer guard notes:"; sed 's/^/  /' "$RUN/guard.txt"; }
 forge_update_notice
-exit "${gate_rc:-0}"
+[ "${verdict:-UNKNOWN}" != FAIL ] || exit 5
+exit 0

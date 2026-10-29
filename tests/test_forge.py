@@ -434,7 +434,7 @@ class ForgeTests(unittest.TestCase):
   # Verdict words win over the exit code; without a verdict the exit code decides.
   cases=[
    ('PASS', {}, {}, [], 0, 'PASS', ''),
-   ('FAIL', {'VERDICT':'FAIL'}, {}, [], 0, 'FAIL', ''),
+   ('FAIL', {'VERDICT':'FAIL'}, {}, [], 5, 'FAIL', ''),
    ('NOCHANGES', {}, {'change.dwarf.1':{'no_edit':True,'message':'nothing in the tree needs an edit'}}, [], 5, 'NOCHANGES', ''),
    ('INFRA', {}, {'change.dwarf.1':{'rc':1,'stderr':'Claude AI usage limit reached|1760000000'}}, [], 8, 'INFRA', 'quota'),
    ('QA-INFRA', {}, {'change.qa.1':{'rc':1,'is_error':True,'verdict':'none','findings':"You've hit your usage limit. Try again in 2 hours."}}, [], 8, 'INFRA', 'quota'),
