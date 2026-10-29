@@ -244,6 +244,20 @@ class RefusalTests(NeedsInputCase):
                 self.assertFalse((p / 'tasks/a/answer.md').exists())
                 self.assert_nothing_changed(p, before, dwarfs)
 
+    def test_a_plan_dir_the_answer_check_cannot_write_to_still_refuses_an_empty_answer(self):
+        # The check walks the options in a scratch dir inside the plan. When that dir cannot be
+        # made, the empty answer must still be refused, not taken unchecked.
+        p = self.waiting_plan()
+        before, dwarfs = self.snapshot(p), self.dwarf_count()
+        p.chmod(0o555)
+        try:
+            r = self.run_script('forge-parallel.sh', 'retry', p, 'a', '--answer', '')
+        finally:
+            p.chmod(0o755)
+        self.assertEqual(r.returncode, 2, r.stdout)
+        self.assertFalse((p / 'tasks/a/answer.md').exists())
+        self.assert_nothing_changed(p, before, dwarfs)
+
     def test_the_preparation_itself_wants_a_fresh_answer(self):
         p = self.waiting_plan()
         before, dwarfs = self.snapshot(p), self.dwarf_count()

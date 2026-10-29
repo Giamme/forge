@@ -1375,6 +1375,8 @@ do_retry() {
       [ -s "$pre_dir/val" ] || pre_val=""
     fi
     rm -rf "$pre_dir"
+  else
+    die "retry: cannot write to the plan dir $PLAN"
   fi
   if [ "$pre_ok" = 1 ] && [ "$pre_n" != 0 ]; then
     [ "$pre_n" = 1 ] || die "retry: give --answer or --answer-file once"
@@ -1394,10 +1396,13 @@ do_retry() {
       --no-ripwire) export FORGE_RIPWIRE=off; shift ;;
       --output) OUTPUT="${2:?}"; shift 2 ;;
       --dwarf) NEWDWARF="${2:?--dwarf needs a spec}"; shift 2 ;;
+      # The check above refuses an empty answer first; these hold when its walk could not run.
       --answer) [ "$HAVE_ANSWER" = 0 ] || die "retry: give --answer or --answer-file once"
-                ANSWER="${2?--answer needs the answer text}"; HAVE_ANSWER=1; shift 2 ;;
+                ANSWER="${2?--answer needs the answer text}"; HAVE_ANSWER=1; shift 2
+                [ -n "$ANSWER" ] || die "retry: the answer is empty" ;;
       --answer-file) [ "$HAVE_ANSWER" = 0 ] || die "retry: give --answer or --answer-file once"
-                ANSWER_FILE="${2:?--answer-file needs a file}"; HAVE_ANSWER=2; shift 2 ;;
+                ANSWER_FILE="${2:?--answer-file needs a file}"; HAVE_ANSWER=2; shift 2
+                [ -s "$ANSWER_FILE" ] || die "retry: --answer-file '$ANSWER_FILE' is empty or missing" ;;
       --yolo-dwarf) touch "$PLAN/yolo_dwarf"; shift ;;
       --yolo-qa)    touch "$PLAN/yolo_qa"; shift ;;
       --verify)     printf '%s' "${2:?--verify needs a command}" > "$PLAN/verify_cmd"; rm -rf "$PLAN/verify.d"; PP_LANES_FRESH=0; shift 2 ;;
