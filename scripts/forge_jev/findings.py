@@ -36,13 +36,18 @@ Output, a JSON list on stdout, one object per input finding, in input order:
 - `duplicate_of` is the candidate id the model chose, null when it chose `none` or was not
   asked. `dup_p` is that choice's probability; when it chose `none`, the highest probability of
   any candidate (the closest duplicate); null when it was not asked.
-- `concrete` is the Noul of `c<i>`; null for a CONFIRMED finding or an unanswered question.
+- `concrete` is the probability that the finding names a concrete defect: one minus the Noul of
+  `c<i>`, because the rubric asks the opposite way (does it read as a preference?) so that a
+  high Noul keeps the direction every other gate has, "the gate acts". Null for a CONFIRMED
+  finding or an unanswered question.
 
 Exit 3 is no opinion and prints nothing: the gate is off, the model did not answer, or the input
 is unusable. Shadow prints the same JSON as on: the caller records it, and the mode decides
 whether it acts.
 
 `decisions`, `score`, `fired` and `baseline` are what forge_decide.sites reads for this site.
+`score` is the same concreteness as the output's `concrete`, so it is measured against `baseline`
+(1.0 for a finding that looks concrete) in one direction.
 """
 from __future__ import annotations
 
@@ -68,6 +73,13 @@ def _probability(value) -> float | None:
         return None
     value = float(value)
     return value if math.isfinite(value) and 0.0 <= value <= 1.0 else None
+
+
+def _concreteness(preference) -> float | None:
+    """P(concrete defect) from the Noul of `finding_concrete`, which asks whether the finding is
+    a preference; None when it is not a probability."""
+    p = _probability(preference)
+    return None if p is None else 1.0 - p
 
 
 def _text(value) -> str:
@@ -149,7 +161,7 @@ def main(args) -> int:
     out = []
     for item, ids in zip(findings, options):
         duplicate_of, dup_p = _duplicate(result, f"d{item['i']}", ids) if ids else (None, None)
-        concrete = _probability(noul(result, f"c{item['i']}")) if item['status'] == 'PLAUSIBLE' else None
+        concrete = _concreteness(noul(result, f"c{item['i']}")) if item['status'] == 'PLAUSIBLE' else None
         out.append(dict(fp=item['fp'], duplicate_of=duplicate_of,
                         dup_p=None if dup_p is None else round(dup_p, 3),
                         concrete=None if concrete is None else round(concrete, 3)))
@@ -172,10 +184,11 @@ def decisions(body) -> list[str]:
 
 
 def score(answers, qid, request=None) -> float | None:
-    """The Noul of a `c<i>` question; None for any other id or an answer that is not a Noul."""
+    """P(concrete) of a `c<i>` question (one minus its Noul, see the module docstring); None for any
+    other id or an answer that is not a Noul."""
     answer = (answers or {}).get(qid)
     if _index(qid) >= 0 and isinstance(answer, dict) and answer.get('type', 'noul') == 'noul':
-        return _probability(answer.get('noul'))
+        return _concreteness(answer.get('noul'))
     return None
 
 

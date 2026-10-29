@@ -168,8 +168,8 @@ def read(path: Path) -> str:
         return ""
 
 
-def run(cmd, cwd=None, stdin=None, check=True):
-    env = dict(os.environ, LC_ALL="C", GH_PROMPT_DISABLED="1", GH_NO_UPDATE_NOTIFIER="1")
+def run(cmd, cwd=None, stdin=None, check=True, extra_env=None):
+    env = dict(os.environ, LC_ALL="C", GH_PROMPT_DISABLED="1", GH_NO_UPDATE_NOTIFIER="1", **(extra_env or {}))
     try:
         res = subprocess.run(cmd, cwd=cwd, input=stdin, capture_output=True, text=True, env=env, timeout=120)
     except FileNotFoundError:
@@ -1068,6 +1068,17 @@ def number(value):
     return float(value) if ok else None
 
 
+def gate_env(cwd):
+    """FORGE_DECIDE_REPO for the gate subprocesses: the repository's top level, as forge_decide_env exports it.
+
+    `status` has no --repo, so without it the repo level of the configuration (.forge/decide.json, the repo profile)
+    would not apply to the readiness this script reads, while the verb, given --repo, would apply it.
+    """
+    res = run(["git", "rev-parse", "--show-toplevel"], cwd=cwd, check=False)
+    top = res.stdout.strip() if res.returncode == 0 else ""
+    return {"FORGE_DECIDE_REPO": top or os.path.realpath(cwd)}
+
+
 def findings_gate(cwd):
     """(mode, {threshold: value}) when the findings gate is shadow or on and can be asked, else None.
 
@@ -1077,13 +1088,15 @@ def findings_gate(cwd):
     """
     here = Path(__file__).resolve().parent
     try:
-        res = run([sys.executable, str(here / "forge-jev.py"), "status", "--json"], cwd=cwd, check=False)
+        env = gate_env(cwd)
+        res = run([sys.executable, str(here / "forge-jev.py"), "status", "--json"], cwd=cwd, check=False, extra_env=env)
         found = json.loads(res.stdout)["gates"]["findings"] if res.returncode == 0 else None
         if not (isinstance(found, dict) and found.get("ready") is True and found.get("mode") in ("shadow", "on")):
             return None
         limits = dict(GATE_DEFAULTS)
         try:
-            from forge_jev import threshold
+            from forge_jev import threshold, use_repo
+            use_repo(env["FORGE_DECIDE_REPO"])
             limits = {name: threshold(name, site=GATE_SITE) for name in GATE_DEFAULTS}
         except Exception:  # a threshold that cannot be read keeps its default
             pass
@@ -1104,7 +1117,7 @@ def ask_findings(cwd, todo, open_issues, open_titles, lang):
     plans = {}
     for f in todo:
         plans.setdefault(f["plan_dir"], []).append(f)
-    answers = {}
+    answers, env = {}, gate_env(cwd)
     for plan_dir, items in plans.items():
         candidates, entries = {}, []
         for f in items:
@@ -1126,7 +1139,7 @@ def ask_findings(cwd, todo, open_issues, open_titles, lang):
             json.dump({"findings": entries, "candidates": list(candidates.values())}, fh)
         try:
             res = run([sys.executable, str(here / "forge-jev.py"), "findings", "--repo", cwd, "--input", fh.name,
-                       "--run-dir", plan_dir], cwd=cwd, check=False)
+                       "--run-dir", plan_dir], cwd=cwd, check=False, extra_env=env)
             rows = json.loads(res.stdout) if res.returncode == 0 else []
         except (ValueError, Fail, OSError, subprocess.SubprocessError):
             rows = []

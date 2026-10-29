@@ -36,7 +36,9 @@ assert FAKE_GH != test_issues.FAKE_GH
 
 # forge-jev.py of the copied skill: answers each request, learned from STUB_ANSWERS =
 # {"dup": {<text fragment>: [<candidate id>, <p>]}, "concrete": {<text fragment>: <p>}}.
-# A finding that matches no fragment is answered `none` (dup) and 0.9 (concrete).
+# A finding that matches no fragment is answered `none` (dup) and 0.9 (concrete). The table holds
+# how concrete the finding is; the stub answers the rubric as it is worded (finding_concrete asks
+# whether the finding is a PREFERENCE), so the Noul it writes is one minus that.
 WRAPPER = '''#!/usr/bin/env python3
 import hashlib, json, os
 from pathlib import Path
@@ -65,7 +67,7 @@ def spy(value):
                 spread[picked] = p
                 answers[qid] = dict(type='choice', choice=picked, confidence=p, probabilities=spread)
             else:
-                answers[qid] = dict(type='noul', noul=lookup(table.get('concrete', {}), text, 0.9))
+                answers[qid] = dict(type='noul', noul=round(1 - lookup(table.get('concrete', {}), text, 0.9), 6))
         payload = dict(answers=answers, model=value['model'])
         Path(os.environ['FORGE_JEV_FIXTURES'], hashlib.sha256(real(value)).hexdigest() + '.json').write_text(
             json.dumps(payload))
@@ -240,6 +242,21 @@ class DuplicateTests(GateCase):
         self.assertNotIn('commented', out)
         self.assertEqual(len(self.calls('create')), 2)
         self.assertEqual(self.calls('comment'), [])
+        self.assertFalse(list((self.state_home / 'forge' / 'findings').glob('*.comments.json')))
+
+    def test_a_repo_profile_that_shadows_the_gate_beats_the_users_on(self):
+        # `status` has no --repo: forge-issues.py must hand it the repository, or a profile that only the
+        # repo defines is not found and the gate reads `on`
+        self.gate('on')
+        (self.repo / '.forge').mkdir()
+        (self.repo / '.forge' / 'decide.json').write_text(
+            json.dumps({'profiles': {'quiet': {'gates': {'findings': 'shadow'}}}}))
+        self.env['FORGE_DECIDE_PROFILE'] = 'quiet'
+        out = self.forge_issues(str(self.plan), '--apply')
+        self.assertEqual(self.entry(out, 'receipt is replayed')['gate']['mode'], 'shadow')
+        self.assertEqual(out['comments'], [])
+        self.assertEqual(self.calls('comment'), [])
+        self.assertEqual(len(self.calls('create')), 2)
         self.assertFalse(list((self.state_home / 'forge' / 'findings').glob('*.comments.json')))
 
     def test_a_duplicate_below_the_threshold_is_filed(self):
@@ -458,17 +475,17 @@ class MeasurementTests(unittest.TestCase):
         self.assertEqual(findings.decisions(body), ['c2', 'c10'])
         self.assertEqual(findings.decisions({}), [])
 
-    def test_score_is_the_noul_of_a_concrete_question_only(self):
-        answers = {'c0': dict(type='noul', noul=0.2), 'd0': dict(type='choice', choice='4', confidence=0.9),
+    def test_score_is_the_concreteness_behind_the_preference_noul_of_a_concrete_question_only(self):
+        answers = {'c0': dict(type='noul', noul=0.8), 'd0': dict(type='choice', choice='4', confidence=0.9),
                    'c1': dict(type='noul', noul='high')}
-        self.assertEqual(findings.score(answers, 'c0'), 0.2)
+        self.assertAlmostEqual(findings.score(answers, 'c0'), 0.2)
         self.assertIsNone(findings.score(answers, 'd0'))
         self.assertIsNone(findings.score(answers, 'c1'))
         self.assertIsNone(findings.score(answers, 'c9'))
 
     def test_fired_is_the_concrete_questions_below_the_threshold(self):
-        answers = {'c0': dict(type='noul', noul=0.2), 'c1': dict(type='noul', noul=0.5),
-                   'c2': dict(type='noul', noul=0.49), 'd0': dict(type='choice', choice='none', confidence=0.9)}
+        answers = {'c0': dict(type='noul', noul=0.8), 'c1': dict(type='noul', noul=0.5),
+                   'c2': dict(type='noul', noul=0.51), 'd0': dict(type='choice', choice='none', confidence=0.9)}
         self.assertEqual(findings.fired(answers, 0.5), ['c0', 'c2'])
         self.assertEqual(findings.fired(answers, None), [])
 
@@ -484,7 +501,7 @@ class MeasurementTests(unittest.TestCase):
         site = sites.SITES['jev-findings']
         self.assertEqual(site.threshold, 'findings_concrete')
         self.assertEqual(site.decisions(dict(questions={'c0': {}, 'd0': {}})), ['c0'])
-        self.assertEqual(site.fired({'c0': dict(type='noul', noul=0.1)}, 0.5), ['c0'])
+        self.assertEqual(site.fired({'c0': dict(type='noul', noul=0.9)}, 0.5), ['c0'])
         self.assertEqual(site.baseline(dict(state=dict(findings=[dict(i=0, text='a `b`')])), 'c0'), 1.0)
 
 
