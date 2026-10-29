@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -277,13 +278,18 @@ def _load(path: Path) -> dict:
 
 
 def record(gate: str, result: dict) -> Path:
-    """Store `result` under results["<provider>/<model>"] of replays/<gate>.json (0600, atomic)."""
+    """Store `result` under results["<provider>/<model>"] of replays/<gate>.json (0600, atomic).
+
+    The read-modify-write holds flock on a sibling .lock, so two replays of one gate cannot each
+    save a snapshot that drops the other's entry."""
     path = record_path(gate)
     _private_dir(path.parent)
-    data = _load(path)
-    results = data.get('results') if isinstance(data.get('results'), dict) else {}
-    results['%s/%s' % (result['provider'], result['model'])] = {k: result[k] for k in _RECORDED if k in result}
-    _save(path, dict(data, version=VERSION, results=results), 0o600)
+    with open(f'{path}.lock', 'a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        data = _load(path)
+        results = data.get('results') if isinstance(data.get('results'), dict) else {}
+        results['%s/%s' % (result['provider'], result['model'])] = {k: result[k] for k in _RECORDED if k in result}
+        _save(path, dict(data, version=VERSION, results=results), 0o600)
     return path
 
 

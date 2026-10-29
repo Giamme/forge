@@ -13,6 +13,8 @@ import os
 from pathlib import Path
 import random
 import sys
+import threading
+import time
 import unittest
 from unittest import mock
 
@@ -297,6 +299,29 @@ class EvaluationTests(ReplayCase):
         self.assertIn('baseline', out)
         self.assertIn('live cloudflare-live', out)
         self.assertIn('does not pass', out)
+
+
+class RecordTests(PrivateState):
+    def test_concurrent_records_of_one_gate_keep_every_model(self):
+        # Each record sleeps after reading, so every reader sees the file before any of them saves.
+        read = replay._load
+
+        def slow_read(path):
+            data = read(path)
+            time.sleep(0.05)
+            return data
+
+        models = ['m%d' % i for i in range(4)]
+        threads = [threading.Thread(target=replay.record,
+                                    args=('drift', dict(provider='local', model=m, passes=True)))
+                   for m in models]
+        with mock.patch.object(replay, '_load', slow_read):
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+        stored = json.loads(replay.record_path('drift').read_text())['results']
+        self.assertEqual(sorted(stored), sorted('local/' + m for m in models))
 
 
 if __name__ == '__main__':
