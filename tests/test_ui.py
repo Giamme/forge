@@ -172,6 +172,11 @@ class UiLauncherTests(unittest.TestCase):
         start = time.monotonic()
         self.open(self.solo, env=env)
         self.assertLess(time.monotonic() - start, 6)
+        # The command runs from a detached helper that open() waits for at most BROWSER_WAIT_S; on a busy
+        # machine (8 test workers) the helper's own start can take longer, so its pid file may come later.
+        deadline = time.monotonic() + 20
+        while not pidfile.exists() and time.monotonic() < deadline:
+            time.sleep(0.05)
         self.assertTrue(pidfile.exists(), 'the browser command was never run')
 
     def test_no_browser_flag_and_forge_ui_browser_off_both_keep_the_browser_closed(self):
