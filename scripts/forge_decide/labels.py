@@ -231,11 +231,35 @@ def _depends(plan, earlier, later) -> bool:
     return later in export.words(row.get('deps'))
 
 
+def _forward_added(plans) -> set:
+    """The (earlier, later) pairs any plan revision recorded as added by the forward gate."""
+    out = set()
+    for plan in plans:
+        gates = plan['d'].get('plan_gates')
+        forward = gates.get('forward') if isinstance(gates, dict) else None
+        for item in (forward.get('added') if isinstance(forward, dict) else None) or []:
+            if isinstance(item, dict) and item.get('earlier') and item.get('later'):
+                out.add((str(item['earlier']), str(item['later'])))
+    return out
+
+
+def _removed(plans, earlier, later) -> bool:
+    """Whether a revision lacks the dep after an earlier revision had it."""
+    had = False
+    for plan in plans:
+        if _depends(plan, earlier, later):
+            had = True
+        elif had:
+            return True
+    return False
+
+
 def _forward(index: _Index, record, event, body) -> dict:
     run = event['run']
     plans = index.runs.plans.get(run, []) if run else []
     if not plans:
         return {}
+    added = _forward_added(plans)
     out = {}
     for qid in record.decisions(body):
         text = sites._instructions(body, qid)
@@ -243,7 +267,12 @@ def _forward(index: _Index, record, event, body) -> dict:
         if not earlier or not later:
             continue
         earlier, later = earlier.group('id'), later.group('id')
-        if any(_depends(plan, earlier, later) for plan in plans if plan['ts'] > event['ts']):
+        if (earlier, later) in added:
+            # The gate wrote this dep, so its presence says nothing: only the user taking it
+            # out again does, and then the gate was wrong.
+            if _removed(plans, earlier, later):
+                out[qid] = False
+        elif any(_depends(plan, earlier, later) for plan in plans if plan['ts'] > event['ts']):
             out[qid] = True
         elif index.merged(run, earlier) and index.merged(run, later) and not _depends(plans[-1], earlier, later):
             out[qid] = False

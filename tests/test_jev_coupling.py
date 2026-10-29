@@ -4,6 +4,7 @@ import argparse
 import contextlib
 import io
 import json
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -12,7 +13,8 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / 'scripts'))
 
-from forge_jev import DEFAULT_THRESHOLDS, RETIRED_THRESHOLDS, SITE_CAPABILITY, cli, coupling  # noqa: E402
+from forge_jev import DEFAULT_THRESHOLDS, RETIRED_THRESHOLDS, SITE_CAPABILITY, cli, coupling, questions  # noqa: E402
+from test_decide_labels import LabelsCase, T0, noul as labelled  # noqa: E402
 
 
 def task(task_id, title='t', files='-', difficulty='low', deps='-'):
@@ -251,6 +253,159 @@ class CmdCouplingTests(unittest.TestCase):
         self.assertNotIn('jev-coupling', SITE_CAPABILITY)
         rc, out, calls = self._run(lambda qid: 0.9, ready=False)
         self.assertEqual((rc, out, calls), (3, '', []))
+
+
+ROOT = Path(__file__).resolve().parent.parent
+TASKS = [
+    'readme\t-\tlow\tREADME.md\topus\topus\tDocument the CLI',
+    'lib\t-\tlow\tlib.py\topus\topus\tThe library',
+    'cli\t-\tlow\tcli.py\topus\topus\tThe CLI',
+]
+
+
+class ForwardActingTests(unittest.TestCase):
+    """The forward gate `on` makes the earlier task wait for the later one (#39)."""
+
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        self.plan = Path(self.dir.name)
+        self.write(TASKS, '1\treadme\n1\tlib\n2\tcli\n')
+
+    def write(self, rows, waves):
+        (self.plan / 'tasks.tsv').write_text('\n'.join(rows) + '\n')
+        (self.plan / 'waves.tsv').write_text(waves)
+
+    def tasks_bytes(self):
+        return (self.plan / 'tasks.tsv').read_bytes()
+
+    def deps(self):
+        return {line.split('\t')[0]: line.split('\t')[1]
+                for line in self.tasks_bytes().decode().splitlines()}
+
+    def run_gate(self, mode, flagged=('readme', 'cli')):
+        """cmd_coupling with `mode`; the pair `flagged` is the only one the model fires on."""
+        def fake_ask(state, questions, **kwargs):
+            hot = [qid for qid, q in questions.items()
+                   if '%s (' % flagged[0] in str(q) and '%s (' % flagged[1] in str(q)]
+            return dict(answers={qid: dict(type='noul', noul=0.9 if qid in hot else 0.05)
+                                 for qid in questions})
+
+        args = argparse.Namespace(plan=str(self.plan), repo=str(self.plan), json=False)
+        out = io.StringIO()
+        with patch('forge_jev.cli.load_config', return_value={}), \
+                patch('forge_jev.cli.site_ready', return_value=True), \
+                patch('forge_jev.cli.gate_mode', return_value=mode), \
+                patch('forge_jev.coupling.ask', side_effect=fake_ask), \
+                contextlib.redirect_stdout(out):
+            rc = cli.cmd_coupling(args)
+        return rc, out.getvalue()
+
+    def recorded(self):
+        return json.loads((self.plan / 'plan-gates.json').read_text())
+
+    def test_on_adds_the_dependency_prints_added_and_records_it(self):
+        rc, out = self.run_gate('on')
+        self.assertEqual(rc, 0)
+        self.assertEqual(self.deps(), dict(readme='cli', lib='-', cli='-'))
+        [row] = [line.split('\t') for line in out.splitlines()]
+        self.assertEqual(row[:2] + row[3:], ['readme', 'cli', 'added'])
+        self.assertEqual(self.recorded()['forward']['added'],
+                         [dict(earlier='readme', later='cli', p=0.9)])
+
+    def test_a_dependency_that_would_form_a_cycle_is_skipped_and_printed_as_cycle(self):
+        # cli waits for lib, lib waits for readme: readme waiting for cli would close the loop.
+        rows = [TASKS[0], TASKS[1].replace('\t-\t', '\treadme\t', 1), TASKS[2].replace('\t-\t', '\tlib\t', 1)]
+        self.write(rows, '1\treadme\n2\tlib\n3\tcli\n')
+        before = self.tasks_bytes()
+        rc, out = self.run_gate('on')
+        self.assertEqual(self.tasks_bytes(), before)
+        [row] = [line.split('\t') for line in out.splitlines()]
+        self.assertEqual(row[:2] + row[3:], ['readme', 'cli', 'cycle'])
+        forward = self.recorded()['forward']
+        self.assertEqual(forward['skipped_cycle'], [dict(earlier='readme', later='cli', p=0.9)])
+        self.assertNotIn('added', forward)
+
+    def test_shadow_records_would_add_prints_nothing_and_leaves_tasks_alone(self):
+        before = self.tasks_bytes()
+        rc, out = self.run_gate('shadow')
+        self.assertEqual((rc, out), (3, ''))
+        self.assertEqual(self.tasks_bytes(), before)
+        self.assertEqual(self.recorded()['forward'], dict(would_add=[dict(earlier='readme', later='cli', p=0.9)]))
+        self.assertTrue((self.plan / 'jev-coupling.json').exists())
+
+    def test_off_leaves_tasks_and_the_record_alone(self):
+        before = self.tasks_bytes()
+        self.run_gate('off')
+        self.assertEqual(self.tasks_bytes(), before)
+        self.assertFalse((self.plan / 'plan-gates.json').exists())
+
+    def test_the_added_entry_survives_a_later_run_while_the_dependency_stands(self):
+        self.run_gate('on')
+        # Nothing is warned about now (the dep is declared); the record must stay.
+        self.run_gate('on', flagged=('lib', 'cli'))
+        self.assertEqual(self.recorded()['forward']['added'][0]['earlier'], 'readme')
+
+    def test_the_waves_put_the_earlier_task_after_the_later_one(self):
+        self.run_gate('on')
+        (self.plan / 'waves.tsv').unlink()
+        subprocess.run(['bash', str(ROOT / 'scripts' / 'forge-parallel.sh'), '_waves', str(self.plan)], check=True)
+        waves = {line.split('\t')[1]: int(line.split('\t')[0])
+                 for line in (self.plan / 'waves.tsv').read_text().splitlines()}
+        self.assertGreater(waves['readme'], waves['cli'])
+
+
+class ForwardLabelTests(LabelsCase):
+    """The label does not credit the gate for the dependency it wrote itself (#39)."""
+
+    def body(self, pairs):
+        describe = lambda t: '%s (%s) files: %s' % (t, t.upper(), t + '.py')
+        return dict(state=dict(tasks=[]), model='jev-latest',
+                    questions={'f%d' % i: questions.forward_dependency(describe(a), describe(b))
+                               for i, (a, b) in enumerate(pairs)})
+
+    def plan(self, ts, deps, added=()):
+        gates = dict(forward=dict(added=[dict(earlier=a, later=b, p=0.9) for a, b in added])) if added else None
+        extra = dict(plan_gates=gates) if gates else {}
+        self.add('plan', run='run1', ts=ts, tasks={t: dict(title=t, deps=d) for t, d in deps.items()}, **extra)
+
+    def merge_all(self, *tasks):
+        for task in tasks:
+            self.add('event', run='run1', ts=T0 + 100, task=task, name='merge', status='MERGED')
+
+    def ask_pair(self, a, b, p=0.8):
+        self.ask('jev-forward', self.body([(a, b)]), dict(f0=labelled(p)), run='run1', ts=T0)
+
+    def test_a_gate_added_dependency_that_stays_is_unlabelled_even_when_both_merged(self):
+        self.plan(T0 - 10, dict(readme='', cli=''))
+        self.ask_pair('readme', 'cli')
+        self.plan(T0 + 10, dict(readme='cli', cli=''), added=[('readme', 'cli')])
+        self.plan(T0 + 20, dict(readme='cli', cli=''))
+        self.merge_all('readme', 'cli')
+        self.assertEqual(self.collect('jev-forward'), [])
+
+    def test_a_gate_added_dependency_the_user_removed_is_false(self):
+        self.plan(T0 - 10, dict(readme='', cli=''))
+        self.ask_pair('readme', 'cli')
+        self.plan(T0 + 10, dict(readme='cli', cli=''), added=[('readme', 'cli')])
+        self.plan(T0 + 20, dict(readme='', cli=''))
+        [row] = self.collect('jev-forward')
+        self.assertEqual(row['labels'], dict(f0=False))
+
+    def test_a_dependency_a_person_added_is_still_true(self):
+        self.plan(T0 - 10, dict(readme='', cli=''))
+        self.ask_pair('readme', 'cli')
+        self.plan(T0 + 10, dict(readme='cli', cli=''))
+        [row] = self.collect('jev-forward')
+        self.assertEqual(row['labels'], dict(f0=True))
+
+    def test_a_pair_the_gate_never_flagged_merged_without_the_dependency_is_still_false(self):
+        self.plan(T0 - 10, dict(readme='', cli='', api='', ui=''))
+        self.ask_pair('api', 'ui', 0.3)
+        self.plan(T0 + 10, dict(readme='cli', cli='', api='', ui=''), added=[('readme', 'cli')])
+        self.merge_all('api', 'ui')
+        [row] = self.collect('jev-forward')
+        self.assertEqual(row['labels'], dict(f0=False))
 
 
 if __name__ == '__main__':

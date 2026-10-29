@@ -708,13 +708,75 @@ def cmd_score_plan(args) -> int:
     return 0
 
 
+def _forward_act(plan: Path, forward, mode: str) -> list:
+    """What the forward gate does with its warned pairs, and records in plan-gates.json.
+
+    `on` makes each pair's earlier task depend on the later one (plan_gates.add_dep, which
+    refuses a cycle): added pairs go under `forward.added`, refused ones under
+    `skipped_cycle`. `shadow` records them under `would_add` and touches nothing else.
+    `added` entries from an earlier plan stay while the dep is still in the column: the
+    labels need to know the planner did not write it. Returns `(earlier, later, p, kind)`
+    with kind `added` or `cycle`. Any failure behaves as `off`: when the record cannot be
+    saved, tasks.tsv goes back to the bytes it had, so no dependency exists without its
+    provenance.
+    """
+    if mode not in ('on', 'shadow'):
+        return []
+    original = None
+    try:
+        from . import plan_gates
+        if mode == 'on':
+            original = (plan / 'tasks.tsv').read_bytes()
+        pairs = [dict(earlier=a, later=b, p=p) for a, b, p in forward]
+        added, refused = [], []
+        if mode == 'on':
+            for item in pairs:
+                (added if plan_gates.add_dep(plan, item['earlier'], item['later']) else refused).append(item)
+        data = plan_gates.load(plan)
+        entry = data.get('forward') if isinstance(data.get('forward'), dict) else {}
+        _text, lines = plan_gates._read_tasks(plan)
+        deps = plan_gates._deps(lines)
+        now = {(i['earlier'], i['later']) for i in added}
+        kept = [item for item in entry.get('added') or []
+                if isinstance(item, dict) and item.get('later') in deps.get(item.get('earlier'), ())
+                and (item['earlier'], item['later']) not in now]
+        fresh = {}
+        if kept or added:
+            fresh['added'] = kept + added
+        if refused:
+            fresh['skipped_cycle'] = refused
+        if mode == 'shadow' and pairs:
+            fresh['would_add'] = pairs
+        if fresh != entry:
+            if fresh:
+                data['forward'] = fresh
+            else:
+                data.pop('forward', None)
+            if data or (plan / plan_gates.GATES_FILE).exists():
+                plan_gates.save(plan, data)
+        return [(i['earlier'], i['later'], i['p'], 'added') for i in added] \
+            + [(i['earlier'], i['later'], i['p'], 'cycle') for i in refused]
+    except Exception:
+        if original is not None:
+            try:
+                plan_gates._atomic_write(plan / 'tasks.tsv', original)
+            except Exception:
+                pass
+        return []
+
+
 def cmd_coupling(args) -> int:
     """Warn about earlier-wave tasks written against what a later wave builds.
 
-    Advisory only -- like cmd_score_plan, this never edits tasks.tsv or waves.tsv. It
-    reads both (waves.tsv must already exist; forge-parallel.sh runs this after
-    compute_waves) and writes jev-coupling.json for a human or a later run to inspect.
-    Every row has kind 'forward'; the file keeps its name for old consumers.
+    Advisory unless the gate is `on`: then each warned pair becomes a dependency, the earlier
+    task waiting for the later one, written to the `deps` column of tasks.tsv and recorded
+    under `forward.added` in plan-gates.json (a pair whose dependency would form a cycle is
+    left out and recorded under `skipped_cycle`). In `shadow` the pairs are recorded as
+    `would_add`, nothing is printed and tasks.tsv is left alone. It never edits waves.tsv:
+    forge-parallel.sh runs this after compute_waves and recomputes the waves itself. It reads
+    both files (waves.tsv must already exist) and writes jev-coupling.json for a human or a
+    later run to inspect; there every row has kind 'forward', and the file keeps its name for
+    old consumers. Printed rows end in the outcome: `forward` (advisory), `added` or `cycle`.
     """
     plan, repo = Path(args.plan), Path(args.repo)
     if not plan.is_dir():
@@ -746,9 +808,15 @@ def cmd_coupling(args) -> int:
         (plan / 'jev-coupling.json').write_text(json.dumps(payload, indent=2, sort_keys=True) + '\n')
     except OSError:
         pass
-    # Shadow: recorded in the file above, and the run hears nothing.
-    if gate_mode('jev-forward') == 'shadow':
+    mode = gate_mode('jev-forward')
+    # `shadow` is recorded in the file above and under would_add, and the run hears nothing.
+    acted = _forward_act(plan, forward, mode)
+    if mode == 'shadow':
         return 3
+    if mode == 'on':
+        if not acted:
+            return 3
+        payload = [dict(a=a, b=b, probability=p, kind=kind) for a, b, p, kind in acted]
 
     if args.json:
         print(json.dumps(payload, indent=2, sort_keys=True))
