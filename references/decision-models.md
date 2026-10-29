@@ -399,7 +399,8 @@ It reads these runs:
 
 - by default, the newest 10 runs in this repo's run registry, by the run directory's
   modification time. `--runs N` changes the count;
-- with `--all`, every repo's registered runs;
+- with `--all`, every repo's registered runs, cut the same way: the newest 10 across all repos,
+  or the newest N with `--runs N`;
 - with `--run DIR` (repeatable), just those directories. It cannot be combined with `--all` or
   `--runs`.
 
@@ -461,7 +462,8 @@ request is counted under `privacy floor`.
 The answers and the result are stored under `${XDG_STATE_HOME:-~/.local/state}/forge/decide/`:
 
 - `replay/<site>/<provider>/<model>.jsonl`: one line per request, with its answers or its
-  failure reason;
+  failure reason. Each component is percent-encoded, so `--model @cf/meta/llama` is stored as
+  `replay/<site>/<provider>/%40cf%2Fmeta%2Fllama.jsonl`;
 - `replays/<gate>.json`: the result, under `"<provider>/<model>"`. `forge decide gate G on`
   reads this file. A result is recorded only when at least one labelled decision was judged.
 
