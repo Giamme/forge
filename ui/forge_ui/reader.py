@@ -1228,11 +1228,14 @@ _DEFAULT_THRESHOLD = 'P2'
 
 
 def _threshold(reader):
-    """(effective level, 'set' | 'default') from the qa_threshold file; `none` in a file means P3."""
-    value = reader.line('qa_threshold')
-    if value is None:
-        return _DEFAULT_THRESHOLD, 'default'
-    return ('P3' if value.lower() == 'none' else value.upper()), 'set'
+    """(effective level, 'set' | 'default') from the qa_threshold file; `none` in a file means P3.
+    Anything else that is not P0..P3 is ignored, as the gate and forge-control.py ignore it."""
+    value = (reader.line('qa_threshold') or '').replace(' ', '').upper()
+    if value == 'NONE':
+        return 'P3', 'set'
+    if value in ('P0', 'P1', 'P2', 'P3'):
+        return value, 'set'
+    return _DEFAULT_THRESHOLD, 'default'
 
 
 _SOLO_SETTINGS = ('explore', 'shadow_rate', 'shadow_qa', 'timeout', 'max_parallel', 'qa_threshold',
