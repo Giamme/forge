@@ -127,7 +127,9 @@ class RunCase(unittest.TestCase):
     def gates(self, message=None, addressed=None):
         for name, body in (('forge-gate-message.sh', message), ('forge-gate-addressed.sh', addressed)):
             if body is not None:
-                (self.skill / 'scripts' / name).write_text(body)
+                stub = self.skill / 'scripts' / name
+                stub.unlink(missing_ok=True)     # a real gate is linked here: replace it, never write through
+                stub.write_text(body)
 
     def logged(self):
         return self.log.read_text().splitlines() if self.log.exists() else []
