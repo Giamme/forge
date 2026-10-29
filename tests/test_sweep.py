@@ -113,6 +113,14 @@ class Planner(PlanBase):
         self.assertEqual(self.sweep('--severity', 'P3').stdout, '')
         self.assertEqual((self.plan / 'tasks.tsv').read_text(), before)
 
+    def test_a_passed_task_with_a_tolerated_p3_is_swept_without_any_threshold_file(self):
+        self.task('a', {'a.txt': 'a one\n'}, known('* (P3) CONFIRMED a.txt:1 — The first line is lower case.'))
+        self.assertFalse((self.plan / 'qa_threshold').exists())
+        self.assertFalse((self.plan / 'tasks/a/qa_threshold').exists())
+        self.assertEqual(self.sweep('--severity', 'P3').stdout.split(), ['sweep-1'])
+        prompt = (self.plan / 'tasks/sweep-1/prompt.md').read_text()
+        self.assertIn('a.txt:1', prompt)
+
     def test_triage_leaves_each_kind_of_finding_for_forge_issues_with_its_reason(self):
         self.task('a', {'a.txt': 'alpha\nbeta\ngamma\n'}, known(
             '- [P2][CONFIRMED] a.txt:2 — Beta is spelled wrong.',

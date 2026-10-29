@@ -58,6 +58,7 @@ import contextlib
 import errno
 import fcntl
 import hashlib
+import importlib.util
 import json
 import math
 import os
@@ -184,6 +185,62 @@ def parse_findings(text):
     return out
 
 
+_contract = None
+
+
+def contract():
+    """forge-contract.py, loaded by path: its file name is not importable."""
+    global _contract
+    if _contract is None:
+        spec = importlib.util.spec_from_file_location("forge_contract", Path(__file__).resolve().parent / "forge-contract.py")
+        _contract = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(_contract)
+    return _contract
+
+
+_LOCATION_RE = re.compile(r"([^\s:`()\[\]]+):(\d+)(?:[-:]\d+)?")
+_BULLET_RE = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s*")
+
+
+def parse_known(text):
+    """Findings of a known_issues.md as the gate's tolerated blocks, in whatever form the reviewer wrote them."""
+    out = []
+    for block in contract().parse_findings(text or ""):
+        if block.status != "CONFIRMED" or block.severity is None:
+            continue
+        first = block.text.splitlines()[0]
+        # Only the block's own first line: a nested bullet under it is another finding, not this one.
+        canonical = parse_findings(first)
+        if canonical:
+            out.append(canonical[0])
+            continue
+        body = _BULLET_RE.sub("", first, count=1)
+        lm = _LOCATION_RE.search(body)
+        if lm:
+            file, line = lm.group(1).strip("`"), int(lm.group(2))
+            rest = body[lm.end():]
+        else:
+            file, line = (body.split() or ["?"])[0].strip("`*:"), None
+            rest = body[len(body.split()[0]):] if body.split() else ""
+        rest = clean_markdown(rest).strip(" \t—–-:`*")
+        sev = f"P{block.severity}"
+        loc = f"{file}:{line}" if line else file
+        out.append({"severity": sev, "confidence": "CONFIRMED", "file": file, "line": line,
+                    "text": rest or clean_markdown(body), "raw": f"[{sev}][CONFIRMED] {loc} — {rest}"})
+    return out
+
+
+def effective_threshold(task_dir, plan_dir):
+    """The blocking threshold a task ran under: its own qa_threshold, else the plan's, else P2; `none` reads P3."""
+    for d in (task_dir, plan_dir):
+        value = read(d / "qa_threshold").strip().upper() if d else ""
+        if value == "NONE":
+            return "P3"
+        if value in SEVERITIES:
+            return value
+    return "P2"
+
+
 def reviewer_spec(task_dir: Path):
     kv = dict(line.split("=", 1) for line in read(task_dir / "qa.resolved").splitlines() if "=" in line)
     return ":".join(x for x in (kv.get("alias"), kv.get("effort"), kv.get("harness")) if x) or "?"
@@ -195,7 +252,8 @@ _REVIEW_KIND = re.compile(r"(final-review|integrate)-([0-9]+)-([0-9]+)\Z")
 _COMMIT = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})\Z")
 # accept appends the reviewer's reply under this heading; findings before it were threshold-tolerated.
 _ACCEPTED_HEADING = re.compile(
-    r"^## Accepted by a human despite the reviewer's(?:\s+(\S+))?\s+verdict\s*$", re.M)
+    r"^## Accepted by a human despite (?:the reviewer's(?:\s+(\S+))?\s+verdict"
+    r"|forge's FAIL \(.*\))\s*$", re.M)
 
 
 def _epoch(text):
@@ -395,13 +453,13 @@ def known_findings(text, task_dir, meta):
     match = _ACCEPTED_HEADING.search(text)
     before, after = (text[:match.start()], text[match.end():]) if match else (text, "")
     found = [{**f, **meta, "origin": "tolerated", "review": None}
-             for f in parse_findings(before) if f["confidence"] == "CONFIRMED"]
+             for f in parse_known(before) if f["confidence"] == "CONFIRMED"]
     if match:
         file_status, reason = acceptance_of(task_dir)
         status = file_status or match.group(1) or "UNKNOWN"
         found += [{**f, **meta, "origin": "accepted", "review": None,
                    "accepted_status": status, "accepted_reason": reason}
-                  for f in parse_findings(after) if f["confidence"] == "CONFIRMED"]
+                  for f in parse_known(after) if f["confidence"] == "CONFIRMED"]
     return found
 
 
@@ -430,9 +488,10 @@ def task_findings(task_dir: Path, plan_dir, include_plausible, reviewers, review
                  for f in parse_findings(read(task_dir / "qa.last"))
                  if f["confidence"] == "CONFIRMED" or include_plausible]
         return found, None
-    if state not in DONE and status not in DONE:
+    solo = plan_dir is None and not state and (task_dir / "known_issues.md").is_file()
+    if state not in DONE and status not in DONE and not solo:
         return [], f"{task}: status {state or 'unknown'}, its findings still block it"
-    threshold = read(task_dir / "qa_threshold") or (read(plan_dir / "qa_threshold") if plan_dir else "") or "?"
+    threshold = effective_threshold(task_dir, plan_dir)
     meta["threshold"] = threshold
     found = known_findings(read(task_dir / "known_issues.md"), task_dir, meta)
     if include_plausible:
@@ -549,8 +608,9 @@ def collect(path: Path, include_plausible, all_runs=False):
             plan_root = parent.parent
         else:
             plan_root = parent
-        is_review = not is_task and not read(parent / "status")
-        meta = {"task": None if is_review else parent.name, "threshold": "-" if is_review else read(parent / "qa_threshold") or "?",
+        solo_known = plan_root == parent and path.name == "known_issues.md"
+        is_review = not is_task and not read(parent / "status") and not solo_known
+        meta = {"task": None if is_review else parent.name, "threshold": "-" if is_review else effective_threshold(parent, plan_root if plan_root != parent else None),
                 "commit": read(parent / "merged") or read(parent / "reviewed.commit"),
                 "reviewer": reviewer_spec(parent)}
         meta["plan"], meta["plan_dir"] = (plan_root.name, str(plan_root))
@@ -588,7 +648,7 @@ def collect(path: Path, include_plausible, all_runs=False):
             if len(cols) >= 6 and not line.startswith("#"):
                 reviewers[cols[0]] = cols[5]
     found, note = task_findings(path, plan_dir, include_plausible, reviewers,
-                                review=True if path.parent.name != "tasks" and not read(path / "status") else None)
+                                review=True if plan_dir and path.parent.name != "tasks" and not read(path / "status") else None)
     for f in found:
         f["plan"], f["plan_dir"] = (plan_dir or path).name, str(plan_dir or path)
     # a task or review dir in a plan: the plan's repository; a solo run dir: its own

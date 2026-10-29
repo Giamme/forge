@@ -866,6 +866,62 @@ class ForgeIssuesTests(unittest.TestCase):
         self.assertIn('Reason: User: accepted the tradeoff.', free_body)
         self.assertNotIn('below the blocking threshold', free_body)
 
+    def tolerated_task(self, name, known, threshold=None):
+        task = self.plan / 'tasks' / name
+        task.mkdir()
+        (task / 'status').write_text('PASS\n')
+        (task / 'merged').write_text('abc123\n')
+        if threshold:
+            (task / 'qa_threshold').write_text(threshold + '\n')
+        (task / 'known_issues.md').write_text(known)
+        return task
+
+    def test_every_tolerated_form_is_filed_and_canonical_keeps_its_fingerprint(self):
+        canonical = '- [P2][CONFIRMED] src/import.ts:645 — Company creation runs before the receipt replay. A retry creates an extra company.'
+        self.tolerated_task('forms', '## Known issues\n\n' + canonical + '\n\n* (P3) CONFIRMED a.py:7 — x\n')
+        out = self.run_issues(str(self.plan / 'tasks' / 'forms'), '--offline', '--repo', 'o/r')
+        by_file = {f['file']: f for f in out['findings']}
+        self.assertEqual(sorted(by_file), ['a.py', 'src/import.ts'])
+        self.assertEqual((by_file['a.py']['severity'], by_file['a.py']['text']), ('P3', 'x'))
+        self.assertEqual(by_file['src/import.ts']['fp'], 'cf5d9440c970')
+
+    def test_nested_plausible_bullet_does_not_replace_its_confirmed_parent(self):
+        self.tolerated_task('nested', '## Known issues\n\n* (P3) CONFIRMED a.py:7 — Parent defect.\n'
+                            '  - [P3][PLAUSIBLE] b.py:9 — Related suspicion.\n')
+        out = self.run_issues(str(self.plan / 'tasks' / 'nested'), '--offline', '--repo', 'o/r')
+        self.assertEqual([(f['file'], f['text']) for f in out['findings']], [('a.py', 'Parent defect.')])
+
+    def test_threshold_is_the_effective_one(self):
+        known = '## Known issues\n\n- [P3][CONFIRMED] a.py:1 — x\n'
+        self.tolerated_task('plain', known)
+        self.tolerated_task('none', known, 'none')
+        self.tolerated_task('own', known, 'P0')
+        out = self.run_issues(str(self.plan), '--offline', '--repo', 'o/r', '--group', 'task')
+        bodies = {d['title']: d['body'] for d in out['drafts']}
+        joined = '\n'.join(bodies.values())
+        self.assertNotIn('threshold ?', joined)
+        for name, expect in (('plain', 'P2'), ('none', 'P3'), ('own', 'P0')):
+            found = self.run_issues(str(self.plan / 'tasks' / name), '--offline', '--repo', 'o/r')
+            self.assertIn(f'below the blocking threshold {expect}', found['drafts'][0]['body'], name)
+
+    def test_flip_heading_splits_tolerated_and_accepted(self):
+        task = self.tolerated_task('flip',
+            '## Known issues\n\n- [P3][CONFIRMED] src/t.ts:1 — Tolerated one.\n\n'
+            "## Accepted by a human despite forge's FAIL (the reviewer said PASS, but listed findings at or above P2)\n\n"
+            '- [P1][CONFIRMED] src/a.ts:2 — Accepted one.\n')
+        (task / 'accepted.by').write_text('status=FAIL\nreason=ok\nby=ada\n')
+        out = self.run_issues(str(task), '--offline', '--repo', 'o/r')
+        self.assertEqual({f['file']: f['origin'] for f in out['findings']},
+                         {'src/t.ts': 'tolerated', 'src/a.ts': 'accepted'})
+
+    def test_solo_run_dir_lists_known_issues(self):
+        solo = self.dir / 'solo'
+        solo.mkdir()
+        (solo / 'known_issues.md').write_text('## Known issues\n\n* (P3) CONFIRMED a.py:7 — x\n')
+        out = self.run_issues(str(solo), '--offline', '--repo', 'o/r')
+        self.assertEqual([(f['file'], f['origin']) for f in out['findings']], [('a.py', 'tolerated')])
+        self.assertIn('below the blocking threshold P2', out['drafts'][0]['body'])
+
     def accept_task(self, name, status, reason, findings):
         task = self.plan / 'tasks' / name
         task.mkdir()
