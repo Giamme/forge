@@ -19,17 +19,34 @@
 #   merges.tsv   k, commit, task id        steps.tsv   prefix, commit, status, seconds, source
 # Each verified step writes into $PLAN/attribute/<prefix>-<short sha>/.
 
-# The prefix's commit: the base, the k-th first-parent merge commit, or for the last prefix the
-# tip itself (the commit the run verified, whatever follows the last merge).
+# The prefix's commit: the base, or the k-th first-parent merge commit. The last merge commit is
+# the tip unless something follows it (a `forge: combine` commit, a hand commit); the run's
+# failure belongs to the tip, so it only stands for prefix n when the two are the same commit.
 attribute_commit() { # attribute_commit <k>
   if [ "$1" = 0 ]; then printf '%s\n' "$ATTR_BASE"
-  elif [ "$1" = "$ATTR_N" ]; then printf '%s\n' "$ATTR_TIP"
   else awk -F'\t' -v k="$1" '$1 == k { print $2; exit }' "$ATTR_DIR/merges.tsv"
   fi
 }
 
+# The scratch worktree is this search's own: a path no task owns and nothing else uses. A task id
+# may be any name, so `_attribute` can be a task's worktree; that one is never touched. A detached
+# worktree at the path is a leftover of an earlier search and is reused.
+attribute_scratch_pick() { # attribute_scratch_pick <wt_root>
+  local root="$1" name="_attribute" i=0
+  git -C "$ATTR_REPO" worktree prune >/dev/null 2>&1
+  while :; do
+    if ! { [ -s "$ATTR_PLAN/tasks.tsv" ] && all_ids "$ATTR_PLAN/tasks.tsv" | grep -qxF -- "$name"; } \
+       && { [ ! -e "$root/$name" ] || { [ -e "$root/$name/.git" ] && ! git -C "$root/$name" symbolic-ref -q HEAD >/dev/null 2>&1; }; }; then
+      break
+    fi
+    i=$((i + 1)); name="_attribute-$i"
+  done
+  ATTR_SCRATCH="$root/$name"
+  ATTR_SCRATCH_OWNED=1
+}
+
 attribute_scratch_remove() {
-  [ -n "${ATTR_SCRATCH:-}" ] || return 0
+  [ "${ATTR_SCRATCH_OWNED:-0}" = 1 ] && [ -n "${ATTR_SCRATCH:-}" ] || return 0
   git -C "$ATTR_REPO" worktree remove --force "$ATTR_SCRATCH" >/dev/null 2>&1
   rm -rf "$ATTR_SCRATCH"
   git -C "$ATTR_REPO" worktree prune >/dev/null 2>&1
@@ -59,11 +76,27 @@ attribute_verify() { # attribute_verify <k>
   note "attribute: verifying prefix $k of $ATTR_N (${commit:0:12})"
   populate_submodules "$ATTR_REPO" "$ATTR_SCRATCH" "$dir" "prefix $k"
   setup_cmd="$(worktree_setup_command "$ATTR_PLAN" "$ATTR_REPO")"
-  if [ -n "$setup_cmd" ] && ! (cd "$ATTR_SCRATCH" && eval "$setup_cmd") > "$dir/setup.out" 2>&1; then
-    attribute_record "$k" "$commit" SETUP_FAILED 0 search
-    ATTR_STATUS=SETUP_FAILED
-    ATTR_REASON="the worktree setup failed at prefix $k (see $dir/setup.out)"
-    return 1
+  if [ -n "$setup_cmd" ]; then
+    # Stoppable like the verification: a stop reaches the setup command's whole group.
+    ( FORGE_RUN_STOPPABLE=1 FORGE_VERIFY_STOP=0 FORGE_VERIFY_GROUP="" FORGE_VERIFY_TIMER=""
+      trap verify_signal TERM INT
+      verify_exec "$ATTR_SCRATCH" "$setup_cmd" "$dir/setup.out" ) <&0 &
+    ATTR_CHILD=$!
+    [ "$ATTR_STOP" = 1 ] && kill -TERM "$ATTR_CHILD" 2>/dev/null
+    run_wait "$ATTR_CHILD"; rc=$run_rc
+    ATTR_CHILD=""
+    if [ "$rc" = 130 ] || [ "$ATTR_STOP" = 1 ]; then
+      ATTR_STATUS=INTERRUPTED; ATTR_REASON="interrupted during the worktree setup of prefix $k"
+      attribute_record "$k" "$commit" SETUP_INTERRUPTED 0 search
+      attribute_scratch_remove
+      return 1
+    elif [ "$rc" != 0 ]; then
+      attribute_record "$k" "$commit" SETUP_FAILED 0 search
+      ATTR_STATUS=SETUP_FAILED
+      ATTR_REASON="the worktree setup failed at prefix $k (see $dir/setup.out)"
+      attribute_scratch_remove
+      return 1
+    fi
   fi
   t0="$(date +%s)"
   # In the background, as `run` does: a stop reaches this shell, which passes it on, and the
@@ -126,7 +159,7 @@ doc = {
     'inconclusive': inconclusive or None,
     'merges': merges,
     'steps': steps,
-    'verification_runs': sum(1 for s in steps if s['source'] == 'search' and s['status'] != 'SETUP_FAILED'),
+    'verification_runs': sum(1 for s in steps if s['source'] == 'search' and not s['status'].startswith('SETUP_')),
     'gate': None,
 }
 tmp = os.path.join(plan, '.attribution.json.tmp')
@@ -208,10 +241,11 @@ attribute_search() { # attribute_search <plan> <force 0|1>
   ATTR_DIR="$ATTR_PLAN/attribute"
   ATTR_BASE="$(git -C "$ATTR_REPO" rev-parse "$(cat "$ATTR_PLAN/integration.base")^{commit}")"
   ATTR_TIP="$(git -C "$ATTR_REPO" rev-parse "forge/$run_id-integration^{commit}")"
-  ATTR_SCRATCH="$(cat "$ATTR_PLAN/wt_root")/_attribute"
+  ATTR_SCRATCH="" ATTR_SCRATCH_OWNED=0
   ATTR_STOP=0 ATTR_CHILD="" ATTR_STATUS="" ATTR_REASON="" ATTR_LO="" ATTR_HI="" ATTR_SOURCE=""
   trap 'ATTR_STOP=1; [ -n "$ATTR_CHILD" ] && kill -TERM "$ATTR_CHILD" 2>/dev/null' TERM INT
   trap 'attribute_scratch_remove' EXIT
+  attribute_scratch_pick "$(cat "$ATTR_PLAN/wt_root")"
   rm -rf "$ATTR_DIR" "$ATTR_PLAN/attribution.json"
   mkdir -p "$ATTR_DIR" || die "could not create $ATTR_DIR" 1
   : > "$ATTR_DIR/steps.tsv"
@@ -247,12 +281,18 @@ attribute_search() { # attribute_search <plan> <force 0|1>
   [ "$rc" != 2 ] || { note "attribute: $ATTR_REASON"; return 1; }
   if [ "$rc" = 1 ]; then attribute_conclude "" 0 "$ATTR_REASON"; return 0; fi
   if [ "$ATTR_STATUS" = FAIL ]; then attribute_conclude "" 1 ""; return 0; fi
-  # 2. the tip: FAIL from the run's own verification, or verified here under --force
-  if [ "$force" = 1 ]; then
+  # 2. the tip: FAIL from the run's own verification when it is the last merge commit itself;
+  # otherwise (a commit follows the last merge, or --force) prefix n is verified here, so a
+  # boundary is always between two verified merge commits.
+  if [ "$force" = 1 ] || [ "$(attribute_commit "$ATTR_N")" != "$ATTR_TIP" ]; then
     attribute_verify "$ATTR_N"; rc=$?
     [ "$rc" != 2 ] || { note "attribute: $ATTR_REASON"; return 1; }
     if [ "$rc" = 1 ]; then attribute_conclude "" 0 "$ATTR_REASON"; return 0; fi
-    if [ "$ATTR_STATUS" = PASS ]; then attribute_conclude "" 0 "the tip passes"; return 0; fi
+    if [ "$ATTR_STATUS" = PASS ]; then
+      if [ "$(attribute_commit "$ATTR_N")" = "$ATTR_TIP" ]; then attribute_conclude "" 0 "the tip passes"
+      else attribute_conclude "" 0 "the last merge passes: the failure comes from a commit after it, not from a merge"; fi
+      return 0
+    fi
   else
     attribute_record "$ATTR_N" "$ATTR_TIP" FAIL "" run
   fi

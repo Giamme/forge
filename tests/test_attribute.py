@@ -243,6 +243,66 @@ class AttributeTests(unittest.TestCase):
         self.assertFalse(self.scratch().exists())
         self.assertNotIn('_attribute', self.git('worktree', 'list').decode())
 
+    def test_a_task_worktree_named_like_the_scratch_is_never_touched(self):
+        self.failed_run(CLASH)
+        wt_root = Path((self.plan / 'wt_root').read_text().strip())
+        task = wt_root / '_attribute'
+        self.git('worktree', 'add', '-b', 'forge/task-attribute', str(task), 'HEAD')
+        (task / 'unsaved.txt').write_text('uncommitted work')
+        with open(self.plan / 'tasks.tsv', 'a') as fh:
+            fh.write('_attribute\t-\tlow\tz.txt\tsol\topus\tZ\n')
+        r = self.attribute()
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertEqual(self.result()['culprit'], 'b')
+        self.assertEqual((task / 'unsaved.txt').read_text(), 'uncommitted work')
+        self.assertIn(str(task), self.git('worktree', 'list').decode())
+        self.assertEqual(sorted(p.name for p in wt_root.glob('_attribute*')), ['_attribute'])
+
+    def test_a_commit_after_the_last_merge_is_not_blamed_on_that_merge(self):
+        self.failed_run(ALWAYS)
+        script = self.root / 'verify.sh'
+        script.write_text('[ -e d.txt ] && { echo "d breaks it"; exit 1; }\nexit 0\n')
+        wt = Path((self.plan / 'wt_root').read_text().strip()) / '_integration'
+        (wt / 'd.txt').write_text('d\n')
+        subprocess.check_call(['git', 'add', 'd.txt'], cwd=wt, env=self.env)
+        subprocess.check_call(['git', 'commit', '-q', '-m', 'forge: combine'], cwd=wt, env=self.env)
+        tip = self.integration_tip()
+        (self.plan / 'accepted.integration').write_text(tip + '\n')
+        (self.plan / 'verification.commit').write_text(tip + '\n')
+        (self.plan / 'verification.status').write_text('FAIL\n')
+        r = self.attribute()
+        self.assertEqual(r.returncode, 0, r.stdout)
+        found = self.result()
+        self.assertIsNone(found['culprit'])
+        self.assertIn('after it', found['inconclusive'])
+        self.assertEqual(self.status_of(found['steps'], 3), ['PASS'])
+        self.assertNotIn('breaks verification', r.stdout)
+
+    def test_a_stop_during_a_long_setup_ends_the_search_and_removes_its_worktree(self):
+        self.failed_run(CLASH)
+        marker = self.root / 'setup.started'
+        (self.plan / 'setup_cmd').write_text('touch "%s"; sleep 60' % marker)
+        proc = subprocess.Popen(['bash', str(ROOT / 'scripts/forge-parallel.sh'), 'attribute', str(self.plan)],
+                                cwd=self.repo, env=self.env, text=True,
+                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        try:
+            deadline = time.time() + 60
+            while not marker.exists() and time.time() < deadline and proc.poll() is None:
+                time.sleep(0.1)
+            self.assertTrue(marker.exists(), 'the setup never started')
+            proc.send_signal(signal.SIGTERM)
+            out, _ = proc.communicate(timeout=30)
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.communicate()
+        found = self.result()
+        self.assertIsNone(found['culprit'])
+        self.assertIn('interrupted', found['inconclusive'])
+        self.assertEqual(found['verification_runs'], 0)
+        self.assertFalse(self.scratch().exists())
+        self.assertNotIn('_attribute', self.git('worktree', 'list').decode())
+
     def test_a_second_search_while_the_plan_is_locked_is_refused_and_writes_nothing(self):
         self.failed_run(CLASH)
         holder = self.root / 'holder.sh'
