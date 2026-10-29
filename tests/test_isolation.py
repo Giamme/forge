@@ -18,12 +18,13 @@ class IsolationTests(unittest.TestCase):
     def test_forge_decide_state_from_an_outer_run_or_shell_is_cleared(self):
         env = dict(os.environ, FORGE_DECIDE_RUN_DIR='/outer/plan', FORGE_DECIDE_REPO='/outer/repo',
                    FORGE_DECIDE_FLAGS='{"no_gates": true}', FORGE_DECIDE_PROFILE='careful',
-                   FORGE_DECIDE_GATE_DRIFT='on')
+                   FORGE_DECIDE_GATE_DRIFT='on', FORGE_DECIDE_CACHE='on')
         script = ('import json, os, sys; sys.path.insert(0, sys.argv[1]); import dataset_isolation; '
-                  'print(json.dumps(sorted(k for k in os.environ if k.startswith("FORGE_DECIDE_"))))')
+                  'print(json.dumps({k: v for k, v in os.environ.items() if k.startswith("FORGE_DECIDE_")}))')
         out = subprocess.run([sys.executable, '-c', script, str(TESTS)], capture_output=True, text=True,
                              env=env, check=True)
-        self.assertEqual(json.loads(out.stdout), [])
+        # Only the suite's own setting is left: the request cache starts off (test_decide_cache turns it on).
+        self.assertEqual(json.loads(out.stdout), {'FORGE_DECIDE_CACHE': 'off'})
 
 
 if __name__ == '__main__':
