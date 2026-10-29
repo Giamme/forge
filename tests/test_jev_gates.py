@@ -28,12 +28,18 @@ class CandidateTests(unittest.TestCase):
         self.addCleanup(self.dir.cleanup)
         self.repo = Path(self.dir.name)
         subprocess.run(['git', 'init', '-q', str(self.repo)], check=True)
+        self.edits = 0
 
-    def _commit(self, *names):
+    def _write(self, *names):
         for name in names:
             path = self.repo / name
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text('x')
+            self.edits += 1
+            # New content each time, so committing the same file again still has a change.
+            path.write_text(str(self.edits))
+
+    def _commit(self, *names):
+        self._write(*names)
         subprocess.run(['git', '-C', str(self.repo), 'add', '-A'], check=True)
         subprocess.run(['git', '-C', str(self.repo), '-c', 'user.email=t@t',
                         '-c', 'user.name=t', 'commit', '-qm', 'c'], check=True)
@@ -48,19 +54,77 @@ class CandidateTests(unittest.TestCase):
         self.assertEqual(gates.candidates(self.repo, 'a.py b.py'), ['c.py'])
 
     def test_noise_directories_and_binaries_are_skipped(self):
-        self._commit('src/a.py', 'node_modules/x.js', 'package-lock.json',
+        self._commit('src/main.py', 'src/a.py', 'node_modules/x.js', 'package-lock.json',
                      'logo.png', 'dist/bundle.js', 'go.sum', 'Cargo.lock',
                      'web/yarn.lock')
+        # Named in the text, so each would score if the skip lists did not apply.
+        text = ('node_modules/x.js package-lock.json logo.png dist/bundle.js go.sum '
+                'Cargo.lock web/yarn.lock')
         # package-lock.json ends in .json, not .lock -- the suffix list alone misses it.
-        self.assertEqual(gates.candidates(self.repo, '-'), ['src/a.py'])
+        self.assertEqual(gates.candidates(self.repo, 'src/main.py', text), ['src/a.py'])
 
-    def test_candidates_are_sorted_and_capped_deterministically(self):
-        self._commit(*[f'f{i:03d}.py' for i in range(gates.CANDIDATE_CAP + 20)])
-        found = gates.candidates(self.repo, '-')
-        self.assertEqual(len(found), gates.CANDIDATE_CAP)
-        # Sorted BEFORE truncation, so the same plan cannot warn differently twice.
+    def test_candidates_are_capped_and_the_same_on_every_call(self):
+        self._commit('a.py', *[f'f{i:03d}.py' for i in range(gates.CANDIDATE_CAP + 20)])
+        found = gates.candidates(self.repo, 'a.py')
+        self.assertEqual(len(found), 25)
+        # Every file ties on score here, so the order falls to the path.
         self.assertEqual(found, sorted(found))
-        self.assertEqual(found, gates.candidates(self.repo, '-'))
+        self.assertEqual(found, gates.candidates(self.repo, 'a.py'))
+
+    def test_a_test_paired_with_a_declared_script_is_a_candidate_past_the_alphabetical_cut(self):
+        # The ui-controls run: tests/test_retry.py fell outside the first 120 files by name.
+        self._commit('scripts/forge-route.py', 'tests/test_route.py')
+        self._commit(*[f'a{i:03d}.py' for i in range(200)])
+        found = gates.candidates(self.repo, 'scripts/forge-route.py')
+        self.assertIn('tests/test_route.py', found)
+        self.assertNotIn('a000.py', found)
+
+    def test_test_files_pair_by_their_test_marker(self):
+        self._commit('src/parser.js', 'src/codec.go')
+        self._commit('tests/parser.spec.js', 'tests/codec_test.go', 'tests/unrelated.spec.js')
+        found = gates.candidates(self.repo, 'src/parser.js,src/codec.go')
+        self.assertEqual(sorted(found), ['tests/codec_test.go', 'tests/parser.spec.js'])
+
+    def test_a_file_named_in_the_text_outranks_a_same_directory_neighbour(self):
+        self._commit('src/main.py', 'src/neighbour.py')
+        self._commit('web/guide.md')
+        found = gates.candidates(self.repo, 'src/main.py', 'Document it in web/guide.md.')
+        self.assertEqual(found, ['web/guide.md', 'src/neighbour.py'])
+
+    def test_a_full_path_outranks_the_same_basename_elsewhere(self):
+        self._commit('src/main.py')
+        self._commit('aaa/guide.md', 'zzz/guide.md')
+        found = gates.candidates(self.repo, 'src/main.py', 'Update zzz/guide.md')
+        self.assertEqual(found, ['zzz/guide.md', 'aaa/guide.md'])
+
+    def test_a_name_inside_a_longer_name_is_not_named(self):
+        self._commit('src/main.py')
+        self._commit('tools/forge', 'tools/forge.py')
+        # "forge" is only inside "forge-route.py" and "forge.py"; "forge.py." names the file.
+        text = 'Edit forge-route.py and forge.py.'
+        self.assertEqual(gates.candidates(self.repo, 'src/main.py', text), ['tools/forge.py'])
+
+    def test_a_file_committed_with_a_declared_file_is_a_candidate_from_another_directory(self):
+        for _ in range(3):
+            self._commit('src/main.py', 'lib/helper.py')
+        self._commit('lib/lonely.py')
+        self.assertEqual(gates.candidates(self.repo, 'src/main.py'), ['lib/helper.py'])
+
+    def test_a_file_under_a_declared_directory_is_never_a_candidate(self):
+        self._commit('src/a.py', 'src/sub/b.py', 'lib/c.py')
+        # Named in the text, which would score +8 were it not under a declared directory.
+        text = 'Edit src/a.py, src/sub/b.py and lib/c.py.'
+        self.assertEqual(gates.candidates(self.repo, 'src/', text), ['lib/c.py'])
+        self.assertEqual(gates.candidates(self.repo, 'src', text), ['lib/c.py'])
+
+    def test_a_repository_without_commits_keeps_the_named_paired_and_neighbour_candidates(self):
+        # `git log` fails here (no commit yet) while `git ls-files` still lists the index.
+        self._write('scripts/forge-route.py', 'scripts/neighbour.py', 'tests/test_route.py',
+                    'docs/notes.md')
+        subprocess.run(['git', '-C', str(self.repo), 'add', '-A'], check=True)
+        found = gates.candidates(self.repo, 'scripts/forge-route.py', 'Update docs/notes.md')
+        self.assertEqual(sorted(found), ['docs/notes.md', 'scripts/neighbour.py',
+                                         'tests/test_route.py'])
 
     def test_a_non_repository_yields_nothing_rather_than_raising(self):
         with tempfile.TemporaryDirectory() as plain:
