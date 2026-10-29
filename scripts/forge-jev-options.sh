@@ -47,7 +47,8 @@ DECIDE_NO_GATES=0      # --no-gates
 DECIDE_BUDGET_TOKENS="" # --decide-budget tokens=N
 DECIDE_BUDGET_USD=""   # --decide-budget usd=X
 # forge_decide.GATES and MODES; tests/test_decide_flags.py keeps these in sync.
-FORGE_DECIDE_GATE_NAMES="drift forward prompt memory-curate memory-slice memory-stale verify-discover"
+FORGE_DECIDE_GATE_NAMES="drift forward prompt memory-curate memory-slice memory-stale verify-discover \
+coverage retry-addressed dwarf-message attribution findings"
 FORGE_DECIDE_MODE_NAMES="off shadow on"
 
 forge_jev_help() {
@@ -60,7 +61,8 @@ Optional Jev (TypeSafe System One) advisory judgments (solo or parallel run):
 Decision-model gates for this run (frozen at plan time; win over every config level):
   --gate NAME=MODE[,NAME=MODE...]  Set gates off, shadow or on; repeatable, a later one wins
                              gates: drift forward prompt memory-curate memory-slice
-                                    memory-stale verify-discover
+                                    memory-stale verify-discover coverage retry-addressed
+                                    dwarf-message attribution findings
   --no-gates                 Every gate off: no decision-model request at all
   --decide-budget tokens=N[,usd=X]  Cap this run's decision-model spend
 FORGE_JEV=off is a hard kill switch and wins over every other setting, and a repo's

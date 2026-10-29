@@ -78,7 +78,8 @@ class ConfigTests(unittest.TestCase):
         self.assertNotIn('zzz', out.stdout)
 
     def test_show_decide_block(self):
-        gates = ('drift', 'forward', 'prompt', 'memory-curate', 'memory-slice', 'memory-stale', 'verify-discover')
+        gates = ('drift', 'forward', 'prompt', 'memory-curate', 'memory-slice', 'memory-stale', 'verify-discover',
+                 'coverage', 'retry-addressed', 'dwarf-message', 'attribution', 'findings')
         out = self.run_cfg('show', '--repo', str(self.repo), '--json')
         self.assertEqual(out.returncode, 0, out.stderr)
         decide = json.loads(out.stdout)['decide']

@@ -24,6 +24,9 @@ from forge_decide.resolve import resolve  # noqa: E402
 LEGACY_VARS = ('FORGE_JEV', 'FORGE_JEV_SHADOW', 'FORGE_JEV_ROUTING', 'FORGE_JEV_TESTS',
                'FORGE_JEV_GATES', 'FORGE_JEV_MEMORY')
 MEMORY = ('memory-curate', 'memory-slice', 'memory-stale')
+# Gates the legacy level can switch, and the ones it cannot (no legacy capability).
+LEGACY_GATES = tuple(g for g in forge_decide.GATES if forge_decide.GATE_CAPABILITY[g])
+NO_LEGACY_GATES = tuple(g for g in forge_decide.GATES if not forge_decide.GATE_CAPABILITY[g])
 
 
 class DecideTestCase(unittest.TestCase):
@@ -215,7 +218,8 @@ class LegacyTests(DecideTestCase):
         self.write_jev({'enabled': True, 'capabilities': {'gates': False}})
         result = resolve(self.repo, env={})
         self.assertEqual(self.on(result), set(MEMORY) | {'verify-discover'})
-        self.assertEqual({g['source'] for g in result['gates'].values()}, {'legacy'})
+        self.assertEqual({result['gates'][g]['source'] for g in LEGACY_GATES}, {'legacy'})
+        self.assertEqual({result['gates'][g]['source'] for g in NO_LEGACY_GATES}, {'default'})
 
     def test_one_capability_on_is_an_allowlist(self):
         self.write_jev({'enabled': True})
@@ -254,6 +258,10 @@ class LegacyTests(DecideTestCase):
                             if name not in env:
                                 os.environ.pop(name, None)
                         for gate, cap in forge_decide.GATE_CAPABILITY.items():
+                            if cap is None:
+                                # No capability to compare with: enabled(None) means any gate on.
+                                self.assertEqual(result['gates'][gate]['mode'], 'off', gate)
+                                continue
                             self.assertEqual(result['gates'][gate]['mode'] == 'on',
                                              forge_jev.enabled(cap), (gate, cap))
 
@@ -286,7 +294,8 @@ class ShadowVariableTests(DecideTestCase):
         self.write_jev({'enabled': True, 'capabilities': {'gates': False}})
         result = resolve(self.repo, env={'FORGE_JEV_SHADOW': 'on'})
         self.assertEqual(self.on(result), set(MEMORY) | {'verify-discover'})
-        self.assertEqual({g['source'] for g in result['gates'].values()}, {'legacy'})
+        self.assertEqual({result['gates'][g]['source'] for g in LEGACY_GATES}, {'legacy'})
+        self.assertEqual({result['gates'][g]['source'] for g in NO_LEGACY_GATES}, {'default'})
 
     def test_before_migration_it_still_shadows_gates_other_levels_turned_on(self):
         # Only what the legacy level turned on keeps acting; a repo file or a gate variable

@@ -67,7 +67,19 @@ DEFAULT_THRESHOLDS = dict(tests_act=0.70,
                           memory_recategorize=0.80,
                           # Deliberately far below gate_warn: dropping a fact is
                           # irreversible, so only a confident "this went false" acts.
-                          stale_drop=0.25)
+                          stale_drop=0.25,
+                          # Unmeasured: a starting point until a replay sets it.
+                          coverage_warn=0.50,
+                          # Unmeasured: a starting point until a replay sets it.
+                          untouched_warn=0.70,
+                          # Unmeasured: a starting point until a replay sets it.
+                          message_warn=0.70,
+                          # Unmeasured: a starting point until a replay sets it.
+                          message_ask=0.70,
+                          # Unmeasured: a starting point until a replay sets it.
+                          findings_dup=0.85,
+                          # Unmeasured: a starting point until a replay sets it.
+                          findings_concrete=0.50)
 DEFAULTS = dict(enabled=False, key='', model=MODEL, endpoint=ENDPOINT, deadline_s=5.0,
                 capabilities={c: True for c in CAPABILITIES},
                 thresholds=dict(DEFAULT_THRESHOLDS),
@@ -292,9 +304,10 @@ def _resolved(config: dict | None = None) -> dict:
         return result
     result = json.loads(json.dumps(result))
     for gate, value in result['gates'].items():
-        if value['skip'] or value['source'] not in ('default', 'legacy', 'repo'):
+        capability = forge_decide.GATE_CAPABILITY[gate]
+        if value['skip'] or capability is None or value['source'] not in ('default', 'legacy', 'repo'):
             continue
-        if resolve_module._legacy_enabled(forge_decide.GATE_CAPABILITY[gate], os.environ, config):
+        if resolve_module._legacy_enabled(capability, os.environ, config):
             # Before migration FORGE_JEV_SHADOW marks records only: the gate stays on.
             value['mode'], value['source'] = 'on', 'legacy'
         elif value['source'] != 'repo':
