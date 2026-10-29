@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import getpass
+import importlib
 import json
 import os
 from pathlib import Path
@@ -104,6 +105,33 @@ def parser() -> argparse.ArgumentParser:
     memory_stale.add_argument('--text', required=True)
     memory_stale.add_argument('--anchor', required=True)
     memory_stale.add_argument('--run-dir', default=None)
+
+    coverage = sub.add_parser('coverage')
+    coverage.add_argument('--plan', required=True)
+    coverage.add_argument('--repo', required=True)
+    coverage.add_argument('--json', action='store_true')
+
+    retry_addressed = sub.add_parser('retry-addressed')
+    retry_addressed.add_argument('--plan', required=True)
+    retry_addressed.add_argument('--task', required=True)
+    retry_addressed.add_argument('--attempt', type=int, required=True)
+    retry_addressed.add_argument('--repo', required=True)
+
+    dwarf_message = sub.add_parser('dwarf-message')
+    dwarf_message.add_argument('--plan', required=True)
+    dwarf_message.add_argument('--task', required=True)
+    dwarf_message.add_argument('--attempt', type=int, required=True)
+    dwarf_message.add_argument('--repo', required=True)
+
+    attribution = sub.add_parser('attribution')
+    attribution.add_argument('--plan', required=True)
+    attribution.add_argument('--repo', required=True)
+    attribution.add_argument('--log', required=True)
+
+    findings = sub.add_parser('findings')
+    findings.add_argument('--repo', required=True)
+    findings.add_argument('--input', required=True)
+    findings.add_argument('--run-dir', default=None)
     return p
 
 
@@ -744,6 +772,70 @@ def _anchor_repo(anchor: str) -> str | None:
     return (out.stdout.strip() or None) if out.returncode == 0 else None
 
 
+def _path_missing(verb: str, dirs: dict, files: dict) -> bool:
+    """True, after saying which, when a path the verb was given is not there. `dirs` values must
+    be directories and `files` values regular files; None means the flag was not given."""
+    for flag, path in dirs.items():
+        if path is not None and not Path(path).is_dir():
+            print(f'forge jev {verb}: --{flag} {path!r} is not a directory', file=sys.stderr)
+            return True
+    for flag, path in files.items():
+        if path is not None and not Path(path).is_file():
+            print(f'forge jev {verb}: --{flag} {path!r} is not a file', file=sys.stderr)
+            return True
+    return False
+
+
+def _delegate(verb: str, module_name: str, args, repo: str) -> int:
+    """use_repo(repo), then the module's `main(args)`. A module that is missing, or has no
+    main, is no opinion (exit 3) and says so on stderr only. Imported here, not at the top of
+    this file, so a module still being written cannot break the other verbs."""
+    use_repo(repo)
+    try:
+        main = importlib.import_module(f'.{module_name}', __package__).main
+    except (ImportError, AttributeError) as error:
+        print(f'forge jev {verb}: {module_name} module unavailable ({error})', file=sys.stderr)
+        return 3
+    return main(args)
+
+
+def cmd_coverage(args) -> int:
+    """Plan covers the request (#47): which requirement no task's acceptance criteria cover."""
+    if _path_missing('coverage', dirs={'plan': args.plan, 'repo': args.repo}, files={}):
+        return 2
+    return _delegate('coverage', 'coverage', args, args.repo)
+
+
+def cmd_retry_addressed(args) -> int:
+    """A retry touched its blocking findings (#43): which findings its diff left as they were."""
+    if _path_missing('retry-addressed', dirs={'plan': args.plan, 'repo': args.repo}, files={}):
+        return 2
+    return _delegate('retry-addressed', 'addressed', args, args.repo)
+
+
+def cmd_dwarf_message(args) -> int:
+    """The dwarf's final message (#44): unfinished, blocked or a question for the user."""
+    if _path_missing('dwarf-message', dirs={'plan': args.plan, 'repo': args.repo}, files={}):
+        return 2
+    return _delegate('dwarf-message', 'message', args, args.repo)
+
+
+def cmd_attribution(args) -> int:
+    """Integration attribution (#45): which merged task most likely broke the combined run."""
+    if _path_missing('attribution', dirs={'plan': args.plan, 'repo': args.repo}, files={'log': args.log}):
+        return 2
+    return _delegate('attribution', 'attribution', args, args.repo)
+
+
+def cmd_findings(args) -> int:
+    """Findings duplicates and triage (#46): which findings duplicate an open issue or read as
+    a preference. --run-dir is the plan the findings came from, for dataset capture."""
+    if _path_missing('findings', dirs={'repo': args.repo, 'run-dir': args.run_dir},
+                     files={'input': args.input}):
+        return 2
+    return _delegate('findings', 'findings', args, args.repo)
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     try:
@@ -755,7 +847,12 @@ def main(argv: list[str] | None = None) -> int:
                        'memory-curate': cmd_memory_curate,
                        'memory-slice': cmd_memory_slice,
                        'memory-stale': cmd_memory_stale,
-                       'verify-discover': cmd_verify_discover})[args.command](args)
+                       'verify-discover': cmd_verify_discover,
+                       'coverage': cmd_coverage,
+                       'retry-addressed': cmd_retry_addressed,
+                       'dwarf-message': cmd_dwarf_message,
+                       'attribution': cmd_attribution,
+                       'findings': cmd_findings})[args.command](args)
     except SystemExit as exit:
         # argparse exits the process on a usage error; return the code instead so the
         # shim owns exiting and main() stays callable from a test.
