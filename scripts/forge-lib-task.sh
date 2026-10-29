@@ -313,17 +313,66 @@ attempt_delta() { # attempt_delta <tdir> <worktree> <reviewed-commit>
   return 0
 }
 
+# --- NEEDS_INPUT (#44) ------------------------------------------------------------
+# A task stopped for the user's answer (needs_input.md holds the question). It resumes only
+# when answer.md is non-empty and strictly newer than the question; a stale answer, left over
+# from before the question was asked, is no answer. Compared in nanoseconds: the shell's -nt looks
+# at whole seconds on some systems.
+answer_ready() { # answer_ready <tdir>
+  [ -s "$1/answer.md" ] || return 1
+  [ -f "$1/needs_input.md" ] || return 0   # no question left to be older than
+  python3 -c 'import os, sys; sys.exit(0 if os.stat(sys.argv[1]).st_mtime_ns > os.stat(sys.argv[2]).st_mtime_ns else 1)' \
+    "$1/answer.md" "$1/needs_input.md" 2>/dev/null
+}
+
+# retry_findings.next: the findings so far, then the question quoted and the answer. Nothing
+# else changes until commit_answer_findings.
+compose_answer_findings() { # compose_answer_findings <tdir>
+  local tdir="$1" tmp="$1/.retry_findings.next.tmp"
+  {
+    if [ -s "$tdir/retry_findings.md" ]; then
+      cat "$tdir/retry_findings.md"
+      printf '\n\n'
+    fi
+    printf "## The user's answer\n\n"
+    if [ -f "$tdir/needs_input.md" ]; then sed 's/^/> /' "$tdir/needs_input.md"; printf '\n'; fi
+    cat "$tdir/answer.md"
+    printf '\n'
+  } > "$tmp" && mv "$tmp" "$tdir/retry_findings.next" || { rm -f "$tmp"; return 1; }
+}
+
+# The retry goes ahead: the composed findings replace the old ones, their source is the answer,
+# retry_findings.commit stays as it was, and the question and answer are consumed. The reviewer
+# and implementer sessions kept beside the old findings stay with them.
+commit_answer_findings() { # commit_answer_findings <tdir>
+  local tdir="$1"
+  printf 'answer\n' > "$tdir/.retry_findings.source.tmp" && mv "$tdir/.retry_findings.source.tmp" "$tdir/retry_findings.source" \
+    && mv "$tdir/retry_findings.next" "$tdir/retry_findings.md" || return 1
+  rm -f "$tdir/needs_input.md" "$tdir/answer.md"
+}
+
 # Shared by `retry` (a human asked) and the scheduler's automatic retries. The findings
 # are the whole point of retrying rather than re-running: the dwarf is told what was
 # wrong with its own previous attempt.
 prepare_retry() { # prepare_retry <plan> <id> [new-dwarf]
   local PLAN="$1" id="$2" newdwarf="${3:-}" T="$1/tasks.tsv" tdir="$1/tasks/$2" st verdict
   st="$(task_status "$PLAN" "$id")"
+  # A NEEDS_INPUT task waits for the user, and nothing here may change before the answer is
+  # known to be there: no file removed, no status changed, no escalation.
+  if [ "$st" = NEEDS_INPUT ] && ! answer_ready "$tdir"; then
+    note "$id is waiting for an answer: forge-parallel.sh retry $PLAN $id --answer \"<text>\""
+    return 2
+  fi
   verdict="$(forge_verdict "$tdir/qa.last" 2>/dev/null)"
   if [ "$st" = INFRA ]; then
     # Nothing was judged, so there is nothing new to carry forward; the stop already
     # recorded where to resume (a `resume` marker for a QA-stage stop).
     note "$id: resuming after an infrastructure stop"
+  elif [ "$st" = NEEDS_INPUT ]; then
+    # Exclusive: an older qa.last (a reviewed FAIL before the question) must not reach
+    # carry_findings and overwrite the answer. The result is composed into retry_findings.next
+    # and only moved into place once escalation and pins have agreed to the retry.
+    compose_answer_findings "$tdir" || return 1
   elif { [ "$st" = UNKNOWN ] || [ "$st" = INVALIDATED ]; } && [ -s "$tdir/reviewed.commit" ]; then
     # The reviewer never reached a verdict, or its verdict was voided because something changed
     # during the review: either way the code was not rejected. Re-asking QA is cheaper and more
@@ -384,6 +433,7 @@ prepare_retry() { # prepare_retry <plan> <id> [new-dwarf]
   elif [ "$has_pin" = 1 ] && ! escalation_record_ok "$PLAN" "$id"; then
     # Before the claim: a refused record leaves the pin unclaimed and tasks.tsv as it was.
     note "$id: could not record the escalation in escalations.tsv; nothing was retried"
+    rm -f "$tdir/retry_findings.next"
     return 1
   elif [ "$has_pin" = 1 ] && pinned="$(claim_pin "$tdir")"; then
     esc_source=pin
@@ -392,6 +442,7 @@ prepare_retry() { # prepare_retry <plan> <id> [new-dwarf]
   else
     next="$(python3 "$SKILL_DIR/scripts/forge-route.py" escalation --plan "$PLAN" --task "$id")"; rc=$?
     if [ "$rc" = 3 ]; then
+      rm -f "$tdir/retry_findings.next"
       note "$(cat "$tdir/split.suggested" 2>/dev/null)"
       return 3
     fi
@@ -405,8 +456,9 @@ prepare_retry() { # prepare_retry <plan> <id> [new-dwarf]
   # request is recorded and consumed.
   if [ "$newdwarf" = "$cur" ] && [ "$esc_source" != pin ]; then newdwarf=""; fi
   if [ -n "$newdwarf" ]; then
-    write_escalation "$PLAN" "$id" "$cur" "$newdwarf" "$esc_source" || return 1
+    write_escalation "$PLAN" "$id" "$cur" "$newdwarf" "$esc_source" || { rm -f "$tdir/retry_findings.next"; return 1; }
   fi
+  [ "$st" != NEEDS_INPUT ] || commit_answer_findings "$tdir" || return 1
   rm -f "$tdir/noretry"
 }
 

@@ -403,7 +403,8 @@ forge-parallel.sh run       <plan-dir> [--max-parallel N] [--yolo-dwarf] [--yolo
                                      [--sweep P0|P1|P2|P3 [--sweep-plausible] [--sweep-max N]]
                                      [--sweep-ahead | --no-sweep-ahead]
                                      [--fractal | --no-fractal] [--fractal-<limit> <n>]
-forge-parallel.sh retry     <plan-dir> <task-id> [--dwarf <spec>] [--timeout S]
+forge-parallel.sh retry     <plan-dir> <task-id> [--dwarf <spec>] [--answer <text> | --answer-file <file>]
+                                     [--timeout S]
                                      [--qa-threshold P0|P1|P2|P3|none|default] [--verify-retries N]
                                      [--verify <cmd> | --verify-lane 'name[opts]=cmd' ...] [--verify-parallel N]
                                      [--escalate-after N] [--escalate-effort | --no-escalate-effort]
@@ -430,6 +431,7 @@ forge-parallel.sh combine   <new-plan-dir> <plan-dir> <plan-dir>... [--verify <c
 | `--gate NAME=MODE[,NAME=MODE...]` | plan | `jev-selection.json` | set decision-model gates for this run; repeatable, a later one wins. When the file exists, `run` and `retry` keep it; with no file they apply the flags passed then and freeze them |
 | `--no-gates` | plan | `jev-selection.json` | every decision-model gate off |
 | `--decide-budget tokens=N[,usd=X]` | plan | `jev-selection.json` | cap this run's decision-model spend |
+| `--answer TEXT` / `--answer-file F` | retry | no — this retry only | the user's answer to a `NEEDS_INPUT` task's question (`tasks/<id>/needs_input.md`), written to `answer.md`; on any other status `retry` exits `2` |
 | `--timeout S` | run, retry | `timeout` | per-dispatch timeout in seconds (`0` disables); wins over `FORGE_TIMEOUT` |
 | `--retry-failed N` | run | no — this run only | re-queue a task the reviewer rejected up to `N` more times inside the run |
 | `--infra-retries M` | run | no — this run only | wait out up to `M` infrastructure stops per paused scope (a model, a harness, or everything) instead of ending the run |
@@ -454,6 +456,16 @@ forge-parallel.sh combine   <new-plan-dir> <plan-dir> <plan-dir>... [--verify <c
 spent and nothing was judged — fix the cause and run the same command again ·
 `130` **interrupted or stopped** (a signal, or `forge control stop`): the running tasks are
 `INTERRUPTED` and verification was skipped or stopped; the summary prints the `retry` for each.
+
+**`NEEDS_INPUT`** is a task status that is not a failure: the implementer ended with a question
+only the user can answer, kept in `tasks/<id>/needs_input.md`. The run summary lists it under
+`waiting for your answer:` with the first line of the question and the command to answer it, and
+the retry hint does not count it as failed. Its dependents end `BLOCKED`, and neither a later
+`run`, `--retry-failed` nor `forge control retry` resumes it. Only
+`retry <plan> <id> --answer "<text>"` (or `--answer-file F`) does: the question and the answer
+join the findings of the next attempt, a normal new attempt. Without an answer, or with one older
+than the question, `retry` exits `2` and changes nothing; if escalation refuses the retry, the
+question and the answer stay for the same `--answer` to be tried again.
 
 The full plan → run → integrate walkthrough is in [decomposed runs](decomposed-runs.md#plan-run-integrate). `retry`, `accept` and `review` are covered in [reviews, retries and recovery](reviews.md); resuming, `split`/`combine`, scope drift and `tasks.tsv` in [decomposed runs](decomposed-runs.md).
 
