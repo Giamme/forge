@@ -147,6 +147,7 @@ edge-case bug, P3 minor). [The verdict rule](#verdicts-and-failure) says which o
 `--qa-threshold Pn` (on `plan`, `run`, `retry`, `review` and solo; a plan remembers it) changes
 the default `P2`, the **least severe level that still blocks**: `P2` means P0–P2 block and only P3
 is tolerated. `none` means P3, so every CONFIRMED finding blocks; `default` removes the setting.
+Solo is the exception: it takes only `P0`–`P3` or `none`, so `default` exits 2 there.
 A task-specific `tasks/<id>/qa_threshold` file beats the plan-level value, which is how a
 dev-tooling or investigation task gets a looser bar than production code. A reviewer `FAIL` made
 only of CONFIRMED findings that are all labelled and strictly milder than the threshold is
