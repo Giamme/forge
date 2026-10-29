@@ -303,6 +303,9 @@ def _fired(record, entry: dict, thresholds: dict, store: _Store) -> list | None:
         request = store.body(entry.get('key'))
         if request is None:
             return None
+    elif record.name == 'jev-attribution':
+        # a tie at the top is broken by the merge order, which only the stored request's state keeps
+        request = store.body(entry.get('key')) or request
     fired = record.fired(answers, value, request)
     return None if fired is None else list(fired)
 

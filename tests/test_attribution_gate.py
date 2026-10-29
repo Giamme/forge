@@ -335,6 +335,26 @@ class MeasurementTests(unittest.TestCase):
         self.assertEqual(attribution.ranking(attribution.probabilities({'answers': answers}, 'culprit'),
                                              ['z', 'a', 'none'])[0][0], 'z')
 
+    def test_the_report_resolves_a_tie_from_the_stored_body_and_marks_it_unknown_without_one(self):
+        from forge_decide import report
+        body = dict(state=dict(run='r', log='', tasks=[dict(id='z', files=[]), dict(id='a', files=[])]),
+                    model='jev-latest', questions=dict(culprit=dict(criteria={'a': '', 'none': '', 'z': ''})))
+        entry = dict(ok=True, key='k', model='jev-latest', questions=['culprit'],
+                     answers=self.answers(none=0.5, z=0.5, a=0.0))
+
+        class Store:
+            def __init__(self, found):
+                self.found = found
+
+            def body(self, key):
+                return self.found
+
+        record = sites.site('jev-attribution')
+        self.assertEqual(report._fired(record, entry, {}, Store(body)), ['culprit:z'])
+        self.assertIsNone(report._fired(record, entry, {}, Store(None)))
+        clear = dict(entry, answers=self.answers(none=0.1, z=0.2, a=0.7))
+        self.assertEqual(report._fired(record, clear, {}, Store(None)), ['culprit:a'])
+
     def test_the_baseline_counts_the_tasks_files_named_in_the_log(self):
         self.assertEqual(attribution.baseline(self.body(), 'culprit:a'), 1.0)
         self.assertEqual(attribution.baseline(self.body('a.py x.py'), 'culprit:a'), 2.0)

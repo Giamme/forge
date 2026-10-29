@@ -165,12 +165,20 @@ def _asked_order(request) -> list[str]:
     return _options(request)
 
 
-def fired(answers, threshold_value=None, request=None) -> list[str]:
+def fired(answers, threshold_value=None, request=None) -> list[str] | None:
     """The top option when it is not `none` (there is no threshold). Ties break as `main` ranks
-    them, by the order the run asked the options in."""
+    them, by the order the run asked the options in. None when options tie at the top and the
+    request does not give that order (the report has only the question names when it finds no
+    stored body): the winner cannot be known then."""
     probs = probabilities({'answers': answers or {}}, 'culprit')
-    ordered = ranking(probs, _asked_order(request))
-    if not ordered or ordered[0][0] == 'none':
+    order = _asked_order(request)
+    ordered = ranking(probs, order)
+    if not ordered:
+        return []
+    tied = [option for option, p in ordered if p == ordered[0][1]]
+    if len(tied) > 1 and any(option not in order for option in tied):
+        return None
+    if ordered[0][0] == 'none':
         return []
     return [PREFIX + ordered[0][0]]
 
