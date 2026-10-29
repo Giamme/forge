@@ -38,9 +38,8 @@ REVIEW_SINCE_LIMIT=204800     # largest "changes since the previous review" plac
 REVIEW_DIFF_LIMIT=409600      # largest combined diff placed inline in the prompt
 
 # --- small helpers ---------------------------------------------------------------------
-review_threshold() { # the plan-level blocking threshold, or nothing
-  [ -s "$1/qa_threshold" ] && head -1 "$1/qa_threshold" | tr -d ' \r'
-  return 0
+review_threshold() { # the plan-level blocking threshold: the plan file, else the default; always a value
+  qa_threshold_for "$1" ""
 }
 
 review_yolo_flag() { # review_yolo_flag <plan> [force] -> "--yolo" or nothing
@@ -360,7 +359,7 @@ PY
 #   it is called from inside do_integrate.
 final_review() {
   local plan="$1" base="$2" tip="$3" src="$4" out="$5" spec="$6" yolo="${7:-}"
-  local review n rc verdict thr gate_line source_fp review_fp vdir tflag="" inline=1 diff_n
+  local review n rc verdict thr gate_line gate_forced source_fp review_fp vdir tflag="" inline=1 diff_n
   local plan_real prev="" prev_rel=none prev_tip="" since=none integration="" prev_note=""
   [ -n "$yolo" ] && yolo=--yolo
   [ -n "$spec" ] || { note "final review: no QA spec given"; return 3; }
@@ -467,7 +466,7 @@ final_review() {
     echo
     cat "$out/notes.md"
     [ -s "$out/previous.md" ] && cat "$out/previous.md"
-    python3 "$SKILL_DIR/scripts/forge-contract.py" qa --part tail --kind final ${thr:+--threshold "$thr"}
+    python3 "$SKILL_DIR/scripts/forge-contract.py" qa --part tail --kind final --threshold "$thr"
     echo
     if [ "$inline" = 1 ]; then
       echo '```diff'; cat "$out/combined.diff"; echo '```'
@@ -549,15 +548,17 @@ final_review() {
   verdict=""
   [ -s "$out/qa.last" ] && verdict="$(forge_verdict "$out/qa.last")"
   verdict="${verdict:-UNKNOWN}"
-  if [ -n "$thr" ]; then
-    # Same gate as per-task QA: a FAIL made only of labelled findings below the threshold
-    # is accepted with known issues; anything unlabelled stays blocking.
-    gate_line="$(python3 "$SKILL_DIR/scripts/forge-contract.py" gate --verdict "$verdict" \
-        --qa-last "$out/qa.last" --threshold "$thr" --known-issues "$out/known_issues.md" 2>/dev/null)" || gate_line=""
-    if [ -n "$gate_line" ]; then
-      printf '%s\t%s\n' "$thr" "$gate_line" > "$out/qa.gate"
-      if [ "$(printf '%s' "$gate_line" | awk -F'\t' '{print $1}')" = accept ]; then verdict=ACCEPTED; fi
-    fi
+  # Same gate as per-task QA, both ways: a FAIL made only of labelled findings below the
+  # threshold is accepted with known issues; a PASS listing a blocking CONFIRMED finding fails.
+  gate_line="$(python3 "$SKILL_DIR/scripts/forge-contract.py" gate --verdict "$verdict" \
+      --qa-last "$out/qa.last" --threshold "$thr" --known-issues "$out/known_issues.md" 2>/dev/null)" || gate_line=""
+  gate_forced=""
+  if [ -n "$gate_line" ]; then
+    printf '%s\t%s\n' "$thr" "$gate_line" > "$out/qa.gate"
+    case "$(printf '%s' "$gate_line" | awk -F'\t' '{print $1}')" in
+      accept) verdict=ACCEPTED ;;
+      fail) [ "$verdict" = PASS ] && { verdict=FAIL; gate_forced=1; } ;;
+    esac
   fi
   printf '%s\n' "$verdict" > "$out/verdict"
 
@@ -571,7 +572,11 @@ final_review() {
       echo "  known issues: $out/known_issues.md"
       echo "  report: $out/qa.last" ;;
     FAIL)
-      echo "final review ($spec): verdict FAIL (blocking) — the reviewer confirmed at least one defect in the combined result."
+      if [ -n "$gate_forced" ]; then
+        echo "final review ($spec): verdict FAIL (blocking) — the reviewer said PASS, but listed a CONFIRMED finding at or above the $thr threshold — forge made it FAIL."
+      else
+        echo "final review ($spec): verdict FAIL (blocking) — the reviewer confirmed at least one defect in the combined result."
+      fi
       echo "  findings: $out/qa.last" ;;
     *)
       echo "final review ($spec): verdict UNKNOWN (blocking) — the reviewer ended without a FORGE_VERDICT line, so nothing was concluded."
