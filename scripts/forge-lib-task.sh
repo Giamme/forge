@@ -524,6 +524,10 @@ qa_threshold_source() { # qa_threshold_source <plan> <id> -> set | default
   local v; v="$(qa_threshold_walk "$1" "$2")"; printf '%s\n' "${v##* }"
 }
 
+# Epoch seconds with milliseconds, for the flip log and FORGE_RUN_STARTED. Whole seconds cannot
+# tell a flip from just before a run started apart from one in the same second after it.
+forge_now() { python3 -c 'import time; print("%.3f" % time.time())' 2>/dev/null || date +%s; }
+
 # The gate goes both ways, at the effective threshold. A reviewer's FAIL whose confirmed
 # findings are all labelled and less severe than the threshold is accepted as
 # PASS-with-known-issues; the literal status stays PASS, so the merge path, the scheduler
@@ -550,7 +554,7 @@ qa_gate() { # qa_gate <plan> <id> <tdir> <verdict> [threshold]
       note "$id: the reviewer said PASS but listed a CONFIRMED finding at or above the $thr threshold (worst $worst) — forge made it FAIL"
       # A scheduled task's notes go to its task.out, and a later attempt replaces qa.gate: this
       # log is what lets the run's summary say forge overrode a verdict (report_gate_flips).
-      printf '%s\t%s\t%s\t%s\n' "$(date +%s)" "$(cat "$tdir/attempt" 2>/dev/null || echo 0)" "$thr" "$worst" \
+      printf '%s\t%s\t%s\t%s\n' "$(forge_now)" "$(cat "$tdir/attempt" 2>/dev/null || echo 0)" "$thr" "$worst" \
         >> "$tdir/qa.flips" ;;
   esac
   return 0
@@ -595,7 +599,7 @@ report_gate_flips() { # report_gate_flips <plan>
   for id in $(all_ids "$plan/tasks.tsv"); do
     [ -s "$plan/tasks/$id/qa.flips" ] || continue
     while IFS="$(printf '\t')" read -r at attempt thr worst; do
-      [ "${at:-0}" -ge "${FORGE_RUN_STARTED:-0}" ] 2>/dev/null || continue
+      awk -v at="${at:-0}" -v since="${FORGE_RUN_STARTED:-0}" 'BEGIN { exit !(at + 0 >= since + 0) }' || continue
       [ "$n" = 0 ] && echo "forge overrode the reviewer's verdict (PASS, but it listed a CONFIRMED finding at or above the threshold):"
       n=$((n+1))
       printf '  %-14s attempt %s: PASS -> FAIL at the %s threshold (worst %s)\n' "$id" "$attempt" "$thr" "$worst"
