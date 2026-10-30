@@ -490,6 +490,12 @@ def _delete(ctx):
     return ctx.locked(work)
 
 
+def _directory(value):
+    """`value` when it is an absolute existing directory with no control characters, else None."""
+    ok = isinstance(value, str) and os.path.isabs(value) and _no_control_chars(value) and os.path.isdir(value)
+    return value if ok else None
+
+
 def _repo_of(path):
     """The repository the run's own `repo` file names, or None."""
     try:
@@ -497,17 +503,19 @@ def _repo_of(path):
             line = handle.readline().strip()
     except (OSError, UnicodeDecodeError):
         return None
-    return line if line and os.path.isabs(line) and _no_control_chars(line) and os.path.isdir(line) else None
+    return _directory(line)
 
 
 def _config_run(ctx, key):
-    """(repo, error answer) for the run key a config request names."""
+    """(repo, error answer) for the run key a config request names. The repository is the run's root
+    (every worktree of one repository shares its .forge/ config), else the directory its `repo` names."""
     if not isinstance(key, str) or not re.fullmatch(r'[0-9a-f]{12}', key):
         return None, _invalid('run must be a 12-hex run key')
     found = ctx.server.catalog.locate(key)
     if not found:
         return None, (404, {'error': 'not found'})
-    repo = _repo_of(found[0])
+    identity = ctx.server.catalog.identity(key)
+    repo = _directory(identity and identity['root']) or _repo_of(found[0])
     if repo is None:
         return None, (409, {'error': 'refused', 'detail': 'the run names no repository directory'})
     return repo, None

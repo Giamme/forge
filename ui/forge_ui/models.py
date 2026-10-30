@@ -127,10 +127,10 @@ def _reviews(key, ident, execs, shadows):
     return rows
 
 
-def _facts(path, summary):
+def _facts(path, summary, root):
     rd = reader._Read(path)
     key = summary['key']
-    base_row = dict(run=key, repo=summary['repo'], created=summary['created'])
+    base_row = dict(run=key, repo=summary['repo'], repo_root=root, created=summary['created'])
     tasks, reviews = [], []
     if summary['kind'] == 'solo':
         execs = reader._solo_execs(rd, reader._solo_status(rd), reader._history(rd, 'attempts.tsv'))
@@ -166,25 +166,28 @@ def _facts(path, summary):
                                 spec=spec, verdict=review['verdict'] if review['verdict'] in ('PASS', 'FAIL') else None,
                                 findings=review['findings'], duration_s=review['duration_s'],
                                 tokens=run['tokens'] if run else None, agreement=None, primary_alias=None))
-    order = ('run', 'task', 'kind', 'repo', 'difficulty', 'created', 'explored', 'propensity', 'final_status',
-             'accepted', 'attempts', 'escalations')
+    order = ('run', 'task', 'kind', 'repo', 'repo_root', 'difficulty', 'created', 'explored', 'propensity',
+             'final_status', 'accepted', 'attempts', 'escalations')
+    # Reviews have no repo of their own; every row carries the run's grouping key.
+    reviews = [dict(row, repo_root=root) for row in reviews]
     return dict(tasks=[{name: row[name] for name in order} for row in tasks], reviews=reviews,
                 warnings=[f'{key}: {item}' for item in rd.warnings])
 
 
-def _signature(summary):
+def _signature(summary, root):
+    # The grouping key is part of the signature: a root that appears later must reach the cached rows.
     return (summary['updated'], summary['task_count'], json.dumps(summary['counts'], sort_keys=True),
-            summary['final_review'])
+            summary['final_review'], root)
 
 
-def _cached(path, summary, now):
+def _cached(path, summary, now, root):
     real = os.path.realpath(path)
-    sig = _signature(summary)
+    sig = _signature(summary, root)
     hit = _RUNS.get(real)
     if hit is not None and hit[0] == sig and not ('RUNNING' in summary['counts'] and now - hit[1] > _RUNNING_S):
         _RUNS.move_to_end(real)
         return hit[2]
-    facts = _facts(path, summary)
+    facts = _facts(path, summary, root)
     _RUNS[real] = (sig, now, facts)
     _RUNS.move_to_end(real)
     while len(_RUNS) > _SIZE:
@@ -197,18 +200,15 @@ def collect(found):
     # One computation at a time: a cold cache reads every run once, not once per request.
     with _LOCK:
         now = time.time()
-        runs = []
-        for path, source in found:
-            summary = reader.summarize(path, source)
-            if reader._kind(path):
-                runs.append((path, summary))
+        listed, identities = reader.batch(found)
+        runs = [(path, reader.summarize(path, source), identities[entry[0]]) for path, source, entry in listed]
         runs.sort(key=lambda item: item[1]['updated'] if item[1]['updated'] is not None else float('-inf'), reverse=True)
         tasks, reviews, warnings, count, truncated = [], [], [], 0, False
-        for path, summary in runs:
+        for path, summary, identity in runs:
             if len(tasks) + summary['task_count'] > _MAX_ROWS:
                 truncated = True
                 break
-            facts = _cached(path, summary, now)
+            facts = _cached(path, summary, now, reader.repo_root(identity, summary['repo']))
             tasks += facts['tasks']
             reviews += facts['reviews']
             warnings += facts['warnings']
