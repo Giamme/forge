@@ -38,6 +38,7 @@ written), and the reader must never raise because of one.
 | `results.tsv` | `id<TAB>status<TAB>branch` per line, e.g. `reader	MERGED	forge/20261016-1530/reader` |
 | `run_id` | one line, e.g. `20261016-153012-ab12` |
 | `repo` | one line, absolute path of the target repo |
+| `repo.identity` | optional, written by forge 0.13.1 and later, once at creation: `{"root", "worktree", "branch"}`, the repository `repo` belongs to. `root` is its main working tree (the same for every linked worktree), `worktree` the checkout's physical path when it differs from `root` (else `null`), `branch` its branch (`null` when HEAD is detached) |
 | `goal.txt`, `request.md` | free text |
 | `decompose_level` | `low`, `medium` or `high` |
 | `explore`, `shadow_rate` | one number each (e.g. `0.5`) |
@@ -117,6 +118,7 @@ raise because of one. Older solo dirs have `verdict` and not `status`.
 |---|---|
 | `prompt.md` | the implementation prompt |
 | `repo` | one line, absolute path of the target repo |
+| `repo.identity` | optional, written by forge 0.13.1 and later, once at creation: `{"root", "worktree", "branch"}`, the repository `repo` belongs to. `root` is its main working tree (the same for every linked worktree), `worktree` the checkout's physical path when it differs from `root` (else `null`), `branch` its branch (`null` when HEAD is detached) |
 | `goal.txt`, `request.md` | free text; the summary goal is the first line of `goal.txt` |
 | `status` | one word: `RUNNING`, then `PASS`, `FAIL`, `UNKNOWN`, `NOCHANGES`, `INVALIDATED`, `TIMEOUT`, `INFRA`, `INTERRUPTED` or `ERROR` |
 | `verdict` | one word, the legacy status (`PASS`, `FAIL`, `UNKNOWN`, `NOCHANGES`, `INVALIDATED`, …) |
@@ -185,6 +187,7 @@ class Catalog:
     def __init__(self, plans=(), roots=(), registry=True, registry_dir=None): ...
     def runs(self) -> list[dict]        # RunSummary list, newest `updated` first
     def get(self, key) -> dict | None   # RunDetail for that run_key, or None
+    def identity(self, key) -> dict | None  # {root, worktree, branch, source} of that run; None for an unknown key
     def task(self, key, task_id) -> dict | None
     def execution(self, key, name) -> dict | None
     def final_review(self, key, name) -> dict | None
@@ -256,7 +259,7 @@ its last 20,000 behind a leading `…`. Their `truncated` lists the field names 
 | `POST /api/runs/<key>/issues/dismiss` | dismiss or (`undo`) restore findings; authenticated |
 | `POST /api/runs/<key>/delete` | dry-run or delete a run with `forge runs rm`; authenticated, 900 s timeout; later requests for the key answer `404` |
 | `GET /api/models/reviewers` | `200` the `forge dataset reviewers --json` report (how each reviewer's PASSed work held up); no parameters |
-| `GET /api/config?run=<key>` | `200` the `forge config show --json` of that run's repo |
+| `GET /api/config?run=<key>` | `200` the `forge config show --json` of that run's repository root (see Config) |
 | `POST /api/config` | set or unset one allowed key (`repo.verify`, `repo.setup`, `repo.verify-subset`, `decide.gate.<gate>`, `decide.gate.<gate>.provider`, `decide.gate.<gate>.model`); `jev.enabled` is gone; authenticated |
 | `GET /api/runs/<key>/export?texts=0\|1&paths=0\|1` | `200` the run as one HTML file (see Export), `Content-Disposition: attachment`, `Content-Security-Policy: default-src 'none'; sandbox`; `404` for an unknown run |
 | `GET /api/runs/<key>/tasks/<id>/fractal` | `200 TaskFractal` |
@@ -305,6 +308,9 @@ nothing when there is none. Every other response keeps
   "kind": "plan",
   "run_id": "20261016-153012-ab12",
   "repo": "/Users/me/dev/forge-ui",
+  "repo_root": "/Users/me/dev/forge-ui",
+  "repo_worktree": null,
+  "repo_branch": "main",
   "goal": "first line of goal.txt",
   "decompose_level": "medium",
   "updated": 1760621412.5,
@@ -329,6 +335,18 @@ nothing when there is none. Every other response keeps
 - `created`: when the run began: the earliest birth time (else mtime) of the files a run writes
   once at its start (plan: `run_id`, `repo`, `request.md`, `goal.txt`, `tasks.tsv`; solo: `prompt.md`,
   `repo`, `request.md`, `goal.txt`), else `null`. These are stat'ed only, and never move `updated`.
+- `repo_root`: the repository the run belongs to, and the key to group runs by. It is the identity's
+  root, or `repo` when nothing better is known (`null` only when the run has no `repo`). It is found in
+  four steps, the first that answers: (1) `repo.identity` in the run dir, written once at creation by
+  forge 0.13.1 and later, its `root`; (2) the `repo` path is a live git checkout: the main working tree
+  of its `git worktree list`; (3) the `repo` path is gone: the run's base commit (`integration.base`,
+  else a plan's first readable `tasks/*/base_ref`, else a solo run's `dwarf.head.before`) is in exactly
+  one root that steps 1 and 2 found in the same listing; (4) otherwise `repo` itself. Clients should
+  group by `repo_root` and fall back to `repo` when it is absent (an older server).
+- `repo_worktree`: the checkout the run started in, when that is not `repo_root` (a linked worktree; for
+  a worktree that was removed, its `repo` text), else `null`.
+- `repo_branch`: the branch the run started on, from `repo.identity` only; `null` when unknown (a
+  detached HEAD, or a run whose root came from step 2 or 3).
 - `dwarf_models`, `qa_models`: `models` split by role.
 - `models`: the sorted distinct specs of the `dwarf` and `qa` columns (a solo run: its `dwarf`
   and `qa` specs as its task has them), nulls left out.
@@ -1045,7 +1063,8 @@ lines follow, a line was cut, or reaching them took more than 64 MB of reading.
 
 ```json
 {"generated": 1760621412.5, "runs": 12, "truncated": false,
- "tasks": [{"run": "3f9a0c1d2e4b", "task": "reader", "kind": "plan", "repo": "/x/y", "difficulty": "high",
+ "tasks": [{"run": "3f9a0c1d2e4b", "task": "reader", "kind": "plan", "repo": "/x/y", "repo_root": "/x/y",
+            "difficulty": "high",
             "created": 1760619000.0, "explored": true, "propensity": 0.125, "final_status": "MERGED",
             "accepted": true,
             "attempts": [{"n": 1, "alias": "luna", "spec": "luna", "source": "execution", "outcome": "fail",
@@ -1053,12 +1072,14 @@ lines follow, a line was cut, or reaching them took more than 64 MB of reading.
                           "tokens": {"input": 120000, "cached": 90000, "output": 8000}, "timed_out": false}],
             "escalations": [{"n": 1, "from": "luna", "to": "sol:xhigh"}]}],
  "reviews": [{"run": "3f9a0c1d2e4b", "task": "reader", "n": 1, "kind": "primary", "alias": "opus", "spec": "opus",
+              "repo_root": "/x/y",
               "verdict": "FAIL", "findings": FindingsSummary, "duration_s": 270.0, "tokens": {...},
               "agreement": null, "primary_alias": null}],
  "warnings": ["3f9a0c1d2e4b: tasks/x/attempts.tsv line 2: invalid attempt"]}
 ```
 
-- `tasks[]`: one per task (`solo` for a solo run). `explored` as Task's; `propensity` that of
+- `tasks[]`: one per task (`solo` for a solo run). `repo` is the run's `repo` text and `repo_root` its
+  grouping key, both as in RunSummary (the same for every row of a run). `explored` as Task's; `propensity` that of
   the newest `route.jsonl` decision, else `null`; `final_status` the task (or solo) status;
   `accepted` whether `accepted.by` is non-empty (`false` for a solo run). `escalations` is
   `escalations.tsv` as it is (`n` its attempt column, `from`/`to` specs).
@@ -1080,9 +1101,10 @@ lines follow, a line was cut, or reaching them took more than 64 MB of reading.
   `shadow.status` is `done` (`alias`/`spec` its execution's model, else `shadow.json`'s spec;
   `agreement` and `primary_alias` against the primary review of its attempt); every finished
   final review (`kind` `final`, `task` and `n` `null`, `verdict` `PASS`/`FAIL` else `null`,
-  timing from its newest execution).
+  timing from its newest execution). Every review row also has `repo_root`, the run's (reviews have no
+  `repo` of their own).
 - Per run the facts are kept, keyed by its realpath, until its RunSummary's `updated`,
-  `task_count`, `counts` or `final_review` changes (4,096 runs); a run with a `RUNNING` task is
+  `task_count`, `counts` or `final_review`, or its `repo_root`, changes (4,096 runs); a run with a `RUNNING` task is
   read again after 120 s. One computation runs at a time. Past 50,000 task rows the next run
   is left out and `truncated` is true. `warnings` (first 500) are prefixed by the run key.
 
@@ -1386,8 +1408,11 @@ Reviewers table's Did not hold column and nothing else. Timeout 60 s.
 
 ### `GET /api/config?run=<key>` and `POST /api/config`
 
-The repository is the run's own `repo` file (first line, an existing absolute directory; else
-`409`), never a client field. `GET` runs `config show --repo <repo> --json` and answers with its
+The repository is the run's `repo_root` (see RunSummary) when that is an existing absolute directory,
+else the run's own `repo` file (first line, an existing absolute directory; else `409`), never a client
+field. The settings resolve against the root: every worktree of a repository shares its committed
+`.forge/` config, so the run of a removed worktree reads and writes the main checkout. A run whose root
+is unknown and whose `repo` is gone is still `409`. `GET` runs `config show --repo <repo> --json` and answers with its
 object. The `decide` block is the `forge decide status --json` object for that repo, plus `ready`
 on each gate (`true` when the gate is `shadow` or `on`, nothing skips it, and its provider is
 local or has a key on file), plus two fields from `forge decide status --json`: `forced` (bool: the

@@ -566,6 +566,65 @@ class Page(unittest.TestCase):
 
 
 @unittest.skipUnless(sync_playwright, 'install Python Playwright to run browser checks')
+class WorktreeLabel(unittest.TestCase):
+    """A run started in a worktree keeps that checkout visible, and shares its repository's plate."""
+    open, assertClean = Page.open, Page.assertClean
+
+    @classmethod
+    def setUpClass(cls):
+        cls.temp = tempfile.TemporaryDirectory(prefix='forge-ui-worktree-')
+        base = Path(cls.temp.name)
+        cls.plan, cls.solo = F.make_plan(base / 'p'), F.make_solo(base / 's')
+        cls.root = '/example/fixture-repo'                 # the plan's repo file; the solo's identity names the same root
+        cls.worktree = '/example/worktrees/fixture-c2'
+        cls.branch = 'fix/milestone-c2'
+        F.write(cls.solo / 'repo.identity', {'root': cls.root, 'worktree': cls.worktree, 'branch': cls.branch})
+        cls.plan_key, cls.solo_key = reader.run_key(cls.plan), reader.run_key(cls.solo)
+        _serve(cls, reader.Catalog(plans=[cls.plan, cls.solo], registry=False))
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.shutdown(); cls.server.server_close(); cls.thread.join(timeout=2)
+        cls.temp.cleanup()
+
+    def test_a_worktree_run_shows_its_checkout_and_shares_the_repository_plate(self):
+        page = self.open(cdn=False, view='2d')
+        page.goto(self.url + '#/')
+        page.wait_for_function(
+            "() => document.querySelectorAll('.map-repo').length === 1 && document.querySelectorAll('.map-card').length === 2")
+        row = page.locator(f'#run-list [data-run="{self.solo_key}"]')
+        page.wait_for_selector(f'#run-list [data-run="{self.solo_key}"] .repo-wt')
+        self.assertEqual(row.locator('.repo').text_content(), 'fixture-repo')
+        self.assertEqual(row.locator('.repo-wt').text_content(), 'fixture-c2 (fix/milestone-c2)')
+        self.assertEqual(row.locator('.repo-leaf').text_content(), 'fixture-c2')
+        self.assertEqual(row.locator('.repo-branch').text_content().strip(), '(fix/milestone-c2)')
+        self.assertEqual(row.locator('.repo-line').text_content(), 'fixture-repo · fixture-c2 (fix/milestone-c2)')
+        self.assertEqual(row.locator('.repo-wt').get_attribute('title'), f'{self.worktree}\nbranch {self.branch}')
+        main = page.locator(f'#run-list [data-run="{self.plan_key}"]')
+        self.assertEqual(main.locator('.repo').text_content(), 'fixture-repo')
+        self.assertEqual(main.locator('.repo-wt').count(), 0)          # the main checkout has no worktree part
+        self.assertEqual(page.locator('.map-repo').count(), 1)         # one plate: both runs, one repository
+        self.assertEqual(page.locator('.map-repo h3').text_content(), 'fixture-repo')
+        self.assertEqual(page.locator('.map-repo .map-card').count(), 2)
+        page.goto(self.url + '#/runs/' + self.solo_key)
+        page.wait_for_selector('#run-head .run-where .repo-wt')
+        self.assertEqual(page.text_content('#run-head .run-where .repo'), 'fixture-repo')
+        self.assertEqual(page.text_content('#run-head .run-where .repo-wt'), 'fixture-c2 (fix/milestone-c2)')
+        self.assertEqual(page.get_attribute('#run-head .run-where .repo-wt', 'title'), f'{self.worktree}\nbranch {self.branch}')
+        page.set_viewport_size({'width': 320, 'height': 800})     # narrow: the id stays inside its header row, the worktree gives way
+        edges = page.evaluate("() => ['#run-head .run-title-row', '#run-head .run-where', '#run-head .run-where .mono']"
+                              ".map(s => document.querySelector(s).getBoundingClientRect().right)")
+        self.assertLessEqual(edges[2], edges[1])
+        self.assertLessEqual(edges[1], edges[0])
+        page.goto(self.url + '#/settings')
+        page.wait_for_selector('#set-run')
+        self.assertEqual(page.get_attribute('#set-run', 'data-run'), self.solo_key)
+        self.assertEqual(page.text_content('#set-run .repo-wt'), 'fixture-c2 (fix/milestone-c2)')
+        self.assertEqual(page.get_attribute('#set-run .repo-wt', 'title'), f'{self.worktree}\nbranch {self.branch}')
+        self.assertClean(page)
+
+
+@unittest.skipUnless(sync_playwright, 'install Python Playwright to run browser checks')
 class Cloud(unittest.TestCase):
     """The run cloud (#/cloud) over many runs in several repos."""
     open, three_or_skip, assertClean, frames = Page.open, Page.three_or_skip, Page.assertClean, Page.frames

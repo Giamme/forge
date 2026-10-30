@@ -8,6 +8,9 @@ run in one full-screen view, grouped by project, in five layouts (helix, sphere,
 timeline, constellation), filtered down to exactly the runs you want; drag any run anywhere
 and the cloud remembers it.
 
+Runs are grouped by repository. A run started in any worktree of a repository shares that
+repository's group, and each run shows the worktree and branch it started in.
+
 <p align="center">
   <img src="../ui/docs/media/cloud.webp" width="880" alt="The run cloud: about seventy runs as blocks in five project spirals, orbited, then laid out as galaxies and as a timeline with one lane per project.">
 </p>
@@ -133,7 +136,10 @@ indistinguishable from the same command typed in a terminal, except that `contro
   out. Anything that is not the run's own, or has uncommitted changes, is listed and left alone.
 - **Settings:** every config source in one view (`forge config show`) and edits for the
   per-repo ones (`repo.verify`, `repo.setup`, `repo.verify-subset`, and Jev on or off). The
-  registry stays read-only: the skill directory is often a live symlink to a checkout.
+  registry stays read-only: the skill directory is often a live symlink to a checkout. You pick
+  the repository through one of its runs, from a list grouped by repository that shows each
+  run's worktree and branch (arrow keys and typing work in it), and the page names the
+  directory the configuration was read from.
 
 Writing is protected, because anything that can reach the server could otherwise change your
 runs. The server makes a random token each time it starts and puts it in the page it serves;

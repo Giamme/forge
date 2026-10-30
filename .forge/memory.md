@@ -4,6 +4,7 @@
      overwritten. Facts only, one per line. -->
 
 ## Verify
+- cd ui/tests && PYTHONPATH=.. uv run --quiet --with playwright python3 -m unittest test_browser [ui/tests/test_browser.py]
 - node --test ui/tests/js/*.test.js [ui/tests/js/runmodel.test.js]
 - `bash tests/check.sh` takes about 12 minutes, so a 600s foreground call is moved to the background. Redirect its output to a file, and it still finishes there [tests/check.sh]
 - `bash tests/check.sh` exceeds the 10-minute foreground limit and gets moved to the background; run the touched modules with `python3 tests/run_tests.py <pattern>`… [tests/check.sh]
@@ -16,18 +17,18 @@
 - the full `python3 -m unittest discover -s tests` takes over 10 minutes; run only the modules you touched [tests/check.sh]
 
 ## Known traps
+- forge-ui browser tests skip without Python Playwright, so a green ui suite does not exercise the DOM [ui/tests/test_browser.py]
 - several test modules in one `python3 -m unittest` process make test_decide_wire fail (order leak, also on d3f6028); tests/run_tests.py runs each class… [tests/test_decide_wire.py]
+- the settings run picker is a native `<select id="set-run">`, so each option is plain text and cannot carry a secondary element [ui/forge_ui/static/settings.js]
+- `self.fail = None` in the settings browser fixture shadows unittest's fail, so a failed assertion there surfaces as a TypeError [ui/tests/test_browser_settings.py]
+- forge-ui browser tests skip unless Python Playwright is installed, so an OK unittest run does not exercise the UI [ui/tests/test_browser.py]
+- reader.detail() and reader.summarize() carry no repo_root; only Catalog.get() and Catalog.runs() add repo_root, repo_worktree, repo_branch [ui/forge_ui/reader.py]
 - after migration, a FORGE_JEV_<CAP>=on in the environment turns off every gate with no legacy capability, even one set on with… [scripts/forge_decide/resolve.py]
 - a rendered memory.md fact ends in a [source] tag, which a remembered command must not read as an argument [scripts/forge_jev/verify.py]
-- the browser tests skip silently without Playwright: system python3 skips 57 of 329 forge-ui tests, uv run --with playwright runs them [ui/tests/test_browser.py]
 - export.py nulls only the keys listed in _TEXT_KEYS, so a new free-text field in a RunDetail or Task leaks into an export unless its key is added there [ui/forge_ui/export.py]
 - bash `-nt` compares whole seconds on macOS, so a mtime-order check needs python3 `st_mtime_ns` [scripts/forge-lib-task.sh]
 - test_forge.py's sandboxed PATH has no `cut`, so shell code run under those tests must use bash builtins, sed or awk [tests/test_forge.py]
+- tests that write stub gate files into a copied skill dir write through the scripts/ symlinks and overwrite the real gate; unlink first [tests/test_retry_sources.py]
 - ui test modules import forge_ui, so `python3 -m unittest` from ui/tests needs PYTHONPATH=<repo>/ui (tests/run_tests.py sets it) [ui/tests/test_control_endpoints.py]
 - `git log --name-only` quotes non-ASCII paths unless run with `-c core.quotePath=false` [scripts/forge_jev/gates.py]
-- a sub-second clock needs python3: macOS date has no %N and /bin/bash is 3.2 (no EPOCHREALTIME) [scripts/forge-lib-task.sh]
-- scandir order decides which entry copy_tree reaches first, so an end-to-end permission-failure test cannot force a read-only directory to be copied… [scripts/forge-submodules.py]
-- tests/test_skill.py checks file links only in SKILL.md and references/*.md, never docs/ links or #anchors [tests/test_skill.py]
-- runner notes from a task worker land in tasks/<id>/task.out, not the run's stdout; only `_integration` and do_run notes reach stdout [scripts/forge-parallel.sh]
-- `python3 run_tests.py <module>` from `tests/` also runs the matching `ui:` modules, so a forge-side contract change can fail a ui test you don't own [tests/run_tests.py]
 

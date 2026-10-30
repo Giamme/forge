@@ -76,6 +76,21 @@ test('picker grouping: by repo, newest repo first, newest run first inside, runs
   assert.ok(S.optionLabel(run('r1', '/r', 1, { goal: 'x'.repeat(100) })).length < 70);
 });
 
+test('picker type-ahead: case-insensitive prefix, from the active option on, wrapping round', () => {
+  const labels = ['alpha · x', 'beta', 'apple', 'Bravo'];
+  for (const [from, query, want, why] of [
+    [0, 'a', 2, 'one letter moves on to the next label that starts with it'],
+    [2, 'a', 0, 'and wraps round'],
+    [2, 'aaa', 0, 'the same letter typed again keeps stepping'],
+    [0, 'BR', 3, 'case does not matter'],
+    [3, 'br', 3, 'a longer query that the active label matches stays on it'],
+    [-1, 'b', 1, 'with nothing active the search starts at the top'],
+    [0, 'z', -1, 'no label starts with it'],
+    [0, '', -1, 'an empty query matches nothing'],
+  ]) assert.equal(S.typeAhead(labels, from, query), want, why);
+  assert.equal(S.typeAhead([], 0, 'a'), -1);
+});
+
 test('dirty editor: untouched or equal-to-disk text follows the disk', () => {
   const e = S.editorOf('make\n');
   assert.equal(S.isDirty(e), false);
@@ -253,4 +268,22 @@ test('a failed read keeps a good page with a note, and replaces the page only be
   assert.deepEqual(S.readFailure({ ok: false, status: 500, error: 'boom' }, false), { keep: false, message: 'boom' });
   assert.deepEqual(S.readFailure({ ok: false, status: 0, error: 'network' }, true), { keep: true, message: 'could not reach forge-ui' });
   assert.deepEqual(S.readFailure({ ok: false, status: 0 }, false), { keep: false, message: 'could not reach forge-ui' });
+});
+
+test('picker grouping by repository root: the checkouts of one root share a group, a run without repo_root groups by repo', () => {
+  const runs = [
+    run('a', '/r/forge', 10, { repo_root: '/r/forge' }),
+    run('b', '/r/forge-c2', 40, { repo_root: '/r/forge', repo_worktree: '/r/forge-c2' }),
+    run('c', '/r/forge-c3', 30, { repo_root: '/r/forge' }),
+    run('d', '/r/tool', 5),
+  ];
+  const groups = S.groupRuns(runs);
+  assert.deepEqual(groups.map(g => [g.repo, g.name]), [['/r/forge', 'forge'], ['/r/tool', 'tool']]);
+  assert.deepEqual(groups[0].runs.map(r => r.key), ['b', 'c', 'a'], 'the newest run first inside the group');
+  assert.equal(S.pickDefault(runs, null), 'b', 'the newest run opens the page, whichever checkout it started in');
+});
+
+test('picker grouping: two roots with one folder name stay two groups', () => {
+  const runs = [run('a', '/work/forge', 10, { repo_root: '/work/forge' }), run('b', '/home/forge', 20, { repo_root: '/home/forge' })];
+  assert.deepEqual(S.groupRuns(runs).map(g => g.repo), ['/home/forge', '/work/forge']);
 });

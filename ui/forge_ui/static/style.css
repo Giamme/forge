@@ -307,6 +307,13 @@ body.resizing.rows { cursor: row-resize; }
 .run-sub { display: flex; gap: var(--s-2); align-items: baseline; font-size: var(--t-xs); color: var(--muted); min-width: 0; white-space: nowrap; }
 .run-sub .mono { font-size: var(--t-xs); overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 0 1 auto; }
 .run-sub .repo { color: var(--ink-2); font-weight: 600; flex: none; }
+/* the repository name and, for a worktree run, its checkout: the name never gives way; the worktree's leaf truncates first, its branch keeps its place */
+.repo-line { display: inline-flex; align-items: baseline; max-width: 100%; min-width: 0; overflow: hidden; vertical-align: baseline; }
+.repo-line > .repo { flex: none; }
+.run-sub .repo-line { flex: 0 1 auto; }
+.repo-wt { display: flex; align-items: baseline; min-width: 0; color: var(--muted); font-weight: 400; white-space: nowrap; }
+.repo-leaf { flex: 0 100 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }   /* shrinks far more than the branch, which only gives way once the leaf is gone */
+.repo-branch { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .run-sub .updated { margin-left: auto; flex: none; }
 .run-item .chips { margin-top: 3px; }
 .run-item .chip { font-size: .786rem; padding: 0 5px 0 4px; }
@@ -500,11 +507,15 @@ dialog.keys-sheet::backdrop { background: light-dark(rgb(17 22 19 / .35), rgb(0 
 .run-title-row { display: flex; align-items: center; gap: 6px var(--s-3); min-width: 0; }
 .run-title-row > .lamp { margin-right: -4px; }
 .run-title-row > h2 { flex: 1 1 auto; min-width: 14ch; margin: 0; font-size: var(--t-md); line-height: 1.3; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.run-where { flex: none; white-space: nowrap; color: var(--muted); font-size: var(--t-sm); }   /* the id is copied: only the goal gives way */
+.run-where { flex: 0 1 auto; min-width: 0; display: flex; align-items: baseline; gap: 0 var(--s-2); white-space: nowrap; color: var(--muted); font-size: var(--t-sm); }   /* the id is copied: only the goal and the worktree give way */
+.run-where > .mono { flex: none; }
 .run-where .repo { font-weight: 600; color: var(--ink-2); }
+.run-where > .repo { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.run-where .repo-wt { max-width: 36ch; }   /* a long worktree name must not take the goal's room */
 .run-title-row > .describer { flex: none; }
 @container (max-width: 860px) {
   .run-title-row { flex-wrap: wrap; } .run-title-row > h2 { flex-basis: calc(100% - 24px); }
+  .run-title-row > .run-where { flex: 0 1 auto; min-width: 0; max-width: 100%; }   /* on its own line, the repository and its worktree give way before the id */
   .run-title-row > .describer { flex: 0 1 auto; max-width: 100%; flex-wrap: wrap; white-space: normal; row-gap: 2px; }
 }
 .run-actions { display: flex; gap: 6px; flex: none; margin-left: auto; }
@@ -1328,7 +1339,31 @@ dialog.del-dialog::backdrop { background: light-dark(rgb(17 22 19 / .35), rgb(0 
 .set-head { display: flex; align-items: baseline; gap: var(--s-4); flex-wrap: wrap; }
 .set-lede { margin: 0; font-size: var(--t-sm); }
 .set-picker-row { display: flex; align-items: center; flex-wrap: wrap; gap: var(--s-3); }
-.set-picker select { min-width: 22em; max-width: 100%; }
+/* the run picker: a button drawn as a field, and its listbox of runs grouped by repository */
+button.set-run { justify-content: flex-start; align-items: baseline; gap: var(--s-2); min-width: 22em; max-width: 100%; padding: 6px 28px 6px 10px;
+  border-color: var(--rule-2); box-shadow: none; text-align: left;
+  font-family: inherit; font-weight: 400; font-size: inherit; letter-spacing: normal; text-transform: none; line-height: 1.3; }
+/* the select's drawn chevron, also on hover: the base button:hover sets the whole background */
+button.set-run, button.set-run:hover:not(:disabled) { background-color: var(--field);
+  background-image: linear-gradient(45deg, transparent 50%, var(--ink-2) 50%), linear-gradient(135deg, var(--ink-2) 50%, transparent 50%);
+  background-position: calc(100% - 15px) 52%, calc(100% - 10px) 52%; background-size: 5px 5px; background-repeat: no-repeat; }
+button.set-run:hover:not(:disabled) { border-color: var(--ink-2); }
+button.set-run:active:not(:disabled) { scale: 1; }
+button.set-run[aria-expanded=true] { border-color: var(--route); }
+.set-run-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.set-run .repo-wt, .set-run-opt .repo-wt { flex: none; font-size: var(--t-sm); }
+.set-run-pop { margin: 0; inset: auto; position: fixed; max-width: min(640px, calc(100vw - 16px)); max-height: min(60vh, 480px); overflow: auto; padding: 6px;
+  border: 1px solid var(--rule); border-radius: var(--r-module); background: var(--module); color: var(--ink); box-shadow: var(--ply-2); }
+.set-run-list { display: grid; gap: 2px; outline: none; }
+.set-run-group { display: grid; gap: 1px; }
+.set-run-group + .set-run-group { margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--rule); }
+.set-run-group-name { display: flex; align-items: baseline; gap: var(--s-2); min-width: 0; padding: 4px 10px 2px; font-size: var(--t-xs); }
+.set-run-group-name .mono { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.set-run-opt { position: relative; display: flex; align-items: baseline; gap: var(--s-2); min-height: 36px; padding: 9px 10px 9px 14px; border-radius: var(--r-key); cursor: pointer; }
+.set-run-opt[aria-selected=true]::before { content: ''; position: absolute; left: 4px; top: 9px; bottom: 9px; width: 2px; border-radius: 1px; background: var(--route); }
+.set-run-opt[aria-selected=true] .set-run-label { font-weight: 650; }
+.set-run-opt.is-active { background: var(--wash); box-shadow: inset 0 0 0 1px var(--rule-2); }
+.set-run-list:focus-visible .set-run-opt.is-active { box-shadow: inset 0 0 0 2px var(--route); }
 .set-field { display: inline-flex; align-items: center; }
 .set-repo-path, .set-why, .set-state-line, .set-file-status { display: flex; align-items: flex-start; gap: 7px; margin: var(--s-2) 0 0; font-size: var(--t-sm); overflow-wrap: anywhere; }
 .set-repo-path .lamp, .set-why .lamp, .set-state-line .lamp, .set-file-status .lamp { margin-top: .42em; }
@@ -1348,7 +1383,7 @@ button.set-switch { gap: 8px; padding: 0 10px 0 4px; }
 .set-switch-knob::after { content: ''; position: absolute; top: 2px; left: 2px; width: 10px; height: 10px; border-radius: 50%; background: var(--key); box-shadow: 0 0 0 1px var(--lamp-edge); transition: translate var(--relay); }
 button.set-switch[aria-checked=true] .set-switch-knob { background: var(--lamp-green); }
 button.set-switch[aria-checked=true] .set-switch-knob::after { translate: 12px 0; }
-button.set-switch:focus-visible, .set-editor:focus-visible, .set-picker select:focus-visible, .set-gate select:focus-visible, .set-gate input:focus-visible { outline: 2px solid var(--route); outline-offset: 2px; }
+button.set-switch:focus-visible, .set-editor:focus-visible, button.set-run:focus-visible, .set-gate select:focus-visible, .set-gate input:focus-visible { outline: 2px solid var(--route); outline-offset: 2px; }
 .set-file { display: grid; gap: var(--s-2); width: 100%; padding: var(--s-3); border: 1px solid var(--rule); border-radius: var(--r-key); background: var(--module-2); }
 .set-file > * { margin-block: 0; }
 .set-file-head { display: flex; align-items: baseline; justify-content: space-between; gap: var(--s-3); flex-wrap: wrap; }

@@ -59,15 +59,17 @@
   function inPeriod(created, f, now) {
     return !f.days || num(now) === null || (num(created) !== null && created >= now - f.days * DAY);
   }
-  // a run's own facts (repo, kind, created): from its task rows, else from the run summaries
+  // a run's own facts (repo, repo_root, kind, created): from its task rows, else from the run summaries
   function runIndex(data, runs) {
     const by = new Map();
-    for (const t of list(data.tasks)) if (obj(t) && t.run && !by.has(t.run)) by.set(t.run, { repo: t.repo || null, kind: t.kind || null, created: num(t.created) });
-    for (const r of list(runs)) if (obj(r) && r.key && !by.has(r.key)) by.set(r.key, { repo: r.repo || null, kind: r.kind || null, created: num(r.created) });
+    for (const t of list(data.tasks)) if (obj(t) && t.run && !by.has(t.run)) by.set(t.run, { repo: t.repo || null, repo_root: t.repo_root || null, kind: t.kind || null, created: num(t.created) });
+    for (const r of list(runs)) if (obj(r) && r.key && !by.has(r.key)) by.set(r.key, { repo: r.repo || null, repo_root: r.repo_root || null, kind: r.kind || null, created: num(r.created) });
     return by;
   }
+  // a project is a repository root; a saved project that names the checkout a row started in still matches that row
+  const inProject = (row, project) => !project || RM.repoKey(row) === project || row.repo === project;
   function taskMatch(t, f, now) {
-    if (f.project && t.repo !== f.project) return false;
+    if (!inProject(t, f.project)) return false;
     if (f.difficulty && diffOf(t) !== f.difficulty) return false;
     if (f.kind && t.kind !== f.kind) return false;
     if (!inPeriod(t.created, f, now)) return false;
@@ -81,8 +83,9 @@
       if (t) return taskMatch(t, f, now);
     }
     if (f.difficulty || f.exploratoryOnly) return false;
-    const r = runs.get(v.run) || {};
-    if (f.project && r.repo !== f.project) return false;
+    // no run summary loaded yet: the review row's own repo_root (reviews carry no repo) still names the project
+    const r = runs.get(v.run) || { repo_root: v.repo_root || null };
+    if (!inProject(r, f.project)) return false;
     if (f.kind && r.kind !== f.kind) return false;
     return inPeriod(r.created, f, now);
   }
@@ -101,7 +104,8 @@
     const repos = new Map(), diff = {}, kinds = {}, aliases = new Set();
     let first = null, last = null, explored = 0;
     for (const t of tasks) {
-      if (t.repo) repos.set(t.repo, (repos.get(t.repo) || 0) + 1);
+      const key = RM.repoKey(t);
+      if (key) repos.set(key, (repos.get(key) || 0) + 1);
       const d = diffOf(t); diff[d] = (diff[d] || 0) + 1;
       if (t.kind) kinds[t.kind] = (kinds[t.kind] || 0) + 1;
       const c = num(t.created);
@@ -114,7 +118,7 @@
     for (const v of list(data.reviews)) {
       if (!obj(v)) continue;
       const x = aliasOf(v); if (x) aliases.add(x);
-      const r = idx.get(v.run); if (r && r.repo && !repos.has(r.repo)) repos.set(r.repo, 0);
+      const key = RM.repoKey(idx.get(v.run) || v); if (key && !repos.has(key)) repos.set(key, 0);
     }
     return {
       projects: projectNames(repos),

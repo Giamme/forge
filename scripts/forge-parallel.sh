@@ -274,6 +274,8 @@ do_plan() {
   fi
   [ -s "$PLAN/repo" ] || die "plan needs --repo the first time"
   REPO="$(cat "$PLAN/repo")"
+  # The repository the checkout belongs to, recorded once: a plan that has none gets one now.
+  forge_repo_identity "$REPO" "$PLAN"
   # Before any decision-model step: the privacy floor and the run budget read these.
   [ "$JEV_OPTS" = 1 ] && forge_decide_env "$REPO" "$PLAN"
   [ -s "$PLAN/run_id" ] || basename "$PLAN" | sed 's/^forge-//' > "$PLAN/run_id"

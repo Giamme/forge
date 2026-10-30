@@ -12,7 +12,7 @@ import stat
 import time
 import urllib.parse
 
-from forge_ui import checks, diffs, executions, findings, fractal, transcripts
+from forge_ui import checks, diffs, executions, findings, fractal, repos, transcripts
 from forge_ui.findings import verdict as _verdict
 
 
@@ -2243,17 +2243,51 @@ def verification_log(path, lane=None, k=None, first=None, retry=False, source='p
         return _log_tail(stream, info, name) if first is None else _log_range(stream, info, name, first)
 
 
+def batch(found):
+    """The runs among `found` ((path, source) pairs of discover) as [(path, source, entry)], and
+    {run dir: identity} for them. An entry is (run dir, repo text, kind), what repos.resolve takes.
+
+    One repos.resolve call over the whole batch, so the base-commit step sees every known root; a
+    run resolved on its own could miss its root.
+    """
+    listed = []
+    for path, source in found:
+        kind = _kind(path)
+        if kind:
+            reader = _Read(path)
+            listed.append((path, source, (str(reader.path), reader.line('repo'), kind)))
+    return listed, repos.resolve([entry for _path, _source, entry in listed])
+
+
+def repo_root(identity, repo):
+    """A run's grouping key: its identity's root, or its repo text when nothing better is known."""
+    return identity['root'] or repo
+
+
+def _with_repo(result, identity):
+    """A run summary or detail with its repository fields: repo_root (the grouping key), repo_worktree
+    (the checkout it started in, null when that is the root) and repo_branch (null when unknown)."""
+    result.update(repo_root=repo_root(identity, result['repo']), repo_worktree=identity['worktree'],
+                  repo_branch=identity['branch'])
+    return result
+
+
 class Catalog:
     def __init__(self, plans=(), roots=(), registry=True, registry_dir=None):
         self.options = dict(plans=tuple(plans), roots=tuple(roots), registry=registry, registry_dir=registry_dir)
 
     def runs(self):
-        runs = []
-        for path, source in discover(**self.options):
-            result = summarize(path, source)
-            if _kind(path):
-                runs.append(result)
+        listed, identities = batch(discover(**self.options))
+        runs = [_with_repo(summarize(path, source), identities[entry[0]]) for path, source, entry in listed]
         return sorted(runs, key=lambda item: item['updated'] if item['updated'] is not None else float('-inf'), reverse=True)
+
+    def identity(self, key):
+        """The identity of the run with this key, resolved in the same batch as the list; None for no such run."""
+        listed, identities = batch(discover(**self.options))
+        for path, _source, entry in listed:
+            if run_key(path) == key:
+                return identities[entry[0]]
+        return None
 
     def _find(self, key, read, *args):
         for path, source in discover(**self.options):
@@ -2273,7 +2307,11 @@ class Catalog:
         return None
 
     def get(self, key):
-        return self._find(key, detail)
+        listed, identities = batch(discover(**self.options))
+        for path, source, entry in listed:
+            if run_key(path) == key:
+                return _with_repo(detail(path, source=source), identities[entry[0]])
+        return None
 
     def task(self, key, task_id):
         return self._find(key, task_detail, task_id)

@@ -14,6 +14,13 @@ from test_control_api import ControlApiCase, FIXTURES, ROOT
 
 FP = 'a1b2c3d4e5f6'
 FP2 = '0123456789ab'
+GIT_ENV = dict(os.environ, GIT_AUTHOR_NAME='t', GIT_AUTHOR_EMAIL='t@t', GIT_COMMITTER_NAME='t',
+               GIT_COMMITTER_EMAIL='t@t', GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_SYSTEM=os.devnull)
+
+
+def git(cwd, *args):
+    done = subprocess.run(['git', '-C', str(cwd), *args], check=True, capture_output=True, text=True, env=GIT_ENV)
+    return done.stdout.strip()
 
 
 class EndpointCase(ControlApiCase):
@@ -247,6 +254,39 @@ class ConfigTests(EndpointCase):
         (self.plan / 'repo').write_text('/no/such/dir\n')
         self.assertEqual(self.cfg(key='repo.verify', value='x')[0], 409)
         self.assertEqual(self.get(f'/api/config?run={self.key}')[0], 409)
+        self.assertEqual(self.calls(), [])
+
+    def removed_worktree(self):
+        """Makes the plan run's checkout a worktree of a main checkout and removes it: the run's base commit is in
+        the main checkout, which is returned. The solo run's repo is the caller's to set."""
+        main, wt = Path(os.path.realpath(self.base / 'main')), self.base / 'wt'
+        main.mkdir()
+        git(main, 'init', '-q', '-b', 'main')
+        (main / 'f').write_text('x')
+        git(main, 'add', 'f')
+        git(main, 'commit', '-q', '-m', 'init')
+        sha = git(main, 'rev-parse', 'HEAD')
+        git(main, 'worktree', 'add', '-q', '-b', 'w', str(wt))
+        (self.plan / 'repo').write_text(f'{wt}\n')
+        (self.plan / 'integration.base').write_text(f'{sha}\n')
+        git(main, 'worktree', 'remove', '--force', str(wt))
+        return main
+
+    def test_a_removed_worktree_reads_and_writes_the_main_checkout(self):
+        main = self.removed_worktree()
+        # The solo run is in the main checkout, which makes it a known root for the removed worktree's run.
+        (self.solo / 'repo').write_text(f'{main}\n')
+        self.assertEqual(self.get(f'/api/config?run={self.key}')[0], 200)
+        self.assertEqual(self.last_argv(), ['config', 'show', '--repo', str(main), '--json'])
+        self.assertEqual(self.cfg(key='repo.verify', value='make test')[0], 200)
+        self.assertEqual(self.last_argv(),
+                         ['config', 'set', 'repo.verify', 'make test', '--repo', str(main), '--json'])
+
+    def test_a_removed_worktree_with_no_known_root_is_still_refused(self):
+        self.removed_worktree()
+        (self.solo / 'repo').write_text('/no/such/checkout\n')
+        self.assertEqual(self.get(f'/api/config?run={self.key}')[0], 409)
+        self.assertEqual(self.cfg(key='repo.verify', value='x')[0], 409)
         self.assertEqual(self.calls(), [])
 
     def test_config_lock_serializes(self):
