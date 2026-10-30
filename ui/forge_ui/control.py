@@ -34,7 +34,8 @@ FP_RE = re.compile(r'[0-9a-f]{12}')
 # Mirrored from forge_decide.GATES and MODES. The ui tests do not put scripts/ on the path, so this
 # module does not import forge_decide; ConfigTests.test_decide_names_match_forge_decide keeps them equal.
 DECIDE_GATES = ('drift', 'forward', 'prompt', 'memory-curate', 'memory-slice', 'memory-stale',
-                'verify-discover')
+                'verify-discover', 'coverage', 'retry-addressed', 'dwarf-message', 'attribution',
+                'findings')
 DECIDE_MODES = ('off', 'shadow', 'on')
 REPO_CONFIG_KEYS = ('repo.verify', 'repo.setup', 'repo.verify-subset')
 CONFIG_KEYS = REPO_CONFIG_KEYS

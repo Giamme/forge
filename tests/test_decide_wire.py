@@ -386,11 +386,12 @@ class LegacyLevelTests(WireCase):
         config['enabled'] = True
         forge_jev.save_config(config)
         self.assertFalse(forge_decide.user_path().exists())
-        expected = {'jev-drift': True, 'jev-forward': True, 'jev-prompt': True,
-                    'jev-memory-curate': True, 'jev-memory-slice': True, 'jev-memory-stale': True,
-                    'jev-verify-discover': True}
-        self.assertEqual({site: forge_jev.site_ready(site) for site in SITES}, expected)
-        self.assertEqual({site: forge_jev.gate_mode(site) for site in SITES}, {s: 'on' for s in SITES})
+        # The gates with no legacy capability (#43-#47) are not switched by jev.json: they stay off.
+        legacy = ('jev-drift', 'jev-forward', 'jev-prompt', 'jev-memory-curate', 'jev-memory-slice',
+                  'jev-memory-stale', 'jev-verify-discover')
+        self.assertEqual({site: forge_jev.site_ready(site) for site in SITES}, {s: s in legacy for s in SITES})
+        self.assertEqual({site: forge_jev.gate_mode(site) for site in SITES},
+                         {s: 'on' if s in legacy else 'off' for s in SITES})
         del os.environ['TYPESAFE_API_KEY']
         self.assertEqual({site: forge_jev.site_ready(site) for site in SITES}, {s: False for s in SITES})
 

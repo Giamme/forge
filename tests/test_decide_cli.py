@@ -16,7 +16,8 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 FORGE = ROOT / 'forge'
 DECIDE = ROOT / 'scripts' / 'forge-decide.py'
-GATES = ('drift', 'forward', 'prompt', 'memory-curate', 'memory-slice', 'memory-stale', 'verify-discover')
+GATES = ('drift', 'forward', 'prompt', 'memory-curate', 'memory-slice', 'memory-stale', 'verify-discover',
+         'coverage', 'retry-addressed', 'dwarf-message', 'attribution', 'findings')
 MEMORY = ('memory-curate', 'memory-slice', 'memory-stale')
 KEY = 'decide-cli-secret-7c41e9'
 

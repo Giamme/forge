@@ -32,8 +32,11 @@ def drift_body(declared='src/a.py', prompt='', approach='', files=('src/a.py',))
 
 
 class RegistryTestCase(unittest.TestCase):
-    def test_the_seven_live_sites(self):
+    def test_every_gate_site_has_a_record(self):
         self.assertEqual(set(sites.SITES), set(forge_decide.SITE_GATE))
+
+    def test_the_twelve_live_sites(self):
+        self.assertEqual(len(sites.SITES), 12)
         for name, record in sites.SITES.items():
             self.assertIs(sites.site(name), record)
             self.assertEqual(record.gate, forge_decide.SITE_GATE[name])
@@ -42,20 +45,27 @@ class RegistryTestCase(unittest.TestCase):
         for name in ('jev-score-plan', 'clef-first-pass', 'nope', ''):
             self.assertIsNone(sites.site(name))
 
-    def test_thresholds_floors_and_labels(self):
-        got = {name: (record.threshold, record.floor, record.label is None)
+    def test_thresholds_floors_labels_and_orientation(self):
+        got = {name: (record.threshold, record.floor, record.label is not None, record.invert)
                for name, record in sites.SITES.items()}
         self.assertEqual(got, {
-            'jev-drift': ('drift_warn', 0.5, False),
-            'jev-forward': ('forward_warn', 0.5, False),
-            'jev-prompt': ('prompt_warn', None, True),
-            'jev-memory-curate': (None, None, True),
-            'jev-memory-slice': (None, None, False),
-            'jev-memory-stale': (None, None, True),
-            'jev-verify-discover': ('tests_act', 0.7, False),
+            'jev-drift': ('drift_warn', 0.5, True, False),
+            'jev-forward': ('forward_warn', 0.5, True, False),
+            'jev-prompt': ('prompt_warn', None, True, True),
+            'jev-memory-curate': (None, None, False, False),
+            'jev-memory-slice': (None, None, True, False),
+            'jev-memory-stale': ('stale_drop', None, False, False),
+            'jev-verify-discover': ('tests_act', 0.7, True, False),
+            'jev-coverage': ('coverage_warn', None, True, False),
+            'jev-retry-addressed': ('untouched_warn', None, True, False),
+            'jev-dwarf-message': (None, None, True, False),
+            'jev-attribution': (None, None, True, False),
+            'jev-findings': ('findings_concrete', None, False, True),
         })
-        self.assertEqual(sites.site('jev-prompt').label_issue, '#40')
+        self.assertIsNone(sites.site('jev-prompt').label_issue)
+        self.assertEqual(sites.site('jev-memory-curate').label_issue, sites.site('jev-memory-stale').label_issue)
         self.assertTrue(sites.site('jev-memory-curate').label_issue.startswith('#41'))
+        self.assertEqual(sites.site('jev-findings').label_issue, '#46: needs issue-closure records')
 
     def test_threshold_names_resolve_through_forge_jev(self):
         for record in sites.SITES.values():
@@ -142,7 +152,7 @@ class PromptTestCase(unittest.TestCase):
         self.assertEqual(record.fired({'prompt_adequacy': noul(0.3)}, 0.55), ['prompt_adequacy'])
         self.assertEqual(record.fired({'prompt_adequacy': noul(0.55)}, 0.55), [])
         self.assertEqual(record.fired({}, 0.55), [])
-        self.assertEqual(record.score({'prompt_adequacy': noul(0.3)}, 'prompt_adequacy'), 0.3)
+        self.assertEqual(record.score({'prompt_adequacy': noul(0.3)}, 'prompt_adequacy'), 0.7)
 
 
 class MemoryTestCase(unittest.TestCase):
@@ -221,10 +231,27 @@ class MemoryTestCase(unittest.TestCase):
         body['state']['facts'][0] = 'a fact with no anchor'
         self.assertEqual(sites.site('jev-memory-slice').baseline(body, 'l0'), 0)
 
-    def test_curate_and_stale_act_on_nothing(self):
+    def test_curate_and_stale_have_no_decisions(self):
         for name in ('jev-memory-curate', 'jev-memory-stale'):
-            self.assertEqual(sites.site(name).fired({'durable': noul(0.0)}, 0.5), [])
             self.assertEqual(sites.site(name).decisions(self.body()), [])
+
+    def test_curate_fires_what_curate_acts_on(self):
+        record = sites.site('jev-memory-curate')
+        merged = choice('a fact', {'a fact': 0.9, 'none': 0.1})
+        self.assertIsNone(record.threshold)
+        self.assertEqual(record.fired({'durable': noul(0.3)}, None, ['durable', 'category']), ['durable'])
+        self.assertEqual(record.fired({'durable': noul(0.3), 'same': merged}, None, ['durable', 'same']),
+                         ['same'])
+        self.assertEqual(record.fired({'durable': noul(0.9), 'same': merged}, None), ['same'])
+        self.assertEqual(record.fired({'durable': noul(0.9)}, None), [])
+
+    def test_stale_fires_below_stale_drop(self):
+        record = sites.site('jev-memory-stale')
+        drop = forge_jev.threshold('stale_drop', site='jev-memory-stale')
+        self.assertEqual(record.threshold, 'stale_drop')
+        self.assertEqual(record.fired({'still': noul(0.1)}, drop), ['still'])
+        self.assertEqual(record.fired({'still': noul(drop)}, drop), [])
+        self.assertEqual(record.fired({}, drop), [])
 
 
 class VerifyTestCase(unittest.TestCase):

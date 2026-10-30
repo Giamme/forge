@@ -18,6 +18,10 @@ The labels, per site (forge_decide.sites names each in one sentence):
   forward          a later plan revision added the dependency (true); both tasks merged
                    with no such dependency (false)
 
+The gate modules' labellers (label_prompt, label_coverage, label_addressed, label_message,
+label_attribution) are read lazily: until a module exists its site has no rows. The memory
+sites and findings have none.
+
 The joins are the export's (forge_dataset.export: Store, Runs, the final passing
 attempt, the memory rule), not a copy. The store is only read: never opened by
 connect(), which creates and migrates it. Imported only by `forge decide` commands: the
@@ -144,6 +148,19 @@ class _Index:
 
 # --- labellers: (index, site record, event, body) -> {qid: bool} -------------------------
 
+def _drift_added(index: _Index, run, task) -> set:
+    """The files any plan revision of the run recorded as added by the drift gate to `task`."""
+    out = set()
+    for plan in index.runs.plans.get(run, []) if run else []:
+        gates = plan['d'].get('plan_gates')
+        entry = ((gates.get('drift') or {}).get(task) if isinstance(gates, dict)
+                 and isinstance(gates.get('drift'), dict) else None)
+        for item in (entry.get('added') if isinstance(entry, dict) else None) or []:
+            if isinstance(item, dict) and item.get('file'):
+                out.add(str(item['file']))
+    return out
+
+
 def _drift(index: _Index, record, event, body) -> dict:
     state = _state(body)
     task = state.get('task') if isinstance(state.get('task'), dict) else {}
@@ -154,7 +171,11 @@ def _drift(index: _Index, record, event, body) -> dict:
     if final is None:
         return {}
     changed = set(export.words(final['d'].get('changed_files')))
-    declared = set(export.words(task.get('declared_files'))) | set(export.words(final['d'].get('declared_files')))
+    # A file the gate added to the column is declared in the attempt but not by the planner:
+    # whether the task edited it is still the label. Adding it changes the waves, not the edit.
+    added = _drift_added(index, final['run'], task_id)
+    declared = (set(export.words(task.get('declared_files')))
+                | (set(export.words(final['d'].get('declared_files'))) - added))
     out = {}
     for qid in record.decisions(body):
         path = sites._drift_file(body, qid)
@@ -210,11 +231,35 @@ def _depends(plan, earlier, later) -> bool:
     return later in export.words(row.get('deps'))
 
 
+def _forward_added(plans) -> set:
+    """The (earlier, later) pairs any plan revision recorded as added by the forward gate."""
+    out = set()
+    for plan in plans:
+        gates = plan['d'].get('plan_gates')
+        forward = gates.get('forward') if isinstance(gates, dict) else None
+        for item in (forward.get('added') if isinstance(forward, dict) else None) or []:
+            if isinstance(item, dict) and item.get('earlier') and item.get('later'):
+                out.add((str(item['earlier']), str(item['later'])))
+    return out
+
+
+def _removed(plans, earlier, later) -> bool:
+    """Whether a revision lacks the dep after an earlier revision had it."""
+    had = False
+    for plan in plans:
+        if _depends(plan, earlier, later):
+            had = True
+        elif had:
+            return True
+    return False
+
+
 def _forward(index: _Index, record, event, body) -> dict:
     run = event['run']
     plans = index.runs.plans.get(run, []) if run else []
     if not plans:
         return {}
+    added = _forward_added(plans)
     out = {}
     for qid in record.decisions(body):
         text = sites._instructions(body, qid)
@@ -222,7 +267,12 @@ def _forward(index: _Index, record, event, body) -> dict:
         if not earlier or not later:
             continue
         earlier, later = earlier.group('id'), later.group('id')
-        if any(_depends(plan, earlier, later) for plan in plans if plan['ts'] > event['ts']):
+        if (earlier, later) in added:
+            # The gate wrote this dep, so its presence says nothing: only the user taking it
+            # out again does, and then the gate was wrong.
+            if _removed(plans, earlier, later):
+                out[qid] = False
+        elif any(_depends(plan, earlier, later) for plan in plans if plan['ts'] > event['ts']):
             out[qid] = True
         elif index.merged(run, earlier) and index.merged(run, later) and not _depends(plans[-1], earlier, later):
             out[qid] = False
@@ -234,6 +284,12 @@ LABELLERS = {
     'jev-memory-slice': _memory_slice,
     'jev-verify-discover': _verify_discover,
     'jev-forward': _forward,
+    # The gate modules' own labellers, read lazily: `{}` (no rows) while a module is missing.
+    'jev-prompt': sites._lazy('forge_decide.label_prompt', 'label', {}),
+    'jev-coverage': sites._lazy('forge_decide.label_coverage', 'label', {}),
+    'jev-retry-addressed': sites._lazy('forge_decide.label_addressed', 'label', {}),
+    'jev-dwarf-message': sites._lazy('forge_decide.label_message', 'label', {}),
+    'jev-attribution': sites._lazy('forge_decide.label_attribution', 'label', {}),
 }
 
 

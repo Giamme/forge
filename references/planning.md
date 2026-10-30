@@ -38,5 +38,13 @@ pass on a first attempt, each ending its prompt with an `## Acceptance criteria`
 checks the reviewer can verify; see [task size](decompose.md#task-size-and-acceptance-criteria). Write each task's approach to
 `tasks/<id>/approach.md`, where the runner picks it up for both the dwarf and qa.
 
+If `plan` exits 4 (the prompt or coverage gate is `on` and sent work back), read
+`<plan>/plan.sendback.md` and re-dispatch the planner with that file appended to its prompt: it
+rewrites the listed `prompt.md` files and extends or adds tasks for each uncovered requirement.
+Then run `plan` again, once; forge never sends the same task or requirement back twice. Under
+the table, the `decision-model gates:` block lists what drift and forward added to
+`tasks.tsv` (files and deps, `on` only) and what is still flagged; see
+[decomposition](decompose.md#plan-gates-sent-back-and-the-block-under-the-table).
+
 Show the approach before dispatching and let the user change it. That gate is the last
 moment the plan is free; after it, changing the plan costs a whole run.

@@ -167,6 +167,7 @@ class CountingTests(ReportCase):
         # 0.6 is drift_warn (gate_warn's 0.60): at it fires, every file below it does not.
         # The cache hit carries the same answers, so it fires too.
         self.assertEqual((drift['fired'], drift['fired_unknown']), (2, 0))
+        self.assertEqual(drift['effects'], dict(f=2))
         self.assertEqual(drift['mode'], 'off')
         self.assertEqual(data['totals']['input_tokens'], 700)
         self.assertEqual(data['totals']['calls'], 7)
@@ -179,6 +180,7 @@ class CountingTests(ReportCase):
         # typesafe has no price in the user file.
         self.assertIsNone(retired['cost_usd'])
         self.assertEqual((retired['fired'], retired['labelled'], retired['mode']), (None, None, None))
+        self.assertIsNone(retired['effects'])
         self.assertTrue(retired['retired'])
         # Sorted by input tokens: the retired site's 500 first.
         self.assertEqual(list(data['sites']), ['jev-score-plan', 'jev-drift'])
@@ -227,6 +229,79 @@ class CountingTests(ReportCase):
         self.report('--run', str(self.base), '--all', code=2)
         # Outside a git repo the registry has no repo to read.
         self.report(code=2)
+
+
+def choice(picked, confidence):
+    return dict(type='choice', choice=picked, confidence=confidence)
+
+
+class EffectsTests(ReportCase):
+    """What a fired site did, by the prefix of the question ids it fired."""
+
+    def curate(self, key, durable, merged=None, **kw):
+        answers = dict(durable=noul(durable), category=choice('trap', 0.95))
+        if merged is not None:
+            answers['same'] = choice('a recorded fact', merged)
+        return entry('jev-memory-curate', key=key, answers=answers, **kw)
+
+    def test_curate_counts_durable_and_same(self):
+        plan = self.run_dir('plan', {'': [
+            self.curate('k1', 0.3),                  # refused as a one-off
+            self.curate('k2', 0.9),                  # durable, nothing merged
+            self.curate('k3', 0.3, merged=0.9),      # merged, so exempt from the refusal
+            self.curate('k4', 0.2, merged=0.5),      # merge below memory_merge: still refused
+            self.curate('k5', 0.9, merged=0.95),     # merged
+        ]})
+        row = self.data_json('--run', str(plan))['sites']['jev-memory-curate']
+        self.assertEqual((row['calls'], row['fired'], row['fired_unknown']), (5, 4, 0))
+        self.assertEqual(row['effects'], dict(durable=2, same=2))
+        text = self.report('--run', str(plan)).stdout
+        self.assertRegex(text, r'jev-memory-curate.* 4 +durable 2, same 2 ')
+
+    def test_stale_counts_still_and_a_site_that_fired_nothing_has_no_effects(self):
+        plan = self.run_dir('plan', {'': [
+            entry('jev-memory-stale', key='s1', answers=dict(still=noul(0.1))),
+            entry('jev-memory-stale', key='s2', answers=dict(still=noul(0.5))),
+            entry('jev-memory-stale', key='s3', answers=dict(still=noul(0.0))),
+        ]})
+        row = self.data_json('--run', str(plan))['sites']['jev-memory-stale']
+        self.assertEqual((row['fired'], row['effects']), (2, dict(still=2)))
+        quiet = self.run_dir('quiet', {'': [entry('jev-memory-stale', key='s4', answers=dict(still=noul(0.9)))]})
+        row = self.data_json('--run', str(quiet))['sites']['jev-memory-stale']
+        self.assertEqual((row['fired'], row['effects']), (0, {}))
+
+    def test_a_malformed_logged_answer_does_not_crash_the_report(self):
+        bad = dict(type='noul', noul='0.3')
+        plan = self.run_dir('plan', {'': [
+            entry('jev-memory-curate', key='m1', answers=dict(durable=bad)),
+            entry('jev-memory-curate', key='m2', answers=dict(durable=noul(0.3))),
+            entry('jev-memory-stale', key='m3', answers=dict(still=bad)),
+        ]})
+        sites_ = self.data_json('--run', str(plan))['sites']
+        self.assertEqual((sites_['jev-memory-curate']['fired'], sites_['jev-memory-curate']['effects']),
+                         (1, dict(durable=1)))
+        self.assertEqual(sites_['jev-memory-stale']['fired'], 0)
+
+    def gate_warn_for(self, model):
+        path = self.cfg / 'forge' / 'decide.json'
+        data = json.loads(path.read_text())
+        data['gates'] = {'memory-curate': dict(mode='shadow', thresholds=dict(gate_warn=0.95),
+                                               thresholds_model=model)}
+        path.write_text(json.dumps(data))
+
+    def test_each_entry_is_read_at_its_own_models_threshold(self):
+        # The override raises gate_warn to 0.95 for one model only. The same answers (durable
+        # 0.9) are a refusal under 0.95 and not under the default 0.60.
+        plan = self.run_dir('plan', {'': [self.curate('ka', 0.9, model='model-a'),
+                                          self.curate('kb', 0.9, model='model-b')]})
+        for overridden in ('model-a', 'model-b'):
+            with self.subTest(overridden=overridden):
+                self.gate_warn_for(overridden)
+                row = self.data_json('--run', str(plan))['sites']['jev-memory-curate']
+                self.assertEqual((row['fired'], row['effects']), (1, dict(durable=1)))
+        self.gate_warn_for('model-c')
+        row = self.data_json('--run', str(plan))['sites']['jev-memory-curate']
+        self.assertEqual((row['fired'], row['effects']), (0, {}))
 
 
 ANSWERS = dict(f0=noul(0.9), f1=noul(0.8), f2=noul(0.1), f3=noul(0.1))

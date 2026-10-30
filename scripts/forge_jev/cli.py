@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import getpass
+import importlib
 import json
 import os
 from pathlib import Path
@@ -16,8 +17,8 @@ from . import (CAPABILITIES, CLOUDFLARE_DEFAULT_SITES, CLOUDFLARE_TOKEN_FILE,
               DEFAULT_THRESHOLDS, PROVIDERS, RETIRED_CAPABILITIES, RETIRED_THRESHOLDS,
               SITE_CAPABILITY, THRESHOLD_FALLBACK, api_key,
               capability_ready, cloudflare, config_path, enabled, gate_mode, gate_reason, load_config,
-              provider_for, provider_ready, redact, save_config, secrets, site_ready, threshold, use_repo,
-              _resolved)
+              plan_gate_mode, provider_for, provider_ready, redact, save_config, secrets, site_ready,
+              threshold, use_repo, _resolved)
 from . import client, questions
 import forge_decide
 
@@ -104,6 +105,33 @@ def parser() -> argparse.ArgumentParser:
     memory_stale.add_argument('--text', required=True)
     memory_stale.add_argument('--anchor', required=True)
     memory_stale.add_argument('--run-dir', default=None)
+
+    coverage = sub.add_parser('coverage')
+    coverage.add_argument('--plan', required=True)
+    coverage.add_argument('--repo', required=True)
+    coverage.add_argument('--json', action='store_true')
+
+    retry_addressed = sub.add_parser('retry-addressed')
+    retry_addressed.add_argument('--plan', required=True)
+    retry_addressed.add_argument('--task', required=True)
+    retry_addressed.add_argument('--attempt', type=int, required=True)
+    retry_addressed.add_argument('--repo', required=True)
+
+    dwarf_message = sub.add_parser('dwarf-message')
+    dwarf_message.add_argument('--plan', required=True)
+    dwarf_message.add_argument('--task', required=True)
+    dwarf_message.add_argument('--attempt', type=int, required=True)
+    dwarf_message.add_argument('--repo', required=True)
+
+    attribution = sub.add_parser('attribution')
+    attribution.add_argument('--plan', required=True)
+    attribution.add_argument('--repo', required=True)
+    attribution.add_argument('--log', required=True)
+
+    findings = sub.add_parser('findings')
+    findings.add_argument('--repo', required=True)
+    findings.add_argument('--input', required=True)
+    findings.add_argument('--run-dir', default=None)
     return p
 
 
@@ -279,7 +307,8 @@ def cmd_disable(args) -> int:
 def _capability_sites() -> dict:
     sites = {cap: [] for cap in CAPABILITIES}
     for site, cap in SITE_CAPABILITY.items():
-        sites.setdefault(cap, []).append(site)
+        if cap is not None:  # a site with no capability belongs to no capability's list
+            sites.setdefault(cap, []).append(site)
     return sites
 
 
@@ -362,7 +391,9 @@ def cmd_doctor(args) -> int:
     else:
         checks.append(('config readable', True, 'no config file; using defaults'))
     key = api_key(config)
-    used = {provider_for(s, config) for s in SITE_CAPABILITY if enabled(SITE_CAPABILITY[s], config=config)}
+    # enabled(None) means any gate on, so a site with no capability counts by its own gate.
+    used = {provider_for(s, config) for s, cap in SITE_CAPABILITY.items()
+            if (enabled(cap, config=config) if cap is not None else gate_mode(s) != 'off')}
     if 'typesafe' in used or not used:
         checks.append(('key present', key is not None, None))
     if 'cloudflare' in used:
@@ -467,16 +498,124 @@ def cmd_verify_discover(args) -> int:
 PROMPT_CHARS = 8000
 
 
+def _column(plan: Path, task_id: str) -> list:
+    """The names in the task's `files` column right now (tasks.tsv column 4)."""
+    try:
+        for line in (plan / 'tasks.tsv').read_text(errors='replace').splitlines():
+            cells = line.split('\t')
+            if len(cells) >= 7 and not line.startswith('#') and cells[0] == task_id:
+                return [name.strip() for name in cells[3].split(',') if name.strip() not in ('', '-')]
+    except OSError:
+        pass
+    return []
+
+
+def _drift_act(plan: Path, task_id: str, predicted, mode: str) -> list:
+    """What the drift gate does with an answer, and records in plan-gates.json.
+
+    `on` appends the predicted files to the task's `files` column and records them under
+    `drift.<task>.added`; `shadow` records them under `would_add` and touches nothing else.
+    `added` entries from an earlier plan stay while their file is still in the column: the
+    labels need to know the planner did not declare it. Returns the files added now. Any
+    failure behaves as `off`, so a plan never fails because of this gate: when the record
+    cannot be saved, tasks.tsv goes back to the bytes it had, so no file is added without
+    its provenance.
+    """
+    if mode not in ('on', 'shadow'):
+        return []
+    original = None
+    try:
+        from . import plan_gates
+        if mode == 'on':
+            original = (plan / 'tasks.tsv').read_bytes()
+        files = [dict(file=name, p=probability) for name, probability in predicted]
+        added = []
+        if mode == 'on' and files:
+            done = set(plan_gates.add_files(plan, task_id, [item['file'] for item in files]))
+            added = [item for item in files if item['file'] in done]
+        data = plan_gates.load(plan)
+        drift = data.get('drift') if isinstance(data.get('drift'), dict) else {}
+        entry = drift.get(task_id) if isinstance(drift.get(task_id), dict) else {}
+        column = set(_column(plan, task_id))
+        kept = [item for item in entry.get('added') or []
+                if isinstance(item, dict) and item.get('file') in column
+                and item['file'] not in {a['file'] for a in added}]
+        fresh = {}
+        if kept or added:
+            fresh['added'] = kept + added
+        if mode == 'shadow' and files:
+            fresh['would_add'] = files
+        if fresh != entry:
+            if fresh:
+                drift[task_id] = fresh
+            else:
+                drift.pop(task_id, None)
+            data['drift'] = drift
+            if not drift:
+                data.pop('drift')
+            if data or (plan / plan_gates.GATES_FILE).exists():
+                plan_gates.save(plan, data)
+        return [item['file'] for item in added]
+    except Exception:
+        if original is not None:
+            try:
+                plan_gates._atomic_write(plan / 'tasks.tsv', original)
+            except Exception:
+                pass
+        return []
+
+
+def _prompt_act(plan: Path, scores: dict, mode: str, warn_at: float) -> None:
+    """What the prompt gate does with the plan's adequacy scores, recorded in plan-gates.json.
+
+    `on` records `prompt.<task> = {p, shadow: false}` and queues a task below `warn_at` for
+    the planner (plan_gates.mark_pending). A task that was already sent back is never queued
+    again: its new score goes under `after`, and the table lists it when still below the
+    threshold. `shadow` records `{p, shadow: true}` and queues nothing. `sendback` is not
+    called here: `plan` runs it once after every gate. Any failure behaves as `off`, so a
+    plan never fails because of this gate.
+    """
+    if mode not in ('on', 'shadow') or not scores:
+        return
+    try:
+        from . import plan_gates
+        data = plan_gates.load(plan)
+        before = json.dumps(data, sort_keys=True)
+        prompt = data.get('prompt') if isinstance(data.get('prompt'), dict) else {}
+        sent = (data.get('sent_back') or {}).get('prompt') or []
+        for task_id, p in scores.items():
+            entry = dict(p=round(p, 3), shadow=mode == 'shadow')
+            if mode == 'on':
+                if task_id in sent:
+                    entry['after'] = entry['p']
+                elif p < warn_at:
+                    plan_gates.mark_pending(data, 'prompt', task_id)
+            prompt[task_id] = entry
+        data['prompt'] = prompt
+        if json.dumps(data, sort_keys=True) != before:
+            plan_gates.save(plan, data)
+    except Exception:
+        pass
+
+
 def cmd_score_plan(args) -> int:
     """The plan-time gates: prompt adequacy (jev-prompt) and drift (jev-drift), per task.
 
-    Advisory output only: nothing here writes into tasks.tsv, and no answer changes a
-    plan. Each task's answers go to tasks/<id>/jev.json; stdout carries one
-    `id<TAB>warnings<TAB>drift` row per task that got any answer. (This command used to
-    rate routing rubrics into a suggested tier; that was removed in milestone C1.)
+    Prompt adequacy is advisory unless the gate is `on`: then a task below `prompt_warn` is
+    queued for the planner once (plan_gates.mark_pending) and its score recorded under
+    `prompt.<task>`; in `shadow` the score is recorded and nothing queued. Drift is advisory
+    too unless the gate is `on`: then each file it
+    predicts at or above `drift_warn` is appended to the task's `files` column in tasks.tsv
+    (before the shell computes waves, so the waves treat it as declared) and recorded under
+    `drift.<task>.added` in plan-gates.json. In `shadow` the files are recorded as
+    `would_add` and tasks.tsv is left alone. Each task's answers go to tasks/<id>/jev.json;
+    stdout carries one `id<TAB>warnings<TAB>drift` row per task that got any answer, and in
+    `on` the drift field lists the files that were added. (This command used to rate routing
+    rubrics into a suggested tier; that was removed in milestone C1.)
 
     A gate in shadow is asked and its answer kept in jev.json, but it adds `-` to the row;
     a task whose every answer is shadowed prints no row, and exit 3 means no row at all.
+    A gate that cannot write its change behaves as `off`: the plan goes on unchanged.
     """
     plan, repo = Path(args.plan), Path(args.repo)
     if not plan.is_dir():
@@ -504,7 +643,7 @@ def cmd_score_plan(args) -> int:
     if goal_file.is_file():
         goal = goal_file.read_text(errors='replace')[:2000]
 
-    rows, judgments, shown = [], [], []
+    rows, judgments, shown, adequacies = [], [], [], {}
     for line in tasks.read_text(errors='replace').splitlines():
         if not line.strip() or line.startswith('#'):
             continue
@@ -544,8 +683,11 @@ def cmd_score_plan(args) -> int:
                                             declared=files, approach=approach,
                                             prompt=prompt_text,
                                             run_dir=str(plan), config=config)
+        if adequacy is not None:
+            adequacies[task_id] = adequacy
         if adequacy is None and predicted is None:
             continue
+        added = _drift_act(plan, task_id, predicted, plan_gate_mode('jev-drift')) if predicted is not None else []
 
         # A warning, not a gate: recorded below the threshold and silent above it.
         warnings = {}
@@ -575,10 +717,15 @@ def cmd_score_plan(args) -> int:
                 visible.update(prompt_adequacy=None, warnings={})
             if shadow_drift:
                 visible['predicted_drift'] = []
+            else:
+                # In `on` the row names what the gate added to the column.
+                visible['predicted_drift'] = [item for item in visible['predicted_drift']
+                                              if item['file'] in added]
             shown.append(visible)
 
     if not judgments:
         return 3
+    _prompt_act(plan, adequacies, plan_gate_mode('jev-prompt'), warn_at)
 
     # Tell the repo where its own run data lives: forge keeps plan dirs wherever the user put
     # them, and `forge dataset import --registry` (and forge-ui) find them through this list.
@@ -600,13 +747,75 @@ def cmd_score_plan(args) -> int:
     return 0
 
 
+def _forward_act(plan: Path, forward, mode: str) -> list:
+    """What the forward gate does with its warned pairs, and records in plan-gates.json.
+
+    `on` makes each pair's earlier task depend on the later one (plan_gates.add_dep, which
+    refuses a cycle): added pairs go under `forward.added`, refused ones under
+    `skipped_cycle`. `shadow` records them under `would_add` and touches nothing else.
+    `added` entries from an earlier plan stay while the dep is still in the column: the
+    labels need to know the planner did not write it. Returns `(earlier, later, p, kind)`
+    with kind `added` or `cycle`. Any failure behaves as `off`: when the record cannot be
+    saved, tasks.tsv goes back to the bytes it had, so no dependency exists without its
+    provenance.
+    """
+    if mode not in ('on', 'shadow'):
+        return []
+    original = None
+    try:
+        from . import plan_gates
+        if mode == 'on':
+            original = (plan / 'tasks.tsv').read_bytes()
+        pairs = [dict(earlier=a, later=b, p=p) for a, b, p in forward]
+        added, refused = [], []
+        if mode == 'on':
+            for item in pairs:
+                (added if plan_gates.add_dep(plan, item['earlier'], item['later']) else refused).append(item)
+        data = plan_gates.load(plan)
+        entry = data.get('forward') if isinstance(data.get('forward'), dict) else {}
+        _text, lines = plan_gates._read_tasks(plan)
+        deps = plan_gates._deps(lines)
+        now = {(i['earlier'], i['later']) for i in added}
+        kept = [item for item in entry.get('added') or []
+                if isinstance(item, dict) and item.get('later') in deps.get(item.get('earlier'), ())
+                and (item['earlier'], item['later']) not in now]
+        fresh = {}
+        if kept or added:
+            fresh['added'] = kept + added
+        if refused:
+            fresh['skipped_cycle'] = refused
+        if mode == 'shadow' and pairs:
+            fresh['would_add'] = pairs
+        if fresh != entry:
+            if fresh:
+                data['forward'] = fresh
+            else:
+                data.pop('forward', None)
+            if data or (plan / plan_gates.GATES_FILE).exists():
+                plan_gates.save(plan, data)
+        return [(i['earlier'], i['later'], i['p'], 'added') for i in added] \
+            + [(i['earlier'], i['later'], i['p'], 'cycle') for i in refused]
+    except Exception:
+        if original is not None:
+            try:
+                plan_gates._atomic_write(plan / 'tasks.tsv', original)
+            except Exception:
+                pass
+        return []
+
+
 def cmd_coupling(args) -> int:
     """Warn about earlier-wave tasks written against what a later wave builds.
 
-    Advisory only -- like cmd_score_plan, this never edits tasks.tsv or waves.tsv. It
-    reads both (waves.tsv must already exist; forge-parallel.sh runs this after
-    compute_waves) and writes jev-coupling.json for a human or a later run to inspect.
-    Every row has kind 'forward'; the file keeps its name for old consumers.
+    Advisory unless the gate is `on`: then each warned pair becomes a dependency, the earlier
+    task waiting for the later one, written to the `deps` column of tasks.tsv and recorded
+    under `forward.added` in plan-gates.json (a pair whose dependency would form a cycle is
+    left out and recorded under `skipped_cycle`). In `shadow` the pairs are recorded as
+    `would_add`, nothing is printed and tasks.tsv is left alone. It never edits waves.tsv:
+    forge-parallel.sh runs this after compute_waves and recomputes the waves itself. It reads
+    both files (waves.tsv must already exist) and writes jev-coupling.json for a human or a
+    later run to inspect; there every row has kind 'forward', and the file keeps its name for
+    old consumers. Printed rows end in the outcome: `forward` (advisory), `added` or `cycle`.
     """
     plan, repo = Path(args.plan), Path(args.repo)
     if not plan.is_dir():
@@ -630,6 +839,14 @@ def cmd_coupling(args) -> int:
     waves = coupling.parse_waves(plan)
     forward = coupling.forward_dependencies(repo, tasks=tasks, waves=waves,
                                             run_dir=str(plan), config=config)
+    if forward is None:
+        return 3
+
+    mode = plan_gate_mode('jev-forward')
+    # An answer of "nothing to flag" is still an answer: the record of an earlier plan
+    # (a stale would_add, a dependency the planner has since dropped) is reconciled with it.
+    # `shadow` is recorded under would_add, and the run hears nothing.
+    acted = _forward_act(plan, forward, mode)
     if not forward:
         return 3
 
@@ -638,9 +855,12 @@ def cmd_coupling(args) -> int:
         (plan / 'jev-coupling.json').write_text(json.dumps(payload, indent=2, sort_keys=True) + '\n')
     except OSError:
         pass
-    # Shadow: recorded in the file above, and the run hears nothing.
-    if gate_mode('jev-forward') == 'shadow':
+    if mode == 'shadow':
         return 3
+    if mode == 'on':
+        if not acted:
+            return 3
+        payload = [dict(a=a, b=b, probability=p, kind=kind) for a, b, p, kind in acted]
 
     if args.json:
         print(json.dumps(payload, indent=2, sort_keys=True))
@@ -744,6 +964,70 @@ def _anchor_repo(anchor: str) -> str | None:
     return (out.stdout.strip() or None) if out.returncode == 0 else None
 
 
+def _path_missing(verb: str, dirs: dict, files: dict) -> bool:
+    """True, after saying which, when a path the verb was given is not there. `dirs` values must
+    be directories and `files` values regular files; None means the flag was not given."""
+    for flag, path in dirs.items():
+        if path is not None and not Path(path).is_dir():
+            print(f'forge jev {verb}: --{flag} {path!r} is not a directory', file=sys.stderr)
+            return True
+    for flag, path in files.items():
+        if path is not None and not Path(path).is_file():
+            print(f'forge jev {verb}: --{flag} {path!r} is not a file', file=sys.stderr)
+            return True
+    return False
+
+
+def _delegate(verb: str, module_name: str, args, repo: str) -> int:
+    """use_repo(repo), then the module's `main(args)`. A module that is missing, or has no
+    main, is no opinion (exit 3) and says so on stderr only. Imported here, not at the top of
+    this file, so a module still being written cannot break the other verbs."""
+    use_repo(repo)
+    try:
+        main = importlib.import_module(f'.{module_name}', __package__).main
+    except (ImportError, AttributeError) as error:
+        print(f'forge jev {verb}: {module_name} module unavailable ({error})', file=sys.stderr)
+        return 3
+    return main(args)
+
+
+def cmd_coverage(args) -> int:
+    """Plan covers the request (#47): which requirement no task's acceptance criteria cover."""
+    if _path_missing('coverage', dirs={'plan': args.plan, 'repo': args.repo}, files={}):
+        return 2
+    return _delegate('coverage', 'coverage', args, args.repo)
+
+
+def cmd_retry_addressed(args) -> int:
+    """A retry touched its blocking findings (#43): which findings its diff left as they were."""
+    if _path_missing('retry-addressed', dirs={'plan': args.plan, 'repo': args.repo}, files={}):
+        return 2
+    return _delegate('retry-addressed', 'addressed', args, args.repo)
+
+
+def cmd_dwarf_message(args) -> int:
+    """The dwarf's final message (#44): unfinished, blocked or a question for the user."""
+    if _path_missing('dwarf-message', dirs={'plan': args.plan, 'repo': args.repo}, files={}):
+        return 2
+    return _delegate('dwarf-message', 'message', args, args.repo)
+
+
+def cmd_attribution(args) -> int:
+    """Integration attribution (#45): which merged task most likely broke the combined run."""
+    if _path_missing('attribution', dirs={'plan': args.plan, 'repo': args.repo}, files={'log': args.log}):
+        return 2
+    return _delegate('attribution', 'attribution', args, args.repo)
+
+
+def cmd_findings(args) -> int:
+    """Findings duplicates and triage (#46): which findings duplicate an open issue or read as
+    a preference. --run-dir is the plan the findings came from, for dataset capture."""
+    if _path_missing('findings', dirs={'repo': args.repo, 'run-dir': args.run_dir},
+                     files={'input': args.input}):
+        return 2
+    return _delegate('findings', 'findings', args, args.repo)
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     try:
@@ -755,7 +1039,12 @@ def main(argv: list[str] | None = None) -> int:
                        'memory-curate': cmd_memory_curate,
                        'memory-slice': cmd_memory_slice,
                        'memory-stale': cmd_memory_stale,
-                       'verify-discover': cmd_verify_discover})[args.command](args)
+                       'verify-discover': cmd_verify_discover,
+                       'coverage': cmd_coverage,
+                       'retry-addressed': cmd_retry_addressed,
+                       'dwarf-message': cmd_dwarf_message,
+                       'attribution': cmd_attribution,
+                       'findings': cmd_findings})[args.command](args)
     except SystemExit as exit:
         # argparse exits the process on a usage error; return the code instead so the
         # shim owns exiting and main() stays callable from a test.

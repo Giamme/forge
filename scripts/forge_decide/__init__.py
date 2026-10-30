@@ -30,20 +30,27 @@ from pathlib import Path
 import uuid
 
 GATES = ('drift', 'forward', 'prompt', 'memory-curate', 'memory-slice', 'memory-stale',
-         'verify-discover')
+         'verify-discover', 'coverage', 'retry-addressed', 'dwarf-message', 'attribution',
+         'findings')
 MODES = ('off', 'shadow', 'on')
 GATE_SITE = {
     'drift': 'jev-drift', 'forward': 'jev-forward', 'prompt': 'jev-prompt',
     'memory-curate': 'jev-memory-curate', 'memory-slice': 'jev-memory-slice',
     'memory-stale': 'jev-memory-stale', 'verify-discover': 'jev-verify-discover',
+    'coverage': 'jev-coverage', 'retry-addressed': 'jev-retry-addressed',
+    'dwarf-message': 'jev-dwarf-message', 'attribution': 'jev-attribution',
+    'findings': 'jev-findings',
 }
 SITE_GATE = {site: gate for gate, site in GATE_SITE.items()}
 # The forge_jev capability each gate used to belong to: what the legacy jev.json and the
-# FORGE_JEV_<CAP> variables switch.
+# FORGE_JEV_<CAP> variables switch. None for a gate with no legacy capability: the legacy
+# level never turns it on, so it is off until its own mode is set.
 GATE_CAPABILITY = {
     'drift': 'gates', 'forward': 'gates', 'prompt': 'gates',
     'memory-curate': 'memory', 'memory-slice': 'memory', 'memory-stale': 'memory',
     'verify-discover': 'tests',
+    'coverage': None, 'retry-addressed': None, 'dwarf-message': None, 'attribution': None,
+    'findings': None,
 }
 PROVIDER_TYPES = ('jev', 'clef')
 USER_ONLY = ('providers', 'budget.daily_tokens', 'budget.daily_usd')

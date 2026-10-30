@@ -16,12 +16,19 @@
 - `baseline(body, qid)`: the cheap heuristic the site must not lose to; higher = more
   likely positive.
 - `floor`: the precision a promoted gate must reach at its threshold.
+- `invert`: the raw probability points away from acting, so `score` is 1 - p and replay and
+  report compare it against 1 - threshold.
+
+The sites of the five new gates take their `fired`, `decisions`, `score` and `baseline` from
+their gate module (forge_jev.coverage and so on) through `_lazy`, so this file never imports
+a module that another task writes: until one exists its site acts on nothing.
 
 Pure functions over answers and bodies: no I/O, and nothing here asks a model.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
+import importlib
 import re
 from typing import Callable
 
@@ -90,6 +97,22 @@ def _instructions(body, qid) -> str:
 
 def _files(text) -> list[str]:
     return [name for name in str(text or '').replace(',', ' ').split() if name]
+
+
+def _lazy(module: str, attr: str, default):
+    """A function calling `module.attr` with its arguments, importing `module` on each call.
+    `default` is returned instead while the module or the attribute is missing; any other
+    import error propagates, so a broken gate module is not read as an absent one."""
+    def call(*args, **kwargs):
+        try:
+            target = importlib.import_module(module)
+        except ModuleNotFoundError as exc:
+            if exc.name is None or not (module == exc.name or module.startswith(exc.name + '.')):
+                raise
+            return default
+        function = getattr(target, attr, None)
+        return default if function is None else function(*args, **kwargs)
+    return call
 
 
 # --- fired ------------------------------------------------------------------------------
@@ -186,6 +209,13 @@ def _score_noul(answers, qid, request=None):
     return _noul(answers, qid)
 
 
+def _score_inverted(answers, qid, request=None):
+    """The probability of acting for a site whose model answers the other way round (prompt
+    adequacy): 1 - p. None while the answer is missing."""
+    probability = _noul(answers, qid)
+    return None if probability is None else 1.0 - probability
+
+
 def _score_verify(answers, qid, request=None):
     """The choice distribution's probability of the candidate's command. None without the
     body (see _fired_verify)."""
@@ -279,15 +309,26 @@ class Site:
     floor: float | None = None
     # The issue that will define the label, for a site that has none.
     label_issue: str | None = None
+    # The raw probability points away from acting: score is 1 - p.
+    invert: bool = False
 
 
-def _site(name, threshold, fired, decisions, score, label, baseline, floor=None, label_issue=None):
-    return Site(name, SITE_GATE[name], threshold, fired, decisions, score, label, baseline, floor, label_issue)
+def _site(name, threshold, fired, decisions, score, label, baseline, floor=None, label_issue=None,
+          invert=False):
+    return Site(name, SITE_GATE[name], threshold, fired, decisions, score, label, baseline, floor,
+                label_issue, invert)
 
 
-def _no_fire(answers, threshold_value=None, request=None):
-    return []
+def _gate_module_site(name, module, threshold, label, label_issue=None, invert=False):
+    """A site whose fired, decisions, score and baseline are its gate module's, lazily (see
+    _lazy). No floor: the new sites have none until their replay measures one."""
+    return _site(name, threshold, _lazy(module, 'fired', []), _lazy(module, 'decisions', []),
+                 _lazy(module, 'score', None), label, _lazy(module, 'baseline', 0.0), label_issue=label_issue,
+                 invert=invert)
 
+
+# Both memory sites: the labels need a contradiction record, which does not exist yet.
+_MEMORY_ISSUE = '#41: recurrence is influenced by the gate itself; needs independent contradiction evidence'
 
 SITES: dict[str, Site] = {record.name: record for record in (
     _site('jev-drift', 'drift_warn', _fired_at_least('f'), _decisions_prefix('f'), _score_noul,
@@ -298,21 +339,36 @@ SITES: dict[str, Site] = {record.name: record for record in (
           'a later plan revision of the same run added the dependency (true); both tasks merged '
           'with no such dependency (false)',
           _baseline_forward, floor=0.5),
-    _site('jev-prompt', 'prompt_warn', _fired_prompt, _decisions_prompt, _score_noul,
-          None, _baseline_none, label_issue='#40'),
-    _site('jev-memory-curate', None, _no_fire, lambda body: [], _score_noul,
-          None, _baseline_none, label_issue='#41: needs a contradiction record'),
+    _site('jev-prompt', 'prompt_warn', _fired_prompt, _decisions_prompt, _score_inverted,
+          'true when the prompt was inadequate: a later plan revision changed it before its first '
+          'attempt, or the first review called it ambiguous; false otherwise',
+          _baseline_none, invert=True),
+    _site('jev-memory-curate', None, _lazy('forge_jev.memory', 'fired_curate', []), lambda body: [],
+          _score_noul, None, _baseline_none, label_issue=_MEMORY_ISSUE),
     _site('jev-memory-slice', None, _fired_slice, _decisions_prefix('l'), _score_noul,
           "the fact's anchor was edited by the task (true), or lies in an area the task never "
           'touched (false)',
           _baseline_slice),
-    _site('jev-memory-stale', None, _no_fire, lambda body: [], _score_noul,
-          None, _baseline_none, label_issue='#41: needs a contradiction record'),
+    _site('jev-memory-stale', 'stale_drop', _lazy('forge_jev.memory', 'fired_stale', []),
+          lambda body: [], _score_noul, None, _baseline_none, label_issue=_MEMORY_ISSUE),
     _site('jev-verify-discover', 'tests_act', _fired_verify, _decisions_verify, _score_verify,
           'the candidate is the command the repo documents: `.forge/verify`, or the command a later '
           'run of the same repo verified with, from `--verify` or `repo.verify` (command_source not '
           '`jev`)',
           _baseline_verify, floor=0.7),
+    _gate_module_site('jev-coverage', 'forge_jev.coverage', 'coverage_warn',
+                      'true when a later plan revision added a task covering the requirement; false when '
+                      'every task merged with no change to the acceptance criteria'),
+    _gate_module_site('jev-retry-addressed', 'forge_jev.addressed', 'untouched_warn',
+                      'true when the review of the same attempt raised the finding again; false when that '
+                      'review parsed without it'),
+    _gate_module_site('jev-dwarf-message', 'forge_jev.message', None,
+                      "true when the same attempt's review failed; false when it passed"),
+    _gate_module_site('jev-attribution', 'forge_jev.attribution', None,
+                      'true when verified prefixes show the merge breaks verification (prefix k−1 passes, '
+                      'k fails); false when both were verified and do not'),
+    _gate_module_site('jev-findings', 'forge_jev.findings', 'findings_concrete', None,
+                      label_issue='#46: needs issue-closure records', invert=True),
 )}
 
 

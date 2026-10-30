@@ -6,6 +6,16 @@
       the tasks whose prompt.md has no acceptance criteria. Prints nothing when every task is
       fine. Exit status is always 0.
 
+  forge-plan-check.py gates PLAN
+      Prints the decision-model gate block (what drift, forward, prompt and coverage did to this
+      plan) from PLAN/plan-gates.json. Prints nothing when no gate recorded anything.
+
+  forge-plan-check.py sendback PLAN
+      Writes PLAN/plan.sendback.md from the items the gates marked in this `plan` call and prints
+      it, exiting 4. Prints nothing and exits 0 when nothing was marked.
+
+Both of the last two print nothing and exit 0 if forge_jev.plan_gates cannot be imported.
+
 Why these two: in forge's run history (269 first attempts, measured 2026-10-17) the share of
 first attempts a reviewer passed falls steadily with prompt length (62% under 3K characters,
 51% at 5-7K, 33% at 7-10K, 23% at 14K and over) and with declared files (68% at 2, 29% at 9
@@ -96,12 +106,36 @@ def size_notes(plan: Path) -> list:
     return notes
 
 
+def plan_gates():
+    try:
+        from forge_jev import plan_gates as module
+    except Exception:
+        return None
+    return module
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog='forge-plan-check.py')
     sub = ap.add_subparsers(dest='command', required=True)
     p = sub.add_parser('size')
     p.add_argument('--plan', required=True)
+    for name in ('gates', 'sendback'):
+        sub.add_parser(name).add_argument('plan')
     args = ap.parse_args(argv)
+    if args.command in ('gates', 'sendback'):
+        module = plan_gates()
+        if module is None:
+            return 0
+        try:
+            if args.command == 'gates':
+                for line in module.marks(args.plan):
+                    print(line)
+            elif module.sendback(args.plan):
+                sys.stdout.write((Path(args.plan) / module.SENDBACK_FILE).read_text())
+                return 4
+        except Exception:
+            return 0
+        return 0
     try:
         notes = size_notes(Path(args.plan))
     except Exception:

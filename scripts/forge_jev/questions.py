@@ -353,3 +353,169 @@ def memory_relevant(text: str, task: str) -> dict:
               'context on every dispatch, so a fact that will not change what the model '
               'does here should be left out.',
     )
+
+
+# --- rubrics about one item (C3-C5) ------------------------------------------------
+#
+# A rubric about one requirement, finding or candidate issue quotes that item into its own
+# instructions: the question id alone cannot tie a question to its item, so two items asked
+# in one request would otherwise get the same text. A quoted item is cut first, so one long
+# one cannot crowd out the state the question is about.
+#
+# Every Noul here is worded so that a HIGHER probability means the gate acts. A Choice's
+# gate acts on `none` (coverage) or on a candidate other than `none` (culprit, duplicate).
+
+QUOTE_CHARS = 600
+
+
+def _quoted(text) -> str:
+    return repr(str(text)[:QUOTE_CHARS])
+
+
+# Plan covers the request (#47): one Choice per requirement the request splits into.
+
+def requirement_coverage(requirement: str, options: list) -> dict:
+    """Which task's acceptance criteria, if any, deliver this requirement of the request?
+
+    Asked once per requirement (coverage.py) over every task id plus 'none'. The gate acts
+    on 'none': a requirement no task's criteria cover goes back to the planner. A task whose
+    title only sounds related is not coverage, so the rubric says that outright.
+    """
+    instructions = (
+        'A user asked for the work in state.request. The plan splits it into the tasks in '
+        'state.tasks, each with its acceptance criteria. Which task\'s acceptance criteria, '
+        f'if met, would deliver this requirement: {_quoted(requirement)}? Answer none when no '
+        'task\'s criteria cover it, even when a task\'s title sounds related.'
+    )
+    criteria = {task_id: f'task {task_id} covers it' for task_id in options}
+    criteria['none'] = 'no task\'s acceptance criteria cover it'
+    return Choice(instructions, criteria)
+
+
+# A retry touched its blocking findings (#43).
+
+def finding_untouched(finding: str) -> dict:
+    """Does the retry's diff leave this blocking finding unaddressed?
+
+    Asked once per P0/P1 finding of a retry (addressed.py). Higher means the gate acts: the
+    attempt is bounced before QA. An edit that might fix the finding, even one that may not
+    be enough, is the false side.
+    """
+    return Noul(
+        'A reviewer rejected the previous attempt of a Forge task with this finding: '
+        f'{_quoted(finding)}. The implementer then changed the code; state.diff is everything '
+        'it changed since the reviewed attempt. Does this diff leave the finding unaddressed '
+        '-- the code the finding names is untouched, or only unrelated code, comments or tests '
+        'that do not exercise the finding\'s case changed?',
+        true='The cited code and behaviour are not changed in a way that could fix the finding.',
+        false='The diff edits the cited code or the behaviour the finding describes in a way '
+              'that could fix it, even if it may not be enough.',
+    )
+
+
+# The dwarf's final message (#44). One request per attempt; message.py picks the first that fires.
+
+def message_unfinished() -> dict:
+    """Did the implementer's final message say part of the requested work is left undone?
+
+    Higher means the gate acts: the attempt is sent back as FAIL before its review. Caveats,
+    suggestions for later and notes about style are the false side.
+    """
+    return Noul(
+        'Does the implementer\'s final message (state.message) say it did not finish the task '
+        '-- that part of the requested work is left undone, skipped, only partly done, or left '
+        'as a TODO? Caveats, suggestions for later and notes about style do not count.'
+    )
+
+
+def message_blocked() -> dict:
+    """Did the implementer say something outside the task stopped it from doing the work?
+
+    Higher means the gate acts: the attempt is sent back as FAIL before its review. A message
+    that reports a finished or merely difficult task is the false side.
+    """
+    return Noul(
+        'Does the message say the implementer was blocked by something outside the task -- a '
+        'missing dependency, an environment that fails or is unavailable, a tool or permission '
+        'it lacked -- so that it could not do the work?'
+    )
+
+
+def message_question() -> dict:
+    """Did the implementer ask a question only the user can answer?
+
+    Higher means the gate acts: the attempt ends NEEDS_INPUT and waits for the answer. A
+    choice the requirements already settle is not a question for the user.
+    """
+    return Noul(
+        'Does the message ask a question only the user can answer -- a choice between behaviours '
+        'the requirements leave open -- and say it could not proceed correctly without the answer?'
+    )
+
+
+# Integration attribution (#45): which merged task broke a run's combined verification.
+
+def culprit(options: list) -> dict:
+    """Which merged task most likely caused the failing combined verification of a run?
+
+    Asked once per failing integration (attribution.py) over every merged task id plus
+    'none'. The gate acts on a task: its boundary is probed before the binary search. 'none'
+    (environmental, or unrelated to every change) leaves the search alone.
+    """
+    instructions = (
+        'The combined verification of a Forge run failed after these tasks were merged one '
+        'after another (state.tasks: id, title, files, diff excerpt). state.log is the end of '
+        'the failing verification log. Which merged task most likely caused the failure? Answer '
+        'none when the failure looks environmental or unrelated to every listed change.'
+    )
+    criteria = {task_id: f'task {task_id} most likely caused the failure' for task_id in options}
+    criteria['none'] = 'the failure looks environmental, or unrelated to every listed change'
+    return Choice(instructions, criteria)
+
+
+# Findings duplicates and triage (#46): options maps each candidate issue id to its title.
+
+def finding_duplicate(finding: str, options: dict) -> dict:
+    """Does this review finding restate one of the existing issues?
+
+    Asked once per finding when there are candidate issues (findings.py), over the candidate
+    ids plus 'none'. Higher probability on a candidate means the gate acts: the finding becomes
+    a comment on that issue rather than a new one. 'none' is the safe side: a finding that
+    only shares a file or topic with an issue is not a duplicate.
+    """
+    instructions = (
+        'Is this review finding -- '
+        f'{_quoted(finding)} -- the same defect as one of the existing issues in state.candidates, '
+        'described in other words? Same defect means the same broken behaviour in the same code, '
+        'not just the same file or topic.'
+    )
+    criteria = {
+        candidate: (f'issue {candidate} ({_quoted(title)}) reports this same defect: the same '
+                    'broken behaviour in the same code')
+        for candidate, title in options.items()
+    }
+    criteria['none'] = ('no existing issue reports this defect; sharing a file or a topic with '
+                        'one is not a duplicate')
+    return Choice(instructions, criteria)
+
+
+def finding_concrete(finding: str) -> dict:
+    """Is this PLAUSIBLE review finding a preference, with no concrete defect behind it?
+
+    Asked once per PLAUSIBLE finding (findings.py). Higher means the gate acts: the finding is
+    pre-deselected rather than filed. The question is therefore worded as the preference, not
+    as concreteness, so the probability keeps the same direction as every other Noul here. A
+    finding that names an input, state or sequence of steps that gives wrong behaviour is the
+    false side.
+    """
+    return Noul(
+        'Does this review finding -- '
+        f'{_quoted(finding)} -- read as a preference about style, naming or structure rather '
+        'than a defect, because it names no specific input, state or sequence of steps that '
+        'produces wrong behaviour?',
+        true='The finding is a preference about style, naming, structure or taste. It names no '
+             'specific input, state or sequence of steps that produces wrong behaviour, so '
+             'fixing it would not fix a defect.',
+        false='The finding names a concrete defect: a specific input, state or sequence of steps '
+              'that produces wrong behaviour, even when it also mentions style or naming.',
+    )

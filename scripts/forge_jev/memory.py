@@ -11,6 +11,8 @@ capability all leave the model's own category and key exactly as they were.
 """
 from __future__ import annotations
 
+import math
+
 from . import threshold
 from .client import ask, choice, noul
 from .questions import memory_category, memory_durable, memory_same_fact
@@ -88,6 +90,65 @@ def curate(*, category: str, text: str, existing=None, run_dir=None,
     if out['matched']:
         out['injectable'] = True
     return out
+
+
+def _request_model(request) -> str | None:
+    """The model a request was measured for: a stored body's or a {model, questions} dict's;
+    None for a bare list of ids."""
+    model = request.get('model') if isinstance(request, dict) else None
+    return model if isinstance(model, str) and model else None
+
+
+def _number(value) -> float | None:
+    """A finite real number, else None. Logged answers are only envelope-checked, so a
+    string or a bool in a numeric slot must read as "no answer", not crash the report."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value) if math.isfinite(value) else None
+
+
+def _answer(answers, qid: str, kind: str) -> dict | None:
+    answer = answers.get(qid) if isinstance(answers, dict) else None
+    return answer if isinstance(answer, dict) and answer.get('type') == kind else None
+
+
+def fired_curate(answers, threshold_value, request=None) -> list[str]:
+    """The question ids `curate` acted on, `same` first: what the decision model changed.
+
+    `same` is a merge (the choice is not `none` and its confidence reaches `memory_merge`).
+    `durable` is the durability refusal: the Noul is below `gate_warn` and no merge happened,
+    since a merged line is exempt and stays injectable. A category correction is not counted:
+    the request does not carry the recorded category, so a correction cannot be told from
+    agreement. `threshold_value` is None for this site; both thresholds are resolved here,
+    for the request's model when it names one, as `curate` reads them. Malformed answer
+    values count as not fired."""
+    model = _request_model(request)
+    out = []
+    same = _answer(answers, 'same', 'choice')
+    matched = same.get('choice') if same else None
+    confidence = _number(same.get('confidence')) if same else None
+    merged = (isinstance(matched, str) and bool(matched) and matched != 'none'
+              and confidence is not None
+              and confidence >= threshold('memory_merge', site='jev-memory-curate', model=model))
+    if merged:
+        out.append('same')
+    durable = _answer(answers, 'durable', 'noul')
+    value = _number(durable.get('noul')) if durable else None
+    if (not merged and value is not None
+            and value < threshold('gate_warn', site='jev-memory-curate', model=model)):
+        out.append('durable')
+    return out
+
+
+def fired_stale(answers, threshold_value, request=None) -> list[str]:
+    """['still'] when `still_true` would call the fact stale: its probability is below
+    `threshold_value` (`stale_drop`)."""
+    still = _answer(answers, 'still', 'noul')
+    probability = _number(still.get('noul')) if still else None
+    limit = _number(threshold_value)
+    if probability is None or limit is None:
+        return []
+    return ['still'] if probability < limit else []
 
 
 # The number of facts a single dispatch is likely to act on. The existing 40-line / 4KB

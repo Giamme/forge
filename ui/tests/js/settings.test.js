@@ -158,7 +158,8 @@ test('decision models: gates, sources, the privacy banner and the budget line', 
   };
   const view = S.describeDecide(decide);
   assert.deepEqual(view.gates.map(g => g.name),
-    ['drift', 'forward', 'prompt', 'memory-curate', 'memory-slice', 'memory-stale', 'verify-discover']);
+    ['drift', 'forward', 'prompt', 'memory-curate', 'memory-slice', 'memory-stale', 'verify-discover',
+      'coverage', 'retry-addressed', 'dwarf-message', 'attribution', 'findings']);
   assert.deepEqual(view.gates.map(g => [g.mode, g.source, g.provider, g.model, g.skip]), [
     ['shadow', 'user', 'box', 'jev-latest', ''],
     ['on', 'repo', '', '', ''],
@@ -167,9 +168,14 @@ test('decision models: gates, sources, the privacy banner and the budget line', 
     ['off', 'env', '', '', 'kill'],
     ['on', 'flags', '', '', ''],
     ['off', 'default', '', '', ''],
+    ['off', 'default', '', '', ''],
+    ['off', 'default', '', '', ''],
+    ['off', 'default', '', '', ''],
+    ['off', 'default', '', '', ''],
+    ['off', 'default', '', '', ''],
   ]);
   // The user level's mode, where the status shows it: the user file set it and no override applies.
-  assert.deepEqual(view.gates.map(g => g.userMode), ['shadow', null, null, null, null, null, null]);
+  assert.deepEqual(view.gates.map(g => g.userMode), ['shadow', ...Array(11).fill(null)]);
   assert.equal(view.gates[0].ready, true);
   assert.equal(view.privacyFloor, false);
   assert.equal(view.banner, '');
@@ -187,8 +193,8 @@ test('decision models: gates, sources, the privacy banner and the budget line', 
   const floored = S.describeDecide({ ...decide, privacy: { floor: true, path: '/r/.forge/decide.json' }, providers: {} });
   assert.equal(floored.banner, 'Nothing is sent. This repository is under a privacy floor.');
   assert.equal(floored.privacyFloor, true);
-  assert.deepEqual(floored.gates.map(g => g.skip), ['privacy', 'privacy', 'privacy', 'privacy', 'privacy', 'privacy', 'privacy']);
-  assert.deepEqual(floored.gates.map(g => g.userMode), Array(7).fill(null));
+  assert.deepEqual(floored.gates.map(g => g.skip), Array(12).fill('privacy'));
+  assert.deepEqual(floored.gates.map(g => g.userMode), Array(12).fill(null));
   assert.equal(floored.noProviders, true);
   assert.equal(floored.addCommand, 'forge decide provider add …');
 });
@@ -210,7 +216,7 @@ test('describeDecide keeps forced and replay per gate, and reads their absence a
   assert.equal(by('prompt').replay.passes, false);
   assert.deepEqual([by('memory-curate').forced, by('memory-curate').replay], [false, null]);
   assert.deepEqual([by('memory-slice').forced, by('memory-slice').replay], [false, null], 'a malformed field is unknown, not an error');
-  assert.deepEqual(S.describeDecide(undefined).gates.map(g => [g.forced, g.replay]), Array(7).fill([false, null]));
+  assert.deepEqual(S.describeDecide(undefined).gates.map(g => [g.forced, g.replay]), Array(12).fill([false, null]));
 });
 
 test('a gate row shows a forced tag on a forced on gate, the replay date on a replayed one, and nothing on a plain one', () => {

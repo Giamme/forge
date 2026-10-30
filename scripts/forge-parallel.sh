@@ -12,11 +12,13 @@
 #                                     [--timeout S] [--retry-failed N] [--infra-retries M]
 #                                     [--qa-threshold P0|P1|P2|P3|none|default] [--verify-retries N] [--no-forecast]
 #                                     [--sweep P0|P1|P2|P3 [--sweep-plausible] [--sweep-max N]]
-#                                     [--sweep-ahead | --no-sweep-ahead]
+#                                     [--sweep-ahead | --no-sweep-ahead] [--attribute | --no-attribute]
 #   forge-parallel.sh retry <plan-dir> <task-id> [--dwarf <spec>] [--setup <command>]
+#                                     [--answer <text> | --answer-file <file>]   (a NEEDS_INPUT task)
 #                                     [--timeout S] [--qa-threshold Pn|none|default] [--verify-retries N]
 #   forge-parallel.sh integrate <plan-dir> --approved [--verify-retries N] [--final-review <qa-spec>]
 #   forge-parallel.sh review <plan-dir> [--qa <spec>] [--yolo-qa] [--qa-threshold Pn|none|default]
+#   forge-parallel.sh attribute <plan-dir> [--force]   (find a merge that breaks the failed verification)
 #   forge-parallel.sh accept <plan-dir> <task-id> --reason "<why>" --approved
 #   forge-parallel.sh split <plan-dir> <new-plan> --tasks <id,id> [--dry-run]
 #   forge-parallel.sh combine <new-plan> <plan-a> <plan-b> [<plan>...] [--verify <command>] [--dry-run]
@@ -73,6 +75,8 @@
 #                           plan; what it does not fix stays for `forge issues`
 #   --sweep-ahead           a task is also told the open findings in files it owns, to fix only
 #                           on its way (kept for the plan; --no-sweep-ahead turns it off)
+#   --attribute             when the run's combined verification fails, search the merge order for
+#                           a merge that breaks it (kept for the plan; --no-attribute turns it off)
 #
 # Exit codes: 0 ok | 2 usage/validation | 3 precondition (not a git repo, etc.)
 #             5 some task failed QA or verification failed | 6 integration conflict
@@ -97,7 +101,7 @@ JEV_OPTS=0
 # Flags shared by several subcommands, then the helper libraries. Functions only, resolved
 # at call time, so they may use die/note/field and friends defined below.
 source "$SKILL_DIR/scripts/forge-parallel-options.sh"
-for forge_lib in task verify plans review; do
+for forge_lib in task gates verify attribute plans review; do
   [ -f "$SKILL_DIR/scripts/forge-lib-$forge_lib.sh" ] && source "$SKILL_DIR/scripts/forge-lib-$forge_lib.sh"
 done
 OUTPUT=summary
@@ -298,8 +302,8 @@ PY
   fi
 
   # --- jev: plan-time gates ------------------------------------------------------
-  # Prompt adequacy and drift, advisory: warnings about the task text and its declared
-  # files. Nothing here changes tasks.tsv.
+  # Prompt adequacy and drift: warnings about the task text and its declared files. Drift
+  # `on` adds the files it predicts to tasks.tsv (inside score-plan); `shadow` only records.
   local jev_loaded=0
   if [ -f "$SKILL_DIR/scripts/forge-jev-options.sh" ]; then
     source "$SKILL_DIR/scripts/forge-jev-options.sh" 2>/dev/null && jev_loaded=1
@@ -311,25 +315,51 @@ PY
     jev_rc=$?
     # A gate in shadow is asked and recorded by score-plan, which leaves it out of
     # these rows: what is printed here is only what an `on` gate has to say.
-    # --jev-shadow before migration keeps its gates `on` and prints a count, as it always did.
-    if [ "$jev_rc" -eq 0 ] && [ -n "$jev_scores" ] && [ "${FORGE_JEV_SHADOW:-}" = on ]; then
-      note "jev: scored $(printf '%s\n' "$jev_scores" | grep -c .) task(s) in shadow mode (no change)"
-    elif [ "$jev_rc" -eq 0 ] && [ -n "$jev_scores" ]; then
+    # --jev-shadow before migration keeps its gates `on` and prints a count for the
+    # warnings, as it always did; what a gate ADDED is still said, whatever the flag.
+    if [ "$jev_rc" -eq 0 ] && [ -n "$jev_scores" ]; then
       local jid jwarn jdrift
       # The columns score-plan prints: id, warnings, drift. Read in lockstep with
       # cmd_score_plan.
       while IFS="$(printf '\t')" read -r jid jwarn jdrift; do
         [ -n "$jid" ] || continue
-        case "$jwarn" in
-          *prompt_adequacy*) note "jev: $jid — the prompt may be too vague for QA to judge correctness against" ;;
-        esac
+        if [ "${FORGE_JEV_SHADOW:-}" != on ]; then
+          case "$jwarn" in
+            *prompt_adequacy*) note "jev: $jid — the prompt may be too vague for QA to judge correctness against" ;;
+          esac
+        fi
         if [ -n "$jdrift" ] && [ "$jdrift" != "-" ]; then
-          note "jev: $jid may also edit undeclared files: $jdrift"
-          note "     undeclared files break wave disjointness — add them to the files column or split the task"
+          # The drift field only names files score-plan ADDED (drift `on`): a shadowed gate
+          # prints '-', so there is no "may edit undeclared files" case left to hint at.
+          note "drift added to $jid: $jdrift"
         fi
       done <<EOF
 $jev_scores
 EOF
+      if [ "${FORGE_JEV_SHADOW:-}" = on ]; then
+        note "jev: scored $(printf '%s\n' "$jev_scores" | grep -c .) task(s) in shadow mode (no change)"
+      fi
+    fi
+  fi
+
+  # Coverage: does some task's acceptance criteria deliver each requirement of request.md?
+  # `on` marks the ones no task covers pending in plan-gates.json; the send-back file below
+  # says which, so nothing is printed here.
+  if [ "$jev_loaded" = 1 ] && forge_decide_active coverage; then
+    python3 "$SKILL_DIR/scripts/forge-jev.py" coverage --plan "$PLAN" --repo "$REPO" >/dev/null 2>&1 || true
+  fi
+
+  # The one send-back step of this call, after every pre-resolve gate: prompt and coverage
+  # mark what to rewrite, and exit 4 hands it back before validation, waves and the table.
+  # An item is sent back once; the re-plan lists what is still wrong under the table.
+  if [ "$jev_loaded" = 1 ] && { forge_decide_active prompt || forge_decide_active coverage; }; then
+    local sendback_out sendback_rc=0 sendback_n
+    sendback_out="$(python3 "$SKILL_DIR/scripts/forge-plan-check.py" sendback "$PLAN" 2>/dev/null)" || sendback_rc=$?
+    if [ "$sendback_rc" -eq 4 ]; then
+      printf '%s\n' "$sendback_out"
+      sendback_n="$(printf '%s\n' "$sendback_out" | grep -c '^- ')"
+      note "plan gates sent $sendback_n item(s) back: rewrite them as $PLAN/plan.sendback.md says, then run plan again (once)"
+      return 4
     fi
   fi
 
@@ -401,37 +431,50 @@ EOF
 
   compute_waves "$PLAN"
 
-  # --- jev: advisory forward dependency -------------------------------------------
+  # --- jev: forward dependency ----------------------------------------------------
   # Wave order is structural, but it cannot see an earlier-wave task written against
-  # an interface a later-wave task builds. This is advisory only: it never edits
-  # tasks.tsv, never adds a dep, and
-  # never changes waves.tsv, so it must run after compute_waves and before the table
-  # that reports the plan is printed.
+  # an interface a later-wave task builds. Forward `on` adds that dep to tasks.tsv (inside
+  # `coupling`, refusing a cycle), so the waves are computed again below when it did;
+  # otherwise the gate only advises. It runs after compute_waves and before the table.
   if [ "$jev_loaded" = 1 ] && forge_decide_active forward; then
     local jev_coupling jev_coupling_rc
     jev_coupling="$(python3 "$SKILL_DIR/scripts/forge-jev.py" coupling \
       --plan "$PLAN" --repo "$REPO" 2>/dev/null)"
     jev_coupling_rc=$?
     # A shadowed forward gate is recorded in jev-coupling.json and prints no row; --jev-shadow
-    # before migration prints a count, as it always did.
-    if [ "$jev_coupling_rc" -eq 0 ] && [ -n "$jev_coupling" ] && [ "${FORGE_JEV_SHADOW:-}" = on ]; then
-      note "jev: found $(printf '%s\n' "$jev_coupling" | grep -c .) coupled pair(s) in shadow mode (no change)"
-    elif [ "$jev_coupling_rc" -eq 0 ] && [ -n "$jev_coupling" ]; then
-      local ca cb cp ckind
+    # before migration counts the advisory rows, as it always did. Rows an `on` gate acted
+    # on (`added`, `cycle`) are said and acted on whatever the flag.
+    if [ "$jev_coupling_rc" -eq 0 ] && [ -n "$jev_coupling" ]; then
+      local ca cb cp ckind dep_added=0 advisory=0
       while IFS="$(printf '\t')" read -r ca cb cp ckind; do
         [ -n "$ca" ] || continue
-        # Forward: an earlier task written against work that has not been built yet,
-        # which its own review cannot catch.
-        if [ "$ckind" = forward ]; then
-          note "jev: task '$ca' runs before '$cb' and may depend on what it builds ($cp) — consider a dep"
-        fi
+        # An earlier task written against work that has not been built yet, which its own
+        # review cannot catch. The last column says what `on` did about it.
+        case "$ckind" in
+          added)
+            dep_added=1
+            note "forward: task '$ca' now waits for '$cb' ($cp) — it may depend on what '$cb' builds" ;;
+          cycle)
+            note "forward: '$ca' may depend on '$cb' ($cp), but that dependency would form a cycle — not added" ;;
+          *)
+            advisory=$((advisory+1))
+            [ "${FORGE_JEV_SHADOW:-}" = on ] ||
+              note "jev: task '$ca' runs before '$cb' and may depend on what it builds ($cp) — consider a dep" ;;
+        esac
       done <<EOF
 $jev_coupling
 EOF
+      if [ "$advisory" -gt 0 ] && [ "${FORGE_JEV_SHADOW:-}" = on ]; then
+        note "jev: found $advisory coupled pair(s) in shadow mode (no change)"
+      fi
+      if [ "$dep_added" = 1 ]; then compute_waves "$PLAN"; fi
     fi
   fi
 
   render_table "$PLAN"
+  # What the gates did, from plan-gates.json: files and deps they added, prompts and
+  # requirements still flagged. Prints nothing when no gate recorded anything.
+  python3 "$SKILL_DIR/scripts/forge-plan-check.py" gates "$PLAN" 2>/dev/null || true
   # Advisory, under the table: a privacy floor that silences every gate, and which
   # gates this plan's runs will ask. Prints nothing when it cannot tell.
   [ "$jev_loaded" = 1 ] && forge_decide_plan_lines "${FORGE_DECIDE_REPO:-$REPO}"
@@ -858,7 +901,8 @@ do_task_body() (
   # The gate's decision belongs to the review that made it. A review that ends before the gate
   # (invalidated, timed out, no changes) must not leave an earlier attempt's decision for the
   # next retry note or `accept` to read; prepare_retry has already carried it forward.
-  rm -f "$tdir/qa.gate" "$tdir/known_issues.md" "$tdir/invalidated.reason" "$tdir/prereview.failed"
+  rm -f "$tdir/qa.gate" "$tdir/known_issues.md" "$tdir/invalidated.reason" "$tdir/prereview.failed" \
+        "$tdir/bounced" "$tdir/message.failed"
 
   # The base is pinned per task on first creation and reused by every retry. The
   # integration branch moves as later waves land, so re-reading the run-level
@@ -891,7 +935,7 @@ do_task_body() (
     /bin/bash "$MEMORY" inject "$REPO" dwarf --task "$tdir/prompt.md" \
         --run-dir "$tdir" > "$tdir/dwarf.memory"
     {
-      python3 "$SKILL_DIR/scripts/forge-prompt.py" --requirements "$tdir/prompt.md" --capsule "$tdir/baseline.capsule" --approach "$tdir/approach.md" --retry "$tdir/retry_findings.md" --memory "$tdir/dwarf.memory"
+      python3 "$SKILL_DIR/scripts/forge-prompt.py" --requirements "$tdir/prompt.md" --capsule "$tdir/baseline.capsule" --approach "$tdir/approach.md" --retry "$tdir/retry_findings.md" --retry-source "$(cat "$tdir/retry_findings.source" 2>/dev/null || echo review)" --memory "$tdir/dwarf.memory"
       [ ! -f "$PLAN/sweep_ahead" ] || python3 "$SKILL_DIR/scripts/forge-sweep.py" ahead "$PLAN" "$id" --role dwarf 2>/dev/null
       echo "Implement this task in the repository. Follow the intended approach unless it is wrong; explain deviations. Run the task's requested verification and report results."
       echo "On retry, fix the findings in the existing work; preserve parts not criticised. Explain any finding you reject."
@@ -973,6 +1017,8 @@ do_task_body() (
         --duration "$(dispatch_duration "$tdir" dwarf)" >/dev/null 2>&1
 
     guard_after_dwarf "$wt" "$tdir" "$id"
+    # Before the snapshot, so a dwarf that only asked a question (and changed nothing) still reaches it.
+    forge_post_dwarf_gates "$PLAN" "$id" "$tdir" "$wt" "$attempt" || return 0
     forge_metric_phase snapshot
     # Capture the real diff, including new files, then commit on the task branch.
     # Diffed against the task's pinned base rather than the branch head, so a retry
@@ -997,7 +1043,11 @@ do_task_body() (
       echo "The dwarf produced no changes at all." > "$tdir/qa.last"
       note "$id: dwarf produced an empty diff"; return 1
     fi
-    if [ -s "$tdir/changes.prev.diff" ] && cmp -s "$tdir/changes.diff" "$tdir/changes.prev.diff"; then
+    # A bounced attempt (retry_findings.source `bounce`) was never reviewed, so a retry that keeps
+    # its code is reviewed rather than refused as identical: the refusal is for a diff a review
+    # already judged.
+    if [ -s "$tdir/changes.prev.diff" ] && cmp -s "$tdir/changes.diff" "$tdir/changes.prev.diff" \
+        && [ "$(cat "$tdir/retry_findings.source" 2>/dev/null)" != bounce ]; then
       echo FAIL > "$tdir/status"
       : > "$tdir/noretry"
       echo "The retry changed nothing: the diff is byte-identical to the previous attempt." \
@@ -1029,6 +1079,7 @@ do_task_body() (
     rm -f "$tdir/reviewed.dwarf.session" "$tdir/reviewed.dwarf.resolved"
     [ ! -s "$tdir/dwarf.session" ] || cp "$tdir/dwarf.session" "$tdir/reviewed.dwarf.session"
     [ ! -s "$tdir/dwarf.resolved" ] || cp "$tdir/dwarf.resolved" "$tdir/reviewed.dwarf.resolved"
+    forge_pre_qa_gates "$PLAN" "$id" "$tdir" "$wt" "$attempt" "$reviewed" || return 0
   else
     reviewed="$(cat "$tdir/reviewed.commit")"
   fi
@@ -1088,7 +1139,7 @@ do_task_body() (
   /bin/bash "$MEMORY" inject "$REPO" qa --task "$tdir/prompt.md" \
       --run-dir "$tdir" > "$tdir/qa.memory"
   {
-    python3 "$SKILL_DIR/scripts/forge-prompt.py" --requirements "$tdir/prompt.md" --capsule "$tdir/baseline.capsule" --approach "$tdir/approach.md" --retry "$tdir/retry_findings.md" ${prompt_extra[@]+"${prompt_extra[@]}"} --memory "$tdir/dwarf.memory" --memory "$tdir/qa.memory"
+    python3 "$SKILL_DIR/scripts/forge-prompt.py" --requirements "$tdir/prompt.md" --capsule "$tdir/baseline.capsule" --approach "$tdir/approach.md" --retry "$tdir/retry_findings.md" --retry-source "$(cat "$tdir/retry_findings.source" 2>/dev/null || echo review)" ${prompt_extra[@]+"${prompt_extra[@]}"} --memory "$tdir/dwarf.memory" --memory "$tdir/qa.memory"
     python3 "$SKILL_DIR/scripts/forge-contract.py" qa --part head --kind "$qa_kind"
     echo
     [ ! -f "$PLAN/sweep_ahead" ] || python3 "$SKILL_DIR/scripts/forge-sweep.py" ahead "$PLAN" "$id" --role qa 2>/dev/null
@@ -1279,18 +1330,86 @@ merge_task() { # merge_task <plan> <id> -> 0 merged, 1 conflicted
 }
 
 # --- retry --------------------------------------------------------------------
+# The answer arguments of `retry`, found by walking the option list as do_retry's own loop does,
+# so the value of another option (--setup '--answer') is never mistaken for one. Run it in a
+# subshell with a scratch directory as the plan: the shared option parsers write into it, not
+# into the real plan. Leaves n (how many answer flags), flag, val and novalue in the scratch dir.
+_retry_answer_scan() { # _retry_answer_scan <scratch-dir> <retry args...>
+  local sd="$1"; shift
+  local n=0 flag="" val="" novalue=0 rc=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --no-ripwire|--yolo-dwarf|--yolo-qa) shift ;;
+      --output|--dwarf|--verify|--setup) [ $# -ge 2 ] || break; shift 2 ;;
+      --answer|--answer-file)
+        n=$((n + 1)); flag="$1"
+        if [ $# -ge 2 ]; then val="$2"; shift 2; else novalue=1; shift; fi ;;
+      *)
+        if forge_pp_flag retry "$sd" "$@"; then shift "$PP_SHIFT"; continue; fi
+        if [ "${JEV_OPTS:-0}" = 1 ]; then
+          forge_jev_flag "$@"; rc=$?
+          case "$rc" in
+            0) shift "$JEV_SHIFT"; continue ;;
+            2) exit 2 ;;
+          esac
+        fi
+        break ;;
+    esac
+  done
+  printf '%s' "$n" > "$sd/n"; printf '%s' "$flag" > "$sd/flag"; printf '%s' "$val" > "$sd/val"
+  [ "$novalue" = 0 ] || : > "$sd/novalue"
+}
+
 # A failed task keeps its branch and worktree "so there is something to inspect and
 # retry from" — this is the retry. It is a command a human types, not an automatic
 # repair loop, which is what keeps forge's one-dwarf-then-QA rule intact.
 do_retry() {
   local PLAN="${1:?retry needs a plan dir}" id="${2:?retry needs a task id}"; shift 2
   FORGE_RUN_STARTED="$(forge_now)"
-  local NEWDWARF="" jev_rc=0
+  local NEWDWARF="" jev_rc=0 ANSWER="" ANSWER_FILE="" HAVE_ANSWER=0
+  # An answer is validated before any option below writes into the plan: a rejected answer
+  # changes nothing, --setup and --verify included. Only a NEEDS_INPUT task takes one. The
+  # arguments are walked the way the loop below walks them (a value is never taken for a flag),
+  # in a subshell against a scratch plan dir, so nothing real is written by the walk.
+  local pre_dir="$PLAN/.answer-scan.$$" pre_n=0 pre_have="" pre_val="" pre_novalue=0 pre_ok=0
+  rm -rf "$pre_dir"
+  if mkdir "$pre_dir" 2>/dev/null; then
+    if ( _retry_answer_scan "$pre_dir" "$@" ) >/dev/null 2>&1; then
+      pre_ok=1
+      pre_n="$(<"$pre_dir/n")"; pre_have="$(<"$pre_dir/flag")"; pre_val="$(<"$pre_dir/val")"
+      [ ! -f "$pre_dir/novalue" ] || pre_novalue=1
+      # `$(<f)` drops trailing newlines, so an answer of only newlines needs the size check.
+      [ -s "$pre_dir/val" ] || pre_val=""
+    fi
+    rm -rf "$pre_dir"
+  else
+    die "retry: cannot write to the plan dir $PLAN"
+  fi
+  if [ "$pre_ok" = 1 ] && [ "$pre_n" != 0 ]; then
+    [ "$pre_n" = 1 ] || die "retry: give --answer or --answer-file once"
+    [ "$pre_novalue" = 0 ] || die "retry: $pre_have needs a value"
+    [ -s "$PLAN/tasks.tsv" ] && all_ids "$PLAN/tasks.tsv" | grep -qx "$id" || die "no task '$id' in this plan"
+    local pre_st; pre_st="$(task_status "$PLAN" "$id")"
+    [ "$pre_st" = NEEDS_INPUT ] || die "retry: '$id' is $pre_st, not waiting for an answer; --answer and --answer-file only answer a NEEDS_INPUT task"
+    if [ "$pre_have" = --answer-file ]; then
+      [ -f "$pre_val" ] && [ -r "$pre_val" ] || die "retry: --answer-file '$pre_val' is not a readable file"
+      [ -s "$pre_val" ] || die "retry: --answer-file '$pre_val' is empty"
+    else
+      [ -n "$pre_val" ] || die "retry: the answer is empty"
+    fi
+  fi
   while [ $# -gt 0 ]; do
     case "$1" in
       --no-ripwire) export FORGE_RIPWIRE=off; shift ;;
       --output) OUTPUT="${2:?}"; shift 2 ;;
       --dwarf) NEWDWARF="${2:?--dwarf needs a spec}"; shift 2 ;;
+      # The check above refuses an empty answer first; these hold when its walk could not run.
+      --answer) [ "$HAVE_ANSWER" = 0 ] || die "retry: give --answer or --answer-file once"
+                ANSWER="${2?--answer needs the answer text}"; HAVE_ANSWER=1; shift 2
+                [ -n "$ANSWER" ] || die "retry: the answer is empty" ;;
+      --answer-file) [ "$HAVE_ANSWER" = 0 ] || die "retry: give --answer or --answer-file once"
+                ANSWER_FILE="${2:?--answer-file needs a file}"; HAVE_ANSWER=2; shift 2
+                [ -s "$ANSWER_FILE" ] || die "retry: --answer-file '$ANSWER_FILE' is empty or missing" ;;
       --yolo-dwarf) touch "$PLAN/yolo_dwarf"; shift ;;
       --yolo-qa)    touch "$PLAN/yolo_qa"; shift ;;
       --verify)     printf '%s' "${2:?--verify needs a command}" > "$PLAN/verify_cmd"; rm -rf "$PLAN/verify.d"; PP_LANES_FRESH=0; shift 2 ;;
@@ -1320,6 +1439,18 @@ do_retry() {
   [ -s "$PLAN/wt_root" ] || die "this plan has never been run — use 'run', not 'retry'"
   local st; st="$(task_status "$PLAN" "$id")"
   [ "$st" = "MERGED" ] && die "task '$id' already merged — nothing to retry"
+  [ "$HAVE_ANSWER" = 0 ] || [ "$st" = NEEDS_INPUT ] || die "retry: '$id' is $st, not waiting for an answer; --answer and --answer-file only answer a NEEDS_INPUT task"
+  # The user's answer to a NEEDS_INPUT task's question (validated above): written before
+  # anything else is prepared, atomically, and kept when the preparation then refuses (the
+  # same answer can be retried).
+  if [ "$HAVE_ANSWER" != 0 ]; then
+    if [ "$HAVE_ANSWER" = 2 ]; then
+      cp "$ANSWER_FILE" "$tdir/.answer.md.tmp" || { rm -f "$tdir/.answer.md.tmp"; die "retry: could not write the answer" 1; }
+    else
+      printf '%s\n' "$ANSWER" > "$tdir/.answer.md.tmp" || { rm -f "$tdir/.answer.md.tmp"; die "retry: could not write the answer" 1; }
+    fi
+    mv "$tdir/.answer.md.tmp" "$tdir/answer.md" || die "retry: could not write the answer" 1
+  fi
 
   # Findings carry-forward, the optional --dwarf escalation and the QA-only resume
   # decision are shared with the scheduler's automatic retries.
@@ -1464,12 +1595,16 @@ verify_stopped() { # verify_stopped <out>
   verify_mark_interrupted "$1"
 }
 
-verify_result() ( verify_result_body "$@" ) # plan, checkout, artifact directory
+verify_result() ( verify_result_body "$@" ) # plan, checkout, artifact directory[, fixed source]
 
 # The body is a function of its own so `run` can start it as `( verify_result_body ... ) &`:
 # that one subshell is the background job, the home of the signal handler above and of
 # forge_metric_begin's EXIT trap.
-verify_result_body() { # plan, checkout, artifact directory
+# An optional fourth argument fixes the verification: "command:<file>" or "lanes:<dir>" (a
+# finished verification's verification.command or verification.lanes.d/). It replaces
+# verify_source_for and verify-discover, so a re-run judges by the predicate that verification
+# used, whatever the plan, the repository or discovery would say now.
+verify_result_body() { # plan, checkout, artifact directory[, fixed source]
   local plan="$1" wt="$2" out="$3" cmd="" before after rc=0 repo jev_loaded=0 vretries
   FORGE_VERIFY_STOP=0 FORGE_VERIFY_GROUP="" FORGE_VERIFY_TIMER="" FORGE_VERIFY_GRACE=5
   [ "${FORGE_RUN_STOPPABLE:-0}" = 1 ] && trap verify_signal TERM INT
@@ -1495,8 +1630,26 @@ verify_result_body() { # plan, checkout, artifact directory
   if [ -f "$SKILL_DIR/scripts/forge-jev-options.sh" ]; then
     source "$SKILL_DIR/scripts/forge-jev-options.sh" 2>/dev/null && jev_loaded=1
   fi
-  local vsource; vsource="$(verify_source_for "$plan" "$repo")"
+  local vsource fixed="${4:-}"
+  if [ -n "$fixed" ]; then
+    vsource="$(verify_fixed_source "$fixed")" || { echo UNVERIFIED > "$out/verification.status"
+      note "combined result UNVERIFIED: unusable fixed verification source: $fixed"; return 0; }
+    # A fixed source that is missing or empty is not a reason to look elsewhere.
+    case "$vsource" in
+      lanes:*) verify_lanes_present "${vsource#*$'\t'}" || vsource="none" ;;
+      *) [ -s "${vsource#*$'\t'}" ] || vsource="none" ;;
+    esac
+    if [ "$vsource" = none ]; then
+      echo UNVERIFIED > "$out/verification.status"
+      note "combined result UNVERIFIED: the fixed verification source $fixed is missing or empty"; return 0
+    fi
+  else
+    vsource="$(verify_source_for "$plan" "$repo")"
+  fi
   case "$vsource" in command:*) cmd="$(cat "${vsource#*$'\t'}")" ;; esac
+  # A lanes snapshot belongs to the verification that wrote it: a run on a command, or on
+  # other lanes, leaves none behind (verify_lanes_run makes the new one).
+  case "$vsource" in lanes:*) ;; *) rm -rf "$out/verification.lanes.d" ;; esac
   if [ "$(forge_tree "$wt")" != "$(git -C "$wt" rev-parse HEAD^{tree})" ]; then
     echo FAIL > "$out/verification.status"
     note "verification checkout has source changes outside its commit"; return 1
@@ -1511,8 +1664,8 @@ verify_result_body() { # plan, checkout, artifact directory
   # produced — any non-zero exit (no key, disabled, nothing suitable, a traceback)
   # falls straight through to the exact UNVERIFIED behaviour below. A Jev failure
   # must never change the outcome of a run.
-  if [ -z "$cmd" ] && [ "$jev_loaded" = 1 ] && forge_decide_active verify-discover; then
-    local jev_json jev_rc jev_cmd
+  if [ -z "$cmd" ] && [ -z "$fixed" ] && [ "$jev_loaded" = 1 ] && forge_decide_active verify-discover; then
+    local jev_json jev_rc jev_cmd jev_note
     # --json rather than the bare form: the record exists so a human can audit why a
     # command ran, and "confidence: null" answers nothing. The exit code still decides.
     jev_json="$(python3 "$SKILL_DIR/scripts/forge-jev.py" verify-discover --repo "$repo" --json --run-dir "$out" 2>/dev/null)"
@@ -1529,9 +1682,22 @@ except ValueError:
     fi
     if [ -n "$jev_cmd" ]; then
       cmd="$jev_cmd"
+      # Coverage (#42): the pick's evidence names fewer languages than the repo has. The
+      # pick stands and its run still decides; only the announcement says so.
+      jev_note="$(printf '%s' "$jev_json" | python3 -c '
+import json, sys
+try:
+    coverage = (json.load(sys.stdin) or {}).get("coverage") or {}
+except ValueError:
+    coverage = {}
+covered = coverage.get("covered") or []
+missing = [language for language in coverage.get("present") or [] if language not in covered]
+if covered and missing:
+    print(" — it may cover only part of the repo (covers %s; the repo also has %s)" % (", ".join(covered), ", ".join(missing)))
+' 2>/dev/null)"
       # Loud on purpose: an unreviewed command is about to run on the user's behalf,
       # and they must never discover that later from a log instead of right here.
-      note "jev chose a verification command (no --verify or .forge/verify configured): $cmd"
+      note "jev chose a verification command (no --verify or .forge/verify configured): $cmd$jev_note"
       printf '%s' "$jev_json" | python3 -c '
 import json, sys
 out = sys.argv[1]
@@ -1844,10 +2010,21 @@ do_run() {
     for id in $stopped_ids; do echo "  forge-parallel.sh retry $PLAN $id"; done
   fi
   [ "$interrupted" = 1 ] || [ -n "$stopped_ids" ] && echo
+  # Tasks stopped for the user's answer: the question as it was asked, and the command that
+  # answers it. Not failures, so the retry hint below does not count them.
+  local waiting; waiting="$(awk -F'\t' '$2=="NEEDS_INPUT" {print $1}' "$PLAN/results.tsv")"
+  if [ -n "$waiting" ]; then
+    echo "waiting for your answer:"
+    for id in $waiting; do
+      printf '  %s: %s\n' "$id" "$(awk 'NF { print substr($0, 1, 120); exit }' "$PLAN/tasks/$id/needs_input.md" 2>/dev/null)"
+      echo "    answer with: forge-parallel.sh retry $PLAN $id --answer \"<text>\""
+    done
+    echo
+  fi
   # The retry hint is for tasks that actually failed; a run that only failed verification,
   # or only paused on infrastructure, has nothing to retry task by task. An interrupted task
-  # has its own hint above.
-  if [ "$(awk -F'\t' '$2!="MERGED" && $2!="INFRA" && $2!="PENDING" && $2!="BLOCKED" && $2!="INTERRUPTED" {n++} END {print n+0}' "$PLAN/results.tsv")" -gt 0 ]; then
+  # has its own hint above, a task waiting for an answer its own block.
+  if [ "$(awk -F'\t' '$2!="MERGED" && $2!="INFRA" && $2!="PENDING" && $2!="BLOCKED" && $2!="INTERRUPTED" && $2!="NEEDS_INPUT" {n++} END {print n+0}' "$PLAN/results.tsv")" -gt 0 ]; then
     echo "retry a failed task with its reviewer's findings:"
     echo "  forge-parallel.sh retry $PLAN <task-id> [--dwarf <spec>]"
     echo "or let a run retry them itself:  forge-parallel.sh run $PLAN --retry-failed 1"
@@ -1856,6 +2033,20 @@ do_run() {
   if [ "$failed" = 1 ] && [ "$paused" = 0 ] && [ "$interrupted" = 0 ] && [ "$(cat "$PLAN/verification.status" 2>/dev/null)" = FAIL ]; then
     echo "combined verification failed: see $PLAN/verification.log"
     echo
+    if [ -f "$PLAN/attribute_on" ] && declare -F attribute_search >/dev/null; then
+      # This run holds the plan lock: the search function, never the subcommand.
+      run_phase=attribute
+      ( attribute_search "$PLAN" 0 ) <&0 &
+      run_child=$!
+      [ "$run_stop" = 1 ] && kill -TERM "$run_child" 2>/dev/null
+      run_wait "$run_child"
+      run_child=""
+      [ "$run_stop" = 1 ] && interrupted=1
+      echo
+    else
+      echo "find a merge that broke it: forge-parallel.sh attribute $PLAN"
+      echo
+    fi
   fi
 
   if [ ! -f "$PLAN/no_memory" ]; then
@@ -1938,7 +2129,7 @@ if [ "${1:-}" = --help ] || [ "${1:-}" = -h ]; then
   forge_fractal_help
   exit 0
 fi
-[ $# -ge 1 ] || die "usage: forge-parallel.sh <plan|run|retry|accept|review|integrate|split|combine> <plan-dir> [...]"
+[ $# -ge 1 ] || die "usage: forge-parallel.sh <plan|run|retry|accept|review|integrate|split|attribute|combine> <plan-dir> [...]"
 CMD="$1"; shift
 [ ! -f "${1:-}/no_ripwire" ] || export FORGE_RIPWIRE=off
 if [ -d "${1:-}" ]; then
@@ -1946,7 +2137,7 @@ if [ -d "${1:-}" ]; then
 fi
 case "$CMD" in
   # `combine` takes a plan dir that does not exist yet and locks its sources itself.
-  run|retry|integrate|accept|review|split)
+  run|retry|integrate|accept|review|split|attribute)
     if [ "${FORGE_PLAN_LOCK:-}" != "${1:-}" ]; then
       exec python3 "$SKILL_DIR/scripts/forge-schedule.py" lock "$SELF" "$CMD" "$@"
     fi ;;
@@ -1955,7 +2146,7 @@ esac
 # path (die included). Installed after the lock re-exec, so it fires once, in the process
 # that did the work; `_task` and `_merge` are parts of a `run` and are not recorded alone.
 case "$CMD" in
-  plan|run|retry|integrate|accept|review|split|combine)
+  plan|run|retry|integrate|accept|review|split|attribute|combine)
     FORGE_DATASET_INVOCATION="inv-$(date +%s)-$$-$RANDOM"; export FORGE_DATASET_INVOCATION
     FORGE_DATASET_STARTED="$(date +%s)"
     FORGE_DATASET_ARGV=("$@")
@@ -1983,6 +2174,7 @@ case "$CMD" in
   accept)    need_fn do_accept;  do_accept "$@" ;;
   review)    need_fn do_review;  do_review "$@" ;;
   split)     need_fn do_split;   do_split "$@" ;;
+  attribute) need_fn do_attribute; do_attribute "$@" ;;
   combine)   need_fn do_combine; do_combine "$@" ;;
   _task)     do_task "$@" ;;
   _merge)    merge_task "$@" ;;

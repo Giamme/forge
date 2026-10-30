@@ -90,7 +90,10 @@ class DecideTests(unittest.TestCase):
         (self.tdir / 'retry_findings.resolved').write_text('harness=old\n')
         self.assertEqual(self.retry().returncode, 0)     # a real review that left no session
         self.assertIn('FORGE_VERDICT: FAIL', (self.tdir / 'retry_findings.md').read_text())
-        self.assertEqual(sorted(p.name for p in self.tdir.glob('retry_findings.*')), ['retry_findings.md'])
+        # No session sits beside the new findings; their source says a review wrote them.
+        self.assertEqual(sorted(p.name for p in self.tdir.glob('retry_findings.*')),
+                         ['retry_findings.md', 'retry_findings.source'])
+        self.assertEqual((self.tdir / 'retry_findings.source').read_text().strip(), 'review')
 
     def test_emptied_findings_lose_their_session(self):
         for n in ('session', 'resolved'):
