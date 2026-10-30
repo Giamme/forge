@@ -455,3 +455,45 @@ test('the finding sweep reads as one line, and each swept finding as a lamp', ()
   assert.equal(RM.sweepLine(null), null);
   assert.deepEqual(['fixed', 'not-fixed', 'unreported', null].map(s => RM.sweepState(s).lamp), ['pass', 'fail', 'unknown', 'pending']);
 });
+
+test('NEEDS_INPUT waits for the user: neither done nor failed, and no failure notification', () => {
+  assert.equal(RM.isWaiting('NEEDS_INPUT'), true);
+  assert.equal(RM.isWaiting('FAIL'), false);
+  assert.equal(RM.runState({ counts: { NEEDS_INPUT: 1, MERGED: 2 } }), 'pending');
+  assert.equal(RM.runState({ counts: { NEEDS_INPUT: 1, FAIL: 1 } }), 'failed');
+  assert.equal(RM.runState({ counts: { NEEDS_INPUT: 1 } }), 'pending');
+  // only answers are missing: the integration waits for the user; a failed task still blocks it
+  const integration = statuses => RM.finishState({ tasks: statuses.map((status, i) => ({ id: 't' + i, status })) }).integration.status;
+  assert.equal(integration(['MERGED', 'NEEDS_INPUT']), 'WAITING');
+  assert.equal(integration(['MERGED', 'NEEDS_INPUT', 'FAIL']), 'BLOCKED');
+  assert.equal(integration(['NEEDS_INPUT', 'PENDING']), 'PENDING');
+  // a question answered later is a failure only when the retry fails, and the wait itself notifies nothing
+  const task = (status) => ({ key: 'k', run_id: 'r', goal: 'g', repo: '/r', updated: T0, counts: { [status]: 1 }, task_statuses: [{ id: 'a', status, title: 'A' }] });
+  assert.deepEqual(RM.statusEvents([task('RUNNING')], [task('NEEDS_INPUT')], { now: T0 }), []);
+  const failed = RM.statusEvents([task('NEEDS_INPUT')], [task('FAIL')], { now: T0 });
+  assert.deepEqual(failed.map(e => e.kind), ['task-failed']);
+});
+
+test('BOUNCED and INCOMPLETE are failed attempts, each with a note of its own; other attempts have none', () => {
+  assert.equal(RM.attemptFailed('BOUNCED'), true);
+  assert.equal(RM.attemptFailed('INCOMPLETE'), true);
+  assert.equal(RM.attemptFailed('FAIL'), true);
+  assert.equal(RM.attemptFailed('PASS'), false);
+  assert.equal(RM.attemptFailed('UNKNOWN'), false);
+  assert.match(RM.attemptNote('BOUNCED'), /review/);
+  assert.match(RM.attemptNote('INCOMPLETE'), /did not finish/);
+  assert.notEqual(RM.attemptNote('BOUNCED'), RM.attemptNote('INCOMPLETE'));
+  assert.equal(RM.attemptNote('FAIL'), null);
+  assert.equal(RM.attemptNote('constructor'), null);
+});
+
+test('the attribution line names the culprit, the failing base, or the inconclusive reason, with its runs', () => {
+  assert.equal(RM.attributionLine({ culprit: 'page', base_fails: false, inconclusive: null, verification_runs: 4 }),
+    'integration failure: merge page breaks verification (4 verification runs)');
+  assert.equal(RM.attributionLine({ culprit: null, base_fails: true, inconclusive: null, verification_runs: 2 }),
+    'the base already fails verification (2 runs)');
+  assert.equal(RM.attributionLine({ culprit: null, base_fails: false, inconclusive: 'no prefix verified', verification_runs: 1 }),
+    'attribution inconclusive: no prefix verified (1 run)');
+  assert.equal(RM.attributionLine({ culprit: null, base_fails: false, inconclusive: null, verification_runs: 3 }), null);
+  assert.equal(RM.attributionLine(null), null);
+});

@@ -31,19 +31,49 @@ verify_source_for() { # verify_source_for <plan> <repo>
 # lane's command (its #forge: option lines left out), one after another. Prints nothing
 # when nothing is configured.
 verify_command_for() { # verify_command_for <plan> <repo>
-  local src loc f
+  local src loc
   src="$(verify_source_for "$1" "$2")"
   loc="${src#*$'\t'}"
   case "$src" in
     command:*) cat "$loc" ;;
-    lanes:*)
-      for f in "$loc"/*; do
-        [ -f "$f" ] || continue
-        case "${f##*/}" in *~) continue ;; esac
-        awk 'body || !/^#forge:/ { body = 1; print }' "$f"
-      done ;;
+    lanes:*) verify_lanes_command "$loc" ;;
   esac
   return 0
+}
+
+# The commands of the lanes in one directory, as text (see verify_command_for).
+verify_lanes_command() { # verify_lanes_command <lanes dir>
+  local f
+  for f in "$1"/*; do
+    [ -f "$f" ] || continue
+    case "${f##*/}" in *~) continue ;; esac
+    awk 'body || !/^#forge:/ { body = 1; print }' "$f"
+  done
+  return 0
+}
+
+# A fixed verification source, "command:<file>" or "lanes:<dir>", as verify_source_for prints
+# one ("<kind><TAB><location>"), so a re-run uses the predicate an earlier verification used
+# (its verification.command, its verification.lanes.d/) and never a newer config or discovery.
+# Prints nothing, and fails, on anything else.
+verify_fixed_source() { # verify_fixed_source <command:file | lanes:dir>
+  case "$1" in
+    command:?*) printf 'command:fixed\t%s\n' "${1#command:}" ;;
+    lanes:?*) printf 'lanes:fixed\t%s\n' "${1#lanes:}" ;;
+    *) return 1 ;;
+  esac
+}
+
+# Freeze the lane files a verification runs, so the same lanes can be run again after the
+# directory changed or vanished: a plain copy at $out/verification.lanes.d/, made before the
+# runner starts. A re-run that already reads that directory leaves it alone.
+verify_lanes_snapshot() { # verify_lanes_snapshot <lanes dir> <out>
+  local snap="$2/verification.lanes.d" tmp
+  [ "$1" -ef "$snap" ] && return 0
+  tmp="$(mktemp -d "$2/.verification.lanes.XXXXXX")" || return 1
+  if cp -R "$1/." "$tmp/" && rm -rf "$snap" && mv "$tmp" "$snap"; then return 0; fi
+  rm -rf "$tmp"
+  return 1
 }
 
 # Lanes are checked before any model is paid for: the runner's own validation, against the
@@ -98,9 +128,16 @@ verify_lanes_run() { # verify_lanes_run <plan> <checkout> <out> <lanes dir> <ret
   parallel="$(cat "$plan/verify_parallel" 2>/dev/null)"
   case "$parallel" in ''|*[!0-9]*) parallel=3 ;; esac
   [ "$retries" -le 9 ] 2>/dev/null || retries=9          # the runner takes 0 to 9
+  verify_lanes_snapshot "$dir" "$out" || {
+    echo FAIL > "$out/verification.status"
+    note "could not copy the verification lanes to $out/verification.lanes.d"; return 1
+  }
+  # From here on the frozen copy is the lanes' only source: an edit to the live directory
+  # after the copy must not change what runs, or the snapshot would not be its predicate.
+  dir="$out/verification.lanes.d"
   python3 "$SKILL_DIR/scripts/forge-verify.py" lanes --lanes-dir "$dir" 2>/dev/null \
     | awk -F'\t' '{ print $1 ": " $3 }' > "$out/verification.command"
-  verify_coverage_report "$wt" "$(verify_command_for "$plan" "$(cat "$plan/repo")")" "$out/verification.coverage.txt"
+  verify_coverage_report "$wt" "$(verify_lanes_command "$dir")" "$out/verification.coverage.txt"
   forge_fingerprint "$wt" > "$out/verification.fingerprint" || return 1
   # The runner judges "a lane changed the checkout" by forge's own fingerprint.
   fpcmd="source $(printf %q "$SKILL_DIR/scripts/forge-artifact.sh") && forge_fingerprint ."

@@ -10,12 +10,18 @@ optional. Read this when turning one on, when changing a site, or before proposi
 - **Always fail-open.** A timeout, an error, a refusal or a missing key is logged as a skip
   reason, and the run proceeds exactly as it would with the model off. A decision-model call
   can never fail a run.
-- **Advisory.** A decision model never changes a `FORGE_VERDICT`, a task's tier or the model a
-  task runs on, and it never marks anything verified itself. With the gate `on`, the memory
-  sites act (what `memory.md` keeps, files and injects) and verify discover picks the command
-  that runs when none is configured; that command's own result decides verification. Drift,
-  forward and prompt only print a note. `shadow` asks and records, and changes nothing. See
-  [Setup](#setup).
+- **The rule: a gate never changes a verdict, never blocks a dispatch, and never makes work
+  pass.** It never changes a review verdict, a severity, `accept` or a PASS. A decision model
+  never changes a task's tier or the model a task runs on, and never marks anything verified
+  itself. With the gate `on`, a gate acts in one of these ways and no other: it sends a task's
+  prompt or an uncovered requirement back to the planner, once; it adds a predicted file to a
+  task's `files`, or a dependency that forms no cycle; it bounces a retry, skips the review of an
+  attempt that says it did not finish, or stops a task for the user's answer; it puts the likeliest
+  culprit's boundary first in the attribution search; it turns duplicate findings into comments and
+  pre-selects concrete ones for filing; or it acts on memory and on the verify command. Verify
+  discover picks the command that runs when none is configured; that command's own result decides
+  verification. `shadow` asks and records, and changes nothing. See [Gates and modes](#gates-and-modes)
+  and [Setup](#setup).
 - **`FORGE_JEV=off` sends nothing.** It turns every gate off. A repo privacy floor does the
   same and is applied after it. See [Setup](#setup).
 
@@ -39,11 +45,15 @@ How each kept site meets them:
 
 | site | changes | measured | baseline it beats | cost |
 |---|---|---|---|---|
-| drift | warns at plan time that a task may edit undeclared files | precision at `gate_warn` 0.60 over 50 commits × 2 repos: **1.000** and **0.934**; non-edited files scored ≤0.23 where the true file scored 0.65 | the post-wave `drift.txt`, which reports the broken promise only after the wave ran | one request per task |
-| forward | warns that an earlier-wave task may be written against what a later one builds | 7 cross-wave pairs, 5 runs each: `readme`→`cli` **0.88–0.90**, every other pair 0.05–0.15 (gap 0.73, noise 0.07) | wave order, which cannot see the case; the review cannot either | one request per plan |
-| prompt adequacy | warns that a prompt is too vague for a reviewer to judge correctness | 3 runs over 8 probe prompts and 8 real ones: unjudgeable **0.06–0.27**, checkable behaviour **0.85–0.96** | silence; the old 0.30 sat 0.03 above the worst true positive | one request per task |
+| drift | in `on`, adds the predicted undeclared file to the task's `files` before the waves are computed (in `shadow`, only recorded) | precision at `gate_warn` 0.60 over 50 commits × 2 repos: **1.000** and **0.934**; non-edited files scored ≤0.23 where the true file scored 0.65 | the post-wave `drift.txt`, which reports the broken promise only after the wave ran | one request per task |
+| forward | in `on`, makes the earlier-wave task wait for the later one it may be written against, unless that forms a cycle (in `shadow`, only recorded) | 7 cross-wave pairs, 5 runs each: `readme`→`cli` **0.88–0.90**, every other pair 0.05–0.15 (gap 0.73, noise 0.07) | wave order, which cannot see the case; the review cannot either | one request per plan |
+| prompt adequacy | in `on`, sends a task back to the planner, once, when a reviewer could not judge its prompt (in `shadow`, only recorded) | 3 runs over 8 probe prompts and 8 real ones: unjudgeable **0.06–0.27**, checkable behaviour **0.85–0.96** | silence; the old 0.30 sat 0.03 above the worst true positive | one request per task |
 | memory curate, slice, stale | refiles, merges, hides or drops a fact in `memory.md` | merge: wrong 0.56–0.72, right 0.91–1.00. Refile: wrong 0.56–0.72, right 0.92–1.00. Stale: gone false 0.03–0.10, still true 0.47–0.96 | exact-match keys (two wordings of one fact never reach two distinct runs) | curate at `record`, slice at `inject`, stale only on `prune` |
 | verify discover | picks a verify command when none is configured | 18 repos: 10 fire at 0.70, every pick correct, lowest correct 0.73, highest wrong 0.55 | `UNVERIFIED` | one request, only when nothing is configured |
+
+The five gates added in C3–C5 (coverage, retry-addressed, dwarf-message, attribution, findings)
+are not in this table. None has a replay or a measured threshold yet, so their thresholds are
+starting points, and `forge decide gate G on` needs `--force` for each until a replay passes.
 
 Two caveats travel with these numbers:
 
@@ -63,13 +73,19 @@ scale: the single shared `gate_warn` warned on 5 of 9 and 5 of 11 perfectly good
 ## The kept sites
 
 `SITE_CAPABILITY` in `scripts/forge_jev/__init__.py` is the source of truth for the first two
-columns; thresholds are `DEFAULT_THRESHOLDS` in the same file.
+columns; thresholds are `DEFAULT_THRESHOLDS` in the same file. A capability of `—` means the
+gate has no legacy capability, so its own mode alone decides.
 
 | site | capability | runs | can change | threshold | recorded |
 |---|---|---|---|---|---|
-| `jev-prompt` | `gates` | `plan`, per task | prints a "prompt may be too vague" note | `prompt_warn` 0.55 | `tasks/<id>/jev.json` |
-| `jev-drift` | `gates` | `plan`, per task | prints "may also edit undeclared files" | `drift_warn`, falls back to `gate_warn` 0.60 | `tasks/<id>/jev.json` |
-| `jev-forward` | `gates` | `plan`, once | prints "runs before X and may depend on it" | `forward_warn` 0.50 | `jev-coupling.json` |
+| `jev-prompt` | `gates` | `plan`, per task | sends a task whose prompt is below the threshold back to the planner, once (`plan` exits 4) | `prompt_warn` 0.55 (flags a probability below it) | `<plan>/jev.jsonl`; judgment in `tasks/<id>/jev.json`; `plan-gates.json` (`prompt`) |
+| `jev-drift` | `gates` | `plan`, per task | adds each predicted file at or above the threshold to the task's `files`, before the waves are computed | `drift_warn`, falls back to `gate_warn` 0.60 | `<plan>/jev.jsonl`; judgment in `tasks/<id>/jev.json`; `plan-gates.json` (`drift`) |
+| `jev-forward` | `gates` | `plan`, once | makes the earlier task of a warned pair depend on the later one, unless that would form a cycle (then recorded as refused); at most three pairs a plan (`MAX_WARNINGS`, the highest-scoring) | `forward_warn` 0.50 | `<plan>/jev.jsonl`; `jev-coupling.json`; `plan-gates.json` (`forward`) |
+| `jev-coverage` | `—` | `plan`, once, one question per requirement of `request.md`: the first 30 that have at least four words and are not repeated (`MAX_REQUIREMENTS`), so a later requirement is never asked. Skipped above 40 tasks, with fewer than two requirements, or without `request.md` | sends each uncovered requirement back to the planner, once (`plan` exits 4) | `coverage_warn` 0.50 (the probability that no task covers it) | `<plan>/jev.jsonl`; `plan-gates.json` (`coverage`, `sent_back`, `pending`) |
+| `jev-retry-addressed` | `—` | a retry (attempt above 1) whose retry findings came from a review, after its diff is taken and before QA | bounces the retry back to its implementer without a review when its diff leaves a blocking finding untouched | `untouched_warn` 0.70 | `tasks/<id>/jev.jsonl`; `bounced` and `bounce.md`; attempts.tsv `BOUNCED`; dataset attempt `sent_back: bounce` |
+| `jev-dwarf-message` | `—` | each implementer reply, before its diff is taken and before any review | stops the task as `NEEDS_INPUT` when the message asks a question only the user can answer; sends the attempt back as FAIL without a review when it says it did not finish or was blocked | `message_ask` 0.70 (question); `message_warn` 0.70 (unfinished, blocked) | `tasks/<id>/jev.jsonl`; `needs_input.md` or `message.md` with `message.failed`; attempts.tsv `INCOMPLETE`; dataset attempt `sent_back: message` (not for a question) |
+| `jev-attribution` | `—` | `attribute` and `run --attribute`, once per search, after a failed combined verification | ranks the merged tasks, and in `on` verifies the top suspect's boundary first; nothing is merged, reverted or accepted | none (it orders a search) | `<plan>/jev.jsonl`; `attribution.json` (`gate`); the `attribution` event |
+| `jev-findings` | `—` | `forge-issues.py`, once per plan, through `forge-jev.py findings --run-dir <plan>` | turns a finding that duplicates an open issue into a comment on that issue (posted by `--apply`), and pre-selects the PLAUSIBLE findings that read as concrete defects | `findings_dup` 0.85 (duplicate); `findings_concrete` 0.50 (concrete) | `<plan>/jev.jsonl`; the `gate` field of each finding and draft; comment receipts in `${XDG_STATE_HOME:-~/.local/state}/forge/findings/<repo key>.comments.json` |
 | `jev-memory-curate` | `memory` | `forge-memory.sh record` | not injected, refiled, or merged onto an existing key | `memory_merge` 0.85, `memory_recategorize` 0.80, durability `gate_warn` 0.60 | ledger flag; nothing is ever lost |
 | `jev-memory-slice` | `memory` | `forge-memory.sh inject` | removes lines from the role slice, never adds or reorders | none | `jev.jsonl` |
 | `jev-memory-stale` | `memory` | `forge-memory.sh prune`, deep prune only | drops an entry whose fact went false | `stale_drop` 0.25 | `memory_prune` event |
@@ -129,31 +145,51 @@ user file.
 
 ### Gates and modes
 
-Seven gates, each `off` (the default), `shadow` or `on`:
+Twelve gates, each `off` (the default), `shadow` or `on`:
 
-`drift`, `forward`, `prompt`, `memory-curate`, `memory-slice`, `memory-stale`, `verify-discover`.
+`drift`, `forward`, `prompt`, `coverage`, `retry-addressed`, `dwarf-message`, `attribution`,
+`findings`, `memory-curate`, `memory-slice`, `memory-stale`, `verify-discover`.
 
 `off` asks nothing. `shadow`, on every gate, asks and records the answer, then leaves the run
-as it would have been with the gate off: no note, no memory edit, no verify command.
+as it would have been with the gate off: no note, no work sent back, no retry bounced, no review
+skipped, no task stopped, no search reordered, no memory edit, no comment, no verify command.
 
-`on` in this release:
+What `on` does:
 
 | gate | what `on` does |
 |---|---|
-| `drift` | prints the "may also edit undeclared files" note |
-| `forward` | prints the note that a task runs before another and may depend on what it builds |
-| `prompt` | prints the "prompt may be too vague" note |
+| `drift` | adds each file it predicts at or above `drift_warn` to the task's `files`, before the waves are computed, so the wave plan treats it as declared |
+| `forward` | makes the earlier task of a warned pair depend on the later one, never one that would form a cycle; the waves are computed again |
+| `prompt` | sends a task whose prompt is below `prompt_warn` back to the planner, once |
+| `coverage` | sends each uncovered requirement back to the planner, once (among the first 30 requirements of `request.md`) |
+| `retry-addressed` | bounces a retry back to its implementer without a review when its diff leaves a blocking finding untouched |
+| `dwarf-message` | skips the review of an attempt whose final message says it did not finish or was blocked (the attempt ends FAIL, unreviewed), or stops the task as `NEEDS_INPUT` when the message asks a question only the user can answer |
+| `attribution` | after a failed combined verification, verifies the likeliest culprit's boundary first |
+| `findings` | turns a finding that duplicates an open issue into a comment on that issue (posted by `forge issues --apply`), and pre-selects the concrete findings for filing |
 | `memory-curate` | refiles, merges or withholds the fact |
 | `memory-slice` | removes lines from the injected slice |
 | `memory-stale` | drops a fact that went false |
 | `verify-discover` | runs the chosen command when none is configured |
 
-Drift, forward and prompt stay advisory when `on`. The three memory gates and verify discover
-act. Verify discover still does not mark anything verified: the command it picked does, or
-`UNVERIFIED` stands.
+`prompt` and `coverage` send work back **once** per item: a task for `prompt`, a requirement for
+`coverage`. `plan` writes `plan.sendback.md` listing what was flagged and exits 4 before it prints
+the table. Rewrite what the file lists, then run `plan` again. What is still flagged from that list
+is printed under the table and is not sent back again. An item the first list did not name is a new
+flag, such as a task the rewrite added with an unjudgeable prompt, or a requirement the rewrite left
+uncovered. That item is sent back in its own round, so the second `plan` can exit 4 again. No item
+is sent back twice; `plan-gates.json` keeps that history across re-plans.
+
+`dwarf-message` and `retry-addressed` send an attempt back without spending a review on it. The
+attempt ends FAIL, and the next attempt is handed the implementer's own words (`dwarf-message`) or
+the untouched blocking findings (`retry-addressed`). `retry-addressed` does not check the attempt
+after its bounce again.
+
+The memory gates and verify discover act as they did before C3–C5. Verify discover still does
+not mark anything verified: the command it picked does, or `UNVERIFIED` stands.
 
 `on` for any gate needs a passing replay for the provider and model it uses, or `--force`.
-See [Measuring a gate](#measuring-a-gate).
+See [Measuring a gate](#measuring-a-gate). None of the five gates added in C3–C5 has a recorded
+replay yet, so each needs `--force` for now.
 
 Set one with `forge decide gate <gate> off|shadow|on [--provider P] [--model M]`. `--repo DIR`
 writes `<repo>/.forge/decide.json`; `--profile NAME` writes that profile in the user file.
@@ -186,7 +222,9 @@ repo on any field both set; `status` lists those as shadowed.
    allowlist of the capabilities left on. `FORGE_JEV_SHADOW=on` (`--jev-shadow`) turns every
    `on` into `shadow`, except, before the user `decide.json` exists, a gate the legacy level
    turned on: that site acts as it did before #36, its records are marked shadow, and `plan`
-   prints a count in shadow mode instead of its warnings.
+   prints a count in shadow mode instead of its warnings. Drift, forward and prompt are the
+   exception to the exception: they only advised before #36, so under `--jev-shadow` they
+   record what they would do (`would_add`, `shadow: true`) and change nothing in the plan.
 6. **flags.** `--gate`, `--no-gates` and `--decide-budget` on `plan` or a solo run, frozen in
    `<plan-or-run>/jev-selection.json`. `--no-gates` turns every gate off after `--gate` is
    applied. A re-plan replaces the file. Solo again on the same run dir keeps it. `run` and
@@ -292,7 +330,8 @@ forge decide migrate --force    # replace the user decide.json from jev.json aga
   `key_env` `CLOUDFLARE_API_TOKEN`.
 - When `jev.json` is `enabled`, the `memory` gates and `verify-discover` are set `on`, and
   `drift`, `forward` and `prompt` are set `shadow`. A capability switched off is left unset,
-  so its gates stay `off`. The `on` gates are written with `"force": true`, so they show as
+  so its gates stay `off`. The five gates added in C3–C5 have no legacy capability, so migration
+  leaves them unset. The `on` gates are written with `"force": true`, so they show as
   forced until a replay passes for them.
 - A site mapped to `cloudflare` points at that provider; every other site points at
   `typesafe`, when that provider was created. `forge jev setup --provider cloudflare` mapped
@@ -373,22 +412,52 @@ A replay measures one provider and model. A passing replay on `typesafe` does no
 
 ### Labels
 
-Each site's label is one sentence in its record in `forge_decide/sites.py`.
-`forge_decide/labels.py` computes it from the run dataset with the joins of `forge dataset
-export`, so a run the dataset did not capture has no labels.
+Each site's label is one sentence in its record in `forge_decide/sites.py`. Labels mean
+**should act**: a label is true when the gate should have acted (sent the work back, added the
+file or the dependency, bounced the attempt, named the culprit), and false when it should not
+have. A label never comes from the gate's own action: whatever followed a send-back that the gate
+made is left unlabelled, or labelled by evidence the gate did not produce.
 
-| site | label | precision floor |
+A site whose threshold reads the other way round from its score sets `invert` in its record.
+Two do:
+- **Prompt adequacy.** Its model answers "is the prompt adequate", so the probability of acting
+  is `1 − p`, and its score is that. `replay` compares the score with `1 − prompt_warn`, the
+  same line as `p < prompt_warn`.
+- **Findings.** Its score is the Noul of "does it read as a preference", the probability of
+  deselecting, and its baseline is 1.0 for a finding with no concrete cue. Its threshold
+  `findings_concrete` is on the concreteness scale (`1 − p`), so `replay` compares the score with
+  `1 − findings_concrete`.
+
+`report` counts each site's fired decisions with the site's own rule, which already reads the
+threshold the right way, so it needs no inversion of its own.
+
+`forge_decide/labels.py` computes the labels from the run dataset with the joins of `forge
+dataset export`, so a run the dataset did not capture has no labels. The gate modules' labellers
+(`label_prompt`, `label_coverage`, `label_addressed`, `label_message`, `label_attribution`) are
+loaded lazily, so a site whose labeller is missing has no rows.
+
+| site | label: true means should act | precision floor |
 |---|---|---|
-| `jev-drift` | the undeclared file was edited by the task's final passing attempt (true), or was not (false) | 0.5 |
-| `jev-forward` | a later plan revision of the same run added the dependency (true); both tasks merged with no such dependency (false) | 0.5 |
-| `jev-verify-discover` | the candidate is the command the repo documents: its `.forge/verify`, or the command a later run of the same repo verified with, from `--verify` or `repo.verify` | 0.7 |
-| `jev-memory-slice` | the fact's anchor was edited by the task (true), or lies in an area the task never touched (false) | none |
-| `jev-prompt` | none yet (#40) | none |
-| `jev-memory-curate`, `jev-memory-stale` | none yet (#41: needs a contradiction record) | none |
+| `jev-drift` | the undeclared file was edited by the task's final passing attempt (true), or was not (false). A file the gate added to `files` is labelled by the same edit | 0.5 |
+| `jev-forward` | a later plan revision of the run has the dependency and the gate did not add it (true); both tasks merged and no revision has it (false). A dependency the gate added is false only once a later revision removes it, the user's correction, and is otherwise unlabelled | 0.5 |
+| `jev-prompt` | the prompt was inadequate (true): a later plan revision changed it before its first attempt started, or the first attempt's review calls it ambiguous or unclear. False when the first attempt was reviewed and neither held. No label for a task the gate sent back, a task that never ran, or one whose first review is missing or unparseable | none |
+| `jev-memory-slice` | the fact's anchor was edited by the task (true), or lies in an area the task never touched (false); a request needs both classes | none |
+| `jev-verify-discover` | the candidate is the command the repo documents: its `.forge/verify`, or the command a later run of the same repo verified with, from `--verify` or `repo.verify` (command source not `jev`) | 0.7 |
+| `jev-coverage` | the requirement is uncovered (true): a later plan revision has a task whose acceptance criteria hold at least 60% of the requirement's content words, and the tasks the request was asked about did not. Covered (false): every task of the run merged and no revision changed any acceptance criteria. No label for a requirement the gate sent back | none |
+| `jev-retry-addressed` | the review of the same attempt raised the finding again (true); that review parsed in full and did not (false). No label without a review (a bounced attempt has none), or when its findings cannot be read in full | none |
+| `jev-dwarf-message` | `unfinished` and `blocked`: the QA verdict of the same attempt was FAIL (true) or PASS (false). `question` has no label. No label for an attempt with no review, which is what a send-back leaves | none |
+| `jev-attribution` | `culprit:<id>`: the merge breaks verification (true) when the search verified prefix k−1 PASS and prefix k FAIL; false when both were verified and do not form that pair. No label when either prefix was not verified, the base fails, or the search was inconclusive | none |
 
 Verify discover has a label only for a repo that documents a command. Memory slice labels a
-request only when it has both classes. The three sites with no label cannot be replayed:
-`forge decide replay` refuses them, so their `on` needs `--force`.
+request only when it has both classes.
+
+Three sites have no label, so `forge decide replay` refuses them, and their `on` needs
+`--force`. Each is listed with the reason its label is not yet defined:
+
+| site | why it has no label |
+|---|---|
+| `jev-memory-curate`, `jev-memory-stale` | `#41: recurrence is influenced by the gate itself; needs independent contradiction evidence`. An injected fact gets re-recorded, so the gate's own action would decide the label |
+| `jev-findings` | `#46: needs issue-closure records`. Auto mode would supply its own ground truth, and an operational non-filing (a cap, a same-titled issue) is not a judgment |
 
 ### forge decide report
 
@@ -568,23 +637,65 @@ A new site takes this path, in this order. Skipping a step is how the sites in
 2. **Asked through `client.ask` with a site name** (`jev-<name>`). `client.ask` is the only
    place that talks to a provider; it handles the key, the deadline, the provider mapping and
    the fail-open skip, and it records the request.
-3. **Gated through `site_ready`.** Add the site to `SITE_CAPABILITY` and as a gate in
-   `forge_decide.GATES`. The shell asks `forge_decide_active <gate>` and the Python side asks
-   `site_ready(site)`; both must be false when the gate is off, `FORGE_JEV=off` is set, the
-   privacy floor is on, or the provider cannot be asked.
-4. **Recorded in the dataset.** The request must land in `jev.jsonl` and the run dataset whole,
-   and the export (`forge dataset export`) needs a slice that labels it from what happened
-   afterwards.
-5. **Replayed against labelled outcomes before it may act.** Give the site a label that comes
-   from outside the model, a record in `forge_decide/sites.py` (label, baseline and floor) and a
-   labeller in `forge_decide/labels.py`. Then measure it on the state production sends, and
-   report the class separation, the noise floor from repeated identical requests, and the
-   baseline from the criteria above. `forge decide replay` judges it by the rule in
-   [Measuring a gate](#measuring-a-gate). A number measured on state the model is not sent
-   describes nothing: it has bitten this file seven times.
-6. **Ships advisory first.** It prints or records and cannot block a dispatch. A new site must
-   treat `shadow` as ask-and-record (the kept sites do). It acts on something only after step 5
-   holds on live runs, and never on a verdict, a tier or a model.
+3. **Gated in every copy of the gate list.** The gate's name goes into `GATES`, its site into
+   `GATE_SITE`, and its legacy capability into `GATE_CAPABILITY`, all in
+   `scripts/forge_decide/__init__.py`. The capability is `None` when the gate has none: the legacy
+   level then never turns it on. The same names are also hard-coded
+   in these places, and each one needs the new name:
+   - `scripts/forge_jev/__init__.py`: `SITE_CAPABILITY`, for every site, and `DEFAULT_THRESHOLDS`
+     for each threshold the rubric reads;
+   - `scripts/forge_decide/migrate.py`: `THRESHOLD_GATES`, the gates each stored threshold is
+     copied onto;
+   - `scripts/forge-jev-options.sh`: `FORGE_DECIDE_GATE_NAMES` and the gate names in its help
+     text (`tests/test_decide_flags.py` keeps it in step with `forge_decide.GATES`);
+   - `ui/forge_ui/control.py`: `DECIDE_GATES`;
+   - `ui/forge_ui/static/settings.js`: `GATES`;
+   - `ui/tests/test_browser_settings.py`: `_GATES`;
+   - `ui/tests/js/settings.test.js`: the list its assertions compare the page with.
+
+   Three tests spell the list out by hand and need the name too: `tests/test_config.py`,
+   `tests/test_decide_cli.py` and `tests/test_gate_registry.py`.
+
+   The shell asks `forge_decide_active <gate>` and the Python side asks `site_ready(site)`; both
+   must be false when the gate is off, `FORGE_JEV=off` is set, the privacy floor is on, or the
+   provider cannot be asked.
+4. **Recorded in the run dataset.** The request must land in `jev.jsonl` and the run dataset
+   whole, state included. The labeller reads it back from the dataset and labels it from what
+   happened afterwards.
+5. **A record in `forge_decide/sites.py`, with its functions taken lazily.** One `Site` per site:
+   its `fired`, `decisions`, `score` and `baseline`, the label sentence or a `label_issue`, the
+   floor if it has one, and `invert=True` when the raw probability points away from acting. A
+   site whose functions live in its gate module takes them through `_lazy(module, attr, default)`,
+   so `sites.py` never imports a module another task is still writing. While the module is
+   missing the site acts on nothing: `fired` and `decisions` give `[]`, `score` gives None and
+   `baseline` gives 0.0.
+6. **A labeller, read lazily.** `forge_decide/labels.py` finds a site's labeller in `LABELLERS`.
+   A labeller has the shape `label(index, record, event, body) -> {qid: bool}`. One in its own
+   module, `forge_decide/label_<name>.py`, is registered as `sites._lazy('forge_decide.label_<name>',
+   'label', {})`, so the site has no rows until the module exists.
+7. **The measurement functions and the CLI verb.** `forge_jev/<module>.py` exports `decisions`,
+   `score`, `fired` and `baseline` over the stored body, and `main(args)` for its verb. In
+   `forge_jev/cli.py`, `cmd_<verb>` checks its paths (exit 2) and calls
+   `_delegate(verb, module, args, repo)`, which imports the module and returns its `main`. A
+   missing module is exit 3. Exit 3 always means no opinion: skipped, shadow, or nothing to say.
+   Each `main` checks `site_ready(site)` first. The verb goes into `parser()` and into the dispatch
+   table in `main()`.
+8. **A run-time gate puts its attempt into the request state.** A gate that runs once per attempt
+   puts `run` (the plan's `run_id`), `task` and `attempt` into the request's **state**, as
+   `dwarf-message` and `retry-addressed` do, and not only into `client.ask(context=...)`. The
+   request key, and with it the cache, then differs per attempt and per run. `labels.requests`
+   keeps only the first request per key, so without this a message repeated on a later attempt,
+   or in another run, would be neither asked nor labelled again. A per-run gate (`attribution`)
+   puts `run` alone.
+9. **Replayed against labelled outcomes before it may act.** The label must come from outside the
+   model. Then measure the site on the state production sends, and report the class separation,
+   the noise floor from repeated identical requests, and the baseline from the criteria above.
+   `forge decide replay` judges it by the rule in [Measuring a gate](#measuring-a-gate). A number
+   measured on state the model is not sent describes nothing: it has bitten this file seven times.
+10. **Ships in `shadow` first.** `shadow` asks and records, and changes nothing. A new site moves
+    to `on` only after step 9 holds on live runs. What `on` may then do is one of the actions in
+    [Gates and modes](#gates-and-modes): it never changes a verdict, never blocks a dispatch, and
+    never makes work pass.
 
 ## Tried and removed
 

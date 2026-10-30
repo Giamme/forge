@@ -434,6 +434,8 @@ def stop_harnesses(plan: object, names: object) -> None:
 # is left after it withdraws liveness, under the same lock, so no request outlives its run.
 REQUESTS = 'control.requests'
 REQUEST_MAX = 64 * 1024
+# NEEDS_INPUT is in neither: a task stopped for the user's answer resumes only through
+# `retry <plan> <id> --answer`, whose preparation refuses without one.
 RETRYABLE = ('FAIL', 'UNKNOWN', 'TIMEOUT', 'ERROR', 'INTERRUPTED', 'BLOCKED', 'INVALIDATED')
 # What --retry-failed retries on its own. INVALIDATED only for a review voided while the committed
 # work stayed as it was (tasks/<id>/invalidated.reason is `review`): that retry is a fresh review.
@@ -843,6 +845,9 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
             return 'refused', 'the task is merged'
         if state == 'INFRA':
             return 'refused', 'an infrastructure stop is resumed by the scheduler itself'
+        if state == 'NEEDS_INPUT':
+            return 'refused', (name + ' is waiting for an answer: forge-parallel.sh retry ' + str(plan)
+                               + ' ' + name + ' --answer \u2026')
         if state not in RETRYABLE:
             return 'refused', 'a ' + state + ' task is not retried'
         command = ['/bin/bash', script, '_prepare_retry', str(plan), name] + (['--dwarf', dwarf] if dwarf else [])

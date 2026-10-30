@@ -42,6 +42,9 @@
 #   --sweep-max N           run               (this run only)      at most N sweep tasks (default 5)
 #   --sweep-ahead           run               $PLAN/sweep_ahead    a task is told the open findings in files it
 #   --no-sweep-ahead                                               owns, to fix on its way (off by default)
+#   --attribute             run               $PLAN/attribute_on   after a failed combined verification, search the
+#   --no-attribute                                                 merge order for a merge that breaks it (off by
+#                                                                  default; `forge-parallel.sh attribute` does it later)
 #   --verify-lane L=CMD     run retry         $PLAN/verify.d/<L>   a verification lane: name[options]=command,
 #                                                                  options as in a lane file (group=g,first,...);
 #                                                                  repeatable; replaces --verify and the lanes
@@ -157,6 +160,12 @@ forge_pp_flag() {
     --no-sweep-ahead)
       [ "$cmd" = run ] || return 1
       PP_SHIFT=1; rm -f "$plan/sweep_ahead" ;;
+    --attribute)
+      [ "$cmd" = run ] || return 1
+      PP_SHIFT=1; printf 'on\n' > "$plan/attribute_on" ;;
+    --no-attribute)
+      [ "$cmd" = run ] || return 1
+      PP_SHIFT=1; rm -f "$plan/attribute_on" ;;
     --final-review)
       [ "$cmd" = integrate ] || return 1
       PP_FINAL_REVIEW="${2:?--final-review needs a QA spec}"

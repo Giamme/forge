@@ -26,7 +26,8 @@ def tearDownModule():
     tb.tearDownModule()
 
 
-_GATES = ('drift', 'forward', 'prompt', 'memory-curate', 'memory-slice', 'memory-stale', 'verify-discover')
+_GATES = ('drift', 'forward', 'prompt', 'memory-curate', 'memory-slice', 'memory-stale', 'verify-discover',
+          'coverage', 'retry-addressed', 'dwarf-message', 'attribution', 'findings')
 
 
 def decide(floor=False):

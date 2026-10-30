@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import re
+import subprocess
 
 from . import enabled, load_config, threshold
 from .client import ask, choice, noul, probabilities, score
@@ -20,25 +21,80 @@ _WORKFLOW_TEST_HINT_RE = re.compile(
     r'\b(pytest|npm (?:test|run\s+test\S*)|yarn (?:test|run\s+test\S*)|go test|cargo test|'
     r'make test|tox\b|jest|vitest|mvn test|gradle test|rspec|phpunit|ctest|go\s+vet\s+&&\s+go\s+test)\b',
     re.I)
-_MEMORY_CMD_RES = (
-    re.compile(r'\bpytest(?:\s+-{1,2}\S+)*'),
-    re.compile(r'\bmake\s+\w[\w-]*'),
-    re.compile(r'\bnpm run\s+[\w:_-]+'),
-    re.compile(r'\bnpm test\b'),
-    re.compile(r'\byarn(?:\s+run)?\s+[\w:_-]+'),
-    re.compile(r'\bgo test(?:\s+\S+)*'),
-    re.compile(r'\bcargo test(?:\s+\S+)*'),
-    re.compile(r'\btox\b'),
-    re.compile(r'\bnox\b'),
+# A remembered command is read off a rendered fact two ways (#42). A code span is the command as
+# its author wrote it, so its content is taken whole, quotes and option values included. Prose is
+# scanned for a runner and the arguments after it, and an argument is a flag, a path or a quoted
+# string: a plain word ends the command, so "cargo test --workspace runs all tests" names
+# `cargo test --workspace`. A bare flag followed by a plain word may take that word as its value
+# ("--features integration"), and half an option is a command cargo rejects, so the command ends
+# before such a flag unless the word is plain prose ("runs", "also"). A number after a flag is
+# always its value ("--jobs 2"), so it stays with the flag. The rendered source tag
+# ("[tests/]") matches none of these forms.
+_CODE_SPAN_RE = re.compile(r'`([^`\n]+)`')
+_PROSE_WORD = r'[A-Za-z][\w-]*(?![\w/-]|\.\w)'
+_PROSE_STOP = (r'(?:runs?|running|also|and|or|then|which|that|for|to|in|on|with|before|after|if|'
+               r'when|but|is|are|will|should|must|can|takes?|checks?|covers?|lints?|builds?|'
+               r'executes?|needs?|requires?)(?![\w/-]|\.\w)')
+_PROSE_FLAG = (r'-{1,2}[^\s`\'"\[\]=]+(?![^\s`\'"\[\]=])(?:=[^\s`\'"\[\]]*|\s+\d[\w.]*(?![\w/-])|'
+               r'(?!\s+(?!' + _PROSE_STOP + r')' + _PROSE_WORD + r'))')
+_PROSE_ARG = r'''(?:''' + _PROSE_FLAG + r'''|[\w.-]*/[\w./-]*|"[^"\n]*"|'[^'\n]*')'''
+# A runner is a whole word: "pytest.ini" and "tests/pytest/" are files, not the pytest command.
+_HEAD_START = r'(?<![\w./-])'
+_HEAD_END = r'(?![\w/-]|\.\w)'
+_MEMORY_HEADS = (
+    r'pytest',
+    r'make\s+\w[\w-]*',
+    r'npm run\s+[\w:_-]+',
+    r'npm test',
+    r'yarn(?:\s+run)?\s+[\w:_-]+',
+    r'go test',
+    r'cargo test',
+    r'tox',
+    r'nox',
+    r'bash\s+[\w./-]+\.sh',
+    r'python3?\s+[\w./-]+\.py',
+)
+_MEMORY_HEAD_RES = tuple(re.compile(_HEAD_START + head + _HEAD_END) for head in _MEMORY_HEADS)
+_MEMORY_PROSE_RES = tuple(re.compile(_HEAD_START + head + _HEAD_END + r'(?:\s+' + _PROSE_ARG + r')*')
+                          for head in _MEMORY_HEADS)
+# Punctuation that ends the sentence a command sits in: "pytest -q." names `pytest -q`, but
+# "go test ./..." keeps its dots.
+_SENTENCE_END_RE = re.compile(r'(?:[,;:!?)]|(?<=[^.])\.)+$')
+
+# Extension -> language, for languages_present (#42). Anything else is not code here.
+_LANGUAGE_BY_EXTENSION = {
+    'py': 'python', 'rs': 'rust', 'go': 'go', 'rb': 'ruby', 'swift': 'swift',
+    'js': 'javascript', 'jsx': 'javascript', 'ts': 'javascript', 'tsx': 'javascript',
+    'mjs': 'javascript', 'cjs': 'javascript',
+    'java': 'jvm', 'kt': 'jvm',
+    'c': 'c', 'cc': 'c', 'cpp': 'c', 'h': 'c', 'hpp': 'c',
+}
+# A language is present when it has this many code files and this share of them.
+LANGUAGE_MIN_FILES = 5
+LANGUAGE_MIN_SHARE = 0.10
+# Words that name the language a command runs the tests of (#42). Whole words only.
+_COVERAGE_RES = (
+    (re.compile(r'\bcargo\b', re.I), 'rust'),
+    (re.compile(r'\b(?:pytest|python3?|tox|nox)\b', re.I), 'python'),
+    (re.compile(r'\b(?:npm|pnpm|yarn|npx|node|jest|vitest)\b', re.I), 'javascript'),
+    (re.compile(r'\bgo[ \t]+(?:test|vet)\b', re.I), 'go'),
+    (re.compile(r'\b(?:bundle|rake|rspec)\b', re.I), 'ruby'),
+    (re.compile(r'\b(?:gradle|mvn)\b', re.I), 'jvm'),
+    (re.compile(r'\bswift\b', re.I), 'swift'),
+    (re.compile(r'\b(?:ctest|cmake)\b', re.I), 'c'),
 )
 
 
-def _add(found: list[dict], seen: set[str], command: str, source: str, evidence: str) -> None:
+def _add(found: list[dict], seen: set[str], command: str, source: str, evidence: str,
+         excerpt: str = '') -> None:
     command = command.strip()
     if not command or command in seen or len(found) >= CANDIDATE_CAP:
         return
     seen.add(command)
-    found.append(dict(command=command, source=source, evidence=evidence))
+    entry = dict(command=command, source=source, evidence=evidence)
+    if excerpt:
+        entry['excerpt'] = excerpt
+    found.append(entry)
 
 
 def _forge_verify(repo: Path, found, seen) -> None:
@@ -171,24 +227,33 @@ def _workflows(repo: Path, found, seen) -> None:
                 _add(found, seen, command, 'workflow', str(path))
 
 
+def _remembered_commands(fact: str) -> list[str]:
+    """The runner invocations one memory fact names (#42): code spans first, then the prose."""
+    commands = []
+    for span in _CODE_SPAN_RE.findall(fact):
+        if any(pattern.search(span) for pattern in _MEMORY_HEAD_RES):
+            commands.append(span.strip())
+    # The prose with each span blanked out, so a span's text is not read a second time.
+    prose = _CODE_SPAN_RE.sub(lambda match: ' ' * len(match.group(0)), fact)
+    for pattern in _MEMORY_PROSE_RES:
+        for match in pattern.finditer(prose):
+            commands.append(_SENTENCE_END_RE.sub('', match.group(0)))
+    return commands
+
+
 def _memory_verify(repo: Path, found, seen) -> None:
     path = repo / '.forge' / 'memory.md'
-    if not path.is_file():
-        return
-    for line in path.read_text(errors='replace').splitlines():
-        if 'verify |' not in line:
-            continue
-        text = line.split('verify |', 1)[1]
-        # A memory entry is prose ("pytest -q runs the suite; make test also lints and
+    for fact in _memory_facts(repo, 'verify'):
+        # A memory fact is prose ("pytest -q runs the suite; make test also lints and
         # is 4x slower"), not a bare command -- pull out anything that looks like a
         # known runner invocation rather than treating the whole sentence as a command.
-        for pattern in _MEMORY_CMD_RES:
-            for match in pattern.finditer(text):
-                _add(found, seen, match.group(0), 'memory:verify', str(path))
+        for command in _remembered_commands(fact):
+            _add(found, seen, command, 'memory', str(path), excerpt=fact)
 
 
 def candidates(repo) -> list[dict]:
-    """Real, existing verify commands. Each: {'command': str, 'source': str, 'evidence': str}.
+    """Real, existing verify commands. Each: {'command': str, 'source': str, 'evidence': str},
+    and 'excerpt' for a memory candidate (the memory fact that named it).
 
     Deterministic order, deduplicated, capped at CANDIDATE_CAP. Never executes anything --
     this only enumerates what plausibly exists so Jev can select among real options.
@@ -266,6 +331,10 @@ def _evidence_excerpt(candidate: dict) -> str:
     `make test` at 0.58 while leaving 0.40 on `none`, for a Choice confidence of 0.37
     against a 0.70 gate -- so it declined, and a verifiable repo reported UNVERIFIED.
     """
+    # A memory candidate's evidence is memory.md, whose head describes every fact, not
+    # just the one that named the command. The fact itself is what it runs.
+    if candidate.get('excerpt'):
+        return candidate['excerpt'][:EVIDENCE_CHARS]
     path = candidate.get('evidence') or ''
     try:
         text = Path(path).read_text(errors='replace')
@@ -291,11 +360,37 @@ def _evidence_excerpt(candidate: dict) -> str:
     return text[:EVIDENCE_CHARS]
 
 
+def languages_present(repo) -> list[str]:
+    """The languages a repo has, from its tracked files (#42), sorted. A language counts at
+    LANGUAGE_MIN_FILES files and LANGUAGE_MIN_SHARE of the code files. Empty when the repo
+    is not a git repository."""
+    try:
+        listed = subprocess.run(['git', '-C', str(repo), 'ls-files', '-z'],
+                                capture_output=True, check=True).stdout
+    except (OSError, subprocess.CalledProcessError):
+        return []
+    counts: dict[str, int] = {}
+    for name in listed.decode(errors='replace').split('\0'):
+        language = _LANGUAGE_BY_EXTENSION.get(Path(name).suffix[1:].lower())
+        if language:
+            counts[language] = counts.get(language, 0) + 1
+    total = sum(counts.values())
+    return sorted(language for language, n in counts.items()
+                  if n >= LANGUAGE_MIN_FILES and n / total >= LANGUAGE_MIN_SHARE)
+
+
+def languages_covered(command, evidence) -> list[str]:
+    """The languages whose tests a command runs, judged from the command and the excerpt of
+    what it runs (#42), sorted. Empty when nothing is recognised."""
+    text = f'{command}\n{evidence}'
+    return sorted({language for pattern, language in _COVERAGE_RES if pattern.search(text)})
+
+
 def discover(repo, *, config=None, run_dir=None) -> dict | None:
     """Ask Jev which candidate actually verifies this repo. None when Jev is
     unavailable, no candidates exist, or it picks `none`.
     -> {'command', 'confidence', 'verifiable', 'runs_tests', 'runtime_level', 'source',
-        'evidence'}
+        'evidence', 'coverage': {'present', 'covered'}}
     """
     config = config or load_config()
     if not enabled('tests', config=config):
@@ -373,8 +468,12 @@ def discover(repo, *, config=None, run_dir=None) -> dict | None:
     # `verifiable` is the quantity the gate actually used; `confidence` is kept beside it
     # because they answer different questions and a future re-measurement needs both.
     verifiable = (1.0 - distribution.get('none', 0.0)) if distribution else None
+    # Coverage (#42) only informs the announcement: the pick stands, and the command's own
+    # run still decides verification. `described` already holds the pick's excerpt.
+    coverage = dict(present=languages_present(repo_path),
+                    covered=languages_covered(picked, described[idx]['runs']))
     return dict(command=picked, confidence=confidence, verifiable=verifiable,
                runs_tests=runs_probability,
                runtime_level=runtime_level, source=picked_candidate['source'],
-               evidence=picked_candidate['evidence'])
+               evidence=picked_candidate['evidence'], coverage=coverage)
 

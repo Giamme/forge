@@ -15,6 +15,9 @@
   const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
   const DONE = new Set(['MERGED', 'PASS', 'NOCHANGES']);
   const BAD = new Set(['FAIL', 'ERROR', 'CONFLICT', 'INFRA', 'TIMEOUT', 'INVALIDATED', 'INTERRUPTED', 'UNKNOWN', 'BLOCKED']);
+  // NEEDS_INPUT: stopped for an answer only the user can give. Neither DONE nor BAD, so never a failure.
+  const WAITING = new Set(['NEEDS_INPUT']);
+  const isWaiting = status => WAITING.has(status);
   const WEIGHT = { low: 1, medium: 2, high: 3 };
   const weight = t => WEIGHT[String(t && t.difficulty || '').toLowerCase()] || 2;
   const alias = spec => spec ? String(spec).split(':')[0] : null;
@@ -73,6 +76,7 @@
   }
 
   /* ---------- statuses ---------- */
+  // A waiting task is in neither set: a run with nothing else left is pending, not failed and not done.
   function runState(run) {
     const counts = run && run.counts || {};
     if (counts.RUNNING) return 'live';
@@ -180,6 +184,8 @@
     if (statuses.some(s => s === 'RUNNING')) return 'RUNNING';
     if (statuses.every(s => s === 'MERGED')) return 'MERGED';
     if (statuses.some(s => s === 'PENDING' || s === 'PASS')) return 'PENDING';
+    // only answers are missing: the integration waits for the user, not for a fix
+    if (statuses.some(isWaiting) && statuses.every(s => s === 'MERGED' || isWaiting(s))) return 'WAITING';
     return 'BLOCKED';
   }
   // How one final review reads as a stage. OUTDATED only once it is done and the reader says the
@@ -225,6 +231,21 @@
     const n = num(attempt), want = num(task.accepted_attempt);
     if (n !== null && want !== null && n === want) return 'ACCEPTED';
     return raw;
+  }
+  // The send-backs forge writes into attempts.tsv without a reviewer's verdict. The task status stays FAIL, but each
+  // is a failed attempt with its own word, and a note says what forge did with it.
+  const SENT_BACK = new Map([['BOUNCED', 'sent back: the review left blocking findings unaddressed'],
+    ['INCOMPLETE', 'sent back: the dwarf said it did not finish']]);
+  const attemptNote = status => SENT_BACK.get(status) || null;
+  const attemptFailed = status => status === 'FAIL' || status === 'ERROR' || SENT_BACK.has(status);
+  // The run's attribution (attribution.json) as the line under its verification result, or null when it names nothing.
+  function attributionLine(a) {
+    if (!a || typeof a !== 'object') return null;
+    const n = num(a.verification_runs), runs = (word) => n === null ? '' : ` (${n} ${word}${n === 1 ? '' : 's'})`;
+    if (a.culprit) return `integration failure: merge ${a.culprit} breaks verification${runs('verification run')}`;
+    if (a.base_fails === true) return `the base already fails verification${runs('run')}`;
+    if (a.inconclusive) return `attribution inconclusive: ${a.inconclusive}${runs('run')}`;
+    return null;
   }
   function shortTip(tip) {
     if (tip === null || tip === undefined || tip === '') return '—';
@@ -873,7 +894,8 @@
   }
 
   return { liveNow, runState, execStatus, matchRun, filterOptions, atlasModel, columns, planModel, finishState,
-    finalStatus, runReviewStatus, reviewSinceLine, reviewAt, taskStatus, taskVerdict, attemptStatus, taskParts,
+    finalStatus, runReviewStatus, reviewSinceLine, reviewAt, taskStatus, taskVerdict, attemptStatus, attemptNote, attemptFailed, isWaiting,
+    attributionLine, taskParts,
     taskTimes, metricValue, overlap, projectSchedule, execModel, verifyLeds, criticalPath, concurrency, stateAt, timeRange, events, lineage, structureKey, innerKey,
     fmtDur, alias, basename, weight, searchIndex, searchRank, statusEvents, fractalTree, sweepLine, sweepState };
 });

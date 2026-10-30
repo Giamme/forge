@@ -2,6 +2,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -9,6 +10,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+from forge_ui import export
 from forge_ui.reader import Catalog, detail, discover, run_key, summarize
 
 
@@ -60,11 +62,11 @@ class ReaderTests(unittest.TestCase):
                 {'attempt': 2, 'k': 0, 'spec': 'sol:xhigh', 'primary': 'opus', 'started': 1760620100.0,
                  'status': 'FAIL', 'verdict': 'PASS', 'reviewed': True, 'pick': 0, **SHADOW_EXTRA}],
             'prompt': 'Read the plan.\n', 'approach': 'Use standard Python.\n',
-            'retry_findings': 'Handle missing files.\n',
+            'retry_findings': 'Handle missing files.\n', 'needs_input': None,
             'qa_tail': 'FORGE_VERDICT: FAIL\nFixed now.\nFORGE_VERDICT: PASS\n',
             'dwarf_tail': None, 'executions': [],
             'merged_at': (FIXTURE / 'tasks/reader/merged').stat().st_mtime, 'findings': NO_FINDINGS,
-            'gate': None, 'known_issues': False, 'fail_first': None, 'pre_review': None, 'now': None, 'waiting': None, 'sweep': None, 'swept': [],
+            'gate': None, 'known_issues': False, 'needs_input': None, 'fail_first': None, 'pre_review': None, 'now': None, 'waiting': None, 'sweep': None, 'swept': [],
         })
         self.assertEqual((page['accepted'], page['accepted_attempt'], page['accepted_over']), (False, None, None))
         self.assertEqual(page['status'], 'RUNNING')
@@ -79,7 +81,7 @@ class ReaderTests(unittest.TestCase):
         self.assertEqual(graph['files'], [])
         self.assertFalse(graph['accepted'])
         for field in ('branch', 'attempt', 'verdict', 'accepted_by', 'accepted_attempt', 'accepted_over',
-                      'prompt', 'approach', 'retry_findings', 'qa_tail', 'qa'):
+                      'prompt', 'approach', 'retry_findings', 'needs_input', 'qa_tail', 'qa'):
             self.assertIsNone(graph[field], field)
         self.assertNotIn('clef', graph)
         for field in ('attempts', 'escalations', 'route', 'shadow'):
@@ -540,10 +542,10 @@ class ReaderTests(unittest.TestCase):
             'accepted': False, 'accepted_attempt': None, 'accepted_over': None,
             'explored': False, 'route': [],
             'shadow': [],
-            'prompt': 'Implement the reader.\n', 'approach': None, 'retry_findings': None,
+            'prompt': 'Implement the reader.\n', 'approach': None, 'retry_findings': None, 'needs_input': None,
             'qa_tail': 'Looked at the diff.\nFORGE_VERDICT: FAIL\n', 'dwarf_tail': 'Still working.\n',
             'executions': [], 'merged_at': None, 'findings': NO_FINDINGS, 'gate': None, 'known_issues': False,
-            'fail_first': None, 'pre_review': None, 'now': None, 'waiting': None, 'sweep': None, 'swept': [],
+            'needs_input': None, 'fail_first': None, 'pre_review': None, 'now': None, 'waiting': None, 'sweep': None, 'swept': [],
         }])
         self.assertEqual(data['kind'], 'solo')
         self.assertEqual(data['run_id'], 'solo-full')
@@ -598,9 +600,9 @@ class ReaderTests(unittest.TestCase):
             'attempts': [], 'escalations': [], 'verdict': None, 'accepted_by': None,
             'accepted': False, 'accepted_attempt': None, 'accepted_over': None, 'explored': False,
             'route': [], 'shadow': [],
-            'prompt': 'Old prompt.\n', 'approach': None, 'retry_findings': None,
+            'prompt': 'Old prompt.\n', 'approach': None, 'retry_findings': None, 'needs_input': None,
             'qa_tail': None, 'dwarf_tail': None, 'executions': [], 'merged_at': None, 'findings': None,
-            'gate': None, 'known_issues': False, 'fail_first': None, 'pre_review': None, 'now': None, 'waiting': None, 'sweep': None, 'swept': [],
+            'gate': None, 'known_issues': False, 'needs_input': None, 'fail_first': None, 'pre_review': None, 'now': None, 'waiting': None, 'sweep': None, 'swept': [],
         }])
         json.dumps(data, allow_nan=False)
         run = self.base / 'neither'
@@ -680,6 +682,91 @@ class ReaderTests(unittest.TestCase):
                 if path == plan:
                     self.assertIsNone(data['tasks'][1]['dwarf_tail'])
                     self.assertIsNone(data['tasks'][2]['dwarf_tail'])
+
+    def test_needs_input_quotes_the_question_and_is_capped(self):
+        plan = self.copy_plan()
+        self.write(plan / 'tasks/page/status', 'NEEDS_INPUT\n')
+        self.write(plan / 'tasks/page/needs_input.md', 'The implementer asked: which database?\n')
+        self.write(plan / 'tasks/graph/needs_input.md', 'x' * 30000)
+        data = detail(plan)
+        tasks = {task['id']: task for task in data['tasks']}
+        self.assertEqual(tasks['page']['status'], 'NEEDS_INPUT')
+        self.assertEqual(tasks['page']['needs_input'], 'The implementer asked: which database?\n')
+        self.assertEqual(tasks['graph']['needs_input'], 'x' * 20000 + '…')
+        self.assertIn('tasks/graph/needs_input', data['truncated'])
+        self.assertIsNone(tasks['reader']['needs_input'])
+
+    def test_bounced_and_incomplete_attempts_keep_their_statuses(self):
+        plan = self.copy_plan()
+        self.write(plan / 'tasks/page/attempts.tsv',
+                   '1760620000\t3\tINFRA\trate_limit\n'
+                   '1760622000\t4\tBOUNCED\t\n'
+                   '1760622100\t5\tINCOMPLETE\t\n')
+        data = detail(plan)
+        page = next(task for task in data['tasks'] if task['id'] == 'page')
+        self.assertEqual(page['attempts'], [
+            {'at': 1760620000.0, 'attempt': 3, 'status': 'INFRA', 'infra': 'rate_limit'},
+            {'at': 1760622000.0, 'attempt': 4, 'status': 'BOUNCED', 'infra': None},
+            {'at': 1760622100.0, 'attempt': 5, 'status': 'INCOMPLETE', 'infra': None}])
+        self.assertEqual(page['attempt'], 5)
+        self.assertEqual(data['warnings'], [])
+
+    def test_attribution_is_read_from_the_plan_or_null(self):
+        plan = self.copy_plan()
+        with self.subTest('missing'):
+            data = detail(plan)
+            self.assertIsNone(data['attribution'])
+            self.assertEqual(data['warnings'], [])
+        found = {'culprit': 'page', 'base_fails': False, 'inconclusive': None,
+                 'merges': [{'id': 'reader', 'commit': 'a1'}, {'id': 'page', 'commit': 'b2'}],
+                 'steps': [{'prefix': 0, 'commit': 'a0', 'status': 'PASS', 'seconds': 4, 'source': 'search'}],
+                 'verification_runs': 3,
+                 'gate': {'mode': 'on', 'ranking': [{'id': 'page', 'p': 0.9}], 'tried': 1, 'outcome': 'confirmed'}}
+        with self.subTest('culprit'):
+            self.write(plan / 'attribution.json', json.dumps(found))
+            self.assertEqual(detail(plan)['attribution'], dict(
+                culprit='page', base_fails=False, inconclusive=None, verification_runs=3, gate_outcome='confirmed'))
+        with self.subTest('inconclusive'):
+            self.write(plan / 'attribution.json', json.dumps(dict(found, culprit=None, verification_runs=2,
+                                                                  inconclusive='step 2 UNVERIFIED', gate=None)))
+            self.assertEqual(detail(plan)['attribution'], dict(
+                culprit=None, base_fails=False, inconclusive='step 2 UNVERIFIED', verification_runs=2, gate_outcome=None))
+        with self.subTest('base fails'):
+            self.write(plan / 'attribution.json', json.dumps(dict(found, culprit=None, base_fails=True, verification_runs=1,
+                                                                  gate=None)))
+            self.assertEqual(detail(plan)['attribution'], dict(
+                culprit=None, base_fails=True, inconclusive=None, verification_runs=1, gate_outcome=None))
+        with self.subTest('malformed'):
+            for text in ('{"culprit": "page", "base_fails": fa', '[]', json.dumps({'culprit': 'page'})):
+                self.write(plan / 'attribution.json', text)
+                data = detail(plan)
+                self.assertIsNone(data['attribution'], text)
+                self.assertTrue(any(warning.startswith('attribution.json') for warning in data['warnings']), text)
+        with self.subTest('wrong types'):
+            wrong = [dict(found, base_fails='true', culprit=None, gate=None),
+                     dict(found, verification_runs='3'), dict(found, verification_runs=True),
+                     dict(found, culprit=7), dict(found, inconclusive=['step 2']), dict(found, gate=[]),
+                     dict(found, gate={'outcome': 3})]
+            for obj in wrong:
+                self.write(plan / 'attribution.json', json.dumps(obj))
+                data = detail(plan)
+                self.assertIsNone(data['attribution'], obj)
+                self.assertTrue(any(warning.startswith('attribution.json') for warning in data['warnings']), obj)
+
+    def test_the_export_leaves_the_question_out_unless_texts_are_chosen(self):
+        plan = self.copy_plan()
+        self.write(plan / 'tasks/page/status', 'NEEDS_INPUT\n')
+        self.write(plan / 'tasks/page/needs_input.md', 'Which token should I use?\n')
+        catalog = Catalog(plans=[plan], registry=False)
+        key = run_key(plan)
+        for texts, expected in ((False, None), (True, 'Which token should I use?\n')):
+            with self.subTest(texts=texts):
+                _, body = export.build(catalog, key, texts=texts)
+                snapshot = re.search(r'<script type="application/json" id="forge-snapshot">(.*?)</script>',
+                                     body.decode('utf-8'), re.DOTALL).group(1)
+                tasks = json.loads(snapshot)['api'][f'/api/runs/{key}']['tasks']
+                page = next(task for task in tasks if task['id'] == 'page')
+                self.assertEqual(page['needs_input'], expected)
 
 
 class SummaryExtensionTests(unittest.TestCase):

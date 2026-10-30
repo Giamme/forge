@@ -32,7 +32,7 @@
   };
   const BACKOFF_FORMS = 'exp:<base>[,<cap>], linear:<start>,<step>[,<cap>] or list:<a>,<b>,… (seconds)';
   // A task status after which "Retry now" applies (or the policy stopped it).
-  const RETRYABLE = ['FAIL', 'UNKNOWN', 'TIMEOUT', 'ERROR', 'INTERRUPTED', 'BLOCKED', 'INVALIDATED'];   // scripts/forge-schedule.py RETRYABLE
+  const RETRYABLE = ['FAIL', 'UNKNOWN', 'TIMEOUT', 'ERROR', 'INTERRUPTED', 'BLOCKED', 'INVALIDATED'];   // scripts/forge-schedule.py RETRYABLE; NEEDS_INPUT is in neither list
 
   const obj = v => v && typeof v === 'object' && !Array.isArray(v) ? v : {};
   const num = v => typeof v === 'number' && Number.isFinite(v) ? v : null;
@@ -216,9 +216,10 @@
   }
   const requestText = st => st.state === 'refused' ? `refused${st.reason ? ': ' + st.reason : ''}` : st.state;
   // Whether "Retry now" shows for a task: live only, after it ended without passing or once the policy stopped it.
+  // Never for a task waiting for an answer: forge refuses a retry without one (retry --answer).
   const canRetry = (controls, id) => {
     const c = obj(controls), v = taskValues(c, id);
-    return c.live === true && v.known && v.status !== 'MERGED' && (RETRYABLE.includes(v.status) || v.stop);
+    return c.live === true && v.known && v.status !== 'MERGED' && v.status !== 'NEEDS_INPUT' && (RETRYABLE.includes(v.status) || v.stop);
   };
   // A task's controls with the effective value of each: an override wins, else the run's value is inherited.
   function taskValues(controls, id) {

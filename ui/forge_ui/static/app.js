@@ -106,7 +106,7 @@ window.ForgeApp = (() => {
   function link(text, key, sel) { const a = el('a', text); a.href = hashFor(key, sel); return a; }
 
   const statuses = new Set(['merged', 'pass', 'running', 'pending', 'fail', 'error', 'infra',
-    'timeout', 'unknown', 'invalidated', 'blocked', 'interrupted', 'nochanges', 'conflict', 'accepted', 'outdated']);
+    'timeout', 'unknown', 'invalidated', 'blocked', 'interrupted', 'nochanges', 'conflict', 'accepted', 'outdated', 'needs_input']);
   function chip(value, cls) {
     const status = String(cls || value || 'unknown').toLowerCase();
     return el('span', value || '—', 'chip st-' + (statuses.has(status) ? status : 'unknown'));

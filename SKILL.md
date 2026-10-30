@@ -69,6 +69,10 @@ For explanation requests, explain the workflow without spending model quota.
   lists them). Never set a control, pin, `drain|stop|retry` or delete a run with `forge control` /
   `forge runs rm` unless the user asks. Exit `130` / `INTERRUPTED`: the run was signalled or
   stopped; relay the `retry` lines it printed.
+- A run that ends with a `waiting for your answer:` block has tasks in status `NEEDS_INPUT`: the
+  implementer asked a question only the user can answer. Relay each question to the user
+  verbatim, and pass the reply with `retry <plan> <id> --answer "<reply>"`. Never answer for the
+  user, and never retry such a task without an answer: nothing else resumes it.
 - Exit `8` / status `INFRA` is a quota, auth or network stop, not a task failure and no
   attempt was spent: report it, say what to fix, and re-run only when told. For a multi-task
   plan, offer the opt-in whole-run review (`review`, or `integrate --final-review <qa-spec>`);
@@ -86,6 +90,8 @@ For explanation requests, explain the workflow without spending model quota.
   - `ask` (the default): show the dry-run summary (count by severity, titles, anything already filed) and ask once: **"File these N findings as GitHub issues? [all / CONFIRMED only / none]"**. Then re-run with `--apply`, adding `--include-plausible` only for "all".
   - `auto`: file them without asking (`--apply`, PLAUSIBLE included as "to verify" issues) and report what was created and skipped.
   - `off`: never offer.
+
+  With the `findings` gate on (`forge decide gate findings on`), forge's filer adds `preselect` and `reason` to each finding in the dry-run JSON, and `--apply` turns a reworded duplicate of an open issue into a comment on it (`comments`, `commented`). `ask` shows the pre-selected findings and the reason for each one left out, and files the ones the user keeps with `--only <fps> --max-issues <count>`. `auto` files only the pre-selected ones the same way.
 
   `--file-issues` is an instruction to you: never forward it to a runner. Skip INFRA, interrupted and still-failing runs. Both filers mark each issue with the same finding fingerprint and skip a finding either one already filed, so offering again after a retry only brings up new ones. A draft flagged as a possible duplicate is skipped on `--apply`: show it, and file it (`--confirm-new`) only if the user says it is different.
 - Decision models (Jev, Clef) are optional, off until a gate is opted in with `forge decide`,
@@ -111,6 +117,10 @@ For explanation requests, explain the workflow without spending model quota.
    Pass the recorded Fractal choice and requested limits to the execution runner; tier
    pools go to solo directly or decomposed `plan`. Fractal does not replace planner dispatch.
    `--timeout` applies to decomposed runs too (kept in the plan).
+   When `plan` exits 4, the prompt or coverage gate sent work back: read `<plan>/plan.sendback.md`,
+   rewrite each listed task's `prompt.md`, and extend or add tasks for each uncovered
+   requirement (with `--planner`, re-dispatch it with that file appended), then run `plan`
+   again, once. Forge never sends the same task or requirement back twice.
 4. Runners default to summary output. Read each `dwarf.last` and `qa.last` once; retrieve raw
    logs only when needed. Report findings faithfully, and identify verification
    limits. Source or review mutations invalidate acceptance. Missing verdicts are UNKNOWN.
