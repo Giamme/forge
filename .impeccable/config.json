@@ -1,0 +1,17 @@
+{
+  "detector": {
+    "ignoreRules": [],
+    "ignoreFiles": [],
+    "ignoreValues": [
+      {
+        "rule": "side-tab",
+        "value": "*",
+        "files": [
+          "ui/forge_ui/static/style.css"
+        ],
+        "createdAt": "2026-10-30T15:58:44.125Z",
+        "reason": "Agent: .vfy-test's 3px inset is the lamp-red status rail for a new failing test (lamp-off when known), not a decorative card accent"
+      }
+    ]
+  }
+}

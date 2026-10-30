@@ -498,6 +498,16 @@ test('the attribution line names the culprit, the failing base, or the inconclus
   assert.equal(RM.attributionLine(null), null);
 });
 
+test('repoLabel: a known branch, an unknown branch, the main checkout, and a summary without the three fields', () => {
+  const known = { repo: '/dev/forge-c2', repo_root: '/dev/forge', repo_worktree: '/dev/forge-c2', repo_branch: 'fix/milestone-c2' };
+  assert.deepEqual(RM.repoLabel(known), { name: 'forge', worktree: 'forge-c2 (fix/milestone-c2)' });
+  assert.deepEqual(RM.repoLabel({ ...known, repo_branch: null }), { name: 'forge', worktree: 'forge-c2' }, 'unknown branch');
+  assert.deepEqual(RM.repoLabel({ repo: '/dev/forge', repo_root: '/dev/forge', repo_worktree: null, repo_branch: 'main' }),
+    { name: 'forge', worktree: null }, 'the main checkout names the repository and nothing after it');
+  assert.deepEqual(RM.repoLabel({ repo: '/old/tool' }), { name: 'tool', worktree: null },
+    'no repo_root, repo_worktree or repo_branch: basename(repo), no worktree part');
+});
+
 test('repo grouping: a run from a worktree joins its repository root; without repo_root it is grouped by repo', () => {
   const runs = [
     { key: 'a', repo: '/dev/forge', repo_root: '/dev/forge', goal: 'root run', updated: T0 - 1, counts: { MERGED: 1 } },
