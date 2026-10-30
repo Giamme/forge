@@ -136,7 +136,10 @@ indistinguishable from the same command typed in a terminal, except that `contro
   out. Anything that is not the run's own, or has uncommitted changes, is listed and left alone.
 - **Settings:** every config source in one view (`forge config show`) and edits for the
   per-repo ones (`repo.verify`, `repo.setup`, `repo.verify-subset`, and Jev on or off). The
-  registry stays read-only: the skill directory is often a live symlink to a checkout.
+  registry stays read-only: the skill directory is often a live symlink to a checkout. You pick
+  the repository through one of its runs, from a list grouped by repository that shows each
+  run's worktree and branch (arrow keys and typing work in it), and the page names the
+  directory the configuration was read from.
 
 Writing is protected, because anything that can reach the server could otherwise change your
 runs. The server makes a random token each time it starts and puts it in the page it serves;

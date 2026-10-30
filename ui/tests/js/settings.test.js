@@ -76,6 +76,21 @@ test('picker grouping: by repo, newest repo first, newest run first inside, runs
   assert.ok(S.optionLabel(run('r1', '/r', 1, { goal: 'x'.repeat(100) })).length < 70);
 });
 
+test('picker type-ahead: case-insensitive prefix, from the active option on, wrapping round', () => {
+  const labels = ['alpha · x', 'beta', 'apple', 'Bravo'];
+  for (const [from, query, want, why] of [
+    [0, 'a', 2, 'one letter moves on to the next label that starts with it'],
+    [2, 'a', 0, 'and wraps round'],
+    [2, 'aaa', 0, 'the same letter typed again keeps stepping'],
+    [0, 'BR', 3, 'case does not matter'],
+    [3, 'br', 3, 'a longer query that the active label matches stays on it'],
+    [-1, 'b', 1, 'with nothing active the search starts at the top'],
+    [0, 'z', -1, 'no label starts with it'],
+    [0, '', -1, 'an empty query matches nothing'],
+  ]) assert.equal(S.typeAhead(labels, from, query), want, why);
+  assert.equal(S.typeAhead([], 0, 'a'), -1);
+});
+
 test('dirty editor: untouched or equal-to-disk text follows the disk', () => {
   const e = S.editorOf('make\n');
   assert.equal(S.isDirty(e), false);

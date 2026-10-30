@@ -192,12 +192,27 @@
     }
     return [...groups.values()];
   }
-  // The run inside its repository's group. The worktree it started in belongs to the run; the group names the repository.
+  // The run inside its repository's group. The worktree it started in belongs to the run too, and the picker shows it
+  // beside this label as secondary text; the group names the repository.
   const optionLabel = r => {
     const goal = text(r.goal).split('\n')[0].trim();
     const short = goal.length > 60 ? goal.slice(0, 59) + '…' : goal;
-    return [r.run_id || r.key, short, RM.repoLabel(r).worktree].filter(Boolean).join(' · ');
+    return [r.run_id || r.key, short].filter(Boolean).join(' · ');
   };
+  // The option the picker's type-ahead lands on: the first label that starts with `query`, ignoring case, searching on from
+  // the active one `from` and wrapping round; -1 when none does. One letter typed again and again steps through the labels
+  // that start with it, so the search starts after the active label; a longer query starts at it, which stays put.
+  function typeAhead(labels, from, query) {
+    const all = list(labels), q = text(query).toLowerCase();
+    if (!q || !all.length) return -1;
+    const repeat = [...q].every(ch => ch === q[0]);
+    const want = repeat ? q[0] : q, start = repeat ? from + 1 : Math.max(from, 0);
+    for (let i = 0; i < all.length; i++) {
+      const at = (start + i) % all.length;
+      if (text(all[at]).toLowerCase().startsWith(want)) return at;
+    }
+    return -1;
+  }
 
   // An editor's unsaved text. `base` is the file as last read, `draft` the textarea (null: untouched). The CLI ends a saved
   // file with a newline, so trailing newlines do not count as an edit.
@@ -230,7 +245,7 @@
   function render(host, ctx) {
     const UI = root.ForgeUI, c = ctx || {};
     const el = (tag, t, cls) => UI.el(tag, t, cls);
-    const s = { run: null, data: null, dataText: null, error: null, writes: false, loading: true, editors: {}, moved: {}, models: {}, modelMoved: {}, hold: 0, redraw: false, seq: 0, gen: 0, runsSig: null, ready: false, loadedAt: 0, repo: null, gone: false, asking: 0, asks: 0, pickerLate: false };
+    const s = { run: null, data: null, dataText: null, error: null, writes: false, loading: true, editors: {}, moved: {}, models: {}, modelMoved: {}, hold: 0, redraw: false, seq: 0, gen: 0, runsSig: null, ready: false, loadedAt: 0, repo: null, gone: false, asking: 0, asks: 0, pickerLate: false, listOpen: false };
     const key_ = (label, cls, onclick) => { const b = el('button', label, cls); b.type = 'button'; if (onclick) b.addEventListener('click', onclick); return b; };
 
     const head = el('header', undefined, 'set-head');
@@ -247,10 +262,26 @@
     host.replaceChildren(head, picker, note, stale, body);
     const staleNote = msg => { stale.hidden = !msg; stale.textContent = msg ? `The last read of the configuration failed: ${msg}. This shows the read before it; the next refresh tries again.` : ''; };
 
-    /* the repository picker */
+    /* the repository picker: a button and a listbox rather than a native select, whose options hold plain text only, so
+       that each run can show the worktree it started in as secondary text. */
+    // The repository the configuration was read from, as the server answered; until then the run's root.
+    const repoPath = () => text(object(object(s.data).repo).path) || s.repo || '';
+    // A run as the picker shows it: its label, then its worktree as secondary text, with the full path and branch in its title.
+    function runFace(r) {
+      const face = [el('span', optionLabel(r), 'set-run-label')];
+      const worktree = RM.repoLabel(r).worktree;
+      if (worktree) {
+        const wt = el('span', worktree, 'muted repo-wt');
+        const branch = typeof r.repo_branch === 'string' ? r.repo_branch.trim() : '';
+        wt.title = r.repo_worktree + (branch ? `\nbranch ${branch}` : '');
+        face.push(wt);
+      }
+      return face;
+    }
     function drawPicker() {
-      // The switch confirm lives in the picker: while it is open the rebuild waits, and runs when it is answered.
-      if (s.asking) { s.pickerLate = true; return; }
+      // The switch confirm lives in the picker, and the open list is part of it: while either is open the rebuild waits,
+      // and runs when the confirm is answered or the list closes.
+      if (s.asking || s.listOpen) { s.pickerLate = true; return; }
       const runs = c.runs ? c.runs() : [];
       const groups = groupRuns(runs);
       const before = s.run, usable = withRepo(runs);
@@ -271,48 +302,118 @@
         if (!kept) resetRun();
         if (s.ready) { if (!kept) drawBody(); load(); }           // the default arrived, or the run went away
       }
-      const sig = JSON.stringify([s.run, s.gone, groups.map(g => [g.repo, g.runs.map(r => [r.key, optionLabel(r), r.repo_worktree || null])])]);
+      const sig = JSON.stringify([s.run, s.gone, repoPath(), groups.map(g => [g.repo, g.runs.map(r => [r.key, optionLabel(r), r.repo_worktree || null, r.repo_branch || null])])]);
       if (sig === s.runsSig) return;
       s.runsSig = sig;
       if (!groups.length) { picker.replaceChildren(el('p', 'No run names a repository yet, so there is nothing to configure.', 'muted')); return; }
-      const sel = el('select'); sel.id = 'set-run';
-      if (s.gone) { const o = el('option', 'This run is no longer listed'); o.value = ''; o.selected = true; o.disabled = true; sel.append(o); }
-      for (const g of groups) {
-        const og = el('optgroup'); og.label = g.name + ' · ' + g.repo;
+      const refocus = document.activeElement && document.activeElement.id === 'set-run';
+      const current = s.gone ? null : usable.find(r => r.key === s.run);
+
+      const btn = el('button', undefined, 'set-run'); btn.type = 'button'; btn.id = 'set-run';
+      btn.dataset.run = current ? current.key : '';
+      btn.setAttribute('aria-haspopup', 'listbox'); btn.setAttribute('aria-expanded', 'false');
+      btn.setAttribute('aria-controls', 'set-run-list'); btn.setAttribute('aria-labelledby', 'set-run-cap set-run');
+      if (current) btn.append(...runFace(current));
+      else btn.append(el('span', 'This run is no longer listed', 'set-run-label'));
+      const pop = el('div', undefined, 'set-run-pop popover'); pop.popover = 'auto'; pop.id = 'set-run-pop';
+      const box = el('div', undefined, 'set-run-list'); box.id = 'set-run-list'; box.tabIndex = -1;
+      box.setAttribute('role', 'listbox'); box.setAttribute('aria-labelledby', 'set-run-cap');
+      const options = [];
+      groups.forEach((g, i) => {
+        const group = el('div', undefined, 'set-run-group'); group.setAttribute('role', 'group');
+        const name = el('div', undefined, 'set-run-group-name'); name.id = 'set-run-g' + i;
+        name.append(el('span', g.name, 'plate'), el('span', g.repo, 'muted mono'));
+        group.setAttribute('aria-labelledby', name.id); group.append(name);
         for (const r of g.runs) {
-          const o = el('option', optionLabel(r)); o.value = r.key; o.selected = r.key === s.run;
-          if (r.repo_worktree) o.title = r.repo_worktree;   // the option's text carries the worktree; the title is its full path
-          og.append(o);
+          const o = el('div', undefined, 'set-run-opt'); o.id = 'set-run-o-' + r.key; o.dataset.run = r.key;
+          o.setAttribute('role', 'option'); o.setAttribute('aria-selected', String(r.key === btn.dataset.run));
+          o.append(...runFace(r)); group.append(o); options.push(o);
         }
-        sel.append(og);
+        box.append(group);
+      });
+      pop.append(box);
+
+      let active = -1, query = '', queryAt = 0;                    // the type-ahead's letters, and when the last came
+      const typing = () => query !== '' && Date.now() - queryAt < 700;
+      function activate(i) {
+        active = i;
+        options.forEach((o, j) => o.classList.toggle('is-active', j === i));
+        if (i < 0) { box.removeAttribute('aria-activedescendant'); return; }
+        box.setAttribute('aria-activedescendant', options[i].id);
+        options[i].scrollIntoView({ block: 'nearest' });
       }
-      sel.addEventListener('change', async () => {
+      const isOpen = () => pop.matches(':popover-open');
+      const close = () => { s.listOpen = false; btn.setAttribute('aria-expanded', 'false'); if (isOpen()) pop.hidePopover(); };
+      btn.popoverTargetElement = pop;                             // a click toggles the list; Escape or a click elsewhere closes it
+      btn.addEventListener('keydown', e => {
+        if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+        e.preventDefault();
+        if (!isOpen()) pop.showPopover();
+      });
+      // The open state as the list starts to open or close (beforetoggle runs at once); where it sits and the focus once it has
+      // (toggle runs after).
+      pop.addEventListener('beforetoggle', e => {
+        s.listOpen = e.newState === 'open'; btn.setAttribute('aria-expanded', String(s.listOpen));
+      });
+      pop.addEventListener('toggle', e => {
+        if (e.newState === 'open') {
+          // under the button, or above it when the button sits low on the screen
+          const r = btn.getBoundingClientRect();
+          pop.style.minWidth = Math.round(r.width) + 'px';
+          const h = pop.offsetHeight, below = window.innerHeight - r.bottom > h + 16;
+          pop.style.left = Math.round(Math.max(8, Math.min(window.innerWidth - pop.offsetWidth - 8, r.left))) + 'px';
+          pop.style.top = Math.round(below ? r.bottom + 4 : Math.max(8, r.top - h - 4)) + 'px';
+          query = '';
+          activate(Math.max(0, options.findIndex(o => o.dataset.run === btn.dataset.run)));
+          box.focus({ preventScroll: true });
+          return;
+        }
+        // Focus left with the list goes back to the button, the one on the page now (a choice may have rebuilt it).
+        const at = document.activeElement;
+        if (!at || at === document.body || pop.contains(at)) { const b = document.getElementById('set-run'); if (b) b.focus({ preventScroll: true }); }
+        if (s.pickerLate && !s.asking) { s.pickerLate = false; drawPicker(); }
+      });
+      box.addEventListener('keydown', e => {
+        const k = e.key, last = options.length - 1;
+        if (k === 'ArrowDown') activate(Math.min(last, active + 1));
+        else if (k === 'ArrowUp') activate(Math.max(0, active - 1));
+        else if (k === 'Home') activate(0);
+        else if (k === 'End') activate(last);
+        else if (k === 'Enter' || (k === ' ' && !typing())) { if (active >= 0) choose(options[active].dataset.run); }
+        else if (k === 'Tab') { close(); return; }
+        else if (k.length === 1 && !e.altKey && !e.ctrlKey && !e.metaKey) {
+          query = (typing() ? query : '') + k; queryAt = Date.now();
+          const at = typeAhead(options.map(o => o.firstChild.textContent), active, query);
+          if (at >= 0) activate(at);
+        } else return;
+        e.preventDefault();
+      });
+      box.addEventListener('mousemove', e => { const o = e.target.closest('[role=option]'); if (o && options.indexOf(o) !== active) activate(options.indexOf(o)); });
+      box.addEventListener('click', e => { const o = e.target.closest('[role=option]'); if (o) choose(o.dataset.run); });
+      async function choose(key) {
+        close();
+        if (key === btn.dataset.run) return;                      // the run already shown
         const unsaved = FILES.filter(n => s.editors[n] && isDirty(s.editors[n]));
         if (unsaved.length) {
           const ask = s.asking = ++s.asks;
           const yes = await UI.confirmInline(picker, `Switch repository and discard the unsaved edits to ${unsaved.map(n => '.forge/' + n).join(', ')}?`, { danger: true });
-          if (s.asking !== ask) return;                           // a later change asked again, and that confirm decides
+          if (s.asking !== ask) return;                           // a later choice asked again, and that confirm decides
           const late = s.pickerLate;
           s.asking = 0; s.pickerLate = false;
-          if (!yes) { sel.value = s.gone ? '' : s.run; if (late) drawPicker(); return; }
+          if (!yes) { if (late) drawPicker(); return; }
         }
-        pick(sel.value);
-      });
-      const lab = el('label', undefined, 'set-field'); lab.htmlFor = 'set-run';
-      lab.append(el('span', 'Repository of run', 'plate'));
-      const path = el('p', undefined, 'set-repo-path');
-      path.append(el('i', undefined, 'lamp lamp-route'), el('span', s.repo || '', 'mono'));
-      const row = el('div', undefined, 'set-picker-row'); row.append(lab, sel);
-      // a native option cannot hold secondary text, so the selected run's worktree also sits beside the select
-      const current = usable.find(r => r.key === s.run), worktree = current && RM.repoLabel(current).worktree;
-      if (worktree) {
-        const wt = el('span', worktree, 'muted repo-wt');
-        const branch = typeof current.repo_branch === 'string' ? current.repo_branch.trim() : '';
-        wt.title = current.repo_worktree + (branch ? `\nbranch ${branch}` : '');
-        row.append(wt);
+        pick(key);
       }
+
+      const lab = el('label', undefined, 'set-field'); lab.htmlFor = 'set-run';
+      const cap = el('span', 'Repository of run', 'plate'); cap.id = 'set-run-cap';
+      lab.append(cap);
+      const path = el('p', undefined, 'set-repo-path');
+      path.append(el('i', undefined, 'lamp lamp-route'), el('span', repoPath(), 'mono'));
+      const row = el('div', undefined, 'set-picker-row'); row.append(lab, btn, pop);
       picker.replaceChildren(row, path);
       if (s.gone) picker.append(el('p', 'The run is gone from the list. Your unsaved edits are kept; pick another run to continue, which discards them.', 'warn set-problem'));
+      if (refocus) btn.focus({ preventScroll: true });
     }
     // A new run: nothing of the old one stays, and confirms of the old body (now detached) no longer hold a redraw.
     function resetRun() {
@@ -356,6 +457,7 @@
       const t = JSON.stringify(res.data);
       if (t === s.dataText && !s.redraw) return;
       s.data = res.data; s.dataText = t;
+      drawPicker();                                               // its path line names the repository this read came from
       if (s.hold > 0) { s.redraw = true; return; }                // a confirm or a write is open: draw after it
       drawBody();
     }
@@ -741,6 +843,6 @@
   }
 
   return { render, configBody, repoKey, gateKey, targetPath, subsetOk, valueProblem, decideTextProblem, describeDecide, gateTags, replayDate,
-    pickDefault, groupRuns, optionLabel, editorOf, isDirty, dirtyState, edited, typed, shown, readFailure,
+    pickDefault, groupRuns, optionLabel, typeAhead, editorOf, isDirty, dirtyState, edited, typed, shown, readFailure,
     FILES, GATES, MODES, VALUE_MAX, DECIDE_VALUE_MAX, ADD_COMMAND };
 });

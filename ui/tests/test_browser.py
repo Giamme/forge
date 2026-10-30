@@ -618,9 +618,9 @@ class WorktreeLabel(unittest.TestCase):
         self.assertLessEqual(edges[1], edges[0])
         page.goto(self.url + '#/settings')
         page.wait_for_selector('#set-run')
-        self.assertEqual(page.input_value('#set-run'), self.solo_key)
-        self.assertEqual(page.text_content('.set-picker-row .repo-wt'), 'fixture-c2 (fix/milestone-c2)')
-        self.assertEqual(page.get_attribute('.set-picker-row .repo-wt', 'title'), f'{self.worktree}\nbranch {self.branch}')
+        self.assertEqual(page.get_attribute('#set-run', 'data-run'), self.solo_key)
+        self.assertEqual(page.text_content('#set-run .repo-wt'), 'fixture-c2 (fix/milestone-c2)')
+        self.assertEqual(page.get_attribute('#set-run .repo-wt', 'title'), f'{self.worktree}\nbranch {self.branch}')
         self.assertClean(page)
 
 

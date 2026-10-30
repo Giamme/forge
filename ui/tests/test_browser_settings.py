@@ -69,8 +69,9 @@ class Settings(unittest.TestCase):
         self.addCleanup(lambda: (self.server.shutdown(), self.server.server_close(), self.thread.join(timeout=2)))
         self.repos = {self.a: '/r/one', self.b: '/r/two'}
         self.configs = {self.a: config('/r/one', 'make test\n'), self.b: config('/r/two', 'pytest -q\n')}
-        self.fail = None                 # (status, body) to answer GET /api/config with, or None
+        self.failing = None                 # (status, body) to answer GET /api/config with, or None
         self.goal = None                 # a goal that replaces run a's in the run list
+        self.where = {}                  # key -> (repo_root, repo_worktree, repo_branch) the run list reports
 
     def page(self):
         page = self.open(cdn=False, view='2d')
@@ -83,13 +84,15 @@ class Settings(unittest.TestCase):
                 r['updated'] = 2000 if r['key'] == self.a else 1000           # run a is the default
                 if r['key'] == self.a and self.goal:
                     r['goal'] = self.goal
+                if r['key'] in self.where:
+                    r['repo_root'], r['repo_worktree'], r['repo_branch'] = self.where[r['key']]
             route.fulfill(status=200, content_type='application/json', body=json.dumps(data))
 
         def cfg(route):
             if route.request.method != 'GET':
                 return route.continue_()
-            if self.fail:
-                status, body = self.fail
+            if self.failing:
+                status, body = self.failing
                 return route.fulfill(status=status, content_type='application/json', body=json.dumps(body))
             key = parse_qs(urlparse(route.request.url).query)['run'][0]
             route.fulfill(status=200, content_type='application/json', body=json.dumps(self.configs[key]))
@@ -98,8 +101,17 @@ class Settings(unittest.TestCase):
         page.route('**/api/config?**', cfg)
         page.goto(self.url + '#/settings')
         page.wait_for_selector('#set-f-verify')
-        self.assertEqual(page.input_value('#set-run'), self.a)
+        self.assertEqual(self.shown(page), self.a)
         return page
+
+    def shown(self, page):
+        """The run the picker shows."""
+        return page.get_attribute('#set-run', 'data-run')
+
+    def choose(self, page, key):
+        """Open the picker and click the run's option."""
+        page.click('#set-run')
+        page.click(f'#set-run-list [data-run="{key}"]')
 
     def next_read(self, page):
         page.clock.fast_forward(READ_EVERY_MS)
@@ -111,28 +123,64 @@ class Settings(unittest.TestCase):
         page.wait_for_function("g => (window.ForgeUI.state.listText || '').includes(g)", arg=goal, timeout=20000)
 
     def option(self, page, key):
-        return page.text_content(f'#set-run option[value="{key}"]')
+        return page.text_content(f'#set-run-list [data-run="{key}"]')
 
     def test_a_switch_confirm_survives_a_run_list_change_and_its_answer_is_applied(self):
         page = self.page()
         page.fill('#set-f-verify', 'make test -j4')
         # no: the run and the edit stay, and the picker then shows the new list
-        page.select_option('#set-run', self.b)
+        self.choose(page, self.b)
         page.wait_for_selector('.set-picker .ui-confirm')
         self.relisted(page, 'a goal renamed while asking')
         self.assertEqual(page.locator('.set-picker .ui-confirm').count(), 1, 'the open confirm stays')
         page.click('.set-picker .ui-confirm button:text-is("Cancel")')
-        self.assertEqual(page.input_value('#set-run'), self.a)
+        self.assertEqual(self.shown(page), self.a)
         self.assertEqual(page.input_value('#set-f-verify'), 'make test -j4')
         self.assertIn('a goal renamed while asking', self.option(page, self.a))
         # yes: the switch happens and the edit is dropped
-        page.select_option('#set-run', self.b)
+        self.choose(page, self.b)
         page.wait_for_selector('.set-picker .ui-confirm')
         self.relisted(page, 'and renamed again')
         page.click('.set-picker .ui-confirm button:text-is("Confirm")')
         page.wait_for_function("() => document.querySelector('#set-f-verify')?.value === 'pytest -q\\n'")
-        self.assertEqual(page.input_value('#set-run'), self.b)
+        self.assertEqual(self.shown(page), self.b)
         self.assertIn('and renamed again', self.option(page, self.a))
+        self.assertClean(page)
+
+    def test_each_run_shows_its_worktree_as_secondary_text_and_the_picker_works_from_the_keyboard(self):
+        self.where = {self.b: ('/r/two', '/r/two-wt', 'fix/x')}
+        page = self.page()
+        option = f'#set-run-list [role=option][data-run="{self.b}"]'
+        self.assertEqual(page.text_content(f'{option} .repo-wt'), 'two-wt (fix/x)')
+        self.assertEqual(page.get_attribute(f'{option} .repo-wt', 'title'), '/r/two-wt\nbranch fix/x')
+        self.assertNotIn('two-wt', page.text_content(f'{option} .set-run-label'))
+        # ArrowDown opens the list on the run shown; ArrowDown and Enter choose the next one
+        page.focus('#set-run')
+        page.keyboard.press('ArrowDown')
+        page.wait_for_function("() => document.activeElement?.id === 'set-run-list'")     # the open list takes the focus
+        self.assertEqual(page.get_attribute('#set-run', 'aria-expanded'), 'true')
+        self.assertEqual(page.get_attribute('#set-run-list', 'aria-activedescendant'), f'set-run-o-{self.a}')
+        page.keyboard.press('ArrowDown')
+        page.keyboard.press('Enter')
+        page.wait_for_function("() => document.querySelector('#set-f-verify')?.value === 'pytest -q\\n'")
+        self.assertEqual(self.shown(page), self.b)
+        self.assertEqual(page.text_content('#set-run .repo-wt'), 'two-wt (fix/x)')
+        self.assertEqual(page.evaluate('document.activeElement.id'), 'set-run')
+        # Escape closes the list, keeps the run and gives the focus back to the button
+        page.keyboard.press('ArrowDown')
+        page.wait_for_function("() => document.activeElement?.id === 'set-run-list'")
+        page.keyboard.press('Escape')
+        page.wait_for_selector('#set-run-pop:not(:popover-open)', state='attached')
+        self.assertEqual((self.shown(page), page.get_attribute('#set-run', 'aria-expanded')), (self.b, 'false'))
+        self.assertEqual(page.evaluate('document.activeElement.id'), 'set-run')
+        self.assertClean(page)
+
+    def test_the_path_line_names_the_repository_the_configuration_was_read_from(self):
+        # The run's recorded root has moved away, so the server read the settings from the run's own checkout. The page
+        # names the directory the configuration came from, not the root it was told.
+        self.where = {self.a: ('/old/main', None, None)}
+        page = self.page()
+        self.assertEqual(page.text_content('.set-repo-path .mono'), '/r/one')
         self.assertClean(page)
 
     def test_typing_on_text_a_held_read_replaced_warns_that_the_file_changed(self):
@@ -207,7 +255,7 @@ class Settings(unittest.TestCase):
         page = self.page()
         self.assertEqual(page.text_content('#set-decide-privacy'),
                          'Nothing is sent. This repository is under a privacy floor.')
-        self.assertEqual(page.locator('.set-gate-skip').all_text_contents(), ['skip: privacy'] * 7)
+        self.assertEqual(page.locator('.set-gate-skip').all_text_contents(), ['skip: privacy'] * len(_GATES))   # every gate
         self.assertTrue(page.is_enabled('#set-gate-drift-mode'))
         self.assertIn('forge decide provider add …', page.text_content('#set-decide'))
         budget = page.text_content('#set-decide-budget')
@@ -218,14 +266,14 @@ class Settings(unittest.TestCase):
     def test_a_failed_read_after_a_good_one_keeps_the_page_and_the_unsaved_text(self):
         page = self.page()
         page.fill('#set-f-verify', 'make test -j4')
-        self.fail = (504, {'error': 'timeout', 'detail': 'forge config show timed out'})
+        self.failing = (504, {'error': 'timeout', 'detail': 'forge config show timed out'})
         with page.expect_response('**/api/config?**'):
             self.next_read(page)
         page.wait_for_selector('.set-stale:not([hidden])')
         self.assertIn('forge config show timed out', page.text_content('.set-stale'))
         self.assertEqual(page.input_value('#set-f-verify'), 'make test -j4')
         self.assertTrue(page.is_enabled('#set-f-verify + .set-problem + .set-keys button:text-is("Save")'))
-        self.fail = None
+        self.failing = None
         with page.expect_response('**/api/config?**'):
             self.next_read(page)
         page.wait_for_selector('.set-stale', state='hidden')
@@ -233,9 +281,9 @@ class Settings(unittest.TestCase):
         self.assertClean(page)
 
     def test_a_failed_first_read_shows_the_error_page(self):
-        self.fail = (504, {'error': 'timeout', 'detail': 'forge config show timed out'})
+        self.failing = (504, {'error': 'timeout', 'detail': 'forge config show timed out'})
         page = self.open(cdn=False, view='2d')
-        page.route('**/api/config?**', lambda route: route.fulfill(status=504, content_type='application/json', body=json.dumps(self.fail[1])))
+        page.route('**/api/config?**', lambda route: route.fulfill(status=504, content_type='application/json', body=json.dumps(self.failing[1])))
         page.goto(self.url + '#/settings')
         page.wait_for_selector('.set-body .warn')
         self.assertEqual(page.text_content('.set-body .warn'), 'Could not read the configuration: forge config show timed out')
