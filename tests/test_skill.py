@@ -58,6 +58,16 @@ class LauncherTests(unittest.TestCase):
                 self.assertEqual(re.findall(r'`forge ([a-z]+)`', result.stderr), [meant] if meant else [])
                 self.assertIn('usage: forge', result.stderr)
 
+    def test_a_command_group_run_alone_shows_its_help_as_a_usage_error(self):
+        # Like a bare `forge`: the group's own --help, on stderr, exit 2, rather than
+        # argparse's "the following arguments are required" line.
+        for name in ('fractal', 'decide', 'jev', 'dataset', 'ui', 'control', 'config'):
+            with self.subTest(name):
+                result = self.forge(name)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertEqual(result.stdout, '')
+                self.assertEqual(result.stderr, self.forge(name, '--help').stdout)
+
     def test_every_command_the_help_lists_is_routed(self):
         listed = re.findall(r'^  ([a-z]+) ', self.forge('--help').stdout, re.M)
         self.assertTrue(listed)

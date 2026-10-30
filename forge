@@ -46,6 +46,16 @@ hit = prefixed if len(prefixed) == 1 else difflib.get_close_matches(word, names,
 print(hit[0] if hit else "")' "$1" 2>/dev/null
 }
 
+# A command group given no subcommand prints its own help, the way a bare `forge` prints
+# the command list: on stderr with exit 2, rather than argparse's one "arguments are
+# required" line that names none of the subcommands.
+help_if_bare() {
+  [ "$1" -gt 0 ] && return 0
+  shift
+  "$@" --help >&2
+  exit 2
+}
+
 case "${1:-}" in
   install)
     shift
@@ -53,14 +63,17 @@ case "${1:-}" in
     ;;
   fractal)
     shift
+    help_if_bare $# python3 "$ROOT/scripts/forge-fractal.py"
     exec python3 "$ROOT/scripts/forge-fractal.py" "$@"
     ;;
   decide)
     shift
+    help_if_bare $# python3 "$ROOT/scripts/forge-decide.py"
     exec python3 "$ROOT/scripts/forge-decide.py" "$@"
     ;;
   jev)
     shift
+    help_if_bare $# python3 "$ROOT/scripts/forge-jev.py"
     # Only the launcher says so: forge's own callers run forge-jev.py directly.
     case "${1:-}" in
       setup) NEW='forge decide provider add …' ;;
@@ -76,6 +89,7 @@ case "${1:-}" in
     ;;
   dataset)
     shift
+    help_if_bare $# python3 "$ROOT/scripts/forge-dataset.py"
     exec python3 "$ROOT/scripts/forge-dataset.py" "$@"
     ;;
   issues)
@@ -84,6 +98,7 @@ case "${1:-}" in
     ;;
   ui)
     shift
+    help_if_bare $# python3 "$ROOT/scripts/forge-ui.py"
     exec python3 "$ROOT/scripts/forge-ui.py" "$@"
     ;;
   runs)
@@ -92,10 +107,12 @@ case "${1:-}" in
     ;;
   control)
     shift
+    help_if_bare $# python3 "$ROOT/scripts/forge-control.py"
     exec python3 "$ROOT/scripts/forge-control.py" "$@"
     ;;
   config)
     shift
+    help_if_bare $# python3 "$ROOT/scripts/forge-config.py"
     exec python3 "$ROOT/scripts/forge-config.py" "$@"
     ;;
   update)
