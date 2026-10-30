@@ -15,6 +15,7 @@ import shutil
 import sqlite3
 import subprocess
 import sys
+from unittest import mock
 import tempfile
 import threading
 import time
@@ -616,6 +617,39 @@ class EndToEndTests(StoreCase):
                          dict(verdict='FAIL', reviewer='shadow-model', worst='none'))
         self.assertIs(cases[1]['meta']['consensus'], False)
         self.assertEqual([c['expected'] for c in cases], [{'passes': True}, {'passes': True}])
+
+    def test_a_cohort_takes_the_shadow_pair_whose_primary_it_contains(self):
+        # Run A's earlier execution reviewed diff X while its ending dispatch reviewed Y;
+        # run B's ending dispatch reviewed X. A's pair sorts first but its primary is not
+        # in the cohort of X, so B's pair must still be found.
+        from forge_dataset import export
+
+        def row(run, dispatch):
+            return dict(run=run, task='t', attempt=1, repo='r', verdict='PASS', gate='pass',
+                        diff='X', review='', effort=None, model='m', reviewer={}, completeness='clean',
+                        worst='none', dispatch=dispatch)
+
+        a_early, a_end, b_end = object(), object(), object()
+        shadow_a = dict(d=dict(verdict='FAIL', model='s'))
+        shadow_b = dict(d=dict(verdict='PASS', model='s'))
+        primary_b = dict(d=dict(verdict='PASS'))
+        rows = [row('A', a_early), row('B', b_end)]
+        rows[1]['dispatch'] = primary_b
+        pairs = {('A', 't', 1): (a_end, shadow_a), ('B', 't', 1): (primary_b, shadow_b)}
+
+        class FakeRuns:
+            reviewed = {}
+            survival = {}
+
+            def prompt(self, run, task):
+                return 'task'
+
+        with mock.patch.object(export, '_qa_rows', return_value=iter(rows)), \
+                mock.patch.object(export, 'shadow_pairs', return_value=pairs):
+            cases = list(export.review_cases(FakeRuns()))
+        self.assertEqual(len(cases), 1)
+        self.assertEqual(cases[0]['meta']['shadow']['verdict'], 'PASS')
+        self.assertIs(cases[0]['meta']['consensus'], True)
 
     def test_a_solo_run_records_its_gate_and_the_tolerated_findings(self):
         self.scenario({'*.qa.*': {'verdict': 'PASS', 'findings': '- [P3][CONFIRMED] change.txt:1 — nit'}})

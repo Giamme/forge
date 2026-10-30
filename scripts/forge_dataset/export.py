@@ -750,13 +750,13 @@ def review_cases(runs: Runs):
             # shadow_pairs binds that comparison to the dispatch the attempt ended on. A gate
             # split exports every execution; only the cohort that contains that dispatch may
             # carry it, or an earlier review of the same attempt would count the pair too.
-            paired = next((shadows[k] for k in ((i['run'], i['task'], i['attempt']) for i, _ in cohort) if k in shadows), None)
+            paired = next((shadows[k] for k in dict.fromkeys((i['run'], i['task'], i['attempt']) for i, _ in cohort)
+                           if k in shadows and any(item.get('dispatch') is shadows[k][0] for item, _ in cohort)), None)
             if paired:
                 primary, shadow = paired
-                if any(item.get('dispatch') is primary for item, _ in cohort):
-                    meta['shadow'] = dict(verdict=shadow['d']['verdict'], reviewer=shadow['d'].get('model'),
-                                          worst=_worst(shadow['d'].get('findings') or []))
-                    meta['consensus'] = shadow['d']['verdict'] == primary['d']['verdict']
+                meta['shadow'] = dict(verdict=shadow['d']['verdict'], reviewer=shadow['d'].get('model'),
+                                      worst=_worst(shadow['d'].get('findings') or []))
+                meta['consensus'] = shadow['d']['verdict'] == primary['d']['verdict']
             # The one label here no reviewer decides: whether the merged diff's lines stayed.
             landed = next((runs.survival[c] for c in (runs.reviewed.get((i['run'], i['task'], i['attempt']))
                                                        for i, _ in cohort) if c in runs.survival), None)
