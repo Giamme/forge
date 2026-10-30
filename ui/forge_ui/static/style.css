@@ -307,10 +307,12 @@ body.resizing.rows { cursor: row-resize; }
 .run-sub { display: flex; gap: var(--s-2); align-items: baseline; font-size: var(--t-xs); color: var(--muted); min-width: 0; white-space: nowrap; }
 .run-sub .mono { font-size: var(--t-xs); overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 0 1 auto; }
 .run-sub .repo { color: var(--ink-2); font-weight: 600; flex: none; }
-.repo-line { display: flex; align-items: baseline; min-width: 0; }
-.run-sub .repo-line { overflow: hidden; flex: 0 1 auto; max-width: 100%; }
-.repo-wt { color: var(--muted); font-weight: 400; }
-.run-sub .repo-wt { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+/* the repository name and, for a worktree run, its checkout: the worktree part is capped and truncates, the name never does */
+.repo-line { display: inline-flex; align-items: baseline; max-width: 100%; min-width: 0; overflow: hidden; vertical-align: baseline; }
+.repo-line > .repo { flex: none; }
+.run-sub .repo-line { flex: 0 1 auto; }
+.run-where .repo-line { max-width: 36ch; }
+.repo-wt { color: var(--muted); font-weight: 400; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .run-sub .updated { margin-left: auto; flex: none; }
 .run-item .chips { margin-top: 3px; }
 .run-item .chip { font-size: .786rem; padding: 0 5px 0 4px; }
