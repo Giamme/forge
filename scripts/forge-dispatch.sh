@@ -811,9 +811,12 @@ fi
 
 wait "$hpid"; rc=$?
 # Its last sample is in before `finish` copies the clock into the attempt. A stop file, not a TERM:
-# a signal could reach a sampler still starting up and kill it before its first sample (#84).
+# a signal could reach a sampler still starting up and kill it before its first sample (#84). When
+# the file cannot be written (the run dir is gone, the disk is full), a TERM it is: the sampler
+# waits for that file or for its parent, and its parent is this `wait` (#100).
 if [ -n "$cpid" ]; then
-  : > "$RUN_DIR/$ROLE.clock.stop"; wait "$cpid" 2>/dev/null; cpid=""; rm -f "$RUN_DIR/$ROLE.clock.stop"
+  { : > "$RUN_DIR/$ROLE.clock.stop"; } 2>/dev/null || kill -TERM "$cpid" 2>/dev/null
+  wait "$cpid" 2>/dev/null; cpid=""; rm -f "$RUN_DIR/$ROLE.clock.stop"
 fi
 if [ -n "$wpid" ]; then
   # The watchdog is asleep in a child of its own; kill that too or it outlives the
