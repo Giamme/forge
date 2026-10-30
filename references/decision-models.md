@@ -10,14 +10,18 @@ optional. Read this when turning one on, when changing a site, or before proposi
 - **Always fail-open.** A timeout, an error, a refusal or a missing key is logged as a skip
   reason, and the run proceeds exactly as it would with the model off. A decision-model call
   can never fail a run.
-- **Never judges work.** A gate never changes a review verdict, a severity, `accept` or a PASS,
-  never blocks a dispatch, and never makes work pass. A decision model never changes a task's
-  tier or the model a task runs on, and never marks anything verified itself. With the gate
-  `on`, a gate acts only by sending work back early (or stopping it for the user's answer),
-  adding a declared file or dependency, ordering a search, pre-selecting what to file, or acting
-  on memory and on the verify command. Verify discover picks the command that runs when none is
-  configured; that command's own result decides verification. `shadow` asks and records, and
-  changes nothing. See [Gates and modes](#gates-and-modes) and [Setup](#setup).
+- **The rule: a gate never changes a verdict, never blocks a dispatch, and never makes work
+  pass.** It never changes a review verdict, a severity, `accept` or a PASS. A decision model
+  never changes a task's tier or the model a task runs on, and never marks anything verified
+  itself. With the gate `on`, a gate acts in one of these ways and no other: it sends a task's
+  prompt or an uncovered requirement back to the planner, once; it adds a predicted file to a
+  task's `files`, or a dependency that forms no cycle; it bounces a retry, skips the review of an
+  attempt that says it did not finish, or stops a task for the user's answer; it puts the likeliest
+  culprit's boundary first in the attribution search; it turns duplicate findings into comments and
+  pre-selects concrete ones for filing; or it acts on memory and on the verify command. Verify
+  discover picks the command that runs when none is configured; that command's own result decides
+  verification. `shadow` asks and records, and changes nothing. See [Gates and modes](#gates-and-modes)
+  and [Setup](#setup).
 - **`FORGE_JEV=off` sends nothing.** It turns every gate off. A repo privacy floor does the
   same and is applied after it. See [Setup](#setup).
 
@@ -41,9 +45,9 @@ How each kept site meets them:
 
 | site | changes | measured | baseline it beats | cost |
 |---|---|---|---|---|
-| drift | warns at plan time that a task may edit undeclared files | precision at `gate_warn` 0.60 over 50 commits × 2 repos: **1.000** and **0.934**; non-edited files scored ≤0.23 where the true file scored 0.65 | the post-wave `drift.txt`, which reports the broken promise only after the wave ran | one request per task |
-| forward | warns that an earlier-wave task may be written against what a later one builds | 7 cross-wave pairs, 5 runs each: `readme`→`cli` **0.88–0.90**, every other pair 0.05–0.15 (gap 0.73, noise 0.07) | wave order, which cannot see the case; the review cannot either | one request per plan |
-| prompt adequacy | warns that a prompt is too vague for a reviewer to judge correctness | 3 runs over 8 probe prompts and 8 real ones: unjudgeable **0.06–0.27**, checkable behaviour **0.85–0.96** | silence; the old 0.30 sat 0.03 above the worst true positive | one request per task |
+| drift | in `on`, adds the predicted undeclared file to the task's `files` before the waves are computed (in `shadow`, only recorded) | precision at `gate_warn` 0.60 over 50 commits × 2 repos: **1.000** and **0.934**; non-edited files scored ≤0.23 where the true file scored 0.65 | the post-wave `drift.txt`, which reports the broken promise only after the wave ran | one request per task |
+| forward | in `on`, makes the earlier-wave task wait for the later one it may be written against, unless that forms a cycle (in `shadow`, only recorded) | 7 cross-wave pairs, 5 runs each: `readme`→`cli` **0.88–0.90**, every other pair 0.05–0.15 (gap 0.73, noise 0.07) | wave order, which cannot see the case; the review cannot either | one request per plan |
+| prompt adequacy | in `on`, sends a task back to the planner, once, when a reviewer could not judge its prompt (in `shadow`, only recorded) | 3 runs over 8 probe prompts and 8 real ones: unjudgeable **0.06–0.27**, checkable behaviour **0.85–0.96** | silence; the old 0.30 sat 0.03 above the worst true positive | one request per task |
 | memory curate, slice, stale | refiles, merges, hides or drops a fact in `memory.md` | merge: wrong 0.56–0.72, right 0.91–1.00. Refile: wrong 0.56–0.72, right 0.92–1.00. Stale: gone false 0.03–0.10, still true 0.47–0.96 | exact-match keys (two wordings of one fact never reach two distinct runs) | curate at `record`, slice at `inject`, stale only on `prune` |
 | verify discover | picks a verify command when none is configured | 18 repos: 10 fire at 0.70, every pick correct, lowest correct 0.73, highest wrong 0.55 | `UNVERIFIED` | one request, only when nothing is configured |
 
@@ -76,8 +80,8 @@ gate has no legacy capability, so its own mode alone decides.
 |---|---|---|---|---|---|
 | `jev-prompt` | `gates` | `plan`, per task | sends a task whose prompt is below the threshold back to the planner, once (`plan` exits 4) | `prompt_warn` 0.55 (flags a probability below it) | `<plan>/jev.jsonl`; judgment in `tasks/<id>/jev.json`; `plan-gates.json` (`prompt`) |
 | `jev-drift` | `gates` | `plan`, per task | adds each predicted file at or above the threshold to the task's `files`, before the waves are computed | `drift_warn`, falls back to `gate_warn` 0.60 | `<plan>/jev.jsonl`; judgment in `tasks/<id>/jev.json`; `plan-gates.json` (`drift`) |
-| `jev-forward` | `gates` | `plan`, once | makes the earlier task of a warned pair depend on the later one, unless that would form a cycle (then recorded as refused) | `forward_warn` 0.50 | `<plan>/jev.jsonl`; `jev-coupling.json`; `plan-gates.json` (`forward`) |
-| `jev-coverage` | `—` | `plan`, once, one question per requirement of `request.md` (skipped above 40 tasks, with fewer than two requirements, or without `request.md`) | sends each uncovered requirement back to the planner, once (`plan` exits 4) | `coverage_warn` 0.50 (the probability that no task covers it) | `<plan>/jev.jsonl`; `plan-gates.json` (`coverage`, `sent_back`, `pending`) |
+| `jev-forward` | `gates` | `plan`, once | makes the earlier task of a warned pair depend on the later one, unless that would form a cycle (then recorded as refused); at most three pairs a plan (`MAX_WARNINGS`, the highest-scoring) | `forward_warn` 0.50 | `<plan>/jev.jsonl`; `jev-coupling.json`; `plan-gates.json` (`forward`) |
+| `jev-coverage` | `—` | `plan`, once, one question per requirement of `request.md`: the first 30 that have at least four words and are not repeated (`MAX_REQUIREMENTS`), so a later requirement is never asked. Skipped above 40 tasks, with fewer than two requirements, or without `request.md` | sends each uncovered requirement back to the planner, once (`plan` exits 4) | `coverage_warn` 0.50 (the probability that no task covers it) | `<plan>/jev.jsonl`; `plan-gates.json` (`coverage`, `sent_back`, `pending`) |
 | `jev-retry-addressed` | `—` | a retry (attempt above 1) whose retry findings came from a review, after its diff is taken and before QA | bounces the retry back to its implementer without a review when its diff leaves a blocking finding untouched | `untouched_warn` 0.70 | `tasks/<id>/jev.jsonl`; `bounced` and `bounce.md`; attempts.tsv `BOUNCED`; dataset attempt `sent_back: bounce` |
 | `jev-dwarf-message` | `—` | each implementer reply, before its diff is taken and before any review | stops the task as `NEEDS_INPUT` when the message asks a question only the user can answer; sends the attempt back as FAIL without a review when it says it did not finish or was blocked | `message_ask` 0.70 (question); `message_warn` 0.70 (unfinished, blocked) | `tasks/<id>/jev.jsonl`; `needs_input.md` or `message.md` with `message.failed`; attempts.tsv `INCOMPLETE`; dataset attempt `sent_back: message` (not for a question) |
 | `jev-attribution` | `—` | `attribute` and `run --attribute`, once per search, after a failed combined verification | ranks the merged tasks, and in `on` verifies the top suspect's boundary first; nothing is merged, reverted or accepted | none (it orders a search) | `<plan>/jev.jsonl`; `attribution.json` (`gate`); the `attribution` event |
@@ -147,8 +151,8 @@ Twelve gates, each `off` (the default), `shadow` or `on`:
 `findings`, `memory-curate`, `memory-slice`, `memory-stale`, `verify-discover`.
 
 `off` asks nothing. `shadow`, on every gate, asks and records the answer, then leaves the run
-as it would have been with the gate off: no note, no work sent back, no memory edit, no comment,
-no verify command.
+as it would have been with the gate off: no note, no work sent back, no retry bounced, no review
+skipped, no task stopped, no search reordered, no memory edit, no comment, no verify command.
 
 What `on` does:
 
@@ -157,7 +161,7 @@ What `on` does:
 | `drift` | adds each file it predicts at or above `drift_warn` to the task's `files`, before the waves are computed, so the wave plan treats it as declared |
 | `forward` | makes the earlier task of a warned pair depend on the later one, never one that would form a cycle; the waves are computed again |
 | `prompt` | sends a task whose prompt is below `prompt_warn` back to the planner, once |
-| `coverage` | sends each requirement of the request that no task covers back to the planner, once |
+| `coverage` | sends each uncovered requirement back to the planner, once (among the first 30 requirements of `request.md`) |
 | `retry-addressed` | bounces a retry back to its implementer without a review when its diff leaves a blocking finding untouched |
 | `dwarf-message` | skips the review of an attempt whose final message says it did not finish or was blocked (the attempt ends FAIL, unreviewed), or stops the task as `NEEDS_INPUT` when the message asks a question only the user can answer |
 | `attribution` | after a failed combined verification, verifies the likeliest culprit's boundary first |
@@ -167,10 +171,13 @@ What `on` does:
 | `memory-stale` | drops a fact that went false |
 | `verify-discover` | runs the chosen command when none is configured |
 
-`prompt` and `coverage` send work back **once**. `plan` writes `plan.sendback.md` listing what
-was flagged and exits 4 before it prints the table. Rewrite what the file lists, then run `plan`
-again. Whatever is still flagged on that second run is printed under the table and is not sent
-back again.
+`prompt` and `coverage` send work back **once** per item: a task for `prompt`, a requirement for
+`coverage`. `plan` writes `plan.sendback.md` listing what was flagged and exits 4 before it prints
+the table. Rewrite what the file lists, then run `plan` again. What is still flagged from that list
+is printed under the table and is not sent back again. An item the first list did not name is a new
+flag, such as a task the rewrite added with an unjudgeable prompt, or a requirement the rewrite left
+uncovered. That item is sent back in its own round, so the second `plan` can exit 4 again. No item
+is sent back twice; `plan-gates.json` keeps that history across re-plans.
 
 `dwarf-message` and `retry-addressed` send an attempt back without spending a review on it. The
 attempt ends FAIL, and the next attempt is handed the implementer's own words (`dwarf-message`) or
@@ -634,7 +641,11 @@ A new site takes this path, in this order. Skipping a step is how the sites in
      text (`tests/test_decide_flags.py` keeps it in step with `forge_decide.GATES`);
    - `ui/forge_ui/control.py`: `DECIDE_GATES`;
    - `ui/forge_ui/static/settings.js`: `GATES`;
-   - `ui/tests/test_browser_settings.py`: `_GATES`.
+   - `ui/tests/test_browser_settings.py`: `_GATES`;
+   - `ui/tests/js/settings.test.js`: the list its assertions compare the page with.
+
+   Three tests spell the list out by hand and need the name too: `tests/test_config.py`,
+   `tests/test_decide_cli.py` and `tests/test_gate_registry.py`.
 
    The shell asks `forge_decide_active <gate>` and the Python side asks `site_ready(site)`; both
    must be false when the gate is off, `FORGE_JEV=off` is set, the privacy floor is on, or the

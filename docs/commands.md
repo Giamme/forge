@@ -463,11 +463,14 @@ spent and nothing was judged — fix the cause and run the same command again ·
 `INTERRUPTED` and verification was skipped or stopped; the summary prints the `retry` for each.
 
 **`plan` and the plan-time gates.** With the `prompt` or `coverage` gate `on`, `plan` may send work
-back, once, and exits `4` before it validates the tasks or prints the table. It writes
-`plan.sendback.md`, listing the task prompts a reviewer could not judge and the requirements of
-`request.md` that no task's `## Acceptance criteria` covers. Rewrite what the file lists (a prompt,
-a task's criteria, or a new task), then run `plan` again. Anything sent back once is not sent back
-again: what is still flagged is printed in a `decision-model gates:` block under the table. `drift`
+back and exits `4` before it validates the tasks or prints the table. It writes `plan.sendback.md`,
+listing the task prompts a reviewer could not judge, and the requirements of `request.md` (the first
+30 with at least four words) that no task's `## Acceptance criteria` covers. Rewrite what the file
+lists (a prompt, a task's criteria, or a new task), then run `plan` again. An item goes back at most
+once, keyed by its task id (prompts) or its requirement (coverage). What is still flagged from that
+list is printed in a `decision-model gates:` block under the table and is not sent back again. An
+item the first list did not name, such as a new task whose prompt is flagged, is sent back in its
+own round, so the second `plan` can exit `4` again; no item goes back twice. `drift`
 and `forward`, when `on`, act without exiting: they add a predicted file to a task's `files`, or
 make a task depend on a later one, and the block says what they added. In `shadow` they change
 `tasks.tsv` and `waves.tsv` not at all, and their predictions go to `plan-gates.json` as `would_add`.
@@ -544,8 +547,8 @@ forge-jev.py memory-stale    --text T --anchor A [--run-dir D]
 
 The verbs `coverage`, `retry-addressed`, `dwarf-message`, `attribution` and `findings` check their
 paths first: `--plan`, `--repo` and `--run-dir` must be directories, and `--log` and `--input`
-files, else the verb exits `2`. Exit `3` is no opinion: the gate is off or in `shadow`, there is
-nothing to ask, or the model did not answer. A failed request is never a verdict. The rows the
+files, for the verbs that take them, else the verb exits `2`. Exit `3` is no opinion: the gate is
+off or in `shadow`, there is nothing to ask, or the model did not answer. A failed request is never a verdict. The rows the
 shell reads, one per item:
 
 - `coverage`: `r<i>`, the probability, and the requirement, for each uncovered requirement at or above `coverage_warn`.
