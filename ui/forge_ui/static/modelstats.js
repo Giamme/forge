@@ -83,7 +83,8 @@
       if (t) return taskMatch(t, f, now);
     }
     if (f.difficulty || f.exploratoryOnly) return false;
-    const r = runs.get(v.run) || {};
+    // no run summary loaded yet: the review row's own repo_root (reviews carry no repo) still names the project
+    const r = runs.get(v.run) || { repo_root: v.repo_root || null };
     if (!inProject(r, f.project)) return false;
     if (f.kind && r.kind !== f.kind) return false;
     return inPeriod(r.created, f, now);

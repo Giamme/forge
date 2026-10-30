@@ -42,3 +42,11 @@ test('the project filter names a root and matches every checkout of it; a saved 
   assert.equal(L('/old/tool').totals.tasks, 1, 'a row without repo_root matches by repo');
   assert.equal(L('/gone').totals.tasks, 0);
 });
+
+test('a final review whose run summary is not loaded yet still follows its own repo_root into the project filter', () => {
+  // /api/models can load before /api/runs: the review row is then the only place its repository is named
+  const data = { tasks: [], reviews: [{ run: 'r', task: null, kind: 'final', repo_root: '/dev/forge', alias: 'opus', spec: 'opus', verdict: 'PASS' }] };
+  assert.deepEqual(MS.options(data, []).projects.map(p => p.repo), ['/dev/forge']);
+  assert.equal(MS.leaderboard(data, { project: '/dev/forge' }, NOW, []).totals.reviews, 1, 'the project it offers keeps the review');
+  assert.equal(MS.leaderboard(data, { project: '/gone' }, NOW, []).totals.reviews, 0);
+});
