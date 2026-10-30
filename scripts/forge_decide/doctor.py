@@ -14,6 +14,8 @@ and thresholds only. Kinds:
     shadowed            a repo value the user file overrides
     misplaced           a user-only key in a repo file, or `privacy` in a user file
     key-file            a provider's key file is missing or not mode 0600
+    bad-price           a provider's price_usd_per_mtok is not a finite number above zero,
+                        so the price is ignored ({provider, value})
     privacy-floor       the repo has `privacy: never-send`
     not-migrated        jev.json exists but decide.json does not
     config-error        anything else wrong with reading the files
@@ -27,6 +29,7 @@ from pathlib import Path
 
 from . import GATES, config_dir, load_repo, load_user, repo_path, user_path
 from .migrate import retired_thresholds
+from .providers import _positive
 from .resolve import resolve
 
 MISPLACED_MARKERS = ('user file only', 'only in a repo file')
@@ -133,6 +136,32 @@ def _key_path(value: str) -> Path:
     return path if path.is_absolute() else config_dir() / path
 
 
+def _price_text(value) -> str:
+    if isinstance(value, float) and value != value:
+        return 'NaN'
+    if value == float('inf'):
+        return 'Infinity'
+    if value == float('-inf'):
+        return '-Infinity'
+    return str(value)
+
+
+def _bad_prices(providers: dict, items: list) -> None:
+    """A stored price _positive() would drop never counts toward a USD cap. A missing price
+    is unpriced on purpose and is not reported."""
+    for name in sorted(providers):
+        provider = providers[name]
+        if not isinstance(provider, dict) or 'price_usd_per_mtok' not in provider:
+            continue
+        value = provider['price_usd_per_mtok']
+        if value is None or _positive(value) is not None:
+            continue
+        shown = _price_text(value)
+        items.append(dict(kind='bad-price', provider=name, value=value,
+                          message=f'provider {name}: price_usd_per_mtok {shown} is ignored; '
+                                  f'set a finite number above zero with `forge decide provider add --price`'))
+
+
 def _key_files(providers: dict, items: list) -> None:
     for name, provider in sorted(providers.items()):
         key_file = provider.get('key_file') if isinstance(provider, dict) else None
@@ -195,6 +224,7 @@ def _checks(repo, env, items: list) -> None:
         if name not in used:
             items.append(dict(kind='unused-provider', provider=name,
                               message=f'provider {name!r} is configured but no gate uses it'))
+    _bad_prices(providers, items)
 
     for entry in resolved['shadowed']:
         items.append(dict(kind='shadowed', **entry,

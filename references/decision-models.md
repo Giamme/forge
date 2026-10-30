@@ -370,7 +370,9 @@ the measured default), `shadowed` (the user file wins over the repo), `privacy-f
 Problems: `retired-threshold`, `unknown-provider` (a gate names a provider that is not
 configured), `unused-provider`, `misplaced` (providers or a daily budget in a repo file, or
 `privacy` in the user file), `key-file` (missing, or not mode `0600`), `not-migrated`
-(`jev.json` exists and `decide.json` does not), `config-error`.
+(`jev.json` exists and `decide.json` does not), `config-error`, `bad-price` (a stored
+`price_usd_per_mtok` is not a finite number above zero, so it is ignored and that
+provider's spend does not count toward a USD cap).
 
 `--live` sends one fixed synthetic request, with no repo data, to each configured provider.
 It is the only `forge decide` subcommand that uses the network, and it is skipped when the

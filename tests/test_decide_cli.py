@@ -4,6 +4,7 @@ Every test gets private XDG config and state homes, and a temp git repo.
 """
 import dataset_isolation  # noqa: F401  keeps forge's dataset and config out of the developer's home
 import json
+import math
 import os
 from pathlib import Path
 import sqlite3
@@ -264,6 +265,44 @@ class MigrateAndDoctorTests(DecideCliTestCase):
         self.write_user(dict(version=1, gates=dict(drift=dict(mode='on', thresholds=dict(drift_warn=0.99)))))
         data = json.loads(self.decide('doctor', '--json').stdout)
         self.assertEqual({item['kind'] for item in data['items']}, {'threshold-override'})
+
+    def test_doctor_names_a_price_that_cannot_be_used(self):
+        path = self.cfg / 'forge' / 'decide.json'
+        path.parent.mkdir(parents=True)
+        # 1e999 is a JSON number Python reads as inf; write it as text so it is not
+        # collapsed to Infinity before it reaches the file.
+        path.write_text("""{
+          "version": 1,
+          "providers": {
+            "price-inf": {"type": "jev", "url": "http://127.0.0.1:9/a", "local": true, "price_usd_per_mtok": Infinity},
+            "price-nan": {"type": "jev", "url": "http://127.0.0.1:9/b", "local": true, "price_usd_per_mtok": NaN},
+            "price-huge": {"type": "jev", "url": "http://127.0.0.1:9/c", "local": true, "price_usd_per_mtok": 1e999},
+            "price-zero": {"type": "jev", "url": "http://127.0.0.1:9/d", "local": true, "price_usd_per_mtok": 0},
+            "price-neg": {"type": "jev", "url": "http://127.0.0.1:9/e", "local": true, "price_usd_per_mtok": -1},
+            "price-ok": {"type": "jev", "url": "http://127.0.0.1:9/f", "local": true, "price_usd_per_mtok": 2},
+            "price-none": {"type": "jev", "url": "http://127.0.0.1:9/g", "local": true}
+          }
+        }""")
+        data = json.loads(self.decide('doctor', '--json', code=1).stdout)
+        bad = {item['provider']: item for item in data['items'] if item['kind'] == 'bad-price'}
+        self.assertEqual(set(bad), {'price-inf', 'price-nan', 'price-huge', 'price-zero', 'price-neg'})
+        self.assertEqual(bad['price-inf']['value'], float('inf'))
+        self.assertEqual(bad['price-huge']['value'], float('inf'))
+        self.assertTrue(math.isnan(bad['price-nan']['value']))
+        self.assertEqual((bad['price-zero']['value'], bad['price-neg']['value']), (0, -1))
+        for item in bad.values():
+            self.assertIn('ignored', item['message'])
+            self.assertIn(item['provider'], item['message'])
+            self.assertIn('--price', item['message'])
+        lines = [line for line in self.decide('doctor', code=1).stdout.splitlines() if 'bad-price' in line]
+        self.assertEqual(len(lines), 5)
+        blob = '\n'.join(lines)
+        for line in lines:
+            self.assertTrue(line.startswith('[problem] bad-price'), line)
+        for name in bad:
+            self.assertIn(name, blob)
+        for name in ('price-ok', 'price-none'):
+            self.assertNotIn(name, blob)
 
     def test_doctor_live_is_skipped_under_the_privacy_floor(self):
         self.write_user(dict(version=1, providers=dict(spare=dict(type='jev', url='http://127.0.0.1:9/x',
