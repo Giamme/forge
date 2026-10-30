@@ -5,6 +5,17 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and versions follow the format `{major}.{minor}[.{patch}]` ([...] parts appear only when non-zero).
 
+## [0.13.1] - 2026-10-30
+
+Runs started from a git worktree now sit under their repository in forge-ui, showing the worktree and branch they started in. Also exact decision-model spend caps, and the right gate on each exported review.
+
+### Fixed
+
+- Decision-model spend caps: token caps compare exactly, a cost that overflowed to infinity counts as reaching the USD caps, and `forge decide doctor` names a provider whose price is unusable (`bad-price`).
+- `forge dataset export` gives each review the gate decision of its own QA execution: a review that ended in an outage before a QA-only resume no longer inherits the gate of the review the attempt ended on, and separate runs that met the same diff still export as one review case.
+- forge-ui groups runs by repository: a run started in any worktree of a repository joins that repository's group, also after the worktree is removed, and shows the worktree and branch it started in. New runs record `repo.identity` (root, worktree, branch); older runs are matched by their base commit. `/api/runs` carries `repo_root`, `repo_worktree` and `repo_branch`, and per-repository settings resolve against the repository rather than the worktree.
+- forge-ui Settings: the repository picker lists runs by repository with each run's worktree and branch, works from the keyboard (arrow keys, Enter, Escape, typing), and the page names the directory the configuration was actually read from.
+
 ## [0.13] - 2026-10-30
 
 Decision-model gates are now yours to set, off, shadow or on, per user or per repository with `forge decide`, and when on they act: drift and forward edit the plan, prompt and coverage send it back to the planner, and five new gates bounce unaddressed retries, read the implementer's final message, find the merge that broke verification and triage leftover findings. QA verdicts now follow a P2 blocking threshold in both directions, and a retry can continue the implementer's own session.
