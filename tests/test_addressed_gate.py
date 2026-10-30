@@ -128,6 +128,18 @@ class BounceTests(AddressedCase):
         self.assertIn('other.txt', since)
         self.assertIn('a.txt', since)
 
+    def test_a_retry_that_keeps_the_bounced_code_still_reaches_review(self):
+        # Nobody reviewed the bounced attempt, so an attempt that disputes the bounce and leaves
+        # the code as it was is reviewed, not refused as a byte-identical retry (that refusal is
+        # for a diff a review already failed: tests/test_retry.py).
+        self.gate('on', 0.9)
+        self.start(**{'a.dwarf.2': {'no_edit': True, 'files': {'other.txt': 'unrelated\n'}},
+                      'a.dwarf.3': {'no_edit': True}})
+        result = self.run_retries(2)
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertEqual(self.calls(), ['dwarf', 'qa', 'dwarf', 'dwarf', 'qa'])
+        self.assertEqual(self.statuses(self.plan), ['FAIL', 'BOUNCED', 'PASS'])
+
     def test_the_gate_only_sends_work_back_and_the_bounced_attempt_stays_a_fail(self):
         self.gate('on', 0.9)
         self.start(**{'a.dwarf.2': {'no_edit': True, 'files': {'other.txt': 'unrelated\n'}}})

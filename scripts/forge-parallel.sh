@@ -1043,7 +1043,11 @@ do_task_body() (
       echo "The dwarf produced no changes at all." > "$tdir/qa.last"
       note "$id: dwarf produced an empty diff"; return 1
     fi
-    if [ -s "$tdir/changes.prev.diff" ] && cmp -s "$tdir/changes.diff" "$tdir/changes.prev.diff"; then
+    # A bounced attempt (retry_findings.source `bounce`) was never reviewed, so a retry that keeps
+    # its code is reviewed rather than refused as identical: the refusal is for a diff a review
+    # already judged.
+    if [ -s "$tdir/changes.prev.diff" ] && cmp -s "$tdir/changes.diff" "$tdir/changes.prev.diff" \
+        && [ "$(cat "$tdir/retry_findings.source" 2>/dev/null)" != bounce ]; then
       echo FAIL > "$tdir/status"
       : > "$tdir/noretry"
       echo "The retry changed nothing: the diff is byte-identical to the previous attempt." \
