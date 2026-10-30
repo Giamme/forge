@@ -4,7 +4,6 @@ Every test gets private XDG config and state homes, and a temp git repo.
 """
 import dataset_isolation  # noqa: F401  keeps forge's dataset and config out of the developer's home
 import json
-import math
 import os
 from pathlib import Path
 import sqlite3
@@ -283,12 +282,19 @@ class MigrateAndDoctorTests(DecideCliTestCase):
             "price-none": {"type": "jev", "url": "http://127.0.0.1:9/g", "local": true}
           }
         }""")
-        data = json.loads(self.decide('doctor', '--json', code=1).stdout)
+        raw = self.decide('doctor', '--json', code=1).stdout
+        # Python's json.loads accepts Infinity and NaN. A strict consumer does not, so the
+        # value of a non-finite price is a string and the whole document must parse with
+        # those tokens rejected.
+        data = json.loads(raw, parse_constant=lambda token: self.fail(
+            'non-standard JSON number %s' % token))
         bad = {item['provider']: item for item in data['items'] if item['kind'] == 'bad-price'}
         self.assertEqual(set(bad), {'price-inf', 'price-nan', 'price-huge', 'price-zero', 'price-neg'})
-        self.assertEqual(bad['price-inf']['value'], float('inf'))
-        self.assertEqual(bad['price-huge']['value'], float('inf'))
-        self.assertTrue(math.isnan(bad['price-nan']['value']))
+        self.assertEqual(bad['price-inf']['value'], 'Infinity')
+        self.assertEqual(bad['price-huge']['value'], 'Infinity')
+        self.assertEqual(bad['price-nan']['value'], 'NaN')
+        self.assertNotIn('"value": Infinity', raw)
+        self.assertNotIn('"value": NaN', raw)
         self.assertEqual((bad['price-zero']['value'], bad['price-neg']['value']), (0, -1))
         for item in bad.values():
             self.assertIn('ignored', item['message'])

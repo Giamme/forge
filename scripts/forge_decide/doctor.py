@@ -15,7 +15,9 @@ and thresholds only. Kinds:
     misplaced           a user-only key in a repo file, or `privacy` in a user file
     key-file            a provider's key file is missing or not mode 0600
     bad-price           a provider's price_usd_per_mtok is not a finite number above zero,
-                        so the price is ignored ({provider, value})
+                        so the price is ignored ({provider, value}). NaN and ±Infinity are
+                        the strings "NaN", "Infinity" and "-Infinity": they are not JSON
+                        numbers, and `doctor --json` must stay standard JSON
     privacy-floor       the repo has `privacy: never-send`
     not-migrated        jev.json exists but decide.json does not
     config-error        anything else wrong with reading the files
@@ -146,6 +148,15 @@ def _price_text(value) -> str:
     return str(value)
 
 
+def _json_price(value):
+    """The stored price as strict JSON can carry it. NaN and Infinity are not JSON numbers,
+    so they are strings; a finite number (0, -1) stays a number."""
+    shown = _price_text(value)
+    if isinstance(value, float) and shown in ('NaN', 'Infinity', '-Infinity'):
+        return shown
+    return value
+
+
 def _bad_prices(providers: dict, items: list) -> None:
     """A stored price _positive() would drop never counts toward a USD cap. A missing price
     is unpriced on purpose and is not reported."""
@@ -157,7 +168,7 @@ def _bad_prices(providers: dict, items: list) -> None:
         if value is None or _positive(value) is not None:
             continue
         shown = _price_text(value)
-        items.append(dict(kind='bad-price', provider=name, value=value,
+        items.append(dict(kind='bad-price', provider=name, value=_json_price(value),
                           message=f'provider {name}: price_usd_per_mtok {shown} is ignored; '
                                   f'set a finite number above zero with `forge decide provider add --price`'))
 
