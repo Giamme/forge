@@ -733,10 +733,12 @@ def review_cases(runs: Runs):
                 baseline['passes'] = dict(source='hosted-jev qa effort', risk=EFFORT_RANK[r['effort'][0]] / 4.0)
             questions, expected = dict(passes=review_passes()), dict(passes=r['verdict'] == 'PASS')
             label_source = dict(passes='QA verdict')
-            # A graded label only where every finding the reviewer was sure of carries a severity:
-            # skipping the rest keeps "none" honest instead of counting unreadable reviews as clean.
-            if all(item['completeness'] in ('clean', 'graded') for item, _ in cohort) and \
-                    len({item['worst'] for item, _ in cohort}) == 1:
+            # A graded label only where every review of this diff agrees. The gate split
+            # exports each execution, but severity stays a property of the whole group:
+            # a clean PASS beside a PASS that lists a confirmed P2 disagree, so neither
+            # case is graded. Skipping an unreadable review keeps "none" honest.
+            if all(item['completeness'] in ('clean', 'graded') for item, _ in items) and \
+                    len({item['worst'] for item, _ in items}) == 1:
                 questions['severity'], expected['severity'] = review_severity(), r['worst']
                 label_source['severity'] = 'worst CONFIRMED finding (%s)' % r['completeness']
             meta = dict(completeness=r['completeness'], gate=r['gate'])

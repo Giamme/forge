@@ -477,6 +477,10 @@ class EndToEndTests(StoreCase):
                          [(None, 'PASS', 'none'), ('fail', 'PASS', 'P2')])
         cases = [c for c in export.review_cases(runs) if c['task'] == 'a']
         self.assertEqual([c['meta']['gate'] for c in cases], [row['gate'] for row in rows])
+        # Same diff and the same PASS, but the severities disagree (none vs P2). Exporting
+        # one case per gate must not grade them separately.
+        self.assertEqual(cases[0]['state'], cases[1]['state'])
+        self.assertEqual([c['expected'] for c in cases], [{'passes': True}, {'passes': True}])
         course = next(c['meta'] for c in export.routing_cases(runs) if c['task'] == 'a')
         self.assertEqual((course['gate_fail'], course['gate_pass'], course['raw_verdict']), (True, False, 'PASS'))
 
