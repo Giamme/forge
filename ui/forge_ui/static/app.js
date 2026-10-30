@@ -211,7 +211,8 @@ window.ForgeApp = (() => {
     return runs.sort(byTime);
   }
   // The repository's name, and — when the run started in a worktree — that checkout as secondary text.
-  // The worktree is "leaf (branch)": the leaf truncates first, the branch keeps its place. The title is the full path.
+  // The worktree is "leaf (branch)": the leaf truncates first, the branch keeps its place. The title is the full path
+  // and, on a second line, the full branch, since the branch can be truncated on screen.
   // No worktree: the name span alone, as before.
   function appendRepo(parent, run) {
     const label = RM.repoLabel(run);
@@ -219,8 +220,8 @@ window.ForgeApp = (() => {
     if (!label.worktree) { parent.append(name); return; }
     const line = el('span', undefined, 'repo-line');
     const wt = el('span', undefined, 'muted repo-wt');
-    wt.title = run.repo_worktree || '';
     const branch = typeof run.repo_branch === 'string' ? run.repo_branch.trim() : '';
+    wt.title = run.repo_worktree + (branch ? `\nbranch ${branch}` : '');
     const at = branch ? label.worktree.length - branch.length - 3 : label.worktree.length;   // " (" and ")" around the branch
     wt.append(el('span', label.worktree.slice(0, at), 'repo-leaf'), el('span', label.worktree.slice(at), 'repo-branch'));
     line.append(name, document.createTextNode(' · '), wt);

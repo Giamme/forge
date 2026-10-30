@@ -599,7 +599,7 @@ class WorktreeLabel(unittest.TestCase):
         self.assertEqual(row.locator('.repo-leaf').text_content(), 'fixture-c2')
         self.assertEqual(row.locator('.repo-branch').text_content().strip(), '(fix/milestone-c2)')
         self.assertEqual(row.locator('.repo-line').text_content(), 'fixture-repo · fixture-c2 (fix/milestone-c2)')
-        self.assertEqual(row.locator('.repo-wt').get_attribute('title'), self.worktree)
+        self.assertEqual(row.locator('.repo-wt').get_attribute('title'), f'{self.worktree}\nbranch {self.branch}')
         main = page.locator(f'#run-list [data-run="{self.plan_key}"]')
         self.assertEqual(main.locator('.repo').text_content(), 'fixture-repo')
         self.assertEqual(main.locator('.repo-wt').count(), 0)          # the main checkout has no worktree part
@@ -610,7 +610,7 @@ class WorktreeLabel(unittest.TestCase):
         page.wait_for_selector('#run-head .run-where .repo-wt')
         self.assertEqual(page.text_content('#run-head .run-where .repo'), 'fixture-repo')
         self.assertEqual(page.text_content('#run-head .run-where .repo-wt'), 'fixture-c2 (fix/milestone-c2)')
-        self.assertEqual(page.get_attribute('#run-head .run-where .repo-wt', 'title'), self.worktree)
+        self.assertEqual(page.get_attribute('#run-head .run-where .repo-wt', 'title'), f'{self.worktree}\nbranch {self.branch}')
         page.set_viewport_size({'width': 320, 'height': 800})     # narrow: the id stays inside its header row, the worktree gives way
         edges = page.evaluate("() => ['#run-head .run-title-row', '#run-head .run-where', '#run-head .run-where .mono']"
                               ".map(s => document.querySelector(s).getBoundingClientRect().right)")
@@ -620,7 +620,7 @@ class WorktreeLabel(unittest.TestCase):
         page.wait_for_selector('#set-run')
         self.assertEqual(page.input_value('#set-run'), self.solo_key)
         self.assertEqual(page.text_content('.set-picker-row .repo-wt'), 'fixture-c2 (fix/milestone-c2)')
-        self.assertEqual(page.get_attribute('.set-picker-row .repo-wt', 'title'), self.worktree)
+        self.assertEqual(page.get_attribute('.set-picker-row .repo-wt', 'title'), f'{self.worktree}\nbranch {self.branch}')
         self.assertClean(page)
 
 
