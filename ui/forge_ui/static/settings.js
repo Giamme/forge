@@ -303,6 +303,9 @@
       const path = el('p', undefined, 'set-repo-path');
       path.append(el('i', undefined, 'lamp lamp-route'), el('span', s.repo || '', 'mono'));
       const row = el('div', undefined, 'set-picker-row'); row.append(lab, sel);
+      // a native option cannot hold secondary text, so the selected run's worktree also sits beside the select
+      const current = usable.find(r => r.key === s.run), worktree = current && RM.repoLabel(current).worktree;
+      if (worktree) { const wt = el('span', worktree, 'muted repo-wt'); wt.title = current.repo_worktree; row.append(wt); }
       picker.replaceChildren(row, path);
       if (s.gone) picker.append(el('p', 'The run is gone from the list. Your unsaved edits are kept; pick another run to continue, which discards them.', 'warn set-problem'));
     }

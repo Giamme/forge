@@ -211,14 +211,18 @@ window.ForgeApp = (() => {
     return runs.sort(byTime);
   }
   // The repository's name, and — when the run started in a worktree — that checkout as secondary text.
-  // The worktree element's title is the full path. No worktree: the name span alone, as before.
+  // The worktree is "leaf (branch)": the leaf truncates first, the branch keeps its place. The title is the full path.
+  // No worktree: the name span alone, as before.
   function appendRepo(parent, run) {
     const label = RM.repoLabel(run);
     const name = el('span', label.name, 'repo');
     if (!label.worktree) { parent.append(name); return; }
     const line = el('span', undefined, 'repo-line');
-    const wt = el('span', label.worktree, 'muted repo-wt');
+    const wt = el('span', undefined, 'muted repo-wt');
     wt.title = run.repo_worktree || '';
+    const branch = typeof run.repo_branch === 'string' ? run.repo_branch.trim() : '';
+    const at = branch ? label.worktree.length - branch.length - 3 : label.worktree.length;   // " (" and ")" around the branch
+    wt.append(el('span', label.worktree.slice(0, at), 'repo-leaf'), el('span', label.worktree.slice(at), 'repo-branch'));
     line.append(name, document.createTextNode(' · '), wt);
     parent.append(line);
   }
@@ -743,7 +747,7 @@ window.ForgeApp = (() => {
       const title = el('h2', String(run.goal || 'Untitled run').split('\n')[0]); title.title = run.goal || '';
       const where = el('span', undefined, 'run-where'); where.title = `${run.repo || ''}\n${run.run_id || ''}`;
       appendRepo(where, run);
-      where.append(document.createTextNode(' '), el('span', run.run_id, 'mono'));
+      where.append(el('span', run.run_id, 'mono'));
       if (solo) where.append(document.createTextNode(' · solo run'));
       // the describer: each state's count, the wall time so far, and how long since anything moved
       const desc = el('span', undefined, 'describer');
