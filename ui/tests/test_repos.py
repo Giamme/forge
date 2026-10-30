@@ -400,6 +400,57 @@ class ReposTest(unittest.TestCase):
                                                source='base-commit'))
         self.assertIn('cat-file', [args[0] for _, args in calls])
 
+    def test_a_live_fall_through_run_is_resolved_again_when_a_new_root_appears(self):
+        main = self.make_repo('proj')
+        wt = self.tmp / 'wt'
+        git(main, 'worktree', 'add', '-q', '-b', 'a', str(wt))
+        moved = self.tmp / 'moved'
+        run = (self.make_run(wt), str(wt), 'plan')
+        # With its main checkout away the worktree is no readable checkout and keeps its path.
+        main.rename(moved)
+        self.assertEqual(repos.resolve([run])[run[0]]['source'], 'path')
+        moved.rename(main)
+        self.assertEqual(repos.resolve([run])[run[0]]['source'], 'path')
+        out = repos.resolve([run, (self.make_run(main), str(main), 'plan')])
+        self.assertEqual(out[run[0]], dict(root=str(main), worktree=str(wt), branch=None, source='live'))
+
+    def test_a_root_found_late_in_the_batch_reopens_every_stale_fall_through(self):
+        main = self.make_repo('proj')
+        wt = self.tmp / 'wt'
+        git(main, 'worktree', 'add', '-q', '-b', 'a', str(wt))
+        base = git(main, 'rev-parse', 'HEAD')
+        moved, gone = self.tmp / 'moved', self.tmp / 'gone'
+        # Both fall through while main is away: the worktree's git fails, main's path is missing.
+        main.rename(moved)
+        runs = [(self.make_run(gone, base=base), str(gone), 'plan'), (self.make_run(wt), str(wt), 'plan'),
+                (self.make_run(main), str(main), 'plan')]
+        self.assertEqual({i['source'] for i in repos.resolve(runs).values()}, {'path'})
+        moved.rename(main)
+        out = repos.resolve(runs)
+        self.assertEqual([out[r[0]]['source'] for r in runs], ['base-commit', 'live', 'live'])
+        self.assertEqual({out[r[0]]['root'] for r in runs}, {str(main)})
+
+    def test_malformed_worktree_listing_falls_through(self):
+        main = self.make_repo('proj')
+        other = str(self.tmp / 'other')
+        rows = {
+            'no NUL at all': f'worktree {other}'.encode(),
+            'record not closed': f'worktree {other}\0'.encode(),
+            'last record not closed': f'worktree {other}\0\0worktree {main}\0'.encode(),
+            'record without worktree': b'HEAD 0\0\0',
+            'relative path': b'worktree rel\0\0',
+            'empty': b'',
+        }
+        for name, stdout in rows.items():
+            with self.subTest(name):
+                repos._RESOLVED.clear()
+                repos._FALLTHROUGH.clear()
+                run = self.make_run(main)
+                done = subprocess.CompletedProcess([], 0, stdout, b'')
+                with patch.object(repos, '_run_git', return_value=done):
+                    out = repos.resolve([(run, str(main), 'plan')])
+                self.assertEqual(out[run], dict(root=str(main), worktree=None, branch=None, source='path'))
+
     def test_git_failure_or_timeout_never_raises(self):
         main = self.make_repo('proj')
         run = self.make_run(main)

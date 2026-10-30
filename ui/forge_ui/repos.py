@@ -41,7 +41,8 @@ short timeout; a failure or timeout means "not found". Within one ``resolve`` ca
 list`` runs at most once per distinct repo path and ``cat-file`` at most once per (root, sha).
 Results from steps 2 and 3 are cached for the life of the process by run dir (the repository of a
 run never changes); a step 4 result is cached with the known roots it was checked against and is
-resolved again only when that set changes. Step 1 needs no git and is not cached.
+resolved again only when that set changes or its repo path appears or vanishes. Step 1 needs no
+git and is not cached.
 """
 from __future__ import annotations
 
@@ -172,13 +173,34 @@ def _checkout_identity(repo):
         return _legacy_identity(repo)
     if done.returncode != 0:
         return True, None
+    return True, _live_identity(repo, _porcelain_z_paths(done.stdout) or [])
+
+
+def _porcelain_z_paths(out):
+    """The worktree paths of ``git worktree list --porcelain -z`` output, in order, or None unless
+    the whole output is well formed.
+
+    Every field ends with a NUL and every record with one more (an empty field). A record starts
+    with ``worktree <absolute path>``; the fields after it are not read but may not be empty.
+    """
+    if not isinstance(out, bytes) or not out.endswith(b'\0'):
+        return None
+    fields = out[:-1].split(b'\0')
     paths = []
-    for line in done.stdout.decode('utf-8', 'replace').split('\0'):
-        if line.startswith('worktree '):
-            path = line[len('worktree '):]
-            if os.path.isabs(path):
-                paths.append(path)
-    return True, _live_identity(repo, paths)
+    at_start = True
+    for field in fields:
+        if at_start:
+            if not field.startswith(b'worktree '):
+                return None
+            path = os.fsdecode(field[len(b'worktree '):])
+            if not os.path.isabs(path):
+                return None
+            paths.append(path)
+            at_start = False
+        elif not field:
+            at_start = True
+    # The last field must have closed a record.
+    return paths if at_start and paths else None
 
 
 def _rev_parse_path(repo, option):
@@ -322,7 +344,22 @@ def resolve(runs):
         return commit_checks[key]
 
     known_roots = set()
+
+    def found_by(given, found):
+        result[given] = found
+        if found['source'] != 'base-commit' and _is_dir(found['root']):
+            known_roots.add(found['root'])
+
+    def live_step(path, repo):
+        found = checkout(repo)
+        if found is not None:
+            with _LOCK:
+                _RESOLVED[(path, repo)] = dict(found)
+        return found
+
     pending = []
+    # Runs with a step 4 answer from an earlier call, held back until the known roots are final.
+    waiting = []
     # Steps 1 and 2 for the whole batch first: step 3 needs every root they found.
     for given, repo, kind in runs:
         path = os.fspath(given)
@@ -334,36 +371,45 @@ def resolve(runs):
         if found is None:
             with _LOCK:
                 found = _RESOLVED.get((path, repo))
+                cached = _FALLTHROUGH.get((path, repo))
             if found is not None:
                 found = dict(found)
-        if found is None and _is_dir(repo):
-            with _LOCK:
-                cached = _FALLTHROUGH.get((path, repo))
-            # A directory that was no checkout last time: no git call until the process ends. A
-            # path that was missing then (a restored worktree) is looked at again.
-            if cached is None or not cached[1]:
-                found = checkout(repo)
-                if found is not None:
-                    with _LOCK:
-                        _RESOLVED[(path, repo)] = dict(found)
+            elif cached is not None:
+                waiting.append((given, path, repo, kind, _is_dir(repo), cached))
+                continue
+            elif _is_dir(repo):
+                found = live_step(path, repo)
         if found is None:
             pending.append((given, path, repo, kind))
             continue
-        result[given] = found
-        if found['source'] != 'base-commit' and _is_dir(found['root']):
-            known_roots.add(found['root'])
+        found_by(given, found)
+
+    # A step 4 answer holds while the repo path has neither appeared nor vanished and the known
+    # roots are the ones it was checked against. A stale one goes through step 2 again, which can
+    # add a root and so make another one stale: repeat until the known roots stop changing.
+    while True:
+        roots_key = frozenset(known_roots)
+        still = []
+        for item in waiting:
+            given, path, repo, kind, live, cached = item
+            if cached[0] == roots_key and cached[1] == live:
+                still.append(item)
+                continue
+            found = live_step(path, repo) if live else None
+            if found is None:
+                pending.append((given, path, repo, kind))
+            else:
+                found_by(given, found)
+        waiting = still
+        if frozenset(known_roots) == roots_key:
+            break
+    for given, _path, _repo, _kind, _live, cached in waiting:
+        result[given] = dict(cached[2])
 
     roots_key = frozenset(known_roots)
     for given, path, repo, kind in pending:
         key = (path, repo)
-        with _LOCK:
-            cached = _FALLTHROUGH.get(key)
         live = _is_dir(repo)
-        # Known roots only matter to a run whose repo is gone; a live directory keeps its answer.
-        # An answer from before the path appeared or vanished is stale either way.
-        if cached is not None and cached[1] == live and (live or cached[0] == roots_key):
-            result[given] = dict(cached[2])
-            continue
         found = None
         if not live:
             sha = _base_commit(path, kind)
