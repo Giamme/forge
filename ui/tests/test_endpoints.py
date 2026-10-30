@@ -2,8 +2,10 @@ import base64
 import hashlib
 import http.client
 import json
+import os
 from pathlib import Path
 import re
+import subprocess
 import tempfile
 import threading
 import unittest
@@ -11,6 +13,15 @@ import unittest
 from forge_ui import reader
 from forge_ui.server import STATIC_DIR, make_server
 import run_fixture as F
+
+
+GIT_ENV = dict(os.environ, GIT_AUTHOR_NAME='t', GIT_AUTHOR_EMAIL='t@t', GIT_COMMITTER_NAME='t',
+               GIT_COMMITTER_EMAIL='t@t', GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_SYSTEM=os.devnull)
+
+
+def git(cwd, *args):
+    done = subprocess.run(['git', '-C', str(cwd), *args], check=True, capture_output=True, text=True, env=GIT_ENV)
+    return done.stdout.strip()
 
 
 OLD_CSP = ("default-src 'self'; style-src 'self'; script-src 'self'; img-src 'self' data:; "
@@ -115,7 +126,7 @@ class EndpointTests(unittest.TestCase):
                          (200, reader.task_detail(self.solo, 'solo')))
         self.assertEqual(self.get_json(f'/api/runs/{self.solo_key}/executions/{F.SOLO_QA}'),
                          (200, reader.execution_detail(self.solo, F.SOLO_QA)))
-        self.assertEqual(self.get_json(f'/api/runs/{self.key}'), (200, reader.detail(self.plan)))
+        self.assertEqual(self.get_json(f'/api/runs/{self.key}'), (200, self.catalog.get(self.key)))
         for name in (F.READER_DWARF1, F.GRAPH_QA):
             self.assertEqual(self.get_json(f'/api/runs/{self.key}/executions/{name}/transcript'),
                              (200, reader.execution_transcript(self.plan, name)), name)
@@ -188,6 +199,75 @@ class EndpointTests(unittest.TestCase):
         self.assertEqual(status, 405)
         self.assertEqual(self.header(headers, 'Content-Security-Policy'), OLD_CSP)
         self.assertEqual(self.header(headers, 'Referrer-Policy'), 'no-referrer')
+
+
+class RepoRootTests(unittest.TestCase):
+    """Every run names its repository's main checkout, in the list and in its detail alike."""
+
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        # realpath: git reports physical paths, and /var is a symlink on macOS.
+        self.base = Path(os.path.realpath(temp.name))
+        self.main, self.wt_a, self.wt_b = self.base / 'main', self.base / 'wt-a', self.base / 'wt-b'
+        self.main.mkdir()
+        git(self.main, 'init', '-q', '-b', 'main')
+        (self.main / 'f').write_text('x')
+        git(self.main, 'add', 'f')
+        git(self.main, 'commit', '-q', '-m', 'init')
+        self.sha = git(self.main, 'rev-parse', 'HEAD')
+        git(self.main, 'worktree', 'add', '-q', '-b', 'a', str(self.wt_a))
+        git(self.main, 'worktree', 'add', '-q', '-b', 'b', str(self.wt_b))
+        self.runs = {'main': self.make_run('main', self.main), 'a': self.make_run('a', self.wt_a),
+                     'b': self.make_run('b', self.wt_b), 'stray': self.make_run('stray', '/no/such/checkout', '0' * 40)}
+        # The run from wt-b also has repo.identity, which names its branch.
+        F.write(self.runs['b'] / 'repo.identity', dict(root=str(self.main), worktree=str(self.wt_b), branch='b'))
+        self.catalog = reader.Catalog(plans=list(self.runs.values()), registry=False)
+        server = make_server(self.catalog, port=0, quiet=True)
+        thread = threading.Thread(target=server.serve_forever, kwargs={'poll_interval': 0.05}, daemon=True)
+        thread.start()
+        self.addCleanup(lambda: (server.shutdown(), server.server_close(), thread.join()))
+        self.port = server.server_address[1]
+
+    def make_run(self, name, repo, base=None):
+        plan = F.make_plan(self.base / 'runs' / name)
+        F.write(plan / 'repo', f'{repo}\n')
+        F.write(plan / 'integration.base', f'{base or self.sha}\n')
+        return plan
+
+    def get_json(self, path):
+        conn = http.client.HTTPConnection('127.0.0.1', self.port, timeout=10)
+        try:
+            conn.request('GET', path)
+            response = conn.getresponse()
+            return response.status, json.loads(response.read())
+        finally:
+            conn.close()
+
+    def assert_fields(self, expected):
+        status, listed = self.get_json('/api/runs')
+        self.assertEqual(status, 200)
+        by_key = {run['key']: run for run in listed['runs']}
+        for name, fields in expected.items():
+            key = reader.run_key(self.runs[name])
+            self.assertEqual({field: by_key[key][field] for field in fields}, fields, f'{name} in the list')
+            status, detail = self.get_json(f'/api/runs/{key}')
+            self.assertEqual((status, {field: detail[field] for field in fields}), (200, fields), f'{name} detail')
+
+    def test_list_and_detail_name_the_main_checkout(self):
+        self.assert_fields({
+            'main': dict(repo=str(self.main), repo_root=str(self.main), repo_worktree=None, repo_branch=None),
+            'a': dict(repo=str(self.wt_a), repo_root=str(self.main), repo_worktree=str(self.wt_a), repo_branch=None),
+            'b': dict(repo=str(self.wt_b), repo_root=str(self.main), repo_worktree=str(self.wt_b), repo_branch='b'),
+            'stray': dict(repo='/no/such/checkout', repo_root='/no/such/checkout', repo_worktree=None,
+                          repo_branch=None)})
+
+    def test_a_removed_worktree_keeps_the_main_checkout_by_its_base_commit(self):
+        git(self.main, 'worktree', 'remove', '--force', str(self.wt_a))
+        self.assert_fields({
+            'a': dict(repo=str(self.wt_a), repo_root=str(self.main), repo_worktree=str(self.wt_a), repo_branch=None),
+            'stray': dict(repo='/no/such/checkout', repo_root='/no/such/checkout', repo_worktree=None,
+                          repo_branch=None)})
 
 
 if __name__ == '__main__':

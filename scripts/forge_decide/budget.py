@@ -7,9 +7,12 @@ left alone). The transports call check() before a request and charge() after it;
 has been reached turns every remaining call into a skip with reason 'budget'.
 
 Fail-open throughout: check() and charge() never raise, a counter that cannot be read or
-parsed counts as zero, and a lock or write failure skips the charge. Several processes of one
-run may charge at once, so each read-modify-write holds flock(LOCK_EX) on a sibling .lock
-file and the write is a temp file plus os.replace. Standard library only.
+parsed counts as zero, and a lock or write failure skips the charge. A stored usd of positive
+infinity is kept: an overflowed cost has reached the USD caps, and a later charge leaves it
+infinite. NaN, a negative, a non-number and an integer too big for a float still count as
+zero. Several processes of one run may charge at once, so each read-modify-write holds
+flock(LOCK_EX) on a sibling .lock file and the write is a temp file plus os.replace. Standard
+library only.
 """
 from __future__ import annotations
 
@@ -35,6 +38,31 @@ def _number(value) -> float:
         return value if math.isfinite(value) and value > 0 else 0
     except OverflowError:  # an integer too big for a float is corrupt, not a huge spend
         return 0
+
+
+def _usd(value) -> float:
+    """Stored USD spend. +inf stays inf: an overflowed cost reached the cap. NaN, a negative,
+    a non-number, or an integer too big for a float counts as zero."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return 0.0
+    try:
+        number = float(value)
+    except OverflowError:
+        return 0.0
+    if math.isnan(number) or number <= 0:
+        return 0.0
+    return number
+
+
+def _sum_usd(current: float, extra: float) -> float:
+    """Positive infinity stays infinity. A later charge must not turn it into NaN or zero."""
+    if _positive_inf(current) or _positive_inf(extra):
+        return math.inf
+    return current + extra
+
+
+def _positive_inf(value) -> bool:
+    return isinstance(value, float) and math.isinf(value) and value > 0
 
 
 def usage_tokens(usage) -> int:
@@ -76,7 +104,7 @@ def _read(path: Path | None) -> dict:
         return zero
     try:
         data = json.loads(path.read_text())
-        return {'tokens': int(_number(data['tokens'])), 'usd': float(_number(data['usd']))}
+        return {'tokens': int(_number(data['tokens'])), 'usd': _usd(data['usd'])}
     except (OSError, ValueError, KeyError, TypeError, OverflowError, RecursionError):
         return zero
 
@@ -88,7 +116,7 @@ def _add(path: Path, tokens: int, usd: float) -> None:
             fcntl.flock(lock, fcntl.LOCK_EX)
             total = _read(path)
             total['tokens'] += tokens
-            total['usd'] += usd
+            total['usd'] = _sum_usd(total['usd'], usd)
             tmp = path.with_name(f'{path.name}.{os.getpid()}.tmp')
             try:
                 tmp.write_text(json.dumps(total))
@@ -100,12 +128,15 @@ def _add(path: Path, tokens: int, usd: float) -> None:
 
 
 def _reached(spent, cap, slack=0.0) -> bool:
-    # The slack scales the (finite) spend, never the cap: an int cap too big for a float
-    # still compares exactly. A cap that cannot be compared never blocks, and never stops
-    # the other caps from being checked.
+    # Token caps pass no slack and compare as integers, so a count above 2^53 is exact.
+    # USD caps pass USD_SLACK, which scales the (finite) spend, never the cap: an int cap
+    # too big for a float still compares exactly. A cap that cannot be compared never
+    # blocks, and never stops the other caps from being checked.
     if cap is None:
         return False
     try:
+        if not slack:
+            return spent >= cap
         return spent * (1 + slack) >= cap
     except Exception:
         return False

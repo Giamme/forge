@@ -10,10 +10,11 @@
    with controls on. */
 (function (root, factory) {
   'use strict';
-  const api = factory(root);
+  const RM = typeof module === 'object' && module.exports ? require('./runmodel.js') : root.ForgeRunModel;
+  const api = factory(root, RM);
   if (typeof module === 'object' && module.exports) module.exports = api;
   else root.ForgeSettings = api;
-})(typeof self !== 'undefined' ? self : this, function (root) {
+})(typeof self !== 'undefined' ? self : this, function (root, RM) {
   'use strict';
 
   const FILES = ['verify', 'setup', 'verify-subset'];
@@ -172,7 +173,7 @@
   }
 
   // The runs a repository can be taken from (those that name one), newest first.
-  const withRepo = runs => list(runs).filter(r => r && r.key != null && typeof r.repo === 'string' && r.repo);
+  const withRepo = runs => list(runs).filter(r => r && r.key != null && typeof RM.repoKey(r) === 'string');
   const newestFirst = (a, b) => (Number(b.updated) || 0) - (Number(a.updated) || 0);
   // The run whose repository the page opens on: the current run when it is in the list, else the most recent one.
   function pickDefault(runs, current) {
@@ -181,18 +182,21 @@
     const latest = usable.slice().sort(newestFirst)[0];
     return latest ? latest.key : null;
   }
-  // The choices grouped by repository: [{repo, name, runs}], the repository of the newest run first.
+  // The choices grouped by repository root: [{repo, name, runs}], the repository of the newest run first.
   function groupRuns(runs) {
     const groups = new Map();
     for (const r of withRepo(runs).sort(newestFirst)) {
-      if (!groups.has(r.repo)) groups.set(r.repo, { repo: r.repo, name: basename(r.repo), runs: [] });
-      groups.get(r.repo).runs.push(r);
+      const repo = RM.repoKey(r);
+      if (!groups.has(repo)) groups.set(repo, { repo, name: basename(repo), runs: [] });
+      groups.get(repo).runs.push(r);
     }
     return [...groups.values()];
   }
+  // The run inside its repository's group. The worktree it started in belongs to the run; the group names the repository.
   const optionLabel = r => {
     const goal = text(r.goal).split('\n')[0].trim();
-    return [r.run_id || r.key, goal.length > 60 ? goal.slice(0, 59) + '…' : goal].filter(Boolean).join(' · ');
+    const short = goal.length > 60 ? goal.slice(0, 59) + '…' : goal;
+    return [r.run_id || r.key, short, RM.repoLabel(r).worktree].filter(Boolean).join(' · ');
   };
 
   // An editor's unsaved text. `base` is the file as last read, `draft` the textarea (null: untouched). The CLI ends a saved
@@ -255,19 +259,19 @@
       if (s.run != null && !usable.some(r => r.key === s.run)) {
         // The run left the list. Another run of the same repository carries on with the editors as they are; with unsaved
         // text and no such run the page stays on it, flagged, rather than throwing the text away.
-        const sibling = usable.slice().sort(newestFirst).find(r => r.repo === s.repo);
+        const sibling = usable.slice().sort(newestFirst).find(r => RM.repoKey(r) === s.repo);
         if (sibling) { s.run = sibling.key; kept = true; }
         else if (FILES.some(n => isDirty(s.editors[n]))) s.gone = true;
         else s.run = null;
       }
       if (s.run == null) s.run = pickDefault(runs, c.key);
       const now = usable.find(r => r.key === s.run);
-      if (now) s.repo = now.repo;
+      if (now) s.repo = RM.repoKey(now);
       if (s.run !== before) {
         if (!kept) resetRun();
         if (s.ready) { if (!kept) drawBody(); load(); }           // the default arrived, or the run went away
       }
-      const sig = JSON.stringify([s.run, s.gone, groups.map(g => [g.repo, g.runs.map(r => [r.key, optionLabel(r)])])]);
+      const sig = JSON.stringify([s.run, s.gone, groups.map(g => [g.repo, g.runs.map(r => [r.key, optionLabel(r), r.repo_worktree || null])])]);
       if (sig === s.runsSig) return;
       s.runsSig = sig;
       if (!groups.length) { picker.replaceChildren(el('p', 'No run names a repository yet, so there is nothing to configure.', 'muted')); return; }
@@ -275,7 +279,11 @@
       if (s.gone) { const o = el('option', 'This run is no longer listed'); o.value = ''; o.selected = true; o.disabled = true; sel.append(o); }
       for (const g of groups) {
         const og = el('optgroup'); og.label = g.name + ' · ' + g.repo;
-        for (const r of g.runs) { const o = el('option', optionLabel(r)); o.value = r.key; o.selected = r.key === s.run; og.append(o); }
+        for (const r of g.runs) {
+          const o = el('option', optionLabel(r)); o.value = r.key; o.selected = r.key === s.run;
+          if (r.repo_worktree) o.title = r.repo_worktree;   // the option's text carries the worktree; the title is its full path
+          og.append(o);
+        }
         sel.append(og);
       }
       sel.addEventListener('change', async () => {
@@ -295,6 +303,14 @@
       const path = el('p', undefined, 'set-repo-path');
       path.append(el('i', undefined, 'lamp lamp-route'), el('span', s.repo || '', 'mono'));
       const row = el('div', undefined, 'set-picker-row'); row.append(lab, sel);
+      // a native option cannot hold secondary text, so the selected run's worktree also sits beside the select
+      const current = usable.find(r => r.key === s.run), worktree = current && RM.repoLabel(current).worktree;
+      if (worktree) {
+        const wt = el('span', worktree, 'muted repo-wt');
+        const branch = typeof current.repo_branch === 'string' ? current.repo_branch.trim() : '';
+        wt.title = current.repo_worktree + (branch ? `\nbranch ${branch}` : '');
+        row.append(wt);
+      }
       picker.replaceChildren(row, path);
       if (s.gone) picker.append(el('p', 'The run is gone from the list. Your unsaved edits are kept; pick another run to continue, which discards them.', 'warn set-problem'));
     }

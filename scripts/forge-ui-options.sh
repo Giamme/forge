@@ -40,3 +40,28 @@ forge_ui_register() {
   python3 -I "$SKILL_DIR/scripts/forge_registry.py" register "$1" </dev/null >/dev/null 2>&1 || true
   return 0
 }
+
+# forge_repo_identity CHECKOUT DIR — write DIR/repo.identity, the repository CHECKOUT belongs to:
+# {"root", "worktree", "branch"}. root is the main working tree, the same for the main checkout
+# and every linked worktree; worktree is CHECKOUT's physical path when it differs from root, else
+# null; branch is its branch, null when HEAD is detached. It names the repository after a
+# worktree is removed, which the path in `repo` cannot. Written once, at creation: an existing
+# file stays.
+# Best effort like forge_ui_register: a failure leaves no file, and this always returns 0 and
+# prints nothing. Callers skip it in a --dry-run.
+forge_repo_identity() {
+  local checkout="${1:-}" dir="${2:-}" root phys rootphys worktree="" branch tmp
+  [ -n "$dir" ] && [ ! -e "$dir/repo.identity" ] || return 0
+  root="$(git -C "$checkout" worktree list --porcelain 2>/dev/null | awk '/^worktree /{ sub(/^worktree /, ""); print; exit }')"
+  [ -n "$root" ] || return 0
+  phys="$(cd "$checkout" 2>/dev/null && pwd -P)" || return 0
+  rootphys="$(cd "$root" 2>/dev/null && pwd -P)" || return 0
+  [ "$phys" = "$rootphys" ] || worktree="$phys"
+  branch="$(git -C "$checkout" symbolic-ref --short -q HEAD 2>/dev/null)"
+  tmp="$dir/repo.identity.$$.tmp"
+  # The values go in as arguments, never into the code. The redirect and mv sit in the group,
+  # so a refused write is silent too.
+  { python3 -I -c 'import json, sys; r, w, b = sys.argv[1:4]; print(json.dumps({"root": r, "worktree": w or None, "branch": b or None}, separators=(",", ":")))' "$root" "$worktree" "$branch" > "$tmp" \
+      && mv "$tmp" "$dir/repo.identity"; } 2>/dev/null || rm -f "$tmp" 2>/dev/null
+  return 0
+}

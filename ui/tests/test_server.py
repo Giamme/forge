@@ -213,7 +213,7 @@ class RoutesTests(ServerTestCase):
     def test_detail_matches_the_reader(self):
         status, _, body = self.request('GET', f'/api/runs/{reader.run_key(PLAN)}')
         self.assertEqual(status, 200)
-        self.assertEqual(json.loads(body), reader.detail(PLAN, source='root'))
+        self.assertEqual(json.loads(body), self.catalog.get(reader.run_key(PLAN)))
 
     def test_bad_keys_are_404_without_touching_the_catalog(self):
         catalog = FakeCatalog()

@@ -254,3 +254,21 @@ test('a failed read keeps a good page with a note, and replaces the page only be
   assert.deepEqual(S.readFailure({ ok: false, status: 0, error: 'network' }, true), { keep: true, message: 'could not reach forge-ui' });
   assert.deepEqual(S.readFailure({ ok: false, status: 0 }, false), { keep: false, message: 'could not reach forge-ui' });
 });
+
+test('picker grouping by repository root: the checkouts of one root share a group, a run without repo_root groups by repo', () => {
+  const runs = [
+    run('a', '/r/forge', 10, { repo_root: '/r/forge' }),
+    run('b', '/r/forge-c2', 40, { repo_root: '/r/forge', repo_worktree: '/r/forge-c2' }),
+    run('c', '/r/forge-c3', 30, { repo_root: '/r/forge' }),
+    run('d', '/r/tool', 5),
+  ];
+  const groups = S.groupRuns(runs);
+  assert.deepEqual(groups.map(g => [g.repo, g.name]), [['/r/forge', 'forge'], ['/r/tool', 'tool']]);
+  assert.deepEqual(groups[0].runs.map(r => r.key), ['b', 'c', 'a'], 'the newest run first inside the group');
+  assert.equal(S.pickDefault(runs, null), 'b', 'the newest run opens the page, whichever checkout it started in');
+});
+
+test('picker grouping: two roots with one folder name stay two groups', () => {
+  const runs = [run('a', '/work/forge', 10, { repo_root: '/work/forge' }), run('b', '/home/forge', 20, { repo_root: '/home/forge' })];
+  assert.deepEqual(S.groupRuns(runs).map(g => g.repo), ['/home/forge', '/work/forge']);
+});

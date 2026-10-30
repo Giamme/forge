@@ -93,6 +93,17 @@ class ExportTests(unittest.TestCase):
         self.assertEqual([r['key'] for r in snap['api']['/api/runs']['runs']], [self.key])
         self.assertEqual(snap['meta']['key'], self.key)
 
+    def test_the_snapshot_carries_the_repository_fields_of_the_run(self):
+        _, _, _, snap = self.build(paths=True)
+        run = snap['api']['/api/runs']['runs'][0]
+        self.assertEqual({key: run[key] for key in ('repo', 'repo_root', 'repo_worktree', 'repo_branch')},
+                         {'repo': '/example/fixture-repo', 'repo_root': '/example/fixture-repo',
+                          'repo_worktree': None, 'repo_branch': None})
+        self.assertEqual(snap['api'][f'/api/runs/{self.key}']['repo_root'], '/example/fixture-repo')
+        # Without paths, a whole absolute path is its last component, as the repo already was.
+        _, _, _, snap = self.build()
+        self.assertEqual(snap['api']['/api/runs']['runs'][0]['repo_root'], 'fixture-repo')
+
     def test_prompts_diffs_reports_and_local_paths_stay_out_unless_chosen(self):
         _, html, _, snap = self.build()
         self.assertFalse(snap['meta']['texts'])

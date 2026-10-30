@@ -2,6 +2,7 @@ import http.client
 import json
 import os
 from pathlib import Path
+import subprocess
 import tempfile
 import threading
 import unittest
@@ -15,6 +16,13 @@ import run_fixture as F
 PASS, FAIL = 'FORGE_VERDICT: PASS\n', '- [P2][CONFIRMED] a.py:1 — wrong.\n\nFORGE_VERDICT: FAIL\n'
 # attempts.tsv epochs far from any execution's end, so attempt numbers come from dataset.json.
 FAR = F.T0 + 90000
+GIT_ENV = dict(os.environ, GIT_AUTHOR_NAME='t', GIT_AUTHOR_EMAIL='t@t', GIT_COMMITTER_NAME='t',
+               GIT_COMMITTER_EMAIL='t@t', GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_SYSTEM=os.devnull)
+
+
+def git(cwd, *args):
+    done = subprocess.run(['git', '-C', str(cwd), *args], check=True, capture_output=True, text=True, env=GIT_ENV)
+    return done.stdout.strip()
 
 
 class Builder:
@@ -147,8 +155,9 @@ class ModelsTests(unittest.TestCase):
         rows = self.tasks(data)
         reader_row = rows['reader']
         self.assertEqual({key: reader_row[key] for key in reader_row if key != 'attempts'}, dict(
-            run=reader.run_key(plan), task='reader', kind='plan', repo='/example/fixture-repo', difficulty='high',
-            created=reader_row['created'], explored=True, propensity=0.125, final_status='MERGED', accepted=True,
+            run=reader.run_key(plan), task='reader', kind='plan', repo='/example/fixture-repo',
+            repo_root='/example/fixture-repo', difficulty='high', created=reader_row['created'], explored=True,
+            propensity=0.125, final_status='MERGED', accepted=True,
             escalations=[{'n': 1, 'from': 'luna', 'to': 'sol:xhigh'}]))
         self.assertEqual([(item['n'], item['alias'], item['outcome']) for item in reader_row['attempts']],
                          [(1, 'luna', 'fail'), (2, 'sol', 'pass')])
@@ -165,6 +174,7 @@ class ModelsTests(unittest.TestCase):
             (None, None, 'final', 'opus', 'FAIL', None, None), ('solo', 1, 'primary', 'opus', 'PASS', None, None)])
         final = [row for row in data['reviews'] if row['kind'] == 'final'][0]
         self.assertEqual((final['duration_s'], final['findings']['P1']), (390.0, 1))
+        self.assertEqual({row['repo_root'] for row in data['reviews']}, {'/example/fixture-repo', '/example/solo-repo'})
         json.dumps(data, allow_nan=False)
 
     def test_cache_and_its_invalidation(self):
@@ -195,6 +205,28 @@ class ModelsTests(unittest.TestCase):
         with patch('forge_ui.models._MAX_ROWS', 5):
             data = self.facts(plan, solo)
         self.assertEqual((data['truncated'], data['runs'], len(data['tasks'])), (True, 1, 5))
+
+    def test_a_root_that_appears_later_reaches_cached_rows(self):
+        main, wt = Path(os.path.realpath(self.base / 'main')), self.base / 'wt'
+        main.mkdir()
+        git(main, 'init', '-q', '-b', 'main')
+        (main / 'f').write_text('x')
+        git(main, 'add', 'f')
+        git(main, 'commit', '-q', '-m', 'init')
+        sha = git(main, 'rev-parse', 'HEAD')
+        git(main, 'worktree', 'add', '-q', '-b', 'w', str(wt))
+        plan = F.make_plan(self.base / 'runs')
+        F.write(plan / 'repo', f'{wt}\n')
+        F.write(plan / 'integration.base', f'{sha}\n')
+        git(main, 'worktree', 'remove', '--force', str(wt))
+        # Alone, the run is grouped under the path its repo names: no checkout of it is known.
+        self.assertEqual({row['repo_root'] for row in self.facts(plan)['tasks']}, {str(wt)})
+        # A run in the main checkout makes it a known root, so the removed worktree's run moves under it
+        # at once, though its facts were cached above.
+        solo = F.make_solo(self.base / 'runs')
+        F.write(solo / 'repo', f'{main}\n')
+        data = self.facts(plan, solo)
+        self.assertEqual({row['repo_root'] for row in data['tasks'] + data['reviews']}, {str(main)})
 
     def test_endpoint(self):
         plan = F.make_plan(self.base)

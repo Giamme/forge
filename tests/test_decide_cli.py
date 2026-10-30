@@ -265,6 +265,56 @@ class MigrateAndDoctorTests(DecideCliTestCase):
         data = json.loads(self.decide('doctor', '--json').stdout)
         self.assertEqual({item['kind'] for item in data['items']}, {'threshold-override'})
 
+    def test_doctor_names_a_price_that_cannot_be_used(self):
+        path = self.cfg / 'forge' / 'decide.json'
+        path.parent.mkdir(parents=True)
+        # 1e999 is a JSON number Python reads as inf; write it as text so it is not
+        # collapsed to Infinity before it reaches the file.
+        path.write_text("""{
+          "version": 1,
+          "providers": {
+            "price-inf": {"type": "jev", "url": "http://127.0.0.1:9/a", "local": true, "price_usd_per_mtok": Infinity},
+            "price-nan": {"type": "jev", "url": "http://127.0.0.1:9/b", "local": true, "price_usd_per_mtok": NaN},
+            "price-huge": {"type": "jev", "url": "http://127.0.0.1:9/c", "local": true, "price_usd_per_mtok": 1e999},
+            "price-zero": {"type": "jev", "url": "http://127.0.0.1:9/d", "local": true, "price_usd_per_mtok": 0},
+            "price-neg": {"type": "jev", "url": "http://127.0.0.1:9/e", "local": true, "price_usd_per_mtok": -1},
+            "price-list": {"type": "jev", "url": "http://127.0.0.1:9/h", "local": true, "price_usd_per_mtok": [NaN, Infinity, -Infinity, 0]},
+            "price-obj": {"type": "jev", "url": "http://127.0.0.1:9/i", "local": true, "price_usd_per_mtok": {"rate": NaN, "nested": [1, Infinity]}},
+            "price-ok": {"type": "jev", "url": "http://127.0.0.1:9/f", "local": true, "price_usd_per_mtok": 2},
+            "price-none": {"type": "jev", "url": "http://127.0.0.1:9/g", "local": true}
+          }
+        }""")
+        raw = self.decide('doctor', '--json', code=1).stdout
+        # Python's json.loads accepts Infinity and NaN. A strict consumer does not, so the
+        # value of a non-finite price is a string and the whole document must parse with
+        # those tokens rejected.
+        data = json.loads(raw, parse_constant=lambda token: self.fail(
+            'non-standard JSON number %s' % token))
+        bad = {item['provider']: item for item in data['items'] if item['kind'] == 'bad-price'}
+        self.assertEqual(set(bad), {'price-inf', 'price-nan', 'price-huge', 'price-zero', 'price-neg',
+                                    'price-list', 'price-obj'})
+        self.assertEqual(bad['price-inf']['value'], 'Infinity')
+        self.assertEqual(bad['price-huge']['value'], 'Infinity')
+        self.assertEqual(bad['price-nan']['value'], 'NaN')
+        self.assertEqual(bad['price-list']['value'], ['NaN', 'Infinity', '-Infinity', 0])
+        self.assertEqual(bad['price-obj']['value'], {'rate': 'NaN', 'nested': [1, 'Infinity']})
+        self.assertNotIn('"value": Infinity', raw)
+        self.assertNotIn('"value": NaN', raw)
+        self.assertEqual((bad['price-zero']['value'], bad['price-neg']['value']), (0, -1))
+        for item in bad.values():
+            self.assertIn('ignored', item['message'])
+            self.assertIn(item['provider'], item['message'])
+            self.assertIn('--price', item['message'])
+        lines = [line for line in self.decide('doctor', code=1).stdout.splitlines() if 'bad-price' in line]
+        self.assertEqual(len(lines), 7)
+        blob = '\n'.join(lines)
+        for line in lines:
+            self.assertTrue(line.startswith('[problem] bad-price'), line)
+        for name in bad:
+            self.assertIn(name, blob)
+        for name in ('price-ok', 'price-none'):
+            self.assertNotIn(name, blob)
+
     def test_doctor_live_is_skipped_under_the_privacy_floor(self):
         self.write_user(dict(version=1, providers=dict(spare=dict(type='jev', url='http://127.0.0.1:9/x',
                                                                   local=True))))

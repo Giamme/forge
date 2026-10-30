@@ -25,7 +25,7 @@
   };
   const DIFFS = ['low', 'medium', 'high'];
 
-  // FNV-1a: a short stable id for a project (its repo path)
+  // FNV-1a: a short stable id for a project (its repository root)
   function hashId(s) {
     let h = 0x811c9dc5;
     for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; }
@@ -35,11 +35,13 @@
   const startOf = r => num(r.created) ?? num(r.updated) ?? 0;
 
   /* ---------- projects and per-run facts ---------- */
+  // a run's project is its repository root (RM.repoKey), so a run started from a worktree joins its repository's project
+  const projectId = r => hashId(RM.repoKey(r) || '?');
   function projects(runs) {
     const by = new Map();
     for (const r of list(runs)) {
-      const repo = r.repo || '?', id = hashId(repo);
-      if (!by.has(id)) by.set(id, { id, repo: r.repo || null, name: RM.basename(r.repo), keys: [], first: Infinity, last: -Infinity, count: 0 });
+      const id = projectId(r), key = RM.repoKey(r);
+      if (!by.has(id)) by.set(id, { id, repo: key, name: RM.basename(key), keys: [], first: Infinity, last: -Infinity, count: 0 });
       const p = by.get(id), t = startOf(r);
       p.keys.push(r.key); p.count++; p.first = Math.min(p.first, t); p.last = Math.max(p.last, num(r.updated) ?? t);
     }
@@ -61,7 +63,7 @@
     if (state === 'live' && num(now) !== null && num(run.updated) !== null && now - run.updated > 7200) state = 'stale';
     const n = Math.max(1, num(run.task_count) || tasks.length || 1);
     const aliases = specs => new Set(list(specs).map(RM.alias).filter(Boolean));
-    return { key: run.key, run, project: hashId(run.repo || '?'), n, bucket: bucket(n), diff, dominant, state, t: startOf(run),
+    return { key: run.key, run, project: projectId(run), checkout: hashId(run.repo || '?'), n, bucket: bucket(n), diff, dominant, state, t: startOf(run),
       dwarf: aliases(run.dwarf_models || run.models), qa: aliases(run.qa_models || []), all: aliases(run.models),
       review: RM.runReviewStatus(run) || null, verification: run.verification_status || null, decompose: run.decompose_level || null, kind: run.kind };
   }
@@ -89,7 +91,8 @@
       const hay = [r.goal, r.repo, r.run_id, r.path, ...list(r.models), ...list(r.task_statuses).flatMap(t => [t.id, t.title])];
       if (!hay.some(v => String(v || '').toLowerCase().includes(text))) return false;
     }
-    if (f.projects.length && !f.projects.includes(fact.project)) return false;
+    // a saved project may be the checkout a run started in (a worktree, before it joined its root): the run still matches it
+    if (f.projects.length && !f.projects.includes(fact.project) && !f.projects.includes(fact.checkout)) return false;
     if (f.states.length && !f.states.includes(fact.state)) return false;
     if (f.kinds.length && !f.kinds.includes(fact.kind)) return false;
     if (f.difficulty.levels.length) {

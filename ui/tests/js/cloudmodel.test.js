@@ -183,3 +183,30 @@ test('task status helper returns ACCEPTED for a MERGED task with accepted: true'
   assert.equal(RM.taskStatus(null), 'PENDING');
 });
 
+
+test('projects are repository roots: three checkouts of one root are one project, a run without repo_root is its repo', () => {
+  const root = '/w/forge';
+  const rs = [
+    { key: hex(1), repo: root, repo_root: root, created: NOW - 400, updated: NOW - 100, task_count: 1 },
+    { key: hex(2), repo: '/w/forge-c2', repo_root: root, repo_worktree: '/w/forge-c2', created: NOW - 300, updated: NOW - 50, task_count: 1 },
+    { key: hex(3), repo: '/w/forge-c3', repo_root: root, repo_worktree: '/w/forge-c3', created: NOW - 200, updated: NOW - 20, task_count: 1 },
+    { key: hex(4), repo: '/w/tool', created: NOW - 100, updated: NOW - 10, task_count: 1 },
+  ];
+  const P = CM.projects(rs);
+  assert.deepEqual(P.map(p => [p.repo, p.name, p.count]), [[root, 'forge', 3], ['/w/tool', 'tool', 1]]);
+  const F = facts(rs);
+  assert.deepEqual(F.map(f => f.project), [P[0].id, P[0].id, P[0].id, P[1].id], 'a run lands in its root\'s project');
+  assert.deepEqual(F.filter(f => CM.match(f, { projects: [P[0].id] }, NOW)).map(f => f.key), [hex(1), hex(2), hex(3)]);
+  // a project saved before the worktree runs joined their root named the checkout: that run still matches it
+  assert.deepEqual(F.filter(f => CM.match(f, { projects: [F[1].checkout] }, NOW)).map(f => f.key), [hex(2)]);
+});
+
+test('projects: two roots with one folder name stay two projects, named by their parent folder', () => {
+  const rs = [
+    { key: hex(1), repo: '/work/forge', repo_root: '/work/forge', created: NOW - 200, updated: NOW - 100 },
+    { key: hex(2), repo: '/home/forge', repo_root: '/home/forge', created: NOW - 100, updated: NOW - 10 },
+  ];
+  const P = CM.projects(rs);
+  assert.deepEqual(P.map(p => p.name), ['forge (work)', 'forge (home)']);
+  assert.notEqual(facts(rs)[0].project, facts(rs)[1].project);
+});
