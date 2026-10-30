@@ -207,7 +207,7 @@ window.ForgeApp = (() => {
   function filteredRuns() {
     const runs = state.runs.filter(run => RM.matchRun(run, state.mapFilter, wall())), byTime = (a, b) => (b.updated || 0) - (a.updated || 0);
     if (state.runSort === 'state') return runs.sort((a, b) => STATE_ORDER[RM.runState(a)] - STATE_ORDER[RM.runState(b)] || byTime(a, b));
-    if (state.runSort === 'repo') return runs.sort((a, b) => RM.basename(a.repo).localeCompare(RM.basename(b.repo)) || byTime(a, b));
+    if (state.runSort === 'repo') return runs.sort((a, b) => RM.compareRepo(a, b) || byTime(a, b));
     return runs.sort(byTime);
   }
   function renderList() {

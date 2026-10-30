@@ -10,10 +10,11 @@
    with controls on. */
 (function (root, factory) {
   'use strict';
-  const api = factory(root);
+  const RM = typeof module === 'object' && module.exports ? require('./runmodel.js') : root.ForgeRunModel;
+  const api = factory(root, RM);
   if (typeof module === 'object' && module.exports) module.exports = api;
   else root.ForgeSettings = api;
-})(typeof self !== 'undefined' ? self : this, function (root) {
+})(typeof self !== 'undefined' ? self : this, function (root, RM) {
   'use strict';
 
   const FILES = ['verify', 'setup', 'verify-subset'];
@@ -172,7 +173,7 @@
   }
 
   // The runs a repository can be taken from (those that name one), newest first.
-  const withRepo = runs => list(runs).filter(r => r && r.key != null && typeof r.repo === 'string' && r.repo);
+  const withRepo = runs => list(runs).filter(r => r && r.key != null && typeof RM.repoKey(r) === 'string');
   const newestFirst = (a, b) => (Number(b.updated) || 0) - (Number(a.updated) || 0);
   // The run whose repository the page opens on: the current run when it is in the list, else the most recent one.
   function pickDefault(runs, current) {
@@ -181,12 +182,13 @@
     const latest = usable.slice().sort(newestFirst)[0];
     return latest ? latest.key : null;
   }
-  // The choices grouped by repository: [{repo, name, runs}], the repository of the newest run first.
+  // The choices grouped by repository root: [{repo, name, runs}], the repository of the newest run first.
   function groupRuns(runs) {
     const groups = new Map();
     for (const r of withRepo(runs).sort(newestFirst)) {
-      if (!groups.has(r.repo)) groups.set(r.repo, { repo: r.repo, name: basename(r.repo), runs: [] });
-      groups.get(r.repo).runs.push(r);
+      const repo = RM.repoKey(r);
+      if (!groups.has(repo)) groups.set(repo, { repo, name: basename(repo), runs: [] });
+      groups.get(repo).runs.push(r);
     }
     return [...groups.values()];
   }
@@ -255,14 +257,14 @@
       if (s.run != null && !usable.some(r => r.key === s.run)) {
         // The run left the list. Another run of the same repository carries on with the editors as they are; with unsaved
         // text and no such run the page stays on it, flagged, rather than throwing the text away.
-        const sibling = usable.slice().sort(newestFirst).find(r => r.repo === s.repo);
+        const sibling = usable.slice().sort(newestFirst).find(r => RM.repoKey(r) === s.repo);
         if (sibling) { s.run = sibling.key; kept = true; }
         else if (FILES.some(n => isDirty(s.editors[n]))) s.gone = true;
         else s.run = null;
       }
       if (s.run == null) s.run = pickDefault(runs, c.key);
       const now = usable.find(r => r.key === s.run);
-      if (now) s.repo = now.repo;
+      if (now) s.repo = RM.repoKey(now);
       if (s.run !== before) {
         if (!kept) resetRun();
         if (s.ready) { if (!kept) drawBody(); load(); }           // the default arrived, or the run went away
