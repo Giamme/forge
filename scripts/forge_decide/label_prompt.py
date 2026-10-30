@@ -11,8 +11,10 @@ is fired-right.
   false  the first attempt was reviewed, and neither
   none   the task is in `plan_gates.sent_back.prompt` of any revision (the gate acted, so what
          followed is its own doing), the task never ran, its first review is missing or cannot
-         be read (a rewrite alone is then no label), or the rewrite cannot be told (the request
-         has no prompt text, or the attempt's start is unknown)
+         be read (a rewrite alone is then no label), the rewrite cannot be told (the request
+         has no prompt text, or the attempt's start is unknown), or the task was rewritten in a
+         plan with anything in `plan_gates.sent_back.coverage` (the planner may have rewritten
+         it to cover a requirement that gate sent back, which says nothing about this prompt)
 
 The prompt of a revision is the plan event's per-task `prompt` blob; the scored one is the
 request's `state.prompt`. The attempt starts at its dwarf dispatch's `wall_started`. The review
@@ -42,12 +44,13 @@ def _parse_findings(text):
     return _issues.parse_findings(text)
 
 
-def _sent_back(plans, task) -> bool:
+def _sent_back(plans, kind, task=None) -> bool:
+    """Whether any revision lists `task` (or, without one, anything) in `sent_back.<kind>`."""
     for plan in plans:
         gates = plan['d'].get('plan_gates')
         sent = (gates.get('sent_back') if isinstance(gates, dict) else None)
-        listed = sent.get('prompt') if isinstance(sent, dict) else None
-        if isinstance(listed, list) and task in listed:
+        listed = sent.get(kind) if isinstance(sent, dict) else None
+        if isinstance(listed, list) and (task in listed if task is not None else listed):
             return True
     return False
 
@@ -120,7 +123,7 @@ def label(index, record, event, body) -> dict:
         return {}
     run = first['run']
     plans = index.runs.plans.get(run, []) if run else []
-    if _sent_back(plans, task):
+    if _sent_back(plans, 'prompt', task):
         return {}
     review = _review(index, run, task)
     if review is None or review['d'].get('findings_parse') == 'unparseable':
@@ -131,4 +134,6 @@ def label(index, record, event, body) -> dict:
     scored = state.get('prompt')
     rewritten = _rewritten(index, plans, task, scored.strip() if isinstance(scored, str) else None,
                            event['ts'], _started(index, first, run, task))
+    if rewritten and _sent_back(plans, 'coverage'):
+        return {}
     return {} if rewritten is None else {QID: rewritten}

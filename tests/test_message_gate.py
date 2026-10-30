@@ -113,6 +113,21 @@ class SendBackTests(MessageCase):
         self.assertIn('Your previous attempt said it did not finish', self.text(self.plan, 'dwarf.input'))
         self.assertIn(UNFINISHED, self.text(self.plan, 'dwarf.input'))
 
+    def test_a_send_back_after_a_failed_review_keeps_that_reviews_findings(self):
+        # Attempt 2 was working on FINDING when it said it did not finish: attempt 3 and its
+        # review must still see FINDING, not only attempt 2's own words.
+        self.gate('on', only_attempt=2, unfinished=0.9)
+        self.start(**{'a.qa.1': {'verdict': 'FAIL', 'findings': FINDING},
+                      'a.dwarf.2': {'message': UNFINISHED}, 'a.dwarf.3': {'content': 'done'}})
+        result = self.run_retries(2)
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertEqual(self.calls(), ['dwarf', 'qa', 'dwarf', 'dwarf', 'qa'])
+        self.assertEqual(self.text(self.plan, 'retry_findings.source'), 'message')
+        for name in ('dwarf.input', 'qa.input'):
+            with self.subTest(name):
+                self.assertIn(UNFINISHED, self.text(self.plan, name))
+                self.assertIn(FINDING, self.text(self.plan, name))
+
     def test_the_send_back_with_no_retries_ends_the_task_failed(self):
         self.gate('on', unfinished=0.9)
         self.start(**{'a.dwarf.1': {'message': UNFINISHED}})

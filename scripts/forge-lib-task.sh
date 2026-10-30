@@ -215,9 +215,13 @@ carry_findings() { # carry_findings <tdir>
 # The retry findings of an attempt forge sent back without a review: <file> (prereview.md,
 # bounce.md or message.md) is copied to retry_findings.md and <source> names where it came from.
 # They are kept against the commit they were written about, and no reviewer session goes with them.
-carry_sent_back() { # carry_sent_back <tdir> <file> <source>
-  local tdir="$1" file="$2" source="$3"
-  if [ -s "$tdir/reviewed.commit" ]; then
+# With `keep`, retry_findings.commit stays as it is: a bounce's findings are the last review's,
+# and its reviewed.commit is the bounced attempt's, which nobody reviewed.
+carry_sent_back() { # carry_sent_back <tdir> <file> <source> [keep]
+  local tdir="$1" file="$2" source="$3" keep="${4:-}"
+  if [ "$keep" = keep ]; then
+    :
+  elif [ -s "$tdir/reviewed.commit" ]; then
     cp "$tdir/reviewed.commit" "$tdir/.retry_findings.commit.tmp" \
       && mv "$tdir/.retry_findings.commit.tmp" "$tdir/retry_findings.commit"
   else
@@ -232,7 +236,7 @@ carry_sent_back() { # carry_sent_back <tdir> <file> <source>
 # The failing tests and the end of their output (#85).
 carry_prereview() { carry_sent_back "$1" prereview.md prereview; }   # carry_prereview <tdir>
 # The blocking findings a retry left unaddressed (#43).
-carry_bounce() { carry_sent_back "$1" bounce.md bounce; }            # carry_bounce <tdir>
+carry_bounce() { carry_sent_back "$1" bounce.md bounce keep; }       # carry_bounce <tdir>
 # What the implementer's final message said about not finishing (#44).
 carry_message() { carry_sent_back "$1" message.md message; }         # carry_message <tdir>
 

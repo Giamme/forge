@@ -494,10 +494,10 @@ class MeasurementTests(unittest.TestCase):
         self.assertEqual(findings.decisions(body), ['c2', 'c10'])
         self.assertEqual(findings.decisions({}), [])
 
-    def test_score_is_the_concreteness_behind_the_preference_noul_of_a_concrete_question_only(self):
+    def test_score_is_the_preference_noul_of_a_concrete_question_only(self):
         answers = {'c0': dict(type='noul', noul=0.8), 'd0': dict(type='choice', choice='4', confidence=0.9),
                    'c1': dict(type='noul', noul='high')}
-        self.assertAlmostEqual(findings.score(answers, 'c0'), 0.2)
+        self.assertAlmostEqual(findings.score(answers, 'c0'), 0.8)
         self.assertIsNone(findings.score(answers, 'd0'))
         self.assertIsNone(findings.score(answers, 'c1'))
         self.assertIsNone(findings.score(answers, 'c9'))
@@ -508,12 +508,25 @@ class MeasurementTests(unittest.TestCase):
         self.assertEqual(findings.fired(answers, 0.5), ['c0', 'c2'])
         self.assertEqual(findings.fired(answers, None), [])
 
-    def test_baseline_is_one_for_a_digit_a_backtick_or_a_trigger_word(self):
+    def test_baseline_is_zero_for_a_digit_a_backtick_or_a_trigger_word(self):
         body = self.body('Consider renaming x for clarity.', 'Returns None for the empty list.',
                          'The loop never ends when the list is empty.', 'Off by one at index 3.',
                          'Wrong `unit` in the label.', 'This is specific to nothing at all.')
-        self.assertEqual([findings.baseline(body, f'c{i}') for i in range(6)], [0.0, 1.0, 1.0, 1.0, 1.0, 0.0])
+        self.assertEqual([findings.baseline(body, f'c{i}') for i in range(6)], [1.0, 0.0, 0.0, 0.0, 0.0, 1.0])
         self.assertEqual(findings.baseline(body, 'c9'), 0.0)
+
+    def test_score_and_baseline_point_at_the_findings_the_gate_deselects(self):
+        # Every site's score is the probability of acting: replay flags a score at or above the
+        # threshold (flipped for an inverted site) and measures it against the baseline, so both
+        # must point at what `fired` deselects (the preference), not at the concrete finding.
+        from forge_decide import sites
+        site = sites.SITES['jev-findings']
+        answers = {'c0': dict(type='noul', noul=0.8), 'c1': dict(type='noul', noul=0.1)}
+        limit = 1.0 - 0.5 if site.invert else 0.5
+        self.assertEqual([qid for qid in ('c0', 'c1') if site.score(answers, qid) >= limit],
+                         site.fired(answers, 0.5))
+        body = self.body('Consider renaming x for clarity.', 'Returns None for the empty list.')
+        self.assertGreater(site.baseline(body, 'c0'), site.baseline(body, 'c1'))
 
     def test_the_site_wires_these_functions(self):
         from forge_decide import sites
@@ -521,7 +534,8 @@ class MeasurementTests(unittest.TestCase):
         self.assertEqual(site.threshold, 'findings_concrete')
         self.assertEqual(site.decisions(dict(questions={'c0': {}, 'd0': {}})), ['c0'])
         self.assertEqual(site.fired({'c0': dict(type='noul', noul=0.9)}, 0.5), ['c0'])
-        self.assertEqual(site.baseline(dict(state=dict(findings=[dict(i=0, text='a `b`')])), 'c0'), 1.0)
+        self.assertEqual(site.baseline(dict(state=dict(findings=[dict(i=0, text='a `b`')])), 'c0'), 0.0)
+        self.assertTrue(site.invert)
 
 
 if __name__ == '__main__':

@@ -319,11 +319,12 @@ def _site(name, threshold, fired, decisions, score, label, baseline, floor=None,
                 label_issue, invert)
 
 
-def _gate_module_site(name, module, threshold, label, label_issue=None):
+def _gate_module_site(name, module, threshold, label, label_issue=None, invert=False):
     """A site whose fired, decisions, score and baseline are its gate module's, lazily (see
     _lazy). No floor: the new sites have none until their replay measures one."""
     return _site(name, threshold, _lazy(module, 'fired', []), _lazy(module, 'decisions', []),
-                 _lazy(module, 'score', None), label, _lazy(module, 'baseline', 0.0), label_issue=label_issue)
+                 _lazy(module, 'score', None), label, _lazy(module, 'baseline', 0.0), label_issue=label_issue,
+                 invert=invert)
 
 
 # Both memory sites: the labels need a contradiction record, which does not exist yet.
@@ -367,7 +368,7 @@ SITES: dict[str, Site] = {record.name: record for record in (
                       'true when verified prefixes show the merge breaks verification (prefix k−1 passes, '
                       'k fails); false when both were verified and do not'),
     _gate_module_site('jev-findings', 'forge_jev.findings', 'findings_concrete', None,
-                      label_issue='#46: needs issue-closure records'),
+                      label_issue='#46: needs issue-closure records', invert=True),
 )}
 
 

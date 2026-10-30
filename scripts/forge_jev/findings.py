@@ -46,8 +46,10 @@ is unusable. Shadow prints the same JSON as on: the caller records it, and the m
 whether it acts.
 
 `decisions`, `score`, `fired` and `baseline` are what forge_decide.sites reads for this site.
-`score` is the same concreteness as the output's `concrete`, so it is measured against `baseline`
-(1.0 for a finding that looks concrete) in one direction.
+Like every site's, `score` and `baseline` point at acting, here deselecting: `score` is the Noul
+itself (the preference), one minus the output's `concrete`, and `baseline` is 1.0 for a finding
+that looks like a preference. The threshold `findings_concrete` is on the `concrete` scale, so the
+site is inverted (forge_decide.sites `invert`): replay flags a score at or above 1 - threshold.
 """
 from __future__ import annotations
 
@@ -183,34 +185,35 @@ def decisions(body) -> list[str]:
 
 
 def score(answers, qid, request=None) -> float | None:
-    """P(concrete) of a `c<i>` question (one minus its Noul, see the module docstring); None for any
-    other id or an answer that is not a Noul."""
+    """P(preference), the probability of deselecting: the Noul of a `c<i>` question (see the module
+    docstring); None for any other id or an answer that is not a probability."""
     answer = (answers or {}).get(qid)
     if _index(qid) >= 0 and isinstance(answer, dict) and answer.get('type', 'noul') == 'noul':
-        return _concreteness(answer.get('noul'))
+        return _probability(answer.get('noul'))
     return None
 
 
 def fired(answers, threshold_value, request=None) -> list[str]:
-    """The `c<i>` below the threshold: the findings the gate would deselect."""
+    """The `c<i>` whose concreteness is below the threshold: the findings the gate would deselect."""
     limit = _probability(threshold_value)
     if limit is None:
         return []
     out = []
     for qid in sorted((q for q in (answers or {}) if _index(q) >= 0), key=_index):
         p = score(answers, qid)
-        if p is not None and p < limit:
+        if p is not None and 1.0 - p < limit:
             out.append(qid)
     return out
 
 
 def baseline(body, qid) -> float:
-    """1.0 when the finding's text has a digit, a backtick or one of when, if, returns, raises,
-    crash, wrong; else 0.0: the plain rule the model's Noul is measured against."""
+    """0.0 when the finding's text has a digit, a backtick or one of when, if, returns, raises,
+    crash, wrong (it looks concrete); else 1.0 (it looks like a preference): the plain rule the
+    model's Noul is measured against. 0.0 for a question with no finding."""
     state = body.get('state') if isinstance(body, dict) else None
     findings = state.get('findings') if isinstance(state, dict) else None
     for item in findings if isinstance(findings, list) else ():
         if isinstance(item, dict) and item.get('i') == _index(qid):
             text = _text(item.get('text'))
-            return 1.0 if re.search(r'\d|`', text) or _BASELINE_WORDS.search(text) else 0.0
+            return 0.0 if re.search(r'\d|`', text) or _BASELINE_WORDS.search(text) else 1.0
     return 0.0

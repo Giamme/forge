@@ -115,6 +115,19 @@ class BounceTests(AddressedCase):
         self.assertIn(FINDING + '\n\n' + FINDING, bounce)
         self.assertEqual(self.text(self.plan, 'retry_findings.source'), 'bounce')
 
+    def test_the_review_after_a_bounce_is_shown_the_changes_since_the_last_review(self):
+        # The bounced attempt was never reviewed, so "the changes since that round" start at the
+        # commit the last review judged and include the bounced attempt's own edits.
+        self.gate('on', 0.9)
+        self.start(**{'a.dwarf.2': {'no_edit': True, 'files': {'other.txt': 'unrelated\n'}},
+                      'a.dwarf.3': {'content': 'third'}})
+        result = self.run_retries(2)
+        self.assertEqual(result.returncode, 0, result.stdout)
+        since = self.text(self.plan, 'qa.input').split('### Changes since that review', 1)[1]
+        since = since.split("### The implementer's reply", 1)[0]
+        self.assertIn('other.txt', since)
+        self.assertIn('a.txt', since)
+
     def test_the_gate_only_sends_work_back_and_the_bounced_attempt_stays_a_fail(self):
         self.gate('on', 0.9)
         self.start(**{'a.dwarf.2': {'no_edit': True, 'files': {'other.txt': 'unrelated\n'}}})

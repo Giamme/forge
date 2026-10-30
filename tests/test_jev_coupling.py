@@ -295,7 +295,7 @@ class ForwardActingTests(unittest.TestCase):
         out = io.StringIO()
         with patch('forge_jev.cli.load_config', return_value={}), \
                 patch('forge_jev.cli.site_ready', return_value=True), \
-                patch('forge_jev.cli.gate_mode', return_value=mode), \
+                patch('forge_jev.cli.plan_gate_mode', return_value=mode), \
                 patch('forge_jev.coupling.ask', side_effect=fake_ask), \
                 contextlib.redirect_stdout(out):
             rc = cli.cmd_coupling(args)

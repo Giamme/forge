@@ -348,6 +348,10 @@ class PlanFlagTests(unittest.TestCase):
         self.assertEqual(planned.returncode, 0, planned.stderr)
         self.assertIn('jev: scored 1 task(s) in shadow mode (no change)', planned.stderr)
         self.assertNotIn('undeclared files', planned.stderr)
+        # Drift acts in `on` now (#38), and "no change" has to stay true: the file it would add
+        # is recorded, not added.
+        self.assertNotIn('drift added', planned.stderr)
+        self.assertEqual((self.plan / 'tasks.tsv').read_text().splitlines()[-1].split(TAB)[3], 'src/a.py')
         self.assertEqual(sorted((r['site'], r['mode'], r['shadow']) for r in self.requests()),
                          [('jev-drift', 'on', True), ('jev-prompt', 'on', True)])
 

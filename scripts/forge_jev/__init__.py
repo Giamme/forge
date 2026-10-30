@@ -329,6 +329,19 @@ def gate_mode(site: str) -> str:
     return gate['mode'] if gate else 'off'
 
 
+def plan_gate_mode(site: str) -> str:
+    """The mode a plan-time gate that changes the plan (drift, forward, prompt) acts in:
+    gate_mode(site), except that under --jev-shadow a gate the legacy level turned on (no user
+    decide.json yet) is 'shadow'. Its records were always marked shadow (client._gate_fields);
+    now that these gates act in `on` (#38–#40), a flag that promises no change keeps them from
+    acting too."""
+    gate = _gate(site, _resolved())
+    mode = gate['mode'] if gate else 'off'
+    if mode == 'on' and gate.get('source') == 'legacy' and shadow():
+        return 'shadow'
+    return mode
+
+
 def _spec(site: str, config: dict | None, resolved: dict) -> dict:
     from forge_decide import providers
     return providers.spec_for_site(site, config=config, repo=current_repo(), resolved=resolved)

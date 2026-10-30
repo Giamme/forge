@@ -17,8 +17,8 @@ from . import (CAPABILITIES, CLOUDFLARE_DEFAULT_SITES, CLOUDFLARE_TOKEN_FILE,
               DEFAULT_THRESHOLDS, PROVIDERS, RETIRED_CAPABILITIES, RETIRED_THRESHOLDS,
               SITE_CAPABILITY, THRESHOLD_FALLBACK, api_key,
               capability_ready, cloudflare, config_path, enabled, gate_mode, gate_reason, load_config,
-              provider_for, provider_ready, redact, save_config, secrets, site_ready, threshold, use_repo,
-              _resolved)
+              plan_gate_mode, provider_for, provider_ready, redact, save_config, secrets, site_ready,
+              threshold, use_repo, _resolved)
 from . import client, questions
 import forge_decide
 
@@ -687,7 +687,7 @@ def cmd_score_plan(args) -> int:
             adequacies[task_id] = adequacy
         if adequacy is None and predicted is None:
             continue
-        added = _drift_act(plan, task_id, predicted, gate_mode('jev-drift')) if predicted is not None else []
+        added = _drift_act(plan, task_id, predicted, plan_gate_mode('jev-drift')) if predicted is not None else []
 
         # A warning, not a gate: recorded below the threshold and silent above it.
         warnings = {}
@@ -725,7 +725,7 @@ def cmd_score_plan(args) -> int:
 
     if not judgments:
         return 3
-    _prompt_act(plan, adequacies, gate_mode('jev-prompt'), warn_at)
+    _prompt_act(plan, adequacies, plan_gate_mode('jev-prompt'), warn_at)
 
     # Tell the repo where its own run data lives: forge keeps plan dirs wherever the user put
     # them, and `forge dataset import --registry` (and forge-ui) find them through this list.
@@ -842,7 +842,7 @@ def cmd_coupling(args) -> int:
     if forward is None:
         return 3
 
-    mode = gate_mode('jev-forward')
+    mode = plan_gate_mode('jev-forward')
     # An answer of "nothing to flag" is still an answer: the record of an earlier plan
     # (a stale would_add, a dependency the planner has since dropped) is reconciled with it.
     # `shadow` is recorded under would_add, and the run hears nothing.

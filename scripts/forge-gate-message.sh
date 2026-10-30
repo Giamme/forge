@@ -44,6 +44,14 @@ sys.stdout.buffer.write(text.encode("utf-8"))' "$tdir/dwarf.last" 2>/dev/null)"
         echo "forge: the implementer's final message says it did not finish ($which, $p); its own words:"
         echo
         printf '%s\n' "$said" | sed 's/^/> /'
+        # The findings this attempt was sent replace nothing: they go on with the retry, as
+        # a bounce keeps them (forge-gate-addressed.sh).
+        if [ -s "$tdir/retry_findings.md" ]; then
+          echo
+          echo "The findings this attempt was sent, still to fix:"
+          echo
+          cat "$tdir/retry_findings.md"
+        fi
       } > "$tdir/.message.md.tmp" && mv "$tdir/.message.md.tmp" "$tdir/message.md" || return 0
       : > "$tdir/message.failed"
       rm -f "$tdir/qa.last"

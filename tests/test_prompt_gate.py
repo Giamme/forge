@@ -204,6 +204,17 @@ class LabelTests(LabelsCase):
         self.ran()
         self.assertEqual(self.labels(), [])
 
+    def test_a_rewrite_in_a_plan_the_coverage_gate_sent_back_gets_no_label(self):
+        # The planner may have rewritten t1 to cover the requirement the coverage gate sent back:
+        # that rewrite measures the coverage gate, not this prompt.
+        sent = dict(sent_back=dict(coverage=['req-sha']))
+        self.plan(T0 - 10, dict(t1='fix it'), gates_=sent)
+        self.ask(p=0.9)
+        self.plan(T0 + 10, dict(t1='fix it, and cover the CSV export'), gates_=sent)
+        self.ran()
+        self.review('VERDICT: PASS\n')
+        self.assertEqual(self.labels(), [])
+
     def test_an_unparseable_review_gives_no_label(self):
         self.plan(T0 - 10, dict(t1='fix it'))
         self.ask()

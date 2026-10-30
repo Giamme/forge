@@ -222,7 +222,9 @@ repo on any field both set; `status` lists those as shadowed.
    allowlist of the capabilities left on. `FORGE_JEV_SHADOW=on` (`--jev-shadow`) turns every
    `on` into `shadow`, except, before the user `decide.json` exists, a gate the legacy level
    turned on: that site acts as it did before #36, its records are marked shadow, and `plan`
-   prints a count in shadow mode instead of its warnings.
+   prints a count in shadow mode instead of its warnings. Drift, forward and prompt are the
+   exception to the exception: they only advised before #36, so under `--jev-shadow` they
+   record what they would do (`would_add`, `shadow: true`) and change nothing in the plan.
 6. **flags.** `--gate`, `--no-gates` and `--decide-budget` on `plan` or a solo run, frozen in
    `<plan-or-run>/jev-selection.json`. `--no-gates` turns every gate off after `--gate` is
    applied. A re-plan replaces the file. Solo again on the same run dir keeps it. `run` and
@@ -416,11 +418,18 @@ file or the dependency, bounced the attempt, named the culprit), and false when 
 have. A label never comes from the gate's own action: whatever followed a send-back that the gate
 made is left unlabelled, or labelled by evidence the gate did not produce.
 
-A site whose model answers the other way round sets `invert` in its record. Prompt adequacy is
-the one such site. Its model answers "is the prompt adequate", so the probability of acting is
-`1 − p`, and its score is that. `replay` compares the score with `1 − prompt_warn`, the same
-line as `p < prompt_warn`. `report` counts the site's fired decisions with the site's own rule,
-which already reads `p < prompt_warn`, so it needs no inversion of its own.
+A site whose threshold reads the other way round from its score sets `invert` in its record.
+Two do:
+- **Prompt adequacy.** Its model answers "is the prompt adequate", so the probability of acting
+  is `1 − p`, and its score is that. `replay` compares the score with `1 − prompt_warn`, the
+  same line as `p < prompt_warn`.
+- **Findings.** Its score is the Noul of "does it read as a preference", the probability of
+  deselecting, and its baseline is 1.0 for a finding with no concrete cue. Its threshold
+  `findings_concrete` is on the concreteness scale (`1 − p`), so `replay` compares the score with
+  `1 − findings_concrete`.
+
+`report` counts each site's fired decisions with the site's own rule, which already reads the
+threshold the right way, so it needs no inversion of its own.
 
 `forge_decide/labels.py` computes the labels from the run dataset with the joins of `forge
 dataset export`, so a run the dataset did not capture has no labels. The gate modules' labellers

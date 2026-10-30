@@ -60,7 +60,7 @@ class RegistryTestCase(unittest.TestCase):
             'jev-retry-addressed': ('untouched_warn', None, True, False),
             'jev-dwarf-message': (None, None, True, False),
             'jev-attribution': (None, None, True, False),
-            'jev-findings': ('findings_concrete', None, False, False),
+            'jev-findings': ('findings_concrete', None, False, True),
         })
         self.assertIsNone(sites.site('jev-prompt').label_issue)
         self.assertEqual(sites.site('jev-memory-curate').label_issue, sites.site('jev-memory-stale').label_issue)
