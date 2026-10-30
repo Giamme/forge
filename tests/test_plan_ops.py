@@ -4,6 +4,7 @@ Uses the same fake agent CLI as test_forge.py, driven per call through SCENARIO.
 fixtures are borrowed rather than inherited: subclassing ForgeTests would run all of its
 tests again under this class."""
 import fcntl
+import os
 from pathlib import Path
 import subprocess
 import unittest
@@ -310,6 +311,17 @@ class PlanOpsTests(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stdout)
         self.assertFalse((new / 'repo.identity').exists())
 
+    @unittest.skipIf(hasattr(os, 'geteuid') and os.geteuid() == 0, 'root reads a mode 000 file')
+    def test_combine_still_combines_when_the_first_identity_cannot_be_copied(self):
+        p1, p2 = self.merged_pair()
+        (p1 / 'repo.identity').chmod(0o000)
+        self.addCleanup((p1 / 'repo.identity').chmod, 0o600)
+        new = self.root / 'combined'
+        r = self.forge('combine', new, p1, p2, '--verify', VERIFY_ALL)
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertEqual(self.text(new, 'run_id'), 'combined')
+        self.assertFalse((new / 'repo.identity').exists())
+
     def test_combine_refuses_anything_unsafe_and_creates_nothing(self):
         p1 = self.plan_of([('a', '-', 'a.txt'), ('b', '-', 'b.txt')], name='plan1')
         p2 = self.plan_of([('c', '-', 'c.txt')], name='plan2')
@@ -484,6 +496,17 @@ class PlanOpsTests(unittest.TestCase):
         r = self.forge('split', p, new, '--tasks', 'b,c')
         self.assertEqual(r.returncode, 0, r.stdout)
         self.assertFalse((new / 'repo.identity').exists())
+
+    @unittest.skipIf(hasattr(os, 'geteuid') and os.geteuid() == 0, 'root reads a mode 000 file')
+    def test_split_still_splits_when_the_identity_cannot_be_copied(self):
+        p = self.split_fixture()
+        (p / 'repo.identity').chmod(0o000)
+        self.addCleanup((p / 'repo.identity').chmod, 0o600)
+        new = self.root / 'second'
+        r = self.forge('split', p, new, '--tasks', 'b,c')
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertFalse((new / 'repo.identity').exists())
+        self.assertEqual([line.split('\t')[0] for line in self.text(new, 'tasks.tsv').splitlines()[1:]], ['b', 'c'])
 
     def test_split_retries_a_moved_failure_through_run_retry_failed(self):
         p = self.split_fixture()
