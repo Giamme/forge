@@ -307,6 +307,34 @@ class ReposTest(unittest.TestCase):
                 git(main, 'worktree', 'remove', '--force', str(wt))
                 shutil.rmtree(main)
 
+    def test_a_legacy_split_path_never_names_another_repository(self):
+        real = repos._run_git
+
+        def old_git(cwd, *args):
+            if args[-1] == '-z':
+                return subprocess.CompletedProcess(args, 129, b'', b'')
+            return real(cwd, *args)
+        other = self.make_repo('proj')
+        # The first line reads `worktree <tmp>/proj`, an existing unrelated repository; the rest
+        # reads as a bare first block, or a complete one, followed by a well-formed entry.
+        for name in ('proj\n\nworktree ', 'proj\nHEAD ' + '0' * 40 + '\nbranch refs/heads/x\n\nworktree '):
+            with self.subTest(name=name):
+                repos._RESOLVED.clear()
+                repos._FALLTHROUGH.clear()
+                main = self.tmp / name / 'nested'
+                main.mkdir(parents=True)
+                git(main, 'init', '-q', '-b', 'main')
+                git(main, 'commit', '-q', '--allow-empty', '-m', 'init')
+                wt = self.tmp / 'wt'
+                git(main, 'worktree', 'add', '-q', '-b', 'a', str(wt))
+                run = self.make_run(wt)
+                with patch.object(repos, '_run_git', old_git):
+                    out = repos.resolve([(run, str(wt), 'plan')])
+                self.assertEqual(out[run], dict(root=str(wt), worktree=None, branch=None, source='path'))
+                git(main, 'worktree', 'remove', '--force', str(wt))
+                shutil.rmtree(self.tmp / name)
+        self.assertTrue((other / '.git').is_dir())
+
     def test_a_clean_legacy_listing_is_still_read(self):
         main = self.make_repo('proj')
         wt = self.tmp / 'wt'
@@ -317,10 +345,16 @@ class ReposTest(unittest.TestCase):
             if args[-1] == '-z':
                 return subprocess.CompletedProcess(args, 129, b'', b'')
             return real(cwd, *args)
-        run = self.make_run(wt)
+        nested = main / 'wts' / 'n'
+        git(main, 'worktree', 'add', '-q', '-b', 'b', str(nested))
+        runs = [(self.make_run(wt), str(wt), 'plan'), (self.make_run(nested), str(nested), 'plan'),
+                (self.make_run(main), str(main), 'plan')]
         with patch.object(repos, '_run_git', old_git):
-            out = repos.resolve([(run, str(wt), 'plan')])
-        self.assertEqual(out[run], dict(root=str(main), worktree=str(wt), branch=None, source='live'))
+            out = repos.resolve(runs)
+        self.assertEqual([out[run] for run, _, _ in runs],
+                         [dict(root=str(main), worktree=str(wt), branch=None, source='live'),
+                          dict(root=str(main), worktree=str(nested), branch=None, source='live'),
+                          dict(root=str(main), worktree=None, branch=None, source='live')])
 
     def test_a_restored_worktree_is_not_stuck_on_its_missing_path_answer(self):
         main = self.make_repo('proj')

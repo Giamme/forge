@@ -158,71 +158,88 @@ def _from_identity_file(run_dir):
 
 # ---- step 2: the repo path is a live checkout --------------------------------------------------
 
-# The fields of one porcelain block by the order git writes them, each at most once; branch,
-# detached and bare are alternatives, so they share a rank.
-_PORCELAIN_RANK = {'worktree': 0, 'HEAD': 1, 'branch': 2, 'detached': 2, 'bare': 2, 'locked': 3,
-                   'prunable': 4}
-
-
-def _legacy_paths(text):
-    """Worktree paths from line-separated porcelain output, or [] when it cannot be trusted.
-
-    Without ``-z`` a path containing a newline is split over several lines, and a fragment can look
-    like a porcelain field. So the output is trusted only when it is exactly the shape git writes:
-    blocks separated by one blank line, each starting with ``worktree`` and carrying known fields in
-    git's order, none twice; and the main working tree, the answer, is an existing directory.
-    """
-    paths = []
-    for block in text.rstrip('\n').split('\n\n'):
-        rank = -1
-        for line in block.split('\n'):
-            key, _, value = line.partition(' ')
-            if key not in _PORCELAIN_RANK:
-                return []
-            if key in ('detached', 'bare') and value:
-                return []
-            if key in ('worktree', 'HEAD', 'branch') and not value:
-                return []
-            if _PORCELAIN_RANK[key] <= rank or (key == 'worktree') != (rank == -1):
-                return []
-            rank = _PORCELAIN_RANK[key]
-            if key == 'worktree':
-                if not os.path.isabs(value):
-                    return []
-                paths.append(value)
-    if not paths or not _is_dir(paths[0]):
-        return []
-    return paths
-
-
-def _worktree_entries(repo):
-    """Worktree paths listed by git for ``repo``, main working tree first; None when git did not run.
-
-    An empty list means ``repo`` is no checkout (or its listing could not be read safely). A listed
-    checkout always has at least its main working tree.
+def _checkout_identity(repo):
+    """``(ran, identity)`` for the checkout ``repo``: identity is None when ``repo`` is no checkout
+    or its listing could not be read safely; ran is False when git did not run or timed out.
 
     ``-z`` keeps a path that contains a newline in one piece. A git too old for it (exit 129)
-    falls back to line output, which ``_legacy_paths`` trusts only when it has exactly git's shape.
+    falls back to ``_legacy_identity``.
     """
     done = _run_git(repo, 'worktree', 'list', '--porcelain', '-z')
     if done is None:
-        return None
+        return False, None
     if done.returncode == 129:
-        done = _run_git(repo, 'worktree', 'list', '--porcelain')
-        if done is None:
-            return None
-        if done.returncode != 0:
-            return []
-        return _legacy_paths(done.stdout.decode('utf-8', 'replace'))
+        return _legacy_identity(repo)
     if done.returncode != 0:
-        return []
+        return True, None
     paths = []
     for line in done.stdout.decode('utf-8', 'replace').split('\0'):
         if line.startswith('worktree '):
             path = line[len('worktree '):]
             if os.path.isabs(path):
                 paths.append(path)
-    return paths
+    return True, _live_identity(repo, paths)
+
+
+def _rev_parse_path(repo, option):
+    """``(ran, path)`` for a ``git rev-parse`` option that prints one path, made absolute.
+
+    One value per call, so a newline inside the path cannot split it: only git's final newline
+    is dropped.
+    """
+    done = _run_git(repo, 'rev-parse', option)
+    if done is None:
+        return False, None
+    out = done.stdout.decode('utf-8', 'replace')
+    if done.returncode != 0 or not out.endswith('\n') or out == '\n':
+        return True, None
+    return True, os.path.join(repo, out[:-1])
+
+
+def _git_dir_of(root):
+    """The git dir of the working tree ``root`` (its ``.git`` directory or the one a ``.git``
+    file names), or None."""
+    if not _is_dir(root):
+        return None
+    dot = os.path.join(root, '.git')
+    if os.path.isdir(dot):
+        return dot
+    text = _read_file(dot, _MAX_LINE_BYTES)
+    if text is None or not text.startswith('gitdir: '):
+        return None
+    lines = text[len('gitdir: '):].splitlines()
+    return os.path.join(root, lines[0]) if lines and lines[0] else None
+
+
+def _legacy_identity(repo):
+    """``(ran, identity)`` from line-separated porcelain output, for a git without ``-z``.
+
+    Without ``-z`` a path containing a newline is split over several lines, and its fragments can
+    look like porcelain fields or whole entries, including a path that names another repository.
+    No reading of the lines can tell, so the shape is not trusted at all: the first line's path is
+    taken as the main working tree only when its git dir is the common dir of ``repo``'s
+    repository. The checkout holding ``repo`` comes from ``--show-toplevel``, which prints one path.
+    """
+    done = _run_git(repo, 'worktree', 'list', '--porcelain')
+    if done is None:
+        return False, None
+    if done.returncode != 0:
+        return True, None
+    first = done.stdout.decode('utf-8', 'replace').split('\n', 1)[0]
+    root = first[len('worktree '):] if first.startswith('worktree ') else ''
+    if not os.path.isabs(root):
+        return True, None
+    root_git_dir = _git_dir_of(root)
+    if root_git_dir is None:
+        return True, None
+    ran, common = _rev_parse_path(repo, '--git-common-dir')
+    if common is None or _real(common) != _real(root_git_dir):
+        return ran, None
+    ran, top = _rev_parse_path(repo, '--show-toplevel')
+    if not ran:
+        return False, None
+    # No toplevel (repo is inside a git dir): the verified root alone is listed.
+    return True, _live_identity(repo, [root] + ([top] if top else []))
 
 
 def _live_identity(repo, entries):
@@ -288,13 +305,14 @@ def resolve(runs):
     """{run dir: Identity} for every ``(path, repo, kind)`` in ``runs``; see the module docstring."""
     runs = list(runs)
     result = {}
-    entries_by_repo = {}
+    checkouts = {}
     commit_checks = {}
 
-    def worktrees(repo):
-        if repo not in entries_by_repo:
-            entries_by_repo[repo] = _worktree_entries(repo)
-        return entries_by_repo[repo]
+    def checkout(repo):
+        if repo not in checkouts:
+            checkouts[repo] = _checkout_identity(repo)
+        found = checkouts[repo][1]
+        return dict(found) if found is not None else None
 
     def has_commit(root, sha):
         key = (root, sha)
@@ -324,8 +342,7 @@ def resolve(runs):
             # A directory that was no checkout last time: no git call until the process ends. A
             # path that was missing then (a restored worktree) is looked at again.
             if cached is None or not cached[1]:
-                entries = worktrees(repo)
-                found = _live_identity(repo, entries)
+                found = checkout(repo)
                 if found is not None:
                     with _LOCK:
                         _RESOLVED[(path, repo)] = dict(found)
@@ -358,7 +375,7 @@ def resolve(runs):
         if found is None:
             found = _identity(repo)
             # A live repo whose git call timed out is retried next time rather than remembered.
-            if not (live and entries_by_repo.get(repo) is None):
+            if not (live and not checkouts.get(repo, (True, None))[0]):
                 with _LOCK:
                     _FALLTHROUGH[key] = (roots_key, live, dict(found))
         result[given] = found
