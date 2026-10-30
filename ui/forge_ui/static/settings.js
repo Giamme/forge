@@ -192,9 +192,11 @@
     }
     return [...groups.values()];
   }
+  // The run inside its repository's group. The worktree it started in belongs to the run; the group names the repository.
   const optionLabel = r => {
     const goal = text(r.goal).split('\n')[0].trim();
-    return [r.run_id || r.key, goal.length > 60 ? goal.slice(0, 59) + '…' : goal].filter(Boolean).join(' · ');
+    const short = goal.length > 60 ? goal.slice(0, 59) + '…' : goal;
+    return [r.run_id || r.key, short, RM.repoLabel(r).worktree].filter(Boolean).join(' · ');
   };
 
   // An editor's unsaved text. `base` is the file as last read, `draft` the textarea (null: untouched). The CLI ends a saved
@@ -269,7 +271,7 @@
         if (!kept) resetRun();
         if (s.ready) { if (!kept) drawBody(); load(); }           // the default arrived, or the run went away
       }
-      const sig = JSON.stringify([s.run, s.gone, groups.map(g => [g.repo, g.runs.map(r => [r.key, optionLabel(r)])])]);
+      const sig = JSON.stringify([s.run, s.gone, groups.map(g => [g.repo, g.runs.map(r => [r.key, optionLabel(r), r.repo_worktree || null])])]);
       if (sig === s.runsSig) return;
       s.runsSig = sig;
       if (!groups.length) { picker.replaceChildren(el('p', 'No run names a repository yet, so there is nothing to configure.', 'muted')); return; }
@@ -277,7 +279,11 @@
       if (s.gone) { const o = el('option', 'This run is no longer listed'); o.value = ''; o.selected = true; o.disabled = true; sel.append(o); }
       for (const g of groups) {
         const og = el('optgroup'); og.label = g.name + ' · ' + g.repo;
-        for (const r of g.runs) { const o = el('option', optionLabel(r)); o.value = r.key; o.selected = r.key === s.run; og.append(o); }
+        for (const r of g.runs) {
+          const o = el('option', optionLabel(r)); o.value = r.key; o.selected = r.key === s.run;
+          if (r.repo_worktree) o.title = r.repo_worktree;   // the option's text carries the worktree; the title is its full path
+          og.append(o);
+        }
         sel.append(og);
       }
       sel.addEventListener('change', async () => {
@@ -297,6 +303,14 @@
       const path = el('p', undefined, 'set-repo-path');
       path.append(el('i', undefined, 'lamp lamp-route'), el('span', s.repo || '', 'mono'));
       const row = el('div', undefined, 'set-picker-row'); row.append(lab, sel);
+      // a native option cannot hold secondary text, so the selected run's worktree also sits beside the select
+      const current = usable.find(r => r.key === s.run), worktree = current && RM.repoLabel(current).worktree;
+      if (worktree) {
+        const wt = el('span', worktree, 'muted repo-wt');
+        const branch = typeof current.repo_branch === 'string' ? current.repo_branch.trim() : '';
+        wt.title = current.repo_worktree + (branch ? `\nbranch ${branch}` : '');
+        row.append(wt);
+      }
       picker.replaceChildren(row, path);
       if (s.gone) picker.append(el('p', 'The run is gone from the list. Your unsaved edits are kept; pick another run to continue, which discards them.', 'warn set-problem'));
     }

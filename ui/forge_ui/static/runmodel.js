@@ -26,6 +26,18 @@
   const repoKey = run => (run && (run.repo_root || run.repo)) || null;
   // The run list's "by repo" order: the name of each run's repository root.
   const compareRepo = (a, b) => basename(repoKey(a)).localeCompare(basename(repoKey(b)));
+  // What a run shows where its repository is named. `name` is the root's basename. `worktree` is the
+  // checkout it started in when that is not the root — "forge-c2 (fix/milestone-c2)", or the basename
+  // alone when the branch is unknown — and null for the main checkout. A summary that lacks
+  // repo_root, repo_worktree and repo_branch (an older server or export) keeps basename(repo).
+  const repoLabel = run => {
+    const name = basename(run && (run.repo_root || run.repo));
+    const path = run && typeof run.repo_worktree === 'string' ? run.repo_worktree : '';
+    if (!path) return { name, worktree: null };
+    const branch = typeof run.repo_branch === 'string' ? run.repo_branch.trim() : '';
+    const leaf = basename(path);
+    return { name, worktree: branch ? `${leaf} (${branch})` : leaf };
+  };
   function fmtDur(s) {
     s = num(s); if (s === null) return '—';
     s = Math.max(0, Math.round(s));
@@ -900,7 +912,7 @@
     return { pos, edges, cols, rows: next };
   }
 
-  return { liveNow, runState, execStatus, matchRun, filterOptions, atlasModel, repoKey, compareRepo, columns, planModel, finishState,
+  return { liveNow, runState, execStatus, matchRun, filterOptions, atlasModel, repoKey, repoLabel, compareRepo, columns, planModel, finishState,
     finalStatus, runReviewStatus, reviewSinceLine, reviewAt, taskStatus, taskVerdict, attemptStatus, attemptNote, attemptFailed, isWaiting,
     attributionLine, taskParts,
     taskTimes, metricValue, overlap, projectSchedule, execModel, verifyLeds, criticalPath, concurrency, stateAt, timeRange, events, lineage, structureKey, innerKey,

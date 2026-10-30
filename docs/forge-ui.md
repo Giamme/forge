@@ -8,6 +8,9 @@ run in one full-screen view, grouped by project, in five layouts (helix, sphere,
 timeline, constellation), filtered down to exactly the runs you want; drag any run anywhere
 and the cloud remembers it.
 
+Runs are grouped by repository. A run started in any worktree of a repository shares that
+repository's group, and each run shows the worktree and branch it started in.
+
 <p align="center">
   <img src="../ui/docs/media/cloud.webp" width="880" alt="The run cloud: about seventy runs as blocks in five project spirals, orbited, then laid out as galaxies and as a timeline with one lane per project.">
 </p>
