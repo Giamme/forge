@@ -571,6 +571,21 @@ def session_continued(event) -> bool:
     return (event.get('d') or {}).get('session_continue') is not None
 
 
+def _ending_qa(rows) -> dict:
+    """Index, per attempt, of the last primary dispatch with a PASS or FAIL verdict.
+
+    `rows` is the chronological list `runs.dispatches[(run, task, 'qa')]`. The choice is
+    made before continued sessions are removed: the dispatch the attempt ended on may have
+    continued a reviewer session, and an earlier fresh verdict must not stand in for it.
+    Same choice as `shadow_pairs`.
+    """
+    ending = {}
+    for index, event in enumerate(rows):
+        if (event.get('d') or {}).get('verdict') in ('PASS', 'FAIL'):
+            ending[event['attempt']] = index
+    return ending
+
+
 def _qa_rows(runs: Runs):
     """Every independent QA dispatch with a verdict, with the diff it was shown and its task text.
 
@@ -578,6 +593,11 @@ def _qa_rows(runs: Runs):
     one whose continue failed after it had already printed a verdict. A fresh fallback in
     the same round has no `session_continue` and stays. There is no switch to put the
     continued ones back, so a slice never mixes the two.
+
+    The attempt event's gate belongs to the QA execution the attempt ended on (see
+    `_ending_qa`). Every earlier dispatch of that attempt gets `gate=None`. When the one
+    the attempt ended on continued a session, it is skipped below, so no row of the
+    attempt carries the gate.
     """
     store = runs.store
     effort = {}
@@ -592,7 +612,8 @@ def _qa_rows(runs: Runs):
     for (run, task, role), rows in runs.dispatches.items():
         if role != 'qa':
             continue
-        for e in rows:
+        ending = _ending_qa(rows)
+        for index, e in enumerate(rows):
             if session_continued(e):
                 continue
             d = e['d']
@@ -603,8 +624,11 @@ def _qa_rows(runs: Runs):
             if not blocks or not blocks[-1].strip():
                 continue
             found = d.get('findings') or []
+            # Only the dispatch the attempt ended on was gated. An earlier one in the same
+            # attempt (a QA-only re-run keeps the number) was never the gate's input.
+            gate = gates.get((run, task, e['attempt'])) if ending.get(e['attempt']) == index else None
             yield dict(run=run, task=task, attempt=e['attempt'], repo=e['repo'], verdict=d['verdict'],
-                       gate=gates.get((run, task, e['attempt'])),
+                       gate=gate,
                        diff=blocks[-1], review=store.text((d.get('blobs') or {}).get('message')),
                        effort=effort.get((run, task, e['attempt'])), model=d.get('model'),
                        reviewer=dict(model=d.get('model'), effort=d.get('effort'), harness=d.get('harness')),
@@ -694,44 +718,50 @@ def review_cases(runs: Runs):
         if len(verdicts) != 1:
             # Two reviews of the same diff disagreed: the label is noise, not an outcome.
             continue
-        r, task = items[0]
-        diff = r['diff']
-        # Who reviews decides the outcome as much as the diff: the same diff meets a 0.93 pass rate
-        # from one reviewer and 0.39 from another, so the reviewer is part of the state.
-        state = dict(diff=diff[:DIFF_CHARS], task=task, truncated=len(diff) > DIFF_CHARS, reviewer=r['reviewer'])
-        baseline = {}
-        if r['effort'] and r['effort'][0] in EFFORT_RANK:
-            baseline['passes'] = dict(source='hosted-jev qa effort', risk=EFFORT_RANK[r['effort'][0]] / 4.0)
-        questions, expected = dict(passes=review_passes()), dict(passes=r['verdict'] == 'PASS')
-        label_source = dict(passes='QA verdict')
-        # A graded label only where every finding the reviewer was sure of carries a severity:
-        # skipping the rest keeps "none" honest instead of counting unreadable reviews as clean.
-        if all(item['completeness'] in ('clean', 'graded') for item, _ in items) and \
-                len({item['worst'] for item, _ in items}) == 1:
-            questions['severity'], expected['severity'] = review_severity(), r['worst']
-            label_source['severity'] = 'worst CONFIRMED finding (%s)' % r['completeness']
-        meta = dict(completeness=r['completeness'], gate=r['gate'])
-        # A second reviewer of the same diff, never consulted by the run: agreement is how
-        # much of this label is the diff and how much is who happened to review it.
-        paired = next((shadows[k] for k in ((i['run'], i['task'], i['attempt']) for i, _ in items) if k in shadows), None)
-        if paired:
-            primary, shadow = paired
-            meta['shadow'] = dict(verdict=shadow['d']['verdict'], reviewer=shadow['d'].get('model'),
-                                  worst=_worst(shadow['d'].get('findings') or []))
-            meta['consensus'] = shadow['d']['verdict'] == primary['d']['verdict']
-        # The one label here no reviewer decides: whether the merged diff's lines stayed.
-        landed = next((runs.survival[c] for c in (runs.reviewed.get((i['run'], i['task'], i['attempt']))
-                                                   for i, _ in items) if c in runs.survival), None)
-        if landed:
-            kept = landed['surviving'] / landed['added']
-            questions['survives'] = review_survives()
-            expected['survives'] = kept >= SURVIVES_AT and not landed.get('reverted_by')
-            label_source['survives'] = 'git blame %d days after integrate' % landed['horizon_days']
-            meta['survival'] = dict(added=landed['added'], surviving=landed['surviving'],
-                                    reverted_by=landed.get('reverted_by') or [], horizon_days=landed['horizon_days'])
-        yield dict(slice='review', key=key, run=r['run'], repo=r['repo'], task=r['task'], state=state,
-                   questions=questions, expected=expected, baseline=baseline, label_source=label_source,
-                   reviewer=r['model'], meta=meta)
+        # Same verdict on one diff stays one case. Executions forge gated differently are
+        # not interchangeable: the first row's gate must not hide the one the attempt ended on.
+        split = len({item['gate'] for item, _ in items}) > 1
+        exported = items if split else [items[0]]
+        for index, (r, task) in enumerate(exported):
+            cohort = [(r, task)] if split else items
+            diff = r['diff']
+            # Who reviews decides the outcome as much as the diff: the same diff meets a 0.93 pass rate
+            # from one reviewer and 0.39 from another, so the reviewer is part of the state.
+            state = dict(diff=diff[:DIFF_CHARS], task=task, truncated=len(diff) > DIFF_CHARS, reviewer=r['reviewer'])
+            baseline = {}
+            if r['effort'] and r['effort'][0] in EFFORT_RANK:
+                baseline['passes'] = dict(source='hosted-jev qa effort', risk=EFFORT_RANK[r['effort'][0]] / 4.0)
+            questions, expected = dict(passes=review_passes()), dict(passes=r['verdict'] == 'PASS')
+            label_source = dict(passes='QA verdict')
+            # A graded label only where every finding the reviewer was sure of carries a severity:
+            # skipping the rest keeps "none" honest instead of counting unreadable reviews as clean.
+            if all(item['completeness'] in ('clean', 'graded') for item, _ in cohort) and \
+                    len({item['worst'] for item, _ in cohort}) == 1:
+                questions['severity'], expected['severity'] = review_severity(), r['worst']
+                label_source['severity'] = 'worst CONFIRMED finding (%s)' % r['completeness']
+            meta = dict(completeness=r['completeness'], gate=r['gate'])
+            # A second reviewer of the same diff, never consulted by the run: agreement is how
+            # much of this label is the diff and how much is who happened to review it.
+            paired = next((shadows[k] for k in ((i['run'], i['task'], i['attempt']) for i, _ in cohort) if k in shadows), None)
+            if paired:
+                primary, shadow = paired
+                meta['shadow'] = dict(verdict=shadow['d']['verdict'], reviewer=shadow['d'].get('model'),
+                                      worst=_worst(shadow['d'].get('findings') or []))
+                meta['consensus'] = shadow['d']['verdict'] == primary['d']['verdict']
+            # The one label here no reviewer decides: whether the merged diff's lines stayed.
+            landed = next((runs.survival[c] for c in (runs.reviewed.get((i['run'], i['task'], i['attempt']))
+                                                       for i, _ in cohort) if c in runs.survival), None)
+            if landed:
+                kept = landed['surviving'] / landed['added']
+                questions['survives'] = review_survives()
+                expected['survives'] = kept >= SURVIVES_AT and not landed.get('reverted_by')
+                label_source['survives'] = 'git blame %d days after integrate' % landed['horizon_days']
+                meta['survival'] = dict(added=landed['added'], surviving=landed['surviving'],
+                                        reverted_by=landed.get('reverted_by') or [], horizon_days=landed['horizon_days'])
+            yield dict(slice='review', key=key if not split else _sha(key, str(index)),
+                       run=r['run'], repo=r['repo'], task=r['task'], state=state,
+                       questions=questions, expected=expected, baseline=baseline, label_source=label_source,
+                       reviewer=r['model'], meta=meta)
 
 
 _SKIP_PREFIXES = ('.git/', '.forge/', 'node_modules/', 'vendor/', 'target/', 'dist/',

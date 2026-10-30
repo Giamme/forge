@@ -443,6 +443,100 @@ class EndToEndTests(StoreCase):
         rows = [r for r in export._qa_rows(export.Runs(export.Store(store.connect()))) if r['attempt'] == first['attempt']]
         self.assertEqual([(r['gate'], r['verdict']) for r in rows], [('fail', 'PASS')])
 
+    def test_an_earlier_qa_execution_does_not_inherit_the_gate_of_the_one_the_attempt_ended_on(self):
+        # One attempt, two QA executions. The first prints a clean PASS and then the dispatch
+        # stops on quota, so forge never gates it. QA-only resume keeps the attempt number;
+        # the second PASS lists a CONFIRMED P2 and the gate turns the attempt into FAIL.
+        # The gate belongs to that second review. Built through the fake harness: qa.1 is the
+        # infrastructure stop, retry re-runs QA only.
+        from forge_dataset import export
+        p = self.plan_of([('a', '-', 'a.txt')])
+        self.scenario({'a.qa.1': {'rc': 1, 'is_error': True, 'verdict': 'PASS',
+                                  'findings': "You've hit your usage limit. Try again in 2 hours."},
+                       'a.qa.2': {'verdict': 'PASS', 'findings': '- [P2][CONFIRMED] a.txt:1 — wrong'}})
+        r = self.run_script('forge-parallel.sh', 'run', p)
+        self.assertEqual(r.returncode, 8, r.stdout)
+        self.assertEqual(self.calls(), ['dwarf', 'qa'])
+        r = self.run_script('forge-parallel.sh', 'retry', p, 'a')
+        self.assertEqual(self.calls(), ['dwarf', 'qa', 'qa'], r.stdout)
+        self.assertEqual((p / 'tasks' / 'a' / 'attempt').read_text().strip(), '1')
+        self.assertEqual((p / 'tasks' / 'a' / 'status').read_text().strip(), 'FAIL')
+        stopped, gated = self.attempts('a')
+        self.assertEqual((stopped['attempt'], stopped['data']['status'], stopped['data']['infra']['stage']),
+                         (1, 'INFRA', 'qa'))
+        self.assertEqual((gated['attempt'], gated['data']['status'], gated['data']['gate'].split('\t')[1]),
+                         (1, 'FAIL', 'fail'))
+        qa = [e for e in self.events(kind='dispatch', task='a') if e['data']['role'] == 'qa']
+        self.assertEqual([(e['attempt'], e['data']['verdict'], (e['data'].get('infra') or {}).get('class'),
+                           e['data'].get('session_continue')) for e in qa],
+                         [(1, 'PASS', 'quota', None), (1, 'PASS', None, None)])
+
+        runs = export.Runs(export.Store(store.connect()))
+        rows = [row for row in export._qa_rows(runs) if row['task'] == 'a']
+        self.assertEqual([(row['gate'], row['verdict'], row['worst']) for row in rows],
+                         [(None, 'PASS', 'none'), ('fail', 'PASS', 'P2')])
+        cases = [c for c in export.review_cases(runs) if c['task'] == 'a']
+        self.assertEqual([c['meta']['gate'] for c in cases], [row['gate'] for row in rows])
+        course = next(c['meta'] for c in export.routing_cases(runs) if c['task'] == 'a')
+        self.assertEqual((course['gate_fail'], course['gate_pass'], course['raw_verdict']), (True, False, 'PASS'))
+
+    def test_a_continued_session_the_attempt_ended_on_leaves_no_row_carrying_its_gate(self):
+        # The last verdict-bearing QA dispatch continued a reviewer session, so _qa_rows skips
+        # it. The earlier fresh PASS of the same attempt must not inherit the attempt's gate.
+        # The fake harness's QA-only re-run is a fresh dispatch, so this shape is imported the
+        # way the harvester reads a run dir: two qa dispatches, one attempt, gate `P2\tfail\t...`.
+        plan = Path(self.tmp.name) / 'continued-gate'
+        plan.mkdir()
+        (plan / 'dataset.uid').write_text('uid-continued-gate\n')
+        (plan / 'tasks.tsv').write_text('a\t-\tlow\ta.txt\tsol\topus\tA\n')
+        (plan / 'repo').write_text('/nonexistent/repo\n')
+        (plan / 'run_id').write_text('continued-gate\n')
+        (plan / 'goal.txt').write_text('goal\n')
+        tdir = plan / 'tasks' / 'a'
+        tdir.mkdir(parents=True)
+        (tdir / 'status').write_text('FAIL\n')
+        (tdir / 'attempt').write_text('1\n')
+        (tdir / 'prompt.md').write_text('Implement change. REQUIREMENT_SENTINEL TASK_a\n')
+        (tdir / 'qa.gate').write_text('P2\tfail\tP2\t1\t0\t0\n')
+        (tdir / 'reviewed.commit').write_text('commit-continued-gate\n')
+        diff = 'diff --git a/a.txt b/a.txt\n+a'
+        (tdir / 'changes.diff').write_text(diff + '\n')
+        task_attempt = tdir / 'attempts' / 'task-continued-gate'
+        task_attempt.mkdir(parents=True)
+        (task_attempt / 'metrics.json').write_text(json.dumps(
+            dict(role='task', wall_started=1.0, exit_code=0, harness='pipeline', elapsed_s=dict(total=1))))
+
+        def qa(name, mode, started):
+            attempt = tdir / 'attempts' / name
+            attempt.mkdir()
+            (attempt / 'metrics.json').write_text(json.dumps(
+                dict(role='qa', wall_started=started, exit_code=0, harness='codex', elapsed_s=dict(total=1))))
+            (attempt / 'qa.resolved').write_text('alias=opus\nharness=codex\nmodel=opus\n')
+            (attempt / 'qa.last').write_text('FORGE_VERDICT: PASS\n')
+            (attempt / 'qa.prompt').write_text('review this\n```diff\n%s\n```\n' % diff)
+            if mode is not None:
+                (attempt / 'qa.continue').write_text('requested=prev\nmode=%s\nreason=round\n' % mode)
+
+        qa('qa-fresh', None, 2.0)
+        qa('qa-continued', 'continued', 3.0)
+        from forge_dataset import importer
+        args = type('A', (), dict(paths=[str(plan)], registry=False, fractal=False, ledger=[],
+                                  include_temp=True, dry_run=False))()
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(importer.main(args), 0)
+
+        from forge_dataset import export
+        runs = export.Runs(export.Store(store.connect()))
+        qa_events = runs.dispatches[('uid-continued-gate', 'a', 'qa')]
+        self.assertEqual([(e['attempt'], e['d']['wall_started'], e['d']['session_continue'], e['d']['verdict'])
+                          for e in qa_events],
+                         [(1, 2.0, None, 'PASS'), (1, 3.0, 'continued', 'PASS')])
+        self.assertEqual(self.attempts('a')[-1]['data']['gate'].split('\t')[1], 'fail')
+        rows = [row for row in export._qa_rows(runs) if row['task'] == 'a']
+        self.assertEqual([(row['verdict'], row['gate']) for row in rows], [('PASS', None)])
+        cases = [c for c in export.review_cases(runs) if c['task'] == 'a']
+        self.assertEqual([c['meta']['gate'] for c in cases], [None])
+
     def test_a_solo_run_records_its_gate_and_the_tolerated_findings(self):
         self.scenario({'*.qa.*': {'verdict': 'PASS', 'findings': '- [P3][CONFIRMED] change.txt:1 — nit'}})
         r = self.solo()
