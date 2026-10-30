@@ -151,15 +151,51 @@ class CapTests(BudgetTestCase):
         self.assertIsNone(self.check(run, run_tokens=None, run_usd=None,
                                      daily_tokens=None, daily_usd=None))
 
+    def test_token_caps_are_exact_past_2_to_the_53(self):
+        # 2^53+1 is not a float. A float compare rounds the counter and the cap to 2^53,
+        # so an equal cap does not count as reached.
+        exact = 2 ** 53 + 1
+        cases = (
+            ('run', exact, 'budget', 27),
+            ('run', 2 ** 53, None, 28),
+            ('daily', exact, 'budget', 29),
+            ('daily', 2 ** 53, None, 30),
+        )
+        for scope, tokens, want, day in cases:
+            with self.subTest(scope=scope, tokens=tokens):
+                now = at(day)
+                run = self.run_dir('%s-%s' % (scope, day))
+                self.charge(tokens, run, now=now)
+                self.assertEqual(self.check(run, now=now, **{'%s_tokens' % scope: exact}), want)
+
+    def test_an_overflowed_cost_reaches_the_usd_caps(self):
+        # 2e6 tokens at $1e308/mtok is +inf. That spend has reached every USD cap, and a
+        # later finite charge must not turn the counter into NaN or a small number.
+        run = self.run_dir()
+        budget.charge({'price_usd_per_mtok': 1e308}, {'total_tokens': 2_000_000}, run_dir=run, now=NOON)
+        for scope, where in (('run', run), ('daily', self.run_dir('other'))):
+            with self.subTest(scope=scope, charge='overflow'):
+                self.assertEqual(self.check(where, **{'%s_usd' % scope: 1}), 'budget')
+        budget.charge(PRICED, {'total_tokens': 1}, run_dir=run, now=NOON)
+        got = budget.spend(run_dir=run, now=NOON)
+        self.assertEqual(got['run']['usd'], float('inf'))
+        self.assertEqual(got['today']['usd'], float('inf'))
+        for scope, where in (('run', run), ('daily', self.run_dir('later'))):
+            with self.subTest(scope=scope, charge='after'):
+                self.assertEqual(self.check(where, **{'%s_usd' % scope: 1}), 'budget')
+
 
 class FailOpenTests(BudgetTestCase):
     def test_corrupt_counter_counts_as_zero_and_is_rewritten(self):
         run = self.run_dir()
         counter = run / budget.RUN_FILE
-        for junk in ('{not json', '[]', '{"tokens": "x"}', ''):
+        for junk in ('{not json', '[]', '{"tokens": "x"}', '',
+                     '{"tokens": NaN, "usd": NaN}',
+                     '{"tokens": -1, "usd": -1}',
+                     '{"tokens": "nope", "usd": "nope"}'):
             with self.subTest(junk=junk):
                 counter.write_text(junk)
-                self.assertIsNone(self.check(run, run_tokens=1))
+                self.assertIsNone(self.check(run, run_tokens=1, run_usd=0.01))
                 self.charge(5, run)
                 self.assertEqual(json.loads(counter.read_text())['tokens'], 5)
                 shutil.rmtree(forge_decide.state_dir() / 'spend', ignore_errors=True)
@@ -167,7 +203,7 @@ class FailOpenTests(BudgetTestCase):
     def test_oversized_integer_counts_as_zero_and_is_repaired(self):
         run = self.run_dir()
         counter = run / budget.RUN_FILE
-        counter.write_text('{"tokens": %s, "usd": 0}' % ('9' * 401))
+        counter.write_text('{"tokens": %s, "usd": %s}' % ('9' * 401, '9' * 401))
         self.assertEqual(budget.spend(run_dir=run, now=NOON)['run'], {'tokens': 0, 'usd': 0.0})
         self.assertIsNone(self.check(run, run_tokens=1))
         self.charge(5, run)
