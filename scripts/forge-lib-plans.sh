@@ -500,6 +500,8 @@ Retry or accept them (or split them off into their own plan) first." 3
     for p in "${SRC[@]}"; do awk -F'\t' '!/^#/ && NF' "$p/tasks.tsv"; done
   } > "$tsv" || ok=0
   printf '%s\n' "$repo_text" > "$NEW/repo" || ok=0
+  # The same repository as the first source, so its identity carries over (none when it has none).
+  [ ! -f "${SRC[0]}/repo.identity" ] || cp -p "${SRC[0]}/repo.identity" "$NEW/repo.identity" || ok=0
   printf '%s\n' "$NEWRID" > "$NEW/run_id" || ok=0
   printf '%s\n' "$NEWWTR" > "$NEW/wt_root" || ok=0
   git -C "$NEWINT" rev-parse HEAD > "$NEW/accepted.integration" || ok=0
@@ -750,6 +752,7 @@ except Exception:
       }' "$T"
   } > "$NEW/tasks.tsv" || ok=0
   printf '%s\n' "$repo_text" > "$NEW/repo" || ok=0
+  [ ! -f "$PLAN/repo.identity" ] || cp -p "$PLAN/repo.identity" "$NEW/repo.identity" || ok=0
   printf '%s\n' "$NEWRID" > "$NEW/run_id" || ok=0
   printf '%s\n' "$NEWWTR" > "$NEW/wt_root" || ok=0
   printf '%s\n' "$acc" > "$NEW/accepted.integration" || ok=0

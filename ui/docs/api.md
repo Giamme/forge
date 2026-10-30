@@ -38,6 +38,7 @@ written), and the reader must never raise because of one.
 | `results.tsv` | `id<TAB>status<TAB>branch` per line, e.g. `reader	MERGED	forge/20261016-1530/reader` |
 | `run_id` | one line, e.g. `20261016-153012-ab12` |
 | `repo` | one line, absolute path of the target repo |
+| `repo.identity` | optional, written by forge 0.13.1 and later, once at creation: `{"root", "worktree", "branch"}`, the repository `repo` belongs to. `root` is its main working tree (the same for every linked worktree), `worktree` the checkout's physical path when it differs from `root` (else `null`), `branch` its branch (`null` when HEAD is detached) |
 | `goal.txt`, `request.md` | free text |
 | `decompose_level` | `low`, `medium` or `high` |
 | `explore`, `shadow_rate` | one number each (e.g. `0.5`) |
@@ -117,6 +118,7 @@ raise because of one. Older solo dirs have `verdict` and not `status`.
 |---|---|
 | `prompt.md` | the implementation prompt |
 | `repo` | one line, absolute path of the target repo |
+| `repo.identity` | optional, written by forge 0.13.1 and later, once at creation: `{"root", "worktree", "branch"}`, the repository `repo` belongs to. `root` is its main working tree (the same for every linked worktree), `worktree` the checkout's physical path when it differs from `root` (else `null`), `branch` its branch (`null` when HEAD is detached) |
 | `goal.txt`, `request.md` | free text; the summary goal is the first line of `goal.txt` |
 | `status` | one word: `RUNNING`, then `PASS`, `FAIL`, `UNKNOWN`, `NOCHANGES`, `INVALIDATED`, `TIMEOUT`, `INFRA`, `INTERRUPTED` or `ERROR` |
 | `verdict` | one word, the legacy status (`PASS`, `FAIL`, `UNKNOWN`, `NOCHANGES`, `INVALIDATED`, …) |

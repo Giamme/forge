@@ -253,6 +253,8 @@ class PlanOpsTests(unittest.TestCase):
 
     def test_combine_builds_a_plan_whose_run_only_verifies_and_that_integrates(self):
         p1, p2 = self.merged_pair()
+        # the second source names another repository, so a copy can only have come from the first
+        (p2 / 'repo.identity').write_text('{"root":"/elsewhere","worktree":null,"branch":null}\n')
         calls, new = self.calls(), self.root / 'combined'
         before = self.snapshot(p1, p2)
 
@@ -269,6 +271,7 @@ class PlanOpsTests(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stdout)
         self.assertEqual(self.text(new, 'run_id'), 'combined')
         self.assertEqual(self.text(new, 'repo'), self.text(p1, 'repo'))
+        self.assertEqual(self.text(new, 'repo.identity'), self.text(p1, 'repo.identity'))
         self.assertEqual(self.text(new, 'wt_root'), str(self.root / '.forge-worktrees/combined'))
         self.assertEqual(self.text(new, 'verify_cmd'), VERIFY_ALL)
         self.assertEqual(self.text(new, 'accepted.integration'),
@@ -298,6 +301,14 @@ class PlanOpsTests(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stdout)
         for name in ('a.txt', 'b.txt', 'c.txt', 'd.txt'):
             self.assertTrue((self.repo / name).exists(), name)
+
+    def test_combine_copies_no_identity_when_the_first_source_has_none(self):
+        p1, p2 = self.merged_pair()
+        (p1 / 'repo.identity').unlink()
+        new = self.root / 'combined'
+        r = self.forge('combine', new, p1, p2, '--verify', VERIFY_ALL)
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertFalse((new / 'repo.identity').exists())
 
     def test_combine_refuses_anything_unsafe_and_creates_nothing(self):
         p1 = self.plan_of([('a', '-', 'a.txt'), ('b', '-', 'b.txt')], name='plan1')
@@ -408,6 +419,7 @@ class PlanOpsTests(unittest.TestCase):
 
         r = self.forge('split', p, new, '--tasks', 'b,c')
         self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertEqual(self.text(new, 'repo.identity'), self.text(p, 'repo.identity'))
 
         branches = self.branches()
         self.assertIn('forge/second/b', branches); self.assertIn('forge/second-integration', branches)
@@ -464,6 +476,14 @@ class PlanOpsTests(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stdout)
         for name in ('a.txt', 'b.txt', 'c.txt'):
             self.assertTrue((self.repo / name).exists(), name)
+
+    def test_split_copies_no_identity_when_the_plan_has_none(self):
+        p = self.split_fixture()
+        (p / 'repo.identity').unlink()
+        new = self.root / 'second'
+        r = self.forge('split', p, new, '--tasks', 'b,c')
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertFalse((new / 'repo.identity').exists())
 
     def test_split_retries_a_moved_failure_through_run_retry_failed(self):
         p = self.split_fixture()
