@@ -635,7 +635,10 @@ def _qa_rows(runs: Runs):
                        # Receipts from before findings_parse existed: an empty list then cannot
                        # tell a clean review from a parser failure, which was rare; read it as clean.
                        completeness=d.get('findings_parse') or review_completeness(d['verdict'], found),
-                       worst=_worst(found))
+                       worst=_worst(found),
+                       # The dispatch this row was built from. A shadow pair names that event,
+                       # so an earlier execution of the same attempt cannot claim it.
+                       dispatch=e)
 
 
 def _worst(found) -> str:
@@ -744,12 +747,16 @@ def review_cases(runs: Runs):
             meta = dict(completeness=r['completeness'], gate=r['gate'])
             # A second reviewer of the same diff, never consulted by the run: agreement is how
             # much of this label is the diff and how much is who happened to review it.
+            # shadow_pairs binds that comparison to the dispatch the attempt ended on. A gate
+            # split exports every execution; only the cohort that contains that dispatch may
+            # carry it, or an earlier review of the same attempt would count the pair too.
             paired = next((shadows[k] for k in ((i['run'], i['task'], i['attempt']) for i, _ in cohort) if k in shadows), None)
             if paired:
                 primary, shadow = paired
-                meta['shadow'] = dict(verdict=shadow['d']['verdict'], reviewer=shadow['d'].get('model'),
-                                      worst=_worst(shadow['d'].get('findings') or []))
-                meta['consensus'] = shadow['d']['verdict'] == primary['d']['verdict']
+                if any(item.get('dispatch') is primary for item, _ in cohort):
+                    meta['shadow'] = dict(verdict=shadow['d']['verdict'], reviewer=shadow['d'].get('model'),
+                                          worst=_worst(shadow['d'].get('findings') or []))
+                    meta['consensus'] = shadow['d']['verdict'] == primary['d']['verdict']
             # The one label here no reviewer decides: whether the merged diff's lines stayed.
             landed = next((runs.survival[c] for c in (runs.reviewed.get((i['run'], i['task'], i['attempt']))
                                                        for i, _ in cohort) if c in runs.survival), None)

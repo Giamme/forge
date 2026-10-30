@@ -541,6 +541,82 @@ class EndToEndTests(StoreCase):
         cases = [c for c in export.review_cases(runs) if c['task'] == 'a']
         self.assertEqual([c['meta']['gate'] for c in cases], [None])
 
+    def test_a_shadow_pair_belongs_only_to_the_qa_execution_the_attempt_ended_on(self):
+        # One attempt, two reviews of the same diff, and a shadow that finished. The first
+        # PASS is the infrastructure stop forge never gated; the second PASS lists a
+        # CONFIRMED P2 and the gate flips the attempt to FAIL. shadow_pairs binds the
+        # shadow to that second dispatch. Built from store events in the shape the
+        # harvester writes: the fake harness's QA-only re-run does not also leave one
+        # completed shadow beside both dispatches.
+        plan = Path(self.tmp.name) / 'shadow-gate'
+        plan.mkdir()
+        (plan / 'dataset.uid').write_text('uid-shadow-gate\n')
+        (plan / 'tasks.tsv').write_text('a\t-\tlow\ta.txt\tsol\topus\tA\n')
+        (plan / 'repo').write_text('/nonexistent/repo\n')
+        (plan / 'run_id').write_text('shadow-gate\n')
+        (plan / 'goal.txt').write_text('goal\n')
+        tdir = plan / 'tasks' / 'a'
+        tdir.mkdir(parents=True)
+        (tdir / 'status').write_text('FAIL\n')
+        (tdir / 'attempt').write_text('1\n')
+        (tdir / 'prompt.md').write_text('Implement change. REQUIREMENT_SENTINEL TASK_a\n')
+        (tdir / 'qa.gate').write_text('P2\tfail\tP2\t1\t0\t0\n')
+        (tdir / 'reviewed.commit').write_text('commit-shadow-gate\n')
+        diff = 'diff --git a/a.txt b/a.txt\n+a'
+        (tdir / 'changes.diff').write_text(diff + '\n')
+        task_attempt = tdir / 'attempts' / 'task-shadow-gate'
+        task_attempt.mkdir(parents=True)
+        (task_attempt / 'metrics.json').write_text(json.dumps(
+            dict(role='task', wall_started=1.0, exit_code=0, harness='pipeline', elapsed_s=dict(total=1))))
+
+        def qa(name, body, started):
+            attempt = tdir / 'attempts' / name
+            attempt.mkdir()
+            (attempt / 'metrics.json').write_text(json.dumps(
+                dict(role='qa', wall_started=started, exit_code=0, harness='codex', elapsed_s=dict(total=1))))
+            (attempt / 'qa.resolved').write_text('alias=opus\nharness=codex\nmodel=opus\n')
+            (attempt / 'qa.last').write_text(body)
+            (attempt / 'qa.prompt').write_text('review this\n```diff\n%s\n```\n' % diff)
+
+        qa('qa-stopped', 'FORGE_VERDICT: PASS\n', 2.0)
+        qa('qa-gated', '- [P2][CONFIRMED] a.txt:1 — wrong\nFORGE_VERDICT: PASS\n', 3.0)
+        shadow = plan / 'shadow' / 'a' / '1-1' / 'attempts' / 'qa-shadow-a'
+        shadow.mkdir(parents=True)
+        (shadow / 'metrics.json').write_text(json.dumps(
+            dict(role='qa', wall_started=4.0, exit_code=0, harness='codex', elapsed_s=dict(total=1))))
+        (shadow / 'qa.resolved').write_text('alias=sol\nharness=codex\nmodel=shadow-model\n')
+        (shadow / 'qa.last').write_text('FORGE_VERDICT: FAIL\n')
+        (shadow / 'qa.prompt').write_text('review this\n```diff\n%s\n```\n' % diff)
+        (shadow / 'dataset.json').write_text(json.dumps(dict(
+            run='uid-shadow-gate', run_id='shadow-gate', mode='parallel', scope='task', task='a',
+            shadow=dict(attempt=1, reviewed='commit-shadow-gate', primary='opus'))))
+        from forge_dataset import importer
+        args = type('A', (), dict(paths=[str(plan)], registry=False, fractal=False, ledger=[],
+                                  include_temp=True, dry_run=False))()
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(importer.main(args), 0)
+        from forge_dataset.capture import point
+        point('shadow_review', str(plan / 'shadow' / 'a' / '1-1'), 'a',
+              dict(status='done', attempt=1, reviewed='commit-shadow-gate'))
+
+        from forge_dataset import export
+        runs = export.Runs(export.Store(store.connect()))
+        pairs = export.shadow_pairs(runs)
+        self.assertEqual(set(pairs), {('uid-shadow-gate', 'a', 1)})
+        primary, shadow_event = pairs[('uid-shadow-gate', 'a', 1)]
+        self.assertEqual(primary['d']['wall_started'], 3.0)
+        self.assertEqual(shadow_event['d']['verdict'], 'FAIL')
+        rows = [row for row in export._qa_rows(runs) if row['task'] == 'a']
+        self.assertEqual([(row['gate'], row['verdict'], row['worst']) for row in rows],
+                         [(None, 'PASS', 'none'), ('fail', 'PASS', 'P2')])
+        cases = [c for c in export.review_cases(runs) if c['task'] == 'a']
+        self.assertEqual([c['meta']['gate'] for c in cases], [None, 'fail'])
+        self.assertNotIn('shadow', cases[0]['meta'])
+        self.assertEqual(cases[1]['meta']['shadow'],
+                         dict(verdict='FAIL', reviewer='shadow-model', worst='none'))
+        self.assertIs(cases[1]['meta']['consensus'], False)
+        self.assertEqual([c['expected'] for c in cases], [{'passes': True}, {'passes': True}])
+
     def test_a_solo_run_records_its_gate_and_the_tolerated_findings(self):
         self.scenario({'*.qa.*': {'verdict': 'PASS', 'findings': '- [P3][CONFIRMED] change.txt:1 — nit'}})
         r = self.solo()
