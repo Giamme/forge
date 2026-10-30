@@ -495,3 +495,47 @@
 2026-10-30T09:27:59Z	c345-plan	gates-docs	qa	gpt-6.1-terra:high:codex	FAIL	-	-	-	37
 2026-10-30T09:34:43Z	c345-plan	gates-docs	dwarf	haiku:xhigh	-	-	-	-	398
 2026-10-30T09:35:25Z	c345-plan	gates-docs	qa	gpt-6.1-terra:high:codex	PASS	-	-	-	38
+2026-10-30T14:22:06Z	patch-plan	repo-resolver	dwarf	sonnet:high	-	-	-	-	205
+2026-10-30T14:24:18Z	patch-plan	repo-resolver	qa	sol:high	FAIL	-	-	-	125
+2026-10-30T14:26:48Z	patch-plan	repo-resolver	dwarf	sonnet:high	-	trap	git worktree list porcelain without z cannot represent a path containing a newline use z git 2 36 exit 129 on older git	`git worktree list --porcelain` without `-z` cannot represent a path containing a newline; use `-z` (git 2.36+, exit 129 on older git) [ui/forge_ui/repos.py]	145	1
+2026-10-30T14:28:23Z	patch-plan	repo-resolver	qa	sol:high	FAIL	-	-	-	88
+2026-10-30T14:31:47Z	patch-plan	repo-resolver	dwarf	sonnet:high	-	-	-	-	197
+2026-10-30T14:32:39Z	patch-plan	budget-exact	dwarf	grok:high	-	-	-	-	837
+2026-10-30T14:33:27Z	patch-plan	repo-resolver	qa	sol:high	FAIL	-	-	-	87
+2026-10-30T14:33:34Z	patch-plan	budget-exact	qa	gpt-6.1-terra:high:codex	FAIL	-	-	-	40
+2026-10-30T14:39:29Z	patch-plan	budget-exact	dwarf	grok:high	-	-	-	-	347
+2026-10-30T14:40:07Z	patch-plan	repo-resolver	dwarf	opus:high	-	-	-	-	297
+2026-10-30T14:40:19Z	patch-plan	budget-exact	qa	gpt-6.1-terra:high:codex	FAIL	-	-	-	35
+2026-10-30T14:44:14Z	patch-plan	export-gate	dwarf	grok:high	-	-	-	-	1533
+2026-10-30T14:45:43Z	patch-plan	budget-exact	dwarf	grok:high	-	-	-	-	316
+2026-10-30T14:46:07Z	patch-plan	budget-exact	qa	gpt-6.1-terra:high:codex	PASS	-	-	-	19
+2026-10-30T14:46:17Z	patch-plan	export-gate	qa	gpt-6.1-terra:high:codex	FAIL	-	-	-	113
+2026-10-30T14:46:38Z	patch-plan	repo-identity	dwarf	haiku:xhigh	-	-	-	-	1677
+2026-10-30T14:51:56Z	patch-plan	repo-identity	qa	sol:medium	FAIL	-	-	-	312
+2026-10-30T14:53:45Z	patch-plan	repo-resolver	qa	sol:high	FAIL	-	-	-	64
+2026-10-30T14:55:23Z	patch-plan	export-gate	dwarf	grok:high	-	-	-	-	542
+2026-10-30T14:56:08Z	patch-plan	export-gate	qa	gpt-6.1-terra:high:codex	FAIL	-	-	-	40
+2026-10-30T14:57:05Z	patch-plan	repo-resolver	dwarf	opus:high	-	-	-	-	196
+2026-10-30T14:59:00Z	patch-plan	repo-resolver	qa	sol:high	PASS	-	-	-	109
+2026-10-30T15:16:35Z	patch-plan	repo-identity	dwarf	haiku:xhigh	-	-	-	-	1434
+2026-10-30T15:16:43Z	patch-plan	export-gate	dwarf	grok:high	-	-	-	-	1231
+2026-10-30T15:17:29Z	patch-plan	export-gate	qa	gpt-6.1-terra:high:codex	FAIL	-	-	-	40
+2026-10-30T15:19:33Z	patch-plan	repo-identity	qa	sol:medium	PASS	-	-	-	171
+2026-10-30T15:28:52Z	patch-plan	export-gate	dwarf	sonnet:medium	-	-	-	-	459
+2026-10-30T15:29:33Z	patch-plan	export-gate	qa	gpt-6.1-terra:high:codex	PASS	-	-	-	37
+2026-10-30T15:30:03Z	patch-plan	repo-root-api	dwarf	haiku:xhigh	-	trap	reader detail and reader summarize carry no repo root only catalog get and catalog runs add repo root repo worktree repo branch	reader.detail() and reader.summarize() carry no repo_root; only Catalog.get() and Catalog.runs() add repo_root, repo_worktree, repo_branch [ui/forge_ui/reader.py]	624	1
+2026-10-30T15:31:21Z	patch-plan	repo-root-api	qa	sol:medium	PASS	-	-	-	72
+2026-10-30T15:38:32Z	patch-plan	repo-root-ui	dwarf	haiku:xhigh	-	trap	the browser tests skip silently without playwright system python3 skips 57 of 329 forge ui tests uv run with playwright runs them	forge-ui browser tests skip without Python Playwright, so a green ui suite does not exercise the DOM [ui/tests/test_browser.py]	426	1
+2026-10-30T15:39:25Z	patch-plan	repo-root-ui	qa	sol:medium	FAIL	-	-	-	48
+2026-10-30T15:42:40Z	patch-plan	repo-root-ui	dwarf	haiku:xhigh	-	trap	forge ui browser tests skip without python playwright so a green ui suite does not exercise the dom	forge-ui browser tests skip unless Python Playwright is installed, so an OK unittest run does not exercise the UI [ui/tests/test_browser.py]	190	1
+2026-10-30T15:43:03Z	patch-plan	repo-root-ui	qa	sol:medium	PASS	-	-	-	17
+2026-10-30T15:58:51Z	patch-plan	worktree-label	dwarf	grok:high	-	-	-	-	942
+2026-10-30T15:59:27Z	patch-plan	worktree-label	qa	gpt-6.1-terra:high:codex	FAIL	-	-	-	32
+2026-10-30T16:07:05Z	patch-plan	worktree-label	dwarf	haiku:high	-	trap	test browser settings test a privacy floor says nothing is sent and the gates stay editable errors with typeerror nonetype object is	`test_browser_settings` `test_a_privacy_floor_says_nothing_is_sent_and_the_gates_stay_editable` errors with `TypeError: 'NoneType' object is… [ui/tests/test_browser_settings.py]	453	0
+2026-10-30T16:07:29Z	patch-plan	worktree-label	qa	gpt-6.1-terra:high:codex	FAIL	-	-	-	18
+2026-10-30T16:21:15Z	patch-plan	worktree-label	dwarf	haiku:high	-	trap	self fail none in the settings browser fixture shadows unittest s fail so a failed assertion there surfaces as a typeerror	`self.fail = None` in the settings browser fixture shadows unittest's fail, so a failed assertion there surfaces as a TypeError [ui/tests/test_browser_settings.py]	823	1
+2026-10-30T16:21:15Z	patch-plan	worktree-label	dwarf	haiku:high	-	trap	at 320px the immersive run header is wider than the viewport even for a plain run so viewport width assertions on the header fail	At 320px the immersive run header is wider than the viewport even for a plain run, so viewport-width assertions on the header fail [ui/forge_ui/static/style.css]	823	0
+2026-10-30T16:21:40Z	patch-plan	worktree-label	qa	gpt-6.1-terra:high:codex	FAIL	-	-	-	19
+2026-10-30T16:27:19Z	patch-plan	worktree-label	dwarf	haiku:high	-	verify	cd ui tests pythonpath uv run quiet with playwright python3 m unittest test browser	cd ui/tests && PYTHONPATH=.. uv run --quiet --with playwright python3 -m unittest test_browser [ui/tests/test_browser.py]	334	1
+2026-10-30T16:27:41Z	patch-plan	worktree-label	qa	gpt-6.1-terra:high:codex	PASS	-	-	-	16
+2026-10-30T16:28:14Z	patch-plan	sweep-1	dwarf	haiku:high	-	trap	the settings run picker is a native select id set run so each option is plain text and cannot carry a secondary element	the settings run picker is a native `<select id="set-run">`, so each option is plain text and cannot carry a secondary element [ui/forge_ui/static/settings.js]	29	1
