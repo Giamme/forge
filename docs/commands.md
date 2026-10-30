@@ -87,7 +87,7 @@ request cache) is in [Measuring a gate](../references/decision-models.md#measuri
 | Command | Does |
 |---|---|
 | `status [--repo DIR] [--json]` | each gate's effective mode and which level set it, providers (`present` or `missing` key), caps and today's spend, privacy floor. A gate that is `on` without a passing replay is shown as `forced`. Never writes |
-| `gate GATE off\|shadow\|on [--force] [--provider P] [--model M] [--profile NAME \| --repo DIR]` | set one gate. Gates: `drift`, `forward`, `prompt`, `memory-curate`, `memory-slice`, `memory-stale`, `verify-discover`. With no `--provider`, a gate uses the legacy transport (`jev.json`'s endpoint with `TYPESAFE_API_KEY` or `jev.json`'s key, or Cloudflare for a site `jev.json` maps there); name a provider to choose where requests go. Without `--repo`, writes the user file and migrates `jev.json` first. `--profile` writes that profile in the user file. `on` needs a passing replay for the provider and model it resolves to, else it is refused (exit 3). `--force` turns it on anyway, and it shows as forced (see [measuring a gate](../references/decision-models.md#promotion)) |
+| `gate GATE off\|shadow\|on [--force] [--provider P] [--model M] [--profile NAME \| --repo DIR]` | set one gate. Gates: `drift`, `forward`, `prompt`, `coverage`, `retry-addressed`, `dwarf-message`, `attribution`, `findings`, `memory-curate`, `memory-slice`, `memory-stale`, `verify-discover` (what each does when `on`: [Gates and modes](../references/decision-models.md#gates-and-modes)). With no `--provider`, a gate uses the legacy transport (`jev.json`'s endpoint with `TYPESAFE_API_KEY` or `jev.json`'s key, or Cloudflare for a site `jev.json` maps there); name a provider to choose where requests go. Without `--repo`, writes the user file and migrates `jev.json` first. `--profile` writes that profile in the user file. `on` needs a passing replay for the provider and model it resolves to, else it is refused (exit 3). `--force` turns it on anyway, and it shows as forced (see [measuring a gate](../references/decision-models.md#promotion)) |
 | `provider add jev\|clef --name N [--url U] [--account-id A] [--model M] [--context N] [--price X] [--deadline S] [--local] [--key-stdin \| --key-env VAR]` | add a hosted or local provider. A key is never an argument: one line on stdin or a terminal prompt is written to `keys/<N>.key` mode `0600`, or `--key-env VAR` stores the variable name and reads it at request time |
 | `provider list [--json]` | configured providers |
 | `provider rm N` | remove a provider no gate uses, and the `keys/<N>.key` it wrote |
@@ -421,7 +421,7 @@ forge-parallel.sh combine   <new-plan-dir> <plan-dir> <plan-dir>... [--verify <c
 |---|---|
 | `plan` | validate `tasks.tsv`, resolve difficulty → concrete dwarf/qa specs, compute waves, render the approval table |
 | `run` | schedule ready tasks; per task: worktree → dwarf → diff → QA → status; merge passing tasks onto the integration branch |
-| `retry` | re-run **one** failed task in the worktree it already has, with its reviewer's findings in the prompt |
+| `retry` | re-run **one** failed task in the worktree it already has, with its reviewer's findings in the prompt; with `--answer` or `--answer-file`, answer a `NEEDS_INPUT` task's question and run it |
 | `attribute` | after a failed combined verification, search the merge order for **a merge that breaks it**; merges, revises and accepts nothing. See below |
 | `integrate` | **never automatic** — merge the integration branch into your branch |
 | `accept` | **only on your explicit instruction** — merge a `FAIL`/`UNKNOWN` task's reviewed work anyway, recording why |
@@ -454,11 +454,26 @@ forge-parallel.sh combine   <new-plan-dir> <plan-dir> <plan-dir>... [--verify <c
 | `--escalate-effort` | run, retry | `escalate_effort` | at the top tier, retry the same model once more at its next accepted effort before stopping (off by default; `--no-escalate-effort` turns it off) |
 
 **Exit codes:** `0` ok · `2` usage or validation · `3` precondition (not a git repo, …) ·
-`5` some task failed QA, or the combined verification failed · `6` integration conflict ·
+`4` **`plan` only: the plan gates sent work back** (see below) ·
+`5` some task failed QA, the combined verification failed, or a task is still waiting for an
+answer · `6` integration conflict ·
 `8` **paused on an infrastructure failure** (quota, auth, rate limit, network): no attempt was
 spent and nothing was judged — fix the cause and run the same command again ·
 `130` **interrupted or stopped** (a signal, or `forge control stop`): the running tasks are
 `INTERRUPTED` and verification was skipped or stopped; the summary prints the `retry` for each.
+
+**`plan` and the plan-time gates.** With the `prompt` or `coverage` gate `on`, `plan` may send work
+back and exits `4` before it validates the tasks or prints the table. It writes `plan.sendback.md`,
+listing the task prompts a reviewer could not judge, and the requirements of `request.md` (the first
+30 with at least four words) that no task's `## Acceptance criteria` covers. Rewrite what the file
+lists (a prompt, a task's criteria, or a new task), then run `plan` again. An item goes back at most
+once, keyed by its task id (prompts) or its requirement (coverage). What is still flagged from that
+list is printed in a `decision-model gates:` block under the table and is not sent back again. An
+item the first list did not name, such as a new task whose prompt is flagged, is sent back in its
+own round, so the second `plan` can exit `4` again; no item goes back twice. `drift`
+and `forward`, when `on`, act without exiting: they add a predicted file to a task's `files`, or
+make a task depend on a later one, and the block says what they added. In `shadow` they change
+`tasks.tsv` and `waves.tsv` not at all, and their predictions go to `plan-gates.json` as `would_add`.
 
 **`attribute`** answers the question a failed combined verification leaves open: every task passed
 its own review, so which merge broke the whole? It verifies *prefixes* of the merge order in a
@@ -479,12 +494,21 @@ whose `verification.commit` is not `accepted.integration`, the commit being sear
 skips both checks and verifies the tip itself (a passing tip is inconclusive). A step that ends
 `UNVERIFIED`, is interrupted or whose setup fails ends the search inconclusive with no culprit.
 
+With the `attribution` gate `on` (see [`forge decide`](#forge-decide)), the search first asks the
+decision model which merged task most likely broke the run, from the end of the failing log and
+each merge's diff. It verifies that task's boundary first, prefix `k − 1` then prefix `k`: a
+pass-then-fail pair settles it (`outcome: "confirmed"`), and otherwise the answer narrows the bounds
+and the binary search goes on (`"refuted"`). In `shadow` the ranking is recorded and the binary
+search alone decides. The gate only chooses which boundary to verify first; it never decides the
+result.
+
 It writes `attribution.json` (`culprit`, `base_fails`, `inconclusive`, `merges`, `steps` of
 `{prefix, commit, status, seconds, source}`, `verification_runs`, `gate`), each step's output in
 `attribute/<prefix>-<sha>/`, the failing log's last 200 lines in `tasks/<culprit>/verification.md`,
 and an `attribution` event in the [run dataset](dataset.md). It prints one line,
 `integration failure: merge <id> breaks verification (prefix k−1 passes, k fails; M verification
 runs)`, or the variant `the base already fails verification` or `attribution inconclusive — <reason>`.
+When the gate's first guess is the merge that was confirmed, the line ends `(the decision model's first guess)`.
 Exit `0` when the search finished, culprit or not, `1` when a step could not run at all.
 
 **`NEEDS_INPUT`** is a task status that is not a failure: the implementer ended with a question
@@ -495,9 +519,43 @@ the retry hint does not count it as failed. Its dependents end `BLOCKED`, and ne
 `retry <plan> <id> --answer "<text>"` (or `--answer-file F`) does: the question and the answer
 join the findings of the next attempt, a normal new attempt. Without an answer, or with one older
 than the question, `retry` exits `2` and changes nothing; if escalation refuses the retry, the
-question and the answer stay for the same `--answer` to be tried again.
+question and the answer stay for the same `--answer` to be tried again. A run that ends with such a
+task unmerged exits `5`, as it does for a task that failed. Only the `dwarf-message` gate, when `on`,
+sets this status.
 
 The full plan → run → integrate walkthrough is in [decomposed runs](decomposed-runs.md#plan-run-integrate). `retry`, `accept` and `review` are covered in [reviews, retries and recovery](reviews.md); resuming, `split`/`combine`, scope drift and `tasks.tsv` in [decomposed runs](decomposed-runs.md).
+
+## `scripts/forge-jev.py`
+
+The verbs the decision-model gates run. A person turns gates on with `forge decide`; the shell
+calls these verbs, one per gate question. The `forge jev` verbs `setup`, `sites`, `enable`,
+`disable`, `status` and `doctor` are the old names of `forge decide` commands and are not listed.
+
+```
+forge-jev.py score-plan      --plan P --repo R [--json]     prompt adequacy and drift, per task
+forge-jev.py coupling        --plan P --repo R [--json]     forward dependencies, per warned pair
+forge-jev.py coverage        --plan P --repo R [--json]     requirements no task covers
+forge-jev.py retry-addressed --plan P --task T --attempt N --repo R
+forge-jev.py dwarf-message   --plan P --task T --attempt N --repo R
+forge-jev.py attribution     --plan P --repo R --log L      the merged tasks, most likely culprit first
+forge-jev.py findings        --repo R --input F [--run-dir D]
+forge-jev.py verify-discover --repo R [--json] [--run-dir D]
+forge-jev.py memory-curate   --repo R --category C --text T [--json] [--run-dir D]
+forge-jev.py memory-slice    --task T --lines F [--keep N] [--run-dir D]
+forge-jev.py memory-stale    --text T --anchor A [--run-dir D]
+```
+
+The verbs `coverage`, `retry-addressed`, `dwarf-message`, `attribution` and `findings` check their
+paths first: `--plan`, `--repo` and `--run-dir` must be directories, and `--log` and `--input`
+files, for the verbs that take them, else the verb exits `2`. Exit `3` is no opinion: the gate is
+off or in `shadow`, there is nothing to ask, or the model did not answer. A failed request is never a verdict. The rows the
+shell reads, one per item:
+
+- `coverage`: `r<i>`, the probability, and the requirement, for each uncovered requirement at or above `coverage_warn`.
+- `retry-addressed`: `u<i>`, the probability, and the finding, for each finding at or above `untouched_warn`.
+- `dwarf-message`: the first of `question`, `blocked`, `unfinished` that fires, as `<which>` and its probability; otherwise `ok` and the highest probability.
+- `attribution`: `<id>` and its probability, highest first, `none` included.
+- `findings`: a JSON list in input order, `[{"fp", "duplicate_of", "dup_p", "concrete"}]`. `--input` is a JSON object `{"findings": [...], "candidates": [...]}`; `--run-dir` is the plan the findings came from, for the dataset and the request cache.
 
 ## `scripts/forge-verify.py`
 
