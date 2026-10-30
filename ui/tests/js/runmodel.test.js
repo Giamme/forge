@@ -497,3 +497,51 @@ test('the attribution line names the culprit, the failing base, or the inconclus
   assert.equal(RM.attributionLine({ culprit: null, base_fails: false, inconclusive: null, verification_runs: 3 }), null);
   assert.equal(RM.attributionLine(null), null);
 });
+
+test('repo grouping: a run from a worktree joins its repository root; without repo_root it is grouped by repo', () => {
+  const runs = [
+    { key: 'a', repo: '/dev/forge', repo_root: '/dev/forge', goal: 'root run', updated: T0 - 1, counts: { MERGED: 1 } },
+    { key: 'b', repo: '/dev/forge-c2', repo_root: '/dev/forge', repo_worktree: '/dev/forge-c2', goal: 'worktree run', updated: T0 - 2, counts: { MERGED: 1 } },
+    { key: 'c', repo: '/dev/forge-c3', repo_root: '/dev/forge', goal: 'other worktree', updated: T0 - 3, counts: { FAIL: 1 } },
+    { key: 'd', repo: '/old/tool', goal: 'older server', updated: T0 - 4, counts: { MERGED: 1 } },
+  ];
+  assert.equal(RM.repoKey(runs[1]), '/dev/forge');
+  assert.equal(RM.repoKey(runs[3]), '/old/tool');
+  assert.equal(RM.repoKey(null), null);
+  assert.deepEqual(RM.filterOptions(runs).repos, [{ path: '/dev/forge', name: 'forge' }, { path: '/old/tool', name: 'tool' }]);
+  const A = RM.atlasModel(runs, {}, { showAll: true });
+  assert.deepEqual(A.layers.map(l => [l.id, l.name, l.repo]), [['repo:/dev/forge', 'forge', '/dev/forge'], ['repo:/old/tool', 'tool', '/old/tool']]);
+  assert.deepEqual(A.modules.map(m => m.layer), ['repo:/dev/forge', 'repo:/dev/forge', 'repo:/dev/forge', 'repo:/old/tool']);
+});
+
+test('repo filter: a root matches all its checkouts; a saved worktree path still matches the runs that started there', () => {
+  const runs = [
+    { key: 'a', repo: '/dev/forge', repo_root: '/dev/forge', updated: T0 },
+    { key: 'b', repo: '/dev/forge-c2', repo_root: '/dev/forge', updated: T0 },
+    { key: 'd', repo: '/old/tool', updated: T0 },
+  ];
+  const picked = repo => runs.filter(r => RM.matchRun(r, { repo }, T0)).map(r => r.key);
+  assert.deepEqual(picked('/dev/forge'), ['a', 'b']);
+  assert.deepEqual(picked('/dev/forge-c2'), ['b'], 'a worktree path names only the runs that started there');
+  assert.deepEqual(picked('/old/tool'), ['d']);
+  assert.deepEqual(picked('/gone'), []);
+  assert.deepEqual(picked(''), ['a', 'b', 'd'], 'no repo filter');
+});
+
+test('repo grouping: two roots with one folder name stay two groups', () => {
+  const runs = [
+    { key: 'x', repo: '/work/forge', repo_root: '/work/forge', updated: T0 - 1 },
+    { key: 'y', repo: '/home/forge', repo_root: '/home/forge', updated: T0 - 2 },
+  ];
+  assert.deepEqual(RM.filterOptions(runs).repos.map(r => r.path), ['/work/forge', '/home/forge']);
+  assert.deepEqual(RM.atlasModel(runs, {}, { showAll: true }).layers.map(l => l.id), ['repo:/work/forge', 'repo:/home/forge']);
+});
+
+test('"by repo" orders runs by the name of their repository root, not of the checkout they started in', () => {
+  const runs = [
+    { key: 'x', repo: '/x/alpha-wt', repo_root: '/x/zeta', updated: T0 },
+    { key: 'y', repo: '/y/beta', repo_root: '/y/beta', updated: T0 },
+    { key: 'z', repo: '/z/alpha', updated: T0 },
+  ];
+  assert.deepEqual(runs.slice().sort(RM.compareRepo).map(r => r.key), ['z', 'y', 'x']);
+});

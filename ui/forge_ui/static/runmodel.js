@@ -22,6 +22,10 @@
   const weight = t => WEIGHT[String(t && t.difficulty || '').toLowerCase()] || 2;
   const alias = spec => spec ? String(spec).split(':')[0] : null;
   const basename = p => p ? String(p).split(/[\\/]/).filter(Boolean).pop() || String(p) : '—';
+  // What a run (or a models row) is grouped under: its repository root, else the checkout it started in (an older server).
+  const repoKey = run => (run && (run.repo_root || run.repo)) || null;
+  // The run list's "by repo" order: the name of each run's repository root.
+  const compareRepo = (a, b) => basename(repoKey(a)).localeCompare(basename(repoKey(b)));
   function fmtDur(s) {
     s = num(s); if (s === null) return '—';
     s = Math.max(0, Math.round(s));
@@ -112,7 +116,8 @@
     const text = String(f.text || '').trim().toLowerCase();
     if (text && ![run.goal, run.repo, run.run_id, run.path, ...list(run.models)].some(v => String(v || '').toLowerCase().includes(text))) return false;
     if (f.state && runState(run) !== f.state) return false;
-    if (f.repo && run.repo !== f.repo) return false;
+    // a saved filter may name the checkout a run started in (a worktree) rather than its root: it still matches that run
+    if (f.repo && repoKey(run) !== f.repo && run.repo !== f.repo) return false;
     if (f.kind && run.kind !== f.kind) return false;
     if (f.model && !list(run.models).some(m => alias(m) === f.model)) return false;
     if (f.ageDays && num(now) !== null && !(num(run.updated) !== null && run.updated >= now - f.ageDays * 86400)) return false;
@@ -127,7 +132,8 @@
   function filterOptions(runs) {
     const repos = new Map(), models = new Set();
     for (const r of list(runs)) {
-      if (r.repo && !repos.has(r.repo)) repos.set(r.repo, basename(r.repo));
+      const key = repoKey(r);
+      if (key && !repos.has(key)) repos.set(key, basename(key));
       for (const m of list(r.models)) if (alias(m)) models.add(alias(m));
     }
     return { repos: [...repos].map(([path, name]) => ({ path, name })), models: [...models].sort() };
@@ -145,11 +151,12 @@
       shown = (recent.length >= Math.min(floor, sorted.length) ? recent : sorted.slice(0, floor)).slice(0, limit);
     }
     const layers = [], seen = new Set();
+    const layerOf = r => 'repo:' + (repoKey(r) || '?');
     for (const r of shown) {
-      const id = 'repo:' + (r.repo || '?');
-      if (!seen.has(id)) { seen.add(id); layers.push({ id, name: basename(r.repo), repo: r.repo || null }); }
+      const id = layerOf(r), key = repoKey(r);
+      if (!seen.has(id)) { seen.add(id); layers.push({ id, name: basename(key), repo: key }); }
     }
-    const modules = shown.map(r => ({ id: r.key, layer: 'repo:' + (r.repo || '?'), run: r, state: runState(r),
+    const modules = shown.map(r => ({ id: r.key, layer: layerOf(r), run: r, state: runState(r),
       tasks: list(r.task_statuses).length ? list(r.task_statuses) : Object.entries(r.counts || {}).flatMap(([s, n]) => Array.from({ length: Math.min(n, 60) }, (_, i) => ({ id: s + i, status: s }))),
       match: matchRun(r, f, now) }));
     const p = plate({ modules, layers }, atlasSize);
@@ -893,7 +900,7 @@
     return { pos, edges, cols, rows: next };
   }
 
-  return { liveNow, runState, execStatus, matchRun, filterOptions, atlasModel, columns, planModel, finishState,
+  return { liveNow, runState, execStatus, matchRun, filterOptions, atlasModel, repoKey, compareRepo, columns, planModel, finishState,
     finalStatus, runReviewStatus, reviewSinceLine, reviewAt, taskStatus, taskVerdict, attemptStatus, attemptNote, attemptFailed, isWaiting,
     attributionLine, taskParts,
     taskTimes, metricValue, overlap, projectSchedule, execModel, verifyLeds, criticalPath, concurrency, stateAt, timeRange, events, lineage, structureKey, innerKey,
