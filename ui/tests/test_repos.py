@@ -212,7 +212,7 @@ class ReposTest(unittest.TestCase):
                         out = repos.resolve([(live, str(main), 'plan'), (run, str(gone), kind)])
                     self.assertFalse(out_file.exists())
                     self.assertEqual(out[run]['source'], 'path')
-                    self.assertEqual(calls, [(str(main), ('worktree', 'list', '--porcelain'))])
+                    self.assertEqual(calls, [(str(main), ('worktree', 'list', '--porcelain', '-z'))])
 
     def test_a_missing_repo_text_resolves_to_no_root(self):
         run = self.make_run('/x')
@@ -246,6 +246,42 @@ class ReposTest(unittest.TestCase):
         self.assertEqual(calls, [])
         self.assertEqual(first, second)
         self.assertEqual(first[runs[3][0]]['source'], 'base-commit')
+
+    def test_second_resolve_of_a_non_git_directory_makes_no_git_call(self):
+        plain = self.tmp / 'plain'
+        plain.mkdir()
+        runs = [(self.make_run(plain), str(plain), 'plan')]
+        first = repos.resolve(runs)
+        calls, patched = self.git_calls()
+        with patched:
+            second = repos.resolve(runs)
+        self.assertEqual(calls, [])
+        self.assertEqual(first, second)
+
+    def test_a_path_with_a_newline_is_not_cut_at_the_newline(self):
+        main = self.make_repo('proj\nsuffix')
+        wt = self.tmp / 'wt'
+        git(main, 'worktree', 'add', '-q', '-b', 'a', str(wt))
+        run = self.make_run(wt)
+        self.assertEqual(repos.resolve([(run, str(wt), 'plan')])[run],
+                         dict(root=str(main), worktree=str(wt), branch=None, source='live'))
+
+    def test_a_git_without_z_falls_back_to_lines_and_distrusts_a_split_path(self):
+        main = self.make_repo('proj\nsuffix')
+        wt = self.tmp / 'wt'
+        git(main, 'worktree', 'add', '-q', '-b', 'a', str(wt))
+        plain = self.make_repo('plain')
+        real = repos._run_git
+
+        def old_git(cwd, *args):
+            if args[-1] == '-z':
+                return subprocess.CompletedProcess(args, 129, b'', b'')
+            return real(cwd, *args)
+        with patch.object(repos, '_run_git', old_git):
+            out = repos.resolve([(self.make_run(plain), str(plain), 'plan'),
+                                 (self.make_run(wt), str(wt), 'plan')])
+        self.assertEqual([i['root'] for i in out.values()], [str(plain), str(wt)])
+        self.assertEqual([i['source'] for i in out.values()], ['live', 'path'])
 
     def test_cached_runs_survive_the_worktree_being_removed(self):
         main = self.make_repo('proj')
@@ -307,7 +343,7 @@ class ReposTest(unittest.TestCase):
         with patch.object(repos.subprocess, 'run', spy):
             repos.resolve([(run, str(main), 'plan')])
         (args, kwargs), = seen
-        self.assertEqual(args, ['git', '-C', str(main), 'worktree', 'list', '--porcelain'])
+        self.assertEqual(args, ['git', '-C', str(main), 'worktree', 'list', '--porcelain', '-z'])
         self.assertIs(kwargs['stdin'], subprocess.DEVNULL)
         self.assertFalse(kwargs.get('shell'))
         self.assertTrue(0 < kwargs['timeout'] <= 10)

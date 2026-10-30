@@ -157,18 +157,35 @@ def _from_identity_file(run_dir):
 
 # ---- step 2: the repo path is a live checkout --------------------------------------------------
 
-def _worktree_entries(repo):
-    """Worktree paths listed by git for ``repo``, main working tree first; None when it is no checkout.
+_PORCELAIN_KEYS = ('worktree ', 'HEAD ', 'branch ', 'detached', 'bare', 'locked', 'prunable')
 
-    An empty list is never returned: git always lists at least the main working tree.
+
+def _worktree_entries(repo):
+    """Worktree paths listed by git for ``repo``, main working tree first; None when git did not run.
+
+    An empty list means ``repo`` is no checkout (or its listing could not be read safely). A listed
+    checkout always has at least its main working tree.
+
+    ``-z`` keeps a path that contains a newline in one piece. A git too old for it (exit 129)
+    falls back to line output, which is trusted only while every line is a known porcelain field:
+    a stray line is the tail of a path with a newline in it, and that listing is unusable.
     """
-    done = _run_git(repo, 'worktree', 'list', '--porcelain')
+    done = _run_git(repo, 'worktree', 'list', '--porcelain', '-z')
     if done is None:
         return None
+    if done.returncode == 129:
+        done = _run_git(repo, 'worktree', 'list', '--porcelain')
+        if done is None:
+            return None
+        separator = '\n'
+    else:
+        separator = '\0'
     if done.returncode != 0:
         return []
     paths = []
-    for line in done.stdout.decode('utf-8', 'replace').splitlines():
+    for line in done.stdout.decode('utf-8', 'replace').split(separator):
+        if separator == '\n' and line and not line.startswith(_PORCELAIN_KEYS):
+            return []
         if line.startswith('worktree '):
             path = line[len('worktree '):]
             if os.path.isabs(path):
@@ -270,11 +287,15 @@ def resolve(runs):
             if found is not None:
                 found = dict(found)
         if found is None and _is_dir(repo):
-            entries = worktrees(repo)
-            found = _live_identity(repo, entries)
-            if found is not None:
-                with _LOCK:
-                    _RESOLVED[(path, repo)] = dict(found)
+            with _LOCK:
+                remembered = (path, repo) in _FALLTHROUGH
+            # A live directory that was no checkout last time: no git call until the process ends.
+            if not remembered:
+                entries = worktrees(repo)
+                found = _live_identity(repo, entries)
+                if found is not None:
+                    with _LOCK:
+                        _RESOLVED[(path, repo)] = dict(found)
         if found is None:
             pending.append((given, path, repo, kind))
             continue
@@ -287,7 +308,8 @@ def resolve(runs):
         key = (path, repo)
         with _LOCK:
             cached = _FALLTHROUGH.get(key)
-        if cached is not None and cached[0] == roots_key:
+        # Known roots only matter to a run whose repo is gone; a live directory keeps its answer.
+        if cached is not None and (cached[0] == roots_key or _is_dir(repo)):
             result[given] = dict(cached[1])
             continue
         found = None
