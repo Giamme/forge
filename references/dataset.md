@@ -31,21 +31,26 @@ time order: an attempt that PASSed, then a merge that CONFLICTed, then a human `
 |---|---|---|
 | `start` | execution | a receipt written by `begin()`. A start with no matching end is an execution that was killed or is still running |
 | `dispatch` | model call | role, alias, harness, **resolved** model, effort after clamping, timeout and its source, delivery (custom or native review), phase timings, exit, timeout, infra class, tokens, parsed verdict and findings, `FORGE_LEARNING` lines, `session_id`, `session_continue`. Blobs: the delivered prompt and the final message |
-| `attempt` | task attempt or solo run | status, attempt number (with refund and resume flags), trigger (`initial`, `auto`, `human`), dwarf and qa spec, declared vs changed files, numstat, drift, guard notes, gate line (`thr<TAB>decision<TAB>worst<TAB>n_confirmed<TAB>n_unlabelled<TAB>n_below`; a solo attempt has it too, with the `known_issues` blob; null when the run wrote none), patch key, the files this execution wrote and the ones it only carried. Blobs: the diff, retry findings, memory slices, capsule, Jev task files |
+| `attempt` | task attempt or solo run | status, attempt number (with refund and resume flags), trigger (`initial`, `auto`, `human`), dwarf and qa spec, declared vs changed files, numstat, drift, guard notes, gate line (`thr<TAB>decision<TAB>worst<TAB>n_confirmed<TAB>n_unlabelled<TAB>n_below`; a solo attempt has it too, with the `known_issues` blob; null when the run wrote none), patch key, the files this execution wrote and the ones it only carried, `sent_back` (`prereview`, `bounce` or `message`: the send-back this attempt ended with, which leaves its status `FAIL`; null otherwise) and `retry_source` (where the retry findings it was given came from: `review`, `prereview`, `bounce`, `message` or `answer`; null on a first attempt). Blobs: the diff, retry findings, memory slices, capsule, Jev task files |
 | `verification` / `verify_run` | verify, and each command execution | command and its source (flag, `.forge/verify`, Jev), status, flaky. One `verify_run` per execution, each with its own log |
-| `plan` | `plan` | goal, original request, decompose level, exploratory routing decisions (`tasks[id].route`, with their odds), author (orchestrator or planner), per-task declared vs executed difficulty and who set it, pools, waves, Jev's plan-time judgments (stores from before 2026-10-27 also hold routing and coupling), options (`qa_threshold`, the effective blocking threshold, and `qa_threshold_source`, `set` when the plan's file held a valid value and `default` otherwise; plus `reviewer_session` when that file is present). Blobs: both task tables, prompts, approaches, excerpts of the declared files at plan time, the file inventory, `memory.md` |
+| `plan` | `plan` | goal, original request, decompose level, exploratory routing decisions (`tasks[id].route`, with their odds), author (orchestrator or planner), per-task declared vs executed difficulty and who set it, pools, waves, Jev's plan-time judgments (stores from before 2026-10-27 also hold routing and coupling), options (`qa_threshold`, the effective blocking threshold, and `qa_threshold_source`, `set` when the plan's file held a valid value and `default` otherwise; plus `reviewer_session` when that file is present), `plan_gates` (the parsed `plan-gates.json`: what the plan-time gates did, with the `sent_back` history and `pending`; absent when the plan has no such file). Blobs: both task tables, prompts, approaches, excerpts of the declared files at plan time, the file inventory, `memory.md` |
 | `run_end` | `run` | results per task, the accepted integration commit, `memory.md` |
 | `invocation` | user-facing `forge-parallel.sh` subcommand | argv, exit, duration, plus final review, accept, integrate and split/combine payloads |
-| `event` | point event | `merge` (MERGED, CONFLICT with the files, INVALIDATED and why), `integrate_advanced`, `integrate_conflict`, `combine_conflict`, `sched_terminal`, `memory_record`, `memory_prune` |
+| `event` | point event | `merge` (MERGED, CONFLICT with the files, INVALIDATED and why), `integrate_advanced`, `integrate_conflict`, `combine_conflict`, `sched_terminal`, `memory_record`, `memory_prune`, `attribution` (below) |
 | `event` `escalation` | retry that changes the model | the model a retry escalated from and to, `after_attempt`, and `source` (`policy`, `retry` for an explicit `--dwarf`, or `pin`), recorded at the rewrite, before the retried attempt begins |
 | `event` `control` | `forge control` change | a human's live change: `at`, `actor` (`cli`/`ui`), `action` (`set`, `pin`, `unpin`), `key`, `value`, `previous`; task events carry the task id. Also read back from `control.log` by `import` |
 | `event` `run_delete_started` / `run_deleted` | `forge runs rm` | written strictly around a run's deletion: `path`, `run_id`, `archive`, and for `run_deleted` the bytes freed |
 | `event` `shadow_review` | shadow review | how an opt-in second review ended (`done`, `invalid`, `overtime`, `orphaned`, ...), with the reviewed commit and both specs. Its dispatch is recorded with role `qa_shadow` |
-| `jev` | Jev request | site, answers, usage, latency, mode. Blob: the **full request** (state and questions). Its original sha is `jev.jsonl`'s `key` |
+| `jev` | Jev request | site, answers, usage, latency, mode. Blob: the **full request** (state and questions). Its original sha is `jev.jsonl`'s `key`. A per-attempt gate's request state carries `run`, `task` and `attempt` (`dwarf-message`, `retry-addressed`), so its key differs per attempt and per run; `attribution` carries `run` only |
 | `fractal_step` / `fractal_node` | Fractal step, node state | decomposition decision, iteration, resolved model, cost, tokens, candidate diff |
 | `ledger` | ledger row | imported `.forge/ledger.tsv` rows |
 | `forecast` | forecast shown by `run` | the plan forecast printed before dispatch (see [plan forecast](#plan-forecast)), once per run and content. Also in the plan as `forecast.json` |
 | `outcome` | integrated task, per horizon | written by `forge dataset outcomes`, never by a run: how many of the lines a task added survive N days after `integrate`, and what reverted it |
+
+An attempt that forge sent back without a review keeps the status `FAIL` in the dataset, and
+`sent_back` says what sent it back (`prereview`, `bounce` or `message`). `attempts.tsv` names the
+`bounce` and `message` cases `BOUNCED` and `INCOMPLETE`; those two statuses exist only there. An
+attempt that stopped for the user's answer has the status `NEEDS_INPUT` in the dataset.
 
 A dispatch carries `session_id` and `session_continue`. `session_id` comes from the attempt
 dir's `<role>.session`, and from `metrics.json` when that file is absent. `session_continue`
@@ -61,7 +66,9 @@ infrastructure stop (the `tasks/<id>/resume` marker).
 it in `options`. The file joins the plan id only when it is present, so every plan already
 in a store keeps its id, and turning the experiment on stores a new plan event.
 `plan --implementer-session` (`$PLAN/implementer_session`, `on`) is recorded the same way, and
-`plan --pre-review-tests` joins the plan id the same way and is listed in `flags`.
+`plan --pre-review-tests` joins the plan id the same way and is listed in `flags`. `plan-gates.json`
+joins it too, but with its parsed content rather than a first line: a plan without the file keeps
+its id, and a re-plan that changes the file's content gets a new plan event.
 `forge dataset status` counts continued and failed continues for reviewers and implementers
 apart.
 
@@ -72,6 +79,12 @@ log 272 KiB. Transcripts (`*.log`) and `.cmd` (which some harnesses use to carry
 prompt in argv) are never stored. A harness without structured output has its final
 message copied from the whole log, so for those harnesses only the tail is kept, flagged
 `final_source: log_copy`.
+
+The `attribution` event is written once an integration search stops (`forge-parallel.sh attribute`,
+in [the command reference](../docs/commands.md)). It is a point event with no task. Its blob
+`attribution` holds the search's `attribution.json`: `culprit`, `base_fails`, `inconclusive`,
+`merges`, `steps` (each verified prefix, its status and its `source`), `verification_runs` and
+`gate` (the decision model's ranking, the suspect it tried and the outcome, or null).
 
 ## How it is captured
 
