@@ -14,6 +14,7 @@ import json
 import os
 from pathlib import Path
 import stat
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -204,16 +205,83 @@ class CandidateSourceTests(JevVerifyTestCase):
         # Must not raise, whatever it finds or does not find.
         verify.candidates(self.repo)
 
-    def test_memory_verify_lines_extract_known_commands(self):
+    def test_memory_verify_facts_extract_known_commands(self):
+        # The rendered memory.md's ## Verify bullets, not the ledger's `verify |` rows.
         (self.repo / '.forge').mkdir()
         (self.repo / '.forge' / 'memory.md').write_text(
-            'FORGE_LEARNING: verify | pytest -q runs the suite; make test also lints and is 4x slower\n')
+            '# forge project memory\n\n## Verify\n'
+            '- pytest -q runs the suite; make test also lints and is 4x slower [tests/]\n')
         found = verify.candidates(self.repo)
         commands = {c['command'] for c in found}
         self.assertIn('pytest -q', commands)
         self.assertIn('make test', commands)
         for c in found:
-            self.assertEqual(c['source'], 'memory:verify')
+            self.assertEqual(c['source'], 'memory')
+
+    def test_a_remembered_verify_command_is_a_memory_candidate(self):
+        (self.repo / '.forge').mkdir()
+        (self.repo / '.forge' / 'memory.md').write_text(
+            '# forge project memory\n\n## Verify\n- run `bash tests/check.sh` before merging\n\n'
+            '## Known traps\n- `cargo test` needs network\n')
+        found = verify.candidates(self.repo)
+        # Only the Verify section is read: the trap's `cargo test` is not a candidate.
+        self.assertEqual([(c['command'], c['source']) for c in found], [('bash tests/check.sh', 'memory')])
+
+    def test_a_remembered_command_ends_at_its_markdown_and_its_source_tag(self):
+        # The backtick closing a code span and the rendered [source] tag are not arguments:
+        # "pytest -q`" would be handed to Bash and fail before any test ran.
+        (self.repo / '.forge').mkdir()
+        (self.repo / '.forge' / 'memory.md').write_text(
+            '## Verify\n- run `pytest -q` before merging\n'
+            '- run `go test ./...` before merging\n'
+            '- cargo test --workspace [Cargo.toml]\n'
+            '- then run pytest --lf.\n')
+        found = verify.candidates(self.repo)
+        self.assertEqual([c['command'] for c in found],
+                         ['pytest -q', 'go test ./...', 'cargo test --workspace', 'pytest --lf'])
+        for c in found:
+            self.assertEqual(c['source'], 'memory')
+
+    def test_prose_after_an_unquoted_command_is_not_part_of_it(self):
+        # "runs all tests" is the sentence the command sits in, not an argument to cargo.
+        (self.repo / '.forge').mkdir()
+        (self.repo / '.forge' / 'memory.md').write_text(
+            '## Verify\n- cargo test --workspace runs all tests [Cargo.toml]\n')
+        found = verify.candidates(self.repo)
+        self.assertEqual([c['command'] for c in found], ['cargo test --workspace'])
+
+    def test_prose_never_ends_a_command_on_half_an_option(self):
+        # "--features integration" is one option; cargo rejects "--features" alone.
+        (self.repo / '.forge').mkdir()
+        (self.repo / '.forge' / 'memory.md').write_text(
+            '## Verify\n- cargo test --features integration runs the suite [Cargo.toml]\n'
+            '- pytest -q --maxfail=1 also lints [tests/]\n')
+        found = verify.candidates(self.repo)
+        self.assertEqual([c['command'] for c in found], ['cargo test', 'pytest -q --maxfail=1'])
+
+    def test_prose_keeps_a_numeric_option_value_with_its_flag(self):
+        (self.repo / '.forge').mkdir()
+        (self.repo / '.forge' / 'memory.md').write_text(
+            '## Verify\n- cargo test --jobs 2 runs the suite [Cargo.toml]\n'
+            '- pytest -n 4 -q also lints [tests/]\n')
+        found = verify.candidates(self.repo)
+        self.assertEqual([c['command'] for c in found], ['cargo test --jobs 2', 'pytest -n 4 -q'])
+
+    def test_a_filename_in_a_code_span_is_not_a_runner(self):
+        (self.repo / '.forge').mkdir()
+        (self.repo / '.forge' / 'memory.md').write_text(
+            '## Verify\n- pytest -q runs with the settings in `pytest.ini` [pytest.ini]\n'
+            '- see `tests/pytest/conftest.py` and `tox.ini` [tox.ini]\n')
+        found = verify.candidates(self.repo)
+        self.assertEqual([c['command'] for c in found], ['pytest -q'])
+
+    def test_a_code_span_keeps_its_quoted_option_value(self):
+        # Quotes end a word in prose, but a code span is the command as written.
+        (self.repo / '.forge').mkdir()
+        (self.repo / '.forge' / 'memory.md').write_text(
+            '## Verify\n- run `cargo test --features "integration"` before merging [Cargo.toml]\n')
+        found = verify.candidates(self.repo)
+        self.assertEqual([c['command'] for c in found], ['cargo test --features "integration"'])
 
     def test_deduplicates_across_sources(self):
         (self.repo / '.forge').mkdir()
@@ -363,6 +431,165 @@ class DiscoverGatingTests(JevVerifyTestCase):
         self.assertAlmostEqual(result['runs_tests'], 0.95)
         self.assertIsInstance(result['runtime_level'], str)
         self.assertIn(result['source'], {c['source'] for c in cand})
+
+
+def _pick_answers(picked):
+    """A fake ask() that picks `picked` confidently, and says it runs the tests."""
+    def fake_ask(state, questions, **kwargs):
+        answers = {'choice': dict(type='choice', choice=picked, confidence=0.9)}
+        for qid, q in questions.items():
+            if qid.startswith('runs_'):
+                answers[qid] = dict(type='noul', noul=0.95)
+            elif qid.startswith('runtime_'):
+                answers[qid] = _score_answer(q['criteria'], 1)
+        return dict(answers=answers, usage=None, model='jev-latest', latency_s=0.0, site=kwargs['site'])
+    return fake_ask
+
+
+def _git_repo(repo, *files):
+    """Make `repo` a git repository with one commit of `files`, each written with a line of text."""
+    for rel in files:
+        (repo / rel).parent.mkdir(parents=True, exist_ok=True)
+        (repo / rel).write_text('x\n')
+    git = ['git', '-C', str(repo)]
+    subprocess.run([*git, 'init', '-q'], check=True)
+    subprocess.run([*git, 'add', '-A'], check=True)
+    subprocess.run([*git, '-c', 'user.name=test', '-c', 'user.email=test@test',
+                    '-c', 'commit.gpgsign=false', 'commit', '-qm', 'fixture'], check=True)
+
+
+# 3. Coverage: languages the repo has, and languages a pick's tests cover (#42) ----------
+
+class CoverageTests(JevVerifyTestCase):
+
+    def test_twenty_files_each_of_rust_and_python_are_both_present(self):
+        _git_repo(self.repo, *(f'src/a{i}.rs' for i in range(20)), *(f'lib/b{i}.py' for i in range(20)))
+        self.assertEqual(verify.languages_present(self.repo), ['python', 'rust'])
+
+    def test_a_stray_file_of_another_language_is_not_counted(self):
+        _git_repo(self.repo, *(f'src/a{i}.rs' for i in range(20)), *(f'lib/b{i}.py' for i in range(20)),
+                  'tools/stray.go')
+        self.assertEqual(verify.languages_present(self.repo), ['python', 'rust'])
+
+    def test_a_language_needs_a_tenth_of_the_code_files_as_well_as_five(self):
+        # Five Go files clear the count but are 9% of a 55-file repo.
+        _git_repo(self.repo, *(f'lib/b{i}.py' for i in range(50)), *(f'cmd/c{i}.go' for i in range(5)))
+        self.assertEqual(verify.languages_present(self.repo), ['python'])
+
+    def test_a_directory_that_is_not_a_git_repository_has_no_languages(self):
+        (self.repo / 'a.py').write_text('x\n')
+        self.assertEqual(verify.languages_present(self.repo), [])
+
+    def test_cargo_test_covers_rust(self):
+        self.assertEqual(verify.languages_covered('cargo test', ''), ['rust'])
+
+    def test_make_test_covers_what_its_recipe_runs(self):
+        (self.repo / 'Makefile').write_text('test:\n\tcargo test\n\tpytest\n')
+        candidate = next(c for c in verify.candidates(self.repo) if c['command'] == 'make test')
+        self.assertEqual(verify.languages_covered(candidate['command'], verify._evidence_excerpt(candidate)),
+                         ['python', 'rust'])
+
+    def test_a_command_that_names_no_language_covers_nothing(self):
+        self.assertEqual(verify.languages_covered('./run.sh', ''), [])
+
+    def test_go_is_recognised_by_its_test_and_vet_subcommands_only(self):
+        self.assertEqual(verify.languages_covered('go test ./...', ''), ['go'])
+        self.assertEqual(verify.languages_covered('go build ./...', ''), [])
+
+    def test_words_match_whole_only(self):
+        self.assertEqual(verify.languages_covered('cargo_test_helper', ''), [])
+
+    def test_a_memory_candidate_is_judged_by_its_fact_not_the_whole_file(self):
+        (self.repo / '.forge').mkdir()
+        (self.repo / '.forge' / 'memory.md').write_text(
+            '## Verify\n- `bash tests/check.sh` runs both suites\n## Known traps\n- cargo test needs network\n')
+        candidate = verify.candidates(self.repo)[0]
+        excerpt = verify._evidence_excerpt(candidate)
+        self.assertEqual(excerpt, '`bash tests/check.sh` runs both suites')
+        self.assertEqual(verify.languages_covered(candidate['command'], excerpt), [])
+
+    def test_discover_reports_the_languages_present_and_the_pick_covers(self):
+        _git_repo(self.repo, 'Cargo.toml', *(f'src/a{i}.rs' for i in range(5)), *(f'tools/b{i}.py' for i in range(5)))
+        with patch('forge_jev.verify.ask', side_effect=_pick_answers('cargo test')):
+            result = verify.discover(self.repo, config=self._enabled_config())
+        self.assertEqual(result['command'], 'cargo test')
+        self.assertEqual(result['coverage'], dict(present=['python', 'rust'], covered=['rust']))
+
+
+# 3b. The shell's half: the announcement, the run it starts, and whether it asks Jev -------
+
+# As tests/test_verify_freeze.py does: only forge-parallel.sh's functions are loaded, with no
+# command line. A fake python3 answers and logs the forge-jev.py calls; everything else is real.
+ANNOUNCE_HARNESS = r'''
+source_text="$(sed '/^# --- main/,$d' "$SKILL/scripts/forge-parallel.sh" | sed "s|^SELF=.*|SELF=$SKILL/scripts/forge-parallel.sh|; s|^SKILL_DIR=.*|SKILL_DIR=$SKILL|")"
+SKILL_DIR="$SKILL"
+eval "$source_text"
+python3() {
+  case "$*" in
+    *forge-jev.py*status*) echo status >> "$JEV_CALLS"; echo '{"gates":{"verify-discover":{"ready":true}}}'; return 0 ;;
+    *forge-jev.py*verify-discover*) echo verify-discover >> "$JEV_CALLS"; cat "$DISCOVERED"; return 0 ;;
+  esac
+  command python3 "$@"
+}
+verify_result_body "$@"
+'''
+
+
+class VerifyAnnouncementTests(JevVerifyTestCase):
+    def setUp(self):
+        super().setUp()
+        self.bin = self.root / 'bin'
+        self._make_executable(self.bin / 'cargo', '#!/bin/sh\necho "cargo ran"\n')
+        self._make_executable(self.bin / 'pytest', '#!/bin/sh\necho "pytest ran"\n')
+        self.plan = self.root / 'plan'
+        self.plan.mkdir()
+        (self.plan / 'repo').write_text(f'{self.repo}\n')
+        self.discovered = self.root / 'discovered.json'
+        self.jev_calls = self.root / 'jev.calls'
+        self.out = self.root / 'out'
+        self.env = dict(os.environ, PATH=f'{self.bin}{os.pathsep}{os.environ["PATH"]}', SKILL=str(ROOT),
+                        DISCOVERED=str(self.discovered), JEV_CALLS=str(self.jev_calls))
+
+    def _discover(self, picked):
+        """The JSON forge-jev.py verify-discover prints: the real discover(), with Jev's answer."""
+        with patch('forge_jev.verify.ask', side_effect=_pick_answers(picked)):
+            result = verify.discover(self.repo, config=self._enabled_config())
+        self.discovered.write_text(json.dumps(result))
+
+    def _run(self):
+        return subprocess.run(['bash', '-c', ANNOUNCE_HARNESS, 'harness', str(self.plan), str(self.repo),
+                               str(self.out)], cwd=self.repo, env=self.env, text=True,
+                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+
+    def test_a_pick_covering_part_of_the_repo_says_so_and_still_runs(self):
+        _git_repo(self.repo, 'Cargo.toml', *(f'src/a{i}.rs' for i in range(5)), *(f'tools/b{i}.py' for i in range(5)))
+        self._discover('cargo test')
+        r = self._run()
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertIn('jev chose a verification command (no --verify or .forge/verify configured): cargo test'
+                      ' — it may cover only part of the repo (covers rust; the repo also has python)', r.stdout)
+        self.assertIn('cargo ran', (self.out / 'verification.log').read_text())
+        self.assertEqual((self.out / 'verification.status').read_text().strip(), 'PASS')
+        self.assertEqual(json.loads((self.out / 'verification.jev.json').read_text())['discovered']['coverage'],
+                         dict(present=['python', 'rust'], covered=['rust']))
+
+    def test_a_pick_covering_the_whole_repo_adds_nothing(self):
+        _git_repo(self.repo, 'pytest.ini', *(f'tests/t{i}.py' for i in range(5)))
+        self._discover('pytest -q')
+        r = self._run()
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertIn('jev chose a verification command', r.stdout)
+        self.assertNotIn('may cover only part of the repo', r.stdout)
+        self.assertIn('pytest ran', (self.out / 'verification.log').read_text())
+        self.assertEqual((self.out / 'verification.status').read_text().strip(), 'PASS')
+
+    def test_a_configured_command_asks_jev_nothing(self):
+        _git_repo(self.repo, 'a.txt')
+        (self.plan / 'verify_cmd').write_text('echo configured\n')
+        r = self._run()
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertFalse(self.jev_calls.exists(), 'no forge-jev.py call with a verify command configured')
+        self.assertEqual((self.out / 'verification.command').read_text(), 'echo configured\n')
 
 
 # 4. CLI ---------------------------------------------------------------------------
