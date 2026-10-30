@@ -278,6 +278,8 @@ class MigrateAndDoctorTests(DecideCliTestCase):
             "price-huge": {"type": "jev", "url": "http://127.0.0.1:9/c", "local": true, "price_usd_per_mtok": 1e999},
             "price-zero": {"type": "jev", "url": "http://127.0.0.1:9/d", "local": true, "price_usd_per_mtok": 0},
             "price-neg": {"type": "jev", "url": "http://127.0.0.1:9/e", "local": true, "price_usd_per_mtok": -1},
+            "price-list": {"type": "jev", "url": "http://127.0.0.1:9/h", "local": true, "price_usd_per_mtok": [NaN, Infinity, -Infinity, 0]},
+            "price-obj": {"type": "jev", "url": "http://127.0.0.1:9/i", "local": true, "price_usd_per_mtok": {"rate": NaN, "nested": [1, Infinity]}},
             "price-ok": {"type": "jev", "url": "http://127.0.0.1:9/f", "local": true, "price_usd_per_mtok": 2},
             "price-none": {"type": "jev", "url": "http://127.0.0.1:9/g", "local": true}
           }
@@ -289,10 +291,13 @@ class MigrateAndDoctorTests(DecideCliTestCase):
         data = json.loads(raw, parse_constant=lambda token: self.fail(
             'non-standard JSON number %s' % token))
         bad = {item['provider']: item for item in data['items'] if item['kind'] == 'bad-price'}
-        self.assertEqual(set(bad), {'price-inf', 'price-nan', 'price-huge', 'price-zero', 'price-neg'})
+        self.assertEqual(set(bad), {'price-inf', 'price-nan', 'price-huge', 'price-zero', 'price-neg',
+                                    'price-list', 'price-obj'})
         self.assertEqual(bad['price-inf']['value'], 'Infinity')
         self.assertEqual(bad['price-huge']['value'], 'Infinity')
         self.assertEqual(bad['price-nan']['value'], 'NaN')
+        self.assertEqual(bad['price-list']['value'], ['NaN', 'Infinity', '-Infinity', 0])
+        self.assertEqual(bad['price-obj']['value'], {'rate': 'NaN', 'nested': [1, 'Infinity']})
         self.assertNotIn('"value": Infinity', raw)
         self.assertNotIn('"value": NaN', raw)
         self.assertEqual((bad['price-zero']['value'], bad['price-neg']['value']), (0, -1))
@@ -301,7 +306,7 @@ class MigrateAndDoctorTests(DecideCliTestCase):
             self.assertIn(item['provider'], item['message'])
             self.assertIn('--price', item['message'])
         lines = [line for line in self.decide('doctor', code=1).stdout.splitlines() if 'bad-price' in line]
-        self.assertEqual(len(lines), 5)
+        self.assertEqual(len(lines), 7)
         blob = '\n'.join(lines)
         for line in lines:
             self.assertTrue(line.startswith('[problem] bad-price'), line)

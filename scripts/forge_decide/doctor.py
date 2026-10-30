@@ -16,8 +16,9 @@ and thresholds only. Kinds:
     key-file            a provider's key file is missing or not mode 0600
     bad-price           a provider's price_usd_per_mtok is not a finite number above zero,
                         so the price is ignored ({provider, value}). NaN and ±Infinity are
-                        the strings "NaN", "Infinity" and "-Infinity": they are not JSON
-                        numbers, and `doctor --json` must stay standard JSON
+                        the strings "NaN", "Infinity" and "-Infinity" wherever they sit,
+                        including inside a list or object: they are not JSON numbers, and
+                        `doctor --json` must stay standard JSON
     privacy-floor       the repo has `privacy: never-send`
     not-migrated        jev.json exists but decide.json does not
     config-error        anything else wrong with reading the files
@@ -150,10 +151,17 @@ def _price_text(value) -> str:
 
 def _json_price(value):
     """The stored price as strict JSON can carry it. NaN and Infinity are not JSON numbers,
-    so they are strings; a finite number (0, -1) stays a number."""
-    shown = _price_text(value)
-    if isinstance(value, float) and shown in ('NaN', 'Infinity', '-Infinity'):
-        return shown
+    so each becomes the string "NaN", "Infinity" or "-Infinity", including one nested in a
+    list or object. A finite number (0, -1) stays a number."""
+    if isinstance(value, float):
+        shown = _price_text(value)
+        if shown in ('NaN', 'Infinity', '-Infinity'):
+            return shown
+        return value
+    if isinstance(value, list):
+        return [_json_price(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _json_price(item) for key, item in value.items()}
     return value
 
 

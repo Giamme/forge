@@ -373,7 +373,8 @@ configured), `unused-provider`, `misplaced` (providers or a daily budget in a re
 (`jev.json` exists and `decide.json` does not), `config-error`, `bad-price` (a stored
 `price_usd_per_mtok` is not a finite number above zero, so it is ignored and that
 provider's spend does not count toward a USD cap). A non-finite price is reported as
-the string `Infinity`, `-Infinity` or `NaN`, so `doctor --json` is standard JSON.
+the string `Infinity`, `-Infinity` or `NaN`, including when it sits inside a list or
+object, so `doctor --json` is standard JSON.
 
 `--live` sends one fixed synthetic request, with no repo data, to each configured provider.
 It is the only `forge decide` subcommand that uses the network, and it is skipped when the
