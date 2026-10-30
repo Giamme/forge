@@ -469,6 +469,23 @@ class ClockTests(DispatchBase):
             self.assertEqual(int(clock.read_text().split()[-1]), size, clock)
         self.assertFalse((self.run_dir / 'dwarf.clock.stop').exists())
 
+    def test_a_run_dir_removed_while_the_harness_runs_does_not_hang_the_dispatch(self):
+        # #100: the stop file cannot be written into a removed run dir, and the dispatch then waited
+        # for the sampler forever while the sampler waited for that file (test cleanups leaked these).
+        self.scenario({'*.dwarf.*': {'sleep': 2}})
+        proc = subprocess.Popen(
+            ['bash', str(DISPATCH), 'dwarf', 'sol', '--repo', str(self.repo), '--run-dir', str(self.run_dir),
+             '--prompt-file', str(self.prompt)],
+            cwd=self.repo, env=self.env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            start_new_session=True)
+        self.addCleanup(lambda: proc.poll() is None and os.killpg(proc.pid, signal.SIGKILL))
+        self.assertTrue(wait_until(lambda: (self.run_dir / 'dwarf.clock').exists()))
+        shutil.rmtree(self.run_dir)
+        try:
+            proc.wait(timeout=30)
+        except subprocess.TimeoutExpired:
+            self.fail('the dispatch is still waiting for its log clock')
+
     def test_off_leaves_no_clock_and_a_new_dispatch_drops_the_old_one(self):
         self.assertEqual(self.dispatch('dwarf', 'sol').returncode, 0)
         self.assertTrue((self.run_dir / 'dwarf.clock').exists())
