@@ -391,3 +391,107 @@
 2026-10-29T10:55:10Z	e0-plan	sweep-5	qa	sol:high	PASS	-	-	-	86
 2026-10-29T10:58:24Z	e0-plan	sweep-4	dwarf	haiku:xhigh	-	trap	a sub second clock needs python3 macos date has no n and bin bash is 3 2 no epochrealtime	a sub-second clock needs python3: macOS date has no %N and /bin/bash is 3.2 (no EPOCHREALTIME) [scripts/forge-lib-task.sh]	619	1
 2026-10-29T10:59:20Z	e0-plan	sweep-4	qa	sol:high	PASS	-	-	-	51
+2026-10-29T16:23:59Z	c345-plan	gate-rubrics	dwarf	haiku:xhigh	-	-	-	-	330
+2026-10-29T16:24:34Z	c345-plan	drift-rank	dwarf	haiku:xhigh	-	trap	git log name only quotes non ascii paths unless run with c core quotepath false	`git log --name-only` quotes non-ASCII paths unless run with `-c core.quotePath=false` [scripts/forge_jev/gates.py]	364	1
+2026-10-29T16:24:51Z	c345-plan	gate-rubrics	qa	sol:medium	PASS	-	-	-	47
+2026-10-29T16:24:52Z	c345-plan	plan-gates-core	dwarf	sonnet:high	-	-	-	-	383
+2026-10-29T16:25:38Z	c345-plan	drift-rank	qa	sol:medium	FAIL	-	-	-	55
+2026-10-29T16:28:03Z	c345-plan	plan-gates-core	qa	sol:high	FAIL	-	-	-	186
+2026-10-29T16:28:04Z	c345-plan	drift-rank	dwarf	haiku:xhigh	-	-	-	-	141
+2026-10-29T16:28:19Z	c345-plan	verify-freeze	dwarf	sonnet:high	-	-	-	-	590
+2026-10-29T16:28:29Z	c345-plan	drift-rank	qa	sol:medium	PASS	-	-	-	20
+2026-10-29T16:30:28Z	c345-plan	gate-registry	dwarf	haiku:xhigh	-	trap	ui test modules import forge ui so python3 m unittest from ui tests needs pythonpath repo ui tests run tests py sets it	ui test modules import forge_ui, so `python3 -m unittest` from ui/tests needs PYTHONPATH=<repo>/ui (tests/run_tests.py sets it) [ui/tests/test_control_endpoints.py]	718	1
+2026-10-29T16:32:05Z	c345-plan	gate-registry	qa	sol:medium	FAIL	-	-	-	91
+2026-10-29T16:32:30Z	c345-plan	plan-gates-core	dwarf	sonnet:high	-	-	-	-	262
+2026-10-29T16:32:56Z	c345-plan	verify-freeze	qa	sol:high	FAIL	-	-	-	272
+2026-10-29T16:33:42Z	c345-plan	plan-gates-core	qa	sol:high	PASS	-	-	-	66
+2026-10-29T16:34:58Z	c345-plan	verify-freeze	dwarf	sonnet:high	-	-	-	-	118
+2026-10-29T16:37:14Z	c345-plan	gate-registry	dwarf	haiku:xhigh	-	trap	test decide wire fails memory slice no key when run in one unittest process with test jev test decide transports and others at baseline too run it	several test modules in one `python3 -m unittest` process make test_decide_wire fail (order leak, also on d3f6028); tests/run_tests.py runs each class… [tests/test_decide_wire.py]	305	1
+2026-10-29T16:38:07Z	c345-plan	gate-registry	qa	sol:medium	PASS	-	-	-	47
+2026-10-29T16:39:08Z	c345-plan	verify-freeze	qa	sol:high	PASS	-	-	-	245
+2026-10-29T16:44:17Z	c345-plan	gate-sites	dwarf	haiku:xhigh	-	-	-	-	364
+2026-10-29T16:45:24Z	c345-plan	gate-sites	qa	sol:medium	PASS	-	-	-	59
+2026-10-29T17:29:51Z	c345-plan	drift-on	dwarf	sonnet:high	-	-	-	-	225
+2026-10-29T17:30:07Z	c345-plan	coverage-gate	dwarf	sonnet:high	-	-	-	-	241
+2026-10-29T17:31:07Z	c345-plan	memory-labels	dwarf	sonnet:high	-	-	-	-	301
+2026-10-29T17:31:51Z	c345-plan	drift-on	qa	sol:high	FAIL	-	-	-	107
+2026-10-29T17:32:36Z	c345-plan	coverage-gate	qa	sol:high	FAIL	-	-	-	140
+2026-10-29T17:32:49Z	c345-plan	memory-labels	qa	sol:high	FAIL	-	-	-	97
+2026-10-29T17:33:53Z	c345-plan	coverage-gate	dwarf	sonnet:high	-	-	-	-	73
+2026-10-29T17:33:56Z	c345-plan	drift-on	dwarf	sonnet:high	-	-	-	-	121
+2026-10-29T17:34:18Z	c345-plan	retry-sources	dwarf	sonnet:high	-	-	-	-	492
+2026-10-29T17:35:20Z	c345-plan	drift-on	qa	sol:high	PASS	-	-	-	79
+2026-10-29T17:35:34Z	c345-plan	coverage-gate	qa	sol:high	FAIL	-	-	-	95
+2026-10-29T17:35:34Z	c345-plan	memory-labels	dwarf	sonnet:high	-	-	-	-	161
+2026-10-29T17:36:18Z	c345-plan	coverage-gate	dwarf	sonnet:high	-	-	-	-	41
+2026-10-29T17:36:33Z	c345-plan	memory-labels	qa	sol:high	PASS	-	-	-	53
+2026-10-29T17:37:27Z	c345-plan	forward-on	dwarf	sonnet:high	-	-	-	-	121
+2026-10-29T17:37:40Z	c345-plan	coverage-gate	qa	sol:high	FAIL	-	-	-	77
+2026-10-29T17:39:09Z	c345-plan	retry-sources	qa	sol:high	PASS	-	-	-	285
+2026-10-29T17:39:35Z	c345-plan	forward-on	qa	sol:high	FAIL	-	-	-	122
+2026-10-29T17:40:28Z	c345-plan	forward-on	dwarf	sonnet:high	-	-	-	-	50
+2026-10-29T17:41:28Z	c345-plan	forward-on	qa	sol:high	PASS	-	-	-	56
+2026-10-29T17:45:25Z	c345-plan	prompt-gate	dwarf	sonnet:high	-	-	-	-	232
+2026-10-29T17:47:28Z	c345-plan	prompt-gate	qa	sol:high	FAIL	-	-	-	117
+2026-10-29T17:48:55Z	c345-plan	prompt-gate	dwarf	sonnet:high	-	-	-	-	83
+2026-10-29T17:50:12Z	c345-plan	prompt-gate	qa	sol:high	FAIL	-	-	-	70
+2026-10-29T17:51:25Z	c345-plan	prompt-gate	dwarf	sonnet:high	-	-	-	-	69
+2026-10-29T17:52:26Z	c345-plan	prompt-gate	qa	sol:high	FAIL	-	-	-	56
+2026-10-29T17:52:40Z	c345-plan	addressed-gate	dwarf	sonnet:high	-	trap	tests that write stub gate files into a copied skill dir write through the scripts symlinks and overwrite the real gate unlink first	tests that write stub gate files into a copied skill dir write through the scripts/ symlinks and overwrite the real gate; unlink first [tests/test_retry_sources.py]	805	1
+2026-10-29T17:52:40Z	c345-plan	addressed-gate	dwarf	sonnet:high	-	trap	test forge py s sandboxed path has no cut so shell code run under those tests must use bash builtins sed or awk	test_forge.py's sandboxed PATH has no `cut`, so shell code run under those tests must use bash builtins, sed or awk [tests/test_forge.py]	805	1
+2026-10-29T17:54:56Z	c345-plan	addressed-gate	qa	sol:high	FAIL	-	-	-	129
+2026-10-29T17:56:50Z	c345-plan	addressed-gate	dwarf	sonnet:high	-	-	-	-	110
+2026-10-29T17:59:02Z	c345-plan	addressed-gate	qa	sol:high	PASS	-	-	-	126
+2026-10-29T19:00:46Z	c345-plan	plan-wiring	dwarf	sonnet:high	-	trap	a gate on with a low score now makes plan exit 4 on the first call so any test that scores a task low must plan twice	a gate `on` with a low score now makes `plan` exit 4 on the first call, so any test that scores a task low must plan twice [tests/test_jev_invariants.py]	663	0
+2026-10-29T19:08:01Z	c345-plan	plan-wiring	qa	sol:high	FAIL	-	-	-	428
+2026-10-29T19:11:40Z	c345-plan	plan-wiring	dwarf	sonnet:high	-	-	-	-	215
+2026-10-29T19:13:00Z	c345-plan	plan-wiring	qa	sol:high	PASS	-	-	-	74
+2026-10-29T19:29:41Z	c345-plan	needs-input	dwarf	sonnet:high	-	trap	bash nt compares whole seconds on macos so a mtime order check needs python3 st mtime ns	bash `-nt` compares whole seconds on macOS, so a mtime-order check needs python3 `st_mtime_ns` [scripts/forge-lib-task.sh]	985	1
+2026-10-29T19:35:26Z	c345-plan	needs-input	qa	sol:high	FAIL	-	-	-	319
+2026-10-29T19:43:41Z	c345-plan	needs-input	dwarf	sonnet:high	-	-	-	-	480
+2026-10-29T19:48:27Z	c345-plan	needs-input	qa	sol:high	FAIL	-	-	-	281
+2026-10-29T19:58:13Z	c345-plan	needs-input	dwarf	sonnet:high	-	-	-	-	581
+2026-10-29T20:41:20Z	c345-plan	needs-input	qa	sol:high	FAIL	-	-	-	298
+2026-10-29T21:18:56Z	c345-plan	findings-gate	dwarf	sonnet:high	-	-	-	-	543
+2026-10-29T21:22:29Z	c345-plan	findings-gate	qa	sol:high	FAIL	-	-	-	207
+2026-10-29T21:23:56Z	c345-plan	message-gate	dwarf	sonnet:high	-	-	-	-	843
+2026-10-29T21:26:34Z	c345-plan	findings-gate	dwarf	sonnet:high	-	-	-	-	238
+2026-10-29T21:26:43Z	c345-plan	message-gate	qa	sol:high	FAIL	-	-	-	162
+2026-10-29T21:26:52Z	c345-plan	attribute	dwarf	sonnet:high	-	-	-	-	1019
+2026-10-29T21:29:24Z	c345-plan	findings-gate	qa	sol:high	FAIL	-	-	-	164
+2026-10-29T21:31:49Z	c345-plan	message-gate	dwarf	sonnet:high	-	-	-	-	301
+2026-10-29T21:32:27Z	c345-plan	attribute	qa	sol:high	FAIL	-	-	-	328
+2026-10-29T21:32:34Z	c345-plan	findings-gate	dwarf	sonnet:high	-	-	-	-	184
+2026-10-29T21:34:02Z	c345-plan	message-gate	qa	sol:high	PASS	-	-	-	127
+2026-10-29T21:35:34Z	c345-plan	findings-gate	qa	sol:high	PASS	-	-	-	175
+2026-10-29T21:35:53Z	c345-plan	attribute	dwarf	sonnet:high	-	-	-	-	202
+2026-10-29T21:43:21Z	c345-plan	attribute	qa	sol:high	FAIL	-	-	-	442
+2026-10-29T21:45:25Z	c345-plan	attribute	dwarf	sonnet:high	-	-	-	-	119
+2026-10-29T21:47:00Z	c345-plan	attribute	qa	sol:high	PASS	-	-	-	91
+2026-10-29T21:52:12Z	c345-plan	ui-reader	dwarf	haiku:xhigh	-	trap	export py nulls only the keys listed in text keys so a new free text field in a rundetail or task leaks into an export unless its key is added there	export.py nulls only the keys listed in _TEXT_KEYS, so a new free-text field in a RunDetail or Task leaks into an export unless its key is added there [ui/forge_ui/export.py]	306	1
+2026-10-29T21:52:55Z	c345-plan	ui-reader	qa	sol:medium	FAIL	-	-	-	36
+2026-10-29T21:55:48Z	c345-plan	ui-reader	dwarf	haiku:xhigh	-	-	-	-	168
+2026-10-29T21:56:15Z	c345-plan	ui-reader	qa	sol:medium	PASS	-	-	-	23
+2026-10-29T21:57:24Z	c345-plan	verify-coverage	dwarf	haiku:xhigh	-	-	-	-	618
+2026-10-29T21:59:57Z	c345-plan	attribution-gate	dwarf	sonnet:high	-	-	-	-	771
+2026-10-29T22:02:22Z	c345-plan	verify-coverage	qa	sol:medium	FAIL	-	-	-	292
+2026-10-29T22:05:44Z	c345-plan	ui-views	dwarf	haiku:xhigh	-	verify	node test ui tests js test js	node --test ui/tests/js/*.test.js [ui/tests/js/runmodel.test.js]	562	1
+2026-10-29T22:05:44Z	c345-plan	ui-views	dwarf	haiku:xhigh	-	trap	the browser tests skip silently without playwright system python3 skips 57 of 329 forge ui tests uv run with playwright runs them	the browser tests skip silently without Playwright: system python3 skips 57 of 329 forge-ui tests, uv run --with playwright runs them [ui/tests/test_browser.py]	562	1
+2026-10-29T22:06:11Z	c345-plan	attribution-gate	qa	sol:high	FAIL	-	-	-	368
+2026-10-29T22:06:36Z	c345-plan	ui-views	qa	sol:medium	PASS	-	-	-	41
+2026-10-29T22:10:20Z	c345-plan	verify-coverage	dwarf	haiku:xhigh	-	trap	a rendered memory md fact ends in a source tag which a remembered command must not read as an argument	a rendered memory.md fact ends in a [source] tag, which a remembered command must not read as an argument [scripts/forge_jev/verify.py]	473	1
+2026-10-29T22:10:50Z	c345-plan	attribution-gate	dwarf	sonnet:high	-	-	-	-	274
+2026-10-29T22:11:53Z	c345-plan	verify-coverage	qa	sol:medium	FAIL	-	-	-	86
+2026-10-29T22:14:35Z	c345-plan	attribution-gate	qa	sol:high	FAIL	-	-	-	219
+2026-10-29T22:16:04Z	c345-plan	verify-coverage	dwarf	haiku:xhigh	-	-	-	-	246
+2026-10-29T22:17:22Z	c345-plan	verify-coverage	qa	sol:medium	FAIL	-	-	-	70
+2026-10-29T22:17:58Z	c345-plan	attribution-gate	dwarf	sonnet:high	-	-	-	-	195
+2026-10-29T22:22:31Z	c345-plan	attribution-gate	qa	sol:high	PASS	-	-	-	267
+2026-10-29T22:22:52Z	c345-plan	verify-coverage	dwarf	sonnet:high	-	-	-	-	323
+2026-10-29T22:24:01Z	c345-plan	verify-coverage	qa	sol:medium	FAIL	-	-	-	64
+2026-10-30T09:11:33Z	c345-plan	verify-coverage	dwarf	sonnet:high	-	-	-	-	120
+2026-10-30T09:12:26Z	c345-plan	verify-coverage	qa	sol:medium	PASS	-	-	-	48
+2026-10-30T09:27:17Z	c345-plan	gates-docs	dwarf	haiku:xhigh	-	trap	after migration a forge jev cap on in the environment turns off every gate with no legacy capability even one set on with	after migration, a FORGE_JEV_<CAP>=on in the environment turns off every gate with no legacy capability, even one set on with… [scripts/forge_decide/resolve.py]	886	1
+2026-10-30T09:27:59Z	c345-plan	gates-docs	qa	gpt-6.1-terra:high:codex	FAIL	-	-	-	37
+2026-10-30T09:34:43Z	c345-plan	gates-docs	dwarf	haiku:xhigh	-	-	-	-	398
+2026-10-30T09:35:25Z	c345-plan	gates-docs	qa	gpt-6.1-terra:high:codex	PASS	-	-	-	38
