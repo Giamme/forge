@@ -485,6 +485,27 @@ class EndToEndTests(StoreCase):
         course = next(c['meta'] for c in export.routing_cases(runs) if c['task'] == 'a')
         self.assertEqual((course['gate_fail'], course['gate_pass'], course['raw_verdict']), (True, False, 'PASS'))
 
+    def test_separate_runs_that_met_the_same_diff_stay_one_review_case_whatever_their_gates(self):
+        # Two runs of the same task produce the same diff, each with one QA execution. The first
+        # reviewer's PASS lists a CONFIRMED P2 (gate fail), the second is clean (gate keep). Only
+        # the executions of one attempt are split by gate; these export as one case, as before.
+        from forge_dataset import export
+        self.scenario({'a.qa.1': {'verdict': 'PASS', 'findings': '- [P2][CONFIRMED] a.txt:1 — wrong'}})
+        p = self.plan_of([('a', '-', 'a.txt')])
+        self.assertEqual(self.run_script('forge-parallel.sh', 'run', p).returncode, 5)
+        shutil.rmtree(p)
+        p = self.plan_of([('a', '-', 'a.txt')])
+        r = self.run_script('forge-parallel.sh', 'run', p)
+        self.assertEqual(r.returncode, 0, r.stdout)
+
+        runs = export.Runs(export.Store(store.connect()))
+        rows = [row for row in export._qa_rows(runs) if row['task'] == 'a']
+        self.assertEqual(len({row['run'] for row in rows}), 2)
+        self.assertEqual(len({row['diff'] for row in rows}), 1)
+        self.assertEqual(sorted(row['gate'] for row in rows), ['fail', 'keep'])
+        [case] = [c for c in export.review_cases(runs) if c['task'] == 'a']
+        self.assertEqual(case['key'], export._sha(runs.prompt(case['run'], 'a')[:export.REVIEW_CHARS], rows[0]['diff']))
+
     def test_a_continued_session_the_attempt_ended_on_leaves_no_row_carrying_its_gate(self):
         # The last verdict-bearing QA dispatch continued a reviewer session, so _qa_rows skips
         # it. The earlier fresh PASS of the same attempt must not inherit the attempt's gate.

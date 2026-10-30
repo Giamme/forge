@@ -638,7 +638,10 @@ def _qa_rows(runs: Runs):
                        worst=_worst(found),
                        # The dispatch this row was built from. A shadow pair names that event,
                        # so an earlier execution of the same attempt cannot claim it.
-                       dispatch=e)
+                       dispatch=e,
+                       # Its place in the task's chronological QA dispatches: a split review
+                       # case is keyed by it, never by the order rows come out of the store.
+                       execution=index)
 
 
 def _worst(found) -> str:
@@ -721,11 +724,15 @@ def review_cases(runs: Runs):
         if len(verdicts) != 1:
             # Two reviews of the same diff disagreed: the label is noise, not an outcome.
             continue
-        # Same verdict on one diff stays one case. Executions forge gated differently are
-        # not interchangeable: the first row's gate must not hide the one the attempt ended on.
-        split = len({item['gate'] for item, _ in items}) > 1
+        # Same verdict on one diff stays one case, separate runs that met the same diff
+        # included. Only the executions of one attempt split, when forge gated them
+        # differently: the first row's gate must not hide the one the attempt ended on.
+        gates = defaultdict(set)
+        for item, _ in items:
+            gates[(item['run'], item['task'], item['attempt'])].add(item['gate'])
+        split = any(len(g) > 1 for g in gates.values())
         exported = items if split else [items[0]]
-        for index, (r, task) in enumerate(exported):
+        for r, task in exported:
             cohort = [(r, task)] if split else items
             diff = r['diff']
             # Who reviews decides the outcome as much as the diff: the same diff meets a 0.93 pass rate
@@ -767,7 +774,7 @@ def review_cases(runs: Runs):
                 label_source['survives'] = 'git blame %d days after integrate' % landed['horizon_days']
                 meta['survival'] = dict(added=landed['added'], surviving=landed['surviving'],
                                         reverted_by=landed.get('reverted_by') or [], horizon_days=landed['horizon_days'])
-            yield dict(slice='review', key=key if not split else _sha(key, str(index)),
+            yield dict(slice='review', key=key if not split else _sha(key, r['run'], r['task'], r['attempt'], r['execution']),
                        run=r['run'], repo=r['repo'], task=r['task'], state=state,
                        questions=questions, expected=expected, baseline=baseline, label_source=label_source,
                        reviewer=r['model'], meta=meta)
