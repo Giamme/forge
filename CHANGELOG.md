@@ -5,6 +5,61 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and versions follow the format `{major}.{minor}[.{patch}]` ([...] parts appear only when non-zero).
 
+## [0.13] - 2026-10-30
+
+Decision-model gates are now yours to set, off, shadow or on, per user or per repository with `forge decide`, and when on they act: drift and forward edit the plan, prompt and coverage send it back to the planner, and five new gates bounce unaddressed retries, read the implementer's final message, find the merge that broke verification and triage leftover findings. QA verdicts now follow a P2 blocking threshold in both directions, and a retry can continue the implementer's own session.
+
+### Added
+
+- A gate can ask any TypeSafe-compatible (jev) or Cloudflare-compatible (clef) endpoint, hosted or on your machine: `forge decide provider add` takes a URL, a model, a context limit and a price, and a key only on stdin or as the name of an environment variable.
+- Decision models can be capped per run and per day, in tokens and estimated cost (`forge decide budget`, or `--decide-budget tokens=N,usd=X` on a run); a gate past a cap stops asking for the rest of the run or day.
+- `forge decide` sets each decision-model gate (drift, forward, prompt, memory-curate, memory-slice, memory-stale, verify-discover) to off, shadow or on, for you or per repository (`.forge/decide.json`): `status`, `gate`, `provider`, `budget`, `privacy`, `doctor` and `migrate`. Shadow asks and records but changes nothing. Its first change migrates `jev.json`; until then every run behaves exactly as before. `forge decide privacy never-send --repo DIR` stops every gate from sending anything about that repository.
+- forge-ui's Settings page sets each gate's mode, the providers, the budgets and a repository's privacy floor, through `forge decide`.
+- `--gate name=mode` and `--no-gates` on `plan` and solo runs choose the gates for that run; they are kept with the run, so resume and retry decide the same way.
+- A decision-model question asked again in the same run is answered from the run directory's request cache: free, outside the budget, and logged as `cached`. `FORGE_DECIDE_CACHE=off` turns it off.
+- A gate goes `on` only for a provider and model with a passing replay: `forge decide gate G on`, and `forge config set` of an `on` gate's provider or model, refuse (exit 3) and name the replay to run. `--force` turns it on anyway, and a forced gate is marked in `forge decide status` and `report`, `forge config show`, the plan's decide line and forge-ui's Settings, which shows the whole refusal. `forge decide migrate` marks the gates it turns on as forced.
+- `forge decide replay --site S --provider P --model M` re-asks a site's labelled past requests on that provider and model, compares the answers with the live model's and the site's no-model baseline, and records whether it passes. Without `--send` it is a dry run that sends nothing; a replay skips repos under the privacy floor and is charged to no budget. The decision-models guide gains a "Measuring a gate" section.
+- `forge decide report` shows, per decision-model site over recent runs, what it cost (calls, cache hits, errors, skips, tokens, and dollars at the provider's price) and how often it fired right, wrong or missed, judged against labels taken from what the runs did next. It asks no model.
+- forge-ui marks a PASS that forge turned into FAIL, and shows the QA threshold with where it comes from, such as `P2 (default)`.
+- Task and integration worktrees now contain the repository's submodules, each at its recorded commit, copied from your checkout's own copy without network access and invisible to git. A submodule forge cannot fill is named in the implementer's brief.
+- `plan --pre-review-tests` runs only the tests an attempt affects (from `.forge/test-map`, naming conventions or references) before paying for its review; a red result goes back to the implementer as findings, unreviewed. `--pre-review-parallel N` caps how many run at once, `forge control set` changes both during a run, and forge-ui shows the result.
+- `plan --implementer-session` lets a retry continue the implementer's own claude or openclaude session, so it does not re-read what it already knows, when its spec is unchanged and its work is still what the review judged; otherwise the retry starts fresh as before. Each attempt is logged in `tasks/<id>/implementer_sessions.tsv`, and `forge dataset status` counts implementer continues apart from reviewer ones.
+- `forge-parallel.sh attribute <plan>` (or `run --attribute`) finds the merged task that broke the combined verification, by re-running the same verification at merge boundaries. With the new `attribution` gate on, the likeliest culprit is checked first.
+- New `dwarf-message` gate: an implementer whose final message says it did not finish, or was blocked, is sent back without a review (`INCOMPLETE`), keeping the findings it was working on. One that asks a question only you can answer stops the task as `NEEDS_INPUT`; the run summary shows the question, and `forge-parallel.sh retry <plan> <task> --answer "…"` (or `--answer-file`) resumes it.
+- New `retry-addressed` gate: a retry whose change leaves one of its blocking findings untouched goes back to the implementer without paying for a review. The attempt is recorded as `BOUNCED`, and the next one is always reviewed.
+- When `on`, the prompt gate and the new coverage gate send work back to the planner once: a task whose prompt reads as too vague to check, or a requirement in `request.md` that no task covers. `plan` then exits 4 and writes `plan.sendback.md`; fix the plan and run `plan` again. A block under the task table shows what each plan-time gate did.
+- `forge decide status`, `report` and `replay` cover the five new gates (coverage, retry-addressed, dwarf-message, attribution, findings), which start `off` and need `--force` to go `on` until a replay passes. Every label now means "the gate should have acted"; the memory gates report how often they acted. `references/decision-models.md` describes what each gate does when on.
+- forge-ui shows a task waiting for your answer with its question, `BOUNCED` and `INCOMPLETE` attempts, and the result of `attribute`.
+- New `findings` gate for `forge-issues.py`: a leftover finding that rewords an open issue becomes a comment on that issue instead of a new one, and the `--file-issues ask` dialog pre-selects the findings that name a concrete defect, with a reason for each one left out. `forge-jev.py findings` offers the same check to other tools.
+
+### Changed
+
+- `forge issues` and the finding sweep read the findings a review tolerated the same way the gate does, at the run's actual threshold, so each one is filed.
+- QA verdicts now follow a blocking threshold in both directions, `P2` unless `--qa-threshold` sets another, in solo runs, decomposed tasks and the whole-run review alike. A PASS that lists a CONFIRMED finding at the threshold or worse becomes FAIL, and its retry says why. A FAIL made only of CONFIRMED findings below it is accepted, and those findings are kept in `known_issues.md`. `--qa-threshold P3` (or `none`) makes every CONFIRMED finding block; `plan` now takes the flag too.
+- Implementers and reviewers are told to verify within the change: the tests it affects, not the whole suite or repo-wide lint, format and type checks unless the task asks, with a reviewer spending about 5 minutes at most on test runs.
+- QA reviews now run at `high` effort when the reviewer spec names none (it was `xhigh`), and the approval table says so; planning stays at `xhigh`. Name an effort (`--qa opus:xhigh`) to keep the old one.
+- The drift gate asks about the 25 files a task could plausibly touch, ranked, instead of the first 120 in alphabetical order. When `on`, drift adds the files it predicts to the task before the waves are computed, and the forward gate adds the dependency it predicts (never one that would form a cycle); both are recorded in `plan-gates.json`. In `shadow`, and under `--jev-shadow`, they only record what they would do.
+- Verify discovery says when the command it picks may test only part of the repository (for example Python tests in a repo that also has Rust code), and reads remembered test commands from the project memory itself.
+
+### Deprecated
+
+- `forge jev` still works for one release and names the `forge decide` command that replaces it; `--jev-act` does nothing and says so; `forge config`'s `jev.enabled` is replaced by `decide.gate.<gate>`.
+
+### Removed
+
+- The decision-model sites that did not earn their place are gone: `forge jev backtest` (and the tracked `jev-backtests/` data), review triage, same-wave coupling (coupling keeps forward dependencies), the Clef first-pass and retry-pass predictions and their forge-ui drawing, verify flake triage (the deterministic rerun stays), the test-subset site (`.forge/verify-subset` stays for `--fail-first`) and score-plan's routing tiers. `references/decision-models.md` replaces the Jev reference.
+
+### Fixed
+
+- A dispatch whose harness exits very quickly now still records its log clock, so forge-ui can time its commands.
+- A reviewer that runs the tests no longer gets a passing attempt thrown away: files it leaves untracked in its review copy, such as `__pycache__/` in a repository with no `.gitignore`, no longer void the review. A task `INVALIDATED` because its review copy changed is now retried by `--retry-failed`, and that retry, like an explicit `retry`, only reviews the unchanged work again; forge-ui offers Retry now for it.
+- `forge issues` and the finding sweep read a location that lists several lines or adds a note (`path:442,674`, `path:117-119 (also …)`) as its file and first line, instead of dropping the finding as having no location.
+- A dispatch no longer hangs forever when its run directory is removed, or cannot be written, while the agent is running: it used to wait for its log-clock sampler, which waited for it. Test runs left one such pair of processes behind each time.
+
+### For contributors
+
+- The dataset records each review's gate decision, PASS verdicts that forge turned into FAIL, the solo gate, and where the threshold came from.
+
 ## [0.12.1] - 2026-10-28
 
 A run can now fix the review findings it tolerated before it ends (`run --sweep Pn`), and forge-ui shows where each task stands, the checks each attempt ran and the environment problems several tasks hit. A task that deletes large files no longer breaks its review.
