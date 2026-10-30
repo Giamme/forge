@@ -62,7 +62,8 @@ _SHA = re.compile(r'(?:[0-9a-f]{40}|[0-9a-f]{64})')
 
 # (path, repo) -> identity, for runs resolved by step 2 or 3.
 _RESOLVED: dict = {}
-# (path, repo) -> (frozenset of known roots, identity), for runs that fell through to step 4.
+# (path, repo) -> (frozenset of known roots, repo was a directory, identity), for runs that fell
+# through to step 4.
 _FALLTHROUGH: dict = {}
 _LOCK = threading.Lock()
 
@@ -157,7 +158,41 @@ def _from_identity_file(run_dir):
 
 # ---- step 2: the repo path is a live checkout --------------------------------------------------
 
-_PORCELAIN_KEYS = ('worktree ', 'HEAD ', 'branch ', 'detached', 'bare', 'locked', 'prunable')
+# The fields of one porcelain block by the order git writes them, each at most once; branch,
+# detached and bare are alternatives, so they share a rank.
+_PORCELAIN_RANK = {'worktree': 0, 'HEAD': 1, 'branch': 2, 'detached': 2, 'bare': 2, 'locked': 3,
+                   'prunable': 4}
+
+
+def _legacy_paths(text):
+    """Worktree paths from line-separated porcelain output, or [] when it cannot be trusted.
+
+    Without ``-z`` a path containing a newline is split over several lines, and a fragment can look
+    like a porcelain field. So the output is trusted only when it is exactly the shape git writes:
+    blocks separated by one blank line, each starting with ``worktree`` and carrying known fields in
+    git's order, none twice; and the main working tree, the answer, is an existing directory.
+    """
+    paths = []
+    for block in text.rstrip('\n').split('\n\n'):
+        rank = -1
+        for line in block.split('\n'):
+            key, _, value = line.partition(' ')
+            if key not in _PORCELAIN_RANK:
+                return []
+            if key in ('detached', 'bare') and value:
+                return []
+            if key in ('worktree', 'HEAD', 'branch') and not value:
+                return []
+            if _PORCELAIN_RANK[key] <= rank or (key == 'worktree') != (rank == -1):
+                return []
+            rank = _PORCELAIN_RANK[key]
+            if key == 'worktree':
+                if not os.path.isabs(value):
+                    return []
+                paths.append(value)
+    if not paths or not _is_dir(paths[0]):
+        return []
+    return paths
 
 
 def _worktree_entries(repo):
@@ -167,8 +202,7 @@ def _worktree_entries(repo):
     checkout always has at least its main working tree.
 
     ``-z`` keeps a path that contains a newline in one piece. A git too old for it (exit 129)
-    falls back to line output, which is trusted only while every line is a known porcelain field:
-    a stray line is the tail of a path with a newline in it, and that listing is unusable.
+    falls back to line output, which ``_legacy_paths`` trusts only when it has exactly git's shape.
     """
     done = _run_git(repo, 'worktree', 'list', '--porcelain', '-z')
     if done is None:
@@ -177,15 +211,13 @@ def _worktree_entries(repo):
         done = _run_git(repo, 'worktree', 'list', '--porcelain')
         if done is None:
             return None
-        separator = '\n'
-    else:
-        separator = '\0'
+        if done.returncode != 0:
+            return []
+        return _legacy_paths(done.stdout.decode('utf-8', 'replace'))
     if done.returncode != 0:
         return []
     paths = []
-    for line in done.stdout.decode('utf-8', 'replace').split(separator):
-        if separator == '\n' and line and not line.startswith(_PORCELAIN_KEYS):
-            return []
+    for line in done.stdout.decode('utf-8', 'replace').split('\0'):
         if line.startswith('worktree '):
             path = line[len('worktree '):]
             if os.path.isabs(path):
@@ -288,9 +320,10 @@ def resolve(runs):
                 found = dict(found)
         if found is None and _is_dir(repo):
             with _LOCK:
-                remembered = (path, repo) in _FALLTHROUGH
-            # A live directory that was no checkout last time: no git call until the process ends.
-            if not remembered:
+                cached = _FALLTHROUGH.get((path, repo))
+            # A directory that was no checkout last time: no git call until the process ends. A
+            # path that was missing then (a restored worktree) is looked at again.
+            if cached is None or not cached[1]:
                 entries = worktrees(repo)
                 found = _live_identity(repo, entries)
                 if found is not None:
@@ -308,12 +341,14 @@ def resolve(runs):
         key = (path, repo)
         with _LOCK:
             cached = _FALLTHROUGH.get(key)
+        live = _is_dir(repo)
         # Known roots only matter to a run whose repo is gone; a live directory keeps its answer.
-        if cached is not None and (cached[0] == roots_key or _is_dir(repo)):
-            result[given] = dict(cached[1])
+        # An answer from before the path appeared or vanished is stale either way.
+        if cached is not None and cached[1] == live and (live or cached[0] == roots_key):
+            result[given] = dict(cached[2])
             continue
         found = None
-        if not _is_dir(repo):
+        if not live:
             sha = _base_commit(path, kind)
             root = _by_base_commit(sha, known_roots, has_commit) if sha else None
             if root is not None:
@@ -323,8 +358,8 @@ def resolve(runs):
         if found is None:
             found = _identity(repo)
             # A live repo whose git call timed out is retried next time rather than remembered.
-            if not (_is_dir(repo) and entries_by_repo.get(repo) is None):
+            if not (live and entries_by_repo.get(repo) is None):
                 with _LOCK:
-                    _FALLTHROUGH[key] = (roots_key, dict(found))
+                    _FALLTHROUGH[key] = (roots_key, live, dict(found))
         result[given] = found
     return result

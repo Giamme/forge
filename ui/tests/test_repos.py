@@ -283,6 +283,54 @@ class ReposTest(unittest.TestCase):
         self.assertEqual([i['root'] for i in out.values()], [str(plain), str(wt)])
         self.assertEqual([i['source'] for i in out.values()], ['live', 'path'])
 
+    def test_legacy_lines_that_look_like_porcelain_fields_are_distrusted(self):
+        real = repos._run_git
+
+        def old_git(cwd, *args):
+            if args[-1] == '-z':
+                return subprocess.CompletedProcess(args, 129, b'', b'')
+            return real(cwd, *args)
+        # Each name's tail reads as a porcelain field, or a whole extra entry, to a line parser.
+        for name in ('proj\nbare', 'proj\nHEAD 0000\nbranch x', 'proj\nlocked',
+                     'proj\n\nworktree x', 'proj\n'):
+            with self.subTest(name=name):
+                repos._RESOLVED.clear()
+                repos._FALLTHROUGH.clear()
+                main = self.make_repo(name)
+                wt = self.tmp / 'wt'
+                git(main, 'worktree', 'add', '-q', '-b', 'a', str(wt))
+                run = self.make_run(wt)
+                with patch.object(repos, '_run_git', old_git):
+                    out = repos.resolve([(run, str(wt), 'plan')])
+                self.assertEqual(out[run]['source'], 'path')
+                self.assertEqual(out[run]['root'], str(wt))
+                git(main, 'worktree', 'remove', '--force', str(wt))
+                shutil.rmtree(main)
+
+    def test_a_clean_legacy_listing_is_still_read(self):
+        main = self.make_repo('proj')
+        wt = self.tmp / 'wt'
+        git(main, 'worktree', 'add', '-q', '-b', 'a', str(wt))
+        real = repos._run_git
+
+        def old_git(cwd, *args):
+            if args[-1] == '-z':
+                return subprocess.CompletedProcess(args, 129, b'', b'')
+            return real(cwd, *args)
+        run = self.make_run(wt)
+        with patch.object(repos, '_run_git', old_git):
+            out = repos.resolve([(run, str(wt), 'plan')])
+        self.assertEqual(out[run], dict(root=str(main), worktree=str(wt), branch=None, source='live'))
+
+    def test_a_restored_worktree_is_not_stuck_on_its_missing_path_answer(self):
+        main = self.make_repo('proj')
+        wt = self.tmp / 'wt'
+        run = self.make_run(wt)
+        self.assertEqual(repos.resolve([(run, str(wt), 'plan')])[run]['source'], 'path')
+        git(main, 'worktree', 'add', '-q', '-b', 'a', str(wt))
+        out = repos.resolve([(run, str(wt), 'plan'), (self.make_run(main), str(main), 'plan')])
+        self.assertEqual(out[run], dict(root=str(main), worktree=str(wt), branch=None, source='live'))
+
     def test_cached_runs_survive_the_worktree_being_removed(self):
         main = self.make_repo('proj')
         wt = self.tmp / 'wt'
