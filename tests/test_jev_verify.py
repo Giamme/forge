@@ -259,6 +259,14 @@ class CandidateSourceTests(JevVerifyTestCase):
         found = verify.candidates(self.repo)
         self.assertEqual([c['command'] for c in found], ['cargo test', 'pytest -q --maxfail=1'])
 
+    def test_prose_keeps_a_numeric_option_value_with_its_flag(self):
+        (self.repo / '.forge').mkdir()
+        (self.repo / '.forge' / 'memory.md').write_text(
+            '## Verify\n- cargo test --jobs 2 runs the suite [Cargo.toml]\n'
+            '- pytest -n 4 -q also lints [tests/]\n')
+        found = verify.candidates(self.repo)
+        self.assertEqual([c['command'] for c in found], ['cargo test --jobs 2', 'pytest -n 4 -q'])
+
     def test_a_filename_in_a_code_span_is_not_a_runner(self):
         (self.repo / '.forge').mkdir()
         (self.repo / '.forge' / 'memory.md').write_text(

@@ -27,14 +27,16 @@ _WORKFLOW_TEST_HINT_RE = re.compile(
 # string: a plain word ends the command, so "cargo test --workspace runs all tests" names
 # `cargo test --workspace`. A bare flag followed by a plain word may take that word as its value
 # ("--features integration"), and half an option is a command cargo rejects, so the command ends
-# before such a flag unless the word is plain prose ("runs", "also"). The rendered source tag
+# before such a flag unless the word is plain prose ("runs", "also"). A number after a flag is
+# always its value ("--jobs 2"), so it stays with the flag. The rendered source tag
 # ("[tests/]") matches none of these forms.
 _CODE_SPAN_RE = re.compile(r'`([^`\n]+)`')
 _PROSE_WORD = r'[A-Za-z][\w-]*(?![\w/-]|\.\w)'
 _PROSE_STOP = (r'(?:runs?|running|also|and|or|then|which|that|for|to|in|on|with|before|after|if|'
                r'when|but|is|are|will|should|must|can|takes?|checks?|covers?|lints?|builds?|'
                r'executes?|needs?|requires?)(?![\w/-]|\.\w)')
-_PROSE_FLAG = (r'-{1,2}[^\s`\'"\[\]=]+(?![^\s`\'"\[\]=])(?:=[^\s`\'"\[\]]*|(?!\s+(?!' + _PROSE_STOP + r')' + _PROSE_WORD + r'))')
+_PROSE_FLAG = (r'-{1,2}[^\s`\'"\[\]=]+(?![^\s`\'"\[\]=])(?:=[^\s`\'"\[\]]*|\s+\d[\w.]*(?![\w/-])|'
+               r'(?!\s+(?!' + _PROSE_STOP + r')' + _PROSE_WORD + r'))')
 _PROSE_ARG = r'''(?:''' + _PROSE_FLAG + r'''|[\w.-]*/[\w./-]*|"[^"\n]*"|'[^'\n]*')'''
 # A runner is a whole word: "pytest.ini" and "tests/pytest/" are files, not the pytest command.
 _HEAD_START = r'(?<![\w./-])'
