@@ -78,6 +78,17 @@ _forge_decide_word() {
   return 1
 }
 
+# _forge_decide_split <array-name> <text> — split <text> on IFS into the named array
+# without pathname expansion, so a `*` or `?` in a flag value stays as typed (GitHub #82).
+# The caller's noglob setting is left as it was.
+_forge_decide_split() {
+  local had_noglob=0
+  case $- in *f*) had_noglob=1 ;; esac
+  set -f
+  eval "$1=(\$2)"
+  [ "$had_noglob" = 1 ] || set +f
+}
+
 # _forge_decide_gate_list <list> — validate and append `name=mode[,name=mode...]` to
 # DECIDE_GATES. Nothing is appended unless every entry is valid.
 _forge_decide_gate_list() {
@@ -86,8 +97,9 @@ _forge_decide_gate_list() {
     echo "--gate needs name=mode[,name=mode...]; gates: $FORGE_DECIDE_GATE_NAMES; modes: $FORGE_DECIDE_MODE_NAMES" >&2
     return 2
   fi
-  local IFS=,
-  for entry in $list; do
+  local IFS=, entries
+  _forge_decide_split entries "$list"
+  for entry in ${entries[@]+"${entries[@]}"}; do
     name="${entry%%=*}"; mode="${entry#*=}"
     if [ "$name" = "$entry" ] || [ -z "$name" ]; then
       echo "--gate: '$entry' is not name=mode; gates: $FORGE_DECIDE_GATE_NAMES; modes: $FORGE_DECIDE_MODE_NAMES" >&2
@@ -117,8 +129,9 @@ _forge_decide_budget_spec() {
   local spec="$1" part field value tokens="$DECIDE_BUDGET_TOKENS" usd="$DECIDE_BUDGET_USD"
   local usage="--decide-budget expects tokens=N[,usd=X] (N a whole number, X a number, both >= 0)"
   [ -n "$spec" ] || { echo "$usage" >&2; return 2; }
-  local IFS=,
-  for part in $spec; do
+  local IFS=, parts
+  _forge_decide_split parts "$spec"
+  for part in ${parts[@]+"${parts[@]}"}; do
     field="${part%%=*}"; value="${part#*=}"
     [ "$field" != "$part" ] || { echo "$usage; got '$part'" >&2; return 2; }
     case "$field" in
