@@ -45,7 +45,7 @@ class InfraTests(unittest.TestCase):
         self.assertEqual(r.returncode, 8, r.stdout)
         self.assertEqual(self.text(p, 'tasks/a/status'), 'INFRA')
         self.assertEqual(self.text(p, 'tasks/a/attempt'), '0')          # refunded
-        self.assertIn('class=quota', (p / 'tasks/a/infra.txt').read_text())
+        self.assertIn('class=usage_limit', (p / 'tasks/a/infra.txt').read_text())
         self.assertIn('paused on an infrastructure failure', r.stdout)
         self.assertIn('no attempt spent', r.stdout)
         self.assertNotIn('retry a failed task', r.stdout)               # nothing failed

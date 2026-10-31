@@ -67,6 +67,11 @@ INFRA_EXIT = 8
 INFRA_WAIT_CAP = 6 * 3600
 
 
+# The classes the scheduler's scopes and fallback were written for. A finer cause is folded into
+# one of them here, so its behaviour is unchanged, until it reads forge_infra.CAUSES (#81).
+SCHEDULER_CLASS = {'capacity': 'rate_limit', 'usage_limit': 'quota', 'budget': 'quota', 'provider_down': 'network'}
+
+
 def infra_info(root: Path) -> dict:
     """key=value lines the task wrote when it stopped on an infrastructure failure."""
     info = {}
@@ -77,6 +82,8 @@ def infra_info(root: Path) -> dict:
                 info[key.strip()] = value.strip()
     except OSError:
         pass
+    if info.get('class') in SCHEDULER_CLASS:
+        info['class'] = SCHEDULER_CLASS[info['class']]
     return info
 
 
