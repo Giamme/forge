@@ -190,6 +190,11 @@ def write(path, value, at=None):
         os.utime(path, (at, at))
 
 
+def tsv(rows):
+    """The text of a forge run-file table: one tab-separated line per row, no header."""
+    return ''.join('\t'.join(str(cell) for cell in row) + '\n' for row in rows)
+
+
 def metrics(role, start, end=None, phase='model', exit_code=0, tokens=None, shadow=False):
     """metrics.json as forge-runtime.py begin/phase/finish leave it; times are T0-relative."""
     mono = 1000.0 + start

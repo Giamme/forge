@@ -38,7 +38,7 @@ _EXEC = re.compile(r'(?:task|dwarf|qa|solo|verification|parallel)-[0-9a-f]{32}')
 _TEXT_KEYS = frozenset(('prompt', 'last', 'request', 'log_tail', 'dwarf_tail', 'qa_tail', 'qa_last', 'qa_input',
                         'tasks_summary', 'known_issues', 'texts', 'text', 'planning_last', 'approach', 'retry_findings',
                         'dwarf_input', 'error', 'last_line', 'message', 'excerpt', 'tail', 'lines', 'call', 'split',
-                        'needs_input'))
+                        'needs_input', 'detail'))
 
 
 def _enc(value):

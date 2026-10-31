@@ -12,6 +12,7 @@ from unittest.mock import patch
 
 from forge_ui import export
 from forge_ui.reader import Catalog, detail, discover, run_key, summarize
+import run_fixture as F
 
 
 FIXTURE = Path(__file__).parent / 'fixtures' / 'plan-full'
@@ -67,12 +68,15 @@ class ReaderTests(unittest.TestCase):
             'dwarf_tail': None, 'executions': [],
             'merged_at': (FIXTURE / 'tasks/reader/merged').stat().st_mtime, 'findings': NO_FINDINGS,
             'gate': None, 'known_issues': False, 'needs_input': None, 'fail_first': None, 'pre_review': None, 'now': None, 'waiting': None, 'sweep': None, 'swept': [],
+            'infra': None, 'lateral': [], 'ledger': [], 'decision': None, 'decisions': [], 'attempts_total': 3, 'attempt_cap': 8,
         })
         self.assertEqual((page['accepted'], page['accepted_attempt'], page['accepted_over']), (False, None, None))
         self.assertEqual(page['status'], 'RUNNING')
         self.assertEqual(page['branch'], 'forge/20261016-153012-ab12/page')
         self.assertEqual(page['attempt'], 3)
         self.assertEqual(page['attempts'][0]['infra'], 'rate_limit')
+        self.assertEqual(page['attempts_total'], 0)  # its one attempt was an infrastructure stop
+        self.assertIsNone(page['infra'])
         self.assertTrue(page['explored'])
         self.assertIsNone(page['dwarf'])
         self.assertIsNone(page['qa'])
@@ -81,11 +85,12 @@ class ReaderTests(unittest.TestCase):
         self.assertEqual(graph['files'], [])
         self.assertFalse(graph['accepted'])
         for field in ('branch', 'attempt', 'verdict', 'accepted_by', 'accepted_attempt', 'accepted_over',
-                      'prompt', 'approach', 'retry_findings', 'needs_input', 'qa_tail', 'qa'):
+                      'prompt', 'approach', 'retry_findings', 'needs_input', 'qa_tail', 'qa', 'infra', 'decision'):
             self.assertIsNone(graph[field], field)
         self.assertNotIn('clef', graph)
-        for field in ('attempts', 'escalations', 'route', 'shadow'):
+        for field in ('attempts', 'escalations', 'route', 'shadow', 'lateral', 'ledger', 'decisions'):
             self.assertEqual(graph[field], [])
+        self.assertEqual((graph['attempts_total'], graph['attempt_cap']), (0, 8))
         self.assertFalse(graph['explored'])
         self.assertEqual(data['waves'], [['reader'], ['page', 'graph']])
         self.assertEqual(page['executions'], [])
@@ -546,6 +551,7 @@ class ReaderTests(unittest.TestCase):
             'qa_tail': 'Looked at the diff.\nFORGE_VERDICT: FAIL\n', 'dwarf_tail': 'Still working.\n',
             'executions': [], 'merged_at': None, 'findings': NO_FINDINGS, 'gate': None, 'known_issues': False,
             'needs_input': None, 'fail_first': None, 'pre_review': None, 'now': None, 'waiting': None, 'sweep': None, 'swept': [],
+            'infra': None, 'lateral': [], 'ledger': [], 'decision': None, 'decisions': [], 'attempts_total': 2, 'attempt_cap': None,
         }])
         self.assertEqual(data['kind'], 'solo')
         self.assertEqual(data['run_id'], 'solo-full')
@@ -603,6 +609,7 @@ class ReaderTests(unittest.TestCase):
             'prompt': 'Old prompt.\n', 'approach': None, 'retry_findings': None, 'needs_input': None,
             'qa_tail': None, 'dwarf_tail': None, 'executions': [], 'merged_at': None, 'findings': None,
             'gate': None, 'known_issues': False, 'needs_input': None, 'fail_first': None, 'pre_review': None, 'now': None, 'waiting': None, 'sweep': None, 'swept': [],
+            'infra': None, 'lateral': [], 'ledger': [], 'decision': None, 'decisions': [], 'attempts_total': 0, 'attempt_cap': None,
         }])
         json.dumps(data, allow_nan=False)
         run = self.base / 'neither'
@@ -767,6 +774,180 @@ class ReaderTests(unittest.TestCase):
                 tasks = json.loads(snapshot)['api'][f'/api/runs/{key}']['tasks']
                 page = next(task for task in tasks if task['id'] == 'page')
                 self.assertEqual(page['needs_input'], expected)
+
+
+class StopRecordTests(unittest.TestCase):
+    """The run files a stop leaves: infra.txt, the pause keys, lateral.tsv, ledger.tsv, decision.md, decisions.tsv
+    and max_attempts, as the plan's tasks and scheduler carry them."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.plan = Path(shutil.copytree(FIXTURE, Path(self.temp.name) / 'plan'))
+
+    def read(self):
+        data = detail(self.plan)
+        return data, {task['id']: task for task in data['tasks']}
+
+    def test_an_infra_task_carries_its_stop_record(self):
+        F.write(self.plan / 'tasks/page/status', 'INFRA\n')
+        F.write(self.plan / 'tasks/page/infra.txt', 'class=capacity\nstage=dwarf\nharness=claude\nmodel=opus\n'
+                'reset_at=1760630000\nretry_after=600\ndetail=the model is overloaded\nrc=1\nrole=dwarf\n')
+        _, tasks = self.read()
+        self.assertEqual(tasks['page']['infra'], dict(cause='capacity', stage='dwarf', harness='claude', model='opus',
+                                                      reset_at=1760630000.0, retry_after=600.0,
+                                                      detail='the model is overloaded'))
+        self.assertIsNone(tasks['reader']['infra'])
+        with self.subTest('an old run says quota, and empty values read as null'):
+            F.write(self.plan / 'tasks/page/infra.txt', 'class=quota\nstage=qa\nretry_after=\nrc=1\n')
+            _, tasks = self.read()
+            self.assertEqual(tasks['page']['infra'], dict(cause='quota', stage='qa', harness=None, model=None,
+                                                          reset_at=None, retry_after=None, detail=None))
+        with self.subTest('no infra.txt: the stop is still an infra stop, with nothing in it'):
+            (self.plan / 'tasks/page/infra.txt').unlink()
+            _, tasks = self.read()
+            self.assertEqual(tasks['page']['infra'], dict(cause=None, stage=None, harness=None, model=None,
+                                                          reset_at=None, retry_after=None, detail=None))
+        with self.subTest('a long detail is capped'):
+            F.write(self.plan / 'tasks/page/infra.txt', 'class=network\ndetail=' + 'x' * 500 + '\n')
+            data, tasks = self.read()
+            self.assertEqual(tasks['page']['infra']['detail'], 'x' * 400 + '…')
+            self.assertIn('tasks/page/infra_detail', data['truncated'])
+
+    def test_pauses_carry_needs_you_hint_and_reset_at(self):
+        F.write(self.plan / 'scheduler.live', {'pid': os.getpid()})  # this process: alive, so its pauses are read
+        F.write(self.plan / 'infra.paused', {'scopes': [
+            {'scope': 'harness:claude', 'class': 'usage_limit', 'harness': 'claude', 'model': None, 'tasks': ['page'],
+             'cycle': 2, 'until': None, 'exhausted': False, 'needs_you': True,
+             'hint': 'Add extra usage, or wait for the reset.', 'reset_at': 1760630000},
+            {'scope': 'all', 'class': 'capacity', 'harness': None, 'model': None, 'tasks': None, 'cycle': 1,
+             'until': 1760631000, 'exhausted': False},
+            {'scope': 'model:codex/luna', 'needs_you': 'yes', 'hint': 5, 'reset_at': True}]})
+        pauses = detail(self.plan)['scheduler']['pauses']
+        self.assertEqual(pauses[0], dict(scope='harness:claude', **{'class': 'usage_limit'}, harness='claude', model=None,
+                                         tasks=['page'], cycle=2, until=None, exhausted=False, needs_you=True,
+                                         hint='Add extra usage, or wait for the reset.', reset_at=1760630000))
+        # an older run's pause has none of the new keys: needs_you reads false, the other two null
+        self.assertEqual(pauses[1], dict(scope='all', **{'class': 'capacity'}, harness=None, model=None, tasks=None,
+                                         cycle=1, until=1760631000, exhausted=False, needs_you=False, hint=None, reset_at=None))
+        # wrong types are not taken: a string is not a yes, a bool is not an epoch
+        self.assertEqual(pauses[2], dict(scope='model:codex/luna', **{'class': None}, harness=None, model=None, tasks=None,
+                                         cycle=None, until=None, exhausted=None, needs_you=False, hint=None, reset_at=None))
+
+    def test_lateral_moves_are_read_like_escalations_and_bad_rows_skipped(self):
+        F.write(self.plan / 'tasks/graph/lateral.tsv', F.tsv([
+            (1760620500, 1, 'dwarf', 'luna', 'sol', 'capacity'),
+            (1760620600, 2, 'qa', 'opus', 'sonnet', 'rate_limit'),
+            ('soon', 2, 'dwarf', 'luna', 'sol', 'capacity'),
+            (1760620700, 3, 'dwarf', 'luna')]))
+        data, tasks = self.read()
+        self.assertEqual(tasks['graph']['lateral'], [
+            dict(at=1760620500.0, attempt=1, role='dwarf', cause='capacity', **{'from': 'luna', 'to': 'sol'}),
+            dict(at=1760620600.0, attempt=2, role='qa', cause='rate_limit', **{'from': 'opus', 'to': 'sonnet'})])
+        self.assertEqual(sorted(data['warnings']), ['tasks/graph/lateral.tsv line 3: invalid epoch or attempt',
+                                                    'tasks/graph/lateral.tsv line 4: expected at least 6 columns'])
+
+    def test_ledger_rows_read_dashes_as_null_and_keep_the_newest_fifty(self):
+        F.write(self.plan / 'tasks/graph/ledger.tsv', F.tsv([
+            (1760620500, 1, 'final-review-1', 'FAIL', 'P2', 'P1', 2, 1, 0, 4096, '-'),
+            (1760620600, 2, 'final-review-2', 'PASS', '-', '-', 0, 0, 2, 3000, -120),
+            (1760620700, 2, 'final-review-3', 'PASS', 'P2', '-', 0, 0, 1, 3100, 100),
+            (1760620800, 3, 'final-review-4', 'PASS', 'P2', 'P3', 'x', 0, 0, 10, '-')]))
+        data, tasks = self.read()
+        self.assertEqual(tasks['graph']['ledger'], [
+            dict(at=1760620500.0, attempt=1, review='final-review-1', verdict='FAIL', gate='P2', worst='P1', confirmed=2,
+                 new=1, carried=0, diff_bytes=4096, delta_bytes=None),
+            dict(at=1760620600.0, attempt=2, review='final-review-2', verdict='PASS', gate=None, worst=None, confirmed=0,
+                 new=0, carried=2, diff_bytes=3000, delta_bytes=-120),
+            dict(at=1760620700.0, attempt=2, review='final-review-3', verdict='PASS', gate='P2', worst=None, confirmed=0,
+                 new=0, carried=1, diff_bytes=3100, delta_bytes=100)])
+        self.assertEqual(len(data['warnings']), 1)  # the row with a count that is not a number
+        F.write(self.plan / 'tasks/graph/ledger.tsv', F.tsv(
+            [(1760620000 + n, 1, f'review-{n}', 'FAIL', 'P2', 'P2', 1, 0, 0, 100, 0) for n in range(60)]))
+        data, tasks = self.read()
+        self.assertEqual([row['review'] for row in tasks['graph']['ledger']], [f'review-{n}' for n in range(10, 60)])
+        self.assertIn('tasks/graph/ledger.tsv', data['truncated'])
+
+    def test_a_needs_decision_task_carries_its_question_and_the_attempt_cap(self):
+        F.write(self.plan / 'max_attempts', '6\n')
+        F.write(self.plan / 'tasks/page/status', 'NEEDS_DECISION\n')
+        F.write(self.plan / 'tasks/page/decision.md',
+                'reasons: converging, cap\nThe two models disagree on the fix; pick one.\n')
+        F.write(self.plan / 'tasks/page/decisions.tsv', F.tsv([
+            (1760621000, 2, 'retry=3', 'the fix is close'),
+            (1760621100, 2, 'accept', ''),
+            ('soon', 2, 'retry=9', 'a bad row, not counted')]))
+        F.write(self.plan / 'tasks/reader/attempts.tsv', F.tsv([
+            (1760620000, 1, 'FAIL', ''), (1760620500, 2, 'INFRA', 'capacity'), (1760621000, 2, 'PASS', '-')]))
+        _, tasks = self.read()
+        page = tasks['page']
+        self.assertEqual(page['decision'], dict(reasons=['converging', 'cap'],
+                                                text='The two models disagree on the fix; pick one.\n'))
+        self.assertEqual(page['decisions'], [dict(at=1760621000.0, attempt=2, choice='retry=3', reason='the fix is close'),
+                                             dict(at=1760621100.0, attempt=2, choice='accept', reason=None)])
+        self.assertEqual((page['attempt_cap'], page['attempts_total']), (9, 0))  # 6 + the 3 granted; its attempt was INFRA
+        self.assertEqual((tasks['reader']['attempts_total'], tasks['reader']['attempt_cap']), (2, 6))
+        self.assertIsNone(tasks['reader']['decision'])
+        self.assertEqual(tasks['graph']['attempt_cap'], 6)
+        F.write(self.plan / 'tasks/graph/status', 'NEEDS_DECISION\n')
+        F.write(self.plan / 'tasks/graph/decision.md', 'reasons: split\n' + 'x' * 30000)
+        data, tasks = self.read()
+        self.assertEqual(tasks['graph']['decision'], dict(reasons=['split'], text='x' * 20000 + '…'))
+        self.assertIn('tasks/graph/decision', data['truncated'])
+
+    def test_the_attempt_cap_without_a_plan_file_zero_and_a_bad_value(self):
+        F.write(self.plan / 'tasks/page/decisions.tsv', F.tsv([(1760621000, 2, 'retry=3', '')]))
+        for label, text, expected, warning in (('missing', None, 8, None), ('zero', '0\n', None, None),
+                                               ('six', '6\n', 6, None), ('bad', 'many\n', 8, 'max_attempts: not an integer'),
+                                               ('negative', '-2\n', 8, 'max_attempts: negative')):
+            with self.subTest(label):
+                if text is None:
+                    (self.plan / 'max_attempts').unlink(missing_ok=True)
+                else:
+                    F.write(self.plan / 'max_attempts', text)
+                data, tasks = self.read()
+                self.assertEqual(tasks['graph']['attempt_cap'], expected)  # no decisions: the plan's cap alone
+                self.assertEqual(tasks['page']['attempt_cap'], None if expected is None else expected + 3)
+                self.assertEqual(data['warnings'], [warning] if warning else [])
+
+    def test_a_retry_grant_counts_however_many_digits_it_has(self):
+        F.write(self.plan / 'max_attempts', '6\n')
+        # a grant past Python's digit limit is no grant, and no reason to raise
+        for choice, expected in (('retry=3', 9), ('retry=1000000', 1000006), ('retry=0000003', 9),
+                                 ('retry=' + '9' * 5000, 6)):
+            with self.subTest(choice=choice[:12]):
+                F.write(self.plan / 'tasks/page/decisions.tsv', F.tsv([(1760621000, 2, choice, 'extra attempts')]))
+                _, tasks = self.read()
+                self.assertEqual(tasks['page']['attempt_cap'], expected)
+
+    def test_a_dependency_at_needs_decision_makes_its_dependent_wait_like_needs_input(self):
+        F.write(self.plan / 'scheduler.live', {'pid': os.getpid()})
+        waits = {}
+        for status in ('NEEDS_INPUT', 'NEEDS_DECISION'):
+            F.write(self.plan / 'tasks/page/status', status + '\n')
+            _, tasks = self.read()
+            waits[status] = tasks['graph']['waiting']
+        self.assertEqual(waits['NEEDS_DECISION'], waits['NEEDS_INPUT'])
+        self.assertEqual(waits['NEEDS_DECISION'], dict(kind='deps', on=['page'], stopped=[]))
+
+    def test_the_export_leaves_the_decision_and_the_infra_detail_out_unless_texts_are_chosen(self):
+        F.write(self.plan / 'tasks/page/status', 'NEEDS_DECISION\n')
+        F.write(self.plan / 'tasks/page/decision.md', 'reasons: converging, cap\nPick the retry budget.\n')
+        F.write(self.plan / 'tasks/graph/status', 'INFRA\n')
+        F.write(self.plan / 'tasks/graph/infra.txt', 'class=capacity\ndetail=the provider said no\n')
+        catalog = Catalog(plans=[self.plan], registry=False)
+        key = run_key(self.plan)
+        for texts in (False, True):
+            with self.subTest(texts=texts):
+                _, body = export.build(catalog, key, texts=texts)
+                snapshot = re.search(r'<script type="application/json" id="forge-snapshot">(.*?)</script>',
+                                     body.decode('utf-8'), re.DOTALL).group(1)
+                tasks = {task['id']: task for task in json.loads(snapshot)['api'][f'/api/runs/{key}']['tasks']}
+                self.assertEqual(tasks['page']['decision'], dict(reasons=['converging', 'cap'],
+                                                                 text='Pick the retry budget.\n' if texts else None))
+                self.assertEqual(tasks['graph']['infra'], dict(cause='capacity', stage=None, harness=None, model=None,
+                                                               reset_at=None, retry_after=None,
+                                                               detail='the provider said no' if texts else None))
 
 
 class SummaryExtensionTests(unittest.TestCase):

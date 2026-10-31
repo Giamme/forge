@@ -59,13 +59,18 @@ written), and the reader must never raise because of one.
 | `final-review` | a symlink to the newest *published* review dir; `final-review.verdict` a copy of its verdict |
 | `integrate-<epoch>-<pid>/` | one `integrate`: `setup.log`, `merge.log`, `verification.*`, `attempts/verification-<uuid>/`, and `final-review/` (a review dir as above) when it ran one |
 | `tasks/<id>/merged` | exists when the task was merged; its mtime is when |
-| `tasks/<id>/status` | one word: `RUNNING PASS FAIL ERROR INFRA TIMEOUT UNKNOWN INVALIDATED BLOCKED INTERRUPTED NOCHANGES CONFLICT NEEDS_INPUT` |
+| `tasks/<id>/status` | one word: `RUNNING PASS FAIL ERROR INFRA TIMEOUT UNKNOWN INVALIDATED BLOCKED INTERRUPTED NOCHANGES CONFLICT NEEDS_INPUT NEEDS_DECISION` |
 | `tasks/<id>/attempt` | the current attempt number |
 | `tasks/<id>/attempts.tsv` | `epoch<TAB>attempt<TAB>status<TAB>infra_class` per line, one per attempt entry; status may also be `MERGED`, `BOUNCED` or `INCOMPLETE` (a send-back that no reviewer judged: the task status stays `FAIL`), `infra_class` may be empty, `-` or missing |
 | `tasks/<id>/escalations.tsv` | `epoch<TAB>attempt<TAB>from_spec<TAB>to_spec[<TAB>source]` per line; `source` (who decided: `policy`, a human's `retry --dwarf` as `retry`, or a `pin`) is missing on older rows, which read as `policy` |
 | `tasks/<id>/qa.last` | the reviewer's final message; its last line matching `FORGE_VERDICT: PASS` or `FORGE_VERDICT: FAIL` is the verdict |
 | `tasks/<id>/prompt.md`, `approach.md`, `retry_findings.md` | free text |
 | `tasks/<id>/needs_input.md` | the question for the user, written when the task stopped `NEEDS_INPUT`: `The implementer asked:`, then the end of the dwarf's last message; free text, returned as `needs_input` |
+| `tasks/<id>/infra.txt` | the stop record of an `INFRA` task: `key=value` lines `class` (the cause: `capacity`, `rate_limit`, `usage_limit`, `budget`, `auth`, `network`, `provider_down`, `empty` or `cancelled`; older runs say `quota`, `rate_limit` or `network`, shown as they are), `stage`, `harness`, `model`, `retry_after` (seconds), `reset_at` (an epoch, when known), `detail`, and `rc`, `role`; returned as `infra` |
+| `tasks/<id>/lateral.tsv` | `epoch<TAB>attempt<TAB>role<TAB>from<TAB>to<TAB>cause` per line, one per move of a stopped dispatch to another model of the same tier (`role` `dwarf` or `qa`); returned as `lateral` |
+| `tasks/<id>/ledger.tsv` | `epoch<TAB>attempt<TAB>review<TAB>verdict<TAB>gate<TAB>worst<TAB>confirmed<TAB>new<TAB>carried<TAB>diff_bytes<TAB>delta_bytes` per line, one per review (no header); `gate`, `worst` and `delta_bytes` may be `-`; returned as `ledger` |
+| `tasks/<id>/decision.md` | written when the task stopped `NEEDS_DECISION`: its first line `reasons: converging, cap` (comma-separated, from `converging`, `split` and `cap`), then markdown for the user; returned as `decision` |
+| `tasks/<id>/decisions.tsv` | `epoch<TAB>attempt<TAB>choice<TAB>reason` per line, one per human decision; a `retry=N` choice grants N more attempts; returned as `decisions` |
 | `tasks/<id>/accepted.by` | who accepted a task over a reviewer's FAIL, and why (`key=value`: `task`, `status`, `reason`, `by`, `at`, `epoch`, `attempt`, `reviewed_commit`; older runs are free text; returned as text) |
 | `tasks/<id>/qa.gate` | `threshold<TAB>decision<TAB>worst<TAB>n_confirmed<TAB>n_unlabelled<TAB>n_below` (`decision` is `accept` (the reviewer said FAIL, every CONFIRMED finding was below the threshold), `fail` (the reviewer said PASS, but listed a blocking CONFIRMED finding) or `keep`, `-` for none) |
 | `tasks/<id>/known_issues.md` | the confirmed findings a threshold tolerated |
@@ -74,7 +79,8 @@ written), and the reader must never raise because of one.
 | `tasks/<id>/<role>.log`, `<role>.clock` | the running dispatch's harness log and its clock: one `<epoch> <bytes>` line each time the log grew (forge-dispatch.sh samples it every second; `FORGE_LOG_CLOCK=off` writes none) |
 | `tasks/<id>/escalation.stop`, `split.suggested` | the retry policy stopped the task: `<attempts><TAB><model>`, and the split it suggests (free text) |
 | `scheduler.live` | `{"pid": n}`: the scheduler running the plan; it is live while that process is |
-| `drain`, `stop`, `max_parallel`, `infra.paused` | a live scheduler's controls (Controls below): a drain, a stop (`graceful` or `now`), a capacity, and its infrastructure pauses as `{"scopes": [{scope, class, harness, model, tasks, cycle, until, exhausted}]}` |
+| `drain`, `stop`, `max_parallel`, `infra.paused` | a live scheduler's controls (Controls below): a drain, a stop (`graceful` or `now`), a capacity, and its infrastructure pauses as `{"scopes": [{scope, class, harness, model, tasks, cycle, until, exhausted, needs_you, hint, reset_at}]}`; `needs_you` (a bool), `hint` (text or `null`) and `reset_at` (an epoch or `null`) are absent in older runs, which read as `false`, `null` and `null` |
+| `max_attempts` | the base attempt cap of every task, an integer: `0` for no cap; without the file it is `8`. A task's `retry=N` decisions add to it (see `attempt_cap` below) |
 | `tasks/<id>/attempts/<role>-<uuid>/` | one execution of the task: `task`, `dwarf` or `qa` |
 | `tasks/<id>/changes.diff` | `git diff --binary` of the task's work since its base, cumulative, rewritten every attempt; `changes.prev.diff` the previous attempt's; `committed.diff` base..the reviewed commit |
 | `tasks/<id>/drift.txt`, `conflict.files` | one path per line: files the diff changed without declaring them; files that conflicted on merge |
@@ -217,7 +223,7 @@ loaded. When it cannot be loaded, `findings_available` is `false` and every find
 is `null`; verdicts and `gate` do not need it.
 
 Text fields are capped so one huge file cannot blow up a response: `request`, `prompt`,
-`approach`, `retry_findings`, `needs_input` keep their first 20,000 characters; `qa_tail`, `dwarf_tail`
+`approach`, `retry_findings`, `needs_input` and the `decision` text keep their first 20,000 characters, and an `infra` `detail` its first 400; `qa_tail`, `dwarf_tail`
 and `verification.log_tail` keep their last 4,000. A capped field ends (or, for tails,
 starts) with `…` and the value of `truncated` lists the field names that were cut.
 
@@ -501,7 +507,9 @@ Every RunSummary field, plus:
 - `scheduler`: `live` is whether the pid in `scheduler.live` is a running process. Only then are the
   rest read: `drained` (a `drain` file), `stopping` (`stop` holds `graceful` or `now`, else `null`),
   `max_parallel` (the `max_parallel` file when it holds 1 to 64, else `null`) and `pauses` (the scopes of
-  `infra.paused`, `[]` without it); while no scheduler runs they are `false`, `null`, `null` and `[]`.
+  `infra.paused`, `[]` without it; each with `needs_you` (`true` only for a bool `true`), `hint` (a string or
+  `null`) and `reset_at` (an epoch or `null`), which an older scope lacks, so they read as `false`, `null`, `null`);
+  while no scheduler runs they are `false`, `null`, `null` and `[]`.
   A solo run's `scheduler` is `null`.
 - `sweep`: the run's finding sweep (`run --sweep`), `null` without `sweep/plan.json` (and for a solo
   run). `tasks` are its fix tasks (tasks with a `sweep.json`), `findings` how many findings they took
@@ -554,6 +562,15 @@ Every RunSummary field, plus:
   "approach": null,
   "retry_findings": "...",
   "needs_input": "the question in tasks/<id>/needs_input.md, or null",
+  "infra": {"cause": "capacity", "stage": "dwarf", "harness": "claude", "model": "opus", "reset_at": 1760630000.0,
+            "retry_after": 600.0, "detail": "the model is overloaded"},
+  "lateral": [{"at": 1760620500.0, "attempt": 1, "role": "dwarf", "from": "luna", "to": "sol", "cause": "capacity"}],
+  "ledger": [{"at": 1760620500.0, "attempt": 1, "review": "final-review-1760620500-4242", "verdict": "FAIL", "gate": "P2",
+              "worst": "P1", "confirmed": 2, "new": 1, "carried": 0, "diff_bytes": 4096, "delta_bytes": null}],
+  "decision": {"reasons": ["converging", "cap"], "text": "the markdown in tasks/<id>/decision.md, after its first line"},
+  "decisions": [{"at": 1760621000.0, "attempt": 2, "choice": "retry=3", "reason": "the fix is close"}],
+  "attempts_total": 2,
+  "attempt_cap": 9,
   "qa_tail": "last 4000 chars of qa.last",
   "dwarf_tail": "last 4000 chars of dwarf.last",
   "executions": [Execution, ...],
@@ -611,6 +628,25 @@ Every RunSummary field, plus:
   malformed (malformed is warned).
 - `needs_input`: the text of `tasks/<id>/needs_input.md`, capped like `prompt`, or `null` when the file is
   missing. The question a task stopped `NEEDS_INPUT` for; the export leaves it out unless texts are chosen.
+- `infra`: for an `INFRA` task, the stop record in `tasks/<id>/infra.txt`: `cause` (its `class=`, as written),
+  `stage`, `harness`, `model`, `reset_at` (an epoch), `retry_after` (seconds) and `detail` (capped at 400
+  characters; the export leaves it out unless texts are chosen). A missing value is `null`, and a missing
+  file gives all of them `null`. `null` for every other status.
+- `lateral`: the rows of `tasks/<id>/lateral.tsv`, as `escalations` are read (a row with fewer than six columns
+  or a bad epoch or attempt is warned and skipped); `[]` without the file.
+- `ledger`: the rows of `tasks/<id>/ledger.tsv`, the newest 50 (the list is in `truncated` when rows were cut).
+  `gate`, `worst` and `delta_bytes` read `-` as `null`; the counts and `diff_bytes` are integers; a row with a
+  bad number is warned and skipped. `[]` without the file.
+- `decision`: for a `NEEDS_DECISION` task, `{reasons, text}`: `reasons` from the first line of
+  `tasks/<id>/decision.md` (`[]` when it has none, and that is warned), `text` the rest of the file, capped
+  like `needs_input` (`null` when the file is missing). `null` for every other status. Its `text` is blanked
+  by the export unless texts are chosen; `reasons` stay.
+- `decisions`: the rows of `tasks/<id>/decisions.tsv` as `{at, attempt, choice, reason}`, `reason` `null` when
+  empty; `[]` without the file. A human's `retry=N` grants N more attempts (see `attempt_cap`).
+- `attempts_total`: the number of `attempts.tsv` rows whose status is not `INFRA`: an infrastructure stop
+  spends no attempt. `attempt` is still the highest attempt number.
+- `attempt_cap`: the attempt cap of the task: the plan's `max_attempts` (`8` without the file, `null` when it
+  is `0`, no cap) plus the N of each `retry=N` decision; `null` when there is no cap. Solo runs have `null`.
 - `known_issues`: whether `known_issues.md` is a non-empty file.
 - `now`: `null` unless the task is `RUNNING`. Then where it is: the newest running non-shadow `dwarf`
   or `qa` execution (`role`, `execution`, `attempt`, `phase`, `phase_started`, `started`), else the
@@ -625,7 +661,8 @@ Every RunSummary field, plus:
   not a scheduler runs); else, while `scheduler.live` is true, for a `PENDING` or `INFRA` task:
   `infra` (a pause in `scheduler.pauses` holds it: scope `all`, or its id in `tasks`; the pause's
   keys plus `kind`), then for a `PENDING` task `deps` (`on`: its deps not merged, `stopped`: those
-  in a stopped status such as `FAIL`), `stopping` (`mode`), `drained`, `overlap` (`on`: running
+  in a stopped status such as `FAIL`; a dep at `NEEDS_INPUT` or `NEEDS_DECISION` is in `on` only, as the user
+  holds it and the retry policy did not stop it), `stopping` (`mode`), `drained`, `overlap` (`on`: running
   tasks whose files overlap its own, as forge-schedule.py tells overlap), `slot` (`running`,
   `max_parallel`: the run is at its capacity) or `next` (nothing holds it).
 - `sweep`: `null` unless the task is a finding sweep's fix task (it has a `sweep.json`). Then `file`
@@ -644,7 +681,9 @@ from the run dir's `attempts.tsv`. `status` is the solo status; `attempt` is the
 in `attempts.tsv`, or `null`. `escalations`, `route` and `shadow` are empty. `verdict` and
 `qa_tail` come from `qa.last`, and `prompt` comes from `prompt.md`. `deps` and `files` are
 `[]`; `difficulty`, `accepted_by`, `approach`, `retry_findings` and `needs_input` are `null`; `accepted` is
-false; `accepted_attempt` and `accepted_over` are `null`; `explored` is false; `waiting` and `sweep` are `null`, `swept` is `[]`. `request` on
+false; `accepted_attempt` and `accepted_over` are `null`; `explored` is false; `waiting` and `sweep` are `null`, `swept` is `[]`.
+`infra` and `decision` are `null`, `lateral`, `ledger` and `decisions` are `[]`, `attempt_cap` is `null`, and `attempts_total`
+counts the run dir's `attempts.tsv` rows that are not `INFRA`. `request` on
 the detail is `request.md`.
 
 ## Execution
@@ -1204,7 +1243,7 @@ difficulty paths deps model` each), `decomposition_history` (its newest 20, each
   (under their tail paths; line ranges are not stored, so the page shows the tail).
 - `texts=0` (the default) nulls these keys wherever they hold a string, list or object: `prompt
   last request log_tail dwarf_tail qa_tail qa_last qa_input tasks_summary known_issues texts text
-  planning_last approach retry_findings needs_input dwarf_input error last_line message excerpt tail lines call split`,
+  planning_last approach retry_findings needs_input dwarf_input error last_line message excerpt tail lines call split detail`,
   and stores no diff, no transcript, no checks and no environment problems (a command is a text). A finding keeps its `summary`, a failing test its `name`.
 - `paths=0` (the default) makes every string that is a whole absolute path (but `/api/…`, `url`s
   and `command`s) its last component, and replaces the run dir, the repo and the home dir inside other
@@ -1452,7 +1491,8 @@ stage's own background and accent are `--stage-bg` and `--stage-accent` on `.sta
 
 Suggested meaning: merged and pass green, running blue, pending grey, fail, error and conflict
 red, infra and timeout orange, blocked, interrupted, invalidated, unknown and nochanges muted
-purple.
+purple. `NEEDS_DECISION` takes the same waiting colour as `NEEDS_INPUT` (`--lamp-wait`, the
+`st-needs_input` class in `style.css`): a task that waits for the user is neither done nor failed.
 
 ## The graph (`forge_ui/static/graph.js`)
 
