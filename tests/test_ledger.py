@@ -29,6 +29,10 @@ ELSEWHERE = '- [P1][CONFIRMED] src/other.py:10 — the cache key ignores the use
 UNRELATED = '- [P1][CONFIRMED] src/cache.py:90 — the retry loop never sleeps between attempts'
 UNLOCATED = '- [P2][CONFIRMED] the retry loop never sleeps between attempts'
 UNLOCATED_REWORDED = '- [P2][CONFIRMED] the retry loop never sleeps between failed attempts'
+SPACED = '- [P1][CONFIRMED] src/first dir/cache.py:10 — the cache key ignores the user id'
+SPACED_REWORDED = '- [P1][CONFIRMED] src/first dir/cache.py:14 — the cache key ignores the user identity'
+FIRST_DIR = '- [P1][CONFIRMED] src/first dir/cache.py:10 — the cache ignores account identity'
+SECOND_DIR = '- [P1][CONFIRMED] src/second dir/cache.py:20 — the cache ignores account identity'
 
 FIRST = '\n'.join([
     '- [P1][CONFIRMED] src/a.py:10 — the cache key ignores the user id',
@@ -102,6 +106,8 @@ class MatchTests(unittest.TestCase):
             ('the same words in another file do not match', CACHE, ELSEWHERE, False),
             ('an unrelated finding in the same file does not match', CACHE, UNRELATED, False),
             ('two unlocated findings with similar text match', UNLOCATED, UNLOCATED_REWORDED, True),
+            ('a reworded finding in a directory with a space matches', SPACED, SPACED_REWORDED, True),
+            ('the same basename in two directories with spaces does not match', FIRST_DIR, SECOND_DIR, False),
         ]
         for name, a, b, expected in cases:
             with self.subTest(name):
@@ -142,6 +148,15 @@ class RowTests(unittest.TestCase):
                  confirmed=2, new=1, carried=1, diff_bytes=1234, delta_bytes=77),
         ]
         self.assertEqual(ledger.task_rows(self.task), expected)
+
+    def test_a_review_starting_after_a_recorded_second_is_the_next_attempt(self):
+        # attempts.tsv records whole seconds: attempt 1 was recorded at 100. A review that starts at
+        # 100.0 ran in attempt 1; one that starts at 100.9 came after it, so it is attempt 2.
+        record(self.task, 100, 1)
+        record(self.task, 200, 2)
+        make_review(self.task, 100.0, FIRST)
+        make_review(self.task, 100.9, SECOND)
+        self.assertEqual([row['attempt'] for row in ledger.task_rows(self.task)], [1, 2])
 
     def test_review_without_a_verdict_is_not_a_row(self):
         self.history()

@@ -33,8 +33,13 @@ DEFAULT_SHARE = 0.5
 JACCARD = 0.5
 
 _VERDICT = re.compile(r'^FORGE_VERDICT: (PASS|FAIL)([ \t]+(—|–|-)( .*)?)?[ \t]*$')
-# The file part of a finding's location: `path/file.py:123`. Not a bare line number.
-_PATH = re.compile(r'([^\s:`()\[\]*]+):\d+')
+# What a finding block leads with before its location: the bullet, then tags such as `[P1]`,
+# `[CONFIRMED]`, `**P1**`, `(P2)` or a backtick.
+_TAGS = re.compile(r'(?:\s*(?:\*\*[^*\n]*\*\*|\[[^\]\n]*\]|\([^)\n]*\)|[-*+•–`]|\d{1,3}[.)]\s|#{1,6}'
+                   r'|P[0-3](?![\w/.\\-])[:.]?|CONFIRMED\b|PLAUSIBLE\b|UNSTATED\b))*\s*')
+# The file of a finding's location: everything up to the first `.ext:line`. A path may hold spaces
+# (`src/first dir/cache.py:10`), so it is not cut at the first space; it stops before a ` — ` or `: `.
+_LOCATION = re.compile(r'((?:(?!\s[—–-]\s|:\s).)+?\.\w+):\d+')
 _WORD = re.compile(r'[a-z]{4,}')
 
 
@@ -54,7 +59,8 @@ contract = _load_contract()
 
 def _file(finding):
     """The file a finding names, from its first line; None when the finding names no file."""
-    match = _PATH.search(finding.text.split('\n', 1)[0])
+    first = finding.text.split('\n', 1)[0]
+    match = _LOCATION.match(first, _TAGS.match(first).end())
     return match.group(1).removeprefix('./') if match else None
 
 
@@ -127,11 +133,13 @@ def _attempt_rows(task_dir: Path) -> list:
 def _attempt_of(task_dir: Path, started: float) -> int:
     """The attempt a review belongs to. A review dir records no attempt number, but attempts.tsv
     gets one row per attempt, written when the attempt ends. So the first row written at or after
-    the review started is its attempt. A review after the last recorded attempt (still running, or
-    not yet recorded) is the attempt the counter holds. A QA-only resume after an infrastructure
-    stop maps to the attempt after the stopped one: the mapping is approximate there."""
+    the review started is its attempt. The row's epoch is whole seconds (date +%s), but the review's
+    start is compared exactly: a review that starts at 100.9 after an attempt recorded at 100 is the
+    next attempt, not that one. A review after the last recorded attempt (still running, or not yet
+    recorded) is the attempt the counter holds. A QA-only resume after an infrastructure stop maps
+    to the attempt after the stopped one: the mapping is approximate there."""
     for epoch, attempt in _attempt_rows(task_dir):
-        if int(started) <= epoch:
+        if started <= epoch:
             return attempt
     return _int(_read(task_dir / 'attempt')) or 0
 
