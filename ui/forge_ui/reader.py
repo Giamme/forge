@@ -735,12 +735,20 @@ def _max_attempts(reader):
     return _ATTEMPT_CAP if value is None else value
 
 
+def _grant(choice):
+    """The N of a retry=N choice, however many digits it has; 0 for any other choice."""
+    match = re.fullmatch(r'retry=([0-9]+)', choice)
+    try:
+        return int(match.group(1)) if match else 0
+    except ValueError:  # more digits than Python reads as an int: a reader must not raise over one bad row
+        return 0
+
+
 def _attempt_cap(max_attempts, decisions):
     """A task's attempt cap: max_attempts plus the N of each retry=N decision. None when max_attempts is 0 (no cap)."""
     if max_attempts == 0:
         return None
-    grants = (re.fullmatch(r'retry=([0-9]{1,6})', item['choice']) for item in decisions)
-    return max_attempts + sum(int(match.group(1)) for match in grants if match)
+    return max_attempts + sum(_grant(item['choice']) for item in decisions)
 
 
 def _waiting(reader, tasks, scheduler):

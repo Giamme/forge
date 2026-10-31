@@ -910,6 +910,16 @@ class StopRecordTests(unittest.TestCase):
                 self.assertEqual(tasks['page']['attempt_cap'], None if expected is None else expected + 3)
                 self.assertEqual(data['warnings'], [warning] if warning else [])
 
+    def test_a_retry_grant_counts_however_many_digits_it_has(self):
+        F.write(self.plan / 'max_attempts', '6\n')
+        # a grant past Python's digit limit is no grant, and no reason to raise
+        for choice, expected in (('retry=3', 9), ('retry=1000000', 1000006), ('retry=0000003', 9),
+                                 ('retry=' + '9' * 5000, 6)):
+            with self.subTest(choice=choice[:12]):
+                F.write(self.plan / 'tasks/page/decisions.tsv', F.tsv([(1760621000, 2, choice, 'extra attempts')]))
+                _, tasks = self.read()
+                self.assertEqual(tasks['page']['attempt_cap'], expected)
+
     def test_a_dependency_at_needs_decision_makes_its_dependent_wait_like_needs_input(self):
         F.write(self.plan / 'scheduler.live', {'pid': os.getpid()})
         waits = {}
