@@ -15,8 +15,8 @@
   const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
   const DONE = new Set(['MERGED', 'PASS', 'NOCHANGES']);
   const BAD = new Set(['FAIL', 'ERROR', 'CONFLICT', 'INFRA', 'TIMEOUT', 'INVALIDATED', 'INTERRUPTED', 'UNKNOWN', 'BLOCKED']);
-  // NEEDS_INPUT: stopped for an answer only the user can give. Neither DONE nor BAD, so never a failure.
-  const WAITING = new Set(['NEEDS_INPUT']);
+  // NEEDS_INPUT (an answer) and NEEDS_DECISION (a choice): stopped for the user. Neither DONE nor BAD, so never a failure.
+  const WAITING = new Set(['NEEDS_INPUT', 'NEEDS_DECISION']);
   const isWaiting = status => WAITING.has(status);
   const WEIGHT = { low: 1, medium: 2, high: 3 };
   const weight = t => WEIGHT[String(t && t.difficulty || '').toLowerCase()] || 2;
@@ -203,7 +203,7 @@
     if (statuses.some(s => s === 'RUNNING')) return 'RUNNING';
     if (statuses.every(s => s === 'MERGED')) return 'MERGED';
     if (statuses.some(s => s === 'PENDING' || s === 'PASS')) return 'PENDING';
-    // only answers are missing: the integration waits for the user, not for a fix
+    // only the user is missing (an answer or a decision): the integration waits, not for a fix
     if (statuses.some(isWaiting) && statuses.every(s => s === 'MERGED' || isWaiting(s))) return 'WAITING';
     return 'BLOCKED';
   }
@@ -875,6 +875,7 @@
   }
 
   /* ---------- notifications: what changed between two polls of the run list ---------- */
+  // Waiting statuses are absent: a task that stops for the user (NEEDS_INPUT, NEEDS_DECISION) is not a failure.
   const FAILING = new Set(['FAIL', 'ERROR', 'CONFLICT', 'TIMEOUT', 'INVALIDATED', 'INTERRUPTED', 'BLOCKED']);
   // prev, next: RunSummary lists (prev null on the first poll, which is only a baseline). A run that has not
   // changed for two hours (stale: its process died) never fires.

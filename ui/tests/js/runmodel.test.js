@@ -456,22 +456,26 @@ test('the finding sweep reads as one line, and each swept finding as a lamp', ()
   assert.deepEqual(['fixed', 'not-fixed', 'unreported', null].map(s => RM.sweepState(s).lamp), ['pass', 'fail', 'unknown', 'pending']);
 });
 
-test('NEEDS_INPUT waits for the user: neither done nor failed, and no failure notification', () => {
-  assert.equal(RM.isWaiting('NEEDS_INPUT'), true);
+test('NEEDS_INPUT and NEEDS_DECISION wait for the user: neither done nor failed, and no failure notification', () => {
   assert.equal(RM.isWaiting('FAIL'), false);
-  assert.equal(RM.runState({ counts: { NEEDS_INPUT: 1, MERGED: 2 } }), 'pending');
-  assert.equal(RM.runState({ counts: { NEEDS_INPUT: 1, FAIL: 1 } }), 'failed');
-  assert.equal(RM.runState({ counts: { NEEDS_INPUT: 1 } }), 'pending');
-  // only answers are missing: the integration waits for the user; a failed task still blocks it
+  // only the user is missing: the integration waits; a failed task still blocks it; work still pending stays pending
   const integration = statuses => RM.finishState({ tasks: statuses.map((status, i) => ({ id: 't' + i, status })) }).integration.status;
-  assert.equal(integration(['MERGED', 'NEEDS_INPUT']), 'WAITING');
-  assert.equal(integration(['MERGED', 'NEEDS_INPUT', 'FAIL']), 'BLOCKED');
-  assert.equal(integration(['NEEDS_INPUT', 'PENDING']), 'PENDING');
-  // a question answered later is a failure only when the retry fails, and the wait itself notifies nothing
+  // stopping for the user notifies nothing; a later failure does
   const task = (status) => ({ key: 'k', run_id: 'r', goal: 'g', repo: '/r', updated: T0, counts: { [status]: 1 }, task_statuses: [{ id: 'a', status, title: 'A' }] });
-  assert.deepEqual(RM.statusEvents([task('RUNNING')], [task('NEEDS_INPUT')], { now: T0 }), []);
-  const failed = RM.statusEvents([task('NEEDS_INPUT')], [task('FAIL')], { now: T0 });
-  assert.deepEqual(failed.map(e => e.kind), ['task-failed']);
+  for (const status of ['NEEDS_INPUT', 'NEEDS_DECISION']) {
+    assert.equal(RM.isWaiting(status), true, status);
+    assert.equal(RM.runState({ counts: { [status]: 1, MERGED: 2 } }), 'pending', status);
+    assert.equal(RM.runState({ counts: { [status]: 1, FAIL: 1 } }), 'failed', status);
+    assert.equal(RM.runState({ counts: { [status]: 1 } }), 'pending', status);
+    assert.equal(integration(['MERGED', status]), 'WAITING', status);
+    assert.equal(integration(['MERGED', status, 'FAIL']), 'BLOCKED', status);
+    assert.equal(integration([status, 'PENDING']), 'PENDING', status);
+    assert.deepEqual(RM.statusEvents([task('RUNNING')], [task(status)], { now: T0 }), [], status);
+    const failed = RM.statusEvents([task(status)], [task('FAIL')], { now: T0 });
+    assert.deepEqual(failed.map(e => e.kind), ['task-failed'], status);
+  }
+  // both waiting statuses together still wait: a run whose unmerged tasks all wait reads the same
+  assert.equal(integration(['MERGED', 'NEEDS_INPUT', 'NEEDS_DECISION']), 'WAITING');
 });
 
 test('BOUNCED and INCOMPLETE are failed attempts, each with a note of its own; other attempts have none', () => {
