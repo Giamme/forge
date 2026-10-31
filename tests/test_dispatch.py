@@ -590,6 +590,12 @@ class InfraTests(DispatchBase):
         self.assertEqual(result.returncode, 8, result.stdout)
         self.assert_infra('dwarf', 'auth', 1, detail='401')
 
+    def test_codex_stderr_529_dwarf_is_capacity(self):
+        self.scenario({'*.dwarf.*': {'rc': 1, 'stderr': 'ERROR: unexpected status 529 Service Overloaded'}})
+        result = self.dispatch('dwarf', 'sol')
+        self.assertEqual(result.returncode, 8, result.stdout)
+        self.assert_infra('dwarf', 'capacity', 1, detail='529')
+
     def test_raw_log_harness_balance(self):
         shutil.copy(self.bin / 'codex', self.bin / 'opencode')
         self.scenario({'*.dwarf.*': {'rc': 1, 'stdout': 'Insufficient balance.'}})

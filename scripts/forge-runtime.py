@@ -366,11 +366,13 @@ INFRA_PATTERNS = (
         _P(r"\binsufficient (?:balance|credits?|funds)\b", re.I),
         _P(r"\bcredit balance (?:is )?too low\b", re.I),
         _P(r"\bpayment required\b|\bbilling (?:hard )?limit\b|\bbilling (?:issue|error|details|not active)\b|\bcheck your (?:plan and )?billing\b", re.I),
+        _P(_HTTP_CODE % '402', re.I),
     )),
     # A model at capacity for everyone who asks it.
     ('capacity', (
         _P(r"\boverloaded\b", re.I),
         _P(r"\bat capacity\b", re.I),
+        _P(_HTTP_CODE % '529', re.I),
     )),
     # An account sending too fast.
     ('rate_limit', (
@@ -381,6 +383,7 @@ INFRA_PATTERNS = (
     # One provider failing, while the connection itself works.
     ('provider_down', (
         _P(r"\bbad gateway\b|\bservice unavailable\b|\bgateway time-?out\b", re.I),
+        _P(_HTTP_CODE % '50[234]', re.I),
     )),
     ('network', (
         _P(r"\b(?:ECONNRESET|ETIMEDOUT|ENOTFOUND|ECONNREFUSED|EAI_AGAIN|EHOSTUNREACH|ENETUNREACH|ENETDOWN)\b"),

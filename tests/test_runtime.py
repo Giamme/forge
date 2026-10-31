@@ -159,10 +159,12 @@ class ClassifyTests(unittest.TestCase):
             ('raw insufficient_quota', 'Error: insufficient_quota\n', 'opencode', 1, 'budget'),
             ('raw credit balance is too low', 'Error: credit balance is too low\n', 'opencode', 1, 'budget'),
             ('raw billing', 'Check your plan and billing details\n', 'opencode', 1, 'budget'),
+            ('raw HTTP 402', 'HTTP 402\n', 'opencode', 1, 'budget'),
             # capacity: a model at capacity for everyone
             ('claude overloaded', json.dumps({'type': 'result', 'is_error': True, 'result': 'Overloaded'}), 'claude', 1, 'capacity'),
             ('codex turn.failed', jsonl(CODEX_AT_CAPACITY), 'codex', 1, 'capacity'),
             ('codex exit 0 but turn failed', jsonl(CODEX_AT_CAPACITY), 'codex', 0, 'capacity'),
+            ('codex stderr 529', jsonl([{'type': 'turn.started'}]) + 'ERROR: unexpected status 529\n', 'codex', 1, 'capacity'),
             # rate_limit: an account sending too fast
             ('claude 429 text', json.dumps({'type': 'result', 'is_error': True, 'result': 'Request failed: 429 Too Many Requests'}), 'claude', 1, 'rate_limit'),
             ('raw 429 Too Many Requests', '429 Too Many Requests\n', 'opencode', 1, 'rate_limit'),
@@ -172,6 +174,7 @@ class ClassifyTests(unittest.TestCase):
             # provider_down: one provider failing
             ('raw 502 Bad Gateway', '502 Bad Gateway\n', 'opencode', 1, 'provider_down'),
             ('raw 503 Service Unavailable', 'Error: 503 Service Unavailable\n', 'opencode', 1, 'provider_down'),
+            ('raw HTTP 502', 'HTTP 502\n', 'opencode', 1, 'provider_down'),
             # auth
             ('claude status only', json.dumps({'type': 'result', 'is_error': True, 'api_error_status': 401, 'result': 'x'}), 'claude', 1, 'auth'),
             ('claude invalid key', json.dumps({'type': 'result', 'is_error': True, 'result': 'Invalid API key · Please run /login'}), 'claude', 1, 'auth'),
@@ -221,6 +224,13 @@ class ClassifyTests(unittest.TestCase):
                 log = json.dumps({'type': 'result', 'is_error': True, 'api_error_status': code, 'result': 'request failed'})
                 self.assertEqual(self.klass(log, 'claude', 1), expected)
 
+    def test_http_status_in_the_text_gives_the_same_class(self):
+        # The code as a provider prints it: a raw line, and codex's stderr line after its stream.
+        for code, expected in self.runtime.STATUS_CLASS.items():
+            for line in ('HTTP %d' % code, 'ERROR: unexpected status %d' % code):
+                with self.subTest(line=line):
+                    self.assertEqual(self.klass(jsonl([{'type': 'turn.started'}]) + line + '\n', 'codex', 1), expected)
+
     def test_empty_answers_at_exit_zero(self):
         empty = self.klass
         self.assertEqual(empty(json.dumps({'type': 'result', 'is_error': False, 'result': '  \n'}), 'claude', 0), 'empty')
@@ -259,6 +269,7 @@ class ClassifyTests(unittest.TestCase):
             ('stack trace in a claude log', STACK_TRACE, 'claude', 1),
             ('context limit is not the account limit', 'Error: reached the context limit for this model\n', 'opencode', 1),
             ('bare numbers', 'processed 401 files in 429 ms\n', 'opencode', 1),
+            ('bare provider and capacity codes', 'processed 503 files, 529 lines, 402 ms\n', 'opencode', 1),
             ('empty log, plain failure', '', 'codex', 1),
         ]
         for name, log, harness, rc in table:
