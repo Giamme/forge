@@ -33,6 +33,15 @@ SPACED = '- [P1][CONFIRMED] src/first dir/cache.py:10 — the cache key ignores 
 SPACED_REWORDED = '- [P1][CONFIRMED] src/first dir/cache.py:14 — the cache key ignores the user identity'
 FIRST_DIR = '- [P1][CONFIRMED] src/first dir/cache.py:10 — the cache ignores account identity'
 SECOND_DIR = '- [P1][CONFIRMED] src/second dir/cache.py:20 — the cache ignores account identity'
+BOLD_A = '- [P1][CONFIRMED] **src/a.py:10** — the cache ignores account identity'
+BOLD_B = '- [P1][CONFIRMED] **src/b.py:20** — the cache ignores account identity'
+BOLD_TAGS = '- **P1** **CONFIRMED** **src/cache.py:14** — the cache key ignores the user identity'
+PLAIN_CACHE = '- [P1][CONFIRMED] src/cache.py:14 — the cache key ignores the user identity'
+PAREN = '- [P1][CONFIRMED] (src/cache.py:14) — the cache key ignores the user identity'
+BRACKET = '- [P1][CONFIRMED] [src/cache.py:14] — the cache key ignores the user identity'
+DOCKER_ONE = '- [P1][CONFIRMED] one/Dockerfile:10 — the image runs as root'
+DOCKER_TWO = '- [P1][CONFIRMED] two/Dockerfile:20 — the image runs as root'
+DOCKER_ONE_REWORDED = '- [P1][CONFIRMED] one/Dockerfile:12 — the image runs as the root user'
 
 FIRST = '\n'.join([
     '- [P1][CONFIRMED] src/a.py:10 — the cache key ignores the user id',
@@ -108,11 +117,26 @@ class MatchTests(unittest.TestCase):
             ('two unlocated findings with similar text match', UNLOCATED, UNLOCATED_REWORDED, True),
             ('a reworded finding in a directory with a space matches', SPACED, SPACED_REWORDED, True),
             ('the same basename in two directories with spaces does not match', FIRST_DIR, SECOND_DIR, False),
+            ('a bold location in the same file as a plain one matches', BOLD_TAGS, PLAIN_CACHE, True),
+            ('bold locations in two files do not match', BOLD_A, BOLD_B, False),
+            ('a location in parentheses matches its plain form', PAREN, PLAIN_CACHE, True),
+            ('a location in brackets matches its plain form', BRACKET, PLAIN_CACHE, True),
+            ('a reworded finding at the same extensionless path matches', DOCKER_ONE, DOCKER_ONE_REWORDED, True),
+            ('the same extensionless name in two directories does not match', DOCKER_ONE, DOCKER_TWO, False),
         ]
         for name, a, b, expected in cases:
             with self.subTest(name):
                 self.assertEqual(ledger.same_finding(finding(a), finding(b)), expected)
                 self.assertEqual(ledger.same_finding(finding(b), finding(a)), expected)
+
+    def test_file_of_a_finding(self):
+        self.assertEqual(ledger._file(finding(BOLD_A)), 'src/a.py')
+        self.assertEqual(ledger._file(finding(BOLD_TAGS)), 'src/cache.py')
+        self.assertEqual(ledger._file(finding(DOCKER_ONE)), 'one/Dockerfile')
+        self.assertEqual(ledger._file(finding('- [P1][CONFIRMED] Dockerfile:3 — the image runs as root')), 'Dockerfile')
+        # `the retry loop runs 3` has a space and no extension: prose that happens to end in `:30`, not a file.
+        self.assertIsNone(ledger._file(finding('- [P2][CONFIRMED] the retry loop runs 3:30 times')))
+        self.assertIsNone(ledger._file(finding('- [P2][CONFIRMED] the retry loop never sleeps between attempts')))
 
 
 class RowTests(unittest.TestCase):

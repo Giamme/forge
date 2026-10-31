@@ -34,12 +34,17 @@ JACCARD = 0.5
 
 _VERDICT = re.compile(r'^FORGE_VERDICT: (PASS|FAIL)([ \t]+(—|–|-)( .*)?)?[ \t]*$')
 # What a finding block leads with before its location: the bullet, then tags such as `[P1]`,
-# `[CONFIRMED]`, `**P1**`, `(P2)` or a backtick.
-_TAGS = re.compile(r'(?:\s*(?:\*\*[^*\n]*\*\*|\[[^\]\n]*\]|\([^)\n]*\)|[-*+•–`]|\d{1,3}[.)]\s|#{1,6}'
+# `[CONFIRMED]`, `P1:` or `(P2)`. A bracketed or parenthesised tag never holds a line number, so a
+# location wrapped in brackets is not taken for a tag.
+_TAGS = re.compile(r'(?:\s*(?:\[(?![^\]\n]*:\d)[^\]\n]*\]|\((?![^)\n]*:\d)[^)\n]*\)|[-+•–]|\d{1,3}[.)]\s|#{1,6}'
                    r'|P[0-3](?![\w/.\\-])[:.]?|CONFIRMED\b|PLAUSIBLE\b|UNSTATED\b))*\s*')
-# The file of a finding's location: everything up to the first `.ext:line`. A path may hold spaces
+# Markdown emphasis and code marks are never part of a path: `**src/a.py:10**` names src/a.py.
+_MARKUP = re.compile(r'[*`]')
+# The file of a finding's location: everything up to the `:line` that follows it. A path may hold spaces
 # (`src/first dir/cache.py:10`), so it is not cut at the first space; it stops before a ` — ` or `: `.
-_LOCATION = re.compile(r'((?:(?!\s[—–-]\s|:\s).)+?\.\w+):\d+')
+_LOCATION = re.compile(r'((?:(?!\s[—–-]\s|:\s).)+?):\d+')
+_LEADING = re.compile(r'^[^\w./\\-]+')
+_EXTENSION = re.compile(r'\.\w+$')
 _WORD = re.compile(r'[a-z]{4,}')
 
 
@@ -59,9 +64,19 @@ contract = _load_contract()
 
 def _file(finding):
     """The file a finding names, from its first line; None when the finding names no file."""
-    first = finding.text.split('\n', 1)[0]
+    first = _MARKUP.sub('', finding.text.split('\n', 1)[0])
     match = _LOCATION.match(first, _TAGS.match(first).end())
-    return match.group(1).removeprefix('./') if match else None
+    if match is None:
+        return None
+    path = _LEADING.sub('', match.group(1)).removeprefix('./')
+    return path if _is_file(path) else None
+
+
+def _is_file(path: str) -> bool:
+    """A path names a file when its last part has an extension (`cache.py`) or has no space (`Dockerfile`,
+    `one/Makefile`). A last part with a space is prose that happens to end in `:digits`, as in `runs 3:30`."""
+    last = re.split(r'[/\\]', path)[-1]
+    return bool(last) and (bool(_EXTENSION.search(last)) or ' ' not in last)
 
 
 def _words(finding) -> set:
