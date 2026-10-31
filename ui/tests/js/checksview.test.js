@@ -36,8 +36,8 @@ test('each reason a task waits reads as a sentence with the tasks it names', () 
     [{ kind: 'drained' }, 'drained: nothing new starts until the run resumes', []],
     [{ kind: 'stopping', mode: 'now' }, 'the run is stopping now', []],
     [{ kind: 'next' }, "starts at the scheduler's next turn", []],
-    [{ kind: 'infra', scope: 'model:codex/gpt-6', class: 'rate_limit', harness: 'codex', model: 'gpt-6', until: T + 90 }, 'paused: model gpt-6 on codex · rate limit', []],
-    [{ kind: 'infra', scope: 'all', class: 'network' }, 'paused: every model · network', []],
+    [{ kind: 'infra', scope: 'model:codex/gpt-6', class: 'rate_limit', harness: 'codex', model: 'gpt-6', until: T + 90 }, 'paused: model gpt-6 on codex · rate limited', []],
+    [{ kind: 'infra', scope: 'all', class: 'network' }, 'paused: every model · network down', []],
     [{ kind: 'escalation', attempts: 3, model: 'sol:xhigh', split: 'Split it.' }, 'stopped by the retry policy after 3 attempts on sol:xhigh', []],
   ];
   for (const [w, text, tasks] of cases) {
@@ -51,6 +51,17 @@ test('each reason a task waits reads as a sentence with the tasks it names', () 
   assert.equal(C.waitingModel(cases[8][0]).split, 'Split it.');
   assert.equal(C.waitingModel({ kind: 'something new' }), null);
   assert.equal(C.waitingModel(null), null);
+});
+
+test('a pause says when its limit resets and what it needs from the user; an old pause says neither', () => {
+  const at = (h, m) => new Date(2026, 9, 31, h, m).getTime() / 1000, now = at(9, 0);
+  const pause = { kind: 'infra', scope: 'all', class: 'budget', needs_you: true, hint: 'Top up the budget', reset_at: at(14, 5) };
+  const m = C.waitingModel(pause, now);
+  assert.deepEqual([m.text, m.reset, m.needs], ['paused: every model · out of budget', 'resets 14:05', 'needs you: Top up the budget']);
+  assert.equal(C.waitingModel({ ...pause, hint: null }, now).needs, 'needs you');
+  assert.equal(C.waitingModel({ ...pause, needs_you: false }, now).needs, null);
+  const old = C.waitingModel({ kind: 'infra', scope: 'all', class: 'network' }, now);
+  assert.deepEqual([old.text, old.reset, old.needs], ['paused: every model · network down', null, null]);
 });
 
 test('the Now column sorts running first, then what starts soonest, and what is held last', () => {

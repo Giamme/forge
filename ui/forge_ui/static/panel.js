@@ -89,6 +89,15 @@ window.ForgePanel = (() => {
   // A task that stopped NEEDS_INPUT: the question it asked, and the command that answers it. forge-ui shows the
   // command and never runs it; only the user's answer, passed to retry, resumes the task.
   const shellWord = s => /^[\w@%+=:,./-]+$/.test(s) ? s : "'" + String(s).replace(/'/g, "'\\''") + "'";
+  // An INFRA task: why its dispatch stopped (the cause, the stage, the model it ran on), when its limit resets, and
+  // the scope pause that needs the user, matched by the task's id in its `tasks`
+  function infraSection(host, ctx, task) {
+    const s = section(host, 'Stopped on infrastructure'), inf = task.infra || {};
+    fields(s, [['Cause', RM.causeLabel(inf.cause)], ['Stage', inf.stage], ['Harness', inf.harness, true], ['Model', inf.model, true],
+      ['Reset', RM.resetText(inf.reset_at, ctx.now) || undefined]]);
+    const pause = list(ctx.run.scheduler && ctx.run.scheduler.pauses).find(p => list(p.tasks).includes(task.id));
+    if (pause && pause.needs_you === true) s.append(el('p', 'needs you' + (pause.hint ? `: ${pause.hint}` : ''), 'warn'));
+  }
   function waitingSection(host, ctx, task) {
     const s = section(host, 'Waiting for you');
     muted(s, 'This task stopped for an answer only you can give. Nothing retries it until you answer.');
@@ -355,7 +364,7 @@ window.ForgePanel = (() => {
     const chips = el('div', undefined, 'chips');
     if (RM.taskStatus(task) === 'ACCEPTED') chips.append(acceptedChip(task));
     else {
-      chips.append(chip(RM.taskStatus(task)));
+      chips.append(RM.taskStatus(task) === 'INFRA' ? chip(RM.statusText(task), 'infra') : chip(RM.taskStatus(task)));
       if (task.accepted === true) chips.append(acceptedChip(task));
       else if (task.verdict) chips.append(chip('review ' + task.verdict, task.verdict.toLowerCase()));
     }
@@ -364,6 +373,7 @@ window.ForgePanel = (() => {
     const dl = diffLink(ctx, solo ? 'View the diff →' : 'View its diff, findings pinned to their lines →', { kind: 'task', task: task.id, source: 'current' }); if (dl) head.append(dl);
     host.append(head);
     if (RM.isWaiting(task.status)) waitingSection(host, ctx, task);
+    if (RM.taskStatus(task) === 'INFRA') infraSection(host, ctx, task);
     if (!solo) fields(host, [['Difficulty', task.difficulty], ['Depends on', depLinks(task.deps, ctx)], ['Files', list(task.files).join('\n') || '—', true], ['Branch', task.branch, true]]);
     if (C) C.nowSection(host, ctx, task);
     sweepSection(host, ctx, task);
@@ -376,6 +386,10 @@ window.ForgePanel = (() => {
     for (const e of list(task.escalations)) {
       const line = el('p', `Escalated after attempt ${display(e.attempt)}: ${display(e.from)} → ${display(e.to)} at ${time(e.at)} `, 'muted');
       line.append(sourcePlate(e.source)); ms.append(line);
+    }
+    for (const m of list(task.lateral)) {
+      const cause = RM.causeLabel(m.cause);
+      ms.append(el('p', `moved sideways: ${display(m.role)} ${display(m.from)} → ${display(m.to)}${cause ? ` (${cause})` : ''} · attempt ${display(m.attempt)} · ${time(m.at)}`, 'muted'));
     }
     controlsSection(host, ctx, task);
 

@@ -47,7 +47,7 @@ class Checks(unittest.TestCase):
         self.assertRegex(now['ui'], r'^bash tests/check\.sh\s*\d+m\d\ds\s*quiet \d+ min$')   # nine minutes and more
         self.assertEqual(now['docs'], 'waits on api')
         self.assertEqual(now['cli'], 'shares files with api')
-        self.assertRegex(now['perf'], r'^paused: model luna-model on codex · rate limitresumes in 2\dm\d\ds$')
+        self.assertRegex(now['perf'], r'^paused: model luna-model on codex · rate limitedresumes in 2\dm\d\ds$')
         self.assertEqual(now['db'], 'stopped by the retry policy after 3 attempts on luna')
         banner = page.text_content('#run-head .env-banner')
         self.assertIn('Docker ran out of network address pools in 2 tasks: schema, api', banner)

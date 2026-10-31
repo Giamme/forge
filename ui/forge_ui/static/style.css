@@ -643,6 +643,7 @@ pre.cmd { max-height: none; }
 .now-live .vfy-idle { margin: 0; }
 .now-live .vfy-idle[hidden] { display: none; }
 .now-split summary { cursor: pointer; font-size: var(--t-xs); color: var(--muted); }
+.pause-needs { display: block; flex-basis: 100%; }   /* a pause's "needs you" line stands on its own */
 .checks-of { margin: 0 0 6px 2px; padding-left: 10px; border-left: 1px solid var(--rule-2); }
 .checks { gap: 2px; margin: 2px 0; }
 /* a check: its lamp, kind and command on one line, what it printed under them */

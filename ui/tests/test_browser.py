@@ -977,3 +977,39 @@ class Controls(unittest.TestCase):
         self.assertIn('Read-only', page.text_content('#inspector .ctl'))
         self.assertEqual(page.locator('#inspector .ctl button, #inspector .ctl input, #inspector .ctl form').count(), 0)
         self.assertClean(page)
+
+
+class Infra(unittest.TestCase):
+    """An INFRA task stopped on a budget, in a live plan: its cause in the table and the panel, the pause that needs the user, a sideways move."""
+    open, assertClean = Page.open, Page.assertClean
+
+    def setUp(self):
+        self.temp = temp = tempfile.TemporaryDirectory(prefix='forge-ui-infra-')
+        self.addCleanup(temp.cleanup)
+        self.plan = F.make_plan(Path(temp.name) / 'p')
+        (self.plan / 'scheduler.live').write_text(json.dumps({'pid': os.getpid()}))        # a live scheduler: this process
+        now = time.time()
+        docs = self.plan / 'tasks/docs'
+        F.write(docs / 'status', 'INFRA\n')
+        F.write(docs / 'infra.txt', f'class=budget\nstage=dwarf\nharness=codex\nmodel=luna\nreset_at={int(now + 7200)}\n')
+        F.write(docs / 'lateral.tsv', f'{int(now - 600)}\t1\tdwarf\tluna\tsol\tcapacity\n')
+        F.write(self.plan / 'infra.paused', {'scopes': [{'scope': 'harness:codex', 'class': 'budget', 'harness': 'codex', 'model': None,
+                                                         'tasks': ['docs'], 'cycle': 1, 'until': None, 'exhausted': False,
+                                                         'needs_you': True, 'hint': 'Top up the budget, then retry docs',
+                                                         'reset_at': int(now + 7200)}]})
+        self.key = reader.run_key(self.plan)
+        _serve(self, reader.Catalog(plans=[self.plan], registry=False))
+        self.addCleanup(lambda: (self.server.shutdown(), self.server.server_close(), self.thread.join(timeout=2)))
+
+    def test_an_infra_stop_names_its_cause_what_needs_you_and_its_sideways_move(self):
+        page = self.open(cdn=False, view='2d')
+        page.goto(self.url + '#/runs/' + self.key)
+        page.wait_for_selector('#run-tasks td[data-col=status] .chip.st-infra')
+        self.assertEqual(page.text_content('#run-tasks td[data-col=status] .chip.st-infra'), 'INFRA · out of budget')
+        page.goto(self.url + '#/runs/' + self.key + '/tasks/docs')
+        page.wait_for_selector('#inspector .insp-section')
+        self.assertEqual(page.text_content('#inspector .insp-head .chip.st-infra'), 'INFRA · out of budget')
+        inspector = page.text_content('#inspector')
+        self.assertIn('needs you: Top up the budget, then retry docs', inspector)
+        self.assertIn('moved sideways: dwarf luna → sol (at capacity)', inspector)
+        self.assertClean(page)
