@@ -109,8 +109,10 @@ class Waiting(Base):
         pause = {'scope': 'model:codex/gpt-6', 'class': 'rate_limit', 'harness': 'codex', 'model': 'gpt-6', 'tasks': ['t4'],
                  'cycle': 2, 'until': F.T0 + 90, 'exhausted': False}
         waiting, scheduler = self.plan(self.ROWS, infra_dot_paused={'scopes': [pause]})
-        self.assertEqual(waiting['t4'], dict(pause, kind='infra'))
-        self.assertEqual(scheduler['pauses'], [pause])
+        # an old pause has none of the keys since added: they read as no, nothing and nothing
+        added = dict(needs_you=False, hint=None, reset_at=None)
+        self.assertEqual(waiting['t4'], dict(pause, kind='infra', **added))
+        self.assertEqual(scheduler['pauses'], [dict(pause, **added)])
 
     def test_a_task_the_retry_policy_stopped_says_so_even_with_no_scheduler(self):
         files = {'tasks__t5__escalation_dot_stop': '3\tsol:xhigh\n', 'tasks__t5__split_dot_suggested': 'Split the parser from the writer.\n'}
