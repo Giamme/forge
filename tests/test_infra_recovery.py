@@ -1,7 +1,7 @@
 """Infrastructure stops recover by cause (#81): lateral, wait or ask, never a stronger tier. The
 worker stands in for forge-parallel.sh as in test_infra_scope.py, and also answers
 `_prepare_retry --fallback` (it logs the excluded pairs and the cause to events.log, refuses when
-plan/nopeer exists, as forge-route.py does when the tier pool has no free model, and otherwise
+plan/nopeer (or plan/nopeer.<task>) exists, as forge-route.py does when the tier pool has no free model, and otherwise
 moves the task's dwarf column to the spec in plan/peer, as prepare_fallback does). An INFRA
 outcome is `INFRA <cause> <harness> <model> [retry_after]`. The real routing and the fake CLIs are
 exercised in test_infra_fallback.py."""
@@ -24,7 +24,7 @@ WORKER = scope_tests.WORKER.replace(
     '  _merge)', '''  _prepare_retry)
     if [ "$4" = --fallback ]; then
       echo "$name fallback $5 $6 $7" >> "$plan/events.log"
-      [ -f "$plan/nopeer" ] && exit 1
+      [ -f "$plan/nopeer" ] || [ -f "$plan/nopeer.$name" ] && exit 1
       if [ -f "$plan/peer" ]; then
         awk -F'\t' -v OFS='\t' -v id="$name" -v peer="$(cat "$plan/peer")" '$1==id {$5=peer} 1' \
           "$plan/tasks.tsv" > "$plan/tasks.new" && mv "$plan/tasks.new" "$plan/tasks.tsv"
@@ -33,7 +33,8 @@ WORKER = scope_tests.WORKER.replace(
     fi
     ;;
   _merge)''', 1)
-assert WORKER.count('after') > 3 and '_prepare_retry)' in WORKER
+WORKER = WORKER.replace('[ -f "$plan/gate" ] && break', '[ -f "$plan/gate" ] || [ -f "$plan/gate.$name" ] && break', 1)
+assert 'gate.$name' in WORKER and WORKER.count('after') > 3 and '_prepare_retry)' in WORKER
 
 SOL = 'codex gpt-6.1-sol'
 SONNET = 'claude sonnet'
@@ -201,6 +202,25 @@ class AskTests(RecoveryBase):
         code, err = self.release(scheduler)
         self.assertEqual(code, 0, err)
         self.assertEqual(self.fallbacks(), ['a fallback claude/* --cause budget'])
+
+    def test_a_later_budget_stop_that_moved_ends_the_wait_the_pause_was_in(self):
+        self.peer('sonnet')
+        (self.plan / 'nopeer.a').write_text('')
+        self.task('a', [f'INFRA usage_limit {SOL} 20', 'PASS'], dwarf='sol')
+        self.task('b', [f'INFRA budget {SOL}', 'PASS'], dwarf='astra', qa='sonnet', hold=True)
+        self.task('c', ['PASS'], dwarf='opus', qa='sonnet', hold=True)     # keeps the run alive until the gate
+        scheduler, scopes = self.live('--infra-retries', 3)
+        self.assertEqual((scopes[0]['class'], scopes[0]['tasks'], scopes[0]['needs_you'], bool(scopes[0]['until'])),
+                         ('usage_limit', ['a'], False, True))
+        (self.plan / 'gate.b').write_text('')              # b stops, and moves to the peer
+        scopes = self.paused_scopes(lambda found: any(s['needs_you'] for s in found))
+        self.release(scheduler)
+        # One pause, no longer waiting: a would otherwise go back to codex when its 20 s were over.
+        self.assertEqual([(s['scope'], s['class'], s['exhausted'], s['needs_you'], s['until'], s['hint'])
+                          for s in scopes],
+                         [('harness:codex', 'budget', True, True, None,
+                           'add credits, or check the billing of codex')])
+        self.assertEqual(self.calls('a'), 1)
 
     def test_a_usage_limit_waits_for_a_reset_inside_the_cap_and_asks_otherwise(self):
         (self.plan / 'nopeer').write_text('')

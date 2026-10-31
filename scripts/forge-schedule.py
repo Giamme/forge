@@ -814,10 +814,12 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
               + str(done + 1) + ' of ' + str(budget) + '); other tasks continue (no attempt spent)',
               file=sys.stderr, flush=True)
 
-    def ask(pause: dict, name: str) -> None:
-        """A cause only a person clears: the pause is exhausted at once, with no wait spent."""
-        hint = forge_infra.hint(pause['class'], pause['harness'])
+    def ask(pause: dict, info: dict, cause: str, name: str) -> None:
+        """A cause only a person clears: the pause is exhausted at once, with no wait spent. It takes
+        over the stop's cause, so a wait it was in is replaced and its hint is the cause's own."""
+        hint = forge_infra.hint(cause, pause['harness'])
         where = pause['harness'] + ('/' + pause['model'] if pause['model'] else '')
+        pause.update({'class': cause, 'info': info, 'reset_at': _epoch(info.get('reset_at'))})
         pause.update(cycle=scope_waits.get(pause['scope'], 0), until=None, exhausted=True, needs_you=True,
                      hint=hint, asked_at_budget=infra_budget())
         print('forge: infrastructure failure (' + pause['class'] + ') on ' + where + ' for ' + name
@@ -872,12 +874,13 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
         how = without_peer(cause, info, moved)
         if created:
             if how == 'ask':
-                ask(pause, name)
+                ask(pause, info, cause, name)
             else:
                 start_wait(pause, info, name)
-        elif how == 'ask' and not moved and not pause['needs_you']:
-            # A task with nowhere to go joins a pause that waits: only a person helps it now.
-            ask(pause, name)
+        elif how == 'ask' and not pause['needs_you']:
+            # A stop only a person clears, whether its task moved or not, ends a wait the pause was
+            # in: the other tasks on this pair or harness must not be dispatched into it again.
+            ask(pause, info, cause, name)
         write_paused()
 
     def end_scoped_waits() -> None:

@@ -52,6 +52,18 @@ class PickTests(unittest.TestCase):
         self.assertEqual(pick('opus', ''), None)                 # a pool of one has no peer
         self.assertIsNone(pick('sonnet', ''))
 
+    def test_a_model_in_two_pools_stays_in_the_tier_of_its_task(self):
+        pools = {'medium': ['sol'], 'high': ['sol', 'sonnet']}
+        pick = lambda tier: route.fallback_pick(  # noqa: E731
+            'sol', pools, self.registry, set(), tier)
+        self.assertIsNone(pick('medium'))           # sonnet is a high-tier model: not a peer of a medium task
+        self.assertEqual(pick('high'), 'sonnet')
+        self.assertEqual(pick(''), 'sonnet')        # no tier known: the highest pool that runs the model
+        pools['medium'] = ['sol', 'astra']
+        self.assertEqual(pick('medium'), 'astra')
+        # An escalated task runs a model only a higher pool lists: that pool is its tier.
+        self.assertEqual(route.fallback_pick('sonnet', pools, self.registry, set(), 'medium'), 'sol')
+
     def test_a_spec_in_no_pool_has_no_fallback(self):
         self.assertIsNone(self.pick('opus', ['sol', 'astra']))
 
@@ -68,6 +80,15 @@ class PickTests(unittest.TestCase):
             done = subprocess.run(command + ['--exclude', 'codex/gpt-6.1-sol'], capture_output=True, text=True)
             self.assertEqual((done.returncode, done.stdout), (0, 'astra\n'))
             done = subprocess.run(command + ['--exclude', 'codex/gpt-6-astra'], capture_output=True, text=True)
+            self.assertEqual((done.returncode, done.stdout), (1, ''))
+
+    def test_the_command_takes_the_tier_from_the_tasks_difficulty(self):
+        with __import__('tempfile').TemporaryDirectory() as tmp:
+            plan = Path(tmp)
+            (plan / 'tasks.tsv').write_text('a\t-\tmedium\tf\tsol\topus\tA\n')
+            (plan / 'fractal-routing.json').write_text(json.dumps({'medium': ['sol'], 'high': ['sol', 'sonnet']}))
+            command = [sys.executable, str(ROOT / 'scripts/forge-route.py'), 'fallback', '--plan', tmp, '--task', 'a']
+            done = subprocess.run(command, capture_output=True, text=True)
             self.assertEqual((done.returncode, done.stdout), (1, ''))
 
 
@@ -220,6 +241,13 @@ class RunTests(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stdout)
         self.assertEqual((self.dwarf_column(p), self.escalations(p)), ('sol', []))
         self.assertIn('is over; resuming a', r.stdout)
+
+    def test_a_model_the_high_pool_also_lists_does_not_move_a_medium_task_up(self):
+        p = self.plan('sol', 'opus', '--dwarf-high', 'sol,sonnet')
+        self.scenario({'a.dwarf.1': USAGE_LIMIT})
+        r = self.run_plan(p, '--infra-retries', '1', '--infra-backoff', '1')
+        self.assertEqual((self.dwarf_column(p), self.escalations(p)), ('sol', []))
+        self.assertNotIn('falling back', r.stdout)
 
 
 if __name__ == '__main__':

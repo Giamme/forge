@@ -245,14 +245,19 @@ def parse_excluded(text: str) -> set:
     return out
 
 
-def fallback_pick(current: str, pools: dict, registry: dict, excluded: set):
+def fallback_pick(current: str, pools: dict, registry: dict, excluded: set, tier: str = ''):
     """The next member of the current dwarf's own tier pool, in pool order and wrapping around,
-    that runs another model on a pair nobody paused; None when there is none."""
-    rank = rank_of(current, pools, registry)
+    that runs another model on a pair nobody paused; None when there is none. A model listed
+    in several pools belongs to the task's own tier (`tier`, its difficulty) when that pool
+    runs it, else to the highest pool that does (an escalated task): never to a stronger one."""
+    own = canonical(current, registry)
+    if tier in TIERS and any(canonical(s, registry) == own for s in pools.get(tier, ())):
+        rank = TIERS.index(tier)
+    else:
+        rank = rank_of(current, pools, registry)
     if rank is None:
         return None
     pool = pools[TIERS[rank]]
-    own = canonical(current, registry)
     keys = [canonical(s, registry) for s in pool]
     start = keys.index(own) if own in keys else -1
     for step in range(1, len(pool) + 1):
@@ -272,7 +277,7 @@ def fallback(args) -> int:
     if not current or current in ('-', 'UNASSIGNED'):
         return 1
     pick = fallback_pick(current, load_pools(plan / 'fractal-routing.json'), registry_models(),
-                         parse_excluded(args.exclude))
+                         parse_excluded(args.exclude), _row_cell(plan, args.task, 2))
     if not pick:
         return 1
     print(pick)
@@ -311,6 +316,14 @@ def explore(args) -> str:
 
 
 # --- escalation --------------------------------------------------------------------
+
+def _row_cell(plan: Path, task: str, index: int) -> str:
+    for line in (plan / 'tasks.tsv').read_text().splitlines():
+        cells = line.split('\t')
+        if not line.startswith('#') and cells and cells[0] == task and len(cells) > index:
+            return cells[index]
+    return ''
+
 
 def _dwarf_of(plan: Path, task: str) -> str:
     for line in (plan / 'tasks.tsv').read_text().splitlines():
