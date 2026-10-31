@@ -352,13 +352,39 @@ class PromptTextTests(unittest.TestCase):
                        'ordering races', 'regressions of existing contracts', 'per-task review'):
             self.assertIn(phrase.lower(), final.lower(), phrase)
         self.assertEqual(contract.qa_text('head', 'final', 'P2'), final)
-        self.assertEqual(contract.qa_text('tail', 'final'), contract.qa_text('tail', 'task'))
 
     def test_solo_kind_keeps_the_solo_wording(self):
         head = contract.qa_text('head', 'solo')
         self.assertIn("one stated, or changed files outside the goal's scope.", head)
         self.assertIn('If the diff is correct, say so plainly', contract.qa_text('tail', 'solo'))
-        self.assertNotIn('say so plainly', contract.qa_text('tail', 'task'))
+        self.assertIn('say so plainly', contract.qa_text('tail', 'task'))
+
+    def test_task_and_solo_ask_for_every_confirmed_finding(self):
+        # #69: a task review reported a few findings per round. Task and solo ask for every
+        # CONFIRMED finding and say so when the diff is correct; final and sweep do not.
+        every = 'List every CONFIRMED finding you find, not only the most important few.'
+        plain = 'If the diff is correct, say so plainly rather than inventing something to report.'
+        extra = every + '\n' + plain + '\n'
+        for kind in ('task', 'solo'):
+            tail = contract.qa_text('tail', kind)
+            opening, rest = tail.split('\n\n', 1)
+            self.assertIn(every, opening, kind)
+            self.assertIn(plain, opening, kind)
+            self.assertLess(opening.index(every), opening.index(plain), kind)
+            self.assertNotIn(every, rest, kind)
+            self.assertNotIn('say so plainly', rest, kind)
+        final = contract.qa_text('tail', 'final')
+        task = contract.qa_text('tail', 'task')
+        self.assertNotIn(every, final)
+        self.assertNotIn('say so plainly', final)
+        self.assertEqual(task, LEGACY_FINDINGS + extra + final[len(LEGACY_FINDINGS):])
+        sweep = contract.qa_text('tail', 'sweep')
+        self.assertNotIn(every, sweep)
+        self.assertNotIn('say so plainly', sweep)
+        for kind in contract.KINDS:
+            head = contract.qa_text('head', kind)
+            self.assertNotIn(every, head, kind)
+            self.assertNotIn('say so plainly', head, kind)
 
     def test_severity_instruction(self):
         tail = contract.qa_text('tail')
