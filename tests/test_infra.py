@@ -97,7 +97,8 @@ class InfraTests(unittest.TestCase):
 
     def test_a_dwarf_that_returns_nothing_and_changes_nothing_never_ran(self):
         p = self.plan_of([('a', '-', 'a.txt')])
-        self.scenario({'a.dwarf.1': {'empty': True, 'no_edit': True}})
+        # Every call: the first empty answer is tried again at once, and a second one is a stop.
+        self.scenario({'a.dwarf.*': {'empty': True, 'no_edit': True}})
         r = self.run_script('forge-parallel.sh', 'run', p)
         self.assertEqual(r.returncode, 8, r.stdout)
         self.assertEqual(self.text(p, 'tasks/a/status'), 'INFRA')

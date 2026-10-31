@@ -917,9 +917,10 @@ class PinEndToEndTests(unittest.TestCase):
 
     def test_a_qa_stage_infra_resume_keeps_the_pin_pending(self):
         p = self.pooled_plan('--dwarf-low', 'sol', '--dwarf-high', 'astra')
-        # No reset time in the message, so the test's short backoff is the wait.
+        # A cause that waits (a usage limit with no reset time would ask for a person instead), so
+        # the test's short backoff is the wait.
         self.scenario({'a.qa.1': {'rc': 1, 'is_error': True, 'verdict': 'none',
-                                  'findings': "You've hit your usage limit."}})
+                                  'findings': 'The model is overloaded.'}})
         rc, out = self.run_pinning_during_the_backoff(p)
         self.assertEqual(rc, 0, out)
         self.assertEqual(self.calls(), ['dwarf', 'qa', 'qa'])    # QA only: the implementer did not run again

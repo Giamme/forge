@@ -94,7 +94,7 @@ class ControlTests(unittest.TestCase):
                          (str(self.plan), 'r-7', False, False))
         self.assertEqual(shown['run'], dict(qa_threshold='P2', qa_threshold_source='set', timeout=90, escalate_after=3, escalate_effort='off',
                                             verify_retries=1, retry_budget=None, infra_budget=None, infra_backoff='exp:60',
-                                            max_parallel=None, drained=False, stopping=None,
+                                            infra_fallback='off', max_parallel=None, drained=False, stopping=None,
                                             infra_paused=None, pre_review_tests='off', pre_review_parallel=2))
         self.assertEqual(list(shown['tasks']), ['a', 'b'])
         self.assertEqual(shown['tasks']['a'], dict(

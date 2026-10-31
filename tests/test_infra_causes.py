@@ -93,25 +93,28 @@ class WaitCapTests(unittest.TestCase):
 
 
 class SchedulerTests(unittest.TestCase):
-    def test_finer_causes_keep_the_scope_and_class_the_scheduler_acts_on(self):
-        # The scheduler is unchanged by the split: each new cause still gets the scope its old class did.
+    def test_each_cause_gets_the_scope_its_table_entry_names(self):
         scheduler = module('forge-schedule')
         table = [
-            ('capacity', 'model:codex/sol', 'rate_limit'),
-            ('rate_limit', 'model:codex/sol', 'rate_limit'),
-            ('usage_limit', 'harness:codex', 'quota'),
-            ('budget', 'harness:codex', 'quota'),
-            ('auth', 'harness:codex', 'auth'),
-            ('provider_down', 'all', 'network'),
-            ('network', 'all', 'network'),
+            ('capacity', 'model:codex/sol'),
+            ('rate_limit', 'model:codex/sol'),
+            ('empty', 'model:codex/sol'),
+            ('cancelled', 'model:codex/sol'),
+            ('usage_limit', 'harness:codex'),
+            ('quota', 'harness:codex'),        # a class an old run recorded
+            ('budget', 'harness:codex'),
+            ('auth', 'harness:codex'),
+            ('provider_down', 'harness:codex'),
+            ('network', 'all'),
+            ('something_new', 'all'),
         ]
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            for cls, scope, legacy in table:
+            for cls, scope in table:
                 with self.subTest(cls=cls):
                     (root / 'infra.txt').write_text('class=%s\nharness=codex\nmodel=sol\nstage=dwarf\n' % cls)
                     info = scheduler.infra_info(root)
-                    self.assertEqual(info['class'], legacy)
+                    self.assertEqual(info['class'], cls)
                     self.assertEqual(scheduler.infra_scope(info)[0], scope)
 
 

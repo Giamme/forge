@@ -4,7 +4,8 @@
   show  <plan> [--json]                          every control, per-task overrides, pins and the change log
   set   <plan> <key> <value> [--task ID]         qa-threshold, timeout, escalate-after, escalate-effort,
                                                  verify-retries, retry-budget, infra-retries, infra-backoff
-                                                 (none drops it), max-parallel (1-64), pre-review-tests
+                                                 (none drops it), infra-fallback (on/off), max-parallel (1-64),
+                                                 pre-review-tests
                                                  (on/off), pre-review-parallel (1-64)
   pin   <plan> <task> <spec>                     the model the task's next FULL implementer retry uses
   unpin <plan> <task>
@@ -19,8 +20,8 @@
                                                  them like SIGTERM
 
 `show` reports escalate-after and verify-retries at their defaults (3 and 1) when unset,
-escalate-effort and pre-review-tests as on or off (off when the file is absent), pre-review-parallel
-at its default (2) when unset, and the two budgets only while a scheduler is live.
+escalate-effort, infra-fallback and pre-review-tests as on or off (off when the file is absent),
+pre-review-parallel at its default (2) when unset, and the two budgets only while a scheduler is live.
 
 Every change is validated, written atomically under the plan's control lock (`control.lock`),
 appended to `control.log` and recorded as a dataset `control` event. This is the only writer of
@@ -74,6 +75,7 @@ NEXT_DECISION = 'at the next retry decision'
 NEXT_RETRY = 'at the next full retry (not QA-only resumes)'
 NEXT_VERIFY = 'at the next verification'
 NEXT_INFRA_WAIT = 'at the next infrastructure wait'
+NEXT_INFRA_STOP = 'at the next infrastructure stop'
 NEXT_DISPATCH = "at the scheduler's next dispatch decision"
 
 
@@ -397,7 +399,8 @@ def nullable(value):
     return None if value in (None, '', '-', 'UNASSIGNED') else value
 
 
-PAUSE_KEYS = ('scope', 'class', 'harness', 'model', 'tasks', 'cycle', 'until', 'exhausted')
+PAUSE_KEYS = ('scope', 'class', 'harness', 'model', 'tasks', 'cycle', 'until', 'exhausted', 'needs_you', 'hint',
+              'reset_at')
 
 
 def paused_scopes(text):
@@ -427,6 +430,7 @@ def show(plan, rows):
                verify_retries=number(get('verify_retries')),
                retry_budget=budget('retry_budget'), infra_budget=budget('infra_budget'))
     run['infra_backoff'] = get('infra_backoff') or default_backoff()
+    run['infra_fallback'] = 'on' if get('infra_fallback') == 'on' else 'off'
     parallel = number(get('max_parallel'))
     run['max_parallel'] = parallel if parallel and parallel <= 64 else None
     stopping = get('stop') if live else None
@@ -537,6 +541,7 @@ KEYS = {
     'retry-budget': ('both', _budget, 'retry_budget', True, NEXT_DECISION),
     'infra-retries': ('plan', _int, 'infra_budget', True, NEXT_DECISION),
     'infra-backoff': ('plan', _backoff, 'infra_backoff', False, NEXT_INFRA_WAIT),
+    'infra-fallback': ('plan', _onoff, 'infra_fallback', False, NEXT_INFRA_STOP),
     'max-parallel': ('plan', _parallel, 'max_parallel', True, NEXT_DISPATCH),
     'pre-review-tests': ('plan', _onoff, 'pre_review_tests', False, NEXT_ATTEMPT),
     'pre-review-parallel': ('plan', _parallel, 'pre_review_parallel', False, NEXT_ATTEMPT),
