@@ -135,7 +135,8 @@ window.ForgePanel = (() => {
     ledgerTable(s, list(task.ledger));
     s.append(el('pre', d.text != null ? d.text : `The decision is not recorded: tasks/${task.id}/decision.md is missing.`));
   }
-  // The review ledger as a small table, one row per review. A FAIL verdict or a `fail` gate reads as failed.
+  // The review ledger as a small table, one row per review. A FAIL verdict or a `fail` gate reads as failed: a gate fail
+  // over a PASS verdict keeps the reviewer's word and turns the chip red, with the gate's decision on hover.
   function ledgerTable(parent, rows) {
     if (!rows.length) { muted(parent, 'No review is recorded for this task yet.'); return; }
     const word = v => String(v || '').toLowerCase();
@@ -148,7 +149,9 @@ window.ForgePanel = (() => {
     for (const r of rows) {
       const failed = word(r.verdict) === 'fail' || word(r.gate) === 'fail';
       const verdict = el('td'), worst = el('td');
-      verdict.append(chip(r.verdict, word(r.verdict) === 'pass' ? 'pass' : failed ? 'fail' : 'unknown'));
+      const v = chip(r.verdict, failed ? 'fail' : word(r.verdict) === 'pass' ? 'pass' : 'unknown');
+      if (word(r.gate) === 'fail' && word(r.verdict) !== 'fail') v.title = 'forge gate: FAIL' + (r.verdict ? ` (reviewer said ${r.verdict})` : '');
+      verdict.append(v);
       worst.append(r.worst ? sevChip(r.worst, r.worst) : document.createTextNode('—'));
       const tr = el('tr', undefined, failed ? 'failed' : undefined);
       tr.append(el('td', r.attempt, 'num'), verdict, el('td', r.confirmed, 'num'), el('td', r.new, 'num'), worst);

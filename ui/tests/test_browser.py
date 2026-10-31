@@ -1058,3 +1058,17 @@ class Decision(unittest.TestCase):
         self.assertEqual(page.locator('#inspector button', has_text='Retry now').count(), 0)
         self.assertEqual(page.locator('#inspector form.ctl-retry').count(), 0)
         self.assertClean(page)
+
+    def test_a_gate_fail_over_a_pass_verdict_still_reads_as_failed(self):
+        F.write(self.plan / 'tasks/docs/ledger.tsv', F.tsv([(int(time.time() - 300), 1, 'task-docs-r1', 'PASS', 'fail', 'P2', 1, 1, 0, 4096, '-')]))
+        page = self.open(cdn=False, view='2d')
+        page.goto(self.url + '#/runs/' + self.key + '/tasks/docs')
+        page.wait_for_selector('#inspector table.ledger tbody tr')
+        row = page.locator('#inspector table.ledger tbody tr').first
+        self.assertIn('failed', row.get_attribute('class'))
+        chip = row.locator('td .chip').first
+        self.assertEqual(chip.text_content(), 'PASS')
+        self.assertIn('st-fail', chip.get_attribute('class'))
+        self.assertNotIn('st-pass', chip.get_attribute('class'))
+        self.assertEqual(chip.get_attribute('title'), 'forge gate: FAIL (reviewer said PASS)')
+        self.assertClean(page)
