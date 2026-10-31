@@ -247,6 +247,21 @@ class AskTests(RecoveryBase):
                 self.assertIn('nothing will be retried until a person acts', err)
                 self.assertEqual(self.calls('a'), 1)
 
+    def test_a_usage_limit_joining_a_running_wait_keeps_its_own_reset(self):
+        (self.plan / 'nopeer').write_text('')
+        self.env['FORGE_INFRA_BACKOFF'] = '3'
+        self.task('a', [f'INFRA provider_down {SOL}', 'PASS'], dwarf='sol')
+        self.task('b', [f'INFRA usage_limit codex gpt-6-astra 8', 'PASS'], dwarf='astra', hold=True)
+        scheduler, scopes = self.live('--infra-retries', 2)
+        self.assertEqual((scopes[0]['class'], scopes[0]['tasks']), ('provider_down', ['a']))
+        started = time.time()
+        (self.plan / 'gate.b').write_text('')
+        scopes = self.paused_scopes(lambda found: found and found[0]['tasks'] == ['a', 'b'])
+        # The shorter backoff (3 s) must not release the harness before the provider's reset (8 s).
+        self.assertGreater(scopes[0]['until'] - started, 6)
+        scheduler.kill()
+        scheduler.communicate(timeout=30)
+
     def test_reset_at_is_reported(self):
         (self.plan / 'nopeer').write_text('')
         self.task('a', [f'INFRA usage_limit {SOL} 90000'], dwarf='sol')

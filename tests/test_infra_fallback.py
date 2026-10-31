@@ -64,6 +64,13 @@ class PickTests(unittest.TestCase):
         # An escalated task runs a model only a higher pool lists: that pool is its tier.
         self.assertEqual(route.fallback_pick('sonnet', pools, self.registry, set(), 'medium'), 'sol')
 
+    def test_an_escalated_task_never_falls_back_to_a_stronger_tier(self):
+        # A low task escalated to the medium pool's sol: sol is also in the high pool, but the task runs in medium.
+        pools = {'low': ['astra'], 'medium': ['sol'], 'high': ['sol', 'sonnet']}
+        self.assertIsNone(route.fallback_pick('sol', pools, self.registry, set(), 'low'))
+        pools['medium'] = ['sol', 'opus']
+        self.assertEqual(route.fallback_pick('sol', pools, self.registry, set(), 'low'), 'opus')
+
     def test_a_spec_in_no_pool_has_no_fallback(self):
         self.assertIsNone(self.pick('opus', ['sol', 'astra']))
 

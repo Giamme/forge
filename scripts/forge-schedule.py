@@ -881,6 +881,16 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
             # A stop only a person clears, whether its task moved or not, ends a wait the pause was
             # in: the other tasks on this pair or harness must not be dispatched into it again.
             ask(pause, info, cause, name)
+        elif how == 'wait' and not pause['exhausted'] and pause['until'] is not None:
+            # A stop joining a wait that is already running keeps its own known reset: the pause
+            # lasts until the later of the two, so a shorter backoff cannot release it early.
+            if _epoch(info.get('retry_after')) is not None:
+                wait, source = infra_wait(info, scope_waits.get(scope, 0), backoff())
+                if time.time() + wait > pause['until']:
+                    pause.update(until=time.time() + wait, reset_at=_epoch(info.get('reset_at')))
+                    print('forge: ' + cause + ' on ' + scope.partition(':')[2] + ' for ' + name
+                          + ' extends the wait to ' + ('%g' % wait) + 's (' + source + ')',
+                          file=sys.stderr, flush=True)
         write_paused()
 
     def end_scoped_waits() -> None:

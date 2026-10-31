@@ -249,12 +249,16 @@ def fallback_pick(current: str, pools: dict, registry: dict, excluded: set, tier
     """The next member of the current dwarf's own tier pool, in pool order and wrapping around,
     that runs another model on a pair nobody paused; None when there is none. A model listed
     in several pools belongs to the task's own tier (`tier`, its difficulty) when that pool
-    runs it, else to the highest pool that does (an escalated task): never to a stronger one."""
+    runs it, else to the nearest pool above it that does (an escalated task went up from its
+    own tier to the first one with its model), else to the highest pool that does: never to a
+    stronger tier than the one the task is running in."""
     own = canonical(current, registry)
-    if tier in TIERS and any(canonical(s, registry) == own for s in pools.get(tier, ())):
+    runs = lambda name: any(canonical(s, registry) == own for s in pools.get(name, ()))
+    if tier in TIERS and runs(tier):
         rank = TIERS.index(tier)
     else:
-        rank = rank_of(current, pools, registry)
+        above = [i for i in range(TIERS.index(tier) + 1, len(TIERS)) if runs(TIERS[i])] if tier in TIERS else []
+        rank = above[0] if above else rank_of(current, pools, registry)
     if rank is None:
         return None
     pool = pools[TIERS[rank]]
