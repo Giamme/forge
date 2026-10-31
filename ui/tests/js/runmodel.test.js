@@ -555,3 +555,26 @@ test('"by repo" orders runs by the name of their repository root, not of the che
   ];
   assert.deepEqual(runs.slice().sort(RM.compareRepo).map(r => r.key), ['z', 'y', 'x']);
 });
+
+test('an infrastructure cause reads as its label, an unknown one as written, and a reset as a clock, a day or a date', () => {
+  const at = (day, h, m, month = 9) => new Date(2026, month, day, h, m).getTime() / 1000;      // local time; month 9 is October, 30 Oct 2026 a Friday
+  const now = at(30, 12, 0);
+  const cases = [
+    [RM.causeLabel('capacity'), 'at capacity'], [RM.causeLabel('rate_limit'), 'rate limited'], [RM.causeLabel('usage_limit'), 'usage limit'],
+    [RM.causeLabel('budget'), 'out of budget'], [RM.causeLabel('auth'), 'login needed'], [RM.causeLabel('network'), 'network down'],
+    [RM.causeLabel('provider_down'), 'provider down'], [RM.causeLabel('empty'), 'empty answer'], [RM.causeLabel('cancelled'), 'cancelled'],
+    [RM.causeLabel('quota'), 'quota'], [RM.causeLabel('constructor'), 'constructor'], [RM.causeLabel(null), null],
+    [RM.resetText(at(30, 14, 5), now), 'resets 14:05'], [RM.resetText(at(31, 9, 0), now), 'resets Sat 09:00'],
+    [RM.resetText(at(3, 9, 0, 10), now), 'resets Tue 09:00'], [RM.resetText(at(6, 9, 0, 10), now), 'resets Nov 6 09:00'], [RM.resetText(null, now), null], [RM.resetText(at(30, 14, 5), null), null],
+  ];
+  for (const [got, want] of cases) assert.equal(got, want, `want ${want}`);
+});
+
+test('a task in INFRA reads with its cause; without a cause it reads INFRA, and other statuses are unchanged', () => {
+  assert.equal(RM.statusText({ status: 'INFRA', infra: { cause: 'budget' } }), 'INFRA · out of budget');
+  assert.equal(RM.statusText({ status: 'INFRA', infra: { cause: 'quota' } }), 'INFRA · quota');
+  assert.equal(RM.statusText({ status: 'INFRA', infra: null }), 'INFRA');
+  assert.equal(RM.statusText({ status: 'FAIL', infra: { cause: 'budget' } }), 'FAIL');
+  assert.equal(RM.statusText({ status: 'MERGED', accepted: true }), 'ACCEPTED');
+  assert.equal(RM.statusText(null), 'PENDING');
+});

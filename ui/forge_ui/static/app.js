@@ -778,7 +778,7 @@ window.ForgeApp = (() => {
       { id: 'title', label: 'Title', value: t => t.title },
       { id: 'difficulty', label: 'Difficulty', value: t => DIFF_RANK[t.difficulty] ?? null, cell: t => display(t.difficulty) },
       { id: 'wave', label: 'Wave', value: t => Number.isFinite(Number(t.wave)) && t.wave !== null && t.wave !== '' ? Number(t.wave) : null, cell: t => display(t.wave) },
-      { id: 'status', label: 'Status', value: t => RM.taskStatus(t), cell: t => chip(RM.taskStatus(t)) },
+      { id: 'status', label: 'Status', value: t => RM.taskStatus(t), cell: t => chip(RM.statusText(t), RM.taskStatus(t)) },
       ...(window.ForgeChecks ? [{ id: 'now', label: 'Now', title: 'What a running task is doing, or why one that is not running waits',
         value: t => window.ForgeChecks.nowRank(t), cell: t => window.ForgeChecks.cell(t, now(), { hash: s => hashFor(run.key, s) }) }] : []),
       { id: 'dwarf', label: 'Dwarf', value: t => t.dwarf, cell: t => window.ForgeIcons.modelPlate(t.dwarf) },
