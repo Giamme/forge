@@ -36,8 +36,9 @@
 #
 # Exit codes: 0 ok | 2 usage/resolution error | 3 harness missing or unusable
 #             4 backend ran but failed | 7 backend exceeded --timeout and was killed
-#             8 infrastructure failure (auth, quota, rate limit, network, or an empty
-#               answer): the model never got to do its work. $ROLE.infra says which.
+#             8 infrastructure failure (auth, usage_limit, budget, capacity, rate_limit,
+#               provider_down, network, or an empty answer; forge_infra.py says what each
+#               means): the model never got to do its work. $ROLE.infra says which.
 #               A DWARF that exits 0 with an empty final message also writes $ROLE.infra
 #               (class=empty) but still exits 0; consult the file only if the diff is empty.
 #             9 the session was not continued (--continue-session only): the harness cannot
@@ -844,9 +845,10 @@ if [ -f "$RUN_DIR/$ROLE.timedout" ]; then
   write_continue failed timeout
   exit 7
 fi
-# Infrastructure, not the model's work: auth, quota, rate limit, network, or an answer that
-# never arrived. Classified from the LOG because $LAST is only created later, by the EXIT
-# trap's `finish`. Any trouble running the classifier counts as "not infrastructure".
+# Infrastructure, not the model's work: auth, a usage limit, budget, capacity, rate limit, a
+# provider or the network, or an answer that never arrived. Classified from the LOG because $LAST
+# is only created later, by the EXIT trap's `finish`. Any trouble running the classifier counts as
+# "not infrastructure".
 INFRA="$(python3 "$RUNTIME" classify "$LOG" "$HARNESS" "$rc" "$LAST" "$ROLE" 2>/dev/null)" || INFRA=""
 if [ -n "$INFRA" ]; then
   TAB=$'\t'
@@ -855,6 +857,8 @@ if [ -n "$INFRA" ]; then
   {
     echo "class=$infra_class"
     echo "retry_after=$infra_after"
+    # The moment the wait ends, when the message said how long it is.
+    case "$infra_after" in ''|*[!0-9]*) ;; *) echo "reset_at=$(( $(date +%s) + infra_after ))" ;; esac
     echo "detail=$infra_detail"
     echo "rc=$rc"
     echo "role=$ROLE"

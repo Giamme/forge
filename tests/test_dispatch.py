@@ -547,11 +547,11 @@ class InfraTests(DispatchBase):
         self.assertEqual(metrics['exit_code'], 8)
         return fields
 
-    def test_claude_dwarf_quota_with_retry_time(self):
+    def test_claude_dwarf_session_limit_with_retry_time(self):
         self.scenario({'*.dwarf.*': {'rc': 1, 'is_error': True, 'message': CLAUDE_LIMIT}})
         result = self.dispatch('dwarf', 'opus')
         self.assertEqual(result.returncode, 8, result.stdout)
-        fields = self.assert_infra('dwarf', 'quota', 1, retry=True, detail='hit your session limit')
+        fields = self.assert_infra('dwarf', 'usage_limit', 1, retry=True, detail='hit your session limit')
         self.assertLessEqual(int(fields['retry_after']), 86400)
 
     def test_claude_epoch_suffix_gives_the_wait(self):
@@ -559,14 +559,30 @@ class InfraTests(DispatchBase):
         self.scenario({'*.dwarf.*': {'rc': 1, 'is_error': True, 'message': 'Claude usage limit reached|%d' % reset}})
         result = self.dispatch('dwarf', 'opus')
         self.assertEqual(result.returncode, 8, result.stdout)
-        fields = self.assert_infra('dwarf', 'quota', 1, retry=True)
+        fields = self.assert_infra('dwarf', 'usage_limit', 1, retry=True)
         self.assertTrue(500 <= int(fields['retry_after']) <= 601, fields)
+
+    def test_reset_at_is_the_end_of_a_known_wait_and_absent_without_one(self):
+        before = int(time.time())
+        self.scenario({'*.dwarf.*': {'rc': 1, 'is_error': True, 'message': CLAUDE_LIMIT}})
+        self.assertEqual(self.dispatch('dwarf', 'opus').returncode, 8)
+        fields = self.assert_infra('dwarf', 'usage_limit', 1, retry=True)
+        wait = int(fields['retry_after'])
+        self.assertTrue(before + wait <= int(fields['reset_at']) <= int(time.time()) + 1 + wait, fields)
+        self.assertEqual(self.read('dwarf.infra').splitlines()[:3], ['class=usage_limit', 'retry_after=%d' % wait,
+                                                                     'reset_at=' + fields['reset_at']])
+        # Capacity says nothing about how long it lasts, so there is no reset line.
+        self.scenario({'*.dwarf.*': {'rc': 1, 'stdout': CODEX_CAPACITY}})
+        self.assertEqual(self.dispatch('dwarf', 'sol').returncode, 8)
+        self.assert_infra('dwarf', 'capacity', 1, detail='at capacity')
+        self.assertNotIn('reset_at', self.kv('dwarf.infra'))
+        self.assertEqual(self.kv('dwarf.infra')['retry_after'], '')
 
     def test_codex_turn_failed_dwarf(self):
         self.scenario({'*.dwarf.*': {'rc': 1, 'stdout': CODEX_CAPACITY}})
         result = self.dispatch('dwarf', 'sol')
         self.assertEqual(result.returncode, 8, result.stdout)
-        self.assert_infra('dwarf', 'rate_limit', 1, detail='at capacity')
+        self.assert_infra('dwarf', 'capacity', 1, detail='at capacity')
 
     def test_codex_stderr_401_dwarf(self):
         self.scenario({'*.dwarf.*': {'rc': 1, 'stderr': 'ERROR: unexpected status 401 Unauthorized: Missing bearer or basic authentication'}})
@@ -579,13 +595,13 @@ class InfraTests(DispatchBase):
         self.scenario({'*.dwarf.*': {'rc': 1, 'stdout': 'Insufficient balance.'}})
         result = self.dispatch('dwarf', 'sol:high:opencode')
         self.assertEqual(result.returncode, 8, result.stdout)
-        self.assert_infra('dwarf', 'quota', 1, detail='Insufficient balance')
+        self.assert_infra('dwarf', 'budget', 1, detail='Insufficient balance')
 
     def test_qa_infra_is_exit_8(self):
         self.scenario({'*.qa.*': {'rc': 1, 'is_error': True, 'verdict': 'none', 'findings': "You've hit your usage limit. Try again in 2h 5m."}})
         result = self.dispatch('qa', 'opus')
         self.assertEqual(result.returncode, 8, result.stdout)
-        fields = self.assert_infra('qa', 'quota', 1, retry=True, detail='usage limit')
+        fields = self.assert_infra('qa', 'usage_limit', 1, retry=True, detail='usage limit')
         self.assertEqual(fields['retry_after'], str(2 * 3600 + 5 * 60))
 
     def test_empty_answer(self):

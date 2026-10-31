@@ -253,7 +253,7 @@ class ReviewTests(unittest.TestCase):
         out = self.latest(p)
         self.assertFalse((out / 'verdict').exists())                               # nothing was judged
         self.assertFalse((p / 'final-review.verdict').exists())
-        self.assertIn('class=quota', (out / 'qa.infra').read_text())
+        self.assertIn('class=usage_limit', (out / 'qa.infra').read_text())
         self.assertIn('infrastructure', r.stdout)
         self.assertIn('forge-parallel.sh review', r.stdout)                        # how to retry
         # the same stop while integrating: exit 8, the user's branch untouched, the exact command to re-run

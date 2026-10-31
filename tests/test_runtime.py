@@ -143,49 +143,83 @@ class ClassifyTests(unittest.TestCase):
 
     def test_positive_table(self):
         table = [
-            ('claude session limit', json.dumps(CLAUDE_SESSION_LIMIT), 'claude', 1, 'quota'),
-            ('claude no network', json.dumps(CLAUDE_NO_NETWORK), 'claude', 1, 'network'),
-            ('claude is_error with exit 0', json.dumps(CLAUDE_SESSION_LIMIT), 'claude', 0, 'quota'),
-            ('claude status only', json.dumps({'type': 'result', 'is_error': True, 'api_error_status': 401, 'result': 'x'}), 'claude', 1, 'auth'),
-            ('claude invalid key', json.dumps({'type': 'result', 'is_error': True, 'result': 'Invalid API key · Please run /login'}), 'claude', 1, 'auth'),
-            ('claude low credit', json.dumps({'type': 'result', 'is_error': True, 'result': 'Credit balance is too low'}), 'claude', 1, 'quota'),
-            ('claude overloaded', json.dumps({'type': 'result', 'is_error': True, 'result': 'Overloaded'}), 'claude', 1, 'rate_limit'),
+            # usage_limit: a spent window that resets
+            ('claude session limit', json.dumps(CLAUDE_SESSION_LIMIT), 'claude', 1, 'usage_limit'),
+            ('claude is_error with exit 0', json.dumps(CLAUDE_SESSION_LIMIT), 'claude', 0, 'usage_limit'),
+            ('claude as JSON array', json.dumps([{'type': 'system'}, CLAUDE_SESSION_LIMIT]), 'claude', 1, 'usage_limit'),
+            ('openclaude json', json.dumps(CLAUDE_SESSION_LIMIT), 'openclaude', 1, 'usage_limit'),
+            ('codex fatal error event only', jsonl([{'type': 'error', 'message': "You've hit your usage limit."}]), 'codex', 1, 'usage_limit'),
+            ('raw usage limit with a reset epoch', 'Claude AI usage limit reached|1760000000\n', 'antigravity', 1, 'usage_limit'),
+            ('raw usage limit with a wait', "You've hit your usage limit. Try again in 2 hours.\n", 'opencode', 1, 'usage_limit'),
+            # budget: money that is gone
+            ('claude low credit', json.dumps({'type': 'result', 'is_error': True, 'result': 'Credit balance is too low'}), 'claude', 1, 'budget'),
+            ('opencode balance', 'Insufficient balance.\n', 'opencode', 1, 'budget'),
+            ('raw quota exceeded', 'Error: quota exceeded for this project\n', 'opencode', 1, 'budget'),
+            ('raw quota exceeded, with billing', 'Quota exceeded. Check your plan and billing details.\n', 'opencode', 1, 'budget'),
+            ('raw insufficient_quota', 'Error: insufficient_quota\n', 'opencode', 1, 'budget'),
+            ('raw credit balance is too low', 'Error: credit balance is too low\n', 'opencode', 1, 'budget'),
+            ('raw billing', 'Check your plan and billing details\n', 'opencode', 1, 'budget'),
+            # capacity: a model at capacity for everyone
+            ('claude overloaded', json.dumps({'type': 'result', 'is_error': True, 'result': 'Overloaded'}), 'claude', 1, 'capacity'),
+            ('codex turn.failed', jsonl(CODEX_AT_CAPACITY), 'codex', 1, 'capacity'),
+            ('codex exit 0 but turn failed', jsonl(CODEX_AT_CAPACITY), 'codex', 0, 'capacity'),
+            # rate_limit: an account sending too fast
             ('claude 429 text', json.dumps({'type': 'result', 'is_error': True, 'result': 'Request failed: 429 Too Many Requests'}), 'claude', 1, 'rate_limit'),
-            ('claude as JSON array', json.dumps([{'type': 'system'}, CLAUDE_SESSION_LIMIT]), 'claude', 1, 'quota'),
-            ('claude JSONL with stderr noise', 'warning: x\n' + json.dumps(CLAUDE_NO_NETWORK) + '\n', 'claude', 1, 'network'),
-            ('openclaude json', json.dumps(CLAUDE_SESSION_LIMIT), 'openclaude', 1, 'quota'),
-            ('openclaude raw text', 'Error: 401 Unauthorized\n', 'openclaude', 1, 'auth'),
-            ('claude died before its result', 'Invalid API key · Please run /login\n', 'claude', 1, 'auth'),
-            ('codex turn.failed', jsonl(CODEX_AT_CAPACITY), 'codex', 1, 'rate_limit'),
-            ('codex fatal error event only', jsonl([{'type': 'error', 'message': "You've hit your usage limit."}]), 'codex', 1, 'quota'),
-            ('codex error after the last message', jsonl([CODEX_RECONNECTS[3], {'type': 'error', 'message': 'ECONNRESET'}]), 'codex', 1, 'network'),
-            ('codex stderr 401', jsonl([{'type': 'turn.started'}]) + 'ERROR: unexpected status 401 Unauthorized\n', 'codex', 1, 'auth'),
-            ('codex exit 0 but turn failed', jsonl(CODEX_AT_CAPACITY), 'codex', 0, 'rate_limit'),
-            ('opencode error event', jsonl([OPENCODE_401]), 'opencode', 1, 'auth'),
-            ('opencode error event, exit 0, no answer', jsonl([{'type': 'step_start'}, OPENCODE_401]), 'opencode', 0, 'auth'),
-            ('opencode balance', 'Insufficient balance.\n', 'opencode', 1, 'quota'),
-            ('opencode auth', 'Unauthorized: unauthorized: AuthenticateToken authentication failed\n', 'opencode', 1, 'auth'),
-            ('raw 401, rc 1', 'HTTP 401\n', 'opencode', 1, 'auth'),
+            ('raw 429 Too Many Requests', '429 Too Many Requests\n', 'opencode', 1, 'rate_limit'),
             ('antigravity rate limit', 'Error 429: Too Many Requests\n', 'antigravity', 1, 'rate_limit'),
             ('antigravity rate limit prose', 'rate limit exceeded, slow down\n', 'antigravity', 2, 'rate_limit'),
-            ('raw getaddrinfo', 'Error: getaddrinfo ENOTFOUND api.example.com\n', 'opencode', 1, 'network'),
-            ('raw connection refused', 'dial tcp 127.0.0.1:443: connect: connection refused\n', 'opencode', 1, 'network'),
-            ('raw quota exceeded', 'Error: quota exceeded for this project\n', 'opencode', 1, 'quota'),
-            ('raw billing', 'Check your plan and billing details\n', 'opencode', 1, 'quota'),
+            ('nonstandard nonzero rc', 'too many requests\n', 'opencode', 137, 'rate_limit'),
+            # provider_down: one provider failing
+            ('raw 502 Bad Gateway', '502 Bad Gateway\n', 'opencode', 1, 'provider_down'),
+            ('raw 503 Service Unavailable', 'Error: 503 Service Unavailable\n', 'opencode', 1, 'provider_down'),
+            # auth
+            ('claude status only', json.dumps({'type': 'result', 'is_error': True, 'api_error_status': 401, 'result': 'x'}), 'claude', 1, 'auth'),
+            ('claude invalid key', json.dumps({'type': 'result', 'is_error': True, 'result': 'Invalid API key · Please run /login'}), 'claude', 1, 'auth'),
+            ('openclaude raw text', 'Error: 401 Unauthorized\n', 'openclaude', 1, 'auth'),
+            ('claude died before its result', 'Invalid API key · Please run /login\n', 'claude', 1, 'auth'),
+            ('codex stderr 401', jsonl([{'type': 'turn.started'}]) + 'ERROR: unexpected status 401 Unauthorized\n', 'codex', 1, 'auth'),
+            ('opencode error event', jsonl([OPENCODE_401]), 'opencode', 1, 'auth'),
+            ('opencode error event, exit 0, no answer', jsonl([{'type': 'step_start'}, OPENCODE_401]), 'opencode', 0, 'auth'),
+            ('opencode auth', 'Unauthorized: unauthorized: AuthenticateToken authentication failed\n', 'opencode', 1, 'auth'),
+            ('raw 401, rc 1', 'HTTP 401\n', 'opencode', 1, 'auth'),
             ('raw login required', 'Not logged in · Please run /login\n', 'opencode', 1, 'auth'),
             ('raw token expired', 'OAuth token has expired\n', 'opencode', 1, 'auth'),
-            ('nonstandard nonzero rc', 'too many requests\n', 'opencode', 137, 'rate_limit'),
+            # network: local connectivity
+            ('claude no network', json.dumps(CLAUDE_NO_NETWORK), 'claude', 1, 'network'),
+            ('claude JSONL with stderr noise', 'warning: x\n' + json.dumps(CLAUDE_NO_NETWORK) + '\n', 'claude', 1, 'network'),
+            ('codex error after the last message', jsonl([CODEX_RECONNECTS[3], {'type': 'error', 'message': 'ECONNRESET'}]), 'codex', 1, 'network'),
+            ('raw getaddrinfo', 'Error: getaddrinfo ENOTFOUND api.example.com\n', 'opencode', 1, 'network'),
+            ('getaddrinfo ENOTFOUND alone', 'getaddrinfo ENOTFOUND\n', 'opencode', 1, 'network'),
+            ('raw connection refused', 'dial tcp 127.0.0.1:443: connect: connection refused\n', 'opencode', 1, 'network'),
         ]
         for name, log, harness, rc, expected in table:
             with self.subTest(name):
                 self.assertEqual(self.klass(log, harness, rc), expected)
 
-    def test_priority_is_auth_then_quota_then_rate_limit_then_network(self):
-        text = 'getaddrinfo ENOTFOUND; too many requests; usage limit reached; 401 Unauthorized\n'
-        self.assertEqual(self.klass(text, 'opencode', 1), 'auth')
-        self.assertEqual(self.klass(text.replace('; 401 Unauthorized', ''), 'opencode', 1), 'quota')
-        self.assertEqual(self.klass('getaddrinfo ENOTFOUND; too many requests\n', 'opencode', 1), 'rate_limit')
-        self.assertEqual(self.klass('getaddrinfo ENOTFOUND\n', 'opencode', 1), 'network')
+    def test_order_is_auth_usage_limit_budget_capacity_rate_limit_provider_down_network(self):
+        # Each text holds phrases of the classes below the one it should give.
+        table = [
+            ('auth over usage_limit', '401 Unauthorized; usage limit reached', 'auth'),
+            ('auth over budget', 'Invalid API key · quota exceeded', 'auth'),
+            ('usage_limit over budget', 'usage limit reached; insufficient credits', 'usage_limit'),
+            ('usage_limit with credits to buy', "You've hit your usage limit. Purchase more credits to continue.", 'usage_limit'),
+            ('budget over capacity', 'insufficient credits; at capacity', 'budget'),
+            ('capacity over rate_limit', 'too many requests; at capacity', 'capacity'),
+            ('rate_limit over provider_down', 'bad gateway; too many requests', 'rate_limit'),
+            ('provider_down over network', 'getaddrinfo ENOTFOUND; bad gateway', 'provider_down'),
+        ]
+        for name, text, expected in table:
+            with self.subTest(name):
+                self.assertEqual(self.klass(text + '\n', 'opencode', 1), expected)
+
+    def test_http_status_classes_when_the_text_names_no_phrase(self):
+        table = {401: 'auth', 403: 'auth', 402: 'budget', 429: 'rate_limit', 529: 'capacity',
+                 502: 'provider_down', 503: 'provider_down', 504: 'provider_down'}
+        self.assertEqual(self.runtime.STATUS_CLASS, table)
+        for code, expected in table.items():
+            with self.subTest(status=code):
+                log = json.dumps({'type': 'result', 'is_error': True, 'api_error_status': code, 'result': 'request failed'})
+                self.assertEqual(self.klass(log, 'claude', 1), expected)
 
     def test_empty_answers_at_exit_zero(self):
         empty = self.klass
@@ -285,7 +319,7 @@ class ClassifyTests(unittest.TestCase):
         except Exception:
             self.skipTest('no zoneinfo database')
         hit = self.classify(json.dumps(CLAUDE_SESSION_LIMIT), 'claude', 1, now=now)
-        self.assertEqual(hit[:2], ('quota', 3 * 3600 + 10 * 60))
+        self.assertEqual(hit[:2], ('usage_limit', 3 * 3600 + 10 * 60))
         self.assertEqual(self.runtime.retry_after('resets 3pm (Europe/Rome)', late), 23 * 3600)
         # An unknown zone falls back to local time instead of failing.
         self.assertIsNotNone(self.runtime.retry_after('resets 3pm (Nowhere/Land)', now))
@@ -298,7 +332,7 @@ class ClassifyTests(unittest.TestCase):
         hit = cli(json.dumps(CLAUDE_SESSION_LIMIT), 'claude', 1)
         self.assertEqual(hit.returncode, 0, hit.stderr)
         cls, after, detail = hit.stdout.rstrip('\n').split('\t')
-        self.assertEqual(cls, 'quota'); self.assertTrue(after.isdigit()); self.assertIn('hit your session limit', detail)
+        self.assertEqual(cls, 'usage_limit'); self.assertTrue(after.isdigit()); self.assertIn('hit your session limit', detail)
         # retry_after may be empty, and then the field is still there.
         self.assertEqual(cli(json.dumps(CLAUDE_NO_NETWORK), 'claude', 1).stdout.split('\t')[:2], ['network', ''])
         clean = cli(STACK_TRACE, 'opencode', 1)

@@ -348,7 +348,10 @@ INFRA_PATTERNS = (
         _P(r"\b(?:no|missing) api[ _-]?key\b|\bcould not resolve authentication method\b", re.I),
         _P(_HTTP_CODE % '40[13]' + r"|\b40[13]\b\W{0,3}(?:unauthori[sz]ed|forbidden)\b", re.I),
     )),
-    ('quota', (
+    # Order is priority: the first class with a matching phrase wins (auth > usage_limit > budget >
+    # capacity > rate_limit > provider_down > network). A usage limit that also mentions credits
+    # is a usage limit: the window resets, the money does not run out.
+    ('usage_limit', (
         _P(r"\busage[ _-]?limit\b", re.I),
         # "You've hit your limit", "hit your session limit", "reached the weekly limit"; but not
         # "reached the context limit", which is the model's problem rather than the account's.
@@ -356,17 +359,28 @@ INFRA_PATTERNS = (
            r"5-hour|five-hour|spend\w*|credit|token|message|request|plan|org\w*) )?limits?\b", re.I),
         _P(r"(?<!context )(?<!rate )(?<!rate-)(?<!rate_)\blimit (?:reached|exceeded)\b", re.I),
         _P(r"\b(?:session|weekly|daily|monthly|5-hour|five-hour) limit\b", re.I),
+    )),
+    # Money that is gone. A bare "billing" is not a phrase: it would match "billing.ts" in a stack trace.
+    ('budget', (
         _P(r"\bquota (?:exceeded|exhausted|reached)\b|\bexceeded (?:your |the )?(?:current )?quota\b|\binsufficient[ _-]quota\b|\bout of (?:credits|quota)\b", re.I),
         _P(r"\binsufficient (?:balance|credits?|funds)\b", re.I),
         _P(r"\bcredit balance (?:is )?too low\b", re.I),
         _P(r"\bpayment required\b|\bbilling (?:hard )?limit\b|\bbilling (?:issue|error|details|not active)\b|\bcheck your (?:plan and )?billing\b", re.I),
     )),
+    # A model at capacity for everyone who asks it.
+    ('capacity', (
+        _P(r"\boverloaded\b", re.I),
+        _P(r"\bat capacity\b", re.I),
+    )),
+    # An account sending too fast.
     ('rate_limit', (
         _P(r"\brate[ _-]?limit(?:s|ed|ing)?\b", re.I),
         _P(r"\btoo many requests\b", re.I),
-        _P(r"\boverloaded\b", re.I),
-        _P(r"\bat capacity\b", re.I),
         _P(_HTTP_CODE % '429' + r"|\b429\b\W{0,3}too many\b", re.I),
+    )),
+    # One provider failing, while the connection itself works.
+    ('provider_down', (
+        _P(r"\bbad gateway\b|\bservice unavailable\b|\bgateway time-?out\b", re.I),
     )),
     ('network', (
         _P(r"\b(?:ECONNRESET|ETIMEDOUT|ENOTFOUND|ECONNREFUSED|EAI_AGAIN|EHOSTUNREACH|ENETUNREACH|ENETDOWN)\b"),
@@ -374,13 +388,12 @@ INFRA_PATTERNS = (
         _P(r"\bconnection (?:refused|reset|timed out)\b|\bnetwork is unreachable\b|\bsocket hang up\b", re.I),
         _P(r"\bcan['’]?t reach the api server\b|\bunable to connect\b|\bfailed to connect\b|\bfetch failed\b", re.I),
         _P(r"\btemporary failure in name resolution\b|\bname or service not known\b", re.I),
-        _P(r"\bbad gateway\b|\bservice unavailable\b|\bgateway time-?out\b", re.I),
         _P(r"\binvalid peer certificate\b", re.I),
     )),
 )
 # api_error_status as claude reports it, used only when the text itself matched nothing.
-STATUS_CLASS = {401: 'auth', 403: 'auth', 402: 'quota', 429: 'rate_limit', 529: 'rate_limit',
-                502: 'network', 503: 'network', 504: 'network'}
+STATUS_CLASS = {401: 'auth', 403: 'auth', 402: 'budget', 429: 'rate_limit', 529: 'capacity',
+                502: 'provider_down', 503: 'provider_down', 504: 'provider_down'}
 
 _MONTHS = {m: i + 1 for i, m in enumerate(
     ('jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'))}
@@ -470,7 +483,7 @@ def _one_line(text: str, limit: int = DETAIL_MAX) -> str:
 
 
 def classify_text(text: str, status: object = None, now: float | None = None):
-    """(class, retry_after_or_None, detail) for failure text, or None. auth > quota > rate_limit > network."""
+    """(class, retry_after_or_None, detail) for failure text, or None. The order is INFRA_PATTERNS'."""
     for name, patterns in INFRA_PATTERNS:
         for pattern in patterns:
             match = pattern.search(text)

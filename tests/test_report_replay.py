@@ -90,7 +90,7 @@ class ReportReplayTests(unittest.TestCase):
         # --- b: paused by the provider, nothing spent, resumed by the same run -------------------
         self.assertEqual(self.text(p, 'tasks/b/attempt'), '1')
         self.assertEqual(self.attempts(p, 'b'), [('0', 'INFRA'), ('1', 'PASS')])
-        self.assertIn('class=quota', (p / 'tasks/b/infra.txt').read_text())
+        self.assertIn('class=usage_limit', (p / 'tasks/b/infra.txt').read_text())
         self.assertIn('waiting', out)
 
         # --- c: tolerated finding, accepted with a record ------------------------------------------
