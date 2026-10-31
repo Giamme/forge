@@ -583,6 +583,12 @@ ul.plain li.current { font-weight: 650; }
 pre.cmd { max-height: none; }
 .waiting-cmd { display: flex; align-items: flex-start; gap: var(--s-2); }
 .waiting-cmd pre { flex: 1; min-width: 0; }
+/* a task that waits for a decision (panel.js decisionSection): its reasons as the heading, and its review ledger */
+.insp-section h3.decision-reasons { white-space: normal; }
+.ledger-wrap { overflow-x: auto; margin: var(--s-2) 0; }
+.ledger th, .ledger td { padding: var(--s-1) var(--s-2) var(--s-1) 0; }
+.ledger td.num { font-variant-numeric: tabular-nums; }
+.ledger tr.failed td:first-child { box-shadow: inset 3px 0 0 var(--lamp-red); }
 /* the verification inspector (verifyview.js): live state, failing tests, lanes and their logs */
 .vfy-num { font-variant-numeric: tabular-nums; }
 .vfy-live { margin: var(--s-3) 0 0; padding: var(--s-3); border-radius: var(--r-key); background: var(--module-2); box-shadow: inset 0 0 0 1px var(--rule); }

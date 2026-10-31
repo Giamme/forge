@@ -10,7 +10,7 @@ window.ForgePanel = (() => {
   const num = v => typeof v === 'number' && Number.isFinite(v) ? v : null;
   const display = v => v === null || v === undefined || v === '' ? '—' : typeof v === 'object' ? JSON.stringify(v, null, 2) : String(v);
   const STATUSES = new Set(['merged', 'pass', 'running', 'pending', 'fail', 'error', 'infra', 'timeout', 'unknown', 'invalidated', 'blocked',
-    'interrupted', 'nochanges', 'conflict', 'accepted', 'none', 'outdated', 'needs_input', 'waiting']);
+    'interrupted', 'nochanges', 'conflict', 'accepted', 'none', 'outdated', 'needs_input', 'needs_decision', 'waiting']);
   const cache = new Map();                                  // path → {data, error, at}
   function el(tag, text, className) {
     const node = document.createElement(tag);
@@ -113,6 +113,53 @@ window.ForgePanel = (() => {
     const line = el('div', undefined, 'waiting-cmd');
     line.append(el('pre', text, 'cmd'), copy);
     s.append(line);
+  }
+  // A task that stopped NEEDS_DECISION: why the retry policy stopped it, its attempts against the cap, the ledger of its
+  // reviews, and the decision text, which holds the commands to run. forge-ui shows the commands and never runs them.
+  const REASON_WORDS = { converging: 'reviews are not converging', split: 'no stronger model left', cap: 'attempt cap reached' };
+  // `attempts 9 of 8 allowed`, or `attempts 9` with no cap; null for a task that has made no attempt
+  function attemptsText(task) {
+    const n = num(task.attempts_total), cap = num(task.attempt_cap);
+    if (!n) return null;
+    return cap === null ? `attempts ${n}` : `attempts ${n} of ${cap} allowed`;
+  }
+  function decisionSection(host, ctx, task) {
+    const d = task.decision || {};
+    const reasons = list(d.reasons).map(r => Object.prototype.hasOwnProperty.call(REASON_WORDS, r) ? REASON_WORDS[r] : r);
+    const s = el('section', undefined, 'insp-section');
+    s.append(el('h3', reasons.length ? reasons.join(', ') : 'waiting for a decision', 'decision-reasons'));
+    host.append(s);
+    muted(s, 'This task stopped for a decision only you can make. Nothing retries it until you run one of the commands below.');
+    const attempts = attemptsText(task);
+    if (attempts) s.append(el('p', attempts));
+    ledgerTable(s, list(task.ledger));
+    s.append(el('pre', d.text != null ? d.text : `The decision is not recorded: tasks/${task.id}/decision.md is missing.`));
+  }
+  // The review ledger as a small table, one row per review. A FAIL verdict or a `fail` gate reads as failed: a gate fail
+  // over a PASS verdict keeps the reviewer's word and turns the chip red, with the gate's decision on hover.
+  function ledgerTable(parent, rows) {
+    if (!rows.length) { muted(parent, 'No review is recorded for this task yet.'); return; }
+    const word = v => String(v || '').toLowerCase();
+    const wrap = el('div', undefined, 'ledger-wrap'), table = el('table', undefined, 'ledger');
+    const findings = el('th', 'Findings'); findings.title = 'confirmed findings';
+    const thead = el('thead'), head = el('tr');
+    head.append(el('th', 'Attempt'), el('th', 'Verdict'), findings, el('th', 'New'), el('th', 'Worst'));
+    thead.append(head);
+    const tbody = el('tbody');
+    for (const r of rows) {
+      const failed = word(r.verdict) === 'fail' || word(r.gate) === 'fail';
+      const verdict = el('td'), worst = el('td');
+      const v = chip(r.verdict, failed ? 'fail' : word(r.verdict) === 'pass' ? 'pass' : 'unknown');
+      if (word(r.gate) === 'fail' && word(r.verdict) !== 'fail') v.title = 'forge gate: FAIL' + (r.verdict ? ` (reviewer said ${r.verdict})` : '');
+      verdict.append(v);
+      worst.append(r.worst ? sevChip(r.worst, r.worst) : document.createTextNode('—'));
+      const tr = el('tr', undefined, failed ? 'failed' : undefined);
+      tr.append(el('td', r.attempt, 'num'), verdict, el('td', r.confirmed, 'num'), el('td', r.new, 'num'), worst);
+      tbody.append(tr);
+    }
+    table.append(thead, tbody);
+    wrap.append(table);
+    parent.append(wrap);
   }
   // An attempt's chip. A failed attempt is red whatever its words; a send-back says what forge did in its title.
   function attemptChip(word) {
@@ -372,7 +419,8 @@ window.ForgePanel = (() => {
     head.append(chips);
     const dl = diffLink(ctx, solo ? 'View the diff →' : 'View its diff, findings pinned to their lines →', { kind: 'task', task: task.id, source: 'current' }); if (dl) head.append(dl);
     host.append(head);
-    if (RM.isWaiting(task.status)) waitingSection(host, ctx, task);
+    if (task.status === 'NEEDS_DECISION') decisionSection(host, ctx, task);
+    else if (RM.isWaiting(task.status)) waitingSection(host, ctx, task);
     if (RM.taskStatus(task) === 'INFRA') infraSection(host, ctx, task);
     if (!solo) fields(host, [['Difficulty', task.difficulty], ['Depends on', depLinks(task.deps, ctx)], ['Files', list(task.files).join('\n') || '—', true], ['Branch', task.branch, true]]);
     if (C) C.nowSection(host, ctx, task);
@@ -380,7 +428,8 @@ window.ForgePanel = (() => {
 
     // the models: who owned it, how it was routed, what it was escalated to
     const ms = section(host, 'Models');
-    fields(ms, [['Dwarf', plate(task.dwarf)], ['Reviewer', plate(task.qa)], ['Attempt', task.attempt]]);
+    const attempts = attemptsText(task);
+    fields(ms, [['Dwarf', plate(task.dwarf)], ['Reviewer', plate(task.qa)], attempts ? ['Attempts', attempts] : ['Attempt', task.attempt]]);
     const route = list(task.route).slice(-1)[0];
     if (route) fields(ms, [['Routed', `${display(route.chosen)} from ${list(route.candidates).join(', ') || '—'}${route.explored ? ` (exploratory, p=${display(route.propensity)})` : ''}`, true], ['Tier · ε', `${display(route.tier)} · ${display(route.epsilon)}`]]);
     for (const e of list(task.escalations)) {
