@@ -42,7 +42,7 @@
   --lamp-green: light-dark(#1d7a39, #5bd57d);
   --lamp-amber: light-dark(#9c6c00, #f4c443);
   --lamp-red: light-dark(#bf3127, #ff5f53);
-  --lamp-wait: light-dark(#0b7285, #5fd0e4);    /* waiting for you (NEEDS_INPUT): stopped, not failed */
+  --lamp-wait: light-dark(#0b7285, #5fd0e4);    /* waiting for you (NEEDS_INPUT, NEEDS_DECISION): stopped, not failed */
   --lamp-edge: light-dark(rgb(0 0 0 / .18), rgb(0 0 0 / .4));
   /* the same lamps lit on the 3D plate: on a pale panel a lit lamp is saturated, not darkened for text */
   --lit-green: light-dark(#2fae55, #5bd57d);
@@ -93,16 +93,16 @@
 :root[data-theme=dark] { color-scheme: dark; }
 
 /* status: the lamp behind each forge state. One meaning each (--st; --st-lit on the 3D plate): four lamps, and the
-   waiting lamp for a task that waits for the user (NEEDS_INPUT, and an integration that only waits for answers).
+   waiting lamp for a task that waits for the user (NEEDS_INPUT, NEEDS_DECISION, and an integration that only waits for the user).
    A hollow lamp is that lamp's family but not its plain case: passed without a merge, stopped, failed outside the code,
    an outdated review, waiting for you */
 .st-merged, .st-pass, .st-accepted, .st-nochanges { --st: var(--lamp-green); --st-lit: var(--lit-green); }
 .st-running, .st-interrupted { --st: var(--lamp-amber); --st-lit: var(--lit-amber); }
 .st-pending, .st-none, .st-unknown, .st-invalidated, .st-outdated { --st: var(--lamp-off); --st-lit: var(--lamp-off); }
 .st-fail, .st-error, .st-conflict, .st-infra, .st-timeout, .st-blocked, .st-bounced, .st-incomplete { --st: var(--lamp-red); --st-lit: var(--lit-red); }
-.st-needs_input, .st-waiting { --st: var(--lamp-wait); --st-lit: var(--lit-wait); }
+.st-needs_input, .st-needs_decision, .st-waiting { --st: var(--lamp-wait); --st-lit: var(--lit-wait); }
 [class^="st-"], [class*=" st-"] { --st-fill: var(--st); --st-ring: var(--lamp-edge); }
-.st-accepted, .st-nochanges, .st-interrupted, .st-infra, .st-timeout, .st-blocked, .st-outdated, .st-needs_input, .st-waiting { --st-fill: transparent; --st-ring: var(--st); }
+.st-accepted, .st-nochanges, .st-interrupted, .st-infra, .st-timeout, .st-blocked, .st-outdated, .st-needs_input, .st-needs_decision, .st-waiting { --st-fill: transparent; --st-ring: var(--st); }
 /* verification lanes: flaky passed on a rerun (amber, hollow), known passed with only baseline failures (green, hollow) */
 .st-flaky { --st: var(--lamp-amber); --st-lit: var(--lit-amber); --st-fill: transparent; --st-ring: var(--st); }
 .st-known { --st: var(--lamp-green); --st-lit: var(--lit-green); --st-fill: transparent; --st-ring: var(--st); }
