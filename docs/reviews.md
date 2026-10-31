@@ -149,6 +149,8 @@ still collapses to Fractal's own "failed" handling; QA-side stops propagate as a
 QA is asked to label every finding `- [P0..P3][CONFIRMED|PLAUSIBLE] file:line — what breaks`
 (P0 data loss/security/crash on the main path, P1 wrong behaviour on realistic input, P2
 edge-case bug, P3 minor). [The verdict rule](#verdicts-and-failure) says which of them block.
+Task and solo reviews ask for every CONFIRMED finding, and task reviews also ask the reviewer
+to say so plainly when the diff is correct.
 
 `--qa-threshold Pn` (on `plan`, `run`, `retry`, `review` and solo; a plan remembers it) changes
 the default `P2`, the **least severe level that still blocks**: `P2` means P0–P2 block and only P3
