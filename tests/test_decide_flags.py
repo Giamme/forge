@@ -40,11 +40,11 @@ def scrubbed_env(**extra):
 class OptionsShellTests(unittest.TestCase):
     """The options file sourced on its own, as the runners source it."""
 
-    def _shell(self, body, env=None):
+    def _shell(self, body, env=None, cwd=None):
         script = 'set -uo pipefail\nSKILL_DIR="{root}"\nsource "$SKILL_DIR/scripts/forge-jev-options.sh"\n{body}'.format(
             root=ROOT, body=body)
         return subprocess.run(['/bin/bash', '-c', script], capture_output=True, text=True,
-                              env=scrubbed_env(**(env or {})))
+                              env=scrubbed_env(**(env or {})), cwd=cwd)
 
     def flags(self, *args):
         """FORGE_DECIDE_FLAGS after parsing `args` and exporting, as a dict (None when unset)."""
@@ -96,6 +96,23 @@ class OptionsShellTests(unittest.TestCase):
                 r = self._shell('forge_jev_flag %s; echo "rc=$?"' % args)
                 self.assertEqual(r.stdout.strip(), 'rc=2')
                 self.assertIn(listed, r.stderr)
+
+    def test_a_glob_in_a_value_is_not_expanded_against_the_working_directory(self):
+        """GitHub #82: `drift=*` next to a file named `drift=on` must stay `drift=*` (rejected,
+        named as typed), not turn into the valid `drift=on`."""
+        cases = (("--gate 'drift=*'", 'drift=on', 'drift=*'),
+                 ("--decide-budget 'tokens=*'", 'tokens=5', 'tokens=*'))
+        for args, filename, named in cases:
+            with self.subTest(args), tempfile.TemporaryDirectory() as cwd:
+                Path(cwd, filename).touch()
+                r = self._shell('forge_jev_flag %s; echo "rc=$?"; case $- in *f*) echo noglob;; esac' % args,
+                                cwd=cwd)
+                self.assertEqual(r.stdout.strip(), 'rc=2', r.stderr)
+                self.assertIn(named, r.stderr)
+        with tempfile.TemporaryDirectory() as cwd:
+            Path(cwd, 'drift=off').touch()
+            r = self._shell("forge_jev_flag --gate 'drift=on'; echo \"rc=$? ${DECIDE_GATES[*]}\"; echo *", cwd=cwd)
+            self.assertEqual(r.stdout.splitlines(), ['rc=0 drift=on', 'drift=off'], r.stderr)
 
     def test_an_invalid_list_adds_none_of_its_gates(self):
         r = self._shell('forge_jev_flag --gate drift=on,nope=on; forge_jev_export; echo "${FORGE_DECIDE_FLAGS:-unset}"')
