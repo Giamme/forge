@@ -39,6 +39,7 @@ forge/
 │   ├── forge_registry.py        the run registry: where run dirs are noted, read by forge-ui
 │   ├── forge-dataset.py         `forge dataset` entry point
 │   ├── forge_dataset/           the run dataset: capture hooks, readers, importer, status checks
+│   ├── forge-pr.py              `forge pr`: a draft PR description for a finished run (reads with forge-ui's reader)
 │   └── forge-install.sh         install into every harness that needs it (opencode and grok find it themselves)
 ├── ui/                          forge-ui: read-only local run viewer (`forge_ui` package, tests, API contract)
 └── references/
