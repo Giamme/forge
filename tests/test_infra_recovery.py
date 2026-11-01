@@ -56,10 +56,10 @@ class RecoveryBase(scope_tests.InfraScopeBase):
     def fallbacks(self):
         return [line for line in self.events() if ' fallback ' in line]
 
-    def live(self, *extra):
-        """Start the scheduler with capacity 2 (a task held on a gate keeps it alive) and return it
-        with the infra.paused scopes once the first stop is recorded."""
-        scheduler = subprocess.Popen(self.command(*extra, capacity=2), env=self.env, text=True,
+    def live(self, *extra, capacity=2):
+        """Start the scheduler (a task held on a gate keeps it alive) and return it with the
+        infra.paused scopes once the first stop is recorded."""
+        scheduler = subprocess.Popen(self.command(*extra, capacity=capacity), env=self.env, text=True,
                                      stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         self.addCleanup(lambda: scheduler.poll() is None and scheduler.kill())
         return scheduler, self.paused_scopes()
@@ -259,6 +259,60 @@ class AskTests(RecoveryBase):
         scopes = self.paused_scopes(lambda found: found and found[0]['tasks'] == ['a', 'b'])
         # The shorter backoff (3 s) must not release the harness before the provider's reset (8 s).
         self.assertGreater(scopes[0]['until'] - started, 6)
+        scheduler.kill()
+        scheduler.communicate(timeout=30)
+
+    def test_a_usage_limit_joining_an_exhausted_pause_keeps_its_reset_for_the_restart(self):
+        (self.plan / 'nopeer').write_text('')
+        self.task('a', [f'INFRA provider_down {SOL}', 'PASS'], dwarf='sol')
+        self.task('b', ['INFRA usage_limit codex gpt-6-astra 4', 'PASS'], dwarf='astra', hold=True)
+        self.task('c', ['PASS'], dwarf='sonnet', qa='sonnet', hold=True)   # keeps the run alive
+        scheduler, scopes = self.live('--infra-retries', 0, capacity=3)
+        self.assertEqual((scopes[0]['class'], scopes[0]['exhausted']), ('provider_down', True))
+        (self.plan / 'gate.b').write_text('')
+        scopes = self.paused_scopes(lambda found: found and found[0]['tasks'] == ['a', 'b'])
+        self.assertEqual((scopes[0]['class'], scopes[0]['exhausted'], scopes[0]['needs_you']),
+                         ('usage_limit', True, False))
+        self.assertAlmostEqual(scopes[0]['reset_at'], time.time() + 4, delta=2)
+        started = time.time()
+        (self.plan / 'infra_budget').write_text('1')               # what `forge control set infra-retries` does
+        scopes = self.paused_scopes(lambda found: found and found[0]['until'] is not None)
+        # The merged state: the reset of 4 s, not the outage's backoff of 0.05 s.
+        self.assertGreater(scopes[0]['until'] - started, 3)
+        self.assertEqual(self.calls('a'), 1)
+        scheduler.kill()
+        scheduler.communicate(timeout=30)
+
+    def test_a_budget_stop_over_a_known_reset_restarts_from_that_reset(self):
+        (self.plan / 'nopeer').write_text('')
+        self.task('a', [f'INFRA usage_limit {SOL} 20', 'PASS'], dwarf='sol')
+        self.task('b', ['INFRA budget codex gpt-6-astra', 'PASS'], dwarf='astra', hold=True)
+        self.task('c', ['PASS'], dwarf='sonnet', qa='sonnet', hold=True)   # keeps the run alive
+        scheduler, scopes = self.live('--infra-retries', 1, capacity=3)
+        (self.plan / 'gate.b').write_text('')
+        scopes = self.paused_scopes(lambda found: found and found[0]['needs_you'])
+        # What it shows matches the budget cause, and its restart still respects the reset.
+        self.assertEqual((scopes[0]['class'], scopes[0]['reset_at']), ('budget', None))
+        started = time.time()
+        (self.plan / 'infra_budget').write_text('2')
+        scopes = self.paused_scopes(lambda found: found and found[0]['until'] is not None)
+        self.assertGreater(scopes[0]['until'] - started, 15)
+        self.assertAlmostEqual(scopes[0]['reset_at'], started + 20, delta=5)
+        scheduler.kill()
+        scheduler.communicate(timeout=30)
+
+    def test_a_later_reset_joining_an_asking_pause_still_asks_and_shows_the_reset(self):
+        (self.plan / 'nopeer').write_text('')
+        self.task('a', [f'INFRA budget {SOL}', 'PASS'], dwarf='sol')
+        self.task('b', ['INFRA usage_limit codex gpt-6-astra 60', 'PASS'], dwarf='astra', hold=True)
+        self.task('c', ['PASS'], dwarf='sonnet', qa='sonnet', hold=True)   # keeps the run alive
+        scheduler, scopes = self.live('--infra-retries', 1, capacity=3)
+        (self.plan / 'gate.b').write_text('')
+        scopes = self.paused_scopes(lambda found: found and found[0]['tasks'] == ['a', 'b'])
+        self.assertEqual((scopes[0]['class'], scopes[0]['exhausted'], scopes[0]['needs_you'], scopes[0]['until']),
+                         ('budget', True, True, None))
+        self.assertAlmostEqual(scopes[0]['reset_at'], time.time() + 60, delta=10)
+        self.assertEqual(scopes[0]['hint'], 'add credits, or check the billing of codex')
         scheduler.kill()
         scheduler.communicate(timeout=30)
 

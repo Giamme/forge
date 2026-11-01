@@ -6,9 +6,11 @@ test_forge.py; sol and astra both run on codex, opus on claude."""
 import dataset_isolation  # noqa: F401  keeps the run dataset out of the developer's store
 import importlib.util
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
+import tempfile
 import unittest
 
 import test_forge as fixtures
@@ -28,7 +30,7 @@ class PickTests(unittest.TestCase):
         self.registry = route.registry_models()
 
     def pick(self, current, pool, excluded=''):
-        return route.fallback_pick(current, {'medium': pool}, self.registry, route.parse_excluded(excluded))
+        return route.fallback_pick(current, {'medium': pool}, self.registry, route.parse_excluded(excluded), 'medium')
 
     def test_the_next_member_in_pool_order_wrapping_around(self):
         pool = ['sol', 'astra', 'sonnet']
@@ -44,32 +46,13 @@ class PickTests(unittest.TestCase):
 
     def test_a_model_of_another_tier_is_never_picked(self):
         pools = {'low': ['sonnet'], 'medium': ['sol', 'astra'], 'high': ['opus']}
-        pick = lambda current, excluded: route.fallback_pick(  # noqa: E731
-            current, pools, self.registry, route.parse_excluded(excluded))
+        pick = lambda current, excluded, tier='medium': route.fallback_pick(  # noqa: E731
+            current, pools, self.registry, route.parse_excluded(excluded), tier)
         self.assertEqual(pick('sol', ''), 'astra')
         self.assertIsNone(pick('sol', 'codex/gpt-6-astra'))     # sonnet and opus are free, but not peers
         self.assertIsNone(pick('sol', 'codex/*'))
-        self.assertEqual(pick('opus', ''), None)                 # a pool of one has no peer
-        self.assertIsNone(pick('sonnet', ''))
-
-    def test_a_model_in_two_pools_stays_in_the_tier_of_its_task(self):
-        pools = {'medium': ['sol'], 'high': ['sol', 'sonnet']}
-        pick = lambda tier: route.fallback_pick(  # noqa: E731
-            'sol', pools, self.registry, set(), tier)
-        self.assertIsNone(pick('medium'))           # sonnet is a high-tier model: not a peer of a medium task
-        self.assertEqual(pick('high'), 'sonnet')
-        self.assertEqual(pick(''), 'sonnet')        # no tier known: the highest pool that runs the model
-        pools['medium'] = ['sol', 'astra']
-        self.assertEqual(pick('medium'), 'astra')
-        # An escalated task runs a model only a higher pool lists: that pool is its tier.
-        self.assertEqual(route.fallback_pick('sonnet', pools, self.registry, set(), 'medium'), 'sol')
-
-    def test_an_escalated_task_never_falls_back_to_a_stronger_tier(self):
-        # A low task escalated to the medium pool's sol: sol is also in the high pool, but the task runs in medium.
-        pools = {'low': ['astra'], 'medium': ['sol'], 'high': ['sol', 'sonnet']}
-        self.assertIsNone(route.fallback_pick('sol', pools, self.registry, set(), 'low'))
-        pools['medium'] = ['sol', 'opus']
-        self.assertEqual(route.fallback_pick('sol', pools, self.registry, set(), 'low'), 'opus')
+        self.assertIsNone(pick('opus', '', 'high'))              # a pool of one has no peer
+        self.assertIsNone(pick('sonnet', '', 'low'))
 
     def test_a_spec_in_no_pool_has_no_fallback(self):
         self.assertIsNone(self.pick('opus', ['sol', 'astra']))
@@ -78,25 +61,110 @@ class PickTests(unittest.TestCase):
         self.assertEqual(self.pick('sol:high', ['sol:high', 'sol:xhigh', 'astra']), 'astra')
         self.assertIsNone(self.pick('sol:high', ['sol:high', 'sol:xhigh']))
 
-    def test_the_command_prints_the_pick_or_exits_1(self):
-        with __import__('tempfile').TemporaryDirectory() as tmp:
-            plan = Path(tmp)
-            (plan / 'tasks.tsv').write_text('a\t-\tmedium\tf\tsol\topus\tA\n')
-            (plan / 'fractal-routing.json').write_text(json.dumps({'medium': ['sol', 'astra']}))
-            command = [sys.executable, str(ROOT / 'scripts/forge-route.py'), 'fallback', '--plan', tmp, '--task', 'a']
-            done = subprocess.run(command + ['--exclude', 'codex/gpt-6.1-sol'], capture_output=True, text=True)
-            self.assertEqual((done.returncode, done.stdout), (0, 'astra\n'))
-            done = subprocess.run(command + ['--exclude', 'codex/gpt-6-astra'], capture_output=True, text=True)
-            self.assertEqual((done.returncode, done.stdout), (1, ''))
 
-    def test_the_command_takes_the_tier_from_the_tasks_difficulty(self):
-        with __import__('tempfile').TemporaryDirectory() as tmp:
+class RunningTierTests(unittest.TestCase):
+    """`forge-route.py fallback`, which reads the tier a task runs in from its records."""
+
+    def fallback(self, dwarf, difficulty, pools, escalations=(), route_record=None, exclude=''):
+        with tempfile.TemporaryDirectory() as tmp:
             plan = Path(tmp)
-            (plan / 'tasks.tsv').write_text('a\t-\tmedium\tf\tsol\topus\tA\n')
-            (plan / 'fractal-routing.json').write_text(json.dumps({'medium': ['sol'], 'high': ['sol', 'sonnet']}))
-            command = [sys.executable, str(ROOT / 'scripts/forge-route.py'), 'fallback', '--plan', tmp, '--task', 'a']
-            done = subprocess.run(command, capture_output=True, text=True)
-            self.assertEqual((done.returncode, done.stdout), (1, ''))
+            (plan / 'tasks/a').mkdir(parents=True)
+            (plan / 'tasks.tsv').write_text(f'a\t-\t{difficulty}\tf\t{dwarf}\topus\tA\n')
+            (plan / 'fractal-routing.json').write_text(json.dumps(pools))
+            if escalations:
+                (plan / 'tasks/a/escalations.tsv').write_text(
+                    ''.join('1\t1\t' + '\t'.join(row) + '\n' for row in escalations))
+            if route_record:
+                (plan / 'tasks/a/route.jsonl').write_text(route_record + '\n')
+            done = subprocess.run([sys.executable, str(ROOT / 'scripts/forge-route.py'), 'fallback', '--plan', tmp,
+                                   '--task', 'a', '--exclude', exclude], capture_output=True, text=True)
+            self.assertEqual(done.returncode, 0 if done.stdout else 1, done.stderr)
+            return done.stdout.strip() or None
+
+    def test_the_command_prints_the_pick_or_exits_1(self):
+        pools = {'medium': ['sol', 'astra']}
+        self.assertEqual(self.fallback('sol', 'medium', pools, exclude='codex/gpt-6.1-sol'), 'astra')
+        self.assertIsNone(self.fallback('sol', 'medium', pools, exclude='codex/gpt-6-astra'))
+
+    def test_a_model_in_two_pools_stays_in_the_tier_of_its_task(self):
+        pools = {'medium': ['sol'], 'high': ['sol', 'sonnet']}
+        self.assertIsNone(self.fallback('sol', 'medium', pools))      # sonnet is a high-tier model
+        self.assertEqual(self.fallback('sol', 'high', pools), 'sonnet')
+        pools['medium'] = ['sol', 'astra']
+        self.assertEqual(self.fallback('sol', 'medium', pools), 'astra')
+
+    def test_a_model_named_by_hand_outside_its_tier_does_not_move(self):
+        pools = {'medium': ['sol', 'astra'], 'high': ['sonnet', 'opus']}
+        self.assertIsNone(self.fallback('sonnet', 'medium', pools))
+
+    def test_an_escalated_task_stays_in_the_target_tier_of_its_escalation(self):
+        # A low task escalated to the medium pool's sol: sol is also in the high pool, but the task runs in medium.
+        pools = {'low': ['astra'], 'medium': ['sol'], 'high': ['sol', 'sonnet']}
+        rows = [('astra', 'sol', 'policy')]
+        self.assertIsNone(self.fallback('sol', 'low', pools, rows))
+        pools['medium'] = ['sol', 'opus']
+        self.assertEqual(self.fallback('sol', 'low', pools, rows), 'opus')
+
+    def test_the_policy_tier_is_the_one_its_target_was_picked_from(self):
+        # astra's highest pool is medium, so the policy picked sol from high, though medium lists sol too.
+        pools = {'low': ['astra'], 'medium': ['astra', 'sol'], 'high': ['sol', 'sonnet']}
+        self.assertEqual(self.fallback('sol', 'low', pools, [('astra', 'sol', 'policy')]), 'sonnet')
+
+    def test_a_model_picked_by_a_person_runs_in_the_nearest_pool_listing_it(self):
+        pools = {'low': ['astra'], 'medium': ['sol', 'opus'], 'high': ['sol', 'sonnet']}
+        self.assertEqual(self.fallback('sol', 'low', pools, [('astra', 'sol', 'pin')]), 'opus')
+        self.assertEqual(self.fallback('sol', 'low', pools, [('astra', 'sol', 'retry')]), 'opus')
+        self.assertEqual(self.fallback('sol', 'high', pools, [('sonnet', 'sol', 'pin')]), 'sonnet')
+
+    def test_a_fallback_or_an_effort_step_stays_in_its_tier(self):
+        pools = {'low': ['astra', 'luna'], 'medium': ['sol', 'opus'], 'high': ['luna', 'sonnet']}
+        self.assertEqual(self.fallback('luna', 'low', pools, [('astra', 'luna', 'fallback')]), 'astra')
+        self.assertEqual(self.fallback('astra:high', 'low', pools, [('astra', 'astra:high', 'policy')]), 'luna')
+
+    def test_a_task_exploring_a_lower_tier_stays_there(self):
+        # A medium task exploring low-tier sol: sol is also in the high pool.
+        pools = {'low': ['sol'], 'medium': ['astra'], 'high': ['sol', 'sonnet']}
+        record = json.dumps({'chosen': 'sol', 'chosen_tier': 'low', 'explored': True, 'tier': 'medium'})
+        self.assertIsNone(self.fallback('sol', 'medium', pools, route_record=record))
+        pools['low'] = ['sol', 'luna']
+        self.assertEqual(self.fallback('sol', 'medium', pools, route_record=record), 'luna')
+
+    def test_a_task_exploring_a_stronger_tier_runs_in_that_tier(self):
+        pools = {'low': ['astra'], 'medium': ['sol', 'opus'], 'high': ['sol', 'sonnet']}
+        record = json.dumps({'chosen': 'sol', 'chosen_tier': 'medium', 'explored': True, 'tier': 'low'})
+        self.assertEqual(self.fallback('sol', 'low', pools, route_record=record), 'opus')
+
+    def test_an_exploration_then_an_escalation_counts_from_the_explored_tier(self):
+        pools = {'low': ['astra', 'luna'], 'medium': ['sol', 'opus'], 'high': ['sonnet']}
+        record = json.dumps({'chosen': 'astra', 'chosen_tier': 'low', 'explored': True, 'tier': 'medium'})
+        self.assertEqual(self.fallback('luna', 'medium', pools, [('astra', 'luna', 'pin')], record), 'astra')
+
+    def test_an_exploration_the_user_replaced_at_the_gate_no_longer_counts(self):
+        pools = {'low': ['sol', 'luna'], 'medium': ['astra', 'sonnet']}
+        record = json.dumps({'chosen': 'sol', 'chosen_tier': 'low', 'explored': True, 'tier': 'medium'})
+        self.assertEqual(self.fallback('sonnet', 'medium', pools, route_record=record), 'astra')
+
+    def test_a_plan_without_a_usable_record_uses_the_difficulty(self):
+        # Made before chosen_tier was recorded: the explored model is not in the difficulty's pool, so no move.
+        pools = {'low': ['sol'], 'medium': ['astra'], 'high': ['sol', 'sonnet']}
+        old = json.dumps({'chosen': 'sol', 'explored': True, 'tier': 'medium'})
+        self.assertIsNone(self.fallback('sol', 'medium', pools, route_record=old))
+        self.assertIsNone(self.fallback('sol', 'medium', pools, route_record='not json'))
+
+    def test_exploration_records_the_tier_of_its_choice(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            plan = Path(tmp)
+            (plan / 'tasks.tsv').write_text('a\t-\tmedium\tf\tastra\topus\tA\n')
+            pools = plan / 'fractal-routing.json'
+            pools.write_text(json.dumps({'low': ['sol'], 'medium': ['astra'], 'high': ['sol', 'sonnet']}))
+            for seed in range(30):
+                subprocess.run([sys.executable, str(ROOT / 'scripts/forge-route.py'), 'explore', '--plan', tmp,
+                                '--task', 'a', '--tier', 'medium', '--epsilon', '1', '--default', 'astra',
+                                '--pools', str(pools)], capture_output=True, text=True, check=True,
+                               env=dict(os.environ, FORGE_ROUTE_EXPLORE_SEED=str(seed)))
+            decisions = [json.loads(line) for line in (plan / 'tasks/a/route.jsonl').read_text().splitlines()]
+            self.assertEqual({(d['chosen'], d['chosen_tier']) for d in decisions},
+                             {('astra', 'medium'), ('sol', 'low')})
 
 
 class RunTests(unittest.TestCase):

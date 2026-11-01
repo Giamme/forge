@@ -175,6 +175,13 @@ def _epoch(value: object) -> float | int | None:
     return int(number) if number == int(number) else number
 
 
+def _reset_of(info: dict) -> float | int | None:
+    """When a stop's limit resets: its reset_at, else its retry-after from now; None when unknown."""
+    at = _epoch(info.get('reset_at'))
+    after = _epoch(info.get('retry_after'))
+    return at if at is not None or after is None else time.time() + after
+
+
 def load_registry() -> list:
     path = os.environ.get('FORGE_REGISTRY') or str(Path(__file__).resolve().parent.parent / 'registry.tsv')
     rows = []
@@ -797,12 +804,14 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
             _warn('infra_backoff ignored, using the default: ' + problem)
         return default_backoff()
 
+    def scope_where(pause: dict) -> str:
+        return pause['harness'] + ('/' + pause['model'] if pause['model'] else '')
+
     def start_wait(pause: dict, info: dict, name: str) -> None:
         """Begin the scope's next wait, or mark it exhausted when its budget is spent."""
         done, budget = scope_waits.get(pause['scope'], 0), infra_budget()
-        where = pause['harness'] + ('/' + pause['model'] if pause['model'] else '')
-        head = 'forge: infrastructure failure (' + pause['class'] + ') on ' + where + ' for ' + name
-        pause.update(needs_you=False, hint=None)
+        head = 'forge: infrastructure failure (' + pause['class'] + ') on ' + scope_where(pause) + ' for ' + name
+        pause.update(needs_you=False, hint=None, reset_at=_epoch(info.get('reset_at')))
         if done >= budget:
             pause.update(cycle=done, until=None, exhausted=True)
             print(head + '; its waits are used up (' + str(done) + ' of ' + str(budget)
@@ -818,13 +827,43 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
         """A cause only a person clears: the pause is exhausted at once, with no wait spent. It takes
         over the stop's cause, so a wait it was in is replaced and its hint is the cause's own."""
         hint = forge_infra.hint(cause, pause['harness'])
-        where = pause['harness'] + ('/' + pause['model'] if pause['model'] else '')
         pause.update({'class': cause, 'info': info, 'reset_at': _epoch(info.get('reset_at'))})
         pause.update(cycle=scope_waits.get(pause['scope'], 0), until=None, exhausted=True, needs_you=True,
                      hint=hint, asked_at_budget=infra_budget())
-        print('forge: infrastructure failure (' + pause['class'] + ') on ' + where + ' for ' + name
+        print('forge: infrastructure failure (' + pause['class'] + ') on ' + scope_where(pause) + ' for ' + name
               + '; nothing will be retried until a person acts' + (': ' + hint if hint else '')
               + '; other tasks continue (no attempt spent)', file=sys.stderr, flush=True)
+
+    def join_pause(pause: dict, info: dict, cause: str, how: str, name: str) -> None:
+        """A stop on a scope already paused, running or exhausted. The pause takes the stronger
+        recovery and the later known reset, and keeps that reset in the info a raised infra-retries
+        restarts from. A stop that changes the recovery gives the pause its cause."""
+        reset, kept = _reset_of(info), _reset_of(pause['info'])
+        later = reset is not None and (kept is None or reset > kept)
+        merged = info if later else pause['info']
+        if how == 'ask' and not pause['needs_you']:
+            # A stop only a person clears, whether its task moved or not, ends a wait the pause was
+            # in: the other tasks on this pair or harness must not be dispatched into it again.
+            ask(pause, info, cause, name)
+            pause['info'] = merged
+            return
+        pause['info'] = merged
+        if later:
+            pause['reset_at'] = _epoch(info.get('reset_at'))
+        # An asking pause keeps waiting for a person, whatever this stop's own recovery is.
+        if pause['needs_you'] or _epoch(info.get('retry_after')) is None:
+            return
+        where, wait = scope_where(pause), infra_wait(info, 0)[0]
+        if pause['exhausted']:
+            if later:
+                pause['class'] = cause
+                print('forge: ' + cause + ' on ' + where + ' for ' + name + ' sets the reset a raised '
+                      'infra-retries waits for (' + ('%g' % wait) + 's)', file=sys.stderr, flush=True)
+        elif time.time() + wait > pause['until']:
+            # A shorter backoff must not release the pause before this stop's reset.
+            pause.update({'class': cause, 'until': time.time() + wait})
+            print('forge: ' + cause + ' on ' + where + ' for ' + name + ' extends the wait to '
+                  + ('%g' % wait) + 's (provider retry-after)', file=sys.stderr, flush=True)
 
     def without_peer(cause: str, info: dict, moved: bool) -> str:
         """'wait' or 'ask': what the pause does while it holds back the cause's other tasks."""
@@ -854,8 +893,9 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
         scope, harness, model = infra_scope(info)
         if scope == 'all':
             paused = True
-            if not all_class:
-                all_class, all_reset = cause, _epoch(info.get('reset_at'))
+            all_class = all_class or cause
+            reset = _epoch(info.get('reset_at'))
+            all_reset = max(all_reset, reset) if all_reset is not None and reset is not None else all_reset or reset
             if name not in infra_seen:
                 infra_seen.append(name)
             write_paused()
@@ -877,20 +917,8 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
                 ask(pause, info, cause, name)
             else:
                 start_wait(pause, info, name)
-        elif how == 'ask' and not pause['needs_you']:
-            # A stop only a person clears, whether its task moved or not, ends a wait the pause was
-            # in: the other tasks on this pair or harness must not be dispatched into it again.
-            ask(pause, info, cause, name)
-        elif how == 'wait' and not pause['exhausted'] and pause['until'] is not None:
-            # A stop joining a wait that is already running keeps its own known reset: the pause
-            # lasts until the later of the two, so a shorter backoff cannot release it early.
-            if _epoch(info.get('retry_after')) is not None:
-                wait, source = infra_wait(info, scope_waits.get(scope, 0), backoff())
-                if time.time() + wait > pause['until']:
-                    pause.update(until=time.time() + wait, reset_at=_epoch(info.get('reset_at')))
-                    print('forge: ' + cause + ' on ' + scope.partition(':')[2] + ' for ' + name
-                          + ' extends the wait to ' + ('%g' % wait) + 's (' + source + ')',
-                          file=sys.stderr, flush=True)
+        else:
+            join_pause(pause, info, cause, how, name)
         write_paused()
 
     def end_scoped_waits() -> None:
