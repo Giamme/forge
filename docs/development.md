@@ -36,6 +36,7 @@ forge/
 │   ├── forge_fractal/           nested execution, recovery, inspection and dashboard
 │   ├── forge-ui.py              `forge ui open|status|stop`: the one shared forge-ui server
 │   ├── forge-ui-options.sh      `--ui|--no-ui` and the fail-open launch, sourced by the runners
+│   ├── forge-watch.py           `forge watch`: follow runs, notify, run hooks (reads with forge-ui's reader)
 │   ├── forge_registry.py        the run registry: where run dirs are noted, read by forge-ui
 │   ├── forge-dataset.py         `forge dataset` entry point
 │   ├── forge_dataset/           the run dataset: capture hooks, readers, importer, status checks

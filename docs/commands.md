@@ -18,6 +18,7 @@ harness (`/forge`); this command installs forge and drives its optional tools.
 | `forge runs [--repo DIR \| --all] [--limit N] [--json]` | this repo's recent runs, newest first: run id, kind, age, task states, verification and final review, goal, and the run dir. Read-only; the same summaries forge-ui shows |
 | `forge control show\|set\|pin\|unpin\|drain\|resume\|stop\|retry\|add PLAN_DIR …` | change a live plan: `set` takes `qa-threshold` (`P0`..`P3`, `none` or `default` for the plan, `inherit` per task), `timeout`, `escalate-after`, `escalate-effort` (`on`/`off`), `verify-retries`, `infra-backoff` (a backoff shape; `none` drops it), `pre-review-tests` (`on`/`off`), `pre-review-parallel` (1-64), `retry-budget`, `infra-retries` or `max-parallel` (1-64) (the last three only while a scheduler runs; `--task ID` for `qa-threshold` and `retry-budget`, value `inherit` drops the override); `pin PLAN_DIR TASK SPEC` sets the model the task's next full retry uses once, `unpin` drops it. While a scheduler runs: `drain` starts nothing new until `resume` (a run with nothing left to start ends as usual); `stop [--now]` ends the run once the running tasks finish (`--now` interrupts them; `run` exits 130 without verifying, unless every task had merged by then: it then verifies and exits 0 as usual); `retry PLAN_DIR TASK [--dwarf SPEC]` and `add PLAN_DIR TASK` (a row appended to `tasks.tsv`) queue a request the scheduler applies or refuses. `show` (`--json` for JSON) also says whether the run is drained or stopping and lists its infrastructure pauses. Every change and every request's outcome is logged in `control.log`. Exit 2 invalid input, 3 refused. See [live controls](decomposed-runs.md#changing-a-run-while-it-works) |
 | `forge config show [--repo DIR] [--json]` / `forge config set <key> <value> [--repo DIR] [--json]` / `forge config unset <key> [--repo DIR] [--json]` | one view of every config source (registry, the legacy Jev file, decide, the repo's `.forge/verify`, `setup` and `verify-subset`, dataset, `FORGE_*` variables with secrets hidden); `set` / `unset` edit `repo.verify`, `repo.setup`, `repo.verify-subset` (must contain `{files}` or `{changed}`; `--repo` required) and `decide.gate.<gate>`, `decide.gate.<gate>.provider`, `decide.gate.<gate>.model` (`off`, `shadow` or `on`; those write the user level and do not need `--repo`). Unset of a `decide.gate.*` key is refused: set the mode to `off`. `-` as a value reads stdin for the per-repo files. Exit 2 on invalid input |
+| `forge watch [RUN_DIR \| --repo DIR \| --all] [--interval S] [--settle S] [--until-done] [--no-notify] [--exec CMD]` | follow runs live: a line for every task status change, and a desktop notification, `--exec CMD` and the repo's `.forge/on-finish` when a run finishes or fails, a task fails or a final review gives its verdict; see [below](#forge-watch). Read-only |
 | `forge runs rm RUN_DIR [--dry-run] [--yes] [--no-archive] [--worktrees] [--branches] [--json]` | delete a run directory but keep what it taught the dataset; see [below](#forge-runs-rm) |
 | `forge issues RUN [--apply] …` | file the review findings a run left open as GitHub issues; see [below](#forge-issues) |
 | `forge ui open\|status\|stop` | forge-ui, the run viewer; see [the command group](forge-ui.md#forge-ui-command-group) |
@@ -25,6 +26,40 @@ harness (`/forge`); this command installs forge and drives its optional tools.
 | `forge decide …` | decision-model gates, providers, budgets and the privacy floor; see [below](#forge-decide) |
 | `forge jev …` | deprecated alias of the old decision-model commands, kept for one release; see [below](#forge-decide) |
 | `forge --help` | list the commands; `forge <command> --help` shows each one's options |
+
+### `forge watch`
+
+Follows runs from the terminal, for when forge-ui is not open or you are away from it.
+
+```
+forge watch                       # every run registered for this repo, new ones too; Ctrl-C stops
+forge watch RUN_DIR               # one run, until it ends: exit 0 done, 1 failed, 3 its process looks dead
+forge watch --all --until-done    # every repo's runs; stop once nothing is running
+```
+
+Every task status change prints a line. These events also raise a notification and run the hooks:
+a run finishing (`run-done`) or ending with failures (`run-failed`), a task newly failing
+(`task-failed`) and a final review's `PASS`/`FAIL` (`review`). They are the events forge-ui's bell
+reports, and the runs are read with forge-ui's own reader. The first look at each run is only a
+baseline, so a run that was already over, or had not changed for two hours, says nothing. A run
+that stops is announced once it has stayed stopped for `--settle` seconds (10), so a task that
+fails and is retried automatically is not reported as a failed run (the `task-failed` event still is).
+
+- **Desktop notification.** `notify-send` on Linux, `osascript` on macOS. With no notifier on the `PATH`, or on Linux
+  with no desktop session (`DISPLAY`, `WAYLAND_DISPLAY` and `DBUS_SESSION_BUS_ADDRESS` all unset: a
+  server, a container, CI), forge says so once on stderr and the events only print. `--no-notify` or
+  `FORGE_WATCH_NOTIFY=off` turns notifications off.
+- **`--exec CMD`** runs `CMD` through the shell on every event. **`.forge/on-finish`** in the run's repo
+  runs on `run-done` and `run-failed` only, with the repo as its working directory.
+- **The environment** of both: `FORGE_WATCH_EVENT`, `FORGE_WATCH_RUN_ID`, `FORGE_WATCH_RUN_DIR`,
+  `FORGE_WATCH_REPO`, `FORGE_WATCH_GOAL`, `FORGE_WATCH_TASK` (a `task-failed` event), `FORGE_WATCH_VERDICT`
+  (the review's verdict, the failing task's status, else the run's final review or verification status, else
+  `PASS`/`FAIL`) and `FORGE_WATCH_MESSAGE`. A hook's output goes to stderr; one that fails or runs
+  past 30 seconds is reported there and never stops the watch.
+- **`.forge/on-finish` is run only when it is safe.** `.forge/` is usually committed, so a hook that arrived with
+  a cloned repository would run code the first time you watch. It runs only when it is executable, owned by you,
+  not writable by others, and not tracked by git; otherwise forge says why on stderr and skips it. A hook you want
+  to share goes in your own checkout untracked, or is passed with `--exec`.
 
 ### `forge runs rm`
 
