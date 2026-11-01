@@ -70,6 +70,9 @@ class StreakTests(unittest.TestCase):
             ('moves out of the order they were made do not chain',
              [(1, fail, 'sol'), (2, fail, 'sol'), (3, fail, 'sonnet')],
              'sonnet', [(2, 'astra', 'sonnet'), (2, 'sol', 'astra')], False, 1),
+            ('a move that starts off the chain does not carry, though the chain reaches the new model',
+             [(1, fail, 'sol'), (2, fail, 'sol'), (3, fail, 'astra')],
+             'astra', [(2, 'sol', 'astra'), (2, 'sonnet', 'astra')], False, 1),
             ('by effort, a bump restarts it',
              [(1, fail, 'sol:high'), (2, fail, 'sol:xhigh')], 'sol:xhigh', [], True, 1),
             ('without by effort, a bump is the same model',
@@ -128,6 +131,12 @@ class PolicyTests(unittest.TestCase):
 
     def test_an_explicit_retry_is_no_move(self):
         self.assertEqual(self.decide(self.ATTEMPTS, escalations='2\tsol\tastra\tretry\n'), '')
+
+    def test_an_explicit_retry_between_two_moves_breaks_the_count(self):
+        # sol -> astra, then an explicit retry to sonnet that never ran, then sonnet -> astra: the second move
+        # does not start where the first ended, so the count does not carry across the retry.
+        self.assertEqual(self.decide([(1, 'FAIL', 'sol'), (2, 'FAIL', 'sol'), (3, 'FAIL', 'astra')],
+                                     [(2, 'sol', 'astra'), (2, 'sonnet', 'astra')]), '')
 
     def test_an_old_fallback_row_is_no_move_either(self):
         # Runs from before lateral moves: the move was an escalations.tsv `fallback` row, and it restarts the count as before.

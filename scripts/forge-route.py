@@ -493,11 +493,15 @@ def _moved_between(laterals, frm: str, to: str, earlier: int, later: int) -> boo
     """Whether dwarf moves took `frm` to `to` between two attempts: after attempt `earlier` was spent and
     before attempt `later` began. A move records the attempts spent at that moment (an infrastructure stop
     refunds its own), so a move straight after `earlier` is recorded as `earlier`. One stop can make several
-    moves (sol -> astra -> sonnet) with no attempt on the middle model, so the moves in the window are
-    followed in the order they were made: each move from the model the task is on takes it to the next."""
+    moves (sol -> astra -> sonnet) with no attempt on the middle model, so the moves in the window must chain
+    in the order they were made: each one starts where the last ended. A move that starts elsewhere means
+    the model changed in between by something no lateral row records (an explicit retry), and the window
+    does not carry across it."""
     model = frm
     for n, f, t in laterals:
-        if earlier <= n < later and f == model:
+        if earlier <= n < later:
+            if f != model:
+                return False
             model = t
     return model == to
 
