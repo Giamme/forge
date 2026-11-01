@@ -12,8 +12,8 @@ bias (inverse-propensity weighting needs the probability each choice had).
       exactly two: SPEC and its neighbour, the model one tier away in the user's own pools
       (the next cheaper tier for medium and high, the next stronger for low). With
       probability 1-E it keeps SPEC; with probability E it picks uniformly between the two.
-      Prints the spec to use. Appends the decision to <plan>/tasks/<id>/route.jsonl (never
-      rewritten) and marks a changed pick in tasks/<id>/route.explored for the table. A row
+      Prints the spec to use. Appends the decision, with the tier of its choice, to
+      <plan>/tasks/<id>/route.jsonl (never rewritten) and marks a changed pick in tasks/<id>/route.explored for the table. A row
       with no neighbour is not explored and records nothing.
 
   forge-route.py escalation --plan P --task ID [--check] [--qa-only-next yes|no]
@@ -39,9 +39,15 @@ bias (inverse-propensity weighting needs the probability each choice had).
       re-read escalate_after inside it: a policy decision made before a human switched the
       policy off writes nothing.
 
+  forge-route.py fallback --plan P --task ID [--exclude harness/model,...]
+      The lateral move of an infrastructure stop: prints the next free model of the pool of the
+      tier the task runs in (its difficulty, the tier its exploration picked, or the target its last
+      escalation recorded in running.tier), or exits 1 when there is none. Never a model of another tier.
+
   forge-route.py record --plan P --task ID (--probe | --line TEXT)
       Internal. Probe or append tasks/<id>/escalations.tsv through forge-control.py, which
       walks from the plan one directory at a time and refuses a symlink at any component.
+      An appended row also writes tasks/<id>/running.tier: its target tier and spec.
       `--probe` exits 0 when every component below the plan is a real directory and the file
       is absent or a regular file. `--line` appends one record under those same conditions.
       A missing parent exits 1 and writes nothing: the walk has no directory descriptor then,
@@ -195,17 +201,18 @@ def _aligned(spec: str, pool_of_spec: list, other: list, key):
 
 
 def neighbour(spec: str, tier: str, pools: dict, registry: dict):
-    """The exploration alternative: the nearest cheaper tier for medium/high, the nearest stronger for low."""
+    """The exploration alternative and its tier: the nearest cheaper tier for medium/high, the nearest
+    stronger for low. (None, None) when there is none."""
     if tier not in TIERS:
-        return None
+        return None, None
     i = TIERS.index(tier)
     order = TIERS[i + 1:] if i == 0 else tuple(reversed(TIERS[:i]))
     for other in order:
         if pools.get(other):
             pick = _aligned(spec, pools.get(tier) or [spec], pools[other], lambda s: arm(s, registry))
             if pick:
-                return pick
-    return None
+                return pick, other
+    return None, None
 
 
 def stronger(spec: str, pools: dict, registry: dict):
@@ -245,16 +252,16 @@ def parse_excluded(text: str) -> set:
     return out
 
 
-def fallback_pick(current: str, pools: dict, registry: dict, excluded: set):
-    """The next member of the current dwarf's own tier pool, in pool order and wrapping around,
-    that runs another model on a pair nobody paused; None when there is none."""
-    rank = rank_of(current, pools, registry)
-    if rank is None:
-        return None
-    pool = pools[TIERS[rank]]
+def fallback_pick(current: str, pools: dict, registry: dict, excluded: set, tier: str):
+    """The next member of the pool of `tier`, the tier the task runs in (running_tier), in pool
+    order and wrapping around, that runs another model on a pair nobody paused. None when there is
+    none, or when that pool does not run the current model (a model the user named by hand)."""
+    pool = pools.get(tier) or []
     own = canonical(current, registry)
     keys = [canonical(s, registry) for s in pool]
-    start = keys.index(own) if own in keys else -1
+    if own not in keys:
+        return None
+    start = keys.index(own)
     for step in range(1, len(pool) + 1):
         candidate = pool[(start + step) % len(pool)]
         pair = pair_of(candidate, registry)
@@ -266,13 +273,65 @@ def fallback_pick(current: str, pools: dict, registry: dict, excluded: set):
     return None
 
 
+def escalation_target(source: str, frm: str, to: str, running: str, pools: dict, registry: dict) -> str:
+    """The tier an escalations.tsv row moved the task to. The same model at another effort stays.
+    The policy (stronger) went to the first pool with its target above the highest pool of `frm`;
+    a person named a model, which is in the nearest pool to the tier the task was running in."""
+    model = canonical(to, registry)
+    if model == canonical(frm, registry):
+        return running
+    rank = rank_of(frm, pools, registry) if source == 'policy' else None
+    first = rank + 1 if rank is not None else TIERS.index(running)
+    for tier in TIERS[first:] + tuple(reversed(TIERS[:first])):
+        if any(canonical(s, registry) == model for s in pools.get(tier, ())):
+            return tier
+    return running
+
+
+def running_tier(plan: Path, task: str, current: str = '') -> str:
+    """The tier a task runs in, from what forge recorded when it assigned the model, never from which
+    pools list the model: one model can sit in several, and a re-plan can change them. While the task
+    runs the spec of a record, the tier in tasks/<id>/running.tier (written with each escalations.tsv
+    row), else the tier its exploration picked; with neither, as in an older plan, the difficulty.
+    `current` is the spec the task runs, read from tasks.tsv when not given. '' when the difficulty
+    is no tier."""
+    tier = _row_cell(plan, task, 2)
+    if tier not in TIERS:
+        return ''
+    tdir = plan / 'tasks' / task
+    current = current or _dwarf_of(plan, task)
+    with contextlib.suppress(OSError):
+        recorded, _, spec = (tdir / 'running.tier').read_text().strip().partition('\t')
+        if spec == current and recorded in TIERS:
+            return recorded
+    with contextlib.suppress(OSError, ValueError, AttributeError):       # no usable record: the difficulty
+        lines = (tdir / 'route.jsonl').read_text().splitlines()
+        decision = json.loads(lines[-1]) if lines else {}
+        if decision.get('chosen') == current and decision.get('chosen_tier') in TIERS:
+            return decision['chosen_tier']
+    return tier
+
+
+def record_running_tier(plan: str, task: str, row: str, control) -> None:
+    """tasks/<id>/running.tier for an escalations.tsv row: `tier<TAB>spec`, the tier the row moved the
+    task to, decided here with the pools of this moment. A fallback stays in its tier."""
+    cells = row.rstrip('\n').split('\t')
+    frm, to, source = cells[2], cells[3], cells[4] if len(cells) > 4 else 'policy'
+    tier = running_tier(Path(plan), task, frm)
+    if tier and source != 'fallback':
+        tier = escalation_target(source, frm, to, tier, load_pools(Path(plan) / 'fractal-routing.json'),
+                                 registry_models())
+    if tier:
+        control.write_atomic(plan, 'tasks/%s/running.tier' % task, '%s\t%s\n' % (tier, to))
+
+
 def fallback(args) -> int:
     plan = Path(os.path.realpath(args.plan))
     current = _dwarf_of(plan, args.task)
     if not current or current in ('-', 'UNASSIGNED'):
         return 1
     pick = fallback_pick(current, load_pools(plan / 'fractal-routing.json'), registry_models(),
-                         parse_excluded(args.exclude))
+                         parse_excluded(args.exclude), running_tier(plan, args.task, current))
     if not pick:
         return 1
     print(pick)
@@ -285,7 +344,7 @@ def explore(args) -> str:
     epsilon = float(args.epsilon)
     if not 0 < epsilon <= 1:
         return args.default
-    alternative = neighbour(args.default, args.tier, load_pools(args.pools), registry_models())
+    alternative, alternative_tier = neighbour(args.default, args.tier, load_pools(args.pools), registry_models())
     if not alternative:
         return args.default
     candidates = [args.default, alternative]
@@ -298,6 +357,7 @@ def explore(args) -> str:
     tdir.mkdir(parents=True, exist_ok=True)
     decision = dict(at=time.time(), task=args.task, tier=args.tier, epsilon=epsilon, candidates=candidates,
                     default=args.default, chosen=chosen, explored=chosen != args.default,
+                    chosen_tier=alternative_tier if chosen != args.default else args.tier,
                     propensity=round(propensity, 6), inputs=row_inputs(plan, args.task))
     decision['decision'] = hashlib.sha256(json.dumps(decision, sort_keys=True).encode()).hexdigest()[:16]
     with open(tdir / 'route.jsonl', 'a') as log:      # one line per resolution, never rewritten
@@ -311,6 +371,14 @@ def explore(args) -> str:
 
 
 # --- escalation --------------------------------------------------------------------
+
+def _row_cell(plan: Path, task: str, index: int) -> str:
+    for line in (plan / 'tasks.tsv').read_text().splitlines():
+        cells = line.split('\t')
+        if not line.startswith('#') and cells and cells[0] == task and len(cells) > index:
+            return cells[index]
+    return ''
+
 
 def _dwarf_of(plan: Path, task: str) -> str:
     for line in (plan / 'tasks.tsv').read_text().splitlines():
@@ -662,6 +730,10 @@ def record_escalation(args) -> int:
         else:
             line = args.line if args.line.endswith('\n') else args.line + '\n'
             control.append_line(plan, rel, line)
+            try:
+                record_running_tier(plan, args.task, line, control)
+            except Exception as error:      # the row stands; without this record the task reads as its difficulty
+                print('%s: could not record the tier it runs in: %s' % (args.task, error), file=sys.stderr)
     except Exception:
         return 1
     return 0

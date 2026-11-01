@@ -164,6 +164,7 @@ pool_pick() { # pool_pick <comma-list> <index>
 do_plan() {
   local PLAN="${1:?plan needs a plan dir}"; shift
   local REPO="" D_ANY="" D_HI="" D_MD="" D_LO="" Q_ANY="" Q_HI="" Q_MD="" Q_LO=""
+  PP_INFRA_FALLBACK=on
   local PLANNER="" NOMEM=0 jev_rc=0 DLEVEL="" SHADOW_QA="" SHADOW_RATE="" EXPLORE="" FAIL_FIRST="" REVIEWER_SESSION="" IMPLEMENTER_SESSION="" PRE_REVIEW="" PRE_REVIEW_PARALLEL=""
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -228,6 +229,8 @@ do_plan() {
   # The table as the planner or orchestrator wrote it, before Jev or route resolution
   # rewrites any column: which tier a task was DECLARED is a label of its own.
   cp "$T" "$PLAN/tasks.declared.tsv"
+  # A lateral move on an infrastructure stop is on for a new plan; one without the file stays off.
+  printf '%s\n' "$PP_INFRA_FALLBACK" > "$PLAN/infra_fallback" || die "could not write $PLAN/infra_fallback"
   [ -z "$DLEVEL" ] || printf '%s\n' "$DLEVEL" > "$PLAN/decompose_level"
   # Shadow reviews are part of the plan, like its routing: frozen here, shown in the table
   # and read by every task process. `none` turns them off again.

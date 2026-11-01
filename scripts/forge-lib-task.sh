@@ -537,11 +537,12 @@ prepare_resume() { # prepare_resume <plan> <id>
   return 0
 }
 
-# --infra-fallback: a dwarf-stage capacity stop moves the task to the next healthy member of
-# its own tier pool (forge-route.py fallback), recorded like an escalation with source
-# `fallback`. No attempt is spent: the stop already refunded it. Returns 1, changing nothing,
-# when there is no candidate, a pin is waiting (a human's choice wins) or the plan is Fractal.
-prepare_fallback() { # prepare_fallback <plan> <id> <excluded harness/model,...>
+# --infra-fallback: a dwarf-stage lateral stop (capacity, a usage limit, ...) moves the task to the
+# next healthy member of its own tier pool (forge-route.py fallback), recorded like an escalation
+# with source `fallback`. No attempt is spent: the stop already refunded it. Returns 1, changing
+# nothing, when there is no candidate, a pin is waiting (a human's choice wins) or the plan is
+# Fractal. The fourth argument names the cause of the stop; it only words the note for now.
+prepare_fallback() { # prepare_fallback <plan> <id> <excluded harness/model,...> [<cause>]
   local PLAN="$1" id="$2" tdir="$1/tasks/$2" cur pick
   [ -e "$tdir/escalation.pin" ] && return 1
   forge_plan_is_fractal "$PLAN" && return 1
@@ -550,21 +551,26 @@ prepare_fallback() { # prepare_fallback <plan> <id> <excluded harness/model,...>
   [ -n "$pick" ] || return 1
   write_escalation "$PLAN" "$id" "$cur" "$pick" fallback || return 1
   rm -f "$tdir/status" "$tdir/infra.txt"
-  note "$id: $cur is at capacity; falling back to $pick (same tier)"
+  case "${4:-capacity}" in
+    capacity) note "$id: $cur is at capacity; falling back to $pick (same tier)" ;;
+    *) note "$id: $cur stopped (${4}); falling back to $pick (same tier)" ;;
+  esac
 }
 
 # The scheduler's `_prepare_retry` target: prepare, then clear the status so the task
 # reads as PENDING again. `retry` clears it itself, after its own preflight. With --resume it
 # prepares an infrastructure stop's resume instead (prepare_resume), and the status stays;
-# with --dwarf <spec> the spec is the explicit new implementer; --fallback <pairs> is
-# prepare_fallback.
-retry_for_scheduler() { # retry_for_scheduler <plan> <id> [--resume | --dwarf <spec> | --fallback <pairs>]
+# with --dwarf <spec> the spec is the explicit new implementer; --fallback <pairs> [--cause <cause>]
+# is prepare_fallback.
+retry_for_scheduler() { # retry_for_scheduler <plan> <id> [--resume | --dwarf <spec> | --fallback <pairs> [--cause <cause>]]
   if [ "${3:-}" = --resume ]; then
     prepare_resume "$1" "$2"
     return $?
   fi
   if [ "${3:-}" = --fallback ]; then
-    prepare_fallback "$1" "$2" "${4:-}"
+    local cause=""
+    if [ "${5:-}" = --cause ]; then cause="${6:-}"; fi
+    prepare_fallback "$1" "$2" "${4:-}" "$cause"
     return $?
   fi
   # --dwarf: `forge control retry --dwarf`, the same explicit escalation as `retry --dwarf`.

@@ -23,8 +23,10 @@
 #   --infra-retries M       run               (this run only)      waits out quota/auth/network stops
 #   --infra-backoff SHAPE   run               $PLAN/infra_backoff  waits between those stops: exp:B[,C],
 #                                                                  linear:S,T[,C] or list:a,b,... (default exp:60)
-#   --infra-fallback        run               $PLAN/infra_fallback a dwarf's capacity stop moves it to the next healthy
-#   --no-infra-fallback                                            model of its tier pool (off by default)
+#   --infra-fallback        run               $PLAN/infra_fallback a dwarf's stop that another model can take (capacity,
+#   --no-infra-fallback     plan run                               usage limit, ...) moves it to the next healthy
+#                                                                  model of its tier pool; `plan` writes on, a
+#                                                                  plan without the file stays off
 #   --qa-threshold Pn|none|default  plan run retry review  $PLAN/qa_threshold  least severe CONFIRMED
 #                                                                  finding that still blocks; none (or off) =
 #                                                                  P3, default removes the file (P2)
@@ -99,8 +101,9 @@ forge_pp_flag() {
       [ "$cmd" = run ] || return 1
       PP_SHIFT=1; printf 'on\n' > "$plan/infra_fallback" ;;
     --no-infra-fallback)
-      [ "$cmd" = run ] || return 1
-      PP_SHIFT=1; rm -f "$plan/infra_fallback" ;;
+      PP_SHIFT=1
+      # `plan` writes the file itself, after its options, so the default on and this off cannot clash.
+      case "$cmd" in plan) PP_INFRA_FALLBACK=off ;; run) printf 'off\n' > "$plan/infra_fallback" ;; *) return 1 ;; esac ;;
     --infra-backoff)
       [ "$cmd" = run ] || return 1
       PP_MSG="$(python3 "$SKILL_DIR/scripts/forge-schedule.py" backoff-check "${2:-}" 2>&1)" || die "${PP_MSG#forge: }"
