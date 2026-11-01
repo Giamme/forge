@@ -1624,6 +1624,17 @@ class IndependenceTests(unittest.TestCase):
                 imports = [line.strip() for line in text.splitlines() if 'forge_dataset' in line and 'import' in line]
                 self.assertEqual(imports, ['from forge_dataset import dataset_dir', 'from forge_dataset import export'])
                 continue
+            if path.name == 'forge-compare.py':
+                # `forge runs compare` reads tokens/time and the forecast for the operator's screen and records one
+                # `comparison` event. `rerun` copies the source plan's own prompts; none is built from the store.
+                imports = sorted(line.strip() for line in text.splitlines() if 'forge_dataset' in line and 'import' in line)
+                self.assertEqual(imports, ['from forge_dataset import connect, dataset_dir',
+                                           'from forge_dataset import forecast',
+                                           'from forge_dataset import record',
+                                           'from forge_dataset.export import Runs, Store',
+                                           'from forge_dataset.forecast import _cost',
+                                           'from forge_dataset.forecast import registry_models'])
+                continue
             self.assertIn(path.name, allowed, path)
             for line in text.splitlines():
                 if 'forge_dataset' in line and 'import' in line:
