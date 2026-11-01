@@ -23,6 +23,7 @@ usage() {
     '  jev       the old decision-model commands, replaced by decide (kept for one release)' \
     '  dataset   every run'"'"'s inputs and outcomes: status, dump, import, export, outcomes, ...' \
     '  issues    file the review findings a run left open as GitHub issues (plain gh)' \
+    '  pr        a draft pull-request description for a finished run (--create opens it with gh)' \
     '  ui        forge-ui, the run viewer: open [DIR], status, stop' \
     '  runs      this repo'"'"'s recent runs in the terminal: state, verdicts and run dirs' \
     '  watch     follow runs live and get a desktop notification when one finishes or fails' \
@@ -96,6 +97,10 @@ case "${1:-}" in
   issues)
     shift
     exec python3 "$ROOT/scripts/forge-issues.py" "$@"
+    ;;
+  pr)
+    shift
+    exec python3 "$ROOT/scripts/forge-pr.py" "$@"
     ;;
   ui)
     shift

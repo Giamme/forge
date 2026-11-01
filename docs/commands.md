@@ -21,6 +21,7 @@ harness (`/forge`); this command installs forge and drives its optional tools.
 | `forge watch [RUN_DIR \| --repo DIR \| --all] [--interval S] [--settle S] [--until-done] [--no-notify] [--exec CMD]` | follow runs live: a line for every task status change, and a desktop notification, `--exec CMD` and the repo's `.forge/on-finish` when a run finishes or fails, a task fails or a final review gives its verdict; see [below](#forge-watch). Read-only |
 | `forge runs rm RUN_DIR [--dry-run] [--yes] [--no-archive] [--worktrees] [--branches] [--json]` | delete a run directory but keep what it taught the dataset; see [below](#forge-runs-rm) |
 | `forge issues RUN [--apply] …` | file the review findings a run left open as GitHub issues; see [below](#forge-issues) |
+| `forge pr [RUN_DIR \| --repo DIR] [--texts] [--paths] [--out FILE] [--create [--base B] [--head B]]` | a draft pull-request description for a finished run, on stdout; `--create` opens it as a draft PR with `gh`; see [below](#forge-pr) |
 | `forge ui open\|status\|stop` | forge-ui, the run viewer; see [the command group](forge-ui.md#forge-ui-command-group) |
 | `forge dataset …` | every run's inputs and outcomes; see [run dataset](dataset.md) |
 | `forge decide …` | decision-model gates, providers, budgets and the privacy floor; see [below](#forge-decide) |
@@ -111,6 +112,34 @@ Two filers for one repository at once would both see a finding as unfiled, so `-
 repository lock from the issue lookup to the last `gh issue create`, and each dismissal takes it
 around its write. A busy lock is retried for 10 s, then exit 3. Exit 0 ok, 2 usage or a `gh` or
 dismissal-store error, 3 busy.
+
+### `forge pr`
+
+Writes the pull-request description a finished run deserves, from what the run recorded, so the PR
+that proposes its integration branch says what was built and what was not.
+
+```
+forge pr                                  # the newest finished run of this repo, on stdout
+forge pr RUN_DIR --out pr.md              # a given run, also written to a file
+forge pr | gh pr create --draft --body-file - --title "…"   # your own gh call
+forge pr --create --base main             # gh pr create --draft, on forge/<run id>-integration
+```
+
+The body has the goal, a table of the tasks (status, difficulty, implementer, reviewer), the tasks that
+did not merge, the verification status and the final review's verdict (marked when tasks merged after
+it), the final review's open findings (severity, location and headline, worst first) and the integration
+branch with the commit it forked from. The suggested title (the goal's first line) goes to stderr.
+A run that still has running or pending tasks is refused; solo runs have no tasks or integration branch
+to describe and are refused too.
+
+- **Private text stays out**, as in `forge ui export`: the request, the prompts and the deferrals
+  (`--texts` adds the request and the deferrals) and local paths, which are cut to their last component
+  (`--paths` keeps them). The goal, task titles and finding headlines are kept: read the body before it
+  goes anywhere public.
+- **`--create` is the only thing that does more than print.** It runs `gh pr create --draft` in the
+  repo, for `--head` (default `forge/<run id>-integration`) and `--base` (default gh's). It never pushes:
+  the branch must already have an upstream (`git push -u origin <branch>`) or forge says so and stops.
+  Without `--create` neither `gh` nor the network is used.
 
 ### `forge decide`
 
