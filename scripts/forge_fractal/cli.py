@@ -12,21 +12,38 @@ import subprocess
 from . import DEFAULTS, identifier, managed_run, read_json, safe_file, write_json
 
 
+# One line each in `forge fractal --help`. status, tree, activity, costs, messages and config
+# print the same captured run view (references/fractal.md); --task and --node narrow it.
+_HELP = dict(
+    status="a run's captured state as JSON; --html PATH writes a page",
+    tree='the same view as status, read for task and node ids',
+    activity='the same view as status; page history with --offset and --limit',
+    logs='the same view with logs; --follow prints each change',
+    costs='the same view as status, read for usage and costs',
+    messages='the same view as status, read for messages',
+    config="the same view as status, read for the run's config",
+    report='a portable HTML report with full history and logs (default RUN.html)',
+    pause='pause a run, or one --task (and --node) in it',
+    resume="resume a run's whole pipeline, or one --task",
+    stop='stop a run; work and artifacts are kept',
+)
+
+
 def parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog='forge fractal', description='Opt-in Fractal execution and read-only observability for Forge')
     sub = p.add_subparsers(dest='command', required=True)
-    install = sub.add_parser('install')
+    install = sub.add_parser('install', help='install the Fractal runtime; --dry-run previews')
     for flag in ('dry-run', 'yes', 'with-prerequisites'):
         install.add_argument('--' + flag, action='store_true')
-    doctor = sub.add_parser('doctor')
+    doctor = sub.add_parser('doctor', help='whether Fractal is ready to run (exit 3 when not)')
     doctor.add_argument('--spec', action='append', default=[])
     doctor.add_argument('--json', action='store_true')
-    listing = sub.add_parser('runs')
+    listing = sub.add_parser('runs', help="a repo's managed Fractal runs and their RUN ids")
     listing.add_argument('--repo')
     listing.add_argument('--json', action='store_true')
     listing.add_argument('--html', type=Path)
     for name in ('status', 'tree', 'activity', 'logs', 'costs', 'messages', 'config', 'report', 'pause', 'resume', 'stop'):
-        command = sub.add_parser(name)
+        command = sub.add_parser(name, help=_HELP[name])
         command.add_argument('run')
         command.add_argument('--task')
         command.add_argument('--node')
@@ -36,10 +53,10 @@ def parser() -> argparse.ArgumentParser:
         command.add_argument('--limit', type=int, default=100)
         if name == 'logs':
             command.add_argument('--follow', action='store_true')
-    opening = sub.add_parser('open')
+    opening = sub.add_parser('open', help="the run inspector in a browser: every run, or RUN's live detail")
     opening.add_argument('run', nargs='?')
     opening.add_argument('--port', type=int, default=0)
-    selection = sub.add_parser('select')
+    selection = sub.add_parser('select', help="used by the runners: resolve and record a run's Fractal selection")
     selection.add_argument('--run-dir', required=True)
     selection.add_argument('--repo', required=True)
     selection.add_argument('--mode', choices=('solo', 'parallel'), required=True)

@@ -68,6 +68,17 @@ class LauncherTests(unittest.TestCase):
                 self.assertEqual(result.stdout, '')
                 self.assertEqual(result.stderr, self.forge(name, '--help').stdout)
 
+    def test_every_subcommand_a_group_help_lists_has_a_description(self):
+        # A bare group prints this help (above), so a name with no line beside it leaves
+        # the user guessing. jev is left out: it is the old alias, kept for one release.
+        for name in ('fractal', 'decide', 'dataset', 'ui', 'control', 'config'):
+            with self.subTest(name):
+                help_text = self.forge(name, '--help').stdout
+                choices = re.search(r'^  \{([^}]*)\}$', help_text, re.M).group(1).split(',')
+                self.assertTrue(choices)
+                described = re.findall(r'^    ([a-z-]+)(?: {2,}\S|\n {6,}\S)', help_text, re.M)
+                self.assertEqual([c for c in choices if c not in described], [])
+
     def test_every_command_the_help_lists_is_routed(self):
         listed = re.findall(r'^  ([a-z]+) ', self.forge('--help').stdout, re.M)
         self.assertTrue(listed)
