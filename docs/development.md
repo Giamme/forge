@@ -34,6 +34,7 @@ forge/
 │   ├── forge-fractal-dispatch.sh bridge entrypoint for existing pipelines
 │   ├── forge-install-fractal.sh isolated optional runtime installer
 │   ├── forge_fractal/           nested execution, recovery, inspection and dashboard
+│   ├── forge-compare.py         `forge runs rerun|compare`: a plan under another implementer, side by side
 │   ├── forge-ui.py              `forge ui open|status|stop`: the one shared forge-ui server
 │   ├── forge-ui-options.sh      `--ui|--no-ui` and the fail-open launch, sourced by the runners
 │   ├── forge_registry.py        the run registry: where run dirs are noted, read by forge-ui
