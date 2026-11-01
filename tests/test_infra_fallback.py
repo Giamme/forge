@@ -1,5 +1,5 @@
 """--infra-fallback (#30, #81): a dwarf's lateral stop (capacity, a usage limit, ...) moves the task to
-the next healthy model of its own tier pool, recorded like an escalation with source `fallback`. The stopped model is
+the next healthy model of its own tier pool, recorded in lateral.tsv and not as an escalation. The stopped model is
 still paused and counted, so a pool that is all at capacity ends the run after a bounded
 number of dispatches. Runs drive the real forge-parallel.sh with the fake CLIs of
 test_forge.py; sol and astra both run on codex, opus on claude."""
@@ -229,6 +229,11 @@ class RunTests(unittest.TestCase):
         f = p / 'tasks/a/escalations.tsv'
         return [line.split('\t')[2:] for line in f.read_text().splitlines()] if f.exists() else []
 
+    def laterals(self, p):
+        """The lateral.tsv rows as role, from, to, cause."""
+        f = p / 'tasks/a/lateral.tsv'
+        return [line.split('\t')[2:] for line in f.read_text().splitlines()] if f.exists() else []
+
     def test_a_capacity_stop_moves_to_the_next_model_of_the_pool_at_once(self):
         p = self.plan()
         self.scenario({'a.dwarf.1': CAPACITY})
@@ -237,8 +242,9 @@ class RunTests(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stdout)
         self.assertTrue((p / 'tasks/a/merged').exists())
         self.assertEqual(self.dwarf_column(p), 'astra')
-        self.assertEqual(self.escalations(p), [['sol', 'astra', 'fallback']])
-        self.assertIn('sol is at capacity; falling back to astra (same tier)', r.stdout)
+        self.assertEqual(self.escalations(p), [])
+        self.assertEqual(self.laterals(p), [['dwarf', 'sol', 'astra', 'capacity']])
+        self.assertIn('sol is at capacity; moving sideways to astra (same tier)', r.stdout)
         self.assertNotIn('is over; resuming', r.stdout)
         self.assertEqual(self.calls().count('dwarf'), 2)
 
@@ -251,8 +257,9 @@ class RunTests(unittest.TestCase):
         # is tried at most twice: sol, astra, sol again once its short wait is over, then
         # astra, after which both budgets are spent and nothing is left to fall back to.
         self.assertEqual(self.calls().count('dwarf'), 4)
-        self.assertEqual(self.escalations(p), [['sol', 'astra', 'fallback'], ['astra', 'sol', 'fallback'],
-                                               ['sol', 'astra', 'fallback']])
+        self.assertEqual(self.escalations(p), [])
+        self.assertEqual(self.laterals(p), [['dwarf', 'sol', 'astra', 'capacity'], ['dwarf', 'astra', 'sol', 'capacity'],
+                                            ['dwarf', 'sol', 'astra', 'capacity']])
         self.assertEqual((p / 'tasks/a/status').read_text().strip(), 'INFRA')
 
     def test_no_candidate_pauses_as_before(self):
@@ -304,7 +311,8 @@ class RunTests(unittest.TestCase):
         self.scenario({'a.dwarf.1': CAPACITY})
         r = self.run_plan(p, '--infra-retries', '1', '--infra-backoff', '30')
         self.assertEqual(r.returncode, 0, r.stdout)
-        self.assertEqual((self.dwarf_column(p), self.escalations(p)), ('astra', [['sol', 'astra', 'fallback']]))
+        self.assertEqual((self.dwarf_column(p), self.escalations(p), self.laterals(p)),
+                         ('astra', [], [['dwarf', 'sol', 'astra', 'capacity']]))
 
     def test_a_plan_without_the_file_does_not_fall_back(self):
         p = self.plan()
@@ -337,8 +345,9 @@ class RunTests(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stdout)
         self.assertTrue((p / 'tasks/a/merged').exists())
         # astra is a codex model like sol: the whole harness is out, so the pick is sonnet on claude.
-        self.assertEqual((self.dwarf_column(p), self.escalations(p)), ('sonnet', [['sol', 'sonnet', 'fallback']]))
-        self.assertIn('sol stopped (usage_limit); falling back to sonnet (same tier)', r.stdout)
+        self.assertEqual((self.dwarf_column(p), self.escalations(p), self.laterals(p)),
+                         ('sonnet', [], [['dwarf', 'sol', 'sonnet', 'usage_limit']]))
+        self.assertIn('sol stopped (usage_limit); moving sideways to sonnet (same tier)', r.stdout)
         self.assertEqual(self.calls().count('dwarf'), 2)
 
     def test_a_pool_whose_only_free_model_is_in_another_tier_gives_no_move(self):
@@ -360,7 +369,7 @@ class RunTests(unittest.TestCase):
         self.scenario({'a.dwarf.1': USAGE_LIMIT})
         r = self.run_plan(p, '--infra-retries', '1', '--infra-backoff', '1')
         self.assertEqual((self.dwarf_column(p), self.escalations(p)), ('sol', []))
-        self.assertNotIn('falling back', r.stdout)
+        self.assertNotIn('moving sideways', r.stdout)
 
 
 if __name__ == '__main__':

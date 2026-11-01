@@ -173,6 +173,15 @@ escalation_record_line() { # escalation_record_line <plan> <id> <line>
   python3 "$SKILL_DIR/scripts/forge-route.py" record --plan "$1" --task "$2" --line "$3"
 }
 
+# tasks/<id>/lateral.tsv, probed and appended the same way (forge-route.py lateral).
+lateral_record_ok() { # lateral_record_ok <plan> <id>
+  python3 "$SKILL_DIR/scripts/forge-route.py" lateral --plan "$1" --task "$2" --probe
+}
+
+lateral_record_line() { # lateral_record_line <plan> <id> <line>
+  python3 "$SKILL_DIR/scripts/forge-route.py" lateral --plan "$1" --task "$2" --line "$3"
+}
+
 # Writes the task's implementer column in tasks.tsv: a temp file, then a rename.
 set_dwarf() { # set_dwarf <plan> <id> <spec>
   awk -F'\t' -v OFS='\t' -v id="$2" -v dw="$3" \
@@ -538,23 +547,46 @@ prepare_resume() { # prepare_resume <plan> <id>
 }
 
 # --infra-fallback: a dwarf-stage lateral stop (capacity, a usage limit, ...) moves the task to the
-# next healthy member of its own tier pool (forge-route.py fallback), recorded like an escalation
-# with source `fallback`. No attempt is spent: the stop already refunded it. Returns 1, changing
-# nothing, when there is no candidate, a pin is waiting (a human's choice wins) or the plan is
-# Fractal. The fourth argument names the cause of the stop; it only words the note for now.
+# next healthy member of its own tier pool (forge-route.py fallback). A move is no escalation: it is
+# recorded in tasks/<id>/lateral.tsv and as a `lateral` dataset event, not in escalations.tsv, so the
+# retry policy's streak carries across it. No attempt is spent: the stop already refunded it. Returns
+# 1, changing nothing, when there is no candidate, a pin is waiting (a human's choice wins), the plan
+# is Fractal or the move cannot be recorded. The fourth argument names the cause of the stop.
 prepare_fallback() { # prepare_fallback <plan> <id> <excluded harness/model,...> [<cause>]
-  local PLAN="$1" id="$2" tdir="$1/tasks/$2" cur pick
+  local PLAN="$1" id="$2" tdir="$1/tasks/$2" cur pick cause attempt line phrase
   [ -e "$tdir/escalation.pin" ] && return 1
   forge_plan_is_fractal "$PLAN" && return 1
   cur="$(field "$PLAN/tasks.tsv" "$id" dwarf)"
   pick="$(python3 "$SKILL_DIR/scripts/forge-route.py" fallback --plan "$PLAN" --task "$id" --exclude "$3")" || return 1
   [ -n "$pick" ] || return 1
-  write_escalation "$PLAN" "$id" "$cur" "$pick" fallback || return 1
-  rm -f "$tdir/status" "$tdir/infra.txt"
-  case "${4:-capacity}" in
-    capacity) note "$id: $cur is at capacity; falling back to $pick (same tier)" ;;
-    *) note "$id: $cur stopped (${4}); falling back to $pick (same tier)" ;;
+  cause="${4:--}"
+  attempt="$(cat "$tdir/attempt" 2>/dev/null || echo 0)"
+  # Learned before anything changes, as a pin's record is: a refused record leaves tasks.tsv as it was.
+  if ! lateral_record_ok "$PLAN" "$id"; then
+    note "$id: could not record the lateral move in lateral.tsv; nothing was moved"
+    return 1
+  fi
+  set_dwarf "$PLAN" "$id" "$pick" || { note "$id: could not write $pick into tasks.tsv; nothing was moved"; return 1; }
+  line="$(printf '%s\t%s\tdwarf\t%s\t%s\t%s' "$(date +%s)" "$attempt" "$cur" "$pick" "$cause")"
+  if ! lateral_record_line "$PLAN" "$id" "$line"; then
+    if set_dwarf "$PLAN" "$id" "$cur"; then
+      note "$id: could not record the lateral move in lateral.tsv; nothing was moved"
+    else
+      note "$id: could not record the lateral move in lateral.tsv, and tasks.tsv could not be put back to $cur; it keeps $pick"
+    fi
+    return 1
+  fi
+  forge_dataset_event lateral --dir "$PLAN" --task "$id" --set role=dwarf --set "from=$cur" --set "to=$pick" \
+    --set "cause=$cause" --set "attempt=$attempt"
+  rm -f "$tdir/escalation.next" "$tdir/status" "$tdir/infra.txt"
+  # The note names the cause: a capacity stop (also when none came) and a spent budget have their
+  # own words; any other class is shown as classed.
+  case "$cause" in
+    -|capacity) phrase='is at capacity' ;;
+    budget) phrase='is out of budget' ;;
+    *) phrase="stopped ($cause)" ;;
   esac
+  note "$id: $cur $phrase; moving sideways to $pick (same tier)"
 }
 
 # The scheduler's `_prepare_retry` target: prepare, then clear the status so the task

@@ -26,6 +26,7 @@ bias (inverse-propensity weighting needs the probability each choice had).
       that names no effort counts as medium, a dwarf dispatch's default) before that stop.
       The streak then counts per effort, so the new effort starts again. At the pairing's
       highest effort the task still stops, and split.suggested says that effort was tried too.
+      A lateral move recorded in tasks/<id>/lateral.tsv does not end the count (see failed_streak).
       With the file absent the streak and the stop are exactly as before. `--check` (run after
       every attempt) also records a due escalation in escalation.next, and clears the markers
       once the streak no longer holds. A pending tasks/<id>/escalation.pin (a human's one-shot
@@ -43,6 +44,7 @@ bias (inverse-propensity weighting needs the probability each choice had).
       The lateral move of an infrastructure stop: prints the next free model of the pool of the
       tier the task runs in (its difficulty, the tier its exploration picked, or the target its last
       escalation recorded in running.tier), or exits 1 when there is none. Never a model of another tier.
+      The move is recorded by `lateral` below, not as an escalation.
 
   forge-route.py record --plan P --task ID (--probe | --line TEXT)
       Internal. Probe or append tasks/<id>/escalations.tsv through forge-control.py, which
@@ -52,6 +54,11 @@ bias (inverse-propensity weighting needs the probability each choice had).
       is absent or a regular file. `--line` appends one record under those same conditions.
       A missing parent exits 1 and writes nothing: the walk has no directory descriptor then,
       and opening the leaf would create it in the process's current directory.
+
+  forge-route.py lateral --plan P --task ID (--probe | --line TEXT)
+      Internal. The same probe and append, for tasks/<id>/lateral.tsv: the record of a dwarf
+      lateral move (epoch, attempt, role, from, to, cause). Its appended row writes running.tier
+      too: a move keeps the tier, and the spec it moved to is the one that tier is recorded for.
 
 The propensity of the chosen spec is (1-E)*[chosen == SPEC] + E/2. Forge never picks a
 model the user did not name: both helpers read only the pools `plan` stored in
@@ -449,30 +456,43 @@ def _next_effort_spec(spec: str):
     return None
 
 
-def failed_streak(rows: list, current: str, registry: dict, by_effort: bool = False) -> int:
+def failed_streak(rows: list, current: str, registry: dict, by_effort: bool = False, laterals=()) -> int:
     """Distinct trailing attempt numbers that failed on `current`'s model.
 
     rows: (attempt, status, spec-or-None) oldest first. A row without a spec predates the
     column and is taken as the current spec. Infra stops, missing verdicts and forge errors
     judge nothing and are skipped; a pass, a merge or another model ends the streak.
+    laterals: (attempt, from, to) of each dwarf move in lateral.tsv. A model change between
+    two counted attempts does not end the streak when such a move from the earlier attempt's
+    spec to the later one's is recorded between them (see _moved_between): a lateral move is
+    an infrastructure stop, not a judgment that the model was too weak.
     With by_effort, another effort of the same model ends it too (a bump starts a new
     streak). A spec that names no effort counts as medium. With by_effort off the count
     is by model only, as before.
     """
-    model = canonical(current, registry)
     effort = _effort_of(current) if by_effort else None
     seen = set()
+    expect, later = current, None        # the spec the last counted attempt ran (current to start), and its number
     for attempt, status, spec in reversed(rows):
         if status in NEUTRAL:
             continue
-        if spec and canonical(spec, registry) != model:
-            break
+        if spec and canonical(spec, registry) != canonical(expect, registry):
+            if later is None or not _moved_between(laterals, spec, expect, attempt, later):
+                break
         if effort is not None and _effort_of(spec or current) != effort:
             break
         if status not in FAILED:
             break
         seen.add(attempt)
+        expect, later = spec or expect, attempt
     return len(seen)
+
+
+def _moved_between(laterals, frm: str, to: str, earlier: int, later: int) -> bool:
+    """Whether a dwarf move from `frm` to `to` happened between two attempts: after attempt `earlier`
+    was spent and before attempt `later` began. A move records the attempts spent at that moment (an
+    infrastructure stop refunds its own), so a move straight after `earlier` is recorded as `earlier`."""
+    return any(f == frm and t == to and earlier <= n < later for n, f, t in laterals)
 
 
 def attempt_rows(tdir: Path) -> list:
@@ -485,6 +505,20 @@ def attempt_rows(tdir: Path) -> list:
         cells = line.split('\t')
         if len(cells) >= 3 and cells[1].isdigit():
             rows.append((int(cells[1]), cells[2], cells[4] if len(cells) > 4 and cells[4] else None))
+    return rows
+
+
+def lateral_rows(tdir: Path) -> list:
+    """(attempt, from, to) of each dwarf move in tasks/<id>/lateral.tsv, oldest first."""
+    rows = []
+    try:
+        lines = (tdir / 'lateral.tsv').read_text().splitlines()
+    except OSError:
+        return rows
+    for line in lines:
+        cells = line.split('\t')
+        if len(cells) >= 5 and cells[1].isdigit() and cells[2] == 'dwarf':
+            rows.append((int(cells[1]), cells[3], cells[4]))
     return rows
 
 
@@ -645,7 +679,7 @@ def _decide(plan: Path, tdir: Path, args, after: int):
         return (), (), '', 0
     registry = registry_models()
     step = _effort_step(plan)
-    streak = failed_streak(attempt_rows(tdir), current, registry, by_effort=step)
+    streak = failed_streak(attempt_rows(tdir), current, registry, by_effort=step, laterals=lateral_rows(tdir))
     if streak < after:
         return MARKERS, (), '', 0
     target, why = stronger(current, load_pools(plan / 'fractal-routing.json'), registry)
@@ -707,20 +741,22 @@ def _load_control():
     return module
 
 
-def record_escalation(args) -> int:
-    """Probe or append tasks/<id>/escalations.tsv. 0 when that is safe; 1 when it is not.
+def _record(args, name: str, after=None) -> int:
+    """Probe or append tasks/<id>/<name>. 0 when that is safe; 1 when it is not.
 
     A missing parent is a refusal on both paths. probe() reports that as the file being
     absent, so the check has to look at the walk itself. append_line refuses the same case
     before it opens the leaf: with no directory descriptor that open would use the process
     cwd, including when the task directory disappears between this check and the append.
+    `after(plan, task, line, control)` runs once the line is appended; its failure is printed,
+    not returned, because the row stands.
     """
     if not args.task or args.task in ('.', '..') or '/' in args.task or '\0' in args.task:
         return 1
     try:
         control = _load_control()
         plan = os.path.realpath(args.plan)
-        rel = 'tasks/%s/escalations.tsv' % args.task
+        rel = 'tasks/%s/%s' % (args.task, name)
         parent, _leaf = control._open_parent(plan, rel)
         if parent is None:
             return 1
@@ -730,13 +766,34 @@ def record_escalation(args) -> int:
         else:
             line = args.line if args.line.endswith('\n') else args.line + '\n'
             control.append_line(plan, rel, line)
-            try:
-                record_running_tier(plan, args.task, line, control)
-            except Exception as error:      # the row stands; without this record the task reads as its difficulty
-                print('%s: could not record the tier it runs in: %s' % (args.task, error), file=sys.stderr)
+            if after:
+                try:
+                    after(plan, args.task, line, control)
+                except Exception as error:      # the row stands; without this record the task reads as its difficulty
+                    print('%s: could not record the tier it runs in: %s' % (args.task, error), file=sys.stderr)
     except Exception:
         return 1
     return 0
+
+
+def record_escalation(args) -> int:
+    """Probe or append tasks/<id>/escalations.tsv, and the tier the row moved the task to."""
+    return _record(args, 'escalations.tsv', record_running_tier)
+
+
+def record_lateral(args) -> int:
+    """Probe or append tasks/<id>/lateral.tsv, and the tier the move keeps (record_lateral_tier)."""
+    return _record(args, 'lateral.tsv', record_lateral_tier)
+
+
+def record_lateral_tier(plan: str, task: str, row: str, control) -> None:
+    """tasks/<id>/running.tier after a lateral move: the tier the task ran in, now recorded for the spec
+    it moved to. Without this a task moved sideways from a recorded spec would read as its difficulty again."""
+    cells = row.rstrip('\n').split('\t')
+    frm, to = cells[3], cells[4]
+    tier = running_tier(Path(plan), task, frm)
+    if tier:
+        control.write_atomic(plan, 'tasks/%s/running.tier' % task, '%s\t%s\n' % (tier, to))
 
 
 def main(argv=None) -> int:
@@ -755,12 +812,13 @@ def main(argv=None) -> int:
     p.add_argument('--plan', required=True)
     p.add_argument('--task', required=True)
     p.add_argument('--exclude', default='', help='harness/model pairs to skip, comma-separated (harness/* for all)')
-    p = sub.add_parser('record', help=argparse.SUPPRESS)
-    p.add_argument('--plan', required=True)
-    p.add_argument('--task', required=True)
-    mode = p.add_mutually_exclusive_group(required=True)
-    mode.add_argument('--probe', action='store_true')
-    mode.add_argument('--line')
+    for name in ('record', 'lateral'):
+        p = sub.add_parser(name, help=argparse.SUPPRESS)
+        p.add_argument('--plan', required=True)
+        p.add_argument('--task', required=True)
+        mode = p.add_mutually_exclusive_group(required=True)
+        mode.add_argument('--probe', action='store_true')
+        mode.add_argument('--line')
     args = ap.parse_args(argv)
     if args.command == 'explore':
         try:
@@ -770,6 +828,8 @@ def main(argv=None) -> int:
         return 0
     if args.command == 'record':
         return record_escalation(args)
+    if args.command == 'lateral':
+        return record_lateral(args)
     if args.command == 'fallback':
         try:
             return fallback(args)
