@@ -53,23 +53,25 @@ def _skip(run_dir: Path | str | None, site: str, reason: str) -> None:
         pass
 
 
-def _gate_fields(site) -> dict:
+def _gate_fields(site, resolved: dict | None = None) -> dict:
     """The gate a site answers to and its resolved mode. `shadow` is that mode, or --jev-shadow
     on a gate the legacy level turned on (no user decide.json yet), which acts as it always
-    did and is marked shadow as it always was."""
-    gate = _gate(site, _resolved())
+    did and is marked shadow as it always was. `resolved` is the resolution the request was
+    sent under (ask() resolves for the repo it finds, which can be the working directory's);
+    without it, current_repo()'s."""
+    gate = _gate(site, resolved if resolved is not None else _resolved())
     mode = gate['mode'] if gate else 'off'
     legacy = mode == 'on' and gate.get('source') == 'legacy' and shadow()
     return dict(gate=SITE_GATE.get(site), mode=mode, shadow=mode == 'shadow' or legacy)
 
 
 def _log(run_dir, site, key, ok, reason, latency_s, model, usage, questions, answers, provider='typesafe',
-         cached=False) -> None:
+         cached=False, resolved=None) -> None:
     if run_dir is None:
         return
     entry = dict(at=time.time(), site=site, key=key, ok=ok, reason=reason, latency_s=latency_s,
                 model=model, usage=usage, questions=questions, answers=answers,
-                acting=acting(), provider=provider, cached=cached, **_gate_fields(site))
+                acting=acting(), provider=provider, cached=cached, **_gate_fields(site, resolved))
     try:
         with (Path(run_dir) / 'jev.jsonl').open('a') as handle:
             handle.write(json.dumps(entry) + '\n')
@@ -85,7 +87,8 @@ def _log(run_dir, site, key, ok, reason, latency_s, model, usage, questions, ans
 _DATASET_SKIP_SITES = ('setup-probe',)
 
 
-def _dataset(site, key, canonical, ok, reason, latency, model, usage, qids, answers, run_dir, extra=None) -> None:
+def _dataset(site, key, canonical, ok, reason, latency, model, usage, qids, answers, run_dir, extra=None,
+             resolved=None) -> None:
     """Keep the full request (state and questions) with its answers in the run dataset.
 
     jev.jsonl keeps only the request's sha256, so a judgment could never be replayed
@@ -99,7 +102,7 @@ def _dataset(site, key, canonical, ok, reason, latency, model, usage, qids, answ
         if scripts not in sys.path:
             sys.path.insert(0, scripts)
         from forge_dataset.capture import jev
-        fields = _gate_fields(site)
+        fields = _gate_fields(site, resolved)
         jev(site=site, key=key, canonical=canonical, ok=ok, reason=reason, latency=latency, model=model,
             usage=usage, questions=qids, answers=answers, run_dir=run_dir, acting=acting(),
             shadow=fields.pop('shadow'), extra=dict(extra or {}, **fields))
@@ -373,11 +376,12 @@ def ask(state, questions: dict, *, site: str, run_dir=None, config: dict | None 
     def done(ok, reason, result, model=None, usage=None, latency=None, cached=False):
         latency = latency if latency is not None else time.time() - started
         answers = result['answers'] if result else None
-        _log(run_dir, site, fixture_key, ok, reason, latency, model, usage, qids, answers, provider, cached)
+        _log(run_dir, site, fixture_key, ok, reason, latency, model, usage, qids, answers, provider, cached,
+             resolved)
         # A cache hit is not a new judgment: the dataset keeps live ones, as it does for fixtures.
         if canonical is not None and not cached:
             _dataset(site, fixture_key, canonical, ok, reason, latency, model, usage, qids, answers, run_dir,
-                     extra)
+                     extra, resolved)
         return result
 
     fixture_key = canonical = None

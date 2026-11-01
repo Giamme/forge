@@ -262,6 +262,21 @@ class MemoryShadowTests(WireCase):
         self.assertEqual(len(out.splitlines()), 8)
 
 
+class RecordedModeTests(WireCase):
+    def test_the_log_records_the_mode_of_the_repo_the_request_was_sent_for(self):
+        # GitHub #82: with no repo passed and FORGE_DECIDE_REPO unset, ask() takes the working
+        # directory's repo and its .forge/decide.json; the record must say that repo's mode.
+        self.write_user({'version': 1, 'gates': {}})
+        forge_decide.save_repo(self.repo, {'gates': {'memory-slice': 'shadow'}})
+        cwd = os.getcwd()
+        self.addCleanup(os.chdir, cwd)
+        os.chdir(self.repo / 'src')
+        question = dict(type='noul', text='is it relevant?')
+        client.ask({'x': 1}, {'q1': question}, site='jev-memory-slice', run_dir=self.run_dir)
+        [entry] = self.log()
+        self.assertEqual((entry['gate'], entry['mode'], entry['shadow']), ('memory-slice', 'shadow', True))
+
+
 class VerifyDiscoverShadowTests(WireCase):
     def test_shadow_prints_no_command(self):
         self.gates(verify_discover='shadow')
