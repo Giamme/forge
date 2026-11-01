@@ -65,17 +65,25 @@ class PickTests(unittest.TestCase):
 class RunningTierTests(unittest.TestCase):
     """`forge-route.py fallback`, which reads the tier a task runs in from its records."""
 
-    def fallback(self, dwarf, difficulty, pools, escalations=(), route_record=None, exclude=''):
+    def fallback(self, dwarf, difficulty, pools, escalations=(), route_record=None, exclude='', replanned=None,
+                 unrecorded=()):
+        """`escalations` are recorded as forge does, with `pools`; `unrecorded` rows as a plan made before
+        running.tier left them. `replanned` are the pools from then on."""
         with tempfile.TemporaryDirectory() as tmp:
             plan = Path(tmp)
             (plan / 'tasks/a').mkdir(parents=True)
             (plan / 'tasks.tsv').write_text(f'a\t-\t{difficulty}\tf\t{dwarf}\topus\tA\n')
             (plan / 'fractal-routing.json').write_text(json.dumps(pools))
-            if escalations:
-                (plan / 'tasks/a/escalations.tsv').write_text(
-                    ''.join('1\t1\t' + '\t'.join(row) + '\n' for row in escalations))
             if route_record:
                 (plan / 'tasks/a/route.jsonl').write_text(route_record + '\n')
+            if unrecorded:
+                (plan / 'tasks/a/escalations.tsv').write_text(
+                    ''.join('1\t1\t' + '\t'.join(row) + '\n' for row in unrecorded))
+            for row in escalations:
+                subprocess.run([sys.executable, str(ROOT / 'scripts/forge-route.py'), 'record', '--plan', tmp,
+                                '--task', 'a', '--line', '1\t1\t' + '\t'.join(row)], check=True)
+            if replanned:
+                (plan / 'fractal-routing.json').write_text(json.dumps(replanned))
             done = subprocess.run([sys.executable, str(ROOT / 'scripts/forge-route.py'), 'fallback', '--plan', tmp,
                                    '--task', 'a', '--exclude', exclude], capture_output=True, text=True)
             self.assertEqual(done.returncode, 0 if done.stdout else 1, done.stderr)
@@ -120,6 +128,30 @@ class RunningTierTests(unittest.TestCase):
         pools = {'low': ['astra', 'luna'], 'medium': ['sol', 'opus'], 'high': ['luna', 'sonnet']}
         self.assertEqual(self.fallback('luna', 'low', pools, [('astra', 'luna', 'fallback')]), 'astra')
         self.assertEqual(self.fallback('astra:high', 'low', pools, [('astra', 'astra:high', 'policy')]), 'luna')
+
+    def test_a_re_plan_does_not_change_the_recorded_tier_of_an_escalation(self):
+        # Escalated into medium; the re-plan moves sol to the high pool only. It still runs in medium.
+        rows = [('luna', 'sol', 'policy')]
+        pools = {'low': ['luna'], 'medium': ['sol'], 'high': ['opus']}
+        replanned = {'low': ['luna'], 'medium': ['astra'], 'high': ['sol', 'sonnet']}
+        self.assertIsNone(self.fallback('sol', 'low', pools, rows, replanned=replanned))
+        replanned['medium'] = ['sol', 'astra']
+        self.assertEqual(self.fallback('sol', 'low', pools, rows, replanned=replanned), 'astra')
+
+    def test_a_fallback_after_an_escalation_keeps_the_recorded_tier(self):
+        pools = {'low': ['luna'], 'medium': ['sol', 'astra'], 'high': ['astra', 'sonnet']}
+        rows = [('luna', 'sol', 'policy'), ('sol', 'astra', 'fallback')]
+        self.assertEqual(self.fallback('astra', 'low', pools, rows), 'sol')
+
+    def test_a_record_for_another_spec_no_longer_counts(self):
+        # The table was edited after the escalation: the task runs its difficulty's tier again.
+        pools = {'low': ['luna', 'haiku'], 'medium': ['sol', 'astra']}
+        self.assertEqual(self.fallback('luna', 'low', pools, [('haiku', 'sol', 'policy')]), 'haiku')
+
+    def test_an_escalation_with_no_record_reads_as_the_difficulty(self):
+        # A plan made before running.tier: never a tier inferred from the pools, so sol has no move from low.
+        pools = {'low': ['luna'], 'medium': ['sol', 'astra'], 'high': ['sol', 'sonnet']}
+        self.assertIsNone(self.fallback('sol', 'low', pools, unrecorded=[('luna', 'sol', 'policy')]))
 
     def test_a_task_exploring_a_lower_tier_stays_there(self):
         # A medium task exploring low-tier sol: sol is also in the high pool.
@@ -316,6 +348,12 @@ class RunTests(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stdout)
         self.assertEqual((self.dwarf_column(p), self.escalations(p)), ('sol', []))
         self.assertIn('is over; resuming a', r.stdout)
+
+    def test_the_tier_is_recorded_when_the_task_moves(self):
+        p = self.plan('sol,astra')
+        self.scenario({'a.dwarf.1': CAPACITY})
+        self.assertEqual(self.run_plan(p, '--infra-retries', '0').returncode, 0)
+        self.assertEqual((p / 'tasks/a/running.tier').read_text(), 'medium\tastra\n')
 
     def test_a_model_the_high_pool_also_lists_does_not_move_a_medium_task_up(self):
         p = self.plan('sol', 'opus', '--dwarf-high', 'sol,sonnet')
