@@ -463,9 +463,10 @@ def failed_streak(rows: list, current: str, registry: dict, by_effort: bool = Fa
     column and is taken as the current spec. Infra stops, missing verdicts and forge errors
     judge nothing and are skipped; a pass, a merge or another model ends the streak.
     laterals: (attempt, from, to) of each dwarf move in lateral.tsv. A model change between
-    two counted attempts does not end the streak when such a move from the earlier attempt's
-    spec to the later one's is recorded between them (see _moved_between): a lateral move is
-    an infrastructure stop, not a judgment that the model was too weak.
+    two counted attempts does not end the streak when dwarf moves recorded between them take
+    the earlier attempt's spec to the later one's, through any chain of moves made in order
+    (see _moved_between): a lateral move is an infrastructure stop, not a judgment that the
+    model was too weak.
     With by_effort, another effort of the same model ends it too (a bump starts a new
     streak). A spec that names no effort counts as medium. With by_effort off the count
     is by model only, as before.
@@ -489,10 +490,16 @@ def failed_streak(rows: list, current: str, registry: dict, by_effort: bool = Fa
 
 
 def _moved_between(laterals, frm: str, to: str, earlier: int, later: int) -> bool:
-    """Whether a dwarf move from `frm` to `to` happened between two attempts: after attempt `earlier`
-    was spent and before attempt `later` began. A move records the attempts spent at that moment (an
-    infrastructure stop refunds its own), so a move straight after `earlier` is recorded as `earlier`."""
-    return any(f == frm and t == to and earlier <= n < later for n, f, t in laterals)
+    """Whether dwarf moves took `frm` to `to` between two attempts: after attempt `earlier` was spent and
+    before attempt `later` began. A move records the attempts spent at that moment (an infrastructure stop
+    refunds its own), so a move straight after `earlier` is recorded as `earlier`. One stop can make several
+    moves (sol -> astra -> sonnet) with no attempt on the middle model, so the moves in the window are
+    followed in the order they were made: each move from the model the task is on takes it to the next."""
+    model = frm
+    for n, f, t in laterals:
+        if earlier <= n < later and f == model:
+            model = t
+    return model == to
 
 
 def attempt_rows(tdir: Path) -> list:
