@@ -660,7 +660,8 @@ review named the same problem; the rest are new. The diff sizes are `changes.dif
 `changes.since.diff` as they stand when the row is written.
 
 The signal looks at the last reviews. The count is the plan file `converge_window` when that file
-holds a number, and **4** otherwise. It fires when every review in that window failed (verdict
+holds a number (`plan --converge-window N`, or `forge control set converge-window N` later), and
+**4** otherwise. It fires when every review in that window failed (verdict
 FAIL, or the gate turned a PASS into a fail) with at least one CONFIRMED finding, at least half of
 the findings in the later reviews are new, and the worst severity is no better in the last review
 than in the first. A window below 2 never fires. On past runs, a window of 4 stopped no task that
@@ -728,7 +729,7 @@ under `waiting for your decision:`. A run that ends with such a task unmerged ex
 `qa-threshold` (read once per attempt, so an attempt keeps the bar it started with; per task, `none`
 (P3) exempts it from a looser plan threshold and `inherit` drops the override; at plan level, `default` restores P2), `timeout`, `escalate-after`, `escalate-effort`
 (`on|off`), `verify-retries`, `infra-backoff` (a shape as for `--infra-backoff`; `none` drops it,
-read at the next infrastructure wait), `infra-fallback` (`on|off`, at the next infrastructure stop), `max-attempts` (a non-negative integer, `0` = no cap, and only with `--confirm`), and, only while a scheduler is live, `retry-budget` (plan
+read at the next infrastructure wait), `infra-fallback` (`on|off`, at the next infrastructure stop), `max-attempts` (a non-negative integer, `0` = no cap, and only with `--confirm`), `converge-window` (a non-negative integer), and, only while a scheduler is live, `retry-budget` (plan
 or `--task`), `infra-retries` and `max-parallel` (1 to 64, at the next dispatch decision; a lower
 limit lets running tasks finish and never stops one). The budgets
 keep the **per invocation** rule: the flags of `run` are not remembered, and a live scheduler only

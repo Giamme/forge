@@ -84,6 +84,19 @@ class DecisionCase(unittest.TestCase):
 
 
 class StopTests(DecisionCase):
+    def test_the_window_is_a_plan_flag_and_a_control_setting(self):
+        # The final review of run 1: both were documented, neither existed; only a hand-edited file worked.
+        p = self.plan_of('--converge-window', 2)
+        self.assertEqual((p / 'converge_window').read_text(), '2\n')
+        self.scenario(self.moving_table())
+        r = self.run_script('forge-parallel.sh', 'run', p, '--retry-failed', 5)
+        self.assertEqual(r.returncode, 5, r.stdout)
+        self.assertEqual((self.read(p, 'status'), self.dwarf_count()), ('NEEDS_DECISION', 2))
+        done = subprocess.run(['python3', str(ROOT / 'scripts' / 'forge-control.py'), 'set', str(p), 'converge-window', '5'],
+                              capture_output=True, text=True, env=dict(self.env, FORGE_DATASET='off'), timeout=60)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual((p / 'converge_window').read_text(), '5\n')
+
     def test_the_signal_stops_the_task_and_the_run_says_so(self):
         p, r = self.converging_plan()
         self.assertEqual(self.dwarf_count(), 2)                      # not a third attempt

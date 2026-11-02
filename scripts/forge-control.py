@@ -7,7 +7,8 @@
                                                  (none drops it), infra-fallback (on/off), max-parallel (1-64),
                                                  pre-review-tests
                                                  (on/off), pre-review-parallel (1-64), max-attempts (0 = no cap;
-                                                 needs --confirm: raising the cap is a person's decision)
+                                                 needs --confirm: raising the cap is a person's decision),
+                                                 converge-window (reviews the non-converging signal looks at)
   pin   <plan> <task> <spec>                     the model the task's next FULL implementer retry uses
   unpin <plan> <task>
   retry <plan> <task> [--dwarf SPEC]             queue a retry of a stopped or failed task into the live run
@@ -578,6 +579,7 @@ KEYS = {
     'pre-review-tests': ('plan', _onoff, 'pre_review_tests', False, NEXT_ATTEMPT),
     'pre-review-parallel': ('plan', _parallel, 'pre_review_parallel', False, NEXT_ATTEMPT),
     'max-attempts': ('plan', _int, 'max_attempts', False, NEXT_DECISION),
+    'converge-window': ('plan', _int, 'converge_window', False, NEXT_DECISION),
 }
 
 
