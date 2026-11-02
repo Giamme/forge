@@ -117,7 +117,8 @@ class CompareTests(unittest.TestCase):
 
     def test_run_yes_runs_the_new_models_and_merges_only_into_its_own_integration_branch(self):
         p = self.first_run()
-        head, master = self.git('rev-parse', 'HEAD'), self.git('rev-parse', 'master')
+        branch = self.git('symbolic-ref', '--short', 'HEAD').decode().strip()  # main or master: git's init default varies
+        head, tip = self.git('rev-parse', 'HEAD'), self.git('rev-parse', branch)
         old = {b: self.git('rev-parse', b) for b in self.branches() if b.startswith('forge/plan')}
         r = self.rerun(p, '--run', '--yes')
         self.assertEqual(r.returncode, 0, r.stdout)
@@ -128,8 +129,8 @@ class CompareTests(unittest.TestCase):
         self.assertTrue((n / 'tasks/a/attempts.tsv').read_text().split('\t')[-1].strip().endswith('opus'))
         # merged into forge/plan-opus-integration only
         self.assertIn('a.txt', self.git('ls-tree', '--name-only', 'forge/plan-opus-integration').decode())
-        self.assertNotIn('a.txt', self.git('ls-tree', '--name-only', 'master').decode())
-        self.assertEqual((self.git('rev-parse', 'HEAD'), self.git('rev-parse', 'master')), (head, master))
+        self.assertNotIn('a.txt', self.git('ls-tree', '--name-only', branch).decode())
+        self.assertEqual((self.git('rev-parse', 'HEAD'), self.git('rev-parse', branch)), (head, tip))
         # the original run and its branches are as they were
         self.assertEqual({b: self.git('rev-parse', b) for b in old}, old)
         self.assertIn('forge runs compare', r.stdout)
