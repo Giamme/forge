@@ -63,13 +63,14 @@ class PinTests(unittest.TestCase):
     def stub_skill(self):
         """A SKILL_DIR whose policy script only records that it was asked.
 
-        `record` writes escalations.tsv; it is not a policy decision, so it runs the real
-        forge-route.py. Counting it would make every applied pin look like the policy ran.
+        `record` writes escalations.tsv and `attempt-cap` reads the attempt cap; neither is a policy
+        decision, so both run the real forge-route.py. Counting them would make every applied pin
+        look like the policy ran.
         """
         skill = self.root / 'skill'; (skill / 'scripts').mkdir(parents=True)
         (skill / 'scripts' / 'forge-route.py').write_text(
             'import subprocess, sys\n'
-            'if len(sys.argv) > 1 and sys.argv[1] == "record":\n'
+            'if len(sys.argv) > 1 and sys.argv[1] in ("record", "attempt-cap"):\n'
             '    raise SystemExit(subprocess.call([sys.executable, %r, *sys.argv[1:]]))\n'
             'open(%r, "a").write("called\\n")\n' % (str(ROUTE), str(self.policy_calls)))
         return skill

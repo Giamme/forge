@@ -388,8 +388,13 @@ decision_reason_text() { # decision_reason_text <reason>: what a reason in decis
 
 # The attempt cap (#69): "<used> <cap>" from forge-route.py attempt-cap, cap - for no cap. Attempts used
 # are the attempts.tsv attempts that were not infrastructure stops; the cap is max_attempts plus every retry=N.
-attempt_cap_of() { # attempt_cap_of <plan> <id>
-  python3 "$SKILL_DIR/scripts/forge-route.py" attempt-cap --plan "$1" --task "$2"
+attempt_cap_of() { # attempt_cap_of <plan> <id>; "? ?" and status 1 when the answer cannot be read
+  local out
+  out="$(python3 "$SKILL_DIR/scripts/forge-route.py" attempt-cap --plan "$1" --task "$2")"
+  if [[ "$out" =~ ^[0-9]+\ ([0-9]+|-)$ ]]; then echo "$out"; return 0; fi
+  note "$2: cannot read its attempt cap: forge-route.py attempt-cap printed '${out:0:80}'"
+  echo '? ?'
+  return 1
 }
 
 # A task at its attempt cap runs no attempt until a person raises the cap with --decide retry=N, and that
@@ -398,6 +403,8 @@ attempt_cap_of() { # attempt_cap_of <plan> <id>
 attempt_cap_gate() { # attempt_cap_gate <plan> <id> <status> <decide>; 0 may run, 1 refused or stopped
   local PLAN="$1" id="$2" st="$3" decide="$4" used cap n=0
   read -r used cap <<< "$(attempt_cap_of "$PLAN" "$id")"
+  # An unreadable cap starts nothing and decides nothing; attempt_cap_of said why.
+  [ "$used" != '?' ] || { note "$id: no attempt starts while its attempt cap cannot be read"; return 1; }
   if [ "$cap" = - ] || [ "$used" -lt "$cap" ]; then return 0; fi
   case "$decide" in retry=*) n="${decide#retry=}" ;; esac
   # retry=N raises the cap by N, so it starts an attempt while the spent attempts are under the raised cap:
@@ -485,7 +492,7 @@ decision_after_attempt() { # decision_after_attempt <plan> <id> <stop-before> <c
   stop="$(cat "$tdir/escalation.stop" 2>/dev/null)"
   if [ -n "$stop" ] && { [ "$crc" = 3 ] || [ "$stop" != "$before" ]; }; then reasons="${reasons:+$reasons }split"; fi
   read -r used cap <<< "$(attempt_cap_of "$PLAN" "$id")"
-  if [ "$cap" != - ] && [ "$used" -ge "$cap" ]; then reasons="${reasons:+$reasons }cap"; fi
+  if [ "$used" != '?' ] && [ "$cap" != - ] && [ "$used" -ge "$cap" ]; then reasons="${reasons:+$reasons }cap"; fi
   [ -z "$reasons" ] || stop_for_decision "$PLAN" "$id" $reasons || true
 }
 

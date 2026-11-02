@@ -16,6 +16,8 @@ import test_forge as fixtures
 
 ROOT = Path(__file__).resolve().parents[1]
 ROUTE = ROOT / 'scripts' / 'forge-route.py'
+LIB = ROOT / 'scripts' / 'forge-lib-task.sh'
+ARTIFACT = ROOT / 'scripts' / 'forge-artifact.sh'
 CONTROL = ROOT / 'scripts' / 'forge-control.py'
 SAME = '- [P1][CONFIRMED] a.txt:1 — broken'
 
@@ -81,6 +83,29 @@ class CapCountTests(unittest.TestCase):
         self.attempts(attempt_row(1, 'FAIL'), attempt_row(2, 'FAIL'))
         (self.plan / 'tasks' / 'a' / 'decisions.tsv').write_text('1700000001\t2\tretry=002\tcontinue\n')
         self.assertEqual(self.cap(), ['2', '10'])
+
+
+class UnreadableCapTests(unittest.TestCase):
+    def test_an_unreadable_cap_starts_nothing_and_decides_nothing(self):
+        # Run 1: a forge-route.py that printed nothing failed `[ "" -lt "" ]` in the gate, which then
+        # stopped the task for a `cap` decision with an empty count.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / 'skill' / 'scripts').mkdir(parents=True)
+            (root / 'skill' / 'scripts' / 'forge-route.py').write_text('')
+            plan = root / 'plan'
+            (plan / 'tasks' / 'a').mkdir(parents=True)
+            (plan / 'tasks' / 'a' / 'status').write_text('FAIL\n')
+            body = ('source "$ARTIFACT"; note() { printf "forge: %s\\n" "$*" >&2; }; source "$LIB"; '
+                    'attempt_cap_gate "$P" a FAIL ""')
+            env = {'PATH': '/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin', 'SKILL_DIR': str(root / 'skill'),
+                   'LIB': str(LIB), 'ARTIFACT': str(ARTIFACT), 'P': str(plan)}
+            r = subprocess.run(['/bin/bash', '-c', body], capture_output=True, text=True, env=env, timeout=60)
+            self.assertEqual(r.returncode, 1, r.stderr)
+            self.assertIn('cannot read its attempt cap', r.stderr)
+            self.assertNotIn('integer expression', r.stderr)
+            self.assertFalse((plan / 'tasks' / 'a' / 'decision.md').exists())
+            self.assertEqual((plan / 'tasks' / 'a' / 'status').read_text(), 'FAIL\n')
 
 
 class CapCase(unittest.TestCase):
