@@ -470,7 +470,7 @@ class EndToEndTests(StoreCase):
         qa = [e for e in self.events(kind='dispatch', task='a') if e['data']['role'] == 'qa']
         self.assertEqual([(e['attempt'], e['data']['verdict'], (e['data'].get('infra') or {}).get('class'),
                            e['data'].get('session_continue')) for e in qa],
-                         [(1, 'PASS', 'quota', None), (1, 'PASS', None, None)])
+                         [(1, 'PASS', 'usage_limit', None), (1, 'PASS', None, None)])
 
         runs = export.Runs(export.Store(store.connect()))
         rows = [row for row in export._qa_rows(runs) if row['task'] == 'a']

@@ -287,26 +287,33 @@ class EffortEndToEndTests(unittest.TestCase):
         self.assertEqual((p / 'escalate_effort').read_text(), 'on\n')
 
     def stopped_at_the_top_tier(self):
-        """A plan whose task the policy stopped after three failures, with the step off."""
+        """A plan whose task the policy stopped after three failures, with the step off: it now waits
+        for a person's decision (#69), so no switch releases it by itself."""
         p = self.pooled_plan('--dwarf-low', 'sol')
         self.three_failures()
         r = self.run_script('forge-parallel.sh', 'run', p, '--retry-failed', 3)
         self.assertEqual(r.returncode, 5, r.stdout)
         self.assertTrue((p / 'tasks/a/escalation.stop').exists())
+        self.assertEqual((p / 'tasks/a/status').read_text().strip(), 'NEEDS_DECISION')
         return p
 
-    def test_the_run_switch_releases_a_task_stopped_with_the_step_off(self):
+    def test_the_run_switch_does_not_release_a_task_waiting_for_a_decision(self):
         p = self.stopped_at_the_top_tier()
         r = self.run_script('forge-parallel.sh', 'run', p, '--retry-failed', 3, '--escalate-effort')
-        self.assertEqual(r.returncode, 0, r.stdout)
-        self.assertEqual(self.spent_on(p)[-1], ('4', 'PASS', 'sol:high'))
+        self.assertEqual(r.returncode, 5, r.stdout)
+        self.assertEqual(self.calls().count('dwarf'), 3)
+        self.assertEqual((p / 'tasks/a/status').read_text().strip(), 'NEEDS_DECISION')
 
-    def test_the_control_releases_a_task_stopped_with_the_step_off(self):
+    def test_the_control_does_not_release_a_task_waiting_for_a_decision(self):
         p = self.stopped_at_the_top_tier()
         done = subprocess.run([sys.executable, str(CONTROL), 'set', str(p), 'escalate-effort', 'on'],
                               capture_output=True, text=True, env=self.env, timeout=60)
         self.assertEqual(done.returncode, 0, done.stderr)
         r = self.run_script('forge-parallel.sh', 'run', p, '--retry-failed', 3)
+        self.assertEqual(r.returncode, 5, r.stdout)
+        self.assertEqual(self.calls().count('dwarf'), 3)
+        # The person who decides names the model: the next effort of the same one.
+        r = self.run_script('forge-parallel.sh', 'retry', p, 'a', '--dwarf', 'sol:high', '--reason', 'step on', '--approved')
         self.assertEqual(r.returncode, 0, r.stdout)
         self.assertEqual(self.spent_on(p)[-1], ('4', 'PASS', 'sol:high'))
 

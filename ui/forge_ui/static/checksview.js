@@ -19,6 +19,7 @@
 })(typeof self !== 'undefined' ? self : this, function (root) {
   'use strict';
 
+  const RM = typeof module === 'object' && module.exports ? require('./runmodel.js') : root.ForgeRunModel;
   const QUIET_WARN_S = 300;                // a log quiet past this is flagged, as the verification view flags its own
   const ENV_EVERY_S = 15;                  // a running run's environment problems are read again at most this often
   const list = v => Array.isArray(v) ? v : [];
@@ -68,8 +69,9 @@
     if (scope.startsWith('harness:')) return `harness ${w.harness || scope.slice(8)}`;
     return scope || 'its model';
   }
-  // Why a task waits: {kind, text, tasks: [{id, stopped}], until, exhausted, split}, or null
-  function waitingModel(w) {
+  // Why a task waits: {kind, text, tasks: [{id, stopped}], until, exhausted, split}, or null. A pause also has
+  // reset (its reset time, from now) and needs (`needs you: <hint>` when the user must act), each null when unknown.
+  function waitingModel(w, now) {
     if (!w || typeof w !== 'object') return null;
     const ids = v => list(v).map(String);
     const out = { kind: w.kind, tasks: [], until: null, exhausted: false, split: null };
@@ -83,8 +85,11 @@
     if (w.kind === 'stopping') return { ...out, text: w.mode === 'now' ? 'the run is stopping now' : 'the run stops once its running tasks end' };
     if (w.kind === 'next') return { ...out, text: "starts at the scheduler's next turn" };
     if (w.kind === 'infra') {
-      return { ...out, text: `paused: ${scopeText(w)}${w.class ? ' · ' + String(w.class).replace(/_/g, ' ') : ''}`,
-        until: w.exhausted === true ? null : num(w.until), exhausted: w.exhausted === true };
+      const cause = RM.causeLabel(w.class);
+      const needs = w.needs_you === true ? (typeof w.hint === 'string' && w.hint ? `needs you: ${w.hint}` : 'needs you') : null;
+      return { ...out, text: `paused: ${scopeText(w)}${cause ? ' · ' + cause : ''}`,
+        until: w.exhausted === true ? null : num(w.until), exhausted: w.exhausted === true,
+        reset: RM.resetText(w.reset_at, now), needs };
     }
     if (w.kind === 'escalation') {
       return { ...out, text: `stopped by the retry policy${num(w.attempts) !== null ? ` after ${plural(w.attempts, 'attempt')}` : ''}${w.model ? ' on ' + w.model : ''}`,
@@ -196,6 +201,11 @@
       if (t.stopped) parent.append(el('span', ' (stopped)', 'warn'));
     });
   }
+  // a pause's reset time after its line, then `needs you: <hint>` on a line of its own in the warn style
+  function pauseNotes(parent, w) {
+    if (w.reset) parent.append(document.createTextNode(' · ' + w.reset));
+    if (w.needs) parent.append(el('span', w.needs, 'warn pause-needs'));
+  }
   // Brings the times under `root` up to `now` (epoch seconds) between redraws.
   function tick(rootNode, now) {
     if (!rootNode || !rootNode.querySelectorAll || num(now) === null) return;
@@ -216,19 +226,20 @@
       box.append(quietNode(m.quietSince, now));
       return box;
     }
-    const w = waitingModel(task && task.waiting);
+    const w = waitingModel(task && task.waiting, now);
     if (!w) { box.append(el('span', '—', 'muted')); return box; }
     box.classList.add('now-waiting');
     box.append(el('span', w.text + (w.tasks.length ? ' ' : ''), 'now-why'));
     taskLinks(box, ctx, w.tasks);
     if (w.until !== null) box.append(untilNode(w.until, now));
+    pauseNotes(box, w);
     if (w.exhausted) box.append(el('span', 'waits used up', 'warn'));
     return box;
   }
 
   // The task inspector's Now section: what it does, or why it waits
   function nowSection(host, ctx, task) {
-    const m = nowModel(task), w = m ? null : waitingModel(task.waiting);
+    const m = nowModel(task), w = m ? null : waitingModel(task.waiting, ctx.now);
     if (!m && !w) return;
     const s = section(host, 'Now', 'now-section');
     const box = el('div', undefined, 'vfy-live now-live');
@@ -267,6 +278,7 @@
       p.append(el('span', w.text + (w.tasks.length ? ' ' : '')));
       taskLinks(p, ctx, w.tasks);
       if (w.until !== null) p.append(document.createTextNode(' · '), untilNode(w.until, ctx.now));
+      pauseNotes(p, w);
       if (w.exhausted) p.append(el('span', ' · its waits are used up', 'warn'));
       box.append(p);
       if (w.split) {
@@ -390,9 +402,10 @@
     const dl = el('dl', undefined, 'fields');
     for (const [label, value] of rows) { dl.append(el('dt', label), el('dd', value)); }
     for (const p of list(run.scheduler.pauses)) {
-      const w = waitingModel({ ...p, kind: 'infra' });
+      const w = waitingModel({ ...p, kind: 'infra' }, now);
       const dd = el('dd', w.text);
       if (w.until !== null) dd.append(document.createTextNode(' · '), untilNode(w.until, now));
+      pauseNotes(dd, w);
       if (w.exhausted) dd.append(el('span', ' · its waits are used up', 'warn'));
       dl.append(el('dt', 'Paused'), dd);
     }

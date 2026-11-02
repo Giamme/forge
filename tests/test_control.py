@@ -1,5 +1,6 @@
 """`forge control`: show and change a plan's live controls, under the control lock, with an audit log."""
 import dataset_isolation  # noqa: F401  keeps forge's dataset and config out of the developer's home
+import calendar
 import fcntl
 import json
 import os
@@ -94,7 +95,7 @@ class ControlTests(unittest.TestCase):
                          (str(self.plan), 'r-7', False, False))
         self.assertEqual(shown['run'], dict(qa_threshold='P2', qa_threshold_source='set', timeout=90, escalate_after=3, escalate_effort='off',
                                             verify_retries=1, retry_budget=None, infra_budget=None, infra_backoff='exp:60',
-                                            max_parallel=None, drained=False, stopping=None,
+                                            infra_fallback='off', max_parallel=None, drained=False, stopping=None,
                                             infra_paused=None, pre_review_tests='off', pre_review_parallel=2))
         self.assertEqual(list(shown['tasks']), ['a', 'b'])
         self.assertEqual(shown['tasks']['a'], dict(
@@ -126,6 +127,39 @@ class ControlTests(unittest.TestCase):
         (self.base / 'empty').mkdir()
         self.code(2, 'show', self.base / 'empty')
         self.code(2, 'set', self.base / 'empty', 'timeout', '5')
+
+    def test_an_infra_task_shows_its_cause_in_the_table_and_its_stop_in_json(self):
+        self.put('tasks/a/status', 'INFRA\n')
+        self.put('tasks/a/infra.txt', 'class=budget\nharness=codex\nmodel=gpt-6.1-sol\nstage=dwarf\nrc=1\n')
+        self.assertRegex(self.ok('show', self.plan).stdout, r'\ba\s+INFRA \(budget\)\s')
+        shown = self.show()
+        self.assertEqual(shown['tasks']['a']['infra'],
+                         dict(cause='budget', harness='codex', model='gpt-6.1-sol', stage='dwarf', reset_at=None,
+                              needs_you=True, hint='add credits, or check the billing of codex'))
+        self.assertNotIn('infra', shown['tasks']['b'])          # only an INFRA task carries a stop
+
+    def test_a_pause_line_gives_its_reset_and_says_who_must_act(self):
+        self.live()
+        self.env['TZ'] = 'UTC'                                  # the clock of the reset below is UTC
+        reset = calendar.timegm(time.gmtime()[:3] + (12, 34, 0))
+        self.put('infra.paused', json.dumps({'scopes': [
+            {'scope': 'harness:codex', 'class': 'budget', 'harness': 'codex', 'model': None, 'tasks': ['a'],
+             'cycle': 0, 'until': None, 'exhausted': True, 'needs_you': True,
+             'hint': 'add credits, or check the billing of codex', 'reset_at': None},
+            {'scope': 'harness:claude', 'class': 'usage_limit', 'harness': 'claude', 'model': None, 'tasks': ['b'],
+             'cycle': 1, 'until': time.time() + 900, 'exhausted': False, 'needs_you': False, 'hint': None,
+             'reset_at': reset}]}))
+        out = self.ok('show', self.plan).stdout
+        self.assertIn('  paused harness:codex (budget)  tasks a  waits used up  needs you: '
+                      'add credits, or check the billing of codex\n', out)
+        self.assertRegex(out, r'  paused harness:claude \(usage_limit\)  tasks b  wait 1 until \S+ \S+  resets 12:34\n')
+
+    def test_the_infra_fallback_setting_is_off_until_the_file_says_on(self):
+        self.assertIn('infra-fallback off', self.ok('show', self.plan).stdout)
+        self.assertEqual(self.show()['run']['infra_fallback'], 'off')
+        self.put('infra_fallback', 'on\n')
+        self.assertIn('infra-fallback on', self.ok('show', self.plan).stdout)
+        self.assertEqual(self.show()['run']['infra_fallback'], 'on')
 
     # ------------------------------------------------------------------------------------ set
 

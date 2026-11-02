@@ -38,7 +38,10 @@ _EXEC = re.compile(r'(?:task|dwarf|qa|solo|verification|parallel)-[0-9a-f]{32}')
 _TEXT_KEYS = frozenset(('prompt', 'last', 'request', 'log_tail', 'dwarf_tail', 'qa_tail', 'qa_last', 'qa_input',
                         'tasks_summary', 'known_issues', 'texts', 'text', 'planning_last', 'approach', 'retry_findings',
                         'dwarf_input', 'error', 'last_line', 'message', 'excerpt', 'tail', 'lines', 'call', 'split',
-                        'needs_input'))
+                        'needs_input', 'detail'))
+# keys that are private text only under one parent: a person's --reason on each decision (`reason` elsewhere is
+# a short machine word, such as a sweep's dropped-finding reason, and stays)
+_TEXT_KEYS_UNDER = {'decisions': frozenset(('reason',))}
 
 
 def _enc(value):
@@ -109,7 +112,8 @@ class _Snapshot:
 
     def clean(self, value, key=None):
         if isinstance(value, dict):
-            return {k: (None if not self.texts and k in _TEXT_KEYS and isinstance(v, (str, dict, list)) else self.clean(v, k))
+            private = _TEXT_KEYS | _TEXT_KEYS_UNDER.get(key, frozenset())
+            return {k: (None if not self.texts and k in private and isinstance(v, (str, dict, list)) else self.clean(v, k))
                     for k, v in value.items()}
         if isinstance(value, list):
             return [self.clean(v, key) for v in value]

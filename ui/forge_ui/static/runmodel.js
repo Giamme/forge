@@ -15,8 +15,8 @@
   const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
   const DONE = new Set(['MERGED', 'PASS', 'NOCHANGES']);
   const BAD = new Set(['FAIL', 'ERROR', 'CONFLICT', 'INFRA', 'TIMEOUT', 'INVALIDATED', 'INTERRUPTED', 'UNKNOWN', 'BLOCKED']);
-  // NEEDS_INPUT: stopped for an answer only the user can give. Neither DONE nor BAD, so never a failure.
-  const WAITING = new Set(['NEEDS_INPUT']);
+  // NEEDS_INPUT (an answer) and NEEDS_DECISION (a choice): stopped for the user. Neither DONE nor BAD, so never a failure.
+  const WAITING = new Set(['NEEDS_INPUT', 'NEEDS_DECISION']);
   const isWaiting = status => WAITING.has(status);
   const WEIGHT = { low: 1, medium: 2, high: 3 };
   const weight = t => WEIGHT[String(t && t.difficulty || '').toLowerCase()] || 2;
@@ -203,7 +203,7 @@
     if (statuses.some(s => s === 'RUNNING')) return 'RUNNING';
     if (statuses.every(s => s === 'MERGED')) return 'MERGED';
     if (statuses.some(s => s === 'PENDING' || s === 'PASS')) return 'PENDING';
-    // only answers are missing: the integration waits for the user, not for a fix
+    // only the user is missing (an answer or a decision): the integration waits, not for a fix
     if (statuses.some(isWaiting) && statuses.every(s => s === 'MERGED' || isWaiting(s))) return 'WAITING';
     return 'BLOCKED';
   }
@@ -230,6 +230,31 @@
     if (!t) return 'PENDING';
     if (t.status === 'MERGED' && t.accepted === true) return 'ACCEPTED';
     return t.status || 'PENDING';
+  }
+  // An infrastructure stop's cause as a short label, shared by the task table, the panel and the checks view.
+  // A cause the page does not know (an older run's `quota`) is shown as it was written; no cause is null.
+  const CAUSE_LABELS = { capacity: 'at capacity', rate_limit: 'rate limited', usage_limit: 'usage limit', budget: 'out of budget',
+    auth: 'login needed', network: 'network down', provider_down: 'provider down', empty: 'empty answer', cancelled: 'cancelled' };
+  const causeLabel = cause => cause ? (Object.prototype.hasOwnProperty.call(CAUSE_LABELS, cause) ? CAUSE_LABELS[cause] : String(cause)) : null;
+  // The status word, with an INFRA task's cause after it (`INFRA · usage limit`); plain `INFRA` when no cause was recorded.
+  function statusText(t) {
+    const status = taskStatus(t), label = status === 'INFRA' ? causeLabel(t.infra && t.infra.cause) : null;
+    return label ? `INFRA · ${label}` : status;
+  }
+  const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  // When a limit resets, in local time: `resets 14:05` today, `resets Fri 09:00` within the next six days, else
+  // `resets Nov 3 09:00`. Null without a reset (epoch seconds, or null) or without now to compare it with.
+  function resetText(epoch, now) {
+    const at = num(epoch), t = num(now);
+    if (at === null || t === null) return null;
+    const when = new Date(at * 1000), today = new Date(t * 1000);
+    if (Number.isNaN(when.getTime()) || Number.isNaN(today.getTime())) return null;
+    const clock = `${String(when.getHours()).padStart(2, '0')}:${String(when.getMinutes()).padStart(2, '0')}`;
+    const days = Math.round((new Date(when.getFullYear(), when.getMonth(), when.getDate()) - new Date(today.getFullYear(), today.getMonth(), today.getDate())) / 86400000);
+    if (days === 0) return `resets ${clock}`;
+    if (days > 0 && days < 7) return `resets ${DAY_NAMES[when.getDay()]} ${clock}`;
+    return `resets ${MONTH_NAMES[when.getMonth()]} ${when.getDate()} ${clock}`;
   }
   // Verdict column and the 2D graph's tick or cross. text is the words, status the lamp class,
   // mark the cross (FAIL) or tick (PASS). An acceptance names FAIL or UNKNOWN and never invents a FAIL,
@@ -850,6 +875,7 @@
   }
 
   /* ---------- notifications: what changed between two polls of the run list ---------- */
+  // Waiting statuses are absent: a task that stops for the user (NEEDS_INPUT, NEEDS_DECISION) is not a failure.
   const FAILING = new Set(['FAIL', 'ERROR', 'CONFLICT', 'TIMEOUT', 'INVALIDATED', 'INTERRUPTED', 'BLOCKED']);
   // prev, next: RunSummary lists (prev null on the first poll, which is only a baseline). A run that has not
   // changed for two hours (stale: its process died) never fires.
@@ -913,7 +939,7 @@
   }
 
   return { liveNow, runState, execStatus, matchRun, filterOptions, atlasModel, repoKey, repoLabel, compareRepo, columns, planModel, finishState,
-    finalStatus, runReviewStatus, reviewSinceLine, reviewAt, taskStatus, taskVerdict, attemptStatus, attemptNote, attemptFailed, isWaiting,
+    finalStatus, runReviewStatus, reviewSinceLine, reviewAt, taskStatus, statusText, causeLabel, resetText, taskVerdict, attemptStatus, attemptNote, attemptFailed, isWaiting,
     attributionLine, taskParts,
     taskTimes, metricValue, overlap, projectSchedule, execModel, verifyLeds, criticalPath, concurrency, stateAt, timeRange, events, lineage, structureKey, innerKey,
     fmtDur, alias, basename, weight, searchIndex, searchRank, statusEvents, fractalTree, sweepLine, sweepState };

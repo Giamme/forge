@@ -23,14 +23,21 @@
 #   --infra-retries M       run               (this run only)      waits out quota/auth/network stops
 #   --infra-backoff SHAPE   run               $PLAN/infra_backoff  waits between those stops: exp:B[,C],
 #                                                                  linear:S,T[,C] or list:a,b,... (default exp:60)
-#   --infra-fallback        run               $PLAN/infra_fallback a dwarf's capacity stop moves it to the next healthy
-#   --no-infra-fallback                                            model of its tier pool (off by default)
+#   --infra-fallback        run               $PLAN/infra_fallback a dwarf's stop that another model can take (capacity,
+#   --no-infra-fallback     plan run                               usage limit, ...) moves it to the next healthy
+#                                                                  model of its tier pool; `plan` writes on, a
+#                                                                  plan without the file stays off
 #   --qa-threshold Pn|none|default  plan run retry review  $PLAN/qa_threshold  least severe CONFIRMED
 #                                                                  finding that still blocks; none (or off) =
 #                                                                  P3, default removes the file (P2)
 #   --verify-retries N      run retry integrate  $PLAN/verify_retries  reruns of a failed verify command
 #   --escalate-after N      run retry         $PLAN/escalate_after failed attempts on one model before the
 #                                                                  next goes a tier up (default 3; 0 = off)
+#   --max-attempts N        plan              $PLAN/max_attempts   attempts a task may spend across runs before it
+#                                                                  waits for a person (default 8; 0 = no cap). Raised
+#                                                                  later only with `forge control set max-attempts --confirm`
+#   --converge-window N     plan              $PLAN/converge_window  reviews the non-converging signal looks at
+#                                                                  (default 4; below 2 it never fires)
 #   --escalate-effort       run retry         $PLAN/escalate_effort  on: before the stop, retry the same
 #                                                                  model at the next effort its pairing accepts;
 #                                                                  tasks already stopped are decided again
@@ -99,8 +106,9 @@ forge_pp_flag() {
       [ "$cmd" = run ] || return 1
       PP_SHIFT=1; printf 'on\n' > "$plan/infra_fallback" ;;
     --no-infra-fallback)
-      [ "$cmd" = run ] || return 1
-      PP_SHIFT=1; rm -f "$plan/infra_fallback" ;;
+      PP_SHIFT=1
+      # `plan` writes the file itself, after its options, so the default on and this off cannot clash.
+      case "$cmd" in plan) PP_INFRA_FALLBACK=off ;; run) printf 'off\n' > "$plan/infra_fallback" ;; *) return 1 ;; esac ;;
     --infra-backoff)
       [ "$cmd" = run ] || return 1
       PP_MSG="$(python3 "$SKILL_DIR/scripts/forge-schedule.py" backoff-check "${2:-}" 2>&1)" || die "${PP_MSG#forge: }"
@@ -122,6 +130,14 @@ forge_pp_flag() {
       if [ "$2" = 0 ]; then
         rm -f "$plan"/tasks/*/escalation.stop "$plan"/tasks/*/split.suggested "$plan"/tasks/*/escalation.next
       fi ;;
+    --max-attempts)
+      case "$cmd" in plan) ;; *) return 1 ;; esac
+      pp_nonneg --max-attempts "${2:-}"
+      printf '%s\n' "$2" > "$plan/max_attempts" || die "could not write $plan/max_attempts" ;;
+    --converge-window)
+      case "$cmd" in plan) ;; *) return 1 ;; esac
+      pp_nonneg --converge-window "${2:-}"
+      printf '%s\n' "$2" > "$plan/converge_window" || die "could not write $plan/converge_window" ;;
     --escalate-effort)
       case "$cmd" in run|retry) ;; *) return 1 ;; esac
       PP_SHIFT=1                                  # a switch, not --escalate-after's N

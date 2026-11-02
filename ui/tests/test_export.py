@@ -126,6 +126,16 @@ class ExportTests(unittest.TestCase):
         for path in (f'/executions/{F.READER_DWARF1}/checks', '/tasks/reader/checks', '/environment'):
             self.assertIn(f'/api/runs/{self.key}' + path, snap['api'])
 
+    def test_a_persons_decision_reason_is_a_private_text(self):
+        # The final review of run 1: `--reason` notes stayed in a no-texts snapshot.
+        decision = {'decisions': [{'at': 1.0, 'attempt': 3, 'choice': 'retry=2', 'reason': 'private note'}],
+                    'sweep': {'dropped': [{'reason': 'stale'}]}}
+        hidden = export._Snapshot(None, 'k', texts=False, paths=True).clean(decision)
+        self.assertEqual(hidden['decisions'][0], {'at': 1.0, 'attempt': 3, 'choice': 'retry=2', 'reason': None})
+        self.assertEqual(hidden['sweep']['dropped'][0]['reason'], 'stale')     # a machine word, not a note
+        shown = export._Snapshot(None, 'k', texts=True, paths=True).clean(decision)
+        self.assertEqual(shown['decisions'][0]['reason'], 'private note')
+
     def test_a_root_that_is_a_symlink_is_scrubbed_in_both_spellings(self):
         real = self.base / 'real-home'
         (real / 'out').mkdir(parents=True)

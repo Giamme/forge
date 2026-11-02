@@ -199,10 +199,11 @@ class RetryTests(unittest.TestCase):
         self.assertEqual(self.calls().count('dwarf'), 3)          # budget left, but no fourth sol attempt
         self.assertIn('already in the highest tier', (p / 'tasks/a/split.suggested').read_text())
         self.assertIn('split suggested', r.stdout)
-        # A plain retry is refused the same way; naming a model is the human's call.
+        self.assertEqual((p / 'tasks/a/status').read_text().strip(), 'NEEDS_DECISION')   # #69: a person decides
+        # A plain retry is refused the same way; naming a model is the human's call, with a reason.
         r = self.run_script('forge-parallel.sh', 'retry', p, 'a')
         self.assertEqual((r.returncode, self.calls().count('dwarf')), (2, 3), r.stdout)
-        r = self.run_script('forge-parallel.sh', 'retry', p, 'a', '--dwarf', 'sol')
+        r = self.run_script('forge-parallel.sh', 'retry', p, 'a', '--dwarf', 'sol', '--reason', 'try sol again', '--approved')
         self.assertEqual((r.returncode, self.calls().count('dwarf')), (0, 4), r.stdout)
         self.assertFalse((p / 'tasks/a/escalations.tsv').exists())   # the same model is no escalation
 

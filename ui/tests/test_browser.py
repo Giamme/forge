@@ -977,3 +977,108 @@ class Controls(unittest.TestCase):
         self.assertIn('Read-only', page.text_content('#inspector .ctl'))
         self.assertEqual(page.locator('#inspector .ctl button, #inspector .ctl input, #inspector .ctl form').count(), 0)
         self.assertClean(page)
+
+
+class Infra(unittest.TestCase):
+    """An INFRA task stopped on a budget, in a live plan: its cause in the table and the panel, the pause that needs the user, a sideways move."""
+    open, assertClean = Page.open, Page.assertClean
+
+    def setUp(self):
+        self.temp = temp = tempfile.TemporaryDirectory(prefix='forge-ui-infra-')
+        self.addCleanup(temp.cleanup)
+        self.plan = F.make_plan(Path(temp.name) / 'p')
+        (self.plan / 'scheduler.live').write_text(json.dumps({'pid': os.getpid()}))        # a live scheduler: this process
+        now = time.time()
+        docs = self.plan / 'tasks/docs'
+        F.write(docs / 'status', 'INFRA\n')
+        F.write(docs / 'infra.txt', f'class=budget\nstage=dwarf\nharness=codex\nmodel=luna\nreset_at={int(now + 7200)}\n')
+        F.write(docs / 'lateral.tsv', f'{int(now - 600)}\t1\tdwarf\tluna\tsol\tcapacity\n')
+        F.write(self.plan / 'infra.paused', {'scopes': [{'scope': 'harness:codex', 'class': 'budget', 'harness': 'codex', 'model': None,
+                                                         'tasks': ['docs'], 'cycle': 1, 'until': None, 'exhausted': False,
+                                                         'needs_you': True, 'hint': 'Top up the budget, then retry docs',
+                                                         'reset_at': int(now + 7200)}]})
+        self.key = reader.run_key(self.plan)
+        _serve(self, reader.Catalog(plans=[self.plan], registry=False))
+        self.addCleanup(lambda: (self.server.shutdown(), self.server.server_close(), self.thread.join(timeout=2)))
+
+    def test_an_infra_stop_names_its_cause_what_needs_you_and_its_sideways_move(self):
+        page = self.open(cdn=False, view='2d')
+        page.goto(self.url + '#/runs/' + self.key)
+        page.wait_for_selector('#run-tasks td[data-col=status] .chip.st-infra')
+        self.assertEqual(page.text_content('#run-tasks td[data-col=status] .chip.st-infra'), 'INFRA · out of budget')
+        page.goto(self.url + '#/runs/' + self.key + '/tasks/docs')
+        page.wait_for_selector('#inspector .insp-section')
+        self.assertEqual(page.text_content('#inspector .insp-head .chip.st-infra'), 'INFRA · out of budget')
+        inspector = page.text_content('#inspector')
+        self.assertIn('needs you: Top up the budget, then retry docs', inspector)
+        self.assertIn('moved sideways: dwarf luna → sol (at capacity)', inspector)
+        self.assertClean(page)
+
+    def test_the_needs_you_line_stays_once_the_scheduler_is_gone(self):
+        # The final review of run 1: infra.paused goes with the scheduler, and the hint went with it.
+        (self.plan / 'infra.paused').unlink()
+        (self.plan / 'scheduler.live').unlink()
+        page = self.open(cdn=False, view='2d')
+        page.goto(self.url + '#/runs/' + self.key + '/tasks/docs')
+        page.wait_for_selector('#inspector .insp-section')
+        self.assertIn('needs you: add credits, or check the billing of codex', page.text_content('#inspector'))
+        self.assertClean(page)
+
+
+class Decision(unittest.TestCase):
+    """A task that stopped NEEDS_DECISION in a live plan: its reasons, its attempts against the cap, its review ledger and its commands, and no Retry."""
+    open, assertClean = Page.open, Page.assertClean
+
+    def setUp(self):
+        self.temp = temp = tempfile.TemporaryDirectory(prefix='forge-ui-decision-')
+        self.addCleanup(temp.cleanup)
+        self.plan = F.make_plan(Path(temp.name) / 'p')
+        (self.plan / 'scheduler.live').write_text(json.dumps({'pid': os.getpid()}))        # a live scheduler: a retry would show if the task allowed one
+        now = time.time()
+        docs = self.plan / 'tasks/docs'
+        F.write(docs / 'status', 'NEEDS_DECISION\n')
+        F.write(docs / 'attempt', '3\n')
+        F.write(docs / 'decision.md', 'reasons: converging, cap\n'
+                'The reviews keep finding new P1 findings in docs/api.md. Choose one and run it:\n\n'
+                '    bash scripts/forge-parallel.sh retry <plan> docs --dwarf sol:xhigh\n')
+        F.write(docs / 'ledger.tsv', F.tsv([
+            (int(now - 1800), 1, 'task-docs-r1', 'FAIL', 'P2', 'P1', 2, 2, 0, 4096, '-'),
+            (int(now - 900), 2, 'task-docs-r2', 'FAIL', 'P2', 'P1', 2, 1, 1, 5120, 1024),
+            (int(now - 300), 3, 'task-docs-r3', 'FAIL', '-', 'P1', 2, 0, 2, 5300, 180)]))
+        F.write(docs / 'attempts.tsv', F.tsv([(int(now - 1800), 1, 'FAIL', '', 'luna'), (int(now - 900), 2, 'FAIL', '', 'sol:xhigh'),
+                                              (int(now - 300), 3, 'FAIL', '', 'sol:xhigh')]))
+        self.key = reader.run_key(self.plan)
+        _serve(self, reader.Catalog(plans=[self.plan], registry=False))
+        self.addCleanup(lambda: (self.server.shutdown(), self.server.server_close(), self.thread.join(timeout=2)))
+
+    def test_a_task_waiting_for_a_decision_says_why_what_it_tried_and_what_to_run(self):
+        page = self.open(cdn=False, view='2d')
+        page.goto(self.url + '#/runs/' + self.key + '/tasks/docs')
+        page.wait_for_selector('#inspector .ctl [data-row]')
+        self.assertEqual(page.text_content('#inspector .insp-head .chip.st-needs_decision'), 'NEEDS_DECISION')
+        self.assertEqual(page.text_content('#inspector .insp-section h3.decision-reasons'), 'reviews are not converging, attempt cap reached')
+        inspector = page.text_content('#inspector')
+        self.assertIn('attempts 3 of 8 allowed', inspector)
+        rows = page.locator('#inspector table.ledger tbody tr')
+        self.assertEqual([rows.nth(i).locator('td').all_text_contents() for i in range(rows.count())],
+                         [['1', 'FAIL', '2', '2', 'P1'], ['2', 'FAIL', '2', '1', 'P1'], ['3', 'FAIL', '2', '0', 'P1']])
+        self.assertEqual(page.locator('#inspector table.ledger tr.failed').count(), 3)
+        command = page.locator('#inspector pre', has_text='forge-parallel.sh retry').first.text_content()
+        self.assertIn('bash scripts/forge-parallel.sh retry <plan> docs --dwarf sol:xhigh', command)
+        self.assertEqual(page.locator('#inspector button', has_text='Retry now').count(), 0)
+        self.assertEqual(page.locator('#inspector form.ctl-retry').count(), 0)
+        self.assertClean(page)
+
+    def test_a_gate_fail_over_a_pass_verdict_still_reads_as_failed(self):
+        F.write(self.plan / 'tasks/docs/ledger.tsv', F.tsv([(int(time.time() - 300), 1, 'task-docs-r1', 'PASS', 'fail', 'P2', 1, 1, 0, 4096, '-')]))
+        page = self.open(cdn=False, view='2d')
+        page.goto(self.url + '#/runs/' + self.key + '/tasks/docs')
+        page.wait_for_selector('#inspector table.ledger tbody tr')
+        row = page.locator('#inspector table.ledger tbody tr').first
+        self.assertIn('failed', row.get_attribute('class'))
+        chip = row.locator('td .chip').first
+        self.assertEqual(chip.text_content(), 'PASS')
+        self.assertIn('st-fail', chip.get_attribute('class'))
+        self.assertNotIn('st-pass', chip.get_attribute('class'))
+        self.assertEqual(chip.get_attribute('title'), 'forge gate: FAIL (reviewer said PASS)')
+        self.assertClean(page)

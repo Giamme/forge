@@ -1,5 +1,6 @@
-"""Infrastructure pauses scoped by class (#30): a rate limit pauses one model, a quota or
-auth stop one harness, anything else everything. The worker stands in for forge-parallel.sh
+"""Infrastructure pauses scoped by cause (#30, #81): capacity, a rate limit, an empty answer or a
+cancelled run pauses one model, a usage limit, budget, auth or provider outage one harness, anything
+else everything. The worker stands in for forge-parallel.sh
 as in test_schedule.py; an INFRA outcome names its class, harness and model, the way
 infra_stop copies them from dispatch. Specs are real registry aliases: sol and astra run on
 codex, sonnet and opus on claude."""
@@ -47,7 +48,7 @@ case "$cmd" in
 esac
 '''
 
-SOL_LIMIT = 'INFRA rate_limit codex gpt-6.1-sol'
+SOL_LIMIT = 'INFRA capacity codex gpt-6.1-sol'
 
 
 class InfraScopeBase(unittest.TestCase):
@@ -92,7 +93,7 @@ class InfraScopeBase(unittest.TestCase):
 
 
 class InfraScopeTests(InfraScopeBase):
-    def test_a_rate_limited_model_waits_alone_while_tasks_on_another_model_finish(self):
+    def test_a_model_at_capacity_waits_alone_while_tasks_on_another_model_finish(self):
         self.task('a', [SOL_LIMIT] * 3, dwarf='sol')
         self.task('b', ['PASS'], dwarf='astra')
         self.task('c', ['PASS'], dwarf='astra')
@@ -105,8 +106,8 @@ class InfraScopeTests(InfraScopeBase):
         self.assertIn('other tasks continue', r.stderr)
         self.assertFalse((self.plan / 'tasks/b/infra.txt').exists())
 
-    def test_a_quota_stop_holds_every_task_on_that_harness_and_no_other(self):
-        self.task('a', ['INFRA quota claude sonnet'], dwarf='sonnet')
+    def test_a_usage_limit_holds_every_task_on_that_harness_and_no_other(self):
+        self.task('a', ['INFRA usage_limit claude sonnet'], dwarf='sonnet')
         self.task('b', ['PASS'], dwarf='opus')            # another model, same harness
         self.task('c', ['PASS'], dwarf='sol')
         r = self.run_scheduler()
@@ -128,6 +129,15 @@ class InfraScopeTests(InfraScopeBase):
         self.assertEqual(self.status('q'), 'MERGED')
         self.assertEqual((self.calls('r'), self.calls('s')), (0, 0))
 
+    def test_an_empty_answer_pauses_its_model_only(self):
+        self.task('a', ['INFRA empty codex gpt-6.1-sol', 'INFRA empty codex gpt-6.1-sol'], dwarf='sol')
+        self.task('b', ['PASS'], dwarf='astra')
+        r = self.run_scheduler()
+        self.assertEqual(r.returncode, 8, r.stderr)
+        # The first stop is tried again at once; the second pauses the model, not the run.
+        self.assertEqual((self.status('b'), self.calls('a')), ('MERGED', 2))
+        self.assertIn('(empty) on codex/gpt-6.1-sol for a', r.stderr)
+
     def test_any_other_class_still_pauses_everything_until_the_drain(self):
         self.task('a', ['INFRA network codex gpt-6.1-sol'], dwarf='sol')
         self.task('b', ['PASS'], dwarf='astra')
@@ -146,15 +156,15 @@ class InfraScopeTests(InfraScopeBase):
         while not paused.exists() and time.monotonic() < deadline:
             time.sleep(0.05)
         scopes = json.loads(paused.read_text())['scopes']
-        self.assertEqual(scopes, [{'scope': 'model:codex/gpt-6.1-sol', 'class': 'rate_limit', 'harness': 'codex',
+        self.assertEqual(scopes, [{'scope': 'model:codex/gpt-6.1-sol', 'class': 'capacity', 'harness': 'codex',
                                    'model': 'gpt-6.1-sol', 'tasks': ['a'], 'cycle': 0, 'until': None,
-                                   'exhausted': True}])
+                                   'exhausted': True, 'needs_you': False, 'hint': None, 'reset_at': None}])
         shown = subprocess.run([sys.executable, str(ROOT / 'scripts/forge-control.py'), 'show', str(self.plan), '--json'],
                                stdout=subprocess.PIPE, text=True, timeout=30)
         self.assertEqual(json.loads(shown.stdout)['run']['infra_paused'], scopes)
         text = subprocess.run([sys.executable, str(ROOT / 'scripts/forge-control.py'), 'show', str(self.plan)],
                               stdout=subprocess.PIPE, text=True, timeout=30).stdout
-        self.assertIn('paused model:codex/gpt-6.1-sol (rate_limit)  tasks a  waits used up', text)
+        self.assertIn('paused model:codex/gpt-6.1-sol (capacity)  tasks a  waits used up', text)
         (self.plan / 'gate').write_text('')
         _, err = scheduler.communicate(timeout=30)
         self.assertEqual(scheduler.returncode, 8, err)

@@ -149,6 +149,9 @@ _FINDINGS = [
     'what breaks, and a concrete input that triggers it. Mark each CONFIRMED if you traced',
     'it in the code, or PLAUSIBLE if you could not fully verify it.',
 ]
+# #69: task reviews returned a few findings per round. These two lines follow _FINDINGS for
+# task and solo only, so the findings rules stay one paragraph. Final and sweep omit them.
+_ALL_CONFIRMED = ['List every CONFIRMED finding you find, not only the most important few.']
 _SOLO_EXTRA = ['If the diff is correct, say so plainly rather than inventing something to report.']
 
 # The reviewer's own verification, bounded to the change (#89): one reviewer re-ran a whole
@@ -221,7 +224,9 @@ def qa_text(part: str, kind: str = 'task', threshold=None) -> str:
         return '\n'.join(_HEAD[kind]) + '\n'
     if part != 'tail':
         raise ValueError('part must be head or tail')
-    lines = list(_SWEEP_FINDINGS if kind == 'sweep' else _FINDINGS) + (_SOLO_EXTRA if kind == 'solo' else [])
+    lines = list(_SWEEP_FINDINGS if kind == 'sweep' else _FINDINGS)
+    if kind in ('task', 'solo'):
+        lines += _ALL_CONFIRMED + _SOLO_EXTRA
     lines += [''] + _VERIFY
     lines += [''] + _SEVERITY
     lines += [''] + _threshold_clause(rank, kind) + _CHECKED

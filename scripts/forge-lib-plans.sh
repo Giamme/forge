@@ -147,7 +147,7 @@ plans_why_not() { # plans_why_not <plan> <id> <status>: exit 3 with advice for a
     ERROR|TIMEOUT|INFRA|INTERRUPTED) die "task '$id' is $st: no reviewer verdict exists to override. Use 'forge-parallel.sh retry $plan $id' (or 'run')" 3 ;;
     BLOCKED|PENDING) die "task '$id' is $st: it has not been reviewed yet, so there is nothing to override" 3 ;;
     RUNNING) die "task '$id' is RUNNING (or a run was killed): re-run 'forge-parallel.sh run $plan' so it settles first" 3 ;;
-    *) die "task '$id' has status '$st'; only a FAIL or UNKNOWN task can be accepted" 3 ;;
+    *) die "task '$id' has status '$st'; only a FAIL, UNKNOWN or NEEDS_DECISION task can be accepted" 3 ;;
   esac
 }
 
@@ -192,7 +192,16 @@ do_accept() {
   int_wt="$(cat "$PLAN/wt_root")/_integration"
 
   st="$(task_status "$PLAN" "$id")"
-  case "$st" in FAIL|UNKNOWN) ;; *) plans_why_not "$PLAN" "$id" "$st" ;; esac
+  case "$st" in
+    FAIL|UNKNOWN) ;;
+    NEEDS_DECISION)
+      # The attempt cap stops a task from any status: only a reviewed one has a verdict to override.
+      st="$(decision_from "$tdir")"
+      case "$st" in FAIL|UNKNOWN) ;; *)
+        die "task '$id' stopped for a decision after a $st attempt: no reviewer verdict exists to override. Decide with 'forge-parallel.sh retry $PLAN $id --decide retry=N --reason \"...\" --approved' (see $tdir/decision.md)" 3 ;;
+      esac ;;
+    *) plans_why_not "$PLAN" "$id" "$st" ;;
+  esac
 
   # The reviewed work must be exactly what is on disk: same commit on the branch, same
   # tree, index and HEAD in the worktree as when QA finished.

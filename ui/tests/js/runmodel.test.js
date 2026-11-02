@@ -456,22 +456,26 @@ test('the finding sweep reads as one line, and each swept finding as a lamp', ()
   assert.deepEqual(['fixed', 'not-fixed', 'unreported', null].map(s => RM.sweepState(s).lamp), ['pass', 'fail', 'unknown', 'pending']);
 });
 
-test('NEEDS_INPUT waits for the user: neither done nor failed, and no failure notification', () => {
-  assert.equal(RM.isWaiting('NEEDS_INPUT'), true);
+test('NEEDS_INPUT and NEEDS_DECISION wait for the user: neither done nor failed, and no failure notification', () => {
   assert.equal(RM.isWaiting('FAIL'), false);
-  assert.equal(RM.runState({ counts: { NEEDS_INPUT: 1, MERGED: 2 } }), 'pending');
-  assert.equal(RM.runState({ counts: { NEEDS_INPUT: 1, FAIL: 1 } }), 'failed');
-  assert.equal(RM.runState({ counts: { NEEDS_INPUT: 1 } }), 'pending');
-  // only answers are missing: the integration waits for the user; a failed task still blocks it
+  // only the user is missing: the integration waits; a failed task still blocks it; work still pending stays pending
   const integration = statuses => RM.finishState({ tasks: statuses.map((status, i) => ({ id: 't' + i, status })) }).integration.status;
-  assert.equal(integration(['MERGED', 'NEEDS_INPUT']), 'WAITING');
-  assert.equal(integration(['MERGED', 'NEEDS_INPUT', 'FAIL']), 'BLOCKED');
-  assert.equal(integration(['NEEDS_INPUT', 'PENDING']), 'PENDING');
-  // a question answered later is a failure only when the retry fails, and the wait itself notifies nothing
+  // stopping for the user notifies nothing; a later failure does
   const task = (status) => ({ key: 'k', run_id: 'r', goal: 'g', repo: '/r', updated: T0, counts: { [status]: 1 }, task_statuses: [{ id: 'a', status, title: 'A' }] });
-  assert.deepEqual(RM.statusEvents([task('RUNNING')], [task('NEEDS_INPUT')], { now: T0 }), []);
-  const failed = RM.statusEvents([task('NEEDS_INPUT')], [task('FAIL')], { now: T0 });
-  assert.deepEqual(failed.map(e => e.kind), ['task-failed']);
+  for (const status of ['NEEDS_INPUT', 'NEEDS_DECISION']) {
+    assert.equal(RM.isWaiting(status), true, status);
+    assert.equal(RM.runState({ counts: { [status]: 1, MERGED: 2 } }), 'pending', status);
+    assert.equal(RM.runState({ counts: { [status]: 1, FAIL: 1 } }), 'failed', status);
+    assert.equal(RM.runState({ counts: { [status]: 1 } }), 'pending', status);
+    assert.equal(integration(['MERGED', status]), 'WAITING', status);
+    assert.equal(integration(['MERGED', status, 'FAIL']), 'BLOCKED', status);
+    assert.equal(integration([status, 'PENDING']), 'PENDING', status);
+    assert.deepEqual(RM.statusEvents([task('RUNNING')], [task(status)], { now: T0 }), [], status);
+    const failed = RM.statusEvents([task(status)], [task('FAIL')], { now: T0 });
+    assert.deepEqual(failed.map(e => e.kind), ['task-failed'], status);
+  }
+  // both waiting statuses together still wait: a run whose unmerged tasks all wait reads the same
+  assert.equal(integration(['MERGED', 'NEEDS_INPUT', 'NEEDS_DECISION']), 'WAITING');
 });
 
 test('BOUNCED and INCOMPLETE are failed attempts, each with a note of its own; other attempts have none', () => {
@@ -554,4 +558,27 @@ test('"by repo" orders runs by the name of their repository root, not of the che
     { key: 'z', repo: '/z/alpha', updated: T0 },
   ];
   assert.deepEqual(runs.slice().sort(RM.compareRepo).map(r => r.key), ['z', 'y', 'x']);
+});
+
+test('an infrastructure cause reads as its label, an unknown one as written, and a reset as a clock, a day or a date', () => {
+  const at = (day, h, m, month = 9) => new Date(2026, month, day, h, m).getTime() / 1000;      // local time; month 9 is October, 30 Oct 2026 a Friday
+  const now = at(30, 12, 0);
+  const cases = [
+    [RM.causeLabel('capacity'), 'at capacity'], [RM.causeLabel('rate_limit'), 'rate limited'], [RM.causeLabel('usage_limit'), 'usage limit'],
+    [RM.causeLabel('budget'), 'out of budget'], [RM.causeLabel('auth'), 'login needed'], [RM.causeLabel('network'), 'network down'],
+    [RM.causeLabel('provider_down'), 'provider down'], [RM.causeLabel('empty'), 'empty answer'], [RM.causeLabel('cancelled'), 'cancelled'],
+    [RM.causeLabel('quota'), 'quota'], [RM.causeLabel('constructor'), 'constructor'], [RM.causeLabel(null), null],
+    [RM.resetText(at(30, 14, 5), now), 'resets 14:05'], [RM.resetText(at(31, 9, 0), now), 'resets Sat 09:00'],
+    [RM.resetText(at(3, 9, 0, 10), now), 'resets Tue 09:00'], [RM.resetText(at(6, 9, 0, 10), now), 'resets Nov 6 09:00'], [RM.resetText(null, now), null], [RM.resetText(at(30, 14, 5), null), null],
+  ];
+  for (const [got, want] of cases) assert.equal(got, want, `want ${want}`);
+});
+
+test('a task in INFRA reads with its cause; without a cause it reads INFRA, and other statuses are unchanged', () => {
+  assert.equal(RM.statusText({ status: 'INFRA', infra: { cause: 'budget' } }), 'INFRA · out of budget');
+  assert.equal(RM.statusText({ status: 'INFRA', infra: { cause: 'quota' } }), 'INFRA · quota');
+  assert.equal(RM.statusText({ status: 'INFRA', infra: null }), 'INFRA');
+  assert.equal(RM.statusText({ status: 'FAIL', infra: { cause: 'budget' } }), 'FAIL');
+  assert.equal(RM.statusText({ status: 'MERGED', accepted: true }), 'ACCEPTED');
+  assert.equal(RM.statusText(null), 'PENDING');
 });

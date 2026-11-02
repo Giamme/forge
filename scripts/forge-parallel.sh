@@ -15,6 +15,8 @@
 #                                     [--sweep-ahead | --no-sweep-ahead] [--attribute | --no-attribute]
 #   forge-parallel.sh retry <plan-dir> <task-id> [--dwarf <spec>] [--setup <command>]
 #                                     [--answer <text> | --answer-file <file>]   (a NEEDS_INPUT task)
+#                                     [--decide retry=N|threshold=Pn | --dwarf <spec>] --reason "<why>" --approved
+#                                                                              (a NEEDS_DECISION task)
 #                                     [--timeout S] [--qa-threshold Pn|none|default] [--verify-retries N]
 #   forge-parallel.sh integrate <plan-dir> --approved [--verify-retries N] [--final-review <qa-spec>]
 #   forge-parallel.sh review <plan-dir> [--qa <spec>] [--yolo-qa] [--qa-threshold Pn|none|default]
@@ -164,6 +166,7 @@ pool_pick() { # pool_pick <comma-list> <index>
 do_plan() {
   local PLAN="${1:?plan needs a plan dir}"; shift
   local REPO="" D_ANY="" D_HI="" D_MD="" D_LO="" Q_ANY="" Q_HI="" Q_MD="" Q_LO=""
+  PP_INFRA_FALLBACK=""
   local PLANNER="" NOMEM=0 jev_rc=0 DLEVEL="" SHADOW_QA="" SHADOW_RATE="" EXPLORE="" FAIL_FIRST="" REVIEWER_SESSION="" IMPLEMENTER_SESSION="" PRE_REVIEW="" PRE_REVIEW_PARALLEL=""
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -228,6 +231,11 @@ do_plan() {
   # The table as the planner or orchestrator wrote it, before Jev or route resolution
   # rewrites any column: which tier a task was DECLARED is a label of its own.
   cp "$T" "$PLAN/tasks.declared.tsv"
+  # A lateral move on an infrastructure stop is on for a new plan; one without the file stays off. A re-plan
+  # keeps what the plan has, as it keeps its routing files: only --no-infra-fallback changes it here.
+  if [ -n "$PP_INFRA_FALLBACK" ] || [ ! -f "$PLAN/infra_fallback" ]; then
+    printf '%s\n' "${PP_INFRA_FALLBACK:-on}" > "$PLAN/infra_fallback" || die "could not write $PLAN/infra_fallback"
+  fi
   [ -z "$DLEVEL" ] || printf '%s\n' "$DLEVEL" > "$PLAN/decompose_level"
   # Shadow reviews are part of the plan, like its routing: frozen here, shown in the table
   # and read by every task process. `none` turns them off again.
@@ -286,6 +294,16 @@ do_plan() {
   [ "$NOMEM" = 1 ] && : > "$PLAN/no_memory"
   [ -n "$PLANNER" ] && printf '%s\n' "$PLANNER" > "$PLAN/planner"
   python3 - "$PLAN/fractal-routing.json" "$D_ANY" "$D_LO" "$D_MD" "$D_HI" <<'PY'
+import json,sys
+from pathlib import Path
+p=Path(sys.argv[1]); data=json.loads(p.read_text()) if p.exists() else {}
+for key,value in zip(('any','low','medium','high'),sys.argv[2:]):
+    if value: data[key]=[s.strip() for s in value.split(',') if s.strip()]
+p.write_text(json.dumps(data))
+PY
+  # The reviewer pools, kept as the dwarf pools are: the round-robin below forgets them, and a review
+  # stopped on infrastructure moves to a peer of its pool (forge-route.py qa-fallback).
+  python3 - "$PLAN/qa-routing.json" "$Q_ANY" "$Q_LO" "$Q_MD" "$Q_HI" <<'PY'
 import json,sys
 from pathlib import Path
 p=Path(sys.argv[1]); data=json.loads(p.read_text()) if p.exists() else {}
@@ -1274,13 +1292,17 @@ do_task_body() (
 # Entry point for both the scheduler's `_task` and `retry`: runs the pipeline, then logs
 # the attempt (including infrastructure stops, which spend nothing) for later audit.
 do_task() {
-  local rc
+  local rc crc=0 stop_before
   do_task_body "$@"; rc=$?
   record_attempt "$1" "$2"
   # The retry policy's state (escalation.next or escalation.stop), decided now rather than
   # at the next retry so a spent retry budget still reports it and the scheduler sees it.
+  stop_before="$(cat "$1/tasks/$2/escalation.stop" 2>/dev/null)"
   python3 "$SKILL_DIR/scripts/forge-route.py" escalation --plan "$1" --task "$2" --check \
-    --qa-only-next "$(qa_only_next_flag "$1" "$2")" >/dev/null 2>&1 || true
+    --qa-only-next "$(qa_only_next_flag "$1" "$2")" >/dev/null 2>&1 || crc=$?
+  # A FAIL that does not converge, or that the policy could not move to a stronger model, waits
+  # for a person (NEEDS_DECISION). attempts.tsv was written above and keeps FAIL.
+  decision_after_attempt "$1" "$2" "$stop_before" "$crc"
   return $rc
 }
 
@@ -1338,11 +1360,15 @@ merge_task() { # merge_task <plan> <id> -> 0 merged, 1 conflicted
 # into the real plan. Leaves n (how many answer flags), flag, val and novalue in the scratch dir.
 _retry_answer_scan() { # _retry_answer_scan <scratch-dir> <retry args...>
   local sd="$1"; shift
-  local n=0 flag="" val="" novalue=0 rc=0
+  local n=0 flag="" val="" novalue=0 rc=0 dwarf="" decide="" reason="" approved=0
   while [ $# -gt 0 ]; do
     case "$1" in
       --no-ripwire|--yolo-dwarf|--yolo-qa) shift ;;
-      --output|--dwarf|--verify|--setup) [ $# -ge 2 ] || break; shift 2 ;;
+      --output|--verify|--setup) [ $# -ge 2 ] || break; shift 2 ;;
+      --dwarf) [ $# -ge 2 ] || break; dwarf="$2"; shift 2 ;;
+      --decide) [ $# -ge 2 ] || break; decide="$2"; shift 2 ;;
+      --reason) [ $# -ge 2 ] || break; reason="$2"; shift 2 ;;
+      --approved) approved=1; shift ;;
       --answer|--answer-file)
         n=$((n + 1)); flag="$1"
         if [ $# -ge 2 ]; then val="$2"; shift 2; else novalue=1; shift; fi ;;
@@ -1359,6 +1385,8 @@ _retry_answer_scan() { # _retry_answer_scan <scratch-dir> <retry args...>
     esac
   done
   printf '%s' "$n" > "$sd/n"; printf '%s' "$flag" > "$sd/flag"; printf '%s' "$val" > "$sd/val"
+  printf '%s' "$dwarf" > "$sd/dwarf"; printf '%s' "$decide" > "$sd/decide"
+  printf '%s' "$reason" > "$sd/reason"; printf '%s' "$approved" > "$sd/approved"
   [ "$novalue" = 0 ] || : > "$sd/novalue"
 }
 
@@ -1368,18 +1396,21 @@ _retry_answer_scan() { # _retry_answer_scan <scratch-dir> <retry args...>
 do_retry() {
   local PLAN="${1:?retry needs a plan dir}" id="${2:?retry needs a task id}"; shift 2
   FORGE_RUN_STARTED="$(forge_now)"
-  local NEWDWARF="" jev_rc=0 ANSWER="" ANSWER_FILE="" HAVE_ANSWER=0
+  local NEWDWARF="" jev_rc=0 ANSWER="" ANSWER_FILE="" HAVE_ANSWER=0 DECIDE="" REASON="" APPROVED=0
   # An answer is validated before any option below writes into the plan: a rejected answer
   # changes nothing, --setup and --verify included. Only a NEEDS_INPUT task takes one. The
   # arguments are walked the way the loop below walks them (a value is never taken for a flag),
   # in a subshell against a scratch plan dir, so nothing real is written by the walk.
   local pre_dir="$PLAN/.answer-scan.$$" pre_n=0 pre_have="" pre_val="" pre_novalue=0 pre_ok=0
+  local pre_dwarf="" pre_decide="" pre_reason="" pre_approved=0
   rm -rf "$pre_dir"
   if mkdir "$pre_dir" 2>/dev/null; then
     if ( _retry_answer_scan "$pre_dir" "$@" ) >/dev/null 2>&1; then
       pre_ok=1
       pre_n="$(<"$pre_dir/n")"; pre_have="$(<"$pre_dir/flag")"; pre_val="$(<"$pre_dir/val")"
       [ ! -f "$pre_dir/novalue" ] || pre_novalue=1
+      pre_dwarf="$(<"$pre_dir/dwarf")"; pre_decide="$(<"$pre_dir/decide")"
+      pre_reason="$(<"$pre_dir/reason")"; pre_approved="$(<"$pre_dir/approved")"
       # `$(<f)` drops trailing newlines, so an answer of only newlines needs the size check.
       [ -s "$pre_dir/val" ] || pre_val=""
     fi
@@ -1400,11 +1431,19 @@ do_retry() {
       [ -n "$pre_val" ] || die "retry: the answer is empty"
     fi
   fi
+  # A decision is judged the same way, before any option writes: a NEEDS_DECISION task is resumed
+  # only by --decide or --dwarf with --reason and --approved, and --decide is for no other task.
+  if [ "$pre_ok" = 1 ] && [ -s "$PLAN/tasks.tsv" ] && all_ids "$PLAN/tasks.tsv" | grep -qx "$id"; then
+    retry_decision_gate "$PLAN" "$id" "$(task_status "$PLAN" "$id")" "$pre_decide" "$pre_dwarf" "$pre_reason" "$pre_approved"
+  fi
   while [ $# -gt 0 ]; do
     case "$1" in
       --no-ripwire) export FORGE_RIPWIRE=off; shift ;;
       --output) OUTPUT="${2:?}"; shift 2 ;;
       --dwarf) NEWDWARF="${2:?--dwarf needs a spec}"; shift 2 ;;
+      --decide) DECIDE="${2:?--decide needs retry=N or threshold=Pn}"; shift 2 ;;
+      --reason) REASON="${2?--reason needs a text}"; shift 2 ;;
+      --approved) APPROVED=1; shift ;;
       # The check above refuses an empty answer first; these hold when its walk could not run.
       --answer) [ "$HAVE_ANSWER" = 0 ] || die "retry: give --answer or --answer-file once"
                 ANSWER="${2?--answer needs the answer text}"; HAVE_ANSWER=1; shift 2
@@ -1442,6 +1481,9 @@ do_retry() {
   local st; st="$(task_status "$PLAN" "$id")"
   [ "$st" = "MERGED" ] && die "task '$id' already merged — nothing to retry"
   [ "$HAVE_ANSWER" = 0 ] || [ "$st" = NEEDS_INPUT ] || die "retry: '$id' is $st, not waiting for an answer; --answer and --answer-file only answer a NEEDS_INPUT task"
+  retry_decision_gate "$PLAN" "$id" "$st" "$DECIDE" "$NEWDWARF" "$REASON" "$APPROVED"
+  # A task at its attempt cap (#69) is refused with the decision commands unless --decide retry=N reaches past it.
+  if ! attempt_cap_gate "$PLAN" "$id" "$st" "$DECIDE"; then write_results "$PLAN"; return 2; fi
   # The user's answer to a NEEDS_INPUT task's question (validated above): written before
   # anything else is prepared, atomically, and kept when the preparation then refuses (the
   # same answer can be retried).
@@ -1459,7 +1501,14 @@ do_retry() {
   # A refusal (the retry policy found no stronger model, or the escalation could not be
   # written) must stop here: past this point the status is cleared and a dwarf dispatched.
   local prc=0
-  prepare_retry "$PLAN" "$id" "$NEWDWARF" || prc=$?
+  if [ "$st" = NEEDS_DECISION ]; then
+    retry_decided "$PLAN" "$id" "$DECIDE" "$NEWDWARF" "$REASON" || prc=$?
+  else
+    prepare_retry "$PLAN" "$id" "$NEWDWARF" || prc=$?
+    # A person's plain retry ends what an earlier decision allowed; resuming after an
+    # infrastructure stop is not a new choice, so the allowance carries over.
+    [ "$prc" != 0 ] || [ "$st" = INFRA ] || rm -f "${tdir:?}/decided.left"
+  fi
   if [ "$prc" != 0 ]; then
     write_results "$PLAN"
     [ "$prc" = 3 ] && return 2
@@ -1474,12 +1523,31 @@ do_retry() {
   preflight_plan "$PLAN" || return $?
   /bin/bash "$SKILL_DIR/scripts/forge-install-ripwire.sh" || true
   rm -f "$tdir/status"
+  # The pauses an earlier run ended with describe that run: this retry's summary must not report them.
+  rm -f "$PLAN/infra.last"
 
   note "retrying $id with dwarf $(field "$T" "$id" dwarf)"
   export FORGE_FRACTAL_RETRY=1
   export FORGE_DATASET_TRIGGER=human
   do_task "$PLAN" "$id"
   st="$(task_status "$PLAN" "$id")"
+  # A decision of retry=N is N attempts in all: this one, then N-1 more while the reviews fail.
+  # Any other decision is this one attempt. The same stops apply as to any retry: a task that
+  # stopped for a decision again, an empty diff, or a policy that finds no stronger model.
+  # The count is decided.left, so it survives a run that ended before the attempts were used.
+  local more; more="$(decided_left "$tdir")"; more="${more:-0}"
+  while [ "$more" -gt 0 ] && { [ "$st" = FAIL ] || [ "$st" = UNKNOWN ]; } && [ ! -e "$tdir/noretry" ]; do
+    # Each further attempt is spent against the cap (#69) like the scheduler's retries: an UNKNOWN review
+    # does not stop the task by itself, so the cap is checked here, and a task at it stops for a decision.
+    if ! attempt_cap_gate "$PLAN" "$id" "$st" ""; then st="$(task_status "$PLAN" "$id")"; break; fi
+    more=$(( more - 1 ))
+    prepare_retry "$PLAN" "$id" || break
+    decided_left_set "$tdir" "$more" || break
+    rm -f "$tdir/status"
+    note "retrying $id (decided retry, $more more after this)"
+    do_task "$PLAN" "$id"
+    st="$(task_status "$PLAN" "$id")"
+  done
   if [ "$st" = "INFRA" ]; then
     # Nothing was judged and no attempt was spent: skip verification, say how to resume.
     write_results "$PLAN"
@@ -1500,6 +1568,7 @@ do_retry() {
   printf '  %-14s %-9s %s\n' id status branch
   awk -F'\t' '{printf "  %-14s %-9s %s\n", $1, $2, $3}' "$PLAN/results.tsv"
   run_report_extras "$PLAN"
+  report_decisions "$PLAN"
   [ "$(task_status "$PLAN" "$id")" = "MERGED" ] || return 5
   return 0
 }
@@ -2023,10 +2092,12 @@ do_run() {
     done
     echo
   fi
+  # Tasks stopped for a decision (#69): why, and the choices. Not failures to retry either.
+  report_decisions "$PLAN"
   # The retry hint is for tasks that actually failed; a run that only failed verification,
   # or only paused on infrastructure, has nothing to retry task by task. An interrupted task
-  # has its own hint above, a task waiting for an answer its own block.
-  if [ "$(awk -F'\t' '$2!="MERGED" && $2!="INFRA" && $2!="PENDING" && $2!="BLOCKED" && $2!="INTERRUPTED" && $2!="NEEDS_INPUT" {n++} END {print n+0}' "$PLAN/results.tsv")" -gt 0 ]; then
+  # has its own hint above, a task waiting for an answer or a decision its own block.
+  if [ "$(awk -F'\t' '$2!="MERGED" && $2!="INFRA" && $2!="PENDING" && $2!="BLOCKED" && $2!="INTERRUPTED" && $2!="NEEDS_INPUT" && $2!="NEEDS_DECISION" {n++} END {print n+0}' "$PLAN/results.tsv")" -gt 0 ]; then
     echo "retry a failed task with its reviewer's findings:"
     echo "  forge-parallel.sh retry $PLAN <task-id> [--dwarf <spec>]"
     echo "or let a run retry them itself:  forge-parallel.sh run $PLAN --retry-failed 1"
