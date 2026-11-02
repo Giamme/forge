@@ -29,6 +29,9 @@ class WatchTests(unittest.TestCase):
         self.log = self.base / 'events.log'
         self.env = {k: v for k, v in os.environ.items() if k not in NO_DESKTOP}
         self.env.update(XDG_CONFIG_HOME=str(self.base / 'config'), LOG=str(self.log))
+        if sys.platform == 'darwin':
+            # osascript needs no desktop variable: without this, a test run on a Mac raises real notifications.
+            self.env['FORGE_WATCH_NOTIFY'] = 'off'
         self.procs = []
         self.addCleanup(lambda: [p.kill() for p in self.procs if p.poll() is None])
 
