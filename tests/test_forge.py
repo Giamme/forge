@@ -254,11 +254,13 @@ class ForgeTests(unittest.TestCase):
   self.assertEqual((p/'verification.status').read_text().strip(),'PASS')
   self.assertIn('REQUIREMENT_SENTINEL',(p/'tasks/a/qa.input').read_text())
   self.assertIn("Run the task's requested verification",(p/'tasks/a/dwarf.input').read_text())
+  self.assertIn('left to forge',(p/'tasks/a/dwarf.input').read_text())   # --verify runs the whole suite after the merge
   self.assertIn('MERGED',(p/'results.tsv').read_text())
   r=self.run_script('forge-parallel.sh','integrate',p,'--approved')
   self.assertEqual(r.returncode,0,r.stdout); self.assertTrue((self.repo/'b.txt').exists())
  def test_retry_then_unblock(self):
   p=self.plan(); self.env['VERDICT']='FAIL'; self.run_script('forge-parallel.sh','run',p)
+  self.assertNotIn('left to forge',(p/'tasks/a/dwarf.input').read_text())   # no verification: today's rule
   self.env['VERDICT']='PASS'; self.env['CONTENT']='fixed'
   r=self.run_script('forge-parallel.sh','retry',p,'a'); self.assertEqual(r.returncode,0,r.stdout)
   r=self.run_script('forge-parallel.sh','retry',p,'b'); self.assertEqual(r.returncode,0,r.stdout)
@@ -433,12 +435,19 @@ class ForgeTests(unittest.TestCase):
   # Advisory only: the table and the exit code are what they would be without the notes.
   p=self.root/'plan'; p.mkdir()
   files=','.join('f%d.txt'%i for i in range(9))
-  (p/'tasks.tsv').write_text(f'big\t-\thigh\t{files}\tsol\topus\tBig\nok\t-\tlow\tok.txt\tsol\topus\tOk\n')
-  for i,text in (('big','Implement change. TASK_big '+'x'*9500),('ok','Implement change. TASK_ok\n\n## Acceptance criteria\n\n- ok.txt says implemented\n')):
+  (p/'tasks.tsv').write_text(f'big\t-\thigh\t{files}\tsol\topus\tBig\nok\t-\tlow\tok.txt\tsol\topus\tOk\n'
+                            'suite\t-\tlow\ts.txt\tsol\topus\tSuite\nci\t-\tlow\tc.txt\tsol\topus\tCi\n')
+  (self.repo/'.forge').mkdir(exist_ok=True); (self.repo/'.forge/verify').write_text('./ci.sh --all && echo done\n')
+  accept='\n\n## Acceptance criteria\n\n- ok.txt says implemented\n- `%s` passes\n'
+  # The whole suite named outside the acceptance criteria, or a selected test, is not asking for it.
+  for i,text in (('big','Implement change. TASK_big '+'x'*9500),('ok','Implement change. `bash tests/check.sh` is slow.'+accept%'cargo test parser'),
+                 ('suite','Implement change.'+accept%'bash tests/check.sh'),('ci','Implement change.'+accept%'./ci.sh  --all')):
    (p/'tasks'/i).mkdir(parents=True); (p/'tasks'/i/'prompt.md').write_text(text)
   r=self.run_script('forge-parallel.sh','plan',p,'--repo',self.repo,'--no-memory'); self.assertEqual(r.returncode,0,r.stdout)
   notes=[l.split() for l in r.stdout.split('task size and acceptance criteria')[1].splitlines()[1:] if l.strip()]
-  self.assertEqual([(n[0],' '.join(n[1:3])) for n in notes],[('big','large prompt'),('big','touches 9'),('big','no acceptance')])
+  self.assertEqual([(n[0],' '.join(n[1:3])) for n in notes],[('big','large prompt'),('big','touches 9'),('big','no acceptance'),
+                   ('suite','acceptance criteria'),('ci','acceptance criteria')])
+  self.assertIn('whole suite (`bash tests/check.sh`)',r.stdout); self.assertIn('whole suite (`./ci.sh --all`)',r.stdout)
   self.assertIn('at 7-10K passed review',r.stdout)
 
  def test_solo_run_records_its_outcome(self):

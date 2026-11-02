@@ -444,6 +444,18 @@ class DwarfRulesTests(unittest.TestCase):
         self.assertLessEqual(len(text.splitlines()), 10)          # 8 until #90's verification-scope rule
         self.assertFalse(any(line != line.rstrip() for line in text.splitlines()))
 
+    def test_with_verification_after_the_merge_the_whole_suite_is_left_to_forge(self):
+        # Run 1 (2026-11-02): "`bash tests/check.sh` passes" in the acceptance criteria counted as the task
+        # asking for it, so every attempt ran the 15-minute suite that the run's --verify runs after the merge.
+        default = ' '.join(contract.dwarf_text().split())
+        after = ' '.join(contract.dwarf_text(verify_after_merge=True).split())
+        self.assertIn('unless the task asks for them', default)
+        self.assertNotIn('unless the task asks', after)
+        for phrase in ('Never run the whole suite', 'even when the task or its acceptance criteria name them',
+                       "forge runs the repository's verification after the merge", 'left to forge'):
+            self.assertIn(phrase, after, phrase)
+            self.assertNotIn(phrase, default, phrase)
+
 
 class CommandLineTests(unittest.TestCase):
     def test_output_matches_the_functions(self):
@@ -460,6 +472,7 @@ class CommandLineTests(unittest.TestCase):
                          contract.qa_text('tail', 'task', 'P3'))
         self.assertEqual(run('qa', '--part', 'head', '--kind', 'final').stdout, contract.qa_text('head', 'final'))
         self.assertEqual(run('dwarf').stdout, contract.dwarf_text())
+        self.assertEqual(run('dwarf', '--verify-after-merge').stdout, contract.dwarf_text(verify_after_merge=True))
 
     def test_usage_errors_exit_2(self):
         for args in ([], ['qa'], ['qa', '--part', 'middle'], ['qa', '--part', 'head', '--kind', 'x'],
