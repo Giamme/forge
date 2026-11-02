@@ -400,14 +400,15 @@ attempt_cap_gate() { # attempt_cap_gate <plan> <id> <status> <decide>; 0 may run
   read -r used cap <<< "$(attempt_cap_of "$PLAN" "$id")"
   if [ "$cap" = - ] || [ "$used" -lt "$cap" ]; then return 0; fi
   case "$decide" in retry=*) n="${decide#retry=}" ;; esac
-  # retry=N grants exactly N attempts when the spent attempts are the cap; past it, a smaller N would grant fewer.
-  if [ "$n" -gt 0 ] && [ "$used" -eq "$cap" ]; then return 0; fi
+  # retry=N raises the cap by N, so it starts an attempt while the spent attempts are under the raised cap:
+  # at the cap that is exactly N attempts; past a lowered cap, the attempts the raised cap still leaves.
+  if [ "$n" -gt 0 ] && [ "$used" -lt $(( cap + 10#$n )) ]; then return 0; fi
   # A question waiting for its answer is not stopped: the answer is kept, and only the plan's cap can let it run.
   if [ "$st" != NEEDS_DECISION ] && [ "$st" != NEEDS_INPUT ]; then
     stop_for_decision "$PLAN" "$id" cap || return 1
   fi
   if [ "$n" -gt 0 ]; then
-    note "$id: retry=$n would not grant $n attempts: $used attempts are used against a cap of $cap; retry=$(( used - cap + n )) grants $n"
+    note "$id: retry=$n would not start an attempt: $used attempts are used against a cap of $cap, and the grant must take the cap past $used; retry=$(( used - cap + 1 )) starts attempt $(( used + 1 ))"
   elif [ "$st" = NEEDS_INPUT ]; then
     note "$id: at its attempt cap (attempts $used of $cap), so its answer would start attempt $(( used + 1 )): raise the plan's cap first, forge control set max-attempts N --confirm"
   else

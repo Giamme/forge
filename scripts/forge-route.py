@@ -657,10 +657,10 @@ def max_attempts_setting(plan: Path) -> int:
 
 
 def attempts_spent(tdir: Path) -> int:
-    """Attempts the task has used: the distinct attempt numbers in attempts.tsv whose status is not INFRA.
-    An infrastructure stop spends none. A QA-only resume re-reviews the same attempt and writes a row
-    of its own, so the numbers are counted rather than the rows."""
-    return len({number for number, status, _spec in attempt_rows(tdir) if status != 'INFRA'})
+    """Attempts the task has used: the attempts.tsv rows whose status is not INFRA. An infrastructure stop
+    spends none. A QA-only resume re-reviews the same attempt number and writes a row of its own, and that
+    row spends one too: a task whose reviews return no verdict reaches its cap like any other."""
+    return sum(1 for _number, status, _spec in attempt_rows(tdir) if status != 'INFRA')
 
 
 def granted_attempts(tdir: Path) -> int:

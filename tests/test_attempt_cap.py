@@ -63,10 +63,10 @@ class CapCountTests(unittest.TestCase):
         self.attempts(attempt_row(1, 'FAIL'), attempt_row(2, 'INFRA'), attempt_row(2, 'FAIL'), attempt_row(3, 'INFRA'))
         self.assertEqual(self.cap(), ['2', '8'])
 
-    def test_a_qa_only_resume_is_not_a_second_attempt(self):
-        # A review with no verdict, then the same attempt's review again: one attempt, two rows.
+    def test_a_qa_only_resume_spends_an_attempt(self):
+        # A review with no verdict, then the same attempt number's review again: two rows, two attempts spent.
         self.attempts(attempt_row(1, 'UNKNOWN'), attempt_row(1, 'FAIL'))
-        self.assertEqual(self.cap(), ['1', '8'])
+        self.assertEqual(self.cap(), ['2', '8'])
 
     def test_each_retry_grant_adds_its_n_and_other_choices_add_nothing(self):
         self.attempts(attempt_row(1, 'FAIL'), attempt_row(2, 'FAIL'))
@@ -182,8 +182,30 @@ class CapRunTests(CapCase):
         self.assertEqual(self.retry(p).returncode, 2)                           # a plain retry stops it for a decision
         r = self.retry(p, '--decide', 'retry=1', '--reason', 'one more', '--approved')
         self.assertEqual(r.returncode, 2, r.stdout)
-        self.assertIn('retry=2 grants 1', r.stdout)                             # with retry=2 there is one attempt
+        self.assertIn('retry=2 starts attempt 3', r.stdout)                     # the smallest grant that runs one
         self.assertEqual((self.dwarf_count(), self.decisions(p)), (2, []))
+
+    def test_a_grant_past_a_lowered_cap_runs_the_attempts_it_leaves(self):
+        p = self.plan_of('--max-attempts', 2)
+        self.failing()
+        self.run_script('forge-parallel.sh', 'run', p)
+        self.run_script('forge-parallel.sh', 'run', p, '--retry-failed', 5)
+        self.assertEqual((self.read(p, 'status'), self.dwarf_count()), ('NEEDS_DECISION', 2))
+        (p / 'max_attempts').write_text('1\n')                                  # two spent against a cap of one
+        r = self.retry(p, '--decide', 'retry=2', '--reason', 'two more', '--approved')
+        self.assertEqual(self.dwarf_count(), 3, r.stdout)                       # the raised cap is 3: attempt 3 runs
+        self.assertEqual(self.decisions(p)[0][2:], ['retry=2', 'two more'])
+        self.assertEqual((self.read(p, 'status'), self.first_line(p)), ('NEEDS_DECISION', 'reasons: cap'))
+        self.assertIn('Attempts used so far: 3 (attempts 3 of 3)', (p / 'tasks/a/decision.md').read_text())
+
+    def test_qa_only_retries_spend_the_cap(self):
+        # A reviewer that gives no verdict: each re-review asks again about attempt 1 and spends a row of its own.
+        p = self.plan_of('--max-attempts', 2)
+        self.scenario({'a.qa.*': {'findings': 'The review did not reach a verdict.', 'verdict': 'none'}})
+        self.run_script('forge-parallel.sh', 'run', p, '--retry-failed', 5)
+        self.assertEqual((self.read(p, 'status'), self.first_line(p), self.dwarf_count()),
+                         ('NEEDS_DECISION', 'reasons: cap', 1))
+        self.assertEqual(len((p / 'tasks/a/attempts.tsv').read_text().splitlines()), 2)
 
     def test_zero_is_no_cap_at_run_level(self):
         p = self.plan_of('--max-attempts', 0)
