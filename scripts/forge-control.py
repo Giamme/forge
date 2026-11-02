@@ -58,6 +58,13 @@ import subprocess
 import sys
 import time
 
+# forge_infra.py sits beside this file: the causes table and the wording the run summary shares. As in
+# forge-schedule.py, the directory is put on sys.path here, since -I or PYTHONSAFEPATH would leave it off.
+SCRIPTS = os.path.dirname(os.path.realpath(__file__))
+if SCRIPTS not in sys.path:
+    sys.path.insert(0, SCRIPTS)
+import forge_infra  # noqa: E402
+
 SKILL = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 LOCK_WAIT = 5.0
 LOG_SHOWN = 20
@@ -437,6 +444,7 @@ def show(plan, rows):
     run['drained'] = live and has(plan, 'drain')
     run['stopping'] = stopping if stopping in ('graceful', 'now') else None
     run['infra_paused'] = paused_scopes(get('infra.paused')) if live else None
+    pauses, now = run['infra_paused'] or [], time.time()
     if run['escalate_after'] is None:
         run['escalate_after'] = DEFAULT_ESCALATE_AFTER
     if run['verify_retries'] is None:
@@ -458,6 +466,10 @@ def show(plan, rows):
                            retries_used=number(get(base + 'retries.used')) or 0,
                            pin=get(base + 'escalation.pin'), escalation_stop=has(plan, base + 'escalation.stop'),
                            escalation_next=get(base + 'escalation.next'))
+        if tasks[task]['status'] == 'INFRA':
+            # Present on an INFRA task only (#81): its cause, where it stopped, when the limit resets, who must act.
+            info = forge_infra.parse_stop(get(base + 'infra.txt'))
+            tasks[task]['infra'] = forge_infra.stop_of(task, info, pauses, now)
     log = []
     for line in reversed((read_file(plan, 'control.log', tail=LOG_TAIL) or '').splitlines()):
         try:
@@ -826,6 +838,7 @@ def cmd_show(args):
           f"  fractal {'yes' if controls['fractal'] else 'no'}")
     print('  ' + '  '.join(f"{k.replace('_', '-')} {cell(v)}" + (' (default)' if k == 'qa_threshold' and run['qa_threshold_source'] == 'default' else '')
                            for k, v in run.items() if k not in ('infra_paused', 'qa_threshold_source')))
+    now = time.time()
     for p in run['infra_paused'] or []:
         tasks = ','.join(t for t in (p['tasks'] or []) if isinstance(t, str)) or '-'
         if p['exhausted']:
@@ -834,11 +847,16 @@ def cmd_show(args):
             when = f"wait {cell(p['cycle'])} until {stamp(p['until'])}"
         else:
             when = 'waiting for running tasks to finish'
-        print(f"  paused {p['scope']} ({cell(p['class'])})  tasks {tasks}  {when}")
+        # The reset, and a pause that waits on a person says so with the hint (#81).
+        parts = [when] + [text for text in [forge_infra.reset_text(p['reset_at'], now)] if text]
+        if p['needs_you']:
+            parts.append('needs you' + (f": {p['hint']}" if isinstance(p['hint'], str) and p['hint'] else ''))
+        print(f"  paused {p['scope']} ({forge_infra.label(p['class'])})  tasks {tasks}  " + '  '.join(parts))
     columns = ('task', 'status', 'dwarf', 'qa', 'threshold', 'budget', 'used', 'pin', 'stop', 'next')
     table = [columns]
     for task, t in controls['tasks'].items():
-        table.append((task, t['status'], cell(t['dwarf']), cell(t['qa']), cell(t['qa_threshold']), cell(t['retry_budget']),
+        status = f"{t['status']} ({t['infra']['cause']})" if t.get('infra') else t['status']
+        table.append((task, status, cell(t['dwarf']), cell(t['qa']), cell(t['qa_threshold']), cell(t['retry_budget']),
                       cell(t['retries_used']), cell(t['pin']), 'yes' if t['escalation_stop'] else '-',
                       cell(t['escalation_next'])))
     widths = [max(len(r[i]) for r in table) for i in range(len(columns))]

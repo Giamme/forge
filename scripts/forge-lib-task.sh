@@ -746,17 +746,27 @@ qa_gate() { # qa_gate <plan> <id> <tdir> <verdict> [threshold]
 }
 
 # --- report blocks ----------------------------------------------------------------
+# The wording of each line, and what the causes need, is forge_infra.py's; this block only lays them out.
+# A lateral move is news whether or not a task is still paused, so its lines come out either way.
 report_infra() { # report_infra <plan>
-  local plan="$1" id n=0 cls
+  local plan="$1" id n=0 infra_ids="" moved
   for id in $(all_ids "$plan/tasks.tsv"); do
     [ "$(task_status "$plan" "$id")" = INFRA ] || continue
     [ "$n" = 0 ] && echo "paused on an infrastructure failure (not a task failure, no attempt spent):"
-    n=$((n+1))
-    cls="$(sed -n 's/^class=//p' "$plan/tasks/$id/infra.txt" 2>/dev/null | head -1)"
-    printf '  %-14s %s (%s stage)\n' "$id" "${cls:-unknown}" "$(sed -n 's/^stage=//p' "$plan/tasks/$id/infra.txt" 2>/dev/null | tail -1)"
+    n=$((n+1)); infra_ids="$infra_ids $id"
+    python3 "$SKILL_DIR/scripts/forge_infra.py" stop "$plan" "$id"
   done
   if [ "$n" -gt 0 ]; then
-    echo "  fix the cause (quota, login, network), then re-run: forge-parallel.sh run $plan"
+    if python3 "$SKILL_DIR/scripts/forge_infra.py" needs-you "$plan" $infra_ids; then
+      echo "  fix what is marked 'needs you', then re-run: forge-parallel.sh run $plan"
+    else
+      echo "  fix the cause (quota, login, network), then re-run: forge-parallel.sh run $plan"
+    fi
+    echo
+  fi
+  moved="$(python3 "$SKILL_DIR/scripts/forge_infra.py" moved "$plan" "${FORGE_RUN_STARTED:-0}")"
+  if [ -n "$moved" ]; then
+    echo "$moved"
     echo
   fi
   return 0
