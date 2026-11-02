@@ -400,6 +400,7 @@ def _pinned(plan: object, name: str) -> bool:
 # lets that trap finish; the guard's `stop` then acts on whatever <role>.harness record a
 # dispatch that died too early left behind.
 GUARD = str(Path(__file__).resolve().parent / 'forge-guard.py')
+ROUTE = str(Path(__file__).resolve().parent / 'forge-route.py')
 HARNESS_ROLES = ('dwarf', 'qa')
 GUARD_STOP_WAIT = 15.0    # seconds; the guard's own bound is about 3 s plus two ps calls
 
@@ -717,14 +718,27 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
                   + str(budget(name)) + ')', file=sys.stderr, flush=True)
         return True
 
+    def at_cap(name: str) -> bool:
+        """The task has spent its attempt cap (#69): `forge-route.py attempt-cap` prints "<used> <cap>"."""
+        result = subprocess.run([sys.executable, ROUTE, 'attempt-cap', '--plan', str(plan), '--task', name],
+                                capture_output=True, text=True)
+        used, _, cap = result.stdout.strip().partition(' ')
+        return result.returncode == 0 and used.isdigit() and cap.isdigit() and int(used) >= int(cap)
+
     def resume(name: str) -> bool:
         """Prepare an INFRA task's next entry. Not a retry, so nothing is counted, but a
         pending pin applies when that entry is a full implementer attempt. False when a
-        claimed pin could not be put in place: the task then stays INFRA, as `retry` would."""
-        if not _pinned(plan, name):
+        claimed pin could not be put in place: the task then stays INFRA, as `retry` would. A task already
+        at its attempt cap (#69; the cap may have been set or lowered after the stop) is not resumed
+        either: _prepare_retry --resume stops it for a decision, and it leaves the queue."""
+        if not _pinned(plan, name) and not at_cap(name):
             return True
         result = subprocess.run(['/bin/bash', script, '_prepare_retry', str(plan), name, '--resume'])
         if result.returncode:
+            if status(name) == 'NEEDS_DECISION':
+                print('forge: ' + name + ' is not resumed: it is at its attempt cap and waits for your decision',
+                      file=sys.stderr, flush=True)
+                return False
             held.add(name)
             print('forge: ' + name + ' is not resumed: its escalation pin could not be applied',
                   file=sys.stderr, flush=True)

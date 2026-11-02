@@ -241,6 +241,32 @@ class CapRunTests(CapCase):
                          ('NEEDS_DECISION', 'reasons: cap', 1))
         self.assertEqual(len((p / 'tasks/a/attempts.tsv').read_text().splitlines()), 2)
 
+    def test_an_infrastructure_resume_at_the_cap_stops_for_a_decision(self):
+        # Two failed attempts under no cap, then an infrastructure stop, then the person sets the cap to 2: the
+        # stop spent nothing, but its resume would start a 3rd attempt, so the scheduler must not dispatch it.
+        p = self.plan_of('--max-attempts', 0)
+        self.failing()
+        self.run_script('forge-parallel.sh', 'run', p)
+        self.run_script('forge-parallel.sh', 'run', p, '--retry-failed', 1)
+        self.assertEqual((self.read(p, 'status'), self.dwarf_count()), ('FAIL', 2))
+        with (p / 'tasks/a/attempts.tsv').open('a') as rows:
+            rows.write(attempt_row(3, 'INFRA'))
+        (p / 'tasks/a/status').write_text('INFRA\n')
+        (p / 'max_attempts').write_text('2\n')
+        r = self.run_script('forge-parallel.sh', 'run', p)                      # the scheduler's own resume
+        self.assertEqual((self.read(p, 'status'), self.first_line(p), self.dwarf_count()),
+                         ('NEEDS_DECISION', 'reasons: cap', 2), r.stdout)
+
+    def test_an_infrastructure_resume_under_the_cap_is_prepared(self):
+        p = self.plan_of('--max-attempts', 3)
+        self.failing()
+        self.run_script('forge-parallel.sh', 'run', p)
+        with (p / 'tasks/a/attempts.tsv').open('a') as rows:
+            rows.write(attempt_row(2, 'INFRA'))
+        (p / 'tasks/a/status').write_text('INFRA\n')
+        r = self.run_script('forge-parallel.sh', '_prepare_retry', p, 'a', '--resume')
+        self.assertEqual((r.returncode, self.read(p, 'status')), (0, 'INFRA'), r.stdout)
+
     def test_zero_is_no_cap_at_run_level(self):
         p = self.plan_of('--max-attempts', 0)
         self.failing()

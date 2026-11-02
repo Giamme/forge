@@ -849,6 +849,8 @@ prepare_fallback() { # prepare_fallback <plan> <id> <excluded harness/model,...>
 # is prepare_fallback.
 retry_for_scheduler() { # retry_for_scheduler <plan> <id> [--resume | --dwarf <spec> | --fallback <pairs> [--cause <cause> [--role qa]]]
   if [ "${3:-}" = --resume ]; then
+    # An infrastructure stop spends no attempt, but the resume starts one: at the cap it is stopped for a decision.
+    attempt_cap_gate "$1" "$2" INFRA "" || return 4
     prepare_resume "$1" "$2"
     return $?
   fi
