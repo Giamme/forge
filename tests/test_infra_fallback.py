@@ -217,6 +217,12 @@ class QaPickTests(unittest.TestCase):
     def test_a_literal_id_of_the_implementers_model_is_the_implementer(self):
         self.assertIsNone(self.pick('opus', 'gpt-6.1-sol', ['opus', 'sol:high:opencode']))
 
+    def test_another_model_listed_under_the_implementers_alias_is_a_peer(self):
+        # the bundled gemini alias is Flash on antigravity and Pro on opencode: two models, one alias
+        pro = 'github-copilot/gemini-3.1-pro-preview::opencode'
+        self.assertEqual(self.pick('opus', 'gemini-flash', ['opus', pro]), pro)
+        self.assertIsNone(self.pick('opus', 'gemini-pro', ['opus', 'gemini-pro:high']))
+
     def test_a_registry_from_the_environment_resolves_custom_aliases(self):
         with tempfile.TemporaryDirectory() as tmp:
             registry = Path(tmp) / 'registry.tsv'

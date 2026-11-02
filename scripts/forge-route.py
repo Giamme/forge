@@ -162,21 +162,17 @@ def canonical(spec: str, registry: dict) -> str:
     return next(iter(rows.values()))
 
 
-def identities(spec: str, registry: dict) -> set:
-    """Every name the model of a spec goes by: its alias and the id it has on each harness (`sol` is
-    `gpt-6.1-sol` on codex and `github-copilot/gpt-6.1-sol` on opencode), and for a literal model id the
-    alias that lists it. Two specs run the same model when these sets meet."""
-    name = str(spec).split(':')[0]
-    names = {name}
-    for alias, rows in registry.items():
-        if alias == name or name in rows.values():
-            names.add(alias)
-            names.update(rows.values())
-    return names
+def model_key(spec: str, registry: dict) -> str:
+    """The model a spec runs, named so that one model reached through two harnesses compares equal
+    (`gpt-6.1-sol` on codex and `github-copilot/gpt-6.1-sol` on opencode): the id it resolves to, without
+    its provider prefix and with dots and dashes alike. Two ids are compared, never two aliases, since
+    one alias may list different models on different harnesses (`gemini` is Flash on antigravity and
+    Pro on opencode)."""
+    return canonical(spec, registry).rsplit('/', 1)[-1].lower().replace('.', '-')
 
 
 def same_model(a: str, b: str, registry: dict) -> bool:
-    return bool(identities(a, registry) & identities(b, registry))
+    return model_key(a, registry) == model_key(b, registry)
 
 
 def arm(spec: str, registry: dict) -> tuple:
