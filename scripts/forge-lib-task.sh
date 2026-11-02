@@ -371,12 +371,202 @@ commit_answer_findings() { # commit_answer_findings <tdir>
   rm -f "$tdir/needs_input.md" "$tdir/answer.md"
 }
 
+# --- NEEDS_DECISION (#69) ---------------------------------------------------------
+# A task whose reviews do not converge, or that the retry policy cannot move to a stronger model,
+# stops and waits for a person. Only `retry --decide`, `retry --dwarf` (both with --reason and
+# --approved) or `accept` resumes it: the scheduler, a retry budget and a pinned model do not.
+# decision.md holds the reasons and the choices; decisions.tsv (epoch, attempt, choice, reason)
+# records the answer, and everything that counts failures counts only the attempts after its last row.
+decision_reason_text() { # decision_reason_text <reason>: what a reason in decision.md means
+  case "$1" in
+    converging) echo "the last reviews failed one after another, most of their findings were new, and the worst severity did not improve: more attempts keep finding new problems instead of closing the old ones" ;;
+    split) echo "the retry policy found no stronger model to escalate to after repeated failures on one: another attempt on the same model rarely passes" ;;
+    *) echo "$1" ;;
+  esac
+}
+
+# decision.md, then the status. Reasons are words (`converging`, `split`); the first line of
+# the file lists them. The status is the last thing written, so a task never reads as
+# NEEDS_DECISION without its decision.md.
+stop_for_decision() { # stop_for_decision <plan> <id> <reason>...
+  local PLAN="$1" id="$2" tdir="$1/tasks/$2" reasons="" r win decided summary="" tmp="$1/tasks/$2/.decision.md.tmp"
+  shift 2
+  for r in "$@"; do reasons="${reasons:+$reasons, }$r"; done
+  [ -n "$reasons" ] || return 0
+  win="$(tr -dc '0-9' < "$PLAN/converge_window" 2>/dev/null | head -c 4)"
+  [ -n "$win" ] && [ "$win" -ge 1 ] 2>/dev/null || win=4
+  decided="$(awk -F'\t' '$2 ~ /^[0-9]+$/ && $2 + 0 > m { m = $2 + 0 } END { print m + 0 }' "$tdir/decisions.tsv" 2>/dev/null)"
+  case ",${reasons// /}," in *,converging,*)
+    summary="$(python3 "$SKILL_DIR/scripts/forge-ledger.py" signal "$tdir" 2>/dev/null | sed -n 's/^fire.//p')" ;;
+  esac
+  {
+    echo "reasons: $reasons"
+    echo
+    echo "$id stopped for your decision. Nothing resumes it except a decision of yours: the scheduler,"
+    echo "a retry budget and a pinned model do not."
+    echo
+    echo "What each reason means:"
+    for r in "$@"; do echo "  $r: $(decision_reason_text "$r")"; done
+    if [ -n "$summary" ]; then echo; echo "Signal: $summary"; fi
+    if [ -s "$tdir/split.suggested" ] && [ "${reasons#*split}" != "$reasons" ]; then
+      echo; echo "Retry policy: $(head -1 "$tdir/split.suggested")"
+    fi
+    if [ -s "$tdir/ledger.tsv" ]; then
+      echo
+      echo "The last reviews (tasks/$id/ledger.tsv):"
+      awk -F'\t' -v after="$decided" 'NF == 11 && $2 + 0 > after { print }' "$tdir/ledger.tsv" | tail -n "$win" |
+        awk -F'\t' 'BEGIN { printf "  %-8s %-14s %-10s %-4s %s\n", "attempt", "verdict", "confirmed", "new", "worst" }
+                    { v = $4; if ($5 == "fail") v = v " (gate)"; printf "  %-8s %-14s %-10s %-4s %s\n", $2, v, $7, $8, $6 }'
+    fi
+    echo
+    echo "Attempts used so far: $(cat "$tdir/attempt" 2>/dev/null || echo 0)"
+    echo
+    echo "Choices (each needs your reason; --approved says the decision is yours):"
+    echo "  N more attempts:        forge-parallel.sh retry $PLAN $id --decide retry=N --reason \"...\" --approved"
+    echo "  lower the threshold:    forge-parallel.sh retry $PLAN $id --decide threshold=P1 --reason \"...\" --approved"
+    echo "                          (this task's blocking threshold, then one retry)"
+    echo "  a named model:          forge-parallel.sh retry $PLAN $id --dwarf <spec> --reason \"...\" --approved"
+    echo "  accept it as it is:     forge-parallel.sh accept $PLAN $id --reason \"...\" --approved"
+    echo "                          (merges it; its findings become known issues)"
+    echo "  split it:               forge control drain $PLAN, then forge control add $PLAN <id> for each smaller task"
+  } > "$tmp" && mv "$tmp" "$tdir/decision.md" || { rm -f "${tmp:?}"; note "$id: could not write decision.md; the task stays FAIL"; return 1; }
+  rm -f "${tdir:?}/decided.left"
+  echo NEEDS_DECISION > "$tdir/status"
+  note "$id: stopped for your decision ($reasons) — see $tdir/decision.md"
+}
+
+# After an attempt (do_task): the review goes into the findings ledger, and a task that ended FAIL
+# stops for a decision when the signal fires (`converging`) or this attempt's `escalation --check`
+# stopped it (`split`: <stop-before> is escalation.stop as it was before the check, <check-rc> the
+# check's exit). attempts.tsv was written before this and keeps FAIL for the attempt. A later
+# reason (an attempt cap) is one more line here.
+decision_after_attempt() { # decision_after_attempt <plan> <id> <stop-before> <check-rc>
+  local PLAN="$1" id="$2" before="${3:-}" crc="${4:-0}" tdir="$1/tasks/$2" reasons="" stop
+  python3 "$SKILL_DIR/scripts/forge-ledger.py" append "$PLAN" "$id" >/dev/null 2>&1 \
+    || note "$id: could not add this review to the findings ledger"
+  [ "$(task_status "$PLAN" "$id")" = FAIL ] || return 0
+  if python3 "$SKILL_DIR/scripts/forge-ledger.py" signal "$tdir" >/dev/null 2>&1; then reasons="converging"; fi
+  stop="$(cat "$tdir/escalation.stop" 2>/dev/null)"
+  if [ -n "$stop" ] && { [ "$crc" = 3 ] || [ "$stop" != "$before" ]; }; then reasons="${reasons:+$reasons }split"; fi
+  [ -z "$reasons" ] || stop_for_decision "$PLAN" "$id" $reasons || true
+}
+
+# Refuses, with a message, a `retry` that is not an explicit decision for a NEEDS_DECISION task, and a
+# decision offered to a task that waits for none. Runs before anything is written.
+retry_decision_gate() { # retry_decision_gate <plan> <id> <status> <decide> <dwarf> <reason> <approved 0|1>
+  local PLAN="$1" id="$2" st="$3" decide="$4" dwarf="$5" reason="$6" approved="$7" n
+  if [ "$st" != NEEDS_DECISION ]; then
+    [ -z "$decide" ] || die "retry: '$id' is $st, not waiting for a decision; --decide only decides a NEEDS_DECISION task"
+    return 0
+  fi
+  if [ -z "$decide" ] && [ -z "$dwarf" ]; then
+    die "retry: '$id' is waiting for your decision, and only a decision resumes it:
+$(sed -n '1,3p' "$PLAN/tasks/$id/decision.md" 2>/dev/null)
+read $PLAN/tasks/$id/decision.md, then retry with --decide retry=N or --decide threshold=Pn, or --dwarf <spec>, each with --reason \"...\" --approved; or accept the task"
+  fi
+  [ -z "$decide" ] || [ -z "$dwarf" ] || die "retry: give --decide or --dwarf, not both: a decision is one choice"
+  case "$decide" in
+    "") ;;
+    retry=*) n="${decide#retry=}"
+             case "$n" in ''|*[!0-9]*) n=0 ;; esac
+             [ "${#n}" -le 3 ] && [ "$n" -ge 1 ] && [ "$n" -le 20 ] || die "retry: --decide retry=N takes N from 1 to 20" ;;
+    threshold=P[0-3]) ;;
+    *) die "retry: --decide takes retry=N (1 to 20) or threshold=P0|P1|P2|P3, not '$decide'" ;;
+  esac
+  reason="$(printf '%s' "$reason" | tr '\n\r\t' '   ' | sed 's/^ *//; s/ *$//')"
+  [ -n "$reason" ] || die "retry: a decision needs --reason \"<why>\": it is recorded with the task"
+  [ "$approved" = 1 ] || die "retry: a decision needs --approved: it resumes a task forge stopped, and is only given on the user's instruction"
+}
+
+# The decision of a NEEDS_DECISION task, recorded and then the retry prepared as `retry` does.
+# Recorded first because the escalation policy reads decisions.tsv to restart its count; when the
+# preparation refuses, the files the decision touched are put back and the task stays as it was.
+retry_decided() { # retry_decided <plan> <id> <decide> <new-dwarf> <reason>
+  local PLAN="$1" id="$2" decide="$3" newdwarf="$4" reason="$5" tdir="$1/tasks/$2" choice f rc=0 attempt
+  local undo="$1/tasks/$2/.decision.undo"
+  choice="$decide"; [ -n "$choice" ] || choice="dwarf=$newdwarf"
+  reason="$(printf '%s' "$reason" | tr '\n\r\t' '   ' | sed 's/^ *//; s/ *$//')"
+  attempt="$(cat "$tdir/attempt" 2>/dev/null || echo 0)"
+  rm -rf "${undo:?}"; mkdir "$undo" 2>/dev/null || { note "$id: could not record the decision; nothing was retried"; return 1; }
+  for f in decisions.tsv qa_threshold escalation.stop split.suggested escalation.next decided.left; do
+    if [ -f "$tdir/$f" ]; then cp -p "$tdir/$f" "$undo/$f"; else : > "$undo/$f.absent"; fi
+  done
+  if ! printf '%s\t%s\t%s\t%s\n' "$(date +%s)" "$attempt" "$choice" "$reason" >> "$tdir/decisions.tsv"; then
+    rm -rf "${undo:?}"; note "$id: could not record the decision in decisions.tsv; nothing was retried"; return 1
+  fi
+  case "$decide" in
+    threshold=*) printf '%s\n' "${decide#threshold=}" > "$tdir/qa_threshold" || rc=1 ;;
+  esac
+  rm -f "${tdir:?}/escalation.stop" "${tdir:?}/split.suggested" "${tdir:?}/escalation.next"
+  [ "$rc" != 0 ] || decided_left_set "$tdir" $(( $(decided_attempts "$decide") - 1 )) || rc=$?
+  [ "$rc" != 0 ] || prepare_retry "$PLAN" "$id" "$newdwarf" decided || rc=$?
+  if [ "$rc" != 0 ]; then
+    for f in decisions.tsv qa_threshold escalation.stop split.suggested escalation.next decided.left; do
+      if [ -f "$undo/$f" ]; then cp -p "$undo/$f" "$tdir/$f"; else rm -f "${tdir:?}/${f:?}"; fi
+    done
+  else
+    forge_dataset_event decision --dir "$PLAN" --task "$id" --set "choice=$choice" --set "reason=$reason" \
+      --set "attempt=$attempt"
+  fi
+  rm -rf "${undo:?}"
+  return $rc
+}
+
+# How many attempts a decision grants in all: retry=N is N, every other choice (threshold=Pn,
+# dwarf=<spec>) is the one attempt it resumes the task for. Empty (no decision) is one.
+decided_attempts() { # decided_attempts <decide>
+  case "${1:-}" in
+    retry=[0-9]|retry=[0-9][0-9]) echo $(( 10#${1#retry=} )) ;;
+    *) echo 1 ;;
+  esac
+}
+
+# The automatic retries a decision still allows, in tasks/<id>/decided.left (a number, written
+# with the decision and counted down as each retry is prepared). It lives in a file because the
+# run that uses it may end first (a quota stop) and a later `run` or `retry` must still honour it.
+# Absent means no decision governs and the retry budget rules; 0 means the decided attempts are used.
+decided_left() { # decided_left <task-dir>: the number, or nothing
+  local v; v="$(tr -dc '0-9' < "$1/decided.left" 2>/dev/null | head -c 3)"
+  [ -n "$v" ] && echo $(( 10#$v ))
+  return 0
+}
+
+decided_left_set() { # decided_left_set <task-dir> <n>
+  printf '%s\n' "$2" > "$1/.decided.left.tmp" && mv "$1/.decided.left.tmp" "$1/decided.left" \
+    || { rm -f "${1:?}/.decided.left.tmp"; note "could not record the decided attempts left"; return 1; }
+}
+
+# The run summary's block for tasks waiting for a decision: one line each, the choices once.
+report_decisions() { # report_decisions <plan>
+  local plan="$1" id waiting
+  waiting="$(awk -F'\t' '$2=="NEEDS_DECISION" {print $1}' "$plan/results.tsv" 2>/dev/null)"
+  [ -n "$waiting" ] || return 0
+  echo "waiting for your decision:"
+  for id in $waiting; do
+    printf '  %s: %s — %s\n' "$id" "$(sed -n '1s/^reasons: //p' "$plan/tasks/$id/decision.md" 2>/dev/null)" "$plan/tasks/$id/decision.md"
+  done
+  echo "decide with (each needs --reason \"...\" --approved; decision.md has the commands filled in):"
+  echo "  forge-parallel.sh retry $plan <task-id> --decide retry=N | --decide threshold=Pn | --dwarf <spec>"
+  echo "  forge-parallel.sh accept $plan <task-id>    (merge it with its findings as known issues)"
+  echo "  or split it: forge control drain $plan, then forge control add $plan <task-id> for smaller tasks"
+  echo
+}
+
 # Shared by `retry` (a human asked) and the scheduler's automatic retries. The findings
 # are the whole point of retrying rather than re-running: the dwarf is told what was
 # wrong with its own previous attempt.
-prepare_retry() { # prepare_retry <plan> <id> [new-dwarf]
+prepare_retry() { # prepare_retry <plan> <id> [new-dwarf [decided]]
   local PLAN="$1" id="$2" newdwarf="${3:-}" T="$1/tasks.tsv" tdir="$1/tasks/$2" st verdict
   st="$(task_status "$PLAN" "$id")"
+  # A NEEDS_DECISION task resumes only through retry_decided, which says so with `decided` once the
+  # decision is recorded. It was a FAIL before it stopped, and its findings carry as a FAIL's do.
+  if [ "$st" = NEEDS_DECISION ]; then
+    if [ "${4:-}" != decided ]; then
+      note "$id is waiting for your decision (see $tdir/decision.md): forge-parallel.sh retry $PLAN $id --decide ... --reason \"...\" --approved"
+      return 2
+    fi
+    st=FAIL
+  fi
   # A NEEDS_INPUT task waits for the user, and nothing here may change before the answer is
   # known to be there: no file removed, no status changed, no escalation.
   if [ "$st" = NEEDS_INPUT ] && ! answer_ready "$tdir"; then
@@ -630,13 +820,27 @@ retry_for_scheduler() { # retry_for_scheduler <plan> <id> [--resume | --dwarf <s
     return $?
   fi
   # --dwarf: `forge control retry --dwarf`, the same explicit escalation as `retry --dwarf`.
-  if [ "${3:-}" = --dwarf ]; then
-    [ -n "${4:-}" ] || die "_prepare_retry: --dwarf needs a spec"
-    prepare_retry "$1" "$2" "$4" || return $?
+  # --decide, --reason and --approved: the same request for a NEEDS_DECISION task, which only a
+  # decision resumes (retry_decision_gate refuses the rest).
+  local PLAN="$1" id="$2" newdwarf="" decide="" reason="" approved=0 st
+  shift 2
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --dwarf) [ -n "${2:-}" ] || die "_prepare_retry: --dwarf needs a spec"; newdwarf="$2"; shift 2 ;;
+      --decide) decide="${2:-}"; shift 2 ;;
+      --reason) reason="${2:-}"; shift 2 ;;
+      --approved) approved=1; shift ;;
+      *) die "_prepare_retry: unknown option '$1'" ;;
+    esac
+  done
+  st="$(task_status "$PLAN" "$id")"
+  retry_decision_gate "$PLAN" "$id" "$st" "$decide" "$newdwarf" "$reason" "$approved"
+  if [ "$st" = NEEDS_DECISION ]; then
+    retry_decided "$PLAN" "$id" "$decide" "$newdwarf" "$reason" || return $?
   else
-    prepare_retry "$1" "$2" || return $?
+    prepare_retry "$PLAN" "$id" "$newdwarf" || return $?
   fi
-  rm -f "$1/tasks/$2/status"
+  rm -f "$PLAN/tasks/$id/status"
 }
 
 # --- implementer guards ---------------------------------------------------------

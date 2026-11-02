@@ -46,6 +46,7 @@ WATCHED = (
     'verification.jev.json', 'verification.runs.tsv', 'verification.commit', 'verification.fingerprint',
     'verification.lanes.json', 'results.tsv',
     'prereview.failed', 'bounced', 'message.failed', 'needs_input.md', 'lateral.tsv',
+    'decision.md', 'decisions.tsv', 'ledger.tsv',
 )
 
 # The markers of an attempt forge sent back without a review, and the kind each one records.

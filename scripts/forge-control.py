@@ -10,6 +10,9 @@
   pin   <plan> <task> <spec>                     the model the task's next FULL implementer retry uses
   unpin <plan> <task>
   retry <plan> <task> [--dwarf SPEC]             queue a retry of a stopped or failed task into the live run
+                                                 a NEEDS_DECISION task (reviews that do not converge, or a stop with no
+                                                 stronger model) is resumed only by a decision: --decide retry=N or
+                                                 threshold=P0..P3, or --dwarf SPEC, each with --reason TEXT --approved
   add   <plan> <task>                            queue a row added to tasks.tsv (with its prompt.md) into the live run
   drain <plan>                                   start nothing new; running tasks finish and the scheduler waits
                                                  while tasks remain (with none left to start, the run ends as usual)
@@ -775,8 +778,9 @@ def check_row(plan, rows, task):
     return dwarf, qa
 
 
-def queue(args, plan, verb, task, dwarf):
-    """Write the request under the control lock, live only; log it with its id."""
+def queue(args, plan, verb, task, dwarf, decision=None):
+    """Write the request under the control lock, live only; log it with its id.
+    decision: a retry's (--decide choice or None, reason, approved) for a NEEDS_DECISION task."""
     with control_lock(plan):
         probe(plan, 'control.log')
         if not is_live(plan):
@@ -785,8 +789,10 @@ def queue(args, plan, verb, task, dwarf):
             refuse_task(plan, task, pin=True)
         name = f'{time.time_ns()}-{os.getpid()}.json'
         request = dict(verb=verb, task=task, dwarf=dwarf, at=time.time(), actor=args.actor)
+        if decision:
+            request.update(decide=decision[0], reason=decision[1], approved=True)
         write_atomic(plan, f'{REQUESTS}/{name}', json.dumps(request) + '\n')
-        audit(plan, args.actor, verb, task, None, dwarf, None, request=name)
+        audit(plan, args.actor, verb, task, None, dwarf or (decision[0] if decision else None), None, request=name)
     if args.json:
         json.dump(dict(queued=True, request=name), sys.stdout)
         sys.stdout.write('\n')
@@ -796,6 +802,35 @@ def queue(args, plan, verb, task, dwarf):
     return 0
 
 
+DECISION = re.compile(r'retry=(?:[1-9]|1[0-9]|20)|threshold=P[0-3]')
+
+
+def decision_of(plan, args, dwarf):
+    """The decision a retry carries, (choice or None, reason, True), or None for a plain retry.
+    A NEEDS_DECISION task is resumed only by a decision: --decide or --dwarf, with --reason and
+    --approved. --decide is for no other task."""
+    status = task_status(plan, args.task, strict=True)
+    if status != 'NEEDS_DECISION':
+        if args.decide is not None:
+            raise Refused(f'task {args.task} is {status}, not waiting for a decision: --decide only decides a NEEDS_DECISION task')
+        return None
+    if args.decide is None and dwarf is None:
+        head = ' '.join(line.strip() for line in (read_file(plan, f'tasks/{args.task}/decision.md') or '').splitlines()[:3]
+                        if line.strip())
+        raise Refused(f'task {args.task} is waiting for your decision, and only a decision resumes it: {head or "see decision.md"} '
+                      '(retry --decide retry=N | threshold=Pn, or --dwarf SPEC, each with --reason TEXT --approved)')
+    if args.decide is not None and dwarf is not None:
+        raise Invalid('give --decide or --dwarf, not both: a decision is one choice')
+    if args.decide is not None and not DECISION.fullmatch(args.decide):
+        raise Invalid('--decide takes retry=N (1 to 20) or threshold=P0|P1|P2|P3')
+    reason = re.sub(r'\s+', ' ', args.reason or '').strip()
+    if not reason:
+        raise Invalid('a decision needs --reason TEXT: it is recorded with the task')
+    if not args.approved:
+        raise Invalid('a decision needs --approved: it resumes a task forge stopped, and is only given on the user\'s instruction')
+    return args.decide, reason, True
+
+
 def cmd_retry(args):
     plan, rows = load(args.plan)
     require_task(rows, args.task)
@@ -803,9 +838,10 @@ def cmd_retry(args):
     if args.dwarf is not None:
         dwarf = clean_spec(args.dwarf, '--dwarf')
     refuse_task(plan, args.task, pin=True)   # before the doctor: MERGED and Fractal need no model check
+    decision = decision_of(plan, args, dwarf)
     if dwarf:
         doctor(dwarf)
-    return queue(args, plan, 'retry', args.task, dwarf)
+    return queue(args, plan, 'retry', args.task, dwarf, decision)
 
 
 def cmd_add(args):
@@ -909,6 +945,9 @@ def parser():
     common(p)
     p.add_argument('task')
     p.add_argument('--dwarf', metavar='SPEC', help='the implementer for this retry (an explicit escalation)')
+    p.add_argument('--decide', metavar='CHOICE', help='decide a NEEDS_DECISION task: retry=N (1 to 20) or threshold=P0..P3')
+    p.add_argument('--reason', metavar='TEXT', help='why (a decision needs it)')
+    p.add_argument('--approved', action='store_true', help='the decision is the user\'s (a decision needs it)')
     p.set_defaults(func=cmd_retry)
     p = sub.add_parser('add', help='queue a row added to tasks.tsv into the live run')
     common(p)
