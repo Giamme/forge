@@ -738,19 +738,27 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
         return any(not pause['exhausted'] and live_pause(pause) for pause in pauses.values())
 
     def fall_back(name: str, info: dict, scope: str, cause: str) -> bool:
-        """The lateral move: a dwarf-stage stop on a model or harness scope moves to the next healthy
-        model of its tier pool, when --infra-fallback is on. The stop was already recorded as its
-        scope's pause, so every paused or exhausted pair is excluded (and a harness stop excludes
-        the whole harness); a pool all stopped cannot bounce the task forever. True when the task
-        moved, and so left the pause."""
-        if interrupted or graceful or fractal or _read_small(plan, 'infra_fallback') != 'on' or _pinned(plan, name):
+        """The lateral move: a stop on a model or harness scope moves to the next healthy model of its
+        tier pool, when --infra-fallback is on. A dwarf-stage stop takes the implementer pool's next
+        model; a QA-stage stop takes a peer reviewer from the plan's qa-routing.json (never the model
+        that wrote the work, and none for a plan without that file), keeping its attempt and its
+        QA-only resume. The stop was already recorded as its scope's pause, so every paused or
+        exhausted pair is excluded (and a harness stop excludes the whole harness); a pool all
+        stopped cannot bounce the task forever. True when the task moved, and so left the pause."""
+        stage = info.get('stage')
+        if interrupted or graceful or fractal or _read_small(plan, 'infra_fallback') != 'on':
             return False
-        if info.get('stage') != 'dwarf' or not scope.startswith(('model:', 'harness:')):
+        # A pin waits for the next full retry, which a review's move is not.
+        if stage not in ('dwarf', 'qa') or (stage == 'dwarf' and _pinned(plan, name)):
+            return False
+        if not scope.startswith(('model:', 'harness:')):
             return False
         excluded = {(info['harness'], info['model'] if scope.startswith('model:') else '*')}
         excluded.update((p['harness'], p['model'] or '*') for p in pauses.values())
         command = ['/bin/bash', script, '_prepare_retry', str(plan), name, '--fallback',
                    ','.join(sorted(h + '/' + m for h, m in excluded)), '--cause', cause]
+        if stage == 'qa':
+            command += ['--role', 'qa']
         if subprocess.run(command).returncode:
             return False
         pauses[scope]['tasks'].remove(name)

@@ -189,6 +189,13 @@ set_dwarf() { # set_dwarf <plan> <id> <spec>
     && mv "$1/.tasks.tsv.retry" "$1/tasks.tsv"
 }
 
+# The same for the reviewer column (6) in tasks.tsv.
+set_qa() { # set_qa <plan> <id> <spec>
+  awk -F'\t' -v OFS='\t' -v id="$2" -v qa="$3" \
+    '$0 !~ /^#/ && $1==id { $6=qa } { print }' "$1/tasks.tsv" > "$1/.tasks.tsv.retry" \
+    && mv "$1/.tasks.tsv.retry" "$1/tasks.tsv"
+}
+
 # --- retry preparation ----------------------------------------------------------
 # Carries the last review's report forward as the findings of the next attempt, and records
 # which commit that report judged (what reviewed.commit holds now, since qa.last is that
@@ -546,18 +553,29 @@ prepare_resume() { # prepare_resume <plan> <id>
   return 0
 }
 
-# --infra-fallback: a dwarf-stage lateral stop (capacity, a usage limit, ...) moves the task to the
-# next healthy member of its own tier pool (forge-route.py fallback). A move is no escalation: it is
-# recorded in tasks/<id>/lateral.tsv and as a `lateral` dataset event, not in escalations.tsv, so the
-# retry policy's streak carries across it. No attempt is spent: the stop already refunded it. Returns
+# --infra-fallback: a lateral stop (capacity, a usage limit, ...) moves the task to the next healthy
+# member of its own tier pool (forge-route.py fallback). A move is no escalation: it is recorded in
+# tasks/<id>/lateral.tsv and as a `lateral` dataset event, not in escalations.tsv, so the retry
+# policy's streak carries across it. No attempt is spent: the stop already refunded it. Returns
 # 1, changing nothing, when there is no candidate, a pin is waiting (a human's choice wins), the plan
 # is Fractal or the move cannot be recorded. The fourth argument names the cause of the stop.
-prepare_fallback() { # prepare_fallback <plan> <id> <excluded harness/model,...> [<cause>]
-  local PLAN="$1" id="$2" tdir="$1/tasks/$2" cur pick cause attempt line phrase
-  [ -e "$tdir/escalation.pin" ] && return 1
+# The fifth names the stage that stopped: dwarf (the default) or qa. A review that stopped moves to a
+# peer reviewer of the plan's qa-routing.json (forge-route.py qa-fallback), keeping its attempt and its
+# `resume` marker, so the next entry is a QA-only dispatch to the new reviewer; a pin waits for the
+# next full retry as it does for any QA-only resume, and the escalation streak is not touched.
+prepare_fallback() { # prepare_fallback <plan> <id> <excluded harness/model,...> [<cause> [<dwarf|qa>]]
+  local PLAN="$1" id="$2" tdir="$1/tasks/$2" role="${5:-dwarf}" setter=set_dwarf cur pick cause attempt line phrase
   forge_plan_is_fractal "$PLAN" && return 1
-  cur="$(field "$PLAN/tasks.tsv" "$id" dwarf)"
-  pick="$(python3 "$SKILL_DIR/scripts/forge-route.py" fallback --plan "$PLAN" --task "$id" --exclude "$3")" || return 1
+  if [ "$role" = qa ]; then
+    setter=set_qa
+    resume_check "$PLAN" "$id" || return 1
+    cur="$(field "$PLAN/tasks.tsv" "$id" qa)"
+    pick="$(python3 "$SKILL_DIR/scripts/forge-route.py" qa-fallback --plan "$PLAN" --task "$id" --exclude "$3")" || return 1
+  else
+    [ -e "$tdir/escalation.pin" ] && return 1
+    cur="$(field "$PLAN/tasks.tsv" "$id" dwarf)"
+    pick="$(python3 "$SKILL_DIR/scripts/forge-route.py" fallback --plan "$PLAN" --task "$id" --exclude "$3")" || return 1
+  fi
   [ -n "$pick" ] || return 1
   cause="${4:--}"
   attempt="$(cat "$tdir/attempt" 2>/dev/null || echo 0)"
@@ -566,19 +584,20 @@ prepare_fallback() { # prepare_fallback <plan> <id> <excluded harness/model,...>
     note "$id: could not record the lateral move in lateral.tsv; nothing was moved"
     return 1
   fi
-  set_dwarf "$PLAN" "$id" "$pick" || { note "$id: could not write $pick into tasks.tsv; nothing was moved"; return 1; }
-  line="$(printf '%s\t%s\tdwarf\t%s\t%s\t%s' "$(date +%s)" "$attempt" "$cur" "$pick" "$cause")"
+  "$setter" "$PLAN" "$id" "$pick" || { note "$id: could not write $pick into tasks.tsv; nothing was moved"; return 1; }
+  line="$(printf '%s\t%s\t%s\t%s\t%s\t%s' "$(date +%s)" "$attempt" "$role" "$cur" "$pick" "$cause")"
   if ! lateral_record_line "$PLAN" "$id" "$line"; then
-    if set_dwarf "$PLAN" "$id" "$cur"; then
+    if "$setter" "$PLAN" "$id" "$cur"; then
       note "$id: could not record the lateral move in lateral.tsv; nothing was moved"
     else
       note "$id: could not record the lateral move in lateral.tsv, and tasks.tsv could not be put back to $cur; it keeps $pick"
     fi
     return 1
   fi
-  forge_dataset_event lateral --dir "$PLAN" --task "$id" --set role=dwarf --set "from=$cur" --set "to=$pick" \
+  forge_dataset_event lateral --dir "$PLAN" --task "$id" --set "role=$role" --set "from=$cur" --set "to=$pick" \
     --set "cause=$cause" --set "attempt=$attempt"
-  rm -f "$tdir/escalation.next" "$tdir/status" "$tdir/infra.txt"
+  # A review's move keeps the escalation streak: only the stop's status and record are cleared.
+  if [ "$role" = qa ]; then rm -f "$tdir/status" "$tdir/infra.txt"; else rm -f "$tdir/escalation.next" "$tdir/status" "$tdir/infra.txt"; fi
   # The note names the cause: a capacity stop (also when none came) and a spent budget have their
   # own words; any other class is shown as classed.
   case "$cause" in
@@ -586,23 +605,28 @@ prepare_fallback() { # prepare_fallback <plan> <id> <excluded harness/model,...>
     budget) phrase='is out of budget' ;;
     *) phrase="stopped ($cause)" ;;
   esac
-  note "$id: $cur $phrase; moving sideways to $pick (same tier)"
+  if [ "$role" = qa ]; then
+    note "$id: reviewer $cur $phrase; moving sideways to reviewer $pick (same tier)"
+  else
+    note "$id: $cur $phrase; moving sideways to $pick (same tier)"
+  fi
 }
 
 # The scheduler's `_prepare_retry` target: prepare, then clear the status so the task
 # reads as PENDING again. `retry` clears it itself, after its own preflight. With --resume it
 # prepares an infrastructure stop's resume instead (prepare_resume), and the status stays;
-# with --dwarf <spec> the spec is the explicit new implementer; --fallback <pairs> [--cause <cause>]
+# with --dwarf <spec> the spec is the explicit new implementer; --fallback <pairs> [--cause <cause> [--role qa]]
 # is prepare_fallback.
-retry_for_scheduler() { # retry_for_scheduler <plan> <id> [--resume | --dwarf <spec> | --fallback <pairs> [--cause <cause>]]
+retry_for_scheduler() { # retry_for_scheduler <plan> <id> [--resume | --dwarf <spec> | --fallback <pairs> [--cause <cause> [--role qa]]]
   if [ "${3:-}" = --resume ]; then
     prepare_resume "$1" "$2"
     return $?
   fi
   if [ "${3:-}" = --fallback ]; then
-    local cause=""
+    local cause="" role=dwarf
     if [ "${5:-}" = --cause ]; then cause="${6:-}"; fi
-    prepare_fallback "$1" "$2" "${4:-}" "$cause"
+    if [ "${7:-}" = --role ]; then role="${8:-dwarf}"; fi
+    prepare_fallback "$1" "$2" "${4:-}" "$cause" "$role"
     return $?
   fi
   # --dwarf: `forge control retry --dwarf`, the same explicit escalation as `retry --dwarf`.

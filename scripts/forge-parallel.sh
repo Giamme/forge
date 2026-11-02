@@ -296,6 +296,16 @@ for key,value in zip(('any','low','medium','high'),sys.argv[2:]):
     if value: data[key]=[s.strip() for s in value.split(',') if s.strip()]
 p.write_text(json.dumps(data))
 PY
+  # The reviewer pools, kept as the dwarf pools are: the round-robin below forgets them, and a review
+  # stopped on infrastructure moves to a peer of its pool (forge-route.py qa-fallback).
+  python3 - "$PLAN/qa-routing.json" "$Q_ANY" "$Q_LO" "$Q_MD" "$Q_HI" <<'PY'
+import json,sys
+from pathlib import Path
+p=Path(sys.argv[1]); data=json.loads(p.read_text()) if p.exists() else {}
+for key,value in zip(('any','low','medium','high'),sys.argv[2:]):
+    if value: data[key]=[s.strip() for s in value.split(',') if s.strip()]
+p.write_text(json.dumps(data))
+PY
 
   # Uncommitted work is invisible to every dwarf, because worktrees branch from a
   # commit. That is the likeliest way to get a confusingly wrong result, so it is

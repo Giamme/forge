@@ -23,7 +23,7 @@ WORKER = scope_tests.WORKER.replace(
 ).replace(
     '  _merge)', '''  _prepare_retry)
     if [ "$4" = --fallback ]; then
-      echo "$name fallback $5 $6 $7" >> "$plan/events.log"
+      echo "$name fallback $5 $6 $7${8:+ $8 $9}" >> "$plan/events.log"
       [ -f "$plan/nopeer" ] || [ -f "$plan/nopeer.$name" ] && exit 1
       if [ -f "$plan/peer" ]; then
         awk -F'\t' -v OFS='\t' -v id="$name" -v peer="$(cat "$plan/peer")" '$1==id {$5=peer} 1' \
@@ -127,10 +127,11 @@ class LateralTests(RecoveryBase):
         self.assertEqual(self.fallbacks(), [])
         self.assertIn('is over; resuming a', r.stderr)
 
-    def test_a_qa_stage_stop_is_not_a_lateral_move_yet(self):
+    def test_a_qa_stage_stop_asks_for_a_reviewer_move_and_asks_when_it_has_no_peer(self):
+        (self.plan / 'nopeer').write_text('')
         self.task('a', [f'INFRAQA usage_limit {SOL}', 'PASS'], dwarf='sonnet', qa='sol')
         r = self.run_scheduler('--infra-retries', 1)
-        self.assertEqual(self.fallbacks(), [])
+        self.assertEqual(self.fallbacks(), ['a fallback codex/* --cause usage_limit --role qa'])
         self.assertEqual((r.returncode, self.calls('a')), (8, 1))        # no reset known: it asks
 
     def test_with_the_fallback_off_a_lateral_cause_applies_its_without_peer_value(self):

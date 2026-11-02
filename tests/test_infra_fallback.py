@@ -22,6 +22,7 @@ route = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(route)
 
 CAPACITY = {'rc': 1, 'stdout': CODEX_CAPACITY}
+BUDGET = {'rc': 1, 'stdout': json.dumps({'type': 'result', 'is_error': True, 'result': 'Credit balance is too low'})}
 USAGE_LIMIT = {'rc': 1, 'stderr': 'Claude AI usage limit reached|1760000000'}
 
 
@@ -278,13 +279,85 @@ class RunTests(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stdout)
         self.assertEqual(self.escalations(p), [['sol', 'sol:xhigh', 'pin']])
 
-    def test_a_qa_stage_capacity_stop_does_not_fall_back(self):
+    # --- the QA stage: a review stopped on infrastructure moves to a peer reviewer ----------------------
+    def qa_routing(self, p):
+        return json.loads((p / 'qa-routing.json').read_text())
+
+    def qa_column(self, p):
+        return [line.split('\t')[5] for line in (p / 'tasks.tsv').read_text().splitlines() if line.startswith('a\t')][0]
+
+    def test_plan_keeps_the_reviewer_pools(self):
+        p = self.plan('sol', 'opus', '--qa-low', 'a', '--qa-medium', 'b,c', '--qa-high', 'd')
+        self.assertEqual(self.qa_routing(p), {'low': ['a'], 'medium': ['b', 'c'], 'high': ['d']})
+        (self.root / 'plan').rename(self.root / 'plan.1')
+        p = self.plan('sol', 'opus', '--qa', 'x')
+        self.assertEqual(self.qa_routing(p), {'any': ['x']})
+        self.run_script('forge-parallel.sh', 'plan', p, '--repo', self.repo, '--no-memory', '--explore', '0',
+                        '--dwarf-medium', 'sol', '--qa-high', 'y')       # a re-plan updates it, as the dwarf pools are
+        self.assertEqual(self.qa_routing(p), {'any': ['x'], 'high': ['y']})
+
+    def test_a_qa_stage_budget_stop_moves_to_a_peer_reviewer_and_keeps_the_attempt(self):
+        p = self.plan('sol', 'opus', '--qa-medium', 'opus,astra')
+        self.scenario({'a.qa.1': BUDGET})
+        r = self.run_plan(p, '--infra-retries', '1', '--infra-backoff', '30')
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertTrue((p / 'tasks/a/merged').exists())
+        self.assertEqual((self.qa_column(p), self.dwarf_column(p), self.escalations(p), self.laterals(p)),
+                         ('astra', 'sol', [], [['qa', 'opus', 'astra', 'budget']]))
+        self.assertEqual((p / 'tasks/a/lateral.tsv').read_text().split('\t')[1], '1')       # the attempt it stopped on
+        self.assertEqual((p / 'tasks/a/attempt').read_text().strip(), '1')
+        self.assertEqual((self.calls().count('dwarf'), self.calls().count('qa')), (1, 2))
+        self.assertIn('reviewer opus is out of budget; moving sideways to reviewer astra (same tier)', r.stdout)
+
+    def test_a_qa_stage_move_never_picks_the_implementers_model(self):
+        p = self.plan('sol', 'opus', '--qa-medium', 'opus,sol')        # the only other reviewer wrote the work
+        self.scenario({'a.qa.1': BUDGET})
+        r = self.run_plan(p, '--infra-retries', '1')
+        self.assertEqual((self.qa_column(p), self.laterals(p)), ('opus', []))
+        self.assertEqual(self.calls().count('dwarf'), 1)
+        self.assertIn('nothing will be retried until a person acts', r.stdout)       # a budget with no peer asks
+
+    def test_a_qa_stage_capacity_stop_without_a_peer_waits_for_its_reviewer(self):
         p = self.plan(qa='astra')
         self.scenario({'a.qa.1': CAPACITY})
         r = self.run_plan(p, '--infra-fallback', '--infra-retries', '1')
         self.assertEqual(r.returncode, 0, r.stdout)
-        self.assertEqual((self.dwarf_column(p), self.escalations(p)), ('sol', []))
+        self.assertEqual((self.dwarf_column(p), self.qa_column(p), self.escalations(p), self.laterals(p)),
+                         ('sol', 'astra', [], []))
         self.assertIn('is over; resuming a', r.stdout)
+
+    def test_a_plan_without_reviewer_pools_has_no_qa_move(self):
+        p = self.plan('sol', 'opus', '--qa-medium', 'opus,astra')
+        (p / 'qa-routing.json').unlink()                # a plan made before the pools were kept
+        self.scenario({'a.qa.1': BUDGET})
+        r = self.run_plan(p, '--infra-retries', '1')
+        self.assertEqual((self.qa_column(p), self.laterals(p)), ('opus', []))
+        self.assertIn('nothing will be retried until a person acts', r.stdout)
+
+    def test_a_reviewer_no_pool_lists_has_no_peer(self):
+        p = self.plan('sol', 'opus', '--qa-medium', 'sonnet,astra')
+        self.scenario({'a.qa.1': BUDGET})
+        self.run_plan(p, '--infra-retries', '1')
+        self.assertEqual((self.qa_column(p), self.laterals(p)), ('opus', []))
+
+    def test_the_any_pool_is_the_second_choice(self):
+        p = self.plan('sol', 'opus', '--qa', 'opus,astra', '--qa-high', 'sonnet')    # a medium task: no medium pool
+        self.scenario({'a.qa.1': BUDGET})
+        self.run_plan(p, '--infra-retries', '1', '--infra-backoff', '30')
+        self.assertEqual((self.qa_column(p), self.laterals(p)), ('astra', [['qa', 'opus', 'astra', 'budget']]))
+
+    def test_a_moved_review_starts_a_fresh_session(self):
+        fail = {'verdict': 'FAIL', 'findings': '- [P1][CONFIRMED] a.txt:1 — broken'}
+        p = self.plan('sol', 'opus', '--qa-medium', 'opus,astra', '--reviewer-session')
+        self.scenario({'a.qa.1': fail, 'a.dwarf.2': {'content': 'attempt 2'}, 'a.qa.2': BUDGET})
+        r = self.run_plan(p, '--retry-failed', '1', '--infra-retries', '1', '--infra-backoff', '30')
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertEqual(self.laterals(p), [['qa', 'opus', 'astra', 'budget']])
+        sessions = [line.split('\t') for line in (p / 'tasks/a/review_sessions.tsv').read_text().splitlines()]
+        # round 2 continued opus's session until opus stopped; the review that moved to astra starts fresh
+        self.assertEqual([row[2:4] for row in sessions],
+                         [['fresh', 'first-round'], ['continued', 'same-spec'], ['fresh', 'spec-changed']])
+        self.assertNotIn('resume', (p / 'tasks/a/qa.cmd').read_text())
 
     def test_with_the_option_off_the_task_waits_for_its_model(self):
         p = self.plan()

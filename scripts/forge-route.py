@@ -46,6 +46,13 @@ bias (inverse-propensity weighting needs the probability each choice had).
       escalation recorded in running.tier), or exits 1 when there is none. Never a model of another tier.
       The move is recorded by `lateral` below, not as an escalation.
 
+  forge-route.py qa-fallback --plan P --task ID [--exclude harness/model,...]
+      The lateral move of a review stopped on infrastructure: prints the peer reviewer from
+      plan/qa-routing.json (the --qa, --qa-low, --qa-medium and --qa-high pools `plan` was given): the
+      next member of the task's difficulty pool and then of `any`, never the stopped reviewer's model nor
+      the implementer's (a task is not reviewed by the model that wrote it), or exits 1 when there is none.
+      A plan with no qa-routing.json, or a reviewer no pool lists, has no peer.
+
   forge-route.py record --plan P --task ID (--probe | --line TEXT)
       Internal. Probe or append tasks/<id>/escalations.tsv through forge-control.py, which
       walks from the plan one directory at a time and refuses a symlink at any component.
@@ -280,6 +287,47 @@ def fallback_pick(current: str, pools: dict, registry: dict, excluded: set, tier
     return None
 
 
+def load_qa_pools(path) -> dict:
+    """{'any'|'low'|'medium'|'high': [spec, ...]} from plan/qa-routing.json, the reviewer pools `plan` was
+    given. Empty for a plan made before the file existed."""
+    try:
+        data = json.loads(Path(path).read_text())
+    except (OSError, ValueError):
+        return {}
+    out = {}
+    for key in ('any',) + TIERS:
+        specs = data.get(key) if isinstance(data, dict) else None
+        if isinstance(specs, list):
+            specs = [str(s).strip() for s in specs if str(s).strip()]
+            if specs:
+                out[key] = specs
+    return out
+
+
+def qa_fallback_pick(current: str, implementer: str, pools: dict, registry: dict, excluded: set, difficulty: str):
+    """The peer reviewer of a review stopped on infrastructure: the next member, in pool order and
+    wrapping around, of the task's difficulty pool and then of `any`, that runs another model than the
+    stopped reviewer and than the implementer, on a pair nobody paused. A reviewer that no such pool
+    lists (named by hand) has no peer, since its strength is unknown. None when there is none."""
+    order = [pools.get(key) or [] for key in (difficulty, 'any') if key in TIERS or key == 'any']
+    own = canonical(current, registry)
+    if not any(canonical(s, registry) == own for pool in order for s in pool):
+        return None
+    wrote = canonical(implementer, registry) if implementer not in ('', '-', 'UNASSIGNED') else None
+    for pool in order:
+        keys = [canonical(s, registry) for s in pool]
+        start = keys.index(own) if own in keys else -1
+        for step in range(1, len(pool) + 1):
+            candidate = pool[(start + step) % len(pool)]
+            model, pair = canonical(candidate, registry), pair_of(candidate, registry)
+            if model == own or model == wrote or pair is None:
+                continue
+            if pair in excluded or (pair[0], '*') in excluded:
+                continue
+            return candidate
+    return None
+
+
 def escalation_target(source: str, frm: str, to: str, running: str, pools: dict, registry: dict) -> str:
     """The tier an escalations.tsv row moved the task to. The same model at another effort stays.
     The policy (stronger) went to the first pool with its target above the highest pool of `frm`;
@@ -339,6 +387,19 @@ def fallback(args) -> int:
         return 1
     pick = fallback_pick(current, load_pools(plan / 'fractal-routing.json'), registry_models(),
                          parse_excluded(args.exclude), running_tier(plan, args.task, current))
+    if not pick:
+        return 1
+    print(pick)
+    return 0
+
+
+def qa_fallback(args) -> int:
+    plan = Path(os.path.realpath(args.plan))
+    current, implementer = _row_cell(plan, args.task, 5), _dwarf_of(plan, args.task)
+    if not current or current in ('-', 'UNASSIGNED'):
+        return 1
+    pick = qa_fallback_pick(current, implementer, load_qa_pools(plan / 'qa-routing.json'), registry_models(),
+                            parse_excluded(args.exclude), _row_cell(plan, args.task, 2))
     if not pick:
         return 1
     print(pick)
@@ -801,6 +862,8 @@ def record_lateral_tier(plan: str, task: str, row: str, control) -> None:
     """tasks/<id>/running.tier after a lateral move: the tier the task ran in, now recorded for the spec
     it moved to. Without this a task moved sideways from a recorded spec would read as its difficulty again."""
     cells = row.rstrip('\n').split('\t')
+    if cells[2] != 'dwarf':                  # a reviewer's move says nothing about the implementer's tier
+        return
     frm, to = cells[3], cells[4]
     tier = running_tier(Path(plan), task, frm)
     if tier:
@@ -823,6 +886,10 @@ def main(argv=None) -> int:
     p.add_argument('--plan', required=True)
     p.add_argument('--task', required=True)
     p.add_argument('--exclude', default='', help='harness/model pairs to skip, comma-separated (harness/* for all)')
+    p = sub.add_parser('qa-fallback', help='the peer reviewer a review stopped on infrastructure moves to')
+    p.add_argument('--plan', required=True)
+    p.add_argument('--task', required=True)
+    p.add_argument('--exclude', default='', help='harness/model pairs to skip, comma-separated (harness/* for all)')
     for name in ('record', 'lateral'):
         p = sub.add_parser(name, help=argparse.SUPPRESS)
         p.add_argument('--plan', required=True)
@@ -841,9 +908,9 @@ def main(argv=None) -> int:
         return record_escalation(args)
     if args.command == 'lateral':
         return record_lateral(args)
-    if args.command == 'fallback':
+    if args.command in ('fallback', 'qa-fallback'):
         try:
-            return fallback(args)
+            return (fallback if args.command == 'fallback' else qa_fallback)(args)
         except Exception:
             return 1
     try:
