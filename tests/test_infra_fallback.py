@@ -423,7 +423,13 @@ class RunTests(unittest.TestCase):
         self.assertEqual((p / 'infra_fallback').read_text(), 'off\n')
         self.run_script('forge-parallel.sh', 'plan', p, '--repo', self.repo, '--no-memory',
                                           '--explore', '0', '--dwarf-medium', 'sol,astra')
-        self.assertEqual((p / 'infra_fallback').read_text(), 'on\n')       # a re-plan is a new decision
+        # The final review of run 1: a re-plan turned lateral moves back on; it keeps them off, as it
+        # keeps the routing files.
+        self.assertEqual((p / 'infra_fallback').read_text(), 'off\n')
+        self.run_plan(p, '--infra-fallback')
+        self.run_script('forge-parallel.sh', 'plan', p, '--repo', self.repo, '--no-memory',
+                                          '--explore', '0', '--dwarf-medium', 'sol,astra')
+        self.assertEqual((p / 'infra_fallback').read_text(), 'on\n')
 
     def test_a_new_plan_moves_a_capacity_stop_without_any_flag(self):
         p = self.plan()

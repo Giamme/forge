@@ -441,7 +441,7 @@ forge-parallel.sh combine   <new-plan-dir> <plan-dir> <plan-dir>... [--verify <c
 | `--infra-retries M` | run | no — this run only | wait out up to `M` infrastructure stops per paused scope (a model, a harness, or everything) instead of ending the run |
 | `--infra-backoff SHAPE` | run | `infra_backoff` | the waits between those stops when the provider gave no retry-after: `exp:B[,C]`, `linear:S,T[,C]` or `list:a,b,...` in seconds (default `exp:60`) |
 | `--infra-fallback` | run | `infra_fallback` | turn lateral recovery on: a stop whose cause moves sideways goes to another model of the same tier (the dwarf pool, or a QA peer from `qa-routing.json`), never a stronger one. A new `plan` writes `on`; this flag writes `on` for a later `run` |
-| `--no-infra-fallback` | plan, run | `infra_fallback` | turn lateral recovery off. A plan with no file stays off |
+| `--no-infra-fallback` | plan, run | `infra_fallback` | turn lateral recovery off. A plan with no file stays off, and a re-plan keeps the setting it has |
 | `--converge-window N` | plan | `converge_window` | reviews the non-converging signal looks at (default `4` when the file is absent; below `2` it never fires). Changing it later is `forge control set converge-window N` |
 | `--max-attempts N` | plan | `max_attempts` | attempts a task may spend across runs before it stops for a decision (default `8` when the file is absent; `0` means no cap). Changing it later is `forge control set max-attempts N --confirm` |
 | `--decide retry=N` / `--decide threshold=Pn` | retry | no — this retry only | resume a `NEEDS_DECISION` task: `N` more attempts (`N` from 1 to 20) or this task's blocking threshold (`P0`..`P3`) and then one retry. Needs `--reason` and `--approved`. Refused on any other status |

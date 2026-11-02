@@ -849,7 +849,7 @@ starts a wait after all. "Needs you" is that end of the recovery: no peer, and t
 clear by itself.
 
 **Lateral recovery** is on for a new plan. `plan` writes `infra_fallback` as `on`;
-`plan --no-infra-fallback` writes `off`. A plan with no file stays off. `run --infra-fallback` and
+`plan --no-infra-fallback` writes `off`, and a re-plan keeps the file as it is. A plan with no file stays off. `run --infra-fallback` and
 `run --no-infra-fallback` write the file, and `forge control set infra-fallback on|off` applies at
 the next infrastructure stop. It runs at the dwarf stage and at the QA stage, and not on a Fractal
 plan:
