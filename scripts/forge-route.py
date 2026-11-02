@@ -297,12 +297,13 @@ def fallback_pick(current: str, pools: dict, registry: dict, excluded: set, tier
     keys = [canonical(s, registry) for s in pool]
     if own not in keys:
         return None
-    judge = canonical(reviewer, registry) if reviewer and reviewer not in ('-', 'UNASSIGNED') else None
+    judge = reviewer if reviewer and reviewer not in ('-', 'UNASSIGNED') else None
     start = keys.index(own)
     for step in range(1, len(pool) + 1):
         candidate = pool[(start + step) % len(pool)]
         pair = pair_of(candidate, registry)
-        if canonical(candidate, registry) in (own, judge) or pair is None:
+        # The reviewer's model on any harness (sol on opencode is codex's sol), as qa_fallback_pick compares.
+        if canonical(candidate, registry) == own or (judge and same_model(candidate, judge, registry)) or pair is None:
             continue
         if pair in excluded or (pair[0], '*') in excluded:
             continue

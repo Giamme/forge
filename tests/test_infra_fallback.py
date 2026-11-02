@@ -106,6 +106,8 @@ class RunningTierTests(unittest.TestCase):
         self.assertEqual(self.fallback('sol', 'medium', pools, qa='astra:xhigh'), 'sonnet')   # any effort of it
         self.assertIsNone(self.fallback('sol', 'medium', {'medium': ['sol', 'astra']}, qa='astra'))
         self.assertEqual(self.fallback('sol', 'medium', {'medium': ['sol', 'astra']}, qa='-'), 'astra')
+        # The reviewer's model through another harness is the same model (round 2 of the final review).
+        self.assertEqual(self.fallback('opus', 'low', {'low': ['opus', 'sol:high:opencode', 'astra']}, qa='sol'), 'astra')
 
     def test_a_model_in_two_pools_stays_in_the_tier_of_its_task(self):
         pools = {'medium': ['sol'], 'high': ['sol', 'sonnet']}
