@@ -1532,6 +1532,9 @@ do_retry() {
   # The count is decided.left, so it survives a run that ended before the attempts were used.
   local more; more="$(decided_left "$tdir")"; more="${more:-0}"
   while [ "$more" -gt 0 ] && { [ "$st" = FAIL ] || [ "$st" = UNKNOWN ]; } && [ ! -e "$tdir/noretry" ]; do
+    # Each further attempt is spent against the cap (#69) like the scheduler's retries: an UNKNOWN review
+    # does not stop the task by itself, so the cap is checked here, and a task at it stops for a decision.
+    if ! attempt_cap_gate "$PLAN" "$id" "$st" ""; then st="$(task_status "$PLAN" "$id")"; break; fi
     more=$(( more - 1 ))
     prepare_retry "$PLAN" "$id" || break
     decided_left_set "$tdir" "$more" || break

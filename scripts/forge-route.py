@@ -664,7 +664,8 @@ def attempts_spent(tdir: Path) -> int:
 
 
 def granted_attempts(tdir: Path) -> int:
-    """The attempts a person granted: N of every retry=N row in tasks/<id>/decisions.tsv."""
+    """The attempts a person granted: N of every retry=N row in tasks/<id>/decisions.tsv. The retry CLI takes
+    up to three digits, zero-padded ones too (retry=002), so the grant is read the same way."""
     total = 0
     try:
         lines = (tdir / 'decisions.tsv').read_text().splitlines()
@@ -673,7 +674,7 @@ def granted_attempts(tdir: Path) -> int:
     for line in lines:
         cells = line.split('\t')
         if len(cells) > 2:
-            match = re.fullmatch(r'retry=([0-9]{1,2})', cells[2])
+            match = re.fullmatch(r'retry=([0-9]{1,3})', cells[2])
             if match:
                 total += int(match.group(1))
     return total
