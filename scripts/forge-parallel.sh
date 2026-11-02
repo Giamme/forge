@@ -1494,7 +1494,17 @@ do_retry() {
       note "$id PASS but conflicted on merge — branch preserved"
     fi
   fi
-  verify_result "$PLAN" "$(cat "$PLAN/wt_root")/_integration" "$PLAN" || { write_results "$PLAN"; run_report_extras "$PLAN"; return 5; }
+  # Tasks still to run (#112): the run that dispatches them verifies the integration branch at its
+  # end, and integrate verifies its candidate, so verifying now would only be repeated.
+  local left="" lid
+  for lid in $(all_ids "$T"); do
+    case "$(task_status "$PLAN" "$lid")" in PENDING|BLOCKED) left="${left:+$left }$lid" ;; esac
+  done
+  if [ -n "$left" ]; then
+    note "verification deferred: tasks still to run ($left); the next run, or integrate, verifies the integration branch"
+  else
+    verify_result "$PLAN" "$(cat "$PLAN/wt_root")/_integration" "$PLAN" || { write_results "$PLAN"; run_report_extras "$PLAN"; return 5; }
+  fi
   write_results "$PLAN"
   echo
   printf '  %-14s %-9s %s\n' id status branch
@@ -1614,7 +1624,7 @@ verify_result_body() { # plan, checkout, artifact directory[, fixed source]
   forge_metric_begin "$out" verification
   forge_metric_phase verification
   repo="$(cat "$plan/repo")"
-  rm -f "$out/verification.flaky" "$out/verification.retry.log" "$out/verification.coverage.txt" \
+  rm -f "$out/verification.flaky" "$out/verification.retry.log" "$out/verification.failing.log" "$out/verification.coverage.txt" \
     "$out/verification.runs.tsv" "$out"/verification.run-*.log "$out/verification.commit" \
     "$out/verification.lanes.json" "$out"/verification.lane.*.log
   # The commit being verified, named before any early return, so every outcome (FAIL and
@@ -1730,10 +1740,31 @@ with open(out + "/verification.jev.json", "w") as fh:
   verify_stopped "$out" && return 130
   echo "$before" > "$out/verification.fingerprint"
   if [ "$rc" != 0 ] || [ "$before" != "$after" ]; then
-    local flaked=0 n_retry=0 rc3 b3 a3
+    local flaked=0 n_retry=0 rc3 b3 a3 fcmd
     # The rerun itself is the evidence: it needs no model and no recorded trap. A tree
     # change is never retried.
     if [ "$rc" != 0 ] && [ "$before" = "$after" ] && [ "$vretries" -gt 0 ]; then
+      # First the failing tests alone, through .forge/verify-subset (#112): failing again on their own
+      # confirms a regression without a second full suite. Their pass says nothing about the rest of
+      # the command, so the full rerun below still decides a flaky result.
+      if [ -s "$repo/.forge/verify-subset" ] && fcmd="$(python3 "$SKILL_DIR/scripts/forge-verify-failed.py" command \
+           --checkout "$wt" --log "$out/verification.log" --subset "$repo/.forge/verify-subset" 2>/dev/null)"; then
+        rc3=0
+        note "verification failed (exit $rc); rerunning only the failing tests first: $fcmd"
+        b3="$(forge_fingerprint "$wt")" || return 1
+        vt0="$(date +%s)"
+        verify_stopped "$out" && return 130
+        verify_exec "$wt" "$fcmd" "$out/verification.failing.log" || rc3=$?
+        a3="$(forge_fingerprint "$wt")" || { verify_stopped "$out" && return 130; return 1; }
+        verify_run_note "$out" failing "$rc3" "$b3" "$a3" verification.failing.log "$vt0"
+        verify_stopped "$out" && return 130
+        # 126 and 127: the subset command itself could not run, which confirms nothing.
+        if [ "$rc3" != 0 ] && [ "$rc3" != 126 ] && [ "$rc3" != 127 ] && [ "$b3" = "$a3" ]; then
+          echo FAIL > "$out/verification.status"
+          note "the failing tests fail again on their own (exit $rc3): a regression, not a flaky test, so the full command is not rerun; see $out/verification.log"
+          return 1
+        fi
+      fi
       while [ "$n_retry" -lt "$vretries" ] && [ "$flaked" = 0 ]; do
         n_retry=$((n_retry+1)); rc3=0
         note "verification failed (exit $rc); rerunning to tell a flaky lane from a regression ($n_retry/$vretries)"

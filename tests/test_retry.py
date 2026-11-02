@@ -254,6 +254,9 @@ class RetryTests(unittest.TestCase):
         self.assertNotIn('jev_retry', (p / 'verification.runs.tsv').read_text())
         self.assertFalse((p / 'verification.jev.json').exists())
 
+    def run_kinds(self, plan):
+        return [line.split('\t')[1] for line in (plan / 'verification.runs.tsv').read_text().splitlines()]
+
     def test_a_consistently_failing_verify_still_fails_after_the_rerun(self):
         p = self.plan_of([('a', '-', 'a.txt')])
         r = self.run_script('forge-parallel.sh', 'run', p, '--verify', 'echo nope; exit 9')
@@ -261,6 +264,59 @@ class RetryTests(unittest.TestCase):
         self.assertEqual(self.text(p, 'verification.exit'), '9')
         self.assertFalse((p / 'verification.flaky').exists())
         self.assertEqual(self.text(p, 'verification.status'), 'FAIL')
+        self.assertEqual(self.run_kinds(p), ['initial', 'rerun'])   # no verify-subset: the whole command again
+
+    def with_subset(self, subset):
+        """A tracked test file the failing log can name, and the repository's verify-subset."""
+        (self.repo / 'tests').mkdir(exist_ok=True)
+        (self.repo / 'tests' / 'test_x.py').write_text('# a test module\n')
+        (self.repo / '.forge').mkdir(exist_ok=True)
+        (self.repo / '.forge' / 'verify-subset').write_text(subset)
+        self.git('add', 'tests/test_x.py'); self.git('commit', '-qm', 'tests')
+
+    def test_a_regression_is_confirmed_by_its_failing_tests_without_a_full_rerun(self):
+        # #112: one deterministic failure used to cost a second full suite.
+        seen = self.root / 'subset-args'
+        self.with_subset('echo {files} > %s; echo still-failing; exit 1\n' % seen)
+        p = self.plan_of([('a', '-', 'a.txt')])
+        r = self.run_script('forge-parallel.sh', 'run', p, '--verify',
+                            'echo "FAIL: test_y (test_x.Case.test_y)"; exit 1')
+        self.assertEqual(r.returncode, 5, r.stdout)
+        self.assertEqual(self.text(p, 'verification.status'), 'FAIL')
+        self.assertEqual(self.run_kinds(p), ['initial', 'failing'])
+        self.assertEqual(seen.read_text().strip(), 'tests/test_x.py')
+        self.assertIn('still-failing', (p / 'verification.failing.log').read_text())
+        self.assertFalse((p / 'verification.retry.log').exists())
+
+    def test_failing_tests_that_pass_alone_still_need_the_full_rerun(self):
+        # Their pass says nothing about the rest of the command: the flaky verdict needs the whole command.
+        self.with_subset('true {files}\n')
+        marker = self.root / 'flake-marker'
+        p = self.plan_of([('a', '-', 'a.txt')])
+        r = self.run_script('forge-parallel.sh', 'run', p, '--verify',
+                            f'if [ -e {marker} ]; then exit 0; fi; touch {marker}; '
+                            'echo "FAIL: test_y (test_x.Case.test_y)"; exit 1')
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertEqual(self.run_kinds(p), ['initial', 'failing', 'rerun'])
+        self.assertTrue((p / 'verification.flaky').exists())
+
+    def test_retry_defers_verification_while_tasks_remain_to_run(self):
+        # #112: the run that dispatches them verifies the same branch minutes later.
+        count = self.root / 'verifications'
+        p = self.plan_of([('a', '-', 'a.txt'), ('b', 'a', 'b.txt')])
+        self.scenario({'a.qa.1': {'verdict': 'FAIL', 'findings': '- [P1][CONFIRMED] a.txt:1 — broken'},
+                       'a.dwarf.2': {'content': 'fixed'}})
+        verify = f'echo x >> {count}'
+        self.run_script('forge-parallel.sh', 'run', p, '--verify', verify)
+        runs = count.read_text().count('x')
+        r = self.run_script('forge-parallel.sh', 'retry', p, 'a')
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertIn('MERGED', (p / 'results.tsv').read_text())
+        self.assertIn('verification deferred: tasks still to run (b)', r.stdout)
+        self.assertEqual(count.read_text().count('x'), runs)
+        r = self.run_script('forge-parallel.sh', 'run', p)
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertEqual(count.read_text().count('x'), runs + 1)
 
     def test_a_command_that_changes_the_tree_is_never_retried(self):
         p = self.plan_of([('a', '-', 'a.txt')])
