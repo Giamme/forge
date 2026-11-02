@@ -12,8 +12,8 @@ bias (inverse-propensity weighting needs the probability each choice had).
       exactly two: SPEC and its neighbour, the model one tier away in the user's own pools
       (the next cheaper tier for medium and high, the next stronger for low). With
       probability 1-E it keeps SPEC; with probability E it picks uniformly between the two.
-      Prints the spec to use. Appends the decision to <plan>/tasks/<id>/route.jsonl (never
-      rewritten) and marks a changed pick in tasks/<id>/route.explored for the table. A row
+      Prints the spec to use. Appends the decision, with the tier of its choice, to
+      <plan>/tasks/<id>/route.jsonl (never rewritten) and marks a changed pick in tasks/<id>/route.explored for the table. A row
       with no neighbour is not explored and records nothing.
 
   forge-route.py escalation --plan P --task ID [--check] [--qa-only-next yes|no]
@@ -26,6 +26,7 @@ bias (inverse-propensity weighting needs the probability each choice had).
       that names no effort counts as medium, a dwarf dispatch's default) before that stop.
       The streak then counts per effort, so the new effort starts again. At the pairing's
       highest effort the task still stops, and split.suggested says that effort was tried too.
+      A lateral move recorded in tasks/<id>/lateral.tsv does not end the count (see failed_streak).
       With the file absent the streak and the stop are exactly as before. `--check` (run after
       every attempt) also records a due escalation in escalation.next, and clears the markers
       once the streak no longer holds. A pending tasks/<id>/escalation.pin (a human's one-shot
@@ -39,13 +40,36 @@ bias (inverse-propensity weighting needs the probability each choice had).
       re-read escalate_after inside it: a policy decision made before a human switched the
       policy off writes nothing.
 
+  forge-route.py fallback --plan P --task ID [--exclude harness/model,...]
+      The lateral move of an infrastructure stop: prints the next free model of the pool of the
+      tier the task runs in (its difficulty, the tier its exploration picked, or the target its last
+      escalation recorded in running.tier), or exits 1 when there is none. Never a model of another tier.
+      The move is recorded by `lateral` below, not as an escalation.
+
+  forge-route.py qa-fallback --plan P --task ID [--exclude harness/model,...]
+      The lateral move of a review stopped on infrastructure: prints the peer reviewer from
+      plan/qa-routing.json (the --qa, --qa-low, --qa-medium and --qa-high pools `plan` was given): the
+      next member of the task's difficulty pool and then of `any`, never the stopped reviewer's model nor
+      the implementer's (a task is not reviewed by the model that wrote it), or exits 1 when there is none.
+      A plan with no qa-routing.json, or a reviewer no pool lists, has no peer.
+
   forge-route.py record --plan P --task ID (--probe | --line TEXT)
       Internal. Probe or append tasks/<id>/escalations.tsv through forge-control.py, which
       walks from the plan one directory at a time and refuses a symlink at any component.
+      An appended row also writes tasks/<id>/running.tier: its target tier and spec.
       `--probe` exits 0 when every component below the plan is a real directory and the file
       is absent or a regular file. `--line` appends one record under those same conditions.
       A missing parent exits 1 and writes nothing: the walk has no directory descriptor then,
       and opening the leaf would create it in the process's current directory.
+
+  forge-route.py lateral --plan P --task ID (--probe | --line TEXT)
+      Internal. The same probe and append, for tasks/<id>/lateral.tsv: the record of a dwarf
+      lateral move (epoch, attempt, role, from, to, cause). Its appended row writes running.tier
+      too: a move keeps the tier, and the spec it moved to is the one that tier is recorded for.
+
+  forge-route.py attempt-cap --plan P --task ID
+      Prints "<used> <cap>": the attempts a task has spent and its attempt cap (#69), or "-" for
+      no cap. Used by the shell and the scheduler, and by `forge control show`. See attempt_cap.
 
 The propensity of the chosen spec is (1-E)*[chosen == SPEC] + E/2. Forge never picks a
 model the user did not name: both helpers read only the pools `plan` stored in
@@ -64,6 +88,7 @@ import hashlib
 import json
 import os
 import random
+import re
 import secrets
 import stat
 import subprocess
@@ -76,8 +101,9 @@ TIERS = ('low', 'medium', 'high')
 SCRIPTS = Path(__file__).resolve().parent
 REGISTRY = SCRIPTS.parent / 'registry.tsv'
 FAILED = ('FAIL', 'TIMEOUT', 'BOUNCED', 'INCOMPLETE')   # a judgment against the spec that ran
-NEUTRAL = ('INFRA', 'UNKNOWN', 'ERROR', 'RUNNING', 'INTERRUPTED', 'NEEDS_INPUT')   # say nothing about it
+NEUTRAL = ('INFRA', 'UNKNOWN', 'ERROR', 'RUNNING', 'INTERRUPTED', 'NEEDS_INPUT', 'NEEDS_DECISION')   # say nothing about it
 DEFAULT_ESCALATE_AFTER = 3
+DEFAULT_MAX_ATTEMPTS = 8                          # `plan --max-attempts`; a plan without the file
 DEFAULT_EFFORT = 'medium'                         # forge-dispatch.sh dwarf default
 LOCK_WAIT = 5.0                                    # seconds to wait for P/control.lock
 # forge-dispatch.sh rank_of. Only for "which accepted effort is above this one"; the set of
@@ -111,8 +137,10 @@ def row_inputs(plan: Path, task: str) -> str:
 
 # --- the user's ladder -------------------------------------------------------------
 
-def registry_models(path: Path = REGISTRY) -> dict:
-    """{alias: {harness: model id}} from registry.tsv; the first row of an alias is its default."""
+def registry_models(path=None) -> dict:
+    """{alias: {harness: model id}} from registry.tsv (or FORGE_REGISTRY, as dispatch and the scheduler read
+    it); the first row of an alias is its default."""
+    path = Path(path or os.environ.get('FORGE_REGISTRY') or REGISTRY)
     out = {}
     try:
         lines = path.read_text().splitlines()
@@ -138,6 +166,19 @@ def canonical(spec: str, registry: dict) -> str:
     if harness and harness in rows:
         return rows[harness]
     return next(iter(rows.values()))
+
+
+def model_key(spec: str, registry: dict) -> str:
+    """The model a spec runs, named so that one model reached through two harnesses compares equal
+    (`gpt-6.1-sol` on codex and `github-copilot/gpt-6.1-sol` on opencode): the id it resolves to, without
+    its provider prefix and with dots and dashes alike. Two ids are compared, never two aliases, since
+    one alias may list different models on different harnesses (`gemini` is Flash on antigravity and
+    Pro on opencode)."""
+    return canonical(spec, registry).rsplit('/', 1)[-1].lower().replace('.', '-')
+
+
+def same_model(a: str, b: str, registry: dict) -> bool:
+    return model_key(a, registry) == model_key(b, registry)
 
 
 def arm(spec: str, registry: dict) -> tuple:
@@ -195,17 +236,18 @@ def _aligned(spec: str, pool_of_spec: list, other: list, key):
 
 
 def neighbour(spec: str, tier: str, pools: dict, registry: dict):
-    """The exploration alternative: the nearest cheaper tier for medium/high, the nearest stronger for low."""
+    """The exploration alternative and its tier: the nearest cheaper tier for medium/high, the nearest
+    stronger for low. (None, None) when there is none."""
     if tier not in TIERS:
-        return None
+        return None, None
     i = TIERS.index(tier)
     order = TIERS[i + 1:] if i == 0 else tuple(reversed(TIERS[:i]))
     for other in order:
         if pools.get(other):
             pick = _aligned(spec, pools.get(tier) or [spec], pools[other], lambda s: arm(s, registry))
             if pick:
-                return pick
-    return None
+                return pick, other
+    return None, None
 
 
 def stronger(spec: str, pools: dict, registry: dict):
@@ -245,25 +287,121 @@ def parse_excluded(text: str) -> set:
     return out
 
 
-def fallback_pick(current: str, pools: dict, registry: dict, excluded: set):
-    """The next member of the current dwarf's own tier pool, in pool order and wrapping around,
-    that runs another model on a pair nobody paused; None when there is none."""
-    rank = rank_of(current, pools, registry)
-    if rank is None:
-        return None
-    pool = pools[TIERS[rank]]
+def fallback_pick(current: str, pools: dict, registry: dict, excluded: set, tier: str, reviewer: str = None):
+    """The next member of the pool of `tier`, the tier the task runs in (running_tier), in pool
+    order and wrapping around, that runs another model on a pair nobody paused, and not the task's
+    reviewer's model: a task is never reviewed by the model that wrote it. None when there is none,
+    or when that pool does not run the current model (a model the user named by hand)."""
+    pool = pools.get(tier) or []
     own = canonical(current, registry)
     keys = [canonical(s, registry) for s in pool]
-    start = keys.index(own) if own in keys else -1
+    if own not in keys:
+        return None
+    judge = reviewer if reviewer and reviewer not in ('-', 'UNASSIGNED') else None
+    start = keys.index(own)
     for step in range(1, len(pool) + 1):
         candidate = pool[(start + step) % len(pool)]
         pair = pair_of(candidate, registry)
-        if canonical(candidate, registry) == own or pair is None:
+        # The reviewer's model on any harness (sol on opencode is codex's sol), as qa_fallback_pick compares.
+        if canonical(candidate, registry) == own or (judge and same_model(candidate, judge, registry)) or pair is None:
             continue
         if pair in excluded or (pair[0], '*') in excluded:
             continue
         return candidate
     return None
+
+
+def load_qa_pools(path) -> dict:
+    """{'any'|'low'|'medium'|'high': [spec, ...]} from plan/qa-routing.json, the reviewer pools `plan` was
+    given. Empty for a plan made before the file existed."""
+    try:
+        data = json.loads(Path(path).read_text())
+    except (OSError, ValueError):
+        return {}
+    out = {}
+    for key in ('any',) + TIERS:
+        specs = data.get(key) if isinstance(data, dict) else None
+        if isinstance(specs, list):
+            specs = [str(s).strip() for s in specs if str(s).strip()]
+            if specs:
+                out[key] = specs
+    return out
+
+
+def qa_fallback_pick(current: str, implementer: str, pools: dict, registry: dict, excluded: set, difficulty: str):
+    """The peer reviewer of a review stopped on infrastructure: the next member, in pool order and
+    wrapping around, of the task's difficulty pool and then of `any`, that runs another model than the
+    stopped reviewer and than the implementer, on a pair nobody paused. A reviewer that no such pool
+    lists (named by hand) has no peer, since its strength is unknown. None when there is none."""
+    order = [pools.get(key) or [] for key in (difficulty, 'any') if key in TIERS or key == 'any']
+    own = canonical(current, registry)
+    if not any(canonical(s, registry) == own for pool in order for s in pool):
+        return None
+    wrote = implementer if implementer not in ('', '-', 'UNASSIGNED') else None
+    for pool in order:
+        keys = [canonical(s, registry) for s in pool]
+        start = keys.index(own) if own in keys else -1
+        for step in range(1, len(pool) + 1):
+            candidate = pool[(start + step) % len(pool)]
+            model, pair = canonical(candidate, registry), pair_of(candidate, registry)
+            if model == own or (wrote and same_model(candidate, wrote, registry)) or pair is None:
+                continue
+            if pair in excluded or (pair[0], '*') in excluded:
+                continue
+            return candidate
+    return None
+
+
+def escalation_target(source: str, frm: str, to: str, running: str, pools: dict, registry: dict) -> str:
+    """The tier an escalations.tsv row moved the task to. The same model at another effort stays.
+    The policy (stronger) went to the first pool with its target above the highest pool of `frm`;
+    a person named a model, which is in the nearest pool to the tier the task was running in."""
+    model = canonical(to, registry)
+    if model == canonical(frm, registry):
+        return running
+    rank = rank_of(frm, pools, registry) if source == 'policy' else None
+    first = rank + 1 if rank is not None else TIERS.index(running)
+    for tier in TIERS[first:] + tuple(reversed(TIERS[:first])):
+        if any(canonical(s, registry) == model for s in pools.get(tier, ())):
+            return tier
+    return running
+
+
+def running_tier(plan: Path, task: str, current: str = '') -> str:
+    """The tier a task runs in, from what forge recorded when it assigned the model, never from which
+    pools list the model: one model can sit in several, and a re-plan can change them. While the task
+    runs the spec of a record, the tier in tasks/<id>/running.tier (written with each escalations.tsv
+    row), else the tier its exploration picked; with neither, as in an older plan, the difficulty.
+    `current` is the spec the task runs, read from tasks.tsv when not given. '' when the difficulty
+    is no tier."""
+    tier = _row_cell(plan, task, 2)
+    if tier not in TIERS:
+        return ''
+    tdir = plan / 'tasks' / task
+    current = current or _dwarf_of(plan, task)
+    with contextlib.suppress(OSError):
+        recorded, _, spec = (tdir / 'running.tier').read_text().strip().partition('\t')
+        if spec == current and recorded in TIERS:
+            return recorded
+    with contextlib.suppress(OSError, ValueError, AttributeError):       # no usable record: the difficulty
+        lines = (tdir / 'route.jsonl').read_text().splitlines()
+        decision = json.loads(lines[-1]) if lines else {}
+        if decision.get('chosen') == current and decision.get('chosen_tier') in TIERS:
+            return decision['chosen_tier']
+    return tier
+
+
+def record_running_tier(plan: str, task: str, row: str, control) -> None:
+    """tasks/<id>/running.tier for an escalations.tsv row: `tier<TAB>spec`, the tier the row moved the
+    task to, decided here with the pools of this moment. A fallback stays in its tier."""
+    cells = row.rstrip('\n').split('\t')
+    frm, to, source = cells[2], cells[3], cells[4] if len(cells) > 4 else 'policy'
+    tier = running_tier(Path(plan), task, frm)
+    if tier and source != 'fallback':
+        tier = escalation_target(source, frm, to, tier, load_pools(Path(plan) / 'fractal-routing.json'),
+                                 registry_models())
+    if tier:
+        control.write_atomic(plan, 'tasks/%s/running.tier' % task, '%s\t%s\n' % (tier, to))
 
 
 def fallback(args) -> int:
@@ -272,7 +410,21 @@ def fallback(args) -> int:
     if not current or current in ('-', 'UNASSIGNED'):
         return 1
     pick = fallback_pick(current, load_pools(plan / 'fractal-routing.json'), registry_models(),
-                         parse_excluded(args.exclude))
+                         parse_excluded(args.exclude), running_tier(plan, args.task, current),
+                         _row_cell(plan, args.task, 5))
+    if not pick:
+        return 1
+    print(pick)
+    return 0
+
+
+def qa_fallback(args) -> int:
+    plan = Path(os.path.realpath(args.plan))
+    current, implementer = _row_cell(plan, args.task, 5), _dwarf_of(plan, args.task)
+    if not current or current in ('-', 'UNASSIGNED'):
+        return 1
+    pick = qa_fallback_pick(current, implementer, load_qa_pools(plan / 'qa-routing.json'), registry_models(),
+                            parse_excluded(args.exclude), _row_cell(plan, args.task, 2))
     if not pick:
         return 1
     print(pick)
@@ -285,7 +437,7 @@ def explore(args) -> str:
     epsilon = float(args.epsilon)
     if not 0 < epsilon <= 1:
         return args.default
-    alternative = neighbour(args.default, args.tier, load_pools(args.pools), registry_models())
+    alternative, alternative_tier = neighbour(args.default, args.tier, load_pools(args.pools), registry_models())
     if not alternative:
         return args.default
     candidates = [args.default, alternative]
@@ -298,6 +450,7 @@ def explore(args) -> str:
     tdir.mkdir(parents=True, exist_ok=True)
     decision = dict(at=time.time(), task=args.task, tier=args.tier, epsilon=epsilon, candidates=candidates,
                     default=args.default, chosen=chosen, explored=chosen != args.default,
+                    chosen_tier=alternative_tier if chosen != args.default else args.tier,
                     propensity=round(propensity, 6), inputs=row_inputs(plan, args.task))
     decision['decision'] = hashlib.sha256(json.dumps(decision, sort_keys=True).encode()).hexdigest()[:16]
     with open(tdir / 'route.jsonl', 'a') as log:      # one line per resolution, never rewritten
@@ -311,6 +464,14 @@ def explore(args) -> str:
 
 
 # --- escalation --------------------------------------------------------------------
+
+def _row_cell(plan: Path, task: str, index: int) -> str:
+    for line in (plan / 'tasks.tsv').read_text().splitlines():
+        cells = line.split('\t')
+        if not line.startswith('#') and cells and cells[0] == task and len(cells) > index:
+            return cells[index]
+    return ''
+
 
 def _dwarf_of(plan: Path, task: str) -> str:
     for line in (plan / 'tasks.tsv').read_text().splitlines():
@@ -381,30 +542,54 @@ def _next_effort_spec(spec: str):
     return None
 
 
-def failed_streak(rows: list, current: str, registry: dict, by_effort: bool = False) -> int:
+def failed_streak(rows: list, current: str, registry: dict, by_effort: bool = False, laterals=()) -> int:
     """Distinct trailing attempt numbers that failed on `current`'s model.
 
     rows: (attempt, status, spec-or-None) oldest first. A row without a spec predates the
     column and is taken as the current spec. Infra stops, missing verdicts and forge errors
     judge nothing and are skipped; a pass, a merge or another model ends the streak.
+    laterals: (attempt, from, to) of each dwarf move in lateral.tsv. A model change between
+    two counted attempts does not end the streak when dwarf moves recorded between them take
+    the earlier attempt's spec to the later one's, through any chain of moves made in order
+    (see _moved_between): a lateral move is an infrastructure stop, not a judgment that the
+    model was too weak.
     With by_effort, another effort of the same model ends it too (a bump starts a new
     streak). A spec that names no effort counts as medium. With by_effort off the count
     is by model only, as before.
     """
-    model = canonical(current, registry)
     effort = _effort_of(current) if by_effort else None
     seen = set()
+    expect, later = current, None        # the spec the last counted attempt ran (current to start), and its number
     for attempt, status, spec in reversed(rows):
         if status in NEUTRAL:
             continue
-        if spec and canonical(spec, registry) != model:
-            break
+        if spec and canonical(spec, registry) != canonical(expect, registry):
+            if later is None or not _moved_between(laterals, spec, expect, attempt, later):
+                break
         if effort is not None and _effort_of(spec or current) != effort:
             break
         if status not in FAILED:
             break
         seen.add(attempt)
+        expect, later = spec or expect, attempt
     return len(seen)
+
+
+def _moved_between(laterals, frm: str, to: str, earlier: int, later: int) -> bool:
+    """Whether dwarf moves took `frm` to `to` between two attempts: after attempt `earlier` was spent and
+    before attempt `later` began. A move records the attempts spent at that moment (an infrastructure stop
+    refunds its own), so a move straight after `earlier` is recorded as `earlier`. One stop can make several
+    moves (sol -> astra -> sonnet) with no attempt on the middle model, so the moves in the window must chain
+    in the order they were made: each one starts where the last ended. A move that starts elsewhere means
+    the model changed in between by something no lateral row records (an explicit retry), and the window
+    does not carry across it."""
+    model = frm
+    for n, f, t in laterals:
+        if earlier <= n < later:
+            if f != model:
+                return False
+            model = t
+    return model == to
 
 
 def attempt_rows(tdir: Path) -> list:
@@ -417,6 +602,31 @@ def attempt_rows(tdir: Path) -> list:
         cells = line.split('\t')
         if len(cells) >= 3 and cells[1].isdigit():
             rows.append((int(cells[1]), cells[2], cells[4] if len(cells) > 4 and cells[4] else None))
+    return rows
+
+
+def decided_attempt(tdir: Path) -> int:
+    """The attempt number of the latest row of tasks/<id>/decisions.tsv (epoch, attempt, choice, reason);
+    0 when the task has no decision. The attempts counted against a model start after it."""
+    try:
+        lines = (tdir / 'decisions.tsv').read_text().splitlines()
+    except OSError:
+        return 0
+    return max([int(cells[1]) for cells in (line.split('\t') for line in lines)
+                if len(cells) > 1 and cells[1].isdigit()] or [0])
+
+
+def lateral_rows(tdir: Path) -> list:
+    """(attempt, from, to) of each dwarf move in tasks/<id>/lateral.tsv, oldest first."""
+    rows = []
+    try:
+        lines = (tdir / 'lateral.tsv').read_text().splitlines()
+    except OSError:
+        return rows
+    for line in lines:
+        cells = line.split('\t')
+        if len(cells) >= 5 and cells[1].isdigit() and cells[2] == 'dwarf':
+            rows.append((int(cells[1]), cells[3], cells[4]))
     return rows
 
 
@@ -433,6 +643,68 @@ def _fractal(plan: Path) -> bool:
         return bool(json.loads((plan / 'fractal-selection.json').read_text()).get('enabled'))
     except (OSError, ValueError, AttributeError):
         return False
+
+
+# --- attempt cap (#69) -------------------------------------------------------------
+# A task that keeps failing across runs stops for a person. The count and the cap live here, so
+# the shell (do_task, the retry gate, the run summary), the scheduler and `forge control show`
+# all read the same numbers.
+
+def max_attempts_setting(plan: Path) -> int:
+    """The plan's attempt cap (`plan --max-attempts N`, `forge control set max-attempts`): the file's
+    number, DEFAULT_MAX_ATTEMPTS without the file, and 0 for no cap. An unreadable value is the default."""
+    try:
+        value = (plan / 'max_attempts').read_text().strip()
+    except OSError:
+        return DEFAULT_MAX_ATTEMPTS
+    return int(value) if re.fullmatch(r'[0-9]{1,9}', value) else DEFAULT_MAX_ATTEMPTS
+
+
+def attempts_spent(tdir: Path) -> int:
+    """Attempts the task has used: the attempts.tsv rows whose status is not INFRA. An infrastructure stop
+    spends none. A QA-only resume re-reviews the same attempt number and writes a row of its own, and that
+    row spends one too: a task whose reviews return no verdict reaches its cap like any other."""
+    return sum(1 for _number, status, _spec in attempt_rows(tdir) if status != 'INFRA')
+
+
+def granted_attempts(tdir: Path) -> int:
+    """The attempts a person granted: N of every retry=N row in tasks/<id>/decisions.tsv. The retry CLI takes
+    up to three digits, zero-padded ones too (retry=002), so the grant is read the same way."""
+    total = 0
+    try:
+        lines = (tdir / 'decisions.tsv').read_text().splitlines()
+    except OSError:
+        return total
+    for line in lines:
+        cells = line.split('\t')
+        if len(cells) > 2:
+            match = re.fullmatch(r'retry=([0-9]{1,3})', cells[2])
+            if match:
+                total += int(match.group(1))
+    return total
+
+
+def attempt_cap(plan: Path, task: str) -> tuple:
+    """(attempts used, cap). The cap is max_attempts plus granted_attempts, and None when the plan has no
+    cap (max_attempts 0): a decision adds attempts to a cap, it does not make one."""
+    tdir = plan / 'tasks' / task
+    used = attempts_spent(tdir)
+    limit = max_attempts_setting(plan)
+    if limit == 0:
+        return used, None
+    return used, limit + granted_attempts(tdir)
+
+
+def attempt_cap_cmd(args) -> int:
+    """`attempt-cap`: "<used> <cap>" on one line, cap "-" for no cap. Read only; a bad task id counts as
+    no attempts, which the callers never pass."""
+    plan = Path(os.path.realpath(args.plan))
+    if not args.task or args.task in ('.', '..') or '/' in args.task or '\0' in args.task:
+        print('0 -')
+        return 0
+    used, cap = attempt_cap(plan, args.task)
+    print('%d %s' % (used, '-' if cap is None else cap))
+    return 0
 
 
 # --- live-control files ------------------------------------------------------------
@@ -577,7 +849,10 @@ def _decide(plan: Path, tdir: Path, args, after: int):
         return (), (), '', 0
     registry = registry_models()
     step = _effort_step(plan)
-    streak = failed_streak(attempt_rows(tdir), current, registry, by_effort=step)
+    # A person's decision (decisions.tsv) restarts the count: only attempts after it can fail the model.
+    decided = decided_attempt(tdir)
+    rows = [row for row in attempt_rows(tdir) if row[0] > decided]
+    streak = failed_streak(rows, current, registry, by_effort=step, laterals=lateral_rows(tdir))
     if streak < after:
         return MARKERS, (), '', 0
     target, why = stronger(current, load_pools(plan / 'fractal-routing.json'), registry)
@@ -639,20 +914,22 @@ def _load_control():
     return module
 
 
-def record_escalation(args) -> int:
-    """Probe or append tasks/<id>/escalations.tsv. 0 when that is safe; 1 when it is not.
+def _record(args, name: str, after=None) -> int:
+    """Probe or append tasks/<id>/<name>. 0 when that is safe; 1 when it is not.
 
     A missing parent is a refusal on both paths. probe() reports that as the file being
     absent, so the check has to look at the walk itself. append_line refuses the same case
     before it opens the leaf: with no directory descriptor that open would use the process
     cwd, including when the task directory disappears between this check and the append.
+    `after(plan, task, line, control)` runs once the line is appended; its failure is printed,
+    not returned, because the row stands.
     """
     if not args.task or args.task in ('.', '..') or '/' in args.task or '\0' in args.task:
         return 1
     try:
         control = _load_control()
         plan = os.path.realpath(args.plan)
-        rel = 'tasks/%s/escalations.tsv' % args.task
+        rel = 'tasks/%s/%s' % (args.task, name)
         parent, _leaf = control._open_parent(plan, rel)
         if parent is None:
             return 1
@@ -662,9 +939,36 @@ def record_escalation(args) -> int:
         else:
             line = args.line if args.line.endswith('\n') else args.line + '\n'
             control.append_line(plan, rel, line)
+            if after:
+                try:
+                    after(plan, args.task, line, control)
+                except Exception as error:      # the row stands; without this record the task reads as its difficulty
+                    print('%s: could not record the tier it runs in: %s' % (args.task, error), file=sys.stderr)
     except Exception:
         return 1
     return 0
+
+
+def record_escalation(args) -> int:
+    """Probe or append tasks/<id>/escalations.tsv, and the tier the row moved the task to."""
+    return _record(args, 'escalations.tsv', record_running_tier)
+
+
+def record_lateral(args) -> int:
+    """Probe or append tasks/<id>/lateral.tsv, and the tier the move keeps (record_lateral_tier)."""
+    return _record(args, 'lateral.tsv', record_lateral_tier)
+
+
+def record_lateral_tier(plan: str, task: str, row: str, control) -> None:
+    """tasks/<id>/running.tier after a lateral move: the tier the task ran in, now recorded for the spec
+    it moved to. Without this a task moved sideways from a recorded spec would read as its difficulty again."""
+    cells = row.rstrip('\n').split('\t')
+    if cells[2] != 'dwarf':                  # a reviewer's move says nothing about the implementer's tier
+        return
+    frm, to = cells[3], cells[4]
+    tier = running_tier(Path(plan), task, frm)
+    if tier:
+        control.write_atomic(plan, 'tasks/%s/running.tier' % task, '%s\t%s\n' % (tier, to))
 
 
 def main(argv=None) -> int:
@@ -679,16 +983,24 @@ def main(argv=None) -> int:
     p.add_argument('--check', action='store_true')
     p.add_argument('--qa-only-next', choices=('yes', 'no'), default=None,
                    help='whether the next entry only re-runs QA, as the caller measured it')
+    p = sub.add_parser('attempt-cap', help='the attempts a task has used and its cap, "<used> <cap>" (- for none)')
+    p.add_argument('--plan', required=True)
+    p.add_argument('--task', required=True)
     p = sub.add_parser('fallback', help='the same-tier model a capacity stop moves to')
     p.add_argument('--plan', required=True)
     p.add_argument('--task', required=True)
     p.add_argument('--exclude', default='', help='harness/model pairs to skip, comma-separated (harness/* for all)')
-    p = sub.add_parser('record', help=argparse.SUPPRESS)
+    p = sub.add_parser('qa-fallback', help='the peer reviewer a review stopped on infrastructure moves to')
     p.add_argument('--plan', required=True)
     p.add_argument('--task', required=True)
-    mode = p.add_mutually_exclusive_group(required=True)
-    mode.add_argument('--probe', action='store_true')
-    mode.add_argument('--line')
+    p.add_argument('--exclude', default='', help='harness/model pairs to skip, comma-separated (harness/* for all)')
+    for name in ('record', 'lateral'):
+        p = sub.add_parser(name, help=argparse.SUPPRESS)
+        p.add_argument('--plan', required=True)
+        p.add_argument('--task', required=True)
+        mode = p.add_mutually_exclusive_group(required=True)
+        mode.add_argument('--probe', action='store_true')
+        mode.add_argument('--line')
     args = ap.parse_args(argv)
     if args.command == 'explore':
         try:
@@ -698,9 +1010,13 @@ def main(argv=None) -> int:
         return 0
     if args.command == 'record':
         return record_escalation(args)
-    if args.command == 'fallback':
+    if args.command == 'lateral':
+        return record_lateral(args)
+    if args.command == 'attempt-cap':
+        return attempt_cap_cmd(args)
+    if args.command in ('fallback', 'qa-fallback'):
         try:
-            return fallback(args)
+            return (fallback if args.command == 'fallback' else qa_fallback)(args)
         except Exception:
             return 1
     try:

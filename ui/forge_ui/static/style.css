@@ -42,7 +42,7 @@
   --lamp-green: light-dark(#1d7a39, #5bd57d);
   --lamp-amber: light-dark(#9c6c00, #f4c443);
   --lamp-red: light-dark(#bf3127, #ff5f53);
-  --lamp-wait: light-dark(#0b7285, #5fd0e4);    /* waiting for you (NEEDS_INPUT): stopped, not failed */
+  --lamp-wait: light-dark(#0b7285, #5fd0e4);    /* waiting for you (NEEDS_INPUT, NEEDS_DECISION): stopped, not failed */
   --lamp-edge: light-dark(rgb(0 0 0 / .18), rgb(0 0 0 / .4));
   /* the same lamps lit on the 3D plate: on a pale panel a lit lamp is saturated, not darkened for text */
   --lit-green: light-dark(#2fae55, #5bd57d);
@@ -93,16 +93,16 @@
 :root[data-theme=dark] { color-scheme: dark; }
 
 /* status: the lamp behind each forge state. One meaning each (--st; --st-lit on the 3D plate): four lamps, and the
-   waiting lamp for a task that waits for the user (NEEDS_INPUT, and an integration that only waits for answers).
+   waiting lamp for a task that waits for the user (NEEDS_INPUT, NEEDS_DECISION, and an integration that only waits for the user).
    A hollow lamp is that lamp's family but not its plain case: passed without a merge, stopped, failed outside the code,
    an outdated review, waiting for you */
 .st-merged, .st-pass, .st-accepted, .st-nochanges { --st: var(--lamp-green); --st-lit: var(--lit-green); }
 .st-running, .st-interrupted { --st: var(--lamp-amber); --st-lit: var(--lit-amber); }
 .st-pending, .st-none, .st-unknown, .st-invalidated, .st-outdated { --st: var(--lamp-off); --st-lit: var(--lamp-off); }
 .st-fail, .st-error, .st-conflict, .st-infra, .st-timeout, .st-blocked, .st-bounced, .st-incomplete { --st: var(--lamp-red); --st-lit: var(--lit-red); }
-.st-needs_input, .st-waiting { --st: var(--lamp-wait); --st-lit: var(--lit-wait); }
+.st-needs_input, .st-needs_decision, .st-waiting { --st: var(--lamp-wait); --st-lit: var(--lit-wait); }
 [class^="st-"], [class*=" st-"] { --st-fill: var(--st); --st-ring: var(--lamp-edge); }
-.st-accepted, .st-nochanges, .st-interrupted, .st-infra, .st-timeout, .st-blocked, .st-outdated, .st-needs_input, .st-waiting { --st-fill: transparent; --st-ring: var(--st); }
+.st-accepted, .st-nochanges, .st-interrupted, .st-infra, .st-timeout, .st-blocked, .st-outdated, .st-needs_input, .st-needs_decision, .st-waiting { --st-fill: transparent; --st-ring: var(--st); }
 /* verification lanes: flaky passed on a rerun (amber, hollow), known passed with only baseline failures (green, hollow) */
 .st-flaky { --st: var(--lamp-amber); --st-lit: var(--lit-amber); --st-fill: transparent; --st-ring: var(--st); }
 .st-known { --st: var(--lamp-green); --st-lit: var(--lit-green); --st-fill: transparent; --st-ring: var(--st); }
@@ -583,6 +583,12 @@ ul.plain li.current { font-weight: 650; }
 pre.cmd { max-height: none; }
 .waiting-cmd { display: flex; align-items: flex-start; gap: var(--s-2); }
 .waiting-cmd pre { flex: 1; min-width: 0; }
+/* a task that waits for a decision (panel.js decisionSection): its reasons as the heading, and its review ledger */
+.insp-section h3.decision-reasons { white-space: normal; }
+.ledger-wrap { overflow-x: auto; margin: var(--s-2) 0; }
+.ledger th, .ledger td { padding: var(--s-1) var(--s-2) var(--s-1) 0; }
+.ledger td.num { font-variant-numeric: tabular-nums; }
+.ledger tr.failed td:first-child { box-shadow: inset 3px 0 0 var(--lamp-red); }
 /* the verification inspector (verifyview.js): live state, failing tests, lanes and their logs */
 .vfy-num { font-variant-numeric: tabular-nums; }
 .vfy-live { margin: var(--s-3) 0 0; padding: var(--s-3); border-radius: var(--r-key); background: var(--module-2); box-shadow: inset 0 0 0 1px var(--rule); }
@@ -643,6 +649,7 @@ pre.cmd { max-height: none; }
 .now-live .vfy-idle { margin: 0; }
 .now-live .vfy-idle[hidden] { display: none; }
 .now-split summary { cursor: pointer; font-size: var(--t-xs); color: var(--muted); }
+.pause-needs { display: block; flex-basis: 100%; }   /* a pause's "needs you" line stands on its own */
 .checks-of { margin: 0 0 6px 2px; padding-left: 10px; border-left: 1px solid var(--rule-2); }
 .checks { gap: 2px; margin: 2px 0; }
 /* a check: its lamp, kind and command on one line, what it printed under them */

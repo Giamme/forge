@@ -31,6 +31,35 @@ Telemetry is independent of project memory. Dispatch and pipeline attempt record
 their total durations must not be added together. Unsupported usage remains unknown. See
 [the evaluation](../tests/benchmark-2026-09-07.md) for observed improvements and regressions.
 
+## Infrastructure stops
+
+A dispatch that fails for a reason other than the work exits 8, and its task stops with
+status `INFRA`. `forge-runtime.py classify` gives the stop a class, and `forge-dispatch.sh`
+writes it to `<role>.infra` as `class=`. `forge_infra.py` holds the one table of what each
+class means for a recovery (scope, first move, what to do without a peer).
+
+- `capacity`: the model is at capacity for everyone (overloaded, at capacity, HTTP 529).
+- `rate_limit`: this account is sending too fast (rate limit, too many requests, HTTP 429).
+- `usage_limit`: a spent subscription window, which resets (usage limit, hit your session or weekly limit).
+- `budget`: money that is gone (insufficient credits, credit balance too low, billing, quota exceeded, HTTP 402).
+- `auth`: credentials refused (401, 403, unauthorized, login required).
+- `provider_down`: one provider failing while the connection works (bad gateway, service unavailable, gateway time-out, HTTP 502/503/504).
+- `network`: local connectivity (ECONNRESET and similar codes, getaddrinfo, connection refused or reset, fetch failed, name resolution, certificate).
+- `empty`: exit 0 with no final answer. `cancelled`: the CLI stopped a working model to ask for approval.
+
+The order is auth > usage_limit > budget > capacity > rate_limit > provider_down > network, and
+the first class with a matching phrase wins. A usage-limit message that also mentions credits
+is `usage_limit`: the window resets, the money does not.
+
+When the message gives a wait, `<role>.infra` also has `retry_after=<seconds>` and
+`reset_at=<epoch>` (now plus the wait). Without a wait there is no `reset_at` line. The
+scheduler copies the file into `infra.txt`, so both lines go with it.
+
+Runs recorded before the split say `quota`, which `forge_infra.LEGACY` reads as `usage_limit`.
+The scheduler still acts on the classes it was written for: `infra_info` folds `capacity` into
+`rate_limit`, `usage_limit` and `budget` into `quota`, and `provider_down` into `network`, until
+it reads the table.
+
 ## Optional Fractal adapter decision
 
 Fractal adds a Python adapter around the existing shell pipeline instead of replacing

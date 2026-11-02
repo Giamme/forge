@@ -27,6 +27,7 @@ import contextlib
 import errno
 import fcntl
 import json
+import math
 import os
 import re
 from pathlib import Path
@@ -37,6 +38,11 @@ import subprocess
 import sys
 import tempfile
 import time
+
+# forge_infra.py sits beside this file; forge-control.py loads this module by path.
+if str(Path(__file__).resolve().parent) not in sys.path:
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+import forge_infra  # noqa: E402
 
 
 def dataset_event(name: str, plan: Path, task: str, values: dict) -> None:
@@ -64,7 +70,7 @@ def overlap(a: str, b: str) -> bool:
 
 INFRA_EXIT = 8
 # A parsed retry-after beyond this is not a pause worth waiting for inside one run.
-INFRA_WAIT_CAP = 6 * 3600
+INFRA_WAIT_CAP = forge_infra.WAIT_CAP_S
 
 
 def infra_info(root: Path) -> dict:
@@ -143,16 +149,37 @@ def infra_wait(info: dict, cycle: int, backoff: tuple | None = None) -> tuple:
 
 
 # --- pause scopes ----------------------------------------------------------------------
-# A capacity error on one model says nothing about another, and a quota or auth stop is one
-# harness's account; only the remaining classes (network, empty output, ...) stop everything.
+# What a stop holds back follows its cause (forge_infra.CAUSES): a capacity or rate-limit error
+# on one model says nothing about another, a usage limit, budget or auth stop is one harness's
+# account, and only the remaining causes (network, ...) stop everything. A stored class from
+# before the split (`quota`) is read as the cause it became.
 def infra_scope(info: dict) -> tuple:
     """(scope, harness, model) for a stop's infra.txt."""
-    cls, harness, model = info.get('class', ''), info.get('harness', ''), info.get('model', '')
-    if cls == 'rate_limit' and harness and model:
+    harness, model = info.get('harness', ''), info.get('model', '')
+    scope = forge_infra.entry(info.get('class'))['scope']
+    if scope == 'model' and harness and model:
         return 'model:%s/%s' % (harness, model), harness, model
-    if cls in ('quota', 'auth') and harness:
+    if scope == 'harness' and harness:
         return 'harness:' + harness, harness, ''
     return 'all', harness, model
+
+
+def _epoch(value: object) -> float | int | None:
+    """A finite non-negative number from an infra.txt value, else None."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(number) or number < 0:
+        return None
+    return int(number) if number == int(number) else number
+
+
+def _reset_of(info: dict) -> float | int | None:
+    """When a stop's limit resets: its reset_at, else its retry-after from now; None when unknown."""
+    at = _epoch(info.get('reset_at'))
+    after = _epoch(info.get('retry_after'))
+    return at if at is not None or after is None else time.time() + after
 
 
 def load_registry() -> list:
@@ -373,6 +400,7 @@ def _pinned(plan: object, name: str) -> bool:
 # lets that trap finish; the guard's `stop` then acts on whatever <role>.harness record a
 # dispatch that died too early left behind.
 GUARD = str(Path(__file__).resolve().parent / 'forge-guard.py')
+ROUTE = str(Path(__file__).resolve().parent / 'forge-route.py')
 HARNESS_ROLES = ('dwarf', 'qa')
 GUARD_STOP_WAIT = 15.0    # seconds; the guard's own bound is about 3 s plus two ps calls
 
@@ -434,8 +462,13 @@ def stop_harnesses(plan: object, names: object) -> None:
 # is left after it withdraws liveness, under the same lock, so no request outlives its run.
 REQUESTS = 'control.requests'
 REQUEST_MAX = 64 * 1024
+# What `forge control retry --decide` may carry: retry=N (1 to 20) or threshold=Pn.
+DECISION = re.compile(r'retry=(?:[1-9]|1[0-9]|20)|threshold=P[0-3]')
 # NEEDS_INPUT is in neither: a task stopped for the user's answer resumes only through
-# `retry <plan> <id> --answer`, whose preparation refuses without one.
+# `retry <plan> <id> --answer`, whose preparation refuses without one. Nor is NEEDS_DECISION (#69):
+# a task whose reviews do not converge, or that the retry policy cannot move to a stronger model,
+# resumes only through a person's `retry --decide` (or `--dwarf`) with a reason and --approved.
+# No budget, pin or sweep reaches it, because every automatic path asks for a status in AUTO_RETRY.
 RETRYABLE = ('FAIL', 'UNKNOWN', 'TIMEOUT', 'ERROR', 'INTERRUPTED', 'BLOCKED', 'INVALIDATED')
 # What --retry-failed retries on its own. INVALIDATED only for a review voided while the committed
 # work stayed as it was (tasks/<id>/invalidated.reason is `review`): that retry is a fresh review.
@@ -455,6 +488,15 @@ def list_requests(plan: object) -> list:
         return []
 
 
+def decision_head(plan: object, name: str) -> str:
+    """The first lines of a NEEDS_DECISION task's decision.md, on one line."""
+    try:
+        lines = (Path(plan) / 'tasks' / name / 'decision.md').read_text().splitlines()
+    except OSError:
+        return 'see decision.md'
+    return ' '.join(line.strip() for line in lines[:3] if line.strip())[:300]
+
+
 def read_request(plan: object, name: str) -> dict | None:
     try:
         fd = os.open(_resolve(plan, REQUESTS, name), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
@@ -472,6 +514,13 @@ def read_request(plan: object, name: str) -> dict | None:
         return None
     if dwarf is not None and (not isinstance(dwarf, str) or not dwarf or dwarf.startswith('-')
                               or any(c.isspace() or c == ',' for c in dwarf)):
+        return None
+    decide, reason = request.get('decide'), request.get('reason')
+    if decide is not None and (not isinstance(decide, str) or not DECISION.fullmatch(decide)):
+        return None
+    if reason is not None and (not isinstance(reason, str) or len(reason) > 2000):
+        return None
+    if not isinstance(request.get('approved', False), bool):
         return None
     return request
 
@@ -509,6 +558,7 @@ def live_start(plan: object, names: object, retry_failed: int, infra_retries: in
             _remove(plan, 'tasks', name, 'retry_budget')
             _remove(plan, 'tasks', name, 'retries.used')
         _remove(plan, 'infra.paused')
+        _remove(plan, 'infra.last')
         _remove(plan, 'drain')
         _remove(plan, 'stop')
         # Queued for a scheduler that died: never applied to this run.
@@ -569,10 +619,13 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
     infra_cycles = 0   # how many times this run already waited out an infrastructure pause
     paused = False     # an `all`-scope infrastructure failure was seen: dispatch nothing new
     resume_at = 0.0
-    all_class = ''     # the class of the first `all`-scope stop, for infra.paused
+    all_class = ''     # the cause of the first `all`-scope stop, for infra.paused
+    all_reset = None   # when that stop said its limit resets, for infra.paused
+    retried_stops = set()  # (task, cause) already re-dispatched once at once (the `retry` move)
     pauses = {}        # scope -> its pause, for model: and harness: scopes; `all` is the above
     scope_waits = {}   # scope -> waits it already completed this run
     pairs_cache = {}   # task -> (harness, model) pairs its next dispatch uses
+    held_tries = {}    # task -> the paused scopes and its pairs when a sideways move before dispatch was last tried
     registry = load_registry()
     paused_text = None # what infra.paused holds now
     backoff_warned = [] # an invalid infra_backoff file is reported once
@@ -618,12 +671,21 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
         except OSError:
             return False
 
+    def granted(name: str) -> int | None:
+        """Automatic retries left from a person's decision, which replaces the budget; None when no
+        decision governs. A file (decided.left), so a run that ended before they were used (a quota
+        stop) hands them to the next one."""
+        return _read_budget(plan, 'tasks', name, 'decided.left')
+
     def retryable(name: str) -> bool:
         root = plan / 'tasks' / name
+        left = granted(name)
         return (
             status(name) in AUTO_RETRY
             and (status(name) != 'INVALIDATED' or review_voided(name))
-            and retries.get(name, 0) < budget(name)
+            # After a decision the person's count rules, over and under the budget: `retry=3`
+            # is three attempts even with a budget of 0, and `retry=1` is one even with 3.
+            and (left > 0 if left is not None else retries.get(name, 0) < budget(name))
             # A task that produced no new work (empty diff, byte-identical retry) would
             # only repeat itself; its marker says so and it is left for a human.
             and not (root / 'noretry').exists()
@@ -634,7 +696,8 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
         )
 
     def requeue(name: str) -> bool:
-        """Prepare a retry exactly as `retry` does, then put the task at the queue head."""
+        """Prepare a retry exactly as `retry` does, then put the task at the queue head. A task at its
+        attempt cap (#69) is not prepared: _prepare_retry stops it for a decision instead."""
         result = subprocess.run(['/bin/bash', script, '_prepare_retry', str(plan), name])
         if result.returncode:
             refused[name] = budget(name)
@@ -646,18 +709,38 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
         retried.add(name)
         if name not in pending:
             pending.insert(0, name)
-        print('forge: retrying ' + name + ' (automatic retry ' + str(retries[name]) + '/'
-              + str(budget(name)) + ')', file=sys.stderr, flush=True)
+        left = granted(name)
+        if left is not None:
+            left = max(left - 1, 0)
+            _write_atomic(plan, str(left), 'tasks', name, 'decided.left')
+            print('forge: retrying ' + name + ' (decided retry, ' + str(left) + ' more after this)',
+                  file=sys.stderr, flush=True)
+        else:
+            print('forge: retrying ' + name + ' (automatic retry ' + str(retries[name]) + '/'
+                  + str(budget(name)) + ')', file=sys.stderr, flush=True)
         return True
+
+    def at_cap(name: str) -> bool:
+        """The task has spent its attempt cap (#69): `forge-route.py attempt-cap` prints "<used> <cap>"."""
+        result = subprocess.run([sys.executable, ROUTE, 'attempt-cap', '--plan', str(plan), '--task', name],
+                                capture_output=True, text=True)
+        used, _, cap = result.stdout.strip().partition(' ')
+        return result.returncode == 0 and used.isdigit() and cap.isdigit() and int(used) >= int(cap)
 
     def resume(name: str) -> bool:
         """Prepare an INFRA task's next entry. Not a retry, so nothing is counted, but a
         pending pin applies when that entry is a full implementer attempt. False when a
-        claimed pin could not be put in place: the task then stays INFRA, as `retry` would."""
-        if not _pinned(plan, name):
+        claimed pin could not be put in place: the task then stays INFRA, as `retry` would. A task already
+        at its attempt cap (#69; the cap may have been set or lowered after the stop) is not resumed
+        either: _prepare_retry --resume stops it for a decision, and it leaves the queue."""
+        if not _pinned(plan, name) and not at_cap(name):
             return True
         result = subprocess.run(['/bin/bash', script, '_prepare_retry', str(plan), name, '--resume'])
         if result.returncode:
+            if status(name) == 'NEEDS_DECISION':
+                print('forge: ' + name + ' is not resumed: it is at its attempt cap and waits for your decision',
+                      file=sys.stderr, flush=True)
+                return False
             held.add(name)
             print('forge: ' + name + ' is not resumed: its escalation pin could not be applied',
                   file=sys.stderr, flush=True)
@@ -700,6 +783,52 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
     def scope_held(name: str) -> bool:
         return any(holds(pause, next_pairs(name)) for pause in pauses.values())
 
+    def move_held(name: str) -> bool:
+        """A pending task a pause holds back moves sideways before its dispatch, as a stopped one does: the
+        implementer to the next healthy model of its tier, or, when only its reviewer is held, the reviewer
+        to a peer. Tried once for each set of pauses and models: a move changes the models, so a task with
+        both on the paused harness moves its implementer, then its reviewer. True when the task moved."""
+        if interrupted or graceful or fractal or _read_small(plan, 'infra_fallback') != 'on':
+            return False
+        pairs = next_pairs(name)
+        seen = (frozenset(pauses), tuple(pairs))
+        if held_tries.get(name) == seen:
+            return False
+        held_tries[name] = seen
+        holding = [pause for pause in pauses.values() if holds(pause, pairs)]
+        moves = [pause for pause in holding if forge_infra.entry(pause['class'])['move'] in ('lateral', 'retry')]
+        if not holding or len(moves) < len(holding):
+            return False
+        # The implementer's pair when it is held (a full dispatch), else the reviewer's.
+        role = 'dwarf' if len(pairs) == 2 and any(holds(pause, pairs[:1]) for pause in holding) else 'qa'
+        excluded = {(pause['harness'], pause['model'] or '*') for pause in pauses.values()}
+        command = ['/bin/bash', script, '_prepare_retry', str(plan), name, '--fallback',
+                   ','.join(sorted(h + '/' + m for h, m in excluded)), '--cause', holding[0]['class']]
+        if role == 'qa':
+            command += ['--role', 'qa']
+        if subprocess.run(command).returncode:
+            return False
+        pairs_cache.pop(name, None)
+        return True
+
+    def held_record() -> None:
+        """infra.last: the pauses still holding work when the scheduler ends, each with the pending tasks it
+        holds back (`held`). infra.paused goes with the scheduler; the run summary and forge-ui read this
+        one to say who must act. The next run's start removes it."""
+        scopes = []
+        if paused:
+            scopes.append({'scope': 'all', 'class': all_class or None, 'harness': None, 'model': None,
+                           'tasks': list(infra_seen), 'held': list(pending), 'needs_you': False, 'hint': None,
+                           'reset_at': all_reset})
+        for pause in pauses.values():
+            if live_pause(pause):
+                record = {key: pause[key] for key in ('scope', 'class', 'harness', 'model', 'tasks', 'needs_you',
+                                                      'hint', 'reset_at')}
+                record['held'] = [name for name in pending if holds(pause, next_pairs(name))]
+                scopes.append(record)
+        if scopes:
+            _write_atomic(plan, json.dumps({'scopes': scopes}), 'infra.last')
+
     def live_pause(pause: dict) -> bool:
         """A pause still holding something: its own stopped tasks, or a pending task on its pair.
         One whose tasks all fell back to another model holds nothing."""
@@ -708,23 +837,34 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
     def waiting_scopes() -> bool:
         return any(not pause['exhausted'] and live_pause(pause) for pause in pauses.values())
 
-    def fall_back(name: str, info: dict, scope: str) -> None:
-        """--infra-fallback: a dwarf-stage capacity stop moves to the next healthy model of its
-        tier pool. The stop was already recorded as its scope's pause, so every paused or
-        exhausted pair is excluded and a pool all at capacity cannot bounce the task forever."""
-        if interrupted or graceful or fractal or _read_small(plan, 'infra_fallback') != 'on' or _pinned(plan, name):
-            return
-        if info.get('stage') != 'dwarf' or info.get('class') != 'rate_limit' or not scope.startswith('model:'):
-            return
-        excluded = {(info['harness'], info['model'])}
+    def fall_back(name: str, info: dict, scope: str, cause: str) -> bool:
+        """The lateral move: a stop on a model or harness scope moves to the next healthy model of its
+        tier pool, when --infra-fallback is on. A dwarf-stage stop takes the implementer pool's next
+        model; a QA-stage stop takes a peer reviewer from the plan's qa-routing.json (never the model
+        that wrote the work, and none for a plan without that file), keeping its attempt and its
+        QA-only resume. The stop was already recorded as its scope's pause, so every paused or
+        exhausted pair is excluded (and a harness stop excludes the whole harness); a pool all
+        stopped cannot bounce the task forever. True when the task moved, and so left the pause."""
+        stage = info.get('stage')
+        if interrupted or graceful or fractal or _read_small(plan, 'infra_fallback') != 'on':
+            return False
+        # A pin waits for the next full retry, which a review's move is not.
+        if stage not in ('dwarf', 'qa') or (stage == 'dwarf' and _pinned(plan, name)):
+            return False
+        if not scope.startswith(('model:', 'harness:')):
+            return False
+        excluded = {(info['harness'], info['model'] if scope.startswith('model:') else '*')}
         excluded.update((p['harness'], p['model'] or '*') for p in pauses.values())
         command = ['/bin/bash', script, '_prepare_retry', str(plan), name, '--fallback',
-                   ','.join(sorted(h + '/' + m for h, m in excluded))]
+                   ','.join(sorted(h + '/' + m for h, m in excluded)), '--cause', cause]
+        if stage == 'qa':
+            command += ['--role', 'qa']
         if subprocess.run(command).returncode:
-            return
+            return False
         pauses[scope]['tasks'].remove(name)
         pairs_cache.pop(name, None)
         pending.insert(0, name)
+        return True
 
     def write_paused(until_all: float | None = None) -> None:
         """infra.paused for forge-ui and `forge control show`; gone when nothing is paused."""
@@ -733,10 +873,12 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
         if paused:
             scopes.append({'scope': 'all', 'class': all_class or None, 'harness': None, 'model': None,
                            'tasks': list(infra_seen), 'cycle': infra_cycles + (1 if until_all else 0),
-                           'until': until_all, 'exhausted': not until_all and infra_cycles >= infra_budget()})
+                           'until': until_all, 'exhausted': not until_all and infra_cycles >= infra_budget(),
+                           'needs_you': False, 'hint': None, 'reset_at': all_reset})
         for pause in pauses.values():
             scopes.append({key: pause[key] for key in
-                           ('scope', 'class', 'harness', 'model', 'tasks', 'cycle', 'until', 'exhausted')})
+                           ('scope', 'class', 'harness', 'model', 'tasks', 'cycle', 'until', 'exhausted',
+                            'needs_you', 'hint', 'reset_at')})
         text = json.dumps({'scopes': scopes}) if scopes else None
         if text == paused_text:
             return
@@ -770,11 +912,14 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
             _warn('infra_backoff ignored, using the default: ' + problem)
         return default_backoff()
 
+    def scope_where(pause: dict) -> str:
+        return pause['harness'] + ('/' + pause['model'] if pause['model'] else '')
+
     def start_wait(pause: dict, info: dict, name: str) -> None:
         """Begin the scope's next wait, or mark it exhausted when its budget is spent."""
         done, budget = scope_waits.get(pause['scope'], 0), infra_budget()
-        where = pause['harness'] + ('/' + pause['model'] if pause['model'] else '')
-        head = 'forge: infrastructure failure (' + pause['class'] + ') on ' + where + ' for ' + name
+        head = 'forge: infrastructure failure (' + pause['class'] + ') on ' + scope_where(pause) + ' for ' + name
+        pause.update(needs_you=False, hint=None, reset_at=_epoch(info.get('reset_at')))
         if done >= budget:
             pause.update(cycle=done, until=None, exhausted=True)
             print(head + '; its waits are used up (' + str(done) + ' of ' + str(budget)
@@ -786,37 +931,117 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
               + str(done + 1) + ' of ' + str(budget) + '); other tasks continue (no attempt spent)',
               file=sys.stderr, flush=True)
 
+    def ask(pause: dict, info: dict, cause: str, name: str) -> None:
+        """A cause only a person clears: the pause is exhausted at once, with no wait spent. It takes
+        over the stop's cause, so a wait it was in is replaced and its hint is the cause's own."""
+        hint = forge_infra.hint(cause, pause['harness'])
+        pause.update({'class': cause, 'info': info, 'reset_at': _epoch(info.get('reset_at'))})
+        pause.update(cycle=scope_waits.get(pause['scope'], 0), until=None, exhausted=True, needs_you=True,
+                     hint=hint, asked_at_budget=infra_budget())
+        print('forge: infrastructure failure (' + pause['class'] + ') on ' + scope_where(pause) + ' for ' + name
+              + '; nothing will be retried until a person acts' + (': ' + hint if hint else '')
+              + '; other tasks continue (no attempt spent)', file=sys.stderr, flush=True)
+
+    def join_pause(pause: dict, info: dict, cause: str, how: str, name: str) -> None:
+        """A stop on a scope already paused, running or exhausted. The pause takes the stronger
+        recovery and the later known reset, and keeps that reset in the info a raised infra-retries
+        restarts from. A stop that changes the recovery gives the pause its cause."""
+        reset, kept = _reset_of(info), _reset_of(pause['info'])
+        later = reset is not None and (kept is None or reset > kept)
+        merged = info if later else pause['info']
+        if how == 'ask' and not pause['needs_you']:
+            # A stop only a person clears, whether its task moved or not, ends a wait the pause was
+            # in: the other tasks on this pair or harness must not be dispatched into it again.
+            ask(pause, info, cause, name)
+            pause['info'] = merged
+            return
+        pause['info'] = merged
+        if later:
+            pause['reset_at'] = _epoch(info.get('reset_at'))
+        # An asking pause keeps waiting for a person, whatever this stop's own recovery is.
+        if pause['needs_you'] or _epoch(info.get('retry_after')) is None:
+            return
+        where, wait = scope_where(pause), infra_wait(info, 0)[0]
+        if pause['exhausted']:
+            if later:
+                pause['class'] = cause
+                print('forge: ' + cause + ' on ' + where + ' for ' + name + ' sets the reset a raised '
+                      'infra-retries waits for (' + ('%g' % wait) + 's)', file=sys.stderr, flush=True)
+        elif time.time() + wait > pause['until']:
+            # A shorter backoff must not release the pause before this stop's reset.
+            pause.update({'class': cause, 'until': time.time() + wait})
+            print('forge: ' + cause + ' on ' + where + ' for ' + name + ' extends the wait to '
+                  + ('%g' % wait) + 's (provider retry-after)', file=sys.stderr, flush=True)
+
+    def without_peer(cause: str, info: dict, moved: bool) -> str:
+        """'wait' or 'ask': what the pause does while it holds back the cause's other tasks."""
+        how = forge_infra.entry(cause)['without_peer']
+        if how != 'wait_if_reset':
+            return how
+        after = _epoch(info.get('retry_after'))
+        return 'wait' if moved or (after is not None and after <= INFRA_WAIT_CAP) else 'ask'
+
     def infra_stopped(name: str) -> None:
-        nonlocal paused, all_class
+        nonlocal paused, all_class, all_reset
         pairs_cache.pop(name, None)
         info = infra_info(plan / 'tasks' / name)
+        cause = forge_infra.cause_of(info.get('class'))
+        move = forge_infra.entry(cause)['move']
+        if move == 'retry':
+            # The first stop of this cause is tried again at once, on the same model, with no wait;
+            # a second one goes on as a lateral move.
+            if (name, cause) not in retried_stops and not interrupted and not graceful:
+                retried_stops.add((name, cause))
+                print('forge: infrastructure failure (' + cause + ') for ' + name
+                      + '; dispatching it again at once (no attempt spent)', file=sys.stderr, flush=True)
+                if resume(name):
+                    pending.insert(0, name)
+                return
+            move = 'lateral'
         scope, harness, model = infra_scope(info)
         if scope == 'all':
             paused = True
-            all_class = all_class or info.get('class', '')
+            all_class = all_class or cause
+            reset = _epoch(info.get('reset_at'))
+            all_reset = max(all_reset, reset) if all_reset is not None and reset is not None else all_reset or reset
             if name not in infra_seen:
                 infra_seen.append(name)
-        elif scope in pauses:
-            # A stop in a scope already paused joins its wait and is not counted again.
-            if name not in pauses[scope]['tasks']:
-                pauses[scope]['tasks'].append(name)
-        else:
-            pauses[scope] = {'scope': scope, 'class': info.get('class', ''), 'harness': harness,
+            write_paused()
+            return
+        created = scope not in pauses
+        if created:
+            pauses[scope] = {'scope': scope, 'class': cause, 'harness': harness,
                              'model': model if scope.startswith('model:') else None, 'tasks': [name],
-                             'cycle': 0, 'until': None, 'exhausted': False, 'info': info}
-            start_wait(pauses[scope], info, name)
-        if scope != 'all':
-            fall_back(name, info, scope)
+                             'cycle': 0, 'until': None, 'exhausted': False, 'info': info,
+                             'needs_you': False, 'hint': None, 'reset_at': _epoch(info.get('reset_at'))}
+        elif name not in pauses[scope]['tasks']:
+            # A stop in a scope already paused joins its wait and is not counted again.
+            pauses[scope]['tasks'].append(name)
+        pause = pauses[scope]
+        moved = move == 'lateral' and fall_back(name, info, scope, cause)
+        how = without_peer(cause, info, moved)
+        if created:
+            if how == 'ask':
+                ask(pause, info, cause, name)
+            else:
+                start_wait(pause, info, name)
+        else:
+            join_pause(pause, info, cause, how, name)
         write_paused()
 
     def end_scoped_waits() -> None:
         """Resume the tasks of every scope whose wait is over; an exhausted scope whose
-        budget was raised meanwhile starts its next wait."""
+        budget was raised meanwhile starts its next wait. A pause waiting for a person
+        restarts only when the budget goes above what it was when it asked."""
         for scope, pause in list(pauses.items()):
             if interrupted:
                 return
             if pause['exhausted']:
-                if scope_waits.get(scope, 0) < infra_budget():
+                if pause['needs_you']:
+                    restart = infra_budget() > pause['asked_at_budget']
+                else:
+                    restart = scope_waits.get(scope, 0) < infra_budget()
+                if restart:
                     start_wait(pause, pause['info'], ', '.join(pause['tasks']))
                 continue
             if time.time() < pause['until']:
@@ -848,9 +1073,24 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
         if state == 'NEEDS_INPUT':
             return 'refused', (name + ' is waiting for an answer: forge-parallel.sh retry ' + str(plan)
                                + ' ' + name + ' --answer \u2026')
-        if state not in RETRYABLE:
+        decide, reason, approved = request.get('decide'), request.get('reason'), request.get('approved') is True
+        if decide and state != 'NEEDS_DECISION':
+            return 'refused', name + ' is ' + state + ', not waiting for a decision; --decide only decides a NEEDS_DECISION task'
+        decision = []
+        if state == 'NEEDS_DECISION':
+            # Only a person's explicit decision resumes it: a choice, a reason, and --approved.
+            if not decide and not dwarf:
+                return 'refused', (name + ' is waiting for your decision, and only a decision resumes it: '
+                                   + decision_head(plan, name) + ' (retry --decide retry=N | threshold=Pn, or --dwarf SPEC,'
+                                   + ' with --reason and --approved)')
+            if decide and dwarf:
+                return 'refused', 'give --decide or --dwarf, not both: a decision is one choice'
+            if not (reason or '').strip() or not approved:
+                return 'refused', name + ' is waiting for your decision: a decision needs --reason and --approved'
+            decision = (['--decide', decide] if decide else []) + ['--reason', reason, '--approved']
+        elif state not in RETRYABLE:
             return 'refused', 'a ' + state + ' task is not retried'
-        command = ['/bin/bash', script, '_prepare_retry', str(plan), name] + (['--dwarf', dwarf] if dwarf else [])
+        command = ['/bin/bash', script, '_prepare_retry', str(plan), name] + (['--dwarf', dwarf] if dwarf else []) + decision
         rc = subprocess.run(command).returncode
         if rc == 3:
             try:
@@ -858,12 +1098,20 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
             except OSError:
                 why = ''
             return 'refused', why or 'the retry policy stopped this task: split it or name a --dwarf'
+        if rc and status(name) == 'NEEDS_DECISION':
+            # The attempt cap (#69) stopped it for a decision just now: say what it waits for.
+            return 'refused', name + ' is waiting for your decision: ' + decision_head(plan, name)
         if rc:
             return 'refused', 'the retry could not be prepared (exit ' + str(rc) + '; see the run output)'
         # A human's retry: no automatic budget is spent, and a stop marker the
         # preparation cleared (an explicit --dwarf) no longer holds the task.
         pairs_cache.pop(name, None)
         refused.pop(name, None)
+        # A decision sets how many attempts follow it: retry=N is N in all (this one and N-1
+        # automatic ones), any other choice is this one. A plain retry leaves the budget in charge.
+        # (retry_decided wrote decided.left for a decision.) A plain retry ends what a decision allowed.
+        if state != 'NEEDS_DECISION':
+            _remove(plan, 'tasks', name, 'decided.left')
         retried.add(name)
         human.add(name)
         pending.insert(0, name)
@@ -1075,7 +1323,7 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
                         pending.insert(0, name)
                 infra_seen.clear()
                 paused = False
-                all_class = ''
+                all_class, all_reset = '', None
                 write_paused()
             end_scoped_waits()
             handle_requests()
@@ -1090,7 +1338,12 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
                 if any(overlap(tasks[name][3], tasks[other][3]) for other in active):
                     continue
                 if pauses and scope_held(name):
-                    continue
+                    # Each move changes the models it is held on: the implementer, then the reviewer, in one pass,
+                    # before the loop below can end the run on a task only half moved.
+                    while move_held(name) and scope_held(name):
+                        pass
+                    if scope_held(name):
+                        continue
                 root = plan / 'tasks' / name
                 if not (root / 'base_ref').exists():
                     worktree = Path((plan / 'wt_root').read_text().strip()) / '_integration'
@@ -1133,6 +1386,10 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
                 break
             time.sleep(0.05)
     finally:
+        try:
+            held_record()
+        except Exception as error:
+            _warn('could not record the pauses left: ' + str(error))
         # Not live from here on: a late `forge control` must not edit budgets nobody reads.
         live_stop(plan, tasks)
         # Poll before any signal. A process that has already exited keeps the result

@@ -283,10 +283,12 @@ test('Retry now shows for an ended or policy-stopped task while the run is live'
   assert.equal(C.canRetry(stopped, 'page'), true);
 });
 
-test('a task waiting for an answer is never offered a retry, even when the policy also stopped it', () => {
+test('a task waiting for the user is never offered a retry, even when the policy also stopped it', () => {
   const waiting = status => show({ tasks: { page: Object.assign({}, show().tasks.page, { status, escalation_stop: true }) } });
-  assert.equal(C.canRetry(waiting('NEEDS_INPUT'), 'page'), false);
-  assert.equal(C.canRetry(show({ tasks: { page: Object.assign({}, show().tasks.page, { status: 'NEEDS_INPUT' }) } }), 'page'), false);
+  for (const status of ['NEEDS_INPUT', 'NEEDS_DECISION']) {
+    assert.equal(C.canRetry(waiting(status), 'page'), false, status);
+    assert.equal(C.canRetry(show({ tasks: { page: Object.assign({}, show().tasks.page, { status }) } }), 'page'), false, status);
+  }
 });
 
 test('qa-threshold accepts default at run level and none at both', () => {

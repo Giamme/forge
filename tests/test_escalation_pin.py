@@ -63,13 +63,14 @@ class PinTests(unittest.TestCase):
     def stub_skill(self):
         """A SKILL_DIR whose policy script only records that it was asked.
 
-        `record` writes escalations.tsv; it is not a policy decision, so it runs the real
-        forge-route.py. Counting it would make every applied pin look like the policy ran.
+        `record` writes escalations.tsv and `attempt-cap` reads the attempt cap; neither is a policy
+        decision, so both run the real forge-route.py. Counting them would make every applied pin
+        look like the policy ran.
         """
         skill = self.root / 'skill'; (skill / 'scripts').mkdir(parents=True)
         (skill / 'scripts' / 'forge-route.py').write_text(
             'import subprocess, sys\n'
-            'if len(sys.argv) > 1 and sys.argv[1] == "record":\n'
+            'if len(sys.argv) > 1 and sys.argv[1] in ("record", "attempt-cap"):\n'
             '    raise SystemExit(subprocess.call([sys.executable, %r, *sys.argv[1:]]))\n'
             'open(%r, "a").write("called\\n")\n' % (str(ROUTE), str(self.policy_calls)))
         return skill
@@ -917,9 +918,10 @@ class PinEndToEndTests(unittest.TestCase):
 
     def test_a_qa_stage_infra_resume_keeps_the_pin_pending(self):
         p = self.pooled_plan('--dwarf-low', 'sol', '--dwarf-high', 'astra')
-        # No reset time in the message, so the test's short backoff is the wait.
+        # A cause that waits (a usage limit with no reset time would ask for a person instead), so
+        # the test's short backoff is the wait.
         self.scenario({'a.qa.1': {'rc': 1, 'is_error': True, 'verdict': 'none',
-                                  'findings': "You've hit your usage limit."}})
+                                  'findings': 'The model is overloaded.'}})
         rc, out = self.run_pinning_during_the_backoff(p)
         self.assertEqual(rc, 0, out)
         self.assertEqual(self.calls(), ['dwarf', 'qa', 'qa'])    # QA only: the implementer did not run again

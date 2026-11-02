@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 import math
 import os
@@ -609,12 +610,22 @@ def _scheduler(reader):
     paused = reader.object('infra.paused') if reader.exists('infra.paused') else None
     for scope in (paused or {}).get('scopes') or []:
         if isinstance(scope, dict):
-            result['pauses'].append({key: scope.get(key) for key in
-                                     ('scope', 'class', 'harness', 'model', 'tasks', 'cycle', 'until', 'exhausted')})
+            pause = {key: scope.get(key) for key in
+                     ('scope', 'class', 'harness', 'model', 'tasks', 'cycle', 'until', 'exhausted')}
+            # the keys forge added later: an older scope has none, so they read as false and null
+            hint, reset_at = scope.get('hint'), scope.get('reset_at')
+            numeric = isinstance(reset_at, (int, float)) and not isinstance(reset_at, bool)
+            pause.update(needs_you=scope.get('needs_you') is True, hint=hint if isinstance(hint, str) else None,
+                         reset_at=reset_at if numeric else None)
+            result['pauses'].append(pause)
     return result
 
 
+# Not NEEDS_INPUT or NEEDS_DECISION: those wait for the user, so a task that depends on one waits rather than stops.
 _STOPPED = ('FAIL', 'BLOCKED', 'INFRA', 'INTERRUPTED', 'TIMEOUT', 'ERROR', 'CONFLICT', 'NOCHANGES', 'INVALIDATED', 'UNKNOWN')
+_DETAIL_CAP = 400              # characters of an infra stop's detail, a short text
+_ATTEMPT_CAP = 8               # a plan without a max_attempts file
+_LEDGER_KEEP = 50              # the newest ledger rows a task keeps
 
 
 def _escalation_stop(reader, ident):
@@ -627,6 +638,150 @@ def _escalation_stop(reader, ident):
     split = (reader.text(f'tasks/{ident}/split.suggested') or '').strip()
     return dict(kind='escalation', attempts=attempts, model=cells[1].strip() if len(cells) > 1 and cells[1].strip() else None,
                 split=reader.cap(split, f'tasks/{ident}/split.suggested', 600) or None)
+
+
+def _number_or_none(value):
+    """A key=value number (reset_at, retry_after): None when missing, empty or not finite."""
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        return None
+    return result if math.isfinite(result) else None
+
+
+_INFRA_TABLE = Path(__file__).resolve().parents[2] / 'scripts' / 'forge_infra.py'
+_INFRA_STATE = {}
+
+
+def _forge_infra():
+    """forge's table of infrastructure causes (scripts/forge_infra.py), loaded once and read-only; None when it
+    cannot be, which leaves needs_you false and hint null."""
+    if 'module' not in _INFRA_STATE:
+        try:
+            spec = importlib.util.spec_from_file_location(
+                'forge_infra_for_ui', _INFRA_TABLE, loader=findings._ReadOnlyLoader('forge_infra_for_ui', str(_INFRA_TABLE)))
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            _INFRA_STATE['module'] = module if callable(getattr(module, 'stop_of', None)) else None
+        except Exception:
+            _INFRA_STATE['module'] = None
+    return _INFRA_STATE['module']
+
+
+def _infra(reader, prefix, status, ident):
+    """task['infra']: the stop record of an INFRA task (infra.txt, key=value lines); None for any other status.
+    needs_you and hint are forge's own answer (forge_infra.stop_of): the pause that names the task, live
+    (infra.paused) or the one the run ended with (infra.last), else what the cause asks for with no peer."""
+    if status != 'INFRA':
+        return None
+    fields = executions.parse_resolved(reader.text(prefix + '/infra.txt'))
+    record = dict(cause=fields.get('class') or None, stage=fields.get('stage') or None,
+                  harness=fields.get('harness') or None, model=fields.get('model') or None,
+                  reset_at=_number_or_none(fields.get('reset_at')), retry_after=_number_or_none(fields.get('retry_after')),
+                  detail=reader.cap(fields.get('detail') or None, prefix + '/infra_detail', _DETAIL_CAP),
+                  needs_you=False, hint=None)
+    module = _forge_infra()
+    if module is not None:
+        try:
+            scopes = module.parse_pauses(reader.text('infra.paused')) or module.parse_pauses(reader.text('infra.last'))
+            judged = module.stop_of(ident, fields, scopes, time.time())
+            record.update(needs_you=judged.get('needs_you') is True,
+                          hint=judged.get('hint') if isinstance(judged.get('hint'), str) else None)
+        except Exception:
+            pass
+    return record
+
+
+def _lateral(reader, name):
+    """task['lateral']: the moves of a stopped dispatch to another model of its tier (lateral.tsv), read as escalations are."""
+    result = []
+    for label, row in reader.rows(name, 6):
+        try:
+            at, attempt = float(row[0]), int(row[1])
+            if not math.isfinite(at):
+                raise ValueError()
+        except (ValueError, OverflowError):
+            reader.warn(label, 'invalid epoch or attempt')
+            continue
+        result.append(dict(at=at, attempt=attempt, role=row[2], cause=row[5], **{'from': row[3], 'to': row[4]}))
+    return result
+
+
+def _ledger(reader, name):
+    """task['ledger']: one row per review (ledger.tsv), the newest _LEDGER_KEEP. `-` is None; the counts are ints."""
+    result = []
+    for label, row in reader.rows(name, 11):
+        try:
+            at, attempt = float(row[0]), int(row[1])
+            if not math.isfinite(at):
+                raise ValueError()
+            confirmed, new, carried, diff_bytes = (int(cell) for cell in row[6:10])
+            delta = _nullable(row[10])
+            delta = None if delta is None else int(delta)
+        except (ValueError, OverflowError):
+            reader.warn(label, 'invalid epoch, attempt or count')
+            continue
+        result.append(dict(at=at, attempt=attempt, review=row[2], verdict=row[3], gate=_nullable(row[4]),
+                           worst=_nullable(row[5]), confirmed=confirmed, new=new, carried=carried,
+                           diff_bytes=diff_bytes, delta_bytes=delta))
+    if len(result) > _LEDGER_KEEP:
+        reader.truncated.append(name)
+        del result[:-_LEDGER_KEEP]
+    return result
+
+
+def _decision(reader, prefix, status):
+    """task['decision'] of a NEEDS_DECISION task: `reasons` from decision.md's first line, `text` the markdown after it."""
+    if status != 'NEEDS_DECISION':
+        return None
+    text = reader.text(prefix + '/decision.md')
+    first, _, rest = (text or '').partition('\n')
+    match = re.fullmatch(r'\s*reasons:(.*)', first)
+    if text is not None and match is None:
+        reader.warn(prefix + '/decision.md', 'no reasons line')
+    body = rest if match else text
+    return dict(reasons=_list(match.group(1)) if match else [],
+                text=None if body is None else reader.cap(body, prefix + '/decision'))
+
+
+def _decisions(reader, name):
+    """task['decisions']: one human decision per row of decisions.tsv (epoch, attempt, choice, reason)."""
+    result = []
+    for label, row in reader.rows(name, 3):
+        try:
+            at, attempt = float(row[0]), int(row[1])
+            if not math.isfinite(at):
+                raise ValueError()
+        except (ValueError, OverflowError):
+            reader.warn(label, 'invalid epoch or attempt')
+            continue
+        result.append(dict(at=at, attempt=attempt, choice=row[2], reason=_nullable('\t'.join(row[3:]))))
+    return result
+
+
+def _max_attempts(reader):
+    """The plan's max_attempts: a whole number, 0 for no cap; 8 without the file or when it is not a whole number."""
+    value = reader.number('max_attempts', int)
+    if value is not None and value < 0:
+        reader.warn('max_attempts', 'negative')
+        value = None
+    return _ATTEMPT_CAP if value is None else value
+
+
+def _grant(choice):
+    """The N of a retry=N choice, however many digits it has; 0 for any other choice."""
+    match = re.fullmatch(r'retry=([0-9]+)', choice)
+    try:
+        return int(match.group(1)) if match else 0
+    except ValueError:  # more digits than Python reads as an int: a reader must not raise over one bad row
+        return 0
+
+
+def _attempt_cap(max_attempts, decisions):
+    """A task's attempt cap: max_attempts plus the N of each retry=N decision. None when max_attempts is 0 (no cap)."""
+    if max_attempts == 0:
+        return None
+    return max_attempts + sum(_grant(item['choice']) for item in decisions)
 
 
 def _waiting(reader, tasks, scheduler):
@@ -672,7 +827,7 @@ def _waiting(reader, tasks, scheduler):
                 task['waiting'] = dict(kind='next')
 
 
-def _task_detail(reader, task, run_id, waves, branches):
+def _task_detail(reader, task, run_id, waves, branches, max_attempts):
     """Fill in a plan task; returns every execution it read (its own and its shadows')."""
     ident = task['id']
     prefix = f'tasks/{ident}'
@@ -684,6 +839,7 @@ def _task_detail(reader, task, run_id, waves, branches):
         except (OSError, ValueError):
             pass
     task['attempts'], task['attempt'] = _attempt_state(reader, prefix)
+    task['attempts_total'] = sum(item['status'] != 'INFRA' for item in task['attempts'])
     task['escalations'] = _history(reader, prefix + '/escalations.tsv', True)
     qa = reader.text(prefix + '/qa.last')
     task['verdict'] = _verdict(qa)
@@ -696,6 +852,13 @@ def _task_detail(reader, task, run_id, waves, branches):
         task[field] = reader.cap(reader.text(prefix + '/' + filename), prefix + '/' + field)
     # the implementer's question for the user, when the task stopped NEEDS_INPUT
     task['needs_input'] = reader.cap(reader.text(prefix + '/needs_input.md'), prefix + '/needs_input')
+    # the stop records: why an INFRA dispatch stopped, the lateral moves, the review ledger, and a NEEDS_DECISION's question
+    task['infra'] = _infra(reader, prefix, task['status'], task['id'])
+    task['lateral'] = _lateral(reader, prefix + '/lateral.tsv')
+    task['ledger'] = _ledger(reader, prefix + '/ledger.tsv')
+    task['decision'] = _decision(reader, prefix, task['status'])
+    task['decisions'] = _decisions(reader, prefix + '/decisions.tsv')
+    task['attempt_cap'] = _attempt_cap(max_attempts, task['decisions'])
     task['route'] = []
     for n, line in enumerate((reader.text(prefix + '/route.jsonl') or '').splitlines(), 1):
         if line.strip():
@@ -797,7 +960,7 @@ def _sweep(reader, tasks):
 # files without touching the run dir, so they are stat'd for `updated` only.
 # Read only for their mtimes, so the run's `updated` stamp moves when a control changes.
 # control.requests is a directory: its mtime moves when a request is queued or settled.
-_RUN_CONTROLS = ('control.log', 'retry_budget', 'infra_budget', 'drain', 'stop', 'max_parallel', 'infra.paused',
+_RUN_CONTROLS = ('control.log', 'retry_budget', 'infra_budget', 'drain', 'stop', 'max_parallel', 'infra.paused', 'infra.last',
                  'infra_backoff', 'escalate_effort', 'control.requests')
 _TASK_CONTROLS = ('qa_threshold', 'retry_budget', 'retries.used', 'escalation.pin', 'escalation.stop', 'escalation.next')
 
@@ -1293,7 +1456,9 @@ def _solo_detail(reader, source):
                 accepted=False, accepted_attempt=None, accepted_over=None,
                 explored=False, route=[], shadow=[],
                 prompt=reader.cap(reader.text('prompt.md'), 'tasks/solo/prompt'), approach=None,
-                retry_findings=None, needs_input=None, qa_tail=reader.cap(qa, 'tasks/solo/qa_tail', 4000, True),
+                retry_findings=None, needs_input=None, infra=None, lateral=[], ledger=[], decision=None, decisions=[],
+                attempts_total=sum(item['status'] != 'INFRA' for item in attempts), attempt_cap=None,
+                qa_tail=reader.cap(qa, 'tasks/solo/qa_tail', 4000, True),
                 dwarf_tail=reader.cap(reader.text('dwarf.last'), 'tasks/solo/dwarf_tail', 4000, True),
                 executions=execs, merged_at=None, findings=executions.summary_of(qa),
                 gate=_gate(reader, 'qa.gate'), known_issues=_nonempty(reader, 'known_issues.md'),
@@ -1368,9 +1533,10 @@ def detail(path, source='plan') -> dict:
     waves, wave_map = _waves(reader)
     result['waves'] = [waves.get(n, []) for n in range(1, max(waves, default=0) + 1)]
     branches = {row[0]: _nullable(row[2]) for _, row in reader.rows('results.tsv', 3)}
+    max_attempts = _max_attempts(reader)
     pool = []
     for task in tasks:
-        pool += _task_detail(reader, task, result['run_id'], wave_map, branches)
+        pool += _task_detail(reader, task, result['run_id'], wave_map, branches, max_attempts)
     for name in _RUN_CONTROLS:
         reader.stat(name)
     result['scheduler'] = _scheduler(reader)

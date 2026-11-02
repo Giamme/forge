@@ -45,7 +45,8 @@ WATCHED = (
     'verification.retry.log', 'verification.flaky', 'verification.coverage.txt',
     'verification.jev.json', 'verification.runs.tsv', 'verification.commit', 'verification.fingerprint',
     'verification.lanes.json', 'results.tsv',
-    'prereview.failed', 'bounced', 'message.failed', 'needs_input.md',
+    'prereview.failed', 'bounced', 'message.failed', 'needs_input.md', 'lateral.tsv',
+    'decision.md', 'decisions.tsv', 'ledger.tsv',
 )
 
 # The markers of an attempt forge sent back without a review, and the kind each one records.
@@ -358,6 +359,7 @@ def run_uid(run_dir: Path, create: bool) -> str:
 
 INTERVENTIONS = {
     'escalation': ('after_attempt', 'from', 'to', 'source'),
+    'lateral': ('attempt', 'role', 'from', 'to', 'cause'),
     'control': ('at', 'actor', 'action', 'key', 'value', 'previous'),
 }
 

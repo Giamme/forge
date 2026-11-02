@@ -39,6 +39,10 @@ case "$cmd" in
     ;;
   _prepare_retry)
     echo "$name prepared ${*:4}" >> "$plan/events.log"
+    # A decision records how many automatic retries follow it, as the real preparation does.
+    all="$*"
+    case "$all" in *"--decide retry="*) n="${all#*--decide retry=}"; echo $(( ${n%% *} - 1 )) > "$t/decided.left" ;;
+                   *"--decide "*) echo 0 > "$t/decided.left" ;; esac
     if [ "${4:-}" = --dwarf ]; then rm -f "$t/escalation.stop"
     elif [ -f "$t/escalation.stop" ]; then echo "split $name, or name a --dwarf" > "$t/split.suggested"; exit 3; fi
     rm -f "$t/status"

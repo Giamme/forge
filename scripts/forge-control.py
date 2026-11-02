@@ -4,11 +4,17 @@
   show  <plan> [--json]                          every control, per-task overrides, pins and the change log
   set   <plan> <key> <value> [--task ID]         qa-threshold, timeout, escalate-after, escalate-effort,
                                                  verify-retries, retry-budget, infra-retries, infra-backoff
-                                                 (none drops it), max-parallel (1-64), pre-review-tests
-                                                 (on/off), pre-review-parallel (1-64)
+                                                 (none drops it), infra-fallback (on/off), max-parallel (1-64),
+                                                 pre-review-tests
+                                                 (on/off), pre-review-parallel (1-64), max-attempts (0 = no cap;
+                                                 needs --confirm: raising the cap is a person's decision),
+                                                 converge-window (reviews the non-converging signal looks at)
   pin   <plan> <task> <spec>                     the model the task's next FULL implementer retry uses
   unpin <plan> <task>
   retry <plan> <task> [--dwarf SPEC]             queue a retry of a stopped or failed task into the live run
+                                                 a NEEDS_DECISION task (reviews that do not converge, or a stop with no
+                                                 stronger model) is resumed only by a decision: --decide retry=N or
+                                                 threshold=P0..P3, or --dwarf SPEC, each with --reason TEXT --approved
   add   <plan> <task>                            queue a row added to tasks.tsv (with its prompt.md) into the live run
   drain <plan>                                   start nothing new; running tasks finish and the scheduler waits
                                                  while tasks remain (with none left to start, the run ends as usual)
@@ -19,8 +25,9 @@
                                                  them like SIGTERM
 
 `show` reports escalate-after and verify-retries at their defaults (3 and 1) when unset,
-escalate-effort and pre-review-tests as on or off (off when the file is absent), pre-review-parallel
-at its default (2) when unset, and the two budgets only while a scheduler is live.
+escalate-effort, infra-fallback and pre-review-tests as on or off (off when the file is absent),
+pre-review-parallel at its default (2) when unset, each task's attempts used and cap (`9/8`, or `9/-`
+with no cap), and the two budgets only while a scheduler is live.
 
 Every change is validated, written atomically under the plan's control lock (`control.lock`),
 appended to `control.log` and recorded as a dataset `control` event. This is the only writer of
@@ -56,6 +63,14 @@ import stat
 import subprocess
 import sys
 import time
+from pathlib import Path
+
+# forge_infra.py sits beside this file: the causes table and the wording the run summary shares. As in
+# forge-schedule.py, the directory is put on sys.path here, since -I or PYTHONSAFEPATH would leave it off.
+SCRIPTS = os.path.dirname(os.path.realpath(__file__))
+if SCRIPTS not in sys.path:
+    sys.path.insert(0, SCRIPTS)
+import forge_infra  # noqa: E402
 
 SKILL = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 LOCK_WAIT = 5.0
@@ -74,6 +89,7 @@ NEXT_DECISION = 'at the next retry decision'
 NEXT_RETRY = 'at the next full retry (not QA-only resumes)'
 NEXT_VERIFY = 'at the next verification'
 NEXT_INFRA_WAIT = 'at the next infrastructure wait'
+NEXT_INFRA_STOP = 'at the next infrastructure stop'
 NEXT_DISPATCH = "at the scheduler's next dispatch decision"
 
 
@@ -397,7 +413,8 @@ def nullable(value):
     return None if value in (None, '', '-', 'UNASSIGNED') else value
 
 
-PAUSE_KEYS = ('scope', 'class', 'harness', 'model', 'tasks', 'cycle', 'until', 'exhausted')
+PAUSE_KEYS = ('scope', 'class', 'harness', 'model', 'tasks', 'cycle', 'until', 'exhausted', 'needs_you', 'hint',
+              'reset_at')
 
 
 def paused_scopes(text):
@@ -427,12 +444,14 @@ def show(plan, rows):
                verify_retries=number(get('verify_retries')),
                retry_budget=budget('retry_budget'), infra_budget=budget('infra_budget'))
     run['infra_backoff'] = get('infra_backoff') or default_backoff()
+    run['infra_fallback'] = 'on' if get('infra_fallback') == 'on' else 'off'
     parallel = number(get('max_parallel'))
     run['max_parallel'] = parallel if parallel and parallel <= 64 else None
     stopping = get('stop') if live else None
     run['drained'] = live and has(plan, 'drain')
     run['stopping'] = stopping if stopping in ('graceful', 'now') else None
     run['infra_paused'] = paused_scopes(get('infra.paused')) if live else None
+    pauses, now = run['infra_paused'] or [], time.time()
     if run['escalate_after'] is None:
         run['escalate_after'] = DEFAULT_ESCALATE_AFTER
     if run['verify_retries'] is None:
@@ -454,6 +473,10 @@ def show(plan, rows):
                            retries_used=number(get(base + 'retries.used')) or 0,
                            pin=get(base + 'escalation.pin'), escalation_stop=has(plan, base + 'escalation.stop'),
                            escalation_next=get(base + 'escalation.next'))
+        if tasks[task]['status'] == 'INFRA':
+            # Present on an INFRA task only (#81): its cause, where it stopped, when the limit resets, who must act.
+            info = forge_infra.parse_stop(get(base + 'infra.txt'))
+            tasks[task]['infra'] = forge_infra.stop_of(task, info, pauses, now)
     log = []
     for line in reversed((read_file(plan, 'control.log', tail=LOG_TAIL) or '').splitlines()):
         try:
@@ -497,6 +520,20 @@ def schedule_module():
     return _SCHEDULE
 
 
+_ROUTE = None
+
+
+def route_module():
+    """forge-route.py, loaded by path: the one owner of a task's attempts used and its cap (#69)."""
+    global _ROUTE
+    if _ROUTE is None:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location('forge_route', os.path.join(SKILL, 'scripts', 'forge-route.py'))
+        _ROUTE = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(_ROUTE)
+    return _ROUTE
+
+
 def _backoff(value, task):
     if value == 'none':
         return value
@@ -537,9 +574,12 @@ KEYS = {
     'retry-budget': ('both', _budget, 'retry_budget', True, NEXT_DECISION),
     'infra-retries': ('plan', _int, 'infra_budget', True, NEXT_DECISION),
     'infra-backoff': ('plan', _backoff, 'infra_backoff', False, NEXT_INFRA_WAIT),
+    'infra-fallback': ('plan', _onoff, 'infra_fallback', False, NEXT_INFRA_STOP),
     'max-parallel': ('plan', _parallel, 'max_parallel', True, NEXT_DISPATCH),
     'pre-review-tests': ('plan', _onoff, 'pre_review_tests', False, NEXT_ATTEMPT),
     'pre-review-parallel': ('plan', _parallel, 'pre_review_parallel', False, NEXT_ATTEMPT),
+    'max-attempts': ('plan', _int, 'max_attempts', False, NEXT_DECISION),
+    'converge-window': ('plan', _int, 'converge_window', False, NEXT_DECISION),
 }
 
 
@@ -592,6 +632,12 @@ def change(args, plan, rows, action, task, key, work, applies, summary, live_onl
 def cmd_set(args):
     plan, rows = load(args.plan)
     scope, check, name, live_only, applies = KEYS[args.key]
+    # The cap on a task's attempts is a person's decision: any change to it is given with --confirm.
+    if args.key == 'max-attempts' and not args.confirm:
+        raise Refused('max-attempts is a person\'s decision: a task at its cap waits for one, and raising the cap '
+                      'lets it run more attempts; give --confirm to change it')
+    if args.confirm and args.key != 'max-attempts':
+        raise Invalid('--confirm applies only to max-attempts')
     task = args.task
     if task is not None:
         require_task(rows, task)
@@ -758,8 +804,9 @@ def check_row(plan, rows, task):
     return dwarf, qa
 
 
-def queue(args, plan, verb, task, dwarf):
-    """Write the request under the control lock, live only; log it with its id."""
+def queue(args, plan, verb, task, dwarf, decision=None):
+    """Write the request under the control lock, live only; log it with its id.
+    decision: a retry's (--decide choice or None, reason, approved) for a NEEDS_DECISION task."""
     with control_lock(plan):
         probe(plan, 'control.log')
         if not is_live(plan):
@@ -768,8 +815,10 @@ def queue(args, plan, verb, task, dwarf):
             refuse_task(plan, task, pin=True)
         name = f'{time.time_ns()}-{os.getpid()}.json'
         request = dict(verb=verb, task=task, dwarf=dwarf, at=time.time(), actor=args.actor)
+        if decision:
+            request.update(decide=decision[0], reason=decision[1], approved=True)
         write_atomic(plan, f'{REQUESTS}/{name}', json.dumps(request) + '\n')
-        audit(plan, args.actor, verb, task, None, dwarf, None, request=name)
+        audit(plan, args.actor, verb, task, None, dwarf or (decision[0] if decision else None), None, request=name)
     if args.json:
         json.dump(dict(queued=True, request=name), sys.stdout)
         sys.stdout.write('\n')
@@ -779,6 +828,35 @@ def queue(args, plan, verb, task, dwarf):
     return 0
 
 
+DECISION = re.compile(r'retry=(?:[1-9]|1[0-9]|20)|threshold=P[0-3]')
+
+
+def decision_of(plan, args, dwarf):
+    """The decision a retry carries, (choice or None, reason, True), or None for a plain retry.
+    A NEEDS_DECISION task is resumed only by a decision: --decide or --dwarf, with --reason and
+    --approved. --decide is for no other task."""
+    status = task_status(plan, args.task, strict=True)
+    if status != 'NEEDS_DECISION':
+        if args.decide is not None:
+            raise Refused(f'task {args.task} is {status}, not waiting for a decision: --decide only decides a NEEDS_DECISION task')
+        return None
+    if args.decide is None and dwarf is None:
+        head = ' '.join(line.strip() for line in (read_file(plan, f'tasks/{args.task}/decision.md') or '').splitlines()[:3]
+                        if line.strip())
+        raise Refused(f'task {args.task} is waiting for your decision, and only a decision resumes it: {head or "see decision.md"} '
+                      '(retry --decide retry=N | threshold=Pn, or --dwarf SPEC, each with --reason TEXT --approved)')
+    if args.decide is not None and dwarf is not None:
+        raise Invalid('give --decide or --dwarf, not both: a decision is one choice')
+    if args.decide is not None and not DECISION.fullmatch(args.decide):
+        raise Invalid('--decide takes retry=N (1 to 20) or threshold=P0|P1|P2|P3')
+    reason = re.sub(r'\s+', ' ', args.reason or '').strip()
+    if not reason:
+        raise Invalid('a decision needs --reason TEXT: it is recorded with the task')
+    if not args.approved:
+        raise Invalid('a decision needs --approved: it resumes a task forge stopped, and is only given on the user\'s instruction')
+    return args.decide, reason, True
+
+
 def cmd_retry(args):
     plan, rows = load(args.plan)
     require_task(rows, args.task)
@@ -786,9 +864,10 @@ def cmd_retry(args):
     if args.dwarf is not None:
         dwarf = clean_spec(args.dwarf, '--dwarf')
     refuse_task(plan, args.task, pin=True)   # before the doctor: MERGED and Fractal need no model check
+    decision = decision_of(plan, args, dwarf)
     if dwarf:
         doctor(dwarf)
-    return queue(args, plan, 'retry', args.task, dwarf)
+    return queue(args, plan, 'retry', args.task, dwarf, decision)
 
 
 def cmd_add(args):
@@ -821,6 +900,7 @@ def cmd_show(args):
           f"  fractal {'yes' if controls['fractal'] else 'no'}")
     print('  ' + '  '.join(f"{k.replace('_', '-')} {cell(v)}" + (' (default)' if k == 'qa_threshold' and run['qa_threshold_source'] == 'default' else '')
                            for k, v in run.items() if k not in ('infra_paused', 'qa_threshold_source')))
+    now = time.time()
     for p in run['infra_paused'] or []:
         tasks = ','.join(t for t in (p['tasks'] or []) if isinstance(t, str)) or '-'
         if p['exhausted']:
@@ -829,12 +909,20 @@ def cmd_show(args):
             when = f"wait {cell(p['cycle'])} until {stamp(p['until'])}"
         else:
             when = 'waiting for running tasks to finish'
-        print(f"  paused {p['scope']} ({cell(p['class'])})  tasks {tasks}  {when}")
-    columns = ('task', 'status', 'dwarf', 'qa', 'threshold', 'budget', 'used', 'pin', 'stop', 'next')
+        # The reset, and a pause that waits on a person says so with the hint (#81).
+        parts = [when] + [text for text in [forge_infra.reset_text(p['reset_at'], now)] if text]
+        if p['needs_you']:
+            parts.append('needs you' + (f": {p['hint']}" if isinstance(p['hint'], str) and p['hint'] else ''))
+        print(f"  paused {p['scope']} ({forge_infra.label(p['class'])})  tasks {tasks}  " + '  '.join(parts))
+    columns = ('task', 'status', 'dwarf', 'qa', 'threshold', 'budget', 'used', 'attempts', 'pin', 'stop', 'next')
     table = [columns]
     for task, t in controls['tasks'].items():
-        table.append((task, t['status'], cell(t['dwarf']), cell(t['qa']), cell(t['qa_threshold']), cell(t['retry_budget']),
-                      cell(t['retries_used']), cell(t['pin']), 'yes' if t['escalation_stop'] else '-',
+        status = f"{t['status']} ({t['infra']['cause']})" if t.get('infra') else t['status']
+        # attempts used/cap (#69): 9/8, or 9/- for a plan with no cap. Text only: the JSON keeps its keys.
+        used, cap = route_module().attempt_cap(Path(plan), task)
+        attempts = f"{used}/{cell(cap)}"
+        table.append((task, status, cell(t['dwarf']), cell(t['qa']), cell(t['qa_threshold']), cell(t['retry_budget']),
+                      cell(t['retries_used']), attempts, cell(t['pin']), 'yes' if t['escalation_stop'] else '-',
                       cell(t['escalation_next'])))
     widths = [max(len(r[i]) for r in table) for i in range(len(columns))]
     for r in table:
@@ -872,6 +960,7 @@ def parser():
     p.add_argument('key', choices=list(KEYS))
     p.add_argument('value')
     p.add_argument('--task', metavar='ID', help='change this task only (qa-threshold, retry-budget)')
+    p.add_argument('--confirm', action='store_true', help="max-attempts only: the change is a person's decision")
     p.set_defaults(func=cmd_set)
     p = sub.add_parser('pin', help="set the model a task's next full retry uses")
     common(p)
@@ -886,6 +975,9 @@ def parser():
     common(p)
     p.add_argument('task')
     p.add_argument('--dwarf', metavar='SPEC', help='the implementer for this retry (an explicit escalation)')
+    p.add_argument('--decide', metavar='CHOICE', help='decide a NEEDS_DECISION task: retry=N (1 to 20) or threshold=P0..P3')
+    p.add_argument('--reason', metavar='TEXT', help='why (a decision needs it)')
+    p.add_argument('--approved', action='store_true', help='the decision is the user\'s (a decision needs it)')
     p.set_defaults(func=cmd_retry)
     p = sub.add_parser('add', help='queue a row added to tasks.tsv into the live run')
     common(p)

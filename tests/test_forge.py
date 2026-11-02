@@ -448,8 +448,8 @@ class ForgeTests(unittest.TestCase):
    ('PASS', {}, {}, [], 0, 'PASS', ''),
    ('FAIL', {'VERDICT':'FAIL'}, {}, [], 0, 'FAIL', ''),
    ('NOCHANGES', {}, {'change.dwarf.1':{'no_edit':True,'message':'nothing in the tree needs an edit'}}, [], 5, 'NOCHANGES', ''),
-   ('INFRA', {}, {'change.dwarf.1':{'rc':1,'stderr':'Claude AI usage limit reached|1760000000'}}, [], 8, 'INFRA', 'quota'),
-   ('QA-INFRA', {}, {'change.qa.1':{'rc':1,'is_error':True,'verdict':'none','findings':"You've hit your usage limit. Try again in 2 hours."}}, [], 8, 'INFRA', 'quota'),
+   ('INFRA', {}, {'change.dwarf.1':{'rc':1,'stderr':'Claude AI usage limit reached|1760000000'}}, [], 8, 'INFRA', 'usage_limit'),
+   ('QA-INFRA', {}, {'change.qa.1':{'rc':1,'is_error':True,'verdict':'none','findings':"You've hit your usage limit. Try again in 2 hours."}}, [], 8, 'INFRA', 'usage_limit'),
    ('ERROR', {}, {'change.dwarf.1':{'rc':1,'stderr':'Traceback: something unrelated broke'}}, [], 4, 'ERROR', ''),
    ('TIMEOUT', {'SLEEP':'1'}, {}, ['--timeout','1'], 7, 'TIMEOUT', ''),
   ]
@@ -501,7 +501,7 @@ class ForgeTests(unittest.TestCase):
   r=self.solo()
   self.assertEqual(r.returncode, 8, r.stdout)
   run=self.root/'solo'
-  self.assertEqual((run/'qa.infra').read_text().splitlines()[0], 'class=quota')
+  self.assertEqual((run/'qa.infra').read_text().splitlines()[0], 'class=usage_limit')
   for p in self.root.glob('scenario.json*'): p.unlink()
   self.env.pop('SCENARIO', None)
   self.scenario({'change.dwarf.1':{'rc':1,'stderr':'authentication failed'}})
@@ -511,7 +511,7 @@ class ForgeTests(unittest.TestCase):
   self.assertFalse((run/'qa.infra').exists())
   self.assertTrue((run/'dwarf.infra').read_text().startswith('class=auth\n'))
   rows=[line.split('\t') for line in (run/'attempts.tsv').read_text().splitlines()]
-  self.assertEqual([row[1:] for row in rows], [['1','INFRA','quota','sol'],['2','INFRA','auth','sol']])
+  self.assertEqual([row[1:] for row in rows], [['1','INFRA','usage_limit','sol'],['2','INFRA','auth','sol']])
 
  def test_run_records_each_dispatch_session(self):
   # codex's thread id and claude's session id, kept for a later round. Nothing reads them yet.
