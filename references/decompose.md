@@ -617,14 +617,16 @@ times on one model (`--escalate-after N` on `run` or `retry`, kept in the plan, 
 turns it off):
 
 - **Counting:** the count is the task's failed attempts (FAIL, or an implementer TIMEOUT) on its current model,
-  from the fifth column of `attempts.tsv`. Infrastructure stops, missing verdicts and
-  forge's own errors judge nothing and are skipped; a pass or a change of model resets it.
+  from the fifth column of `attempts.tsv`, after the latest row of `tasks/<id>/decisions.tsv`.
+  Infrastructure stops, missing verdicts and forge's own errors judge nothing and are skipped; a pass
+  or a change of model resets it. A lateral move does not: the streak carries across `tasks/<id>/lateral.tsv`.
 - **Escalation:** at the threshold, the next attempt goes to a different model in the next tier
   up of the pools given to `plan` (same position in the pool, as with exploration),
   recorded in `escalations.tsv` and `tasks.tsv` like a `retry --dwarf`.
 - **Stop:** when nothing is above (the model is in the top tier, or in no tier pool at
-  all), the task stops with `tasks/<id>/split.suggested`: split it into smaller tasks, or
-  name a model. `run --retry-failed` does not retry it, and a plain `retry` refuses (exit 2).
+  all), the task stops as `NEEDS_DECISION` with reason `split` (see [When reviews don't converge](#when-reviews-dont-converge)).
+  `tasks/<id>/split.suggested` still says to split it or name a model. `run --retry-failed` does not retry it,
+  and a plain `retry` refuses (exit 2).
 - **Effort step** (`--escalate-effort` on `run` or `retry`, kept in the plan as `escalate_effort`;
   `--no-escalate-effort` removes it; off by default): when no higher tier has another model, the
   same alias and harness is tried once more at the next effort its pairing accepts
@@ -649,11 +651,84 @@ turns it off):
 History cannot yet say whether escalating rescues a task (31% of the 29 later attempts on a
 changed spec passed, mostly effort bumps); the attempts this policy makes are what will.
 
+## When reviews don't converge
+
+A task can fail review after review, each round with new findings. forge keeps a findings ledger
+at `tasks/<id>/ledger.tsv`, one row per review: epoch, attempt, review, verdict, gate, worst,
+confirmed, new, carried, diff_bytes, delta_bytes. A CONFIRMED finding is carried when the previous
+review named the same problem; the rest are new. The diff sizes are `changes.diff` and
+`changes.since.diff` as they stand when the row is written.
+
+The signal looks at the last reviews. The count is the plan file `converge_window` when that file
+holds a number, and **4** otherwise. It fires when every review in that window failed (verdict
+FAIL, or the gate turned a PASS into a fail) with at least one CONFIRMED finding, at least half of
+the findings in the later reviews are new, and the worst severity is no better in the last review
+than in the first. A window below 2 never fires. On past runs, a window of 4 stopped no task that
+merged by attempt 4. Rows from before the latest `tasks/<id>/decisions.tsv` entry do not count: a
+decision restarts the window, and the escalation streak with it.
+
+Task and solo reviews are asked to list every CONFIRMED finding, and to say so plainly when the
+diff is correct, so a round is the whole list and not only the worst few.
+
+The task then stops with status **`NEEDS_DECISION`**. So does a task the retry policy cannot
+escalate further (reason `split`; `split.suggested` still names the suggestion), and a task at its
+attempt cap (reason `cap`). The cap is `plan --max-attempts N`, default **8** when `max_attempts`
+is absent, counted across runs: an infrastructure stop spends nothing, and each `retry=N` a person
+grants adds N to the cap. `0` is no cap, and a grant does not create one. `forge control set max-attempts N --confirm`
+changes it; `--confirm` applies only to that key. A `NEEDS_INPUT` task at the cap keeps its question:
+raise the plan's cap before the answer can start an attempt.
+
+`tasks/<id>/decision.md` gives the reasons and the choices. Nothing else resumes the task: not a
+re-run, not `--retry-failed`, not a retry budget and not a pin. A plain `retry` exits 2. The
+choices:
+
+- `forge-parallel.sh retry <plan> <id> --decide retry=N --reason "…" --approved` gives N more
+  attempts, N from 1 to 20. At the cap this raises the cap by N, and it is the only choice that
+  runs the task again while the attempts already spent sit on the cap.
+- `forge-parallel.sh retry <plan> <id> --decide threshold=Pn --reason "…" --approved` sets this
+  task's blocking threshold (`P0`, `P1`, `P2` or `P3`) and then retries once.
+- `forge-parallel.sh retry <plan> <id> --dwarf <spec> --reason "…" --approved` names a model. Not
+  together with `--decide`.
+- `forge-parallel.sh accept <plan> <id> --reason "…" --approved` merges it; the findings become
+  known issues.
+- Split it by hand. `tasks/<id>/decision.md` and the run summary name this as
+  `forge control drain <plan>`, then `forge control add <plan> <id>` for each smaller task.
+  That pair needs a scheduler that is still live (exit 3 once `scheduler.live` is gone, which
+  it is by the time the summary is printed), and it does not replace the stopped task. `add`
+  is refused until the new id is already a row of `tasks.tsv` with a non-empty
+  `tasks/<id>/prompt.md`. `drain` starts nothing new until `forge control resume <plan>`.
+  The stopped task stays `NEEDS_DECISION` in the scheduler's list for this invocation:
+  dependents keep the `deps` loaded at the start, and the run exits 5 while the row is
+  unmerged. The replacement is an edit of `tasks.tsv`, then `forge-parallel.sh run <plan>`,
+  which reads that file again and recomputes `waves.tsv`.
+
+  Take the stopped task's row out of `tasks.tsv`. Leave `tasks/<id>/` where it is; its diff
+  is not on the integration branch. A row left in place is not dispatched. Append one row
+  per smaller task, seven tab-separated columns: `id`, `deps`, `difficulty` (`low`, `medium`
+  or `high`), `files` (non-empty), `dwarf`, `qa`, `title`. Copy the stopped task's `dwarf`
+  and `qa` (explicit specs; `forge control add` refuses `-` and `UNASSIGNED`, and `run`
+  preflights every spec). `deps` is `-`, a task that is already `MERGED`, or another new
+  task. On every remaining row whose `deps` named the stopped task, put those new ids in
+  its place: a dependency that is no longer a row makes `run` die with `dependency cycle or
+  unsatisfiable deps`, and one that never merges leaves the dependent `BLOCKED`. Write a
+  non-empty `tasks/<id>/prompt.md` for each new id. The next `run` skips `MERGED` work and
+  dispatches the new rows from the integration branch as it stands, not from the stopped
+  task's worktree. While a scheduler is still live, `forge control add` can queue a row
+  written this way whose dependencies that run already knows; the row that replaces the
+  stopped task takes effect on the `run` after the scheduler has exited.
+  `forge-parallel.sh split` moves whole tasks into a new plan
+  ([below](#accepting-splitting-combining-and-the-whole-run-review)).
+
+A live scheduler takes the same decision as `forge control retry <plan> <id> --decide …` (or
+`--dwarf`), with `--reason` and `--approved`; that only queues the request. The answer is appended
+to `tasks/<id>/decisions.tsv` (epoch, attempt, choice, reason). The run summary lists these tasks
+under `waiting for your decision:`. A run that ends with such a task unmerged exits 5.
+
 **Live controls.** `forge control show|set|pin|unpin <plan>` changes a run while it works:
 `qa-threshold` (read once per attempt, so an attempt keeps the bar it started with; per task, `none`
 (P3) exempts it from a looser plan threshold and `inherit` drops the override; at plan level, `default` restores P2), `timeout`, `escalate-after`, `escalate-effort`
 (`on|off`), `verify-retries`, `infra-backoff` (a shape as for `--infra-backoff`; `none` drops it,
-read at the next infrastructure wait), and, only while a scheduler is live, `retry-budget` (plan
+read at the next infrastructure wait), `infra-fallback` (`on|off`, at the next infrastructure stop), `max-attempts` (a non-negative integer, `0` = no cap, and only with `--confirm`), and, only while a scheduler is live, `retry-budget` (plan
 or `--task`), `infra-retries` and `max-parallel` (1 to 64, at the next dispatch decision; a lower
 limit lets running tasks finish and never stops one). The budgets
 keep the **per invocation** rule: the flags of `run` are not remembered, and a live scheduler only
@@ -667,7 +742,8 @@ run. `pin <task> <spec>` sets the model the task's next full retry uses, once (c
 the pin stays and nothing is retried. A QA-only resume leaves it for the next full retry;
 Fractal plans never apply pins; a MERGED task refuses one.
 The last column of `escalations.tsv` says who decided: `policy`, `retry` (an explicit
-`--dwarf`), `pin` or `fallback` (`--infra-fallback`, below); four-column rows read as `policy`.
+`--dwarf`) or `pin`; four-column rows read as `policy`. Older rows may say `fallback`.
+A sideways move is recorded in `lateral.tsv`, not here (see [Infrastructure failures](#infrastructure-failures)).
 Every change goes to `control.log` (JSON lines: `at`, `actor` `cli|ui`, `action`, `task`, `key`,
 `value`, `previous`) and to the dataset as a `control` event. Exit 2 invalid input, 3 refused (not
 live, MERGED, Fractal, failing doctor, lock busy over 5 s). Report them; never set one yourself
@@ -690,16 +766,16 @@ Five more commands steer a live scheduler (exit 3 when none is live):
   an outcome line to `control.log` with the same `request` id (`actor` `scheduler`, `outcome`
   `applied|refused`, `reason`). `retry` takes a `FAIL`, `UNKNOWN`, `TIMEOUT`, `ERROR`,
   `BLOCKED` or `INTERRUPTED` task that is neither running nor waiting, prepares it exactly as
-  `forge-parallel.sh retry` does (a policy stop refuses it unless `--dwarf` names a model), and
-  spends no automatic retry budget; an `INFRA` task is the
-  scheduler's own to resume. `add` takes a row the human appended to `tasks.tsv` (with its
+  `forge-parallel.sh retry` does. A `NEEDS_DECISION` task is resumed only by `--decide` or
+  `--dwarf`, each with `--reason` and `--approved`. It spends no automatic retry budget; an
+  `INFRA` task is the scheduler's own to resume. `add` takes a row the human appended to `tasks.tsv` (with its
   `tasks/<id>/prompt.md`) whose dependencies this run already knows, and refreshes `waves.tsv`.
   A request never outlives the scheduler that was live when it was queued; one left behind is
   refused, and every request is refused once the run is stopping.
 
 **Ordinary execution resume:** run `run` again. Tasks already `MERGED` are skipped. A saved PASS is fingerprint-checked and merged without
 redispatch. PENDING, `INFRA` (paused by an infrastructure failure) and newly unblocked tasks run
-when eligible. Failed or interrupted tasks
+when eligible. A `NEEDS_DECISION` task is not among them: only a decision resumes it. Failed or interrupted tasks
 require an explicit `retry` (or `--retry-failed N`); `run` never silently pays for them again. Worktrees and pinned
 baselines are retained. A per-plan advisory lock excludes concurrent run/retry/integrate
 operations.
@@ -727,59 +803,106 @@ Pause, stop and inspection preserve both the work and diagnostics.
 
 ## Infrastructure failures
 
-Quota or usage limits, auth problems, rate limits, network errors and empty answers say nothing
-about the work. `forge-dispatch.sh` classifies them from the dispatch log (strong phrases and
-structured `is_error`/`turn.failed` results only; a reply that otherwise succeeded is never
-reclassified) and exits **8**, writing `<role>.infra` (`class=`, `retry_after=`, `detail=`,
-`harness=`, `model=`). `do_task` then ends the task as **`INFRA`**, copying that file to
-`tasks/<id>/infra.txt` with `stage=dwarf|qa`:
+A usage window, a spent budget, an auth problem, a rate limit, a provider outage, a network error,
+an empty answer or a cancelled dispatch says nothing about the work. The status stays **`INFRA`**.
+`forge-dispatch.sh` classifies the stop from the dispatch log (strong phrases and structured
+`is_error`/`turn.failed` results only; a reply that otherwise succeeded is never reclassified) and
+exits **8**, writing `<role>.infra` (`class=`, `retry_after=`, `reset_at=` when the wait is known,
+`detail=`, `rc=`, `role=`, `harness=`, `model=`). `do_task` copies that file to
+`tasks/<id>/infra.txt` and adds `stage=dwarf|qa`. The class is a symptom. What happens next is the
+cause, from `CAUSES` in `scripts/forge_infra.py`. A run recorded before the split may say `quota`;
+that name is recovered as `usage_limit`, and the summary still prints the stored word.
 
 - a **dwarf-stage** stop refunds the attempt counter;
-- a **QA-stage** stop keeps the attempt (the dwarf's work is real and committed) and writes the
-  `resume=qa` marker, so the next entry re-reviews without running the dwarf.
+- a **QA-stage** stop keeps the attempt (the dwarf's work is committed) and writes the `resume=qa`
+  marker, so the next entry re-reviews without running the dwarf.
 
-The scheduler pauses only what the stop says something about. Its **scope** comes from the class:
+| Cause | Scope | Move | Without a peer | Hint |
+|---|---|---|---|---|
+| `capacity` | model | lateral | wait | — |
+| `rate_limit` | model | wait | wait | — |
+| `usage_limit` | harness | lateral | wait_if_reset | wait for the reset, or add another harness to this tier's pool |
+| `budget` | harness | lateral | ask | add credits, or check the billing of {harness} |
+| `auth` | harness | lateral | ask | log in to {harness} again |
+| `network` | all | wait | wait | — |
+| `provider_down` | harness | lateral | wait | — |
+| `empty` | model | retry | wait | — |
+| `cancelled` | model | retry | ask | check {harness}'s approval and permission settings |
 
-| Class | Scope paused | Other tasks |
-|---|---|---|
-| `rate_limit` | that model on that harness (`model:<harness>/<model>`) | keep running, on any other model |
-| `quota`, `auth` | that harness's account (`harness:<harness>`) | keep running on other harnesses |
-| anything else (network, empty output, ...) | everything (`all`): running tasks drain, nothing new starts | wait with it |
+**Scope** is what the pause holds back. `model` pauses that model on that harness
+(`model:<harness>/<model>`); `harness` pauses that harness's account (`harness:<harness>`);
+`all` pauses everything, so running tasks drain and nothing new starts. A model or harness cause
+with no harness, or a model cause with no model, pauses everything. Other tasks keep running. A
+pending task whose next dispatch needs a paused pair waits; unstarted tasks stay `PENDING`, never
+`BLOCKED`.
 
-A pending task whose next dispatch (its implementer and reviewer, or the reviewer alone before a
-QA-only resume) needs a paused pair waits; the rest of the run continues. Unstarted tasks stay
-`PENDING`, never `BLOCKED`. Without `--infra-retries`, `run` ends once nothing else can run, prints
-what to fix and exits `8`; verification is skipped and running the same command again resumes.
-`run --infra-retries M` waits out each scope instead, up to `M` waits **per scope** (a stop in a
-scope already paused joins its wait and is not counted again), then resumes its tasks in the same
-run with no attempt spent. A scope whose waits are used up stays paused while other tasks finish.
+**Move** is what happens first. **lateral** sends the work to another model of the same tier —
+another harness or account when the scope is a harness, another model when the scope is one model —
+and never a stronger tier. **wait** pauses the scope until the cause clears and spends one of that
+scope's waits. **retry** dispatches the same model again at once and spends no wait; the next stop
+of that same cause is treated as lateral.
+
+**Without a peer** is the recovery when no model can take the work. **wait** is the pause above.
+**wait_if_reset** waits when the reset is known and inside six hours, and asks otherwise; if this
+task did move sideways, the scope waits rather than asking. **ask** pauses the scope, marks it
+**needs you** with the hint (`{harness}` filled in), and spends no wait. Nothing on that scope is
+retried until a person acts. Raising the infra-retry budget above the value it had when it asked
+starts a wait after all. "Needs you" is that end of the recovery: no peer, and the cause will not
+clear by itself.
+
+**Lateral recovery** is on for a new plan. `plan` writes `infra_fallback` as `on`;
+`plan --no-infra-fallback` writes `off`. A plan with no file stays off. `run --infra-fallback` and
+`run --no-infra-fallback` write the file, and `forge control set infra-fallback on|off` applies at
+the next infrastructure stop. It runs at the dwarf stage and at the QA stage, and not on a Fractal
+plan:
+
+- a **dwarf-stage** stop takes the next healthy model of the tier the task is running in (the tier
+  recorded with its last escalation or exploration, otherwise its difficulty). A pinned implementer
+  is not moved. No attempt is spent.
+- a **QA-stage** stop takes a reviewer of the same strength from `qa-routing.json`: the next member
+  of the task's difficulty pool, then of `any`, on a pair nobody paused. Never the stopped
+  reviewer's model, and never the implementer's. The attempt and the `resume` marker stay, so the
+  next entry is QA only. A reviewer no such pool lists, or a plan with no `qa-routing.json`, has
+  no peer. A pin waits for the next full retry.
+
+Each move is a row of `tasks/<id>/lateral.tsv` (epoch, attempt, role `dwarf` or `qa`, from, to,
+cause) and a `lateral` dataset event. It is not an escalation: it is not written to
+`escalations.tsv`, and the escalation streak carries across the dwarf moves. A pool with no healthy
+member keeps the ordinary pause.
+
+Without `--infra-retries`, `run` ends once nothing else can run, prints what to fix and exits `8`;
+verification is skipped, and running the same command again resumes. `run --infra-retries M` waits
+out each scope instead, up to `M` waits **per scope** (a stop in a scope already paused joins its
+wait and is not counted again). A scope whose waits are used up stays paused. An asking scope
+spends none of those waits.
 
 Each wait is the provider's retry-after when the log carried one (capped at 6 h), otherwise the
-backoff shape for that wait number. `--infra-backoff <shape>` on `run` (kept in the plan as
-`infra_backoff`, read at every wait, so `forge control set infra-backoff` applies to the next one)
-takes `exp:<base>[,<cap>]` (base doubling, capped at `<cap>`, default the larger of the base and
-30 min), `linear:<start>,<step>[,<cap>]`, or `list:<a>,<b>,...` (a bare `<a>,<b>,...` is a list;
-the last value repeats), all in positive seconds. The default is `exp:60`; `FORGE_INFRA_BACKOFF`
-changes that base. The wait message names the source, for example `waiting 120s before resuming
-(backoff exp:60, wait 2 of 3)`. While anything is paused, `infra.paused` (JSON `{"scopes": [...]}`
-with `scope`, `class`, `harness`, `model`, `tasks`, `cycle`, `until`, `exhausted`) says what waits
-and until when; `forge control show` reports it as `infra_paused`, and it is removed when nothing
-is paused.
+backoff shape for that wait number. `--infra-backoff <shape>` on `run` (kept as `infra_backoff`,
+read at every wait, so `forge control set infra-backoff` applies to the next one) takes
+`exp:<base>[,<cap>]` (base doubling, capped at `<cap>`, default the larger of the base and 30 min),
+`linear:<start>,<step>[,<cap>]`, or `list:<a>,<b>,...` (a bare `<a>,<b>,...` is a list; the last
+value repeats), all in positive seconds. The default is `exp:60`; `FORGE_INFRA_BACKOFF` changes
+that base. The wait message names the source, for example `waiting 120s before resuming (backoff
+exp:60, wait 2 of 3)`. While anything is paused, `infra.paused` (JSON `{"scopes": [...]}` with
+`scope`, `class`, `harness`, `model`, `tasks`, `cycle`, `until`, `exhausted`, `needs_you`, `hint`,
+`reset_at`) says what waits and until when. It is removed when nothing is paused, and again when
+the scheduler exits, so a summary printed after the run reads `infra.txt` alone.
 
-`--infra-fallback` on `run` (kept as `infra_fallback`; `--no-infra-fallback` turns it off, the
-default) moves a **dwarf-stage `rate_limit`** stop to the next member of the task's own tier pool,
-in pool order, that runs another model on a pair nobody paused. No attempt is spent; the move is
-recorded in `escalations.tsv` with source `fallback` and in `tasks.tsv`, and the task is
-dispatched again at once. A pinned task, a Fractal plan, a QA-stage stop and a pool with no
-healthy member keep the ordinary pause.
+The run summary and `forge control show` name the cause, the reset when it is known
+(`resets HH:MM`, with the date when it is not today), and **needs you** with the hint. The
+summary's line is `  <task> <cause> on <harness>/<model> (<stage> stage)`, then the reset and
+`— needs you: <hint>`, and a move is `moved sideways: <task> <role> <from> → <to> (<cause>)`.
+`forge control show` prints the cause on the task's status (`INFRA (cause)`) and, while the
+scheduler is live, on each pause line. forge-ui shows the same facts; the words it uses are in
+[forge-ui](ui.md).
+
+A dwarf that exits 0 with an empty final message *and* an empty diff is `class=empty`: it never
+really ran. Under Fractal a dwarf-side stop still ends as Fractal's own `failed`; QA-side stops
+behave as above, and `scripts/forge_fractal/pipeline.py` resets `INFRA` to `PENDING` on resume.
 
 A planned pause (a provider maintenance window, a quota reset) is `forge control drain`, not a
 signal: running tasks finish, nothing new starts, and `forge control resume` continues the same
 run.
-
-A dwarf that exits 0 with an empty final message *and* an empty diff is the same class
-(`class=empty`): it never really ran. Under Fractal a dwarf-side stop still ends as Fractal's own
-`failed`; QA-side stops behave as above, and `pipeline.py` resets `INFRA` to `PENDING` on resume.
 
 ## Implementer guards
 
@@ -900,7 +1023,8 @@ The user's own branch and working tree are untouched for the whole run.
 | task status `TIMEOUT` | that role exceeded the dispatch timeout and was killed. It has usually left a partial edit in the worktree; `retry` continues from it |
 | task status `FAIL` with "produced no changes" | the dwarf ended without editing anything — usually an ambiguous prompt it could not resolve headlessly |
 | task status `UNKNOWN` | QA never emitted a verdict line; read `tasks/<id>/qa.last`. `retry` re-runs QA only, on the unchanged work |
-| task status `INFRA`, `run` exits `8` | quota/auth/rate limit/network/empty output stopped a dispatch; no attempt spent. See `tasks/<id>/infra.txt`, fix the cause, run again (or `--infra-retries M`, `--infra-fallback`) |
+| task status `INFRA`, `run` exits `8` | an infrastructure stop; the cause is in the summary and `tasks/<id>/infra.txt`. No attempt spent. Fix a "needs you" line before re-running; otherwise re-run, or wait with `--infra-retries M`. See [Infrastructure failures](#infrastructure-failures) |
+| task status `NEEDS_DECISION` | reviews are not converging, the retry policy has no stronger model, or the attempt cap is spent. Read `tasks/<id>/decision.md`. Only a decision resumes it |
 | task status `INTERRUPTED`, `run` exits `130` | the run was signalled or stopped with `forge control stop --now`; verification was skipped. The summary prints `forge-parallel.sh retry <plan> <id>` for each one; a plain `run` does not dispatch them |
 | a run that sits idle with tasks `PENDING` | `forge control drain` is in effect (`forge control show` says `drained`; `forge control resume` continues), every scope a task needs is paused on infrastructure (`infra.paused`), or `max-parallel` is lower than you think |
 | a `FAIL` task merged anyway | the threshold (`P2` by default) tolerated its findings, or a person ran `accept`; see `known_issues.md` and `qa.gate` |

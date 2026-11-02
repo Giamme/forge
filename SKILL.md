@@ -60,23 +60,29 @@ For explanation requests, explain the workflow without spending model quota.
   a row left to forge gets its neighbouring tier's model from the user's pools, odds
   recorded for `forge dataset routing`); say so with the table and pass `--explore 0` when
   the user declines. Retries follow a policy: after three failed attempts on one model the
-  next goes a tier up in the user's pools, or the task stops with a split suggestion
+  next goes a tier up in the user's pools, or the task stops as `NEEDS_DECISION`
   (`--escalate-after N`, `0` = off); an explicit `retry --dwarf` overrides it. `accept`
-  overrides a reviewer, so run it (with the user's `--reason` and
-  `--approved`) only on the user's explicit instruction; never self-accept.
+  overrides a reviewer: run it, with `--reason` and `--approved`, only when the user
+  explicitly says so; never self-accept.
 - When you report a run, read `<plan>/control.log` and mention any human change made mid-run
   (a threshold, a budget, a model pin, a drain, stop or queued retry; `forge control show <plan>`
   lists them). Never set a control, pin, `drain|stop|retry` or delete a run with `forge control` /
   `forge runs rm` unless the user asks. Exit `130` / `INTERRUPTED`: the run was signalled or
   stopped; relay the `retry` lines it printed.
-- A run that ends with a `waiting for your answer:` block has tasks in status `NEEDS_INPUT`: the
-  implementer asked a question only the user can answer. Relay each question to the user
-  verbatim, and pass the reply with `retry <plan> <id> --answer "<reply>"`. Never answer for the
-  user, and never retry such a task without an answer: nothing else resumes it.
-- Exit `8` / status `INFRA` is a quota, auth or network stop, not a task failure and no
-  attempt was spent: report it, say what to fix, and re-run only when told. For a multi-task
-  plan, offer the opt-in whole-run review (`review`, or `integrate --final-review <qa-spec>`);
-  it spends QA quota, so never run it unprompted.
+- A `waiting for your answer:` block is status `NEEDS_INPUT`: relay each question verbatim and
+  pass it with `retry <plan> <id> --answer "<reply>"`. Never answer for the user; nothing else
+  resumes it.
+- A task at `NEEDS_DECISION` waits for the user. Present `tasks/<id>/decision.md`'s reasons and
+  choices. Run `retry --decide`, `retry --dwarf` or `accept` (with `--reason` and `--approved`)
+  only on the user's explicit word, never to keep a run going. Nothing else resumes it. The
+  split choice replaces the row in `tasks.tsv` and is a later `run`
+  ([when reviews don't converge](references/decompose.md#when-reviews-dont-converge)); do that
+  only when the user asks, and do not run `decision.md`'s `drain` / `add` line for them.
+- Exit `8` / status `INFRA` is an infrastructure stop (`capacity`, `rate_limit`, `usage_limit`,
+  `budget`, `auth`, `network`, `provider_down`, `empty` or `cancelled`; an old run may say
+  `quota`), not a task failure, and no attempt was spent. Report each "needs you" item with its
+  hint, and re-run only when told. Offer a multi-task plan's whole-run review (`review`, or
+  `integrate --final-review <qa-spec>`) only when asked: it spends QA quota.
 - **Leftover findings become issues.** A run can finish with review findings nobody will act on:
   - CONFIRMED findings the threshold tolerated, from a PASS or a FAIL (`tasks/<id>/known_issues.md`);
   - PLAUSIBLE findings in a passed task's `qa.last`;
