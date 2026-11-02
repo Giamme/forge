@@ -131,8 +131,10 @@ def row_inputs(plan: Path, task: str) -> str:
 
 # --- the user's ladder -------------------------------------------------------------
 
-def registry_models(path: Path = REGISTRY) -> dict:
-    """{alias: {harness: model id}} from registry.tsv; the first row of an alias is its default."""
+def registry_models(path=None) -> dict:
+    """{alias: {harness: model id}} from registry.tsv (or FORGE_REGISTRY, as dispatch and the scheduler read
+    it); the first row of an alias is its default."""
+    path = Path(path or os.environ.get('FORGE_REGISTRY') or REGISTRY)
     out = {}
     try:
         lines = path.read_text().splitlines()
@@ -158,6 +160,23 @@ def canonical(spec: str, registry: dict) -> str:
     if harness and harness in rows:
         return rows[harness]
     return next(iter(rows.values()))
+
+
+def identities(spec: str, registry: dict) -> set:
+    """Every name the model of a spec goes by: its alias and the id it has on each harness (`sol` is
+    `gpt-6.1-sol` on codex and `github-copilot/gpt-6.1-sol` on opencode), and for a literal model id the
+    alias that lists it. Two specs run the same model when these sets meet."""
+    name = str(spec).split(':')[0]
+    names = {name}
+    for alias, rows in registry.items():
+        if alias == name or name in rows.values():
+            names.add(alias)
+            names.update(rows.values())
+    return names
+
+
+def same_model(a: str, b: str, registry: dict) -> bool:
+    return bool(identities(a, registry) & identities(b, registry))
 
 
 def arm(spec: str, registry: dict) -> tuple:
@@ -313,14 +332,14 @@ def qa_fallback_pick(current: str, implementer: str, pools: dict, registry: dict
     own = canonical(current, registry)
     if not any(canonical(s, registry) == own for pool in order for s in pool):
         return None
-    wrote = canonical(implementer, registry) if implementer not in ('', '-', 'UNASSIGNED') else None
+    wrote = implementer if implementer not in ('', '-', 'UNASSIGNED') else None
     for pool in order:
         keys = [canonical(s, registry) for s in pool]
         start = keys.index(own) if own in keys else -1
         for step in range(1, len(pool) + 1):
             candidate = pool[(start + step) % len(pool)]
             model, pair = canonical(candidate, registry), pair_of(candidate, registry)
-            if model == own or model == wrote or pair is None:
+            if model == own or (wrote and same_model(candidate, wrote, registry)) or pair is None:
                 continue
             if pair in excluded or (pair[0], '*') in excluded:
                 continue

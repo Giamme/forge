@@ -200,6 +200,37 @@ class RunningTierTests(unittest.TestCase):
                              {('astra', 'medium'), ('sol', 'low')})
 
 
+class QaPickTests(unittest.TestCase):
+    def setUp(self):
+        self.registry = route.registry_models()
+
+    def pick(self, current, implementer, pool, excluded=''):
+        return route.qa_fallback_pick(current, implementer, {'medium': pool}, self.registry,
+                                      route.parse_excluded(excluded), 'medium')
+
+    def test_the_implementers_model_on_another_harness_is_still_the_implementer(self):
+        # sol is gpt-6.1-sol on codex and github-copilot/gpt-6.1-sol on opencode: one model, two ids
+        self.assertIsNone(self.pick('opus', 'sol', ['opus', 'sol:high:opencode']))
+        self.assertIsNone(self.pick('opus', 'sol:high:opencode', ['opus', 'sol']))
+        self.assertEqual(self.pick('opus', 'sol', ['opus', 'sol:high:opencode', 'astra']), 'astra')
+
+    def test_a_literal_id_of_the_implementers_model_is_the_implementer(self):
+        self.assertIsNone(self.pick('opus', 'gpt-6.1-sol', ['opus', 'sol:high:opencode']))
+
+    def test_a_registry_from_the_environment_resolves_custom_aliases(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            registry = Path(tmp) / 'registry.tsv'
+            registry.write_text('review-a\tcodex\tmodel-a\t<=max\nreview-b\tclaude\tmodel-b\t<=max\n')
+            plan = Path(tmp) / 'plan'
+            plan.mkdir()
+            (plan / 'tasks.tsv').write_text('a\t-\tmedium\ta.txt\tsol\treview-a\tA\n')
+            (plan / 'qa-routing.json').write_text(json.dumps({'medium': ['review-a', 'review-b']}))
+            env = dict(os.environ, FORGE_REGISTRY=str(registry))
+            r = subprocess.run([sys.executable, str(ROOT / 'scripts/forge-route.py'), 'qa-fallback', '--plan', str(plan),
+                                '--task', 'a', '--exclude', 'codex/model-a'], env=env, capture_output=True, text=True)
+            self.assertEqual((r.returncode, r.stdout.strip()), (0, 'review-b'), r.stderr)
+
+
 class RunTests(unittest.TestCase):
     git = fixtures.ForgeTests.git
     run_script = fixtures.ForgeTests.run_script
