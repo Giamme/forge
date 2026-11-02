@@ -89,8 +89,10 @@ class LateralTests(RecoveryBase):
         self.task('a', [f'INFRA usage_limit {SOL}', 'PASS'], dwarf='sol')
         r = self.run_scheduler('--infra-retries', 1)
         self.assertEqual(r.returncode, 0, r.stderr)
-        # The whole harness is out of the pool, and the cause is passed along.
-        self.assertEqual(self.fallbacks(), ['a fallback codex/* --cause usage_limit'])
+        # The whole harness is out of the pool, and the cause is passed along. The task's reviewer (astra) is
+        # on that harness too, so it moves to a peer before the dispatch rather than holding the task.
+        self.assertEqual(self.fallbacks(), ['a fallback codex/* --cause usage_limit',
+                                            'a fallback codex/* --cause usage_limit --role qa'])
         self.assertEqual((self.status('a'), self.calls('a')), ('MERGED', 2))
 
     def test_a_task_that_moved_leaves_a_pause_the_others_still_wait_in(self):
