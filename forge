@@ -23,8 +23,10 @@ usage() {
     '  jev       the old decision-model commands, replaced by decide (kept for one release)' \
     '  dataset   every run'"'"'s inputs and outcomes: status, dump, import, export, outcomes, ...' \
     '  issues    file the review findings a run left open as GitHub issues (plain gh)' \
+    '  pr        a draft pull-request description for a finished run (--create opens it with gh)' \
     '  ui        forge-ui, the run viewer: open [DIR], status, stop' \
     '  runs      this repo'"'"'s recent runs in the terminal: state, verdicts and run dirs; rerun a plan with another model, compare' \
+    '  watch     follow runs live and get a desktop notification when one finishes or fails' \
     '  control   a plan'"'"'s live controls: show, set (QA threshold, retries, timeouts), pin, unpin' \
     '  config    every config source: show, and set/unset the per-repo .forge files and Jev on/off' \
     '  update    fast-forward this checkout and refresh every harness installation' \
@@ -96,6 +98,10 @@ case "${1:-}" in
     shift
     exec python3 "$ROOT/scripts/forge-issues.py" "$@"
     ;;
+  pr)
+    shift
+    exec python3 "$ROOT/scripts/forge-pr.py" "$@"
+    ;;
   ui)
     shift
     help_if_bare $# python3 "$ROOT/scripts/forge-ui.py"
@@ -104,6 +110,10 @@ case "${1:-}" in
   runs)
     shift
     exec python3 "$ROOT/scripts/forge-runs.py" "$@"
+    ;;
+  watch)
+    shift
+    exec python3 "$ROOT/scripts/forge-watch.py" "$@"
     ;;
   control)
     shift

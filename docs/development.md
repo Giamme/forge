@@ -37,9 +37,11 @@ forge/
 │   ├── forge-compare.py         `forge runs rerun|compare`: a plan under another implementer, side by side
 │   ├── forge-ui.py              `forge ui open|status|stop`: the one shared forge-ui server
 │   ├── forge-ui-options.sh      `--ui|--no-ui` and the fail-open launch, sourced by the runners
+│   ├── forge-watch.py           `forge watch`: follow runs, notify, run hooks (reads with forge-ui's reader)
 │   ├── forge_registry.py        the run registry: where run dirs are noted, read by forge-ui
 │   ├── forge-dataset.py         `forge dataset` entry point
 │   ├── forge_dataset/           the run dataset: capture hooks, readers, importer, status checks
+│   ├── forge-pr.py              `forge pr`: a draft PR description for a finished run (reads with forge-ui's reader)
 │   └── forge-install.sh         install into every harness that needs it (opencode and grok find it themselves)
 ├── ui/                          forge-ui: read-only local run viewer (`forge_ui` package, tests, API contract)
 └── references/
