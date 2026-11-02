@@ -285,14 +285,36 @@ class CapRunTests(CapCase):
         self.scenario({'a.qa.1': {'sleep': 8}})
         self.run_script('forge-parallel.sh', 'run', p, '--timeout', 3)
         self.assertEqual(self.read(p, 'status'), 'TIMEOUT')
-        self.retry(p)
+        r = self.retry(p)
         self.assertEqual((self.read(p, 'status'), self.first_line(p)), ('NEEDS_DECISION', 'reasons: cap'))
         self.assertNotIn('forge-parallel.sh accept', (p / 'tasks/a/decision.md').read_text())
+        self.assertNotIn('or accept it', r.stdout)
+        # A run's summary says so too, and offers no accept (round 2 of the final review).
+        r = self.run_script('forge-parallel.sh', 'run', p)
+        self.assertIn('stopped after a TIMEOUT attempt: no reviewer verdict', r.stdout)
+        self.assertNotIn('forge-parallel.sh accept', r.stdout)
         r = self.run_script('forge-parallel.sh', 'accept', p, 'a', '--reason', 'ship it', '--approved')
         self.assertEqual(r.returncode, 3, r.stdout)
         self.assertIn('no reviewer verdict exists to override', r.stdout)
         self.assertEqual(self.read(p, 'status'), 'NEEDS_DECISION')
         self.assertFalse((p / 'tasks/a/known_issues.md').exists())
+
+    def test_any_unreviewed_stop_status_is_refused_by_accept(self):
+        # Round 2 of the final review: statuses the first fix did not list (INTERRUPTED, BLOCKED, CONFLICT) read
+        # as FAIL. Each is the stop a task had when the cap stopped it; only FAIL and UNKNOWN can be accepted.
+        p = self.plan_of('--max-attempts', 1)
+        self.failing()
+        self.run_script('forge-parallel.sh', 'run', p)
+        self.assertEqual(self.read(p, 'status'), 'NEEDS_DECISION')
+        for status in ('INTERRUPTED', 'BLOCKED', 'CONFLICT'):
+            with self.subTest(status):
+                (p / 'tasks/a/decision.from').write_text(status + '\n')
+                r = self.run_script('forge-parallel.sh', 'accept', p, 'a', '--reason', 'ship it', '--approved')
+                self.assertEqual(r.returncode, 3, r.stdout)
+                self.assertIn(f'after a {status} attempt', r.stdout)
+        (p / 'tasks/a/decision.from').write_text('FAIL\n')          # the positive control: a reviewed FAIL is accepted
+        r = self.run_script('forge-parallel.sh', 'accept', p, 'a', '--reason', 'ship it', '--approved')
+        self.assertEqual(r.returncode, 0, r.stdout)
 
     def test_an_infrastructure_resume_at_the_cap_stops_for_a_decision(self):
         # Two failed attempts under no cap, then an infrastructure stop, then the person sets the cap to 2: the

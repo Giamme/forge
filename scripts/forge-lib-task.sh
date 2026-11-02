@@ -419,17 +419,19 @@ attempt_cap_gate() { # attempt_cap_gate <plan> <id> <status> <decide>; 0 may run
   elif [ "$st" = NEEDS_INPUT ]; then
     note "$id: at its attempt cap (attempts $used of $cap), so its answer would start attempt $(( used + 1 )): raise the plan's cap first, forge control set max-attempts N --confirm"
   else
-    note "$id: at its attempt cap (attempts $used of $cap): it runs again only on a decision: forge-parallel.sh retry $PLAN $id --decide retry=N --reason \"...\" --approved (or accept it); see $PLAN/tasks/$id/decision.md"
+    local accept_too=""
+    case "$(decision_from "$PLAN/tasks/$id")" in FAIL|UNKNOWN) accept_too=" (or accept it)" ;; esac
+    note "$id: at its attempt cap (attempts $used of $cap): it runs again only on a decision: forge-parallel.sh retry $PLAN $id --decide retry=N --reason \"...\" --approved$accept_too; see $PLAN/tasks/$id/decision.md"
   fi
   return 1
 }
 
-# The status a NEEDS_DECISION task had when it stopped, from decision.from: FAIL, UNKNOWN, TIMEOUT,
-# ERROR, INVALIDATED or INFRA (the attempt cap stops any of them). FAIL when it is missing or not one
-# of those, as every stop was before the cap.
+# The status a NEEDS_DECISION task had when it stopped, from decision.from, as recorded: the attempt cap
+# stops a task from any status (UNKNOWN, TIMEOUT, INTERRUPTED, INFRA, ...), and only FAIL and UNKNOWN have
+# a reviewer verdict to accept. FAIL when the file is missing or empty, as every stop was before the cap.
 decision_from() { # decision_from <task-dir>
-  local st; st="$(head -c 16 "$1/decision.from" 2>/dev/null | tr -dc 'A-Z')"
-  case "$st" in FAIL|UNKNOWN|TIMEOUT|ERROR|INVALIDATED|INFRA) echo "$st" ;; *) echo FAIL ;; esac
+  local st; st="$(head -c 32 "$1/decision.from" 2>/dev/null | tr -dc 'A-Z_')"
+  echo "${st:-FAIL}"
 }
 
 # decision.md, then the status. Reasons are words (`converging`, `split`); the first line of
@@ -444,7 +446,7 @@ stop_for_decision() { # stop_for_decision <plan> <id> <reason>...
   # What the stop replaces: a task already waiting keeps the status it first stopped from.
   from="$(task_status "$PLAN" "$id")"
   case "$from" in NEEDS_DECISION|NEEDS_INPUT) from="$(decision_from "$tdir")" ;; esac
-  win="$(tr -dc '0-9' < "$PLAN/converge_window" 2>/dev/null | head -c 4)"
+  win="$( { tr -dc '0-9' < "$PLAN/converge_window"; } 2>/dev/null | head -c 4)"
   [ -n "$win" ] && [ "$win" -ge 1 ] 2>/dev/null || win=4
   decided="$(awk -F'\t' '$2 ~ /^[0-9]+$/ && $2 + 0 > m { m = $2 + 0 } END { print m + 0 }' "$tdir/decisions.tsv" 2>/dev/null)"
   case ",${reasons// /}," in *,converging,*)
@@ -599,7 +601,7 @@ decided_left_set() { # decided_left_set <task-dir> <n>
 
 # The run summary's block for tasks waiting for a decision: one line each, the choices once.
 report_decisions() { # report_decisions <plan>
-  local plan="$1" id waiting used cap
+  local plan="$1" id waiting used cap from acceptable=0
   waiting="$(awk -F'\t' '$2=="NEEDS_DECISION" {print $1}' "$plan/results.tsv" 2>/dev/null)"
   [ -n "$waiting" ] || return 0
   echo "waiting for your decision:"
@@ -607,10 +609,15 @@ report_decisions() { # report_decisions <plan>
     printf '  %s: %s — %s\n' "$id" "$(sed -n '1s/^reasons: //p' "$plan/tasks/$id/decision.md" 2>/dev/null)" "$plan/tasks/$id/decision.md"
     read -r used cap <<< "$(attempt_cap_of "$plan" "$id")"
     printf '      attempts %s/%s\n' "$used" "$cap"
+    from="$(decision_from "$plan/tasks/$id")"
+    case "$from" in
+      FAIL|UNKNOWN) acceptable=1 ;;
+      *) printf '      stopped after a %s attempt: no reviewer verdict, so it cannot be accepted\n' "$from" ;;
+    esac
   done
   echo "decide with (each needs --reason \"...\" --approved; decision.md has the commands filled in):"
   echo "  forge-parallel.sh retry $plan <task-id> --decide retry=N | --decide threshold=Pn | --dwarf <spec>"
-  echo "  forge-parallel.sh accept $plan <task-id>    (merge it with its findings as known issues)"
+  [ "$acceptable" = 0 ] || echo "  forge-parallel.sh accept $plan <task-id>    (merge it with its findings as known issues)"
   echo "  or split it: replace its row in $plan/tasks.tsv with smaller tasks, then forge-parallel.sh run $plan"
   echo
 }
