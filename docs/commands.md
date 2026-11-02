@@ -538,8 +538,8 @@ the `retry` and `accept` commands are in `tasks/<id>/decision.md`. The run summa
 `waiting for your decision:`. Neither a later `run`, `--retry-failed`, a retry budget nor a pin
 resumes that same task. Only `retry <plan> <id> --decide retry=N` or `--decide threshold=Pn`, or
 `--dwarf <spec>`, each with `--reason "…" --approved`, or `accept`, does. Replacing it is a hand
-edit of `tasks.tsv` before the next `run` (the summary's `forge control drain` / `add` line does
-not). A live scheduler takes the same flags as `forge control retry`. A run that ends with such a
+edit of `tasks.tsv` before the next `run`, as the summary says (`forge control add` queues a new
+row but does not replace the stopped one). A live scheduler takes the same flags as `forge control retry`. A run that ends with such a
 task still in `tasks.tsv` and unmerged exits `5`. See
 [when reviews don't converge](../references/decompose.md#when-reviews-dont-converge).
 

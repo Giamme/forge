@@ -111,7 +111,10 @@ class StopTests(DecisionCase):
                         f'forge-parallel.sh retry {p} a --dwarf <spec> --reason "..." --approved',
                         f'forge-parallel.sh accept {p} a --reason "..." --approved'):
             self.assertIn(command, text)
-        self.assertIn('forge control add', text)
+        # The split is an edit of tasks.tsv and a later run: drain/add need a live scheduler, gone by now.
+        for shown in (text, r.stdout):
+            self.assertIn(f'forge-parallel.sh run {p}', shown)
+            self.assertNotIn('forge control drain', shown)
         # attempts.tsv keeps FAIL for the attempt; the status is the stop.
         attempts = [line.split('\t') for line in (p / 'tasks/a/attempts.tsv').read_text().splitlines()]
         self.assertEqual([(row[1], row[2]) for row in attempts], [('1', 'FAIL'), ('2', 'FAIL')])

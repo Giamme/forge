@@ -485,7 +485,8 @@ stop_for_decision() { # stop_for_decision <plan> <id> <reason>...
       echo "  accept it as it is:     forge-parallel.sh accept $PLAN $id --reason \"...\" --approved"
       echo "                          (merges it; its findings become known issues)" ;;
     esac
-    echo "  split it:               forge control drain $PLAN, then forge control add $PLAN <id> for each smaller task"
+    echo "  split it:               replace its row in $PLAN/tasks.tsv with smaller tasks (each with a"
+    echo "                          tasks/<id>/prompt.md) and point its dependents at them, then forge-parallel.sh run $PLAN"
   } > "$tmp" && mv "$tmp" "$tdir/decision.md" || { rm -f "${tmp:?}"; note "$id: could not write decision.md; the task stays FAIL"; return 1; }
   rm -f "${tdir:?}/decided.left"
   echo "$from" > "$tdir/decision.from"
@@ -610,7 +611,7 @@ report_decisions() { # report_decisions <plan>
   echo "decide with (each needs --reason \"...\" --approved; decision.md has the commands filled in):"
   echo "  forge-parallel.sh retry $plan <task-id> --decide retry=N | --decide threshold=Pn | --dwarf <spec>"
   echo "  forge-parallel.sh accept $plan <task-id>    (merge it with its findings as known issues)"
-  echo "  or split it: forge control drain $plan, then forge control add $plan <task-id> for smaller tasks"
+  echo "  or split it: replace its row in $plan/tasks.tsv with smaller tasks, then forge-parallel.sh run $plan"
   echo
 }
 

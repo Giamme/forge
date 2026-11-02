@@ -692,16 +692,13 @@ choices:
   together with `--decide`.
 - `forge-parallel.sh accept <plan> <id> --reason "…" --approved` merges it; the findings become
   known issues.
-- Split it by hand. `tasks/<id>/decision.md` and the run summary name this as
-  `forge control drain <plan>`, then `forge control add <plan> <id>` for each smaller task.
-  That pair needs a scheduler that is still live (exit 3 once `scheduler.live` is gone, which
-  it is by the time the summary is printed), and it does not replace the stopped task. `add`
-  is refused until the new id is already a row of `tasks.tsv` with a non-empty
-  `tasks/<id>/prompt.md`. `drain` starts nothing new until `forge control resume <plan>`.
-  The stopped task stays `NEEDS_DECISION` in the scheduler's list for this invocation:
-  dependents keep the `deps` loaded at the start, and the run exits 5 while the row is
-  unmerged. The replacement is an edit of `tasks.tsv`, then `forge-parallel.sh run <plan>`,
-  which reads that file again and recomputes `waves.tsv`.
+- Split it by hand: `tasks/<id>/decision.md` and the run summary say to replace its row in
+  `tasks.tsv` with smaller tasks, then `forge-parallel.sh run <plan>`, which reads that file
+  again and recomputes `waves.tsv`. `forge control drain` and `add` do not do it: they need a
+  scheduler that is still live (exit 3 once `scheduler.live` is gone, which it is by the time
+  the summary is printed), and `add` queues a new row without replacing the stopped one, which
+  stays `NEEDS_DECISION` for that invocation (its dependents keep the `deps` loaded at the
+  start, and the run exits 5 while the row is unmerged).
 
   Take the stopped task's row out of `tasks.tsv`. Leave `tasks/<id>/` where it is; its diff
   is not on the integration branch. A row left in place is not dispatched. Append one row

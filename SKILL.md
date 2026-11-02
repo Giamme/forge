@@ -77,7 +77,7 @@ For explanation requests, explain the workflow without spending model quota.
   only on the user's explicit word, never to keep a run going. Nothing else resumes it. The
   split choice replaces the row in `tasks.tsv` and is a later `run`
   ([when reviews don't converge](references/decompose.md#when-reviews-dont-converge)); do that
-  only when the user asks, and do not run `decision.md`'s `drain` / `add` line for them.
+  only when the user asks.
 - Exit `8` / status `INFRA` is an infrastructure stop (`capacity`, `rate_limit`, `usage_limit`,
   `budget`, `auth`, `network`, `provider_down`, `empty` or `cancelled`; an old run may say
   `quota`), not a task failure, and no attempt was spent. Report each "needs you" item with its
