@@ -141,7 +141,9 @@ def stop_of(task, info, scopes, now) -> dict:
     cls = info.get('class', '')
     harness, model = info.get('harness', ''), info.get('model', '')
     reset = _epoch(info.get('reset_at'))
-    scope = next((s for s in scopes if isinstance(s.get('tasks'), list) and task in s['tasks']), None)
+    # A scope on another harness is not this stop's pause, whatever its list says (an earlier run's record).
+    scope = next((s for s in scopes if isinstance(s.get('tasks'), list) and task in s['tasks']
+                  and (not s.get('harness') or not harness or s.get('harness') == harness)), None)
     if scope is not None:
         needs, text = bool(scope.get('needs_you')), scope.get('hint')
     else:
@@ -176,12 +178,13 @@ def parse_laterals(task, text, since) -> list:
     return moves
 
 
-def held_lines(scopes) -> list:
+def held_lines(scopes, still_held=lambda task: True) -> list:
     """The run summary's lines for the tasks a pause held back without a dispatch (infra.last's `held`):
-    they never stopped, so they have no stop record of their own, but the pause may need a person."""
+    they never stopped, so they have no stop record of their own, but the pause may need a person. A task
+    that has run since (`still_held` is false) is no longer held back."""
     lines = []
     for scope in scopes:
-        held = [task for task in scope.get('held') or [] if isinstance(task, str)]
+        held = [task for task in scope.get('held') or [] if isinstance(task, str) and still_held(task)]
         if not held:
             continue
         where = '/'.join(part for part in (scope.get('harness'), scope.get('model')) if part) or 'everything'
@@ -217,6 +220,12 @@ def _stop(plan, task, scopes, now) -> dict:
     return stop_of(task, parse_stop(_read(plan, os.path.join('tasks', task, 'infra.txt'))), scopes, now)
 
 
+def _not_started(plan, task) -> bool:
+    """True while a task has neither merged nor a status: what a held task was when its run ended."""
+    return (not os.path.exists(os.path.join(plan, 'tasks', task, 'merged'))
+            and _read(plan, os.path.join('tasks', task, 'status')).strip() in ('', 'PENDING'))
+
+
 def pauses_of(plan) -> list:
     """The pauses of a live scheduler (infra.paused), else those its end left (infra.last)."""
     return parse_pauses(_read(plan, 'infra.paused')) or parse_pauses(_read(plan, 'infra.last'))
@@ -245,9 +254,11 @@ def main(argv=None) -> int:
     now = time.time()
     scopes = pauses_of(args.plan)
     if args.command == 'held':
-        for line in held_lines(scopes):
+        still = lambda task: _not_started(args.plan, task)  # noqa: E731
+        for line in held_lines(scopes, still):
             print(line)
-        return 0 if any(s.get('needs_you') is True and s.get('held') for s in scopes) else 1
+        return 0 if any(s.get('needs_you') is True and any(still(t) for t in s.get('held') or [] if isinstance(t, str))
+                        for s in scopes) else 1
     if args.command == 'stop':
         print(stop_line(args.task, _stop(args.plan, args.task, scopes, now), now))
         return 0

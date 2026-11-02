@@ -1523,6 +1523,8 @@ do_retry() {
   preflight_plan "$PLAN" || return $?
   /bin/bash "$SKILL_DIR/scripts/forge-install-ripwire.sh" || true
   rm -f "$tdir/status"
+  # The pauses an earlier run ended with describe that run: this retry's summary must not report them.
+  rm -f "$PLAN/infra.last"
 
   note "retrying $id with dwarf $(field "$T" "$id" dwarf)"
   export FORGE_FRACTAL_RETRY=1

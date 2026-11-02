@@ -1,6 +1,9 @@
 import dataset_isolation  # noqa: F401  keeps the run dataset out of the developer's store
 import importlib.util
+import json
 from pathlib import Path
+import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -120,3 +123,42 @@ class SchedulerTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class SummaryRecordTests(unittest.TestCase):
+    """`forge_infra.py stop` and `held` on a plan an earlier run left an infra.last in (round 2 of the final
+    review of run 1): an old pause must not lend its hint to a new stop, nor name a task that has run since."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.plan = Path(self.tmp.name)
+        (self.plan / 'tasks.tsv').write_text('a\t-\tlow\tf\tsonnet\topus\tA\nb\t-\tlow\tg\tastra\topus\tB\n')
+        for name in 'ab':
+            (self.plan / 'tasks' / name).mkdir(parents=True)
+        (self.plan / 'infra.last').write_text(json.dumps({'scopes': [
+            {'scope': 'harness:codex', 'class': 'budget', 'harness': 'codex', 'model': None, 'tasks': ['a'],
+             'held': ['b'], 'needs_you': True, 'hint': 'add credits, or check the billing of codex'}]}))
+
+    def infra(self, *args):
+        return subprocess.run([sys.executable, str(ROOT / 'scripts' / 'forge_infra.py'), *args, str(self.plan), *(['a'] if args == ('stop',) else [])],
+                              capture_output=True, text=True, timeout=60)
+
+    def test_a_pause_on_another_harness_is_not_this_stops_pause(self):
+        (self.plan / 'tasks/a/infra.txt').write_text('class=capacity\nstage=dwarf\nharness=claude\nmodel=sonnet\n')
+        line = self.infra('stop').stdout
+        self.assertIn('capacity on claude/sonnet', line)
+        self.assertNotIn('needs you', line)
+        (self.plan / 'tasks/a/infra.txt').write_text('class=budget\nstage=dwarf\nharness=codex\nmodel=sol\n')
+        self.assertIn('needs you: add credits, or check the billing of codex', self.infra('stop').stdout)
+
+    def test_a_held_task_that_has_run_since_is_not_held_back(self):
+        r = self.infra('held')
+        self.assertEqual(r.returncode, 0)
+        self.assertRegex(r.stdout, r'^  b\s+held back: budget on codex — needs you')
+        for done in ('merged', 'status'):
+            with self.subTest(done):
+                (self.plan / 'tasks/b' / done).write_text('FAIL\n' if done == 'status' else '')
+                r = self.infra('held')
+                self.assertEqual((r.returncode, r.stdout), (1, ''))
+                (self.plan / 'tasks/b' / done).unlink()

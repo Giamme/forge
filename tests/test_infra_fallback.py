@@ -322,6 +322,10 @@ class RunTests(unittest.TestCase):
         self.assertIn("fix what is marked 'needs you'", r.stdout)
         self.assertFalse((p / 'infra.paused').exists())
         self.assertEqual(json.loads((p / 'infra.last').read_text())['scopes'][0]['held'], ['b'])
+        # A retry is a new invocation: the pauses that run ended with are not its own (round 2 of the review).
+        r = self.run_script('forge-parallel.sh', 'retry', p, 'b')
+        self.assertFalse((p / 'infra.last').exists(), r.stdout)
+        self.assertNotIn('held back', r.stdout)
 
     def test_a_capacity_stop_moves_to_the_next_model_of_the_pool_at_once(self):
         p = self.plan()
