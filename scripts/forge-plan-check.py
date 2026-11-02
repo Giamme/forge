@@ -2,9 +2,10 @@
 """Advisory checks on a plan's tasks, printed under the approval table. Never fails a plan.
 
   forge-plan-check.py size --plan P
-      Names the tasks that are large by the measure that predicts a failed first attempt, and
-      the tasks whose prompt.md has no acceptance criteria. Prints nothing when every task is
-      fine. Exit status is always 0.
+      Names the tasks that are large by the measure that predicts a failed first attempt, the
+      tasks whose prompt.md has no acceptance criteria, and the tasks whose acceptance criteria
+      ask for the whole suite (each attempt would run it; the run's verification already does,
+      after each merge). Prints nothing when every task is fine. Exit status is always 0.
 
   forge-plan-check.py gates PLAN
       Prints the decision-model gate block (what drift, forward, prompt and coverage did to this
@@ -40,6 +41,13 @@ FILE_BIN = (9, 29, 107)
 HEADING = re.compile(r'^(#{1,6})\s+acceptance criteria\s*:?\s*$', re.IGNORECASE)
 ANY_HEADING = re.compile(r'^(#{1,6})\s')
 FENCE = re.compile(r'^\s*(```|~~~)')
+# A whole-suite run named as a command: forge's own check.sh, bare discovery, or an ecosystem's
+# default test target with no selection. A command that names tests (`cargo test foo`) is fine.
+WHOLE_SUITE = re.compile(
+    r'(?:(?:ba)?sh\s+|\./)?[\w./-]*check\.sh'
+    r'|python3?\s+-m\s+(?:unittest(?:\s+discover(?:\s+-s\s+\S+)?)?|pytest)|pytest|tox'
+    r'|(?:npm|pnpm|yarn)(?:\s+run)?\s+test|make\s+(?:test|check)|cargo\s+test|go\s+test\s+\./\.\.\.')
+COMMAND_SPAN = re.compile(r'`([^`\n]+)`')
 
 
 def has_acceptance_criteria(text: str) -> bool:
@@ -66,6 +74,57 @@ def has_acceptance_criteria(text: str) -> bool:
     return False
 
 
+def acceptance_lines(text: str) -> list:
+    """The lines of the `Acceptance criteria` sections, fenced code included."""
+    out, fenced, level = [], False, None
+    for line in text.splitlines():
+        if FENCE.match(line):
+            fenced = not fenced
+            continue
+        if not fenced:
+            heading = ANY_HEADING.match(line)
+            if level is not None and heading and len(heading.group(1)) <= level:
+                level = None
+            match = HEADING.match(line)
+            if match:
+                level = len(match.group(1))
+                continue
+        if level is not None:
+            out.append(line)
+    return out
+
+
+def verify_commands(plan: Path) -> set:
+    """Each command of the plan's --verify and the repository's .forge/verify, whitespace collapsed."""
+    sources = [plan / 'verify_cmd']
+    try:
+        sources.append(Path((plan / 'repo').read_text().strip()) / '.forge' / 'verify')
+    except OSError:
+        pass
+    out = set()
+    for source in sources:
+        try:
+            text = source.read_text(errors='replace')
+        except OSError:
+            continue
+        for part in re.split(r'&&|\|\||;|\n', text):
+            part = ' '.join(part.split())
+            if len(part) >= 6:
+                out.add(part)
+    return out
+
+
+def whole_suite_asked(prompt: str, configured: set):
+    """The first whole-suite command the acceptance criteria name, or None."""
+    for line in acceptance_lines(prompt):
+        spans = COMMAND_SPAN.findall(line) or [line]
+        for span in spans:
+            command = ' '.join(span.split())
+            if WHOLE_SUITE.fullmatch(command) or command in configured:
+                return command
+    return None
+
+
 def rows(plan: Path) -> list:
     out = []
     try:
@@ -82,6 +141,7 @@ def rows(plan: Path) -> list:
 
 def size_notes(plan: Path) -> list:
     notes = []
+    configured = verify_commands(plan)
     for row in rows(plan):
         try:
             prompt = (plan / 'tasks' / row['id'] / 'prompt.md').read_text(errors='replace')
@@ -103,6 +163,11 @@ def size_notes(plan: Path) -> list:
         if not has_acceptance_criteria(prompt):
             notes.append((row['id'], 'no acceptance criteria: end prompt.md with an "## Acceptance criteria" '
                           'section of checks the reviewer can verify'))
+        command = whole_suite_asked(prompt, configured)
+        if command:
+            notes.append((row['id'], 'acceptance criteria ask for the whole suite (`%s`): every attempt would run '
+                          'it; name the task\'s own tests instead, the run\'s verification runs the suite after '
+                          'each merge' % command))
     return notes
 
 

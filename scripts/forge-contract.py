@@ -243,14 +243,27 @@ def qa_text(part: str, kind: str = 'task', threshold=None) -> str:
     return '\n'.join(lines) + '\n'
 
 
+_VERIFY_SCOPE = (
+    '- Verify within your change: run the tests the change affects (the task\'s own tests and the',
+    '  tests of the modules you changed). Do not run the whole suite or repo-wide lint, format or',
+    '  type checks unless the task asks for them.',
+)
+
+# When the run verifies the repository after each merge, a task that names the whole suite in its
+# acceptance criteria no longer buys a full run per attempt: forge runs it once, after the merge.
+_VERIFY_SCOPE_AFTER_MERGE = (
+    '- Verify within your change: run the tests the change affects (the task\'s own tests and the',
+    '  tests of the modules you changed). Never run the whole suite or repo-wide lint, format or',
+    '  type checks, even when the task or its acceptance criteria name them: forge runs the',
+    '  repository\'s verification after the merge. Report that check as left to forge.',
+)
+
 _DWARF = [
     '## Implementer rules',
     '- Do not run git commit, checkout, switch, reset, stash or rebase. The harness captures',
     '  the working tree itself; a self-commit makes the change set ambiguous.',
     '- Do not start background processes, and leave nothing running when you finish.',
-    '- Verify within your change: run the tests the change affects (the task\'s own tests and the',
-    '  tests of the modules you changed). Do not run the whole suite or repo-wide lint, format or',
-    '  type checks unless the task asks for them.',
+    _VERIFY_SCOPE,
     '- Finish every measurement and test run BEFORE your last message and report its actual',
     '  result. If you could not run something, say so explicitly instead of claiming it passed.',
     '- State precisely which verification commands you ran and what each one returned.',
@@ -263,9 +276,15 @@ _DWARF_PRE_REVIEW = [
 ]
 
 
-def dwarf_text(pre_review: bool = False) -> str:
+def dwarf_text(pre_review: bool = False, verify_after_merge: bool = False) -> str:
     """The implementer rules block, newline-terminated."""
-    return '\n'.join(_DWARF + (_DWARF_PRE_REVIEW if pre_review else [])) + '\n'
+    lines = []
+    for line in _DWARF:
+        if line is _VERIFY_SCOPE:
+            lines.extend(_VERIFY_SCOPE_AFTER_MERGE if verify_after_merge else _VERIFY_SCOPE)
+        else:
+            lines.append(line)
+    return '\n'.join(lines + (_DWARF_PRE_REVIEW if pre_review else [])) + '\n'
 
 
 # --- parsing ---------------------------------------------------------------------
@@ -293,7 +312,7 @@ def _collapse(text: str) -> str:
 
 @functools.lru_cache(maxsize=None)
 def _contract_flat() -> str:
-    parts = [dwarf_text()]
+    parts = [dwarf_text(), dwarf_text(verify_after_merge=True)]
     for kind in KINDS:
         for part in ('head', 'tail'):
             for threshold in SEVERITIES:    # None and `none` render one of these
@@ -455,6 +474,8 @@ def _parser() -> argparse.ArgumentParser:
                     help='least severe level that still blocks; none = P3 (default: %s)' % DEFAULT_THRESHOLD)
     dwarf = sub.add_parser('dwarf', help='print the implementer rules block')
     dwarf.add_argument('--pre-review', action='store_true', help='forge runs the affected tests before the review')
+    dwarf.add_argument('--verify-after-merge', action='store_true',
+                       help='the run verifies the repository after each merge, so the whole suite is left to it')
     gate_parser = sub.add_parser(
         'gate', help='print: decision (accept|fail|keep), worst_confirmed, n_confirmed, n_unlabelled, n_below')
     gate_parser.add_argument('--verdict', required=True, choices=('PASS', 'FAIL', 'UNKNOWN'))
@@ -473,7 +494,7 @@ def main(argv=None) -> int:
         _emit(qa_text(args.part, args.kind, args.threshold))
         return 0
     if args.command == 'dwarf':
-        _emit(dwarf_text(args.pre_review))
+        _emit(dwarf_text(args.pre_review, args.verify_after_merge))
         return 0
     try:
         with open(args.qa_last, 'rb') as handle:

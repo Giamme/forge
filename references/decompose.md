@@ -262,11 +262,15 @@ So:
   parallel tasks. A task should still be reviewable and correct on its own.
 - End every `prompt.md` with an `## Acceptance criteria` section: observable checks the
   reviewer can verify (a behaviour, a command that passes, a file that exists), not
-  restated goals.
+  restated goals. A command names the task's own tests, never the whole suite: the run's
+  verification runs the suite after each merge, and naming it here makes every attempt run it.
 - `plan` prints an advisory block under the table naming tasks at 7,000 characters or 9
-  declared files and over, with the history for their size, and tasks with no acceptance
-  criteria. A heading inside a code fence, or with nothing under it, does not count. The
-  block never changes the table or the exit code.
+  declared files and over, with the history for their size, tasks with no acceptance
+  criteria, and tasks whose acceptance criteria ask for the whole suite (forge's
+  `tests/check.sh`, a bare `unittest discover`, `npm test`, `make check`, `cargo test` and the
+  like, or a command of the plan's `--verify` or the repository's `.forge/verify`). A heading
+  inside a code fence, or with nothing under it, does not count. The block never changes the
+  table or the exit code.
 
 ## Plan gates: sent back, and the block under the table
 
@@ -374,6 +378,10 @@ forge's rule that a dwarf → QA cycle does not loop on its own initiative.
 The prompt contract (preamble, findings format, severity definitions and the verdict lines)
 comes from one place, `scripts/forge-contract.py`, shared by solo, decomposed and the final
 review; the implementer rules appended to every dwarf prompt come from the same module.
+When the run verifies the repository (`--verify`, verification lanes or `.forge/verify`), those
+rules tell the implementer never to run the whole suite, even when the task's acceptance
+criteria name it, and to report it as left to forge: the suite runs once, after the merge.
+Without verification, the implementer runs the whole suite only when the task asks for it.
 
 ### Fail-first evidence (opt-in)
 
