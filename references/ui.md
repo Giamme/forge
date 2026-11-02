@@ -73,6 +73,16 @@ run goes on, with the same exit code.
 - It refreshes every two seconds while something runs (five otherwise) while the tab is
   visible, so a run can be watched as it goes. A run can also be replayed from its record.
 
+An infrastructure stop shows as `INFRA · <label>`: `at capacity`, `rate limited`, `usage limit`,
+`out of budget`, `login needed`, `network down`, `provider down`, `empty answer` or `cancelled`.
+A cause the page does not know, such as an older run's `quota`, is shown as it was written.
+Opening the task lists that label, the stage, the harness and model, and `resets …` when the
+limit's reset is known. A pause that needs the user says "needs you" with the fix hint, and a
+sideways move is a "moved sideways" line under Models. A task at `NEEDS_DECISION` is waiting, not
+failed: its inspector gives the reasons, the attempts against the cap, the review ledger, and the
+text of `tasks/<id>/decision.md`. forge-ui shows those commands and does not run them, and it does
+not offer Retry now. A run whose unfinished tasks are all waiting is `WAITING`.
+
 The 3D view loads three.js from cdn.jsdelivr.net when first used; offline, the page shows the
 same run in 2D. The full page description is in [ui/README.md](../ui/README.md).
 
