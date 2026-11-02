@@ -67,13 +67,14 @@ class RunningTierTests(unittest.TestCase):
     """`forge-route.py fallback`, which reads the tier a task runs in from its records."""
 
     def fallback(self, dwarf, difficulty, pools, escalations=(), route_record=None, exclude='', replanned=None,
-                 unrecorded=()):
+                 unrecorded=(), qa='kimi'):
         """`escalations` are recorded as forge does, with `pools`; `unrecorded` rows as a plan made before
-        running.tier left them. `replanned` are the pools from then on."""
+        running.tier left them. `replanned` are the pools from then on. The reviewer, `qa`, is in no pool
+        unless a test puts it there: a move never lands on it."""
         with tempfile.TemporaryDirectory() as tmp:
             plan = Path(tmp)
             (plan / 'tasks/a').mkdir(parents=True)
-            (plan / 'tasks.tsv').write_text(f'a\t-\t{difficulty}\tf\t{dwarf}\topus\tA\n')
+            (plan / 'tasks.tsv').write_text(f'a\t-\t{difficulty}\tf\t{dwarf}\t{qa}\tA\n')
             (plan / 'fractal-routing.json').write_text(json.dumps(pools))
             if route_record:
                 (plan / 'tasks/a/route.jsonl').write_text(route_record + '\n')
@@ -94,6 +95,14 @@ class RunningTierTests(unittest.TestCase):
         pools = {'medium': ['sol', 'astra']}
         self.assertEqual(self.fallback('sol', 'medium', pools, exclude='codex/gpt-6.1-sol'), 'astra')
         self.assertIsNone(self.fallback('sol', 'medium', pools, exclude='codex/gpt-6-astra'))
+
+    def test_the_tasks_reviewer_is_never_its_implementers_peer(self):
+        # The final review of run 1: sol stopped and the move landed on astra, the task's own reviewer.
+        pools = {'medium': ['sol', 'astra', 'sonnet']}
+        self.assertEqual(self.fallback('sol', 'medium', pools, qa='astra'), 'sonnet')
+        self.assertEqual(self.fallback('sol', 'medium', pools, qa='astra:xhigh'), 'sonnet')   # any effort of it
+        self.assertIsNone(self.fallback('sol', 'medium', {'medium': ['sol', 'astra']}, qa='astra'))
+        self.assertEqual(self.fallback('sol', 'medium', {'medium': ['sol', 'astra']}, qa='-'), 'astra')
 
     def test_a_model_in_two_pools_stays_in_the_tier_of_its_task(self):
         pools = {'medium': ['sol'], 'high': ['sol', 'sonnet']}

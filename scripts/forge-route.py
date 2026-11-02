@@ -287,20 +287,22 @@ def parse_excluded(text: str) -> set:
     return out
 
 
-def fallback_pick(current: str, pools: dict, registry: dict, excluded: set, tier: str):
+def fallback_pick(current: str, pools: dict, registry: dict, excluded: set, tier: str, reviewer: str = None):
     """The next member of the pool of `tier`, the tier the task runs in (running_tier), in pool
-    order and wrapping around, that runs another model on a pair nobody paused. None when there is
-    none, or when that pool does not run the current model (a model the user named by hand)."""
+    order and wrapping around, that runs another model on a pair nobody paused, and not the task's
+    reviewer's model: a task is never reviewed by the model that wrote it. None when there is none,
+    or when that pool does not run the current model (a model the user named by hand)."""
     pool = pools.get(tier) or []
     own = canonical(current, registry)
     keys = [canonical(s, registry) for s in pool]
     if own not in keys:
         return None
+    judge = canonical(reviewer, registry) if reviewer and reviewer not in ('-', 'UNASSIGNED') else None
     start = keys.index(own)
     for step in range(1, len(pool) + 1):
         candidate = pool[(start + step) % len(pool)]
         pair = pair_of(candidate, registry)
-        if canonical(candidate, registry) == own or pair is None:
+        if canonical(candidate, registry) in (own, judge) or pair is None:
             continue
         if pair in excluded or (pair[0], '*') in excluded:
             continue
@@ -407,7 +409,8 @@ def fallback(args) -> int:
     if not current or current in ('-', 'UNASSIGNED'):
         return 1
     pick = fallback_pick(current, load_pools(plan / 'fractal-routing.json'), registry_models(),
-                         parse_excluded(args.exclude), running_tier(plan, args.task, current))
+                         parse_excluded(args.exclude), running_tier(plan, args.task, current),
+                         _row_cell(plan, args.task, 5))
     if not pick:
         return 1
     print(pick)
