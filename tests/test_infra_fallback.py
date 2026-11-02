@@ -23,6 +23,9 @@ spec.loader.exec_module(route)
 
 CAPACITY = {'rc': 1, 'stdout': CODEX_CAPACITY}
 BUDGET = {'rc': 1, 'stdout': json.dumps({'type': 'result', 'is_error': True, 'result': 'Credit balance is too low'})}
+CODEX_BUDGET = {'rc': 1, 'stdout': '{"type":"error","message":"You exceeded your current quota, please check your plan '
+                                  'and billing details."}\n{"type":"turn.failed","error":{"message":"You exceeded your '
+                                  'current quota."}}'}
 USAGE_LIMIT = {'rc': 1, 'stderr': 'Claude AI usage limit reached|1760000000'}
 
 
@@ -280,6 +283,43 @@ class RunTests(unittest.TestCase):
         """The lateral.tsv rows as role, from, to, cause."""
         f = p / 'tasks/a/lateral.tsv'
         return [line.split('\t')[2:] for line in f.read_text().splitlines()] if f.exists() else []
+
+    def two_tasks(self, qa_b='opus'):
+        """a on sol and b on astra (both codex), one at a time, so b is still pending when a stops."""
+        p = self.root / 'plan'; p.mkdir()
+        (p / 'tasks.tsv').write_text(f'a\t-\tmedium\ta.txt\tsol\topus\tA\nb\t-\tmedium\tb.txt\tastra\t{qa_b}\tB\n')
+        for name in 'ab':
+            (p / 'tasks' / name).mkdir(parents=True)
+            (p / 'tasks' / name / 'prompt.md').write_text('Implement change. REQUIREMENT_SENTINEL TASK_' + name)
+        r = self.run_script('forge-parallel.sh', 'plan', p, '--repo', self.repo, '--no-memory', '--explore', '0',
+                            '--dwarf-medium', 'sol,astra,sonnet')
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.scenario({'a.dwarf.1': CODEX_BUDGET})
+        return p
+
+    def test_a_pending_task_on_a_paused_harness_moves_sideways_before_its_dispatch(self):
+        # The final review of run 1: a's budget stop paused codex and a moved to sonnet, but b, pending on codex's
+        # astra, was never dispatched and the run exited 8 with nothing saying why.
+        p = self.two_tasks()
+        r = self.run_plan(p, '--max-parallel', '1', '--infra-retries', '1')
+        self.assertEqual(r.returncode, 0, r.stdout)
+        rows = {line.split('\t')[0]: line.split('\t')[4] for line in (p / 'tasks.tsv').read_text().splitlines()
+                if not line.startswith('#')}
+        self.assertEqual(rows, {'a': 'sonnet', 'b': 'sonnet'})
+        moved = (p / 'tasks/b/lateral.tsv').read_text().split('\t')[2:]
+        self.assertEqual([c.strip() for c in moved], ['dwarf', 'astra', 'sonnet', 'budget'])
+        self.assertIn('MERGED', (p / 'results.tsv').read_text().split('b\t')[1].split('\n')[0])
+
+    def test_a_task_held_without_a_peer_is_named_in_the_summary_with_who_must_act(self):
+        # b's reviewer is on codex too, and the plan has no reviewer pools: b stays held, and the summary says so.
+        p = self.two_tasks(qa_b='terra')
+        r = self.run_plan(p, '--max-parallel', '1', '--infra-retries', '1')
+        self.assertEqual(r.returncode, 8, r.stdout)
+        self.assertIn('held back by an infrastructure pause', r.stdout)
+        self.assertRegex(r.stdout, r'\n  b\s+held back: budget on codex — needs you: add credits')
+        self.assertIn("fix what is marked 'needs you'", r.stdout)
+        self.assertFalse((p / 'infra.paused').exists())
+        self.assertEqual(json.loads((p / 'infra.last').read_text())['scopes'][0]['held'], ['b'])
 
     def test_a_capacity_stop_moves_to_the_next_model_of_the_pool_at_once(self):
         p = self.plan()

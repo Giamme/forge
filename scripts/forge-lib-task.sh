@@ -822,7 +822,11 @@ prepare_fallback() { # prepare_fallback <plan> <id> <excluded harness/model,...>
   forge_plan_is_fractal "$PLAN" && return 1
   if [ "$role" = qa ]; then
     setter=set_qa
-    resume_check "$PLAN" "$id" || return 1
+    # A stopped review keeps its attempt only through a valid QA-only resume; a task not yet started
+    # (held back by its reviewer's pause) has none to keep, and its full dispatch takes the peer.
+    if [ -e "$tdir/resume" ] || [ -n "$(cat "$tdir/status" 2>/dev/null)" ]; then
+      resume_check "$PLAN" "$id" || return 1
+    fi
     cur="$(field "$PLAN/tasks.tsv" "$id" qa)"
     pick="$(python3 "$SKILL_DIR/scripts/forge-route.py" qa-fallback --plan "$PLAN" --task "$id" --exclude "$3")" || return 1
   else
@@ -1021,15 +1025,22 @@ qa_gate() { # qa_gate <plan> <id> <tdir> <verdict> [threshold]
 # The wording of each line, and what the causes need, is forge_infra.py's; this block only lays them out.
 # A lateral move is news whether or not a task is still paused, so its lines come out either way.
 report_infra() { # report_infra <plan>
-  local plan="$1" id n=0 infra_ids="" moved
+  local plan="$1" id n=0 infra_ids="" moved held needs=1
   for id in $(all_ids "$plan/tasks.tsv"); do
     [ "$(task_status "$plan" "$id")" = INFRA ] || continue
     [ "$n" = 0 ] && echo "paused on an infrastructure failure (not a task failure, no attempt spent):"
     n=$((n+1)); infra_ids="$infra_ids $id"
     python3 "$SKILL_DIR/scripts/forge_infra.py" stop "$plan" "$id"
   done
-  if [ "$n" -gt 0 ]; then
-    if python3 "$SKILL_DIR/scripts/forge_infra.py" needs-you "$plan" $infra_ids; then
+  [ "$n" = 0 ] || ! python3 "$SKILL_DIR/scripts/forge_infra.py" needs-you "$plan" $infra_ids || needs=0
+  # Tasks a pause held back never stopped, so they are not INFRA: the pause the run ended with names them.
+  held="$(python3 "$SKILL_DIR/scripts/forge_infra.py" held "$plan")" && needs=0
+  if [ -n "$held" ]; then
+    echo "held back by an infrastructure pause (not started, no attempt spent):"
+    echo "$held"
+  fi
+  if [ "$n" -gt 0 ] || [ -n "$held" ]; then
+    if [ "$needs" = 0 ]; then
       echo "  fix what is marked 'needs you', then re-run: forge-parallel.sh run $plan"
     else
       echo "  fix the cause (quota, login, network), then re-run: forge-parallel.sh run $plan"

@@ -176,6 +176,23 @@ def parse_laterals(task, text, since) -> list:
     return moves
 
 
+def held_lines(scopes) -> list:
+    """The run summary's lines for the tasks a pause held back without a dispatch (infra.last's `held`):
+    they never stopped, so they have no stop record of their own, but the pause may need a person."""
+    lines = []
+    for scope in scopes:
+        held = [task for task in scope.get('held') or [] if isinstance(task, str)]
+        if not held:
+            continue
+        where = '/'.join(part for part in (scope.get('harness'), scope.get('model')) if part) or 'everything'
+        line = '  %-14s held back: %s on %s' % (', '.join(held), label(scope.get('class')), where)
+        if scope.get('needs_you') is True:
+            hint = scope.get('hint')
+            line += ' — needs you' + (': ' + hint if isinstance(hint, str) and hint else '')
+        lines.append(line)
+    return lines
+
+
 def moved_line(move) -> str:
     """The run summary's line for a lateral move."""
     return 'moved sideways: %s %s %s → %s (%s)' % (move['task'], move['role'], move['frm'], move['to'],
@@ -200,10 +217,16 @@ def _stop(plan, task, scopes, now) -> dict:
     return stop_of(task, parse_stop(_read(plan, os.path.join('tasks', task, 'infra.txt'))), scopes, now)
 
 
+def pauses_of(plan) -> list:
+    """The pauses of a live scheduler (infra.paused), else those its end left (infra.last)."""
+    return parse_pauses(_read(plan, 'infra.paused')) or parse_pauses(_read(plan, 'infra.last'))
+
+
 def main(argv=None) -> int:
     """forge-lib-task.sh's run summary calls this for the infrastructure block. `stop` prints one
     line for an INFRA task; `needs-you` exits 0 when one of the tasks needs a person and 1 when none
-    does; `moved` prints a line for each lateral move made at or after the given epoch time."""
+    does; `held` prints a line for the tasks each pause held back undispatched; `moved` prints a line
+    for each lateral move made at or after the given epoch time."""
     parser = argparse.ArgumentParser(prog='forge_infra.py', description=main.__doc__)
     commands = parser.add_subparsers(dest='command', required=True)
     stop = commands.add_parser('stop', help='the summary line for one INFRA task')
@@ -215,9 +238,16 @@ def main(argv=None) -> int:
     moved = commands.add_parser('moved', help='the lateral moves made at or after a time')
     moved.add_argument('plan')
     moved.add_argument('since', type=float)
+    held = commands.add_parser('held', help='the tasks a pause held back when the run ended; exit 0 when one '
+                                            'of those pauses needs a person')
+    held.add_argument('plan')
     args = parser.parse_args(argv)
     now = time.time()
-    scopes = parse_pauses(_read(args.plan, 'infra.paused'))
+    scopes = pauses_of(args.plan)
+    if args.command == 'held':
+        for line in held_lines(scopes):
+            print(line)
+        return 0 if any(s.get('needs_you') is True and s.get('held') for s in scopes) else 1
     if args.command == 'stop':
         print(stop_line(args.task, _stop(args.plan, args.task, scopes, now), now))
         return 0

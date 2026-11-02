@@ -558,6 +558,7 @@ def live_start(plan: object, names: object, retry_failed: int, infra_retries: in
             _remove(plan, 'tasks', name, 'retry_budget')
             _remove(plan, 'tasks', name, 'retries.used')
         _remove(plan, 'infra.paused')
+        _remove(plan, 'infra.last')
         _remove(plan, 'drain')
         _remove(plan, 'stop')
         # Queued for a scheduler that died: never applied to this run.
@@ -624,6 +625,7 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
     pauses = {}        # scope -> its pause, for model: and harness: scopes; `all` is the above
     scope_waits = {}   # scope -> waits it already completed this run
     pairs_cache = {}   # task -> (harness, model) pairs its next dispatch uses
+    held_tries = {}    # task -> the paused scopes its last sideways move before dispatch was tried with
     registry = load_registry()
     paused_text = None # what infra.paused holds now
     backoff_warned = [] # an invalid infra_backoff file is reported once
@@ -780,6 +782,51 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
 
     def scope_held(name: str) -> bool:
         return any(holds(pause, next_pairs(name)) for pause in pauses.values())
+
+    def move_held(name: str) -> bool:
+        """A pending task a pause holds back moves sideways before its dispatch, as a stopped one does: the
+        implementer to the next healthy model of its tier, or, when only its reviewer is held, the reviewer
+        to a peer. Tried once for each set of pauses. True when the task moved."""
+        if interrupted or graceful or fractal or _read_small(plan, 'infra_fallback') != 'on':
+            return False
+        seen = frozenset(pauses)
+        if held_tries.get(name) == seen:
+            return False
+        held_tries[name] = seen
+        pairs = next_pairs(name)
+        holding = [pause for pause in pauses.values() if holds(pause, pairs)]
+        moves = [pause for pause in holding if forge_infra.entry(pause['class'])['move'] in ('lateral', 'retry')]
+        if not holding or len(moves) < len(holding):
+            return False
+        # The implementer's pair when it is held (a full dispatch), else the reviewer's.
+        role = 'dwarf' if len(pairs) == 2 and any(holds(pause, pairs[:1]) for pause in holding) else 'qa'
+        excluded = {(pause['harness'], pause['model'] or '*') for pause in pauses.values()}
+        command = ['/bin/bash', script, '_prepare_retry', str(plan), name, '--fallback',
+                   ','.join(sorted(h + '/' + m for h, m in excluded)), '--cause', holding[0]['class']]
+        if role == 'qa':
+            command += ['--role', 'qa']
+        if subprocess.run(command).returncode:
+            return False
+        pairs_cache.pop(name, None)
+        return True
+
+    def held_record() -> None:
+        """infra.last: the pauses still holding work when the scheduler ends, each with the pending tasks it
+        holds back (`held`). infra.paused goes with the scheduler; the run summary and forge-ui read this
+        one to say who must act. The next run's start removes it."""
+        scopes = []
+        if paused:
+            scopes.append({'scope': 'all', 'class': all_class or None, 'harness': None, 'model': None,
+                           'tasks': list(infra_seen), 'held': list(pending), 'needs_you': False, 'hint': None,
+                           'reset_at': all_reset})
+        for pause in pauses.values():
+            if live_pause(pause):
+                record = {key: pause[key] for key in ('scope', 'class', 'harness', 'model', 'tasks', 'needs_you',
+                                                      'hint', 'reset_at')}
+                record['held'] = [name for name in pending if holds(pause, next_pairs(name))]
+                scopes.append(record)
+        if scopes:
+            _write_atomic(plan, json.dumps({'scopes': scopes}), 'infra.last')
 
     def live_pause(pause: dict) -> bool:
         """A pause still holding something: its own stopped tasks, or a pending task on its pair.
@@ -1289,7 +1336,7 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
                     continue
                 if any(overlap(tasks[name][3], tasks[other][3]) for other in active):
                     continue
-                if pauses and scope_held(name):
+                if pauses and scope_held(name) and not (move_held(name) and not scope_held(name)):
                     continue
                 root = plan / 'tasks' / name
                 if not (root / 'base_ref').exists():
@@ -1333,6 +1380,10 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
                 break
             time.sleep(0.05)
     finally:
+        try:
+            held_record()
+        except Exception as error:
+            _warn('could not record the pauses left: ' + str(error))
         # Not live from here on: a late `forge control` must not edit budgets nobody reads.
         live_stop(plan, tasks)
         # Poll before any signal. A process that has already exited keeps the result
