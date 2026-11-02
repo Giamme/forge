@@ -197,35 +197,53 @@ class DecisionTests(DecisionCase):
         self.assertIn('is FAIL, not waiting for a decision', r.stdout)
         self.assertEqual((self.read(p, 'status'), self.dwarf_count(), self.decisions(p)), ('FAIL', before, []))
 
-    def test_retry_n_is_recorded_dispatches_and_restarts_the_count(self):
+    def test_retry_n_is_n_attempts_and_restarts_the_count(self):
         p, _ = self.converging_plan()
         before = self.dwarf_count()
         r = self.retry(p, '--decide', 'retry=2', '--reason', 'new findings are cheap ones', '--approved')
-        self.assertEqual(self.dwarf_count(), before + 1, r.stdout)
+        # Two attempts follow the decision, whatever the run's retry budget was (the run had 5).
+        self.assertEqual(self.dwarf_count(), before + 2, r.stdout)
         [row] = self.decisions(p)
         self.assertEqual(row[1:], ['2', 'retry=2', 'new findings are cheap ones'])
-        # The third review fails with a new finding as well, but the signal counts only the reviews after
-        # the decision: one is not a window.
-        self.assertEqual(self.read(p, 'status'), 'FAIL', r.stdout)
-        r = self.retry(p)                                              # a FAIL task retries as it always did
+        # The signal counts only the reviews after the decision: the first of them was not a window, the
+        # second completed one.
         self.assertEqual(self.read(p, 'status'), 'NEEDS_DECISION', r.stdout)
         text = (p / 'tasks/a/decision.md').read_text()
         self.assertIn('Attempts used so far: 4', text)
         self.assertRegex(text, r'\n  3\s+FAIL\s+1\s+1\s+P1\n  4\s+FAIL')   # a new full window failed
         self.assertNotRegex(text, r'\n  [12]\s+FAIL')
 
+    def test_retry_one_is_one_attempt_and_the_signal_waits_for_a_window(self):
+        p, _ = self.converging_plan()
+        before = self.dwarf_count()
+        r = self.retry(p, '--decide', 'retry=1', '--reason', 'one more', '--approved')
+        self.assertEqual(self.dwarf_count(), before + 1, r.stdout)
+        # The third review fails with a new finding as well, but one review is not a window.
+        self.assertEqual(self.read(p, 'status'), 'FAIL', r.stdout)
+        r = self.retry(p)                                              # a FAIL task retries as it always did
+        self.assertEqual(self.read(p, 'status'), 'NEEDS_DECISION', r.stdout)
+
     def test_a_decision_on_a_split_stop_gets_its_attempts(self):
         p, _ = self.split_plan()
         self.assertTrue((p / 'tasks/a/escalation.stop').exists())
         before = self.dwarf_count()
         r = self.retry(p, '--decide', 'retry=3', '--reason', 'the findings are shrinking', '--approved')
-        self.assertEqual(self.dwarf_count(), before + 1, r.stdout)     # not stopped at once by the old streak
-        self.assertFalse((p / 'tasks/a/escalation.stop').exists())
-        self.assertFalse((p / 'tasks/a/split.suggested').exists())
-        self.assertEqual(self.read(p, 'status'), 'FAIL')
-        r = self.retry(p)
-        self.assertEqual(self.dwarf_count(), before + 2, r.stdout)
-        self.assertEqual(self.read(p, 'status'), 'FAIL')
+        self.assertEqual(self.dwarf_count(), before + 3, r.stdout)     # all three, not stopped at once by the old streak
+        self.assertEqual([row[1:3] for row in self.decisions(p)], [['3', 'retry=3']])
+
+    def test_retry_n_stops_early_when_an_attempt_passes(self):
+        p = self.plan_of(window=9)
+        table = {'a.qa.%d' % n: {'verdict': 'FAIL', 'findings': SAME} for n in range(1, 3)}
+        table.update({'a.qa.3': {'verdict': 'PASS'}, 'a.qa.4': {'verdict': 'PASS'}})
+        table.update({'a.dwarf.%d' % n: {'content': 'try %d' % n} for n in range(1, 12)})
+        self.scenario(table)
+        self.assertEqual(self.run_script('forge-parallel.sh', 'run', p, '--retry-failed', 0).returncode, 5)
+        (p / 'tasks/a/status').write_text('NEEDS_DECISION\n')
+        (p / 'tasks/a/decision.md').write_text('reasons: converging\n')
+        before = self.dwarf_count()
+        r = self.retry(p, '--decide', 'retry=5', '--reason', 'go on', '--approved')
+        self.assertEqual(self.dwarf_count(), before + 2, r.stdout)     # the second of the five passed: no third
+        self.assertTrue((p / 'tasks/a/merged').exists(), r.stdout)
 
     def test_a_threshold_decision_writes_the_task_threshold_and_retries(self):
         p, _ = self.converging_plan()
@@ -276,11 +294,11 @@ class SchedulerTests(control_fixtures.Base):
         if stop:                                                       # the stand-in preparation stops on it
             (self.plan / 'tasks' / name / 'escalation.stop').write_text('3\tsol\n')
 
-    def run_beside(self, during):
+    def run_beside(self, during, budget=3):
         """A live scheduler with one other task held open while `during` runs; returns its stderr."""
         self.task('a')
         (self.plan / 'hooks/a.1').write_text('waitfor "$plan/release"\n')
-        proc = self.start('--retry-failed', 3)
+        proc = self.start('--retry-failed', budget)
         self.wait_for(lambda: (self.plan / 'tasks/a/calls').exists(), 'a to start')
         during()
         (self.plan / 'release').write_text('')
@@ -353,6 +371,30 @@ class SchedulerTests(control_fixtures.Base):
         self.assertEqual((line['task'], line['outcome']), ('x', 'applied'))
         self.assertIn('x prepared --decide retry=2 --reason new findings are cheap --approved', self.events())
         self.assertIn('x start 1 trigger=human', self.events())
+
+    def starts(self, name):
+        return [e for e in self.events() if e.startswith(name + ' start')]
+
+    def decide_live(self, choice, budget):
+        self.task('x', outcomes=['FAIL'] * 6, status='NEEDS_DECISION')
+        (self.plan / 'tasks/x/decision.md').write_text('reasons: converging\n')
+
+        def during():
+            result = self.control('retry', self.plan, 'x', '--decide', choice, '--reason', 'go on', '--approved')
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.wait_for(lambda: self.outcomes(), 'the outcome line')
+
+        self.run_beside(during, budget)
+
+    def test_a_decision_of_one_attempt_is_not_extended_by_the_retry_budget(self):
+        self.decide_live('retry=1', 3)
+        self.assertEqual(len(self.starts('x')), 1, self.events())
+        self.assertEqual(self.status('x'), 'FAIL')
+
+    def test_a_decision_of_n_attempts_is_n_attempts_whatever_the_retry_budget(self):
+        self.decide_live('retry=3', 0)
+        self.assertEqual(len(self.starts('x')), 3, self.events())
+        self.assertEqual(self.status('x'), 'FAIL')
 
     def test_control_retry_with_a_dwarf_needs_the_same_flags(self):
         self.waiting(stop=False)

@@ -1496,7 +1496,9 @@ do_retry() {
   # A refusal (the retry policy found no stronger model, or the escalation could not be
   # written) must stop here: past this point the status is cleared and a dwarf dispatched.
   local prc=0
+  local decided_choice=""
   if [ "$st" = NEEDS_DECISION ]; then
+    decided_choice="$DECIDE"
     retry_decided "$PLAN" "$id" "$DECIDE" "$NEWDWARF" "$REASON" || prc=$?
   else
     prepare_retry "$PLAN" "$id" "$NEWDWARF" || prc=$?
@@ -1521,6 +1523,18 @@ do_retry() {
   export FORGE_DATASET_TRIGGER=human
   do_task "$PLAN" "$id"
   st="$(task_status "$PLAN" "$id")"
+  # A decision of retry=N is N attempts in all: this one, then N-1 more while the reviews fail.
+  # Any other decision is this one attempt. The same stops apply as to any retry: a task that
+  # stopped for a decision again, an empty diff, or a policy that finds no stronger model.
+  local more; more="$(decided_attempts "$decided_choice")"; more=$(( more - 1 ))
+  while [ "$more" -gt 0 ] && { [ "$st" = FAIL ] || [ "$st" = UNKNOWN ]; } && [ ! -e "$tdir/noretry" ]; do
+    more=$(( more - 1 ))
+    prepare_retry "$PLAN" "$id" || break
+    rm -f "$tdir/status"
+    note "retrying $id (decided retry, $more more after this)"
+    do_task "$PLAN" "$id"
+    st="$(task_status "$PLAN" "$id")"
+  done
   if [ "$st" = "INFRA" ]; then
     # Nothing was judged and no attempt was spent: skip verification, say how to resume.
     write_results "$PLAN"

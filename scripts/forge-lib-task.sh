@@ -510,6 +510,15 @@ retry_decided() { # retry_decided <plan> <id> <decide> <new-dwarf> <reason>
   return $rc
 }
 
+# How many attempts a decision grants in all: retry=N is N, every other choice (threshold=Pn,
+# dwarf=<spec>) is the one attempt it resumes the task for. Empty (no decision) is one.
+decided_attempts() { # decided_attempts <decide>
+  case "${1:-}" in
+    retry=[0-9]|retry=[0-9][0-9]) echo $(( 10#${1#retry=} )) ;;
+    *) echo 1 ;;
+  esac
+}
+
 # The run summary's block for tasks waiting for a decision: one line each, the choices once.
 report_decisions() { # report_decisions <plan>
   local plan="$1" id waiting
