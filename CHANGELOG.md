@@ -5,6 +5,35 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and versions follow the format `{major}.{minor}[.{patch}]` ([...] parts appear only when non-zero).
 
+## [0.14] - 2026-11-02
+
+Infrastructure stops now carry a cause and recover on their own where they can, moving sideways to a model of the same tier; forge watch, forge pr and forge runs rerun/compare follow, describe and compare runs; and a run now pays for the full test suite once, after the merge, instead of on every attempt.
+
+### Highlights
+
+- `forge watch` follows runs from the terminal: it prints each task status change and, when a run finishes or fails, a task fails or a final review gives its verdict, raises a desktop notification (`notify-send` or `osascript`; on a headless machine or in CI it says there is none and only prints). `--exec CMD` and an untracked, executable `.forge/on-finish` in the repo run on those events with `FORGE_WATCH_EVENT`, `FORGE_WATCH_RUN_ID` and `FORGE_WATCH_VERDICT` in their environment. It is read-only and uses the same run reader as forge-ui.
+- `forge pr` writes a draft pull-request description for a finished run: the goal, the tasks and their status, who implemented and reviewed them, the verification and final-review results, the open findings and the integration branch. Private text (the request, prompts, deferrals, local paths) is left out unless you ask with `--texts` or `--paths`, as in the export. `forge pr --create` opens it with `gh pr create --draft`; without `--create` it only prints, and it never pushes.
+- `forge runs rerun <run-dir> --dwarf SPEC` sets the same plan up again with another implementer, starting from the commit the original run started from, and `forge runs compare <run-dir-A> <run-dir-B>` sets two runs side by side per task (status, attempts, tokens, time, diff size) and records the pair in the dataset. A rerun spends nothing until you pass `--run --yes` after reading the token warning and forecast it prints, and it never merges anything.
+- Infrastructure stops now carry a cause (capacity, rate limit, usage limit, budget, login, network, provider down, an empty reply or a cancelled call), and each recovers its own way. When another model of the same tier can take the work, the task, or its review, moves there sideways at once, without spending an attempt or counting as an escalation; a limit that resets is waited out; and a stop only a person can clear, such as spent credits or an expired login, is marked "needs you" in the run summary, `forge control show` and forge-ui. Sideways moves are on for new plans; `plan --no-infra-fallback` turns them off (#81).
+- A failed verification no longer reruns the whole suite to confirm a real failure: with `.forge/verify-subset`, forge first reruns only the failing test files, and runs everything again only if they pass. A `retry` that leaves tasks still to run skips its verification, since the next `run` or `integrate` verifies the branch (#112).
+- When a run has a verification command, implementers no longer run the whole test suite on every attempt, even if a task's acceptance criteria ask for it: forge runs the suite after the merge. `plan` also names tasks whose acceptance criteria ask for the whole suite (#111).
+
+### Added
+
+- A task whose reviews keep failing with new findings now stops as `NEEDS_DECISION` and waits for you instead of retrying: `retry --decide retry=N` or `threshold=Pn`, `retry --dwarf <spec>`, `accept`, or a split in `tasks.tsv`. A task that reaches its cap on attempts across runs stops the same way (`plan --max-attempts N`, default 8; raised only with `forge control set max-attempts N --confirm`), and `plan --converge-window N` sets how many reviews the signal looks at (#69).
+- forge-ui shows why a task stopped on infrastructure and whether it needs you, the sideways moves, each task's findings ledger, and a decision panel for tasks waiting for your decision (#81, #69).
+
+### Changed
+
+- A command group typed on its own, such as `forge control` or `forge dataset`, now prints that group's help with its subcommands, the same as `forge control --help`, instead of a one-line "the following arguments are required" error. It still exits 2, like a bare `forge`.
+- `forge fractal --help` and `forge config --help` (and a bare `forge fractal` or `forge config`) give each subcommand a one-line description, as `forge decide`, `forge dataset`, `forge ui` and `forge control` already did, instead of only listing the names.
+- Task reviews now ask the reviewer to report every confirmed finding in one pass, and to say plainly when the change is correct (#69).
+
+### Fixed
+
+- `--gate` and `--decide-budget` take a `*` or `?` in their value as typed: it is no longer matched against file names in the current directory, so `--gate 'drift=*'` next to a file named `drift=on` is refused and named as given instead of quietly becoming `drift=on` (#82).
+- A decision-model request made from inside a repo, with no `--repo` and no `FORGE_DECIDE_REPO`, now records in `jev.jsonl` and the run dataset the gate mode it was actually sent under, the one that repo's `.forge/decide.json` sets, instead of the mode resolved with no repo at all (#82).
+
 ## [0.13.1] - 2026-10-30
 
 Runs started from a git worktree now sit under their repository in forge-ui, showing the worktree and branch they started in. Also exact decision-model spend caps, and the right gate on each exported review.
