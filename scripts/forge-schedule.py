@@ -625,7 +625,7 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
     pauses = {}        # scope -> its pause, for model: and harness: scopes; `all` is the above
     scope_waits = {}   # scope -> waits it already completed this run
     pairs_cache = {}   # task -> (harness, model) pairs its next dispatch uses
-    held_tries = {}    # task -> the paused scopes its last sideways move before dispatch was tried with
+    held_tries = {}    # task -> the paused scopes and its pairs when a sideways move before dispatch was last tried
     registry = load_registry()
     paused_text = None # what infra.paused holds now
     backoff_warned = [] # an invalid infra_backoff file is reported once
@@ -786,14 +786,15 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
     def move_held(name: str) -> bool:
         """A pending task a pause holds back moves sideways before its dispatch, as a stopped one does: the
         implementer to the next healthy model of its tier, or, when only its reviewer is held, the reviewer
-        to a peer. Tried once for each set of pauses. True when the task moved."""
+        to a peer. Tried once for each set of pauses and models: a move changes the models, so a task with
+        both on the paused harness moves its implementer, then its reviewer. True when the task moved."""
         if interrupted or graceful or fractal or _read_small(plan, 'infra_fallback') != 'on':
             return False
-        seen = frozenset(pauses)
+        pairs = next_pairs(name)
+        seen = (frozenset(pauses), tuple(pairs))
         if held_tries.get(name) == seen:
             return False
         held_tries[name] = seen
-        pairs = next_pairs(name)
         holding = [pause for pause in pauses.values() if holds(pause, pairs)]
         moves = [pause for pause in holding if forge_infra.entry(pause['class'])['move'] in ('lateral', 'retry')]
         if not holding or len(moves) < len(holding):
@@ -1336,8 +1337,13 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
                     continue
                 if any(overlap(tasks[name][3], tasks[other][3]) for other in active):
                     continue
-                if pauses and scope_held(name) and not (move_held(name) and not scope_held(name)):
-                    continue
+                if pauses and scope_held(name):
+                    # Each move changes the models it is held on: the implementer, then the reviewer, in one pass,
+                    # before the loop below can end the run on a task only half moved.
+                    while move_held(name) and scope_held(name):
+                        pass
+                    if scope_held(name):
+                        continue
                 root = plan / 'tasks' / name
                 if not (root / 'base_ref').exists():
                     worktree = Path((plan / 'wt_root').read_text().strip()) / '_integration'

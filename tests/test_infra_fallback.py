@@ -286,7 +286,7 @@ class RunTests(unittest.TestCase):
         f = p / 'tasks/a/lateral.tsv'
         return [line.split('\t')[2:] for line in f.read_text().splitlines()] if f.exists() else []
 
-    def two_tasks(self, qa_b='opus'):
+    def two_tasks(self, qa_b='opus', *extra):
         """a on sol and b on astra (both codex), one at a time, so b is still pending when a stops."""
         p = self.root / 'plan'; p.mkdir()
         (p / 'tasks.tsv').write_text(f'a\t-\tmedium\ta.txt\tsol\topus\tA\nb\t-\tmedium\tb.txt\tastra\t{qa_b}\tB\n')
@@ -294,7 +294,7 @@ class RunTests(unittest.TestCase):
             (p / 'tasks' / name).mkdir(parents=True)
             (p / 'tasks' / name / 'prompt.md').write_text('Implement change. REQUIREMENT_SENTINEL TASK_' + name)
         r = self.run_script('forge-parallel.sh', 'plan', p, '--repo', self.repo, '--no-memory', '--explore', '0',
-                            '--dwarf-medium', 'sol,astra,sonnet')
+                            '--dwarf-medium', 'sol,astra,sonnet', *extra)
         self.assertEqual(r.returncode, 0, r.stdout)
         self.scenario({'a.dwarf.1': CODEX_BUDGET})
         return p
@@ -311,6 +311,17 @@ class RunTests(unittest.TestCase):
         moved = (p / 'tasks/b/lateral.tsv').read_text().split('\t')[2:]
         self.assertEqual([c.strip() for c in moved], ['dwarf', 'astra', 'sonnet', 'budget'])
         self.assertIn('MERGED', (p / 'results.tsv').read_text().split('b\t')[1].split('\n')[0])
+
+    def test_a_held_task_moves_its_implementer_then_its_reviewer(self):
+        # Round 2 of the final review: one try per set of pauses moved b's implementer, and its reviewer (also on
+        # codex) never moved although the reviewer pool had a peer, so b stayed held and the run exited 8.
+        p = self.two_tasks('terra', '--qa-medium', 'terra,opus')
+        r = self.run_plan(p, '--max-parallel', '1', '--infra-retries', '1')
+        self.assertEqual(r.returncode, 0, r.stdout)
+        row = [line.split('\t') for line in (p / 'tasks.tsv').read_text().splitlines() if line.startswith('b\t')][0]
+        self.assertEqual((row[4], row[5]), ('sonnet', 'opus'))
+        roles = [line.split('\t')[2] for line in (p / 'tasks/b/lateral.tsv').read_text().splitlines()]
+        self.assertEqual(roles, ['dwarf', 'qa'])
 
     def test_a_task_held_without_a_peer_is_named_in_the_summary_with_who_must_act(self):
         # b's reviewer is on codex too, and the plan has no reviewer pools: b stays held, and the summary says so.
