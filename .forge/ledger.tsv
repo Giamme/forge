@@ -539,3 +539,72 @@
 2026-10-30T16:27:19Z	patch-plan	worktree-label	dwarf	haiku:high	-	verify	cd ui tests pythonpath uv run quiet with playwright python3 m unittest test browser	cd ui/tests && PYTHONPATH=.. uv run --quiet --with playwright python3 -m unittest test_browser [ui/tests/test_browser.py]	334	1
 2026-10-30T16:27:41Z	patch-plan	worktree-label	qa	gpt-6.1-terra:high:codex	PASS	-	-	-	16
 2026-10-30T16:28:14Z	patch-plan	sweep-1	dwarf	haiku:high	-	trap	the settings run picker is a native select id set run so each option is plain text and cannot carry a secondary element	the settings run picker is a native `<select id="set-run">`, so each option is plain text and cannot carry a secondary element [ui/forge_ui/static/settings.js]	29	1
+2026-10-31T10:49:37Z	run1-plan	ui-reader	dwarf	haiku:xhigh	-	-	-	-	1029
+2026-10-31T10:51:33Z	run1-plan	ui-reader	qa	sol:medium	FAIL	-	-	-	83
+2026-10-31T10:57:28Z	run1-plan	ui-reader	dwarf	haiku:xhigh	-	-	-	-	326
+2026-10-31T10:58:40Z	run1-plan	ui-reader	qa	sol:medium	PASS	-	-	-	45
+2026-10-31T11:45:04Z	run1-plan	infra-causes	dwarf	haiku:xhigh	-	trap	the claude ai usage limit reached fixtures decide the infra class asserted by real runs so renaming a class breaks tests in test forge py test infra py	the "Claude AI usage limit reached" fixtures decide the infra class asserted by real runs, so renaming a class breaks tests in test_forge.py, test_infra.py,… [tests/test_forge.py]	4355	1
+2026-10-31T11:52:11Z	run1-plan	infra-causes	qa	sol:medium	FAIL	-	-	-	358
+2026-10-31T12:23:55Z	run1-plan	ui-infra-views	dwarf	haiku:xhigh	-	verify	cd ui python3 m unittest discover s tests	cd ui && python3 -m unittest discover -s tests	5082	0
+2026-10-31T12:23:55Z	run1-plan	ui-infra-views	dwarf	haiku:xhigh	-	trap	on head the cloud finding mark status change orbit and 3d stage browser tests error in this sandbox so a red test browser run is not caused by ui changes	on HEAD the Cloud, finding-mark, status-change, orbit and 3D-stage browser tests error in this sandbox, so a red test_browser run is not caused by ui changes	5082	0
+2026-10-31T12:28:07Z	run1-plan	ui-infra-views	qa	sol:medium	PASS	-	-	-	159
+2026-10-31T12:41:14Z	run1-plan	findings-ledger	dwarf	haiku:xhigh	-	trap	a qa dir records no attempt number and changes diff is rewritten per attempt so an old review s diff is not recoverable from its task dir	a qa dir records no attempt number, and changes.diff is rewritten per attempt, so an old review's diff is not recoverable from its task dir [scripts/forge-runtime.py]	7727	1
+2026-10-31T12:43:24Z	run1-plan	findings-ledger	qa	sol:medium	FAIL	-	-	-	94
+2026-10-31T12:44:08Z	run1-plan	ui-decision-status	dwarf	grok:high	-	-	-	-	914
+2026-10-31T12:59:48Z	run1-plan	infra-causes	dwarf	haiku:xhigh	-	-	-	-	4030
+2026-10-31T12:59:57Z	run1-plan	ui-decision-status	qa	gpt-6.1-terra:high:codex	PASS	-	-	-	929
+2026-10-31T14:20:55Z	run1-plan	findings-ledger	dwarf	haiku:xhigh	-	trap	forge contract py s location has no space in its path class so a location in a directory with a space only matches the last part of the path	forge-contract.py's `_LOCATION` has no space in its path class, so a location in a directory with a space only matches the last part of the path [scripts/forge-contract.py]	1134	1
+2026-10-31T14:21:51Z	run1-plan	findings-ledger	qa	sol:medium	FAIL	-	-	-	49
+2026-10-31T14:23:29Z	run1-plan	ui-decision-panel	dwarf	haiku:xhigh	-	trap	test static js py imports forge ui at test time so run it with pythonpath ui without it it fails with modulenotfounderror forge ui	test_static_js.py imports forge_ui at test time, so run it with PYTHONPATH=ui; without it, it fails with ModuleNotFoundError: forge_ui [ui/tests/test_static_js.py]	1287	1
+2026-10-31T14:23:29Z	run1-plan	ui-decision-panel	dwarf	haiku:xhigh	-	trap	test orbiting asks for one frame at a time waits 30 s for a steady camera and times out intermittently regardless of panel changes	test_orbiting_asks_for_one_frame_at_a_time waits 30 s for a steady camera and times out intermittently, regardless of panel changes [ui/tests/test_browser.py]	1287	1
+2026-10-31T14:24:23Z	run1-plan	ui-decision-panel	qa	sol:medium	FAIL	-	-	-	48
+2026-10-31T14:36:53Z	run1-plan	ui-decision-panel	dwarf	haiku:xhigh	-	-	-	-	745
+2026-10-31T14:37:46Z	run1-plan	ui-decision-panel	qa	sol:medium	PASS	-	-	-	43
+2026-10-31T14:41:03Z	run1-plan	findings-ledger	dwarf	haiku:xhigh	-	-	-	-	1146
+2026-10-31T14:41:52Z	run1-plan	findings-ledger	qa	sol:medium	PASS	-	-	-	44
+2026-10-31T15:30:15Z	run1-plan	infra-causes	qa	sol:medium	PASS	-	-	-	64
+2026-10-31T15:51:04Z	run1-plan	review-wording	dwarf	grok:high	-	-	-	-	158
+2026-10-31T15:51:39Z	run1-plan	review-wording	qa	gpt-6.1-terra:high:codex	PASS	-	-	-	19
+2026-10-31T16:17:26Z	run1-plan	infra-recovery	dwarf	sonnet:high	-	-	-	-	1751
+2026-10-31T16:20:46Z	run1-plan	infra-recovery	qa	sol:high	FAIL	-	-	-	193
+2026-10-31T16:32:06Z	run1-plan	infra-recovery	dwarf	sonnet:high	-	trap	in scheduler fake worker tests a task whose qa spec is on the paused harness stays held by that pause give such tasks a qa on another harness	in scheduler fake-worker tests, a task whose QA spec is on the paused harness stays held by that pause; give such tasks a QA on another harness [tests/test_infra_recovery.py]	676	1
+2026-10-31T16:36:58Z	run1-plan	infra-recovery	qa	sol:high	FAIL	-	-	-	286
+2026-10-31T16:40:41Z	run1-plan	infra-recovery	dwarf	sonnet:high	-	-	-	-	219
+2026-10-31T16:43:37Z	run1-plan	infra-recovery	qa	sol:high	FAIL	-	-	-	171
+2026-11-01T18:17:36Z	run1-plan	infra-recovery	dwarf	opus:high	-	-	-	-	1721
+2026-11-01T18:21:16Z	run1-plan	infra-recovery	qa	sol:high	FAIL	-	-	-	207
+2026-11-01T19:01:32Z	run1-plan	infra-recovery	dwarf	opus:high	-	trap	tests test escalation pin py s stub forge route py counts every subcommand except record as a policy call so a new route call from	tests/test_escalation_pin.py's stub forge-route.py counts every subcommand except `record` as a policy call, so a new route call from… [tests/test_escalation_pin.py]	1298	0
+2026-11-01T19:04:53Z	run1-plan	infra-recovery	qa	sol:high	FAIL	-	-	-	193
+2026-11-01T20:00:48Z	run1-plan	lateral-records	dwarf	haiku:xhigh	-	trap	test infra recovery lateraltests races under full suite load live returns on the first non empty infra paused snapshot before fall back	`test_infra_recovery.LateralTests` races under full-suite load: `live()` returns on the first non-empty `infra.paused` snapshot, before `fall_back`… [tests/test_infra_recovery.py]	2216	1
+2026-11-01T20:05:46Z	run1-plan	lateral-records	qa	sol:medium	FAIL	-	-	-	291
+2026-11-01T22:44:44Z	run1-plan	lateral-records	dwarf	haiku:xhigh	-	-	-	-	753
+2026-11-01T22:47:45Z	run1-plan	lateral-records	qa	sol:medium	FAIL	-	-	-	176
+2026-11-01T23:29:31Z	run1-plan	lateral-records	dwarf	haiku:xhigh	-	-	-	-	1357
+2026-11-01T23:31:57Z	run1-plan	lateral-records	qa	sol:medium	PASS	-	-	-	141
+2026-11-02T08:58:04Z	run1-plan	qa-lateral	dwarf	sonnet:high	-	-	-	-	1324
+2026-11-02T09:03:13Z	run1-plan	qa-lateral	qa	sol:high	FAIL	-	-	-	303
+2026-11-02T09:08:54Z	run1-plan	qa-lateral	dwarf	sonnet:high	-	-	-	-	337
+2026-11-02T09:13:40Z	run1-plan	qa-lateral	qa	sol:high	FAIL	-	-	-	281
+2026-11-02T09:16:22Z	run1-plan	qa-lateral	dwarf	sonnet:high	-	trap	the bundled gemini alias in registry tsv lists different models per harness flash on antigravity pro on opencode so never compare models by alias	the bundled `gemini` alias in registry.tsv lists different models per harness (Flash on antigravity, Pro on opencode), so never compare models by alias [registry.tsv]	158	1
+2026-11-02T09:20:55Z	run1-plan	qa-lateral	qa	sol:high	PASS	-	-	-	266
+2026-11-02T10:08:25Z	run1-plan	infra-visible	dwarf	haiku:xhigh	-	trap	infra paused is removed when a scheduler exits live stop so a summary printed after the run finds no scope pauses	infra.paused is removed when a scheduler exits (live_stop), so a summary printed after the run finds no scope pauses [scripts/forge-schedule.py]	2845	1
+2026-11-02T10:11:12Z	run1-plan	infra-visible	qa	sol:medium	PASS	-	-	-	161
+2026-11-02T10:42:49Z	run1-plan	needs-decision	dwarf	sonnet:high	-	-	-	-	1891
+2026-11-02T10:47:42Z	run1-plan	needs-decision	qa	sol:high	FAIL	-	-	-	287
+2026-11-02T10:57:57Z	run1-plan	needs-decision	dwarf	sonnet:high	-	-	-	-	610
+2026-11-02T11:02:09Z	run1-plan	needs-decision	qa	sol:high	FAIL	-	-	-	247
+2026-11-02T11:10:34Z	run1-plan	needs-decision	dwarf	sonnet:high	-	trap	in a bash worker script pattern trims each positional argument separately copy into a variable first	in a bash worker script, `${*#pattern}` trims each positional argument separately; copy `"$*"` into a variable first [tests/test_control_requests.py]	499	0
+2026-11-02T11:15:09Z	run1-plan	needs-decision	qa	sol:high	PASS	-	-	-	269
+2026-11-02T12:11:46Z	run1-plan	attempt-cap	dwarf	haiku:xhigh	-	trap	tests test control py asserts the exact show json run and task dicts so new keys there fail it add text only output instead	tests/test_control.py asserts the exact `show --json` run and task dicts, so new keys there fail it; add text-only output instead [tests/test_control.py]	3391	1
+2026-11-02T12:16:35Z	run1-plan	attempt-cap	qa	sol:medium	FAIL	-	-	-	284
+2026-11-02T12:55:04Z	run1-plan	attempt-cap	dwarf	haiku:xhigh	-	-	-	-	2304
+2026-11-02T12:59:25Z	run1-plan	attempt-cap	qa	sol:medium	FAIL	-	-	-	255
+2026-11-02T13:29:06Z	run1-plan	attempt-cap	dwarf	haiku:xhigh	-	trap	forge parallel sh retry accepts decide retry 002 up to three digits but the decision regexes in forge control py and forge schedule py	`forge-parallel.sh retry` accepts `--decide retry=002` (up to three digits), but the `DECISION` regexes in `forge-control.py` and `forge-schedule.py`… [scripts/forge-control.py]	1777	1
+2026-11-02T13:33:12Z	run1-plan	attempt-cap	qa	sol:medium	FAIL	-	-	-	240
+2026-11-02T13:59:19Z	run1-plan	attempt-cap	dwarf	sonnet:high	-	-	-	-	342
+2026-11-02T14:03:39Z	run1-plan	attempt-cap	qa	sol:medium	PASS	-	-	-	254
+2026-11-02T14:58:42Z	run1-plan	run1-docs	dwarf	grok:high	-	-	-	-	1243
+2026-11-02T14:59:28Z	run1-plan	run1-docs	qa	gpt-6.1-terra:high:codex	FAIL	-	-	-	41
+2026-11-02T15:08:25Z	run1-plan	run1-docs	dwarf	grok:high	-	trap	forge control add queues a row already in tasks tsv 7 columns non empty prompt md and needs a live scheduler it does not drop or replace a	`forge control add` queues a row already in `tasks.tsv` (7 columns, non-empty `prompt.md`) and needs a live scheduler; it does not drop or replace a… [scripts/forge-control.py]	532	1
+2026-11-02T15:08:58Z	run1-plan	run1-docs	qa	gpt-6.1-terra:high:codex	PASS	-	-	-	26
+2026-11-02T15:14:02Z	run1-plan	run1-docs	qa	gpt-6.1-terra:high:codex	PASS	-	-	-	19
