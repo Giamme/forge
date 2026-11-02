@@ -461,8 +461,13 @@ def stop_harnesses(plan: object, names: object) -> None:
 # is left after it withdraws liveness, under the same lock, so no request outlives its run.
 REQUESTS = 'control.requests'
 REQUEST_MAX = 64 * 1024
+# What `forge control retry --decide` may carry: retry=N (1 to 20) or threshold=Pn.
+DECISION = re.compile(r'retry=(?:[1-9]|1[0-9]|20)|threshold=P[0-3]')
 # NEEDS_INPUT is in neither: a task stopped for the user's answer resumes only through
-# `retry <plan> <id> --answer`, whose preparation refuses without one.
+# `retry <plan> <id> --answer`, whose preparation refuses without one. Nor is NEEDS_DECISION (#69):
+# a task whose reviews do not converge, or that the retry policy cannot move to a stronger model,
+# resumes only through a person's `retry --decide` (or `--dwarf`) with a reason and --approved.
+# No budget, pin or sweep reaches it, because every automatic path asks for a status in AUTO_RETRY.
 RETRYABLE = ('FAIL', 'UNKNOWN', 'TIMEOUT', 'ERROR', 'INTERRUPTED', 'BLOCKED', 'INVALIDATED')
 # What --retry-failed retries on its own. INVALIDATED only for a review voided while the committed
 # work stayed as it was (tasks/<id>/invalidated.reason is `review`): that retry is a fresh review.
@@ -482,6 +487,15 @@ def list_requests(plan: object) -> list:
         return []
 
 
+def decision_head(plan: object, name: str) -> str:
+    """The first lines of a NEEDS_DECISION task's decision.md, on one line."""
+    try:
+        lines = (Path(plan) / 'tasks' / name / 'decision.md').read_text().splitlines()
+    except OSError:
+        return 'see decision.md'
+    return ' '.join(line.strip() for line in lines[:3] if line.strip())[:300]
+
+
 def read_request(plan: object, name: str) -> dict | None:
     try:
         fd = os.open(_resolve(plan, REQUESTS, name), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
@@ -499,6 +513,13 @@ def read_request(plan: object, name: str) -> dict | None:
         return None
     if dwarf is not None and (not isinstance(dwarf, str) or not dwarf or dwarf.startswith('-')
                               or any(c.isspace() or c == ',' for c in dwarf)):
+        return None
+    decide, reason = request.get('decide'), request.get('reason')
+    if decide is not None and (not isinstance(decide, str) or not DECISION.fullmatch(decide)):
+        return None
+    if reason is not None and (not isinstance(reason, str) or len(reason) > 2000):
+        return None
+    if not isinstance(request.get('approved', False), bool):
         return None
     return request
 
@@ -973,9 +994,24 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
         if state == 'NEEDS_INPUT':
             return 'refused', (name + ' is waiting for an answer: forge-parallel.sh retry ' + str(plan)
                                + ' ' + name + ' --answer \u2026')
-        if state not in RETRYABLE:
+        decide, reason, approved = request.get('decide'), request.get('reason'), request.get('approved') is True
+        if decide and state != 'NEEDS_DECISION':
+            return 'refused', name + ' is ' + state + ', not waiting for a decision; --decide only decides a NEEDS_DECISION task'
+        decision = []
+        if state == 'NEEDS_DECISION':
+            # Only a person's explicit decision resumes it: a choice, a reason, and --approved.
+            if not decide and not dwarf:
+                return 'refused', (name + ' is waiting for your decision, and only a decision resumes it: '
+                                   + decision_head(plan, name) + ' (retry --decide retry=N | threshold=Pn, or --dwarf SPEC,'
+                                   + ' with --reason and --approved)')
+            if decide and dwarf:
+                return 'refused', 'give --decide or --dwarf, not both: a decision is one choice'
+            if not (reason or '').strip() or not approved:
+                return 'refused', name + ' is waiting for your decision: a decision needs --reason and --approved'
+            decision = (['--decide', decide] if decide else []) + ['--reason', reason, '--approved']
+        elif state not in RETRYABLE:
             return 'refused', 'a ' + state + ' task is not retried'
-        command = ['/bin/bash', script, '_prepare_retry', str(plan), name] + (['--dwarf', dwarf] if dwarf else [])
+        command = ['/bin/bash', script, '_prepare_retry', str(plan), name] + (['--dwarf', dwarf] if dwarf else []) + decision
         rc = subprocess.run(command).returncode
         if rc == 3:
             try:

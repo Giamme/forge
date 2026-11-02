@@ -96,7 +96,7 @@ TIERS = ('low', 'medium', 'high')
 SCRIPTS = Path(__file__).resolve().parent
 REGISTRY = SCRIPTS.parent / 'registry.tsv'
 FAILED = ('FAIL', 'TIMEOUT', 'BOUNCED', 'INCOMPLETE')   # a judgment against the spec that ran
-NEUTRAL = ('INFRA', 'UNKNOWN', 'ERROR', 'RUNNING', 'INTERRUPTED', 'NEEDS_INPUT')   # say nothing about it
+NEUTRAL = ('INFRA', 'UNKNOWN', 'ERROR', 'RUNNING', 'INTERRUPTED', 'NEEDS_INPUT', 'NEEDS_DECISION')   # say nothing about it
 DEFAULT_ESCALATE_AFTER = 3
 DEFAULT_EFFORT = 'medium'                         # forge-dispatch.sh dwarf default
 LOCK_WAIT = 5.0                                    # seconds to wait for P/control.lock
@@ -595,6 +595,17 @@ def attempt_rows(tdir: Path) -> list:
     return rows
 
 
+def decided_attempt(tdir: Path) -> int:
+    """The attempt number of the latest row of tasks/<id>/decisions.tsv (epoch, attempt, choice, reason);
+    0 when the task has no decision. The attempts counted against a model start after it."""
+    try:
+        lines = (tdir / 'decisions.tsv').read_text().splitlines()
+    except OSError:
+        return 0
+    return max([int(cells[1]) for cells in (line.split('\t') for line in lines)
+                if len(cells) > 1 and cells[1].isdigit()] or [0])
+
+
 def lateral_rows(tdir: Path) -> list:
     """(attempt, from, to) of each dwarf move in tasks/<id>/lateral.tsv, oldest first."""
     rows = []
@@ -766,7 +777,10 @@ def _decide(plan: Path, tdir: Path, args, after: int):
         return (), (), '', 0
     registry = registry_models()
     step = _effort_step(plan)
-    streak = failed_streak(attempt_rows(tdir), current, registry, by_effort=step, laterals=lateral_rows(tdir))
+    # A person's decision (decisions.tsv) restarts the count: only attempts after it can fail the model.
+    decided = decided_attempt(tdir)
+    rows = [row for row in attempt_rows(tdir) if row[0] > decided]
+    streak = failed_streak(rows, current, registry, by_effort=step, laterals=lateral_rows(tdir))
     if streak < after:
         return MARKERS, (), '', 0
     target, why = stronger(current, load_pools(plan / 'fractal-routing.json'), registry)
