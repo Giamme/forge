@@ -33,6 +33,9 @@
 #   --verify-retries N      run retry integrate  $PLAN/verify_retries  reruns of a failed verify command
 #   --escalate-after N      run retry         $PLAN/escalate_after failed attempts on one model before the
 #                                                                  next goes a tier up (default 3; 0 = off)
+#   --max-attempts N        plan              $PLAN/max_attempts   attempts a task may spend across runs before it
+#                                                                  waits for a person (default 8; 0 = no cap). Raised
+#                                                                  later only with `forge control set max-attempts --confirm`
 #   --escalate-effort       run retry         $PLAN/escalate_effort  on: before the stop, retry the same
 #                                                                  model at the next effort its pairing accepts;
 #                                                                  tasks already stopped are decided again
@@ -125,6 +128,10 @@ forge_pp_flag() {
       if [ "$2" = 0 ]; then
         rm -f "$plan"/tasks/*/escalation.stop "$plan"/tasks/*/split.suggested "$plan"/tasks/*/escalation.next
       fi ;;
+    --max-attempts)
+      case "$cmd" in plan) ;; *) return 1 ;; esac
+      pp_nonneg --max-attempts "${2:-}"
+      printf '%s\n' "$2" > "$plan/max_attempts" || die "could not write $plan/max_attempts" ;;
     --escalate-effort)
       case "$cmd" in run|retry) ;; *) return 1 ;; esac
       PP_SHIFT=1                                  # a switch, not --escalate-after's N

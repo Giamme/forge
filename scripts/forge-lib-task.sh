@@ -381,15 +381,46 @@ decision_reason_text() { # decision_reason_text <reason>: what a reason in decis
   case "$1" in
     converging) echo "the last reviews failed one after another, most of their findings were new, and the worst severity did not improve: more attempts keep finding new problems instead of closing the old ones" ;;
     split) echo "the retry policy found no stronger model to escalate to after repeated failures on one: another attempt on the same model rarely passes" ;;
+    cap) echo "the attempts spent across runs reach the task's cap (max_attempts, plus each retry=N a person granted): another attempt needs a person's retry=N" ;;
     *) echo "$1" ;;
   esac
+}
+
+# The attempt cap (#69): "<used> <cap>" from forge-route.py attempt-cap, cap - for no cap. Attempts used
+# are the attempts.tsv attempts that were not infrastructure stops; the cap is max_attempts plus every retry=N.
+attempt_cap_of() { # attempt_cap_of <plan> <id>
+  python3 "$SKILL_DIR/scripts/forge-route.py" attempt-cap --plan "$1" --task "$2"
+}
+
+# A task at its attempt cap runs no attempt until a person raises the cap with --decide retry=N, and that
+# N must reach past it: any other decision waits, as does a plain retry. A task not yet waiting for a
+# decision is stopped for one (`cap`), so no scheduler pass, budget or pin dispatches it.
+attempt_cap_gate() { # attempt_cap_gate <plan> <id> <status> <decide>; 0 may run, 1 refused or stopped
+  local PLAN="$1" id="$2" st="$3" decide="$4" used cap n=0
+  read -r used cap <<< "$(attempt_cap_of "$PLAN" "$id")"
+  if [ "$cap" = - ] || [ "$used" -lt "$cap" ]; then return 0; fi
+  case "$decide" in retry=*) n="${decide#retry=}" ;; esac
+  # retry=N grants exactly N attempts when the spent attempts are the cap; past it, a smaller N would grant fewer.
+  if [ "$n" -gt 0 ] && [ "$used" -eq "$cap" ]; then return 0; fi
+  # A question waiting for its answer is not stopped: the answer is kept, and only the plan's cap can let it run.
+  if [ "$st" != NEEDS_DECISION ] && [ "$st" != NEEDS_INPUT ]; then
+    stop_for_decision "$PLAN" "$id" cap || return 1
+  fi
+  if [ "$n" -gt 0 ]; then
+    note "$id: retry=$n would not grant $n attempts: $used attempts are used against a cap of $cap; retry=$(( used - cap + n )) grants $n"
+  elif [ "$st" = NEEDS_INPUT ]; then
+    note "$id: at its attempt cap (attempts $used of $cap), so its answer would start attempt $(( used + 1 )): raise the plan's cap first, forge control set max-attempts N --confirm"
+  else
+    note "$id: at its attempt cap (attempts $used of $cap): it runs again only on a decision: forge-parallel.sh retry $PLAN $id --decide retry=N --reason \"...\" --approved (or accept it); see $PLAN/tasks/$id/decision.md"
+  fi
+  return 1
 }
 
 # decision.md, then the status. Reasons are words (`converging`, `split`); the first line of
 # the file lists them. The status is the last thing written, so a task never reads as
 # NEEDS_DECISION without its decision.md.
 stop_for_decision() { # stop_for_decision <plan> <id> <reason>...
-  local PLAN="$1" id="$2" tdir="$1/tasks/$2" reasons="" r win decided summary="" tmp="$1/tasks/$2/.decision.md.tmp"
+  local PLAN="$1" id="$2" tdir="$1/tasks/$2" reasons="" r win decided summary="" used cap tmp="$1/tasks/$2/.decision.md.tmp"
   shift 2
   for r in "$@"; do reasons="${reasons:+$reasons, }$r"; done
   [ -n "$reasons" ] || return 0
@@ -419,10 +450,14 @@ stop_for_decision() { # stop_for_decision <plan> <id> <reason>...
                     { v = $4; if ($5 == "fail") v = v " (gate)"; printf "  %-8s %-14s %-10s %-4s %s\n", $2, v, $7, $8, $6 }'
     fi
     echo
-    echo "Attempts used so far: $(cat "$tdir/attempt" 2>/dev/null || echo 0)"
+    read -r used cap <<< "$(attempt_cap_of "$PLAN" "$id")"
+    if [ "$cap" = - ]; then echo "Attempts used so far: $used (no cap)"; else echo "Attempts used so far: $used (attempts $used of $cap)"; fi
     echo
     echo "Choices (each needs your reason; --approved says the decision is yours):"
     echo "  N more attempts:        forge-parallel.sh retry $PLAN $id --decide retry=N --reason \"...\" --approved"
+    case ",${reasons// /}," in
+      *,cap,*) echo "                          (this raises the cap by N; at the cap, only this choice runs it again)" ;;
+    esac
     echo "  lower the threshold:    forge-parallel.sh retry $PLAN $id --decide threshold=P1 --reason \"...\" --approved"
     echo "                          (this task's blocking threshold, then one retry)"
     echo "  a named model:          forge-parallel.sh retry $PLAN $id --dwarf <spec> --reason \"...\" --approved"
@@ -441,13 +476,15 @@ stop_for_decision() { # stop_for_decision <plan> <id> <reason>...
 # check's exit). attempts.tsv was written before this and keeps FAIL for the attempt. A later
 # reason (an attempt cap) is one more line here.
 decision_after_attempt() { # decision_after_attempt <plan> <id> <stop-before> <check-rc>
-  local PLAN="$1" id="$2" before="${3:-}" crc="${4:-0}" tdir="$1/tasks/$2" reasons="" stop
+  local PLAN="$1" id="$2" before="${3:-}" crc="${4:-0}" tdir="$1/tasks/$2" reasons="" stop used cap
   python3 "$SKILL_DIR/scripts/forge-ledger.py" append "$PLAN" "$id" >/dev/null 2>&1 \
     || note "$id: could not add this review to the findings ledger"
   [ "$(task_status "$PLAN" "$id")" = FAIL ] || return 0
   if python3 "$SKILL_DIR/scripts/forge-ledger.py" signal "$tdir" >/dev/null 2>&1; then reasons="converging"; fi
   stop="$(cat "$tdir/escalation.stop" 2>/dev/null)"
   if [ -n "$stop" ] && { [ "$crc" = 3 ] || [ "$stop" != "$before" ]; }; then reasons="${reasons:+$reasons }split"; fi
+  read -r used cap <<< "$(attempt_cap_of "$PLAN" "$id")"
+  if [ "$cap" != - ] && [ "$used" -ge "$cap" ]; then reasons="${reasons:+$reasons }cap"; fi
   [ -z "$reasons" ] || stop_for_decision "$PLAN" "$id" $reasons || true
 }
 
@@ -538,12 +575,14 @@ decided_left_set() { # decided_left_set <task-dir> <n>
 
 # The run summary's block for tasks waiting for a decision: one line each, the choices once.
 report_decisions() { # report_decisions <plan>
-  local plan="$1" id waiting
+  local plan="$1" id waiting used cap
   waiting="$(awk -F'\t' '$2=="NEEDS_DECISION" {print $1}' "$plan/results.tsv" 2>/dev/null)"
   [ -n "$waiting" ] || return 0
   echo "waiting for your decision:"
   for id in $waiting; do
     printf '  %s: %s — %s\n' "$id" "$(sed -n '1s/^reasons: //p' "$plan/tasks/$id/decision.md" 2>/dev/null)" "$plan/tasks/$id/decision.md"
+    read -r used cap <<< "$(attempt_cap_of "$plan" "$id")"
+    printf '      attempts %s/%s\n' "$used" "$cap"
   done
   echo "decide with (each needs --reason \"...\" --approved; decision.md has the commands filled in):"
   echo "  forge-parallel.sh retry $plan <task-id> --decide retry=N | --decide threshold=Pn | --dwarf <spec>"
@@ -835,6 +874,8 @@ retry_for_scheduler() { # retry_for_scheduler <plan> <id> [--resume | --dwarf <s
   done
   st="$(task_status "$PLAN" "$id")"
   retry_decision_gate "$PLAN" "$id" "$st" "$decide" "$newdwarf" "$reason" "$approved"
+  # At its attempt cap (#69), a scheduler's or a control's retry is stopped for a decision, not dispatched.
+  attempt_cap_gate "$PLAN" "$id" "$st" "$decide" || return 4
   if [ "$st" = NEEDS_DECISION ]; then
     retry_decided "$PLAN" "$id" "$decide" "$newdwarf" "$reason" || return $?
   else

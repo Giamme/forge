@@ -693,7 +693,8 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
         )
 
     def requeue(name: str) -> bool:
-        """Prepare a retry exactly as `retry` does, then put the task at the queue head."""
+        """Prepare a retry exactly as `retry` does, then put the task at the queue head. A task at its
+        attempt cap (#69) is not prepared: _prepare_retry stops it for a decision instead."""
         result = subprocess.run(['/bin/bash', script, '_prepare_retry', str(plan), name])
         if result.returncode:
             refused[name] = budget(name)
@@ -1035,6 +1036,9 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
             except OSError:
                 why = ''
             return 'refused', why or 'the retry policy stopped this task: split it or name a --dwarf'
+        if rc and status(name) == 'NEEDS_DECISION':
+            # The attempt cap (#69) stopped it for a decision just now: say what it waits for.
+            return 'refused', name + ' is waiting for your decision: ' + decision_head(plan, name)
         if rc:
             return 'refused', 'the retry could not be prepared (exit ' + str(rc) + '; see the run output)'
         # A human's retry: no automatic budget is spent, and a stop marker the
