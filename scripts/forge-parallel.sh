@@ -1496,12 +1496,13 @@ do_retry() {
   # A refusal (the retry policy found no stronger model, or the escalation could not be
   # written) must stop here: past this point the status is cleared and a dwarf dispatched.
   local prc=0
-  local decided_choice=""
   if [ "$st" = NEEDS_DECISION ]; then
-    decided_choice="$DECIDE"
     retry_decided "$PLAN" "$id" "$DECIDE" "$NEWDWARF" "$REASON" || prc=$?
   else
     prepare_retry "$PLAN" "$id" "$NEWDWARF" || prc=$?
+    # A person's plain retry ends what an earlier decision allowed; resuming after an
+    # infrastructure stop is not a new choice, so the allowance carries over.
+    [ "$prc" != 0 ] || [ "$st" = INFRA ] || rm -f "${tdir:?}/decided.left"
   fi
   if [ "$prc" != 0 ]; then
     write_results "$PLAN"
@@ -1526,10 +1527,12 @@ do_retry() {
   # A decision of retry=N is N attempts in all: this one, then N-1 more while the reviews fail.
   # Any other decision is this one attempt. The same stops apply as to any retry: a task that
   # stopped for a decision again, an empty diff, or a policy that finds no stronger model.
-  local more; more="$(decided_attempts "$decided_choice")"; more=$(( more - 1 ))
+  # The count is decided.left, so it survives a run that ended before the attempts were used.
+  local more; more="$(decided_left "$tdir")"; more="${more:-0}"
   while [ "$more" -gt 0 ] && { [ "$st" = FAIL ] || [ "$st" = UNKNOWN ]; } && [ ! -e "$tdir/noretry" ]; do
     more=$(( more - 1 ))
     prepare_retry "$PLAN" "$id" || break
+    decided_left_set "$tdir" "$more" || break
     rm -f "$tdir/status"
     note "retrying $id (decided retry, $more more after this)"
     do_task "$PLAN" "$id"

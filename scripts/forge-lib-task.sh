@@ -430,6 +430,7 @@ stop_for_decision() { # stop_for_decision <plan> <id> <reason>...
     echo "                          (merges it; its findings become known issues)"
     echo "  split it:               forge control drain $PLAN, then forge control add $PLAN <id> for each smaller task"
   } > "$tmp" && mv "$tmp" "$tdir/decision.md" || { rm -f "${tmp:?}"; note "$id: could not write decision.md; the task stays FAIL"; return 1; }
+  rm -f "${tdir:?}/decided.left"
   echo NEEDS_DECISION > "$tdir/status"
   note "$id: stopped for your decision ($reasons) — see $tdir/decision.md"
 }
@@ -487,7 +488,7 @@ retry_decided() { # retry_decided <plan> <id> <decide> <new-dwarf> <reason>
   reason="$(printf '%s' "$reason" | tr '\n\r\t' '   ' | sed 's/^ *//; s/ *$//')"
   attempt="$(cat "$tdir/attempt" 2>/dev/null || echo 0)"
   rm -rf "${undo:?}"; mkdir "$undo" 2>/dev/null || { note "$id: could not record the decision; nothing was retried"; return 1; }
-  for f in decisions.tsv qa_threshold escalation.stop split.suggested escalation.next; do
+  for f in decisions.tsv qa_threshold escalation.stop split.suggested escalation.next decided.left; do
     if [ -f "$tdir/$f" ]; then cp -p "$tdir/$f" "$undo/$f"; else : > "$undo/$f.absent"; fi
   done
   if ! printf '%s\t%s\t%s\t%s\n' "$(date +%s)" "$attempt" "$choice" "$reason" >> "$tdir/decisions.tsv"; then
@@ -497,9 +498,10 @@ retry_decided() { # retry_decided <plan> <id> <decide> <new-dwarf> <reason>
     threshold=*) printf '%s\n' "${decide#threshold=}" > "$tdir/qa_threshold" || rc=1 ;;
   esac
   rm -f "${tdir:?}/escalation.stop" "${tdir:?}/split.suggested" "${tdir:?}/escalation.next"
+  [ "$rc" != 0 ] || decided_left_set "$tdir" $(( $(decided_attempts "$decide") - 1 )) || rc=$?
   [ "$rc" != 0 ] || prepare_retry "$PLAN" "$id" "$newdwarf" decided || rc=$?
   if [ "$rc" != 0 ]; then
-    for f in decisions.tsv qa_threshold escalation.stop split.suggested escalation.next; do
+    for f in decisions.tsv qa_threshold escalation.stop split.suggested escalation.next decided.left; do
       if [ -f "$undo/$f" ]; then cp -p "$undo/$f" "$tdir/$f"; else rm -f "${tdir:?}/${f:?}"; fi
     done
   else
@@ -517,6 +519,21 @@ decided_attempts() { # decided_attempts <decide>
     retry=[0-9]|retry=[0-9][0-9]) echo $(( 10#${1#retry=} )) ;;
     *) echo 1 ;;
   esac
+}
+
+# The automatic retries a decision still allows, in tasks/<id>/decided.left (a number, written
+# with the decision and counted down as each retry is prepared). It lives in a file because the
+# run that uses it may end first (a quota stop) and a later `run` or `retry` must still honour it.
+# Absent means no decision governs and the retry budget rules; 0 means the decided attempts are used.
+decided_left() { # decided_left <task-dir>: the number, or nothing
+  local v; v="$(tr -dc '0-9' < "$1/decided.left" 2>/dev/null | head -c 3)"
+  [ -n "$v" ] && echo $(( 10#$v ))
+  return 0
+}
+
+decided_left_set() { # decided_left_set <task-dir> <n>
+  printf '%s\n' "$2" > "$1/.decided.left.tmp" && mv "$1/.decided.left.tmp" "$1/decided.left" \
+    || { rm -f "${1:?}/.decided.left.tmp"; note "could not record the decided attempts left"; return 1; }
 }
 
 # The run summary's block for tasks waiting for a decision: one line each, the choices once.

@@ -288,14 +288,6 @@ def _remove(plan: object, *parts: str) -> None:
         _warn('could not remove ' + '/'.join(parts) + ': ' + str(error))
 
 
-def _decided_attempts(decide: object) -> int:
-    """How many attempts a decision grants in all: retry=N is N (1 to 20), any other choice one."""
-    text = str(decide or '')
-    if text.startswith('retry=') and text[6:].isdigit():
-        return min(max(int(text[6:]), 1), 20)
-    return 1
-
-
 def _read_budget(plan: object, *parts: str) -> int | None:
     """A non-negative integer from a control file; None when it is missing, empty, a
     symlink or anything else, so the caller falls through to its next source."""
@@ -636,7 +628,6 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
     backoff_warned = [] # an invalid infra_backoff file is reported once
     graceful = False   # `forge control stop`: start nothing more, end once running tasks are done
     human = set()      # tasks whose next dispatch is a `forge control retry` (dataset trigger human)
-    granted = {}       # task -> automatic retries left from a person's decision (it replaces the budget)
     fractal = _fractal_plan(plan)
     drain_told = False # the drained message was printed for this drain
     sweep_asked = False  # this invocation already asked for the finding sweep
@@ -677,14 +668,21 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
         except OSError:
             return False
 
+    def granted(name: str) -> int | None:
+        """Automatic retries left from a person's decision, which replaces the budget; None when no
+        decision governs. A file (decided.left), so a run that ended before they were used (a quota
+        stop) hands them to the next one."""
+        return _read_budget(plan, 'tasks', name, 'decided.left')
+
     def retryable(name: str) -> bool:
         root = plan / 'tasks' / name
+        left = granted(name)
         return (
             status(name) in AUTO_RETRY
             and (status(name) != 'INVALIDATED' or review_voided(name))
             # After a decision the person's count rules, over and under the budget: `retry=3`
             # is three attempts even with a budget of 0, and `retry=1` is one even with 3.
-            and (granted[name] > 0 if name in granted else retries.get(name, 0) < budget(name))
+            and (left > 0 if left is not None else retries.get(name, 0) < budget(name))
             # A task that produced no new work (empty diff, byte-identical retry) would
             # only repeat itself; its marker says so and it is left for a human.
             and not (root / 'noretry').exists()
@@ -707,9 +705,11 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
         retried.add(name)
         if name not in pending:
             pending.insert(0, name)
-        if name in granted:
-            granted[name] -= 1
-            print('forge: retrying ' + name + ' (decided retry, ' + str(granted[name]) + ' more after this)',
+        left = granted(name)
+        if left is not None:
+            left = max(left - 1, 0)
+            _write_atomic(plan, str(left), 'tasks', name, 'decided.left')
+            print('forge: retrying ' + name + ' (decided retry, ' + str(left) + ' more after this)',
                   file=sys.stderr, flush=True)
         else:
             print('forge: retrying ' + name + ' (automatic retry ' + str(retries[name]) + '/'
@@ -1043,10 +1043,9 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
         refused.pop(name, None)
         # A decision sets how many attempts follow it: retry=N is N in all (this one and N-1
         # automatic ones), any other choice is this one. A plain retry leaves the budget in charge.
-        if state == 'NEEDS_DECISION':
-            granted[name] = _decided_attempts(decide) - 1
-        else:
-            granted.pop(name, None)
+        # (retry_decided wrote decided.left for a decision.) A plain retry ends what a decision allowed.
+        if state != 'NEEDS_DECISION':
+            _remove(plan, 'tasks', name, 'decided.left')
         retried.add(name)
         human.add(name)
         pending.insert(0, name)

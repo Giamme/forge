@@ -245,6 +245,30 @@ class DecisionTests(DecisionCase):
         self.assertEqual(self.dwarf_count(), before + 2, r.stdout)     # the second of the five passed: no third
         self.assertTrue((p / 'tasks/a/merged').exists(), r.stdout)
 
+    def test_a_quota_stop_keeps_the_decided_attempts_for_the_next_run(self):
+        p, _ = self.converging_plan()
+        (p / 'converge_window').write_text('9\n')                      # only the allowance can stop it now
+        table = {'a.qa.%d' % n: {'verdict': 'FAIL', 'findings': MOVING[(n - 1) % len(MOVING)]} for n in range(1, 9)}
+        table.update({'a.dwarf.%d' % n: {'content': 'try %d' % n} for n in range(1, 12)})
+        table['a.dwarf.3'] = {'rc': 1, 'stderr': 'Claude AI usage limit reached|1760000000'}
+        self.scenario(table)
+        r = self.retry(p, '--decide', 'retry=3', '--reason', 'go on', '--approved')
+        self.assertEqual(r.returncode, 8, r.stdout)
+        self.assertEqual(self.read(p, 'status'), 'INFRA')
+        self.assertEqual(self.read(p, 'decided.left'), '2')            # three attempts, none spent yet
+        before = self.dwarf_count()
+        r = self.run_script('forge-parallel.sh', 'run', p, '--retry-failed', 0)
+        # The resumed attempt and the two that follow it, though the run's budget is 0.
+        self.assertEqual(self.dwarf_count(), before + 3, r.stdout)
+        self.assertEqual(self.read(p, 'attempt'), '5', r.stdout)
+
+    def test_a_plain_retry_ends_what_a_decision_allowed(self):
+        p, _ = self.converging_plan()
+        self.retry(p, '--decide', 'retry=1', '--reason', 'one more', '--approved')
+        self.assertEqual(self.read(p, 'decided.left'), '0')
+        self.retry(p)
+        self.assertFalse((p / 'tasks/a/decided.left').exists())
+
     def test_a_threshold_decision_writes_the_task_threshold_and_retries(self):
         p, _ = self.converging_plan()
         before = self.dwarf_count()
