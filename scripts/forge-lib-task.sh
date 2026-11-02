@@ -424,14 +424,26 @@ attempt_cap_gate() { # attempt_cap_gate <plan> <id> <status> <decide>; 0 may run
   return 1
 }
 
+# The status a NEEDS_DECISION task had when it stopped, from decision.from: FAIL, UNKNOWN, TIMEOUT,
+# ERROR, INVALIDATED or INFRA (the attempt cap stops any of them). FAIL when it is missing or not one
+# of those, as every stop was before the cap.
+decision_from() { # decision_from <task-dir>
+  local st; st="$(head -c 16 "$1/decision.from" 2>/dev/null | tr -dc 'A-Z')"
+  case "$st" in FAIL|UNKNOWN|TIMEOUT|ERROR|INVALIDATED|INFRA) echo "$st" ;; *) echo FAIL ;; esac
+}
+
 # decision.md, then the status. Reasons are words (`converging`, `split`); the first line of
 # the file lists them. The status is the last thing written, so a task never reads as
 # NEEDS_DECISION without its decision.md.
 stop_for_decision() { # stop_for_decision <plan> <id> <reason>...
   local PLAN="$1" id="$2" tdir="$1/tasks/$2" reasons="" r win decided summary="" used cap tmp="$1/tasks/$2/.decision.md.tmp"
+  local from
   shift 2
   for r in "$@"; do reasons="${reasons:+$reasons, }$r"; done
   [ -n "$reasons" ] || return 0
+  # What the stop replaces: a task already waiting keeps the status it first stopped from.
+  from="$(task_status "$PLAN" "$id")"
+  case "$from" in NEEDS_DECISION|NEEDS_INPUT) from="$(decision_from "$tdir")" ;; esac
   win="$(tr -dc '0-9' < "$PLAN/converge_window" 2>/dev/null | head -c 4)"
   [ -n "$win" ] && [ "$win" -ge 1 ] 2>/dev/null || win=4
   decided="$(awk -F'\t' '$2 ~ /^[0-9]+$/ && $2 + 0 > m { m = $2 + 0 } END { print m + 0 }' "$tdir/decisions.tsv" 2>/dev/null)"
@@ -469,11 +481,14 @@ stop_for_decision() { # stop_for_decision <plan> <id> <reason>...
     echo "  lower the threshold:    forge-parallel.sh retry $PLAN $id --decide threshold=P1 --reason \"...\" --approved"
     echo "                          (this task's blocking threshold, then one retry)"
     echo "  a named model:          forge-parallel.sh retry $PLAN $id --dwarf <spec> --reason \"...\" --approved"
-    echo "  accept it as it is:     forge-parallel.sh accept $PLAN $id --reason \"...\" --approved"
-    echo "                          (merges it; its findings become known issues)"
+    case "$from" in FAIL|UNKNOWN)       # with no reviewer verdict, accept has nothing to override
+      echo "  accept it as it is:     forge-parallel.sh accept $PLAN $id --reason \"...\" --approved"
+      echo "                          (merges it; its findings become known issues)" ;;
+    esac
     echo "  split it:               forge control drain $PLAN, then forge control add $PLAN <id> for each smaller task"
   } > "$tmp" && mv "$tmp" "$tdir/decision.md" || { rm -f "${tmp:?}"; note "$id: could not write decision.md; the task stays FAIL"; return 1; }
   rm -f "${tdir:?}/decided.left"
+  echo "$from" > "$tdir/decision.from"
   echo NEEDS_DECISION > "$tdir/status"
   note "$id: stopped for your decision ($reasons) — see $tdir/decision.md"
 }
@@ -606,13 +621,14 @@ prepare_retry() { # prepare_retry <plan> <id> [new-dwarf [decided]]
   local PLAN="$1" id="$2" newdwarf="${3:-}" T="$1/tasks.tsv" tdir="$1/tasks/$2" st verdict
   st="$(task_status "$PLAN" "$id")"
   # A NEEDS_DECISION task resumes only through retry_decided, which says so with `decided` once the
-  # decision is recorded. It was a FAIL before it stopped, and its findings carry as a FAIL's do.
+  # decision is recorded. It retries as the status it stopped from: a FAIL carries its findings, and an
+  # unjudged attempt (UNKNOWN, INVALIDATED) goes back to QA rather than to the implementer.
   if [ "$st" = NEEDS_DECISION ]; then
     if [ "${4:-}" != decided ]; then
       note "$id is waiting for your decision (see $tdir/decision.md): forge-parallel.sh retry $PLAN $id --decide ... --reason \"...\" --approved"
       return 2
     fi
-    st=FAIL
+    st="$(decision_from "$tdir")"
   fi
   # A NEEDS_INPUT task waits for the user, and nothing here may change before the answer is
   # known to be there: no file removed, no status changed, no escalation.

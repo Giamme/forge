@@ -266,6 +266,34 @@ class CapRunTests(CapCase):
                          ('NEEDS_DECISION', 'reasons: cap', 1))
         self.assertEqual(len((p / 'tasks/a/attempts.tsv').read_text().splitlines()), 2)
 
+    def test_a_granted_attempt_after_an_unjudged_review_goes_back_to_qa(self):
+        # The final review of run 1: the cap stopped an UNKNOWN task, and retry=N then ran the implementer
+        # again on work no reviewer had judged, as if it had been a FAIL.
+        p = self.plan_of('--max-attempts', 2)
+        self.scenario({'a.qa.*': {'findings': 'The review did not reach a verdict.', 'verdict': 'none'}})
+        self.run_script('forge-parallel.sh', 'run', p, '--retry-failed', 5)
+        self.assertEqual((self.read(p, 'status'), self.dwarf_count()), ('NEEDS_DECISION', 1))
+        self.scenario({})                                          # reviews pass from here on
+        r = self.retry(p, '--decide', 'retry=2', '--reason', 'ask the reviewer again', '--approved')
+        self.assertEqual((self.read(p, 'status'), self.dwarf_count()), ('PASS', 1), r.stdout)
+        self.assertTrue((p / 'tasks/a/merged').exists(), r.stdout)
+
+    def test_a_task_stopped_after_an_unreviewed_attempt_cannot_be_accepted(self):
+        # The final review of run 1: QA timed out on the attempt that reached the cap, and `accept` merged work
+        # no reviewer judged, recorded as accepted "despite the reviewer's FAIL verdict".
+        p = self.plan_of('--max-attempts', 1)
+        self.scenario({'a.qa.1': {'sleep': 8}})
+        self.run_script('forge-parallel.sh', 'run', p, '--timeout', 3)
+        self.assertEqual(self.read(p, 'status'), 'TIMEOUT')
+        self.retry(p)
+        self.assertEqual((self.read(p, 'status'), self.first_line(p)), ('NEEDS_DECISION', 'reasons: cap'))
+        self.assertNotIn('forge-parallel.sh accept', (p / 'tasks/a/decision.md').read_text())
+        r = self.run_script('forge-parallel.sh', 'accept', p, 'a', '--reason', 'ship it', '--approved')
+        self.assertEqual(r.returncode, 3, r.stdout)
+        self.assertIn('no reviewer verdict exists to override', r.stdout)
+        self.assertEqual(self.read(p, 'status'), 'NEEDS_DECISION')
+        self.assertFalse((p / 'tasks/a/known_issues.md').exists())
+
     def test_an_infrastructure_resume_at_the_cap_stops_for_a_decision(self):
         # Two failed attempts under no cap, then an infrastructure stop, then the person sets the cap to 2: the
         # stop spent nothing, but its resume would start a 3rd attempt, so the scheduler must not dispatch it.

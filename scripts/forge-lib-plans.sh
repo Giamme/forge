@@ -192,7 +192,16 @@ do_accept() {
   int_wt="$(cat "$PLAN/wt_root")/_integration"
 
   st="$(task_status "$PLAN" "$id")"
-  case "$st" in FAIL|UNKNOWN) ;; NEEDS_DECISION) st=FAIL ;; *) plans_why_not "$PLAN" "$id" "$st" ;; esac
+  case "$st" in
+    FAIL|UNKNOWN) ;;
+    NEEDS_DECISION)
+      # The attempt cap stops a task from any status: only a reviewed one has a verdict to override.
+      st="$(decision_from "$tdir")"
+      case "$st" in FAIL|UNKNOWN) ;; *)
+        die "task '$id' stopped for a decision after a $st attempt: no reviewer verdict exists to override. Decide with 'forge-parallel.sh retry $PLAN $id --decide retry=N --reason \"...\" --approved' (see $tdir/decision.md)" 3 ;;
+      esac ;;
+    *) plans_why_not "$PLAN" "$id" "$st" ;;
+  esac
 
   # The reviewed work must be exactly what is on disk: same commit on the branch, same
   # tree, index and HEAD in the worktree as when QA finished.
