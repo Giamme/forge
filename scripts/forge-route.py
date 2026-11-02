@@ -67,6 +67,10 @@ bias (inverse-propensity weighting needs the probability each choice had).
       lateral move (epoch, attempt, role, from, to, cause). Its appended row writes running.tier
       too: a move keeps the tier, and the spec it moved to is the one that tier is recorded for.
 
+  forge-route.py attempt-cap --plan P --task ID
+      Prints "<used> <cap>": the attempts a task has spent and its attempt cap (#69), or "-" for
+      no cap. Used by the shell and the scheduler, and by `forge control show`. See attempt_cap.
+
 The propensity of the chosen spec is (1-E)*[chosen == SPEC] + E/2. Forge never picks a
 model the user did not name: both helpers read only the pools `plan` stored in
 fractal-routing.json, and "stronger" means only "in a higher tier of those pools" --
@@ -84,6 +88,7 @@ import hashlib
 import json
 import os
 import random
+import re
 import secrets
 import stat
 import subprocess
@@ -98,6 +103,7 @@ REGISTRY = SCRIPTS.parent / 'registry.tsv'
 FAILED = ('FAIL', 'TIMEOUT', 'BOUNCED', 'INCOMPLETE')   # a judgment against the spec that ran
 NEUTRAL = ('INFRA', 'UNKNOWN', 'ERROR', 'RUNNING', 'INTERRUPTED', 'NEEDS_INPUT', 'NEEDS_DECISION')   # say nothing about it
 DEFAULT_ESCALATE_AFTER = 3
+DEFAULT_MAX_ATTEMPTS = 8                          # `plan --max-attempts`; a plan without the file
 DEFAULT_EFFORT = 'medium'                         # forge-dispatch.sh dwarf default
 LOCK_WAIT = 5.0                                    # seconds to wait for P/control.lock
 # forge-dispatch.sh rank_of. Only for "which accepted effort is above this one"; the set of
@@ -635,6 +641,68 @@ def _fractal(plan: Path) -> bool:
         return False
 
 
+# --- attempt cap (#69) -------------------------------------------------------------
+# A task that keeps failing across runs stops for a person. The count and the cap live here, so
+# the shell (do_task, the retry gate, the run summary), the scheduler and `forge control show`
+# all read the same numbers.
+
+def max_attempts_setting(plan: Path) -> int:
+    """The plan's attempt cap (`plan --max-attempts N`, `forge control set max-attempts`): the file's
+    number, DEFAULT_MAX_ATTEMPTS without the file, and 0 for no cap. An unreadable value is the default."""
+    try:
+        value = (plan / 'max_attempts').read_text().strip()
+    except OSError:
+        return DEFAULT_MAX_ATTEMPTS
+    return int(value) if re.fullmatch(r'[0-9]{1,9}', value) else DEFAULT_MAX_ATTEMPTS
+
+
+def attempts_spent(tdir: Path) -> int:
+    """Attempts the task has used: the attempts.tsv rows whose status is not INFRA. An infrastructure stop
+    spends none. A QA-only resume re-reviews the same attempt number and writes a row of its own, and that
+    row spends one too: a task whose reviews return no verdict reaches its cap like any other."""
+    return sum(1 for _number, status, _spec in attempt_rows(tdir) if status != 'INFRA')
+
+
+def granted_attempts(tdir: Path) -> int:
+    """The attempts a person granted: N of every retry=N row in tasks/<id>/decisions.tsv. The retry CLI takes
+    up to three digits, zero-padded ones too (retry=002), so the grant is read the same way."""
+    total = 0
+    try:
+        lines = (tdir / 'decisions.tsv').read_text().splitlines()
+    except OSError:
+        return total
+    for line in lines:
+        cells = line.split('\t')
+        if len(cells) > 2:
+            match = re.fullmatch(r'retry=([0-9]{1,3})', cells[2])
+            if match:
+                total += int(match.group(1))
+    return total
+
+
+def attempt_cap(plan: Path, task: str) -> tuple:
+    """(attempts used, cap). The cap is max_attempts plus granted_attempts, and None when the plan has no
+    cap (max_attempts 0): a decision adds attempts to a cap, it does not make one."""
+    tdir = plan / 'tasks' / task
+    used = attempts_spent(tdir)
+    limit = max_attempts_setting(plan)
+    if limit == 0:
+        return used, None
+    return used, limit + granted_attempts(tdir)
+
+
+def attempt_cap_cmd(args) -> int:
+    """`attempt-cap`: "<used> <cap>" on one line, cap "-" for no cap. Read only; a bad task id counts as
+    no attempts, which the callers never pass."""
+    plan = Path(os.path.realpath(args.plan))
+    if not args.task or args.task in ('.', '..') or '/' in args.task or '\0' in args.task:
+        print('0 -')
+        return 0
+    used, cap = attempt_cap(plan, args.task)
+    print('%d %s' % (used, '-' if cap is None else cap))
+    return 0
+
+
 # --- live-control files ------------------------------------------------------------
 # Markers are shared with `forge control` and the scheduler, so they are written the way
 # every writer of the plan's control files writes: a task id the scheduler would accept, a
@@ -911,6 +979,9 @@ def main(argv=None) -> int:
     p.add_argument('--check', action='store_true')
     p.add_argument('--qa-only-next', choices=('yes', 'no'), default=None,
                    help='whether the next entry only re-runs QA, as the caller measured it')
+    p = sub.add_parser('attempt-cap', help='the attempts a task has used and its cap, "<used> <cap>" (- for none)')
+    p.add_argument('--plan', required=True)
+    p.add_argument('--task', required=True)
     p = sub.add_parser('fallback', help='the same-tier model a capacity stop moves to')
     p.add_argument('--plan', required=True)
     p.add_argument('--task', required=True)
@@ -937,6 +1008,8 @@ def main(argv=None) -> int:
         return record_escalation(args)
     if args.command == 'lateral':
         return record_lateral(args)
+    if args.command == 'attempt-cap':
+        return attempt_cap_cmd(args)
     if args.command in ('fallback', 'qa-fallback'):
         try:
             return (fallback if args.command == 'fallback' else qa_fallback)(args)

@@ -1479,6 +1479,8 @@ do_retry() {
   [ "$st" = "MERGED" ] && die "task '$id' already merged — nothing to retry"
   [ "$HAVE_ANSWER" = 0 ] || [ "$st" = NEEDS_INPUT ] || die "retry: '$id' is $st, not waiting for an answer; --answer and --answer-file only answer a NEEDS_INPUT task"
   retry_decision_gate "$PLAN" "$id" "$st" "$DECIDE" "$NEWDWARF" "$REASON" "$APPROVED"
+  # A task at its attempt cap (#69) is refused with the decision commands unless --decide retry=N reaches past it.
+  if ! attempt_cap_gate "$PLAN" "$id" "$st" "$DECIDE"; then write_results "$PLAN"; return 2; fi
   # The user's answer to a NEEDS_INPUT task's question (validated above): written before
   # anything else is prepared, atomically, and kept when the preparation then refuses (the
   # same answer can be retried).
@@ -1530,6 +1532,9 @@ do_retry() {
   # The count is decided.left, so it survives a run that ended before the attempts were used.
   local more; more="$(decided_left "$tdir")"; more="${more:-0}"
   while [ "$more" -gt 0 ] && { [ "$st" = FAIL ] || [ "$st" = UNKNOWN ]; } && [ ! -e "$tdir/noretry" ]; do
+    # Each further attempt is spent against the cap (#69) like the scheduler's retries: an UNKNOWN review
+    # does not stop the task by itself, so the cap is checked here, and a task at it stops for a decision.
+    if ! attempt_cap_gate "$PLAN" "$id" "$st" ""; then st="$(task_status "$PLAN" "$id")"; break; fi
     more=$(( more - 1 ))
     prepare_retry "$PLAN" "$id" || break
     decided_left_set "$tdir" "$more" || break

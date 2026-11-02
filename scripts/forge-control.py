@@ -6,7 +6,8 @@
                                                  verify-retries, retry-budget, infra-retries, infra-backoff
                                                  (none drops it), infra-fallback (on/off), max-parallel (1-64),
                                                  pre-review-tests
-                                                 (on/off), pre-review-parallel (1-64)
+                                                 (on/off), pre-review-parallel (1-64), max-attempts (0 = no cap;
+                                                 needs --confirm: raising the cap is a person's decision)
   pin   <plan> <task> <spec>                     the model the task's next FULL implementer retry uses
   unpin <plan> <task>
   retry <plan> <task> [--dwarf SPEC]             queue a retry of a stopped or failed task into the live run
@@ -24,7 +25,8 @@
 
 `show` reports escalate-after and verify-retries at their defaults (3 and 1) when unset,
 escalate-effort, infra-fallback and pre-review-tests as on or off (off when the file is absent),
-pre-review-parallel at its default (2) when unset, and the two budgets only while a scheduler is live.
+pre-review-parallel at its default (2) when unset, each task's attempts used and cap (`9/8`, or `9/-`
+with no cap), and the two budgets only while a scheduler is live.
 
 Every change is validated, written atomically under the plan's control lock (`control.lock`),
 appended to `control.log` and recorded as a dataset `control` event. This is the only writer of
@@ -60,6 +62,7 @@ import stat
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 # forge_infra.py sits beside this file: the causes table and the wording the run summary shares. As in
 # forge-schedule.py, the directory is put on sys.path here, since -I or PYTHONSAFEPATH would leave it off.
@@ -516,6 +519,20 @@ def schedule_module():
     return _SCHEDULE
 
 
+_ROUTE = None
+
+
+def route_module():
+    """forge-route.py, loaded by path: the one owner of a task's attempts used and its cap (#69)."""
+    global _ROUTE
+    if _ROUTE is None:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location('forge_route', os.path.join(SKILL, 'scripts', 'forge-route.py'))
+        _ROUTE = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(_ROUTE)
+    return _ROUTE
+
+
 def _backoff(value, task):
     if value == 'none':
         return value
@@ -560,6 +577,7 @@ KEYS = {
     'max-parallel': ('plan', _parallel, 'max_parallel', True, NEXT_DISPATCH),
     'pre-review-tests': ('plan', _onoff, 'pre_review_tests', False, NEXT_ATTEMPT),
     'pre-review-parallel': ('plan', _parallel, 'pre_review_parallel', False, NEXT_ATTEMPT),
+    'max-attempts': ('plan', _int, 'max_attempts', False, NEXT_DECISION),
 }
 
 
@@ -612,6 +630,12 @@ def change(args, plan, rows, action, task, key, work, applies, summary, live_onl
 def cmd_set(args):
     plan, rows = load(args.plan)
     scope, check, name, live_only, applies = KEYS[args.key]
+    # The cap on a task's attempts is a person's decision: any change to it is given with --confirm.
+    if args.key == 'max-attempts' and not args.confirm:
+        raise Refused('max-attempts is a person\'s decision: a task at its cap waits for one, and raising the cap '
+                      'lets it run more attempts; give --confirm to change it')
+    if args.confirm and args.key != 'max-attempts':
+        raise Invalid('--confirm applies only to max-attempts')
     task = args.task
     if task is not None:
         require_task(rows, task)
@@ -888,12 +912,15 @@ def cmd_show(args):
         if p['needs_you']:
             parts.append('needs you' + (f": {p['hint']}" if isinstance(p['hint'], str) and p['hint'] else ''))
         print(f"  paused {p['scope']} ({forge_infra.label(p['class'])})  tasks {tasks}  " + '  '.join(parts))
-    columns = ('task', 'status', 'dwarf', 'qa', 'threshold', 'budget', 'used', 'pin', 'stop', 'next')
+    columns = ('task', 'status', 'dwarf', 'qa', 'threshold', 'budget', 'used', 'attempts', 'pin', 'stop', 'next')
     table = [columns]
     for task, t in controls['tasks'].items():
         status = f"{t['status']} ({t['infra']['cause']})" if t.get('infra') else t['status']
+        # attempts used/cap (#69): 9/8, or 9/- for a plan with no cap. Text only: the JSON keeps its keys.
+        used, cap = route_module().attempt_cap(Path(plan), task)
+        attempts = f"{used}/{cell(cap)}"
         table.append((task, status, cell(t['dwarf']), cell(t['qa']), cell(t['qa_threshold']), cell(t['retry_budget']),
-                      cell(t['retries_used']), cell(t['pin']), 'yes' if t['escalation_stop'] else '-',
+                      cell(t['retries_used']), attempts, cell(t['pin']), 'yes' if t['escalation_stop'] else '-',
                       cell(t['escalation_next'])))
     widths = [max(len(r[i]) for r in table) for i in range(len(columns))]
     for r in table:
@@ -931,6 +958,7 @@ def parser():
     p.add_argument('key', choices=list(KEYS))
     p.add_argument('value')
     p.add_argument('--task', metavar='ID', help='change this task only (qa-threshold, retry-budget)')
+    p.add_argument('--confirm', action='store_true', help="max-attempts only: the change is a person's decision")
     p.set_defaults(func=cmd_set)
     p = sub.add_parser('pin', help="set the model a task's next full retry uses")
     common(p)
