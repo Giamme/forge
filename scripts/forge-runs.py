@@ -11,6 +11,10 @@ forge-ui and never writes anything.
 `forge runs rm <run-dir> [--dry-run] [--yes] [--no-archive] [--worktrees] [--branches] [--json]`
 is the one thing here that changes anything: it deletes a run, after its traces are in the dataset
 and an archive exists (scripts/forge-runs-rm.py).
+
+`forge runs rerun <run-dir> --dwarf SPEC` and `forge runs compare <run-dir-A> <run-dir-B>` (scripts/forge-compare.py)
+run a plan again under another implementer, from the same starting commit and never merging, and set two runs
+side by side per task. Starting the rerun spends tokens, so it takes `--run --yes` after it has shown the forecast.
 """
 from __future__ import annotations
 
@@ -100,12 +104,25 @@ def remove(argv) -> int:
     return module.main(argv)
 
 
+def compare_runs(argv) -> int:
+    """`forge runs rerun` and `forge runs compare`: loaded on demand, like rm."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location('forge_compare', Path(__file__).resolve().with_name('forge-compare.py'))
+    module = importlib.util.module_from_spec(spec)
+    sys.modules['forge_compare'] = module
+    spec.loader.exec_module(module)
+    return module.main(argv)
+
+
 def main(argv=None) -> int:
     argv = sys.argv[1:] if argv is None else list(argv)
     if argv[:1] == ['rm']:
         return remove(argv[1:])
+    if argv[:1] in (['rerun'], ['compare']):
+        return compare_runs(argv)
     parser = argparse.ArgumentParser(prog='forge runs', description="This repo's recent forge runs, newest first. Listing is read-only.",
-                                     epilog='Delete a run, keeping its traces: forge runs rm <run-dir> (forge runs rm --help)')
+                                     epilog='Delete a run, keeping its traces: forge runs rm <run-dir> (forge runs rm --help). Rerun a plan with another '
+                                            'implementer and compare: forge runs rerun --help, forge runs compare --help')
     which = parser.add_mutually_exclusive_group()
     which.add_argument('--repo', type=Path, metavar='DIR', help='the repo whose runs to list (default: the Git top level of the current directory)')
     which.add_argument('--all', action='store_true', help='list the runs of every repo')

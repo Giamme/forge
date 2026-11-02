@@ -20,6 +20,8 @@ harness (`/forge`); this command installs forge and drives its optional tools.
 | `forge config show [--repo DIR] [--json]` / `forge config set <key> <value> [--repo DIR] [--json]` / `forge config unset <key> [--repo DIR] [--json]` | one view of every config source (registry, the legacy Jev file, decide, the repo's `.forge/verify`, `setup` and `verify-subset`, dataset, `FORGE_*` variables with secrets hidden); `set` / `unset` edit `repo.verify`, `repo.setup`, `repo.verify-subset` (must contain `{files}` or `{changed}`; `--repo` required) and `decide.gate.<gate>`, `decide.gate.<gate>.provider`, `decide.gate.<gate>.model` (`off`, `shadow` or `on`; those write the user level and do not need `--repo`). Unset of a `decide.gate.*` key is refused: set the mode to `off`. `-` as a value reads stdin for the per-repo files. Exit 2 on invalid input |
 | `forge watch [RUN_DIR \| --repo DIR \| --all] [--interval S] [--settle S] [--until-done] [--no-notify] [--exec CMD]` | follow runs live: a line for every task status change, and a desktop notification, `--exec CMD` and the repo's `.forge/on-finish` when a run finishes or fails, a task fails or a final review gives its verdict; see [below](#forge-watch). Read-only |
 | `forge runs rm RUN_DIR [--dry-run] [--yes] [--no-archive] [--worktrees] [--branches] [--json]` | delete a run directory but keep what it taught the dataset; see [below](#forge-runs-rm) |
+| `forge runs rerun RUN_DIR --dwarf SPEC [--qa SPEC] [--to DIR] [--max-parallel N] [--dry-run] [--run --yes]` | set up the same plan again with another implementer, from the same starting commit; spends nothing unless `--run --yes`; never merges. See [below](#forge-runs-rerun-and-compare) |
+| `forge runs compare RUN_A RUN_B [--json] [--no-record]` | two runs of one plan, side by side, per task; records the pair in the dataset |
 | `forge issues RUN [--apply] …` | file the review findings a run left open as GitHub issues; see [below](#forge-issues) |
 | `forge pr [RUN_DIR \| --repo DIR] [--texts] [--paths] [--out FILE] [--create [--base B] [--head B]]` | a draft pull-request description for a finished run, on stdout; `--create` opens it as a draft PR with `gh`; see [below](#forge-pr) |
 | `forge ui open\|status\|stop` | forge-ui, the run viewer; see [the command group](forge-ui.md#forge-ui-command-group) |
@@ -84,6 +86,34 @@ was asked. Branches are reported
 reports; `--yes` skips the prompt for the run id (needed without a terminal); `--json` prints one
 object, on failure too. Exit 0 ok, 2 refused input, 3 busy or the run is active, 4 failed during
 deletion or the run directory was kept (the same command finishes the job).
+
+### `forge runs rerun` and `forge runs compare`
+
+`forge runs rerun <run-dir> --dwarf SPEC` answers "would this plan have gone better on another
+model?" with the same tasks, prompts and options. It copies the plan into a new directory
+(`<run-dir>-<spec>`, or `--to`), puts SPEC on every task (`--qa` changes the reviewer too; by
+default each task keeps its own, so one thing changes), and prepares it the way `forge-parallel.sh
+plan` does. The new run's integration branch `forge/<new id>-integration` starts at the commit the
+original run started from (`integration.base`), not at wherever your branch is now, so both runs
+see the same code. Exploratory routing is off for it (`--explore 0`), or some tasks would run on
+a third model.
+
+It spends nothing: it prints a warning that a second run costs a second run's tokens, what the
+original run recorded for these tasks, the [plan forecast](dataset.md) for the new model when the
+dataset has history, and the command that starts it. `--run --yes` starts it (`--run` alone is
+refused, so the cost is read first); `--dry-run` creates nothing at all. It never merges: the
+rerun only writes its own `forge/<new id>…` branches and worktrees, and your branch, the original
+run and its branches are not touched. A plan that has a task still `RUNNING`, a solo run (no task
+table), a plan that never started, and a Fractal-backed plan are refused, and a rerun that fails to
+set up is removed again. Exit 0 ok, 2 bad input, 3 refused.
+
+`forge runs compare <run-dir-A> <run-dir-B>` sets two runs of one repository side by side per
+task: status, attempts, tokens and time (from the dataset, when the runs are in it) and the lines
+added and deleted on the task's branch. It writes the pair as one `comparison` event to the dataset
+(`--no-record` skips that; the same pair twice is one event; a run that has not attempted a task
+yet is shown but not recorded). `--json` prints everything. One pair of runs is one sample: a task
+that passed on one model and failed on the other may have just been the model's day, so read it
+as what happened, not as which model is better. Nothing routes on it.
 
 ### `forge issues`
 

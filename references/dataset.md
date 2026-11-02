@@ -45,6 +45,7 @@ time order: an attempt that PASSed, then a merge that CONFLICTed, then a human `
 | `fractal_step` / `fractal_node` | Fractal step, node state | decomposition decision, iteration, resolved model, cost, tokens, candidate diff |
 | `ledger` | ledger row | imported `.forge/ledger.tsv` rows |
 | `forecast` | forecast shown by `run` | the plan forecast printed before dispatch (see [plan forecast](#plan-forecast)), once per run and content. Also in the plan as `forecast.json` |
+| `comparison` | `forge runs compare` | two runs of one plan side by side: `a` and `b` each with the run's uid, run id, starting commit and per-task status, attempts, tokens, time and diff size, and a `summary` (tasks merged in both, only in one, in neither). One event per pair and content; the event's run is the second one. Descriptive: nothing routes on it |
 | `outcome` | integrated task, per horizon | written by `forge dataset outcomes`, never by a run: how many of the lines a task added survive N days after `integrate`, and what reverted it |
 
 An attempt that forge sent back without a review keeps the status `FAIL` in the dataset, and
