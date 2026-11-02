@@ -1066,10 +1066,18 @@ Configure combined executable checks with `run <plan> --verify '<command>'` (als
 `retry`), or a shell command file at `<repo>/.forge/verify`. Commands execute under Bash from
 the integration checkout. Forge records `verification.command`, `.log`, `.exit`, `.fingerprint`
 and `.status` in the plan directory. Failed checks or source changes fail the run. With no
-command, the result is explicitly UNVERIFIED.
+command, the result is explicitly UNVERIFIED. A `retry` that leaves tasks still to run
+(PENDING or BLOCKED) skips its verification and says so: the `run` that dispatches them verifies
+the integration branch at its end, and `integrate` verifies its candidate.
 
 A failed command whose source fingerprint is unchanged is rerun (`--verify-retries N`, default
-`1`, `0` = strict single run). A rerun that passes leaves status `PASS` but writes
+`1`, `0` = strict single run). When the repository has `.forge/verify-subset` (a test command
+with `{files}` or `{changed}`) and the log names failing tracked test files (unittest
+`FAIL:`/`ERROR:` lines, pytest `FAILED path::`, node's test runner `test at file:L:C` or TAP
+`location:`), those files run alone first (`verification.failing.log`, run kind `failing`): if
+they fail again the regression is confirmed and the whole command is not rerun. If they pass,
+or nothing can be named, the whole command reruns as before, so a pass always comes from the
+whole command. A rerun that passes leaves status `PASS` but writes
 `verification.flaky` (both exit codes), keeps the first run in `verification.log` and the second
 in `verification.retry.log`, and prints a loud `FLAKY` line in `run`/`retry`/`integrate` output;
 a command that changes the tree is never retried.
