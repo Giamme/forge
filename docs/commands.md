@@ -533,11 +533,13 @@ sets this status.
 the last window all failed and kept finding new problems, or the retry policy has no stronger
 model, or the task has spent its attempt cap (`plan --max-attempts N`, default 8 across runs;
 `forge control set max-attempts N --confirm` changes it, and `0` means no cap). The reasons and
-the commands are in `tasks/<id>/decision.md`. The run summary lists them under `waiting for your
-decision:`. Neither a later `run`, `--retry-failed`, a retry budget nor a pin resumes it. Only
-`retry <plan> <id> --decide retry=N` or `--decide threshold=Pn`, or `--dwarf <spec>`, each with
-`--reason "…" --approved`, or `accept`, or a hand split. A live scheduler takes the same flags as
-`forge control retry`. A run that ends with such a task unmerged exits `5`. See
+the `retry` and `accept` commands are in `tasks/<id>/decision.md`. The run summary lists them under
+`waiting for your decision:`. Neither a later `run`, `--retry-failed`, a retry budget nor a pin
+resumes that same task. Only `retry <plan> <id> --decide retry=N` or `--decide threshold=Pn`, or
+`--dwarf <spec>`, each with `--reason "…" --approved`, or `accept`, does. Replacing it is a hand
+edit of `tasks.tsv` before the next `run` (the summary's `forge control drain` / `add` line does
+not). A live scheduler takes the same flags as `forge control retry`. A run that ends with such a
+task still in `tasks.tsv` and unmerged exits `5`. See
 [when reviews don't converge](../references/decompose.md#when-reviews-dont-converge).
 
 The full plan → run → integrate walkthrough is in [decomposed runs](decomposed-runs.md#plan-run-integrate). `retry`, `accept` and `review` are covered in [reviews, retries and recovery](reviews.md); resuming, `split`/`combine`, scope drift and `tasks.tsv` in [decomposed runs](decomposed-runs.md).

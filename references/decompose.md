@@ -691,8 +691,33 @@ choices:
   together with `--decide`.
 - `forge-parallel.sh accept <plan> <id> --reason "…" --approved` merges it; the findings become
   known issues.
-- Split it by hand: `forge control drain <plan>`, then `forge control add <plan> <id>` for each
-  smaller task.
+- Split it by hand. `tasks/<id>/decision.md` and the run summary name this as
+  `forge control drain <plan>`, then `forge control add <plan> <id>` for each smaller task.
+  That pair needs a scheduler that is still live (exit 3 once `scheduler.live` is gone, which
+  it is by the time the summary is printed), and it does not replace the stopped task. `add`
+  is refused until the new id is already a row of `tasks.tsv` with a non-empty
+  `tasks/<id>/prompt.md`. `drain` starts nothing new until `forge control resume <plan>`.
+  The stopped task stays `NEEDS_DECISION` in the scheduler's list for this invocation:
+  dependents keep the `deps` loaded at the start, and the run exits 5 while the row is
+  unmerged. The replacement is an edit of `tasks.tsv`, then `forge-parallel.sh run <plan>`,
+  which reads that file again and recomputes `waves.tsv`.
+
+  Take the stopped task's row out of `tasks.tsv`. Leave `tasks/<id>/` where it is; its diff
+  is not on the integration branch. A row left in place is not dispatched. Append one row
+  per smaller task, seven tab-separated columns: `id`, `deps`, `difficulty` (`low`, `medium`
+  or `high`), `files` (non-empty), `dwarf`, `qa`, `title`. Copy the stopped task's `dwarf`
+  and `qa` (explicit specs; `forge control add` refuses `-` and `UNASSIGNED`, and `run`
+  preflights every spec). `deps` is `-`, a task that is already `MERGED`, or another new
+  task. On every remaining row whose `deps` named the stopped task, put those new ids in
+  its place: a dependency that is no longer a row makes `run` die with `dependency cycle or
+  unsatisfiable deps`, and one that never merges leaves the dependent `BLOCKED`. Write a
+  non-empty `tasks/<id>/prompt.md` for each new id. The next `run` skips `MERGED` work and
+  dispatches the new rows from the integration branch as it stands, not from the stopped
+  task's worktree. While a scheduler is still live, `forge control add` can queue a row
+  written this way whose dependencies that run already knows; the row that replaces the
+  stopped task takes effect on the `run` after the scheduler has exited.
+  `forge-parallel.sh split` moves whole tasks into a new plan
+  ([below](#accepting-splitting-combining-and-the-whole-run-review)).
 
 A live scheduler takes the same decision as `forge control retry <plan> <id> --decide …` (or
 `--dwarf`), with `--reason` and `--approved`; that only queues the request. The answer is appended
