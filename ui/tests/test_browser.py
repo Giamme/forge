@@ -1014,6 +1014,16 @@ class Infra(unittest.TestCase):
         self.assertIn('moved sideways: dwarf luna → sol (at capacity)', inspector)
         self.assertClean(page)
 
+    def test_the_needs_you_line_stays_once_the_scheduler_is_gone(self):
+        # The final review of run 1: infra.paused goes with the scheduler, and the hint went with it.
+        (self.plan / 'infra.paused').unlink()
+        (self.plan / 'scheduler.live').unlink()
+        page = self.open(cdn=False, view='2d')
+        page.goto(self.url + '#/runs/' + self.key + '/tasks/docs')
+        page.wait_for_selector('#inspector .insp-section')
+        self.assertIn('needs you: add credits, or check the billing of codex', page.text_content('#inspector'))
+        self.assertClean(page)
+
 
 class Decision(unittest.TestCase):
     """A task that stopped NEEDS_DECISION in a live plan: its reasons, its attempts against the cap, its review ledger and its commands, and no Retry."""

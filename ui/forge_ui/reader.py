@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 import math
 import os
@@ -648,15 +649,47 @@ def _number_or_none(value):
     return result if math.isfinite(result) else None
 
 
-def _infra(reader, prefix, status):
-    """task['infra']: the stop record of an INFRA task (infra.txt, key=value lines); None for any other status."""
+_INFRA_TABLE = Path(__file__).resolve().parents[2] / 'scripts' / 'forge_infra.py'
+_INFRA_STATE = {}
+
+
+def _forge_infra():
+    """forge's table of infrastructure causes (scripts/forge_infra.py), loaded once and read-only; None when it
+    cannot be, which leaves needs_you false and hint null."""
+    if 'module' not in _INFRA_STATE:
+        try:
+            spec = importlib.util.spec_from_file_location(
+                'forge_infra_for_ui', _INFRA_TABLE, loader=findings._ReadOnlyLoader('forge_infra_for_ui', str(_INFRA_TABLE)))
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            _INFRA_STATE['module'] = module if callable(getattr(module, 'stop_of', None)) else None
+        except Exception:
+            _INFRA_STATE['module'] = None
+    return _INFRA_STATE['module']
+
+
+def _infra(reader, prefix, status, ident):
+    """task['infra']: the stop record of an INFRA task (infra.txt, key=value lines); None for any other status.
+    needs_you and hint are forge's own answer (forge_infra.stop_of): the pause that names the task, live
+    (infra.paused) or the one the run ended with (infra.last), else what the cause asks for with no peer."""
     if status != 'INFRA':
         return None
     fields = executions.parse_resolved(reader.text(prefix + '/infra.txt'))
-    return dict(cause=fields.get('class') or None, stage=fields.get('stage') or None,
-                harness=fields.get('harness') or None, model=fields.get('model') or None,
-                reset_at=_number_or_none(fields.get('reset_at')), retry_after=_number_or_none(fields.get('retry_after')),
-                detail=reader.cap(fields.get('detail') or None, prefix + '/infra_detail', _DETAIL_CAP))
+    record = dict(cause=fields.get('class') or None, stage=fields.get('stage') or None,
+                  harness=fields.get('harness') or None, model=fields.get('model') or None,
+                  reset_at=_number_or_none(fields.get('reset_at')), retry_after=_number_or_none(fields.get('retry_after')),
+                  detail=reader.cap(fields.get('detail') or None, prefix + '/infra_detail', _DETAIL_CAP),
+                  needs_you=False, hint=None)
+    module = _forge_infra()
+    if module is not None:
+        try:
+            scopes = module.parse_pauses(reader.text('infra.paused')) or module.parse_pauses(reader.text('infra.last'))
+            judged = module.stop_of(ident, fields, scopes, time.time())
+            record.update(needs_you=judged.get('needs_you') is True,
+                          hint=judged.get('hint') if isinstance(judged.get('hint'), str) else None)
+        except Exception:
+            pass
+    return record
 
 
 def _lateral(reader, name):
@@ -820,7 +853,7 @@ def _task_detail(reader, task, run_id, waves, branches, max_attempts):
     # the implementer's question for the user, when the task stopped NEEDS_INPUT
     task['needs_input'] = reader.cap(reader.text(prefix + '/needs_input.md'), prefix + '/needs_input')
     # the stop records: why an INFRA dispatch stopped, the lateral moves, the review ledger, and a NEEDS_DECISION's question
-    task['infra'] = _infra(reader, prefix, task['status'])
+    task['infra'] = _infra(reader, prefix, task['status'], task['id'])
     task['lateral'] = _lateral(reader, prefix + '/lateral.tsv')
     task['ledger'] = _ledger(reader, prefix + '/ledger.tsv')
     task['decision'] = _decision(reader, prefix, task['status'])
@@ -927,7 +960,7 @@ def _sweep(reader, tasks):
 # files without touching the run dir, so they are stat'd for `updated` only.
 # Read only for their mtimes, so the run's `updated` stamp moves when a control changes.
 # control.requests is a directory: its mtime moves when a request is queued or settled.
-_RUN_CONTROLS = ('control.log', 'retry_budget', 'infra_budget', 'drain', 'stop', 'max_parallel', 'infra.paused',
+_RUN_CONTROLS = ('control.log', 'retry_budget', 'infra_budget', 'drain', 'stop', 'max_parallel', 'infra.paused', 'infra.last',
                  'infra_backoff', 'escalate_effort', 'control.requests')
 _TASK_CONTROLS = ('qa_threshold', 'retry_budget', 'retries.used', 'escalation.pin', 'escalation.stop', 'escalation.next')
 

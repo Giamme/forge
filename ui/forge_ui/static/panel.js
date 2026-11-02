@@ -90,13 +90,15 @@ window.ForgePanel = (() => {
   // command and never runs it; only the user's answer, passed to retry, resumes the task.
   const shellWord = s => /^[\w@%+=:,./-]+$/.test(s) ? s : "'" + String(s).replace(/'/g, "'\\''") + "'";
   // An INFRA task: why its dispatch stopped (the cause, the stage, the model it ran on), when its limit resets, and
-  // the scope pause that needs the user, matched by the task's id in its `tasks`
+  // whether the user must act: the reader's answer from forge's cause table (after the run too), else a live
+  // scope pause that names the task in its `tasks`
   function infraSection(host, ctx, task) {
     const s = section(host, 'Stopped on infrastructure'), inf = task.infra || {};
     fields(s, [['Cause', RM.causeLabel(inf.cause)], ['Stage', inf.stage], ['Harness', inf.harness, true], ['Model', inf.model, true],
       ['Reset', RM.resetText(inf.reset_at, ctx.now) || undefined]]);
-    const pause = list(ctx.run.scheduler && ctx.run.scheduler.pauses).find(p => list(p.tasks).includes(task.id));
-    if (pause && pause.needs_you === true) s.append(el('p', 'needs you' + (pause.hint ? `: ${pause.hint}` : ''), 'warn'));
+    const pause = list(ctx.run.scheduler && ctx.run.scheduler.pauses).find(p => list(p.tasks).includes(task.id)) || {};
+    const hint = inf.hint || pause.hint;
+    if (inf.needs_you === true || pause.needs_you === true) s.append(el('p', 'needs you' + (hint ? `: ${hint}` : ''), 'warn'));
   }
   function waitingSection(host, ctx, task) {
     const s = section(host, 'Waiting for you');

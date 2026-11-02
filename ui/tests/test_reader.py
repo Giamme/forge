@@ -796,23 +796,44 @@ class StopRecordTests(unittest.TestCase):
         _, tasks = self.read()
         self.assertEqual(tasks['page']['infra'], dict(cause='capacity', stage='dwarf', harness='claude', model='opus',
                                                       reset_at=1760630000.0, retry_after=600.0,
-                                                      detail='the model is overloaded'))
+                                                      detail='the model is overloaded', needs_you=False, hint=None))
         self.assertIsNone(tasks['reader']['infra'])
         with self.subTest('an old run says quota, and empty values read as null'):
             F.write(self.plan / 'tasks/page/infra.txt', 'class=quota\nstage=qa\nretry_after=\nrc=1\n')
             _, tasks = self.read()
             self.assertEqual(tasks['page']['infra'], dict(cause='quota', stage='qa', harness=None, model=None,
-                                                          reset_at=None, retry_after=None, detail=None))
+                                                          reset_at=None, retry_after=None, detail=None,
+                                                          needs_you=True, hint="wait for the reset, or add another "
+                                                                               "harness to this tier's pool"))
         with self.subTest('no infra.txt: the stop is still an infra stop, with nothing in it'):
             (self.plan / 'tasks/page/infra.txt').unlink()
             _, tasks = self.read()
             self.assertEqual(tasks['page']['infra'], dict(cause=None, stage=None, harness=None, model=None,
-                                                          reset_at=None, retry_after=None, detail=None))
+                                                          reset_at=None, retry_after=None, detail=None,
+                                                          needs_you=False, hint=None))
         with self.subTest('a long detail is capped'):
             F.write(self.plan / 'tasks/page/infra.txt', 'class=network\ndetail=' + 'x' * 500 + '\n')
             data, tasks = self.read()
             self.assertEqual(tasks['page']['infra']['detail'], 'x' * 400 + '…')
             self.assertIn('tasks/page/infra_detail', data['truncated'])
+
+    def test_an_infra_task_says_whether_it_needs_you_once_the_run_has_ended(self):
+        # The final review of run 1: the hint lived only in infra.paused, which goes with the scheduler, so a
+        # budget stop with no peer showed no hint at all.
+        F.write(self.plan / 'tasks/page/status', 'INFRA\n')
+        F.write(self.plan / 'tasks/page/infra.txt', 'class=budget\nstage=dwarf\nharness=codex\nmodel=sol\n')
+        _, tasks = self.read()
+        self.assertEqual((tasks['page']['infra']['needs_you'], tasks['page']['infra']['hint']),
+                         (True, 'add credits, or check the billing of codex'))
+        F.write(self.plan / 'infra.last', {'scopes': [{'scope': 'harness:codex', 'class': 'budget', 'harness': 'codex',
+                                                       'model': None, 'tasks': ['page'], 'held': [], 'needs_you': True,
+                                                       'hint': 'the pause the run ended with'}]})
+        _, tasks = self.read()
+        self.assertEqual(tasks['page']['infra']['hint'], 'the pause the run ended with')
+        F.write(self.plan / 'tasks/page/infra.txt', 'class=capacity\nstage=dwarf\nharness=codex\nmodel=sol\n')
+        (self.plan / 'infra.last').unlink()
+        _, tasks = self.read()
+        self.assertEqual((tasks['page']['infra']['needs_you'], tasks['page']['infra']['hint']), (False, None))
 
     def test_pauses_carry_needs_you_hint_and_reset_at(self):
         F.write(self.plan / 'scheduler.live', {'pid': os.getpid()})  # this process: alive, so its pauses are read
@@ -947,7 +968,8 @@ class StopRecordTests(unittest.TestCase):
                                                                  text='Pick the retry budget.\n' if texts else None))
                 self.assertEqual(tasks['graph']['infra'], dict(cause='capacity', stage=None, harness=None, model=None,
                                                                reset_at=None, retry_after=None,
-                                                               detail='the provider said no' if texts else None))
+                                                               detail='the provider said no' if texts else None,
+                                                               needs_you=False, hint=None))
 
 
 class SummaryExtensionTests(unittest.TestCase):

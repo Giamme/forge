@@ -563,7 +563,7 @@ Every RunSummary field, plus:
   "retry_findings": "...",
   "needs_input": "the question in tasks/<id>/needs_input.md, or null",
   "infra": {"cause": "capacity", "stage": "dwarf", "harness": "claude", "model": "opus", "reset_at": 1760630000.0,
-            "retry_after": 600.0, "detail": "the model is overloaded"},
+            "retry_after": 600.0, "detail": "the model is overloaded", "needs_you": false, "hint": null},
   "lateral": [{"at": 1760620500.0, "attempt": 1, "role": "dwarf", "from": "luna", "to": "sol", "cause": "capacity"}],
   "ledger": [{"at": 1760620500.0, "attempt": 1, "review": "final-review-1760620500-4242", "verdict": "FAIL", "gate": "P2",
               "worst": "P1", "confirmed": 2, "new": 1, "carried": 0, "diff_bytes": 4096, "delta_bytes": null}],
@@ -631,7 +631,10 @@ Every RunSummary field, plus:
 - `infra`: for an `INFRA` task, the stop record in `tasks/<id>/infra.txt`: `cause` (its `class=`, as written),
   `stage`, `harness`, `model`, `reset_at` (an epoch), `retry_after` (seconds) and `detail` (capped at 400
   characters; the export leaves it out unless texts are chosen). A missing value is `null`, and a missing
-  file gives all of them `null`. `null` for every other status.
+  file gives all of them `null`. `needs_you` (a boolean) and `hint` (or `null`) are forge's own answer
+  (`forge_infra.stop_of`): the scheduler's pause that names the task, live (`infra.paused`) or the one the run
+  ended with (`infra.last`), else what the cause asks for when no peer can take the work. `null` for every
+  other status.
 - `lateral`: the rows of `tasks/<id>/lateral.tsv`, as `escalations` are read (a row with fewer than six columns
   or a bad epoch or attempt is warned and skipped); `[]` without the file.
 - `ledger`: the rows of `tasks/<id>/ledger.tsv`, the newest 50 (the list is in `truncated` when rows were cut).
