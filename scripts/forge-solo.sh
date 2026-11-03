@@ -22,6 +22,11 @@
 #                 [--fail-first] [--qa-threshold P0|P1|P2|P3|none]
 #                 [--fast ROLES]   dwarf, qa or none (planner, review and all are refused);
 #                                  kept in <run-dir>/fast. none removes it; omitting it keeps it
+#                 [--profile NAME | --no-profile]   a named profile (forge config profile list) picks
+#                                  the dwarf and qa (its medium pool, else its any pool), the QA
+#                                  threshold, the timeout and the fast roles that no flag gives;
+#                                  frozen in <run-dir>/profile.json, which later runs of the dir keep.
+#                                  With neither flag, that copy, else the default profile, applies
 #
 # Reads  <run-dir>/prompt.md   the implementation instruction (required)
 #        <run-dir>/goal.txt    one line, what the user asked for (optional)
@@ -31,6 +36,7 @@
 #        <run-dir>/verdict      PASS | FAIL | UNKNOWN, when qa emitted one (after the severity gate)
 #        <run-dir>/qa.gate, known_issues.md   the gate's decision and the tolerated findings
 #        <run-dir>/qa_threshold  with --qa-threshold: the blocking level (default P2)
+#        <run-dir>/profile.json  with a profile: the frozen copy of it
 #        <run-dir>/failfirst.json  with --fail-first: do the change's tests fail without it?
 #        <run-dir>/status       RUNNING, then this invocation's outcome
 #        <run-dir>/dwarf.spec, qa.spec and attempts.tsv
@@ -97,7 +103,7 @@ forge_metric_on_exit() {
 }
 
 if [ "${1:-}" = --help ] || [ "${1:-}" = -h ]; then
-  sed -n '18,41s/^# *//p' "$0"
+  sed -n '18,47s/^# *//p' "$0"
   forge_fractal_help
   echo 'Explicit Fractal retry: repeat the original command with --retry.'
   exit 0
@@ -106,9 +112,12 @@ RUN="${1:-}"; [ -n "$RUN" ] || die "usage: forge-solo.sh <run-dir> --repo <dir> 
 case "$RUN" in -*) die "first argument must be the run directory, got '$RUN'" ;; esac
 shift
 
+# --- profiles (#48): the same reading, freezing and exporting as forge-parallel.sh's plan ---
+forge_profile_py() { PYTHONPATH="$SKILL_DIR/scripts${PYTHONPATH:+:$PYTHONPATH}" python3 -m forge_decide.profiles "$@"; }
+
 OUTPUT=summary
 REPO="$PWD"; DWARF=""; QA="opus"; APPROACH=""; YD=""; YQ=""; NATIVE=""; TIMEOUT=""; DRY=0; FAIL_FIRST=0; QA_THR=
-FAST_GIVEN=0; FAST_PARSED=""
+FAST_GIVEN=0; FAST_PARSED=""; QA_GIVEN=0; PF_NAME=""; PF_NONE=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --fractal) forge_fractal_flag on || exit $?; shift ;;
@@ -119,7 +128,9 @@ while [ $# -gt 0 ]; do
     --output) OUTPUT="${2:?}"; shift 2 ;;
     --repo)       REPO="${2:?--repo needs a value}"; shift 2 ;;
     --dwarf)      DWARF="${2:?--dwarf needs a spec}"; shift 2 ;;
-    --qa)         QA="${2:?--qa needs a spec}"; shift 2 ;;
+    --qa)         QA="${2:?--qa needs a spec}"; QA_GIVEN=1; shift 2 ;;
+    --profile)    PF_NAME="${2:?--profile needs a profile name}"; shift 2 ;;
+    --no-profile) PF_NONE=1; shift ;;
     --approach)   APPROACH="${2:?--approach needs a file}"; shift 2 ;;
     --yolo-dwarf) YD="--yolo"; shift ;;
     --yolo-qa)    YQ="--yolo"; shift ;;
@@ -157,6 +168,48 @@ done
 
 case "$OUTPUT" in summary|full) ;; *) die "--output must be summary or full" ;; esac
 
+# A profile (#48) stands in for the flags that were not given. Read and checked here, before the
+# model is asked for and before anything is written: an unknown or invalid profile stops the run.
+[ -z "$PF_NAME" ] || [ "$PF_NONE" = 0 ] || die "--profile and --no-profile are mutually exclusive"
+pf_args=()
+[ -z "$PF_NAME" ] || pf_args+=(--profile "$PF_NAME")
+[ "$PF_NONE" = 0 ] || pf_args+=(--no-profile)
+[ -z "$DWARF" ] || pf_args+=(--given dwarf)
+[ "$QA_GIVEN" != 1 ] || pf_args+=(--given qa)
+[ -z "$QA_THR" ] || pf_args+=(--given qa_threshold)
+[ -z "$TIMEOUT" ] || pf_args+=(--given timeout)
+[ "$FAST_GIVEN" != 1 ] || pf_args+=(--given fast)
+pf_auto=0; pf_planner=0
+for pf_arg in ${FRACTAL_ARGS[@]+"${FRACTAL_ARGS[@]}"}; do
+  case "$pf_arg" in
+    --dwarf-low|--dwarf-medium|--dwarf-high) pf_args+=(--given "${pf_arg#--}") ;;
+    --fractal-auto-decompose) pf_auto=1 ;;
+    --fractal-planner) pf_planner=1; pf_args+=(--given fractal-planner) ;;
+  esac
+done
+PF_LINE=""
+pf_out="$(forge_profile_py solo "$RUN" --repo "$REPO" ${pf_args[@]+"${pf_args[@]}"})" || exit $?
+while IFS="$(printf '\t')" read -r pf_key pf_val; do
+  case "$pf_key" in
+    dwarf) DWARF="$pf_val" ;;
+    qa) QA="$pf_val" ;;
+    qa_threshold) QA_THR="$pf_val" ;;
+    timeout) TIMEOUT="$pf_val" ;;
+    fast) forge_fast_parse "$pf_val" solo; FAST_GIVEN=1 ;;
+    # Fractal's tier pools and planner count only where Fractal is selected (and the planner
+    # only with automatic decomposition, which --fractal-planner needs).
+    pool.low) [ "$FRACTAL_CHOICE" != on ] || FRACTAL_ARGS+=(--dwarf-low "$pf_val") ;;
+    pool.medium) [ "$FRACTAL_CHOICE" != on ] || FRACTAL_ARGS+=(--dwarf-medium "$pf_val") ;;
+    pool.high) [ "$FRACTAL_CHOICE" != on ] || FRACTAL_ARGS+=(--dwarf-high "$pf_val") ;;
+    fractal_planner) [ "$FRACTAL_CHOICE$pf_auto$pf_planner" != on10 ] || FRACTAL_ARGS+=(--fractal-planner "$pf_val") ;;
+    line) PF_LINE="$pf_val" ;;
+    # The gates and budget of the copy this run uses, for it and everything it starts.
+    decide) [ -z "$pf_val" ] || export FORGE_DECIDE_PROFILE_JSON="$pf_val" ;;
+  esac
+done <<EOF
+$pf_out
+EOF
+
 # Forge never picks the model: every dispatch spends the user's quota, and choosing
 # for them is not the tool's call.
 [ -n "$DWARF" ] || die "--dwarf is required"
@@ -173,6 +226,13 @@ case "$(cd "$RUN" && pwd)/" in
 esac
 
 RUN="$(cd "$RUN" && pwd)"
+# The frozen copy, atomically. Only the process that holds the run's lock writes it (a refused
+# second start, or a dry run, must not change what an active run froze): the first pass above
+# only read and checked, and the re-exec under the lock chooses again from the same arguments.
+if [ "$DRY" != 1 ] && [ "${FORGE_SOLO_LOCK:-}" = "$RUN" ]; then
+  forge_profile_py solo "$RUN" --repo "$REPO" --no-validate --write ${pf_args[@]+"${pf_args[@]}"} >/dev/null || exit $?
+fi
+[ -z "$PF_LINE" ] || [ -n "${FORGE_SOLO_LOCK:-}" ] || echo "$PF_LINE"
 # Freeze the selection now that the run dir is real and absolute. A retry of this
 # same run dir restores it rather than re-reading whatever flags are passed then.
 [ "$JEV_OPTS" = 1 ] && { forge_jev_restore "$RUN" || true; forge_jev_record "$RUN"; }

@@ -13,15 +13,26 @@ one name the first of these wins: the user file, the repo file, the built-in pro
     check_spec(spec)      -> reason | None
     from_plan(plan_dir)   -> a profile body captured from a plan dir
     frozen_decide(text)   -> the value of FORGE_DECIDE_PROFILE_JSON, or None
+
+The shell reads and freezes a profile through the entry point at the end of this file
+(`python3 -m forge_decide.profiles <command>`, with scripts/ on PYTHONPATH):
+
+    freeze PLAN --repo R [--profile N | --no-profile] [--given KEY]...   `plan`: freeze, apply
+    solo RUN --repo R [--profile N | --no-profile] [--given TOKEN]...    forge-solo.sh: the same
+    decide FILE | line FILE | value FILE KEY...                          read a frozen profile.json
 """
 from __future__ import annotations
 
+import argparse
+import datetime
 import json
 import math
 import os
 from pathlib import Path
 import re
 import subprocess
+import sys
+import tempfile
 import unicodedata
 
 from . import GATES, MODES, load_repo, load_user
@@ -429,3 +440,404 @@ def frozen_decide(profile_json_text) -> str | None:
     name = data.get('name')
     return json.dumps(dict(name=name if isinstance(name, str) else '', gates=gates or {},
                            budget=budget or {}))
+
+
+# --- a profile in a run: choose, check, freeze, apply -------------------------------------
+# `plan` and forge-solo.sh pick a profile (a flag, the plan's own frozen copy, or the default),
+# keep it as <dir>/profile.json, and turn its values into what their flags would have set.
+
+FROZEN = 'profile.json'
+# Files an escalation policy leaves in the task dirs; turning the policy off removes them.
+ESCALATION_MARKERS = ('escalation.stop', 'split.suggested', 'escalation.next')
+SOLO_FAST_ROLES = ('dwarf', 'qa')
+SOLO_POOL_TOKENS = ('dwarf-low', 'dwarf-medium', 'dwarf-high')
+
+
+def flat(body) -> dict:
+    """The routing and policy keys a profile sets, dotted: routing.dwarf.high, policy.timeout."""
+    out: dict = {}
+    if not isinstance(body, dict):
+        return out
+    routing, policy = body.get('routing'), body.get('policy')
+    for key, value in (routing.items() if isinstance(routing, dict) else ()):
+        if key in POOLS and isinstance(value, dict):
+            for tier, specs in value.items():
+                out[f'routing.{key}.{tier}'] = specs
+        else:
+            out[f'routing.{key}'] = value
+    for key, value in (policy.items() if isinstance(policy, dict) else ()):
+        out[f'policy.{key}'] = value
+    return out
+
+
+def table_line(record, overridden=None) -> str:
+    """`profile: NAME (LEVEL[, shadows LEVEL]) — flags override: KEY, KEY` for the approval table."""
+    if not isinstance(record, dict) or not isinstance(record.get('name'), str):
+        return ''
+    where = str(record.get('level') or '?')
+    shadowed = [lv for lv in (record.get('shadowed') or []) if isinstance(lv, str)]
+    if shadowed:
+        where += ', shadows ' + ', '.join(shadowed)
+    line = f'profile: {record["name"]} ({where})'
+    keys = record.get('overridden') if overridden is None else overridden
+    keys = [k for k in (keys or []) if isinstance(k, str)]
+    if keys:
+        line += ' \u2014 flags override: ' + ', '.join(keys)
+    return line
+
+
+def _load_frozen(path) -> dict | None:
+    try:
+        data = json.loads(Path(path).read_text())
+    except (OSError, UnicodeDecodeError, ValueError, RecursionError):
+        return None
+    return data if isinstance(data, dict) and isinstance(data.get('body'), dict) else None
+
+
+def _write_atomic(path: Path, text: str) -> None:
+    """A temp file in the same directory, then a rename."""
+    fd, temporary = tempfile.mkstemp(prefix=path.name + '.', dir=str(path.parent))
+    try:
+        with os.fdopen(fd, 'w') as handle:
+            handle.write(text)
+        os.chmod(temporary, 0o644)
+        os.replace(temporary, path)
+    except BaseException:
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
+        raise
+
+
+def _providers() -> dict:
+    providers = load_user()[0].get('providers')
+    return providers if isinstance(providers, dict) else {}
+
+
+def _choose(repo, name, none, frozen_path: Path, prefer_frozen: bool, validate_it: bool = True):
+    """(action, record): 'none' (nothing to do), 'remove' (--no-profile), 'keep' (the frozen
+    copy stays; record is it) or 'new' (record is a freshly selected, valid profile).
+    Raises ProfileError for an unknown or invalid profile."""
+    if none:
+        return 'remove', None
+    kept = _load_frozen(frozen_path) if (name is None or prefer_frozen) else None
+    if kept is not None:
+        return 'keep', kept
+    if name is None and frozen_path.exists() and not prefer_frozen:
+        return 'keep', {}  # a frozen copy that cannot be read is still the plan's, kept as it is
+    chosen = select(repo, name)
+    if chosen is None:
+        return 'none', None
+    reasons = validate(chosen['body'], _providers()) if validate_it else []
+    if reasons:
+        raise ProfileError(f'profile {chosen["name"]!r} is not valid:\n'
+                           + '\n'.join(f'  - {reason}' for reason in reasons))
+    return 'new', chosen
+
+
+def _record(chosen: dict, given) -> dict:
+    keys = flat(chosen['body'])
+    return dict(name=chosen['name'], level=chosen['level'], body=chosen['body'],
+                shadowed=list(chosen.get('shadowed') or []),
+                frozen_at=datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
+                overridden=sorted(k for k in set(given) if k in keys))
+
+
+def _list(value) -> str:
+    return ','.join(value) if isinstance(value, list) else str(value)
+
+
+def _share(value) -> str:
+    """0.1 -> 0.1, 1.0 -> 1, 0.0 -> 0: the shapes the --explore and --shadow-rate flags accept."""
+    return ('%.10f' % float(value)).rstrip('0').rstrip('.') or '0'
+
+
+def _fast_roles(roles, allowed) -> str:
+    kept = [role for role in FAST_ROLES if role in roles and role in allowed]
+    return ','.join(kept) if kept else 'none'
+
+
+def _apply_plan_files(plan: Path, keys: dict) -> None:
+    """The profile values `plan` has no variable for, written as their flags write them."""
+    def put(name, text):
+        (plan / name).write_text(text)
+
+    def markers():
+        for task in plan.glob('tasks/*'):
+            for marker in ESCALATION_MARKERS:
+                try:
+                    (task / marker).unlink()
+                except OSError:
+                    pass
+    if 'routing.final_reviewer' in keys:
+        put('final_qa', keys['routing.final_reviewer'])
+    if 'routing.escalate_after' in keys:
+        put('escalate_after', str(keys['routing.escalate_after']))
+        if keys['routing.escalate_after'] == 0:
+            markers()
+    if 'routing.escalate_effort' in keys:
+        if keys['routing.escalate_effort']:
+            put('escalate_effort', 'on\n')
+            markers()
+        else:
+            try:
+                (plan / 'escalate_effort').unlink()
+            except OSError:
+                pass
+    if 'policy.qa_threshold' in keys:
+        put('qa_threshold', str(keys['policy.qa_threshold']))
+    for key in ('timeout', 'verify_retries'):
+        if f'policy.{key}' in keys:
+            put(key, str(keys[f'policy.{key}']))
+
+
+ROUTED = 'routed.json'
+_BLANK = {'dwarf': ('', '-', 'UNASSIGNED'), 'qa': ('', '-')}
+
+
+def _rows(path: Path) -> dict:
+    """{task id: fields} of a task table; {} when it cannot be read."""
+    try:
+        lines = path.read_text().split('\n')
+    except (OSError, UnicodeDecodeError):
+        return {}
+    rows = {}
+    for line in lines:
+        fields = line.split('\t')
+        if not line.startswith('#') and len(fields) >= 7:
+            rows[fields[0]] = fields
+    return rows
+
+
+def _load_routed(plan: Path) -> dict:
+    try:
+        data = json.loads((plan / ROUTED).read_text())
+    except (OSError, UnicodeDecodeError, ValueError, RecursionError):
+        data = None
+    data = data if isinstance(data, dict) else {}
+    return {pool: {k: v for k, v in (data.get(pool) or {}).items() if isinstance(k, str) and isinstance(v, str)}
+            if isinstance(data.get(pool), dict) else {} for pool in ('dwarf', 'qa')}
+
+
+def record_routed(plan: Path) -> None:
+    """Remember which dwarf and qa cells routing wrote into the task table (`plan` calls this once it
+    has resolved the table): a cell that was blank in tasks.declared.tsv, the table as this call
+    found it, and now holds a spec. A cell an earlier call recorded stays recorded while it still holds
+    what routing wrote, so a model put there by hand is never mistaken for a routed one."""
+    declared, current, before = _rows(plan / 'tasks.declared.tsv'), _rows(plan / 'tasks.tsv'), _load_routed(plan)
+    after = {'dwarf': {}, 'qa': {}}
+    for task, fields in current.items():
+        for column, pool in ((4, 'dwarf'), (5, 'qa')):
+            value = fields[column]
+            if value in _BLANK[pool]:
+                continue
+            was = declared.get(task)
+            if was is not None and was[column] in _BLANK[pool]:
+                after[pool][task] = value
+            elif before[pool].get(task) == value:
+                after[pool][task] = value
+    _write_atomic(plan / ROUTED, json.dumps(after, indent=2) + '\n')
+
+
+def _release_routed(plan: Path, routed) -> None:
+    """A profile chosen again replaces the routing the plan was resolved with: a task model that routing
+    itself wrote (routed.json) goes back to unassigned, when the new pools (`routed`: the routing keys of
+    the new profile and of this call's flags) can resolve that row, and the table then does it. A model
+    written into a row by hand, a row the new pools say nothing about, and a task that merged stay."""
+    written = _load_routed(plan)
+    if not any(written.values()):
+        return
+    table = plan / 'tasks.tsv'
+    try:
+        lines = table.read_text().split('\n')
+    except (OSError, UnicodeDecodeError):
+        return
+    changed = False
+    for number, line in enumerate(lines):
+        fields = line.split('\t')
+        if line.startswith('#') or len(fields) < 7:
+            continue
+        try:
+            merged = (plan / 'tasks' / fields[0] / 'status').read_text().strip() == 'MERGED'
+        except (OSError, UnicodeDecodeError):
+            merged = False
+        if merged:
+            continue
+        for column, pool in ((4, 'dwarf'), (5, 'qa')):
+            if written[pool].get(fields[0]) == fields[column] and (
+                    f'routing.{pool}.{fields[2]}' in routed or f'routing.{pool}.any' in routed):
+                fields[column] = '-'
+                changed = True
+        lines[number] = '\t'.join(fields)
+    if changed:
+        _write_atomic(table, '\n'.join(lines))
+
+
+def freeze_plan(plan: Path, repo, name, none, given, check_only=False, validate_it=True) -> list:
+    """Select, freeze and apply a profile for `plan`; returns `key<TAB>value` lines for the shell
+    (the values of its variables: pools, planner, shadow review, exploration, fast roles)."""
+    frozen_path = plan / FROZEN
+    action, chosen = _choose(repo, name, none, frozen_path, False, validate_it)
+    if check_only:
+        return []
+    if action == 'remove':
+        for name_ in (FROZEN, ROUTED):
+            try:
+                (plan / name_).unlink()
+            except OSError:
+                pass
+        return []
+    if action != 'new':
+        return []
+    record = _record(chosen, given)
+    keys = {k: v for k, v in flat(chosen['body']).items() if k not in record['overridden']}
+    out = []
+    for key, value in keys.items():
+        if key.startswith(('routing.dwarf.', 'routing.qa.')) or key in (
+                'routing.planner', 'policy.shadow_qa'):
+            out.append(f'{key}\t{_list(value)}')
+        elif key in ('policy.shadow_rate', 'policy.explore'):
+            out.append(f'{key}\t{_share(value)}')
+        elif key == 'policy.fast':
+            out.append(f'{key}\t{_fast_roles(value, FAST_ROLES)}')
+    _release_routed(plan, set(keys) | set(given))
+    _apply_plan_files(plan, keys)
+    _write_atomic(frozen_path, json.dumps(record, indent=2) + '\n')
+    return out
+
+
+SOLO_GIVEN = {'dwarf': None, 'qa': None, 'qa_threshold': 'policy.qa_threshold',
+              'timeout': 'policy.timeout', 'fast': 'policy.fast',
+              'fractal-planner': 'routing.fractal_planner',
+              'dwarf-low': 'routing.dwarf.low', 'dwarf-medium': 'routing.dwarf.medium',
+              'dwarf-high': 'routing.dwarf.high'}
+
+
+def _first(body, pool):
+    """The first spec of `pool` (dwarf or qa) at the medium tier, else the any tier."""
+    pools = flat(body)
+    for tier in ('medium', 'any'):
+        specs = pools.get(f'routing.{pool}.{tier}')
+        if isinstance(specs, list) and specs:
+            return f'routing.{pool}.{tier}', specs[0]
+    return None, None
+
+
+def solo_profile(run: Path, repo, name, none, given, use_frozen, write, validate_it=True) -> list:
+    """The solo run's values from a profile, as `key<TAB>value` lines; writes the frozen copy
+    when `write`. Keys: dwarf, qa, qa_threshold, timeout, fast, pool.<tier>, fractal_planner, line."""
+    frozen_path = run / FROZEN
+    action, chosen = _choose(repo, name, none, frozen_path, use_frozen, validate_it)
+    if action == 'remove':
+        if write:
+            try:
+                frozen_path.unlink()
+            except OSError:
+                pass
+        return []
+    if action == 'none' or not chosen:
+        return []
+    body = chosen['body']
+    keys = flat(body)
+    overridden = []
+    for token in given:
+        if token in ('dwarf', 'qa'):
+            key, _ = _first(body, token)
+            overridden.append(key)
+        else:
+            overridden.append(SOLO_GIVEN.get(token))
+    overridden = sorted(k for k in set(overridden) if k in keys)
+    record = chosen if action == 'keep' else _record(chosen, overridden)
+    shown = dict(record, overridden=overridden)
+    out = []
+    for token in ('dwarf', 'qa'):
+        if token not in given:
+            _, spec = _first(body, token)
+            if spec:
+                out.append(f'{token}\t{spec}')
+    if 'qa_threshold' not in given and 'policy.qa_threshold' in keys:
+        out.append(f'qa_threshold\t{keys["policy.qa_threshold"]}')
+    if 'timeout' not in given and 'policy.timeout' in keys:
+        out.append(f'timeout\t{keys["policy.timeout"]}')
+    if 'fast' not in given and isinstance(keys.get('policy.fast'), list):
+        out.append(f'fast\t{_fast_roles(keys["policy.fast"], SOLO_FAST_ROLES)}')
+    for tier in ('low', 'medium', 'high'):
+        specs = keys.get(f'routing.dwarf.{tier}')
+        if f'dwarf-{tier}' not in given and isinstance(specs, list) and specs:
+            out.append(f'pool.{tier}\t{_list(specs)}')
+    planner = keys.get('routing.fractal_planner')
+    if 'fractal-planner' not in given and isinstance(planner, str) and planner:
+        out.append(f'fractal_planner\t{planner}')
+    out.append(f'line\t{table_line(shown)}')
+    out.append(f'decide\t{frozen_decide(json.dumps(record)) or ""}')
+    if write and action == 'new':
+        _write_atomic(frozen_path, json.dumps(record, indent=2) + '\n')
+    return out
+
+
+# --- command line -----------------------------------------------------------------------
+
+def _command_line() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog='python3 -m forge_decide.profiles')
+    commands = parser.add_subparsers(dest='command', required=True)
+    for name in ('freeze', 'solo'):
+        sub = commands.add_parser(name)
+        sub.add_argument('directory')
+        sub.add_argument('--repo', default=None)
+        sub.add_argument('--profile', default=None)
+        sub.add_argument('--no-profile', action='store_true')
+        sub.add_argument('--given', action='append', default=[])
+        sub.add_argument('--no-validate', action='store_true')
+        if name == 'freeze':
+            sub.add_argument('--check-only', action='store_true')
+        else:
+            sub.add_argument('--use-frozen', action='store_true')
+            sub.add_argument('--write', action='store_true')
+    commands.add_parser('routed').add_argument('directory')
+    commands.add_parser('decide').add_argument('file')
+    commands.add_parser('line').add_argument('file')
+    value = commands.add_parser('value')
+    value.add_argument('file')
+    value.add_argument('keys', nargs='+')
+    return parser
+
+
+def main(argv=None) -> int:
+    args = _command_line().parse_args(argv)
+    if args.command in ('decide', 'line', 'value'):
+        text = Path(args.file).read_text() if Path(args.file).is_file() else ''
+        if args.command == 'decide':
+            print(frozen_decide(text) or '')
+        elif args.command == 'line':
+            print(table_line(_load_frozen(args.file)))
+        else:
+            values = flat((_load_frozen(args.file) or {}).get('body'))
+            for key in args.keys:
+                if key in values:
+                    print(f'{key}\t{values[key]}')
+        return 0
+    if args.command == 'routed':
+        record_routed(Path(args.directory))
+        return 0
+    if args.profile is not None and args.no_profile:
+        print('forge: --profile and --no-profile are mutually exclusive', file=sys.stderr)
+        return 2
+    repo = args.repo or None
+    try:
+        if args.command == 'freeze':
+            lines = freeze_plan(Path(args.directory), repo, args.profile, args.no_profile, args.given,
+                                args.check_only, not args.no_validate)
+        else:
+            lines = solo_profile(Path(args.directory), repo, args.profile, args.no_profile, args.given,
+                                 args.use_frozen, args.write, not args.no_validate)
+    except ProfileError as exc:
+        print(f'forge: {exc}', file=sys.stderr)
+        return 2
+    for line in lines:
+        print(line)
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())
