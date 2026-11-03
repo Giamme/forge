@@ -8,6 +8,9 @@
 #   forge-parallel.sh plan <plan-dir> --repo <dir> [routing flags] [--decompose-level low|medium|high] [--ui]
 #                                     [--qa-threshold P0|P1|P2|P3|none|default] [--profile NAME | --no-profile]
 #                                     [--collapse-chains]
+#   forge-parallel.sh auto <plan-dir> --repo <dir> --goal-file <file> [--planner <spec>] [--decompose-level L]
+#                                     [--plan auto|always|never] [--one-task-difficulty low|medium|high]
+#                                     [--no-collapse] [--approved] [plan flags...] [-- run flags...]
 #   forge-parallel.sh run  <plan-dir> [--max-parallel N] [--yolo-dwarf] [--yolo-qa]
 #                                     [--verify <command>] [--setup <command>] [--dry-run]
 #                                     [--timeout S] [--retry-failed N] [--infra-retries M]
@@ -95,6 +98,28 @@
 #                           on its way (kept for the plan; --no-sweep-ahead turns it off)
 #   --attribute             when the run's combined verification fails, search the merge order for
 #                           a merge that breaks it (kept for the plan; --no-attribute turns it off)
+#
+# auto (#87, #88): from a goal to a finished run in one blocking command, with no orchestrating
+# session in between. In a NEW plan dir (created when missing; one that already has tasks.tsv
+# is refused, exit 2): the goal is copied verbatim to <plan-dir>/request.md and `auto` is
+# written to <plan-dir>/orchestrator (the plan event in the dataset records it). Then
+#   1. the gate (--plan): auto = forge-planner.py gate; always = plan; never = one task
+#   2. one task: forge-planner.py one-task --difficulty (--one-task-difficulty, default medium);
+#      no planner is dispatched
+#   3. planning: the spec is --planner, else the routing.planner of the profile the plan flags
+#      select (neither: exit 2). A preflight (forge-dispatch.sh doctor) runs before any model
+#      call, the planner is dispatched into the plan dir (with the fast tier when planner is a
+#      fast role), and its reply is parsed strictly by forge-planner.py parse
+#   4. `plan` with every flag before `--` that is not auto's own, plus --collapse-chains unless
+#      --no-collapse. When its gates send items back (plan.sendback.md, exit 4), the planner is
+#      re-dispatched once with that file appended and the reply planned again
+#   5. without --approved: stop, exit 0, after printing the exact `run` command; nothing is
+#      dispatched after the planner. With --approved (the user's explicit pre-approval): `run`
+#      with the flags after `--`, and auto exits with its code
+# auto exit codes: 0 stopped at approval, or the run's 0 | 2 usage (no planner, a plan dir that
+#   already has tasks.tsv, ...) | 4 the planner failed, its reply was refused, or the plan gates
+#   sent items back a second time | 8 the planner stopped on an infrastructure failure (nothing
+#   was dispatched after it) | otherwise the exit code of the preflight, of `plan` or of `run`
 #
 # Exit codes: 0 ok | 2 usage/validation | 3 precondition (not a git repo, etc.)
 #             5 some task failed QA or verification failed | 6 integration conflict
@@ -2522,13 +2547,213 @@ do_integrate() {
   echo "merged candidate of $int_br into $cur (verification: $(cat "$out/verification.status"))"
 }
 
+# --- auto (#87, #88) -----------------------------------------------------------------
+# The profile `plan` will select for these flags, read without writing anything: the
+# planner spec and the fast-tier roles it names, as `key<TAB>value` lines.
+forge_auto_profile() { # forge_auto_profile <repo> <profile name or empty> <no-profile 0|1>
+  PYTHONPATH="$SKILL_DIR/scripts${PYTHONPATH:+:$PYTHONPATH}" python3 - "$@" <<'PY'
+import sys
+from forge_decide import profiles
+repo, name, none = sys.argv[1] or None, sys.argv[2] or None, sys.argv[3] == '1'
+try:
+    chosen = profiles.select(repo, name, none)
+except profiles.ProfileError as exc:
+    print('forge: %s' % exc, file=sys.stderr)
+    sys.exit(2)
+values = profiles.flat(chosen['body']) if chosen else {}
+planner = values.get('routing.planner')
+if isinstance(planner, str) and planner:
+    print('routing.planner\t%s' % planner)
+fast = values.get('policy.fast')
+if isinstance(fast, (list, tuple)):
+    fast = ','.join(str(role) for role in fast)
+if isinstance(fast, str) and fast:
+    print('policy.fast\t%s' % fast)
+PY
+}
+
+# Forget what `parse` wrote, so the planner's next reply can be parsed: tasks.tsv and each
+# tasks/<id>/. request.md, the planner's records and plan.sendback.md stay.
+forge_auto_unparse() { # forge_auto_unparse <plan-dir>
+  local id
+  if [ -f "$1/tasks.tsv" ]; then
+    for id in $(all_ids "$1/tasks.tsv"); do
+      case "$id" in ''|.*|*/*) continue ;; esac
+      rm -rf "$1/tasks/$id"
+    done
+  fi
+  rm -f "$1/tasks.tsv" "$1/tasks.declared.tsv"
+}
+
+# One planner dispatch: prompt in $PLAN/planner.prompt, reply in $PLAN/planner.last. Sets
+# AUTO_RC (0, 4 or 8) for the caller instead of exiting, so a send-back can reuse it.
+forge_auto_dispatch() { # forge_auto_dispatch <plan-dir> <repo> <spec> <fast-option-or-empty>
+  local plan="$1" repo="$2" spec="$3" tier="$4" rc=0
+  AUTO_RC=0
+  note "auto: dispatching the planner ($spec) for the whole plan"
+  bash "$DISPATCH" planner "$spec" --repo "$repo" --run-dir "$plan" --prompt-file "$plan/planner.prompt" \
+    --output summary ${tier:+$tier} >&2 || rc=$?
+  if [ "$rc" -eq 8 ]; then
+    note "auto: the planner stopped on an infrastructure failure (see $plan/planner.infra). Nothing was dispatched after the planner; fix the cause and run auto again"
+    AUTO_RC=8
+  elif [ "$rc" -ne 0 ]; then
+    note "auto: the planner failed (exit $rc). Its last message is $plan/planner.last and its log $plan/planner.log"
+    AUTO_RC=4
+  fi
+  return 0
+}
+
+do_auto() {
+  local PLAN="${1:?auto needs a plan dir}"; shift
+  local REPO="" GOAL="" PLANNER="" DLEVEL="" GATE=auto ONE_DIFF=medium COLLAPSE=1 APPROVED=0
+  local PLAN_ARGS=() RUN_ARGS=() PF_NAME="" PF_NONE=0 FAST_GIVEN=0 FAST_PARSED="" arg
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --)             shift; RUN_ARGS=("$@"); break ;;
+      --repo)         REPO="${2:?--repo needs a directory}"; shift 2 ;;
+      --goal-file)    GOAL="${2:?--goal-file needs a file}"; shift 2 ;;
+      --planner)      PLANNER="${2:?--planner needs a spec}"; PLAN_ARGS+=("$1" "$2"); shift 2 ;;
+      --decompose-level)
+        case "${2:-}" in low|medium|high) DLEVEL="$2"; shift 2 ;;
+          *) die "--decompose-level must be low, medium or high" ;; esac ;;
+      --plan)
+        case "${2:-}" in auto|always|never) GATE="$2"; shift 2 ;;
+          *) die "--plan must be auto, always or never" ;; esac ;;
+      --one-task-difficulty)
+        case "${2:-}" in low|medium|high) ONE_DIFF="$2"; shift 2 ;;
+          *) die "--one-task-difficulty must be low, medium or high" ;; esac ;;
+      --no-collapse)  COLLAPSE=0; shift ;;
+      --approved)     APPROVED=1; shift ;;
+      --profile)      PF_NAME="${2:?--profile needs a profile name}"; PLAN_ARGS+=("$1" "$2"); shift 2 ;;
+      --no-profile)   PF_NONE=1; PLAN_ARGS+=("$1"); shift ;;
+      --fast)
+        [ -n "${2:-}" ] || die "--fast needs a comma list of roles (dwarf, qa, planner, review), all or none"
+        forge_fast_parse "$2" plan; FAST_GIVEN=1
+        PLAN_ARGS+=("$1" "$2"); shift 2 ;;
+      --no-ripwire)   export FORGE_RIPWIRE=off; PLAN_ARGS+=("$1"); shift ;;
+      *)              PLAN_ARGS+=("$1"); shift ;;
+    esac
+  done
+  [ -n "$REPO" ] || die "auto needs --repo DIR"
+  [ -d "$REPO" ] || die "--repo '$REPO' is not a directory"
+  REPO="$(cd "$REPO" && pwd)"
+  [ -n "$GOAL" ] || die "auto needs --goal-file FILE"
+  [ -f "$GOAL" ] && [ -r "$GOAL" ] || die "--goal-file '$GOAL' is not a readable file"
+  [ ! -e "$PLAN/tasks.tsv" ] || die "auto starts a new plan; use plan and run on an existing one"
+  (cd "$REPO" && git rev-parse --git-dir >/dev/null 2>&1) \
+    || die "'$REPO' is not a git repository. Decomposed runs need worktrees, and there is no honest fallback without them." 3
+  mkdir -p "$PLAN" || die "could not create plan dir '$PLAN'" 3
+  PLAN="$(cd "$PLAN" && pwd)"
+
+  # The request, verbatim, and who started this plan.
+  if ! [ "$GOAL" -ef "$PLAN/request.md" ]; then
+    cp "$GOAL" "$PLAN/request.md" || die "could not write $PLAN/request.md" 3
+  fi
+  printf 'auto\n' > "$PLAN/orchestrator" || die "could not write $PLAN/orchestrator" 3
+  local PLANNER_PY="$SKILL_DIR/scripts/forge-planner.py" REQUEST="$PLAN/request.md" rc=0 from_planner=0 fast_tier=""
+  PLAN_ARGS=(--repo "$REPO" ${PLAN_ARGS[@]+"${PLAN_ARGS[@]}"})
+  [ -z "$DLEVEL" ] || PLAN_ARGS+=(--decompose-level "$DLEVEL")
+  [ "$COLLAPSE" = 0 ] || PLAN_ARGS+=(--collapse-chains)
+
+  # 1. The gate.
+  local decision
+  case "$GATE" in
+    always) decision=plan ;;
+    never)  decision=one-task ;;
+    *)
+      decision="$(python3 "$PLANNER_PY" gate --plan "$PLAN" --goal-file "$REQUEST")" || exit $?
+      note "auto: the gate says $decision" ;;
+  esac
+
+  if [ "$decision" = one-task ]; then
+    # 2. One task, no planner.
+    python3 "$PLANNER_PY" one-task --plan "$PLAN" --goal-file "$REQUEST" --difficulty "$ONE_DIFF" >/dev/null || exit $?
+  else
+    # 3. The planner: its spec, its preflight, its dispatch, its reply.
+    local key val profile_planner="" profile_fast="" profile_lines
+    forge_profile_precheck "$PLAN" "${PLAN_ARGS[@]}"
+    profile_lines="$(forge_auto_profile "$REPO" "$PF_NAME" "$PF_NONE")" || exit $?
+    while IFS="$(printf '\t')" read -r key val; do
+      case "$key" in
+        routing.planner) profile_planner="$val" ;;
+        policy.fast) profile_fast="$val" ;;
+      esac
+    done <<AUTO_PROFILE
+$profile_lines
+AUTO_PROFILE
+    [ -n "$PLANNER" ] || PLANNER="$profile_planner"
+    [ -n "$PLANNER" ] || die "auto needs --planner SPEC, or a profile with routing.planner"
+    # The fast roles `plan` is about to store: the flag, else the profile's. Written now so the
+    # planner dispatch asks for the tier through the helper the other roles use.
+    if [ "$FAST_GIVEN" != 1 ] && [ -n "$profile_fast" ]; then
+      forge_fast_parse "$profile_fast" plan; FAST_GIVEN=1
+    fi
+    forge_fast_store "$PLAN"
+    fast_tier="$(forge_fast_tier "$PLAN" planner)"
+
+    note "auto: checking the planner ($PLANNER) before any model call"
+    bash "$DISPATCH" doctor --spec "$PLANNER" --role planner ${fast_tier:+$fast_tier} >&2 || exit $?
+    python3 "$PLANNER_PY" prompt --plan "$PLAN" --goal-file "$REQUEST" ${DLEVEL:+--level "$DLEVEL"} >/dev/null || exit $?
+    forge_auto_dispatch "$PLAN" "$REPO" "$PLANNER" "$fast_tier"
+    [ "$AUTO_RC" -eq 0 ] || exit "$AUTO_RC"
+    python3 "$PLANNER_PY" parse --plan "$PLAN" --reply "$PLAN/planner.last" || rc=$?
+    case "$rc" in
+      0) ;;
+      4) note "auto: the planner's reply was refused (see $PLAN/planner.refused). Nothing was dispatched after the planner"
+         exit 4 ;;
+      *) exit "$rc" ;;
+    esac
+    from_planner=1
+  fi
+
+  # 4. plan, and one send-back when the plan gates ask for it.
+  bash "$SELF" plan "$PLAN" ${PLAN_ARGS[@]+"${PLAN_ARGS[@]}"}; rc=$?
+  if [ "$rc" -eq 4 ] && [ "$from_planner" = 1 ] && [ -s "$PLAN/plan.sendback.md" ]; then
+    note "auto: the plan gates sent items back; asking the planner once more"
+    cp "$PLAN/planner.last" "$PLAN/planner.first.last" 2>/dev/null || true
+    cp "$PLAN/planner.prompt" "$PLAN/planner.first.prompt" 2>/dev/null || true
+    forge_auto_unparse "$PLAN"
+    python3 "$PLANNER_PY" prompt --plan "$PLAN" --goal-file "$REQUEST" ${DLEVEL:+--level "$DLEVEL"} >/dev/null || exit $?
+    {
+      printf '\n\n## Your plan was sent back\n\n'
+      printf 'forge checked your plan and sent the items below back. Reply with the whole corrected plan, in the same format.\n\n'
+      cat "$PLAN/plan.sendback.md"
+    } >> "$PLAN/planner.prompt"
+    forge_auto_dispatch "$PLAN" "$REPO" "$PLANNER" "$fast_tier"
+    [ "$AUTO_RC" -eq 0 ] || exit "$AUTO_RC"
+    rc=0
+    python3 "$PLANNER_PY" parse --plan "$PLAN" --reply "$PLAN/planner.last" || rc=$?
+    case "$rc" in
+      0) ;;
+      4) note "auto: the planner's second reply was refused (see $PLAN/planner.refused). Nothing was dispatched after the planner"
+         exit 4 ;;
+      *) exit "$rc" ;;
+    esac
+    bash "$SELF" plan "$PLAN" ${PLAN_ARGS[@]+"${PLAN_ARGS[@]}"}; rc=$?
+    if [ "$rc" -eq 4 ]; then
+      note "auto: the plan gates sent items back a second time; stopping. See $PLAN/plan.sendback.md"
+    fi
+  fi
+  [ "$rc" -eq 0 ] || exit "$rc"
+
+  # 5. Stop for approval, or run.
+  if [ "$APPROVED" = 1 ]; then
+    bash "$SELF" run "$PLAN" ${RUN_ARGS[@]+"${RUN_ARGS[@]}"}; exit $?
+  fi
+  local command_line
+  command_line="$(printf '%q run %q' "$SELF" "$PLAN")"
+  for arg in ${RUN_ARGS[@]+"${RUN_ARGS[@]}"}; do command_line="$command_line $(printf '%q' "$arg")"; done
+  printf '\nauto: the plan is ready and nothing has run. To start it:\n  %s\n' "$command_line"
+  exit 0
+}
+
 # --- main ---------------------------------------------------------------------
 if [ "${1:-}" = --help ] || [ "${1:-}" = -h ]; then
   awk '/^# Usage:/ {on=1} /^set -uo pipefail/ {on=0} on {sub(/^# ?/, ""); print}' "$SELF"
   forge_fractal_help
   exit 0
 fi
-[ $# -ge 1 ] || die "usage: forge-parallel.sh <plan|run|retry|accept|review|integrate|split|attribute|combine> <plan-dir> [...]"
+[ $# -ge 1 ] || die "usage: forge-parallel.sh <plan|auto|run|retry|accept|review|integrate|split|attribute|combine> <plan-dir> [...]"
 CMD="$1"; shift
 [ ! -f "${1:-}/no_ripwire" ] || export FORGE_RIPWIRE=off
 if [ -d "${1:-}" ]; then
@@ -2558,6 +2783,7 @@ need_fn() { declare -F "$1" >/dev/null || die "'$CMD' is not available: $1 is mi
 case "$CMD" in run|retry|integrate|accept|review|split|attribute) forge_profile_export "${1:-}" ;; esac
 case "$CMD" in
   plan)      do_plan "$@"; rc=$?; forge_update_notice; exit "$rc" ;;
+  auto)      do_auto "$@" ;;
   run)
     # The signal handler lives here, at the pid the user started: do_run is a subshell, and
     # bash runs a trap only between commands, so it is started in the background and waited
