@@ -780,6 +780,10 @@ def plan_event(plan: Path, prov: dict, src: str = 'live', inventory: bool = True
             data['collapsed_from'] = origin
     if plan_gate is not None:
         data['plan_gate'] = plan_gate
+    # Who started the plan: `auto` for forge-parallel.sh auto. Absent for a plan built by hand.
+    orchestrator = first_line(plan / 'orchestrator')
+    if orchestrator:
+        data['orchestrator'] = orchestrator
     return dict(rid='plan:%s:%s' % (prov.get('run'), sha256(inputs.encode())[:16]), kind='plan',
                 ts=time.time(), src=src, run=prov.get('run'), run_id=prov.get('run_id'), mode='parallel',
                 inv=prov.get('inv'), data=data)
