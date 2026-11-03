@@ -592,21 +592,61 @@ def _apply_plan_files(plan: Path, keys: dict) -> None:
             put(key, str(keys[f'policy.{key}']))
 
 
+ROUTED = 'routed.json'
+_BLANK = {'dwarf': ('', '-', 'UNASSIGNED'), 'qa': ('', '-')}
+
+
+def _rows(path: Path) -> dict:
+    """{task id: fields} of a task table; {} when it cannot be read."""
+    try:
+        lines = path.read_text().split('\n')
+    except (OSError, UnicodeDecodeError):
+        return {}
+    rows = {}
+    for line in lines:
+        fields = line.split('\t')
+        if not line.startswith('#') and len(fields) >= 7:
+            rows[fields[0]] = fields
+    return rows
+
+
+def _load_routed(plan: Path) -> dict:
+    try:
+        data = json.loads((plan / ROUTED).read_text())
+    except (OSError, UnicodeDecodeError, ValueError, RecursionError):
+        data = None
+    data = data if isinstance(data, dict) else {}
+    return {pool: {k: v for k, v in (data.get(pool) or {}).items() if isinstance(k, str) and isinstance(v, str)}
+            if isinstance(data.get(pool), dict) else {} for pool in ('dwarf', 'qa')}
+
+
+def record_routed(plan: Path) -> None:
+    """Remember which dwarf and qa cells routing wrote into the task table (`plan` calls this once it
+    has resolved the table): a cell that was blank in tasks.declared.tsv, the table as this call
+    found it, and now holds a spec. A cell an earlier call recorded stays recorded while it still holds
+    what routing wrote, so a model put there by hand is never mistaken for a routed one."""
+    declared, current, before = _rows(plan / 'tasks.declared.tsv'), _rows(plan / 'tasks.tsv'), _load_routed(plan)
+    after = {'dwarf': {}, 'qa': {}}
+    for task, fields in current.items():
+        for column, pool in ((4, 'dwarf'), (5, 'qa')):
+            value = fields[column]
+            if value in _BLANK[pool]:
+                continue
+            was = declared.get(task)
+            if was is not None and was[column] in _BLANK[pool]:
+                after[pool][task] = value
+            elif before[pool].get(task) == value:
+                after[pool][task] = value
+    _write_atomic(plan / ROUTED, json.dumps(after, indent=2) + '\n')
+
+
 def _release_routed(plan: Path, routed) -> None:
-    """A profile chosen again replaces the routing the plan was resolved with: a task model that came
-    from the earlier pools goes back to unassigned, when the new pools (`routed`: the routing keys of
+    """A profile chosen again replaces the routing the plan was resolved with: a task model that routing
+    itself wrote (routed.json) goes back to unassigned, when the new pools (`routed`: the routing keys of
     the new profile and of this call's flags) can resolve that row, and the table then does it. A model
     written into a row by hand, a row the new pools say nothing about, and a task that merged stay."""
-    pools = {4: set(), 5: set()}
-    for column, name in ((4, 'fractal-routing.json'), (5, 'qa-routing.json')):
-        try:
-            data = json.loads((plan / name).read_text())
-        except (OSError, UnicodeDecodeError, ValueError, RecursionError):
-            data = None
-        for value in (data.values() if isinstance(data, dict) else ()):
-            if isinstance(value, list):
-                pools[column].update(spec for spec in value if isinstance(spec, str))
-    if not any(pools.values()):
+    written = _load_routed(plan)
+    if not any(written.values()):
         return
     table = plan / 'tasks.tsv'
     try:
@@ -625,8 +665,8 @@ def _release_routed(plan: Path, routed) -> None:
         if merged:
             continue
         for column, pool in ((4, 'dwarf'), (5, 'qa')):
-            if fields[column] in pools[column] and (f'routing.{pool}.{fields[2]}' in routed
-                                                    or f'routing.{pool}.any' in routed):
+            if written[pool].get(fields[0]) == fields[column] and (
+                    f'routing.{pool}.{fields[2]}' in routed or f'routing.{pool}.any' in routed):
                 fields[column] = '-'
                 changed = True
         lines[number] = '\t'.join(fields)
@@ -642,10 +682,11 @@ def freeze_plan(plan: Path, repo, name, none, given, check_only=False, validate_
     if check_only:
         return []
     if action == 'remove':
-        try:
-            frozen_path.unlink()
-        except OSError:
-            pass
+        for name_ in (FROZEN, ROUTED):
+            try:
+                (plan / name_).unlink()
+            except OSError:
+                pass
         return []
     if action != 'new':
         return []
@@ -753,6 +794,7 @@ def _command_line() -> argparse.ArgumentParser:
         else:
             sub.add_argument('--use-frozen', action='store_true')
             sub.add_argument('--write', action='store_true')
+    commands.add_parser('routed').add_argument('directory')
     commands.add_parser('decide').add_argument('file')
     commands.add_parser('line').add_argument('file')
     value = commands.add_parser('value')
@@ -774,6 +816,9 @@ def main(argv=None) -> int:
             for key in args.keys:
                 if key in values:
                     print(f'{key}\t{values[key]}')
+        return 0
+    if args.command == 'routed':
+        record_routed(Path(args.directory))
         return 0
     if args.profile is not None and args.no_profile:
         print('forge: --profile and --no-profile are mutually exclusive', file=sys.stderr)

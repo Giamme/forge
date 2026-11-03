@@ -261,6 +261,29 @@ class ProfileRunsTests(unittest.TestCase):
         self.assertEqual(self.plan(p).returncode, 0)
         self.assertEqual(self.rows(p)['a'], dict(dwarf='opus', qa='sol'))
 
+    def test_a_replan_keeps_a_hand_written_model_that_an_old_pool_also_names(self):
+        wide = {'routing': {'dwarf': {'medium': ['sol:medium'], 'low': ['opus:low']}, 'qa': {'any': ['opus:medium']}},
+                'policy': {'explore': 0}}
+        other = {'routing': {'dwarf': {'any': ['sol:high']}, 'qa': {'any': ['sol']}}, 'policy': {'explore': 0}}
+        self.decide({'P': wide, 'Q': other})
+        p = self.planned('--profile', 'P', tasks=(('a', 'low'), ('b', 'medium')))
+        self.assertEqual(self.rows(p)['b']['dwarf'], 'sol:medium')
+        # b's model was put there by hand, and happens to be a spec P's pools name
+        table = (p / 'tasks.tsv').read_text()
+        (p / 'tasks.tsv').write_text(table.replace('b\t-\tmedium\tb.txt\tsol:medium', 'b\t-\tmedium\tb.txt\topus:low'))
+        r = self.plan(p, '--profile', 'Q')
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertEqual(self.rows(p)['a'], dict(dwarf='sol:high', qa='sol'))
+        self.assertEqual(self.rows(p)['b']['dwarf'], 'opus:low')
+
+    def test_a_replan_replaces_the_reviewer_a_plan_chose_for_itself(self):
+        self.decide({'P': {'routing': {'dwarf': {'any': ['sol']}}, 'policy': {'explore': 0}},
+                     'Q': {'routing': {'dwarf': {'any': ['opus']}, 'qa': {'any': ['sol']}}, 'policy': {'explore': 0}}})
+        p = self.planned('--profile', 'P')
+        self.assertEqual(self.rows(p)['a'], dict(dwarf='sol', qa='opus'))     # no QA pool: the default reviewer
+        self.assertEqual(self.plan(p, '--profile', 'Q').returncode, 0)
+        self.assertEqual(self.rows(p)['a'], dict(dwarf='opus', qa='sol'))
+
     # --- refusals -----------------------------------------------------------------------
     def assert_refused(self, *flags, reason):
         p = self.make_plan()
@@ -401,6 +424,18 @@ class ProfileRunsTests(unittest.TestCase):
                 self.assertEqual(self.calls().count('dwarf') - before, attempts)
                 (self.root / 'calls').unlink()
                 self.env.pop('FAIL_A')
+
+    def test_an_explicit_decision_is_not_stretched_by_the_profiles_retry_budget(self):
+        self.decide({'P': {**SMALL, 'routing': {**SMALL['routing'], 'escalate_after': 0},
+                           'policy': {'explore': 0, 'retry_failed': 2}}})
+        p = self.planned('--profile', 'P')
+        self.failing_a()
+        self.assertEqual(self.run_script('forge-parallel.sh', 'run', p, '--retry-failed', '0').returncode, 5)
+        (p / 'max_attempts').write_text('1\n')                  # one spent against a cap of one: a decision is needed
+        self.assertEqual(self.run_script('forge-parallel.sh', 'retry', p, 'a').returncode, 2)
+        before = self.calls().count('dwarf')
+        r = self.run_script('forge-parallel.sh', 'retry', p, 'a', '--decide', 'retry=1', '--reason', 'one more', '--approved')
+        self.assertEqual(self.calls().count('dwarf') - before, 1, r.stdout)
 
     def test_retry_without_a_profile_is_one_attempt_and_still_takes_the_flag(self):
         p = self.planned('--dwarf', 'sol:medium', '--qa', 'opus:medium')

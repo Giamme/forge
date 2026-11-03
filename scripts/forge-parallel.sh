@@ -577,6 +577,8 @@ EOF
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$id" "$deps" "$diff" "$files" "$dw" "$qa" "$title" >> "$tmp"
   done < "$T"
   mv "$tmp" "$T"
+  # Which cells routing filled in, so a re-plan under another profile replaces those and no others.
+  [ ! -f "$PLAN/profile.json" ] || forge_profile_py routed "$PLAN" 2>/dev/null || true
 
   compute_waves "$PLAN"
 
@@ -1644,6 +1646,9 @@ do_retry() {
     esac
   done
   forge_profile_run_values "$PLAN"
+  # An explicit --decide grant is exactly what it says: the profile's default budget of further
+  # attempts does not stretch it. Only a --retry-failed typed on this line adds to a decision.
+  { [ -z "$DECIDE" ] || [ "$PP_RETRY_FAILED_SET" = 1 ]; } || PP_RETRY_FAILED=0
   [ "$JEV_OPTS" = 1 ] && forge_jev_settle "$PLAN"
   # Before any decision-model step: the privacy floor and the run budget read these.
   [ "$JEV_OPTS" = 1 ] && [ -s "$PLAN/repo" ] && forge_decide_env "$(cat "$PLAN/repo")" "$PLAN"
