@@ -78,7 +78,7 @@ class CompareTests(unittest.TestCase):
         self.assertIn('Nothing is dispatched yet', r.stdout)
         self.assertIn('spends a second run', r.stdout)
         self.assertIn('--run --yes', r.stdout)
-        self.assertIn('forge runs compare %s %s' % (p, n), r.stdout)
+        self.assertIn('forge runs compare %s %s' % (p.resolve(), n.resolve()), r.stdout)   # paths as resolved
 
     def test_rerun_judges_the_new_run_the_way_the_original_was_and_never_explores(self):
         p = self.first_run()
