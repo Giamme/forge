@@ -223,6 +223,22 @@ test('the api.md example aggregates as documented', () => {
   assert.ok(L.caveats.some(c => c.includes('unreadable entry')));
 });
 
+test('the recommended dwarf line: the measured median, not run yet, or no line', () => {
+  const source = '#86 SWE-bench Pro decomposed runs, 2026-10-28; docs/models.md';
+  const rec = { profile: 'balanced', source, dwarf: { low: 'haiku:xhigh', medium: 'sonnet:medium', high: 'opus:high' } };
+  // 114s is 1.9 min, the time the line shows for an alias measured on this tier
+  const low = [{ alias: 'haiku', medianModelS: 114 }, { alias: 'sol', medianModelS: 10 }];
+  assert.equal(MS.recommendedLine(rec, 'low', low),
+    `Recommended: haiku:xhigh (built-in profile "balanced", ${source}) · your median model time 1.9 min`);
+  assert.equal(MS.recommendedLine(rec, 'medium', low),
+    `Recommended: sonnet:medium (built-in profile "balanced", ${source}) · not run on this tier yet`);
+  assert.equal(MS.recommendedLine(null, 'low', low), null);
+  assert.equal(MS.recommendedLine(undefined, 'low', low), null);
+  // a recommendation with no dwarf for this tier draws no line
+  assert.equal(MS.recommendedLine({ profile: 'balanced', source, dwarf: { low: 'haiku:xhigh' } }, 'high', low), null);
+  assert.equal(MS.recommendedLine({ profile: 'balanced', source, dwarf: { low: '' } }, 'low', low), null);
+});
+
 test('empty or malformed input never throws', () => {
   for (const data of [undefined, null, {}, [], 'x', { tasks: null, reviews: 3 }, { tasks: [null, 4, 'x', {}, { run: 'r' }], reviews: [null, {}, { run: 'r' }] },
     { tasks: [{ run: 'r', task: 't', attempts: [null, { n: 'x' }, { alias: 'a', outcome: 'weird', tokens: 'many' }], escalations: [null, { from: null }, 5] }] }]) {

@@ -10,6 +10,7 @@ from collections import OrderedDict
 import json
 import math
 import os
+from pathlib import Path
 import threading
 import time
 
@@ -21,12 +22,70 @@ _MAX_WARNINGS = 500
 _RUNNING_S = 120
 _SIZE = 4096
 _PASS = ('PASS', 'MERGED')
+_TIERS = ('low', 'medium', 'high')
 _LOCK = threading.Lock()
 _RUNS = OrderedDict()  # realpath -> (signature, computed at, facts)
+# realpath -> the balanced profile's recommendation, or None when that file could not be read.
+# Kept for the process, including a failure: the next server picks up an edited file, not this one.
+_RECOMMENDED = {}
+_REC_LOCK = threading.Lock()
 
 
 def _alias(spec):
     return (spec.split(':', 1)[0] or None) if isinstance(spec, str) else None
+
+
+def _builtin_profiles_path():
+    """scripts/forge_decide/builtin_profiles.json, located from this package the way reader._forge_infra finds
+    scripts/forge_infra.py. Read as data: forge-ui never imports forge_decide."""
+    return Path(__file__).resolve().parents[2] / 'scripts' / 'forge_decide' / 'builtin_profiles.json'
+
+
+def _first_spec(pool):
+    """The first spec of a tier's routing pool, or None when the pool does not start with one."""
+    if isinstance(pool, list) and pool and isinstance(pool[0], str) and pool[0]:
+        return pool[0]
+    return None
+
+
+def _recommended_from(data):
+    """balanced's dwarf per tier: the first spec of each routing.dwarf pool. None when that profile is not there."""
+    profiles = data.get('profiles') if isinstance(data, dict) else None
+    body = profiles.get('balanced') if isinstance(profiles, dict) else None
+    routing = body.get('routing') if isinstance(body, dict) else None
+    pools = routing.get('dwarf') if isinstance(routing, dict) else None
+    if not isinstance(pools, dict):
+        return None
+    dwarf = {}
+    for tier in _TIERS:
+        spec = _first_spec(pools.get(tier))
+        if spec:
+            dwarf[tier] = spec
+    if not dwarf:
+        return None
+    source = body.get('source')
+    return dict(profile='balanced', source=source if isinstance(source, str) else '', dwarf=dwarf)
+
+
+def _load_recommended(path):
+    try:
+        data = json.loads(Path(path).read_text(encoding='utf-8'))
+    except (OSError, ValueError, RecursionError):
+        return None
+    return _recommended_from(data)
+
+
+def recommended():
+    """The balanced built-in profile's dwarf per tier, or None when its file cannot be read. Cached per process."""
+    path = _builtin_profiles_path()
+    try:
+        key = os.path.realpath(path)
+    except OSError:
+        key = os.fspath(path)
+    with _REC_LOCK:
+        if key not in _RECOMMENDED:
+            _RECOMMENDED[key] = _load_recommended(path)
+        return _RECOMMENDED[key]
 
 
 def _attempt_rows(rd, name):
@@ -214,4 +273,4 @@ def collect(found):
             warnings += facts['warnings']
             count += 1
         return dict(generated=now, runs=count, truncated=truncated, tasks=tasks, reviews=reviews,
-                    warnings=warnings[:_MAX_WARNINGS])
+                    warnings=warnings[:_MAX_WARNINGS], recommended=recommended())

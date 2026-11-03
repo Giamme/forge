@@ -303,7 +303,11 @@ window.ForgeLeaderboard = (() => {
           const det = el('details', undefined, 'lb-diff'); det.open = prefs.open.includes(d);
           const sum = el('summary');
           sum.append(el('span', DIFF_LABEL[d], 'lb-diff-name'), el('span', `${plural(tasks, 'task')} · ${plural(rows.length, 'model')} · first-attempt pass ${n ? `${pct(k / n)} (${k}/${n})` : '—'}`, 'muted'));
-          det.append(sum, implementerTable(rows, ctx, f.minN, `Implementers, ${DIFF_LABEL[d].toLowerCase()}`));
+          det.append(sum);
+          // The built-in profile's dwarf for this tier, under the summary. Nothing when the server sent none.
+          const rec = MS.recommendedLine(data && data.recommended, d, rows);
+          if (rec) det.append(el('p', rec, 'muted'));
+          det.append(implementerTable(rows, ctx, f.minN, `Implementers, ${DIFF_LABEL[d].toLowerCase()}`));
           det.addEventListener('toggle', () => {
             if (det.open === prefs.open.includes(d)) return;
             prefs.open = det.open ? prefs.open.concat(d) : prefs.open.filter(x => x !== d); save();
