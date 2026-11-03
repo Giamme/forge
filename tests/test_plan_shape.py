@@ -214,6 +214,16 @@ EXPECTED_APPROACH = (
     'Call the parser from main.\n')
 
 
+def _combined_prompt(title, task_id, body, criteria):
+    """One combined prompt: intro, one part body, and that part's criteria."""
+    intro = (
+        'This task combines the 1 parts of a plan that could only run one after another. '
+        'Do them in order, in this one task; each part\'s requirements and acceptance criteria still hold.')
+    return (
+        '%s\n\n## Part 1: %s (%s)\n\n%s\n\n## Acceptance criteria\n\n### Part 1: %s\n\n%s\n'
+        % (intro, title, task_id, body, title, criteria))
+
+
 def task(task_id, deps='-', files='-', difficulty='low', dwarf='-', qa='-', title=None):
     return dict(id=task_id, deps=deps, difficulty=difficulty, files=files, dwarf=dwarf, qa=qa,
                 title=title if title is not None else 'Title of ' + task_id)
@@ -471,6 +481,26 @@ class CollapseTests(unittest.TestCase):
         self.assertEqual(prompt.count('\n## Acceptance criteria\n'), 3)
         self.assertIn('\n    ## Acceptance criteria\n', prompt)
         self.assertNotIn('### Acceptance criteria', prompt)
+
+    def test_a_tab_is_a_heading_separator_and_may_follow_a_closing_fence(self):
+        # CommonMark: `##\tTitle` is a heading, and ```<tab> closes a fence. A space-only
+        # scan leaves the criteria heading in the body and reports that none were written.
+        rows = [task('a', files='a.py', title='Parse')]
+        cases = (
+            ('tab heading',
+             '##\tBehavior\n\nKeep it.\n\n##\tAcceptance criteria\n- real check\n',
+             '###\tBehavior\n\nKeep it.'),
+            ('tab after fence',
+             '```python\nprint(1)\n```\t\n\n## Acceptance criteria\n- real check\n',
+             '```python\nprint(1)\n```\t'),
+        )
+        for name, raw, body in cases:
+            with self.subTest(name=name):
+                _row, prompt, approach = plan_check.collapse_rows(rows, {'a': raw}, {})
+                self.assertIsNone(approach)
+                self.assertEqual(prompt, _combined_prompt('Parse', 'a', body, '- real check'))
+                self.assertNotIn('no criteria were written', prompt)
+                self.assertEqual(prompt.count('\n## Acceptance criteria\n'), 1)
 
     def test_an_unreadable_prompt_refuses_and_keeps_the_plan(self):
         plan, _original = self.write_plan(

@@ -370,23 +370,26 @@ _CRITERIA_TEXT = re.compile(r'acceptance criteria\s*:?', re.IGNORECASE)
 
 
 def _strip_closing_hashes(content: str) -> str:
-    """Drop a closing `#` run that is the whole content or is preceded by a space."""
+    """Drop a closing `#` run that is the whole content or is preceded by a space or tab."""
     end = len(content)
     while end > 0 and content[end - 1] == '#':
         end -= 1
     if end == len(content):
         return content
-    if end == 0 or content[end - 1] == ' ':
-        return content[:end].strip(' ')
+    if end == 0 or content[end - 1] in ' \t':
+        return content[:end].strip(' \t')
     return content
 
 
 def _atx_heading(line: str):
     """(indent, opening hashes, content) of a CommonMark ATX heading, else None.
 
-    Up to three leading spaces. The opening `#` run is 1-6 and must be followed by a space
-    or the end of the line. A closing `#` run, preceded by a space and followed only by
-    spaces, is not part of the content (`## Acceptance criteria ##` is that heading).
+    Up to three leading spaces. A leading tab is a code indent, not a heading. The opening
+    `#` run is 1-6 and must be followed by a space or a tab, or the end of the line. A
+    closing `#` run, preceded by a space or tab and followed only by spaces or tabs, is not
+    part of the content (`## Acceptance criteria ##` is that heading, and so is the same
+    line with a tab in place of the space). Leading and trailing spaces and tabs are not
+    part of the content.
     """
     if not line or line[0] == '\t' or line.startswith('    '):
         return None
@@ -399,10 +402,10 @@ def _atx_heading(line: str):
     marks = line[indent_len:marks_end]
     if not marks or len(marks) > 6:
         return None
-    if marks_end < len(line) and line[marks_end] != ' ':
+    if marks_end < len(line) and line[marks_end] not in ' \t':
         return None
     raw = line[marks_end + 1:] if marks_end < len(line) else ''
-    return line[:indent_len], marks, _strip_closing_hashes(raw.strip(' '))
+    return line[:indent_len], marks, _strip_closing_hashes(raw.strip(' \t'))
 
 
 def _fence_step(line: str, open_fence):
@@ -411,7 +414,8 @@ def _fence_step(line: str, open_fence):
     `open_fence` is None or `(marker, length)`. A fence opens on three or more backticks
     or tildes, indented at most three spaces. A backtick fence whose info string contains
     a backtick does not open. It closes only on the same marker, at least as long, with
-    nothing after it but spaces, so a shorter or different marker inside the block is content.
+    nothing after it but spaces or tabs, so a shorter or different marker inside the block
+    is content. A tab after the closing marker still closes the fence.
     """
     found = _FENCE_LINE.match(line)
     if open_fence is None:
@@ -423,7 +427,7 @@ def _fence_step(line: str, open_fence):
         return True, (marker[0], len(marker))
     if found:
         marker, rest = found.group(2), found.group(3)
-        if marker[0] == open_fence[0] and len(marker) >= open_fence[1] and rest.strip(' ') == '':
+        if marker[0] == open_fence[0] and len(marker) >= open_fence[1] and rest.strip(' \t') == '':
             return True, None
     return True, open_fence
 
@@ -433,7 +437,8 @@ def split_acceptance(text: str):
 
     Criteria is None when no acceptance-criteria heading sits outside a fence. The heading
     is a CommonMark ATX heading (`## Acceptance criteria`, `## Acceptance criteria ##`,
-    or the same indented up to three spaces). The lines under every such heading are kept
+    the same indented up to three spaces, or with a tab where a space would separate the
+    hashes from the text). The lines under every such heading are kept
     as written, fence markers included, and the headings themselves are not part of either piece.
     """
     body, criteria = [], []
