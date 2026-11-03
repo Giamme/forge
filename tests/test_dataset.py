@@ -1488,6 +1488,66 @@ class ReviewerSessionTests(StoreCase):
         self.assertNotEqual(flagged['rid'], 'plan:fixed-run:26062ad6ab65e2f6')
 
 
+class ServiceTierHarvestTests(StoreCase):
+    """A dispatch records the tier it asked for and the speed the log actually ran.
+
+    Attempt dirs are built by hand. The tier lives in metrics.json (what finish() writes)
+    and, as a fallback for the asked tier only, in `<role>.resolved`.
+    """
+
+    def test_harvest_records_the_service_tier_the_speed_and_why_it_was_not_fast(self):
+        from forge_dataset import harvest
+        root = Path(self.tmp.name) / 'root'
+        root.mkdir()
+        base = 'alias=sol\nharness=claude\nmodel=sol-model\neffort=high\n'
+        keys = ('service_tier', 'speed', 'speed_reason')
+
+        def harvest_one(name, metrics_extra=None, resolved=None):
+            attempt = Path(self.tmp.name) / name
+            attempt.mkdir()
+            metrics = dict(exit_code=0, harness='claude', elapsed_s=dict(total=3),
+                           input_tokens=10, output_tokens=4)
+            if metrics_extra:
+                metrics.update(metrics_extra)
+            (attempt / 'metrics.json').write_text(json.dumps(metrics))
+            (attempt / 'dwarf.resolved').write_text(resolved if resolved is not None else base)
+            (attempt / 'dwarf.last').write_text('done\n')
+            (attempt / 'dwarf.prompt').write_text('do the thing\n')
+            return harvest.dispatch_event(attempt, root, 'dwarf', 'claude', 0,
+                                           dict(run='r', task='a', attempt_now=1, wall_ended=10.0))
+
+        def triple(event):
+            return tuple(event['data'][key] for key in keys)
+
+        asked = harvest_one('asked', dict(service_tier='fast', speed='fast', speed_reason=None),
+                            base + 'service_tier=fast\n')
+        self.assertEqual(triple(asked), ('fast', 'fast', None))
+        fell = harvest_one('fell',
+                           dict(service_tier='fast', speed='standard', speed_reason='extra_usage_disabled'),
+                           base + 'service_tier=fast\n')
+        self.assertEqual(triple(fell), ('fast', 'standard', 'extra_usage_disabled'))
+        # metrics.json predates the keys; the resolved line is the asked tier.
+        backed = harvest_one('backed', dict(speed='default', speed_reason='not advertised'),
+                             base + 'service_tier=fast\n')
+        self.assertEqual(triple(backed), ('fast', 'default', 'not advertised'))
+        # An explicit JSON null is absent, so the resolved line still fills the tier.
+        blank = harvest_one('blank', dict(service_tier=None, speed=None, speed_reason=None),
+                            base + 'service_tier=fast\n')
+        self.assertEqual(triple(blank), ('fast', None, None))
+        old = harvest_one('old')
+        self.assertEqual(triple(old), (None, None, None))
+
+        def rest(event):
+            data = dict(event['data'])
+            for key in keys:
+                self.assertIn(key, data)
+                data.pop(key)
+            return data
+
+        # Same prompt, message and resolved fields: only the three tier fields differ.
+        self.assertEqual(rest(old), rest(asked))
+
+
 class ExportStateIdentityTests(StoreCase):
     """The routing and retry cases this fixture exported before the assemblers left forge_jev.
 

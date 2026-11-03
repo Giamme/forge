@@ -65,7 +65,7 @@ class ExecutionTests(FixtureCase):
                        'finalization': 0.5},
             'exit_code': 0, 'infra_class': None, 'timed_out': False,
             'model': {'spec': 'sol:xhigh', 'alias': 'sol', 'harness': 'codex', 'model': 'sol-model', 'effort': 'xhigh',
-                      'clamped': None},
+                      'clamped': None, 'service_tier': None, 'speed': None, 'speed_reason': None},
             'tokens': {'input': 150000, 'cached': 100000, 'output': 9000}, 'prompt_bytes': 4096,
             'verdict': None, 'findings': None})
         self.assertEqual(list(execs), [F.READER_TASK1, F.READER_DWARF1, F.READER_QA1,
@@ -77,6 +77,35 @@ class ExecutionTests(FixtureCase):
         # `<harness default>` is no effort: the spec is the bare alias.
         self.assertEqual(execs[F.READER_QA1]['model']['spec'], 'opus')
         self.assertIsNone(execs[F.READER_QA1]['model']['effort'])
+
+    def test_the_model_names_the_asked_tier_and_the_speed_the_log_ran(self):
+        attempt = self.plan / 'tasks/reader/attempts' / F.READER_DWARF2
+        self.write(attempt / 'dwarf.resolved', (attempt / 'dwarf.resolved').read_text() + 'service_tier=fast\n')
+        metrics = json.loads((attempt / 'metrics.json').read_text())
+        metrics.update(service_tier='fast', speed='standard', speed_reason='extra_usage_disabled')
+        self.write(attempt / 'metrics.json', metrics)
+        model = self.execs(detail(self.plan), 'reader')[F.READER_DWARF2]['model']
+        self.assertEqual(model, {
+            'spec': 'sol:xhigh', 'alias': 'sol', 'harness': 'codex', 'model': 'sol-model', 'effort': 'xhigh',
+            'clamped': None, 'service_tier': 'fast', 'speed': 'standard', 'speed_reason': 'extra_usage_disabled'})
+        # metrics.json never recorded the tier; the resolved line still names what was asked.
+        metrics.pop('service_tier')
+        self.write(attempt / 'metrics.json', metrics)
+        model = self.execs(detail(self.plan), 'reader')[F.READER_DWARF2]['model']
+        self.assertEqual((model['service_tier'], model['speed'], model['speed_reason']),
+                         ('fast', 'standard', 'extra_usage_disabled'))
+        # Still running, so the attempt dir has no resolved copy. The live file and metrics.json do.
+        qa = self.plan / 'tasks/graph/attempts' / F.GRAPH_QA
+        running_metrics = json.loads((qa / 'metrics.json').read_text())
+        running_metrics.update(speed='standard', speed_reason='extra_usage_disabled')
+        self.write(qa / 'metrics.json', running_metrics)
+        live = self.plan / 'tasks/graph/qa.resolved'
+        self.write(live, live.read_text() + 'service_tier=fast\n')
+        graph = self.execs(detail(self.plan), 'graph')
+        self.assertEqual(graph[F.GRAPH_QA]['state'], 'running')
+        self.assertEqual(graph[F.GRAPH_QA]['model'], {
+            'spec': 'opus:high', 'alias': 'opus', 'harness': 'claude', 'model': 'opus-model', 'effort': 'high',
+            'clamped': None, 'service_tier': 'fast', 'speed': 'standard', 'speed_reason': 'extra_usage_disabled'})
 
     def test_nesting_by_dataset_parent_and_by_time(self):
         data = detail(self.plan)
