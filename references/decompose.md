@@ -862,9 +862,11 @@ clear by itself.
 the next infrastructure stop. It runs at the dwarf stage and at the QA stage, and not on a Fractal
 plan:
 
-- a **dwarf-stage** stop takes the next healthy model of the tier the task is running in (the tier
-  recorded with its last escalation or exploration, otherwise its difficulty). A pinned implementer
-  is not moved. No attempt is spent.
+- a **dwarf-stage** stop takes the next healthy model of the tier the task is running in: the tier
+  recorded at its newest assignment (the plan's pick, explored or not, an escalation, a pin, a
+  `retry --dwarf`, an earlier move), as long as it still runs that model; otherwise its difficulty.
+  A re-plan that keeps a row's model keeps its tier. A pinned implementer is not moved. No attempt
+  is spent.
 - a **QA-stage** stop takes a reviewer of the same strength from `qa-routing.json`: the next member
   of the task's difficulty pool, then of `any`, on a pair nobody paused. Never the stopped
   reviewer's model, and never the implementer's. The attempt and the `resume` marker stay, so the

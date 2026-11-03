@@ -198,6 +198,23 @@ class RunningTierTests(unittest.TestCase):
         self.assertIsNone(self.fallback('sol', 'medium', pools, route_record=old))
         self.assertIsNone(self.fallback('sol', 'medium', pools, route_record='not json'))
 
+    def test_a_record_without_its_time_is_as_old_as_its_file(self):
+        # A plan forge 0.14 wrote: `tier<TAB>spec` only. A pin into high and an exploration of low-tier sol: the newer counts.
+        pools = {'low': ['sol'], 'medium': ['astra'], 'high': ['sol', 'sonnet']}
+        for pinned_at, explored_at, expected in ((100, 200, None), (200, 100, 'sonnet')):
+            with tempfile.TemporaryDirectory() as tmp:
+                plan = Path(tmp)
+                (plan / 'tasks/a').mkdir(parents=True)
+                (plan / 'tasks.tsv').write_text('a\t-\tmedium\tf\tsol\tkimi\tA\n')
+                (plan / 'fractal-routing.json').write_text(json.dumps(pools))
+                (plan / 'tasks/a/running.tier').write_text('high\tsol\n')
+                os.utime(plan / 'tasks/a/running.tier', (pinned_at, pinned_at))
+                (plan / 'tasks/a/route.jsonl').write_text(
+                    json.dumps({'at': explored_at, 'chosen': 'sol', 'chosen_tier': 'low'}) + '\n')
+                done = subprocess.run([sys.executable, str(ROOT / 'scripts/forge-route.py'), 'fallback', '--plan', tmp,
+                                       '--task', 'a'], capture_output=True, text=True)
+                self.assertEqual(done.stdout.strip() or None, expected, (pinned_at, explored_at))
+
     def test_exploration_records_the_tier_of_its_choice(self):
         with tempfile.TemporaryDirectory() as tmp:
             plan = Path(tmp)
@@ -261,9 +278,9 @@ class RunTests(unittest.TestCase):
         fixtures.ForgeTests.setUp(self)
         self.env['FORGE_INFRA_BACKOFF'] = '0.05'
 
-    def plan(self, pool='sol,astra', qa='opus', *extra):
+    def plan(self, pool='sol,astra', qa='opus', *extra, dwarf='sol'):
         p = self.root / 'plan'; p.mkdir()
-        (p / 'tasks.tsv').write_text(f'a\t-\tmedium\ta.txt\tsol\t{qa}\tA\n')
+        (p / 'tasks.tsv').write_text(f'a\t-\tmedium\ta.txt\t{dwarf}\t{qa}\tA\n')
         (p / 'tasks/a').mkdir(parents=True)
         (p / 'tasks/a/prompt.md').write_text('Implement change. REQUIREMENT_SENTINEL TASK_a')
         r = self.run_script('forge-parallel.sh', 'plan', p, '--repo', self.repo, '--no-memory', '--explore', '0',
@@ -276,6 +293,14 @@ class RunTests(unittest.TestCase):
 
     def dwarf_column(self, p):
         return [line.split('\t')[4] for line in (p / 'tasks.tsv').read_text().splitlines() if line.startswith('a\t')][0]
+
+    def set_dwarf_column(self, p, spec):
+        rows = [line.split('\t') for line in (p / 'tasks.tsv').read_text().splitlines()]
+        (p / 'tasks.tsv').write_text(''.join('\t'.join(r[:4] + [spec] + r[5:] if r[0] == 'a' else r) + '\n' for r in rows))
+
+    def route(self, p, *args):
+        return subprocess.run([sys.executable, str(ROOT / 'scripts/forge-route.py'), *args, '--plan', str(p),
+                               '--task', 'a'], capture_output=True, text=True)
 
     def escalations(self, p):
         f = p / 'tasks/a/escalations.tsv'
@@ -544,7 +569,25 @@ class RunTests(unittest.TestCase):
         p = self.plan('sol,astra')
         self.scenario({'a.dwarf.1': CAPACITY})
         self.assertEqual(self.run_plan(p, '--infra-retries', '0').returncode, 0)
-        self.assertEqual((p / 'tasks/a/running.tier').read_text(), 'medium\tastra\n')
+        self.assertEqual((p / 'tasks/a/running.tier').read_text().split('\t')[:2], ['medium', 'astra'])
+
+    def test_a_re_plan_records_the_tier_of_the_model_it_picks(self):
+        # #106: a medium task pinned to sol runs in high, where sonnet is its peer, and a re-plan that keeps the pin
+        # keeps that tier. Reset to `-`, the re-plan explores low-tier sol: it runs in low, where sol has no peer.
+        pools = ('--dwarf-low', 'sol', '--dwarf-high', 'sol,sonnet')
+        p = self.plan('astra', 'opus', *pools, dwarf='-')
+        self.assertEqual(self.dwarf_column(p), 'astra')
+        self.set_dwarf_column(p, 'sol')
+        self.assertEqual(self.route(p, 'record', '--line', '1\t1\tastra\tsol\tpin').returncode, 0)
+        self.env['FORGE_ROUTE_EXPLORE_SEED'] = '2'      # the draw that explores the low pool's sol for task a
+        replan = lambda: self.run_script(  # noqa: E731
+            'forge-parallel.sh', 'plan', p, '--no-memory', '--explore', '0.5', '--dwarf-medium', 'astra', *pools)
+        self.assertEqual(replan().returncode, 0)
+        self.assertEqual((self.dwarf_column(p), self.route(p, 'fallback').stdout.strip()), ('sol', 'sonnet'))
+        self.set_dwarf_column(p, '-')
+        self.assertEqual(replan().returncode, 0)
+        moved = self.route(p, 'fallback')
+        self.assertEqual((self.dwarf_column(p), moved.returncode, moved.stdout), ('sol', 1, ''))
 
     def test_a_model_the_high_pool_also_lists_does_not_move_a_medium_task_up(self):
         p = self.plan('sol', 'opus', '--dwarf-high', 'sol,sonnet')

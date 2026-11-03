@@ -422,11 +422,13 @@ EOF
       # Exploration (--explore): now and then the neighbouring tier's model instead, with the
       # odds recorded, so `forge dataset routing` can compare two models on tasks neither was
       # routed to by design. The pool's turn above was still taken, so other rows are unchanged.
-      if [ -n "$EXPLORE" ] && [ "$dw" != UNASSIGNED ]; then
-        local explored
-        explored="$(python3 "$SKILL_DIR/scripts/forge-route.py" explore --plan "$PLAN" --task "$id" \
-          --tier "$diff" --epsilon "$EXPLORE" --default "$dw" --pools "$PLAN/fractal-routing.json" 2>/dev/null)"
-        [ -z "$explored" ] || dw="$explored"
+      # Explored or not, the pick's tier is recorded (running.tier), so an escalation or pin that
+      # this re-plan replaces no longer says which tier a lateral move stays in (#106).
+      if [ "$dw" != UNASSIGNED ]; then
+        local assigned
+        assigned="$(python3 "$SKILL_DIR/scripts/forge-route.py" assign --plan "$PLAN" --task "$id" \
+          --tier "$diff" --epsilon "${EXPLORE:-0}" --default "$dw" --pools "$PLAN/fractal-routing.json" 2>/dev/null)"
+        [ -z "$assigned" ] || dw="$assigned"
       fi
     fi
     # resolve qa: the same grammar as the dwarf, a comma-list round-robins within its tier.

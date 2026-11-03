@@ -61,7 +61,7 @@ A decomposed run adds:
   tasks/<id>/<role>.harness            only while a guarded dispatch runs: its harness's pid and start time, for forge-guard.py stop
   tasks/<id>/qa_threshold              optional per-task blocking threshold: P0-P3, or none (P3; exempt from a looser plan threshold)
   tasks/<id>/escalations.tsv           epoch, attempt, from-spec, to-spec, source (policy|retry|pin|fallback); older rows have 4 columns
-  tasks/<id>/running.tier              tier<TAB>spec: the tier the last escalations.tsv row moved the task to; ignored once the task runs another spec
+  tasks/<id>/running.tier              tier<TAB>spec<TAB>epoch: the tier the task runs in, written at each assignment (plan, escalation, pin, retry --dwarf, lateral move); the newer of it and route.jsonl's last pick counts, and neither once the task runs another spec
   tasks/<id>/escalation.pin            a human's one-shot model for the next full retry: one dwarf spec on one line
   tasks/<id>/escalation.pin.applying   the pin while a retry has claimed it; removed once the retry is recorded
   tasks/<id>/retry_findings.commit     commit the carried review judged
