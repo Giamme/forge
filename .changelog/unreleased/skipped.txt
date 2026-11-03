@@ -1,0 +1,1 @@
+621b585	test(compare): the rerun hint prints resolved plan paths; compare against those
