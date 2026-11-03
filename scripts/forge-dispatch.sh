@@ -33,9 +33,15 @@
 # Environment: FORGE_REGISTRY      alternate registry file (default: <skill>/registry.tsv)
 #              FORGE_ORPHAN_GUARD  off = do not run the harness in its own process group
 #                                  (default on; also skipped under FORGE_FRACTAL_RUN)
+#              FORGE_RESULT_GRACE  claude/openclaude: seconds a log that ends in the model's final
+#                                  result may stay silent before forge ends the harness (an open
+#                                  background task keeps it up); default 1800, 0 = off. Either way
+#                                  a dispatch killed after that result is not a timeout.
 #
 # Exit codes: 0 ok | 2 usage/resolution error | 3 harness missing or unusable
 #             4 backend ran but failed | 7 backend exceeded --timeout and was killed
+#               (not when its log ended in a final result and only background tasks kept it up:
+#               that result stands, as after FORGE_RESULT_GRACE; $ROLE.settled says which)
 #             8 infrastructure failure (auth, usage_limit, budget, capacity, rate_limit,
 #               provider_down, network, or an empty answer; forge_infra.py says what each
 #               means): the model never got to do its work. $ROLE.infra says which.
@@ -371,6 +377,15 @@ if [ "$LIMIT_SOURCE" = registry ] || [ "$LIMIT_SOURCE" = default ]; then
   fi
 fi
 
+# --- the grace after a final result (#110) --------------------------------------
+# claude and openclaude stay up while a background task of the session is open, even after the
+# model's final result. Once the log ends in that result and stays silent this long, forge ends
+# the harness and the result stands. Long on purpose: a background test run can wake the session
+# for another turn many minutes later.
+RESULT_GRACE="${FORGE_RESULT_GRACE:-1800}"
+case "$RESULT_GRACE" in ''|*[!0-9]*) die "FORGE_RESULT_GRACE must be a nonnegative integer" ;; esac
+[ "${#RESULT_GRACE}" -gt 9 ] || RESULT_GRACE=$((10#$RESULT_GRACE))
+
 # --- run dir & prompt ---------------------------------------------------------
 [ -d "$REPO" ] || die "--repo '$REPO' is not a directory"
 REPO="$(cd "$REPO" && pwd)"
@@ -388,7 +403,7 @@ write_continue() { :; }   # redefined below once there is an attempt to archive 
 ATTEMPT=""
 if [ "$PREFLIGHT" != 1 ] && [ "$DRY" != 1 ]; then
   ATTEMPT="$(python3 "$RUNTIME" begin "$RUN_DIR" "$ROLE")" || exit 3
-  rm -f "$RUN_DIR/$ROLE.last" "$RUN_DIR/$ROLE.log" "$RUN_DIR/$ROLE.clock" "$RUN_DIR/$ROLE.resolved" "$RUN_DIR/$ROLE.cmd" "$RUN_DIR/$ROLE.timedout" "$RUN_DIR/$ROLE.infra" "$RUN_DIR/$ROLE.orphans" "$RUN_DIR/$ROLE.session" "$RUN_DIR/$ROLE.continue" "$RUN_DIR/$ROLE.harness"
+  rm -f "$RUN_DIR/$ROLE.last" "$RUN_DIR/$ROLE.log" "$RUN_DIR/$ROLE.clock" "$RUN_DIR/$ROLE.resolved" "$RUN_DIR/$ROLE.cmd" "$RUN_DIR/$ROLE.timedout" "$RUN_DIR/$ROLE.settled" "$RUN_DIR/$ROLE.infra" "$RUN_DIR/$ROLE.orphans" "$RUN_DIR/$ROLE.session" "$RUN_DIR/$ROLE.continue" "$RUN_DIR/$ROLE.harness"
   trap 'exit 143' TERM
   trap 'exit 130' INT
   # GUARD_ON is 1 only when the harness was started in its own process group (see the
@@ -404,7 +419,7 @@ if [ "$PREFLIGHT" != 1 ] && [ "$DRY" != 1 ]; then
       # Interrupted after the harness exited but before the normal reap.
       python3 "$GUARD" reap "$hpid" "$RUN_DIR/$ROLE.orphans" >/dev/null 2>&1
     fi
-    if [ -n "${wpid:-}" ]; then pkill -P "$wpid" 2>/dev/null; kill "$wpid" 2>/dev/null; fi
+    for watcher in ${wpid:-} ${spid:-}; do pkill -P "$watcher" 2>/dev/null; kill "$watcher" 2>/dev/null; done
     [ -z "${cpid:-}" ] || kill "$cpid" 2>/dev/null
     rm -f "$RUN_DIR/$ROLE.harness"
   }
@@ -705,6 +720,7 @@ if [ "$DRY" != 1 ] || [ "$PREFLIGHT" = 1 ]; then preflight_command; fi
   [ -n "$CLAMPED" ] && echo "clamped=$CLAMPED"
   echo "timeout=$LIMIT"
   echo "timeout_source=$LIMIT_SOURCE"
+  case "$HARNESS" in claude|openclaude) echo "result_grace=$RESULT_GRACE" ;; esac
   # Native review ignores the assembled prompt, so whether it reached the model is a fact
   # worth recording rather than inferring from the role and harness later.
   echo "delivery=$([ "$NATIVE_REVIEW" = 1 ] && echo native_review || echo custom)"
@@ -744,7 +760,7 @@ fi
 # when a stale $LAST is already there. That is harmless when each run gets a fresh
 # run-dir, and silently wrong for `forge-parallel.sh retry`, which reuses the task
 # directory — it would read the first attempt's result and never notice.
-rm -f "$LAST" "$LOG" "$RUN_DIR/$ROLE.clock" "$RUN_DIR/$ROLE.clock.stop" "$RUN_DIR/$ROLE.timedout" "$RUN_DIR/$ROLE.infra" "$RUN_DIR/$ROLE.orphans" "$RUN_DIR/$ROLE.harness"
+rm -f "$LAST" "$LOG" "$RUN_DIR/$ROLE.clock" "$RUN_DIR/$ROLE.clock.stop" "$RUN_DIR/$ROLE.timedout" "$RUN_DIR/$ROLE.settled" "$RUN_DIR/$ROLE.infra" "$RUN_DIR/$ROLE.orphans" "$RUN_DIR/$ROLE.harness"
 python3 "$RUNTIME" phase "$ATTEMPT" model
 t0="$(date +%s)"
 # Process-group guard. A dwarf that starts `npm test &` and ends its turn leaves that
@@ -785,6 +801,19 @@ if [ "$GUARD_ON" = 1 ]; then
   fi
 fi
 
+# Ends the harness: the whole process group first when the harness has its own (GUARD_ON),
+# then children, then the process itself, then SIGKILL for a CLI that traps TERM and takes
+# its time. Without the guard there is no group to signal as a unit.
+stop_harness() {
+  [ "$GUARD_ON" != 1 ] || kill -s TERM -- "-$hpid" 2>/dev/null
+  pkill -TERM -P "$hpid" 2>/dev/null
+  kill -TERM "$hpid" 2>/dev/null
+  sleep 5
+  [ "$GUARD_ON" != 1 ] || kill -s KILL -- "-$hpid" 2>/dev/null
+  pkill -KILL -P "$hpid" 2>/dev/null
+  kill -KILL "$hpid" 2>/dev/null
+}
+
 # Watchdog. Only antigravity has a time bound of its own, and `timeout` is not
 # present on stock macOS, so without this a hung backend blocks forever — and under
 # forge-parallel's `xargs -P` one hung task silently stalls its whole wave. The
@@ -796,19 +825,24 @@ if [ "${LIMIT:-0}" != "0" ]; then
     sleep "$LIMIT"
     kill -0 "$hpid" 2>/dev/null || exit 0
     : > "$RUN_DIR/$ROLE.timedout"
-    # The whole process group first when the harness has its own (GUARD_ON), then
-    # children, then the process itself, then SIGKILL for a CLI that traps TERM and
-    # takes its time. Without the guard there is no group to signal as a unit.
-    [ "$GUARD_ON" != 1 ] || kill -s TERM -- "-$hpid" 2>/dev/null
-    pkill -TERM -P "$hpid" 2>/dev/null
-    kill -TERM "$hpid" 2>/dev/null
-    sleep 5
-    [ "$GUARD_ON" != 1 ] || kill -s KILL -- "-$hpid" 2>/dev/null
-    pkill -KILL -P "$hpid" 2>/dev/null
-    kill -KILL "$hpid" 2>/dev/null
+    stop_harness
   ) >/dev/null 2>&1 &
   wpid=$!
 fi
+# A final result the CLI stays open after (#110): once the log ends in it and has been silent for
+# the grace, the harness is ended like a timeout, but the result stands (see below).
+spid=""
+case "$HARNESS" in claude|openclaude)
+  if [ "$RESULT_GRACE" != 0 ]; then
+    (
+      python3 "$RUNTIME" settle "$LOG" "$RESULT_GRACE" "$hpid" </dev/null || exit 0
+      kill -0 "$hpid" 2>/dev/null || exit 0
+      : > "$RUN_DIR/$ROLE.settled"
+      stop_harness
+    ) >/dev/null 2>&1 &
+    spid=$!
+  fi ;;
+esac
 
 wait "$hpid"; rc=$?
 # Its last sample is in before `finish` copies the clock into the attempt. A stop file, not a TERM:
@@ -819,13 +853,13 @@ if [ -n "$cpid" ]; then
   { : > "$RUN_DIR/$ROLE.clock.stop"; } 2>/dev/null || kill -TERM "$cpid" 2>/dev/null
   wait "$cpid" 2>/dev/null; cpid=""; rm -f "$RUN_DIR/$ROLE.clock.stop"
 fi
-if [ -n "$wpid" ]; then
-  # The watchdog is asleep in a child of its own; kill that too or it outlives the
-  # run as an orphan holding the timer.
-  pkill -P "$wpid" 2>/dev/null
-  kill "$wpid" 2>/dev/null
-  wait "$wpid" 2>/dev/null
-fi
+for watcher in $wpid $spid; do
+  # The watchdog is asleep in a child of its own, and so is the grace watcher; kill that
+  # too or it outlives the run as an orphan holding the timer.
+  pkill -P "$watcher" 2>/dev/null
+  kill "$watcher" 2>/dev/null
+  wait "$watcher" 2>/dev/null
+done
 # Anything the harness left running in its group is an abandoned background job. Kill it
 # before reading the tree, and leave the list for the caller. Bounded (~3s) and advisory:
 # a reaper failure changes nothing about the exit code.
@@ -840,6 +874,28 @@ DURATION=$(( $(date +%s) - t0 ))
 echo "duration_s=$DURATION" >> "$RUN_DIR/$ROLE.resolved"
 [ "$OUTPUT" != full ] || cat "$LOG"
 [ "$OUTPUT" != summary ] || echo "forge: role=$ROLE backend_exit=$rc final=$LAST log=$LOG metrics=$ATTEMPT/metrics.json"
+# Ended by forge after the model's final result, with only background tasks open: the answer was
+# in, so the role finished and its result stands, whether the grace or the watchdog ended it. The
+# exit is the one the CLI gives for that result. A turn that began while forge was ending it is cut
+# off, as by a timeout.
+if [ -f "$RUN_DIR/$ROLE.settled" ] || [ -f "$RUN_DIR/$ROLE.timedout" ]; then
+  case "$HARNESS" in claude|openclaude)
+    if verdict="$(python3 "$RUNTIME" settled "$LOG" 2>/dev/null)"; then
+      # The marker is written before the harness is stopped, so it says the grace came first.
+      if [ -f "$RUN_DIR/$ROLE.settled" ]; then after="${RESULT_GRACE}s of silence"; ended_by=grace
+      else after="the ${LIMIT}s timeout"; ended_by=timeout; fi
+      printf 'ended_by=%s\nbackend_exit=%s\n' "$ended_by" "$rc" > "$RUN_DIR/$ROLE.settled"
+      rm -f "$RUN_DIR/$ROLE.timedout"
+      if [ "$verdict" = error ]; then rc=1; else rc=0; fi
+      note "$HARNESS gave its final result, then stayed open on a background task; forge ended it after $after — the result stands"
+    elif [ -f "$RUN_DIR/$ROLE.settled" ]; then
+      rm -f "$RUN_DIR/$ROLE.settled"; : > "$RUN_DIR/$ROLE.timedout"
+      note "$HARNESS began another turn while forge was ending it after its final result — see $LOG"
+      write_continue failed timeout
+      exit 7
+    fi ;;
+  esac
+fi
 if [ -f "$RUN_DIR/$ROLE.timedout" ]; then
   note "$HARNESS exceeded the ${LIMIT}s timeout and was killed after ${DURATION}s — see $LOG"
   write_continue failed timeout

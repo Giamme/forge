@@ -529,6 +529,77 @@ class StreamTests(DispatchBase):
         self.assertEqual(self.kv('dwarf.infra')['class'], 'auth')
 
 
+class SettledResultTests(DispatchBase):
+    """#110: claude stays up on an open background task after the model's final result. Once its log ends in
+    that result and stays silent for the grace, forge ends it and the result stands; a watchdog kill after
+    such a result is no timeout either. A turn that began after a result is never cut short by the grace."""
+
+    INIT = {'type': 'system', 'subtype': 'init', 'session_id': 's1'}
+    SAYS = {'type': 'assistant', 'message': {'content': [{'type': 'text', 'text': 'running the tests'}]}}
+    OPEN = {'type': 'system', 'subtype': 'background_tasks_changed', 'tasks': [{'task_id': 'b1', 'description': 'Wait for the test run'}]}
+    CLOSED = [{'type': 'system', 'subtype': 'task_notification', 'task_id': 'b1', 'status': 'completed'},
+              {'type': 'system', 'subtype': 'background_tasks_changed', 'tasks': []}]
+
+    @staticmethod
+    def result(text, error=False):
+        return {'type': 'result', 'subtype': 'success', 'is_error': error, 'result': text, 'session_id': 's1'}
+
+    def claude(self, steps, hang=120):
+        """A claude that prints `steps`, (seconds to wait, event) pairs, as stream-json and then stays up."""
+        fake = self.bin / 'claude'
+        fake.write_text('#!/usr/bin/env python3\n'
+                        'import json, sys, time\n'
+                        "if '--help' in sys.argv: print(%r); sys.exit()\n"
+                        'for delay, event in %r:\n'
+                        '    time.sleep(delay); print(json.dumps(event), flush=True)\n'
+                        'time.sleep(%r)\n' % (HELP, steps, hang))
+        fake.chmod(0o755)
+
+    def test_a_final_result_left_open_on_a_background_task_ends_after_the_grace(self):
+        self.claude([(0, self.INIT), (0, self.SAYS), (0, self.result('The fix is in.')), (0, self.OPEN)])
+        self.env['FORGE_RESULT_GRACE'] = '1'
+        result = self.dispatch('dwarf', 'opus', '--timeout', '30')
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertEqual(self.read('dwarf.last'), 'The fix is in.\n')
+        self.assertFalse((self.run_dir / 'dwarf.timedout').exists())
+        self.assertEqual(self.kv('dwarf.settled')['ended_by'], 'grace')
+        self.assertEqual(self.kv('dwarf.resolved')['result_grace'], '1')
+
+    def test_the_watchdog_takes_a_final_result_as_finished(self):
+        self.claude([(0, self.INIT), (0, self.result('The fix is in.')), (0, self.OPEN)])
+        self.env['FORGE_RESULT_GRACE'] = '0'
+        result = self.dispatch('dwarf', 'opus', '--timeout', '2')
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertEqual(self.read('dwarf.last'), 'The fix is in.\n')
+        self.assertFalse((self.run_dir / 'dwarf.timedout').exists())
+        self.assertFalse((self.attempt('dwarf') / 'dwarf.timedout').exists())
+        self.assertEqual(self.kv('dwarf.settled')['ended_by'], 'timeout')
+
+    def test_an_error_result_left_open_is_still_a_failure(self):
+        self.claude([(0, self.INIT), (0, self.result('Execution stopped.', error=True)), (0, self.OPEN)])
+        self.env['FORGE_RESULT_GRACE'] = '1'
+        self.assertEqual(self.dispatch('dwarf', 'opus', '--timeout', '30').returncode, 4)
+
+    def test_a_result_followed_by_another_turn_keeps_running(self):
+        # The test run completes and wakes the session; its new turn then works in silence past the grace.
+        self.claude([(0, self.INIT), (0, self.result('The tests are running; waiting for them.')), (0, self.OPEN),
+                     (0.3, self.CLOSED[0]), (0, self.CLOSED[1]), (0, self.INIT), (3, self.SAYS),
+                     (0, self.result('All done.'))], hang=0)
+        self.env['FORGE_RESULT_GRACE'] = '1'
+        result = self.dispatch('dwarf', 'opus', '--timeout', '30')
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertEqual(self.read('dwarf.last'), 'All done.\n')
+        self.assertFalse((self.run_dir / 'dwarf.settled').exists())
+
+    def test_a_stream_with_no_result_is_still_a_timeout(self):
+        self.claude([(0, self.INIT), (0, self.SAYS)])
+        self.env['FORGE_RESULT_GRACE'] = '1'
+        result = self.dispatch('dwarf', 'opus', '--timeout', '2')
+        self.assertEqual(result.returncode, 7, result.stdout)
+        self.assertTrue((self.run_dir / 'dwarf.timedout').exists())
+        self.assertFalse((self.run_dir / 'dwarf.settled').exists())
+
+
 class InfraTests(DispatchBase):
     def assert_infra(self, role, cls, rc, *, retry=None, detail=''):
         fields = self.kv(role + '.infra')

@@ -43,7 +43,10 @@ way to distinguish stuck from slow. `forge-dispatch.sh` therefore runs every bac
 background and kills it after its timeout: `--timeout`, else `FORGE_TIMEOUT` (an explicit `0`
 disables), else the optional `timeout` column of the model's registry row, else 2700 s — scaled
 ×4/3 for `xhigh` and ×2 for `max`/`ultra` effort when not explicit (`<role>.resolved` records
-`timeout=` and `timeout_source=`). A killed dispatch exits `7`.
+`timeout=` and `timeout_source=`). A killed dispatch exits `7`, unless claude or openclaude had
+already given its final result and only an open background task kept it up: that result stands,
+whether the watchdog or `FORGE_RESULT_GRACE` (default 1800 s of silence after it; `0` = off) ended
+it, and `<role>.settled` records which (see [commands](../docs/commands.md)).
 
 **Infrastructure failures exit `8`.** After the backend exits, `forge-runtime.py classify` reads
 the dispatch log (never `<role>.last`, which is only created afterwards): claude/openclaude/grok

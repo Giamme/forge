@@ -355,7 +355,8 @@ whole ladder. It never dispatches and spends no quota. The retry policy's effort
 | `--timeout <s>` | kill this dispatch after `<s>` seconds; `0` disables. See the precedence below |
 
 **Exit codes:** `0` ok · `2` spec or usage error · `3` harness missing or unusable ·
-`4` the backend ran and failed · `7` the backend hit its timeout and was killed ·
+`4` the backend ran and failed · `7` the backend hit its timeout and was killed (unless it had
+already given its final result, below) ·
 `8` an **infrastructure failure** (quota or usage limit, auth, rate limit, network, or an
 empty answer) — nothing about the work was judged, so callers pause instead of counting a
 failure. On `8`, `<run-dir>/<role>.infra` holds `class=`, `retry_after=`, `detail=`, `rc=`,
@@ -376,6 +377,17 @@ others in — so a hung backend used to block forever, and under a decomposed ru
 silently stalled the others. The default is deliberately generous: this is a backstop against
 a wedged process, not a budget. A role killed by it has usually left a partial edit behind, so
 `7` is worth reporting as such rather than as a clean failure.
+
+**A final result the CLI stays open after.** claude and openclaude stay up while a background
+task their session started is still open, even after the model's final result. When the log
+ends in that result (only background-task events after it) and has been silent for
+`FORGE_RESULT_GRACE` seconds (default 1800; `0` turns it off), forge ends the harness and the
+result stands: the role finished, its exit is the one the CLI gives for that result, and
+`<role>.settled` says `ended_by=grace`. The same holds when the watchdog is what ended it
+(`ended_by=timeout`), so the work goes to review instead of counting as a timeout. A result is
+not always the end: a background task that completes wakes the session for another turn, and a
+turn under way is never ended by the grace, however long it is silent. The grace is long
+because that wake-up can come many minutes later. `<role>.resolved` records `result_grace=`.
 
 On `3` or `4`, forge shows you the actual error rather than substituting a different model —
 quietly swapping backends hides the fact that the one you picked is broken.
