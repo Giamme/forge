@@ -18,6 +18,7 @@
 #                                     [--decide retry=N|threshold=Pn | --dwarf <spec>] --reason "<why>" --approved
 #                                                                              (a NEEDS_DECISION task)
 #                                     [--timeout S] [--qa-threshold Pn|none|default] [--verify-retries N]
+#                                     [--retry-failed N] [--infra-retries M]
 #   forge-parallel.sh integrate <plan-dir> --approved [--verify-retries N] [--final-review <qa-spec>]
 #   forge-parallel.sh review <plan-dir> [--qa <spec>] [--yolo-qa] [--qa-threshold Pn|none|default]
 #   forge-parallel.sh attribute <plan-dir> [--force]   (find a merge that breaks the failed verification)
@@ -1541,6 +1542,31 @@ _retry_answer_scan() { # _retry_answer_scan <scratch-dir> <retry args...>
 # A failed task keeps its branch and worktree "so there is something to inspect and
 # retry from" — this is the retry. It is a command a human types, not an automatic
 # repair loop, which is what keeps forge's one-dwarf-then-QA rule intact.
+# The wait before `retry --infra-retries` dispatches again after an infrastructure stop: the provider's
+# retry-after when it gave one, else the plan's infra_backoff (the scheduler's own rule, its functions).
+retry_infra_wait() { # retry_infra_wait <plan> <task-dir> <cycle>
+  local secs
+  secs="$(python3 - "$SKILL_DIR/scripts/forge-schedule.py" "$1" "$2" "$3" <<'PY' 2>/dev/null
+import importlib.util, sys
+from pathlib import Path
+spec = importlib.util.spec_from_file_location('forge_schedule', sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+sys.modules['forge_schedule'] = module
+spec.loader.exec_module(module)
+backoff = None
+try:
+    text = (Path(sys.argv[2]) / 'infra_backoff').read_text().strip()
+    backoff = (module.parse_backoff(text), text) if text else None
+except (OSError, ValueError):
+    pass
+print(module.infra_wait(module.infra_info(Path(sys.argv[3])), int(sys.argv[4]), backoff)[0])
+PY
+)" || secs=""
+  case "$secs" in ''|*[!0-9.]*) secs=60 ;; esac
+  note "waiting ${secs}s for the infrastructure stop to clear"
+  sleep "$secs"
+}
+
 do_retry() {
   local PLAN="${1:?retry needs a plan dir}" id="${2:?retry needs a task id}"; shift 2
   FORGE_RUN_STARTED="$(forge_now)"
@@ -1617,6 +1643,7 @@ do_retry() {
         ;;
     esac
   done
+  forge_profile_run_values "$PLAN"
   [ "$JEV_OPTS" = 1 ] && forge_jev_settle "$PLAN"
   # Before any decision-model step: the privacy floor and the run budget read these.
   [ "$JEV_OPTS" = 1 ] && [ -s "$PLAN/repo" ] && forge_decide_env "$(cat "$PLAN/repo")" "$PLAN"
@@ -1685,15 +1712,34 @@ do_retry() {
   # stopped for a decision again, an empty diff, or a policy that finds no stronger model.
   # The count is decided.left, so it survives a run that ended before the attempts were used.
   local more; more="$(decided_left "$tdir")"; more="${more:-0}"
-  while [ "$more" -gt 0 ] && { [ "$st" = FAIL ] || [ "$st" = UNKNOWN ]; } && [ ! -e "$tdir/noretry" ]; do
+  # --retry-failed N (or the frozen profile's) adds N further attempts for this call alone, spent after the
+  # decided ones; --infra-retries M waits out that many infrastructure stops before giving up (#48).
+  local rf_left="$PP_RETRY_FAILED" inf_left="$PP_INFRA_RETRIES" inf_cycle=0 from_decided
+  while :; do
+    if [ "$st" = INFRA ]; then
+      # No attempt was spent and nothing was judged: wait the stop out as the scheduler does, and dispatch again.
+      [ "$inf_left" -gt 0 ] || break
+      inf_left=$(( inf_left - 1 ))
+      retry_infra_wait "$PLAN" "$tdir" "$inf_cycle"; inf_cycle=$(( inf_cycle + 1 ))
+      prepare_retry "$PLAN" "$id" || break
+      rm -f "$tdir/status" "$PLAN/infra.last"
+      note "retrying $id after an infrastructure stop ($inf_left more wait(s) allowed)"
+      do_task "$PLAN" "$id"
+      st="$(task_status "$PLAN" "$id")"
+      continue
+    fi
+    { [ "$st" = FAIL ] || [ "$st" = UNKNOWN ]; } && [ ! -e "$tdir/noretry" ] || break
+    from_decided=0
+    if [ "$more" -gt 0 ]; then from_decided=1; elif [ "$rf_left" -le 0 ]; then break; fi
     # Each further attempt is spent against the cap (#69) like the scheduler's retries: an UNKNOWN review
     # does not stop the task by itself, so the cap is checked here, and a task at it stops for a decision.
     if ! attempt_cap_gate "$PLAN" "$id" "$st" ""; then st="$(task_status "$PLAN" "$id")"; break; fi
-    more=$(( more - 1 ))
+    if [ "$from_decided" = 1 ]; then more=$(( more - 1 )); else rf_left=$(( rf_left - 1 )); fi
     prepare_retry "$PLAN" "$id" || break
-    decided_left_set "$tdir" "$more" || break
+    if [ "$from_decided" = 1 ]; then decided_left_set "$tdir" "$more" || break; fi
     rm -f "$tdir/status"
-    note "retrying $id (decided retry, $more more after this)"
+    if [ "$from_decided" = 1 ]; then note "retrying $id (decided retry, $more more after this)"
+    else note "retrying $id (--retry-failed, $rf_left more after this)"; fi
     do_task "$PLAN" "$id"
     st="$(task_status "$PLAN" "$id")"
   done
@@ -2361,6 +2407,17 @@ do_integrate() {
   report_known_issues "$PLAN"
   # Opt-in whole-run review of the combined candidate, after verification and before the
   # user's branch moves. Per-task review only ever saw one slice at a time.
+  # A profile that names a final reviewer (#48) asks for this review: --final-review wins, then the spec
+  # `review` or an earlier --final-review left in final_qa, then the profile's own.
+  if [ -z "$PP_FINAL_REVIEW" ] && [ -f "$PLAN/profile.json" ]; then
+    local pf_final; pf_final="$(forge_profile_py value "$PLAN/profile.json" routing.final_reviewer 2>/dev/null)"
+    pf_final="${pf_final#*$'\t'}"
+    if [ -n "$pf_final" ]; then
+      PP_FINAL_REVIEW="$(head -1 "$PLAN/final_qa" 2>/dev/null | tr -d ' \r')"
+      [ -n "$PP_FINAL_REVIEW" ] || PP_FINAL_REVIEW="$pf_final"
+      note "final review: $PP_FINAL_REVIEW, from the plan's profile"
+    fi
+  fi
   if [ -n "$PP_FINAL_REVIEW" ]; then
     declare -F final_review_for_integrate >/dev/null || die "the final review is not available in this build" 3
     final_review_for_integrate "$PLAN" "$parent" "$candidate_sha" "$candidate" "$out" "$PP_FINAL_REVIEW" || return $?

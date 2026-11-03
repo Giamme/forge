@@ -114,13 +114,6 @@ shift
 
 # --- profiles (#48): the same reading, freezing and exporting as forge-parallel.sh's plan ---
 forge_profile_py() { PYTHONPATH="$SKILL_DIR/scripts${PYTHONPATH:+:$PYTHONPATH}" python3 -m forge_decide.profiles "$@"; }
-forge_profile_export() { # forge_profile_export <run-dir>: the gates and budget of the frozen copy
-  local text
-  [ -f "${1:-}/profile.json" ] || return 0
-  text="$(forge_profile_py decide "$1/profile.json" 2>/dev/null)" || return 0
-  [ -z "$text" ] || export FORGE_DECIDE_PROFILE_JSON="$text"
-  return 0
-}
 
 OUTPUT=summary
 REPO="$PWD"; DWARF=""; QA="opus"; APPROACH=""; YD=""; YQ=""; NATIVE=""; TIMEOUT=""; DRY=0; FAIL_FIRST=0; QA_THR=
@@ -181,7 +174,6 @@ case "$OUTPUT" in summary|full) ;; *) die "--output must be summary or full" ;; 
 pf_args=()
 [ -z "$PF_NAME" ] || pf_args+=(--profile "$PF_NAME")
 [ "$PF_NONE" = 0 ] || pf_args+=(--no-profile)
-[ -z "${FORGE_SOLO_LOCK:-}" ] || pf_args+=(--use-frozen)   # the re-exec under the lock: the copy the first pass froze
 [ -z "$DWARF" ] || pf_args+=(--given dwarf)
 [ "$QA_GIVEN" != 1 ] || pf_args+=(--given qa)
 [ -z "$QA_THR" ] || pf_args+=(--given qa_threshold)
@@ -211,6 +203,8 @@ while IFS="$(printf '\t')" read -r pf_key pf_val; do
     pool.high) [ "$FRACTAL_CHOICE" != on ] || FRACTAL_ARGS+=(--dwarf-high "$pf_val") ;;
     fractal_planner) [ "$FRACTAL_CHOICE$pf_auto$pf_planner" != on10 ] || FRACTAL_ARGS+=(--fractal-planner "$pf_val") ;;
     line) PF_LINE="$pf_val" ;;
+    # The gates and budget of the copy this run uses, for it and everything it starts.
+    decide) [ -z "$pf_val" ] || export FORGE_DECIDE_PROFILE_JSON="$pf_val" ;;
   esac
 done <<EOF
 $pf_out
@@ -232,9 +226,12 @@ case "$(cd "$RUN" && pwd)/" in
 esac
 
 RUN="$(cd "$RUN" && pwd)"
-# The frozen copy, atomically, and its gates and budget for this run and everything it starts.
-forge_profile_py solo "$RUN" --repo "$REPO" --no-validate --write ${pf_args[@]+"${pf_args[@]}"} >/dev/null || exit $?
-forge_profile_export "$RUN"
+# The frozen copy, atomically. Only the process that holds the run's lock writes it (a refused
+# second start, or a dry run, must not change what an active run froze): the first pass above
+# only read and checked, and the re-exec under the lock chooses again from the same arguments.
+if [ "$DRY" != 1 ] && [ "${FORGE_SOLO_LOCK:-}" = "$RUN" ]; then
+  forge_profile_py solo "$RUN" --repo "$REPO" --no-validate --write ${pf_args[@]+"${pf_args[@]}"} >/dev/null || exit $?
+fi
 [ -z "$PF_LINE" ] || [ -n "${FORGE_SOLO_LOCK:-}" ] || echo "$PF_LINE"
 # Freeze the selection now that the run dir is real and absolute. A retry of this
 # same run dir restores it rather than re-reading whatever flags are passed then.

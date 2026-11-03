@@ -243,6 +243,24 @@ class ProfileRunsTests(unittest.TestCase):
         self.assertEqual(self.rows(p)['a'], dict(dwarf='sol:medium', qa='opus:medium'))
         self.assertNotIn('profile:', r.stdout)
 
+    def test_a_replan_with_another_profile_routes_the_tasks_by_the_new_pools(self):
+        other = {'routing': {'dwarf': {'any': ['opus']}, 'qa': {'any': ['sol']}}, 'policy': {'explore': 0}}
+        self.decide({'P': SMALL, 'Q': other})
+        p = self.planned('--profile', 'P', tasks=(('a', 'low'), ('b', 'low'), ('c', 'low')))
+        # A model written into a row by hand is the user's, whatever profile is chosen after it.
+        table = (p / 'tasks.tsv').read_text()
+        (p / 'tasks.tsv').write_text(table.replace('b\t-\tlow\tb.txt\tsol:medium\topus:medium', 'b\t-\tlow\tb.txt\topus:low\tsol:low'))
+        (p / 'tasks' / 'c').joinpath('status').write_text('MERGED\n')
+        r = self.plan(p, '--profile', 'Q')
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertEqual(self.rows(p), {'a': dict(dwarf='opus', qa='sol'), 'b': dict(dwarf='opus:low', qa='sol:low'),
+                                        'c': dict(dwarf='sol:medium', qa='opus:medium')})
+        self.assertEqual(json.loads((p / 'fractal-routing.json').read_text()), {'any': ['opus']})
+        self.assertEqual(json.loads((p / 'qa-routing.json').read_text()), {'any': ['sol']})
+        # a re-plan that names no profile leaves the rows as they are
+        self.assertEqual(self.plan(p).returncode, 0)
+        self.assertEqual(self.rows(p)['a'], dict(dwarf='opus', qa='sol'))
+
     # --- refusals -----------------------------------------------------------------------
     def assert_refused(self, *flags, reason):
         p = self.make_plan()
@@ -365,6 +383,75 @@ class ProfileRunsTests(unittest.TestCase):
         self.assertEqual(self.budgets(self.planned('--profile', 'P'), '--retry-failed', '0'), {'retry=0 infra=3'})
         self.assertEqual(self.budgets(self.planned('--profile', 'P'), '--infra-retries', '1'), {'retry=2 infra=1'})
 
+    def failing_a(self, n=5):
+        # Every attempt of a changes the file (a retry that changes nothing is not reviewed) and fails its review.
+        self.scenario({'a.dwarf.%d' % i: {'content': 'attempt %d' % i} for i in range(1, n + 1)})
+        self.env['FAIL_A'] = '1'
+
+    def test_retry_takes_the_retry_budget_from_the_profile_and_a_flag_wins(self):
+        self.decide({'P': {**SMALL, 'routing': {**SMALL['routing'], 'escalate_after': 0},
+                           'policy': {'explore': 0, 'retry_failed': 2}}})
+        for flags, attempts in (((), 3), (('--retry-failed', '1'), 2), (('--retry-failed', '0'), 1)):
+            with self.subTest(flags=flags):
+                p = self.planned('--profile', 'P')
+                self.failing_a()
+                self.assertEqual(self.run_script('forge-parallel.sh', 'run', p, '--retry-failed', '0').returncode, 5)
+                before = self.calls().count('dwarf')
+                self.run_script('forge-parallel.sh', 'retry', p, 'a', *flags)
+                self.assertEqual(self.calls().count('dwarf') - before, attempts)
+                (self.root / 'calls').unlink()
+                self.env.pop('FAIL_A')
+
+    def test_retry_without_a_profile_is_one_attempt_and_still_takes_the_flag(self):
+        p = self.planned('--dwarf', 'sol:medium', '--qa', 'opus:medium')
+        self.failing_a()
+        self.assertEqual(self.run_script('forge-parallel.sh', 'run', p).returncode, 5)
+        before = self.calls().count('dwarf')
+        self.run_script('forge-parallel.sh', 'retry', p, 'a', '--escalate-after', '0')
+        self.assertEqual(self.calls().count('dwarf') - before, 1)
+        self.run_script('forge-parallel.sh', 'retry', p, 'a', '--retry-failed', '1')
+        self.assertEqual(self.calls().count('dwarf') - before, 3)
+
+    def test_retry_waits_out_an_infrastructure_stop_with_the_profiles_infra_retries(self):
+        self.decide({'P': {**SMALL, 'policy': {'explore': 0, 'infra_retries': 1}}})
+        self.env['FORGE_INFRA_BACKOFF'] = '0.1'
+        limit = {'rc': 1, 'stderr': 'Claude AI usage limit reached|1760000000'}
+        stop = {'a.dwarf.1': limit, 'a.dwarf.2': limit}
+        p = self.planned('--profile', 'P')
+        self.scenario(stop)
+        self.assertEqual(self.run_script('forge-parallel.sh', 'run', p, '--infra-retries', '0').returncode, 8)
+        self.assertEqual(self.calls().count('dwarf'), 1)
+        r = self.run_script('forge-parallel.sh', 'retry', p, 'a')
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertEqual(self.calls().count('dwarf'), 3, 'the retry hit the stop once more and waited it out')
+        self.assertIn('infrastructure stop', r.stdout)
+        # a flag of the retry wins over the profile's number
+        p = self.planned('--profile', 'P')
+        for stale in self.root.glob('scenario.json.*'):
+            stale.unlink()
+        self.scenario(stop)
+        self.assertEqual(self.run_script('forge-parallel.sh', 'run', p, '--infra-retries', '0').returncode, 8)
+        self.assertEqual(self.run_script('forge-parallel.sh', 'retry', p, 'a', '--infra-retries', '0').returncode, 8)
+
+    def test_integrate_reviews_the_combined_candidate_with_the_profiles_final_reviewer(self):
+        self.decide({'P': {**SMALL, 'routing': {**SMALL['routing'], 'final_reviewer': 'opus:high'}}, 'Q': SMALL})
+        p = self.planned('--profile', 'P')
+        self.assertEqual((p / 'final_qa').read_text(), 'opus:high')
+        self.assertEqual(self.run_script('forge-parallel.sh', 'run', p).returncode, 0)
+        before = self.calls().count('qa')
+        r = self.run_script('forge-parallel.sh', 'integrate', p, '--approved')
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertGreater(self.calls().count('qa'), before, r.stdout)
+        self.assertIn('final review', r.stdout)
+        # a plan whose profile names none reviews nothing at integrate, as before
+        self.git('reset', '-q', '--hard', 'HEAD~1')
+        self.fresh_change()
+        q = self.planned('--profile', 'Q', name='noreview')
+        self.assertEqual(self.run_script('forge-parallel.sh', 'run', q).returncode, 0)
+        before = self.calls().count('qa')
+        self.assertEqual(self.run_script('forge-parallel.sh', 'integrate', q, '--approved').returncode, 0)
+        self.assertEqual(self.calls().count('qa'), before)
+
     def test_run_passes_the_profiles_fractal_planner_with_automatic_decomposition(self):
         self.decide({'P': {**SMALL, 'routing': {**SMALL['routing'], 'fractal_planner': 'sol:high'}}})
         p = self.planned('--profile', 'P')
@@ -432,6 +519,28 @@ class ProfileRunsTests(unittest.TestCase):
         flagged = self.run_script('forge-solo.sh', run, '--repo', self.repo, '--profile', 'P', '--dwarf', 'sol:high')
         self.assertEqual(flagged.returncode, 0, flagged.stdout)
         self.assertEqual(self.resolved(run / 'dwarf.resolved', 'effort'), 'high')
+
+    def test_solo_that_cannot_take_the_lock_leaves_the_active_runs_profile_alone(self):
+        import fcntl
+        self.decide({'P': SMALL, 'Q': {'routing': {'dwarf': {'any': ['opus']}, 'qa': {'any': ['sol']}}}})
+        r, run = self.solo('busy', '--profile', 'P', dwarf=False)
+        self.assertEqual(r.returncode, 0, r.stdout)
+        frozen_text = (run / 'profile.json').read_text()
+        with (run / 'pipeline.lock').open('a') as held:
+            fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            self.fresh_change()
+            second = self.run_script('forge-solo.sh', run, '--repo', self.repo, '--profile', 'Q')
+            self.assertNotEqual(second.returncode, 0, second.stdout)
+            none = self.run_script('forge-solo.sh', run, '--repo', self.repo, '--no-profile', '--dwarf', 'sol')
+            self.assertNotEqual(none.returncode, 0, none.stdout)
+        self.assertEqual((run / 'profile.json').read_text(), frozen_text)
+
+    def test_a_solo_dry_run_does_not_write_the_profile(self):
+        self.decide({'P': SMALL})
+        r, run = self.solo('dry', '--profile', 'P', '--dry-run', dwarf=False)
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertFalse((run / 'profile.json').exists())
+        self.assertIn('profile: P (user)', r.stdout.splitlines())
 
     def test_solo_without_a_profile_or_a_dwarf_still_asks_for_a_model(self):
         r, run = self.solo('bare', dwarf=False)

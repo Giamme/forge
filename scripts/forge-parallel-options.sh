@@ -12,7 +12,8 @@
 #   A malformed value exits through die (2).
 #
 # A profile (plan --profile, frozen as $PLAN/profile.json) supplies --retry-failed and
-# --infra-retries when `run` is not given them; a flag of the run wins.
+# --infra-retries when `run` or `retry` is not given them; a flag wins. On `retry` they are
+# the further attempts after this one (while its review fails) and the waits out of an infrastructure stop.
 #
 # Persisted options become files in the plan dir, like --verify and --setup, so a later
 # `retry` or the scheduler's task processes see them. Cost-bearing options that change
@@ -22,8 +23,8 @@
 # `forge control` can change them live; the scheduler removes those files when it exits.
 #
 #   --timeout S             run retry         $PLAN/timeout        dispatch timeout, seconds (0 = none)
-#   --retry-failed N        run               (this run only)      automatic reviewer-driven retries
-#   --infra-retries M       run               (this run only)      waits out quota/auth/network stops
+#   --retry-failed N        run retry         (this run only)      automatic reviewer-driven retries
+#   --infra-retries M       run retry         (this run only)      waits out quota/auth/network stops
 #   --infra-backoff SHAPE   run               $PLAN/infra_backoff  waits between those stops: exp:B[,C],
 #                                                                  linear:S,T[,C] or list:a,b,... (default exp:60)
 #   --infra-fallback        run               $PLAN/infra_fallback a dwarf's stop that another model can take (capacity,
@@ -102,10 +103,10 @@ forge_pp_flag() {
       pp_nonneg --timeout "${2:-}"
       printf '%s' "$2" > "$plan/timeout" ;;
     --retry-failed)
-      [ "$cmd" = run ] || return 1
+      [ "$cmd" = run ] || [ "$cmd" = retry ] || return 1
       pp_nonneg --retry-failed "${2:-}"; PP_RETRY_FAILED="$2"; PP_RETRY_FAILED_SET=1 ;;
     --infra-retries)
-      [ "$cmd" = run ] || return 1
+      [ "$cmd" = run ] || [ "$cmd" = retry ] || return 1
       pp_nonneg --infra-retries "${2:-}"; PP_INFRA_RETRIES="$2"; PP_INFRA_RETRIES_SET=1 ;;
     --infra-fallback)
       [ "$cmd" = run ] || return 1

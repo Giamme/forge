@@ -592,6 +592,48 @@ def _apply_plan_files(plan: Path, keys: dict) -> None:
             put(key, str(keys[f'policy.{key}']))
 
 
+def _release_routed(plan: Path, routed) -> None:
+    """A profile chosen again replaces the routing the plan was resolved with: a task model that came
+    from the earlier pools goes back to unassigned, when the new pools (`routed`: the routing keys of
+    the new profile and of this call's flags) can resolve that row, and the table then does it. A model
+    written into a row by hand, a row the new pools say nothing about, and a task that merged stay."""
+    pools = {4: set(), 5: set()}
+    for column, name in ((4, 'fractal-routing.json'), (5, 'qa-routing.json')):
+        try:
+            data = json.loads((plan / name).read_text())
+        except (OSError, UnicodeDecodeError, ValueError, RecursionError):
+            data = None
+        for value in (data.values() if isinstance(data, dict) else ()):
+            if isinstance(value, list):
+                pools[column].update(spec for spec in value if isinstance(spec, str))
+    if not any(pools.values()):
+        return
+    table = plan / 'tasks.tsv'
+    try:
+        lines = table.read_text().split('\n')
+    except (OSError, UnicodeDecodeError):
+        return
+    changed = False
+    for number, line in enumerate(lines):
+        fields = line.split('\t')
+        if line.startswith('#') or len(fields) < 7:
+            continue
+        try:
+            merged = (plan / 'tasks' / fields[0] / 'status').read_text().strip() == 'MERGED'
+        except (OSError, UnicodeDecodeError):
+            merged = False
+        if merged:
+            continue
+        for column, pool in ((4, 'dwarf'), (5, 'qa')):
+            if fields[column] in pools[column] and (f'routing.{pool}.{fields[2]}' in routed
+                                                    or f'routing.{pool}.any' in routed):
+                fields[column] = '-'
+                changed = True
+        lines[number] = '\t'.join(fields)
+    if changed:
+        _write_atomic(table, '\n'.join(lines))
+
+
 def freeze_plan(plan: Path, repo, name, none, given, check_only=False, validate_it=True) -> list:
     """Select, freeze and apply a profile for `plan`; returns `key<TAB>value` lines for the shell
     (the values of its variables: pools, planner, shadow review, exploration, fast roles)."""
@@ -618,6 +660,7 @@ def freeze_plan(plan: Path, repo, name, none, given, check_only=False, validate_
             out.append(f'{key}\t{_share(value)}')
         elif key == 'policy.fast':
             out.append(f'{key}\t{_fast_roles(value, FAST_ROLES)}')
+    _release_routed(plan, set(keys) | set(given))
     _apply_plan_files(plan, keys)
     _write_atomic(frozen_path, json.dumps(record, indent=2) + '\n')
     return out
@@ -686,6 +729,7 @@ def solo_profile(run: Path, repo, name, none, given, use_frozen, write, validate
     if 'fractal-planner' not in given and isinstance(planner, str) and planner:
         out.append(f'fractal_planner\t{planner}')
     out.append(f'line\t{table_line(shown)}')
+    out.append(f'decide\t{frozen_decide(json.dumps(record)) or ""}')
     if write and action == 'new':
         _write_atomic(frozen_path, json.dumps(record, indent=2) + '\n')
     return out
