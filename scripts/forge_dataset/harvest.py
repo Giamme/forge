@@ -120,6 +120,14 @@ def as_int(value) -> int | None:
         return None
 
 
+def as_text(value) -> str | None:
+    """A non-empty string, or None. A missing tier field and a JSON null both land here."""
+    if isinstance(value, str):
+        value = value.strip()
+        return value or None
+    return None
+
+
 def signature(path: Path) -> list | None:
     try:
         st = path.stat()
@@ -414,6 +422,10 @@ def dispatch_event(attempt: Path, root: Path, role: str, harness: str, rc, prov:
         # gets its own role: nothing that reads qa dispatches mistakes it for the one that decided.
         role='qa_shadow' if shadow and role == 'qa' else role, alias=resolved.get('alias'), harness=harness, model=resolved.get('model'),
         effort=None if not effort or effort.startswith('<') else effort,
+        # metrics.json is the record finish() wrote. A run from before that record falls
+        # back to the resolved line, which exists only when a tier was asked.
+        service_tier=as_text(metrics.get('service_tier')) or as_text(resolved.get('service_tier')),
+        speed=as_text(metrics.get('speed')), speed_reason=as_text(metrics.get('speed_reason')),
         yolo=resolved.get('yolo') == 'ON', passthrough=resolved.get('passthrough') == 'yes',
         clamped=resolved.get('clamped'), timeout=as_int(resolved.get('timeout')),
         timeout_source=resolved.get('timeout_source'), delivery=delivery,

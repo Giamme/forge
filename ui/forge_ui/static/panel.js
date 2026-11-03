@@ -306,9 +306,18 @@ window.ForgePanel = (() => {
     parent.append(bar, legend);
   }
   const tokens = t => t ? `${display(t.input)} in (${display(t.cached)} cached) · ${display(t.output)} out` : '—';
+  // A tier row exists only when one was asked. A logged speed that is not that tier sits beside it, with the reason.
+  function tierText(m) {
+    const asked = m && m.service_tier;
+    if (!asked) return undefined;
+    const speed = m.speed;
+    if (!speed || speed === asked) return String(asked);
+    return m.speed_reason ? `${asked} asked · ran ${speed} (${m.speed_reason})` : `${asked} asked · ran ${speed}`;
+  }
   function modelFields(m) {
     if (!m) return [['Model', '—']];
-    return [['Spec', m.spec ? plate(m.spec) : undefined], ['Harness', m.harness, true], ['Model', m.model, true], ['Effort', m.effort], m.clamped ? ['Clamped', m.clamped] : ['Clamped', undefined]];
+    return [['Spec', m.spec ? plate(m.spec) : undefined], ['Harness', m.harness, true], ['Model', m.model, true], ['Effort', m.effort],
+      ['Tier', tierText(m)], m.clamped ? ['Clamped', m.clamped] : ['Clamped', undefined]];
   }
 
   /* ---------- views ---------- */
