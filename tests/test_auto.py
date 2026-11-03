@@ -142,6 +142,26 @@ class ValidReplyTests(AutoCase):
         self.assertEqual((plan / 'fast').read_text(), 'planner\n')
         self.assertEqual(self.calls(), ['qa'])
 
+    def test_an_existing_frozen_profile_names_the_planner_not_the_current_default(self):
+        config = self.root / 'cfg'
+        self.env.update(XDG_CONFIG_HOME=str(config), XDG_STATE_HOME=str(self.root / 'state'))
+        (config / 'forge').mkdir(parents=True)
+        body = {'routing': {'dwarf': {'any': ['sol']}, 'qa': {'any': ['opus']}}, 'policy': {'explore': 0}}
+        decide = {'version': 1, 'default_profile': 'now',
+                  'profiles': {'now': dict(body, routing=dict(body['routing'], planner='opus'))}}
+        (config / 'forge' / 'decide.json').write_text(json.dumps(decide))
+        plan = self.root / 'frozen'
+        plan.mkdir()
+        frozen = {'name': 'then', 'level': 'user', 'shadowed': [], 'overridden': [],
+                  'body': dict(body, routing=dict(body['routing'], planner='sol:medium'))}
+        (plan / 'profile.json').write_text(json.dumps(frozen))
+        self.planner_says(reply(task('a')))
+        result, plan = self.auto('frozen', '--plan', 'always', planner=None)
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn('gpt-6.1-sol', (plan / 'planner.cmd').read_text())
+        self.assertNotIn('opus', (plan / 'planner.cmd').read_text())
+        self.assertEqual(json.loads((plan / 'profile.json').read_text())['name'], 'then')
+
 
 class RefusalTests(AutoCase):
     def test_a_malformed_reply_stops_with_exit_4_before_anything_else_is_dispatched(self):
@@ -179,6 +199,17 @@ class RefusalTests(AutoCase):
     def test_an_unusable_planner_spec_stops_in_the_preflight(self):
         result, _ = self.auto('nospec', '--plan', 'always', planner='no-such-model')
         self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertEqual(self.calls(), [])
+
+    def test_a_missing_value_or_plan_dir_is_a_usage_error(self):
+        goal = self.goal()
+        for args in (['--repo'], ['--repo', self.repo, '--goal-file'], ['--repo', self.repo, '--goal-file', goal, '--planner'],
+                     ['--repo', self.repo, '--goal-file', goal, '--profile'], ['--repo', self.repo, '--goal-file', goal, '--fast']):
+            with self.subTest(args=args[-1]):
+                result = self.run_script('forge-parallel.sh', 'auto', self.root / 'usage', *args)
+                self.assertEqual(result.returncode, 2, result.stdout)
+        result = self.run_script('forge-parallel.sh', 'auto')
+        self.assertEqual(result.returncode, 2, result.stdout)
         self.assertEqual(self.calls(), [])
 
     def test_a_plan_dir_with_tasks_is_refused(self):

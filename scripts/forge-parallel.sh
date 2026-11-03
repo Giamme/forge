@@ -2548,26 +2548,31 @@ do_integrate() {
 }
 
 # --- auto (#87, #88) -----------------------------------------------------------------
-# The profile `plan` will select for these flags, read without writing anything: the
-# planner spec and the fast-tier roles it names, as `key<TAB>value` lines.
-forge_auto_profile() { # forge_auto_profile <repo> <profile name or empty> <no-profile 0|1>
+# The profile `plan` will use for these flags, read without writing anything: the planner
+# spec and the fast-tier roles it names, as `key<TAB>value` lines. The choice is plan's own
+# (profiles._choose): --no-profile means none; with no --profile the plan's frozen
+# profile.json stays; otherwise the named profile, else the default. A frozen profile adds no
+# fast roles: plan stored those when it froze it.
+forge_auto_profile() { # forge_auto_profile <plan-dir> <repo> <profile name or empty> <no-profile 0|1>
   PYTHONPATH="$SKILL_DIR/scripts${PYTHONPATH:+:$PYTHONPATH}" python3 - "$@" <<'PY'
 import sys
+from pathlib import Path
 from forge_decide import profiles
-repo, name, none = sys.argv[1] or None, sys.argv[2] or None, sys.argv[3] == '1'
+plan, repo, name, none = Path(sys.argv[1]), sys.argv[2] or None, sys.argv[3] or None, sys.argv[4] == '1'
 try:
-    chosen = profiles.select(repo, name, none)
+    action, chosen = profiles._choose(repo, name, none, plan / profiles.FROZEN, False, False)
 except profiles.ProfileError as exc:
     print('forge: %s' % exc, file=sys.stderr)
     sys.exit(2)
-values = profiles.flat(chosen['body']) if chosen else {}
+body = chosen.get('body') if isinstance(chosen, dict) else None
+values = profiles.flat(body) if body else {}
 planner = values.get('routing.planner')
 if isinstance(planner, str) and planner:
     print('routing.planner\t%s' % planner)
 fast = values.get('policy.fast')
 if isinstance(fast, (list, tuple)):
     fast = ','.join(str(role) for role in fast)
-if isinstance(fast, str) and fast:
+if action == 'new' and isinstance(fast, str) and fast:
     print('policy.fast\t%s' % fast)
 PY
 }
@@ -2604,15 +2609,17 @@ forge_auto_dispatch() { # forge_auto_dispatch <plan-dir> <repo> <spec> <fast-opt
 }
 
 do_auto() {
-  local PLAN="${1:?auto needs a plan dir}"; shift
+  local PLAN="${1:-}"
+  [ -n "$PLAN" ] && [ "${PLAN#-}" = "$PLAN" ] || die "auto needs a plan dir: forge-parallel.sh auto <plan-dir> --repo DIR --goal-file FILE ..."
+  shift
   local REPO="" GOAL="" PLANNER="" DLEVEL="" GATE=auto ONE_DIFF=medium COLLAPSE=1 APPROVED=0
   local PLAN_ARGS=() RUN_ARGS=() PF_NAME="" PF_NONE=0 FAST_GIVEN=0 FAST_PARSED="" arg
   while [ $# -gt 0 ]; do
     case "$1" in
       --)             shift; RUN_ARGS=("$@"); break ;;
-      --repo)         REPO="${2:?--repo needs a directory}"; shift 2 ;;
-      --goal-file)    GOAL="${2:?--goal-file needs a file}"; shift 2 ;;
-      --planner)      PLANNER="${2:?--planner needs a spec}"; PLAN_ARGS+=("$1" "$2"); shift 2 ;;
+      --repo)         [ $# -ge 2 ] || die "--repo needs a directory"; REPO="$2"; shift 2 ;;
+      --goal-file)    [ $# -ge 2 ] || die "--goal-file needs a file"; GOAL="$2"; shift 2 ;;
+      --planner)      [ $# -ge 2 ] || die "--planner needs a spec"; PLANNER="$2"; PLAN_ARGS+=("$1" "$2"); shift 2 ;;
       --decompose-level)
         case "${2:-}" in low|medium|high) DLEVEL="$2"; shift 2 ;;
           *) die "--decompose-level must be low, medium or high" ;; esac ;;
@@ -2624,7 +2631,7 @@ do_auto() {
           *) die "--one-task-difficulty must be low, medium or high" ;; esac ;;
       --no-collapse)  COLLAPSE=0; shift ;;
       --approved)     APPROVED=1; shift ;;
-      --profile)      PF_NAME="${2:?--profile needs a profile name}"; PLAN_ARGS+=("$1" "$2"); shift 2 ;;
+      --profile)      [ $# -ge 2 ] || die "--profile needs a profile name"; PF_NAME="$2"; PLAN_ARGS+=("$1" "$2"); shift 2 ;;
       --no-profile)   PF_NONE=1; PLAN_ARGS+=("$1"); shift ;;
       --fast)
         [ -n "${2:-}" ] || die "--fast needs a comma list of roles (dwarf, qa, planner, review), all or none"
@@ -2672,7 +2679,7 @@ do_auto() {
     # 3. The planner: its spec, its preflight, its dispatch, its reply.
     local key val profile_planner="" profile_fast="" profile_lines
     forge_profile_precheck "$PLAN" "${PLAN_ARGS[@]}"
-    profile_lines="$(forge_auto_profile "$REPO" "$PF_NAME" "$PF_NONE")" || exit $?
+    profile_lines="$(forge_auto_profile "$PLAN" "$REPO" "$PF_NAME" "$PF_NONE")" || exit $?
     while IFS="$(printf '\t')" read -r key val; do
       case "$key" in
         routing.planner) profile_planner="$val" ;;
