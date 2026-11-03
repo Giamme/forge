@@ -330,6 +330,14 @@ class ProfileCliTests(unittest.TestCase):
             out = self.run_cfg(*args, stdin='{}')
             self.assert_unchanged(before, out)
             self.assertEqual(out.stdout, '')
+        # An explicit empty --repo is a bad path. An empty shell variable must not create a user profile.
+        empty_repo = self.run_cfg('profile', 'create', 'accidental', '--file', '-', '--repo', '',
+                                  '--json', stdin='{}')
+        self.assert_unchanged(before, empty_repo, 'not a directory')
+        error = json.loads(empty_repo.stdout)
+        self.assertEqual(set(error), {'ok', 'error'})
+        self.assertFalse(error['ok'])
+        self.assertIn('not a directory', error['error'])
         self.assertFalse((self.cfg / 'forge').exists())
         builtin = self.run_cfg('profile', 'set', 'balanced', 'routing.planner', 'sonnet:high', '--json')
         self.assert_unchanged(before, builtin, BUILTIN_MSG % ('balanced', 'balanced'))

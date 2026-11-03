@@ -594,11 +594,16 @@ def profiles_text(payload, heading):
 
 
 def profile_repo(args):
-    """Git top for --repo, else None (the user file). A symlinked .forge or a non-regular decide.json
-    is refused here: save_repo would otherwise create or write through the link."""
-    if not getattr(args, 'repo', None):
+    """Git top for an explicit --repo, else None (the user file).
+
+    An empty --repo is a bad path, not "no --repo": an empty shell variable must not select the
+    user file. A symlinked .forge or a non-regular decide.json is refused here: save_repo would
+    otherwise create or write through the link.
+    """
+    repo = getattr(args, 'repo', None)
+    if repo is None:
         return None
-    root = repo_root(args.repo, required=True)
+    root = repo_root(repo, required=True)
     safe_target(root, 'decide.json')
     return root
 
