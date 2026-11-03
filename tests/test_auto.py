@@ -302,6 +302,21 @@ class FastTierTests(AutoCase):
         self.assertEqual(result.returncode, 0, result.stdout)
         self.assertNotIn('service_tier', (plan / 'planner.cmd').read_text())
 
+    def test_a_profile_with_no_fast_roles_clears_the_roles_an_earlier_auto_stored(self):
+        self.scenario({'change.qa.1': USAGE_LIMIT, 'change.qa.2': {'findings': reply(task('a')), 'verdict': 'none'}})
+        result, plan = self.auto('again', '--plan', 'always', '--fast', 'planner')
+        self.assertEqual(result.returncode, 8, result.stdout)
+        self.assertEqual((plan / 'fast').read_text(), 'planner\n')
+        config = self.root / 'cfg'
+        self.env.update(XDG_CONFIG_HOME=str(config), XDG_STATE_HOME=str(self.root / 'state'))
+        (config / 'forge').mkdir(parents=True)
+        profile = {'routing': {'planner': 'sol'}, 'policy': {'explore': 0, 'fast': []}}
+        (config / 'forge' / 'decide.json').write_text(json.dumps({'version': 1, 'profiles': {'mine': profile}}))
+        result, plan = self.auto('again', '--plan', 'always', '--profile', 'mine', planner=None)
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertNotIn('service_tier', (plan / 'planner.cmd').read_text())
+        self.assertFalse((plan / 'fast').exists())
+
     def test_no_fast_flag_leaves_the_planner_on_the_standard_tier(self):
         self.planner_says(reply(task('a')))
         _, plan = self.auto('standard', '--plan', 'always')

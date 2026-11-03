@@ -2570,11 +2570,9 @@ planner = values.get('routing.planner')
 if isinstance(planner, str) and planner:
     print('routing.planner\t%s' % planner)
 print('action\t%s' % action)
-fast = values.get('policy.fast')
-if isinstance(fast, (list, tuple)):
-    fast = ','.join(str(role) for role in fast)
-if action == 'new' and isinstance(fast, str) and fast:
-    print('policy.fast\t%s' % fast)
+# As plan stores it: an empty list is `none`, which clears the roles an earlier call stored.
+if action == 'new' and isinstance(values.get('policy.fast'), list):
+    print('policy.fast\t%s' % profiles._fast_roles(values['policy.fast'], profiles.FAST_ROLES))
 PY
 }
 
