@@ -649,7 +649,7 @@ def _profile_stdin(value):
         raise BadBody('body must be a JSON object')
     try:
         raw = json.dumps(value, allow_nan=False).encode('utf-8')
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, RecursionError):
         raise BadBody('body must be a JSON object')
     if len(raw) > MAX_PROFILE_BODY:
         raise BadBody('body is larger than 64 KiB')

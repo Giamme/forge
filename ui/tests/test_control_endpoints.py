@@ -470,6 +470,15 @@ class ProfileTests(EndpointCase):
         self.assertEqual(status, 200, body)
         self.assertEqual(self.calls()[-1]['stdin'], json.dumps({'note': 'x' * fits}, allow_nan=False))
 
+    def test_a_deeply_nested_body_is_a_400_not_a_500(self):
+        deep = 0
+        for _ in range(980):
+            deep = [deep]
+        status, body, route, key = control.dispatch(self.server, self.fake, 'POST', '/api/config/profiles', {
+            'run': self.key, 'action': 'create', 'name': 'deep', 'level': 'user', 'body': {'note': deep}})
+        self.assertEqual((status, route), (400, 'profiles'), body)
+        self.assertEqual(self.calls(), [])
+
     def test_without_the_token_is_refused(self):
         status, _body = self.post({'run': self.key, 'action': 'rm', 'name': 'work', 'level': 'user'},
                                   '/api/config/profiles', **{'X-Forge-UI-Token': None})
