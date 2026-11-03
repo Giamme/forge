@@ -130,7 +130,7 @@ plans_make_integration() { # plans_make_integration <repo> <branch> <commit> <wt
 
 # Per-plan option files carried to a derived plan. The cost-bearing choices a user made
 # for this plan apply to the plan made from it; `planner` does not (nothing plans again).
-PLANS_OPTION_FILES="no_ripwire no_memory yolo_dwarf yolo_qa reviewer_session implementer_session pre_review_tests pre_review_parallel qa_threshold timeout verify_retries verify_cmd verify_parallel setup_cmd final_qa shadow_qa shadow_rate explore escalate_after fractal-routing.json fractal-selection.json jev-selection.json"
+PLANS_OPTION_FILES="no_ripwire no_memory yolo_dwarf yolo_qa reviewer_session implementer_session fast pre_review_tests pre_review_parallel qa_threshold timeout verify_retries verify_cmd verify_parallel setup_cmd final_qa shadow_qa shadow_rate explore escalate_after fractal-routing.json fractal-selection.json jev-selection.json"
 
 # --- accept ---------------------------------------------------------------------
 # A reviewer's FAIL is the QA gate; overriding it is the user's call and never forge's or
@@ -547,7 +547,7 @@ Retry or accept them (or split them off into their own plan) first." 3
   done
   all=1; for p in "${SRC[@]}"; do [ -f "$p/pre_review_tests" ] || all=0; done
   [ "$all" = 1 ] && : > "$NEW/pre_review_tests"
-  for f in qa_threshold timeout verify_retries verify_parallel pre_review_parallel; do
+  for f in qa_threshold timeout verify_retries verify_parallel pre_review_parallel fast; do
     same=1
     for p in "${SRC[@]}"; do
       if [ ! -f "$p/$f" ] || ! cmp -s "$p/$f" "${SRC[0]}/$f"; then same=0; fi

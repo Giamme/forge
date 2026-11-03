@@ -20,6 +20,8 @@
 #                 [--approach <file>] [--yolo-dwarf] [--yolo-qa]
 #                 [--native-review] [--no-memory] [--timeout <s>] [--dry-run] [--ui]
 #                 [--fail-first] [--qa-threshold P0|P1|P2|P3|none]
+#                 [--fast ROLES]   dwarf, qa or none (planner, review and all are refused);
+#                                  kept in <run-dir>/fast. none removes it; omitting it keeps it
 #
 # Reads  <run-dir>/prompt.md   the implementation instruction (required)
 #        <run-dir>/goal.txt    one line, what the user asked for (optional)
@@ -95,7 +97,7 @@ forge_metric_on_exit() {
 }
 
 if [ "${1:-}" = --help ] || [ "${1:-}" = -h ]; then
-  sed -n '18,39s/^# *//p' "$0"
+  sed -n '18,41s/^# *//p' "$0"
   forge_fractal_help
   echo 'Explicit Fractal retry: repeat the original command with --retry.'
   exit 0
@@ -106,6 +108,7 @@ shift
 
 OUTPUT=summary
 REPO="$PWD"; DWARF=""; QA="opus"; APPROACH=""; YD=""; YQ=""; NATIVE=""; TIMEOUT=""; DRY=0; FAIL_FIRST=0; QA_THR=
+FAST_GIVEN=0; FAST_PARSED=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --fractal) forge_fractal_flag on || exit $?; shift ;;
@@ -126,6 +129,11 @@ while [ $# -gt 0 ]; do
     --timeout)    TIMEOUT="${2:?--timeout needs seconds}"; shift 2 ;;
     --dry-run)    DRY=1; shift ;;
     --fail-first) FAIL_FIRST=1; shift ;;
+    --fast)
+      [ -n "${2:-}" ] || die "--fast needs a comma list of roles (dwarf, qa, planner, review), all or none"
+      forge_fast_parse "$2" solo
+      FAST_GIVEN=1
+      shift 2 ;;
     --qa-threshold)
       QA_THR="$(printf '%s' "${2:?--qa-threshold needs P0, P1, P2, P3 or none}" | tr 'a-z' 'A-Z')"
       case "$QA_THR" in P0|P1|P2|P3) ;; NONE) QA_THR=none ;; *) die "--qa-threshold must be P0, P1, P2, P3 or none, got '$2'" 2 ;; esac
@@ -174,6 +182,8 @@ REPO="$(cd "$REPO" && pwd)"
 if [ "$DRY" != 1 ] && [ "${FORGE_SOLO_LOCK:-}" != "$RUN" ]; then
   exec python3 "$SKILL_DIR/scripts/forge-fractal.py" _lock "$RUN" "$0" "${ORIGINAL_ARGS[@]}"
 fi
+# After the lock re-exec, so the process that dispatches is the one that writes it.
+forge_fast_store "$RUN"
 RUN_ID="$(basename "$RUN")"
 export FORGE_CAPABILITY_CACHE="$RUN/capabilities"
 TFLAG=""; [ -n "$TIMEOUT" ] && TFLAG="--timeout $TIMEOUT"
@@ -183,6 +193,10 @@ FFLAGS=()
 [ -z "$YD" ] || FFLAGS+=(--yolo-dwarf)
 [ -z "$YQ" ] || FFLAGS+=(--yolo-qa)
 forge_fractal_select "$RUN" "$REPO" solo "$DRY" --dwarf "$DWARF" --qa "$QA" ${FFLAGS[@]+"${FFLAGS[@]}"} || exit $?
+forge_fast_fractal_note "$RUN"
+# Computed after Fractal selects, so a Fractal dispatch is not asked for the tier.
+ft_dwarf="$(forge_fast_tier "$RUN" dwarf)"
+ft_qa="$(forge_fast_tier "$RUN" qa)"
 if [ -n "${FORGE_FRACTAL_RUN:-}" ]; then
   # The UI choice is per invocation: a tmux resume replays these args and must not open it again.
   REMEMBER_ARGS=()
@@ -235,7 +249,7 @@ if [ "$DRY" = 1 ]; then
   echo "--- dry run ---"
   [ "$FORGE_UI_WANTED" != 1 ] || note "--ui ignored: a dry run starts no UI"
   /bin/bash "$DISPATCH" dwarf "$DWARF" --repo "$REPO" --run-dir "$RUN" \
-    --ripwire-query-file "$RUN/prompt.md" --prompt-file "$RUN/dwarf.input" $YD $TFLAG --dry-run
+    --ripwire-query-file "$RUN/prompt.md" --prompt-file "$RUN/dwarf.input" $YD $TFLAG $ft_dwarf --dry-run
   echo
   echo "qa would be: $QA $NATIVE $YQ"
   echo "dwarf prompt: $RUN/dwarf.input ($(wc -l < "$RUN/dwarf.input" | tr -d ' ') lines)"
@@ -243,8 +257,8 @@ if [ "$DRY" = 1 ]; then
 fi
 
 forge_metric_phase preflight
-/bin/bash "$DISPATCH" doctor --spec "$DWARF" --role dwarf $YD $TFLAG || exit $?
-/bin/bash "$DISPATCH" doctor --spec "$QA" --role qa $YQ $NATIVE $TFLAG || exit $?
+/bin/bash "$DISPATCH" doctor --spec "$DWARF" --role dwarf $YD $TFLAG $ft_dwarf || exit $?
+/bin/bash "$DISPATCH" doctor --spec "$QA" --role qa $YQ $NATIVE $TFLAG $ft_qa || exit $?
 /bin/bash "$SKILL_DIR/scripts/forge-install-ripwire.sh" || true
 # After the _lock re-exec and the Fractal checkpoint exit, so it runs once per run.
 forge_ui_launch "$RUN"
@@ -260,7 +274,7 @@ forge_metric_phase dispatch
 note "dwarf $DWARF in $REPO"
 guard_before_dwarf "$REPO" "$RUN"
 /bin/bash "$DISPATCH" dwarf "$DWARF" --repo "$REPO" --run-dir "$RUN" \
-  --ripwire-query-file "$RUN/prompt.md" --prompt-file "$RUN/dwarf.input" $YD $TFLAG --output "$OUTPUT"
+  --ripwire-query-file "$RUN/prompt.md" --prompt-file "$RUN/dwarf.input" $YD $TFLAG $ft_dwarf --output "$OUTPUT"
 rc=$?
 dur_dwarf="$(sed -n 's/^duration_s=//p' "$RUN/dwarf.resolved" 2>/dev/null | tail -1)"
 /bin/bash "$MEMORY" record "$REPO" --last "$RUN/dwarf.last" --role dwarf \
@@ -326,7 +340,7 @@ fi
 forge_metric_phase dispatch
 note "qa $QA on $(wc -l < "$RUN/changes.diff" | tr -d ' ') diff lines"
 /bin/bash "$DISPATCH" qa "$QA" --repo "$REVIEW" --review-base "$(cat "$RUN/review.base")" --run-dir "$RUN" \
-  --ripwire-query-file "$RUN/prompt.md" --prompt-file "$RUN/qa.input" $YQ $NATIVE $TFLAG --output "$OUTPUT"
+  --ripwire-query-file "$RUN/prompt.md" --prompt-file "$RUN/qa.input" $YQ $NATIVE $TFLAG $ft_qa --output "$OUTPUT"
 rc=$?
 forge_metric_phase verification
 verdict="$(forge_verdict "$RUN/qa.last")"

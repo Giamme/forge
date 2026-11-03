@@ -89,6 +89,125 @@ except Exception:
     sys.exit(1)' "$1/fractal-selection.json"
 }
 
+# --- fast service tier (--fast, #68) ---------------------------------------------------
+# A plan or solo run keeps the roles that should ask for the fast tier in <dir>/fast,
+# one role per line, in the order dwarf, qa, planner, review. Specs never change: the
+# dispatch and its preflight doctor get `--service-tier fast` only for a listed role.
+# Fractal dispatches through its own runner and ignores the file.
+#
+# forge_fast_parse sets FAST_PARSED (dynamic scope: the caller's local, when it has one)
+# to `none` or the roles. forge_fast_store writes that when --fast was given this time;
+# a re-plan that omits the flag leaves the file alone.
+forge_fast_parse() { # forge_fast_parse <roles> <plan|solo>
+  local raw="$1" mode="$2" token rest seen="" w more=0
+  # Trim the ends only. A space inside a token is part of it: "dwa rf" is not the
+  # role dwarf, and deleting every space would turn that typo into a billed role.
+  raw="${raw#"${raw%%[![:space:]]*}"}"
+  raw="${raw%"${raw##*[![:space:]]}"}"
+  [ -n "$raw" ] || die "--fast needs a comma list of roles (dwarf, qa, planner, review), all or none"
+  case "$mode" in
+    plan|solo) ;;
+    *) die "--fast: internal mode '$mode'" ;;
+  esac
+  case "$raw" in
+    none) FAST_PARSED=none; return 0 ;;
+    all)
+      # `all` is the four plan roles. A solo run has no planner or review, so it cannot
+      # mean the same thing there; the user names dwarf and qa instead.
+      if [ "$mode" = solo ]; then
+        die "--fast: 'all' includes planner and review, which a solo run does not dispatch (expected dwarf, qa or none)"
+      fi
+      FAST_PARSED="dwarf
+qa
+planner
+review"
+      return 0 ;;
+  esac
+  rest="$raw"
+  while true; do
+    token="${rest%%,*}"
+    token="${token#"${token%%[![:space:]]*}"}"
+    token="${token%"${token##*[![:space:]]}"}"
+    # A trailing comma is an empty role (`dwarf,`), so the loop must visit that field too.
+    case "$rest" in
+      *,*) rest="${rest#*,}"; more=1 ;;
+      *) rest=""; more=0 ;;
+    esac
+    if [ -z "$token" ]; then
+      if [ "$mode" = solo ]; then
+        die "--fast: '' is not a role of a solo run (expected dwarf, qa or none)"
+      fi
+      die "--fast: '' is not a role (expected dwarf, qa, planner, review, all or none)"
+    fi
+    if [ "$token" = all ] || [ "$token" = none ]; then
+      die "--fast: '$token' must be the whole value, not combined with other roles"
+    fi
+    case "$mode" in
+      solo) case "$token" in dwarf|qa) ;; *) die "--fast: '$token' is not a role of a solo run (expected dwarf, qa or none)" ;; esac ;;
+      *) case "$token" in dwarf|qa|planner|review) ;; *) die "--fast: '$token' is not a role (expected dwarf, qa, planner, review, all or none)" ;; esac ;;
+    esac
+    case " $seen " in
+      *" $token "*) ;;
+      *) seen="$seen $token" ;;
+    esac
+    [ "$more" = 1 ] || break
+  done
+  # Canonical order, whatever order the user typed. A solo run never stores planner or review.
+  FAST_PARSED=""
+  for w in dwarf qa planner review; do
+    [ "$mode" = solo ] && case "$w" in planner|review) continue ;; esac
+    case " $seen " in
+      *" $w "*)
+        if [ -n "$FAST_PARSED" ]; then FAST_PARSED="$FAST_PARSED
+$w"
+        else FAST_PARSED="$w"; fi ;;
+    esac
+  done
+}
+
+forge_fast_store() { # forge_fast_store <dir> — honour FAST_GIVEN / FAST_PARSED from the caller
+  [ "${FAST_GIVEN:-0}" = 1 ] || return 0
+  if [ "$FAST_PARSED" = none ]; then
+    rm -f "$1/fast"
+  else
+    printf '%s\n' "$FAST_PARSED" > "$1/fast" || die "could not write $1/fast"
+  fi
+}
+
+# Prints `--service-tier fast` when <role> is listed in <dir>/fast, and nothing otherwise.
+# Fractal's runner does not take the option. That is FORGE_FRACTAL_RUN once the runner is
+# selected, and also a saved selection: retry preflights before the runner is selected, so
+# the variable is still unset. A whole-run review is not a Fractal dispatch and still asks.
+forge_fast_tier() { # forge_fast_tier <dir> <role>
+  local line found=0
+  [ -n "${FORGE_FRACTAL_RUN:-}" ] && return 0
+  [ -f "$1/fast" ] || return 0
+  while IFS= read -r line || [ -n "$line" ]; do
+    line="${line%$'\r'}"
+    line="${line#"${line%%[![:space:]]*}"}"
+    line="${line%"${line##*[![:space:]]}"}"
+    if [ "$line" = "$2" ]; then found=1; break; fi
+  done < "$1/fast"
+  [ "$found" = 1 ] || return 0
+  if [ "$2" != review ] && forge_plan_is_fractal "$1"; then return 0; fi
+  printf '%s %s\n' --service-tier fast
+}
+
+# One note per invocation, and only where this invocation's dispatches go through Fractal
+# (FORGE_FRACTAL_RUN already set) or are about to (a retry of a plan whose selection is on).
+# A whole-run review is not one of those dispatches, so it still asks for the tier.
+# No fast file, or no fractal selection to consult, returns before any python.
+forge_fast_fractal_note() { # forge_fast_fractal_note <dir>
+  [ -s "$1/fast" ] || return 0
+  [ -n "${FORGE_FAST_FRACTAL_NOTED:-}" ] && return 0
+  if [ -z "${FORGE_FRACTAL_RUN:-}" ]; then
+    [ -s "$1/fractal-selection.json" ] || return 0
+    forge_plan_is_fractal "$1" || return 0
+  fi
+  export FORGE_FAST_FRACTAL_NOTED=1
+  note "fast tier is not applied to Fractal dispatches"
+}
+
 # The pin's spec: the first line, trimmed, a single token (it lands in a TSV column).
 # Prints nothing when the file is not a regular file or holds no usable spec.
 pin_spec() { # pin_spec <file>

@@ -37,7 +37,7 @@ sys.path.insert(0, str(SKILL / 'ui'))
 
 # Plan options that travel with a rerun, so it is judged the way the original was. Not the ones
 # `plan` writes itself (routing, Jev's frozen selection) or that a fresh plan decides (exploration).
-OPTION_FILES = ('no_ripwire', 'no_memory', 'yolo_dwarf', 'yolo_qa', 'reviewer_session', 'implementer_session',
+OPTION_FILES = ('no_ripwire', 'no_memory', 'yolo_dwarf', 'yolo_qa', 'reviewer_session', 'implementer_session', 'fast',
                 'pre_review_tests', 'pre_review_parallel', 'qa_threshold', 'timeout', 'verify_retries', 'verify_cmd',
                 'verify_parallel', 'setup_cmd', 'final_qa', 'shadow_qa', 'shadow_rate', 'escalate_after', 'fail_first')
 PLAN_FILES = ('repo.identity', 'goal.txt', 'request.md')
