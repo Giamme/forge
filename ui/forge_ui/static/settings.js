@@ -192,6 +192,16 @@
     const latest = usable.slice().sort(newestFirst)[0];
     return latest ? latest.key : null;
   }
+  // The selected run has left the list. 'keep': another run of the same repository takes over and the editors stay.
+  // 'stay': nothing of this repository remains, but text is unsaved, so the page holds the gone run instead of
+  // picking a new one and discarding that text. 'drop': nothing unsaved, so a new default may replace it.
+  // 'here': the run is still listed, or none was selected.
+  function departedRun(run, repo, runs, unsaved) {
+    const usable = withRepo(runs);
+    if (run == null || usable.some(r => r.key === run)) return 'here';
+    if (usable.some(r => RM.repoKey(r) === repo)) return 'keep';
+    return unsaved ? 'stay' : 'drop';
+  }
   // The choices grouped by repository root: [{repo, name, runs}], the repository of the newest run first.
   function groupRuns(runs) {
     const groups = new Map();
@@ -244,6 +254,23 @@
     return { editor: e, dirty, moved: dirty && norm(from) !== norm(e.base) };
   }
   const shown = editor => editor.draft !== null ? editor.draft : editor.base;
+  // What a repository switch would discard. A profile's unsaved JSON counts: resetRun drops those editors, so a
+  // poll that sees the run leave the list must not move to another repository while one is dirty. Profile keys
+  // are `name\0level`. File names stay in the order the page edits them; profile names are sorted.
+  function unsavedLabels(editors, profileEditors) {
+    const labels = [];
+    const files = object(editors);
+    for (const name of FILES) {
+      if (isDirty(files[name])) labels.push('.forge/' + name);
+    }
+    const profiles = object(profileEditors);
+    for (const key of Object.keys(profiles).sort()) {
+      if (!isDirty(profiles[key])) continue;
+      const name = text(String(key).split('\0')[0]);
+      if (name) labels.push('profile ' + name);
+    }
+    return labels;
+  }
   // What a failed GET /api/config does: with a good read of this run on the page, it stays and a note names the
   // failure; with none yet, the message replaces the page. Status 0 is no answer at all.
   function readFailure(res, hasData) {
@@ -346,6 +373,29 @@
     if (action === 'set') body.value = String(s.value == null ? '' : s.value);
     return body;
   }
+  // The create spec for a blank profile, or a copy of `source` ({name, level, body}). A user-level write passes
+  // no --repo, so --from resolves against the user file and the built-ins only. A repo profile is not there: the
+  // CLI reports it missing, or copies a built-in of the same name. Send the body the list shows instead.
+  // Every other copy is `from`, which is what a repo-level write resolves, and what a user-level copy of a user
+  // or built-in profile resolves.
+  function profileCopySpec(name, level, source) {
+    const spec = { action: 'create', name: text(name), level: text(level) };
+    const row = source && typeof source === 'object' ? source : null;
+    const sourceName = row ? text(row.name) : '';
+    if (!sourceName) { spec.body = {}; return spec; }
+    if (spec.level === 'user' && text(row.level) === 'repo') spec.body = object(row.body);
+    else spec.from = sourceName;
+    return spec;
+  }
+  // `use --none` clears default_profile in the file that stores it. That file's level is payload.default.level
+  // (the user file, else the repo file), not the profile's own level: a repo default_profile can name a user
+  // profile, and clearing the user file would leave the repo default in effect while the CLI still says it cleared.
+  // The profile's level is only the fallback when the payload names no user or repo level.
+  function clearDefaultLevel(payload, profileLevel) {
+    const stored = text(object(object(payload).default).level);
+    if (stored === 'user' || stored === 'repo') return stored;
+    return profileLevel === 'repo' ? 'repo' : 'user';
+  }
 
   // What a row may do. A built-in (and anything that is not user or repo) can only be duplicated: the CLI refuses
   // to edit, remove or store a default at that level.
@@ -444,14 +494,14 @@
       const before = s.run, usable = withRepo(runs);
       let kept = false;
       s.gone = false;
-      if (s.run != null && !usable.some(r => r.key === s.run)) {
-        // The run left the list. Another run of the same repository carries on with the editors as they are; with unsaved
-        // text and no such run the page stays on it, flagged, rather than throwing the text away.
+      // File editors and profile JSON both count. A poll that drops this run must not switch repositories
+      // while either is dirty: resetRun would drop the text.
+      const departure = departedRun(s.run, s.repo, runs, unsavedLabels(s.editors, s.profileEditors).length > 0);
+      if (departure === 'keep') {
         const sibling = usable.slice().sort(newestFirst).find(r => RM.repoKey(r) === s.repo);
         if (sibling) { s.run = sibling.key; kept = true; }
-        else if (FILES.some(n => isDirty(s.editors[n]))) s.gone = true;
-        else s.run = null;
-      }
+      } else if (departure === 'stay') s.gone = true;
+      else if (departure === 'drop') s.run = null;
       if (s.run == null) s.run = pickDefault(runs, c.key);
       const now = usable.find(r => r.key === s.run);
       if (now) s.repo = RM.repoKey(now);
@@ -550,10 +600,10 @@
       async function choose(key) {
         close();
         if (key === btn.dataset.run) return;                      // the run already shown
-        const unsaved = FILES.filter(n => s.editors[n] && isDirty(s.editors[n]));
+        const unsaved = unsavedLabels(s.editors, s.profileEditors);
         if (unsaved.length) {
           const ask = s.asking = ++s.asks;
-          const yes = await UI.confirmInline(picker, `Switch repository and discard the unsaved edits to ${unsaved.map(n => '.forge/' + n).join(', ')}?`, { danger: true });
+          const yes = await UI.confirmInline(picker, `Switch repository and discard the unsaved edits to ${unsaved.join(', ')}?`, { danger: true });
           if (s.asking !== ask) return;                           // a later choice asked again, and that confirm decides
           const late = s.pickerLate;
           s.asking = 0; s.pickerLate = false;
@@ -1298,7 +1348,7 @@
           return;
         }
         const created = draft.name, level = draft.level;
-        const res = await UI.post('/api/config/profiles', profileRequest(s.run, { action: 'create', name: created, level, from: row.name }));
+        const res = await UI.post('/api/config/profiles', profileRequest(s.run, profileCopySpec(created, level, row)));
         UI.outcome(result, res, `Created ${created}.`);
         name.readOnly = false;
         if (res.ok && gen === s.gen) {
@@ -1316,18 +1366,21 @@
 
     function defaultButton(row, result) {
       const clearing = row.default === true;
+      // Setting writes default_profile at the profile's own level. Clearing removes it from the file that
+      // actually stores it, which can be the other level (a repo default_profile naming a user profile).
+      const level = clearing ? clearDefaultLevel(s.profiles, row.level) : text(row.level);
       const label = clearing ? 'Clear default' : 'Set as default';
       const b = key_(label);
       b.id = 'set-profile-default';
       b.setAttribute('aria-label', clearing
-        ? 'Clear the default profile at the ' + text(row.level) + ' level'
-        : 'Set ' + text(row.name) + ' as the default profile at the ' + text(row.level) + ' level');
+        ? 'Clear the default profile at the ' + level + ' level'
+        : 'Set ' + text(row.name) + ' as the default profile at the ' + level + ' level');
       b.addEventListener('click', async () => {
         const gen = s.gen, release = grab();
         b.disabled = true;
         const question = clearing
-          ? `Clear the default profile at the ${text(row.level)} level?`
-          : `Set ${text(row.name)} as the default profile at the ${text(row.level)} level?`;
+          ? `Clear the default profile at the ${level} level?`
+          : `Set ${text(row.name)} as the default profile at the ${level} level?`;
         const yes = await UI.confirmInline(result, question);
         if (!yes || gen !== s.gen) {
           b.disabled = false;
@@ -1336,10 +1389,10 @@
           return;
         }
         const spec = clearing
-          ? { action: 'use', level: row.level, none: true }
-          : { action: 'use', name: row.name, level: row.level };
+          ? { action: 'use', level, none: true }
+          : { action: 'use', name: row.name, level };
         const res = await UI.post('/api/config/profiles', profileRequest(s.run, spec));
-        UI.outcome(result, res, clearing ? `Cleared the default at the ${text(row.level)} level.` : `${text(row.name)} is the default at the ${text(row.level)} level.`);
+        UI.outcome(result, res, clearing ? `Cleared the default at the ${level} level.` : `${text(row.name)} is the default at the ${level} level.`);
         b.disabled = false;
         release();
         if (res.ok && gen === s.gen) await reload();
@@ -1486,9 +1539,10 @@
           name.focus({ preventScroll: true });
           return;
         }
-        const spec = { action: 'create', name: draft.name, level: draft.level };
-        if (draft.source) spec.from = draft.source;
-        else spec.body = {};
+        const sourceRow = draft.source ? rows.find(item => text(item.name) === draft.source) : null;
+        // A chosen name whose row is gone still goes as `from`. A repo profile copied to the user level
+        // cannot: that write passes no --repo, so the spec carries the body instead.
+        const spec = profileCopySpec(draft.name, draft.level, draft.source ? (sourceRow || { name: draft.source }) : null);
         const gen = s.gen, release = grab();
         go.disabled = true;
         name.readOnly = true;
@@ -1551,6 +1605,7 @@
 
   return { render, configBody, repoKey, gateKey, targetPath, subsetOk, valueProblem, decideTextProblem, describeDecide, gateTags, replayDate,
     pickDefault, groupRuns, optionLabel, typeAhead, editorOf, isDirty, dirtyState, edited, typed, shown, readFailure,
-    describeProfile, profileRequest, profileOffers, profileRowText, shadowLabel, refusalReasons, profileText, profileJsonProblem, profileNameProblem,
+    unsavedLabels, departedRun,
+    describeProfile, profileRequest, profileCopySpec, clearDefaultLevel, profileOffers, profileRowText, shadowLabel, refusalReasons, profileText, profileJsonProblem, profileNameProblem,
     FILES, GATES, MODES, VALUE_MAX, DECIDE_VALUE_MAX, ADD_COMMAND, PROFILE_LEVELS, WRITE_LEVELS, TIERS };
 });

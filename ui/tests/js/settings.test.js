@@ -362,6 +362,54 @@ test('a run page names its frozen profile, and the overridden keys when the list
     'balanced (user) · flags override: routing.planner, policy.timeout');
 });
 
+test('a user-level copy of a repo profile sends its body, and clearing a default uses the file that stores it', () => {
+  const run = 'abc123';
+  const team = { name: 'team', level: 'repo', body: { policy: { retry_failed: 7 } } };
+  // User-level writes pass no --repo, so --from cannot see a repo-only profile (and would copy a same-named built-in).
+  assert.deepEqual(S.profileRequest(run, S.profileCopySpec('personal', 'user', team)),
+    { run, action: 'create', name: 'personal', level: 'user', body: { policy: { retry_failed: 7 } } });
+  assert.deepEqual(S.profileRequest(run, S.profileCopySpec('personal', 'repo', team)),
+    { run, action: 'create', name: 'personal', level: 'repo', from: 'team' });
+  assert.deepEqual(S.profileRequest(run, S.profileCopySpec('mine', 'user', { name: 'balanced', level: 'builtin', body: { policy: {} } })),
+    { run, action: 'create', name: 'mine', level: 'user', from: 'balanced' });
+  assert.deepEqual(S.profileRequest(run, S.profileCopySpec('mine', 'repo', { name: 'mine', level: 'user', body: { policy: { retry_failed: 1 } } })),
+    { run, action: 'create', name: 'mine', level: 'repo', from: 'mine' });
+  assert.deepEqual(S.profileRequest(run, S.profileCopySpec('blank', 'user', null)),
+    { run, action: 'create', name: 'blank', level: 'user', body: {} });
+  // A name whose row is already gone still goes as --from; the page no longer knows it was repo-only.
+  assert.deepEqual(S.profileRequest(run, S.profileCopySpec('personal', 'user', { name: 'team' })),
+    { run, action: 'create', name: 'personal', level: 'user', from: 'team' });
+
+  const storedAtRepo = { default: { name: 'mine', level: 'repo' } };
+  assert.equal(S.clearDefaultLevel(storedAtRepo, 'user'), 'repo');
+  assert.deepEqual(S.profileRequest(run, { action: 'use', level: S.clearDefaultLevel(storedAtRepo, 'user'), none: true }),
+    { run, action: 'use', level: 'repo', none: true });
+  assert.equal(S.clearDefaultLevel({ default: { name: 'team', level: 'user' } }, 'repo'), 'user');
+  assert.equal(S.clearDefaultLevel({ default: { name: 'team', level: 'repo' } }, 'repo'), 'repo');
+  assert.equal(S.clearDefaultLevel({}, 'user'), 'user');
+  assert.equal(S.clearDefaultLevel({ default: { name: 'mine', level: null } }, 'repo'), 'repo');
+});
+
+test('unsaved profile JSON keeps a departed run, and is named in the switch confirm', () => {
+  const one = [run('a', '/r/one', 10), run('c', '/r/one', 30)];
+  const two = [run('b', '/r/two', 20)];
+  const clean = { 'team\0repo': S.editorOf('{}\n') };
+  const dirty = { 'team\0repo': S.edited(S.editorOf('{}\n'), '{"policy":{"retry_failed":9}}') };
+  assert.deepEqual(S.unsavedLabels({}, clean), []);
+  assert.deepEqual(S.unsavedLabels({ verify: S.editorOf('make\n') }, clean), []);
+  assert.deepEqual(S.unsavedLabels({}, dirty), ['profile team']);
+  assert.deepEqual(S.unsavedLabels(
+    { verify: S.edited(S.editorOf('a\n'), 'b'), setup: S.editorOf('') },
+    { 'mine\0user': S.edited(S.editorOf('{}'), '{"x":1}'), 'team\0repo': S.editorOf('{}') },
+  ), ['.forge/verify', 'profile mine']);
+  assert.equal(S.departedRun('a', '/r/one', one, false), 'here');
+  assert.equal(S.departedRun('missing', '/r/one', one, false), 'keep');
+  assert.equal(S.departedRun('missing', '/r/one', one, true), 'keep', 'a same-repository run keeps the editors, dirty or not');
+  assert.equal(S.departedRun('missing', '/r/one', two, false), 'drop');
+  assert.equal(S.departedRun('a', '/r/one', two, S.unsavedLabels({}, dirty).length > 0), 'stay');
+  assert.equal(S.departedRun(null, null, two, true), 'here');
+});
+
 test('a refused profile write keeps every CLI reason, not only the last line', () => {
   assert.deepEqual(S.refusalReasons({ ok: true, result: { error: 'nope' } }), []);
   assert.deepEqual(S.refusalReasons({

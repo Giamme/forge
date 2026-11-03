@@ -75,6 +75,8 @@ class Settings(unittest.TestCase):
         self.failing = None                 # (status, body) to answer GET /api/config with, or None
         self.goal = None                 # a goal that replaces run a's in the run list
         self.where = {}                  # key -> (repo_root, repo_worktree, repo_branch) the run list reports
+        self.hide = set()                # run keys the list pretends are gone
+        self.profiles = None             # a GET /api/config/profiles body, or None to let the server answer
 
     def page(self):
         page = self.open(cdn=False, view='2d')
@@ -82,6 +84,8 @@ class Settings(unittest.TestCase):
 
         def runs(route):
             data = route.fetch().json()
+            if self.hide:
+                data['runs'] = [r for r in data['runs'] if r['key'] not in self.hide]
             for r in data['runs']:
                 r['repo'] = self.repos.get(r['key'], r.get('repo'))
                 r['updated'] = 2000 if r['key'] == self.a else 1000           # run a is the default
@@ -102,6 +106,15 @@ class Settings(unittest.TestCase):
 
         page.route('**/api/runs', runs)
         page.route('**/api/config?**', cfg)
+        if self.profiles is not None:
+            payload = self.profiles
+
+            def profiles(route):
+                if route.request.method != 'GET':
+                    return route.continue_()
+                route.fulfill(status=200, content_type='application/json', body=json.dumps(payload))
+
+            page.route('**/api/config/profiles?**', profiles)
         page.goto(self.url + '#/settings')
         page.wait_for_selector('#set-f-verify')
         self.assertEqual(self.shown(page), self.a)
@@ -369,6 +382,126 @@ class Settings(unittest.TestCase):
             if user_file.is_file():
                 self.assertNotIn('mine', json.loads(user_file.read_text()).get('profiles', {}))
             self.assertClean(page)
+
+    def test_clearing_a_default_uses_the_storing_level_and_a_repo_profile_copies_by_its_body(self):
+        # `mine` is a user profile that the repo file names as default_profile. Clearing must remove that repo
+        # key. `team` exists only in the repo file, so a user-level copy cannot use --from (no --repo is passed);
+        # the page sends the body. Both go through the real CLI, in a temp config home.
+        repo = Path(self.temp.name) / 'repo'
+        repo.mkdir()
+        root = os.path.realpath(repo)
+        subprocess.run(['git', 'init', '-q'], cwd=root, check=True)
+        (self.one / 'repo').write_text(root + '\n')
+        (self.one / 'repo.identity').write_text(json.dumps({'root': root, 'worktree': root, 'branch': None}))
+        team = {'policy': {'retry_failed': 7}}
+        (Path(root) / '.forge').mkdir()
+        (Path(root) / '.forge' / 'decide.json').write_text(json.dumps({
+            'default_profile': 'mine', 'profiles': {'team': team},
+        }) + '\n')
+        cfg = Path(self.temp.name) / 'xdg'
+        (cfg / 'forge').mkdir(parents=True)
+        (cfg / 'forge' / 'decide.json').write_text(json.dumps({
+            'profiles': {'mine': {'policy': {'retry_failed': 3}}},
+        }) + '\n')
+        home = Path(self.temp.name) / 'home'
+        home.mkdir()
+        env = {key: value for key, value in os.environ.items()
+               if not key.startswith(('FORGE_DECIDE', 'FORGE_JEV')) and key != 'FORGE_REGISTRY'}
+        env.update(HOME=str(home), XDG_CONFIG_HOME=str(cfg),
+                   XDG_CACHE_HOME=str(Path(self.temp.name) / 'cache'),
+                   XDG_DATA_HOME=str(Path(self.temp.name) / 'data'),
+                   XDG_STATE_HOME=str(Path(self.temp.name) / 'state'))
+
+        def posted(page, click):
+            with page.expect_request(lambda r: r.method == 'POST' and r.url.endswith('/api/config/profiles')) as caught:
+                page.click(click)
+            return caught.value.post_data_json
+
+        with patch.dict(os.environ, env, clear=True):
+            page = self.page()
+            page.wait_for_selector('#set-prof-mine', timeout=60000)
+            page.wait_for_selector('#set-prof-team')
+            self.assertIn('default', page.text_content('#set-prof-mine'))
+            page.click('#set-prof-mine')
+            page.click('#set-profile-default')
+            page.wait_for_selector('#set-profile-detail .ui-confirm')
+            question = page.text_content('#set-profile-detail .ui-confirm-text')
+            self.assertIn('repo level', question)
+            self.assertNotIn('user level', question)
+            body = posted(page, '#set-profile-detail .ui-confirm button:text-is("Confirm")')
+            self.assertEqual(body['action'], 'use')
+            self.assertEqual(body['level'], 'repo')
+            self.assertIs(body['none'], True)
+            self.assertNotIn('name', body)
+            page.wait_for_function("""() => {
+              const tags = [...document.querySelectorAll('#set-prof-mine .tag')].map(t => t.textContent);
+              return tags.includes('user') && !tags.includes('default');
+            }""", timeout=60000)
+            repo_data = json.loads((Path(root) / '.forge' / 'decide.json').read_text())
+            self.assertNotIn('default_profile', repo_data)
+            self.assertEqual(repo_data['profiles']['team'], team)
+            user_path = cfg / 'forge' / 'decide.json'
+            user_data = json.loads(user_path.read_text())
+            self.assertNotIn('default_profile', user_data)
+            self.assertIn('mine', user_data['profiles'])
+
+            page.click('#set-prof-team')
+            page.click('#set-profile-duplicate')
+            page.fill('#set-dup-name', 'personal')
+            page.select_option('#set-dup-level', 'user')
+            page.click('#set-dup-save')
+            page.wait_for_selector('#set-profile-detail .ui-confirm')
+            body = posted(page, '#set-profile-detail .ui-confirm button:text-is("Confirm")')
+            self.assertEqual(body['name'], 'personal')
+            self.assertEqual(body['level'], 'user')
+            self.assertNotIn('from', body)
+            self.assertEqual(body['body'], team)
+            page.wait_for_selector('#set-prof-personal', timeout=120000)
+
+            page.fill('#set-new-name', 'other')
+            page.select_option('#set-new-level', 'user')
+            page.select_option('#set-new-source', 'team')
+            page.click('#set-new-save')
+            page.wait_for_selector('#set-new .ui-confirm')
+            body = posted(page, '#set-new .ui-confirm button:text-is("Confirm")')
+            self.assertEqual(body['name'], 'other')
+            self.assertEqual(body['level'], 'user')
+            self.assertNotIn('from', body)
+            self.assertEqual(body['body'], team)
+            page.wait_for_selector('#set-prof-other', timeout=120000)
+            user_data = json.loads(user_path.read_text())
+            self.assertEqual(user_data['profiles']['personal'], team)
+            self.assertEqual(user_data['profiles']['other'], team)
+            self.assertClean(page)
+
+    def test_an_unsaved_profile_survives_the_run_leaving_and_a_switch_asks_first(self):
+        # The file editors are clean. Only the profile JSON is dirty, which used to be ignored: an explicit
+        # switch discarded it with no confirm, and a poll that dropped the run moved to the other repository.
+        self.profiles = {
+            'default': {'name': None, 'level': None},
+            'profiles': [{
+                'name': 'team', 'level': 'repo', 'shadowed': [], 'default': False,
+                'body': {'policy': {'retry_failed': 1}},
+            }],
+        }
+        page = self.page()
+        page.wait_for_selector('#set-profile-body')
+        page.fill('#set-profile-body', page.input_value('#set-profile-body').replace('"retry_failed": 1', '"retry_failed": 9', 1))
+        self.choose(page, self.b)
+        page.wait_for_selector('.set-picker .ui-confirm')
+        self.assertIn('profile team', page.text_content('.set-picker .ui-confirm'))
+        page.click('.set-picker .ui-confirm button:text-is("Cancel")')
+        self.assertEqual(self.shown(page), self.a)
+        self.assertIn('"retry_failed": 9', page.input_value('#set-profile-body'))
+        self.hide.add(self.a)
+        page.clock.fast_forward(6000)
+        page.wait_for_function(
+            "() => (document.querySelector('.set-picker')?.textContent || '').includes('unsaved edits are kept')",
+            timeout=20000)
+        self.assertEqual(self.shown(page), '')
+        self.assertIn('"retry_failed": 9', page.input_value('#set-profile-body'))
+        self.assertEqual(page.input_value('#set-f-verify'), 'make test\n')
+        self.assertClean(page)
 
 
 if __name__ == '__main__':
