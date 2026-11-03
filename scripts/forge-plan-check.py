@@ -363,32 +363,95 @@ def _union_files(parts: list) -> str:
     return ','.join(ordered) if ordered else '-'
 
 
+# Collapse follows CommonMark for ATX headings and fenced code. The size advisory above keeps
+# its own simpler scan; changing that would change which tasks it flags.
+_FENCE_LINE = re.compile(r'^( {0,3})(`{3,}|~{3,})(.*)$')
+_CRITERIA_TEXT = re.compile(r'acceptance criteria\s*:?', re.IGNORECASE)
+
+
+def _strip_closing_hashes(content: str) -> str:
+    """Drop a closing `#` run that is the whole content or is preceded by a space."""
+    end = len(content)
+    while end > 0 and content[end - 1] == '#':
+        end -= 1
+    if end == len(content):
+        return content
+    if end == 0 or content[end - 1] == ' ':
+        return content[:end].strip(' ')
+    return content
+
+
+def _atx_heading(line: str):
+    """(indent, opening hashes, content) of a CommonMark ATX heading, else None.
+
+    Up to three leading spaces. The opening `#` run is 1-6 and must be followed by a space
+    or the end of the line. A closing `#` run, preceded by a space and followed only by
+    spaces, is not part of the content (`## Acceptance criteria ##` is that heading).
+    """
+    if not line or line[0] == '\t' or line.startswith('    '):
+        return None
+    indent_len = 0
+    while indent_len < 3 and indent_len < len(line) and line[indent_len] == ' ':
+        indent_len += 1
+    marks_end = indent_len
+    while marks_end < len(line) and line[marks_end] == '#':
+        marks_end += 1
+    marks = line[indent_len:marks_end]
+    if not marks or len(marks) > 6:
+        return None
+    if marks_end < len(line) and line[marks_end] != ' ':
+        return None
+    raw = line[marks_end + 1:] if marks_end < len(line) else ''
+    return line[:indent_len], marks, _strip_closing_hashes(raw.strip(' '))
+
+
+def _fence_step(line: str, open_fence):
+    """(line is fence content or a fence marker, fence state after the line).
+
+    `open_fence` is None or `(marker, length)`. A fence opens on three or more backticks
+    or tildes, indented at most three spaces. A backtick fence whose info string contains
+    a backtick does not open. It closes only on the same marker, at least as long, with
+    nothing after it but spaces, so a shorter or different marker inside the block is content.
+    """
+    found = _FENCE_LINE.match(line)
+    if open_fence is None:
+        if not found:
+            return False, None
+        marker, rest = found.group(2), found.group(3)
+        if marker[0] == '`' and '`' in rest:
+            return False, None
+        return True, (marker[0], len(marker))
+    if found:
+        marker, rest = found.group(2), found.group(3)
+        if marker[0] == open_fence[0] and len(marker) >= open_fence[1] and rest.strip(' ') == '':
+            return True, None
+    return True, open_fence
+
+
 def split_acceptance(text: str):
     """(body without acceptance-criteria sections, criteria lines or None).
 
-    Criteria is None when no acceptance-criteria heading sits outside a fence. The lines
-    under every such heading are kept as written, fence markers included, and the headings
-    themselves are not part of either piece.
+    Criteria is None when no acceptance-criteria heading sits outside a fence. The heading
+    is a CommonMark ATX heading (`## Acceptance criteria`, `## Acceptance criteria ##`,
+    or the same indented up to three spaces). The lines under every such heading are kept
+    as written, fence markers included, and the headings themselves are not part of either piece.
     """
     body, criteria = [], []
     found = False
-    fenced = False
+    fence = None
     level = None
     for line in (text or '').splitlines():
-        if FENCE.match(line):
-            fenced = not fenced
+        inside, fence = _fence_step(line, fence)
+        if inside:
             (criteria if level is not None else body).append(line)
             continue
-        if not fenced and level is not None:
-            heading = ANY_HEADING.match(line)
-            if heading and len(heading.group(1)) <= level:
-                level = None
-        if not fenced and level is None:
-            match = HEADING.match(line)
-            if match:
-                found = True
-                level = len(match.group(1))
-                continue
+        heading = _atx_heading(line)
+        if level is not None and heading and len(heading[1]) <= level:
+            level = None
+        if level is None and heading and _CRITERIA_TEXT.fullmatch(heading[2]):
+            found = True
+            level = len(heading[1])
+            continue
         if level is not None:
             criteria.append(line)
         else:
@@ -397,16 +460,25 @@ def split_acceptance(text: str):
 
 
 def demote_headings(text: str) -> str:
-    """One extra `#` on every ATX heading outside a fence. `## X` becomes `### X`."""
+    """One extra `#` on every ATX heading outside a fence. `## X` becomes `### X`.
+
+    An indented heading keeps its indent (`  ## X` becomes `  ### X`). A heading inside
+    a fence, including one opened by a longer marker, stays as written.
+    """
     if not text:
         return ''
-    out, fenced = [], False
+    out, fence = [], None
     for line in text.splitlines():
-        if FENCE.match(line):
-            fenced = not fenced
+        inside, fence = _fence_step(line, fence)
+        if inside:
             out.append(line)
             continue
-        out.append('#' + line if not fenced and ANY_HEADING.match(line) else line)
+        heading = _atx_heading(line)
+        if heading:
+            indent = heading[0]
+            out.append(indent + '#' + line[len(indent):])
+            continue
+        out.append(line)
     return '\n'.join(out)
 
 
@@ -502,13 +574,18 @@ def _atomic_write(path: Path, data) -> None:
         raise
 
 
-def _read_optional(path: Path):
-    if not path.is_file():
-        return None
+def _read_task_file(path: Path):
+    """The text of a task file, or None when it is absent.
+
+    A file that exists but cannot be read raises PlanShapeError. Treating that as an empty
+    prompt would drop the part's requirements and still collapse.
+    """
     try:
+        if not path.is_file():
+            return None
         return path.read_text(errors='replace')
-    except OSError:
-        return None
+    except OSError as err:
+        raise PlanShapeError('cannot read %s' % path) from err
 
 
 def read_plan(plan: Path):
@@ -635,14 +712,14 @@ def command_collapse(plan: Path) -> int:
     if info['shape'] != 'chain':
         print('not collapsed: %s' % info['shape'])
         return 0
-    prompts, approaches = {}, {}
-    for row in rows:
-        root = plan / 'tasks' / row['id']
-        prompts[row['id']] = _read_optional(root / 'prompt.md') or ''
-        approach = _read_optional(root / 'approach.md')
-        if approach is not None:
-            approaches[row['id']] = approach
     try:
+        prompts, approaches = {}, {}
+        for row in rows:
+            root = plan / 'tasks' / row['id']
+            prompts[row['id']] = _read_task_file(root / 'prompt.md') or ''
+            approach = _read_task_file(root / 'approach.md')
+            if approach is not None:
+                approaches[row['id']] = approach
         combined, prompt, approach = collapse_rows(rows, prompts, approaches)
         commit_collapse(plan, original, rows, combined, prompt, approach, info)
     except PlanShapeError as err:

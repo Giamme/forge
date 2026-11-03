@@ -66,6 +66,93 @@ PROMPT_C = """## Acceptance criteria
 """
 APPROACH_A = 'Walk the argv once.\n'
 APPROACH_C = '\nCall the parser from main.\n'
+# A closing `#` run, a three-space indent, a four-space code line, and two fences whose
+# inner ``` / ## Acceptance criteria must stay in the body. Part b's criteria heading is indented.
+PROMPT_FENCED = """Intro line.
+
+  ## Behavior ##
+
+Do the thing.
+
+   ## Note
+
+Noted.
+
+~~~~markdown
+```
+## Acceptance criteria
+- example only
+```
+~~~~
+
+````markdown
+```
+## Acceptance criteria
+- also an example
+```
+````
+
+    ## Acceptance criteria
+
+    - indented code, not a heading
+
+## Acceptance criteria ##
+
+- real check
+"""
+PROMPT_INDENTED = """Setup.
+
+  ## Acceptance criteria
+
+- indented check
+"""
+EXPECTED_MARKDOWN = (
+    'This task combines the 2 parts of a plan that could only run one after another. '
+    'Do them in order, in this one task; each part\'s requirements and acceptance criteria still hold.\n'
+    '\n'
+    '## Part 1: Parse (a)\n'
+    '\n'
+    'Intro line.\n'
+    '\n'
+    '  ### Behavior ##\n'
+    '\n'
+    'Do the thing.\n'
+    '\n'
+    '   ### Note\n'
+    '\n'
+    'Noted.\n'
+    '\n'
+    '~~~~markdown\n'
+    '```\n'
+    '## Acceptance criteria\n'
+    '- example only\n'
+    '```\n'
+    '~~~~\n'
+    '\n'
+    '````markdown\n'
+    '```\n'
+    '## Acceptance criteria\n'
+    '- also an example\n'
+    '```\n'
+    '````\n'
+    '\n'
+    '    ## Acceptance criteria\n'
+    '\n'
+    '    - indented code, not a heading\n'
+    '\n'
+    '## Part 2: Render (b)\n'
+    '\n'
+    'Setup.\n'
+    '\n'
+    '## Acceptance criteria\n'
+    '\n'
+    '### Part 1: Parse\n'
+    '\n'
+    '- real check\n'
+    '\n'
+    '### Part 2: Render\n'
+    '\n'
+    '- indented check\n')
 HEADER = '# id\tdeps\tdifficulty\tfiles\tdwarf\tqa\ttitle\n# note: keep me\n\n'
 EXPECTED_TITLE = ('3 parts: ' + TITLE_A)[:100]
 EXPECTED_ROW = {
@@ -367,6 +454,42 @@ class CollapseTests(unittest.TestCase):
         self.assertEqual(second.returncode, 2, second.stdout + second.stderr)
         self.assertEqual(second.stdout, '')
         self.assertIn('tasks.precollapse.tsv', second.stderr)
+        self.assertEqual(fingerprint(plan), before)
+
+    def test_markdown_headings_and_fences_land_in_the_combined_prompt(self):
+        rows = [
+            task('a', files='a.py', title='Parse'),
+            task('b', deps='a', files='b.py', title='Render'),
+        ]
+        _row, prompt, approach = plan_check.collapse_rows(
+            rows, {'a': PROMPT_FENCED, 'b': PROMPT_INDENTED}, {})
+        self.assertEqual(prompt, EXPECTED_MARKDOWN)
+        self.assertIsNone(approach)
+        self.assertNotIn('no criteria were written', prompt)
+        # The fenced examples stay put; only the combined section is a real criteria heading
+        # outside a fence. A four-space line is code, so it is not demoted and not extracted.
+        self.assertEqual(prompt.count('\n## Acceptance criteria\n'), 3)
+        self.assertIn('\n    ## Acceptance criteria\n', prompt)
+        self.assertNotIn('### Acceptance criteria', prompt)
+
+    def test_an_unreadable_prompt_refuses_and_keeps_the_plan(self):
+        plan, _original = self.write_plan(
+            [task('a', files='a.py'), task('b', deps='a', files='b.py')],
+            {'a': 'requirements for a\n\n## Acceptance criteria\n\n- a works\n',
+             'b': 'requirements for b\n'})
+        target = plan / 'tasks' / 'a' / 'prompt.md'
+        before = fingerprint(plan)
+        target.chmod(0)
+        try:
+            done = self.check('collapse', str(plan))
+        finally:
+            for path in (target, plan / 'tasks.precollapse' / 'a' / 'prompt.md'):
+                if path.exists():
+                    path.chmod(0o644)
+        self.assertEqual(done.returncode, 2, done.stdout + done.stderr)
+        self.assertEqual(done.stdout, '')
+        self.assertIn('cannot read', done.stderr)
+        self.assertIn('prompt.md', done.stderr)
         self.assertEqual(fingerprint(plan), before)
 
     def test_a_failed_collapse_leaves_the_plan_as_it_was(self):
