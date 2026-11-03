@@ -5,6 +5,15 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and versions follow the format `{major}.{minor}[.{patch}]` ([...] parts appear only when non-zero).
 
+## [0.14.1] - 2026-11-03
+
+Two fixes from run 1's follow-ups: a lateral move after an infrastructure stop stays in the tier the task was last assigned, and a claude or openclaude dispatch that already gave its final result is no longer lost to a timeout while a background task keeps it open.
+
+### Fixed
+
+- A claude or openclaude implementer or reviewer that gave its final result but stayed open on a background task is no longer killed as a timeout. forge ends it after 30 minutes of silence (`FORGE_RESULT_GRACE`, `0` turns it off), or at the watchdog, and its result goes to review; a turn the session starts after a result is never cut short (#110).
+- An infrastructure stop moves a task only within the tier it was last assigned. A re-plan that picks the row's model again, explored or not, now replaces the tier an older escalation or pin recorded, so a task re-planned onto a cheaper tier can no longer move sideways to a stronger tier's model (#106).
+
 ## [0.14] - 2026-11-02
 
 Infrastructure stops now carry a cause and recover on their own where they can, moving sideways to a model of the same tier; forge watch, forge pr and forge runs rerun/compare follow, describe and compare runs; and a run now pays for the full test suite once, after the merge, instead of on every attempt.
