@@ -45,6 +45,30 @@ class Case(unittest.TestCase):
         if self._registry is not None:
             os.environ['FORGE_REGISTRY'] = self._registry
 
+    def tasks(self, n, outcomes, durations):
+        return [(list(outcomes), list(durations)) for _ in range(n)]
+
+    def seed(self, groups):
+        """groups: (effort, [(outcomes, durations per attempt), ...]). One run per effort."""
+        events, n = [], 0
+        for index, (effort, tasks) in enumerate(groups):
+            run, rows, task_events = 'run-%s' % effort, {}, []
+            for outcomes, durations in tasks:
+                n += 1
+                tid = 't%d' % n
+                rows[tid] = dict(difficulty='low', dwarf='haiku:' + effort)
+                for i, (status, seconds) in enumerate(zip(outcomes, durations), 1):
+                    ts = 1000 + n * 10 + i
+                    task_events.append(dict(rid='a%s.%d' % (tid, i), kind='attempt', run=run, mode='parallel',
+                                            task=tid, attempt=i, ts=ts, data=dict(status=status)))
+                    task_events.append(dict(rid='d%s.%d' % (tid, i), kind='dispatch', run=run, mode='parallel',
+                                            task=tid, attempt=i, ts=ts,
+                                            data=dict(role='dwarf', model='haiku', effort=effort, duration_s=seconds)))
+            events.append(dict(rid='p-%s' % run, kind='plan', run=run, mode='parallel', ts=1000 + index,
+                               data=dict(tasks=rows)))
+            events.extend(task_events)
+        self.assertEqual(store.record(events, repo=self.repo), len(events))
+
 
 class BuiltinNoteTests(Case):
     def test_the_built_in_row_notes_haiku_max_on_the_claude_model(self):
@@ -78,30 +102,6 @@ class BuiltinNoteTests(Case):
 
 
 class DatasetNoteTests(Case):
-    def tasks(self, n, outcomes, durations):
-        return [(list(outcomes), list(durations)) for _ in range(n)]
-
-    def seed(self, groups):
-        """groups: (effort, [(outcomes, durations per attempt), ...]). One run per effort."""
-        events, n = [], 0
-        for index, (effort, tasks) in enumerate(groups):
-            run, rows, task_events = 'run-%s' % effort, {}, []
-            for outcomes, durations in tasks:
-                n += 1
-                tid = 't%d' % n
-                rows[tid] = dict(difficulty='low', dwarf='haiku:' + effort)
-                for i, (status, seconds) in enumerate(zip(outcomes, durations), 1):
-                    ts = 1000 + n * 10 + i
-                    task_events.append(dict(rid='a%s.%d' % (tid, i), kind='attempt', run=run, mode='parallel',
-                                            task=tid, attempt=i, ts=ts, data=dict(status=status)))
-                    task_events.append(dict(rid='d%s.%d' % (tid, i), kind='dispatch', run=run, mode='parallel',
-                                            task=tid, attempt=i, ts=ts,
-                                            data=dict(role='dwarf', model='haiku', effort=effort, duration_s=seconds)))
-            events.append(dict(rid='p-%s' % run, kind='plan', run=run, mode='parallel', ts=1000 + index,
-                               data=dict(tasks=rows)))
-            events.extend(task_events)
-        self.assertEqual(store.record(events, repo=self.repo), len(events))
-
     def test_enough_data_that_meets_the_rule_names_the_dataset_counts(self):
         # xhigh takes two attempts of 60s: the median is runtime_s/attempts (1.0 min), not the sum.
         self.seed([
@@ -169,13 +169,17 @@ class DoctorNoteTests(Case):
                        '--dangerously-skip-permissions\n')
         cli.chmod(0o755)
 
-    def doctor(self, spec, registry=None, name=None):
+    def doctor(self, spec, registry=None, name=None, data_home=None, home=None):
         run = self.root / ('doctor-' + (name or spec.replace(':', '_')))
         run.mkdir()
         env = dict(os.environ, PATH=str(self.bin) + os.pathsep + os.environ.get('PATH', ''),
                    FORGE_RIPWIRE='off', FORGE_JEV='off', FORGE_MEMORY='off')
         if registry is not None:
             env['FORGE_REGISTRY'] = registry
+        if data_home is not None:
+            env['FORGE_DATA_HOME'] = data_home
+        if home is not None:
+            env['HOME'] = home
         result = subprocess.run(
             ['bash', str(DISPATCH), 'doctor', '--spec', spec, '--run-dir', str(run)],
             cwd=self.repo, env=env, text=True, capture_output=True, timeout=60)
@@ -216,6 +220,50 @@ class DoctorNoteTests(Case):
         resolved = (run / 'dwarf.resolved').read_text()
         self.assertIn('effort=max\n', resolved)
         self.assertNotIn('no measured gain', resolved)
+
+    def _measured_override(self, home):
+        """Five passing tasks a side: max at 60s is faster than xhigh at 120s, so no note."""
+        os.environ['FORGE_DATA_HOME'] = str(home)
+        self.seed([
+            ('max', self.tasks(5, ['PASS'], [60])),
+            ('xhigh', self.tasks(5, ['PASS'], [120])),
+        ])
+
+    def _assert_dataset_overrides_the_builtin_warning(self, absolute, relative, runs):
+        self.assertEqual(absolute.returncode, 0, absolute.stderr + absolute.stdout)
+        self.assertEqual(relative.returncode, 0, relative.stderr + relative.stdout)
+        self.assertNotIn('no measured gain', absolute.stderr)
+        self.assertNotIn('forge: note:', absolute.stderr)
+        self.assertEqual(relative.stderr, absolute.stderr)
+        self.assertEqual(relative.returncode, absolute.returncode)
+        self.assertNotIn('no measured gain', relative.stdout)
+        self.assertNotIn('forge: note:', relative.stdout)
+        for run in runs:
+            resolved = (run / 'dwarf.resolved').read_text()
+            self.assertIn('effort=max\n', resolved)
+            self.assertNotIn('no measured gain', resolved)
+            self.assertNotIn('note', resolved)
+
+    def test_a_relative_data_home_reads_the_callers_dataset(self):
+        # The note is computed after a cd into scripts/. A relative FORGE_DATA_HOME is
+        # the caller's path; resolving it from scripts/ misses this store and the
+        # built-in 4× warning comes back, while the absolute path of the same directory
+        # stays silent.
+        self._measured_override(self.home)
+        absolute, abs_run = self.doctor('haiku:max', data_home=str(self.home), name='data-absolute')
+        relative, rel_run = self.doctor('haiku:max', data_home='../data', name='data-relative')
+        self._assert_dataset_overrides_the_builtin_warning(absolute, relative, (abs_run, rel_run))
+
+    def test_a_home_relative_data_home_still_reads_the_callers_dataset(self):
+        # ~/… is expanded by Python, not by prefixing $PWD. Prefixing would look for a
+        # directory named "~" and miss the store, bringing the built-in warning back.
+        home = self.root / 'home'
+        self._measured_override(home / 'forge-data')
+        absolute, abs_run = self.doctor(
+            'haiku:max', data_home=str(home / 'forge-data'), name='tilde-absolute')
+        relative, rel_run = self.doctor(
+            'haiku:max', data_home='~/forge-data', home=str(home), name='tilde-relative')
+        self._assert_dataset_overrides_the_builtin_warning(absolute, relative, (abs_run, rel_run))
 
     def test_a_dispatch_does_not_print_the_note(self):
         run = self.root / 'dispatch-run'

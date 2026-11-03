@@ -755,16 +755,25 @@ if [ "$PREFLIGHT" = 1 ]; then
   # Stderr only, and only here: the block above is parsed from stdout and $ROLE.resolved,
   # and a dispatch would repeat this at every task's preflight. A failure to say it
   # changes nothing, including the exit code. The module's cwd is scripts/, so a
-  # relative FORGE_REGISTRY is the caller's path made absolute first: opened from
-  # scripts/ it would miss the file this shell already resolved, and the note would vanish.
+  # relative FORGE_REGISTRY or FORGE_DATA_HOME is the caller's path made absolute first.
+  # Opened from scripts/, the registry would miss the file this shell already resolved
+  # (the note would vanish) and the dataset would miss the caller's store (the built-in
+  # table would speak over measured rows). A FORGE_DATA_HOME that starts with ~ is left
+  # for Python's expanduser; prefixing $PWD would point it at a directory named "~".
   _slow_registry="${FORGE_REGISTRY:-}"
   case "$_slow_registry" in
     ""|/*) ;;
     *) _slow_registry="$PWD/$_slow_registry" ;;
   esac
+  _slow_home="${FORGE_DATA_HOME:-}"
+  case "$_slow_home" in
+    ""|/*|~*) ;;
+    *) _slow_home="$PWD/$_slow_home" ;;
+  esac
   _slow="$(
     cd "$SKILL_DIR/scripts" || exit 1
     if [ -n "$_slow_registry" ]; then export FORGE_REGISTRY="$_slow_registry"; fi
+    if [ -n "$_slow_home" ]; then export FORGE_DATA_HOME="$_slow_home"; fi
     python3 -m forge_dataset.efforts "$SPEC" 2>/dev/null
   )" || _slow=""
   if [ -n "$_slow" ]; then note "note: $_slow"; fi
