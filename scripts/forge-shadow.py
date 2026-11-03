@@ -11,7 +11,9 @@ turns this on for a sampled share of reviewed attempts (`--shadow-rate`, default
       dir under <plan>/shadow/<id>/<attempt>-<k>/, reviews a byte-identical copy of the
       primary's qa.input, and returns. Never exits nonzero.
   forge-shadow.py preflight --plan P
-      Which listed shadow specs resolve here; writes <plan>/shadow_qa.ok. Never fails a run.
+      Which listed shadow specs resolve here; writes <plan>/shadow_qa.ok. A spec that
+      cannot run here is skipped. A fast-tier refusal stops the run with dispatch's
+      own message and exit code, before any model call.
 
 Guarantees, because the task waits for this process before it writes any status:
   - nothing reads the shadow's result in the run path; it changes no status, memory,
@@ -49,10 +51,22 @@ STOP_WAIT_S = 10
 PREPARE_TIMEOUT_S = 120
 
 
+def plan_is_fractal(plan: Path) -> bool:
+    """True when this plan's saved selection says Fractal runs the dispatches."""
+    try:
+        data = json.loads((plan / 'fractal-selection.json').read_text())
+    except (OSError, ValueError):
+        return False
+    return isinstance(data, dict) and bool(data.get('enabled'))
+
+
 def service_tier_args(plan: Path, role: str) -> list[str]:
     """`--service-tier fast` when <role> is a line of <plan>/fast, and nothing otherwise.
 
-    Fractal dispatches through its own runner and does not take the option. Specs never change.
+    Fractal dispatches through its own runner and does not take the option. A retry
+    preflights before that runner is selected, so a plan whose selection is already on
+    is the same case for every role it dispatches. A whole-run review is not one of them.
+    Specs never change.
     """
     if os.environ.get('FORGE_FRACTAL_RUN'):
         return []
@@ -60,9 +74,11 @@ def service_tier_args(plan: Path, role: str) -> list[str]:
         text = (plan / 'fast').read_text()
     except OSError:
         return []
-    if role in [line.strip() for line in text.splitlines() if line.strip()]:
-        return ['--service-tier', 'fast']
-    return []
+    if role not in [line.strip() for line in text.splitlines() if line.strip()]:
+        return []
+    if role != 'review' and plan_is_fractal(plan):
+        return []
+    return ['--service-tier', 'fast']
 
 
 def rate_of(plan: Path) -> float:

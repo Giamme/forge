@@ -95,6 +95,8 @@ class FastRolesTests(unittest.TestCase):
         p = self.make_plan('--fast', 'all')
         self.assertEqual((p / 'fast').read_text(), 'dwarf\nqa\nplanner\nreview\n')
         self.assertIn(fast_line('dwarf, qa, planner, review'), self.plan_output)
+        padded = self.make_plan('--fast', ' all ', name='padded-all')
+        self.assertEqual((padded / 'fast').read_text(), 'dwarf\nqa\nplanner\nreview\n')
         cleared = self.run_script('forge-parallel.sh', 'plan', p, '--repo', self.repo, '--no-memory', '--fast', 'none')
         self.assertEqual(cleared.returncode, 0, cleared.stdout)
         self.assertFalse((p / 'fast').exists())
@@ -110,6 +112,8 @@ class FastRolesTests(unittest.TestCase):
             ('all,dwarf', 'all'),
             ('dwarf,', "''"),
             ('Dwarf', 'Dwarf'),
+            # A space inside the token is not trimmed away into a real role.
+            ('dwa rf', 'dwa rf'),
         )
         for i, (roles, named) in enumerate(cases):
             with self.subTest(roles=roles):
@@ -224,6 +228,50 @@ class FastRolesTests(unittest.TestCase):
         self.assertIn('dwarf role', refused.stdout)
         self.assertEqual(self.calls(), [])
         self.assertEqual(self.cmds(sweep, 'dwarf'), [])
+
+    def test_fast_qa_on_an_unsupported_shadow_stops_at_preflight(self):
+        # The primary reviewer can take the tier. The shadow cannot, and dropping it
+        # would let the dwarf and the primary review run and be billed.
+        p = self.make_plan('--fast', 'qa', '--shadow-qa', 'grok', '--shadow-rate', '1', name='fast-shadow')
+        refused = self.run_plan(p)
+        self.assertEqual(refused.returncode, 3, refused.stdout)
+        self.assertIn('grok %s' % REFUSAL, refused.stdout)
+        self.assertIn('qa role', refused.stdout)
+        self.assertNotIn('is not usable here', refused.stdout)
+        self.assertEqual(self.calls(), [])
+        self.assertEqual(self.cmds(p, 'dwarf'), [])
+        self.assertEqual(self.cmds(p, 'qa'), [])
+
+    def test_a_fractal_retry_does_not_preflight_the_fast_tier(self):
+        # do_retry preflights before Fractal is selected, so FORGE_FRACTAL_RUN is unset.
+        # The saved selection is enough: an opencode dwarf and a grok shadow are not
+        # refused, nothing is dispatched, and the run says the tier was not applied.
+        self.scenario({'a.qa.*': {'verdict': 'FAIL'}})
+        p = self.make_plan('--fast', 'dwarf', name='fractal-retry')
+        failed = self.run_plan(p)
+        self.assertEqual(failed.returncode, 5, failed.stdout)
+        opencode = self.bin / 'opencode'
+        opencode.write_text(fixtures.FAKE)
+        opencode.chmod(0o755)
+        before = self.calls()
+        plain = self.run_script('forge-parallel.sh', 'retry', p, 'a', '--dwarf', 'opus:high:opencode')
+        self.assertEqual(plain.returncode, 3, plain.stdout)
+        self.assertIn('opencode %s' % REFUSAL, plain.stdout)
+        self.assertIn('dwarf role', plain.stdout)
+        self.assertEqual(self.calls(), before)
+        (p / 'fast').write_text('dwarf\nqa\n')
+        (p / 'shadow_qa').write_text('grok\n')
+        (p / 'shadow_rate').write_text('1\n')
+        (p / 'fractal-selection.json').write_text('{"enabled": true}\n')
+        (p / 'fractal-routing.json').write_text('{"low": ["opus:high:opencode"]}\n')
+        again = self.run_script('forge-parallel.sh', 'retry', p, 'a', '--dwarf', 'opus:high:opencode')
+        self.assertNotIn(REFUSAL, again.stdout)
+        self.assertIn('retrying a with dwarf opus:high:opencode', again.stdout)
+        self.assertIn('fast tier is not applied to Fractal dispatches', again.stdout)
+        # grok is not installed here, so the shadow is dropped the ordinary way. That
+        # note is how this shows the fast-tier refusal was not what stopped it.
+        self.assertIn('shadow review spec grok is not usable here', again.stdout)
+        self.assertEqual(self.calls(), before)
 
     # --- solo -----------------------------------------------------------------------------
     def test_solo_stores_dwarf_and_qa_and_none_clears_them(self):
