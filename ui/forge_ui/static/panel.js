@@ -321,6 +321,13 @@ window.ForgePanel = (() => {
   }
 
   /* ---------- views ---------- */
+  // `NAME (level)`, plus the frozen flags when settings.profile lists them. No row when the run froze no profile.
+  function profileLine(settings) {
+    const profile = settings && settings.profile;
+    if (!profile || typeof profile !== 'object') return undefined;
+    const line = window.ForgeSettings && window.ForgeSettings.profileRowText && window.ForgeSettings.profileRowText(profile);
+    return line || undefined;
+  }
   // the run's record: what it was asked, how it was set up, and what verification printed (the header names and counts it)
   function runRecord(host, ctx) {
     const run = ctx.run, solo = run.kind === 'solo';
@@ -329,7 +336,8 @@ window.ForgePanel = (() => {
       ['Decompose', run.decompose_level], ['Updated', time(run.updated)], ['Explore', run.settings && run.settings.explore], ['Shadow rate', run.settings && run.settings.shadow_rate],
       ['Shadow reviewers', run.settings && plates(list(run.settings.shadow_qa))], ['QA threshold', run.settings && run.settings.qa_threshold && run.settings.qa_threshold + (run.settings.qa_threshold_source === 'default' ? ' (default)' : '')],
       ['Max parallel', run.settings && run.settings.max_parallel], ['Final reviewer', run.settings && run.settings.final_qa ? plate(run.settings.final_qa) : undefined],
-      ['Timeout (seconds)', run.settings && run.settings.timeout], ['Verification', chip((run.verification && run.verification.status) || run.verification_status)],
+      ['Timeout (seconds)', run.settings && run.settings.timeout], ['Profile', profileLine(run.settings)],
+      ['Verification', chip((run.verification && run.verification.status) || run.verification_status)],
       ['Command', run.verification && run.verification.command, true]]);
     details(host, 'Request', display(run.request), 'run-request');
     if (!solo) details(host, 'Waves', list(run.waves).map((ids, i) => `${i + 1}: ${list(ids).join(', ')}`).join('\n') || '—', 'waves');

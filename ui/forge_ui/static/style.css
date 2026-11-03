@@ -1417,3 +1417,26 @@ button.set-remove:focus-visible { outline: 2px solid var(--lamp-red); outline-of
 .set-gate select { min-width: 9em; max-width: 100%; }
 .set-gate input[type=text] { width: 14em; max-width: 100%; }
 .set-gate-skip { font-family: var(--mono); font-size: var(--t-xs); color: var(--warn-ink); }
+/* profiles: the list is the selector; the detail is the body, then the writes */
+.set-profiles { display: grid; gap: var(--s-1); width: 100%; margin: 0; padding: 0; list-style: none; }
+.set-profiles li { margin: 0; min-width: 0; }
+button.set-profile { justify-content: flex-start; align-items: baseline; gap: var(--s-2); width: 100%; min-height: 40px; padding: 6px 10px;
+  text-align: left; white-space: normal;
+  font-family: inherit; font-weight: 400; font-size: inherit; letter-spacing: normal; text-transform: none; line-height: 1.3; }
+button.set-profile:active:not(:disabled) { scale: 1; }
+button.set-profile[aria-pressed=true] { border-color: var(--route); background: var(--wash); }
+.set-profile-name { font-family: var(--mono); font-weight: 650; min-width: 0; overflow-wrap: anywhere; }
+.set-profile-meta { color: var(--muted); font-size: var(--t-sm); }
+.set-profile-summary { display: grid; gap: var(--s-3); width: 100%; font-variant-numeric: tabular-nums; }
+.set-profile-summary .plate { margin: 0; }
+.set-kv { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 2px var(--s-4); margin: 0; width: 100%; }
+.set-kv dt, .set-kv dd { margin: 0; overflow-wrap: anywhere; }
+.set-kv dt { color: var(--ink-2); }
+.set-summary-line { margin: 0; overflow-wrap: anywhere; }
+.set-profile-form { display: flex; flex-wrap: wrap; align-items: end; gap: var(--s-2) var(--s-3); width: 100%; }
+.set-profile-editor { display: grid; gap: var(--s-2); width: 100%; }
+.set-profile-editor > * { margin-block: 0; }
+.set-reasons { margin: 0; padding-left: 1.2em; color: var(--warn-ink); font-size: var(--t-sm); }
+.set-reasons li { overflow-wrap: anywhere; }
+button.set-profile:focus-visible, .set-profile-form select:focus-visible, .set-profile-form input:focus-visible,
+.set-profile-editor textarea:focus-visible { outline: 2px solid var(--route); outline-offset: 2px; }

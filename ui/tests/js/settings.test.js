@@ -287,3 +287,87 @@ test('picker grouping: two roots with one folder name stay two groups', () => {
   const runs = [run('a', '/work/forge', 10, { repo_root: '/work/forge' }), run('b', '/home/forge', 20, { repo_root: '/home/forge' })];
   assert.deepEqual(S.groupRuns(runs).map(g => g.repo), ['/home/forge', '/work/forge']);
 });
+
+test('a profile body summarizes pools per tier, then routing, policy, gates and budget', () => {
+  const view = S.describeProfile({
+    routing: {
+      dwarf: { high: ['opus:high'], low: ['haiku:xhigh'], medium: ['sonnet:medium'] },
+      qa: { low: ['sonnet:medium'], medium: ['sonnet:high'], high: ['opus:high'] },
+      planner: 'sonnet:high',
+      escalate_after: 2,
+    },
+    policy: { retry_failed: 2, explore: true },
+    gates: { drift: { mode: 'on', provider: 'jev', model: 'box' }, coverage: 'shadow' },
+    budget: { run_tokens: 1000, run_usd: 1.5, daily_tokens: 10, extra: 3 },
+  });
+  assert.deepEqual(view.tiers, [
+    { tier: 'low', dwarf: 'haiku:xhigh', qa: 'sonnet:medium' },
+    { tier: 'medium', dwarf: 'sonnet:medium', qa: 'sonnet:high' },
+    { tier: 'high', dwarf: 'opus:high', qa: 'opus:high' },
+  ]);
+  assert.deepEqual(view.routing, [
+    { key: 'planner', text: 'sonnet:high' },
+    { key: 'escalate_after', text: '2' },
+  ]);
+  assert.deepEqual(view.policy, [
+    { key: 'retry_failed', text: '2' },
+    { key: 'explore', text: 'true' },
+  ]);
+  assert.equal(view.gates, 'coverage shadow; drift on · jev · box');
+  assert.equal(view.budget, 'run 1000 tokens, $1.5000; daily 10 tokens; extra 3');
+
+  const empty = S.describeProfile({});
+  assert.deepEqual(empty, { tiers: [], routing: [], policy: [], gates: '', budget: '' });
+  assert.deepEqual(S.describeProfile(null), empty);
+  assert.deepEqual(S.describeProfile('nope'), empty);
+});
+
+test('profile writes post one action each, and create never sends both from and body', () => {
+  const run = 'abc123';
+  assert.deepEqual(S.profileRequest(run, { action: 'create', name: 'mine', level: 'user', from: 'balanced' }),
+    { run, action: 'create', name: 'mine', level: 'user', from: 'balanced' });
+  assert.deepEqual(S.profileRequest(run, { action: 'create', name: 'mine', level: 'repo', body: {} }),
+    { run, action: 'create', name: 'mine', level: 'repo', body: {} });
+  assert.deepEqual(S.profileRequest(run, { action: 'edit', name: 'mine', level: 'user', body: { policy: { retry_failed: 4 } } }),
+    { run, action: 'edit', name: 'mine', level: 'user', body: { policy: { retry_failed: 4 } } });
+  assert.deepEqual(S.profileRequest(run, { action: 'set', name: 'mine', level: 'user', key: 'policy.retry_failed', value: '4' }),
+    { run, action: 'set', name: 'mine', level: 'user', key: 'policy.retry_failed', value: '4' });
+  assert.deepEqual(S.profileRequest(run, { action: 'unset', name: 'mine', level: 'repo', key: 'policy.timeout' }),
+    { run, action: 'unset', name: 'mine', level: 'repo', key: 'policy.timeout' });
+  assert.deepEqual(S.profileRequest(run, { action: 'rm', name: 'mine', level: 'user' }),
+    { run, action: 'rm', name: 'mine', level: 'user' });
+  assert.deepEqual(S.profileRequest(run, { action: 'use', name: 'mine', level: 'user' }),
+    { run, action: 'use', name: 'mine', level: 'user' });
+  const cleared = S.profileRequest(run, { action: 'use', name: 'mine', level: 'user', none: true });
+  assert.deepEqual(cleared, { run, action: 'use', level: 'user', none: true });
+  assert.equal('name' in cleared, false);
+});
+
+test('a built-in profile offers only Duplicate', () => {
+  assert.deepEqual(S.profileOffers('builtin'), { edit: false, duplicate: true, remove: false, setDefault: false });
+  assert.deepEqual(S.profileOffers('user'), { edit: true, duplicate: true, remove: true, setDefault: true });
+  assert.deepEqual(S.profileOffers('repo'), { edit: true, duplicate: true, remove: true, setDefault: true });
+  assert.equal(S.shadowLabel(['repo', 'builtin']), 'shadows repo, builtin');
+  assert.equal(S.shadowLabel([]), '');
+  assert.equal(S.shadowLabel(null), '');
+});
+
+test('a run page names its frozen profile, and the overridden keys when the list is not empty', () => {
+  assert.equal(S.profileRowText(null), null);
+  assert.equal(S.profileRowText(undefined), null);
+  assert.equal(S.profileRowText({}), null);
+  assert.equal(S.profileRowText({ name: 'balanced', level: 'user', overridden: false }), 'balanced (user)');
+  assert.equal(S.profileRowText({ name: 'balanced', level: 'user', overridden: [] }), 'balanced (user)');
+  assert.equal(S.profileRowText({ name: 'balanced', level: 'user', overridden: ['routing.planner', 'policy.timeout'] }),
+    'balanced (user) · flags override: routing.planner, policy.timeout');
+});
+
+test('a refused profile write keeps every CLI reason, not only the last line', () => {
+  assert.deepEqual(S.refusalReasons({ ok: true, result: { error: 'nope' } }), []);
+  assert.deepEqual(S.refusalReasons({
+    ok: false, status: 400, detail: 'policy.retry_failed: too big',
+    result: { error: 'routing.planner: unknown\npolicy.retry_failed: too big' },
+  }), ['routing.planner: unknown', 'policy.retry_failed: too big']);
+  assert.deepEqual(S.refusalReasons({ ok: false, status: 400, detail: 'read-only', result: {} }), ['read-only']);
+  assert.deepEqual(S.refusalReasons({ ok: false, status: 502 }), []);
+});

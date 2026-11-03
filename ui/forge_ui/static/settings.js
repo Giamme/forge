@@ -1,8 +1,9 @@
 /* forge-ui settings view (window.ForgeSettings, and a CommonJS module under node:test). Route #/settings: the model
-   registry (read-only), the decision-model gates, the three per-repo .forge files of one repository, the dataset and
-   the FORGE_* environment. The pure helpers (request bodies, value checks, the decision-model view, the repository
-   picker, the editors' unsaved-text state) are tested in ui/tests/js/settings.test.js; render(host, ctx) is thin DOM
-   over them. Every value from the server enters the page as text.
+   registry (read-only), the decision-model gates, named profiles, the three per-repo .forge files of one repository,
+   the dataset and the FORGE_* environment. The pure helpers (request bodies, value checks, the decision-model view,
+   the profile summary, the repository picker, the editors' unsaved-text state) are tested in
+   ui/tests/js/settings.test.js; render(host, ctx) is thin DOM over them. Every value from the server enters the page
+   as text.
    ctx = { key (the run whose repo to show, or null), runs() (the run list), onPick?(key) }. render returns { poll() }:
    the page calls it on each refresh, and unsaved editor text survives it.
    The calls are GET /api/config?run=<key> and POST /api/config, see ui/docs/api.md, "Controls (write endpoints)". A write
@@ -26,6 +27,15 @@
   const MODES = ['off', 'shadow', 'on'];
   const ADD_COMMAND = 'forge decide provider add …';
   const POLL_MS = 20000;                                         // the config rarely changes, and each read starts a CLI process
+  // The same order as forge_decide.profiles. A tier or key the body carries and this list does not still shows, after these.
+  const TIERS = ['any', 'low', 'medium', 'high'];
+  const POOLS = ['dwarf', 'qa'];
+  const ROUTING_ORDER = ['planner', 'fractal_planner', 'final_reviewer', 'escalate_after', 'escalate_effort'];
+  const POLICY_ORDER = ['qa_threshold', 'retry_failed', 'infra_retries', 'verify_retries', 'timeout', 'explore', 'shadow_rate', 'shadow_qa', 'fast'];
+  const BUDGET_PAIRS = [['run', 'run_tokens', 'run_usd'], ['daily', 'daily_tokens', 'daily_usd']];
+  const PROFILE_LEVELS = ['user', 'repo', 'builtin'];
+  const WRITE_LEVELS = ['user', 'repo'];                        // POST /api/config/profiles refuses builtin
+  const PROFILE_NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/;
   const list = v => Array.isArray(v) ? v : [];
   const object = v => v && typeof v === 'object' && !Array.isArray(v) ? v : {};
   const text = v => typeof v === 'string' ? v : '';
@@ -241,16 +251,163 @@
     return { keep: !!hasData, message };
   }
 
+  // A scalar, or a list of them, as the summary shows it. An object is not a routing or policy value the table can name.
+  function showValue(value) {
+    if (typeof value === 'string') return value;
+    if (typeof value === 'number' && Number.isFinite(value)) return String(value);
+    if (typeof value === 'boolean') return value ? 'true' : 'false';
+    if (Array.isArray(value)) return value.map(showValue).filter(Boolean).join(', ');
+    return '';
+  }
+  const has = (obj, key) => Object.prototype.hasOwnProperty.call(obj, key);
+  // Known keys first, in `order`, then any other own key, sorted. `skip` names keys a table already showed.
+  function orderedEntries(obj, order, skip) {
+    const src = object(obj), seen = new Set(skip || []), out = [];
+    for (const key of order) {
+      if (has(src, key)) { out.push([key, src[key]]); seen.add(key); }
+    }
+    for (const key of Object.keys(src).sort()) {
+      if (!seen.has(key)) out.push([key, src[key]]);
+    }
+    return out;
+  }
+  function budgetPart(label, tokensKey, usdKey, budget) {
+    const hasTokens = has(budget, tokensKey), hasUsd = has(budget, usdKey);
+    if (!hasTokens && !hasUsd) return '';
+    const bits = [];
+    if (hasTokens) bits.push((finite(budget[tokensKey]) ? String(budget[tokensKey]) : 'none') + ' tokens');
+    if (hasUsd) bits.push('$' + (finite(budget[usdKey]) ? Number(budget[usdKey]).toFixed(4) : 'none'));
+    return label + ' ' + bits.join(', ');
+  }
+  // One gate as `name mode · provider · model`. A mode string is the short form the file stores.
+  function gateText(name, value) {
+    if (typeof value === 'string') return name + ' ' + value;
+    const g = object(value);
+    const bits = [text(g.mode), text(g.provider), text(g.model)].filter(Boolean);
+    return bits.length ? name + ' ' + bits.join(' · ') : name;
+  }
+
+  // The selected profile's body, as data. render() draws only this: pools per tier, then the other routing and policy
+  // values, then one line each for gates and budget. A missing block is an empty list or ''.
+  function describeProfile(body) {
+    const b = object(body), routing = object(b.routing), pools = {};
+    for (const name of POOLS) {
+      const value = routing[name];
+      pools[name] = value && typeof value === 'object' && !Array.isArray(value) ? value : null;
+    }
+    const tierNames = [];
+    for (const tier of TIERS) {
+      if (POOLS.some(name => pools[name] && has(pools[name], tier))) tierNames.push(tier);
+    }
+    const known = new Set(TIERS);
+    const extra = new Set();
+    for (const name of POOLS) {
+      if (!pools[name]) continue;
+      for (const tier of Object.keys(pools[name])) if (!known.has(tier)) extra.add(tier);
+    }
+    for (const tier of [...extra].sort()) tierNames.push(tier);
+    const tiers = tierNames.map(tier => ({
+      tier,
+      dwarf: (pools.dwarf && showValue(pools.dwarf[tier])) || '—',
+      qa: (pools.qa && showValue(pools.qa[tier])) || '—',
+    })).filter(row => row.dwarf !== '—' || row.qa !== '—');
+    const poolSkip = POOLS.filter(name => pools[name]);
+    const routingLines = orderedEntries(routing, ROUTING_ORDER, poolSkip)
+      .map(([key, value]) => ({ key, text: showValue(value) }))
+      .filter(row => row.text);
+    const policy = orderedEntries(b.policy, POLICY_ORDER)
+      .map(([key, value]) => ({ key, text: showValue(value) }))
+      .filter(row => row.text);
+    const gates = b.gates && typeof b.gates === 'object' && !Array.isArray(b.gates)
+      ? Object.keys(b.gates).sort().map(name => gateText(name, b.gates[name])).join('; ') : '';
+    const budgetObj = b.budget && typeof b.budget === 'object' && !Array.isArray(b.budget) ? b.budget : {};
+    const budgetBits = BUDGET_PAIRS.map(([label, tokens, usd]) => budgetPart(label, tokens, usd, budgetObj)).filter(Boolean);
+    const budgetSeen = new Set(BUDGET_PAIRS.flatMap(([, tokens, usd]) => [tokens, usd]));
+    for (const key of Object.keys(budgetObj).sort()) {
+      if (!budgetSeen.has(key)) {
+        const shown = showValue(budgetObj[key]);
+        if (shown) budgetBits.push(key + ' ' + shown);
+      }
+    }
+    return { tiers, routing: routingLines, policy, gates, budget: budgetBits.join('; ') };
+  }
+
+  // The POST /api/config/profiles body for one action. `use` with none clears the default and carries no name.
+  // create carries `from` or `body`, never both; a missing body is the blank profile {}.
+  function profileRequest(run, spec) {
+    const s = object(spec), action = text(s.action);
+    const body = { run: String(run == null ? '' : run), action };
+    if (s.level != null) body.level = String(s.level);
+    if (action === 'use' && s.none === true) { body.none = true; return body; }
+    if (s.name != null) body.name = String(s.name);
+    if (action === 'create' && s.from != null && text(s.from) !== '') body.from = String(s.from);
+    else if (action === 'create' || action === 'edit') body.body = object(s.body);
+    if (action === 'set' || action === 'unset') body.key = String(s.key == null ? '' : s.key);
+    if (action === 'set') body.value = String(s.value == null ? '' : s.value);
+    return body;
+  }
+
+  // What a row may do. A built-in (and anything that is not user or repo) can only be duplicated: the CLI refuses
+  // to edit, remove or store a default at that level.
+  function profileOffers(level) {
+    const writable = level === 'user' || level === 'repo';
+    return { edit: writable, duplicate: true, remove: writable, setDefault: writable };
+  }
+  // "shadows repo, builtin", or '' when the winning copy hides nothing.
+  function shadowLabel(shadowed) {
+    const levels = list(shadowed).map(text).filter(Boolean);
+    return levels.length ? 'shadows ' + levels.join(', ') : '';
+  }
+  // The run record's Profile row: `NAME (level)`, and `· flags override: KEY, KEY` when `overridden` lists keys.
+  // Null when there is no profile. A bool (the frozen file's flag today) names no key, so it adds nothing.
+  function profileRowText(profile) {
+    if (!profile || typeof profile !== 'object' || Array.isArray(profile)) return null;
+    const name = text(profile.name), level = text(profile.level);
+    if (!name || !level) return null;
+    const keys = Array.isArray(profile.overridden) ? profile.overridden.map(text).filter(Boolean) : [];
+    return name + ' (' + level + ')' + (keys.length ? ' · flags override: ' + keys.join(', ') : '');
+  }
+  // The editor's text. Pretty-printed so a refresh of an untouched profile does not look like an edit.
+  function profileText(body) {
+    try { return JSON.stringify(object(body), null, 2); }
+    catch (_) { return '{}'; }
+  }
+  function profileNameProblem(name) {
+    return PROFILE_NAME.test(text(name)) ? null : 'Use 1–64 letters, digits, ".", "_" or "-", starting with a letter or digit.';
+  }
+  // Why this text cannot be posted as a profile body, or null. The CLI still checks the keys.
+  function profileJsonProblem(value) {
+    const v = text(value);
+    if (!v.trim()) return 'Empty: a profile body is a JSON object.';
+    let parsed;
+    try { parsed = JSON.parse(v); }
+    catch (_) { return 'Not valid JSON.'; }
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return 'A profile body is a JSON object.';
+    return null;
+  }
+  // The CLI's reasons for a refused write. Exit 2's HTTP detail is only the last line; the whole list is result.error,
+  // one reason per line. Empty when the write succeeded.
+  function refusalReasons(res) {
+    if (!res || res.ok) return [];
+    const err = res.result && typeof res.result.error === 'string' ? res.result.error : '';
+    const lines = err.split('\n').map(line => line.trim()).filter(Boolean);
+    if (lines.length) return lines;
+    const detail = typeof res.detail === 'string' ? res.detail.trim() : '';
+    return detail ? [detail] : [];
+  }
+
   /* ---------- DOM ---------- */
   function render(host, ctx) {
     const UI = root.ForgeUI, c = ctx || {};
     const el = (tag, t, cls) => UI.el(tag, t, cls);
-    const s = { run: null, data: null, dataText: null, error: null, writes: false, loading: true, editors: {}, moved: {}, models: {}, modelMoved: {}, hold: 0, redraw: false, seq: 0, gen: 0, runsSig: null, ready: false, loadedAt: 0, repo: null, gone: false, asking: 0, asks: 0, pickerLate: false, listOpen: false };
+    const s = { run: null, data: null, dataText: null, error: null, writes: false, loading: true, editors: {}, moved: {}, models: {}, modelMoved: {}, hold: 0, redraw: false, seq: 0, gen: 0, runsSig: null, ready: false, loadedAt: 0, repo: null, gone: false, asking: 0, asks: 0, pickerLate: false, listOpen: false,
+      profiles: null, profilesText: null, profilesError: null, profileKey: null, profileEditors: {}, profileMoved: {}, profileReasons: [], profileReasonFor: null,
+      forms: { create: { name: '', level: 'user', source: '' }, duplicate: null } };
     const key_ = (label, cls, onclick) => { const b = el('button', label, cls); b.type = 'button'; if (onclick) b.addEventListener('click', onclick); return b; };
 
     const head = el('header', undefined, 'set-head');
     head.append(el('h1', 'Settings', 'module-title'),
-      el('p', 'What forge reads when it runs: its model registry, the decision-model gates, and the three files a repository can keep in .forge.', 'muted set-lede'));
+      el('p', 'What forge reads when it runs: its model registry, the decision-model gates, named profiles, and the three files a repository can keep in .forge.', 'muted set-lede'));
     const picker = el('div', undefined, 'set-picker');
     const body = el('div', undefined, 'set-body');
     const note = el('p', 'This page is read-only: this server has no write token, or has controls off.', 'muted set-readonly');
@@ -419,6 +576,9 @@
     function resetRun() {
       staleNote(null);
       s.data = null; s.dataText = null; s.error = null; s.editors = {}; s.moved = {}; s.models = {}; s.modelMoved = {}; s.loading = s.run != null;
+      s.profiles = null; s.profilesText = null; s.profilesError = null; s.profileKey = null;
+      s.profileEditors = {}; s.profileMoved = {}; s.profileReasons = []; s.profileReasonFor = null;
+      s.forms = { create: { name: '', level: 'user', source: '' }, duplicate: null };
       s.gen++; s.hold = 0; s.redraw = false;
     }
     function pick(key) {
@@ -430,17 +590,55 @@
     }
 
     /* loading, and keeping unsaved text across it */
+    const profileId = row => text(row && row.name) + '\0' + text(row && row.level);
+    // Fold a profiles read into the page. A failed read keeps the previous list when there is one. An editor's unsaved
+    // JSON stays; `moved` says the stored body changed under it.
+    function applyProfiles(res) {
+      if (!res || !res.ok) {
+        const failed = readFailure(res, s.profiles);
+        s.profilesError = failed.message;
+        if (!failed.keep) { s.profiles = null; }
+        return;
+      }
+      s.profilesError = null;
+      const data = object(res.data), rows = list(data.profiles);
+      for (const row of rows) {
+        const key = profileId(row);
+        if (!s.profileEditors[key]) continue;
+        const next = dirtyState(s.profileEditors[key], profileText(row.body));
+        s.profileEditors[key] = next.editor;
+        s.profileMoved[key] = next.moved || (next.dirty && !!s.profileMoved[key]);
+      }
+      if (!rows.some(row => profileId(row) === s.profileKey)) {
+        const def = rows.find(row => row.default) || rows[0];
+        s.profileKey = def ? profileId(def) : null;
+      }
+      s.profiles = data;
+    }
     async function load() {
       const run = s.run, seq = ++s.seq;
       if (run == null) { s.loading = false; drawBody(); return; }
       if (s.gone) return;                                         // the run is not listed: nothing to read until another is picked
       s.loadedAt = Date.now();
-      const res = await UI.get('/api/config?run=' + encodeURIComponent(run));
+      const query = encodeURIComponent(run);
+      const [res, pres] = await Promise.all([
+        UI.get('/api/config?run=' + query),
+        UI.get('/api/config/profiles?run=' + query),
+      ]);
       if (seq !== s.seq || run !== s.run) return;                 // a later pick or load answered
       s.loading = false;
       if (!res.ok) {
         const failed = readFailure(res, s.data);
-        if (failed.keep) { staleNote(failed.message); return; }   // the last good page, its editors and their unsaved text stay
+        if (failed.keep) {                                       // the last good page, its editors and their unsaved text stay
+          staleNote(failed.message);
+          applyProfiles(pres);
+          const pt = JSON.stringify([s.profiles, s.profilesError]);
+          if (pt !== s.profilesText) {
+            s.profilesText = pt;
+            if (s.hold > 0) s.redraw = true; else drawBody();
+          }
+          return;
+        }
         if (s.hold > 0) return;                                   // a confirm or a write is open: its strip must not be torn down
         s.error = failed.message; s.data = null; s.dataText = null; drawBody(); return;
       }
@@ -454,9 +652,11 @@
         const next = dirtyState(s.models[g.name], g.model);
         s.models[g.name] = next.editor; s.modelMoved[g.name] = next.moved || (next.dirty && !!s.modelMoved[g.name]);
       }
+      applyProfiles(pres);
       const t = JSON.stringify(res.data);
-      if (t === s.dataText && !s.redraw) return;
-      s.data = res.data; s.dataText = t;
+      const pt = JSON.stringify([s.profiles, s.profilesError]);
+      if (t === s.dataText && pt === s.profilesText && !s.redraw) return;
+      s.data = res.data; s.dataText = t; s.profilesText = pt;
       drawPicker();                                               // its path line names the repository this read came from
       if (s.hold > 0) { s.redraw = true; return; }                // a confirm or a write is open: draw after it
       drawBody();
@@ -470,15 +670,19 @@
     function drawBody() {
       const focus = document.activeElement && body.contains(document.activeElement) ? document.activeElement : null;
       const at = focus && focus.dataset.editor ? { kind: 'editor', name: focus.dataset.editor, a: focus.selectionStart, b: focus.selectionEnd }
-        : focus && focus.dataset.model ? { kind: 'model', name: focus.dataset.model, a: focus.selectionStart, b: focus.selectionEnd } : null;
+        : focus && focus.dataset.model ? { kind: 'model', name: focus.dataset.model, a: focus.selectionStart, b: focus.selectionEnd }
+        : focus && focus.dataset.profileEditor ? { kind: 'profile', a: focus.selectionStart, b: focus.selectionEnd }
+        : focus && focus.id ? { kind: 'id', id: focus.id, a: focus.selectionStart, b: focus.selectionEnd } : null;
       if (s.loading) { body.replaceChildren(el('p', 'Reading the configuration…', 'muted')); return; }
       if (s.error) { body.replaceChildren(el('p', 'Could not read the configuration: ' + s.error, 'warn')); return; }
       if (!s.data) { body.replaceChildren(); return; }
-      body.replaceChildren(registrySection(), decideSection(), repoSection(), datasetSection(), envSection());
-      if (at) {
-        const t = at.kind === 'model' ? body.querySelector(`input[data-model="${at.name}"]`) : body.querySelector(`textarea[data-editor="${at.name}"]`);
-        if (t) { t.focus({ preventScroll: true }); try { t.setSelectionRange(at.a, at.b); } catch (_) { /* not selectable */ } }
-      }
+      body.replaceChildren(registrySection(), decideSection(), profilesSection(), repoSection(), datasetSection(), envSection());
+      if (!at) return;
+      const t = at.kind === 'model' ? body.querySelector(`input[data-model="${at.name}"]`)
+        : at.kind === 'editor' ? body.querySelector(`textarea[data-editor="${at.name}"]`)
+        : at.kind === 'profile' ? body.querySelector('textarea[data-profile-editor]')
+        : document.getElementById(at.id);
+      if (t && body.contains(t)) { t.focus({ preventScroll: true }); try { t.setSelectionRange(at.a, at.b); } catch (_) { /* not selectable */ } }
     }
 
     /* sections */
@@ -811,6 +1015,509 @@
       return art;
     }
 
+    function profilesSection() {
+      const sec = section('profiles', 'Profiles', 'A named bundle of routing, policy, gates and budget. A user profile hides a repo profile of the same name, which hides a built-in. Editing writes decide.json at the profile\'s level.');
+      if (s.profilesError && !s.profiles) {
+        sec.append(el('p', 'Could not read profiles: ' + s.profilesError, 'warn'));
+        return sec;
+      }
+      if (!s.profiles) { sec.append(el('p', 'Reading profiles…', 'muted')); return sec; }
+      if (s.profilesError) sec.append(el('p', 'The last read of profiles failed: ' + s.profilesError + '. This shows the read before it.', 'warn set-problem'));
+      const rows = list(s.profiles.profiles);
+      if (!rows.length) sec.append(el('p', 'No profiles.', 'muted'));
+      else sec.append(profileList(rows));
+      const row = rows.find(item => profileId(item) === s.profileKey);
+      if (row) sec.append(profileDetail(row));
+      if (s.writes) sec.append(newProfileForm(rows));
+      return sec;
+    }
+
+    function profileList(rows) {
+      const ul = el('ul', undefined, 'set-profiles');
+      ul.setAttribute('aria-label', 'Profiles');
+      for (const row of rows) {
+        const li = el('li');
+        const on = profileId(row) === s.profileKey;
+        const b = el('button', undefined, 'set-profile');
+        b.type = 'button';
+        b.id = 'set-prof-' + text(row.name);
+        b.dataset.profile = text(row.name);
+        b.dataset.level = text(row.level);
+        b.setAttribute('aria-pressed', on ? 'true' : 'false');
+        const shadow = shadowLabel(row.shadowed);
+        b.setAttribute('aria-label', [text(row.name), text(row.level), row.default ? 'default' : '', shadow].filter(Boolean).join(', '));
+        b.append(el('span', text(row.name), 'set-profile-name'), el('span', text(row.level), 'tag'));
+        if (row.default) b.append(el('span', 'default', 'tag'));
+        if (shadow) b.append(el('span', shadow, 'set-profile-meta'));
+        b.addEventListener('click', () => {
+          const key = profileId(row);
+          if (s.profileKey === key) return;
+          s.profileKey = key;
+          s.forms.duplicate = null;
+          s.profileReasons = [];
+          s.profileReasonFor = null;
+          drawBody();
+          const again = document.getElementById(b.id);
+          if (again) again.focus({ preventScroll: true });
+        });
+        li.append(b);
+        ul.append(li);
+      }
+      return ul;
+    }
+
+    function summaryBlock(title, id) {
+      const block = el('div');
+      block.id = id;
+      block.append(el('p', title, 'plate'));
+      return block;
+    }
+    function profileSummary(body) {
+      const view = describeProfile(body);
+      const box = el('div', undefined, 'set-profile-summary');
+      if (view.tiers.length) {
+        const wrap = el('div', undefined, 'set-table-wrap');
+        const table = el('table', undefined, 'set-table');
+        const cap = el('caption', 'Dwarf and QA pools by tier', 'visually-hidden');
+        const hr = el('tr');
+        for (const h of ['Tier', 'Dwarf', 'QA']) { const th = el('th', h); th.scope = 'col'; hr.append(th); }
+        const thead = el('thead'); thead.append(hr);
+        const tbody = el('tbody');
+        for (const tier of view.tiers) {
+          const tr = el('tr');
+          const th = el('th', tier.tier, 'set-alias'); th.scope = 'row';
+          tr.append(th, el('td', tier.dwarf, 'mono'), el('td', tier.qa, 'mono'));
+          tbody.append(tr);
+        }
+        table.append(cap, thead, tbody);
+        wrap.append(table);
+        box.append(wrap);
+      }
+      if (view.routing.length) {
+        const block = summaryBlock('Routing', 'set-profile-routing');
+        const dl = el('dl', undefined, 'set-kv');
+        for (const item of view.routing) dl.append(el('dt', item.key), el('dd', item.text, 'mono'));
+        block.append(dl);
+        box.append(block);
+      }
+      if (view.policy.length) {
+        const block = summaryBlock('Policy', 'set-profile-policy');
+        const dl = el('dl', undefined, 'set-kv');
+        for (const item of view.policy) dl.append(el('dt', item.key), el('dd', item.text, 'mono'));
+        block.append(dl);
+        box.append(block);
+      }
+      if (view.gates) {
+        const block = summaryBlock('Gates', 'set-profile-gates');
+        block.append(el('p', view.gates, 'mono set-summary-line'));
+        box.append(block);
+      }
+      if (view.budget) {
+        const block = summaryBlock('Budget', 'set-profile-budget');
+        block.append(el('p', view.budget, 'mono set-summary-line'));
+        box.append(block);
+      }
+      const source = text(object(body).source);
+      if (source) {
+        const block = summaryBlock('Source', 'set-profile-source');
+        block.append(el('p', source, 'muted set-summary-line'));
+        box.append(block);
+      }
+      if (!box.childElementCount) box.append(el('p', 'This profile sets nothing.', 'muted'));
+      return box;
+    }
+
+    function showReasons(row) {
+      if (s.profileReasonFor !== profileId(row) || !s.profileReasons.length) return null;
+      const ul = el('ul', undefined, 'set-reasons');
+      ul.id = 'set-profile-reasons';
+      for (const reason of s.profileReasons) ul.append(el('li', reason));
+      return ul;
+    }
+
+    function profileEditor(row, result) {
+      const key = profileId(row);
+      const fresh = profileText(row.body);
+      const ed = s.profileEditors[key] || (s.profileEditors[key] = editorOf(fresh));
+      const id = 'set-profile-body';
+      const lab = el('label', 'Body of ' + text(row.name) + ' as JSON', 'visually-hidden');
+      lab.htmlFor = id;
+      const ta = el('textarea', undefined, 'set-editor mono');
+      ta.id = id;
+      ta.dataset.profileEditor = '1';
+      ta.rows = Math.max(6, Math.min(18, shown(ed).split('\n').length + 1));
+      ta.spellcheck = false;
+      ta.setAttribute('autocapitalize', 'off');
+      ta.setAttribute('autocomplete', 'off');
+      ta.value = shown(ed);
+      let from = ed.base;
+      const movedNote = el('p', 'The profile changed after you began editing; saving replaces it with your text.', 'warn set-file-note');
+      movedNote.hidden = !(isDirty(ed) && s.profileMoved[key]);
+      const problem = el('p', undefined, 'warn set-problem');
+      problem.hidden = true;
+      problem.id = id + '-problem';
+      const save = key_('Save', 'primary');
+      save.id = 'set-profile-save';
+      save.setAttribute('aria-label', 'Save profile ' + text(row.name));
+      const sync = () => {
+        const cur = s.profileEditors[key], dirtyNow = isDirty(cur);
+        const bad = dirtyNow ? profileJsonProblem(cur.draft) : null;
+        const reasons = s.profileReasonFor === key ? s.profileReasons : [];
+        problem.hidden = !bad;
+        problem.textContent = bad || '';
+        const described = [bad ? problem.id : '', reasons.length ? 'set-profile-reasons' : ''].filter(Boolean).join(' ');
+        if (bad || reasons.length) {
+          ta.setAttribute('aria-invalid', 'true');
+          if (described) ta.setAttribute('aria-describedby', described);
+        } else {
+          ta.removeAttribute('aria-invalid');
+          ta.removeAttribute('aria-describedby');
+        }
+        save.disabled = !dirtyNow || !!bad;
+        movedNote.hidden = !(dirtyNow && s.profileMoved[key]);
+      };
+      ta.addEventListener('input', () => {
+        const next = typed(s.profileEditors[key], ta.value, from);
+        s.profileEditors[key] = next.editor;
+        s.profileMoved[key] = next.moved || (next.dirty && !!s.profileMoved[key]);
+        if (s.profileReasonFor === key) {
+          s.profileReasons = []; s.profileReasonFor = null;
+          const old = document.getElementById('set-profile-reasons');
+          if (old) old.remove();
+        }
+        sync();
+      });
+      save.addEventListener('click', async () => {
+        const cur = s.profileEditors[key];
+        const bad = profileJsonProblem(shown(cur));
+        if (!isDirty(cur) || bad) { sync(); return; }
+        let parsed;
+        try { parsed = JSON.parse(cur.draft); } catch (_) { sync(); return; }
+        const gen = s.gen, release = grab();
+        save.disabled = true;
+        ta.readOnly = true;
+        const yes = await UI.confirmInline(result, `Replace the body of profile ${text(row.name)} at the ${text(row.level)} level?`);
+        if (!yes || gen !== s.gen) {
+          ta.readOnly = false;
+          release();
+          sync();
+          if (!yes && gen === s.gen) save.focus({ preventScroll: true });
+          return;
+        }
+        const res = await UI.post('/api/config/profiles', profileRequest(s.run, { action: 'edit', name: row.name, level: row.level, body: parsed }));
+        const reasons = refusalReasons(res);
+        s.profileReasons = res.ok ? [] : reasons;
+        s.profileReasonFor = res.ok ? null : key;
+        UI.outcome(result, res, `Saved ${text(row.name)}.`);
+        if (res.ok && gen === s.gen) {
+          s.profileEditors[key] = editorOf(profileText(parsed));
+          s.profileMoved[key] = false;
+          from = s.profileEditors[key].base;
+        }
+        ta.readOnly = false;
+        release();
+        // A refusal keeps this textarea. The reasons go under it; a redraw would drop the outcome line.
+        if (!res.ok && gen === s.gen && ta.isConnected) {
+          const old = document.getElementById('set-profile-reasons');
+          if (old) old.remove();
+          const list = showReasons(row);
+          const editor = ta.closest('.set-profile-editor');
+          if (list && editor) editor.after(list);
+        }
+        if (gen === s.gen && ta.isConnected) sync();
+        if (res.ok && gen === s.gen) await reload();
+      });
+      const wrap = el('div', undefined, 'set-profile-editor');
+      wrap.append(lab, ta, problem, movedNote, save);
+      sync();
+      return wrap;
+    }
+
+    function duplicateForm(row, result) {
+      const draft = s.forms.duplicate;
+      const form = el('div', undefined, 'set-profile-form');
+      form.id = 'set-dup-form';
+      const name = el('input');
+      name.type = 'text';
+      name.id = 'set-dup-name';
+      name.value = draft.name;
+      name.spellcheck = false;
+      name.setAttribute('autocomplete', 'off');
+      name.setAttribute('autocapitalize', 'off');
+      const nameLab = el('label', undefined, 'filter');
+      nameLab.htmlFor = name.id;
+      nameLab.append(el('span', 'New name'), name);
+      const sel = el('select');
+      sel.id = 'set-dup-level';
+      sel.setAttribute('aria-label', 'Level for the copy of ' + text(row.name));
+      for (const level of WRITE_LEVELS) {
+        const o = el('option', level);
+        o.value = level;
+        o.selected = level === draft.level;
+        sel.append(o);
+      }
+      const levelLab = el('label', undefined, 'filter');
+      levelLab.htmlFor = sel.id;
+      levelLab.append(el('span', 'Level'), sel);
+      const problem = el('p', undefined, 'warn set-problem');
+      problem.hidden = true;
+      problem.id = 'set-dup-problem';
+      const go = key_('Create copy', 'primary');
+      go.id = 'set-dup-save';
+      go.setAttribute('aria-label', 'Create a copy of ' + text(row.name));
+      const cancel = key_('Cancel');
+      cancel.id = 'set-dup-cancel';
+      cancel.setAttribute('aria-label', 'Cancel duplicating ' + text(row.name));
+      name.addEventListener('input', () => { draft.name = name.value; problem.hidden = true; name.removeAttribute('aria-invalid'); });
+      sel.addEventListener('change', () => { draft.level = sel.value; });
+      cancel.addEventListener('click', () => {
+        s.forms.duplicate = null;
+        drawBody();
+        const again = document.getElementById('set-profile-duplicate');
+        if (again) again.focus({ preventScroll: true });
+      });
+      go.addEventListener('click', async () => {
+        const bad = profileNameProblem(draft.name);
+        if (bad) {
+          problem.hidden = false;
+          problem.textContent = bad;
+          name.setAttribute('aria-invalid', 'true');
+          name.setAttribute('aria-describedby', problem.id);
+          name.focus({ preventScroll: true });
+          return;
+        }
+        const gen = s.gen, release = grab();
+        go.disabled = true;
+        name.readOnly = true;
+        const yes = await UI.confirmInline(result, `Create profile ${draft.name} at the ${draft.level} level as a copy of ${text(row.name)}?`);
+        if (!yes || gen !== s.gen) {
+          go.disabled = false;
+          name.readOnly = false;
+          release();
+          if (!yes && gen === s.gen) go.focus({ preventScroll: true });
+          return;
+        }
+        const created = draft.name, level = draft.level;
+        const res = await UI.post('/api/config/profiles', profileRequest(s.run, { action: 'create', name: created, level, from: row.name }));
+        UI.outcome(result, res, `Created ${created}.`);
+        name.readOnly = false;
+        if (res.ok && gen === s.gen) {
+          s.profileKey = created + '\0' + level;
+          s.forms.duplicate = null;
+        } else go.disabled = false;
+        release();
+        if (res.ok && gen === s.gen) await reload();
+      });
+      const keys = el('div', undefined, 'set-keys');
+      keys.append(go, cancel);
+      form.append(nameLab, levelLab, problem, keys);
+      return form;
+    }
+
+    function defaultButton(row, result) {
+      const clearing = row.default === true;
+      const label = clearing ? 'Clear default' : 'Set as default';
+      const b = key_(label);
+      b.id = 'set-profile-default';
+      b.setAttribute('aria-label', clearing
+        ? 'Clear the default profile at the ' + text(row.level) + ' level'
+        : 'Set ' + text(row.name) + ' as the default profile at the ' + text(row.level) + ' level');
+      b.addEventListener('click', async () => {
+        const gen = s.gen, release = grab();
+        b.disabled = true;
+        const question = clearing
+          ? `Clear the default profile at the ${text(row.level)} level?`
+          : `Set ${text(row.name)} as the default profile at the ${text(row.level)} level?`;
+        const yes = await UI.confirmInline(result, question);
+        if (!yes || gen !== s.gen) {
+          b.disabled = false;
+          release();
+          if (!yes && gen === s.gen) b.focus({ preventScroll: true });
+          return;
+        }
+        const spec = clearing
+          ? { action: 'use', level: row.level, none: true }
+          : { action: 'use', name: row.name, level: row.level };
+        const res = await UI.post('/api/config/profiles', profileRequest(s.run, spec));
+        UI.outcome(result, res, clearing ? `Cleared the default at the ${text(row.level)} level.` : `${text(row.name)} is the default at the ${text(row.level)} level.`);
+        b.disabled = false;
+        release();
+        if (res.ok && gen === s.gen) await reload();
+      });
+      return b;
+    }
+
+    function deleteButton(row, result) {
+      const b = key_('Delete');
+      b.classList.add('set-remove');
+      b.id = 'set-profile-delete';
+      b.setAttribute('aria-label', 'Delete profile ' + text(row.name));
+      b.addEventListener('click', async () => {
+        const gen = s.gen, release = grab();
+        b.disabled = true;
+        const yes = await UI.confirmInline(result, `Delete profile ${text(row.name)} at the ${text(row.level)} level?`, { danger: true });
+        if (!yes || gen !== s.gen) {
+          b.disabled = false;
+          release();
+          if (!yes && gen === s.gen) b.focus({ preventScroll: true });
+          return;
+        }
+        const res = await UI.post('/api/config/profiles', profileRequest(s.run, { action: 'rm', name: row.name, level: row.level }));
+        UI.outcome(result, res, `Deleted ${text(row.name)}.`);
+        if (res.ok && gen === s.gen) {
+          const key = profileId(row);
+          delete s.profileEditors[key];
+          delete s.profileMoved[key];
+          s.profileKey = null;
+          s.profileReasons = [];
+          s.profileReasonFor = null;
+        } else b.disabled = false;
+        release();
+        if (res.ok && gen === s.gen) await reload();
+      });
+      return b;
+    }
+
+    function profileDetail(row) {
+      const offers = profileOffers(row.level);
+      const art = el('article', undefined, 'set-file set-profile-detail');
+      art.id = 'set-profile-detail';
+      const h = el('h3', text(row.name), 'set-file-name');
+      h.id = 'set-profile-detail-h';
+      art.setAttribute('aria-labelledby', h.id);
+      const status = el('p', undefined, 'set-file-status');
+      status.append(el('span', text(row.level), 'tag'));
+      if (row.default) status.append(el('span', 'default', 'tag'));
+      const shadow = shadowLabel(row.shadowed);
+      if (shadow) status.append(el('span', shadow, 'set-profile-meta'));
+      const top = el('div', undefined, 'set-file-head');
+      top.append(h, status);
+      art.append(top, profileSummary(row.body));
+      if (!offers.edit) art.append(el('p', 'This built-in profile is read-only. Duplicate it to change a copy.', 'muted set-file-blurb'));
+      if (!s.writes) return art;
+      const result = el('div', undefined, 'set-result');
+      result.id = 'set-profile-result';
+      if (offers.edit) art.append(profileEditor(row, result));
+      const reasons = showReasons(row);
+      if (reasons) art.append(reasons);
+      const keys = el('div', undefined, 'set-keys');
+      const dup = key_('Duplicate');
+      dup.id = 'set-profile-duplicate';
+      dup.setAttribute('aria-label', 'Duplicate profile ' + text(row.name));
+      dup.addEventListener('click', () => {
+        if (s.forms.duplicate && s.forms.duplicate.of === profileId(row)) return;
+        s.forms.duplicate = { of: profileId(row), name: '', level: row.level === 'repo' ? 'repo' : 'user' };
+        drawBody();
+        const field = document.getElementById('set-dup-name');
+        if (field) field.focus({ preventScroll: true });
+      });
+      keys.append(dup);
+      if (offers.setDefault) keys.append(defaultButton(row, result));
+      if (offers.remove) keys.append(deleteButton(row, result));
+      art.append(keys);
+      if (s.forms.duplicate && s.forms.duplicate.of === profileId(row)) art.append(duplicateForm(row, result));
+      art.append(result);
+      return art;
+    }
+
+    function newProfileForm(rows) {
+      const draft = s.forms.create;
+      const box = el('div', undefined, 'set-file');
+      box.id = 'set-new';
+      const h = el('h3', 'New profile', 'set-file-name');
+      h.id = 'set-new-h';
+      box.setAttribute('aria-labelledby', h.id);
+      box.append(h, el('p', 'A blank body, or a copy of a profile that already exists.', 'muted set-file-blurb'));
+      const name = el('input');
+      name.type = 'text';
+      name.id = 'set-new-name';
+      name.value = draft.name;
+      name.spellcheck = false;
+      name.setAttribute('autocomplete', 'off');
+      name.setAttribute('autocapitalize', 'off');
+      const nameLab = el('label', undefined, 'filter');
+      nameLab.htmlFor = name.id;
+      nameLab.append(el('span', 'Name'), name);
+      const level = el('select');
+      level.id = 'set-new-level';
+      level.setAttribute('aria-label', 'Level for the new profile');
+      for (const item of WRITE_LEVELS) {
+        const o = el('option', item);
+        o.value = item;
+        o.selected = item === draft.level;
+        level.append(o);
+      }
+      const levelLab = el('label', undefined, 'filter');
+      levelLab.htmlFor = level.id;
+      levelLab.append(el('span', 'Level'), level);
+      const source = el('select');
+      source.id = 'set-new-source';
+      source.setAttribute('aria-label', 'Body for the new profile');
+      const blank = el('option', 'Blank body');
+      blank.value = '';
+      blank.selected = !draft.source;
+      source.append(blank);
+      for (const row of rows) {
+        const o = el('option', text(row.name) + ' (' + text(row.level) + ')');
+        o.value = text(row.name);
+        o.selected = text(row.name) === draft.source;
+        source.append(o);
+      }
+      const sourceLab = el('label', undefined, 'filter');
+      sourceLab.htmlFor = source.id;
+      sourceLab.append(el('span', 'Copy from'), source);
+      const problem = el('p', undefined, 'warn set-problem');
+      problem.hidden = true;
+      problem.id = 'set-new-problem';
+      const result = el('div', undefined, 'set-result');
+      const go = key_('Create', 'primary');
+      go.id = 'set-new-save';
+      go.setAttribute('aria-label', 'Create profile');
+      name.addEventListener('input', () => { draft.name = name.value; problem.hidden = true; name.removeAttribute('aria-invalid'); });
+      level.addEventListener('change', () => { draft.level = level.value; });
+      source.addEventListener('change', () => { draft.source = source.value; });
+      go.addEventListener('click', async () => {
+        const bad = profileNameProblem(draft.name);
+        if (bad) {
+          problem.hidden = false;
+          problem.textContent = bad;
+          name.setAttribute('aria-invalid', 'true');
+          name.setAttribute('aria-describedby', problem.id);
+          name.focus({ preventScroll: true });
+          return;
+        }
+        const spec = { action: 'create', name: draft.name, level: draft.level };
+        if (draft.source) spec.from = draft.source;
+        else spec.body = {};
+        const gen = s.gen, release = grab();
+        go.disabled = true;
+        name.readOnly = true;
+        const from = draft.source ? `a copy of ${draft.source}` : 'a blank body';
+        const yes = await UI.confirmInline(result, `Create profile ${draft.name} at the ${draft.level} level with ${from}?`);
+        if (!yes || gen !== s.gen) {
+          go.disabled = false;
+          name.readOnly = false;
+          release();
+          if (!yes && gen === s.gen) go.focus({ preventScroll: true });
+          return;
+        }
+        const created = draft.name, at = draft.level;
+        const res = await UI.post('/api/config/profiles', profileRequest(s.run, spec));
+        UI.outcome(result, res, `Created ${created}.`);
+        name.readOnly = false;
+        if (res.ok && gen === s.gen) {
+          s.profileKey = created + '\0' + at;
+          s.forms.create = { name: '', level: 'user', source: '' };
+        } else go.disabled = false;
+        release();
+        if (res.ok && gen === s.gen) await reload();
+      });
+      const form = el('div', undefined, 'set-profile-form');
+      form.append(nameLab, levelLab, sourceLab, problem, go);
+      box.append(form, result);
+      return box;
+    }
+
     function datasetSection() {
       const d = object(s.data.dataset), sec = section('dataset', 'Dataset');
       sec.append(pathLine('folder', text(d.path)));
@@ -844,5 +1551,6 @@
 
   return { render, configBody, repoKey, gateKey, targetPath, subsetOk, valueProblem, decideTextProblem, describeDecide, gateTags, replayDate,
     pickDefault, groupRuns, optionLabel, typeAhead, editorOf, isDirty, dirtyState, edited, typed, shown, readFailure,
-    FILES, GATES, MODES, VALUE_MAX, DECIDE_VALUE_MAX, ADD_COMMAND };
+    describeProfile, profileRequest, profileOffers, profileRowText, shadowLabel, refusalReasons, profileText, profileJsonProblem, profileNameProblem,
+    FILES, GATES, MODES, VALUE_MAX, DECIDE_VALUE_MAX, ADD_COMMAND, PROFILE_LEVELS, WRITE_LEVELS, TIERS };
 });

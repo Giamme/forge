@@ -6,9 +6,12 @@ past the view's 20 s read interval instead of waiting it out. Development-only: 
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
+import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
 from urllib.parse import parse_qs, urlparse
 
 from forge_ui import reader
@@ -289,6 +292,83 @@ class Settings(unittest.TestCase):
         self.assertEqual(page.text_content('.set-body .warn'), 'Could not read the configuration: forge config show timed out')
         self.assertEqual(page.locator('#set-f-verify').count(), 0)
         self.assertClean(page)
+
+    def test_a_profile_can_be_duplicated_edited_set_as_default_and_deleted(self):
+        # The list, the copy, the edit and the default hit the real CLI. The run's repository has to be a git
+        # toplevel, and the user file has to land in a temp config home rather than the developer's.
+        repo = Path(self.temp.name) / 'repo'
+        repo.mkdir()
+        root = os.path.realpath(repo)
+        subprocess.run(['git', 'init', '-q'], cwd=root, check=True)
+        (self.one / 'repo').write_text(root + '\n')
+        (self.one / 'repo.identity').write_text(json.dumps({'root': root, 'worktree': root, 'branch': None}))
+        cfg = Path(self.temp.name) / 'xdg'
+        home = Path(self.temp.name) / 'home'
+        home.mkdir()
+        env = {key: value for key, value in os.environ.items()
+               if not key.startswith(('FORGE_DECIDE', 'FORGE_JEV')) and key != 'FORGE_REGISTRY'}
+        env.update(HOME=str(home), XDG_CONFIG_HOME=str(cfg),
+                   XDG_CACHE_HOME=str(Path(self.temp.name) / 'cache'),
+                   XDG_DATA_HOME=str(Path(self.temp.name) / 'data'),
+                   XDG_STATE_HOME=str(Path(self.temp.name) / 'state'))
+        with patch.dict(os.environ, env, clear=True):
+            page = self.page()
+            page.wait_for_selector('#set-prof-balanced', timeout=60000)
+            self.assertIn('builtin', page.text_content('#set-prof-balanced'))
+            self.assertIn('builtin', page.text_content('#set-prof-lite'))
+            page.click('#set-prof-balanced')
+            self.assertIn('read-only', page.text_content('#set-profile-detail'))
+            self.assertEqual(page.locator('#set-profile-save').count(), 0)
+            self.assertEqual(page.locator('#set-profile-delete').count(), 0)
+            self.assertEqual(page.locator('#set-profile-default').count(), 0)
+            self.assertIn('haiku:xhigh', page.text_content('#set-profile-detail'))
+            self.assertIn('retry_failed', page.text_content('#set-profile-policy'))
+
+            page.click('#set-profile-duplicate')
+            page.fill('#set-dup-name', 'mine')
+            page.select_option('#set-dup-level', 'user')
+            page.click('#set-dup-save')
+            page.wait_for_selector('#set-profile-detail .ui-confirm')
+            page.click('#set-profile-detail .ui-confirm button:text-is("Confirm")')
+            page.wait_for_selector('#set-prof-mine', timeout=120000)
+            page.wait_for_function("() => document.querySelector('#set-profile-detail h3')?.textContent === 'mine'")
+            self.assertIn('user', page.text_content('#set-prof-mine'))
+
+            body = page.input_value('#set-profile-body')
+            self.assertIn('"retry_failed": 2', body)
+            page.fill('#set-profile-body', body.replace('"retry_failed": 2', '"retry_failed": 4', 1))
+            # A refresh that redraws the page (the dataset line changes) must keep the unsaved JSON.
+            self.configs[self.a]['dataset']['enabled'] = True
+            with page.expect_response('**/api/config?**'):
+                self.next_read(page)
+            page.wait_for_function("""() => {
+              const on = (document.querySelector('#set-dataset')?.textContent || '').includes('Capture is on');
+              const text = document.querySelector('#set-profile-body')?.value || '';
+              return on && text.includes('"retry_failed": 4');
+            }""")
+            page.click('#set-profile-save')
+            page.wait_for_selector('#set-profile-detail .ui-confirm')
+            page.click('#set-profile-detail .ui-confirm button:text-is("Confirm")')
+            page.wait_for_function(
+                "() => (document.querySelector('#set-profile-policy')?.textContent || '').includes('4')",
+                timeout=120000)
+
+            page.click('#set-profile-default')
+            page.wait_for_selector('#set-profile-detail .ui-confirm')
+            page.click('#set-profile-detail .ui-confirm button:text-is("Confirm")')
+            page.wait_for_function(
+                "() => [...document.querySelectorAll('#set-prof-mine .tag')].some(t => t.textContent === 'default')",
+                timeout=60000)
+
+            page.click('#set-profile-delete')
+            page.wait_for_selector('#set-profile-detail .ui-confirm')
+            page.click('#set-profile-detail .ui-confirm button:text-is("Confirm")')
+            page.wait_for_function("() => !document.querySelector('#set-prof-mine')", timeout=60000)
+            self.assertEqual(page.locator('#set-prof-balanced').count(), 1)
+            user_file = cfg / 'forge' / 'decide.json'
+            if user_file.is_file():
+                self.assertNotIn('mine', json.loads(user_file.read_text()).get('profiles', {}))
+            self.assertClean(page)
 
 
 if __name__ == '__main__':
