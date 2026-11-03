@@ -1,7 +1,7 @@
 """A spec measurably slower than a lower effort of the same model (#91).
 
-The note is advisory: doctor --spec prints it on stderr only, the plan table prints it
-once per distinct spec, and neither the spec nor any exit code changes.
+The note is advisory: doctor --spec prints it on stderr only, plan prints it under the
+table once per distinct spec, and neither the spec nor any exit code changes.
 """
 import dataset_isolation  # noqa: F401  keeps the run dataset out of the developer's store
 import os
@@ -17,9 +17,9 @@ sys.path.insert(0, str(ROOT / 'scripts'))
 
 import forge_dataset as store  # noqa: E402
 from forge_dataset.efforts import slow_note  # noqa: E402
+import test_forge as fixtures  # noqa: E402
 
 DISPATCH = ROOT / 'scripts' / 'forge-dispatch.sh'
-CHECK = ROOT / 'scripts' / 'forge-plan-check.py'
 BUILTIN = ('haiku:max: no measured gain over haiku:xhigh (first try 7/7 vs 4/4) at about 4x the time '
            '(7.8 vs 1.9 min; #86, 2026-10-28). The spec is unchanged.')
 DATASET = ('haiku:max: no measured gain over haiku:xhigh (first try 5/5 vs 5/5) at about 8x the time '
@@ -284,30 +284,38 @@ class DoctorNoteTests(Case):
 
 
 class PlanNoteTests(Case):
-    def row(self, task, dwarf, qa='opus'):
-        return '\t'.join([task, '-', 'low', 'a.py', dwarf, qa, 'Title of ' + task])
+    """The notes under plan's table, with the fake agent CLI from test_forge.py."""
 
-    def gates(self, text):
+    def setUp(self):
+        super().setUp()
+        fixtures.ForgeTests.setUp(self)
+        self.env.pop('FORGE_REGISTRY', None)
+
+    git = fixtures.ForgeTests.git
+    run_script = fixtures.ForgeTests.run_script
+
+    def row(self, task, dwarf, qa='opus'):
+        return '\t'.join([task, '-', 'low', task + '.txt', dwarf, qa, 'Title of ' + task])
+
+    def plan(self, *rows):
         plan = self.root / 'plan'
         plan.mkdir()
-        path = plan / 'tasks.tsv'
-        path.write_text(text)
-        before = path.read_bytes()
-        done = subprocess.run([sys.executable, str(CHECK), 'gates', str(plan)],
-                              capture_output=True, text=True, env=dict(os.environ), timeout=60)
-        self.assertEqual(path.read_bytes(), before)
-        return done
+        (plan / 'tasks.tsv').write_text(HEADER + ''.join(row + '\n' for row in rows))
+        for row in rows:
+            task = plan / 'tasks' / row.split('\t')[0]
+            task.mkdir(parents=True)
+            (task / 'prompt.md').write_text('Implement change.\n')
+        done = self.run_script('forge-parallel.sh', 'plan', plan, '--repo', self.repo, '--no-memory', '--explore', '0')
+        self.assertEqual(done.returncode, 0, done.stdout)
+        return done.stdout
 
-    def test_gates_prints_the_note_once_for_two_slow_tasks(self):
-        text = HEADER + self.row('a', 'haiku:max', 'haiku:max') + '\n' + self.row('b', 'haiku:max') + '\n'
-        done = self.gates(text)
-        self.assertEqual((done.returncode, done.stdout), (0, 'note: ' + BUILTIN + '\n'), done.stderr)
-        self.assertEqual(done.stdout.count('note:'), 1)
-        self.assertFalse((self.home / 'dataset' / 'dataset.sqlite').exists())
+    def test_plan_prints_the_note_once_for_two_slow_tasks(self):
+        out = self.plan(self.row('a', 'haiku:max', 'haiku:max'), self.row('b', 'haiku:max'))
+        self.assertEqual(out.count('note: ' + BUILTIN + '\n'), 1, out)
 
-    def test_a_plan_without_a_slow_spec_prints_nothing(self):
-        done = self.gates(HEADER + self.row('a', 'sonnet:high') + '\n')
-        self.assertEqual((done.returncode, done.stdout), (0, ''), done.stderr)
+    def test_a_plan_without_a_slow_spec_prints_no_note(self):
+        out = self.plan(self.row('a', 'sonnet:high'))
+        self.assertNotIn('no measured gain', out)
 
 
 if __name__ == '__main__':

@@ -626,6 +626,10 @@ EOF
   # What the gates did, from plan-gates.json: files and deps they added, prompts and
   # requirements still flagged. Prints nothing when no gate recorded anything.
   python3 "$SKILL_DIR/scripts/forge-plan-check.py" gates "$PLAN" 2>/dev/null || true
+  # Advisory, under the table: a spec measurably slower than a lower effort of the same model,
+  # once per distinct spec (doctor --spec says the same). Read from the dataset for the
+  # operator's screen only, so not by forge-plan-check.py, which builds a prompt.
+  python3 "$SKILL_DIR/scripts/forge-dataset.py" slow-notes "$PLAN" 2>/dev/null || true
   # Advisory, under the table: a privacy floor that silences every gate, and which
   # gates this plan's runs will ask. Prints nothing when it cannot tell.
   [ "$jev_loaded" = 1 ] && forge_decide_plan_lines "${FORGE_DECIDE_REPO:-$REPO}"

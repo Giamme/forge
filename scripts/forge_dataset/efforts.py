@@ -14,7 +14,10 @@ built-in row applies, `haiku:max` against `haiku:xhigh` on the claude harness's 
 
     python3 -m forge_dataset.efforts SPEC
 
-prints the note, or nothing. Run it from `scripts/`.
+prints the note, or nothing. Run it from `scripts/`. `plan_notes` gives the plan table's
+lines (`forge-dataset.py slow-notes PLAN`, printed by `forge-parallel.sh plan`), kept out
+of forge-plan-check.py: that file builds the planner's send-back prompt, and nothing that
+builds a prompt reads the dataset.
 """
 from __future__ import annotations
 
@@ -22,6 +25,7 @@ import math
 import statistics
 import subprocess
 import sys
+from pathlib import Path
 
 from . import SKILL, connect, dataset_dir, enabled
 from .export import Runs, Store
@@ -174,6 +178,26 @@ def slow_note(spec, *, store=None):
         return _from_table(alias, effort, model_id, lowers, registry)
     except Exception:
         return None
+
+
+def plan_notes(plan) -> list:
+    """`note:` lines for the distinct slow specs in a plan's dwarf and qa columns.
+
+    After routing, tasks.tsv holds concrete specs. The same spec twice is one line. A
+    missing table prints nothing.
+    """
+    from .harvest import tasks_rows
+    seen, out = set(), []
+    for row in tasks_rows(Path(plan) / 'tasks.tsv').values():
+        for spec in (row.get('dwarf'), row.get('qa')):
+            spec = (spec or '').strip()
+            if not spec or spec == '-' or spec in seen:
+                continue
+            seen.add(spec)
+            text = slow_note(spec)
+            if text:
+                out.append('note: ' + text)
+    return out
 
 
 def main(argv=None) -> int:

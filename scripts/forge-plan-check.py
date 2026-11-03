@@ -748,37 +748,6 @@ def plan_gates():
     return module
 
 
-def effort_notes(plan: Path) -> list:
-    """`note:` lines for the distinct slow specs in the plan's dwarf and qa columns.
-
-    After routing, tasks.tsv holds concrete specs. The same spec twice is one line. A
-    missing table or a failure to judge a spec leaves the exit code alone.
-    """
-    try:
-        from forge_dataset.efforts import slow_note
-    except Exception:
-        return []
-    try:
-        rows = parse_task_rows((Path(plan) / 'tasks.tsv').read_text(errors='replace'))
-    except OSError:
-        return []
-    seen = set()
-    out = []
-    for row in rows:
-        for spec in (row.get('dwarf'), row.get('qa')):
-            spec = (spec or '').strip()
-            if not spec or spec == '-' or spec in seen:
-                continue
-            seen.add(spec)
-            try:
-                text = slow_note(spec)
-            except Exception:
-                text = None
-            if text:
-                out.append('note: ' + text)
-    return out
-
-
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog='forge-plan-check.py')
     sub = ap.add_subparsers(dest='command', required=True)
@@ -812,11 +781,6 @@ def main(argv=None) -> int:
             if module is not None:
                 for line in module.marks(args.plan):
                     print(line)
-        except Exception:
-            pass
-        try:
-            for line in effort_notes(Path(args.plan)):
-                print(line)
         except Exception:
             pass
         return 0

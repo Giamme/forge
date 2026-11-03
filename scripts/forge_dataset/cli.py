@@ -201,6 +201,13 @@ def run_forecast(args) -> int:
     return forecast.main(args)
 
 
+def slow_notes(args) -> int:
+    from . import efforts
+    for line in efforts.plan_notes(args.plan):
+        print(line)
+    return 0
+
+
 def parser() -> argparse.ArgumentParser:
     top = argparse.ArgumentParser(prog='forge dataset', description='The run dataset: every run\'s inputs and outcomes.')
     sub = top.add_subparsers(dest='command', required=True)
@@ -253,6 +260,9 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument('--json', action='store_true')
     p.add_argument('--run', action='store_true', help=argparse.SUPPRESS)   # forge-parallel.sh run: budgeted, silent, records
     p.set_defaults(func=run_forecast)
+    p = sub.add_parser('slow-notes', help=argparse.SUPPRESS)   # forge-parallel.sh plan: under the table
+    p.add_argument('plan')
+    p.set_defaults(func=slow_notes)
     p = sub.add_parser('event', help=argparse.SUPPRESS)
     p.add_argument('name')
     p.add_argument('--dir')

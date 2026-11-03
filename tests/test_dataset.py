@@ -1670,9 +1670,13 @@ class IndependenceTests(unittest.TestCase):
             if path.suffix == '.sh':
                 for line in text.splitlines():
                     if 'forge-dataset.py' in line:
-                        # The one read: run's advisory forecast, printed to the operator's stderr only.
-                        self.assertRegex(line, r'forge-dataset\.py" (event|invocation|forecast "\$1" --run 2>/dev/null)',
-                                         str(path))
+                        # The reads: run's advisory forecast and plan's slow-effort notes, printed to the
+                        # operator only.
+                        self.assertRegex(line, r'forge-dataset\.py" (event|invocation|forecast "\$1" --run 2>/dev/null|'
+                                               r'slow-notes "\$PLAN" 2>/dev/null \|\| true$)', str(path))
+                    if '-m forge_dataset' in line:
+                        # doctor --spec's slow-effort note, on the operator's stderr.
+                        self.assertRegex(line, r'python3 -m forge_dataset\.efforts "\$SPEC" 2>/dev/null$', str(path))
                 continue
             if path.name == 'forge-plan-check.py':
                 # task_size does not read the store. The size advisory may import it and nothing else.
