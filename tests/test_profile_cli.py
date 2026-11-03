@@ -434,6 +434,62 @@ class ProfileCliTests(unittest.TestCase):
         self.assertEqual(shown.returncode, 0, shown.stderr)
         self.assertEqual(json.loads(shown.stdout)['profiles']['profiles'][0]['name'], 'balanced')
 
+    def test_use_refuses_an_invalid_body_and_writes_nothing(self):
+        # A hand-edited body can be invalid. Selecting it is still a write of default_profile,
+        # so it has to fail validation and leave the file byte-identical.
+        self.write_json(self.user_file, dict(USER_KEPT, profiles={
+            'bad': {'policy': {'qa_threshold': 'P9'}}}))
+        before = self.snapshot()
+        out = self.run_cfg('profile', 'use', 'bad', '--json')
+        self.assert_unchanged(before, out, 'policy.qa_threshold')
+        error = json.loads(out.stdout)
+        self.assertEqual(set(error), {'ok', 'error'})
+        self.assertFalse(error['ok'])
+        self.assertIn('P9', error['error'])
+        self.assertNotIn('Traceback', out.stderr)
+        self.assertNotIn('default_profile', self.load(self.user_file))
+        self.assert_kept(self.user_file, USER_KEPT)
+        # The same command still selects a profile whose body validates.
+        used = self.ok_json('profile', 'use', 'lite')
+        self.assertTrue(used['ok'])
+        self.assertEqual(self.load(self.user_file)['default_profile'], 'lite')
+        self.assertEqual(self.load(self.user_file)['profiles']['bad']['policy']['qa_threshold'], 'P9')
+        self.assert_kept(self.user_file, USER_KEPT)
+
+    def test_set_accepts_leading_dot_and_scientific_numbers(self):
+        self.ok('profile', 'create', 'work', '--from', 'lite')
+        self.write_json(self.user_file, dict(self.load(self.user_file), **USER_KEPT))
+        for text, number in (('.25', 0.25), ('1e-1', 0.1)):
+            out = self.ok_json('profile', 'set', 'work', 'policy.explore', text)
+            self.assertEqual(out['body']['policy']['explore'], number)
+            self.assertIsInstance(out['body']['policy']['explore'], float)
+            self.assertEqual(self.load(self.user_file)['profiles']['work']['policy']['explore'], number)
+            self.assert_kept(self.user_file, USER_KEPT)
+        # A number that parses but is outside the range is still refused, and the last good value stays.
+        before = self.snapshot()
+        out = self.run_cfg('profile', 'set', 'work', 'policy.explore', '1e1', '--json')
+        self.assert_unchanged(before, out, 'policy.explore')
+        self.assertFalse(json.loads(out.stdout)['ok'])
+        self.assertEqual(self.load(self.user_file)['profiles']['work']['policy']['explore'], 0.1)
+
+    def test_edit_rejects_a_non_utf8_file(self):
+        self.ok('profile', 'create', 'work', '--from', 'lite')
+        before = self.snapshot()
+        bad = self.base / 'bad.json'
+        bad.write_bytes(b'\xff')
+        out = self.run_cfg('profile', 'edit', 'work', '--file', str(bad), '--json')
+        self.assert_unchanged(before, out, 'UTF-8')
+        error = json.loads(out.stdout)
+        self.assertEqual(set(error), {'ok', 'error'})
+        self.assertFalse(error['ok'])
+        self.assertNotIn('Traceback', out.stderr)
+        self.assertEqual(self.load(self.user_file)['profiles']['work'], BUILTIN['lite'])
+        # create reads a body file through the same path, and must not add the new name.
+        out = self.run_cfg('profile', 'create', 'other', '--file', str(bad), '--json')
+        self.assert_unchanged(before, out, 'UTF-8')
+        self.assertFalse(json.loads(out.stdout)['ok'])
+        self.assertEqual(set(self.load(self.user_file)['profiles']), {'work'})
+
 
 if __name__ == '__main__':
     unittest.main()

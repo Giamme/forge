@@ -27,9 +27,9 @@ exit code is 3 (with --json, an error object on stdout too).
 Profiles are the named routing, policy, gates and budget bundles in decide.json. Built-ins
 (balanced, lite) can be listed, shown and copied, and not edited. `profile set` and `unset` take
 one dotted routing.* or policy.* key; a gate inside a profile stays on `forge decide gate
---profile`. Every profile write is checked with profiles.validate before it is saved, and a
-failure leaves the file untouched. `--json` on a profile write prints {"ok": true, "name",
-"level", "body"} or {"ok": false, "error"}.
+--profile`. Every profile write, including selecting one with `profile use`, is checked with
+profiles.validate before it is saved, and a failure leaves the file untouched. `--json` on a
+profile write prints {"ok": true, "name", "level", "body"} or {"ok": false, "error"}.
 
 Exit codes: 0 ok, 2 usage or invalid input (including an unsafe path), 3 refused by the promotion
 rule; any other code is the decide CLI's own, passed through.
@@ -39,6 +39,7 @@ from __future__ import annotations
 import argparse
 import copy
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -737,6 +738,23 @@ def comma_list(value):
     return [part.strip() for part in str(value).split(',') if part.strip()]
 
 
+def coerce_number(text):
+    """A finite int or float, or `text` when it is not one.
+
+    A digit string stays an int, so JSON keeps `1` rather than `1.0`. Every other form float()
+    accepts (`.25`, `1e-1`) becomes a float. Non-finite values stay text and validate() refuses them.
+    """
+    if re.fullmatch(r'[0-9]+', text):
+        return int(text)
+    try:
+        number = float(text)
+    except (ValueError, OverflowError):
+        return text
+    if not math.isfinite(number):
+        return text
+    return number
+
+
 def coerce_profile_value(kind, value):
     text = value.strip() if isinstance(value, str) else str(value)
     if kind in ('specs', 'roles'):
@@ -752,10 +770,7 @@ def coerce_profile_value(kind, value):
     if kind == 'int' and re.fullmatch(r'[0-9]+', text):
         return int(text)
     if kind == 'number':
-        if re.fullmatch(r'[0-9]+', text):
-            return int(text)
-        if re.fullmatch(r'[0-9]+\.[0-9]+', text):
-            return float(text)
+        return coerce_number(text)
     return text
 
 
@@ -796,11 +811,16 @@ def drop_profile_key(body, key):
 
 def read_profile_text(path):
     if path == '-':
-        text = sys.stdin.read(_PROFILE_TEXT_MAX + 1)
+        try:
+            text = sys.stdin.read(_PROFILE_TEXT_MAX + 1)
+        except UnicodeDecodeError:
+            raise Invalid('stdin: not valid UTF-8')
     else:
         try:
             with open(path, 'r', encoding='utf-8') as handle:
                 text = handle.read(_PROFILE_TEXT_MAX + 1)
+        except UnicodeDecodeError:
+            raise Invalid('%s: not valid UTF-8' % path)
         except OSError as err:
             raise Invalid('%s: %s' % (path, err.strerror))
     if len(text) > _PROFILE_TEXT_MAX:
@@ -945,6 +965,9 @@ def cmd_profile_use(args):
             save_level(level, repo, data)
         return emit_profile(args, None, level, None, 'cleared')
     entry = require_known(repo, args.name)
+    # Selecting a profile writes default_profile. The body a run would use has to validate first;
+    # a hand-edited invalid body is refused and the file is left byte-identical.
+    require_valid(entry['body'], profile_providers(level, data))
     if data.get('default_profile') != args.name:
         data['default_profile'] = args.name
         save_level(level, repo, data)
