@@ -2569,6 +2569,7 @@ values = profiles.flat(body) if body else {}
 planner = values.get('routing.planner')
 if isinstance(planner, str) and planner:
     print('routing.planner\t%s' % planner)
+print('action\t%s' % action)
 fast = values.get('policy.fast')
 if isinstance(fast, (list, tuple)):
     fast = ','.join(str(role) for role in fast)
@@ -2619,7 +2620,7 @@ do_auto() {
       --)             shift; RUN_ARGS=("$@"); break ;;
       --repo)         [ $# -ge 2 ] || die "--repo needs a directory"; REPO="$2"; shift 2 ;;
       --goal-file)    [ $# -ge 2 ] || die "--goal-file needs a file"; GOAL="$2"; shift 2 ;;
-      --planner)      [ $# -ge 2 ] || die "--planner needs a spec"; PLANNER="$2"; PLAN_ARGS+=("$1" "$2"); shift 2 ;;
+      --planner)      [ -n "${2:-}" ] || die "--planner needs a spec"; PLANNER="$2"; PLAN_ARGS+=("$1" "$2"); shift 2 ;;
       --decompose-level)
         case "${2:-}" in low|medium|high) DLEVEL="$2"; shift 2 ;;
           *) die "--decompose-level must be low, medium or high" ;; esac ;;
@@ -2631,7 +2632,7 @@ do_auto() {
           *) die "--one-task-difficulty must be low, medium or high" ;; esac ;;
       --no-collapse)  COLLAPSE=0; shift ;;
       --approved)     APPROVED=1; shift ;;
-      --profile)      [ $# -ge 2 ] || die "--profile needs a profile name"; PF_NAME="$2"; PLAN_ARGS+=("$1" "$2"); shift 2 ;;
+      --profile)      [ -n "${2:-}" ] || die "--profile needs a profile name"; PF_NAME="$2"; PLAN_ARGS+=("$1" "$2"); shift 2 ;;
       --no-profile)   PF_NONE=1; PLAN_ARGS+=("$1"); shift ;;
       --fast)
         [ -n "${2:-}" ] || die "--fast needs a comma list of roles (dwarf, qa, planner, review), all or none"
@@ -2677,18 +2678,24 @@ do_auto() {
     python3 "$PLANNER_PY" one-task --plan "$PLAN" --goal-file "$REQUEST" --difficulty "$ONE_DIFF" >/dev/null || exit $?
   else
     # 3. The planner: its spec, its preflight, its dispatch, its reply.
-    local key val profile_planner="" profile_fast="" profile_lines
+    local key val profile_planner="" profile_fast="" profile_action="" profile_lines
     forge_profile_precheck "$PLAN" "${PLAN_ARGS[@]}"
     profile_lines="$(forge_auto_profile "$PLAN" "$REPO" "$PF_NAME" "$PF_NONE")" || exit $?
     while IFS="$(printf '\t')" read -r key val; do
       case "$key" in
         routing.planner) profile_planner="$val" ;;
         policy.fast) profile_fast="$val" ;;
+        action) profile_action="$val" ;;
       esac
     done <<AUTO_PROFILE
 $profile_lines
 AUTO_PROFILE
-    [ -n "$PLANNER" ] || PLANNER="$profile_planner"
+    if [ -z "$PLANNER" ] && [ -n "$profile_planner" ]; then
+      PLANNER="$profile_planner"
+      # `plan` takes routing.planner from a profile only when it freezes a new one. A kept
+      # frozen profile names the planner but plan would not record it: hand it over.
+      [ "$profile_action" = new ] || PLAN_ARGS+=(--planner "$PLANNER")
+    fi
     [ -n "$PLANNER" ] || die "auto needs --planner SPEC, or a profile with routing.planner"
     # The fast roles `plan` is about to store: the flag, else the profile's. Written now so the
     # planner dispatch asks for the tier through the helper the other roles use.

@@ -161,6 +161,8 @@ class ValidReplyTests(AutoCase):
         self.assertIn('gpt-6.1-sol', (plan / 'planner.cmd').read_text())
         self.assertNotIn('opus', (plan / 'planner.cmd').read_text())
         self.assertEqual(json.loads((plan / 'profile.json').read_text())['name'], 'then')
+        # plan records the planner of a kept frozen profile too, so the table and the dataset see it.
+        self.assertEqual((plan / 'planner').read_text(), 'sol:medium\n')
 
 
 class RefusalTests(AutoCase):
@@ -195,6 +197,15 @@ class RefusalTests(AutoCase):
         self.assertIn('auto needs --planner SPEC, or a profile with routing.planner', result.stdout)
         self.assertEqual(self.calls(), [])
         self.assertFalse((plan / 'tasks.tsv').exists())
+
+    def test_an_explicitly_empty_planner_or_profile_is_a_usage_error(self):
+        for flag in ('--planner', '--profile'):
+            with self.subTest(flag=flag):
+                result, plan = self.auto('empty' + flag[2:], '--plan', 'never', flag, '', planner=None)
+                self.assertEqual(result.returncode, 2, result.stdout)
+                self.assertIn('%s needs' % flag, result.stdout)
+                self.assertEqual(self.calls(), [])
+                self.assertFalse((plan / 'tasks.tsv').exists())
 
     def test_an_unusable_planner_spec_stops_in_the_preflight(self):
         result, _ = self.auto('nospec', '--plan', 'always', planner='no-such-model')
