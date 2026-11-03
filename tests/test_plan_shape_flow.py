@@ -189,8 +189,9 @@ class PlanShapeFlowTests(unittest.TestCase):
         info = shape_of(plan)
         self.assertEqual(event['data']['shape'], info['shape'])
         self.assertEqual(event['data']['widest'], info['widest'])
-        # `waves` stays the task→wave map. Its width is the count plan-shape.json recorded.
-        self.assertEqual(len(set(event['data']['waves'].values())), info['waves'])
+        # `waves` is the count in plan-shape.json, not the task→wave map from waves.tsv.
+        self.assertEqual(event['data']['waves'], info['waves'])
+        self.assertIsInstance(event['data']['waves'], int)
         self.assertIs(event['data']['collapsed'], True)
         self.assertEqual(event['data']['collapsed_from'], ['a', 'b', 'c'])
         self.assertNotIn('plan_gate', event['data'])
@@ -206,6 +207,8 @@ class PlanShapeFlowTests(unittest.TestCase):
         stripped = harvest.plan_event(plan, dict(run='fixed-run'), src='import', inventory=False)
         for key in ('shape', 'widest', 'collapsed', 'collapsed_from', 'plan_gate'):
             self.assertNotIn(key, stripped['data'])
+        # No shape file: `waves` is the task→wave map again.
+        self.assertEqual(stripped['data']['waves'], {'combined': 1})
         self.assertNotEqual(stripped['rid'], event['rid'])
 
         # A plan built without those files, the same fixture test_plan_gates hashes.
@@ -221,6 +224,27 @@ class PlanShapeFlowTests(unittest.TestCase):
         for key in ('shape', 'widest', 'collapsed', 'collapsed_from', 'plan_gate'):
             self.assertNotIn(key, bare['data'])
         self.assertEqual(bare['data']['waves'], {})
+
+        # The review case: a three-task chain whose shape record says "waves": 3.
+        # waves.tsv still holds the task→wave map, and that map must not win.
+        chain = self.root / 'shaped-chain'
+        (chain / 'tasks').mkdir(parents=True)
+        (chain / 'tasks.tsv').write_text(
+            'a\t-\tlow\ta.txt\tsol\topus\tA\n'
+            'b\ta\tlow\tb.txt\tsol\topus\tB\n'
+            'c\tb\tlow\tc.txt\tsol\topus\tC\n')
+        (chain / 'waves.tsv').write_text('1\ta\n2\tb\n3\tc\n')
+        (chain / 'plan-shape.json').write_text(json.dumps(
+            {'shape': 'chain', 'tasks': 3, 'waves': 3, 'widest': 1}) + '\n')
+        shaped = harvest.plan_event(chain, dict(run='fixed-run'), src='import', inventory=False)
+        self.assertEqual(shaped['data']['shape'], 'chain')
+        self.assertEqual(shaped['data']['widest'], 1)
+        self.assertEqual(shaped['data']['waves'], 3)
+        (chain / 'plan-shape.json').unlink()
+        unshaped = harvest.plan_event(chain, dict(run='fixed-run'), src='import', inventory=False)
+        self.assertEqual(unshaped['data']['waves'], {'a': 1, 'b': 2, 'c': 3})
+        self.assertNotIn('shape', unshaped['data'])
+        self.assertNotIn('widest', unshaped['data'])
 
     def test_split_does_not_carry_the_shape_or_the_collapse_record(self):
         # PLANS_OPTION_FILES is what split copies onto the new plan. Combine does not use
