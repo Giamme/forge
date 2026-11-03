@@ -87,6 +87,46 @@ class ParseTests(PlannerCase):
         self.assertEqual(r.returncode, 0)
         self.assertFalse((self.plan / 'planner.refused').exists())
 
+    def test_heading_with_crlf_and_u2028(self):
+        crlf = 'Change app.\r\n\r\n## Acceptance criteria\r\n- Tests pass.'
+        text = reply([task('a', files=['a.py'], prompt=crlf), task('b', files=['b.py'], prompt='x\u2028y' + CRITERIA)])
+        r, _ = self.parse(text)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertTrue((self.plan / 'tasks/a/prompt.md').read_bytes().startswith(crlf.encode()))
+        self.assertIn('x\u2028y', (self.plan / 'tasks/b/prompt.md').read_text())
+
+    def test_crlf_reply_and_request_are_kept(self):
+        request = 'Do this.\r\n\r\n\r\n'
+        (self.plan / 'request.md').write_bytes(request.encode())
+        path = self.dir / 'reply.txt'
+        path.write_bytes(reply([task()]).replace('\n', '\r\n').encode())
+        r = self.run_planner('parse', '--plan', self.plan, '--reply', path)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertTrue((self.plan / 'tasks/parse-config/prompt.md').read_bytes().endswith(request.encode()))
+
+    def test_fenced_heading_is_not_a_heading(self):
+        fenced = 'Update this example:\n```md\n## Acceptance criteria\n```\n'
+        self.assert_refused(self.broken(prompt=fenced), 'no "## Acceptance criteria"')
+        both = fenced + CRITERIA
+        r, _ = self.parse(self.broken(prompt=both))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_nul_and_surrogate_are_refused_before_any_write(self):
+        good = task('a', files=['a.py'])
+        self.assert_refused(reply([good, task('b', files=['src/app\x00.py'])]), 'control character')
+        (self.plan / 'planner.refused').unlink()
+        surrogate = reply([good, task('b', files=['b.py'], prompt='x\\ud800' + CRITERIA)]).replace('\\\\ud800', '\\ud800')
+        self.assertIn('\\ud800', surrogate)
+        self.assert_refused(surrogate, 'lone surrogate')
+
+    def test_empty_approach_removes_a_stale_one(self):
+        stale = self.plan / 'tasks/parse-config/approach.md'
+        stale.parent.mkdir(parents=True)
+        stale.write_text('old instructions')
+        r, _ = self.parse(reply([task(approach='')]))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertFalse(stale.exists())
+
     def assert_refused(self, text, reason):
         r, path = self.parse(text)
         self.assertEqual(r.returncode, 4, r.stdout + r.stderr)
@@ -123,8 +163,8 @@ class ParseTests(PlannerCase):
             'difficulty': (self.broken(difficulty='hard'), "difficulty 'hard'"),
             'dotdot': (self.broken(files=['../x']), '.. component'),
             'absolute': (self.broken(files=['/etc/passwd']), 'absolute path'),
-            'comma in file': (self.broken(files=['a,b']), 'tab, comma or newline'),
-            'tab in file': (self.broken(files=['a\tb']), 'tab, comma or newline'),
+            'comma in file': (self.broken(files=['a,b']), 'tab, comma, newline or control'),
+            'tab in file': (self.broken(files=['a\tb']), 'tab, comma, newline or control'),
             'no files': (self.broken(files=[]), 'non-empty list'),
             'multiline title': (self.broken(title='a\nb'), 'one non-empty line'),
             'tab title': (self.broken(title='a\tb'), 'one non-empty line'),
@@ -167,6 +207,10 @@ class GateTests(PlannerCase):
         decision, record = self.gate(text[:1501])
         self.assertEqual((decision, record['signals']['chars']), ('plan', 1501))
 
+    def test_trailing_newline_counts(self):
+        decision, record = self.gate('x' * 1500 + '\n')
+        self.assertEqual((decision, record['signals']['chars']), ('plan', 1501))
+
     def test_requirements_edge(self):
         decision, record = self.gate(''.join(f'- Requirement number {i} holds\n' for i in range(6)))
         self.assertEqual((decision, record['signals']['requirements']), ('one-task', 6))
@@ -201,6 +245,13 @@ class OneTaskTests(PlannerCase):
                          '## Add a limits section\n\nIt has max_items.\n\n## Acceptance criteria\n\n'
                          '- Every requirement of the request above is met, and the tests for the files you changed pass.\n')
         self.assertEqual(self.files(), ['tasks.tsv', 'tasks/task/prompt.md'])
+
+    def test_request_is_kept_verbatim(self):
+        request = 'Do this.\r\n\n\n'
+        self.goal.write_bytes(request.encode())
+        r = self.run_planner('one-task', '--plan', self.plan, '--goal-file', self.goal)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue((self.plan / 'tasks/task/prompt.md').read_bytes().startswith(request.encode()))
 
     def test_difficulty_and_title_cut(self):
         self.goal.write_text('\n\n# ' + 'x\ty' * 60 + '\nbody\n')
@@ -242,6 +293,12 @@ class PromptTests(PlannerCase):
         self.assertLess(text.index('read-only'), text.index(REQUEST.rstrip('\n')))
         self.assertLess(text.index(REQUEST.rstrip('\n')), text.index('A pure chain'))
         self.assertLess(text.index('A pure chain'), text.index('# Reply format'))
+
+    def test_request_is_kept_verbatim(self):
+        request = 'Do this.\r\n\n\n'
+        self.goal.write_bytes(request.encode())
+        self.prompt()
+        self.assertIn(request, (self.plan / 'planner.prompt').read_bytes().decode())
 
     def test_each_level_and_none(self):
         for level, words in (('low', '2-3 coarse'), ('medium', 'typically 4-6')):

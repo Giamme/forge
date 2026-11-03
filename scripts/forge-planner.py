@@ -46,7 +46,11 @@ TASK_KEYS = ('id', 'deps', 'difficulty', 'files', 'title', 'approach', 'prompt')
 DIFFICULTIES = ('low', 'medium', 'high')
 LEVELS = DIFFICULTIES
 ID_RE = re.compile(r'[a-z0-9][a-z0-9-]{0,39}')
-ACCEPTANCE_RE = re.compile(r'^## Acceptance criteria[ \t]*:?[ \t]*$', re.MULTILINE)
+ACCEPTANCE_RE = re.compile(r'## Acceptance criteria[ \t]*:?[ \t]*')
+FENCE_RE = re.compile(r'^ {0,3}(`{3,}|~{3,})(.*)$')
+# Characters that break a one-line TSV field or a path: C0 controls (NUL, tab, newline, CR ...),
+# DEL, and the Unicode line separators that str.splitlines() also splits on.
+LINE_BREAKS_RE = re.compile('[\x00-\x1f\x7f\x85\u2028\u2029]')
 OPEN_RE = re.compile(r'^```forge-plan[ \t]*$')
 CLOSE_RE = re.compile(r'^```[ \t]*$')
 PATH_RE = re.compile(r'(?<![\w/.-])(?:[\w.-]+/)*[\w-]+\.[A-Za-z][A-Za-z0-9]{0,7}(?![\w-])')
@@ -100,16 +104,23 @@ def plan_dir(args) -> Path:
 
 def read_text(path, what: str) -> str:
     try:
-        return Path(path).read_text(encoding='utf-8')
+        with open(path, encoding='utf-8', newline='') as handle:   # newline='': CRLF stays CRLF
+            return handle.read()
     except (OSError, UnicodeDecodeError) as err:
         die(f'cannot read {what} {path}: {err}')
 
 
-def write_atomic(path: Path, text: str):
+def write_atomic(path: Path, data):
+    """Write str (as UTF-8) or bytes to `path` through a temp file and a rename."""
+    if isinstance(data, str):
+        data = data.encode('utf-8')
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + '.tmp')
-    tmp.write_text(text, encoding='utf-8')
-    os.replace(tmp, path)
+    try:
+        tmp.write_bytes(data)
+        os.replace(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 # --- prompt --------------------------------------------------------------------------------
@@ -164,8 +175,7 @@ def build_prompt(request: str, level: str | None) -> str:
 The request follows verbatim between the markers. It is the whole requirement.
 
 <<<REQUEST
-{request.rstrip(chr(10))}
-REQUEST>>>
+{request}{'' if request.endswith(chr(10)) else chr(10)}REQUEST>>>
 
 # Decomposition rules
 
@@ -205,14 +215,16 @@ def cmd_prompt(args) -> int:
 # --- parse ---------------------------------------------------------------------------------
 
 def extract_block(reply: str) -> str:
-    lines = reply.splitlines()
-    openings = [i for i, line in enumerate(lines) if OPEN_RE.match(line)]
+    # Split on \n only: str.splitlines() would also cut at U+2028 and friends, which are legal
+    # inside a JSON string. A trailing \r (CRLF replies) is ignored when matching the fences.
+    lines = reply.split('\n')
+    openings = [i for i, line in enumerate(lines) if OPEN_RE.match(line.rstrip('\r'))]
     if not openings:
         raise Refusal('no forge-plan block in the reply')
     if len(openings) > 1:
         raise Refusal(f'{len(openings)} forge-plan blocks in the reply; exactly one is allowed')
     for j in range(openings[0] + 1, len(lines)):
-        if CLOSE_RE.match(lines[j]):
+        if CLOSE_RE.match(lines[j].rstrip('\r')):
             return '\n'.join(lines[openings[0] + 1:j])
     raise Refusal('the forge-plan block is never closed')
 
@@ -239,11 +251,37 @@ def check_keys(obj, expected, where: str):
         raise Refusal(f'{where} must have exactly the keys {", ".join(expected)} ({"; ".join(parts)})')
 
 
+def has_acceptance_heading(prompt: str) -> bool:
+    """True when a `## Acceptance criteria` heading line stands outside any fenced code block."""
+    fence = None
+    for line in prompt.split('\n'):
+        line = line.rstrip('\r')
+        found = FENCE_RE.match(line)
+        if fence is None:
+            if found and not (found.group(1)[0] == '`' and '`' in found.group(2)):
+                fence = (found.group(1)[0], len(found.group(1)))
+            elif ACCEPTANCE_RE.fullmatch(line):
+                return True
+        elif (found and found.group(1)[0] == fence[0] and len(found.group(1)) >= fence[1]
+              and not found.group(2).strip()):
+            fence = None
+    return False
+
+
+def check_text(value, where: str):
+    """Refuse a string that cannot be written as UTF-8 (a lone surrogate from a \\ud800 escape)."""
+    try:
+        value.encode('utf-8')
+    except UnicodeEncodeError:
+        raise Refusal(f'{where}: holds a character that is not valid Unicode (a lone surrogate)')
+
+
 def check_path(path, where: str):
     if not isinstance(path, str) or not path:
         raise Refusal(f'{where}: a file is not a non-empty string: {path!r}')
-    if any(c in path for c in '\t,\n\r'):
-        raise Refusal(f'{where}: file {path!r} holds a tab, comma or newline')
+    if ',' in path or LINE_BREAKS_RE.search(path):
+        raise Refusal(f'{where}: file {path!r} holds a tab, comma, newline or control character')
+    check_text(path, where)
     if path.startswith('/') or path.startswith('\\') or re.match(r'^[A-Za-z]:', path):
         raise Refusal(f'{where}: file {path!r} is an absolute path')
     if '..' in re.split(r'[\\/]', path):
@@ -273,14 +311,17 @@ def check_task(task, index: int, seen: set) -> dict:
     for path in files:
         check_path(path, where)
     title = task['title']
-    if not isinstance(title, str) or not title.strip() or any(c in title for c in '\t\n\r'):
+    if not isinstance(title, str) or not title.strip() or LINE_BREAKS_RE.search(title):
         raise Refusal(f'{where}: title is not one non-empty line without a tab')
+    check_text(title, where)
     if not isinstance(task['approach'], str):
         raise Refusal(f'{where}: approach is not a string')
+    check_text(task['approach'], where)
     prompt = task['prompt']
     if not isinstance(prompt, str) or not prompt.strip():
         raise Refusal(f'{where}: prompt is empty')
-    if not ACCEPTANCE_RE.search(prompt):
+    check_text(prompt, where)
+    if not has_acceptance_heading(prompt):
         raise Refusal(f'{where}: prompt has no "## Acceptance criteria" heading')
     return task
 
@@ -341,16 +382,23 @@ def cmd_parse(args) -> int:
         print(f'planner reply refused: {reason}')
         print(f'reply: {args.reply}')
         return 4
-    for t in tasks:
-        folder = plan / 'tasks' / t['id']
-        text = t['prompt'].rstrip('\n') + f'\n\n{WHOLE_REQUEST}\n\n' + request
-        write_atomic(folder / 'prompt.md', text)
-        if t['approach'].strip():
-            write_atomic(folder / 'approach.md', t['approach'])
+    # Everything is encoded before the first file is written, so a text that cannot be written
+    # cannot leave half a plan behind.
     rows = [TSV_HEADER] + ['\t'.join([
         t['id'], ','.join(t['deps']) or '-', t['difficulty'], ','.join(t['files']), '-', '-', t['title'],
     ]) for t in tasks]
-    write_atomic(plan / 'tasks.tsv', '\n'.join(rows) + '\n')
+    outputs = []
+    for t in tasks:
+        folder = plan / 'tasks' / t['id']
+        text = t['prompt'].rstrip('\n') + f'\n\n{WHOLE_REQUEST}\n\n' + request
+        outputs.append((folder / 'prompt.md', text.encode('utf-8')))
+        outputs.append((folder / 'approach.md', t['approach'].encode('utf-8') if t['approach'].strip() else None))
+    outputs.append((plan / 'tasks.tsv', ('\n'.join(rows) + '\n').encode('utf-8')))
+    for path, data in outputs:
+        if data is None:
+            path.unlink(missing_ok=True)       # an empty approach must not keep an older one alive
+        else:
+            write_atomic(path, data)
     (plan / 'planner.refused').unlink(missing_ok=True)
     return 0
 
@@ -360,7 +408,7 @@ def cmd_parse(args) -> int:
 def cmd_gate(args) -> int:
     plan = plan_dir(args)
     request = read_text(args.goal_file, 'goal file')
-    chars = len(request.rstrip('\r\n'))
+    chars = len(request)
     requirements = len(split_requirements(request))
     paths = len(set(PATH_RE.findall(request)))
     decision = 'one-task' if chars <= MAX_CHARS and requirements <= MAX_REQUIREMENTS else 'plan'
@@ -379,7 +427,7 @@ def request_title(request: str) -> str:
     for line in request.splitlines():
         line = line.strip()
         if line:
-            title = re.sub(r'^#+\s*', '', line).replace('\t', ' ').strip()
+            title = LINE_BREAKS_RE.sub(' ', re.sub(r'^#+\s*', '', line)).strip()
             return title[:80] or 'task'
     return ''
 
@@ -390,7 +438,9 @@ def cmd_one_task(args) -> int:
     title = request_title(request)
     if not title:
         die(f'goal file {args.goal_file} is empty')
-    prompt = request.rstrip('\n') + f'\n\n## Acceptance criteria\n\n{ONE_TASK_CRITERION}\n'
+    # The request stays a verbatim prefix; only a missing final newline is supplied.
+    prompt = (request + ('' if request.endswith('\n') else '\n')
+              + f'\n## Acceptance criteria\n\n{ONE_TASK_CRITERION}\n')
     write_atomic(plan / 'tasks' / 'task' / 'prompt.md', prompt)
     row = '\t'.join(['task', '-', args.difficulty, '.', '-', '-', title])
     write_atomic(plan / 'tasks.tsv', TSV_HEADER + '\n' + row + '\n')
