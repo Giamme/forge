@@ -4,11 +4,13 @@
 print it (doctor --spec, and the plan table) do not change an exit code because of it.
 
 The dataset decides when it is on and both this effort and a lower one of the same model
-have at least five first attempts. The nearest such lower effort is the one that counts:
-a note when this effort's median time per attempt is at least twice the lower one's and
-its first-try pass rate is no better, and nothing when that measured pair does not say so
-(measured data then overrides the built-in table). Otherwise one built-in row applies,
-`haiku:max` against `haiku:xhigh` on the claude harness's model (#86, 2026-10-28).
+have at least five first attempts. Each lower effort is checked, nearest first. The note
+names the nearest one this effort is at least twice as slow as, with a first-try pass
+rate no better. A nearer pair that has enough data but fails that rule does not hide a
+farther pair that meets it. When at least one pair has enough data and none meet the
+rule, there is no note: measured data overrides the built-in table. Otherwise one
+built-in row applies, `haiku:max` against `haiku:xhigh` on the claude harness's model
+(#86, 2026-10-28).
 
     python3 -m forge_dataset.efforts SPEC
 
@@ -109,21 +111,28 @@ def _line(alias, effort, lower, passes, lower_passes, minutes, lower_minutes, so
 
 
 def _from_dataset(records, alias, effort, model_id, lowers):
-    """The dataset's note, None when a measured pair does not qualify, or _SKIP."""
+    """The dataset's note, None when measured pairs do not qualify, or _SKIP.
+
+    `lowers` is weakest first, so the walk starts at the nearest. The first lower
+    effort that meets the rule is the one named. A pair with enough data that fails
+    the rule does not stop the walk: a farther effort may still qualify. If any pair
+    had enough data and none met the rule, return None so the built-in table stays quiet.
+    """
     hi = _arm(records, model_id, effort)
+    measured = False
     for lower in reversed(lowers):
         lo = _arm(records, model_id, lower)
         if hi['n'] < MIN_TASKS or lo['n'] < MIN_TASKS:
             continue
+        measured = True
         slower = (hi['median'] is not None and lo['median'] is not None and lo['median'] > 0
                   and hi['median'] >= 2 * lo['median'])
         no_better = hi['k'] * lo['n'] <= lo['k'] * hi['n']
-        if not slower or not no_better:
-            return None
-        return _line(alias, effort, lower, (hi['k'], hi['n']), (lo['k'], lo['n']),
-                     hi['median'] / 60.0, lo['median'] / 60.0,
-                     'forge dataset, %d runs' % (hi['n'] + lo['n']))
-    return _SKIP
+        if slower and no_better:
+            return _line(alias, effort, lower, (hi['k'], hi['n']), (lo['k'], lo['n']),
+                         hi['median'] / 60.0, lo['median'] / 60.0,
+                         'forge dataset, %d runs' % (hi['n'] + lo['n']))
+    return None if measured else _SKIP
 
 
 def _from_table(alias, effort, model_id, lowers, registry):

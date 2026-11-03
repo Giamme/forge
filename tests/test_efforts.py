@@ -128,6 +128,20 @@ class DatasetNoteTests(Case):
         ])
         self.assertIsNone(slow_note('haiku:max'))
 
+    def test_a_nearer_effort_that_fails_the_rule_does_not_hide_a_farther_one(self):
+        # xhigh is 1.3× (the rule needs 2×) at the same pass rate. high is 8×.
+        # Enough data on the nearer pair must not swallow the farther one.
+        self.seed([
+            ('max', self.tasks(5, ['PASS'], [480])),
+            ('xhigh', self.tasks(5, ['PASS'], [360])),
+            ('high', self.tasks(5, ['PASS'], [60])),
+        ])
+        self.assertEqual(
+            slow_note('haiku:max'),
+            'haiku:max: no measured gain over haiku:high (first try 5/5 vs 5/5) '
+            'at about 8x the time (8.0 vs 1.0 min; forge dataset, 10 runs). '
+            'The spec is unchanged.')
+
     def test_four_records_on_one_side_falls_back_to_the_table(self):
         self.seed([
             ('max', self.tasks(5, ['PASS'], [480])),
@@ -155,11 +169,13 @@ class DoctorNoteTests(Case):
                        '--dangerously-skip-permissions\n')
         cli.chmod(0o755)
 
-    def doctor(self, spec):
-        run = self.root / ('doctor-' + spec.replace(':', '_'))
+    def doctor(self, spec, registry=None, name=None):
+        run = self.root / ('doctor-' + (name or spec.replace(':', '_')))
         run.mkdir()
         env = dict(os.environ, PATH=str(self.bin) + os.pathsep + os.environ.get('PATH', ''),
                    FORGE_RIPWIRE='off', FORGE_JEV='off', FORGE_MEMORY='off')
+        if registry is not None:
+            env['FORGE_REGISTRY'] = registry
         result = subprocess.run(
             ['bash', str(DISPATCH), 'doctor', '--spec', spec, '--run-dir', str(run)],
             cwd=self.repo, env=env, text=True, capture_output=True, timeout=60)
@@ -180,6 +196,26 @@ class DoctorNoteTests(Case):
         self.assertIn('model=haiku\n', resolved)
         self.assertNotIn('no measured gain', resolved)
         self.assertNotIn('note', resolved)
+
+    def test_a_relative_registry_still_prints_the_note(self):
+        # The note is computed after a cd into scripts/. A relative FORGE_REGISTRY is
+        # the caller's path; resolving it from scripts/ drops the note while the
+        # absolute path of the same file still prints it.
+        registry = self.repo / 'regs' / 'mine.tsv'
+        registry.parent.mkdir()
+        registry.write_text((ROOT / 'registry.tsv').read_text())
+        relative, run = self.doctor('haiku:max', registry='regs/mine.tsv', name='relative')
+        absolute, _ = self.doctor('haiku:max', registry=str(registry), name='absolute')
+        self.assertEqual(absolute.returncode, 0, absolute.stderr + absolute.stdout)
+        self.assertEqual(relative.returncode, 0, relative.stderr + relative.stdout)
+        self.assertEqual(absolute.stderr, 'forge: note: ' + BUILTIN + '\n')
+        self.assertEqual(relative.stderr, absolute.stderr)
+        self.assertEqual(relative.returncode, absolute.returncode)
+        self.assertNotIn('no measured gain', relative.stdout)
+        self.assertNotIn('forge: note:', relative.stdout)
+        resolved = (run / 'dwarf.resolved').read_text()
+        self.assertIn('effort=max\n', resolved)
+        self.assertNotIn('no measured gain', resolved)
 
     def test_a_dispatch_does_not_print_the_note(self):
         run = self.root / 'dispatch-run'

@@ -754,8 +754,19 @@ if [ "$DRY" != 1 ] || [ "$PREFLIGHT" = 1 ]; then preflight_command; fi
 if [ "$PREFLIGHT" = 1 ]; then
   # Stderr only, and only here: the block above is parsed from stdout and $ROLE.resolved,
   # and a dispatch would repeat this at every task's preflight. A failure to say it
-  # changes nothing, including the exit code.
-  _slow="$(cd "$SKILL_DIR/scripts" && python3 -m forge_dataset.efforts "$SPEC" 2>/dev/null)" || _slow=""
+  # changes nothing, including the exit code. The module's cwd is scripts/, so a
+  # relative FORGE_REGISTRY is the caller's path made absolute first: opened from
+  # scripts/ it would miss the file this shell already resolved, and the note would vanish.
+  _slow_registry="${FORGE_REGISTRY:-}"
+  case "$_slow_registry" in
+    ""|/*) ;;
+    *) _slow_registry="$PWD/$_slow_registry" ;;
+  esac
+  _slow="$(
+    cd "$SKILL_DIR/scripts" || exit 1
+    if [ -n "$_slow_registry" ]; then export FORGE_REGISTRY="$_slow_registry"; fi
+    python3 -m forge_dataset.efforts "$SPEC" 2>/dev/null
+  )" || _slow=""
   if [ -n "$_slow" ]; then note "note: $_slow"; fi
   echo "offline preflight passed; authentication, quota and live model availability unverified"
   exit 0
