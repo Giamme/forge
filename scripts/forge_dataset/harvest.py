@@ -722,6 +722,18 @@ def plan_event(plan: Path, prov: dict, src: str = 'live', inventory: bool = True
     plan_gates = read_json(plan / 'plan-gates.json')
     if plan_gates is not None:
         later['plan_gates'] = plan_gates
+    # Same rule as plan_gates: hashed only when the file is there, so a plan from before
+    # these records keeps its id. plan-gate.json is the planner's one-task-or-plan record
+    # (plan-gates.json, plural, is the decision-model gates).
+    plan_shape = read_json(plan / 'plan-shape.json')
+    collapsed_record = read_json(plan / 'collapsed.json')
+    plan_gate = read_json(plan / 'plan-gate.json')
+    if plan_shape is not None:
+        later['plan_shape'] = plan_shape
+    if collapsed_record is not None:
+        later['collapsed'] = collapsed_record
+    if plan_gate is not None:
+        later['plan_gate'] = plan_gate
     inputs = json.dumps([text(plan / 'goal.txt'), text(plan / 'tasks.tsv'), text(declared_path),
                          {t: [r['prompt'], r['approach']] for t, r in per_task.items()}] + ([later] if later else []),
                         sort_keys=True, default=str)
@@ -751,6 +763,21 @@ def plan_event(plan: Path, prov: dict, src: str = 'live', inventory: bool = True
     )
     if plan_gates is not None:
         data['plan_gates'] = plan_gates
+    if plan_shape is not None:
+        # `waves` is already the task→wave map from waves.tsv (the same greedy waves
+        # plan-shape.json counted). Copying the file's count onto that key would drop
+        # the map for every new plan and keep it for every old one.
+        if 'shape' in plan_shape:
+            data['shape'] = plan_shape['shape']
+        if 'widest' in plan_shape:
+            data['widest'] = plan_shape['widest']
+    if collapsed_record is not None:
+        data['collapsed'] = True
+        origin = collapsed_record.get('from')
+        if isinstance(origin, list):
+            data['collapsed_from'] = origin
+    if plan_gate is not None:
+        data['plan_gate'] = plan_gate
     return dict(rid='plan:%s:%s' % (prov.get('run'), sha256(inputs.encode())[:16]), kind='plan',
                 ts=time.time(), src=src, run=prov.get('run'), run_id=prov.get('run_id'), mode='parallel',
                 inv=prov.get('inv'), data=data)
