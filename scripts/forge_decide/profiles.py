@@ -22,6 +22,7 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import unicodedata
 
 from . import GATES, MODES, load_repo, load_user
 
@@ -38,7 +39,6 @@ BUDGET_KEYS = ('run_tokens', 'run_usd', 'daily_tokens', 'daily_usd')
 
 BUILTIN_PATH = Path(__file__).with_name('builtin_profiles.json')
 DISPATCH = Path(__file__).resolve().parents[1] / 'forge-dispatch.sh'
-SPEC_RE = re.compile(r'[^\s,\x00-\x1f\x7f]+')
 
 
 class ProfileError(Exception):
@@ -136,7 +136,7 @@ def check_spec(spec) -> str | None:
     """None when `spec` (alias[:effort[:harness]]) names a pairing forge can run, else why not."""
     if not isinstance(spec, str) or not spec:
         return f'{spec!r} is not a spec (a non-empty string)'
-    if not SPEC_RE.fullmatch(spec):
+    if any(c == ',' or c.isspace() or unicodedata.category(c).startswith('C') for c in spec):
         return f'{spec!r} has whitespace, a comma or a control character'
     parts = spec.split(':')
     if len(parts) > 3 or not all(parts) or spec.startswith('-'):
@@ -255,10 +255,35 @@ def _validate_gates(gates, providers, out: list) -> None:
         mode = value.get('mode')
         if mode is not None and mode not in MODES:
             out.append(f'{path}.mode: {mode!r} is not one of {", ".join(MODES)}')
-        provider = value.get('provider')
-        if provider is not None and provider not in known:
-            out.append(f'{path}.provider: {provider!r} is not a provider of the user file '
-                       f'(known: {", ".join(sorted(known)) or "none"})')
+        for field in ('provider', 'model', 'thresholds_model'):
+            field_value = value.get(field)
+            if field_value is None:
+                continue
+            if not isinstance(field_value, str):
+                out.append(f'{path}.{field}: not a string')
+            elif field == 'provider' and field_value not in known:
+                out.append(f'{path}.provider: {field_value!r} is not a provider of the user file '
+                           f'(known: {", ".join(sorted(known)) or "none"})')
+        if value.get('force') is not None and not isinstance(value['force'], bool):
+            out.append(f'{path}.force: not true or false')
+        thresholds = value.get('thresholds')
+        if thresholds is not None:
+            if not isinstance(thresholds, dict):
+                out.append(f'{path}.thresholds: not an object')
+            else:
+                for key, number in thresholds.items():
+                    if not _threshold_ok(number):
+                        out.append(f'{path}.thresholds.{key}: not a number')
+
+
+def _threshold_ok(value) -> bool:
+    """A threshold as resolution reads it: a number that fits a float."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    try:
+        return math.isfinite(float(value))
+    except OverflowError:
+        return False
 
 
 def validate(body, providers) -> list:

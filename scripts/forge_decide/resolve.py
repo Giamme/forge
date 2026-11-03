@@ -13,7 +13,7 @@ Levels, lowest to highest; each sets a gate's fields only where it names them:
                gate with no capability (None) is never turned on there.
 4. profile  -- FORGE_DECIDE_PROFILE_JSON when set: the {"name", "gates", "budget"} copy frozen
                when the run was planned, applied as `frozen profile NAME` whatever the live
-               files say (invalid JSON: an error, nothing applied). Else `profile`, else
+               files say (set but invalid, empty included, or not of that shape: an error, nothing applied). Else `profile`, else
                FORGE_DECIDE_PROFILE; looked up in the user file's `profiles` first, then the
                repo file's, then the built-in profiles (which set no gate and no budget). Sets
                `gates` and `budget` (`budget.daily_*` only from a user-file profile).
@@ -266,13 +266,17 @@ def _frozen_profile(result: dict, text: str, errors: list) -> None:
     it is not valid JSON of that shape."""
     try:
         data = json.loads(text)
-    except (ValueError, RecursionError) as exc:
+    except (TypeError, ValueError, RecursionError) as exc:
         errors.append(f'FORGE_DECIDE_PROFILE_JSON: not valid JSON ({exc}); ignored')
         return
     name = data.get('name') if isinstance(data, dict) else None
     if not isinstance(name, str) or not name:
         errors.append('FORGE_DECIDE_PROFILE_JSON: not an object with a name; ignored')
         return
+    for key in ('gates', 'budget'):
+        if data.get(key) is not None and not isinstance(data[key], dict):
+            errors.append(f'FORGE_DECIDE_PROFILE_JSON: {key} is not an object; ignored')
+            return
     label = f'frozen profile {name}'
     result['profile'] = name
     _apply(result, _parse_gates(data.get('gates'), label, errors),
@@ -323,10 +327,10 @@ def _resolve(repo, profile, env, flags, errors: list, user_data=None, repo_data=
     result['shadowed'] = _shadowed(repo_gates, repo_budget, user_gates, user_budget)
 
     # 4. profile: the copy frozen when the run was planned, else looked up by name
-    frozen = env.get('FORGE_DECIDE_PROFILE_JSON')
+    # (set but empty or invalid still counts as set: an error, and the live profile is not used)
     name = profile if profile is not None else (env.get('FORGE_DECIDE_PROFILE') or None)
-    if frozen:
-        _frozen_profile(result, frozen, errors)
+    if 'FORGE_DECIDE_PROFILE_JSON' in env:
+        _frozen_profile(result, env['FORGE_DECIDE_PROFILE_JSON'], errors)
     elif name is not None:
         found = None
         for data, label, in_user in ((user_data, user_label, True), (repo_data, repo_label, False)):

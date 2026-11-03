@@ -161,12 +161,16 @@ class PrecedenceTests(DecideTestCase):
 
     def test_invalid_frozen_json_is_an_error_and_applies_nothing(self):
         self.write_user({'profiles': {'p': {'gates': {'drift': 'on'}}}})
-        for text in ('{not json', '[]', '{"gates": {"drift": "on"}}'):
+        shapes = ('{not json', '[]', '{"gates": {"drift": "on"}}', '',
+                  '{"name": "p", "gates": [], "budget": {"run_tokens": 9}}',
+                  '{"name": "p", "gates": {"drift": "on"}, "budget": 3}')
+        for text in shapes:
             with self.subTest(text=text):
                 result = resolve(self.repo, profile='p', env={'FORGE_DECIDE_PROFILE_JSON': text})
                 self.assertTrue(any('FORGE_DECIDE_PROFILE_JSON' in e for e in result['errors']))
                 self.assertIsNone(result['profile'])
                 self.assertEqual(self.on(result), set())
+                self.assertIsNone(result['budget']['run_tokens'])
 
     def test_a_built_in_profile_name_resolves_without_an_error(self):
         for env in ({'FORGE_DECIDE_PROFILE': 'balanced'}, {}):

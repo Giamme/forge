@@ -155,6 +155,13 @@ class ValidateTests(unittest.TestCase):
             (('policy', 'retries', 1), 'policy.retries'),
             (('gates', 'drift', {'provider': 'elsewhere'}), 'gates.drift.provider'),
             (('gates', 'nope', 'on'), 'gates.nope'),
+            (('gates', 'drift', {'provider': []}), 'gates.drift.provider'),
+            (('gates', 'drift', {'provider': 3}), 'gates.drift.provider'),
+            (('gates', 'drift', {'thresholds': {'score': 'oops'}}), 'gates.drift.thresholds.score'),
+            (('gates', 'drift', {'thresholds': [1]}), 'gates.drift.thresholds'),
+            (('gates', 'drift', {'model': 3}), 'gates.drift.model'),
+            (('gates', 'drift', {'thresholds_model': []}), 'gates.drift.thresholds_model'),
+            (('gates', 'drift', {'force': 'yes'}), 'gates.drift.force'),
             (('budget', 'run_usd', -1), 'budget.run_usd'),
         ]
         for change, key in rows:
@@ -182,7 +189,7 @@ class CheckSpecTests(unittest.TestCase):
         for spec in ('sonnet', 'sonnet:high', 'sonnet:high:claude'):
             with self.subTest(spec=spec):
                 self.assertIsNone(profiles.check_spec(spec))
-        for spec in ('', 'a b', 'a,b', 'a\tb', 'a\nb', 'a:b:c:d', ':high', 'sonnet::claude', '-x', None, 3):
+        for spec in ('', 'a b', 'a,b', 'a\tb', 'a\nb', 'a\x85b', 'a\u2028b', 'sonnet:\u0080:opencode', 'a:b:c:d', ':high', 'sonnet::claude', '-x', None, 3):
             with self.subTest(spec=spec):
                 self.assertTrue(profiles.check_spec(spec))
 
