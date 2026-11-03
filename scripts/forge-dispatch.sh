@@ -15,6 +15,9 @@
 #                                  (claude, openclaude)
 #   any role: [--no-ripwire] [--ripwire-query-file <requirements>]
 #   any role: [--timeout <seconds>]   0 disables the watchdog
+#   any role: [--service-tier fast]   codex and claude only; any other harness exits 3
+#                                  before it runs. doctor --spec takes the same option.
+#   forge-dispatch.sh doctor --spec <spec> [--role dwarf|qa|planner] [--service-tier fast]
 #   forge-dispatch.sh efforts --spec <spec>
 #                                  the efforts this pairing accepts, weakest first, one per
 #                                  line. Prints nothing when the pairing has no ladder or no
@@ -39,6 +42,7 @@
 #                                  a dispatch killed after that result is not a timeout.
 #
 # Exit codes: 0 ok | 2 usage/resolution error | 3 harness missing or unusable
+#             (including a --service-tier fast the harness cannot take per invocation)
 #             4 backend ran but failed | 7 backend exceeded --timeout and was killed
 #               (not when its log ended in a final result and only background tasks kept it up:
 #               that result stands, as after FORGE_RESULT_GRACE; $ROLE.settled says which)
@@ -206,7 +210,7 @@ if [ "$ROLE" = report ]; then python3 "$RUNTIME" report "${1:?report needs a run
 PREFLIGHT=0
 if [ "$ROLE" = doctor ]; then
   if [ $# = 0 ]; then doctor; exit $?; fi
-  [ "${1:-}" = --spec ] || die "doctor accepts --spec <spec> [--role dwarf|qa|planner]"
+  [ "${1:-}" = --spec ] || die "doctor accepts --spec <spec> [--role dwarf|qa|planner] [--service-tier fast]"
   SPEC_CHECK="${2:?--spec needs a spec}"; shift 2
   ROLE=dwarf
   if [ "${1:-}" = --role ]; then ROLE="${2:?}"; shift 2; fi
@@ -227,7 +231,7 @@ SPEC="$1"; shift
 
 RIPWIRE_QUERY=""
 OUTPUT=full
-REPO="$PWD"; RUN_DIR=""; PROMPT_FILE=""; YOLO=0; DRY=0; REVIEW_BASE=""; PROMPT_VIA_STDIN=0; NATIVE_REVIEW=0; CONTINUE_ID=""; CONTINUE_GIVEN=0; AGY_TIMEOUT="30m"; TIMEOUT_FLAG=""
+REPO="$PWD"; RUN_DIR=""; PROMPT_FILE=""; YOLO=0; DRY=0; REVIEW_BASE=""; PROMPT_VIA_STDIN=0; NATIVE_REVIEW=0; CONTINUE_ID=""; CONTINUE_GIVEN=0; AGY_TIMEOUT="30m"; TIMEOUT_FLAG=""; SERVICE_TIER=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --no-ripwire) export FORGE_RIPWIRE=off; shift ;;
@@ -241,6 +245,7 @@ while [ $# -gt 0 ]; do
     --continue-session) [ $# -ge 2 ] || die "--continue-session needs a session id"; CONTINUE_ID="$2"; CONTINUE_GIVEN=1; shift 2 ;;
     --agy-timeout)  AGY_TIMEOUT="${2:?--agy-timeout needs a value}"; shift 2 ;;
     --timeout)      TIMEOUT_FLAG="${2:?--timeout needs a value in seconds, 0 to disable}"; shift 2 ;;
+    --service-tier) [ $# -ge 2 ] || die "--service-tier needs a value"; [ "$2" = fast ] || die "--service-tier accepts only fast"; SERVICE_TIER=fast; shift 2 ;;
     --yolo)         YOLO=1; shift ;;
     --dry-run)      DRY=1; shift ;;
     *)              die "unknown option '$1'" ;;
@@ -352,6 +357,13 @@ fi
 
 if [ -n "$EFFORT" ] && [ -n "$LADDER" ] && [ "$(idx_in "$EFFORT" "$LADDER")" -lt 0 ]; then
   die "invalid effort '$EFFORT' for $HARNESS"
+fi
+
+# codex and claude can ask for the fast tier on this invocation. The others cannot
+# (opencode's fast mode is per-model config; the rest have none). Refuse before
+# preflight, so doctor --spec and a dispatch both stop before those CLIs start.
+if [ "$SERVICE_TIER" = fast ] && [ "$HARNESS" != codex ] && [ "$HARNESS" != claude ]; then
+  die "$HARNESS has no per-invocation fast tier (#68); drop the fast tier for the $ROLE role or pick a codex or claude spec" 3
 fi
 
 # --- resolve timeout ----------------------------------------------------------
@@ -520,6 +532,7 @@ build_cmd() {
         # subshell cd below.
         CMD=(codex exec review --json -m "$MODEL" --skip-git-repo-check -o "$LAST")
         [ -n "$EFFORT" ] && CMD+=(-c "model_reasoning_effort=$EFFORT")
+        [ "$SERVICE_TIER" = fast ] && CMD+=(-c "service_tier=fast")
         if [ -n "$REVIEW_BASE" ]; then CMD+=(--base "$REVIEW_BASE"); else CMD+=(--uncommitted); fi
         if [ "$YOLO" = 1 ]; then CMD+=(--dangerously-bypass-approvals-and-sandbox); fi
       elif [ -n "$CONTINUE_ID" ]; then
@@ -531,6 +544,7 @@ build_cmd() {
         case "$CONTINUE_ID" in -*) ;; *) CMD+=("$CONTINUE_ID") ;; esac
         CMD+=(--json -m "$MODEL" --skip-git-repo-check -o "$LAST")
         [ -n "$EFFORT" ] && CMD+=(-c "model_reasoning_effort=$EFFORT")
+        [ "$SERVICE_TIER" = fast ] && CMD+=(-c "service_tier=fast")
         if [ "$YOLO" = 1 ]; then CMD+=(--dangerously-bypass-approvals-and-sandbox)
         else CMD+=(-c 'sandbox_mode="read-only"'); fi
         case "$CONTINUE_ID" in -*) CMD+=(-- "$CONTINUE_ID") ;; esac
@@ -539,6 +553,7 @@ build_cmd() {
       else
         CMD=(codex exec --json -m "$MODEL" -C "$REPO" --skip-git-repo-check -o "$LAST")
         [ -n "$EFFORT" ] && CMD+=(-c "model_reasoning_effort=$EFFORT")
+        [ "$SERVICE_TIER" = fast ] && CMD+=(-c "service_tier=fast")
         # --approve-for-me and --dangerously-bypass-... are mutually exclusive.
         if [ "$YOLO" = 1 ]; then CMD+=(--dangerously-bypass-approvals-and-sandbox)
         elif [ "$ROLE" = "dwarf" ]; then CMD+=(--approve-for-me)
@@ -557,6 +572,9 @@ build_cmd() {
       # takes the final message and the tokens from. stream-json needs --verbose with -p.
       CMD+=(--output-format stream-json --verbose)
       [ -n "$EFFORT" ] && CMD+=(--effort "$EFFORT")
+      # Hidden: claude --help does not list it. openclaude has no per-invocation tier
+      # and is refused before build_cmd; this guard keeps the flag off its argv too.
+      [ "$SERVICE_TIER" = fast ] && [ "$HARNESS" = claude ] && CMD+=(--fast-mode on)
       # Before the variadic flags below, which would otherwise swallow it.
       # --resume takes an optional value, so an id that starts with '-' is joined with '='.
       case "$CONTINUE_ID" in
@@ -667,6 +685,8 @@ unadvertised_flag() { # unadvertised_flag <help text>
       -*) flag="${arg%%=*}"
           # grok's help hides this one; preflight_command checks it with a probe instead.
           [ "$HARNESS $flag" = "grok --background-wait-timeout" ] && continue
+          # claude's help hides this one. Unlike grok's, nothing probes it: this exemption is the whole check.
+          [ "$HARNESS $flag" = "claude --fast-mode" ] && continue
           printf '%s\n' "$1" | grep -E -- "(^|[[:space:],|])$flag([=[:space:],|]|$)" >/dev/null || { printf '%s' "$flag"; return 0; } ;;
     esac
   done
@@ -715,6 +735,7 @@ if [ "$DRY" != 1 ] || [ "$PREFLIGHT" = 1 ]; then preflight_command; fi
   echo "harness=$HARNESS"
   echo "model=$MODEL"
   echo "effort=${EFFORT:-<harness default>}"
+  [ "$SERVICE_TIER" = fast ] && echo "service_tier=fast"
   echo "yolo=$([ "$YOLO" = 1 ] && echo ON || echo off)"
   echo "passthrough=$([ "$PASSTHRU" = 1 ] && echo yes || echo no)"
   [ -n "$CLAMPED" ] && echo "clamped=$CLAMPED"
@@ -869,6 +890,12 @@ if [ "$GUARD_ON" = 1 ]; then
 fi
 reaped=1
 rm -f "$RUN_DIR/$ROLE.harness"
+# Neither CLI refuses a fast request it cannot honour: it runs slower and still exits 0.
+# One note when the log shows that. The exit below stays the one the harness already returned.
+if [ "$SERVICE_TIER" = fast ]; then
+  slow="$(python3 "$RUNTIME" speed "$LOG" "$HARNESS" 2>/dev/null)" || slow=""
+  [ -z "$slow" ] || note "$slow"
+fi
 python3 "$RUNTIME" phase "$ATTEMPT" finalization
 DURATION=$(( $(date +%s) - t0 ))
 echo "duration_s=$DURATION" >> "$RUN_DIR/$ROLE.resolved"

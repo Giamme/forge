@@ -22,6 +22,7 @@ provider test. See [Fractal execution](fractal.md).
 - [opencode](#opencode)
 - [antigravity (agy)](#antigravity-agy)
 - [grok](#grok)
+- [Fast service tier](#fast-service-tier)
 - [Continuing a reviewer session](#continuing-a-reviewer-session) (and an implementer's)
 - [Adding a harness](#adding-a-harness)
 
@@ -326,6 +327,22 @@ Verified live on 2026-10-19 with a `FORGE_OK` dispatch: exit 0, `permissionMode`
 the answer extracted from the `result` line, tokens recorded, nothing left running. The same
 day, grok-4.7 dwarfs implemented and passed review on real tasks (the forge-ui integration run).
 A grok reviewer has not been proven live yet.
+
+## Fast service tier
+
+`forge-dispatch.sh <role> <spec> … --service-tier fast` asks for a faster service tier of the same model on this invocation, and `doctor --spec <spec> [--role <role>] --service-tier fast` resolves and preflights exactly as that dispatch would, so a refusal comes before any model call. `fast` is the only value; anything else is a usage error (exit 2). Specs never grow a `+fast` suffix, and forge never writes the user's global harness config. `<role>.resolved` gains `service_tier=fast` only when the option was given. Without the option the command line, the resolved block and the exit are unchanged.
+
+| Harness | Added to the command | Notes |
+|---|---|---|
+| codex | `-c service_tier=fast`, beside `-c model_reasoning_effort=…` | Fresh, resume and native-review commands alike. The CLI records the tier as `priority`. |
+| claude | `--fast-mode on` | A hidden flag: `claude --help` does not list it. Preflight exempts it the same way it exempts grok's hidden `--background-wait-timeout`, and no other way. |
+| openclaude, opencode, antigravity, grok | — | Refused, exit 3, before anything runs: `forge: <harness> has no per-invocation fast tier (#68); drop the fast tier for the <role> role or pick a codex or claude spec`. opencode's fast mode is per-model config only, and the others have none. |
+
+Claude's fast mode is billed as extra usage. Without that extra usage the CLI does not refuse: the run stays at standard speed and exits 0. The `result` event's `usage.speed` is `fast` or `standard`, and `fast_mode_disabled_reason` (for example `extra_usage_disabled` or `sdk_opt_in_required`) says why it was not fast. Forge reports the miss with one line, `forge: claude ran at standard speed: fast mode is unavailable (extra_usage_disabled)`.
+
+Codex's fast tier is not available with EU data residency for GPT-6 models, and it uses plan usage or credits faster. An unsupported tier is an `item.completed` error whose message contains `is not advertised as supported for model`; the CLI then continues at the default tier and exits 0. Forge records that speed as `default` and prints one note. When the stream says nothing about the tier, the speed is unknown and no note is printed. The note never changes the exit code.
+
+The attempt's `metrics.json` always carries `service_tier` (what `<role>.resolved` asked, else null), `speed` (what the log showed) and `speed_reason`, null when the log does not say.
 
 ## Continuing a reviewer session
 

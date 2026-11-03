@@ -19,6 +19,7 @@ import test_forge as fixtures
 
 ROOT = fixtures.ROOT
 DISPATCH = ROOT / 'scripts' / 'forge-dispatch.sh'
+# --fast-mode is omitted on purpose, matching FAKE: claude's help does not list it.
 HELP = ('-p --model --add-dir --effort --permission-mode --allowedTools --disallowed-tools '
         '--dangerously-skip-permissions -m -C -o -c -s --skip-git-repo-check --approve-for-me --base '
         '--uncommitted --dangerously-bypass-approvals-and-sandbox --dir --variant --auto --agent --print '
@@ -933,6 +934,181 @@ class GuardFailureTests(DispatchBase):
         result = self.run_copy(self.skill_copy(stub))
         self.assertEqual(result.returncode, 0, result.stdout)
         self.assertFalse((self.run_dir / 'dwarf.orphans').exists())
+
+
+class FastTierTests(DispatchBase):
+    """--service-tier fast: the argv it adds, the harnesses that refuse it, and a slower run's note."""
+
+    SESSION = 'abcd1234-ef56-7890-abcd-ef1234567890'
+    FIXTURES = ROOT / 'tests' / 'fixtures' / 'fast_tier'
+    # (harness, spec) for the four that have no per-invocation fast tier.
+    REFUSED = (
+        ('openclaude', 'sol:high:openclaude'),
+        ('opencode', 'sol:high:opencode'),
+        ('antigravity', 'opus::antigravity'),
+        ('grok', 'grok:high'),
+    )
+
+    def argv(self, role='dwarf'):
+        return shlex.split(self.read(role + '.cmd'))
+
+    def doctor(self, *args):
+        return subprocess.run(
+            ['bash', str(DISPATCH), 'doctor', '--spec', *map(str, args)],
+            cwd=self.repo, env=self.env, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=60)
+
+    def refusal(self, harness, role):
+        return ('forge: %s has no per-invocation fast tier (#68); drop the fast tier for the %s role '
+                'or pick a codex or claude spec' % (harness, role))
+
+    def without_tier(self, argv):
+        out, i = [], 0
+        while i < len(argv):
+            if argv[i] == '-c' and i + 1 < len(argv) and argv[i + 1] == 'service_tier=fast':
+                i += 2
+                continue
+            if argv[i] == '--fast-mode' and i + 1 < len(argv) and argv[i + 1] == 'on':
+                i += 2
+                continue
+            out.append(argv[i])
+            i += 1
+        return out
+
+    def resolved_without_duration(self, role):
+        return {k: v for k, v in self.kv(role + '.resolved').items() if k != 'duration_s'}
+
+    def test_without_the_option_the_command_resolved_and_exit_stay(self):
+        # Pinned to the argv a dispatch builds today. A fast dispatch may add only its own flag.
+        codex = [
+            'codex', 'exec', '--json', '-m', 'gpt-6.1-sol', '-C', str(self.repo), '--skip-git-repo-check',
+            '-o', str(self.run_dir / 'dwarf.last'), '-c', 'model_reasoning_effort=medium', '--approve-for-me', '-',
+        ]
+        claude = [
+            'claude', '-p', '--model', 'opus', '--add-dir', str(self.run_dir), '--output-format', 'stream-json',
+            '--verbose', '--effort', 'medium', '--permission-mode', 'acceptEdits', '--allowedTools', 'Bash',
+        ]
+        cases = (
+            ('dwarf', 'sol', [], 'codex', codex),
+            ('qa', 'sol', ['--native-review'], 'codex', None),
+            ('qa', 'sol:high', ['--continue-session', self.SESSION], 'codex', None),
+            ('dwarf', 'opus', [], 'claude', claude),
+            ('qa', 'opus', ['--continue-session', self.SESSION], 'claude', None),
+            ('dwarf', 'opus', ['--continue-session', self.SESSION], 'claude', None),
+        )
+        for role, spec, extra, harness, pinned in cases:
+            with self.subTest(role=role, spec=spec, extra=extra):
+                plain = self.dispatch(role, spec, *extra)
+                self.assertEqual(plain.returncode, 0, plain.stdout)
+                plain_argv = self.argv(role)
+                plain_fields = self.resolved_without_duration(role)
+                self.assertNotIn('service_tier=fast', plain_argv)
+                self.assertNotIn('--fast-mode', plain_argv)
+                self.assertNotIn('service_tier', plain_fields)
+                if pinned is not None:
+                    self.assertEqual(plain_argv, pinned)
+                fast = self.dispatch(role, spec, *extra, '--service-tier', 'fast')
+                self.assertEqual(fast.returncode, plain.returncode, fast.stdout)
+                fast_argv = self.argv(role)
+                self.assertEqual(self.without_tier(fast_argv), plain_argv)
+                self.assertNotEqual(fast_argv, plain_argv)
+                if harness == 'codex':
+                    effort = next(i for i, arg in enumerate(fast_argv) if arg.startswith('model_reasoning_effort='))
+                    self.assertEqual(fast_argv[effort + 1:effort + 3], ['-c', 'service_tier=fast'])
+                else:
+                    effort = fast_argv.index('--effort')
+                    self.assertEqual(fast_argv[effort + 2:effort + 4], ['--fast-mode', 'on'])
+                fast_fields = self.resolved_without_duration(role)
+                self.assertEqual(fast_fields.pop('service_tier'), 'fast')
+                self.assertEqual(fast_fields, plain_fields)
+
+    def test_anything_but_fast_is_a_usage_error(self):
+        for args in (('--service-tier', 'turbo'), ('--service-tier', ''), ('--service-tier',)):
+            with self.subTest(args=args):
+                result = self.dispatch('dwarf', 'sol', *args)
+                self.assertEqual(result.returncode, 2, result.stdout)
+                self.assertIn('--service-tier', result.stdout)
+        self.assertEqual(self.calls(), [])
+        self.assertFalse((self.root / 'capabilities').exists())
+
+    def test_a_fast_tier_on_a_harness_without_one_is_refused_before_it_runs(self):
+        # The binaries are not installed. Preflight would be "not installed"; the refusal is the tier.
+        for harness, spec in self.REFUSED:
+            with self.subTest(harness=harness, where='dispatch'):
+                result = self.dispatch('dwarf', spec, '--service-tier', 'fast')
+                self.assertEqual(result.returncode, 3, result.stdout)
+                self.assertIn(self.refusal(harness, 'dwarf'), result.stdout)
+            with self.subTest(harness=harness, where='doctor'):
+                result = self.doctor(spec, '--role', 'qa', '--service-tier', 'fast')
+                self.assertEqual(result.returncode, 3, result.stdout)
+                self.assertIn(self.refusal(harness, 'qa'), result.stdout)
+                self.assertNotIn('service_tier=fast', result.stdout)
+        self.assertEqual(self.calls(), [])
+        self.assertFalse((self.root / 'capabilities').exists())
+        self.assertFalse((self.run_dir / 'attempts').exists())
+
+    def test_doctor_accepts_codex_and_claude_and_records_the_tier(self):
+        for spec, harness in (('sol', 'codex'), ('opus', 'claude')):
+            with self.subTest(spec=spec):
+                result = self.doctor(spec, '--service-tier', 'fast')
+                self.assertEqual(result.returncode, 0, result.stdout)
+                self.assertIn('service_tier=fast', result.stdout)
+                self.assertIn('harness=%s' % harness, result.stdout)
+                self.assertIn('offline preflight passed', result.stdout)
+        plain = self.doctor('opus')
+        self.assertEqual(plain.returncode, 0, plain.stdout)
+        self.assertNotIn('service_tier', plain.stdout)
+        self.assertEqual(self.calls(), [])
+
+    def test_claude_hidden_fast_mode_passes_preflight_and_another_flag_still_fails(self):
+        result = self.dispatch('dwarf', 'opus', '--service-tier', 'fast')
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn('--fast-mode', self.argv())
+        self.assertEqual(self.argv()[self.argv().index('--fast-mode') + 1], 'on')
+        self.assertNotIn('does not advertise', result.stdout)
+
+        # Every recipe flag except --verbose, and still no --fast-mode. The miss that fails is --verbose.
+        help_text = HELP.replace(' --verbose', '')
+        self.assertNotIn('--verbose', help_text)
+        self.assertNotIn('--fast-mode', help_text)
+        (self.bin / 'claude').write_text(
+            '#!/bin/sh\n'
+            'case " $* " in\n'
+            '  *" --help "*) cat <<\'EOF\'\n' + help_text + '\nEOF\nexit 0 ;;\n'
+            'esac\n'
+            'echo ran\n')
+        (self.bin / 'claude').chmod(0o755)
+        result = self.dispatch('qa', 'opus', '--service-tier', 'fast')
+        self.assertEqual(result.returncode, 3, result.stdout)
+        self.assertIn('does not advertise required flag --verbose', result.stdout)
+        self.assertNotIn('required flag --fast-mode', result.stdout)
+        self.assertNotIn('\nran', result.stdout)
+        self.assertEqual(self.calls(), ['dwarf'])
+
+    def test_a_fast_request_that_ran_slower_prints_one_note_and_keeps_its_exit(self):
+        log = (self.FIXTURES / 'claude-fast-flag-extra-usage-off.jsonl').read_text()
+        note = 'forge: claude ran at standard speed: fast mode is unavailable (extra_usage_disabled)'
+        self.scenario({'*.dwarf.*': {'stdout': log, 'no_edit': True}})
+        result = self.dispatch('dwarf', 'opus', '--service-tier', 'fast')
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertEqual(result.stdout.count(note), 1)
+        self.assertEqual(self.kv('dwarf.resolved')['service_tier'], 'fast')
+        metrics = json.loads((self.attempt('dwarf') / 'metrics.json').read_text())
+        self.assertEqual((metrics['service_tier'], metrics['speed'], metrics['speed_reason']),
+                         ('fast', 'standard', 'extra_usage_disabled'))
+
+        self.scenario({'*.dwarf.*': {'stdout': log, 'no_edit': True}})
+        plain = self.dispatch('dwarf', 'opus')
+        self.assertEqual(plain.returncode, 0, plain.stdout)
+        self.assertNotIn('ran at standard speed', plain.stdout)
+        self.assertNotIn('service_tier', self.kv('dwarf.resolved'))
+        metrics = json.loads((self.attempt('dwarf') / 'metrics.json').read_text())
+        self.assertIsNone(metrics['service_tier'])
+        self.assertEqual((metrics['speed'], metrics['speed_reason']), ('standard', 'extra_usage_disabled'))
+
+        self.scenario({'*.dwarf.*': {'stdout': log, 'no_edit': True, 'rc': 1}})
+        failed = self.dispatch('dwarf', 'opus', '--service-tier', 'fast')
+        self.assertEqual(failed.returncode, 4, failed.stdout)
+        self.assertEqual(failed.stdout.count(note), 1)
 
 
 if __name__ == '__main__':
