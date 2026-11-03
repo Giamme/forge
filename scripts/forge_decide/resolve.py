@@ -11,9 +11,12 @@ Levels, lowest to highest; each sets a gate's fields only where it names them:
                forge_jev.enabled(capability) from jev.json and the FORGE_JEV* variables, and
                turns a gate `on` when its capability is enabled. It never sets `off`, and a
                gate with no capability (None) is never turned on there.
-4. profile  -- `profile`, else FORGE_DECIDE_PROFILE; looked up in the user file's `profiles`
-               first, then the repo file's. Sets `gates` and `budget` (`budget.daily_*` only
-               from a user-file profile).
+4. profile  -- FORGE_DECIDE_PROFILE_JSON when set: the {"name", "gates", "budget"} copy frozen
+               when the run was planned, applied as `frozen profile NAME` whatever the live
+               files say (invalid JSON: an error, nothing applied). Else `profile`, else
+               FORGE_DECIDE_PROFILE; looked up in the user file's `profiles` first, then the
+               repo file's, then the built-in profiles (which set no gate and no budget). Sets
+               `gates` and `budget` (`budget.daily_*` only from a user-file profile).
 5. env      -- FORGE_DECIDE_GATE_<NAME>=off|shadow|on (NAME upper-cased, `-` -> `_`). Once a
                user decide.json exists, the legacy FORGE_JEV_<CAP> variables can only restrict:
                `off` turns that capability's gates off, and any `on` turns off the gates of
@@ -258,6 +261,24 @@ def _shadowed(repo_gates: dict, repo_budget: dict, user_gates: dict, user_budget
     return out
 
 
+def _frozen_profile(result: dict, text: str, errors: list) -> None:
+    """Step 4 from FORGE_DECIDE_PROFILE_JSON, {"name", "gates", "budget"}: nothing applied when
+    it is not valid JSON of that shape."""
+    try:
+        data = json.loads(text)
+    except (ValueError, RecursionError) as exc:
+        errors.append(f'FORGE_DECIDE_PROFILE_JSON: not valid JSON ({exc}); ignored')
+        return
+    name = data.get('name') if isinstance(data, dict) else None
+    if not isinstance(name, str) or not name:
+        errors.append('FORGE_DECIDE_PROFILE_JSON: not an object with a name; ignored')
+        return
+    label = f'frozen profile {name}'
+    result['profile'] = name
+    _apply(result, _parse_gates(data.get('gates'), label, errors),
+           _parse_budget(data.get('budget'), label, errors, RUN_BUDGET + DAILY_BUDGET), 'profile')
+
+
 def _resolve(repo, profile, env, flags, errors: list, user_data=None, repo_data=None) -> dict:
     result = _result(errors)
 
@@ -301,9 +322,12 @@ def _resolve(repo, profile, env, flags, errors: list, user_data=None, repo_data=
         _legacy(result, env, errors)
     result['shadowed'] = _shadowed(repo_gates, repo_budget, user_gates, user_budget)
 
-    # 4. profile
+    # 4. profile: the copy frozen when the run was planned, else looked up by name
+    frozen = env.get('FORGE_DECIDE_PROFILE_JSON')
     name = profile if profile is not None else (env.get('FORGE_DECIDE_PROFILE') or None)
-    if name is not None:
+    if frozen:
+        _frozen_profile(result, frozen, errors)
+    elif name is not None:
         found = None
         for data, label, in_user in ((user_data, user_label, True), (repo_data, repo_label, False)):
             profiles = data.get('profiles')
@@ -311,7 +335,11 @@ def _resolve(repo, profile, env, flags, errors: list, user_data=None, repo_data=
                 found = (profiles[name], f'{label}: profile {name!r}', in_user)
                 break
         if found is None:
-            errors.append(f'profile {name!r} not found; ignored')
+            from . import profiles as profile_store
+            if name in profile_store.builtin_names():
+                result['profile'] = name  # a built-in profile sets no gate and no budget
+            else:
+                errors.append(f'profile {name!r} not found; ignored')
         elif not isinstance(found[0], dict):
             errors.append(f'{found[1]} is not an object; ignored')
         else:

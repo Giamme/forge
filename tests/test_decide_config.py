@@ -140,6 +140,45 @@ class PrecedenceTests(DecideTestCase):
         self.assertTrue(any('nope' in e for e in result['errors']))
         self.assertEqual(self.on(result), set())
 
+    def test_a_frozen_profile_applies_at_the_profile_level_whatever_the_live_one_says(self):
+        self.write_user({'gates': {'drift': 'shadow'}, 'profiles': {'p': {'gates': {'prompt': 'on'}}}})
+        frozen = json.dumps({'name': 'p', 'gates': {'drift': 'on'}, 'budget': {'run_tokens': 7}})
+        result = resolve(self.repo, profile='p', env={'FORGE_DECIDE_PROFILE_JSON': frozen})
+        self.assertEqual(result['profile'], 'p')
+        self.assertEqual((result['gates']['drift']['mode'], result['gates']['drift']['source']),
+                         ('on', 'profile'))
+        self.assertEqual(result['gates']['prompt']['mode'], 'off')
+        self.assertEqual(result['budget']['run_tokens'], 7)
+        self.assertEqual(result['errors'], [])
+        # a higher level still wins over it
+        env = {'FORGE_DECIDE_PROFILE_JSON': frozen, 'FORGE_DECIDE_GATE_DRIFT': 'shadow'}
+        self.assertEqual(resolve(self.repo, env=env)['gates']['drift']['source'], 'env')
+
+    def test_a_frozen_profile_is_labelled_in_its_errors(self):
+        frozen = json.dumps({'name': 'p', 'gates': {'nope': 'on'}})
+        errors = resolve(self.repo, env={'FORGE_DECIDE_PROFILE_JSON': frozen})['errors']
+        self.assertTrue(any('frozen profile p' in e for e in errors), errors)
+
+    def test_invalid_frozen_json_is_an_error_and_applies_nothing(self):
+        self.write_user({'profiles': {'p': {'gates': {'drift': 'on'}}}})
+        for text in ('{not json', '[]', '{"gates": {"drift": "on"}}'):
+            with self.subTest(text=text):
+                result = resolve(self.repo, profile='p', env={'FORGE_DECIDE_PROFILE_JSON': text})
+                self.assertTrue(any('FORGE_DECIDE_PROFILE_JSON' in e for e in result['errors']))
+                self.assertIsNone(result['profile'])
+                self.assertEqual(self.on(result), set())
+
+    def test_a_built_in_profile_name_resolves_without_an_error(self):
+        for env in ({'FORGE_DECIDE_PROFILE': 'balanced'}, {}):
+            result = resolve(self.repo, profile='lite' if not env else None, env=env)
+            self.assertEqual(result['errors'], [])
+            self.assertIn(result['profile'], ('balanced', 'lite'))
+            self.assertEqual(self.on(result), set())
+
+    def test_a_user_profile_named_like_a_built_in_wins(self):
+        self.write_user({'profiles': {'balanced': {'gates': {'drift': 'on'}}}})
+        self.assertEqual(self.on(resolve(self.repo, profile='balanced', env={})), {'drift'})
+
     def test_flags_from_env_and_no_gates(self):
         self.write_user({'gates': {'drift': 'on', 'prompt': 'on'}})
         flags = json.dumps({'gates': {'forward': 'on'}, 'budget': {'run_usd': 1.5}})

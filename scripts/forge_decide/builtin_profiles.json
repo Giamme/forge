@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "profiles": {
+    "balanced": {
+      "source": "#86 SWE-bench Pro decomposed runs, 2026-10-28; docs/models.md",
+      "routing": {
+        "dwarf": {"low": ["haiku:xhigh"], "medium": ["sonnet:medium"], "high": ["opus:high"]},
+        "qa": {"low": ["sonnet:medium"], "medium": ["sonnet:high"], "high": ["opus:high"]},
+        "planner": "sonnet:high",
+        "escalate_after": 2
+      },
+      "policy": {"retry_failed": 2}
+    },
+    "lite": {
+      "source": "#86 SWE-bench Pro decomposed runs, 2026-10-28; docs/models.md",
+      "routing": {
+        "dwarf": {"low": ["haiku:xhigh"], "medium": ["sonnet:medium"], "high": ["sonnet:high"]},
+        "qa": {"low": ["sonnet:medium"], "medium": ["sonnet:high"], "high": ["sonnet:high"]},
+        "planner": "sonnet:high",
+        "escalate_after": 2
+      },
+      "policy": {"retry_failed": 2}
+    }
+  }
+}
