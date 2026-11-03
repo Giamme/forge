@@ -1,0 +1,4 @@
+# id	deps	difficulty	files	dwarf	qa	title
+mock-ilike	-	medium	openlibrary/mocks/mock_infobase.py,openlibrary/mocks/tests/test_mock_infobase.py	sonnet:medium	opus:high	Mock infobase: add MockSite.regex_ilike and use it for the "~" operator
+find-author	mock-ilike	high	openlibrary/catalog/add_book/load_book.py	sonnet:high	opus:high	load_book: find_author(author) with name / alternate_names / surname + date matching; find_entity delegates
+find-entity-tests	find-author	medium	openlibrary/catalog/add_book/tests/test_load_book.py	sonnet:medium	opus:high	Add mock_site tests for find_entity/find_author/import_author matching rules

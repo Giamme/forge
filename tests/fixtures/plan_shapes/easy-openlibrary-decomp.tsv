@@ -1,0 +1,3 @@
+# id	deps	difficulty	files	dwarf	qa	title
+mock-ilike	-	low	openlibrary/mocks/mock_infobase.py,openlibrary/mocks/tests/test_mock_infobase.py	haiku:max:claude	opus:high:claude	Make MockSite '~' queries use production-like ILIKE semantics via MockSite.regex_ilike
+author-match-priority	mock-ilike	high	openlibrary/catalog/add_book/load_book.py,openlibrary/catalog/add_book/tests/test_load_book.py,openlibrary/catalog/utils/__init__.py	sonnet:xhigh:claude	opus:high:claude	Rewrite find_author/find_entity: case-insensitive name, then alternate_names+dates, then surname+dates

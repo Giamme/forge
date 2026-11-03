@@ -1,0 +1,3 @@
+# id	deps	difficulty	files	dwarf	qa	title
+oci-ecr-credentials	-	high	internal/oci,go.mod,go.sum,go.work.sum,cmd/flipt/bundle.go,internal/storage/fs/store/store.go	sonnet:high:claude	sonnet:high:claude	Add OCI AuthenticationType, per-registry credential resolver options, and the AWS ECR credential package
+config-oci-auth-type	oci-ecr-credentials	medium	internal/config/storage.go,internal/config/config_test.go,internal/config/testdata/storage,config/flipt.schema.cue,config/flipt.schema.json,cmd/flipt/bundle.go,internal/storage/fs/store/store.go	haiku:max:claude	sonnet:medium:claude	Add authentication type to OCI storage config with static default, validation, testdata, schema, and caller wiring

@@ -1,0 +1,2 @@
+# id	deps	difficulty	files	dwarf	qa	title
+honor-module-shebang	-	medium	lib/ansible/executor/module_common.py,test/units/executor/module_common,test/units/plugins/action/test_action.py,changelogs/fragments	sonnet:medium:claude	opus:high:claude	Honor the module's declared shebang interpreter; _get_shebang always returns a full shebang
