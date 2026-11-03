@@ -9,13 +9,15 @@
 
   forge-plan-check.py gates PLAN
       Prints the decision-model gate block (what drift, forward, prompt and coverage did to this
-      plan) from PLAN/plan-gates.json. Prints nothing when no gate recorded anything.
+      plan) from PLAN/plan-gates.json, then one `note:` line per distinct slow dwarf or qa spec.
+      Prints nothing when no gate recorded anything and no spec is a measured slowdown.
 
   forge-plan-check.py sendback PLAN
       Writes PLAN/plan.sendback.md from the items the gates marked in this `plan` call and prints
       it, exiting 4. Prints nothing and exits 0 when nothing was marked.
 
-Both of the last two print nothing and exit 0 if forge_jev.plan_gates cannot be imported.
+sendback prints nothing and exits 0 if forge_jev.plan_gates cannot be imported. gates still
+prints a slow-spec note in that case, and still exits 0.
 
   forge-plan-check.py shape PLAN [--write]
       Prints {"shape", "tasks", "waves", "widest"}. shape is one (a single task), chain (two or
@@ -746,6 +748,37 @@ def plan_gates():
     return module
 
 
+def effort_notes(plan: Path) -> list:
+    """`note:` lines for the distinct slow specs in the plan's dwarf and qa columns.
+
+    After routing, tasks.tsv holds concrete specs. The same spec twice is one line. A
+    missing table or a failure to judge a spec leaves the exit code alone.
+    """
+    try:
+        from forge_dataset.efforts import slow_note
+    except Exception:
+        return []
+    try:
+        rows = parse_task_rows((Path(plan) / 'tasks.tsv').read_text(errors='replace'))
+    except OSError:
+        return []
+    seen = set()
+    out = []
+    for row in rows:
+        for spec in (row.get('dwarf'), row.get('qa')):
+            spec = (spec or '').strip()
+            if not spec or spec == '-' or spec in seen:
+                continue
+            seen.add(spec)
+            try:
+                text = slow_note(spec)
+            except Exception:
+                text = None
+            if text:
+                out.append('note: ' + text)
+    return out
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog='forge-plan-check.py')
     sub = ap.add_subparsers(dest='command', required=True)
@@ -762,19 +795,30 @@ def main(argv=None) -> int:
         return command_shape(Path(args.plan), args.write)
     if args.command == 'collapse':
         return command_collapse(Path(args.plan))
-    if args.command in ('gates', 'sendback'):
+    if args.command == 'sendback':
         module = plan_gates()
         if module is None:
             return 0
         try:
-            if args.command == 'gates':
-                for line in module.marks(args.plan):
-                    print(line)
-            elif module.sendback(args.plan):
+            if module.sendback(args.plan):
                 sys.stdout.write((Path(args.plan) / module.SENDBACK_FILE).read_text())
                 return 4
         except Exception:
             return 0
+        return 0
+    if args.command == 'gates':
+        try:
+            module = plan_gates()
+            if module is not None:
+                for line in module.marks(args.plan):
+                    print(line)
+        except Exception:
+            pass
+        try:
+            for line in effort_notes(Path(args.plan)):
+                print(line)
+        except Exception:
+            pass
         return 0
     try:
         notes = size_notes(Path(args.plan))

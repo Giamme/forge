@@ -18,6 +18,8 @@
 #   any role: [--service-tier fast]   codex and claude only; any other harness exits 3
 #                                  before it runs. doctor --spec takes the same option.
 #   forge-dispatch.sh doctor --spec <spec> [--role dwarf|qa|planner] [--service-tier fast]
+#                                  A measured slowdown is `forge: note: …` on stderr, never in
+#                                  the resolved block. A plain dispatch does not print it.
 #   forge-dispatch.sh efforts --spec <spec>
 #                                  the efforts this pairing accepts, weakest first, one per
 #                                  line. Prints nothing when the pairing has no ladder or no
@@ -750,6 +752,11 @@ if [ "$DRY" != 1 ] || [ "$PREFLIGHT" = 1 ]; then preflight_command; fi
 } | tee "$RUN_DIR/$ROLE.resolved"
 
 if [ "$PREFLIGHT" = 1 ]; then
+  # Stderr only, and only here: the block above is parsed from stdout and $ROLE.resolved,
+  # and a dispatch would repeat this at every task's preflight. A failure to say it
+  # changes nothing, including the exit code.
+  _slow="$(cd "$SKILL_DIR/scripts" && python3 -m forge_dataset.efforts "$SPEC" 2>/dev/null)" || _slow=""
+  if [ -n "$_slow" ]; then note "note: $_slow"; fi
   echo "offline preflight passed; authentication, quota and live model availability unverified"
   exit 0
 fi
