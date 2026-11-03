@@ -22,6 +22,7 @@ if '--help' in a:
   with open(os.environ['HELPS'], 'a') as f: f.write('help\\n')
  if 'resume' in a:   # codex exec resume --help: no -C, no -s
   print('-m --model -c --config --json -o --output-last-message --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox'); sys.exit()
+ # --fast-mode is omitted: claude's help hides it, and preflight exempts that flag alone (#68).
  print('--resume -p --model --add-dir --effort --permission-mode --allowedTools --disallowed-tools --dangerously-skip-permissions -m -C -o -c -s --skip-git-repo-check --approve-for-me --base --uncommitted --dangerously-bypass-approvals-and-sandbox --dir --variant --auto --agent --print --print-timeout --mode --json --output-format --verbose --format --prompt-file --reasoning-effort --allow --deny --always-approve'); sys.exit()
 p = (pathlib.Path(a[a.index('--prompt-file')+1]).read_text() if '--prompt-file' in a
      else sys.stdin.read() if '-p' in a or a[-1] == '-' else a[-1])
