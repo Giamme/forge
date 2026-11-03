@@ -306,7 +306,7 @@ def _finish(attempt: Path, root: Path, role: str, harness: str, rc: str) -> None
     session_path.unlink(missing_ok=True)
     if found is not None:
         session_path.write_text(found + '\n')
-    for suffix in ('prompt', 'last', 'log', 'clock', 'resolved', 'cmd', 'timedout', 'infra', 'orphans',
+    for suffix in ('prompt', 'last', 'log', 'clock', 'resolved', 'cmd', 'timedout', 'settled', 'infra', 'orphans',
                    'session', 'continue'):
         if suffix == 'prompt' and not prompt_ready:
             continue
@@ -655,6 +655,72 @@ def classify(log: str, harness: str, rc: object, last: str = '', role: str = '',
     return None
 
 
+# --- a final result the CLI stays open after (#110) ----------------------------------
+# claude -p (and openclaude) stays up while a background task its session started is still open,
+# even after the model's final result: one dwarf sat 47 minutes on a finished answer until the
+# watchdog killed it as TIMEOUT. A result is not always the end, though: a background task that
+# completes wakes the session for another turn, sometimes after a long wait (an hour and more on a
+# slow suite). A new turn always opens with system/init, and until one does the only events after
+# a result are the background tasks' own.
+BACKGROUND_EVENTS = ('task_updated', 'task_notification', 'background_tasks_changed', 'hook_started', 'hook_response')
+SETTLE_POLL_S = 5.0
+
+
+def settled_result(text: str) -> dict | None:
+    """The last `result` event when only background-task events follow it: the model ended its turn and
+    began no other. None when the log has no result, or a turn is under way after it."""
+    found = None
+    for event in _events(text)[0]:
+        if event.get('type') == 'result':
+            found = event
+        elif not (event.get('type') == 'system' and event.get('subtype') in BACKGROUND_EVENTS):
+            found = None
+    return found
+
+
+def settle(log: str, grace: str, pid: str) -> None:
+    """Returns once the harness log ends in a settled result (settled_result) and has not grown for `grace`
+    seconds of the machine's awake time; exits 1 once process `pid`, the harness, is gone. dispatch then ends
+    the harness: its answer is in, and only a background task keeps it open. An idle log whose last turn is
+    still under way (a long command) is never ended here; that is the watchdog's."""
+    grace_s, target = float(grace), int(pid)
+    poll = min(SETTLE_POLL_S, max(grace_s / 4, 0.05))
+    size, since, judged = None, time.monotonic(), None
+    while True:
+        try:
+            os.kill(target, 0)
+        except ProcessLookupError:
+            sys.exit(1)
+        except PermissionError:
+            pass
+        try:
+            now = os.stat(log).st_size
+        except OSError:
+            now = None
+        if now != size:
+            size, since = now, time.monotonic()
+        elif judged != size and time.monotonic() - since >= grace_s:
+            judged = size              # read once per size: an idle log mid-turn is not read again and again
+            try:
+                text = Path(log).read_text(errors='replace')
+            except OSError:
+                text = ''
+            if settled_result(text) is not None:
+                return
+        time.sleep(poll)
+
+
+def settled_command(log: str) -> None:
+    """Prints `ok`, or `error` for an is_error result, when LOG ends in a settled result; exits 1 otherwise."""
+    try:
+        event = settled_result(Path(log).read_text(errors='replace'))
+    except OSError:
+        event = None
+    if event is None:
+        sys.exit(1)
+    print('error' if event.get('is_error') is True else 'ok')
+
+
 def classify_command(log: str, harness: str, rc: str, last: str = '', role: str = '') -> None:
     try:
         hit = classify(log, harness, rc, last, role)
@@ -691,6 +757,10 @@ def main() -> None:
             classify_command(*args)
         elif command == 'clock':
             clock(*args)
+        elif command == 'settle':
+            settle(*args)
+        elif command == 'settled':
+            settled_command(*args)
         else:
             raise ValueError('unknown runtime command: ' + command)
     except (OSError, ValueError, RuntimeError) as error:
