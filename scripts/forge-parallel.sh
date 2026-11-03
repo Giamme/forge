@@ -51,6 +51,9 @@
 #                           still what the review judged, and starts fresh whenever it cannot;
 #                           each attempt is logged in tasks/<id>/implementer_sessions.tsv.
 #                           `--no-implementer-session` turns it off (the default)
+#   --fast ROLES            which of dwarf, qa, planner, review ask for the fast service tier
+#                           (comma list, or all, or none). Kept in the plan; a re-plan without
+#                           the flag keeps it, and none removes it. codex and claude only
 #   --explore E             on by default at 0.2 (0 turns it off, and is kept): a row left
 #                           to forge gets, with probability E/2, its neighbouring model
 #                           (one tier away in the given pools) instead of its pool's turn;
@@ -168,6 +171,7 @@ do_plan() {
   local REPO="" D_ANY="" D_HI="" D_MD="" D_LO="" Q_ANY="" Q_HI="" Q_MD="" Q_LO=""
   PP_INFRA_FALLBACK=""
   local PLANNER="" NOMEM=0 jev_rc=0 DLEVEL="" SHADOW_QA="" SHADOW_RATE="" EXPLORE="" FAIL_FIRST="" REVIEWER_SESSION="" IMPLEMENTER_SESSION="" PRE_REVIEW="" PRE_REVIEW_PARALLEL=""
+  local FAST_GIVEN=0 FAST_PARSED=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --repo)         REPO="${2:?}"; shift 2 ;;
@@ -205,6 +209,11 @@ do_plan() {
       --no-reviewer-session) REVIEWER_SESSION=off; shift ;;
       --implementer-session)    IMPLEMENTER_SESSION=on; shift ;;
       --no-implementer-session) IMPLEMENTER_SESSION=off; shift ;;
+      --fast)
+        [ -n "${2:-}" ] || die "--fast needs a comma list of roles (dwarf, qa, planner, review), all or none"
+        forge_fast_parse "$2" plan
+        FAST_GIVEN=1
+        shift 2 ;;
       *)
         # `case` is not a loop, so `continue` here belongs to the enclosing while.
         # The shared flags write into the plan dir (--qa-threshold), so it must exist first.
@@ -258,6 +267,8 @@ do_plan() {
   case "$REVIEWER_SESSION" in on) printf '%s\n' on > "$PLAN/reviewer_session" ;; off) rm -f "$PLAN/reviewer_session" ;; esac
   # Implementer-session continuation (opt-in, #90): the same `on` file, read the same way.
   case "$IMPLEMENTER_SESSION" in on) printf '%s\n' on > "$PLAN/implementer_session" ;; off) rm -f "$PLAN/implementer_session" ;; esac
+  # Which roles ask for the fast tier. Omitted on a re-plan, so an earlier choice stays.
+  forge_fast_store "$PLAN"
   # Exploration is decided here and only here, so the table and preflight see what will run.
   # On by default: choosing models from measured pass rates needs some randomized picks, and
   # history had almost none (9 tasks ever ran on more than one spec). The flag wins, then
@@ -594,6 +605,11 @@ render_table() {
   if [ -f "$PLAN/implementer_session" ]; then
     echo "implementer-session: a retry continues the implementer's earlier session when its spec is unchanged and its work is as the review left it (claude, openclaude; falls back to a fresh session)"
   fi
+  if [ -s "$PLAN/fast" ]; then
+    local fast_roles
+    fast_roles="$(awk 'NF { printf "%s%s", (n++ ? ", " : ""), $0 }' "$PLAN/fast")"
+    echo "fast tier: $fast_roles — billed at a higher rate (codex service_tier=fast; claude fast mode needs extra usage enabled)"
+  fi
   # The plan-level threshold: at plan time no per-task file exists yet.
   local qa_level qa_src
   read -r qa_level qa_src <<EOF
@@ -679,16 +695,18 @@ dependencies_ready() {
 }
 
 preflight_plan() {
-  local plan="$1" id role flags
+  local plan="$1" id role flags ft
   export FORGE_CAPABILITY_CACHE="$plan/capabilities"
   for id in $(all_ids "$plan/tasks.tsv"); do
     for role in dwarf qa; do
       flags=""; [ -f "$plan/yolo_$role" ] && flags=--yolo
-      /bin/bash "$DISPATCH" doctor --spec "$(field "$plan/tasks.tsv" "$id" "$role")" --role "$role" $flags || return $?
+      ft="$(forge_fast_tier "$plan" "$role")"
+      /bin/bash "$DISPATCH" doctor --spec "$(field "$plan/tasks.tsv" "$id" "$role")" --role "$role" $flags $ft || return $?
     done
   done
   if [ -s "$plan/planner" ]; then
-    /bin/bash "$DISPATCH" doctor --spec "$(cat "$plan/planner")" --role planner || return $?
+    ft="$(forge_fast_tier "$plan" planner)"
+    /bin/bash "$DISPATCH" doctor --spec "$(cat "$plan/planner")" --role planner $ft || return $?
   fi
   # A shadow reviewer that cannot run here is dropped with a note, never a failed run.
   if [ -s "$plan/shadow_qa" ]; then
@@ -699,7 +717,7 @@ preflight_plan() {
 # The implementer a sweep task gets when the plan has a low tier (or a plain --dwarf pool): checked
 # with the rest, before any model is paid for, since no task may have used it yet.
 sweep_preflight() { # sweep_preflight <plan>
-  local spec flags=""
+  local spec flags="" ft
   spec="$(python3 -c 'import json, sys
 try:
     data = json.load(open(sys.argv[1]))
@@ -711,7 +729,8 @@ for tier in ("low", "any"):
         print(specs[0]); break' "$1/fractal-routing.json" 2>/dev/null)"
   [ -n "$spec" ] || return 0
   [ -f "$1/yolo_dwarf" ] && flags=--yolo
-  /bin/bash "$DISPATCH" doctor --spec "$spec" --role dwarf $flags
+  ft="$(forge_fast_tier "$1" dwarf)"
+  /bin/bash "$DISPATCH" doctor --spec "$spec" --role dwarf $flags $ft
 }
 
 sweep_plan() { # sweep_plan <plan> --severity Pn [--plausible] [--max N]: the scheduler's _sweep
@@ -895,6 +914,7 @@ do_task_body() (
   if [ -s "$PLAN/fractal-selection.json" ]; then
     forge_fractal_select "$PLAN" "$REPO" parallel 0 || return $?
   fi
+  forge_fast_fractal_note "$PLAN"
   forge_metric_begin "$tdir" task
   dependencies_ready "$PLAN" "$id" || return 1
   echo RUNNING > "$tdir/status"
@@ -936,11 +956,14 @@ do_task_body() (
     base="$(git -C "$(cat "$PLAN/wt_root")/_integration" rev-parse HEAD)"; printf '%s\n' "$base" > "$tdir/base_ref"
   fi
 
-  local dw qa yd yq rc
+  local dw qa yd yq rc ft_dwarf ft_qa
   dw="$(field "$T" "$id" dwarf)"; qa="$(field "$T" "$id" qa)"
   yd=""; yq=""
   [ -f "$PLAN/yolo_dwarf" ] && yd="--yolo"
   [ -f "$PLAN/yolo_qa" ] && yq="--yolo"
+  # Empty when the role is not listed, so the recorded command line is unchanged.
+  ft_dwarf="$(forge_fast_tier "$PLAN" dwarf)"
+  ft_qa="$(forge_fast_tier "$PLAN" qa)"
 
   if ! ensure_worktree "$REPO" "$wt" "$br" "$base" "$tdir" "$PLAN" "$id"; then
     echo ERROR > "$tdir/status"
@@ -983,7 +1006,7 @@ do_task_body() (
         is_reason=work-changed
       else
         FORGE_CAPABILITY_CACHE="${FORGE_CAPABILITY_CACHE:-$PLAN/capabilities}" \
-          /bin/bash "$DISPATCH" doctor --spec "$dw" --role dwarf $yd > "$tdir/dwarf.doctor" 2>&1 || : > "$tdir/dwarf.doctor"
+          /bin/bash "$DISPATCH" doctor --spec "$dw" --role dwarf $yd $ft_dwarf > "$tdir/dwarf.doctor" 2>&1 || : > "$tdir/dwarf.doctor"
         IFS=$'\t' read -r is_mode is_reason is_id < <(review_session_decide \
           "$tdir/retry_findings.dwarf.session" "$tdir/retry_findings.dwarf.resolved" "$tdir/dwarf.doctor" "claude openclaude")
         if [ "$is_mode" = continued ]; then
@@ -994,7 +1017,7 @@ do_task_body() (
     fi
     forge_metric_phase dispatch
     local dwarf_cmd=(/bin/bash "$DISPATCH" dwarf "$dw" --repo "$wt" --run-dir "$tdir" \
-          --ripwire-query-file "$tdir/prompt.md" --prompt-file "$tdir/dwarf.input" ${yd:+"$yd"} --output "${FORGE_OUTPUT:-summary}")
+          --ripwire-query-file "$tdir/prompt.md" --prompt-file "$tdir/dwarf.input" ${yd:+"$yd"} $ft_dwarf --output "${FORGE_OUTPUT:-summary}")
     "${dwarf_cmd[@]}" ${is_cont[@]+"${is_cont[@]}"} >"$tdir/dwarf.out" 2>&1
     rc=$?
     if [ "$rc" = 9 ] && [ "$is_mode" = continued ]; then
@@ -1217,14 +1240,14 @@ do_task_body() (
       rs_reason=first-round
     else
       FORGE_CAPABILITY_CACHE="${FORGE_CAPABILITY_CACHE:-$PLAN/capabilities}" \
-        /bin/bash "$DISPATCH" doctor --spec "$qa" --role qa $yq > "$tdir/qa.doctor" 2>&1 || : > "$tdir/qa.doctor"
+        /bin/bash "$DISPATCH" doctor --spec "$qa" --role qa $yq $ft_qa > "$tdir/qa.doctor" 2>&1 || : > "$tdir/qa.doctor"
       IFS=$'\t' read -r rs_mode rs_reason rs_id < <(review_session_decide \
         "$tdir/retry_findings.session" "$tdir/retry_findings.resolved" "$tdir/qa.doctor")
       [ "$rs_mode" = continued ] && rs_cont=(--continue-session "$rs_id")
     fi
   fi
   local qa_cmd=(/bin/bash "$DISPATCH" qa "$qa" --repo "$review" --run-dir "$tdir" \
-        --review-base "$(cat "$tdir/review.base")" --ripwire-query-file "$tdir/prompt.md" --prompt-file "$tdir/qa.input" ${yq:+"$yq"} --output "${FORGE_OUTPUT:-summary}")
+        --review-base "$(cat "$tdir/review.base")" --ripwire-query-file "$tdir/prompt.md" --prompt-file "$tdir/qa.input" ${yq:+"$yq"} $ft_qa --output "${FORGE_OUTPUT:-summary}")
   "${qa_cmd[@]}" ${rs_cont[@]+"${rs_cont[@]}"} >"$tdir/qa.out" 2>&1
   rc=$?
   if [ "$rc" = 9 ] && [ "$rs_mode" = continued ]; then
@@ -1531,6 +1554,7 @@ do_retry() {
   rm -f "$PLAN/infra.last"
 
   note "retrying $id with dwarf $(field "$T" "$id" dwarf)"
+  forge_fast_fractal_note "$PLAN"
   export FORGE_FRACTAL_RETRY=1
   export FORGE_DATASET_TRIGGER=human
   do_task "$PLAN" "$id"
@@ -1967,6 +1991,7 @@ do_run() {
     forge_ui_register "$PLAN"
   fi
   forge_fractal_parallel_run "$PLAN" "$REPO" "$DRY" ${fractal_pipeline_args[@]+"${fractal_pipeline_args[@]}"} || return $?
+  forge_fast_fractal_note "$PLAN"
   # Durable, beside the repo — never TMPDIR. A temp worktree root has destroyed
   # real work here before: isolated worktrees are never pushed, so when the root
   # goes, the only copy of that work goes with it.

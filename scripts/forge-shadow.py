@@ -49,6 +49,22 @@ STOP_WAIT_S = 10
 PREPARE_TIMEOUT_S = 120
 
 
+def service_tier_args(plan: Path, role: str) -> list[str]:
+    """`--service-tier fast` when <role> is a line of <plan>/fast, and nothing otherwise.
+
+    Fractal dispatches through its own runner and does not take the option. Specs never change.
+    """
+    if os.environ.get('FORGE_FRACTAL_RUN'):
+        return []
+    try:
+        text = (plan / 'fast').read_text()
+    except OSError:
+        return []
+    if role in [line.strip() for line in text.splitlines() if line.strip()]:
+        return ['--service-tier', 'fast']
+    return []
+
+
 def rate_of(plan: Path) -> float:
     try:
         rate = float((plan / 'shadow_rate').read_text().strip())
@@ -207,6 +223,7 @@ def run(args) -> int:
                 '--output', 'summary']
         if args.yolo:
             argv.append('--yolo')
+        argv.extend(service_tier_args(plan, 'qa'))
         with open(out / 'shadow.out', 'wb') as log:
             STATE['child'] = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
                                               env=env, close_fds=True)
@@ -269,6 +286,7 @@ def preflight(args) -> int:
     ok = []
     for spec in listed:
         flags = ['--yolo'] if (plan / 'yolo_qa').exists() else []
+        flags.extend(service_tier_args(plan, 'qa'))
         try:
             result = subprocess.run(['/bin/bash', str(DISPATCH), 'doctor', '--spec', spec, '--role', 'qa', *flags],
                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=120)
