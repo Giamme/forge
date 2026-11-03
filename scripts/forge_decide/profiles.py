@@ -682,11 +682,12 @@ def freeze_plan(plan: Path, repo, name, none, given, check_only=False, validate_
     if check_only:
         return []
     if action == 'remove':
-        for name_ in (FROZEN, ROUTED):
-            try:
-                (plan / name_).unlink()
-            except OSError:
-                pass
+        # routed.json stays: the models a profile routed stay in the table, and a profile chosen later
+        # must still tell them from a model written by hand.
+        try:
+            frozen_path.unlink()
+        except OSError:
+            pass
         return []
     if action != 'new':
         return []

@@ -243,6 +243,28 @@ class ProfileRunsTests(unittest.TestCase):
         self.assertEqual(self.rows(p)['a'], dict(dwarf='sol:medium', qa='opus:medium'))
         self.assertNotIn('profile:', r.stdout)
 
+    def test_a_profile_chosen_after_no_profile_still_replaces_the_routed_models(self):
+        self.decide({'P': SMALL, 'Q': {'routing': {'dwarf': {'any': ['opus']}, 'qa': {'any': ['sol']}}, 'policy': {'explore': 0}}})
+        p = self.planned('--profile', 'P')
+        self.assertEqual(self.plan(p, '--no-profile').returncode, 0)
+        r = self.plan(p, '--profile', 'Q')
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertEqual(self.frozen(p)['name'], 'Q')
+        self.assertEqual(self.rows(p)['a'], dict(dwarf='opus', qa='sol'))
+
+    def test_a_split_plan_still_replaces_the_routed_models_under_another_profile(self):
+        self.decide({'P': SMALL, 'Q': {'routing': {'dwarf': {'any': ['opus']}, 'qa': {'any': ['sol']}}, 'policy': {'explore': 0}}})
+        p = self.planned('--profile', 'P', tasks=(('a', 'low'), ('b', 'low')))
+        self.env['FAIL_A'] = '1'
+        self.assertEqual(self.run_script('forge-parallel.sh', 'run', p, '--retry-failed', '0').returncode, 5)
+        self.env.pop('FAIL_A')
+        new = self.root / 'second'
+        r = self.run_script('forge-parallel.sh', 'split', p, new, '--tasks', 'a')
+        self.assertEqual(r.returncode, 0, r.stdout)
+        r = self.plan(new, '--profile', 'Q')
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertEqual(self.rows(new)['a'], dict(dwarf='opus', qa='sol'))
+
     def test_a_replan_with_another_profile_routes_the_tasks_by_the_new_pools(self):
         other = {'routing': {'dwarf': {'any': ['opus']}, 'qa': {'any': ['sol']}}, 'policy': {'explore': 0}}
         self.decide({'P': SMALL, 'Q': other})
@@ -435,6 +457,39 @@ class ProfileRunsTests(unittest.TestCase):
         self.assertEqual(self.run_script('forge-parallel.sh', 'retry', p, 'a').returncode, 2)
         before = self.calls().count('dwarf')
         r = self.run_script('forge-parallel.sh', 'retry', p, 'a', '--decide', 'retry=1', '--reason', 'one more', '--approved')
+        self.assertEqual(self.calls().count('dwarf') - before, 1, r.stdout)
+
+    def waiting_for_a_decision(self, *stops):
+        """a, under a profile that gives any retry two more attempts, stopped for a decision (#69) by two
+        reviews with new findings each. `stops`: the dwarf calls that hit a quota stop."""
+        self.decide({'P': {**SMALL, 'routing': {**SMALL['routing'], 'escalate_after': 0},
+                           'policy': {'explore': 0, 'retry_failed': 2}}})
+        p = self.planned('--profile', 'P')
+        (p / 'converge_window').write_text('2\n')
+        table = {'a.qa.%d' % n: {'verdict': 'FAIL', 'findings': '- [P1][CONFIRMED] f%d.py:1 — broken' % n}
+                 for n in range(1, 9)}
+        table.update({'a.dwarf.%d' % n: {'content': 'try %d' % n} for n in range(1, 9)})
+        for n in stops:
+            table['a.dwarf.%d' % n] = {'rc': 1, 'stderr': 'Claude AI usage limit reached|1760000000'}
+        self.scenario(table)
+        r = self.run_script('forge-parallel.sh', 'run', p, '--retry-failed', '5')
+        self.assertEqual((r.returncode, (p / 'tasks/a/status').read_text().strip()), (5, 'NEEDS_DECISION'), r.stdout)
+        (p / 'converge_window').write_text('9\n')                # only the decision's grant can stop it now
+        return p
+
+    def test_a_named_model_decision_is_one_attempt_under_a_profile(self):
+        p = self.waiting_for_a_decision()
+        before = self.calls().count('dwarf')
+        r = self.run_script('forge-parallel.sh', 'retry', p, 'a', '--dwarf', 'sol:medium', '--reason', 'one try', '--approved')
+        self.assertEqual(self.calls().count('dwarf') - before, 1, r.stdout)
+
+    def test_a_decision_resumed_after_a_quota_stop_keeps_its_grant_under_a_profile(self):
+        p = self.waiting_for_a_decision(3)
+        r = self.run_script('forge-parallel.sh', 'retry', p, 'a', '--decide', 'retry=1', '--reason', 'one more', '--approved')
+        self.assertEqual(r.returncode, 8, r.stdout)
+        self.assertEqual((p / 'tasks/a/decided.left').read_text().strip(), '0')
+        before = self.calls().count('dwarf')
+        r = self.run_script('forge-parallel.sh', 'retry', p, 'a')
         self.assertEqual(self.calls().count('dwarf') - before, 1, r.stdout)
 
     def test_retry_without_a_profile_is_one_attempt_and_still_takes_the_flag(self):

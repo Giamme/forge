@@ -578,7 +578,10 @@ EOF
   done < "$T"
   mv "$tmp" "$T"
   # Which cells routing filled in, so a re-plan under another profile replaces those and no others.
-  [ ! -f "$PLAN/profile.json" ] || forge_profile_py routed "$PLAN" 2>/dev/null || true
+  # Kept current through a --no-profile re-plan too, once a profile has recorded any.
+  if [ -f "$PLAN/profile.json" ] || [ -f "$PLAN/routed.json" ]; then
+    forge_profile_py routed "$PLAN" 2>/dev/null || true
+  fi
 
   compute_waves "$PLAN"
 
@@ -1650,9 +1653,6 @@ do_retry() {
     esac
   done
   forge_profile_run_values "$PLAN"
-  # An explicit --decide grant is exactly what it says: the profile's default budget of further
-  # attempts does not stretch it. Only a --retry-failed typed on this line adds to a decision.
-  { [ -z "$DECIDE" ] || [ "$PP_RETRY_FAILED_SET" = 1 ]; } || PP_RETRY_FAILED=0
   [ "$JEV_OPTS" = 1 ] && forge_jev_settle "$PLAN"
   # Before any decision-model step: the privacy floor and the run budget read these.
   [ "$JEV_OPTS" = 1 ] && [ -s "$PLAN/repo" ] && forge_decide_env "$(cat "$PLAN/repo")" "$PLAN"
@@ -1664,6 +1664,14 @@ do_retry() {
   [ -s "$PLAN/wt_root" ] || die "this plan has never been run — use 'run', not 'retry'"
   local st; st="$(task_status "$PLAN" "$id")"
   [ "$st" = "MERGED" ] && die "task '$id' already merged — nothing to retry"
+  # A decision's grant is exactly what it says, and the profile's default budget of further attempts
+  # does not stretch it: a task waiting for a decision (resumed by --decide or --dwarf), or an
+  # infrastructure stop resumed while a decision's count is kept. Only a --retry-failed typed on this
+  # line adds to a decision.
+  if [ "$PP_RETRY_FAILED_SET" != 1 ] && { [ -n "$DECIDE" ] || [ "$st" = NEEDS_DECISION ] \
+       || { [ "$st" = INFRA ] && [ -n "$(decided_left "$tdir")" ]; }; }; then
+    PP_RETRY_FAILED=0
+  fi
   [ "$HAVE_ANSWER" = 0 ] || [ "$st" = NEEDS_INPUT ] || die "retry: '$id' is $st, not waiting for an answer; --answer and --answer-file only answer a NEEDS_INPUT task"
   retry_decision_gate "$PLAN" "$id" "$st" "$DECIDE" "$NEWDWARF" "$REASON" "$APPROVED"
   # A task at its attempt cap (#69) is refused with the decision commands unless --decide retry=N reaches past it.
