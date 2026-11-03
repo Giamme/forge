@@ -1437,12 +1437,30 @@ _SOLO_SETTINGS = ('explore', 'shadow_rate', 'shadow_qa', 'timeout', 'max_paralle
                   'escalate_after', 'verify_retries', 'final_qa')
 
 
+def _frozen_profile(reader):
+    """settings.profile from profile.json: the name and level the run froze, and whether it overrode one.
+
+    None when the file is absent, unreadable, or not a frozen profile. The rest of the file (body,
+    shadowed, frozen_at) stays on disk; the page asks the profile endpoints for a live body."""
+    name = 'profile.json'
+    obj = reader.object(name)
+    if obj is None:
+        return None
+    profile_name, level, overridden = obj.get('name'), obj.get('level'), obj.get('overridden')
+    if not (isinstance(profile_name, str) and profile_name and isinstance(level, str) and level
+            and isinstance(overridden, bool)):
+        reader.warn(name, 'not a profile')
+        return None
+    return dict(name=profile_name, level=level, overridden=overridden)
+
+
 def _solo_detail(reader, source):
     result = _solo_summary(reader, source)
     status = next(iter(result['counts']))
     result['request'] = reader.cap(reader.text('request.md'), 'request')
     result['settings'] = dict.fromkeys(_SOLO_SETTINGS)
     result['settings']['qa_threshold'], result['settings']['qa_threshold_source'] = _threshold(reader)
+    result['settings']['profile'] = _frozen_profile(reader)
     result['verification'] = None
     result['attribution'] = _attribution(reader)
     result['waves'] = [['solo']]
@@ -1529,7 +1547,8 @@ def detail(path, source='plan') -> dict:
                               max_parallel=reader.number('max_parallel', int),
                               qa_threshold=threshold[0], qa_threshold_source=threshold[1],
                               escalate_after=reader.number('escalate_after', int),
-                              verify_retries=reader.number('verify_retries', int), final_qa=reader.line('final_qa'))
+                              verify_retries=reader.number('verify_retries', int), final_qa=reader.line('final_qa'),
+                              profile=_frozen_profile(reader))
     waves, wave_map = _waves(reader)
     result['waves'] = [waves.get(n, []) for n in range(1, max(waves, default=0) + 1)]
     branches = {row[0]: _nullable(row[2]) for _, row in reader.rows('results.tsv', 3)}

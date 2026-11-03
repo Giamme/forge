@@ -18,7 +18,7 @@ import run_fixture as F
 FIXTURE = Path(__file__).parent / 'fixtures' / 'plan-full'
 SOLO = Path(__file__).parent / 'fixtures' / 'solo-full'
 LEGACY = Path(__file__).parent / 'fixtures' / 'solo-legacy'
-NEW_SETTINGS = dict(max_parallel=None, qa_threshold='P2', qa_threshold_source='default', escalate_after=None, verify_retries=None, final_qa=None)
+NEW_SETTINGS = dict(max_parallel=None, qa_threshold='P2', qa_threshold_source='default', escalate_after=None, verify_retries=None, final_qa=None, profile=None)
 SOLO_SETTINGS = dict(explore=None, shadow_rate=None, shadow_qa=None, timeout=None, **NEW_SETTINGS)
 # A reply with verdict lines and no finding blocks.
 NO_FINDINGS = dict(P0=0, P1=0, P2=0, P3=0, unlabelled=0, plausible=0, confirmed=0, worst=None)
@@ -144,6 +144,34 @@ class ReaderTests(unittest.TestCase):
                     self.write(run / 'qa_threshold', text)
                 settings = detail(run)['settings']
                 self.assertEqual((settings['qa_threshold'], settings['qa_threshold_source']), want, (run.name, text))
+
+    def test_settings_profile_is_the_frozen_profile_or_null(self):
+        plan = F.make_plan(self.base)
+        frozen = {key: F.FROZEN_PROFILE[key] for key in ('name', 'level', 'overridden')}
+        data = detail(plan)
+        self.assertEqual(data['settings']['profile'], frozen)
+        self.assertFalse(any(item.startswith('profile.json') for item in data['warnings']))
+        (plan / 'profile.json').unlink()
+        data = detail(plan)
+        self.assertIsNone(data['settings']['profile'])
+        self.assertFalse(any(item.startswith('profile.json') for item in data['warnings']))
+        self.write(plan / 'profile.json', '{')
+        data = detail(plan)
+        self.assertIsNone(data['settings']['profile'])
+        self.assertIn('profile.json: not a JSON object', data['warnings'])
+        self.write(plan / 'profile.json', json.dumps({'name': 'balanced', 'level': 'user', 'body': {}}))
+        data = detail(plan)
+        self.assertIsNone(data['settings']['profile'])
+        self.assertIn('profile.json: not a profile', data['warnings'])
+
+        solo = Path(shutil.copytree(SOLO, self.base / 'solo-profile'))
+        self.assertIsNone(detail(solo)['settings']['profile'])
+        self.write(solo / 'profile.json', json.dumps({
+            'name': 'lite', 'level': 'repo', 'body': {'policy': {'timeout': 1}},
+            'shadowed': [], 'frozen_at': 1, 'overridden': True}))
+        data = detail(solo)
+        self.assertEqual(data['settings']['profile'], {'name': 'lite', 'level': 'repo', 'overridden': True})
+        self.assertFalse(any(item.startswith('profile.json') for item in data['warnings']))
 
     def test_missing_optional_files(self):
         self.write(self.base / 'tasks.tsv', 'one\t-\tlow\t-\t\t-\tTask\n')

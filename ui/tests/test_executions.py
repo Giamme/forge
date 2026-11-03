@@ -337,7 +337,8 @@ class ExecutionTests(FixtureCase):
         data = detail(self.plan)
         self.assertEqual(data['settings'], {'explore': 0.25, 'shadow_rate': 0.5, 'shadow_qa': ['sol:xhigh'],
                                             'timeout': 3600, 'max_parallel': 2, 'qa_threshold': 'P2', 'qa_threshold_source': 'set',
-                                            'escalate_after': 1, 'verify_retries': 1, 'final_qa': 'opus'})
+                                            'escalate_after': 1, 'verify_retries': 1, 'final_qa': 'opus',
+                                            'profile': {'name': 'balanced', 'level': 'user', 'overridden': False}})
         self.assertEqual(data['integration'], {
             'base': 'a' * 40, 'accepted': 'b' * 40,
             'merged': [{'id': 'page', 'at': F.MERGED['page']}, {'id': 'reader', 'at': F.MERGED['reader']}],
