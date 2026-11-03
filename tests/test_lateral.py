@@ -160,7 +160,7 @@ class LateralRecordTests(unittest.TestCase):
             done = self.lateral(plan, '--line', '1\t1\tdwarf\tsol\tastra\tcapacity')
             self.assertEqual(done.returncode, 0, done.stderr)
             self.assertEqual((plan / 'tasks/a/lateral.tsv').read_text(), '1\t1\tdwarf\tsol\tastra\tcapacity\n')
-            self.assertEqual((plan / 'tasks/a/running.tier').read_text(), 'high\tastra\n')
+            self.assertEqual((plan / 'tasks/a/running.tier').read_text().split('\t')[:2], ['high', 'astra'])
             self.assertFalse((plan / 'tasks/a/escalations.tsv').exists())
 
     def test_a_symlinked_record_is_refused_and_nothing_is_written_outside(self):

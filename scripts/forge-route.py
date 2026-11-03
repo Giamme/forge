@@ -16,6 +16,12 @@ bias (inverse-propensity weighting needs the probability each choice had).
       <plan>/tasks/<id>/route.jsonl (never rewritten) and marks a changed pick in tasks/<id>/route.explored for the table. A row
       with no neighbour is not explored and records nothing.
 
+  forge-route.py assign --plan P --task ID --tier T --default SPEC --pools FILE [--epsilon E]
+      Called by `plan` for each row it resolves (one the user left to forge): `explore` above when E is
+      above 0, then tasks/<id>/running.tier for the spec it prints, with the tier of that pick (T, or the
+      neighbour's tier an exploration chose). A re-plan that re-resolves a row thus replaces whatever an
+      older escalation or pin recorded (#106); a row whose dwarf the plan keeps is never assigned.
+
   forge-route.py escalation --plan P --task ID [--check] [--qa-only-next yes|no]
       The retry policy: after <plan>/escalate_after (default 3; 0 = off) failed attempts on
       one spec, the next attempt goes to the next tier up of the user's pools instead of
@@ -42,8 +48,8 @@ bias (inverse-propensity weighting needs the probability each choice had).
 
   forge-route.py fallback --plan P --task ID [--exclude harness/model,...]
       The lateral move of an infrastructure stop: prints the next free model of the pool of the
-      tier the task runs in (its difficulty, the tier its exploration picked, or the target its last
-      escalation recorded in running.tier), or exits 1 when there is none. Never a model of another tier.
+      tier the task runs in (the newest record of it: see running_tier), or exits 1 when there is none.
+      Never a model of another tier.
       The move is recorded by `lateral` below, not as an escalation.
 
   forge-route.py qa-fallback --plan P --task ID [--exclude harness/model,...]
@@ -56,7 +62,7 @@ bias (inverse-propensity weighting needs the probability each choice had).
   forge-route.py record --plan P --task ID (--probe | --line TEXT)
       Internal. Probe or append tasks/<id>/escalations.tsv through forge-control.py, which
       walks from the plan one directory at a time and refuses a symlink at any component.
-      An appended row also writes tasks/<id>/running.tier: its target tier and spec.
+      An appended row also writes tasks/<id>/running.tier: its target tier, spec and time.
       `--probe` exits 0 when every component below the plan is a real directory and the file
       is absent or a regular file. `--line` appends one record under those same conditions.
       A missing parent exits 1 and writes nothing: the walk has no directory descriptor then,
@@ -369,31 +375,46 @@ def escalation_target(source: str, frm: str, to: str, running: str, pools: dict,
 
 def running_tier(plan: Path, task: str, current: str = '') -> str:
     """The tier a task runs in, from what forge recorded when it assigned the model, never from which
-    pools list the model: one model can sit in several, and a re-plan can change them. While the task
-    runs the spec of a record, the tier in tasks/<id>/running.tier (written with each escalations.tsv
-    row), else the tier its exploration picked; with neither, as in an older plan, the difficulty.
-    `current` is the spec the task runs, read from tasks.tsv when not given. '' when the difficulty
-    is no tier."""
+    pools list the model: one model can sit in several, and a re-plan can change them. Two records
+    say it, each with its time: tasks/<id>/running.tier, written at every assignment (the plan's
+    resolution of the row, an escalation, a pin, `retry --dwarf`, a lateral move), and the last
+    exploration decision in route.jsonl, all an older plan has. The newer one counts, and only while
+    the task still runs its spec: an older record never beats a newer pick of the same model (#106).
+    With neither, or when the newest is for another spec (the table was edited by hand), the
+    difficulty. `current` is the spec the task runs, read from tasks.tsv when not given. '' when the
+    difficulty is no tier."""
     tier = _row_cell(plan, task, 2)
     if tier not in TIERS:
         return ''
     tdir = plan / 'tasks' / task
     current = current or _dwarf_of(plan, task)
-    with contextlib.suppress(OSError):
-        recorded, _, spec = (tdir / 'running.tier').read_text().strip().partition('\t')
-        if spec == current and recorded in TIERS:
-            return recorded
-    with contextlib.suppress(OSError, ValueError, AttributeError):       # no usable record: the difficulty
+    records = []
+    with contextlib.suppress(OSError, ValueError):
+        path = tdir / 'running.tier'
+        cells = path.read_text().strip().split('\t')
+        if len(cells) > 1 and cells[0] in TIERS:
+            # Written before records carried their time (forge 0.14): as old as the file.
+            records.append((float(cells[2]) if len(cells) > 2 else path.stat().st_mtime, cells[1], cells[0]))
+    with contextlib.suppress(OSError, ValueError, AttributeError, TypeError):
         lines = (tdir / 'route.jsonl').read_text().splitlines()
         decision = json.loads(lines[-1]) if lines else {}
-        if decision.get('chosen') == current and decision.get('chosen_tier') in TIERS:
-            return decision['chosen_tier']
+        if decision.get('chosen_tier') in TIERS:
+            records.append((float(decision.get('at') or 0), decision.get('chosen'), decision['chosen_tier']))
+    if records:
+        _, spec, recorded = max(records, key=lambda record: record[0])
+        if spec == current:
+            return recorded
     return tier
 
 
+def write_running_tier(plan: str, task: str, tier: str, spec: str, control) -> None:
+    """tasks/<id>/running.tier: `tier<TAB>spec<TAB>time`, the tier the task runs in while it runs `spec`."""
+    control.write_atomic(plan, 'tasks/%s/running.tier' % task, '%s\t%s\t%.6f\n' % (tier, spec, time.time()))
+
+
 def record_running_tier(plan: str, task: str, row: str, control) -> None:
-    """tasks/<id>/running.tier for an escalations.tsv row: `tier<TAB>spec`, the tier the row moved the
-    task to, decided here with the pools of this moment. A fallback stays in its tier."""
+    """tasks/<id>/running.tier for an escalations.tsv row: the tier the row moved the task to, decided
+    here with the pools of this moment. A fallback stays in its tier."""
     cells = row.rstrip('\n').split('\t')
     frm, to, source = cells[2], cells[3], cells[4] if len(cells) > 4 else 'policy'
     tier = running_tier(Path(plan), task, frm)
@@ -401,7 +422,7 @@ def record_running_tier(plan: str, task: str, row: str, control) -> None:
         tier = escalation_target(source, frm, to, tier, load_pools(Path(plan) / 'fractal-routing.json'),
                                  registry_models())
     if tier:
-        control.write_atomic(plan, 'tasks/%s/running.tier' % task, '%s\t%s\n' % (tier, to))
+        write_running_tier(plan, task, tier, to, control)
 
 
 def fallback(args) -> int:
@@ -433,13 +454,14 @@ def qa_fallback(args) -> int:
 
 # --- exploration -------------------------------------------------------------------
 
-def explore(args) -> str:
+def explore(args) -> tuple:
+    """(spec, tier): the pick and the tier it was picked from."""
     epsilon = float(args.epsilon)
     if not 0 < epsilon <= 1:
-        return args.default
+        return args.default, args.tier
     alternative, alternative_tier = neighbour(args.default, args.tier, load_pools(args.pools), registry_models())
     if not alternative:
-        return args.default
+        return args.default, args.tier
     candidates = [args.default, alternative]
     rng = rng_for(args.task)
     draw = rng.random()
@@ -460,6 +482,26 @@ def explore(args) -> str:
         marker.write_text(chosen + '\n')
     elif marker.exists():
         marker.unlink()
+    return chosen, decision['chosen_tier']
+
+
+def assign(args) -> str:
+    """`plan`'s resolution of a row: the exploration draw, then the record of the tier its pick runs in,
+    newer than any record it replaces. A record that cannot be written is removed rather than left to
+    speak for the new pick. Prints the pick; any failure prints SPEC, as explore does."""
+    chosen, tier = args.default, args.tier
+    with contextlib.suppress(Exception):
+        chosen, tier = explore(args)
+    try:
+        control = _load_control()
+        plan = os.path.realpath(args.plan)
+        try:
+            write_running_tier(plan, args.task, tier, chosen, control)
+        except Exception as error:
+            print('%s: could not record the tier it runs in: %s' % (args.task, error), file=sys.stderr)
+            control.remove_safe(plan, 'tasks/%s/running.tier' % args.task)
+    except Exception:
+        pass
     return chosen
 
 
@@ -968,7 +1010,7 @@ def record_lateral_tier(plan: str, task: str, row: str, control) -> None:
     frm, to = cells[3], cells[4]
     tier = running_tier(Path(plan), task, frm)
     if tier:
-        control.write_atomic(plan, 'tasks/%s/running.tier' % task, '%s\t%s\n' % (tier, to))
+        write_running_tier(plan, task, tier, to, control)
 
 
 def main(argv=None) -> int:
@@ -977,6 +1019,10 @@ def main(argv=None) -> int:
     p = sub.add_parser('explore')
     for name in ('plan', 'task', 'tier', 'epsilon', 'default', 'pools'):
         p.add_argument('--' + name, required=True)
+    p = sub.add_parser('assign', help="plan's resolution of a row: exploration, then the record of its tier")
+    for name in ('plan', 'task', 'tier', 'default', 'pools'):
+        p.add_argument('--' + name, required=True)
+    p.add_argument('--epsilon', default='0')
     p = sub.add_parser('escalation')
     p.add_argument('--plan', required=True)
     p.add_argument('--task', required=True)
@@ -1004,9 +1050,12 @@ def main(argv=None) -> int:
     args = ap.parse_args(argv)
     if args.command == 'explore':
         try:
-            print(explore(args))
+            print(explore(args)[0])
         except Exception:
             print(args.default)
+        return 0
+    if args.command == 'assign':
+        print(assign(args))
         return 0
     if args.command == 'record':
         return record_escalation(args)
