@@ -130,7 +130,7 @@ plans_make_integration() { # plans_make_integration <repo> <branch> <commit> <wt
 
 # Per-plan option files carried to a derived plan. The cost-bearing choices a user made
 # for this plan apply to the plan made from it; `planner` does not (nothing plans again).
-PLANS_OPTION_FILES="no_ripwire no_memory yolo_dwarf yolo_qa reviewer_session implementer_session fast pre_review_tests pre_review_parallel qa_threshold timeout verify_retries verify_cmd verify_parallel setup_cmd final_qa shadow_qa shadow_rate explore escalate_after fractal-routing.json fractal-selection.json jev-selection.json"
+PLANS_OPTION_FILES="no_ripwire no_memory yolo_dwarf yolo_qa reviewer_session implementer_session fast pre_review_tests pre_review_parallel qa_threshold timeout verify_retries verify_cmd verify_parallel setup_cmd final_qa shadow_qa shadow_rate explore escalate_after fractal-routing.json fractal-selection.json jev-selection.json profile.json"
 
 # --- accept ---------------------------------------------------------------------
 # A reviewer's FAIL is the QA gate; overriding it is the user's call and never forge's or
@@ -559,6 +559,23 @@ Retry or accept them (or split them off into their own plan) first." 3
       done
     fi
   done
+  # A frozen profile (#48) carries over when every source froze the same one: its name, level and
+  # body (the time it was frozen and the flags that replaced a value do not tell profiles apart).
+  same=1
+  for p in "${SRC[@]}"; do
+    [ -f "$p/profile.json" ] && python3 -c '
+import json, sys
+def key(path):
+    data = json.load(open(path))
+    return [data.get(k) for k in ("name", "level", "body")]
+sys.exit(0 if key(sys.argv[1]) == key(sys.argv[2]) else 1)' "$p/profile.json" "${SRC[0]}/profile.json" 2>/dev/null || same=0
+  done
+  if [ "$same" = 1 ]; then cp -p "${SRC[0]}/profile.json" "$NEW/profile.json"
+  else
+    for p in "${SRC[@]}"; do
+      if [ -f "$p/profile.json" ]; then note "the plans do not agree on profile.json; the combined plan leaves it unset"; break; fi
+    done
+  fi
   # The integration worktree needs a setup step to build and test the combined result, and
   # no task is ever dispatched here, so the first source's is as good as any.
   for p in "${SRC[@]}"; do [ -s "$p/setup_cmd" ] && { cp -p "$p/setup_cmd" "$NEW/setup_cmd"; break; }; done

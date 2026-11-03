@@ -6,7 +6,7 @@
 #
 # Usage:
 #   forge-parallel.sh plan <plan-dir> --repo <dir> [routing flags] [--decompose-level low|medium|high] [--ui]
-#                                     [--qa-threshold P0|P1|P2|P3|none|default]
+#                                     [--qa-threshold P0|P1|P2|P3|none|default] [--profile NAME | --no-profile]
 #   forge-parallel.sh run  <plan-dir> [--max-parallel N] [--yolo-dwarf] [--yolo-qa]
 #                                     [--verify <command>] [--setup <command>] [--dry-run]
 #                                     [--timeout S] [--retry-failed N] [--infra-retries M]
@@ -54,11 +54,18 @@
 #   --fast ROLES            which of dwarf, qa, planner, review ask for the fast service tier
 #                           (comma list, or all, or none). Kept in the plan; a re-plan without
 #                           the flag keeps it, and none removes it. codex and claude only
+#   --profile NAME          take the routing and policy values of a named profile (forge config
+#                           profile list) instead of typing them: frozen into the plan as
+#                           profile.json, shown in the table, and its decision-model gates and
+#                           budget stay the plan's whatever decide.json says later. A flag of
+#                           this call replaces just that one value. --no-profile uses none (and
+#                           removes the plan's frozen copy); with neither, the plan keeps its
+#                           copy, and a plan that has none gets the default profile, if one is set
 #   --explore E             on by default at 0.2 (0 turns it off, and is kept): a row left
 #                           to forge gets, with probability E/2, its neighbouring model
 #                           (one tier away in the given pools) instead of its pool's turn;
 #                           each decision and its odds go to tasks/<id>/route.jsonl
-#                           (precedence: flag, this plan's earlier choice, FORGE_ROUTE_EXPLORE)
+#                           (precedence: flag, profile, this plan's earlier choice, FORGE_ROUTE_EXPLORE)
 #
 # The QA threshold (plan, run, retry, review; kept for the plan):
 #   --qa-threshold Pn       the least severe CONFIRMED finding that still blocks (P0 worst ...
@@ -166,8 +173,108 @@ pool_pick() { # pool_pick <comma-list> <index>
   echo "$last"
 }
 
+# --- profiles (#48) -------------------------------------------------------------
+# A named profile is chosen at `plan` (or by forge-solo.sh), frozen as <dir>/profile.json
+# and applied as the values its flags would have set. forge_decide.profiles does the
+# reading, checking and freezing; these functions only carry its answers to the shell.
+forge_profile_py() { PYTHONPATH="$SKILL_DIR/scripts${PYTHONPATH:+:$PYTHONPATH}" python3 -m forge_decide.profiles "$@"; }
+
+# Gates and budget come from the frozen copy: FORGE_DECIDE_PROFILE_JSON is read by the
+# decide resolution at its profile level, for this process and every child of it.
+forge_profile_export() { # forge_profile_export <plan-dir>
+  local text
+  [ -f "${1:-}/profile.json" ] || return 0
+  text="$(forge_profile_py decide "$1/profile.json" 2>/dev/null)" || return 0
+  [ -z "$text" ] || export FORGE_DECIDE_PROFILE_JSON="$text"
+  return 0
+}
+
+# Before anything is written: an unknown or invalid profile stops `plan` here (exit 2).
+forge_profile_precheck() { # forge_profile_precheck <plan-dir> <plan's arguments...>
+  local plan="$1" name="" none=0 repo="" prev="" arg; shift
+  for arg in "$@"; do
+    case "$prev" in
+      --profile) name="$arg"; prev=""; continue ;;
+      --repo) repo="$arg"; prev=""; continue ;;
+    esac
+    prev=""
+    case "$arg" in --profile|--repo) prev="$arg" ;; --no-profile) none=1 ;; esac
+  done
+  [ -z "$name" ] || [ "$none" = 0 ] || die "--profile and --no-profile are mutually exclusive"
+  [ -n "$repo" ] || repo="$(cat "$plan/repo" 2>/dev/null)"
+  local flags=()
+  [ -z "$name" ] || flags+=(--profile "$name")
+  [ "$none" = 0 ] || flags+=(--no-profile)
+  forge_profile_py freeze "$plan" ${repo:+--repo "$repo"} ${flags[@]+"${flags[@]}"} --check-only || exit $?
+}
+
+# Chooses, freezes and applies the plan's profile. Reads and sets do_plan's locals (dynamic
+# scope, as forge_fast_parse does): a value a flag of this call gave is never replaced.
+forge_profile_plan() {
+  local args=() out key val repo
+  [ -z "$D_ANY" ] || args+=(--given routing.dwarf.any)
+  [ -z "$D_LO" ] || args+=(--given routing.dwarf.low)
+  [ -z "$D_MD" ] || args+=(--given routing.dwarf.medium)
+  [ -z "$D_HI" ] || args+=(--given routing.dwarf.high)
+  [ -z "$Q_ANY" ] || args+=(--given routing.qa.any)
+  [ -z "$Q_LO" ] || args+=(--given routing.qa.low)
+  [ -z "$Q_MD" ] || args+=(--given routing.qa.medium)
+  [ -z "$Q_HI" ] || args+=(--given routing.qa.high)
+  [ -z "$PLANNER" ] || args+=(--given routing.planner)
+  [ -z "$SHADOW_QA" ] || args+=(--given policy.shadow_qa)
+  [ -z "$SHADOW_RATE" ] || args+=(--given policy.shadow_rate)
+  [ -z "$EXPLORE" ] || args+=(--given policy.explore)
+  [ "$FAST_GIVEN" != 1 ] || args+=(--given policy.fast)
+  [ "$PF_QT" != 1 ] || args+=(--given policy.qa_threshold)
+  [ -z "$PF_NAME" ] || args+=(--profile "$PF_NAME")
+  [ "$PF_NONE" = 0 ] || args+=(--no-profile)
+  repo="$REPO"; [ -n "$repo" ] || repo="$(cat "$PLAN/repo" 2>/dev/null)"
+  out="$(forge_profile_py freeze "$PLAN" ${repo:+--repo "$repo"} ${args[@]+"${args[@]}"})" || exit $?
+  while IFS="$(printf '\t')" read -r key val; do
+    case "$key" in
+      routing.dwarf.any) D_ANY="$val" ;;
+      routing.dwarf.low) D_LO="$val" ;;
+      routing.dwarf.medium) D_MD="$val" ;;
+      routing.dwarf.high) D_HI="$val" ;;
+      routing.qa.any) Q_ANY="$val" ;;
+      routing.qa.low) Q_LO="$val" ;;
+      routing.qa.medium) Q_MD="$val" ;;
+      routing.qa.high) Q_HI="$val" ;;
+      routing.planner) PLANNER="$val" ;;
+      policy.shadow_qa) SHADOW_QA="$val" ;;
+      policy.shadow_rate) SHADOW_RATE="$val" ;;
+      policy.explore) EXPLORE="$val" ;;
+      policy.fast) forge_fast_parse "$val" plan; FAST_GIVEN=1 ;;
+    esac
+  done <<EOF
+$out
+EOF
+  forge_profile_export "$PLAN"
+}
+
+# What `run` reads from the frozen profile when its flags do not say: the retry budgets,
+# and the Fractal planner (only with --fractal-auto-decompose, which --fractal-planner needs).
+forge_profile_run_values() { # forge_profile_run_values <plan-dir>
+  local key val arg auto=0 planner=0
+  [ -f "$1/profile.json" ] || return 0
+  for arg in ${FRACTAL_ARGS[@]+"${FRACTAL_ARGS[@]}"}; do
+    case "$arg" in --fractal-auto-decompose) auto=1 ;; --fractal-planner) planner=1 ;; esac
+  done
+  while IFS="$(printf '\t')" read -r key val; do
+    case "$key" in
+      policy.retry_failed) [ "$PP_RETRY_FAILED_SET" = 1 ] || PP_RETRY_FAILED="$val" ;;
+      policy.infra_retries) [ "$PP_INFRA_RETRIES_SET" = 1 ] || PP_INFRA_RETRIES="$val" ;;
+      routing.fractal_planner) [ "$auto$planner" != 10 ] || FRACTAL_ARGS+=(--fractal-planner "$val") ;;
+    esac
+  done <<EOF
+$(forge_profile_py value "$1/profile.json" policy.retry_failed policy.infra_retries routing.fractal_planner 2>/dev/null)
+EOF
+}
+
 do_plan() {
   local PLAN="${1:?plan needs a plan dir}"; shift
+  local PF_NAME="" PF_NONE=0 PF_QT=0
+  forge_profile_precheck "$PLAN" "$@"
   local REPO="" D_ANY="" D_HI="" D_MD="" D_LO="" Q_ANY="" Q_HI="" Q_MD="" Q_LO=""
   PP_INFRA_FALLBACK=""
   local PLANNER="" NOMEM=0 jev_rc=0 DLEVEL="" SHADOW_QA="" SHADOW_RATE="" EXPLORE="" FAIL_FIRST="" REVIEWER_SESSION="" IMPLEMENTER_SESSION="" PRE_REVIEW="" PRE_REVIEW_PARALLEL=""
@@ -181,6 +288,8 @@ do_plan() {
           *) die "--decompose-level must be low, medium or high" ;; esac ;;
       --no-ripwire) export FORGE_RIPWIRE=off; shift ;;
       --no-memory)    NOMEM=1; shift ;;
+      --profile)      PF_NAME="${2:?--profile needs a profile name}"; shift 2 ;;
+      --no-profile)   PF_NONE=1; shift ;;
       --shadow-qa)
         [ -n "${2:-}" ] || die "--shadow-qa needs a QA spec, a comma list of specs, or none"
         SHADOW_QA="$2"; shift 2 ;;
@@ -218,7 +327,10 @@ do_plan() {
         # `case` is not a loop, so `continue` here belongs to the enclosing while.
         # The shared flags write into the plan dir (--qa-threshold), so it must exist first.
         [ -d "$PLAN" ] || die "plan dir '$PLAN' does not exist"
-        if forge_pp_flag plan "$PLAN" "$@"; then shift "$PP_SHIFT"; continue; fi
+        if forge_pp_flag plan "$PLAN" "$@"; then
+          [ "$1" != --qa-threshold ] || PF_QT=1
+          shift "$PP_SHIFT"; continue
+        fi
         if [ "$JEV_OPTS" = 1 ]; then
           forge_jev_flag "$@"; jev_rc=$?
           case "$jev_rc" in
@@ -230,8 +342,11 @@ do_plan() {
         ;;
     esac
   done
-  [ "$JEV_OPTS" = 1 ] && forge_jev_export
   [ -d "$PLAN" ] || die "plan dir '$PLAN' does not exist"
+  # The profile (#48) first: its gates and budget count for every decision-model step below,
+  # and its values stand in for the flags this call did not give.
+  forge_profile_plan
+  [ "$JEV_OPTS" = 1 ] && forge_jev_export
   # Freeze the selection next to the task table, so run and retry restore it rather
   # than re-deciding. Written on every plan: a re-plan is a new decision.
   [ "$JEV_OPTS" = 1 ] && forge_jev_record "$PLAN"
@@ -609,6 +724,10 @@ render_table() {
     local fast_roles
     fast_roles="$(awk 'NF { printf "%s%s", (n++ ? ", " : ""), $0 }' "$PLAN/fast")"
     echo "fast tier: $fast_roles — billed at a higher rate (codex service_tier=fast; claude fast mode needs extra usage enabled)"
+  fi
+  if [ -f "$PLAN/profile.json" ]; then
+    local profile_line; profile_line="$(forge_profile_py line "$PLAN/profile.json" 2>/dev/null)"
+    [ -z "$profile_line" ] || echo "$profile_line"
   fi
   # The plan-level threshold: at plan time no per-task file exists yet.
   local qa_level qa_src
@@ -1971,6 +2090,7 @@ do_run() {
         ;;
     esac
   done
+  forge_profile_run_values "$PLAN"
   [ "$JEV_OPTS" = 1 ] && forge_jev_settle "$PLAN"
   [ -n "$PP_SWEEP" ] || [ "$PP_SWEEP_PLAUSIBLE$PP_SWEEP_MAX_SET" = 00 ] || die "--sweep-plausible and --sweep-max go with --sweep"
   case "$OUTPUT" in summary|full) ;; *) die "--output must be summary or full" ;; esac
@@ -2289,6 +2409,9 @@ case "$CMD" in
 esac
 # Subcommands implemented in the optional libraries fail clearly if the library is absent.
 need_fn() { declare -F "$1" >/dev/null || die "'$CMD' is not available: $1 is missing" 3; }
+# A plan with a frozen profile asks its decision-model gates from that copy (`plan` does it itself,
+# after it freezes). The internal subcommands inherit it from the `run` that started them.
+case "$CMD" in run|retry|integrate|accept|review|split|attribute) forge_profile_export "${1:-}" ;; esac
 case "$CMD" in
   plan)      do_plan "$@"; rc=$?; forge_update_notice; exit "$rc" ;;
   run)

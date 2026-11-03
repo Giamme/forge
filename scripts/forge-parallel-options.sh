@@ -11,6 +11,9 @@
 #     1  not ours, or not accepted by this subcommand
 #   A malformed value exits through die (2).
 #
+# A profile (plan --profile, frozen as $PLAN/profile.json) supplies --retry-failed and
+# --infra-retries when `run` is not given them; a flag of the run wins.
+#
 # Persisted options become files in the plan dir, like --verify and --setup, so a later
 # `retry` or the scheduler's task processes see them. Cost-bearing options that change
 # what a run is allowed to spend (--retry-failed, --infra-retries) are deliberately NOT
@@ -60,6 +63,8 @@
 PP_SHIFT=2
 PP_RETRY_FAILED=0
 PP_INFRA_RETRIES=0
+PP_RETRY_FAILED_SET=0     # given on this command line, so a frozen profile's value does not replace it
+PP_INFRA_RETRIES_SET=0
 PP_FINAL_REVIEW=""
 PP_SWEEP=""
 PP_SWEEP_MAX=5
@@ -98,10 +103,10 @@ forge_pp_flag() {
       printf '%s' "$2" > "$plan/timeout" ;;
     --retry-failed)
       [ "$cmd" = run ] || return 1
-      pp_nonneg --retry-failed "${2:-}"; PP_RETRY_FAILED="$2" ;;
+      pp_nonneg --retry-failed "${2:-}"; PP_RETRY_FAILED="$2"; PP_RETRY_FAILED_SET=1 ;;
     --infra-retries)
       [ "$cmd" = run ] || return 1
-      pp_nonneg --infra-retries "${2:-}"; PP_INFRA_RETRIES="$2" ;;
+      pp_nonneg --infra-retries "${2:-}"; PP_INFRA_RETRIES="$2"; PP_INFRA_RETRIES_SET=1 ;;
     --infra-fallback)
       [ "$cmd" = run ] || return 1
       PP_SHIFT=1; printf 'on\n' > "$plan/infra_fallback" ;;
