@@ -52,6 +52,7 @@ written), and the reader must never raise because of one.
 | `attribution.json` | the result of `forge-parallel.sh attribute`: `culprit` (a task id or `null`), `base_fails`, `inconclusive` (a reason or `null`), `merges`, `steps`, `verification_runs`, `gate` (`null` without the gate, else `{mode, ranking, tried, outcome}`); returned as `attribution`, see RunDetail |
 | `max_parallel`, `escalate_after`, `verify_retries` | one integer each |
 | `qa_threshold` | `P0`..`P3`, the least severe finding that still blocks; `final_qa` the final review's QA spec |
+| `profile.json` | the profile the run froze: `name`, `level` (`user`, `repo` or `builtin`), `body` (the profile object), `shadowed` (levels the winning copy hid), `frozen_at` (an epoch), `overridden` (bool: the run named a profile of its own). RunDetail returns `settings.profile` `{name, level, overridden}`, `null` when the file is absent, unreadable or not that shape |
 | `deferrals.txt` | one line per task the wave planner deferred |
 | `integration.base`, `accepted.integration` | one commit each: where the integration branch started, the revision the run accepted |
 | `attempts/<role>-<uuid>/` | one *execution* (below) of the run itself: `parallel` (a `run`) or `verification` |
@@ -99,7 +100,7 @@ one of `task dwarf qa solo verification parallel` and `<uuid>` 32 lowercase hex 
 
 | Path | Format |
 |---|---|
-| `metrics.json` | `role`, `started` (monotonic), `wall_started` (epoch), `phase`, `phase_started` (monotonic), `elapsed_s` (seconds per phase, `total` once done), `exit_code` (`null` while in flight), `harness`, `prompt_bytes`, `input_tokens`, `cached_input_tokens`, `output_tokens`, `infra_class`, `shadow` |
+| `metrics.json` | `role`, `started` (monotonic), `wall_started` (epoch), `phase`, `phase_started` (monotonic), `elapsed_s` (seconds per phase, `total` once done), `exit_code` (`null` while in flight), `harness`, `prompt_bytes`, `input_tokens`, `cached_input_tokens`, `output_tokens`, `infra_class`, `shadow`, `service_tier` (the tier asked), `speed` (`fast`, `standard` or `default`), `speed_reason` (why it was not fast) |
 | `dataset.json` | may be absent: `parent` (the execution that started this one, e.g. `task-<uuid>`), `trigger`, `attempt_start` and `resume` (task executions) |
 | `<role>.resolved`, `.prompt`, `.last`, `.timedout`, `.log`, `.clock` | copies made when it finished: the model resolution (`key=value`), the prompt, the final message, the timeout marker, the harness log and its clock |
 
@@ -134,6 +135,7 @@ raise because of one. Older solo dirs have `verdict` and not `status`.
 | `attempts/<role>-<uuid>/` | the run's executions: `solo`, `dwarf`, `qa` |
 | `dwarf.input`, `qa.input`, `qa.gate`, `known_issues.md` | as for a plan task |
 | `dwarf.last`, `qa.last` | the role's final message. `qa.last` carries `FORGE_VERDICT:` the same way a plan task does |
+| `profile.json` | as for a plan: the profile the run froze. `settings.profile` is `{name, level, overridden}`, or `null` when the file is absent, unreadable or not that shape |
 | `dwarf.log`, `qa.log` | raw logs. The summary stats them and does not read them, so `updated` moves while a model writes |
 | `changes.diff`, `existing.diff` | the run's change, and the uncommitted changes the repo already had when it started |
 | `fractal-selection.json` | as for a plan |
@@ -267,6 +269,8 @@ its last 20,000 behind a leading `…`. Their `truncated` lists the field names 
 | `GET /api/models/reviewers` | `200` the `forge dataset reviewers --json` report (how each reviewer's PASSed work held up); no parameters |
 | `GET /api/config?run=<key>` | `200` the `forge config show --json` of that run's repository root (see Config) |
 | `POST /api/config` | set or unset one allowed key (`repo.verify`, `repo.setup`, `repo.verify-subset`, `decide.gate.<gate>`, `decide.gate.<gate>.provider`, `decide.gate.<gate>.model`); `jev.enabled` is gone; authenticated |
+| `GET /api/config/profiles?run=<key>` | `200` every profile of that run's repository, each with its level, shadowed levels, default flag and body (see Profiles) |
+| `POST /api/config/profiles` | create, edit, set, unset, remove or select a profile through `forge config profile`; authenticated |
 | `GET /api/runs/<key>/export?texts=0\|1&paths=0\|1` | `200` the run as one HTML file (see Export), `Content-Disposition: attachment`, `Content-Security-Policy: default-src 'none'; sandbox`; `404` for an unknown run |
 | `GET /api/runs/<key>/tasks/<id>/fractal` | `200 TaskFractal` |
 | `GET /api/runs/<key>/tasks/<id>/fractal/nodes/<node>[/diff]` | `200 FractalNodeDetail`, or with `/diff` a `DiffDetail` of its `candidate.diff`; `<node>` matches `[A-Za-z0-9][A-Za-z0-9_-]{0,100}` |
@@ -388,7 +392,8 @@ Every RunSummary field, plus:
   "request": "the user's request, verbatim",
   "settings": {"explore": 0.5, "shadow_rate": 0.5, "shadow_qa": ["opus", "sol:xhigh"], "timeout": 3600,
                "max_parallel": 2, "qa_threshold": "P2", "escalate_after": 3, "verify_retries": 1,
-               "final_qa": "opus"},
+               "final_qa": "opus",
+               "profile": {"name": "balanced", "level": "user", "overridden": false}},
   "attribution": {"culprit": "page", "base_fails": false, "inconclusive": null, "verification_runs": 4,
                   "gate_outcome": "confirmed"},
   "verification": {"status": "PASS", "command": "python3 -m unittest", "log_tail": "...",
@@ -429,8 +434,11 @@ Every RunSummary field, plus:
   list (empty when missing). `max_parallel`, `escalate_after`, `verify_retries` are integers,
   `final_qa` the first line of their file. `qa_threshold` is the effective level (`P0`..`P3`):
   a missing file reads `P2` (forge's default) with `qa_threshold_source` `default`; a file reads
-  with source `set`, and `none` in it reads `P3`. A solo run has no plan settings: every value
-  is `null`, including `shadow_qa`, except `qa_threshold` and its source, which read the same way.
+  with source `set`, and `none` in it reads `P3`. `profile` is `{name, level, overridden}` from
+  `profile.json`, the profile the run froze, or `null` when that file is missing, unreadable or
+  not a frozen profile (`name` and `level` non-empty strings, `overridden` a bool). A solo run
+  reads `$RUN/profile.json` the same way and has no other plan settings: every other value is
+  `null`, including `shadow_qa`, except `qa_threshold` and its source, which read the same way.
 - `attribution` is the result of `forge-parallel.sh attribute` from `attribution.json`, or `null` when
   the file is missing. `culprit` is the merged task's id or `null`; `base_fails` is `true` only when the
   base verified FAIL; `inconclusive` is the reason the search stopped without a culprit, or `null`;
@@ -699,7 +707,7 @@ the detail is `request.md`.
  "phases": {"preparation": 1.2, "preflight": 0.4, "model": 590.1, "snapshot": 3.3, "verification": 0.0},
  "exit_code": 0, "infra_class": null, "timed_out": false,
  "model": {"spec": "sol:xhigh", "alias": "sol", "harness": "codex", "model": "gpt-sol", "effort": "xhigh",
-           "clamped": null},
+           "clamped": null, "service_tier": "standard", "speed": "fast", "speed_reason": null},
  "tokens": {"input": 120000, "cached": 90000, "output": 8000}, "prompt_bytes": 45678,
  "verdict": null, "findings": null}
 ```
@@ -726,6 +734,13 @@ the detail is `request.md`.
 - `model`: from the `<role>.resolved` copy (a running execution without one: the owner dir's
   live `<role>.resolved`); `spec` is `alias[:effort]`, `effort` is `null` for
   `<harness default>`. `null` for the pipeline roles and when there is no alias.
+  `service_tier` is the tier that was asked: `metrics.json`'s `service_tier`, else the
+  `<role>.resolved` line `service_tier=` (written only when the dispatch asked for one).
+  `speed` is what the log reported (`fast`, `standard` or `default`) and `speed_reason` is why
+  it was not fast; both come only from `metrics.json`. Each is a non-empty string with
+  surrounding whitespace stripped, or `null` when absent, so a dispatch from before these keys
+  is otherwise unchanged. While a dispatch is still running and has no resolved copy of its
+  own, `service_tier` falls back to the live `<role>.resolved` and the speed stays unknown.
 - `tokens` is `null` when all three counts are; `timed_out` is whether `<role>.timedout` exists.
 - `verdict` and `findings` (FindingsSummary): `qa` only, from its own `qa.last` copy once done.
 - Executions are ordered by `started` (unknown last), then `id`.
@@ -1117,7 +1132,10 @@ lines follow, a line was cut, or reaching them took more than 64 MB of reading.
               "repo_root": "/x/y",
               "verdict": "FAIL", "findings": FindingsSummary, "duration_s": 270.0, "tokens": {...},
               "agreement": null, "primary_alias": null}],
- "warnings": ["3f9a0c1d2e4b: tasks/x/attempts.tsv line 2: invalid attempt"]}
+ "warnings": ["3f9a0c1d2e4b: tasks/x/attempts.tsv line 2: invalid attempt"],
+ "recommended": {"profile": "balanced",
+                 "source": "#86 SWE-bench Pro decomposed runs, 2026-10-28; docs/models.md",
+                 "dwarf": {"low": "haiku:xhigh", "medium": "sonnet:medium", "high": "opus:high"}}}
 ```
 
 - `tasks[]`: one per task (`solo` for a solo run). `repo` is the run's `repo` text and `repo_root` its
@@ -1149,6 +1167,13 @@ lines follow, a line was cut, or reaching them took more than 64 MB of reading.
   `task_count`, `counts` or `final_review`, or its `repo_root`, changes (4,096 runs); a run with a `RUNNING` task is
   read again after 120 s. One computation runs at a time. Past 50,000 task rows the next run
   is left out and `truncated` is true. `warnings` (first 500) are prefixed by the run key.
+- `recommended`: the balanced built-in's first `routing.dwarf` spec of each tier, read from
+  `scripts/forge_decide/builtin_profiles.json` and cached for the life of the process (a later
+  edit of that file is picked up by the next server). `profile` is `"balanced"`. `source` is
+  that profile's `source` when it is a string, otherwise `""`. `dwarf` maps `low`, `medium`
+  and `high` to that tier's first spec; a tier whose pool does not start with one is omitted.
+  The whole value is `null` when the file cannot be read or no tier qualifies. The object
+  above is what the shipped file answers today.
 
 ## Fractal (`forge_ui/fractal.py`)
 
@@ -1354,8 +1379,8 @@ object its stdout holds, when that parses as one.
 | timeout | `504` | `timeout` |
 
 For the controls routes, unknown run keys, solo runs (they have no controls) and runs the
-catalog does not hold are `404 {"error": "not found"}`. The issues, dismiss, delete and config
-routes below accept plan and solo runs alike (`forge issues` and `forge runs rm` take both);
+catalog does not hold are `404 {"error": "not found"}`. The issues, dismiss, delete, config and
+profile routes below accept plan and solo runs alike (`forge issues` and `forge runs rm` take both);
 for them only unknown keys and runs the catalog does not hold are `404`. Every write that reaches a route logs
 `forge-ui: control <route> <run key> -> <status>` unless the server runs with `--quiet`.
 
@@ -1480,6 +1505,60 @@ value is a non-empty text of at most 4096 characters without control characters 
 are allowed), not starting with `-`; `repo.verify-subset` must contain `{files}`. `200` with the
 CLI's object (`ok`, `key`, `previous`, `value`). Writes serialize on one server-wide config lock
 (`409 busy`). Unknown run `404`. Timeout 60 s.
+
+### `GET /api/config/profiles?run=<key>` and `POST /api/config/profiles`
+
+The run is resolved as for `/api/config`: the repository is the run's root when that is an
+existing absolute directory, else the run's own `repo` file, and a missing directory is `409`.
+An unknown run is `404`. A key that is not 12 hex, or any query parameter other than `run`, is
+`400` before the CLI runs. `GET` does not take the config lock.
+
+`GET` runs `config profile list --json --repo <repo>`, then `config profile show <name> --json
+--repo <repo>` once per row, and answers with the list object with each profile's `body` added.
+One request is enough for the Settings page. Each row is `{name, level, shadowed, default, body}`:
+
+- `level` is `user`, `repo` or `builtin` (user hides repo hides builtin).
+- `shadowed` is the levels that copy hides, in that order, or `[]`.
+- `default` is whether this profile is the default in effect.
+- `body` is the winning profile object, the one `show` prints.
+
+The top-level `default` is `{name, level}` of the default in effect (`default_profile` in the
+user file, else the repo file), or `{name: null, level: null}` when none is selected. A list or
+a show that does not print that object, or a row whose name is not a profile name, is `502`.
+Timeout 60 s per CLI call.
+
+`POST` takes `{"run": <key>, "action", "level": "user"|"repo", ...}`. `level: "repo"` adds
+`--repo <repo>` before `--json` and writes `<repo>/.forge/decide.json`; `user` writes the user
+file and passes no `--repo`. `--json` is always last. The answer is the CLI's `--json` object,
+`{"ok": true, "name", "level", "body"}` (`name` and `body` are `null` when `use --none` cleared
+the default or `rm` removed the profile). A failure uses the exit mapping above, with `result`
+set to `{"ok": false, "error"}` when the CLI printed one.
+
+| `action` | other fields | CLI |
+|---|---|---|
+| `create` | `name`, and exactly one of `from` (another profile's name) or `body` (an object) | `config profile create NAME --from OTHER` or `--file -` |
+| `edit` | `name`, `body` | `config profile edit NAME --file -` |
+| `set` | `name`, `key`, `value` | `config profile set NAME KEY VALUE` |
+| `unset` | `name`, `key` | `config profile unset NAME KEY` |
+| `rm` | `name` | `config profile rm NAME` |
+| `use` | `name`, or `"none": true` (not both) | `config profile use NAME` or `config profile use --none` |
+
+A `body` is written to the CLI's stdin as JSON (`--file -`). That text is refused at 64 KiB
+with `400`; the HTTP body is already capped at 64 KiB (`413`) by the server, and a re-encode
+can be the larger of the two. This is the one write that passes stdin. Checked before any CLI
+runs, and a failure there calls nothing: `action` is one of the six; `name` and `from` match
+`^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$`; `key` matches `^(routing|policy)\.[a-z_.]+$` (the CLI still
+rejects a key of that shape that is not a real profile key); `value` is a string with no
+control characters, newline and tab included, and not starting with `-`; `level` is `user` or
+`repo`; `body` is a JSON object. Any other field is `400`.
+
+Writes take the same server-wide config lock as `/api/config` (`409 {"error": "busy"}`) and the
+same token and Origin checks. Timeout 60 s. Exit 2 is `400` (`invalid`). That includes editing,
+setting, unsetting or removing a built-in profile (`balanced`, `lite`) that has no copy at the
+level being written: the CLI exits 2, not 3, and the detail says it is read-only and names
+`forge config profile create NAME --from <name>`. Exit 3 is `409` (`refused`), as for every
+other write. The CLI does the validation and the writing, so a profile created here is
+byte-for-byte the file `forge config profile create` writes.
 
 ## Status vocabulary for the page and the graph
 

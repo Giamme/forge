@@ -12,6 +12,9 @@ import sys
 
 TRANSCRIPTS = Path(__file__).parent / 'transcripts'   # one small log per harness format
 T0 = 1760600000.0
+# What a plan run freezes at $PLAN/profile.json. make_solo leaves the file absent.
+FROZEN_PROFILE = {'name': 'balanced', 'level': 'user', 'body': {'policy': {'timeout': 3600}},
+                  'shadowed': ['builtin'], 'frozen_at': T0, 'overridden': False}
 MTIME = T0 + 5000  # every file and dir, unless set otherwise
 MERGED = {'reader': T0 + 1300, 'page': T0 + 950}
 REVIEW_OLD, REVIEW_NEW, INTEGRATE = 'final-review-1760602000-4242', 'final-review-1760603000-4343', 'integrate-1760601800-4300'
@@ -277,6 +280,7 @@ def make_plan(base: Path) -> Path:
                         ('max_parallel', '2\n'), ('qa_threshold', 'P2'), ('escalate_after', '1'),
                         ('verify_retries', '1'), ('final_qa', 'opus')]:
         write(plan / name, value)
+    write(plan / 'profile.json', FROZEN_PROFILE)
     write(plan / 'integration.base', 'a' * 40 + '\n')
     write(plan / 'accepted.integration', 'b' * 40 + '\n')
     write(plan / 'deferrals.txt', 'wave 1: docs deferred (file overlap with a task already in this wave)\n\n')
