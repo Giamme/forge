@@ -354,8 +354,10 @@ def parse_reply(reply: str) -> list:
     body = extract_block(reply)
     try:
         data = json.loads(body, object_pairs_hook=no_duplicate_keys)
-    except json.JSONDecodeError as err:
-        raise Refusal(f'the forge-plan body is not valid JSON: {err}')
+    except (ValueError, RecursionError) as err:
+        # JSONDecodeError is a ValueError; so is Python's limit on integer digits. Nesting deeper
+        # than the interpreter allows raises RecursionError.
+        raise Refusal(f'the forge-plan body is not valid JSON: {type(err).__name__}: {str(err)[:200]}')
     check_keys(data, ('tasks',), 'the forge-plan body')
     tasks = data['tasks']
     if not isinstance(tasks, list) or not 1 <= len(tasks) <= MAX_TASKS:
@@ -377,10 +379,12 @@ def cmd_parse(args) -> int:
     try:
         tasks = parse_reply(reply)
     except Refusal as err:
-        reason = str(err)
-        write_atomic(plan / 'planner.refused', f'{reason}\nreply: {args.reply}\n')
+        # A key or path may hold a lone surrogate; escape it so the reason can be written and printed.
+        reason = str(err).encode('utf-8', 'backslashreplace').decode('utf-8')
+        reply_path = str(args.reply).encode('utf-8', 'backslashreplace').decode('utf-8')
+        write_atomic(plan / 'planner.refused', f'{reason}\nreply: {reply_path}\n')
         print(f'planner reply refused: {reason}')
-        print(f'reply: {args.reply}')
+        print(f'reply: {reply_path}')
         return 4
     # Everything is encoded before the first file is written, so a text that cannot be written
     # cannot leave half a plan behind.
