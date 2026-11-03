@@ -7,6 +7,7 @@
 # Usage:
 #   forge-parallel.sh plan <plan-dir> --repo <dir> [routing flags] [--decompose-level low|medium|high] [--ui]
 #                                     [--qa-threshold P0|P1|P2|P3|none|default] [--profile NAME | --no-profile]
+#                                     [--collapse-chains]
 #   forge-parallel.sh run  <plan-dir> [--max-parallel N] [--yolo-dwarf] [--yolo-qa]
 #                                     [--verify <command>] [--setup <command>] [--dry-run]
 #                                     [--timeout S] [--retry-failed N] [--infra-retries M]
@@ -67,6 +68,10 @@
 #                           (one tier away in the given pools) instead of its pool's turn;
 #                           each decision and its odds go to tasks/<id>/route.jsonl
 #                           (precedence: flag, profile, this plan's earlier choice, FORGE_ROUTE_EXPLORE)
+#   --collapse-chains       this call only (not kept): after the task table is validated and
+#                           before routing, merge a chain into one task named combined.
+#                           A one-task or branching plan is left as it is, and collapsing
+#                           a plan that is already collapsed is not an error
 #
 # The QA threshold (plan, run, retry, review; kept for the plan):
 #   --qa-threshold Pn       the least severe CONFIRMED finding that still blocks (P0 worst ...
@@ -280,6 +285,7 @@ do_plan() {
   PP_INFRA_FALLBACK=""
   local PLANNER="" NOMEM=0 jev_rc=0 DLEVEL="" SHADOW_QA="" SHADOW_RATE="" EXPLORE="" FAIL_FIRST="" REVIEWER_SESSION="" IMPLEMENTER_SESSION="" PRE_REVIEW="" PRE_REVIEW_PARALLEL=""
   local FAST_GIVEN=0 FAST_PARSED=""
+  local COLLAPSE=0 COLLAPSED_NOW=0
   while [ $# -gt 0 ]; do
     case "$1" in
       --repo)         REPO="${2:?}"; shift 2 ;;
@@ -298,6 +304,7 @@ do_plan() {
         printf '%s' "${2:-}" | grep -Eq '^(0?\.[0-9]+|0|1|1\.0+)$' || die "--shadow-rate needs a share between 0 and 1"
         SHADOW_RATE="$2"; shift 2 ;;
       --explore)      EXPLORE="${2:?--explore needs a share between 0 and 0.5}"; shift 2 ;;
+      --collapse-chains) COLLAPSE=1; shift ;;
       --dwarf)        D_ANY="${2:?}"; shift 2 ;;
       --dwarf-high)   D_HI="${2:?}"; shift 2 ;;
       --dwarf-medium) D_MD="${2:?}"; shift 2 ;;
@@ -510,7 +517,46 @@ EOF
     fi
   fi
 
-  # --- validate + resolve routing ---
+  # --- collapse a chain, then resolve routing ---
+  # --collapse-chains acts on this call only. The gates have already run (drift may have
+  # added files). Validate, then collapse, then routing fills combined's `-` columns, and
+  # the declared copy is taken again so the declared tier is the combined task's. A second
+  # collapse (tasks.precollapse.tsv or collapsed.json already there) is not an error.
+  if [ "$COLLAPSE" = 1 ]; then
+    local vline vid vdeps vdiff vd
+    while IFS= read -r vline; do
+      case "$vline" in ''|'#'*) continue ;; esac
+      vid="$(printf '%s' "$vline" | awk -F'\t' '{print $1}')"
+      vdeps="$(printf '%s' "$vline" | awk -F'\t' '{print $2}')"
+      vdiff="$(printf '%s' "$vline" | awk -F'\t' '{print $3}')"
+      [ -n "$vid" ] || die "tasks.tsv has a row with no id"
+      case "$vdiff" in low|medium|high) ;; *) die "task '$vid' has difficulty '$vdiff' (expected low, medium or high)" ;; esac
+      if [ "$vdeps" != "-" ]; then
+        for vd in $(printf '%s' "$vdeps" | tr ',' ' '); do
+          all_ids "$T" | grep -qx "$vd" || die "task '$vid' depends on unknown task '$vd'"
+        done
+      fi
+    done < "$T"
+    local collapse_out collapse_err collapse_rc=0 collapse_msg
+    collapse_err="$PLAN/.collapse.err"
+    collapse_out="$(python3 "$SKILL_DIR/scripts/forge-plan-check.py" collapse "$PLAN" 2>"$collapse_err")" || collapse_rc=$?
+    collapse_msg="$(cat "$collapse_err" 2>/dev/null || true)"
+    rm -f "$collapse_err"
+    if [ "$collapse_rc" -ne 0 ]; then
+      case "$collapse_msg" in
+        *already\ exists*) ;;
+        *) die "could not collapse the plan${collapse_msg:+: $collapse_msg}" ;;
+      esac
+    else
+      case "$collapse_out" in
+        collapsed\ *)
+          cp "$T" "$PLAN/tasks.declared.tsv" || die "could not rewrite $PLAN/tasks.declared.tsv"
+          COLLAPSED_NOW=1
+          ;;
+      esac
+    fi
+  fi
+
   local tmp="$PLAN/.tasks.tsv.new"; : > "$tmp"
   local hi_i=0 md_i=0 lo_i=0 an_i=0 qhi_i=0 qmd_i=0 qlo_i=0 qan_i=0 unassigned=0
   printf '# id\tdeps\tdifficulty\tfiles\tdwarf\tqa\ttitle\n' > "$tmp"
@@ -623,6 +669,14 @@ EOF
       fi
       if [ "$dep_added" = 1 ]; then compute_waves "$PLAN"; fi
     fi
+  fi
+
+  # After the last wave computation (a forward dep may have just changed it). Advisory:
+  # a failure is a note, and the table is still printed.
+  local shape_err="" shape_rc=0
+  shape_err="$(python3 "$SKILL_DIR/scripts/forge-plan-check.py" shape "$PLAN" --write 2>&1 >/dev/null)" || shape_rc=$?
+  if [ "$shape_rc" -ne 0 ]; then
+    note "plan shape could not be recorded (advisory)${shape_err:+: $shape_err}"
   fi
 
   render_table "$PLAN"
@@ -776,6 +830,22 @@ EOF
     done
     echo
   done
+  # A chain collapsed on this call, or a chain left as a chain. one and branches say nothing.
+  # COLLAPSED_NOW is do_plan's: collapsed.json from an earlier plan is not announced again.
+  local shape_note=""
+  if [ "${COLLAPSED_NOW:-0}" = 1 ] && [ -f "$PLAN/collapsed.json" ]; then
+    shape_note="$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print("collapsed %d" % len(d.get("from") or []))' "$PLAN/collapsed.json" 2>/dev/null)" || shape_note=""
+  elif [ -f "$PLAN/plan-shape.json" ]; then
+    shape_note="$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print("%s %s" % (d.get("shape"), d.get("tasks")))' "$PLAN/plan-shape.json" 2>/dev/null)" || shape_note=""
+  fi
+  case "$shape_note" in
+    collapsed\ *)
+      echo "collapsed a sequential plan of ${shape_note#collapsed } tasks into one (tasks.precollapse.tsv keeps the original)"
+      echo ;;
+    chain\ *)
+      echo "this plan runs sequentially: ${shape_note#chain } tasks, at most 1 in parallel; each pays its own implementation and review. One task would run once: re-plan with --collapse-chains"
+      echo ;;
+  esac
   if [ "$starred" = 1 ]; then
     echo "* picked by exploratory routing (--explore $(cat "$PLAN/explore" 2>/dev/null)) instead of the pool's turn;"
     echo "  to pin another model, put its spec in the dwarf column of tasks.tsv and re-plan"
