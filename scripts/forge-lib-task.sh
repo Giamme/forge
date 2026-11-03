@@ -100,7 +100,10 @@ except Exception:
 # a re-plan that omits the flag leaves the file alone.
 forge_fast_parse() { # forge_fast_parse <roles> <plan|solo>
   local raw="$1" mode="$2" token rest seen="" w more=0
-  raw="$(printf '%s' "$raw" | tr -d '[:space:]')"
+  # Trim the ends only. A space inside a token is part of it: "dwa rf" is not the
+  # role dwarf, and deleting every space would turn that typo into a billed role.
+  raw="${raw#"${raw%%[![:space:]]*}"}"
+  raw="${raw%"${raw##*[![:space:]]}"}"
   [ -n "$raw" ] || die "--fast needs a comma list of roles (dwarf, qa, planner, review), all or none"
   case "$mode" in
     plan|solo) ;;
@@ -123,6 +126,8 @@ review"
   rest="$raw"
   while true; do
     token="${rest%%,*}"
+    token="${token#"${token%%[![:space:]]*}"}"
+    token="${token%"${token##*[![:space:]]}"}"
     # A trailing comma is an empty role (`dwarf,`), so the loop must visit that field too.
     case "$rest" in
       *,*) rest="${rest#*,}"; more=1 ;;
@@ -169,22 +174,23 @@ forge_fast_store() { # forge_fast_store <dir> — honour FAST_GIVEN / FAST_PARSE
   fi
 }
 
-# Prints `--service-tier fast` when <role> is listed in <dir>/fast, and nothing otherwise
-# (including every Fractal dispatch: that runner does not take the option).
+# Prints `--service-tier fast` when <role> is listed in <dir>/fast, and nothing otherwise.
+# Fractal's runner does not take the option. That is FORGE_FRACTAL_RUN once the runner is
+# selected, and also a saved selection: retry preflights before the runner is selected, so
+# the variable is still unset. A whole-run review is not a Fractal dispatch and still asks.
 forge_fast_tier() { # forge_fast_tier <dir> <role>
-  local line
+  local line found=0
   [ -n "${FORGE_FRACTAL_RUN:-}" ] && return 0
   [ -f "$1/fast" ] || return 0
   while IFS= read -r line || [ -n "$line" ]; do
     line="${line%$'\r'}"
     line="${line#"${line%%[![:space:]]*}"}"
     line="${line%"${line##*[![:space:]]}"}"
-    if [ "$line" = "$2" ]; then
-      printf '%s %s\n' --service-tier fast
-      return 0
-    fi
+    if [ "$line" = "$2" ]; then found=1; break; fi
   done < "$1/fast"
-  return 0
+  [ "$found" = 1 ] || return 0
+  if [ "$2" != review ] && forge_plan_is_fractal "$1"; then return 0; fi
+  printf '%s %s\n' --service-tier fast
 }
 
 # One note per invocation, and only where this invocation's dispatches go through Fractal

@@ -305,14 +305,24 @@ def preflight(args) -> int:
         flags.extend(service_tier_args(plan, 'qa'))
         try:
             result = subprocess.run(['/bin/bash', str(DISPATCH), 'doctor', '--spec', spec, '--role', 'qa', *flags],
-                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=120)
-            good = result.returncode == 0
+                                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=120, text=True)
         except (OSError, subprocess.SubprocessError):
-            good = False
-        if good:
-            ok.append(spec)
-        else:
             print('forge: shadow review spec %s is not usable here; it is skipped' % spec, file=sys.stderr)
+            continue
+        if result.returncode == 0:
+            ok.append(spec)
+            continue
+        # Dispatch refuses a fast tier the harness cannot take (exit 3) before it checks
+        # that the binary exists, and both failures share that exit. The message is how
+        # they differ. Re-emit it unchanged and stop: skipping the shadow would let the
+        # dwarf and the primary review run and be billed.
+        text = result.stdout or ''
+        if result.returncode == 3 and 'has no per-invocation fast tier' in text:
+            sys.stderr.write(text)
+            if text and not text.endswith('\n'):
+                sys.stderr.write('\n')
+            return 3
+        print('forge: shadow review spec %s is not usable here; it is skipped' % spec, file=sys.stderr)
     write(plan / 'shadow_qa.ok', ','.join(ok) + '\n')
     if listed and not ok:
         print('forge: no shadow review spec is usable; shadow reviews are off for this run', file=sys.stderr)

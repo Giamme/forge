@@ -709,8 +709,10 @@ preflight_plan() {
     /bin/bash "$DISPATCH" doctor --spec "$(cat "$plan/planner")" --role planner $ft || return $?
   fi
   # A shadow reviewer that cannot run here is dropped with a note, never a failed run.
+  # A fast-tier refusal is the exception: dispatch already refused it, and skipping the
+  # shadow would let the rest of the run be billed. That exit stops the run.
   if [ -s "$plan/shadow_qa" ]; then
-    python3 "$SKILL_DIR/scripts/forge-shadow.py" preflight --plan "$plan" || true
+    python3 "$SKILL_DIR/scripts/forge-shadow.py" preflight --plan "$plan" || return $?
   fi
 }
 
