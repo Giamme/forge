@@ -408,6 +408,18 @@ class SendBackTests(AutoCase):
         self.assertIn('Do the thing for t1', (plan / 'planner.first.last').read_text())
         self.assertEqual((plan / 'request.md').read_text(), SMALL_GOAL)
 
+    def test_a_default_profile_still_routes_the_plan_after_a_send_back(self):
+        self.replies(self.vague('t1'), task('t1', prompt='Make the thing work for t1, with the details.' + CRITERIA))
+        path = self.config / 'forge' / 'decide.json'
+        decide = json.loads(path.read_text())
+        decide.update(default_profile='p', profiles={'p': {
+            'routing': {'planner': 'sol', 'dwarf': {'any': ['sol']}, 'qa': {'any': ['sol']}}, 'policy': {'explore': 0}}})
+        path.write_text(json.dumps(decide))
+        result, plan = self.auto('defaulted', '--plan', 'always', planner=None, plan_flags=False)
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertEqual(self.calls(), ['qa', 'qa'])
+        self.assertEqual([row[4:6] for row in data_rows(plan / 'tasks.tsv')], [['sol', 'sol']])
+
     def test_a_second_send_back_stops_with_exit_4(self):
         self.replies(self.vague('t1'), self.vague('t2'))
         result, plan = self.auto('twice', '--plan', 'always', '--approved')

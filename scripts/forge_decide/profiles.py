@@ -689,15 +689,24 @@ def freeze_plan(plan: Path, repo, name, none, given, check_only=False, validate_
         except OSError:
             pass
         return []
-    if action != 'new':
-        return []
+    body = chosen.get('body') if isinstance(chosen, dict) else None
     # A plain --dwarf or --qa is that role's pool for every tier, so it replaces the profile's tier
     # pools of the role too: plan reads a tier pool before the `any` one. A tier flag beside it still
     # names its tier alone.
     given = set(given)
     for pool in POOLS:
         if f'routing.{pool}.any' in given:
-            given.update(k for k in flat(chosen['body']) if k.startswith(f'routing.{pool}.'))
+            given.update(k for k in flat(body) if k.startswith(f'routing.{pool}.'))
+    if action == 'keep':
+        # The kept profile's pools, for the rows still unassigned: a plan that stopped before routing
+        # (a send-back) has none resolved yet. A row with a model keeps it, and nothing is written.
+        # A pool a flag replaced, now or when the profile was frozen, stays replaced.
+        if isinstance(chosen.get('overridden'), list):
+            given |= set(chosen['overridden'])
+        return [f'{key}\t{_list(value)}' for key, value in flat(body).items()
+                if key.startswith(('routing.dwarf.', 'routing.qa.')) and key not in given]
+    if action != 'new':
+        return []
     record = _record(chosen, given)
     keys = {k: v for k, v in flat(chosen['body']).items() if k not in record['overridden']}
     out = []

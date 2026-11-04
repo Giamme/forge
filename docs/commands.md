@@ -715,7 +715,8 @@ budget stay in the frozen body and are exported as `FORGE_DECIDE_PROFILE_JSON`; 
 token and USD caps count only when `level` is `user`.
 
 With neither flag, a plan that already has `profile.json` keeps it and does not apply it
-again. A plan with no copy gets the default profile, if one is set. The runner does not
+again, except that its dwarf and qa pools fill the rows still unassigned (a plan its gates
+sent back before routing); a pool a flag replaced stays replaced. A plan with no copy gets the default profile, if one is set. The runner does not
 select `balanced` by itself. `--no-profile` removes `profile.json`. `routed.json` stays,
 so a later profile can still tell a model routing wrote from one written by hand.
 
