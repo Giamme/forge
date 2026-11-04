@@ -29,6 +29,16 @@ HELP = ('-p --model --add-dir --effort --permission-mode --allowedTools --disall
 CLAUDE_LIMIT = "You've hit your session limit · resets 1:10pm (Europe/Rome)"
 CODEX_CAPACITY = ('{"type":"error","message":"Selected model is at capacity. Please try a different model."}\n'
                   '{"type":"turn.failed","error":{"message":"Selected model is at capacity. Please try a different model."}}')
+# (real) the tail of a whole-run review that never reached the model (#114): stderr as bare lines,
+# then the reconnect loop.
+CODEX_MCP_STDERR = ('ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Client(HttpRequest('
+                    'HttpRequest("http/request failed: error sending request for url (https://chatgpt.com/backend-api/ps/mcp)")))\n')
+CODEX_NO_ROUTE = ('ERROR codex_models_manager::manager: failed to refresh available models: request timed out\n' + CODEX_MCP_STDERR + '\n'.join([
+    '{"type":"error","message":"Reconnecting... 5/5 (workspace routing discovery timed out)"}',
+    '{"type":"item.completed","item":{"id":"item_0","type":"error","message":"Falling back from WebSockets to HTTPS transport. workspace routing discovery timed out"}}',
+    '{"type":"error","message":"Reconnecting... 5/5 (workspace routing discovery failed)"}',
+    '{"type":"error","message":"workspace routing discovery failed"}',
+    '{"type":"turn.failed","error":{"message":"workspace routing discovery failed"}}']))
 CODEX_RECONNECT_THEN_OK = '\n'.join([
     '{"type":"turn.started"}',
     '{"type":"error","message":"Reconnecting... 2/5 (workspace routing discovery timed out)"}',
@@ -655,6 +665,12 @@ class InfraTests(DispatchBase):
         result = self.dispatch('dwarf', 'sol')
         self.assertEqual(result.returncode, 8, result.stdout)
         self.assert_infra('dwarf', 'capacity', 1, detail='at capacity')
+
+    def test_codex_that_never_reached_the_network_is_a_network_stop(self):
+        self.scenario({'*.qa.*': {'rc': 1, 'stdout': CODEX_NO_ROUTE}})
+        result = self.dispatch('qa', 'sol')
+        self.assertEqual(result.returncode, 8, result.stdout)
+        self.assert_infra('qa', 'network', 1, detail='workspace routing discovery failed')
 
     def test_codex_stderr_401_dwarf(self):
         self.scenario({'*.dwarf.*': {'rc': 1, 'stderr': 'ERROR: unexpected status 401 Unauthorized: Missing bearer or basic authentication'}})

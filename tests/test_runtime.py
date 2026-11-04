@@ -9,6 +9,8 @@ import tempfile
 import time
 import unittest
 
+from test_dispatch import CODEX_MCP_STDERR, CODEX_NO_ROUTE
+
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -190,6 +192,10 @@ class ClassifyTests(unittest.TestCase):
             # network: local connectivity
             ('claude no network', json.dumps(CLAUDE_NO_NETWORK), 'claude', 1, 'network'),
             ('claude JSONL with stderr noise', 'warning: x\n' + json.dumps(CLAUDE_NO_NETWORK) + '\n', 'claude', 1, 'network'),
+            ('codex no route: its own wording, with stderr noise', CODEX_NO_ROUTE, 'codex', 1, 'network'),
+            ('codex no route, exit 0', CODEX_NO_ROUTE, 'codex', 0, 'network'),
+            ('codex stopped on request timed out', jsonl([{'type': 'turn.failed', 'error': {'message': 'request timed out'}}]), 'codex', 1, 'network'),
+            ('codex reconnects spent, any message', jsonl([{'type': 'error', 'message': 'Reconnecting... 5/5 (stream closed)'}, {'type': 'turn.failed', 'error': {'message': 'unexpected server response'}}]), 'codex', 1, 'network'),
             ('codex error after the last message', jsonl([CODEX_RECONNECTS[3], {'type': 'error', 'message': 'ECONNRESET'}]), 'codex', 1, 'network'),
             ('raw getaddrinfo', 'Error: getaddrinfo ENOTFOUND api.example.com\n', 'opencode', 1, 'network'),
             ('getaddrinfo ENOTFOUND alone', 'getaddrinfo ENOTFOUND\n', 'opencode', 1, 'network'),
@@ -257,6 +263,10 @@ class ClassifyTests(unittest.TestCase):
             ('codex reconnect notices then a message', jsonl(CODEX_RECONNECTS), 'codex', 0),
             ('codex reconnect notices, message, then an unrelated crash', jsonl(CODEX_RECONNECTS[:-1]), 'codex', 1),
             ('codex notices recovered by a completed turn', jsonl(CODEX_RECONNECTS[:3] + [CODEX_RECONNECTS[-1]]), 'codex', 1),
+            ('codex refused, the network words only on stderr', CODEX_MCP_STDERR + jsonl([{'type': 'turn.failed', 'error': {'message': 'The prompt was refused'}}]), 'codex', 1),
+            ('codex refused after an early reconnect notice', jsonl([CODEX_RECONNECTS[1], {'type': 'turn.failed', 'error': {'message': 'The prompt was refused'}}]), 'codex', 1),
+            ('codex recovered from its own network wording', jsonl([{'type': 'error', 'message': 'workspace routing discovery timed out'}] + CODEX_RECONNECTS[3:]), 'codex', 0),
+            ('another harness quoting a timed out request', 'test_fetch FAILED: request timed out\n', 'opencode', 1),
             ('codex ordinary nonzero', jsonl([{'type': 'turn.started'}, {'type': 'turn.completed'}]), 'codex', 1),
             ('claude result quoting limits', json.dumps({'type': 'result', 'is_error': False, 'result': quoting}), 'claude', 0),
             ('claude result quoting limits, odd rc', json.dumps({'type': 'result', 'is_error': False, 'result': quoting}), 'claude', 1),
