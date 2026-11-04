@@ -1438,7 +1438,8 @@ _SOLO_SETTINGS = ('explore', 'shadow_rate', 'shadow_qa', 'timeout', 'max_paralle
 
 
 def _frozen_profile(reader):
-    """settings.profile from profile.json: the name and level the run froze, and whether it overrode one.
+    """settings.profile from profile.json: the name and level the run froze, and the dotted keys a flag
+    of the run replaced (`overridden`, a list, empty when none).
 
     None when the file is absent, unreadable, or not a frozen profile. The rest of the file (body,
     shadowed, frozen_at) stays on disk; the page asks the profile endpoints for a live body."""
@@ -1448,7 +1449,7 @@ def _frozen_profile(reader):
         return None
     profile_name, level, overridden = obj.get('name'), obj.get('level'), obj.get('overridden')
     if not (isinstance(profile_name, str) and profile_name and isinstance(level, str) and level
-            and isinstance(overridden, bool)):
+            and isinstance(overridden, list) and all(isinstance(key, str) for key in overridden)):
         reader.warn(name, 'not a profile')
         return None
     return dict(name=profile_name, level=level, overridden=overridden)

@@ -409,7 +409,7 @@
     return levels.length ? 'shadows ' + levels.join(', ') : '';
   }
   // The run record's Profile row: `NAME (level)`, and `· flags override: KEY, KEY` when `overridden` lists keys.
-  // Null when there is no profile. A bool (the frozen file's flag today) names no key, so it adds nothing.
+  // Null when there is no profile. Anything but a list in `overridden` names no key, so it adds nothing.
   function profileRowText(profile) {
     if (!profile || typeof profile !== 'object' || Array.isArray(profile)) return null;
     const name = text(profile.name), level = text(profile.level);

@@ -14,7 +14,7 @@ TRANSCRIPTS = Path(__file__).parent / 'transcripts'   # one small log per harnes
 T0 = 1760600000.0
 # What a plan run freezes at $PLAN/profile.json. make_solo leaves the file absent.
 FROZEN_PROFILE = {'name': 'balanced', 'level': 'user', 'body': {'policy': {'timeout': 3600}},
-                  'shadowed': ['builtin'], 'frozen_at': T0, 'overridden': False}
+                  'shadowed': ['builtin'], 'frozen_at': '2025-10-16T07:33:20Z', 'overridden': []}
 MTIME = T0 + 5000  # every file and dir, unless set otherwise
 MERGED = {'reader': T0 + 1300, 'page': T0 + 950}
 REVIEW_OLD, REVIEW_NEW, INTEGRATE = 'final-review-1760602000-4242', 'final-review-1760603000-4343', 'integrate-1760601800-4300'

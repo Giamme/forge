@@ -52,7 +52,7 @@ written), and the reader must never raise because of one.
 | `attribution.json` | the result of `forge-parallel.sh attribute`: `culprit` (a task id or `null`), `base_fails`, `inconclusive` (a reason or `null`), `merges`, `steps`, `verification_runs`, `gate` (`null` without the gate, else `{mode, ranking, tried, outcome}`); returned as `attribution`, see RunDetail |
 | `max_parallel`, `escalate_after`, `verify_retries` | one integer each |
 | `qa_threshold` | `P0`..`P3`, the least severe finding that still blocks; `final_qa` the final review's QA spec |
-| `profile.json` | the profile the run froze: `name`, `level` (`user`, `repo` or `builtin`), `body` (the profile object), `shadowed` (levels the winning copy hid), `frozen_at` (an epoch), `overridden` (bool: the run named a profile of its own). RunDetail returns `settings.profile` `{name, level, overridden}`, `null` when the file is absent, unreadable or not that shape |
+| `profile.json` | the profile the run froze: `name`, `level` (`user`, `repo` or `builtin`), `body` (the profile object), `shadowed` (levels the winning copy hid), `frozen_at` (UTC, `YYYY-MM-DDTHH:MM:SSZ`), `overridden` (the sorted dotted keys a flag of the run replaced, such as `routing.qa.any`; empty when none). RunDetail returns `settings.profile` `{name, level, overridden}`, `null` when the file is absent, unreadable or not that shape |
 | `deferrals.txt` | one line per task the wave planner deferred |
 | `integration.base`, `accepted.integration` | one commit each: where the integration branch started, the revision the run accepted |
 | `attempts/<role>-<uuid>/` | one *execution* (below) of the run itself: `parallel` (a `run`) or `verification` |
@@ -393,7 +393,7 @@ Every RunSummary field, plus:
   "settings": {"explore": 0.5, "shadow_rate": 0.5, "shadow_qa": ["opus", "sol:xhigh"], "timeout": 3600,
                "max_parallel": 2, "qa_threshold": "P2", "escalate_after": 3, "verify_retries": 1,
                "final_qa": "opus",
-               "profile": {"name": "balanced", "level": "user", "overridden": false}},
+               "profile": {"name": "balanced", "level": "user", "overridden": ["policy.timeout"]}},
   "attribution": {"culprit": "page", "base_fails": false, "inconclusive": null, "verification_runs": 4,
                   "gate_outcome": "confirmed"},
   "verification": {"status": "PASS", "command": "python3 -m unittest", "log_tail": "...",
@@ -436,7 +436,7 @@ Every RunSummary field, plus:
   a missing file reads `P2` (forge's default) with `qa_threshold_source` `default`; a file reads
   with source `set`, and `none` in it reads `P3`. `profile` is `{name, level, overridden}` from
   `profile.json`, the profile the run froze, or `null` when that file is missing, unreadable or
-  not a frozen profile (`name` and `level` non-empty strings, `overridden` a bool). A solo run
+  not a frozen profile (`name` and `level` non-empty strings, `overridden` a list of strings). A solo run
   reads `$RUN/profile.json` the same way and has no other plan settings: every other value is
   `null`, including `shadow_qa`, except `qa_threshold` and its source, which read the same way.
 - `attribution` is the result of `forge-parallel.sh attribute` from `attribution.json`, or `null` when

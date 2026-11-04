@@ -168,9 +168,22 @@ class ReaderTests(unittest.TestCase):
         self.assertIsNone(detail(solo)['settings']['profile'])
         self.write(solo / 'profile.json', json.dumps({
             'name': 'lite', 'level': 'repo', 'body': {'policy': {'timeout': 1}},
-            'shadowed': [], 'frozen_at': 1, 'overridden': True}))
+            'shadowed': [], 'frozen_at': '2025-10-16T07:33:20Z', 'overridden': ['policy.timeout']}))
         data = detail(solo)
-        self.assertEqual(data['settings']['profile'], {'name': 'lite', 'level': 'repo', 'overridden': True})
+        self.assertEqual(data['settings']['profile'], {'name': 'lite', 'level': 'repo', 'overridden': ['policy.timeout']})
+        self.assertFalse(any(item.startswith('profile.json') for item in data['warnings']))
+
+    def test_the_profile_forge_freezes_reads_with_its_overridden_keys(self):
+        # The record as forge writes it (forge_decide.profiles), not a copy of its shape made by hand.
+        sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'scripts'))
+        from forge_decide import profiles
+        chosen = {'name': 'balanced', 'level': 'builtin', 'shadowed': [],
+                  'body': {'routing': {'qa': {'any': ['opus']}}, 'policy': {'timeout': 5}}}
+        plan = F.make_plan(self.base)
+        self.write(plan / 'profile.json', json.dumps(profiles._record(chosen, {'routing.qa.any'})))
+        data = detail(plan)
+        self.assertEqual(data['settings']['profile'],
+                         {'name': 'balanced', 'level': 'builtin', 'overridden': ['routing.qa.any']})
         self.assertFalse(any(item.startswith('profile.json') for item in data['warnings']))
 
     def test_missing_optional_files(self):

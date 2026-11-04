@@ -117,12 +117,12 @@ as unsaved when the repository changes. The endpoints are in [the API](../ui/doc
 
 The run page's Settings section, for a plan and for a solo run, has a **Profile** row when
 the run record carries a profile. The label is `Profile`. The text is `NAME (level)`. When
-`overridden` is a non-empty list of keys it continues ` · flags override: KEY, KEY`. A
-boolean `overridden` names no keys. There is no row when the record has no profile.
+`overridden` is a non-empty list of keys it continues ` · flags override: KEY, KEY`. There
+is no row when the record has no profile.
 
-The reader puts `settings.profile` on the run record only when `overridden` is a boolean.
-A frozen `profile.json` whose `overridden` is the list of keys `plan` and solo write is
-left out of the record, and the row is absent.
+The reader puts `settings.profile` on the run record when `profile.json` has a non-empty
+`name` and `level` and an `overridden` list of keys, as `plan` and solo write it. Any other
+file leaves the profile out of the record, with a warning, and the row is absent.
 
 ## Commands
 
