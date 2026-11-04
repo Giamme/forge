@@ -35,7 +35,8 @@ run goes on, with the same exit code.
   filed as GitHub issues or dismissed through `forge issues`.
 - **Delete a run:** a dry run, then `forge runs rm`: the dataset keeps the traces, an archive is
   written unless declined, and clean worktrees and unchecked-out branches can go with it.
-- **Settings:** `forge config show` in one view, with edits for the per-repo files and Jev.
+- **Settings:** `forge config show` in one view: the registry, decision-model gates, profiles,
+  the per-repo files, the dataset and `FORGE_*` variables, with edits where the server can write.
 - **Export a run:** one HTML file to share that opens without forge-ui; prompts, diffs, reports
   and local paths stay out unless chosen.
 - **Quick jump and notifications:** Ctrl K (⌘K) or `/` searches every run, task, project and
@@ -85,6 +86,43 @@ not offer Retry now. A run whose unfinished tasks are all waiting is `WAITING`.
 
 The 3D view loads three.js from cdn.jsdelivr.net when first used; offline, the page shows the
 same run in 2D. The full page description is in [ui/README.md](../ui/README.md).
+
+## Profiles
+
+The Settings page has a **Profiles** section. Its lede: a named bundle of routing, policy,
+gates and budget. A user profile hides a repo profile of the same name, which hides a
+built-in. Editing writes `decide.json` at the profile's level.
+
+The list is one button per winning profile: the name, a level tag, a `default` tag when it
+is the effective default, and `shadows LEVEL, LEVEL` when that copy hides another. Opening
+one shows dwarf and QA pools by tier, then Routing, Policy, Gates, Budget and Source when
+the body sets them. An empty body says "This profile sets nothing." A built-in, or any
+level that is not `user` or `repo`, says "This built-in profile is read-only. Duplicate it
+to change a copy."
+
+Duplicate is offered for every profile. Edit, set as default and remove are offered only
+for a user or repo profile. A read-only server (no write token, or controls off) still
+lists profiles and shows the summary. It hides the editor, duplicate, default, delete and
+the new-profile form, and the page says "This page is read-only: this server has no write
+token, or has controls off."
+
+Saving the JSON body replaces that profile, after a confirm. If the profile changed while
+it was being edited, saving replaces it with that text. A new profile is a blank body or a
+copy, confirmed as "Create profile NAME at the LEVEL level with a copy of X?" or "… with a
+blank body?". Duplicate defaults to the user level, or to repo when the source is a repo
+profile. Set default writes `default_profile` at the profile's own level. Clear default
+removes it from the file that stores the effective default. Writes go through
+`POST /api/config/profiles`, which runs `forge config profile`. Unsaved profile JSON counts
+as unsaved when the repository changes. The endpoints are in [the API](../ui/docs/api.md).
+
+The run page's Settings section, for a plan and for a solo run, has a **Profile** row when
+the run record carries a profile. The label is `Profile`. The text is `NAME (level)`. When
+`overridden` is a non-empty list of keys it continues ` · flags override: KEY, KEY`. A
+boolean `overridden` names no keys. There is no row when the record has no profile.
+
+The reader puts `settings.profile` on the run record only when `overridden` is a boolean.
+A frozen `profile.json` whose `overridden` is the list of keys `plan` and solo write is
+left out of the record, and the row is absent.
 
 ## Commands
 

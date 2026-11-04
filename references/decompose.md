@@ -11,12 +11,14 @@ run leaves branches behind.
 - [The two axes: decompose-level and difficulty](#the-two-axes-decompose-level-and-difficulty)
 - [tasks.tsv](#taskstsv)
 - [Routing](#routing)
+- [Profiles](#profiles)
 - [Fractal within decomposed tasks](#fractal-within-decomposed-tasks)
 - [Waves and disjointness](#waves-and-disjointness)
 - [Task size and acceptance criteria](#task-size-and-acceptance-criteria)
 - [Plan gates: sent back, and the block under the table](#plan-gates-sent-back-and-the-block-under-the-table)
 - [The capsule](#the-capsule)
 - [Planning](#planning)
+- [Plan shape](#plan-shape)
 - [QA verdicts](#qa-verdicts)
 - [Severity, thresholds and known issues](#severity-thresholds-and-known-issues)
 - [Retrying, and resuming an interrupted run](#retrying-and-resuming-an-interrupted-run)
@@ -40,8 +42,14 @@ These are independent and easy to conflate.
 
 At every level, two rules override the target count: never split so fine that a task cannot
 be verified on its own, and never emit two tasks that must edit the same file — make it one
-task, or add a dep. The counts are guidance, not quotas; a goal with three natural seams
-produces three tasks at `high` too.
+task, or add a dep. A single-file deliverable (one HTML page, one script, one notebook)
+still splits by module when it splits at all: each task owns its own source file (for
+example `src/physics.js`), and one final low-difficulty task assembles them into the
+required file. A pure chain is worse than one task: no two tasks run at once, and each
+pays its own implementation and review. Prefer parallel branches; when the request allows
+none, return one task. `plan` still accepts a chain; the approval table says when one
+task would have run once. The counts are guidance, not quotas; a goal with three natural
+seams produces three tasks at `high` too.
 
 **`difficulty`** is rated per task, by what the task demands of the model — **not** by how
 much code it produces:
@@ -158,7 +166,9 @@ needs some randomized picks, so `plan` makes a few: `--explore E`, with E betwee
   `(1 - E)·[choice = pool's pick] + E / 2`.
 - **Turning it off:** `--explore 0`. The choice is kept in the plan dir (`explore`), so a
   later re-plan neither turns it back on nor changes rows already resolved. Precedence:
-  the flag, then the plan's earlier choice, then `FORGE_ROUTE_EXPLORE`, then 0.2.
+  the flag, then a profile frozen on this call, then the plan's earlier choice, then
+  `FORGE_ROUTE_EXPLORE`, then 0.2. A kept frozen profile is not applied again, so it does
+  not replace the rate the plan already stored.
 - **Later changes:** a re-plan draws nothing for rows that are already resolved. An
   approval-gate edit or a `retry --dwarf` simply runs a different model; the analysis
   keeps such a task in the arm it was assigned and reports it as not followed.
@@ -169,6 +179,25 @@ attrition, runtime and a run-clustered interval, judged at the first of 30, 60 o
 neighbour assignments it reaches. See [Dataset](dataset.md#routing). At the default rate
 that is weeks of normal use per pair; a pair that matters can be given more with
 `--explore 0.5` on its plans.
+
+### Profiles
+
+A profile is a named bundle of routing, policy, gates and budget, so the pools and the
+policies travel together instead of being retyped. One name resolves user, then repo, then
+built-in: a user profile hides a repo profile of the same name, which hides a built-in.
+The built-ins are `balanced` and `lite`, the [recommended routing](../docs/models.md#recommended-routing).
+`forge config profile` keeps them; `plan` and `forge-solo.sh` take one with `--profile NAME`.
+
+The chosen profile is frozen into `<dir>/profile.json`. A flag of that call replaces only
+the key it names; the other keys are applied as those flags would have been: dwarf and qa
+pools, the planner, shadow review, exploration and fast roles, plus the plan files for the
+final reviewer, escalation, the QA threshold, the timeout and verify retries. A QA tier the
+profile does not name uses `routing.qa.any` when that pool is set; only with no such pool
+does QA fall back to `opus`, which dispatch runs at `high`. Gates and budget stay
+in the frozen body. With neither `--profile` nor `--no-profile`, a plan keeps the copy it already
+froze and does not apply it again; a plan with no copy gets the default profile, if one is
+set. The runner does not select `balanced` on its own. `--no-profile` removes the frozen
+copy. See [commands](../docs/commands.md#forge-config-profile).
 
 ## Fractal within decomposed tasks
 
@@ -346,7 +375,77 @@ they were meant to solve.
 
 The planner runs with qa's permission profile: it reads the repo and writes nothing to it.
 Its output becomes `tasks.tsv` plus each `tasks/<id>/approach.md`, and the approval gate
-renders both — the last moment the plan can be changed for free.
+renders both — the last moment the plan can be changed for free. The contract for that
+reply is [Planning](planning.md).
+
+`forge-parallel.sh auto` does this whole path in one blocking command. The orchestrator's
+job is mechanical, so a small model can drive it. `auto` copies the goal verbatim to
+`request.md` and writes `auto` to `orchestrator`, then:
+
+1. **The gate** (`--plan`, default `auto`). `forge-planner.py gate` prints `one-task` when
+   the request is at most 1500 characters and at most 6 requirements, otherwise `plan`, and
+   records `plan-gate.json` (`decision`, `signals`, `thresholds`, `rule` `size`). `always`
+   plans; `never` is one task. The gate is conservative: on the 16 plans of benchmark #86,
+   size did not predict shape.
+2. **One task** writes a single row, id `task`, files `.`, difficulty from
+   `--one-task-difficulty` (default `medium`), and does not dispatch a planner. Its
+   criterion is that every requirement of the request is met and the tests for the files
+   changed pass.
+3. **Planning** uses `--planner`, or else `routing.planner` of the profile the plan flags
+   select. With neither, exit 2. A doctor preflight runs before any model call. The planner
+   is dispatched into the plan dir, with the fast tier when `planner` is a fast role, and
+   the reply is parsed strictly.
+4. **`plan`** gets the flags before `--` that are not `auto`'s own, plus `--collapse-chains`
+   unless `--no-collapse`. When the gates send work back (`plan` exits 4 with
+   `plan.sendback.md`), `auto` re-dispatches the planner once with that file appended and
+   plans again. A second send-back stops.
+5. **Without `--approved`** it stops at the table, exits 0, and prints the `run` command.
+   Nothing is dispatched after the planner. `--approved` is the user's explicit
+   pre-approval: `auto` then runs, with the flags after `--`, and exits with `run`'s code.
+
+A `--` splits the command: flags after it go to `run`. Flags before it go to `plan`, except
+`--goal-file`, `--plan`, `--one-task-difficulty`, `--no-collapse` and `--approved`, which
+`auto` consumes. `auto` starts a new plan dir. One that already has `tasks.tsv` is refused.
+
+## Plan shape
+
+After the last wave computation, `plan` records `plan-shape.json`: `shape`, `tasks`,
+`waves` and `widest`. `one` is a single task. `chain` is two or more tasks whose every
+wave has one. `branches` is a plan with a wave of two or more. Recording it is advisory:
+a failure is a note, and the table is still printed. `one` and `branches` add nothing to
+the table. A chain prints:
+
+```
+this plan runs sequentially: N tasks, at most 1 in parallel; each pays its own implementation and review. One task would run once: re-plan with --collapse-chains
+```
+
+`--collapse-chains` is this `plan` call only, and it is not kept. It runs after the gates
+(drift may have added files) and after the table is validated, and before routing. A chain
+becomes one task, id `combined`:
+
+- deps `-`; difficulty the highest of the parts (`low` < `medium` < `high`); files the
+  union; dwarf and qa the value they share, or `-` when they differ. Routing then fills a
+  `-`. A spec every part already named is kept.
+- title `N parts: FIRST TITLE`, cut at 100 characters.
+- the prompt starts "This task combines the N parts of a plan that could only run one
+  after another. Do them in order, in this one task; each part's requirements and
+  acceptance criteria still hold." Then `## Part i: TITLE (id)`, with that part's headings
+  demoted one level, then one `## Acceptance criteria` whose `### Part i: TITLE` holds
+  that part's criteria, or `- (no criteria were written for this part)`.
+- approaches that exist become `tasks/combined/approach.md`, each under `### Part i`.
+
+The original `tasks.tsv` bytes are kept as `tasks.precollapse.tsv`. Each `tasks/<id>/`
+moves to `tasks.precollapse/<id>/`. `collapsed.json` is `from` (the ids in wave order),
+`into` `combined`, and `shape`. A one-task or branching plan is left as it is. A plan that
+already has `tasks.precollapse.tsv` or `collapsed.json` is not an error. The table
+announces a collapse only when this call did it:
+
+```
+collapsed a sequential plan of N tasks into one (tasks.precollapse.tsv keeps the original)
+```
+
+`auto` adds `--collapse-chains` unless `--no-collapse`, so the sequential line shows when
+you planned by hand, or when `auto` was told not to collapse.
 
 ## QA verdicts
 
