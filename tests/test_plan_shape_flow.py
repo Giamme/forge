@@ -189,9 +189,9 @@ class PlanShapeFlowTests(unittest.TestCase):
         info = shape_of(plan)
         self.assertEqual(event['data']['shape'], info['shape'])
         self.assertEqual(event['data']['widest'], info['widest'])
-        # `waves` is the count in plan-shape.json, not the task→wave map from waves.tsv.
-        self.assertEqual(event['data']['waves'], info['waves'])
-        self.assertIsInstance(event['data']['waves'], int)
+        # The count is `wave_count`; `waves` stays the task→wave map, as on every plan.
+        self.assertEqual(event['data']['wave_count'], info['waves'])
+        self.assertEqual(event['data']['waves'], {'combined': 1})
         self.assertIs(event['data']['collapsed'], True)
         self.assertEqual(event['data']['collapsed_from'], ['a', 'b', 'c'])
         self.assertNotIn('plan_gate', event['data'])
@@ -205,9 +205,8 @@ class PlanShapeFlowTests(unittest.TestCase):
         (plan / 'collapsed.json').unlink()
         (plan / 'plan-gate.json').unlink()
         stripped = harvest.plan_event(plan, dict(run='fixed-run'), src='import', inventory=False)
-        for key in ('shape', 'widest', 'collapsed', 'collapsed_from', 'plan_gate'):
+        for key in ('shape', 'widest', 'wave_count', 'collapsed', 'collapsed_from', 'plan_gate'):
             self.assertNotIn(key, stripped['data'])
-        # No shape file: `waves` is the task→wave map again.
         self.assertEqual(stripped['data']['waves'], {'combined': 1})
         self.assertNotEqual(stripped['rid'], event['rid'])
 
@@ -221,12 +220,12 @@ class PlanShapeFlowTests(unittest.TestCase):
         (old / 'tasks' / 'a' / 'approach.md').write_text('carefully\n')
         bare = harvest.plan_event(old, dict(run='fixed-run'), src='import', inventory=False)
         self.assertEqual(bare['rid'], BARE_RID)
-        for key in ('shape', 'widest', 'collapsed', 'collapsed_from', 'plan_gate'):
+        for key in ('shape', 'widest', 'wave_count', 'collapsed', 'collapsed_from', 'plan_gate'):
             self.assertNotIn(key, bare['data'])
         self.assertEqual(bare['data']['waves'], {})
 
-        # The review case: a three-task chain whose shape record says "waves": 3.
-        # waves.tsv still holds the task→wave map, and that map must not win.
+        # A three-task chain whose shape record says "waves": 3: the count goes to wave_count, and
+        # waves.tsv's task→wave map stays `waves`, so the field has one type across the store.
         chain = self.root / 'shaped-chain'
         (chain / 'tasks').mkdir(parents=True)
         (chain / 'tasks.tsv').write_text(
@@ -239,7 +238,8 @@ class PlanShapeFlowTests(unittest.TestCase):
         shaped = harvest.plan_event(chain, dict(run='fixed-run'), src='import', inventory=False)
         self.assertEqual(shaped['data']['shape'], 'chain')
         self.assertEqual(shaped['data']['widest'], 1)
-        self.assertEqual(shaped['data']['waves'], 3)
+        self.assertEqual(shaped['data']['wave_count'], 3)
+        self.assertEqual(shaped['data']['waves'], {'a': 1, 'b': 2, 'c': 3})
         (chain / 'plan-shape.json').unlink()
         unshaped = harvest.plan_event(chain, dict(run='fixed-run'), src='import', inventory=False)
         self.assertEqual(unshaped['data']['waves'], {'a': 1, 'b': 2, 'c': 3})

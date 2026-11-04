@@ -764,15 +764,14 @@ def plan_event(plan: Path, prov: dict, src: str = 'live', inventory: bool = True
     if plan_gates is not None:
         data['plan_gates'] = plan_gates
     if plan_shape is not None:
-        # shape, widest and waves come from plan-shape.json. `waves` there is the
-        # count of waves. It replaces the task→wave map on a plan that has the file.
-        # A plan without the file keeps the map, so an older plan harvests as before.
+        # shape, widest and the count of waves come from plan-shape.json. The count is
+        # `wave_count`: `waves` stays the task→wave map on every plan, one type across the store.
         if 'shape' in plan_shape:
             data['shape'] = plan_shape['shape']
         if 'widest' in plan_shape:
             data['widest'] = plan_shape['widest']
         if 'waves' in plan_shape:
-            data['waves'] = plan_shape['waves']
+            data['wave_count'] = plan_shape['waves']
     if collapsed_record is not None:
         data['collapsed'] = True
         origin = collapsed_record.get('from')
