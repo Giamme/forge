@@ -163,6 +163,14 @@ window.ForgePanel = (() => {
     wrap.append(table);
     parent.append(wrap);
   }
+  // What a reviewer said about its own tests (FORGE_TESTS). A review that could not run them stands out: its verdict
+  // rests on reading alone. A reply that says nothing shows nothing.
+  const TESTS_WORDS = { ran: 'Reviewer ran tests', not_needed: 'Reviewer needed no tests', could_not_run: 'Reviewer could not run tests' };
+  function testsLine(parent, tests) {
+    if (!tests || !TESTS_WORDS[tests.status]) return;
+    const text = TESTS_WORDS[tests.status] + (tests.reason ? `: ${tests.reason}` : '');
+    parent.append(el('p', text, tests.status === 'could_not_run' ? 'warn tests-line' : 'muted tests-line'));
+  }
   // An attempt's chip. A failed attempt is red whatever its words; a send-back says what forge did in its title.
   function attemptChip(word) {
     const c = chip(word, RM.attemptFailed(word) ? 'fail' : undefined), note = RM.attemptNote(word);
@@ -527,7 +535,7 @@ window.ForgePanel = (() => {
         h.append(el('strong', `${r.kind} review · attempt ${display(r.attempt)}`), plate(r.spec), chip(r.verdict || r.state || 'unknown'));
         box.append(h);
         if (r.state === 'running') muted(box, 'Still reviewing; findings appear when it finishes.');
-        else findingsList(box, r.findings, `task-${task.id}-r${i}`);
+        else { testsLine(box, r.tests); findingsList(box, r.findings, `task-${task.id}-r${i}`); }
         rs.append(box);
       });
     }
@@ -700,7 +708,7 @@ window.ForgePanel = (() => {
     const entry = lazy(ctx, `/api/runs/${encodeURIComponent(run.key)}/final-reviews/${encodeURIComponent(pick.name)}`, pick.state === 'done' ? 'done:' + pick.verdict : run.updated);
     if (!loading(fs, entry, 'the review')) {
       const d = entry.data;
-      if (pick.state !== 'running') findingsList(fs, d.findings, `final-${pick.name}`);
+      if (pick.state !== 'running') { testsLine(fs, d.tests); findingsList(fs, d.findings, `final-${pick.name}`); }
       const ps = section(host, 'Report and prompt');
       details(ps, 'Reviewer report (qa.last)', d.qa_last, `final-${pick.name}-last`);
       details(ps, 'Prompt (qa.input)', d.qa_input, `final-${pick.name}-input`);

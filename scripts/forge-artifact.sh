@@ -59,6 +59,33 @@ forge_review_snapshot() ( # source, baseline tree, final tree, destination
 
 )
 
+forge_review_deps() { # source checkout, review snapshot, note file (#117)
+  # Links the dependency directories of the checkout under review (what .forge/setup filled, so
+  # they match the attempt, unlike the source repo's) into its snapshot, and writes what the
+  # reviewer has to the note. The names are forge-fail-first.py's DEP_DIRS. An untracked link
+  # counts for no fingerprint, and the exclude keeps it out of the reviewer's `git status`: a
+  # `node_modules/` ignore pattern does not match a link. Tracked directories stay as they are.
+  local src name linked=""
+  src="$(cd "$1" && pwd)" || src=""
+  for name in node_modules .venv venv vendor; do
+    [ -n "$src" ] && [ -d "$src/$name" ] && [ ! -e "$2/$name" ] && [ ! -L "$2/$name" ] || continue
+    ln -s "$src/$name" "$2/$name" 2>/dev/null || continue
+    mkdir -p "$2/.git/info" && echo "/$name" >> "$2/.git/info/exclude"
+    linked="$linked${linked:+, }$name"
+  done
+  if [ -n "$linked" ]; then
+    printf '%s\n' "Dependencies in your checkout: $linked, linked at its root from the attempt's own copy. Use them to run tests, and do not write to them. Only the root is linked, so a workspace package's own nested dependencies may be missing." > "$3"
+  else
+    printf '%s\n' "Dependencies in your checkout: none. It holds committed files only, with no installed packages." > "$3"
+  fi
+}
+
+forge_tests_note() { # QA reply: the reason, when the reviewer says its tests could not run (#117)
+  grep -qs '^FORGE_TESTS: *COULD NOT RUN' "$1" || return 0
+  python3 "$SKILL_DIR/scripts/forge-contract.py" tests --qa-last "$1" 2>/dev/null |
+    awk -F'\t' '$1 == "could_not_run" { print ($2 == "" ? "no reason given" : $2) }'
+}
+
 forge_fingerprint() { # forge_fingerprint <dir> [--tracked], as forge_tree
   local tree head index
   tree="$(forge_tree "$1" "${2:-}")" || return 1

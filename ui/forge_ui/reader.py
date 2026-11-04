@@ -1607,7 +1607,7 @@ def _plan_task(reader, tasks, task_id):
 
 def _review(kind, item, text):
     return dict(kind=kind, execution=item['id'], attempt=item['attempt'], spec=(item['model'] or {}).get('spec'),
-                verdict=item['verdict'], state=item['state'], findings=findings.listing(text))
+                verdict=item['verdict'], state=item['state'], findings=findings.listing(text), tests=findings.tests(text))
 
 
 def task_detail(path, task_id, source='plan'):
@@ -1642,12 +1642,14 @@ def task_detail(path, task_id, source='plan'):
     # The reply in the task dir is normally the copy of the last review; only an unmatched one is listed.
     if live is not None and live not in seen:
         reviews.append(dict(kind='primary', execution=None, attempt=attempt, spec=spec, verdict=_verdict(live),
-                            state='done', findings=findings.listing(live)))
+                            state='done', findings=findings.listing(live), tests=findings.tests(live)))
     for entry, items, sub in shadows:
         run = items[-1] if items else None
+        shadow_text = reader.text(sub + '/qa.last')
         reviews.append(dict(kind='shadow', execution=entry['execution'], attempt=entry['attempt'],
                             spec=entry['spec'] if isinstance(entry['spec'], str) else None, verdict=entry['verdict'],
-                            state=run['state'] if run else None, findings=findings.listing(reader.text(sub + '/qa.last'))))
+                            state=run['state'] if run else None, findings=findings.listing(shadow_text),
+                            tests=findings.tests(shadow_text)))
     return dict(run=run_key(reader.path), id=task_id, texts=texts, gate=_gate(reader, base + 'qa.gate'),
                 reviews=reviews, truncated=reader.truncated, warnings=reader.warnings)
 
@@ -1890,7 +1892,8 @@ def final_review_detail(path, name, source='plan'):
                   qa_input=reader.excerpt(rel + '/qa.input', 40000, 20000, 'qa_input'),
                   qa_last=reader.clip(qa_last, 20000, 8000, 'qa_last'),
                   known_issues=reader.excerpt(rel + '/known_issues.md', 20000, 8000, 'known_issues'),
-                  findings=findings.listing(qa_last), truncated=reader.truncated, warnings=reader.warnings)
+                  findings=findings.listing(qa_last), tests=findings.tests(qa_last),
+                  truncated=reader.truncated, warnings=reader.warnings)
     return result
 
 

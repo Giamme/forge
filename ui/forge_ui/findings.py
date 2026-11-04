@@ -116,6 +116,13 @@ def listing(text, limit=200):
     return result
 
 
+def tests(text):
+    """What the reply says about its tests (forge-contract.py's tests_report), or None."""
+    module = _load()
+    report = getattr(module, 'tests_report', None)
+    return report(text[:_MAX_CHARS]) if report and text else None
+
+
 def parse_gate(text):
     """A qa.gate line: threshold, decision, worst, n_confirmed, n_unlabelled, n_below; None if malformed."""
     line = next((item for item in (text or '').splitlines() if item.strip()), None)

@@ -97,6 +97,27 @@ class GateTableTests(unittest.TestCase):
             with self.subTest(verdict=verdict, threshold=threshold, text=text):
                 self.assertEqual(decide(verdict, text, threshold), expected)
 
+    def test_a_reviewers_word_on_its_tests(self):
+        for name, reply, expected in (
+                ('ran', 'FORGE_TESTS: RAN\nFORGE_VERDICT: PASS', dict(status='ran', reason=None)),
+                ('not needed', 'FORGE_TESTS: NOT NEEDED — docs only\nFORGE_VERDICT: PASS', dict(status='not_needed', reason='docs only')),
+                ('could not run', 'FORGE_TESTS: COULD NOT RUN - no deps\r\nFORGE_VERDICT: FAIL', dict(status='could_not_run', reason='no deps')),
+                ('the last one counts', 'FORGE_TESTS: COULD NOT RUN — x\nFORGE_TESTS: RAN\n', dict(status='ran', reason=None)),
+                ('an older reply', 'FORGE_VERDICT: PASS', None),
+                ('quoted in prose', 'the form is `FORGE_TESTS: RAN`\nFORGE_VERDICT: PASS', None),
+                ('another word', 'FORGE_TESTS: MAYBE\nFORGE_VERDICT: PASS', None)):
+            with self.subTest(name):
+                self.assertEqual(contract.tests_report(reply), expected)
+
+    def test_the_tests_line_is_asked_of_every_kind_and_is_never_a_finding(self):
+        for kind in contract.KINDS:
+            with self.subTest(kind):
+                self.assertIn('FORGE_TESTS: COULD NOT RUN', contract.qa_text('tail', kind))
+        reply = '- [P3][CONFIRMED] a.py:1 — x\n  more about x\nFORGE_TESTS: COULD NOT RUN — path/b.py:2 needs a display\nFORGE_VERDICT: PASS'
+        findings = contract.parse_findings(reply)
+        self.assertEqual(len(findings), 1)
+        self.assertNotIn('display', findings[0].text)
+
     def test_default_is_p2_and_none_is_p3(self):
         self.assertEqual(contract.DEFAULT_THRESHOLD, 'P2')
         texts = [self.reply('P3'), self.reply('P2'), self.reply('P1', 'P3'), bullet(None) + '\n',

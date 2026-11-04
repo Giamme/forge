@@ -1364,6 +1364,7 @@ do_task_body() (
   fi
   review="$tdir/review-$attempt-$$"
   forge_review_snapshot "$wt" "$base" "$reviewed" "$review" || { echo ERROR > "$tdir/status"; return 1; }
+  forge_review_deps "$wt" "$review" "$tdir/review.deps"
   source_fp="$(forge_fingerprint "$wt")" || return 1
   # The review copy is a commit: an untracked file the reviewer leaves there (a test run's
   # bytecode) changes nothing that merges, so only tracked content counts (#95).
@@ -1422,6 +1423,7 @@ do_task_body() (
     python3 "$SKILL_DIR/scripts/forge-contract.py" qa --part head --kind "$qa_kind"
     echo
     [ ! -f "$PLAN/sweep_ahead" ] || python3 "$SKILL_DIR/scripts/forge-sweep.py" ahead "$PLAN" "$id" --role qa 2>/dev/null
+    cat "$tdir/review.deps"; echo
     if [ -s "$tdir/failfirst.txt" ]; then cat "$tdir/failfirst.txt"; echo; fi
     if [ -s "$tdir/prereview.txt" ]; then cat "$tdir/prereview.txt"; echo; fi
     if [ -s "$tdir/guard.txt" ]; then
@@ -2415,6 +2417,18 @@ do_run() {
     fi
   done
   [ "$drift" = 1 ] && echo
+
+  # A verdict that rests on reading alone: the reviewer says its tests could not run (#117).
+  local untested=0 tests_note
+  for id in $(all_ids "$T"); do
+    tests_note="$(forge_tests_note "$PLAN/tasks/$id/qa.last")"
+    if [ -n "$tests_note" ]; then
+      [ "$untested" = 0 ] && echo "reviews whose tests could not run:"
+      untested=1
+      printf '  %-14s %s\n' "$id" "$tests_note"
+    fi
+  done
+  [ "$untested" = 1 ] && echo
 
   # From this run's own flags, never from a verification.status an earlier run left.
   if [ "$interrupted" = 1 ]; then

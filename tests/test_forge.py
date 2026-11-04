@@ -82,6 +82,8 @@ else:
  if os.environ.get('MUTATE') or sc.get('mutate'): pathlib.Path(name).write_text('tampered\\n')
  # 'writes': files the reviewer leaves in its copy, as a test run's bytecode or caches do.
  for k, v in (sc.get('writes') or {}).items(): pathlib.Path(k).parent.mkdir(parents=True, exist_ok=True); pathlib.Path(k).write_text(v)
+ # 'reads': files the reviewer can see in its copy, appended to $READS (a link's target goes with its worktree).
+ for k in sc.get('reads') or []: open(os.environ['READS'], 'a').write(pathlib.Path(k).read_text())
  if os.environ.get('SOURCE'): pathlib.Path(os.environ['SOURCE'],'change.txt').write_text('source tampered\\n')
 verdict = 'FAIL' if name == 'a.txt' and os.environ.get('FAIL_A') else os.environ.get('VERDICT','PASS')
 result = ('FORGE_VERDICT: '+verdict) if qa else 'implemented'
@@ -123,7 +125,7 @@ class ForgeTests(unittest.TestCase):
   self.bin=self.root/'bin'; self.bin.mkdir()
   for cli in ['codex','claude']:
    p=self.bin/cli; p.write_text(FAKE); p.chmod(0o755)
-  for name in 'bash python3 git tar awk sed grep tr sort wc head tail cat mkdir rm mv cp touch date basename dirname mktemp xargs tee sleep pkill cmp'.split():
+  for name in 'bash python3 git tar awk sed grep tr sort wc head tail cat mkdir rm mv cp ln touch date basename dirname mktemp xargs tee sleep pkill cmp'.split():
    binary=shutil.which(name)
    if binary: (self.bin/name).symlink_to(binary)
   # forge-ripwire.py falls back to ~/.local/bin/ripwire when the binary isn't on PATH

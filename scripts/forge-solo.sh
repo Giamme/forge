@@ -362,6 +362,7 @@ fi
 
 REVIEW="$RUN/review-$(date +%s)-$$"
 forge_review_snapshot "$REPO" "$START" "$END" "$REVIEW" || die "cannot create review snapshot" 3
+forge_review_deps "$REPO" "$REVIEW" "$RUN/review.deps"
 SOURCE_FP="$(forge_fingerprint "$REPO")" || exit 3
 [ "$(forge_tree "$REPO")" = "$END" ] || { echo INVALIDATED > "$RUN/verdict"; die "source changed while preparing QA" 5; }
 # The review snapshot is a commit; the reviewer's untracked leftovers there do not count (#95).
@@ -387,6 +388,7 @@ fi
   python3 "$SKILL_DIR/scripts/forge-prompt.py" --requirements "$RUN/prompt.md" --approach "$APPROACH" --goal "$RUN/goal.txt" --memory "$RUN/dwarf.memory" --memory "$RUN/qa.memory"
   python3 "$SKILL_DIR/scripts/forge-contract.py" qa --part head --kind solo
   echo
+  cat "$RUN/review.deps"; echo
   if [ -s "$RUN/failfirst.txt" ]; then cat "$RUN/failfirst.txt"; echo; fi
   python3 "$SKILL_DIR/scripts/forge-contract.py" qa --part tail --kind solo --threshold "$THR"
   echo
@@ -422,6 +424,8 @@ dur_qa="$(sed -n 's/^duration_s=//p' "$RUN/qa.resolved" 2>/dev/null | tail -1)"
 # Otherwise forge enforces the severity rule itself, as a decomposed task's gate does; a gate
 # that cannot run (no output) keeps the reviewer's verdict.
 gate_note=""
+tests_note="$(forge_tests_note "$RUN/qa.last")"
+[ -z "$tests_note" ] || note "the reviewer's tests could not run: $tests_note"
 if [ -z "$NATIVE" ]; then
   gate_line="$(python3 "$SKILL_DIR/scripts/forge-contract.py" gate --verdict "${verdict:-UNKNOWN}" \
       --qa-last "$RUN/qa.last" --threshold "$THR" --known-issues "$RUN/known_issues.md" 2>/dev/null)" || gate_line=""

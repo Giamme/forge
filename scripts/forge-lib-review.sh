@@ -395,6 +395,7 @@ final_review() {
   while [ -e "$review" ]; do n=$((n+1)); review="$out/review-$$-$n"; done
   forge_review_snapshot "$src" "$base" "$tip" "$review" > "$out/snapshot.log" 2>&1 ||
     { note "final review: cannot build the review snapshot (see $out/snapshot.log)"; return 3; }
+  forge_review_deps "$src" "$review" "$out/review.deps"
   source_fp="$(forge_fingerprint "$src")" && review_fp="$(forge_fingerprint "$review" --tracked)" ||
     { note "final review: cannot fingerprint the checkouts"; return 3; }
   printf '%s\n' "$source_fp" > "$out/source.fingerprint"
@@ -466,6 +467,7 @@ final_review() {
     cat "$out/context.md"
     python3 "$SKILL_DIR/scripts/forge-contract.py" qa --part head --kind final
     echo
+    cat "$out/review.deps"; echo
     cat "$out/notes.md"
     [ -s "$out/previous.md" ] && cat "$out/previous.md"
     python3 "$SKILL_DIR/scripts/forge-contract.py" qa --part tail --kind final --threshold "$thr"
@@ -550,6 +552,9 @@ final_review() {
   verdict=""
   [ -s "$out/qa.last" ] && verdict="$(forge_verdict "$out/qa.last")"
   verdict="${verdict:-UNKNOWN}"
+  local tests_note
+  tests_note="$(forge_tests_note "$out/qa.last")"
+  [ -z "$tests_note" ] || note "final review: the reviewer's tests could not run: $tests_note"
   # Same gate as per-task QA, both ways: a FAIL made only of labelled findings below the
   # threshold is accepted with known issues; a PASS listing a blocking CONFIRMED finding fails.
   gate_line="$(python3 "$SKILL_DIR/scripts/forge-contract.py" gate --verdict "$verdict" \

@@ -229,6 +229,8 @@ def run(args) -> int:
         if bash('forge_review_snapshot', args.worktree, args.base, args.reviewed, str(review)).returncode:
             status = 'error'
             return 0
+        # The prompt is the primary's, so this checkout has to hold what it says.
+        bash('forge_review_deps', args.worktree, str(review), os.devnull)
         before = bash('forge_fingerprint', str(review), '--tracked').stdout.strip()
         shutil.copyfile(Path(args.tdir) / 'qa.input', out / 'qa.input')
         env = dict(os.environ, FORGE_SHADOW='1', FORGE_SHADOW_ATTEMPT=args.attempt,

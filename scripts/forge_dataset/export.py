@@ -635,6 +635,7 @@ def _qa_rows(runs: Runs):
                        # Receipts from before findings_parse existed: an empty list then cannot
                        # tell a clean review from a parser failure, which was rare; read it as clean.
                        completeness=d.get('findings_parse') or review_completeness(d['verdict'], found),
+                       tests=d.get('tests'),
                        worst=_worst(found),
                        # The dispatch this row was built from. A shadow pair names that event,
                        # so an earlier execution of the same attempt cannot claim it.

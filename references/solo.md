@@ -82,7 +82,10 @@ Solo defaults to `--output summary`; `--output full` includes raw CLI output. Re
 `.last` files once, then inspect logs only as needed. `forge-dispatch.sh report <run-dir>`
 reports immutable attempt metrics and native usage independently of project memory. Shared
 context is assembled from original requirements and approach; QA does not embed dwarf
-execution instructions. Review snapshots use self-contained object packs and one checkout.
+execution instructions. Review snapshots use self-contained object packs and one checkout, with
+the repo's `node_modules`, `.venv`, `venv` and `vendor` linked at the root when it has them; the
+prompt says what is there, and the reviewer reports `FORGE_TESTS` as in
+[worktree setup](decompose.md#worktree-setup).
 
 Optional [Ripwire context](ripwire.md) is enabled by default. Use `--no-ripwire`
 or `FORGE_RIPWIRE=off` to disable preparation and installation offers.

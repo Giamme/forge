@@ -342,6 +342,15 @@ class EndToEndTests(StoreCase):
         self.assertEqual(checks.run(store.connect())['pass_without_merge']['count'], 0)
         self.assertEqual(self.errors(), '')
 
+    def test_a_review_records_whether_its_tests_ran(self):
+        p = self.plan_of([('a', '-', 'a.txt')])
+        self.scenario({'a.qa.1': {'verdict': 'PASS', 'findings': 'FORGE_TESTS: COULD NOT RUN — no display'}})
+        self.assertEqual(self.run_script('forge-parallel.sh', 'run', p).returncode, 0)
+        attempt = self.attempts('a')[0]
+        recorded = {d['data']['role']: d['data'].get('tests') for d in self.events(kind='dispatch', parent=attempt['rid'])}
+        self.assertEqual(recorded['qa'], dict(status='could_not_run', reason='no display'))
+        self.assertIsNone(recorded['dwarf'])
+
     def test_each_retry_keeps_its_own_diff_and_a_failed_one_inherits_none(self):
         # attempt 1: reviewed and failed; attempt 2: a real fix that passes; a later human
         # retry whose dwarf crashes must not be credited with attempt 2's diff and verdict.

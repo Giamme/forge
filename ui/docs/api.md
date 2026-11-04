@@ -818,7 +818,8 @@ TaskDetail:
            "known_issues": null, "dwarf_input": "...", "qa_input": "..."},
  "gate": {...},
  "reviews": [{"kind": "primary", "execution": "qa-...", "attempt": 1, "spec": "opus",
-              "verdict": "FAIL", "state": "done", "findings": [Finding, ...]}],
+              "verdict": "FAIL", "state": "done", "findings": [Finding, ...],
+              "tests": {"status": "could_not_run", "reason": "..."}}],
  "truncated": [], "warnings": []}
 ```
 
@@ -827,7 +828,9 @@ TaskDetail:
 `dwarf.input`, `qa.input`; the others are `null`). `reviews` lists each non-shadow `qa`
 execution with the findings of its own `qa.last` copy (`null` until it is done); then the
 task's current `qa.last` as a `primary` review with `execution` `null`, only when no
-execution's copy is identical to it; then one `shadow` review per shadow dir.
+execution's copy is identical to it; then one `shadow` review per shadow dir. `tests` is the
+reply's `FORGE_TESTS` line: `status` `ran`, `not_needed` or `could_not_run`, and `reason` or
+`null`; `null` when the reply has none.
 
 ExecutionDetail: the Execution, plus `resolved` (every `key=value` of `<role>.resolved`, or
 `null`), `dataset` (`{trigger, parent, attempt_start, resume}` or `null`), `prompt` (the
@@ -839,7 +842,8 @@ solo run), `<task>/<attempt>-<k>`, the review name, or `null`), `truncated` and 
 
 FinalReviewDetail: the FinalReviewSummary, plus `meta` (every `review.meta` key),
 `tasks_summary`, `qa_input`, `qa_last`, `known_issues` (texts or `null`), `findings` (a list
-of Findings, in place of the summary), `truncated` and `warnings`.
+of Findings, in place of the summary), `tests` (as on a TaskDetail review), `truncated` and
+`warnings`.
 
 ## DiffDetail (`forge_ui/diffs.py`)
 
