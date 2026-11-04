@@ -1,0 +1,1 @@
+b42ece5	test(ui): the hanging browser stub exits 0 when killed
