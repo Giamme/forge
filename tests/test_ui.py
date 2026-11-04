@@ -166,7 +166,9 @@ class UiLauncherTests(unittest.TestCase):
 
     def test_a_browser_command_that_hangs_does_not_hold_open(self):
         pidfile = self.tmp / 'browser.pid'
-        env = self._browser_stub(f'echo $$ > {pidfile}\nexec sleep 30\n')
+        # Killed by the cleanup below, it must still exit 0: webbrowser takes a failed command as a
+        # cue to try the next browser, which here is the developer's own.
+        env = self._browser_stub(f"trap 'kill $sleeper; exit 0' TERM\nsleep 30 &\nsleeper=$!\necho $$ > {pidfile}\nwait\n")
         self.addCleanup(lambda: pidfile.exists() and subprocess.run(['kill', pidfile.read_text().strip()], capture_output=True))
         self.open(self.plan, '--no-browser', env=env)  # server up: only the browser launch is timed
         start = time.monotonic()
