@@ -705,7 +705,9 @@ profile: NAME (LEVEL[, shadows LEVEL]) — flags override: KEY, KEY
 ```
 
 A flag of this call replaces just that value: the dwarf and qa pools, `--planner`,
-`--shadow-qa`, `--shadow-rate`, `--explore`, `--fast` and `--qa-threshold`. What is not
+`--shadow-qa`, `--shadow-rate`, `--explore`, `--fast` and `--qa-threshold`. A plain `--dwarf`
+or `--qa` is that role's pool for every tier, so it replaces the profile's tier pools of the
+role as well; a `--dwarf-<tier>` beside it still names that tier. What is not
 overridden is applied as those flags would have been, including the plan files
 `final_qa`, `escalate_after`, `escalate_effort`, `qa_threshold`, `timeout` and
 `verify_retries`. QA stays `opus` when the profile names no reviewer pool. Gates and

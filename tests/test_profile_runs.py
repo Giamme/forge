@@ -169,6 +169,16 @@ class ProfileRunsTests(unittest.TestCase):
         self.assertIn('profile: P (user) \u2014 flags override: policy.explore, policy.qa_threshold, routing.dwarf.high',
                       self.output.splitlines())
 
+    def test_a_plain_dwarf_or_qa_flag_replaces_the_profiles_tier_pools_of_that_role(self):
+        self.decide({'P': FULL})
+        p = self.planned('--profile', 'P', '--dwarf', 'terra', '--qa', 'sol', tasks=(('a', 'low'), ('h', 'high')))
+        self.assertEqual(self.rows(p), {'a': dict(dwarf='terra', qa='sol'), 'h': dict(dwarf='terra', qa='sol')})
+        self.assertEqual(self.frozen(p)['overridden'], ['routing.dwarf.high', 'routing.dwarf.low', 'routing.dwarf.medium',
+                                                        'routing.qa.high', 'routing.qa.low', 'routing.qa.medium'])
+        # a tier flag beside the plain one still names that tier alone
+        p = self.planned('--profile', 'P', '--dwarf', 'terra', '--dwarf-high', 'opus', tasks=(('a', 'low'), ('h', 'high')))
+        self.assertEqual(self.rows(p), {'a': dict(dwarf='terra', qa='opus:low'), 'h': dict(dwarf='opus', qa='opus:high')})
+
     def test_a_flag_for_a_value_the_profile_does_not_set_is_not_an_override(self):
         self.decide({'P': SMALL})
         p = self.planned('--profile', 'P', '--dwarf-high', 'opus', '--shadow-qa', 'sol', tasks=(('h', 'high'),))
