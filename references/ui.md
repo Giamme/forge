@@ -35,7 +35,7 @@ run goes on, with the same exit code.
   filed as GitHub issues or dismissed through `forge issues`.
 - **Delete a run:** a dry run, then `forge runs rm`: the dataset keeps the traces, an archive is
   written unless declined, and clean worktrees and unchecked-out branches can go with it.
-- **Settings:** `forge config show` in one view: the registry, decision-model gates, profiles,
+- **Settings:** `forge config show` in one view: the registry, decision-model gates (each says what it does, when, what it sends and what `on` changes, and **How to set this up** opens a setup guide), profiles,
   the per-repo files, the dataset and `FORGE_*` variables, with edits where the server can write.
 - **Export a run:** one HTML file to share that opens without forge-ui; prompts, diffs, reports
   and local paths stay out unless chosen.

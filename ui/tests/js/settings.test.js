@@ -419,3 +419,16 @@ test('a refused profile write keeps every CLI reason, not only the last line', (
   assert.deepEqual(S.refusalReasons({ ok: false, status: 400, detail: 'read-only', result: {} }), ['read-only']);
   assert.deepEqual(S.refusalReasons({ ok: false, status: 502 }), []);
 });
+
+test('every gate says what it does, and only the gates forge has', () => {
+  assert.deepEqual(Object.keys(S.GATE_HELP).sort(), [...S.GATES].sort());
+  for (const [name, help] of Object.entries(S.GATE_HELP)) {
+    for (const field of ['summary', 'when', 'sends', 'on']) assert.ok(help[field] && help[field].trim(), `${name}.${field}`);
+  }
+});
+
+test('the setup guide never puts a key on a command line', () => {
+  const commands = [...S.SETUP_GUIDE.steps.flatMap(step => step.commands), ...S.SETUP_GUIDE.stop].map(([, command]) => command);
+  assert.ok(commands.some(command => command.includes('provider add')));
+  for (const command of commands) assert.doesNotMatch(command, /--key(?!-stdin|-env)/);
+});

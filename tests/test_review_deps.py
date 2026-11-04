@@ -190,6 +190,7 @@ class ReviewDepsTests(unittest.TestCase):
         r = self.run_script('forge-parallel.sh', 'retry', p, 'a')
         self.assertEqual(r.returncode, 0, r.stdout)
         self.assertIn('the browser suite needs a display', r.stdout)
+        self.assertNotIn('decided.left', r.stdout)                    # no decision governs it, so no noise about one
 
 
 if __name__ == '__main__':

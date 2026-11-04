@@ -26,6 +26,74 @@
     'coverage', 'retry-addressed', 'dwarf-message', 'attribution', 'findings'];
   const MODES = ['off', 'shadow', 'on'];
   const ADD_COMMAND = 'forge decide provider add …';
+  // What turning a gate on means, per gate: references/decision-models.md in words a first-time reader can act on. `sends`
+  // follows the state the site builds in scripts/forge_jev/; a change there changes what a user agreed to send.
+  const GATE_HELP = {
+    drift: { summary: 'Predicts files a task will edit but did not declare, so two tasks that touch one file do not run at once.',
+      when: 'At plan, once per task.', sends: "The goal, and the task's title, declared files, prompt and approach.",
+      on: "Adds each predicted file to the task's files before the waves are computed." },
+    forward: { summary: 'Spots an earlier task written against something a later task builds.',
+      when: 'At plan, once.', sends: 'The title, files and prompt of the tasks in each pair it checks.',
+      on: 'Makes the earlier task wait for the later one, unless that forms a cycle.' },
+    prompt: { summary: "Checks that a reviewer could judge a task from the task's own text.",
+      when: 'At plan, once per task.', sends: "The goal, the task and its prompt and approach, the plan's other tasks, excerpts of its files, and project memory.",
+      on: 'Sends a task whose prompt falls short back to the planner, once.' },
+    'memory-curate': { summary: 'Keeps project memory clean as reviewers and implementers record facts.',
+      when: 'Each time a fact is recorded.', sends: 'The new fact and the existing memory entries.',
+      on: 'Refiles the fact, merges it with an existing one, or withholds it. The ledger keeps everything.' },
+    'memory-slice': { summary: 'Leaves out memory lines that do not concern the task about to run.',
+      when: 'Each time memory is added to a prompt.', sends: 'The task and the memory facts.',
+      on: 'Removes lines from what the model is given. It never adds or reorders any.' },
+    'memory-stale': { summary: 'Finds memory facts that are no longer true.',
+      when: 'Only during a deep memory prune.', sends: 'The fact and the path of the file it is about.',
+      on: 'Drops a fact that went false.' },
+    'verify-discover': { summary: 'Picks a verification command for a repository that has none configured.',
+      when: 'When neither --verify nor .forge/verify exists.', sends: "The repository's file list, the candidate commands, and memory's lines about verifying.",
+      on: "Runs the chosen command. That command's own result decides verification." },
+    coverage: { summary: 'Finds parts of your request that no task covers.',
+      when: 'At plan, once.', sends: "Your request, its requirements, and each task's acceptance criteria.",
+      on: 'Sends each uncovered requirement back to the planner, once.' },
+    'retry-addressed': { summary: 'Checks that a retry actually touched what its review asked to fix.',
+      when: 'On a retry after a review, before the next review.', sends: "The review's blocking findings and the retry's diff.",
+      on: 'Sends the retry back to its implementer without paying for a review.' },
+    'dwarf-message': { summary: "Reads an implementer's final message for unfinished work or a question for you.",
+      when: "On each implementer's final message, before any review.", sends: "The task's title and the end of the message.",
+      on: 'Skips the review of an attempt that says it did not finish, or stops the task to ask you.' },
+    attribution: { summary: 'Guesses which merged task broke the combined verification, to shorten the search.',
+      when: 'After a combined verification fails.', sends: "The end of the failing log, and each merged task's title, files and diff.",
+      on: "Checks the likeliest task first. Nothing is merged, reverted or accepted." },
+    findings: { summary: 'Finds review findings that repeat an open issue, and the ones concrete enough to file.',
+      when: 'When you run forge issues.', sends: "The findings, and open issues' titles and bodies.",
+      on: 'Turns a duplicate into a comment on that issue (posted by forge issues --apply), and pre-selects concrete findings.' },
+  };
+  // The setup guide, as data. A key never passes through this page: each command runs in the reader's own terminal.
+  const SETUP_GUIDE = {
+    intro: 'A decision model is a small hosted model that answers narrow questions about your run, in about a second. It is optional and off until you turn a gate on. It never changes a review verdict or makes work pass, and if it fails, the run goes on as if it were off.',
+    steps: [
+      { title: 'Add a provider', text: 'Run one of these in a terminal. A key is read from stdin or the environment and is stored outside your repositories.',
+        commands: [
+          ['TypeSafe (Jev)', 'printf \'%s\\n\' "$TYPESAFE_API_KEY" | forge decide provider add jev --name typesafe --key-stdin'],
+          ['Cloudflare (Clef)', 'forge decide provider add clef --name cloudflare --account-id <id> --key-env CLOUDFLARE_API_TOKEN'],
+          ['A local server, no key', 'forge decide provider add jev --name local --url http://127.0.0.1:8080 --local'],
+        ] },
+      { title: 'Check that it answers', text: 'This sends one fixed test request with no data from your repositories.',
+        commands: [['', 'forge decide doctor --live']] },
+      { title: 'Start one gate in shadow', text: 'In shadow a gate asks and records the answer, and the run goes on exactly as if it were off. It does send data: open a gate below to see what. Use the gate\'s mode and provider below, or run:',
+        commands: [['', 'forge decide gate memory-curate shadow --provider typesafe']] },
+      { title: 'Run forge as usual, then look', text: 'Each answer is kept with the run. These show the gates in effect and how they did.',
+        commands: [['', 'forge decide status'], ['', 'forge decide report']] },
+      { title: 'Turn a gate on when it has earned it', text: 'A gate goes on only after a replay of its recorded requests passes, which takes about 15 runs of shadow data. Without --send a replay only counts what it would send.',
+        commands: [
+          ['', 'forge decide replay --site jev-drift --provider typesafe --model jev-latest'],
+          ['', 'forge decide replay --site jev-drift --provider typesafe --model jev-latest --send'],
+          ['', 'forge decide gate drift on --provider typesafe'],
+        ] },
+    ],
+    stop: [
+      ['Keep one repository out', 'forge decide privacy never-send --repo DIR'],
+      ['Send nothing while this is set', 'export FORGE_JEV=off'],
+    ],
+  };
   const POLL_MS = 20000;                                         // the config rarely changes, and each read starts a CLI process
   // The same order as forge_decide.profiles. A tier or key the body carries and this list does not still shows, after these.
   const TIERS = ['any', 'low', 'medium', 'high'];
@@ -776,7 +844,11 @@
 
     function decideSection() {
       const view = describeDecide(s.data.decide);
-      const sec = section('decide', 'Decision models', 'Each gate is off, shadow or on, with a provider and a model. A change writes your forge config (the user level), so it applies to every repository. The mode shown is the one in effect for this repository, and where it came from.');
+      const sec = section('decide', 'Decision models', 'Each gate is off, shadow or on, with a provider and a model. Off asks nothing. Shadow asks and records, and changes nothing. On lets the gate act. A change writes your forge config (the user level), so it applies to every repository. The mode shown is the one in effect for this repository, and where it came from.');
+      const guide = el('button', 'How to set this up', 'set-guide-open');
+      guide.type = 'button'; guide.id = 'set-decide-guide';
+      guide.addEventListener('click', openGuide);
+      sec.append(guide);
       const where = text(object(s.data.decide).user_path);
       if (where) sec.append(pathLine('config', where));
       if (view.privacyFloor) {
@@ -799,6 +871,64 @@
       return sec;
     }
 
+    // The guide lives on document.body, so a refresh of the page's body never closes it.
+    function openGuide() {
+      let dlg = document.getElementById('set-guide');
+      if (!dlg) {
+        dlg = el('dialog', undefined, 'set-guide');
+        dlg.id = 'set-guide'; dlg.setAttribute('aria-labelledby', 'set-guide-h');
+        const title = el('h2', 'Set up a decision model'); title.id = 'set-guide-h';
+        const close = el('button', 'Close', 'set-guide-close'); close.type = 'button';
+        close.addEventListener('click', () => dlg.close());
+        const head = el('div', undefined, 'set-guide-head');
+        head.append(title, close);
+        dlg.append(head, el('p', SETUP_GUIDE.intro));
+        const steps = el('ol', undefined, 'set-guide-steps');
+        for (const step of SETUP_GUIDE.steps) {
+          const li = el('li');
+          li.append(el('strong', step.title), el('p', step.text, 'muted'));
+          for (const [label, command] of step.commands) li.append(commandLine(label, command));
+          steps.append(li);
+        }
+        dlg.append(steps, el('h3', 'To stop sending'));
+        for (const [label, command] of SETUP_GUIDE.stop) dlg.append(commandLine(label, command));
+        dlg.addEventListener('click', e => { if (e.target === dlg) dlg.close(); });   // a click on the backdrop
+        document.body.append(dlg);
+      }
+      if (!dlg.open) dlg.showModal();
+    }
+
+    function commandLine(label, command) {
+      const line = el('div', undefined, 'set-guide-command');
+      if (label) line.append(el('span', label, 'muted'));
+      const row = el('div', undefined, 'set-guide-row');
+      const copy = el('button', 'Copy', 'set-guide-copy'); copy.type = 'button';
+      copy.addEventListener('click', async () => {
+        try { await navigator.clipboard.writeText(command); copy.textContent = 'Copied'; }
+        catch { copy.textContent = 'Copy failed'; }
+      });
+      const code = el('code', command, 'mono');
+      code.tabIndex = 0;                                       // one line, scrolled: a wrap inside `--local` misleads anyone retyping it
+      row.append(code, copy);
+      line.append(row);
+      return line;
+    }
+
+    // What a gate does. Its open state outlives a refresh, which rebuilds the row.
+    function gateHelp(gate) {
+      const help = GATE_HELP[gate.name];
+      if (!help) return [];
+      const more = el('details', undefined, 'set-gate-more');
+      more.id = 'set-gate-' + gate.name + '-help';
+      more.open = !!s.gateHelpOpen?.[gate.name];
+      more.addEventListener('toggle', () => { (s.gateHelpOpen ||= {})[gate.name] = more.open; });
+      more.append(el('summary', 'What it sends and what on does'));
+      const dl = el('dl');
+      for (const [term, value] of [['When', help.when], ['Sends', help.sends], ['When on', help.on]]) dl.append(el('dt', term), el('dd', value));
+      more.append(dl);
+      return [el('p', help.summary, 'set-gate-summary'), more];
+    }
+
     const providerLabel = p => [p.name, p.type, p.local ? 'local' : ''].filter(Boolean).join(' · ');
 
     function gateRow(gate, providers) {
@@ -818,7 +948,7 @@
       if (gate.skip) status.append(el('span', 'skip: ' + gate.skip, 'set-gate-skip'));
       const top = el('div', undefined, 'set-file-head');
       top.append(h, status);
-      art.append(top);
+      art.append(top, ...gateHelp(gate));
       if (!s.writes) {
         const bits = ['mode ' + gate.mode, gate.provider ? 'provider ' + gate.provider : 'no provider', gate.model ? 'model ' + gate.model : 'no model'];
         art.append(el('p', bits.join(', '), 'muted'));
@@ -1603,7 +1733,7 @@
     return { poll, pick };
   }
 
-  return { render, configBody, repoKey, gateKey, targetPath, subsetOk, valueProblem, decideTextProblem, describeDecide, gateTags, replayDate,
+  return { render, configBody, repoKey, gateKey, targetPath, subsetOk, valueProblem, decideTextProblem, describeDecide, gateTags, replayDate, GATES, GATE_HELP, SETUP_GUIDE,
     pickDefault, groupRuns, optionLabel, typeAhead, editorOf, isDirty, dirtyState, edited, typed, shown, readFailure,
     unsavedLabels, departedRun,
     describeProfile, profileRequest, profileCopySpec, clearDefaultLevel, profileOffers, profileRowText, shadowLabel, refusalReasons, profileText, profileJsonProblem, profileNameProblem,
