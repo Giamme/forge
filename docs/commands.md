@@ -247,7 +247,7 @@ a digit.
 | `edit NAME --file F` | replace the body stored at this level. `-` reads stdin |
 | `set NAME KEY VALUE` | set one dotted routing or policy key. `routing.escalate_effort` is `on` or `off`. Pools, `policy.shadow_qa` and `policy.fast` are comma lists |
 | `unset NAME KEY` | remove that key. An empty section is dropped |
-| `rm NAME` | delete the profile stored at this level |
+| `rm NAME` | delete the profile stored at this level; this level's `default_profile` goes with it unless another copy of the name is left (a lower level's or a built-in) |
 | `use NAME` | write `default_profile` at this level, after the body validates |
 | `use --none` | clear `default_profile` at this level |
 

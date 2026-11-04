@@ -285,6 +285,18 @@ class ProfileCliTests(unittest.TestCase):
         self.assert_kept(self.user_file, USER_KEPT)
         self.assert_kept(self.repo_file, REPO_KEPT)
 
+    def test_removing_the_default_profile_clears_the_default_unless_a_copy_is_left(self):
+        self.write_json(self.user_file, dict(USER_KEPT, profiles={'work': {'policy': {'timeout': 5}}},
+                                             default_profile='work'))
+        self.ok('profile', 'rm', 'work')
+        self.assertNotIn('default_profile', self.assert_kept(self.user_file, USER_KEPT))
+        self.assertEqual(self.ok_json('profile', 'list')['default'], {'name': None, 'level': None})
+        # a user copy that shadows the built-in: the default still names a profile once it is gone
+        self.write_json(self.user_file, dict(USER_KEPT, profiles={'lite': {'policy': {'timeout': 5}}},
+                                             default_profile='lite'))
+        self.ok('profile', 'rm', 'lite')
+        self.assertEqual(self.ok_json('profile', 'list')['default'], {'name': 'lite', 'level': 'user'})
+
     def test_create_from_run_reproduces_the_plan(self):
         self.write_json(self.user_file, dict(USER_KEPT))
         plan = self.base / 'plan'

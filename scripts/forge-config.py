@@ -950,11 +950,18 @@ def cmd_profile_rm(args):
         if raw is not None and not isinstance(raw, dict):
             raise Invalid('profiles is not an object')
         refuse_missing(args.name, level, data)
+    # A default that names the profile goes with it, unless another copy of that name is left (a
+    # lower level's, or a built-in): every later plan and solo run would stop on a missing default.
+    entry = profiles.available(repo).get(args.name) or {}
+    left = entry.get('level') != level or bool(entry.get('shadowed'))
     del raw[args.name]
     if not raw:
         data.pop('profiles')
+    cleared = data.get('default_profile') == args.name and not left
+    if cleared:
+        data.pop('default_profile')
     save_level(level, repo, data)
-    return emit_profile(args, args.name, level, None, 'removed')
+    return emit_profile(args, args.name, level, None, 'removed, and the default cleared' if cleared else 'removed')
 
 
 def cmd_profile_use(args):

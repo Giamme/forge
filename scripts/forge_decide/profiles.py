@@ -129,12 +129,18 @@ def select(repo=None, name=None, none=False) -> dict | None:
     if none:
         return None
     profiles = available(repo)
+    default_level = None
     if name is None:
-        name, _ = default_name(repo)
+        name, default_level = default_name(repo)
         if name is None:
             return None
     if name not in profiles:
-        raise ProfileError(f'profile {name!r} not found (known: {", ".join(sorted(profiles))})')
+        hint = ''
+        if default_level:
+            option = ' --repo DIR' if default_level == 'repo' else ''
+            hint = (f'; it is the {default_level} default_profile: clear it with forge config profile use'
+                    f' --none{option}, or pass --no-profile or --profile NAME')
+        raise ProfileError(f'profile {name!r} not found (known: {", ".join(sorted(profiles))}){hint}')
     return dict(name=name, **profiles[name])
 
 
