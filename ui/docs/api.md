@@ -1530,8 +1530,9 @@ Timeout 60 s per CLI call.
 `POST` takes `{"run": <key>, "action", "level": "user"|"repo", ...}`. `level: "repo"` adds
 `--repo <repo>` before `--json` and writes `<repo>/.forge/decide.json`; `user` writes the user
 file and passes no `--repo`. `--json` is always last. The answer is the CLI's `--json` object,
-`{"ok": true, "name", "level", "body"}` (`name` and `body` are `null` when `use --none` cleared
-the default or `rm` removed the profile). A failure uses the exit mapping above, with `result`
+`{"ok": true, "name", "level", "body"}` (`rm` returns the removed profile's `name` and
+`"body": null`; both `name` and `body` are `null` when `use --none` cleared the default).
+A failure uses the exit mapping above, with `result`
 set to `{"ok": false, "error"}` when the CLI printed one.
 
 | `action` | other fields | CLI |
