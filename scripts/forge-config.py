@@ -75,6 +75,10 @@ class Invalid(Exception):
     """Usage or invalid input, an unsafe path included: exit 2."""
 
 
+class ReadOnly(Exception):
+    """A write to a built-in profile that has no copy at that level: refused, exit 3."""
+
+
 def git_top(path):
     try:
         out = subprocess.run(['git', '-C', path, 'rev-parse', '--show-toplevel'],
@@ -677,7 +681,7 @@ def builtin_readonly(name, level, data):
 
 def refuse_missing(name, level, data):
     if builtin_readonly(name, level, data):
-        raise Invalid(builtin_message(name))
+        raise ReadOnly(builtin_message(name))
     raise Invalid('no profile %r at the %s level' % (name, level))
 
 
@@ -1066,6 +1070,11 @@ def main(argv=None):
         if getattr(args, 'json', False) and getattr(args, 'cmd', None) == 'profile':
             print(json.dumps(dict(ok=False, error=str(err))))
         return 2
+    except ReadOnly as err:
+        print('forge config: %s' % err, file=sys.stderr)
+        if getattr(args, 'json', False):
+            print(json.dumps(dict(ok=False, error=str(err))))
+        return 3
     except Refused as err:
         print('forge config: %s' % err, file=sys.stderr)
         if getattr(args, 'json', False):

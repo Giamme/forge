@@ -85,8 +85,8 @@ class ProfileCliTests(unittest.TestCase):
             self.assertEqual(data[key], value, key)
         return data
 
-    def assert_unchanged(self, before, out, needle=None):
-        self.assertEqual(out.returncode, 2, out.stderr or out.stdout)
+    def assert_unchanged(self, before, out, needle=None, code=2):
+        self.assertEqual(out.returncode, code, out.stderr or out.stdout)
         self.assertEqual(self.snapshot(), before)
         if needle:
             self.assertIn(needle, out.stderr)
@@ -328,19 +328,19 @@ class ProfileCliTests(unittest.TestCase):
     def test_refusals_write_nothing(self):
         # No file yet: a refusal must not create the config dir or either decide.json.
         before = self.snapshot()
-        for args in (
-            ('profile', 'edit', 'balanced', '--file', '-'),
-            ('profile', 'set', 'balanced', 'policy.retry_failed', '1'),
-            ('profile', 'unset', 'balanced', 'policy.retry_failed'),
-            ('profile', 'rm', 'balanced'),
-            ('profile', 'rm', 'lite', '--repo', str(self.repo)),
-            ('profile', 'use', 'nope'),
-            ('profile', 'use', 'lite', '--none'),
-            ('profile', 'create', 'x'),
-            ('profile', 'create', 'x', '--from', 'lite', '--file', '-'),
+        for args, code in (
+            (('profile', 'edit', 'balanced', '--file', '-'), 3),
+            (('profile', 'set', 'balanced', 'policy.retry_failed', '1'), 3),
+            (('profile', 'unset', 'balanced', 'policy.retry_failed'), 3),
+            (('profile', 'rm', 'balanced'), 3),
+            (('profile', 'rm', 'lite', '--repo', str(self.repo)), 3),
+            (('profile', 'use', 'nope'), 2),
+            (('profile', 'use', 'lite', '--none'), 2),
+            (('profile', 'create', 'x'), 2),
+            (('profile', 'create', 'x', '--from', 'lite', '--file', '-'), 2),
         ):
             out = self.run_cfg(*args, stdin='{}')
-            self.assert_unchanged(before, out)
+            self.assert_unchanged(before, out, code=code)
             self.assertEqual(out.stdout, '')
         # An explicit empty --repo is a bad path. An empty shell variable must not create a user profile.
         empty_repo = self.run_cfg('profile', 'create', 'accidental', '--file', '-', '--repo', '',
@@ -352,7 +352,8 @@ class ProfileCliTests(unittest.TestCase):
         self.assertIn('not a directory', error['error'])
         self.assertFalse((self.cfg / 'forge').exists())
         builtin = self.run_cfg('profile', 'set', 'balanced', 'routing.planner', 'sonnet:high', '--json')
-        self.assert_unchanged(before, builtin, BUILTIN_MSG % ('balanced', 'balanced'))
+        # a read-only built-in is a refusal (exit 3), as forge-ui's 409 says, not invalid input
+        self.assert_unchanged(before, builtin, BUILTIN_MSG % ('balanced', 'balanced'), code=3)
         self.assertEqual(json.loads(builtin.stdout), {'ok': False, 'error': BUILTIN_MSG % ('balanced', 'balanced')})
         for name in ('balanced', 'lite'):
             for args in (
@@ -362,7 +363,7 @@ class ProfileCliTests(unittest.TestCase):
                 ('profile', 'rm', name),
             ):
                 out = self.run_cfg(*args, stdin='{}')
-                self.assert_unchanged(before, out, BUILTIN_MSG % (name, name))
+                self.assert_unchanged(before, out, BUILTIN_MSG % (name, name), code=3)
 
         self.write_json(self.user_file, dict(USER_KEPT, profiles={'mine': {'policy': {'retry_failed': 1}}}))
         self.write_json(self.repo_file, dict(REPO_KEPT, profiles={'mine': {'policy': {'timeout': 5}}}))
@@ -378,15 +379,17 @@ class ProfileCliTests(unittest.TestCase):
             (('profile', 'create', 'mine', '--from', 'lite', '--repo', str(self.repo)), 'already exists'),
             (('profile', 'use', 'nope'), 'not found'),
             (('profile', 'use', 'nope', '--repo', str(self.repo)), 'not found'),
-            (('profile', 'edit', 'balanced', '--file', '-'), BUILTIN_MSG % ('balanced', 'balanced')),
-            (('profile', 'set', 'balanced', 'policy.retry_failed', '3', '--repo', str(self.repo)),
-             BUILTIN_MSG % ('balanced', 'balanced')),
             (('profile', 'rm', 'gone'), 'no profile'),
             (('profile', 'unset', 'mine', 'policy.explore'), 'is not set'),
         ]
         for args, needle in cases:
             out = self.run_cfg(*args, stdin='{"routing": {"planner": "nope"}}')
             self.assert_unchanged(before, out, needle)
+            self.assertEqual(out.stdout, '')
+        for args in (('profile', 'edit', 'balanced', '--file', '-'),
+                     ('profile', 'set', 'balanced', 'policy.retry_failed', '3', '--repo', str(self.repo))):
+            out = self.run_cfg(*args, stdin='{"routing": {"planner": "nope"}}')
+            self.assert_unchanged(before, out, BUILTIN_MSG % ('balanced', 'balanced'), code=3)
             self.assertEqual(out.stdout, '')
 
         bad = {'routing': {'planner': 'nosuchalias', 'escalate_after': -1},

@@ -1554,11 +1554,10 @@ control characters, newline and tab included, and not starting with `-`; `level`
 `repo`; `body` is a JSON object. Any other field is `400`.
 
 Writes take the same server-wide config lock as `/api/config` (`409 {"error": "busy"}`) and the
-same token and Origin checks. Timeout 60 s. Exit 2 is `400` (`invalid`). That includes editing,
-setting, unsetting or removing a built-in profile (`balanced`, `lite`) that has no copy at the
-level being written: the CLI exits 2, not 3, and the detail says it is read-only and names
-`forge config profile create NAME --from <name>`. Exit 3 is `409` (`refused`), as for every
-other write. The CLI does the validation and the writing, so a profile created here is
+same token and Origin checks. Timeout 60 s. Exit 2 is `400` (`invalid`). Exit 3 is `409`
+(`refused`), as for every other write. That includes editing, setting, unsetting or removing a
+built-in profile (`balanced`, `lite`) that has no copy at the level being written: the detail
+says it is read-only and names `forge config profile create NAME --from <name>`. The CLI does the validation and the writing, so a profile created here is
 byte-for-byte the file `forge config profile create` writes.
 
 ## Status vocabulary for the page and the graph

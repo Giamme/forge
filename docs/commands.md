@@ -273,7 +273,7 @@ On success, `create`, `edit`, `set`, `unset`, `rm` and `use` print `profile NAME
 `use --none` prints `profile none: cleared (LEVEL)`. With `--json` that is
 `{"ok": true, "name", "level", "body"}` (`name` is null for `use --none`). On error,
 `--json` also prints `{"ok": false, "error": "..."}`. Exit 2 on
-invalid input, including a read-only built-in. This is not `forge decide gate --profile`,
+invalid input, and 3 when the profile is a read-only built-in with no copy at that level. This is not `forge decide gate --profile`,
 which writes that profile's gates and refuses `gate on` with exit 3.
 
 Run flags, on `forge-solo.sh` and `forge-parallel.sh plan`, are frozen in `jev-selection.json`.

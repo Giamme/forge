@@ -638,14 +638,14 @@ class ProfileCliTests(EndpointCase):
         self.assertEqual((other_cfg / 'forge' / 'decide.json').read_bytes(), self.user_file.read_bytes())
         self.assertEqual((Path(other_root) / '.forge' / 'decide.json').read_bytes(), self.repo_file.read_bytes())
 
-    def test_a_builtin_edit_is_invalid_and_writes_nothing(self):
-        # The CLI exits 2 (invalid) for a built-in with no copy, which maps to 400 the way
-        # every other exit 2 does. It does not exit 3.
+    def test_a_builtin_edit_is_refused_and_writes_nothing(self):
+        # The CLI refuses a built-in with no copy (exit 3), which maps to 409 the way every
+        # other refusal does.
         for level in ('user', 'repo'):
             status, body = self.profiles(action='edit', name='balanced', level=level,
                                          body={'policy': {'timeout': 1}})
-            self.assertEqual(status, 400, body)
-            self.assertEqual(body['error'], 'invalid')
+            self.assertEqual(status, 409, body)
+            self.assertEqual(body['error'], 'refused')
             self.assertIn('read-only', body['detail'])
             self.assertIs(body['result']['ok'], False)
             self.assertIn('read-only', body['result']['error'])
