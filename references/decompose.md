@@ -191,8 +191,9 @@ The built-ins are `balanced` and `lite`, the [recommended routing](../docs/model
 The chosen profile is frozen into `<dir>/profile.json`. A flag of that call replaces only
 the key it names; the other keys are applied as those flags would have been: dwarf and qa
 pools, the planner, shadow review, exploration and fast roles, plus the plan files for the
-final reviewer, escalation, the QA threshold, the timeout and verify retries. A tier the
-profile does not name still falls back to `opus` at `high` for QA. Gates and budget stay
+final reviewer, escalation, the QA threshold, the timeout and verify retries. A QA tier the
+profile does not name uses `routing.qa.any` when that pool is set; only with no such pool
+does QA fall back to `opus`, which dispatch runs at `high`. Gates and budget stay
 in the frozen body. With neither `--profile` nor `--no-profile`, a plan keeps the copy it already
 froze and does not apply it again; a plan with no copy gets the default profile, if one is
 set. The runner does not select `balanced` on its own. `--no-profile` removes the frozen
