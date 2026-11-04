@@ -287,8 +287,11 @@ def rerun_plan(args) -> int:
         if git(src['repo'], 'branch', new['branch'], src['base'])[0] != 0:
             raise Refusal('could not create %s' % new['branch'])
         created.append('branch')
+        # The source's frozen profile was copied and plan keeps it. A source that froze none must not
+        # take the user's default now: it would replace the options just copied.
+        profile = [] if (new['plan'] / 'profile.json').is_file() else ['--no-profile']
         planned = subprocess.run(['bash', str(SKILL / 'scripts' / 'forge-parallel.sh'), 'plan', str(new['plan']),
-                                  '--explore', '0'], capture_output=True, text=True, stdin=subprocess.DEVNULL)
+                                  '--explore', '0', *profile], capture_output=True, text=True, stdin=subprocess.DEVNULL)
         if planned.returncode != 0:
             raise Refusal('forge-parallel.sh plan failed (%d):\n%s' % (planned.returncode, (planned.stdout + planned.stderr).strip()))
         changed = [r['id'] for r in table(new['plan'] / 'tasks.tsv') if r['dwarf'] != args.dwarf]
