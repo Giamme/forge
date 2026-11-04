@@ -14,7 +14,7 @@ import time
 import unittest
 
 import test_forge as fixtures
-from test_dispatch import CODEX_CAPACITY
+from test_dispatch import CODEX_CAPACITY, CODEX_NO_ROUTE
 from test_infra_causes import module as script_module
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -113,6 +113,16 @@ class InfraTests(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stdout)
         self.assertIn('waiting', r.stdout)
         self.assertTrue((p / 'tasks/a/merged').exists() and (p / 'tasks/b/merged').exists())
+
+    def test_a_codex_that_never_reached_the_network_is_waited_out_too(self):
+        p = self.plan_of([('a', '-', 'a.txt')])
+        self.scenario({'a.dwarf.1': {'rc': 1, 'stdout': CODEX_NO_ROUTE}})
+        self.env['FORGE_INFRA_BACKOFF'] = '0.05'
+        r = self.run_script('forge-parallel.sh', 'run', p, '--infra-retries', 1)
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertIn('waiting', r.stdout)
+        self.assertTrue((p / 'tasks/a/merged').exists())
+        self.assertEqual(self.calls(), ['dwarf', 'dwarf', 'qa'])
 
     def test_a_resume_whose_pin_cannot_be_applied_stays_paused_and_blocks_nothing(self):
         p = self.plan_of([('a', '-', 'a.txt'), ('b', 'a', 'b.txt')])

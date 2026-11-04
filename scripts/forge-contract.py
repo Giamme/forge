@@ -55,7 +55,7 @@ lowercase prose do not count. The severity is the first P0-P3 token of the block
 line (`[P2]`, `(P2)`, `**P2**`, `P2:`, `P2 -` or a standalone `P2`; uppercase only).
 
 Phantom findings. A reviewer may echo the contract it was given. Three layers keep that
-from creating findings or blocking: (1) FORGE_VERDICT and FORGE_LEARNING text is removed
+from creating findings or blocking: (1) FORGE_VERDICT, FORGE_LEARNING and FORGE_TESTS text is removed
 before parsing (the verdict line itself says "CONFIRMED"); (2) any line that is a
 contiguous fragment of this module's own contract text (all parts, kinds and thresholds,
 whitespace-collapsed, at least 25 characters, list marker ignored) is removed, which
@@ -163,7 +163,12 @@ _VERIFY = [
     'spend at most about %d minutes running tests. Use any test evidence forge gives you above' % QA_TEST_MINUTES,
     'before running a test yourself. When the targeted tests would take longer, or the change',
     'touches shared infrastructure (a test helper, a build file, a lockfile), say so instead of',
-    'running everything.',
+    'running everything. If a test needs a dependency your checkout does not have, do not look for',
+    'it elsewhere and do not install anything: report that it could not run.',
+    'Say whether tests ran, on a line of its own before the verdict, in exactly one of these forms:',
+    '  FORGE_TESTS: RAN',
+    '  FORGE_TESTS: NOT NEEDED — why',
+    '  FORGE_TESTS: COULD NOT RUN — why',
 ]
 
 _SEVERITY = [
@@ -289,7 +294,7 @@ def dwarf_text(pre_review: bool = False, verify_after_merge: bool = False) -> st
 
 # --- parsing ---------------------------------------------------------------------
 
-_PROTOCOL = re.compile(r'FORGE_(?:VERDICT|LEARNING):.*$')
+_PROTOCOL = re.compile(r'FORGE_(?:VERDICT|LEARNING|TESTS):.*$')
 _QUOTE = re.compile(r'^\s*(?:>[ \t]?)+')
 _MARKER = re.compile(r'^(?:[-*+•–]|\d{1,3}[.)]|#{1,6})\s+')
 _HEADING = re.compile(r'^ {0,3}#{1,6}[ \t]+\S')
@@ -327,7 +332,7 @@ def _clean(text: str) -> list:
     for number, raw in enumerate(text.replace('\r\n', '\n').replace('\r', '\n').split('\n'), 1):
         raw = raw.expandtabs(4)
         line = _PROTOCOL.sub('', raw)
-        if line != raw and not line.strip():
+        if line != raw and not line.strip(' \t*_`>+-'):
             continue
         line = _QUOTE.sub('', line).rstrip()
         core = _collapse(_MARKER.sub('', line.strip()))
@@ -427,6 +432,35 @@ def gate(verdict: str, text: str, threshold=None) -> GateResult:
     return GateResult(decision, worst, len(confirmed), unlabelled, len(below), below)
 
 
+# A reviewer's own word on whether its tests ran (#117). Only a line of its own counts, the last one
+# when it repeats: a quoted example in prose is not its report. Unlike the verdict, nothing gates on
+# this line and it exists to be seen, so markup and any separator are forgiven, and a line that says
+# something else is `unclear` rather than silence. The forms' own "why" is the prompt echoed.
+_TESTS_LINE = re.compile(r'^[ \t>*_`+-]*FORGE_TESTS:[ \t*_`]*(.*?)[ \t*_`]*$', re.M)
+_TESTS_VALUE = re.compile(r'(RAN|NOT[ _]NEEDED|COULD[ _]NOT[ _]RUN)\b(.*)$', re.I)
+_TESTS_STATUS = {'RAN': 'ran', 'NOT NEEDED': 'not_needed', 'COULD NOT RUN': 'could_not_run'}
+_TESTS_TRIM = ' \t—–-:()'
+_TESTS_REASON_MAX = 300
+
+
+def _tests_reason(text: str) -> str | None:
+    return ''.join(ch for ch in text.strip(_TESTS_TRIM) if ch.isprintable())[:_TESTS_REASON_MAX] or None
+
+
+def tests_report(text) -> dict | None:
+    """{status: ran|not_needed|could_not_run|unclear, reason} from a QA reply, or None when it does not say."""
+    report = None
+    for value in _TESTS_LINE.findall((text or '').replace('\r\n', '\n')):
+        match = _TESTS_VALUE.match(value)
+        if not match:
+            report = dict(status='unclear', reason=_tests_reason(value))
+            continue
+        reason = _tests_reason(match.group(2))
+        if (reason or '').lower() != 'why':
+            report = dict(status=_TESTS_STATUS[match.group(1).upper().replace('_', ' ')], reason=reason)
+    return report
+
+
 def known_issues_text(threshold, tolerated) -> str:
     name = SEVERITIES[_rank(threshold)]
     lines = ['## Known issues (QA findings below blocking threshold %s)' % name, '',
@@ -485,6 +519,8 @@ def _parser() -> argparse.ArgumentParser:
                                   % DEFAULT_THRESHOLD)
     gate_parser.add_argument('--known-issues', metavar='OUT', default=None,
                              help='write tolerated findings here when there are any')
+    tests = sub.add_parser('tests', help='print what the reply says about its tests: status, a tab, the reason')
+    tests.add_argument('--qa-last', required=True, metavar='FILE', help='the QA reply')
     return parser
 
 
@@ -502,6 +538,11 @@ def main(argv=None) -> int:
     except OSError as error:
         sys.stderr.write('forge-contract: cannot read %s: %s\n' % (args.qa_last, error))
         return 3
+    if args.command == 'tests':
+        report = tests_report(text)
+        if report:
+            _emit('%s\t%s\n' % (report['status'], report['reason'] or ''))
+        return 0
     result = gate(args.verdict, text, args.threshold)
     if args.known_issues and result.n_below >= 1:
         temporary = args.known_issues + '.%d.tmp' % os.getpid()

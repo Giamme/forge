@@ -334,6 +334,17 @@ class Page(unittest.TestCase):
         page.wait_for_function(f"{kinds} === 'reasoning,command,edit,message'", timeout=10000)
         self.assertClean(page)
 
+    def test_a_review_whose_tests_could_not_run_stands_out(self):
+        last = self.plan / 'tasks/reader/qa.last'
+        before = last.read_text()
+        self.addCleanup(last.write_text, before)
+        last.write_text('FORGE_TESTS: COULD NOT RUN — no display\nFORGE_VERDICT: PASS\n')
+        page = self.open(cdn=False)
+        page.goto(self.url + f'#/runs/{self.key}/tasks/reader')
+        page.wait_for_selector('#inspector .review .tests-line.warn')
+        self.assertIn('no display', page.inner_text('#inspector .review .tests-line.warn'))
+        self.assertClean(page)
+
     def test_fractal_child_tasks_show_in_the_inspector_with_their_diffs(self):
         page = self.open(cdn=False)
         page.goto(self.url + f'#/runs/{self.key}/tasks/reader')

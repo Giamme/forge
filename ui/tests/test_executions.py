@@ -269,6 +269,15 @@ class ExecutionTests(FixtureCase):
         self.assertEqual(execution_detail(self.plan, 'qa-' + F.uid(24))['state'], 'running')
         self.assertEqual(execution_detail(self.plan, F.PAGE_SHADOW_QA)['state'], 'done')
 
+    def test_a_review_shows_what_the_reviewer_said_about_its_tests(self):
+        reply = 'FORGE_TESTS: COULD NOT RUN — no display\nFORGE_VERDICT: PASS\n'
+        self.assertIsNone(task_detail(self.solo, 'solo')['reviews'][0]['tests'])   # an older reply says nothing
+        self.write(self.solo / 'qa.last', reply)
+        self.assertEqual(task_detail(self.solo, 'solo')['reviews'][-1]['tests'], {'status': 'could_not_run', 'reason': 'no display'})
+        self.assertIsNone(final_review_detail(self.plan, F.REVIEW_NEW)['tests'])
+        self.write(self.plan / F.REVIEW_NEW / 'qa.last', reply)
+        self.assertEqual(final_review_detail(self.plan, F.REVIEW_NEW)['tests'], {'status': 'could_not_run', 'reason': 'no display'})
+
     def test_final_reviews_newest_published_and_running(self):
         data = detail(self.plan)
         reviews = data['final_reviews']

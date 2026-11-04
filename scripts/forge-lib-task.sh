@@ -708,7 +708,7 @@ decided_attempts() { # decided_attempts <decide>
 # run that uses it may end first (a quota stop) and a later `run` or `retry` must still honour it.
 # Absent means no decision governs and the retry budget rules; 0 means the decided attempts are used.
 decided_left() { # decided_left <task-dir>: the number, or nothing
-  local v; v="$(tr -dc '0-9' < "$1/decided.left" 2>/dev/null | head -c 3)"
+  local v; v="$( { tr -dc '0-9' < "$1/decided.left"; } 2>/dev/null | head -c 3)"
   [ -n "$v" ] && echo $(( 10#$v ))
   return 0
 }

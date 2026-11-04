@@ -1440,3 +1440,24 @@ button.set-profile[aria-pressed=true] { border-color: var(--route); background: 
 .set-reasons li { overflow-wrap: anywhere; }
 button.set-profile:focus-visible, .set-profile-form select:focus-visible, .set-profile-form input:focus-visible,
 .set-profile-editor textarea:focus-visible { outline: 2px solid var(--route); outline-offset: 2px; }
+
+/* Decision models: what a gate does, and the setup guide */
+.set-gate-summary { font-size: var(--t-sm); }
+.set-gate-more > summary { cursor: pointer; font-size: var(--t-sm); }
+.set-gate-more > summary:focus-visible, .set-guide-open:focus-visible, .set-guide-close:focus-visible, .set-guide-copy:focus-visible { outline: 2px solid var(--route); outline-offset: 2px; }
+.set-gate-more dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: var(--s-1) var(--s-3); margin: var(--s-2) 0 0; font-size: var(--t-sm); }
+.set-gate-more dt { font-weight: 600; }
+.set-gate-more dd { margin: 0; text-wrap: pretty; }
+.set-guide-open { justify-self: start; }
+dialog.set-guide { width: min(720px, calc(100vw - 24px)); max-height: 86vh; overflow: auto; padding: 18px 20px; border: 1px solid var(--rule); border-radius: var(--r-module); background: var(--module); color: var(--ink); box-shadow: var(--ply-2); }
+dialog.set-guide::backdrop { background: light-dark(rgb(17 22 19 / .35), rgb(0 0 0 / .55)); }
+.set-guide-head { display: flex; align-items: baseline; justify-content: space-between; gap: var(--s-3); }
+.set-guide-head h2 { margin: 0; text-wrap: balance; }
+.set-guide h3 { margin: var(--s-4) 0 var(--s-2); font-size: var(--t-sm); }
+.set-guide p { text-wrap: pretty; }
+.set-guide-steps { display: grid; gap: var(--s-4); margin: var(--s-3) 0 0; padding-inline-start: 1.4em; }
+.set-guide-steps p { margin: var(--s-1) 0 var(--s-2); font-size: var(--t-sm); }
+.set-guide-command { display: grid; gap: 2px; margin-top: var(--s-2); font-size: var(--t-xs); }
+.set-guide-row { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--s-2); padding: var(--s-2); border: 1px solid var(--rule); border-radius: var(--r-key); background: var(--module-2); }
+.set-guide-row code { min-width: 0; flex: 1; overflow-x: auto; white-space: pre; }
+.set-guide-copy { flex: none; }

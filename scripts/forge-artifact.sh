@@ -59,6 +59,51 @@ forge_review_snapshot() ( # source, baseline tree, final tree, destination
 
 )
 
+_forge_dep_dirs() { # checkout: its dependency directories, relative, never one inside another
+  # The names are forge-fail-first.py's DEP_DIRS. Five levels reach apps/group/name/node_modules.
+  (cd "$1" && find . -maxdepth 5 \( -name .git -o -name .forge \) -prune -o \
+      \( -name node_modules -o -name .venv -o -name venv -o -name vendor \) \( -type d -o -type l \) -print -prune 2>/dev/null) |
+    sed 's#^\./##'
+}
+
+forge_review_deps() { # source checkout, review snapshot, note file (#117)
+  # Links the dependency directories of the checkout under review (what .forge/setup filled, so
+  # they match the attempt, unlike the source repo's) into its snapshot, at the root and in
+  # workspace packages, and writes what the reviewer has to the note. An untracked link counts for
+  # no fingerprint, and the exclude keeps it out of the reviewer's `git status`: a `node_modules/`
+  # ignore pattern does not match a link. A directory the snapshot already holds is committed: it
+  # stays as it is. `ln` fails where the snapshot lacks the parent (an old run's dir in a solo
+  # repo): that is no part of the change, so nothing is linked there.
+  local src rel linked="" committed
+  src="$(cd "$1" && pwd)" || src=""
+  committed="$(_forge_dep_dirs "$2" | sort | awk 'NR > 1 { printf ", " } { printf "%s", $0 }')"
+  if [ -n "$src" ]; then
+    while IFS= read -r rel; do
+      [ -n "$rel" ] && [ -d "$src/$rel" ] && [ ! -e "$2/$rel" ] && [ ! -L "$2/$rel" ] || continue
+      ln -s "$src/$rel" "$2/$rel" 2>/dev/null || continue
+      mkdir -p "$2/.git/info" && echo "/$rel" >> "$2/.git/info/exclude"
+      linked="$linked${linked:+, }$rel"
+    done <<< "$(_forge_dep_dirs "$src" | sort)"
+  fi
+  {
+    if [ -n "$linked" ]; then
+      echo "Dependencies linked into your checkout from the attempt's own copy: $linked. Use them to run tests, and do not write to them. forge does not check that they are complete, or look more than five levels down."
+    fi
+    if [ -n "$committed" ]; then
+      echo "Dependency directories committed in your checkout, holding only what was committed: $committed."
+    fi
+    if [ -z "$linked$committed" ]; then
+      echo "Dependencies in your checkout: none. It holds committed files only, with no installed packages."
+    fi
+  } > "$3"
+}
+
+forge_tests_note() { # QA reply: the reason, when the reviewer says its tests could not run (#117)
+  grep -qs 'FORGE_TESTS:' "$1" || return 0
+  python3 "$SKILL_DIR/scripts/forge-contract.py" tests --qa-last "$1" 2>/dev/null |
+    awk -F'\t' '$1 == "could_not_run" { print ($2 == "" ? "no reason given" : $2) }'
+}
+
 forge_fingerprint() { # forge_fingerprint <dir> [--tracked], as forge_tree
   local tree head index
   tree="$(forge_tree "$1" "${2:-}")" || return 1

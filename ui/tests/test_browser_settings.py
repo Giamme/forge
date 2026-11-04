@@ -199,6 +199,22 @@ class Settings(unittest.TestCase):
         self.assertEqual(page.text_content('.set-repo-path .mono'), '/r/one')
         self.assertClean(page)
 
+    def test_the_setup_guide_opens_as_a_dialog_and_each_gate_explains_itself(self):
+        page = self.page()
+        self.assertFalse(page.is_visible('#set-guide'))
+        page.click('#set-decide-guide')
+        page.wait_for_selector('#set-guide[open]')
+        self.assertGreaterEqual(page.locator('#set-guide .set-guide-steps > li').count(), 5)
+        self.assertIn('provider add', page.inner_text('#set-guide'))
+        page.click('#set-guide .set-guide-close')
+        self.assertFalse(page.is_visible('#set-guide'))
+        for gate in ('drift', 'memory-stale', 'findings'):
+            self.assertTrue(page.inner_text(f'#set-gate-{gate} .set-gate-summary').strip())
+        self.assertFalse(page.is_visible('#set-gate-drift-help dl'))
+        page.click('#set-gate-drift-help summary')
+        self.assertTrue(page.is_visible('#set-gate-drift-help dl'))
+        self.assertClean(page)
+
     def test_typing_on_text_a_held_read_replaced_warns_that_the_file_changed(self):
         page = self.page()
         page.select_option('#set-gate-drift-mode', 'shadow')             # the mode confirm holds the body
