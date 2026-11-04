@@ -92,6 +92,14 @@ class ValidReplyTests(AutoCase):
         self.assertEqual(self.calls(), ['qa'])
         self.assertEqual(self.printed_command(result.stdout), [str(SCRIPT), 'run', str(plan)])
 
+    def test_the_goal_line_is_the_requests_first_line(self):
+        # goal.txt is what the table, every task's "Overall goal", the final review and the dataset read.
+        self.planner_says(reply(task('a')))
+        result, plan = self.auto('goal', '--plan', 'always', goal=self.goal('# Add a limits section\n\n' + SMALL_GOAL))
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertEqual((plan / 'goal.txt').read_text(), 'Add a limits section\n')
+        self.assertIn('goal: Add a limits section', result.stdout)
+
     def test_two_branches_are_kept_and_the_printed_command_carries_the_run_flags(self):
         self.planner_says(reply(task('a'), task('b')))
         result, plan = self.auto('branches', '--plan', 'always', '--', '--max-parallel', '2', '--verify', 'echo ok now')
@@ -375,6 +383,7 @@ class SendBackTests(AutoCase):
         seed = self.root / ('seed%d' % len(list(self.root.glob('seed*'))))
         seed.mkdir()
         (seed / 'request.md').write_text(SMALL_GOAL)
+        (seed / 'goal.txt').write_text(SMALL_GOAL.splitlines()[0] + '\n')   # auto writes it from the request
         (seed / 'planner.last').write_text(text)
         parsed = subprocess.run([sys.executable, str(ROOT / 'scripts' / 'forge-planner.py'), 'parse', '--plan', str(seed),
                                  '--reply', str(seed / 'planner.last')], capture_output=True, text=True)

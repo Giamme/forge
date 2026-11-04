@@ -919,13 +919,19 @@ dependencies_ready() {
 }
 
 preflight_plan() {
-  local plan="$1" id role flags ft
+  local plan="$1" id role flags ft spec key seen=";"
   export FORGE_CAPABILITY_CACHE="$plan/capabilities"
   for id in $(all_ids "$plan/tasks.tsv"); do
     for role in dwarf qa; do
       flags=""; [ -f "$plan/yolo_$role" ] && flags=--yolo
       ft="$(forge_fast_tier "$plan" "$role")"
-      /bin/bash "$DISPATCH" doctor --spec "$(field "$plan/tasks.tsv" "$id" "$role")" --role "$role" $flags $ft || return $?
+      spec="$(field "$plan/tasks.tsv" "$id" "$role")"
+      # Once per spec, role and options: the same arguments get the same answer, and a note doctor
+      # adds (a slow effort) is said once, not once per task.
+      key="$role|$spec|$flags|$ft"
+      case "$seen" in *";$key;"*) continue ;; esac
+      seen="$seen$key;"
+      /bin/bash "$DISPATCH" doctor --spec "$spec" --role "$role" $flags $ft || return $?
     done
   done
   if [ -s "$plan/planner" ]; then
@@ -2656,6 +2662,12 @@ do_auto() {
     cp "$GOAL" "$PLAN/request.md" || die "could not write $PLAN/request.md" 3
   fi
   printf 'auto\n' > "$PLAN/orchestrator" || die "could not write $PLAN/orchestrator" 3
+  # The goal line the table, every task's "Overall goal", the final review and the dataset read:
+  # the request's first non-empty line, a heading's marks dropped. One the user wrote stays.
+  if [ ! -s "$PLAN/goal.txt" ]; then
+    awk 'NF { sub(/^#+[[:space:]]*/, ""); print substr($0, 1, 200); exit }' "$PLAN/request.md" > "$PLAN/goal.txt" \
+      || die "could not write $PLAN/goal.txt" 3
+  fi
   local PLANNER_PY="$SKILL_DIR/scripts/forge-planner.py" REQUEST="$PLAN/request.md" rc=0 from_planner=0 fast_tier=""
   PLAN_ARGS=(--repo "$REPO" ${PLAN_ARGS[@]+"${PLAN_ARGS[@]}"})
   [ -z "$DLEVEL" ] || PLAN_ARGS+=(--decompose-level "$DLEVEL")

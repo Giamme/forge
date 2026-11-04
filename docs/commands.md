@@ -809,8 +809,9 @@ unless `--no-collapse`.
 
 From a goal to the approval table in one blocking command. The orchestrator's job is
 mechanical, so a small model can drive it. A new plan dir only: one that already has
-`tasks.tsv` exits 2. The goal is copied verbatim to `<plan-dir>/request.md`, and `auto`
-is written to `<plan-dir>/orchestrator`.
+`tasks.tsv` exits 2. The goal is copied verbatim to `<plan-dir>/request.md`, `auto`
+is written to `<plan-dir>/orchestrator`, and the request's first non-empty line (a heading's
+`#` marks dropped) to `<plan-dir>/goal.txt`, unless that file already exists.
 
 ```
 forge-parallel.sh auto <plan-dir> --repo DIR --goal-file FILE [--planner SPEC]

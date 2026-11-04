@@ -313,6 +313,12 @@ class PlanNoteTests(Case):
         out = self.plan(self.row('a', 'haiku:max', 'haiku:max'), self.row('b', 'haiku:max'))
         self.assertEqual(out.count('note: ' + BUILTIN + '\n'), 1, out)
 
+    def test_run_says_the_note_once_for_two_slow_tasks(self):
+        self.plan(self.row('a', 'haiku:max'), self.row('b', 'haiku:max'))
+        done = self.run_script('forge-parallel.sh', 'run', self.root / 'plan')
+        self.assertEqual(done.returncode, 0, done.stdout)
+        self.assertEqual(done.stdout.count('no measured gain'), 1, done.stdout)
+
     def test_a_plan_without_a_slow_spec_prints_no_note(self):
         out = self.plan(self.row('a', 'sonnet:high'))
         self.assertNotIn('no measured gain', out)
