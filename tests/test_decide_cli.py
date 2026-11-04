@@ -85,6 +85,17 @@ class StatusAndGateTests(DecideCliTestCase):
         self.assertEqual(json.loads((self.repo / '.forge/decide.json').read_text())['gates'],
                          dict(drift=dict(mode='on', force=True)))
 
+    def test_gates_for_a_built_in_profile_are_refused_and_write_nothing(self):
+        # A gates-only user profile of that name would hide the built-in's routing and policy.
+        out = self.decide('gate', 'drift', 'shadow', '--profile', 'balanced', code=2)
+        self.assertIn('forge config profile create NAME --from balanced', out.stderr)
+        self.assertFalse((self.cfg / 'forge' / 'decide.json').exists())
+        # a user profile of its own, built-in name or not, takes them
+        self.write_user({'version': 1, 'profiles': {'balanced': {'policy': {'timeout': 5}}}})
+        self.decide('gate', 'drift', 'shadow', '--profile', 'balanced')
+        self.assertEqual(self.user_file()['profiles']['balanced'],
+                         {'policy': {'timeout': 5}, 'gates': {'drift': {'mode': 'shadow'}}})
+
     def test_status_defaults_to_the_cwd_repo(self):
         self.decide('privacy', 'never-send', '--repo', str(self.repo))
         data = self.status()

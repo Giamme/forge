@@ -31,6 +31,59 @@ the wrong provider.
   stage entirely; `xhigh` reviews cost about twice as much as `high` ones for the same verdicts in
   the SWE-bench Pro benchmark (#89), so `high` is the default and `xhigh` is yours to ask for.
 
+## Recommended routing
+
+What follows is measured, not a rule. It comes from benchmark #86 (SWE-bench Pro,
+decomposed runs, every role on the claude harness), dated 2026-10-28. It will be
+re-measured, and this table replaced, on the next benchmark round.
+
+Measured over dwarf attempts across four decomposed runs. Times are model session times.
+
+| Spec | Attempts | Mean time | Mean cost | Review outcome |
+|---|---|---|---|---|
+| `haiku:max` | 7 | 7.8 min | $0.25 | 7/7 passed first time; up to 5.1M tokens in one attempt |
+| `haiku:xhigh` | 4 | 1.9 min | $0.02 | 4/4 passed first time |
+| `sonnet:medium` | 15 (14 tasks) | 1.1 min | $0.14 | 13 passed first time, 1 on retry |
+| `sonnet:high` | 5 | 3.3 min | $0.33 | 5/5 passed first time, including the high tasks of three HARD-51 problems |
+| `sonnet:xhigh` | 2 | 3.6 min | $0.54 | 2/2 passed first time |
+| `opus:high` | 2 (hard set, high tier) | 5.9 min | $1.13 | 2/2 passed first time |
+
+What it says:
+
+- `haiku:max` was the slowest dwarf in every run that used it, about 4x `haiku:xhigh`,
+  for no gain in pass rate.
+- `sonnet:medium` is the workhorse: about a minute, $0.14, and enough for every medium
+  task.
+- Above medium, `sonnet:high` held up even on HARD-51 high tasks, and `opus:high` is the
+  safer choice where a high task's failure costs a whole chain.
+- Escalation never triggered: no task failed twice on one model.
+
+The recommendation:
+
+- Dwarfs: low `haiku:xhigh`, medium `sonnet:medium`, high `opus:high` (`sonnet:high` for a
+  cheaper run).
+- Reviewers by difficulty: `sonnet:medium` / `sonnet:high` / `opus:high` (see #89).
+- Planner: `sonnet:high`. In #86, `sonnet:xhigh` cost about what `opus:xhigh` did per plan
+  and was slower, and most of a planner's cost is exploring the repository.
+
+```
+--dwarf-low haiku:xhigh --dwarf-medium sonnet:medium --dwarf-high opus:high --qa-low sonnet:medium --qa-medium sonnet:high --qa-high opus:high
+```
+
+forge ships two built-in profiles carrying this routing, `balanced` and `lite` — `lite` is
+the same with the high tier on `sonnet:high` for both dwarf and reviewer — both using
+`--retry-failed 2 --escalate-after 2`; select one with `--profile balanced` (see
+[commands.md](commands.md)), and `forge config profile show balanced` prints it.
+
+| Profile | High tier (dwarf and reviewer) |
+|---|---|
+| `balanced` | `opus:high` |
+| `lite` | `sonnet:high` |
+
+forge notes a spec measurably slower than a lower effort of the same model with no gain
+(today `haiku:max` against `haiku:xhigh`), in `doctor` and under the plan table, and never
+changes the spec.
+
 ## Effort, ceilings and clamping
 
 Every harness has its own effort ladder:

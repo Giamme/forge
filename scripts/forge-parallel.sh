@@ -6,7 +6,11 @@
 #
 # Usage:
 #   forge-parallel.sh plan <plan-dir> --repo <dir> [routing flags] [--decompose-level low|medium|high] [--ui]
-#                                     [--qa-threshold P0|P1|P2|P3|none|default]
+#                                     [--qa-threshold P0|P1|P2|P3|none|default] [--profile NAME | --no-profile]
+#                                     [--collapse-chains]
+#   forge-parallel.sh auto <plan-dir> --repo <dir> --goal-file <file> [--planner <spec>] [--decompose-level L]
+#                                     [--plan auto|always|never] [--one-task-difficulty low|medium|high]
+#                                     [--no-collapse] [--approved] [plan flags...] [-- run flags...]
 #   forge-parallel.sh run  <plan-dir> [--max-parallel N] [--yolo-dwarf] [--yolo-qa]
 #                                     [--verify <command>] [--setup <command>] [--dry-run]
 #                                     [--timeout S] [--retry-failed N] [--infra-retries M]
@@ -18,6 +22,7 @@
 #                                     [--decide retry=N|threshold=Pn | --dwarf <spec>] --reason "<why>" --approved
 #                                                                              (a NEEDS_DECISION task)
 #                                     [--timeout S] [--qa-threshold Pn|none|default] [--verify-retries N]
+#                                     [--retry-failed N] [--infra-retries M]
 #   forge-parallel.sh integrate <plan-dir> --approved [--verify-retries N] [--final-review <qa-spec>]
 #   forge-parallel.sh review <plan-dir> [--qa <spec>] [--yolo-qa] [--qa-threshold Pn|none|default]
 #   forge-parallel.sh attribute <plan-dir> [--force]   (find a merge that breaks the failed verification)
@@ -51,11 +56,25 @@
 #                           still what the review judged, and starts fresh whenever it cannot;
 #                           each attempt is logged in tasks/<id>/implementer_sessions.tsv.
 #                           `--no-implementer-session` turns it off (the default)
+#   --fast ROLES            which of dwarf, qa, planner, review ask for the fast service tier
+#                           (comma list, or all, or none). Kept in the plan; a re-plan without
+#                           the flag keeps it, and none removes it. codex and claude only
+#   --profile NAME          take the routing and policy values of a named profile (forge config
+#                           profile list) instead of typing them: frozen into the plan as
+#                           profile.json, shown in the table, and its decision-model gates and
+#                           budget stay the plan's whatever decide.json says later. A flag of
+#                           this call replaces just that one value. --no-profile uses none (and
+#                           removes the plan's frozen copy); with neither, the plan keeps its
+#                           copy, and a plan that has none gets the default profile, if one is set
 #   --explore E             on by default at 0.2 (0 turns it off, and is kept): a row left
 #                           to forge gets, with probability E/2, its neighbouring model
 #                           (one tier away in the given pools) instead of its pool's turn;
 #                           each decision and its odds go to tasks/<id>/route.jsonl
-#                           (precedence: flag, this plan's earlier choice, FORGE_ROUTE_EXPLORE)
+#                           (precedence: flag, profile, this plan's earlier choice, FORGE_ROUTE_EXPLORE)
+#   --collapse-chains       this call only (not kept): after the task table is validated and
+#                           before routing, merge a chain into one task named combined.
+#                           A one-task or branching plan is left as it is, and collapsing
+#                           a plan that is already collapsed is not an error
 #
 # The QA threshold (plan, run, retry, review; kept for the plan):
 #   --qa-threshold Pn       the least severe CONFIRMED finding that still blocks (P0 worst ...
@@ -79,6 +98,28 @@
 #                           on its way (kept for the plan; --no-sweep-ahead turns it off)
 #   --attribute             when the run's combined verification fails, search the merge order for
 #                           a merge that breaks it (kept for the plan; --no-attribute turns it off)
+#
+# auto (#87, #88): from a goal to a finished run in one blocking command, with no orchestrating
+# session in between. In a NEW plan dir (created when missing; one that already has tasks.tsv
+# is refused, exit 2): the goal is copied verbatim to <plan-dir>/request.md and `auto` is
+# written to <plan-dir>/orchestrator (the plan event in the dataset records it). Then
+#   1. the gate (--plan): auto = forge-planner.py gate; always = plan; never = one task
+#   2. one task: forge-planner.py one-task --difficulty (--one-task-difficulty, default medium);
+#      no planner is dispatched
+#   3. planning: the spec is --planner, else the routing.planner of the profile the plan flags
+#      select (neither: exit 2). A preflight (forge-dispatch.sh doctor) runs before any model
+#      call, the planner is dispatched into the plan dir (with the fast tier when planner is a
+#      fast role), and its reply is parsed strictly by forge-planner.py parse
+#   4. `plan` with every flag before `--` that is not auto's own, plus --collapse-chains unless
+#      --no-collapse. When its gates send items back (plan.sendback.md, exit 4), the planner is
+#      re-dispatched once with that file appended and the reply planned again
+#   5. without --approved: stop, exit 0, after printing the exact `run` command; nothing is
+#      dispatched after the planner. With --approved (the user's explicit pre-approval): `run`
+#      with the flags after `--`, and auto exits with its code
+# auto exit codes: 0 stopped at approval, or the run's 0 | 2 usage (no planner, a plan dir that
+#   already has tasks.tsv, ...) | 4 the planner failed, its reply was refused, or the plan gates
+#   sent items back a second time | 8 the planner stopped on an infrastructure failure (nothing
+#   was dispatched after it) | otherwise the exit code of the preflight, of `plan` or of `run`
 #
 # Exit codes: 0 ok | 2 usage/validation | 3 precondition (not a git repo, etc.)
 #             5 some task failed QA or verification failed | 6 integration conflict
@@ -163,11 +204,113 @@ pool_pick() { # pool_pick <comma-list> <index>
   echo "$last"
 }
 
+# --- profiles (#48) -------------------------------------------------------------
+# A named profile is chosen at `plan` (or by forge-solo.sh), frozen as <dir>/profile.json
+# and applied as the values its flags would have set. forge_decide.profiles does the
+# reading, checking and freezing; these functions only carry its answers to the shell.
+forge_profile_py() { PYTHONPATH="$SKILL_DIR/scripts${PYTHONPATH:+:$PYTHONPATH}" python3 -m forge_decide.profiles "$@"; }
+
+# Gates and budget come from the frozen copy: FORGE_DECIDE_PROFILE_JSON is read by the
+# decide resolution at its profile level, for this process and every child of it.
+forge_profile_export() { # forge_profile_export <plan-dir>
+  local text
+  [ -f "${1:-}/profile.json" ] || return 0
+  text="$(forge_profile_py decide "$1/profile.json" 2>/dev/null)" || return 0
+  [ -z "$text" ] || export FORGE_DECIDE_PROFILE_JSON="$text"
+  return 0
+}
+
+# Before anything is written: an unknown or invalid profile stops `plan` here (exit 2).
+forge_profile_precheck() { # forge_profile_precheck <plan-dir> <plan's arguments...>
+  local plan="$1" name="" none=0 repo="" prev="" arg; shift
+  for arg in "$@"; do
+    case "$prev" in
+      --profile) name="$arg"; prev=""; continue ;;
+      --repo) repo="$arg"; prev=""; continue ;;
+    esac
+    prev=""
+    case "$arg" in --profile|--repo) prev="$arg" ;; --no-profile) none=1 ;; esac
+  done
+  [ -z "$name" ] || [ "$none" = 0 ] || die "--profile and --no-profile are mutually exclusive"
+  [ -n "$repo" ] || repo="$(cat "$plan/repo" 2>/dev/null)"
+  local flags=()
+  [ -z "$name" ] || flags+=(--profile "$name")
+  [ "$none" = 0 ] || flags+=(--no-profile)
+  forge_profile_py freeze "$plan" ${repo:+--repo "$repo"} ${flags[@]+"${flags[@]}"} --check-only || exit $?
+}
+
+# Chooses, freezes and applies the plan's profile. Reads and sets do_plan's locals (dynamic
+# scope, as forge_fast_parse does): a value a flag of this call gave is never replaced.
+forge_profile_plan() {
+  local args=() out key val repo
+  [ -z "$D_ANY" ] || args+=(--given routing.dwarf.any)
+  [ -z "$D_LO" ] || args+=(--given routing.dwarf.low)
+  [ -z "$D_MD" ] || args+=(--given routing.dwarf.medium)
+  [ -z "$D_HI" ] || args+=(--given routing.dwarf.high)
+  [ -z "$Q_ANY" ] || args+=(--given routing.qa.any)
+  [ -z "$Q_LO" ] || args+=(--given routing.qa.low)
+  [ -z "$Q_MD" ] || args+=(--given routing.qa.medium)
+  [ -z "$Q_HI" ] || args+=(--given routing.qa.high)
+  [ -z "$PLANNER" ] || args+=(--given routing.planner)
+  [ -z "$SHADOW_QA" ] || args+=(--given policy.shadow_qa)
+  [ -z "$SHADOW_RATE" ] || args+=(--given policy.shadow_rate)
+  [ -z "$EXPLORE" ] || args+=(--given policy.explore)
+  [ "$FAST_GIVEN" != 1 ] || args+=(--given policy.fast)
+  [ "$PF_QT" != 1 ] || args+=(--given policy.qa_threshold)
+  [ -z "$PF_NAME" ] || args+=(--profile "$PF_NAME")
+  [ "$PF_NONE" = 0 ] || args+=(--no-profile)
+  repo="$REPO"; [ -n "$repo" ] || repo="$(cat "$PLAN/repo" 2>/dev/null)"
+  out="$(forge_profile_py freeze "$PLAN" ${repo:+--repo "$repo"} ${args[@]+"${args[@]}"})" || exit $?
+  while IFS="$(printf '\t')" read -r key val; do
+    case "$key" in
+      routing.dwarf.any) D_ANY="$val" ;;
+      routing.dwarf.low) D_LO="$val" ;;
+      routing.dwarf.medium) D_MD="$val" ;;
+      routing.dwarf.high) D_HI="$val" ;;
+      routing.qa.any) Q_ANY="$val" ;;
+      routing.qa.low) Q_LO="$val" ;;
+      routing.qa.medium) Q_MD="$val" ;;
+      routing.qa.high) Q_HI="$val" ;;
+      routing.planner) PLANNER="$val" ;;
+      policy.shadow_qa) SHADOW_QA="$val" ;;
+      policy.shadow_rate) SHADOW_RATE="$val" ;;
+      policy.explore) EXPLORE="$val" ;;
+      policy.fast) forge_fast_parse "$val" plan; FAST_GIVEN=1 ;;
+    esac
+  done <<EOF
+$out
+EOF
+  forge_profile_export "$PLAN"
+}
+
+# What `run` reads from the frozen profile when its flags do not say: the retry budgets,
+# and the Fractal planner (only with --fractal-auto-decompose, which --fractal-planner needs).
+forge_profile_run_values() { # forge_profile_run_values <plan-dir>
+  local key val arg auto=0 planner=0
+  [ -f "$1/profile.json" ] || return 0
+  for arg in ${FRACTAL_ARGS[@]+"${FRACTAL_ARGS[@]}"}; do
+    case "$arg" in --fractal-auto-decompose) auto=1 ;; --fractal-planner) planner=1 ;; esac
+  done
+  while IFS="$(printf '\t')" read -r key val; do
+    case "$key" in
+      policy.retry_failed) [ "$PP_RETRY_FAILED_SET" = 1 ] || PP_RETRY_FAILED="$val" ;;
+      policy.infra_retries) [ "$PP_INFRA_RETRIES_SET" = 1 ] || PP_INFRA_RETRIES="$val" ;;
+      routing.fractal_planner) [ "$auto$planner" != 10 ] || FRACTAL_ARGS+=(--fractal-planner "$val") ;;
+    esac
+  done <<EOF
+$(forge_profile_py value "$1/profile.json" policy.retry_failed policy.infra_retries routing.fractal_planner 2>/dev/null)
+EOF
+}
+
 do_plan() {
   local PLAN="${1:?plan needs a plan dir}"; shift
+  local PF_NAME="" PF_NONE=0 PF_QT=0
+  forge_profile_precheck "$PLAN" "$@"
   local REPO="" D_ANY="" D_HI="" D_MD="" D_LO="" Q_ANY="" Q_HI="" Q_MD="" Q_LO=""
   PP_INFRA_FALLBACK=""
   local PLANNER="" NOMEM=0 jev_rc=0 DLEVEL="" SHADOW_QA="" SHADOW_RATE="" EXPLORE="" FAIL_FIRST="" REVIEWER_SESSION="" IMPLEMENTER_SESSION="" PRE_REVIEW="" PRE_REVIEW_PARALLEL=""
+  local FAST_GIVEN=0 FAST_PARSED=""
+  local COLLAPSE=0 COLLAPSED_NOW=0
   while [ $# -gt 0 ]; do
     case "$1" in
       --repo)         REPO="${2:?}"; shift 2 ;;
@@ -177,6 +320,8 @@ do_plan() {
           *) die "--decompose-level must be low, medium or high" ;; esac ;;
       --no-ripwire) export FORGE_RIPWIRE=off; shift ;;
       --no-memory)    NOMEM=1; shift ;;
+      --profile)      PF_NAME="${2:?--profile needs a profile name}"; shift 2 ;;
+      --no-profile)   PF_NONE=1; shift ;;
       --shadow-qa)
         [ -n "${2:-}" ] || die "--shadow-qa needs a QA spec, a comma list of specs, or none"
         SHADOW_QA="$2"; shift 2 ;;
@@ -184,6 +329,7 @@ do_plan() {
         printf '%s' "${2:-}" | grep -Eq '^(0?\.[0-9]+|0|1|1\.0+)$' || die "--shadow-rate needs a share between 0 and 1"
         SHADOW_RATE="$2"; shift 2 ;;
       --explore)      EXPLORE="${2:?--explore needs a share between 0 and 0.5}"; shift 2 ;;
+      --collapse-chains) COLLAPSE=1; shift ;;
       --dwarf)        D_ANY="${2:?}"; shift 2 ;;
       --dwarf-high)   D_HI="${2:?}"; shift 2 ;;
       --dwarf-medium) D_MD="${2:?}"; shift 2 ;;
@@ -205,11 +351,19 @@ do_plan() {
       --no-reviewer-session) REVIEWER_SESSION=off; shift ;;
       --implementer-session)    IMPLEMENTER_SESSION=on; shift ;;
       --no-implementer-session) IMPLEMENTER_SESSION=off; shift ;;
+      --fast)
+        [ -n "${2:-}" ] || die "--fast needs a comma list of roles (dwarf, qa, planner, review), all or none"
+        forge_fast_parse "$2" plan
+        FAST_GIVEN=1
+        shift 2 ;;
       *)
         # `case` is not a loop, so `continue` here belongs to the enclosing while.
         # The shared flags write into the plan dir (--qa-threshold), so it must exist first.
         [ -d "$PLAN" ] || die "plan dir '$PLAN' does not exist"
-        if forge_pp_flag plan "$PLAN" "$@"; then shift "$PP_SHIFT"; continue; fi
+        if forge_pp_flag plan "$PLAN" "$@"; then
+          [ "$1" != --qa-threshold ] || PF_QT=1
+          shift "$PP_SHIFT"; continue
+        fi
         if [ "$JEV_OPTS" = 1 ]; then
           forge_jev_flag "$@"; jev_rc=$?
           case "$jev_rc" in
@@ -221,8 +375,11 @@ do_plan() {
         ;;
     esac
   done
-  [ "$JEV_OPTS" = 1 ] && forge_jev_export
   [ -d "$PLAN" ] || die "plan dir '$PLAN' does not exist"
+  # The profile (#48) first: its gates and budget count for every decision-model step below,
+  # and its values stand in for the flags this call did not give.
+  forge_profile_plan
+  [ "$JEV_OPTS" = 1 ] && forge_jev_export
   # Freeze the selection next to the task table, so run and retry restore it rather
   # than re-deciding. Written on every plan: a re-plan is a new decision.
   [ "$JEV_OPTS" = 1 ] && forge_jev_record "$PLAN"
@@ -258,6 +415,8 @@ do_plan() {
   case "$REVIEWER_SESSION" in on) printf '%s\n' on > "$PLAN/reviewer_session" ;; off) rm -f "$PLAN/reviewer_session" ;; esac
   # Implementer-session continuation (opt-in, #90): the same `on` file, read the same way.
   case "$IMPLEMENTER_SESSION" in on) printf '%s\n' on > "$PLAN/implementer_session" ;; off) rm -f "$PLAN/implementer_session" ;; esac
+  # Which roles ask for the fast tier. Omitted on a re-plan, so an earlier choice stays.
+  forge_fast_store "$PLAN"
   # Exploration is decided here and only here, so the table and preflight see what will run.
   # On by default: choosing models from measured pass rates needs some randomized picks, and
   # history had almost none (9 tasks ever ran on more than one spec). The flag wins, then
@@ -383,7 +542,46 @@ EOF
     fi
   fi
 
-  # --- validate + resolve routing ---
+  # --- collapse a chain, then resolve routing ---
+  # --collapse-chains acts on this call only. The gates have already run (drift may have
+  # added files). Validate, then collapse, then routing fills combined's `-` columns, and
+  # the declared copy is taken again so the declared tier is the combined task's. A second
+  # collapse (tasks.precollapse.tsv or collapsed.json already there) is not an error.
+  if [ "$COLLAPSE" = 1 ]; then
+    local vline vid vdeps vdiff vd
+    while IFS= read -r vline; do
+      case "$vline" in ''|'#'*) continue ;; esac
+      vid="$(printf '%s' "$vline" | awk -F'\t' '{print $1}')"
+      vdeps="$(printf '%s' "$vline" | awk -F'\t' '{print $2}')"
+      vdiff="$(printf '%s' "$vline" | awk -F'\t' '{print $3}')"
+      [ -n "$vid" ] || die "tasks.tsv has a row with no id"
+      case "$vdiff" in low|medium|high) ;; *) die "task '$vid' has difficulty '$vdiff' (expected low, medium or high)" ;; esac
+      if [ "$vdeps" != "-" ]; then
+        for vd in $(printf '%s' "$vdeps" | tr ',' ' '); do
+          all_ids "$T" | grep -qx "$vd" || die "task '$vid' depends on unknown task '$vd'"
+        done
+      fi
+    done < "$T"
+    local collapse_out collapse_err collapse_rc=0 collapse_msg
+    collapse_err="$PLAN/.collapse.err"
+    collapse_out="$(python3 "$SKILL_DIR/scripts/forge-plan-check.py" collapse "$PLAN" 2>"$collapse_err")" || collapse_rc=$?
+    collapse_msg="$(cat "$collapse_err" 2>/dev/null || true)"
+    rm -f "$collapse_err"
+    if [ "$collapse_rc" -ne 0 ]; then
+      case "$collapse_msg" in
+        *already\ exists*) ;;
+        *) die "could not collapse the plan${collapse_msg:+: $collapse_msg}" ;;
+      esac
+    else
+      case "$collapse_out" in
+        collapsed\ *)
+          cp "$T" "$PLAN/tasks.declared.tsv" || die "could not rewrite $PLAN/tasks.declared.tsv"
+          COLLAPSED_NOW=1
+          ;;
+      esac
+    fi
+  fi
+
   local tmp="$PLAN/.tasks.tsv.new"; : > "$tmp"
   local hi_i=0 md_i=0 lo_i=0 an_i=0 qhi_i=0 qmd_i=0 qlo_i=0 qan_i=0 unassigned=0
   printf '# id\tdeps\tdifficulty\tfiles\tdwarf\tqa\ttitle\n' > "$tmp"
@@ -450,6 +648,11 @@ EOF
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$id" "$deps" "$diff" "$files" "$dw" "$qa" "$title" >> "$tmp"
   done < "$T"
   mv "$tmp" "$T"
+  # Which cells routing filled in, so a re-plan under another profile replaces those and no others.
+  # Kept current through a --no-profile re-plan too, once a profile has recorded any.
+  if [ -f "$PLAN/profile.json" ] || [ -f "$PLAN/routed.json" ]; then
+    forge_profile_py routed "$PLAN" 2>/dev/null || true
+  fi
 
   compute_waves "$PLAN"
 
@@ -493,10 +696,22 @@ EOF
     fi
   fi
 
+  # After the last wave computation (a forward dep may have just changed it). Advisory:
+  # a failure is a note, and the table is still printed.
+  local shape_err="" shape_rc=0
+  shape_err="$(python3 "$SKILL_DIR/scripts/forge-plan-check.py" shape "$PLAN" --write 2>&1 >/dev/null)" || shape_rc=$?
+  if [ "$shape_rc" -ne 0 ]; then
+    note "plan shape could not be recorded (advisory)${shape_err:+: $shape_err}"
+  fi
+
   render_table "$PLAN"
   # What the gates did, from plan-gates.json: files and deps they added, prompts and
   # requirements still flagged. Prints nothing when no gate recorded anything.
   python3 "$SKILL_DIR/scripts/forge-plan-check.py" gates "$PLAN" 2>/dev/null || true
+  # Advisory, under the table: a spec measurably slower than a lower effort of the same model,
+  # once per distinct spec (doctor --spec says the same). Read from the dataset for the
+  # operator's screen only, so not by forge-plan-check.py, which builds a prompt.
+  python3 "$SKILL_DIR/scripts/forge-dataset.py" slow-notes "$PLAN" 2>/dev/null || true
   # Advisory, under the table: a privacy floor that silences every gate, and which
   # gates this plan's runs will ask. Prints nothing when it cannot tell.
   [ "$jev_loaded" = 1 ] && forge_decide_plan_lines "${FORGE_DECIDE_REPO:-$REPO}"
@@ -594,6 +809,15 @@ render_table() {
   if [ -f "$PLAN/implementer_session" ]; then
     echo "implementer-session: a retry continues the implementer's earlier session when its spec is unchanged and its work is as the review left it (claude, openclaude; falls back to a fresh session)"
   fi
+  if [ -s "$PLAN/fast" ]; then
+    local fast_roles
+    fast_roles="$(awk 'NF { printf "%s%s", (n++ ? ", " : ""), $0 }' "$PLAN/fast")"
+    echo "fast tier: $fast_roles — billed at a higher rate (codex service_tier=fast; claude fast mode needs extra usage enabled)"
+  fi
+  if [ -f "$PLAN/profile.json" ]; then
+    local profile_line; profile_line="$(forge_profile_py line "$PLAN/profile.json" 2>/dev/null)"
+    [ -z "$profile_line" ] || echo "$profile_line"
+  fi
   # The plan-level threshold: at plan time no per-task file exists yet.
   local qa_level qa_src
   read -r qa_level qa_src <<EOF
@@ -631,6 +855,22 @@ EOF
     done
     echo
   done
+  # A chain collapsed on this call, or a chain left as a chain. one and branches say nothing.
+  # COLLAPSED_NOW is do_plan's: collapsed.json from an earlier plan is not announced again.
+  local shape_note=""
+  if [ "${COLLAPSED_NOW:-0}" = 1 ] && [ -f "$PLAN/collapsed.json" ]; then
+    shape_note="$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print("collapsed %d" % len(d.get("from") or []))' "$PLAN/collapsed.json" 2>/dev/null)" || shape_note=""
+  elif [ -f "$PLAN/plan-shape.json" ]; then
+    shape_note="$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print("%s %s" % (d.get("shape"), d.get("tasks")))' "$PLAN/plan-shape.json" 2>/dev/null)" || shape_note=""
+  fi
+  case "$shape_note" in
+    collapsed\ *)
+      echo "collapsed a sequential plan of ${shape_note#collapsed } tasks into one (tasks.precollapse.tsv keeps the original)"
+      echo ;;
+    chain\ *)
+      echo "this plan runs sequentially: ${shape_note#chain } tasks, at most 1 in parallel; each pays its own implementation and review. One task would run once: re-plan with --collapse-chains"
+      echo ;;
+  esac
   if [ "$starred" = 1 ]; then
     echo "* picked by exploratory routing (--explore $(cat "$PLAN/explore" 2>/dev/null)) instead of the pool's turn;"
     echo "  to pin another model, put its spec in the dwarf column of tasks.tsv and re-plan"
@@ -679,27 +919,37 @@ dependencies_ready() {
 }
 
 preflight_plan() {
-  local plan="$1" id role flags
+  local plan="$1" id role flags ft spec key seen=";"
   export FORGE_CAPABILITY_CACHE="$plan/capabilities"
   for id in $(all_ids "$plan/tasks.tsv"); do
     for role in dwarf qa; do
       flags=""; [ -f "$plan/yolo_$role" ] && flags=--yolo
-      /bin/bash "$DISPATCH" doctor --spec "$(field "$plan/tasks.tsv" "$id" "$role")" --role "$role" $flags || return $?
+      ft="$(forge_fast_tier "$plan" "$role")"
+      spec="$(field "$plan/tasks.tsv" "$id" "$role")"
+      # Once per spec, role and options: the same arguments get the same answer, and a note doctor
+      # adds (a slow effort) is said once, not once per task.
+      key="$role|$spec|$flags|$ft"
+      case "$seen" in *";$key;"*) continue ;; esac
+      seen="$seen$key;"
+      /bin/bash "$DISPATCH" doctor --spec "$spec" --role "$role" $flags $ft || return $?
     done
   done
   if [ -s "$plan/planner" ]; then
-    /bin/bash "$DISPATCH" doctor --spec "$(cat "$plan/planner")" --role planner || return $?
+    ft="$(forge_fast_tier "$plan" planner)"
+    /bin/bash "$DISPATCH" doctor --spec "$(cat "$plan/planner")" --role planner $ft || return $?
   fi
   # A shadow reviewer that cannot run here is dropped with a note, never a failed run.
+  # A fast-tier refusal is the exception: dispatch already refused it, and skipping the
+  # shadow would let the rest of the run be billed. That exit stops the run.
   if [ -s "$plan/shadow_qa" ]; then
-    python3 "$SKILL_DIR/scripts/forge-shadow.py" preflight --plan "$plan" || true
+    python3 "$SKILL_DIR/scripts/forge-shadow.py" preflight --plan "$plan" || return $?
   fi
 }
 
 # The implementer a sweep task gets when the plan has a low tier (or a plain --dwarf pool): checked
 # with the rest, before any model is paid for, since no task may have used it yet.
 sweep_preflight() { # sweep_preflight <plan>
-  local spec flags=""
+  local spec flags="" ft
   spec="$(python3 -c 'import json, sys
 try:
     data = json.load(open(sys.argv[1]))
@@ -711,7 +961,8 @@ for tier in ("low", "any"):
         print(specs[0]); break' "$1/fractal-routing.json" 2>/dev/null)"
   [ -n "$spec" ] || return 0
   [ -f "$1/yolo_dwarf" ] && flags=--yolo
-  /bin/bash "$DISPATCH" doctor --spec "$spec" --role dwarf $flags
+  ft="$(forge_fast_tier "$1" dwarf)"
+  /bin/bash "$DISPATCH" doctor --spec "$spec" --role dwarf $flags $ft
 }
 
 sweep_plan() { # sweep_plan <plan> --severity Pn [--plausible] [--max N]: the scheduler's _sweep
@@ -895,6 +1146,7 @@ do_task_body() (
   if [ -s "$PLAN/fractal-selection.json" ]; then
     forge_fractal_select "$PLAN" "$REPO" parallel 0 || return $?
   fi
+  forge_fast_fractal_note "$PLAN"
   forge_metric_begin "$tdir" task
   dependencies_ready "$PLAN" "$id" || return 1
   echo RUNNING > "$tdir/status"
@@ -936,11 +1188,14 @@ do_task_body() (
     base="$(git -C "$(cat "$PLAN/wt_root")/_integration" rev-parse HEAD)"; printf '%s\n' "$base" > "$tdir/base_ref"
   fi
 
-  local dw qa yd yq rc
+  local dw qa yd yq rc ft_dwarf ft_qa
   dw="$(field "$T" "$id" dwarf)"; qa="$(field "$T" "$id" qa)"
   yd=""; yq=""
   [ -f "$PLAN/yolo_dwarf" ] && yd="--yolo"
   [ -f "$PLAN/yolo_qa" ] && yq="--yolo"
+  # Empty when the role is not listed, so the recorded command line is unchanged.
+  ft_dwarf="$(forge_fast_tier "$PLAN" dwarf)"
+  ft_qa="$(forge_fast_tier "$PLAN" qa)"
 
   if ! ensure_worktree "$REPO" "$wt" "$br" "$base" "$tdir" "$PLAN" "$id"; then
     echo ERROR > "$tdir/status"
@@ -983,7 +1238,7 @@ do_task_body() (
         is_reason=work-changed
       else
         FORGE_CAPABILITY_CACHE="${FORGE_CAPABILITY_CACHE:-$PLAN/capabilities}" \
-          /bin/bash "$DISPATCH" doctor --spec "$dw" --role dwarf $yd > "$tdir/dwarf.doctor" 2>&1 || : > "$tdir/dwarf.doctor"
+          /bin/bash "$DISPATCH" doctor --spec "$dw" --role dwarf $yd $ft_dwarf > "$tdir/dwarf.doctor" 2>&1 || : > "$tdir/dwarf.doctor"
         IFS=$'\t' read -r is_mode is_reason is_id < <(review_session_decide \
           "$tdir/retry_findings.dwarf.session" "$tdir/retry_findings.dwarf.resolved" "$tdir/dwarf.doctor" "claude openclaude")
         if [ "$is_mode" = continued ]; then
@@ -994,7 +1249,7 @@ do_task_body() (
     fi
     forge_metric_phase dispatch
     local dwarf_cmd=(/bin/bash "$DISPATCH" dwarf "$dw" --repo "$wt" --run-dir "$tdir" \
-          --ripwire-query-file "$tdir/prompt.md" --prompt-file "$tdir/dwarf.input" ${yd:+"$yd"} --output "${FORGE_OUTPUT:-summary}")
+          --ripwire-query-file "$tdir/prompt.md" --prompt-file "$tdir/dwarf.input" ${yd:+"$yd"} $ft_dwarf --output "${FORGE_OUTPUT:-summary}")
     "${dwarf_cmd[@]}" ${is_cont[@]+"${is_cont[@]}"} >"$tdir/dwarf.out" 2>&1
     rc=$?
     if [ "$rc" = 9 ] && [ "$is_mode" = continued ]; then
@@ -1217,14 +1472,14 @@ do_task_body() (
       rs_reason=first-round
     else
       FORGE_CAPABILITY_CACHE="${FORGE_CAPABILITY_CACHE:-$PLAN/capabilities}" \
-        /bin/bash "$DISPATCH" doctor --spec "$qa" --role qa $yq > "$tdir/qa.doctor" 2>&1 || : > "$tdir/qa.doctor"
+        /bin/bash "$DISPATCH" doctor --spec "$qa" --role qa $yq $ft_qa > "$tdir/qa.doctor" 2>&1 || : > "$tdir/qa.doctor"
       IFS=$'\t' read -r rs_mode rs_reason rs_id < <(review_session_decide \
         "$tdir/retry_findings.session" "$tdir/retry_findings.resolved" "$tdir/qa.doctor")
       [ "$rs_mode" = continued ] && rs_cont=(--continue-session "$rs_id")
     fi
   fi
   local qa_cmd=(/bin/bash "$DISPATCH" qa "$qa" --repo "$review" --run-dir "$tdir" \
-        --review-base "$(cat "$tdir/review.base")" --ripwire-query-file "$tdir/prompt.md" --prompt-file "$tdir/qa.input" ${yq:+"$yq"} --output "${FORGE_OUTPUT:-summary}")
+        --review-base "$(cat "$tdir/review.base")" --ripwire-query-file "$tdir/prompt.md" --prompt-file "$tdir/qa.input" ${yq:+"$yq"} $ft_qa --output "${FORGE_OUTPUT:-summary}")
   "${qa_cmd[@]}" ${rs_cont[@]+"${rs_cont[@]}"} >"$tdir/qa.out" 2>&1
   rc=$?
   if [ "$rc" = 9 ] && [ "$rs_mode" = continued ]; then
@@ -1397,6 +1652,31 @@ _retry_answer_scan() { # _retry_answer_scan <scratch-dir> <retry args...>
 # A failed task keeps its branch and worktree "so there is something to inspect and
 # retry from" — this is the retry. It is a command a human types, not an automatic
 # repair loop, which is what keeps forge's one-dwarf-then-QA rule intact.
+# The wait before `retry --infra-retries` dispatches again after an infrastructure stop: the provider's
+# retry-after when it gave one, else the plan's infra_backoff (the scheduler's own rule, its functions).
+retry_infra_wait() { # retry_infra_wait <plan> <task-dir> <cycle>
+  local secs
+  secs="$(python3 - "$SKILL_DIR/scripts/forge-schedule.py" "$1" "$2" "$3" <<'PY' 2>/dev/null
+import importlib.util, sys
+from pathlib import Path
+spec = importlib.util.spec_from_file_location('forge_schedule', sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+sys.modules['forge_schedule'] = module
+spec.loader.exec_module(module)
+backoff = None
+try:
+    text = (Path(sys.argv[2]) / 'infra_backoff').read_text().strip()
+    backoff = (module.parse_backoff(text), text) if text else None
+except (OSError, ValueError):
+    pass
+print(module.infra_wait(module.infra_info(Path(sys.argv[3])), int(sys.argv[4]), backoff)[0])
+PY
+)" || secs=""
+  case "$secs" in ''|*[!0-9.]*) secs=60 ;; esac
+  note "waiting ${secs}s for the infrastructure stop to clear"
+  sleep "$secs"
+}
+
 do_retry() {
   local PLAN="${1:?retry needs a plan dir}" id="${2:?retry needs a task id}"; shift 2
   FORGE_RUN_STARTED="$(forge_now)"
@@ -1473,6 +1753,7 @@ do_retry() {
         ;;
     esac
   done
+  forge_profile_run_values "$PLAN"
   [ "$JEV_OPTS" = 1 ] && forge_jev_settle "$PLAN"
   # Before any decision-model step: the privacy floor and the run budget read these.
   [ "$JEV_OPTS" = 1 ] && [ -s "$PLAN/repo" ] && forge_decide_env "$(cat "$PLAN/repo")" "$PLAN"
@@ -1484,6 +1765,14 @@ do_retry() {
   [ -s "$PLAN/wt_root" ] || die "this plan has never been run — use 'run', not 'retry'"
   local st; st="$(task_status "$PLAN" "$id")"
   [ "$st" = "MERGED" ] && die "task '$id' already merged — nothing to retry"
+  # A decision's grant is exactly what it says, and the profile's default budget of further attempts
+  # does not stretch it: a task waiting for a decision (resumed by --decide or --dwarf), or an
+  # infrastructure stop resumed while a decision's count is kept. Only a --retry-failed typed on this
+  # line adds to a decision.
+  if [ "$PP_RETRY_FAILED_SET" != 1 ] && { [ -n "$DECIDE" ] || [ "$st" = NEEDS_DECISION ] \
+       || { [ "$st" = INFRA ] && [ -n "$(decided_left "$tdir")" ]; }; }; then
+    PP_RETRY_FAILED=0
+  fi
   [ "$HAVE_ANSWER" = 0 ] || [ "$st" = NEEDS_INPUT ] || die "retry: '$id' is $st, not waiting for an answer; --answer and --answer-file only answer a NEEDS_INPUT task"
   retry_decision_gate "$PLAN" "$id" "$st" "$DECIDE" "$NEWDWARF" "$REASON" "$APPROVED"
   # A task at its attempt cap (#69) is refused with the decision commands unless --decide retry=N reaches past it.
@@ -1531,6 +1820,7 @@ do_retry() {
   rm -f "$PLAN/infra.last"
 
   note "retrying $id with dwarf $(field "$T" "$id" dwarf)"
+  forge_fast_fractal_note "$PLAN"
   export FORGE_FRACTAL_RETRY=1
   export FORGE_DATASET_TRIGGER=human
   do_task "$PLAN" "$id"
@@ -1540,15 +1830,34 @@ do_retry() {
   # stopped for a decision again, an empty diff, or a policy that finds no stronger model.
   # The count is decided.left, so it survives a run that ended before the attempts were used.
   local more; more="$(decided_left "$tdir")"; more="${more:-0}"
-  while [ "$more" -gt 0 ] && { [ "$st" = FAIL ] || [ "$st" = UNKNOWN ]; } && [ ! -e "$tdir/noretry" ]; do
+  # --retry-failed N (or the frozen profile's) adds N further attempts for this call alone, spent after the
+  # decided ones; --infra-retries M waits out that many infrastructure stops before giving up (#48).
+  local rf_left="$PP_RETRY_FAILED" inf_left="$PP_INFRA_RETRIES" inf_cycle=0 from_decided
+  while :; do
+    if [ "$st" = INFRA ]; then
+      # No attempt was spent and nothing was judged: wait the stop out as the scheduler does, and dispatch again.
+      [ "$inf_left" -gt 0 ] || break
+      inf_left=$(( inf_left - 1 ))
+      retry_infra_wait "$PLAN" "$tdir" "$inf_cycle"; inf_cycle=$(( inf_cycle + 1 ))
+      prepare_retry "$PLAN" "$id" || break
+      rm -f "$tdir/status" "$PLAN/infra.last"
+      note "retrying $id after an infrastructure stop ($inf_left more wait(s) allowed)"
+      do_task "$PLAN" "$id"
+      st="$(task_status "$PLAN" "$id")"
+      continue
+    fi
+    { [ "$st" = FAIL ] || [ "$st" = UNKNOWN ]; } && [ ! -e "$tdir/noretry" ] || break
+    from_decided=0
+    if [ "$more" -gt 0 ]; then from_decided=1; elif [ "$rf_left" -le 0 ]; then break; fi
     # Each further attempt is spent against the cap (#69) like the scheduler's retries: an UNKNOWN review
     # does not stop the task by itself, so the cap is checked here, and a task at it stops for a decision.
     if ! attempt_cap_gate "$PLAN" "$id" "$st" ""; then st="$(task_status "$PLAN" "$id")"; break; fi
-    more=$(( more - 1 ))
+    if [ "$from_decided" = 1 ]; then more=$(( more - 1 )); else rf_left=$(( rf_left - 1 )); fi
     prepare_retry "$PLAN" "$id" || break
-    decided_left_set "$tdir" "$more" || break
+    if [ "$from_decided" = 1 ]; then decided_left_set "$tdir" "$more" || break; fi
     rm -f "$tdir/status"
-    note "retrying $id (decided retry, $more more after this)"
+    if [ "$from_decided" = 1 ]; then note "retrying $id (decided retry, $more more after this)"
+    else note "retrying $id (--retry-failed, $rf_left more after this)"; fi
     do_task "$PLAN" "$id"
     st="$(task_status "$PLAN" "$id")"
   done
@@ -1945,6 +2254,7 @@ do_run() {
         ;;
     esac
   done
+  forge_profile_run_values "$PLAN"
   [ "$JEV_OPTS" = 1 ] && forge_jev_settle "$PLAN"
   [ -n "$PP_SWEEP" ] || [ "$PP_SWEEP_PLAUSIBLE$PP_SWEEP_MAX_SET" = 00 ] || die "--sweep-plausible and --sweep-max go with --sweep"
   case "$OUTPUT" in summary|full) ;; *) die "--output must be summary or full" ;; esac
@@ -1967,6 +2277,7 @@ do_run() {
     forge_ui_register "$PLAN"
   fi
   forge_fractal_parallel_run "$PLAN" "$REPO" "$DRY" ${fractal_pipeline_args[@]+"${fractal_pipeline_args[@]}"} || return $?
+  forge_fast_fractal_note "$PLAN"
   # Durable, beside the repo — never TMPDIR. A temp worktree root has destroyed
   # real work here before: isolated worktrees are never pushed, so when the root
   # goes, the only copy of that work goes with it.
@@ -2214,6 +2525,17 @@ do_integrate() {
   report_known_issues "$PLAN"
   # Opt-in whole-run review of the combined candidate, after verification and before the
   # user's branch moves. Per-task review only ever saw one slice at a time.
+  # A profile that names a final reviewer (#48) asks for this review: --final-review wins, then the spec
+  # `review` or an earlier --final-review left in final_qa, then the profile's own.
+  if [ -z "$PP_FINAL_REVIEW" ] && [ -f "$PLAN/profile.json" ]; then
+    local pf_final; pf_final="$(forge_profile_py value "$PLAN/profile.json" routing.final_reviewer 2>/dev/null)"
+    pf_final="${pf_final#*$'\t'}"
+    if [ -n "$pf_final" ]; then
+      PP_FINAL_REVIEW="$(head -1 "$PLAN/final_qa" 2>/dev/null | tr -d ' \r')"
+      [ -n "$PP_FINAL_REVIEW" ] || PP_FINAL_REVIEW="$pf_final"
+      note "final review: $PP_FINAL_REVIEW, from the plan's profile"
+    fi
+  fi
   if [ -n "$PP_FINAL_REVIEW" ]; then
     declare -F final_review_for_integrate >/dev/null || die "the final review is not available in this build" 3
     final_review_for_integrate "$PLAN" "$parent" "$candidate_sha" "$candidate" "$out" "$PP_FINAL_REVIEW" || return $?
@@ -2231,13 +2553,231 @@ do_integrate() {
   echo "merged candidate of $int_br into $cur (verification: $(cat "$out/verification.status"))"
 }
 
+# --- auto (#87, #88) -----------------------------------------------------------------
+# The profile `plan` will use for these flags, read without writing anything: the planner
+# spec and the fast-tier roles it names, as `key<TAB>value` lines. The choice is plan's own
+# (profiles._choose): --no-profile means none; with no --profile the plan's frozen
+# profile.json stays; otherwise the named profile, else the default. A frozen profile adds no
+# fast roles: plan stored those when it froze it.
+forge_auto_profile() { # forge_auto_profile <plan-dir> <repo> <profile name or empty> <no-profile 0|1>
+  PYTHONPATH="$SKILL_DIR/scripts${PYTHONPATH:+:$PYTHONPATH}" python3 - "$@" <<'PY'
+import sys
+from pathlib import Path
+from forge_decide import profiles
+plan, repo, name, none = Path(sys.argv[1]), sys.argv[2] or None, sys.argv[3] or None, sys.argv[4] == '1'
+try:
+    action, chosen = profiles._choose(repo, name, none, plan / profiles.FROZEN, False, False)
+except profiles.ProfileError as exc:
+    print('forge: %s' % exc, file=sys.stderr)
+    sys.exit(2)
+body = chosen.get('body') if isinstance(chosen, dict) else None
+values = profiles.flat(body) if body else {}
+planner = values.get('routing.planner')
+if isinstance(planner, str) and planner:
+    print('routing.planner\t%s' % planner)
+print('action\t%s' % action)
+# As plan stores it: an empty list is `none`, which clears the roles an earlier call stored.
+if action == 'new' and isinstance(values.get('policy.fast'), list):
+    print('policy.fast\t%s' % profiles._fast_roles(values['policy.fast'], profiles.FAST_ROLES))
+PY
+}
+
+# Forget what `parse` wrote, so the planner's next reply can be parsed: tasks.tsv and each
+# tasks/<id>/. request.md, the planner's records and plan.sendback.md stay.
+forge_auto_unparse() { # forge_auto_unparse <plan-dir>
+  local id
+  if [ -f "$1/tasks.tsv" ]; then
+    for id in $(all_ids "$1/tasks.tsv"); do
+      case "$id" in ''|.*|*/*) continue ;; esac
+      rm -rf "$1/tasks/$id"
+    done
+  fi
+  rm -f "$1/tasks.tsv" "$1/tasks.declared.tsv"
+}
+
+# One planner dispatch: prompt in $PLAN/planner.prompt, reply in $PLAN/planner.last. Sets
+# AUTO_RC (0, 4 or 8) for the caller instead of exiting, so a send-back can reuse it.
+forge_auto_dispatch() { # forge_auto_dispatch <plan-dir> <repo> <spec> <fast-option-or-empty>
+  local plan="$1" repo="$2" spec="$3" tier="$4" rc=0
+  AUTO_RC=0
+  note "auto: dispatching the planner ($spec) for the whole plan"
+  bash "$DISPATCH" planner "$spec" --repo "$repo" --run-dir "$plan" --prompt-file "$plan/planner.prompt" \
+    --output summary ${tier:+$tier} >&2 || rc=$?
+  if [ "$rc" -eq 8 ]; then
+    note "auto: the planner stopped on an infrastructure failure (see $plan/planner.infra). Nothing was dispatched after the planner; fix the cause and run auto again"
+    AUTO_RC=8
+  elif [ "$rc" -ne 0 ]; then
+    note "auto: the planner failed (exit $rc). Its last message is $plan/planner.last and its log $plan/planner.log"
+    AUTO_RC=4
+  fi
+  return 0
+}
+
+do_auto() {
+  local PLAN="${1:-}"
+  [ -n "$PLAN" ] && [ "${PLAN#-}" = "$PLAN" ] || die "auto needs a plan dir: forge-parallel.sh auto <plan-dir> --repo DIR --goal-file FILE ..."
+  shift
+  local REPO="" GOAL="" PLANNER="" DLEVEL="" GATE=auto ONE_DIFF=medium COLLAPSE=1 APPROVED=0
+  local PLAN_ARGS=() RUN_ARGS=() PF_NAME="" PF_NONE=0 FAST_GIVEN=0 FAST_PARSED="" arg
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --)             shift; RUN_ARGS=("$@"); break ;;
+      --repo)         [ $# -ge 2 ] || die "--repo needs a directory"; REPO="$2"; shift 2 ;;
+      --goal-file)    [ $# -ge 2 ] || die "--goal-file needs a file"; GOAL="$2"; shift 2 ;;
+      --planner)      [ -n "${2:-}" ] || die "--planner needs a spec"; PLANNER="$2"; PLAN_ARGS+=("$1" "$2"); shift 2 ;;
+      --decompose-level)
+        case "${2:-}" in low|medium|high) DLEVEL="$2"; shift 2 ;;
+          *) die "--decompose-level must be low, medium or high" ;; esac ;;
+      --plan)
+        case "${2:-}" in auto|always|never) GATE="$2"; shift 2 ;;
+          *) die "--plan must be auto, always or never" ;; esac ;;
+      --one-task-difficulty)
+        case "${2:-}" in low|medium|high) ONE_DIFF="$2"; shift 2 ;;
+          *) die "--one-task-difficulty must be low, medium or high" ;; esac ;;
+      --no-collapse)  COLLAPSE=0; shift ;;
+      --approved)     APPROVED=1; shift ;;
+      --profile)      [ -n "${2:-}" ] || die "--profile needs a profile name"; PF_NAME="$2"; PLAN_ARGS+=("$1" "$2"); shift 2 ;;
+      --no-profile)   PF_NONE=1; PLAN_ARGS+=("$1"); shift ;;
+      --fast)
+        [ -n "${2:-}" ] || die "--fast needs a comma list of roles (dwarf, qa, planner, review), all or none"
+        forge_fast_parse "$2" plan; FAST_GIVEN=1
+        PLAN_ARGS+=("$1" "$2"); shift 2 ;;
+      --no-ripwire)   export FORGE_RIPWIRE=off; PLAN_ARGS+=("$1"); shift ;;
+      *)              PLAN_ARGS+=("$1"); shift ;;
+    esac
+  done
+  [ -n "$REPO" ] || die "auto needs --repo DIR"
+  [ -d "$REPO" ] || die "--repo '$REPO' is not a directory"
+  REPO="$(cd "$REPO" && pwd)"
+  [ -n "$GOAL" ] || die "auto needs --goal-file FILE"
+  [ -f "$GOAL" ] && [ -r "$GOAL" ] || die "--goal-file '$GOAL' is not a readable file"
+  [ ! -e "$PLAN/tasks.tsv" ] || die "auto starts a new plan; use plan and run on an existing one"
+  (cd "$REPO" && git rev-parse --git-dir >/dev/null 2>&1) \
+    || die "'$REPO' is not a git repository. Decomposed runs need worktrees, and there is no honest fallback without them." 3
+  mkdir -p "$PLAN" || die "could not create plan dir '$PLAN'" 3
+  PLAN="$(cd "$PLAN" && pwd)"
+
+  # The request, verbatim, and who started this plan.
+  if ! [ "$GOAL" -ef "$PLAN/request.md" ]; then
+    cp "$GOAL" "$PLAN/request.md" || die "could not write $PLAN/request.md" 3
+  fi
+  printf 'auto\n' > "$PLAN/orchestrator" || die "could not write $PLAN/orchestrator" 3
+  # The goal line the table, every task's "Overall goal", the final review and the dataset read:
+  # the request's first non-empty line, a heading's marks dropped. One the user wrote stays.
+  if [ ! -s "$PLAN/goal.txt" ]; then
+    awk 'NF { sub(/^#+[[:space:]]*/, ""); print substr($0, 1, 200); exit }' "$PLAN/request.md" > "$PLAN/goal.txt" \
+      || die "could not write $PLAN/goal.txt" 3
+  fi
+  local PLANNER_PY="$SKILL_DIR/scripts/forge-planner.py" REQUEST="$PLAN/request.md" rc=0 from_planner=0 fast_tier=""
+  PLAN_ARGS=(--repo "$REPO" ${PLAN_ARGS[@]+"${PLAN_ARGS[@]}"})
+  [ -z "$DLEVEL" ] || PLAN_ARGS+=(--decompose-level "$DLEVEL")
+  [ "$COLLAPSE" = 0 ] || PLAN_ARGS+=(--collapse-chains)
+
+  # 1. The gate.
+  local decision
+  case "$GATE" in
+    always) decision=plan ;;
+    never)  decision=one-task ;;
+    *)
+      decision="$(python3 "$PLANNER_PY" gate --plan "$PLAN" --goal-file "$REQUEST")" || exit $?
+      note "auto: the gate says $decision" ;;
+  esac
+
+  if [ "$decision" = one-task ]; then
+    # 2. One task, no planner.
+    python3 "$PLANNER_PY" one-task --plan "$PLAN" --goal-file "$REQUEST" --difficulty "$ONE_DIFF" >/dev/null || exit $?
+  else
+    # 3. The planner: its spec, its preflight, its dispatch, its reply.
+    local key val profile_planner="" profile_fast="" profile_action="" profile_lines
+    forge_profile_precheck "$PLAN" "${PLAN_ARGS[@]}"
+    profile_lines="$(forge_auto_profile "$PLAN" "$REPO" "$PF_NAME" "$PF_NONE")" || exit $?
+    while IFS="$(printf '\t')" read -r key val; do
+      case "$key" in
+        routing.planner) profile_planner="$val" ;;
+        policy.fast) profile_fast="$val" ;;
+        action) profile_action="$val" ;;
+      esac
+    done <<AUTO_PROFILE
+$profile_lines
+AUTO_PROFILE
+    if [ -z "$PLANNER" ] && [ -n "$profile_planner" ]; then
+      PLANNER="$profile_planner"
+      # `plan` takes routing.planner from a profile only when it freezes a new one. A kept
+      # frozen profile names the planner but plan would not record it: hand it over.
+      [ "$profile_action" = new ] || PLAN_ARGS+=(--planner "$PLANNER")
+    fi
+    [ -n "$PLANNER" ] || die "auto needs --planner SPEC, or a profile with routing.planner"
+    # The fast roles `plan` is about to store: the flag, else the profile's. Written now so the
+    # planner dispatch asks for the tier through the helper the other roles use.
+    if [ "$FAST_GIVEN" != 1 ] && [ -n "$profile_fast" ]; then
+      forge_fast_parse "$profile_fast" plan; FAST_GIVEN=1
+    fi
+    forge_fast_store "$PLAN"
+    fast_tier="$(forge_fast_tier "$PLAN" planner)"
+
+    note "auto: checking the planner ($PLANNER) before any model call"
+    bash "$DISPATCH" doctor --spec "$PLANNER" --role planner ${fast_tier:+$fast_tier} >&2 || exit $?
+    python3 "$PLANNER_PY" prompt --plan "$PLAN" --goal-file "$REQUEST" ${DLEVEL:+--level "$DLEVEL"} >/dev/null || exit $?
+    forge_auto_dispatch "$PLAN" "$REPO" "$PLANNER" "$fast_tier"
+    [ "$AUTO_RC" -eq 0 ] || exit "$AUTO_RC"
+    python3 "$PLANNER_PY" parse --plan "$PLAN" --reply "$PLAN/planner.last" || rc=$?
+    case "$rc" in
+      0) ;;
+      4) note "auto: the planner's reply was refused (see $PLAN/planner.refused). Nothing was dispatched after the planner"
+         exit 4 ;;
+      *) exit "$rc" ;;
+    esac
+    from_planner=1
+  fi
+
+  # 4. plan, and one send-back when the plan gates ask for it.
+  bash "$SELF" plan "$PLAN" ${PLAN_ARGS[@]+"${PLAN_ARGS[@]}"}; rc=$?
+  if [ "$rc" -eq 4 ] && [ "$from_planner" = 1 ] && [ -s "$PLAN/plan.sendback.md" ]; then
+    note "auto: the plan gates sent items back; asking the planner once more"
+    cp "$PLAN/planner.last" "$PLAN/planner.first.last" 2>/dev/null || true
+    cp "$PLAN/planner.prompt" "$PLAN/planner.first.prompt" 2>/dev/null || true
+    forge_auto_unparse "$PLAN"
+    python3 "$PLANNER_PY" prompt --plan "$PLAN" --goal-file "$REQUEST" ${DLEVEL:+--level "$DLEVEL"} >/dev/null || exit $?
+    {
+      printf '\n\n## Your plan was sent back\n\n'
+      printf 'forge checked your plan and sent the items below back. Reply with the whole corrected plan, in the same format.\n\n'
+      cat "$PLAN/plan.sendback.md"
+    } >> "$PLAN/planner.prompt"
+    forge_auto_dispatch "$PLAN" "$REPO" "$PLANNER" "$fast_tier"
+    [ "$AUTO_RC" -eq 0 ] || exit "$AUTO_RC"
+    rc=0
+    python3 "$PLANNER_PY" parse --plan "$PLAN" --reply "$PLAN/planner.last" || rc=$?
+    case "$rc" in
+      0) ;;
+      4) note "auto: the planner's second reply was refused (see $PLAN/planner.refused). Nothing was dispatched after the planner"
+         exit 4 ;;
+      *) exit "$rc" ;;
+    esac
+    bash "$SELF" plan "$PLAN" ${PLAN_ARGS[@]+"${PLAN_ARGS[@]}"}; rc=$?
+    if [ "$rc" -eq 4 ]; then
+      note "auto: the plan gates sent items back a second time; stopping. See $PLAN/plan.sendback.md"
+    fi
+  fi
+  [ "$rc" -eq 0 ] || exit "$rc"
+
+  # 5. Stop for approval, or run.
+  if [ "$APPROVED" = 1 ]; then
+    bash "$SELF" run "$PLAN" ${RUN_ARGS[@]+"${RUN_ARGS[@]}"}; exit $?
+  fi
+  local command_line
+  command_line="$(printf '%q run %q' "$SELF" "$PLAN")"
+  for arg in ${RUN_ARGS[@]+"${RUN_ARGS[@]}"}; do command_line="$command_line $(printf '%q' "$arg")"; done
+  printf '\nauto: the plan is ready and nothing has run. To start it:\n  %s\n' "$command_line"
+  exit 0
+}
+
 # --- main ---------------------------------------------------------------------
 if [ "${1:-}" = --help ] || [ "${1:-}" = -h ]; then
   awk '/^# Usage:/ {on=1} /^set -uo pipefail/ {on=0} on {sub(/^# ?/, ""); print}' "$SELF"
   forge_fractal_help
   exit 0
 fi
-[ $# -ge 1 ] || die "usage: forge-parallel.sh <plan|run|retry|accept|review|integrate|split|attribute|combine> <plan-dir> [...]"
+[ $# -ge 1 ] || die "usage: forge-parallel.sh <plan|auto|run|retry|accept|review|integrate|split|attribute|combine> <plan-dir> [...]"
 CMD="$1"; shift
 [ ! -f "${1:-}/no_ripwire" ] || export FORGE_RIPWIRE=off
 if [ -d "${1:-}" ]; then
@@ -2262,8 +2802,12 @@ case "$CMD" in
 esac
 # Subcommands implemented in the optional libraries fail clearly if the library is absent.
 need_fn() { declare -F "$1" >/dev/null || die "'$CMD' is not available: $1 is missing" 3; }
+# A plan with a frozen profile asks its decision-model gates from that copy (`plan` does it itself,
+# after it freezes). The internal subcommands inherit it from the `run` that started them.
+case "$CMD" in run|retry|integrate|accept|review|split|attribute) forge_profile_export "${1:-}" ;; esac
 case "$CMD" in
   plan)      do_plan "$@"; rc=$?; forge_update_notice; exit "$rc" ;;
+  auto)      do_auto "$@" ;;
   run)
     # The signal handler lives here, at the pid the user started: do_run is a subshell, and
     # bash runs a trap only between commands, so it is started in the background and waited

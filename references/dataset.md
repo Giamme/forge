@@ -30,10 +30,10 @@ time order: an attempt that PASSed, then a merge that CONFLICTed, then a human `
 | kind | one per | what it holds |
 |---|---|---|
 | `start` | execution | a receipt written by `begin()`. A start with no matching end is an execution that was killed or is still running |
-| `dispatch` | model call | role, alias, harness, **resolved** model, effort after clamping, timeout and its source, delivery (custom or native review), phase timings, exit, timeout, infra class, tokens, parsed verdict and findings, `FORGE_LEARNING` lines, `session_id`, `session_continue`. Blobs: the delivered prompt and the final message |
+| `dispatch` | model call | role, alias, harness, **resolved** model, effort after clamping, timeout and its source, delivery (custom or native review), phase timings, exit, timeout, infra class, tokens, parsed verdict and findings, `FORGE_LEARNING` lines, `session_id`, `session_continue`, `service_tier`, `speed`, `speed_reason`. Blobs: the delivered prompt and the final message |
 | `attempt` | task attempt or solo run | status, attempt number (with refund and resume flags), trigger (`initial`, `auto`, `human`), dwarf and qa spec, declared vs changed files, numstat, drift, guard notes, gate line (`thr<TAB>decision<TAB>worst<TAB>n_confirmed<TAB>n_unlabelled<TAB>n_below`; a solo attempt has it too, with the `known_issues` blob; null when the run wrote none), patch key, the files this execution wrote and the ones it only carried, `sent_back` (`prereview`, `bounce` or `message`: the send-back this attempt ended with, which leaves its status `FAIL`; null otherwise) and `retry_source` (where the retry findings it was given came from: `review`, `prereview`, `bounce`, `message` or `answer`; null on a first attempt). Blobs: the diff, retry findings, memory slices, capsule, Jev task files |
 | `verification` / `verify_run` | verify, and each command execution | command and its source (flag, `.forge/verify`, Jev), status, flaky. One `verify_run` per execution, each with its own log |
-| `plan` | `plan` | goal, original request, decompose level, exploratory routing decisions (`tasks[id].route`, with their odds), author (orchestrator or planner), per-task declared vs executed difficulty and who set it, pools, waves, Jev's plan-time judgments (stores from before 2026-10-27 also hold routing and coupling), options (`qa_threshold`, the effective blocking threshold, and `qa_threshold_source`, `set` when the plan's file held a valid value and `default` otherwise; plus `reviewer_session` when that file is present), `plan_gates` (the parsed `plan-gates.json`: what the plan-time gates did, with the `sent_back` history and `pending`; absent when the plan has no such file). Blobs: both task tables, prompts, approaches, excerpts of the declared files at plan time, the file inventory, `memory.md` |
+| `plan` | `plan` | goal, original request, decompose level, exploratory routing decisions (`tasks[id].route`, with their odds), author (`planner` when a planner was dispatched into the plan dir, else `orchestrator`), `orchestrator` (the first line of the plan's `orchestrator` file: `auto` for a plan started by `forge-parallel.sh auto`; absent for a plan built by hand), per-task declared vs executed difficulty and who set it, pools, waves, Jev's plan-time judgments (stores from before 2026-10-27 also hold routing and coupling), options (`qa_threshold`, the effective blocking threshold, and `qa_threshold_source`, `set` when the plan's file held a valid value and `default` otherwise; plus `reviewer_session` when that file is present), `plan_gates` (the parsed `plan-gates.json`: what the plan-time gates did, with the `sent_back` history and `pending`; absent when the plan has no such file), `shape`, `widest` and `wave_count` from `plan-shape.json` (`shape` is `one`, `chain` or `branches`; `wave_count` is how many waves; `widest` is the largest wave). `waves` stays the task-to-wave map from `waves.tsv` on every plan. `collapsed` (true when `collapsed.json` exists) and `collapsed_from` (the task ids it merged), `plan_gate` (the parsed `plan-gate.json`: the planner's one-task-or-plan decision). `shape`, `widest`, `wave_count`, `collapsed`, `collapsed_from` and `plan_gate` are absent when their file is missing. Blobs: both task tables, prompts, approaches, excerpts of the declared files at plan time, the file inventory, `memory.md` |
 | `run_end` | `run` | results per task, the accepted integration commit, `memory.md` |
 | `invocation` | user-facing `forge-parallel.sh` subcommand | argv, exit, duration, plus final review, accept, integrate and split/combine payloads |
 | `event` | point event | `merge` (MERGED, CONFLICT with the files, INVALIDATED and why), `integrate_advanced`, `integrate_conflict`, `combine_conflict`, `sched_terminal`, `memory_record`, `memory_prune`, `attribution` (below) |
@@ -64,13 +64,22 @@ continuing was requested, so a failed continue that still printed a verdict is t
 The `attempt` event's `resumed` flag is a different fact: a QA-only re-run after an
 infrastructure stop (the `tasks/<id>/resume` marker).
 
+A dispatch also carries `service_tier`, `speed` and `speed_reason`, read from the attempt's
+`metrics.json`. `service_tier` is the tier that was asked. When metrics has none, it falls
+back to `<role>.resolved`'s `service_tier=`, which is written only when the dispatch asked
+for a tier. `speed` is what the log reported: `fast`, `standard`, `default`, or null when
+the log does not say. `speed_reason` is why it was not fast (claude's
+`fast_mode_disabled_reason`, or codex's error message), or null. Each is null when absent,
+so a dispatch that predates the keys is otherwise unchanged.
+
 `plan --reviewer-session` writes `$PLAN/reviewer_session` (`on`). The plan event records
 it in `options`. The file joins the plan id only when it is present, so every plan already
 in a store keeps its id, and turning the experiment on stores a new plan event.
 `plan --implementer-session` (`$PLAN/implementer_session`, `on`) is recorded the same way, and
 `plan --pre-review-tests` joins the plan id the same way and is listed in `flags`. `plan-gates.json`
 joins it too, but with its parsed content rather than a first line: a plan without the file keeps
-its id, and a re-plan that changes the file's content gets a new plan event.
+its id, and a re-plan that changes the file's content gets a new plan event. `plan-shape.json`,
+`collapsed.json` and `plan-gate.json` join the same way, each only when it is present.
 `forge dataset status` counts continued and failed continues for reviewers and implementers
 apart.
 

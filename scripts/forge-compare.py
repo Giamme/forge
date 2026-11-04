@@ -37,9 +37,9 @@ sys.path.insert(0, str(SKILL / 'ui'))
 
 # Plan options that travel with a rerun, so it is judged the way the original was. Not the ones
 # `plan` writes itself (routing, Jev's frozen selection) or that a fresh plan decides (exploration).
-OPTION_FILES = ('no_ripwire', 'no_memory', 'yolo_dwarf', 'yolo_qa', 'reviewer_session', 'implementer_session',
+OPTION_FILES = ('no_ripwire', 'no_memory', 'yolo_dwarf', 'yolo_qa', 'reviewer_session', 'implementer_session', 'fast',
                 'pre_review_tests', 'pre_review_parallel', 'qa_threshold', 'timeout', 'verify_retries', 'verify_cmd',
-                'verify_parallel', 'setup_cmd', 'final_qa', 'shadow_qa', 'shadow_rate', 'escalate_after', 'fail_first')
+                'verify_parallel', 'setup_cmd', 'final_qa', 'shadow_qa', 'shadow_rate', 'escalate_after', 'fail_first', 'profile.json')
 PLAN_FILES = ('repo.identity', 'goal.txt', 'request.md')
 TASK_FILES = ('prompt.md', 'approach.md')
 NAME = re.compile(r'[^A-Za-z0-9._-]+')
@@ -287,8 +287,11 @@ def rerun_plan(args) -> int:
         if git(src['repo'], 'branch', new['branch'], src['base'])[0] != 0:
             raise Refusal('could not create %s' % new['branch'])
         created.append('branch')
+        # The source's frozen profile was copied and plan keeps it. A source that froze none must not
+        # take the user's default now: it would replace the options just copied.
+        profile = [] if (new['plan'] / 'profile.json').is_file() else ['--no-profile']
         planned = subprocess.run(['bash', str(SKILL / 'scripts' / 'forge-parallel.sh'), 'plan', str(new['plan']),
-                                  '--explore', '0'], capture_output=True, text=True, stdin=subprocess.DEVNULL)
+                                  '--explore', '0', *profile], capture_output=True, text=True, stdin=subprocess.DEVNULL)
         if planned.returncode != 0:
             raise Refusal('forge-parallel.sh plan failed (%d):\n%s' % (planned.returncode, (planned.stdout + planned.stderr).strip()))
         changed = [r['id'] for r in table(new['plan'] / 'tasks.tsv') if r['dwarf'] != args.dwarf]

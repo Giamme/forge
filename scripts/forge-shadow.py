@@ -11,7 +11,9 @@ turns this on for a sampled share of reviewed attempts (`--shadow-rate`, default
       dir under <plan>/shadow/<id>/<attempt>-<k>/, reviews a byte-identical copy of the
       primary's qa.input, and returns. Never exits nonzero.
   forge-shadow.py preflight --plan P
-      Which listed shadow specs resolve here; writes <plan>/shadow_qa.ok. Never fails a run.
+      Which listed shadow specs resolve here; writes <plan>/shadow_qa.ok. A spec that
+      cannot run here is skipped. A fast-tier refusal stops the run with dispatch's
+      own message and exit code, before any model call.
 
 Guarantees, because the task waits for this process before it writes any status:
   - nothing reads the shadow's result in the run path; it changes no status, memory,
@@ -47,6 +49,36 @@ ARTIFACT = SCRIPTS / 'forge-artifact.sh'
 SHADOW_GRACE_S = float(os.environ.get('FORGE_SHADOW_GRACE_S') or 300)
 STOP_WAIT_S = 10
 PREPARE_TIMEOUT_S = 120
+
+
+def plan_is_fractal(plan: Path) -> bool:
+    """True when this plan's saved selection says Fractal runs the dispatches."""
+    try:
+        data = json.loads((plan / 'fractal-selection.json').read_text())
+    except (OSError, ValueError):
+        return False
+    return isinstance(data, dict) and bool(data.get('enabled'))
+
+
+def service_tier_args(plan: Path, role: str) -> list[str]:
+    """`--service-tier fast` when <role> is a line of <plan>/fast, and nothing otherwise.
+
+    Fractal dispatches through its own runner and does not take the option. A retry
+    preflights before that runner is selected, so a plan whose selection is already on
+    is the same case for every role it dispatches. A whole-run review is not one of them.
+    Specs never change.
+    """
+    if os.environ.get('FORGE_FRACTAL_RUN'):
+        return []
+    try:
+        text = (plan / 'fast').read_text()
+    except OSError:
+        return []
+    if role not in [line.strip() for line in text.splitlines() if line.strip()]:
+        return []
+    if role != 'review' and plan_is_fractal(plan):
+        return []
+    return ['--service-tier', 'fast']
 
 
 def rate_of(plan: Path) -> float:
@@ -207,6 +239,7 @@ def run(args) -> int:
                 '--output', 'summary']
         if args.yolo:
             argv.append('--yolo')
+        argv.extend(service_tier_args(plan, 'qa'))
         with open(out / 'shadow.out', 'wb') as log:
             STATE['child'] = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
                                               env=env, close_fds=True)
@@ -269,16 +302,27 @@ def preflight(args) -> int:
     ok = []
     for spec in listed:
         flags = ['--yolo'] if (plan / 'yolo_qa').exists() else []
+        flags.extend(service_tier_args(plan, 'qa'))
         try:
             result = subprocess.run(['/bin/bash', str(DISPATCH), 'doctor', '--spec', spec, '--role', 'qa', *flags],
-                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=120)
-            good = result.returncode == 0
+                                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=120, text=True)
         except (OSError, subprocess.SubprocessError):
-            good = False
-        if good:
-            ok.append(spec)
-        else:
             print('forge: shadow review spec %s is not usable here; it is skipped' % spec, file=sys.stderr)
+            continue
+        if result.returncode == 0:
+            ok.append(spec)
+            continue
+        # Dispatch refuses a fast tier the harness cannot take (exit 3) before it checks
+        # that the binary exists, and both failures share that exit. The message is how
+        # they differ. Re-emit it unchanged and stop: skipping the shadow would let the
+        # dwarf and the primary review run and be billed.
+        text = result.stdout or ''
+        if result.returncode == 3 and 'has no per-invocation fast tier' in text:
+            sys.stderr.write(text)
+            if text and not text.endswith('\n'):
+                sys.stderr.write('\n')
+            return 3
+        print('forge: shadow review spec %s is not usable here; it is skipped' % spec, file=sys.stderr)
     write(plan / 'shadow_qa.ok', ','.join(ok) + '\n')
     if listed and not ok:
         print('forge: no shadow review spec is usable; shadow reviews are off for this run', file=sys.stderr)

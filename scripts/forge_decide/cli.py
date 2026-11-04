@@ -402,6 +402,18 @@ def cmd_gate(args) -> int:
     else:
         data = _user_preview()
         configured = data.get('providers') if isinstance(data.get('providers'), dict) else {}
+    if args.profile is not None and repo is None:
+        # Gates go into the user file's profile of that name. Where only another level has it (a
+        # built-in, a repo profile), that would create a user profile holding just the gates, which
+        # hides the other copy's routing and policy.
+        from . import profiles as profiles_module
+        own = data.get('profiles') if isinstance(data.get('profiles'), dict) else {}
+        other = profiles_module.available(_repo(None)).get(args.profile)
+        if args.profile not in own and other is not None:
+            kind = 'built-in' if other['level'] == 'builtin' else '%s-level' % other['level']
+            raise Usage('%s profile %r is not stored in your user file, and gates for it would hide it; '
+                        'copy it first: forge config profile create NAME --from %s, then pass --profile NAME'
+                        % (kind, args.profile, args.profile))
     if args.provider is not None and args.provider not in configured:
         # A legacy provider exists only once migrated; a --repo write never touches the user
         # file, so there it has to be migrated already.

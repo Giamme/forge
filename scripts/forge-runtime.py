@@ -264,6 +264,84 @@ def session_id(log: str, harness: str) -> str | None:
     return result_id if type(result_id) is str else None
 
 
+_TIER_UNSUPPORTED = 'is not advertised as supported for model'
+
+
+def read_speed(log: str, harness: str) -> tuple[str | None, str | None]:
+    """The speed the harness actually ran at, and why it was not fast.
+
+    claude: `usage.speed` of the last result, and `fast_mode_disabled_reason` when
+    that speed is not `fast`. codex: `default` and the error message when an
+    `item.completed` error says the tier is not advertised for the model; otherwise
+    the stream says nothing. Any other harness, or a log that does not say, is unknown.
+    """
+    if harness == 'codex':
+        reason = None
+        for event in _events(log)[0]:
+            if event.get('type') != 'item.completed':
+                continue
+            item = event.get('item')
+            if not isinstance(item, dict) or item.get('type') != 'error':
+                continue
+            message = item.get('message')
+            if isinstance(message, str) and _TIER_UNSUPPORTED in message:
+                reason = message
+        return ('default', reason) if reason else (None, None)
+    if harness != 'claude':
+        return None, None
+    speed = reason = None
+    saw = False
+    for event in _events(log)[0]:
+        if event.get('type') != 'result':
+            continue
+        saw = True
+        usage = event.get('usage')
+        value = usage.get('speed') if isinstance(usage, dict) else None
+        speed = value if isinstance(value, str) and value else None
+        disabled = event.get('fast_mode_disabled_reason')
+        reason = disabled if isinstance(disabled, str) and disabled else None
+    if not saw or not speed:
+        return None, None
+    if speed == 'fast':
+        return speed, None
+    return speed, reason
+
+
+def speed_note(harness: str, asked: str | None, speed: str | None, reason: str | None) -> str | None:
+    """The one line to print when `asked` is fast and the log ran slower, else None."""
+    if asked != 'fast' or not speed or speed == 'fast':
+        return None
+    if harness == 'claude' and reason:
+        return '%s ran at %s speed: fast mode is unavailable (%s)' % (harness, speed, reason)
+    if reason:
+        return '%s ran at %s speed: %s' % (harness, speed, reason)
+    return '%s ran at %s speed' % (harness, speed)
+
+
+def _resolved_service_tier(root: Path, role: str) -> str | None:
+    path = root / (role + '.resolved')
+    if not path.exists():
+        return None
+    found = None
+    prefix = 'service_tier='
+    for line in path.read_text(errors='replace').splitlines():
+        if line.startswith(prefix):
+            found = line[len(prefix):].strip() or None
+    return found
+
+
+def speed_command(log: str, harness: str) -> None:
+    """Print the slower-speed note for a log, or nothing. Exit stays 0."""
+    try:
+        text = Path(log).read_text(errors='replace')
+    except OSError:
+        return
+    speed, reason = read_speed(text, harness)
+    note = speed_note(harness, 'fast', speed, reason)
+    if note:
+        print(note)
+
+
 def finish(attempt: str, root: str, role: str, harness: str, rc: str) -> None:
     try:
         _finish(Path(attempt), Path(root), role, harness, rc)
@@ -279,6 +357,7 @@ def _finish(attempt: Path, root: Path, role: str, harness: str, rc: str) -> None
     text = log.read_text(errors='replace') if structured and log.exists() else ''
     final, usage = extract(text, harness)
     found = session_id(text, harness)
+    speed, speed_reason = read_speed(text, harness)
     if not last.exists() or not last.stat().st_size:
         if final is not None:
             last.write_text(final + '\n')
@@ -292,6 +371,9 @@ def _finish(attempt: Path, root: Path, role: str, harness: str, rc: str) -> None
         harness=harness,
         prompt_bytes=prompt.stat().st_size if prompt_ready else None,
         session_id=found,
+        service_tier=_resolved_service_tier(root, role),
+        speed=speed,
+        speed_reason=speed_reason,
         **usage,
     )
     infra = root / (role + '.infra')
@@ -761,6 +843,10 @@ def main() -> None:
             settle(*args)
         elif command == 'settled':
             settled_command(*args)
+        elif command == 'speed':
+            if len(args) != 2:
+                raise ValueError('usage: forge-runtime.py speed LOG HARNESS')
+            speed_command(*args)
         else:
             raise ValueError('unknown runtime command: ' + command)
     except (OSError, ValueError, RuntimeError) as error:

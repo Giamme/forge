@@ -1,10 +1,11 @@
 """The write path: routes that call the forge CLI, the one way forge-ui changes anything.
 
 The server never writes a run dir, a repo or forge's config itself. A write is one call of
-`<forge root>/forge ...` with an argv list, no shell and no stdin, in its own process group, under
-a per-run lock; this module holds the route table, the body validation, the call and the mapping
-of the CLI's exit code to an HTTP answer. server.py does the authentication and hands each
-authenticated POST to `dispatch`.
+`<forge root>/forge ...` with an argv list and no shell, in its own process group, under a lock;
+this module holds the route table, the body validation, the call and the mapping of the CLI's
+exit code to an HTTP answer. server.py does the authentication and hands each authenticated POST
+to `dispatch`. Profile create and edit are the one call that writes a JSON body to the CLI's
+stdin (`--file -`); every other call has no stdin.
 """
 from __future__ import annotations
 
@@ -30,6 +31,12 @@ MAX_LABEL = 50
 MAX_REASON = 500
 MAX_CONFIG_VALUE = 4096
 MAX_DECIDE_VALUE = 256
+# The profile object written to `forge config profile … --file -`. The HTTP body is already capped
+# at 64 KiB by the server; this caps the stdin text itself, which a re-encode can make larger.
+MAX_PROFILE_BODY = 64 * 1024
+_PROFILE_NAME = re.compile(r'^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$')
+_PROFILE_KEY = re.compile(r'^(routing|policy)\.[a-z_.]+$')
+_PROFILE_ACTIONS = ('create', 'edit', 'set', 'unset', 'rm', 'use')
 FP_RE = re.compile(r'[0-9a-f]{12}')
 # Mirrored from forge_decide.GATES and MODES. The ui tests do not put scripts/ on the path, so this
 # module does not import forge_decide; ConfigTests.test_decide_names_match_forge_decide keeps them equal.
@@ -120,21 +127,24 @@ def _signal_group(pgid, sig):
         pass  # already gone
 
 
-def run_cli(argv, timeout):
+def run_cli(argv, timeout, stdin=None):
     """Run argv (a list: never a shell) in its own process group and return a CliResult.
 
     On timeout the whole group gets SIGTERM, then SIGKILL after TERM_WAIT_S, and the leader is
     reaped before this returns, so a caller that holds a lock can release it knowing nothing of
-    the call is still running. The CLI's environment is the server's plus `cli_env`.
+    the call is still running. The CLI's environment is the server's plus `cli_env`. `stdin` is
+    bytes written to the process and then closed, or None. Only a profile create or edit passes
+    any, and only after its size was checked; every other call keeps stdin closed.
     """
     env = dict(os.environ, **cli_env) if cli_env else None
     try:
-        proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        proc = subprocess.Popen(argv, stdin=subprocess.PIPE if stdin is not None else subprocess.DEVNULL,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                 start_new_session=True, close_fds=True, env=env)
     except OSError as exc:
         return CliResult(error=f'cannot run the forge CLI: {exc.strerror or exc}')
     try:
-        out, err = proc.communicate(timeout=timeout)
+        out, err = proc.communicate(input=stdin, timeout=timeout)
     except subprocess.TimeoutExpired:
         pgid = proc.pid  # start_new_session made it the leader of a group of its own
         _signal_group(pgid, signal.SIGTERM)
@@ -144,7 +154,7 @@ def run_cli(argv, timeout):
         # Children that outlive the leader (or ignore SIGTERM) die here; the leader is reaped by wait().
         _signal_group(pgid, signal.SIGKILL)
         proc.wait()
-        for pipe in (proc.stdout, proc.stderr):
+        for pipe in (proc.stdin, proc.stdout, proc.stderr):
             if pipe:
                 pipe.close()
         return CliResult(timed_out=True)
@@ -258,11 +268,12 @@ class Context:
         found = self.server.catalog.locate(self.key)
         return found[0] if found and found[1] in kinds else None
 
-    def call(self, *args, limit=None):
+    def call(self, *args, limit=None, stdin=None):
         """One CLI call, mapped to (status, body); the run's lock is the caller's to hold.
 
-        `limit` is the route's timeout; a timeout given to `dispatch` (a test's) replaces it."""
-        return map_exit(run_cli([str(self.cli), *args], self.timeout or limit or TIMEOUT_S))
+        `limit` is the route's timeout; a timeout given to `dispatch` (a test's) replaces it.
+        `stdin` is bytes for the one profile write that uses `--file -`, or None."""
+        return map_exit(run_cli([str(self.cli), *args], self.timeout or limit or TIMEOUT_S, stdin=stdin))
 
     def locked(self, work):
         """work() under the run's lock; 409 busy when another write to this run is in flight."""
@@ -612,6 +623,154 @@ def _config_set(ctx):
         lock.release()
 
 
+def _profile_name(value, label='name'):
+    if not isinstance(value, str) or not _PROFILE_NAME.fullmatch(value):
+        raise BadBody('%s must be 1-64 letters, digits, ".", "_" or "-", starting with a letter or digit' % label)
+    return value
+
+
+def _profile_key(value):
+    if not isinstance(value, str) or not _PROFILE_KEY.fullmatch(value):
+        raise BadBody('key must be a routing.* or policy.* name')
+    return value
+
+
+def _profile_value(value):
+    # On the CLI's argv, so a leading "-" would be another option. Newline and tab count as
+    # control characters here: a profile value is one token, unlike a repo.verify script.
+    if not isinstance(value, str) or value.startswith('-') or not _no_control_chars(value):
+        raise BadBody('value must be a string with no control characters and not start with "-"')
+    return value
+
+
+def _profile_stdin(value):
+    """The bytes `--file -` reads. A re-encode can be larger than the HTTP body, so it is capped on its own."""
+    if not isinstance(value, dict):
+        raise BadBody('body must be a JSON object')
+    try:
+        raw = json.dumps(value, allow_nan=False).encode('utf-8')
+    except (TypeError, ValueError, RecursionError):
+        raise BadBody('body must be a JSON object')
+    if len(raw) > MAX_PROFILE_BODY:
+        raise BadBody('body is larger than 64 KiB')
+    return raw
+
+
+def validate_profile(body):
+    """(level, argv, stdin) for one profile write. BadBody before the CLI runs.
+
+    argv is the forge arguments through the action, not yet `--repo` or `--json`. stdin is the
+    profile object for `--file -`, or None. The CLI still checks that a key is a real profile
+    key and that the body validates.
+    """
+    action = body.get('action')
+    if action not in _PROFILE_ACTIONS:
+        raise BadBody('action must be one of ' + ', '.join(_PROFILE_ACTIONS))
+    level = body.get('level')
+    if level not in ('user', 'repo'):
+        raise BadBody("level must be 'user' or 'repo'")
+    if action == 'create':
+        _check_fields(body, ('run', 'action', 'name', 'level', 'from', 'body'))
+        name = _profile_name(body.get('name'))
+        has_from, has_body = 'from' in body, 'body' in body
+        if has_from == has_body:
+            raise BadBody('create takes from or body, not both')
+        if has_from:
+            return level, ['config', 'profile', 'create', name, '--from', _profile_name(body['from'], 'from')], None
+        return level, ['config', 'profile', 'create', name, '--file', '-'], _profile_stdin(body['body'])
+    if action == 'edit':
+        _check_fields(body, ('run', 'action', 'name', 'level', 'body'))
+        if 'body' not in body:
+            raise BadBody('edit takes a body')
+        return level, ['config', 'profile', 'edit', _profile_name(body.get('name')), '--file', '-'], _profile_stdin(body['body'])
+    if action == 'set':
+        _check_fields(body, ('run', 'action', 'name', 'level', 'key', 'value'))
+        if 'key' not in body or 'value' not in body:
+            raise BadBody('set takes a key and a value')
+        return level, ['config', 'profile', 'set', _profile_name(body.get('name')),
+                       _profile_key(body.get('key')), _profile_value(body.get('value'))], None
+    if action == 'unset':
+        _check_fields(body, ('run', 'action', 'name', 'level', 'key'))
+        if 'key' not in body:
+            raise BadBody('unset takes a key')
+        return level, ['config', 'profile', 'unset', _profile_name(body.get('name')), _profile_key(body.get('key'))], None
+    if action == 'rm':
+        _check_fields(body, ('run', 'action', 'name', 'level'))
+        return level, ['config', 'profile', 'rm', _profile_name(body.get('name'))], None
+    _check_fields(body, ('run', 'action', 'name', 'level', 'none'))
+    if 'none' in body and body['none'] is not True:
+        raise BadBody('none must be true')
+    if body.get('none') is True:
+        if 'name' in body:
+            raise BadBody('use takes a name or none, not both')
+        return level, ['config', 'profile', 'use', '--none'], None
+    if 'name' not in body:
+        raise BadBody('use takes a name or none: true')
+    return level, ['config', 'profile', 'use', _profile_name(body.get('name'))], None
+
+
+def _profiles_with_bodies(ctx, repo):
+    """The list object, each row carrying the body `show` prints for it."""
+    status, obj = ctx.call('config', 'profile', 'list', '--json', '--repo', repo)
+    if status != 200:
+        return status, obj
+    rows = obj.get('profiles')
+    if not isinstance(rows, list):
+        return 502, {'error': 'bad gateway', 'detail': 'the forge CLI printed no profile list'}
+    for row in rows:
+        if not isinstance(row, dict):
+            return 502, {'error': 'bad gateway', 'detail': 'the forge CLI printed a profile row that is not an object'}
+        name = row.get('name')
+        if not isinstance(name, str) or not _PROFILE_NAME.fullmatch(name):
+            return 502, {'error': 'bad gateway', 'detail': 'the forge CLI printed a profile name that is not usable'}
+        show_status, shown = ctx.call('config', 'profile', 'show', name, '--json', '--repo', repo)
+        if show_status != 200:
+            return show_status, shown
+        if not isinstance(shown, dict) or 'body' not in shown:
+            return 502, {'error': 'bad gateway', 'detail': 'the forge CLI printed no profile body'}
+        row['body'] = shown['body']
+    return 200, obj
+
+
+def _config_profiles_get(ctx):
+    ctx.route = 'profiles'
+    _name_run(ctx, urllib.parse.parse_qs(ctx.query[:2000]).get('run', [None])[0])
+    try:
+        params = _query_params(ctx.query, ('run',))
+    except BadBody as exc:
+        return _invalid(str(exc))
+    repo, error = _config_run(ctx, params.get('run'))
+    if error:
+        return error
+    return _profiles_with_bodies(ctx, repo)
+
+
+def _config_profiles_set(ctx):
+    raw = ctx.body if isinstance(ctx.body, dict) else None
+    ctx.route = 'profiles'
+    _name_run(ctx, raw.get('run') if raw else None)
+    try:
+        if raw is None:
+            raise BadBody('body must be a JSON object')
+        level, argv, stdin = validate_profile(raw)
+    except BadBody as exc:
+        return _invalid(str(exc))
+    repo, error = _config_run(ctx, raw.get('run'))
+    if error:
+        return error
+    # User level is the user file: no --repo. Repo level writes <root>/.forge/decide.json.
+    if level == 'repo':
+        argv += ['--repo', repo]
+    argv.append('--json')
+    lock = _server_lock(ctx.server, 'config_lock')
+    if not lock.acquire(blocking=False):
+        return 409, {'error': 'busy'}
+    try:
+        return ctx.call(*argv, stdin=stdin)
+    finally:
+        lock.release()
+
+
 # (method, path pattern, handler(ctx) -> (status, body)); group 1 of the pattern is the run key
 # (the config routes name it in the query or body instead). New routes are added here.
 def _reviewer_outcomes(ctx):
@@ -632,6 +791,8 @@ ROUTES = [
     ('POST', re.compile(r'/api/runs/([0-9a-f]{12})/issues'), _issues_file),
     ('POST', re.compile(r'/api/runs/([0-9a-f]{12})/issues/dismiss'), _issues_dismiss),
     ('POST', re.compile(r'/api/runs/([0-9a-f]{12})/delete'), _delete),
+    ('GET', re.compile(r'/api/config/profiles()'), _config_profiles_get),
+    ('POST', re.compile(r'/api/config/profiles()'), _config_profiles_set),
     ('GET', re.compile(r'/api/config()'), _config_get),
     ('POST', re.compile(r'/api/config()'), _config_set),
     ('GET', re.compile(r'/api/models/reviewers()'), _reviewer_outcomes),

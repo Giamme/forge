@@ -55,8 +55,12 @@ _CACHE = _SigCache()
 
 
 class Execution(dict):
-    """An Execution as the API returns it. `dataset` and `rel` (its dir) stay out of the JSON."""
-    __slots__ = ('dataset', 'rel')
+    """An Execution as the API returns it. `dataset`, `rel` (its dir) and `tier` stay out of the JSON.
+
+    `tier` is the service-tier triple already parsed from metrics.json, kept for a running
+    execution whose `.resolved` still lives only in the owner dir.
+    """
+    __slots__ = ('dataset', 'rel', 'tier')
 
 
 def inside(root, path) -> bool:
@@ -136,14 +140,27 @@ def spec_of(resolved):
     return alias
 
 
-def _model(resolved):
+def _plain(value):
+    """A non-empty string, or None. Tier fields are stored that way, and JSON null is absent."""
+    if isinstance(value, str):
+        value = value.strip()
+        return value or None
+    return None
+
+
+def _model(resolved, metrics=None):
     if not resolved or not resolved.get('alias'):
         return None
     effort = resolved.get('effort') or None
+    metrics = metrics or {}
+    # metrics.json is what finish() recorded. While a dispatch is still running, or on a
+    # run from before that record, the asked tier is the resolved line and the speed is unknown.
     return dict(spec=spec_of(resolved), alias=resolved['alias'], harness=resolved.get('harness') or None,
                 model=resolved.get('model') or None,
                 effort=None if effort == '<harness default>' else effort,
-                clamped=resolved.get('clamped') or None)
+                clamped=resolved.get('clamped') or None,
+                service_tier=_plain(metrics.get('service_tier')) or _plain(resolved.get('service_tier')),
+                speed=_plain(metrics.get('speed')), speed_reason=_plain(metrics.get('speed_reason')))
 
 
 def _finite(value):
@@ -201,7 +218,9 @@ def _metrics(reader, name, text):
                 phase_started=_finite(wall + (mark - mono)) if None not in (wall, mark, mono) else None,
                 phases=phases, exit_code=exit_code, infra_class=infra if isinstance(infra, str) and infra else None,
                 tokens=tokens if any(value is not None for value in tokens.values()) else None,
-                prompt_bytes=number('prompt_bytes', obj.get('prompt_bytes'), (int,)), shadow=obj.get('shadow') is True)
+                prompt_bytes=number('prompt_bytes', obj.get('prompt_bytes'), (int,)), shadow=obj.get('shadow') is True,
+                service_tier=_plain(obj.get('service_tier')), speed=_plain(obj.get('speed')),
+                speed_reason=_plain(obj.get('speed_reason')))
 
 
 def _dataset(reader, name, text):
@@ -283,7 +302,7 @@ def scan(reader, rel_dir, owner_live, roles=None):
     for item in result:
         if item['role'] in _MODEL_ROLES and item['state'] == 'running' and item['model'] is None:
             live = parse_resolved(reader.text(posixpath.join(owner, item['role'] + '.resolved')))
-            item['model'] = _model(live)
+            item['model'] = _model(live, item.tier)
         if item['role'] == 'qa' and item['state'] == 'done':
             item['verdict'], item['findings'] = qa_result(reader, item.rel + '/qa.last')
     return result
@@ -293,9 +312,10 @@ def _build(reader, rel, name, role):
     metrics_name, dataset_name = rel + '/metrics.json', rel + '/dataset.json'
     metrics = _cached(reader, metrics_name, 'metrics', lambda text: _metrics(reader, metrics_name, text)) or {}
     dataset = _cached(reader, dataset_name, 'dataset', lambda text: _dataset(reader, dataset_name, text))
+    tier = {key: metrics.get(key) for key in ('service_tier', 'speed', 'speed_reason')}
     model = timed_out = None
     if role in _MODEL_ROLES:
-        model = _model(resolved_of(reader, f'{rel}/{role}.resolved'))
+        model = _model(resolved_of(reader, f'{rel}/{role}.resolved'), tier)
         timed_out = reader.exists(f'{rel}/{role}.timedout')
     item = Execution(id=name, role=role, parent=None, attempt=None, shadow=bool(metrics.get('shadow')),
                      state=None, started=metrics.get('started'), ended=metrics.get('ended'),
@@ -305,7 +325,7 @@ def _build(reader, rel, name, role):
                      timed_out=bool(timed_out), model=model,
                      tokens=dict(metrics['tokens']) if metrics.get('tokens') else None,
                      prompt_bytes=metrics.get('prompt_bytes'), verdict=None, findings=None)
-    item.dataset, item.rel = dataset, rel
+    item.dataset, item.rel, item.tier = dataset, rel, tier
     return item
 
 

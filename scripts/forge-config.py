@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """forge config <command>: one view of every config source, and safe edits for the per-repo ones.
 
-  show  [--repo DIR] [--json]               registry, Jev, decide, the repo's .forge files, dataset and FORGE_* env
+  show  [--repo DIR] [--json]               registry, Jev, decide, profiles, the repo's .forge files, dataset and FORGE_* env
   set   <key> <value> [--repo DIR] [--json]   repo.verify | repo.setup | repo.verify-subset | decide.gate.<gate>[.provider|.model]
   unset <key> [--repo DIR] [--json]           repo.verify | repo.setup | repo.verify-subset
+  profile list|show|create|edit|set|unset|rm|use [--repo DIR] [--json]
+                                              profiles in decide.json; --repo writes the repo file, otherwise the user file
 
 A value of `-` reads stdin for the per-repo files. repo.verify-subset must contain `{files}` (the
 selected test files) or `{changed}` (the changed paths, for a runner with a related-tests mode).
@@ -22,13 +24,22 @@ A provider or model written to a gate that is `on` and not forced needs a passin
 new provider and model, as `forge decide gate G on` does; without one nothing is written and the
 exit code is 3 (with --json, an error object on stdout too).
 
+Profiles are the named routing, policy, gates and budget bundles in decide.json. Built-ins
+(balanced, lite) can be listed, shown and copied, and not edited. `profile set` and `unset` take
+one dotted routing.* or policy.* key; a gate inside a profile stays on `forge decide gate
+--profile`. Every profile write, including selecting one with `profile use`, is checked with
+profiles.validate before it is saved, and a failure leaves the file untouched. `--json` on a
+profile write prints {"ok": true, "name", "level", "body"} or {"ok": false, "error"}.
+
 Exit codes: 0 ok, 2 usage or invalid input (including an unsafe path), 3 refused by the promotion
 rule; any other code is the decide CLI's own, passed through.
 """
 from __future__ import annotations
 
 import argparse
+import copy
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -39,7 +50,8 @@ import sys
 SKILL = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 sys.path.insert(0, os.path.join(SKILL, 'scripts'))
 
-from forge_decide import GATES, MODES, load_user, save_user, user_path
+from forge_decide import GATES, MODES, load_repo, load_user, save_repo, save_user, user_path
+from forge_decide import profiles
 from forge_decide.migrate import run as migrate_run
 from forge_decide.providers import spec_for_site
 
@@ -61,6 +73,10 @@ class Refused(Exception):
 
 class Invalid(Exception):
     """Usage or invalid input, an unsafe path included: exit 2."""
+
+
+class ReadOnly(Exception):
+    """A write to a built-in profile that has no copy at that level: refused, exit 3."""
 
 
 def git_top(path):
@@ -329,7 +345,8 @@ def _print_decide(decide):
 
 def cmd_show(args):
     root = repo_root(args.repo, required=False)
-    data = dict(registry=registry_block(), jev=jev_block(), decide=decide_block(root))
+    data = dict(registry=registry_block(), jev=jev_block(), decide=decide_block(root),
+                profiles=profiles_payload(show_profiles_repo(root)))
     if root:
         data['repo'] = repo_block(root)
     data['dataset'] = dataset_block()
@@ -346,6 +363,7 @@ def cmd_show(args):
     print('jev: %s (%s, %s)' % ('enabled' if jev['enabled'] else 'disabled', jev['path'],
                                'present' if jev['exists'] else 'absent'))
     _print_decide(data['decide'])
+    print(profiles_text(data['profiles'], heading=True))
     if root:
         print('repo: %s' % root)
         for name, entry in data['repo']['files'].items():
@@ -520,10 +538,511 @@ def set_decide(args):
     return 0
 
 
+# ------------------------------------------------------------------------------------ profiles
+
+_PROFILE_NAME = re.compile(r'^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$')
+_PROFILE_TEXT_MAX = 1024 * 1024
+_PROFILE_KEYS = (
+    'routing.dwarf.<tier>, routing.qa.<tier> (tier is any, low, medium or high), '
+    'routing.planner, routing.fractal_planner, routing.final_reviewer, '
+    'routing.escalate_after, routing.escalate_effort, policy.qa_threshold, '
+    'policy.retry_failed, policy.infra_retries, policy.verify_retries, policy.timeout, '
+    'policy.explore, policy.shadow_rate, policy.shadow_qa, policy.fast')
+
+
+def show_profiles_repo(root):
+    """Repo whose profiles `show` lists, or None when it has no repo or .forge is not a real directory.
+
+    show reports a symlinked .forge without reading it, so the profiles block omits that repo file too.
+    """
+    if root is None:
+        return None
+    try:
+        forge_dir(root)
+    except Invalid:
+        return None
+    return root
+
+
+def profiles_payload(repo):
+    """The `profile list --json` object: the default in effect, and one row per winning profile."""
+    found = profiles.available(repo)
+    name, level = profiles.default_name(repo)
+    rows = [dict(name=profile_name, level=entry['level'], shadowed=list(entry['shadowed']),
+                 default=profile_name == name)
+            for profile_name, entry in sorted(found.items())]
+    return dict(default=dict(name=name, level=level), profiles=rows)
+
+
+def profile_row_text(row):
+    text = '%s %s' % (row['name'], row['level'])
+    if row['default']:
+        text += ' default'
+    if row['shadowed']:
+        text += ' shadows %s' % ', '.join(row['shadowed'])
+    return text
+
+
+def profiles_text(payload, heading):
+    lines = []
+    if heading:
+        default = payload['default']
+        if default.get('name'):
+            lines.append('profiles: default %s (%s)' % (default['name'], default['level']))
+        else:
+            lines.append('profiles: default none')
+    for row in payload['profiles']:
+        line = profile_row_text(row)
+        lines.append(('  ' + line) if heading else line)
+    return '\n'.join(lines)
+
+
+def profile_repo(args):
+    """Git top for an explicit --repo, else None (the user file).
+
+    An empty --repo is a bad path, not "no --repo": an empty shell variable must not select the
+    user file. A symlinked .forge or a non-regular decide.json is refused here: save_repo would
+    otherwise create or write through the link.
+    """
+    repo = getattr(args, 'repo', None)
+    if repo is None:
+        return None
+    root = repo_root(repo, required=True)
+    safe_target(root, 'decide.json')
+    return root
+
+
+def profile_level(args):
+    repo = profile_repo(args)
+    return ('repo', repo) if repo is not None else ('user', None)
+
+
+def load_level(level, repo):
+    data, error = load_repo(repo) if level == 'repo' else load_user()
+    if error:
+        raise Invalid(error + '; fix or remove it before changing settings')
+    return data
+
+
+def save_level(level, repo, data):
+    if level == 'repo':
+        safe_target(repo, 'decide.json')
+        save_repo(repo, data)
+    else:
+        save_user(data)
+
+
+def profile_providers(level, data):
+    """Providers a profile's gates are checked against: always the user file's, even for a repo profile."""
+    if level != 'user':
+        data, error = load_user()
+        if error:
+            raise Invalid(error + '; fix or remove it before changing settings')
+    stored = data.get('providers') if isinstance(data, dict) else None
+    return stored if isinstance(stored, dict) else {}
+
+
+def require_valid(body, providers):
+    reasons = profiles.validate(body, providers)
+    if reasons:
+        raise Invalid('\n'.join(reasons))
+
+
+def has_dict_profile(data, name):
+    raw = data.get('profiles') if isinstance(data, dict) else None
+    return isinstance(raw, dict) and isinstance(raw.get(name), dict)
+
+
+def builtin_message(name):
+    return ("built-in profile %r is read-only; copy it: forge config profile create NAME --from %s"
+            % (name, name))
+
+
+def builtin_readonly(name, level, data):
+    """True when `name` is a built-in and neither the user file nor this repo file has its own copy.
+
+    `data` is the file this command writes. At repo level the user file is checked too, so a user
+    copy of a built-in name is not reported as read-only when the repo simply lacks that name.
+    """
+    if name not in profiles.builtin_names():
+        return False
+    if level == 'user':
+        user = data
+    else:
+        user, error = load_user()
+        if error:
+            raise Invalid(error + '; fix or remove it before changing settings')
+    if has_dict_profile(user, name):
+        return False
+    if level == 'repo' and has_dict_profile(data, name):
+        return False
+    return True
+
+
+def refuse_missing(name, level, data):
+    if builtin_readonly(name, level, data):
+        raise ReadOnly(builtin_message(name))
+    raise Invalid('no profile %r at the %s level' % (name, level))
+
+
+def open_mutable(args, name):
+    """(level, repo, data, body) of a profile this level already stores. Built-ins with no copy are refused."""
+    level, repo = profile_level(args)
+    data = load_level(level, repo)
+    raw = data.get('profiles')
+    if not isinstance(raw, dict):
+        if raw is not None:
+            raise Invalid('profiles is not an object')
+        refuse_missing(name, level, data)
+    body = raw.get(name)
+    if isinstance(body, dict):
+        return level, repo, data, body
+    if name in raw:
+        raise Invalid('profile %r at the %s level is not an object' % (name, level))
+    refuse_missing(name, level, data)
+
+
+def require_known(repo, name):
+    found = profiles.available(repo)
+    if name not in found:
+        known = ', '.join(sorted(found)) or 'none'
+        raise Invalid('profile %r not found (known: %s)' % (name, known))
+    return found[name]
+
+
+def check_profile_name(name):
+    if not _PROFILE_NAME.fullmatch(name or ''):
+        raise Invalid("profile name %r must be 1-64 characters of letters, digits, '.', '_' or '-', "
+                      "starting with a letter or digit" % (name,))
+
+
+def profile_key_kind(key):
+    parts = (key or '').split('.')
+    if (len(parts) == 3 and parts[0] == 'routing' and parts[1] in profiles.POOLS
+            and parts[2] in profiles.TIERS):
+        return 'specs'
+    if len(parts) == 2 and parts[0] == 'routing' and parts[1] in profiles.ROUTING_SPECS:
+        return 'spec'
+    if key == 'routing.escalate_after' or (len(parts) == 2 and parts[0] == 'policy'
+                                           and parts[1] in profiles.POLICY_INTS):
+        return 'int'
+    if key == 'routing.escalate_effort':
+        return 'bool'
+    if key == 'policy.qa_threshold':
+        return 'threshold'
+    if key in ('policy.explore', 'policy.shadow_rate'):
+        return 'number'
+    if key == 'policy.shadow_qa':
+        return 'specs'
+    if key == 'policy.fast':
+        return 'roles'
+    return None
+
+
+def unknown_profile_key(key):
+    raise Invalid('unknown key %r; valid keys: %s' % (key, _PROFILE_KEYS))
+
+
+def comma_list(value):
+    return [part.strip() for part in str(value).split(',') if part.strip()]
+
+
+def coerce_number(text):
+    """A finite int or float, or `text` when it is not one.
+
+    A digit string stays an int, so JSON keeps `1` rather than `1.0`. Every other form float()
+    accepts (`.25`, `1e-1`) becomes a float. Non-finite values stay text and validate() refuses them.
+    """
+    if re.fullmatch(r'[0-9]+', text):
+        return int(text)
+    try:
+        number = float(text)
+    except (ValueError, OverflowError):
+        return text
+    if not math.isfinite(number):
+        return text
+    return number
+
+
+def coerce_profile_value(kind, value):
+    text = value.strip() if isinstance(value, str) else str(value)
+    if kind in ('specs', 'roles'):
+        return comma_list(text)
+    if kind in ('spec', 'threshold'):
+        return text
+    if kind == 'bool':
+        if text == 'on':
+            return True
+        if text == 'off':
+            return False
+        return text
+    if kind == 'int' and re.fullmatch(r'[0-9]+', text):
+        return int(text)
+    if kind == 'number':
+        return coerce_number(text)
+    return text
+
+
+def put_profile_key(body, key, value):
+    parts = key.split('.')
+    node = body
+    for part in parts[:-1]:
+        child = node.get(part)
+        if child is None:
+            child = {}
+            node[part] = child
+        elif not isinstance(child, dict):
+            raise Invalid('%s: %s is not an object' % (key, part))
+        node = child
+    node[parts[-1]] = value
+
+
+def drop_profile_key(body, key):
+    parts = key.split('.')
+    node = body
+    stack = []
+    for part in parts[:-1]:
+        child = node.get(part) if isinstance(node, dict) else None
+        if not isinstance(child, dict):
+            raise Invalid('%s is not set' % key)
+        stack.append((node, part))
+        node = child
+    if not isinstance(node, dict) or parts[-1] not in node:
+        raise Invalid('%s is not set' % key)
+    del node[parts[-1]]
+    for parent, part in reversed(stack):
+        child = parent.get(part)
+        if isinstance(child, dict) and not child:
+            del parent[part]
+        else:
+            break
+
+
+def read_profile_text(path):
+    if path == '-':
+        try:
+            text = sys.stdin.read(_PROFILE_TEXT_MAX + 1)
+        except UnicodeDecodeError:
+            raise Invalid('stdin: not valid UTF-8')
+    else:
+        try:
+            with open(path, 'r', encoding='utf-8') as handle:
+                text = handle.read(_PROFILE_TEXT_MAX + 1)
+        except UnicodeDecodeError:
+            raise Invalid('%s: not valid UTF-8' % path)
+        except OSError as err:
+            raise Invalid('%s: %s' % (path, err.strerror))
+    if len(text) > _PROFILE_TEXT_MAX:
+        raise Invalid('profile body is larger than 1 MiB')
+    return text
+
+
+def parse_profile_body(text):
+    try:
+        body = json.loads(text)
+    except (ValueError, RecursionError) as err:
+        raise Invalid('not valid JSON (%s)' % err)
+    if not isinstance(body, dict):
+        raise Invalid('profile: not an object')
+    return body
+
+
+def profile_source_body(args, repo):
+    if args.from_profile is not None:
+        return copy.deepcopy(require_known(repo, args.from_profile)['body'])
+    if args.from_run is not None:
+        if not os.path.isdir(args.from_run):
+            raise Invalid('--from-run %s is not a directory' % args.from_run)
+        return profiles.from_plan(args.from_run)
+    return parse_profile_body(read_profile_text(args.file))
+
+
+def emit_profile(args, name, level, body, action):
+    if getattr(args, 'json', False):
+        print(json.dumps(dict(ok=True, name=name, level=level, body=body)))
+    else:
+        print('profile %s: %s (%s)' % (name if name else 'none', action, level))
+    return 0
+
+
+def cmd_profile_list(args):
+    payload = profiles_payload(profile_repo(args))
+    if args.json:
+        print(json.dumps(payload, indent=2))
+    else:
+        text = profiles_text(payload, heading=False)
+        if text:
+            print(text)
+    return 0
+
+
+def cmd_profile_show(args):
+    repo = profile_repo(args)
+    entry = require_known(repo, args.name)
+    default_name, _level = profiles.default_name(repo)
+    if args.json:
+        print(json.dumps(dict(name=args.name, level=entry['level'], shadowed=list(entry['shadowed']),
+                              default=args.name == default_name, body=entry['body']), indent=2))
+        return 0
+    print('profile: %s' % args.name)
+    print('level: %s' % entry['level'])
+    print('shadows: %s' % (', '.join(entry['shadowed']) if entry['shadowed'] else 'none'))
+    print(json.dumps(entry['body'], indent=2))
+    return 0
+
+
+def cmd_profile_create(args):
+    check_profile_name(args.name)
+    if sum(source is not None for source in (args.from_profile, args.from_run, args.file)) != 1:
+        raise Invalid('create needs exactly one of --from, --from-run or --file')
+    level, repo = profile_level(args)
+    data = load_level(level, repo)
+    raw = data.get('profiles')
+    if raw is None:
+        raw = {}
+    elif not isinstance(raw, dict):
+        raise Invalid('profiles is not an object')
+    if args.name in raw:
+        raise Invalid('profile %r already exists at the %s level' % (args.name, level))
+    body = profile_source_body(args, repo)
+    require_valid(body, profile_providers(level, data))
+    raw[args.name] = body
+    data['profiles'] = raw
+    save_level(level, repo, data)
+    return emit_profile(args, args.name, level, body, 'created')
+
+
+def cmd_profile_edit(args):
+    level, repo, data, _body = open_mutable(args, args.name)
+    body = parse_profile_body(read_profile_text(args.file))
+    require_valid(body, profile_providers(level, data))
+    data['profiles'][args.name] = body
+    save_level(level, repo, data)
+    return emit_profile(args, args.name, level, body, 'edited')
+
+
+def cmd_profile_set(args):
+    level, repo, data, body = open_mutable(args, args.name)
+    kind = profile_key_kind(args.key)
+    if kind is None:
+        unknown_profile_key(args.key)
+    body = copy.deepcopy(body)
+    put_profile_key(body, args.key, coerce_profile_value(kind, args.value))
+    require_valid(body, profile_providers(level, data))
+    data['profiles'][args.name] = body
+    save_level(level, repo, data)
+    return emit_profile(args, args.name, level, body, 'set %s' % args.key)
+
+
+def cmd_profile_unset(args):
+    level, repo, data, body = open_mutable(args, args.name)
+    if profile_key_kind(args.key) is None:
+        unknown_profile_key(args.key)
+    body = copy.deepcopy(body)
+    drop_profile_key(body, args.key)
+    require_valid(body, profile_providers(level, data))
+    data['profiles'][args.name] = body
+    save_level(level, repo, data)
+    return emit_profile(args, args.name, level, body, 'unset %s' % args.key)
+
+
+def cmd_profile_rm(args):
+    level, repo = profile_level(args)
+    data = load_level(level, repo)
+    raw = data.get('profiles')
+    if not isinstance(raw, dict) or args.name not in raw:
+        if raw is not None and not isinstance(raw, dict):
+            raise Invalid('profiles is not an object')
+        refuse_missing(args.name, level, data)
+    # A default that names the profile goes with it, unless another copy of that name is left (a
+    # lower level's, or a built-in): every later plan and solo run would stop on a missing default.
+    entry = profiles.available(repo).get(args.name) or {}
+    left = entry.get('level') != level or bool(entry.get('shadowed'))
+    del raw[args.name]
+    if not raw:
+        data.pop('profiles')
+    cleared = data.get('default_profile') == args.name and not left
+    if cleared:
+        data.pop('default_profile')
+    save_level(level, repo, data)
+    return emit_profile(args, args.name, level, None, 'removed, and the default cleared' if cleared else 'removed')
+
+
+def cmd_profile_use(args):
+    if args.none and args.name:
+        raise Invalid('use NAME or use --none, not both')
+    if not args.none and not args.name:
+        raise Invalid('use NAME, or use --none to clear the default')
+    level, repo = profile_level(args)
+    data = load_level(level, repo)
+    if args.none:
+        if 'default_profile' in data:
+            data.pop('default_profile')
+            save_level(level, repo, data)
+        return emit_profile(args, None, level, None, 'cleared')
+    entry = require_known(repo, args.name)
+    # Selecting a profile writes default_profile. The body a run would use has to validate first;
+    # a hand-edited invalid body is refused and the file is left byte-identical.
+    require_valid(entry['body'], profile_providers(level, data))
+    if data.get('default_profile') != args.name:
+        data['default_profile'] = args.name
+        save_level(level, repo, data)
+    return emit_profile(args, args.name, level, entry['body'], 'default')
+
+
+def add_level_flags(sub):
+    sub.add_argument('--repo', help="that repo's .forge/decide.json (the git top level); otherwise the user file")
+    sub.add_argument('--json', action='store_true')
+
+
+def add_profile_parser(sub):
+    p = sub.add_parser('profile', help='list and edit named profiles in decide.json')
+    commands = p.add_subparsers(dest='profile_cmd', required=True)
+    s = commands.add_parser('list', help='name, level, default marker and shadowed levels')
+    add_level_flags(s)
+    s.set_defaults(fn=cmd_profile_list)
+    s = commands.add_parser('show', help='the winning body, its level and what it shadows')
+    s.add_argument('name')
+    add_level_flags(s)
+    s.set_defaults(fn=cmd_profile_show)
+    s = commands.add_parser('create', help='copy a profile, a plan dir, or a JSON file into a new profile')
+    s.add_argument('name')
+    s.add_argument('--from', dest='from_profile', metavar='OTHER')
+    s.add_argument('--from-run', dest='from_run', metavar='PLAN')
+    s.add_argument('--file', metavar='F', help="JSON body, or '-' for stdin")
+    add_level_flags(s)
+    s.set_defaults(fn=cmd_profile_create)
+    s = commands.add_parser('edit', help='replace the body stored at this level')
+    s.add_argument('name')
+    s.add_argument('--file', required=True, metavar='F', help="JSON body, or '-' for stdin")
+    add_level_flags(s)
+    s.set_defaults(fn=cmd_profile_edit)
+    s = commands.add_parser('set', help='set one dotted routing or policy key')
+    s.add_argument('name')
+    s.add_argument('key')
+    s.add_argument('value')
+    add_level_flags(s)
+    s.set_defaults(fn=cmd_profile_set)
+    s = commands.add_parser('unset', help='remove one dotted key; empty sections are dropped')
+    s.add_argument('name')
+    s.add_argument('key')
+    add_level_flags(s)
+    s.set_defaults(fn=cmd_profile_unset)
+    s = commands.add_parser('rm', help='delete the profile stored at this level')
+    s.add_argument('name')
+    add_level_flags(s)
+    s.set_defaults(fn=cmd_profile_rm)
+    s = commands.add_parser('use', help='set or clear default_profile at this level')
+    s.add_argument('name', nargs='?')
+    s.add_argument('--none', action='store_true', help='remove default_profile')
+    add_level_flags(s)
+    s.set_defaults(fn=cmd_profile_use)
+
+
 def parser():
     p = argparse.ArgumentParser(prog='forge config', description=__doc__.split('\n\n')[0])
     sub = p.add_subparsers(dest='cmd', required=True)
-    s = sub.add_parser('show', help="every config source: registry, decide, the repo's .forge files, dataset, FORGE_* env")
+    s = sub.add_parser('show', help="every config source: registry, decide, profiles, the repo's .forge files, dataset, FORGE_* env")
     s.add_argument('--repo')
     s.add_argument('--json', action='store_true')
     s.set_defaults(fn=cmd_show)
@@ -538,6 +1057,7 @@ def parser():
     s.add_argument('--repo')
     s.add_argument('--json', action='store_true')
     s.set_defaults(fn=cmd_unset)
+    add_profile_parser(sub)
     return p
 
 
@@ -547,7 +1067,14 @@ def main(argv=None):
         return args.fn(args)
     except Invalid as err:
         print('forge config: %s' % err, file=sys.stderr)
+        if getattr(args, 'json', False) and getattr(args, 'cmd', None) == 'profile':
+            print(json.dumps(dict(ok=False, error=str(err))))
         return 2
+    except ReadOnly as err:
+        print('forge config: %s' % err, file=sys.stderr)
+        if getattr(args, 'json', False):
+            print(json.dumps(dict(ok=False, error=str(err))))
+        return 3
     except Refused as err:
         print('forge config: %s' % err, file=sys.stderr)
         if getattr(args, 'json', False):

@@ -559,3 +559,85 @@ class ClockTests(unittest.TestCase):
                 return True
             return False
         self.assertTrue(self.wait(gone), 'the clock outlived its dispatch')
+
+
+class FastTierTests(unittest.TestCase):
+    """The speed a fast request actually ran at, from the recorded harness logs (#68)."""
+
+    FIXTURES = ROOT / 'tests' / 'fixtures' / 'fast_tier'
+
+    def setUp(self):
+        self.runtime = module('forge-runtime')
+
+    def text(self, name):
+        return (self.FIXTURES / name).read_text()
+
+    def test_speed_on_the_recorded_fixtures(self):
+        self.assertEqual(self.runtime.read_speed(self.text('claude-fast-flag-extra-usage-off.jsonl'), 'claude'),
+                         ('standard', 'extra_usage_disabled'))
+        self.assertEqual(self.runtime.read_speed(self.text('claude-no-flag.jsonl'), 'claude'),
+                         ('standard', 'sdk_opt_in_required'))
+        self.assertEqual(self.runtime.read_speed(self.text('codex-fast.jsonl'), 'codex'), (None, None))
+        unsupported = self.text('codex-unsupported-tier.jsonl')
+        message = json.loads(unsupported.splitlines()[1])['item']['message']
+        self.assertIn('is not advertised as supported for model', message)
+        self.assertEqual(self.runtime.read_speed(unsupported, 'codex'), ('default', message))
+        # A fast result keeps no disabled reason, and the other harnesses are not read this way.
+        fast = jsonl([{'type': 'result', 'result': 'ok', 'fast_mode_disabled_reason': 'extra_usage_disabled',
+                       'usage': {'speed': 'fast'}}])
+        self.assertEqual(self.runtime.read_speed(fast, 'claude'), ('fast', None))
+        self.assertEqual(self.runtime.read_speed(self.text('claude-no-flag.jsonl'), 'openclaude'), (None, None))
+
+    def test_the_note_on_a_fast_request_that_ran_slower_and_its_absence_without_the_option(self):
+        text = self.text('claude-fast-flag-extra-usage-off.jsonl')
+        speed, reason = self.runtime.read_speed(text, 'claude')
+        note = 'claude ran at standard speed: fast mode is unavailable (extra_usage_disabled)'
+        self.assertEqual(self.runtime.speed_note('claude', 'fast', speed, reason), note)
+        self.assertIsNone(self.runtime.speed_note('claude', None, speed, reason))
+        self.assertIsNone(self.runtime.speed_note('claude', 'fast', 'fast', reason))
+        # The command dispatch runs prints that one line. codex's quiet fast log prints nothing.
+        script = str(ROOT / 'scripts' / 'forge-runtime.py')
+        shown = subprocess.run([sys.executable, script, 'speed', str(self.FIXTURES / 'claude-fast-flag-extra-usage-off.jsonl'), 'claude'],
+                               text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=30)
+        self.assertEqual((shown.returncode, shown.stdout), (0, note + '\n'))
+        quiet = subprocess.run([sys.executable, script, 'speed', str(self.FIXTURES / 'codex-fast.jsonl'), 'codex'],
+                               text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=30)
+        self.assertEqual((quiet.returncode, quiet.stdout), (0, ''))
+        unsupported = self.text('codex-unsupported-tier.jsonl')
+        message = json.loads(unsupported.splitlines()[1])['item']['message']
+        codex = subprocess.run([sys.executable, script, 'speed', str(self.FIXTURES / 'codex-unsupported-tier.jsonl'), 'codex'],
+                               text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=30)
+        self.assertEqual((codex.returncode, codex.stdout), (0, 'codex ran at default speed: %s\n' % message))
+
+    def test_metrics_carry_the_tier_the_speed_and_the_reason(self):
+        def finish(role, harness, log, resolved=None):
+            tmp = tempfile.TemporaryDirectory()
+            self.addCleanup(tmp.cleanup)
+            root = Path(tmp.name)
+            if log is not None:
+                (root / (role + '.log')).write_text(log)
+            if resolved is not None:
+                (root / (role + '.resolved')).write_text(resolved)
+            attempt = self.runtime.begin(str(root), role)
+            self.runtime.finish(str(attempt), str(root), role, harness, '0')
+            return json.loads((attempt / 'metrics.json').read_text())
+
+        plain = finish('dwarf', 'claude', 'not json\n')
+        self.assertEqual((plain['service_tier'], plain['speed'], plain['speed_reason']), (None, None, None))
+        missing = finish('qa', 'codex', None)
+        self.assertEqual((missing['service_tier'], missing['speed'], missing['speed_reason']), (None, None, None))
+
+        off = self.text('claude-fast-flag-extra-usage-off.jsonl')
+        asked = finish('dwarf', 'claude', off, 'service_tier=fast\n')
+        self.assertEqual((asked['service_tier'], asked['speed'], asked['speed_reason']),
+                         ('fast', 'standard', 'extra_usage_disabled'))
+        unasked = finish('dwarf', 'claude', off, 'role=dwarf\nharness=claude\n')
+        self.assertIsNone(unasked['service_tier'])
+        self.assertEqual((unasked['speed'], unasked['speed_reason']), ('standard', 'extra_usage_disabled'))
+
+        bad = self.text('codex-unsupported-tier.jsonl')
+        message = json.loads(bad.splitlines()[1])['item']['message']
+        codex = finish('dwarf', 'codex', bad, 'service_tier=fast\n')
+        self.assertEqual((codex['service_tier'], codex['speed'], codex['speed_reason']), ('fast', 'default', message))
+        quiet = finish('dwarf', 'codex', self.text('codex-fast.jsonl'), 'service_tier=fast\n')
+        self.assertEqual((quiet['service_tier'], quiet['speed'], quiet['speed_reason']), ('fast', None, None))

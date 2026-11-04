@@ -14,8 +14,26 @@ File schema, the same at both levels (unknown keys are kept and ignored):
      "budget": {"run_tokens", "run_usd", "daily_tokens", "daily_usd"},
      "providers": {"<name>": {"type", "url", "model", "key_env", "key_file", "context",
                               "price_usd_per_mtok", "local"}},
-     "profiles": {"<name>": {"gates", "budget"}},
+     "default_profile": "<name>",
+     "profiles": {"<name>": {
+         "routing": {"dwarf": {"any"|"low"|"medium"|"high": [spec, ...]},
+                     "qa":    {"any"|"low"|"medium"|"high": [spec, ...]},
+                     "planner": spec, "fractal_planner": spec, "final_reviewer": spec,
+                     "escalate_after": int >= 0, "escalate_effort": bool},
+         "policy":  {"qa_threshold": "P0"|"P1"|"P2"|"P3"|"none", "retry_failed": int >= 0,
+                     "infra_retries": int >= 0, "verify_retries": int >= 0, "timeout": int >= 0,
+                     "explore": number in [0, 0.5], "shadow_qa": [spec, ...],
+                     "shadow_rate": number in [0, 1],
+                     "fast": ["dwarf"|"qa"|"planner"|"review", ...]},
+         "gates": {...as above...}, "budget": {...as above...}}},
      "privacy": "never-send"}
+
+A spec is alias[:effort[:harness]]. Every key of a profile is optional. Unknown keys inside
+`routing` or `policy` (and unknown tiers under `dwarf`/`qa`) are refused by
+profiles.validate(), to catch typos; unknown top-level keys of a profile are kept and
+ignored. `default_profile` names the profile a run uses when none is asked for (the user
+file's beats the repo file's). Two built-in profiles, `balanced` and `lite`
+(builtin_profiles.json, read-only), are found after both files; see profiles.py.
 
 A provider's key comes from `key_env` when that variable is set, else from `key_file`; it
 may name both, or neither (a local server may need no key).
