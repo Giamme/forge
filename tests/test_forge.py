@@ -125,7 +125,7 @@ class ForgeTests(unittest.TestCase):
   self.bin=self.root/'bin'; self.bin.mkdir()
   for cli in ['codex','claude']:
    p=self.bin/cli; p.write_text(FAKE); p.chmod(0o755)
-  for name in 'bash python3 git tar awk sed grep tr sort wc head tail cat mkdir rm mv cp ln touch date basename dirname mktemp xargs tee sleep pkill cmp'.split():
+  for name in 'bash python3 git tar awk sed grep tr sort wc head tail cat mkdir rm mv cp ln find touch date basename dirname mktemp xargs tee sleep pkill cmp'.split():
    binary=shutil.which(name)
    if binary: (self.bin/name).symlink_to(binary)
   # forge-ripwire.py falls back to ~/.local/bin/ripwire when the binary isn't on PATH

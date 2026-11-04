@@ -1423,7 +1423,9 @@ do_task_body() (
     python3 "$SKILL_DIR/scripts/forge-contract.py" qa --part head --kind "$qa_kind"
     echo
     [ ! -f "$PLAN/sweep_ahead" ] || python3 "$SKILL_DIR/scripts/forge-sweep.py" ahead "$PLAN" "$id" --role qa 2>/dev/null
-    cat "$tdir/review.deps"; echo
+    cat "$tdir/review.deps"
+    [ -s "$tdir/failfirst.txt" ] || [ -s "$tdir/prereview.txt" ] || echo "Forge ran no tests of its own on this attempt, so nothing here stands in for yours."
+    echo
     if [ -s "$tdir/failfirst.txt" ]; then cat "$tdir/failfirst.txt"; echo; fi
     if [ -s "$tdir/prereview.txt" ]; then cat "$tdir/prereview.txt"; echo; fi
     if [ -s "$tdir/guard.txt" ]; then
@@ -1679,6 +1681,19 @@ PY
   sleep "$secs"
 }
 
+report_untested() { # report_untested <plan> <id>...: verdicts that rest on reading alone (#117)
+  local plan="$1" id tests_note untested=0; shift
+  for id in "$@"; do
+    tests_note="$(forge_tests_note "$plan/tasks/$id/qa.last")"
+    if [ -n "$tests_note" ]; then
+      [ "$untested" = 0 ] && echo "reviews whose tests could not run:"
+      untested=1
+      printf '  %-14s %s\n' "$id" "$tests_note"
+    fi
+  done
+  [ "$untested" = 0 ] || echo
+}
+
 do_retry() {
   local PLAN="${1:?retry needs a plan dir}" id="${2:?retry needs a task id}"; shift 2
   FORGE_RUN_STARTED="$(forge_now)"
@@ -1877,6 +1892,7 @@ do_retry() {
       note "$id PASS but conflicted on merge — branch preserved"
     fi
   fi
+  report_untested "$PLAN" "$id"
   # Tasks still to run (#112): the run that dispatches them verifies the integration branch at its
   # end, and integrate verifies its candidate, so verifying now would only be repeated.
   local left="" lid
@@ -2418,17 +2434,8 @@ do_run() {
   done
   [ "$drift" = 1 ] && echo
 
-  # A verdict that rests on reading alone: the reviewer says its tests could not run (#117).
-  local untested=0 tests_note
-  for id in $(all_ids "$T"); do
-    tests_note="$(forge_tests_note "$PLAN/tasks/$id/qa.last")"
-    if [ -n "$tests_note" ]; then
-      [ "$untested" = 0 ] && echo "reviews whose tests could not run:"
-      untested=1
-      printf '  %-14s %s\n' "$id" "$tests_note"
-    fi
-  done
-  [ "$untested" = 1 ] && echo
+  # shellcheck disable=SC2046  # ids are single words
+  report_untested "$PLAN" $(all_ids "$T")
 
   # From this run's own flags, never from a verification.status an earlier run left.
   if [ "$interrupted" = 1 ]; then

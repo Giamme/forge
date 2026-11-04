@@ -98,25 +98,39 @@ class GateTableTests(unittest.TestCase):
                 self.assertEqual(decide(verdict, text, threshold), expected)
 
     def test_a_reviewers_word_on_its_tests(self):
-        for name, reply, expected in (
-                ('ran', 'FORGE_TESTS: RAN\nFORGE_VERDICT: PASS', dict(status='ran', reason=None)),
-                ('not needed', 'FORGE_TESTS: NOT NEEDED — docs only\nFORGE_VERDICT: PASS', dict(status='not_needed', reason='docs only')),
-                ('could not run', 'FORGE_TESTS: COULD NOT RUN - no deps\r\nFORGE_VERDICT: FAIL', dict(status='could_not_run', reason='no deps')),
-                ('the last one counts', 'FORGE_TESTS: COULD NOT RUN — x\nFORGE_TESTS: RAN\n', dict(status='ran', reason=None)),
-                ('an older reply', 'FORGE_VERDICT: PASS', None),
-                ('quoted in prose', 'the form is `FORGE_TESTS: RAN`\nFORGE_VERDICT: PASS', None),
-                ('another word', 'FORGE_TESTS: MAYBE\nFORGE_VERDICT: PASS', None)):
+        could_not = dict(status='could_not_run', reason='no deps')
+        for name, line, expected in (
+                ('ran', 'FORGE_TESTS: RAN', dict(status='ran', reason=None)),
+                ('ran, with a count', 'FORGE_TESTS: RAN (3 passed)', dict(status='ran', reason='3 passed')),
+                ('not needed', 'FORGE_TESTS: NOT NEEDED — docs only', dict(status='not_needed', reason='docs only')),
+                ('a hyphen, CRLF', 'FORGE_TESTS: COULD NOT RUN - no deps\r', could_not),
+                ('a colon', 'FORGE_TESTS: COULD NOT RUN: no deps', could_not),
+                ('brackets', 'FORGE_TESTS: COULD NOT RUN (no deps)', could_not),
+                ('two hyphens', 'FORGE_TESTS: COULD NOT RUN -- no deps', could_not),
+                ('a tab', 'FORGE_TESTS:\tCOULD NOT RUN — no deps', could_not),
+                ('bold', '**FORGE_TESTS: COULD NOT RUN — no deps**', could_not),
+                ('indented as the prompt shows it', '  FORGE_TESTS: COULD NOT RUN — no deps', could_not),
+                ('a bullet', '- FORGE_TESTS: COULD NOT RUN — no deps', could_not),
+                ('the last one counts', 'FORGE_TESTS: COULD NOT RUN — x\nFORGE_TESTS: RAN', dict(status='ran', reason=None)),
+                ('the prompt echoed after its own word', 'FORGE_TESTS: COULD NOT RUN — no deps\n  FORGE_TESTS: NOT NEEDED — why', could_not),
+                ('another word', 'FORGE_TESTS: MAYBE', dict(status='unclear', reason='MAYBE')),
+                ('an older reply', 'all fine', None),
+                ('quoted in prose', 'the form is `FORGE_TESTS: RAN`', None)):
             with self.subTest(name):
-                self.assertEqual(contract.tests_report(reply), expected)
+                self.assertEqual(contract.tests_report(line + '\nFORGE_VERDICT: PASS'), expected)
 
     def test_the_tests_line_is_asked_of_every_kind_and_is_never_a_finding(self):
         for kind in contract.KINDS:
             with self.subTest(kind):
-                self.assertIn('FORGE_TESTS: COULD NOT RUN', contract.qa_text('tail', kind))
+                tail = contract.qa_text('tail', kind)
+                self.assertIn('FORGE_TESTS: COULD NOT RUN', tail)
+                self.assertIn('do not install anything', tail)     # report it, rather than hunt for dependencies
         reply = '- [P3][CONFIRMED] a.py:1 — x\n  more about x\nFORGE_TESTS: COULD NOT RUN — path/b.py:2 needs a display\nFORGE_VERDICT: PASS'
         findings = contract.parse_findings(reply)
         self.assertEqual(len(findings), 1)
         self.assertNotIn('display', findings[0].text)
+        bold = contract.parse_findings('- [P3][CONFIRMED] a.py:1 — x\n**FORGE_TESTS: RAN**\nFORGE_VERDICT: PASS')
+        self.assertNotIn('*', bold[0].text)
 
     def test_default_is_p2_and_none_is_p3(self):
         self.assertEqual(contract.DEFAULT_THRESHOLD, 'P2')

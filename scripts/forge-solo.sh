@@ -388,7 +388,9 @@ fi
   python3 "$SKILL_DIR/scripts/forge-prompt.py" --requirements "$RUN/prompt.md" --approach "$APPROACH" --goal "$RUN/goal.txt" --memory "$RUN/dwarf.memory" --memory "$RUN/qa.memory"
   python3 "$SKILL_DIR/scripts/forge-contract.py" qa --part head --kind solo
   echo
-  cat "$RUN/review.deps"; echo
+  cat "$RUN/review.deps"
+  [ -s "$RUN/failfirst.txt" ] || echo "Forge ran no tests of its own on this attempt, so nothing here stands in for yours."
+  echo
   if [ -s "$RUN/failfirst.txt" ]; then cat "$RUN/failfirst.txt"; echo; fi
   python3 "$SKILL_DIR/scripts/forge-contract.py" qa --part tail --kind solo --threshold "$THR"
   echo

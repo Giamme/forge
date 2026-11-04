@@ -31,7 +31,9 @@ a conclusion would defeat the point of reviewing it, so the ambiguous case fails
 Before the verdict, a reviewer says whether its tests ran: `FORGE_TESTS: RAN`,
 `FORGE_TESTS: NOT NEEDED — why` or `FORGE_TESTS: COULD NOT RUN — why`. This never changes the
 verdict. `COULD NOT RUN` prints a note, and forge-ui and the dataset record all three, so a review
-that judged the diff by reading alone can be told apart. An older reply has no such line.
+that judged the diff by reading alone can be told apart. Markup and any separator are accepted,
+because nothing gates on this line, and a line that says something else is recorded as `unclear`.
+An older reply has no such line.
 
 A failing task is excluded and **its branch and worktree are preserved**; the rest of the run
 proceeds. forge never loops a dwarf against its reviewer on its own: a retry happens when you

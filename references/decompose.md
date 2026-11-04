@@ -1103,11 +1103,13 @@ worktree keeps the old content) and nested submodules (left empty).
 
 **Reviewers get the same dependencies.** A review snapshot holds committed files only, so forge
 links `node_modules`, `.venv`, `venv` and `vendor` from the checkout under review (the task's
-worktree, or the integration worktree for a final review) into the snapshot's root, unless the
-snapshot already has that path. These are the directories this step filled, so they match the
-attempt. The links count for no fingerprint and stay out of the reviewer's `git status`. The prompt
-names what was linked, says a workspace package's nested dependencies may be missing, or says there
-are none, and tells the reviewer to report rather than search or install. Nothing guards a write
+worktree, or the integration worktree for a final review) into the snapshot, at the root and in
+workspace packages down to five levels, unless the snapshot already holds that path or lacks its
+parent. These are the directories this step filled, so they match the attempt. The links count for
+no fingerprint and stay out of the reviewer's `git status`. The prompt names what was linked and what
+is committed, or says there is none, says when forge ran no tests of its own, and tells the reviewer
+to report rather than search or install. A directory that is only partly committed (`vendor/.gitkeep`)
+keeps its committed files and gets no link. Nothing guards a write
 through a link: forge commits whatever git does not ignore, so a linked directory is an ignored one
 (a directory the attempt committed is already in the snapshot and gets no link), and a write there
 changes nothing that merges. A link dangles once its worktree is removed, which harms nothing. Each

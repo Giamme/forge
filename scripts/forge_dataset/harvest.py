@@ -170,6 +170,14 @@ def findings(message: str | None) -> list:
     return parse_review(message)[0]
 
 
+def review_tests(message: str | None) -> dict | None:
+    """What a QA reply says about its tests; None when it does not, or the contract cannot load."""
+    try:
+        return contract().tests_report(message) if message else None
+    except Exception:
+        return None
+
+
 def parse_review(message: str | None) -> tuple[list, bool]:
     """(findings, parsed): parsed is False when the contract's parser raised."""
     if not message:
@@ -438,7 +446,7 @@ def dispatch_event(attempt: Path, root: Path, role: str, harness: str, rc, prov:
         prompt_bytes=metrics.get('prompt_bytes'), final_source=final_source,
         verdict=verdict, findings=found, learnings=learnings(message),
         findings_parse=review_completeness(verdict, found, parsed) if role == 'qa' else None,
-        tests=contract().tests_report(message) if role == 'qa' and message else None,
+        tests=review_tests(message) if role == 'qa' else None,
         session_id=session_id, session_continue=session_continue,
         root=str(root), scope=prov.get('scope'), trigger=prov.get('trigger'),
         **({'shadow': shadow} if shadow else {}),

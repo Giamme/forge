@@ -829,8 +829,8 @@ TaskDetail:
 execution with the findings of its own `qa.last` copy (`null` until it is done); then the
 task's current `qa.last` as a `primary` review with `execution` `null`, only when no
 execution's copy is identical to it; then one `shadow` review per shadow dir. `tests` is the
-reply's `FORGE_TESTS` line: `status` `ran`, `not_needed` or `could_not_run`, and `reason` or
-`null`; `null` when the reply has none.
+reply's `FORGE_TESTS` line: `status` `ran`, `not_needed`, `could_not_run` or `unclear` (it says
+something else), and `reason` or `null`; `null` when the reply has none.
 
 ExecutionDetail: the Execution, plus `resolved` (every `key=value` of `<role>.resolved`, or
 `null`), `dataset` (`{trigger, parent, attempt_start, resume}` or `null`), `prompt` (the

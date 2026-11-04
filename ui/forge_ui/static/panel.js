@@ -165,7 +165,7 @@ window.ForgePanel = (() => {
   }
   // What a reviewer said about its own tests (FORGE_TESTS). A review that could not run them stands out: its verdict
   // rests on reading alone. A reply that says nothing shows nothing.
-  const TESTS_WORDS = { ran: 'Reviewer ran tests', not_needed: 'Reviewer needed no tests', could_not_run: 'Reviewer could not run tests' };
+  const TESTS_WORDS = { ran: 'Reviewer ran tests', not_needed: 'Reviewer needed no tests', could_not_run: 'Reviewer could not run tests', unclear: 'Reviewer\'s word on its tests is unclear' };
   function testsLine(parent, tests) {
     if (!tests || !TESTS_WORDS[tests.status]) return;
     const text = TESTS_WORDS[tests.status] + (tests.reason ? `: ${tests.reason}` : '');

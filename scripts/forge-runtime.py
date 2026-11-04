@@ -632,15 +632,18 @@ def _codex_terminal_errors(events: list) -> list[str]:
             error = event.get('error')
             message = error.get('message') if isinstance(error, dict) else error
             pending.append(message if isinstance(message, str) else json.dumps(event))
+        elif kind == 'item.completed' and isinstance(event.get('item'), dict) and event['item'].get('type') == 'error':
+            pass             # a notice ("Falling back from WebSockets to HTTPS"), not the run going on
         else:
             pending = []     # any later activity means the run went on past the error
     return pending
 
 
 # codex's own words for a connection that never came up (#114). Only the message it stopped on
-# answers to these: on stderr the same words are routine (an MCP server's transport, a model-list
-# refresh) while the turn fails for its own reason, an early reconnect notice says nothing about a
-# later failure, and "request timed out" in another harness's raw log may be a test's output.
+# answers to these, or stderr when it emitted no event at all: beside a turn, the same words on
+# stderr are routine (an MCP server's transport, a model-list refresh) while the turn fails for its
+# own reason, an early reconnect notice says nothing about a later failure, and "request timed out"
+# in another harness's raw log may be a test's output.
 _CODEX_NETWORK = _P(r"\bworkspace routing discovery (?:failed|timed out)\b|\berror sending request\b|\brequest timed out\b", re.I)
 _CODEX_RECONNECTS_SPENT = _P(r"\bReconnecting\.\.\. (\d+)/\1\b")
 
@@ -701,7 +704,11 @@ def classify(log: str, harness: str, rc: object, last: str = '', role: str = '',
                 if hit:
                     return hit
             return 'empty', None, 'codex finished with exit 0 but produced no final message'
-        return classify_text('\n'.join(pending + [_tail(stray)]), now=now) or _codex_network(pending, now)
+        hit = classify_text('\n'.join(pending + [_tail(stray)]), now=now) or _codex_network(pending, now)
+        if hit or events:
+            return hit
+        # It died before its first event, so stderr is all it said and no turn gave another reason.
+        return _codex_network([line for line in stray if _CODEX_NETWORK.search(line)], now)
 
     if harness == 'opencode' and events:
         # Like codex: an error event counts when the run produced no answer after it.

@@ -55,7 +55,7 @@ lowercase prose do not count. The severity is the first P0-P3 token of the block
 line (`[P2]`, `(P2)`, `**P2**`, `P2:`, `P2 -` or a standalone `P2`; uppercase only).
 
 Phantom findings. A reviewer may echo the contract it was given. Three layers keep that
-from creating findings or blocking: (1) FORGE_VERDICT and FORGE_LEARNING text is removed
+from creating findings or blocking: (1) FORGE_VERDICT, FORGE_LEARNING and FORGE_TESTS text is removed
 before parsing (the verdict line itself says "CONFIRMED"); (2) any line that is a
 contiguous fragment of this module's own contract text (all parts, kinds and thresholds,
 whitespace-collapsed, at least 25 characters, list marker ignored) is removed, which
@@ -332,7 +332,7 @@ def _clean(text: str) -> list:
     for number, raw in enumerate(text.replace('\r\n', '\n').replace('\r', '\n').split('\n'), 1):
         raw = raw.expandtabs(4)
         line = _PROTOCOL.sub('', raw)
-        if line != raw and not line.strip():
+        if line != raw and not line.strip(' \t*_`>+-'):
             continue
         line = _QUOTE.sub('', line).rstrip()
         core = _collapse(_MARKER.sub('', line.strip()))
@@ -433,20 +433,32 @@ def gate(verdict: str, text: str, threshold=None) -> GateResult:
 
 
 # A reviewer's own word on whether its tests ran (#117). Only a line of its own counts, the last one
-# when it repeats: a quoted example in prose is not its report.
-_TESTS_LINE = re.compile(r'^FORGE_TESTS:[ \t]*(RAN|NOT NEEDED|COULD NOT RUN)\b(?:[ \t]*[—–-][ \t]*(.*?))?[ \t]*$', re.M)
+# when it repeats: a quoted example in prose is not its report. Unlike the verdict, nothing gates on
+# this line and it exists to be seen, so markup and any separator are forgiven, and a line that says
+# something else is `unclear` rather than silence. The forms' own "why" is the prompt echoed.
+_TESTS_LINE = re.compile(r'^[ \t>*_`+-]*FORGE_TESTS:[ \t*_`]*(.*?)[ \t*_`]*$', re.M)
+_TESTS_VALUE = re.compile(r'(RAN|NOT[ _]NEEDED|COULD[ _]NOT[ _]RUN)\b(.*)$', re.I)
 _TESTS_STATUS = {'RAN': 'ran', 'NOT NEEDED': 'not_needed', 'COULD NOT RUN': 'could_not_run'}
+_TESTS_TRIM = ' \t—–-:()'
 _TESTS_REASON_MAX = 300
 
 
+def _tests_reason(text: str) -> str | None:
+    return ''.join(ch for ch in text.strip(_TESTS_TRIM) if ch.isprintable())[:_TESTS_REASON_MAX] or None
+
+
 def tests_report(text) -> dict | None:
-    """{status: ran|not_needed|could_not_run, reason} from a QA reply, or None when it does not say."""
-    found = _TESTS_LINE.findall((text or '').replace('\r\n', '\n'))
-    if not found:
-        return None
-    status, reason = found[-1]
-    reason = ''.join(ch for ch in reason if ch.isprintable())[:_TESTS_REASON_MAX]
-    return dict(status=_TESTS_STATUS[status], reason=reason or None)
+    """{status: ran|not_needed|could_not_run|unclear, reason} from a QA reply, or None when it does not say."""
+    report = None
+    for value in _TESTS_LINE.findall((text or '').replace('\r\n', '\n')):
+        match = _TESTS_VALUE.match(value)
+        if not match:
+            report = dict(status='unclear', reason=_tests_reason(value))
+            continue
+        reason = _tests_reason(match.group(2))
+        if (reason or '').lower() != 'why':
+            report = dict(status=_TESTS_STATUS[match.group(1).upper().replace('_', ' ')], reason=reason)
+    return report
 
 
 def known_issues_text(threshold, tolerated) -> str:

@@ -118,6 +118,7 @@ CODEX_RECONNECTS = [       # (real) notices codex emits and then recovers from
     {'type': 'error', 'message': 'Reconnecting... waiting for network (Connection failed: error sending request)'},
     {'type': 'item.completed', 'item': {'type': 'agent_message', 'text': 'The browser suite passes with the fix.'}},
     {'type': 'turn.completed', 'usage': {'input_tokens': 1, 'output_tokens': 1}}]
+FALLBACK_NOTICE = {'type': 'item.completed', 'item': {'id': 'item_0', 'type': 'error', 'message': 'Falling back from WebSockets to HTTPS transport. x'}}
 STACK_TRACE = ('Traceback (most recent call last):\n  File "worker.py", line 401, in <module>\n    run()\n'
                'ValueError: unexpected token at position 429\n')
 NODE_TRACE = ("TypeError: Cannot read properties of undefined (reading 'quota')\n    at check (/app/src/billing.ts:401:12)\n"
@@ -195,6 +196,8 @@ class ClassifyTests(unittest.TestCase):
             ('codex no route: its own wording, with stderr noise', CODEX_NO_ROUTE, 'codex', 1, 'network'),
             ('codex no route, exit 0', CODEX_NO_ROUTE, 'codex', 0, 'network'),
             ('codex stopped on request timed out', jsonl([{'type': 'turn.failed', 'error': {'message': 'request timed out'}}]), 'codex', 1, 'network'),
+            ('codex reconnects spent, then its fallback notice, any message', jsonl([{'type': 'error', 'message': 'Reconnecting... 5/5 (stream closed)'}, FALLBACK_NOTICE, {'type': 'turn.failed', 'error': {'message': 'unexpected server response'}}]), 'codex', 1, 'network'),
+            ('codex died before its first event', 'ERROR: error sending request for url (https://chatgpt.com/backend-api/codex/responses)\n', 'codex', 1, 'network'),
             ('codex reconnects spent, any message', jsonl([{'type': 'error', 'message': 'Reconnecting... 5/5 (stream closed)'}, {'type': 'turn.failed', 'error': {'message': 'unexpected server response'}}]), 'codex', 1, 'network'),
             ('codex error after the last message', jsonl([CODEX_RECONNECTS[3], {'type': 'error', 'message': 'ECONNRESET'}]), 'codex', 1, 'network'),
             ('raw getaddrinfo', 'Error: getaddrinfo ENOTFOUND api.example.com\n', 'opencode', 1, 'network'),
@@ -265,7 +268,8 @@ class ClassifyTests(unittest.TestCase):
             ('codex notices recovered by a completed turn', jsonl(CODEX_RECONNECTS[:3] + [CODEX_RECONNECTS[-1]]), 'codex', 1),
             ('codex refused, the network words only on stderr', CODEX_MCP_STDERR + jsonl([{'type': 'turn.failed', 'error': {'message': 'The prompt was refused'}}]), 'codex', 1),
             ('codex refused after an early reconnect notice', jsonl([CODEX_RECONNECTS[1], {'type': 'turn.failed', 'error': {'message': 'The prompt was refused'}}]), 'codex', 1),
-            ('codex recovered from its own network wording', jsonl([{'type': 'error', 'message': 'workspace routing discovery timed out'}] + CODEX_RECONNECTS[3:]), 'codex', 0),
+            ('codex recovered from its own network wording', jsonl([{'type': 'error', 'message': 'workspace routing discovery timed out'}] + CODEX_RECONNECTS[3:]), 'codex', 1),
+            ('codex notices, an error item, and a real recovery', jsonl([CODEX_RECONNECTS[2], FALLBACK_NOTICE] + CODEX_RECONNECTS[3:]), 'codex', 1),
             ('another harness quoting a timed out request', 'test_fetch FAILED: request timed out\n', 'opencode', 1),
             ('codex ordinary nonzero', jsonl([{'type': 'turn.started'}, {'type': 'turn.completed'}]), 'codex', 1),
             ('claude result quoting limits', json.dumps({'type': 'result', 'is_error': False, 'result': quoting}), 'claude', 0),
