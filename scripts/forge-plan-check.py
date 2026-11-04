@@ -9,15 +9,15 @@
 
   forge-plan-check.py gates PLAN
       Prints the decision-model gate block (what drift, forward, prompt and coverage did to this
-      plan) from PLAN/plan-gates.json, then one `note:` line per distinct slow dwarf or qa spec.
-      Prints nothing when no gate recorded anything and no spec is a measured slowdown.
+      plan) from PLAN/plan-gates.json. Prints nothing when no gate recorded anything. The
+      slow-effort notes under the table are not this file's: it builds the planner's send-back
+      prompt, which must not read the dataset (`forge-dataset.py slow-notes PLAN` prints them).
 
   forge-plan-check.py sendback PLAN
       Writes PLAN/plan.sendback.md from the items the gates marked in this `plan` call and prints
       it, exiting 4. Prints nothing and exits 0 when nothing was marked.
 
-sendback prints nothing and exits 0 if forge_jev.plan_gates cannot be imported. gates still
-prints a slow-spec note in that case, and still exits 0.
+sendback and gates print nothing and exit 0 if forge_jev.plan_gates cannot be imported.
 
   forge-plan-check.py shape PLAN [--write]
       Prints {"shape", "tasks", "waves", "widest"}. shape is one (a single task), chain (two or
