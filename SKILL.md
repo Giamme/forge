@@ -1,7 +1,7 @@
 ---
 name: forge
 description: Dispatch implementation and independent diff review to user-selected models through local agent CLIs. Use for /forge or explicit requests to delegate coding or review; explanation-only questions do not authorize dispatch.
-argument-hint: '"<goal>" --dwarf <alias>[:effort[:harness]] [--qa <alias>] [--planner <alias>] [--yolo-dwarf] [--yolo-qa] [--decompose-level low|medium|high] [--fractal|--no-fractal|--fractal-auto-decompose] [--fractal-planner <spec>] [--jev|--no-jev] [--jev-shadow] [--gate NAME=MODE] [--no-gates] [--decide-budget tokens=N[,usd=X]] [--no-memory] [--no-ripwire] [--ui|--no-ui] [--timeout <seconds>] [--retry-failed <n>] [--escalate-after <n>] [--qa-threshold P0|P1|P2|P3|none|default] [--file-issues ask|auto|off] [--shadow-qa <spec>[,<spec>]] [--shadow-rate <0..1>] [--reviewer-session] [--explore <0..0.5>] [--fail-first]'
+argument-hint: '"<goal>" --dwarf <alias>[:effort[:harness]] [--qa <alias>] [--planner <alias>] [--profile <name>|--no-profile] [--fast <roles>] [--yolo-dwarf] [--yolo-qa] [--decompose-level low|medium|high] [--collapse-chains] [--plan auto|always|never] [--fractal|--no-fractal|--fractal-auto-decompose] [--fractal-planner <spec>] [--jev|--no-jev] [--jev-shadow] [--gate NAME=MODE] [--no-gates] [--decide-budget tokens=N[,usd=X]] [--no-memory] [--no-ripwire] [--ui|--no-ui] [--timeout <seconds>] [--retry-failed <n>] [--escalate-after <n>] [--qa-threshold P0|P1|P2|P3|none|default] [--file-issues ask|auto|off] [--shadow-qa <spec>[,<spec>]] [--shadow-rate <0..1>] [--reviewer-session] [--explore <0..0.5>] [--fail-first]'
 allowed-tools: [Bash, Read]
 ---
 
@@ -14,11 +14,27 @@ For explanation requests, explain the workflow without spending model quota.
 ## Choices and boundaries
 
 - A dwarf model must be chosen by the user. Ask when it is missing; never invent one.
-- QA defaults to `opus`; effort defaults to `medium` for dwarf, `high` for QA and `xhigh` for the planner.
+  `--profile NAME` the user selected, or a default they set (`forge config profile use`),
+  counts as that choice: do not ask role by role on top of it. When neither a flag nor a
+  profile names models, offer one profile and wait: the user's default if one is set, else
+  the built-in `balanced` ([recommended routing](docs/models.md#recommended-routing)). Ask
+  role by role only if they decline. The runner applies a configured default when neither
+  flag is passed and the run has no frozen copy, and it does not select `balanced` by
+  itself. Pass `--profile balanced` when they accept it and it is not already the default;
+  pass `--no-profile` when they decline, so a configured default does not fill the rest.
+  A profile that names no dwarf pool still needs `--dwarf`.
+- QA defaults to `opus` when no profile names a reviewer; effort defaults to `medium` for dwarf, `high` for QA and `xhigh` for the planner.
 - Specs are `alias[:effort[:harness]]`, e.g. `sol:xhigh:openclaude`. Resolve using
   [registry.tsv](registry.tsv); report any effort clamp. Literal model IDs require a harness.
 - Bypass flags apply only when explicitly requested for that role (`--yolo-dwarf`,
   `--yolo-qa`). Bash access can mutate files despite disabled editing tools.
+- `--fast ROLES` is opt-in. Offer it only when the user asks for speed. `ROLES` is a comma
+  list of `dwarf`, `qa`, `planner` and `review`, or `all`, or `none`. It is billed at a
+  higher rate. Claude's fast mode needs extra usage enabled; without it the run stays at
+  standard speed, exits 0, and forge prints a note. Codex can do the same when the tier is
+  unsupported. Other harnesses (openclaude, opencode, antigravity, grok) refuse and exit 3.
+  A solo run accepts only `dwarf`, `qa` or `none`. Read
+  [the fast service tier](references/harnesses.md#fast-service-tier). A note is not a failed run.
 - Ask **“Use Fractal for this run? [y/N]”** once before an interactive run, unless
   the user supplied `--fractal`, `--no-fractal`, or `--fractal-auto-decompose`. Pass the answer explicitly to
   the runner. Unattended runs default off. Installation never activates Fractal.
@@ -44,7 +60,12 @@ For explanation requests, explain the workflow without spending model quota.
 - The QA threshold defaults to `P2`: a CONFIRMED finding at P2 or worse blocks, so a PASS that
   lists one becomes FAIL, and milder CONFIRMED findings are recorded as known issues. `--qa-threshold`
   changes it (see [the verdict rule](docs/reviews.md#verdicts-and-failure)).
-- Show the decomposed task/model table and wait for approval before dispatch. Retry only
+- Show the decomposed task/model table and wait for approval before dispatch. Relay the
+  table's `profile:` line: the profile, and the flags that override it. Solo prints the
+  same line. When the table says the plan runs sequentially, offer `--collapse-chains`
+  (or one task) before approval. `forge-parallel.sh auto` already passes
+  `--collapse-chains` unless `--no-collapse`, so that line appears when collapse did not
+  run. Retry only
   when requested; preserve failed task branches and worktrees. `run --retry-failed N`,
   `--infra-retries M`, `plan --shadow-qa` (a second review of a
   sampled share of attempts, never read, to measure reviewer agreement) and
@@ -107,15 +128,18 @@ For explanation requests, explain the workflow without spending model quota.
 
 ## Common workflow
 
-1. Inspect the repository and existing work. State the goal, selected models and any bypass
-   flags. Keep complete requirements in `prompt.md`; short titles are insufficient for QA.
+1. Inspect the repository and existing work, unless this is a decomposed `--planner` run:
+   the planner reads the repository, so do not explore it yourself. State the goal,
+   selected models and any bypass flags. Keep complete requirements in `prompt.md`; short
+   titles are insufficient for QA.
 2. Preflight every selected role before the first model call, including an optional planner:
    `bash <skill_dir>/scripts/forge-dispatch.sh doctor --spec <spec> --role <role>`.
    This checks resolution, executable and advertised flags without model quota. Authentication,
    quota and live model availability remain unverified; a live probe must be explicitly requested.
 3. Use [solo runs](references/solo.md) for one implementation. For `--decompose-level
-   low|medium|high`, read [decomposition](references/decompose.md), prepare the task table,
-   obtain approval, then use `forge-parallel.sh plan/run`. Write the user's request verbatim
+   low|medium|high`, read [decomposition](references/decompose.md). With `--planner`, do not
+   assemble the table: call `auto` as below. Otherwise prepare the task table, obtain
+   approval, then use `forge-parallel.sh plan/run`. Write the user's request verbatim
    to `request.md` in the run or plan dir, and pass `--decompose-level` to `plan` with the
    level you actually split at, even when the user named none. Keep each task small and end
    its `prompt.md` with an `## Acceptance criteria` section of checks the reviewer can verify;
@@ -123,10 +147,19 @@ For explanation requests, explain the workflow without spending model quota.
    Pass the recorded Fractal choice and requested limits to the execution runner; tier
    pools go to solo directly or decomposed `plan`. Fractal does not replace planner dispatch.
    `--timeout` applies to decomposed runs too (kept in the plan).
-   When `plan` exits 4, the prompt or coverage gate sent work back: read `<plan>/plan.sendback.md`,
-   rewrite each listed task's `prompt.md`, and extend or add tasks for each uncovered
-   requirement (with `--planner`, re-dispatch it with that file appended), then run `plan`
-   again, once. Forge never sends the same task or requirement back twice.
+   For a decomposed `--planner` run, call `forge-parallel.sh auto` once, as one blocking
+   command, instead of writing the planner prompt and assembling the plan by hand. Omit
+   `--approved` on an interactive run, show the table, and wait; `--approved` is only for
+   the user's explicit pre-approval. Where the harness limits foreground commands, start
+   `auto` in the background and wait for its completion notice. Do not poll and do not
+   read its logs meanwhile. Auto preflights the planner and, on one plan send-back,
+   re-dispatches once. After the run (the `run` command `auto` printed, or
+   `auto --approved`), read `<plan>/results.tsv` and each failed task's `qa.last`, and
+   report. When you called `plan` yourself and it exits 4, the prompt or coverage gate
+   sent work back: read `<plan>/plan.sendback.md`, rewrite each listed task's `prompt.md`,
+   and extend or add tasks for each uncovered requirement (with `--planner`, re-dispatch
+   it with that file appended), then run `plan` again, once. Forge never sends the same
+   task or requirement back twice.
 4. Runners default to summary output. Read each `dwarf.last` and `qa.last` once; retrieve raw
    logs only when needed. Report findings faithfully, and identify verification
    limits. Source or review mutations invalidate acceptance. Missing verdicts are UNKNOWN.
@@ -147,10 +180,10 @@ Runners offer installation once before agents; dispatch never prompts. See
 
 ## Conditional references
 
-- [Planning](references/planning.md): read for `--planner` or an agreed approach.
+- [Planning](references/planning.md): read for `--planner` (including `forge-parallel.sh auto`) or an agreed approach.
 - [Solo](references/solo.md): command, snapshots, artifacts, exit codes and native-review limits.
-- [Decomposition](references/decompose.md): task schema, routing, waves, retries and integration.
-- [Harnesses](references/harnesses.md): invocation troubleshooting or adding a harness.
+- [Decomposition](references/decompose.md): task schema, routing and profiles, `auto`, plan shape, waves, retries and integration.
+- [Harnesses](references/harnesses.md): invocation troubleshooting, the fast service tier, or adding a harness.
 - [Fractal](references/fractal.md): opt-in nested execution, installation, limits,
   recovery, managed run commands, read-only dashboard and portable reports.
 - [Memory](references/memory.md): `.forge/` learning and spend records; `--no-memory` disables
