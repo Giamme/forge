@@ -5,6 +5,23 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and versions follow the format `{major}.{minor}[.{patch}]` ([...] parts appear only when non-zero).
 
+## [0.15] - 2026-11-04
+
+Profiles keep your model routing and run policies under a name, and forge-parallel.sh auto takes a goal to the approval table in one blocking command, planning only when it pays and collapsing plans that would run sequentially. Fast service tiers can be asked per role.
+
+### Highlights
+
+- `forge-parallel.sh auto` takes a goal file to the approval table in one blocking command: the planner, its reply parsed into the task table, one send-back round when the plan gates ask, and `plan`. With `--approved` it also runs the plan. The orchestrator no longer explores the repository or polls, so a small model can drive it (#87).
+- `--fast dwarf,qa,planner,review` (or `all`, `none`) on `plan` and `forge-solo.sh` asks for the fast service tier on those roles' dispatches: codex's `service_tier=fast` and claude's fast mode (billed at a higher rate; claude's needs extra usage). Other harnesses refuse it before any model call, and each dispatch records the tier it got (#68).
+- Profiles keep your model pools and policies under a name: `forge config profile list|show|create|edit|set|unset|rm|use` stores them in decide.json (user or repo level), with the read-only built-ins `balanced` (the recommended routing) and `lite`. `--profile NAME` or `--no-profile` on `plan` and `forge-solo.sh` picks one, and a default set with `use` applies when neither is given. The run freezes the profile, so `run` and `retry` read it; a flag still replaces one value, and the table says so (#48).
+- `plan` names a plan's shape. A chain, where no two tasks can run at once, gets a note in the table, and `--collapse-chains` merges it into one task that runs and is reviewed once (`auto` does this unless `--no-collapse`). The dataset records each plan's shape (#97).
+
+### Added
+
+- forge-ui's Settings page has a Profiles section to list, edit, create, duplicate, delete and choose the default profile, and a run's page shows the profile it froze and the values its flags replaced (#48).
+- docs/models.md gives a recommended routing per difficulty, measured on benchmark #86, and forge-ui's Models page shows it under each tier. `doctor --spec` and the plan table add a note when a spec is measurably slower than a lower effort of the same model with no better first-try pass rate, such as `haiku:max` against `haiku:xhigh` (#91).
+- `auto` first decides whether a goal needs a planner at all: with `--plan auto` (the default) a small goal becomes one task without a planner call; `--plan always` and `--plan never` force either path (#88).
+
 ## [0.14.1] - 2026-11-03
 
 Two fixes from run 1's follow-ups: a lateral move after an infrastructure stop stays in the tier the task was last assigned, and a claude or openclaude dispatch that already gave its final result is no longer lost to a timeout while a background task keeps it open.
