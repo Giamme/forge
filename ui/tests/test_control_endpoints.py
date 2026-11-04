@@ -313,10 +313,344 @@ class RouteNameTests(EndpointCase):
                  (('POST', f'/api/runs/{k}/delete', {'dry_run': 1}), ('delete', k)),
                  (('POST', '/api/config', {'run': k, 'key': 'nope'}), ('config', k)),
                  (('GET', '/api/config', None, f'run={k}&repo=/x'), ('config', k)),
+                 (('POST', '/api/config/profiles', {'run': k, 'action': 'nope'}), ('profiles', k)),
+                 (('GET', '/api/config/profiles', None, f'run={k}&repo=/x'), ('profiles', k)),
                  (('GET', f'/api/runs/{k}/issues', None, 'scope=x'), ('issues', k))]
         for args, expected in cases:
             self.assertEqual(self.named(*args), expected, args)
         self.assertEqual(self.calls(), [])
+
+
+class ProfileTests(EndpointCase):
+    BODY = {'policy': {'timeout': 15}, 'note': 'kept'}
+
+    def profiles(self, **body):
+        return self.post({'run': self.key, **body}, '/api/config/profiles')
+
+    def listed(self):
+        """A list payload that is also a show payload, so one fake answer serves both calls."""
+        body = {'policy': {'timeout': 15}}
+        return {'default': {'name': 'mine', 'level': 'user'},
+                'profiles': [{'name': 'mine', 'level': 'user', 'shadowed': ['repo'], 'default': True},
+                             {'name': 'balanced', 'level': 'builtin', 'shadowed': [], 'default': False}],
+                'body': body, 'name': 'mine', 'level': 'user', 'shadowed': ['repo']}
+
+    def test_list_argv_attaches_each_body(self):
+        payload = self.listed()
+        self.behave(stdout=json.dumps(payload))
+        status, body = self.get(f'/api/config/profiles?run={self.key}')
+        self.assertEqual(status, 200, body)
+        self.assertEqual([row['body'] for row in body['profiles']], [payload['body'], payload['body']])
+        self.assertEqual(body['profiles'][0]['shadowed'], ['repo'])
+        self.assertIs(body['profiles'][0]['default'], True)
+        repo = self.rrepo
+        self.assertEqual([call['argv'] for call in self.calls()], [
+            ['config', 'profile', 'list', '--json', '--repo', repo],
+            ['config', 'profile', 'show', 'mine', '--json', '--repo', repo],
+            ['config', 'profile', 'show', 'balanced', '--json', '--repo', repo]])
+        self.assertTrue(all(call['stdin'] == '' and call['leader'] for call in self.calls()))
+
+    def test_a_bad_list_never_asks_show(self):
+        self.behave(code=2, stderr='forge config: bad\n', stdout='{"ok": false, "error": "bad"}')
+        status, body = self.get(f'/api/config/profiles?run={self.key}')
+        self.assertEqual((status, body['error']), (400, 'invalid'))
+        self.behave(stdout=json.dumps({'profiles': [{'name': '../x', 'level': 'user'}]}))
+        self.assertEqual(self.get(f'/api/config/profiles?run={self.key}')[0], 502)
+        self.assertEqual(len(self.calls()), 2)
+
+    def test_every_action_at_both_levels(self):
+        name, body = 'work', self.BODY
+        stdin = json.dumps(body, allow_nan=False)
+        repo = self.rrepo
+        cases = [
+            ('user-create', dict(action='create', name=name, level='user', body=body),
+             ['config', 'profile', 'create', name, '--file', '-', '--json'], stdin),
+            ('repo-create', dict(action='create', name=name, level='repo', body=body),
+             ['config', 'profile', 'create', name, '--file', '-', '--repo', repo, '--json'], stdin),
+            ('user-from', dict(action='create', name=name, level='user', **{'from': 'balanced'}),
+             ['config', 'profile', 'create', name, '--from', 'balanced', '--json'], ''),
+            ('repo-from', dict(action='create', name=name, level='repo', **{'from': 'balanced'}),
+             ['config', 'profile', 'create', name, '--from', 'balanced', '--repo', repo, '--json'], ''),
+            ('user-edit', dict(action='edit', name=name, level='user', body=body),
+             ['config', 'profile', 'edit', name, '--file', '-', '--json'], stdin),
+            ('repo-edit', dict(action='edit', name=name, level='repo', body=body),
+             ['config', 'profile', 'edit', name, '--file', '-', '--repo', repo, '--json'], stdin),
+            ('user-set', dict(action='set', name=name, level='user', key='policy.retry_failed', value='4'),
+             ['config', 'profile', 'set', name, 'policy.retry_failed', '4', '--json'], ''),
+            ('repo-set', dict(action='set', name=name, level='repo', key='routing.dwarf.low', value='haiku:xhigh'),
+             ['config', 'profile', 'set', name, 'routing.dwarf.low', 'haiku:xhigh', '--repo', repo, '--json'], ''),
+            ('user-unset', dict(action='unset', name=name, level='user', key='policy.timeout'),
+             ['config', 'profile', 'unset', name, 'policy.timeout', '--json'], ''),
+            ('repo-unset', dict(action='unset', name=name, level='repo', key='policy.timeout'),
+             ['config', 'profile', 'unset', name, 'policy.timeout', '--repo', repo, '--json'], ''),
+            ('user-rm', dict(action='rm', name=name, level='user'),
+             ['config', 'profile', 'rm', name, '--json'], ''),
+            ('repo-rm', dict(action='rm', name=name, level='repo'),
+             ['config', 'profile', 'rm', name, '--repo', repo, '--json'], ''),
+            ('user-use', dict(action='use', name=name, level='user'),
+             ['config', 'profile', 'use', name, '--json'], ''),
+            ('repo-use', dict(action='use', name=name, level='repo'),
+             ['config', 'profile', 'use', name, '--repo', repo, '--json'], ''),
+            ('user-none', dict(action='use', level='user', none=True),
+             ['config', 'profile', 'use', '--none', '--json'], ''),
+            ('repo-none', dict(action='use', level='repo', none=True),
+             ['config', 'profile', 'use', '--none', '--repo', repo, '--json'], ''),
+            ('long-name', dict(action='rm', name='a' * 64, level='user'),
+             ['config', 'profile', 'rm', 'a' * 64, '--json'], ''),
+            ('empty-value', dict(action='set', name=name, level='user', key='policy.fast', value=''),
+             ['config', 'profile', 'set', name, 'policy.fast', '', '--json'], ''),
+        ]
+        for label, fields, argv, wanted in cases:
+            self.assertEqual(self.profiles(**fields)[0], 200, label)
+            call = self.calls()[-1]
+            self.assertEqual(call['argv'], argv, label)
+            self.assertEqual(call['stdin'], wanted, label)
+            self.assertTrue(call['leader'], label)
+
+    def test_refusals_never_reach_the_cli(self):
+        name = 'work'
+        bad = [dict(action='drop', name=name, level='user'),
+               dict(action='create', name=name, level='builtin', body=self.BODY),
+               dict(action='create', name=name, level='user'),
+               dict(action='create', name=name, level='user', **{'from': 'balanced'}, body=self.BODY),
+               dict(action='create', name=' has space', level='user', body=self.BODY),
+               dict(action='create', name='-lead', level='user', body=self.BODY),
+               dict(action='create', name='a' * 65, level='user', body=self.BODY),
+               dict(action='create', name='', level='user', body=self.BODY),
+               dict(action='create', name='ok/no', level='user', body=self.BODY),
+               dict(action='create', name=name, level='user', **{'from': '-no'}),
+               dict(action='edit', name=name, level='user'),
+               dict(action='edit', name=name, level='user', body=['nope']),
+               dict(action='edit', name=name, level='user', body='{}'),
+               dict(action='set', name=name, level='user', key='gates.drift', value='on'),
+               dict(action='set', name=name, level='user', key='routing.', value='x'),
+               dict(action='set', name=name, level='user', key='Policy.timeout', value='1'),
+               dict(action='set', name=name, level='user', key='policy.timeout', value='a\nb'),
+               dict(action='set', name=name, level='user', key='policy.timeout', value='a\tb'),
+               dict(action='set', name=name, level='user', key='policy.timeout', value='a\x00b'),
+               dict(action='set', name=name, level='user', key='policy.timeout', value='a\x7fb'),
+               dict(action='set', name=name, level='user', key='policy.timeout', value='\ud800'),
+               dict(action='set', name=name, level='user', key='policy.timeout', value='-1'),
+               dict(action='set', name=name, level='user', key='policy.timeout', value=15),
+               dict(action='unset', name=name, level='user'),
+               dict(action='rm', name=name, level='user', key='policy.timeout'),
+               dict(action='use', level='user'),
+               dict(action='use', name=name, level='user', none=True),
+               dict(action='use', level='user', none=False),
+               dict(action='use', level='user', none='yes'),
+               dict(action='rm', name=name, level='user', repo='/etc'),
+               dict(action='create', name=name, level='user', body=self.BODY, path='/etc')]
+        for fields in bad:
+            self.assertEqual(self.profiles(**fields)[0], 400, fields)
+        self.assertEqual(self.post(['nope'], '/api/config/profiles')[0], 400)
+        self.assertEqual(self.post({'action': 'rm', 'name': name, 'level': 'user'}, '/api/config/profiles')[0], 400)
+        self.assertEqual(self.profiles(run='../x', action='rm', name=name, level='user')[0], 400)
+        self.assertEqual(self.get('/api/config/profiles?run=zz')[0], 400)
+        self.assertEqual(self.get(f'/api/config/profiles?run={self.key}&repo=/etc')[0], 400)
+        self.assertEqual(self.calls(), [])
+        status, obj, route, key = control.dispatch(
+            self.server, self.fake, 'POST', '/api/config/profiles', ['nope'])
+        self.assertEqual((status, route, key, self.calls()), (400, 'profiles', '', []))
+
+    def test_an_oversized_body_is_refused_before_the_cli(self):
+        overhead = len(json.dumps({'note': ''}, allow_nan=False).encode())
+        fits = control.MAX_PROFILE_BODY - overhead
+        self.assertEqual(len(json.dumps({'note': 'x' * fits}, allow_nan=False).encode()), control.MAX_PROFILE_BODY)
+
+        def ask(n):
+            return control.dispatch(self.server, self.fake, 'POST', '/api/config/profiles', {
+                'run': self.key, 'action': 'create', 'name': 'wide', 'level': 'user',
+                'body': {'note': 'x' * n}})
+
+        status, body, route, key = ask(fits + 1)
+        self.assertEqual((status, route, key), (400, 'profiles', self.key))
+        self.assertIn('64', body['detail'])
+        self.assertEqual(self.calls(), [])
+        status, body = ask(fits)[:2]
+        self.assertEqual(status, 200, body)
+        self.assertEqual(self.calls()[-1]['stdin'], json.dumps({'note': 'x' * fits}, allow_nan=False))
+
+    def test_a_deeply_nested_body_is_a_400_not_a_500(self):
+        deep = 0
+        for _ in range(980):
+            deep = [deep]
+        status, body, route, key = control.dispatch(self.server, self.fake, 'POST', '/api/config/profiles', {
+            'run': self.key, 'action': 'create', 'name': 'deep', 'level': 'user', 'body': {'note': deep}})
+        self.assertEqual((status, route), (400, 'profiles'), body)
+        self.assertEqual(self.calls(), [])
+
+    def test_without_the_token_is_refused(self):
+        status, _body = self.post({'run': self.key, 'action': 'rm', 'name': 'work', 'level': 'user'},
+                                  '/api/config/profiles', **{'X-Forge-UI-Token': None})
+        self.assertEqual(status, 403)
+        self.assertEqual(self.calls(), [])
+
+    def test_unknown_run_or_repo(self):
+        self.assertEqual(self.profiles(run='000000000000', action='rm', name='work', level='user')[0], 404)
+        self.assertEqual(self.get('/api/config/profiles?run=000000000000')[0], 404)
+        (self.plan / 'repo').write_text('/no/such/dir\n')
+        self.assertEqual(self.profiles(action='rm', name='work', level='user')[0], 409)
+        self.assertEqual(self.profiles(action='rm', name='work', level='repo')[0], 409)
+        self.assertEqual(self.get(f'/api/config/profiles?run={self.key}')[0], 409)
+        self.assertEqual(self.calls(), [])
+
+    def test_a_removed_worktree_uses_the_main_checkout(self):
+        main = ConfigTests.removed_worktree(self)
+        (self.solo / 'repo').write_text(f'{main}\n')
+        self.behave(stdout=json.dumps({'default': {'name': None, 'level': None}, 'profiles': []}))
+        self.assertEqual(self.get(f'/api/config/profiles?run={self.key}')[0], 200)
+        self.assertEqual(self.last_argv(), ['config', 'profile', 'list', '--json', '--repo', str(main)])
+        self.assertEqual(self.profiles(action='rm', name='work', level='repo')[0], 200)
+        self.assertEqual(self.last_argv(), ['config', 'profile', 'rm', 'work', '--repo', str(main), '--json'])
+        self.assertEqual(self.profiles(action='rm', name='work', level='user')[0], 200)
+        self.assertEqual(self.last_argv(), ['config', 'profile', 'rm', 'work', '--json'])
+
+    def test_config_lock_serializes_writes_and_not_lists(self):
+        lock = control._server_lock(self.server, 'config_lock')
+        lock.acquire()
+        try:
+            self.assertEqual(self.profiles(action='rm', name='work', level='user'), (409, {'error': 'busy'}))
+            self.assertEqual(self.calls(), [])
+            self.behave(stdout=json.dumps({'default': {'name': None, 'level': None}, 'profiles': []}))
+            self.assertEqual(self.get(f'/api/config/profiles?run={self.key}')[0], 200)
+            self.assertEqual(len(self.calls()), 1)
+        finally:
+            lock.release()
+
+    def test_cli_exit_codes(self):
+        fields = dict(action='rm', name='work', level='user')
+        self.behave(code=3, stderr='forge config: no\n', stdout='{"ok": false, "error": "no"}')
+        status, body = self.profiles(**fields)
+        self.assertEqual((status, body['error'], body['result']['ok']), (409, 'refused', False))
+        self.behave(code=2, stderr='forge config: bad\n', stdout='{"ok": false, "error": "bad"}')
+        self.assertEqual(self.profiles(**fields)[0], 400)
+        self.behave(code=1, stderr='forge config: boom\n', stdout='{"ok": false}')
+        self.assertEqual(self.profiles(**fields)[0], 502)
+
+
+class ProfileCliTests(EndpointCase):
+    """The real `forge config profile`, through the HTTP server, on a temp config home and git repo."""
+
+    def setUp(self):
+        super().setUp()
+        self.root = os.path.realpath(self.repo)
+        git(self.root, 'init', '-q')
+        (self.plan / 'repo').write_text(self.root + '\n')
+        self.cfg = self.base / 'xdg'
+        home = self.base / 'home'
+        home.mkdir()
+        env = {key: value for key, value in os.environ.items()
+               if not key.startswith(('FORGE_DECIDE', 'FORGE_JEV')) and key != 'FORGE_REGISTRY'}
+        env.update(HOME=str(home), XDG_CONFIG_HOME=str(self.cfg),
+                   XDG_CACHE_HOME=str(self.base / 'cache'), XDG_DATA_HOME=str(self.base / 'data'),
+                   XDG_STATE_HOME=str(self.base / 'state'))
+        self.env = env
+        for patcher in (patch.dict(os.environ, env, clear=True),
+                        patch.object(ui_server, 'forge_cli', ROOT / 'forge')):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self.user_file = self.cfg / 'forge' / 'decide.json'
+        self.repo_file = Path(self.root) / '.forge' / 'decide.json'
+
+    def profiles(self, **body):
+        return self.post({'run': self.key, **body}, '/api/config/profiles')
+
+    def test_list_returns_every_profile_with_its_body(self):
+        user = {'policy': {'timeout': 15}, 'note': 'user'}
+        repo_body = {'policy': {'timeout': 9}, 'note': 'repo'}
+        self.assertEqual(self.profiles(action='create', name='shared', level='repo', body=repo_body)[0], 200)
+        self.assertEqual(self.profiles(action='create', name='shared', level='user', body=user)[0], 200)
+        self.assertEqual(self.profiles(action='use', name='shared', level='user')[0], 200)
+        status, listed = self.get(f'/api/config/profiles?run={self.key}')
+        self.assertEqual(status, 200, listed)
+        rows = {row['name']: row for row in listed['profiles']}
+        self.assertEqual(rows['shared'], {'name': 'shared', 'level': 'user', 'shadowed': ['repo'],
+                                           'default': True, 'body': user})
+        builtin = json.loads((ROOT / 'scripts/forge_decide/builtin_profiles.json').read_text())['profiles']
+        for name in ('balanced', 'lite'):
+            self.assertEqual(rows[name]['level'], 'builtin', name)
+            self.assertEqual(rows[name]['shadowed'], [], name)
+            self.assertIs(rows[name]['default'], False, name)
+            self.assertEqual(rows[name]['body'], builtin[name], name)
+        self.assertEqual(listed['default'], {'name': 'shared', 'level': 'user'})
+
+    def test_every_action_round_trips_at_both_levels(self):
+        created = {'policy': {'timeout': 15}, 'note': 'kept'}
+        edited = {'policy': {'timeout': 20}, 'note': 'edited'}
+        for level, path in (('user', self.user_file), ('repo', self.repo_file)):
+            status, answer = self.profiles(action='create', name='work', level=level, body=created)
+            self.assertEqual((status, answer.get('ok'), answer.get('level'), answer.get('body')),
+                             (200, True, level, created), answer)
+            status, answer = self.profiles(action='edit', name='work', level=level, body=edited)
+            self.assertEqual((status, answer.get('body')), (200, edited), answer)
+            status, answer = self.profiles(action='set', name='work', level=level,
+                                           key='policy.retry_failed', value='4')
+            self.assertEqual(status, 200, answer)
+            self.assertEqual(answer['body']['policy']['retry_failed'], 4, level)
+            self.assertEqual(answer['body']['policy']['timeout'], 20, level)
+            self.assertEqual(answer['body']['note'], 'edited', level)
+            status, answer = self.profiles(action='unset', name='work', level=level, key='policy.timeout')
+            self.assertEqual(status, 200, answer)
+            self.assertNotIn('timeout', answer['body']['policy'])
+            self.assertEqual(answer['body']['policy']['retry_failed'], 4, level)
+            status, answer = self.profiles(action='use', name='work', level=level)
+            self.assertEqual(status, 200, answer)
+            self.assertEqual(json.loads(path.read_text())['default_profile'], 'work', level)
+            status, answer = self.profiles(action='use', level=level, none=True)
+            self.assertEqual((status, answer.get('name'), answer.get('body')), (200, None, None), answer)
+            self.assertNotIn('default_profile', json.loads(path.read_text()))
+            status, answer = self.profiles(action='rm', name='work', level=level)
+            self.assertEqual((status, answer.get('ok'), answer.get('body')), (200, True, None), answer)
+            self.assertNotIn('profiles', json.loads(path.read_text()), level)
+
+    def test_create_from_a_builtin_copies_its_body(self):
+        builtin = json.loads((ROOT / 'scripts/forge_decide/builtin_profiles.json').read_text())['profiles']['balanced']
+        for level, path in (('user', self.user_file), ('repo', self.repo_file)):
+            status, answer = self.profiles(action='create', name='work', level=level, **{'from': 'balanced'})
+            self.assertEqual(status, 200, answer)
+            self.assertEqual(answer['body'], builtin, level)
+            self.assertEqual(json.loads(path.read_text())['profiles']['work'], builtin, level)
+
+    def test_a_profile_created_through_the_api_matches_the_cli_file(self):
+        body = {'policy': {'timeout': 15}, 'note': 'kept'}
+        stdin = json.dumps(body, allow_nan=False)
+        for level in ('user', 'repo'):
+            status, answer = self.profiles(action='create', name='kept', level=level, body=body)
+            self.assertEqual(status, 200, answer)
+            self.assertEqual(answer['body'], body)
+        self.assertEqual(self.user_file.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(self.repo_file.stat().st_mode & 0o777, 0o644)
+        other_cfg = self.base / 'cli-xdg'
+        other_repo = self.base / 'cli-repo'
+        other_repo.mkdir()
+        git(other_repo, 'init', '-q')
+        other_root = os.path.realpath(other_repo)
+        env = dict(self.env, XDG_CONFIG_HOME=str(other_cfg), HOME=str(self.base / 'cli-home'))
+
+        def cli(*args):
+            done = subprocess.run([str(ROOT / 'forge'), 'config', *args], input=stdin,
+                                  capture_output=True, text=True, env=env)
+            self.assertEqual(done.returncode, 0, done.stderr or done.stdout)
+            return done
+
+        cli('profile', 'create', 'kept', '--file', '-', '--json')
+        cli('profile', 'create', 'kept', '--file', '-', '--repo', other_root, '--json')
+        self.assertEqual((other_cfg / 'forge' / 'decide.json').read_bytes(), self.user_file.read_bytes())
+        self.assertEqual((Path(other_root) / '.forge' / 'decide.json').read_bytes(), self.repo_file.read_bytes())
+
+    def test_a_builtin_edit_is_refused_and_writes_nothing(self):
+        # The CLI refuses a built-in with no copy (exit 3), which maps to 409 the way every
+        # other refusal does.
+        for level in ('user', 'repo'):
+            status, body = self.profiles(action='edit', name='balanced', level=level,
+                                         body={'policy': {'timeout': 1}})
+            self.assertEqual(status, 409, body)
+            self.assertEqual(body['error'], 'refused')
+            self.assertIn('read-only', body['detail'])
+            self.assertIs(body['result']['ok'], False)
+            self.assertIn('read-only', body['result']['error'])
+        self.assertFalse(self.user_file.exists())
+        self.assertFalse(self.repo_file.exists())
 
 
 class RealCliTest(ControlApiCase):

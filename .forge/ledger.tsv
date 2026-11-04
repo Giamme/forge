@@ -608,3 +608,77 @@
 2026-11-02T15:08:25Z	run1-plan	run1-docs	dwarf	grok:high	-	trap	forge control add queues a row already in tasks tsv 7 columns non empty prompt md and needs a live scheduler it does not drop or replace a	`forge control add` queues a row already in `tasks.tsv` (7 columns, non-empty `prompt.md`) and needs a live scheduler; it does not drop or replace a… [scripts/forge-control.py]	532	1
 2026-11-02T15:08:58Z	run1-plan	run1-docs	qa	gpt-6.1-terra:high:codex	PASS	-	-	-	26
 2026-11-02T15:14:02Z	run1-plan	run1-docs	qa	gpt-6.1-terra:high:codex	PASS	-	-	-	19
+2026-11-03T14:10:00Z	run2-plan	profile-store	dwarf	sonnet:high	-	-	-	-	180
+2026-11-03T14:10:11Z	run2-plan	planner-contract	dwarf	sonnet:high	-	-	-	-	191
+2026-11-03T14:10:30Z	run2-plan	models-doc	dwarf	grok:high	-	-	-	-	210
+2026-11-03T14:10:57Z	run2-plan	models-doc	qa	gpt-6.1-terra:high:codex	PASS	-	-	-	22
+2026-11-03T14:12:55Z	run2-plan	profile-store	qa	sol:high	FAIL	-	-	-	169
+2026-11-03T14:13:27Z	run2-plan	planner-contract	qa	sol:high	FAIL	-	-	-	189
+2026-11-03T14:13:53Z	run2-plan	profile-store	dwarf	sonnet:high	-	-	-	-	54
+2026-11-03T14:15:14Z	run2-plan	planner-contract	dwarf	sonnet:high	-	-	-	-	102
+2026-11-03T14:15:37Z	run2-plan	profile-store	qa	sol:high	PASS	-	-	-	98
+2026-11-03T14:16:56Z	run2-plan	planner-contract	qa	sol:high	FAIL	-	-	-	97
+2026-11-03T14:17:47Z	run2-plan	planner-contract	dwarf	sonnet:high	-	-	-	-	48
+2026-11-03T14:18:28Z	run2-plan	planner-contract	qa	sol:high	PASS	-	-	-	36
+2026-11-03T14:27:46Z	run2-plan	ui-models-recommend	dwarf	grok:high	-	trap	test static js py imports forge ui at test time so run it with pythonpath ui without it it fails with modulenotfounderror forge ui	python3 -m unittest test_models from ui/tests fails with ModuleNotFoundError: forge_ui; run the forge-ui suite from ui/ so that directory is on sys.path [ui/tests/test_models.py]	724	1
+2026-11-03T14:28:46Z	run2-plan	ui-models-recommend	qa	gpt-6.1-terra:high:codex	PASS	-	-	-	53
+2026-11-03T14:29:43Z	run2-plan	fast-dispatch	dwarf	grok:xhigh	-	trap	python3 tests run tests py forge matches every class because the suite id is forge module class and a pattern is a substring of that id	python3 tests/run_tests.py forge matches every class, because the suite id is forge:module.Class and a pattern is a substring of that id [tests/run_tests.py]	1363	1
+2026-11-03T14:31:08Z	run2-plan	plan-shape	dwarf	grok:xhigh	-	-	-	-	1448
+2026-11-03T14:32:58Z	run2-plan	plan-shape	qa	sol:medium	FAIL	-	-	-	104
+2026-11-03T14:34:56Z	run2-plan	fast-dispatch	qa	sol:medium	PASS	-	-	-	307
+2026-11-03T14:44:23Z	run2-plan	profile-cli	dwarf	grok:xhigh	-	-	-	-	1721
+2026-11-03T14:46:12Z	run2-plan	profile-cli	qa	sol:medium	FAIL	-	-	-	103
+2026-11-03T14:49:16Z	run2-plan	plan-shape	dwarf	grok:xhigh	-	-	-	-	972
+2026-11-03T14:50:26Z	run2-plan	plan-shape	qa	sol:medium	FAIL	-	-	-	64
+2026-11-03T14:53:41Z	run2-plan	profile-cli	dwarf	grok:xhigh	-	-	-	-	445
+2026-11-03T14:54:37Z	run2-plan	fast-records	dwarf	grok:high	-	-	-	-	1176
+2026-11-03T14:55:22Z	run2-plan	profile-cli	qa	sol:medium	FAIL	-	-	-	95
+2026-11-03T14:56:21Z	run2-plan	plan-shape	dwarf	grok:xhigh	-	-	-	-	351
+2026-11-03T14:56:55Z	run2-plan	fast-records	qa	gpt-6.1-terra:high:codex	PASS	-	-	-	131
+2026-11-03T14:56:58Z	run2-plan	plan-shape	qa	sol:medium	PASS	-	-	-	32
+2026-11-03T14:59:52Z	run2-plan	profile-cli	dwarf	grok:xhigh	-	-	-	-	266
+2026-11-03T15:01:21Z	run2-plan	profile-cli	qa	sol:medium	PASS	-	-	-	84
+2026-11-03T15:14:43Z	run2-plan	profile-ui-api	dwarf	grok:xhigh	-	-	-	-	797
+2026-11-03T15:17:17Z	run2-plan	fast-roles	dwarf	grok:xhigh	-	-	-	-	2536
+2026-11-03T15:21:36Z	run2-plan	fast-roles	qa	sol:medium	FAIL	-	-	-	253
+2026-11-03T15:34:39Z	run2-plan	fast-roles	dwarf	grok:xhigh	-	-	-	-	778
+2026-11-03T15:35:35Z	run2-plan	fast-roles	qa	sol:medium	FAIL	-	-	-	50
+2026-11-03T15:50:01Z	run2-plan	fast-roles	dwarf	grok:xhigh	-	-	-	-	861
+2026-11-03T15:55:16Z	run2-plan	fast-roles	qa	sol:medium	PASS	-	-	-	309
+2026-11-03T16:00:16Z	run2-plan	profile-ui-api	dwarf	grok:xhigh	-	-	-	-	1989
+2026-11-03T16:02:07Z	run2-plan	profile-ui-api	qa	sol:medium	FAIL	-	-	-	106
+2026-11-03T16:03:30Z	run2-plan	profile-ui-api	dwarf	sonnet:medium	-	-	-	-	79
+2026-11-03T16:04:49Z	run2-plan	profile-ui-api	qa	sol:medium	PASS	-	-	-	73
+2026-11-03T16:20:06Z	run2-plan	slow-effort	dwarf	grok:xhigh	-	-	-	-	1485
+2026-11-03T16:22:30Z	run2-plan	slow-effort	qa	sol:medium	FAIL	-	-	-	136
+2026-11-03T16:25:49Z	run2-plan	profile-runs	dwarf	sonnet:high	-	-	-	-	1828
+2026-11-03T16:30:33Z	run2-plan	profile-ui-page	dwarf	grok:xhigh	-	-	-	-	1539
+2026-11-03T16:31:45Z	run2-plan	profile-runs	qa	sol:high	FAIL	-	-	-	350
+2026-11-03T16:31:54Z	run2-plan	slow-effort	dwarf	grok:xhigh	-	trap	registry models opens forge registry relative to the process cwd and returns an empty map when that file is missing so a caller that has	registry_models() opens FORGE_REGISTRY relative to the process cwd and returns an empty map when that file is missing, so a caller that has… [scripts/forge_dataset/forecast.py]	560	1
+2026-11-03T16:32:15Z	run2-plan	profile-ui-page	qa	sol:medium	FAIL	-	-	-	87
+2026-11-03T16:33:01Z	run2-plan	slow-effort	qa	sol:medium	FAIL	-	-	-	61
+2026-11-03T16:43:59Z	run2-plan	slow-effort	dwarf	grok:xhigh	-	trap	data home leaves a relative forge data home unresolved so a cd before opening the dataset reads a different directory	data_home() leaves a relative FORGE_DATA_HOME unresolved, so a cd before opening the dataset reads a different directory [scripts/forge_dataset/__init__.py]	652	1
+2026-11-03T16:43:59Z	run2-plan	slow-effort	dwarf	grok:xhigh	-	trap	test dispatch clocktests test a run dir removed while the harness runs does not hang the dispatch races shutil rmtree against the harness rename of	test_dispatch.ClockTests.test_a_run_dir_removed_while_the_harness_runs_does_not_hang_the_dispatch races shutil.rmtree against the harness rename of… [tests/test_dispatch.py]	652	1
+2026-11-03T16:45:41Z	run2-plan	slow-effort	qa	sol:medium	PASS	-	-	-	88
+2026-11-03T16:47:57Z	run2-plan	profile-ui-page	dwarf	grok:xhigh	-	-	-	-	934
+2026-11-03T16:49:18Z	run2-plan	profile-ui-page	qa	sol:medium	PASS	-	-	-	68
+2026-11-03T17:11:07Z	run2-plan	profile-runs	dwarf	sonnet:high	-	trap	the test path has no cut in forge parallel sh use bash parameter expansion not external text tools	the test PATH has no `cut`; in forge-parallel.sh use bash parameter expansion, not external text tools [scripts/forge-parallel.sh]	2358	1
+2026-11-03T17:16:50Z	run2-plan	profile-runs	qa	sol:high	FAIL	-	-	-	336
+2026-11-03T17:26:37Z	run2-plan	profile-runs	dwarf	sonnet:high	-	-	-	-	583
+2026-11-03T17:30:56Z	run2-plan	profile-runs	qa	sol:high	FAIL	-	-	-	253
+2026-11-03T21:20:01Z	run2-plan	shape-wiring	dwarf	grok:xhigh	-	-	-	-	1624
+2026-11-03T21:24:46Z	run2-plan	shape-wiring	qa	sol:medium	FAIL	-	-	-	279
+2026-11-03T21:31:04Z	run2-plan	shape-wiring	dwarf	grok:xhigh	-	-	-	-	374
+2026-11-03T21:35:37Z	run2-plan	shape-wiring	qa	sol:medium	PASS	-	-	-	268
+2026-11-03T21:50:31Z	run2-plan	auto-command	dwarf	sonnet:high	-	-	-	-	888
+2026-11-03T21:54:56Z	run2-plan	auto-command	qa	sol:high	FAIL	-	-	-	259
+2026-11-03T22:00:28Z	run2-plan	auto-command	dwarf	sonnet:high	-	-	-	-	328
+2026-11-03T22:02:46Z	run2-plan	auto-command	qa	sol:high	FAIL	-	-	-	132
+2026-11-03T22:04:38Z	run2-plan	auto-command	dwarf	sonnet:high	-	-	-	-	109
+2026-11-03T22:06:14Z	run2-plan	auto-command	qa	sol:high	FAIL	-	-	-	91
+2026-11-04T00:02:55Z	run2-plan	run2-docs	dwarf	grok:high	-	-	-	-	1281
+2026-11-04T00:08:47Z	run2-plan	run2-docs	qa	gpt-6.1-terra:high:codex	FAIL	-	-	-	345
+2026-11-04T00:13:29Z	run2-plan	run2-docs	dwarf	grok:high	-	-	-	-	277
+2026-11-04T00:13:53Z	run2-plan	run2-docs	qa	gpt-6.1-terra:high:codex	PASS	-	-	-	17
+2026-11-04T00:15:48Z	run2-plan	sweep-1	dwarf	grok:high	-	-	-	-	107
+2026-11-04T00:21:10Z	run2-plan	sweep-1	qa	sol:medium	PASS	-	-	-	316

@@ -253,6 +253,40 @@ class ModelsTests(unittest.TestCase):
                          {key: expected[key] for key in expected if key != 'generated'})
         self.assertEqual(request('/api/models/x')[0], 404)
 
+    def test_recommended_from_the_builtin_profiles(self):
+        self.assertEqual(models.collect([])['recommended'], {
+            'profile': 'balanced',
+            'source': '#86 SWE-bench Pro decomposed runs, 2026-10-28; docs/models.md',
+            'dwarf': {'low': 'haiku:xhigh', 'medium': 'sonnet:medium', 'high': 'opus:high'},
+        })
+
+    def test_recommended_is_the_first_spec_of_each_pool(self):
+        # A temp file through the same lookup: the first spec wins, and a tier with none is left out.
+        path = self.base / 'profiles.json'
+        path.write_text(json.dumps({'profiles': {'balanced': {
+            'source': 'bench',
+            'routing': {'dwarf': {'low': ['haiku:xhigh', 'haiku:high'], 'medium': ['sonnet:medium'], 'high': []}},
+        }}}))
+        with patch.object(models, '_builtin_profiles_path', return_value=path):
+            self.assertEqual(models.collect([])['recommended'], {
+                'profile': 'balanced', 'source': 'bench',
+                'dwarf': {'low': 'haiku:xhigh', 'medium': 'sonnet:medium'},
+            })
+
+    def test_recommended_is_null_when_the_file_cannot_be_read(self):
+        # The same lookup production uses, pointed at a temp path. No extra seam.
+        missing = self.base / 'builtin_profiles.json'
+        with patch.object(models, '_builtin_profiles_path', return_value=missing):
+            self.assertIsNone(models.collect([])['recommended'])
+        blocked = self.base / 'unreadable.json'
+        blocked.mkdir()
+        with patch.object(models, '_builtin_profiles_path', return_value=blocked):
+            self.assertIsNone(models.collect([])['recommended'])
+        junk = self.base / 'not.json'
+        junk.write_text('{')
+        with patch.object(models, '_builtin_profiles_path', return_value=junk):
+            self.assertIsNone(models.collect([])['recommended'])
+
 
 if __name__ == '__main__':
     unittest.main()

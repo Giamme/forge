@@ -17,16 +17,17 @@
 - the full `python3 -m unittest discover -s tests` takes over 10 minutes; run only the modules you touched [tests/check.sh]
 
 ## Known traps
+- python3 -m unittest test_models from ui/tests fails with ModuleNotFoundError: forge_ui; run the forge-ui suite from ui/ so that directory is on sys.path [ui/tests/test_models.py]
 - forge-ui browser tests skip without Python Playwright, so a green ui suite does not exercise the DOM [ui/tests/test_browser.py]
 - several test modules in one `python3 -m unittest` process make test_decide_wire fail (order leak, also on d3f6028); tests/run_tests.py runs each class… [tests/test_decide_wire.py]
+- the test PATH has no `cut`; in forge-parallel.sh use bash parameter expansion, not external text tools [scripts/forge-parallel.sh]
+- data_home() leaves a relative FORGE_DATA_HOME unresolved, so a cd before opening the dataset reads a different directory [scripts/forge_dataset/__init__.py]
+- test_dispatch.ClockTests.test_a_run_dir_removed_while_the_harness_runs_does_not_hang_the_dispatch races shutil.rmtree against the harness rename of… [tests/test_dispatch.py]
+- registry_models() opens FORGE_REGISTRY relative to the process cwd and returns an empty map when that file is missing, so a caller that has… [scripts/forge_dataset/forecast.py]
+- python3 tests/run_tests.py forge matches every class, because the suite id is forge:module.Class and a pattern is a substring of that id [tests/run_tests.py]
 - `forge control add` queues a row already in `tasks.tsv` (7 columns, non-empty `prompt.md`) and needs a live scheduler; it does not drop or replace a… [scripts/forge-control.py]
 - `forge-parallel.sh retry` accepts `--decide retry=002` (up to three digits), but the `DECISION` regexes in `forge-control.py` and `forge-schedule.py`… [scripts/forge-control.py]
 - tests/test_control.py asserts the exact `show --json` run and task dicts, so new keys there fail it; add text-only output instead [tests/test_control.py]
 - infra.paused is removed when a scheduler exits (live_stop), so a summary printed after the run finds no scope pauses [scripts/forge-schedule.py]
 - the bundled `gemini` alias in registry.tsv lists different models per harness (Flash on antigravity, Pro on opencode), so never compare models by alias [registry.tsv]
-- test_orbiting_asks_for_one_frame_at_a_time waits 30 s for a steady camera and times out intermittently, regardless of panel changes [ui/tests/test_browser.py]
-- test_static_js.py imports forge_ui at test time, so run it with PYTHONPATH=ui; without it, it fails with ModuleNotFoundError: forge_ui [ui/tests/test_static_js.py]
-- forge-contract.py's `_LOCATION` has no space in its path class, so a location in a directory with a space only matches the last part of the path [scripts/forge-contract.py]
-- a qa dir records no attempt number, and changes.diff is rewritten per attempt, so an old review's diff is not recoverable from its task dir [scripts/forge-runtime.py]
-- the "Claude AI usage limit reached" fixtures decide the infra class asserted by real runs, so renaming a class breaks tests in test_forge.py, test_infra.py,… [tests/test_forge.py]
 

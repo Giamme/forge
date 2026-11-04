@@ -1,0 +1,2 @@
+# id	deps	difficulty	files	dwarf	qa	title
+device-verification-status-card	-	low	src/components/views/settings/devices/DeviceVerificationStatusCard.tsx,src/components/views/settings/devices/DeviceDetails.tsx,src/components/views/settings/devices/CurrentDeviceSection.tsx,src/i18n/strings/en_EN.json,res/css/components/views/settings/devices/_DeviceDetails.pcss,test/components/views/settings/devices	haiku:max:claude	opus:high:claude	Extract DeviceVerificationStatusCard and render it under the heading in DeviceDetails

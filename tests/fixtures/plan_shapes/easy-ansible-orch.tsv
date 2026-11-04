@@ -1,0 +1,3 @@
+# id	deps	difficulty	files	dwarf	qa	title
+impl	-	medium	lib/ansible/executor/module_common.py,changelogs/fragments/get-shebang-honor-declared-interpreter.yml	sonnet:medium	opus:high	Make _get_shebang always return a shebang built from the resolved interpreter; drop None handling in callers
+tests	impl	low	test/units/executor/module_common/test_module_common.py,test/units/executor/module_common/test_modify_module.py	haiku:xhigh	opus:high	Update and extend TestGetShebang (and one modify_module guard) for the always-a-shebang contract

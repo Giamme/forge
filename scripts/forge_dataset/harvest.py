@@ -120,6 +120,14 @@ def as_int(value) -> int | None:
         return None
 
 
+def as_text(value) -> str | None:
+    """A non-empty string, or None. A missing tier field and a JSON null both land here."""
+    if isinstance(value, str):
+        value = value.strip()
+        return value or None
+    return None
+
+
 def signature(path: Path) -> list | None:
     try:
         st = path.stat()
@@ -414,6 +422,10 @@ def dispatch_event(attempt: Path, root: Path, role: str, harness: str, rc, prov:
         # gets its own role: nothing that reads qa dispatches mistakes it for the one that decided.
         role='qa_shadow' if shadow and role == 'qa' else role, alias=resolved.get('alias'), harness=harness, model=resolved.get('model'),
         effort=None if not effort or effort.startswith('<') else effort,
+        # metrics.json is the record finish() wrote. A run from before that record falls
+        # back to the resolved line, which exists only when a tier was asked.
+        service_tier=as_text(metrics.get('service_tier')) or as_text(resolved.get('service_tier')),
+        speed=as_text(metrics.get('speed')), speed_reason=as_text(metrics.get('speed_reason')),
         yolo=resolved.get('yolo') == 'ON', passthrough=resolved.get('passthrough') == 'yes',
         clamped=resolved.get('clamped'), timeout=as_int(resolved.get('timeout')),
         timeout_source=resolved.get('timeout_source'), delivery=delivery,
@@ -710,6 +722,18 @@ def plan_event(plan: Path, prov: dict, src: str = 'live', inventory: bool = True
     plan_gates = read_json(plan / 'plan-gates.json')
     if plan_gates is not None:
         later['plan_gates'] = plan_gates
+    # Same rule as plan_gates: hashed only when the file is there, so a plan from before
+    # these records keeps its id. plan-gate.json is the planner's one-task-or-plan record
+    # (plan-gates.json, plural, is the decision-model gates).
+    plan_shape = read_json(plan / 'plan-shape.json')
+    collapsed_record = read_json(plan / 'collapsed.json')
+    plan_gate = read_json(plan / 'plan-gate.json')
+    if plan_shape is not None:
+        later['plan_shape'] = plan_shape
+    if collapsed_record is not None:
+        later['collapsed'] = collapsed_record
+    if plan_gate is not None:
+        later['plan_gate'] = plan_gate
     inputs = json.dumps([text(plan / 'goal.txt'), text(plan / 'tasks.tsv'), text(declared_path),
                          {t: [r['prompt'], r['approach']] for t, r in per_task.items()}] + ([later] if later else []),
                         sort_keys=True, default=str)
@@ -739,6 +763,26 @@ def plan_event(plan: Path, prov: dict, src: str = 'live', inventory: bool = True
     )
     if plan_gates is not None:
         data['plan_gates'] = plan_gates
+    if plan_shape is not None:
+        # shape, widest and the count of waves come from plan-shape.json. The count is
+        # `wave_count`: `waves` stays the task→wave map on every plan, one type across the store.
+        if 'shape' in plan_shape:
+            data['shape'] = plan_shape['shape']
+        if 'widest' in plan_shape:
+            data['widest'] = plan_shape['widest']
+        if 'waves' in plan_shape:
+            data['wave_count'] = plan_shape['waves']
+    if collapsed_record is not None:
+        data['collapsed'] = True
+        origin = collapsed_record.get('from')
+        if isinstance(origin, list):
+            data['collapsed_from'] = origin
+    if plan_gate is not None:
+        data['plan_gate'] = plan_gate
+    # Who started the plan: `auto` for forge-parallel.sh auto. Absent for a plan built by hand.
+    orchestrator = first_line(plan / 'orchestrator')
+    if orchestrator:
+        data['orchestrator'] = orchestrator
     return dict(rid='plan:%s:%s' % (prov.get('run'), sha256(inputs.encode())[:16]), kind='plan',
                 ts=time.time(), src=src, run=prov.get('run'), run_id=prov.get('run_id'), mode='parallel',
                 inv=prov.get('inv'), data=data)

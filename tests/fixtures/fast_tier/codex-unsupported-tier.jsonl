@@ -1,0 +1,5 @@
+{"type":"thread.started","thread_id":"01a18d99-6b8c-7401-969c-6a7096954010"}
+{"type":"item.completed","item":{"id":"item_0","type":"error","message":"Configured service tier `bogus` is not advertised as supported for model `gpt-6-luna` and will be omitted from requests."}}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"ok"}}
+{"type":"turn.completed","usage":{"input_tokens":18190,"cached_input_tokens":11520,"cache_write_input_tokens":0,"output_tokens":5,"reasoning_output_tokens":0}}

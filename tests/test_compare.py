@@ -95,6 +95,20 @@ class CompareTests(unittest.TestCase):
         self.assertIn('--max-parallel 3', r.stdout)
         self.assertIn('reviewer sol', r.stdout)
 
+    def test_rerun_of_a_plan_that_froze_no_profile_does_not_take_the_default(self):
+        p = self.first_run()
+        (p / 'qa_threshold').write_text('P3\n')
+        config = self.root / 'cfg'
+        (config / 'forge').mkdir(parents=True)
+        (config / 'forge' / 'decide.json').write_text(json.dumps({'version': 1, 'default_profile': 'd', 'profiles': {
+            'd': {'policy': {'qa_threshold': 'P0', 'fast': ['dwarf']}}}}))
+        r = self.rerun(p, env={'XDG_CONFIG_HOME': str(config)})
+        self.assertEqual(r.returncode, 0, r.stdout)
+        n = self.new_plan(p)
+        self.assertFalse((n / 'profile.json').exists())
+        self.assertEqual((n / 'qa_threshold').read_text().strip(), 'P3')
+        self.assertFalse((n / 'fast').exists())
+
     def test_starting_needs_both_run_and_yes_and_creates_nothing_otherwise(self):
         p = self.first_run()
         before = self.branches()

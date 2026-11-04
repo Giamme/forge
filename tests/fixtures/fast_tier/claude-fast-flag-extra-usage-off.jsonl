@@ -1,0 +1,2 @@
+{"type": "system", "subtype": "init", "session_id": "s-1", "model": "claude-opus-5-5", "fast_mode_state": "off", "fast_mode_disabled_reason": "extra_usage_disabled"}
+{"type": "result", "subtype": "success", "is_error": false, "result": "ok", "session_id": "s-1", "fast_mode_state": "off", "fast_mode_disabled_reason": "extra_usage_disabled", "usage": {"input_tokens": 2, "cache_read_input_tokens": 11173, "cache_creation_input_tokens": 15687, "output_tokens": 4, "service_tier": "standard", "speed": "standard"}}

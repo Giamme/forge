@@ -1,0 +1,4 @@
+# id	deps	difficulty	files	dwarf	qa	title
+metrics-config	-	medium	internal/config,config/flipt.schema.cue,config/flipt.schema.json,config/default.yml	sonnet:medium:claude	sonnet:high:claude	Add typed `metrics` configuration section (enabled/exporter/otlp) with prometheus default
+otlp-metric-exporter	-	high	internal/metrics/otlp,go.mod,go.sum	opus:high:claude	opus:high:claude	In-repo OTLP metrics exporter (gRPC + HTTP/protobuf) implementing sdkmetric.Exporter
+metrics-get-exporter	metrics-config,otlp-metric-exporter	medium	internal/metrics/metrics.go,internal/metrics/metrics_test.go,internal/cmd/grpc.go	sonnet:medium:claude	sonnet:high:claude	GetExporter with metricExpOnce, remove eager Prometheus init, wire meter provider in gRPC server

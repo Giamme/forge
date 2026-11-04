@@ -20,6 +20,13 @@
 #                 [--approach <file>] [--yolo-dwarf] [--yolo-qa]
 #                 [--native-review] [--no-memory] [--timeout <s>] [--dry-run] [--ui]
 #                 [--fail-first] [--qa-threshold P0|P1|P2|P3|none]
+#                 [--fast ROLES]   dwarf, qa or none (planner, review and all are refused);
+#                                  kept in <run-dir>/fast. none removes it; omitting it keeps it
+#                 [--profile NAME | --no-profile]   a named profile (forge config profile list) picks
+#                                  the dwarf and qa (its medium pool, else its any pool), the QA
+#                                  threshold, the timeout and the fast roles that no flag gives;
+#                                  frozen in <run-dir>/profile.json, which later runs of the dir keep.
+#                                  With neither flag, that copy, else the default profile, applies
 #
 # Reads  <run-dir>/prompt.md   the implementation instruction (required)
 #        <run-dir>/goal.txt    one line, what the user asked for (optional)
@@ -29,6 +36,7 @@
 #        <run-dir>/verdict      PASS | FAIL | UNKNOWN, when qa emitted one (after the severity gate)
 #        <run-dir>/qa.gate, known_issues.md   the gate's decision and the tolerated findings
 #        <run-dir>/qa_threshold  with --qa-threshold: the blocking level (default P2)
+#        <run-dir>/profile.json  with a profile: the frozen copy of it
 #        <run-dir>/failfirst.json  with --fail-first: do the change's tests fail without it?
 #        <run-dir>/status       RUNNING, then this invocation's outcome
 #        <run-dir>/dwarf.spec, qa.spec and attempts.tsv
@@ -95,7 +103,7 @@ forge_metric_on_exit() {
 }
 
 if [ "${1:-}" = --help ] || [ "${1:-}" = -h ]; then
-  sed -n '18,39s/^# *//p' "$0"
+  sed -n '18,47s/^# *//p' "$0"
   forge_fractal_help
   echo 'Explicit Fractal retry: repeat the original command with --retry.'
   exit 0
@@ -104,8 +112,12 @@ RUN="${1:-}"; [ -n "$RUN" ] || die "usage: forge-solo.sh <run-dir> --repo <dir> 
 case "$RUN" in -*) die "first argument must be the run directory, got '$RUN'" ;; esac
 shift
 
+# --- profiles (#48): the same reading, freezing and exporting as forge-parallel.sh's plan ---
+forge_profile_py() { PYTHONPATH="$SKILL_DIR/scripts${PYTHONPATH:+:$PYTHONPATH}" python3 -m forge_decide.profiles "$@"; }
+
 OUTPUT=summary
 REPO="$PWD"; DWARF=""; QA="opus"; APPROACH=""; YD=""; YQ=""; NATIVE=""; TIMEOUT=""; DRY=0; FAIL_FIRST=0; QA_THR=
+FAST_GIVEN=0; FAST_PARSED=""; QA_GIVEN=0; PF_NAME=""; PF_NONE=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --fractal) forge_fractal_flag on || exit $?; shift ;;
@@ -116,7 +128,9 @@ while [ $# -gt 0 ]; do
     --output) OUTPUT="${2:?}"; shift 2 ;;
     --repo)       REPO="${2:?--repo needs a value}"; shift 2 ;;
     --dwarf)      DWARF="${2:?--dwarf needs a spec}"; shift 2 ;;
-    --qa)         QA="${2:?--qa needs a spec}"; shift 2 ;;
+    --qa)         QA="${2:?--qa needs a spec}"; QA_GIVEN=1; shift 2 ;;
+    --profile)    PF_NAME="${2:?--profile needs a profile name}"; shift 2 ;;
+    --no-profile) PF_NONE=1; shift ;;
     --approach)   APPROACH="${2:?--approach needs a file}"; shift 2 ;;
     --yolo-dwarf) YD="--yolo"; shift ;;
     --yolo-qa)    YQ="--yolo"; shift ;;
@@ -126,6 +140,11 @@ while [ $# -gt 0 ]; do
     --timeout)    TIMEOUT="${2:?--timeout needs seconds}"; shift 2 ;;
     --dry-run)    DRY=1; shift ;;
     --fail-first) FAIL_FIRST=1; shift ;;
+    --fast)
+      [ -n "${2:-}" ] || die "--fast needs a comma list of roles (dwarf, qa, planner, review), all or none"
+      forge_fast_parse "$2" solo
+      FAST_GIVEN=1
+      shift 2 ;;
     --qa-threshold)
       QA_THR="$(printf '%s' "${2:?--qa-threshold needs P0, P1, P2, P3 or none}" | tr 'a-z' 'A-Z')"
       case "$QA_THR" in P0|P1|P2|P3) ;; NONE) QA_THR=none ;; *) die "--qa-threshold must be P0, P1, P2, P3 or none, got '$2'" 2 ;; esac
@@ -149,6 +168,48 @@ done
 
 case "$OUTPUT" in summary|full) ;; *) die "--output must be summary or full" ;; esac
 
+# A profile (#48) stands in for the flags that were not given. Read and checked here, before the
+# model is asked for and before anything is written: an unknown or invalid profile stops the run.
+[ -z "$PF_NAME" ] || [ "$PF_NONE" = 0 ] || die "--profile and --no-profile are mutually exclusive"
+pf_args=()
+[ -z "$PF_NAME" ] || pf_args+=(--profile "$PF_NAME")
+[ "$PF_NONE" = 0 ] || pf_args+=(--no-profile)
+[ -z "$DWARF" ] || pf_args+=(--given dwarf)
+[ "$QA_GIVEN" != 1 ] || pf_args+=(--given qa)
+[ -z "$QA_THR" ] || pf_args+=(--given qa_threshold)
+[ -z "$TIMEOUT" ] || pf_args+=(--given timeout)
+[ "$FAST_GIVEN" != 1 ] || pf_args+=(--given fast)
+pf_auto=0; pf_planner=0
+for pf_arg in ${FRACTAL_ARGS[@]+"${FRACTAL_ARGS[@]}"}; do
+  case "$pf_arg" in
+    --dwarf-low|--dwarf-medium|--dwarf-high) pf_args+=(--given "${pf_arg#--}") ;;
+    --fractal-auto-decompose) pf_auto=1 ;;
+    --fractal-planner) pf_planner=1; pf_args+=(--given fractal-planner) ;;
+  esac
+done
+PF_LINE=""
+pf_out="$(forge_profile_py solo "$RUN" --repo "$REPO" ${pf_args[@]+"${pf_args[@]}"})" || exit $?
+while IFS="$(printf '\t')" read -r pf_key pf_val; do
+  case "$pf_key" in
+    dwarf) DWARF="$pf_val" ;;
+    qa) QA="$pf_val" ;;
+    qa_threshold) QA_THR="$pf_val" ;;
+    timeout) TIMEOUT="$pf_val" ;;
+    fast) forge_fast_parse "$pf_val" solo; FAST_GIVEN=1 ;;
+    # Fractal's tier pools and planner count only where Fractal is selected (and the planner
+    # only with automatic decomposition, which --fractal-planner needs).
+    pool.low) [ "$FRACTAL_CHOICE" != on ] || FRACTAL_ARGS+=(--dwarf-low "$pf_val") ;;
+    pool.medium) [ "$FRACTAL_CHOICE" != on ] || FRACTAL_ARGS+=(--dwarf-medium "$pf_val") ;;
+    pool.high) [ "$FRACTAL_CHOICE" != on ] || FRACTAL_ARGS+=(--dwarf-high "$pf_val") ;;
+    fractal_planner) [ "$FRACTAL_CHOICE$pf_auto$pf_planner" != on10 ] || FRACTAL_ARGS+=(--fractal-planner "$pf_val") ;;
+    line) PF_LINE="$pf_val" ;;
+    # The gates and budget of the copy this run uses, for it and everything it starts.
+    decide) [ -z "$pf_val" ] || export FORGE_DECIDE_PROFILE_JSON="$pf_val" ;;
+  esac
+done <<EOF
+$pf_out
+EOF
+
 # Forge never picks the model: every dispatch spends the user's quota, and choosing
 # for them is not the tool's call.
 [ -n "$DWARF" ] || die "--dwarf is required"
@@ -165,6 +226,13 @@ case "$(cd "$RUN" && pwd)/" in
 esac
 
 RUN="$(cd "$RUN" && pwd)"
+# The frozen copy, atomically. Only the process that holds the run's lock writes it (a refused
+# second start, or a dry run, must not change what an active run froze): the first pass above
+# only read and checked, and the re-exec under the lock chooses again from the same arguments.
+if [ "$DRY" != 1 ] && [ "${FORGE_SOLO_LOCK:-}" = "$RUN" ]; then
+  forge_profile_py solo "$RUN" --repo "$REPO" --no-validate --write ${pf_args[@]+"${pf_args[@]}"} >/dev/null || exit $?
+fi
+[ -z "$PF_LINE" ] || [ -n "${FORGE_SOLO_LOCK:-}" ] || echo "$PF_LINE"
 # Freeze the selection now that the run dir is real and absolute. A retry of this
 # same run dir restores it rather than re-reading whatever flags are passed then.
 [ "$JEV_OPTS" = 1 ] && { forge_jev_restore "$RUN" || true; forge_jev_record "$RUN"; }
@@ -174,6 +242,8 @@ REPO="$(cd "$REPO" && pwd)"
 if [ "$DRY" != 1 ] && [ "${FORGE_SOLO_LOCK:-}" != "$RUN" ]; then
   exec python3 "$SKILL_DIR/scripts/forge-fractal.py" _lock "$RUN" "$0" "${ORIGINAL_ARGS[@]}"
 fi
+# After the lock re-exec, so the process that dispatches is the one that writes it.
+forge_fast_store "$RUN"
 RUN_ID="$(basename "$RUN")"
 export FORGE_CAPABILITY_CACHE="$RUN/capabilities"
 TFLAG=""; [ -n "$TIMEOUT" ] && TFLAG="--timeout $TIMEOUT"
@@ -183,6 +253,10 @@ FFLAGS=()
 [ -z "$YD" ] || FFLAGS+=(--yolo-dwarf)
 [ -z "$YQ" ] || FFLAGS+=(--yolo-qa)
 forge_fractal_select "$RUN" "$REPO" solo "$DRY" --dwarf "$DWARF" --qa "$QA" ${FFLAGS[@]+"${FFLAGS[@]}"} || exit $?
+forge_fast_fractal_note "$RUN"
+# Computed after Fractal selects, so a Fractal dispatch is not asked for the tier.
+ft_dwarf="$(forge_fast_tier "$RUN" dwarf)"
+ft_qa="$(forge_fast_tier "$RUN" qa)"
 if [ -n "${FORGE_FRACTAL_RUN:-}" ]; then
   # The UI choice is per invocation: a tmux resume replays these args and must not open it again.
   REMEMBER_ARGS=()
@@ -235,7 +309,7 @@ if [ "$DRY" = 1 ]; then
   echo "--- dry run ---"
   [ "$FORGE_UI_WANTED" != 1 ] || note "--ui ignored: a dry run starts no UI"
   /bin/bash "$DISPATCH" dwarf "$DWARF" --repo "$REPO" --run-dir "$RUN" \
-    --ripwire-query-file "$RUN/prompt.md" --prompt-file "$RUN/dwarf.input" $YD $TFLAG --dry-run
+    --ripwire-query-file "$RUN/prompt.md" --prompt-file "$RUN/dwarf.input" $YD $TFLAG $ft_dwarf --dry-run
   echo
   echo "qa would be: $QA $NATIVE $YQ"
   echo "dwarf prompt: $RUN/dwarf.input ($(wc -l < "$RUN/dwarf.input" | tr -d ' ') lines)"
@@ -243,8 +317,8 @@ if [ "$DRY" = 1 ]; then
 fi
 
 forge_metric_phase preflight
-/bin/bash "$DISPATCH" doctor --spec "$DWARF" --role dwarf $YD $TFLAG || exit $?
-/bin/bash "$DISPATCH" doctor --spec "$QA" --role qa $YQ $NATIVE $TFLAG || exit $?
+/bin/bash "$DISPATCH" doctor --spec "$DWARF" --role dwarf $YD $TFLAG $ft_dwarf || exit $?
+/bin/bash "$DISPATCH" doctor --spec "$QA" --role qa $YQ $NATIVE $TFLAG $ft_qa || exit $?
 /bin/bash "$SKILL_DIR/scripts/forge-install-ripwire.sh" || true
 # After the _lock re-exec and the Fractal checkpoint exit, so it runs once per run.
 forge_ui_launch "$RUN"
@@ -260,7 +334,7 @@ forge_metric_phase dispatch
 note "dwarf $DWARF in $REPO"
 guard_before_dwarf "$REPO" "$RUN"
 /bin/bash "$DISPATCH" dwarf "$DWARF" --repo "$REPO" --run-dir "$RUN" \
-  --ripwire-query-file "$RUN/prompt.md" --prompt-file "$RUN/dwarf.input" $YD $TFLAG --output "$OUTPUT"
+  --ripwire-query-file "$RUN/prompt.md" --prompt-file "$RUN/dwarf.input" $YD $TFLAG $ft_dwarf --output "$OUTPUT"
 rc=$?
 dur_dwarf="$(sed -n 's/^duration_s=//p' "$RUN/dwarf.resolved" 2>/dev/null | tail -1)"
 /bin/bash "$MEMORY" record "$REPO" --last "$RUN/dwarf.last" --role dwarf \
@@ -326,7 +400,7 @@ fi
 forge_metric_phase dispatch
 note "qa $QA on $(wc -l < "$RUN/changes.diff" | tr -d ' ') diff lines"
 /bin/bash "$DISPATCH" qa "$QA" --repo "$REVIEW" --review-base "$(cat "$RUN/review.base")" --run-dir "$RUN" \
-  --ripwire-query-file "$RUN/prompt.md" --prompt-file "$RUN/qa.input" $YQ $NATIVE $TFLAG --output "$OUTPUT"
+  --ripwire-query-file "$RUN/prompt.md" --prompt-file "$RUN/qa.input" $YQ $NATIVE $TFLAG $ft_qa --output "$OUTPUT"
 rc=$?
 forge_metric_phase verification
 verdict="$(forge_verdict "$RUN/qa.last")"

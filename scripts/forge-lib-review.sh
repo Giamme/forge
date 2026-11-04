@@ -359,7 +359,7 @@ PY
 #   it is called from inside do_integrate.
 final_review() {
   local plan="$1" base="$2" tip="$3" src="$4" out="$5" spec="$6" yolo="${7:-}"
-  local review n rc verdict thr gate_line gate_forced source_fp review_fp vdir tflag="" inline=1 diff_n
+  local review n rc verdict thr gate_line gate_forced source_fp review_fp vdir tflag="" inline=1 diff_n ft
   local plan_real prev="" prev_rel=none prev_tip="" since=none integration="" prev_note=""
   [ -n "$yolo" ] && yolo=--yolo
   [ -n "$spec" ] || { note "final review: no QA spec given"; return 3; }
@@ -378,8 +378,10 @@ final_review() {
   fi
 
   # Offline, and before anything is built or paid for: a spec that cannot resolve fails here.
+  # The fast-file role is review; dispatch's own role stays qa (a review is a read-only pass).
+  ft="$(forge_fast_tier "$plan" review)"
   FORGE_CAPABILITY_CACHE="${FORGE_CAPABILITY_CACHE:-$plan/capabilities}" \
-    /bin/bash "$DISPATCH" doctor --spec "$spec" --role qa $yolo > "$out/doctor.out" 2>&1
+    /bin/bash "$DISPATCH" doctor --spec "$spec" --role qa $yolo $ft > "$out/doctor.out" 2>&1
   rc=$?
   if [ "$rc" -ne 0 ]; then
     cat "$out/doctor.out" >&2
@@ -497,7 +499,7 @@ final_review() {
   fi
   local qa_cmd=(/bin/bash "$DISPATCH" qa "$spec" --repo "$review" --run-dir "$out"
       --review-base "$(cat "$out/review.base")" --ripwire-query-file "$out/context.md"
-      --prompt-file "$out/qa.input" ${yolo:+"$yolo"} $tflag --output "${FORGE_OUTPUT:-summary}")
+      --prompt-file "$out/qa.input" ${yolo:+"$yolo"} $ft $tflag --output "${FORGE_OUTPUT:-summary}")
   FORGE_CAPABILITY_CACHE="${FORGE_CAPABILITY_CACHE:-$plan/capabilities}" \
     "${qa_cmd[@]}" ${rs_cont[@]+"${rs_cont[@]}"} > "$out/qa.out" 2>&1
   rc=$?

@@ -267,5 +267,29 @@
     return { state: 'rate', p: row.rate, lo: ci[0], hi: ci[1], ...base };
   }
 
-  return { DIFFS, KINDS, SEVERITIES, DEFAULT_MIN_N, wilson, emptyFilter, normFilter, taskMatch, options, leaderboard, heldUp };
+  // The median model time as the recommendation's source writes times ("1.9 min"): minutes, one decimal.
+  function minutesText(s) {
+    s = num(s);
+    if (s === null) return '—';
+    const tenths = Math.round(Math.max(0, s) / 6);
+    const whole = Math.floor(tenths / 10), frac = tenths % 10;
+    return (frac ? whole + '.' + frac : String(whole)) + ' min';
+  }
+
+  // The line under a "By difficulty" tier. Null when `recommended` is absent or names no dwarf for `tier`
+  // (the page then shows nothing). `rows` are that tier's implementer rows: the alias's own median when
+  // it was measured there, otherwise the line says it has not run on the tier.
+  function recommendedLine(recommended, tier, rows) {
+    const rec = obj(recommended), dwarf = rec && obj(rec.dwarf);
+    const spec = dwarf && typeof dwarf[tier] === 'string' ? dwarf[tier] : '';
+    if (!spec) return null;
+    const profile = typeof rec.profile === 'string' ? rec.profile : '';
+    const source = typeof rec.source === 'string' ? rec.source : '';
+    const alias = spec.split(':')[0];
+    const row = alias ? list(rows).find(r => obj(r) && r.alias === alias) : null;
+    const tail = row ? 'your median model time ' + minutesText(row.medianModelS) : 'not run on this tier yet';
+    return `Recommended: ${spec} (built-in profile "${profile}", ${source}) · ${tail}`;
+  }
+
+  return { DIFFS, KINDS, SEVERITIES, DEFAULT_MIN_N, wilson, emptyFilter, normFilter, taskMatch, options, leaderboard, heldUp, recommendedLine };
 });

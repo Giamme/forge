@@ -306,12 +306,28 @@ window.ForgePanel = (() => {
     parent.append(bar, legend);
   }
   const tokens = t => t ? `${display(t.input)} in (${display(t.cached)} cached) · ${display(t.output)} out` : '—';
+  // A tier row exists only when one was asked. A logged speed that is not that tier sits beside it, with the reason.
+  function tierText(m) {
+    const asked = m && m.service_tier;
+    if (!asked) return undefined;
+    const speed = m.speed;
+    if (!speed || speed === asked) return String(asked);
+    return m.speed_reason ? `${asked} asked · ran ${speed} (${m.speed_reason})` : `${asked} asked · ran ${speed}`;
+  }
   function modelFields(m) {
     if (!m) return [['Model', '—']];
-    return [['Spec', m.spec ? plate(m.spec) : undefined], ['Harness', m.harness, true], ['Model', m.model, true], ['Effort', m.effort], m.clamped ? ['Clamped', m.clamped] : ['Clamped', undefined]];
+    return [['Spec', m.spec ? plate(m.spec) : undefined], ['Harness', m.harness, true], ['Model', m.model, true], ['Effort', m.effort],
+      ['Tier', tierText(m)], m.clamped ? ['Clamped', m.clamped] : ['Clamped', undefined]];
   }
 
   /* ---------- views ---------- */
+  // `NAME (level)`, plus the frozen flags when settings.profile lists them. No row when the run froze no profile.
+  function profileLine(settings) {
+    const profile = settings && settings.profile;
+    if (!profile || typeof profile !== 'object') return undefined;
+    const line = window.ForgeSettings && window.ForgeSettings.profileRowText && window.ForgeSettings.profileRowText(profile);
+    return line || undefined;
+  }
   // the run's record: what it was asked, how it was set up, and what verification printed (the header names and counts it)
   function runRecord(host, ctx) {
     const run = ctx.run, solo = run.kind === 'solo';
@@ -320,7 +336,8 @@ window.ForgePanel = (() => {
       ['Decompose', run.decompose_level], ['Updated', time(run.updated)], ['Explore', run.settings && run.settings.explore], ['Shadow rate', run.settings && run.settings.shadow_rate],
       ['Shadow reviewers', run.settings && plates(list(run.settings.shadow_qa))], ['QA threshold', run.settings && run.settings.qa_threshold && run.settings.qa_threshold + (run.settings.qa_threshold_source === 'default' ? ' (default)' : '')],
       ['Max parallel', run.settings && run.settings.max_parallel], ['Final reviewer', run.settings && run.settings.final_qa ? plate(run.settings.final_qa) : undefined],
-      ['Timeout (seconds)', run.settings && run.settings.timeout], ['Verification', chip((run.verification && run.verification.status) || run.verification_status)],
+      ['Timeout (seconds)', run.settings && run.settings.timeout], ['Profile', profileLine(run.settings)],
+      ['Verification', chip((run.verification && run.verification.status) || run.verification_status)],
       ['Command', run.verification && run.verification.command, true]]);
     details(host, 'Request', display(run.request), 'run-request');
     if (!solo) details(host, 'Waves', list(run.waves).map((ids, i) => `${i + 1}: ${list(ids).join(', ')}`).join('\n') || '—', 'waves');

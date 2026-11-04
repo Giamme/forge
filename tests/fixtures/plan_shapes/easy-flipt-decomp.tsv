@@ -1,0 +1,3 @@
+# id	deps	difficulty	files	dwarf	qa	title
+ext-rule-segment-embed	-	high	internal/ext,internal/storage/fs,build/internal/cmd/generate/main.go	sonnet:xhigh:claude	opus:high:claude	Dual string/object `segment` field on ext.Rule, wired through importer, exporter and fs snapshot
+sql-single-segment-or-operator	-	medium	internal/storage/sql/common/rule.go,internal/storage/sql/common/rollout.go,internal/storage/sql/rule_test.go,internal/storage/sql/rollout_test.go	sonnet:medium:claude	opus:high:claude	SQL store: force OR_SEGMENT_OPERATOR when a rule or rollout has exactly one segment

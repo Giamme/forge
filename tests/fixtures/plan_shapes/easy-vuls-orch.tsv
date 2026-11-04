@@ -1,0 +1,3 @@
+# id	deps	difficulty	files	dwarf	qa	title
+pkginfo	-	low	scan/freebsd.go,scan/freebsd_test.go	haiku:xhigh	opus:high	Add bsd.parsePkgInfo and switch scanInstalledPackages to `pkg info`
+updatable	-	low	models/scanresults.go,models/scanresults_test.go	haiku:xhigh	opus:high	isDisplayUpdatableNum returns false for FreeBSD
