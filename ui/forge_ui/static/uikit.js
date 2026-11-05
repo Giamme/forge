@@ -6,6 +6,8 @@
      get(path) / post(path, body)          Promise<{ok, status, data, error, detail, result}>; post sends the token and never retries
      outcome(host, res, okText)            an inline result line (a lamp and a sentence) in an aria-live region
      confirmInline(host, text, {danger})   Promise<bool>: an inline Confirm / Cancel strip, Escape cancels
+     guard(region, draw)                   draw now, or, while the user is using the region, hold the latest draw (#115)
+     keepOpen(region, draw)                draw, with each details[data-keep] as open as it was
    The write API is described in ui/docs/api.md, "Controls (write endpoints)". All API values enter the DOM as text. */
 (function (root, factory) {
   'use strict';
@@ -154,7 +156,92 @@
       });
     }
 
-    return { el, token, controlsEnabled, get, post, outcome, confirmInline, requestInit, mapResponse, outcomeText };
+    /* A live refresh never cancels what the user is doing (#115). Replacing a node cancels a press on it, a selection in
+       it and an open native list, so a redraw waits while a pointer is down in the region, a selection touches it or a
+       <select> in it has focus, and the latest one runs when that ends. What the user just did draws at once: a click
+       on a task, or a change of the filter that has the focus, is the thing they asked for. A selection left in place would
+       hold a region for ever, so a held redraw that lasts says so and offers to run. */
+    const doc = env && env.document;
+    const HOLD_NOTE_MS = 5000;
+    const held = new Map();     // region -> its latest draw
+    let pressed = null, userTurn = 0, note = null, noteTimer = null;
+
+    function selectionTouches(region) {
+      const s = env.getSelection && env.getSelection();
+      if (!s || s.isCollapsed || !s.rangeCount) return false;
+      try { return s.getRangeAt(0).intersectsNode(region); } catch (_) { return false; }
+    }
+    function inUse(region) {
+      if (!doc) return false;
+      if (pressed && region.contains(pressed)) return true;
+      const active = doc.activeElement;
+      if (active && active.tagName === 'SELECT' && region.contains(active)) return true;
+      return selectionTouches(region);
+    }
+    function syncNote() {
+      if (!doc) return;
+      if (!held.size) {
+        clearTimeout(noteTimer); noteTimer = null;
+        if (note) note.hidden = true;
+        return;
+      }
+      if (noteTimer || (note && !note.hidden)) return;
+      noteTimer = setTimeout(() => {
+        noteTimer = null;
+        if (!held.size) return;
+        if (!note) {
+          note = el('div', undefined, 'live-held'); note.id = 'live-held'; note.setAttribute('role', 'status');
+          const go = el('button', 'Show it'); go.type = 'button';
+          go.addEventListener('click', () => {
+            const s = env.getSelection && env.getSelection();
+            if (s) s.removeAllRanges();
+            if (doc.activeElement && doc.activeElement.tagName === 'SELECT') doc.activeElement.blur();
+            flushHeld();
+          });
+          note.append(el('span', 'Newer data is waiting while you use this.'), go);
+          doc.body.append(note);
+        }
+        note.hidden = false;
+      }, HOLD_NOTE_MS);
+    }
+    function flushHeld() {
+      for (const [region, draw] of [...held]) {
+        if (!region.isConnected) held.delete(region);
+        else if (!inUse(region)) { held.delete(region); draw(); }
+      }
+      syncNote();
+    }
+    function guard(region, draw) {
+      if (userTurn || !inUse(region)) {
+        held.delete(region);
+        draw();
+        syncNote();
+        return true;
+      }
+      held.set(region, draw);
+      syncNote();
+      return false;
+    }
+    function keepOpen(region, draw) {
+      const open = new Map(Array.from(region.querySelectorAll('details[data-keep]'), n => [n.dataset.keep, n.open]));
+      draw();
+      for (const node of region.querySelectorAll('details[data-keep]')) if (open.has(node.dataset.keep)) node.open = open.get(node.dataset.keep);
+    }
+    if (doc && env.addEventListener) {
+      // The click follows the release in the same task, so the redraw waits for the next one.
+      const released = () => { pressed = null; setTimeout(flushHeld, 0); };
+      env.addEventListener('pointerdown', e => { pressed = e.target; }, true);
+      env.addEventListener('pointerup', released, true);
+      env.addEventListener('pointercancel', released, true);
+      env.addEventListener('blur', released);
+      doc.addEventListener('selectionchange', () => { if (held.size) flushHeld(); });
+      doc.addEventListener('focusout', () => { if (held.size) setTimeout(flushHeld, 0); });
+      for (const type of ['click', 'change', 'input', 'keydown', 'submit', 'hashchange', 'popstate']) {
+        env.addEventListener(type, () => { userTurn += 1; setTimeout(() => { userTurn -= 1; }, 0); }, true);
+      }
+    }
+
+    return { el, token, controlsEnabled, get, post, outcome, confirmInline, requestInit, mapResponse, outcomeText, guard, keepOpen };
   }
 
   return { create, requestInit, mapResponse, outcomeText, TOKEN_HEADER };

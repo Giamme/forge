@@ -334,6 +334,31 @@ class Page(unittest.TestCase):
         page.wait_for_function(f"{kinds} === 'reasoning,command,edit,message'", timeout=10000)
         self.assertClean(page)
 
+    def test_a_disclosure_opened_in_the_diff_stays_open_when_new_data_redraws_the_view(self):
+        polls = [0]
+
+        def changed(route):
+            response = route.fetch()
+            body = response.json()
+            polls[0] += 1
+            body['updated'] = (body.get('updated') or 0) + polls[0]            # the diff is read again on a new revision
+            route.fulfill(response=response, json=body)
+
+        def warned(route):
+            response = route.fetch()
+            route.fulfill(response=response, json=dict(response.json(), warnings=['a reader warning']))
+
+        page = self.open(cdn=False)
+        page.route(f'**/api/runs/{self.key}', changed)
+        page.route(f'**/api/runs/{self.key}/tasks/reader/diff**', warned)
+        page.goto(self.url + f'#/runs/{self.key}/tasks/reader/diff')
+        page.wait_for_selector('#diff-view details.diff-warnings')
+        page.eval_on_selector('#diff-view details.diff-warnings', 'd => { d.open = true; }')
+        page.eval_on_selector('#diff-view .diff-top', 'n => { n.__mine = true; }')
+        page.wait_for_function("() => { const top = document.querySelector('#diff-view .diff-top'); return top && !top.__mine && document.querySelector('#diff-view details.diff-warnings'); }", timeout=20000)
+        self.assertTrue(page.eval_on_selector('#diff-view details.diff-warnings', 'd => d.open'))
+        self.assertClean(page)
+
     def test_an_adopted_range_is_listed_above_the_final_review(self):
         rows = self.plan / 'adoptions.tsv'
         self.addCleanup(rows.unlink)

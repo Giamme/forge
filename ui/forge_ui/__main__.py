@@ -38,7 +38,7 @@ def _parser():
     parser.add_argument('--read-only', action='store_true',
                         help='answer no write at all (also FORGE_UI_READONLY=1); the page shows no controls')
     parser.add_argument('--open', action='store_true', help='open the page in the browser once started')
-    parser.add_argument('--version', action='version', version=f'forge-ui {__version__}')
+    parser.add_argument('--version', action='version', version=f'forge-ui {__version__ or "unknown"}')
     return parser
 
 

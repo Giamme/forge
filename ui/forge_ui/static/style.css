@@ -242,6 +242,7 @@ label { cursor: pointer; }
 .brand { display: inline-flex; align-items: center; gap: 6px; text-decoration: none; color: var(--ink); margin-right: var(--s-2); }
 .brand-plate { font-family: var(--font-plate); font-weight: 700; font-size: 1.15rem; letter-spacing: .08em; text-transform: uppercase; padding: 3px 9px 1px; border-radius: 4px; background: var(--plate); color: var(--plate-ink); line-height: 1.2; }
 .brand-sub { font-family: var(--font-plate); font-weight: 700; letter-spacing: .1em; text-transform: uppercase; color: var(--muted); font-size: .857rem; }
+.brand-version { color: var(--muted); font-size: var(--t-xs); font-variant-numeric: tabular-nums; }
 .desk-nav { display: inline-flex; gap: 2px; padding: 2px; border: 1px solid var(--rule-2); border-radius: var(--r-key); background: var(--module-2); }
 .top-link { display: inline-flex; align-items: center; gap: 7px; min-height: 28px; padding: 0 10px; border-radius: var(--r-small); text-decoration: none; color: var(--ink-2);
   font-family: var(--font-plate); font-weight: 700; letter-spacing: .06em; text-transform: uppercase; font-size: .929rem; transition: background-color var(--relay), color var(--relay); }
@@ -1209,7 +1210,7 @@ dialog.export-dialog h2 { margin-bottom: var(--s-2); }
   html, body { height: auto; }
   body { overflow: auto; min-height: 100%; }
   .topbar { flex-wrap: wrap; gap: var(--s-2); padding: var(--s-2) var(--s-3); }
-  .brand-sub, .top-search kbd, .top-search-label span { display: none; }
+  .brand-sub, .brand-version, .top-search kbd, .top-search-label span { display: none; }
   .top-search { min-width: 0; margin-left: auto; }
   .desk-tools { width: 100%; flex-wrap: wrap; }
   .desk-tools .shell-switch { display: none; }
@@ -1465,3 +1466,7 @@ dialog.set-guide::backdrop { background: light-dark(rgb(17 22 19 / .35), rgb(0 0
 /* Commits adopted from outside a run */
 .adoptions { display: grid; gap: var(--s-2); margin: 0; padding: 0; list-style: none; font-size: var(--t-sm); }
 .adoptions p { margin: var(--s-1) 0 0; text-wrap: pretty; }
+
+/* A held redraw that has lasted (#115) */
+.live-held { position: fixed; right: var(--s-4); bottom: var(--s-4); z-index: 30; display: flex; align-items: center; gap: var(--s-2); padding: var(--s-2) var(--s-3); border: 1px solid var(--rule); border-radius: var(--r-key); background: var(--module); color: var(--ink); box-shadow: var(--ply-2); font-size: var(--t-sm); }
+.live-held[hidden] { display: none; }

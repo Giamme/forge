@@ -168,7 +168,8 @@ window.ForgeApp = (() => {
     return body;
   }
   // Restore disclosures, internal scroll and keyboard focus after changed data arrives.
-  function preserve(parent, build, { restore = true } = {}) {
+  function preserve(parent, build, options) { window.ForgeUI.guard(parent, () => preserveNow(parent, build, options)); }
+  function preserveNow(parent, build, { restore = true } = {}) {
     const open = new Map(Array.from(parent.querySelectorAll('details[data-keep]'), n => [n.dataset.keep, n.open]));
     const scroll = new Map(Array.from(parent.querySelectorAll('[data-scroll]'), n => [n.dataset.scroll, [n.scrollLeft, n.scrollTop]]));
     const active = parent.contains(document.activeElement) ? document.activeElement : null;
@@ -494,12 +495,12 @@ window.ForgeApp = (() => {
       host.replaceChildren(el('h1', 'Models', 'module-title'), el('p', state.modelsError ? `Could not load the model results (${state.modelsError}).` : 'Reading every run\'s attempts and reviews…', state.modelsError ? 'warn' : 'muted'));
       return;
     }
-    window.ForgeLeaderboard.render(host, state.modelsData, {
+    window.ForgeUI.guard(host, () => window.ForgeLeaderboard.render(host, state.modelsData, {
       runs: state.runs, prefs: state.modelsPrefs, now: () => Date.now() / 1000,
       savePrefs: p => { state.modelsPrefs = p; store.set('models', p); },
       tablePrefs: id => state.tablePrefs[id], saveTablePrefs: (id, p) => { state.tablePrefs = { ...state.tablePrefs, [id]: p }; store.set('tables', state.tablePrefs); },
       modelHref: alias => '#/cloud/models/' + encodeURIComponent(alias), reviewerOutcomes: state.reviewerOutcomes,
-    });
+    }));
   }
   // How each reviewer's PASSed work held up (forge dataset reviewers). Advisory and optional: read once per
   // change of the models data, and a failure (an export, no dataset) only leaves the column empty.
@@ -850,7 +851,7 @@ window.ForgeApp = (() => {
     const host = $('strip'); if (!host) return;
     const show = state.mode === 'exec' && run.kind !== 'solo';
     host.hidden = !show;
-    if (show) window.ForgeGantt.strip(host, run, { now: now(), replay: state.replay }); else host.replaceChildren();
+    window.ForgeUI.guard(host, () => { if (show) window.ForgeGantt.strip(host, run, { now: now(), replay: state.replay }); else host.replaceChildren(); });
   }
   // Files: which task touched which file, in the stage's place (the inspector stays beside it)
   function renderFiles(run) {
@@ -868,9 +869,10 @@ window.ForgeApp = (() => {
     const sig = JSON.stringify([c.at, state.sel]);
     if (host.filesSig === sig) return;                     // a poll that changed nothing here redraws nothing
     host.filesSig = sig;
-    window.ForgeFiles.render(host, c.data, { run, sel: state.sel, onSelectTask: id => select({ kind: 'task', id }),
+    const UI = window.ForgeUI;
+    UI.guard(host, () => UI.keepOpen(host, () => window.ForgeFiles.render(host, c.data, { run, sel: state.sel, onSelectTask: id => select({ kind: 'task', id }),
       diffHref: (task, path) => diffHash(run.key, { kind: 'task', task, source: 'current', file: path }),
-      prefs: state.filesPrefs, savePrefs: p => { state.filesPrefs = p; store.set('files', p); } });
+      prefs: state.filesPrefs, savePrefs: p => { state.filesPrefs = p; store.set('files', p); } })));
   }
   // every review's findings of the run, for the stage's marks: read again when the run changes
   function syncFindings(run) {
@@ -903,8 +905,9 @@ window.ForgeApp = (() => {
         fetchJSON: path => fetchJSON(path).then(r => r.data), rerender, diffHash: spec => diffHash(run.key, spec), closeHref: hashFor(run.key, state.sel) });
       return;
     }
-    window.ForgeDiff.render(host, { run, spec: state.diff, fetchJSON: path => fetchJSON(path).then(r => r.data), rerender,
-      href: spec => diffHash(run.key, spec), closeHref: hashFor(run.key, state.sel) });
+    const UI = window.ForgeUI;
+    UI.guard(host, () => UI.keepOpen(host, () => window.ForgeDiff.render(host, { run, spec: state.diff, fetchJSON: path => fetchJSON(path).then(r => r.data), rerender,
+      href: spec => diffHash(run.key, spec), closeHref: hashFor(run.key, state.sel) })));
   }
   function renderRunBody(run) {
     renderDiff(run);
@@ -1190,3 +1193,15 @@ window.ForgeApp = (() => {
 // window.ForgeUI is uikit.js's shared helpers; the page's own handles (state, refresh) join it, where the browser
 // tests and ui/tools/readme_media.py read them.
 window.ForgeUI = Object.assign(window.ForgeUI || {}, window.ForgeApp);
+// #113: the version of the server answering, beside the logo. An export has no server, so no label; nor when it is unknown.
+(function brandVersion() {
+  const label = document.getElementById('brand-version');
+  if (!label || !window.ForgeUI.get || document.getElementById('forge-snapshot')) return;
+  window.ForgeUI.get('/api/health').then(res => {
+    const version = res.ok && typeof res.data.version === 'string' ? res.data.version : '';
+    if (!version) return;
+    label.textContent = 'v' + version;
+    label.title = typeof res.data.build === 'string' ? 'forge ' + version + ', build ' + res.data.build.slice(0, 12) : 'forge ' + version;
+    label.hidden = false;
+  });
+})();

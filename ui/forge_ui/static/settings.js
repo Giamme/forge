@@ -785,7 +785,8 @@
       return () => { if (gen !== s.gen) return; s.hold--; if (!s.hold && s.redraw) { s.redraw = false; drawBody(); } };
     }
 
-    function drawBody() {
+    function drawBody() { UI.guard(body, drawBodyNow); }
+    function drawBodyNow() {
       const focus = document.activeElement && body.contains(document.activeElement) ? document.activeElement : null;
       const at = focus && focus.dataset.editor ? { kind: 'editor', name: focus.dataset.editor, a: focus.selectionStart, b: focus.selectionEnd }
         : focus && focus.dataset.model ? { kind: 'model', name: focus.dataset.model, a: focus.selectionStart, b: focus.selectionEnd }

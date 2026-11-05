@@ -279,7 +279,7 @@ window.ForgeConvo = (() => {
     const status = [];
     const ws = list(D.warnings);
     if (ws.length) status.push(el('p', ws[0], 'warn'));
-    if (ws.length > 1) { const d = el('details', undefined, 'diff-warnings'); d.append(el('summary', `${ws.length - 1} more warning${ws.length === 2 ? '' : 's'}`), el('pre', ws.slice(1).join('\n'))); status.push(d); }
+    if (ws.length > 1) { const d = el('details', undefined, 'diff-warnings'); d.open = v.open.has('warnings'); d.addEventListener('toggle', () => { if (d.open) v.open.add('warnings'); else v.open.delete('warnings'); }); d.append(el('summary', `${ws.length - 1} more warning${ws.length === 2 ? '' : 's'}`), el('pre', ws.slice(1).join('\n'))); status.push(d); }
     if (D.format === 'text' && list(D.events).length) status.push(el('p', `${D.harness || 'This harness'} left plain text, not a stream of events: its log is shown as it is.`, 'muted'));
     if (!list(D.events).length) status.push(el('p', running ? 'Nothing logged yet: the agent has just started.' : D.source === 'none' ? 'No log was kept for this execution.' : 'Its log holds no conversation.', 'muted convo-empty'));
     f.status.replaceChildren(...status);

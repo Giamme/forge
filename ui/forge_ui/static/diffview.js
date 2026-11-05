@@ -56,7 +56,7 @@ window.ForgeDiff = (() => {
     if (where) head.append(el('span', where, 'mono muted'));
     box.append(head, el('p', said(f)));
     const more = String(f.text || '').trim();
-    if (more && more !== String(f.summary || '').trim()) { const d = el('details'); d.append(el('summary', 'Details'), el('pre', more)); box.append(d); }
+    if (more && more !== String(f.summary || '').trim()) { const d = el('details'); d.dataset.keep = `finding-${f.id ?? where ?? said(f)}`; d.append(el('summary', 'Details'), el('pre', more)); box.append(d); }
     return box;
   }
 
@@ -193,7 +193,7 @@ window.ForgeDiff = (() => {
       for (const p of loose) { const b = findingBox(p.f, `${p.f.location || 'no location'} · ${p.f.off_diff || 'not located'}`); b.id = 'diff-finding-' + p.i; b.tabIndex = -1; ls.append(b); }
       main.append(ls);
     }
-    if (list(D.warnings).length) { const d = el('details', undefined, 'diff-warnings'); d.append(el('summary', `Reader warnings (${D.warnings.length})`), el('pre', D.warnings.join('\n'))); main.append(d); }
+    if (list(D.warnings).length) { const d = el('details', undefined, 'diff-warnings'); d.dataset.keep = 'diff-warnings'; d.append(el('summary', `Reader warnings (${D.warnings.length})`), el('pre', D.warnings.join('\n'))); main.append(d); }
     if (files.length || loose.length) body.append(nav); else body.classList.add('no-files');
     body.append(main); host.append(body);
 

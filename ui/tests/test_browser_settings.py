@@ -199,6 +199,21 @@ class Settings(unittest.TestCase):
         self.assertEqual(page.text_content('.set-repo-path .mono'), '/r/one')
         self.assertClean(page)
 
+    def test_a_read_that_changes_the_page_waits_for_a_focused_select(self):
+        page = self.page()
+        select = '#set-gate-drift-mode'
+        page.eval_on_selector(select, 'n => { n.__mine = true; }')
+        page.focus(select)
+        self.configs[self.a]['repo']['root'] = '/r/moved'
+        page.clock.fast_forward(READ_EVERY_MS)
+        page.wait_for_timeout(300)
+        self.assertTrue(page.eval_on_selector(select, 'n => !!n.__mine'))
+        self.assertEqual(page.evaluate('document.activeElement.id'), 'set-gate-drift-mode')
+        page.evaluate('document.activeElement.blur()')
+        page.clock.fast_forward(100)
+        page.wait_for_function("() => !document.querySelector('#set-gate-drift-mode').__mine")
+        self.assertClean(page)
+
     def test_the_setup_guide_opens_as_a_dialog_and_each_gate_explains_itself(self):
         page = self.page()
         self.assertFalse(page.is_visible('#set-guide'))
