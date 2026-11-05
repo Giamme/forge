@@ -334,8 +334,10 @@ carry_findings() { # carry_findings <tdir>
   rm -f "$tdir/retry_findings.session" "$tdir/retry_findings.resolved"
   carry_implementer_session "$tdir"
   printf 'review\n' > "$tdir/retry_findings.source"
-  local gthr gdec
-  IFS="$(printf '\t')" read -r gthr gdec _ < "$tdir/qa.gate" 2>/dev/null || true
+  local gthr='' gdec=''
+  if [ -f "$tdir/qa.gate" ]; then
+    IFS="$(printf '\t')" read -r gthr gdec _ < "$tdir/qa.gate" || true
+  fi
   if [ "${gdec:-}" = fail ]; then
     # forge, not the reviewer, failed this attempt: say so above the copied report.
     { printf "forge: the reviewer's verdict was PASS, but this report lists CONFIRMED findings at or above the \`%s\` blocking threshold, so forge failed the attempt. Fix those findings.\n\n" "$gthr"
@@ -708,7 +710,9 @@ decided_attempts() { # decided_attempts <decide>
 # run that uses it may end first (a quota stop) and a later `run` or `retry` must still honour it.
 # Absent means no decision governs and the retry budget rules; 0 means the decided attempts are used.
 decided_left() { # decided_left <task-dir>: the number, or nothing
-  local v; v="$( { tr -dc '0-9' < "$1/decided.left"; } 2>/dev/null | head -c 3)"
+  local v
+  [ -f "$1/decided.left" ] || return 0
+  v="$(tr -dc '0-9' < "$1/decided.left" | head -c 3)"
   [ -n "$v" ] && echo $(( 10#$v ))
   return 0
 }
