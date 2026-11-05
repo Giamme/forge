@@ -342,6 +342,20 @@ class EndToEndTests(StoreCase):
         self.assertEqual(checks.run(store.connect())['pass_without_merge']['count'], 0)
         self.assertEqual(self.errors(), '')
 
+    def test_an_adoption_is_recorded_as_a_persons_work(self):
+        p = self.plan_of([('a', '-', 'a.txt')])
+        self.scenario({})
+        self.assertEqual(self.run_script('forge-parallel.sh', 'run', p).returncode, 0)
+        wt = Path((p / 'wt_root').read_text().strip()) / '_integration'
+        (wt / 'fix.txt').write_text('a fix\n')
+        for args in (('add', 'fix.txt'), ('commit', '-qm', 'a fix by hand')):
+            subprocess.check_call(['git', *args], cwd=wt, env=self.env)
+        r = self.run_script('forge-parallel.sh', 'adopt', p, '--head', '--reason', 'a narrow bug')
+        self.assertEqual(r.returncode, 0, r.stdout)
+        [event] = [e for e in self.events(kind='event') if e['data'].get('event') == 'adopt' or e['data'].get('name') == 'adopt']
+        self.assertEqual((event['data']['verdict'], event['data']['reason'], event['data']['adopted'], event['data']['authors']),
+                         ('PASS', 'a narrow bug', '1', 'test'))
+
     def test_a_review_records_whether_its_tests_ran(self):
         p = self.plan_of([('a', '-', 'a.txt')])
         self.scenario({'a.qa.1': {'verdict': 'PASS', 'findings': 'FORGE_TESTS: COULD NOT RUN — no display'}})

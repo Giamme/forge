@@ -417,6 +417,8 @@ Every RunSummary field, plus:
                                     "ended": 1760622300.0}]},
   "final_review": FinalReviewSummary,
   "final_reviews": [FinalReviewSummary, ...],
+  "adoptions": [{"at": 1760621000.0, "base": "...", "tip": "...", "verdict": "PASS", "approved": false,
+                 "spec": "opus", "review": "adopt-1760621000-7", "reason": "..."}],
   "scheduler": {"live": true, "drained": false, "stopping": null, "max_parallel": 3,
                 "pauses": [{"scope": "model:codex/gpt-6", "class": "rate_limit", "harness": "codex", "model": "gpt-6",
                             "tasks": ["perf"], "cycle": 1, "until": 1760622130.0, "exhausted": false}]},

@@ -1461,3 +1461,7 @@ dialog.set-guide::backdrop { background: light-dark(rgb(17 22 19 / .35), rgb(0 0
 .set-guide-row { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--s-2); padding: var(--s-2); border: 1px solid var(--rule); border-radius: var(--r-key); background: var(--module-2); }
 .set-guide-row code { min-width: 0; flex: 1; overflow-x: auto; white-space: pre; }
 .set-guide-copy { flex: none; }
+
+/* Commits adopted from outside a run */
+.adoptions { display: grid; gap: var(--s-2); margin: 0; padding: 0; list-style: none; font-size: var(--t-sm); }
+.adoptions p { margin: var(--s-1) 0 0; text-wrap: pretty; }

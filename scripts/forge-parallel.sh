@@ -28,6 +28,8 @@
 #   forge-parallel.sh review <plan-dir> [--qa <spec>] [--yolo-qa] [--qa-threshold Pn|none|default]
 #   forge-parallel.sh attribute <plan-dir> [--force]   (find a merge that breaks the failed verification)
 #   forge-parallel.sh accept <plan-dir> <task-id> --reason "<why>" --approved
+#   forge-parallel.sh adopt <plan-dir> <commit|a..b> | --head --reason "<why>" [--qa <spec>] [--approved]
+#                                     (a commit made outside forge, reviewed alone, comes into the run)
 #   forge-parallel.sh split <plan-dir> <new-plan> --tasks <id,id> [--dry-run]
 #   forge-parallel.sh combine <new-plan> <plan-a> <plan-b> [<plan>...] [--verify <command>] [--dry-run]
 #   forge-parallel.sh _task <plan-dir> <task-id>     (internal; coordinator target)
@@ -145,7 +147,7 @@ JEV_OPTS=0
 # Flags shared by several subcommands, then the helper libraries. Functions only, resolved
 # at call time, so they may use die/note/field and friends defined below.
 source "$SKILL_DIR/scripts/forge-parallel-options.sh"
-for forge_lib in task gates verify attribute plans review; do
+for forge_lib in task gates verify attribute plans review adopt; do
   [ -f "$SKILL_DIR/scripts/forge-lib-$forge_lib.sh" ] && source "$SKILL_DIR/scripts/forge-lib-$forge_lib.sh"
 done
 OUTPUT=summary
@@ -2811,7 +2813,7 @@ if [ "${1:-}" = --help ] || [ "${1:-}" = -h ]; then
   forge_fractal_help
   exit 0
 fi
-[ $# -ge 1 ] || die "usage: forge-parallel.sh <plan|auto|run|retry|accept|review|integrate|split|attribute|combine> <plan-dir> [...]"
+[ $# -ge 1 ] || die "usage: forge-parallel.sh <plan|auto|run|retry|accept|adopt|review|integrate|split|attribute|combine> <plan-dir> [...]"
 CMD="$1"; shift
 [ ! -f "${1:-}/no_ripwire" ] || export FORGE_RIPWIRE=off
 if [ -d "${1:-}" ]; then
@@ -2819,7 +2821,7 @@ if [ -d "${1:-}" ]; then
 fi
 case "$CMD" in
   # `combine` takes a plan dir that does not exist yet and locks its sources itself.
-  run|retry|integrate|accept|review|split|attribute)
+  run|retry|integrate|accept|adopt|review|split|attribute)
     if [ "${FORGE_PLAN_LOCK:-}" != "${1:-}" ]; then
       exec python3 "$SKILL_DIR/scripts/forge-schedule.py" lock "$SELF" "$CMD" "$@"
     fi ;;
@@ -2828,7 +2830,7 @@ esac
 # path (die included). Installed after the lock re-exec, so it fires once, in the process
 # that did the work; `_task` and `_merge` are parts of a `run` and are not recorded alone.
 case "$CMD" in
-  plan|run|retry|integrate|accept|review|split|attribute|combine)
+  plan|run|retry|integrate|accept|adopt|review|split|attribute|combine)
     FORGE_DATASET_INVOCATION="inv-$(date +%s)-$$-$RANDOM"; export FORGE_DATASET_INVOCATION
     FORGE_DATASET_STARTED="$(date +%s)"
     FORGE_DATASET_ARGV=("$@")
@@ -2838,7 +2840,7 @@ esac
 need_fn() { declare -F "$1" >/dev/null || die "'$CMD' is not available: $1 is missing" 3; }
 # A plan with a frozen profile asks its decision-model gates from that copy (`plan` does it itself,
 # after it freezes). The internal subcommands inherit it from the `run` that started them.
-case "$CMD" in run|retry|integrate|accept|review|split|attribute) forge_profile_export "${1:-}" ;; esac
+case "$CMD" in run|retry|integrate|accept|adopt|review|split|attribute) forge_profile_export "${1:-}" ;; esac
 case "$CMD" in
   plan)      do_plan "$@"; rc=$?; forge_update_notice; exit "$rc" ;;
   auto)      do_auto "$@" ;;
@@ -2858,6 +2860,7 @@ case "$CMD" in
   retry)     do_retry "$@" ;;
   integrate) do_integrate "$@" ;;
   accept)    need_fn do_accept;  do_accept "$@" ;;
+  adopt)     need_fn do_adopt;   do_adopt "$@" ;;
   review)    need_fn do_review;  do_review "$@" ;;
   split)     need_fn do_split;   do_split "$@" ;;
   attribute) need_fn do_attribute; do_attribute "$@" ;;

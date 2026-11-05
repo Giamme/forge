@@ -516,6 +516,7 @@ Retry or accept them (or split them off into their own plan) first." 3
   printf '%s\n' "$NEWWTR" > "$NEW/wt_root" || ok=0
   git -C "$NEWINT" rev-parse HEAD > "$NEW/accepted.integration" || ok=0
   [ -z "$newbase" ] || printf '%s\n' "$newbase" > "$NEW/integration.base"
+  for p in "${SRC[@]}"; do [ ! -s "$p/adoptions.tsv" ] || cat "$p/adoptions.tsv" >> "$NEW/adoptions.tsv" || ok=0; done
   for p in "${SRC[@]}"; do
     for id in $(all_ids "$p/tasks.tsv"); do
       plans_copy_taskdir "$p/tasks/$id" "$NEW/tasks/$id" || ok=0
@@ -784,6 +785,7 @@ except Exception:
   printf '%s\n' "$NEWRID" > "$NEW/run_id" || ok=0
   printf '%s\n' "$NEWWTR" > "$NEW/wt_root" || ok=0
   printf '%s\n' "$acc" > "$NEW/accepted.integration" || ok=0
+  [ ! -s "$PLAN/adoptions.tsv" ] || cp -p "$PLAN/adoptions.tsv" "$NEW/adoptions.tsv" || ok=0
   [ ! -s "$PLAN/integration.base" ] || cp -p "$PLAN/integration.base" "$NEW/integration.base" || ok=0
   [ ! -s "$PLAN/goal.txt" ] || cp -p "$PLAN/goal.txt" "$NEW/goal.txt" || ok=0
   for f in $PLANS_OPTION_FILES; do

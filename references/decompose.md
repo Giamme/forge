@@ -1035,6 +1035,18 @@ its last message, and to say plainly what it could not run.
 Four subcommands act on plans after tasks have run. Full usage and refusal conditions are in the
 [README](../docs/reviews.md#accepting-a-task-despite-its-reviewer); the mechanics:
 
+- **`adopt <plan> <commit|a..b> --reason …`**, or **`adopt <plan> --head --reason …`**, brings a commit
+  made outside forge into the run instead of leaving `review` refusing. The first cherry-picks onto the
+  integration branch. `--head` takes what is already on it past `accepted.integration`, and it is what
+  `review`'s refusal names. The run's QA (`--qa`, then `final_qa`, then the first task's) reviews that
+  range alone against the reason, and no implementer runs. PASS, or a verdict the threshold accepts, moves
+  `accepted.integration`, adds a row to `adoptions.tsv` (epoch, base, tip, verdict, approved, spec, review,
+  reason) and to `control.log`, writes an `adopt` dataset event, and verifies as a retry does. A FAIL or
+  UNKNOWN puts the branch back and exits 5, unless `--approved` keeps it, which is recorded. An
+  infrastructure stop always puts it back and exits 8. A range that lived only on the branch stays at
+  `refs/forge/adopt-refused/<dir>`. A merge commit is refused, and a range that does not apply exits 6.
+  There is no task row, because no model implemented it; the final review reads the whole range and is told
+  about it, and forge-ui lists it above the final review. `adopt-<epoch>-<pid>/` keeps the review.
 - **`accept <plan> <task> --reason … --approved`** overrides a `FAIL`/`UNKNOWN` reviewer only
   when the reviewed commit is still the branch tip and the worktree still matches
   `source.fingerprint`. It records `known_issues.md` and `accepted.by`, merges through `merge_task`,
