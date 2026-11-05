@@ -787,16 +787,24 @@ changes it; `--confirm` applies only to that key. A `NEEDS_INPUT` task at the ca
 raise the plan's cap before the answer can start an attempt.
 
 `tasks/<id>/decision.md` gives the reasons and the choices. Nothing else resumes the task: not a
-re-run, not `--retry-failed`, not a retry budget and not a pin. A plain `retry` exits 2. The
-choices:
+re-run, not `--retry-failed`, not a retry budget and not a pin. A plain `retry` exits 2.
+
+`retry` holds the plan lock until its attempts end, so to resume several tasks side by side add
+`--no-dispatch` to each. It records the decision, carries the findings forward and starts nothing;
+the task is then `PENDING`, and one `forge-parallel.sh run <plan>` dispatches them all under
+`--max-parallel`, with dependents starting as their dependencies merge. It works on any `retry`,
+not only a decision.
+
+The choices:
 
 - `forge-parallel.sh retry <plan> <id> --decide retry=N --reason "…" --approved` gives N more
   attempts, N from 1 to 20. At the cap this raises the cap by N, and it is the only choice that
   runs the task again while the attempts already spent sit on the cap.
 - `forge-parallel.sh retry <plan> <id> --decide threshold=Pn --reason "…" --approved` sets this
   task's blocking threshold (`P0`, `P1`, `P2` or `P3`) and then retries once.
-- `forge-parallel.sh retry <plan> <id> --dwarf <spec> --reason "…" --approved` names a model. Not
-  together with `--decide`.
+- `forge-parallel.sh retry <plan> <id> --dwarf <spec> --reason "…" --approved` names a model for
+  one attempt. Add `--decide retry=N` for N attempts on that model, or `--decide threshold=Pn` to
+  set the threshold too. `decisions.tsv` records it as one row, such as `retry=2 dwarf=sol:high`.
 - `forge-parallel.sh accept <plan> <id> --reason "…" --approved` merges it; the findings become
   known issues.
 - Split it by hand: `tasks/<id>/decision.md` and the run summary say to replace its row in

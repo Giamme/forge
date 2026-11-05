@@ -19,8 +19,9 @@
 #                                     [--sweep-ahead | --no-sweep-ahead] [--attribute | --no-attribute]
 #   forge-parallel.sh retry <plan-dir> <task-id> [--dwarf <spec>] [--setup <command>]
 #                                     [--answer <text> | --answer-file <file>]   (a NEEDS_INPUT task)
-#                                     [--decide retry=N|threshold=Pn | --dwarf <spec>] --reason "<why>" --approved
+#                                     [--decide retry=N|threshold=Pn] [--dwarf <spec>] --reason "<why>" --approved
 #                                                                              (a NEEDS_DECISION task)
+#                                     [--no-dispatch]   (prepare it and start nothing: the next `run` dispatches it)
 #                                     [--timeout S] [--qa-threshold Pn|none|default] [--verify-retries N]
 #                                     [--retry-failed N] [--infra-retries M]
 #   forge-parallel.sh integrate <plan-dir> --approved [--verify-retries N] [--final-review <qa-spec>]
@@ -1626,7 +1627,7 @@ _retry_answer_scan() { # _retry_answer_scan <scratch-dir> <retry args...>
   local n=0 flag="" val="" novalue=0 rc=0 dwarf="" decide="" reason="" approved=0
   while [ $# -gt 0 ]; do
     case "$1" in
-      --no-ripwire|--yolo-dwarf|--yolo-qa) shift ;;
+      --no-ripwire|--yolo-dwarf|--yolo-qa|--no-dispatch) shift ;;
       --output|--verify|--setup) [ $# -ge 2 ] || break; shift 2 ;;
       --dwarf) [ $# -ge 2 ] || break; dwarf="$2"; shift 2 ;;
       --decide) [ $# -ge 2 ] || break; decide="$2"; shift 2 ;;
@@ -1697,7 +1698,7 @@ report_untested() { # report_untested <plan> <id>...: verdicts that rest on read
 do_retry() {
   local PLAN="${1:?retry needs a plan dir}" id="${2:?retry needs a task id}"; shift 2
   FORGE_RUN_STARTED="$(forge_now)"
-  local NEWDWARF="" jev_rc=0 ANSWER="" ANSWER_FILE="" HAVE_ANSWER=0 DECIDE="" REASON="" APPROVED=0
+  local NEWDWARF="" jev_rc=0 ANSWER="" ANSWER_FILE="" HAVE_ANSWER=0 DECIDE="" REASON="" APPROVED=0 NO_DISPATCH=0
   # An answer is validated before any option below writes into the plan: a rejected answer
   # changes nothing, --setup and --verify included. Only a NEEDS_INPUT task takes one. The
   # arguments are walked the way the loop below walks them (a value is never taken for a flag),
@@ -1745,6 +1746,7 @@ do_retry() {
       --decide) DECIDE="${2:?--decide needs retry=N or threshold=Pn}"; shift 2 ;;
       --reason) REASON="${2?--reason needs a text}"; shift 2 ;;
       --approved) APPROVED=1; shift ;;
+      --no-dispatch) NO_DISPATCH=1; shift ;;
       # The check above refuses an empty answer first; these hold when its walk could not run.
       --answer) [ "$HAVE_ANSWER" = 0 ] || die "retry: give --answer or --answer-file once"
                 ANSWER="${2?--answer needs the answer text}"; HAVE_ANSWER=1; shift 2
@@ -1825,7 +1827,8 @@ do_retry() {
     return "$prc"
   fi
   [ "${FORGE_RIPWIRE:-}" != off ] || touch "$PLAN/no_ripwire"
-  dependencies_ready "$PLAN" "$id" || { write_results "$PLAN"; return 5; }
+  # --no-dispatch leaves the dependencies to the `run` that dispatches it: one can merge in that same run.
+  [ "$NO_DISPATCH" = 1 ] || dependencies_ready "$PLAN" "$id" || { write_results "$PLAN"; return 5; }
   local vrepo vcheckout; vrepo="$(cat "$PLAN/repo" 2>/dev/null)"; vcheckout="$(cat "$PLAN/wt_root")/_integration"
   [ -d "$vcheckout" ] || vcheckout="$vrepo"
   verify_lanes_check "$PLAN" "$vrepo" "$vcheckout"
@@ -1835,6 +1838,16 @@ do_retry() {
   rm -f "$tdir/status"
   # The pauses an earlier run ended with describe that run: this retry's summary must not report them.
   rm -f "$PLAN/infra.last"
+  # #118: `retry` holds the plan lock until its attempts end, so several tasks cannot resume side by
+  # side. This stops once the retry is prepared, and the marker tells the next `run` that dispatch is
+  # a person's retry. The decision's count is already in decided.left, which that run honours.
+  if [ "$NO_DISPATCH" = 1 ]; then
+    : > "$tdir/retry.prepared" || die "retry: could not record the prepared retry" 1
+    write_results "$PLAN"
+    note "$id is ready and nothing was dispatched; forge-parallel.sh run $PLAN starts it"
+    return 0
+  fi
+  rm -f "$tdir/retry.prepared"
 
   note "retrying $id with dwarf $(field "$T" "$id" dwarf)"
   forge_fast_fractal_note "$PLAN"

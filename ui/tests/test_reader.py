@@ -975,7 +975,7 @@ class StopRecordTests(unittest.TestCase):
     def test_a_retry_grant_counts_however_many_digits_it_has(self):
         F.write(self.plan / 'max_attempts', '6\n')
         # a grant past Python's digit limit is no grant, and no reason to raise
-        for choice, expected in (('retry=3', 9), ('retry=1000000', 1000006), ('retry=0000003', 9),
+        for choice, expected in (('retry=3', 9), ('retry=3 dwarf=opus', 9), ('dwarf=opus', 6), ('retry=1000000', 1000006), ('retry=0000003', 9),
                                  ('retry=' + '9' * 5000, 6)):
             with self.subTest(choice=choice[:12]):
                 F.write(self.plan / 'tasks/page/decisions.tsv', F.tsv([(1760621000, 2, choice, 'extra attempts')]))

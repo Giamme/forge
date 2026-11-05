@@ -769,8 +769,8 @@ def _max_attempts(reader):
 
 
 def _grant(choice):
-    """The N of a retry=N choice, however many digits it has; 0 for any other choice."""
-    match = re.fullmatch(r'retry=([0-9]+)', choice)
+    """The N of a retry=N choice (`retry=N dwarf=<spec>` too), however many digits it has; 0 for any other choice."""
+    match = re.match(r'retry=([0-9]+)(?: |$)', choice)
     try:
         return int(match.group(1)) if match else 0
     except ValueError:  # more digits than Python reads as an int: a reader must not raise over one bad row

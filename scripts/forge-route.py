@@ -720,7 +720,7 @@ def granted_attempts(tdir: Path) -> int:
     for line in lines:
         cells = line.split('\t')
         if len(cells) > 2:
-            match = re.fullmatch(r'retry=([0-9]{1,3})', cells[2])
+            match = re.match(r'retry=([0-9]{1,3})(?: |$)', cells[2])     # `retry=2 dwarf=<spec>` grants 2 as well
             if match:
                 total += int(match.group(1))
     return total

@@ -72,6 +72,9 @@ class DecisionCase(unittest.TestCase):
     def read(self, plan, name, task='a'):
         return (plan / 'tasks' / task / name).read_text().strip()
 
+    def decisions_of(self, p, task):
+        return [row.split('\t') for row in (p / 'tasks' / task / 'decisions.tsv').read_text().splitlines()]
+
     def decisions(self, p):
         path = p / 'tasks/a/decisions.tsv'
         return [line.split('\t') for line in path.read_text().splitlines()] if path.exists() else []
@@ -191,7 +194,6 @@ class DecisionTests(DecisionCase):
                            ('no reason', ('--decide', 'retry=2', '--approved')),
                            ('an empty reason', ('--decide', 'retry=2', '--reason', ' ', '--approved')),
                            ('dwarf without approval', ('--dwarf', 'sol:high', '--reason', 'try it')),
-                           ('both choices', ('--decide', 'retry=2', '--dwarf', 'sol:high', '--reason', 'r', '--approved')),
                            ('too many', ('--decide', 'retry=21', '--reason', 'r', '--approved')),
                            ('none', ('--decide', 'retry=0', '--reason', 'r', '--approved')),
                            ('not a choice', ('--decide', 'more', '--reason', 'r', '--approved')),
@@ -301,6 +303,82 @@ class DecisionTests(DecisionCase):
         self.assertEqual(self.dwarf_count(), before + 1, r.stdout)
         self.assertEqual(self.decisions(p)[0][2:], ['dwarf=opus', 'a stronger model'])
         self.assertIn('opus', (p / 'tasks.tsv').read_text())
+
+    def test_a_named_model_with_a_count_is_one_decision(self):
+        p, _ = self.converging_plan()
+        before = self.dwarf_count()
+        r = self.retry(p, '--decide', 'retry=2', '--dwarf', 'opus', '--reason', 'this model, two more', '--approved')
+        self.assertEqual(self.dwarf_count(), before + 2, r.stdout)
+        self.assertEqual(self.decisions(p)[0][2:], ['retry=2 dwarf=opus', 'this model, two more'])
+        row = next(line for line in (p / 'tasks.tsv').read_text().splitlines() if line.startswith('a\t'))
+        self.assertEqual(row.split('\t')[4], 'opus')
+        # Both attempts ran on it: the policy may not move a task a person just put on a model.
+        rows = [row.split('\t') for row in (p / 'tasks/a/attempts.tsv').read_text().splitlines()]
+        self.assertEqual([row[-1] for row in rows[-2:]], ['opus', 'opus'], rows)
+
+    def stopped_pair(self):
+        """a and b stopped for a decision side by side, and c, blocked behind a."""
+        p = self.root / 'plan'; p.mkdir()
+        (p / 'tasks.tsv').write_text('a\t-\tlow\ta.txt\tsol\topus\tA\nb\t-\tlow\tb.txt\tsol\topus\tB\n'
+                                     'c\ta\tlow\tc.txt\tsol\topus\tC\n')
+        for i in 'abc':
+            (p / 'tasks' / i).mkdir(parents=True)
+            (p / 'tasks' / i / 'prompt.md').write_text('Implement change. REQUIREMENT_SENTINEL TASK_' + i)
+        r = self.run_script('forge-parallel.sh', 'plan', p, '--repo', self.repo, '--no-memory')
+        self.assertEqual(r.returncode, 0, r.stdout)
+        (p / 'converge_window').write_text('2\n')
+        table = {}
+        for task in 'ab':
+            table.update({'%s.qa.%d' % (task, n): {'verdict': 'FAIL', 'findings': MOVING[n - 1]} for n in (1, 2)})
+            table.update({'%s.dwarf.%d' % (task, n): {'content': 'try %d' % n} for n in range(1, 9)})
+        table['a.dwarf.3'] = table['b.dwarf.3'] = {'content': 'decided', 'sleep': 1}
+        self.scenario(table)
+        r = self.run_script('forge-parallel.sh', 'run', p, '--retry-failed', 5, '--max-parallel', 3)
+        self.assertEqual(r.returncode, 5, r.stdout)
+        self.assertEqual([self.read(p, 'status', t) for t in 'abc'], ['NEEDS_DECISION', 'NEEDS_DECISION', 'BLOCKED'], r.stdout)
+        self.assertIn('--no-dispatch', r.stdout)                       # the summary says how to decide several
+        return p
+
+    def test_two_decisions_run_side_by_side_under_one_run(self):
+        p = self.stopped_pair()
+        for task, why in (('a', 'first reason'), ('b', 'second reason')):
+            before = self.dwarf_count()
+            r = self.run_script('forge-parallel.sh', 'retry', p, task, '--decide', 'retry=1', '--reason', why,
+                                '--approved', '--no-dispatch')
+            self.assertEqual(r.returncode, 0, r.stdout)
+            self.assertEqual(self.dwarf_count(), before)               # recorded, and nothing started
+            self.assertEqual(self.decisions_of(p, task)[0][2:], ['retry=1', why])
+        self.env['EVENTS'] = str(self.root / 'events')
+        r = self.run_script('forge-parallel.sh', 'run', p, '--max-parallel', 3)
+        self.assertEqual(r.returncode, 0, r.stdout)
+        for task in 'abc':
+            self.assertTrue((p / 'tasks' / task / 'merged').exists(), r.stdout)
+            self.assertFalse((p / 'tasks' / task / 'retry.prepared').exists())
+        events = [line.split()[:2] for line in (self.root / 'events').read_text().splitlines()]
+        self.assertEqual(sorted(events[:2]), [['a.txt', 'dwarf'], ['b.txt', 'dwarf']])   # neither waited for the other
+        self.assertLess(events.index(['a.txt', 'qa']), events.index(['c.txt', 'dwarf']))  # c waited for its dependency only
+        self.assertEqual(self.read(p, 'attempt', 'a'), '3')            # one more attempt, the one decided
+
+    def test_no_dispatch_keeps_every_gate(self):
+        p = self.stopped_pair()
+        before = (p / 'tasks/a/status').read_text()
+        for name, flags, code in (('no decision', [], 2), ('no reason', ['--decide', 'retry=1', '--approved'], 2),
+                                  ('no approved', ['--decide', 'retry=1', '--reason', 'x'], 2)):
+            with self.subTest(name):
+                r = self.run_script('forge-parallel.sh', 'retry', p, 'a', '--no-dispatch', *flags)
+                self.assertNotEqual(r.returncode, 0, r.stdout)
+                self.assertEqual((p / 'tasks/a/status').read_text(), before)
+                self.assertFalse((p / 'tasks/a/retry.prepared').exists())
+                self.assertFalse((p / 'tasks/a/decisions.tsv').exists())
+
+    def test_a_retry_that_dispatches_clears_a_prepared_marker(self):
+        p = self.stopped_pair()
+        self.assertEqual(self.run_script('forge-parallel.sh', 'retry', p, 'a', '--decide', 'retry=1', '--reason', 'x',
+                                         '--approved', '--no-dispatch').returncode, 0)
+        self.assertEqual(self.read(p, 'attempt'), '2')
+        self.assertTrue((p / 'tasks/a/retry.prepared').exists())
+        self.assertEqual(self.run_script('forge-parallel.sh', 'retry', p, 'a').returncode, 0)
+        self.assertFalse((p / 'tasks/a/retry.prepared').exists())
 
     def test_a_refused_preparation_puts_the_decision_back(self):
         p, _ = self.converging_plan()
@@ -447,6 +525,18 @@ class SchedulerTests(control_fixtures.Base):
 
         self.run_beside(during)
         self.assertIn('x prepared --dwarf sol:xhigh:codex --reason stronger --approved', self.events())
+
+    def test_control_retry_can_name_a_model_and_a_count(self):
+        self.waiting(stop=False)
+
+        def during():
+            result = self.control('retry', self.plan, 'x', '--decide', 'retry=2', '--dwarf', 'sol:xhigh:codex',
+                                  '--reason', 'this model, two more', '--approved')
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.wait_for(lambda: self.outcomes(), 'the outcome line')
+
+        self.run_beside(during)
+        self.assertIn('x prepared --dwarf sol:xhigh:codex --decide retry=2 --reason this model, two more --approved', self.events())
 
 
 class RealPreparationTests(DecisionCase):
