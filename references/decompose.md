@@ -787,16 +787,27 @@ changes it; `--confirm` applies only to that key. A `NEEDS_INPUT` task at the ca
 raise the plan's cap before the answer can start an attempt.
 
 `tasks/<id>/decision.md` gives the reasons and the choices. Nothing else resumes the task: not a
-re-run, not `--retry-failed`, not a retry budget and not a pin. A plain `retry` exits 2. The
-choices:
+re-run, not `--retry-failed`, not a retry budget and not a pin. A plain `retry` exits 2.
+
+`retry` holds the plan lock until its attempts end, so to resume several tasks side by side add
+`--no-dispatch` to each. It records the decision, carries the findings forward and starts nothing;
+the task is then `PENDING`, and one `forge-parallel.sh run <plan>` dispatches them all under
+`--max-parallel`, with dependents starting as their dependencies merge. It works on any `retry`,
+not only a decision, but takes no `--retry-failed` or `--infra-retries`: give those to the `run`. A
+second `--decide` on a prepared task is refused; a `--dwarf` changes its model and keeps its count.
+
+The choices:
 
 - `forge-parallel.sh retry <plan> <id> --decide retry=N --reason "…" --approved` gives N more
   attempts, N from 1 to 20. At the cap this raises the cap by N, and it is the only choice that
   runs the task again while the attempts already spent sit on the cap.
 - `forge-parallel.sh retry <plan> <id> --decide threshold=Pn --reason "…" --approved` sets this
   task's blocking threshold (`P0`, `P1`, `P2` or `P3`) and then retries once.
-- `forge-parallel.sh retry <plan> <id> --dwarf <spec> --reason "…" --approved` names a model. Not
-  together with `--decide`.
+- `forge-parallel.sh retry <plan> <id> --dwarf <spec> --reason "…" --approved` names a model for
+  one attempt. Add `--decide retry=N` for up to N attempts: the retry policy keeps the task on that
+  model until they are used, and they end early the way any retry does, on a pass or when the reviews
+  stop converging. Or add `--decide threshold=Pn` to set the threshold too. `decisions.tsv` records it
+  as one row, such as `retry=2 dwarf=sol:high`.
 - `forge-parallel.sh accept <plan> <id> --reason "…" --approved` merges it; the findings become
   known issues.
 - Split it by hand: `tasks/<id>/decision.md` and the run summary say to replace its row in
@@ -1027,6 +1038,24 @@ its last message, and to say plainly what it could not run.
 Four subcommands act on plans after tasks have run. Full usage and refusal conditions are in the
 [README](../docs/reviews.md#accepting-a-task-despite-its-reviewer); the mechanics:
 
+- **`adopt <plan> <commit|a..b> --reason …`**, or **`adopt <plan> --head --reason …`** (each with
+  `--qa <spec>`, `--yolo-qa`, `--approved`), brings a commit
+  made outside forge into the run instead of leaving `review` refusing. The first cherry-picks onto the
+  integration branch. `--head` takes what is already on it past `accepted.integration`, and it is what
+  `review`'s refusal names. The run's QA (`--qa`, then `final_qa`, then the first task's) reviews that
+  range alone against the reason, and no implementer runs. PASS, or a verdict the threshold accepts, moves
+  `accepted.integration`, adds a row to `adoptions.tsv` (epoch, base, tip, verdict, approved, spec, review,
+  reason) and to `control.log`, writes an `adopt` dataset event, and verifies as a retry does. A FAIL or
+  UNKNOWN puts the branch back and exits 5, unless `--approved` keeps it, which writes the findings to the
+  adoption's `known_issues.md` as `accept` does; `forge issues` and the run's report read that file (as
+  accepted findings, the reason with them), and the sweep does not. A review that concluded nothing always puts it back: a crash or timeout exits 5, an
+  infrastructure stop exits 8, a signal exits 130 or 143. If the worktree changed during the review it is
+  left as it is, with the commands to go on. A range that lived only on the branch stays at
+  `refs/forge/adopt-refused/<dir>`. A merge commit is refused, and a range that does not apply exits 6. A
+  diff over 400 KB is read in the snapshot rather than inlined, as in a final review.
+  There is no task row, because no model implemented it; the final review reads the whole range and is told
+  about it, `attribute` treats it as a step of its own, and forge-ui lists it above the final review.
+  `adopt-<epoch>-<pid>/` keeps the review.
 - **`accept <plan> <task> --reason … --approved`** overrides a `FAIL`/`UNKNOWN` reviewer only
   when the reviewed commit is still the branch tip and the worktree still matches
   `source.fingerprint`. It records `known_issues.md` and `accepted.by`, merges through `merge_task`,

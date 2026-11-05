@@ -78,7 +78,7 @@ import sys
 
 SEVERITIES = ('P0', 'P1', 'P2', 'P3')
 PLACEHOLDER = 'path/file.py:123'
-KINDS = ('task', 'final', 'solo', 'sweep')
+KINDS = ('task', 'final', 'solo', 'sweep', 'adopt')
 DEFAULT_THRESHOLD = 'P2'
 QA_TEST_MINUTES = 5        # the reviewer's own test time, beyond which it says the check is too broad (#89)
 
@@ -130,6 +130,12 @@ _HEAD = {
         'diff did not change, and do not report other problems you notice there: they are not this',
         "task's work.",
     ] + _NO_TRUST,
+    'adopt': [
+        "This range was made outside forge, by a person or another agent, and is about to enter this run's",
+        'integration branch. Review the diff below for correctness bugs, and for whether it does what the',
+        'reason above says. Also say if it changes anything that reason does not cover.',
+        "Do not trust the reason's claims about which checks ran or passed; judge the diff itself.",
+    ],
     'final': [
         'This is the final, whole-run review. The diff below is the COMBINED result of several',
         'tasks that were implemented independently and each reviewed on its own slice only.',
@@ -230,7 +236,7 @@ def qa_text(part: str, kind: str = 'task', threshold=None) -> str:
     if part != 'tail':
         raise ValueError('part must be head or tail')
     lines = list(_SWEEP_FINDINGS if kind == 'sweep' else _FINDINGS)
-    if kind in ('task', 'solo'):
+    if kind in ('task', 'solo', 'adopt'):
         lines += _ALL_CONFIRMED + _SOLO_EXTRA
     lines += [''] + _VERIFY
     lines += [''] + _SEVERITY
@@ -502,8 +508,8 @@ def _parser() -> argparse.ArgumentParser:
     qa.add_argument('--part', required=True, choices=('head', 'tail'),
                     help='head = review preamble, tail = findings format + verdict contract')
     qa.add_argument('--kind', choices=KINDS, default='task',
-                    help='task (default), final (whole-run review), solo (solo wording) or sweep (a finding '
-                         'sweep task: per-finding FIXED lines, regressions only)')
+                    help='task (default), final (whole-run review), solo (solo wording), sweep (a finding '
+                         'sweep task: per-finding FIXED lines, regressions only) or adopt (a range made outside forge)')
     qa.add_argument('--threshold', type=_threshold_arg, default=None, metavar='P0..P3|none',
                     help='least severe level that still blocks; none = P3 (default: %s)' % DEFAULT_THRESHOLD)
     dwarf = sub.add_parser('dwarf', help='print the implementer rules block')

@@ -259,7 +259,7 @@ its last 20,000 behind a leading `…`. Their `truncated` lists the field names 
 | `GET /api/runs/<key>/verification/lanes/<lane>/log[/lines/<n>]` | `200 VerificationLog` of `verification.lane.<lane>.log` |
 | `GET /api/runs/<key>/verification/lanes/<lane>/runs/<k>/log[/lines/<n>]` | `200 VerificationLog` of `verification.lane.<lane>.run-<k>.log` |
 | `GET /api/models` | `200 Models` |
-| `GET /api/health` | `200 {"app": "forge-ui", "version", "build", "pid", "controls": true\|false}`; `controls` is `false` in read-only mode |
+| `GET /api/health` | `200 {"app": "forge-ui", "version", "build", "pid", "controls": true\|false}`; `version` is forge's own (the root `VERSION` file, read when this server started), `null` when that file cannot be read; `controls` is `false` in read-only mode |
 | `GET /api/runs/<key>/controls` | `200` the `forge control show --json` object of a plan run (see Controls); `404` for a solo or unknown run |
 | `POST /api/runs/<key>/controls` | change one control or pin; authenticated, see Controls (write endpoints) |
 | `GET /api/runs/<key>/issues?scope=run\|repo&offline=0\|1&plausible=0\|1&dismissed=0\|1&only=fp,fp` | `200` the `forge issues --json` listing, run fresh on every request (no cache); see Controls (write endpoints) |
@@ -417,6 +417,8 @@ Every RunSummary field, plus:
                                     "ended": 1760622300.0}]},
   "final_review": FinalReviewSummary,
   "final_reviews": [FinalReviewSummary, ...],
+  "adoptions": [{"at": 1760621000.0, "base": "...", "tip": "...", "verdict": "PASS", "approved": false,
+                 "spec": "opus", "review": "adopt-1760621000-7", "reason": "..."}],
   "scheduler": {"live": true, "drained": false, "stopping": null, "max_parallel": 3,
                 "pauses": [{"scope": "model:codex/gpt-6", "class": "rate_limit", "harness": "codex", "model": "gpt-6",
                             "tasks": ["perf"], "cycle": 1, "until": 1760622130.0, "exhausted": false}]},

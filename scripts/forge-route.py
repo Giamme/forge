@@ -647,6 +647,19 @@ def attempt_rows(tdir: Path) -> list:
     return rows
 
 
+def held_attempts(tdir: Path, current: str) -> int:
+    """N when the latest decision is `retry=N dwarf=<current>`: a person put the task on this model for N attempts.
+
+    Only on that model: once the policy, or a later --dwarf, moves the task, the usual patience applies again."""
+    try:
+        lines = (tdir / 'decisions.tsv').read_text().splitlines()
+    except OSError:
+        return 0
+    cells = lines[-1].split('\t') if lines else []
+    match = re.fullmatch(r'retry=([0-9]{1,3}) dwarf=(\S+)', cells[2]) if len(cells) > 2 else None
+    return int(match.group(1)) if match and match.group(2) == current else 0
+
+
 def decided_attempt(tdir: Path) -> int:
     """The attempt number of the latest row of tasks/<id>/decisions.tsv (epoch, attempt, choice, reason);
     0 when the task has no decision. The attempts counted against a model start after it."""
@@ -720,7 +733,7 @@ def granted_attempts(tdir: Path) -> int:
     for line in lines:
         cells = line.split('\t')
         if len(cells) > 2:
-            match = re.fullmatch(r'retry=([0-9]{1,3})', cells[2])
+            match = re.match(r'retry=([0-9]{1,3})(?: |$)', cells[2])     # `retry=2 dwarf=<spec>` grants 2 as well
             if match:
                 total += int(match.group(1))
     return total
@@ -895,7 +908,8 @@ def _decide(plan: Path, tdir: Path, args, after: int):
     decided = decided_attempt(tdir)
     rows = [row for row in attempt_rows(tdir) if row[0] > decided]
     streak = failed_streak(rows, current, registry, by_effort=step, laterals=lateral_rows(tdir))
-    if streak < after:
+    # `--decide retry=N --dwarf <spec>` (#118) is N attempts on that model, whatever the usual patience is.
+    if streak < max(after, held_attempts(tdir, current)):
         return MARKERS, (), '', 0
     target, why = stronger(current, load_pools(plan / 'fractal-routing.json'), registry)
     # Only once no higher tier has a model. A tier-up is still the stronger move.

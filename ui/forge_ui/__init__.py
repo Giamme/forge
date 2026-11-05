@@ -4,7 +4,20 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 
-__version__ = '0.4.0'
+# forge's own version: this package ships inside forge, and two numbers could only disagree. What a
+# running server reports is what it started with, which an upgrade underneath it does not change.
+VERSION_FILE = Path(__file__).resolve().parents[2] / 'VERSION'
+
+
+def read_version(path=VERSION_FILE):
+    """The first line of forge's VERSION file, or None when it cannot be read."""
+    try:
+        return Path(path).read_text(encoding='utf-8').split('\n', 1)[0].strip() or None
+    except (OSError, ValueError):
+        return None
+
+
+__version__ = read_version()
 
 
 def build_id():

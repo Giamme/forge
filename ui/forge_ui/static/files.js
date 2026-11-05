@@ -743,7 +743,7 @@
         else if (rows.length - fold <= 4) s.append(items(rows));
         else {
           if (fold) s.append(items(rows.slice(0, fold)));
-          const det = el('details', undefined, 'fm-more');
+          const det = el('details', undefined, 'fm-more'); det.dataset.keep = `fm-more-${title}`;
           det.append(el('summary', `${fmt(rows.length - fold)} ${more}`), items(rows.slice(fold)));
           s.append(det);
         }

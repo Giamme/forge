@@ -19,14 +19,17 @@
 #                                     [--sweep-ahead | --no-sweep-ahead] [--attribute | --no-attribute]
 #   forge-parallel.sh retry <plan-dir> <task-id> [--dwarf <spec>] [--setup <command>]
 #                                     [--answer <text> | --answer-file <file>]   (a NEEDS_INPUT task)
-#                                     [--decide retry=N|threshold=Pn | --dwarf <spec>] --reason "<why>" --approved
+#                                     [--decide retry=N|threshold=Pn] [--dwarf <spec>] --reason "<why>" --approved
 #                                                                              (a NEEDS_DECISION task)
+#                                     [--no-dispatch]   (prepare it and start nothing: the next `run` dispatches it)
 #                                     [--timeout S] [--qa-threshold Pn|none|default] [--verify-retries N]
 #                                     [--retry-failed N] [--infra-retries M]
 #   forge-parallel.sh integrate <plan-dir> --approved [--verify-retries N] [--final-review <qa-spec>]
 #   forge-parallel.sh review <plan-dir> [--qa <spec>] [--yolo-qa] [--qa-threshold Pn|none|default]
 #   forge-parallel.sh attribute <plan-dir> [--force]   (find a merge that breaks the failed verification)
 #   forge-parallel.sh accept <plan-dir> <task-id> --reason "<why>" --approved
+#   forge-parallel.sh adopt <plan-dir> <commit|a..b> | --head --reason "<why>" [--qa <spec>] [--approved]
+#                                     (a commit made outside forge, reviewed alone, comes into the run)
 #   forge-parallel.sh split <plan-dir> <new-plan> --tasks <id,id> [--dry-run]
 #   forge-parallel.sh combine <new-plan> <plan-a> <plan-b> [<plan>...] [--verify <command>] [--dry-run]
 #   forge-parallel.sh _task <plan-dir> <task-id>     (internal; coordinator target)
@@ -144,7 +147,7 @@ JEV_OPTS=0
 # Flags shared by several subcommands, then the helper libraries. Functions only, resolved
 # at call time, so they may use die/note/field and friends defined below.
 source "$SKILL_DIR/scripts/forge-parallel-options.sh"
-for forge_lib in task gates verify attribute plans review; do
+for forge_lib in task gates verify attribute plans review adopt; do
   [ -f "$SKILL_DIR/scripts/forge-lib-$forge_lib.sh" ] && source "$SKILL_DIR/scripts/forge-lib-$forge_lib.sh"
 done
 OUTPUT=summary
@@ -1579,6 +1582,7 @@ merge_task() { # merge_task <plan> <id> -> 0 merged, 1 conflicted
   if [ -s "$PLAN/accepted.integration" ] && [ "$(git -C "$int_wt" rev-parse HEAD)" != "$(cat "$PLAN/accepted.integration")" ]; then
     echo INVALIDATED > "$PLAN/tasks/$id/status"
     forge_dataset_event merge --dir "$PLAN" --task "$id" --set status=INVALIDATED --set reason=integration-moved
+    note "$id: the integration branch moved outside this run. To bring those commits into the run: forge-parallel.sh adopt $PLAN --head --reason \"...\""
     return 1
   fi
   [ -z "$(git -C "$int_wt" status --porcelain -- . ':(exclude).forge')" ] || {
@@ -1626,7 +1630,7 @@ _retry_answer_scan() { # _retry_answer_scan <scratch-dir> <retry args...>
   local n=0 flag="" val="" novalue=0 rc=0 dwarf="" decide="" reason="" approved=0
   while [ $# -gt 0 ]; do
     case "$1" in
-      --no-ripwire|--yolo-dwarf|--yolo-qa) shift ;;
+      --no-ripwire|--yolo-dwarf|--yolo-qa|--no-dispatch) shift ;;
       --output|--verify|--setup) [ $# -ge 2 ] || break; shift 2 ;;
       --dwarf) [ $# -ge 2 ] || break; dwarf="$2"; shift 2 ;;
       --decide) [ $# -ge 2 ] || break; decide="$2"; shift 2 ;;
@@ -1697,7 +1701,7 @@ report_untested() { # report_untested <plan> <id>...: verdicts that rest on read
 do_retry() {
   local PLAN="${1:?retry needs a plan dir}" id="${2:?retry needs a task id}"; shift 2
   FORGE_RUN_STARTED="$(forge_now)"
-  local NEWDWARF="" jev_rc=0 ANSWER="" ANSWER_FILE="" HAVE_ANSWER=0 DECIDE="" REASON="" APPROVED=0
+  local NEWDWARF="" jev_rc=0 ANSWER="" ANSWER_FILE="" HAVE_ANSWER=0 DECIDE="" REASON="" APPROVED=0 NO_DISPATCH=0
   # An answer is validated before any option below writes into the plan: a rejected answer
   # changes nothing, --setup and --verify included. Only a NEEDS_INPUT task takes one. The
   # arguments are walked the way the loop below walks them (a value is never taken for a flag),
@@ -1745,6 +1749,7 @@ do_retry() {
       --decide) DECIDE="${2:?--decide needs retry=N or threshold=Pn}"; shift 2 ;;
       --reason) REASON="${2?--reason needs a text}"; shift 2 ;;
       --approved) APPROVED=1; shift ;;
+      --no-dispatch) NO_DISPATCH=1; shift ;;
       # The check above refuses an empty answer first; these hold when its walk could not run.
       --answer) [ "$HAVE_ANSWER" = 0 ] || die "retry: give --answer or --answer-file once"
                 ANSWER="${2?--answer needs the answer text}"; HAVE_ANSWER=1; shift 2
@@ -1791,6 +1796,14 @@ do_retry() {
     PP_RETRY_FAILED=0
   fi
   [ "$HAVE_ANSWER" = 0 ] || [ "$st" = NEEDS_INPUT ] || die "retry: '$id' is $st, not waiting for an answer; --answer and --answer-file only answer a NEEDS_INPUT task"
+  # The budgets are this call's own, and --no-dispatch ends the call before any attempt spends them.
+  if [ "$NO_DISPATCH" = 1 ] && { [ "$PP_RETRY_FAILED_SET" = 1 ] || [ "$PP_INFRA_RETRIES_SET" = 1 ]; }; then
+    die "retry: --retry-failed and --infra-retries apply to the attempts this call runs, and --no-dispatch runs none; give them to the run: forge-parallel.sh run $PLAN --retry-failed N" 2
+  fi
+  # A recorded decision is already what the next run does: a second one would stack onto its count.
+  if [ -n "$DECIDE" ] && [ -f "$tdir/retry.prepared" ]; then
+    die "retry: '$id' already has a decision recorded and waits for the next run; forge-parallel.sh run $PLAN starts it" 2
+  fi
   retry_decision_gate "$PLAN" "$id" "$st" "$DECIDE" "$NEWDWARF" "$REASON" "$APPROVED"
   # A task at its attempt cap (#69) is refused with the decision commands unless --decide retry=N reaches past it.
   if ! attempt_cap_gate "$PLAN" "$id" "$st" "$DECIDE"; then write_results "$PLAN"; return 2; fi
@@ -1817,7 +1830,8 @@ do_retry() {
     prepare_retry "$PLAN" "$id" "$NEWDWARF" || prc=$?
     # A person's plain retry ends what an earlier decision allowed; resuming after an
     # infrastructure stop is not a new choice, so the allowance carries over.
-    [ "$prc" != 0 ] || [ "$st" = INFRA ] || rm -f "${tdir:?}/decided.left"
+    # Nor is changing a prepared task's model: the count its decision granted still stands.
+    [ "$prc" != 0 ] || [ "$st" = INFRA ] || [ -f "$tdir/retry.prepared" ] || rm -f "${tdir:?}/decided.left"
   fi
   if [ "$prc" != 0 ]; then
     write_results "$PLAN"
@@ -1825,7 +1839,8 @@ do_retry() {
     return "$prc"
   fi
   [ "${FORGE_RIPWIRE:-}" != off ] || touch "$PLAN/no_ripwire"
-  dependencies_ready "$PLAN" "$id" || { write_results "$PLAN"; return 5; }
+  # --no-dispatch leaves the dependencies to the `run` that dispatches it: one can merge in that same run.
+  [ "$NO_DISPATCH" = 1 ] || dependencies_ready "$PLAN" "$id" || { write_results "$PLAN"; return 5; }
   local vrepo vcheckout; vrepo="$(cat "$PLAN/repo" 2>/dev/null)"; vcheckout="$(cat "$PLAN/wt_root")/_integration"
   [ -d "$vcheckout" ] || vcheckout="$vrepo"
   verify_lanes_check "$PLAN" "$vrepo" "$vcheckout"
@@ -1835,6 +1850,16 @@ do_retry() {
   rm -f "$tdir/status"
   # The pauses an earlier run ended with describe that run: this retry's summary must not report them.
   rm -f "$PLAN/infra.last"
+  # #118: `retry` holds the plan lock until its attempts end, so several tasks cannot resume side by
+  # side. This stops once the retry is prepared, and the marker tells the next `run` that dispatch is
+  # a person's retry. The decision's count is already in decided.left, which that run honours.
+  if [ "$NO_DISPATCH" = 1 ]; then
+    : > "$tdir/retry.prepared" || die "retry: could not record the prepared retry" 1
+    write_results "$PLAN"
+    note "$id is ready and nothing was dispatched; forge-parallel.sh run $PLAN starts it"
+    return 0
+  fi
+  rm -f "$tdir/retry.prepared"
 
   note "retrying $id with dwarf $(field "$T" "$id" dwarf)"
   forge_fast_fractal_note "$PLAN"
@@ -2350,7 +2375,7 @@ do_run() {
   fi
 
   if [ -s "$PLAN/accepted.integration" ] && [ "$(git -C "$int_wt" rev-parse HEAD)" != "$(cat "$PLAN/accepted.integration")" ]; then
-    die "integration branch changed outside this run" 3
+    die "integration branch changed outside this run. To bring those commits into the run: forge-parallel.sh adopt $PLAN --head --reason \"...\"" 3
   fi
   git -C "$int_wt" rev-parse HEAD > "$PLAN/accepted.integration"
   local id failed=0
@@ -2798,7 +2823,7 @@ if [ "${1:-}" = --help ] || [ "${1:-}" = -h ]; then
   forge_fractal_help
   exit 0
 fi
-[ $# -ge 1 ] || die "usage: forge-parallel.sh <plan|auto|run|retry|accept|review|integrate|split|attribute|combine> <plan-dir> [...]"
+[ $# -ge 1 ] || die "usage: forge-parallel.sh <plan|auto|run|retry|accept|adopt|review|integrate|split|attribute|combine> <plan-dir> [...]"
 CMD="$1"; shift
 [ ! -f "${1:-}/no_ripwire" ] || export FORGE_RIPWIRE=off
 if [ -d "${1:-}" ]; then
@@ -2806,7 +2831,7 @@ if [ -d "${1:-}" ]; then
 fi
 case "$CMD" in
   # `combine` takes a plan dir that does not exist yet and locks its sources itself.
-  run|retry|integrate|accept|review|split|attribute)
+  run|retry|integrate|accept|adopt|review|split|attribute)
     if [ "${FORGE_PLAN_LOCK:-}" != "${1:-}" ]; then
       exec python3 "$SKILL_DIR/scripts/forge-schedule.py" lock "$SELF" "$CMD" "$@"
     fi ;;
@@ -2815,7 +2840,7 @@ esac
 # path (die included). Installed after the lock re-exec, so it fires once, in the process
 # that did the work; `_task` and `_merge` are parts of a `run` and are not recorded alone.
 case "$CMD" in
-  plan|run|retry|integrate|accept|review|split|attribute|combine)
+  plan|run|retry|integrate|accept|adopt|review|split|attribute|combine)
     FORGE_DATASET_INVOCATION="inv-$(date +%s)-$$-$RANDOM"; export FORGE_DATASET_INVOCATION
     FORGE_DATASET_STARTED="$(date +%s)"
     FORGE_DATASET_ARGV=("$@")
@@ -2825,7 +2850,7 @@ esac
 need_fn() { declare -F "$1" >/dev/null || die "'$CMD' is not available: $1 is missing" 3; }
 # A plan with a frozen profile asks its decision-model gates from that copy (`plan` does it itself,
 # after it freezes). The internal subcommands inherit it from the `run` that started them.
-case "$CMD" in run|retry|integrate|accept|review|split|attribute) forge_profile_export "${1:-}" ;; esac
+case "$CMD" in run|retry|integrate|accept|adopt|review|split|attribute) forge_profile_export "${1:-}" ;; esac
 case "$CMD" in
   plan)      do_plan "$@"; rc=$?; forge_update_notice; exit "$rc" ;;
   auto)      do_auto "$@" ;;
@@ -2845,6 +2870,7 @@ case "$CMD" in
   retry)     do_retry "$@" ;;
   integrate) do_integrate "$@" ;;
   accept)    need_fn do_accept;  do_accept "$@" ;;
+  adopt)     need_fn do_adopt;   do_adopt "$@" ;;
   review)    need_fn do_review;  do_review "$@" ;;
   split)     need_fn do_split;   do_split "$@" ;;
   attribute) need_fn do_attribute; do_attribute "$@" ;;

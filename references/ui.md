@@ -204,3 +204,12 @@ server that is already running, do not unregister runs, and do not block `forge 
 close the exposure, run `forge ui stop`. Do not forward the server's port.
 
 The API contract is [ui/docs/api.md](../ui/docs/api.md).
+
+## Live refresh
+
+A live refresh never cancels what the user is doing. Every view that redraws on new data goes through
+`ForgeUI.guard(region, draw)` (`preserve` in `app.js` does): while a pointer is down in the region, a
+selection touches it or a `<select>` in it has focus, the latest draw waits and runs when that ends. What the
+user just did draws at once, and a hold that lasts five seconds shows **Newer data is waiting**, with a
+button that runs it. Anything collapsible in such a view gets a `data-keep` key, which `preserve` and
+`ForgeUI.keepOpen` restore. A new view that rebuilds on a poll goes through the same two.

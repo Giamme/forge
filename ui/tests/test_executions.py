@@ -269,6 +269,15 @@ class ExecutionTests(FixtureCase):
         self.assertEqual(execution_detail(self.plan, 'qa-' + F.uid(24))['state'], 'running')
         self.assertEqual(execution_detail(self.plan, F.PAGE_SHADOW_QA)['state'], 'done')
 
+    def test_adopted_ranges_are_listed_and_a_bad_row_is_skipped(self):
+        self.assertEqual(detail(self.plan)['adoptions'], [])
+        self.write(self.plan / 'adoptions.tsv', F.tsv([('1760621000', 'aaa', 'bbb', 'FAIL', '1', 'opus', 'adopt-1-1', 'a fix by hand'),
+                                                       ('soon', 'aaa', 'bbb', 'PASS', '0', 'opus', 'adopt-2-1', 'not counted')]))
+        data = detail(self.plan)
+        self.assertEqual(data['adoptions'], [dict(at=1760621000.0, base='aaa', tip='bbb', verdict='FAIL', approved=True,
+                                                  spec='opus', review='adopt-1-1', reason='a fix by hand')])
+        self.assertTrue(data['warnings'])
+
     def test_a_review_shows_what_the_reviewer_said_about_its_tests(self):
         reply = 'FORGE_TESTS: COULD NOT RUN — no display\nFORGE_VERDICT: PASS\n'
         self.assertIsNone(task_detail(self.solo, 'solo')['reviews'][0]['tests'])   # an older reply says nothing

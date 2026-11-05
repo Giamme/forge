@@ -678,11 +678,29 @@ window.ForgePanel = (() => {
     if (n.last == null && n.planning_last == null) muted(ps, 'No output yet.');
   }
 
+  // Commits made outside forge that `adopt` brought in, each reviewed alone: a person's work, so no task row claims them.
+  function adoptionsList(host, run) {
+    const rows = list(run.adoptions);
+    if (!rows.length) return;
+    const s = section(host, `Adopted commits (${rows.length})`);
+    const ul = el('ul', undefined, 'adoptions');
+    for (const a of rows) {
+      const li = el('li'), failed = String(a.verdict).toUpperCase() !== 'PASS';
+      li.append(el('code', `${String(a.base).slice(0, 12)}..${String(a.tip).slice(0, 12)}`, 'mono'), document.createTextNode(' '),
+        chip(a.verdict, failed ? 'fail' : 'pass'));
+      if (a.approved) li.append(el('span', 'approved over the review', 'tag'));
+      if (a.reason) li.append(el('p', a.reason, 'muted'));
+      ul.append(li);
+    }
+    s.append(ul);
+  }
+
   function finalView(host, ctx, sel) {
     const run = ctx.run, reviews = list(run.final_reviews);
     const head = el('div', undefined, 'insp-head');
     head.append(el('h2', 'Final review'), el('div', 'finish · whole-run review', 'insp-kind'));
     host.append(head);
+    adoptionsList(host, run);
     const pick = sel.name ? reviews.find(r => r.name === sel.name) : reviews[0];
     if (!pick) {
       head.append(chip(run.settings && run.settings.final_qa ? 'pending' : 'not requested', 'none'));

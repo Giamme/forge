@@ -769,12 +769,28 @@ def _max_attempts(reader):
 
 
 def _grant(choice):
-    """The N of a retry=N choice, however many digits it has; 0 for any other choice."""
-    match = re.fullmatch(r'retry=([0-9]+)', choice)
+    """The N of a retry=N choice (`retry=N dwarf=<spec>` too), however many digits it has; 0 for any other choice."""
+    match = re.match(r'retry=([0-9]+)(?: |$)', choice)
     try:
         return int(match.group(1)) if match else 0
     except ValueError:  # more digits than Python reads as an int: a reader must not raise over one bad row
         return 0
+
+
+def _adoptions(reader):
+    """One row per range `adopt` brought in (adoptions.tsv: epoch, base, tip, verdict, approved, spec, review, reason)."""
+    result = []
+    for label, row in reader.rows('adoptions.tsv', 8):
+        try:
+            at = float(row[0])
+            if not math.isfinite(at):
+                raise ValueError()
+        except (ValueError, OverflowError):
+            reader.warn(label, 'invalid epoch')
+            continue
+        result.append(dict(at=at, base=row[1], tip=row[2], verdict=row[3], approved=row[4] == '1', spec=_nullable(row[5]),
+                           review=_nullable(row[6]), reason=_nullable('\t'.join(row[7:]))))
+    return result
 
 
 def _attempt_cap(max_attempts, decisions):
@@ -1483,7 +1499,7 @@ def _solo_detail(reader, source):
                 gate=_gate(reader, 'qa.gate'), known_issues=_nonempty(reader, 'known_issues.md'),
                 fail_first=_fail_first(reader, 'failfirst.json'), pre_review=None,
                 now=_now(reader, '', execs) if status == 'RUNNING' else None, waiting=None, sweep=None, swept=[])
-    result.update(timeline=_timeline(execs, [], []), integration=None, final_review=None, final_reviews=[],
+    result.update(timeline=_timeline(execs, [], []), integration=None, final_review=None, final_reviews=[], adoptions=[],
                   deferrals=[], findings_available=findings.available(), fractal=fractal.summary(reader),
                   scheduler=None, sweep=None)
     result.update(tasks=[task], warnings=reader.warnings, truncated=reader.truncated, updated=reader.updated)
@@ -1582,6 +1598,7 @@ def detail(path, source='plan') -> dict:
         _stamp_review(summary, accepted, merges)
     result['final_review'] = reviews[0] if reviews else None
     result['final_reviews'] = reviews
+    result['adoptions'] = _adoptions(reader)
     result['deferrals'] = [line.strip() for line in (reader.text('deferrals.txt') or '').splitlines() if line.strip()]
     result['findings_available'] = findings.available()
     result['fractal'] = fractal.summary(reader)

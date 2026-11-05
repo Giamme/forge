@@ -845,8 +845,6 @@ def decision_of(plan, args, dwarf):
                         if line.strip())
         raise Refused(f'task {args.task} is waiting for your decision, and only a decision resumes it: {head or "see decision.md"} '
                       '(retry --decide retry=N | threshold=Pn, or --dwarf SPEC, each with --reason TEXT --approved)')
-    if args.decide is not None and dwarf is not None:
-        raise Invalid('give --decide or --dwarf, not both: a decision is one choice')
     if args.decide is not None and not DECISION.fullmatch(args.decide):
         raise Invalid('--decide takes retry=N (1 to 20) or threshold=P0|P1|P2|P3')
     reason = re.sub(r'\s+', ' ', args.reason or '').strip()

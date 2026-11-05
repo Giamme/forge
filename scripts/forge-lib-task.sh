@@ -604,6 +604,7 @@ stop_for_decision() { # stop_for_decision <plan> <id> <reason>...
     echo "  lower the threshold:    forge-parallel.sh retry $PLAN $id --decide threshold=P1 --reason \"...\" --approved"
     echo "                          (this task's blocking threshold, then one retry)"
     echo "  a named model:          forge-parallel.sh retry $PLAN $id --dwarf <spec> --reason \"...\" --approved"
+    echo "                          (one attempt; with --decide retry=N, up to N attempts held on that model)"
     case "$from" in FAIL|UNKNOWN)       # with no reviewer verdict, accept has nothing to override
       echo "  accept it as it is:     forge-parallel.sh accept $PLAN $id --reason \"...\" --approved"
       echo "                          (merges it; its findings become known issues)" ;;
@@ -648,7 +649,6 @@ retry_decision_gate() { # retry_decision_gate <plan> <id> <status> <decide> <dwa
 $(sed -n '1,3p' "$PLAN/tasks/$id/decision.md" 2>/dev/null)
 read $PLAN/tasks/$id/decision.md, then retry with --decide retry=N or --decide threshold=Pn, or --dwarf <spec>, each with --reason \"...\" --approved; or accept the task"
   fi
-  [ -z "$decide" ] || [ -z "$dwarf" ] || die "retry: give --decide or --dwarf, not both: a decision is one choice"
   case "$decide" in
     "") ;;
     retry=*) n="${decide#retry=}"
@@ -668,7 +668,7 @@ read $PLAN/tasks/$id/decision.md, then retry with --decide retry=N or --decide t
 retry_decided() { # retry_decided <plan> <id> <decide> <new-dwarf> <reason>
   local PLAN="$1" id="$2" decide="$3" newdwarf="$4" reason="$5" tdir="$1/tasks/$2" choice f rc=0 attempt
   local undo="$1/tasks/$2/.decision.undo"
-  choice="$decide"; [ -n "$choice" ] || choice="dwarf=$newdwarf"
+  choice="$decide"; [ -z "$newdwarf" ] || choice="${choice:+$choice }dwarf=$newdwarf"
   reason="$(printf '%s' "$reason" | tr '\n\r\t' '   ' | sed 's/^ *//; s/ *$//')"
   attempt="$(cat "$tdir/attempt" 2>/dev/null || echo 0)"
   rm -rf "${undo:?}"; mkdir "$undo" 2>/dev/null || { note "$id: could not record the decision; nothing was retried"; return 1; }
@@ -742,6 +742,8 @@ report_decisions() { # report_decisions <plan>
   echo "  forge-parallel.sh retry $plan <task-id> --decide retry=N | --decide threshold=Pn | --dwarf <spec>"
   [ "$acceptable" = 0 ] || echo "  forge-parallel.sh accept $plan <task-id>    (merge it with its findings as known issues)"
   echo "  or split it: replace its row in $plan/tasks.tsv with smaller tasks, then forge-parallel.sh run $plan"
+  echo "several side by side: add --no-dispatch to each retry, which records the decision and starts nothing, then:"
+  echo "  forge-parallel.sh run $plan"
   echo
 }
 
@@ -1195,6 +1197,14 @@ report_known_issues() { # report_known_issues <plan>
     [ "$n" = 0 ] && echo "known issues accepted (findings below the QA threshold, or accepted by a human):"
     n=$((n+1))
     printf '  %-14s %s finding(s)  %s\n' "$id" "$(grep -c '^- ' "$plan/tasks/$id/known_issues.md" 2>/dev/null || echo 0)" "$plan/tasks/$id/known_issues.md"
+  done
+  # What an adopted range kept: findings below the threshold, or a verdict --approved overrode.
+  local dir
+  for dir in $(awk -F'\t' '{ print $7 }' "$plan/adoptions.tsv" 2>/dev/null); do
+    [ -s "$plan/$dir/known_issues.md" ] || continue
+    [ "$n" = 0 ] && echo "known issues accepted (findings below the QA threshold, or accepted by a person):"
+    n=$((n+1))
+    printf '  %-14s %s finding(s)  %s\n' adopted "$(grep -c '^- ' "$plan/$dir/known_issues.md" 2>/dev/null)" "$plan/$dir/known_issues.md"
   done
   [ "$n" -gt 0 ] && echo
   return 0

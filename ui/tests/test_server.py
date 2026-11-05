@@ -16,7 +16,7 @@ import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from unittest.mock import patch
 
-from forge_ui import __version__, build_id, reader
+from forge_ui import __version__, build_id, read_version, reader
 from forge_ui.__main__ import _watch_idle, main
 from forge_ui.server import Handler, make_server
 
@@ -180,6 +180,12 @@ class RoutesTests(ServerTestCase):
         self.assertEqual(json.loads(body), {'runs': self.catalog.runs()})
         self.assertEqual([run['key'] for run in json.loads(body)['runs']], [reader.run_key(PLAN)])
 
+    def test_a_version_file_that_cannot_be_read_is_no_version(self):
+        self.assertIsNone(read_version(Path(tempfile.gettempdir()) / 'forge-no-such-version-file'))
+        with patch('forge_ui.server.__version__', None):
+            _, _, body = self.request('GET', '/api/health')
+        self.assertIsNone(json.loads(body)['version'])
+
     def test_health_reports_version_build_and_pid(self):
         status, headers, body = self.request('GET', '/api/health')
         self.assertEqual(status, 200)
@@ -187,11 +193,12 @@ class RoutesTests(ServerTestCase):
         self.assertEqual(headers['cache-control'], 'no-store')
         self.assertEqual(headers['x-content-type-options'], 'nosniff')
         self.assertEqual(headers['content-security-policy'], CSP)
-        self.assertEqual(__version__, '0.4.0')
+        forge_version = (Path(__file__).resolve().parents[2] / 'VERSION').read_text().strip()
+        self.assertEqual(__version__, forge_version)
         self.assertEqual(build_id(), _source_build_id())
         self.assertEqual(json.loads(body), {
             'app': 'forge-ui',
-            'version': '0.4.0',
+            'version': forge_version,
             'build': build_id(),
             'pid': os.getpid(),
             'controls': True,

@@ -468,6 +468,7 @@ final_review() {
     python3 "$SKILL_DIR/scripts/forge-contract.py" qa --part head --kind final
     echo
     cat "$out/review.deps"; echo
+    adopt_rows "$plan"
     cat "$out/notes.md"
     [ -s "$out/previous.md" ] && cat "$out/previous.md"
     python3 "$SKILL_DIR/scripts/forge-contract.py" qa --part tail --kind final --threshold "$thr"
@@ -639,11 +640,11 @@ do_review() {
   tip="$(git -C "$REPO" rev-parse --verify --quiet "$int_br^{commit}")" ||
     die "integration branch $int_br does not exist; run the plan first" 3
   if [ ! -s "$PLAN/accepted.integration" ] || [ "$tip" != "$(cat "$PLAN/accepted.integration")" ]; then
-    die "$int_br is not at the revision this run accepted (it moved outside forge); refusing to review something forge did not merge" 3
+    die "$int_br is not at the revision this run accepted (it moved outside forge); refusing to review something forge did not merge. To bring those commits into the run: forge-parallel.sh adopt $PLAN --head --reason \"...\"" 3
   fi
   [ -e "$int_wt/.git" ] || die "the integration worktree $int_wt is missing; nothing to take a trustworthy source fingerprint from" 3
   for id in $(all_ids "$T"); do [ "$(task_status "$PLAN" "$id")" = MERGED ] && merged=$((merged+1)); done
-  [ "$merged" -gt 0 ] || die "no task has been merged, so there is no combined result to review" 3
+  [ "$merged" -gt 0 ] || [ -s "$PLAN/adoptions.tsv" ] || die "no task has been merged, so there is no combined result to review" 3
 
   if [ -s "$PLAN/integration.base" ]; then
     base="$(cat "$PLAN/integration.base")"

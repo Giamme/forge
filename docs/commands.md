@@ -621,6 +621,7 @@ forge-parallel.sh retry     <plan-dir> <task-id> [--dwarf <spec>] [--answer <tex
                                      [--verify <cmd> | --verify-lane 'name[opts]=cmd' ...] [--verify-parallel N]
                                      [--escalate-after N] [--escalate-effort | --no-escalate-effort]
 forge-parallel.sh accept    <plan-dir> <task-id> --reason "<why>" --approved
+forge-parallel.sh adopt     <plan-dir> <commit|a..b> | --head --reason "<why>" [--qa <spec>] [--yolo-qa] [--approved]
 forge-parallel.sh review    <plan-dir> [--qa <spec>] [--yolo-qa] [--qa-threshold P0|P1|P2|P3|none|default]
 forge-parallel.sh attribute <plan-dir> [--force]
 forge-parallel.sh integrate <plan-dir> --approved [--final-review <qa-spec>] [--verify-retries N]
@@ -925,7 +926,9 @@ model, or the task has spent its attempt cap (`plan --max-attempts N`, default 8
 the `retry` and `accept` commands are in `tasks/<id>/decision.md`. The run summary lists them under
 `waiting for your decision:`. Neither a later `run`, `--retry-failed`, a retry budget nor a pin
 resumes that same task. Only `retry <plan> <id> --decide retry=N` or `--decide threshold=Pn`, or
-`--dwarf <spec>`, each with `--reason "…" --approved`, or `accept`, does. Replacing it is a hand
+`--dwarf <spec>`, or `--decide` and `--dwarf` together, each with `--reason "…" --approved`, or
+`accept`, does. To resume several at once, add `--no-dispatch` to each `retry`, which records the
+decision and starts nothing, then `run` the plan. Replacing it is a hand
 edit of `tasks.tsv` before the next `run`, as the summary says (`forge control add` queues a new
 row but does not replace the stopped one). A live scheduler takes the same flags as `forge control retry`. A run that ends with such a
 task still in `tasks.tsv` and unmerged exits `5`. See

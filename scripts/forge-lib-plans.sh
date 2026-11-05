@@ -222,7 +222,7 @@ do_accept() {
   done
   [ -e "$int_wt/.git" ] || die "the integration worktree $int_wt is missing" 3
   [ -s "$PLAN/accepted.integration" ] && [ "$(git -C "$int_wt" rev-parse HEAD 2>/dev/null)" = "$(cat "$PLAN/accepted.integration")" ] \
-    || die "integration branch changed outside this run; refusing to merge onto it" 3
+    || die "integration branch changed outside this run; refusing to merge onto it. To bring those commits into the run: forge-parallel.sh adopt $PLAN --head --reason \"...\"" 3
   [ -z "$(git -C "$int_wt" status --porcelain -- . ':(exclude).forge' 2>/dev/null)" ] \
     || die "the integration worktree $int_wt has uncommitted changes; refusing to merge onto it" 3
 
@@ -518,6 +518,7 @@ Retry or accept them (or split them off into their own plan) first." 3
   printf '%s\n' "$NEWWTR" > "$NEW/wt_root" || ok=0
   git -C "$NEWINT" rev-parse HEAD > "$NEW/accepted.integration" || ok=0
   [ -z "$newbase" ] || printf '%s\n' "$newbase" > "$NEW/integration.base"
+  for p in "${SRC[@]}"; do [ ! -s "$p/adoptions.tsv" ] || cat "$p/adoptions.tsv" >> "$NEW/adoptions.tsv" || ok=0; done
   for p in "${SRC[@]}"; do
     for id in $(all_ids "$p/tasks.tsv"); do
       plans_copy_taskdir "$p/tasks/$id" "$NEW/tasks/$id" || ok=0
@@ -786,6 +787,7 @@ except Exception:
   printf '%s\n' "$NEWRID" > "$NEW/run_id" || ok=0
   printf '%s\n' "$NEWWTR" > "$NEW/wt_root" || ok=0
   printf '%s\n' "$acc" > "$NEW/accepted.integration" || ok=0
+  [ ! -s "$PLAN/adoptions.tsv" ] || cp -p "$PLAN/adoptions.tsv" "$NEW/adoptions.tsv" || ok=0
   [ ! -s "$PLAN/integration.base" ] || cp -p "$PLAN/integration.base" "$NEW/integration.base" || ok=0
   [ ! -s "$PLAN/goal.txt" ] || cp -p "$PLAN/goal.txt" "$NEW/goal.txt" || ok=0
   for f in $PLANS_OPTION_FILES; do

@@ -141,6 +141,30 @@ class Settings(unittest.TestCase):
     def option(self, page, key):
         return page.text_content(f'#set-run-list [data-run="{key}"]')
 
+    def test_a_confirm_opened_while_a_redraw_was_held_survives_it(self):
+        page = self.page()
+        select, strip = '#set-gate-drift-mode', '#set-decide .ui-confirm'
+        tag = f"document.querySelector('{select}').__mine = true"
+        rebuilt = f"() => !document.querySelector('{select}').__mine"
+        page.evaluate(tag)
+        page.focus(select)
+        self.configs[self.a]['repo']['root'] = '/r/moved'
+        page.clock.fast_forward(READ_EVERY_MS)
+        page.wait_for_timeout(300)                                            # the read's redraw is held by the focus
+        page.select_option(select, 'shadow')
+        page.wait_for_selector(strip)
+        page.evaluate('document.activeElement.blur()')                        # the use ends, with the confirm open
+        page.clock.fast_forward(100)
+        page.wait_for_timeout(300)
+        self.assertEqual(page.locator(strip).count(), 1, 'the redraw tore the confirm down')
+        page.click(f'{strip} button:text-is("Cancel")')
+        page.evaluate(tag)
+        # Later reads still draw: nothing was left holding the page.
+        self.configs[self.a]['repo']['root'] = '/r/moved-again'
+        page.clock.fast_forward(READ_EVERY_MS)
+        page.wait_for_function(rebuilt)
+        self.assertClean(page)
+
     def test_a_switch_confirm_survives_a_run_list_change_and_its_answer_is_applied(self):
         page = self.page()
         page.fill('#set-f-verify', 'make test -j4')
@@ -197,6 +221,21 @@ class Settings(unittest.TestCase):
         self.where = {self.a: ('/old/main', None, None)}
         page = self.page()
         self.assertEqual(page.text_content('.set-repo-path .mono'), '/r/one')
+        self.assertClean(page)
+
+    def test_a_read_that_changes_the_page_waits_for_a_focused_select(self):
+        page = self.page()
+        select = '#set-gate-drift-mode'
+        page.eval_on_selector(select, 'n => { n.__mine = true; }')
+        page.focus(select)
+        self.configs[self.a]['repo']['root'] = '/r/moved'
+        page.clock.fast_forward(READ_EVERY_MS)
+        page.wait_for_timeout(300)
+        self.assertTrue(page.eval_on_selector(select, 'n => !!n.__mine'))
+        self.assertEqual(page.evaluate('document.activeElement.id'), 'set-gate-drift-mode')
+        page.evaluate('document.activeElement.blur()')
+        page.clock.fast_forward(100)
+        page.wait_for_function("() => !document.querySelector('#set-gate-drift-mode').__mine")
         self.assertClean(page)
 
     def test_the_setup_guide_opens_as_a_dialog_and_each_gate_explains_itself(self):

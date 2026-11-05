@@ -631,6 +631,10 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
     backoff_warned = [] # an invalid infra_backoff file is reported once
     graceful = False   # `forge control stop`: start nothing more, end once running tasks are done
     human = set()      # tasks whose next dispatch is a `forge control retry` (dataset trigger human)
+    for name in tasks:  # `retry --no-dispatch` (#118) prepared it for this run: still a person's retry
+        if (plan / 'tasks' / name / 'retry.prepared').exists():
+            retried.add(name)
+            human.add(name)
     fractal = _fractal_plan(plan)
     drain_told = False # the drained message was printed for this drain
     sweep_asked = False  # this invocation already asked for the finding sweep
@@ -1083,8 +1087,6 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
                 return 'refused', (name + ' is waiting for your decision, and only a decision resumes it: '
                                    + decision_head(plan, name) + ' (retry --decide retry=N | threshold=Pn, or --dwarf SPEC,'
                                    + ' with --reason and --approved)')
-            if decide and dwarf:
-                return 'refused', 'give --decide or --dwarf, not both: a decision is one choice'
             if not (reason or '').strip() or not approved:
                 return 'refused', name + ' is waiting for your decision: a decision needs --reason and --approved'
             decision = (['--decide', decide] if decide else []) + ['--reason', reason, '--approved']
@@ -1356,6 +1358,7 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
                             FORGE_DATASET_TRIGGER='human' if name in human else 'auto')
                        if name in retried else None)
                 human.discard(name)
+                _remove(plan, 'tasks', name, 'retry.prepared')
                 process = subprocess.Popen(
                     ['/bin/bash', script, '_task', str(plan), name],
                     stdout=log, stderr=subprocess.STDOUT, start_new_session=True, env=env,
