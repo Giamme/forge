@@ -234,8 +234,10 @@ do_accept() {
   sha="$(cat "$tdir/reviewed.commit")"
   body="$(plans_reviewer_text "$tdir" "$st")"
   n="$(printf '%s\n' "$body" | grep -c '^- ')"
-  local gthr gdec
-  IFS="$(printf '\t')" read -r gthr gdec _ < "$tdir/qa.gate" 2>/dev/null || true
+  local gthr='' gdec=''
+  if [ -f "$tdir/qa.gate" ]; then
+    IFS="$(printf '\t')" read -r gthr gdec _ < "$tdir/qa.gate" || true
+  fi
   rm -f "$kibak"; [ -f "$ki" ] && cp -p "$ki" "$kibak"
   {
     if [ -s "$ki" ]; then cat "$ki"; echo; fi
