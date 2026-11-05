@@ -6,7 +6,8 @@
      get(path) / post(path, body)          Promise<{ok, status, data, error, detail, result}>; post sends the token and never retries
      outcome(host, res, okText)            an inline result line (a lamp and a sentence) in an aria-live region
      confirmInline(host, text, {danger})   Promise<bool>: an inline Confirm / Cancel strip, Escape cancels
-     guard(region, draw)                   draw now, or, while the user is using the region, hold the latest draw (#115)
+     guard(region, draw, later)            draw now, or, while the user is using the region, hold the latest (`later`, else draw) (#115)
+     forget(region)                        drop a held draw: the view it would draw has gone
      keepOpen(region, draw)                draw, with each details[data-keep] as open as it was
    The write API is described in ui/docs/api.md, "Controls (write endpoints)". All API values enter the DOM as text. */
 (function (root, factory) {
@@ -207,21 +208,26 @@
     function flushHeld() {
       for (const [region, draw] of [...held]) {
         if (!region.isConnected) held.delete(region);
-        else if (!inUse(region)) { held.delete(region); draw(); }
+        else if (!inUse(region)) {
+          held.delete(region);
+          // One draw that throws must not strand the others behind it; it is still reported.
+          try { draw(); } catch (error) { setTimeout(() => { throw error; }, 0); }
+        }
       }
       syncNote();
     }
-    function guard(region, draw) {
+    function guard(region, draw, later) {
       if (userTurn || !inUse(region)) {
         held.delete(region);
         draw();
         syncNote();
         return true;
       }
-      held.set(region, draw);
+      held.set(region, later || draw);
       syncNote();
       return false;
     }
+    function forget(region) { if (held.delete(region)) syncNote(); }
     function keepOpen(region, draw) {
       const open = new Map(Array.from(region.querySelectorAll('details[data-keep]'), n => [n.dataset.keep, n.open]));
       draw();
@@ -241,7 +247,7 @@
       }
     }
 
-    return { el, token, controlsEnabled, get, post, outcome, confirmInline, requestInit, mapResponse, outcomeText, guard, keepOpen };
+    return { el, token, controlsEnabled, get, post, outcome, confirmInline, requestInit, mapResponse, outcomeText, guard, forget, keepOpen };
   }
 
   return { create, requestInit, mapResponse, outcomeText, TOKEN_HEADER };

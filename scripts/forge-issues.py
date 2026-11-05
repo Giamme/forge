@@ -566,6 +566,13 @@ def collect_plan(plan_dir: Path, include_plausible):
     if review:
         items, _ = task_findings(review, plan_dir, include_plausible, {}, review=True)
         found += [{**f, "task": None} for f in items]
+    # What an adopted range kept (`adopt`): its review is of a range on the integration branch, as a final one is.
+    for row in read(plan_dir / "adoptions.tsv").splitlines() if (plan_dir / "adoptions.tsv").is_file() else []:
+        cols = row.split("\t")
+        adopted = plan_dir / cols[6] if len(cols) > 6 and cols[6] else None
+        if adopted and adopted.is_dir():
+            items, _ = task_findings(adopted, plan_dir, include_plausible, {}, review=True)
+            found += [{**f, "task": None} for f in items]
     for f in found:
         f["plan"], f["plan_dir"] = plan_dir.name, str(plan_dir)
     return found, notes

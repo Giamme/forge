@@ -316,6 +316,15 @@ class DecisionTests(DecisionCase):
         rows = [row.split('\t') for row in (p / 'tasks/a/attempts.tsv').read_text().splitlines()]
         self.assertEqual([row[-1] for row in rows[-2:]], ['opus', 'opus'], rows)
 
+    def test_a_named_model_holds_for_every_attempt_decided(self):
+        # The usual patience is two failures on a model: five must not become two and a move.
+        p, _ = self.split_plan()
+        before = self.dwarf_count()
+        r = self.retry(p, '--decide', 'retry=5', '--dwarf', 'sol:high', '--reason', 'this one, five more', '--approved')
+        self.assertEqual(self.dwarf_count(), before + 5, r.stdout)
+        rows = [row.split('\t') for row in (p / 'tasks/a/attempts.tsv').read_text().splitlines()]
+        self.assertEqual([row[-1] for row in rows[-5:]], ['sol:high'] * 5, rows)
+
     def stopped_pair(self):
         """a and b stopped for a decision side by side, and c, blocked behind a."""
         p = self.root / 'plan'; p.mkdir()
@@ -370,6 +379,29 @@ class DecisionTests(DecisionCase):
                 self.assertEqual((p / 'tasks/a/status').read_text(), before)
                 self.assertFalse((p / 'tasks/a/retry.prepared').exists())
                 self.assertFalse((p / 'tasks/a/decisions.tsv').exists())
+
+    def test_no_dispatch_refuses_the_budgets_only_a_run_spends(self):
+        p = self.stopped_pair()
+        for flag in ('--retry-failed', '--infra-retries'):
+            with self.subTest(flag):
+                r = self.run_script('forge-parallel.sh', 'retry', p, 'a', '--decide', 'retry=1', '--reason', 'x',
+                                    '--approved', '--no-dispatch', flag, 3)
+                self.assertEqual(r.returncode, 2, r.stdout)
+                self.assertFalse((p / 'tasks/a/retry.prepared').exists())
+                self.assertFalse((p / 'tasks/a/decisions.tsv').exists())
+
+    def test_a_prepared_decision_is_not_stacked_and_a_model_change_keeps_its_count(self):
+        p = self.stopped_pair()
+        flags = ('--reason', 'x', '--approved', '--no-dispatch')
+        self.assertEqual(self.run_script('forge-parallel.sh', 'retry', p, 'a', '--decide', 'retry=2', *flags).returncode, 0)
+        left = (p / 'tasks/a/decided.left').read_text()
+        r = self.run_script('forge-parallel.sh', 'retry', p, 'a', '--decide', 'retry=3', *flags)
+        self.assertEqual(r.returncode, 2, r.stdout)
+        self.assertEqual(len(self.decisions_of(p, 'a')), 1)
+        self.assertEqual((p / 'tasks/a/decided.left').read_text(), left)
+        r = self.run_script('forge-parallel.sh', 'retry', p, 'a', '--dwarf', 'opus', '--no-dispatch')
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertEqual((p / 'tasks/a/decided.left').read_text(), left)
 
     def test_a_retry_that_dispatches_clears_a_prepared_marker(self):
         p = self.stopped_pair()

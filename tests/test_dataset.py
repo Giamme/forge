@@ -365,6 +365,30 @@ class EndToEndTests(StoreCase):
         self.assertEqual(recorded['qa'], dict(status='could_not_run', reason='no display'))
         self.assertIsNone(recorded['dwarf'])
 
+    def test_a_retry_prepared_without_dispatch_counts_as_a_persons_when_the_run_starts_it(self):
+        p = self.plan_of([('a', '-', 'a.txt')])
+        self.scenario({'a.qa.1': {'verdict': 'FAIL', 'findings': '- [P1][CONFIRMED] a.txt:1 — broken'}, 'a.dwarf.2': {'content': 'fixed'}})
+        self.assertEqual(self.run_script('forge-parallel.sh', 'run', p).returncode, 5)
+        r = self.run_script('forge-parallel.sh', 'retry', p, 'a', '--no-dispatch')
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertEqual(self.run_script('forge-parallel.sh', 'run', p).returncode, 0)
+        self.assertEqual(self.attempts('a')[-1]['data']['trigger'], 'human')
+
+    def test_an_adoption_review_lands_under_the_run_it_belongs_to(self):
+        p = self.plan_of([('a', '-', 'a.txt')])
+        self.assertEqual(self.run_script('forge-parallel.sh', 'run', p).returncode, 0)
+        wt = Path((p / 'wt_root').read_text().strip()) / '_integration'
+        (wt / 'fix.txt').write_text('a fix\n')
+        subprocess.check_call(['git', 'add', 'fix.txt'], cwd=wt, env=self.env)
+        subprocess.check_call(['git', 'commit', '-qm', 'by hand'], cwd=wt, env=self.env)
+        r = self.run_script('forge-parallel.sh', 'adopt', p, '--head', '--reason', 'r')
+        self.assertEqual(r.returncode, 0, r.stdout)
+        task_review = [d for d in self.events(kind='dispatch') if d['data']['role'] == 'qa'][0]
+        adopt_review = [d for d in self.events(kind='dispatch') if d['data']['role'] == 'qa'][-1]
+        self.assertIsNot(task_review, adopt_review)
+        self.assertEqual(adopt_review['run'], task_review['run'])
+        self.assertEqual(adopt_review['data'].get('scope') or adopt_review.get('scope'), 'adopt')
+
     def test_each_retry_keeps_its_own_diff_and_a_failed_one_inherits_none(self):
         # attempt 1: reviewed and failed; attempt 2: a real fix that passes; a later human
         # retry whose dwarf crashes must not be credited with attempt 2's diff and verdict.

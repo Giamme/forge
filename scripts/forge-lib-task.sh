@@ -602,7 +602,7 @@ stop_for_decision() { # stop_for_decision <plan> <id> <reason>...
     echo "  lower the threshold:    forge-parallel.sh retry $PLAN $id --decide threshold=P1 --reason \"...\" --approved"
     echo "                          (this task's blocking threshold, then one retry)"
     echo "  a named model:          forge-parallel.sh retry $PLAN $id --dwarf <spec> --reason \"...\" --approved"
-    echo "                          (one attempt; with --decide retry=N, N attempts on that model)"
+    echo "                          (one attempt; with --decide retry=N, up to N attempts held on that model)"
     case "$from" in FAIL|UNKNOWN)       # with no reviewer verdict, accept has nothing to override
       echo "  accept it as it is:     forge-parallel.sh accept $PLAN $id --reason \"...\" --approved"
       echo "                          (merges it; its findings become known issues)" ;;
@@ -736,10 +736,10 @@ report_decisions() { # report_decisions <plan>
   done
   echo "decide with (each needs --reason \"...\" --approved; decision.md has the commands filled in):"
   echo "  forge-parallel.sh retry $plan <task-id> --decide retry=N | --decide threshold=Pn | --dwarf <spec>"
-  echo "several together: add --no-dispatch to each retry, which records the decision and starts nothing, then:"
-  echo "  forge-parallel.sh run $plan"
   [ "$acceptable" = 0 ] || echo "  forge-parallel.sh accept $plan <task-id>    (merge it with its findings as known issues)"
   echo "  or split it: replace its row in $plan/tasks.tsv with smaller tasks, then forge-parallel.sh run $plan"
+  echo "several side by side: add --no-dispatch to each retry, which records the decision and starts nothing, then:"
+  echo "  forge-parallel.sh run $plan"
   echo
 }
 
@@ -1193,6 +1193,14 @@ report_known_issues() { # report_known_issues <plan>
     [ "$n" = 0 ] && echo "known issues accepted (findings below the QA threshold, or accepted by a human):"
     n=$((n+1))
     printf '  %-14s %s finding(s)  %s\n' "$id" "$(grep -c '^- ' "$plan/tasks/$id/known_issues.md" 2>/dev/null || echo 0)" "$plan/tasks/$id/known_issues.md"
+  done
+  # What an adopted range kept: findings below the threshold, or a verdict --approved overrode.
+  local dir
+  for dir in $(awk -F'\t' '{ print $7 }' "$plan/adoptions.tsv" 2>/dev/null); do
+    [ -s "$plan/$dir/known_issues.md" ] || continue
+    [ "$n" = 0 ] && echo "known issues accepted (findings below the QA threshold, or accepted by a person):"
+    n=$((n+1))
+    printf '  %-14s %s finding(s)  %s\n' adopted "$(grep -c '^- ' "$plan/$dir/known_issues.md" 2>/dev/null)" "$plan/$dir/known_issues.md"
   done
   [ "$n" -gt 0 ] && echo
   return 0

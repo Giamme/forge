@@ -4,11 +4,16 @@ Through the real runner with the fake CLI: the guard keeps its meaning, a refusa
 was, and what is adopted is recorded as a person's, with no task row and no implementer dispatch."""
 import dataset_isolation  # noqa: F401  keeps the run dataset out of the developer's store
 import json
+import os
 from pathlib import Path
+import signal
 import subprocess
+import sys
+import time
 import unittest
 
 import test_forge as fixtures
+import test_issues
 
 BLOCKING = {'verdict': 'FAIL', 'findings': '- [P1][CONFIRMED] fix.txt:1 — wrong'}
 # a.qa.1 is the task's own review; the scenario is keyed by the file name in the prompt, so an adoption
@@ -143,6 +148,132 @@ class AdoptTests(unittest.TestCase):
         self.assertEqual(r.returncode, 8, r.stdout)
         self.assertEqual(self.accepted(p), before)
         self.assertEqual(self.in_wt('rev-parse', 'HEAD'), before)
+
+    def test_a_review_that_crashed_adopts_nothing_with_or_without_approval(self):
+        # Exit 1 with a PASS in its reply: a crash concludes nothing, whatever the reply says.
+        p = self.merged_plan({'change.qa.*': {'rc': 1, 'verdict': 'PASS'}})
+        before = self.accepted(p)
+        for flags in ((), ('--approved',)):
+            with self.subTest(flags=flags):
+                self.commit_on_integration()
+                r = self.adopt(p, '--head', '--reason', 'r', *flags)
+                self.assertEqual(r.returncode, 5, r.stdout)
+                self.assertEqual(self.accepted(p), before)
+                self.assertEqual(self.in_wt('rev-parse', 'HEAD'), before)
+                self.assertFalse((p / 'adoptions.tsv').exists())
+
+    def test_a_review_past_the_plans_timeout_adopts_nothing(self):
+        p = self.merged_plan({'change.qa.*': {'sleep': 60}})
+        (p / 'timeout').write_text('1\n')
+        before = self.accepted(p)
+        self.commit_on_integration()
+        started = time.time()
+        r = self.adopt(p, '--head', '--reason', 'r', '--approved')
+        self.assertEqual(r.returncode, 5, r.stdout)
+        self.assertLess(time.time() - started, 45)
+        self.assertEqual(self.accepted(p), before)
+
+    def test_yolo_qa_reaches_the_review_and_is_off_without_it(self):
+        # Under --yolo the reviewer loses its read-only flag, so the fake takes the call for an implementer.
+        p = self.merged_plan({'change.dwarf.*': {'message': 'FORGE_VERDICT: PASS', 'no_edit': True}})
+        for flags, shown in (((), 'yolo=off'), (('--yolo-qa',), 'yolo=ON')):
+            with self.subTest(flags=flags):
+                self.commit_on_integration('fix%d.txt' % len(flags))
+                r = self.adopt(p, '--head', '--reason', 'r', *flags)
+                self.assertEqual(r.returncode, 0, r.stdout)
+                self.assertIn(shown, (self.review_dir(p) / 'qa.resolved').read_text())
+                time.sleep(1.1)                                # the review dir is named by the second
+
+    def test_a_worktree_changed_during_the_review_is_left_as_it_is(self):
+        p = self.merged_plan()
+        before = self.accepted(p)
+        sha = self.commit_on_integration()
+        # A person edits the file in the integration worktree while the reviewer reads.
+        self.scenario({REVIEW: {'verdict': 'FAIL', 'findings': BLOCKING['findings'], 'writes': {str(self.wt / 'fix.txt'): 'my edit\n'}}})
+        r = self.adopt(p, '--head', '--reason', 'r')
+        self.assertEqual(r.returncode, 5, r.stdout)
+        self.assertEqual((self.wt / 'fix.txt').read_text(), 'my edit\n')
+        self.assertEqual(self.in_wt('rev-parse', 'HEAD'), sha)
+        self.assertEqual(self.accepted(p), before)
+        self.assertFalse((p / 'adoptions.tsv').exists())
+
+    def test_a_signal_during_the_review_puts_the_branch_back(self):
+        p = self.merged_plan({'change.qa.*': {'sleep': 60}})
+        before = self.accepted(p)
+        sha = self.commit_on_integration()
+        calls = len(self.calls())
+        proc = subprocess.Popen(['bash', str(fixtures.ROOT / 'scripts/forge-parallel.sh'), 'adopt', str(p), '--head', '--reason', 'r'],
+                                cwd=self.repo, env=self.env, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                start_new_session=True)
+        try:
+            deadline = time.time() + 60
+            while len(self.calls()) == calls and time.time() < deadline:
+                time.sleep(0.1)
+            self.assertGreater(len(self.calls()), calls, 'the review never started')
+        finally:
+            os.killpg(proc.pid, signal.SIGTERM)
+        out, _ = proc.communicate(timeout=60)
+        self.assertEqual(proc.returncode, 143, out)
+        self.assertEqual(self.in_wt('rev-parse', 'HEAD'), before)
+        self.assertEqual(self.accepted(p), before)
+        self.assertEqual(self.in_wt('rev-parse', 'refs/forge/adopt-refused/' + self.review_dir(p).name), sha)
+
+    def test_what_approval_kept_is_read_by_forge_issues_and_the_runs_report(self):
+        p = self.merged_plan({REVIEW: BLOCKING})
+        self.commit_on_integration()
+        self.assertEqual(self.adopt(p, '--head', '--reason', 'r', '--approved').returncode, 0)
+        (self.bin / 'gh').write_text(test_issues.FAKE_GH); (self.bin / 'gh').chmod(0o755)
+        state = self.root / 'gh.json'
+        state.write_text(json.dumps({'issues': [], 'labels': [], 'calls': [], 'published': 'x'}))
+        res = subprocess.run([sys.executable, str(fixtures.ROOT / 'scripts/forge-issues.py'), str(p), '--repo', 'o/r', '--json'],
+                             cwd=self.repo, env=dict(self.env, FAKE_GH_STATE=str(state)), text=True, capture_output=True)
+        self.assertEqual(res.returncode, 0, res.stderr)
+        found = [f for f in json.loads(res.stdout)['findings'] if 'wrong' in f['text']]
+        self.assertEqual(len(found), 1, res.stdout)
+        self.assertEqual(found[0]['severity'], 'P1')
+        report = self.run_script('forge-parallel.sh', 'run', p)
+        self.assertIn(str(self.review_dir(p) / 'known_issues.md'), report.stdout)
+
+    def test_a_diff_too_large_to_inline_is_named_and_is_there_to_read(self):
+        p = self.merged_plan()
+        (self.wt / 'big.txt').write_text('a line of the big file\n' * 30000)
+        self.in_wt('add', 'big.txt'); self.in_wt('commit', '-qm', 'a big file')
+        self.assertEqual(self.adopt(p, '--head', '--reason', 'r').returncode, 0)
+        prompt = (self.review_dir(p) / 'qa.input').read_text()
+        self.assertLess(len(prompt), 100000)
+        self.assertIn('git diff HEAD~1 HEAD', prompt)
+        shown = subprocess.check_output(['git', 'diff', '--stat', 'HEAD~1', 'HEAD'], cwd=self.review_dir(p) / 'review', env=self.env, text=True)
+        self.assertIn('big.txt', shown)
+
+    def test_a_run_whose_only_change_is_an_adoption_has_a_result_to_review(self):
+        self.scenario({'a.qa.*': BLOCKING})
+        p = self.root / 'plan'; p.mkdir()
+        (p / 'tasks.tsv').write_text('a\t-\tlow\ta.txt\tsol\topus\tA\n')
+        (p / 'tasks/a').mkdir(parents=True)
+        (p / 'tasks/a/prompt.md').write_text('Implement change. TASK_a')
+        self.assertEqual(self.run_script('forge-parallel.sh', 'plan', p, '--repo', self.repo, '--no-memory').returncode, 0)
+        self.assertEqual(self.run_script('forge-parallel.sh', 'run', p).returncode, 5)
+        self.wt = Path((p / 'wt_root').read_text().strip()) / '_integration'
+        self.commit_on_integration()
+        self.assertEqual(self.adopt(p, '--head', '--reason', 'r').returncode, 0)
+        self.scenario({})
+        r = self.run_script('forge-parallel.sh', 'review', p, '--qa', 'opus')
+        self.assertEqual(r.returncode, 0, r.stdout)
+
+    def test_a_merge_onto_a_moved_branch_names_adopt(self):
+        self.scenario({'b.qa.*': BLOCKING})
+        p = self.root / 'plan'; p.mkdir()
+        (p / 'tasks.tsv').write_text('a\t-\tlow\ta.txt\tsol\topus\tA\nb\t-\tlow\tb.txt\tsol\topus\tB\n')
+        for i in 'ab':
+            (p / 'tasks' / i).mkdir(parents=True)
+            (p / 'tasks' / i / 'prompt.md').write_text('Implement change. TASK_' + i)
+        self.assertEqual(self.run_script('forge-parallel.sh', 'plan', p, '--repo', self.repo, '--no-memory').returncode, 0)
+        self.assertEqual(self.run_script('forge-parallel.sh', 'run', p).returncode, 5)
+        self.wt = Path((p / 'wt_root').read_text().strip()) / '_integration'
+        self.commit_on_integration()
+        r = self.run_script('forge-parallel.sh', 'accept', p, 'b', '--reason', 'r', '--approved')
+        self.assertEqual(r.returncode, 3, r.stdout)
+        self.assertIn('adopt', r.stdout)
 
     def test_what_is_refused_before_any_model_call(self):
         p = self.merged_plan()

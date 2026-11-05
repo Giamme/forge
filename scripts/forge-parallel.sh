@@ -1582,6 +1582,7 @@ merge_task() { # merge_task <plan> <id> -> 0 merged, 1 conflicted
   if [ -s "$PLAN/accepted.integration" ] && [ "$(git -C "$int_wt" rev-parse HEAD)" != "$(cat "$PLAN/accepted.integration")" ]; then
     echo INVALIDATED > "$PLAN/tasks/$id/status"
     forge_dataset_event merge --dir "$PLAN" --task "$id" --set status=INVALIDATED --set reason=integration-moved
+    note "$id: the integration branch moved outside this run. To bring those commits into the run: forge-parallel.sh adopt $PLAN --head --reason \"...\""
     return 1
   fi
   [ -z "$(git -C "$int_wt" status --porcelain -- . ':(exclude).forge')" ] || {
@@ -1795,6 +1796,14 @@ do_retry() {
     PP_RETRY_FAILED=0
   fi
   [ "$HAVE_ANSWER" = 0 ] || [ "$st" = NEEDS_INPUT ] || die "retry: '$id' is $st, not waiting for an answer; --answer and --answer-file only answer a NEEDS_INPUT task"
+  # The budgets are this call's own, and --no-dispatch ends the call before any attempt spends them.
+  if [ "$NO_DISPATCH" = 1 ] && { [ "$PP_RETRY_FAILED_SET" = 1 ] || [ "$PP_INFRA_RETRIES_SET" = 1 ]; }; then
+    die "retry: --retry-failed and --infra-retries apply to the attempts this call runs, and --no-dispatch runs none; give them to the run: forge-parallel.sh run $PLAN --retry-failed N" 2
+  fi
+  # A recorded decision is already what the next run does: a second one would stack onto its count.
+  if [ -n "$DECIDE" ] && [ -f "$tdir/retry.prepared" ]; then
+    die "retry: '$id' already has a decision recorded and waits for the next run; forge-parallel.sh run $PLAN starts it" 2
+  fi
   retry_decision_gate "$PLAN" "$id" "$st" "$DECIDE" "$NEWDWARF" "$REASON" "$APPROVED"
   # A task at its attempt cap (#69) is refused with the decision commands unless --decide retry=N reaches past it.
   if ! attempt_cap_gate "$PLAN" "$id" "$st" "$DECIDE"; then write_results "$PLAN"; return 2; fi
@@ -1821,7 +1830,8 @@ do_retry() {
     prepare_retry "$PLAN" "$id" "$NEWDWARF" || prc=$?
     # A person's plain retry ends what an earlier decision allowed; resuming after an
     # infrastructure stop is not a new choice, so the allowance carries over.
-    [ "$prc" != 0 ] || [ "$st" = INFRA ] || rm -f "${tdir:?}/decided.left"
+    # Nor is changing a prepared task's model: the count its decision granted still stands.
+    [ "$prc" != 0 ] || [ "$st" = INFRA ] || [ -f "$tdir/retry.prepared" ] || rm -f "${tdir:?}/decided.left"
   fi
   if [ "$prc" != 0 ]; then
     write_results "$PLAN"
@@ -2365,7 +2375,7 @@ do_run() {
   fi
 
   if [ -s "$PLAN/accepted.integration" ] && [ "$(git -C "$int_wt" rev-parse HEAD)" != "$(cat "$PLAN/accepted.integration")" ]; then
-    die "integration branch changed outside this run" 3
+    die "integration branch changed outside this run. To bring those commits into the run: forge-parallel.sh adopt $PLAN --head --reason \"...\"" 3
   fi
   git -C "$int_wt" rev-parse HEAD > "$PLAN/accepted.integration"
   local id failed=0

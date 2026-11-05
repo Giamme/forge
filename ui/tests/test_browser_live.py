@@ -38,10 +38,19 @@ class LiveRefresh(unittest.TestCase):
         """The page at `hash_`, with each answer to a run or the models changed, so every poll redraws."""
         page = self.open(cdn=False, view='2d')
         self.polls = 0                  # answers to what this page shows: not the run list beside a run
+        self.closing = False
+        self.move_repos = False         # each poll also moves the runs to a new repository (new filter options)
         run_path = '/api/runs/' + self.key
         shown = run_path if '/runs/' in hash_ else '/api/models' if 'models' in hash_ else '/api/runs'
 
         def change(route):
+            try:
+                answer(route)
+            except Exception:                                 # playwright is an optional import here
+                if not (self.closing or page.is_closed()):
+                    raise
+
+        def answer(route):
             response = route.fetch()
             body = response.json()
             if route.request.url.endswith(shown):
@@ -52,11 +61,21 @@ class LiveRefresh(unittest.TestCase):
                     task['title'] = f'{MARK}{self.polls}'
             else:
                 body['__poll'] = self.polls
+                if route.request.url.endswith('/api/runs'):
+                    for run in body['runs']:
+                        run['goal'] = f'{MARK}{self.polls}'
+                        if self.move_repos:
+                            run['repo'] = run['repo_root'] = f'/r/{self.polls}'
             route.fulfill(response=response, json=body)
 
         page.route(re.compile(r'/api/(runs(/[^/?]+)?|models)$'), change)
         page.goto(f'{self.url}{hash_}')
         return page
+
+    def done(self, page):
+        self.closing = True                                   # an answer still on its way has nowhere to go
+        page.close()
+        self.closing = False
 
     def next_poll(self, page):
         """Wait for a poll that brought new data, and for the page to have dealt with it."""
@@ -87,53 +106,66 @@ class LiveRefresh(unittest.TestCase):
         for name, start, selector in (
                 ('inspector close', '#/runs/{key}/tasks/api', '#inspector .insp-close'),
                 ('task table row', '#/runs/{key}', '.run-tasks tbody tr:nth-child(2) td:first-child'),
-                ('run header link', '#/runs/{key}', '#run-head a[href]')):
+                ('column button', '#/runs/{key}', '.dt-tools button'),
+                ('run header link', '#/runs/{key}', '#run-head a[href]'),
+                ('map card', '#/', '#map-cards .map-card'),
+                ('cloud card', '#/cloud', '.cloud-list .map-card')):
             with self.subTest(name):
                 page = self.live_page(start.format(key=self.key))
-                page.wait_for_selector(selector)
-                page.evaluate("() => { window.__clicks = 0; document.addEventListener('click', () => { window.__clicks++; }, true); }")
-                self.press_across_a_poll(page, selector)
-                page.wait_for_timeout(100)
-                self.assertEqual(page.evaluate('window.__clicks'), 1, 'the release did not click')
-                self.assertClean(page)
-                page.close()
+                try:
+                    page.wait_for_selector(selector)
+                    page.evaluate("() => { window.__clicks = 0; document.addEventListener('click', () => { window.__clicks++; }, true); }")
+                    self.press_across_a_poll(page, selector)
+                    page.wait_for_timeout(100)
+                    self.assertEqual(page.evaluate('window.__clicks'), 1, 'the release did not click')
+                    self.assertClean(page)
+                finally:
+                    self.done(page)                                   # a page left polling would count in the next row's polls
 
     def test_a_selection_survives_a_poll_and_then_the_latest_data_shows(self):
         for name, start, selector in (('inspector', f'#/runs/{self.key}/tasks/api', '#inspector .insp-head'),
                                       ('run header', f'#/runs/{self.key}', '#run-head .run-head-body > *')):
             with self.subTest(name):
                 page = self.live_page(start)
-                page.wait_for_selector(selector)
-                self.next_poll(page)
-                page.evaluate("""s => { const r = document.createRange(); r.selectNodeContents(document.querySelector(s));
-                    const sel = getSelection(); sel.removeAllRanges(); sel.addRange(r); }""", selector)
-                text = page.evaluate('getSelection().toString()')
-                self.assertTrue(text.strip())
-                self.identity(page, selector)
-                self.next_poll(page)
-                self.assertEqual(page.evaluate('getSelection().toString()'), text)
-                self.assertTrue(self.same(page, selector))
-                page.evaluate('getSelection().removeAllRanges()')
-                page.wait_for_timeout(200)
-                self.assertFalse(self.same(page, selector))                   # the held redraw ran
-                self.assertClean(page)
-                page.close()
+                try:
+                    page.wait_for_selector(selector)
+                    self.next_poll(page)
+                    page.evaluate("""s => { const r = document.createRange(); r.selectNodeContents(document.querySelector(s));
+                        const sel = getSelection(); sel.removeAllRanges(); sel.addRange(r); }""", selector)
+                    text = page.evaluate('getSelection().toString()')
+                    self.assertTrue(text.strip())
+                    self.identity(page, selector)
+                    self.next_poll(page)
+                    self.assertEqual(page.evaluate('getSelection().toString()'), text)
+                    self.assertTrue(self.same(page, selector))
+                    page.evaluate('getSelection().removeAllRanges()')
+                    page.wait_for_timeout(200)
+                    self.assertFalse(self.same(page, selector))           # the held redraw ran
+                    self.assertClean(page)
+                finally:
+                    self.done(page)
 
     def test_a_focused_select_keeps_its_element_on_every_page(self):
         for name, start, selector in (('models', '#/models', '#models-view select'),
-                                      ('map', '#/', '#map-filters select')):
+                                      ('cloud', '#/cloud', '.cloud-select select[data-key="difficulty-mode"]')):
             with self.subTest(name):
                 page = self.live_page(start)
-                page.wait_for_selector(selector)
-                self.next_poll(page)
-                self.identity(page, selector)
-                page.focus(selector)
-                self.next_poll(page)
-                self.next_poll(page)
-                self.assertTrue(self.same(page, selector))
-                self.assertEqual(page.evaluate('document.activeElement.tagName'), 'SELECT')
-                self.assertClean(page)
-                page.close()
+                try:
+                    self.move_repos = name == 'cloud'                     # new options are what rebuild its filters
+                    page.wait_for_selector(selector)
+                    self.next_poll(page)
+                    self.identity(page, selector)
+                    page.focus(selector)
+                    self.next_poll(page)
+                    self.next_poll(page)
+                    self.assertTrue(self.same(page, selector))
+                    self.assertEqual(page.evaluate('document.activeElement.tagName'), 'SELECT')
+                    page.evaluate('document.activeElement.blur()')
+                    page.wait_for_timeout(200)
+                    self.assertFalse(self.same(page, selector))           # and it does rebuild, once the use ends
+                    self.assertClean(page)
+                finally:
+                    self.done(page)
 
     def test_changing_the_focused_select_still_draws_at_once(self):
         page = self.live_page('#/models')
@@ -149,14 +181,73 @@ class LiveRefresh(unittest.TestCase):
         self.assertClean(page)
 
     def test_a_disclosure_opened_by_hand_stays_open_across_a_poll(self):
+        for name, start, selector, redrawn in (
+                ('task prompt', f'#/runs/{self.key}/tasks/api', '#inspector details[data-keep$="task-api-prompt"]', '#inspector .insp-head'),
+                ('run request', f'#/runs/{self.key}', 'details[data-keep$="run-request"]', '#run-head .run-head-body > *'),
+                ('models tier', '#/models', '#models-view details.lb-diff', '#models-view details.lb-diff')):
+            with self.subTest(name):
+                page = self.live_page(start)
+                try:
+                    page.wait_for_selector(selector, state='attached')
+                    self.next_poll(page)
+                    page.eval_on_selector(selector, 'd => { d.open = false; }')
+                    page.wait_for_timeout(100)
+                    page.eval_on_selector(selector, 'd => { d.open = true; }')
+                    page.wait_for_timeout(100)
+                    self.identity(page, redrawn)
+                    self.next_poll(page)
+                    self.assertFalse(self.same(page, redrawn))            # it was rebuilt, and it is still open
+                    self.assertTrue(page.eval_on_selector(selector, 'd => d.open'))
+                    self.assertClean(page)
+                finally:
+                    self.done(page)
+
+    def test_leaving_a_diff_with_a_held_redraw_does_not_draw_it_over_what_followed(self):
         page = self.live_page(f'#/runs/{self.key}/tasks/api')
-        page.wait_for_selector('#inspector details[data-keep]')
-        page.eval_on_selector('#inspector details[data-keep]', 'd => { d.open = true; }')
-        key = page.eval_on_selector('#inspector details[data-keep]', 'd => d.dataset.keep')
-        self.identity(page, '#inspector .insp-head')
+        page.wait_for_selector('#inspector .insp-head')
+        page.evaluate(f"location.hash = '#/runs/{self.key}/tasks/api/diff'")
+        host = '#diff-view'
+        page.wait_for_function("h => document.querySelector(h)?.textContent.trim()", arg=host)
         self.next_poll(page)
-        self.assertFalse(self.same(page, '#inspector .insp-head'))            # the inspector was rebuilt, and it is still open
-        self.assertTrue(page.evaluate('k => document.querySelector(`#inspector details[data-keep="${k}"]`).open', key))
+        page.evaluate("""s => { const r = document.createRange(); r.selectNodeContents(document.querySelector(s));
+            const sel = getSelection(); sel.removeAllRanges(); sel.addRange(r); }""", host)
+        self.next_poll(page)                                                  # the diff's redraw is now held
+        page.evaluate('history.back()')
+        page.wait_for_function(f"() => location.hash === '#/runs/{self.key}/tasks/api'")
+        page.evaluate('getSelection().removeAllRanges()')
+        self.next_poll(page)
+        self.assertEqual(page.eval_on_selector(host, 'n => n.textContent.trim()'), '')
+        self.assertClean(page)
+
+    def test_a_held_draw_that_throws_does_not_strand_the_ones_behind_it(self):
+        page = self.live_page('#/')
+        page.wait_for_selector('#map-cards .map-card')
+        drawn = page.evaluate("""() => {
+            const [a, b] = ['a', 'b'].map(text => { const n = document.createElement('div'); n.textContent = text; document.body.append(n); return n; });
+            const range = document.createRange(); range.setStart(a.firstChild, 0); range.setEnd(b.firstChild, 1);
+            const sel = getSelection(); sel.removeAllRanges(); sel.addRange(range);
+            window.__drew = [];
+            window.ForgeUI.guard(a, () => { window.__drew.push('a'); throw new Error('a draw failed'); });
+            window.ForgeUI.guard(b, () => { window.__drew.push('b'); });
+            return window.__drew.length; }""")
+        self.assertEqual(drawn, 0)
+        page.evaluate('getSelection().removeAllRanges()')
+        page.wait_for_function('() => window.__drew.length === 2')
+        page.wait_for_timeout(50)
+        self.assertEqual(self.errors, ['a draw failed'])                      # still reported
+
+    def test_a_run_list_redraw_that_was_held_marks_the_open_run(self):
+        page = self.live_page(f'#/runs/{self.key}')
+        page.wait_for_selector('#run-list a[aria-current]')
+        self.next_poll(page)
+        page.evaluate("""() => { const r = document.createRange(); r.selectNodeContents(document.querySelector('#run-list'));
+            const sel = getSelection(); sel.removeAllRanges(); sel.addRange(r); }""")
+        self.identity(page, '#run-list a[aria-current]')
+        self.next_poll(page)
+        page.evaluate('getSelection().removeAllRanges()')
+        page.wait_for_function("() => !document.querySelector('#run-list a[aria-current]')?.__mine")
+        page.wait_for_timeout(50)
+        self.assertEqual(page.locator('#run-list a[aria-current]').count(), 1)
         self.assertClean(page)
 
     def test_an_idle_region_redraws_on_every_poll(self):

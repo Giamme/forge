@@ -621,7 +621,7 @@ forge-parallel.sh retry     <plan-dir> <task-id> [--dwarf <spec>] [--answer <tex
                                      [--verify <cmd> | --verify-lane 'name[opts]=cmd' ...] [--verify-parallel N]
                                      [--escalate-after N] [--escalate-effort | --no-escalate-effort]
 forge-parallel.sh accept    <plan-dir> <task-id> --reason "<why>" --approved
-forge-parallel.sh adopt     <plan-dir> <commit|a..b> | --head --reason "<why>" [--qa <spec>] [--approved]
+forge-parallel.sh adopt     <plan-dir> <commit|a..b> | --head --reason "<why>" [--qa <spec>] [--yolo-qa] [--approved]
 forge-parallel.sh review    <plan-dir> [--qa <spec>] [--yolo-qa] [--qa-threshold P0|P1|P2|P3|none|default]
 forge-parallel.sh attribute <plan-dir> [--force]
 forge-parallel.sh integrate <plan-dir> --approved [--final-review <qa-spec>] [--verify-retries N]

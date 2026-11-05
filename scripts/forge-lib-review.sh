@@ -644,7 +644,7 @@ do_review() {
   fi
   [ -e "$int_wt/.git" ] || die "the integration worktree $int_wt is missing; nothing to take a trustworthy source fingerprint from" 3
   for id in $(all_ids "$T"); do [ "$(task_status "$PLAN" "$id")" = MERGED ] && merged=$((merged+1)); done
-  [ "$merged" -gt 0 ] || die "no task has been merged, so there is no combined result to review" 3
+  [ "$merged" -gt 0 ] || [ -s "$PLAN/adoptions.tsv" ] || die "no task has been merged, so there is no combined result to review" 3
 
   if [ -s "$PLAN/integration.base" ]; then
     base="$(cat "$PLAN/integration.base")"

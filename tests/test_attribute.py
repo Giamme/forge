@@ -101,6 +101,23 @@ class AttributeTests(unittest.TestCase):
         self.assertEqual({p.parent.name: p.read_text() for p in (self.plan / 'tasks').glob('*/status')}, statuses)
         self.assertEqual(len(statuses), 3)
 
+    def test_an_adopted_range_can_be_the_culprit_and_makes_no_task_of_it(self):
+        self.assertEqual(self.failed_run('[ -e fix.txt ] && { echo the fix broke it; exit 1; }\nexit 0\n').returncode, 0, self.run_output)
+        wt = Path((self.plan / 'wt_root').read_text().strip()) / '_integration'
+        (wt / 'fix.txt').write_text('a fix\n')
+        subprocess.check_call(['git', 'add', 'fix.txt'], cwd=wt, env=self.env)
+        subprocess.check_call(['git', 'commit', '-qm', 'by hand'], cwd=wt, env=self.env)
+        sha = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=wt, env=self.env, text=True).strip()
+        adopted = self.run_script('forge-parallel.sh', 'adopt', self.plan, '--head', '--reason', 'r')
+        self.assertEqual(adopted.returncode, 5, adopted.stdout)           # adopted; the verification that follows failed
+        tasks = sorted(p.name for p in (self.plan / 'tasks').iterdir())
+        r = self.attribute()
+        self.assertEqual(r.returncode, 0, r.stdout)
+        found = self.result()
+        self.assertEqual(found['culprit'], 'adopt-' + sha[:12], r.stdout + json.dumps(found))
+        self.assertEqual([m['id'] for m in found['merges']], ['a', 'b', 'c', 'adopt-' + sha[:12]])
+        self.assertEqual(sorted(p.name for p in (self.plan / 'tasks').iterdir()), tasks)
+
     def test_the_tip_is_recorded_from_the_run_and_not_verified_again(self):
         self.failed_run(CLASH)
         self.attribute()

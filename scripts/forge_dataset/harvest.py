@@ -313,6 +313,8 @@ def locate(root: str | Path, role: str | None = None) -> dict:
         plan, ctx['scope'] = p.parent.parent, 'final_review'
     elif p.name.startswith('integrate-') and (p.parent / 'tasks.tsv').exists():
         plan, ctx['scope'] = p.parent, 'integrate'
+    elif p.name.startswith('adopt-') and (p.parent / 'tasks.tsv').exists():
+        plan, ctx['scope'] = p.parent, 'adopt'
     elif (p / 'tasks.tsv').exists() or (p / 'run_id').exists():
         plan, ctx['scope'] = p, 'plan'
     if plan is not None:

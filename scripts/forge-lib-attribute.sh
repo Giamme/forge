@@ -187,6 +187,7 @@ attribute_write_log() { # attribute_write_log <prefix k>
   local k="$1" commit id dir log tmp
   commit="$(attribute_commit "$k")"
   id="$(awk -F'\t' -v k="$k" '$1 == k { print $3; exit }' "$ATTR_DIR/merges.tsv")"
+  case "$id" in adopt-*) return 0 ;; esac                  # no task dir: the summary names the range
   dir="$ATTR_DIR/$k-${commit:0:12}"
   log="$dir/verification.log"
   [ -f "$log" ] || log="$ATTR_PLAN/verification.log"       # the tip, known FAIL from the run itself
@@ -340,8 +341,12 @@ attribute_search() { # attribute_search <plan> <force 0|1>
   : > "$ATTR_DIR/steps.tsv"
 
   # The merges, oldest first, as forge-sweep.py merged_since reads the subjects.
+  # An adopted range is a step of its own, named for its tip: it can break verification as a merge can.
   git -C "$ATTR_REPO" log --first-parent --reverse --format='%H %s' "$ATTR_BASE..$ATTR_TIP" 2>/dev/null \
-    | awk '{ if (match($0, /^[0-9a-f]+ forge: merge [^ ]+ *$/)) { n++; printf "%d\t%s\t%s\n", n, $1, $4 } }' > "$ATTR_DIR/merges.tsv"
+    | awk -v tips="$(awk -F'\t' '{ printf "%s ", $3 }' "$ATTR_PLAN/adoptions.tsv" 2>/dev/null)" '
+        BEGIN { split(tips, t, " "); for (i in t) adopted[t[i]] = 1 }
+        { if ($1 in adopted) { n++; printf "%d\t%s\tadopt-%s\n", n, $1, substr($1, 1, 12) }
+          else if (match($0, /^[0-9a-f]+ forge: merge [^ ]+ *$/)) { n++; printf "%d\t%s\t%s\n", n, $1, $4 } }' > "$ATTR_DIR/merges.tsv"
   ATTR_N="$(wc -l < "$ATTR_DIR/merges.tsv" | tr -d ' ')"
 
   # The run's own predicate. Lanes win: a lanes verification leaves a verification.command that

@@ -785,7 +785,8 @@
       return () => { if (gen !== s.gen) return; s.hold--; if (!s.hold && s.redraw) { s.redraw = false; drawBody(); } };
     }
 
-    function drawBody() { UI.guard(body, drawBodyNow); }
+    // A held draw runs later, when a confirm may have opened: it then waits for that hold, as load() does.
+    function drawBody() { UI.guard(body, drawBodyNow, () => { if (s.hold > 0) s.redraw = true; else drawBodyNow(); }); }
     function drawBodyNow() {
       const focus = document.activeElement && body.contains(document.activeElement) ? document.activeElement : null;
       const at = focus && focus.dataset.editor ? { kind: 'editor', name: focus.dataset.editor, a: focus.selectionStart, b: focus.selectionEnd }

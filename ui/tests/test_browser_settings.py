@@ -141,6 +141,30 @@ class Settings(unittest.TestCase):
     def option(self, page, key):
         return page.text_content(f'#set-run-list [data-run="{key}"]')
 
+    def test_a_confirm_opened_while_a_redraw_was_held_survives_it(self):
+        page = self.page()
+        select, strip = '#set-gate-drift-mode', '#set-decide .ui-confirm'
+        tag = f"document.querySelector('{select}').__mine = true"
+        rebuilt = f"() => !document.querySelector('{select}').__mine"
+        page.evaluate(tag)
+        page.focus(select)
+        self.configs[self.a]['repo']['root'] = '/r/moved'
+        page.clock.fast_forward(READ_EVERY_MS)
+        page.wait_for_timeout(300)                                            # the read's redraw is held by the focus
+        page.select_option(select, 'shadow')
+        page.wait_for_selector(strip)
+        page.evaluate('document.activeElement.blur()')                        # the use ends, with the confirm open
+        page.clock.fast_forward(100)
+        page.wait_for_timeout(300)
+        self.assertEqual(page.locator(strip).count(), 1, 'the redraw tore the confirm down')
+        page.click(f'{strip} button:text-is("Cancel")')
+        page.evaluate(tag)
+        # Later reads still draw: nothing was left holding the page.
+        self.configs[self.a]['repo']['root'] = '/r/moved-again'
+        page.clock.fast_forward(READ_EVERY_MS)
+        page.wait_for_function(rebuilt)
+        self.assertClean(page)
+
     def test_a_switch_confirm_survives_a_run_list_change_and_its_answer_is_applied(self):
         page = self.page()
         page.fill('#set-f-verify', 'make test -j4')

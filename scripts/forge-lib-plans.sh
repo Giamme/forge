@@ -222,7 +222,7 @@ do_accept() {
   done
   [ -e "$int_wt/.git" ] || die "the integration worktree $int_wt is missing" 3
   [ -s "$PLAN/accepted.integration" ] && [ "$(git -C "$int_wt" rev-parse HEAD 2>/dev/null)" = "$(cat "$PLAN/accepted.integration")" ] \
-    || die "integration branch changed outside this run; refusing to merge onto it" 3
+    || die "integration branch changed outside this run; refusing to merge onto it. To bring those commits into the run: forge-parallel.sh adopt $PLAN --head --reason \"...\"" 3
   [ -z "$(git -C "$int_wt" status --porcelain -- . ':(exclude).forge' 2>/dev/null)" ] \
     || die "the integration worktree $int_wt has uncommitted changes; refusing to merge onto it" 3
 

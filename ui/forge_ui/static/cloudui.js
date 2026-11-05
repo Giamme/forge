@@ -220,7 +220,10 @@ window.ForgeCloudUI = (() => {
       if (q) q.addEventListener('input', () => { const t = q.value.trim().toLowerCase(); for (const li of ul.children) li.hidden = !!t && !li.dataset.name.includes(t); });
       box.append(ul); return box;
     }
-    function buildPanel(keep) {
+    // A live refresh waits for what the user is doing (#115). An export has no uikit.js and never refreshes.
+    const guard = (region, draw) => { if (window.ForgeUI?.guard) window.ForgeUI.guard(region, draw); else draw(); };
+    function buildPanel(keep) { guard(panel, () => buildPanelNow(keep)); }
+    function buildPanelNow(keep) {
       const active = keep && panel.contains(document.activeElement) ? document.activeElement.dataset.key : null, top = panel.scrollTop;
       const f = prefs.filter, O = CM.options(S.facts), P = CM.projects(S.runs);
       panel.replaceChildren();
@@ -331,7 +334,8 @@ window.ForgeCloudUI = (() => {
     }
 
     /* ---------- without 3D: the same filtered runs as a list ---------- */
-    function renderList() {
+    function renderList() { guard(listHost, renderListNow); }
+    function renderListNow() {
       listHost.replaceChildren();
       const head = el('div', undefined, 'cloud-list-head');
       if (S.mode === 'failed') head.append(el('p', S.note || '3D view unavailable.', 'warn'));
