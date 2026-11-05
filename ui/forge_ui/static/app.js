@@ -168,7 +168,10 @@ window.ForgeApp = (() => {
     return body;
   }
   // Restore disclosures, internal scroll and keyboard focus after changed data arrives.
-  function preserve(parent, build, options) { window.ForgeUI.guard(parent, () => preserveNow(parent, build, options)); }
+  // A live refresh waits for what the user is doing (#115). An export has no uikit.js and never refreshes: it just draws.
+  const guard = (region, draw) => { if (window.ForgeUI?.guard) window.ForgeUI.guard(region, draw); else draw(); };
+  const keepOpen = (region, draw) => { if (window.ForgeUI?.keepOpen) window.ForgeUI.keepOpen(region, draw); else draw(); };
+  function preserve(parent, build, options) { guard(parent, () => preserveNow(parent, build, options)); }
   function preserveNow(parent, build, { restore = true } = {}) {
     const open = new Map(Array.from(parent.querySelectorAll('details[data-keep]'), n => [n.dataset.keep, n.open]));
     const scroll = new Map(Array.from(parent.querySelectorAll('[data-scroll]'), n => [n.dataset.scroll, [n.scrollLeft, n.scrollTop]]));
@@ -495,7 +498,7 @@ window.ForgeApp = (() => {
       host.replaceChildren(el('h1', 'Models', 'module-title'), el('p', state.modelsError ? `Could not load the model results (${state.modelsError}).` : 'Reading every run\'s attempts and reviews…', state.modelsError ? 'warn' : 'muted'));
       return;
     }
-    window.ForgeUI.guard(host, () => window.ForgeLeaderboard.render(host, state.modelsData, {
+    guard(host, () => window.ForgeLeaderboard.render(host, state.modelsData, {
       runs: state.runs, prefs: state.modelsPrefs, now: () => Date.now() / 1000,
       savePrefs: p => { state.modelsPrefs = p; store.set('models', p); },
       tablePrefs: id => state.tablePrefs[id], saveTablePrefs: (id, p) => { state.tablePrefs = { ...state.tablePrefs, [id]: p }; store.set('tables', state.tablePrefs); },
@@ -851,7 +854,7 @@ window.ForgeApp = (() => {
     const host = $('strip'); if (!host) return;
     const show = state.mode === 'exec' && run.kind !== 'solo';
     host.hidden = !show;
-    window.ForgeUI.guard(host, () => { if (show) window.ForgeGantt.strip(host, run, { now: now(), replay: state.replay }); else host.replaceChildren(); });
+    guard(host, () => { if (show) window.ForgeGantt.strip(host, run, { now: now(), replay: state.replay }); else host.replaceChildren(); });
   }
   // Files: which task touched which file, in the stage's place (the inspector stays beside it)
   function renderFiles(run) {
@@ -869,8 +872,7 @@ window.ForgeApp = (() => {
     const sig = JSON.stringify([c.at, state.sel]);
     if (host.filesSig === sig) return;                     // a poll that changed nothing here redraws nothing
     host.filesSig = sig;
-    const UI = window.ForgeUI;
-    UI.guard(host, () => UI.keepOpen(host, () => window.ForgeFiles.render(host, c.data, { run, sel: state.sel, onSelectTask: id => select({ kind: 'task', id }),
+    guard(host, () => keepOpen(host, () => window.ForgeFiles.render(host, c.data, { run, sel: state.sel, onSelectTask: id => select({ kind: 'task', id }),
       diffHref: (task, path) => diffHash(run.key, { kind: 'task', task, source: 'current', file: path }),
       prefs: state.filesPrefs, savePrefs: p => { state.filesPrefs = p; store.set('files', p); } })));
   }
@@ -905,8 +907,7 @@ window.ForgeApp = (() => {
         fetchJSON: path => fetchJSON(path).then(r => r.data), rerender, diffHash: spec => diffHash(run.key, spec), closeHref: hashFor(run.key, state.sel) });
       return;
     }
-    const UI = window.ForgeUI;
-    UI.guard(host, () => UI.keepOpen(host, () => window.ForgeDiff.render(host, { run, spec: state.diff, fetchJSON: path => fetchJSON(path).then(r => r.data), rerender,
+    guard(host, () => keepOpen(host, () => window.ForgeDiff.render(host, { run, spec: state.diff, fetchJSON: path => fetchJSON(path).then(r => r.data), rerender,
       href: spec => diffHash(run.key, spec), closeHref: hashFor(run.key, state.sel) })));
   }
   function renderRunBody(run) {
