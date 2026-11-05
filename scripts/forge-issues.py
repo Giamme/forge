@@ -566,13 +566,18 @@ def collect_plan(plan_dir: Path, include_plausible):
     if review:
         items, _ = task_findings(review, plan_dir, include_plausible, {}, review=True)
         found += [{**f, "task": None} for f in items]
-    # What an adopted range kept (`adopt`): its review is of a range on the integration branch, as a final one is.
+    # What an adopted range kept (`adopt`), read as an accepted task's are: its known_issues.md holds what fell
+    # below the threshold and, under `--approved`, the findings a person kept. Its review never goes stale.
     for row in read(plan_dir / "adoptions.tsv").splitlines() if (plan_dir / "adoptions.tsv").is_file() else []:
         cols = row.split("\t")
         adopted = plan_dir / cols[6] if len(cols) > 6 and cols[6] else None
         if adopted and adopted.is_dir():
-            items, _ = task_findings(adopted, plan_dir, include_plausible, {}, review=True)
-            found += [{**f, "task": None} for f in items]
+            meta = {"task": adopted.name, "commit": cols[2], "reviewer": cols[5],
+                    "threshold": effective_threshold(adopted, plan_dir)}
+            found += known_findings(read(adopted / "known_issues.md"), adopted, meta)
+            if include_plausible:
+                found += [{**f, **meta, "origin": "plausible", "review": None}
+                          for f in parse_findings(read(adopted / "qa.last")) if f["confidence"] == "PLAUSIBLE"]
     for f in found:
         f["plan"], f["plan_dir"] = plan_dir.name, str(plan_dir)
     return found, notes

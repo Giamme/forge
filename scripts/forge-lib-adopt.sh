@@ -37,7 +37,7 @@ do_adopt() {
     esac
   done
   { [ -n "$target" ] && [ "$head" = 0 ]; } || { [ -z "$target" ] && [ "$head" = 1 ]; } \
-    || die "usage: forge-parallel.sh adopt <plan-dir> <commit|a..b> | --head  --reason \"<why>\" [--qa <spec>] [--approved]"
+    || die "usage: forge-parallel.sh adopt <plan-dir> <commit|a..b> | --head  --reason \"<why>\" [--qa <spec>] [--yolo-qa] [--approved]"
   reason="$(printf '%s' "$reason" | tr '\n\r\t' '   ' | sed 's/^ *//; s/ *$//')"
   [ -n "$reason" ] || die "adopt needs --reason \"<why this commit belongs in the run>\": the reviewer judges against it, and it is recorded"
 
@@ -96,7 +96,11 @@ do_adopt() {
     trap - INT TERM
     if [ -n "$source_fp" ] && [ "$(forge_fingerprint "$int_wt" 2>/dev/null)" != "$source_fp" ]; then
       echo "the integration worktree changed during the review, so forge left it as it is. Nothing was adopted: accepted.integration is still $(printf '%.12s' "$base")."
-      echo "keep what it holds with: forge-parallel.sh adopt $PLAN --head --reason \"...\""
+      if [ -n "$(git -C "$int_wt" status --porcelain -- . ':(exclude).forge' 2>/dev/null)" ]; then
+        echo "keep what it holds: commit the edits in $int_wt, then: forge-parallel.sh adopt $PLAN --head --reason \"...\""
+      else
+        echo "keep what it holds with: forge-parallel.sh adopt $PLAN --head --reason \"...\""
+      fi
       echo "or put it back with: git -C $int_wt reset --hard $base"
       return 0
     fi
@@ -131,6 +135,7 @@ do_adopt() {
   source_fp="$(forge_fingerprint "$int_wt")" && review_fp="$(forge_fingerprint "$review" --tracked)" \
     || { adopt_rollback; die "adopt: cannot fingerprint the checkouts" 3; }
   thr="$(qa_threshold_for "$PLAN" __adopt__)"
+  printf '%s\n' "$thr" > "$out/qa_threshold"                 # what forge issues reads the kept findings under
   git -C "$int_wt" diff --binary --irreversible-delete "$base" "$tip" -- . ':(exclude).forge' | head -c $((REVIEW_DIFF_LIMIT + 1)) > "$out/range.diff"
   if [ "$(wc -c < "$out/range.diff" | tr -d ' ')" -gt "$REVIEW_DIFF_LIMIT" ]; then inline=0; rm -f "$out/range.diff"; fi
   {
@@ -193,15 +198,24 @@ do_adopt() {
     if [ "$approved" = 1 ]; then
       kept=1; echo "adopt: the reviewer said $verdict; --approved keeps it, and that is recorded"
       # What `accept` writes: forge issues and the run's report read the findings it kept from here.
+      local body who
+      body="$(plans_reviewer_text "$out" "$verdict")"
+      who="${USER:-${LOGNAME:-unknown}}"
       {
         if [ -s "$out/known_issues.md" ]; then cat "$out/known_issues.md"; echo; fi
         echo "## Accepted by a human despite the reviewer's $verdict verdict"
         echo
         echo "Reason: $reason"
-        echo "Adopted by ${USER:-${LOGNAME:-unknown}} (range $(printf '%.12s' "$base")..$(printf '%.12s' "$tip")). None of it was fixed."
+        echo "Adopted by $who (range $(printf '%.12s' "$base")..$(printf '%.12s' "$tip")). None of it was fixed."
         echo
-        plans_reviewer_text "$out" "$verdict"
+        [ -z "$body" ] || printf '%s\n' "$body"
+        if [ "$(printf '%s\n' "$body" | grep -c '^- ')" = 0 ]; then
+          echo
+          echo "- [$verdict] the reviewer left no itemised findings; read $(basename "$out")/qa.last"
+        fi
       } > "$out/.known_issues.new" && mv "$out/.known_issues.new" "$out/known_issues.md"
+      printf 'status=%s\nreason=%s\nby=%s\nat=%s\nepoch=%s\nreviewed_commit=%s\n' "$verdict" "$reason" "$who" \
+        "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$(date +%s)" "$tip" > "$out/accepted.by"
     else
       echo "adopt: the reviewer said $verdict, so nothing was adopted (see $out/qa.last)."
       adopt_rollback

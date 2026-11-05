@@ -221,7 +221,7 @@ class AdoptTests(unittest.TestCase):
     def test_what_approval_kept_is_read_by_forge_issues_and_the_runs_report(self):
         p = self.merged_plan({REVIEW: BLOCKING})
         self.commit_on_integration()
-        self.assertEqual(self.adopt(p, '--head', '--reason', 'r', '--approved').returncode, 0)
+        self.assertEqual(self.adopt(p, '--head', '--reason', 'the fix is urgent', '--approved').returncode, 0)
         (self.bin / 'gh').write_text(test_issues.FAKE_GH); (self.bin / 'gh').chmod(0o755)
         state = self.root / 'gh.json'
         state.write_text(json.dumps({'issues': [], 'labels': [], 'calls': [], 'published': 'x'}))
@@ -231,6 +231,10 @@ class AdoptTests(unittest.TestCase):
         found = [f for f in json.loads(res.stdout)['findings'] if 'wrong' in f['text']]
         self.assertEqual(len(found), 1, res.stdout)
         self.assertEqual(found[0]['severity'], 'P1')
+        # A person kept it, for a reason; the review it came from is not a stale one.
+        self.assertEqual(found[0]['origin'], 'accepted')
+        self.assertIn('the fix is urgent', json.dumps(json.loads(res.stdout)['drafts']))
+        self.assertFalse((found[0]['review'] or {}).get('outdated'))
         report = self.run_script('forge-parallel.sh', 'run', p)
         self.assertIn(str(self.review_dir(p) / 'known_issues.md'), report.stdout)
 

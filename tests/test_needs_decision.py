@@ -325,6 +325,17 @@ class DecisionTests(DecisionCase):
         rows = [row.split('\t') for row in (p / 'tasks/a/attempts.tsv').read_text().splitlines()]
         self.assertEqual([row[-1] for row in rows[-5:]], ['sol:high'] * 5, rows)
 
+    def test_a_held_model_holds_only_itself_once_the_policy_moves_on(self):
+        p = self.plan_of('--dwarf-low', 'luna', '--dwarf-medium', 'sol', window=9)
+        table = {'a.qa.%d' % n: {'verdict': 'FAIL', 'findings': SAME} for n in range(1, 20)}
+        table.update({'a.dwarf.%d' % n: {'content': 'try %d' % n} for n in range(1, 20)})
+        self.scenario(table)
+        self.assertEqual(self.run_script('forge-parallel.sh', 'run', p, '--retry-failed', 3).returncode, 5)
+        r = self.retry(p, '--decide', 'retry=4', '--dwarf', 'luna', '--reason', 'r', '--approved', '--retry-failed', 8)
+        models = [row.split('\t')[-1] for row in (p / 'tasks/a/attempts.tsv').read_text().splitlines()]
+        # Four on luna, as decided; then the policy moves up a tier, where the usual three apply.
+        self.assertEqual(models[3:], ['luna'] * 4 + ['sol'] * 3, r.stdout)
+
     def stopped_pair(self):
         """a and b stopped for a decision side by side, and c, blocked behind a."""
         p = self.root / 'plan'; p.mkdir()

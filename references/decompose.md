@@ -1047,8 +1047,8 @@ Four subcommands act on plans after tasks have run. Full usage and refusal condi
   `accepted.integration`, adds a row to `adoptions.tsv` (epoch, base, tip, verdict, approved, spec, review,
   reason) and to `control.log`, writes an `adopt` dataset event, and verifies as a retry does. A FAIL or
   UNKNOWN puts the branch back and exits 5, unless `--approved` keeps it, which writes the findings to the
-  adoption's `known_issues.md` as `accept` does; `forge issues` and the run's report read that file, and
-  the sweep does not. A review that concluded nothing always puts it back: a crash or timeout exits 5, an
+  adoption's `known_issues.md` as `accept` does; `forge issues` and the run's report read that file (as
+  accepted findings, the reason with them), and the sweep does not. A review that concluded nothing always puts it back: a crash or timeout exits 5, an
   infrastructure stop exits 8, a signal exits 130 or 143. If the worktree changed during the review it is
   left as it is, with the commands to go on. A range that lived only on the branch stays at
   `refs/forge/adopt-refused/<dir>`. A merge commit is refused, and a range that does not apply exits 6. A
