@@ -1,4 +1,0 @@
-b42ece5	test(ui): the hanging browser stub exits 0 when killed
-ec0c042	forge(sweep-1) attempt 1: Fix 1 review finding in ui/docs/api.md
-1b02be0	forge(run2-docs) attempt 2: Docs: profiles, fast tiers, auto and plan shape (#48, #68, #87, #88, #91, #97)
-dc43968	forge(run2-docs) attempt 1: Docs: profiles, fast tiers, auto and plan shape (#48, #68, #87, #88, #91, #97)

@@ -1,6 +1,173 @@
 {
   "versions": [
     {
+      "version": "0.16",
+      "date": "2026-11-06",
+      "summary": "forge-ui gets a Worktrees screen and a Projects screen with each repository's runs, findings and memories, and a live refresh no longer cancels what you were doing. A stopped run can be steered by hand: adopt brings in a commit made outside forge, and retry --no-dispatch resumes several tasks side by side. Reviewers get the attempt's dependencies and say whether their tests ran, and a timeout now stops the test servers a harness started.",
+      "entries": [
+        {
+          "type": "added",
+          "text": "Each reviewer now says whether its tests ran, with a `FORGE_TESTS: RAN`, `NOT NEEDED` or `COULD NOT RUN` line before its verdict. It never changes the verdict. The run summary lists reviews whose tests could not run, and forge-ui and the dataset record the answer (#117).",
+          "breaking": false,
+          "audience": "user",
+          "highlight": false,
+          "commits": [
+            "4b65cb4"
+          ]
+        },
+        {
+          "type": "added",
+          "text": "forge-ui's Settings page now explains each decision gate: what it does, when it asks, what it sends and what `on` changes. **How to set this up** opens a dialog with the steps from adding a provider to turning a gate on, and how to stop sending.",
+          "breaking": false,
+          "audience": "user",
+          "highlight": false,
+          "commits": [
+            "4533746"
+          ]
+        },
+        {
+          "type": "added",
+          "text": "`forge-parallel.sh adopt` brings a commit made outside forge into a run, where `review` used to refuse. It cherry-picks a commit or range, or with `--head` takes what is already on the integration branch, and the run's QA reviews just that range against your reason, with no implementer. A failed review puts the branch back unless `--approved` keeps it, whose findings then reach `forge issues` and the run's report. A review that concludes nothing (a crash, a timeout, a stop) always puts it back. Every adoption is recorded and shown in forge-ui, and `attribute` can name one as the step that broke verification (#79).",
+          "breaking": false,
+          "audience": "user",
+          "highlight": false,
+          "commits": [
+            "a40b250"
+          ]
+        },
+        {
+          "type": "added",
+          "text": "`forge-parallel.sh retry --no-dispatch` resumes several stopped tasks side by side: it records the decision, carries the findings forward and starts nothing, and one `run` then dispatches them all under `--max-parallel`. `--decide` and `--dwarf` now combine, so \"this model, two more attempts\" is one decision, on `retry` and on `forge control retry`. The run summary shows how (#118).",
+          "breaking": false,
+          "audience": "user",
+          "highlight": false,
+          "commits": [
+            "2c7dd54"
+          ]
+        },
+        {
+          "type": "added",
+          "text": "forge-ui shows forge's version next to the logo, with the build id in its tooltip, and `/api/health` now reports that version (#113).",
+          "breaking": false,
+          "audience": "user",
+          "highlight": false,
+          "commits": [
+            "6be6d4d"
+          ]
+        },
+        {
+          "type": "added",
+          "text": "forge-ui has a Worktrees screen (`#/worktrees`, linked from the header and from each run's page). It lists every worktree forge created, in any repository it knows, with its run, task, branch, last commit, size and status: in use, uncommitted changes, locked, needed by the run, failed task, finished, missing on disk, not forge's, unknown to git, or removed. It gives the command that removes each one safely, to copy, never with `--force`. The page runs nothing, so it works with `--read-only`. forge now records each worktree it adds or removes in the dataset (`worktree_created`, `worktree_removed`, read with `forge dataset worktrees`), so removed ones stay listed with their dates. Worktrees from older runs are derived from run dirs and the dataset (#125).",
+          "breaking": false,
+          "audience": "user",
+          "highlight": false,
+          "commits": [
+            "e6033a0"
+          ]
+        },
+        {
+          "type": "added",
+          "text": "forge-ui has a Projects screen (`#/projects`), linked from the header, a run's repository name and each map district. It has one page per repository with three tabs. Runs lists its runs, with the checkout and branch as a column. Findings lists every finding of every review of every run, with its run, task, attempt, reviewer and status, and opens the diff at it. A finding a later review got past is `superseded`, never `fixed`, and repeats across rounds are one row with a count. Memories shows what `memory.md` gives each role and every learning in the ledger with its state, from each checkout. The dataset fills in runs and checkouts that are gone, and those rows say so (#126).",
+          "breaking": false,
+          "audience": "user",
+          "highlight": false,
+          "commits": [
+            "b16e56f"
+          ]
+        },
+        {
+          "type": "added",
+          "text": "`forge memory learnings <repo> --json` lists every learning in a repository's ledger with what forge does with it: in memory, waiting for a second run, stale, trimmed by the cap, or curated out. The states come from forge's own memory rebuild, run without changing the repository. `forge memory` also takes `show`, `prune`, `spend` and `inject` (#126).",
+          "breaking": false,
+          "audience": "user",
+          "highlight": false,
+          "commits": [
+            "b16e56f"
+          ]
+        },
+        {
+          "type": "changed",
+          "text": "`forge runs rm --worktrees` also removes a clean scratch worktree forge left in the run's folder: an `integrate` candidate (`_candidate-<n>`) or a culprit search's `_attribute`. It used to count them as foreign and keep them. It uses the same ownership rule as forge-ui's Worktrees screen (#125).",
+          "breaking": false,
+          "audience": "user",
+          "highlight": false,
+          "commits": [
+            "e6033a0"
+          ]
+        },
+        {
+          "type": "changed",
+          "text": "Review snapshots now also get `bower_components`, `.bundle`, `Pods`, Mix's `deps` and `_build`, `.dart_tool`, `elm-stuff` and SwiftPM's `.build` linked from the checkout under review, beside `node_modules`, `.venv`, `venv` and `vendor`, so reviewers can run dependency-backed tests in more ecosystems. The fail-first check links the same directories (#127).",
+          "breaking": false,
+          "audience": "user",
+          "highlight": false,
+          "commits": [
+            "9e6dff2"
+          ]
+        },
+        {
+          "type": "fixed",
+          "text": "A codex that never reaches the network (\"workspace routing discovery failed\", or a reconnect loop that runs out) is now an infrastructure stop. A task pauses as `INFRA` and `--infra-retries` waits it out, where it used to end as `ERROR`, and a whole-run review exits 8 instead of reporting a failed review (#114).",
+          "breaking": false,
+          "audience": "user",
+          "highlight": false,
+          "commits": [
+            "61a2507"
+          ]
+        },
+        {
+          "type": "fixed",
+          "text": "Reviewers can run tests with the attempt's own dependencies: forge links `node_modules`, `.venv`, `venv` and `vendor` from the checkout under review into its review snapshot, at the root and in workspace packages, and the prompt says what is there and tells the reviewer to report rather than search or install (#117).",
+          "breaking": false,
+          "audience": "user",
+          "highlight": false,
+          "commits": [
+            "4b65cb4"
+          ]
+        },
+        {
+          "type": "fixed",
+          "text": "A `retry` with no decision behind it no longer prints a \"No such file\" error about `decided.left`.",
+          "breaking": false,
+          "audience": "user",
+          "highlight": false,
+          "commits": [
+            "4533746"
+          ]
+        },
+        {
+          "type": "fixed",
+          "text": "forge-ui: a live refresh no longer cancels a click, clears a text selection, replaces a focused `<select>` or closes a disclosure you opened. A redraw waits until you finish and then shows the latest data, and a long wait tells you newer data is there (#115).",
+          "breaking": false,
+          "audience": "user",
+          "highlight": false,
+          "commits": [
+            "6be6d4d"
+          ]
+        },
+        {
+          "type": "fixed",
+          "text": "A retry no longer prints a missing-file error when the optional qa.gate file is absent.",
+          "breaking": false,
+          "audience": "user",
+          "highlight": false,
+          "commits": [
+            "f240d4d"
+          ]
+        },
+        {
+          "type": "fixed",
+          "text": "A dispatch that times out or exits now also stops the processes its harness started in sessions or process groups of their own, such as a test runner and the web servers it launched, before verification or a retry can overlap with them in the same worktree. forge samples the harness's descendants every 2 seconds and lists what it stopped in `<role>.orphans`. A standalone `retry` that gets a TERM or Ctrl-C now stops what it dispatched before it exits with 143, instead of leaving the implementer running (#129).",
+          "breaking": false,
+          "audience": "user",
+          "highlight": false,
+          "commits": [
+            "70cb2cc"
+          ]
+        }
+      ]
+    },
+    {
       "version": "0.15",
       "date": "2026-11-04",
       "summary": "Profiles keep your model routing and run policies under a name, and forge-parallel.sh auto takes a goal to the approval table in one blocking command, planning only when it pays and collapsing plans that would run sequentially. Fast service tiers can be asked per role.",
