@@ -1131,7 +1131,9 @@ tells the dwarf which submodules are present. Integration worktrees (`run`, `int
 worktree keeps the old content) and nested submodules (left empty).
 
 **Reviewers get the same dependencies.** A review snapshot holds committed files only, so forge
-links `node_modules`, `.venv`, `venv` and `vendor` from the checkout under review (the task's
+links the directories package managers install into (`node_modules`, `bower_components`, `.venv`,
+`venv`, `vendor`, `.bundle`, `Pods`, Mix's `deps` and `_build`, `.dart_tool`, `elm-stuff` and
+SwiftPM's `.build`) from the checkout under review (the task's
 worktree, or the integration worktree for a final review) into the snapshot, at the root and in
 workspace packages down to five levels, unless the snapshot already holds that path or lacks its
 parent. These are the directories this step filled, so they match the attempt. The links count for

@@ -44,7 +44,9 @@ TEST_PATH = re.compile(r'(^|/)(tests?|spec|specs|__tests__)/'
                        r'|(^|/)test_[^/]*$|_test\.[^/]+$|\.(test|spec)\.[^/]+$')
 CODE_SUFFIXES = ('.py', '.go', '.js', '.jsx', '.ts', '.tsx', '.rb', '.rs', '.java',
                  '.kt', '.php', '.sh', '.mjs', '.cjs')
-DEP_DIRS = ('node_modules', '.venv', 'venv', 'vendor')
+# forge-artifact.sh's FORGE_DEP_DIRS: where package managers install into a checkout (#127)
+DEP_DIRS = ('node_modules', 'bower_components', '.venv', 'venv', 'vendor', '.bundle', 'Pods', 'deps', '_build',
+            '.dart_tool', 'elm-stuff', '.build')
 MAX_FILES = 20
 TAIL = 2000
 
