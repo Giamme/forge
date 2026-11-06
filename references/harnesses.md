@@ -70,7 +70,10 @@ through `forge-guard.py session` (python's `os.setsid()` then `exec`, same pid, 
 unless `FORGE_ORPHAN_GUARD=off` or the run is Fractal. That gives a process group to signal as a
 unit: the watchdog (TERM, then KILL for a CLI that traps TERM) and the exit trap signal the whole
 group in addition to `pkill -P`, and after a normal exit `forge-guard.py reap` lists and stops
-anything still alive in it (`<role>.orphans`). This is proven offline only; verify a new harness
+anything still alive in it (`<role>.orphans`). Tools can leave the group (codex runs commands in
+groups of their own, and a test runner's web server starts a session of its own), so
+`forge-guard.py track` samples the harness's descendants every 2 s into `<role>.tracked` (pid and
+start time), and `reap --tracked` stops those still alive and their children as well (#129). This is proven offline only; verify a new harness
 with one live dispatch before relying on it, and use the kill switch if a harness deliberately
 leaves a helper running.
 

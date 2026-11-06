@@ -57,6 +57,12 @@ if os.environ.get('SCENARIO'):
   if k in table: sc = table[k]; break
 if os.environ.get('CWDS'):
  with open(os.environ['CWDS'], 'a') as f: f.write(os.getcwd()+'\\n')
+# 'detached': a tool command in a session of its own, holding a child, as a test runner's web server
+# does (#129). Started before any sleep, so a timeout finds it running.
+if sc.get('detached'):
+ import subprocess; dp = os.environ['SCENARIO']+'.detpid'
+ q = subprocess.Popen(['/bin/sh','-c','sleep 60 & echo $! > "$0.child"; wait', dp], start_new_session=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+ pathlib.Path(dp).write_text(str(q.pid))
 if sc.get('sleep'): time.sleep(sc['sleep'])
 # 'continue_fails': the harness cannot continue the session it was asked to (exit 1, as claude does).
 if cont is not None and sc.get('continue_fails'):

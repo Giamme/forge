@@ -240,6 +240,65 @@ class ReapTests(unittest.TestCase):
 
 
 
+class TrackedReapTests(unittest.TestCase):
+    """#129: what a harness started in a session of its own leaves its group but not its ancestry."""
+
+    def spawn(self, args, **kwargs):
+        process = subprocess.Popen(args, stdin=subprocess.DEVNULL, **kwargs)
+        self.addCleanup(lambda: process.poll() is None and (process.kill(), process.wait()))
+        return process
+
+    def detached_child(self):
+        """A stand-in harness and the tool it started in a session of its own: (harness, tool pid)."""
+        harness = self.spawn([sys.executable, '-c', 'import subprocess, time; p = subprocess.Popen(["sleep", "120"], '
+                              'start_new_session=True); print(p.pid, flush=True); time.sleep(120)'],
+                             stdout=subprocess.PIPE, text=True)
+        tool = int(harness.stdout.readline())
+        self.addCleanup(lambda: alive(tool) and os.kill(tool, signal.SIGKILL))
+        return harness, tool
+
+    def tracked(self, tmp, harness, tool):
+        path = Path(tmp) / 'dwarf.tracked'
+        tracker = self.spawn([sys.executable, str(GUARD), 'track', str(harness.pid), str(path), '--interval', '0.2'])
+        self.assertTrue(wait_until(lambda: path.exists() and str(tool) in path.read_text(), 5), 'the tracker never saw the tool')
+        tracker.terminate(); tracker.wait(timeout=10)
+        harness.kill(); harness.wait()               # the harness ended: its tool is init's child now
+        return path
+
+    def test_a_tracked_tool_in_a_session_of_its_own_is_reaped_and_an_unrelated_one_is_not(self):
+        harness, tool = self.detached_child()
+        unrelated = self.spawn(['sleep', '120'], start_new_session=True)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self.tracked(tmp, harness, tool)
+            listing = Path(tmp) / 'dwarf.orphans'
+            result = run('reap', harness.pid, listing, '--tracked', path)
+            self.assertEqual((result.returncode, result.stdout.strip()), (0, '1'), result.stderr)
+            self.assertEqual([line.split('\t')[0] for line in listing.read_text().splitlines()], [str(tool)])
+        self.assertTrue(wait_until(lambda: not running(tool), 5), 'the tool survived the reap')
+        self.assertIsNone(unrelated.poll())
+
+    def test_a_recorded_pid_with_another_start_time_is_left_alone(self):
+        other = self.spawn(['sleep', '120'], start_new_session=True)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'dwarf.tracked'
+            path.write_text('%d\tThu Jan  1 00:00:00 1970\tsleep 120\n' % other.pid)
+            result = run('reap', 999999, Path(tmp) / 'o', '--tracked', path)
+            self.assertEqual(result.stdout.strip(), '0', result.stderr)
+        time.sleep(0.3)
+        self.assertIsNone(other.poll())
+
+    def test_stop_reaps_the_track_file_beside_a_harness_record(self):
+        # A dispatch that died before its EXIT trap: the scheduler's backstop gets the record only.
+        harness, tool = self.detached_child()
+        with tempfile.TemporaryDirectory() as tmp:
+            self.tracked(tmp, harness, tool)
+            record = Path(tmp) / 'dwarf.harness'
+            record.write_text('%d\trecorded while it ran\n' % harness.pid)
+            result = run('stop', record)
+            self.assertEqual((result.returncode, result.stdout.strip()), (0, '1'), result.stderr)
+        self.assertTrue(wait_until(lambda: not running(tool), 5))
+
+
 class IdentityStopTests(unittest.TestCase):
     """`identity` names a pid by its start time; `stop` acts on a `<pid>\t<identity>` record."""
 

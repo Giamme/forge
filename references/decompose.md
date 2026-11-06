@@ -1026,7 +1026,7 @@ run.
 
 forge records what it observed about how each dwarf behaved, never what the dwarf claimed:
 HEAD or the checked-out ref moved (**self-commit / branch switch**), processes left alive in the
-harness's session after it exited (**orphans**, listed in `dwarf.orphans` and stopped; disabled by
+harness's session after it exited, or started by it in a session of their own (**orphans**, listed in `dwarf.orphans` and stopped; disabled by
 `FORGE_ORPHAN_GUARD=off` or under Fractal), and a final message that **promises later work**.
 They are written to `tasks/<id>/guard.txt`, added to the QA prompt as "Implementer guard notes" and
 shown in the run summary. They never change a status. The dwarf prompt itself tells the

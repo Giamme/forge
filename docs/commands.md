@@ -491,7 +491,12 @@ quietly swapping backends hides the fact that the one you picked is broken.
 **Process hygiene.** Unless `FORGE_ORPHAN_GUARD=off` (or the run is a Fractal one), the harness
 is started in its own session, and after it exits any process still alive in that session is
 listed in `<role>.orphans` and stopped, so a backgrounded measurement cannot outlive the
-dispatch. The timeout watchdog and the exit trap signal the whole session too.
+dispatch. The timeout watchdog and the exit trap signal the whole session too. A tool that leaves
+that session (a test runner's web server started in a session of its own) is still the harness's
+descendant: forge samples the harness's descendants every 2 s while it runs, and stops those
+still alive, with their children, after a timeout or exit as well. A process that double-forks
+away within those 2 s is not seen. A standalone `retry` that gets a TERM or Ctrl-C stops
+everything it dispatched the same way before it exits (`143`).
 
 **Log clock.** Beside the log, `<role>.clock` records when it grew (one `<epoch> <bytes>` line for
 each second it did), so forge-ui can time the commands of a harness that logs no times (codex,

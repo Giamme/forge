@@ -11,11 +11,27 @@
       be signalled or reaped as a unit. macOS has no `setsid` binary; this is why the
       helper exists.
 
-  forge-guard.py reap <pgid> <orphans-file>
+  forge-guard.py reap <pgid> <orphans-file> [--tracked <file>]
       After the harness exited: anything still alive in its process group is an orphan
       the implementer abandoned. List it (only when something is found), TERM, wait a
       bounded ~2s, KILL, print how many were found. Never exits nonzero for an ordinary
-      outcome, and never touches its own or its caller's group.
+      outcome, and never touches its own or its caller's group. With --tracked, also every
+      process `track` recorded that is still alive with its recorded start time, and its
+      descendants now, whatever group or session it moved to (#129).
+
+  forge-guard.py track <pid> <file> [--interval S]
+      While the harness runs: every S seconds (default 2), append each new descendant of
+      <pid>, and of every process already recorded and still alive, as
+      `<pid><TAB><start time><TAB><command>`. A tool that starts a session of its own (a
+      test runner's web server) leaves the harness's group, but not its ancestry, so this is
+      how `reap --tracked` finds it. Runs until TERM, or until its parent is gone.
+
+  forge-guard.py stop-tree <pid> [--wait S]
+      A controller's interrupt (a standalone retry, #129): TERM the pid and every descendant it
+      has now, in any group or session, then wait up to S seconds (default 20) while they
+      clean up (a dispatch's EXIT trap stops its harness and reaps), then KILL what is left.
+      Each pid is matched by its start time, so a reused one is never signalled. Prints how
+      many processes were signalled.
 
   forge-guard.py identity <pid>
       Print the process's start time, which survives exec. Dispatch records it with the
@@ -29,6 +45,8 @@
       pid with another start time was reused and is left alone. A dead pid's group may
       still hold the harness's background jobs, and cannot have been reused while they
       live, so it is reaped. The record is removed; prints how many processes were signalled.
+      A `<role>.tracked` file beside a `<role>.harness` record is reaped as `reap --tracked`
+      would, so a dispatch that died early leaves no tool behind either.
 
   forge-guard.py promises <file> [--tail-bytes N]
       Scan the tail of an implementer's final message for promises of later work ("it is
@@ -166,8 +184,200 @@ def _reap_group(pgid: int, orphans_file: str | None) -> int:
     return len(found)
 
 
-def reap(pgid: int, orphans_file: str) -> int:
-    print(_reap_group(pgid, orphans_file))
+# --- track / tracked reap --------------------------------------------------------
+TRACK_INTERVAL_S = 2.0
+
+
+def ps_table():
+    """{pid: (ppid, start time, command)} of every live process but zombies, or None when ps is
+    unavailable. The start time is `identity`'s, whitespace-normalised the same way."""
+    for ps in PS_CANDIDATES:
+        if not os.access(ps, os.X_OK):
+            continue
+        try:
+            out = subprocess.run([ps, '-axo', 'pid=,ppid=,stat=,lstart=,command='], stdout=subprocess.PIPE,
+                                 stderr=subprocess.DEVNULL, timeout=5,
+                                 env=dict(os.environ, LC_ALL='C')).stdout.decode(errors='replace')
+        except (OSError, subprocess.SubprocessError):
+            continue
+        table = {}
+        for line in out.splitlines():
+            parts = line.split(None, 8)            # pid ppid stat + lstart's five words + command
+            if len(parts) < 8:
+                continue
+            try:
+                pid, ppid = int(parts[0]), int(parts[1])
+            except ValueError:
+                continue
+            if parts[2].startswith('Z'):
+                continue
+            table[pid] = (ppid, ' '.join(parts[3:8]), parts[8].strip() if len(parts) > 8 else '')
+        return table
+    return None
+
+
+def descendants(table, roots):
+    """Every live descendant of `roots` in a ps_table, the roots excluded."""
+    children = {}
+    for pid, (ppid, _start, _command) in table.items():
+        children.setdefault(ppid, []).append(pid)
+    out, todo = set(), [r for r in roots if r > 1]
+    while todo:
+        for child in children.get(todo.pop(), ()):
+            if child not in out and child not in roots:
+                out.add(child)
+                todo.append(child)
+    return out
+
+
+def read_tracked(path):
+    """{pid: start time} of a track file; a torn last line is skipped."""
+    found = {}
+    try:
+        with open(path, errors='replace') as handle:
+            for line in handle:
+                if not line.endswith('\n'):
+                    break
+                pid_text, _, rest = line.partition('\t')
+                start = rest.split('\t', 1)[0].strip()
+                try:
+                    pid = int(pid_text)
+                except ValueError:
+                    continue
+                if pid > 1 and start:
+                    found[pid] = start
+    except OSError:
+        pass
+    return found
+
+
+def _mine(table, known):
+    """The recorded processes still alive with their recorded start time (not a reused pid)."""
+    return {pid for pid, start in known.items() if pid in table and table[pid][1] == start}
+
+
+def track(root: int, path: str, interval: float = TRACK_INTERVAL_S) -> int:
+    known = read_tracked(path)
+    parent = os.getppid()
+    stopping = []
+    signal.signal(signal.SIGTERM, lambda *_: stopping.append(1))
+    while not stopping:
+        table = ps_table()
+        if table is None:
+            return 0
+        new = []
+        for pid in sorted(descendants(table, {root} | _mine(table, known))):
+            start = table[pid][1]
+            if known.get(pid) != start and pid != os.getpid():
+                known[pid] = start
+                new.append('%d\t%s\t%s\n' % (pid, start, ' '.join(table[pid][2].split()).replace('\t', ' ')))
+        if new:
+            try:
+                with open(path, 'a') as handle:
+                    handle.write(''.join(new))
+            except OSError:
+                pass
+        if os.getppid() != parent:
+            return 0                                  # the dispatch is gone; its EXIT trap reaps
+        deadline = time.monotonic() + interval
+        while not stopping and time.monotonic() < deadline:
+            time.sleep(0.05)
+    return 0
+
+
+def _never(table) -> set:
+    """Pids a tracked reap never signals: init, this process and its ancestors."""
+    never, pid = {0, 1}, os.getpid()
+    while pid and pid not in never:
+        never.add(pid)
+        pid = table.get(pid, (0,))[0] if table else 0
+    return never
+
+
+def _reap_tracked(path: str, skip_group: int | None) -> list:
+    """TERM, then KILL, what a track file recorded that is still ours, and its descendants now;
+    [(pid, command)] of what was found. Members of `skip_group` are left to the group reap."""
+    known = read_tracked(path) if path else {}
+    if not known:
+        return []
+    found = {}
+    for sig, wait in ((signal.SIGTERM, TERM_WAIT_S), (signal.SIGKILL, KILL_WAIT_S)):
+        table = ps_table()
+        if table is None:
+            break
+        never = _never(table)
+        targets = _mine(table, known)
+        targets |= descendants(table, targets)
+        targets -= never
+        if skip_group is not None:
+            targets = {pid for pid in targets if _pgid(pid) != skip_group}
+        if not targets:
+            break
+        for pid in targets:
+            found.setdefault(pid, table[pid][2])
+            try:
+                os.kill(pid, sig)
+            except OSError:
+                pass
+        deadline = time.monotonic() + wait
+        while time.monotonic() < deadline:
+            table = ps_table() or {}
+            if not any(pid in table for pid in targets):
+                break
+            time.sleep(0.05)
+    return sorted(found.items())
+
+
+def _pgid(pid: int):
+    try:
+        return os.getpgid(pid)
+    except OSError:
+        return None
+
+
+def _write_orphans(orphans_file, rows, append=False):
+    if not orphans_file or not rows:
+        return
+    try:
+        with open(orphans_file, 'a' if append else 'w') as handle:
+            for pid, command in rows:
+                handle.write('%s\t%s\n' % (pid or '?', ' '.join(command.split()) or '?'))
+    except OSError:
+        pass
+
+
+def stop_tree(root: int, wait: float) -> int:
+    table = ps_table()
+    if table is None or root <= 1:
+        print(0)
+        return 0
+    targets = (({root} if root in table else set()) | descendants(table, {root})) - _never(table)
+    starts = {pid: table[pid][1] for pid in targets}
+    for pid in targets:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            pass
+    deadline = time.monotonic() + wait
+    left = set(targets)
+    while left and time.monotonic() < deadline:
+        time.sleep(0.2)
+        now = ps_table() or {}
+        left = {pid for pid in left if pid in now and now[pid][1] == starts[pid]}
+    for pid in left:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except OSError:
+            pass
+    print(len(targets))
+    return 0
+
+
+def reap(pgid: int, orphans_file: str, tracked: str | None = None) -> int:
+    count = _reap_group(pgid, orphans_file)
+    extra = _reap_tracked(tracked, pgid) if tracked else []
+    _write_orphans(orphans_file, extra, append=count > 0)
+    print(count + len(extra))
     return 0
 
 
@@ -270,6 +480,8 @@ def stop(record: str) -> int:
                 count = _stop_live(pid)
         else:
             count = _reap_group(pid, None)
+    if record.endswith('.harness'):
+        count += len(_reap_tracked(record[:-len('.harness')] + '.tracked', None))
     try:
         os.unlink(record)
     except OSError:
@@ -355,8 +567,10 @@ def promises(path: str, tail_bytes: int = 3000) -> int:
 # --- cli ----------------------------------------------------------------------
 def main(argv: list[str]) -> int:
     if not argv:
-        print('usage: forge-guard.py ping | session -- CMD... | reap <pgid> <orphans-file> | '
-              'identity <pid> | stop <record-file> | promises <file> [--tail-bytes N]', file=sys.stderr)
+        print('usage: forge-guard.py ping | session -- CMD... | reap <pgid> <orphans-file> [--tracked FILE] | '
+              'track <pid> <file> [--interval S] | stop-tree <pid> [--wait S] | identity <pid> | '
+              'stop <record-file> | '
+              'promises <file> [--tail-bytes N]', file=sys.stderr)
         return 2
     command, rest = argv[0], argv[1:]
     try:
@@ -368,10 +582,35 @@ def main(argv: list[str]) -> int:
                 rest = rest[1:]
             return session(rest)
         if command == 'reap':
+            tracked = None
+            if '--tracked' in rest:
+                index = rest.index('--tracked')
+                tracked = rest[index + 1]
+                rest = rest[:index] + rest[index + 2:]
             if len(rest) != 2:
-                print('usage: forge-guard.py reap <pgid> <orphans-file>', file=sys.stderr)
+                print('usage: forge-guard.py reap <pgid> <orphans-file> [--tracked FILE]', file=sys.stderr)
                 return 2
-            return reap(int(rest[0]), rest[1])
+            return reap(int(rest[0]), rest[1], tracked)
+        if command == 'stop-tree':
+            wait = 20.0
+            if '--wait' in rest:
+                index = rest.index('--wait')
+                wait = float(rest[index + 1])
+                rest = rest[:index] + rest[index + 2:]
+            if len(rest) != 1:
+                print('usage: forge-guard.py stop-tree <pid> [--wait S]', file=sys.stderr)
+                return 2
+            return stop_tree(int(rest[0]), max(0.0, wait))
+        if command == 'track':
+            interval = TRACK_INTERVAL_S
+            if '--interval' in rest:
+                index = rest.index('--interval')
+                interval = float(rest[index + 1])
+                rest = rest[:index] + rest[index + 2:]
+            if len(rest) != 2:
+                print('usage: forge-guard.py track <pid> <file> [--interval S]', file=sys.stderr)
+                return 2
+            return track(int(rest[0]), rest[1], max(0.1, interval))
         if command == 'identity':
             if len(rest) != 1:
                 print('usage: forge-guard.py identity <pid>', file=sys.stderr)
