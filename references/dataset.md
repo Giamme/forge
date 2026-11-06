@@ -165,6 +165,7 @@ forge still running keeps writing.
 ./forge dataset reviewers [--horizon-days 14] [--repo PATH] [--json]   # how each reviewer's PASSed work held up
 ./forge dataset forecast <plan> [--repo PATH] [--json]   # likely cost and first-try PASS rate per task
 ./forge dataset worktrees [--json]      # the worktrees forge created and removed (forge-ui's Worktrees screen)
+./forge dataset history [--json]        # every review's findings and every learning, by run (forge-ui's Projects screen)
 ```
 
 `status` runs a different completeness check for each mode, because each mode

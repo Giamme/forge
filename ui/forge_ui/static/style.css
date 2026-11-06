@@ -1210,6 +1210,10 @@ dialog.export-dialog h2 { margin-bottom: var(--s-2); }
   html, body { height: auto; }
   body { overflow: auto; min-height: 100%; }
   .topbar { flex-wrap: wrap; gap: var(--s-2); padding: var(--s-2) var(--s-3); }
+  /* seven views: the nav takes its own row and scrolls sideways rather than widening the page */
+  .desk-nav { order: 3; max-width: 100%; overflow-x: auto; scrollbar-width: none; }
+  .desk-nav::-webkit-scrollbar { display: none; }
+  .desk-nav .top-link { flex: none; }
   .brand-sub, .brand-version, .top-search kbd, .top-search-label span { display: none; }
   .top-search { min-width: 0; margin-left: auto; }
   .desk-tools { width: 100%; flex-wrap: wrap; }
@@ -1321,6 +1325,37 @@ table.wt-grid { width: max-content; min-width: 100%; }
 .wt-groups summary { cursor: pointer; }
 .wt-group { display: grid; grid-template-columns: minmax(8em, max-content) 1fr; align-items: center; gap: var(--s-3); margin: var(--s-2) 0; }
 .wt-copy:focus-visible, .wt-cmd code:focus-visible, .wt-groups summary:focus-visible { outline: 2px solid var(--route); outline-offset: 2px; }
+
+/* ---------- projects (#/projects) ---------- */
+.projects-view { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--s-3); max-width: 1600px; }
+.prj-head { display: flex; align-items: baseline; gap: var(--s-4); flex-wrap: wrap; }
+.prj-links { display: flex; gap: var(--s-3); font-size: var(--t-sm); }
+.prj-lede, .prj-root, .prj-count, .prj-empty, .prj-differs { margin: 0; }
+.prj-root { overflow-wrap: anywhere; font-size: var(--t-sm); }
+.prj-tabs { justify-self: start; }
+.prj-tabs { display: inline-flex; gap: 2px; }
+.prj-tabs a { padding: 6px 14px; text-decoration: none; color: inherit; border-radius: var(--r-key); }
+.prj-tabs a[aria-current=page] { background: var(--module); box-shadow: var(--ply-1, none); }
+.prj-tabs a[aria-current=page] { font-weight: 600; }
+.prj-notes p { margin: 0; font-size: var(--t-sm); }
+.prj-filters { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-3); }
+.prj-table { min-width: 0; overflow-x: auto; }
+.prj-name { display: inline-flex; align-items: center; gap: 6px; }
+.prj-count-chip { margin-left: 6px; font-variant-numeric: tabular-nums; }
+.prj-occ { margin: var(--s-2) 0 0; padding-left: 1.2em; font-size: var(--t-xs); }
+.prj-given, .prj-learnings { display: grid; gap: var(--s-2); }
+.prj-given h2, .prj-learnings h2, .prj-section h3 { margin: 0; }
+.prj-lines { margin: 4px 0 0; padding-left: 1.2em; }
+.prj-lines li, .prj-learning { overflow-wrap: anywhere; }
+.prj-learnings td, .prj-findings td { vertical-align: top; }
+.prj-table td.prj-cut, .prj-body td.prj-cut { white-space: nowrap; max-width: 18em; overflow: hidden; text-overflow: ellipsis; }
+.prj-body td { white-space: nowrap; }
+.prj-findings td { white-space: nowrap; }
+.prj-findings td.prj-wide { white-space: normal; min-width: 26em; }
+.prj-summary { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; max-width: 46em; }
+.prj-learning { display: inline-block; max-width: 48em; }
+.prj-where a, .project-link { white-space: nowrap; }
+.prj-tabs a:focus-visible, .prj-links a:focus-visible, .project-link:focus-visible { outline: 2px solid var(--route); outline-offset: 2px; }
 
 /* ---------- delete a run ---------- */
 .del-gap { align-self: stretch; width: 1px; margin: 0 6px; background: var(--rule-2); }

@@ -212,6 +212,46 @@ class ReadOnlyWorktreesTests(WorktreesTests):
     read_only = True
 
 
+class ProjectsTests(EndpointCase):
+    def pid(self):
+        from forge_ui import projects
+        return projects.project_id(self.rrepo)
+
+    def test_the_list_and_a_project_read_run_dirs_only(self):
+        status, body = self.get('/api/projects')
+        self.assertEqual(status, 200)
+        self.assertIn((self.pid(), self.rrepo, 1), [(p['id'], p['root'], p['runs']) for p in body['projects']])
+        status, body = self.get('/api/projects/' + self.pid())
+        self.assertEqual((status, body['root'], [r['key'] for r in body['runs']]), (200, self.rrepo, [self.key]))
+        self.assertEqual(self.get('/api/projects/00000000')[0], 404)
+        self.assertEqual(self.get('/api/projects?x=1')[0], 400)
+        self.assertEqual(self.calls(), [])
+
+    def test_findings_ask_the_dataset_and_forge_issues_offline_then_answer_from_the_cache(self):
+        status, body = self.get(f'/api/projects/{self.pid()}/findings')
+        self.assertEqual(status, 200)
+        self.assertEqual(sorted(c['argv'] for c in self.calls()), [
+            ['dataset', 'history', '--json'],
+            ['issues', self.rplan, '--json', '--offline', '--all-runs', '--include-plausible', '--include-dismissed']])
+        self.get(f'/api/projects/{self.pid()}/findings')
+        self.assertEqual(len(self.calls()), 2)
+        self.get(f'/api/projects/{self.pid()}/findings?refresh=1')
+        self.assertEqual(len(self.calls()), 4)
+        self.assertEqual(self.get(f'/api/projects/{self.pid()}/findings?refresh=2')[0], 400)
+        self.assertEqual(self.get('/api/projects/00000000/findings')[0], 404)
+
+    def test_memories_ask_forge_memory_for_each_checkout_that_exists(self):
+        status, body = self.get(f'/api/projects/{self.pid()}/memories')
+        self.assertEqual(status, 200)
+        self.assertEqual(sorted(c['argv'] for c in self.calls()), [
+            ['dataset', 'history', '--json'], ['memory', 'learnings', self.rrepo, '--json']])
+        self.assertEqual([s['path'] for s in body['sources']], [self.rrepo])
+
+
+class ReadOnlyProjectsTests(ProjectsTests):
+    read_only = True
+
+
 class ConfigTests(EndpointCase):
     def cfg(self, **body):
         return self.post({'run': self.key, **body}, '/api/config')

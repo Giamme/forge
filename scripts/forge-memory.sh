@@ -25,6 +25,7 @@
 #   forge-memory.sh show   <repo>
 #   forge-memory.sh prune  <repo>
 #   forge-memory.sh spend  <repo> [--run <run-id>]
+#   forge-memory.sh learnings <repo> [--json]   every ledger learning and its state, as JSON
 #
 # Exit codes: 0 ok | 2 usage error
 set -uo pipefail
@@ -119,12 +120,14 @@ section_title() {
 # memory.md is regenerated from the whole ledger rather than mutated in place.
 # Rebuilding is idempotent and order-independent, so a crashed or concurrent run
 # cannot leave memory half-updated — it can only leave the ledger short a row.
-rebuild() { # rebuild <repo> -> prints "kept<TAB>pruned_stale<TAB>pruned_cap"
+# With <out>, the memory is written there instead of the repo's .forge/memory.md, and the repo is
+# only read: `learnings` uses that to say what a rebuild keeps without changing anything.
+rebuild() { # rebuild <repo> [<out>] -> prints "kept<TAB>pruned_stale<TAB>pruned_cap"
   local repo="$1" led mem tmp cand jev_loaded=0
   if [ "${FORGE_MEMORY_DEEP_PRUNE:-0}" = 1 ] && [ -f "$SKILL_DIR/scripts/forge-jev-options.sh" ]; then
     source "$SKILL_DIR/scripts/forge-jev-options.sh" 2>/dev/null && jev_loaded=1
   fi
-  led="$(ledger_for "$repo")"; mem="$(memory_for "$repo")"
+  led="$(ledger_for "$repo")"; mem="${2:-$(memory_for "$repo")}"
   [ -f "$led" ] || return 0
   tmp="$mem.tmp.$$"; cand="$mem.cand.$$"
 
@@ -222,7 +225,7 @@ rebuild() { # rebuild <repo> -> prints "kept<TAB>pruned_stale<TAB>pruned_cap"
   # The cap can eat a section's last fact, leaving a heading over nothing.
   drop_empty_sections "$header"
 
-  mkdir -p "$(dir_for "$repo")"
+  [ -n "${2:-}" ] || mkdir -p "$(dir_for "$repo")"
   mv "$header" "$mem"
   rm -f "$tmp"
   printf '%s\t%s\t%s\n' "$kept" "$stale" "$capped"
@@ -495,6 +498,26 @@ do_prune() { # do_prune <repo>
   rm -f ${MEMORY_DROPS:+"$MEMORY_DROPS"}
 }
 
+# --- learnings ----------------------------------------------------------------
+# Every learning in the ledger and what forge does with it, as JSON (forge-ui's Projects screen,
+# #126). The states come from this file's own rebuild, run into a scratch dir: the same grouping,
+# promotion threshold, staleness check and cap that `record` applies, so the listing cannot drift
+# from what memory.md gets. Read-only for the repo. No Jev: deep pruning happens only on `prune`.
+do_learnings() { # do_learnings <repo>
+  local repo="${1:?learnings needs a repo}" scratch rc=0
+  [ -d "$repo" ] || die "learnings: '$repo' is not a directory"
+  scratch="$(mktemp -d "${TMPDIR:-/tmp}/forge-memory-learnings.XXXXXX")" || die "learnings: no scratch dir" 3
+  : > "$scratch/drops"
+  if [ -f "$(ledger_for "$repo")" ]; then
+    MEMORY_DROPS="$scratch/drops" FORGE_MEMORY_DEEP_PRUNE=0 rebuild "$repo" "$scratch/memory.md" > "$scratch/counts"
+  fi
+  python3 "$SKILL_DIR/scripts/forge_memory_list.py" --repo "$repo" --ledger "$(ledger_for "$repo")" \
+    --memory "$(memory_for "$repo")" --rebuilt "$scratch/memory.md" --drops "$scratch/drops" \
+    --max-lines "$MAX_LINES" --max-bytes "$MAX_BYTES" --memory-off "$(memory_off && echo 1 || echo 0)" || rc=$?
+  rm -rf "$scratch"
+  return "$rc"
+}
+
 # --- spend --------------------------------------------------------------------
 # The ledger already carries one row per dispatch, and it is never injected into a
 # prompt, so accounting from it costs nothing at all. Time and dispatch counts
@@ -561,14 +584,28 @@ do_spend() {
 }
 
 # --- main ---------------------------------------------------------------------
-[ $# -ge 1 ] || die "usage: forge-memory.sh <inject|note|record|show|prune|spend> [repo] [...]"
+memory_usage() {
+  cat <<'USAGE'
+usage: forge memory <command> <repo> [...]   (scripts/forge-memory.sh)
+
+  show <repo>                 the repository's .forge/memory.md
+  learnings <repo> [--json]   every ledger learning and what forge does with it (in_memory, waiting,
+                              stale, capped, muted), from forge's own rebuild; changes nothing
+  prune <repo>                re-apply staleness and the cap now, then print what a dwarf is told
+  spend <repo> [--run ID]     what forge has cost this repository, from the ledger
+  inject <repo> <role>        the block forge prepends to a planner, dwarf or qa prompt
+USAGE
+}
+[ $# -ge 1 ] || die "usage: forge-memory.sh <inject|note|record|show|prune|spend|learnings> [repo] [...]"
 CMD="$1"; shift
 case "$CMD" in
+  -h|--help|help) memory_usage; exit 0 ;;
   inject) do_inject "$@" ;;
   note)   do_note "$@" ;;
   record) do_record "$@" ;;
   show)   mem="$(memory_for "${1:?show needs a repo}")"; [ -s "$mem" ] && cat "$mem" ;;
   spend)  do_spend "$@" ;;
+  learnings) [ "${2:-}" = --json ] || [ $# -eq 1 ] || die "learnings: usage: learnings <repo> [--json]"; do_learnings "$1" ;;
   prune)  do_prune "${1:?prune needs a repo}" >/dev/null
           do_inject "${1}" dwarf ;;
   *) die "unknown subcommand '$CMD'" ;;

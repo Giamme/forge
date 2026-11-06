@@ -267,6 +267,10 @@ its last 20,000 behind a leading `…`. Their `truncated` lists the field names 
 | `POST /api/runs/<key>/issues/dismiss` | dismiss or (`undo`) restore findings; authenticated |
 | `POST /api/runs/<key>/delete` | dry-run or delete a run with `forge runs rm`; authenticated, 900 s timeout; later requests for the key answer `404` |
 | `GET /api/models/reviewers` | `200` the `forge dataset reviewers --json` report (how each reviewer's PASSed work held up); no parameters |
+| `GET /api/projects` | `200 {projects: [ProjectRow]}`: one row per repository (see Projects) |
+| `GET /api/projects/<id>` | `200 Project`, `404` for an unknown id |
+| `GET /api/projects/<id>/findings[?refresh=1]` | `200 ProjectFindings`: every review's findings with their status |
+| `GET /api/projects/<id>/memories[?refresh=1]` | `200 ProjectMemories`: what each checkout's memory gives models and every learning's state |
 | `GET /api/worktrees[?refresh=1]` | `200 Worktrees`: every worktree forge created, with its status and the commands to remove it; cached 60 s (see Worktrees) |
 | `GET /api/config?run=<key>` | `200` the `forge config show --json` of that run's repository root (see Config) |
 | `POST /api/config` | set or unset one allowed key (`repo.verify`, `repo.setup`, `repo.verify-subset`, `decide.gate.<gate>`, `decide.gate.<gate>.provider`, `decide.gate.<gate>.model`); `jev.enabled` is gone; authenticated |
@@ -1479,6 +1483,37 @@ Runs `dataset reviewers --json` and answers with its object: `horizon_days`, `mi
 `unattributed`, `skipped` and `other_horizons`. Any query parameter is a `400`. Not cached: every
 request runs the CLI, and the page asks once per change of `/api/models`. Advisory: it feeds the
 Reviewers table's Did not hold column and nothing else. Timeout 60 s.
+
+### `GET /api/projects` and `/api/projects/<id>[/findings|/memories]`
+
+The Projects screen (`forge_ui/projects.py`). Read-only, so they answer in `--read-only` mode too, and
+none of them calls `gh`. A project is one repository root as `repos.py` resolves it; `<id>` is the run
+cloud's (cloudmodel.js `hashId`: FNV-1a over the root's UTF-16 code units, 8 hex digits).
+
+```
+ProjectRow = {id, name, root, exists, runs, live, last, path_only (runs tied by path only), checkouts,
+              memory_lines (lines of <root>/.forge/memory.md, null when absent), open_findings (not superseded)}
+Project = {id, name, root, exists, live, last, path_only, memory_off_runs,
+           checkouts: [{path, exists, branch, runs, root}], runs: [RunSummary + identity_source, dataset_uid, no_memory]}
+ProjectFindings = {id, rows: [Finding], notes: [text], runs, dataset_runs, computed, available}
+Finding = {source: run|dataset, run (key or null), run_id, task, final_review (its dir name, 'final' from the
+           dataset), attempt, kind: primary|shadow|final, reviewer, verdict, at, id, severity, confidence, location,
+           summary, text, fp (forge issues' key, null when it cannot parse the line), count, occurrences: [{run,
+           run_id, task, attempt, kind, reviewer, at, href}], status, fileable, origin, href (the diff at the finding)}
+ProjectMemories = {id, sources: [{path, root, branch, ok, ledger, memory, rebuilt_differs, max_lines}], differs,
+                   learnings: [{category, key, text, count, states: {source path: state}, rows, last, dataset_only}],
+                   notes, memory_off_runs, runs, computed}
+```
+
+Findings come from every review of every run dir (parsed by forge-contract.py through `findings.py`), and
+from `dataset history --json` for runs whose dir is gone (their base commit ties a run whose checkout is
+gone to the project, as `repos.py` does). `status` comes from one `issues <run> --json --offline --all-runs
+--include-plausible --include-dismissed` listing per project, matched by `forge issues`' own key, else
+`superseded` when a later review of the same task (or a later final review) passed, else `open`. Repeats
+within a task collapse by that key; a line it cannot parse is its own row. Memories run `memory learnings
+<checkout> --json` for the root and each checkout a run started in that still exists. A run's findings
+are cached by its `updated` time, the CLI's answers for 300 s; `refresh=1` reads everything again; any
+other parameter is a `400`.
 
 ### `GET /api/worktrees`
 

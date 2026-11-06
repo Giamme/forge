@@ -23,6 +23,7 @@ usage() {
     '  jev       the old decision-model commands, replaced by decide (kept for one release)' \
     '  dataset   every run'"'"'s inputs and outcomes: status, dump, import, export, outcomes, ...' \
     '  issues    file the review findings a run left open as GitHub issues (plain gh)' \
+    '  memory    a repository'"'"'s project memory: show, learnings --json (each learning and its state), prune' \
     '  pr        a draft pull-request description for a finished run (--create opens it with gh)' \
     '  ui        forge-ui, the run viewer: open [DIR], status, stop' \
     '  runs      this repo'"'"'s recent runs in the terminal: state, verdicts and run dirs; rerun a plan with another model, compare' \
@@ -97,6 +98,10 @@ case "${1:-}" in
   issues)
     shift
     exec python3 "$ROOT/scripts/forge-issues.py" "$@"
+    ;;
+  memory)
+    shift
+    exec /bin/bash "$ROOT/scripts/forge-memory.sh" "$@"
     ;;
   pr)
     shift

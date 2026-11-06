@@ -123,6 +123,13 @@ indistinguishable from the same command typed in a terminal, except that `contro
   Each is `forge control`; see [decomposed runs](decomposed-runs.md#changing-a-run-while-it-works).
   A control that cannot apply (a budget with no live scheduler, a merged task) is disabled and
   says why.
+- **Projects (`#/projects`):** one page per repository with its runs, every finding forge's reviews
+  wrote about it (each attempt, final reviews, shadow reviews behind a toggle), and every memory forge
+  keeps for it, whichever run or checkout they came from. A finding a later review got past is
+  `superseded`, never `fixed`; repeats across rounds are one row with a count. The Memories tab shows
+  what `memory.md` gives each role and each learning's state, as `forge memory learnings` reports it.
+  Runs and checkouts that are gone are read from the dataset, and those rows say so. Reachable from the
+  header, a run's repository name and each map district.
 - **Worktrees (`#/worktrees`):** every worktree forge created, in any repository it knows: its
   run, task, branch, last commit, size and status (in use, uncommitted changes, locked, needed by
   the run, failed task, finished, missing on disk, not forge's, unknown to git, removed), and the

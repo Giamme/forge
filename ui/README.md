@@ -239,6 +239,22 @@ keep one meaning everywhere (amber running, green merged or passed, red failed, 
   run cloud filtered to its runs.
 
   <img src="docs/media/models.png" width="760" alt="The implementers table: tasks, first-attempt pass rate with its 95% interval, retries, escalations, timeouts, accepts, median model time and tokens per model.">
+- **Projects (`#/projects`, `#/projects/<id>[/runs|/findings|/memories]`):** one row per repository
+  (its root, as the run cloud groups runs, with the same id): runs, runs live now, last activity, open
+  findings and memory lines, sorted by latest activity; a repository whose folder is gone stays listed,
+  and runs tied to it only by their path are marked. A project's page has three tabs. *Runs*: its runs,
+  with the checkout and branch as a column to filter on. *Findings*: every finding of every review of
+  every run (each attempt and round, final reviews, shadow reviews behind a toggle), with severity,
+  confidence, location, run, task, attempt, reviewer, date and status: `open`, `filed`, `fixed`, `swept`,
+  `dismissed` (from `forge issues`, offline) or `superseded` (a later review of the same task passed,
+  which does not say the finding was fixed). A finding repeated across rounds is one row with a count,
+  by `forge issues`' fingerprint. A row opens the diff at that finding; filing and dismissing stay on the
+  run's Open findings page. *Memories*: what `memory.md` gives models, by section and role, and every
+  learning in the ledger with its state from `forge memory learnings` (in memory, waiting for a second
+  run, stale, trimmed by the cap, curated out), from the root and each checkout that still exists, and
+  from the dataset for checkouts that are gone; when checkouts' files differ the tab says so and lets you
+  pick one. Each tab reads its endpoint when it opens, never on the poll; *Read again* reads everything
+  again. A run's header (its repository name) and each map district's heading link to the project.
 - **Worktrees (`#/worktrees`, `#/worktrees/repo/<root>`, `#/worktrees/runs/<key>`):** every worktree forge
   created, in any repository forge-ui knows (the runs it lists and the repositories in the dataset),
   with its run, task, branch, whether that branch is merged, its last commit, when forge created and
