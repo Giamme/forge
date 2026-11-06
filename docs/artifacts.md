@@ -17,7 +17,7 @@ as if the dwarf had written it.
   <role>.clock        when the log grew: one `<epoch> <bytes>` line per second it grew (forge-ui times codex and grok events by it; FORGE_LOG_CLOCK=off)
   <role>.last         the final message — read this first
   <role>.infra        only after an infrastructure failure: class, retry_after, detail, harness, model
-  <role>.orphans      only when processes were left running after the harness exited
+  <role>.orphans      only when processes were left running after the harness exited or timed out
   <role>.settled      only when claude/openclaude stayed up on a background task after its final result and forge ended it: ended_by=grace|timeout, backend_exit=; the result stands (not a timeout)
   <role>.session      session id reported by claude, openclaude or codex; absent when the dispatch published none
   <role>.continue     only when the dispatch was asked to continue a session (a reviewer's, or an implementer's): requested=, mode=continued|failed, reason=

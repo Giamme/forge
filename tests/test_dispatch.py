@@ -859,6 +859,39 @@ class OrphanGuardTests(DispatchBase):
         self.assertEqual((self.attempt('dwarf') / 'dwarf.orphans').read_text(), self.read('dwarf.orphans'))
         self.assertIn('left', result.stdout)
 
+    def detached(self):
+        """The fake dwarf's tool in a session of its own and that tool's child: [pid, child pid]."""
+        path = Path(str(self.root / 'scenario.json') + '.detpid')
+        child = Path(str(path) + '.child')
+        self.assertTrue(wait_until(lambda: path.exists() and child.exists() and child.read_text().strip(), 5),
+                        'the fake dwarf never started its detached job')
+        pids = [int(path.read_text()), int(child.read_text())]
+        for pid in pids:
+            self.addCleanup(lambda pid=pid: alive(pid) and os.kill(pid, signal.SIGKILL))
+        return pids
+
+    def assert_reaped_and_listed(self, pids):
+        for pid in pids:
+            self.assertTrue(wait_until(lambda: not alive(pid), 3), 'pid %d still running after dispatch returned' % pid)
+        if os.access('/bin/ps', os.X_OK):
+            listed = {line.split('\t')[0] for line in self.read('dwarf.orphans').splitlines()}
+            self.assertTrue({str(pid) for pid in pids} <= listed, listed)
+
+    def test_a_timeout_ends_what_the_harness_started_in_a_session_of_its_own(self):
+        # #129: a timed-out implementer's test runner and the servers it started kept running in
+        # sessions of their own while forge went on to verify and retry in the same worktree
+        self.scenario({'*.dwarf.*': {'detached': True, 'sleep': 30}})
+        result = self.dispatch('dwarf', 'sol', '--timeout', '4')
+        self.assertEqual(result.returncode, 7, result.stdout)
+        self.assert_reaped_and_listed(self.detached())
+        self.assertFalse((self.run_dir / 'dwarf.tracked').exists())
+
+    def test_what_the_harness_left_in_a_session_of_its_own_is_reaped_when_it_exits(self):
+        self.scenario({'*.dwarf.*': {'detached': True, 'sleep': 3}})
+        result = self.dispatch('dwarf', 'sol')
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assert_reaped_and_listed(self.detached())
+
     def test_kill_switch_and_fractal_leave_it_running(self):
         for name, extra in (('switch', {'FORGE_ORPHAN_GUARD': 'off'}), ('fractal', {'FORGE_FRACTAL_RUN': str(self.root / 'fractal')})):
             with self.subTest(name):

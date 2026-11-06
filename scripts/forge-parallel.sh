@@ -2250,6 +2250,24 @@ run_wait() { # run_wait <pid>
   while kill -0 "$1" 2>/dev/null; do run_rc=0; wait "$1" || run_rc=$?; done
 }
 
+# A standalone retry runs its dispatches in the foreground, and bash runs a trap only between
+# commands, so a TERM to the retry's pid alone ended it and left the dispatch, its harness and
+# the tools they started running in the task's worktree (#129). retry_stop sends TERM to
+# everything below the retry job (forge-guard.py stop-tree, which reads ps itself), and waits,
+# bounded, while each dispatch's EXIT trap stops its harness and reaps what it started. What
+# still runs then is killed, and the guard's backstop runs on any harness record a dispatch
+# left behind, as the scheduler's does.
+RETRY_STOP_WAIT=20     # seconds; a dispatch's EXIT trap needs about 1 s plus its ~6 s reap
+retry_stop() { # retry_stop <job pid> <plan> <task>
+  local record
+  python3 "$SKILL_DIR/scripts/forge-guard.py" stop-tree "$1" --wait "$RETRY_STOP_WAIT" >/dev/null 2>&1 \
+    || kill -TERM "$1" 2>/dev/null
+  [ -n "$2" ] && [ -n "$3" ] || return 0
+  for record in "$2/tasks/$3/dwarf.harness" "$2/tasks/$3/qa.harness"; do
+    [ ! -e "$record" ] || python3 "$SKILL_DIR/scripts/forge-guard.py" stop "$record" >/dev/null 2>&1
+  done
+}
+
 # The handler of do_run's subshell: a signal reaches the job in progress (the scheduler,
 # then the verification) as TERM. Before any job exists there is nothing to clean up.
 run_signal() {
@@ -2873,7 +2891,19 @@ case "$CMD" in
     trap - TERM INT
     [ "$run_signalled" = 1 ] && [ "$rc" -gt 128 ] && rc=130
     forge_update_notice; exit "$rc" ;;
-  retry)     do_retry "$@" ;;
+  retry)
+    # As run: the handler lives at the pid the user started, and do_retry runs in a background
+    # job it waits for. A signal stops that job's whole tree (retry_stop, #129), and the retry
+    # returns only once what it dispatched has stopped.
+    retry_signalled=0 retry_job=""
+    trap 'retry_signalled=1; [ -n "$retry_job" ] && retry_stop "$retry_job" "${1:-}" "${2:-}"' TERM INT
+    ( do_retry "$@" ) <&0 &
+    retry_job=$!
+    [ "$retry_signalled" = 1 ] && retry_stop "$retry_job" "${1:-}" "${2:-}"
+    run_wait "$retry_job"; rc=$run_rc
+    trap - TERM INT
+    [ "$retry_signalled" = 1 ] && [ "$rc" -le 128 ] && rc=143
+    exit "$rc" ;;
   integrate) do_integrate "$@" ;;
   accept)    need_fn do_accept;  do_accept "$@" ;;
   adopt)     need_fn do_adopt;   do_adopt "$@" ;;

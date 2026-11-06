@@ -119,6 +119,45 @@ class InterruptTests(unittest.TestCase):
         os.kill(run.pid, signal.SIGTERM)
         self.assertInterruptedWithoutVerifying(run, p, marker)
 
+    def test_sigterm_to_a_retry_stops_its_harness_and_what_the_harness_started(self):
+        # #129: a TERM to a standalone retry ended the retry alone. Its implementer, and the test
+        # runner that implementer started in a session of its own, kept running in the worktree.
+        self.scenario({'a.qa.1': {'verdict': 'FAIL', 'findings': '- [P1][CONFIRMED] a.txt:1 — broken'},
+                       'a.dwarf.2': {'detached': True, 'sleep': 60}})
+        p = self.plan()
+        self.assertEqual(self.run_script('forge-parallel.sh', 'run', p).returncode, 5)
+        out = (self.root / 'run.out').open('w')
+        self.addCleanup(out.close)
+        retry = subprocess.Popen(['bash', str(SCRIPTS / 'forge-parallel.sh'), 'retry', str(p), 'a'], cwd=self.repo,
+                                 env=self.env, stdout=out, stderr=subprocess.STDOUT, start_new_session=True)
+        self.addCleanup(self.kill_group, retry.pid)
+        detpid = Path(str(self.root / 'scenario.json') + '.detpid')
+        child = Path(str(detpid) + '.child')
+        record = p / 'tasks/a/dwarf.harness'
+        self.wait_for(lambda: child.exists() and child.read_text().strip() and record.exists(), what='the tool to start')
+        pids = [int(detpid.read_text()), int(child.read_text()), int(record.read_text().split()[0])]
+        for pid in pids:
+            self.addCleanup(lambda pid=pid: self.kill_pid(pid))
+        time.sleep(2.5)                              # one tracker sample past the tool's start
+        os.kill(retry.pid, signal.SIGTERM)
+        self.assertEqual(self.finish(retry, 40), 143, (self.root / 'run.out').read_text())
+        for pid in pids:                             # stopped before the retry returned
+            self.assertFalse(self.running(pid), 'pid %d outlived the retry' % pid)
+        self.assertEqual(self.pgrep('forge-dispatch.sh dwarf .*' + str(p)), [])
+        self.assertLockFree(p)
+
+    @staticmethod
+    def kill_pid(pid):
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+
+    @staticmethod
+    def running(pid):
+        state = subprocess.run(['/bin/ps', '-p', str(pid), '-o', 'stat='], capture_output=True, text=True).stdout.strip()
+        return bool(state) and not state.startswith('Z')
+
     def test_sigint_to_the_scheduler_skips_verification(self):
         p, marker, verify = self.sleeping_dwarf()
         run = self.start(p, '--verify', verify)

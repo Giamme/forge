@@ -56,8 +56,9 @@
 #             9 the session was not continued (--continue-session only): the harness cannot
 #               continue one, or it ran and failed. The caller may dispatch fresh; dispatch
 #               never does, so each dispatch keeps its own record. $ROLE.continue says why.
-# A process still alive in the harness's group after it exited is killed and listed in
-# $ROLE.orphans (only written when there is something to list).
+# A process still alive in the harness's group after it exited, or one the harness started
+# that moved to a session of its own (#129), is killed and listed in $ROLE.orphans (only
+# written when there is something to list). A timeout ends them the same way.
 set -uo pipefail
 
 SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -417,7 +418,7 @@ write_continue() { :; }   # redefined below once there is an attempt to archive 
 ATTEMPT=""
 if [ "$PREFLIGHT" != 1 ] && [ "$DRY" != 1 ]; then
   ATTEMPT="$(python3 "$RUNTIME" begin "$RUN_DIR" "$ROLE")" || exit 3
-  rm -f "$RUN_DIR/$ROLE.last" "$RUN_DIR/$ROLE.log" "$RUN_DIR/$ROLE.clock" "$RUN_DIR/$ROLE.resolved" "$RUN_DIR/$ROLE.cmd" "$RUN_DIR/$ROLE.timedout" "$RUN_DIR/$ROLE.settled" "$RUN_DIR/$ROLE.infra" "$RUN_DIR/$ROLE.orphans" "$RUN_DIR/$ROLE.session" "$RUN_DIR/$ROLE.continue" "$RUN_DIR/$ROLE.harness"
+  rm -f "$RUN_DIR/$ROLE.last" "$RUN_DIR/$ROLE.log" "$RUN_DIR/$ROLE.clock" "$RUN_DIR/$ROLE.resolved" "$RUN_DIR/$ROLE.cmd" "$RUN_DIR/$ROLE.timedout" "$RUN_DIR/$ROLE.settled" "$RUN_DIR/$ROLE.infra" "$RUN_DIR/$ROLE.orphans" "$RUN_DIR/$ROLE.session" "$RUN_DIR/$ROLE.continue" "$RUN_DIR/$ROLE.harness" "$RUN_DIR/$ROLE.tracked"
   trap 'exit 143' TERM
   trap 'exit 130' INT
   # GUARD_ON is 1 only when the harness was started in its own process group (see the
@@ -425,17 +426,22 @@ if [ "$PREFLIGHT" != 1 ] && [ "$DRY" != 1 ]; then
   # signalled. Every wait here is bounded: this runs on the way out of an interrupted
   # dispatch and must not be the thing that hangs it.
   exit_cleanup() {
+    [ -z "${tpid:-}" ] || kill -TERM "$tpid" 2>/dev/null
     if [ -n "${hpid:-}" ] && kill -0 "$hpid" 2>/dev/null; then
       [ "${GUARD_ON:-0}" != 1 ] || kill -s TERM -- "-$hpid" 2>/dev/null
       pkill -TERM -P "$hpid" 2>/dev/null; kill -TERM "$hpid" 2>/dev/null
-      if [ "${GUARD_ON:-0}" = 1 ]; then sleep 1; kill -s KILL -- "-$hpid" 2>/dev/null; fi
+      if [ "${GUARD_ON:-0}" = 1 ]; then
+        sleep 1; kill -s KILL -- "-$hpid" 2>/dev/null
+        # what it started in sessions of their own (#129)
+        python3 "$GUARD" reap "$hpid" "$RUN_DIR/$ROLE.orphans" --tracked "$RUN_DIR/$ROLE.tracked" >/dev/null 2>&1
+      fi
     elif [ "${GUARD_ON:-0}" = 1 ] && [ "${reaped:-0}" != 1 ] && [ -n "${hpid:-}" ]; then
       # Interrupted after the harness exited but before the normal reap.
-      python3 "$GUARD" reap "$hpid" "$RUN_DIR/$ROLE.orphans" >/dev/null 2>&1
+      python3 "$GUARD" reap "$hpid" "$RUN_DIR/$ROLE.orphans" --tracked "$RUN_DIR/$ROLE.tracked" >/dev/null 2>&1
     fi
     for watcher in ${wpid:-} ${spid:-}; do pkill -P "$watcher" 2>/dev/null; kill "$watcher" 2>/dev/null; done
     [ -z "${cpid:-}" ] || kill "$cpid" 2>/dev/null
-    rm -f "$RUN_DIR/$ROLE.harness"
+    rm -f "$RUN_DIR/$ROLE.harness" "$RUN_DIR/$ROLE.tracked"
   }
   # What the EXIT trap's `finish` archives. Pessimistic until an outcome is known, so every
   # path out of a continue request (a signal, a usage error after this point) leaves a record.
@@ -808,7 +814,7 @@ fi
 # when a stale $LAST is already there. That is harmless when each run gets a fresh
 # run-dir, and silently wrong for `forge-parallel.sh retry`, which reuses the task
 # directory — it would read the first attempt's result and never notice.
-rm -f "$LAST" "$LOG" "$RUN_DIR/$ROLE.clock" "$RUN_DIR/$ROLE.clock.stop" "$RUN_DIR/$ROLE.timedout" "$RUN_DIR/$ROLE.settled" "$RUN_DIR/$ROLE.infra" "$RUN_DIR/$ROLE.orphans" "$RUN_DIR/$ROLE.harness"
+rm -f "$LAST" "$LOG" "$RUN_DIR/$ROLE.clock" "$RUN_DIR/$ROLE.clock.stop" "$RUN_DIR/$ROLE.timedout" "$RUN_DIR/$ROLE.settled" "$RUN_DIR/$ROLE.infra" "$RUN_DIR/$ROLE.orphans" "$RUN_DIR/$ROLE.harness" "$RUN_DIR/$ROLE.tracked"
 python3 "$RUNTIME" phase "$ATTEMPT" model
 t0="$(date +%s)"
 # Process-group guard. A dwarf that starts `npm test &` and ends its turn leaves that
@@ -847,6 +853,13 @@ if [ "$GUARD_ON" = 1 ]; then
     printf '%s\t%s\n' "$hpid" "$hident" > "$RUN_DIR/.$ROLE.harness.tmp" \
       && mv -f "$RUN_DIR/.$ROLE.harness.tmp" "$RUN_DIR/$ROLE.harness"
   fi
+fi
+# The harness's descendants, sampled while it runs (#129). A tool that starts a session of its
+# own (a test runner's web server) leaves the group the reap below signals, but the tracker saw
+# it as a descendant, so the reap finds it by pid and start time. Advisory, like the guard.
+tpid=""
+if [ "$GUARD_ON" = 1 ]; then
+  python3 "$GUARD" track "$hpid" "$RUN_DIR/$ROLE.tracked" </dev/null >/dev/null 2>&1 & tpid=$!
 fi
 
 # Ends the harness: the whole process group first when the harness has its own (GUARD_ON),
@@ -908,15 +921,18 @@ for watcher in $wpid $spid; do
   kill "$watcher" 2>/dev/null
   wait "$watcher" 2>/dev/null
 done
-# Anything the harness left running in its group is an abandoned background job. Kill it
-# before reading the tree, and leave the list for the caller. Bounded (~3s) and advisory:
-# a reaper failure changes nothing about the exit code.
+# Anything the harness left running in its group is an abandoned background job, and so is
+# anything the tracker saw it start that is still alive, in whatever session: a timeout stops
+# the harness, not the test servers its tools started (#129). Kill them before reading the
+# tree, and leave the list for the caller. Bounded (~6s) and advisory: a reaper failure
+# changes nothing about the exit code.
+if [ -n "$tpid" ]; then kill -TERM "$tpid" 2>/dev/null; wait "$tpid" 2>/dev/null; tpid=""; fi
 if [ "$GUARD_ON" = 1 ]; then
-  orphans_found="$(python3 "$GUARD" reap "$hpid" "$RUN_DIR/$ROLE.orphans" 2>/dev/null)"
+  orphans_found="$(python3 "$GUARD" reap "$hpid" "$RUN_DIR/$ROLE.orphans" --tracked "$RUN_DIR/$ROLE.tracked" 2>/dev/null)"
   case "$orphans_found" in ''|*[!0-9]*|0) ;; *) note "$HARNESS left $orphans_found process(es) running after it exited; killed — see $RUN_DIR/$ROLE.orphans" ;; esac
 fi
 reaped=1
-rm -f "$RUN_DIR/$ROLE.harness"
+rm -f "$RUN_DIR/$ROLE.harness" "$RUN_DIR/$ROLE.tracked"
 # Neither CLI refuses a fast request it cannot honour: it runs slower and still exits 0.
 # One note when the log shows that. The exit below stays the one the harness already returned.
 if [ "$SERVICE_TIER" = fast ]; then

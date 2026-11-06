@@ -1026,7 +1026,7 @@ run.
 
 forge records what it observed about how each dwarf behaved, never what the dwarf claimed:
 HEAD or the checked-out ref moved (**self-commit / branch switch**), processes left alive in the
-harness's session after it exited (**orphans**, listed in `dwarf.orphans` and stopped; disabled by
+harness's session after it exited, or started by it in a session of their own (**orphans**, listed in `dwarf.orphans` and stopped; disabled by
 `FORGE_ORPHAN_GUARD=off` or under Fractal), and a final message that **promises later work**.
 They are written to `tasks/<id>/guard.txt`, added to the QA prompt as "Implementer guard notes" and
 shown in the run summary. They never change a status. The dwarf prompt itself tells the
@@ -1131,7 +1131,9 @@ tells the dwarf which submodules are present. Integration worktrees (`run`, `int
 worktree keeps the old content) and nested submodules (left empty).
 
 **Reviewers get the same dependencies.** A review snapshot holds committed files only, so forge
-links `node_modules`, `.venv`, `venv` and `vendor` from the checkout under review (the task's
+links the directories package managers install into (`node_modules`, `bower_components`, `.venv`,
+`venv`, `vendor`, `.bundle`, `Pods`, Mix's `deps` and `_build`, `.dart_tool`, `elm-stuff` and
+SwiftPM's `.build`) from the checkout under review (the task's
 worktree, or the integration worktree for a final review) into the snapshot, at the root and in
 workspace packages down to five levels, unless the snapshot already holds that path or lacks its
 parent. These are the directories this step filled, so they match the attempt. The links count for

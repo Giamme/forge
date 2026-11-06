@@ -59,10 +59,18 @@ forge_review_snapshot() ( # source, baseline tree, final tree, destination
 
 )
 
+# Where package managers install into a checkout: npm and bower, Python virtualenvs, Go, PHP and Ruby
+# vendor dirs, Bundler's config, CocoaPods, Mix (deps, _build), Dart, Elm and SwiftPM (#127). The same
+# names as forge-fail-first.py's DEP_DIRS. Only a directory the snapshot does not hold is linked, so a
+# committed one of these names is never replaced.
+FORGE_DEP_DIRS='node_modules bower_components .venv venv vendor .bundle Pods deps _build .dart_tool elm-stuff .build'
+
 _forge_dep_dirs() { # checkout: its dependency directories, relative, never one inside another
-  # The names are forge-fail-first.py's DEP_DIRS. Five levels reach apps/group/name/node_modules.
+  # Five levels reach apps/group/name/node_modules.
+  local name names=()
+  for name in $FORGE_DEP_DIRS; do names+=(${names[0]+-o} -name "$name"); done
   (cd "$1" && find . -maxdepth 5 \( -name .git -o -name .forge \) -prune -o \
-      \( -name node_modules -o -name .venv -o -name venv -o -name vendor \) \( -type d -o -type l \) -print -prune 2>/dev/null) |
+      \( "${names[@]}" \) \( -type d -o -type l \) -print -prune 2>/dev/null) |
     sed 's#^\./##'
 }
 

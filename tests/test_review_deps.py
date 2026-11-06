@@ -3,6 +3,7 @@
 Through the real runners with the fake CLI: the link must hold the attempt's copy, void no review,
 stay out of the reviewed change, and leave a repo with no dependency directories as it was."""
 import dataset_isolation  # noqa: F401  keeps the run dataset out of the developer's store
+import importlib.util
 import os
 from pathlib import Path
 import subprocess
@@ -125,6 +126,17 @@ class ReviewDepsTests(unittest.TestCase):
         self.assertEqual((snapshot / '.git/info/exclude').read_text().split(), ['/a/b/c/d/node_modules', '/node_modules'])
         self.assertIn('a/b/c/d/node_modules, node_modules', note)
         self.assertIn('complete', note)                                        # never claims it is
+
+    def test_every_dependency_dir_fail_first_links_is_linked_for_the_reviewer_too(self):
+        # One list in two languages: a name added to one and not the other gives the reviewer and the
+        # fail-first check different checkouts. Mix's deps/_build and CocoaPods' Pods are among them (#127).
+        spec = importlib.util.spec_from_file_location('ff', fixtures.ROOT / 'scripts/forge-fail-first.py')
+        ff = importlib.util.module_from_spec(spec); spec.loader.exec_module(ff)
+        self.assertTrue({'node_modules', 'deps', '_build', 'Pods'} <= set(ff.DEP_DIRS))
+        snapshot, note = self.link_in(lambda root: [(root / name).mkdir() for name in ff.DEP_DIRS])
+        self.assertEqual(sorted(p.name for p in snapshot.iterdir() if p.is_symlink()), sorted(ff.DEP_DIRS))
+        for name in ff.DEP_DIRS:
+            self.assertIn(name, note)
 
     def test_a_write_through_the_link_voids_no_review(self):
         self.ignore_deps()
