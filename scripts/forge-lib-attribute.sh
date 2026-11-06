@@ -54,7 +54,9 @@ attribute_scratch_pick() { # attribute_scratch_pick <wt_root>
 
 attribute_scratch_remove() {
   [ "${ATTR_SCRATCH_OWNED:-0}" = 1 ] && [ -n "${ATTR_SCRATCH:-}" ] || return 0
-  git -C "$ATTR_REPO" worktree remove --force "$ATTR_SCRATCH" >/dev/null 2>&1
+  if git -C "$ATTR_REPO" worktree remove --force "$ATTR_SCRATCH" >/dev/null 2>&1; then
+    forge_worktree_event removed "$ATTR_PLAN" "$ATTR_REPO" "$ATTR_SCRATCH" - attribute
+  fi
   rm -rf "$ATTR_SCRATCH"
   git -C "$ATTR_REPO" worktree prune >/dev/null 2>&1
   return 0
@@ -80,6 +82,7 @@ attribute_verify() { # attribute_verify <k>
     ATTR_REASON="could not create the scratch worktree for prefix $k: $(tail -1 "$dir/worktree.out")"
     return 2
   fi
+  forge_worktree_event created "$ATTR_PLAN" "$ATTR_REPO" "$ATTR_SCRATCH" - attribute
   note "attribute: verifying prefix $k of $ATTR_N (${commit:0:12})"
   populate_submodules "$ATTR_REPO" "$ATTR_SCRATCH" "$dir" "prefix $k"
   setup_cmd="$(worktree_setup_command "$ATTR_PLAN" "$ATTR_REPO")"

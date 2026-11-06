@@ -40,6 +40,7 @@ time order: an attempt that PASSed, then a merge that CONFLICTed, then a human `
 | `event` `escalation` | retry that changes the model | the model a retry escalated from and to, `after_attempt`, and `source` (`policy`, `retry` for an explicit `--dwarf`, or `pin`), recorded at the rewrite, before the retried attempt begins. Runs from before lateral moves had their own record may also hold `source` `fallback`: those rows are lateral moves |
 | `event` `lateral` | dwarf-stage infrastructure stop moved the task to another model of its tier | `role` (`dwarf`), the model it moved `from` and `to`, `cause` (the stop's class, `-` when none was given) and `attempt` (the attempts spent when it moved). Recorded in `tasks/<id>/lateral.tsv`, not as an `escalation`; a streak of failures carries across it |
 | `event` `control` | `forge control` change | a human's live change: `at`, `actor` (`cli`/`ui`), `action` (`set`, `pin`, `unpin`), `key`, `value`, `previous`; task events carry the task id. Also read back from `control.log` by `import` |
+| `event` `worktree_created` / `worktree_removed` | forge adds or removes a worktree | `path`, `branch` (`-` when detached), `kind` (`task`, `integration`, `candidate` for integrate's scratch worktree, `attribute` for the culprit search's), `repo_path`, and the task for a task worktree; `forge runs rm` adds `by`. Written at task and `_integration` creation, the merged-task cleanup at the end of `run`, integrate's candidate, every prefix of `attribute`, `combine` and `split` (a moved worktree is removed from the old run and created in the new one), and `forge runs rm --worktrees`. A worktree removed outside forge has no `worktree_removed`. forge-ui's Worktrees screen reads them through `forge dataset worktrees` |
 | `event` `run_delete_started` / `run_deleted` | `forge runs rm` | written strictly around a run's deletion: `path`, `run_id`, `archive`, and for `run_deleted` the bytes freed |
 | `event` `shadow_review` | shadow review | how an opt-in second review ended (`done`, `invalid`, `overtime`, `orphaned`, ...), with the reviewed commit and both specs. Its dispatch is recorded with role `qa_shadow` |
 | `jev` | Jev request | site, answers, usage, latency, mode. Blob: the **full request** (state and questions). Its original sha is `jev.jsonl`'s `key`. A per-attempt gate's request state carries `run`, `task` and `attempt` (`dwarf-message`, `retry-addressed`), so its key differs per attempt and per run; `attribution` carries `run` only |
@@ -163,6 +164,7 @@ forge still running keeps writing.
 ./forge dataset routing [--repo PATH] [--since DAYS] [--json]   # pass rate and runtime per tier and model
 ./forge dataset reviewers [--horizon-days 14] [--repo PATH] [--json]   # how each reviewer's PASSed work held up
 ./forge dataset forecast <plan> [--repo PATH] [--json]   # likely cost and first-try PASS rate per task
+./forge dataset worktrees [--json]      # the worktrees forge created and removed (forge-ui's Worktrees screen)
 ```
 
 `status` runs a different completeness check for each mode, because each mode

@@ -784,6 +784,23 @@ def _reviewer_outcomes(ctx):
     return ctx.call('dataset', 'reviewers', '--json')
 
 
+def _worktrees(ctx):
+    # The Worktrees screen (#125): git and the run dirs, read here, plus the history `forge dataset worktrees`
+    # keeps, read through the CLI. Cached per server (worktrees.CACHE_S); ?refresh=1 reads everything again.
+    from forge_ui import worktrees
+    ctx.route = 'worktrees'
+    try:
+        params = _query_params(ctx.query, ('refresh',))
+        refresh = _bit(params, 'refresh')
+    except BadBody as exc:
+        return _invalid(str(exc))
+
+    def history():
+        status, body = ctx.call('dataset', 'worktrees', '--json')
+        return body if status == 200 else None
+    return 200, worktrees.screen(ctx.server).answer(ctx.server.catalog, history, refresh=refresh)
+
+
 ROUTES = [
     ('GET', re.compile(r'/api/runs/([0-9a-f]{12})/controls'), _show),
     ('POST', re.compile(r'/api/runs/([0-9a-f]{12})/controls'), _change),
@@ -796,6 +813,7 @@ ROUTES = [
     ('GET', re.compile(r'/api/config()'), _config_get),
     ('POST', re.compile(r'/api/config()'), _config_set),
     ('GET', re.compile(r'/api/models/reviewers()'), _reviewer_outcomes),
+    ('GET', re.compile(r'/api/worktrees()'), _worktrees),
 ]
 
 

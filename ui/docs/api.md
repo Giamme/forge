@@ -267,6 +267,7 @@ its last 20,000 behind a leading `…`. Their `truncated` lists the field names 
 | `POST /api/runs/<key>/issues/dismiss` | dismiss or (`undo`) restore findings; authenticated |
 | `POST /api/runs/<key>/delete` | dry-run or delete a run with `forge runs rm`; authenticated, 900 s timeout; later requests for the key answer `404` |
 | `GET /api/models/reviewers` | `200` the `forge dataset reviewers --json` report (how each reviewer's PASSed work held up); no parameters |
+| `GET /api/worktrees[?refresh=1]` | `200 Worktrees`: every worktree forge created, with its status and the commands to remove it; cached 60 s (see Worktrees) |
 | `GET /api/config?run=<key>` | `200` the `forge config show --json` of that run's repository root (see Config) |
 | `POST /api/config` | set or unset one allowed key (`repo.verify`, `repo.setup`, `repo.verify-subset`, `decide.gate.<gate>`, `decide.gate.<gate>.provider`, `decide.gate.<gate>.model`); `jev.enabled` is gone; authenticated |
 | `GET /api/config/profiles?run=<key>` | `200` every profile of that run's repository, each with its level, shadowed levels, default flag and body (see Profiles) |
@@ -1478,6 +1479,41 @@ Runs `dataset reviewers --json` and answers with its object: `horizon_days`, `mi
 `unattributed`, `skipped` and `other_horizons`. Any query parameter is a `400`. Not cached: every
 request runs the CLI, and the page asks once per change of `/api/models`. Advisory: it feeds the
 Reviewers table's Did not hold column and nothing else. Timeout 60 s.
+
+### `GET /api/worktrees`
+
+The Worktrees screen (`forge_ui/worktrees.py`). Read-only, so it answers in `--read-only` mode too.
+It runs `git worktree list --porcelain -z` in every repository forge-ui knows (the roots of the runs
+it lists, and the repositories `forge dataset worktrees --json` names), `git status` in each forge
+worktree on disk, one `git show` per repository for the last commits and one `for-each-ref --merged
+HEAD` for merged branches; it lists the folders under each `.forge-worktrees` that no repository
+lists, and adds the dataset's history through `dataset worktrees --json`. Who owns a worktree is
+forge's rule (`scripts/forge_worktrees.py`, the one `forge runs rm` uses). The answer is cached
+for 60 s per server; `refresh=1` reads everything again, any other parameter is a `400`. Sizes are
+walked in a background thread and are `null` until measured (`sizes_pending` counts the rest).
+
+```
+Worktrees = {
+  rows: [Row], truncated, runs: [{key, run_id, path, repo, active, command}], repos: [root],
+  notes: [text], dataset: {enabled, since} | null (the CLI failed), computed (unix time),
+  totals: {count, on_disk, bytes, by_status: {status: n}}, sizes_pending
+}
+Row = {
+  path, repo (the repository's main working tree, or null), git_dir, run (run key or null),
+  run_id, run_path, task, branch (null when detached), kind (task | integration | candidate |
+  attribute | null), status, merged (branch merged into the repository's HEAD; null unknown),
+  head, commit: {sha, time, subject} | null, created, removed (unix times or null), derived
+  (true: from a run dir or the dataset, no dates), locked (git's reason, '' for none, null when
+  not locked), size (bytes or null), note, commands: [{label, command}]
+}
+```
+
+`status` is one of `in_use`, `dirty`, `locked`, `needed`, `failed`, `finished`, `missing`,
+`foreign`, `unknown`, `removed`. Commands: `dirty` gets `git -C <path> status`; `failed` gets
+`git -C <repo> worktree remove <path>`; `finished` gets the same plus `git -C <repo> branch -d
+<branch>` when the branch is merged; `missing` gets `git -C <repo> worktree prune`; every other
+status gets none. Paths are quoted for the shell and no command has `--force`. `runs[].command` is
+`forge runs rm <run-dir> --worktrees --branches --dry-run`, null while the run is active.
 
 ### `GET /api/config?run=<key>` and `POST /api/config`
 

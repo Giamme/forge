@@ -196,6 +196,11 @@ def run_reviewers(args) -> int:
     return reviewers.main(args)
 
 
+def run_worktrees(args) -> int:
+    from . import worktrees
+    return worktrees.main(args)
+
+
 def run_forecast(args) -> int:
     from . import forecast
     return forecast.main(args)
@@ -254,6 +259,9 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument('--repo', help='only this repo')
     p.add_argument('--json', action='store_true')
     p.set_defaults(func=run_reviewers)
+    p = sub.add_parser('worktrees', help="the worktrees forge created and removed, for forge-ui's Worktrees screen")
+    p.add_argument('--json', action='store_true')
+    p.set_defaults(func=run_worktrees)
     p = sub.add_parser('forecast', help="a plan's likely tokens, time and first-try pass rate, from past tasks (advisory)")
     p.add_argument('plan', help='the plan dir')
     p.add_argument('--repo', help='only history from this repo')

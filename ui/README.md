@@ -239,6 +239,21 @@ keep one meaning everywhere (amber running, green merged or passed, red failed, 
   run cloud filtered to its runs.
 
   <img src="docs/media/models.png" width="760" alt="The implementers table: tasks, first-attempt pass rate with its 95% interval, retries, escalations, timeouts, accepts, median model time and tokens per model.">
+- **Worktrees (`#/worktrees`, `#/worktrees/repo/<root>`, `#/worktrees/runs/<key>`):** every worktree forge
+  created, in any repository forge-ui knows (the runs it lists and the repositories in the dataset),
+  with its run, task, branch, whether that branch is merged, its last commit, when forge created and
+  removed it, and its size. Each row has a status: *in use* (its run is active), *uncommitted
+  changes*, *locked*, *needed by the run* (the `_integration` of a run not yet integrated), *failed
+  task*, *finished*, *missing on disk*, *not forge's* (it fails the ownership rule `forge runs rm`
+  uses), *unknown to git* (a folder no repository lists) and *removed*. Rows with a safe next step
+  show the command to copy: `git -C <path> status`, `git -C <repo> worktree remove <path>` (plus
+  `git branch -d` for a merged branch), or `git worktree prune`; never `--force`, and the page runs
+  nothing, so it works with `--read-only`. *Whole runs* gives each finished run's
+  `forge runs rm <run-dir> --worktrees --branches --dry-run`, which also deletes the run directory
+  after archiving it. Removed worktrees are complete from the release that records them (dataset
+  events `worktree_created` and `worktree_removed`); older ones are derived from run dirs and the
+  dataset, without dates. The screen reads `/api/worktrees` when it opens and every minute, never on
+  the page's poll; sizes fill in as they are measured. A run's header links to its worktrees.
 - **Diffs (`…/tasks/<id>/diff[/<source>][/file/<path> | /finding/<id>]`, `…/final-review/<name>/diff[/finding/<id>]`):** a task's
   `changes.diff`, its previous or committed diff, or exactly the diff one reviewer read (the last
   diff in that review's prompt), picked from a row of sources with each review's verdict; a final

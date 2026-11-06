@@ -23,6 +23,13 @@ forge_dataset_event() { # forge_dataset_event <name> --dir <dir> [--task id] [--
   forge_dataset_off && return 0
   python3 "$SKILL_DIR/scripts/forge-dataset.py" event "$@" >/dev/null 2>&1 || true
 }
+# A worktree forge added or removed (#125): forge-ui's Worktrees screen lists every one, removed ones too.
+# <kind> is task, integration, candidate or attribute (scripts/forge_worktrees.py); <branch> is - when detached.
+# Off with the dataset (FORGE_DATASET=off), as forge_dataset_event is.
+forge_worktree_event() { # forge_worktree_event created|removed <run dir> <repo> <path> <branch|-> <kind> [task]
+  forge_dataset_event "worktree_$1" --dir "$2" ${7:+--task "$7"} --set repo_path="$3" --set path="$4" \
+    --set branch="$5" --set kind="$6"
+}
 forge_dataset_invocation() { # forge_dataset_invocation <command> <rc> <started> [argv...]
   forge_dataset_off && return 0
   local command="$1" rc="$2" started="$3"; shift 3

@@ -80,7 +80,9 @@ solo run), so a run started meanwhile fails to start instead of racing the delet
 
 What counts as the run's is decided from the run id, not read from the run directory: a worktree
 under `<repo>/../.forge-worktrees/<run id>/` on `forge/<run id>/<task>` or
-`forge/<run id>-integration`. Any other worktree there is `foreign`, one with uncommitted changes
+`forge/<run id>-integration`, or a detached scratch worktree forge left there (`_candidate-<n>` from
+`integrate`, `_attribute[-<n>]` from `attribute`). forge-ui's Worktrees screen uses the same rule
+(`scripts/forge_worktrees.py`). Any other worktree there is `foreign`, one with uncommitted changes
 is `dirty`; neither is touched, and a dirty one keeps the run directory only when `--worktrees`
 was asked. Branches are reported
 `merged` or `UNMERGED`, so you see what deleting them would lose. `--dry-run` changes nothing and

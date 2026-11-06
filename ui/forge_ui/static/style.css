@@ -337,7 +337,7 @@ body.no-tasks .tasks-module { display: none; }
 body[data-shell=workbench].no-tasks .run-view { grid-template-rows: auto minmax(0, 1fr) auto 0; }
 body[data-shell=immersive] .sidebar { position: absolute; z-index: 4; left: var(--gap); top: var(--gap); bottom: var(--gap); width: var(--runs-w); box-shadow: var(--ply-1); }
 body[data-shell=immersive][data-runs=closed] .sidebar { display: none; }
-body[data-shell=immersive]:is([data-view=models], [data-view=findings], [data-view=settings], [data-view=waiting], [data-view=loading], [data-view=first-run]) #main { left: calc(var(--L) - var(--gap)); }
+body[data-shell=immersive]:is([data-view=models], [data-view=findings], [data-view=settings], [data-view=worktrees], [data-view=projects], [data-view=waiting], [data-view=loading], [data-view=first-run]) #main { left: calc(var(--L) - var(--gap)); }
 body[data-shell=immersive] .stage-row, body[data-shell=immersive] .stage-col { position: absolute; inset: 0; }
 body[data-shell=immersive] .stage-col .stage-slot { position: absolute; inset: 0; }
 body[data-shell=immersive] .insp-module { position: absolute; z-index: 3; right: var(--gap); top: var(--gap); bottom: var(--gap); width: var(--insp-w); box-shadow: var(--ply-1); }
@@ -392,7 +392,7 @@ body[data-shell=workbench] .map-cards-host { overflow: auto; }
 body[data-shell=workbench] .map-cards { padding: var(--s-4); }
 
 /* content views: the leaderboard and the waiting pages */
-body:is([data-view=models], [data-view=findings], [data-view=settings], [data-view=waiting], [data-view=loading], [data-view=first-run]) #main { padding: var(--s-6) var(--s-6) var(--s-8); }
+body:is([data-view=models], [data-view=findings], [data-view=settings], [data-view=worktrees], [data-view=projects], [data-view=waiting], [data-view=loading], [data-view=first-run]) #main { padding: var(--s-6) var(--s-6) var(--s-8); }
 
 /* ---------- the stage: the panel the run is inlaid on ---------- */
 .stage-slot { position: relative; background: var(--stage-bg); }
@@ -1296,6 +1296,31 @@ dialog.fnd-dialog::backdrop { background: light-dark(rgb(17 22 19 / .35), rgb(0 
 .fnd-created { list-style: none; margin: var(--s-2) 0 0; padding: 0; }
 .fnd-created li { display: flex; align-items: flex-start; gap: 7px; overflow-wrap: anywhere; }
 .findings-link .findings-count:not(:empty) { font-family: var(--mono); }
+
+/* ---------- worktrees (#/worktrees) ---------- */
+.worktrees-view { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--s-3); max-width: 1600px; }
+.wt-table { min-width: 0; overflow-x: auto; }
+.wt-head { display: flex; align-items: baseline; gap: var(--s-4); flex-wrap: wrap; }
+.wt-stamp { font-size: var(--t-sm); font-variant-numeric: tabular-nums; }
+.wt-lede, .wt-totals, .wt-run-note { margin: 0; }
+.wt-totals { font-variant-numeric: tabular-nums; }
+.wt-notes p { margin: 0; font-size: var(--t-sm); }
+.wt-filters { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-3); }
+.wt-status { white-space: nowrap; }
+.wt-derived { margin-left: 4px; font-size: var(--t-xs); }
+.wt-cmds { display: grid; gap: 4px; width: 30em; }
+.wt-cmd { display: flex; min-width: 0; align-items: flex-start; gap: var(--s-2); padding: 3px var(--s-2); border: 1px solid var(--rule); border-radius: var(--r-key); background: var(--module-2); }
+.wt-cmd code { min-width: 0; flex: 1; overflow-x: auto; white-space: pre; font-size: var(--t-xs); }
+.wt-copy { flex: none; }
+.wt-note { margin: 0; font-size: var(--t-xs); white-space: normal; }
+.wt-commit { display: inline-block; max-width: 28em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+table.wt-grid { width: max-content; min-width: 100%; }
+.wt-grid td { vertical-align: top; white-space: nowrap; max-width: 16em; overflow: hidden; text-overflow: ellipsis; }
+.wt-grid td.wt-command-col { white-space: normal; max-width: none; overflow: visible; }
+.wt-row-removed { color: var(--muted); }
+.wt-groups summary { cursor: pointer; }
+.wt-group { display: grid; grid-template-columns: minmax(8em, max-content) 1fr; align-items: center; gap: var(--s-3); margin: var(--s-2) 0; }
+.wt-copy:focus-visible, .wt-cmd code:focus-visible, .wt-groups summary:focus-visible { outline: 2px solid var(--route); outline-offset: 2px; }
 
 /* ---------- delete a run ---------- */
 .del-gap { align-self: stretch; width: 1px; margin: 0 6px; background: var(--rule-2); }

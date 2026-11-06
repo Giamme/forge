@@ -1104,6 +1104,7 @@ ensure_worktree() { # ensure_worktree <repo> <wt> <br> <base> <tdir> <plan> <id>
   else
     (cd "$REPO" && git worktree add -b "$br" "$wt" "$base") >"$tdir/worktree.out" 2>&1
   fi || return 1
+  forge_worktree_event created "$PLAN" "$REPO" "$wt" "$br" task "$id"
   run_worktree_setup "$PLAN" "$REPO" "$wt" "$tdir" "$id"
 }
 
@@ -2367,6 +2368,7 @@ do_run() {
   if [ ! -d "$int_wt" ]; then
     (cd "$REPO" && git worktree add "$int_wt" "$int_br" >/dev/null 2>&1) \
       || die "could not create integration worktree" 3
+    forge_worktree_event created "$PLAN" "$REPO" "$int_wt" "$int_br" integration
     # The integration worktree is where a merged result gets validated, so it needs
     # the same setup the task worktrees get. Without it, the one checkout holding
     # every task's merged work is the one checkout that cannot build or test it.
@@ -2430,7 +2432,9 @@ do_run() {
   # branch so there is something to inspect and retry from.
   if [ -s "$PLAN/results.tsv" ]; then
     for id in $(awk -F'\t' '$2=="MERGED" {print $1}' "$PLAN/results.tsv"); do
-      (cd "$REPO" && git worktree remove --force "$wt_root/$id" >/dev/null 2>&1)
+      [ -e "$wt_root/$id" ] || continue
+      (cd "$REPO" && git worktree remove --force "$wt_root/$id" >/dev/null 2>&1) \
+        && forge_worktree_event removed "$PLAN" "$REPO" "$wt_root/$id" "forge/$run_id/$id" task "$id"
     done
   fi
 
@@ -2558,6 +2562,7 @@ do_integrate() {
   out="$PLAN/integrate-$(date +%s)-$$"; mkdir -p "$out"
   candidate="$(cat "$PLAN/wt_root")/_candidate-$$"
   git -C "$REPO" worktree add --detach "$candidate" "$parent" > "$out/setup.log" 2>&1 || return 3
+  forge_worktree_event created "$PLAN" "$REPO" "$candidate" - candidate
   if ! git -C "$candidate" merge --no-ff -m "forge: integrate run $run_id" "$target" > "$out/merge.log" 2>&1; then
     forge_dataset_event integrate_conflict --dir "$PLAN" --set branch="$cur" --set parent="$parent" \
       --set target="$target" --set conflicts="$(git -C "$candidate" diff --name-only --diff-filter=U 2>/dev/null | tr '\n' ' ')" \
@@ -2596,6 +2601,7 @@ do_integrate() {
   forge_dataset_event integrate_advanced --dir "$PLAN" --set branch="$cur" --set parent="$parent" \
     --set candidate="$candidate_sha" --set target="$target" --set verification="$(cat "$out/verification.status" 2>/dev/null)"
   git -C "$REPO" worktree remove "$candidate" || return 3
+  forge_worktree_event removed "$PLAN" "$REPO" "$candidate" - candidate
   echo "merged candidate of $int_br into $cur (verification: $(cat "$out/verification.status"))"
 }
 

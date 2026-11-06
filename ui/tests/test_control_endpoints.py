@@ -184,6 +184,34 @@ class ReviewerOutcomesTests(EndpointCase):
         self.assertEqual(len(self.calls()), 1)
 
 
+class WorktreesTests(EndpointCase):
+    def test_reads_the_history_through_the_cli_once_per_read_and_caches_the_rest(self):
+        self.behave(stdout=json.dumps({'enabled': False, 'since': None, 'events': [], 'attempts': [], 'integrated': [], 'repos': []}))
+        status, body = self.get('/api/worktrees')
+        self.assertEqual(status, 200)
+        self.assertEqual(self.last_argv(), ['dataset', 'worktrees', '--json'])
+        self.assertEqual(body['dataset'], {'enabled': False, 'since': None})
+        self.assertIn('totals', body)
+        self.get('/api/worktrees')
+        self.assertEqual(len(self.calls()), 1)              # cached: no second CLI call, no second git read
+        self.get('/api/worktrees?refresh=1')
+        self.assertEqual(len(self.calls()), 2)
+        for query in ('?refresh=yes', '?repo=/etc', '?refresh=1&refresh=1'):
+            self.assertEqual(self.get('/api/worktrees' + query)[0], 400, query)
+        self.assertEqual(len(self.calls()), 2)
+
+    def test_a_failed_history_read_still_lists_what_git_knows(self):
+        self.behave(code=4, stderr='boom\n')
+        status, body = self.get('/api/worktrees')
+        self.assertEqual(status, 200)
+        self.assertIsNone(body['dataset'])
+        self.assertTrue(any('could not be read' in n for n in body['notes']))
+
+
+class ReadOnlyWorktreesTests(WorktreesTests):
+    read_only = True
+
+
 class ConfigTests(EndpointCase):
     def cfg(self, **body):
         return self.post({'run': self.key, **body}, '/api/config')
