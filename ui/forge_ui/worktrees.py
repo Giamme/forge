@@ -123,7 +123,8 @@ def _note(row):
     if st == 'in_use':
         return 'its run %s is active' % (row.get('run_id') or '')
     if st == 'locked':
-        return 'locked by git' + (': ' + row['locked'] if row.get('locked') else '')
+        return ('locked by git' + (': ' + row['locked'] if row.get('locked') else '')
+                + ('' if os.path.lexists(row['path']) else '; its folder is gone'))
     if st == 'needed':
         return 'the integration worktree of a run not integrated yet'
     if st == 'failed':
@@ -281,7 +282,8 @@ def compute(catalog, history):
             if kind == 'task':
                 row['task'] = row['branch'].split('/', 2)[-1]
             if not os.path.lexists(wt['path']) or wt.get('prunable') is not None:
-                row['status'] = 'missing'
+                # git keeps a locked worktree whose folder is gone (an unplugged disk): prune would not forget it
+                row['status'] = 'locked' if row['locked'] is not None else 'missing'
             elif kind is None:
                 row.update(status='foreign', why="not forge's: " + ("its branch is not one of the run's" if run is not None or ids
                                                                     else 'no run dir or dataset record names its run'))

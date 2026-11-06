@@ -15,6 +15,7 @@ GIT_ENV = dict(os.environ, GIT_AUTHOR_NAME='t', GIT_AUTHOR_EMAIL='t@t', GIT_COMM
                GIT_COMMITTER_EMAIL='t@t', GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_SYSTEM=os.devnull)
 REPEAT = '- [P2][CONFIRMED] ui/again.py:3 — the same bug, reported in both rounds.\n\nFORGE_VERDICT: FAIL\n'
 TAG = '- [P1][CONFIRMED] ui/x.py:1 — <img src=x onerror=alert(1)> is shown as text.\n\nFORGE_VERDICT: FAIL\n'
+LOOSE = '- **P2** [CONFIRMED] ui/loose.py:4: written in another form.\n\nFORGE_VERDICT: FAIL\n'
 
 
 def git(cwd, *args):
@@ -71,13 +72,14 @@ class FindingsCase(unittest.TestCase):
         self.plan = F.make_plan(Path(tmp.name) / 'p')
         tsv = self.plan / 'tasks.tsv'
         tsv.write_text(tsv.read_text() + 'again\t-\tlow\tui/again.py\tluna\topus\tFix it again\n'
-                       'html\t-\tlow\tui/x.py\tluna\topus\tShow text\n')
-        for task, last in (('again', REPEAT), ('html', TAG)):
+                       'html\t-\tlow\tui/x.py\tluna\topus\tShow text\n'
+                       'loose\t-\tlow\tui/loose.py\tluna\topus\tLoose form\n')
+        for task, last in (('again', REPEAT), ('html', TAG), ('loose', LOOSE)):
             tdir = self.plan / 'tasks' / task
             for n in (1, 2) if task == 'again' else (1,):
-                parent = 'task-%032x' % (n + (100 if task == 'again' else 200))
+                parent = 'task-%032x' % (n + {'again': 100, 'html': 200, 'loose': 500}[task])
                 F.execution(tdir, parent, 100.0 * n, 100.0 * n + 50, exit_code=1, attempt_start=n - 1, trigger='initial')
-                F.execution(tdir, 'qa-%032x' % (n + (300 if task == 'again' else 400)), 100.0 * n + 10, 100.0 * n + 40,
+                F.execution(tdir, 'qa-%032x' % (n + {'again': 300, 'html': 400, 'loose': 600}[task]), 100.0 * n + 10, 100.0 * n + 40,
                             parent=parent, spec=('opus', None, 'claude'), last=last)
             (tdir / 'status').write_text('FAIL\n')
         self.catalog = reader.Catalog(plans=[self.plan], registry=False)
@@ -119,14 +121,33 @@ class FindingsTests(FindingsCase):
         self.assertEqual((rows[0]['count'], [o['attempt'] for o in rows[0]['occurrences']]), (2, [1, 2]))
         self.assertEqual(rows[0]['attempt'], 2)                                      # the newest leads
 
+    def entry(self, file, text, task, plan_dir=None, **extra):
+        return dict(dict(file=file, text=text, task=task, plan_dir=str(plan_dir or self.plan), origin='tolerated',
+                         filed=None, dismissed={'at': 't', 'reason': 'by design'}), **extra)
+
     def test_dismissed_and_filed_come_from_forge_issues(self):
-        issues = P.issues_module()
-        page = issues.parse_findings('- [P3][CONFIRMED] ui/page.html:12 — the empty-state text is not localised.')[0]
-        listing = dict(findings=[dict(file=page['file'], text=page['text'], dismissed={'at': 't', 'reason': 'by design'},
-                                      origin='tolerated', filed=None)])
+        listing = dict(findings=[self.entry('ui/page.html', 'the empty-state text is not localised.', 'page')])
         rows = self.by_summary(self.findings(issues=listing)['rows'])
         self.assertEqual(rows['the empty-state text is not lo']['status'], 'dismissed')
         self.assertEqual(rows['the empty-state text is not lo']['origin'], 'tolerated')
+
+    def test_an_entry_of_another_run_or_task_is_not_this_findings_state(self):
+        text = 'the empty-state text is not localised.'
+        for name, entry in (('another run', self.entry('ui/page.html', text, 'page', plan_dir='/elsewhere/other-run')),
+                            ('another task', self.entry('ui/page.html', text, 'again'))):
+            rows = self.by_summary(self.findings(issues=dict(findings=[entry]))['rows'])
+            self.assertEqual(rows['the empty-state text is not lo']['status'], 'open', name)
+
+    def test_a_finding_written_in_another_form_finds_its_entry(self):
+        listing = dict(findings=[self.entry('ui/loose.py', 'written in another form.', 'loose')])
+        [row] = [r for r in self.findings(issues=listing)['rows'] if r['task'] == 'loose']
+        self.assertEqual(row['status'], 'dismissed')
+
+    def test_a_finding_both_reviewers_reported_is_led_by_the_primary_one(self):
+        base = dict(source='run', run='k', run_id='r', task='t', final_review=None, attempt=1, reviewer='opus',
+                    href=None, fp='abc', superseded=False)
+        [row] = P.collapse([dict(base, kind='primary', at=1.0), dict(base, kind='shadow', reviewer='sol', at=2.0)])
+        self.assertEqual((row['kind'], row['reviewer'], row['count']), ('primary', 'opus', 2))
 
     def test_a_run_whose_dir_is_gone_comes_from_the_dataset_labelled(self):
         history = dict(enabled=True, learnings=[], ledger=[], runs=[

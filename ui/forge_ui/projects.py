@@ -72,12 +72,16 @@ def project_id(root):
 
 
 def fingerprint(first_line):
-    """`forge issues`' key for a finding whose first line it can parse, else None (such rows never collapse)."""
+    """`forge issues`' key for a finding whose first line it can parse, else None (such rows never collapse).
+    The canonical `[P1][CONFIRMED] path:line — text` form first, then the other forms forge issues reads from a
+    known_issues.md (`parse_known`), so a tolerated finding written another way still finds its entry."""
     module = issues_module()
     if module is None or not first_line:
         return None
     try:
         parsed = module.parse_findings(first_line)
+        if not parsed and callable(getattr(module, 'parse_known', None)):
+            parsed = module.parse_known(first_line)
         return module.finding_key(parsed[0]) if parsed else None
     except Exception:
         return None
@@ -265,7 +269,8 @@ def _dataset_occurrences(hist, runs_here):
 
 def collapse(occurrences):
     """Rows: repeats of one finding within a task (or a run's final reviews) are one row with a count, by
-    `forge issues`' fingerprint; a finding it cannot fingerprint is its own row. The newest occurrence leads."""
+    `forge issues`' fingerprint; a finding it cannot fingerprint is its own row. The newest occurrence leads, a
+    primary one before any shadow one: a finding both reviewers reported is not hidden with the shadow reviews."""
     rows, order = {}, []
     for occ in occurrences:
         scope = (occ['source'], occ['run'] or occ['run_id'], occ['task'], bool(occ['final_review']))
@@ -277,9 +282,9 @@ def collapse(occurrences):
         row['count'] += 1
         row['occurrences'].append(dict(run=occ['run'], run_id=occ['run_id'], task=occ['task'], attempt=occ['attempt'],
                                        kind=occ['kind'], reviewer=occ['reviewer'], at=occ['at'], href=occ['href']))
-        if (occ['at'] or 0) >= (row['at'] or 0):
-            lead = {k: occ[k] for k in occ}
-            row.update(lead)
+        shadow, lead_shadow = occ['kind'] == 'shadow', row['kind'] == 'shadow'
+        if (lead_shadow and not shadow) or (shadow == lead_shadow and (occ['at'] or 0) >= (row['at'] or 0)):
+            row.update({k: occ[k] for k in occ})
     return [rows[k] for k in order]
 
 
@@ -296,8 +301,16 @@ def status_of(row, issue):
     return 'superseded' if row['superseded'] else 'open'
 
 
+def _real(path):
+    try:
+        return os.path.realpath(path) if path else None
+    except (OSError, ValueError):
+        return None
+
+
 def issue_index(listing):
-    """{forge issues key: entry} of an offline `forge issues --json` listing."""
+    """{(run dir, task, forge issues key): entry} of an offline `forge issues --json --all-runs` listing. The key
+    holds the run and the task: the same text found in two runs is two findings, each with its own state."""
     module = issues_module()
     out = {}
     for entry in (listing or {}).get('findings') or []:
@@ -308,8 +321,20 @@ def issue_index(listing):
         except Exception:
             key = None
         if key:
-            out.setdefault(key, entry)
+            out.setdefault((_real(entry.get('plan_dir')), entry.get('task'), key), entry)
     return out
+
+
+def issue_for(index, row, run_path):
+    """The entry of a row found in a run dir: same run, same task (none for a final review). A solo run's task is
+    named after its dir in forge issues and `solo` here: any entry of that run with the key is its own."""
+    if not row['fp'] or row['source'] != 'run' or not run_path:
+        return None
+    where = _real(run_path)
+    found = index.get((where, row['task'], row['fp']))
+    if found is None and row['task'] == 'solo':
+        found = next((e for (w, _t, k), e in index.items() if w == where and k == row['fp']), None)
+    return found
 
 
 # ---- the cached screen -----------------------------------------------------------------------------
@@ -412,9 +437,10 @@ class Screen:
                 if listing is not None:
                     break
             index = issue_index(listing)
+            paths = {run['key']: run['path'] for run in p['runs']}
             rows = collapse(occ)
             for row in rows:
-                issue = index.get(row['fp']) if row['fp'] else None
+                issue = issue_for(index, row, paths.get(row['run']))
                 row['status'] = status_of(row, issue)
                 row['fileable'] = issue is not None and row['status'] == 'open' and row['source'] == 'run'
                 row['origin'] = issue.get('origin') if issue else None

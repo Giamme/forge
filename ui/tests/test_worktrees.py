@@ -92,6 +92,12 @@ class StatusTests(Fixture):
         self.assertEqual(rows['bad']['commit']['subject'], 'work on bad')
         self.assertEqual((rows['done']['kind'], rows['_integration']['kind'], rows['stranger']['kind']), ('task', 'integration', None))
 
+    def test_a_locked_worktree_whose_folder_is_gone_stays_locked(self):
+        shutil.rmtree(self.root / 'locked')                     # the usb disk is unplugged
+        rows, _ = self.rows()
+        self.assertEqual(rows['locked']['status'], 'locked')
+        self.assertEqual(rows['locked']['commands'], [])        # prune would do nothing for it
+
     def test_an_active_run_holds_every_worktree_it_owns(self):
         (self.plan / 'scheduler.live').write_text(json.dumps({'pid': os.getpid()}))
         rows, _ = self.rows()

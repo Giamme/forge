@@ -101,6 +101,12 @@ case "${1:-}" in
     ;;
   memory)
     shift
+    # only the commands its help lists: note and record are what a run writes into the ledger, not a person
+    case "${1:-}" in
+      show|learnings|prune|spend|inject|-h|--help|help) ;;
+      '') /bin/bash "$ROOT/scripts/forge-memory.sh" --help >&2; exit 2 ;;
+      *) printf 'forge memory: unknown command: %s (show, learnings, prune, spend or inject)\n' "$1" >&2; exit 2 ;;
+    esac
     exec /bin/bash "$ROOT/scripts/forge-memory.sh" "$@"
     ;;
   pr)
