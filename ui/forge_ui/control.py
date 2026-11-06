@@ -784,6 +784,78 @@ def _reviewer_outcomes(ctx):
     return ctx.call('dataset', 'reviewers', '--json')
 
 
+def _project_call(ctx, *args):
+    status, body = ctx.call(*args)
+    return body if status == 200 else None
+
+
+def _projects(ctx):
+    # The Projects screen (#126): forge_ui/projects.py, which reads run dirs here and the rest through the CLI.
+    from forge_ui import projects
+    ctx.route = 'projects'
+    try:
+        _query_params(ctx.query, ())
+    except BadBody as exc:
+        return _invalid(str(exc))
+    return 200, projects.screen(ctx.server).listing(ctx.server.catalog)
+
+
+def _project(ctx):
+    from forge_ui import projects
+    ctx.route = 'project'
+    try:
+        _query_params(ctx.query, ())
+    except BadBody as exc:
+        return _invalid(str(exc))
+    found = projects.screen(ctx.server).detail(ctx.server.catalog, ctx.key)
+    return (404, {'error': 'not found'}) if found is None else (200, found)
+
+
+def _project_findings(ctx):
+    from forge_ui import projects
+    ctx.route = 'project findings'
+    try:
+        refresh = _bit(_query_params(ctx.query, ('refresh',)), 'refresh')
+    except BadBody as exc:
+        return _invalid(str(exc))
+    # --offline: no gh call; the listing says which findings are dismissed, filed (as recorded) or swept.
+    found = projects.screen(ctx.server).findings(
+        ctx.server.catalog, ctx.key, lambda: _project_call(ctx, 'dataset', 'history', '--json'),
+        lambda path: _project_call(ctx, 'issues', path, '--json', '--offline', '--all-runs', '--include-plausible',
+                                   '--include-dismissed'), refresh=refresh)
+    return (404, {'error': 'not found'}) if found is None else (200, found)
+
+
+def _project_memories(ctx):
+    from forge_ui import projects
+    ctx.route = 'project memories'
+    try:
+        refresh = _bit(_query_params(ctx.query, ('refresh',)), 'refresh')
+    except BadBody as exc:
+        return _invalid(str(exc))
+    found = projects.screen(ctx.server).memories(
+        ctx.server.catalog, ctx.key, lambda path: _project_call(ctx, 'memory', 'learnings', path, '--json'),
+        lambda: _project_call(ctx, 'dataset', 'history', '--json'), refresh=refresh)
+    return (404, {'error': 'not found'}) if found is None else (200, found)
+
+
+def _worktrees(ctx):
+    # The Worktrees screen (#125): git and the run dirs, read here, plus the history `forge dataset worktrees`
+    # keeps, read through the CLI. Cached per server (worktrees.CACHE_S); ?refresh=1 reads everything again.
+    from forge_ui import worktrees
+    ctx.route = 'worktrees'
+    try:
+        params = _query_params(ctx.query, ('refresh',))
+        refresh = _bit(params, 'refresh')
+    except BadBody as exc:
+        return _invalid(str(exc))
+
+    def history():
+        status, body = ctx.call('dataset', 'worktrees', '--json')
+        return body if status == 200 else None
+    return 200, worktrees.screen(ctx.server).answer(ctx.server.catalog, history, refresh=refresh)
+
+
 ROUTES = [
     ('GET', re.compile(r'/api/runs/([0-9a-f]{12})/controls'), _show),
     ('POST', re.compile(r'/api/runs/([0-9a-f]{12})/controls'), _change),
@@ -796,6 +868,11 @@ ROUTES = [
     ('GET', re.compile(r'/api/config()'), _config_get),
     ('POST', re.compile(r'/api/config()'), _config_set),
     ('GET', re.compile(r'/api/models/reviewers()'), _reviewer_outcomes),
+    ('GET', re.compile(r'/api/worktrees()'), _worktrees),
+    ('GET', re.compile(r'/api/projects()'), _projects),
+    ('GET', re.compile(r'/api/projects/([0-9a-f]{8})'), _project),
+    ('GET', re.compile(r'/api/projects/([0-9a-f]{8})/findings'), _project_findings),
+    ('GET', re.compile(r'/api/projects/([0-9a-f]{8})/memories'), _project_memories),
 ]
 
 

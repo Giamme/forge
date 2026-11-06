@@ -113,6 +113,7 @@ forge-memory.sh record <repo> --last <file> --role <r> [--run-id X] [--task T]
 forge-memory.sh show <repo>
 forge-memory.sh prune <repo>                       # re-apply staleness and the cap now
 forge-memory.sh spend <repo> [--run <run-id>]      # what forge has cost this repo
+forge-memory.sh learnings <repo> [--json]          # every ledger learning and its state, as JSON (forge memory learnings)
 ```
 
 `record` appends to the ledger and then rebuilds `memory.md` from the whole ledger — the
@@ -127,6 +128,27 @@ bash scripts/forge-memory.sh inject ~/dev/api dwarf
 # start over
 rm -rf ~/dev/api/.forge
 ```
+
+## Every learning and its state
+
+`forge memory learnings <repo> --json` lists each learning in the ledger once (grouped as the rebuild groups
+them: by category and normalised text) with the number of distinct runs that emitted it, its latest wording,
+its rows, and what forge does with it now:
+
+| State | Why |
+|---|---|
+| `in_memory` | the rebuilt `memory.md` has it |
+| `waiting` | a finding seen in one run only: it needs a second run to be promoted |
+| `stale` | its `[anchor]` path no longer exists |
+| `capped` | trimmed by the memory cap (`FORGE_MEMORY_MAX_LINES`, `FORGE_MEMORY_MAX_BYTES`) |
+| `muted` | every row of it was marked not injectable (Jev's curation) |
+
+The states come from forge-memory.sh's own rebuild, run into a scratch directory, so they cannot differ
+from what `record` writes; the repository is only read. The answer also has the current `memory.md` by
+section, with the roles each section reaches, and `rebuilt_differs` when that file is not what a rebuild
+makes now (an older forge wrote it, or a `prune` asked Jev to drop facts). forge-ui's Projects screen
+shows it on each repository's *Memories* tab, merged across the checkouts its runs started in and, from
+the dataset, the learnings of checkouts that are gone.
 
 ## Spend
 

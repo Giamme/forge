@@ -68,6 +68,17 @@ class LauncherTests(unittest.TestCase):
                 self.assertEqual(result.stdout, '')
                 self.assertEqual(result.stderr, self.forge(name, '--help').stdout)
 
+    def test_forge_memory_reaches_only_the_commands_its_help_lists(self):
+        # note and record write the ledger for a run: from the launcher they are unknown commands
+        for args in (['record', '/nonexistent'], ['note', '/nonexistent']):
+            with self.subTest(args):
+                result = self.forge('memory', *args)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn('unknown command: ' + args[0], result.stderr)
+        result = self.forge('memory')
+        self.assertEqual((result.returncode, result.stdout), (2, ''))
+        self.assertEqual(result.stderr, self.forge('memory', '--help').stdout)
+
     def test_every_subcommand_a_group_help_lists_has_a_description(self):
         # A bare group prints this help (above), so a name with no line beside it leaves
         # the user guessing. jev is left out: it is the old alias, kept for one release.

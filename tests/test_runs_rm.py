@@ -207,6 +207,17 @@ class DryRunTests(RmCase):
         self.assertFalse(self.data.exists(), 'a dry run writes no dataset and no archive')
         self.assertFalse((self.plan / 'schedule.lock').exists(), 'and does not even create the lock file')
 
+    def test_a_scratch_worktree_forge_left_is_the_runs_and_a_detached_one_of_any_other_name_is_not(self):
+        # forge_worktrees.owner, the rule forge-ui's Worktrees screen shares: integrate's _candidate-<n> and the
+        # culprit search's _attribute are forge's when detached in the run's folder.
+        self.wt_root.mkdir(parents=True, exist_ok=True)
+        for name in ('_candidate-123', '_attribute', 'scratch'):
+            self.git('worktree', 'add', '-q', '--detach', str(self.wt_root / name))
+        done, result = self.rmj(self.plan, '--dry-run', '--worktrees')
+        self.assertEqual(done.returncode, 0, done.stderr)
+        kinds = {Path(w['path']).name: w['kind'] for w in result['worktrees']}
+        self.assertEqual(kinds, {'_candidate-123': 'run', '_attribute': 'run', 'scratch': 'foreign'})
+
     def test_a_dry_run_says_what_a_dirty_worktree_costs(self):
         wts = self.make_worktrees()
         (wts['a'] / 'scratch.txt').write_text('uncommitted\n')

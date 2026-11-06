@@ -608,6 +608,7 @@ sys.exit(0 if key(sys.argv[1]) == key(sys.argv[2]) else 1)' "$p/profile.json" "$
   # worktree gets: whatever setup the repository asks for. Never fatal.
   mkdir -p "$NEW/tasks/_integration"
   run_worktree_setup "$NEW" "$repo_text" "$NEWINT" "$NEW/tasks/_integration" _integration
+  forge_worktree_event created "$NEW" "$repo_text" "$NEWINT" "$NEWBR" integration
 
   echo "combined $n plans into $NEW (run forge/$NEWRID): $ntasks tasks, all MERGED"
   echo "integration branch: $NEWBR at $(plans_short "$(cat "$NEW/accepted.integration")")"
@@ -741,7 +742,7 @@ except Exception:
   plans_make_integration "$REPO" "$NEWBR" "$acc" "$NEWINT" \
     || { plans_undo; trap - INT TERM; die "could not create $NEWBR and its worktree" 3; }
 
-  local oldbr newbr oldwt newwt head_ref old_branches=""
+  local oldbr newbr oldwt newwt head_ref old_branches="" moved_wts=""
   for id in $(all_ids "$T"); do
     case "$SEL" in *" $id "*) ;; *) continue ;; esac
     oldbr="forge/$run_id/$id"; newbr="forge/$NEWRID/$id"
@@ -756,6 +757,7 @@ except Exception:
       git -C "$REPO" worktree move "$oldwt" "$newwt" >/dev/null 2>&1 \
         || { plans_undo; trap - INT TERM; die "could not move worktree $oldwt to $newwt" 3; }
       plans_journal move "$oldwt" "$newwt"
+      moved_wts="$moved_wts $id"
       # Same commit, same index, same working tree: only the name HEAD points at changes.
       if [ "$head_ref" = "refs/heads/$oldbr" ]; then
         git -C "$newwt" symbolic-ref HEAD "refs/heads/$newbr" >/dev/null 2>&1 \
@@ -828,6 +830,12 @@ except Exception:
   done
   mkdir -p "$NEW/tasks/_integration"
   run_worktree_setup "$NEW" "$repo_text" "$NEWINT" "$NEW/tasks/_integration" _integration
+  forge_worktree_event created "$NEW" "$repo_text" "$NEWINT" "$NEWBR" integration
+  # A moved worktree is one forge removed from the old run and one it created in the new run.
+  for id in $moved_wts; do
+    forge_worktree_event removed "$PLAN" "$repo_text" "$old_wtr/$id" "forge/$run_id/$id" task "$id"
+    forge_worktree_event created "$NEW" "$repo_text" "$NEWWTR/$id" "forge/$NEWRID/$id" task "$id"
+  done
 
   echo "split: moved $PICKED from $PLAN to $NEW (run forge/$NEWRID)"
   echo "integration branch: $NEWBR at $(plans_short "$acc")"

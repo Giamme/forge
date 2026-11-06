@@ -20,10 +20,13 @@ reported per step; the run dir is kept when worktrees or branches could not be d
 after a failed removal the files that identify the run are the last to go, so the same command
 finishes the job. `forge runs rm` on a path that no longer exists only unregisters it.
 
-What the run owns on the repo's side is decided here, not read from the run dir: a worktree is the
-run's only under <repo>/../.forge-worktrees/<run id>/ (as forge-parallel.sh derives it, not from
-the `wt_root` file) on a branch forge/<run id>/<task> for a task in tasks.tsv or
-forge/<run id>-integration. Any other worktree in that place is `foreign`, and never touched. A
+What the run owns on the repo's side is decided here, not read from the run dir, by the rule in
+forge_worktrees.py that forge-ui's Worktrees screen shares: a worktree is the run's only under
+<repo>/../.forge-worktrees/<run id>/ (as forge-parallel.sh derives it, not from the `wt_root` file)
+on a branch forge/<run id>/<task> for a task in tasks.tsv or forge/<run id>-integration, or detached
+and named like a scratch worktree forge left there (`_candidate-<n>`, `_attribute[-<n>]`). Any other
+worktree in that place is `foreign`, and never touched. Each worktree removed is recorded in the
+dataset as `worktree_removed`. A
 worktree with uncommitted or untracked changes is `dirty`: never removed, and --worktrees then
 keeps the run dir too.
 
@@ -60,7 +63,8 @@ SKILL = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(SKILL / 'scripts'))
 
 import forge_registry  # noqa: E402
-from forge_dataset import DatasetError, data_home, dataset_dir, enabled, harvest, importer, record_strict  # noqa: E402
+import forge_worktrees  # noqa: E402
+from forge_dataset import DatasetError, data_home, dataset_dir, enabled, harvest, importer, record, record_strict  # noqa: E402
 
 OK, REFUSED, BUSY, FAILED = 0, 2, 3, 4
 # fullmatch: with `$` alone, a trailing newline would pass
@@ -249,6 +253,7 @@ class Run:
         self.branches = []
         self.removable = set()   # paths of the worktrees --worktrees removes (or prunes, when missing on disk)
         self.wt_root = None
+        self.owners = {}         # worktree path -> forge_worktrees kind (None: foreign), for the dataset events
 
 
 def identify(target):
@@ -285,7 +290,7 @@ def identify(target):
                 seen.add(task)
                 run.tasks.append(task)
     # forge-parallel.sh: wt_root="$(cd "$REPO/.." && pwd)/.forge-worktrees/$run_id", a logical cd
-    run.wt_root = os.path.realpath(os.path.join(os.path.normpath(os.path.join(run.repo, '..')), '.forge-worktrees', run.run_id))
+    run.wt_root = forge_worktrees.wt_root(run.repo, run.run_id)
     if contains(path, run.wt_root) or contains(run.wt_root, path):
         raise Refused('refusing to delete %s: it overlaps the run\'s worktree root %s' % (path, run.wt_root))
     return run
@@ -446,8 +451,12 @@ def inspect_git(run):
         ours = wt['branch'] in branch_refs
         if not in_root and not ours:
             continue   # the main worktree, or another run's: not this command's business
+        # forge_worktrees.owner is the rule forge-ui's Worktrees screen uses too: a task or integration branch in
+        # the run's folder, or a scratch worktree integrate or the culprit search left there.
+        kind = forge_worktrees.owner(wt['path'], wt['branch'], run.run_id, run.tasks, run.wt_root)
+        run.owners[wt['path']] = kind
         entry = dict(path=wt['path'], branch=(wt['branch'] or '').replace('refs/heads/', '', 1) or None,
-                     kind='run' if in_root and ours else 'foreign', dirty=None, removed=False, note='')
+                     kind='run' if kind else 'foreign', dirty=None, removed=False, note='')
         if entry['kind'] == 'run':
             if not os.path.isdir(wt['path']):
                 entry.update(dirty=False, note='missing on disk; `git worktree prune` forgets it')
@@ -583,6 +592,13 @@ def remove_worktrees(run):
         code, _, err = git(run.repo, 'worktree', 'remove', entry['path'])
         if code == 0:
             entry['removed'] = True
+            # Fail-open, like every capture: the removal happened whether or not the store took it.
+            kind = run.owners.get(entry['path']) or 'task'
+            removed = event(run, 'worktree_removed', path=entry['path'], branch=entry['branch'] or '-',
+                            kind=kind, repo_path=run.repo, by='forge runs rm')
+            if kind == 'task' and entry['branch']:
+                removed['task'] = entry['branch'].split('/', 2)[-1]
+            record([removed], repo=run.repo, where='event:worktree_removed')
         else:
             entry['note'] = (err or 'git worktree remove exit %d' % code).splitlines()[0]
             problems.append('%s: %s' % (entry['path'], entry['note']))
