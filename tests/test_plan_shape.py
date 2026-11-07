@@ -2,6 +2,7 @@
 import dataset_isolation  # noqa: F401  keeps the run dataset out of the developer's store
 import importlib.util
 import json
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -436,6 +437,23 @@ class CollapseTests(unittest.TestCase):
         self.assertEqual(done.returncode, 0, done.stderr)
         self.assertTrue((plan / 'tasks' / 'combined' / 'prompt.md').is_file())
         self.assertFalse((plan / 'tasks' / 'combined' / 'approach.md').exists())
+
+    def test_a_combined_task_takes_the_highest_risk_only_when_every_part_was_rated(self):
+        # #122: an unrated part could be the riskiest, so a partly rated chain records no risk.
+        cases = [
+            ('every part rated', {'a': 'low\n', 'b': 'high\n', 'c': 'medium\n'}, 'high\n'),
+            ('one part unrated', {'a': 'low\n', 'c': 'high\n'}, None),
+            ('one part unreadable as a risk', {'a': 'low\n', 'b': 'severe\n', 'c': 'low\n'}, None),
+        ]
+        for name, risks, expected in cases:
+            with self.subTest(name):
+                shutil.rmtree(self.root / 'plan', ignore_errors=True)
+                plan, _ = self.write_plan(chain_rows(), extra={'tasks/%s/risk' % tid: text.encode()
+                                                               for tid, text in risks.items()})
+                done = self.check('collapse', str(plan))
+                self.assertEqual(done.returncode, 0, done.stderr)
+                risk = plan / 'tasks' / 'combined' / 'risk'
+                self.assertEqual(risk.read_text() if risk.exists() else None, expected)
 
     def test_a_branches_plan_and_a_single_task_are_left_untouched(self):
         for kind, rows in (

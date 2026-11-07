@@ -401,6 +401,41 @@ class EndToEndTests(StoreCase):
                              env=self.env, capture_output=True, text=True, check=True).stdout
         self.assertEqual(json.loads(out)['rules']['unusual']['would_pass'], 1)
 
+    def test_a_tasks_risk_reaches_the_store_and_changes_no_routing(self):
+        # #122: the same plan with and without risk ratings resolves the same models, and a rated run
+        # passes as an unrated one does; only the plan event and `forge dataset risk` see the ratings.
+        from forge_dataset import export, risk
+
+        def plan(name, ratings):
+            p = self.root / name
+            (p / 'tasks').mkdir(parents=True)
+            (p / 'tasks.tsv').write_text('a\t-\tlow\ta.txt\t-\t-\tA\nb\t-\thigh\tb.txt\t-\t-\tB\n')
+            for task in 'ab':
+                (p / 'tasks' / task).mkdir()
+                (p / 'tasks' / task / 'prompt.md').write_text('Implement change. REQUIREMENT_SENTINEL TASK_' + task)
+                if task in ratings:
+                    (p / 'tasks' / task / 'risk').write_text(ratings[task] + '\n')
+            r = self.run_script('forge-parallel.sh', 'plan', p, '--repo', self.repo, '--no-memory',
+                                '--dwarf-low', 'sol', '--dwarf-high', 'sol:xhigh', '--qa-low', 'opus', '--qa-high', 'opus:xhigh')
+            self.assertEqual(r.returncode, 0, r.stdout)
+            return p
+
+        plain, rated = plan('plain', {}), plan('rated', {'a': 'high', 'b': 'high'})
+        self.assertEqual((rated / 'tasks.tsv').read_text(), (plain / 'tasks.tsv').read_text())
+        self.assertEqual([line.split('\t')[4:6] for line in (rated / 'tasks.tsv').read_text().splitlines()
+                          if line and not line.startswith('#')], [['sol', 'opus'], ['sol:xhigh', 'opus:xhigh']])
+        r = self.run_script('forge-parallel.sh', 'run', rated)
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertEqual({t: self.text_of(rated, t) for t in 'ab'}, {'a': 'PASS', 'b': 'PASS'})
+
+        plans = {e['run']: e['data']['tasks'] for e in self.events(kind='plan')}
+        self.assertEqual(sorted((t['difficulty'], t['risk'] or '-') for tasks in plans.values() for t in tasks.values()),
+                         [('high', '-'), ('high', 'high'), ('low', '-'), ('low', 'high')])
+        rep = risk.report(export.Runs(export.Store(store.connect())))
+        self.assertEqual((rep['tasks'], rep['rated'], rep['same']), (4, 2, 1))
+        self.assertEqual([(c['difficulty'], c['risk'], c['tasks'], c['attempted'], c['first_pass']) for c in rep['cells']],
+                         [('low', 'high', 1, 1, 1), ('high', 'high', 1, 1, 1)])
+
     def test_a_retry_prepared_without_dispatch_counts_as_a_persons_when_the_run_starts_it(self):
         p = self.plan_of([('a', '-', 'a.txt')])
         self.scenario({'a.qa.1': {'verdict': 'FAIL', 'findings': '- [P1][CONFIRMED] a.txt:1 — broken'}, 'a.dwarf.2': {'content': 'fixed'}})
@@ -1215,6 +1250,32 @@ class PairsReportTests(StoreCase):
                          ('gpt-6.1-sol:high (codex)', 1, 0, 0, 1))
         self.assertEqual((rows['family']['a'], rows['family']['b'], rows['family']['agree']),
                          ('gpt-6.1-sol:high (codex)', 'opus:high (claude)', 1))
+
+
+class RiskReportTests(StoreCase):
+    def test_cells_count_serious_findings_and_work_that_did_not_hold(self):
+        from forge_dataset import export, risk
+        tasks = dict(kept=dict(difficulty='low', risk='high'), reverted=dict(difficulty='low', risk='high'),
+                     rewritten=dict(difficulty='high', risk='low'), unrated=dict(difficulty='low', risk=None))
+        events = [dict(rid='plan', kind='plan', run='r', mode='parallel', ts=1.0, data=dict(tasks=tasks))]
+        landed = dict(kept=(10, 9, []), reverted=(10, 10, ['abc']), rewritten=(10, 5, []))
+        for task in tasks:
+            events.append(dict(rid=task + '-1', kind='attempt', run='r', mode='parallel', task=task, attempt=1, ts=2.0,
+                               data=dict(status='FAIL' if task == 'kept' else 'PASS', reviewed_commit='c1-' + task)))
+            events.append(dict(rid=task + '-qa', kind='dispatch', run='r', mode='parallel', task=task, attempt=1, ts=2.0,
+                               data=dict(role='qa', verdict='PASS', findings=[
+                                   dict(status='CONFIRMED' if task == 'kept' else 'PLAUSIBLE', severity=1, head='- x')])))
+            if task in landed:
+                added, surviving, reverted = landed[task]
+                events.append(dict(rid=task + '-out', kind='outcome', run='r', task=task, ts=3.0,
+                                   data=dict(name='survival', status='ok', reviewed='c1-' + task, horizon_days=14,
+                                             added=added, surviving=surviving, reverted_by=reverted)))
+        store.record(events)
+        rep = risk.report(export.Runs(export.Store(store.connect())))
+        self.assertEqual((rep['tasks'], rep['rated'], rep['same']), (4, 3, 0))
+        self.assertEqual([(c['difficulty'], c['risk'], c['tasks'], c['first_pass'], c['serious'], c['landed'],
+                           c['did_not_hold'], c['enough']) for c in rep['cells']],
+                         [('low', 'high', 2, 1, 1, 2, 1, False), ('high', 'low', 1, 1, 0, 1, 1, False)])
 
 
 class OutcomeFollowTests(StoreCase):

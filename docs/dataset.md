@@ -15,6 +15,7 @@ forge dataset import ~/.local/share/forge/legacy   # runs that predate live capt
 forge dataset export            # labeled decision cases for benchmarks and fine-tuning
 forge dataset outcomes          # which integrated lines survived, read from git history
 forge dataset reviewers         # how often work each reviewer PASSed was later reverted or rewritten
+forge dataset risk              # tasks by difficulty and risk together: do they differ, how did each pair fare
 forge dataset pairs             # two reviewers of one attempt: what another effort, model or family found and cost
 forge dataset facts             # findings' reach, origin and evidence: do reviewers agree, would a gate on them help
 forge dataset forecast <plan>   # likely tokens, time and first-try PASS rate for a plan's tasks

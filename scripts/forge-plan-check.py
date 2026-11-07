@@ -655,7 +655,27 @@ def _rollback(plan: Path, original: bytes, moved: list, made_pre: bool, replaced
         pre.rmdir()
 
 
-def commit_collapse(plan: Path, original: bytes, rows: list, row: dict, prompt: str, approach, info: dict) -> None:
+RISK_RANK = {'low': 0, 'medium': 1, 'high': 2}
+
+
+def read_risk(path: Path):
+    """A task's recorded risk (#122): the first word of tasks/<id>/risk when it is low, medium or high, else None."""
+    try:
+        words = (_read_task_file(path) or '').split()
+    except PlanShapeError:      # a label nothing routes on never stops a collapse
+        return None
+    return words[0] if words and words[0] in RISK_RANK else None
+
+
+def combined_risk(risks: list):
+    """The highest risk of the parts when every part was rated, else None: an unrated part could be the riskiest."""
+    if not risks or any(risk is None for risk in risks):
+        return None
+    return max(risks, key=RISK_RANK.get)
+
+
+def commit_collapse(plan: Path, original: bytes, rows: list, row: dict, prompt: str, approach, info: dict,
+                    risk=None) -> None:
     """Move the chain aside and write the combined task. A failure restores the plan."""
     moved, made_pre, replaced, made_combined = [], False, False, False
     try:
@@ -676,6 +696,8 @@ def commit_collapse(plan: Path, original: bytes, rows: list, row: dict, prompt: 
         _atomic_write(combined / 'prompt.md', prompt)
         if approach is not None:
             _atomic_write(combined / 'approach.md', approach)
+        if risk is not None:
+            _atomic_write(combined / 'risk', risk + '\n')
         ids = [task['id'] for task in _parts_in_wave_order(rows)]
         _atomic_write(plan / COLLAPSED_JSON, _collapsed_text(ids, info))
     except Exception as err:
@@ -728,7 +750,8 @@ def command_collapse(plan: Path) -> int:
             if approach is not None:
                 approaches[row['id']] = approach
         combined, prompt, approach = collapse_rows(rows, prompts, approaches)
-        commit_collapse(plan, original, rows, combined, prompt, approach, info)
+        risk = combined_risk([read_risk(plan / 'tasks' / row['id'] / 'risk') for row in rows])
+        commit_collapse(plan, original, rows, combined, prompt, approach, info, risk)
     except PlanShapeError as err:
         print('forge-plan-check: %s' % err, file=sys.stderr)
         return 2

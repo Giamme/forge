@@ -75,7 +75,7 @@ given this same prompt file as `--prompt-file`.
 **The reply** holds exactly one fenced block opened by ```` ```forge-plan ```` whose body is JSON:
 
 ```
-{"tasks": [{"id": "parse-config", "deps": [], "difficulty": "medium",
+{"tasks": [{"id": "parse-config", "deps": [], "difficulty": "medium", "risk": "low",
             "files": ["src/config.py", "tests/test_config.py"],
             "title": "Parse the new config section", "approach": "…",
             "prompt": "… ## Acceptance criteria …"}]}
@@ -88,7 +88,8 @@ matches `^[a-z0-9][a-z0-9-]{0,39}$` and is unique; `deps` are known ids with no 
 `difficulty` is `low`, `medium` or `high`; `files` is a non-empty list of repo-relative paths (no
 absolute path, no `..`, no tab, comma or newline); `title` is one non-empty line without a tab;
 `approach` is a string (it may be empty); `prompt` is non-empty and has a `## Acceptance
-criteria` heading.
+criteria` heading. `risk` (#122) is the one optional key and never refuses a reply: `low`,
+`medium` or `high` is written to `tasks/<id>/risk`, anything else (or no key) writes nothing.
 
 On success it writes `tasks.tsv` (dwarf and qa `-`), `tasks/<id>/prompt.md` (the task's prompt,
 then `## The whole request` and `$PLAN/request.md` verbatim, so no requirement is lost) and, for

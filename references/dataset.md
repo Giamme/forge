@@ -163,6 +163,7 @@ forge still running keeps writing.
 ./forge dataset outcomes [--horizon-days 14] [--repo PATH] [--dry-run] [--deadline S] [--quiet]   # what integrated work became
 ./forge dataset routing [--repo PATH] [--since DAYS] [--json]   # pass rate and runtime per tier and model
 ./forge dataset reviewers [--horizon-days 14] [--repo PATH] [--json]   # how each reviewer's PASSed work held up
+./forge dataset risk [--repo PATH] [--json]    # tasks by difficulty and risk together, and how each pair fared
 ./forge dataset pairs [--repo PATH] [--json]   # two reviewers of one attempt, by what differs (effort, model, family)
 ./forge dataset facts [--repo PATH] [--json]   # findings' reach, origin and evidence: agreement, and rules replayed
 ./forge dataset forecast <plan> [--repo PATH] [--json]   # likely cost and first-try PASS rate per task
@@ -393,6 +394,19 @@ or its model when no alias was recorded, as the forge-ui Models view keys it. A 
 
 forge-ui shows the rate as the Reviewers table's **Did not hold** column, through
 `GET /api/models/reviewers`, which runs this command with `--json`.
+
+## Risk beside difficulty
+
+A plan event's `tasks.<id>.risk` is the task's `tasks/<id>/risk` rating (`low`, `medium`,
+`high`, or null when it was not rated), recorded beside its difficulty. Nothing routes on it.
+`forge dataset risk` counts each task once, as its run's latest plan revision rated it:
+
+- how many tasks are rated, how many have a risk equal to their difficulty, and Cohen's kappa
+  between the two. A rating that only echoes difficulty adds nothing, and the question stops there.
+- per (difficulty, risk) cell: tasks; first attempts that passed; tasks whose primary review
+  found a CONFIRMED P0 or P1; landed work (`forge dataset outcomes`, the longest horizon followed)
+  and how much of it did not hold. A cell under 10 tasks is flagged rather than read as an answer:
+  outcomes take 14 days, and low difficulty with high risk, the case that matters, is rare.
 
 ## Paired reviews
 
