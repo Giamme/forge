@@ -163,6 +163,7 @@ forge still running keeps writing.
 ./forge dataset outcomes [--horizon-days 14] [--repo PATH] [--dry-run] [--deadline S] [--quiet]   # what integrated work became
 ./forge dataset routing [--repo PATH] [--since DAYS] [--json]   # pass rate and runtime per tier and model
 ./forge dataset reviewers [--horizon-days 14] [--repo PATH] [--json]   # how each reviewer's PASSed work held up
+./forge dataset pairs [--repo PATH] [--json]   # two reviewers of one attempt, by what differs (effort, model, family)
 ./forge dataset facts [--repo PATH] [--json]   # findings' reach, origin and evidence: agreement, and rules replayed
 ./forge dataset forecast <plan> [--repo PATH] [--json]   # likely cost and first-try PASS rate per task
 ./forge dataset worktrees [--json]      # the worktrees forge created and removed (forge-ui's Worktrees screen)
@@ -392,6 +393,27 @@ or its model when no alias was recorded, as the forge-ui Models view keys it. A 
 
 forge-ui shows the rate as the Reviewers table's **Did not hold** column, through
 `GET /api/models/reviewers`, which runs this command with `--json`.
+
+## Paired reviews
+
+`forge dataset pairs` reads the usable shadow pairs (as `status` counts them) and groups them by
+the two reviewers' recorded harness, model and effort, each pair ordered lower effort first
+(side `a`), then by model name:
+
+- `effort`: the same model, at another effort or through another harness
+- `model`: another model of the same family (`forge-shadow.py`'s families)
+- `family`: another family
+- `control`: identical settings. Their disagreement is the noise the others are read against,
+  and a control is never an effort comparison
+
+Per pair of settings: `pairs`, `agree`, `agreement` with its Wilson 95% interval `ci`, and
+`enough` from 30 pairs, the bar `forge dataset routing` uses. `only_a` and `only_b` count
+blocking findings (CONFIRMED at the attempt's threshold or worse, or unlabelled) that the other
+side did not name: nothing of it in the same file within 10 lines. An unlocated finding is always
+unique, and a finding both sides name at different severities is not. `tokens_ratio` and
+`time_ratio` are the medians over pairs of b's input plus output tokens and elapsed time as a
+multiple of a's. A unique find is not a correct one: whether it was real is judged afterwards,
+from outcomes or hidden tests. It only advises.
 
 ## Finding facts
 

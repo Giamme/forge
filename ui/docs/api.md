@@ -90,7 +90,7 @@ written), and the reader must never raise because of one.
 | `fractal-selection.json` | `{"enabled": true, "run": "run-<20 hex>"}` (or `enabled: false`): the run's Fractal choice, see Fractal below |
 | `tasks/<id>/route.jsonl` | one JSON object per line, one per routing decision: `at` (epoch), `task`, `tier`, `epsilon`, `candidates` (list of specs), `default` (spec), `chosen` (spec), `explored` (bool), `propensity` (probability the chosen spec had), `inputs` (object), `decision` (a short hash identifying the decision). Keep unknown fields |
 | `tasks/<id>/route.explored` | exists when the task's route was an exploratory pick |
-| `shadow/<id>/<attempt>-<k>/shadow.json` | JSON: `task`, `attempt`, `reviewed`, `primary`, `spec`, `pick`, `started`. A second, never-read review of attempt `<attempt>` |
+| `shadow/<id>/<attempt>-<k>/shadow.json` | JSON: `task`, `attempt`, `reviewed`, `primary`, `spec`, `pick` (`other_family`, `same_model`, `same_family` or `control`: identical to the primary), `started`. A second, never-read review of attempt `<attempt>` |
 | `shadow/<id>/<attempt>-<k>/shadow.status` | one word |
 | `shadow/<id>/<attempt>-<k>/qa.last` | the shadow reviewer's final message, verdict as above |
 | `shadow/<id>/<attempt>-<k>/attempts/qa-<uuid>/` | the shadow review's execution |

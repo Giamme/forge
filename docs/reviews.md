@@ -345,7 +345,10 @@ family than the task's. Its verdict goes to the run dataset and nothing in the r
 so it never changes a status, merge, memory or retry. `forge dataset status` then reports how
 often the two reviewers agree, overall and per model pair. The table shows the extra reviews
 before you approve. The shadow runs beside the main review and is stopped soon after that
-finishes, so the most it costs is reviews and a little latency. See
+finishes, so the most it costs is reviews and a little latency. To measure what reviewer effort
+buys, list the reviewers' own model at another effort (`--shadow-qa sol:medium` beside `sol:high`):
+`forge dataset pairs` reports those pairs apart from model and family comparisons, and a shadow
+identical to its primary is recorded as a control, never as an effort comparison. See
 [decomposition](../references/decompose.md#shadow-reviews-opt-in).
 
 ## Implementer guards
