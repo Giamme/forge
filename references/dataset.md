@@ -48,7 +48,7 @@ time order: an attempt that PASSed, then a merge that CONFLICTed, then a human `
 | `ledger` | ledger row | imported `.forge/ledger.tsv` rows |
 | `forecast` | forecast shown by `run` | the plan forecast printed before dispatch (see [plan forecast](#plan-forecast)), once per run and content. Also in the plan as `forecast.json` |
 | `comparison` | `forge runs compare` | two runs of one plan side by side: `a` and `b` each with the run's uid, run id, starting commit and per-task status, attempts, tokens, time and diff size, and a `summary` (tasks merged in both, only in one, in neither). One event per pair and content; the event's run is the second one. Descriptive: nothing routes on it |
-| `outcome` | integrated task, per horizon | written by `forge dataset outcomes`, never by a run: how many of the lines a task added survive N days after `integrate`, and what reverted it |
+| `outcome` | integrated task, per horizon | written by `forge dataset outcomes`, which the end of every `run` and `integrate` also runs for its repository: how many of the lines a task added survive N days after it landed, and what reverted it |
 
 An attempt that forge sent back without a review keeps the status `FAIL` in the dataset, and
 `sent_back` says what sent it back (`prereview`, `bounce` or `message`). `attempts.tsv` names the
@@ -160,7 +160,7 @@ forge still running keeps writing.
 ./forge dataset blob <sha>              # print one stored blob
 ./forge dataset import <dir|archive|legacy-dir>... [--registry] [--fractal] [--ledger REPO] [--dry-run]
 ./forge dataset export [--slice S]... [--limit N] [--seed N] [--out DIR]   # labeled decision cases
-./forge dataset outcomes [--horizon-days 14] [--repo PATH] [--dry-run]     # what integrated work became
+./forge dataset outcomes [--horizon-days 14] [--repo PATH] [--dry-run] [--deadline S] [--quiet]   # what integrated work became
 ./forge dataset routing [--repo PATH] [--since DAYS] [--json]   # pass rate and runtime per tier and model
 ./forge dataset reviewers [--horizon-days 14] [--repo PATH] [--json]   # how each reviewer's PASSed work held up
 ./forge dataset forecast <plan> [--repo PATH] [--json]   # likely cost and first-try PASS rate per task
@@ -336,11 +336,31 @@ For every integration, and every task it brought in, the harvester records:
   integration, dated before `integrate` + N days. The branch is resolved once, and the
   chain is walked by position, so commit dates out of order cannot skip a commit.
 
-Two cases leave a task without a survival count:
+**Followed where it went** (#120). When the branch `integrate` advanced is gone, or the
+integration is no longer on its first-parent chain, the harvester looks for it in every other
+branch (local, then remote, never forge's own `forge/` branches): the commit where it entered
+a branch's first-parent chain, a merge or the integration itself, is where the horizon is walked
+from, on that branch. The outcome records `followed` (the branch) and `landed` (that commit). A
+feature branch that a pull request merged and then deleted is followed this way. A run nobody
+ran `integrate` for, its integration branch merged by hand, is followed the same way from its
+last integration commit, and its horizon counts from when it landed (`merged_by_hand`).
+
+Three cases leave a task without a survival count:
 - **Pending:** the horizon has not been reached and no later commit has passed it yet.
   Nothing is written, and the next harvest tries again.
-- **Lost:** a rebase, squash or reset took the integration off the branch. This means
-  unobservable, not failed.
+- **Not landed:** a run merged by hand whose integration no branch contains: not merged yet,
+  or squashed. Nothing is written, and the next harvest tries again.
+- **Lost:** an `integrate` that a squash, rebase or reset took off every branch. This means
+  unobservable, not failed; `lost_cause` says whether its branch was deleted (`branch_gone`)
+  or rewritten (`off_branch`).
+
+**When it runs.** The end of every `run` (unless it was interrupted) and every `integrate`
+harvests that plan's repository: bounded by `FORGE_OUTCOMES_TIMEOUT` seconds (default 20; it
+starts no new integration after that, and is killed 10 s later), never changing the exit code,
+with its errors in `errors.log`. `FORGE_OUTCOMES=off`, or the dataset off, skips it. A new
+integration cannot have reached its horizon, so what it records is older work coming due. Every
+harvest that writes leaves `outcomes.last` in the dataset dir, and `forge dataset status`
+prints the outcomes recorded by status and what the last harvest did.
 
 The rid names the integration, the reviewed commit and the horizon, so harvesting again
 adds nothing, and two horizons are two outcomes. Survival describes the diff that landed,

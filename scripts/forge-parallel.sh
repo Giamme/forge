@@ -2890,6 +2890,8 @@ case "$CMD" in
     run_wait "$run_job"; rc=$run_rc
     trap - TERM INT
     [ "$run_signalled" = 1 ] && [ "$rc" -gt 128 ] && rc=130
+    # Older integrations' outcomes that came due (#120), unless the run was interrupted: bounded, never the exit code.
+    [ "$run_signalled" = 1 ] || forge_outcomes_harvest "${1:-}"
     forge_update_notice; exit "$rc" ;;
   retry)
     # As run: the handler lives at the pid the user started, and do_retry runs in a background
@@ -2904,7 +2906,7 @@ case "$CMD" in
     trap - TERM INT
     [ "$retry_signalled" = 1 ] && [ "$rc" -le 128 ] && rc=143
     exit "$rc" ;;
-  integrate) do_integrate "$@" ;;
+  integrate) do_integrate "$@"; rc=$?; forge_outcomes_harvest "${1:-}"; exit "$rc" ;;
   accept)    need_fn do_accept;  do_accept "$@" ;;
   adopt)     need_fn do_adopt;   do_adopt "$@" ;;
   review)    need_fn do_review;  do_review "$@" ;;

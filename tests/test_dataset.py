@@ -1079,6 +1079,99 @@ class EndToEndTests(StoreCase):
         self.assertEqual(self.errors(), '')
 
 
+class OutcomeFollowTests(StoreCase):
+    """#120: an integration is followed where it went, a run merged by hand too, and the end of a run harvests."""
+    setUp_fixture, git, run_script, scenario = (EndToEndTests.setUp_fixture, EndToEndTests.git,
+                                                EndToEndTests.run_script, EndToEndTests.scenario)
+    setUp, plan_of, commit_at = EndToEndTests.setUp, EndToEndTests.plan_of, EndToEndTests.commit_at
+
+    def merge_at(self, when, ref, message):
+        env = dict(self.env, GIT_AUTHOR_DATE='@%d +0000' % when, GIT_COMMITTER_DATE='@%d +0000' % when)
+        subprocess.run(['git', 'merge', '-q', '--no-ff', '-m', message, ref], cwd=self.repo, env=env, check=True)
+        return self.git('rev-parse', 'HEAD').decode().strip()
+
+    def two_tasks(self):
+        self.scenario({'a.dwarf.*': {'content': 'one\ntwo'}, 'b.dwarf.*': {'content': 'kept'}})
+        p = self.plan_of([('a', '-', 'a.txt'), ('b', '-', 'b.txt')])
+        self.assertEqual(self.run_script('forge-parallel.sh', 'run', p).returncode, 0)
+        return p
+
+    def harvest(self, now, **kw):
+        from forge_dataset import outcomes
+        found, counts = outcomes.harvest(horizon_days=1, include_temp=True, now=now, **kw)
+        return {e['task']: e['data'] for _, e in found}, counts
+
+    def test_an_integration_whose_branch_was_deleted_is_followed_through_the_merge_that_took_it(self):
+        # The 25 lost outcomes on a real machine: a run integrated into a feature branch, which a PR then merged
+        # into the main line with a merge commit before the branch was deleted.
+        main = self.git('rev-parse', '--abbrev-ref', 'HEAD').decode().strip()
+        self.git('checkout', '-q', '-b', 'feat')
+        p = self.two_tasks()
+        self.assertEqual(self.run_script('forge-parallel.sh', 'integrate', p, '--approved').returncode, 0)
+        db = store.connect()
+        [(at, integration)] = [(ts, json.loads(d)) for ts, d in db.execute("SELECT ts, data FROM events WHERE kind='event'")
+                               if json.loads(d)['name'] == 'integrate_advanced']
+        db.close()
+        self.git('checkout', '-q', main)
+        landed = self.merge_at(at + 3600, 'feat', 'Merge pull request #1 from feat')
+        self.git('branch', '-q', '-D', 'feat')
+        self.commit_at(at + 7200, 'reword', {'a.txt': 'ONE\ntwo\n'})
+        by_task, counts = self.harvest(at + 10 * 86400)
+        self.assertEqual({t: (d['status'], d['added'], d['surviving'], d['followed'], d['landed']) for t, d in by_task.items()},
+                         {'a': ('ok', 2, 1, main, landed), 'b': ('ok', 1, 1, main, landed)})
+        self.assertEqual((counts['followed'], counts['lost']), (2, 0))
+        self.assertEqual(by_task['a']['candidate'], integration['candidate'])
+        # Squashed instead, nothing contains it: lost, with the cause written down.
+        self.git('reset', '-q', '--hard', integration['parent'])
+        by_task, _ = self.harvest(at + 10 * 86400)
+        self.assertEqual({(d['status'], d['lost_cause']) for d in by_task.values()}, {('lost', 'branch_gone')})
+
+    def test_a_run_merged_by_hand_is_followed_once_it_lands_and_never_written_before(self):
+        from forge_dataset import outcomes
+        p = self.two_tasks()
+        run_id = (p / 'run_id').read_text().strip()
+        by_task, counts = self.harvest(time.time() + 30 * 86400)
+        self.assertEqual((by_task, counts['not_landed']), ({}, 2))           # its integration branch is forge's own
+        landed = self.merge_at(int(time.time()) - 5 * 86400, 'forge/%s-integration' % run_id, 'merge the run by hand')
+        by_task, counts = self.harvest(time.time())
+        self.assertEqual({t: (d['status'], d['merged_by_hand'], d['landed'], d['branch']) for t, d in by_task.items()},
+                         {'a': ('ok', True, landed, None), 'b': ('ok', True, landed, None)})
+        # A deadline already passed starts nothing: it is all found again next time.
+        self.assertEqual(self.harvest(time.time(), deadline=-1), ({}, {'deferred': 1}))
+        # Recorded once, and the dataset status says when and what.
+        args = type('A', (), dict(horizon_days=1, repo=str(self.repo), include_temp=True, dry_run=False, deadline=None,
+                                  quiet=True))()
+        outcomes.main(args)
+        outcomes.main(args)
+        self.assertEqual(len(self.events(kind='outcome')), 2)
+        out = subprocess.run([sys.executable, str(fixtures.ROOT / 'scripts/forge-dataset.py'), 'status'],
+                             capture_output=True, text=True, env=self.env).stdout
+        self.assertIn('outcomes: 2 recorded (2 ok); last harvested', out)
+        self.assertEqual(self.errors(), '')
+
+    def stamp(self):
+        path = self.home / 'dataset' / 'outcomes.last'
+        return json.loads(path.read_text()) if path.exists() else None
+
+    def test_the_end_of_run_and_integrate_harvest_without_changing_the_result(self):
+        p = self.two_tasks()                                                # `run` harvested its repository
+        self.assertEqual(self.stamp()['repo'], os.path.realpath(self.repo))
+        (self.home / 'dataset' / 'outcomes.last').unlink()
+        off = dict(self.env, FORGE_OUTCOMES='off')
+        self.assertEqual(subprocess.run(['bash', str(fixtures.ROOT / 'scripts/forge-parallel.sh'), 'integrate', str(p),
+                                         '--approved'], cwd=self.repo, env=off, capture_output=True).returncode, 0)
+        self.assertIsNone(self.stamp())
+        # A harvest that hangs is cut off at its bound, and integrate's exit code is its own.
+        site = self.root / 'site'; site.mkdir()
+        (site / 'sitecustomize.py').write_text("import sys, time\nif 'outcomes' in sys.argv: time.sleep(120)\n")
+        hung = dict(self.env, FORGE_OUTCOMES_TIMEOUT='1', PYTHONPATH=str(site))
+        started = time.monotonic()
+        r = subprocess.run(['bash', str(fixtures.ROOT / 'scripts/forge-parallel.sh'), 'integrate', str(p), '--approved'],
+                           cwd=self.repo, env=hung, capture_output=True, text=True, timeout=120)
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertLess(time.monotonic() - started, 60)
+
+
 class ImportTests(StoreCase):
     def test_an_old_run_gets_one_attempt_per_execution_with_its_own_diff(self):
         # A run dir from before live capture: no dataset.json, no attempts.tsv. Earlier
@@ -1718,9 +1811,10 @@ class IndependenceTests(unittest.TestCase):
                 for line in text.splitlines():
                     if 'forge-dataset.py' in line:
                         # The reads: run's advisory forecast and plan's slow-effort notes, printed to the
-                        # operator only.
+                        # operator only; the end of a run's outcome harvest writes outcomes and prints nothing.
                         self.assertRegex(line, r'forge-dataset\.py" (event|invocation|forecast "\$1" --run 2>/dev/null|'
-                                               r'slow-notes "\$PLAN" 2>/dev/null \|\| true$)', str(path))
+                                               r'slow-notes "\$PLAN" 2>/dev/null \|\| true$|'
+                                               r'outcomes --repo "\$repo" --deadline "\$limit" --quiet \\$)', str(path))
                     if '-m forge_dataset' in line:
                         # doctor --spec's slow-effort note, on the operator's stderr.
                         self.assertRegex(line, r'python3 -m forge_dataset\.efforts "\$SPEC" 2>/dev/null$', str(path))

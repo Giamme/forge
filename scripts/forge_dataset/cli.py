@@ -6,6 +6,8 @@ silent): event, invocation, plan.
 from __future__ import annotations
 
 import argparse
+import os
+from collections import Counter
 import json
 import sys
 import time
@@ -49,6 +51,35 @@ def _continued_sessions(db) -> dict:
     return counts
 
 
+def _outcomes(db) -> dict:
+    """Recorded survival outcomes by status, and what the last harvest that wrote did (#120)."""
+    from . import outcomes
+    recorded = Counter()
+    for (raw,) in db.execute("SELECT data FROM events WHERE kind = 'outcome'"):
+        data = json.loads(raw)
+        if data.get('name') == 'survival':
+            recorded[data.get('status') or 'unknown'] += 1
+    return dict(recorded=dict(recorded), last=outcomes.last_harvest())
+
+
+def _outcomes_line(found) -> str | None:
+    recorded, last = found.get('recorded') or {}, found.get('last')
+    total = sum(recorded.values())
+    line = 'outcomes: %d recorded' % total
+    if total:
+        line += ' (%s)' % ', '.join('%d %s' % (recorded[k], k.replace('_', ' ')) for k in sorted(recorded))
+    if last and isinstance(last.get('at'), (int, float)):
+        counts = last.get('counts') or {}
+        where = os.path.basename(last['repo']) if last.get('repo') else 'every repo'
+        extra = ', '.join('%d %s' % (counts[k], k.replace('_', ' ')) for k in ('not_landed', 'pending', 'deferred', 'git_error')
+                          if counts.get(k))
+        line += '; last harvested %s for %s: %d recorded%s' % (time.strftime('%Y-%m-%d %H:%M', time.localtime(last['at'])),
+                                                               where, last.get('recorded') or 0, ', ' + extra if extra else '')
+    else:
+        line += '; never harvested (`forge dataset outcomes`, or the end of a run)'
+    return line
+
+
 def status(args) -> int:
     from . import checks
     directory = dataset_dir()
@@ -65,6 +96,7 @@ def status(args) -> int:
             summary['last_event'] = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(last)) if last else None
             summary['checks'] = checks.run(db, verbose=args.verbose)
             summary.update(_continued_sessions(db))
+            summary['outcomes'] = _outcomes(db)
             if summary['events'].get('dispatch'):
                 from . import export
                 if db.execute("SELECT 1 FROM events WHERE kind = 'dispatch' AND data LIKE '%qa_shadow%' LIMIT 1").fetchone():
@@ -99,6 +131,9 @@ def status(args) -> int:
                   % (shadow['shadow_reviews'], shadow['pairs'], shadow['agree'], rate))
             for pair, n in shadow['by_pair'].items():
                 print('          %s: %d of %d agree' % (pair, n['agree'], n['pairs']))
+        line = _outcomes_line(summary.get('outcomes') or {})
+        if line:
+            print('  ' + line)
         if summary.get('continued_reviews') or summary.get('failed_continues'):
             print('  continued reviews: %d' % summary['continued_reviews'])
             print('  failed continues: %d' % summary['failed_continues'])
@@ -253,6 +288,9 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument('--repo', help='only this repo')
     p.add_argument('--include-temp', action='store_true', help='also repos under temp dirs (test runs)')
     p.add_argument('--dry-run', action='store_true', help='report what would be recorded, write nothing')
+    p.add_argument('--deadline', type=float, metavar='SECONDS',
+                   help='start no new integration after this long; the rest waits for the next harvest')
+    p.add_argument('--quiet', action='store_true', help='print nothing (the automatic harvest at the end of a run)')
     p.set_defaults(func=run_outcomes)
     p = sub.add_parser('routing', help='pass rate and runtime per tier and model, and what the --explore draws say')
     p.add_argument('--repo', help='only this repo')
