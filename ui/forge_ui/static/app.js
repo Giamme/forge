@@ -51,16 +51,19 @@ window.ForgeApp = (() => {
     if (sel.kind === 'task') return `${base}/tasks/${e(sel.id)}`;
     if (sel.kind === 'execution') return sel.task ? `${base}/tasks/${e(sel.task)}/executions/${e(sel.exec)}` : `${base}/executions/${e(sel.exec)}`;
     if (sel.kind === 'final') return `${base}/final-review${sel.name ? '/' + e(sel.name) : ''}`;
+    if (sel.kind === 'adoption') return `${base}/adoptions/${e(sel.name)}`;
     if (sel.kind === 'verification') return `${base}/verification`;
     if (sel.kind === 'integration') return `${base}/integration`;
     if (sel.kind === 'fractal') return `${base}/tasks/${e(sel.task)}/fractal/${e(sel.node)}`;
     return base;
   }
-  // a diff: {kind: 'task', task, source, file} | {kind: 'final', name, file} | {kind: 'fractal', task, node, file},
+  // a diff: {kind: 'task', task, source, file} | {kind: 'final', name, file} | {kind: 'adoption', name, file}
+  // | {kind: 'fractal', task, node, file},
   // opened at a file, or at one finding (its id from /findings)
   function diffHash(key, spec) {
     const e = encodeURIComponent, base = '#/runs/' + e(key), file = spec.finding ? '/finding/' + e(spec.finding) : spec.file ? '/file/' + e(spec.file) : '';
     if (spec.kind === 'final') return `${base}/final-review/${e(spec.name)}/diff${file}`;
+    if (spec.kind === 'adoption') return `${base}/adoptions/${e(spec.name)}/diff${file}`;
     if (spec.kind === 'fractal') return `${base}/tasks/${e(spec.task)}/fractal/${e(spec.node)}/diff${file}`;
     return `${base}/tasks/${e(spec.task)}/diff${spec.source && spec.source !== 'current' ? '/' + e(spec.source) : ''}${file}`;
   }
@@ -87,6 +90,7 @@ window.ForgeApp = (() => {
     if ((r = rest.match(/^\/tasks\/([^/]+)\/diff(?:\/(?!file\/|finding\/)([^/]+))?(?:\/finding\/([^/]+))?(?:\/file\/(.+?))?\/?$/))) return { key: d(m[1]), sel: { kind: 'task', id: d(r[1]) }, diff: { kind: 'task', task: d(r[1]), source: r[2] ? d(r[2]) : 'current', finding: r[3] ? d(r[3]) : null, file: r[4] ? d(r[4]) : null } };
     if ((r = rest.match(/^\/tasks\/([^/]+)\/fractal\/([^/]+)\/diff(?:\/file\/(.+?))?\/?$/))) return { key: d(m[1]), sel: { kind: 'task', id: d(r[1]) }, diff: { kind: 'fractal', task: d(r[1]), node: d(r[2]), file: r[3] ? d(r[3]) : null } };
     if ((r = rest.match(/^\/final-review\/([^/]+)\/diff(?:\/finding\/([^/]+))?(?:\/file\/(.+?))?\/?$/))) return { key: d(m[1]), sel: { kind: 'final', name: d(r[1]) }, diff: { kind: 'final', name: d(r[1]), finding: r[2] ? d(r[2]) : null, file: r[3] ? d(r[3]) : null } };
+    if ((r = rest.match(/^\/adoptions\/([^/]+)\/diff(?:\/finding\/([^/]+))?(?:\/file\/(.+?))?\/?$/))) return { key: d(m[1]), sel: { kind: 'adoption', name: d(r[1]) }, diff: { kind: 'adoption', name: d(r[1]), finding: r[2] ? d(r[2]) : null, file: r[3] ? d(r[3]) : null } };
     if ((r = rest.match(/^\/(?:tasks\/([^/]+)\/)?executions\/([^/]+)\/conversation(?:\/event\/(\d{1,7}))?\/?$/))) {
       const s = r[1] ? { kind: 'execution', task: d(r[1]), id: d(r[1]), exec: d(r[2]) } : { kind: 'execution', task: null, exec: d(r[2]) };
       const run = s.task && state.cache.get(d(m[1]))?.data, t = run && list(run.tasks).find(x => x.id === s.task);
@@ -101,6 +105,7 @@ window.ForgeApp = (() => {
     else if ((r = rest.match(/^\/tasks\/([^/]+)\/?$/))) sel = { kind: 'task', id: d(r[1]) };
     else if ((r = rest.match(/^\/executions\/([^/]+)\/?$/))) sel = { kind: 'execution', task: null, exec: d(r[1]) };
     else if ((r = rest.match(/^\/final-review(?:\/([^/]+))?\/?$/))) sel = { kind: 'final', name: r[1] ? d(r[1]) : null };
+    else if ((r = rest.match(/^\/adoptions\/([^/]+)\/?$/))) sel = { kind: 'adoption', name: d(r[1]) };
     else if (/^\/verification\/?$/.test(rest)) sel = { kind: 'verification' };
     else if (/^\/integration\/?$/.test(rest)) sel = { kind: 'integration' };
     else if ((r = rest.match(/^\/tasks\/([^/]+)\/fractal\/([^/]+)\/?$/))) sel = { kind: 'fractal', task: d(r[1]), node: d(r[2]) };

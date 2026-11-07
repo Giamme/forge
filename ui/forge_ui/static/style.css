@@ -1526,6 +1526,7 @@ dialog.set-guide::backdrop { background: light-dark(rgb(17 22 19 / .35), rgb(0 0
 /* Commits adopted from outside a run */
 .adoptions { display: grid; gap: var(--s-2); margin: 0; padding: 0; list-style: none; font-size: var(--t-sm); }
 .adoptions p { margin: var(--s-1) 0 0; text-wrap: pretty; }
+.adoption-links { display: flex; flex-wrap: wrap; gap: var(--s-3); }
 
 /* A held redraw that has lasted (#115) */
 .live-held { position: fixed; right: var(--s-4); bottom: var(--s-4); z-index: 30; display: flex; align-items: center; gap: var(--s-2); padding: var(--s-2) var(--s-3); border: 1px solid var(--rule); border-radius: var(--r-key); background: var(--module); color: var(--ink); box-shadow: var(--ply-2); font-size: var(--t-sm); }

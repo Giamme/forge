@@ -25,8 +25,12 @@ least as severe as --severity, from a task that is not itself a sweep task (one 
 review finds goes to `forge issues`), not dismissed (`forge issues --dismiss`), located in a file the
 integration branch still has, and still there: when a later merge changed the file and the line the
 reviewer saw is gone from it, the finding is left for `forge issues` rather than "fixed" twice. A
-person's acceptance of a reviewer's FAIL (`accept`) is theirs to triage, so accepted findings are never
-swept. Every finding left out is listed in the plan with its reason.
+person's acceptance of a reviewer's FAIL (`accept`, or `adopt --approved`) is theirs to triage, so accepted
+findings are never swept. Every finding left out is listed in the plan with its reason.
+
+A range `adopt` brought in has no task row, and what its review tolerated is swept like a task's (#131):
+its fix task's reviewer is the adoption's reviewer, and its implementer the plan's low tier, else the
+implementer of the run's first task.
 
 Each fix task gets at most GROUP_CAP findings; --max (default DEFAULT_MAX) caps the tasks, worst
 severity first. Its implementer is the plan's low tier (the first spec of --dwarf-low, else of
@@ -67,6 +71,7 @@ REASONS = {
     'group-cap': 'over the %d findings one fix task takes' % GROUP_CAP,
     'over-max': 'over --sweep-max fix tasks',
     'no-model': 'no implementer or reviewer to give its fix task',
+    'accepted': 'a person kept it over the review (accept, or adopt --approved): theirs to triage',
 }
 
 _ISSUES = None
@@ -218,12 +223,18 @@ def triage(ctx: Context, found: list, severity: str, plausible: bool) -> tuple:
     kept, dropped, seen = [], [], {}
     tip_text = {}
     for f in sorted(found, key=lambda f: SEVERITIES.index(f['severity'])):
-        if f['origin'] not in origins or not f.get('task') or is_sweep_task(ctx.plan, f['task']):
+        if not f.get('task') or is_sweep_task(ctx.plan, f['task']):
+            continue
+        if f['origin'] not in origins and f['origin'] != 'accepted':
             continue
         f = dict(f, key=mod.finding_key(f))
 
         def drop(reason, **detail):
             dropped.append(dict(f, reason=reason, detail=detail))
+
+        if f['origin'] == 'accepted':
+            drop('accepted')
+            continue
 
         if SEVERITIES.index(f['severity']) > cut:
             drop('below-severity')
@@ -279,18 +290,22 @@ def pools(plan: Path) -> dict:
     return data if isinstance(data, dict) else {}
 
 
-def models(plan: Path, source: 'list | None') -> tuple:
-    """(dwarf, qa) for a fix task whose worst finding came from the task with row `source` (None when
-    that task is not in tasks.tsv); an empty string where there is no spec to use."""
+def models(plan: Path, source: 'list | None', finding: 'dict | None' = None, table: list = ()) -> tuple:
+    """(dwarf, qa) for a fix task whose worst finding came from the task with row `source`; an empty string
+    where there is no spec to use. Without a row (an adopted range, #131) the reviewer is the finding's own
+    (the adoption's spec) and the implementer, below the low tier, the run's first task's."""
     def usable(spec):
         return spec if isinstance(spec, str) and spec not in ('', '-', 'UNASSIGNED') else ''
-    qa = usable(source[5]) if source else ''
+    qa = usable(source[5]) if source else usable((finding or {}).get('reviewer'))
     routing = pools(plan)
     for tier in ('low', 'any'):
         specs = routing.get(tier)
         if isinstance(specs, list) and specs and usable(specs[0]):
             return specs[0], qa
-    return (usable(source[4]) if source else ''), qa
+    if source:
+        return usable(source[4]), qa
+    first = next((row for row in table if len(row) > 4 and not is_sweep_task(plan, row[0])), None)
+    return (usable(first[4]) if first else ''), qa
 
 
 def free_ids(taken: set, count: int) -> list:
@@ -368,7 +383,7 @@ def cmd_plan(args) -> int:
     run_id = read(plan / 'run_id') or plan.name
     tasks, new_rows = [], []
     for path, items in list(chosen):
-        if not all(models(plan, by_id.get(items[0]['task']))):
+        if not all(models(plan, by_id.get(items[0]['task']), items[0], table)):
             chosen.remove((path, items))
             dropped += [dict(f, reason='no-model', detail={}) for f in items]
     for ident, (path, items) in zip(ids, chosen):
@@ -376,7 +391,7 @@ def cmd_plan(args) -> int:
                         origin=f['origin'], task=f['task'], file=f['file'], line=f.get('line'), path=path,
                         location=location(f, path), text=f['text'], raw=f['raw'])
                    for n, f in enumerate(items, 1)]
-        dwarf, qa = models(plan, by_id.get(items[0]['task']))
+        dwarf, qa = models(plan, by_id.get(items[0]['task']), items[0], table)
         title = 'Fix %d review finding%s in %s' % (len(entries), '' if len(entries) == 1 else 's', path)
         root = plan / 'tasks' / ident
         root.mkdir(parents=True, exist_ok=True)

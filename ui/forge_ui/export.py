@@ -40,8 +40,9 @@ _TEXT_KEYS = frozenset(('prompt', 'last', 'request', 'log_tail', 'dwarf_tail', '
                         'dwarf_input', 'error', 'last_line', 'message', 'excerpt', 'tail', 'lines', 'call', 'split',
                         'needs_input', 'detail'))
 # keys that are private text only under one parent: a person's --reason on each decision (`reason` elsewhere is
-# a short machine word, such as a sweep's dropped-finding reason, and stays)
-_TEXT_KEYS_UNDER = {'decisions': frozenset(('reason',))}
+# a short machine word, such as a sweep's dropped-finding reason, and stays); the --reason of each adoption too
+_TEXT_KEYS_UNDER = {'decisions': frozenset(('reason',)), 'adoptions': frozenset(('reason',)),
+                    'adoption': frozenset(('reason',))}
 
 
 def _enc(value):
@@ -172,6 +173,10 @@ def build(catalog, key, texts=False, paths=False, now=None):
     reviews = [r.get('name') for r in (run.get('final_reviews') or []) if isinstance(r, dict) and r.get('name')]
     for name in reviews:
         snap.add(f'{base}/final-reviews/{_enc(name)}')
+    adopted = [a['review'] for a in (run.get('adoptions') or []) if isinstance(a, dict) and isinstance(a.get('review'), str)
+               and re.fullmatch(r'adopt-[0-9]+-[0-9]+', a['review'])]
+    for name in adopted:
+        snap.add(f'{base}/adoptions/{_enc(name)}')
     snap.add(f'{base}/files')
     snap.add(f'{base}/findings')
     fractal = run.get('fractal') or {}
@@ -193,6 +198,8 @@ def build(catalog, key, texts=False, paths=False, now=None):
                     snap.add(url, cap=DIFF_CAP)
         for name in reviews:
             snap.add(f'{base}/final-reviews/{_enc(name)}/diff', cap=DIFF_CAP)
+        for name in adopted:
+            snap.add(f'{base}/adoptions/{_enc(name)}/diff', cap=DIFF_CAP)
         # what each dwarf and reviewer said and ran: its conversation is all text, and so are the commands it ran
         for name in names:
             if name.startswith(('dwarf-', 'qa-')):

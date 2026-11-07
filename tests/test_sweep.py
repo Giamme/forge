@@ -175,10 +175,33 @@ class Planner(PlanBase):
         self.sweep('--severity', 'P3')
         self.assertEqual([(t['file'], [i['text'] for i in t['findings']]) for t in self.record()['tasks']],
                          [('a.txt', ['Tolerated.'])])
-        self.assertEqual(self.record()['dropped'], [])
+        self.assertEqual(self.dropped(), [('a', 'b.txt:1', 'accepted')])          # never swept, but said so
         (self.plan / 'sweep/plan.json').unlink()
         self.sweep('--severity', 'P3', '--plausible')
         self.assertEqual([t['file'] for t in self.record()['tasks']], ['a.txt', 'c.txt'])
+
+    def test_what_an_adopted_range_tolerated_is_swept_and_what_a_person_kept_is_not(self):
+        # #131: an adoption has no task row, so its tolerated finding was dropped for want of a model
+        self.task('a', {'a.txt': 'alpha\n'}, dwarf='luna:high')
+        base = self.git(self.int, 'rev-parse', 'HEAD')
+        (self.int / 'c.txt').write_text('adopted header\nadopted body\n')
+        self.git(self.int, 'commit', '-qam', 'a fix made by hand')
+        tip = self.git(self.int, 'rev-parse', 'HEAD')
+        adopted = self.plan / 'adopt-1700000000-42'; adopted.mkdir()
+        (adopted / 'known_issues.md').write_text(known(
+            '- [P3][CONFIRMED] c.txt:1 — The adopted header is stale.',
+            '',
+            "## Accepted by a human despite the reviewer's FAIL verdict",
+            '',
+            '- [P1][CONFIRMED] c.txt:2 — A person kept this one.'))
+        (self.plan / 'adoptions.tsv').write_text('\t'.join(['1700000000', base, tip, 'FAIL', '1', 'opus:high',
+                                                            adopted.name, 'hand-made fix']) + '\n')
+        self.assertEqual(self.sweep('--severity', 'P3').stdout.split(), ['sweep-1'])
+        [task] = self.record()['tasks']
+        self.assertEqual((task['file'], task['dwarf'], task['qa'], [i['text'] for i in task['findings']]),
+                         ('c.txt', 'luna:high', 'opus:high', ['The adopted header is stale.']))
+        self.assertEqual(self.dropped(), [(adopted.name, 'c.txt:2', 'accepted')])
+        self.assertIn('theirs to triage', (self.plan / 'sweep/plan.md').read_text())
 
     def test_the_caps_leave_the_rest_for_forge_issues(self):
         self.task('a', {'a.txt': ''.join('line %d\n' % n for n in range(1, 11))},

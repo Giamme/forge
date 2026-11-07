@@ -103,6 +103,21 @@ class AdoptTests(unittest.TestCase):
         entry = json.loads((p / 'control.log').read_text().splitlines()[-1])
         self.assertEqual((entry['action'], entry['verdict'], entry['reason'], entry['approved']), ('adopt', 'PASS', 'r', False))
 
+    def test_the_reviewer_is_given_the_runs_verification_command_and_none_when_there_is_none(self):
+        # #131: a task's reviewer of the combined run learns how forge verifies; adopt's reviewer did not
+        p = self.merged_plan()
+        self.commit_on_integration('one.txt')
+        self.assertEqual(self.adopt(p, '--head', '--reason', 'r').returncode, 0)
+        self.assertNotIn('The run verifies its integration branch', (self.review_dir(p) / 'qa.input').read_text())
+        (p / 'verify_cmd').write_text('true  # VERIFY_SENTINEL')
+        self.commit_on_integration('two.txt')
+        r = self.adopt(p, '--head', '--reason', 'r')
+        self.assertEqual(r.returncode, 0, r.stdout)
+        latest = (p / 'adoptions.tsv').read_text().splitlines()[-1].split('\t')[6]   # two adopts can share a second
+        prompt = (p / latest / 'qa.input').read_text()
+        self.assertIn('The run verifies its integration branch', prompt)
+        self.assertIn('true  # VERIFY_SENTINEL', prompt)
+
     def test_a_failed_review_puts_the_branch_back_and_keeps_the_commits_reachable(self):
         p = self.merged_plan({REVIEW: BLOCKING})
         before = self.accepted(p)

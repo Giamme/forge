@@ -248,6 +248,8 @@ its last 20,000 behind a leading `…`. Their `truncated` lists the field names 
 | `GET /api/runs/<key>/tasks/<id>/diff[/<which>]` | `200 DiffDetail`; `<which>` is `current` (the default: `changes.diff`), `prev`, `committed` (plan tasks), `existing` (solo) |
 | `GET /api/runs/<key>/executions/<qa-or-dwarf>/diff` | `200 DiffDetail` of the diff that review read (a dwarf: its attempt's primary review) |
 | `GET /api/runs/<key>/final-reviews/<name>/diff` | `200 DiffDetail` |
+| `GET /api/runs/<key>/adoptions/<name>` | `200 AdoptionDetail`; `<name>` is the `adopt-<e>-<p>` an `adoptions.tsv` row names: `{name, adoption, verdict, threshold, gate, started, ended, duration_s, qa_input, qa_last, known_issues, findings, tests, diff}` (`adoption` is its row in `RunDetail.adoptions`; `diff` says the range's diff is there) |
+| `GET /api/runs/<key>/adoptions/<name>/diff` | `200 DiffDetail` of the range (`range.diff`, else the prompt's fence), the review's findings pinned; unavailable with a reason past the 400 KB inline limit |
 | `GET /api/runs/<key>/files` | `200 Files` |
 | `GET /api/runs/<key>/findings` | `200 RunFindings` |
 | `GET /api/runs/<key>/executions/<qa-or-dwarf>/transcript` | `200 ExecutionTranscript` |
@@ -423,7 +425,8 @@ Every RunSummary field, plus:
   "final_review": FinalReviewSummary,
   "final_reviews": [FinalReviewSummary, ...],
   "adoptions": [{"at": 1760621000.0, "base": "...", "tip": "...", "verdict": "PASS", "approved": false,
-                 "spec": "opus", "review": "adopt-1760621000-7", "reason": "..."}],
+                 "spec": "opus", "review": "adopt-1760621000-7", "reason": "...",
+                 "findings": FindingsSummary, "diff": true}],
   "scheduler": {"live": true, "drained": false, "stopping": null, "max_parallel": 3,
                 "pauses": [{"scope": "model:codex/gpt-6", "class": "rate_limit", "harness": "codex", "model": "gpt-6",
                             "tasks": ["perf"], "cycle": 1, "until": 1760622130.0, "exhausted": false}]},

@@ -45,6 +45,8 @@ _EXEC_CHECKS_PATH = re.compile(_EXEC_PATH.pattern + '/checks')
 _TASK_CHECKS_PATH = re.compile(_TASK_PATH.pattern + '/checks')
 _ENVIRONMENT_PATH = re.compile(r'/api/runs/([0-9a-f]{12})/environment')
 _REVIEW_DIFF_PATH = re.compile(_REVIEW_PATH.pattern + '/diff')
+_ADOPTION_PATH = re.compile(r'/api/runs/([0-9a-f]{12})/adoptions/(adopt-[0-9]+-[0-9]+)')
+_ADOPTION_DIFF_PATH = re.compile(_ADOPTION_PATH.pattern + '/diff')
 _FILES_PATH = re.compile(r'/api/runs/([0-9a-f]{12})/files')
 _FINDINGS_PATH = re.compile(r'/api/runs/([0-9a-f]{12})/findings')
 _EXPORT_PATH = re.compile(r'/api/runs/([0-9a-f]{12})/export')
@@ -144,6 +146,12 @@ def api_get(catalog, path):
     match = _REVIEW_DIFF_PATH.fullmatch(path)
     if match:
         return catalog.final_review_diff(*match.groups())
+    match = _ADOPTION_PATH.fullmatch(path)
+    if match:
+        return catalog.adoption(*match.groups())
+    match = _ADOPTION_DIFF_PATH.fullmatch(path)
+    if match:
+        return catalog.adoption_diff(*match.groups())
     match = _TRANSCRIPT_PATH.fullmatch(path)
     if match:
         return catalog.transcript(*match.groups())

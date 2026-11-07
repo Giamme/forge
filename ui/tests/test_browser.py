@@ -8,6 +8,7 @@ tests are skipped. Development-only: nothing here runs in forge itself.
 from __future__ import annotations
 
 import json
+import shutil
 import os
 from pathlib import Path
 import re
@@ -369,6 +370,28 @@ class Page(unittest.TestCase):
         text = page.inner_text('#inspector .adoptions')
         self.assertIn('abcdefabcdef..123456123456', text)
         self.assertIn('a fix by hand', text)
+        self.assertClean(page)
+
+    def test_an_adopted_range_opens_its_review_findings_and_diff(self):
+        # #131: the row was a line of text, and the review, its findings and the range only on disk
+        name = 'adopt-1760621000-77'
+        rows, adopted = self.plan / 'adoptions.tsv', self.plan / name
+        self.addCleanup(lambda: (rows.unlink(), shutil.rmtree(adopted)))
+        rows.write_text(f'1760621000\tabcdefabcdef00\t12345612345600\tFAIL\t1\topus\t{name}\ta fix by hand\n')
+        adopted.mkdir()
+        (adopted / 'qa.last').write_text('- [P2][CONFIRMED] ui/page.html:2 — <b>the banner</b> never clears.\n\nFORGE_VERDICT: FAIL\n')
+        (adopted / 'range.diff').write_text('diff --git a/ui/page.html b/ui/page.html\n--- a/ui/page.html\n+++ b/ui/page.html\n'
+                                            '@@ -1,2 +1,3 @@\n <html>\n+<p>retry</p>\n </html>\n')
+        page = self.open(cdn=False)
+        page.goto(self.url + f'#/runs/{self.key}/final-review')
+        page.click('#inspector .adoptions a:has-text("Its review and findings")')
+        page.wait_for_selector('#inspector .findings li')
+        self.assertEqual(page.inner_text('#inspector .insp-head h2'), 'Adopted range')
+        self.assertIn('<b>the banner</b>', page.inner_text('#inspector .findings'))          # text, not markup
+        page.click('#inspector a.diff-link:has-text("The range")')
+        page.wait_for_function('() => location.hash.endsWith("/diff")')
+        page.wait_for_selector('#diff-view .diff-top h2')
+        self.assertIn('Adopted range', page.inner_text('#diff-view .diff-top h2'))
         self.assertClean(page)
 
     def test_a_review_whose_tests_could_not_run_stands_out(self):
