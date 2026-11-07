@@ -644,7 +644,7 @@ class LazyTests(FixtureCase):
         self.assertEqual(result['reviews'][0]['findings'][0], {
             'severity': 'P1', 'status': 'CONFIRMED', 'location': 'ui/reader.py:42', 'line': 3,
             'summary': '- [P1][CONFIRMED] ui/reader.py:42 — a missing status file raises instead of reading as PENDING.',
-            'text': '- [P1][CONFIRMED] ui/reader.py:42 — a missing status file raises instead of reading as PENDING.\n'
+            'facts': None, 'text': '- [P1][CONFIRMED] ui/reader.py:42 — a missing status file raises instead of reading as PENDING.\n'
                     '  The read is not wrapped, so FileNotFoundError escapes to the server.'})
         self.assertEqual((result['truncated'], result['warnings']), ([], []))
         page = task_detail(self.plan, 'page')
@@ -823,6 +823,11 @@ class RobustnessTests(FixtureCase):
         self.assertEqual([(item['status'], item['severity'], item['line']) for item in findings.listing(text)],
                          [('CONFIRMED', 'P0', 1), ('CONFIRMED', 'P2', 2), ('PLAUSIBLE', None, 3), ('UNSTATED', 'P1', 4)])
         self.assertEqual(len(findings.listing(text, limit=2)), 2)
+        # #119: the reviewer's facts are shown apart, never in the summary or the location
+        [item] = findings.listing('- [P2][CONFIRMED] a.py:7 — y {reach=unusual origin=new evidence=ran}\n')
+        self.assertEqual((item['summary'], item['location'], item['facts']),
+                         ('- [P2][CONFIRMED] a.py:7 — y', 'a.py:7', dict(reach='unusual', origin='new', evidence='ran')))
+        self.assertIsNone(findings.listing(text)[0]['facts'])
         self.assertEqual(findings.listing('- [P1][CONFIRMED] x — ' + 'w' * 300)[0]['summary'],
                          ('- [P1][CONFIRMED] x — ' + 'w' * 300)[:240])
         for empty in (None, ''):

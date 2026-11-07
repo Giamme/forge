@@ -189,6 +189,7 @@ def clean_markdown(text):
 def parse_findings(text):
     out = []
     for m in FINDING_RE.finditer(text or ""):
+        said = contract().split_facts(m.group(4))[0].rstrip()  # #119: the facts suffix is no part of the title
         loc = m.group(3).strip()
         link = re.fullmatch(r"\[([^\]]+)\]\([^)]*\)", loc)
         loc = (link.group(1) if link else loc).strip("` ")
@@ -196,8 +197,8 @@ def parse_findings(text):
         # `:442,674`, a range then a note): the path runs to its first `:<digit>`, the line is that number.
         lm = re.match(r"(.+?):(\d+)(?:[-:]\d+)?$", loc) or re.match(r"([^\s,;()]+?):(\d+)(?=[-:,;\s(]|$)", loc)
         out.append({"severity": m.group(1), "confidence": m.group(2), "file": lm.group(1) if lm else loc,
-                    "line": int(lm.group(2)) if lm else None, "text": clean_markdown(m.group(4)),
-                    "raw": f"[{m.group(1)}][{m.group(2)}] {loc} — {m.group(4).strip()}"})
+                    "line": int(lm.group(2)) if lm else None, "text": clean_markdown(said),
+                    "raw": f"[{m.group(1)}][{m.group(2)}] {loc} — {said.strip()}"})
     return out
 
 
@@ -230,7 +231,7 @@ def parse_known(text):
         if canonical:
             out.append(canonical[0])
             continue
-        body = _BULLET_RE.sub("", first, count=1)
+        body = _BULLET_RE.sub("", contract().split_facts(first)[0], count=1)
         lm = _LOCATION_RE.search(body)
         if lm:
             file, line = lm.group(1).strip("`*"), int(lm.group(2))

@@ -183,11 +183,21 @@ def parse_review(message: str | None) -> tuple[list, bool]:
     if not message:
         return [], True
     try:
-        parsed = contract().parse_findings(message)
+        module = contract()
+        parsed = module.parse_findings(message)
     except Exception:
         return [], False
-    return [dict(status=f.status, severity=f.severity, located=f.located, line=f.line,
-                 head=f.text.splitlines()[0][:300] if f.text else '') for f in parsed], True
+    out = []
+    for f in parsed:
+        head = f.text.splitlines()[0] if f.text else ''
+        item = dict(status=f.status, severity=f.severity, located=f.located, line=f.line,
+                    head=module.split_facts(head)[0][:300])
+        # #119: the facts suffix is kept apart, so a head reads as it did before it existed.
+        found = module.facts(f.text)
+        if found is not None:
+            item['facts'] = found
+        out.append(item)
+    return out, True
 
 
 def review_completeness(verdict: str | None, found: list, parsed: bool = True) -> str | None:

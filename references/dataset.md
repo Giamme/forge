@@ -163,6 +163,7 @@ forge still running keeps writing.
 ./forge dataset outcomes [--horizon-days 14] [--repo PATH] [--dry-run] [--deadline S] [--quiet]   # what integrated work became
 ./forge dataset routing [--repo PATH] [--since DAYS] [--json]   # pass rate and runtime per tier and model
 ./forge dataset reviewers [--horizon-days 14] [--repo PATH] [--json]   # how each reviewer's PASSed work held up
+./forge dataset facts [--repo PATH] [--json]   # findings' reach, origin and evidence: agreement, and rules replayed
 ./forge dataset forecast <plan> [--repo PATH] [--json]   # likely cost and first-try PASS rate per task
 ./forge dataset worktrees [--json]      # the worktrees forge created and removed (forge-ui's Worktrees screen)
 ./forge dataset history [--json]        # every review's findings and every learning, by run (forge-ui's Projects screen)
@@ -391,6 +392,29 @@ or its model when no alias was recorded, as the forge-ui Models view keys it. A 
 
 forge-ui shows the rate as the Reviewers table's **Did not hold** column, through
 `GET /api/models/reviewers`, which runs this command with `--json`.
+
+## Finding facts
+
+A reviewer ends each finding's first line with `{reach=… origin=… evidence=…}`. Each QA dispatch
+records it beside the finding's severity and status as `findings[].facts` = `{reach, origin,
+evidence}` (a value that is not one of the fact's words is null), and the finding's `head` has the
+suffix cut. A finding without the suffix has no `facts` key. Nothing in forge decides on them yet:
+`forge dataset facts` measures whether a gate should.
+
+- **Coverage**: findings and reviews that carry facts, each fact's values, and reach by severity.
+- **Agreement**: for every usable shadow pair (as `status` counts them), the findings both
+  reviewers name (same file, lines at most 10 apart, nearest first). Severity and each fact are
+  compared where both reviewers gave a value, as a raw share and as Cohen's kappa: severity has
+  four values and reach three, so raw agreement alone would flatter reach.
+- **Rules**: the review each task attempt ended on, replayed through the severity gate with and
+  without a rule (the threshold its `qa.gate` recorded, else the plan's). `unusual`: reach=unusual
+  does not block unless P0. `existing`: origin=existing does not block. `both`. A rule only
+  releases a CONFIRMED or UNSTATED finding that has a severity; an unlabelled one still blocks.
+  Counted: reviews that would have passed, and the attempts after the first such review that
+  would not have run. Up to 50 released findings are listed with their run, task, attempt and head.
+
+The replay without a rule is the gate itself. It agreed with every recorded gate decision on one
+machine's store (545 of 545), so a difference is the rule's.
 
 ## Plan forecast
 

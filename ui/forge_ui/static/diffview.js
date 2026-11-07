@@ -55,6 +55,9 @@ window.ForgeDiff = (() => {
     const r = f.review || {};
     head.append(el('span', `${r.kind || 'review'}${r.attempt != null ? ' · attempt ' + r.attempt : ''}${r.spec ? ' · ' + r.spec : ''}`, 'muted'));
     if (where) head.append(el('span', where, 'mono muted'));
+    // #119: the reviewer's own reach, origin and evidence, recorded in shadow (they decide nothing)
+    const facts = Object.entries(f.facts || {}).filter(([, v]) => v).map(([k, v]) => `${k} ${v}`);
+    if (facts.length) { const t = el('span', facts.join(' · '), 'muted diff-finding-facts'); t.title = "The reviewer's own facts about this finding; they do not change what blocks"; head.append(t); }
     box.append(head, el('p', said(f)));
     const more = String(f.text || '').trim();
     if (more && more !== String(f.summary || '').trim()) { const d = el('details'); d.dataset.keep = `finding-${f.id ?? where ?? said(f)}`; d.append(el('summary', 'Details'), el('pre', more)); box.append(d); }

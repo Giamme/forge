@@ -261,6 +261,25 @@ class ForgeIssuesTests(unittest.TestCase):
         # the commit is in no remote-tracking ref: unpublished wording, still no gh
         self.assertIn('(commit not pushed to GitHub yet)', out['drafts'][0]['body'])
 
+    def test_a_findings_facts_suffix_is_in_no_location_title_or_fingerprint(self):
+        # #119: reviewers end a finding's line with {reach=… origin=… evidence=…}. Same task as setUp, every
+        # finding suffixed: the file, the title and the fingerprint are the values the plain findings give.
+        def listed():
+            out = self.run_issues(str(self.plan), '--offline', '--include-plausible', env=self.offline_env())
+            return [(f['file'], f['text'], f['fp']) for f in out['findings']], [d['title'] for d in out['drafts']]
+        plain = listed()
+        task = self.plan / 'tasks' / 'import'
+        for name in ('known_issues.md', 'qa.last'):
+            text = (task / name).read_text()
+            (task / name).write_text('\n'.join(line + ' {reach=unusual origin=existing evidence=traced}'
+                                               if line.startswith('- [') else line for line in text.split('\n')))
+        self.assertIn('{reach=unusual', (task / 'qa.last').read_text())
+        self.assertEqual(listed(), plain)
+        self.assertEqual(([fp for _, _, fp in plain[0]][:2], plain[1][:2]),
+                         (['cf5d9440c970', '3f6046d5ed8e'],
+                          ['[P2] import.ts: Company creation runs before the receipt replay',
+                           '[P3] import.ts: Persisting null loses the list']))
+
     def test_offline_apply_is_a_usage_error(self):
         self.assertIn('--offline', self.run_issues(str(self.plan), '--offline', '--apply', code=2))
 

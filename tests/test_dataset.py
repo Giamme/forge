@@ -365,6 +365,41 @@ class EndToEndTests(StoreCase):
         self.assertEqual(recorded['qa'], dict(status='could_not_run', reason='no display'))
         self.assertIsNone(recorded['dwarf'])
 
+    def test_a_findings_facts_reach_the_store_and_change_no_verdict(self):
+        # #119: the flipped PASS of the test below, its finding ending in facts, and a shadow reviewer naming a
+        # nearby line with other facts. The gate decides as it does without them (fail, then a retry), the
+        # store keeps the facts apart from the head, and `forge dataset facts` replays the rules on them.
+        from forge_dataset import export, facts
+        self.scenario({'a.qa.1': {'verdict': 'PASS',
+                                  'findings': '- [P2][CONFIRMED] a.txt:1 — wrong {reach=unusual origin=new evidence=traced}'},
+                       'a.shadow.*': {'verdict': 'FAIL',
+                                      'findings': '- [P1][CONFIRMED] a.txt:3 — wrong too {reach=main origin=new evidence=ran}'},
+                       'a.dwarf.2': {'content': 'fixed'}})
+        p = self.plan_of([('a', '-', 'a.txt')], '--shadow-qa', 'opus,sol', '--shadow-rate', '1')
+        r = self.run_script('forge-parallel.sh', 'run', p, '--retry-failed', 1)
+        self.assertEqual(r.returncode, 0, r.stdout)
+        first, second = self.attempts('a')
+        self.assertEqual((first['data']['gate'].split('\t')[1], first['data']['status'], second['data']['status']),
+                         ('fail', 'FAIL', 'PASS'))
+        [primary] = [e for e in self.events(kind='dispatch', parent=first['rid']) if e['data']['role'] == 'qa']
+        self.assertEqual([(f['head'], f['facts']) for f in primary['data']['findings']],
+                         [('- [P2][CONFIRMED] a.txt:1 — wrong', dict(reach='unusual', origin='new', evidence='traced'))])
+
+        rep = facts.report(export.Runs(export.Store(store.connect())))
+        cov, agree, rules = rep['coverage'], rep['agreement'], rep['rules']
+        self.assertEqual((cov['findings'], cov['findings_with_facts'], cov['values']['reach']),
+                         (3, 3, {'main': 2, 'unusual': 1}))
+        self.assertEqual((agree['pairs'], agree['matched'], agree['severity']['agree'], agree['reach']['agree'],
+                          agree['origin']['agree']), (2, 1, 0, 0, 1))
+        self.assertEqual((rules['reviews'], rules['reviews_with_facts']), (2, 1))
+        self.assertEqual({name: (rules[name]['would_pass'], rules[name]['attempts_saved']) for name in facts.RULES},
+                         {'unusual': (1, 1), 'existing': (0, 0), 'both': (1, 1)})
+        self.assertEqual([(f['attempt'], f['severity'], f['head']) for f in rules['unusual']['released']],
+                         [(1, 'P2', '- [P2][CONFIRMED] a.txt:1 — wrong')])
+        out = subprocess.run([sys.executable, str(ROOT / 'scripts' / 'forge-dataset.py'), 'facts', '--json'],
+                             env=self.env, capture_output=True, text=True, check=True).stdout
+        self.assertEqual(json.loads(out)['rules']['unusual']['would_pass'], 1)
+
     def test_a_retry_prepared_without_dispatch_counts_as_a_persons_when_the_run_starts_it(self):
         p = self.plan_of([('a', '-', 'a.txt')])
         self.scenario({'a.qa.1': {'verdict': 'FAIL', 'findings': '- [P1][CONFIRMED] a.txt:1 — broken'}, 'a.dwarf.2': {'content': 'fixed'}})
@@ -1077,6 +1112,34 @@ class EndToEndTests(StoreCase):
         found, _ = outcomes.harvest(horizon_days=2, include_temp=True, now=at + 10 * 86400)
         self.assertEqual({e['data']['status'] for _, e in found}, {'lost'})
         self.assertEqual(self.errors(), '')
+
+
+class FactsRuleTests(unittest.TestCase):
+    def test_the_rules_only_release_labelled_blocking_findings(self):
+        from forge_dataset import facts
+
+        def f(sev, reach=None, origin=None, status='CONFIRMED'):
+            return dict(status=status, severity=sev, facts=dict(reach=reach, origin=origin, evidence='traced'))
+        cases = [
+            # name, verdict, findings, rule, (decision without the rule, with it); threshold P2
+            ('a PASS listing an unusual P2', 'PASS', [f(2, 'unusual')], 'unusual', ('fail', 'pass')),
+            ('an unusual P0 still blocks: security or data loss', 'PASS', [f(0, 'unusual')], 'unusual', ('fail', 'fail')),
+            ('an unusual unlabelled finding still blocks', 'PASS', [f(None, 'unusual')], 'unusual', ('fail', 'fail')),
+            ('a FAIL whose blocking findings are all released', 'FAIL', [f(1, 'unusual')], 'unusual', ('fail', 'pass')),
+            ('a FAIL with one finding left blocking', 'FAIL', [f(1, 'unusual'), f(1, 'main')], 'unusual', ('fail', 'fail')),
+            ('an existing finding under its rule', 'FAIL', [f(1, origin='existing')], 'existing', ('fail', 'pass')),
+            ('an existing finding under the reach rule', 'FAIL', [f(1, origin='existing')], 'unusual', ('fail', 'fail')),
+            ('either fact under both', 'FAIL', [f(1, 'unusual'), f(2, origin='existing')], 'both', ('fail', 'pass')),
+            ('a FAIL with no finding', 'FAIL', [], 'both', ('fail', 'fail')),
+            ('a FAIL with only tolerated findings', 'FAIL', [f(3, 'main')], 'unusual', ('pass', 'pass')),
+            ('a PLAUSIBLE P0 never blocks', 'PASS', [f(0, 'main', status='PLAUSIBLE')], 'unusual', ('pass', 'pass')),
+            ('a released UNSTATED beside a tolerated P3', 'FAIL', [f(3), f(1, 'unusual', status='UNSTATED')], 'unusual',
+             ('fail', 'pass')),
+        ]
+        for name, verdict, found, rule, expected in cases:
+            with self.subTest(name):
+                self.assertEqual((facts.decide(verdict, found, 2), facts.decide(verdict, found, 2, facts._released(rule))),
+                                 expected)
 
 
 class OutcomeFollowTests(StoreCase):

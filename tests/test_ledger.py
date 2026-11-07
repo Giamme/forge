@@ -75,6 +75,10 @@ CONVERGING = [
 ]
 
 
+STALE_FACTS = '- [P2][CONFIRMED] src/cache.py:10 — stale entry {reach=unusual origin=new evidence=traced}'
+HEADER_FACTS = '- [P2][CONFIRMED] src/cache.py:40 — wrong header {reach=unusual origin=new evidence=traced}'
+
+
 def finding(text):
     found = contract.parse_findings(text)
     assert len(found) == 1, found
@@ -123,6 +127,10 @@ class MatchTests(unittest.TestCase):
             ('a location in brackets matches its plain form', BRACKET, PLAIN_CACHE, True),
             ('a reworded finding at the same extensionless path matches', DOCKER_ONE, DOCKER_ONE_REWORDED, True),
             ('the same extensionless name in two directories does not match', DOCKER_ONE, DOCKER_TWO, False),
+            # #119: the facts suffix's words are no content: two problems in one file stay two
+            ('two findings that share only their facts do not match', STALE_FACTS, HEADER_FACTS, False),
+            ('a reworded finding with facts on one side matches', CACHE + ' {reach=main origin=new evidence=ran}',
+             REWORDED, True),
         ]
         for name, a, b, expected in cases:
             with self.subTest(name):

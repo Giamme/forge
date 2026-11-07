@@ -231,6 +231,11 @@ def run_reviewers(args) -> int:
     return reviewers.main(args)
 
 
+def run_facts(args) -> int:
+    from . import facts
+    return facts.main(args)
+
+
 def run_history(args) -> int:
     from . import history
     return history.main(args)
@@ -302,6 +307,11 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument('--repo', help='only this repo')
     p.add_argument('--json', action='store_true')
     p.set_defaults(func=run_reviewers)
+    p = sub.add_parser('facts', help="the reach, origin and evidence reviewers give findings: agreement, and what "
+                                     "a gate on them would have changed (advisory)")
+    p.add_argument('--repo', help='only this repo')
+    p.add_argument('--json', action='store_true')
+    p.set_defaults(func=run_facts)
     p = sub.add_parser('history', help="every review's findings and every learning, for forge-ui's Projects screen")
     p.add_argument('--json', action='store_true')
     p.set_defaults(func=run_history)
