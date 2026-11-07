@@ -679,7 +679,8 @@ window.ForgePanel = (() => {
   }
 
   // Commits made outside forge that `adopt` brought in, each reviewed alone: a person's work, so no task row claims them.
-  function adoptionsList(host, run) {
+  // Each opens its review, its findings and the range's diff (#131).
+  function adoptionsList(host, run, ctx) {
     const rows = list(run.adoptions);
     if (!rows.length) return;
     const s = section(host, `Adopted commits (${rows.length})`);
@@ -689,10 +690,49 @@ window.ForgePanel = (() => {
       li.append(el('code', `${String(a.base).slice(0, 12)}..${String(a.tip).slice(0, 12)}`, 'mono'), document.createTextNode(' '),
         chip(a.verdict, failed ? 'fail' : 'pass'));
       if (a.approved) li.append(el('span', 'approved over the review', 'tag'));
+      if (a.findings && a.findings.worst) li.append(document.createTextNode(' '), sevChip(`${a.findings.worst}×${a.findings[a.findings.worst]}`, a.findings.worst));
       if (a.reason) li.append(el('p', a.reason, 'muted'));
+      if (ctx && a.findings !== undefined && (a.findings !== null || a.diff)) {
+        const links = el('p', undefined, 'adoption-links'), sel = { kind: 'adoption', name: a.review };
+        links.append(link('Its review and findings →', ctx.hash(sel), () => ctx.onSelect(sel)));
+        const d = a.diff && diffLink(ctx, 'The range, findings pinned →', { kind: 'adoption', name: a.review });
+        if (d) links.append(document.createTextNode(' '), d);
+        li.append(links);
+      }
       ul.append(li);
     }
     s.append(ul);
+  }
+
+  function adoptionView(host, ctx, sel) {
+    const run = ctx.run, a = list(run.adoptions).find(x => x.review === sel.name);
+    const head = el('div', undefined, 'insp-head');
+    head.append(el('h2', 'Adopted range'), el('div', 'finish · made outside forge, reviewed alone', 'insp-kind'));
+    host.append(head);
+    const back = { kind: 'final' };
+    if (!a) { muted(host, `This run adopted nothing under ${sel.name}.`); host.append(link('← Final review', ctx.hash(back), () => ctx.onSelect(back))); return; }
+    const chips = el('div', undefined, 'chips');
+    chips.append(chip(a.verdict, String(a.verdict).toUpperCase() === 'PASS' ? 'pass' : 'fail'));
+    if (a.approved) chips.append(el('span', 'approved over the review', 'tag'));
+    head.append(chips);
+    if (a.reason) host.append(el('p', a.reason));
+    fields(host, [['Reviewer', plate(a.spec)], ['Range', `${String(a.base).slice(0, 12)}..${String(a.tip).slice(0, 12)}`, true], ['Adopted', time(a.at)]]);
+    const d0 = a.diff && diffLink(ctx, 'The range, findings pinned →', { kind: 'adoption', name: a.review });
+    if (d0) host.append(d0);
+    const fs = section(host, 'Findings');
+    findingCounts(fs, a.findings);
+    const entry = lazy(ctx, `/api/runs/${encodeURIComponent(run.key)}/adoptions/${encodeURIComponent(a.review)}`, 'adoption:' + a.review);
+    if (!loading(fs, entry, 'the review')) {
+      const d = entry.data;
+      gateLine(fs, d.gate);
+      testsLine(fs, d.tests);
+      findingsList(fs, d.findings, `adoption-${a.review}`);
+      const ps = section(host, 'Report and prompt');
+      if (d.known_issues) details(ps, a.approved ? 'Findings kept (known_issues.md)' : 'Known issues', d.known_issues, `adoption-${a.review}-known`);
+      details(ps, 'Reviewer report (qa.last)', d.qa_last, `adoption-${a.review}-last`);
+      details(ps, 'Prompt (qa.input)', d.qa_input, `adoption-${a.review}-input`);
+    }
+    host.append(el('p'), link('← Final review', ctx.hash(back), () => ctx.onSelect(back)));
   }
 
   function finalView(host, ctx, sel) {
@@ -700,7 +740,7 @@ window.ForgePanel = (() => {
     const head = el('div', undefined, 'insp-head');
     head.append(el('h2', 'Final review'), el('div', 'finish · whole-run review', 'insp-kind'));
     host.append(head);
-    adoptionsList(host, run);
+    adoptionsList(host, run, ctx);
     const pick = sel.name ? reviews.find(r => r.name === sel.name) : reviews[0];
     if (!pick) {
       head.append(chip(run.settings && run.settings.final_qa ? 'pending' : 'not requested', 'none'));
@@ -812,6 +852,7 @@ window.ForgePanel = (() => {
     }
     if (sel.kind === 'execution') return execView(host, ctx, task, sel);
     if (sel.kind === 'final') return finalView(host, ctx, sel);
+    if (sel.kind === 'adoption') return adoptionView(host, ctx, sel);
     if (sel.kind === 'verification') return verificationView(host, ctx);
     if (sel.kind === 'integration') return integrationView(host, ctx);
     if (sel.kind === 'fractal') return fractalNodeView(host, ctx, sel);

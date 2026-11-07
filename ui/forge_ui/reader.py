@@ -777,8 +777,13 @@ def _grant(choice):
         return 0
 
 
+_ADOPT_NAME = re.compile(r'adopt-[0-9]+-[0-9]+')
+
+
 def _adoptions(reader):
-    """One row per range `adopt` brought in (adoptions.tsv: epoch, base, tip, verdict, approved, spec, review, reason)."""
+    """One row per range `adopt` brought in (adoptions.tsv: epoch, base, tip, verdict, approved, spec, review, reason).
+    `findings` summarizes its review's reply and `diff` says the range's diff is there to open (#131); both are
+    None or False when `review` does not name an adopt-<epoch>-<pid> dir of the run."""
     result = []
     for label, row in reader.rows('adoptions.tsv', 8):
         try:
@@ -788,8 +793,11 @@ def _adoptions(reader):
         except (ValueError, OverflowError):
             reader.warn(label, 'invalid epoch')
             continue
+        name = row[6] if _ADOPT_NAME.fullmatch(row[6] or '') and reader.exists(row[6]) else None
         result.append(dict(at=at, base=row[1], tip=row[2], verdict=row[3], approved=row[4] == '1', spec=_nullable(row[5]),
-                           review=_nullable(row[6]), reason=_nullable('\t'.join(row[7:]))))
+                           review=_nullable(row[6]), reason=_nullable('\t'.join(row[7:])),
+                           findings=executions.qa_result(reader, name + '/qa.last')[1] if name else None,
+                           diff=bool(name) and reader.exists(name + '/range.diff')))
     return result
 
 
@@ -1914,6 +1922,59 @@ def final_review_detail(path, name, source='plan'):
     return result
 
 
+def _adoption(reader, name):
+    """The adoptions.tsv row of adopt-<epoch>-<pid> `name`, or None."""
+    if _kind(reader.path) != 'plan' or not _ADOPT_NAME.fullmatch(name or ''):
+        return None
+    return next((row for row in _adoptions(reader) if row['review'] == name), None) if reader.exists(name) else None
+
+
+def adoption_detail(path, name, source='plan'):
+    """AdoptionDetail of a range `adopt` brought in (#131): its row, what its reviewer read and said, the findings
+    and what was kept; None when the run adopted nothing under that name."""
+    reader = _Read(path)
+    row = _adoption(reader, name)
+    if row is None:
+        return None
+    qa_last = reader.text(name + '/qa.last')
+    execs = executions.scan(reader, name + '/attempts', False, ('qa',))
+    run = execs[-1] if execs else None
+    threshold = reader.word(name + '/qa_threshold')
+    return dict(name=name, adoption=row, verdict=reader.word(name + '/verdict') or row['verdict'],
+                threshold=None if threshold in (None, 'none') else threshold, gate=_gate(reader, name + '/qa.gate'),
+                started=run['started'] if run else None, ended=run['ended'] if run else None,
+                duration_s=run['duration_s'] if run else None,
+                qa_input=reader.excerpt(name + '/qa.input', 40000, 20000, 'qa_input'),
+                qa_last=reader.clip(qa_last, 20000, 8000, 'qa_last'),
+                known_issues=reader.excerpt(name + '/known_issues.md', 20000, 8000, 'known_issues'),
+                findings=findings.listing(qa_last), tests=findings.tests(qa_last), diff=row['diff'],
+                truncated=reader.truncated, warnings=reader.warnings)
+
+
+def adoption_diff(path, name, source='plan'):
+    """DiffDetail of an adopted range: its range.diff, else the ```diff fence of its review's prompt, with the
+    review's findings pinned; None when the run adopted nothing under that name."""
+    reader = _Read(path)
+    row = _adoption(reader, name)
+    if row is None:
+        return None
+    loaded = rel = None
+    for rel, fence in ((name + '/range.diff', False), (name + '/qa.input', True)):
+        if os.path.lexists(reader.path / rel):
+            loaded = diffs.load(reader, rel, fence)
+            if loaded is not None:
+                break
+    key = run_key(reader.path)
+    info = _regular(reader, name + '/range.diff')
+    sources = [dict(id=name, label='range.diff' if info else 'reviewed diff', kind='adoption', verdict=row['verdict'],
+                    bytes=info.st_size if info else None, url=_url(key, 'adoptions', name, 'diff'))]
+    origin = dict(kind='adoption', id=name, which='reviewed', execution=None, attempt=None,
+                  file=rel if loaded is not None else None)
+    review = _diff_review('adoption', None, None, row['spec'], row['verdict'], name + '/qa.last', [])
+    # adopt leaves the diff out of the prompt, and range.diff out of the dir, past the inline limit
+    return _diff_detail(reader, key, origin, sources, loaded, _NOT_INLINED, [review])
+
+
 # --- diffs: what a task changed and what each review read, its findings pinned -------------
 
 _PLAN_DIFFS = (('current', 'changes.diff'), ('prev', 'changes.prev.diff'), ('committed', 'committed.diff'))
@@ -2548,6 +2609,12 @@ class Catalog:
 
     def final_review_diff(self, key, name):
         return self._find(key, final_review_diff, name)
+
+    def adoption(self, key, name):
+        return self._find(key, adoption_detail, name)
+
+    def adoption_diff(self, key, name):
+        return self._find(key, adoption_diff, name)
 
     def files(self, key):
         return self._find(key, files_detail)

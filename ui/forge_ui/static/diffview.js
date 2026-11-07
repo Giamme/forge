@@ -1,7 +1,7 @@
 /* forge-ui diff viewer: a task's diff (current, previous, committed, or exactly what one reviewer read), a final
-   review's combined diff or a Fractal node's candidate, with each review finding shown under the line it points
+   review's combined diff, an adopted range or a Fractal node's candidate, with each review finding shown under the line it points
    at. Defines window.ForgeDiff.render(host, ctx). All API values enter the DOM as text.
-   ctx = { run, spec: {kind: 'task'|'final'|'fractal', task, source, file, name, node, finding}, fetchJSON(path),
+   ctx = { run, spec: {kind: 'task'|'final'|'adoption'|'fractal', task, source, file, name, node, finding}, fetchJSON(path),
            rerender(), href(spec) → hash, closeHref }. */
 window.ForgeDiff = (() => {
   'use strict';
@@ -23,6 +23,7 @@ window.ForgeDiff = (() => {
   function urlFor(run, spec) {
     const base = `/api/runs/${enc(run.key)}`;
     if (spec.kind === 'final') return `${base}/final-reviews/${enc(spec.name)}/diff`;
+    if (spec.kind === 'adoption') return `${base}/adoptions/${enc(spec.name)}/diff`;
     if (spec.kind === 'fractal') return `${base}/tasks/${enc(spec.task)}/fractal/nodes/${enc(spec.node)}/diff`;
     const src = spec.source || 'current';
     if (TASK_FILES.has(src)) return `${base}/tasks/${enc(spec.task)}/diff${src === 'current' ? '' : '/' + src}`;
@@ -128,7 +129,7 @@ window.ForgeDiff = (() => {
     host.replaceChildren();
     const D = entry.data;
     const top = el('div', undefined, 'diff-top');
-    const what = spec.kind === 'final' ? 'Final review' : spec.kind === 'fractal' ? `${spec.task} · Fractal node ${spec.node}` : spec.task === 'solo' && run.kind === 'solo' ? 'Solo run' : `Task ${spec.task}`;
+    const what = spec.kind === 'final' ? 'Final review' : spec.kind === 'adoption' ? `Adopted range · ${spec.name}` : spec.kind === 'fractal' ? `${spec.task} · Fractal node ${spec.node}` : spec.task === 'solo' && run.kind === 'solo' ? 'Solo run' : `Task ${spec.task}`;
     const title = el('h2'); title.append(el('span', 'Diff · ', 'muted'), document.createTextNode(what)); top.append(title);
     const close = el('a', undefined, 'diff-close button'); close.href = ctx.closeHref;
     if (window.ForgeIcons) close.append(window.ForgeIcons.icon('close'));

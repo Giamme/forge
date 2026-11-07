@@ -275,7 +275,7 @@ class ExecutionTests(FixtureCase):
                                                        ('soon', 'aaa', 'bbb', 'PASS', '0', 'opus', 'adopt-2-1', 'not counted')]))
         data = detail(self.plan)
         self.assertEqual(data['adoptions'], [dict(at=1760621000.0, base='aaa', tip='bbb', verdict='FAIL', approved=True,
-                                                  spec='opus', review='adopt-1-1', reason='a fix by hand')])
+                                                  spec='opus', review='adopt-1-1', reason='a fix by hand', findings=None, diff=False)])
         self.assertTrue(data['warnings'])
 
     def test_a_review_shows_what_the_reviewer_said_about_its_tests(self):

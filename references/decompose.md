@@ -640,8 +640,9 @@ every task has merged, and before the combined verification, the scheduler runs 
 once. It collects the open findings at `Pn` or worse (the ones the threshold tolerated, plus
 PLAUSIBLE ones with `--sweep-plausible`), with `forge issues`' own collector, and leaves out:
 
-- findings a person accepted with `accept`, and findings of fix tasks (one round: what a sweep review
-  finds goes to `forge issues`, never into another sweep);
+- findings a person accepted with `accept` or kept with `adopt --approved` (listed as `accepted`), and
+  findings of fix tasks (one round: what a sweep review finds goes to `forge issues`, never into another
+  sweep);
 - dismissed ones (`forge issues --dismiss`), ones with no file, and ones whose file is gone;
 - ones whose line, as the reviewer saw it, a later merge changed (`changed`, naming those merges).
 
@@ -649,7 +650,9 @@ Every finding left out is listed in the plan with its reason. The rest become fi
 worst first, at most 8 findings each and `--sweep-max N` (default 5) tasks. Each fix task is a row
 `sweep-<n>` in `tasks.tsv` with `prompt.md` and `sweep.json`. Its implementer is the plan's low tier
 (the first spec of `--dwarf-low`, else of `--dwarf`; checked at `run` start), else the implementer of
-the task the worst finding came from. Its reviewer is that task's reviewer. The plan (groups, findings,
+the task the worst finding came from. Its reviewer is that task's reviewer. What an adopted range's review
+tolerated is swept too: its fix task's reviewer is the adoption's, and below the low tier its implementer
+is the run's first task's. The plan (groups, findings,
 dispatches) is printed and kept in `<plan>/sweep/plan.md` and `plan.json`. A plan is swept at most once.
 
 Fix tasks share the run's scheduling, controls and `--retry-failed` budget. Their review is narrow
@@ -1048,13 +1051,16 @@ Four subcommands act on plans after tasks have run. Full usage and refusal condi
   reason) and to `control.log`, writes an `adopt` dataset event, and verifies as a retry does. A FAIL or
   UNKNOWN puts the branch back and exits 5, unless `--approved` keeps it, which writes the findings to the
   adoption's `known_issues.md` as `accept` does; `forge issues` and the run's report read that file (as
-  accepted findings, the reason with them), and the sweep does not. A review that concluded nothing always puts it back: a crash or timeout exits 5, an
+  accepted findings, the reason with them), and the sweep lists them as `accepted` without fixing them;
+  what the review tolerated under the threshold the sweep fixes like a task's. The reviewer is told the
+  run's verification command (or its lanes' commands), which runs only after the review. A review that concluded nothing always puts it back: a crash or timeout exits 5, an
   infrastructure stop exits 8, a signal exits 130 or 143. If the worktree changed during the review it is
   left as it is, with the commands to go on. A range that lived only on the branch stays at
   `refs/forge/adopt-refused/<dir>`. A merge commit is refused, and a range that does not apply exits 6. A
   diff over 400 KB is read in the snapshot rather than inlined, as in a final review.
   There is no task row, because no model implemented it; the final review reads the whole range and is told
-  about it, `attribute` treats it as a step of its own, and forge-ui lists it above the final review.
+  about it, `attribute` treats it as a step of its own, and forge-ui lists it above the final review, each
+  row opening its review, its findings and the range's diff with the findings pinned.
   `adopt-<epoch>-<pid>/` keeps the review.
 - **`accept <plan> <task> --reason … --approved`** overrides a `FAIL`/`UNKNOWN` reviewer only
   when the reviewed commit is still the branch tip and the worktree still matches

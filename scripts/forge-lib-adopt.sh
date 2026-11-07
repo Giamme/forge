@@ -128,7 +128,7 @@ do_adopt() {
   fi
   tip="$(git -C "$int_wt" rev-parse HEAD)"
 
-  local review="$out/review" thr verdict gate_line decision kept inline=1
+  local review="$out/review" thr verdict gate_line decision kept inline=1 vcmd
   forge_review_snapshot "$int_wt" "$base" "$tip" "$review" > "$out/snapshot.log" 2>&1 \
     || { adopt_rollback; die "adopt: cannot build the review snapshot (see $out/snapshot.log)" 3; }
   forge_review_deps "$int_wt" "$review" "$out/review.deps"
@@ -146,6 +146,12 @@ do_adopt() {
     echo
     cat "$out/review.deps"
     echo "Forge ran no tests of its own on this range, so nothing here stands in for yours."
+    # The run's verification, named and not run: it runs after this review, on the whole branch (#131).
+    vcmd="$(verify_command_for "$PLAN" "$(cat "$PLAN/repo")" | head -c 4000)"
+    if [ -n "$vcmd" ]; then
+      echo "The run verifies its integration branch with the command below, after this review. Run the parts of it that touch this range:"
+      echo '```sh'; printf '%s\n' "$vcmd"; echo '```'
+    fi
     echo
     python3 "$SKILL_DIR/scripts/forge-contract.py" qa --part tail --kind adopt --threshold "$thr"
     echo
