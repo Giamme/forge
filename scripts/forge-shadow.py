@@ -27,11 +27,14 @@ Guarantees, because the task waits for this process before it writes any status:
 timeout, error, invalid (the reviewer changed its snapshot), overtime, stopped, orphaned.
 Only a `done` review counts as a second opinion.
 Forge never picks a model: the reviewer is one the user listed, preferring a different
-model family from the primary reviewer's, so two reviewers do not share one blind spot.
+model family from the primary reviewer's, so two reviewers do not share one blind spot. A listed
+spec that resolves to the primary's own harness, model and effort is picked last, as a `control`:
+it measures a reviewer's noise, not what another effort or model buys (#121).
 """
 from __future__ import annotations
 
 import argparse
+import functools
 import hashlib
 import json
 import os
@@ -115,8 +118,9 @@ def family(model: str) -> str:
     return m
 
 
-def resolved_model(spec: str) -> str | None:
-    """The model a qa dispatch of `spec` would use, by dispatch's own dry run."""
+@functools.lru_cache(maxsize=None)
+def resolution(spec: str) -> tuple | None:
+    """(harness, model, effort) a qa dispatch of `spec` would use, by dispatch's own dry run; None when it fails."""
     with tempfile.TemporaryDirectory(prefix='forge-shadow-resolve-') as tmp:
         prompt = Path(tmp) / 'input'
         prompt.write_text('Offline resolution')
@@ -127,7 +131,9 @@ def resolved_model(spec: str) -> str | None:
         except (OSError, subprocess.SubprocessError):
             return None
     fields = dict(line.split('=', 1) for line in out.stdout.splitlines() if '=' in line)
-    return fields.get('model') or None
+    if not fields.get('model'):
+        return None
+    return fields.get('harness') or None, fields['model'], fields.get('effort') or None
 
 
 def candidates(plan: Path) -> list:
@@ -140,14 +146,27 @@ def candidates(plan: Path) -> list:
 
 
 def pick(listed: list, primary: str) -> tuple[str | None, str | None]:
-    """(spec, why): the first listed spec of another family than the primary's, else the first."""
+    """(spec, why): the first listed spec of another family than the primary's (`other_family`); else the
+    first one of its family that does not resolve to the primary's own harness, model and effort
+    (`same_model` when only the effort or harness differs, `same_family` for another model); else the
+    first listed, labelled `control` (#121). A control reviews the diff with the primary's own settings,
+    so it measures noise and never counts as an effort comparison. A spec that does not resolve is
+    compared by its text."""
     if not listed:
         return None, None
-    mine = family(resolved_model(primary) or primary)
-    for spec in listed:
-        if family(resolved_model(spec) or spec) != mine:
+    me = resolution(primary)
+    mine = family(me[1] if me else primary)
+    resolved = [(spec, resolution(spec)) for spec in listed]
+    for spec, found in resolved:
+        if family(found[1] if found else spec) != mine:
             return spec, 'other_family'
-    return listed[0], 'same_family'
+    for spec, found in resolved:
+        if me and found:
+            if found != me:
+                return spec, 'same_model' if found[1] == me[1] else 'same_family'
+        elif spec.strip().lower() != primary.strip().lower():
+            return spec, 'same_family'
+    return listed[0], 'control'
 
 
 def fresh_dir(base: Path, attempt: str) -> Path:

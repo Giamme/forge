@@ -593,8 +593,16 @@ turns shadow reviews off again.
 
 - **Which reviewer:** the first listed spec whose model family (Claude, GPT, Gemini, ...)
   differs from the task's reviewer, so the two do not share one blind spot. If none
-  differs, the first listed spec. Forge only ever uses the specs you list. A spec that
-  cannot run here (`doctor` fails) is dropped with a note and never fails the run.
+  differs, the first listed spec that does not resolve to the reviewer's own harness, model
+  and effort: the same model at another effort (`same_model`) or another model of the
+  family. Only when every listed spec is identical to the reviewer does it run as a
+  `control`, two reviews with one setting, which measures noise and never counts as an
+  effort comparison (a reviewer pool can hand a task the shadow's own spec). Forge only
+  ever uses the specs you list. A spec that cannot run here (`doctor` fails) is dropped
+  with a note and never fails the run.
+- **Measuring an effort:** list only specs of the reviewers' own model at another effort,
+  for example `--shadow-qa sol:medium` beside `sol:high` reviewers, with a rate high enough
+  for at least 30 pairs per comparison. Each pair is one more review, so agree on its cost first.
 - **Which attempts:** a deterministic sample per (run, task, attempt), so a QA-only
   resume decides the same way.
 - **Same evidence, separate everything else.** The shadow reviews a byte-identical copy of
@@ -608,7 +616,11 @@ turns shadow reviews off again.
   a manual `retry`.
 - **Scope:** parallel mode only, and never under Fractal.
 
-`./forge dataset status` reports the agreement rate, overall and per model pair. The export
+`./forge dataset status` reports the agreement rate, overall and per model pair, and
+`./forge dataset pairs` splits it by what differs between the two reviewers: effort within one
+model, another model of the family, another family, and controls. For each pair of settings it
+gives verdict agreement with a 95% interval, the blocking findings only one side found, and the
+token and time ratio (see [the dataset reference](dataset.md#paired-reviews)). The export
 adds `shadow` and `consensus` to the matching review cases' metadata.
 
 ## Severity, thresholds and known issues

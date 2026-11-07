@@ -131,6 +131,7 @@ def status(args) -> int:
                   % (shadow['shadow_reviews'], shadow['pairs'], shadow['agree'], rate))
             for pair, n in shadow['by_pair'].items():
                 print('          %s: %d of %d agree' % (pair, n['agree'], n['pairs']))
+            print('          by effort, model and family: forge dataset pairs')
         line = _outcomes_line(summary.get('outcomes') or {})
         if line:
             print('  ' + line)
@@ -236,6 +237,11 @@ def run_facts(args) -> int:
     return facts.main(args)
 
 
+def run_pairs(args) -> int:
+    from . import pairs
+    return pairs.main(args)
+
+
 def run_history(args) -> int:
     from . import history
     return history.main(args)
@@ -312,6 +318,11 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument('--repo', help='only this repo')
     p.add_argument('--json', action='store_true')
     p.set_defaults(func=run_facts)
+    p = sub.add_parser('pairs', help='two reviewers of one attempt, per pair of settings: effort within one model apart '
+                                     'from model and family comparisons and controls (advisory)')
+    p.add_argument('--repo', help='only this repo')
+    p.add_argument('--json', action='store_true')
+    p.set_defaults(func=run_pairs)
     p = sub.add_parser('history', help="every review's findings and every learning, for forge-ui's Projects screen")
     p.add_argument('--json', action='store_true')
     p.set_defaults(func=run_history)

@@ -7,6 +7,7 @@ inherited, so ForgeTests' own tests do not run twice.
 """
 import dataset_isolation  # noqa: F401  keeps the run dataset out of the developer's store
 import contextlib
+import importlib.util
 import io
 import json
 import os
@@ -1140,6 +1141,80 @@ class FactsRuleTests(unittest.TestCase):
             with self.subTest(name):
                 self.assertEqual((facts.decide(verdict, found, 2), facts.decide(verdict, found, 2, facts._released(rule))),
                                  expected)
+
+
+class ShadowPickTests(unittest.TestCase):
+    def test_the_shadow_spec_rule(self):
+        # #121: specs resolve by dispatch's own dry run against the shipped registry (sol and astra: gpt, opus: claude;
+        # a qa spec without an effort resolves to high).
+        spec = importlib.util.spec_from_file_location('forge_shadow_pick', ROOT / 'scripts' / 'forge-shadow.py')
+        shadow = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(shadow)
+        cases = [
+            # name, listed, primary, (spec, why)
+            ('another family first', ['sol:medium', 'opus'], 'sol:high', ('opus', 'other_family')),
+            ('the same model at another effort, past the identical spec', ['sol:high', 'sol:medium'], 'sol:high',
+             ('sol:medium', 'same_model')),
+            ('another model of the family', ['sol:high', 'astra:high'], 'sol:high', ('astra:high', 'same_family')),
+            ('only the identical spec: a control', ['sol:high'], 'sol:high', ('sol:high', 'control')),
+            ('written differently, resolving the same: a control', ['sol:high'], 'sol', ('sol:high', 'control')),
+            ('an unresolved spec compared by its text', ['nosuch'], 'nosuch', ('nosuch', 'control')),
+            ('nothing listed', [], 'sol:high', (None, None)),
+        ]
+        for name, listed, primary, expected in cases:
+            with self.subTest(name):
+                self.assertEqual(shadow.pick(listed, primary), expected)
+
+
+class PairsReportTests(StoreCase):
+    SOL_HIGH = dict(harness='codex', model='gpt-6.1-sol', effort='high')
+    SOL_MEDIUM = dict(harness='codex', model='gpt-6.1-sol', effort='medium')
+    OPUS_HIGH = dict(harness='claude', model='opus', effort='high')
+
+    def pair(self, task, primary, shadow, status='done'):
+        """One attempt reviewed twice: (settings, verdict, findings, tokens, seconds) per side."""
+        def finding(head):
+            sev = int(head[4]) if head.startswith('- [P') else None
+            return dict(status='CONFIRMED', severity=sev, located=':' in head, line=1, head=head)
+
+        def dispatch(role, side, extra):
+            who, verdict, heads, tokens, seconds = side
+            return dict(rid='%s-%s' % (task, role), kind='dispatch', run='r', mode='parallel', task=task, attempt=1,
+                        ts=10.0, data=dict(who, role=role, verdict=verdict, findings=[finding(h) for h in heads],
+                                           tokens=dict(input=tokens, output=0), elapsed_s=seconds, wall_started=5.0,
+                                           **extra))
+        store.record([
+            dict(rid=task + '-attempt', kind='attempt', run='r', mode='parallel', task=task, attempt=1, ts=11.0,
+                 data=dict(status='FAIL', reviewed_commit='c-' + task, gate='P2\tkeep\t-\t0\t0\t0')),
+            dispatch('qa', primary, {}),
+            dispatch('qa_shadow', shadow, dict(shadow=dict(reviewed='c-' + task))),
+            dict(rid=task + '-ended', kind='event', run='r', mode='parallel', task=task, ts=12.0,
+                 data=dict(name='shadow_review', status=status, attempt=1)),
+        ])
+
+    def test_pairs_are_split_by_what_differs_and_counted_by_hand(self):
+        from forge_dataset import export, pairs
+        self.pair('ctl', (self.SOL_HIGH, 'PASS', [], 100, 30), (self.SOL_HIGH, 'FAIL', ['- [P1][CONFIRMED] a.py:5 — x'], 100, 30))
+        # Effort: a is the lower effort (the shadow here), b the higher. t1: b alone blocks on a.py:10 (its P3 is
+        # tolerated at P2). t2: both name b.py within 10 lines; a's unlocated P0 is a only.
+        self.pair('t1', (self.SOL_HIGH, 'FAIL', ['- [P1][CONFIRMED] a.py:10 — x', '- [P3][CONFIRMED] a.py:50 — y'], 300, 60),
+                  (self.SOL_MEDIUM, 'PASS', [], 100, 30))
+        self.pair('t2', (self.SOL_HIGH, 'FAIL', ['- [P2][CONFIRMED] b.py:20 — z'], 200, 90),
+                  (self.SOL_MEDIUM, 'FAIL', ['- [P2][CONFIRMED] b.py:24 — z again', '- [P0][CONFIRMED] the build breaks'], 100, 30))
+        self.pair('fam', (self.OPUS_HIGH, 'PASS', [], 100, 30), (self.SOL_HIGH, 'PASS', [], 100, 30))
+        self.pair('late', (self.OPUS_HIGH, 'PASS', [], 100, 30), (self.SOL_HIGH, 'FAIL', [], 100, 30), status='timeout')
+
+        rep = pairs.report(export.Runs(export.Store(store.connect())))
+        self.assertEqual((rep['pairs'], rep['by_kind']), (4, dict(effort=2, model=0, family=1, control=1)))
+        rows = {r['kind']: r for r in rep['comparisons']}
+        self.assertEqual(rows['effort'], dict(kind='effort', a='gpt-6.1-sol:medium (codex)', b='gpt-6.1-sol:high (codex)',
+                                              pairs=2, agree=1, agreement=0.5, ci=[0.095, 0.905], enough=False,
+                                              only_a=1, only_b=1, tokens_ratio=2.5, time_ratio=2.5))
+        self.assertEqual((rows['control']['a'], rows['control']['pairs'], rows['control']['agree'],
+                          rows['control']['only_a'], rows['control']['only_b']),
+                         ('gpt-6.1-sol:high (codex)', 1, 0, 0, 1))
+        self.assertEqual((rows['family']['a'], rows['family']['b'], rows['family']['agree']),
+                         ('gpt-6.1-sol:high (codex)', 'opus:high (claude)', 1))
 
 
 class OutcomeFollowTests(StoreCase):
