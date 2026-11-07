@@ -2105,7 +2105,7 @@ def _diff_detail(reader, key, origin, sources, loaded, reason, reviews):
         for index, item in enumerate(findings.listing(text) or []):
             found.append(dict(id=_finding_id(review, index), review={key: review[key] for key in ('kind', 'execution', 'attempt', 'spec')},
                               severity=item['severity'], status=item['status'], location=item['location'],
-                              summary=item['summary'], text=item['text']))
+                              summary=item['summary'], facts=item['facts'], text=item['text']))
     return dict(run=key, source=origin, sources=sources, available=loaded is not None,
                 reason=None if loaded is not None else reason, bytes=loaded['bytes'] if loaded else None,
                 truncated=bool(loaded and loaded['truncated']), files=files, findings=diffs.pin(found, files),
@@ -2225,7 +2225,7 @@ def _finding_id(review, index):
 def _findings_of(reader, review):
     listed = findings.listing(reader.text(review['last'])) if review['last'] else None
     return [dict(id=_finding_id(review, index), severity=item['severity'], status=item['status'],
-                 location=item['location'], summary=item['summary'])
+                 location=item['location'], summary=item['summary'], facts=item['facts'])
             for index, item in enumerate(listed or [])]
 
 

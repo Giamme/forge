@@ -54,6 +54,11 @@ line); CONFIRMED beats PLAUSIBLE; PLAUSIBLE-only blocks are ignored; "NOT CONFIR
 lowercase prose do not count. The severity is the first P0-P3 token of the block's first
 line (`[P2]`, `(P2)`, `**P2**`, `P2:`, `P2 -` or a standalone `P2`; uppercase only).
 
+Facts (#119). A finding may end its first line (or, wrapped, its last) with
+`{reach=main|realistic|unusual origin=new|existing evidence=ran|traced|suspected}`. They are
+recorded in shadow and decide nothing: the gate never reads them, and `split_facts` cuts the
+suffix for readers that show the line. A missing or malformed suffix changes nothing.
+
 Phantom findings. A reviewer may echo the contract it was given. Three layers keep that
 from creating findings or blocking: (1) FORGE_VERDICT, FORGE_LEARNING and FORGE_TESTS text is removed
 before parsing (the verdict line itself says "CONFIRMED"); (2) any line that is a
@@ -186,7 +191,21 @@ _SEVERITY = [
     '  P1  wrong behaviour on realistic input, or breaks an existing contract',
     '  P2  edge-case bug, race that needs unusual timing, missing hardening',
     '  P3  minor: cosmetic, naming, nit-level correctness',
+    'End the first line of every finding with three facts about it, in braces, in this form:',
+    '  - [P1][CONFIRMED] path/file.py:123 — what breaks {reach=realistic origin=new evidence=traced}',
+    '  reach     main (the main path), realistic (realistic input),',
+    '            or unusual (an unusual or hostile state)',
+    '  origin    new (this change introduced it), or existing (it was there before the change)',
+    '  evidence  ran (you ran it and saw it break), traced (you traced it in the code),',
+    '            or suspected',
+    'The facts are recorded for measurement only: they change neither the severity nor what blocks.',
 ]
+
+# The three facts of #119, recorded in shadow beside each finding's severity and confidence. They go
+# at the END of the first line, never after the tags: `forge issues` would read a third tag as part
+# of the location, and forge-ui strips only two.
+FACTS = {'reach': ('main', 'realistic', 'unusual'), 'origin': ('new', 'existing'),
+         'evidence': ('ran', 'traced', 'suspected')}
 
 _SWEEP_FINDINGS = [
     'Report findings only — do not edit any file. A finding here is a regression the change',
@@ -342,7 +361,8 @@ def _clean(text: str) -> list:
             continue
         line = _QUOTE.sub('', line).rstrip()
         core = _collapse(_MARKER.sub('', line.strip()))
-        if len(core) >= _MIN_ECHO and core in flat:
+        # A wrapped finding's facts on a line of their own can match the example's suffix word for word.
+        if len(core) >= _MIN_ECHO and core in flat and split_facts(core)[0].strip():
             continue
         out.append((number, line))
     return out
@@ -405,6 +425,37 @@ def _finding(number: int, lines: list):
     else:
         return None
     return Finding(status, severity, located, number, '\n'.join(lines))
+
+
+# A brace group closing a line, markup and a full stop around it forgiven. It is the facts suffix only
+# when it names at least one of the three facts: a finding's own text may end in braces (`{}`, `{a=1}`).
+_FACTS_SUFFIX = re.compile(r'[ \t]*[`*_]*\{([^{}\n]*)\}[`*_.]*[ \t]*$')
+_FACT = re.compile(r'([A-Za-z]+)[ \t]*[=:][ \t]*([A-Za-z]+)')
+
+
+def split_facts(line: str):
+    """(line without its facts suffix, {reach, origin, evidence}) or (line, None) when it has none.
+
+    A fact whose value is not one of its words reads None, and keys other than the three are ignored:
+    a malformed suffix is still cut from the line, so it never reaches a location or a title."""
+    match = _FACTS_SUFFIX.search(line or '')
+    if not match:
+        return line, None
+    said = {key.lower(): value.lower() for key, value in _FACT.findall(match.group(1))}
+    if not any(key in said for key in FACTS):
+        return line, None
+    return line[:match.start()], {key: said[key] if said.get(key) in words else None
+                                  for key, words in FACTS.items()}
+
+
+def facts(text: str):
+    """The facts of one finding block: its first line's suffix, else its last line's (a wrapped bullet)."""
+    lines = [line for line in (text or '').split('\n') if line.strip()]
+    for line in lines[:1] + lines[-1:]:
+        found = split_facts(line)[1]
+        if found is not None:
+            return found
+    return None
 
 
 def parse_findings(text: str) -> list:

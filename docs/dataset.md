@@ -15,6 +15,7 @@ forge dataset import ~/.local/share/forge/legacy   # runs that predate live capt
 forge dataset export            # labeled decision cases for benchmarks and fine-tuning
 forge dataset outcomes          # which integrated lines survived, read from git history
 forge dataset reviewers         # how often work each reviewer PASSed was later reverted or rewritten
+forge dataset facts             # findings' reach, origin and evidence: do reviewers agree, would a gate on them help
 forge dataset forecast <plan>   # likely tokens, time and first-try PASS rate for a plan's tasks
 ```
 
@@ -22,6 +23,10 @@ forge dataset forecast <plan>   # likely tokens, time and first-try PASS rate fo
 advisory only and never changes routing, and it shows "not enough data" below 10 outcomes per
 reviewer rather than a rate a handful of tasks would make up. See
 [the reviewer report card](../references/dataset.md#reviewer-report-card).
+
+`forge dataset facts` measures the three facts reviewers add to each finding (reach, origin,
+evidence) before any gate uses them: agreement between two reviewers of one attempt, and what
+rules on them would have changed. See [finding facts](../references/dataset.md#finding-facts).
 
 `forge dataset forecast <plan>` estimates a plan from past tasks at the same tier and model:
 median and p90 tokens and time, and the first-try PASS rate with a 95% interval, per task and in

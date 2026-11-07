@@ -284,6 +284,62 @@ class GateTableTests(unittest.TestCase):
         self.assertEqual([f.severity for f in result.tolerated], [3])
 
 
+class FactsTests(unittest.TestCase):
+    """#119: a finding's reach, origin and evidence, in a suffix at the end of its line, decide nothing."""
+    ALL = dict(reach='unusual', origin='new', evidence='traced')
+
+    def test_the_suffix(self):
+        head = '- [P2][CONFIRMED] a.py:1 — breaks (input x)'
+        none = dict(reach=None, origin=None, evidence=None)
+        cases = [
+            # name, line, (line left, facts)
+            ('a valid suffix', head + ' {reach=unusual origin=new evidence=traced}', (head, self.ALL)),
+            ('no suffix', head, (head, None)),
+            ('values not among its words', head + ' {reach=sometimes origin=new evidence=maybe}',
+             (head, dict(none, origin='new'))),
+            ('unknown keys beside a known one', head + ' {reach=main kind=bug}', (head, dict(none, reach='main'))),
+            ('only unknown keys: the finding\'s own braces', head + ' {a=1}', (head + ' {a=1}', None)),
+            ('braces in the text, then the suffix', '- [P2][CONFIRMED] a.py:1 — returns {} {origin=existing}',
+             ('- [P2][CONFIRMED] a.py:1 — returns {}', dict(none, origin='existing'))),
+            ('empty braces closing the text', '- [P2][CONFIRMED] a.py:1 — returns {}',
+             ('- [P2][CONFIRMED] a.py:1 — returns {}', None)),
+            ('braces not at the end', head + ' {reach=main} then more', (head + ' {reach=main} then more', None)),
+            ('markup, colons, commas and case', head + ' `{Reach: Unusual, ORIGIN=new; evidence=Traced}`.',
+             (head, self.ALL)),
+        ]
+        for name, line, expected in cases:
+            with self.subTest(name):
+                self.assertEqual(contract.split_facts(line), expected)
+
+    def test_a_wrapped_finding_keeps_its_facts_on_its_last_line(self):
+        # The example bullet's own suffix, alone on a line: the echo filter must not take it for the contract.
+        text = ('- [P2][CONFIRMED] a.py:1 — breaks when the list\n  is empty (input [])\n'
+                '  {reach=realistic origin=new evidence=traced}\n\nFORGE_VERDICT: FAIL\n')
+        [found] = contract.parse_findings(text)
+        self.assertEqual(contract.facts(found.text), dict(reach='realistic', origin='new', evidence='traced'))
+
+    def test_the_suffix_changes_no_verdict(self):
+        replies = [
+            ('PASS', None, ['P2']), ('PASS', None, ['P3']), ('FAIL', None, ['P3']), ('FAIL', None, ['P1', 'P3']),
+            ('FAIL', 'P0', ['P1']), ('PASS', None, [None]), ('FAIL', None, []),
+        ]
+        suffixes = [' {reach=unusual origin=existing evidence=suspected}', ' {reach=??? origin}', ' {reach=main']
+        for verdict, threshold, severities in replies:
+            plain = [bullet(s, where='f%d.py:%d' % (i, i + 1)) for i, s in enumerate(severities)]
+            for suffix in suffixes:
+                with self.subTest(verdict=verdict, severities=severities, suffix=suffix):
+                    tail = '\n\nFORGE_VERDICT: %s\n' % verdict
+                    self.assertEqual(decide(verdict, '\n'.join(line + suffix for line in plain) + tail, threshold),
+                                     decide(verdict, '\n'.join(plain) + tail, threshold))
+
+    def test_every_review_kind_asks_for_the_facts(self):
+        for kind in contract.KINDS:
+            with self.subTest(kind=kind):
+                tail = contract.qa_text('tail', kind)
+                self.assertIn('{reach=realistic origin=new evidence=traced}', tail)
+                self.assertEqual(contract.parse_findings(tail), [])
+
+
 class KnownIssuesFileTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(); self.addCleanup(self.tmp.cleanup)

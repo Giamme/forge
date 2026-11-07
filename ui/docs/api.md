@@ -769,12 +769,18 @@ FindingsSummary is `null` when there is no text or no contract module.
 ```json
 {"severity": "P1", "status": "CONFIRMED", "location": "src/x.py:12", "line": 7,
  "summary": "- [P1][CONFIRMED] src/x.py:12 — first line, at most 240 characters",
+ "facts": {"reach": "realistic", "origin": "new", "evidence": "traced"},
  "text": "the whole finding block"}
 ```
 
 `status` is `CONFIRMED`, `PLAUSIBLE` or `UNSTATED`; `severity` may be `null`; `location` is the
 first match of the contract's `_LOCATION` in the first line, or `null`; `line` is the
-block's 1-based line in the reply. Lists of Findings keep the first 200.
+block's 1-based line in the reply. Lists of Findings keep the first 200. `facts` is the
+reviewer's `{reach=… origin=… evidence=…}` suffix (#119), cut from `summary`: `null` when the
+finding has none, and a fact whose value is not one of its words is `null`. `reach` is `main`,
+`realistic` or `unusual`, `origin` `new` or `existing`, `evidence` `ran`, `traced` or
+`suspected`. They are recorded in shadow: nothing in forge decides on them. A diff's and a
+RunFindings' Findings carry `facts` too.
 
 ## FinalReviewSummary
 

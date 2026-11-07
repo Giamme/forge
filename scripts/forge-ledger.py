@@ -80,7 +80,9 @@ def _is_file(path: str) -> bool:
 
 
 def _words(finding) -> set:
-    return set(_WORD.findall(finding.text.lower()))
+    # #119: the facts suffix's words (reach, origin, evidence, ...) would make any two findings look alike
+    text = '\n'.join(contract.split_facts(line)[0] for line in finding.text.split('\n'))
+    return set(_WORD.findall(text.lower()))
 
 
 def same_finding(a, b) -> bool:

@@ -104,14 +104,16 @@ def listing(text, limit=200):
         return None
     result = []
     for status, severity, line, block in found[:limit]:
-        first = block.split('\n', 1)[0]
+        first, facts = block.split('\n', 1)[0], None
         try:
             match = module._LOCATION.search(first)
+            # #119: the facts suffix is shown apart, never as part of the summary
+            first, facts = module.split_facts(first)[0], module.facts(block)
         except Exception:
             match = None
         result.append(dict(severity=None if severity is None else 'P%d' % severity, status=status,
                            location=match.group(0) if match else None, line=line,
-                           summary=first.strip()[:_SUMMARY_MAX],
+                           summary=first.strip()[:_SUMMARY_MAX], facts=facts,
                            text=block if len(block) <= _TEXT_MAX else block[:_TEXT_MAX] + '…'))
     return result
 

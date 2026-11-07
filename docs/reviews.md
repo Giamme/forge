@@ -174,6 +174,17 @@ decision `fail`), and the next attempt starts with a note saying why.
 It fails safe: an unlabelled CONFIRMED finding, or a FAIL with no CONFIRMED finding at all,
 is never tolerated.
 
+Every finding also ends its first line with three facts, `{reach=main|realistic|unusual
+origin=new|existing evidence=ran|traced|suspected}`: how likely the trigger is, whether this change
+introduced the problem, and how the reviewer knows. They are **recorded in shadow** and decide
+nothing: the gate, `forge issues`, the ledger and forge-ui read a finding with the suffix exactly as
+one without it, and a missing or malformed suffix changes nothing. They go to the run dataset, and
+`forge dataset facts` says whether a gate on them would do better than the severity line alone: how
+often two reviewers of one attempt agree on reach versus severity (with `--shadow-qa`), and how many
+reviews and rounds rules such as "unusual reach does not block unless P0" or "existing problems do
+not block" would have changed, listing the findings they would have let through so a person can
+judge them. See [the dataset reference](../references/dataset.md#finding-facts).
+
 Tolerated findings are recorded, not fixed. After a run, the skill offers once to file them as
 GitHub issues, together with PLAUSIBLE findings of passed tasks and whatever a whole-run review
 left open (`--file-issues ask|auto|off`, `ask` by default). Where the
