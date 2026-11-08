@@ -247,6 +247,11 @@ def run_risk(args) -> int:
     return risk.main(args)
 
 
+def run_tiers(args) -> int:
+    from . import tiers
+    return tiers.main(args)
+
+
 def run_history(args) -> int:
     from . import history
     return history.main(args)
@@ -333,6 +338,15 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument('--repo', help='only this repo')
     p.add_argument('--json', action='store_true')
     p.set_defaults(func=run_risk)
+    p = sub.add_parser('tiers', help="what explains results inside each difficulty tier: plan-time facts held out by "
+                                     "run and adjusted for the implementer, and blind-rating agreement (advisory)")
+    p.add_argument('--repo', help='only this repo')
+    p.add_argument('--tier', choices=('low', 'medium', 'high'), help='only this tier')
+    p.add_argument('--sample', type=int, metavar='N', help='write N past prompts for blind rating into --out')
+    p.add_argument('--out', help='an empty directory for --sample')
+    p.add_argument('--blind', metavar='DIR', help='agreement of DIR/ratings.tsv with the recorded tiers')
+    p.add_argument('--json', action='store_true')
+    p.set_defaults(func=run_tiers)
     p = sub.add_parser('history', help="every review's findings and every learning, for forge-ui's Projects screen")
     p.add_argument('--json', action='store_true')
     p.set_defaults(func=run_history)
