@@ -1278,6 +1278,72 @@ class RiskReportTests(StoreCase):
                          [('low', 'high', 2, 1, 1, 2, 1, False), ('high', 'low', 1, 1, 0, 1, 1, False)])
 
 
+class TiersReportTests(StoreCase):
+    """#123: plan-time facts inside a tier, held out by run and adjusted for the implementer; blind-rating agreement."""
+
+    def runs_of(self, tasks_per_run, runs=12):
+        """runs x tasks: (name, tier, files, implementer, passed); every task one attempt, wave 1, no deps."""
+        events = []
+        for i in range(runs):
+            run = 'run%02d' % i
+            tasks = {name: dict(id=name, difficulty=tier, files=','.join('f%d' % k for k in range(files)), deps='-',
+                                prompt=store.put_blob('do %s in %d files' % (name, files), 'prompt'))
+                     for name, tier, files, _, _ in tasks_per_run}
+            events.append(dict(rid=run + '-plan', kind='plan', run=run, mode='parallel', ts=1.0,
+                               data=dict(tasks=tasks, waves={name: 1 for name in tasks})))
+            for name, _, files, who, passed in tasks_per_run:
+                events.append(dict(rid='%s-%s' % (run, name), kind='attempt', run=run, mode='parallel', task=name,
+                                   attempt=1, ts=2.0, data=dict(status='PASS' if passed else 'FAIL', dwarf=who,
+                                                                numstat={'a.py': [10 * files, 0]}, changed_files=['a.py'])))
+        store.record(events)
+        from forge_dataset import export, tiers
+        return tiers, export.Runs(export.Store(store.connect()))
+
+    def test_a_split_that_holds_on_unseen_runs_is_found_and_bins_describe_the_tier(self):
+        tiers, runs = self.runs_of([('small1', 'high', 1, 'sol', True), ('small2', 'high', 1, 'sol', True),
+                                    ('big1', 'high', 4, 'sol', False), ('big2', 'high', 4, 'sol', False)])
+        high = tiers.report(runs)['tiers']['high']
+        self.assertEqual((high['tasks'], high['runs'], high['unfinished']), (48, 12, 24))
+        files = next(f for f in high['facts'] if f['fact'] == 'files')
+        self.assertEqual([(b['lo'], b['hi'], b['tasks'], b['first_pass']) for b in files['bins']], [(1, 1, 24, 1.0), (4, 4, 24, 0.0)])
+        held = files['heldout']['first_pass']
+        self.assertEqual((held['lift'], held['ci'], held['threshold'], held['above_higher'], held['runs']),
+                         (1.0, [1.0, 1.0], 1, False, 12))
+        self.assertEqual(held['folds'], held['of'])
+        # The diff is known only afterwards: reported, but apart from the facts a rule could route on.
+        self.assertEqual({f['fact']: f['phase'] for f in high['facts']}['diff_lines'], 'after')
+        # Under MIN_RUNS runs nothing is held out: the bins remain, the test does not.
+        few = tiers.tier_report([r for r in tiers.records(runs) if r['run'] < 'run05'])
+        self.assertIsNone(next(f for f in few['facts'] if f['fact'] == 'files')['heldout']['first_pass']['lift'])
+
+    def test_a_harder_implementer_mix_is_not_read_as_harder_tasks(self):
+        # Within each implementer files change nothing; the weaker one simply got more of the big tasks.
+        tiers, runs = self.runs_of([('s1', 'high', 1, 'sol', True), ('s2', 'high', 1, 'sol', True),
+                                    ('s3', 'high', 1, 'luna', False), ('b1', 'high', 4, 'sol', True),
+                                    ('b2', 'high', 4, 'luna', False), ('b3', 'high', 4, 'luna', False)])
+        files = next(f for f in tiers.report(runs)['tiers']['high']['facts'] if f['fact'] == 'files')
+        raw = files['bins'][0]['first_pass'] - files['bins'][1]['first_pass']
+        self.assertAlmostEqual(raw, 1 / 3)
+        self.assertLess(abs(files['heldout']['first_pass']['lift']), 0.1)
+
+    def test_blind_ratings_spread_over_runs_and_agreement_is_measured(self):
+        tiers, runs = self.runs_of([('h1', 'high', 2, 'sol', True), ('m1', 'medium', 1, 'sol', True),
+                                    ('l1', 'low', 1, 'sol', True)], runs=2)
+        out = Path(self.tmp.name) / 'blind'
+        self.assertEqual(tiers.sample(runs, 4, out), 4)
+        rows = [line.split('\t') for line in (out / 'sample.tsv').read_text().splitlines() if line[:1].isdigit()]
+        self.assertEqual(sorted(r[1] for r in rows[:2]), ['run00', 'run01'])   # one task per run before a second
+        self.assertIn('do ', (out / 'prompts' / '1.md').read_text())
+        given = {'h': 'high', 'm': 'medium', 'l': 'low'}
+        ratings = [(n, given[task[0]]) for n, _, task in rows]
+        ratings[0] = (ratings[0][0], 'low' if ratings[0][1] != 'low' else 'high')   # one disagreement
+        (out / 'ratings.tsv').write_text(''.join('%s\t%s\n' % r for r in ratings) + '9\tlow\n7\tsideways\n')
+        rep = tiers.blind(runs, out)
+        self.assertEqual((rep['rated'], rep['agree'], rep['unknown'], rep['invalid']), (4, 3, 1, 1))
+        with self.assertRaises(SystemExit):
+            tiers.sample(runs, 1, out)   # never writes over an earlier sample
+
+
 class OutcomeFollowTests(StoreCase):
     """#120: an integration is followed where it went, a run merged by hand too, and the end of a run harvests."""
     setUp_fixture, git, run_script, scenario = (EndToEndTests.setUp_fixture, EndToEndTests.git,

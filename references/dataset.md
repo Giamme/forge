@@ -164,6 +164,8 @@ forge still running keeps writing.
 ./forge dataset routing [--repo PATH] [--since DAYS] [--json]   # pass rate and runtime per tier and model
 ./forge dataset reviewers [--horizon-days 14] [--repo PATH] [--json]   # how each reviewer's PASSed work held up
 ./forge dataset risk [--repo PATH] [--json]    # tasks by difficulty and risk together, and how each pair fared
+./forge dataset tiers [--repo PATH] [--tier T] [--json]   # what explains results inside each tier, held out by run
+./forge dataset tiers --sample N --out DIR | --blind DIR   # past prompts to rate blind, then agreement with the recorded tier
 ./forge dataset pairs [--repo PATH] [--json]   # two reviewers of one attempt, by what differs (effort, model, family)
 ./forge dataset facts [--repo PATH] [--json]   # findings' reach, origin and evidence: agreement, and rules replayed
 ./forge dataset forecast <plan> [--repo PATH] [--json]   # likely cost and first-try PASS rate per task
@@ -407,6 +409,43 @@ A plan event's `tasks.<id>.risk` is the task's `tasks/<id>/risk` rating (`low`, 
   found a CONFIRMED P0 or P1; landed work (`forge dataset outcomes`, the longest horizon followed)
   and how much of it did not hold. A cell under 10 tasks is flagged rather than read as an answer:
   outcomes take 14 days, and low difficulty with high risk, the case that matters, is rare.
+
+## Inside a tier
+
+`forge dataset tiers` asks whether a tier, `high` above all, mixes tasks that behave very
+differently, before anyone adds a tier. It reads the tasks `routing` counts (first attempt says
+something about the implementer, fractal runs left out) and changes nothing in a run. Facts come in
+two kinds, reported apart:
+
+- **plan time**, known before dispatch, so a rule could route on them: declared files,
+  dependencies, wave, and the size of the task's prompt in KB;
+- **afterwards**, known only once the first attempt ran, so they can explain a result but never
+  route one: lines in that attempt's diff and files it changed.
+
+Outcomes are first attempt passed, attempts taken, and unfinished (never passed, not accepted).
+Per tier and fact:
+
+- **bins**: the tier in thirds of the fact, each with tasks, runs, first pass (Wilson 95%), mean
+  attempts and unfinished. Descriptive only: a run's tasks are correlated and routing chose who
+  ran what.
+- **held out by run**: runs go to 5 folds by a hash of their id. On the other folds, each
+  threshold at the training values' quartiles is scored on outcomes adjusted for the implementer
+  (an outcome minus its model's mean in the tier, shrunk toward the tier mean by 5 tasks), so a
+  weaker model mix is not read as harder tasks. The best threshold and its direction are applied
+  to the held-out runs. `lift` is the held-out difference between the side predicted higher and
+  the other, in the outcome's units (points for rates, attempts for attempts): above 0 means the
+  direction learned elsewhere held. The interval resamples held-out runs. It is omitted under 10
+  runs, or when no threshold leaves 5 tasks on each side.
+- **repos**: first pass per repo with 10 or more tasks in the tier, and the implementer-adjusted
+  residual with a run bootstrap. Not held out: a repo's runs mostly stay in it.
+
+Label noise is measured blind and never by the report itself, since rating costs model calls or a
+person's time. `--sample N --out DIR` writes N past prompts, one task per run before any run gives
+a second, to `DIR/prompts/<n>.md`, with `DIR/sample.tsv` mapping each number to its run and task.
+The tier is not in either file, but a prompt can name it (2 of 663 did on one machine), so tell the
+rater to ignore that. The rater writes `DIR/ratings.tsv` as `<n><TAB>low|medium|high`, and
+`--blind DIR` reports the agreement rate with the recorded tier (Wilson 95%), Cohen's kappa and the
+confusion table. Lines naming an unknown number or an invalid tier are counted, not guessed.
 
 ## Paired reviews
 
