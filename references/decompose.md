@@ -65,6 +65,22 @@ by diff length instead of by judgment required is the main way difficulty routin
 paying off — it sends the cheap model at the subtle problem and the expensive one at the
 boilerplate, which is worse than not routing at all.
 
+**`risk`** is a separate rating, recorded in shadow (#122): what a mistake that gets through
+would cost — what breaks, for whom, and how hard it is to undo. It changes no model, reviewer
+or verdict yet; `forge dataset risk` measures whether it predicts problems difficulty misses.
+
+| Risk | Means |
+|------|-------|
+| `low` | local, and easy to see and revert: docs, a test, an internal helper. |
+| `medium` | wrong behaviour users would notice, undone by a revert. |
+| `high` | hard to undo or reaching everyone: release and CI files, migrations and persisted data, auth and permissions, public APIs. |
+
+A one-line change to a release script is low difficulty and high risk. Write the rating as
+`low`, `medium` or `high` on the first line of `tasks/<id>/risk` before `plan` (the planner
+writes it from its reply). A plan without ratings behaves exactly as before, and `tasks.tsv`
+keeps its columns. A collapsed chain gets the highest of its parts' ratings, or none when a
+part was not rated.
+
 ## tasks.tsv
 
 Tab-separated, one row per task, written by whoever decomposes the goal:
@@ -131,8 +147,9 @@ outright. Forge does not invent a model when the user has not said which one sho
 their quota.
 
 QA has no tier rules by default and falls back to `opus` at `high`, matching single-task forge.
-When the user names no reviewers, offer reviewers sized to the task's risk (never add them
-unprompted): `--qa-low sonnet:medium --qa-medium sonnet:high --qa-high opus:high`. In the
+When the user names no reviewers, offer reviewers sized to the task's difficulty, which is what
+the `--qa-<tier>` rules key on (a task's [risk](#the-two-axes-decompose-level-and-difficulty) is
+recorded but routes nothing yet; never add them unprompted): `--qa-low sonnet:medium --qa-medium sonnet:high --qa-high opus:high`. In the
 SWE-bench Pro benchmark (#89) Sonnet reviewers gave no false PASS at about a seventh of an
 `opus:xhigh` review's cost.
 
@@ -1099,6 +1116,7 @@ removes what it created.
 
 ```
 <plan-dir>/tasks/<id>/approach.md               intended approach, if planned
+<plan-dir>/tasks/<id>/risk                      low|medium|high, recorded only (#122), if rated
 <repo>/.forge/                                  project memory (survives the run)
 <repo>/../.forge-worktrees/<run-id>/<task-id>   task worktree
 <repo>/../.forge-worktrees/<run-id>/_integration integration worktree

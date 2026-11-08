@@ -127,6 +127,27 @@ class ParseTests(PlannerCase):
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertFalse(stale.exists())
 
+    def test_a_tasks_risk_is_a_side_record_that_never_refuses(self):
+        # #122: tasks.tsv is the same with or without a risk; only a known value writes tasks/<id>/risk.
+        plain = '# id\tdeps\tdifficulty\tfiles\tdwarf\tqa\ttitle\nparse-config\t-\tmedium\tsrc/config.py,tests/test_config.py\t-\t-\tParse the new config section\n'
+        risk = self.plan / 'tasks/parse-config/risk'
+        cases = [
+            ('a known value', dict(risk='high'), 'high\n'),
+            ('no risk key', {}, None),
+            ('an unknown value', dict(risk='severe'), None),
+            ('not a string', dict(risk=2), None),
+        ]
+        for name, extra, written in cases:
+            with self.subTest(name):
+                for path in sorted(self.plan.rglob('*'), reverse=True):
+                    path.rmdir() if path.is_dir() else path.unlink()
+                risk.parent.mkdir(parents=True)
+                risk.write_text('low\n')            # a stale rating never outlives a reply without one
+                r, _ = self.parse(reply([dict(task(), **extra)]))
+                self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+                self.assertEqual((self.plan / 'tasks.tsv').read_text(), plain)
+                self.assertEqual(risk.read_text() if risk.exists() else None, written)
+
     def assert_refused(self, text, reason):
         r, path = self.parse(text)
         self.assertEqual(r.returncode, 4, r.stdout + r.stderr)

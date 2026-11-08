@@ -242,6 +242,11 @@ def run_pairs(args) -> int:
     return pairs.main(args)
 
 
+def run_risk(args) -> int:
+    from . import risk
+    return risk.main(args)
+
+
 def run_history(args) -> int:
     from . import history
     return history.main(args)
@@ -323,6 +328,11 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument('--repo', help='only this repo')
     p.add_argument('--json', action='store_true')
     p.set_defaults(func=run_pairs)
+    p = sub.add_parser('risk', help="tasks by difficulty and risk together: how often they differ, and how each "
+                                    "pair fared (advisory)")
+    p.add_argument('--repo', help='only this repo')
+    p.add_argument('--json', action='store_true')
+    p.set_defaults(func=run_risk)
     p = sub.add_parser('history', help="every review's findings and every learning, for forge-ui's Projects screen")
     p.add_argument('--json', action='store_true')
     p.set_defaults(func=run_history)

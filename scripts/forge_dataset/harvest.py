@@ -721,7 +721,10 @@ def plan_event(plan: Path, prov: dict, src: str = 'live', inventory: bool = True
             source = 'planner'
         else:
             source = 'orchestrator'
+        risk = (text(tdir / 'risk') or '').split()
         per_task[tid] = dict(row, declared_difficulty=declared_tier, difficulty_source=source,
+                             # #122: the task's risk, recorded in shadow beside its difficulty (None: not rated)
+                             risk=risk[0] if risk and risk[0] in ('low', 'medium', 'high') else None,
                              routing=routing, prompt=put_file(tdir / 'prompt.md', 'prompt'),
                              approach=put_file(tdir / 'approach.md', 'prompt'))
         decisions = jsonl(tdir / 'route.jsonl')

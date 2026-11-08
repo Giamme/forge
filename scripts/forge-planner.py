@@ -8,7 +8,8 @@ gate and the one-task plan. Standard library only; no shell wiring.
 
   forge-planner.py parse    --plan P --reply FILE
       Turns the planner's reply into P/tasks.tsv, P/tasks/<id>/prompt.md and, when it is not
-      empty, P/tasks/<id>/approach.md. It never guesses or repairs: a reply that breaks one
+      empty, P/tasks/<id>/approach.md; a task's `risk` (#122) goes to P/tasks/<id>/risk, and a
+      missing or unknown one writes nothing. It never guesses or repairs: a reply that breaks one
       rule writes nothing but P/planner.refused (the first reason and the reply's path), prints
       both and exits 4. P/request.md must hold the user's request (exit 2 when it is missing);
       it is attached to every task prompt so no requirement is lost.
@@ -43,7 +44,11 @@ MAX_REQUIREMENTS = 6
 
 MAX_TASKS = 20
 TASK_KEYS = ('id', 'deps', 'difficulty', 'files', 'title', 'approach', 'prompt')
+# #122: a task's risk, recorded in shadow beside its difficulty. Optional, and the one key that never refuses a
+# reply: a missing or unknown value records nothing, because a label nothing routes on must not cost a plan.
+OPTIONAL_KEYS = ('risk',)
 DIFFICULTIES = ('low', 'medium', 'high')
+RISKS = ('low', 'medium', 'high')
 LEVELS = DIFFICULTIES
 ID_RE = re.compile(r'[a-z0-9][a-z0-9-]{0,39}')
 ACCEPTANCE_RE = re.compile(r'## Acceptance criteria[ \t]*:?[ \t]*')
@@ -75,7 +80,7 @@ worktree of its own, and a reviewer judges each task against its prompt."""
 EXAMPLE = """\
 ```forge-plan
 {"tasks": [
-  {"id": "parse-config", "deps": [], "difficulty": "medium",
+  {"id": "parse-config", "deps": [], "difficulty": "medium", "risk": "low",
    "files": ["src/config.py", "tests/test_config.py"],
    "title": "Parse the new config section",
    "approach": "Add parse_section() beside load(); keep load()'s signature.",
@@ -153,6 +158,12 @@ def build_prompt(request: str, level: str | None) -> str:
         'judgment, touches cross-cutting behaviour, has subtle edge cases or state or concurrency, or '
         'the right approach is not obvious from the request. A five-hundred-line mechanical rename is '
         '`low`; a ten-line concurrency fix is `high`.',
+        'Rate `risk` apart from difficulty, by what a mistake that gets through would cost: what breaks, for '
+        'whom, and how hard it is to undo. `low`: local and easy to see and revert (docs, a test, an internal '
+        'helper). `medium`: wrong behaviour users would notice, undone by a revert. `high`: hard to undo or '
+        'reaching everyone: release and CI files, migrations and persisted data, auth and permissions, public '
+        'APIs. A one-line change to a release script is low difficulty and high risk. The rating is recorded '
+        'only; it changes no model or reviewer.',
         '**Each task\'s `prompt`** carries the whole requirement it owns, written so that someone who '
         'sees only that prompt can do it, and ends with a `## Acceptance criteria` section of checks '
         'a reviewer can verify (a behaviour, a command that passes, a file that exists), not restated '
@@ -190,6 +201,7 @@ these keys and no others:
 - `id`: lowercase slug matching `^[a-z0-9][a-z0-9-]{{0,39}}$`, unique in the plan;
 - `deps`: list of ids of tasks that must land first (`[]` for none), no cycles;
 - `difficulty`: `low`, `medium` or `high`;
+- `risk`: `low`, `medium` or `high`, as the rules above define it;
 - `files`: non-empty list of repo-relative paths the task creates or edits (no absolute path, no
   `..`, no tab, comma or newline in a path);
 - `title`: one line without a tab;
@@ -237,11 +249,11 @@ def no_duplicate_keys(pairs):
     return dict(pairs)
 
 
-def check_keys(obj, expected, where: str):
+def check_keys(obj, expected, where: str, optional=()):
     if not isinstance(obj, dict):
         raise Refusal(f'{where} is not a JSON object')
     missing = [k for k in expected if k not in obj]
-    extra = [k for k in obj if k not in expected]
+    extra = [k for k in obj if k not in expected and k not in optional]
     if missing or extra:
         parts = []
         if missing:
@@ -290,7 +302,7 @@ def check_path(path, where: str):
 
 def check_task(task, index: int, seen: set) -> dict:
     where = f'task {index + 1}'
-    check_keys(task, TASK_KEYS, where)
+    check_keys(task, TASK_KEYS, where, OPTIONAL_KEYS)
     tid = task['id']
     if not isinstance(tid, str) or not ID_RE.fullmatch(tid):
         raise Refusal(f'{where}: id {tid!r} does not match ^[a-z0-9][a-z0-9-]{{0,39}}$')
@@ -323,7 +335,8 @@ def check_task(task, index: int, seen: set) -> dict:
     check_text(prompt, where)
     if not has_acceptance_heading(prompt):
         raise Refusal(f'{where}: prompt has no "## Acceptance criteria" heading')
-    return task
+    risk = task.get('risk')
+    return dict(task, risk=risk if isinstance(risk, str) and risk in RISKS else None)
 
 
 def check_graph(tasks: list):
@@ -397,6 +410,7 @@ def cmd_parse(args) -> int:
         text = t['prompt'].rstrip('\n') + f'\n\n{WHOLE_REQUEST}\n\n' + request
         outputs.append((folder / 'prompt.md', text.encode('utf-8')))
         outputs.append((folder / 'approach.md', t['approach'].encode('utf-8') if t['approach'].strip() else None))
+        outputs.append((folder / 'risk', (t['risk'] + '\n').encode('utf-8') if t['risk'] else None))
     outputs.append((plan / 'tasks.tsv', ('\n'.join(rows) + '\n').encode('utf-8')))
     for path, data in outputs:
         if data is None:
