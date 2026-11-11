@@ -636,7 +636,10 @@ Every RunSummary field, plus:
   else `null`.
 - `header`: `{title, goal, criteria, links}`. `title` is the task's title. `goal` is the first
   paragraph of `approach.md`, or else of `prompt.md`, after a leading `# ` title line, as plain
-  text with its whitespace collapsed, capped at 600 characters; `null` when neither file has one.
+  text with its whitespace collapsed, capped at 600 characters. Plain text drops code-span
+  backticks, `*` and `**` emphasis and `~~strikethrough~~` markers, and keeps the label of a
+  `[label](url)` or image; underscores stay, so a file name is unchanged. `null` when neither
+  file has one.
   `criteria` is the text of `prompt.md`'s `## Acceptance criteria` section (an optional colon is
   allowed), up to the next `## ` heading or the end of the file, capped like `prompt`; a `### `
   subsection stays inside it, and a fenced `## ` does not end it. `null` when there is no such
@@ -648,8 +651,10 @@ Every RunSummary field, plus:
   its url is `https://github.com/<owner>/<repo>/issues/N` for the GitHub origin of the run's
   repo (the `repo` file, then that repo's `.git/config`, SSH or HTTPS, with no network), or
   `null` when that origin is not GitHub. `#N` inside a code span or a fenced block, and a
-  markdown heading, are not links. `source` is the file name. The same link in a later file is
-  kept from the first. The export leaves `goal` and `criteria` out unless texts are chosen;
+  markdown heading, are not links. A fence whose marker lines are block-quoted (`> ~~~`) is
+  still a fence. A digit run longer than Python will convert does not raise: `#N` is skipped,
+  and an issue or pull URL is kept as kind `url`. `source` is the file name. The same link in a
+  later file is kept from the first. The export leaves `goal` and `criteria` out unless texts are chosen;
   `links` stay.
 - `trail`: one entry per `attempts.tsv` row, in that order:
   `{attempt, dwarf, verdict, findings, worst, reason, executions}`. `attempt` and `dwarf` come

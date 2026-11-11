@@ -937,6 +937,16 @@ class ReaderTests(unittest.TestCase):
         server = next(task for task in detail(plan)['tasks'] if task['id'] == 'server')
         self.assertIsNone(server['header']['criteria'])
 
+        self.write(plan / 'tasks/docs/approach.md',
+                   '# Goal\n\n'
+                   'Use **atomic writes** in `reader.py` and retry_sources.tsv. '
+                   'See [the issue](https://github.com/acme/widgets/issues/133). '
+                   'Keep `**literal**`. Prefer *stable* reads. Drop ~~old~~ names.\n')
+        docs_task = next(item for item in detail(plan)['tasks'] if item['id'] == 'docs')
+        self.assertEqual(docs_task['header']['goal'],
+                         'Use atomic writes in reader.py and retry_sources.tsv. '
+                         'See the issue. Keep **literal**. Prefer stable reads. Drop old names.')
+
         self.write(plan / 'tasks/docs/approach.md', 'g' * 601)
         docs = detail(plan)
         task = next(item for item in docs['tasks'] if item['id'] == 'docs')

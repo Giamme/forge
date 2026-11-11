@@ -37,18 +37,45 @@ def _close_fence(line, opened):
     return mark[0] == opened[0] and len(mark) >= opened[1] and not info.strip()
 
 
+# One block-quote marker: up to three spaces, `>`, and one optional space (CommonMark).
+_QUOTE = re.compile(r'^( {0,3}> ?)')
+
+
+def _unquote(line, limit=None):
+    """Strip up to `limit` leading block-quote markers. Return `(depth, content)`."""
+    depth, rest = 0, line
+    while limit is None or depth < limit:
+        match = _QUOTE.match(rest)
+        if match is None:
+            break
+        rest = rest[match.end():]
+        depth += 1
+    return depth, rest
+
+
 def _mask(text):
-    """Blank fenced blocks, inline code spans, and ATX heading lines. Length stays put."""
+    """Blank fenced blocks, inline code spans, and ATX heading lines. Length stays put.
+
+    A fence may be written inside a block quote (`> ~~~`). Markers are stripped only up to
+    the depth the fence opened at, so a quoted `` ``` `` inside a top-level fence stays
+    fence content and does not close it.
+    """
     masked, fence = [], None
     for line in text.splitlines():
         if fence is not None:
-            if _close_fence(line, fence):
+            marker, quote_depth = fence
+            got, content = _unquote(line, quote_depth)
+            # Fewer markers than the fence's quote is a lazy continuation: the whole line
+            # is content, unless that whole line is itself the closing fence.
+            candidate = content if got == quote_depth else line
+            if _close_fence(candidate, marker):
                 fence = None
             masked.append(' ' * len(line))
             continue
-        opened = _open_fence(line)
+        quote_depth, content = _unquote(line)
+        opened = _open_fence(content)
         if opened is not None:
-            fence = opened
+            fence = (opened, quote_depth)
             masked.append(' ' * len(line))
             continue
         masked.append(line)
@@ -109,12 +136,24 @@ def _slug(origin):
     return None
 
 
+def _number(text):
+    """The integer, or None when the digit string is longer than Python will convert."""
+    try:
+        return int(text)
+    except ValueError:
+        return None
+
+
 def _issue(token, source):
     token = token.rstrip('.,;:!?')
     match = _ISSUE.match(token)
     if match is None:
         return dict(kind='url', number=None, url=token, source=source)
-    owner, repo, kind, number = match.group(1), match.group(2), match.group(3).lower(), int(match.group(4))
+    number = _number(match.group(4))
+    # A number past the conversion limit is still a URL; it is not an issue number.
+    if number is None:
+        return dict(kind='url', number=None, url=token, source=source)
+    owner, repo, kind = match.group(1), match.group(2), match.group(3).lower()
     path = 'pull' if kind == 'pull' else 'issues'
     url = f'https://github.com/{owner}/{repo}/{path}/{number}'
     return dict(kind='pr' if kind == 'pull' else 'issue', number=number, url=url, source=source)
@@ -126,7 +165,8 @@ def extract(text, source, origin=None):
     `kind` is `issue`, `pr` or `url`. A `#N` reference is an issue; its url is
     `https://github.com/<owner>/<repo>/issues/N` when `origin` is that repo's GitHub
     remote, and null otherwise. Full issue and pull URLs are canonical, so the same
-    number written as `#N` and as a URL is one link. Nothing is fetched.
+    number written as `#N` and as a URL is one link. A digit string Python will not
+    convert is skipped for `#N`, and kept as kind `url` for a full URL. Nothing is fetched.
     """
     if not text:
         return []
@@ -136,7 +176,9 @@ def extract(text, source, origin=None):
         if match.group(1) is None:
             item = _issue(match.group(0), source)
         else:
-            number = int(match.group(1))
+            number = _number(match.group(1))
+            if number is None:
+                continue
             url = f'https://github.com/{slug[0]}/{slug[1]}/issues/{number}' if slug else None
             item = dict(kind='issue', number=number, url=url, source=source)
         key = (item['kind'], item['number'], item['url'])

@@ -906,8 +906,70 @@ def _close_fence(line, opened):
     return mark[0] == opened[0] and len(mark) >= opened[1] and not info.strip()
 
 
+_IMAGE = re.compile(r'!\[([^\[\]]*)\]\([^)]*\)')
+_LINK = re.compile(r'\[([^\[\]]*)\]\([^)]*\)')
+# A marker inside a word (`2*3*4`) is not emphasis. Underscores are left as written.
+_STRONG = re.compile(r'(?<!\w)\*\*([^*]+)\*\*(?!\w)')
+_EM = re.compile(r'(?<!\w)\*(?!\*)(\S(?:[^*]*?\S)?)\*(?!\w)')
+_STRIKE = re.compile(r'(?<!\w)~~([^~]+)~~(?!\w)')
+
+
+def _hold_code(text):
+    """Replace inline code spans with placeholders. Return `(text, contents)`.
+
+    Contents keep their characters and lose the backticks. A span that starts and ends
+    with a space, and is not all spaces, loses one space on each side.
+    """
+    pieces, held = [], []
+    index, size = 0, len(text)
+    while index < size:
+        if text[index] != '`':
+            pieces.append(text[index])
+            index += 1
+            continue
+        end = index
+        while end < size and text[end] == '`':
+            end += 1
+        length, cursor, close = end - index, end, None
+        while cursor < size:
+            if text[cursor] != '`':
+                cursor += 1
+                continue
+            run = cursor
+            while run < size and text[run] == '`':
+                run += 1
+            if run - cursor == length:
+                close = run
+                break
+            cursor = run
+        if close is None:
+            pieces.append(text[index:end])
+            index = end
+            continue
+        interior = text[end:close - length]
+        if len(interior) >= 2 and interior[0] == ' ' and interior[-1] == ' ' and interior.strip(' '):
+            interior = interior[1:-1]
+        held.append(interior)
+        pieces.append(f'\ue000{len(held) - 1}\ue000')
+        index = close
+    return ''.join(pieces), held
+
+
+def _plain_inline(text):
+    """Drop inline markdown. Code-span contents stay literal, and underscores stay."""
+    held_text, held = _hold_code(text)
+    plain = _IMAGE.sub(r'\1', held_text)
+    plain = _LINK.sub(r'\1', plain)
+    plain = _STRONG.sub(r'\1', plain)
+    plain = _EM.sub(r'\1', plain)
+    plain = _STRIKE.sub(r'\1', plain)
+    for index, interior in enumerate(held):
+        plain = plain.replace(f'\ue000{index}\ue000', interior)
+    return plain
+
+
 def _goal_text(text):
-    """The first prose paragraph after an optional `# ` title, whitespace collapsed, or None."""
+    """The first prose paragraph after an optional `# ` title, as plain text, or None."""
     if not text:
         return None
     lines, index = text.splitlines(), 0
@@ -923,7 +985,7 @@ def _goal_text(text):
         index += 1
     if not paragraph:
         return None
-    return re.sub(r'\s+', ' ', ' '.join(paragraph)).strip() or None
+    return re.sub(r'\s+', ' ', _plain_inline('\n'.join(paragraph))).strip() or None
 
 
 def _criteria_text(text):
