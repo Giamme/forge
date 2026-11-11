@@ -80,6 +80,11 @@ written), and the reader must never raise because of one.
 | `tasks/<id>/summary.json` | the task's generated summary: `{text, sentence, model, generated_at, inputs_hash, sources}`, `generated_at` in epoch seconds, `sources` a list of `{kind, ref}` (`kind` `attempt` or `finding`; a finding's `ref` is `<attempt>:<title>`); returned as `summary`, see Task |
 | `tasks/<id>/summary.error` | the reason the last generation failed; the previous `summary.json` is kept. Returned as `error` inside `summary` |
 | `tasks/<id>/summaries` | the task's summary switch, `on` or `off`, from `forge control set summaries --task <id>`; `inherit` removes the file. Returned as `summaries_override` |
+| `brief` | the plan's brief level: `advisory`, `gated` or `strict`. `off`, any other word, or a missing file means brief mode is off. Returned as RunDetail `brief` (`null` when off) |
+| `tasks/<id>/brief.json` | the task's questions: `{questions: [{id, text, why, options, default, scope, must_answer, possibly_stale}], model, generated_at}`. Returned inside the task's `brief.questions` |
+| `tasks/<id>/brief.parked.json` | wider-scope questions (`wave` or `plan`), the same shape. Returned as `brief.parked` |
+| `tasks/<id>/brief.answers.json` | `{qid: {text, actor, t}}`: answers given before the task started. A question with an entry here is `answered` |
+| `tasks/<id>/brief.late.json` | the same shape, for answers given after the task started. Returned as `brief.late`; a question that has one and no answer yet is `late` |
 | `tasks/<id>/prereview.json`, `prereview.md` | the pre-review tests of the latest attempt (opt-in `plan --pre-review-tests`): `status` (`passed`, `flaky`, `pre-existing`, `failed`, `skipped`, `error`), `reason`, `command`, `selected`, `failing`, `preexisting`, `flaky`, `runs`, `seconds`; returned on a task as `pre_review` `{status, reason, command, selected, failing, preexisting, flaky, seconds, tail}` (`tail`: the end of the last failing run's output), `null` without the file. `prereview.md` is the implementer's findings of a `failed` check |
 | `tasks/<id>/dwarf.input`, `qa.input` | the prompts forge assembled; `<role>.delivered`, `<role>.resolved` the live dispatch files |
 | `tasks/<id>/<role>.log`, `<role>.clock` | the running dispatch's harness log and its clock: one `<epoch> <bytes>` line each time the log grew (forge-dispatch.sh samples it every second; `FORGE_LOG_CLOCK=off` writes none) |
@@ -231,7 +236,7 @@ loaded. When it cannot be loaded, `findings_available` is `false` and every find
 is `null`; verdicts and `gate` do not need it.
 
 Text fields are capped so one huge file cannot blow up a response: `request`, `prompt`,
-`approach`, `retry_findings`, `needs_input`, the `decision` text, `retro`'s `text`, a summary's `text`, `sentence` and `error` and each source `ref` keep their first 20,000 characters, and an `infra` `detail` its first 400; `qa_tail`, `dwarf_tail`
+`approach`, `retry_findings`, `needs_input`, the `decision` text, `retro`'s `text`, a summary's `text`, `sentence` and `error` and each source `ref`, a brief question's `text`, `why`, `default`, each option and its `answer`, a parked question's text and a late answer's `text` keep their first 20,000 characters, and an `infra` `detail` its first 400; `qa_tail`, `dwarf_tail`
 and `verification.log_tail` keep their last 4,000. A capped field ends (or, for tails,
 starts) with `…` and the value of `truncated` lists the field names that were cut.
 
@@ -270,6 +275,7 @@ its last 20,000 behind a leading `…`. Their `truncated` lists the field names 
 | `GET /api/health` | `200 {"app": "forge-ui", "version", "build", "pid", "controls": true\|false}`; `version` is forge's own (the root `VERSION` file, read when this server started), `null` when that file cannot be read; `controls` is `false` in read-only mode |
 | `GET /api/runs/<key>/controls` | `200` the `forge control show --json` object of a plan run (see Controls); `404` for a solo or unknown run |
 | `POST /api/runs/<key>/controls` | change one control or pin; authenticated, see Controls (write endpoints) |
+| `POST /api/runs/<key>/tasks/<id>/brief/<qid>` | record a brief answer (`forge brief answer … --file - --actor ui`); authenticated, see Controls |
 | `GET /api/runs/<key>/issues?scope=run\|repo&offline=0\|1&plausible=0\|1&dismissed=0\|1&only=fp,fp` | `200` the `forge issues --json` listing, run fresh on every request (no cache); see Controls (write endpoints) |
 | `POST /api/runs/<key>/issues` | file GitHub issues for chosen findings; authenticated, 300 s timeout |
 | `POST /api/runs/<key>/issues/dismiss` | dismiss or (`undo`) restore findings; authenticated |
@@ -406,6 +412,7 @@ Every RunSummary field, plus:
   "retro": {"text": "# Retro\n…", "notes": 6, "user": 2, "forge": 2, "unsure": 1,
             "verified": 3, "claimed": 3, "blocking": 3},
   "summaries": {"mode": "on", "model": "sol:low"},
+  "brief": {"level": "gated", "open": 2, "flagged": 1},
   "settings": {"explore": 0.5, "shadow_rate": 0.5, "shadow_qa": ["opus", "sol:xhigh"], "timeout": 3600,
                "max_parallel": 2, "qa_threshold": "P2", "escalate_after": 3, "verify_retries": 1,
                "final_qa": "opus",
@@ -469,6 +476,11 @@ Every RunSummary field, plus:
 - `summaries` is the run's task-summary switch from its plan files: `mode` is `on` only when `summaries` holds
   `on` (absent, `off` or anything else is `off`), and `model` is the first line of `summaries_model`, or `null`.
   A solo run has `null`. A task's own switch is its `summaries_override` (Task).
+- `brief` is `null` when brief mode is off: the `brief` file is missing, or its first word is not
+  `advisory`, `gated` or `strict` (`off` and any other word are off). A solo run's `brief` is always
+  `null`. Otherwise `{level, open, flagged}`: `level` is that word; `open` counts task questions whose
+  state is `open`; `flagged` counts those that also have `must_answer` true. Parked questions are not
+  counted. Each task's own questions are its `brief` (Task).
 - `attribution` is the result of `forge-parallel.sh attribute` from `attribution.json`, or `null` when
   the file is missing. `culprit` is the merged task's id or `null`; `base_fails` is `true` only when the
   base verified FAIL; `inconclusive` is the reason the search stopped without a culprit, or `null`;
@@ -636,7 +648,13 @@ Every RunSummary field, plus:
               "generated_at": 1760621300, "sources": [{"kind": "attempt", "ref": "2"},
                                                        {"kind": "finding", "ref": "1:Missing status file"}],
               "stale": false, "error": null},
-  "summaries_override": null
+  "summaries_override": null,
+  "brief": {"questions": [{"id": "q1", "text": "Which module?", "why": "two readers", "options": ["ui", "cli"],
+                           "default": "ui", "must_answer": true, "possibly_stale": false,
+                           "state": "open", "answer": null}],
+            "parked": [{"id": "q2", "text": "For the whole plan?", "why": "scope", "options": [],
+                        "default": null, "scope": "plan", "must_answer": false, "possibly_stale": false}],
+            "late": [{"id": "q3", "text": "ship it", "actor": "ui", "t": 1760621400.0}]}
 }
 ```
 
@@ -779,6 +797,22 @@ Every RunSummary field, plus:
 - `summaries_override`: `on` or `off` from `tasks/<id>/summaries`, or `null` when the file is missing or holds
   anything else (the task then follows the run's switch). A solo run's task has `null` for `summary` and
   `summaries_override`.
+- `brief`: `null` when the run's brief is off, on a solo task, or when the task has none of `brief.json`,
+  `brief.parked.json` and `brief.late.json`. Otherwise `{questions, parked, late}`.
+  `questions` is `brief.json`'s list, in file order. Each is `{id, text, why, options, default, must_answer,
+  possibly_stale, state, answer}`. `state` is `answered` when `brief.answers.json` has the id, else `late`
+  when `brief.late.json` has it, else `open`. An id in both files is `answered`: the answer given before
+  the task started is the one shown. `answer` is that entry's `text`, or `null` when the entry has no
+  string `text`. `must_answer` and `possibly_stale` are true only when the file says `true`
+  (`possibly_stale` is also true when the whole `brief.json` says so). `options` keeps the entries that
+  are strings; `default` is the string, or `null` when the file's value is not one. A question that is
+  not an object, or has no string `id`, is skipped, with one warning for the file
+  (`tasks/<id>/brief.json: N question(s) skipped`). `parked` is `brief.parked.json`'s questions, the same
+  fields except `state` and `answer`, plus `scope` (a string, or `null`). `late` is `brief.late.json` in
+  file order, each `{id, text, actor, t}`: `actor` is a string or `null`, and `t` is a finite number or
+  `null`. `text`, `why`, `default`, each option, `answer` and a late `text` are capped like `prompt`
+  (the cut is named `tasks/<id>/brief/<qid>.text`, and the same way for `why`, `default`, `options`,
+  `answer`, `brief.parked/<qid>.*` and `brief.late/<qid>.text`).
 - Text fields are `null` when the file is missing.
 
 A solo run's one task uses this same shape. `id` is `solo` and `title` is the goal, or
@@ -1407,16 +1441,17 @@ dir, a repo or config; a write route builds an argv, runs it, and answers with w
 validation, the call and the exit-code mapping; `server.py` does the authentication and gives
 each authenticated POST to the table, so a new write route is one entry in it.
 
-**The call.** `[<forge root>/forge, ...]`, an argv list with no shell, `stdin` closed, in a process
-group of its own. `<forge root>` is two directories above `forge_ui/` and can be replaced as
+**The call.** `[<forge root>/forge, ...]`, an argv list with no shell, in a process
+group of its own. `stdin` is closed, except for a profile create or edit (the profile object) and a
+brief answer (the answer text), both via `--file -`. `<forge root>` is two directories above `forge_ui/` and can be replaced as
 `forge_ui.server.forge_cli`. A call that outlives its timeout (60 s) gets SIGTERM for its whole
 group, SIGKILL 5 s later if anything is left, and is reaped, all before the run's lock is
 released; the answer is `504 {"error": "timeout", "detail": "the operation may have partly
 completed; reload to see the current state"}`.
 
-**Runs are named by key.** The path holds the 12-hex run key and nothing else; the server finds
-the run dir with `Catalog.locate(key)`. A body field never names a path, and a field the route does
-not know is a `400`.
+**Runs are named by key.** The path holds the 12-hex run key; the server finds
+the run dir with `Catalog.locate(key)`. A brief answer's path also names the task id and the question
+id. A body field never names a path, and a field the route does not know is a `400`.
 
 **Authentication.** Each server process makes a random token (`secrets.token_urlsafe(32)`). `GET /`
 (and `/index.html`) carries it as `<meta name="forge-ui-token" content="...">` as the first element
@@ -1488,6 +1523,10 @@ object its stdout holds, when that parses as one.
 | anything else, a signal, a missing CLI, or a 0 with no JSON object | `502` | `bad gateway` |
 | timeout | `504` | `timeout` |
 
+A brief answer is the exception to the exit-0 row: its CLI prints text, and exit 0 (including a late
+answer's notice) is `200 {"exit": 0, "output": "<stdout>"}` rather than `502` for a missing JSON object.
+A non-zero exit uses the row above and also carries `exit` and `output`.
+
 For the controls routes, unknown run keys, solo runs (they have no controls) and runs the
 catalog does not hold are `404 {"error": "not found"}`. The issues, dismiss, delete, config and
 profile routes below accept plan and solo runs alike (`forge issues` and `forge runs rm` take both);
@@ -1540,6 +1579,25 @@ hand, so its CLI is the place to queue it. A success is
 (`409`) when no scheduler is live. A `retry` only queues: `200 {"queued": true, "request": "<id>"}`.
 Its refusals before queueing (not live, a MERGED task, a spec that fails doctor) are the CLI's
 `409`/`400`; the scheduler applies or refuses it later, in the `log` line with that `request` id.
+
+### `POST /api/runs/<key>/tasks/<id>/brief/<qid>`
+
+Record one answer to a brief question. Body: `{"answer": "<text>"}`. `<id>` matches
+`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` (a task id safe to pass as one argv). `<qid>` must match
+`^q[0-9]+$`; a path whose question segment does not is `400`, and the CLI is not called. `answer` is a
+string of 1 to 4096 characters with no NUL. A value that cannot be encoded as UTF-8 is refused too.
+Any other field, a missing or empty answer, or one longer than 4096 characters is
+`400 {"error": "invalid", "detail": ...}` before the CLI runs.
+
+Runs `brief answer <plan dir> <id> <qid> --file - --actor ui`, with the answer as UTF-8 on stdin.
+Under the run's write lock (`409 {"error": "busy"}`). A solo run or an unknown key is `404`.
+Timeout 60 s. Read-only mode refuses it with every other write (`405`).
+
+The CLI prints text and exits 0, including when the answer is late (the task had already started):
+that prints a notice and still exits 0, so the page can show it. The success body is
+`200 {"exit": 0, "output": "<stdout>"}`. A non-zero exit uses the mapping above (`2` is `400`
+`invalid`, `3` is `409` `refused`) and the body also has `exit` (the CLI's code) and `output`
+(stdout). `detail` is stderr, as for every other write.
 
 ### `GET /api/runs/<key>/issues`
 
@@ -1725,7 +1783,8 @@ set to `{"ok": false, "error"}` when the CLI printed one.
 
 A `body` is written to the CLI's stdin as JSON (`--file -`). That text is refused at 64 KiB
 with `400`; the HTTP body is already capped at 64 KiB (`413`) by the server, and a re-encode
-can be the larger of the two. This is the one write that passes stdin. Checked before any CLI
+can be the larger of the two. A brief answer is the other write that passes stdin (the answer text,
+not a JSON object). Checked before any CLI
 runs, and a failure there calls nothing: `action` is one of the six; `name` and `from` match
 `^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$`; `key` matches `^(routing|policy)\.[a-z_.]+$` (the CLI still
 rejects a key of that shape that is not a real profile key); `value` is a string with no
