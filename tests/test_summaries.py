@@ -403,36 +403,34 @@ class SummaryTests(unittest.TestCase):
                     [item['ref'] for item in sources if item['kind'] == 'finding'],
                     ['2:Second bug'])
 
-    def test_completed_attempts_sharing_an_epoch_second_keep_their_reviews(self):
-        # attempts.tsv stores date +%s. Two attempts that both end in that second
-        # used to match the first row: attempt 2's review (start .5, finish .8)
-        # overwrote attempt 1's severity, left attempt 2 empty, and the finding
-        # ref was 1:Second bug.
+    def test_attempts_sharing_an_epoch_second_get_no_guessed_review(self):
+        # attempts.tsv stores date +%s, so rows 1 and 2 are both 1700000001 and the
+        # fraction of a second cannot say whose review is whose. An attempt that stopped
+        # before QA (empty diff, backend error) also logs a row and looks reviewed.
+        # Nothing in that second is assigned. The finding ref is 0 (unknown) when the
+        # live qa.last is one of those reviews. When it is not (the attempt wrote its own),
+        # it belongs to the open attempt and attempt 1 keeps nothing taken from it.
         first = '- [P1][CONFIRMED] a.txt:1 — First bug\nFORGE_VERDICT: FAIL\n'
         second = '- [P2][CONFIRMED] a.txt:2 — Second bug\nFORGE_VERDICT: FAIL\n'
-        log = '1700000001\t1\tFAIL\t\tsol\n1700000001\t2\tFAIL\t\tastra\n'
+        synthetic = '- [P2][CONFIRMED] a.txt:3 — Empty diff\nFORGE_VERDICT: FAIL\n'
         cases = (
-            # Attempt 1 finished before the shared second. Attempt 2 is the .5/.8 review.
-            ('earlier-attempt', ((1700000000.2, 0.5, first), (1700000001.5, 0.3, second)),
-             [(1, 'P1'), (1, 'P2')], ['2:Second bug']),
-            # Both reviews finish in the second half. Order, not the first row, separates them.
-            ('both-in-the-second', ((1700000001.1, 0.5, first), (1700000001.7, 0.15, second)),
-             [(1, 'P1'), (1, 'P2')], ['2:Second bug']),
-            # The only archived review is attempt 2's. It must not land on attempt 1.
-            ('only-the-later-review', ((1700000001.5, 0.3, second),),
-             [(None, None), (1, 'P2')], ['2:Second bug']),
-            # An early finish in the shared second stays on the first attempt.
-            ('only-the-earlier-review', ((1700000001.1, 0.2, first),),
-             [(1, 'P1'), (None, None)], ['1:First bug']),
+            # Attempt 1 reviewed at .8, attempt 2 stopped before QA and wrote its own qa.last.
+            ('unreviewed-fail', 'FAIL', ((1700000001.3, 0.5, first),), synthetic, 'FAIL', '2:Empty diff', [(None, None), (1, 'P2')]),
+            # Both reviews ran, then attempt 2's backend exited nonzero.
+            ('error-after-review', 'ERROR',
+             ((1700000000.2, 0.5, first), (1700000001.5, 0.3, second)), second, 'ERROR', '0:Second bug', [(None, None), (None, None)]),
+            ('both-reviews', 'FAIL',
+             ((1700000001.1, 0.5, first), (1700000001.7, 0.15, second)), second, 'FAIL', '0:Second bug', [(None, None), (None, None)]),
         )
-        for name, archives, expected, refs in cases:
+        for name, verdict, archives, live, status, ref, expected in cases:
             with self.subTest(name=name):
                 self._fresh(TASKS)
                 task = self.plan / 'tasks' / 'a'
                 task.mkdir(parents=True)
-                (task / 'status').write_text('FAIL\n')
-                (task / 'attempts.tsv').write_text(log)
-                (task / 'qa.last').write_text(archives[-1][2])
+                (task / 'status').write_text(status + '\n')
+                (task / 'attempts.tsv').write_text(
+                    '1700000001\t1\tFAIL\t\tsol\n1700000001\t2\t%s\t\tastra\n' % verdict)
+                (task / 'qa.last').write_text(live)
                 for index, (started, total, text) in enumerate(archives):
                     self._archive(task, 'qa-%d' % index, text, started, total)
                 body, sources = self.facts()
@@ -440,27 +438,7 @@ class SummaryTests(unittest.TestCase):
                     [(row['findings'], row['worst']) for row in body['attempts']],
                     expected)
                 self.assertEqual(
-                    [item['ref'] for item in sources if item['kind'] == 'finding'],
-                    refs)
-
-    def test_an_attempt_that_failed_before_qa_owns_no_review_in_a_shared_second(self):
-        # Attempt 1's review finishes at .8, attempt 2 fails before QA at .95. Both
-        # rows are logged at 1700000001. The fraction cannot pick attempt 2.
-        first = '- [P1][CONFIRMED] a.txt:1 — First bug\nFORGE_VERDICT: FAIL\n'
-        self._fresh(TASKS)
-        task = self.plan / 'tasks' / 'a'
-        task.mkdir(parents=True)
-        (task / 'status').write_text('ERROR\n')
-        (task / 'attempts.tsv').write_text(
-            '1700000001\t1\tFAIL\t\tsol\n1700000001\t2\tERROR\t\tastra\n')
-        self._archive(task, 'qa-0', first, 1700000001.3, 0.5)
-        body, sources = self.facts()
-        self.assertEqual(
-            [(row['findings'], row['worst']) for row in body['attempts']],
-            [(1, 'P1'), (None, None)])
-        self.assertEqual(
-            [item['ref'] for item in sources if item['kind'] == 'finding'],
-            ['1:First bug'])
+                    [item['ref'] for item in sources if item['kind'] == 'finding'], [ref])
 
     def test_a_review_archived_before_its_row_keeps_the_open_attempt(self):
         # Summarise after attempt 2's review is archived and before record_attempt

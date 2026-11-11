@@ -175,10 +175,6 @@ def _worst(findings: list):
     return 'P%d' % min(ranks)
 
 
-# attempts.tsv statuses of an attempt that never reached a reviewer's verdict.
-_NO_REVIEW = frozenset({'ERROR', 'BOUNCED', 'INCOMPLETE', 'INFRA', 'BLOCKED'})
-
-
 def _attempt_rows(task_dir: Path) -> list:
     """One dict per attempts.tsv row: epoch, attempt, verdict (the status column), dwarf."""
     rows = []
@@ -339,79 +335,12 @@ def _matching_group(rows: list, mark: float):
     return start, end
 
 
-def _slot(mark: float, epoch: int, count: int) -> int:
-    """Which of `count` attempts logged at `epoch` a review that ended at `mark` is.
-
-    One row is that row. Several attempts recorded in one second are ordered in
-    the file, and each review is recorded just after it finishes, so a finish
-    later in the second is a later attempt. The second is split into `count`
-    equal parts. A finish before the second began is the first of them.
-    """
-    if count <= 1:
-        return 0
-    offset = mark - epoch
-    if offset <= 0:
-        return 0
-    if offset >= 1:
-        return count - 1
-    slot = int(offset * count)
-    if slot >= count:
-        return count - 1
-    return slot
-
-
-def _clusters(items: list) -> list:
-    """Reviews one attempt could own, in start order.
-
-    The next attempt's review starts after this attempt's review has finished:
-    record_attempt sits between them. Overlapping reviews stay one attempt.
-    """
-    clusters = []
-    ends = []
-    for item in items:
-        end = _review_end(item)
-        if not clusters or ends[-1] <= item['started']:
-            clusters.append([item])
-            ends.append(end)
-        else:
-            clusters[-1].append(item)
-            if end > ends[-1]:
-                ends[-1] = end
-    return clusters
-
-
-def _place_clusters(clusters: list, epoch: int, count: int) -> list:
-    """Row offset within the shared second for each cluster.
-
-    One cluster per row follows file order: the earlier review is the earlier
-    attempt, whichever part of the second it finished in. A single cluster uses
-    where it finished. Fewer clusters than rows do too, without a later cluster
-    landing before an earlier one. Extras share the last row.
-    """
-    if len(clusters) == count:
-        return list(range(count))
-    if len(clusters) > count:
-        return list(range(count - 1)) + [count - 1] * (len(clusters) - count + 1)
-    chosen = []
-    used = set()
-    for cluster in clusters:
-        slot = _slot(max(item['mark'] for item in cluster), epoch, count)
-        if chosen:
-            slot = max(slot, chosen[-1])
-        while slot in used and slot + 1 < count:
-            slot += 1
-        if slot in used:
-            slot = chosen[-1]
-        used.add(slot)
-        chosen.append(slot)
-    return chosen
-
-
 def _assign_timed(items: list, rows: list, task_dir: Path) -> dict:
     """`{id(item): attempt}` for reviews with no dataset.json attempt_now.
 
     Items are in start order. An attempt the log does not own yet is the open
-    attempt from the counter.
+    attempt from the counter. A review that falls in a second shared by several
+    logged attempts is left out: its attempt is not knowable.
     """
     opened = _open_attempt(rows, task_dir)
     last = rows[-1]['attempt'] if rows else None
@@ -432,40 +361,26 @@ def _assign_timed(items: list, rows: list, task_dir: Path) -> dict:
             order.append(group)
         buckets[group].append(item)
     for start, end in order:
-        members = buckets[(start, end)]
-        epoch = rows[start]['epoch']
-        count = end - start
-        if count == 1:
-            for item in members:
-                if end == len(rows) and _append_rejects(
-                        epoch, item['started'], item['finished'], task_dir, ahead):
-                    assigned[id(item)] = opened
-                else:
-                    assigned[id(item)] = rows[start]['attempt']
+        if end - start != 1:
             continue
-        # Two completed attempts can share the truncated second. The first row's
-        # window contains every review that finished in it, so taking that row
-        # would give the later review the earlier attempt's findings.
-        clusters = _clusters(members)
-        # A row that ended before any review ran owns no review. The fraction of a
-        # second cannot say which attempt a review is, so those rows leave the pool
-        # first and only the rows that could hold one share the second.
-        pool = [index for index in range(start, end) if rows[index]['verdict'] not in _NO_REVIEW]
-        if not pool:
-            pool = list(range(start, end))
-        for cluster, offset in zip(clusters, _place_clusters(clusters, epoch, len(pool))):
-            index = pool[offset]
-            for item in cluster:
-                if index == len(rows) - 1 and _append_rejects(
-                        epoch, item['started'], item['finished'], task_dir, ahead):
-                    assigned[id(item)] = opened
-                else:
-                    assigned[id(item)] = rows[index]['attempt']
+        epoch = rows[start]['epoch']
+        for item in buckets[(start, end)]:
+            if end == len(rows) and _append_rejects(
+                    epoch, item['started'], item['finished'], task_dir, ahead):
+                assigned[id(item)] = opened
+            else:
+                assigned[id(item)] = rows[start]['attempt']
+    # Several attempts logged in one truncated second: the fraction of a second
+    # cannot say which of them a review is, and an attempt that stopped before QA
+    # (an empty diff, a backend error) looks like one that was reviewed. Those
+    # reviews stay unassigned rather than guessed.
     return assigned
 
 
-def _reviews(task_dir: Path, rows: list) -> dict:
-    """`{attempt: qa.last text}` from attempts/qa-*/, newest start wins. Shadow reviews are skipped.
+def _reviews(task_dir: Path, rows: list) -> tuple:
+    """`({attempt: qa.last text}, {texts of reviews with no knowable attempt})`.
+
+    Reviews come from attempts/qa-*/, newest start wins. Shadow reviews are skipped.
 
     dataset.json's attempt_now wins when a capture wrote one. Production archives
     do not persist it, so the attempt log is the fallback. Its epoch is date +%s
@@ -477,7 +392,8 @@ def _reviews(task_dir: Path, rows: list) -> dict:
 
     The live qa.last is the review still in the task dir. When no archive holds the same
     text, it belongs to the open attempt when the counter is ahead of the log, and
-    otherwise to the last recorded attempt (a review that was not archived).
+    otherwise to the last recorded attempt (a review that was not archived). A live text
+    equal to an unassignable archive stays unassigned too.
     """
     items = []
     root = task_dir / 'attempts'
@@ -512,17 +428,19 @@ def _reviews(task_dir: Path, rows: list) -> dict:
     items.sort(key=lambda item: (item['started'], item['name']))
     assigned = _assign_timed([item for item in items if item['pinned'] is None], rows, task_dir)
     found = {}
+    undecided = set()
     for item in items:
         number = item['pinned'] if item['pinned'] is not None else assigned.get(id(item))
         if number is None:
+            undecided.add(item['text'])
             continue
         found[number] = item['text']
     live = _text(task_dir / 'qa.last')
-    if live is not None and all(text != live for text in found.values()):
+    if live is not None and live not in undecided and all(text != live for text in found.values()):
         number = _open_attempt(rows, task_dir)
         if number is not None:
             found[number] = live
-    return found
+    return found, undecided
 
 
 def _counter(task_dir: Path):
@@ -532,10 +450,12 @@ def _counter(task_dir: Path):
     return None
 
 
-def _latest(task_dir: Path, rows: list, reviews: dict):
+def _latest(task_dir: Path, rows: list, reviews: dict, undecided: set):
     """`(attempt, text)` of the latest review, or `(None, None)` when the task has none."""
     live = _text(task_dir / 'qa.last')
     if live is not None:
+        if live in undecided and all(text != live for text in reviews.values()):
+            return None, live
         # The same text can sit on an older archive and on the latest attempt. The finding
         # refs name the newest attempt that still holds it.
         matches = [number for number, text in reviews.items() if text == live]
@@ -567,8 +487,8 @@ def collect(plan: Path, task: str) -> tuple:
     task_dir = plan / 'tasks' / task
     attempts = _attempt_rows(task_dir)
     reasons = _reasons(task_dir)
-    reviews = _reviews(task_dir, attempts)
-    latest_n, latest_text = _latest(task_dir, attempts, reviews)
+    reviews, undecided = _reviews(task_dir, attempts)
+    latest_n, latest_text = _latest(task_dir, attempts, reviews, undecided)
     trail = []
     for row in attempts:
         review = reviews.get(row['attempt'])
