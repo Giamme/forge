@@ -214,13 +214,13 @@ def parse_reply(reply):
     text = _strip_fence(reply)
     try:
         data = json.loads(text)
-    except ValueError:
+    except (ValueError, RecursionError):
         start, end = text.find('{'), text.rfind('}')
         data = None
         if 0 <= start < end:
             try:
                 data = json.loads(text[start:end + 1])
-            except ValueError:
+            except (ValueError, RecursionError):
                 data = None
         if data is None:
             return None, 'reply is not valid JSON'
@@ -247,9 +247,22 @@ def parse_reply(reply):
         must = item['must_answer']
         if not isinstance(must, bool):
             return None, '%s: must_answer must be true or false' % where
-        found.append({'text': text_value.strip(), 'why': why.strip(), 'options': [o.strip() for o in options],
-                      'default': default.strip(), 'scope': scope, 'must_answer': must})
+        entry = {'text': text_value.strip(), 'why': why.strip(), 'options': [o.strip() for o in options],
+                 'default': default.strip(), 'scope': scope, 'must_answer': must}
+        try:   # a lone surrogate (JSON "\\ud800") parses but cannot be stored as UTF-8
+            _dump(entry).encode('utf-8')
+        except UnicodeError:
+            return None, '%s has characters that cannot be stored' % where
+        found.append(entry)
     return found, None
+
+
+def _parse_safely(reply):
+    """`parse_reply` that never raises: any surprise is an unusable reply."""
+    try:
+        return parse_reply(reply)
+    except Exception as error:   # noqa: BLE001 - a broken reply must not hold the task
+        return None, 'reply could not be read (%s)' % type(error).__name__
 
 
 def _ask(plan, task: dict, prompt: str, spec: str, timeout: int):
@@ -265,7 +278,7 @@ def _ask(plan, task: dict, prompt: str, spec: str, timeout: int):
                 # The first reply used the last slot: the task still gets its error brief.
                 return None, '%s (no retry: dispatch cap reached)' % error
             return None, 'dispatch failed: %s' % (result['reason'] or 'error')
-        questions, error = parse_reply(result['last'])
+        questions, error = _parse_safely(result['last'])
         if questions is not None:
             return questions, None
         reminder = '\n\n' + REMINDER % error
@@ -393,15 +406,33 @@ def write(plan, task=None, jobs=DEFAULT_JOBS, force=False, timeout=900, progress
             if progress:
                 progress(report[item['id']])
 
-    # Workers prepare in parallel but dispatch in order: each waits until the one before
-    # it has built its prompt and is about to dispatch.
+    # Workers prepare in parallel but dispatch in order. A worker may start only once the one
+    # before it has really begun its dispatch (its `side/brief/<task>/` gained a new run dir)
+    # or has finished without one (skipped, capped, failed): saying "I am about to" is not
+    # enough, the thread can still be descheduled before it dispatches.
     todo = []
     for item in chosen:
         if (task_dir(plan, item['id']) / 'brief.json').exists() and not force:
             say(item, 'skipped', 'exists')
         else:
             todo.append(item)
-    started = [threading.Event() for _ in todo]
+    intent = [threading.Event() for _ in todo]
+    finished = [threading.Event() for _ in todo]
+    baseline = [0] * len(todo)
+
+    def runs(item) -> int:
+        try:
+            return sum(1 for _ in (plan / 'side' / 'brief' / item['id']).iterdir())
+        except OSError:
+            return 0
+
+    def wait_for_turn(index):
+        if not index:
+            return
+        before = todo[index - 1]
+        intent[index - 1].wait()
+        while not finished[index - 1].is_set() and runs(before) <= baseline[index - 1]:
+            finished[index - 1].wait(0.01)
 
     def work(index, item):
         try:
@@ -413,20 +444,30 @@ def write(plan, task=None, jobs=DEFAULT_JOBS, force=False, timeout=900, progress
                 if not ok_now:
                     say(item, 'skipped', why)
                     return
-                if index:
-                    started[index - 1].wait()
+                wait_for_turn(index)
                 prompt = build_prompt(plan, item, tasks, repo)
-                started[index].set()
+                baseline[index] = runs(item)
+                intent[index].set()
                 questions, error = _ask(plan, item, prompt, spec, timeout)
                 if questions is None and error is None:
                     say(item, 'skipped', 'cap')
                     return
-                stats = _record(plan, item['id'], spec, level, questions, error)
+                try:
+                    stats = _record(plan, item['id'], spec, level, questions, error)
+                except Exception as failure:   # noqa: BLE001
+                    error = 'could not store the reply (%s)' % type(failure).__name__
+                    stats = _record(plan, item['id'], spec, level, [], error)
                 say(item, 'error' if error else 'written', error, stats)
-        except BaseException as error:
-            say(item, 'error', 'internal error: %s' % error)
+        except BaseException as failure:
+            say(item, 'error', 'internal error: %s' % failure)
+            try:   # a broken writer must not leave the task without a brief.json
+                if not (task_dir(plan, item['id']) / 'brief.json').exists():
+                    _record(plan, item['id'], spec, level, [], 'internal error: %s' % type(failure).__name__)
+            except Exception:   # noqa: BLE001
+                pass
         finally:
-            started[index].set()
+            intent[index].set()
+            finished[index].set()
 
     pool = concurrent.futures.ThreadPoolExecutor(max_workers=max(1, int(jobs)))
     try:

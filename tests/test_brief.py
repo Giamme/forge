@@ -184,6 +184,24 @@ class WriteTests(BriefCase):
         self.assertIn('not usable', retry)
         self.assertNotIn('not usable', first)
 
+    def test_a_reply_that_breaks_the_parser_still_leaves_an_error_brief(self):
+        deep = '{"questions": ' + '[' * 3000 + '0' + ']' * 3000 + '}'
+        self.all_say(deep)
+        results = forge_brief.write(self.plan, task='a')
+        self.assertEqual(results[0]['status'], 'error')
+        self.assertEqual(self.calls(), ['qa', 'qa'])
+        data = self.brief('a')
+        self.assertEqual(data['questions'], [])
+        self.assertTrue(data['error'])
+
+    def test_a_reply_with_a_lone_surrogate_is_retried_then_recorded_as_an_error(self):
+        bad = '{"questions": [{"text": "Bad \\ud800?", "why": "w", "options": [], "default": "d", "scope": "task", "must_answer": false}]}'
+        self.all_say(bad)
+        results = forge_brief.write(self.plan, task='a')
+        self.assertEqual(results[0]['status'], 'error')
+        self.assertEqual(self.calls(), ['qa', 'qa'])
+        self.assertTrue(self.brief('a')['error'])
+
     def test_a_wrong_shape_is_retried_and_a_good_second_reply_is_used(self):
         self.arm({'a.qa.1': says('{"questions": "none"}'),
                   'a.qa.2': says(reply(question('Second try?'))),
@@ -420,6 +438,26 @@ class SelectionTests(BriefCase):
         self.addCleanup(setattr, forge_brief, 'build_prompt', real_build)
         self.addCleanup(setattr, forge_brief.forge_side, 'run', real_run)
         forge_brief.write(self.plan, jobs=3)
+        self.assertEqual(order, ['a', 'b', 'c'])
+
+    def test_a_worker_paused_before_it_dispatches_does_not_let_a_later_wave_go_first(self):
+        import threading
+        import time
+        (self.plan / 'waves.tsv').write_text('1\ta\n2\tb\n2\tc\n')
+        self.all_say()
+        real_run = forge_brief.forge_side.run
+        order = []
+        paused = threading.Event()
+
+        def spy(kind, plan, task, *args, **kwargs):
+            if task == 'a':
+                paused.set()
+                time.sleep(0.8)   # descheduled after saying it is about to dispatch
+            order.append(task)
+            return real_run(kind, plan, task, *args, **kwargs)
+        forge_brief.forge_side.run = spy
+        self.addCleanup(setattr, forge_brief.forge_side, 'run', real_run)
+        forge_brief.write(self.plan, jobs=2)
         self.assertEqual(order, ['a', 'b', 'c'])
 
     def test_tasks_go_in_wave_order_then_file_order(self):
