@@ -2,12 +2,16 @@
 
 `answer` writes `tasks/<id>/brief.answers.json` as `{qid: {text, actor, t}}` while the
 task is still PENDING and has no `attempts.tsv` row. Once it is past starting, nothing
-about the task changes: the same object goes to `brief.late.json` instead, and the
-command tells the caller the `forge control add` line for a follow-up task.
+about the task changes: the same object goes to `brief.late.json` instead. The command
+prints the `tasks.tsv` row and the `prompt.md` a follow-up needs, then the
+`forge control add` line that queues that row. `add` only takes the plan and a task id
+that is already in `tasks.tsv`, and the prompt is what carries the answer.
 
 `stale` runs after a task has merged. When that merge's `changes.diff` (or, if the diff
-is gone, the task's attempt events) names a file the task did not declare, every open
-question of a direct dependent that has not started gets `possibly_stale: true`.
+is gone, the task's attempt events) names a file outside the task's declared files,
+every open question of a direct dependent that has not started gets `possibly_stale:
+true`. A declared directory covers everything under it, the same rule as `check_drift`:
+`src/routes` covers `src/routes/api.py`.
 """
 from __future__ import annotations
 
@@ -178,12 +182,18 @@ def _put(path, qid, record) -> str | None:
     return previous
 
 
+def _task_token(text) -> str:
+    """A tasks.tsv id: no slash, NUL, comma or whitespace, which would split a column or a dep."""
+    cleaned = ''.join('-' if ch in '/\0\t\r\n ,' else ch for ch in str(text))
+    return cleaned.strip('-')
+
+
 def _follow_up_id(tasks, task, qid) -> str:
-    """A task id that is not already in the plan, so `control add` can queue a new row."""
+    """An id that is free in tasks.tsv, so the caller can append a row and then `control add` it."""
     taken = {item['id'] for item in tasks}
-    base = ('%s-%s' % (task, qid)).replace('/', '-').replace('\0', '')
+    base = _task_token('%s-%s' % (task, qid))
     if base in ('', '.', '..'):
-        base = 'follow-up-%s' % qid.replace('/', '-').replace('\0', '') or 'follow-up'
+        base = _task_token('follow-up-%s' % qid) or 'follow-up'
     candidate = base
     number = 2
     while candidate in taken or candidate in ('', '.', '..'):
@@ -193,8 +203,57 @@ def _follow_up_id(tasks, task, qid) -> str:
 
 
 def follow_up_line(plan, follow_id) -> str:
-    """The `forge control add` invocation: plan, then the task id. Nothing else is required."""
+    """`forge control add`: the plan, then the task id. Those are its only positional arguments."""
     return 'forge control add %s %s' % (shlex.quote(str(plan)), shlex.quote(follow_id))
+
+
+def _one_line(text) -> str:
+    return ' '.join(str(text or '').split())
+
+
+def _question_text(plan, task, qid) -> str:
+    data = forge_brief._json(forge_brief.task_dir(plan, task) / 'brief.json')
+    for question in forge_brief._questions(data if isinstance(data, dict) else None):
+        if question.get('id') == qid:
+            text = question.get('text')
+            return text if isinstance(text, str) else ''
+    return ''
+
+
+def _follow_row(source, follow_id, qid) -> str:
+    """A 7-column tasks.tsv row `check_row` can accept once the prompt exists.
+
+    Difficulty, files and the two specs are the source task's, so the row stays inside
+    the columns that task already used. The new id depends on the source task. The files
+    column has to be non-empty; a source row with no files falls back to `.`.
+    """
+    difficulty = source.get('difficulty')
+    if difficulty not in ('low', 'medium', 'high'):
+        difficulty = 'low'
+    files = str(source.get('files') or '').strip()
+    if files in ('', '-'):
+        files = '.'
+    title = _one_line('Late answer to %s %s' % (source.get('id') or follow_id, qid)) or 'Late answer'
+    return '\t'.join((follow_id, source.get('id') or '-', difficulty, files,
+                      str(source.get('dwarf') or ''), str(source.get('qa') or ''), title))
+
+
+def late_message(plan, task, follow_id, row, question, answer) -> str:
+    """What a late answer prints: the row and the prompt first, then the add command.
+
+    `forge control add` queues a task that is already a row in tasks.tsv and reads the
+    answer from that task's prompt.md. The command line itself has nowhere to put the text.
+    """
+    prompt = 'tasks/%s/prompt.md' % follow_id
+    return (
+        'too late for task %s: the answer does not change this task\n'
+        'Append this row to tasks.tsv and write %s with the question and the answer below. '
+        'The prompt carries the answer. While a scheduler is live, run the command at the end.\n'
+        '%s\n'
+        'question: %s\n'
+        'answer: %s\n'
+        '%s\n'
+        % (task, prompt, row, _one_line(question), answer, follow_up_line(plan, follow_id)))
 
 
 def _log(plan, actor, task, qid, text, previous, late) -> None:
@@ -226,7 +285,8 @@ def answer(plan, task, qid, text=None, actor='cli', file=None) -> dict:
     """Record one answer. Raises `Usage`, `NotAPlan`, `NoSuchTask` or `NoSuchQuestion`.
 
     Returns `{task, qid, late, text, message}`. `message` is what the command prints.
-    A late answer's message names the `forge control add` line for a follow-up task.
+    A late answer's message gives the tasks.tsv row and the prompt text, then the
+    `forge control add` line that queues that follow-up once a scheduler is live.
     """
     if file is not None and text is not None:
         raise Usage('give the answer as text or --file, not both')
@@ -255,9 +315,10 @@ def answer(plan, task, qid, text=None, actor='cli', file=None) -> dict:
         previous = _put(target, qid, record)
     _log(plan, who, task, qid, cleaned, previous, late)
     if late:
+        source = next(item for item in tasks if item['id'] == task)
         follow = _follow_up_id(tasks, task, qid)
-        message = ('too late for task %s: the answer does not change this task\n%s\n'
-                   % (task, follow_up_line(plan, follow)))
+        message = late_message(plan, task, follow, _follow_row(source, follow, qid),
+                               _question_text(plan, task, qid), cleaned)
     else:
         message = '%s/%s answered\n' % (task, qid)
     return {'task': task, 'qid': qid, 'late': late, 'text': cleaned, 'message': message}
@@ -269,6 +330,23 @@ def _declared(files_field) -> set:
     if not files_field or str(files_field).strip() in ('', '-'):
         return set()
     return {_norm(part) for part in str(files_field).split(',') if part.strip() and part.strip() != '-'}
+
+
+def _covers(declared: str, path: str) -> bool:
+    """Whether `check_drift` would treat `path` as inside this declared entry.
+
+    Exact match, or a declared directory prefix: `src/routes` covers `src/routes/api.py`.
+    A trailing slash is the same directory. `src/routes` does not cover `src/routes-extra.py`.
+    """
+    root = declared.rstrip('/')
+    if not root:
+        return False
+    return path == root or path.startswith(root + '/')
+
+
+def _undeclared(changed: set, declared: set) -> set:
+    """Changed paths that sit outside every declared file and directory."""
+    return {path for path in changed if path and not any(_covers(item, path) for item in declared)}
 
 
 def _diff_files(plan, task) -> set | None:
@@ -362,7 +440,7 @@ def stale(plan, task) -> list:
 
     Returns `[(dependent, qid), ...]` in tasks.tsv order, then question order. An unknown
     task raises `NoSuchTask`. A task that is not merged, or whose changes stay inside its
-    declared files, flags nothing.
+    declared files and directories, flags nothing.
     """
     plan = Path(plan)
     tasks = forge_brief.read_tasks(plan)
@@ -371,7 +449,7 @@ def stale(plan, task) -> list:
         raise NoSuchTask(task, [item['id'] for item in tasks])
     if status_of(plan, task) != 'MERGED':
         return []
-    if not (changed_files(plan, task) - _declared(by_id[task]['files'])):
+    if not _undeclared(changed_files(plan, task), _declared(by_id[task]['files'])):
         return []
     flagged = []
     for item in tasks:

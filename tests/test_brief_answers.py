@@ -7,6 +7,7 @@ import dataset_isolation  # noqa: F401  keeps forge's dataset and config out of 
 import json
 import os
 from pathlib import Path
+import shlex
 import shutil
 import sqlite3
 import subprocess
@@ -20,6 +21,7 @@ sys.path.insert(0, str(ROOT / 'scripts'))
 import forge_dataset  # noqa: E402
 
 CLI = str(ROOT / 'scripts' / 'forge-brief.py')
+CONTROL = str(ROOT / 'scripts' / 'forge-control.py')
 ANSWER_CAP = 4 * 1024
 
 
@@ -257,6 +259,47 @@ class AnswerTests(unittest.TestCase):
             self.assertEqual(recorded, [('q1', 'cli', True)])
         self.assertEqual((self.plan / 'tasks.tsv').read_bytes(), tasks_tsv)
 
+    def test_a_late_answer_names_the_row_and_prompt_control_add_needs(self):
+        # `forge control add` queues a row that is already in tasks.tsv; the line carries
+        # only the plan and the task id, so the prompt is what holds the answer.
+        self.task('run', files='src/routes', status='RUNNING', questions=('q1',))
+        result = self.cli('answer', self.plan, 'run', 'q1', 'use the routes module')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('too late', result.stdout)
+        follow = self.control_task(result.stdout)
+        self.assertEqual(follow, 'run-q1')
+        prompt = 'tasks/%s/prompt.md' % follow
+        self.assertIn('tasks.tsv', result.stdout)
+        self.assertIn(prompt, result.stdout)
+        self.assertIn('question: Question q1?', result.stdout)
+        self.assertIn('answer: use the routes module', result.stdout)
+        add = next(line for line in result.stdout.splitlines() if line.startswith('forge control add '))
+        self.assertNotIn('use the routes module', add)
+        row = next(line for line in result.stdout.splitlines() if line.startswith(follow + '\t'))
+        self.assertEqual(row.split('\t'),
+                         [follow, 'run', 'low', 'src/routes', 'sol', 'opus', 'Late answer to run q1'])
+
+        def control_add(env):
+            argv = shlex.split(add)
+            return subprocess.run([sys.executable, CONTROL, *argv[2:]],
+                                  capture_output=True, text=True, env=env)
+
+        refused = control_add(self.env)
+        self.assertEqual(refused.returncode, 2, refused.stderr)
+        self.assertIn("task 'run-q1' is not in tasks.tsv", refused.stderr)
+
+        with (self.plan / 'tasks.tsv').open('a', encoding='utf-8') as handle:
+            handle.write(row + '\n')
+        prompt_path = self.plan / 'tasks' / follow / 'prompt.md'
+        prompt_path.parent.mkdir(parents=True)
+        prompt_path.write_text('Question q1?\nuse the routes module\n')
+        env = dict(self.env)
+        env['FORGE_CONTROL_DOCTOR'] = 'true'
+        queued = control_add(env)
+        self.assertEqual(queued.returncode, 3, queued.stderr)
+        self.assertNotIn('not in tasks.tsv', queued.stderr)
+        self.assertIn('live', queued.stderr)
+
     def test_an_undeclared_merge_flags_only_open_questions_of_dependents_that_have_not_started(self):
         # `merged` is the marker a real merge writes; status can still say PASS.
         # `word` is the same fact recorded only as a MERGED status line.
@@ -331,6 +374,30 @@ class AnswerTests(unittest.TestCase):
         skipped = self.cli('stale', self.plan, 'waiting')
         self.assertEqual((skipped.returncode, skipped.stdout), (0, ''))
         self.assertEqual(self.files('held'), held_before)
+
+    def test_a_declared_directory_covers_paths_under_it(self):
+        # check_drift: `src/routes` covers `src/routes/api.py`, and a trailing slash is the
+        # same directory. A name that only shares the prefix string is still outside.
+        up = self.task('up', files='src/routes', questions=('q1',), status='PASS', merged=True)
+        (up / 'changes.diff').write_text(diff_of('src/routes/api.py'))
+        down = self.task('down', deps='up', questions=('q1',))
+        slash = self.task('slash', files='src/routes/', questions=('q1',), status='MERGED')
+        (slash / 'changes.diff').write_text(diff_of('src/routes/api.py', 'src/routes/nested/x.py'))
+        slash_down = self.task('slash-down', deps='slash', questions=('q1',))
+        wide = self.task('wide', files='src/routes', questions=('q1',), status='MERGED')
+        (wide / 'changes.diff').write_text(diff_of('src/routes/api.py', 'src/routes-extra.py'))
+        wide_down = self.task('wide-down', deps='wide', questions=('q1',))
+
+        inside = self.cli('stale', self.plan, 'up')
+        self.assertEqual((inside.returncode, inside.stdout), (0, ''))
+        self.assertNotIn('possibly_stale', (down / 'brief.json').read_text())
+        slashed = self.cli('stale', self.plan, 'slash')
+        self.assertEqual((slashed.returncode, slashed.stdout), (0, ''))
+        self.assertNotIn('possibly_stale', (slash_down / 'brief.json').read_text())
+        outside = self.cli('stale', self.plan, 'wide')
+        self.assertEqual((outside.returncode, outside.stdout), (0, 'wide-down/q1\n'))
+        flagged = json.loads((wide_down / 'brief.json').read_text())
+        self.assertIs(flagged['questions'][0]['possibly_stale'], True)
 
     def test_file_input_reads_stdin_strips_controls_and_caps_at_4kb(self):
         self.task('a', questions=('q1', 'q2'))

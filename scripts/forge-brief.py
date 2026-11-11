@@ -8,11 +8,13 @@
       Every question with its state, flagged open questions first.
   answer PLAN TASK QID TEXT [--actor A] [--file F]
       Record an answer. Before the task starts it goes to brief.answers.json; after,
-      to brief.late.json, and the command prints the `forge control add` line for a
-      follow-up. --file F reads the text (- is stdin).
+      to brief.late.json. A late answer prints the tasks.tsv row and the prompt.md
+      a follow-up needs, then the `forge control add` line that queues that row.
+      --file F reads the text (- is stdin).
   stale PLAN MERGED-TASK
       Flag open questions of dependents that have not started, when the merge changed
-      a file the task did not declare.
+      a file outside the task's declared files. A declared directory covers the paths
+      under it.
 
 Exit codes: 0 ok, 2 usage or an unknown task or question (the message lists the valid
 ids), 3 PLAN is not a plan dir or, for write and show, brief is off for it.
