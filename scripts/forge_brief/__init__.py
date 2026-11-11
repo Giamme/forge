@@ -14,6 +14,11 @@ shape, is retried once, and a second failure (or a failed dispatch) stores
 
 `show` lists every question with its state: `open`, `answered` (`brief.answers.json`),
 `late` (`brief.late.json`) or `possibly_stale` (a flag in brief.json).
+
+`answer` and `stale` (answers.py) write those. An answer given before the task starts
+goes to `brief.answers.json`; one given after goes to `brief.late.json` and does not
+change the task. `stale` sets `possibly_stale` on the open questions of tasks that
+depend on a merge which changed files outside the ones it declared.
 """
 from __future__ import annotations
 
