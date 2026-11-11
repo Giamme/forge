@@ -25,7 +25,9 @@ from pathlib import Path
 
 from . import SCRIPTS, put_blob, put_file, sha256
 
-DISPATCH_ROLES = ('dwarf', 'qa', 'planner')
+DISPATCH_ROLES = ('dwarf', 'qa', 'planner', 'side')
+# The file role stays `side`. Harvest records side_<kind> (see dispatch_event);
+# attempt statistics tell those apart with forge_dataset.is_side_role.
 PIPELINE_ROLES = ('task', 'solo', 'verification', 'parallel')
 TASKS_COLS = ('id', 'deps', 'difficulty', 'files', 'dwarf', 'qa', 'title')
 STRUCTURED = ('codex', 'claude', 'openclaude', 'grok', 'opencode')   # as forge-runtime.py's: .last is the message, not the log
@@ -315,6 +317,13 @@ def locate(root: str | Path, role: str | None = None) -> dict:
     if p.parent.parent.name == 'shadow' and (p.parent.parent.parent / 'tasks.tsv').exists():
         # <plan>/shadow/<task>/<attempt>-<k>: a shadow review (forge-shadow.py) of that task.
         plan, ctx['task'], ctx['scope'], ctx['shadow'] = p.parent.parent.parent, p.parent.name, 'task', True
+    elif p.parent.parent.parent.name == 'side' and (p.parent.parent.parent.parent / 'tasks.tsv').exists():
+        # <plan>/side/<kind>/<task>/<n>: a side dispatch (brief or summary) of that task.
+        # The role is recorded as side_<kind> (see dispatch_event), the way a shadow
+        # review is recorded as qa_shadow. n counts dispatches; it is not the attempt.
+        kind = p.parent.parent.name
+        plan, ctx['task'], ctx['scope'], ctx['side'] = (
+            p.parent.parent.parent.parent, p.parent.name, 'task', kind)
     elif p.parent.name == 'tasks' and (p.parent.parent / 'tasks.tsv').exists():
         plan, ctx['task'], ctx['scope'] = p.parent.parent, p.name, 'task'
     elif p.name.startswith('final-review-') and (p.parent / 'tasks.tsv').exists():
@@ -423,6 +432,20 @@ def session_record(attempt: Path, role: str, metrics: dict) -> tuple[str | None,
     return recorded, 'continued' if kv(path).get('mode') == 'continued' else 'failed'
 
 
+def side_kind(root: Path, role: str, prov: dict | None = None) -> str | None:
+    """The kind of a side dispatch (`brief`, `summary`), or None when this is not one.
+
+    The files stay `side.*`. The kind lives in the directory `<plan>/side/<kind>/...`
+    and, when a caller already knows it, in prov['side'].
+    """
+    if role != 'side':
+        return None
+    recorded = (prov or {}).get('side')
+    if isinstance(recorded, str) and recorded and '/' not in recorded and recorded not in ('.', '..'):
+        return recorded
+    return locate(root, role).get('side')
+
+
 def dispatch_event(attempt: Path, root: Path, role: str, harness: str, rc, prov: dict, src: str = 'live') -> dict:
     metrics = read_json(attempt / 'metrics.json') or {}
     resolved = kv(attempt / (role + '.resolved'))
@@ -437,10 +460,19 @@ def dispatch_event(attempt: Path, root: Path, role: str, harness: str, rc, prov:
     verdict = verdict_of(message) if message is not None else None
     found, parsed = parse_review(message) if role == 'qa' else ([], True)
     shadow = prov.get('shadow')
+    kind = side_kind(root, role, prov)
+    # A shadow review keeps the qa files and contract but is never a task's review, so it
+    # gets its own role: nothing that reads qa dispatches mistakes it for the one that decided.
+    # A side dispatch keeps the side files and is recorded as side_<kind>, so attempt
+    # statistics can leave it out (forge_dataset.is_side_role).
+    if kind:
+        recorded_role = 'side_' + kind
+    elif shadow and role == 'qa':
+        recorded_role = 'qa_shadow'
+    else:
+        recorded_role = role
     data = dict(
-        # A shadow review keeps the qa files and contract but is never a task's review, so it
-        # gets its own role: nothing that reads qa dispatches mistakes it for the one that decided.
-        role='qa_shadow' if shadow and role == 'qa' else role, alias=resolved.get('alias'), harness=harness, model=resolved.get('model'),
+        role=recorded_role, alias=resolved.get('alias'), harness=harness, model=resolved.get('model'),
         effort=None if not effort or effort.startswith('<') else effort,
         # metrics.json is the record finish() wrote. A run from before that record falls
         # back to the resolved line, which exists only when a tier was asked.

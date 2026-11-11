@@ -2136,3 +2136,91 @@ class IndependenceTests(unittest.TestCase):
                     if name in ('neither', 'relative XDG_DATA_HOME'):
                         # The XDG spec says a relative path is invalid and ignored; it is not the cwd.
                         self.assertEqual(shown['path'], str(home / '.local/share/forge/dataset'))
+
+
+class SideDispatchHarvestTests(StoreCase):
+    """A `<plan>/side/<kind>/<task>/<n>/` dispatch is harvested as `side_<kind>`, task `<task>`.
+
+    Its tokens count in that run's dispatch totals. A plan with no `side/` directory
+    harvests the same dwarf dispatch it did before the directory existed.
+    """
+
+    def attempt(self, directory, role, name, tokens):
+        attempt = directory / 'attempts' / name
+        attempt.mkdir(parents=True)
+        (attempt / 'metrics.json').write_text(json.dumps(dict(
+            role=role, wall_started=1.0, exit_code=0, harness='codex', elapsed_s=dict(total=1),
+            input_tokens=tokens[0], cached_input_tokens=tokens[1], output_tokens=tokens[2])))
+        (attempt / (role + '.resolved')).write_text('alias=sol\nharness=codex\nmodel=gpt-6.1-sol\neffort=low\n')
+        (attempt / (role + '.last')).write_text('done\n')
+        (attempt / (role + '.prompt')).write_text('read this\n')
+        return attempt
+
+    def plan(self, path, uid, dwarf_name):
+        path.mkdir(parents=True)
+        (path / 'dataset.uid').write_text(uid + '\n')
+        (path / 'tasks.tsv').write_text('t1\t-\tlow\ta.txt\tsol\topus\tOne task\n')
+        (path / 'repo').write_text('/nonexistent/repo\n')
+        (path / 'run_id').write_text(uid + '-run\n')
+        (path / 'goal.txt').write_text('goal\n')
+        self.attempt(path / 'tasks' / 't1', 'dwarf', dwarf_name, (10, 1, 2))
+        return path
+
+    def token_sum(self, events):
+        total = dict(input=0, cached_input=0, output=0)
+        for event in events:
+            for key in total:
+                total[key] += event['data']['tokens'][key] or 0
+        return total
+
+    def test_a_side_dispatch_is_harvested_apart_from_the_attempt_and_a_plan_without_one_is_unchanged(self):
+        from forge_dataset import harvest
+        from forge_dataset.importer import import_run
+        root = Path(self.tmp.name) / 'plans'
+        plain = self.plan(root / 'plain', 'plain-uid', 'dwarf-plain1')
+        sided = self.plan(root / 'sided', 'side-uid', 'dwarf-side1')
+        self.attempt(sided / 'side' / 'summary' / 't1' / '1', 'side', 'side-side1', (40, 4, 8))
+        brief = sided / 'side' / 'brief' / 't1' / '1'
+        brief.mkdir(parents=True)
+        result = import_run(root)
+        self.assertEqual(result['failed'], [], result)
+
+        plain_events = self.events(kind='dispatch', run='plain-uid')
+        self.assertEqual([e['data']['role'] for e in plain_events], ['dwarf'])
+        self.assertEqual(plain_events[0]['task'], 't1')
+        self.assertEqual(plain_events[0]['data']['tokens'], dict(input=10, cached_input=1, output=2))
+        self.assertEqual(self.token_sum(plain_events), dict(input=10, cached_input=1, output=2))
+        self.assertNotIn('side', harvest.locate(plain / 'tasks' / 't1'))
+
+        side_events = self.events(kind='dispatch', run='side-uid')
+        self.assertEqual(sorted(e['data']['role'] for e in side_events), ['dwarf', 'side_summary'])
+        summary = next(e for e in side_events if e['data']['role'] == 'side_summary')
+        self.assertEqual(summary['task'], 't1')
+        self.assertIsNone(summary['attempt'])
+        self.assertEqual(summary['data']['tokens'], dict(input=40, cached_input=4, output=8))
+        dwarf = next(e for e in side_events if e['data']['role'] == 'dwarf')
+        self.assertEqual(dwarf['data']['tokens'], dict(input=10, cached_input=1, output=2))
+        # The side dispatch's tokens are in the run's dispatch totals, beside the dwarf's.
+        self.assertEqual(self.token_sum(side_events), dict(input=50, cached_input=5, output=10))
+
+        located = harvest.locate(brief)
+        self.assertEqual((located['scope'], located['task'], located['side']), ('task', 't1', 'brief'))
+        outside = Path(self.tmp.name) / 'side-brief-outside'
+        self.attempt(outside.parent, 'side', outside.name, (1, 0, 1))
+        # attempt() nests under attempts/, so the dir just written is outside/attempts/side-brief-outside.
+        event = harvest.dispatch_event(outside.parent / 'attempts' / outside.name, brief, 'side', 'codex', 0,
+                                        dict(run='x', run_id='x', mode='parallel', scope='task', task='t1'))
+        self.assertEqual(event['data']['role'], 'side_brief')
+        self.assertEqual(event['task'], 't1')
+
+        loose = Path(self.tmp.name) / 'loose-attempt'
+        self.attempt(loose.parent, 'side', loose.name, (1, 0, 1))
+        event = harvest.dispatch_event(loose.parent / 'attempts' / loose.name, loose, 'side', 'codex', 0, dict(run='r'))
+        self.assertEqual(event['data']['role'], 'side')
+
+    def test_is_side_role_matches_a_harvested_kind_only(self):
+        self.assertTrue(store.is_side_role('side_summary'))
+        self.assertTrue(store.is_side_role('side_brief'))
+        self.assertTrue(store.is_side_role('side_other'))
+        for role in ('side', 'qa', 'qa_shadow', 'sideways', 'sidewards', None, ''):
+            self.assertFalse(store.is_side_role(role), role)

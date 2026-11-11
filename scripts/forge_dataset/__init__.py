@@ -86,6 +86,16 @@ ADDED_COLUMNS = (('code_sha', 'TEXT'), ('forge_rev', 'TEXT'))
 PROVENANCE = ('forge_version', 'registry_sha', 'code_sha', 'forge_rev')
 
 
+def is_side_role(role) -> bool:
+    """True for a harvested side dispatch (`side_brief`, `side_summary`, any `side_*`).
+
+    The files on disk stay `side.*`; harvest records the kind in the role so attempt
+    statistics can leave the dispatch out. A bare `side` is the dispatch role, not one
+    of these.
+    """
+    return isinstance(role, str) and role.startswith('side_')
+
+
 def enabled() -> bool:
     return os.environ.get('FORGE_DATASET', 'on').strip().lower() not in OFF
 
