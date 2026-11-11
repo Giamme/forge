@@ -368,7 +368,12 @@ class RetroIssuesTests(unittest.TestCase):
             'ssh alice@builder02 make; '
             'cat /Users/Secret Person/key.txt kept-arg; '
             'cat /Users/Secret Middle Person/key.txt; '
-            'file:///Users/privateuser/private-project/key.txt'
+            'file:///Users/privateuser/private-project/key.txt; '
+            'scp key.txt buildone:/Users/alice/secret-proj/key.txt; '
+            'rsync -a out/ deploy@buildbox:/home/alice/app/; '
+            'error at line 3:/Users/alice/proj/a.py; '
+            'buildtwo:22 refused; '
+            'Host key verification failed; the host machine ran out of memory'
         )
         notes = [note('alpha', 'forge', summary, 'python3 build.py', 'opus', 'claude')]
         blob = ''.join(json.dumps(item, ensure_ascii=False, sort_keys=True) + '\n' for item in notes)
@@ -379,7 +384,8 @@ class RetroIssuesTests(unittest.TestCase):
         visible = draft['title'] + '\n' + draft['body'].split('<!--', 1)[0]
         for secret in ('qa', 'ab', 'xy', 'internal-api.sh', 'builder01', 'builder02',
                        'Secret', 'Middle', 'Person/key.txt', 'privateuser',
-                       'private-project', 'file://', '/Users/'):
+                       'private-project', 'file://', '/Users/', 'buildone', 'buildbox',
+                       'buildtwo', 'alice', '/home/'):
             self.assertNotIn(secret, visible, secret)
         self.assertIn('<branch>', visible)
         self.assertIn('<repo>', visible)
@@ -389,6 +395,7 @@ class RetroIssuesTests(unittest.TestCase):
         self.assertIn('ssh -v <host> make', visible)
         self.assertIn('Could not resolve host: <host>', visible)
         self.assertIn('kept-arg', visible)
+        self.assertIn('Host key verification failed; the host machine ran out of memory', visible)
 
     def test_a_repeated_comment_is_not_posted(self):
         self.write_state(issues=[{

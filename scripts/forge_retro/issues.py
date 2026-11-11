@@ -37,8 +37,9 @@ _QUERY_SKIP = {
 # Absolute paths, as the retro report matches them, without first lowercasing the draft.
 _QUOTED_PATH = re.compile(
     r'''(?<![A-Za-z0-9_])(?:"(?:~|/|[A-Za-z]:[\\/])[^"]*"|'(?:~|/|[A-Za-z]:[\\/])[^']*')''')
-_UNIX_PATH = re.compile(r'(?<![A-Za-z0-9_.:/~])/\S+')
-_HOME_PATH = re.compile(r'(?<![A-Za-z0-9_.:/])~/\S+')
+# A path may follow a colon (`builder01:/home/x`, `line 3:/Users/x`), but `https://` is a URL.
+_UNIX_PATH = re.compile(r'(?:(?<![A-Za-z0-9_.:/~])|(?<=:)(?!//))/\S+')
+_HOME_PATH = re.compile(r'(?<![A-Za-z0-9_./])~/\S+')
 _WIN_PATH = re.compile(r'(?<![A-Za-z0-9_])[A-Za-z]:[\\/]\S+')
 # file:///Users/... never matches _UNIX_PATH: the slashes after the scheme fail its lookbehind.
 _FILE_URL = re.compile(r'(?i)(?<![A-Za-z0-9_])file://\S*')
@@ -122,7 +123,9 @@ _DIAG_BARE = re.compile(
     r'|unknown host(?:name)?'
     r'|connect(?:ing|ed)? to(?:\s+host)?'
     r'|dial(?:ing)?(?:\s+tcp|\s+udp)?'
-    r'|host(?:name)?'
+    r'|hostname'
+    # Plain "host machine" / "Host key verification" is prose. Only `host:` or `host=` names one.
+    r'|host(?=[ \t]*[:=])'
     r')'
     r'(?P<sep>[\s:=]+)'
     # tcp/udp/host are part of the phrase (`dial tcp`, `connect to host`). Backtracking
@@ -618,6 +621,27 @@ def _redact_command_hosts(text: str) -> str:
     return ''.join(pieces)
 
 
+# `builder01:/home/x` (scp, rsync) and `builder01:22`: a single-label host in front of a path or
+# port. A user may precede it (`deploy@buildbox:`). Words that commonly sit before a colon are
+# not hosts; the path itself is already `<path>` by the time hosts are redacted.
+_LABEL_DEST = re.compile(
+    r'(?<![A-Za-z0-9_.@/<>+-])(?P<user>[A-Za-z0-9._+-]+@)?(?P<label>[A-Za-z][A-Za-z0-9-]{0,62})'
+    r'(?=:(?:<path>|\d{1,5}(?![A-Za-z0-9])))')
+_NOT_HOSTS = frozenset({
+    'error', 'warning', 'warn', 'info', 'debug', 'note', 'fatal', 'trace', 'line', 'lines',
+    'col', 'column', 'port', 'code', 'status', 'pid', 'exit', 'at', 'in', 'from', 'file',
+    'path', 'dir', 'cwd', 'pwd', 'see', 'step', 'attempt', 'task', 'tasks', 'version', 'time',
+    'id', 'count', 'size', 'total', 'rc', 'errno', 'signal', 'http', 'https', 'ssh', 'ftp',
+    'git', 'file', 'localhost', 'try', 'retry', 'timeout', 'ms', 'sec', 'exitcode',
+})
+
+
+def _label_repl(match) -> str:
+    if match.group('label').lower() in _NOT_HOSTS and not match.group('user'):
+        return match.group(0)
+    return '<host>'
+
+
 def _diag_bare_repl(match) -> str:
     host = match.group('host')
     return match.group(0)[:-len(host)] + '<host>'
@@ -629,6 +653,7 @@ def _redact_hosts(text: str) -> str:
     text = _sub_outside(text, _IPV6, '<host>')
     text = _sub_outside(text, _LOCALHOST, '<host>')
     text = _sub_outside(text, _HOST, _host_repl)
+    text = _LABEL_DEST.sub(_label_repl, text)
     text = _sub_outside(text, _DIAG_BARE, _diag_bare_repl)
     return _redact_command_hosts(text)
 
