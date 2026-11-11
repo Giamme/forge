@@ -1046,9 +1046,11 @@ window.ForgeApp = (() => {
       const strip = el('div', undefined, 'strip-wrap'); strip.id = 'strip'; view.append(strip);
       const diff = el('section', undefined, 'diff-view'); diff.id = 'diff-view'; diff.hidden = true; diff.tabIndex = -1; view.append(diff);
       const box = el('section', undefined, 'module tasks-module'); box.setAttribute('aria-label', 'Tasks'); box.dataset.overlay = '';
+      const questions = el('div', undefined, 'run-questions'); questions.id = 'run-questions'; questions.hidden = true;   // open brief questions (#135)
+      questions.setAttribute('aria-label', 'Open questions');
       const switchRow = el('div', undefined, 'tasks-switch'); switchRow.id = 'run-summaries'; switchRow.hidden = true;   // the summaries switch (#133 B)
       const tasks = el('div', undefined, 'run-tasks'); tasks.id = 'run-tasks';
-      box.append(Shell.head('tasks', 'Tasks', ''), switchRow, tasks, Shell.splitter('tasks'));
+      box.append(Shell.head('tasks', 'Tasks', ''), questions, switchRow, tasks, Shell.splitter('tasks'));
       view.append(box);
     }
     document.body.classList.toggle('no-tasks', run.kind === 'solo');
@@ -1056,8 +1058,26 @@ window.ForgeApp = (() => {
     renderHeader(run);
     renderRunBody(run);
     renderSummarySwitch(run);
+    renderQuestions(run);
     renderTable(run);
     announce(run);
+  }
+  // Open brief questions (#135), flagged first and then by the schedule projection. Hidden with the tasks module
+  // when that panel is folded, and hidden entirely when brief is off or nothing is still open.
+  function renderQuestions(run) {
+    const host = $('run-questions');
+    if (!host) return;
+    const show = run.kind !== 'solo' && run.brief && window.ForgeBrief;
+    if (!show) { host.hidden = true; host.replaceChildren(); return; }
+    const open = window.ForgeBrief.openQuestions(run);
+    if (!open.length) { host.hidden = true; host.replaceChildren(); return; }
+    host.hidden = false;
+    const clock = now();
+    const projections = RM.projectSchedule(run, { now: clock });
+    preserve(host, () => window.ForgeBrief.renderList(host, {
+      run, projections, now: clock,
+      href: id => hashFor(run.key, { kind: 'task', id }),
+    }));
   }
   function renderMain() {
     document.body.classList.toggle('cloud-mode', !!state.cloud);
