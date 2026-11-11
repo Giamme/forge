@@ -80,6 +80,17 @@ running task it shares files with, no free slot, a drain or stop, an infrastruct
 its countdown, or the retry policy's stop with the split it proposes. The run's inspector says
 what the scheduler is doing and how many tasks wait on what.
 
+A task's inspector opens on its header: its title and goal, its links (`#N` and GitHub issue and pull
+request URLs; `#N` links to the repo's GitHub origin when there is one), and the Prompt, Approach and
+Acceptance criteria buttons. Then comes its attempt trail, one line per attempt with the reason it ran
+(for example *after review findings* or *escalated to a stronger model*). Then its Summary: the
+generated summary, the model and time it was made, its sources, and an *Out of date* mark once the
+task has changed since. Then its Questions: the brief questions, each with an answer box, and parked
+questions behind a collapsed block. A solo run has the header and the trail only. Above a plan's task
+table sit its open brief questions, flagged first and then by projected start, and the summaries switch.
+A run with a retro report or notes shows a Retro section in its run details: the note counts on one line,
+then the report, collapsed.
+
 Under each attempt's dwarf and reviewer are the checks they ran, read from their logs: each
 test, type check, lint or build with its exit, its time and the counts it printed, a failed
 one's last lines, and a link to that command in the conversation. Each attempt then says which
@@ -105,7 +116,7 @@ forge-ui reads everything, and it changes things only by calling forge's own com
 never writes a run file, a repo or a config itself. That keeps one set of rules (validation,
 locks, the audit log) whichever way you change something, and a change from the page is
 indistinguishable from the same command typed in a terminal, except that `control.log` says
-`ui` instead of `cli`. Every change asks you to confirm and says when it takes effect.
+`ui` instead of `cli`. Every change asks you to confirm and says when it takes effect, except a brief answer, which is sent when you press *Send*.
 
 - **Run controls** (a plan's inspector): the QA threshold (shown with its source, `P2 (default)`
   or `P1 (set)`); it accepts `P0`–`P3`, *Default* (drop the setting; P2) and *None* (P3, nothing
@@ -154,13 +165,19 @@ indistinguishable from the same command typed in a terminal, except that `contro
   the repository through one of its runs, from a list grouped by repository that shows each
   run's worktree and branch (arrow keys and typing work in it), and the page names the
   directory the configuration was read from.
+- **Summaries:** a switch above a plan's task table turns summaries on or off for the run. A task's own
+  switch, in its Summary section, sets it to *On*, *Off* or *Inherit* (the run's setting). Each change is
+  confirmed first. Turning them on for a finished run starts `forge summarize` in the background.
+- **Brief answers:** each brief question in a task's inspector has an answer box, and *Send* records the
+  answer (`forge brief answer`, logged as `ui`). A late answer, given after the task started, shows the
+  CLI's notice under its question. Answers are sent at once, without a confirm.
 
 Writing is protected, because anything that can reach the server could otherwise change your
 runs. The server makes a random token each time it starts and puts it in the page it serves;
 the page sends it with every change, and the server also checks the `Host` and `Origin`
 headers, so another website open in your browser cannot make your browser change a run. Reading
 needs no token. `--read-only` (or `FORGE_UI_READONLY=1`) turns writing off altogether: no
-token is issued and every change is refused. `FORGE_UI_READONLY=1 forge ui open` starts such a
+token is issued and every change is refused. The summaries and the questions still show, without their switches and answer boxes. `FORGE_UI_READONLY=1 forge ui open` starts such a
 server, and the launcher never reuses a server running in the other mode; it replaces it.
 
 Also: replay, critical path, Fractal child-task trees, quick jump (Ctrl K, ⌘K on a Mac, or
