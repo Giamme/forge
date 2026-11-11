@@ -290,6 +290,33 @@ class EvaluationTests(ReplayCase):
                 verdicts[seed] = result['passes']
         self.assertEqual(verdicts, {1: True, 7: False})
 
+    def test_a_label_variant_judges_the_stored_answers_and_sends_and_records_nothing(self):
+        server = self.server('jev', reply=separating)
+        self.local_provider(server)
+        self.runs(16)
+        self.replay_json('--send')
+        replay.record_path('drift').unlink()
+        sent = len(server.requests)
+        result = self.replay_json('--label', 'first-attempt')
+        # Attempt 1 is the passing one here, so the old label agrees with the site's own.
+        self.assertEqual((result['label'], result['recorded'], result['judged']['decisions']), ('first-attempt', None, 32))
+        self.assertEqual(result['auc']['replay'], 1.0)
+        self.assertEqual(len(server.requests), sent)
+        self.assertFalse(replay.record_path('drift').exists())
+        code, _out, err = self.cli('--provider', 'local', '--model', 'm1', '--label', 'first-attempt', '--send')
+        self.assertEqual(code, 2)
+        self.assertIn('drop --send', err)
+        code, _out, err = self.cli('--provider', 'local', '--model', 'm1', '--label', 'final')
+        self.assertEqual(code, 2)
+        self.assertEqual(len(server.requests), sent)
+
+    def test_an_inverted_threshold_is_shown_as_configured(self):
+        result = dict(site='jev-prompt', provider='p', model='m', answered=1, requests=1, skipped_privacy=0,
+                      judged=dict(decisions=1, positives=0, runs=1), auc=dict(replay=None, baseline=None, live={}),
+                      diff=dict(value=None, ci=None), margin=0.02, threshold=1.0 - 0.55, threshold_name='prompt_warn',
+                      precision=None, recall=0.0, flagged=0, floor=None, passes=False, reason='r')
+        self.assertIn('at prompt_warn 0.55 (inverted: a score at or above 0.45):', replay.render(result))
+
     def test_the_text_output_is_a_table(self):
         self.local_provider(self.server('jev', reply=separating))
         self.runs(4)

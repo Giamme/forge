@@ -11,7 +11,7 @@
     doctor   [--live] [--json] [--repo DIR]
     migrate  [--force] [--json]
     report   [--runs N] [--run DIR]... [--site S] [--all] [--json]
-    replay   --site S --provider P --model M [--runs N] [--send] [--workers 3] [--seed 7]
+    replay   --site S --provider P --model M [--runs N] [--send | --label V] [--workers 3] [--seed 7]
              [--margin 0.02] [--json]
 
 `report` sums each site's jev.jsonl calls, cache hits, skips, tokens and cost over the newest
@@ -24,6 +24,8 @@ provider, else the legacy typesafe/cloudflare transport) with model M (forge_dec
 Without --send it only prints the count, estimated input tokens and cost. With --send it asks
 the unanswered ones, outside any budget, then judges replay, baseline and live answers on the
 newer half of the runs and records the result in replays/<gate>.json, which `gate on` reads.
+--label V judges the answers already stored on another label of the site instead (jev-drift:
+first-attempt, the 2026-10-16 label); it sends nothing and records nothing.
 Its --json is the dry run's estimate, or the evaluation (also `sent`). An unknown provider is
 exit 2, a provider with no key that is not local exit 1.
 
@@ -798,6 +800,7 @@ def cmd_report(args) -> int:
 
 
 def cmd_replay(args) -> int:
+    from . import labels as labels_module
     from . import replay as replay_module
     from . import sites as sites_module
     record = sites_module.site(args.site)
@@ -820,7 +823,23 @@ def cmd_replay(args) -> int:
     if not spec['key'] and not spec['local']:
         raise Failed('provider %s has no key (forge decide provider add ... --key-stdin, or its key_env)'
                      % args.provider)
-    plan = replay_module.plan(args.site, spec['name'], spec['model'], spec, runs=args.runs)
+    if args.label is not None:
+        if args.label not in labels_module.VARIANTS.get(args.site, {}):
+            raise Usage('%s has no label variant %s (variants: %s)' % (
+                args.site, args.label, ', '.join(sorted(labels_module.VARIANTS.get(args.site, {}))) or 'none'))
+        if args.send:
+            raise Usage('a label variant judges the answers already stored and records nothing: drop --send')
+    plan = replay_module.plan(args.site, spec['name'], spec['model'], spec, runs=args.runs, variant=args.label)
+    if args.label is not None:
+        result = replay_module.evaluate(plan, seed=args.seed, margin=args.margin)
+        result.update(label=args.label, recorded=None)
+        if args.json:
+            print(json.dumps(result, indent=2))
+        else:
+            print(replay_module.render(result))
+            print('label %s: judged on the %d answered of %d requests; not recorded (promotion reads the '
+                  "site's own label)" % (args.label, result['answered'], result['requests']))
+        return 0
     if not args.send:
         data = replay_module.estimate(plan)
         print(json.dumps(data, indent=2) if args.json else replay_module.render_estimate(data))
@@ -928,6 +947,8 @@ def parser() -> argparse.ArgumentParser:
     s.add_argument('--model', required=True, metavar='M')
     s.add_argument('--runs', type=int, metavar='N', help='only the newest N dataset runs')
     s.add_argument('--send', action='store_true', help='ask the provider (without it: a dry run)')
+    s.add_argument('--label', metavar='V', help='judge the stored answers on another label of the site '
+                   '(jev-drift: first-attempt); sends and records nothing')
     s.add_argument('--workers', type=int, default=3)
     s.add_argument('--seed', type=int, default=7, help='bootstrap seed of the reported interval')
     s.add_argument('--margin', type=float, default=0.02)

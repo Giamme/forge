@@ -161,13 +161,23 @@ def _drift_added(index: _Index, run, task) -> set:
     return out
 
 
-def _drift(index: _Index, record, event, body) -> dict:
+def _first_attempt(rows):
+    """The last execution of the task's first real attempt, passed or not: what attempt 1 edited.
+    A refunded or infra-stopped execution spent no attempt (export._attempts)."""
+    real = [e for e in rows if e['d'].get('status') and not e['d'].get('refunded') and not e['d'].get('infra')]
+    if not real:
+        return None
+    first = min(e['attempt'] or 0 for e in real)
+    return [e for e in real if (e['attempt'] or 0) == first][-1]
+
+
+def _drift(index: _Index, record, event, body, pick=export.final_pass) -> dict:
     state = _state(body)
     task = state.get('task') if isinstance(state.get('task'), dict) else {}
     task_id = task.get('id')
     if not task_id:
         return {}
-    final = export.final_pass(index.attempts(event['run'], event['repo'], task_id, event['ts']))
+    final = pick(index.attempts(event['run'], event['repo'], task_id, event['ts']))
     if final is None:
         return {}
     changed = set(export.words(final['d'].get('changed_files')))
@@ -293,14 +303,28 @@ LABELLERS = {
 }
 
 
-def collect(site: str, *, store: export.Store | None = None, runs=None) -> list[dict]:
+def _drift_first_attempt(index: _Index, record, event, body) -> dict:
+    return _drift(index, record, event, body, pick=_first_attempt)
+
+
+# Other labels of a site, to check a past result against (`forge decide replay --label`). A
+# variant's replay is never recorded, so promotion only ever reads the site's own label.
+# drift first-attempt: the 2026-10-16 drift replay's label, "the file is in attempt 1's
+# changed files", where the site's own is the final passing attempt's.
+VARIANTS = {
+    'jev-drift': {'first-attempt': _drift_first_attempt},
+}
+
+
+def collect(site: str, *, store: export.Store | None = None, runs=None, variant: str | None = None) -> list[dict]:
     """One row per stored live request of `site` with at least one labelled decision.
 
     `store` is an already-open forge_dataset.export.Store; without one the store is opened
-    read-only. `runs`, when given, keeps only those dataset run uids. A site with no label
-    (prompt, memory-curate, memory-stale) or an unknown one returns []."""
+    read-only. `runs`, when given, keeps only those dataset run uids. `variant` names one of the
+    site's VARIANTS instead of its own label. A site with no label (prompt, memory-curate,
+    memory-stale), an unknown one, or an unknown variant returns []."""
     record = sites.site(site)
-    labeller = LABELLERS.get(site)
+    labeller = LABELLERS.get(site) if variant is None else VARIANTS.get(site, {}).get(variant)
     if record is None or record.label is None or labeller is None:
         return []
     if store is None:

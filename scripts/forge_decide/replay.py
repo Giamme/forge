@@ -96,7 +96,8 @@ def _newest_runs(events, n: int) -> set:
     return set(sorted(first, key=lambda run: (first[run], str(run)), reverse=True)[:n])
 
 
-def plan(site: str, provider: str, model: str, spec: dict, *, runs: int | None = None, store=None) -> Plan:
+def plan(site: str, provider: str, model: str, spec: dict, *, runs: int | None = None, store=None,
+         variant: str | None = None) -> Plan:
     """The labelled live requests of `site` (newest `runs` dataset runs only, when given), less
     those whose own repo has the privacy floor, and which of them the replay file answers."""
     store = store if store is not None else labels._open_store()
@@ -106,7 +107,7 @@ def plan(site: str, provider: str, model: str, spec: dict, *, runs: int | None =
         usage = {event['d'].get('key'): event['d'].get('usage') for event, _body in stored}
         keep = _newest_runs([event for event, _body in stored], runs) if runs else None
         floors = {}
-        for row in labels.collect(site, store=store, runs=keep):
+        for row in labels.collect(site, store=store, runs=keep, variant=variant):
             path = store.repo_paths.get(row['repo'])
             # No recorded path, no floor: privacy_floor(None) would read the working directory's.
             if path not in floors:
@@ -250,7 +251,7 @@ def evaluate(plan_: Plan, *, seed: int = 7, margin: float = 0.02) -> dict:
     threshold = (forge_jev.threshold(record.threshold, site=plan_.site, model=plan_.model)
                  if record.threshold else None)
     if threshold is not None and record.invert:
-        threshold = 1.0 - threshold
+        threshold = round(1.0 - threshold, 9)   # 1 - 0.55 is 0.44999999999999996
     answered_pairs = [(r['replay'], r['label']) for r in judged if r['replay'] is not None]
     precision = (metrics.precision_at(answered_pairs, threshold) if threshold is not None
                  else dict(precision=None, recall=None, flagged=None))
@@ -343,7 +344,12 @@ def render(result: dict) -> str:
         + ('-' if ci is None else f'[{ci[0]:.3f}, {ci[1]:.3f}]') + f"  (margin {result['margin']})",
     ]
     if result['threshold'] is not None:
-        lines.append(f"  at {result['threshold_name']} {result['threshold']}: precision "
+        record = sites.site(result['site'])
+        cut = result['threshold']
+        # An inverted site's config value is on the other scale: show it as configured, and the cut.
+        at = (f"{result['threshold_name']} {round(1.0 - cut, 9):g} (inverted: a score at or above {cut:g})"
+              if record is not None and record.invert else f"{result['threshold_name']} {cut:g}")
+        lines.append(f"  at {at}: precision "
                      f"{_number(result['precision'])}, recall {_number(result['recall'])}, "
                      f"{result['flagged']} flagged (floor {_number(result['floor'], 2)})")
     lines += ['', ('PASSES: ' if result['passes'] else 'does not pass: ') + result['reason']]
