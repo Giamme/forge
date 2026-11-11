@@ -483,6 +483,89 @@ forge_retro_notice() { # forge_retro_notice <plan>
   { mkdir -p "${marker%/*}" && : > "$marker"; } 2>/dev/null || true
 }
 
+# 0 when this plan records retro notes. settings() is the switch: the plan file, the user
+# setting before waves.tsv, and FORGE_RETRO=off. Auto's planner is dispatched before `plan`
+# writes retro_mode, so AUTO_RETRO_FLAG (on, off, or empty) carries the flag that call will
+# hand to plan. Off from the environment still wins. Prints nothing and writes nothing.
+forge_retro_on() { # forge_retro_on <plan>
+  local flag="${AUTO_RETRO_FLAG:-}"
+  PYTHONPATH="$SKILL_DIR/scripts${PYTHONPATH:+:$PYTHONPATH}" \
+    python3 - "$1" "$flag" >/dev/null <<'PY'
+import os, sys
+import forge_side
+plan, flag = sys.argv[1], sys.argv[2]
+if os.environ.get('FORGE_RETRO', '').strip().lower() == 'off':
+    sys.exit(1)
+if flag == 'on':
+    sys.exit(0)
+if flag == 'off':
+    sys.exit(1)
+sys.exit(0 if forge_side.settings(plan).get('retro') else 1)
+PY
+}
+
+# The retro instruction, printed so it can be the last block of a prompt. Nothing when retro
+# is off, which is what keeps that prompt byte-identical.
+forge_retro_prompt() { # forge_retro_prompt <plan> <role>
+  forge_retro_on "$1" || return 0
+  echo
+  python3 "$SKILL_DIR/scripts/forge-contract.py" retro --role "$2" \
+    || note "retro: could not write the $2 instruction"
+  return 0
+}
+
+# One dispatch's notes. A failure is one warning and never the caller's result: the status
+# and the exit code stay whatever the dispatch already decided. No task for a whole-run
+# dispatch (the planner, the final review). The inbox is the dwarf worktree's.
+forge_retro_record() { # forge_retro_record <plan> <role> <dir> [task] [attempt] [inbox]
+  forge_retro_on "$1" || return 0
+  local plan="$1" role="$2" dir="$3" task="${4:-}" attempt="${5:-}" inbox="${6:-}"
+  local cmd=(python3 "$SKILL_DIR/scripts/forge-retro.py" record "$plan" --role "$role" --dir "$dir")
+  [ -n "$task" ] && cmd+=(--task "$task")
+  [ -n "$attempt" ] && cmd+=(--attempt "$attempt")
+  [ -n "$inbox" ] && cmd+=(--inbox "$inbox")
+  if ! "${cmd[@]}" >/dev/null 2>&1; then
+    note "retro: could not record the $role notes${task:+ for $task}"
+  fi
+  return 0
+}
+
+# Rewrite retro.md. Quiet: integrate and review regenerate after their dispatches, and the
+# run's own summary line is forge_retro_summary_line. A failure is one warning.
+forge_retro_report() { # forge_retro_report <plan>
+  forge_retro_on "$1" || return 0
+  python3 "$SKILL_DIR/scripts/forge-retro.py" report "$1" >/dev/null 2>&1 \
+    || note "retro: could not write the report"
+  return 0
+}
+
+# Write retro.md and print the one summary line when the report has any pattern. Nothing
+# when it does not, or when retro is off (no call, no file).
+forge_retro_summary_line() { # forge_retro_summary_line <plan>
+  forge_retro_on "$1" || return 0
+  local json
+  json="$(python3 "$SKILL_DIR/scripts/forge-retro.py" report "$1" --json 2>/dev/null)" || {
+    note "retro: could not write the report"
+    return 0
+  }
+  printf '%s' "$json" | python3 -c '
+import json, sys
+doc = json.load(sys.stdin)
+plan = sys.argv[1]
+n = u = f = 0
+for group in doc.get("groups") or []:
+    k = len(group.get("patterns") or [])
+    n += k
+    if group.get("id") == "user":
+        u += k
+    elif group.get("id") == "forge":
+        f += k
+if n:
+    sys.stdout.write("retro: %d patterns (%d you can fix, %d for forge): %s/retro.md\n" % (n, u, f, plan))
+' "$1"
+  return 0
+}
+
 # One line per feature that is on, from the plan files (what the run will do).
 forge_features_table() { # forge_features_table <plan>
   local plan="$1" level scope model
@@ -1452,6 +1535,8 @@ do_task_body() (
       echo; python3 "$SKILL_DIR/scripts/forge-contract.py" dwarf $([ ! -f "$PLAN/pre_review_tests" ] || echo --pre-review) \
         $([ -z "$(verify_source_for "$PLAN" "$REPO")" ] || echo --verify-after-merge)
       echo; /bin/bash "$MEMORY" note dwarf
+      # Last, after the memory note. Nothing is printed when retro is off.
+      forge_retro_prompt "$PLAN" dwarf
     } > "$tdir/dwarf.input"
     # This attempt starts with the findings just written to dwarf.input (#133).
     record_retry_source "$tdir" "$attempt" || note "$id: retry_sources.tsv not updated; the attempt trail stays as it was"
@@ -1517,6 +1602,9 @@ do_task_body() (
     fi
     if [ "${FORGE_OUTPUT:-summary}" = full ]; then cat "$tdir/dwarf.out"; fi
     if [ "$rc" -ne 0 ]; then
+      # The dispatch ended without a result memory would record. Keep its notes anyway;
+      # a failure to record them does not change the status this case is about to write.
+      forge_retro_record "$PLAN" dwarf "$tdir" "$id" "$attempt" "$wt/.forge/retro-inbox.jsonl"
       case "$rc" in
         7) echo TIMEOUT > "$tdir/status"; note "$id: dwarf hit the dispatch timeout — see $tdir/dwarf.out" ;;
         8) infra_stop "$tdir" "$id" dwarf "$attempt"; return 8 ;;
@@ -1528,6 +1616,7 @@ do_task_body() (
     /bin/bash "$MEMORY" record "$REPO" --last "$tdir/dwarf.last" --role dwarf \
         --run-id "$run_id" --task "$id" --model "$dw" --run-dir "$tdir" \
         --duration "$(dispatch_duration "$tdir" dwarf)" >/dev/null 2>&1
+    forge_retro_record "$PLAN" dwarf "$tdir" "$id" "$attempt" "$wt/.forge/retro-inbox.jsonl"
 
     guard_after_dwarf "$wt" "$tdir" "$id"
     # Before the snapshot, so a dwarf that only asked a question (and changed nothing) still reaches it.
@@ -1688,6 +1777,9 @@ do_task_body() (
     echo '```diff'; git -C "$wt" diff --binary --irreversible-delete "$base" "$reviewed" -- . ':(exclude).forge'; echo '```'
     echo; /bin/bash "$MEMORY" note qa
     echo "Place any learning notes before the final FORGE_VERDICT: PASS or FORGE_VERDICT: FAIL line."
+    # Last, so a shadow review, which copies this file byte for byte, carries the same
+    # instruction. Its notes are not recorded: only this task's own dispatch is.
+    forge_retro_prompt "$PLAN" qa
   } > "$tdir/qa.input"
   # Opt-in (plan --shadow-qa): a second, independent review of this same diff, to measure
   # how often two reviewers agree. It reviews its own snapshot from its own dir under
@@ -1748,6 +1840,7 @@ do_task_body() (
   fi
   if [ "${FORGE_OUTPUT:-summary}" = full ]; then cat "$tdir/qa.out"; fi
   if [ "$rc" -ne 0 ]; then
+    forge_retro_record "$PLAN" qa "$tdir" "$id" "$attempt"
     case "$rc" in
       7) echo TIMEOUT > "$tdir/status"; note "$id: qa hit the dispatch timeout — see $tdir/qa.out" ;;
       8) infra_stop "$tdir" "$id" qa "$attempt"; return 8 ;;
@@ -1770,6 +1863,7 @@ do_task_body() (
       --run-id "$run_id" --task "$id" --model "$qa" --verdict "${verdict:-UNKNOWN}" \
       --run-dir "$tdir" \
       --duration "$(dispatch_duration "$tdir" qa)" >/dev/null 2>&1
+  forge_retro_record "$PLAN" qa "$tdir" "$id" "$attempt"
 
   case "$verdict" in
     PASS) echo PASS > "$tdir/status" ;;
@@ -2686,12 +2780,18 @@ do_run() {
     done
   fi
 
+  # After the scheduler (and verification) and before the summary. Retro off: no call,
+  # no retro.md. A failure here does not change the exit code decided below.
+  local retro_line=""
+  retro_line="$(forge_retro_summary_line "$PLAN")"
+
   echo
   echo "results (integration branch: $int_br)"
   echo "artifacts: $PLAN/tasks/<id>/{dwarf,qa}.{last,log}; results: $PLAN/results.tsv"
   printf '  %-14s %-9s %s\n' id status branch
   awk -F'\t' '{printf "  %-14s %-9s %s\n", $1, $2, $3}' "$PLAN/results.tsv"
   echo
+  if [ -n "$retro_line" ]; then printf '%s\n\n' "$retro_line"; fi
   run_report_extras "$PLAN"
   # Pre-review tests (#85): every check of the plan, and the reviews the red ones saved.
   local pre_review
@@ -2901,8 +3001,13 @@ forge_auto_dispatch() { # forge_auto_dispatch <plan-dir> <repo> <spec> <fast-opt
   local plan="$1" repo="$2" spec="$3" tier="$4" rc=0
   AUTO_RC=0
   note "auto: dispatching the planner ($spec) for the whole plan"
+  # Last. The planner runs before `plan` stores retro_mode; AUTO_RETRO_FLAG says whether
+  # this call's flags will turn it on. Off appends nothing, so the file stays as written.
+  forge_retro_prompt "$plan" planner >> "$plan/planner.prompt"
   bash "$DISPATCH" planner "$spec" --repo "$repo" --run-dir "$plan" --prompt-file "$plan/planner.prompt" \
     --output summary ${tier:+$tier} >&2 || rc=$?
+  # No task: the planner is the whole plan. Its result is AUTO_RC, set below, not this.
+  forge_retro_record "$plan" planner "$plan"
   if [ "$rc" -eq 8 ]; then
     note "auto: the planner stopped on an infrastructure failure (see $plan/planner.infra). Nothing was dispatched after the planner; fix the cause and run auto again"
     AUTO_RC=8
@@ -3015,6 +3120,16 @@ AUTO_PROFILE
     forge_fast_store "$PLAN"
     fast_tier="$(forge_fast_tier "$PLAN" planner)"
 
+    # The flag `plan` is about to store. The planner is dispatched before that write, and
+    # FORGE_RETRO=off still wins inside forge_retro_on. Last flag wins, as plan's own scan.
+    AUTO_RETRO_FLAG=""
+    local retro_scan=""
+    for retro_scan in ${PLAN_ARGS[@]+"${PLAN_ARGS[@]}"}; do
+      case "$retro_scan" in
+        --retro) AUTO_RETRO_FLAG=on ;;
+        --no-retro) AUTO_RETRO_FLAG=off ;;
+      esac
+    done
     note "auto: checking the planner ($PLANNER) before any model call"
     bash "$DISPATCH" doctor --spec "$PLANNER" --role planner ${fast_tier:+$fast_tier} >&2 || exit $?
     python3 "$PLANNER_PY" prompt --plan "$PLAN" --goal-file "$REQUEST" ${DLEVEL:+--level "$DLEVEL"} >/dev/null || exit $?
