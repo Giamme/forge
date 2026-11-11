@@ -1,5 +1,0 @@
-1803dec	forge-ui: review fixes for the Worktrees and Projects screens (#125, #126)
-44be1cd	fix(f2-g): re-review P3s for #79 and #118
-916592b	fix(f2-g): review fixes for #118, #79, #115
-6279617	fix(ui): an exported run draws without the live refresh guard (#115)
-ec1abe0	fix(review): fixes from the F1 review (#114, #117)

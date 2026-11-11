@@ -1,6 +1,103 @@
 {
   "versions": [
     {
+      "version": "0.17",
+      "date": "2026-11-11",
+      "summary": "Measure reviews and routing: outcomes recorded at the end of every run, finding facts, paired reviews, task risk and a look inside each difficulty tier, all in shadow; plus adoption fixes.",
+      "entries": [
+        {
+          "type": "added",
+          "text": "forge-ui: each adopted range listed above the final review now opens its review (verdict, gate, findings, what a person kept, the reviewer's reply and prompt) and the range's diff with the findings pinned, through `/api/runs/<key>/adoptions/<name>` and its `/diff`. An export includes them, and keeps each adoption's reason private unless texts are included (#131).",
+          "breaking": false,
+          "audience": "user",
+          "highlight": false,
+          "commits": [
+            "655faaa"
+          ]
+        },
+        {
+          "type": "added",
+          "text": "Outcomes are now recorded without anyone running `forge dataset outcomes`: the end of every `run` and `integrate` harvests that repository, bounded by `FORGE_OUTCOMES_TIMEOUT` (default 20 s), never changing the exit code, and off with `FORGE_OUTCOMES=off`. The harvest also follows work where it went: an integration whose branch a pull request merged and deleted is measured on the branch it landed in, and so is a run whose integration branch was merged by hand. `forge dataset status` shows the outcomes recorded and when they were last harvested (#120).",
+          "breaking": false,
+          "audience": "user",
+          "highlight": false,
+          "commits": [
+            "f1f1570"
+          ]
+        },
+        {
+          "type": "added",
+          "text": "Reviewers now end each finding with three facts: its reach (main path, realistic or unusual), its origin (new in this change or already there) and their evidence (ran it, traced it or suspected). The facts are recorded in shadow. No verdict changes, and `forge issues`, the ledger and forge-ui read a finding with them exactly as one without. forge-ui shows them beside each finding in the diff. The new `forge dataset facts` command reports how often two reviewers of one attempt agree on reach compared with severity. It also replays candidate rules on past reviews, such as \"unusual reach does not block unless P0\" and \"existing problems do not block\", and lists the findings each rule would have let through (#119).",
+          "breaking": false,
+          "audience": "user",
+          "highlight": false,
+          "commits": [
+            "5a75052"
+          ]
+        },
+        {
+          "type": "added",
+          "text": "A shadow review (`--shadow-qa`) no longer repeats its primary's exact settings when another listed spec differs. If every listed spec is identical to the primary, the shadow still runs but is labelled a control, so it measures noise and never counts as an effort comparison. The new `forge dataset pairs` command groups paired reviews by what differs between the two reviewers: effort within one model, another model, another family, or nothing (controls). For each pair of settings it reports verdict agreement with a 95% interval, the blocking findings only one side found, and how many times the tokens and time each side used. Listing a reviewer's own model at another effort, such as `--shadow-qa sol:medium` beside `sol:high` reviewers, now measures what that effort buys (#121).",
+          "breaking": false,
+          "audience": "user",
+          "highlight": false,
+          "commits": [
+            "d8c85a7"
+          ]
+        },
+        {
+          "type": "added",
+          "text": "A task can now carry a risk rating, separate from its difficulty: what a mistake that gets through would cost. The planner rates it, or you write `low`, `medium` or `high` to `tasks/<id>/risk` before `plan`. It is recorded in shadow. No model, reviewer or verdict changes, `tasks.tsv` keeps its columns, and a plan without ratings behaves as before. The new `forge dataset risk` command shows tasks by difficulty and risk together: how often the two ratings differ, and, per pair, first-try passes, serious findings and landed work that did not hold. The docs now say that reviewer tiers follow difficulty (#122).",
+          "breaking": false,
+          "audience": "user",
+          "highlight": false,
+          "commits": [
+            "842324f"
+          ]
+        },
+        {
+          "type": "added",
+          "text": "The new `forge dataset tiers` command looks inside each difficulty tier before anyone adds a tier. It sets plan-time facts (declared files, dependencies, wave, prompt size) against first-try passes, attempts and unfinished tasks. Each fact is tested on runs the split never saw, and adjusted for the implementer, so a weaker model mix is not read as harder tasks. Facts known only after the attempt, such as the diff size, are reported apart. `--sample` writes past prompts for a blind re-rating, and `--blind` reports how often that rating matches the recorded tier. Nothing in a run changes (#123).",
+          "breaking": false,
+          "audience": "user",
+          "highlight": false,
+          "commits": [
+            "fb7e76c"
+          ]
+        },
+        {
+          "type": "added",
+          "text": "`forge decide replay --label first-attempt` judges the stored drift answers on the 2026-10-16 label: a file counts as drift when attempt 1 edited it, whether or not that attempt passed. It sends nothing and records nothing, so promotion still reads the site's own label. The replay report now also shows an inverted gate's threshold as it is configured, such as `prompt_warn 0.55 (inverted: a score at or above 0.45)`, instead of `0.44999999999999996` (#101).",
+          "breaking": false,
+          "audience": "user",
+          "highlight": false,
+          "commits": [
+            "e3c45dd"
+          ]
+        },
+        {
+          "type": "changed",
+          "text": "`run --sweep` now fixes what an adopted range's review tolerated, with the adoption's reviewer reviewing the fix, where it used to drop those findings for want of a model. Findings a person kept (`accept`, or `adopt --approved`) are still never swept, and the sweep plan now lists them as `accepted` instead of leaving them out silently (#131).",
+          "breaking": false,
+          "audience": "user",
+          "highlight": false,
+          "commits": [
+            "655faaa"
+          ]
+        },
+        {
+          "type": "changed",
+          "text": "`adopt`'s reviewer is now told the run's verification command (or its lanes' commands), so it can run the parts that touch the adopted range. Verification itself still runs after the review, as before (#131).",
+          "breaking": false,
+          "audience": "user",
+          "highlight": false,
+          "commits": [
+            "655faaa"
+          ]
+        }
+      ]
+    },
+    {
       "version": "0.16",
       "date": "2026-11-06",
       "summary": "forge-ui gets a Worktrees screen and a Projects screen with each repository's runs, findings and memories, and a live refresh no longer cancels what you were doing. A stopped run can be steered by hand: adopt brings in a commit made outside forge, and retry --no-dispatch resumes several tasks side by side. Reviewers get the attempt's dependencies and say whether their tests ran, and a timeout now stops the test servers a harness started.",
