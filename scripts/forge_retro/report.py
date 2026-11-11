@@ -117,17 +117,18 @@ def normalise(text: str) -> str:
 
 
 def _quoted_path(match) -> str:
-    """Replace the path inside one quoted word. Keep flags that follow it.
+    """Replace the path inside one quoted word. Keep the arguments that follow it.
 
-    `"/tmp/Review One/project"` is one path: every word is part of the name. In
-    `"/tmp/wt/test.sh --unit"` the flag is a different failure's argument, so it stays.
-    Words before the flag, spaces included, are the path.
+    `"/tmp/Review One/project"` is one path: a space inside a directory name is followed
+    by more path. The path ends at the last word that holds a separator, or at the first
+    word that starts with `-`; whatever comes after is the command's own arguments, so
+    `"/usr/bin/npm test"` and `"/usr/bin/npm install"` stay two patterns. A space in the
+    last component of the path (`"/tmp/My Dir"`) reads as an argument.
     """
     parts = match.group(0)[1:-1].split(' ')
-    for index in range(1, len(parts)):
-        if parts[index].startswith('-'):
-            return '<path> ' + ' '.join(parts[index:])
-    return '<path>'
+    limit = next((i for i in range(1, len(parts)) if parts[i].startswith('-')), len(parts))
+    last = max((i for i in range(limit) if '/' in parts[i] or '\\' in parts[i]), default=0)
+    return ' '.join(['<path>'] + parts[last + 1:])
 
 
 def build(plan) -> dict:

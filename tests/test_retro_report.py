@@ -161,6 +161,9 @@ class NormaliseTests(unittest.TestCase):
                          'bash -c <path> --unit')
         self.assertEqual(report.normalise('bash -c "/tmp/a/test.sh --config /tmp/b/file --unit"'),
                          'bash -c <path> --config <path> --unit')
+        self.assertEqual(report.normalise('bash -c "/usr/bin/npm test"'), 'bash -c <path> test')
+        self.assertEqual(report.normalise('bash -c "/usr/bin/npm install"'), 'bash -c <path> install')
+        self.assertEqual(report.normalise('bash -c "/tmp/Review One/npm test"'), 'bash -c <path> test')
         self.assertEqual(report.normalise('id 123456789012'), 'id <n>')
         self.assertEqual(report.normalise('id 123E4567-E89B-12D3-A456-426614174000'), 'id <hex>')
         self.assertEqual(report.normalise('curl https://example.test/a'), 'curl https://example.test/a')
