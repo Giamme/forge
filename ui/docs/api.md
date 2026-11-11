@@ -565,6 +565,14 @@ Every RunSummary field, plus:
 {
   "id": "reader",
   "title": "Read plan dirs into plain dicts",
+  "header": {"title": "Read plan dirs into plain dicts",
+             "goal": "The first paragraph of approach.md, else of prompt.md.",
+             "criteria": "The Acceptance criteria section of prompt.md.",
+             "links": [{"kind": "issue", "number": 133, "url": "https://github.com/acme/widgets/issues/133", "source": "prompt.md"}]},
+  "trail": [{"attempt": 1, "dwarf": "luna", "verdict": "FAIL", "findings": FindingsSummary, "worst": "P1",
+             "reason": "first", "executions": ["task-…", "dwarf-…", "qa-…"]},
+            {"attempt": 2, "dwarf": "sol", "verdict": "PASS", "findings": FindingsSummary, "worst": null,
+             "reason": "review", "executions": ["task-…"]}],
   "deps": [],
   "difficulty": "high",
   "files": ["forge_ui/reader.py", "tests/test_reader.py"],
@@ -626,6 +634,39 @@ Every RunSummary field, plus:
   task has a `tasks/<id>/` dir; else `null`.
 - `attempt`: integer from `tasks/<id>/attempt`, else the highest attempt in `attempts`,
   else `null`.
+- `header`: `{title, goal, criteria, links}`. `title` is the task's title. `goal` is the first
+  paragraph of `approach.md`, or else of `prompt.md`, after a leading `# ` title line, as plain
+  text with its whitespace collapsed, capped at 600 characters; `null` when neither file has one.
+  `criteria` is the text of `prompt.md`'s `## Acceptance criteria` section (an optional colon is
+  allowed), up to the next `## ` heading or the end of the file, capped like `prompt`; a `### `
+  subsection stays inside it, and a fenced `## ` does not end it. `null` when there is no such
+  section, or the section is empty. `links` is `[{kind, number, url, source}]`, deduplicated, in
+  order of appearance across `prompt.md`, `approach.md` and the run's `request.md`. A full
+  `https://github.com/<owner>/<repo>/issues/<n>` or `.../pull/<n>` URL is kind `issue` or `pr`,
+  with that number and the canonical URL (query and fragment dropped). Any other
+  `https://github.com/...` URL is kind `url`, `number` `null`. A `#N` reference is kind `issue`;
+  its url is `https://github.com/<owner>/<repo>/issues/N` for the GitHub origin of the run's
+  repo (the `repo` file, then that repo's `.git/config`, SSH or HTTPS, with no network), or
+  `null` when that origin is not GitHub. `#N` inside a code span or a fenced block, and a
+  markdown heading, are not links. `source` is the file name. The same link in a later file is
+  kept from the first. The export leaves `goal` and `criteria` out unless texts are chosen;
+  `links` stay.
+- `trail`: one entry per `attempts.tsv` row, in that order:
+  `{attempt, dwarf, verdict, findings, worst, reason, executions}`. `attempt` and `dwarf` come
+  from the row (`dwarf` is its 5th column; empty, `-` and `UNASSIGNED` are `null`; a row without
+  the column is `null`). `verdict`, `findings` and `worst` come from the newest done non-shadow
+  `qa` execution of that attempt (`worst` is that summary's worst severity, `P0`…`P3`, or
+  `null`). With no such execution all three are `null` — the task's `qa.last` is not a fallback.
+  `findings` is a FindingsSummary. `executions` is the ids of that attempt's executions, in the
+  order of `executions`. `reason` is why the attempt ran: `first` for attempt 1; otherwise the
+  source recorded in `tasks/<id>/retry_sources.tsv` (`<attempt>`, `<source>`, `<epoch>`), one of
+  `review`, `prereview`, `bounce`, `message`, `answer` (the last known source for that attempt;
+  an unknown source is warned and skipped); otherwise `escalation` when this row's dwarf differs
+  from the previous row's and `escalations` is not empty; otherwise `manual` when a `control.log`
+  line queued a `retry` for this task (actor `cli` or `ui`, no `outcome`) and this row is the
+  attempt that ends at or after that queue (a scheduler line, which carries `outcome`, does not);
+  otherwise `unknown`. A run from before `retry_sources.tsv` existed has `unknown` for every
+  later attempt the other rules do not explain.
 - `infra` in an attempt: `null` for empty, `-` or missing.
 - `source` in an escalation: the 5th column of `escalations.tsv` (`policy`, `retry` or `pin`, as forge wrote it); `policy` when the row has only 4 columns or the cell is empty.
 - `verdict`: `"PASS"`, `"FAIL"` or `null`, from `qa.last` as described above.
@@ -717,7 +758,10 @@ in `attempts.tsv`, or `null`. `escalations`, `route` and `shadow` are empty. `ve
 false; `accepted_attempt` and `accepted_over` are `null`; `explored` is false; `waiting` and `sweep` are `null`, `swept` is `[]`.
 `infra` and `decision` are `null`, `lateral`, `ledger` and `decisions` are `[]`, `attempt_cap` is `null`, and `attempts_total`
 counts the run dir's `attempts.tsv` rows that are not `INFRA`. `request` on
-the detail is `request.md`.
+the detail is `request.md`. `header` and `trail` follow the same rules. `prompt.md`, `approach.md`
+and `retry_sources.tsv` are read from the run directory (next to `attempts.tsv`); `escalations` is
+empty, so a later attempt whose dwarf changed is `unknown` unless a retry source or a queued retry
+explains it. `goal` and `criteria` are capped as `tasks/solo/goal` and `tasks/solo/criteria`.
 
 ## Execution
 
