@@ -62,6 +62,8 @@ Only `verify` and `trap` are kept on first sighting — those are facts, true th
 QA is not told the build command; it is not building anything. It *is* told the recurring
 findings, so it can notice this is the fourth time the same bug shipped.
 
+Retro notes are not memory: they never go to `.forge/memory.md` or the ledger, and no prompt reads them back ([retro notes](../references/decompose.md#retro-notes-opt-in)).
+
 `.forge/` is the **only** thing forge writes into your working tree rather than onto a branch
 of its own. It is excluded from every captured diff, so a reviewer never sees it as the
 dwarf's work — but it *will* show up as untracked in `git status` after your first run.
