@@ -603,6 +603,56 @@ class ControlTests(unittest.TestCase):
         run = self.show()['run']
         self.assertEqual((run['drained'], run['stopping'], run['max_parallel']), (False, None, 4))
 
+    # ------------------------------------------------------------------------------------ summaries
+
+    def wait_for(self, path, text, seconds=20):
+        end = time.monotonic() + seconds
+        while time.monotonic() < end:
+            if path.exists() and text in path.read_text():
+                return path.read_text()
+            time.sleep(0.05)
+        self.fail(f'{path.name} never held {text!r}: {path.read_text() if path.exists() else "(no file)"}')
+
+    def test_summaries_at_plan_and_task_level_are_audited(self):
+        self.live()   # a live scheduler notices the change itself: nothing is started here
+        self.ok('set', self.plan, 'summaries', 'on')
+        self.assertEqual((self.plan / 'summaries').read_text(), 'on\n')
+        self.ok('set', self.plan, 'summaries', 'off', '--task', 'a', '--actor', 'ui')
+        self.assertEqual((self.plan / 'tasks/a/summaries').read_text(), 'off\n')
+        self.ok('set', self.plan, 'summaries', 'inherit', '--task', 'a')
+        self.assertFalse((self.plan / 'tasks/a/summaries').exists())
+        self.ok('set', self.plan, 'summaries', 'off')
+        self.assertEqual((self.plan / 'summaries').read_text(), 'off\n')   # an explicit off, not a missing file
+        self.ok('set', self.plan, 'summaries', 'off')                       # no change, not logged
+        rows = [(e['actor'], e['task'], e['key'], e['value'], e['previous']) for e in self.log()]
+        self.assertEqual(rows, [('cli', None, 'summaries', 'on', None), ('ui', 'a', 'summaries', 'off', None),
+                                ('cli', 'a', 'summaries', 'inherit', 'off'), ('cli', None, 'summaries', 'off', 'on')])
+        self.assertFalse((self.plan / 'summaries.out').exists())
+
+    def test_summaries_refuse_a_bad_value_and_inherit_at_run_level(self):
+        for args in (('maybe',), ('inherit',), ('default',), ('maybe', '--task', 'a'), ('on', '--task', 'zz')):
+            self.code(2, 'set', self.plan, 'summaries', *args)
+        self.assertEqual(self.files(self.plan), ['tasks', 'tasks.tsv'])
+
+    def test_summaries_on_for_a_finished_run_starts_summarize_detached(self):
+        self.ok('set', self.plan, 'summaries', 'off', '--task', 'b')
+        self.ok('set', self.plan, 'summaries', 'on')
+        out = self.wait_for(self.plan / 'summaries.out', 'skipped')   # forge summarize ran: no model is set up here
+        self.assertIn('a skipped no-model', out)
+        self.assertIn('b skipped off', out)
+        self.assertEqual([(e['key'], e['value']) for e in self.log()], [('summaries', 'off'), ('summaries', 'on')])
+
+    def test_summaries_on_for_one_task_summarizes_only_that_task(self):
+        self.ok('set', self.plan, 'summaries', 'on', '--task', 'a')
+        out = self.wait_for(self.plan / 'summaries.out', 'skipped')
+        self.assertIn('a skipped', out)
+        self.assertNotIn('b ', out)
+
+    def test_summaries_off_starts_nothing(self):
+        self.ok('set', self.plan, 'summaries', 'off')
+        time.sleep(0.3)
+        self.assertFalse((self.plan / 'summaries.out').exists())
+
 
 if __name__ == '__main__':
     unittest.main()
