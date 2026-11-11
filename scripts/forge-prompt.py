@@ -3,10 +3,15 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 
 DIFF_INLINE_CAP = 100 * 1024
 REPLY_CAP = 8 * 1024
+# A brief answer, and each brief section, stay small enough to leave the task itself
+# in the prompt. The cut matches the reply cap: keep the leading bytes, then a marker.
+ANSWER_CAP = 4 * 1024
+BRIEF_CHUNK_CAP = 16 * 1024
 
 # What a reviewer is asked to do with the previous round's report. The labelled-line rule
 # matters: the severity gate, `forge issues` and forge-ui count every `- [Px][...]` line as open.
@@ -72,6 +77,119 @@ def qa_round(findings: str, diff: str | None, span: str | None, stat: str | None
     return '\n\n'.join(parts) + '\n'
 
 
+# Brief is opt-in. `<plan>/brief` names the level and `<plan>/tasks/<id>/brief.json` holds
+# the questions. Answers given before the task starts live in `brief.answers.json`.
+# `brief.late.json` is written after the start and is never read here. No level file, no
+# brief.json, or no questions: nothing is added, and the prompt stays byte-identical.
+DECISIONS_TITLE = 'Decisions the user made'
+OPEN_TITLE = 'Open questions: follow the stated default'
+DECISIONS_NOTE = (
+    'Treat these as constraints that override anything in the requirements or approach '
+    'they contradict.'
+)
+DECISIONS_QA = (
+    "These are the user's own decisions, so following them is not a deviation and must "
+    'not be reported as a finding.'
+)
+OPEN_NOTE = (
+    'Follow the default for each question below, and say in the final message which '
+    'defaults were used.'
+)
+OPEN_QA = (
+    'These are the defaults the implementer was told to follow. The implementer was told '
+    'to say in the final message which defaults were used.'
+)
+OPEN_LEVELS = ('advisory', 'gated')
+
+
+def clip(text: str, limit: int, marker: str) -> str:
+    """Keep the leading bytes. A cut keeps the marker, as a long reply does."""
+    raw = text.encode()
+    if len(raw) <= limit:
+        return text
+    return raw[:limit].decode(errors='ignore') + marker
+
+
+def load_json(path: Path):
+    if not path.is_file():
+        return None
+    try:
+        return json.loads(path.read_text(encoding='utf-8'))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return None
+
+
+def task_dir_of(requirements: str | None, approach: str | None) -> Path | None:
+    """`<plan>/tasks/<id>`, from the prompt.md or approach.md path callers already pass.
+
+    A solo run and a fixture that is not that shape have no plan brief, so they get nothing.
+    """
+    found = None
+    for path in (requirements, approach):
+        if not path:
+            continue
+        candidate = Path(path)
+        if candidate.name not in ('prompt.md', 'approach.md'):
+            continue
+        # candidate = <plan>/tasks/<id>/<file>
+        if candidate.parent.parent.name != 'tasks':
+            continue
+        if candidate.name == 'prompt.md':
+            return candidate.parent
+        found = candidate.parent
+    return found
+
+
+def brief_rows(questions: list, answers: dict) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
+    decided, pending = [], []
+    for question in questions:
+        if not isinstance(question, dict):
+            continue
+        qid, text = question.get('id'), question.get('text')
+        if not isinstance(qid, str) or not qid or not isinstance(text, str) or not text.strip():
+            continue
+        entry = answers.get(qid)
+        answer = entry.get('text') if isinstance(entry, dict) else None
+        if isinstance(answer, str):
+            decided.append((text.strip(), clip(answer, ANSWER_CAP,
+                                                '\n[... the answer continues; cut here ...]')))
+        else:
+            default = question.get('default')
+            pending.append((text.strip(), default if isinstance(default, str) else ''))
+    return decided, pending
+
+
+def brief_section(title: str, note: str, rows: list[tuple[str, str]], label: str) -> str:
+    items = '\n\n'.join('- ' + text + '\n  ' + label + ': ' + value for text, value in rows)
+    # Trailing newline matches the other sections, whose source files end with one.
+    body = '## ' + title + '\n' + note + '\n\n' + items + '\n'
+    return clip(body, BRIEF_CHUNK_CAP, '\n[... the brief continues; cut here ...]\n')
+
+
+def brief_chunks(requirements: str | None, approach: str | None, role: str) -> list[str]:
+    task = task_dir_of(requirements, approach)
+    if task is None:
+        return []
+    plan = task.parent.parent
+    if not (plan / 'brief').is_file() or not (task / 'brief.json').is_file():
+        return []
+    spec = load_json(task / 'brief.json')
+    questions = spec.get('questions') if isinstance(spec, dict) else None
+    if not isinstance(questions, list) or not questions:
+        return []
+    answers = load_json(task / 'brief.answers.json')
+    decided, pending = brief_rows(questions, answers if isinstance(answers, dict) else {})
+    chunks = []
+    if decided:
+        note = DECISIONS_NOTE + (' ' + DECISIONS_QA if role == 'qa' else '')
+        chunks.append(brief_section(DECISIONS_TITLE, note, decided, 'Answer'))
+    # strict has no open questions: run refuses to start until every one is answered.
+    if pending and read(str(plan / 'brief')).strip() in OPEN_LEVELS:
+        note = OPEN_QA if role == 'qa' else OPEN_NOTE
+        chunks.append(brief_section(OPEN_TITLE, note, pending, 'Default'))
+    return chunks
+
+
 def context(
     requirements: str, approach: str | None = None, capsule: str | None = None,
     retry: str | None = None, goal: str | None = None, memories: tuple[str, ...] = (),
@@ -85,6 +203,8 @@ def context(
                         ('Complete implementation requirements', requirements),
                         ('Intended approach', approach),
                         (RETRY_HEADINGS[retry_source], retry)]:
+        if title == RETRY_HEADINGS[retry_source]:
+            chunks.extend(brief_chunks(requirements, approach, role))
         data = read(path) if path and Path(path).is_file() else ''
         if data:
             if role == 'qa' and path == retry:
