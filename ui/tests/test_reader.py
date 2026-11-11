@@ -77,7 +77,7 @@ class ReaderTests(unittest.TestCase):
             'merged_at': (FIXTURE / 'tasks/reader/merged').stat().st_mtime, 'findings': NO_FINDINGS,
             'gate': None, 'known_issues': False, 'needs_input': None, 'fail_first': None, 'pre_review': None, 'now': None, 'waiting': None, 'sweep': None, 'swept': [],
             'infra': None, 'lateral': [], 'ledger': [], 'decision': None, 'decisions': [], 'attempts_total': 3, 'attempt_cap': 8,
-            'summary': None, 'summaries_override': None,
+            'summary': None, 'summaries_override': None, 'brief': None,
         })
         self.assertEqual((page['accepted'], page['accepted_attempt'], page['accepted_over']), (False, None, None))
         self.assertEqual(page['status'], 'RUNNING')
@@ -117,6 +117,7 @@ class ReaderTests(unittest.TestCase):
                              ('fractal', None)):
             self.assertEqual(data[field], value, field)
         self.assertEqual(data['request'], 'A read-only run viewer.\n')
+        self.assertIsNone(data['brief'])
         self.assertEqual(data['warnings'], [])
         self.assertEqual(data['truncated'], [])
         summary = summarize(FIXTURE, 'root')
@@ -610,9 +611,10 @@ class ReaderTests(unittest.TestCase):
             'executions': [], 'merged_at': None, 'findings': NO_FINDINGS, 'gate': None, 'known_issues': False,
             'needs_input': None, 'fail_first': None, 'pre_review': None, 'now': None, 'waiting': None, 'sweep': None, 'swept': [],
             'infra': None, 'lateral': [], 'ledger': [], 'decision': None, 'decisions': [], 'attempts_total': 2, 'attempt_cap': None,
-            'summary': None, 'summaries_override': None,
+            'summary': None, 'summaries_override': None, 'brief': None,
         }])
         self.assertEqual(data['kind'], 'solo')
+        self.assertIsNone(data['brief'])
         self.assertEqual(data['run_id'], 'solo-full')
         self.assertEqual(data['repo'], '/example/solo-repo')
         self.assertEqual(data['goal'], 'Ship the solo reader')
@@ -647,6 +649,7 @@ class ReaderTests(unittest.TestCase):
     def test_legacy_verdict_and_missing_status(self):
         data = detail(LEGACY)
         self.assertEqual(data['kind'], 'solo')
+        self.assertIsNone(data['brief'])
         self.assertEqual(data['run_id'], 'solo-legacy')
         self.assertEqual(data['repo'], '/example/legacy')
         self.assertIsNone(data['goal'])
@@ -671,7 +674,7 @@ class ReaderTests(unittest.TestCase):
             'qa_tail': None, 'dwarf_tail': None, 'executions': [], 'merged_at': None, 'findings': None,
             'gate': None, 'known_issues': False, 'needs_input': None, 'fail_first': None, 'pre_review': None, 'now': None, 'waiting': None, 'sweep': None, 'swept': [],
             'infra': None, 'lateral': [], 'ledger': [], 'decision': None, 'decisions': [], 'attempts_total': 0, 'attempt_cap': None,
-            'summary': None, 'summaries_override': None,
+            'summary': None, 'summaries_override': None, 'brief': None,
         }])
         json.dumps(data, allow_nan=False)
         run = self.base / 'neither'
@@ -1418,6 +1421,172 @@ class TaskSummaryTests(unittest.TestCase):
         self.assertIsNone(data['summaries'])
         self.assertEqual((data['tasks'][0]['summary'], data['tasks'][0]['summaries_override']), (None, None))
         json.dumps(data, allow_nan=False)
+
+
+class BriefTests(unittest.TestCase):
+    """RunDetail.brief counts, and each task's questions with state and answer, plus parked and late (#135).
+
+    Expected values are written out here, not derived from the reader. reader has one answered question,
+    one open question and one late answer; page has two open questions, one of them must_answer; graph has
+    only a parked question. open is 3 and flagged is 1: the parked must_answer question is not counted.
+    """
+
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.plan = F.make_plan(Path(temp.name) / 'p')
+        F.write(self.plan / 'brief', 'gated\n')
+        F.write(self.plan / 'tasks/reader/brief.json', {
+            'questions': [
+                {'id': 'q1', 'text': 'Which reader?', 'why': 'two modules', 'options': ['a', 1, 'b'],
+                 'default': 'a', 'scope': 'task', 'must_answer': True},
+                {'id': 'q2', 'text': 'x' * 20001, 'why': 'w' * 20001, 'options': ['yes'],
+                 'default': 'yes', 'must_answer': False, 'possibly_stale': True},
+                {'id': 'q3', 'text': 'Ship it?', 'why': 'timing', 'options': [],
+                 'default': '', 'must_answer': True},
+                {'text': 'nameless'},
+            ],
+            'model': 'sol', 'generated_at': 1760600000})
+        F.write(self.plan / 'tasks/reader/brief.answers.json', {
+            'q1': {'text': 'the ui reader', 'actor': 'ui', 't': 1760600100}})
+        F.write(self.plan / 'tasks/reader/brief.late.json', {
+            'q3': {'text': 'too late', 'actor': 'cli', 't': 1760600200},
+            'q1': {'text': 'ignored late', 'actor': 'ui', 't': 1760600300}})
+        F.write(self.plan / 'tasks/reader/brief.parked.json', {
+            'questions': [
+                {'id': 'q4', 'text': 'Whole plan?', 'why': 'scope', 'options': ['now', 'later'],
+                 'default': 'later', 'scope': 'plan', 'must_answer': True},
+            ],
+            'model': 'sol', 'generated_at': 1760600000})
+        F.write(self.plan / 'tasks/page/brief.json', {
+            'questions': [
+                {'id': 'q1', 'text': 'Layout?', 'why': 'css', 'options': ['grid'],
+                 'default': 'grid', 'must_answer': True},
+                {'id': 'q2', 'text': 'Color?', 'why': 'theme', 'must_answer': False},
+            ]})
+        F.write(self.plan / 'tasks/graph/brief.parked.json', {
+            'questions': [
+                {'id': 'q9', 'text': 'Across the wave?', 'why': 'overlap', 'options': ['hold'],
+                 'default': 'hold', 'scope': 'wave', 'must_answer': True},
+            ]})
+
+    def loaded(self):
+        data = detail(self.plan)
+        return data, {task['id']: task for task in data['tasks']}
+
+    def test_question_states_are_answered_open_or_late(self):
+        data, tasks = self.loaded()
+        self.assertEqual(tasks['reader']['brief']['questions'], [
+            {'id': 'q1', 'text': 'Which reader?', 'why': 'two modules', 'options': ['a', 'b'],
+             'default': 'a', 'must_answer': True, 'possibly_stale': False,
+             'state': 'answered', 'answer': 'the ui reader'},
+            {'id': 'q2', 'text': 'x' * 20000 + '…', 'why': 'w' * 20000 + '…', 'options': ['yes'],
+             'default': 'yes', 'must_answer': False, 'possibly_stale': True,
+             'state': 'open', 'answer': None},
+            {'id': 'q3', 'text': 'Ship it?', 'why': 'timing', 'options': [],
+             'default': '', 'must_answer': True, 'possibly_stale': False,
+             'state': 'late', 'answer': 'too late'},
+        ])
+        # q1 is in the late file too; the answer recorded before the start is the one the question shows.
+        self.assertEqual(tasks['reader']['brief']['late'], [
+            {'id': 'q3', 'text': 'too late', 'actor': 'cli', 't': 1760600200},
+            {'id': 'q1', 'text': 'ignored late', 'actor': 'ui', 't': 1760600300},
+        ])
+        self.assertEqual([item for item in data['truncated'] if item.startswith('tasks/reader/brief/')],
+                         ['tasks/reader/brief/q2.text', 'tasks/reader/brief/q2.why'])
+        self.assertIn('tasks/reader/brief.json: 1 question skipped', data['warnings'])
+        self.assertEqual(tasks['page']['brief']['questions'], [
+            {'id': 'q1', 'text': 'Layout?', 'why': 'css', 'options': ['grid'],
+             'default': 'grid', 'must_answer': True, 'possibly_stale': False,
+             'state': 'open', 'answer': None},
+            {'id': 'q2', 'text': 'Color?', 'why': 'theme', 'options': [],
+             'default': None, 'must_answer': False, 'possibly_stale': False,
+             'state': 'open', 'answer': None},
+        ])
+        self.assertEqual((tasks['page']['brief']['parked'], tasks['page']['brief']['late']), ([], []))
+        json.dumps(data, allow_nan=False)
+
+    def test_parked_questions_keep_their_scope(self):
+        _, tasks = self.loaded()
+        self.assertEqual(tasks['reader']['brief']['parked'], [
+            {'id': 'q4', 'text': 'Whole plan?', 'why': 'scope', 'options': ['now', 'later'],
+             'default': 'later', 'scope': 'plan', 'must_answer': True, 'possibly_stale': False},
+        ])
+        self.assertEqual(tasks['graph']['brief'], {
+            'questions': [],
+            'parked': [{'id': 'q9', 'text': 'Across the wave?', 'why': 'overlap', 'options': ['hold'],
+                        'default': 'hold', 'scope': 'wave', 'must_answer': True, 'possibly_stale': False}],
+            'late': [],
+        })
+        self.assertIsNone(tasks['docs']['brief'])
+        self.assertIsNone(tasks['server']['brief'])
+
+    def test_run_counts_open_questions_and_open_must_answer_ones(self):
+        data, _ = self.loaded()
+        self.assertEqual(data['brief'], {'level': 'gated', 'open': 3, 'flagged': 1})
+        for level in ('advisory', 'strict'):
+            F.write(self.plan / 'brief', level + '\n')
+            self.assertEqual(detail(self.plan)['brief'], {'level': level, 'open': 3, 'flagged': 1}, level)
+
+    def test_null_when_brief_is_off(self):
+        for level in ('off', 'nope', ''):
+            F.write(self.plan / 'brief', level + '\n')
+            data = detail(self.plan)
+            self.assertIsNone(data['brief'], repr(level))
+            self.assertTrue(all(task['brief'] is None for task in data['tasks']), repr(level))
+        (self.plan / 'brief').unlink()
+        data = detail(self.plan)
+        self.assertIsNone(data['brief'])
+        self.assertIsNone({task['id']: task for task in data['tasks']}['reader']['brief'])
+        solo = detail(SOLO)
+        self.assertIsNone(solo['brief'])
+        self.assertIsNone(solo['tasks'][0]['brief'])
+
+    def test_the_export_leaves_brief_prose_and_answers_out_unless_texts_are_chosen(self):
+        # why, options, default and answer are not in the export's global text keys. `text` is.
+        # Scope, state and the run counts are not prose and stay when texts are left out.
+        catalog = Catalog(plans=[self.plan], registry=False)
+        key = run_key(self.plan)
+        for texts in (False, True):
+            with self.subTest(texts=texts):
+                _, body = export.build(catalog, key, texts=texts)
+                html = body.decode('utf-8')
+                snapshot = json.loads(re.search(
+                    r'<script type="application/json" id="forge-snapshot">(.*?)</script>', html, re.DOTALL).group(1))
+                run = snapshot['api'][f'/api/runs/{key}']
+                tasks = {task['id']: task for task in run['tasks']}
+                question = tasks['reader']['brief']['questions'][0]
+                parked = tasks['reader']['brief']['parked'][0]
+                late = tasks['reader']['brief']['late'][0]
+                self.assertEqual(run['brief'], {'level': 'gated', 'open': 3, 'flagged': 1})
+                self.assertEqual(question['id'], 'q1')
+                self.assertEqual(question['state'], 'answered')
+                self.assertIs(question['must_answer'], True)
+                self.assertEqual(parked['id'], 'q4')
+                self.assertEqual(parked['scope'], 'plan')
+                self.assertIs(parked['must_answer'], True)
+                self.assertEqual((late['id'], late['actor'], late['t']), ('q3', 'cli', 1760600200))
+                if texts:
+                    self.assertEqual(question['text'], 'Which reader?')
+                    self.assertEqual(question['why'], 'two modules')
+                    self.assertEqual(question['options'], ['a', 'b'])
+                    self.assertEqual(question['default'], 'a')
+                    self.assertEqual(question['answer'], 'the ui reader')
+                    self.assertEqual(parked['text'], 'Whole plan?')
+                    self.assertEqual(parked['why'], 'scope')
+                    self.assertEqual(parked['options'], ['now', 'later'])
+                    self.assertEqual(parked['default'], 'later')
+                    self.assertEqual(late['text'], 'too late')
+                    self.assertIn('the ui reader', html)
+                else:
+                    for field in ('text', 'why', 'options', 'default', 'answer'):
+                        self.assertIsNone(question[field], field)
+                    for field in ('text', 'why', 'options', 'default'):
+                        self.assertIsNone(parked[field], field)
+                    self.assertIsNone(late['text'])
+                    self.assertNotIn('the ui reader', html)
+                    self.assertNotIn('two modules', html)
+                    self.assertNotIn('Whole plan?', html)
 
 
 class BriefWaitTests(unittest.TestCase):

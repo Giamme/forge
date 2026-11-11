@@ -433,6 +433,69 @@ class SummariesReadOnlyTests(EndpointCase):
         self.assertEqual(self.calls(), [])
 
 
+class BriefAnswerTests(EndpointCase):
+    """POST /api/runs/<key>/tasks/<id>/brief/<qid> runs `forge brief answer` with the answer on stdin."""
+
+    def path(self, qid='q1', task='reader', key=None):
+        return f'/api/runs/{key or self.key}/tasks/{task}/brief/{qid}'
+
+    def test_the_answer_is_passed_on_stdin_with_actor_ui(self):
+        # A late answer prints a notice, not a JSON object, and exits 0. That is a success.
+        notice = 'too late for task reader: the answer does not change this task\n'
+        self.behave(stdout=notice)
+        answer = 'use the reader'
+        status, body = self.post({'answer': answer}, self.path())
+        self.assertEqual((status, body), (200, {'exit': 0, 'output': notice}))
+        self.assertEqual(self.last_argv(), ['brief', 'answer', self.rplan, 'reader', 'q1',
+                                            '--file', '-', '--actor', 'ui'])
+        self.assertEqual(self.calls()[-1]['stdin'], answer)
+        self.assertEqual(self.calls()[-1]['leader'], True)
+
+    def test_a_bad_qid_an_empty_answer_and_one_too_long_are_refused(self):
+        self.behave(stdout='reader/q12 answered\n')
+        answer = 'y' * 4096
+        status, body = self.post({'answer': answer}, self.path('q12'))
+        self.assertEqual((status, body['exit'], body['output']), (200, 0, 'reader/q12 answered\n'), body)
+        self.assertEqual(self.calls()[-1]['stdin'], answer)
+        self.assertEqual(self.last_argv()[-5:], ['q12', '--file', '-', '--actor', 'ui'])
+        before = len(self.calls())
+        refused = [('q', {'answer': 'yes'}), ('q1a', {'answer': 'yes'}), ('1', {'answer': 'yes'}),
+                   ('Q1', {'answer': 'yes'}), ('q1', {'answer': ''}), ('q1', {}),
+                   ('q1', {'answer': 'z' * 4097}), ('q1', {'answer': 'a\x00b'}),
+                   ('q1', {'answer': 3}), ('q1', {'answer': 'yes', 'actor': 'ui'})]
+        for qid, obj in refused:
+            self.assertEqual(self.post(obj, self.path(qid))[0], 400, (qid, obj))
+        self.assertEqual(self.post({'answer': 'yes'}, self.path(task='solo', key=self.solo_key))[0], 404)
+        self.assertEqual(self.post({'answer': 'yes'}, self.path(key='000000000000'))[0], 404)
+        self.assertEqual(len(self.calls()), before)
+
+    def test_a_cli_error_keeps_the_output_and_the_exit_code(self):
+        self.behave(code=2, stderr='forge brief: no such question: q9\n', stdout='')
+        status, body = self.post({'answer': 'yes'}, self.path('q9'))
+        self.assertEqual(status, 400)
+        self.assertEqual(body['error'], 'invalid')
+        self.assertEqual(body['exit'], 2)
+        self.assertEqual(body['output'], '')
+        self.assertIn('no such question', body['detail'])
+
+    def test_a_second_write_to_the_run_is_busy(self):
+        self.assertTrue(self.server.run_locks.acquire(self.key))
+        try:
+            self.assertEqual(self.post({'answer': 'yes'}, self.path()), (409, {'error': 'busy'}))
+        finally:
+            self.server.run_locks.release(self.key)
+        self.assertEqual(self.calls(), [])
+
+
+class BriefAnswerReadOnlyTests(EndpointCase):
+    read_only = True
+
+    def test_an_answer_is_refused(self):
+        status, body = self.post({'answer': 'yes'}, f'/api/runs/{self.key}/tasks/reader/brief/q1')
+        self.assertEqual((status, body), (405, {'error': 'method not allowed'}))
+        self.assertEqual(self.calls(), [])
+
+
 class SummariesRealCliTests(ControlApiCase):
     """The real `forge control set summaries` through the API. `on` is not called here: it starts forge summarize."""
 

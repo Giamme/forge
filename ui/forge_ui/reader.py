@@ -1279,6 +1279,147 @@ def _run_summaries(reader):
     return dict(mode='on' if reader.word('summaries') == 'on' else 'off', model=reader.line('summaries_model'))
 
 
+# --- brief mode (#135): tasks/<id>/brief.json, parked questions, answers and late answers ---------
+
+_BRIEF_LEVELS = ('advisory', 'gated', 'strict')
+
+
+def _brief_level(reader):
+    """The plan's brief level, or None when brief is off (no `brief` file, `off`, or any other word)."""
+    level = reader.word('brief')
+    return level if level in _BRIEF_LEVELS else None
+
+
+def _cap_str(reader, value, field):
+    return reader.cap(value, field) if isinstance(value, str) else None
+
+
+def _cap_options(reader, value, field):
+    if not isinstance(value, list):
+        return []
+    return [reader.cap(item, field) for item in value if isinstance(item, str)]
+
+
+def _answer_map(data):
+    """`{qid: entry}` from an answers or late object. Anything else is no answers."""
+    if not isinstance(data, dict):
+        return {}
+    return {key: value if isinstance(value, dict) else {}
+            for key, value in data.items() if isinstance(key, str) and key}
+
+
+def _entry_text(entry):
+    text = entry.get('text') if isinstance(entry, dict) else None
+    return text if isinstance(text, str) else None
+
+
+def _brief_rows(reader, prefix, body, answers, late, parked):
+    """Questions from a brief.json or brief.parked.json object, in file order.
+
+    An entry that is not an object, or has no string id, is skipped, with one warning for the file.
+    Answers apply to task questions only: `answered` beats `late`, and anything else is `open`.
+    """
+    if not isinstance(body, dict):
+        return []
+    label = f'{prefix}/brief.parked.json' if parked else f'{prefix}/brief.json'
+    items = body.get('questions', [])
+    if not isinstance(items, list):
+        reader.warn(label, 'questions is not a list')
+        return []
+    file_stale = body.get('possibly_stale') is True
+    rows, skipped = [], 0
+    for question in items:
+        if not isinstance(question, dict) or not isinstance(question.get('id'), str) or not question['id']:
+            skipped += 1
+            continue
+        qid = question['id']
+        stem = f'{prefix}/brief.parked/{qid}' if parked else f'{prefix}/brief/{qid}'
+        if parked:
+            state, entry = None, None
+        elif qid in answers:
+            state, entry = 'answered', answers[qid]
+        elif qid in late:
+            state, entry = 'late', late[qid]
+        else:
+            state, entry = 'open', None
+        row = dict(id=qid, text=_cap_str(reader, question.get('text'), stem + '.text'),
+                   why=_cap_str(reader, question.get('why'), stem + '.why'),
+                   options=_cap_options(reader, question.get('options'), stem + '.options'),
+                   default=_cap_str(reader, question.get('default'), stem + '.default'),
+                   must_answer=question.get('must_answer') is True,
+                   possibly_stale=file_stale or question.get('possibly_stale') is True)
+        if parked:
+            scope = question.get('scope')
+            row['scope'] = scope if isinstance(scope, str) else None
+        else:
+            row['state'] = state
+            row['answer'] = _cap_str(reader, _entry_text(entry), stem + '.answer')
+        rows.append(row)
+    if skipped:
+        reader.warn(label, f'{skipped} question{"" if skipped == 1 else "s"} skipped')
+    return rows
+
+
+def _late_rows(reader, prefix, late):
+    """brief.late.json in file order: `{id, text, actor, t}`. `t` is kept only when it is a finite number."""
+    rows = []
+    for qid, entry in late.items():
+        actor = entry.get('actor') if isinstance(entry, dict) else None
+        stamp = entry.get('t') if isinstance(entry, dict) else None
+        rows.append(dict(id=qid, text=_cap_str(reader, _entry_text(entry), f'{prefix}/brief.late/{qid}.text'),
+                         actor=actor if isinstance(actor, str) else None,
+                         t=stamp if _is_number(stamp) else None))
+    return rows
+
+
+def _task_brief(reader, ident):
+    """The task's questions, parked questions and late answers, or None when it has none of those files."""
+    prefix = f'tasks/{ident}'
+    paths = {'brief': f'{prefix}/brief.json', 'parked': f'{prefix}/brief.parked.json',
+             'late': f'{prefix}/brief.late.json'}
+    present = {name: reader.exists(path) for name, path in paths.items()}
+    if not any(present.values()):
+        return None
+    brief = reader.object(paths['brief']) if present['brief'] else None
+    parked = reader.object(paths['parked']) if present['parked'] else None
+    late = _answer_map(reader.object(paths['late']) if present['late'] else None)
+    answers = _answer_map(reader.object(f'{prefix}/brief.answers.json'))
+    return dict(questions=_brief_rows(reader, prefix, brief, answers, late, False),
+                parked=_brief_rows(reader, prefix, parked, {}, {}, True),
+                late=_late_rows(reader, prefix, late))
+
+
+def _run_brief(level, tasks):
+    """RunDetail.brief: the level, and how many task questions are still open (flagged: open and must_answer).
+
+    Parked questions are not counted: they are wider than this task and do not hold it."""
+    open_n = flagged = 0
+    for task in tasks:
+        brief = task.get('brief')
+        if not brief:
+            continue
+        for question in brief['questions']:
+            if question['state'] != 'open':
+                continue
+            open_n += 1
+            flagged += question['must_answer']
+    return dict(level=level, open=open_n, flagged=flagged)
+
+
+def _attach_brief(reader, tasks):
+    """Set each task's `brief` and return the run's `{level, open, flagged}`, or None when brief is off.
+
+    Off means the questions are not shown either: a file left from an earlier level stays on disk."""
+    level = _brief_level(reader)
+    if level is None:
+        for task in tasks:
+            task['brief'] = None
+        return None
+    for task in tasks:
+        task['brief'] = _task_brief(reader, task['id'])
+    return _run_brief(level, tasks)
+
+
 def _task_detail(reader, task, run_id, waves, branches, max_attempts, origin, request, queues):
     """Fill in a plan task; returns every execution it read (its own and its shadows')."""
     ident = task['id']
@@ -1922,6 +2063,7 @@ def _solo_detail(reader, source):
     result['request'] = reader.cap(request, 'request')
     result['retro'] = _retro(reader)
     result['summaries'] = None  # generated summaries are for plan tasks only
+    result['brief'] = None  # brief mode is a plan's questions, not a solo run's
     result['settings'] = dict.fromkeys(_SOLO_SETTINGS)
     result['settings']['qa_threshold'], result['settings']['qa_threshold_source'] = _threshold(reader)
     result['settings']['profile'] = _frozen_profile(reader)
@@ -1948,7 +2090,7 @@ def _solo_detail(reader, source):
                 gate=_gate(reader, 'qa.gate'), known_issues=_nonempty(reader, 'known_issues.md'),
                 fail_first=_fail_first(reader, 'failfirst.json'), pre_review=None,
                 now=_now(reader, '', execs) if status == 'RUNNING' else None, waiting=None, sweep=None, swept=[],
-                summary=None, summaries_override=None)
+                summary=None, summaries_override=None, brief=None)
     task['header'] = _header(reader, task['title'], prompt, approach, request, 'tasks/solo',
                              _github_origin(reader))
     task['trail'] = _trail(reader, logged, execs, 'retry_sources.tsv', [], _queued_retries(reader).get('solo', ()))
@@ -2095,6 +2237,7 @@ def detail(path, source='plan') -> dict:
     result['deferrals'] = [line.strip() for line in (reader.text('deferrals.txt') or '').splitlines() if line.strip()]
     result['findings_available'] = findings.available()
     result['fractal'] = fractal.summary(reader)
+    result['brief'] = _attach_brief(reader, tasks)
     result.update(tasks=tasks, warnings=reader.warnings, truncated=reader.truncated, updated=reader.updated)
     return result
 

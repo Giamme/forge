@@ -4,8 +4,8 @@ The server never writes a run dir, a repo or forge's config itself. A write is o
 `<forge root>/forge ...` with an argv list and no shell, in its own process group, under a lock;
 this module holds the route table, the body validation, the call and the mapping of the CLI's
 exit code to an HTTP answer. server.py does the authentication and hands each authenticated POST
-to `dispatch`. Profile create and edit are the one call that writes a JSON body to the CLI's
-stdin (`--file -`); every other call has no stdin.
+to `dispatch`. Profile create and edit write a JSON body to the CLI's stdin (`--file -`);
+a brief answer writes the answer text the same way. Every other call has no stdin.
 """
 from __future__ import annotations
 
@@ -34,6 +34,10 @@ MAX_DECIDE_VALUE = 256
 # The profile object written to `forge config profile … --file -`. The HTTP body is already capped
 # at 64 KiB by the server; this caps the stdin text itself, which a re-encode can make larger.
 MAX_PROFILE_BODY = 64 * 1024
+# A brief answer, in characters. The CLI then keeps the leading 4 KiB of what remains after it
+# strips control characters; this bound is the one the route enforces before that call.
+MAX_ANSWER = 4096
+_QID = re.compile(r'^q[0-9]+$')
 _PROFILE_NAME = re.compile(r'^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$')
 _PROFILE_KEY = re.compile(r'^(routing|policy)\.[a-z_.]+$')
 _PROFILE_ACTIONS = ('create', 'edit', 'set', 'unset', 'rm', 'use')
@@ -133,8 +137,9 @@ def run_cli(argv, timeout, stdin=None):
     On timeout the whole group gets SIGTERM, then SIGKILL after TERM_WAIT_S, and the leader is
     reaped before this returns, so a caller that holds a lock can release it knowing nothing of
     the call is still running. The CLI's environment is the server's plus `cli_env`. `stdin` is
-    bytes written to the process and then closed, or None. Only a profile create or edit passes
-    any, and only after its size was checked; every other call keeps stdin closed.
+    bytes written to the process and then closed, or None. A profile create or edit passes the
+    profile object, and a brief answer passes the answer text, each only after its size was
+    checked; every other call keeps stdin closed.
     """
     env = dict(os.environ, **cli_env) if cli_env else None
     try:
@@ -205,6 +210,26 @@ def map_exit(result):
     return status, body
 
 
+def _text_exit(result):
+    """(status, body) for a CLI that prints text. Exit 0 is success even with no JSON object.
+
+    A late brief answer prints a notice and exits 0. `output` is stdout, so the page can show it.
+    A non-zero exit uses the same status mapping as `map_exit` and also carries `exit` and `output`.
+    """
+    if result.timed_out:
+        return 504, {'error': 'timeout', 'detail': TIMEOUT_DETAIL}
+    if result.error:
+        return 502, {'error': 'bad gateway', 'detail': result.error[:DETAIL_MAX]}
+    output = result.stdout
+    if result.code == 0:
+        return 200, {'exit': 0, 'output': output}
+    status, error = _EXITS.get(result.code, (502, 'bad gateway'))
+    detail = _message(result.stderr) if result.code == 3 else _last_line(result.stderr)
+    body = {'error': error, 'detail': detail or f'the forge CLI exited {result.code}',
+            'exit': result.code, 'output': output}
+    return status, body
+
+
 # -------------------------------------------------------------------------------------- validation
 
 class BadBody(Exception):
@@ -268,12 +293,14 @@ class Context:
         found = self.server.catalog.locate(self.key)
         return found[0] if found and found[1] in kinds else None
 
-    def call(self, *args, limit=None, stdin=None):
+    def call(self, *args, limit=None, stdin=None, json_stdout=True):
         """One CLI call, mapped to (status, body); the run's lock is the caller's to hold.
 
         `limit` is the route's timeout; a timeout given to `dispatch` (a test's) replaces it.
-        `stdin` is bytes for the one profile write that uses `--file -`, or None."""
-        return map_exit(run_cli([str(self.cli), *args], self.timeout or limit or TIMEOUT_S, stdin=stdin))
+        `stdin` is bytes for a call that uses `--file -`, or None. `json_stdout` is false when a
+        successful CLI prints text (a brief answer, including a late-answer notice)."""
+        result = run_cli([str(self.cli), *args], self.timeout or limit or TIMEOUT_S, stdin=stdin)
+        return map_exit(result) if json_stdout else _text_exit(result)
 
     def locked(self, work):
         """work() under the run's lock; 409 busy when another write to this run is in flight."""
@@ -303,6 +330,43 @@ def _change(ctx):
     if path is None:
         return 404, {'error': 'not found'}
     return ctx.locked(lambda: ctx.call('control', action, path, *tail, '--actor', 'ui', '--json'))
+
+
+def _answer_text(value):
+    """The answer string, or BadBody. 1 to MAX_ANSWER characters, no NUL, encodable as UTF-8."""
+    if not isinstance(value, str):
+        raise BadBody('answer must be a string')
+    if '\x00' in value:
+        raise BadBody('answer must not contain a NUL')
+    if not 1 <= len(value) <= MAX_ANSWER:
+        raise BadBody(f'answer must be 1 to {MAX_ANSWER} characters')
+    try:
+        return value.encode('utf-8')
+    except UnicodeEncodeError:
+        raise BadBody('answer must be valid text')
+
+
+def _brief_answer(ctx):
+    """POST an answer: `forge brief answer <plan> <task> <qid> --file - --actor ui`, text on stdin.
+
+    A late answer is exit 0 with a notice on stdout, so it is a success and the page can show it.
+    """
+    ctx.route = 'brief'
+    task, qid = ctx.parts
+    try:
+        if not isinstance(ctx.body, dict):
+            raise BadBody('body must be a JSON object')
+        if not _QID.fullmatch(qid):
+            raise BadBody('qid must match ^q[0-9]+$')
+        _check_fields(ctx.body, ('answer',))
+        stdin = _answer_text(ctx.body.get('answer'))
+    except BadBody as exc:
+        return _invalid(str(exc))
+    path = ctx.locate(('plan',))
+    if path is None:
+        return 404, {'error': 'not found'}
+    return ctx.locked(lambda: ctx.call('brief', 'answer', path, task, qid, '--file', '-', '--actor', 'ui',
+                                       stdin=stdin, json_stdout=False))
 
 
 # ----------------------------------------------------------------- issues, delete and config routes
@@ -859,6 +923,8 @@ def _worktrees(ctx):
 ROUTES = [
     ('GET', re.compile(r'/api/runs/([0-9a-f]{12})/controls'), _show),
     ('POST', re.compile(r'/api/runs/([0-9a-f]{12})/controls'), _change),
+    ('POST', re.compile(r'/api/runs/([0-9a-f]{12})/tasks/([A-Za-z0-9][A-Za-z0-9._-]{0,127})/brief/([^/]+)'),
+     _brief_answer),
     ('GET', re.compile(r'/api/runs/([0-9a-f]{12})/issues'), _issues_list),
     ('POST', re.compile(r'/api/runs/([0-9a-f]{12})/issues'), _issues_file),
     ('POST', re.compile(r'/api/runs/([0-9a-f]{12})/issues/dismiss'), _issues_dismiss),
@@ -877,12 +943,12 @@ ROUTES = [
 
 
 def match(method, path):
-    """(handler, run key) for a route, or None."""
+    """(handler, match) for a route, or None. Group 1 of the match is the run key."""
     for verb, pattern, handler in ROUTES:
         if verb == method:
             found = pattern.fullmatch(path)
             if found:
-                return handler, found.group(1)
+                return handler, found
     return None
 
 
@@ -895,7 +961,8 @@ def dispatch(server, cli, method, path, body, timeout=None, query=''):
     found = match(method, path)
     if found is None:
         return None
-    handler, key = found
-    ctx = Context(server, cli, key, body, timeout, query)
+    handler, matched = found
+    ctx = Context(server, cli, matched.group(1), body, timeout, query)
+    ctx.parts = matched.groups()[1:]
     status, obj = handler(ctx)
     return status, obj, ctx.route, ctx.key
