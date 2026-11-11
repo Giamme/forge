@@ -1117,6 +1117,7 @@ removes what it created.
 ```
 <plan-dir>/tasks/<id>/approach.md               intended approach, if planned
 <plan-dir>/tasks/<id>/risk                      low|medium|high, recorded only (#122), if rated
+<plan-dir>/tasks/<id>/retry_sources.tsv         attempt, source, epoch: why each retried attempt ran (#133)
 <repo>/.forge/                                  project memory (survives the run)
 <repo>/../.forge-worktrees/<run-id>/<task-id>   task worktree
 <repo>/../.forge-worktrees/<run-id>/_integration integration worktree
