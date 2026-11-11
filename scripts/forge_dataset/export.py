@@ -32,7 +32,7 @@ import time
 from collections import Counter, defaultdict
 from pathlib import Path
 
-from . import SKILL, connect, data_home, read_blob
+from . import SKILL, connect, data_home, is_side_role, read_blob
 from .harvest import review_completeness
 from .states import assemble, retry, siblings, task_size
 
@@ -586,6 +586,17 @@ def _ending_qa(rows) -> dict:
     return ending
 
 
+def not_an_attempt(role) -> bool:
+    """A shadow review or a side dispatch: in the run's tokens, not in its attempt statistics.
+
+    `qa_shadow` is the second reviewer. A harvested side call is `side_<kind>`
+    (`is_side_role`); the dir on disk, and a side dispatch harvested outside
+    `side/<kind>/`, keeps the role `side`. None of these is the review of record.
+    Shadow agreement still reads `qa_shadow`. This does not drop a side dispatch's tokens.
+    """
+    return role == 'qa_shadow' or role == 'side' or is_side_role(role)
+
+
 def _qa_rows(runs: Runs):
     """Every independent QA dispatch with a verdict, with the diff it was shown and its task text.
 
@@ -610,7 +621,8 @@ def _qa_rows(runs: Runs):
                 word, _, conf = text.strip().partition('\t')
                 effort[(run, task, e['attempt'])] = (word, _float(conf))
     for (run, task, role), rows in runs.dispatches.items():
-        if role != 'qa':
+        # The review of record only. A shadow pair is selected below; a side dispatch is not a row.
+        if not_an_attempt(role) or role != 'qa':
             continue
         ending = _ending_qa(rows)
         for index, e in enumerate(rows):
@@ -672,7 +684,8 @@ def shadow_pairs(runs: Runs) -> dict:
             ended[(e['run'], e['task'], _int(e['d'].get('attempt')))] = e['d'].get('status')
     out = {}
     for (run, task, role), rows in runs.dispatches.items():
-        if role != 'qa_shadow':
+        # Selects the shadow reviewer. A side role is not `qa_shadow`, so it is not a pair.
+        if role != 'qa_shadow' or is_side_role(role):
             continue
         for shadow in rows:
             n = shadow['attempt']
@@ -700,7 +713,8 @@ def agreement(runs: Runs) -> dict:
         key = '%s vs %s' % (primary['d'].get('model'), shadow['d'].get('model'))
         by_pair[key][0] += 1
         by_pair[key][1] += primary['d']['verdict'] == shadow['d']['verdict']
-    shadows = sum(len(rows) for (_, _, role), rows in runs.dispatches.items() if role == 'qa_shadow')
+    shadows = sum(len(rows) for (_, _, role), rows in runs.dispatches.items()
+                  if role == 'qa_shadow' and not is_side_role(role))
     agree = sum(a for _, a in by_pair.values())
     return dict(shadow_reviews=shadows, pairs=len(pairs), agree=agree,
                 by_pair={k: dict(pairs=n, agree=a) for k, (n, a) in sorted(by_pair.items())})

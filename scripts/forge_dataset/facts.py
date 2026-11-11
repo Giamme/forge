@@ -28,8 +28,8 @@ import re
 import sys
 from collections import Counter, defaultdict
 
-from . import connect, dataset_dir
-from .export import Runs, Store, _ending_qa, _gate_decision, shadow_pairs
+from . import connect, dataset_dir, is_side_role
+from .export import Runs, Store, _ending_qa, _gate_decision, not_an_attempt, shadow_pairs
 
 FACTS = {'reach': ('main', 'realistic', 'unusual'), 'origin': ('new', 'existing'),
          'evidence': ('ran', 'traced', 'suspected')}
@@ -156,7 +156,9 @@ def report(runs: Runs, repo: str = None) -> dict:
     by_sev = defaultdict(Counter)
     for e in runs.store.of('dispatch'):
         d = e['d']
-        if d.get('role') not in ('qa', 'qa_shadow') or not mine(e) or not isinstance(d.get('findings'), list):
+        role = d.get('role')
+        # qa and qa_shadow are reviews. A side dispatch is neither, even when it carries a findings list.
+        if role not in ('qa', 'qa_shadow') or is_side_role(role) or not mine(e) or not isinstance(d.get('findings'), list):
             continue
         found = [f for f in d['findings'] if isinstance(f, dict)]
         cov['reviews'] += 1
@@ -194,7 +196,7 @@ def report(runs: Runs, repo: str = None) -> dict:
 
     rules = out['rules']
     for (run, task, role), rows in runs.dispatches.items():
-        if role != 'qa' or not rows or not mine(rows[0]):
+        if not_an_attempt(role) or role != 'qa' or not rows or not mine(rows[0]):
             continue
         ended = sorted(_ending_qa(rows).items(), key=lambda item: item[0] or 0)
         attempts = [n for n, _ in ended]
