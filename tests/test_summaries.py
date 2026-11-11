@@ -403,6 +403,46 @@ class SummaryTests(unittest.TestCase):
                     [item['ref'] for item in sources if item['kind'] == 'finding'],
                     ['2:Second bug'])
 
+    def test_completed_attempts_sharing_an_epoch_second_keep_their_reviews(self):
+        # attempts.tsv stores date +%s. Two attempts that both end in that second
+        # used to match the first row: attempt 2's review (start .5, finish .8)
+        # overwrote attempt 1's severity, left attempt 2 empty, and the finding
+        # ref was 1:Second bug.
+        first = '- [P1][CONFIRMED] a.txt:1 — First bug\nFORGE_VERDICT: FAIL\n'
+        second = '- [P2][CONFIRMED] a.txt:2 — Second bug\nFORGE_VERDICT: FAIL\n'
+        log = '1700000001\t1\tFAIL\t\tsol\n1700000001\t2\tFAIL\t\tastra\n'
+        cases = (
+            # Attempt 1 finished before the shared second. Attempt 2 is the .5/.8 review.
+            ('earlier-attempt', ((1700000000.2, 0.5, first), (1700000001.5, 0.3, second)),
+             [(1, 'P1'), (1, 'P2')], ['2:Second bug']),
+            # Both reviews finish in the second half. Order, not the first row, separates them.
+            ('both-in-the-second', ((1700000001.1, 0.5, first), (1700000001.7, 0.15, second)),
+             [(1, 'P1'), (1, 'P2')], ['2:Second bug']),
+            # The only archived review is attempt 2's. It must not land on attempt 1.
+            ('only-the-later-review', ((1700000001.5, 0.3, second),),
+             [(None, None), (1, 'P2')], ['2:Second bug']),
+            # An early finish in the shared second stays on the first attempt.
+            ('only-the-earlier-review', ((1700000001.1, 0.2, first),),
+             [(1, 'P1'), (None, None)], ['1:First bug']),
+        )
+        for name, archives, expected, refs in cases:
+            with self.subTest(name=name):
+                self._fresh(TASKS)
+                task = self.plan / 'tasks' / 'a'
+                task.mkdir(parents=True)
+                (task / 'status').write_text('FAIL\n')
+                (task / 'attempts.tsv').write_text(log)
+                (task / 'qa.last').write_text(archives[-1][2])
+                for index, (started, total, text) in enumerate(archives):
+                    self._archive(task, 'qa-%d' % index, text, started, total)
+                body, sources = self.facts()
+                self.assertEqual(
+                    [(row['findings'], row['worst']) for row in body['attempts']],
+                    expected)
+                self.assertEqual(
+                    [item['ref'] for item in sources if item['kind'] == 'finding'],
+                    refs)
+
     def test_a_review_archived_before_its_row_keeps_the_open_attempt(self):
         # Summarise after attempt 2's review is archived and before record_attempt
         # appends its row. The counter already says 2. The new findings must not

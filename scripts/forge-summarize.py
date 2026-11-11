@@ -264,67 +264,212 @@ def _open_attempt(rows: list, task_dir: Path):
     return last
 
 
-def _archive_attempt(path: Path, rows: list, task_dir: Path):
-    """The attempt a saved review belongs to.
+def _review_end(item: dict) -> float:
+    """When this review was over. Without a finish, the start is the only bound."""
+    if item['finished'] is not None:
+        return item['finished']
+    return item['started']
 
-    dataset.json's attempt_now wins when a capture wrote one. Production
-    archives do not persist it, so the attempt log is the fallback. Its epoch
-    is date +%s at the end of the attempt, which drops the fraction: a review
-    that starts at E.2 and finishes at E.8 is stored as E. Comparing the raw
-    start with <= E skips that row and takes the next attempt.
 
-    The finish, when metrics closed, matches a row when it falls before the
-    next second (`< epoch + 1`). Without a finish, the start uses that window.
-    A review that started after the last row was appended is the open attempt
-    the counter already holds. That row does not exist yet, and the review
-    must not replace the previous attempt's facts.
+def _after_append(started: float, rows: list, task_dir: Path) -> bool:
+    """True when the review started after attempts.tsv was last appended.
+
+    record_attempt runs after the review, so a start later than that write is not
+    one of the logged rows. It belongs to the attempt the counter already holds.
+    A mtime that is only the truncated epoch cannot say: date +%s drops the
+    fraction, and a one-second timestamp does too. This is the whole log, not
+    only its last row: an earlier row in the same second was written before the
+    final append as well.
     """
-    number = _json(path / 'dataset.json').get('attempt_now')
-    if type(number) is int and number > 0:
-        return number
-    started = _number(_json(path / 'metrics.json').get('wall_started'))
-    if started is None:
+    written = _log_mtime(task_dir)
+    if written is None or not started > written:
+        return False
+    if not written.is_integer():
+        return True
+    last = None
+    for row in rows:
+        if row['epoch'] is not None:
+            last = row['epoch']
+    return last is None or written > last
+
+
+def _append_rejects(epoch: int, started: float, finished, task_dir: Path, ahead: bool) -> bool:
+    """The last logged row does not own this review.
+
+    Its second can also hold the start of the next attempt, whose row is still
+    missing. The same rules as `_after_append`, for a one-second mtime that the
+    coarser check cannot decide: a review that did not finish inside the second
+    then belongs to the open attempt.
+    """
+    written = _log_mtime(task_dir)
+    started_before_append = written is not None and started <= written
+    if written is not None and written > epoch and not started_before_append:
+        return True
+    if ahead and finished is None and started > epoch and not started_before_append:
+        return True
+    return False
+
+
+def _matching_group(rows: list, mark: float):
+    """`[start, end)` of the attempts logged in the first second that contains `mark`.
+
+    A row at truncated epoch E owns a review that finished before the next second
+    (`mark < E + 1`). Every later row shares that test until its own epoch is
+    larger, so the earliest matching second is the one the review finished in.
+    Rows logged in that same second stay in the group; the next second does not.
+    """
+    start = None
+    epoch = None
+    for index, row in enumerate(rows):
+        row_epoch = row['epoch']
+        if row_epoch is None or not mark < row_epoch + 1:
+            continue
+        start = index
+        epoch = row_epoch
+        break
+    if start is None:
         return None
-    finished = _finished(path, started)
-    mark = finished if finished is not None else started
+    end = start + 1
+    while end < len(rows) and rows[end]['epoch'] == epoch:
+        end += 1
+    return start, end
+
+
+def _slot(mark: float, epoch: int, count: int) -> int:
+    """Which of `count` attempts logged at `epoch` a review that ended at `mark` is.
+
+    One row is that row. Several attempts recorded in one second are ordered in
+    the file, and each review is recorded just after it finishes, so a finish
+    later in the second is a later attempt. The second is split into `count`
+    equal parts. A finish before the second began is the first of them.
+    """
+    if count <= 1:
+        return 0
+    offset = mark - epoch
+    if offset <= 0:
+        return 0
+    if offset >= 1:
+        return count - 1
+    slot = int(offset * count)
+    if slot >= count:
+        return count - 1
+    return slot
+
+
+def _clusters(items: list) -> list:
+    """Reviews one attempt could own, in start order.
+
+    The next attempt's review starts after this attempt's review has finished:
+    record_attempt sits between them. Overlapping reviews stay one attempt.
+    """
+    clusters = []
+    ends = []
+    for item in items:
+        end = _review_end(item)
+        if not clusters or ends[-1] <= item['started']:
+            clusters.append([item])
+            ends.append(end)
+        else:
+            clusters[-1].append(item)
+            if end > ends[-1]:
+                ends[-1] = end
+    return clusters
+
+
+def _place_clusters(clusters: list, epoch: int, count: int) -> list:
+    """Row offset within the shared second for each cluster.
+
+    One cluster per row follows file order: the earlier review is the earlier
+    attempt, whichever part of the second it finished in. A single cluster uses
+    where it finished. Fewer clusters than rows do too, without a later cluster
+    landing before an earlier one. Extras share the last row.
+    """
+    if len(clusters) == count:
+        return list(range(count))
+    if len(clusters) > count:
+        return list(range(count - 1)) + [count - 1] * (len(clusters) - count + 1)
+    chosen = []
+    used = set()
+    for cluster in clusters:
+        slot = _slot(max(item['mark'] for item in cluster), epoch, count)
+        if chosen:
+            slot = max(slot, chosen[-1])
+        while slot in used and slot + 1 < count:
+            slot += 1
+        if slot in used:
+            slot = chosen[-1]
+        used.add(slot)
+        chosen.append(slot)
+    return chosen
+
+
+def _assign_timed(items: list, rows: list, task_dir: Path) -> dict:
+    """`{id(item): attempt}` for reviews with no dataset.json attempt_now.
+
+    Items are in start order. An attempt the log does not own yet is the open
+    attempt from the counter.
+    """
     opened = _open_attempt(rows, task_dir)
     last = rows[-1]['attempt'] if rows else None
     ahead = opened is not None and opened != last
-    for index, row in enumerate(rows):
-        epoch = row['epoch']
-        if epoch is None or not mark < epoch + 1:
+    assigned = {}
+    buckets = {}
+    order = []
+    for item in items:
+        if _after_append(item['started'], rows, task_dir):
+            assigned[id(item)] = opened
             continue
-        if index != len(rows) - 1:
-            return row['attempt']
-        # The last logged second can also hold the start of the next attempt,
-        # whose row is still missing. Two ways to tell them apart. The file's
-        # mtime is the last append: a review that started after that write is
-        # not this row (record_attempt runs after the review). A one-second
-        # mtime cannot say, so a review that did not finish inside the second
-        # falls through to the open attempt instead.
-        written = _log_mtime(task_dir)
-        # st_mtime is the last append. record_attempt runs after the review, so
-        # a review that started after that write is not this row.
-        started_before_append = written is not None and started <= written
-        if written is not None and written > epoch and not started_before_append:
+        group = _matching_group(rows, item['mark'])
+        if group is None:
+            assigned[id(item)] = opened
             continue
-        # A mtime that is only the truncated epoch cannot say. A start inside
-        # that second, with no finish, then belongs to the open attempt.
-        if ahead and finished is None and started > epoch and not started_before_append:
+        if group not in buckets:
+            buckets[group] = []
+            order.append(group)
+        buckets[group].append(item)
+    for start, end in order:
+        members = buckets[(start, end)]
+        epoch = rows[start]['epoch']
+        count = end - start
+        if count == 1:
+            for item in members:
+                if end == len(rows) and _append_rejects(
+                        epoch, item['started'], item['finished'], task_dir, ahead):
+                    assigned[id(item)] = opened
+                else:
+                    assigned[id(item)] = rows[start]['attempt']
             continue
-        return row['attempt']
-    return opened
+        # Two completed attempts can share the truncated second. The first row's
+        # window contains every review that finished in it, so taking that row
+        # would give the later review the earlier attempt's findings.
+        clusters = _clusters(members)
+        for cluster, offset in zip(clusters, _place_clusters(clusters, epoch, count)):
+            index = start + offset
+            for item in cluster:
+                if index == len(rows) - 1 and _append_rejects(
+                        epoch, item['started'], item['finished'], task_dir, ahead):
+                    assigned[id(item)] = opened
+                else:
+                    assigned[id(item)] = rows[index]['attempt']
+    return assigned
 
 
 def _reviews(task_dir: Path, rows: list) -> dict:
     """`{attempt: qa.last text}` from attempts/qa-*/, newest start wins. Shadow reviews are skipped.
 
+    dataset.json's attempt_now wins when a capture wrote one. Production archives
+    do not persist it, so the attempt log is the fallback. Its epoch is date +%s
+    at the end of the attempt, which drops the fraction: a review that starts at
+    E.2 and finishes at E.8 is stored as E. Comparing the raw start with <= E
+    skips that row and takes the next attempt. The finish, when metrics closed,
+    matches a row when it falls before the next second. Without a finish, the
+    start uses that window.
+
     The live qa.last is the review still in the task dir. When no archive holds the same
     text, it belongs to the open attempt when the counter is ahead of the log, and
     otherwise to the last recorded attempt (a review that was not archived).
     """
-    found = {}
-    order = []
+    items = []
     root = task_dir / 'attempts'
     if root.is_dir():
         for path in root.iterdir():
@@ -333,18 +478,35 @@ def _reviews(task_dir: Path, rows: list) -> dict:
             text = _text(path / 'qa.last')
             if text is None:
                 continue
-            number = _archive_attempt(path, rows, task_dir)
-            if number is None:
-                continue
+            pinned = _json(path / 'dataset.json').get('attempt_now')
+            if type(pinned) is not int or pinned <= 0:
+                pinned = None
             started = _number(_json(path / 'metrics.json').get('wall_started'))
+            finished = _finished(path, started) if started is not None else None
             if started is None:
+                if pinned is None:
+                    continue
                 try:
                     started = path.stat().st_mtime
                 except OSError:
-                    started = 0
-            order.append((started, path.name, number, text))
-    for _, _, number, text in sorted(order, key=lambda item: (item[0], item[1])):
-        found[number] = text
+                    started = 0.0
+                finished = None
+            items.append({
+                'started': started,
+                'finished': finished,
+                'mark': finished if finished is not None else started,
+                'name': path.name,
+                'text': text,
+                'pinned': pinned,
+            })
+    items.sort(key=lambda item: (item['started'], item['name']))
+    assigned = _assign_timed([item for item in items if item['pinned'] is None], rows, task_dir)
+    found = {}
+    for item in items:
+        number = item['pinned'] if item['pinned'] is not None else assigned.get(id(item))
+        if number is None:
+            continue
+        found[number] = item['text']
     live = _text(task_dir / 'qa.last')
     if live is not None and all(text != live for text in found.values()):
         number = _open_attempt(rows, task_dir)
