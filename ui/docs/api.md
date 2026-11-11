@@ -754,7 +754,10 @@ Every RunSummary field, plus:
   `infra` (a pause in `scheduler.pauses` holds it: scope `all`, or its id in `tasks`; the pause's
   keys plus `kind`), then for a `PENDING` task `deps` (`on`: its deps not merged, `stopped`: those
   in a stopped status such as `FAIL`; a dep at `NEEDS_INPUT` or `NEEDS_DECISION` is in `on` only, as the user
-  holds it and the retry policy did not stop it), `stopping` (`mode`), `drained`, `overlap` (`on`: running
+  holds it and the retry policy did not stop it), `stopping` (`mode`), `drained`, `brief` (`questions`: a gated
+  plan holds it for the ids of its `must_answer` questions with no entry in `brief.answers.json`, or `[]`
+  while `brief.json` is not written yet and `brief.pid` names a running process; the same two files
+  `forge-schedule.py` reads), `overlap` (`on`: running
   tasks whose files overlap its own, as forge-schedule.py tells overlap), `slot` (`running`,
   `max_parallel`: the run is at its capacity) or `next` (nothing holds it).
 - `sweep`: `null` unless the task is a finding sweep's fix task (it has a `sweep.json`). Then `file`

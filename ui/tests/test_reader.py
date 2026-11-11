@@ -1420,6 +1420,53 @@ class TaskSummaryTests(unittest.TestCase):
         json.dumps(data, allow_nan=False)
 
 
+class BriefWaitTests(unittest.TestCase):
+    """RunDetail task.waiting `brief`: a gated plan holds a task for your answer, from the same files the scheduler reads."""
+
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.plan = Path(temp.name) / 'plan'
+        F.write(self.plan / 'run_id', 'brief\n')
+        rows = [('a', '-'), ('b', '-'), ('c', 'a')]
+        F.write(self.plan / 'tasks.tsv', ''.join(f'{i}\t{d}\tlow\tf_{i}\tluna\topus\t{i}\n' for i, d in rows))
+        for ident, _ in rows:
+            F.write(self.plan / f'tasks/{ident}/status', 'PENDING\n')
+        F.write(self.plan / 'scheduler.live', {'pid': os.getpid()})
+        F.write(self.plan / 'brief', 'gated\n')
+        ask = lambda *ids: {'questions': [{'id': q, 'text': q, 'default': 'x', 'must_answer': True} for q in ids]}
+        F.write(self.plan / 'tasks/a/brief.json', ask('q1', 'q2'))
+        F.write(self.plan / 'tasks/b/brief.json', {'questions': [{'id': 'q1', 'text': 't', 'default': 'x', 'must_answer': False}]})
+
+    def waiting(self):
+        return {t['id']: t['waiting'] for t in detail(self.plan)['tasks']}
+
+    def test_the_unanswered_must_answer_questions_hold_a_task(self):
+        waiting = self.waiting()
+        self.assertEqual(waiting['a'], {'kind': 'brief', 'questions': ['q1', 'q2']})
+        self.assertEqual(waiting['b'], {'kind': 'next'})                       # a question it may skip holds nothing
+        self.assertEqual(waiting['c'], {'kind': 'deps', 'on': ['a'], 'stopped': []})
+
+    def test_an_answer_lifts_the_wait_for_that_question_only(self):
+        F.write(self.plan / 'tasks/a/brief.answers.json', {'q1': {'text': 'yes'}})
+        self.assertEqual(self.waiting()['a'], {'kind': 'brief', 'questions': ['q2']})
+        F.write(self.plan / 'tasks/a/brief.answers.json', {'q1': {'text': 'yes'}, 'q2': {'text': 'no'}})
+        self.assertEqual(self.waiting()['a'], {'kind': 'next'})
+
+    def test_only_a_gated_plan_waits(self):
+        for level in ('advisory', 'strict', 'off'):
+            F.write(self.plan / 'brief', level + '\n')
+            self.assertEqual(self.waiting()['a'], {'kind': 'next'}, level)
+
+    def test_a_task_with_no_brief_waits_while_the_writer_runs(self):
+        F.write(self.plan / 'brief.pid', f'{os.getpid()}\n')
+        self.assertEqual(self.waiting()['b'], {'kind': 'next'})           # it has a brief.json
+        (self.plan / 'tasks/b/brief.json').unlink()
+        self.assertEqual(self.waiting()['b'], {'kind': 'brief', 'questions': []})
+        F.write(self.plan / 'brief.pid', f'{2 ** 22 + 12345}\n')                # above any pid this machine hands out
+        self.assertEqual(self.waiting()['b'], {'kind': 'next'})
+
+
 class ControlChangeTests(unittest.TestCase):
     """A change made with `forge control` reaches the next poll of the run detail, which is what redraws Controls."""
 

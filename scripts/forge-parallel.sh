@@ -2246,6 +2246,7 @@ do_retry() {
   if [ "$st" = "PASS" ]; then
     if merge_task "$PLAN" "$id"; then
       note "$id PASS -> merged"
+      forge_brief_stale "$PLAN" "$id"
     else
       note "$id PASS but conflicted on merge — branch preserved"
     fi
@@ -2611,6 +2612,99 @@ run_signal() {
 # Not a ( ) function: main runs it as `( do_run ... ) &`, one subshell that is both the
 # background job and the home of its signal handler. A function called with `&` would be a
 # second subshell level, and an async function does not run its EXIT trap.
+# --- brief mode in a run (#135) ------------------------------------------------------
+# The effective level: advisory, gated, strict or off. Settings are the switch (the plan file and
+# FORGE_BRIEF=off); anything that cannot be read is off, so a broken brief never holds a run.
+forge_brief_level() { # forge_brief_level <plan>
+  local level
+  level="$(PYTHONPATH="$SKILL_DIR/scripts${PYTHONPATH:+:$PYTHONPATH}" python3 - "$1" 2>/dev/null <<'PY'
+import sys
+import forge_side
+print(forge_side.settings(sys.argv[1])['brief']['level'])
+PY
+)" || level=off
+  case "$level" in advisory|gated|strict) echo "$level" ;; *) echo off ;; esac
+}
+
+# `forge-brief.py write` in a session of its own, output to brief.out, without waiting. brief.pid holds
+# the writer's supervisor, which removes it when the writer ends: the scheduler's gated wait reads it.
+forge_brief_start() { # forge_brief_start <plan>
+  local plan="$1"
+  rm -f "$plan/brief.pid"
+  python3 - "$plan" "$SKILL_DIR/scripts/forge-brief.py" <<'PY' || { note "brief: could not start the question writer"; return 0; }
+import os, subprocess, sys
+plan, script = sys.argv[1], sys.argv[2]
+pidfile = os.path.join(plan, 'brief.pid')
+ready, signal_ready = os.pipe()
+child = os.fork()
+if child:
+    os.close(signal_ready)
+    os.read(ready, 1)          # the child wrote brief.pid (or gave up): the file is there before this returns
+    sys.exit(0)
+code = 1
+try:
+    os.close(ready)
+    os.setsid()
+    out = os.open(os.path.join(plan, 'brief.out'), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+    null = os.open(os.devnull, os.O_RDONLY)
+    os.dup2(null, 0); os.dup2(out, 1); os.dup2(out, 2)
+    with open(pidfile, 'w') as handle:
+        handle.write('%d\n' % os.getpid())
+    os.write(signal_ready, b'1'); os.close(signal_ready)
+    code = subprocess.run([sys.executable, script, 'write', plan], stdin=subprocess.DEVNULL).returncode
+except BaseException:
+    pass
+finally:
+    try:
+        os.write(signal_ready, b'1')
+    except OSError:
+        pass
+    try:
+        os.unlink(pidfile)
+    except OSError:
+        pass
+    os._exit(code)
+PY
+}
+
+# Strict: the questions of the tasks that have not started and nobody answered, each with the command that
+# answers it. Exit 3 when there are any, so the caller refuses before the scheduler starts.
+forge_brief_strict() { # forge_brief_strict <plan>
+  local plan="$1" rc=0
+  python3 "$SKILL_DIR/scripts/forge-brief.py" write "$plan" >&2 || note "brief: the question writer did not finish; tasks without questions are not held"
+  PYTHONPATH="$SKILL_DIR/scripts${PYTHONPATH:+:$PYTHONPATH}" python3 - "$plan" <<'PY' || rc=$?
+import shlex, sys
+import forge_brief
+import forge_brief.answers as answers
+plan = sys.argv[1]
+try:
+    found = forge_brief.collect(plan)['questions']
+except Exception:
+    sys.exit(0)
+open_ = [q for q in found if q['state'] in ('open', 'possibly_stale') and not answers.past_start(plan, q['task'])]
+if not open_:
+    sys.exit(0)
+err = sys.stderr
+err.write('forge: strict brief: %d question(s) wait for your answer before any task starts:\n' % len(open_))
+for q in open_:
+    err.write('  %s %s: %s\n' % (q['task'], q['id'], q['text']))
+    err.write('      default: %s\n' % (q['default'] or '(none)'))
+    err.write('      forge brief answer %s %s %s "…"\n' % (shlex.quote(plan), q['task'], q['id']))
+err.write('forge: nothing was started. Answer them, then run again.\n')
+sys.exit(3)
+PY
+  return "$rc"
+}
+
+# After a merge, with brief on: flag the dependents' open questions when the merge touched files outside
+# the task's own. A failure is one line and changes nothing else.
+forge_brief_stale() { # forge_brief_stale <plan> <merged-task>
+  [ "$(forge_brief_level "$1")" = off ] && return 0
+  python3 "$SKILL_DIR/scripts/forge-brief.py" stale "$1" "$2" >/dev/null 2>&1 \
+    || note "brief: could not flag the dependents of $2 as possibly stale"
+  return 0
+}
+
 do_run() {
   local run_child="" run_stop=0 run_phase=pre run_rc=0 interrupted=0 vstopped=0
   FORGE_RUN_STOPPABLE=1
@@ -2734,6 +2828,14 @@ do_run() {
   # Also before any model is paid for: what this plan is likely to cost, and which tasks
   # history says may bounce. Advisory, budgeted and silent without history; it never stops a run.
   [ "$FORECAST" = 1 ] && forecast_report "$PLAN"
+  # Brief mode (#135), when the plan has it on. Strict asks first and refuses to start while a question of a
+  # task that has not started is unanswered; advisory and gated write the questions beside the scheduler.
+  local brief_level
+  brief_level="$(forge_brief_level "$PLAN")"
+  case "$brief_level" in
+    strict) forge_brief_strict "$PLAN" || exit $? ;;
+    advisory|gated) forge_brief_start "$PLAN" ;;
+  esac
   # Invalid verification lanes stop the run here, before any model is paid for.
   verify_lanes_check "$PLAN" "$REPO" "$int_wt"
   # Say now, before any model is paid for, which suites the verify command will not run.
