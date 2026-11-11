@@ -18,13 +18,16 @@ Precedence for each switch, first match wins:
 `no-model` or `cap`, in that order. For a summary, `tasks/<task>/summaries` (`on` or
 `off`) overrides the plan's mode and nothing else. The cap is
 `max(10, 3 × tasks in tasks.tsv)` dispatches of that kind in the run, counted from
-`<plan>/side/<kind>/<task>/<n>/`.
+`<plan>/side/<kind>/<task>/<n>/`, including a task id that starts with a dot.
+A dispatch that outlives its wait is stopped with its session, so a hung preflight
+does not keep running after `run` returns.
 """
 from __future__ import annotations
 
 import fcntl
 import os
 from pathlib import Path
+import signal
 import subprocess
 import sys
 
@@ -44,6 +47,9 @@ FEATURE_KEYS = ('retro', 'brief', 'brief.scope', 'brief.model', 'summaries', 'su
 CAP_MARKER = '… (capped)'
 # How long `run` waits past the dispatch watchdog for the script to exit and reap.
 _DISPATCH_GRACE_S = 30
+# How long a timed-out dispatch gets to run its EXIT trap (it sleeps 1s while it reaps a
+# harness that moved to its own session) before the session is killed.
+_STOP_GRACE_S = 2
 
 
 class _Capped(Exception):
@@ -170,7 +176,13 @@ def _limit(plan: Path) -> int:
 
 
 def _count(kind_dir: Path) -> int:
-    """Dispatch dirs under `side/<kind>/<task>/<n>/`. The lock file and task dirs do not count."""
+    """Dispatch dirs under `side/<kind>/<task>/<n>/`.
+
+    Every directory counts, including a task id that starts with a dot: `_safe_component`
+    accepts one, and skipping it would let that task dispatch past the cap. The lock is a
+    file, so it is not a directory and does not count. A task directory itself does not;
+    the directories inside it do.
+    """
     total = 0
     try:
         children = list(kind_dir.iterdir())
@@ -303,6 +315,54 @@ def _finish(plan, task, kind, spec, ok, last, directory, reason) -> dict:
     return result
 
 
+def _signal_group(pgid: int, sig: int, proc: subprocess.Popen) -> None:
+    """Signal the dispatch's session. Never this process's own group."""
+    if pgid == os.getpgrp():
+        try:
+            proc.send_signal(sig)
+        except OSError:
+            pass
+        return
+    try:
+        os.killpg(pgid, sig)
+    except (ProcessLookupError, PermissionError):
+        return
+    except OSError:
+        try:
+            proc.send_signal(sig)
+        except OSError:
+            pass
+
+
+def _stop_dispatch(proc: subprocess.Popen) -> None:
+    """Stop a dispatch that outlived its wait, and everything it started.
+
+    The shell is its own session. SIGTERM lets its EXIT trap reap a harness that moved
+    to another session. SIGKILL then takes this session. Killing the shell alone leaves
+    a hung preflight running: that child is not the harness, so the trap does not know
+    its pid, and SIGKILL of the shell (what `subprocess.run` does on timeout) skips the
+    trap as well.
+    """
+    try:
+        try:
+            pgid = os.getpgid(proc.pid)
+        except OSError:
+            pgid = proc.pid
+        _signal_group(pgid, signal.SIGTERM, proc)
+        try:
+            proc.wait(timeout=_STOP_GRACE_S)
+        except subprocess.TimeoutExpired:
+            pass
+        # The shell can be gone while a preflight child is still in the session.
+        _signal_group(pgid, signal.SIGKILL, proc)
+        try:
+            proc.wait(timeout=_STOP_GRACE_S)
+        except subprocess.TimeoutExpired:
+            pass
+    except Exception:
+        pass
+
+
 def run(kind, plan, task, prompt, spec, timeout=900) -> dict:
     """Dispatch once. Returns `{ok, last, dir, reason}` and never raises on a failure.
 
@@ -310,7 +370,8 @@ def run(kind, plan, task, prompt, spec, timeout=900) -> dict:
     task), writes the prompt there, and runs `forge-dispatch.sh side`. `last` is the
     text of `side.last` when dispatch wrote one. `reason` is None on success, `cap`
     when this kind is already at its limit, `timeout` when the dispatch times out,
-    `missing` when the dispatch script is not there, and `error` otherwise.
+    `missing` when the dispatch script is not there, and `error` otherwise. A timeout
+    stops the dispatch's session, including a preflight that has not exited.
     """
     if kind not in KINDS:
         raise ValueError('kind must be brief or summary, not %r' % (kind,))

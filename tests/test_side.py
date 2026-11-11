@@ -8,7 +8,9 @@ import dataset_isolation  # noqa: F401  keeps forge's dataset and config out of 
 import json
 import os
 from pathlib import Path
+import signal
 import sqlite3
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -27,6 +29,64 @@ OFF = {
     'brief': {'level': 'off', 'scope': 'task', 'model': ''},
     'summaries': {'mode': 'off', 'model': ''},
 }
+
+
+def _alive(pid: int) -> bool:
+    """True when `pid` is still running. A zombie is not: init reaps it, and it does no work."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    result = subprocess.run(['/bin/ps', '-o', 'state=', '-p', str(pid)],
+                            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+    if result.returncode != 0:
+        return False
+    state = result.stdout.strip()
+    return bool(state) and not state.startswith('Z')
+
+
+def _group_pids(pgid: int) -> list[int]:
+    """Live (not zombie) members of a process group."""
+    result = subprocess.run(['/bin/ps', '-ax', '-o', 'pid=,pgid=,state='],
+                            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+    found = []
+    for line in result.stdout.splitlines():
+        parts = line.split()
+        if len(parts) < 3:
+            continue
+        try:
+            pid, group = int(parts[0]), int(parts[1])
+        except ValueError:
+            continue
+        if group == pgid and not parts[2].startswith('Z'):
+            found.append(pid)
+    return found
+
+
+def _kill_recorded(path: Path) -> None:
+    """Stop a preflight the test recorded, without signalling this process's own group."""
+    if not path.is_file():
+        return
+    lines = []
+    for line in path.read_text().split():
+        try:
+            lines.append(int(line))
+        except ValueError:
+            continue
+    if not lines:
+        return
+    if lines[0] != os.getpgrp():
+        try:
+            os.killpg(lines[0], signal.SIGKILL)
+        except OSError:
+            pass
+    for pid in lines[1:]:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except OSError:
+            pass
 
 
 class SideCase(unittest.TestCase):
@@ -383,6 +443,21 @@ class RunTests(unittest.TestCase):
         self.assertEqual([(body['kind'], body['ok'], body['reason']) for body in events],
                          [('summary', True, None), ('summary', False, 'cap'), ('brief', True, None)])
 
+    def test_a_dot_prefixed_task_id_counts_toward_the_cap(self):
+        # `.hidden` is a legal task id. Ten dirs under it are the whole cap for one task in
+        # tasks.tsv; the next dispatch is refused, and asking agrees.
+        (self.plan / 'brief').write_text('advisory\n')
+        (self.plan / 'brief_model').write_text('sol\n')
+        root = self.plan / 'side' / 'brief' / '.hidden'
+        for number in range(1, 11):
+            (root / str(number)).mkdir(parents=True)
+        self.arm({'*.qa.*': {'findings': 'SIDE_OK', 'verdict': 'none'}})
+        blocked = forge_side.run('brief', self.plan, '.hidden', 'More.\n', 'sol')
+        self.assertEqual(blocked, {'ok': False, 'last': None, 'dir': None, 'reason': 'cap'})
+        self.assertFalse((root / '11').exists())
+        self.assertEqual(self.calls(), [])
+        self.assertEqual(forge_side.allowed('brief', self.plan), (False, 'cap'))
+
     def fill_summary(self, count):
         root = self.plan / 'side' / 'summary' / 'a'
         root.mkdir(parents=True)
@@ -399,6 +474,41 @@ class RunTests(unittest.TestCase):
         self.assertEqual(len(events), 1, events)
         self.assertEqual((events[0][2]['ok'], events[0][2]['reason'], events[0][2]['kind']),
                          (False, 'timeout', 'brief'))
+
+    def test_a_hung_preflight_does_not_leave_its_processes(self):
+        # Help runs before dispatch's own watchdog. The wrapper timeout has to stop the
+        # CLI and the runtime helper that spawned it, not only the shell.
+        pids = self.root / 'hung-pids'
+        self.addCleanup(_kill_recorded, pids)
+        sleeper = (
+            '#!/usr/bin/env python3\n'
+            'import os, sys, time, pathlib\n'
+            'if "--help" in sys.argv:\n'
+            '    pathlib.Path(os.environ["HUNG_PIDS"]).write_text(\n'
+            '        "%s\\n%s\\n%s\\n" % (os.getpgid(0), os.getpid(), os.getppid()))\n'
+            '    time.sleep(120)\n'
+            'sys.exit(0)\n')
+        for name in ('codex', 'claude'):
+            cli = self.bin / name
+            cli.write_text(sleeper)
+            cli.chmod(0o755)
+        self.arm({'*.qa.*': {'findings': 'SIDE_OK', 'verdict': 'none'}})
+        os.environ['HUNG_PIDS'] = str(pids)
+        # The grace is how long dispatch's own watchdog is given to finish. This preflight
+        # never reaches it, so the wait is only the caller's timeout, long enough for help
+        # to have started.
+        with mock.patch.object(forge_side, '_DISPATCH_GRACE_S', 0):
+            result = forge_side.run('brief', self.plan, 'a', 'Slow.\n', 'sol', timeout=5)
+        self.assertFalse(result['ok'])
+        self.assertEqual(result['reason'], 'timeout')
+        self.assertTrue(pids.is_file(), 'the help preflight never started')
+        pgid, cli_pid, helper_pid = (int(line) for line in pids.read_text().split())
+        self.assertFalse(_alive(cli_pid), cli_pid)
+        self.assertFalse(_alive(helper_pid), helper_pid)
+        # A dispatch session of its own must leave nothing behind in it. When the
+        # preflight shared this process's group, the two pids above are the check.
+        if pgid != os.getpgrp():
+            self.assertEqual(_group_pids(pgid), [])
 
     def test_unknown_kind_raises_before_dispatch(self):
         self.arm({'*.qa.*': {'findings': 'SIDE_OK', 'verdict': 'none'}})
