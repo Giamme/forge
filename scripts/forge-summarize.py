@@ -454,7 +454,7 @@ def _latest(task_dir: Path, rows: list, reviews: dict, undecided: set):
     """`(attempt, text)` of the latest review, or `(None, None)` when the task has none."""
     live = _text(task_dir / 'qa.last')
     if live is not None:
-        if live in undecided and all(text != live for text in reviews.values()):
+        if live in undecided:
             return None, live
         # The same text can sit on an older archive and on the latest attempt. The finding
         # refs name the newest attempt that still holds it.
