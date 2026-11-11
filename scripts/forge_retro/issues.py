@@ -64,11 +64,77 @@ _URL_AUTH = re.compile(
 # here: their operand is usually a URL, already redacted, or ordinary words.
 _NET_HOST_CMDS = 'ssh|sftp|ping|telnet|mosh|nslookup|ftp|mysql|psql|nc|netcat'
 _NET_CMDS = _NET_HOST_CMDS + '|curl|wget'
-_NET_HOST = re.compile(
-    r'(?i)(?<![A-Za-z0-9_-])(?P<cmd>' + _NET_HOST_CMDS + r')'
-    r'(?P<flags>(?:\s+-[A-Za-z0-9-]+(?:\s+\S+)?)*)\s+'
-    r'(?P<host>[A-Za-z](?:[A-Za-z0-9-]{0,62}))(?![A-Za-z0-9_.-])(?!://)')
+# A real invocation, not `ssh://` and not the `ssh:` prefix of an error line.
+_NET_CMD = re.compile(
+    r'(?i)(?<![A-Za-z0-9_-])(?P<cmd>' + _NET_HOST_CMDS + r')(?![A-Za-z0-9_-])(?=\s|$)')
 _NET_BEFORE = re.compile(r'(?i)(?:' + _NET_CMDS + r')\s+$')
+# mysql and psql take the host as `-h` / `--host`. Their positional is a database name.
+_POSITIONAL_HOST = frozenset({
+    'ssh', 'sftp', 'ping', 'telnet', 'mosh', 'nslookup', 'ftp', 'nc', 'netcat',
+})
+# Short flags whose next token is an ordinary value, and those whose value is a host.
+# Anything else (`-v`, `-vv`, `-4`) is boolean and must not swallow the hostname.
+_VALUE_LETTERS = {
+    'ssh': 'cDeFIiLlmOopQRSw',
+    'sftp': 'BFiloPRS',
+    'ping': 'cipstWw',
+    'telnet': 'l',
+    'mosh': 'cDeFIiLlmOopQRSw',
+    'nc': 'ipw',
+    'netcat': 'ipw',
+    'mysql': 'DePpSu',
+    'psql': 'cdfFpPU',
+}
+_HOST_LETTERS = {
+    'ssh': 'bJW',
+    'sftp': 'J',
+    'mosh': 'bJW',
+    'ping': 'IS',
+    'nc': 's',
+    'netcat': 's',
+    'mysql': 'h',
+    'psql': 'h',
+}
+_HOST_LONG = frozenset({'host', 'hostname', 'jump', 'bind', 'bind-address', 'source'})
+_VALUE_LONG = frozenset({
+    'port', 'identity', 'identity-file', 'user', 'login', 'config', 'option',
+    'count', 'interval', 'timeout', 'wait', 'size', 'file', 'output', 'password',
+    'command', 'local', 'remote', 'dynamic', 'proxy-command',
+})
+# "Could not resolve host: internal-api.sh" is a host even though `.sh` is also a filename.
+# The same phrases introduce a bare name with no dot (`hostname builder01`).
+_HOST_DIAGNOSTIC = re.compile(
+    r'(?i)(?:(?<![A-Za-z0-9_])(?:'
+    r'could not resolve host(?:name)?'
+    r'|unknown host(?:name)?'
+    r'|no such host'
+    r'|name or service not known'
+    r'|temporary failure in name resolution'
+    r'|nodename nor servname'
+    r'|getaddrinfo'
+    r'|connect(?:ing|ed)? to'
+    r'|dial(?:ing)?(?:\s+tcp|\s+udp)?'
+    r'|host(?:name)?'
+    r'))[\s:=(]*$')
+_DIAG_BARE = re.compile(
+    r'(?i)(?<![A-Za-z0-9_])(?:'
+    r'could not resolve host(?:name)?'
+    r'|unknown host(?:name)?'
+    r'|connect(?:ing|ed)? to(?:\s+host)?'
+    r'|dial(?:ing)?(?:\s+tcp|\s+udp)?'
+    r'|host(?:name)?'
+    r')'
+    r'(?P<sep>[\s:=]+)'
+    # tcp/udp/host are part of the phrase (`dial tcp`, `connect to host`). Backtracking
+    # must not redact those words and leave the real name in place.
+    r'(?P<host>(?!(?:tcp|udp|host|hostname)\b)'
+    r'[A-Za-z](?:[A-Za-z0-9-]{0,62}[A-Za-z0-9])?)'
+    r'(?![A-Za-z0-9_.-])')
+# A hyphenated `forge-issues.py` after one of these is still a file.
+_FILE_BEFORE = re.compile(
+    r'(?i)(?:(?<![A-Za-z0-9_./])(?:'
+    r'python3?|bash|sh|zsh|dash|node|ruby|perl|php|lua|cat|ls|vim|nvim|emacs|'
+    r'make|cargo|go|rustc|gcc|clang|source|exec)\s+|[/\\])$')
 _TITLE_LIMIT = 240
 
 
@@ -224,27 +290,60 @@ def _path_token(token: str) -> str:
     return '<path>' + token[len(stripped):]
 
 
-def _path_end(text: str, end: int) -> int:
-    """Include later segments of an unquoted path that themselves contain a slash.
+def _next_segment(text: str, index: int):
+    """The next space-separated segment, or None when the path has ended.
 
-    `/Users/Secret Person/key.txt` is one path. The first token stops at the space
-    and `Person/key.txt` still holds the private name. A segment with no slash is
-    the next argument, not more of the path.
+    Only spaces join a path. A tab, newline or shell metacharacter is the next
+    command, and a flag or a placeholder is the next argument.
+    """
+    length = len(text)
+    if index >= length or text[index] != ' ':
+        return None
+    start = index
+    while start < length and text[start] == ' ':
+        start += 1
+    if start >= length or text[start] in '\t\r\n|&;<>()':
+        return None
+    stop = start
+    while stop < length and text[stop] not in ' \t\r\n|&;<>()':
+        stop += 1
+    segment = text[start:stop]
+    if not segment or segment.startswith(('-', '<')):
+        return None
+    return stop, segment
+
+
+def _path_continues(text: str, index: int) -> bool:
+    """True when a later segment of this same path still contains a separator.
+
+    `/Users/Secret Middle Person/key.txt` is one path: `Middle` has no slash,
+    and `Person/key.txt` does. A slashless word with nothing slashed after it
+    is the next argument (`cat /tmp/out.txt notes`).
+    """
+    while True:
+        found = _next_segment(text, index)
+        if found is None:
+            return False
+        stop, segment = found
+        if '/' in segment or '\\' in segment:
+            return True
+        index = stop
+
+
+def _path_end(text: str, end: int) -> int:
+    """Include later segments of one unquoted path, spaces included.
+
+    The first token stops at the space. `Person/key.txt` still holds the private
+    name, and so does a slashless segment that sits in front of it.
     """
     best = end
     index = end
-    length = len(text)
-    while index < length and text[index] == ' ':
-        start = index
-        while start < length and text[start] == ' ':
-            start += 1
-        stop = start
-        while stop < length and text[stop] not in ' \t\r\n':
-            stop += 1
-        segment = text[start:stop]
-        if not segment or segment.startswith(('-', '<')) or segment[0] in '|&;<>()':
+    while True:
+        found = _next_segment(text, index)
+        if found is None:
             break
-        if '/' not in segment and '\\' not in segment:
+        stop, segment = found
+        if '/' not in segment and '\\' not in segment and not _path_continues(text, stop):
             break
         best = stop
         index = stop
@@ -315,7 +414,9 @@ def _bare_filename(match) -> bool:
     """True when the token is a filename (`build.py`), not a hostname.
 
     `.sh` and `.py` are filename extensions and real public suffixes. A token in a
-    URL, followed by a path, or given to a network command is a host.
+    URL, followed by a path, given to a network command, or named in a resolver
+    error is a host. `internal-api.sh` is a host that merely uses that suffix;
+    `build.py` has no hyphen and stays a filename.
     """
     name = match.group(0)
     if name.rsplit('.', 1)[-1].lower() not in _CODE_EXT:
@@ -326,7 +427,13 @@ def _bare_filename(match) -> bool:
         return False
     if after.startswith('/') or re.match(r':\d', after):
         return False
-    if _NET_BEFORE.search(before):
+    if _NET_BEFORE.search(before) or _HOST_DIAGNOSTIC.search(before):
+        return False
+    labels = name.split('.')
+    if any('-' in label for label in labels[:-1]):
+        # internal-api.sh is a host. forge-issues.py after python3 or bash is a file.
+        if _FILE_BEFORE.search(before):
+            return True
         return False
     return True
 
@@ -345,8 +452,175 @@ def _url_repl(match) -> str:
     return match.group('scheme') + '<host>'
 
 
-def _net_repl(match) -> str:
-    return '%s%s <host>' % (match.group('cmd'), match.group('flags'))
+def _token_at(text: str, index: int):
+    """The next command token, or None at a newline or shell metacharacter.
+
+    `<path>` is a token. A path redacted earlier is the argument of `-i`, not the
+    end of the command, and `alice@<host>` is still one destination.
+    """
+    length = len(text)
+    while index < length and text[index] in ' \t':
+        index += 1
+    if index >= length or text[index] in '\r\n|&;>()':
+        return None
+    if text[index] == '<':
+        kept = _KEPT.match(text, index)
+        if not kept:
+            return None
+        return index, kept.end(), kept.group(0)
+    stop = index
+    while stop < length and text[stop] not in ' \t\r\n|&;<>()':
+        stop += 1
+    if stop < length and text[stop] == '<' and text[:stop].endswith(('@', '=')):
+        kept = _KEPT.match(text, stop)
+        if kept:
+            stop = kept.end()
+    return index, stop, text[index:stop]
+
+
+def _flag_kind(token: str, cmd: str) -> str:
+    """How this token consumes what follows: flag, value, host, attached, or end.
+
+    `-v` is boolean. Treating every flag as taking an optional argument redacts
+    the command word and leaves `ssh -v builder01` in the draft.
+    """
+    if token == '--':
+        return 'end'
+    if not token.startswith('-') or token == '-':
+        return 'positional'
+    host = _HOST_LETTERS.get(cmd, '')
+    value = _VALUE_LETTERS.get(cmd, '')
+    if token.startswith('--'):
+        name, sep, _rest = token[2:].partition('=')
+        key = name.lower()
+        if sep:
+            return 'host-attached' if key in _HOST_LONG else 'attached'
+        if key in _HOST_LONG:
+            return 'host'
+        if key in _VALUE_LONG:
+            return 'value'
+        return 'flag'
+    body = token[1:]
+    if not body or not re.fullmatch(r'[A-Za-z0-9]+', body):
+        head = body[:1]
+        if head in host:
+            return 'host-attached'
+        if head in value:
+            return 'attached'
+        return 'flag'
+
+    def role(char: str) -> str:
+        if char in host:
+            return 'host'
+        if char in value:
+            return 'value'
+        return 'flag'
+
+    roles = [role(char) for char in body]
+    if all(item == 'flag' for item in roles):
+        return 'flag'
+    if len(body) > 1 and roles[0] == 'host':
+        return 'host-attached'
+    if len(body) > 1 and roles[0] == 'value':
+        return 'attached'
+    return roles[-1]
+
+
+def _redact_destination(token: str) -> str:
+    """The whole destination, including `alice@builder02`.
+
+    Replacing only the letters before `@` leaves the hostname in the draft.
+    """
+    if _KEPT.fullmatch(token) or token.startswith('<path>'):
+        return token
+    return '<host>'
+
+
+def _redact_attached_host(token: str) -> str:
+    if token.startswith('--'):
+        name, sep, _value = token[2:].partition('=')
+        return '--' + name + sep + '<host>'
+    return token[:2] + '<host>'
+
+
+def _consume_destination(text: str, pos: int, cmd: str, pieces: list) -> int:
+    while True:
+        found = _token_at(text, pos)
+        if found is None:
+            return pos
+        start, stop, token = found
+        kind = _flag_kind(token, cmd)
+        if kind == 'positional':
+            if cmd not in _POSITIONAL_HOST:
+                return pos
+            # `ssh -i <path> builder01`: the path is an argument, and the host follows.
+            # `ssh alice@<host>` is already redacted; do not write a second placeholder.
+            if _KEPT.fullmatch(token) and token != '<host>':
+                pieces.append(text[pos:stop])
+                pos = stop
+                continue
+            if token == '<host>':
+                return pos
+            if token.endswith('@<host>'):
+                pieces.append(text[pos:start])
+                pieces.append('<host>')
+                return stop
+            if not re.match(r'[A-Za-z0-9@]', token):
+                return pos
+            pieces.append(text[pos:start])
+            pieces.append(_redact_destination(token))
+            return stop
+        if kind == 'end':
+            pieces.append(text[pos:stop])
+            if cmd not in _POSITIONAL_HOST:
+                return stop
+            nxt = _token_at(text, stop)
+            if nxt is None:
+                return stop
+            nstart, nstop, ntoken = nxt
+            pieces.append(text[stop:nstart])
+            pieces.append(_redact_destination(ntoken))
+            return nstop
+        if kind == 'host-attached':
+            pieces.append(text[pos:start])
+            pieces.append(_redact_attached_host(token))
+            pos = stop
+            continue
+        if kind in ('host', 'value'):
+            pieces.append(text[pos:stop])
+            nxt = _token_at(text, stop)
+            if nxt is None:
+                return stop
+            nstart, nstop, ntoken = nxt
+            if _flag_kind(ntoken, cmd) != 'positional':
+                pos = stop
+                continue
+            pieces.append(text[stop:nstart])
+            if kind == 'host':
+                pieces.append(_redact_destination(ntoken))
+            else:
+                pieces.append(ntoken)
+            pos = nstop
+            continue
+        pieces.append(text[pos:stop])
+        pos = stop
+
+
+def _redact_command_hosts(text: str) -> str:
+    pieces = []
+    cursor = 0
+    for match in _NET_CMD.finditer(text):
+        if match.start() < cursor:
+            continue
+        pieces.append(text[cursor:match.end()])
+        cursor = _consume_destination(text, match.end(), match.group('cmd').lower(), pieces)
+    pieces.append(text[cursor:])
+    return ''.join(pieces)
+
+
+def _diag_bare_repl(match) -> str:
+    host = match.group('host')
+    return match.group(0)[:-len(host)] + '<host>'
 
 
 def _redact_hosts(text: str) -> str:
@@ -355,7 +629,8 @@ def _redact_hosts(text: str) -> str:
     text = _sub_outside(text, _IPV6, '<host>')
     text = _sub_outside(text, _LOCALHOST, '<host>')
     text = _sub_outside(text, _HOST, _host_repl)
-    return _sub_outside(text, _NET_HOST, _net_repl)
+    text = _sub_outside(text, _DIAG_BARE, _diag_bare_repl)
+    return _redact_command_hosts(text)
 
 
 class Redactor:
@@ -546,34 +821,82 @@ def _search(slug: str, query: str, state: str) -> list:
         if isinstance(number, bool) or not isinstance(number, int):
             continue
         issue_state = str(item.get('state') or '').lower()
+        comments = item.get('comments')
         found.append({
             'number': number,
             'state': 'closed' if issue_state == 'closed' else 'open',
             'title': str(item.get('title') or ''),
             'url': str(item.get('url') or ''),
             'body': item.get('body') if isinstance(item.get('body'), str) else '',
+            'comments': comments if isinstance(comments, list) else [],
         })
     return found
 
 
 def _fill_related(slug: str, drafts: list) -> None:
+    threads = {}
     for draft in drafts:
         merged = {}
         for query in _queries(draft):
             for state in ('open', 'closed'):
                 for issue in _search(slug, query, state):
                     merged[issue['number']] = issue
-        draft['related'] = [merged[number] for number in sorted(merged)]
+        related = [merged[number] for number in sorted(merged)]
+        fingerprint = draft['fingerprint']
+        for issue in related:
+            # Search JSON is the issue body. A fingerprint posted with comment:N
+            # lives on the comment, so a closed issue still has to be read.
+            if issue['state'] != 'closed' or fingerprint in _known_markers(issue):
+                continue
+            number = issue['number']
+            if number not in threads:
+                threads[number] = _fetch_issue(slug, number)
+            issue['thread'] = threads[number]
+        draft['related'] = related
 
 
 def _marked(body: str) -> set:
     return set(_filer().FP_MARK_RE.findall(body or ''))
 
 
+def _comment_blob(comments) -> str:
+    if not isinstance(comments, list):
+        return ''
+    parts = []
+    for item in comments:
+        if isinstance(item, str):
+            text = item
+        elif isinstance(item, dict) and isinstance(item.get('body'), str):
+            text = item['body']
+        else:
+            continue
+        if text.strip():
+            parts.append(text)
+    return '\n'.join(parts)
+
+
+def _known_markers(issue: dict) -> set:
+    """Markers already on the search result, before a separate issue view."""
+    return _marked((issue.get('body') or '') + '\n' + _comment_blob(issue.get('comments')))
+
+
+def _issue_markers(issue: dict) -> set:
+    return _marked('\n'.join([
+        issue.get('body') or '',
+        _comment_blob(issue.get('comments')),
+        issue.get('thread') or '',
+    ]))
+
+
 def _default_choice(draft: dict) -> str:
+    """`skip` when a closed issue already carries this fingerprint.
+
+    The marker may be in the issue body or in a comment left by `comment:N`.
+    Closing the issue does not move the comment into the body.
+    """
     fingerprint = draft['fingerprint']
     for issue in draft['related']:
-        if issue['state'] == 'closed' and fingerprint in _marked(issue.get('body') or ''):
+        if issue['state'] == 'closed' and fingerprint in _issue_markers(issue):
             return 'skip'
     return 'new'
 
@@ -611,26 +934,21 @@ def _fetch_issue(slug: str, number: str) -> str:
     body = data.get('body')
     if isinstance(body, str) and body.strip():
         parts.append(body)
-    comments = data.get('comments')
-    if isinstance(comments, list):
-        for item in comments:
-            if isinstance(item, str):
-                text = item
-            elif isinstance(item, dict) and isinstance(item.get('body'), str):
-                text = item['body']
-            else:
-                continue
-            if text.strip():
-                parts.append(text)
+    comments = _comment_blob(data.get('comments'))
+    if comments:
+        parts.append(comments)
     return '\n'.join(parts)
 
 
 def _adds(draft: dict, existing: str) -> bool:
-    """False when the issue or one of its comments already carries this draft."""
+    """False when this draft's text is already on the issue or one of its comments.
+
+    The fingerprint follows the command, not the error. A later run can carry the
+    same marker and a new error, and that comment still adds something. The marker
+    alone is not "already posted".
+    """
     if not existing or not existing.strip():
         return True
-    if draft['fingerprint'] in _marked(existing):
-        return False
     core = draft['body']
     marker = '<!-- forge:finding fp=%s' % draft['fingerprint']
     at = core.find(marker)

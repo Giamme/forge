@@ -362,8 +362,12 @@ class RetroIssuesTests(unittest.TestCase):
         summary = (
             'failed on branch qa in repo ab owned by xy; '
             'curl https://internal-api.sh/status; '
+            'Could not resolve host: internal-api.sh; '
             'ssh builder01 make; '
-            'cat /Users/Secret Person/key.txt; '
+            'ssh -v builder01 make; '
+            'ssh alice@builder02 make; '
+            'cat /Users/Secret Person/key.txt kept-arg; '
+            'cat /Users/Secret Middle Person/key.txt; '
             'file:///Users/privateuser/private-project/key.txt'
         )
         notes = [note('alpha', 'forge', summary, 'python3 build.py', 'opus', 'claude')]
@@ -373,15 +377,18 @@ class RetroIssuesTests(unittest.TestCase):
         self.assertEqual([draft['id'] for draft in data['drafts']], ['r1'])
         draft = data['drafts'][0]
         visible = draft['title'] + '\n' + draft['body'].split('<!--', 1)[0]
-        for secret in ('qa', 'ab', 'xy', 'internal-api.sh', 'builder01', 'Secret',
-                       'Person/key.txt', 'privateuser', 'private-project', 'file://',
-                       '/Users/'):
+        for secret in ('qa', 'ab', 'xy', 'internal-api.sh', 'builder01', 'builder02',
+                       'Secret', 'Middle', 'Person/key.txt', 'privateuser',
+                       'private-project', 'file://', '/Users/'):
             self.assertNotIn(secret, visible, secret)
         self.assertIn('<branch>', visible)
         self.assertIn('<repo>', visible)
         self.assertIn('<host>', visible)
         self.assertIn('<path>', visible)
         self.assertIn('python3 build.py', visible)
+        self.assertIn('ssh -v <host> make', visible)
+        self.assertIn('Could not resolve host: <host>', visible)
+        self.assertIn('kept-arg', visible)
 
     def test_a_repeated_comment_is_not_posted(self):
         self.write_state(issues=[{
@@ -401,6 +408,56 @@ class RetroIssuesTests(unittest.TestCase):
         _res, second = self.invoke_json('--apply', '--approve', chosen['approve'], *choices)
         self.assertEqual(second['posted'][0]['skipped'], 'adds nothing')
         self.assertEqual(len(self.writes()), 1)
+
+    def test_a_changed_error_is_posted_on_the_same_fingerprint(self):
+        # The fingerprint follows the command, so a new error is the same finding.
+        # comment:N still posts when that error is not already on the issue.
+        def write_notes(error):
+            item = note('alpha', 'forge', 'same command pattern', 'python3 build.py',
+                        'opus', 'claude')
+            item['evidence']['error'] = error
+            blob = json.dumps(item, ensure_ascii=False, sort_keys=True) + '\n'
+            (self.plan / 'retro' / 'notes.jsonl').write_text(blob, encoding='utf-8')
+
+        write_notes('error-sentinel-old')
+        _res, first = self.invoke_json()
+        old = first['drafts'][0]
+        self.assertIn('error-sentinel-old', old['body'])
+        write_notes('error-sentinel-new')
+        self.write_state(issues=[{
+            'number': 9,
+            'title': 'open retro',
+            'state': 'open',
+            'body': old['body'],
+            'url': 'https://github.com/Giamme/forge/issues/9',
+        }])
+        choices = ['--choice', 'r1=comment:9']
+        _res, chosen = self.invoke_json(*choices)
+        self.assertEqual(chosen['drafts'][0]['fingerprint'], old['fingerprint'])
+        self.assertIn('error-sentinel-new', chosen['drafts'][0]['body'])
+        self.assertNotIn('error-sentinel-old', chosen['drafts'][0]['body'])
+        self.assertEqual(self.writes(), [])
+        _res, posted = self.invoke_json('--apply', '--approve', chosen['approve'], *choices)
+        self.assertEqual(posted['posted'][0]['choice'], 'comment:9')
+        self.assertNotIn('skipped', posted['posted'][0])
+        self.assertEqual(len(self.writes()), 1)
+        self.assertIn('error-sentinel-new', self.gh_state()['writes'][0]['body'])
+
+    def test_a_closed_issue_skips_when_the_fingerprint_is_in_a_comment(self):
+        _res, dry = self.invoke_json()
+        first = dry['drafts'][0]
+        self.write_state(issues=[{
+            'number': 9,
+            'title': 'discussed then closed',
+            'state': 'closed',
+            'body': 'original report without the marker',
+            'comments': [{'body': first['body']}],
+            'url': 'https://github.com/Giamme/forge/issues/9',
+        }])
+        _res, again = self.invoke_json()
+        self.assertEqual(again['drafts'][0]['choice'], 'skip')
+        self.assertEqual(again['drafts'][0]['fingerprint'], first['fingerprint'])
+        self.assertEqual(self.writes(), [])
 
     def test_a_comment_that_adds_nothing_is_not_posted(self):
         _res, dry = self.invoke_json()
