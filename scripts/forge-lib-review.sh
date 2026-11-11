@@ -519,6 +519,9 @@ final_review() {
     fi
     rs_mode=fresh
     mv "$out/qa.out" "$out/qa.continue.out" 2>/dev/null || true
+    # The fresh dispatch deletes qa.last and qa.log as it starts. Record the continuation
+    # first; a failure to record does not change rc, which the fresh dispatch sets next.
+    forge_retro_record "$plan" qa "$out"
     FORGE_CAPABILITY_CACHE="${FORGE_CAPABILITY_CACHE:-$plan/capabilities}" \
       "${qa_cmd[@]}" > "$out/qa.out" 2>&1
     rc=$?

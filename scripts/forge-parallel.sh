@@ -1583,6 +1583,9 @@ do_task_body() (
       if [ -n "$is_fp" ] && [ "$(forge_fingerprint "$wt")" = "$is_fp" ]; then
         # It changed nothing, so the same input goes to a fresh session, which decides the attempt.
         is_mode=fresh
+        # The fresh dispatch deletes dwarf.last and dwarf.log as it starts. Record the
+        # continuation first; a failure to record does not change the attempt.
+        forge_retro_record "$PLAN" dwarf "$tdir" "$id" "$attempt" "$wt/.forge/retro-inbox.jsonl"
         "${dwarf_cmd[@]}" >"$tdir/dwarf.out" 2>&1
         rc=$?
       else
@@ -1823,6 +1826,9 @@ do_task_body() (
     fi
     rs_mode=fresh
     mv "$tdir/qa.out" "$tdir/qa.continue.out" 2>/dev/null || true
+    # The fresh dispatch deletes qa.last and qa.log as it starts. Record the continuation
+    # first; a failure to record does not change the round.
+    forge_retro_record "$PLAN" qa "$tdir" "$id" "$attempt"
     "${qa_cmd[@]}" >"$tdir/qa.out" 2>&1
     rc=$?
   fi
@@ -1851,6 +1857,9 @@ do_task_body() (
   rm -f "$tdir/resume"
 
   forge_metric_phase verification
+  # Before the invalidation return: a review that changed a tracked file still finished,
+  # and its notes are the point of that dispatch. Recording never changes the status.
+  forge_retro_record "$PLAN" qa "$tdir" "$id" "$attempt"
   if [ "$(forge_fingerprint "$wt")" != "$source_fp" ] || [ "$(forge_fingerprint "$review" --tracked)" != "$review_fp" ]; then
     # The committed work is untouched, so --retry-failed may review it again (reason `review`);
     # the merge-time invalidations below leave no reason and wait for a human.
@@ -1863,7 +1872,6 @@ do_task_body() (
       --run-id "$run_id" --task "$id" --model "$qa" --verdict "${verdict:-UNKNOWN}" \
       --run-dir "$tdir" \
       --duration "$(dispatch_duration "$tdir" qa)" >/dev/null 2>&1
-  forge_retro_record "$PLAN" qa "$tdir" "$id" "$attempt"
 
   case "$verdict" in
     PASS) echo PASS > "$tdir/status" ;;
@@ -2995,11 +3003,22 @@ forge_auto_unparse() { # forge_auto_unparse <plan-dir>
   rm -f "$1/tasks.tsv" "$1/tasks.declared.tsv"
 }
 
+# The planner's notes, once. A dispatch that ran before `plan` wrote run_id leaves
+# AUTO_PLANNER_RECORDED=0; recording then would store run_id null for good. The caller
+# records after `plan`, or on an exit that will never reach it. A later dispatch (the
+# send-back) already has the file and records itself.
+forge_auto_record_planner() { # forge_auto_record_planner <plan>
+  [ "${AUTO_PLANNER_RECORDED:-1}" = 0 ] || return 0
+  forge_retro_record "$1" planner "$1"
+  AUTO_PLANNER_RECORDED=1
+}
+
 # One planner dispatch: prompt in $PLAN/planner.prompt, reply in $PLAN/planner.last. Sets
 # AUTO_RC (0, 4 or 8) for the caller instead of exiting, so a send-back can reuse it.
 forge_auto_dispatch() { # forge_auto_dispatch <plan-dir> <repo> <spec> <fast-option-or-empty>
   local plan="$1" repo="$2" spec="$3" tier="$4" rc=0
   AUTO_RC=0
+  AUTO_PLANNER_RECORDED=0
   note "auto: dispatching the planner ($spec) for the whole plan"
   # Last. The planner runs before `plan` stores retro_mode; AUTO_RETRO_FLAG says whether
   # this call's flags will turn it on. Off appends nothing, so the file stays as written.
@@ -3007,7 +3026,12 @@ forge_auto_dispatch() { # forge_auto_dispatch <plan-dir> <repo> <spec> <fast-opt
   bash "$DISPATCH" planner "$spec" --repo "$repo" --run-dir "$plan" --prompt-file "$plan/planner.prompt" \
     --output summary ${tier:+$tier} >&2 || rc=$?
   # No task: the planner is the whole plan. Its result is AUTO_RC, set below, not this.
-  forge_retro_record "$plan" planner "$plan"
+  # run_id is written by `plan`, which has not run yet on a new directory. Record now only
+  # when that file is already there (a send-back); otherwise the caller records after `plan`.
+  if [ -s "$plan/run_id" ]; then
+    forge_retro_record "$plan" planner "$plan"
+    AUTO_PLANNER_RECORDED=1
+  fi
   if [ "$rc" -eq 8 ]; then
     note "auto: the planner stopped on an infrastructure failure (see $plan/planner.infra). Nothing was dispatched after the planner; fix the cause and run auto again"
     AUTO_RC=8
@@ -3134,19 +3158,27 @@ AUTO_PROFILE
     bash "$DISPATCH" doctor --spec "$PLANNER" --role planner ${fast_tier:+$fast_tier} >&2 || exit $?
     python3 "$PLANNER_PY" prompt --plan "$PLAN" --goal-file "$REQUEST" ${DLEVEL:+--level "$DLEVEL"} >/dev/null || exit $?
     forge_auto_dispatch "$PLAN" "$REPO" "$PLANNER" "$fast_tier"
-    [ "$AUTO_RC" -eq 0 ] || exit "$AUTO_RC"
+    if [ "$AUTO_RC" -ne 0 ]; then
+      forge_auto_record_planner "$PLAN"
+      exit "$AUTO_RC"
+    fi
     python3 "$PLANNER_PY" parse --plan "$PLAN" --reply "$PLAN/planner.last" || rc=$?
     case "$rc" in
       0) ;;
-      4) note "auto: the planner's reply was refused (see $PLAN/planner.refused). Nothing was dispatched after the planner"
+      4) forge_auto_record_planner "$PLAN"
+         note "auto: the planner's reply was refused (see $PLAN/planner.refused). Nothing was dispatched after the planner"
          exit 4 ;;
-      *) exit "$rc" ;;
+      *) forge_auto_record_planner "$PLAN"
+         exit "$rc" ;;
     esac
     from_planner=1
   fi
 
   # 4. plan, and one send-back when the plan gates ask for it.
   bash "$SELF" plan "$PLAN" ${PLAN_ARGS[@]+"${PLAN_ARGS[@]}"}; rc=$?
+  # planner.last is still the first reply. plan has written run_id when it got that far,
+  # and the send-back below overwrites the reply, so this is the moment to record it.
+  forge_auto_record_planner "$PLAN"
   if [ "$rc" -eq 4 ] && [ "$from_planner" = 1 ] && [ -s "$PLAN/plan.sendback.md" ]; then
     note "auto: the plan gates sent items back; asking the planner once more"
     cp "$PLAN/planner.last" "$PLAN/planner.first.last" 2>/dev/null || true
@@ -3159,16 +3191,22 @@ AUTO_PROFILE
       cat "$PLAN/plan.sendback.md"
     } >> "$PLAN/planner.prompt"
     forge_auto_dispatch "$PLAN" "$REPO" "$PLANNER" "$fast_tier"
-    [ "$AUTO_RC" -eq 0 ] || exit "$AUTO_RC"
+    if [ "$AUTO_RC" -ne 0 ]; then
+      forge_auto_record_planner "$PLAN"
+      exit "$AUTO_RC"
+    fi
     rc=0
     python3 "$PLANNER_PY" parse --plan "$PLAN" --reply "$PLAN/planner.last" || rc=$?
     case "$rc" in
       0) ;;
-      4) note "auto: the planner's second reply was refused (see $PLAN/planner.refused). Nothing was dispatched after the planner"
+      4) forge_auto_record_planner "$PLAN"
+         note "auto: the planner's second reply was refused (see $PLAN/planner.refused). Nothing was dispatched after the planner"
          exit 4 ;;
-      *) exit "$rc" ;;
+      *) forge_auto_record_planner "$PLAN"
+         exit "$rc" ;;
     esac
     bash "$SELF" plan "$PLAN" ${PLAN_ARGS[@]+"${PLAN_ARGS[@]}"}; rc=$?
+    forge_auto_record_planner "$PLAN"
     if [ "$rc" -eq 4 ]; then
       note "auto: the plan gates sent items back a second time; stopping. See $PLAN/plan.sendback.md"
     fi

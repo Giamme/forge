@@ -272,6 +272,14 @@ class RetroWiringTests(unittest.TestCase):
         self.assertEqual(stored[0]['role'], 'planner')
         self.assertIsNone(stored[0]['task'])
         self.assertIsNone(stored[0]['attempt'])
+        # The planner is dispatched before `plan` writes run_id. The note must still carry
+        # the id that write created, not null from recording too early.
+        run_id = (plan / 'run_id').read_text(encoding='utf-8').strip()
+        self.assertTrue(run_id)
+        self.assertEqual(stored[0]['run_id'], run_id)
+        events = self.retro_events(run_id)
+        self.assertEqual([event['summary'] for event in events], [PLANNER_NOTE['summary']])
+        self.assertEqual(events[0]['run_id'], run_id)
         self.assertIn(PLANNER_NOTE['summary'], (plan / 'retro.md').read_text(encoding='utf-8'))
         summary = 'retro: 1 patterns (0 you can fix, 1 for forge): '
         self.assertEqual(sum(item.startswith(summary) for item in result.stdout.splitlines()), 1)
@@ -324,3 +332,147 @@ class RetroWiringTests(unittest.TestCase):
         self.assertNotIn(SENTENCE, (out / 'qa.input').read_text(encoding='utf-8'))
         self.assert_no_retro_files(plan)
         self.assertEqual(self.retro_events((plan / 'run_id').read_text().strip()), [])
+
+
+class RetroWiringFailureTests(unittest.TestCase):
+    """Recording still happens when a later step discards the dispatch's files or returns
+    before the usual record. The task's own result stays whatever that step decided.
+
+    Not a subclass of RetroWiringTests: unittest would collect those tests again.
+    """
+    setUp = RetroWiringTests.setUp
+    git = fixtures.ForgeTests.git
+    run_script = fixtures.ForgeTests.run_script
+    scenario = fixtures.ForgeTests.scenario
+    plan_of = RetroWiringTests.plan_of
+
+    def test_an_invalidated_review_still_records_its_note(self):
+        # The reviewer rewrites a tracked file in its copy (mutate). The fingerprint check
+        # then rejects the review; the note was already in qa.last.
+        self.scenario({'a.qa.1': {'findings': line(QA_NOTE), 'verdict': 'PASS', 'mutate': True}})
+        plan = self.plan_of('--retro', name='invalidated')
+        result = self.run_script('forge-parallel.sh', 'run', plan)
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertEqual((plan / 'tasks' / 'a' / 'status').read_text().strip(), 'INVALIDATED')
+        self.assertFalse((plan / 'tasks' / 'a' / 'merged').exists())
+        stored = notes_of(plan)
+        self.assertEqual([note['summary'] for note in stored], [QA_NOTE['summary']])
+        self.assertEqual(stored[0]['role'], 'qa')
+        self.assertEqual(stored[0]['task'], 'a')
+        self.assertEqual(stored[0]['run_id'], (plan / 'run_id').read_text(encoding='utf-8').strip())
+        self.assertIn(QA_NOTE['summary'], (plan / 'retro.md').read_text(encoding='utf-8'))
+        summary = 'retro: 1 patterns (1 you can fix, 0 for forge): '
+        self.assertEqual(sum(item.startswith(summary) for item in result.stdout.splitlines()), 1)
+
+    def test_a_failed_qa_continuation_keeps_its_note_and_the_fresh_one_decides(self):
+        # qa.2 is the continued review: it emits a note, then exits 1, so dispatch returns 9
+        # and the fresh fallback (qa.3) replaces qa.last. The fallback's PASS is the result.
+        continued = dict(QA_NOTE, summary='the continued review lost its sandbox')
+        fresh = dict(QA_NOTE, summary='the fresh review could not read the log')
+        self.scenario({
+            'a.dwarf.2': {'content': 'attempt 2'},
+            'a.qa.1': {'verdict': 'FAIL', 'findings': '- [P1][CONFIRMED] a.txt:1 — broken'},
+            'a.qa.2': {'findings': line(continued), 'verdict': 'FAIL', 'rc': 1},
+            'a.qa.3': {'findings': line(fresh), 'verdict': 'PASS'},
+        })
+        plan = self.plan_of('--retro', '--reviewer-session', name='qa-continue')
+        first = self.run_script('forge-parallel.sh', 'run', plan)
+        self.assertEqual(first.returncode, 5, first.stdout)
+        retry = self.run_script('forge-parallel.sh', 'retry', plan, 'a')
+        self.assertEqual(retry.returncode, 0, retry.stdout)
+        self.assertEqual((plan / 'tasks' / 'a' / 'status').read_text().strip(), 'PASS')
+        rows = [line.split('\t') for line in (plan / 'tasks' / 'a' / 'review_sessions.tsv').read_text().splitlines()]
+        self.assertEqual(rows[-1][2:4], ['fresh', 'continue-failed'])
+        last = (plan / 'tasks' / 'a' / 'qa.last').read_text(encoding='utf-8')
+        self.assertIn(fresh['summary'], last)
+        self.assertNotIn(continued['summary'], last)
+        stored = notes_of(plan)
+        self.assertEqual([note['summary'] for note in stored],
+                         [continued['summary'], fresh['summary']])
+        for note in stored:
+            self.assertEqual(note['role'], 'qa')
+            self.assertEqual(note['task'], 'a')
+            self.assertEqual(note['attempt'], 2)
+            self.assertEqual(note['run_id'], (plan / 'run_id').read_text(encoding='utf-8').strip())
+
+    def test_a_failed_implementer_continuation_keeps_its_note(self):
+        # The continued dwarf changes nothing tracked (so a fresh one runs) but leaves a note
+        # and an inbox. The fresh dispatch deletes dwarf.last before the usual record.
+        plan = self.root / 'dwarf-continue'
+        plan.mkdir()
+        (plan / 'tasks.tsv').write_text('a\t-\tlow\ta.txt\topus\topus\tA\n')
+        task = plan / 'tasks' / 'a'
+        task.mkdir(parents=True)
+        (task / 'prompt.md').write_text('Implement change. REQUIREMENT_SENTINEL TASK_a\n')
+        continued = dict(DWARF, summary='the continued implementer could not push')
+        inbox = dict(INBOX, summary='the continued implementer was sandboxed')
+        self.scenario({
+            'a.qa.1': {'verdict': 'FAIL', 'findings': '- [P1][CONFIRMED] a.txt:1 — broken'},
+            'a.dwarf.2': {
+                'no_edit': True, 'rc': 1, 'message': line(continued) + '\n',
+                'files': {'.forge/retro-inbox.jsonl': json.dumps(inbox) + '\n'},
+            },
+            'a.dwarf.3': {'content': 'attempt 3', 'message': 'implemented the retry\n'},
+        })
+        planned = self.run_script('forge-parallel.sh', 'plan', plan, '--repo', self.repo,
+                                  '--no-memory', '--retro', '--implementer-session')
+        self.assertEqual(planned.returncode, 0, planned.stdout)
+        first = self.run_script('forge-parallel.sh', 'run', plan)
+        self.assertEqual(first.returncode, 5, first.stdout)
+        retry = self.run_script('forge-parallel.sh', 'retry', plan, 'a')
+        self.assertEqual(retry.returncode, 0, retry.stdout)
+        self.assertEqual((plan / 'tasks' / 'a' / 'status').read_text().strip(), 'PASS')
+        rows = [line.split('\t') for line in
+                (plan / 'tasks' / 'a' / 'implementer_sessions.tsv').read_text().splitlines()]
+        self.assertEqual(rows[-1][2:4], ['fresh', 'continue-failed'])
+        last = (plan / 'tasks' / 'a' / 'dwarf.last').read_text(encoding='utf-8')
+        self.assertIn('implemented the retry', last)
+        self.assertNotIn(continued['summary'], last)
+        stored = notes_of(plan)
+        self.assertEqual([note['summary'] for note in stored],
+                         [inbox['summary'], continued['summary']])
+        for note in stored:
+            self.assertEqual(note['role'], 'dwarf')
+            self.assertEqual(note['task'], 'a')
+            self.assertEqual(note['attempt'], 2)
+            self.assertEqual(note['run_id'], (plan / 'run_id').read_text(encoding='utf-8').strip())
+
+    def test_a_failed_final_review_continuation_keeps_its_note(self):
+        # a.qa.1 is the task review. a.qa.2 establishes the session. a.qa.3 is the continued
+        # final review, which notes and then fails; a.qa.4 is the fresh fallback that passes.
+        continued = dict(REVIEW_NOTE, summary='the continued final review lost the toolchain')
+        # A different command, so the report keeps this as its own pattern rather than
+        # folding it into the continuation's.
+        fresh = dict(REVIEW_NOTE, summary='the fresh final review saw a stale diff',
+                     evidence={'command': 'git diff HEAD~1 HEAD', 'exit': 1,
+                               'error': 'bad revision'})
+        self.scenario({
+            'a.qa.2': {'verdict': 'PASS'},
+            'a.qa.3': {'findings': line(continued), 'verdict': 'PASS', 'rc': 1},
+            'a.qa.4': {'findings': line(fresh), 'verdict': 'PASS'},
+        })
+        plan = self.plan_of('--retro', '--reviewer-session', name='final-continue')
+        ran = self.run_script('forge-parallel.sh', 'run', plan)
+        self.assertEqual(ran.returncode, 0, ran.stdout)
+        first = self.run_script('forge-parallel.sh', 'review', plan)
+        self.assertEqual(first.returncode, 0, first.stdout)
+        second = self.run_script('forge-parallel.sh', 'review', plan)
+        self.assertEqual(second.returncode, 0, second.stdout)
+        out = sorted(plan.glob('final-review-*'))[-1]
+        self.assertIn('session=fresh\nsession_reason=continue-failed\n',
+                      (out / 'review.meta').read_text(encoding='utf-8'))
+        self.assertEqual((out / 'verdict').read_text().strip(), 'PASS')
+        last = (out / 'qa.last').read_text(encoding='utf-8')
+        self.assertIn(fresh['summary'], last)
+        self.assertNotIn(continued['summary'], last)
+        stored = notes_of(plan)
+        self.assertEqual([note['summary'] for note in stored],
+                         [continued['summary'], fresh['summary']])
+        for note in stored:
+            self.assertEqual(note['role'], 'qa')
+            self.assertIsNone(note['task'])
+            self.assertIsNone(note['attempt'])
+            self.assertEqual(note['run_id'], (plan / 'run_id').read_text(encoding='utf-8').strip())
+        report = (plan / 'retro.md').read_text(encoding='utf-8')
+        self.assertIn(continued['summary'], report)
+        self.assertIn(fresh['summary'], report)
