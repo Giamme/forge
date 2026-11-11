@@ -155,6 +155,9 @@ class ConfigTests(unittest.TestCase):
         out = self.run_cfg('set', 'repo.nope', 'x', '--repo', str(self.repo))
         self.assertEqual(out.returncode, 2)
         self.assertIn('repo.verify-subset', out.stderr)
+        self.assertIn('brief.model', out.stderr)
+        self.assertIn('summaries.model', out.stderr)
+        self.assertIn('decide.gate.<gate>', out.stderr)
 
     def test_refusals(self):
         plain = self.base / 'plain'; plain.mkdir()
@@ -401,6 +404,137 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(self.run_cfg('--help').returncode, 0)
         out = subprocess.run([str(FORGE), '--help'], capture_output=True, text=True)
         self.assertIn('config', out.stdout)
+
+    def decide_path(self):
+        return self.cfg / 'forge' / 'decide.json'
+
+    def test_feature_keys_set_show_and_unset(self):
+        # Nothing stored yet: show lists the six keys at their defaults.
+        shown = json.loads(self.run_cfg('show', '--json').stdout)
+        self.assertEqual(shown['features'], {
+            'retro': 'off', 'brief': 'off', 'brief.scope': 'task', 'brief.model': None,
+            'summaries': 'off', 'summaries.model': None,
+        })
+        text = self.run_cfg('show').stdout
+        self.assertLess(text.index('gate drift:'), text.index('\nfeatures:\n'))
+        self.assertLess(text.index('\nfeatures:\n'), text.index('\nprofiles:'))
+        self.assertIn('  retro: off\n', text)
+        self.assertIn('  brief.model: (none)\n', text)
+        self.assertIn('  summaries.model: (none)\n', text)
+
+        path = self.decide_path()
+        path.parent.mkdir(parents=True)
+        path.write_text(json.dumps({
+            'gates': {'drift': {'mode': 'shadow'}},
+            'budget': {'daily_usd': 2},
+            'custom': {'kept': True},
+        }) + '\n')
+        cases = [
+            ('retro', 'on'),
+            ('brief', 'advisory'),
+            ('brief.scope', 'wave'),
+            ('brief.model', 'sol'),
+            ('summaries', 'on'),
+            ('summaries.model', 'sol:high'),
+        ]
+        previous = {}
+        for key, value in cases:
+            out = self.run_cfg('set', key, value, '--repo', str(self.repo), '--json')
+            self.assertEqual(out.returncode, 0, (key, out.stderr, out.stdout))
+            body = json.loads(out.stdout)
+            self.assertEqual((body['ok'], body['key'], body['previous'], body['value']),
+                             (True, key, previous.get(key), value))
+            previous[key] = value
+        # --repo is ignored: the user file changed, the repo file did not.
+        self.assertFalse((self.repo / '.forge' / 'decide.json').exists())
+        stored = json.loads(path.read_text())
+        self.assertEqual(stored['version'], 1)
+        self.assertEqual(stored['gates'], {'drift': {'mode': 'shadow'}})
+        self.assertEqual(stored['budget'], {'daily_usd': 2})
+        self.assertEqual(stored['custom'], {'kept': True})
+        self.assertEqual(stored['features'], {
+            'retro': 'on',
+            'brief': {'level': 'advisory', 'scope': 'wave', 'model': 'sol'},
+            'summaries': {'mode': 'on', 'model': 'sol:high'},
+        })
+        shown = json.loads(self.run_cfg('show', '--json').stdout)['features']
+        self.assertEqual(shown, {
+            'retro': 'on', 'brief': 'advisory', 'brief.scope': 'wave', 'brief.model': 'sol',
+            'summaries': 'on', 'summaries.model': 'sol:high',
+        })
+        text = self.run_cfg('show').stdout
+        for line in ('  retro: on\n', '  brief: advisory\n', '  brief.scope: wave\n',
+                     '  brief.model: sol\n', '  summaries: on\n', '  summaries.model: sol:high\n'):
+            self.assertIn(line, text)
+        plain = self.run_cfg('set', 'retro', 'off')
+        self.assertEqual(plain.returncode, 0, plain.stderr)
+        self.assertIn('retro: set\n', plain.stdout)
+        replaced = json.loads(self.run_cfg('set', 'retro', 'on', '--json').stdout)
+        self.assertEqual((replaced['previous'], replaced['value']), ('off', 'on'))
+
+        for key, value in reversed(cases):
+            out = self.run_cfg('unset', key, '--json')
+            self.assertEqual(out.returncode, 0, (key, out.stderr, out.stdout))
+            body = json.loads(out.stdout)
+            self.assertEqual((body['previous'], body['value']), (value, None))
+        stored = json.loads(path.read_text())
+        self.assertNotIn('features', stored)
+        self.assertEqual(stored['gates'], {'drift': {'mode': 'shadow'}})
+        self.assertEqual(stored['custom'], {'kept': True})
+        self.assertIn('retro: unset\n', self.run_cfg('unset', 'retro').stdout)
+        shown = json.loads(self.run_cfg('show', '--json').stdout)['features']
+        self.assertEqual(shown['retro'], 'off')
+        self.assertIsNone(shown['summaries.model'])
+
+    def test_a_feature_may_be_turned_on_with_no_model(self):
+        self.assertEqual(self.run_cfg('set', 'brief', 'strict', '--json').returncode, 0)
+        self.assertEqual(self.run_cfg('set', 'summaries', 'on', '--json').returncode, 0)
+        stored = json.loads(self.decide_path().read_text())['features']
+        self.assertEqual(stored, {'brief': {'level': 'strict'}, 'summaries': {'mode': 'on'}})
+        shown = json.loads(self.run_cfg('show', '--json').stdout)['features']
+        self.assertEqual(shown['brief'], 'strict')
+        self.assertEqual(shown['summaries'], 'on')
+        self.assertIsNone(shown['brief.model'])
+        self.assertIsNone(shown['summaries.model'])
+        text = self.run_cfg('show').stdout
+        self.assertIn('  brief: strict\n', text)
+        self.assertIn('  brief.model: (none)\n', text)
+        self.assertIn('  summaries.model: (none)\n', text)
+
+    def test_invalid_feature_values_write_nothing(self):
+        path = self.decide_path()
+        path.parent.mkdir(parents=True)
+        blob = b'{"version": 1, "custom": true}\n'
+        path.write_bytes(blob)
+        cases = [
+            (('set', 'retro', 'maybe'), 'retro must be off or on'),
+            (('set', 'retro', 'on '), 'retro must be off or on'),
+            (('set', 'summaries', 'sometimes'), 'summaries must be off or on'),
+            (('set', 'brief', 'repo'), 'brief must be off, advisory, gated or strict'),
+            (('set', 'brief.scope', 'nope'), 'brief.scope must be task, wave or plan'),
+            (('set', 'brief.model', 'sol:low'), 'sol:low'),
+            (('set', 'summaries.model', 'sol high'), 'sol high'),
+            (('set', 'summaries.model', 'bogus'), 'bogus'),
+            (('set', 'brief.model', '-'), 'not alias'),
+        ]
+        for args, needle in cases:
+            out = self.run_cfg(*args)
+            self.assertEqual(out.returncode, 2, (args, out.stderr))
+            self.assertIn(needle, out.stderr, args)
+            self.assertEqual(path.read_bytes(), blob, args)
+        path.unlink()
+        missing = self.run_cfg('set', 'brief', 'sometimes')
+        self.assertEqual(missing.returncode, 2, missing.stderr)
+        self.assertFalse(path.exists())
+        absent = self.run_cfg('unset', 'retro', '--json')
+        self.assertEqual(absent.returncode, 0, absent.stderr)
+        self.assertIsNone(json.loads(absent.stdout)['previous'])
+        self.assertFalse(path.exists())
+        path.write_bytes(blob)
+        untouched = self.run_cfg('unset', 'summaries.model', '--json')
+        self.assertEqual(untouched.returncode, 0, untouched.stderr)
+        self.assertIsNone(json.loads(untouched.stdout)['previous'])
+        self.assertEqual(path.read_bytes(), blob)
 
 
 if __name__ == '__main__':
