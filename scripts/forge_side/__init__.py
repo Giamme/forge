@@ -189,13 +189,13 @@ def _count(kind_dir: Path) -> int:
     except OSError:
         return 0
     for task_dir in children:
-        if not task_dir.is_dir() or task_dir.name.startswith('.'):
+        if not task_dir.is_dir():
             continue
         try:
             nested = list(task_dir.iterdir())
         except OSError:
             continue
-        total += sum(1 for child in nested if child.is_dir() and not child.name.startswith('.'))
+        total += sum(1 for child in nested if child.is_dir())
     return total
 
 
@@ -401,16 +401,24 @@ def run(kind, plan, task, prompt, spec, timeout=900) -> dict:
     argv = ['/bin/bash', str(DISPATCH), 'side', '' if spec is None else str(spec),
             '--repo', repo, '--run-dir', str(dest), '--prompt-file', str(dest / 'prompt.txt'),
             '--timeout', str(max(0, limit))]
+    # Own session, so a timeout can stop the preflight with the shell.
     try:
-        completed = subprocess.run(
-            argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            timeout=None if limit <= 0 else limit + _DISPATCH_GRACE_S, check=False, close_fds=True)
-    except subprocess.TimeoutExpired:
-        return _finish(plan, task, kind, spec, False, _last(dest), dest, 'timeout')
+        proc = subprocess.Popen(
+            argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            start_new_session=True, close_fds=True)
     except (OSError, subprocess.SubprocessError):
         return _finish(plan, task, kind, spec, False, _last(dest), dest, 'error')
-    ok = completed.returncode == 0
-    reason = None if ok else ('timeout' if completed.returncode == 7 else 'error')
+    wait = None if limit <= 0 else limit + _DISPATCH_GRACE_S
+    try:
+        proc.wait(timeout=wait)
+    except subprocess.TimeoutExpired:
+        _stop_dispatch(proc)
+        return _finish(plan, task, kind, spec, False, _last(dest), dest, 'timeout')
+    except (OSError, subprocess.SubprocessError):
+        _stop_dispatch(proc)
+        return _finish(plan, task, kind, spec, False, _last(dest), dest, 'error')
+    ok = proc.returncode == 0
+    reason = None if ok else ('timeout' if proc.returncode == 7 else 'error')
     return _finish(plan, task, kind, spec, ok, _last(dest), dest, reason)
 
 
