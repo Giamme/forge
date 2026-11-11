@@ -133,7 +133,7 @@ class SettingsTests(SideCase):
             'brief': {'level': 'advisory', 'scope': 'plan', 'model': 'user-brief'},
             'summaries': {'mode': 'on', 'model': 'user-sum'},
         })
-        (self.plan / 'retro').write_text('off\n')
+        (self.plan / 'retro_mode').write_text('off\n')
         (self.plan / 'brief').write_text(' strict \n')
         (self.plan / 'brief_scope').write_text('wave\n')
         (self.plan / 'brief_model').write_text(' plan-brief \n')
@@ -168,7 +168,7 @@ class SettingsTests(SideCase):
             'brief': {'level': 'advisory', 'scope': 'wave', 'model': 'user-m'},
             'summaries': {'mode': 'on', 'model': 'user-s'},
         })
-        (self.plan / 'retro').write_text('ON\n')
+        (self.plan / 'retro_mode').write_text('ON\n')
         (self.plan / 'brief').write_text('STRICT\n')
         (self.plan / 'brief_scope').write_text('nope\n')
         (self.plan / 'summaries').write_text('yes\n')
@@ -185,7 +185,7 @@ class SettingsTests(SideCase):
             'brief': {'level': 'strict', 'scope': 'plan', 'model': 'user-m'},
             'summaries': {'mode': 'on', 'model': 'user-s'},
         })
-        (self.plan / 'retro').write_text('on\n')
+        (self.plan / 'retro_mode').write_text('on\n')
         (self.plan / 'brief').write_text('strict\n')
         (self.plan / 'brief_scope').write_text('wave\n')
         (self.plan / 'brief_model').write_text('plan-brief\n')
@@ -206,7 +206,7 @@ class AllowedTests(SideCase):
 
     def setUp(self):
         super().setUp()
-        (self.plan / 'retro').write_text('on\n')
+        (self.plan / 'retro_mode').write_text('on\n')
         (self.plan / 'brief').write_text('advisory\n')
         (self.plan / 'brief_scope').write_text('task\n')
         (self.plan / 'brief_model').write_text('sol\n')

@@ -130,7 +130,7 @@ plans_make_integration() { # plans_make_integration <repo> <branch> <commit> <wt
 
 # Per-plan option files carried to a derived plan. The cost-bearing choices a user made
 # for this plan apply to the plan made from it; `planner` does not (nothing plans again).
-PLANS_OPTION_FILES="no_ripwire no_memory yolo_dwarf yolo_qa reviewer_session implementer_session fast pre_review_tests pre_review_parallel qa_threshold timeout verify_retries verify_cmd verify_parallel setup_cmd final_qa shadow_qa shadow_rate explore escalate_after fractal-routing.json fractal-selection.json jev-selection.json profile.json routed.json retro brief brief_scope brief_model summaries summaries_model"
+PLANS_OPTION_FILES="no_ripwire no_memory yolo_dwarf yolo_qa reviewer_session implementer_session fast pre_review_tests pre_review_parallel qa_threshold timeout verify_retries verify_cmd verify_parallel setup_cmd final_qa shadow_qa shadow_rate explore escalate_after fractal-routing.json fractal-selection.json jev-selection.json profile.json routed.json retro_mode brief brief_scope brief_model summaries summaries_model"
 
 # --- accept ---------------------------------------------------------------------
 # A reviewer's FAIL is the QA gate; overriding it is the user's call and never forge's or

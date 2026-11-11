@@ -8,7 +8,8 @@ never raises on a dispatch failure.
 Precedence for each switch, first match wins:
 
 1. `FORGE_RETRO=off`, `FORGE_BRIEF=off` or `FORGE_SUMMARIES=off` forces that switch off.
-2. The plan file, when it names a value: `retro` (`on`), `brief` (the level),
+2. The plan file, when it names a value: `retro_mode` (`on` or `off`; not `retro`, which is
+   the notes directory), `brief` (the level),
    `brief_scope`, `brief_model`, `summaries` (`on` or `off`), `summaries_model`.
 3. The user `features` object in decide.json (`forge_decide.load_user`).
 4. Off. `brief_scope` defaults to `task`. An env var forces the switch off and leaves
@@ -132,7 +133,7 @@ def settings(plan) -> dict:
     if _env_off('FORGE_RETRO'):
         retro = False
     else:
-        file = _read(plan / 'retro')
+        file = _read(plan / 'retro_mode')
         retro = (file == 'on') if file is not None else _choice(features.get('retro'), ON_OFF) == 'on'
 
     if _env_off('FORGE_BRIEF'):

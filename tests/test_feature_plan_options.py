@@ -18,7 +18,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / 'scripts'))
 from forge_dataset import harvest  # noqa: E402  the dataset plan event records these files
 
-FILES = ('retro', 'brief', 'brief_scope', 'brief_model', 'summaries', 'summaries_model')
+FILES = ('retro_mode', 'brief', 'brief_scope', 'brief_model', 'summaries', 'summaries_model')
 FAIL = {'verdict': 'FAIL', 'findings': '- [P1][CONFIRMED] a.txt:1 — broken'}
 # The fake `claude` on PATH resolves `opus` and `sonnet` in the registry; `sol` is a codex alias.
 BRIEF = ('--brief-model', 'sonnet')
@@ -70,7 +70,7 @@ class PlanOptionTests(unittest.TestCase):
     def test_each_flag_writes_its_file(self):
         p, out = self.planned('--retro', '--brief', 'gated', '--brief-scope', 'wave', *BRIEF,
                               '--summaries', 'on', *SUMMARIES)
-        self.assertEqual(self.present(p), {'retro': 'on', 'brief': 'gated', 'brief_scope': 'wave',
+        self.assertEqual(self.present(p), {'retro_mode': 'on', 'brief': 'gated', 'brief_scope': 'wave',
                                            'brief_model': 'sonnet', 'summaries': 'on', 'summaries_model': 'sol'})
 
     def test_the_brief_scope_is_task_without_a_flag(self):
@@ -78,11 +78,13 @@ class PlanOptionTests(unittest.TestCase):
             p, _ = self.planned('--brief', level, *BRIEF)
             self.assertEqual(self.present(p), {'brief': level, 'brief_scope': 'task', 'brief_model': 'sonnet'})
 
-    def test_no_retro_and_brief_off_remove_what_a_plan_has(self):
+    def test_no_retro_and_brief_off_turn_off_what_a_plan_has(self):
         p, _ = self.planned('--retro', '--brief', 'strict', *BRIEF, '--summaries', 'on', *SUMMARIES)
         self.assertEqual(len(self.present(p)), 6)
         self.planned('--no-retro', '--brief', 'off', '--summaries', 'off', p=p)
-        self.assertEqual(self.present(p), {})
+        # Off is kept as `off`, not left to the user setting; the scope and both models go.
+        self.assertEqual(self.present(p), {'retro_mode': 'off', 'brief': 'off', 'summaries': 'off'})
+        self.assertFalse(any(l.startswith(('retro:', 'brief:', 'summaries:')) for l in self.planned(p=p)[1].splitlines()))
 
     def test_a_replan_without_the_flags_keeps_them(self):
         p, _ = self.planned('--retro', '--brief', 'gated', *BRIEF, '--summaries', 'on', *SUMMARIES)
@@ -106,7 +108,7 @@ class PlanOptionTests(unittest.TestCase):
         self.user({'retro': 'on', 'brief': {'level': 'advisory', 'scope': 'plan', 'model': 'sonnet'},
                    'summaries': {'mode': 'on', 'model': 'sol'}})
         p, _ = self.planned()
-        self.assertEqual(self.present(p), {'retro': 'on', 'brief': 'advisory', 'brief_scope': 'plan',
+        self.assertEqual(self.present(p), {'retro_mode': 'on', 'brief': 'advisory', 'brief_scope': 'plan',
                                            'brief_model': 'sonnet', 'summaries': 'on', 'summaries_model': 'sol'})
 
     def test_a_flag_beats_the_user_setting(self):
@@ -114,7 +116,7 @@ class PlanOptionTests(unittest.TestCase):
                    'summaries': {'mode': 'on', 'model': 'sol'}})
         p, out = self.planned('--brief', 'strict', '--brief-scope', 'wave', '--brief-model', 'opus',
                               '--summaries-model', 'sonnet')
-        self.assertEqual(self.present(p), {'retro': 'on', 'brief': 'strict', 'brief_scope': 'wave',
+        self.assertEqual(self.present(p), {'retro_mode': 'on', 'brief': 'strict', 'brief_scope': 'wave',
                                            'brief_model': 'opus', 'summaries': 'on', 'summaries_model': 'sonnet'})
         self.assertIn('brief: strict, wave scope, opus;', out)
 
@@ -122,7 +124,7 @@ class PlanOptionTests(unittest.TestCase):
         # Removing the file would let the run fall back to the user setting, so `off` is written.
         self.user({'retro': 'on', 'brief': {'level': 'gated', 'model': 'sonnet'}, 'summaries': {'mode': 'on', 'model': 'sol'}})
         p, out = self.planned('--no-retro', '--brief', 'off', '--summaries', 'off')
-        self.assertEqual(self.present(p), {'retro': 'off', 'brief': 'off', 'summaries': 'off'})
+        self.assertEqual(self.present(p), {'retro_mode': 'off', 'brief': 'off', 'summaries': 'off'})
         from forge_side import settings
         os.environ['XDG_CONFIG_HOME'] = self.env['XDG_CONFIG_HOME']
         try:
@@ -144,9 +146,52 @@ class PlanOptionTests(unittest.TestCase):
         self.assertNotIn('retro is on', out)
         self.assertFalse((self.state / 'forge' / 'retro.noticed').exists())
 
-    def test_explicit_offs_with_nothing_on_write_nothing(self):
+    def test_explicit_offs_are_frozen_against_a_later_user_setting(self):
         p, _ = self.planned('--no-retro', '--brief', 'off', '--summaries', 'off', '--brief-model', 'sonnet')
+        self.assertEqual(self.present(p), {'retro_mode': 'off', 'brief': 'off', 'summaries': 'off'})
+        # the user switches everything on afterwards: this plan stays off
+        self.user({'retro': 'on', 'brief': {'level': 'gated', 'model': 'sonnet'}, 'summaries': {'mode': 'on', 'model': 'sol'}})
+        from forge_side import settings
+        os.environ['XDG_CONFIG_HOME'] = self.env['XDG_CONFIG_HOME']
+        try:
+            effective = settings(p)
+        finally:
+            os.environ['XDG_CONFIG_HOME'] = dataset_isolation.CONFIG
+        self.assertEqual((effective['retro'], effective['brief']['level'], effective['summaries']['mode']),
+                         (False, 'off', 'off'))
+        # and a re-plan without flags keeps the offs
+        self.planned(p=p)
+        self.assertEqual(self.present(p), {'retro_mode': 'off', 'brief': 'off', 'summaries': 'off'})
+
+    def test_a_refused_replan_leaves_the_other_options_as_they_were(self):
+        p, _ = self.planned('--qa-threshold', 'P1')
+        r = self.plan_cmd(p, '--qa-threshold', 'P3', '--max-attempts', '7', '--brief', 'strict')
+        self.assertEqual(r.returncode, 2, r.stdout)
+        self.assertEqual((p / 'qa_threshold').read_text().strip(), 'P1')
+        self.assertFalse((p / 'max_attempts').exists())
         self.assertEqual(self.present(p), {})
+        # a fresh plan with a refusal gets no qa_threshold either
+        q = self.new_plan()
+        self.assertEqual(self.plan_cmd(q, '--qa-threshold', 'P3', '--summaries', 'on').returncode, 2)
+        self.assertFalse((q / 'qa_threshold').exists())
+
+    def test_a_dash_is_not_a_model(self):
+        for flags in (('--brief', 'gated', '--brief-model', '-'), ('--summaries', 'on', '--summaries-model', '-')):
+            p = self.new_plan()
+            r = self.plan_cmd(p, *flags)
+            self.assertEqual(r.returncode, 2, (flags, r.stdout))
+            self.assertIn('does not resolve', r.stdout)
+            self.assertEqual(self.present(p), {}, flags)
+
+    def test_the_retro_option_file_and_the_notes_directory_do_not_collide(self):
+        p, _ = self.planned('--retro')
+        self.assertTrue((p / 'retro_mode').is_file())
+        r = subprocess.run([sys.executable, str(ROOT / 'scripts' / 'forge-retro.py'), 'note', str(p), '--type', 'tooling',
+                            '--fixable-by', 'forge', '--summary', 'test'], capture_output=True, text=True, env=self.env)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue((p / 'retro' / 'notes.jsonl').is_file())
+        self.planned(p=p)
+        self.assertTrue((p / 'retro' / 'notes.jsonl').is_file())
 
     # --- no model, no plan ---------------------------------------------------------------------
     def test_brief_or_summaries_on_without_a_model_is_refused_and_leaves_no_files(self):
@@ -249,7 +294,7 @@ class PlanOptionTests(unittest.TestCase):
         p, _ = self.planned('--retro', '--brief', 'strict', '--brief-scope', 'wave', *BRIEF, '--summaries', 'on', *SUMMARIES)
         event = harvest.plan_event(p, dict(run='fixed-run'), src='import', inventory=False)
         self.assertEqual({k: v for k, v in event['data']['options'].items() if k in FILES},
-                         {'retro': 'on', 'brief': 'strict', 'brief_scope': 'wave', 'brief_model': 'sonnet',
+                         {'retro_mode': 'on', 'brief': 'strict', 'brief_scope': 'wave', 'brief_model': 'sonnet',
                           'summaries': 'on', 'summaries_model': 'sol'})
         # a different choice is a different plan
         other = harvest.plan_event(self.planned('--retro', '--brief', 'gated', *BRIEF)[0], dict(run='fixed-run'),

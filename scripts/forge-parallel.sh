@@ -59,8 +59,8 @@
 #                           still what the review judged, and starts fresh whenever it cannot;
 #                           each attempt is logged in tasks/<id>/implementer_sessions.tsv.
 #                           `--no-implementer-session` turns it off (the default)
-#   --retro | --no-retro   agents record what got in their way (retro, #132); plan file `retro`
-#                           (on). Without a flag the plan keeps its earlier choice, else takes the
+#   --retro | --no-retro   agents record what got in their way (retro, #132); plan file `retro_mode`
+#                           (on or off; not `retro`, the notes directory). Without a flag the plan keeps its earlier choice, else takes the
 #                           user `features` setting. The first plan with it on says what is recorded
 #   --brief LEVEL           advisory, gated, strict or off (#135): one cheap read-only dispatch per
 #                           task before it starts. Plan files `brief`, `brief_scope` (--brief-scope
@@ -317,16 +317,18 @@ EOF
 }
 
 # --- retro, brief and summaries (#132, #135, #133): options frozen into the plan -------
-# `plan` writes six plan files (retro, brief, brief_scope, brief_model, summaries,
-# summaries_model) that forge_side.settings(plan) reads at run time. For each, a flag of
-# this call wins, then what the plan already has (a re-plan without the flag keeps it, as
+# `plan` writes six plan files (retro_mode, brief, brief_scope, brief_model, summaries,
+# summaries_model) that forge_side.settings(plan) reads at run time. The retro file is not
+# called `retro`: <plan>/retro/ is where the notes are kept. For each, a flag of this call
+# wins, then what the plan already has (a re-plan without the flag keeps it, as
 # --reviewer-session is kept), then the user `features` setting, read here once. A file is
-# written only for a feature that is on. An explicit off is written as `off` only when the
-# user setting is on (else the run would fall back to it); otherwise it removes the file.
+# written for a feature that is on, and as `off` for one switched off by a flag (or an earlier
+# flag), so a later change to the user setting cannot turn it on in this plan. With nothing on
+# and no explicit off, no file is written.
 #
-# forge_features_resolve sets FEAT_* and writes nothing; it exits 2 when a feature is on with
-# no model, or a model spec does not resolve. forge_features_store writes the files and says
-# what retro records the first time. A value of "-" means "no file".
+# forge_features_resolve sets FEAT_* and writes nothing; it returns 2 (FEAT_ERR says why) when
+# a feature is on with no model, or a model spec does not resolve. forge_features_store writes
+# the files and says what retro records the first time. An empty value means "no file".
 forge_features_user() { # prints key=value lines: the stored user settings, defaults when unreadable
   PYTHONPATH="$SKILL_DIR/scripts${PYTHONPATH:+:$PYTHONPATH}" python3 - <<'PY' 2>/dev/null || true
 import forge_side
@@ -345,13 +347,13 @@ forge_feature_file() { # forge_feature_file <plan> <name> -> first line, trimmed
 
 forge_feature_spec_ok() { # forge_feature_spec_ok <flag name> <spec>: dispatch's own dry run, as a --qa spec resolves
   local tmp err rc=0
-  tmp="$(mktemp -d)" || die "could not make a temporary directory"
+  tmp="$(mktemp -d)" || { FEAT_ERR="could not make a temporary directory"; return 2; }
   mkdir -p "$tmp/repo" "$tmp/run"; echo spec-check > "$tmp/prompt"
   bash "$SKILL_DIR/scripts/forge-dispatch.sh" side "$2" --repo "$tmp/repo" --run-dir "$tmp/run" \
     --prompt-file "$tmp/prompt" --dry-run >/dev/null 2>"$tmp/err" || rc=$?
   err="$(awk 'NF { line = $0 } END { print line }' "$tmp/err" 2>/dev/null)"
   rm -rf "${tmp:?}"
-  [ "$rc" -eq 0 ] || die "$1: '$2' does not resolve to a model${err:+ ($err)}"
+  [ "$rc" -eq 0 ] || { FEAT_ERR="$1: '$2' does not resolve to a model${err:+ ($err)}"; return 2; }
 }
 
 forge_features_resolve() { # forge_features_resolve <plan>
@@ -370,53 +372,81 @@ forge_features_resolve() { # forge_features_resolve <plan>
 $(forge_features_user)
 FEATURES_EOF
   local f_retro f_brief f_scope f_bmodel f_summ f_smodel
-  f_retro="$(forge_feature_file "$plan" retro)"; f_brief="$(forge_feature_file "$plan" brief)"
+  f_retro="$(forge_feature_file "$plan" retro_mode)"; f_brief="$(forge_feature_file "$plan" brief)"
   f_scope="$(forge_feature_file "$plan" brief_scope)"; f_bmodel="$(forge_feature_file "$plan" brief_model)"
   f_summ="$(forge_feature_file "$plan" summaries)"; f_smodel="$(forge_feature_file "$plan" summaries_model)"
 
-  # retro: `on`, or `off` (an override of a user `on`), or no file
+  # retro: `on`; `off` when this call or the plan said so; no file otherwise
   local retro="${RETRO_FLAG:-${f_retro:-$u_retro}}"
-  case "$retro" in on) FEAT_RETRO=on ;; *) if [ "$u_retro" = on ]; then FEAT_RETRO=off; else FEAT_RETRO=-; fi ;; esac
+  FEAT_RETRO=""
+  case "$retro" in on) FEAT_RETRO=on ;; *) if [ "$RETRO_FLAG" = off ] || [ "$f_retro" = off ]; then FEAT_RETRO=off; fi ;; esac
 
   # brief: the level, its scope and its model
   local level="${BRIEF_FLAG:-${f_brief:-$u_brief}}"
   case "$level" in advisory|gated|strict|off) ;; *) level=off ;; esac
-  FEAT_BRIEF=-; FEAT_BRIEF_SCOPE=-; FEAT_BRIEF_MODEL=-
+  FEAT_BRIEF=""; FEAT_BRIEF_SCOPE=""; FEAT_BRIEF_MODEL=""
   if [ "$level" = off ]; then
-    if [ "$u_brief" != off ]; then FEAT_BRIEF=off; fi
+    if [ "$BRIEF_FLAG" = off ] || [ "$f_brief" = off ]; then FEAT_BRIEF=off; fi
   else
     local scope="${BRIEF_SCOPE_FLAG:-${f_scope:-$u_scope}}" bmodel="${BRIEF_MODEL_FLAG:-${f_bmodel:-$u_bmodel}}"
     case "$scope" in task|wave|plan) ;; *) scope=task ;; esac
-    [ -n "$bmodel" ] || die "brief is $level but has no model: pass --brief-model SPEC or run 'forge config set brief.model SPEC'"
+    if [ -z "$bmodel" ]; then
+      FEAT_ERR="brief is $level but has no model: pass --brief-model SPEC or run 'forge config set brief.model SPEC'"
+      return 2
+    fi
     FEAT_BRIEF="$level"; FEAT_BRIEF_SCOPE="$scope"; FEAT_BRIEF_MODEL="$bmodel"
   fi
 
   # summaries: the mode and its model
   local mode="${SUMM_FLAG:-${f_summ:-$u_summ}}"
   case "$mode" in on|off) ;; *) mode=off ;; esac
-  FEAT_SUMM=-; FEAT_SUMM_MODEL=-
+  FEAT_SUMM=""; FEAT_SUMM_MODEL=""
   if [ "$mode" = off ]; then
-    if [ "$u_summ" != off ]; then FEAT_SUMM=off; fi
+    if [ "$SUMM_FLAG" = off ] || [ "$f_summ" = off ]; then FEAT_SUMM=off; fi
   else
     local smodel="${SUMM_MODEL_FLAG:-${f_smodel:-$u_smodel}}"
-    [ -n "$smodel" ] || die "summaries is on but has no model: pass --summaries-model SPEC or run 'forge config set summaries.model SPEC'"
+    if [ -z "$smodel" ]; then
+      FEAT_ERR="summaries is on but has no model: pass --summaries-model SPEC or run 'forge config set summaries.model SPEC'"
+      return 2
+    fi
     FEAT_SUMM=on; FEAT_SUMM_MODEL="$smodel"
   fi
 
   # Every model that will be dispatched resolves now, not at its first dispatch.
-  if [ "$FEAT_BRIEF_MODEL" != - ]; then forge_feature_spec_ok --brief-model "$FEAT_BRIEF_MODEL"; fi
-  if [ "$FEAT_SUMM_MODEL" != - ] && [ "$FEAT_SUMM_MODEL" != "$FEAT_BRIEF_MODEL" ]; then
-    forge_feature_spec_ok --summaries-model "$FEAT_SUMM_MODEL"
+  if [ -n "$FEAT_BRIEF_MODEL" ]; then forge_feature_spec_ok --brief-model "$FEAT_BRIEF_MODEL" || return 2; fi
+  if [ -n "$FEAT_SUMM_MODEL" ] && [ "$FEAT_SUMM_MODEL" != "$FEAT_BRIEF_MODEL" ]; then
+    forge_feature_spec_ok --summaries-model "$FEAT_SUMM_MODEL" || return 2
   fi
   return 0
 }
 
+# The shared flags (--qa-threshold, ...) write into the plan dir as they are parsed, before the
+# features above can be settled. A refusal puts the plan dir's top-level files back as they were.
+forge_plan_snapshot() { # forge_plan_snapshot <plan>: prints the snapshot dir
+  local snap f
+  snap="$(mktemp -d)" || return 1
+  for f in "$1"/*; do
+    if [ -f "$f" ] && [ ! -L "$f" ]; then cp -p "$f" "$snap/" 2>/dev/null || true; fi
+  done
+  printf '%s' "$snap"
+}
+
+forge_plan_restore() { # forge_plan_restore <plan> <snapshot dir>
+  local f
+  for f in "$1"/*; do
+    if [ -f "$f" ] && [ ! -e "$2/${f##*/}" ]; then rm -f "$f"; fi
+  done
+  for f in "$2"/*; do
+    if [ -f "$f" ]; then cp -p "$f" "$1/" 2>/dev/null || true; fi
+  done
+}
+
 forge_features_store() { # forge_features_store <plan>
   local plan="$1" pair name var val
-  for pair in retro:FEAT_RETRO brief:FEAT_BRIEF brief_scope:FEAT_BRIEF_SCOPE brief_model:FEAT_BRIEF_MODEL \
+  for pair in retro_mode:FEAT_RETRO brief:FEAT_BRIEF brief_scope:FEAT_BRIEF_SCOPE brief_model:FEAT_BRIEF_MODEL \
               summaries:FEAT_SUMM summaries_model:FEAT_SUMM_MODEL; do
     name="${pair%%:*}"; var="${pair#*:}"; val="${!var}"
-    if [ "$val" = - ]; then
+    if [ -z "$val" ]; then
       rm -f "${plan:?}/${name:?}"
     else
       printf '%s\n' "$val" > "$plan/$name" || die "could not write $plan/$name" 3
@@ -439,7 +469,7 @@ forge_retro_notice() { # forge_retro_notice <plan>
 # One line per feature that is on, from the plan files (what the run will do).
 forge_features_table() { # forge_features_table <plan>
   local plan="$1" level scope model
-  if [ "$(forge_feature_file "$plan" retro)" = on ]; then
+  if [ "$(forge_feature_file "$plan" retro_mode)" = on ]; then
     echo "retro: agents record what got in their way; report at retro.md (local only)"
   fi
   level="$(forge_feature_file "$plan" brief)"
@@ -463,7 +493,7 @@ do_plan() {
   local PLANNER="" NOMEM=0 jev_rc=0 DLEVEL="" SHADOW_QA="" SHADOW_RATE="" EXPLORE="" FAIL_FIRST="" REVIEWER_SESSION="" IMPLEMENTER_SESSION="" PRE_REVIEW="" PRE_REVIEW_PARALLEL=""
   local FAST_GIVEN=0 FAST_PARSED=""
   local RETRO_FLAG="" BRIEF_FLAG="" BRIEF_SCOPE_FLAG="" BRIEF_MODEL_FLAG="" SUMM_FLAG="" SUMM_MODEL_FLAG=""
-  local COLLAPSE=0 COLLAPSED_NOW=0
+  local COLLAPSE=0 COLLAPSED_NOW=0 FEAT_ERR="" FEAT_SNAP=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --repo)         REPO="${2:?}"; shift 2 ;;
@@ -530,6 +560,7 @@ do_plan() {
         # `case` is not a loop, so `continue` here belongs to the enclosing while.
         # The shared flags write into the plan dir (--qa-threshold), so it must exist first.
         [ -d "$PLAN" ] || die "plan dir '$PLAN' does not exist"
+        [ -n "$FEAT_SNAP" ] || FEAT_SNAP="$(forge_plan_snapshot "$PLAN")" || FEAT_SNAP=""
         if forge_pp_flag plan "$PLAN" "$@"; then
           [ "$1" != --qa-threshold ] || PF_QT=1
           shift "$PP_SHIFT"; continue
@@ -548,7 +579,11 @@ do_plan() {
   [ -d "$PLAN" ] || die "plan dir '$PLAN' does not exist"
   # The retro, brief and summaries choices, settled before anything is written: a refusal
   # (no model, a spec that does not resolve) leaves the plan dir as it was.
-  forge_features_resolve "$PLAN"
+  if ! forge_features_resolve "$PLAN"; then
+    if [ -n "$FEAT_SNAP" ]; then forge_plan_restore "$PLAN" "$FEAT_SNAP"; rm -rf "${FEAT_SNAP:?}"; fi
+    die "$FEAT_ERR" 2
+  fi
+  if [ -n "$FEAT_SNAP" ]; then rm -rf "${FEAT_SNAP:?}"; FEAT_SNAP=""; fi
   # The profile (#48) first: its gates and budget count for every decision-model step below,
   # and its values stand in for the flags this call did not give.
   forge_profile_plan
