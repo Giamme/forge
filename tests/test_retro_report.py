@@ -149,6 +149,18 @@ class NormaliseTests(unittest.TestCase):
         self.assertEqual(report.normalise('cat "/tmp/Review One/project"'), 'cat <path>')
         self.assertEqual(report.normalise("cat '/tmp/Review Two/project'"), 'cat <path>')
         self.assertEqual(report.normalise('cat /tmp/ReviewOne/project'), 'cat <path>')
+        self.assertEqual(report.normalise('cat /tmp/Review\\ One/project'), 'cat <path>')
+        self.assertEqual(report.normalise('cat /tmp/Review\\ Two/project'), 'cat <path>')
+        self.assertEqual(report.normalise('cat /tmp/Review\\ One/project --brief'), 'cat <path> --brief')
+        self.assertEqual(report.normalise('bash -c "/tmp/wt/test.sh --unit"'), 'bash -c <path> --unit')
+        self.assertEqual(report.normalise("bash -c '/tmp/wt/test.sh --integration'"),
+                         'bash -c <path> --integration')
+        self.assertEqual(report.normalise('bash -c "/tmp/Review One/test.sh --unit"'),
+                         'bash -c <path> --unit')
+        self.assertEqual(report.normalise('bash -c "/tmp/Review Two/test.sh --unit"'),
+                         'bash -c <path> --unit')
+        self.assertEqual(report.normalise('bash -c "/tmp/a/test.sh --config /tmp/b/file --unit"'),
+                         'bash -c <path> --config <path> --unit')
         self.assertEqual(report.normalise('id 123456789012'), 'id <n>')
         self.assertEqual(report.normalise('id 123E4567-E89B-12D3-A456-426614174000'), 'id <hex>')
         self.assertEqual(report.normalise('curl https://example.test/a'), 'curl https://example.test/a')
@@ -424,6 +436,32 @@ class ReportTests(unittest.TestCase):
         self.assertIn('Evidence: exited 1.', text)
         self.assertIn('Permission denied', text)
 
+    def test_quoted_commands_keep_arguments_and_escaped_spaces_merge(self):
+        # `--unit` and `--integration` are different failures. A space escaped with a
+        # backslash is still the path, so two worktrees are one pattern.
+        plan = self.plan('shell', [(name, 'grok:xhigh', '-') for name in 'abcde'])
+        write_notes(plan, [
+            make_note('a', summary='unit script failed',
+                      evidence={'command': 'bash -c "/tmp/wt-a/test.sh --unit"', 'exit': 1,
+                                'error': 'unit failed'}),
+            make_note('b', summary='unit script failed',
+                      evidence={'command': 'bash -c "/tmp/wt-b/test.sh --unit"', 'exit': 1,
+                                'error': 'unit failed'}),
+            make_note('c', summary='integration script failed',
+                      evidence={'command': 'bash -c "/tmp/wt-c/test.sh --integration"', 'exit': 1,
+                                'error': 'integration failed'}),
+            make_note('d', summary='cannot read the project',
+                      evidence={'command': 'cat /tmp/Review\\ One/project', 'exit': 1, 'error': 'missing'}),
+            make_note('e', summary='cannot read the project',
+                      evidence={'command': 'cat /tmp/Review\\ Two/project', 'exit': 1, 'error': 'missing'}),
+        ])
+        patterns = report.write(plan)[0]['groups'][0]['patterns']
+        self.assertEqual([(item['tasks_hit'], item['summary'], item['command']) for item in patterns], [
+            (2, 'cannot read the project', 'cat /tmp/Review\\ One/project'),
+            (2, 'unit script failed', 'bash -c "/tmp/wt-a/test.sh --unit"'),
+            (1, 'integration script failed', 'bash -c "/tmp/wt-c/test.sh --integration"'),
+        ])
+
     def test_short_shas_and_quoted_paths_are_one_pattern(self):
         plan = self.plan('norm', [(name, 'grok:xhigh', '-') for name in 'abcd'])
         write_notes(plan, [
@@ -441,6 +479,35 @@ class ReportTests(unittest.TestCase):
             (2, 'git show abc1234'),
             (2, 'cat "/tmp/Review One/project"'),
         ])
+
+    def test_a_relative_plan_path_is_not_an_earlier_run(self):
+        # No dataset.uid: capture hashes Path.resolve(). `report ./plan` must hash that
+        # same absolute path, or this plan's own retro_note is "1 earlier run".
+        plan = self.plan('relative', [('a', 'grok:xhigh', '-')])
+        (plan / 'dataset.uid').unlink()
+        write_notes(plan, [make_note(
+            'a', summary='missing module',
+            evidence={'command': 'npm test', 'exit': 1, 'error': 'missing'})])
+        from forge_dataset.harvest import legacy_uid
+        resolved = plan.resolve()
+        own = legacy_uid(resolved)
+        add_event(own, 'this-run', make_note(
+            'old', summary='missing module',
+            evidence={'command': 'npm test', 'exit': 1, 'error': 'missing'}))
+        previous = Path.cwd()
+        os.chdir(plan.parent)
+        try:
+            given = Path('./relative')
+            self.assertEqual(given.resolve(), resolved)
+            self.assertNotEqual(legacy_uid(given), own)
+            result = run_retro('report', './relative', '--json')
+        finally:
+            os.chdir(previous)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload['groups'][0]['patterns'][0]['earlier_runs'], 0)
+        text = (plan / 'retro.md').read_text(encoding='utf-8')
+        self.assertIn('1 of 1 tasks in this run, and 0 earlier runs.', text)
 
     def test_same_run_name_with_another_uid_is_an_earlier_run(self):
         # Plan basenames repeat. The other plan's uid is what makes it an earlier run.

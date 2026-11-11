@@ -67,9 +67,14 @@ _BYPASS = {
 
 # A quoted absolute path may contain spaces (`"/tmp/Review One/project"`). The quotes are
 # part of the match, so two worktrees whose names differ only inside them collapse to one
-# placeholder. Replaced before the unquoted forms, which stop at whitespace.
+# placeholder. A later word that starts with `-` is an argument, not more of the path:
+# `bash -c "/tmp/wt/test.sh --unit"` must stay distinct from `--integration`. Replaced
+# before the unquoted forms, which stop at whitespace.
 _QUOTED_PATH = re.compile(
     r'''(?<![a-z0-9_])(?:"(?:~|/|[a-z]:[\\/])[^"]*"|'(?:~|/|[a-z]:[\\/])[^']*')''')
+# Stands in for a shell-escaped space (`/tmp/Review\ One`) while a path is matched.
+# It is not whitespace, so the escaped space stays inside the path token.
+_ESC_SPACE = '\ue000'
 # A filesystem path, not the slash in https://host/path. The lookbehind rejects a scheme
 # colon, a doubled slash, and a leading tilde, so a URL stays a URL and `~/...` is one
 # home path rather than a unix path with the tilde left in front.
@@ -93,18 +98,36 @@ def normalise(text: str) -> str:
     """Lowercase, collapse whitespace, and replace paths, hex ids and numbers.
 
     Paths are replaced before hex ids and hex ids before numbers, so a path is one
-    placeholder and a hex id is not split into numbers.
+    placeholder and a hex id is not split into numbers. A shell-escaped space stays
+    inside the path (`/tmp/Review\\ One`). A quoted command keeps a flag that follows
+    the path (`bash -c "/tmp/wt/test.sh --unit"`).
     """
     if not isinstance(text, str):
         return ''
-    collapsed = ' '.join(text.lower().split())
-    collapsed = _QUOTED_PATH.sub('<path>', collapsed)
+    collapsed = text.lower().replace('\\ ', _ESC_SPACE)
+    collapsed = ' '.join(collapsed.split())
+    collapsed = _QUOTED_PATH.sub(_quoted_path, collapsed)
     collapsed = _WIN_PATH.sub(_path_token, collapsed)
     collapsed = _UNIX_PATH.sub(_path_token, collapsed)
     collapsed = _HOME_PATH.sub(_path_token, collapsed)
+    collapsed = ' '.join(collapsed.replace(_ESC_SPACE, ' ').split())
     collapsed = _UUID.sub('<hex>', collapsed)
     collapsed = _HEX.sub('<hex>', collapsed)
     return _NUMBER.sub('<n>', collapsed)
+
+
+def _quoted_path(match) -> str:
+    """Replace the path inside one quoted word. Keep flags that follow it.
+
+    `"/tmp/Review One/project"` is one path: every word is part of the name. In
+    `"/tmp/wt/test.sh --unit"` the flag is a different failure's argument, so it stays.
+    Words before the flag, spaces included, are the path.
+    """
+    parts = match.group(0)[1:-1].split(' ')
+    for index in range(1, len(parts)):
+        if parts[index].startswith('-'):
+            return '<path> ' + ' '.join(parts[index:])
+    return '<path>'
 
 
 def build(plan) -> dict:
@@ -440,6 +463,10 @@ def _current_ids(plan: Path) -> set:
     The dataset uid and the legacy uid identify the run. The run id is the plan's
     display name: directory basenames repeat, so it is only a fallback for an event
     that has no uid at all.
+
+    Note capture resolves the plan (`locate` → `Path.resolve`) before `run_uid` hashes
+    a legacy id. Hash that same absolute path. `report ./plan` on a plan with no
+    `dataset.uid` must not treat this plan's own events as another run.
     """
     found = set()
     for name in ('dataset.uid', 'run_id'):
@@ -448,7 +475,7 @@ def _current_ids(plan: Path) -> set:
             found.add(value)
     try:
         from forge_dataset.harvest import legacy_uid
-        found.add(legacy_uid(plan))
+        found.add(legacy_uid(plan.resolve()))
     except Exception:
         pass
     return found
