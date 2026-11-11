@@ -633,6 +633,9 @@ _NOT_HOSTS = frozenset({
     'path', 'dir', 'cwd', 'pwd', 'see', 'step', 'attempt', 'task', 'tasks', 'version', 'time',
     'id', 'count', 'size', 'total', 'rc', 'errno', 'signal', 'http', 'https', 'ssh', 'ftp',
     'git', 'file', 'localhost', 'try', 'retry', 'timeout', 'ms', 'sec', 'exitcode',
+    # Extensionless build and config files: `Makefile:23: *** missing separator`.
+    'makefile', 'gnumakefile', 'dockerfile', 'containerfile', 'jenkinsfile', 'vagrantfile',
+    'gemfile', 'rakefile', 'procfile', 'justfile', 'podfile',
 })
 
 
