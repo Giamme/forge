@@ -10,8 +10,13 @@
   report PLAN [--json]
       Write PLAN/retro.md from the stored notes and print its path. --json prints the
       structure instead of the path.
+  issues PLAN [--json] [--choice rN=new|comment:N|skip ...] [--apply --approve HASH]
+      Draft one redacted issue per forge-group pattern for forge's own repository.
+      The dry run prints the text and posts nothing. --apply posts only when HASH is
+      the sha256 of those drafts and choices.
 
-Exit codes: 0 stored or reported (or nothing to store), 2 usage, 3 PLAN is not a directory.
+Exit codes: 0 stored, reported, drafted or posted, 2 usage, 3 PLAN is not a directory,
+never-send, gh is missing or unauthenticated, or the approval hash does not match.
 `record` and `note` print each stored note as one JSON line.
 """
 from __future__ import annotations
@@ -23,6 +28,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import forge_retro  # noqa: E402
+import forge_retro.issues as retro_issues  # noqa: E402
 import forge_retro.report as retro_report  # noqa: E402
 
 
@@ -53,6 +59,15 @@ def _parser() -> argparse.ArgumentParser:
     report.add_argument('plan', help='the plan directory')
     report.add_argument('--json', action='store_true', dest='as_json',
                         help='print the report structure instead of the path')
+    issues = sub.add_parser('issues', help='draft redacted issues for forge\'s own repository')
+    issues.add_argument('plan', help='the plan directory')
+    issues.add_argument('--json', action='store_true', dest='as_json',
+                        help='print the drafts as JSON')
+    issues.add_argument('--choice', action='append', default=[],
+                        help='rN=new, rN=comment:N or rN=skip; repeatable')
+    issues.add_argument('--apply', action='store_true',
+                        help='post the chosen drafts; requires a matching --approve hash')
+    issues.add_argument('--approve', help='sha256 of the draft texts and choices to post')
     return parser
 
 
@@ -80,6 +95,8 @@ def main(argv=None) -> int:
     try:
         if args.command == 'report':
             return _report(args)
+        if args.command == 'issues':
+            return retro_issues.execute(args)
         if args.command == 'record':
             notes = forge_retro.record(args.plan, args.role, args.dispatch_dir, task=args.task,
                                        attempt=args.attempt, inbox=args.inbox)
