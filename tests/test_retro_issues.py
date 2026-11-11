@@ -52,24 +52,68 @@ FAKE_GH = textwrap.dedent('''\
             sys.stderr.write('not logged in\\n')
             sys.exit(1)
         sys.exit(0)
+    def positionals(argv):
+        skip = {'--repo', '--state', '--limit', '--json', '--title', '--body-file'}
+        found, index = [], 0
+        while index < len(argv):
+            arg = argv[index]
+            if arg in skip:
+                index += 2
+                continue
+            if arg.startswith('--'):
+                index += 1
+                continue
+            found.append(arg)
+            index += 1
+        return found
+    def haystack(issue):
+        text = (issue.get('title') or '') + '\\n' + (issue.get('body') or '')
+        for comment in issue.get('comments') or []:
+            if isinstance(comment, dict):
+                text += '\\n' + (comment.get('body') or '')
+            elif isinstance(comment, str):
+                text += '\\n' + comment
+        return text.lower()
     if args[:2] == ['search', 'issues']:
+        # GitHub ANDs the query terms. A fingerprint glued onto the key terms
+        # hides an issue that has the words and was not filed by forge.
         wanted = args[args.index('--state') + 1].lower() if '--state' in args else None
+        terms = ' '.join(positionals(args[2:])).lower().split()
         found = []
         for issue in state['issues']:
             if wanted and str(issue.get('state', '')).lower() != wanted:
                 continue
+            blob = haystack(issue)
+            if terms and not all(term in blob for term in terms):
+                continue
             found.append({key: issue.get(key) for key in ('number', 'title', 'state', 'body', 'url')})
         save()
         print(json.dumps(found))
+    elif args[:2] == ['issue', 'view']:
+        number = int(args[2])
+        issue = next((item for item in state['issues'] if item['number'] == number), None)
+        save()
+        if issue is None:
+            print(json.dumps({'body': '', 'comments': []}))
+        else:
+            print(json.dumps({'body': issue.get('body') or '',
+                              'comments': issue.get('comments') or []}))
     elif args[:2] == ['issue', 'create']:
         numbers = [issue['number'] for issue in state['issues']] or [0]
         number = max(numbers) + 1
         url = 'https://github.com/%s/issues/%d' % (val('--repo'), number)
         state['issues'].append({'number': number, 'url': url, 'state': 'open',
-                                'title': val('--title'), 'body': state['writes'][-1]['body']})
+                                'title': val('--title'), 'body': state['writes'][-1]['body'],
+                                'comments': []})
         save()
         print(url)
     elif args[:2] == ['issue', 'comment']:
+        number = int(args[2])
+        body = state['writes'][-1]['body']
+        for issue in state['issues']:
+            if issue['number'] == number:
+                issue.setdefault('comments', []).append({'body': body})
+                break
         save()
         print('https://github.com/%s/issues/%s#issuecomment-1' % (val('--repo'), args[2]))
     else:
@@ -125,7 +169,7 @@ class RetroIssuesTests(unittest.TestCase):
                 'number': 8,
                 'title': 'retro notes dropped',
                 'state': 'open',
-                'body': 'no fingerprint here',
+                'body': 'beta clean pattern, no fingerprint',
                 'url': 'https://github.com/Giamme/forge/issues/8',
             }]
         self.state_path.write_text(json.dumps({
@@ -307,6 +351,56 @@ class RetroIssuesTests(unittest.TestCase):
              'url': 'https://github.com/Giamme/forge/issues/4'},
             closed)
         self.assertEqual(self.writes(), [])
+
+    def test_short_names_hosts_file_urls_and_spaced_paths_are_redacted(self):
+        repo = self.root / 'ab'
+        (repo / '.git').mkdir(parents=True)
+        (repo / '.git' / 'config').write_text(
+            '[remote "origin"]\n\turl = git@github.com:xy/ab.git\n', encoding='utf-8')
+        (self.plan / 'repo').write_text(str(repo) + '\n', encoding='utf-8')
+        (self.plan / 'integration.base').write_text('qa\n', encoding='utf-8')
+        summary = (
+            'failed on branch qa in repo ab owned by xy; '
+            'curl https://internal-api.sh/status; '
+            'ssh builder01 make; '
+            'cat /Users/Secret Person/key.txt; '
+            'file:///Users/privateuser/private-project/key.txt'
+        )
+        notes = [note('alpha', 'forge', summary, 'python3 build.py', 'opus', 'claude')]
+        blob = ''.join(json.dumps(item, ensure_ascii=False, sort_keys=True) + '\n' for item in notes)
+        (self.plan / 'retro' / 'notes.jsonl').write_text(blob, encoding='utf-8')
+        _res, data = self.invoke_json()
+        self.assertEqual([draft['id'] for draft in data['drafts']], ['r1'])
+        draft = data['drafts'][0]
+        visible = draft['title'] + '\n' + draft['body'].split('<!--', 1)[0]
+        for secret in ('qa', 'ab', 'xy', 'internal-api.sh', 'builder01', 'Secret',
+                       'Person/key.txt', 'privateuser', 'private-project', 'file://',
+                       '/Users/'):
+            self.assertNotIn(secret, visible, secret)
+        self.assertIn('<branch>', visible)
+        self.assertIn('<repo>', visible)
+        self.assertIn('<host>', visible)
+        self.assertIn('<path>', visible)
+        self.assertIn('python3 build.py', visible)
+
+    def test_a_repeated_comment_is_not_posted(self):
+        self.write_state(issues=[{
+            'number': 9,
+            'title': 'open retro',
+            'state': 'open',
+            'body': 'original report',
+            'url': 'https://github.com/Giamme/forge/issues/9',
+        }])
+        choices = ['--choice', 'r1=comment:9', '--choice', 'r2=skip', '--choice', 'r3=skip']
+        _res, chosen = self.invoke_json(*choices)
+        self.assertEqual(self.writes(), [])
+        _res, first = self.invoke_json('--apply', '--approve', chosen['approve'], *choices)
+        self.assertEqual(first['posted'][0]['choice'], 'comment:9')
+        self.assertNotIn('skipped', first['posted'][0])
+        self.assertEqual(len(self.writes()), 1)
+        _res, second = self.invoke_json('--apply', '--approve', chosen['approve'], *choices)
+        self.assertEqual(second['posted'][0]['skipped'], 'adds nothing')
+        self.assertEqual(len(self.writes()), 1)
 
     def test_a_comment_that_adds_nothing_is_not_posted(self):
         _res, dry = self.invoke_json()

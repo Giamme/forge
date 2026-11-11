@@ -40,6 +40,9 @@ _QUOTED_PATH = re.compile(
 _UNIX_PATH = re.compile(r'(?<![A-Za-z0-9_.:/~])/\S+')
 _HOME_PATH = re.compile(r'(?<![A-Za-z0-9_.:/])~/\S+')
 _WIN_PATH = re.compile(r'(?<![A-Za-z0-9_])[A-Za-z]:[\\/]\S+')
+# file:///Users/... never matches _UNIX_PATH: the slashes after the scheme fail its lookbehind.
+_FILE_URL = re.compile(r'(?i)(?<![A-Za-z0-9_])file://\S*')
+_QUOTED_FILE = re.compile(r'(?i)"file://[^"]*"|\'file://[^\']*\'')
 _TRAILING = '.,;:)]}\'"'
 _ESC_SPACE = '\ue000'
 _IPV4 = re.compile(
@@ -54,6 +57,18 @@ _CODE_EXT = {
     'yaml', 'txt', 'toml', 'lock', 'ini', 'cfg', 'xml', 'csv', 'tsv', 'rb', 'go', 'rs',
     'java', 'c', 'h', 'cpp', 'hpp', 'sql', 'vue', 'svg',
 }
+# scheme://authority, so a host whose suffix is also a filename extension (.sh, .py) is still a host.
+_URL_AUTH = re.compile(
+    r'(?i)(?<![A-Za-z0-9+.-])(?P<scheme>[a-z][a-z0-9+.-]*://)(?P<auth>[^/\s]+)')
+# The next word of these commands is a host (`ssh builder01`). curl and wget are not
+# here: their operand is usually a URL, already redacted, or ordinary words.
+_NET_HOST_CMDS = 'ssh|sftp|ping|telnet|mosh|nslookup|ftp|mysql|psql|nc|netcat'
+_NET_CMDS = _NET_HOST_CMDS + '|curl|wget'
+_NET_HOST = re.compile(
+    r'(?i)(?<![A-Za-z0-9_-])(?P<cmd>' + _NET_HOST_CMDS + r')'
+    r'(?P<flags>(?:\s+-[A-Za-z0-9-]+(?:\s+\S+)?)*)\s+'
+    r'(?P<host>[A-Za-z](?:[A-Za-z0-9-]{0,62}))(?![A-Za-z0-9_.-])(?!://)')
+_NET_BEFORE = re.compile(r'(?i)(?:' + _NET_CMDS + r')\s+$')
 _TITLE_LIMIT = 240
 
 
@@ -122,7 +137,9 @@ def _split_origin(url: str):
 
 def _add(found: list, text, placeholder: str) -> None:
     text = (text or '').strip()
-    if len(text) < 3 or any(text == item[0] for item in found):
+    # A branch, repository or owner can be one or two characters (`qa`, `ab`).
+    # Empty text would match every position.
+    if not text or any(text == item[0] for item in found):
         return
     found.append((text, placeholder))
 
@@ -184,24 +201,68 @@ def _prompts(plan: Path) -> list:
     return found
 
 
-def _sub_outside(text: str, pattern, repl) -> str:
-    """Substitute, leaving placeholders already written untouched."""
+def _map_outside(text: str, fn) -> str:
+    """Run fn on the text, leaving placeholders already written untouched."""
     pieces = []
     cursor = 0
     for kept in _KEPT.finditer(text):
-        pieces.append(pattern.sub(repl, text[cursor:kept.start()]))
+        pieces.append(fn(text[cursor:kept.start()]))
         pieces.append(kept.group(0))
         cursor = kept.end()
-    pieces.append(pattern.sub(repl, text[cursor:]))
+    pieces.append(fn(text[cursor:]))
     return ''.join(pieces)
 
 
-def _path_repl(match) -> str:
-    token = match.group(0)
+def _sub_outside(text: str, pattern, repl) -> str:
+    return _map_outside(text, lambda chunk: pattern.sub(repl, chunk))
+
+
+def _path_token(token: str) -> str:
     stripped = token.rstrip(_TRAILING)
     if len(stripped) < 2 or re.fullmatch(r'[A-Za-z]:[\\/]', stripped):
         return token
     return '<path>' + token[len(stripped):]
+
+
+def _path_end(text: str, end: int) -> int:
+    """Include later segments of an unquoted path that themselves contain a slash.
+
+    `/Users/Secret Person/key.txt` is one path. The first token stops at the space
+    and `Person/key.txt` still holds the private name. A segment with no slash is
+    the next argument, not more of the path.
+    """
+    best = end
+    index = end
+    length = len(text)
+    while index < length and text[index] == ' ':
+        start = index
+        while start < length and text[start] == ' ':
+            start += 1
+        stop = start
+        while stop < length and text[stop] not in ' \t\r\n':
+            stop += 1
+        segment = text[start:stop]
+        if not segment or segment.startswith(('-', '<')) or segment[0] in '|&;<>()':
+            break
+        if '/' not in segment and '\\' not in segment:
+            break
+        best = stop
+        index = stop
+    return best
+
+
+def _replace_paths(chunk: str, pattern) -> str:
+    pieces = []
+    cursor = 0
+    for match in pattern.finditer(chunk):
+        if match.start() < cursor:
+            continue
+        end = _path_end(chunk, match.end())
+        pieces.append(chunk[cursor:match.start()])
+        pieces.append(_path_token(chunk[match.start():end]))
+        cursor = end
+    pieces.append(chunk[cursor:])
+    return ''.join(pieces)
 
 
 def _redact_prompts(text: str, prompts: list) -> str:
@@ -227,9 +288,11 @@ def _redact_prompts(text: str, prompts: list) -> str:
 def _redact_paths(text: str) -> str:
     text = text.replace('\\ ', _ESC_SPACE)
     text = _sub_outside(text, _QUOTED_PATH, '<path>')
-    text = _sub_outside(text, _WIN_PATH, _path_repl)
-    text = _sub_outside(text, _UNIX_PATH, _path_repl)
-    text = _sub_outside(text, _HOME_PATH, _path_repl)
+    text = _sub_outside(text, _QUOTED_FILE, '<path>')
+    text = _map_outside(text, lambda chunk: _replace_paths(chunk, _FILE_URL))
+    text = _map_outside(text, lambda chunk: _replace_paths(chunk, _WIN_PATH))
+    text = _map_outside(text, lambda chunk: _replace_paths(chunk, _UNIX_PATH))
+    text = _map_outside(text, lambda chunk: _replace_paths(chunk, _HOME_PATH))
     return text.replace(_ESC_SPACE, ' ')
 
 
@@ -248,18 +311,51 @@ def _redact_literals(text: str, literals: list) -> str:
     return text
 
 
-def _host_repl(match) -> str:
+def _bare_filename(match) -> bool:
+    """True when the token is a filename (`build.py`), not a hostname.
+
+    `.sh` and `.py` are filename extensions and real public suffixes. A token in a
+    URL, followed by a path, or given to a network command is a host.
+    """
     name = match.group(0)
-    if name.rsplit('.', 1)[-1].lower() in _CODE_EXT:
-        return name
+    if name.rsplit('.', 1)[-1].lower() not in _CODE_EXT:
+        return False
+    before = match.string[:match.start()]
+    after = match.string[match.end():]
+    if before.endswith(('://', '@', '//')):
+        return False
+    if after.startswith('/') or re.match(r':\d', after):
+        return False
+    if _NET_BEFORE.search(before):
+        return False
+    return True
+
+
+def _host_repl(match) -> str:
+    if _bare_filename(match):
+        return match.group(0)
     return '<host>'
 
 
+def _url_repl(match) -> str:
+    # file:// is a path. _redact_paths has already replaced it, and a missed one
+    # must not lose its path by keeping only the authority.
+    if match.group('scheme').lower().startswith('file'):
+        return match.group(0)
+    return match.group('scheme') + '<host>'
+
+
+def _net_repl(match) -> str:
+    return '%s%s <host>' % (match.group('cmd'), match.group('flags'))
+
+
 def _redact_hosts(text: str) -> str:
+    text = _sub_outside(text, _URL_AUTH, _url_repl)
     text = _sub_outside(text, _IPV4, '<host>')
     text = _sub_outside(text, _IPV6, '<host>')
     text = _sub_outside(text, _LOCALHOST, '<host>')
-    return _sub_outside(text, _HOST, _host_repl)
+    text = _sub_outside(text, _HOST, _host_repl)
+    return _sub_outside(text, _NET_HOST, _net_repl)
 
 
 class Redactor:
@@ -408,7 +504,13 @@ def _parse_choices(values) -> dict:
     return found
 
 
-def _query(draft: dict) -> str:
+def _queries(draft: dict) -> list:
+    """Key terms, then the fingerprint on its own.
+
+    GitHub search ANDs every term. A fingerprint in the same query as the key terms
+    hides an issue that shares the words and was not filed by forge. The fingerprint
+    query is what finds an issue already filed under a different title.
+    """
     words = []
     for word in sorted(_filer().content_words(draft['title'])):
         if word in _QUERY_SKIP or word in words:
@@ -416,7 +518,10 @@ def _query(draft: dict) -> str:
         words.append(word)
         if len(words) == 6:
             break
-    return ' '.join(words + [draft['fingerprint']])
+    queries = [' '.join(words)] if words else []
+    if draft['fingerprint'] not in queries:
+        queries.append(draft['fingerprint'])
+    return queries
 
 
 def _search(slug: str, query: str, state: str) -> list:
@@ -453,11 +558,11 @@ def _search(slug: str, query: str, state: str) -> list:
 
 def _fill_related(slug: str, drafts: list) -> None:
     for draft in drafts:
-        query = _query(draft)
         merged = {}
-        for state in ('open', 'closed'):
-            for issue in _search(slug, query, state):
-                merged[issue['number']] = issue
+        for query in _queries(draft):
+            for state in ('open', 'closed'):
+                for issue in _search(slug, query, state):
+                    merged[issue['number']] = issue
         draft['related'] = [merged[number] for number in sorted(merged)]
 
 
@@ -483,24 +588,56 @@ def _apply_overrides(drafts: list, overrides: dict) -> None:
             draft['choice'] = overrides[draft['id']]
 
 
-def _issue_body(draft: dict, number: str):
-    for issue in draft['related']:
-        if str(issue['number']) == number:
-            return issue.get('body') or ''
-    return None
+def _fetch_issue(slug: str, number: str) -> str:
+    """The issue body and every comment body.
+
+    A comment does not change the issue body, so the body alone cannot show that
+    this draft was already posted.
+    """
+    filer = _filer()
+    res = filer.run(
+        ['gh', 'issue', 'view', str(number), '--repo', slug, '--json', 'body,comments'],
+        check=False)
+    if res.returncode != 0:
+        detail = (res.stderr or res.stdout or '').strip()[:400]
+        raise filer.Fail('gh issue view failed: %s' % detail)
+    try:
+        data = json.loads(res.stdout or '{}')
+    except ValueError:
+        data = None
+    if not isinstance(data, dict):
+        raise filer.Fail('gh issue view returned no JSON')
+    parts = []
+    body = data.get('body')
+    if isinstance(body, str) and body.strip():
+        parts.append(body)
+    comments = data.get('comments')
+    if isinstance(comments, list):
+        for item in comments:
+            if isinstance(item, str):
+                text = item
+            elif isinstance(item, dict) and isinstance(item.get('body'), str):
+                text = item['body']
+            else:
+                continue
+            if text.strip():
+                parts.append(text)
+    return '\n'.join(parts)
 
 
-def _adds(draft: dict, issue_body) -> bool:
-    """False when the issue already carries this draft, so a comment would add nothing."""
-    if issue_body is None:
+def _adds(draft: dict, existing: str) -> bool:
+    """False when the issue or one of its comments already carries this draft."""
+    if not existing or not existing.strip():
         return True
+    if draft['fingerprint'] in _marked(existing):
+        return False
     core = draft['body']
     marker = '<!-- forge:finding fp=%s' % draft['fingerprint']
     at = core.find(marker)
     if at >= 0:
         core = core[:at]
     core = core.strip()
-    return bool(core) and core not in issue_body
+    return bool(core) and core not in existing
 
 
 def _hash(drafts: list) -> str:
@@ -595,7 +732,7 @@ def _post(slug: str, drafts: list) -> list:
             continue
         if choice.startswith('comment:'):
             number = choice.split(':', 1)[1]
-            if not _adds(draft, _issue_body(draft, number)):
+            if not _adds(draft, _fetch_issue(slug, number)):
                 posted.append({'id': draft['id'], 'choice': choice, 'skipped': 'adds nothing'})
                 continue
         posted.append(_send(slug, draft))
