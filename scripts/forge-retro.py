@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Retro notes for one plan. Report and issues are later subcommands of this file.
+"""Retro notes for one plan.
 
   record PLAN --role ROLE --dir DISPATCH [--task ID] [--attempt N] [--inbox PATH]
       Parse the dispatch's FORGE_RETRO lines (and, for a dwarf, its inbox), check them
@@ -7,9 +7,12 @@
   note PLAN --type T --fixable-by F --summary S [--command C --exit N --error E]
        [--blocking] [--tried TEXT]
       Record one orchestrator note. It is always claimed.
+  report PLAN [--json]
+      Write PLAN/retro.md from the stored notes and print its path. --json prints the
+      structure instead of the path.
 
-Exit codes: 0 stored (or nothing to store), 2 usage, 3 PLAN is not a directory.
-Prints each stored note as one JSON line.
+Exit codes: 0 stored or reported (or nothing to store), 2 usage, 3 PLAN is not a directory.
+`record` and `note` print each stored note as one JSON line.
 """
 from __future__ import annotations
 
@@ -20,6 +23,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import forge_retro  # noqa: E402
+import forge_retro.report as retro_report  # noqa: E402
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -45,6 +49,10 @@ def _parser() -> argparse.ArgumentParser:
     note.add_argument('--error', help='the error text, kept up to 2 KB')
     note.add_argument('--blocking', action='store_true', help='the run could not finish without this')
     note.add_argument('--tried', help='what was tried before giving up')
+    report = sub.add_parser('report', help='write retro.md from the stored notes')
+    report.add_argument('plan', help='the plan directory')
+    report.add_argument('--json', action='store_true', dest='as_json',
+                        help='print the report structure instead of the path')
     return parser
 
 
@@ -56,9 +64,22 @@ def _emit(notes: list) -> None:
     sys.stdout.buffer.flush()
 
 
+def _report(args) -> int:
+    document, path = retro_report.write(args.plan)
+    if args.as_json:
+        text = json.dumps(document, ensure_ascii=False, indent=2, sort_keys=True) + '\n'
+    else:
+        text = str(path) + '\n'
+    sys.stdout.write(text)
+    sys.stdout.flush()
+    return 0
+
+
 def main(argv=None) -> int:
     args = _parser().parse_args(argv)
     try:
+        if args.command == 'report':
+            return _report(args)
         if args.command == 'record':
             notes = forge_retro.record(args.plan, args.role, args.dispatch_dir, task=args.task,
                                        attempt=args.attempt, inbox=args.inbox)
