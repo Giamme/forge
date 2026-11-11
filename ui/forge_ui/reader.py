@@ -10,10 +10,11 @@ from pathlib import Path
 import posixpath
 import re
 import stat
+import sys
 import time
 import urllib.parse
 
-from forge_ui import checks, diffs, executions, findings, fractal, repos, transcripts
+from forge_ui import checks, diffs, executions, findings, fractal, links, repos, transcripts
 from forge_ui.findings import verdict as _verdict
 
 
@@ -425,9 +426,13 @@ def summarize(path, source='plan') -> dict:
     return _summary(reader, source)[0]
 
 
-def _history(reader, name, escalation=False):
+def _attempt_log(reader, name):
+    """attempts.tsv rows, oldest first, including the dwarf column the public attempt omits.
+
+    The public attempt stays `{at, attempt, status, infra}`: callers compare that dict exactly.
+    """
     result = []
-    for label, row in reader.rows(name, 4 if escalation else 3):
+    for label, row in reader.rows(name, 3):
         try:
             at, attempt = float(row[0]), int(row[1])
             if not math.isfinite(at):
@@ -435,23 +440,45 @@ def _history(reader, name, escalation=False):
         except (ValueError, OverflowError):
             reader.warn(label, 'invalid epoch or attempt')
             continue
-        entry = dict(at=at, attempt=attempt)
-        if escalation:
-            # the 5th column says who decided (policy, a human's retry --dwarf, a pin); older rows have 4
-            source = row[4].strip() if len(row) > 4 else ''
-            entry.update({'from': row[2], 'to': row[3], 'source': source or 'policy'})
-        else:
-            entry.update(status=row[2], infra=_nullable(row[3]) if len(row) > 3 else None)
-        result.append(entry)
+        dwarf = row[4].strip() if len(row) > 4 else ''
+        result.append(dict(at=at, attempt=attempt, status=row[2],
+                           infra=_nullable(row[3]) if len(row) > 3 else None, dwarf=_nullable(dwarf)))
+    return result
+
+
+def _public_attempt(row):
+    return dict(at=row['at'], attempt=row['attempt'], status=row['status'], infra=row['infra'])
+
+
+def _attempt_view(reader, name, number_file):
+    rows = _attempt_log(reader, name)
+    attempt = reader.number(number_file, int) if number_file else None
+    if attempt is None:
+        attempt = max((item['attempt'] for item in rows), default=None)
+    return rows, attempt
+
+
+def _history(reader, name, escalation=False):
+    if not escalation:
+        return [_public_attempt(row) for row in _attempt_log(reader, name)]
+    result = []
+    for label, row in reader.rows(name, 4):
+        try:
+            at, attempt = float(row[0]), int(row[1])
+            if not math.isfinite(at):
+                raise ValueError()
+        except (ValueError, OverflowError):
+            reader.warn(label, 'invalid epoch or attempt')
+            continue
+        # the 5th column says who decided (policy, a human's retry --dwarf, a pin); older rows have 4
+        source = row[4].strip() if len(row) > 4 else ''
+        result.append(dict(at=at, attempt=attempt, **{'from': row[2], 'to': row[3], 'source': source or 'policy'}))
     return result
 
 
 def _attempt_state(reader, prefix):
-    attempts = _history(reader, prefix + '/attempts.tsv')
-    attempt = reader.number(prefix + '/attempt', int)
-    if attempt is None:
-        attempt = max((item['attempt'] for item in attempts), default=None)
-    return attempts, attempt
+    rows, attempt = _attempt_view(reader, prefix + '/attempts.tsv', prefix + '/attempt')
+    return [_public_attempt(row) for row in rows], attempt
 
 
 def _gate(reader, name):
@@ -851,7 +878,325 @@ def _waiting(reader, tasks, scheduler):
                 task['waiting'] = dict(kind='next')
 
 
-def _task_detail(reader, task, run_id, waves, branches, max_attempts):
+# The first paragraph of a task's approach (else its prompt), after the markdown title.
+_GOAL_CAP = 600
+_ATX = re.compile(r'^[ ]{0,3}#{1,6}(?:[ \t]|$)')
+_CRITERIA = re.compile(r'^## Acceptance criteria[ \t]*:?[ \t]*$')
+_FENCE = re.compile(r'^( {0,3})(`{3,}|~{3,})(.*)$')
+# retry_sources.tsv sources. Anything else is warned and skipped; the last known row for an attempt wins.
+_RETRY_SOURCES = frozenset(('review', 'prereview', 'bounce', 'message', 'answer'))
+_DATASET = None
+
+
+def _open_fence(line):
+    match = _FENCE.match(line)
+    if match is None:
+        return None
+    mark, info = match.group(2), match.group(3)
+    if mark[0] == '`' and '`' in info:
+        return None
+    return mark[0], len(mark)
+
+
+def _close_fence(line, opened):
+    match = _FENCE.match(line)
+    if match is None:
+        return False
+    mark, info = match.group(2), match.group(3)
+    return mark[0] == opened[0] and len(mark) >= opened[1] and not info.strip()
+
+
+_IMAGE = re.compile(r'!\[([^\[\]]*)\]\([^)]*\)')
+_LINK = re.compile(r'\[([^\[\]]*)\]\([^)]*\)')
+# A marker inside a word (`2*3*4`) is not emphasis. Underscores are left as written.
+_STRONG = re.compile(r'(?<!\w)\*\*([^*]+)\*\*(?!\w)')
+_EM = re.compile(r'(?<!\w)\*(?!\*)(\S(?:[^*]*?\S)?)\*(?!\w)')
+_STRIKE = re.compile(r'(?<!\w)~~([^~]+)~~(?!\w)')
+
+
+def _hold_code(text):
+    """Replace inline code spans with placeholders. Return `(text, contents)`.
+
+    Contents keep their characters and lose the backticks. A span that starts and ends
+    with a space, and is not all spaces, loses one space on each side.
+    """
+    pieces, held = [], []
+    index, size = 0, len(text)
+    while index < size:
+        if text[index] != '`':
+            pieces.append(text[index])
+            index += 1
+            continue
+        end = index
+        while end < size and text[end] == '`':
+            end += 1
+        length, cursor, close = end - index, end, None
+        while cursor < size:
+            if text[cursor] != '`':
+                cursor += 1
+                continue
+            run = cursor
+            while run < size and text[run] == '`':
+                run += 1
+            if run - cursor == length:
+                close = run
+                break
+            cursor = run
+        if close is None:
+            pieces.append(text[index:end])
+            index = end
+            continue
+        interior = text[end:close - length]
+        if len(interior) >= 2 and interior[0] == ' ' and interior[-1] == ' ' and interior.strip(' '):
+            interior = interior[1:-1]
+        held.append(interior)
+        pieces.append(f'\ue000{len(held) - 1}\ue000')
+        index = close
+    return ''.join(pieces), held
+
+
+def _plain_inline(text):
+    """Drop inline markdown. Code-span contents stay literal, and underscores stay."""
+    held_text, held = _hold_code(text)
+    plain = _IMAGE.sub(r'\1', held_text)
+    plain = _LINK.sub(r'\1', plain)
+    plain = _STRONG.sub(r'\1', plain)
+    plain = _EM.sub(r'\1', plain)
+    plain = _STRIKE.sub(r'\1', plain)
+    for index, interior in enumerate(held):
+        plain = plain.replace(f'\ue000{index}\ue000', interior)
+    return plain
+
+
+def _goal_text(text):
+    """The first prose paragraph after an optional `# ` title, as plain text, or None."""
+    if not text:
+        return None
+    lines, index = text.splitlines(), 0
+    while index < len(lines) and not lines[index].strip():
+        index += 1
+    if index < len(lines) and lines[index].startswith('# '):
+        index += 1
+    while index < len(lines) and (not lines[index].strip() or _ATX.match(lines[index])):
+        index += 1
+    paragraph = []
+    while index < len(lines) and lines[index].strip() and not _ATX.match(lines[index]):
+        paragraph.append(lines[index].strip())
+        index += 1
+    if not paragraph:
+        return None
+    return re.sub(r'\s+', ' ', _plain_inline('\n'.join(paragraph))).strip() or None
+
+
+def _criteria_text(text):
+    """prompt.md's `## Acceptance criteria` section, up to the next `## ` heading, or None.
+
+    A fenced `## ` does not end the section, and a `### ` subsection stays inside it.
+    """
+    if not text:
+        return None
+    fence, started, body = None, False, []
+    for line in text.splitlines():
+        if fence is not None:
+            if started:
+                body.append(line)
+            if _close_fence(line, fence):
+                fence = None
+            continue
+        opened = _open_fence(line)
+        if opened is not None:
+            fence = opened
+            if started:
+                body.append(line)
+            continue
+        if not started:
+            started = _CRITERIA.match(line) is not None
+            continue
+        if line.startswith('## '):
+            break
+        body.append(line)
+    if not started:
+        return None
+    return '\n'.join(body).strip() or None
+
+
+def _forge_dataset():
+    """forge_dataset, loaded from scripts/, or None when it cannot be imported. Cached.
+
+    scripts/ is on the path only while that import runs.
+    """
+    global _DATASET
+    if _DATASET is False:
+        return None
+    if _DATASET is not None:
+        return _DATASET
+    scripts = str(Path(__file__).resolve().parents[2] / 'scripts')
+    inserted = scripts not in sys.path
+    if inserted:
+        sys.path.insert(0, scripts)
+    try:
+        import forge_dataset
+    except Exception:
+        _DATASET = False
+        return None
+    finally:
+        if inserted and scripts in sys.path:
+            sys.path.remove(scripts)
+    _DATASET = forge_dataset
+    return _DATASET
+
+
+def _github_origin(reader):
+    """The run repo's origin URL, from the plan's `repo` file then `.git/config`. No git, no network.
+
+    A missing config is not a warning: `#N` then has a null url.
+    """
+    repo = reader.line('repo')
+    module = _forge_dataset() if repo else None
+    if module is None:
+        return None
+    try:
+        return module.git_origin(repo)
+    except Exception:
+        return None
+
+
+def _header(reader, title, prompt, approach, request, field, origin):
+    """`{title, goal, criteria, links}` from the raw prompt, approach and request texts."""
+    goal = _goal_text(approach)
+    if goal is None:
+        goal = _goal_text(prompt)
+    found, seen = [], set()
+    for name, text in (('prompt.md', prompt), ('approach.md', approach), ('request.md', request)):
+        if not text:
+            continue
+        for item in links.extract(text, name, origin):
+            key = (item['kind'], item['number'], item['url'])
+            if key in seen:
+                continue
+            seen.add(key)
+            found.append(item)
+    return dict(title=title, goal=reader.cap(goal, field + '/goal', _GOAL_CAP),
+                criteria=reader.cap(_criteria_text(prompt), field + '/criteria'), links=found)
+
+
+def _retry_sources(reader, name):
+    """`{attempt: source}` from retry_sources.tsv. The last known source for an attempt wins."""
+    found = {}
+    for label, row in reader.rows(name, 3):
+        try:
+            attempt = int(row[0])
+        except ValueError:
+            reader.warn(label, 'invalid attempt')
+            continue
+        source = row[1].strip()
+        if source not in _RETRY_SOURCES:
+            reader.warn(label, 'unknown retry source')
+            continue
+        found[attempt] = source
+    return found
+
+
+def _queued_retries(reader):
+    """`{task: [epoch, ...]}` of control.log lines that queued a retry.
+
+    A scheduler settlement carries `outcome` and actor `scheduler`; it is not the queue.
+    A line that is not JSON is skipped, with no warning.
+    """
+    found = {}
+    for line in (reader.text('control.log') or '').splitlines():
+        if not line.strip():
+            continue
+        try:
+            obj = json.loads(line)
+        except (ValueError, RecursionError):
+            continue
+        if not isinstance(obj, dict) or obj.get('action') != 'retry':
+            continue
+        if obj.get('outcome') or obj.get('actor') == 'scheduler':
+            continue
+        task, at = obj.get('task'), obj.get('at')
+        if not isinstance(task, str) or not task:
+            continue
+        if isinstance(at, bool) or not isinstance(at, (int, float)) or not math.isfinite(at):
+            continue
+        found.setdefault(task, []).append(float(at))
+    return found
+
+
+def _manual_indexes(rows, times):
+    """Row indexes a queued retry explains.
+
+    attempts.tsv is written when the attempt ends, so the queue explains the next attempt:
+    the first row that is not attempt 1 and whose end is at or after the queue, plus later
+    rows of that same attempt number that also end then. An earlier row of the same number,
+    already finished before the queue, is not that retry.
+    """
+    found = set()
+    for moment in times:
+        chosen = None
+        for index, row in enumerate(rows):
+            if row['attempt'] == 1 or row['at'] < moment:
+                continue
+            if chosen is None:
+                chosen = row['attempt']
+            if row['attempt'] == chosen:
+                found.add(index)
+    return found
+
+
+def _attempt_reason(index, row, rows, sources, escalations, manual):
+    """Why this attempt ran: first, a recorded retry source, an escalation, a queued retry, or unknown."""
+    if row['attempt'] == 1:
+        return 'first'
+    source = sources.get(row['attempt'])
+    if source:
+        return source
+    # escalations.tsv names the attempt that finished, which is the previous one. The signal
+    # is a dwarf change while any escalation is recorded, not that column.
+    previous = rows[index - 1]['dwarf'] if index else None
+    if row['dwarf'] != previous and escalations:
+        return 'escalation'
+    if index in manual:
+        return 'manual'
+    return 'unknown'
+
+
+def _attempt_review(execs, attempt):
+    """The newest done, non-shadow qa execution of this attempt, or None."""
+    chosen = None
+    for item in execs:
+        if item.get('shadow') or item.get('role') != 'qa' or item.get('state') != 'done':
+            continue
+        if item.get('attempt') != attempt:
+            continue
+        chosen = item
+    return chosen
+
+
+def _trail(reader, rows, execs, sources_name, escalations, queue_times):
+    """One entry per attempts.tsv row: its review, why it ran, and its execution ids."""
+    sources = _retry_sources(reader, sources_name)
+    manual = _manual_indexes(rows, queue_times)
+    result = []
+    for index, row in enumerate(rows):
+        review = _attempt_review(execs, row['attempt'])
+        summary = None
+        verdict = None
+        if review is not None:
+            verdict = review.get('verdict')
+            found = review.get('findings')
+            summary = dict(found) if found else None
+        result.append(dict(
+            attempt=row['attempt'], dwarf=row['dwarf'], verdict=verdict, findings=summary,
+            worst=summary.get('worst') if summary else None, reason=_attempt_reason(
+                index, row, rows, sources, escalations, manual),
+            executions=[item['id'] for item in execs
+                        if item.get('attempt') == row['attempt'] and not item.get('shadow')]))
+    return result
+
+
+def _task_detail(reader, task, run_id, waves, branches, max_attempts, origin, request, queues):
     """Fill in a plan task; returns every execution it read (its own and its shadows')."""
     ident = task['id']
     prefix = f'tasks/{ident}'
@@ -862,7 +1207,8 @@ def _task_detail(reader, task, run_id, waves, branches, max_attempts):
                 task['branch'] = f'forge/{run_id}/{ident}'
         except (OSError, ValueError):
             pass
-    task['attempts'], task['attempt'] = _attempt_state(reader, prefix)
+    logged, task['attempt'] = _attempt_view(reader, prefix + '/attempts.tsv', prefix + '/attempt')
+    task['attempts'] = [_public_attempt(row) for row in logged]
     task['attempts_total'] = sum(item['status'] != 'INFRA' for item in task['attempts'])
     task['escalations'] = _history(reader, prefix + '/escalations.tsv', True)
     qa = reader.text(prefix + '/qa.last')
@@ -872,8 +1218,10 @@ def _task_detail(reader, task, run_id, waves, branches, max_attempts):
     task['accepted_by'] = reader.text(prefix + '/accepted.by')
     task['accepted_attempt'], task['accepted_over'] = _accepted_fields(
         reader, prefix + '/accepted.by', task['accepted_by'])
+    texts = {}
     for field, filename in [('prompt', 'prompt.md'), ('approach', 'approach.md'), ('retry_findings', 'retry_findings.md')]:
-        task[field] = reader.cap(reader.text(prefix + '/' + filename), prefix + '/' + field)
+        texts[field] = reader.text(prefix + '/' + filename)
+        task[field] = reader.cap(texts[field], prefix + '/' + field)
     # the implementer's question for the user, when the task stopped NEEDS_INPUT
     task['needs_input'] = reader.cap(reader.text(prefix + '/needs_input.md'), prefix + '/needs_input')
     # the stop records: why an INFRA dispatch stopped, the lateral moves, the review ledger, and a NEEDS_DECISION's question
@@ -893,6 +1241,8 @@ def _task_detail(reader, task, run_id, waves, branches, max_attempts):
         item.get('explored') is True for item in task['route'])
     execs = _task_execs(reader, task)
     task['executions'] = execs
+    task['header'] = _header(reader, task['title'], texts['prompt'], texts['approach'], request, prefix, origin)
+    task['trail'] = _trail(reader, logged, execs, prefix + '/retry_sources.tsv', task['escalations'], queues)
     task['now'] = _now(reader, prefix, execs) if task['status'] == 'RUNNING' else None
     merged = reader.stat(prefix + '/merged') if task['status'] == 'MERGED' else None
     task['merged_at'] = float(merged.st_mtime) if merged is not None else None
@@ -1482,7 +1832,8 @@ def _frozen_profile(reader):
 def _solo_detail(reader, source):
     result = _solo_summary(reader, source)
     status = next(iter(result['counts']))
-    result['request'] = reader.cap(reader.text('request.md'), 'request')
+    request = reader.text('request.md')
+    result['request'] = reader.cap(request, 'request')
     result['retro'] = _retro(reader)
     result['settings'] = dict.fromkeys(_SOLO_SETTINGS)
     result['settings']['qa_threshold'], result['settings']['qa_threshold_source'] = _threshold(reader)
@@ -1490,16 +1841,18 @@ def _solo_detail(reader, source):
     result['verification'] = None
     result['attribution'] = _attribution(reader)
     result['waves'] = [['solo']]
-    attempts = _history(reader, 'attempts.tsv')
+    logged, attempt = _attempt_view(reader, 'attempts.tsv', None)
+    attempts = [_public_attempt(row) for row in logged]
     qa = reader.text('qa.last')
     execs = _solo_execs(reader, status, attempts)
+    prompt, approach = reader.text('prompt.md'), reader.text('approach.md')
     task = dict(id='solo', title=result['goal'] or 'Solo run', deps=[], difficulty=None, files=[],
                 dwarf=_role_spec(reader, 'dwarf'), qa=_role_spec(reader, 'qa'), wave=1, status=status,
-                branch=None, attempt=max((item['attempt'] for item in attempts), default=None),
+                branch=None, attempt=attempt,
                 attempts=attempts, escalations=[], verdict=_verdict(qa), accepted_by=None,
                 accepted=False, accepted_attempt=None, accepted_over=None,
                 explored=False, route=[], shadow=[],
-                prompt=reader.cap(reader.text('prompt.md'), 'tasks/solo/prompt'), approach=None,
+                prompt=reader.cap(prompt, 'tasks/solo/prompt'), approach=None,
                 retry_findings=None, needs_input=None, infra=None, lateral=[], ledger=[], decision=None, decisions=[],
                 attempts_total=sum(item['status'] != 'INFRA' for item in attempts), attempt_cap=None,
                 qa_tail=reader.cap(qa, 'tasks/solo/qa_tail', 4000, True),
@@ -1508,6 +1861,9 @@ def _solo_detail(reader, source):
                 gate=_gate(reader, 'qa.gate'), known_issues=_nonempty(reader, 'known_issues.md'),
                 fail_first=_fail_first(reader, 'failfirst.json'), pre_review=None,
                 now=_now(reader, '', execs) if status == 'RUNNING' else None, waiting=None, sweep=None, swept=[])
+    task['header'] = _header(reader, task['title'], prompt, approach, request, 'tasks/solo',
+                             _github_origin(reader))
+    task['trail'] = _trail(reader, logged, execs, 'retry_sources.tsv', [], _queued_retries(reader).get('solo', ()))
     result.update(timeline=_timeline(execs, [], []), integration=None, final_review=None, final_reviews=[], adoptions=[],
                   deferrals=[], findings_available=findings.available(), fractal=fractal.summary(reader),
                   scheduler=None, sweep=None)
@@ -1601,7 +1957,8 @@ def detail(path, source='plan') -> dict:
     if _kind(reader.path) == 'solo':
         return _solo_detail(reader, source)
     result, tasks = _summary(reader, source)
-    result['request'] = reader.cap(reader.text('request.md'), 'request')
+    request = reader.text('request.md')
+    result['request'] = reader.cap(request, 'request')
     result['retro'] = _retro(reader)
     threshold = _threshold(reader)
     result['settings'] = dict(explore=reader.number('explore'), shadow_rate=reader.number('shadow_rate'),
@@ -1615,9 +1972,11 @@ def detail(path, source='plan') -> dict:
     result['waves'] = [waves.get(n, []) for n in range(1, max(waves, default=0) + 1)]
     branches = {row[0]: _nullable(row[2]) for _, row in reader.rows('results.tsv', 3)}
     max_attempts = _max_attempts(reader)
+    origin, queues = _github_origin(reader), _queued_retries(reader)
     pool = []
     for task in tasks:
-        pool += _task_detail(reader, task, result['run_id'], wave_map, branches, max_attempts)
+        pool += _task_detail(reader, task, result['run_id'], wave_map, branches, max_attempts,
+                             origin, request, queues.get(task['id'], ()))
     for name in _RUN_CONTROLS:
         reader.stat(name)
     result['scheduler'] = _scheduler(reader)
