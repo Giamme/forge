@@ -77,6 +77,7 @@ class ReaderTests(unittest.TestCase):
             'merged_at': (FIXTURE / 'tasks/reader/merged').stat().st_mtime, 'findings': NO_FINDINGS,
             'gate': None, 'known_issues': False, 'needs_input': None, 'fail_first': None, 'pre_review': None, 'now': None, 'waiting': None, 'sweep': None, 'swept': [],
             'infra': None, 'lateral': [], 'ledger': [], 'decision': None, 'decisions': [], 'attempts_total': 3, 'attempt_cap': 8,
+            'summary': None, 'summaries_override': None,
         })
         self.assertEqual((page['accepted'], page['accepted_attempt'], page['accepted_over']), (False, None, None))
         self.assertEqual(page['status'], 'RUNNING')
@@ -609,6 +610,7 @@ class ReaderTests(unittest.TestCase):
             'executions': [], 'merged_at': None, 'findings': NO_FINDINGS, 'gate': None, 'known_issues': False,
             'needs_input': None, 'fail_first': None, 'pre_review': None, 'now': None, 'waiting': None, 'sweep': None, 'swept': [],
             'infra': None, 'lateral': [], 'ledger': [], 'decision': None, 'decisions': [], 'attempts_total': 2, 'attempt_cap': None,
+            'summary': None, 'summaries_override': None,
         }])
         self.assertEqual(data['kind'], 'solo')
         self.assertEqual(data['run_id'], 'solo-full')
@@ -669,6 +671,7 @@ class ReaderTests(unittest.TestCase):
             'qa_tail': None, 'dwarf_tail': None, 'executions': [], 'merged_at': None, 'findings': None,
             'gate': None, 'known_issues': False, 'needs_input': None, 'fail_first': None, 'pre_review': None, 'now': None, 'waiting': None, 'sweep': None, 'swept': [],
             'infra': None, 'lateral': [], 'ledger': [], 'decision': None, 'decisions': [], 'attempts_total': 0, 'attempt_cap': None,
+            'summary': None, 'summaries_override': None,
         }])
         json.dumps(data, allow_nan=False)
         run = self.base / 'neither'
@@ -1310,6 +1313,111 @@ class SummaryExtensionTests(unittest.TestCase):
         for name, at in (('prompt.md', 800), ('repo', 700), ('request.md', 750), ('goal.txt', 760)):
             os.utime(solo / name, (at, at))
         self.assertEqual(summarize(solo)['created'], 700.0)
+
+
+class TaskSummaryTests(unittest.TestCase):
+    """tasks/<id>/summary.json and summary.error, the stale rule, each task's override and the run's switch (#133 B).
+
+    run_fixture's plan: reader and page are merged (their merged markers at T0+1300 and T0+950), graph is running with no
+    attempts.tsv or qa.last, and docs failed. Every file the fixture writes is at MTIME (T0+5000) unless given a time.
+    """
+
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.plan = F.make_plan(Path(temp.name) / 'p')
+        self.fresh, self.old = 1760605010, 1760601000   # after every fixture file's mtime; before the attempts.tsv one
+
+    def summary(self, task, generated, **fields):
+        body = dict(text='Drew the graph.\n', sentence='Draws the graph.', model='sol:low', generated_at=generated,
+                    inputs_hash='0' * 64, sources=[{'kind': 'attempt', 'ref': '1'}])
+        body.update(fields)
+        F.write(self.plan / 'tasks' / task / 'summary.json', body)
+
+    def tasks(self):
+        return {task['id']: task for task in detail(self.plan)['tasks']}
+
+    def test_a_fresh_summary_with_an_error_reads_both(self):
+        self.summary('graph', self.fresh)
+        F.write(self.plan / 'tasks/graph/summary.error', 'the reply was not JSON\n')
+        self.assertEqual(self.tasks()['graph']['summary'], {
+            'text': 'Drew the graph.\n', 'sentence': 'Draws the graph.', 'model': 'sol:low', 'generated_at': 1760605010,
+            'sources': [{'kind': 'attempt', 'ref': '1'}], 'stale': False, 'error': 'the reply was not JSON\n'})
+
+    def test_a_summary_older_than_its_attempts_is_stale_and_its_sources_are_kept(self):
+        self.summary('page', self.old, sources=[{'kind': 'attempt', 'ref': '1'},
+                                                {'kind': 'finding', 'ref': '1:Empty state not localised'}])
+        self.assertEqual(self.tasks()['page']['summary'], {
+            'text': 'Drew the graph.\n', 'sentence': 'Draws the graph.', 'model': 'sol:low', 'generated_at': 1760601000,
+            'sources': [{'kind': 'attempt', 'ref': '1'}, {'kind': 'finding', 'ref': '1:Empty state not localised'}],
+            'stale': True, 'error': None})
+
+    def test_stale_compares_whole_seconds(self):
+        # The fixture's attempts.tsv is at 1760605000: a summary made in that second is not older than it.
+        self.summary('reader', 1760605000)
+        self.assertFalse(self.tasks()['reader']['summary']['stale'])
+        self.summary('reader', 1760604999)
+        self.assertTrue(self.tasks()['reader']['summary']['stale'])
+
+    def test_a_merge_after_the_summary_makes_it_stale(self):
+        for name in ('attempts.tsv', 'status', 'qa.last'):
+            os.utime(self.plan / 'tasks/page' / name, (1760601000, 1760601000))
+        F.set_merged_at(self.plan, 'page', 1760601300)
+        self.summary('page', 1760601200)
+        self.assertTrue(self.tasks()['page']['summary']['stale'])
+        self.summary('page', 1760601400)
+        self.assertFalse(self.tasks()['page']['summary']['stale'])
+
+    def test_no_summary_json_is_null_even_with_an_error_file(self):
+        F.write(self.plan / 'tasks/docs/summary.error', 'the model timed out\n')
+        task = self.tasks()['docs']
+        self.assertIsNone(task['summary'])
+        self.assertIsNone(task['summaries_override'])
+
+    def test_an_unreadable_or_incomplete_summary_is_null_and_warned(self):
+        F.write(self.plan / 'tasks/page/summary.json', '[1, 2]\n')
+        F.write(self.plan / 'tasks/graph/summary.json', {'text': 'no time', 'sentence': None})
+        data = detail(self.plan)
+        tasks = {task['id']: task for task in data['tasks']}
+        self.assertEqual((tasks['page']['summary'], tasks['graph']['summary']), (None, None))
+        self.assertEqual(data['warnings'], ['tasks/page/summary.json: not a JSON object',
+                                            'tasks/graph/summary.json: not a summary (needs text and generated_at)'])
+
+    def test_sources_keep_only_attempt_and_finding_refs_that_are_strings(self):
+        self.summary('graph', self.fresh, sources=[{'kind': 'attempt', 'ref': '1'}, {'kind': 'bogus', 'ref': 'x'},
+                                                   'junk', {'kind': 'finding', 'ref': 3},
+                                                   {'kind': 'finding', 'ref': '2:Late'}])
+        self.assertEqual(self.tasks()['graph']['summary']['sources'],
+                         [{'kind': 'attempt', 'ref': '1'}, {'kind': 'finding', 'ref': '2:Late'}])
+
+    def test_text_and_sentence_are_capped_like_the_other_texts(self):
+        self.summary('graph', self.fresh, text='x' * 20001, sentence='y' * 20000)
+        summary = self.tasks()['graph']['summary']
+        self.assertEqual((len(summary['text']), summary['text'][-1]), (20001, '…'))
+        self.assertEqual(summary['sentence'], 'y' * 20000)  # at the cap, not over it
+        self.assertIn('tasks/graph/summary.text', detail(self.plan)['truncated'])
+
+    def test_the_override_is_on_off_or_null(self):
+        F.write(self.plan / 'tasks/reader/summaries', 'off\n')
+        F.write(self.plan / 'tasks/page/summaries', 'on\n')
+        F.write(self.plan / 'tasks/graph/summaries', 'maybe\n')
+        tasks = self.tasks()   # graph's 'maybe' is not a mode; docs and server have no file
+        self.assertEqual([tasks[name]['summaries_override'] for name in ('reader', 'page', 'graph', 'docs', 'server')],
+                         ['off', 'on', None, None, None])
+
+    def test_the_run_switch_is_its_mode_and_model(self):
+        self.assertEqual(detail(self.plan)['summaries'], {'mode': 'off', 'model': None})
+        F.write(self.plan / 'summaries', 'on\n')
+        F.write(self.plan / 'summaries_model', 'sol:low\n')
+        self.assertEqual(detail(self.plan)['summaries'], {'mode': 'on', 'model': 'sol:low'})
+        F.write(self.plan / 'summaries', 'off\n')
+        self.assertEqual(detail(self.plan)['summaries'], {'mode': 'off', 'model': 'sol:low'})
+
+    def test_a_solo_run_has_no_summaries(self):
+        data = detail(SOLO)
+        self.assertIsNone(data['summaries'])
+        self.assertEqual((data['tasks'][0]['summary'], data['tasks'][0]['summaries_override']), (None, None))
+        json.dumps(data, allow_nan=False)
 
 
 class ControlChangeTests(unittest.TestCase):

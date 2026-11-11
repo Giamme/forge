@@ -389,6 +389,79 @@ class RouteNameTests(EndpointCase):
         self.assertEqual(self.calls(), [])
 
 
+class SummariesSwitchTests(EndpointCase):
+    """The summaries switch is a `control set` like any key: the run's, and each task's on, off or inherit."""
+
+    def test_argv_for_the_run_and_for_a_task(self):
+        plan = self.rplan
+        cases = [({'action': 'set', 'key': 'summaries', 'value': 'on'},
+                  ['control', 'set', plan, 'summaries', 'on', '--actor', 'ui', '--json']),
+                 ({'action': 'set', 'key': 'summaries', 'value': 'off'},
+                  ['control', 'set', plan, 'summaries', 'off', '--actor', 'ui', '--json']),
+                 ({'action': 'set', 'key': 'summaries', 'value': 'inherit', 'task': 't1'},
+                  ['control', 'set', plan, 'summaries', 'inherit', '--task', 't1', '--actor', 'ui', '--json']),
+                 ({'action': 'set', 'key': 'summaries', 'value': 'off', 'task': 't1'},
+                  ['control', 'set', plan, 'summaries', 'off', '--task', 't1', '--actor', 'ui', '--json'])]
+        for body, argv in cases:
+            status, answer = self.post(body)
+            self.assertEqual((status, answer['ok'], self.last_argv()), (200, True, argv), body)
+
+    def test_a_value_the_cli_refuses_comes_back_as_invalid(self):
+        # The route checks the shape only; the value is the CLI's to refuse (exit 2 -> 400 invalid).
+        self.behave(code=2, stderr='forge control: summaries: needs on or off\n')
+        for value in ('maybe', 'inherit'):   # inherit is a task's value only
+            status, answer = self.post({'action': 'set', 'key': 'summaries', 'value': value})
+            self.assertEqual((status, answer['error'], answer['detail']),
+                             (400, 'invalid', 'forge control: summaries: needs on or off'), value)
+        self.assertEqual([call['argv'] for call in self.calls()],
+                         [['control', 'set', self.rplan, 'summaries', 'maybe', '--actor', 'ui', '--json'],
+                          ['control', 'set', self.rplan, 'summaries', 'inherit', '--actor', 'ui', '--json']])
+
+    def test_a_value_with_a_leading_dash_never_reaches_the_cli(self):
+        self.assertEqual(self.post({'action': 'set', 'key': 'summaries', 'value': '-on'})[0], 400)
+        self.assertEqual(self.post({'action': 'set', 'key': 'summaries', 'value': 'on', 'task': '--task'})[0], 400)
+        self.assertEqual(self.calls(), [])
+
+
+class SummariesReadOnlyTests(EndpointCase):
+    read_only = True
+
+    def test_the_switch_is_refused_for_the_run_and_for_a_task(self):
+        for body in ({'action': 'set', 'key': 'summaries', 'value': 'on'},
+                     {'action': 'set', 'key': 'summaries', 'value': 'inherit', 'task': 't1'}):
+            self.assertEqual(self.post(body), (405, {'error': 'method not allowed'}), body)
+        self.assertEqual(self.calls(), [])
+
+
+class SummariesRealCliTests(ControlApiCase):
+    """The real `forge control set summaries` through the API. `on` is not called here: it starts forge summarize."""
+
+    def setUp(self):
+        super().setUp()
+        for patcher in (patch.dict(os.environ, {'FORGE_DATASET': 'off'}),
+                        patch.object(ui_server, 'forge_cli', ROOT / 'forge')):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def test_off_and_inherit_are_written_and_removed_and_bad_values_refused(self):
+        status, answer = self.post({'action': 'set', 'key': 'summaries', 'value': 'off'})
+        self.assertEqual((status, answer['ok']), (200, True), answer)
+        self.assertEqual((self.plan / 'summaries').read_text(), 'off\n')
+        status, answer = self.post({'action': 'set', 'key': 'summaries', 'value': 'off', 'task': 'reader'})
+        self.assertEqual((status, answer['ok']), (200, True), answer)
+        self.assertEqual((self.plan / 'tasks/reader/summaries').read_text(), 'off\n')
+        status, answer = self.post({'action': 'set', 'key': 'summaries', 'value': 'inherit', 'task': 'reader'})
+        self.assertEqual((status, answer['ok']), (200, True), answer)
+        self.assertFalse((self.plan / 'tasks/reader/summaries').exists())
+        for body in ({'action': 'set', 'key': 'summaries', 'value': 'maybe'},
+                     {'action': 'set', 'key': 'summaries', 'value': 'inherit'},
+                     {'action': 'set', 'key': 'summaries', 'value': 'maybe', 'task': 'reader'}):
+            status, answer = self.post(body)
+            self.assertEqual((status, answer['error']), (400, 'invalid'), body)
+            self.assertIn('summaries', answer['detail'], body)
+        self.assertEqual((self.plan / 'summaries').read_text(), 'off\n')  # a refused change writes nothing
+
+
 class ProfileTests(EndpointCase):
     BODY = {'policy': {'timeout': 15}, 'note': 'kept'}
 
