@@ -106,6 +106,18 @@ class DriftTests(LabelsCase):
         [row] = self.collect('jev-drift')
         self.assertEqual((row['key'], row['live']['f0']), ('k', 0.9))
 
+    def test_the_first_attempt_variant_labels_what_attempt_1_edited_passed_or_not(self):
+        # The 2026-10-16 label: attempt 1's changed files, even when a later attempt passed or none did.
+        self.attempt('run1', 't1', 'FAIL', ts=T0 + 10, changed=['src/c.py'], declared=['src/a.py'])
+        self.attempt('run1', 't1', 'PASS', ts=T0 + 20, n=2, changed=['src/a.py', 'src/b.py'], declared=['src/a.py'])
+        self.ask('jev-drift', drift_body(), dict(f0=noul(0.9), f1=noul(0.2), f2=noul(0.5)), run='run1', ts=T0)
+        self.attempt('run2', 't1', 'FAIL', ts=T0 + 10, changed=['src/b.py'], declared=['src/a.py'])
+        self.ask('jev-drift', drift_body(), dict(f0=noul(0.9)), run='run2', ts=T0, key='never-passed')
+        rows = {r['run']: r['labels'] for r in self.collect('jev-drift', variant='first-attempt')}
+        self.assertEqual(rows, dict(run1=dict(f0=False, f1=True), run2=dict(f0=True, f1=False)))
+        self.assertEqual([r['labels'] for r in self.collect('jev-drift')], [dict(f0=True, f1=False)])
+        self.assertEqual(self.collect('jev-drift', variant='no-such-label'), [])
+
     def test_the_runs_filter_keeps_only_the_named_runs(self):
         for run in ('run1', 'run2'):
             self.attempt(run, 't1', 'PASS', ts=T0 + 10, changed=['src/b.py'])

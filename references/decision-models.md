@@ -549,11 +549,24 @@ On the judged half of the runs (the newer half, see [Promotion](#promotion)), `-
 - precision, recall and the number flagged at the site's threshold, against its floor;
 - `PASSES: passes`, or `does not pass:` with the first rule that failed.
 
+An inverted site's threshold is shown as configured, with the score it cuts at beside it:
+`prompt_warn 0.55 (inverted: a score at or above 0.45)`.
+
 A replay is not charged to the run or daily budget, and its requests are not written to
 `jev.jsonl` or the dataset. Each `--send` is a deliberate call to the provider.
 
-Exit codes: 2 for an unknown site, a site with no label, an unknown provider or a bad flag; 1
-when the provider has no key and is not local.
+`--label V` judges the answers already stored on another label of the site, to check a past
+result against the current one. It sends nothing and records nothing, so `gate on` only ever
+reads a site's own label; `--label` with `--send` is refused. Requests that only the other label
+labels and that were never answered are left out, and the output says how many were judged out of
+how many. One variant exists:
+
+- `jev-drift --label first-attempt`: the file is in attempt 1's changed files, passed or not.
+  It is the label of the 2026-10-16 replay. The site's own label is the final passing attempt's,
+  which has fewer positives.
+
+Exit codes: 2 for an unknown site, a site with no label, an unknown provider, an unknown label
+variant or a bad flag; 1 when the provider has no key and is not local.
 
 ### Promotion
 
