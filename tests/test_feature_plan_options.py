@@ -82,8 +82,8 @@ class PlanOptionTests(unittest.TestCase):
         p, _ = self.planned('--retro', '--brief', 'strict', *BRIEF, '--summaries', 'on', *SUMMARIES)
         self.assertEqual(len(self.present(p)), 6)
         self.planned('--no-retro', '--brief', 'off', '--summaries', 'off', p=p)
-        # Off is kept as `off`, not left to the user setting; the scope and both models go.
-        self.assertEqual(self.present(p), {'retro_mode': 'off', 'brief': 'off', 'summaries': 'off'})
+        # Off removes the files: the scope and both models go with them.
+        self.assertEqual(self.present(p), {})
         self.assertFalse(any(l.startswith(('retro:', 'brief:', 'summaries:')) for l in self.planned(p=p)[1].splitlines()))
 
     def test_a_replan_without_the_flags_keeps_them(self):
@@ -120,19 +120,20 @@ class PlanOptionTests(unittest.TestCase):
                                            'brief_model': 'opus', 'summaries': 'on', 'summaries_model': 'sonnet'})
         self.assertIn('brief: strict, wave scope, opus;', out)
 
-    def test_a_flag_that_turns_off_what_the_user_turned_on_holds_for_the_run(self):
-        # Removing the file would let the run fall back to the user setting, so `off` is written.
-        self.user({'retro': 'on', 'brief': {'level': 'gated', 'model': 'sonnet'}, 'summaries': {'mode': 'on', 'model': 'sol'}})
-        p, out = self.planned('--no-retro', '--brief', 'off', '--summaries', 'off')
-        self.assertEqual(self.present(p), {'retro_mode': 'off', 'brief': 'off', 'summaries': 'off'})
+    def settings_of(self, p):
         from forge_side import settings
         os.environ['XDG_CONFIG_HOME'] = self.env['XDG_CONFIG_HOME']
         try:
             effective = settings(p)
         finally:
             os.environ['XDG_CONFIG_HOME'] = dataset_isolation.CONFIG
-        self.assertEqual((effective['retro'], effective['brief']['level'], effective['summaries']['mode']),
-                         (False, 'off', 'off'))
+        return (effective['retro'], effective['brief']['level'], effective['summaries']['mode'])
+
+    def test_a_flag_that_turns_off_what_the_user_turned_on_holds_for_the_run(self):
+        self.user({'retro': 'on', 'brief': {'level': 'gated', 'model': 'sonnet'}, 'summaries': {'mode': 'on', 'model': 'sol'}})
+        p, out = self.planned('--no-retro', '--brief', 'off', '--summaries', 'off')
+        self.assertEqual(self.present(p), {})
+        self.assertEqual(self.settings_of(p), (False, 'off', 'off'))
         for word in ('retro:', 'brief:', 'summaries:'):
             self.assertNotIn(word, out)
 
@@ -146,22 +147,22 @@ class PlanOptionTests(unittest.TestCase):
         self.assertNotIn('retro is on', out)
         self.assertFalse((self.state / 'forge' / 'retro.noticed').exists())
 
-    def test_explicit_offs_are_frozen_against_a_later_user_setting(self):
-        p, _ = self.planned('--no-retro', '--brief', 'off', '--summaries', 'off', '--brief-model', 'sonnet')
-        self.assertEqual(self.present(p), {'retro_mode': 'off', 'brief': 'off', 'summaries': 'off'})
-        # the user switches everything on afterwards: this plan stays off
+    def test_a_planned_plan_is_frozen_against_a_later_user_setting(self):
+        # Planned with everything off (so no file at all), then the user switches everything on.
+        p, _ = self.planned()
+        self.assertEqual(self.present(p), {})
+        self.assertTrue((p / 'waves.tsv').exists())
         self.user({'retro': 'on', 'brief': {'level': 'gated', 'model': 'sonnet'}, 'summaries': {'mode': 'on', 'model': 'sol'}})
-        from forge_side import settings
-        os.environ['XDG_CONFIG_HOME'] = self.env['XDG_CONFIG_HOME']
-        try:
-            effective = settings(p)
-        finally:
-            os.environ['XDG_CONFIG_HOME'] = dataset_isolation.CONFIG
-        self.assertEqual((effective['retro'], effective['brief']['level'], effective['summaries']['mode']),
-                         (False, 'off', 'off'))
-        # and a re-plan without flags keeps the offs
-        self.planned(p=p)
-        self.assertEqual(self.present(p), {'retro_mode': 'off', 'brief': 'off', 'summaries': 'off'})
+        self.assertEqual(self.settings_of(p), (False, 'off', 'off'))
+        # and explicit offs plan the same way
+        q, _ = self.planned('--no-retro', '--brief', 'off', '--summaries', 'off')
+        self.assertEqual(self.present(q), {})
+        self.assertEqual(self.settings_of(q), (False, 'off', 'off'))
+
+    def test_the_user_setting_still_fills_in_before_planning(self):
+        p = self.new_plan()
+        self.user({'retro': 'on'})
+        self.assertEqual(self.settings_of(p)[0], True)
 
     def test_a_refused_replan_leaves_the_other_options_as_they_were(self):
         p, _ = self.planned('--qa-threshold', 'P1')

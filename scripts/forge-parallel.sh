@@ -322,9 +322,9 @@ EOF
 # called `retro`: <plan>/retro/ is where the notes are kept. For each, a flag of this call
 # wins, then what the plan already has (a re-plan without the flag keeps it, as
 # --reviewer-session is kept), then the user `features` setting, read here once. A file is
-# written for a feature that is on, and as `off` for one switched off by a flag (or an earlier
-# flag), so a later change to the user setting cannot turn it on in this plan. With nothing on
-# and no explicit off, no file is written.
+# written for a feature that is on and removed for one that is off. Nothing is written for
+# "off": a planned plan (waves.tsv exists) is frozen by forge_side.settings, which no longer
+# asks the user setting, so a later change to it cannot turn a feature on in this plan.
 #
 # forge_features_resolve sets FEAT_* and writes nothing; it returns 2 (FEAT_ERR says why) when
 # a feature is on with no model, or a model spec does not resolve. forge_features_store writes
@@ -376,18 +376,16 @@ FEATURES_EOF
   f_scope="$(forge_feature_file "$plan" brief_scope)"; f_bmodel="$(forge_feature_file "$plan" brief_model)"
   f_summ="$(forge_feature_file "$plan" summaries)"; f_smodel="$(forge_feature_file "$plan" summaries_model)"
 
-  # retro: `on`; `off` when this call or the plan said so; no file otherwise
+  # retro: `on`, or no file
   local retro="${RETRO_FLAG:-${f_retro:-$u_retro}}"
   FEAT_RETRO=""
-  case "$retro" in on) FEAT_RETRO=on ;; *) if [ "$RETRO_FLAG" = off ] || [ "$f_retro" = off ]; then FEAT_RETRO=off; fi ;; esac
+  [ "$retro" = on ] && FEAT_RETRO=on
 
   # brief: the level, its scope and its model
   local level="${BRIEF_FLAG:-${f_brief:-$u_brief}}"
   case "$level" in advisory|gated|strict|off) ;; *) level=off ;; esac
   FEAT_BRIEF=""; FEAT_BRIEF_SCOPE=""; FEAT_BRIEF_MODEL=""
-  if [ "$level" = off ]; then
-    if [ "$BRIEF_FLAG" = off ] || [ "$f_brief" = off ]; then FEAT_BRIEF=off; fi
-  else
+  if [ "$level" != off ]; then
     local scope="${BRIEF_SCOPE_FLAG:-${f_scope:-$u_scope}}" bmodel="${BRIEF_MODEL_FLAG:-${f_bmodel:-$u_bmodel}}"
     case "$scope" in task|wave|plan) ;; *) scope=task ;; esac
     if [ -z "$bmodel" ]; then
@@ -401,9 +399,7 @@ FEATURES_EOF
   local mode="${SUMM_FLAG:-${f_summ:-$u_summ}}"
   case "$mode" in on|off) ;; *) mode=off ;; esac
   FEAT_SUMM=""; FEAT_SUMM_MODEL=""
-  if [ "$mode" = off ]; then
-    if [ "$SUMM_FLAG" = off ] || [ "$f_summ" = off ]; then FEAT_SUMM=off; fi
-  else
+  if [ "$mode" = on ]; then
     local smodel="${SUMM_MODEL_FLAG:-${f_smodel:-$u_smodel}}"
     if [ -z "$smodel" ]; then
       FEAT_ERR="summaries is on but has no model: pass --summaries-model SPEC or run 'forge config set summaries.model SPEC'"

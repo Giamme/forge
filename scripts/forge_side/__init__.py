@@ -11,7 +11,8 @@ Precedence for each switch, first match wins:
 2. The plan file, when it names a value: `retro_mode` (`on` or `off`; not `retro`, which is
    the notes directory), `brief` (the level),
    `brief_scope`, `brief_model`, `summaries` (`on` or `off`), `summaries_model`.
-3. The user `features` object in decide.json (`forge_decide.load_user`).
+3. The user `features` object in decide.json (`forge_decide.load_user`), only before the
+   plan is planned: once `waves.tsv` exists the plan is frozen and this step is skipped.
 4. Off. `brief_scope` defaults to `task`. An env var forces the switch off and leaves
    the resolved scope and model in place.
 
@@ -126,7 +127,9 @@ def settings(plan) -> dict:
     turns them on). A model is the spec string, or `''` when none is configured.
     """
     plan = Path(plan)
-    features = _user_features()
+    # A planned plan (its waves.tsv exists) is frozen: `plan` read the user setting once, so
+    # a missing plan file now means off, not "ask the user setting again".
+    features = {} if (plan / 'waves.tsv').exists() else _user_features()
     brief = _mapping(features.get('brief'))
     summaries = _mapping(features.get('summaries'))
 

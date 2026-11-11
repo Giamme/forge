@@ -160,6 +160,21 @@ class SettingsTests(SideCase):
             'summaries': {'mode': 'on', 'model': 'astra'},
         })
 
+    def test_a_planned_plan_ignores_the_user_settings(self):
+        self.user({
+            'retro': 'on',
+            'brief': {'level': 'gated', 'scope': 'plan', 'model': 'sol'},
+            'summaries': {'mode': 'on', 'model': 'astra'},
+        })
+        (self.plan / 'waves.tsv').write_text('a\t1\n')
+        self.assertEqual(forge_side.settings(self.plan), {
+            'retro': False,
+            'brief': {'level': 'off', 'scope': 'task', 'model': ''},
+            'summaries': {'mode': 'off', 'model': ''},
+        })
+        (self.plan / 'brief').write_text('strict\n')
+        self.assertEqual(forge_side.settings(self.plan)['brief'], {'level': 'strict', 'scope': 'task', 'model': ''})
+
     def test_invalid_plan_tokens_fall_through_but_a_retro_file_can_force_off(self):
         # Brief, scope and summaries ignore a token they do not recognise. Retro's file is
         # the on/off switch itself: anything other than `on` is off, and it beats the user.
