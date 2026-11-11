@@ -105,6 +105,15 @@ class LinkTests(unittest.TestCase):
         self.assertEqual(extract('    ~~~python\n    print("#133")\n    ~~~\nSee #12.\n',
                                  'prompt.md', origin), [buried, after])
 
+    def test_a_closing_fence_may_be_indented_whatever_the_opener_was(self):
+        origin = 'https://github.com/acme/widgets'
+        fix = {'kind': 'issue', 'number': 133, 'url': 'https://github.com/acme/widgets/issues/133',
+               'source': 'prompt.md'}
+        self.assertEqual(extract('~~~python\nexample\n ~~~\nFix #133.\n', 'prompt.md', origin), [fix])
+        self.assertEqual(extract('```\nexample #4\n   ```\nFix #133.\n', 'prompt.md', origin), [fix])
+        # Four spaces is content, so the fence stays open and hides what follows.
+        self.assertEqual(extract('~~~\nexample\n    ~~~\nFix #133.\n', 'prompt.md', origin), [])
+
     def test_a_number_python_will_not_convert_is_not_a_link(self):
         huge = '9' * 5000
         text = (

@@ -74,10 +74,8 @@ def _close_fence(line, opened):
     match = _FENCE.match(line)
     if match is None:
         return False
-    indent, mark, info = match.group(1), match.group(2), match.group(3)
-    # A closer indented more than its opener is content (CommonMark).
-    if len(indent) > opened[2]:
-        return False
+    mark, info = match.group(2), match.group(3)
+    # CommonMark: a closer may take up to three spaces whatever the opener took; _FENCE caps it.
     return mark[0] == opened[0] and len(mark) >= opened[1] and not info.strip()
 
 
