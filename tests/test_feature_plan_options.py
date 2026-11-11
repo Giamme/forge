@@ -175,6 +175,29 @@ class PlanOptionTests(unittest.TestCase):
         self.assertEqual(self.plan_cmd(q, '--qa-threshold', 'P3', '--summaries', 'on').returncode, 2)
         self.assertFalse((q / 'qa_threshold').exists())
 
+    def test_a_refusal_touches_nothing_in_the_plan_dir(self):
+        # The refusal comes before any shared flag writes, so nothing needs putting back: a symlinked
+        # tasks.tsv and an unreadable file stay as they were, and so does a half-given flag.
+        p = self.new_plan()
+        real = self.root / 'real-tasks.tsv'
+        (p / 'tasks.tsv').rename(real)
+        (p / 'tasks.tsv').symlink_to(real)
+        (p / 'notes.txt').write_text('keep')
+        (p / 'notes.txt').chmod(0)
+        (p / 'qa_threshold').write_text('P1')
+        try:
+            for flags in (('--qa-threshold', 'P3', '--brief', 'strict'),
+                          ('--qa-threshold', 'P3', '--brief', 'gated', '--brief-model'),
+                          ('--qa-threshold', 'P3', '--summaries', 'on', '--summaries-model')):
+                r = self.plan_cmd(p, *flags)
+                self.assertEqual(r.returncode, 2, (flags, r.stdout))
+                self.assertTrue((p / 'tasks.tsv').is_symlink(), flags)
+                self.assertTrue((p / 'notes.txt').exists(), flags)
+                self.assertEqual((p / 'qa_threshold').read_text(), 'P1', flags)
+                self.assertEqual(self.present(p), {}, flags)
+        finally:
+            (p / 'notes.txt').chmod(0o644)
+
     def test_a_dash_is_not_a_model(self):
         for flags in (('--brief', 'gated', '--brief-model', '-'), ('--summaries', 'on', '--summaries-model', '-')):
             p = self.new_plan()

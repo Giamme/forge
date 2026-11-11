@@ -420,24 +420,32 @@ FEATURES_EOF
   return 0
 }
 
-# The shared flags (--qa-threshold, ...) write into the plan dir as they are parsed, before the
-# features above can be settled. A refusal puts the plan dir's top-level files back as they were.
-forge_plan_snapshot() { # forge_plan_snapshot <plan>: prints the snapshot dir
-  local snap f
-  snap="$(mktemp -d)" || return 1
-  for f in "$1"/*; do
-    if [ -f "$f" ] && [ ! -L "$f" ]; then cp -p "$f" "$snap/" 2>/dev/null || true; fi
-  done
-  printf '%s' "$snap"
-}
-
-forge_plan_restore() { # forge_plan_restore <plan> <snapshot dir>
-  local f
-  for f in "$1"/*; do
-    if [ -f "$f" ] && [ ! -e "$2/${f##*/}" ]; then rm -f "$f"; fi
-  done
-  for f in "$2"/*; do
-    if [ -f "$f" ]; then cp -p "$f" "$1/" 2>/dev/null || true; fi
+# The six flags are read in a pass of their own, before the main loop: the shared flags
+# (--qa-threshold, ...) write into the plan dir as they are parsed, so a refusal that came
+# after them would leave their files behind. Here nothing has been written yet, and every bad
+# value or missing model ends the call with the plan dir untouched.
+forge_features_scan() { # forge_features_scan "$@": sets the *_FLAG variables of do_plan
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --retro)        RETRO_FLAG=on ;;
+      --no-retro)     RETRO_FLAG=off ;;
+      --brief)
+        case "${2:-}" in advisory|gated|strict|off) BRIEF_FLAG="$2"; shift ;;
+          *) die "--brief must be advisory, gated, strict or off" ;; esac ;;
+      --brief-scope)
+        case "${2:-}" in task|wave|plan) BRIEF_SCOPE_FLAG="$2"; shift ;;
+          *) die "--brief-scope must be task, wave or plan" ;; esac ;;
+      --brief-model)
+        [ -n "${2:-}" ] || die "--brief-model needs a model spec"
+        BRIEF_MODEL_FLAG="$2"; shift ;;
+      --summaries)
+        case "${2:-}" in on|off) SUMM_FLAG="$2"; shift ;;
+          *) die "--summaries must be on or off" ;; esac ;;
+      --summaries-model)
+        [ -n "${2:-}" ] || die "--summaries-model needs a model spec"
+        SUMM_MODEL_FLAG="$2"; shift ;;
+    esac
+    shift
   done
 }
 
@@ -493,7 +501,12 @@ do_plan() {
   local PLANNER="" NOMEM=0 jev_rc=0 DLEVEL="" SHADOW_QA="" SHADOW_RATE="" EXPLORE="" FAIL_FIRST="" REVIEWER_SESSION="" IMPLEMENTER_SESSION="" PRE_REVIEW="" PRE_REVIEW_PARALLEL=""
   local FAST_GIVEN=0 FAST_PARSED=""
   local RETRO_FLAG="" BRIEF_FLAG="" BRIEF_SCOPE_FLAG="" BRIEF_MODEL_FLAG="" SUMM_FLAG="" SUMM_MODEL_FLAG=""
-  local COLLAPSE=0 COLLAPSED_NOW=0 FEAT_ERR="" FEAT_SNAP=""
+  local COLLAPSE=0 COLLAPSED_NOW=0 FEAT_ERR=""
+  # The retro, brief and summaries choices, settled before anything is written: a refusal
+  # (a bad value, no model, a spec that does not resolve) leaves the plan dir as it was.
+  forge_features_scan "$@"
+  [ -d "$PLAN" ] || die "plan dir '$PLAN' does not exist"
+  forge_features_resolve "$PLAN" || die "$FEAT_ERR" 2
   while [ $# -gt 0 ]; do
     case "$1" in
       --repo)         REPO="${2:?}"; shift 2 ;;
@@ -539,28 +552,12 @@ do_plan() {
         forge_fast_parse "$2" plan
         FAST_GIVEN=1
         shift 2 ;;
-      --retro)        RETRO_FLAG=on; shift ;;
-      --no-retro)     RETRO_FLAG=off; shift ;;
-      --brief)
-        case "${2:-}" in advisory|gated|strict|off) BRIEF_FLAG="$2"; shift 2 ;;
-          *) die "--brief must be advisory, gated, strict or off" ;; esac ;;
-      --brief-scope)
-        case "${2:-}" in task|wave|plan) BRIEF_SCOPE_FLAG="$2"; shift 2 ;;
-          *) die "--brief-scope must be task, wave or plan" ;; esac ;;
-      --brief-model)
-        [ -n "${2:-}" ] || die "--brief-model needs a model spec"
-        BRIEF_MODEL_FLAG="$2"; shift 2 ;;
-      --summaries)
-        case "${2:-}" in on|off) SUMM_FLAG="$2"; shift 2 ;;
-          *) die "--summaries must be on or off" ;; esac ;;
-      --summaries-model)
-        [ -n "${2:-}" ] || die "--summaries-model needs a model spec"
-        SUMM_MODEL_FLAG="$2"; shift 2 ;;
+      --retro|--no-retro) shift ;;                      # read by forge_features_scan
+      --brief|--brief-scope|--brief-model|--summaries|--summaries-model) shift 2 ;;
       *)
         # `case` is not a loop, so `continue` here belongs to the enclosing while.
         # The shared flags write into the plan dir (--qa-threshold), so it must exist first.
         [ -d "$PLAN" ] || die "plan dir '$PLAN' does not exist"
-        [ -n "$FEAT_SNAP" ] || FEAT_SNAP="$(forge_plan_snapshot "$PLAN")" || FEAT_SNAP=""
         if forge_pp_flag plan "$PLAN" "$@"; then
           [ "$1" != --qa-threshold ] || PF_QT=1
           shift "$PP_SHIFT"; continue
@@ -577,13 +574,6 @@ do_plan() {
     esac
   done
   [ -d "$PLAN" ] || die "plan dir '$PLAN' does not exist"
-  # The retro, brief and summaries choices, settled before anything is written: a refusal
-  # (no model, a spec that does not resolve) leaves the plan dir as it was.
-  if ! forge_features_resolve "$PLAN"; then
-    if [ -n "$FEAT_SNAP" ]; then forge_plan_restore "$PLAN" "$FEAT_SNAP"; rm -rf "${FEAT_SNAP:?}"; fi
-    die "$FEAT_ERR" 2
-  fi
-  if [ -n "$FEAT_SNAP" ]; then rm -rf "${FEAT_SNAP:?}"; FEAT_SNAP=""; fi
   # The profile (#48) first: its gates and budget count for every decision-model step below,
   # and its values stand in for the flags this call did not give.
   forge_profile_plan
