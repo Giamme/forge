@@ -1542,6 +1542,52 @@ class BriefTests(unittest.TestCase):
         self.assertIsNone(solo['brief'])
         self.assertIsNone(solo['tasks'][0]['brief'])
 
+    def test_the_export_leaves_brief_prose_and_answers_out_unless_texts_are_chosen(self):
+        # why, options, default and answer are not in the export's global text keys. `text` is.
+        # Scope, state and the run counts are not prose and stay when texts are left out.
+        catalog = Catalog(plans=[self.plan], registry=False)
+        key = run_key(self.plan)
+        for texts in (False, True):
+            with self.subTest(texts=texts):
+                _, body = export.build(catalog, key, texts=texts)
+                html = body.decode('utf-8')
+                snapshot = json.loads(re.search(
+                    r'<script type="application/json" id="forge-snapshot">(.*?)</script>', html, re.DOTALL).group(1))
+                run = snapshot['api'][f'/api/runs/{key}']
+                tasks = {task['id']: task for task in run['tasks']}
+                question = tasks['reader']['brief']['questions'][0]
+                parked = tasks['reader']['brief']['parked'][0]
+                late = tasks['reader']['brief']['late'][0]
+                self.assertEqual(run['brief'], {'level': 'gated', 'open': 3, 'flagged': 1})
+                self.assertEqual(question['id'], 'q1')
+                self.assertEqual(question['state'], 'answered')
+                self.assertIs(question['must_answer'], True)
+                self.assertEqual(parked['id'], 'q4')
+                self.assertEqual(parked['scope'], 'plan')
+                self.assertIs(parked['must_answer'], True)
+                self.assertEqual((late['id'], late['actor'], late['t']), ('q3', 'cli', 1760600200))
+                if texts:
+                    self.assertEqual(question['text'], 'Which reader?')
+                    self.assertEqual(question['why'], 'two modules')
+                    self.assertEqual(question['options'], ['a', 'b'])
+                    self.assertEqual(question['default'], 'a')
+                    self.assertEqual(question['answer'], 'the ui reader')
+                    self.assertEqual(parked['text'], 'Whole plan?')
+                    self.assertEqual(parked['why'], 'scope')
+                    self.assertEqual(parked['options'], ['now', 'later'])
+                    self.assertEqual(parked['default'], 'later')
+                    self.assertEqual(late['text'], 'too late')
+                    self.assertIn('the ui reader', html)
+                else:
+                    for field in ('text', 'why', 'options', 'default', 'answer'):
+                        self.assertIsNone(question[field], field)
+                    for field in ('text', 'why', 'options', 'default'):
+                        self.assertIsNone(parked[field], field)
+                    self.assertIsNone(late['text'])
+                    self.assertNotIn('the ui reader', html)
+                    self.assertNotIn('two modules', html)
+                    self.assertNotIn('Whole plan?', html)
+
 
 class BriefWaitTests(unittest.TestCase):
     """RunDetail task.waiting `brief`: a gated plan holds a task for your answer, from the same files the scheduler reads."""

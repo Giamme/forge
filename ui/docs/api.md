@@ -812,7 +812,10 @@ Every RunSummary field, plus:
   file order, each `{id, text, actor, t}`: `actor` is a string or `null`, and `t` is a finite number or
   `null`. `text`, `why`, `default`, each option, `answer` and a late `text` are capped like `prompt`
   (the cut is named `tasks/<id>/brief/<qid>.text`, and the same way for `why`, `default`, `options`,
-  `answer`, `brief.parked/<qid>.*` and `brief.late/<qid>.text`).
+  `answer`, `brief.parked/<qid>.*` and `brief.late/<qid>.text`). The export leaves `text`, `why`,
+  `options`, `default` and `answer` out unless texts are chosen (`answer` is only on a task question;
+  a late answer's private text is its `text`). `id`, `state`, `must_answer`, `possibly_stale`, `scope`,
+  `actor` and `t` stay.
 - Text fields are `null` when the file is missing.
 
 A solo run's one task uses this same shape. `id` is `solo` and `title` is the goal, or
@@ -1415,8 +1418,10 @@ difficulty paths deps model` each), `decomposition_history` (its newest 20, each
   (under their tail paths; line ranges are not stored, so the page shows the tail).
 - `texts=0` (the default) nulls these keys wherever they hold a string, list or object: `prompt
   last request log_tail dwarf_tail qa_tail qa_last qa_input tasks_summary known_issues texts text
-  planning_last approach retry_findings needs_input dwarf_input error last_line message excerpt tail lines call split detail`,
-  and stores no diff, no transcript, no checks and no environment problems (a command is a text). A finding keeps its `summary`, a failing test its `name`.
+  planning_last approach retry_findings needs_input dwarf_input error last_line message excerpt tail lines call split detail`.
+  Under each brief `questions` or `parked` entry it also nulls `why`, `options`, `default` and `answer`
+  (`scope`, `state`, `id`, `must_answer` and `possibly_stale` stay; a late answer's `text` is in the list above).
+  It stores no diff, no transcript, no checks and no environment problems (a command is a text). A finding keeps its `summary`, a failing test its `name`.
 - `paths=0` (the default) makes every string that is a whole absolute path (but `/api/…`, `url`s
   and `command`s) its last component, and replaces the run dir, the repo and the home dir inside other
   strings with their last component (`~` for home).
