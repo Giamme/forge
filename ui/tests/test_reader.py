@@ -801,6 +801,42 @@ class ReaderTests(unittest.TestCase):
                 self.assertIsNone(data['attribution'], obj)
                 self.assertTrue(any(warning.startswith('attribution.json') for warning in data['warnings']), obj)
 
+    def test_retro_report_and_note_counts_are_read_from_the_run(self):
+        plan = self.copy_plan()
+        F.make_retro(plan)
+        data = detail(plan)
+        self.assertEqual(data['retro'], dict(text=F.RETRO_REPORT, notes=6, user=2, forge=2, unsure=1,
+                                             verified=3, claimed=3, blocking=3))
+        self.assertIn('retro/notes.jsonl: 2 malformed lines skipped', data['warnings'])
+        self.assertNotIn('retro', data['truncated'])
+
+    def test_retro_is_null_without_either_file_and_each_file_reads_alone(self):
+        plan = self.copy_plan()
+        self.assertIsNone(detail(plan)['retro'])
+        empty = dict(notes=0, user=0, forge=0, unsure=0, verified=0, claimed=0, blocking=0)
+        with self.subTest('report only'):
+            self.write(plan / 'retro.md', 'Only the report.\n')
+            self.assertEqual(detail(plan)['retro'], dict(text='Only the report.\n', **empty))
+        with self.subTest('notes only'):
+            (plan / 'retro.md').unlink()
+            self.write(plan / 'retro/notes.jsonl', '{"fixable_by": "forge", "check": "claimed"}\n')
+            self.assertEqual(detail(plan)['retro'], dict(text=None, **dict(empty, notes=1, forge=1, claimed=1)))
+
+    def test_retro_text_is_capped_like_the_request(self):
+        plan = self.copy_plan()
+        self.write(plan / 'retro.md', 'x' * 20001)
+        data = detail(plan)
+        self.assertEqual(data['retro']['text'], 'x' * 20000 + '…')
+        self.assertIn('retro', data['truncated'])
+
+    def test_a_solo_run_reads_the_same_retro_field(self):
+        run = self.base / 'solo'
+        shutil.copytree(SOLO, run)
+        self.assertIsNone(detail(run)['retro'])
+        F.make_retro(run)
+        self.assertEqual(detail(run)['retro'], dict(text=F.RETRO_REPORT, notes=6, user=2, forge=2, unsure=1,
+                                                    verified=3, claimed=3, blocking=3))
+
     def test_the_export_leaves_the_question_out_unless_texts_are_chosen(self):
         plan = self.copy_plan()
         self.write(plan / 'tasks/page/status', 'NEEDS_INPUT\n')
