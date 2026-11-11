@@ -1,6 +1,8 @@
 /* forge-ui inspector: what a selected node is, which model owned it, what prompt launched it, how long it
    took and what its reviewer found. Defines window.ForgePanel.render(host, ctx). All API values enter the
    DOM as text. Large texts (prompts, reports) come from the lazy endpoints and are fetched once per node.
+   A task opens on its header (title, goal, links, and the prompt, approach and acceptance criteria) and
+   its attempt trail, then the chips and the rest.
    The run's and a task's write controls are controls.js's (ForgeControls); this file only says where they stand. */
 window.ForgePanel = (() => {
   'use strict';
@@ -12,6 +14,7 @@ window.ForgePanel = (() => {
   const STATUSES = new Set(['merged', 'pass', 'running', 'pending', 'fail', 'error', 'infra', 'timeout', 'unknown', 'invalidated', 'blocked',
     'interrupted', 'nochanges', 'conflict', 'accepted', 'none', 'outdated', 'needs_input', 'needs_decision', 'waiting']);
   const cache = new Map();                                  // path → {data, error, at}
+  const shownText = new Map();                              // task id → which header text is open (prompt, approach, criteria)
   function el(tag, text, className) {
     const node = document.createElement(tag);
     if (text !== undefined) node.textContent = display(text);
@@ -441,8 +444,141 @@ window.ForgePanel = (() => {
     s.append(ul);
   }
 
+  // Why an attempt ran, in the words the trail shows. Anything else reads as unrecorded.
+  const TRAIL_REASONS = {
+    first: 'first attempt', review: 'after review findings', prereview: 'after failing tests before review',
+    bounce: 'after unaddressed findings', message: 'after an unfinished message', answer: 'after your answer',
+    escalation: 'escalated to a stronger model', manual: 'manual retry', unknown: 'reason not recorded',
+  };
+  function reasonText(reason) {
+    return Object.prototype.hasOwnProperty.call(TRAIL_REASONS, reason) ? TRAIL_REASONS[reason] : TRAIL_REASONS.unknown;
+  }
+  function findingsText(item) {
+    const findings = item && item.findings;
+    const has = !!findings && typeof findings === 'object' && !Array.isArray(findings);
+    const count = has ? (num(findings.confirmed) === null ? 0 : num(findings.confirmed)) : null;
+    const worst = item && item.worst ? String(item.worst) : '';
+    if (count === null && !worst) return 'no findings';
+    const n = count === null ? 0 : count;
+    const noun = n === 1 ? 'finding' : 'findings';
+    return worst ? `${n} ${noun} (worst ${worst})` : `${n} ${noun}`;
+  }
+  // `#2 grok:xhigh · FAIL · 3 findings (worst P1) · after review findings`
+  function trailLine(item) {
+    const row = item || {};
+    const attempt = row.attempt == null || row.attempt === '' ? '—' : row.attempt;
+    const dwarf = row.dwarf ? String(row.dwarf) : '—';
+    const verdict = row.verdict ? String(row.verdict) : '—';
+    return `#${attempt} ${dwarf} · ${verdict} · ${findingsText(row)} · ${reasonText(row.reason)}`;
+  }
+  // A header link: `#123` or `PR #45` when it has a number, the url itself otherwise.
+  // Only an http(s) url is opened; anything else is shown as text.
+  function linkModel(link) {
+    if (!link || typeof link !== 'object') return { label: 'link', href: null };
+    const href = typeof link.url === 'string' && /^https?:\/\//i.test(link.url) ? link.url : null;
+    let label = 'link';
+    if (link.kind === 'pr' && link.number != null) label = `PR #${link.number}`;
+    else if (link.number != null) label = `#${link.number}`;
+    else if (href) label = href;
+    return { label, href };
+  }
+  function linkChip(item) {
+    const model = linkModel(item);
+    if (!model.href) return el('span', model.label, 'task-link-text');
+    const a = el('a', model.label, 'chip');
+    a.href = model.href; a.target = '_blank'; a.rel = 'noopener noreferrer';
+    return a;
+  }
+  const textMissing = v => v == null || v === '';
+  // Prompt and approach come from the lazy task detail once it has landed, and from the task until then.
+  // Acceptance criteria is header.criteria, already on the task. A missing text disables its button.
+  function knownTexts(task, detail) {
+    if (detail && detail.data) {
+      const t = detail.data.texts || {};
+      return { prompt: t.prompt ?? null, approach: t.approach ?? null, settled: true };
+    }
+    return { prompt: task.prompt ?? null, approach: task.approach ?? null, settled: false };
+  }
+  function headerActions(header, texts) {
+    const h = header || {}, t = texts || {};
+    return [
+      { key: 'prompt', label: 'Prompt', disabled: textMissing(t.prompt), text: t.prompt ?? null },
+      { key: 'approach', label: 'Approach', disabled: textMissing(t.approach), text: t.approach ?? null },
+      { key: 'criteria', label: 'Acceptance criteria', disabled: textMissing(h.criteria), text: h.criteria ?? null },
+    ];
+  }
+  function revealBody(key, detail, action) {
+    if (key === 'criteria') return action && action.text != null ? String(action.text) : '';
+    if (detail && detail.error) {
+      const err = detail.error;
+      return err.status === 404 ? 'This text is not available from this server.' : `Could not load it: ${err.message || 'error'}`;
+    }
+    if (!detail || !detail.data) return 'Loading…';
+    return action && action.text != null ? String(action.text) : '';
+  }
+  function taskHeader(host, ctx, task, detail) {
+    const header = task.header || {};
+    const texts = knownTexts(task, detail);
+    const actions = headerActions(header, texts);
+    let open = shownText.get(task.id) || null;
+    if (open && actions.some(a => a.key === open && a.disabled && texts.settled)) { shownText.delete(task.id); open = null; }
+    const box = el('div', undefined, 'task-header');
+    const top = el('div', undefined, 'task-header-top');
+    top.append(el('h2', header.title || task.title || 'Untitled task'));
+    if (header.goal) top.append(el('p', header.goal, 'task-goal'));
+    box.append(top);
+    const links = list(header.links);
+    if (links.length) {
+      const row = el('div', undefined, 'chips task-links');
+      for (const item of links) row.append(linkChip(item));
+      box.append(row);
+    }
+    const bank = el('div', undefined, 'seg task-texts');
+    bank.setAttribute('role', 'group'); bank.setAttribute('aria-label', 'Task text');
+    for (const action of actions) {
+      const button = el('button', action.label);
+      button.type = 'button'; button.dataset.text = action.key; button.disabled = action.disabled;
+      button.setAttribute('aria-pressed', open === action.key ? 'true' : 'false');
+      button.addEventListener('click', () => {
+        shownText.set(task.id, shownText.get(task.id) === action.key ? null : action.key);
+        ctx.rerender();
+      });
+      bank.append(button);
+    }
+    box.append(bank);
+    if (open) {
+      const action = actions.find(a => a.key === open);
+      const pre = el('pre', revealBody(open, detail, action), 'task-reveal');
+      pre.dataset.scroll = `task-${task.id}-header-text`;
+      box.append(pre);
+    }
+    host.append(box);
+  }
+  // One line per attempt. Its executions open the same way the Attempts section opens them.
+  function attemptTrail(host, ctx, task) {
+    const items = list(task.trail);
+    if (!items.length) return;
+    const ol = el('ol', undefined, 'attempt-trail');
+    for (const item of items) {
+      const li = el('li', undefined, 'trail-line');
+      li.append(el('span', trailLine(item), 'trail-summary'));
+      const nav = el('span', undefined, 'trail-nav');
+      for (const id of list(item && item.executions)) {
+        const role = String(id).split('-')[0].toLowerCase();
+        const target = { kind: 'execution', task: task.id, id: task.id, exec: id, shadow: false };
+        nav.append(link(role, ctx.hash(target), () => ctx.onSelect(target)));
+      }
+      if (nav.childElementCount) li.append(nav);
+      ol.append(li);
+    }
+    host.append(ol);
+  }
+
   function taskView(host, ctx, task) {
     const run = ctx.run, now = ctx.now, solo = run.kind === 'solo';
+    const detail = lazy(ctx, `/api/runs/${encodeURIComponent(run.key)}/tasks/${encodeURIComponent(task.id)}`, run.updated);
+    taskHeader(host, ctx, task, detail);
+    attemptTrail(host, ctx, task);
     const head = el('div', undefined, 'insp-head');
     head.append(el('h2', solo ? (task.title || 'Solo run') : `${task.id} · ${task.title || 'Untitled task'}`), el('div', solo ? 'solo task' : `task · wave ${display(task.wave)}`, 'insp-kind'));
     const chips = el('div', undefined, 'chips');
@@ -535,7 +671,6 @@ window.ForgePanel = (() => {
     findingCounts(rs, task.findings);
     failFirst(rs, task.fail_first);
     preReview(rs, task.pre_review);
-    const detail = lazy(ctx, `/api/runs/${encodeURIComponent(run.key)}/tasks/${encodeURIComponent(task.id)}`, run.updated);
     if (!loading(rs, detail, 'the full findings')) {
       const reviews = list(detail.data.reviews);
       if (!reviews.length) muted(rs, 'No review has run yet.');
@@ -868,5 +1003,6 @@ window.ForgePanel = (() => {
     if (sel.kind === 'fractal') return fractalNodeView(host, ctx, sel);
     return runView(host, ctx);
   }
-  return { render, cache };
+  return { render, cache, trailLine, reasonText, linkModel, headerActions };
 })();
+if (typeof module === 'object' && module.exports) module.exports = window.ForgePanel;
