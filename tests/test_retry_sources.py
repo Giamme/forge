@@ -320,6 +320,27 @@ class AttemptTrailTests(RunCase):
         self.assertEqual(self.calls(), ['dwarf', 'qa', 'dwarf', 'qa', 'qa'])
         self.assertEqual(self.trail(p), before)
 
+    @unittest.skipIf(os.geteuid() == 0, 'root reads every file')
+    def test_an_unreadable_trail_is_left_with_its_history(self):
+        p = self.plan_of()
+        self.scenario({'a.qa.1': {'verdict': 'FAIL', 'findings': FINDING},
+                       'a.dwarf.2': {'content': 'second'},
+                       'a.qa.2': {'verdict': 'FAIL', 'findings': FINDING},
+                       'a.dwarf.3': {'content': 'third'}})
+        self.run_script('forge-parallel.sh', 'run', p)                  # attempt 1 is reviewed and fails
+        self.run_script('forge-parallel.sh', 'retry', p, 'a')           # attempt 2 starts with the review: row 2
+        before = self.trail(p)
+        self.assertEqual([row[:2] for row in self.rows(p)], [['2', 'review']])
+        trail = p / 'tasks/a/retry_sources.tsv'
+        trail.chmod(0)
+        self.addCleanup(trail.chmod, 0o644)
+        r = self.run_script('forge-parallel.sh', 'retry', p, 'a')       # attempt 3 cannot record its source
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertIn('retry_sources.tsv not updated', r.stdout)
+        self.assertEqual(self.calls(), ['dwarf', 'qa', 'dwarf', 'qa', 'dwarf', 'qa'])
+        trail.chmod(0o644)
+        self.assertEqual(self.trail(p), before)
+
 
 class HookTests(RunCase):
     def test_a_message_gate_that_sends_the_attempt_back_ends_it_without_a_review(self):

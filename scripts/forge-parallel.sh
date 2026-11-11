@@ -1145,14 +1145,21 @@ check_drift() { # check_drift <declared-comma-list> <tdir> <wt> <base>
 # happened, as `<attempt>\t<source>\t<epoch>`. The source is read the way forge-prompt.py reads it
 # (a missing or unknown one is a review). A line for the same attempt number is replaced rather than
 # repeated: an infrastructure stop refunds the attempt, so its restart runs the same number again.
+# An existing trail that cannot be read is left as it is (non-zero return): rewriting it from this
+# one line would drop the history.
 record_retry_source() { # record_retry_source <tdir> <attempt>
-  local tdir="$1" n="$2" src
+  local tdir="$1" n="$2" src trail tmp
+  trail="$tdir/retry_sources.tsv"; tmp="$tdir/.retry_sources.tsv.tmp"
   [ -s "$tdir/retry_findings.md" ] || return 0
   src="$(cat "$tdir/retry_findings.source" 2>/dev/null)"
   case "$src" in review|prereview|bounce|message|answer) ;; *) src=review ;; esac
-  { awk -F'\t' -v n="$n" '$1 != n' "$tdir/retry_sources.tsv" 2>/dev/null
-    printf '%s\t%s\t%s\n' "$n" "$src" "$(date +%s)"
-  } > "$tdir/.retry_sources.tsv.tmp" && mv "$tdir/.retry_sources.tsv.tmp" "$tdir/retry_sources.tsv"
+  if [ -e "$trail" ]; then
+    [ -f "$trail" ] && [ -r "$trail" ] || return 1
+    awk -F'\t' -v n="$n" '$1 != n' "$trail" > "$tmp" 2>/dev/null || { rm -f "$tmp"; return 1; }
+  else
+    : > "$tmp" || return 1
+  fi
+  printf '%s\t%s\t%s\n' "$n" "$src" "$(date +%s)" >> "$tmp" && mv "$tmp" "$trail" || { rm -f "$tmp"; return 1; }
 }
 
 do_task_body() (
@@ -1240,7 +1247,7 @@ do_task_body() (
       echo; /bin/bash "$MEMORY" note dwarf
     } > "$tdir/dwarf.input"
     # This attempt starts with the findings just written to dwarf.input (#133).
-    record_retry_source "$tdir" "$attempt" || :
+    record_retry_source "$tdir" "$attempt" || note "$id: retry_sources.tsv not updated; the attempt trail stays as it was"
     guard_before_dwarf "$wt" "$tdir"
     # Whether this attempt continues the implementer's earlier session (plan
     # --implementer-session, #90): only a retry of judged work that is still exactly what was
