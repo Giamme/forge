@@ -54,6 +54,7 @@ written), and the reader must never raise because of one.
 | `qa_threshold` | `P0`..`P3`, the least severe finding that still blocks; `final_qa` the final review's QA spec |
 | `profile.json` | the profile the run froze: `name`, `level` (`user`, `repo` or `builtin`), `body` (the profile object), `shadowed` (levels the winning copy hid), `frozen_at` (UTC, `YYYY-MM-DDTHH:MM:SSZ`), `overridden` (the sorted dotted keys a flag of the run replaced, such as `routing.qa.any`; empty when none). RunDetail returns `settings.profile` `{name, level, overridden}`, `null` when the file is absent, unreadable or not that shape |
 | `deferrals.txt` | one line per task the wave planner deferred |
+| `retro.md`, `retro/notes.jsonl` | written when retro mode is on: the report (Markdown) and one JSON note per line (`fixable_by` `user`, `forge` or `unsure`, `check` `verified` or `claimed`, `blocking` a boolean). Returned as `retro`, see RunDetail |
 | `integration.base`, `accepted.integration` | one commit each: where the integration branch started, the revision the run accepted |
 | `attempts/<role>-<uuid>/` | one *execution* (below) of the run itself: `parallel` (a `run`) or `verification` |
 | `final-review-<epoch>-<pid>/` | one whole-run review: `qa.input`, `qa.last`, `verdict` (`PASS FAIL UNKNOWN INVALIDATED ACCEPTED`; absent while it runs or when nothing was judged), `qa.infra`, `qa.gate`, `known_issues.md`, `review.meta` (`key=value`: `base tip source spec threshold integration`, `threshold=none` when unset; `integration` is the integration-branch commit the reviewed result contains and is absent on older runs), `tasks.summary`, `attempts/qa-<uuid>/` |
@@ -139,6 +140,7 @@ raise because of one. Older solo dirs have `verdict` and not `status`.
 | `dwarf.log`, `qa.log` | raw logs. The summary stats them and does not read them, so `updated` moves while a model writes |
 | `changes.diff`, `existing.diff` | the run's change, and the uncommitted changes the repo already had when it started |
 | `fractal-selection.json` | as for a plan |
+| `retro.md`, `retro/notes.jsonl` | as for a plan; `retro` in the detail is read the same way |
 
 **Solo status** is the first word of `status`, otherwise the first word of `verdict`, otherwise
 `UNKNOWN`.
@@ -225,7 +227,7 @@ loaded. When it cannot be loaded, `findings_available` is `false` and every find
 is `null`; verdicts and `gate` do not need it.
 
 Text fields are capped so one huge file cannot blow up a response: `request`, `prompt`,
-`approach`, `retry_findings`, `needs_input` and the `decision` text keep their first 20,000 characters, and an `infra` `detail` its first 400; `qa_tail`, `dwarf_tail`
+`approach`, `retry_findings`, `needs_input`, the `decision` text and `retro`'s `text` keep their first 20,000 characters, and an `infra` `detail` its first 400; `qa_tail`, `dwarf_tail`
 and `verification.log_tail` keep their last 4,000. A capped field ends (or, for tails,
 starts) with `…` and the value of `truncated` lists the field names that were cut.
 
@@ -397,6 +399,8 @@ Every RunSummary field, plus:
 ```json
 {
   "request": "the user's request, verbatim",
+  "retro": {"text": "# Retro\n…", "notes": 6, "user": 2, "forge": 2, "unsure": 1,
+            "verified": 3, "claimed": 3, "blocking": 3},
   "settings": {"explore": 0.5, "shadow_rate": 0.5, "shadow_qa": ["opus", "sol:xhigh"], "timeout": 3600,
                "max_parallel": 2, "qa_threshold": "P2", "escalate_after": 3, "verify_retries": 1,
                "final_qa": "opus",
@@ -449,6 +453,14 @@ Every RunSummary field, plus:
   not a frozen profile (`name` and `level` non-empty strings, `overridden` a list of strings). A solo run
   reads `$RUN/profile.json` the same way and has no other plan settings: every other value is
   `null`, including `shadow_qa`, except `qa_threshold` and its source, which read the same way.
+- `retro` is `null` when the run has neither `retro.md` nor `retro/notes.jsonl`; a solo run has the same
+  field. Otherwise `text` is `retro.md`, capped like `request` (`null` when that file is missing), and the
+  other values count `retro/notes.jsonl`: `notes` is the number of lines that are JSON objects; `user`,
+  `forge` and `unsure` count the notes whose `fixable_by` is that value; `verified` and `claimed` those
+  whose `check` is that value; `blocking` those whose `blocking` is `true`. A note with any other
+  `fixable_by` or `check` counts only in `notes`. A non-blank line that is not a JSON object is skipped,
+  with one warning per file (`retro/notes.jsonl: N malformed lines skipped`). `text` is among the texts
+  an export leaves out unless it is asked to include them.
 - `attribution` is the result of `forge-parallel.sh attribute` from `attribution.json`, or `null` when
   the file is missing. `culprit` is the merged task's id or `null`; `base_fails` is `true` only when the
   base verified FAIL; `inconclusive` is the reason the search stopped without a culprit, or `null`;

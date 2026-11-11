@@ -1483,6 +1483,7 @@ def _solo_detail(reader, source):
     result = _solo_summary(reader, source)
     status = next(iter(result['counts']))
     result['request'] = reader.cap(reader.text('request.md'), 'request')
+    result['retro'] = _retro(reader)
     result['settings'] = dict.fromkeys(_SOLO_SETTINGS)
     result['settings']['qa_threshold'], result['settings']['qa_threshold_source'] = _threshold(reader)
     result['settings']['profile'] = _frozen_profile(reader)
@@ -1560,12 +1561,48 @@ def _attribution(reader):
                 gate_outcome=_text_or_none(outcome, 40))
 
 
+# --- retro: the report and the counts of its notes, written when retro mode is on ----------------
+
+_RETRO_GROUPS = (('user', 'fixable_by', 'user'), ('forge', 'fixable_by', 'forge'), ('unsure', 'fixable_by', 'unsure'),
+                 ('verified', 'check', 'verified'), ('claimed', 'check', 'claimed'))
+
+
+def _retro(reader):
+    """RunDetail.retro: retro.md's text and the counts of retro/notes.jsonl, or null when the run has neither file.
+
+    A note is a line that parses as a JSON object. Other non-blank lines are skipped, with one warning for the
+    file. `notes` counts every note; each other count is the notes whose field has that value."""
+    if not (reader.exists('retro.md') or reader.exists('retro/notes.jsonl')):
+        return None
+    name = 'retro/notes.jsonl'
+    counts = dict.fromkeys(('notes', 'user', 'forge', 'unsure', 'verified', 'claimed', 'blocking'), 0)
+    skipped = 0
+    for line in (reader.text(name) or '').split('\n'):
+        if not line.strip():
+            continue
+        try:
+            note = json.loads(line)
+        except (ValueError, RecursionError):
+            note = None
+        if not isinstance(note, dict):
+            skipped += 1
+            continue
+        counts['notes'] += 1
+        for key, field, value in _RETRO_GROUPS:
+            counts[key] += note.get(field) == value
+        counts['blocking'] += note.get('blocking') is True
+    if skipped:
+        reader.warn(name, f'{skipped} malformed line{"" if skipped == 1 else "s"} skipped')
+    return dict(text=reader.cap(reader.text('retro.md'), 'retro'), **counts)
+
+
 def detail(path, source='plan') -> dict:
     reader = _Read(path)
     if _kind(reader.path) == 'solo':
         return _solo_detail(reader, source)
     result, tasks = _summary(reader, source)
     result['request'] = reader.cap(reader.text('request.md'), 'request')
+    result['retro'] = _retro(reader)
     threshold = _threshold(reader)
     result['settings'] = dict(explore=reader.number('explore'), shadow_rate=reader.number('shadow_rate'),
                               shadow_qa=_list(reader.text('shadow_qa') or ''), timeout=reader.number('timeout', int),
