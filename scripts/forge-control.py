@@ -8,7 +8,9 @@
                                                  pre-review-tests
                                                  (on/off), pre-review-parallel (1-64), max-attempts (0 = no cap;
                                                  needs --confirm: raising the cap is a person's decision),
-                                                 converge-window (reviews the non-converging signal looks at)
+                                                 converge-window (reviews the non-converging signal looks at),
+                                                 summaries (on/off; with --task also inherit; on for a finished run
+                                                 also starts `forge summarize` detached, output in summaries.out)
   pin   <plan> <task> <spec>                     the model the task's next FULL implementer retry uses
   unpin <plan> <task>
   retry <plan> <task> [--dwarf SPEC]             queue a retry of a stopped or failed task into the live run
@@ -91,6 +93,7 @@ NEXT_VERIFY = 'at the next verification'
 NEXT_INFRA_WAIT = 'at the next infrastructure wait'
 NEXT_INFRA_STOP = 'at the next infrastructure stop'
 NEXT_DISPATCH = "at the scheduler's next dispatch decision"
+NEXT_CHANGE = "at the task's next change"
 
 
 class Invalid(Exception):
@@ -374,8 +377,9 @@ def task_status(plan, task, strict=False):
     return words[0] if words else 'PENDING'
 
 
-def refuse_task(plan, task, pin=False):
-    if task_status(plan, task, strict=True) == 'MERGED':
+def refuse_task(plan, task, pin=False, merged_ok=False):
+    # merged_ok: a switch that changes no run behaviour (summaries) may still be set on a finished task.
+    if task_status(plan, task, strict=True) == 'MERGED' and not merged_ok:
         raise Refused(f'task {task} is MERGED: nothing left to change')
     if pin and is_fractal(plan):
         raise Refused('this plan runs under Fractal, which never applies pins')
@@ -564,6 +568,12 @@ def _onoff(value, _task):
     raise Invalid('needs on or off')
 
 
+def _summaries(value, task):
+    if value in ('on', 'off') or (task and value == 'inherit'):
+        return value
+    raise Invalid('needs on or off' + (' (or inherit to drop the override)' if task else ''))
+
+
 # key -> (plan only or both, validator, file, live only, when it applies)
 KEYS = {
     'qa-threshold': ('both', _qa, 'qa_threshold', False, NEXT_ATTEMPT),
@@ -580,6 +590,7 @@ KEYS = {
     'pre-review-parallel': ('plan', _parallel, 'pre_review_parallel', False, NEXT_ATTEMPT),
     'max-attempts': ('plan', _int, 'max_attempts', False, NEXT_DECISION),
     'converge-window': ('plan', _int, 'converge_window', False, NEXT_DECISION),
+    'summaries': ('both', _summaries, 'summaries', False, NEXT_CHANGE),
 }
 
 
@@ -607,14 +618,15 @@ def audit(plan, actor, action, task, key, value, previous, **extra):
     return entry
 
 
-def change(args, plan, rows, action, task, key, work, applies, summary, live_only=False, pin_guard=False):
+def change(args, plan, rows, action, task, key, work, applies, summary, live_only=False, pin_guard=False,
+           merged_ok=False):
     """Run work() -> (value, previous, changed) under the control lock, audit a change, report the result."""
     with control_lock(plan):
         probe(plan, 'control.log')   # an unsafe log refuses the change instead of leaving it unaudited
         if live_only and not is_live(plan):
             raise Refused(f'{key or action} can only change while a run is live (no live scheduler for this plan)')
         if task:
-            refuse_task(plan, task, pin_guard)
+            refuse_task(plan, task, pin_guard, merged_ok)
         value, previous, changed = work()
         if changed:   # setting a value it already has, or unpinning nothing, is not a change
             audit(plan, args.actor, action, task, key, value, previous)
@@ -668,8 +680,28 @@ def cmd_set(args):
         return value, previous, changed or any(swept)
 
     where = f'task {task}' if task else 'the plan'
-    return change(args, plan, rows, 'set', task, args.key, work, applies,
-                  lambda v: f'set {args.key} {v} on {where}', live_only=live_only)
+    done = change(args, plan, rows, 'set', task, args.key, work, applies,
+                  lambda v: f'set {args.key} {v} on {where}', live_only=live_only,
+                  merged_ok=args.key == 'summaries')
+    if args.key == 'summaries' and value == 'on':
+        start_summaries(plan, task)
+    return done
+
+
+def start_summaries(plan, task):
+    """A finished run has no scheduler to notice a change: `summaries on` starts `forge summarize` itself,
+    detached, its output in summaries.out. A live run's scheduler does it at the next change instead.
+    Best effort: the switch is already set."""
+    if is_live(plan):
+        return
+    command = [sys.executable, os.path.join(SKILL, 'scripts', 'forge-summarize.py'), plan]
+    if task:
+        command += ['--task', task]
+    try:
+        with open(os.path.join(plan, 'summaries.out'), 'ab') as out:
+            subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=out, stderr=out, start_new_session=True)
+    except OSError:
+        pass
 
 
 def doctor(spec, role='dwarf'):
@@ -953,11 +985,12 @@ def parser():
     p.set_defaults(func=cmd_show)
     p = sub.add_parser('set', help='change a control', description='Keys: ' + ', '.join(KEYS) + '. '
                        'retry-budget, infra-retries and max-parallel change only while a run is live. '
-                       'qa-threshold and retry-budget also take --task (value inherit drops the override; at run level, default drops the file and none means P3).')
+                       'qa-threshold, retry-budget and summaries also take --task (value inherit drops the override; at run level, default drops the file and none means P3). '
+                       'summaries on|off turns generated task summaries on or off; on for a finished run also starts them.')
     common(p)
     p.add_argument('key', choices=list(KEYS))
     p.add_argument('value')
-    p.add_argument('--task', metavar='ID', help='change this task only (qa-threshold, retry-budget)')
+    p.add_argument('--task', metavar='ID', help='change this task only (qa-threshold, retry-budget, summaries)')
     p.add_argument('--confirm', action='store_true', help="max-attempts only: the change is a person's decision")
     p.set_defaults(func=cmd_set)
     p = sub.add_parser('pin', help="set the model a task's next full retry uses")

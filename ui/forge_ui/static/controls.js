@@ -29,6 +29,7 @@
     'max-parallel': { label: 'Max parallel', run: 'at the next dispatch', planOnly: true, live: true },
     'infra-backoff': { label: 'Infra backoff', run: 'at the next infrastructure wait', planOnly: true },
     'escalate-effort': { label: 'Effort step', run: 'at the next retry decision', planOnly: true },
+    'summaries': { label: 'Summaries', run: "at each task's next change", task: 'at its next change' },
   };
   const BACKOFF_FORMS = 'exp:<base>[,<cap>], linear:<start>,<step>[,<cap>] or list:<a>,<b>,… (seconds)';
   // A task status after which "Retry now" applies (or the policy stopped it).
@@ -93,6 +94,10 @@
     if (task && key === 'retry-budget' && text === 'inherit') return { ok: true, value: 'inherit' };
     if (key === 'max-parallel') {
       return /^[0-9]{1,2}$/.test(text) && Number(text) >= 1 && Number(text) <= 64 ? { ok: true, value: String(Number(text)) } : bad('a whole number, 1 to 64');
+    }
+    if (key === 'summaries') {
+      return text === 'on' || text === 'off' || (task && text === 'inherit') ? { ok: true, value: text }
+        : bad(task ? 'on, off or inherit' : 'on or off');
     }
     if (key === 'escalate-effort') return text === 'on' || text === 'off' ? { ok: true, value: text } : bad('on or off');
     if (key === 'infra-backoff') {

@@ -37,6 +37,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 
 # forge_infra.py sits beside this file; forge-control.py loads this module by path.
@@ -401,6 +402,11 @@ def _pinned(plan: object, name: str) -> bool:
 # dispatch that died too early left behind.
 GUARD = str(Path(__file__).resolve().parent / 'forge-guard.py')
 ROUTE = str(Path(__file__).resolve().parent / 'forge-route.py')
+# FORGE_SUMMARIZE names another script for the same job; tests stand a stub in.
+SUMMARIZE = str(Path(__file__).resolve().parent / 'forge-summarize.py')
+# the dwarf's reply (it ends before the status moves), an attempt ended, a verdict, a retry queued
+SUMMARY_FILES = ('dwarf.last', 'attempts.tsv', 'qa.last', 'retries.used')
+SUMMARY_JOIN = 3.0   # seconds the scheduler's end waits for admission checks to start their summarize
 HARNESS_ROLES = ('dwarf', 'qa')
 GUARD_STOP_WAIT = 15.0    # seconds; the guard's own bound is about 3 s plus two ps calls
 
@@ -1149,6 +1155,10 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
             return 'refused', 'tasks/' + name + ' could not be created: ' + str(error)
         tasks[name] = found[0]
         pending.append(name)
+        try:
+            summary_seen[name] = summary_signature(name)   # before it runs: its first change must trigger
+        except Exception:
+            pass
         if subprocess.run(['/bin/bash', script, '_waves', str(plan)]).returncode:
             _warn('waves.tsv was not refreshed for ' + name + '; the task still runs')
         return 'applied', None
@@ -1236,6 +1246,102 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
             if not reaped:
                 return
 
+    summary_seen = {}      # task -> what the scheduler last saw of it (status, attempt trail, verdict, retries)
+    summary_due = set()    # tasks that changed and wait for a summarize
+    summary_procs = {}     # task -> its detached forge-summarize.py, polled only to reap it
+    summary_starters = {}  # task -> the thread that is checking admission and starting one
+    summary_checks = {}    # task -> (that thread's abandon flag, the pid it waits for)
+    summary_warned = []    # a failure to start one is reported once
+
+    def summary_signature(name: str) -> tuple:
+        root = plan / 'tasks' / name
+        parts = [status(name)]
+        for file in SUMMARY_FILES:
+            try:
+                found = os.stat(root / file)
+                parts.append((found.st_size, found.st_mtime_ns))
+            except OSError:
+                parts.append(None)
+        return tuple(parts)
+
+    def summary_spawn(name: str, after: int | None) -> None:
+        """Start the detached summarize of one task, in its own session. With after (a pid), it begins once
+        that process is gone: the run is ending and the earlier summarize of this task still holds its lock."""
+        command = [sys.executable, os.environ.get('FORGE_SUMMARIZE') or SUMMARIZE, str(plan), '--task', name]
+        if after is not None:
+            command = ['/bin/sh', '-c', 'while kill -0 "$0" 2>/dev/null; do sleep 1; done; exec "$@"',
+                       str(after)] + command
+        out = open(plan / 'summaries.out', 'ab')
+        try:
+            process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=out, stderr=out,
+                                       start_new_session=True)
+        finally:
+            out.close()
+        summary_procs[name] = process
+
+    def summary_run(name: str, after: int | None, abandoned: threading.Event) -> None:
+        """Thread body: forge_side.allowed() takes a blocking lock, so it never runs on the scheduler's
+        loop. An abandoned check (the scheduler is ending and handed the task on) starts nothing."""
+        try:
+            import forge_side
+            if not forge_side.allowed('summary', plan, name)[0] or abandoned.is_set():
+                return
+            summary_spawn(name, after)
+        except Exception as error:   # a summary is never worth the run
+            if not summary_warned:
+                summary_warned.append(error)
+                _warn('summaries not started: ' + str(error))
+
+    def summaries_on_change(final: bool = False) -> None:
+        """Start a detached `forge-summarize.py <plan> --task <id>` for every task whose status, dwarf reply,
+        attempt trail, verdict or retry count changed since the last look: once per change, never on a timer,
+        one at a time per task, and only where forge_side.allowed() says summaries are on. The first look at a
+        task only remembers it. Nothing here can change a task or the run, or wait for one."""
+        try:
+            for name in list(summary_procs):
+                if summary_procs[name].poll() is not None:
+                    del summary_procs[name]
+            for name in list(summary_starters):
+                if not summary_starters[name].is_alive():
+                    del summary_starters[name]
+            for name in tasks:
+                signature = summary_signature(name)
+                if name in summary_seen and summary_seen[name] != signature:
+                    summary_due.add(name)
+                summary_seen[name] = signature
+            deadline = time.monotonic() + SUMMARY_JOIN
+            if final:   # let the admission checks that are under way finish, for a bounded time
+                for starter in list(summary_starters.values()):
+                    starter.join(max(0.0, deadline - time.monotonic()))
+            for name in sorted(summary_due):
+                starter = summary_starters.get(name)
+                running = summary_procs.get(name)
+                running = running if running is not None and running.poll() is None else None
+                if (starter is not None and starter.is_alive()) or (running is not None and not final):
+                    continue   # still summarising: the change waits for it to end
+                summary_due.discard(name)
+                after = running.pid if running else None
+                abandoned = threading.Event()
+                thread = threading.Thread(target=summary_run, args=(name, after, abandoned), daemon=True)
+                summary_starters[name] = thread
+                summary_checks[name] = (abandoned, after)
+                thread.start()
+            if final:
+                for starter in list(summary_starters.values()):
+                    starter.join(max(0.0, deadline - time.monotonic()))
+                # A check still blocked at the deadline (the side lock is held) was past the switch tests,
+                # which never block: summaries are on. The thread dies with the scheduler, so the detached
+                # summarize takes it over and makes the whole admission check itself.
+                for name, starter in list(summary_starters.items()):
+                    if starter.is_alive():
+                        abandoned, after = summary_checks[name]
+                        abandoned.set()
+                        summary_spawn(name, after)
+        except Exception as error:   # a summary is never worth the run
+            if not summary_warned:
+                summary_warned.append(error)
+                _warn('summaries not started: ' + str(error))
+
     def stop(signum: int, frame: object) -> None:
         nonlocal interrupted
         interrupted = True
@@ -1244,6 +1350,7 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
     signal.signal(signal.SIGINT, stop)
     try:
         live_start(plan, tasks, retry_failed, infra_retries)
+        summaries_on_change()
         # Failures require an explicit retry unless this run asked for automatic ones.
         # Saved PASS results use the same fingerprint checks without paying for
         # implementation or QA again; an INFRA stop is not a failure of the work, so it
@@ -1276,6 +1383,7 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
                 interrupted = True
             graceful = graceful or mode == 'graceful'
             reap_exited(ended)
+            summaries_on_change()
             if interrupted:
                 break
             draining = drained(plan)
@@ -1437,6 +1545,7 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
                 mark(name, 'INTERRUPTED')
             except OSError as error:
                 _warn('could not mark ' + name + ' INTERRUPTED: ' + str(error))
+        summaries_on_change(final=True)   # the last merges and stops; the children outlive the scheduler
     if interrupted or (graceful and not all(status(name) == 'MERGED' for name in tasks)):
         return 130
     if paused or any(live_pause(pause) for pause in pauses.values()) \
