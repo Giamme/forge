@@ -5,6 +5,7 @@ The fake CLI harness is the one test_side uses, so a summary dispatch is a real
 """
 import dataset_isolation  # noqa: F401  keeps forge's dataset and config out of the developer's home
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -67,6 +68,14 @@ HOLDER = (
 def hashed(body: dict) -> str:
     raw = json.dumps(body, sort_keys=True, separators=(',', ':'), ensure_ascii=False)
     return hashlib.sha256(raw.encode('utf-8')).hexdigest()
+
+
+def summarize_module():
+    """forge-summarize.py, loaded by path. The facts are what collect() returns."""
+    spec = importlib.util.spec_from_file_location('forge_summarize_tests', SCRIPT)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 class SummaryTests(unittest.TestCase):
@@ -354,6 +363,79 @@ class SummaryTests(unittest.TestCase):
             if holder.poll() is None:
                 holder.kill()
             holder.wait(timeout=5)
+
+    def facts(self, task='a'):
+        body, sources = summarize_module().collect(self.plan, task)
+        return body, sources
+
+    def _archive(self, task, name, text, started, total=None):
+        archive = task / 'attempts' / name
+        archive.mkdir(parents=True)
+        (archive / 'qa.last').write_text(text)
+        metrics = {'wall_started': started, 'exit_code': 0}
+        if total is not None:
+            metrics['elapsed_s'] = {'total': total}
+        (archive / 'metrics.json').write_text(json.dumps(metrics) + '\n')
+        return archive
+
+    def test_a_fast_review_stays_on_the_attempt_that_logged_it(self):
+        # attempts.tsv stores date +%s. A review that starts at 1700000001.2 and
+        # finishes at 1700000001.8 is logged as 1700000001, and production
+        # archives carry no attempt_now. It belongs to attempt 1, not attempt 2.
+        first = '- [P1][CONFIRMED] a.txt:1 — First bug\nFORGE_VERDICT: FAIL\n'
+        second = '- [P3][CONFIRMED] a.txt:4 — Second bug\nFORGE_VERDICT: PASS\n'
+        for total in (0.6, None):
+            with self.subTest(total=total):
+                self._fresh(TASKS)
+                task = self.plan / 'tasks' / 'a'
+                task.mkdir(parents=True)
+                (task / 'status').write_text('PASS\n')
+                (task / 'attempts.tsv').write_text(
+                    '1700000001\t1\tFAIL\t\tsol\n1700000010\t2\tPASS\t\tastra\n')
+                (task / 'qa.last').write_text(second)
+                self._archive(task, 'qa-fast', first, 1700000001.2, total)
+                self._archive(task, 'qa-later', second, 1700000009.2, total)
+                body, sources = self.facts()
+                self.assertEqual(
+                    [(row['findings'], row['worst']) for row in body['attempts']],
+                    [(1, 'P1'), (1, 'P3')])
+                self.assertEqual(
+                    [item['ref'] for item in sources if item['kind'] == 'finding'],
+                    ['2:Second bug'])
+
+    def test_a_review_archived_before_its_row_keeps_the_open_attempt(self):
+        # Summarise after attempt 2's review is archived and before record_attempt
+        # appends its row. The counter already says 2. The new findings must not
+        # replace attempt 1's, and the finding ref is 2, not 1.
+        first = '- [P1][CONFIRMED] a.txt:1 — First bug\nFORGE_VERDICT: FAIL\n'
+        second = '- [P2][CONFIRMED] a.txt:2 — Second bug\nFORGE_VERDICT: FAIL\n'
+        cases = (
+            ('later', 1700000005.2, 0.5, None),
+            # Appended at .1, so a start at .5 is the next attempt even though
+            # both sit in the logged second. One case has no finish time.
+            ('same-second', 1700000001.5, None, 1700000001.1),
+            ('written-earlier', 1700000001.5, 0.3, 1700000001.1),
+        )
+        for name, started, total, written in cases:
+            with self.subTest(name=name):
+                self._fresh('a\t-\tlow\ta.txt\tsol\topus\tA\n')
+                task = self.plan / 'tasks' / 'a'
+                task.mkdir(parents=True)
+                (task / 'status').write_text('FAIL\n')
+                (task / 'attempt').write_text('2\n')
+                log = task / 'attempts.tsv'
+                log.write_text('1700000001\t1\tFAIL\t\tsol\n')
+                if written is not None:
+                    os.utime(log, (written, written))
+                (task / 'qa.last').write_text(second)
+                self._archive(task, 'qa-old', first, 1700000000.2, 0.5)
+                self._archive(task, 'qa-new', second, started, total)
+                body, sources = self.facts()
+                self.assertEqual(body['attempts'][0]['findings'], 1)
+                self.assertEqual(body['attempts'][0]['worst'], 'P1')
+                self.assertEqual(
+                    [item['ref'] for item in sources if item['kind'] == 'finding'],
+                    ['2:Second bug'])
 
 
 if __name__ == '__main__':

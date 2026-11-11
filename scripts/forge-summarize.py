@@ -21,6 +21,7 @@ import argparse
 import hashlib
 import importlib.util
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -208,29 +209,119 @@ def _shadow(path: Path) -> bool:
     return _json(path / 'metrics.json').get('shadow') is True
 
 
-def _archive_attempt(path: Path, rows: list):
-    """The attempt a saved review belongs to: dataset.json's attempt_now, else its start time.
+def _number(value):
+    """A finite float, or None. A bool is not a timestamp."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    try:
+        value = float(value)
+    except OverflowError:
+        return None
+    if not math.isfinite(value):
+        return None
+    return value
 
-    attempts.tsv is written when the attempt ends, in whole seconds. A review that started
-    at or before that stamp belongs to that row; one after the last row belongs to it.
+
+def _finished(path: Path, started: float):
+    """Wall time the review finished, or None when metrics never closed it.
+
+    begin() stores wall_started. finish() adds elapsed_s.total, the monotonic
+    seconds until the dispatch ended, so wall_started plus that total is the
+    completion. date +%s then truncates it into the attempt log.
+    """
+    metrics = _json(path / 'metrics.json')
+    elapsed = metrics.get('elapsed_s')
+    total = _number(elapsed.get('total') if isinstance(elapsed, dict) else None)
+    if total is None or total < 0:
+        return None
+    # A metrics file from begin() has no total. A zero total with no exit is the
+    # same unfinished state, not a review that ended on its start instant.
+    if total == 0 and metrics.get('exit_code') is None:
+        return None
+    return started + total
+
+
+def _log_mtime(task_dir: Path):
+    """When attempts.tsv was last appended, or None. Sub-second when the filesystem gives it."""
+    try:
+        return (task_dir / 'attempts.tsv').stat().st_mtime
+    except OSError:
+        return None
+
+
+def _open_attempt(rows: list, task_dir: Path):
+    """The attempt a review belongs to when no attempts.tsv row owns it.
+
+    The counter advances before the attempt starts. record_attempt appends the
+    row when it ends. Until that append, the counter is this attempt and the
+    last row is the previous one. Once the counter has caught up, a review that
+    was never archived belongs to the last logged attempt.
+    """
+    current = _counter(task_dir)
+    last = rows[-1]['attempt'] if rows else None
+    if current is not None and (last is None or current > last):
+        return current
+    return last
+
+
+def _archive_attempt(path: Path, rows: list, task_dir: Path):
+    """The attempt a saved review belongs to.
+
+    dataset.json's attempt_now wins when a capture wrote one. Production
+    archives do not persist it, so the attempt log is the fallback. Its epoch
+    is date +%s at the end of the attempt, which drops the fraction: a review
+    that starts at E.2 and finishes at E.8 is stored as E. Comparing the raw
+    start with <= E skips that row and takes the next attempt.
+
+    The finish, when metrics closed, matches a row when it falls before the
+    next second (`< epoch + 1`). Without a finish, the start uses that window.
+    A review that started after the last row was appended is the open attempt
+    the counter already holds. That row does not exist yet, and the review
+    must not replace the previous attempt's facts.
     """
     number = _json(path / 'dataset.json').get('attempt_now')
     if type(number) is int and number > 0:
         return number
-    started = _json(path / 'metrics.json').get('wall_started')
-    if isinstance(started, bool) or not isinstance(started, (int, float)):
+    started = _number(_json(path / 'metrics.json').get('wall_started'))
+    if started is None:
         return None
-    for row in rows:
-        if row['epoch'] is not None and started <= row['epoch']:
+    finished = _finished(path, started)
+    mark = finished if finished is not None else started
+    opened = _open_attempt(rows, task_dir)
+    last = rows[-1]['attempt'] if rows else None
+    ahead = opened is not None and opened != last
+    for index, row in enumerate(rows):
+        epoch = row['epoch']
+        if epoch is None or not mark < epoch + 1:
+            continue
+        if index != len(rows) - 1:
             return row['attempt']
-    return rows[-1]['attempt'] if rows else None
+        # The last logged second can also hold the start of the next attempt,
+        # whose row is still missing. Two ways to tell them apart. The file's
+        # mtime is the last append: a review that started after that write is
+        # not this row (record_attempt runs after the review). A one-second
+        # mtime cannot say, so a review that did not finish inside the second
+        # falls through to the open attempt instead.
+        written = _log_mtime(task_dir)
+        # st_mtime is the last append. record_attempt runs after the review, so
+        # a review that started after that write is not this row.
+        started_before_append = written is not None and started <= written
+        if written is not None and written > epoch and not started_before_append:
+            continue
+        # A mtime that is only the truncated epoch cannot say. A start inside
+        # that second, with no finish, then belongs to the open attempt.
+        if ahead and finished is None and started > epoch and not started_before_append:
+            continue
+        return row['attempt']
+    return opened
 
 
 def _reviews(task_dir: Path, rows: list) -> dict:
     """`{attempt: qa.last text}` from attempts/qa-*/, newest start wins. Shadow reviews are skipped.
 
     The live qa.last is the review still in the task dir. When no archive holds the same
-    text, it belongs to the last recorded attempt (a review that was not archived).
+    text, it belongs to the open attempt when the counter is ahead of the log, and
+    otherwise to the last recorded attempt (a review that was not archived).
     """
     found = {}
     order = []
@@ -242,11 +333,11 @@ def _reviews(task_dir: Path, rows: list) -> dict:
             text = _text(path / 'qa.last')
             if text is None:
                 continue
-            number = _archive_attempt(path, rows)
+            number = _archive_attempt(path, rows, task_dir)
             if number is None:
                 continue
-            started = _json(path / 'metrics.json').get('wall_started')
-            if isinstance(started, bool) or not isinstance(started, (int, float)):
+            started = _number(_json(path / 'metrics.json').get('wall_started'))
+            if started is None:
                 try:
                     started = path.stat().st_mtime
                 except OSError:
@@ -256,7 +347,7 @@ def _reviews(task_dir: Path, rows: list) -> dict:
         found[number] = text
     live = _text(task_dir / 'qa.last')
     if live is not None and all(text != live for text in found.values()):
-        number = rows[-1]['attempt'] if rows else _counter(task_dir)
+        number = _open_attempt(rows, task_dir)
         if number is not None:
             found[number] = live
     return found
@@ -278,8 +369,7 @@ def _latest(task_dir: Path, rows: list, reviews: dict):
         matches = [number for number, text in reviews.items() if text == live]
         if matches:
             return max(matches), live
-        number = rows[-1]['attempt'] if rows else _counter(task_dir)
-        return number, live
+        return _open_attempt(rows, task_dir), live
     if not reviews:
         return None, None
     number = max(reviews)
