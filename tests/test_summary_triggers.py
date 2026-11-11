@@ -156,7 +156,19 @@ class SummaryTriggerTests(unittest.TestCase):
             result = self.run_scheduler()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue((self.plan / 'tasks/a/merged').exists())
-        self.assertEqual(self.calls(), [])
+
+    def test_an_admission_check_still_blocked_at_the_end_is_handed_to_a_detached_summarize(self):
+        import fcntl
+        self.on(); self.task('a', ['PASS'])
+        (self.plan / 'side' / 'summary').mkdir(parents=True)
+        with open(self.plan / 'side' / 'summary' / '.lock', 'w') as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            result = self.run_scheduler()
+        # The scheduler's own check threads die with it; the final transition (MERGED) must not be lost.
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.settle()
+        self.assertTrue(self.calls('a'), 'the blocked admission check was dropped at shutdown')
+        self.assertTrue((self.plan / 'summaries.out').exists())
 
     def test_a_task_added_during_the_run_gets_its_summaries_even_when_it_finishes_fast(self):
         import json, time

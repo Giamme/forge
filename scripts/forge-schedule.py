@@ -1250,6 +1250,7 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
     summary_due = set()    # tasks that changed and wait for a summarize
     summary_procs = {}     # task -> its detached forge-summarize.py, polled only to reap it
     summary_starters = {}  # task -> the thread that is checking admission and starting one
+    summary_checks = {}    # task -> (that thread's abandon flag, the pid it waits for)
     summary_warned = []    # a failure to start one is reported once
 
     def summary_signature(name: str) -> tuple:
@@ -1263,25 +1264,29 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
                 parts.append(None)
         return tuple(parts)
 
-    def summary_run(name: str, after: int | None) -> None:
+    def summary_spawn(name: str, after: int | None) -> None:
+        """Start the detached summarize of one task, in its own session. With after (a pid), it begins once
+        that process is gone: the run is ending and the earlier summarize of this task still holds its lock."""
+        command = [sys.executable, os.environ.get('FORGE_SUMMARIZE') or SUMMARIZE, str(plan), '--task', name]
+        if after is not None:
+            command = ['/bin/sh', '-c', 'while kill -0 "$0" 2>/dev/null; do sleep 1; done; exec "$@"',
+                       str(after)] + command
+        out = open(plan / 'summaries.out', 'ab')
+        try:
+            process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=out, stderr=out,
+                                       start_new_session=True)
+        finally:
+            out.close()
+        summary_procs[name] = process
+
+    def summary_run(name: str, after: int | None, abandoned: threading.Event) -> None:
         """Thread body: forge_side.allowed() takes a blocking lock, so it never runs on the scheduler's
-        loop. Detached and in its own session. With after (a pid), the summarize begins once that process
-        is gone: the run is ending and the earlier summarize of this task still holds its lock."""
+        loop. An abandoned check (the scheduler is ending and handed the task on) starts nothing."""
         try:
             import forge_side
-            if not forge_side.allowed('summary', plan, name)[0]:
+            if not forge_side.allowed('summary', plan, name)[0] or abandoned.is_set():
                 return
-            command = [sys.executable, os.environ.get('FORGE_SUMMARIZE') or SUMMARIZE, str(plan), '--task', name]
-            if after is not None:
-                command = ['/bin/sh', '-c', 'while kill -0 "$0" 2>/dev/null; do sleep 1; done; exec "$@"',
-                           str(after)] + command
-            out = open(plan / 'summaries.out', 'ab')
-            try:
-                process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=out, stderr=out,
-                                           start_new_session=True)
-            finally:
-                out.close()
-            summary_procs[name] = process
+            summary_spawn(name, after)
         except Exception as error:   # a summary is never worth the run
             if not summary_warned:
                 summary_warned.append(error)
@@ -1315,13 +1320,23 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
                 if (starter is not None and starter.is_alive()) or (running is not None and not final):
                     continue   # still summarising: the change waits for it to end
                 summary_due.discard(name)
-                thread = threading.Thread(target=summary_run, args=(name, running.pid if running else None),
-                                          daemon=True)
+                after = running.pid if running else None
+                abandoned = threading.Event()
+                thread = threading.Thread(target=summary_run, args=(name, after, abandoned), daemon=True)
                 summary_starters[name] = thread
+                summary_checks[name] = (abandoned, after)
                 thread.start()
             if final:
                 for starter in list(summary_starters.values()):
                     starter.join(max(0.0, deadline - time.monotonic()))
+                # A check still blocked at the deadline (the side lock is held) was past the switch tests,
+                # which never block: summaries are on. The thread dies with the scheduler, so the detached
+                # summarize takes it over and makes the whole admission check itself.
+                for name, starter in list(summary_starters.items()):
+                    if starter.is_alive():
+                        abandoned, after = summary_checks[name]
+                        abandoned.set()
+                        summary_spawn(name, after)
         except Exception as error:   # a summary is never worth the run
             if not summary_warned:
                 summary_warned.append(error)
