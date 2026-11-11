@@ -553,4 +553,30 @@ class ForgeTests(unittest.TestCase):
    self.assertFalse((run/name).exists(), name)
   self.assertEqual((run/'verdict').read_text(), 'PASS\n')
 
+class RetroRouteTests(unittest.TestCase):
+    """`forge retro note` reaches forge-retro.py. A missing plan is that command's exit 3,
+    not the launcher's unknown-command exit 2."""
+
+    def test_forge_retro_note_is_routed(self):
+        home = tempfile.TemporaryDirectory()
+        self.addCleanup(home.cleanup)
+        env = dict(os.environ, HOME=home.name)
+        forge = str(ROOT / 'forge')
+        helped = subprocess.run([forge, 'retro', '--help'], capture_output=True, text=True, env=env)
+        self.assertEqual(helped.returncode, 0, helped.stderr)
+        self.assertIn('usage: forge retro', helped.stdout)
+        bare = subprocess.run([forge, 'retro'], capture_output=True, text=True, env=env)
+        self.assertEqual((bare.returncode, bare.stdout), (2, ''))
+        self.assertEqual(bare.stderr, helped.stdout)
+        usage = subprocess.run([forge, 'retro', 'note'], capture_output=True, text=True, env=env)
+        self.assertEqual(usage.returncode, 2, usage.stderr)
+        self.assertIn('usage: forge retro note', usage.stderr)
+        missing = subprocess.run(
+            [forge, 'retro', 'note', os.path.join(home.name, 'no-plan'),
+             '--type', 'tooling', '--fixable-by', 'forge', '--summary', 'missing command'],
+            capture_output=True, text=True, env=env)
+        self.assertEqual(missing.returncode, 3, missing.stderr)
+        self.assertIn('no-plan', missing.stderr)
+        self.assertEqual(missing.stdout, '')
+
 if __name__=='__main__': unittest.main()
