@@ -1141,6 +1141,20 @@ check_drift() { # check_drift <declared-comma-list> <tdir> <wt> <base>
   return 0
 }
 
+# The attempt trail (#133): one line per attempt that starts with carried findings, saying why it
+# happened, as `<attempt>\t<source>\t<epoch>`. The source is read the way forge-prompt.py reads it
+# (a missing or unknown one is a review). A line for the same attempt number is replaced rather than
+# repeated: an infrastructure stop refunds the attempt, so its restart runs the same number again.
+record_retry_source() { # record_retry_source <tdir> <attempt>
+  local tdir="$1" n="$2" src
+  [ -s "$tdir/retry_findings.md" ] || return 0
+  src="$(cat "$tdir/retry_findings.source" 2>/dev/null)"
+  case "$src" in review|prereview|bounce|message|answer) ;; *) src=review ;; esac
+  { awk -F'\t' -v n="$n" '$1 != n' "$tdir/retry_sources.tsv" 2>/dev/null
+    printf '%s\t%s\t%s\n' "$n" "$src" "$(date +%s)"
+  } > "$tdir/.retry_sources.tsv.tmp" && mv "$tdir/.retry_sources.tsv.tmp" "$tdir/retry_sources.tsv"
+}
+
 do_task_body() (
   local PLAN="${1:?}" id="${2:?}"
   local T="$PLAN/tasks.tsv" REPO run_id base wt br tdir attempt resume=""
@@ -1225,6 +1239,8 @@ do_task_body() (
         $([ -z "$(verify_source_for "$PLAN" "$REPO")" ] || echo --verify-after-merge)
       echo; /bin/bash "$MEMORY" note dwarf
     } > "$tdir/dwarf.input"
+    # This attempt starts with the findings just written to dwarf.input (#133).
+    record_retry_source "$tdir" "$attempt" || :
     guard_before_dwarf "$wt" "$tdir"
     # Whether this attempt continues the implementer's earlier session (plan
     # --implementer-session, #90): only a retry of judged work that is still exactly what was

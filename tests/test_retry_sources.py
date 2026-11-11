@@ -1,4 +1,5 @@
-"""Retry findings know where they came from (#43, #44), and the two hooks the gates plug into.
+"""Retry findings know where they came from (#43, #44), the two hooks the gates plug into, and
+each attempt that starts with findings records why it ran (tasks/<id>/retry_sources.tsv, #133).
 
 End-to-end cases drive forge-parallel.sh with the fake agent CLI from test_forge.py. The gates
 themselves do not exist yet, so the hooks are exercised with stub gate files placed in a copy of
@@ -11,6 +12,7 @@ import os
 from pathlib import Path
 import subprocess
 import tempfile
+import time
 import unittest
 
 import test_dataset as dataset_fixtures
@@ -234,6 +236,89 @@ class SourceTests(RunCase):
         self.run_script('forge-parallel.sh', 'retry', p, 'a')
         self.assertEqual(self.text(p, 'retry_findings.source'), 'review')
         self.assertIn(FINDING, self.text(p, 'retry_findings.md'))
+
+
+class AttemptTrailTests(RunCase):
+    """tasks/<id>/retry_sources.tsv: one line per attempt that starts with carried findings (#133)."""
+
+    def trail(self, plan):
+        path = plan / 'tasks/a/retry_sources.tsv'
+        return path.read_text() if path.exists() else None
+
+    def rows(self, plan):
+        text = self.trail(plan)
+        return None if text is None else [line.split('\t') for line in text.splitlines()]
+
+    def test_a_review_fail_then_a_retry_writes_its_attempt_and_source(self):
+        p = self.plan_of()
+        self.scenario({'a.qa.1': {'verdict': 'FAIL', 'findings': FINDING}, 'a.dwarf.2': {'content': 'fixed'}})
+        before = int(time.time())
+        r = self.run_script('forge-parallel.sh', 'run', p, '--retry-failed', 1)
+        after = int(time.time())
+        self.assertEqual(r.returncode, 0, r.stdout)
+        rows = self.rows(p)
+        self.assertEqual(len(rows), 1, rows)
+        attempt, source, epoch = rows[0]
+        self.assertEqual((attempt, source), ('2', 'review'))
+        self.assertTrue(before <= int(epoch) <= after, rows)
+
+    def test_a_pre_review_red_attempt_writes_prereview(self):
+        (self.repo / '.forge').mkdir(exist_ok=True)
+        (self.repo / '.forge/verify-subset').write_text(pre_review_fixtures.EACH + '\n')
+        p = self.plan_of('--pre-review-tests')
+        self.scenario({'a.dwarf.1': {'files': {'tests/test_a.py': "raise SystemExit('red')\n"}},
+                       'a.dwarf.2': {'content': 'fixed', 'files': {'tests/test_a.py': 'pass\n'}}})
+        r = self.run_script('forge-parallel.sh', 'run', p, '--retry-failed', 1)
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertEqual(self.calls(), ['dwarf', 'dwarf', 'qa'])
+        self.assertEqual([row[:2] for row in self.rows(p)], [['2', 'prereview']])
+
+    def test_a_first_attempt_writes_no_trail(self):
+        p = self.plan_of()
+        r = self.run_script('forge-parallel.sh', 'run', p)
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertEqual(self.statuses(p), ['PASS'])
+        self.assertIsNone(self.trail(p))
+
+    def test_a_restarted_attempt_leaves_one_line_for_its_number(self):
+        p = self.plan_of()
+        self.scenario({'a.qa.1': {'verdict': 'FAIL', 'findings': FINDING},
+                       'a.dwarf.2': {'rc': 1, 'stderr': 'authentication failed'},
+                       'a.dwarf.3': {'content': 'second'}})
+        self.run_script('forge-parallel.sh', 'run', p)                  # attempt 1 is reviewed and fails
+        self.assertEqual(self.statuses(p), ['FAIL'])
+        r = self.run_script('forge-parallel.sh', 'retry', p, 'a')       # attempt 2 stops at the dwarf: auth
+        self.assertEqual(r.returncode, 8, r.stdout)
+        self.assertEqual([row[:2] for row in self.rows(p)], [['2', 'review']])
+        r = self.run_script('forge-parallel.sh', 'retry', p, 'a')       # the refunded number runs again
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertEqual(self.calls(), ['dwarf', 'qa', 'dwarf', 'dwarf', 'qa'])
+        self.assertEqual([row[:2] for row in self.rows(p)], [['2', 'review']])
+
+    def test_each_attempt_that_starts_with_findings_keeps_its_own_line(self):
+        self.gates(addressed=GATE_ADDRESSED)
+        self.env.update(STUB_ADDRESSED='once', STUB_AT='2')
+        p = self.plan_of()
+        self.scenario({'a.qa.1': {'verdict': 'FAIL', 'findings': FINDING},
+                       'a.dwarf.2': {'content': 'second'}, 'a.dwarf.3': {'content': 'third'}})
+        r = self.run_script('forge-parallel.sh', 'run', p, '--retry-failed', 2)
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertEqual(self.statuses(p), ['FAIL', 'BOUNCED', 'PASS'])
+        self.assertEqual([row[:2] for row in self.rows(p)], [['2', 'review'], ['3', 'bounce']])
+
+    def test_a_qa_only_resume_leaves_the_trail_as_it_was(self):
+        p = self.plan_of()
+        self.scenario({'a.qa.1': {'verdict': 'FAIL', 'findings': FINDING},
+                       'a.dwarf.2': {'content': 'second'},
+                       'a.qa.2': {'verdict': 'none', 'findings': 'no verdict here'}})
+        self.run_script('forge-parallel.sh', 'run', p)                  # attempt 1 is reviewed and fails
+        self.run_script('forge-parallel.sh', 'retry', p, 'a')           # attempt 2 gets no verdict
+        before = self.trail(p)
+        self.assertEqual([row[:2] for row in self.rows(p)], [['2', 'review']])
+        r = self.run_script('forge-parallel.sh', 'retry', p, 'a')       # QA only: no dwarf, no attempt
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertEqual(self.calls(), ['dwarf', 'qa', 'dwarf', 'qa', 'qa'])
+        self.assertEqual(self.trail(p), before)
 
 
 class HookTests(RunCase):
