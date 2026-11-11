@@ -545,7 +545,13 @@ dialog.keys-sheet::backdrop { background: light-dark(rgb(17 22 19 / .35), rgb(0 
 .strip-wrap[hidden], .graph[hidden] { display: none; }
 .tasks-module { overflow: hidden; }
 .tasks-module .run-tasks { flex: 1; min-height: 0; overflow: auto; }
-body[data-tasks=closed] .tasks-module :is(.run-tasks, .splitter, .dt-tools) { display: none; }
+/* the run's summaries switch, above the table (#133 B): a row of its own, its model beside the bank */
+.tasks-switch { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-1) var(--s-2); padding: var(--s-1) var(--s-2); border-bottom: 1px solid var(--rule); font-size: var(--t-sm); }
+.tasks-switch[hidden] { display: none; }
+.tasks-switch .sum-msgs { flex-basis: 100%; }
+.tasks-switch .sum-model { display: inline-flex; }
+.tasks-switch .sum-state { font-weight: 600; }
+body[data-tasks=closed] .tasks-module :is(.run-tasks, .splitter, .dt-tools, .tasks-switch) { display: none; }
 body[data-tasks=closed] .tasks-module .module-head { border-bottom: 0; }
 .run-tasks .dt, .run-tasks .dt-frame, .run-tasks .table-scroll { height: 100%; }
 .run-tasks .table-scroll { border: 0; border-radius: 0; }
@@ -779,6 +785,20 @@ p.ctl-request-refused { color: var(--warn-ink); font-weight: 600; }
 .ctl-changes li { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; }
 .ctl-what { color: var(--ink); font-weight: 600; }
 .ctl[aria-busy=true] .ctl-row { opacity: .7; }
+
+/* a task's summary (#133 B): its text, where it came from, and the task's own switch (a row like a control's) */
+.sum-section .sum-text { margin: 0 0 var(--s-1); white-space: pre-line; overflow-wrap: anywhere; }
+.sum-by { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin: 0 0 var(--s-2); font-size: var(--t-xs); }
+.sum-error { margin: 0 0 var(--s-2); }
+.sum-sources { list-style: none; margin: 0 0 var(--s-2); padding: 0; display: grid; gap: 2px; font-size: var(--t-xs); }
+.sum-sources li { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 10px; overflow-wrap: anywhere; }
+.sum-switch { display: grid; gap: 6px; padding: var(--s-2) 10px; border: 1px solid var(--rule); border-radius: var(--r-key); background: var(--module-2); }
+.sum-label { margin: 0; font-family: var(--font-plate); font-weight: 700; font-size: .786rem; letter-spacing: .07em; text-transform: uppercase; color: var(--muted); }
+.sum-bank { justify-self: start; flex-wrap: wrap; max-width: 100%; }
+p.sum-note { margin: 0; font-size: var(--t-xs); }
+.sum-msgs:empty { display: none; }
+/* the one-sentence column: one line, cut off at the cell's edge */
+.sum-col { max-width: 32ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* who decided an escalation, on the line that reports it */
 .src-plate { font-size: .714rem; padding: 0 5px; vertical-align: 1px; }
 
