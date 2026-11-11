@@ -164,6 +164,12 @@ class NormaliseTests(unittest.TestCase):
         self.assertEqual(report.normalise('bash -c "/usr/bin/npm test"'), 'bash -c <path> test')
         self.assertEqual(report.normalise('bash -c "/usr/bin/npm install"'), 'bash -c <path> install')
         self.assertEqual(report.normalise('bash -c "/tmp/Review One/npm test"'), 'bash -c <path> test')
+        self.assertEqual(report.normalise('bash -c "/usr/bin/npm test tests/unit"'),
+                         'bash -c <path> test tests/unit')
+        self.assertEqual(report.normalise('bash -c "/usr/bin/npm install packages/foo"'),
+                         'bash -c <path> install packages/foo')
+        self.assertEqual(report.normalise('cat "/tmp/Review One"'), 'cat <path>')
+        self.assertEqual(report.normalise('cat "/tmp/Review Two"'), 'cat <path>')
         self.assertEqual(report.normalise('id 123456789012'), 'id <n>')
         self.assertEqual(report.normalise('id 123E4567-E89B-12D3-A456-426614174000'), 'id <hex>')
         self.assertEqual(report.normalise('curl https://example.test/a'), 'curl https://example.test/a')

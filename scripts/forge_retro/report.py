@@ -67,9 +67,8 @@ _BYPASS = {
 
 # A quoted absolute path may contain spaces (`"/tmp/Review One/project"`). The quotes are
 # part of the match, so two worktrees whose names differ only inside them collapse to one
-# placeholder. A later word that starts with `-` is an argument, not more of the path:
-# `bash -c "/tmp/wt/test.sh --unit"` must stay distinct from `--integration`. Replaced
-# before the unquoted forms, which stop at whitespace.
+# placeholder. `_quoted_path` decides whether the quotes hold a path or a command line.
+# Replaced before the unquoted forms, which stop at whitespace.
 _QUOTED_PATH = re.compile(
     r'''(?<![a-z0-9_])(?:"(?:~|/|[a-z]:[\\/])[^"]*"|'(?:~|/|[a-z]:[\\/])[^']*')''')
 # Stands in for a shell-escaped space (`/tmp/Review\ One`) while a path is matched.
@@ -116,19 +115,33 @@ def normalise(text: str) -> str:
     return _NUMBER.sub('<n>', collapsed)
 
 
-def _quoted_path(match) -> str:
-    """Replace the path inside one quoted word. Keep the arguments that follow it.
+_COMMAND_LINE = re.compile(r'(?:^|\s)(?:-[a-z]*c|eval)\s*$')
 
-    `"/tmp/Review One/project"` is one path: a space inside a directory name is followed
-    by more path. The path ends at the last word that holds a separator, or at the first
-    word that starts with `-`; whatever comes after is the command's own arguments, so
-    `"/usr/bin/npm test"` and `"/usr/bin/npm install"` stay two patterns. A space in the
-    last component of the path (`"/tmp/My Dir"`) reads as an argument.
+
+def _quoted_path(match) -> str:
+    """Replace the quoted absolute path. Keep the arguments of a quoted command line.
+
+    A quoted string is one of two things, and the text alone does not always say which:
+
+    - a command line, when it follows `-c` / `eval` or holds a word that starts with `-`
+      (`bash -c "/usr/bin/npm test tests/unit"`). The path is the first word, plus any
+      word right after it that holds a separator (`"/tmp/Review One/test.sh --unit"`: the
+      space is inside a directory name). Every other word is an argument and is kept, so
+      `"/usr/bin/npm test"` and `"/usr/bin/npm install"` stay two patterns.
+    - otherwise one path, spaces included: `cat "/tmp/Review One"` is `cat <path>`.
+
+    A quoted command line with no flag and no `-c` (`ssh host "/usr/bin/npm test"`) reads
+    as a path; the arguments after it are lost.
     """
     parts = match.group(0)[1:-1].split(' ')
-    limit = next((i for i in range(1, len(parts)) if parts[i].startswith('-')), len(parts))
-    last = max((i for i in range(limit) if '/' in parts[i] or '\\' in parts[i]), default=0)
-    return ' '.join(['<path>'] + parts[last + 1:])
+    before = match.string[:match.start()]
+    if not (_COMMAND_LINE.search(before) or any(part.startswith('-') for part in parts[1:])):
+        return '<path>'
+    end = 1
+    while end < len(parts) and not parts[end].startswith('-') \
+            and ('/' in parts[end] or '\\' in parts[end]):
+        end += 1
+    return ' '.join(['<path>'] + parts[end:])
 
 
 def build(plan) -> dict:
