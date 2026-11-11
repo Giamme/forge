@@ -195,14 +195,18 @@ def _complete(note: dict) -> dict:
 
 
 def _parse_inbox(text: str) -> list:
+    """One JSON object per line. A line that begins with the protocol marker is
+    accepted too. The marker inside a JSON string is part of the note, not a prefix.
+    """
     notes = []
     for line in text.splitlines():
-        if not line.strip():
+        stripped = line.strip()
+        if not stripped:
             continue
-        if MARKER in line:
-            notes.extend(parse(line))
+        if stripped.startswith(MARKER):
+            notes.extend(parse(stripped))
         else:
-            notes.append(_parse_payload(line.strip(), line.strip()))
+            notes.append(_parse_payload(stripped, stripped))
     return notes
 
 

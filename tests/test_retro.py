@@ -297,6 +297,24 @@ class RecordTests(PlanCase):
         self.assertEqual(json.loads((self.plan / 'tasks' / 'core' / 'retro.json').read_text(encoding='utf-8')),
                          stored)
 
+    def test_an_inbox_object_keeps_a_marker_mentioned_in_a_string(self):
+        # The inbox is one JSON object per line. Quoting the protocol marker inside
+        # a string is part of the note; it is not a prefix that starts a new payload.
+        inbox = self.root / 'inbox.jsonl'
+        inbox.write_text(
+            '{"type":"prompt","summary":"FORGE_RETRO: instructions conflict","blocking":true}\n',
+            encoding='utf-8')
+        (self.dispatch / 'dwarf.resolved').write_text(
+            'role=dwarf\nalias=grok\nharness=grok\n', encoding='utf-8')
+        stored = forge_retro.record(self.plan, 'dwarf', self.dispatch, task='core', inbox=inbox)
+        self.assertEqual(len(stored), 1)
+        self.assertEqual(stored[0]['type'], 'prompt')
+        self.assertEqual(stored[0]['fixable_by'], 'unsure')
+        self.assertEqual(stored[0]['summary'], 'FORGE_RETRO: instructions conflict')
+        self.assertTrue(stored[0]['blocking'])
+        self.assertNotIn('malformed', stored[0])
+        self.assertFalse(inbox.exists())
+
     def test_another_role_leaves_the_inbox(self):
         inbox = self.derived_inbox('spec')
         inbox.write_text(json.dumps({'type': 'sandbox', 'summary': 'dwarf only'}) + '\n', encoding='utf-8')
