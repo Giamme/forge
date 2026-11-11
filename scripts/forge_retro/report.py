@@ -5,7 +5,9 @@ command is matched on its normalised summary instead. Normalising lowercases, co
 whitespace, and replaces absolute paths, hex ids and numbers with placeholders, so two
 tasks that failed the same way under different worktree paths are one pattern.
 
-Patterns are grouped by who can fix them. `forge retro report` writes the file atomically.
+Who can fix a pattern is decided after that merge. Notes that name different owners stay
+one pattern: the majority `fixable_by` is the group, and a tie is unsure.
+`forge retro report` writes the file atomically.
 """
 from __future__ import annotations
 
@@ -63,6 +65,11 @@ _BYPASS = {
     'grok': '--always-approve',
 }
 
+# A quoted absolute path may contain spaces (`"/tmp/Review One/project"`). The quotes are
+# part of the match, so two worktrees whose names differ only inside them collapse to one
+# placeholder. Replaced before the unquoted forms, which stop at whitespace.
+_QUOTED_PATH = re.compile(
+    r'''(?<![a-z0-9_])(?:"(?:~|/|[a-z]:[\\/])[^"]*"|'(?:~|/|[a-z]:[\\/])[^']*')''')
 # A filesystem path, not the slash in https://host/path. The lookbehind rejects a scheme
 # colon, a doubled slash, and a leading tilde, so a URL stays a URL and `~/...` is one
 # home path rather than a unix path with the tilde left in front.
@@ -72,10 +79,11 @@ _WIN_PATH = re.compile(r'(?<![a-z0-9_])[a-z]:[\\/]\S+')
 _TRAILING = '.,;:)]}\'"'
 
 # UUIDs are replaced whole, before the hex run, or the dashes would split them. A hex id
-# needs a letter so a long decimal (a port, a size) stays a number.
+# is seven or more characters with a letter: `git rev-parse --short` prints seven. A long
+# decimal has no letter, so a port or a size stays a number.
 _UUID = re.compile(
     r'(?<![0-9a-f])[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(?![0-9a-f])')
-_HEX = re.compile(r'(?<![0-9a-f])(?=[0-9a-f]*[a-f])[0-9a-f]{8,}(?![0-9a-f])')
+_HEX = re.compile(r'(?<![0-9a-f])(?=[0-9a-f]*[a-f])[0-9a-f]{7,}(?![0-9a-f])')
 _NUMBER = re.compile(r'\d+')
 
 EMPTY = "Nothing got in the agents' way in this run.\n"
@@ -90,6 +98,7 @@ def normalise(text: str) -> str:
     if not isinstance(text, str):
         return ''
     collapsed = ' '.join(text.lower().split())
+    collapsed = _QUOTED_PATH.sub('<path>', collapsed)
     collapsed = _WIN_PATH.sub(_path_token, collapsed)
     collapsed = _UNIX_PATH.sub(_path_token, collapsed)
     collapsed = _HOME_PATH.sub(_path_token, collapsed)
@@ -107,15 +116,11 @@ def build(plan) -> dict:
     rows = _task_rows(plan)
     run_models = _run_models(rows, notes)
     earlier = _earlier_index(_current_ids(plan))
-    grouped = {key: [] for key, _title in GROUPS}
-    for note in notes:
-        bucket = note.get('fixable_by')
-        grouped[bucket if bucket in grouped else 'unsure'].append(note)
+    grouped = _patterns(notes, len(rows), run_models, earlier)
     groups = []
     for key, title in GROUPS:
-        patterns = _patterns(grouped[key], len(rows), run_models, earlier, key)
-        if patterns:
-            groups.append({'id': key, 'title': title, 'patterns': patterns})
+        if grouped[key]:
+            groups.append({'id': key, 'title': title, 'patterns': grouped[key]})
     return {
         'empty': not notes and not malformed,
         'tasks': len(rows),
@@ -175,7 +180,25 @@ def _pattern_key(note: dict):
     return (kind, 'summary', normalise(summary))
 
 
-def _patterns(notes, task_total, run_models, earlier, group_id) -> list:
+def _owner(notes) -> str:
+    """The group for one pattern.
+
+    Merging happens first, so a failure that several tasks recorded stays one pattern
+    when those notes disagree about who should fix it. The majority `fixable_by` wins.
+    A tie is `unsure`: the notes do not agree, and an unknown value counts as that.
+    """
+    counts = {'user': 0, 'forge': 0, 'unsure': 0}
+    for note in notes:
+        bucket = note.get('fixable_by')
+        counts[bucket if bucket in counts else 'unsure'] += 1
+    best = max(counts.values())
+    winners = [name for name in counts if counts[name] == best]
+    if len(winners) == 1:
+        return winners[0]
+    return 'unsure'
+
+
+def _patterns(notes, task_total, run_models, earlier) -> dict:
     order = []
     buckets = {}
     for note in notes:
@@ -184,10 +207,15 @@ def _patterns(notes, task_total, run_models, earlier, group_id) -> list:
             order.append(key)
             buckets[key] = []
         buckets[key].append(note)
-    built = [_pattern(buckets[key], task_total, run_models, earlier, group_id) for key in order]
-    built.sort(key=lambda item: (
-        -item['tasks_hit'], item['summary'].lower(), item['type'], item['command'] or ''))
-    return built
+    grouped = {key: [] for key, _title in GROUPS}
+    for key in order:
+        owner = _owner(buckets[key])
+        grouped[owner].append(
+            _pattern(buckets[key], task_total, run_models, earlier, owner))
+    for items in grouped.values():
+        items.sort(key=lambda item: (
+            -item['tasks_hit'], item['summary'].lower(), item['type'], item['command'] or ''))
+    return grouped
 
 
 def _pattern(notes, task_total, run_models, earlier, group_id) -> dict:
@@ -300,19 +328,40 @@ def _render_pattern(pattern: dict) -> list:
     out.append('%d of %d tasks in this run, %s.' % (pattern['tasks_hit'], pattern['tasks'], earlier_text))
     out.append('Models: %s. Harnesses: %s.' % (_names(pattern['models']), _names(pattern['harnesses'])))
     out.append('Checks: %d verified, %d claimed.' % (pattern['verified'], pattern['claimed']))
-    if pattern.get('command'):
-        out.append('')
-        if pattern.get('exit') is None:
-            out.append('Evidence: `%s`.' % pattern['command'])
-        else:
-            out.append('Evidence: `%s` exited %s.' % (pattern['command'], pattern['exit']))
-        if pattern.get('error'):
-            out.append('')
-            out.append(_fence(pattern['error']))
+    out.extend(_render_evidence(pattern))
     if pattern.get('fix'):
         out.append('')
         out.append('Fix: ' + pattern['fix']['action'])
         out.append(pattern['fix']['why'])
+    return out
+
+
+def _render_evidence(pattern: dict) -> list:
+    """The command, exit code and error, each only when the note recorded it.
+
+    A note can carry an exit code and an error with no command. Those still belong in
+    the report; the command is not what makes the other two real.
+    """
+    command = pattern.get('command') or None
+    exit_code = pattern.get('exit')
+    error = pattern.get('error') or None
+    if command is None and exit_code is None and error is None:
+        return []
+    if command and exit_code is not None:
+        line = 'Evidence: `%s` exited %s.' % (command, exit_code)
+    elif command:
+        line = 'Evidence: `%s`.' % command
+    elif exit_code is not None:
+        line = 'Evidence: exited %s.' % exit_code
+    else:
+        line = None
+    out = ['']
+    if line:
+        out.append(line)
+    if error:
+        if line:
+            out.append('')
+        out.append(_fence(error))
     return out
 
 
@@ -386,7 +435,12 @@ def _spec_alias(row, index):
 
 
 def _current_ids(plan: Path) -> set:
-    """This plan's dataset uid and run id, so its own retro_note events are not earlier runs."""
+    """Ids that can mean this plan, so its own retro_note events are not earlier runs.
+
+    The dataset uid and the legacy uid identify the run. The run id is the plan's
+    display name: directory basenames repeat, so it is only a fallback for an event
+    that has no uid at all.
+    """
     found = set()
     for name in ('dataset.uid', 'run_id'):
         value = _first_line(plan / name)
@@ -444,11 +498,20 @@ def _retro_events() -> list:
 
 
 def _is_current(run, run_id, data, current: set) -> bool:
+    """True when this event is the plan being reported.
+
+    `events.run` is the dataset uid. Another plan with the same display name and a
+    different uid is an earlier run, not this one. An event with no uid falls back to
+    the display name, which is the only link it has.
+    """
     if not current:
         return False
-    if _in(run, current) or _in(run_id, current):
-        return True
-    return _in(data.get('run'), current) or _in(data.get('run_id'), current)
+    if not isinstance(data, dict):
+        data = {}
+    event_uid = _text_field(run) or _text_field(data.get('run'))
+    if event_uid:
+        return event_uid in current
+    return _in(run_id, current) or _in(data.get('run_id'), current)
 
 
 def _in(value, current: set) -> bool:

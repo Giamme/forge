@@ -30,7 +30,7 @@ EXPECTED = """\
 ### review snapshots lacked dependencies
 
 environment. blocking. possibly specific to grok, not forge.
-7 of 12 tasks in this run, and 2 earlier runs.
+7 of 12 tasks in this run, and 3 earlier runs.
 Models: grok. Harnesses: grok.
 Checks: 6 verified, 1 claimed.
 
@@ -144,6 +144,11 @@ class NormaliseTests(unittest.TestCase):
         self.assertEqual(report.normalise('see /tmp/a.'), 'see <path>.')
         self.assertEqual(report.normalise('git show AbCdEf0123456789'), 'git show <hex>')
         self.assertEqual(report.normalise('git show 0123456789abcdef'), 'git show <hex>')
+        self.assertEqual(report.normalise('git show abc1234'), 'git show <hex>')
+        self.assertEqual(report.normalise('git show def5678'), 'git show <hex>')
+        self.assertEqual(report.normalise('cat "/tmp/Review One/project"'), 'cat <path>')
+        self.assertEqual(report.normalise("cat '/tmp/Review Two/project'"), 'cat <path>')
+        self.assertEqual(report.normalise('cat /tmp/ReviewOne/project'), 'cat <path>')
         self.assertEqual(report.normalise('id 123456789012'), 'id <n>')
         self.assertEqual(report.normalise('id 123E4567-E89B-12D3-A456-426614174000'), 'id <hex>')
         self.assertEqual(report.normalise('curl https://example.test/a'), 'curl https://example.test/a')
@@ -210,8 +215,10 @@ class ReportTests(unittest.TestCase):
             *dependency,
         ]
         write_notes(plan, notes, trailing=['{not json', '{"summary": "cut off", "malformed": true}'])
-        # Same failure, other runs. Who should fix it is not part of the pattern. This run's
-        # own events, a second event of one earlier run, and a different command or type are not.
+        # Same failure, other runs. Who should fix it is not part of the pattern. This plan's
+        # own uid is not an earlier run. A second event of one earlier run is still one run.
+        # A different command or type is not this pattern. Another uid that reuses this
+        # plan's run name is an earlier run: directory basenames repeat.
         def earlier(command, kind='environment'):
             return make_note('old', type=kind, fixable_by='forge', alias='opus', harness='claude',
                              summary='deps missing elsewhere',
@@ -237,7 +244,7 @@ class ReportTests(unittest.TestCase):
             'review snapshots lacked dependencies', 'the disk filled up'])
         self.assertEqual([item['tasks_hit'] for item in user], [7, 1])
         self.assertEqual(user[0]['tasks'], 12)
-        self.assertEqual(user[0]['earlier_runs'], 2)
+        self.assertEqual(user[0]['earlier_runs'], 3)
         self.assertEqual(user[0]['verified'], 6)
         self.assertEqual(user[0]['claimed'], 1)
         self.assertEqual(user[0]['command'], 'npm test /tmp/wt-t1/node_modules')
@@ -357,6 +364,100 @@ class ReportTests(unittest.TestCase):
         text = path.read_text(encoding='utf-8')
         self.assertIn('2 of 4 tasks in this run, and 1 earlier run.', text)
         self.assertIn('Checks: 2 verified, 1 claimed.', text)
+
+    def test_notes_that_disagree_on_owner_stay_one_pattern(self):
+        # One environment failure, two tasks, two owners. The count is the tasks, once.
+        plan = self.plan('owners', [('a', 'opus', 'grok'), ('b', 'opus', 'grok')])
+        write_notes(plan, [
+            make_note('a', fixable_by='user', alias='opus', harness='claude', check='verified',
+                      summary='missing dependency',
+                      evidence={'command': 'npm test', 'exit': 1, 'error': 'missing module'}),
+            make_note('b', fixable_by='unsure', alias='grok', harness='grok', check='claimed',
+                      summary='missing dependency',
+                      evidence={'command': 'npm test', 'exit': 1, 'error': 'missing module'}),
+        ])
+        document, path = report.write(plan)
+        self.assertEqual([group['id'] for group in document['groups']], ['unsure'])
+        pattern = document['groups'][0]['patterns'][0]
+        self.assertEqual(pattern['tasks_hit'], 2)
+        self.assertEqual(pattern['tasks'], 2)
+        self.assertEqual(pattern['models'], ['grok', 'opus'])
+        self.assertEqual(pattern['harnesses'], ['claude', 'grok'])
+        self.assertEqual(pattern['verified'], 1)
+        self.assertEqual(pattern['claimed'], 1)
+        self.assertIsNone(pattern['fix'])
+        text = path.read_text(encoding='utf-8')
+        self.assertEqual(text.count('of 2 tasks'), 1)
+        self.assertIn('2 of 2 tasks in this run, and 0 earlier runs.', text)
+        self.assertIn('## Not sure who should fix this', text)
+        self.assertNotIn('## You can fix this on this machine', text)
+
+        # The same failure recorded twice as the user's and once as forge's is the user's.
+        plan = self.plan('majority', [(name, 'opus', 'opus') for name in 'abc'])
+        write_notes(plan, [
+            make_note('a', fixable_by='user', summary='missing dependency',
+                      evidence={'command': 'npm test', 'exit': 1, 'error': 'missing module'}),
+            make_note('b', fixable_by='user', summary='missing dependency',
+                      evidence={'command': 'npm test', 'exit': 1, 'error': 'missing module'}),
+            make_note('c', fixable_by='forge', alias='opus', summary='missing dependency',
+                      evidence={'command': 'npm test', 'exit': 1, 'error': 'missing module'}),
+        ])
+        document, path = report.write(plan)
+        self.assertEqual([group['id'] for group in document['groups']], ['user'])
+        pattern = document['groups'][0]['patterns'][0]
+        self.assertEqual(pattern['tasks_hit'], 3)
+        self.assertEqual(pattern['models'], ['grok', 'opus'])
+        self.assertIsNotNone(pattern['fix'])
+        self.assertIn('3 of 3 tasks in this run, and 0 earlier runs.', path.read_text(encoding='utf-8'))
+
+    def test_evidence_without_a_command_is_reported(self):
+        plan = self.plan('nocmd', [('a', 'grok:xhigh', '-')])
+        write_notes(plan, [make_note(
+            'a', summary='the sandbox denied the write',
+            evidence={'command': None, 'exit': 1, 'error': 'Permission denied'})])
+        document, path = report.write(plan)
+        pattern = document['groups'][0]['patterns'][0]
+        self.assertIsNone(pattern['command'])
+        self.assertEqual(pattern['exit'], 1)
+        self.assertEqual(pattern['error'], 'Permission denied')
+        text = path.read_text(encoding='utf-8')
+        self.assertIn('Evidence: exited 1.', text)
+        self.assertIn('Permission denied', text)
+
+    def test_short_shas_and_quoted_paths_are_one_pattern(self):
+        plan = self.plan('norm', [(name, 'grok:xhigh', '-') for name in 'abcd'])
+        write_notes(plan, [
+            make_note('a', summary='bad object',
+                      evidence={'command': 'git show abc1234', 'exit': 128, 'error': 'bad object'}),
+            make_note('b', summary='bad object',
+                      evidence={'command': 'git show def5678', 'exit': 128, 'error': 'bad object'}),
+            make_note('c', summary='cannot read the project',
+                      evidence={'command': 'cat "/tmp/Review One/project"', 'exit': 1, 'error': 'No such file'}),
+            make_note('d', summary='cannot read the project',
+                      evidence={'command': 'cat "/tmp/Review Two/project"', 'exit': 1, 'error': 'No such file'}),
+        ])
+        patterns = report.write(plan)[0]['groups'][0]['patterns']
+        self.assertEqual([(item['tasks_hit'], item['command']) for item in patterns], [
+            (2, 'git show abc1234'),
+            (2, 'cat "/tmp/Review One/project"'),
+        ])
+
+    def test_same_run_name_with_another_uid_is_an_earlier_run(self):
+        # Plan basenames repeat. The other plan's uid is what makes it an earlier run.
+        plan = self.plan('named', [('a', 'grok:xhigh', '-')])
+        (plan / 'run_id').write_text('release\n', encoding='utf-8')
+        (plan / 'dataset.uid').write_text('this-plan-uid\n', encoding='utf-8')
+        write_notes(plan, [make_note(
+            'a', summary='missing module',
+            evidence={'command': 'npm test', 'exit': 1, 'error': 'missing'})])
+        add_event('other-plan-uid', 'release', make_note(
+            'old', summary='missing module',
+            evidence={'command': 'npm test', 'exit': 1, 'error': 'missing'}))
+        add_event('this-plan-uid', 'release', make_note(
+            'old', summary='missing module',
+            evidence={'command': 'npm test', 'exit': 1, 'error': 'missing'}))
+        pattern = report.write(plan)[0]['groups'][0]['patterns'][0]
+        self.assertEqual(pattern['earlier_runs'], 1)
 
     def test_model_specific_label_needs_two_models_and_one_hit(self):
         # UNASSIGNED and "-" are not models. One alias in the notes is one model.
