@@ -377,8 +377,9 @@ def task_status(plan, task, strict=False):
     return words[0] if words else 'PENDING'
 
 
-def refuse_task(plan, task, pin=False):
-    if task_status(plan, task, strict=True) == 'MERGED':
+def refuse_task(plan, task, pin=False, merged_ok=False):
+    # merged_ok: a switch that changes no run behaviour (summaries) may still be set on a finished task.
+    if task_status(plan, task, strict=True) == 'MERGED' and not merged_ok:
         raise Refused(f'task {task} is MERGED: nothing left to change')
     if pin and is_fractal(plan):
         raise Refused('this plan runs under Fractal, which never applies pins')
@@ -617,14 +618,15 @@ def audit(plan, actor, action, task, key, value, previous, **extra):
     return entry
 
 
-def change(args, plan, rows, action, task, key, work, applies, summary, live_only=False, pin_guard=False):
+def change(args, plan, rows, action, task, key, work, applies, summary, live_only=False, pin_guard=False,
+           merged_ok=False):
     """Run work() -> (value, previous, changed) under the control lock, audit a change, report the result."""
     with control_lock(plan):
         probe(plan, 'control.log')   # an unsafe log refuses the change instead of leaving it unaudited
         if live_only and not is_live(plan):
             raise Refused(f'{key or action} can only change while a run is live (no live scheduler for this plan)')
         if task:
-            refuse_task(plan, task, pin_guard)
+            refuse_task(plan, task, pin_guard, merged_ok)
         value, previous, changed = work()
         if changed:   # setting a value it already has, or unpinning nothing, is not a change
             audit(plan, args.actor, action, task, key, value, previous)
@@ -679,7 +681,8 @@ def cmd_set(args):
 
     where = f'task {task}' if task else 'the plan'
     done = change(args, plan, rows, 'set', task, args.key, work, applies,
-                  lambda v: f'set {args.key} {v} on {where}', live_only=live_only)
+                  lambda v: f'set {args.key} {v} on {where}', live_only=live_only,
+                  merged_ok=args.key == 'summaries')
     if args.key == 'summaries' and value == 'on':
         start_summaries(plan, task)
     return done

@@ -22,9 +22,11 @@ case "$cmd" in
   _task)
     n=$(( $(cat "$t/calls" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$t/calls"
     echo RUNNING > "$t/status"
-    sleep 0.4
+    [ -e "$plan/fast/$name" ] || sleep 0.4
+    echo "reply $n" > "$t/dwarf.last"         # the dwarf is done; the status is still RUNNING
+    [ -e "$plan/fast/$name" ] || sleep 0.4
     echo "review $n" > "$t/qa.last"          # the verdict, while the attempt is still open
-    sleep 0.4
+    [ -e "$plan/fast/$name" ] || sleep 0.4
     outcome="$(head -1 "$plan/outcomes/$name")"
     tail -n +2 "$plan/outcomes/$name" > "$plan/outcomes/$name.rest"; mv "$plan/outcomes/$name.rest" "$plan/outcomes/$name"
     echo "$n" >> "$t/attempts.tsv"           # the attempt ends
@@ -120,11 +122,11 @@ class SummaryTriggerTests(unittest.TestCase):
         result = self.run_scheduler('--retry-failed', 1)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.settle()
-        # attempt 1: RUNNING, its review; it ends FAIL and is requeued in the same pass (one change: the
-        # retry); attempt 2: RUNNING, its review; MERGED when the pass merges it. Six changes, six
+        # attempt 1: RUNNING, the dwarf's reply, its review; it ends FAIL and is requeued in the same pass (one
+        # change: the retry); attempt 2: RUNNING, reply, review; MERGED when the pass merges it. Eight changes, eight
         # triggers: the hundreds of loops between them start nothing. (What the stub saw of the status
         # is only the moment it ran, so only the count is asserted.)
-        self.assertEqual(len(self.calls('a')), 6, self.calls('a'))
+        self.assertEqual(len(self.calls('a')), 8, self.calls('a'))
 
     def test_a_task_override_off_silences_that_task_only(self):
         self.on(); self.task('a', ['PASS']); self.task('b', ['PASS'])
@@ -133,7 +135,7 @@ class SummaryTriggerTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.settle()
         self.assertEqual(self.calls('b'), [])
-        self.assertEqual(len(self.calls('a')), 3, self.calls('a'))   # RUNNING, its review, MERGED
+        self.assertEqual(len(self.calls('a')), 4, self.calls('a'))   # RUNNING, the reply, its review, MERGED
 
     def test_a_task_override_on_summarizes_that_task_under_an_off_plan(self):
         (self.plan / 'summaries').write_text('off\n')
@@ -144,6 +146,36 @@ class SummaryTriggerTests(unittest.TestCase):
         self.settle()
         self.assertEqual(self.calls('b'), [])
         self.assertTrue(self.calls('a'))
+
+    def test_a_held_admission_lock_never_holds_the_scheduler_back(self):
+        import fcntl
+        self.on(); self.task('a', ['PASS'])
+        (self.plan / 'side' / 'summary').mkdir(parents=True)
+        with open(self.plan / 'side' / 'summary' / '.lock', 'w') as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)   # another allocator holds it for the whole run
+            result = self.run_scheduler()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue((self.plan / 'tasks/a/merged').exists())
+        self.assertEqual(self.calls(), [])
+
+    def test_a_task_added_during_the_run_gets_its_summaries_even_when_it_finishes_fast(self):
+        import json, time
+        self.on(); self.task('a', ['PASS'])
+        (self.plan / 'fast').mkdir(); (self.plan / 'fast' / 'n').write_text('')
+        (self.plan / 'tasks.tsv').write_text('\n'.join(self.rows) + '\n')
+        command = [sys.executable, str(ROOT / 'scripts/forge-schedule.py'), str(self.worker), str(self.plan), '3']
+        proc = subprocess.Popen(command, env=self.env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.addCleanup(lambda: proc.poll() is None and proc.kill())
+        time.sleep(0.5)
+        self.task('n', ['PASS'])
+        (self.plan / 'tasks.tsv').write_text('\n'.join(self.rows) + '\n')
+        requests = self.plan / 'control.requests'; requests.mkdir(exist_ok=True)
+        (requests / 'r1').write_text(json.dumps({'verb': 'add', 'task': 'n'}))
+        out, err = proc.communicate(timeout=60)
+        self.assertEqual(proc.returncode, 0, err)
+        self.assertTrue((self.plan / 'tasks/n/merged').exists())
+        self.settle()
+        self.assertTrue(self.calls('n'), 'the added task was never summarised')
 
     def test_a_failing_summarize_changes_neither_the_task_nor_the_exit_code(self):
         self.on(); self.task('a', ['FAIL', 'PASS'])

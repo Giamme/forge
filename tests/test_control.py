@@ -648,6 +648,16 @@ class ControlTests(unittest.TestCase):
         self.assertIn('a skipped', out)
         self.assertNotIn('b ', out)
 
+    def test_summaries_can_be_set_on_a_merged_task(self):
+        # a MERGED task: the switch changes no behaviour of the run, and a finished task is where summaries matter
+        self.put('tasks/b/merged', '')
+        self.ok('set', self.plan, 'summaries', 'on', '--task', 'b')
+        self.assertEqual((self.plan / 'tasks/b/summaries').read_text(), 'on\n')
+        self.ok('set', self.plan, 'summaries', 'off', '--task', 'b')
+        self.ok('set', self.plan, 'summaries', 'inherit', '--task', 'b')
+        self.assertFalse((self.plan / 'tasks/b/summaries').exists())
+        self.code(3, 'set', self.plan, 'qa-threshold', 'P1', '--task', 'b')   # the others still refuse a merged task
+
     def test_summaries_off_starts_nothing(self):
         self.ok('set', self.plan, 'summaries', 'off')
         time.sleep(0.3)

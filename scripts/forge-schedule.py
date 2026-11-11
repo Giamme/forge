@@ -37,6 +37,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 
 # forge_infra.py sits beside this file; forge-control.py loads this module by path.
@@ -403,7 +404,9 @@ GUARD = str(Path(__file__).resolve().parent / 'forge-guard.py')
 ROUTE = str(Path(__file__).resolve().parent / 'forge-route.py')
 # FORGE_SUMMARIZE names another script for the same job; tests stand a stub in.
 SUMMARIZE = str(Path(__file__).resolve().parent / 'forge-summarize.py')
-SUMMARY_FILES = ('attempts.tsv', 'qa.last', 'retries.used')   # an attempt ended, a verdict, a retry queued
+# the dwarf's reply (it ends before the status moves), an attempt ended, a verdict, a retry queued
+SUMMARY_FILES = ('dwarf.last', 'attempts.tsv', 'qa.last', 'retries.used')
+SUMMARY_JOIN = 3.0   # seconds the scheduler's end waits for admission checks to start their summarize
 HARNESS_ROLES = ('dwarf', 'qa')
 GUARD_STOP_WAIT = 15.0    # seconds; the guard's own bound is about 3 s plus two ps calls
 
@@ -1152,6 +1155,10 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
             return 'refused', 'tasks/' + name + ' could not be created: ' + str(error)
         tasks[name] = found[0]
         pending.append(name)
+        try:
+            summary_seen[name] = summary_signature(name)   # before it runs: its first change must trigger
+        except Exception:
+            pass
         if subprocess.run(['/bin/bash', script, '_waves', str(plan)]).returncode:
             _warn('waves.tsv was not refreshed for ' + name + '; the task still runs')
         return 'applied', None
@@ -1242,6 +1249,7 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
     summary_seen = {}      # task -> what the scheduler last saw of it (status, attempt trail, verdict, retries)
     summary_due = set()    # tasks that changed and wait for a summarize
     summary_procs = {}     # task -> its detached forge-summarize.py, polled only to reap it
+    summary_starters = {}  # task -> the thread that is checking admission and starting one
     summary_warned = []    # a failure to start one is reported once
 
     def summary_signature(name: str) -> tuple:
@@ -1255,44 +1263,65 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
                 parts.append(None)
         return tuple(parts)
 
-    def summary_start(name: str, after: int | None = None) -> None:
-        """Detached and in its own session. With after (a pid), it begins once that process is gone:
-        the run is ending and the earlier summarize of this task still holds its lock."""
-        import forge_side
-        if not forge_side.allowed('summary', plan, name)[0]:
-            return
-        command = [sys.executable, os.environ.get('FORGE_SUMMARIZE') or SUMMARIZE, str(plan), '--task', name]
-        if after is not None:
-            command = ['/bin/sh', '-c', 'while kill -0 "$0" 2>/dev/null; do sleep 1; done; exec "$@"',
-                       str(after)] + command
-        out = open(plan / 'summaries.out', 'ab')
+    def summary_run(name: str, after: int | None) -> None:
+        """Thread body: forge_side.allowed() takes a blocking lock, so it never runs on the scheduler's
+        loop. Detached and in its own session. With after (a pid), the summarize begins once that process
+        is gone: the run is ending and the earlier summarize of this task still holds its lock."""
         try:
-            process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=out, stderr=out,
-                                       start_new_session=True)
-        finally:
-            out.close()
-        if after is None:
+            import forge_side
+            if not forge_side.allowed('summary', plan, name)[0]:
+                return
+            command = [sys.executable, os.environ.get('FORGE_SUMMARIZE') or SUMMARIZE, str(plan), '--task', name]
+            if after is not None:
+                command = ['/bin/sh', '-c', 'while kill -0 "$0" 2>/dev/null; do sleep 1; done; exec "$@"',
+                           str(after)] + command
+            out = open(plan / 'summaries.out', 'ab')
+            try:
+                process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=out, stderr=out,
+                                           start_new_session=True)
+            finally:
+                out.close()
             summary_procs[name] = process
+        except Exception as error:   # a summary is never worth the run
+            if not summary_warned:
+                summary_warned.append(error)
+                _warn('summaries not started: ' + str(error))
 
     def summaries_on_change(final: bool = False) -> None:
-        """Start a detached `forge-summarize.py <plan> --task <id>` for every task whose status, attempt
-        trail, verdict or retry count changed since the last look: once per change, never on a timer, one
-        at a time per task, and only where forge_side.allowed() says summaries are on. The first look at a
-        task only remembers it. Nothing here can change a task or the run."""
+        """Start a detached `forge-summarize.py <plan> --task <id>` for every task whose status, dwarf reply,
+        attempt trail, verdict or retry count changed since the last look: once per change, never on a timer,
+        one at a time per task, and only where forge_side.allowed() says summaries are on. The first look at a
+        task only remembers it. Nothing here can change a task or the run, or wait for one."""
         try:
-            for name, process in list(summary_procs.items()):
-                if process.poll() is not None:
+            for name in list(summary_procs):
+                if summary_procs[name].poll() is not None:
                     del summary_procs[name]
+            for name in list(summary_starters):
+                if not summary_starters[name].is_alive():
+                    del summary_starters[name]
             for name in tasks:
                 signature = summary_signature(name)
                 if name in summary_seen and summary_seen[name] != signature:
                     summary_due.add(name)
                 summary_seen[name] = signature
+            deadline = time.monotonic() + SUMMARY_JOIN
+            if final:   # let the admission checks that are under way finish, for a bounded time
+                for starter in list(summary_starters.values()):
+                    starter.join(max(0.0, deadline - time.monotonic()))
             for name in sorted(summary_due):
-                if name in summary_procs and not final:
+                starter = summary_starters.get(name)
+                running = summary_procs.get(name)
+                running = running if running is not None and running.poll() is None else None
+                if (starter is not None and starter.is_alive()) or (running is not None and not final):
                     continue   # still summarising: the change waits for it to end
                 summary_due.discard(name)
-                summary_start(name, summary_procs[name].pid if name in summary_procs else None)
+                thread = threading.Thread(target=summary_run, args=(name, running.pid if running else None),
+                                          daemon=True)
+                summary_starters[name] = thread
+                thread.start()
+            if final:
+                for starter in list(summary_starters.values()):
+                    starter.join(max(0.0, deadline - time.monotonic()))
         except Exception as error:   # a summary is never worth the run
             if not summary_warned:
                 summary_warned.append(error)
