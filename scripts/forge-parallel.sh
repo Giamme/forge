@@ -59,6 +59,17 @@
 #                           still what the review judged, and starts fresh whenever it cannot;
 #                           each attempt is logged in tasks/<id>/implementer_sessions.tsv.
 #                           `--no-implementer-session` turns it off (the default)
+#   --retro | --no-retro   agents record what got in their way (retro, #132); plan file `retro`
+#                           (on). Without a flag the plan keeps its earlier choice, else takes the
+#                           user `features` setting. The first plan with it on says what is recorded
+#   --brief LEVEL           advisory, gated, strict or off (#135): one cheap read-only dispatch per
+#                           task before it starts. Plan files `brief`, `brief_scope` (--brief-scope
+#                           task|wave|plan, default task) and `brief_model` (--brief-model SPEC). On
+#                           with no model is refused (exit 2); `off` removes the files
+#   --summaries on|off      a generated summary per task (#133); plan files `summaries` and
+#                           `summaries_model` (--summaries-model SPEC); on with no model is refused.
+#                           A flag beats the user setting (forge config show), which is read once, at
+#                           plan time; a re-plan without the flag keeps what the plan has
 #   --fast ROLES            which of dwarf, qa, planner, review ask for the fast service tier
 #                           (comma list, or all, or none). Kept in the plan; a re-plan without
 #                           the flag keeps it, and none removes it. codex and claude only
@@ -305,6 +316,144 @@ $(forge_profile_py value "$1/profile.json" policy.retry_failed policy.infra_retr
 EOF
 }
 
+# --- retro, brief and summaries (#132, #135, #133): options frozen into the plan -------
+# `plan` writes six plan files (retro, brief, brief_scope, brief_model, summaries,
+# summaries_model) that forge_side.settings(plan) reads at run time. For each, a flag of
+# this call wins, then what the plan already has (a re-plan without the flag keeps it, as
+# --reviewer-session is kept), then the user `features` setting, read here once. A file is
+# written only for a feature that is on. An explicit off is written as `off` only when the
+# user setting is on (else the run would fall back to it); otherwise it removes the file.
+#
+# forge_features_resolve sets FEAT_* and writes nothing; it exits 2 when a feature is on with
+# no model, or a model spec does not resolve. forge_features_store writes the files and says
+# what retro records the first time. A value of "-" means "no file".
+forge_features_user() { # prints key=value lines: the stored user settings, defaults when unreadable
+  PYTHONPATH="$SKILL_DIR/scripts${PYTHONPATH:+:$PYTHONPATH}" python3 - <<'PY' 2>/dev/null || true
+import forge_side
+f = forge_side.stored_features()
+for k in ('retro', 'brief', 'brief.scope', 'brief.model', 'summaries', 'summaries.model'):
+    print('%s=%s' % (k, f.get(k) or ''))
+PY
+}
+
+forge_feature_file() { # forge_feature_file <plan> <name> -> first line, trimmed; empty when absent
+  local line=""
+  if [ -f "$1/$2" ] && [ -r "$1/$2" ]; then IFS= read -r line < "$1/$2" || true; fi
+  line="${line#"${line%%[![:space:]]*}"}"
+  printf '%s' "${line%"${line##*[![:space:]]}"}"
+}
+
+forge_feature_spec_ok() { # forge_feature_spec_ok <flag name> <spec>: dispatch's own dry run, as a --qa spec resolves
+  local tmp err rc=0
+  tmp="$(mktemp -d)" || die "could not make a temporary directory"
+  mkdir -p "$tmp/repo" "$tmp/run"; echo spec-check > "$tmp/prompt"
+  bash "$SKILL_DIR/scripts/forge-dispatch.sh" side "$2" --repo "$tmp/repo" --run-dir "$tmp/run" \
+    --prompt-file "$tmp/prompt" --dry-run >/dev/null 2>"$tmp/err" || rc=$?
+  err="$(awk 'NF { line = $0 } END { print line }' "$tmp/err" 2>/dev/null)"
+  rm -rf "${tmp:?}"
+  [ "$rc" -eq 0 ] || die "$1: '$2' does not resolve to a model${err:+ ($err)}"
+}
+
+forge_features_resolve() { # forge_features_resolve <plan>
+  local plan="$1" key val
+  local u_retro=off u_brief=off u_scope=task u_bmodel="" u_summ=off u_smodel=""
+  while IFS== read -r key val; do
+    case "$key" in
+      retro) [ "$val" = on ] && u_retro=on ;;
+      brief) [ -n "$val" ] && u_brief="$val" ;;
+      brief.scope) [ -n "$val" ] && u_scope="$val" ;;
+      brief.model) u_bmodel="$val" ;;
+      summaries) [ -n "$val" ] && u_summ="$val" ;;
+      summaries.model) u_smodel="$val" ;;
+    esac
+  done <<FEATURES_EOF
+$(forge_features_user)
+FEATURES_EOF
+  local f_retro f_brief f_scope f_bmodel f_summ f_smodel
+  f_retro="$(forge_feature_file "$plan" retro)"; f_brief="$(forge_feature_file "$plan" brief)"
+  f_scope="$(forge_feature_file "$plan" brief_scope)"; f_bmodel="$(forge_feature_file "$plan" brief_model)"
+  f_summ="$(forge_feature_file "$plan" summaries)"; f_smodel="$(forge_feature_file "$plan" summaries_model)"
+
+  # retro: `on`, or `off` (an override of a user `on`), or no file
+  local retro="${RETRO_FLAG:-${f_retro:-$u_retro}}"
+  case "$retro" in on) FEAT_RETRO=on ;; *) if [ "$u_retro" = on ]; then FEAT_RETRO=off; else FEAT_RETRO=-; fi ;; esac
+
+  # brief: the level, its scope and its model
+  local level="${BRIEF_FLAG:-${f_brief:-$u_brief}}"
+  case "$level" in advisory|gated|strict|off) ;; *) level=off ;; esac
+  FEAT_BRIEF=-; FEAT_BRIEF_SCOPE=-; FEAT_BRIEF_MODEL=-
+  if [ "$level" = off ]; then
+    if [ "$u_brief" != off ]; then FEAT_BRIEF=off; fi
+  else
+    local scope="${BRIEF_SCOPE_FLAG:-${f_scope:-$u_scope}}" bmodel="${BRIEF_MODEL_FLAG:-${f_bmodel:-$u_bmodel}}"
+    case "$scope" in task|wave|plan) ;; *) scope=task ;; esac
+    [ -n "$bmodel" ] || die "brief is $level but has no model: pass --brief-model SPEC or run 'forge config set brief.model SPEC'"
+    FEAT_BRIEF="$level"; FEAT_BRIEF_SCOPE="$scope"; FEAT_BRIEF_MODEL="$bmodel"
+  fi
+
+  # summaries: the mode and its model
+  local mode="${SUMM_FLAG:-${f_summ:-$u_summ}}"
+  case "$mode" in on|off) ;; *) mode=off ;; esac
+  FEAT_SUMM=-; FEAT_SUMM_MODEL=-
+  if [ "$mode" = off ]; then
+    if [ "$u_summ" != off ]; then FEAT_SUMM=off; fi
+  else
+    local smodel="${SUMM_MODEL_FLAG:-${f_smodel:-$u_smodel}}"
+    [ -n "$smodel" ] || die "summaries is on but has no model: pass --summaries-model SPEC or run 'forge config set summaries.model SPEC'"
+    FEAT_SUMM=on; FEAT_SUMM_MODEL="$smodel"
+  fi
+
+  # Every model that will be dispatched resolves now, not at its first dispatch.
+  if [ "$FEAT_BRIEF_MODEL" != - ]; then forge_feature_spec_ok --brief-model "$FEAT_BRIEF_MODEL"; fi
+  if [ "$FEAT_SUMM_MODEL" != - ] && [ "$FEAT_SUMM_MODEL" != "$FEAT_BRIEF_MODEL" ]; then
+    forge_feature_spec_ok --summaries-model "$FEAT_SUMM_MODEL"
+  fi
+  return 0
+}
+
+forge_features_store() { # forge_features_store <plan>
+  local plan="$1" pair name var val
+  for pair in retro:FEAT_RETRO brief:FEAT_BRIEF brief_scope:FEAT_BRIEF_SCOPE brief_model:FEAT_BRIEF_MODEL \
+              summaries:FEAT_SUMM summaries_model:FEAT_SUMM_MODEL; do
+    name="${pair%%:*}"; var="${pair#*:}"; val="${!var}"
+    if [ "$val" = - ]; then
+      rm -f "${plan:?}/${name:?}"
+    else
+      printf '%s\n' "$val" > "$plan/$name" || die "could not write $plan/$name" 3
+    fi
+  done
+  if [ "$FEAT_RETRO" = on ]; then forge_retro_notice "$plan"; fi
+  return 0
+}
+
+# Said once per user, to stderr, the first time a plan has retro on. The marker is in the state dir.
+forge_retro_notice() { # forge_retro_notice <plan>
+  local marker="${XDG_STATE_HOME:-$HOME/.local/state}/forge/retro.noticed"
+  [ ! -e "$marker" ] || return 0
+  note "retro is on. Each agent records what got in its way: a note with the command it ran and an excerpt of the error."
+  note "  Kept in $1/retro/, in tasks/<id>/retro.json and in the local dataset. Nothing leaves this machine"
+  note "  unless you approve it with 'forge retro issues'. This notice is shown once per user."
+  { mkdir -p "${marker%/*}" && : > "$marker"; } 2>/dev/null || true
+}
+
+# One line per feature that is on, from the plan files (what the run will do).
+forge_features_table() { # forge_features_table <plan>
+  local plan="$1" level scope model
+  if [ "$(forge_feature_file "$plan" retro)" = on ]; then
+    echo "retro: agents record what got in their way; report at retro.md (local only)"
+  fi
+  level="$(forge_feature_file "$plan" brief)"
+  case "$level" in
+    advisory|gated|strict)
+      scope="$(forge_feature_file "$plan" brief_scope)"; model="$(forge_feature_file "$plan" brief_model)"
+      echo "brief: $level, ${scope:-task} scope, ${model:-no model}; one cheap read-only dispatch per task before it starts" ;;
+  esac
+  if [ "$(forge_feature_file "$plan" summaries)" = on ]; then
+    echo "summaries: on, $(forge_feature_file "$plan" summaries_model); one cheap dispatch per task when its attempts or status change"
+  fi
+  return 0
+}
+
 do_plan() {
   local PLAN="${1:?plan needs a plan dir}"; shift
   local PF_NAME="" PF_NONE=0 PF_QT=0
@@ -313,6 +462,7 @@ do_plan() {
   PP_INFRA_FALLBACK=""
   local PLANNER="" NOMEM=0 jev_rc=0 DLEVEL="" SHADOW_QA="" SHADOW_RATE="" EXPLORE="" FAIL_FIRST="" REVIEWER_SESSION="" IMPLEMENTER_SESSION="" PRE_REVIEW="" PRE_REVIEW_PARALLEL=""
   local FAST_GIVEN=0 FAST_PARSED=""
+  local RETRO_FLAG="" BRIEF_FLAG="" BRIEF_SCOPE_FLAG="" BRIEF_MODEL_FLAG="" SUMM_FLAG="" SUMM_MODEL_FLAG=""
   local COLLAPSE=0 COLLAPSED_NOW=0
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -359,6 +509,23 @@ do_plan() {
         forge_fast_parse "$2" plan
         FAST_GIVEN=1
         shift 2 ;;
+      --retro)        RETRO_FLAG=on; shift ;;
+      --no-retro)     RETRO_FLAG=off; shift ;;
+      --brief)
+        case "${2:-}" in advisory|gated|strict|off) BRIEF_FLAG="$2"; shift 2 ;;
+          *) die "--brief must be advisory, gated, strict or off" ;; esac ;;
+      --brief-scope)
+        case "${2:-}" in task|wave|plan) BRIEF_SCOPE_FLAG="$2"; shift 2 ;;
+          *) die "--brief-scope must be task, wave or plan" ;; esac ;;
+      --brief-model)
+        [ -n "${2:-}" ] || die "--brief-model needs a model spec"
+        BRIEF_MODEL_FLAG="$2"; shift 2 ;;
+      --summaries)
+        case "${2:-}" in on|off) SUMM_FLAG="$2"; shift 2 ;;
+          *) die "--summaries must be on or off" ;; esac ;;
+      --summaries-model)
+        [ -n "${2:-}" ] || die "--summaries-model needs a model spec"
+        SUMM_MODEL_FLAG="$2"; shift 2 ;;
       *)
         # `case` is not a loop, so `continue` here belongs to the enclosing while.
         # The shared flags write into the plan dir (--qa-threshold), so it must exist first.
@@ -379,6 +546,9 @@ do_plan() {
     esac
   done
   [ -d "$PLAN" ] || die "plan dir '$PLAN' does not exist"
+  # The retro, brief and summaries choices, settled before anything is written: a refusal
+  # (no model, a spec that does not resolve) leaves the plan dir as it was.
+  forge_features_resolve "$PLAN"
   # The profile (#48) first: its gates and budget count for every decision-model step below,
   # and its values stand in for the flags this call did not give.
   forge_profile_plan
@@ -420,6 +590,8 @@ do_plan() {
   case "$IMPLEMENTER_SESSION" in on) printf '%s\n' on > "$PLAN/implementer_session" ;; off) rm -f "$PLAN/implementer_session" ;; esac
   # Which roles ask for the fast tier. Omitted on a re-plan, so an earlier choice stays.
   forge_fast_store "$PLAN"
+  # Retro, brief and summaries (#132, #133, #135), as forge_features_resolve settled them.
+  forge_features_store "$PLAN"
   # Exploration is decided here and only here, so the table and preflight see what will run.
   # On by default: choosing models from measured pass rates needs some randomized picks, and
   # history had almost none (9 tasks ever ran on more than one spec). The flag wins, then
@@ -817,6 +989,7 @@ render_table() {
     fast_roles="$(awk 'NF { printf "%s%s", (n++ ? ", " : ""), $0 }' "$PLAN/fast")"
     echo "fast tier: $fast_roles — billed at a higher rate (codex service_tier=fast; claude fast mode needs extra usage enabled)"
   fi
+  forge_features_table "$PLAN"
   if [ -f "$PLAN/profile.json" ]; then
     local profile_line; profile_line="$(forge_profile_py line "$PLAN/profile.json" 2>/dev/null)"
     [ -z "$profile_line" ] || echo "$profile_line"

@@ -15,6 +15,10 @@
 # --infra-retries when `run` or `retry` is not given them; a flag wins. On `retry` they are
 # the further attempts after this one (while its review fails) and the waits out of an infrastructure stop.
 #
+# `plan` also writes retro, brief, brief_scope, brief_model, summaries and summaries_model
+# (--retro, --brief, --brief-scope, --brief-model, --summaries, --summaries-model; #132, #133,
+# #135). They are plan-only flags, parsed in do_plan, not here; see forge_features_resolve.
+#
 # Persisted options become files in the plan dir, like --verify and --setup, so a later
 # `retry` or the scheduler's task processes see them. Cost-bearing options that change
 # what a run is allowed to spend (--retry-failed, --infra-retries) are deliberately NOT
