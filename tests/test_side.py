@@ -175,6 +175,26 @@ class SettingsTests(SideCase):
         (self.plan / 'brief').write_text('strict\n')
         self.assertEqual(forge_side.settings(self.plan)['brief'], {'level': 'strict', 'scope': 'task', 'model': ''})
 
+    def test_an_off_file_beats_the_user_setting_before_planning(self):
+        self.user({'retro': 'on', 'brief': {'level': 'gated', 'model': 'sol'}, 'summaries': {'mode': 'on', 'model': 'a'}})
+        for name in ('retro_mode', 'brief', 'summaries'):
+            (self.plan / name).write_text('off\n')
+        got = forge_side.settings(self.plan)
+        self.assertEqual((got['retro'], got['brief']['level'], got['summaries']['mode']), (False, 'off', 'off'))
+
+    def test_plan_files_freeze_the_effective_choices_without_the_env_switches(self):
+        # What a plan made from this one is given: `off` spelled out, and the env switches left out.
+        self.user({'retro': 'on', 'brief': {'level': 'gated', 'model': 'sol'}, 'summaries': {'mode': 'on', 'model': 'a'}})
+        (self.plan / 'waves.tsv').write_text('a\t1\n')
+        self.assertEqual(forge_side.plan_files(self.plan), {'retro_mode': 'off', 'brief': 'off', 'summaries': 'off'})
+        (self.plan / 'brief').write_text('strict\n')
+        (self.plan / 'brief_model').write_text('sol\n')
+        (self.plan / 'retro_mode').write_text('on\n')
+        os.environ['FORGE_BRIEF'] = 'off'
+        os.environ['FORGE_RETRO'] = 'off'
+        self.assertEqual(forge_side.plan_files(self.plan), {'retro_mode': 'on', 'brief': 'strict', 'brief_scope': 'task',
+                                                            'brief_model': 'sol', 'summaries': 'off'})
+
     def test_invalid_plan_tokens_fall_through_but_a_retro_file_can_force_off(self):
         # Brief, scope and summaries ignore a token they do not recognise. Retro's file is
         # the on/off switch itself: anything other than `on` is off, and it beats the user.

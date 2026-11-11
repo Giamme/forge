@@ -1,6 +1,6 @@
 """plan --retro, --brief, --summaries: the choices are frozen into the plan as files (#132, #133, #135).
 
-Each flag writes one plan file that forge_side.settings(plan) reads at run time; a flag beats the
+Each flag writes one plan file (an explicit off writes `off`) that forge_side.settings(plan) reads at run time; a flag beats the
 user `features` setting, which `plan` reads once. Driven like test_fail_first / test_review_sessions:
 `plan` on a fixture repo with the fake agent CLI of test_forge (fixtures borrowed, not inherited)."""
 import dataset_isolation  # noqa: F401  keeps forge's dataset and config out of the developer's home
@@ -23,6 +23,7 @@ FAIL = {'verdict': 'FAIL', 'findings': '- [P1][CONFIRMED] a.txt:1 — broken'}
 # The fake `claude` on PATH resolves `opus` and `sonnet` in the registry; `sol` is a codex alias.
 BRIEF = ('--brief-model', 'sonnet')
 SUMMARIES = ('--summaries-model', 'sol')
+ALL_ON = {'retro': 'on', 'brief': {'level': 'gated', 'model': 'sonnet'}, 'summaries': {'mode': 'on', 'model': 'sol'}}
 
 
 class PlanOptionTests(unittest.TestCase):
@@ -82,8 +83,8 @@ class PlanOptionTests(unittest.TestCase):
         p, _ = self.planned('--retro', '--brief', 'strict', *BRIEF, '--summaries', 'on', *SUMMARIES)
         self.assertEqual(len(self.present(p)), 6)
         self.planned('--no-retro', '--brief', 'off', '--summaries', 'off', p=p)
-        # Off removes the files: the scope and both models go with them.
-        self.assertEqual(self.present(p), {})
+        # An explicit off is kept as `off`; the scope and both models go.
+        self.assertEqual(self.present(p), {'retro_mode': 'off', 'brief': 'off', 'summaries': 'off'})
         self.assertFalse(any(l.startswith(('retro:', 'brief:', 'summaries:')) for l in self.planned(p=p)[1].splitlines()))
 
     def test_a_replan_without_the_flags_keeps_them(self):
@@ -132,10 +133,62 @@ class PlanOptionTests(unittest.TestCase):
     def test_a_flag_that_turns_off_what_the_user_turned_on_holds_for_the_run(self):
         self.user({'retro': 'on', 'brief': {'level': 'gated', 'model': 'sonnet'}, 'summaries': {'mode': 'on', 'model': 'sol'}})
         p, out = self.planned('--no-retro', '--brief', 'off', '--summaries', 'off')
-        self.assertEqual(self.present(p), {})
+        self.assertEqual(self.present(p), {'retro_mode': 'off', 'brief': 'off', 'summaries': 'off'})
         self.assertEqual(self.settings_of(p), (False, 'off', 'off'))
         for word in ('retro:', 'brief:', 'summaries:'):
             self.assertNotIn(word, out)
+
+    def test_an_explicit_off_survives_a_replan_without_flags(self):
+        # Planned with the explicit offs, then the user switches everything on and re-plans with no
+        # feature flag: the offs are the plan's choice and stay.
+        p, _ = self.planned('--no-retro', '--brief', 'off', '--summaries', 'off')
+        self.user(ALL_ON)
+        _, out = self.planned(p=p)
+        self.assertEqual(self.present(p), {'retro_mode': 'off', 'brief': 'off', 'summaries': 'off'})
+        self.assertEqual(self.settings_of(p), (False, 'off', 'off'))
+        self.assertFalse(any(l.startswith(('retro:', 'brief:', 'summaries:')) for l in out.splitlines()))
+        # Even with no waves.tsv (it went missing), an `off` file beats the user setting.
+        (p / 'waves.tsv').unlink()
+        self.assertEqual(self.settings_of(p), (False, 'off', 'off'))
+        self.planned(p=p)
+        self.assertEqual(self.present(p), {'retro_mode': 'off', 'brief': 'off', 'summaries': 'off'})
+
+    def test_a_replan_of_a_plan_planned_with_everything_off_stays_off(self):
+        p, _ = self.planned()
+        self.user(ALL_ON)
+        _, out = self.planned(p=p)
+        self.assertEqual(self.present(p), {})
+        self.assertEqual(self.settings_of(p), (False, 'off', 'off'))
+        self.assertNotIn('retro is on', out)
+        # A flag still turns a feature on, and it may take its model from the user setting.
+        self.planned('--brief', 'gated', p=p)
+        self.assertEqual(self.present(p), {'brief': 'gated', 'brief_scope': 'task', 'brief_model': 'sonnet'})
+
+    def test_a_rerun_keeps_the_source_choices_and_never_takes_the_user_setting(self):
+        self.env.update(GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM='1')
+        head = self.git('rev-parse', 'HEAD').decode().strip()
+
+        def rerun(src, to):
+            (src / 'integration.base').write_text(head + '\n')
+            r = subprocess.run([str(ROOT / 'forge'), 'runs', 'rerun', str(src), '--dwarf', 'opus', '--to', str(to)],
+                               cwd=self.root, text=True, env=self.env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+            self.assertEqual(r.returncode, 0, r.stdout)
+            return to
+
+        # Off by default (no files) and off by flag: with the user's features on, the rerun has them off.
+        quiet, _ = self.planned()
+        offs, _ = self.planned('--no-retro', '--brief', 'off', '--summaries', 'off')
+        self.user(ALL_ON)
+        for src in (quiet, offs):
+            new = rerun(src, self.root / ('rerun-' + src.name))
+            self.assertEqual(self.present(new), {'retro_mode': 'off', 'brief': 'off', 'summaries': 'off'}, src)
+            self.assertEqual(self.settings_of(new), (False, 'off', 'off'), src)
+        # A source with features on carries them, models included.
+        on, _ = self.planned('--retro', '--brief', 'strict', '--brief-scope', 'wave', '--brief-model', 'opus',
+                             '--summaries', 'on', '--summaries-model', 'sonnet')
+        new = rerun(on, self.root / 'rerun-on')
+        self.assertEqual(self.present(new), self.present(on))
+        self.assertEqual(len(self.present(new)), 6)
 
     # --- with everything off, plan is what it was --------------------------------------------
     def test_with_everything_off_no_file_and_no_table_line(self):
@@ -152,11 +205,11 @@ class PlanOptionTests(unittest.TestCase):
         p, _ = self.planned()
         self.assertEqual(self.present(p), {})
         self.assertTrue((p / 'waves.tsv').exists())
-        self.user({'retro': 'on', 'brief': {'level': 'gated', 'model': 'sonnet'}, 'summaries': {'mode': 'on', 'model': 'sol'}})
+        self.user(ALL_ON)
         self.assertEqual(self.settings_of(p), (False, 'off', 'off'))
         # and explicit offs plan the same way
         q, _ = self.planned('--no-retro', '--brief', 'off', '--summaries', 'off')
-        self.assertEqual(self.present(q), {})
+        self.assertEqual(self.present(q), {'retro_mode': 'off', 'brief': 'off', 'summaries': 'off'})
         self.assertEqual(self.settings_of(q), (False, 'off', 'off'))
 
     def test_the_user_setting_still_fills_in_before_planning(self):

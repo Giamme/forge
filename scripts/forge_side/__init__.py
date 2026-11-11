@@ -9,8 +9,9 @@ Precedence for each switch, first match wins:
 
 1. `FORGE_RETRO=off`, `FORGE_BRIEF=off` or `FORGE_SUMMARIES=off` forces that switch off.
 2. The plan file, when it names a value: `retro_mode` (`on` or `off`; not `retro`, which is
-   the notes directory), `brief` (the level),
-   `brief_scope`, `brief_model`, `summaries` (`on` or `off`), `summaries_model`.
+   the notes directory), `brief` (the level, or `off`), `brief_scope`, `brief_model`,
+   `summaries` (`on` or `off`), `summaries_model`. An `off` file is an explicit off (`plan
+   --no-retro`, `--brief off`, `--summaries off`) and beats the user setting.
 3. The user `features` object in decide.json (`forge_decide.load_user`), only before the
    plan is planned: once `waves.tsv` exists the plan is frozen and this step is skipped.
 4. Off. `brief_scope` defaults to `task`. An env var forces the switch off and leaves
@@ -126,31 +127,53 @@ def settings(plan) -> dict:
     `retro` is a bool. Levels, scopes and modes are the stored words (`off` when nothing
     turns them on). A model is the spec string, or `''` when none is configured.
     """
-    plan = Path(plan)
+    resolved = _resolve(Path(plan))
+    if _env_off('FORGE_RETRO'):
+        resolved['retro'] = False
+    if _env_off('FORGE_BRIEF'):
+        resolved['brief']['level'] = 'off'
+    if _env_off('FORGE_SUMMARIES'):
+        resolved['summaries']['mode'] = 'off'
+    return resolved
+
+
+def plan_files(plan) -> dict:
+    """The six plan files that freeze `plan`'s choices as they stand, for a plan made from it.
+
+    `{retro_mode, brief, summaries}` are always present: `on`/the level when on, `off` when
+    off, so the new plan never falls back to the user setting. A feature that is on adds its
+    scope and model (`brief_scope`, `brief_model`, `summaries_model`) when it has one. The env
+    off switches are not applied: they are run-time switches, not this plan's choice.
+    """
+    resolved = _resolve(Path(plan))
+    out = {'retro_mode': 'on' if resolved['retro'] else 'off',
+           'brief': resolved['brief']['level'], 'summaries': resolved['summaries']['mode']}
+    if out['brief'] != 'off':
+        out['brief_scope'] = resolved['brief']['scope']
+        if resolved['brief']['model']:
+            out['brief_model'] = resolved['brief']['model']
+    if out['summaries'] == 'on' and resolved['summaries']['model']:
+        out['summaries_model'] = resolved['summaries']['model']
+    return out
+
+
+def _resolve(plan: Path) -> dict:
+    """`settings` before the env off switches: plan files, then (unplanned only) the user setting."""
     # A planned plan (its waves.tsv exists) is frozen: `plan` read the user setting once, so
     # a missing plan file now means off, not "ask the user setting again".
     features = {} if (plan / 'waves.tsv').exists() else _user_features()
     brief = _mapping(features.get('brief'))
     summaries = _mapping(features.get('summaries'))
 
-    if _env_off('FORGE_RETRO'):
-        retro = False
-    else:
-        file = _read(plan / 'retro_mode')
-        retro = (file == 'on') if file is not None else _choice(features.get('retro'), ON_OFF) == 'on'
-
-    if _env_off('FORGE_BRIEF'):
-        level = 'off'
-    else:
-        level = _choice(_read(plan / 'brief'), BRIEF_LEVELS) or _choice(brief.get('level'), BRIEF_LEVELS) or 'off'
+    # An `off` file is a choice of its own (plan --no-retro, --brief off, --summaries off): it
+    # is a recognised value, so it beats the user setting even before planning.
+    file = _read(plan / 'retro_mode')
+    retro = (file == 'on') if file is not None else _choice(features.get('retro'), ON_OFF) == 'on'
+    level = _choice(_read(plan / 'brief'), BRIEF_LEVELS) or _choice(brief.get('level'), BRIEF_LEVELS) or 'off'
     scope = _choice(_read(plan / 'brief_scope'), BRIEF_SCOPES) or _choice(brief.get('scope'), BRIEF_SCOPES) or 'task'
     model = _model_of(_read(plan / 'brief_model')) or _model_of(brief.get('model'))
-
-    if _env_off('FORGE_SUMMARIES'):
-        mode = 'off'
-    else:
-        mode = (_choice(_read(plan / 'summaries'), SUMMARY_MODES)
-                or _choice(summaries.get('mode'), SUMMARY_MODES) or 'off')
+    mode = (_choice(_read(plan / 'summaries'), SUMMARY_MODES)
+            or _choice(summaries.get('mode'), SUMMARY_MODES) or 'off')
     summary_model = _model_of(_read(plan / 'summaries_model')) or _model_of(summaries.get('model'))
     return {
         'retro': retro,

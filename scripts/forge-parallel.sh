@@ -60,16 +60,18 @@
 #                           each attempt is logged in tasks/<id>/implementer_sessions.tsv.
 #                           `--no-implementer-session` turns it off (the default)
 #   --retro | --no-retro   agents record what got in their way (retro, #132); plan file `retro_mode`
-#                           (on or off; not `retro`, the notes directory). Without a flag the plan keeps its earlier choice, else takes the
-#                           user `features` setting. The first plan with it on says what is recorded
+#                           (on or off; not `retro`, the notes directory). Without a flag the plan
+#                           keeps its earlier choice, else (first plan only) takes the user
+#                           `features` setting. The first plan with it on says what is recorded
 #   --brief LEVEL           advisory, gated, strict or off (#135): one cheap read-only dispatch per
 #                           task before it starts. Plan files `brief`, `brief_scope` (--brief-scope
 #                           task|wave|plan, default task) and `brief_model` (--brief-model SPEC). On
-#                           with no model is refused (exit 2); `off` removes the files
+#                           with no model is refused (exit 2); `off` writes `off` and drops the rest
 #   --summaries on|off      a generated summary per task (#133); plan files `summaries` and
 #                           `summaries_model` (--summaries-model SPEC); on with no model is refused.
 #                           A flag beats the user setting (forge config show), which is read once, at
-#                           plan time; a re-plan without the flag keeps what the plan has
+#                           the first plan; a re-plan without the flag keeps what the plan has, and an
+#                           explicit off (--no-retro, --brief off, --summaries off) is kept as `off`
 #   --fast ROLES            which of dwarf, qa, planner, review ask for the fast service tier
 #                           (comma list, or all, or none). Kept in the plan; a re-plan without
 #                           the flag keeps it, and none removes it. codex and claude only
@@ -321,10 +323,16 @@ EOF
 # summaries_model) that forge_side.settings(plan) reads at run time. The retro file is not
 # called `retro`: <plan>/retro/ is where the notes are kept. For each, a flag of this call
 # wins, then what the plan already has (a re-plan without the flag keeps it, as
-# --reviewer-session is kept), then the user `features` setting, read here once. A file is
-# written for a feature that is on and removed for one that is off. Nothing is written for
-# "off": a planned plan (waves.tsv exists) is frozen by forge_side.settings, which no longer
-# asks the user setting, so a later change to it cannot turn a feature on in this plan.
+# --reviewer-session is kept), then the user `features` setting, read here once. The user
+# setting turns a feature on or off only before the plan is first planned (no waves.tsv):
+# after that the plan is frozen, here as in forge_side.settings, and a feature a re-plan does
+# not name stays as it was. (A flag that turns a feature on may still take its scope and
+# model from the user setting.) A feature that is on writes its files. One that is off
+# because a flag said so, or because the plan already said `off`, writes `off` into its
+# switch file (retro_mode, brief, summaries), so a later re-plan or a plan made from this
+# one cannot take it from the user setting again; its scope and model files go. One that is
+# merely off by default (no flag, no file, the user setting off) writes nothing, which is
+# what keeps a plan with every feature off exactly what it was before these options.
 #
 # forge_features_resolve sets FEAT_* and writes nothing; it returns 2 (FEAT_ERR says why) when
 # a feature is on with no model, or a model spec does not resolve. forge_features_store writes
@@ -371,20 +379,24 @@ forge_features_resolve() { # forge_features_resolve <plan>
   done <<FEATURES_EOF
 $(forge_features_user)
 FEATURES_EOF
+  # Planned before: the user setting no longer turns anything on or off (see above).
+  if [ -e "$plan/waves.tsv" ]; then u_retro=off; u_brief=off; u_summ=off; fi
   local f_retro f_brief f_scope f_bmodel f_summ f_smodel
   f_retro="$(forge_feature_file "$plan" retro_mode)"; f_brief="$(forge_feature_file "$plan" brief)"
   f_scope="$(forge_feature_file "$plan" brief_scope)"; f_bmodel="$(forge_feature_file "$plan" brief_model)"
   f_summ="$(forge_feature_file "$plan" summaries)"; f_smodel="$(forge_feature_file "$plan" summaries_model)"
 
-  # retro: `on`, or no file
+  # retro: `on`; `off` when a flag or the plan says so; else no file
   local retro="${RETRO_FLAG:-${f_retro:-$u_retro}}"
   FEAT_RETRO=""
-  [ "$retro" = on ] && FEAT_RETRO=on
+  if [ "$retro" = on ]; then FEAT_RETRO=on
+  elif [ -n "$RETRO_FLAG" ] || [ -n "$f_retro" ]; then FEAT_RETRO=off; fi
 
   # brief: the level, its scope and its model
   local level="${BRIEF_FLAG:-${f_brief:-$u_brief}}"
   case "$level" in advisory|gated|strict|off) ;; *) level=off ;; esac
   FEAT_BRIEF=""; FEAT_BRIEF_SCOPE=""; FEAT_BRIEF_MODEL=""
+  if [ "$level" = off ] && { [ -n "$BRIEF_FLAG" ] || [ -n "$f_brief" ]; }; then FEAT_BRIEF=off; fi
   if [ "$level" != off ]; then
     local scope="${BRIEF_SCOPE_FLAG:-${f_scope:-$u_scope}}" bmodel="${BRIEF_MODEL_FLAG:-${f_bmodel:-$u_bmodel}}"
     case "$scope" in task|wave|plan) ;; *) scope=task ;; esac
@@ -399,6 +411,7 @@ FEATURES_EOF
   local mode="${SUMM_FLAG:-${f_summ:-$u_summ}}"
   case "$mode" in on|off) ;; *) mode=off ;; esac
   FEAT_SUMM=""; FEAT_SUMM_MODEL=""
+  if [ "$mode" = off ] && { [ -n "$SUMM_FLAG" ] || [ -n "$f_summ" ]; }; then FEAT_SUMM=off; fi
   if [ "$mode" = on ]; then
     local smodel="${SUMM_MODEL_FLAG:-${f_smodel:-$u_smodel}}"
     if [ -z "$smodel" ]; then
