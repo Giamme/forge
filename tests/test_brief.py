@@ -460,6 +460,39 @@ class SelectionTests(BriefCase):
         forge_brief.write(self.plan, jobs=2)
         self.assertEqual(order, ['a', 'b', 'c'])
 
+    def test_a_task_skipped_midway_does_not_let_a_later_wave_overtake_an_earlier_one(self):
+        import contextlib
+        import threading
+        import time
+        (self.plan / 'waves.tsv').write_text('1\ta\n2\tb\n3\tc\n')
+        self.all_say()
+        real_build, real_run, real_lock = forge_brief.build_prompt, forge_brief.forge_side.run, forge_brief._task_lock
+        order = []
+
+        def slow_build(plan, task, tasks, repo):
+            if task['id'] == 'a':
+                time.sleep(0.8)
+            return real_build(plan, task, tasks, repo)
+
+        def spy(kind, plan, task, *args, **kwargs):
+            order.append(task)
+            return real_run(kind, plan, task, *args, **kwargs)
+
+        @contextlib.contextmanager
+        def late_lock(plan, task):
+            if task == 'b':   # another writer finishes b after this one chose its tasks
+                time.sleep(0.2)
+                forge_brief.atomic_write(forge_brief.task_dir(plan, 'b') / 'brief.json', '{"questions": []}')
+            with real_lock(plan, task):
+                yield
+        forge_brief.build_prompt, forge_brief.forge_side.run, forge_brief._task_lock = slow_build, spy, late_lock
+        self.addCleanup(setattr, forge_brief, 'build_prompt', real_build)
+        self.addCleanup(setattr, forge_brief.forge_side, 'run', real_run)
+        self.addCleanup(setattr, forge_brief, '_task_lock', real_lock)
+        report = forge_brief.write(self.plan, jobs=3)
+        self.assertEqual(order, ['a', 'c'])
+        self.assertEqual([(row['task'], row['reason']) for row in report if row['status'] == 'skipped'], [('b', 'exists')])
+
     def test_tasks_go_in_wave_order_then_file_order(self):
         (self.plan / 'waves.tsv').write_text('1\tc\n2\ta\n2\tb\n')
         events = self.root / 'events'

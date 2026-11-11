@@ -408,7 +408,8 @@ def write(plan, task=None, jobs=DEFAULT_JOBS, force=False, timeout=900, progress
 
     # Workers prepare in parallel but dispatch in order. A worker may start only once the one
     # before it has really begun its dispatch (its `side/brief/<task>/` gained a new run dir)
-    # or has finished without one (skipped, capped, failed): saying "I am about to" is not
+    # or has finished without one (skipped, capped, failed; a skip waits its own turn first, so
+    # the chain of earlier tasks is never cut short): saying "I am about to" is not
     # enough, the thread can still be descheduled before it dispatches.
     todo = []
     for item in chosen:
@@ -426,7 +427,12 @@ def write(plan, task=None, jobs=DEFAULT_JOBS, force=False, timeout=900, progress
         except OSError:
             return 0
 
+    turned = [False] * len(todo)
+
     def wait_for_turn(index):
+        if turned[index]:
+            return
+        turned[index] = True
         if not index:
             return
         before = todo[index - 1]
@@ -466,6 +472,9 @@ def write(plan, task=None, jobs=DEFAULT_JOBS, force=False, timeout=900, progress
             except Exception:   # noqa: BLE001
                 pass
         finally:
+            # A worker that skips still takes its turn before it signals: otherwise the one
+            # after it would see "done" and overtake an earlier task that has not dispatched.
+            wait_for_turn(index)
             intent[index].set()
             finished[index].set()
 
