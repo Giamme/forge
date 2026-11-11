@@ -201,8 +201,40 @@ class WriteTests(BriefCase):
             questions, error = forge_brief.parse_reply(bad)
             self.assertIsNone(questions, bad)
             self.assertTrue(error, bad)
-        questions, error = forge_brief.parse_reply('{"questions": [{"text": "Only text"}]}')
-        self.assertEqual((error, questions[0]['scope'], questions[0]['options']), (None, 'task', []))
+        # Every key of the format is required: a question with no default leaves a guess.
+        for key in ('text', 'why', 'options', 'default', 'scope', 'must_answer'):
+            partial = question()
+            del partial[key]
+            questions, error = forge_brief.parse_reply(reply(partial))
+            self.assertIsNone(questions, key)
+            self.assertIn(key, error)
+        for key in ('why', 'default'):
+            questions, error = forge_brief.parse_reply(reply(question(**{key: ' '})))
+            self.assertIsNone(questions, key)
+        questions, error = forge_brief.parse_reply(reply(question(options=[])))
+        self.assertEqual((error, questions[0]['options']), (None, []))
+
+    def test_an_incomplete_question_is_retried_like_any_bad_reply(self):
+        self.arm({'a.qa.1': says('{"questions": [{"text": "Which database?"}]}'),
+                  'a.qa.2': says(reply(question('Which database?'))),
+                  '*.qa.*': says(NONE)})
+        forge_brief.write(self.plan, task='a')
+        self.assertEqual(self.calls(), ['qa', 'qa'])
+        data = self.brief('a')
+        self.assertNotIn('error', data)
+        self.assertEqual(data['questions'][0]['default'], 'x')
+
+    def test_a_retry_the_cap_refuses_still_records_the_error(self):
+        for number in range(1, 10):
+            (self.plan / 'side' / 'brief' / 'z' / str(number)).mkdir(parents=True)
+        self.arm({'*.qa.*': says('not json')})
+        results = forge_brief.write(self.plan, task='a')
+        self.assertEqual(self.calls(), ['qa'])   # the first reply used the last slot
+        data = self.brief('a')
+        self.assertEqual(data['questions'], [])
+        self.assertIn('reply is not valid JSON', data['error'])
+        self.assertIn('cap', data['error'])
+        self.assertEqual(results[0]['status'], 'error')
 
     def test_a_failed_dispatch_still_leaves_a_brief_json(self):
         self.arm({'*.qa.*': {'rc': 1, 'findings': 'boom', 'verdict': 'none'}})
@@ -242,6 +274,16 @@ class WriteTests(BriefCase):
         self.assertIn('must not write', prompt)
         self.assertIn('At most 3 questions', prompt)
         self.assertLess(len(prompt), 12000)
+
+    def test_the_task_documents_are_never_truncated(self):
+        (self.plan / 'tasks' / 'a' / 'prompt.md').write_text('x' * 40000 + ' PROMPT_TAIL TASK_a\n')
+        (self.plan / 'tasks' / 'a' / 'approach.md').write_text('y' * 40000 + ' APPROACH_TAIL\n')
+        self.all_say()
+        forge_brief.write(self.plan, task='a')
+        prompt = (self.plan / 'side' / 'brief' / 'a' / '1' / 'prompt.txt').read_text()
+        self.assertIn('PROMPT_TAIL', prompt)
+        self.assertIn('APPROACH_TAIL', prompt)
+        self.assertNotIn('(capped)', prompt)
 
 
 class RefusalTests(BriefCase):
@@ -312,6 +354,73 @@ class SelectionTests(BriefCase):
         self.arm({'*.qa.*': says(NONE)})
         forge_brief.write(self.plan, task='a', force=True)
         self.assertFalse((self.plan / 'tasks' / 'a' / 'brief.parked.json').exists())
+
+    def test_a_forced_rewrite_sets_old_answers_aside(self):
+        self.arm({'*.qa.*': says(reply(question('Which database?')))})
+        forge_brief.write(self.plan, task='a')
+        tdir = self.plan / 'tasks' / 'a'
+        (tdir / 'brief.answers.json').write_text(json.dumps({'q1': {'text': 'PostgreSQL', 'actor': 'cli', 't': 1}}))
+        (tdir / 'brief.late.json').write_text(json.dumps({'q1': {'text': 'late', 'actor': 'cli', 't': 2}}))
+        self.arm({'*.qa.*': says(reply(question('Which login protocol?')))})
+        forge_brief.write(self.plan, task='a', force=True)
+        self.assertEqual(self.brief('a')['questions'][0]['text'], 'Which login protocol?')
+        self.assertFalse((tdir / 'brief.answers.json').exists())
+        self.assertFalse((tdir / 'brief.late.json').exists())
+        found = forge_brief.collect(self.plan, task='a')
+        self.assertEqual([(r['id'], r['state']) for r in found['questions']], [('q1', 'open')])
+        kept = list((tdir / 'brief.history').glob('*/brief.answers.json'))
+        self.assertEqual(len(kept), 1)
+        self.assertEqual(json.loads(kept[0].read_text())['q1']['text'], 'PostgreSQL')
+        old = json.loads((kept[0].parent / 'brief.json').read_text())
+        self.assertEqual(old['questions'][0]['text'], 'Which database?')
+
+    def test_two_writers_on_one_task_dispatch_once_and_do_not_overwrite(self):
+        import threading
+        import time
+        self.all_say(reply(question('Once?')))
+        real = forge_brief._ask
+        entered = []
+
+        def slow(*args, **kwargs):
+            entered.append(1)
+            time.sleep(0.6)
+            return real(*args, **kwargs)
+        forge_brief._ask = slow
+        self.addCleanup(setattr, forge_brief, '_ask', real)
+        outcomes = []
+        threads = [threading.Thread(target=lambda: outcomes.append(forge_brief.write(self.plan, task='a')))
+                   for _ in range(2)]
+        for thread in threads:
+            thread.start()
+            time.sleep(0.2)
+        for thread in threads:
+            thread.join()
+        self.assertEqual(len(entered), 1)
+        self.assertEqual(self.calls(), ['qa'])
+        self.assertEqual(sorted(out[0]['status'] for out in outcomes), ['skipped', 'written'])
+        self.assertEqual(self.brief('a')['questions'][0]['text'], 'Once?')
+
+    def test_parallel_workers_still_dispatch_in_wave_order(self):
+        import time
+        (self.plan / 'waves.tsv').write_text('1\ta\n2\tb\n2\tc\n')
+        self.all_say()
+        real_build, real_run = forge_brief.build_prompt, forge_brief.forge_side.run
+        order = []
+
+        def slow_build(plan, task, tasks, repo):
+            if task['id'] == 'a':
+                time.sleep(0.8)
+            return real_build(plan, task, tasks, repo)
+
+        def spy(kind, plan, task, *args, **kwargs):
+            order.append(task)
+            return real_run(kind, plan, task, *args, **kwargs)
+        forge_brief.build_prompt = slow_build
+        forge_brief.forge_side.run = spy
+        self.addCleanup(setattr, forge_brief, 'build_prompt', real_build)
+        self.addCleanup(setattr, forge_brief.forge_side, 'run', real_run)
+        forge_brief.write(self.plan, jobs=3)
+        self.assertEqual(order, ['a', 'b', 'c'])
 
     def test_tasks_go_in_wave_order_then_file_order(self):
         (self.plan / 'waves.tsv').write_text('1\tc\n2\ta\n2\tb\n')

@@ -18,11 +18,15 @@ shape, is retried once, and a second failure (or a failed dispatch) stores
 from __future__ import annotations
 
 import concurrent.futures
+import contextlib
+import fcntl
 import json
 import os
 from pathlib import Path
+import shutil
 import sys
 import tempfile
+import threading
 import time
 
 SCRIPTS = Path(__file__).resolve().parent.parent
@@ -33,7 +37,6 @@ import forge_side  # noqa: E402
 
 MAX_QUESTIONS = 3
 DEP_PROMPT_LIMIT = 4096
-TASK_TEXT_LIMIT = 16384
 SCOPES = ('task', 'wave', 'plan')
 DEFAULT_JOBS = 4
 
@@ -152,11 +155,11 @@ def build_prompt(plan, task: dict, tasks: list, repo: str) -> str:
         'Read the task below. The repository is at %s: you may read it and you must not '
         'write to it.\n' % repo,
         '## The task: %s\n' % task['id'],
-        '### prompt.md\n\n%s\n' % forge_side.cap(_text(tdir / 'prompt.md').strip(), TASK_TEXT_LIMIT),
+        '### prompt.md\n\n%s\n' % _text(tdir / 'prompt.md').strip(),
     ]
     approach = _text(tdir / 'approach.md').strip()
     if approach:
-        parts.append('### approach.md\n\n%s\n' % forge_side.cap(approach, TASK_TEXT_LIMIT))
+        parts.append('### approach.md\n\n%s\n' % approach)
     parts.append('### Its tasks.tsv row\n\n(id, deps, difficulty, files, dwarf, qa, title)\n\n%s\n' % task['row'])
     parts.append('### All tasks in this run\n\n%s\n' % '\n'.join(
         '- %s: %s' % (item['id'], item['title'] or '(no title)') for item in tasks))
@@ -201,9 +204,10 @@ def _strip_fence(text: str) -> str:
 def parse_reply(reply):
     """`(questions, None)` for a usable reply, else `(None, reason)`.
 
-    Each question is `{text, why, options, default, scope, must_answer}`; a missing
-    `why`, `options`, `default`, `scope` or `must_answer` takes its empty value (scope
-    `task`). A wrong type, an unknown scope or an empty text makes the reply unusable.
+    Each question is `{text, why, options, default, scope, must_answer}` and all six must
+    be there: a question without a `default` leaves the implementer to guess, which is what
+    the brief is for. A missing key, a wrong type, an empty `text`, `why` or `default`, or
+    an unknown scope makes the reply unusable.
     """
     if not isinstance(reply, str) or not reply.strip():
         return None, 'empty reply'
@@ -227,20 +231,20 @@ def parse_reply(reply):
         where = 'question %d' % index
         if not isinstance(item, dict):
             return None, '%s is not an object' % where
-        text_value = item.get('text')
-        if not isinstance(text_value, str) or not text_value.strip():
-            return None, '%s has no text' % where
-        why = item.get('why', '')
-        default = item.get('default', '')
-        if not isinstance(why, str) or not isinstance(default, str):
-            return None, '%s: why and default must be strings' % where
-        options = item.get('options', [])
+        missing = [key for key in ('text', 'why', 'options', 'default', 'scope', 'must_answer') if key not in item]
+        if missing:
+            return None, '%s has no %s' % (where, ', '.join(missing))
+        text_value, why, default = item['text'], item['why'], item['default']
+        for name, value in (('text', text_value), ('why', why), ('default', default)):
+            if not isinstance(value, str) or not value.strip():
+                return None, '%s: %s must be a non-empty string' % (where, name)
+        options = item['options']
         if not isinstance(options, list) or not all(isinstance(opt, str) for opt in options):
             return None, '%s: options must be a list of strings' % where
-        scope = item.get('scope', 'task')
+        scope = item['scope']
         if scope not in SCOPES:
             return None, '%s: scope must be task, wave or plan' % where
-        must = item.get('must_answer', False)
+        must = item['must_answer']
         if not isinstance(must, bool):
             return None, '%s: must_answer must be true or false' % where
         found.append({'text': text_value.strip(), 'why': why.strip(), 'options': [o.strip() for o in options],
@@ -255,8 +259,11 @@ def _ask(plan, task: dict, prompt: str, spec: str, timeout: int):
     for attempt in range(2):
         result = forge_side.run('brief', plan, task['id'], prompt + reminder, spec, timeout=timeout)
         if not result['ok']:
-            if result['reason'] == 'cap':
+            if result['reason'] == 'cap' and attempt == 0:
                 return None, None
+            if result['reason'] == 'cap':
+                # The first reply used the last slot: the task still gets its error brief.
+                return None, '%s (no retry: dispatch cap reached)' % error
             return None, 'dispatch failed: %s' % (result['reason'] or 'error')
         questions, error = parse_reply(result['last'])
         if questions is not None:
@@ -266,6 +273,46 @@ def _ask(plan, task: dict, prompt: str, spec: str, timeout: int):
 
 
 # --- write -----------------------------------------------------------------------
+
+STORED = ('brief.json', 'brief.parked.json', 'brief.answers.json', 'brief.late.json')
+
+
+def _archive(tdir: Path, stamp: str) -> None:
+    """Set a task's earlier brief aside before a new one replaces it.
+
+    Question ids restart at q1, so answers or late notes left next to a regenerated
+    brief.json would attach to unrelated new questions. They move to
+    `brief.history/<stamp>/` together with the old brief.json and parked file.
+    """
+    present = [name for name in STORED if (tdir / name).exists()]
+    if not present:
+        return
+    base = tdir / 'brief.history'
+    dest = base / stamp.replace(':', '')
+    number = 1
+    while dest.exists():
+        number += 1
+        dest = base / ('%s-%d' % (stamp.replace(':', ''), number))
+    dest.mkdir(parents=True)
+    for name in present:
+        if name == 'brief.json':
+            shutil.copy2(tdir / name, dest / name)   # stays until the new one replaces it
+        else:
+            os.replace(tdir / name, dest / name)
+
+
+@contextlib.contextmanager
+def _task_lock(plan: Path, task: str):
+    """Exclusive per-task lock: two writers on one task take turns, so the second sees the first's brief.json."""
+    tdir = task_dir(plan, task)
+    tdir.mkdir(parents=True, exist_ok=True)
+    fd = os.open(str(tdir / '.brief.lock'), os.O_CREAT | os.O_RDWR, 0o644)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(fd)
+
 
 def _record(plan: Path, task: str, model: str, level: str, questions, error) -> dict:
     """Store brief.json (and brief.parked.json) for one task and emit the events."""
@@ -279,6 +326,7 @@ def _record(plan: Path, task: str, model: str, level: str, questions, error) -> 
     if error:
         brief['error'] = error
     tdir = task_dir(plan, task)
+    _archive(tdir, stamp)
     atomic_write(tdir / 'brief.json', _dump(brief))
     parked_path = tdir / 'brief.parked.json'
     if parked:
@@ -335,44 +383,55 @@ def write(plan, task=None, jobs=DEFAULT_JOBS, force=False, timeout=900, progress
     repo = _text(plan / 'repo').strip()
     report = {}
 
+    mute = threading.Lock()
+
     def say(item, status, reason=None, stats=None):
         stats = stats or {}
-        report[item['id']] = {'task': item['id'], 'status': status, 'reason': reason,
-                              'questions': stats.get('questions', 0), 'parked': stats.get('parked', 0)}
-        if progress:
-            progress(report[item['id']])
+        with mute:
+            report[item['id']] = {'task': item['id'], 'status': status, 'reason': reason,
+                                  'questions': stats.get('questions', 0), 'parked': stats.get('parked', 0)}
+            if progress:
+                progress(report[item['id']])
 
+    # Workers prepare in parallel but dispatch in order: each waits until the one before
+    # it has built its prompt and is about to dispatch.
     todo = []
     for item in chosen:
         if (task_dir(plan, item['id']) / 'brief.json').exists() and not force:
             say(item, 'skipped', 'exists')
         else:
             todo.append(item)
+    started = [threading.Event() for _ in todo]
 
-    def work(item):
-        ok_now, why = forge_side.allowed('brief', plan)
-        if not ok_now:
-            return item, None, why
-        prompt = build_prompt(plan, item, tasks, repo)
-        questions, error = _ask(plan, item, prompt, spec, timeout)
-        if questions is None and error is None:
-            return item, None, 'cap'
-        return item, (questions, error), None
+    def work(index, item):
+        try:
+            with _task_lock(plan, item['id']):
+                if (task_dir(plan, item['id']) / 'brief.json').exists() and not force:
+                    say(item, 'skipped', 'exists')
+                    return
+                ok_now, why = forge_side.allowed('brief', plan)
+                if not ok_now:
+                    say(item, 'skipped', why)
+                    return
+                if index:
+                    started[index - 1].wait()
+                prompt = build_prompt(plan, item, tasks, repo)
+                started[index].set()
+                questions, error = _ask(plan, item, prompt, spec, timeout)
+                if questions is None and error is None:
+                    say(item, 'skipped', 'cap')
+                    return
+                stats = _record(plan, item['id'], spec, level, questions, error)
+                say(item, 'error' if error else 'written', error, stats)
+        except BaseException as error:
+            say(item, 'error', 'internal error: %s' % error)
+        finally:
+            started[index].set()
 
     pool = concurrent.futures.ThreadPoolExecutor(max_workers=max(1, int(jobs)))
     try:
-        futures = [pool.submit(work, item) for item in todo]
-        for future in concurrent.futures.as_completed(futures):
-            item, result, skipped = future.result()
-            if skipped:
-                say(item, 'skipped', skipped)
-                continue
-            questions, error = result
-            if not force and (task_dir(plan, item['id']) / 'brief.json').exists():
-                say(item, 'skipped', 'exists')
-                continue
-            stats = _record(plan, item['id'], spec, level, questions, error)
-            say(item, 'error' if error else 'written', error, stats)
+        for future in [pool.submit(work, index, item) for index, item in enumerate(todo)]:
+            future.result()
     finally:
         pool.shutdown(wait=True)
     return [report[item['id']] for item in chosen]
