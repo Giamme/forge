@@ -30,7 +30,7 @@ from pathlib import Path
 import threading
 import time
 
-from forge_ui import executions, findings as F, reader, repos
+from forge_ui import executions, findings as F, models, reader, repos
 
 ISSUES = Path(__file__).resolve().parents[2] / 'scripts' / 'forge-issues.py'
 CACHE_S = 300
@@ -246,6 +246,9 @@ def _dataset_occurrences(hist, runs_here):
     for (run, task), reviews in by_run.items():
         reviews.sort(key=lambda r: r.get('ts') or 0)
         for index, review in enumerate(reviews):
+            # A side dispatch is not a review of the task. qa_shadow stays a shadow row.
+            if models.side_role(review.get('role')):
+                continue
             superseded = any(r.get('verdict') == 'PASS' and r.get('role') == 'qa' for r in reviews[index + 1:])
             for item in review.get('findings') or []:
                 head = item['head']

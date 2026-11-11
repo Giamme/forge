@@ -2224,3 +2224,89 @@ class SideDispatchHarvestTests(StoreCase):
         self.assertTrue(store.is_side_role('side_other'))
         for role in ('side', 'qa', 'qa_shadow', 'sideways', 'sidewards', None, ''):
             self.assertFalse(store.is_side_role(role), role)
+
+
+class SideDispatchStatisticsTests(StoreCase):
+    """A qa dispatch counts in export rows, facts and history. A side/summary dispatch of the same task does not.
+
+    The side dispatch's tokens stay in the run's dispatch total. The first test is the qa dispatch
+    alone. The second adds side/summary/t1/1 beside it and changes nothing else.
+    """
+
+    def attempt(self, directory, role, name, tokens, message):
+        attempt = directory / 'attempts' / name
+        attempt.mkdir(parents=True)
+        (attempt / 'metrics.json').write_text(json.dumps(dict(
+            role=role, wall_started=1.0, exit_code=0, harness='codex', elapsed_s=dict(total=1),
+            input_tokens=tokens[0], cached_input_tokens=tokens[1], output_tokens=tokens[2])))
+        (attempt / (role + '.resolved')).write_text('alias=opus\nharness=codex\nmodel=opus\neffort=low\n')
+        (attempt / (role + '.last')).write_text(message)
+        (attempt / (role + '.prompt')).write_text('review this\n```diff\ndiff --git a/a.txt b/a.txt\n+a\n```\n')
+        return attempt
+
+    def plan(self, name, uid, side):
+        path = Path(self.tmp.name) / name
+        path.mkdir(parents=True)
+        (path / 'dataset.uid').write_text(uid + '\n')
+        (path / 'tasks.tsv').write_text('t1\t-\tlow\ta.txt\tsol\topus\tOne task\n')
+        (path / 'repo').write_text('/nonexistent/repo\n')
+        (path / 'run_id').write_text(uid + '-run\n')
+        (path / 'goal.txt').write_text('goal\n')
+        self.attempt(path / 'tasks' / 't1', 'qa', 'qa-qa1', (10, 1, 2),
+                     '- [P2][CONFIRMED] a.txt:1 — wrong\nFORGE_VERDICT: FAIL\n')
+        if side:
+            self.attempt(path / 'side' / 'summary' / 't1' / '1', 'side', 'side-side1', (40, 4, 8),
+                         '- [P1][CONFIRMED] a.txt:2 — from the summary\nFORGE_VERDICT: PASS\n')
+        return path
+
+    def imported(self, path):
+        from forge_dataset.importer import import_run
+        result = import_run(path)
+        self.assertEqual(result['failed'], [], result)
+
+    def token_sum(self, uid):
+        total = dict(input=0, cached_input=0, output=0)
+        for event in self.events(kind='dispatch', run=uid):
+            for key in total:
+                total[key] += event['data']['tokens'][key] or 0
+        return total
+
+    def counted(self, uid):
+        from forge_dataset import export, facts, history
+        runs = export.Runs(export.Store(store.connect()))
+        rows = [(row['task'], row['verdict']) for row in export._qa_rows(runs) if row['run'] == uid]
+        cases = [(case['task'], case['expected'].get('passes'))
+                 for case in export.review_cases(runs) if case['run'] == uid]
+        coverage = facts.report(runs)['coverage']
+        findings = [(item['role'], item['findings'][0]['head'], item['findings'][0]['severity'],
+                     item['findings'][0]['status'])
+                    for item in history.load()['findings'] if item['run'] == uid]
+        return rows, cases, coverage['reviews'], coverage['findings'], findings
+
+    def test_a_qa_dispatch_is_one_review_in_export_facts_and_history(self):
+        self.imported(self.plan('qa-only', 'qa-only', side=False))
+        self.assertEqual([event['data']['role'] for event in self.events(kind='dispatch', run='qa-only')], ['qa'])
+        rows, cases, reviews, findings_n, findings = self.counted('qa-only')
+        self.assertEqual(rows, [('t1', 'FAIL')])
+        self.assertEqual(cases, [('t1', False)])
+        self.assertEqual(reviews, 1)
+        self.assertEqual(findings_n, 1)
+        self.assertEqual(findings, [('qa', '- [P2][CONFIRMED] a.txt:1 — wrong', 2, 'CONFIRMED')])
+        self.assertEqual(self.token_sum('qa-only'), dict(input=10, cached_input=1, output=2))
+
+    def test_a_side_summary_beside_that_qa_is_not_another_attempt_and_its_tokens_stay(self):
+        self.imported(self.plan('sided', 'sided', side=True))
+        events = self.events(kind='dispatch', run='sided')
+        self.assertEqual(sorted(event['data']['role'] for event in events), ['qa', 'side_summary'])
+        side = next(event for event in events if event['data']['role'] == 'side_summary')
+        self.assertEqual(side['task'], 't1')
+        self.assertIsNone(side['attempt'])
+        self.assertEqual(side['data']['verdict'], 'PASS')
+        self.assertEqual(side['data']['tokens'], dict(input=40, cached_input=4, output=8))
+        rows, cases, reviews, findings_n, findings = self.counted('sided')
+        self.assertEqual(rows, [('t1', 'FAIL')])
+        self.assertEqual(cases, [('t1', False)])
+        self.assertEqual(reviews, 1)
+        self.assertEqual(findings_n, 1)
+        self.assertEqual(findings, [('qa', '- [P2][CONFIRMED] a.txt:1 — wrong', 2, 'CONFIRMED')])
+        self.assertEqual(self.token_sum('sided'), dict(input=50, cached_input=5, output=10))

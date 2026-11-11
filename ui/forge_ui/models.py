@@ -7,14 +7,16 @@ implementer is censored, never counted as a failure.
 from __future__ import annotations
 
 from collections import OrderedDict
+import importlib.util
 import json
 import math
 import os
 from pathlib import Path
+import sys
 import threading
 import time
 
-from forge_ui import executions, reader
+from forge_ui import executions, findings, reader
 
 
 _MAX_ROWS = 50000
@@ -33,6 +35,57 @@ _REC_LOCK = threading.Lock()
 
 def _alias(spec):
     return (spec.split(':', 1)[0] or None) if isinstance(spec, str) else None
+
+
+_DATASET = Path(__file__).resolve().parents[2] / 'scripts' / 'forge_dataset' / '__init__.py'
+_SIDE_LOCK = threading.Lock()
+_SIDE_FN = {}
+
+
+def _is_side_role():
+    """forge_dataset.is_side_role, loaded read-only the way reader loads forge_infra. None when it cannot be."""
+    with _SIDE_LOCK:
+        if 'fn' in _SIDE_FN:
+            return _SIDE_FN['fn']
+        fn = None
+        scripts = str(_DATASET.parents[1])
+        inserted = scripts not in sys.path
+        if inserted:
+            sys.path.insert(0, scripts)
+        try:
+            spec = importlib.util.spec_from_file_location(
+                'forge_dataset_for_ui', _DATASET,
+                loader=findings._ReadOnlyLoader('forge_dataset_for_ui', str(_DATASET)))
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            candidate = getattr(module, 'is_side_role', None)
+            fn = candidate if callable(candidate) else None
+        except Exception:
+            fn = None
+        finally:
+            if inserted and scripts in sys.path:
+                sys.path.remove(scripts)
+        _SIDE_FN['fn'] = fn
+        return fn
+
+
+def side_role(role) -> bool:
+    """A side dispatch: harvested `side_*`, or the on-disk role `side` (`is_side_role` rejects the bare name).
+
+    Not an attempt. A shadow review is a separate flag on the execution; this is only the role.
+    """
+    if role == 'side':
+        return True
+    fn = _is_side_role()
+    if fn is not None:
+        return bool(fn(role))
+    return isinstance(role, str) and role.startswith('side_')
+
+
+def _primary_qa(item) -> bool:
+    """The review of record for an attempt. A shadow review and a side dispatch are not one."""
+    role = item['role']
+    return role == 'qa' and not item['shadow'] and role != 'qa_shadow' and not side_role(role)
 
 
 def _builtin_profiles_path():
@@ -127,7 +180,7 @@ def _attempts(rows, execs, plan_spec):
     result = []
     for n, (status, logged) in rows.items():
         dwarfs = [item for item in execs if item['role'] == 'dwarf' and item['attempt'] == n]
-        reviews = [item for item in execs if item['role'] == 'qa' and not item['shadow'] and item['attempt'] == n]
+        reviews = [item for item in execs if _primary_qa(item) and item['attempt'] == n]
         outcome, reason = _outcome(status, dwarfs, reviews)
         last = dwarfs[-1] if dwarfs else None
         model = last['model'] if last is not None else None
@@ -166,7 +219,7 @@ def _route(rd, base):
 def _reviews(key, ident, execs, shadows):
     rows = []
     for item in execs:
-        if item['role'] == 'qa' and not item['shadow'] and item['state'] == 'done':
+        if _primary_qa(item) and item['state'] == 'done':
             model = item['model'] or {}
             rows.append(dict(run=key, task=ident, n=item['attempt'], kind='primary', alias=model.get('alias'),
                              spec=model.get('spec'), verdict=item['verdict'], findings=item['findings'],
@@ -176,7 +229,7 @@ def _reviews(key, ident, execs, shadows):
             continue
         model = (items[-1]['model'] if items else None) or {}
         spec = entry['spec'] if isinstance(entry['spec'], str) else model.get('spec')
-        primaries = [item for item in execs if item['role'] == 'qa' and not item['shadow']
+        primaries = [item for item in execs if _primary_qa(item)
                      and item['attempt'] == entry['attempt'] and item['model']]
         rows.append(dict(run=key, task=ident, n=entry['attempt'], kind='shadow', alias=model.get('alias') or _alias(spec),
                          spec=spec, verdict=entry['verdict'], findings=entry['findings'],
