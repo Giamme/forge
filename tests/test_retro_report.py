@@ -155,15 +155,22 @@ class NormaliseTests(unittest.TestCase):
         self.assertEqual(report.normalise('bash -c "/tmp/wt/test.sh --unit"'), 'bash -c <path> --unit')
         self.assertEqual(report.normalise("bash -c '/tmp/wt/test.sh --integration'"),
                          'bash -c <path> --integration')
+        # A space inside a directory name of a quoted command line is kept: it cannot be told
+        # from an argument, and two patterns for one problem beat one for two problems.
         self.assertEqual(report.normalise('bash -c "/tmp/Review One/test.sh --unit"'),
-                         'bash -c <path> --unit')
-        self.assertEqual(report.normalise('bash -c "/tmp/Review Two/test.sh --unit"'),
-                         'bash -c <path> --unit')
+                         'bash -c <path> one/test.sh --unit')
         self.assertEqual(report.normalise('bash -c "/tmp/a/test.sh --config /tmp/b/file --unit"'),
                          'bash -c <path> --config <path> --unit')
         self.assertEqual(report.normalise('bash -c "/usr/bin/npm test"'), 'bash -c <path> test')
         self.assertEqual(report.normalise('bash -c "/usr/bin/npm install"'), 'bash -c <path> install')
-        self.assertEqual(report.normalise('bash -c "/tmp/Review One/npm test"'), 'bash -c <path> test')
+        self.assertEqual(report.normalise('ssh host "/usr/bin/npm test"'), 'ssh host <path> test')
+        self.assertEqual(report.normalise('ssh host "/usr/bin/npm install"'), 'ssh host <path> install')
+        self.assertEqual(report.normalise('bash -c "/usr/bin/pytest tests/unit -q"'),
+                         'bash -c <path> tests/unit -q')
+        self.assertEqual(report.normalise('bash -c "/usr/bin/pytest tests/integration -q"'),
+                         'bash -c <path> tests/integration -q')
+        self.assertEqual(report.normalise('cat "/tmp/Review - One"'), 'cat <path>')
+        self.assertEqual(report.normalise('cat "/tmp/Review - Two"'), 'cat <path>')
         self.assertEqual(report.normalise('bash -c "/usr/bin/npm test tests/unit"'),
                          'bash -c <path> test tests/unit')
         self.assertEqual(report.normalise('bash -c "/usr/bin/npm install packages/foo"'),

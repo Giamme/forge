@@ -116,6 +116,10 @@ def normalise(text: str) -> str:
 
 
 _COMMAND_LINE = re.compile(r'(?:^|\s)(?:-[a-z]*c|eval)\s*$')
+# Commands whose quoted argument is a command line for another shell.
+_REMOTE = re.compile(r'(?:^|\s)(?:ssh|mosh)\s')
+# A flag is a dash and a letter. A lone dash (`"/tmp/Review - One"`) is part of a name.
+_FLAG = re.compile(r'-{1,2}[a-z]')
 
 
 def _quoted_path(match) -> str:
@@ -123,25 +127,25 @@ def _quoted_path(match) -> str:
 
     A quoted string is one of two things, and the text alone does not always say which:
 
-    - a command line, when it follows `-c` / `eval` or holds a word that starts with `-`
-      (`bash -c "/usr/bin/npm test tests/unit"`). The path is the first word, plus any
-      word right after it that holds a separator (`"/tmp/Review One/test.sh --unit"`: the
-      space is inside a directory name). Every other word is an argument and is kept, so
-      `"/usr/bin/npm test"` and `"/usr/bin/npm install"` stay two patterns.
+    - a command line, when it follows `-c` / `eval`, when the command is `ssh` / `mosh`,
+      or when it holds a word that is a flag (`bash -c "/usr/bin/npm test tests/unit"`,
+      `ssh host "/usr/bin/npm test"`). The path is the first word only; every other word
+      is an argument and is kept, so `"/usr/bin/npm test"` and `"/usr/bin/npm install"`
+      stay two patterns, and so do `"/usr/bin/pytest tests/unit -q"` and
+      `"/usr/bin/pytest tests/integration -q"`.
     - otherwise one path, spaces included: `cat "/tmp/Review One"` is `cat <path>`.
 
-    A quoted command line with no flag and no `-c` (`ssh host "/usr/bin/npm test"`) reads
-    as a path; the arguments after it are lost.
+    A space inside a directory name of a quoted command line (`"/tmp/Review One/t.sh -q"`)
+    cannot be told from an argument, so the rest of that name is kept and two worktrees
+    named differently stay two patterns. Splitting is the safe failure: the report shows
+    the same problem twice, never two different problems as one.
     """
     parts = match.group(0)[1:-1].split(' ')
     before = match.string[:match.start()]
-    if not (_COMMAND_LINE.search(before) or any(part.startswith('-') for part in parts[1:])):
+    if not (_COMMAND_LINE.search(before) or _REMOTE.search(before)
+            or any(_FLAG.match(part) for part in parts[1:])):
         return '<path>'
-    end = 1
-    while end < len(parts) and not parts[end].startswith('-') \
-            and ('/' in parts[end] or '\\' in parts[end]):
-        end += 1
-    return ' '.join(['<path>'] + parts[end:])
+    return ' '.join(['<path>'] + parts[1:])
 
 
 def build(plan) -> dict:
