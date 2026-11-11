@@ -39,7 +39,10 @@ sys.path.insert(0, str(SKILL / 'ui'))
 # `plan` writes itself (routing, Jev's frozen selection) or that a fresh plan decides (exploration).
 OPTION_FILES = ('no_ripwire', 'no_memory', 'yolo_dwarf', 'yolo_qa', 'reviewer_session', 'implementer_session', 'fast',
                 'pre_review_tests', 'pre_review_parallel', 'qa_threshold', 'timeout', 'verify_retries', 'verify_cmd',
-                'verify_parallel', 'setup_cmd', 'final_qa', 'shadow_qa', 'shadow_rate', 'escalate_after', 'fail_first', 'profile.json')
+                'verify_parallel', 'setup_cmd', 'final_qa', 'shadow_qa', 'shadow_rate', 'escalate_after', 'fail_first', 'profile.json',
+                'retro_mode', 'brief', 'brief_scope', 'brief_model', 'summaries', 'summaries_model')
+# The feature files are rewritten from the source's effective settings (copy_plan), not only copied.
+FEATURE_FILES = ('retro_mode', 'brief', 'brief_scope', 'brief_model', 'summaries', 'summaries_model')
 PLAN_FILES = ('repo.identity', 'goal.txt', 'request.md')
 TASK_FILES = ('prompt.md', 'approach.md')
 NAME = re.compile(r'[^A-Za-z0-9._-]+')
@@ -199,6 +202,13 @@ def copy_plan(src: dict, new: dict, rows: list) -> None:
             shutil.copy2(plan / name, out / name)
     if (plan / 'verify.d').is_dir():
         shutil.copytree(plan / 'verify.d', out / 'verify.d')
+    # Retro, brief and summaries as the source resolved them, `off` included: the new plan has
+    # no waves.tsv yet, so a missing file would let its `plan` take the user setting instead.
+    from forge_side import plan_files
+    for name in FEATURE_FILES:
+        (out / name).unlink(missing_ok=True)
+    for name, value in plan_files(plan).items():
+        (out / name).write_text(value + '\n')
     for row in rows:
         for name in TASK_FILES:
             if (plan / 'tasks' / row['id'] / name).is_file():

@@ -33,7 +33,8 @@ TASKS_COLS = ('id', 'deps', 'difficulty', 'files', 'dwarf', 'qa', 'title')
 STRUCTURED = ('codex', 'claude', 'openclaude', 'grok', 'opencode')   # as forge-runtime.py's: .last is the message, not the log
 # Plan files that change what a plan decides, added to its rid only when present (see plan_event).
 PLAN_RID_LATER = ('decompose_level', 'shadow_qa', 'shadow_rate', 'explore', 'reviewer_session',
-                  'implementer_session', 'pre_review_tests')
+                  'implementer_session', 'pre_review_tests', 'retro_mode', 'brief', 'brief_scope', 'brief_model',
+                  'summaries', 'summaries_model')
 
 # Files a task or solo execution may write. begin() snapshots their signatures so
 # finish() can tell this execution's outputs from what an earlier one left behind.
@@ -806,7 +807,8 @@ def plan_event(plan: Path, prov: dict, src: str = 'live', inventory: bool = True
         jev_coupling=read_json(plan / 'jev-coupling.json'),
         options=dict({name: first_line(plan / name) for name in ('verify_retries', 'timeout', 'final_qa',
                                                             'shadow_qa', 'shadow_rate', 'explore', 'reviewer_session',
-                                                            'implementer_session')
+                                                            'implementer_session', 'retro_mode', 'brief', 'brief_scope',
+                                                            'brief_model', 'summaries', 'summaries_model')
                  if (plan / name).exists()}, qa_threshold=threshold, qa_threshold_source=threshold_source),
         flags=sorted(name for name in ('no_memory', 'no_ripwire', 'yolo_dwarf', 'yolo_qa', 'pre_review_tests')
                      if (plan / name).exists()),

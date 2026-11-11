@@ -133,7 +133,7 @@ class SettingsTests(SideCase):
             'brief': {'level': 'advisory', 'scope': 'plan', 'model': 'user-brief'},
             'summaries': {'mode': 'on', 'model': 'user-sum'},
         })
-        (self.plan / 'retro').write_text('off\n')
+        (self.plan / 'retro_mode').write_text('off\n')
         (self.plan / 'brief').write_text(' strict \n')
         (self.plan / 'brief_scope').write_text('wave\n')
         (self.plan / 'brief_model').write_text(' plan-brief \n')
@@ -160,6 +160,41 @@ class SettingsTests(SideCase):
             'summaries': {'mode': 'on', 'model': 'astra'},
         })
 
+    def test_a_planned_plan_ignores_the_user_settings(self):
+        self.user({
+            'retro': 'on',
+            'brief': {'level': 'gated', 'scope': 'plan', 'model': 'sol'},
+            'summaries': {'mode': 'on', 'model': 'astra'},
+        })
+        (self.plan / 'waves.tsv').write_text('a\t1\n')
+        self.assertEqual(forge_side.settings(self.plan), {
+            'retro': False,
+            'brief': {'level': 'off', 'scope': 'task', 'model': ''},
+            'summaries': {'mode': 'off', 'model': ''},
+        })
+        (self.plan / 'brief').write_text('strict\n')
+        self.assertEqual(forge_side.settings(self.plan)['brief'], {'level': 'strict', 'scope': 'task', 'model': ''})
+
+    def test_an_off_file_beats_the_user_setting_before_planning(self):
+        self.user({'retro': 'on', 'brief': {'level': 'gated', 'model': 'sol'}, 'summaries': {'mode': 'on', 'model': 'a'}})
+        for name in ('retro_mode', 'brief', 'summaries'):
+            (self.plan / name).write_text('off\n')
+        got = forge_side.settings(self.plan)
+        self.assertEqual((got['retro'], got['brief']['level'], got['summaries']['mode']), (False, 'off', 'off'))
+
+    def test_plan_files_freeze_the_effective_choices_without_the_env_switches(self):
+        # What a plan made from this one is given: `off` spelled out, and the env switches left out.
+        self.user({'retro': 'on', 'brief': {'level': 'gated', 'model': 'sol'}, 'summaries': {'mode': 'on', 'model': 'a'}})
+        (self.plan / 'waves.tsv').write_text('a\t1\n')
+        self.assertEqual(forge_side.plan_files(self.plan), {'retro_mode': 'off', 'brief': 'off', 'summaries': 'off'})
+        (self.plan / 'brief').write_text('strict\n')
+        (self.plan / 'brief_model').write_text('sol\n')
+        (self.plan / 'retro_mode').write_text('on\n')
+        os.environ['FORGE_BRIEF'] = 'off'
+        os.environ['FORGE_RETRO'] = 'off'
+        self.assertEqual(forge_side.plan_files(self.plan), {'retro_mode': 'on', 'brief': 'strict', 'brief_scope': 'task',
+                                                            'brief_model': 'sol', 'summaries': 'off'})
+
     def test_invalid_plan_tokens_fall_through_but_a_retro_file_can_force_off(self):
         # Brief, scope and summaries ignore a token they do not recognise. Retro's file is
         # the on/off switch itself: anything other than `on` is off, and it beats the user.
@@ -168,7 +203,7 @@ class SettingsTests(SideCase):
             'brief': {'level': 'advisory', 'scope': 'wave', 'model': 'user-m'},
             'summaries': {'mode': 'on', 'model': 'user-s'},
         })
-        (self.plan / 'retro').write_text('ON\n')
+        (self.plan / 'retro_mode').write_text('ON\n')
         (self.plan / 'brief').write_text('STRICT\n')
         (self.plan / 'brief_scope').write_text('nope\n')
         (self.plan / 'summaries').write_text('yes\n')
@@ -185,7 +220,7 @@ class SettingsTests(SideCase):
             'brief': {'level': 'strict', 'scope': 'plan', 'model': 'user-m'},
             'summaries': {'mode': 'on', 'model': 'user-s'},
         })
-        (self.plan / 'retro').write_text('on\n')
+        (self.plan / 'retro_mode').write_text('on\n')
         (self.plan / 'brief').write_text('strict\n')
         (self.plan / 'brief_scope').write_text('wave\n')
         (self.plan / 'brief_model').write_text('plan-brief\n')
@@ -206,7 +241,7 @@ class AllowedTests(SideCase):
 
     def setUp(self):
         super().setUp()
-        (self.plan / 'retro').write_text('on\n')
+        (self.plan / 'retro_mode').write_text('on\n')
         (self.plan / 'brief').write_text('advisory\n')
         (self.plan / 'brief_scope').write_text('task\n')
         (self.plan / 'brief_model').write_text('sol\n')
