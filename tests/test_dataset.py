@@ -2105,6 +2105,13 @@ class IndependenceTests(unittest.TestCase):
                                            'from forge_dataset.forecast import _cost',
                                            'from forge_dataset.forecast import registry_models'])
                 continue
+            if path.parent.name == 'forge_side' and path.name == '__init__.py':
+                # A side dispatch records one point event. It does not read the store, and the
+                # filename is shared with every other package, so it cannot join `allowed` by name.
+                imports = [line.strip() for line in text.splitlines()
+                           if 'forge_dataset' in line and 'import' in line]
+                self.assertEqual(imports, ['from forge_dataset.capture import point'])
+                continue
             self.assertIn(path.name, allowed, path)
             for line in text.splitlines():
                 if 'forge_dataset' in line and 'import' in line:
