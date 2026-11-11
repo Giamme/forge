@@ -1196,6 +1196,57 @@ def _trail(reader, rows, execs, sources_name, escalations, queue_times):
     return result
 
 
+# --- generated task summaries (#133 B): tasks/<id>/summary.json, its error, and the switches -----------------------
+
+_SUMMARY_SOURCES = ('attempt', 'finding')
+# The facts a summary is made from, as the reader shows them: one changed after generated_at makes it stale.
+_SUMMARY_FACTS = ('attempts.tsv', 'status', 'merged', 'qa.last')
+
+
+def _mode_or_none(value):
+    return value if value in ('on', 'off') else None
+
+
+def _is_number(value):
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+
+
+def _summary_sources(reader, prefix, sources):
+    """The well-formed `{kind, ref}` entries of a summary's sources; any other entry is dropped."""
+    if not isinstance(sources, list):
+        return []
+    return [dict(kind=item['kind'], ref=reader.cap(item['ref'], prefix + '/summary.sources'))
+            for item in sources
+            if isinstance(item, dict) and item.get('kind') in _SUMMARY_SOURCES and isinstance(item.get('ref'), str)]
+
+
+def _task_summary(reader, prefix):
+    """The task's generated summary, or None when there is no summary.json (or it is not a summary: warned)."""
+    body = reader.object(prefix + '/summary.json')
+    error = reader.text(prefix + '/summary.error')
+    if body is None:
+        return None
+    text, generated = body.get('text'), body.get('generated_at')
+    if not isinstance(text, str) or not _is_number(generated):
+        reader.warn(prefix + '/summary.json', 'not a summary (needs text and generated_at)')
+        return None
+    facts = [reader.stat(f'{prefix}/{name}') for name in _SUMMARY_FACTS]
+    # generated_at is whole seconds: a fact written in the second the summary was made is not after it.
+    stale = any(info is not None and int(info.st_mtime) > generated for info in facts)
+    sentence, model = body.get('sentence'), body.get('model')
+    return dict(text=reader.cap(text, prefix + '/summary.text'),
+                sentence=reader.cap(sentence, prefix + '/summary.sentence') if isinstance(sentence, str) else None,
+                model=model if isinstance(model, str) else None, generated_at=generated,
+                sources=_summary_sources(reader, prefix, body.get('sources')), stale=stale,
+                error=reader.cap(error, prefix + '/summary.error') if error and error.strip() else None)
+
+
+def _run_summaries(reader):
+    """The run's summary switch from its plan files. `mode` is on only when `summaries` says so (absent is off);
+    `model` is the first line of `summaries_model`, or null."""
+    return dict(mode='on' if reader.word('summaries') == 'on' else 'off', model=reader.line('summaries_model'))
+
+
 def _task_detail(reader, task, run_id, waves, branches, max_attempts, origin, request, queues):
     """Fill in a plan task; returns every execution it read (its own and its shadows')."""
     ident = task['id']
@@ -1255,6 +1306,8 @@ def _task_detail(reader, task, run_id, waves, branches, max_attempts, origin, re
     task['swept'] = []
     shadows = _shadows(reader, ident, execs)
     task['shadow'] = [entry for entry, _, _ in shadows]
+    task['summary'] = _task_summary(reader, prefix)
+    task['summaries_override'] = _mode_or_none(reader.word(prefix + '/summaries'))
     # What `forge control show` reads of the task. A change there (a write, or a delete: the dir's mtime) moves `updated`,
     # so the page redraws and the Controls panel asks again.
     reader.stat(prefix)
@@ -1335,8 +1388,9 @@ def _sweep(reader, tasks):
 # Read only for their mtimes, so the run's `updated` stamp moves when a control changes.
 # control.requests is a directory: its mtime moves when a request is queued or settled.
 _RUN_CONTROLS = ('control.log', 'retry_budget', 'infra_budget', 'drain', 'stop', 'max_parallel', 'infra.paused', 'infra.last',
-                 'infra_backoff', 'escalate_effort', 'control.requests')
-_TASK_CONTROLS = ('qa_threshold', 'retry_budget', 'retries.used', 'escalation.pin', 'escalation.stop', 'escalation.next')
+                 'infra_backoff', 'escalate_effort', 'control.requests', 'summaries', 'summaries_model')
+_TASK_CONTROLS = ('qa_threshold', 'retry_budget', 'retries.used', 'escalation.pin', 'escalation.stop', 'escalation.next',
+                  'summaries')
 
 
 _FAIL_FIRST_RESULTS = ('proven', 'passes_without_change', 'inconclusive', 'error')
@@ -1835,6 +1889,7 @@ def _solo_detail(reader, source):
     request = reader.text('request.md')
     result['request'] = reader.cap(request, 'request')
     result['retro'] = _retro(reader)
+    result['summaries'] = None  # generated summaries are for plan tasks only
     result['settings'] = dict.fromkeys(_SOLO_SETTINGS)
     result['settings']['qa_threshold'], result['settings']['qa_threshold_source'] = _threshold(reader)
     result['settings']['profile'] = _frozen_profile(reader)
@@ -1860,7 +1915,8 @@ def _solo_detail(reader, source):
                 executions=execs, merged_at=None, findings=executions.summary_of(qa),
                 gate=_gate(reader, 'qa.gate'), known_issues=_nonempty(reader, 'known_issues.md'),
                 fail_first=_fail_first(reader, 'failfirst.json'), pre_review=None,
-                now=_now(reader, '', execs) if status == 'RUNNING' else None, waiting=None, sweep=None, swept=[])
+                now=_now(reader, '', execs) if status == 'RUNNING' else None, waiting=None, sweep=None, swept=[],
+                summary=None, summaries_override=None)
     task['header'] = _header(reader, task['title'], prompt, approach, request, 'tasks/solo',
                              _github_origin(reader))
     task['trail'] = _trail(reader, logged, execs, 'retry_sources.tsv', [], _queued_retries(reader).get('solo', ()))
@@ -1968,6 +2024,7 @@ def detail(path, source='plan') -> dict:
                               escalate_after=reader.number('escalate_after', int),
                               verify_retries=reader.number('verify_retries', int), final_qa=reader.line('final_qa'),
                               profile=_frozen_profile(reader))
+    result['summaries'] = _run_summaries(reader)
     waves, wave_map = _waves(reader)
     result['waves'] = [waves.get(n, []) for n in range(1, max(waves, default=0) + 1)]
     branches = {row[0]: _nullable(row[2]) for _, row in reader.rows('results.tsv', 3)}

@@ -52,6 +52,7 @@ written), and the reader must never raise because of one.
 | `attribution.json` | the result of `forge-parallel.sh attribute`: `culprit` (a task id or `null`), `base_fails`, `inconclusive` (a reason or `null`), `merges`, `steps`, `verification_runs`, `gate` (`null` without the gate, else `{mode, ranking, tried, outcome}`); returned as `attribution`, see RunDetail |
 | `max_parallel`, `escalate_after`, `verify_retries` | one integer each |
 | `qa_threshold` | `P0`..`P3`, the least severe finding that still blocks; `final_qa` the final review's QA spec |
+| `summaries`, `summaries_model` | the run's task-summary switch (`on` or `off`; absent is `off`) and its model spec, from `forge control set summaries`; returned as `summaries`, see RunDetail |
 | `profile.json` | the profile the run froze: `name`, `level` (`user`, `repo` or `builtin`), `body` (the profile object), `shadowed` (levels the winning copy hid), `frozen_at` (UTC, `YYYY-MM-DDTHH:MM:SSZ`), `overridden` (the sorted dotted keys a flag of the run replaced, such as `routing.qa.any`; empty when none). RunDetail returns `settings.profile` `{name, level, overridden}`, `null` when the file is absent, unreadable or not that shape |
 | `deferrals.txt` | one line per task the wave planner deferred |
 | `retro.md`, `retro/notes.jsonl` | written when retro mode is on: the report (Markdown) and one JSON note per line (`fixable_by` `user`, `forge` or `unsure`, `check` `verified` or `claimed`, `blocking` a boolean). Returned as `retro`, see RunDetail |
@@ -76,6 +77,9 @@ written), and the reader must never raise because of one.
 | `tasks/<id>/accepted.by` | who accepted a task over a reviewer's FAIL, and why (`key=value`: `task`, `status`, `reason`, `by`, `at`, `epoch`, `attempt`, `reviewed_commit`; older runs are free text; returned as text) |
 | `tasks/<id>/qa.gate` | `threshold<TAB>decision<TAB>worst<TAB>n_confirmed<TAB>n_unlabelled<TAB>n_below` (`decision` is `accept` (the reviewer said FAIL, every CONFIRMED finding was below the threshold), `fail` (the reviewer said PASS, but listed a blocking CONFIRMED finding) or `keep`, `-` for none) |
 | `tasks/<id>/known_issues.md` | the confirmed findings a threshold tolerated |
+| `tasks/<id>/summary.json` | the task's generated summary: `{text, sentence, model, generated_at, inputs_hash, sources}`, `generated_at` in epoch seconds, `sources` a list of `{kind, ref}` (`kind` `attempt` or `finding`; a finding's `ref` is `<attempt>:<title>`); returned as `summary`, see Task |
+| `tasks/<id>/summary.error` | the reason the last generation failed; the previous `summary.json` is kept. Returned as `error` inside `summary` |
+| `tasks/<id>/summaries` | the task's summary switch, `on` or `off`, from `forge control set summaries --task <id>`; `inherit` removes the file. Returned as `summaries_override` |
 | `tasks/<id>/prereview.json`, `prereview.md` | the pre-review tests of the latest attempt (opt-in `plan --pre-review-tests`): `status` (`passed`, `flaky`, `pre-existing`, `failed`, `skipped`, `error`), `reason`, `command`, `selected`, `failing`, `preexisting`, `flaky`, `runs`, `seconds`; returned on a task as `pre_review` `{status, reason, command, selected, failing, preexisting, flaky, seconds, tail}` (`tail`: the end of the last failing run's output), `null` without the file. `prereview.md` is the implementer's findings of a `failed` check |
 | `tasks/<id>/dwarf.input`, `qa.input` | the prompts forge assembled; `<role>.delivered`, `<role>.resolved` the live dispatch files |
 | `tasks/<id>/<role>.log`, `<role>.clock` | the running dispatch's harness log and its clock: one `<epoch> <bytes>` line each time the log grew (forge-dispatch.sh samples it every second; `FORGE_LOG_CLOCK=off` writes none) |
@@ -227,7 +231,7 @@ loaded. When it cannot be loaded, `findings_available` is `false` and every find
 is `null`; verdicts and `gate` do not need it.
 
 Text fields are capped so one huge file cannot blow up a response: `request`, `prompt`,
-`approach`, `retry_findings`, `needs_input`, the `decision` text and `retro`'s `text` keep their first 20,000 characters, and an `infra` `detail` its first 400; `qa_tail`, `dwarf_tail`
+`approach`, `retry_findings`, `needs_input`, the `decision` text, `retro`'s `text`, a summary's `text`, `sentence` and `error` and each source `ref` keep their first 20,000 characters, and an `infra` `detail` its first 400; `qa_tail`, `dwarf_tail`
 and `verification.log_tail` keep their last 4,000. A capped field ends (or, for tails,
 starts) with `…` and the value of `truncated` lists the field names that were cut.
 
@@ -401,6 +405,7 @@ Every RunSummary field, plus:
   "request": "the user's request, verbatim",
   "retro": {"text": "# Retro\n…", "notes": 6, "user": 2, "forge": 2, "unsure": 1,
             "verified": 3, "claimed": 3, "blocking": 3},
+  "summaries": {"mode": "on", "model": "sol:low"},
   "settings": {"explore": 0.5, "shadow_rate": 0.5, "shadow_qa": ["opus", "sol:xhigh"], "timeout": 3600,
                "max_parallel": 2, "qa_threshold": "P2", "escalate_after": 3, "verify_retries": 1,
                "final_qa": "opus",
@@ -461,6 +466,9 @@ Every RunSummary field, plus:
   `fixable_by` or `check` counts only in `notes`. A non-blank line that is not a JSON object is skipped,
   with one warning per file (`retro/notes.jsonl: N malformed lines skipped`). `text` is among the texts
   an export leaves out unless it is asked to include them.
+- `summaries` is the run's task-summary switch from its plan files: `mode` is `on` only when `summaries` holds
+  `on` (absent, `off` or anything else is `off`), and `model` is the first line of `summaries_model`, or `null`.
+  A solo run has `null`. A task's own switch is its `summaries_override` (Task).
 - `attribution` is the result of `forge-parallel.sh attribute` from `attribution.json`, or `null` when
   the file is missing. `culprit` is the merged task's id or `null`; `base_fails` is `true` only when the
   base verified FAIL; `inconclusive` is the reason the search stopped without a culprit, or `null`;
@@ -623,7 +631,12 @@ Every RunSummary field, plus:
   "waiting": null,
   "sweep": null,
   "swept": [{"id": "S1", "severity": "P2", "confidence": "CONFIRMED", "task": "reader", "location": "ui/reader.py:12",
-             "summary": "Status is read twice.", "status": "fixed", "note": null, "by": "sweep-1"}]
+             "summary": "Status is read twice.", "status": "fixed", "note": null, "by": "sweep-1"}],
+  "summary": {"text": "Reads the plan dirs.\n…", "sentence": "Reads plan dirs into plain dicts.", "model": "sol:low",
+              "generated_at": 1760621300, "sources": [{"kind": "attempt", "ref": "2"},
+                                                       {"kind": "finding", "ref": "1:Missing status file"}],
+              "stale": false, "error": null},
+  "summaries_override": null
 }
 ```
 
@@ -750,6 +763,19 @@ Every RunSummary field, plus:
   `not-fixed`, or `unreported` when it merged without a line for it; read from `sweep.outcome.json`)
   and `null` until the fix task merged, `note` the review's words on it.
 - `swept`: this task's findings a fix task took, the same objects plus `by` (the fix task); `[]`.
+- `summary`: `null` unless `tasks/<id>/summary.json` is a JSON object with a string `text` and a number
+  `generated_at` (anything else is `null` and warned, as is a file that is not JSON). Then
+  `{text, sentence, model, generated_at, sources, stale, error}`: `sentence` and `model` are `null`
+  when the file's are not strings; `generated_at` is its epoch seconds; `sources` keeps the entries that are
+  `{kind, ref}` with `kind` `attempt` or `finding` and a string `ref`, and drops the others. `stale` is `true`
+  when `attempts.tsv`, `status`, `merged` or `qa.last` has a later mtime than `generated_at`, compared in whole
+  seconds (a file written in the second `generated_at` was made in is not later). `merged` counts because
+  a merge changes the status the page shows. `error` is the text of `tasks/<id>/summary.error`, or `null` when
+  the file is missing or blank. A task whose first generation failed has no `summary.json`, so its `summary` is
+  `null` and its error is not shown. The export blanks `text` and `error` unless texts are chosen.
+- `summaries_override`: `on` or `off` from `tasks/<id>/summaries`, or `null` when the file is missing or holds
+  anything else (the task then follows the run's switch). A solo run's task has `null` for `summary` and
+  `summaries_override`.
 - Text fields are `null` when the file is missing.
 
 A solo run's one task uses this same shape. `id` is `solo` and `title` is the goal, or
@@ -1490,6 +1516,8 @@ known or a spec runs is for the CLI to say (its `400` or `409` comes back as abo
 |---|---|
 | `{"action": "set", "key": "qa-threshold", "value": "P2"}` (`default` at run level removes the setting, `none` is P3; for a task `inherit` drops the override) | `control set <dir> qa-threshold P2 --actor ui --json` |
 | `{"action": "set", "key": "retry-budget", "value": "inherit", "task": "reader"}` | `control set <dir> retry-budget inherit --task reader --actor ui --json` |
+| `{"action": "set", "key": "summaries", "value": "on"}` (or `off`) | `control set <dir> summaries on --actor ui --json` |
+| `{"action": "set", "key": "summaries", "value": "inherit", "task": "reader"}` (`on` or `off` with `task` too) | `control set <dir> summaries inherit --task reader --actor ui --json` |
 | `{"action": "pin", "task": "graph", "spec": "sol:high:codex"}` | `control pin <dir> graph sol:high:codex --actor ui --json` |
 | `{"action": "unpin", "task": "graph"}` | `control unpin <dir> graph --actor ui --json` |
 | `{"action": "drain"}` | `control drain <dir> --actor ui --json` |
@@ -1501,7 +1529,8 @@ known or a spec runs is for the CLI to say (its `400` or `409` comes back as abo
 
 `value` is always a string. `task` is optional on `set`, and only for the keys the CLI allows it
 for; the page sets `max-parallel`, `infra-backoff` (`none` drops it) and `escalate-effort`
-(`on`/`off`) plan-wide. `now` is a boolean. `add` is not exposed: a row is added to `tasks.tsv` by
+(`on`/`off`) plan-wide. `summaries` takes `on` or `off`, for the run or with a `task`, and `inherit` only with a `task`; `on`
+for a finished run makes the CLI start `forge summarize` (detached), which the route does not wait for. `now` is a boolean. `add` is not exposed: a row is added to `tasks.tsv` by
 hand, so its CLI is the place to queue it. A success is
 `200 {"ok": true, "changed": {...}, "applies": "...", "controls": {...}}`, where `controls` is the
 `GET` object after the change; `drain`, `resume` and `stop` answer the same way and are refused
