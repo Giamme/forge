@@ -579,4 +579,30 @@ class RetroRouteTests(unittest.TestCase):
         self.assertIn('no-plan', missing.stderr)
         self.assertEqual(missing.stdout, '')
 
+class BriefRouteTests(unittest.TestCase):
+    """`forge brief` reaches forge-brief.py. A missing plan is that command's exit 3,
+    not the launcher's unknown-command exit 2."""
+
+    def test_forge_brief_is_routed(self):
+        home = tempfile.TemporaryDirectory()
+        self.addCleanup(home.cleanup)
+        env = dict(os.environ, HOME=home.name, XDG_CONFIG_HOME=os.path.join(home.name, 'cfg'))
+        forge = str(ROOT / 'forge')
+        listed = subprocess.run([forge, '--help'], capture_output=True, text=True, env=env)
+        self.assertRegex(listed.stdout, r'(?m)^  brief  ')
+        helped = subprocess.run([forge, 'brief', '--help'], capture_output=True, text=True, env=env)
+        self.assertEqual(helped.returncode, 0, helped.stderr)
+        self.assertIn('usage: forge brief', helped.stdout)
+        bare = subprocess.run([forge, 'brief'], capture_output=True, text=True, env=env)
+        self.assertEqual((bare.returncode, bare.stdout), (2, ''))
+        self.assertEqual(bare.stderr, helped.stdout)
+        usage = subprocess.run([forge, 'brief', 'write'], capture_output=True, text=True, env=env)
+        self.assertEqual(usage.returncode, 2, usage.stderr)
+        self.assertIn('usage: forge brief write', usage.stderr)
+        missing = subprocess.run([forge, 'brief', 'show', os.path.join(home.name, 'no-plan')],
+                                 capture_output=True, text=True, env=env)
+        self.assertEqual(missing.returncode, 3, missing.stderr)
+        self.assertIn('no-plan', missing.stderr)
+        self.assertEqual(missing.stdout, '')
+
 if __name__=='__main__': unittest.main()
