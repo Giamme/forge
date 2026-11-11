@@ -914,6 +914,18 @@
     return s ? { lamp: s[0], text: s[1] } : { lamp: 'pending', text: 'its fix task has not merged' };
   }
 
+  /* ---------- the retro report (retro.md, retro/notes.jsonl) ---------- */
+  // RunDetail.retro → the Retro section's one line, e.g. "5 notes: 3 you can fix, 2 for forge · 4 verified, 1 claimed · 1 blocking".
+  // Unsure notes are named only when there are some. Null when the run has no retro record.
+  function retroSummary(retro) {
+    if (!retro || typeof retro !== 'object') return null;
+    const n = key => num(retro[key]) || 0, word = (count, one, many) => `${count} ${count === 1 ? one : many}`;
+    if (!n('notes')) return '0 notes';
+    const fixable = [`${n('user')} you can fix`, `${n('forge')} for forge`];
+    if (n('unsure')) fixable.push(`${n('unsure')} not sure who`);
+    return `${word(n('notes'), 'note', 'notes')}: ${fixable.join(', ')} · ${n('verified')} verified, ${n('claimed')} claimed · ${n('blocking')} blocking`;
+  }
+
   /* ---------- Fractal: a task's child tasks as a tidy tree (depth across, siblings down) ---------- */
   // nodes: TaskFractal.nodes (tree order, parent ids); returns {pos: {id: {col, row, depth}}, edges: [[parent, child]], cols, rows}
   function fractalTree(nodes) {
@@ -942,5 +954,5 @@
     finalStatus, runReviewStatus, reviewSinceLine, reviewAt, taskStatus, statusText, causeLabel, resetText, taskVerdict, attemptStatus, attemptNote, attemptFailed, isWaiting,
     attributionLine, taskParts,
     taskTimes, metricValue, overlap, projectSchedule, execModel, verifyLeds, criticalPath, concurrency, stateAt, timeRange, events, lineage, structureKey, innerKey,
-    fmtDur, alias, basename, weight, searchIndex, searchRank, statusEvents, fractalTree, sweepLine, sweepState };
+    fmtDur, alias, basename, weight, searchIndex, searchRank, statusEvents, fractalTree, sweepLine, sweepState, retroSummary };
 });

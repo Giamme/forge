@@ -696,6 +696,53 @@ class WorktreeLabel(unittest.TestCase):
 
 
 @unittest.skipUnless(sync_playwright, 'install Python Playwright to run browser checks')
+class RetroSection(unittest.TestCase):
+    """A run with retro.md and retro/notes.jsonl shows a collapsed Retro section in its run details; one without, none."""
+    open, assertClean = Page.open, Page.assertClean
+
+    @classmethod
+    def setUpClass(cls):
+        cls.temp = tempfile.TemporaryDirectory(prefix='forge-ui-retro-')
+        base = Path(cls.temp.name)
+        cls.plan = F.make_retro(F.make_plan(base / 'p'))
+        cls.solo = F.make_solo(base / 's')
+        cls.key, cls.solo_key = reader.run_key(cls.plan), reader.run_key(cls.solo)
+        _serve(cls, reader.Catalog(plans=[cls.plan, cls.solo], registry=False))
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.shutdown(); cls.server.server_close(); cls.thread.join(timeout=2)
+        cls.temp.cleanup()
+
+    RETRO_SECTION = """() => {
+      const h = [...document.querySelectorAll('#inspector section.insp-section > h3')].find(n => n.textContent === 'Retro');
+      const s = h && h.parentElement;
+      if (!s) return null;
+      const d = s.querySelector('details');
+      return { line: s.querySelector('p.muted').textContent, summary: d.querySelector('summary').textContent,
+               open: d.open, report: d.querySelector('pre').textContent };
+    }"""
+
+    def test_the_retro_section_shows_the_counts_and_a_collapsed_report(self):
+        page = self.open(cdn=False, view='2d')
+        page.goto(self.url + '#/runs/' + self.key)
+        page.locator('button.details-btn', has_text='Run details').click()     # the inspector opens on the run's record
+        page.wait_for_selector('#inspector details[data-keep$="run-retro"]', state='attached')
+        self.assertEqual(page.evaluate(self.RETRO_SECTION), {
+            'line': '6 notes: 2 you can fix, 2 for forge, 1 not sure who · 3 verified, 3 claimed · 3 blocking',
+            'summary': 'Report', 'open': False, 'report': F.RETRO_REPORT})
+        self.assertTrue(page.is_visible('#inspector details[data-keep$="run-retro"] > summary'))
+        self.assertClean(page)
+
+    def test_a_solo_run_without_the_files_has_no_retro_section(self):
+        page = self.open(cdn=False, view='2d')
+        page.goto(self.url + '#/runs/' + self.solo_key)
+        page.wait_for_selector('#inspector details[data-keep$="run-request"]', state='attached')
+        self.assertIsNone(page.evaluate(self.RETRO_SECTION))
+        self.assertClean(page)
+
+
+@unittest.skipUnless(sync_playwright, 'install Python Playwright to run browser checks')
 class Cloud(unittest.TestCase):
     """The run cloud (#/cloud) over many runs in several repos."""
     open, three_or_skip, assertClean, frames = Page.open, Page.three_or_skip, Page.assertClean, Page.frames

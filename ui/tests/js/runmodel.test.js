@@ -456,6 +456,16 @@ test('the finding sweep reads as one line, and each swept finding as a lamp', ()
   assert.deepEqual(['fixed', 'not-fixed', 'unreported', null].map(s => RM.sweepState(s).lamp), ['pass', 'fail', 'unknown', 'pending']);
 });
 
+test('the retro section reads as one line of counts; unsure notes appear only when there are some; no record, no line', () => {
+  const counts = { notes: 5, user: 3, forge: 2, unsure: 0, verified: 4, claimed: 1, blocking: 1, text: '# Retro\n' };
+  assert.equal(RM.retroSummary(counts), '5 notes: 3 you can fix, 2 for forge · 4 verified, 1 claimed · 1 blocking');
+  assert.equal(RM.retroSummary({ ...counts, notes: 6, unsure: 1, blocking: 0 }), '6 notes: 3 you can fix, 2 for forge, 1 not sure who · 4 verified, 1 claimed · 0 blocking');
+  assert.equal(RM.retroSummary({ ...counts, notes: 1, user: 1, forge: 0, verified: 0, claimed: 1, blocking: 0 }), '1 note: 1 you can fix, 0 for forge · 0 verified, 1 claimed · 0 blocking');
+  assert.equal(RM.retroSummary({ text: null, notes: 0, user: 0, forge: 0, unsure: 0, verified: 0, claimed: 0, blocking: 0 }), '0 notes');
+  assert.equal(RM.retroSummary(null), null);
+  assert.equal(RM.retroSummary(undefined), null);
+});
+
 test('NEEDS_INPUT and NEEDS_DECISION wait for the user: neither done nor failed, and no failure notification', () => {
   assert.equal(RM.isWaiting('FAIL'), false);
   // only the user is missing: the integration waits; a failed task still blocks it; work still pending stays pending

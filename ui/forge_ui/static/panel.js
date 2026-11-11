@@ -336,6 +336,15 @@ window.ForgePanel = (() => {
     const line = window.ForgeSettings && window.ForgeSettings.profileRowText && window.ForgeSettings.profileRowText(profile);
     return line || undefined;
   }
+  // the Retro section (retro mode only): the report's counts on one line, then the report, collapsed like the other long texts.
+  // The report is plain text: forge-ui has no Markdown renderer, and run data never goes in as HTML.
+  function retroSection(host, run) {
+    const line = RM.retroSummary(run.retro);
+    if (!line) return;
+    const s = section(host, 'Retro');
+    muted(s, line);
+    if (run.retro.text != null) details(s, 'Report', run.retro.text, 'run-retro');
+  }
   // the run's record: what it was asked, how it was set up, and what verification printed (the header names and counts it)
   function runRecord(host, ctx) {
     const run = ctx.run, solo = run.kind === 'solo';
@@ -348,6 +357,7 @@ window.ForgePanel = (() => {
       ['Verification', chip((run.verification && run.verification.status) || run.verification_status)],
       ['Command', run.verification && run.verification.command, true]]);
     details(host, 'Request', display(run.request), 'run-request');
+    retroSection(host, run);
     if (!solo) details(host, 'Waves', list(run.waves).map((ids, i) => `${i + 1}: ${list(ids).join(', ')}`).join('\n') || '—', 'waves');
     if (run.verification && run.verification.log_tail != null) details(host, 'Verification output', run.verification.log_tail, 'verification-output');
   }
