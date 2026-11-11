@@ -443,6 +443,25 @@ class SummaryTests(unittest.TestCase):
                     [item['ref'] for item in sources if item['kind'] == 'finding'],
                     refs)
 
+    def test_an_attempt_that_failed_before_qa_owns_no_review_in_a_shared_second(self):
+        # Attempt 1's review finishes at .8, attempt 2 fails before QA at .95. Both
+        # rows are logged at 1700000001. The fraction cannot pick attempt 2.
+        first = '- [P1][CONFIRMED] a.txt:1 — First bug\nFORGE_VERDICT: FAIL\n'
+        self._fresh(TASKS)
+        task = self.plan / 'tasks' / 'a'
+        task.mkdir(parents=True)
+        (task / 'status').write_text('ERROR\n')
+        (task / 'attempts.tsv').write_text(
+            '1700000001\t1\tFAIL\t\tsol\n1700000001\t2\tERROR\t\tastra\n')
+        self._archive(task, 'qa-0', first, 1700000001.3, 0.5)
+        body, sources = self.facts()
+        self.assertEqual(
+            [(row['findings'], row['worst']) for row in body['attempts']],
+            [(1, 'P1'), (None, None)])
+        self.assertEqual(
+            [item['ref'] for item in sources if item['kind'] == 'finding'],
+            ['1:First bug'])
+
     def test_a_review_archived_before_its_row_keeps_the_open_attempt(self):
         # Summarise after attempt 2's review is archived and before record_attempt
         # appends its row. The counter already says 2. The new findings must not

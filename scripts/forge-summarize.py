@@ -175,6 +175,10 @@ def _worst(findings: list):
     return 'P%d' % min(ranks)
 
 
+# attempts.tsv statuses of an attempt that never reached a reviewer's verdict.
+_NO_REVIEW = frozenset({'ERROR', 'BOUNCED', 'INCOMPLETE', 'INFRA', 'BLOCKED'})
+
+
 def _attempt_rows(task_dir: Path) -> list:
     """One dict per attempts.tsv row: epoch, attempt, verdict (the status column), dwarf."""
     rows = []
@@ -443,8 +447,14 @@ def _assign_timed(items: list, rows: list, task_dir: Path) -> dict:
         # window contains every review that finished in it, so taking that row
         # would give the later review the earlier attempt's findings.
         clusters = _clusters(members)
-        for cluster, offset in zip(clusters, _place_clusters(clusters, epoch, count)):
-            index = start + offset
+        # A row that ended before any review ran owns no review. The fraction of a
+        # second cannot say which attempt a review is, so those rows leave the pool
+        # first and only the rows that could hold one share the second.
+        pool = [index for index in range(start, end) if rows[index]['verdict'] not in _NO_REVIEW]
+        if not pool:
+            pool = list(range(start, end))
+        for cluster, offset in zip(clusters, _place_clusters(clusters, epoch, len(pool))):
+            index = pool[offset]
             for item in cluster:
                 if index == len(rows) - 1 and _append_rejects(
                         epoch, item['started'], item['finished'], task_dir, ahead):
