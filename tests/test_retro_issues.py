@@ -397,6 +397,19 @@ class RetroIssuesTests(unittest.TestCase):
         self.assertIn('kept-arg', visible)
         self.assertIn('Host key verification failed; the host machine ran out of memory', visible)
 
+    def test_build_file_names_before_a_line_number_are_not_hosts(self):
+        summary = 'Makefile:23: * missing separator; Dockerfile:5 failed; buildtwo:22 refused'
+        notes = [note('alpha', 'forge', summary, 'make', 'opus', 'claude')]
+        blob = ''.join(json.dumps(item, ensure_ascii=False, sort_keys=True) + '\n' for item in notes)
+        (self.plan / 'retro' / 'notes.jsonl').write_text(blob, encoding='utf-8')
+        _res, data = self.invoke_json()
+        draft = data['drafts'][0]
+        visible = draft['title'] + '\n' + draft['body'].split('<!--', 1)[0]
+        self.assertIn('Makefile:23: * missing separator', visible)
+        self.assertIn('Dockerfile:5 failed', visible)
+        self.assertIn('<host>:22 refused', visible)
+        self.assertNotIn('buildtwo', visible)
+
     def test_a_repeated_comment_is_not_posted(self):
         self.write_state(issues=[{
             'number': 9,
