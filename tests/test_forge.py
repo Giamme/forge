@@ -579,4 +579,32 @@ class RetroRouteTests(unittest.TestCase):
         self.assertIn('no-plan', missing.stderr)
         self.assertEqual(missing.stdout, '')
 
+class SummarizeRouteTests(unittest.TestCase):
+    """`forge summarize` reaches forge-summarize.py. A missing plan is that command's exit 3,
+    not the launcher's unknown-command exit 2."""
+
+    def test_forge_summarize_is_routed(self):
+        home = tempfile.TemporaryDirectory()
+        self.addCleanup(home.cleanup)
+        env = dict(os.environ, HOME=home.name)
+        forge = str(ROOT / 'forge')
+        listed = subprocess.run([forge, '--help'], capture_output=True, text=True, env=env)
+        self.assertEqual(listed.returncode, 0, listed.stderr)
+        self.assertIn('\n  summarize ', listed.stdout)
+        helped = subprocess.run([forge, 'summarize', '--help'], capture_output=True, text=True, env=env)
+        self.assertEqual(helped.returncode, 0, helped.stderr)
+        self.assertIn('usage: forge summarize', helped.stdout)
+        self.assertIn('--force', helped.stdout)
+        self.assertIn('--task', helped.stdout)
+        self.assertIn('--json', helped.stdout)
+        bare = subprocess.run([forge, 'summarize'], capture_output=True, text=True, env=env)
+        self.assertEqual((bare.returncode, bare.stdout), (2, ''))
+        self.assertEqual(bare.stderr, helped.stdout)
+        missing = subprocess.run(
+            [forge, 'summarize', os.path.join(home.name, 'no-plan')],
+            capture_output=True, text=True, env=env)
+        self.assertEqual(missing.returncode, 3, missing.stderr)
+        self.assertIn('no-plan', missing.stderr)
+        self.assertEqual(missing.stdout, '')
+
 if __name__=='__main__': unittest.main()
