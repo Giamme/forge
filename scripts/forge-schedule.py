@@ -30,6 +30,7 @@ import json
 import math
 import os
 import re
+import shlex
 from pathlib import Path
 import posixpath
 import signal
@@ -592,6 +593,54 @@ def live_stop(plan: object, names: object) -> None:
         _warn('could not withdraw the live control files: ' + str(error))
 
 
+def brief_level(plan: object) -> str:
+    """The plan's effective brief level (off, advisory, gated, strict). Off when settings cannot be read:
+    a broken brief must never hold a run."""
+    try:
+        import forge_side
+        return str(forge_side.settings(plan)['brief']['level'])
+    except Exception:
+        return 'off'
+
+
+def _json_object(path: Path) -> dict | None:
+    try:
+        value = json.loads(path.read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
+BRIEF_PID_CHECK = 0.5   # seconds a writer liveness answer is reused
+
+
+def brief_writer_alive(plan: object) -> bool:
+    """Whether the brief writer `run` started is still running: brief.pid names a live process.
+    The file is removed when the writer ends, so a missing or unreadable one means it is gone."""
+    try:
+        pid = int((Path(plan) / 'brief.pid').read_text().split()[0])
+        if pid <= 0:
+            return False
+        os.kill(pid, 0)
+    except PermissionError:
+        return True
+    except (OSError, ValueError, IndexError):
+        return False
+    return True
+
+
+def brief_unanswered(plan: object, name: str) -> list:
+    """The ids of the task's `must_answer` questions that have no entry in brief.answers.json."""
+    root = Path(plan) / 'tasks' / name
+    brief = _json_object(root / 'brief.json')
+    if brief is None or not isinstance(brief.get('questions'), list):
+        return []
+    answers = _json_object(root / 'brief.answers.json') or {}
+    return [q['id'] for q in brief['questions']
+            if isinstance(q, dict) and q.get('must_answer') is True
+            and isinstance(q.get('id'), str) and q['id'] and q['id'] not in answers]
+
+
 def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
              infra_retries: int = 0, sweep: str | None = None, sweep_max: int = 5,
              sweep_plausible: bool = False) -> int:
@@ -644,6 +693,10 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
     fractal = _fractal_plan(plan)
     drain_told = False # the drained message was printed for this drain
     sweep_asked = False  # this invocation already asked for the finding sweep
+    brief_mode = brief_level(plan)   # advisory never waits; strict was settled before the scheduler started
+    brief_told = set()   # (task, qid or '') whose brief wait was already printed
+    brief_waiting = set()  # tasks the last dispatch pass held for a brief answer or the brief writer
+    brief_alive = [0.0, False]   # when the writer was last looked at, and what was seen
 
     def status(name: str) -> str:
         root = plan / 'tasks' / name
@@ -660,6 +713,47 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
         result = subprocess.run(['/bin/bash', script, '_merge', str(plan), name])
         if result.returncode and status(name) == 'PASS':
             mark(name, 'ERROR')
+        elif brief_mode != 'off' and status(name) == 'MERGED':
+            brief_stale(name)
+
+    def brief_stale(name: str) -> None:
+        """Flag the open questions of the tasks that depend on a merge that touched undeclared files.
+        A failure is one warning line and changes nothing else."""
+        try:
+            result = subprocess.run([sys.executable, str(Path(__file__).resolve().with_name('forge-brief.py')),
+                                     'stale', str(plan), name], stdin=subprocess.DEVNULL,
+                                    stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, timeout=120)
+            failed = result.returncode != 0
+            detail = result.stderr.strip().splitlines()[-1:] if failed else []
+        except (OSError, subprocess.SubprocessError) as error:
+            failed, detail = True, [str(error)]
+        if failed:
+            _warn('brief: could not flag the dependents of ' + name + ' as possibly stale'
+                  + (' (' + detail[0] + ')' if detail else ''))
+
+    def brief_held(name: str) -> bool:
+        """Under gated only: the task has a must_answer question nobody answered, or no brief.json yet while
+        the writer still runs. Prints one line the first time a question holds it."""
+        if brief_mode != 'gated':
+            return False
+        open_ids = brief_unanswered(plan, name)
+        if open_ids:
+            if (name, open_ids[0]) not in brief_told:
+                brief_told.add((name, open_ids[0]))
+                print('forge: ' + name + ' waits for your answer to ' + open_ids[0] + ': forge brief answer '
+                      + shlex.quote(str(plan)) + ' ' + name + ' ' + open_ids[0] + ' "…"', file=sys.stderr, flush=True)
+            return True
+        if (plan / 'tasks' / name / 'brief.json').exists():
+            return False
+        now = time.monotonic()
+        if now - brief_alive[0] >= BRIEF_PID_CHECK:
+            brief_alive[:] = [now, brief_writer_alive(plan)]
+        if not brief_alive[1]:
+            return False
+        if (name, '') not in brief_told:
+            brief_told.add((name, ''))
+            print('forge: ' + name + ' waits for its brief questions to be written', file=sys.stderr, flush=True)
+        return True
 
     def budget(name: str) -> int:
         """Automatic retries this task may use. Read at every decision, never cached: the
@@ -1439,11 +1533,16 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
             handle_requests()
             cap = live_capacity(plan, capacity)
             draining = drained(plan)   # again: the infrastructure wait above can last minutes
+            brief_waiting.clear()
             for name in pending[:]:
                 if paused or len(active) >= cap or interrupted or graceful or draining:
                     break
                 deps = [d for d in tasks[name][1].split(',') if d and d != '-']
                 if any(status(dep) != 'MERGED' for dep in deps):
+                    continue
+                if brief_held(name):
+                    # A wait, not a stop: the rest of the plan runs, and the run does not end while it lasts.
+                    brief_waiting.add(name)
                     continue
                 if any(overlap(tasks[name][3], tasks[other][3]) for other in active):
                     continue
@@ -1484,7 +1583,7 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
                     drain_told = True
                     print('forge: drained — ' + str(len(pending)) + ' task(s) waiting; forge control resume '
                           + str(plan) + ' continues', file=sys.stderr, flush=True)
-            elif not active and not waiting_scopes():
+            elif not active and not waiting_scopes() and not brief_waiting:
                 if paused or held or any(live_pause(pause) for pause in pauses.values()):
                     # Infrastructure stop: leave everything not yet run PENDING. Marking it
                     # BLOCKED would turn "the provider was down" into a recorded failure.

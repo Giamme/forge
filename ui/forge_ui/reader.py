@@ -835,12 +835,42 @@ def _attempt_cap(max_attempts, decisions):
     return max_attempts + sum(_grant(item['choice']) for item in decisions)
 
 
+def _brief_writer_alive(reader):
+    """brief.pid names a running process: the question writer `run` started has not finished."""
+    try:
+        pid = int((reader.text('brief.pid') or '').split()[0])
+        if pid > 0:
+            os.kill(pid, 0)
+            return True
+    except PermissionError:
+        return True
+    except (OSError, ValueError, IndexError):
+        pass
+    return False
+
+
+def _brief_wait(reader, ident):
+    """Why a gated plan holds this task, as forge-schedule.py tells it: the ids of its must_answer questions that
+    have no entry in brief.answers.json, or `[]` when it has no brief.json yet and the writer still runs.
+    None for any other level, or when nothing holds it."""
+    if reader.word('brief') != 'gated':
+        return None
+    brief = reader.object(f'tasks/{ident}/brief.json')
+    if brief is None:
+        return [] if not reader.exists(f'tasks/{ident}/brief.json') and _brief_writer_alive(reader) else None
+    answers = reader.object(f'tasks/{ident}/brief.answers.json') or {}
+    asked = [q['id'] for q in brief.get('questions') or [] if isinstance(q, dict) and q.get('must_answer') is True
+             and isinstance(q.get('id'), str) and q['id'] and q['id'] not in answers]
+    return asked or None
+
+
 def _waiting(reader, tasks, scheduler):
     """Task.waiting: why a task that is not running is not, as far as the run dir tells.
 
     escalation (the retry policy stopped it, whether or not a scheduler runs); and while one runs: infra (a pause
-    holds it), deps (on tasks not merged yet), drained, stopping, overlap (it shares files with a running task),
-    slot (the run is at its capacity) or next (nothing holds it: it starts at the scheduler's next turn)."""
+    holds it), deps (on tasks not merged yet), drained, stopping, brief (a gated plan waits for your answer),
+    overlap (it shares files with a running task), slot (the run is at its capacity) or next (nothing holds it:
+    it starts at the scheduler's next turn)."""
     status = {task['id']: task['status'] for task in tasks}
     running = [task for task in tasks if task['status'] == 'RUNNING']
     for task in tasks:
@@ -866,6 +896,8 @@ def _waiting(reader, tasks, scheduler):
             task['waiting'] = dict(kind='stopping', mode=scheduler['stopping'])
         elif scheduler['drained']:
             task['waiting'] = dict(kind='drained')
+        elif (asked := _brief_wait(reader, task['id'])) is not None:
+            task['waiting'] = dict(kind='brief', questions=asked)
         else:
             mine = [_scope(path) for path in task['files'] if path and path != '-']
             shared = [other['id'] for other in running if _overlap(mine, [_scope(p) for p in other['files'] if p and p != '-'])]
