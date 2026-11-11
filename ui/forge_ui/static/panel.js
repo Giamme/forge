@@ -2,7 +2,7 @@
    took and what its reviewer found. Defines window.ForgePanel.render(host, ctx). All API values enter the
    DOM as text. Large texts (prompts, reports) come from the lazy endpoints and are fetched once per node.
    A task opens on its header (title, goal, links, and the prompt, approach and acceptance criteria) and
-   its attempt trail, then its summary (#133 B) and the chips and the rest.
+   its attempt trail, then its summary (#133 B), then its brief questions (#135) when it has them, and the chips and the rest.
    The run's and a task's write controls are controls.js's (ForgeControls); this file only says where they stand. */
 window.ForgePanel = (() => {
   'use strict';
@@ -697,6 +697,7 @@ window.ForgePanel = (() => {
     taskHeader(host, ctx, task, detail);
     attemptTrail(host, ctx, task);
     summarySection(host, ctx, task);
+    if (window.ForgeBrief) window.ForgeBrief.taskSection(host, ctx, task);
     const head = el('div', undefined, 'insp-head');
     head.append(el('h2', solo ? (task.title || 'Solo run') : `${task.id} · ${task.title || 'Untitled task'}`), el('div', solo ? 'solo task' : `task · wave ${display(task.wave)}`, 'insp-kind'));
     const chips = el('div', undefined, 'chips');

@@ -551,7 +551,7 @@ dialog.keys-sheet::backdrop { background: light-dark(rgb(17 22 19 / .35), rgb(0 
 .tasks-switch .sum-msgs { flex-basis: 100%; }
 .tasks-switch .sum-model { display: inline-flex; }
 .tasks-switch .sum-state { font-weight: 600; }
-body[data-tasks=closed] .tasks-module :is(.run-tasks, .splitter, .dt-tools, .tasks-switch) { display: none; }
+body[data-tasks=closed] .tasks-module :is(.run-tasks, .splitter, .dt-tools, .tasks-switch, .run-questions) { display: none; }
 body[data-tasks=closed] .tasks-module .module-head { border-bottom: 0; }
 .run-tasks .dt, .run-tasks .dt-frame, .run-tasks .table-scroll { height: 100%; }
 .run-tasks .table-scroll { border: 0; border-radius: 0; }
@@ -801,6 +801,32 @@ p.sum-note { margin: 0; font-size: var(--t-xs); }
 .sum-col { max-width: 32ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* who decided an escalation, on the line that reports it */
 .src-plate { font-size: .714rem; padding: 0 5px; vertical-align: 1px; }
+
+/* brief questions (#135): the run's open questions above the task table, and each question in the inspector.
+   The tasks module is 208px tall, so the list is a short strip and scrolls; the table keeps the rest. */
+.run-questions { display: flex; flex-direction: column; flex: 0 1 auto; max-height: 5.5rem; min-height: 0; overflow: hidden; border-bottom: 1px solid var(--rule); }
+.run-questions[hidden] { display: none; }
+.brief-list-head { display: flex; align-items: center; gap: var(--s-2); margin: 0; padding: 6px 10px; flex: none; }
+.brief-list { list-style: none; margin: 0; padding: 0; overflow: auto; min-height: 0; flex: 1 1 auto; }
+a.brief-open { display: grid; gap: 2px; min-width: 0; padding: 6px 10px; border-top: 1px solid var(--rule); color: inherit; text-decoration: none; }
+a.brief-open:hover { text-decoration: none; background: var(--module-2); }
+.brief-open-top { display: flex; flex-wrap: wrap; gap: 2px 8px; align-items: baseline; min-width: 0; }
+.brief-open-task { color: var(--muted); }
+.brief-open-text, .brief-text, .brief-got { overflow-wrap: anywhere; }
+.brief-when { color: var(--muted); font-size: var(--t-xs); font-variant-numeric: tabular-nums; }
+.brief-section .brief-questions { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--s-2); }
+.brief-q { display: grid; gap: 4px; padding: var(--s-2) 10px; border: 1px solid var(--rule); border-radius: var(--r-key); background: var(--module-2); }
+.brief-q p { margin: 0; }
+.brief-text { white-space: pre-line; }
+.brief-why, .brief-options, .brief-default, .brief-scope { font-size: var(--t-xs); color: var(--muted); overflow-wrap: anywhere; }
+.brief-flags { display: flex; flex-wrap: wrap; gap: var(--s-1); }
+.brief-box { display: grid; gap: 6px; margin-top: 2px; }
+.brief-box textarea { width: 100%; min-height: 4.5rem; padding: 6px 10px; resize: vertical; }
+.brief-box .brief-send { justify-self: start; }
+.brief-msgs:empty { display: none; }
+.brief-q .brief-notice { margin: 0; }
+.brief-parked { margin-top: var(--s-2); }
+.brief-parked > .brief-questions { margin-top: var(--s-2); }
 
 /* ---------- tables ---------- */
 .table-scroll { overflow: auto; max-width: 100%; border: 1px solid var(--rule); border-radius: var(--r-key); background: var(--module); }
