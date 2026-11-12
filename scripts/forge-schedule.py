@@ -1711,7 +1711,7 @@ def lock_refusal(plan: Path, command: str) -> str:
                 if command == 'accept' else 'forge control (retry, accept, add, set, drain, stop)')
         text += ' A run is live: change it with ' + live + ', or wait for the run to end.'
     else:
-        text += ' Wait for it to finish, then run ' + command + ' again.'
+        text += ' Wait for it to finish, then run forge-parallel.sh ' + command + ' again.'
     return text
 
 
