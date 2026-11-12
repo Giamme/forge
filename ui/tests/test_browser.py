@@ -94,6 +94,10 @@ class Page(unittest.TestCase):
             context = self.browser.new_context(viewport={'width': 1440, 'height': 960})
             self.addCleanup(context.close)
         page = context.new_page()
+        # Cleanups run last-in first-out, so this runs before the context closes: a test's route
+        # handler still serving a live refresh would otherwise read a disposed response, and
+        # Playwright raises that error in the next test's first call.
+        self.addCleanup(page.unroute_all, behavior='ignoreErrors')
         self.errors = []
         page.on('pageerror', lambda e: self.errors.append(str(e)))
         page.add_init_script(f"""
