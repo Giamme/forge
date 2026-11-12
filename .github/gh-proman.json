@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "language": "en",
+  "project": {
+    "owner": "Giamme",
+    "number": 3
+  },
+  "integration_branches": [
+    "dev",
+    "@default"
+  ]
+}
