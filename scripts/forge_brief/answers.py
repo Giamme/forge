@@ -361,9 +361,13 @@ def _diff_files(plan, task) -> set | None:
 
 
 def _dataset_files(plan, task) -> set:
-    """`changed_files` of this plan's attempt events for the task, when the diff is gone."""
+    """`changed_files` of this plan's attempt events for the task, when the diff is gone.
+
+    Only this run's own events: a plan without a `run_id` reads nothing, so another run's
+    attempts (and the store beyond file lists) never reach the brief."""
     repo = forge_brief._text(Path(plan) / 'repo').strip()
-    if not repo:
+    run_id = forge_brief._text(Path(plan) / 'run_id').strip()
+    if not repo or not run_id:
         return set()
     try:
         from forge_dataset import dataset_dir, repo_id
@@ -371,12 +375,8 @@ def _dataset_files(plan, task) -> set:
         if not path.is_file():
             return set()
         # The events table stores repo_id(repo), the same key live capture writes.
-        query = 'SELECT data FROM events WHERE kind = ? AND task = ? AND repo = ?'
-        params = ['attempt', task, repo_id(repo)]
-        run_id = forge_brief._text(Path(plan) / 'run_id').strip()
-        if run_id:
-            query += ' AND run_id = ?'
-            params.append(run_id)
+        query = 'SELECT data FROM events WHERE kind = ? AND task = ? AND repo = ? AND run_id = ?'
+        params = ['attempt', task, repo_id(repo), run_id]
         db = sqlite3.connect(str(path))
         try:
             rows = db.execute(query, params).fetchall()

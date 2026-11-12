@@ -433,5 +433,21 @@ class AnswerTests(unittest.TestCase):
         self.assertFalse((self.plan / 'tasks' / 'a' / 'brief.late.json').exists())
 
 
+    def test_with_the_diff_gone_only_this_runs_attempt_events_name_the_changed_files(self):
+        # The brief package builds the question writer's prompt, so its one read of the store is
+        # scoped to this run's own attempt file lists; another run's, or a plan with no run_id, give nothing.
+        import forge_brief.answers as answers
+        self.task('a')
+        db = forge_dataset.connect()
+        repo = forge_dataset.repo_id(self.root / 'repo')
+        for rid, run_id, files in (('r1', 'this-run', ['src/mine.py']), ('r2', 'other-run', ['src/theirs.py'])):
+            db.execute('INSERT INTO events (rid, kind, ts, src, repo, run_id, task, data) VALUES (?,?,?,?,?,?,?,?)',
+                       (rid, 'attempt', 1.0, 'live', repo, run_id, 'a', json.dumps({'changed_files': files})))
+        db.commit(); db.close()
+        self.assertEqual(answers.changed_files(self.plan, 'a'), set())
+        (self.plan / 'run_id').write_text('this-run\n')
+        self.assertEqual(answers.changed_files(self.plan, 'a'), {'src/mine.py'})
+
+
 if __name__ == '__main__':
     unittest.main()
