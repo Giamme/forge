@@ -306,6 +306,25 @@ class RunBriefTests(unittest.TestCase):
         self.until_gone(plan / 'brief.pid')
         self.assertTrue((plan / 'tasks' / 'a' / 'merged').exists())
 
+    def refused_by_invalid_lanes(self, level):
+        plan = self.plan_of('--brief', level, '--brief-model', 'sol')          # no brief.json: the writer has questions to write
+        lanes = self.repo / '.forge' / 'verify.d'
+        lanes.mkdir(parents=True)
+        (lanes / 'unit').write_text('#forge: bogus=1\necho unit\n')
+        before = self.calls()
+        result = self.run_script('forge-parallel.sh', 'run', plan)
+        self.until_gone(plan / 'brief.pid')                                    # a writer started before the refusal ends here
+        self.assertEqual(result.returncode, 2, result.stdout)
+        self.assertIn('invalid verification lanes', result.stdout)
+        self.assertFalse((plan / 'brief.out').exists(), 'the question writer was started before the refusal')
+        self.assertEqual(self.calls(), before, 'a model was paid for before the refusal')
+
+    def test_invalid_lanes_refuse_before_the_writer_starts_under_advisory(self):
+        self.refused_by_invalid_lanes('advisory')
+
+    def test_invalid_lanes_refuse_before_the_writer_starts_under_strict(self):
+        self.refused_by_invalid_lanes('strict')
+
     def test_gated_runs_the_writer_and_the_run_waits_for_an_answer_it_is_given_late(self):
         plan = self.plan_of('--brief', 'gated', '--brief-model', 'sol',
                             questions={'a': [question('q1', must=True)], 'b': []})
