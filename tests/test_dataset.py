@@ -907,14 +907,17 @@ class EndToEndTests(StoreCase):
     def test_a_shadow_review_never_holds_its_task_for_long_or_outlives_it(self):
         # The shadow may take as long again as the primary did (here a 2 s minimum), then it
         # is stopped and the task goes on. A spec that cannot run here is dropped, not fatal.
+        # The shadow would sleep 120 s: a run that waited for it takes that long, while one that
+        # stopped it takes some 15 s alone and 40 s or more on a loaded machine, so the bound is
+        # between the two rather than near the loaded time.
         self.env['FORGE_SHADOW_GRACE_S'] = '2'
-        self.scenario({'a.shadow.*': {'sleep': 60}})
+        self.scenario({'a.shadow.*': {'sleep': 120}})
         p = self.plan_of([('a', '-', 'a.txt'), ('b', '-', 'b.txt')], '--shadow-qa', 'nosuchalias,sol',
                          '--shadow-rate', '1')
         started = time.time()
         r = self.run_script('forge-parallel.sh', 'run', p)
         self.assertEqual(r.returncode, 0, r.stdout)
-        self.assertLess(time.time() - started, 40, r.stdout)
+        self.assertLess(time.time() - started, 90, r.stdout)
         self.assertIn('shadow review spec nosuchalias is not usable here', r.stdout)
         self.assertEqual((p / 'shadow' / 'a' / '1-1' / 'shadow.status').read_text().strip(), 'overtime')
         self.assertEqual((p / 'shadow' / 'b' / '1-1' / 'shadow.status').read_text().strip(), 'done')
