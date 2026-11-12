@@ -171,6 +171,9 @@ class NormaliseTests(unittest.TestCase):
                          'bash -c <path> tests/integration -q')
         self.assertEqual(report.normalise('cat "/tmp/Review - One"'), 'cat <path>')
         self.assertEqual(report.normalise('cat "/tmp/Review - Two"'), 'cat <path>')
+        # A dash and a letter inside a quoted path are part of the name, not a flag.
+        self.assertEqual(report.normalise('cat "/tmp/Review -One"'), 'cat <path>')
+        self.assertEqual(report.normalise('cat "/tmp/Review -Two"'), 'cat <path>')
         self.assertEqual(report.normalise('bash -c "/usr/bin/npm test tests/unit"'),
                          'bash -c <path> test tests/unit')
         self.assertEqual(report.normalise('bash -c "/usr/bin/npm install packages/foo"'),
