@@ -707,7 +707,7 @@ class ExclusionTests(RmCase):
         script.write_text('exit 0\n')
         attempt, code, result = self.paused(self.plan, [sys.executable, str(SCHEDULE), 'lock', str(script), 'run', str(self.plan)])
         self.assertEqual(attempt.returncode, 3, attempt.stderr)
-        self.assertIn('forge scheduler', attempt.stderr)
+        self.assertIn('is locked by another forge command', attempt.stderr)   # #138: no bare Errno
         self.assertEqual(code, 0, result)
         self.assertFalse(self.plan.exists())
         again = subprocess.run([sys.executable, str(SCHEDULE), 'lock', str(script), 'run', str(self.plan)],

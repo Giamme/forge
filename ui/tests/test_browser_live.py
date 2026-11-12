@@ -154,8 +154,11 @@ class LiveRefresh(unittest.TestCase):
                     self.move_repos = name == 'cloud'                     # new options are what rebuild its filters
                     page.wait_for_selector(selector)
                     self.next_poll(page)
-                    self.identity(page, selector)
+                    # Focus, then tag: a poll counted above may still be redrawing, and a redraw before
+                    # the focus replaces the select rightly. Every redraw after it must keep the node.
                     page.focus(selector)
+                    self.identity(page, selector)
+                    self.assertTrue(page.eval_on_selector(selector, 'n => n === document.activeElement'))
                     self.next_poll(page)
                     self.next_poll(page)
                     self.assertTrue(self.same(page, selector))

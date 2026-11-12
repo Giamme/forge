@@ -95,7 +95,8 @@ For explanation requests, explain the workflow without spending model quota.
   resumes it.
 - A task at `NEEDS_DECISION` waits for the user. Present `tasks/<id>/decision.md`'s reasons and
   choices. Run `retry --decide`, `retry --dwarf` or `accept` (with `--reason` and `--approved`)
-  only on the user's explicit word, never to keep a run going. Nothing else resumes it. The
+  only on the user's explicit word, never to keep a run going; on a live run use `forge control
+  retry … --decide` or `forge control accept`, which the scheduler applies. Nothing else resumes it. The
   split choice replaces the row in `tasks.tsv` and is a later `run`
   ([when reviews don't converge](references/decompose.md#when-reviews-dont-converge)); do that
   only when the user asks.
