@@ -20,6 +20,9 @@ run leaves branches behind.
 - [Planning](#planning)
 - [Plan shape](#plan-shape)
 - [QA verdicts](#qa-verdicts)
+- [Retro notes (opt-in)](#retro-notes-opt-in)
+- [Brief mode (opt-in)](#brief-mode-opt-in)
+- [Task summaries (opt-in)](#task-summaries-opt-in)
 - [Severity, thresholds and known issues](#severity-thresholds-and-known-issues)
 - [Retrying, and resuming an interrupted run](#retrying-and-resuming-an-interrupted-run)
 - [Infrastructure failures](#infrastructure-failures)
@@ -640,6 +643,128 @@ gives verdict agreement with a 95% interval, the blocking findings only one side
 token and time ratio (see [the dataset reference](dataset.md#paired-reviews)). The export
 adds `shadow` and `consensus` to the matching review cases' metadata.
 
+## Retro notes (opt-in)
+
+`plan --retro` makes each agent record what got in its way: a sandbox that blocked a command, a
+tool that is not installed, an instruction it could not follow, a forge fault. A note says what
+happened and who can fix it. Without a flag a plan keeps its earlier choice, and a first plan
+takes the user setting (`forge config set retro on`). `plan --no-retro` turns it off.
+
+- **What an agent writes.** Most tasks have nothing to report, and a hard task is not a note.
+  A note is one `FORGE_RETRO: {json}` line in the final message. The planner, QA and the
+  whole-run review write it the same way. A dwarf blocked before it finishes also appends the
+  same JSON to `.forge/retro-inbox.jsonl` in its worktree, which forge reads when the dispatch
+  ends. The fields are `type` (`environment`, `sandbox`, `tooling`, `prompt`, `forge-bug` or
+  `other`), `fixable_by` (`user`, `forge` or `unsure`), `summary`, `evidence` (the command, its
+  exit code and the error, up to 2 KB), `blocking` and `tried`.
+- **Checked against the log.** forge looks for the note's command and the first line of its
+  error in that dispatch's log. When both are there the note is `verified`; otherwise `claimed`.
+- **Orchestrator notes.** `forge retro note PLAN --type T --fixable-by F --summary S` records
+  one note of the run's own, with `--command`, `--exit`, `--error`, `--blocking` and `--tried`
+  as needed. It is always `claimed`, and it does not check the retro setting.
+- **Where it goes.** `<plan>/retro/notes.jsonl`, `tasks/<id>/retro.json` for a task, and one
+  `retro_note` dataset event per note. `forge retro report PLAN` writes `<plan>/retro.md`.
+  Notes with the same type and the same normalised command form one pattern; a note with no
+  command is matched on its normalised summary instead. Each pattern
+  goes to the group its majority `fixable_by` names: **You can fix this on this machine**
+  (`user`), **forge should fix this** (`forge`), or **Not sure who should fix this** (`unsure`,
+  also on a tie). A run prints one line with the pattern count and the path when there are any
+  patterns. The first plan with retro on says what is recorded, once per user.
+- **Filing.** `forge retro issues PLAN` drafts one redacted issue per `forge` pattern, for
+  forge's own repository, and posts nothing. The dry run prints the texts and their hash.
+  `forge retro issues PLAN --apply --approve HASH` posts only when the hash matches those texts
+  and the `--choice rN=new|comment:N|skip` choices. It needs an authenticated `gh`, and it
+  refuses a never-send repository. Both refusals exit `3`.
+- **Never memory.** Notes never go into `.forge/memory.md` or the ledger, and no prompt reads
+  them back. A retro plan does add a short instruction block to each prompt, at its end.
+- **Off.** With retro off (`--no-retro`, no setting, or `FORGE_RETRO=off`) no instruction is
+  added to any prompt, the inbox is not read, and forge stores no note from a dispatch. Its
+  prompts stay as they were without the feature. `forge retro note` still records a note when
+  it is called, because it does not check the setting.
+
+Files it adds: `retro_mode` (plan file), `retro/notes.jsonl`, `retro/.lock`, `retro.md`,
+`tasks/<id>/retro.json`, and `.forge/retro-inbox.jsonl` in a worktree (removed once its notes
+are stored). It costs no model call of its own.
+
+## Brief mode (opt-in)
+
+With `plan --brief advisory|gated|strict --brief-model SPEC`, a read-only side dispatch writes
+the questions each task needs answered before it starts. Each question has a default. A task
+with no answer follows the default. The user answers with `forge brief answer`,
+and each answer goes into that task's prompt. forge never answers for the user.
+
+- **Cost.** One dispatch per task that has no `brief.json`, at effort `low`, four at a time.
+  A reply that is not valid JSON, or has the wrong shape, is retried once; a second failure
+  stores no questions and the reason in `brief.json`'s `error`. Answers and stale flags call no
+  model.
+- **When.** `run` writes the missing briefs when it starts. `strict` waits for them; `advisory`
+  and `gated` write them alongside the scheduler. `forge brief write PLAN [--task ID] [--jobs N]
+  [--force]` does the same by hand, and `--force` redoes a task that already has a brief.
+- **Levels.**
+  - `advisory`: the run does not wait. Open questions reach the prompt under "Open questions:
+    follow the stated default", with each default.
+  - `gated`: a task with an unanswered must-answer question is held. The run prints
+    `forge: <task> waits for your answer to <qid>` with the `forge brief answer` line. A task
+    whose brief is still being written waits too.
+  - `strict`: `run` exits `3` before any task starts while a question of an unstarted task is
+    open. It prints each question, its default and the answer command. Answer them and run again.
+- **Answers.** `forge brief answer PLAN TASK QID TEXT` (or `--file F`; `-` reads stdin). Before
+  the task starts, the answer goes to `brief.answers.json` and to the prompt under "Decisions the
+  user made", which overrides what the requirements say. After it starts, the answer goes to
+  `brief.late.json` and changes nothing in the run. The command then prints the `tasks.tsv` row,
+  the `prompt.md` a follow-up needs, and the `forge control add` line that queues it.
+- **Scope.** `--brief-scope task` (the default) is the only scope that acts. A `wave` or `plan`
+  question is parked in `brief.parked.json` and acts on nothing.
+- **Stale.** After a task merges, a merge that changed files outside that task's declared files
+  flags the open questions of its dependents that have not started (`possibly_stale`). `forge
+  brief stale PLAN TASK` does this by hand.
+- **Model.** `--brief-model SPEC` is required with brief on, and it must resolve; otherwise
+  `plan` exits `2`. forge never picks the model.
+- **Privacy.** A never-send repository gets no brief dispatch (`never-send`), so its tasks have
+  no questions and nothing holds them.
+- **Off.** With `--brief off`, no setting, or `FORGE_BRIEF=off`, there is no writer, no hold and
+  no prompt addition. `forge-prompt.py` adds nothing without a `brief` file. `forge brief write`
+  and `forge brief show` exit `3` for such a plan.
+
+Files it adds: the plan files `brief`, `brief_scope` and `brief_model`; `brief.out` (the
+writer's output) and `brief.pid` (while the writer runs); and per task `tasks/<id>/brief.json`,
+`brief.parked.json`, `brief.answers.json` and `brief.late.json`. Its events are `brief_question`,
+`brief_answer` and `side_dispatch` (kind `brief`).
+
+## Task summaries (opt-in)
+
+`plan --summaries on --summaries-model SPEC` writes a short summary of each task to
+`tasks/<id>/summary.json`. The model sees only the task's facts: its status, its attempt trail
+(attempt, dwarf spec, verdict, findings count, worst severity, retry reason), the latest review's
+finding titles and severities, its known issues, and its dependencies and dependents. The facts
+are capped at 8 KB. The model never sees the repository, the diff or the task prompt.
+
+- **Cost.** One read-only dispatch per task, at effort `low`, when its facts change. Unchanged
+  facts are not dispatched again, because `inputs_hash` matches the stored summary. Each kind
+  of side dispatch is capped per run at `max(10, 3 × tasks)`.
+- **When.** During `run`, the scheduler starts a detached `forge summarize PLAN --task ID` for
+  each task whose status, dwarf reply, attempt trail, verdict or retry count changed since its
+  last look. The first look at a task only remembers it. The scheduler never waits for a
+  summary, and a failed one changes nothing in the run. On a finished run, `forge control set
+  PLAN summaries on` starts `forge summarize` itself, with its output in `summaries.out`.
+- **Output.** `summary.json` holds `text`, `sentence`, `model`, `generated_at`, `inputs_hash`
+  and `sources` (the attempts and findings the facts came from). The prompt asks for 3 to 5
+  short lines. A reply that is not a JSON object with `text` and `sentence`, or whose text runs
+  past 8 lines, is rejected: the previous `summary.json` stays and `summary.error` says why.
+- **Commands.** `forge summarize PLAN [--task ID] [--force] [--json]`. `--force` dispatches even
+  when the facts did not change. `--json` prints one object per task: `task`, `status`, `reason`.
+  `forge control set PLAN summaries on|off` sets the plan. `--task ID on|off|inherit` sets one
+  task; its own `on` or `off` overrides the plan, and `inherit` drops that override.
+- **Model.** `--summaries-model SPEC` is required with summaries on, and it must resolve;
+  otherwise `plan` exits `2`. Set a user default with `forge config set summaries.model SPEC`.
+- **Off.** With `--summaries off`, no setting, or `FORGE_SUMMARIES=off`, there is no dispatch and
+  no `summary.json`.
+
+Files it adds: the plan files `summaries` and `summaries_model`; `summaries.out`; and per task
+`tasks/<id>/summary.json`, `summary.error` (after a failed reply) and `tasks/<id>/summaries`
+(`on` or `off`, the task's override). Its events are `side_dispatch` (kind `summary`) and the
+`side_summary` role in the dataset.
+
 ## Severity, thresholds and known issues
 
 QA labels each finding `- [P0..P3][CONFIRMED|PLAUSIBLE] file:line — what breaks (input)`:
@@ -748,6 +873,11 @@ as `retry` does (same findings carry-forward, same pinned base, same cumulative 
 tasks keep running; dependents wait for the task to merge. It applies per invocation (not
 remembered), never to `TIMEOUT`/`ERROR`/`CONFLICT` or an `INVALIDATED` merge, and never after a retry that
 changed nothing (`tasks/<id>/noretry`). Every entry is logged in `tasks/<id>/attempts.tsv`.
+An attempt that carries retry findings also gets one row in `tasks/<id>/retry_sources.tsv`:
+the attempt number, the source of those findings (`review`, `prereview`, `bounce`, `message` or
+`answer`) and the epoch time. A row for the same attempt replaces the earlier one, because an
+infrastructure stop refunds the attempt and its restart runs the same number again. forge-ui's
+attempt trail reads this file.
 
 **Escalation after repeated failures.** In forge's history the first three attempts at a task
 pass review at about the same rate (43%, 42%, 47%), and the fourth and later at 29%, whether
@@ -1117,6 +1247,7 @@ removes what it created.
 ```
 <plan-dir>/tasks/<id>/approach.md               intended approach, if planned
 <plan-dir>/tasks/<id>/risk                      low|medium|high, recorded only (#122), if rated
+<plan-dir>/tasks/<id>/retry_sources.tsv         attempt, source, epoch: why each retried attempt ran (#133)
 <repo>/.forge/                                  project memory (survives the run)
 <repo>/../.forge-worktrees/<run-id>/<task-id>   task worktree
 <repo>/../.forge-worktrees/<run-id>/_integration integration worktree

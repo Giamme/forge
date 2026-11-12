@@ -27,6 +27,9 @@ usage() {
     '  pr        a draft pull-request description for a finished run (--create opens it with gh)' \
     '  ui        forge-ui, the run viewer: open [DIR], status, stop' \
     '  runs      this repo'"'"'s recent runs in the terminal: state, verdicts and run dirs; rerun a plan with another model, compare' \
+    '  retro     notes on what got in a run'"'"'s way, kept on this machine' \
+    '  summarize a task'"'"'s generated summary, rewritten only when its inputs change' \
+    '  brief     each task'"'"'s open questions, asked before it starts: write, show' \
     '  watch     follow runs live and get a desktop notification when one finishes or fails' \
     '  control   a plan'"'"'s live controls: show, set (QA threshold, retries, timeouts), pin, unpin' \
     '  config    every config source: show, and set/unset the per-repo .forge files and Jev on/off' \
@@ -121,6 +124,21 @@ case "${1:-}" in
   runs)
     shift
     exec python3 "$ROOT/scripts/forge-runs.py" "$@"
+    ;;
+  retro)
+    shift
+    help_if_bare $# python3 "$ROOT/scripts/forge-retro.py"
+    exec python3 "$ROOT/scripts/forge-retro.py" "$@"
+    ;;
+  summarize)
+    shift
+    help_if_bare $# python3 "$ROOT/scripts/forge-summarize.py"
+    exec python3 "$ROOT/scripts/forge-summarize.py" "$@"
+    ;;
+  brief)
+    shift
+    help_if_bare $# python3 "$ROOT/scripts/forge-brief.py"
+    exec python3 "$ROOT/scripts/forge-brief.py" "$@"
     ;;
   watch)
     shift

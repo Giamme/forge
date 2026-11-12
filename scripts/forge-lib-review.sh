@@ -482,6 +482,9 @@ final_review() {
       echo "  git diff HEAD~1 HEAD -- . ':(exclude).forge'"
       echo "(and 'git diff --stat HEAD~1 HEAD' for the overview)."
     fi
+    # Last. A shadow of a task review copies qa.input itself; this prompt is the final
+    # review's, and nothing copies it onward. Off prints nothing.
+    forge_retro_prompt "$plan" review
   } > "$out/qa.input"
 
   [ -s "$plan/timeout" ] && tflag="--timeout $(cat "$plan/timeout")"
@@ -516,12 +519,19 @@ final_review() {
     fi
     rs_mode=fresh
     mv "$out/qa.out" "$out/qa.continue.out" 2>/dev/null || true
+    # The fresh dispatch deletes qa.last and qa.log as it starts. Record the continuation
+    # first; a failure to record does not change rc, which the fresh dispatch sets next.
+    forge_retro_record "$plan" qa "$out"
     FORGE_CAPABILITY_CACHE="${FORGE_CAPABILITY_CACHE:-$plan/capabilities}" \
       "${qa_cmd[@]}" > "$out/qa.out" 2>&1
     rc=$?
   fi
   [ ! -f "$plan/reviewer_session" ] || { echo "session=$rs_mode"; echo "session_reason=$rs_reason"; } >> "$out/review.meta"
   if [ "${FORGE_OUTPUT:-summary}" = full ]; then cat "$out/qa.out"; fi
+  # The dispatch role is qa, so the notes are in qa.last. No task: this is the whole run.
+  # Record and the regenerated report never change rc; the case below still decides it.
+  forge_retro_record "$plan" qa "$out"
+  forge_retro_report "$plan"
   case "$rc" in
     0) ;;
     8) note "final review: the reviewer hit an infrastructure failure; nothing was judged"

@@ -240,6 +240,22 @@ class GateTableTests(unittest.TestCase):
         text = learning + bullet('P3') + '\n\n  FORGE_LEARNING: trap | P0 CONFIRMED\nFORGE_VERDICT: FAIL\n'
         self.assertEqual(decide('FAIL', text, 'P2'), ('accept', 'P3', 1, 0, 1))
 
+    def test_a_retro_line_yields_the_same_findings(self):
+        # The line names a CONFIRMED location. Left in the reply it would join the bullet
+        # above it and turn that finding confirmed; stripped, the findings do not change.
+        retro = ('FORGE_RETRO: {"type":"prompt","fixable_by":"forge",'
+                 '"summary":"CONFIRMED P0 data loss in a.py:9","blocking":true}\n')
+        bare = bullet('P3') + '\n'
+        self.assertEqual(contract.parse_findings(bare + retro), contract.parse_findings(bare))
+        reply = self.reply('P1', 'P3')
+        # A line inserted above moves the later line numbers down. The findings do not.
+        body = lambda findings: [finding._replace(line=None) for finding in findings]
+        self.assertEqual(body(contract.parse_findings(retro + reply)), body(contract.parse_findings(reply)))
+        self.assertEqual(contract.parse_findings(reply + retro), contract.parse_findings(reply))
+        plausible = '- [P3][PLAUSIBLE] a.py:1 — maybe\n'
+        self.assertEqual(decide('FAIL', plausible + retro, 'P2'), decide('FAIL', plausible, 'P2'))
+        self.assertEqual(decide('FAIL', plausible + retro, 'P2'), ('keep', '-', 0, 0, 0))
+
     def test_echoed_contract_changes_nothing(self):
         echo = ''
         for kind in contract.KINDS:

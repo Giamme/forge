@@ -52,8 +52,10 @@ written), and the reader must never raise because of one.
 | `attribution.json` | the result of `forge-parallel.sh attribute`: `culprit` (a task id or `null`), `base_fails`, `inconclusive` (a reason or `null`), `merges`, `steps`, `verification_runs`, `gate` (`null` without the gate, else `{mode, ranking, tried, outcome}`); returned as `attribution`, see RunDetail |
 | `max_parallel`, `escalate_after`, `verify_retries` | one integer each |
 | `qa_threshold` | `P0`..`P3`, the least severe finding that still blocks; `final_qa` the final review's QA spec |
+| `summaries`, `summaries_model` | the run's task-summary switch (`on` or `off`; absent is `off`) and its model spec, from `forge control set summaries`; returned as `summaries`, see RunDetail |
 | `profile.json` | the profile the run froze: `name`, `level` (`user`, `repo` or `builtin`), `body` (the profile object), `shadowed` (levels the winning copy hid), `frozen_at` (UTC, `YYYY-MM-DDTHH:MM:SSZ`), `overridden` (the sorted dotted keys a flag of the run replaced, such as `routing.qa.any`; empty when none). RunDetail returns `settings.profile` `{name, level, overridden}`, `null` when the file is absent, unreadable or not that shape |
 | `deferrals.txt` | one line per task the wave planner deferred |
+| `retro.md`, `retro/notes.jsonl` | written when retro mode is on: the report (Markdown) and one JSON note per line (`fixable_by` `user`, `forge` or `unsure`, `check` `verified` or `claimed`, `blocking` a boolean). Returned as `retro`, see RunDetail |
 | `integration.base`, `accepted.integration` | one commit each: where the integration branch started, the revision the run accepted |
 | `attempts/<role>-<uuid>/` | one *execution* (below) of the run itself: `parallel` (a `run`) or `verification` |
 | `final-review-<epoch>-<pid>/` | one whole-run review: `qa.input`, `qa.last`, `verdict` (`PASS FAIL UNKNOWN INVALIDATED ACCEPTED`; absent while it runs or when nothing was judged), `qa.infra`, `qa.gate`, `known_issues.md`, `review.meta` (`key=value`: `base tip source spec threshold integration`, `threshold=none` when unset; `integration` is the integration-branch commit the reviewed result contains and is absent on older runs), `tasks.summary`, `attempts/qa-<uuid>/` |
@@ -75,6 +77,14 @@ written), and the reader must never raise because of one.
 | `tasks/<id>/accepted.by` | who accepted a task over a reviewer's FAIL, and why (`key=value`: `task`, `status`, `reason`, `by`, `at`, `epoch`, `attempt`, `reviewed_commit`; older runs are free text; returned as text) |
 | `tasks/<id>/qa.gate` | `threshold<TAB>decision<TAB>worst<TAB>n_confirmed<TAB>n_unlabelled<TAB>n_below` (`decision` is `accept` (the reviewer said FAIL, every CONFIRMED finding was below the threshold), `fail` (the reviewer said PASS, but listed a blocking CONFIRMED finding) or `keep`, `-` for none) |
 | `tasks/<id>/known_issues.md` | the confirmed findings a threshold tolerated |
+| `tasks/<id>/summary.json` | the task's generated summary: `{text, sentence, model, generated_at, inputs_hash, sources}`, `generated_at` in epoch seconds, `sources` a list of `{kind, ref}` (`kind` `attempt` or `finding`; a finding's `ref` is `<attempt>:<title>`); returned as `summary`, see Task |
+| `tasks/<id>/summary.error` | the reason the last generation failed; the previous `summary.json` is kept. Returned as `error` inside `summary` |
+| `tasks/<id>/summaries` | the task's summary switch, `on` or `off`, from `forge control set summaries --task <id>`; `inherit` removes the file. Returned as `summaries_override` |
+| `brief` | the plan's brief level: `advisory`, `gated` or `strict`. `off`, any other word, or a missing file means brief mode is off. Returned as RunDetail `brief` (`null` when off) |
+| `tasks/<id>/brief.json` | the task's questions: `{questions: [{id, text, why, options, default, scope, must_answer, possibly_stale}], model, generated_at}`. Returned inside the task's `brief.questions` |
+| `tasks/<id>/brief.parked.json` | wider-scope questions (`wave` or `plan`), the same shape. Returned as `brief.parked` |
+| `tasks/<id>/brief.answers.json` | `{qid: {text, actor, t}}`: answers given before the task started. A question with an entry here is `answered` |
+| `tasks/<id>/brief.late.json` | the same shape, for answers given after the task started. Returned as `brief.late`; a question that has one and no answer yet is `late` |
 | `tasks/<id>/prereview.json`, `prereview.md` | the pre-review tests of the latest attempt (opt-in `plan --pre-review-tests`): `status` (`passed`, `flaky`, `pre-existing`, `failed`, `skipped`, `error`), `reason`, `command`, `selected`, `failing`, `preexisting`, `flaky`, `runs`, `seconds`; returned on a task as `pre_review` `{status, reason, command, selected, failing, preexisting, flaky, seconds, tail}` (`tail`: the end of the last failing run's output), `null` without the file. `prereview.md` is the implementer's findings of a `failed` check |
 | `tasks/<id>/dwarf.input`, `qa.input` | the prompts forge assembled; `<role>.delivered`, `<role>.resolved` the live dispatch files |
 | `tasks/<id>/<role>.log`, `<role>.clock` | the running dispatch's harness log and its clock: one `<epoch> <bytes>` line each time the log grew (forge-dispatch.sh samples it every second; `FORGE_LOG_CLOCK=off` writes none) |
@@ -139,6 +149,7 @@ raise because of one. Older solo dirs have `verdict` and not `status`.
 | `dwarf.log`, `qa.log` | raw logs. The summary stats them and does not read them, so `updated` moves while a model writes |
 | `changes.diff`, `existing.diff` | the run's change, and the uncommitted changes the repo already had when it started |
 | `fractal-selection.json` | as for a plan |
+| `retro.md`, `retro/notes.jsonl` | as for a plan; `retro` in the detail is read the same way |
 
 **Solo status** is the first word of `status`, otherwise the first word of `verdict`, otherwise
 `UNKNOWN`.
@@ -225,7 +236,7 @@ loaded. When it cannot be loaded, `findings_available` is `false` and every find
 is `null`; verdicts and `gate` do not need it.
 
 Text fields are capped so one huge file cannot blow up a response: `request`, `prompt`,
-`approach`, `retry_findings`, `needs_input` and the `decision` text keep their first 20,000 characters, and an `infra` `detail` its first 400; `qa_tail`, `dwarf_tail`
+`approach`, `retry_findings`, `needs_input`, the `decision` text, `retro`'s `text`, a summary's `text`, `sentence` and `error` and each source `ref`, a brief question's `text`, `why`, `default`, each option and its `answer`, a parked question's text and a late answer's `text` keep their first 20,000 characters, and an `infra` `detail` its first 400; `qa_tail`, `dwarf_tail`
 and `verification.log_tail` keep their last 4,000. A capped field ends (or, for tails,
 starts) with `…` and the value of `truncated` lists the field names that were cut.
 
@@ -264,6 +275,7 @@ its last 20,000 behind a leading `…`. Their `truncated` lists the field names 
 | `GET /api/health` | `200 {"app": "forge-ui", "version", "build", "pid", "controls": true\|false}`; `version` is forge's own (the root `VERSION` file, read when this server started), `null` when that file cannot be read; `controls` is `false` in read-only mode |
 | `GET /api/runs/<key>/controls` | `200` the `forge control show --json` object of a plan run (see Controls); `404` for a solo or unknown run |
 | `POST /api/runs/<key>/controls` | change one control or pin; authenticated, see Controls (write endpoints) |
+| `POST /api/runs/<key>/tasks/<id>/brief/<qid>` | record a brief answer (`forge brief answer … --file - --actor ui`); authenticated, see Controls |
 | `GET /api/runs/<key>/issues?scope=run\|repo&offline=0\|1&plausible=0\|1&dismissed=0\|1&only=fp,fp` | `200` the `forge issues --json` listing, run fresh on every request (no cache); see Controls (write endpoints) |
 | `POST /api/runs/<key>/issues` | file GitHub issues for chosen findings; authenticated, 300 s timeout |
 | `POST /api/runs/<key>/issues/dismiss` | dismiss or (`undo`) restore findings; authenticated |
@@ -397,6 +409,10 @@ Every RunSummary field, plus:
 ```json
 {
   "request": "the user's request, verbatim",
+  "retro": {"text": "# Retro\n…", "notes": 6, "user": 2, "forge": 2, "unsure": 1,
+            "verified": 3, "claimed": 3, "blocking": 3},
+  "summaries": {"mode": "on", "model": "sol:low"},
+  "brief": {"level": "gated", "open": 2, "flagged": 1},
   "settings": {"explore": 0.5, "shadow_rate": 0.5, "shadow_qa": ["opus", "sol:xhigh"], "timeout": 3600,
                "max_parallel": 2, "qa_threshold": "P2", "escalate_after": 3, "verify_retries": 1,
                "final_qa": "opus",
@@ -449,6 +465,22 @@ Every RunSummary field, plus:
   not a frozen profile (`name` and `level` non-empty strings, `overridden` a list of strings). A solo run
   reads `$RUN/profile.json` the same way and has no other plan settings: every other value is
   `null`, including `shadow_qa`, except `qa_threshold` and its source, which read the same way.
+- `retro` is `null` when the run has neither `retro.md` nor `retro/notes.jsonl`; a solo run has the same
+  field. Otherwise `text` is `retro.md`, capped like `request` (`null` when that file is missing), and the
+  other values count `retro/notes.jsonl`: `notes` is the number of lines that are JSON objects; `user`,
+  `forge` and `unsure` count the notes whose `fixable_by` is that value; `verified` and `claimed` those
+  whose `check` is that value; `blocking` those whose `blocking` is `true`. A note with any other
+  `fixable_by` or `check` counts only in `notes`. A non-blank line that is not a JSON object is skipped,
+  with one warning per file (`retro/notes.jsonl: N malformed lines skipped`). `text` is among the texts
+  an export leaves out unless it is asked to include them.
+- `summaries` is the run's task-summary switch from its plan files: `mode` is `on` only when `summaries` holds
+  `on` (absent, `off` or anything else is `off`), and `model` is the first line of `summaries_model`, or `null`.
+  A solo run has `null`. A task's own switch is its `summaries_override` (Task).
+- `brief` is `null` when brief mode is off: the `brief` file is missing, or its first word is not
+  `advisory`, `gated` or `strict` (`off` and any other word are off). A solo run's `brief` is always
+  `null`. Otherwise `{level, open, flagged}`: `level` is that word; `open` counts task questions whose
+  state is `open`; `flagged` counts those that also have `must_answer` true. Parked questions are not
+  counted. Each task's own questions are its `brief` (Task).
 - `attribution` is the result of `forge-parallel.sh attribute` from `attribution.json`, or `null` when
   the file is missing. `culprit` is the merged task's id or `null`; `base_fails` is `true` only when the
   base verified FAIL; `inconclusive` is the reason the search stopped without a culprit, or `null`;
@@ -553,6 +585,14 @@ Every RunSummary field, plus:
 {
   "id": "reader",
   "title": "Read plan dirs into plain dicts",
+  "header": {"title": "Read plan dirs into plain dicts",
+             "goal": "The first paragraph of approach.md, else of prompt.md.",
+             "criteria": "The Acceptance criteria section of prompt.md.",
+             "links": [{"kind": "issue", "number": 133, "url": "https://github.com/acme/widgets/issues/133", "source": "prompt.md"}]},
+  "trail": [{"attempt": 1, "dwarf": "luna", "verdict": "FAIL", "findings": FindingsSummary, "worst": "P1",
+             "reason": "first", "executions": ["task-…", "dwarf-…", "qa-…"]},
+            {"attempt": 2, "dwarf": "sol", "verdict": "PASS", "findings": FindingsSummary, "worst": null,
+             "reason": "review", "executions": ["task-…"]}],
   "deps": [],
   "difficulty": "high",
   "files": ["forge_ui/reader.py", "tests/test_reader.py"],
@@ -603,7 +643,18 @@ Every RunSummary field, plus:
   "waiting": null,
   "sweep": null,
   "swept": [{"id": "S1", "severity": "P2", "confidence": "CONFIRMED", "task": "reader", "location": "ui/reader.py:12",
-             "summary": "Status is read twice.", "status": "fixed", "note": null, "by": "sweep-1"}]
+             "summary": "Status is read twice.", "status": "fixed", "note": null, "by": "sweep-1"}],
+  "summary": {"text": "Reads the plan dirs.\n…", "sentence": "Reads plan dirs into plain dicts.", "model": "sol:low",
+              "generated_at": 1760621300, "sources": [{"kind": "attempt", "ref": "2"},
+                                                       {"kind": "finding", "ref": "1:Missing status file"}],
+              "stale": false, "error": null},
+  "summaries_override": null,
+  "brief": {"questions": [{"id": "q1", "text": "Which module?", "why": "two readers", "options": ["ui", "cli"],
+                           "default": "ui", "must_answer": true, "possibly_stale": false,
+                           "state": "open", "answer": null}],
+            "parked": [{"id": "q2", "text": "For the whole plan?", "why": "scope", "options": [],
+                        "default": null, "scope": "plan", "must_answer": false, "possibly_stale": false}],
+            "late": [{"id": "q3", "text": "ship it", "actor": "ui", "t": 1760621400.0}]}
 }
 ```
 
@@ -614,6 +665,44 @@ Every RunSummary field, plus:
   task has a `tasks/<id>/` dir; else `null`.
 - `attempt`: integer from `tasks/<id>/attempt`, else the highest attempt in `attempts`,
   else `null`.
+- `header`: `{title, goal, criteria, links}`. `title` is the task's title. `goal` is the first
+  paragraph of `approach.md`, or else of `prompt.md`, after a leading `# ` title line, as plain
+  text with its whitespace collapsed, capped at 600 characters. Plain text drops code-span
+  backticks, `*` and `**` emphasis and `~~strikethrough~~` markers, and keeps the label of a
+  `[label](url)` or image; underscores stay, so a file name is unchanged. `null` when neither
+  file has one.
+  `criteria` is the text of `prompt.md`'s `## Acceptance criteria` section (an optional colon is
+  allowed), up to the next `## ` heading or the end of the file, capped like `prompt`; a `### `
+  subsection stays inside it, and a fenced `## ` does not end it. `null` when there is no such
+  section, or the section is empty. `links` is `[{kind, number, url, source}]`, deduplicated, in
+  order of appearance across `prompt.md`, `approach.md` and the run's `request.md`. A full
+  `https://github.com/<owner>/<repo>/issues/<n>` or `.../pull/<n>` URL is kind `issue` or `pr`,
+  with that number and the canonical URL (query and fragment dropped). Any other
+  `https://github.com/...` URL is kind `url`, `number` `null`. A `#N` reference is kind `issue`;
+  its url is `https://github.com/<owner>/<repo>/issues/N` for the GitHub origin of the run's
+  repo (the `repo` file, then that repo's `.git/config`, SSH or HTTPS, with no network), or
+  `null` when that origin is not GitHub. `#N` inside a code span or a fenced block, and a
+  markdown heading, are not links. A fence whose marker lines are block-quoted (`> ~~~`) is
+  still a fence. A digit run longer than Python will convert does not raise: `#N` is skipped,
+  and an issue or pull URL is kept as kind `url`. `source` is the file name. The same link in a
+  later file is kept from the first. The export leaves `goal` and `criteria` out unless texts are chosen;
+  `links` stay.
+- `trail`: one entry per `attempts.tsv` row, in that order:
+  `{attempt, dwarf, verdict, findings, worst, reason, executions}`. `attempt` and `dwarf` come
+  from the row (`dwarf` is its 5th column; empty, `-` and `UNASSIGNED` are `null`; a row without
+  the column is `null`). `verdict`, `findings` and `worst` come from the newest done non-shadow
+  `qa` execution of that attempt (`worst` is that summary's worst severity, `P0`…`P3`, or
+  `null`). With no such execution all three are `null` — the task's `qa.last` is not a fallback.
+  `findings` is a FindingsSummary. `executions` is the ids of that attempt's executions, in the
+  order of `executions`. `reason` is why the attempt ran: `first` for attempt 1; otherwise the
+  source recorded in `tasks/<id>/retry_sources.tsv` (`<attempt>`, `<source>`, `<epoch>`), one of
+  `review`, `prereview`, `bounce`, `message`, `answer` (the last known source for that attempt;
+  an unknown source is warned and skipped); otherwise `escalation` when this row's dwarf differs
+  from the previous row's and `escalations` is not empty; otherwise `manual` when a `control.log`
+  line queued a `retry` for this task (actor `cli` or `ui`, no `outcome`) and this row is the
+  attempt that ends at or after that queue (a scheduler line, which carries `outcome`, does not);
+  otherwise `unknown`. A run from before `retry_sources.tsv` existed has `unknown` for every
+  later attempt the other rules do not explain.
 - `infra` in an attempt: `null` for empty, `-` or missing.
 - `source` in an escalation: the 5th column of `escalations.tsv` (`policy`, `retry` or `pin`, as forge wrote it); `policy` when the row has only 4 columns or the cell is empty.
 - `verdict`: `"PASS"`, `"FAIL"` or `null`, from `qa.last` as described above.
@@ -683,7 +772,10 @@ Every RunSummary field, plus:
   `infra` (a pause in `scheduler.pauses` holds it: scope `all`, or its id in `tasks`; the pause's
   keys plus `kind`), then for a `PENDING` task `deps` (`on`: its deps not merged, `stopped`: those
   in a stopped status such as `FAIL`; a dep at `NEEDS_INPUT` or `NEEDS_DECISION` is in `on` only, as the user
-  holds it and the retry policy did not stop it), `stopping` (`mode`), `drained`, `overlap` (`on`: running
+  holds it and the retry policy did not stop it), `stopping` (`mode`), `drained`, `brief` (`questions`: a gated
+  plan holds it for the ids of its `must_answer` questions with no entry in `brief.answers.json`, or `[]`
+  while `brief.json` is not written yet and `brief.pid` names a running process; the same two files
+  `forge-schedule.py` reads), `overlap` (`on`: running
   tasks whose files overlap its own, as forge-schedule.py tells overlap), `slot` (`running`,
   `max_parallel`: the run is at its capacity) or `next` (nothing holds it).
 - `sweep`: `null` unless the task is a finding sweep's fix task (it has a `sweep.json`). Then `file`
@@ -692,6 +784,38 @@ Every RunSummary field, plus:
   `not-fixed`, or `unreported` when it merged without a line for it; read from `sweep.outcome.json`)
   and `null` until the fix task merged, `note` the review's words on it.
 - `swept`: this task's findings a fix task took, the same objects plus `by` (the fix task); `[]`.
+- `summary`: `null` unless `tasks/<id>/summary.json` is a JSON object with a string `text` and a number
+  `generated_at` (anything else is `null` and warned, as is a file that is not JSON). Then
+  `{text, sentence, model, generated_at, sources, stale, error}`: `sentence` and `model` are `null`
+  when the file's are not strings; `generated_at` is its epoch seconds; `sources` keeps the entries that are
+  `{kind, ref}` with `kind` `attempt` or `finding` and a string `ref`, and drops the others. `stale` is `true`
+  when `attempts.tsv`, `status`, `merged` or `qa.last` has a later mtime than `generated_at`, compared in whole
+  seconds (a file written in the second `generated_at` was made in is not later). `merged` counts because
+  a merge changes the status the page shows. `error` is the text of `tasks/<id>/summary.error`, or `null` when
+  the file is missing or blank. A task whose first generation failed has no `summary.json`, so its `summary` is
+  `null` and its error is not shown. The export blanks `text` and `error` unless texts are chosen.
+- `summaries_override`: `on` or `off` from `tasks/<id>/summaries`, or `null` when the file is missing or holds
+  anything else (the task then follows the run's switch). A solo run's task has `null` for `summary` and
+  `summaries_override`.
+- `brief`: `null` when the run's brief is off, on a solo task, or when the task has none of `brief.json`,
+  `brief.parked.json` and `brief.late.json`. Otherwise `{questions, parked, late}`.
+  `questions` is `brief.json`'s list, in file order. Each is `{id, text, why, options, default, must_answer,
+  possibly_stale, state, answer}`. `state` is `answered` when `brief.answers.json` has the id, else `late`
+  when `brief.late.json` has it, else `open`. An id in both files is `answered`: the answer given before
+  the task started is the one shown. `answer` is that entry's `text`, or `null` when the entry has no
+  string `text`. `must_answer` and `possibly_stale` are true only when the file says `true`
+  (`possibly_stale` is also true when the whole `brief.json` says so). `options` keeps the entries that
+  are strings; `default` is the string, or `null` when the file's value is not one. A question that is
+  not an object, or has no string `id`, is skipped, with one warning for the file
+  (`tasks/<id>/brief.json: N question(s) skipped`). `parked` is `brief.parked.json`'s questions, the same
+  fields except `state` and `answer`, plus `scope` (a string, or `null`). `late` is `brief.late.json` in
+  file order, each `{id, text, actor, t}`: `actor` is a string or `null`, and `t` is a finite number or
+  `null`. `text`, `why`, `default`, each option, `answer` and a late `text` are capped like `prompt`
+  (the cut is named `tasks/<id>/brief/<qid>.text`, and the same way for `why`, `default`, `options`,
+  `answer`, `brief.parked/<qid>.*` and `brief.late/<qid>.text`). The export leaves `text`, `why`,
+  `options`, `default` and `answer` out unless texts are chosen (`answer` is only on a task question;
+  a late answer's private text is its `text`). `id`, `state`, `must_answer`, `possibly_stale`, `scope`,
+  `actor` and `t` stay.
 - Text fields are `null` when the file is missing.
 
 A solo run's one task uses this same shape. `id` is `solo` and `title` is the goal, or
@@ -705,7 +829,10 @@ in `attempts.tsv`, or `null`. `escalations`, `route` and `shadow` are empty. `ve
 false; `accepted_attempt` and `accepted_over` are `null`; `explored` is false; `waiting` and `sweep` are `null`, `swept` is `[]`.
 `infra` and `decision` are `null`, `lateral`, `ledger` and `decisions` are `[]`, `attempt_cap` is `null`, and `attempts_total`
 counts the run dir's `attempts.tsv` rows that are not `INFRA`. `request` on
-the detail is `request.md`.
+the detail is `request.md`. `header` and `trail` follow the same rules. `prompt.md`, `approach.md`
+and `retry_sources.tsv` are read from the run directory (next to `attempts.tsv`); `escalations` is
+empty, so a later attempt whose dwarf changed is `unknown` unless a retry source or a queued retry
+explains it. `goal` and `criteria` are capped as `tasks/solo/goal` and `tasks/solo/criteria`.
 
 ## Execution
 
@@ -1291,8 +1418,10 @@ difficulty paths deps model` each), `decomposition_history` (its newest 20, each
   (under their tail paths; line ranges are not stored, so the page shows the tail).
 - `texts=0` (the default) nulls these keys wherever they hold a string, list or object: `prompt
   last request log_tail dwarf_tail qa_tail qa_last qa_input tasks_summary known_issues texts text
-  planning_last approach retry_findings needs_input dwarf_input error last_line message excerpt tail lines call split detail`,
-  and stores no diff, no transcript, no checks and no environment problems (a command is a text). A finding keeps its `summary`, a failing test its `name`.
+  planning_last approach retry_findings needs_input dwarf_input error last_line message excerpt tail lines call split detail`.
+  Under each brief `questions` or `parked` entry it also nulls `why`, `options`, `default` and `answer`
+  (`scope`, `state`, `id`, `must_answer` and `possibly_stale` stay; a late answer's `text` is in the list above).
+  It stores no diff, no transcript, no checks and no environment problems (a command is a text). A finding keeps its `summary`, a failing test its `name`.
 - `paths=0` (the default) makes every string that is a whole absolute path (but `/api/…`, `url`s
   and `command`s) its last component, and replaces the run dir, the repo and the home dir inside other
   strings with their last component (`~` for home).
@@ -1317,16 +1446,17 @@ dir, a repo or config; a write route builds an argv, runs it, and answers with w
 validation, the call and the exit-code mapping; `server.py` does the authentication and gives
 each authenticated POST to the table, so a new write route is one entry in it.
 
-**The call.** `[<forge root>/forge, ...]`, an argv list with no shell, `stdin` closed, in a process
-group of its own. `<forge root>` is two directories above `forge_ui/` and can be replaced as
+**The call.** `[<forge root>/forge, ...]`, an argv list with no shell, in a process
+group of its own. `stdin` is closed, except for a profile create or edit (the profile object) and a
+brief answer (the answer text), both via `--file -`. `<forge root>` is two directories above `forge_ui/` and can be replaced as
 `forge_ui.server.forge_cli`. A call that outlives its timeout (60 s) gets SIGTERM for its whole
 group, SIGKILL 5 s later if anything is left, and is reaped, all before the run's lock is
 released; the answer is `504 {"error": "timeout", "detail": "the operation may have partly
 completed; reload to see the current state"}`.
 
-**Runs are named by key.** The path holds the 12-hex run key and nothing else; the server finds
-the run dir with `Catalog.locate(key)`. A body field never names a path, and a field the route does
-not know is a `400`.
+**Runs are named by key.** The path holds the 12-hex run key; the server finds
+the run dir with `Catalog.locate(key)`. A brief answer's path also names the task id and the question
+id. A body field never names a path, and a field the route does not know is a `400`.
 
 **Authentication.** Each server process makes a random token (`secrets.token_urlsafe(32)`). `GET /`
 (and `/index.html`) carries it as `<meta name="forge-ui-token" content="...">` as the first element
@@ -1398,6 +1528,10 @@ object its stdout holds, when that parses as one.
 | anything else, a signal, a missing CLI, or a 0 with no JSON object | `502` | `bad gateway` |
 | timeout | `504` | `timeout` |
 
+A brief answer is the exception to the exit-0 row: its CLI prints text, and exit 0 (including a late
+answer's notice) is `200 {"exit": 0, "output": "<stdout>"}` rather than `502` for a missing JSON object.
+A non-zero exit uses the row above and also carries `exit` and `output`.
+
 For the controls routes, unknown run keys, solo runs (they have no controls) and runs the
 catalog does not hold are `404 {"error": "not found"}`. The issues, dismiss, delete, config and
 profile routes below accept plan and solo runs alike (`forge issues` and `forge runs rm` take both);
@@ -1429,6 +1563,8 @@ known or a spec runs is for the CLI to say (its `400` or `409` comes back as abo
 |---|---|
 | `{"action": "set", "key": "qa-threshold", "value": "P2"}` (`default` at run level removes the setting, `none` is P3; for a task `inherit` drops the override) | `control set <dir> qa-threshold P2 --actor ui --json` |
 | `{"action": "set", "key": "retry-budget", "value": "inherit", "task": "reader"}` | `control set <dir> retry-budget inherit --task reader --actor ui --json` |
+| `{"action": "set", "key": "summaries", "value": "on"}` (or `off`) | `control set <dir> summaries on --actor ui --json` |
+| `{"action": "set", "key": "summaries", "value": "inherit", "task": "reader"}` (`on` or `off` with `task` too) | `control set <dir> summaries inherit --task reader --actor ui --json` |
 | `{"action": "pin", "task": "graph", "spec": "sol:high:codex"}` | `control pin <dir> graph sol:high:codex --actor ui --json` |
 | `{"action": "unpin", "task": "graph"}` | `control unpin <dir> graph --actor ui --json` |
 | `{"action": "drain"}` | `control drain <dir> --actor ui --json` |
@@ -1440,13 +1576,33 @@ known or a spec runs is for the CLI to say (its `400` or `409` comes back as abo
 
 `value` is always a string. `task` is optional on `set`, and only for the keys the CLI allows it
 for; the page sets `max-parallel`, `infra-backoff` (`none` drops it) and `escalate-effort`
-(`on`/`off`) plan-wide. `now` is a boolean. `add` is not exposed: a row is added to `tasks.tsv` by
+(`on`/`off`) plan-wide. `summaries` takes `on` or `off`, for the run or with a `task`, and `inherit` only with a `task`; `on`
+for a finished run makes the CLI start `forge summarize` (detached), which the route does not wait for. `now` is a boolean. `add` is not exposed: a row is added to `tasks.tsv` by
 hand, so its CLI is the place to queue it. A success is
 `200 {"ok": true, "changed": {...}, "applies": "...", "controls": {...}}`, where `controls` is the
 `GET` object after the change; `drain`, `resume` and `stop` answer the same way and are refused
 (`409`) when no scheduler is live. A `retry` only queues: `200 {"queued": true, "request": "<id>"}`.
 Its refusals before queueing (not live, a MERGED task, a spec that fails doctor) are the CLI's
 `409`/`400`; the scheduler applies or refuses it later, in the `log` line with that `request` id.
+
+### `POST /api/runs/<key>/tasks/<id>/brief/<qid>`
+
+Record one answer to a brief question. Body: `{"answer": "<text>"}`. `<id>` matches
+`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` (a task id safe to pass as one argv). `<qid>` must match
+`^q[0-9]+$`; a path whose question segment does not is `400`, and the CLI is not called. `answer` is a
+string of 1 to 4096 characters with no NUL. A value that cannot be encoded as UTF-8 is refused too.
+Any other field, a missing or empty answer, or one longer than 4096 characters is
+`400 {"error": "invalid", "detail": ...}` before the CLI runs.
+
+Runs `brief answer <plan dir> <id> <qid> --file - --actor ui`, with the answer as UTF-8 on stdin.
+Under the run's write lock (`409 {"error": "busy"}`). A solo run or an unknown key is `404`.
+Timeout 60 s. Read-only mode refuses it with every other write (`405`).
+
+The CLI prints text and exits 0, including when the answer is late (the task had already started):
+that prints a notice and still exits 0, so the page can show it. The success body is
+`200 {"exit": 0, "output": "<stdout>"}`. A non-zero exit uses the mapping above (`2` is `400`
+`invalid`, `3` is `409` `refused`) and the body also has `exit` (the CLI's code) and `output`
+(stdout). `detail` is stderr, as for every other write.
 
 ### `GET /api/runs/<key>/issues`
 
@@ -1632,7 +1788,8 @@ set to `{"ok": false, "error"}` when the CLI printed one.
 
 A `body` is written to the CLI's stdin as JSON (`--file -`). That text is refused at 64 KiB
 with `400`; the HTTP body is already capped at 64 KiB (`413`) by the server, and a re-encode
-can be the larger of the two. This is the one write that passes stdin. Checked before any CLI
+can be the larger of the two. A brief answer is the other write that passes stdin (the answer text,
+not a JSON object). Checked before any CLI
 runs, and a failure there calls nothing: `action` is one of the six; `name` and `from` match
 `^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$`; `key` matches `^(routing|policy)\.[a-z_.]+$` (the CLI still
 rejects a key of that shape that is not a real profile key); `value` is a string with no
@@ -1690,9 +1847,11 @@ Plain scripts unless noted; each defines one global and none parses API text as 
 |---|---|---|
 | `runmodel.js` | `ForgeRunModel` | pure data, no DOM: the plate layout (archivision's `plate()`), the atlas, plan and execution models, forge-schedule's rules projected forward, the critical path, concurrency, the state of every node at a time `t` (replay, verification lanes included), the finish node's verification LEDs (`verifyLeds`: one per lane in lanes mode, else one per run), filters. Also a CommonJS module, for `node --test` |
 | `gantt.js` | `ForgeGantt` | `render(container, run, {now, onSelect, sel, replay, critical, ghosts})`: attempts on wall-clock time in lanes; `strip(container, run, {now, replay})`: busy attempts and model calls against `max_parallel`. Under the attempts, the finish rows: `verify` (single-command verifications; the newest split into its runs back to back from its start, dashed because that placement is approximate), a `verify · <lane>` row per lane of a lanes verification (each run and rerun at its own time; a run with no exit is UNKNOWN once it ended, never FAIL) and `final review`. A lane or run item opens the verification inspector |
-| `panel.js` | `ForgePanel` | `render(host, ctx)`: the inspector for a run, task, execution, final review, verification, integration or Fractal node; fetches the lazy endpoints once per node; `ctx.diffHash(spec)` links into the diff viewer, `ctx.onFractal(task, TaskFractal)` hands a task's tree to the stage |
+| `panel.js` | `ForgePanel` | `render(host, ctx)`: the inspector for a run, task, execution, final review, verification, integration or Fractal node; for a task it opens on its `header` (its Prompt, Approach and Acceptance criteria texts, from the lazy detail once loaded), then its `trail`, its `summary` with the `summaries_override` switch, and `ForgeBrief`'s questions; fetches the lazy endpoints once per node; `ctx.diffHash(spec)` links into the diff viewer, `ctx.onFractal(task, TaskFractal)` hands a task's tree to the stage |
 | `verifyview.js` | `ForgeVerify` | `render(host, {run, now, fetchJSON, rerender})`: the verification inspector panel.js delegates to: while it runs, the elapsed time, step, last line and a flag past 5 minutes without output, and a live tail of the followed lane's log (or the single log) read again each poll; when it failed, the failing tests first, grouped by lane with new or known, each opening its lane's log at its line (in an export, the tail); a lanes table (state, time, reruns, counts). Pure helpers (`model`, `laneRow`, `groupFailing`, `idleWarning`, `openStep`, `tailLane`, `logPath`, `linesPath`, `tailLines`) are a CommonJS module too |
 | `checksview.js` | `ForgeChecks` | where each task stands and the checks its agents ran: `cell(task, now, ctx)` (the task table's Now column: the running call and for how long, a `quiet N min` flag past 5 minutes without output, or why it waits), `nowSection`, `execSection` and the attempts' checks and acceptance-criteria lines (`taskChecks`, `underExecution`, `attemptCriteria`) for panel.js, `schedulerFields` (the run inspector), `banner(head, ctx)` (the run header: environment problems more than one task met, read again at most every 15 s while tasks run) and `tick(root, now)`, which app.js calls each refresh to move `data-since`, `data-until` and `data-quiet` times. Pure helpers (`nowModel`, `waitingModel`, `nowRank`, `checkRow`, `countsText`, `coverageModel`, `bannerProblems`, `schedulerModel`, `quietText`, `untilText`) are a CommonJS module too |
+| `controls.js` | `ForgeControls` | the run and task control panels that panel.js mounts (`mountRun`, `mountTask`) and the pure model under them: what each key is called and where it applies (`KEYS`), `prepare` (a draft's request body and confirm text), `bodyFor`, `savedText` and `agoText`. Every change goes through `ForgeUI` (uikit.js) to `POST /api/runs/<key>/controls`. Also a CommonJS module |
+| `briefview.js` | `ForgeBrief` | a task's brief questions in the inspector (`taskSection(host, ctx, task)`: each question with its flags and answer, the parked ones in a collapsed *Parked (wider scope)*, and an answer box per question where the page can write, which posts to `POST …/brief/<qid>`), and the run's open questions above the task table (`renderList(host, {run, projections, now, href})`, flagged first, then by projected start). Pure helpers (`openQuestions`, `orderQuestions`, `startLine`) are a CommonJS module too |
 | `diffview.js` | `ForgeDiff` | `render(host, {run, spec, fetchJSON, rerender, href, closeHref})`: a DiffDetail with its findings under their lines; `spec` is `{kind: task, task, source, file}`, `{kind: final, name, file}` or `{kind: fractal, task, node, file}` |
 | `convo.js` | `ForgeConvo` | `render(host, {run, spec: {task, exec}, brief, live, fetchJSON, rerender, diffHash, closeHref, focus})`: an ExecutionTranscript as a timeline, with search, the errors and, while the execution runs, a read of its log every 2.5 s; `focus` (an event index) opens it at that event once and stops following the end |
 | `files.js` | `ForgeFiles` | `matrix(data, run, opts)` (pure: Files as rows of dirs and files against task columns by wave) and `render(host, data, {run, sel, onSelectTask, diffHref, prefs, savePrefs})`: the run's Files mode. Also a CommonJS module |

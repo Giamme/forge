@@ -40,9 +40,14 @@ _TEXT_KEYS = frozenset(('prompt', 'last', 'request', 'log_tail', 'dwarf_tail', '
                         'dwarf_input', 'error', 'last_line', 'message', 'excerpt', 'tail', 'lines', 'call', 'split',
                         'needs_input', 'detail'))
 # keys that are private text only under one parent: a person's --reason on each decision (`reason` elsewhere is
-# a short machine word, such as a sweep's dropped-finding reason, and stays); the --reason of each adoption too
+# a short machine word, such as a sweep's dropped-finding reason, and stays); the --reason of each adoption too.
+# A task header's goal and criteria are paragraphs of the prompt; the run's own `goal` (its title) stays.
+# A brief question's why, the choices in options, its default and the answer a person typed are private
+# only under `questions` and `parked` (`text` is already in _TEXT_KEYS). `scope`, `state` and `id` stay.
 _TEXT_KEYS_UNDER = {'decisions': frozenset(('reason',)), 'adoptions': frozenset(('reason',)),
-                    'adoption': frozenset(('reason',))}
+                    'adoption': frozenset(('reason',)), 'header': frozenset(('goal', 'criteria')),
+                    'questions': frozenset(('why', 'options', 'default', 'answer')),
+                    'parked': frozenset(('why', 'options', 'default', 'answer'))}
 
 
 def _enc(value):

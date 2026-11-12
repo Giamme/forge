@@ -809,6 +809,9 @@ class TimeoutResolutionTests(DispatchBase):
         self.assertEqual(self.kv('qa.resolved')['effort'], 'high')
         self.assertEqual(self.resolve('sol', role='planner'), ('3600', 'default+effort-scaled'))
         self.assertEqual(self.kv('planner.resolved')['effort'], 'xhigh')
+        # A side dispatch (brief, summary) is a cheap read.
+        self.assertEqual(self.resolve('sol', role='side'), ('2700', 'default'))
+        self.assertEqual(self.kv('side.resolved')['effort'], 'low')
 
     def test_scaling_uses_the_clamped_effort(self):
         # gemini tops out at high on antigravity: asking for ultra costs nothing extra.
@@ -1158,6 +1161,79 @@ class FastTierTests(DispatchBase):
         failed = self.dispatch('dwarf', 'opus', '--service-tier', 'fast')
         self.assertEqual(failed.returncode, 4, failed.stdout)
         self.assertEqual(failed.stdout.count(note), 1)
+
+
+class SideRoleTests(DispatchBase):
+    """`side` is a read-only dispatch, default effort low, refused when the role is unknown."""
+
+    def argv(self, role='side'):
+        return shlex.split(self.read(role + '.cmd'))
+
+    def test_codex_and_claude_are_read_only_at_effort_low(self):
+        codex = [
+            'codex', 'exec', '--json', '-m', 'gpt-6.1-sol', '-C', str(self.repo), '--skip-git-repo-check',
+            '-o', str(self.run_dir / 'side.last'), '-c', 'model_reasoning_effort=low', '-s', 'read-only', '-',
+        ]
+        claude = [
+            'claude', '-p', '--model', 'opus', '--add-dir', str(self.run_dir), '--output-format', 'stream-json',
+            '--verbose', '--effort', 'low', '--permission-mode', 'acceptEdits', '--allowedTools', 'Bash',
+            '--disallowed-tools', 'Edit,Write,NotebookEdit',
+        ]
+        for spec, pinned in (('sol', codex), ('opus', claude)):
+            with self.subTest(spec=spec):
+                result = self.dispatch('side', spec)
+                self.assertEqual(result.returncode, 0, result.stdout)
+                self.assertEqual(self.argv(), pinned)
+                self.assertEqual(self.kv('side.resolved')['role'], 'side')
+                self.assertEqual(self.kv('side.resolved')['effort'], 'low')
+                self.assertTrue((self.run_dir / 'side.log').is_file())
+                self.assertTrue((self.run_dir / 'side.last').is_file())
+                attempt = self.attempt('side')
+                self.assertEqual(json.loads((attempt / 'metrics.json').read_text())['role'], 'side')
+                self.assertFalse((self.repo / 'change.txt').exists())
+        # An explicit effort still wins, and the dispatch stays read-only.
+        result = self.dispatch('side', 'sol:high', '--dry-run')
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertEqual(self.kv('side.resolved')['effort'], 'high')
+        self.assertIn('-s', self.argv())
+        self.assertEqual(self.argv()[self.argv().index('-s') + 1], 'read-only')
+        self.assertNotIn('--approve-for-me', self.argv())
+
+    def test_every_other_harness_is_read_only(self):
+        # opencode has no effort ladder and antigravity's opus row has no effort dial,
+        # so both keep the harness default. The permission flag is what this checks.
+        cases = (
+            ('sol::openclaude', '--disallowed-tools', 'Edit,Write,NotebookEdit', 'low'),
+            ('sol::opencode', '--agent', 'plan', '<harness default>'),
+            ('opus::antigravity', '--mode', 'plan', '<harness default>'),
+            ('grok', '--reasoning-effort', 'low', 'low'),
+        )
+        for spec, flag, value, effort in cases:
+            with self.subTest(spec=spec):
+                result = self.dispatch('side', spec, '--dry-run')
+                self.assertEqual(result.returncode, 0, result.stdout)
+                argv = self.argv()
+                self.assertEqual(argv[argv.index(flag) + 1], value)
+                self.assertEqual(self.kv('side.resolved')['effort'], effort)
+        grok = self.argv()
+        self.assertEqual(grok[grok.index('--deny') + 1:grok.index('--deny') + 4], ['Edit', '--deny', 'Write'])
+
+    def test_doctor_accepts_side(self):
+        result = subprocess.run(
+            ['bash', str(DISPATCH), 'doctor', '--spec', 'sol', '--role', 'side'],
+            cwd=self.repo, env=self.env, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn('role=side', result.stdout)
+        self.assertIn('effort=low', result.stdout)
+        self.assertIn('offline preflight passed', result.stdout)
+        self.assertEqual(self.calls(), [])
+
+    def test_an_unknown_role_is_still_refused(self):
+        result = self.dispatch('wizard', 'sol')
+        self.assertEqual(result.returncode, 2, result.stdout)
+        self.assertIn("unknown role 'wizard'", result.stdout)
+        self.assertFalse((self.run_dir / 'attempts').exists())
+        self.assertEqual(self.calls(), [])
 
 
 if __name__ == '__main__':

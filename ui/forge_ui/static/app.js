@@ -835,6 +835,9 @@ window.ForgeApp = (() => {
     return [
       { id: 'id', label: 'ID', mono: true, value: t => t.id, cell: t => link(t.id, run.key, { kind: 'task', id: t.id }) },
       { id: 'title', label: 'Title', value: t => t.title },
+      // the one-sentence summary, only while the run's summaries are on (#133 B): the column is not there otherwise
+      ...(summariesOn(run) ? [{ id: 'summary', label: 'Summary', title: 'The one-sentence summary of each task (summaries are on for this run)', cls: 'sum-col',
+        value: t => t.summary && t.summary.sentence || null, cell: t => t.summary && t.summary.sentence || '—' }] : []),
       { id: 'difficulty', label: 'Difficulty', value: t => DIFF_RANK[t.difficulty] ?? null, cell: t => display(t.difficulty) },
       { id: 'wave', label: 'Wave', value: t => Number.isFinite(Number(t.wave)) && t.wave !== null && t.wave !== '' ? Number(t.wave) : null, cell: t => display(t.wave) },
       { id: 'status', label: 'Status', value: t => RM.taskStatus(t), cell: t => chip(RM.statusText(t), RM.taskStatus(t)) },
@@ -878,6 +881,43 @@ window.ForgeApp = (() => {
       scoped(host, run.key + ':');
     }));
   }
+  // The run's summary switch above its tasks (#133 B): `forge control set summaries on|off`, asked in controls.js's words
+  // and sent through the page's write path, with the model shown when on. A page that cannot write shows the state alone.
+  // Built once per run and per writability, then updated in place, so a poll never takes the keyboard off its keys.
+  const summariesOn = run => !!run.summaries && run.summaries.mode === 'on';
+  let summaryWritable = false;
+  function askWritable() {
+    if (SNAP || !window.ForgeUI || !window.ForgeUI.controlsEnabled) return;
+    window.ForgeUI.controlsEnabled().then(on => {
+      if (!!on === summaryWritable) return;
+      summaryWritable = !!on;
+      const cur = state.cache.get(state.key)?.data;
+      if (cur) renderSummarySwitch(cur);
+    });
+  }
+  function renderSummarySwitch(run) {
+    const host = $('run-summaries'); if (!host) return;
+    host.hidden = run.kind === 'solo' || !window.ForgePanel;      // a solo run has one task and no switch
+    if (host.hidden) return;
+    askWritable();
+    const mode = summariesOn(run) ? 'on' : 'off', key = run.key;
+    const shape = `${key}|${summaryWritable ? 'write' : 'read'}`;
+    if (host.dataset.shape !== shape) {
+      host.dataset.shape = shape;
+      const kids = [el('span', 'Summaries:', 'plate')];
+      if (summaryWritable) {
+        kids.push(window.ForgePanel.summaryBank([['off', 'Off'], ['on', 'On']], mode,
+          value => window.ForgePanel.changeSummaries(host.querySelector('.sum-msgs'), null, key, { input: value }, () => loadRun(key)),
+          'Summaries for this run'));
+      } else kids.push(el('span', undefined, 'sum-state'));
+      kids.push(el('span', undefined, 'sum-model'), el('div', undefined, 'sum-msgs'));
+      host.replaceChildren(...kids);
+    }
+    for (const b of host.querySelectorAll('.sum-bank button')) b.setAttribute('aria-pressed', String(b.dataset.value === mode));
+    const word = host.querySelector('.sum-state');
+    if (word) word.textContent = mode;
+    host.querySelector('.sum-model').replaceChildren(...(mode === 'on' && run.summaries.model ? [window.ForgeIcons.modelPlate(run.summaries.model)] : []));
+  }
   function renderInspector(run) {
     const host = $('inspector'); if (!host || !window.ForgePanel) return;
     const sel = state.sel || (run.kind === 'solo' ? { kind: 'task', id: list(run.tasks)[0]?.id } : null);
@@ -886,6 +926,7 @@ window.ForgeApp = (() => {
         run, sel, now: now(),
         fetchJSON: path => fetchJSON(path).then(r => r.data),
         rerender: () => { const r = state.cache.get(state.key)?.data; if (r) renderInspector(r); },
+        refresh: () => loadRun(run.key),                    // a change made here shows at once, not at the next poll
         hash: s => hashFor(run.key, s), onSelect: s => select(s), diffHash: spec => diffHash(run.key, spec),
         convoHash: (s, event) => convoHash(run.key, s, event),
         onFractal: (id, data) => { if (state.stage && state.stage.setFractal) state.stage.setFractal(id, data); },
@@ -1005,16 +1046,38 @@ window.ForgeApp = (() => {
       const strip = el('div', undefined, 'strip-wrap'); strip.id = 'strip'; view.append(strip);
       const diff = el('section', undefined, 'diff-view'); diff.id = 'diff-view'; diff.hidden = true; diff.tabIndex = -1; view.append(diff);
       const box = el('section', undefined, 'module tasks-module'); box.setAttribute('aria-label', 'Tasks'); box.dataset.overlay = '';
+      const questions = el('div', undefined, 'run-questions'); questions.id = 'run-questions'; questions.hidden = true;   // open brief questions (#135)
+      questions.setAttribute('aria-label', 'Open questions');
+      const switchRow = el('div', undefined, 'tasks-switch'); switchRow.id = 'run-summaries'; switchRow.hidden = true;   // the summaries switch (#133 B)
       const tasks = el('div', undefined, 'run-tasks'); tasks.id = 'run-tasks';
-      box.append(Shell.head('tasks', 'Tasks', ''), tasks, Shell.splitter('tasks'));
+      box.append(Shell.head('tasks', 'Tasks', ''), questions, switchRow, tasks, Shell.splitter('tasks'));
       view.append(box);
     }
     document.body.classList.toggle('no-tasks', run.kind === 'solo');
     ensureStage();
     renderHeader(run);
     renderRunBody(run);
+    renderSummarySwitch(run);
+    renderQuestions(run);
     renderTable(run);
     announce(run);
+  }
+  // Open brief questions (#135), flagged first and then by the schedule projection. Hidden with the tasks module
+  // when that panel is folded, and hidden entirely when brief is off or nothing is still open.
+  function renderQuestions(run) {
+    const host = $('run-questions');
+    if (!host) return;
+    const show = run.kind !== 'solo' && run.brief && window.ForgeBrief;
+    if (!show) { host.hidden = true; host.replaceChildren(); return; }
+    const open = window.ForgeBrief.openQuestions(run);
+    if (!open.length) { host.hidden = true; host.replaceChildren(); return; }
+    host.hidden = false;
+    const clock = now();
+    const projections = RM.projectSchedule(run, { now: clock });
+    preserve(host, () => window.ForgeBrief.renderList(host, {
+      run, projections, now: clock,
+      href: id => hashFor(run.key, { kind: 'task', id }),
+    }));
   }
   function renderMain() {
     document.body.classList.toggle('cloud-mode', !!state.cloud);

@@ -43,6 +43,10 @@ time order: an attempt that PASSed, then a merge that CONFLICTed, then a human `
 | `event` `worktree_created` / `worktree_removed` | forge adds or removes a worktree | `path`, `branch` (`-` when detached), `kind` (`task`, `integration`, `candidate` for integrate's scratch worktree, `attribute` for the culprit search's), `repo_path`, and the task for a task worktree; `forge runs rm` adds `by`. Written at task and `_integration` creation, the merged-task cleanup at the end of `run`, integrate's candidate, every prefix of `attribute`, `combine` and `split` (a moved worktree is removed from the old run and created in the new one), and `forge runs rm --worktrees`. A worktree removed outside forge has no `worktree_removed`. forge-ui's Worktrees screen reads them through `forge dataset worktrees` |
 | `event` `run_delete_started` / `run_deleted` | `forge runs rm` | written strictly around a run's deletion: `path`, `run_id`, `archive`, and for `run_deleted` the bytes freed |
 | `event` `shadow_review` | shadow review | how an opt-in second review ended (`done`, `invalid`, `overtime`, `orphaned`, ...), with the reviewed commit and both specs. Its dispatch is recorded with role `qa_shadow` |
+| `event` `side_dispatch` | a brief or summary dispatch that `forge run`, `forge brief write`, `forge summarize` or the scheduler's summaries started, or could not start | `kind` (`brief` or `summary`), `task`, `spec`, `ok`, and `reason`: null on success, else `timeout`, `error`, `missing` or `cap`. Its dispatch is recorded with role `side_brief` or `side_summary` |
+| `event` `retro_note` | a retro note stored by `forge retro note`, or by `forge retro record` after a dispatch | the note's fields (`type`, `fixable_by`, `summary`, `blocking`, `tried`, `evidence`), forge's context (`role`, `spec`, `alias`, `harness`, `effort`, `tier`, `task`, `attempt`, `run_id`, `version`, `os`, `t`) and `check` (`verified` or `claimed`). Fail-open: the plan's `retro/notes.jsonl` is the record |
+| `event` `brief_question` | a brief question stored by `forge brief write` | `task`, `qid`, `scope`, `must_answer` (kept only under `gated`), and `parked`: true for a `wave` or `plan` question, which is kept in `brief.parked.json` |
+| `event` `brief_answer` | an answer given with `forge brief answer` | `task`, `qid`, `actor` (`cli`, or `ui` from forge-ui), and `late`: true once the task has started. The answer is also logged in `control.log` as an `answer` change |
 | `jev` | Jev request | site, answers, usage, latency, mode. Blob: the **full request** (state and questions). Its original sha is `jev.jsonl`'s `key`. A per-attempt gate's request state carries `run`, `task` and `attempt` (`dwarf-message`, `retry-addressed`), so its key differs per attempt and per run; `attribution` carries `run` only |
 | `fractal_step` / `fractal_node` | Fractal step, node state | decomposition decision, iteration, resolved model, cost, tokens, candidate diff |
 | `ledger` | ledger row | imported `.forge/ledger.tsv` rows |
@@ -73,6 +77,12 @@ the log does not say. `speed_reason` is why it was not fast (claude's
 `fast_mode_disabled_reason`, or codex's error message), or null. Each is null when absent,
 so a dispatch that predates the keys is otherwise unchanged.
 
+A brief or summary is a side dispatch (`forge-dispatch.sh side`, read-only). Its dispatch is
+recorded as role `side_brief` or `side_summary` (`forge_dataset.is_side_role`), and its files on
+disk stay `side.*`. Review history, finding facts, review exports and forge-ui's model views
+skip every `side_*` role, so a brief or summary is never counted as a review. A bare `side` is
+the dispatch role itself, not one of these.
+
 `plan --reviewer-session` writes `$PLAN/reviewer_session` (`on`). The plan event records
 it in `options`. The file joins the plan id only when it is present, so every plan already
 in a store keeps its id, and turning the experiment on stores a new plan event.
@@ -83,6 +93,14 @@ its id, and a re-plan that changes the file's content gets a new plan event. `pl
 `collapsed.json` and `plan-gate.json` join the same way, each only when it is present.
 `forge dataset status` counts continued and failed continues for reviewers and implementers
 apart.
+
+The feature files `retro_mode`, `brief`, `brief_scope`, `brief_model`, `summaries` and
+`summaries_model` join the plan id the same way, and the plan event's `options` records each
+one under its file name. `brief_scope` and `brief_model` exist only when brief is on, and
+`summaries_model` only when summaries is on. `retro_mode`, `brief` and `summaries` hold `off`
+after an explicit off (`--no-retro`, `--brief off`, `--summaries off`); with no choice they
+are absent. See [retro notes](decompose.md#retro-notes-opt-in), [brief mode](decompose.md#brief-mode-opt-in)
+and [task summaries](decompose.md#task-summaries-opt-in).
 
 Each blob reference carries `sha` (the stored bytes), `original_sha`, `n` (the original
 size), `kept`, and `cut`. A cut keeps the head and the tail, because a QA prompt ends with
