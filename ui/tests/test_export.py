@@ -187,6 +187,14 @@ class ExportTests(unittest.TestCase):
         result = subprocess.run(['node', '--input-type=module', '--check'], input=text.encode(), capture_output=True, timeout=60)
         self.assertEqual(result.returncode, 0, result.stderr.decode(errors='replace'))
 
+    def test_every_script_the_page_loads_is_exported_or_left_out_with_a_reason(self):
+        page = _Page(); page.feed((export.STATIC / 'index.html').read_text(encoding='utf-8'))
+        loaded = {attrs['src'] for attrs, _ in page.scripts if attrs.get('src')}
+        self.assertEqual(loaded - set(export.SCRIPTS) - set(export.LEFT_OUT), set(), 'add each to SCRIPTS or LEFT_OUT')
+        self.assertEqual(set(export.SCRIPTS) & set(export.LEFT_OUT), set())
+        self.assertEqual(set(export.LEFT_OUT) - loaded, set(), 'LEFT_OUT names a script index.html no longer loads')
+        self.assertTrue(all(export.LEFT_OUT.values()))
+
     def test_the_endpoint_serves_a_download_that_never_runs_on_this_origin(self):
         try:
             srv = make_server(self.catalog, port=0, quiet=True)

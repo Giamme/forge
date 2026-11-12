@@ -1,7 +1,7 @@
 """Brief questions in a real browser (Chromium through Python Playwright, skipped without it).
 
 Answering posts to the brief answer route and the answer shows as text. A late answer shows the CLI notice.
-Read-only has the questions and no answer box. Parked questions stay collapsed, with no box. The run's list
+Read-only has the questions and no answer box, and so does an exported run. Parked questions stay collapsed, with no box. The run's list
 opens the task, flagged questions first. The route is answered by the test (`page.route`), so no `forge brief`
 runs. Fixtures come from test_browser.
 """
@@ -15,7 +15,7 @@ import time
 import unittest
 from pathlib import Path
 
-from forge_ui import reader
+from forge_ui import export, reader
 from forge_ui.server import make_server
 import run_fixture as F
 import test_browser as tb
@@ -168,6 +168,22 @@ class Brief(unittest.TestCase):
         page.wait_for_selector('#inspector .insp-head h2')
         self.assertIn('server', page.text_content('#inspector .insp-head h2'))
         self.assertIn('Which <b>port</b>?', page.text_content('#inspector .brief-section'))
+        self.assertClean(page)
+
+    def test_an_exported_run_shows_the_questions_and_the_run_list_without_a_box(self):
+        name, body = export.build(reader.Catalog(plans=[self.plan], registry=False), self.key, texts=True)
+        path = Path(self.temp.name) / name
+        path.write_bytes(body)
+        page = self.open(cdn=False, view='2d')
+        page.goto(path.as_uri() + '#/runs/' + self.key)
+        page.wait_for_selector('#run-questions a.brief-open')
+        self.assertEqual(page.locator('#run-questions a.brief-open').count(), 4)
+        page.click('#run-questions a.brief-open >> nth=0')
+        page.wait_for_function("() => document.querySelector('#inspector .brief-section')?.dataset.controls === 'off'")
+        section = page.text_content('#inspector .brief-section')
+        self.assertIn('Which <b>port</b>?', section)
+        self.assertIn('must answer', section)
+        self.assertEqual(page.locator('#inspector .brief-section textarea, #inspector .brief-section button').count(), 0)
         self.assertClean(page)
 
 
