@@ -378,7 +378,7 @@ def _assign_timed(items: list, rows: list, task_dir: Path) -> dict:
 
 
 def _reviews(task_dir: Path, rows: list) -> tuple:
-    """`({attempt: qa.last text}, {texts of reviews with no knowable attempt})`.
+    """`({attempt: qa.last text}, {texts whose newest review has no knowable attempt})`.
 
     Reviews come from attempts/qa-*/, newest start wins. Shadow reviews are skipped.
 
@@ -428,18 +428,22 @@ def _reviews(task_dir: Path, rows: list) -> tuple:
     items.sort(key=lambda item: (item['started'], item['name']))
     assigned = _assign_timed([item for item in items if item['pinned'] is None], rows, task_dir)
     found = {}
-    undecided = set()
+    unassignable = set()
+    newest = {}
     for item in items:
         number = item['pinned'] if item['pinned'] is not None else assigned.get(id(item))
+        # Items are in start order, so the last one kept per text is its newest review.
+        newest[item['text']] = number
         if number is None:
-            undecided.add(item['text'])
+            unassignable.add(item['text'])
             continue
         found[number] = item['text']
     live = _text(task_dir / 'qa.last')
-    if live is not None and live not in undecided and all(text != live for text in found.values()):
+    if live is not None and live not in unassignable and all(text != live for text in found.values()):
         number = _open_attempt(rows, task_dir)
         if number is not None:
             found[number] = live
+    undecided = {text for text, number in newest.items() if number is None}
     return found, undecided
 
 
@@ -454,7 +458,7 @@ def _latest(task_dir: Path, rows: list, reviews: dict, undecided: set):
     """`(attempt, text)` of the latest review, or `(None, None)` when the task has none."""
     live = _text(task_dir / 'qa.last')
     if live is not None:
-        if live in undecided and all(text != live for text in reviews.values()):
+        if live in undecided:
             return None, live
         # The same text can sit on an older archive and on the latest attempt. The finding
         # refs name the newest attempt that still holds it.
