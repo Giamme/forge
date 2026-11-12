@@ -50,6 +50,12 @@ case "$cmd" in
   _waves)
     echo "waves" >> "$plan/events.log"
     ;;
+  _accept)
+    echo "$name accepted ${*:4} actor=${FORGE_ACCEPT_ACTOR:-}" >> "$plan/events.log"
+    [ -f "$plan/hooks/accept-refuses" ] && { echo "forge: task '$name': the worktree changed since it was reviewed" >&2; exit 3; }
+    echo PASS > "$t/status"; touch "$t/merged"; echo "$name merged" >> "$plan/events.log"
+    echo "$name accepted by a human and merged"
+    ;;
 esac
 '''
 
@@ -239,6 +245,57 @@ class CliTests(Base):
         self.assertEqual(sorted(p.name for p in self.plan.glob('.*')), [])
 
 
+class AcceptCliTests(Base):
+    """forge control accept (#138): a person's override of a reviewer, queued into a live run."""
+
+    def test_accept_writes_a_request_with_its_reason_and_logs_who_asked(self):
+        self.task('x', status='NEEDS_DECISION')
+        self.live()
+        result = self.control('accept', self.plan, 'x', '--reason', '  the  P2 is a  test-only nit ', '--approved',
+                              '--actor', 'ui', '--json')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        [name] = self.requests()
+        self.assertEqual(json.loads(result.stdout)['request'], name)
+        body = json.loads((self.plan / 'control.requests' / name).read_text())
+        self.assertEqual((body['verb'], body['task'], body['reason'], body['approved'], body['actor']),
+                         ('accept', 'x', 'the P2 is a test-only nit', True, 'ui'))
+        [entry] = self.log()
+        self.assertEqual((entry['action'], entry['task'], entry['actor'], entry['reason'], entry['request']),
+                         ('accept', 'x', 'ui', 'the P2 is a test-only nit', name))
+
+    def test_accept_refusals(self):
+        self.task('x', status='NEEDS_DECISION')
+        self.task('f', status='FAIL')
+        self.task('p', status='PASS')
+        self.task('m', status='PASS')
+        (self.plan / 'tasks/m/merged').write_text('')
+        good = ('--reason', 'fine as it is', '--approved')
+        cases = [
+            ('not live', 3, ('x',) + good, False),
+            ('no --approved', 2, ('x', '--reason', 'fine as it is'), True),
+            ('no --reason', 2, ('x', '--approved'), True),
+            ('a blank reason', 2, ('x', '--reason', '   ', '--approved'), True),
+            ('a reason over 2000 characters', 2, ('x', '--reason', 'r' * 2001, '--approved'), True),
+            ('a task with no verdict to override', 3, ('p',) + good, True),
+            ('a merged task', 3, ('m',) + good, True),
+            ('an unknown task', 2, ('zz',) + good, True),
+        ]
+        for what, code, args, live in cases:
+            with self.subTest(what):
+                (self.plan / 'scheduler.live').unlink(missing_ok=True)
+                if live:
+                    self.live()
+                result = self.control('accept', self.plan, *args)
+                self.assertEqual(result.returncode, code, result.stdout + result.stderr)
+                if what == 'not live':
+                    self.assertIn('forge-parallel.sh accept', result.stderr)   # what to run instead
+        self.assertEqual(self.requests(), [])
+        self.live()
+        for task in ('x', 'f'):                                               # the valid controls
+            self.assertEqual(self.control('accept', self.plan, task, *good).returncode, 0)
+        self.assertEqual(len(self.requests()), 2)
+
+
 class SchedulerTests(Base):
     def queue(self, verb, task, dwarf=None):
         """What `forge control` writes; liveness is the scheduler's own."""
@@ -357,6 +414,104 @@ class SchedulerTests(Base):
         self.assertEqual(self.requests(), [])
 
 
+class AcceptSchedulerTests(Base):
+    def accept(self, task):
+        result = self.control('accept', self.plan, task, '--reason', 'tolerable', '--approved', '--json')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout)['request']
+
+    def test_an_accept_merges_the_stopped_task_and_its_dependent_runs_in_the_same_run(self):
+        self.task('x', status='NEEDS_DECISION')
+        self.task('d', deps='x')
+        self.task('a')
+        (self.plan / 'hooks/a.1').write_text('waitfor "$plan/tasks/d/merged"\n')   # keeps the run live meanwhile
+        proc = self.start()
+        self.wait_for(lambda: (self.plan / 'tasks/a/calls').exists(), 'a to start')
+        request = self.accept('x')
+        _, err = proc.communicate(timeout=60)
+        self.assertEqual(proc.returncode, 0, err)
+        self.assertEqual([self.status(n) for n in 'xda'], ['MERGED'] * 3)
+        self.assertIn('x accepted --reason tolerable --approved actor=cli', self.events())
+        self.assertLess(self.events().index('x merged'), self.events().index('d start 1 trigger='))
+        self.assertEqual(self.events().count('x start 1 trigger='), 0)     # no attempt was spent on it
+        [line] = self.outcomes()
+        self.assertEqual((line['request'], line['action'], line['task'], line['outcome']), (request, 'accept', 'x', 'applied'))
+        self.assertIn('forge: control: accept x applied', err)
+
+    def test_a_refused_accept_logs_why_and_leaves_the_task(self):
+        self.task('x', status='NEEDS_DECISION')
+        self.task('a')
+        (self.plan / 'hooks/accept-refuses').write_text('')
+        (self.plan / 'hooks/a.1').write_text('waitfor "$plan/release"\n')
+        proc = self.start()
+        self.wait_for(lambda: (self.plan / 'tasks/a/calls').exists(), 'a to start')
+        self.accept('x')
+        self.wait_for(lambda: self.outcomes(), 'the outcome line')
+        (self.plan / 'release').write_text('')
+        proc.communicate(timeout=60)
+        [line] = self.outcomes()
+        self.assertEqual((line['outcome'], line['reason']),
+                         ('refused', "task 'x': the worktree changed since it was reviewed"))
+        self.assertEqual(self.status('x'), 'NEEDS_DECISION')
+
+    def test_an_accept_of_a_running_task_is_refused(self):
+        self.task('a')
+        (self.plan / 'hooks/a.1').write_text('echo FAIL > "$t/status"; waitfor "$plan/release"\n')
+        proc = self.start()
+        self.wait_for(lambda: self.status('a') == 'FAIL', 'a to write its verdict')
+        self.accept('a')
+        self.wait_for(lambda: self.outcomes(), 'the outcome line')
+        (self.plan / 'release').write_text('')
+        proc.communicate(timeout=60)
+        [line] = self.outcomes()
+        self.assertEqual((line['outcome'], line['reason']), ('refused', 'the task is running'))
+        self.assertNotIn('a accepted', ' '.join(self.events()))
+
+
+class LockMessageTests(unittest.TestCase):
+    """A command the plan lock refuses names the holder and what to run instead (#138)."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory(); self.addCleanup(tmp.cleanup)
+        self.plan = Path(tmp.name).resolve() / 'plan'; self.plan.mkdir()
+        (self.plan / 'tasks.tsv').write_text('a\t-\tlow\ta.txt\tsol\topus\tA\n')
+        holder = subprocess.Popen([sys.executable, '-c', textwrap.dedent('''
+            import fcntl, sys, time
+            lock = open(sys.argv[1], "a"); fcntl.flock(lock, fcntl.LOCK_EX); print("held", flush=True); time.sleep(60)
+            '''), str(self.plan / 'schedule.lock')], stdout=subprocess.PIPE, text=True)
+        self.addCleanup(lambda: (holder.kill(), holder.wait(), holder.stdout.close()))
+        self.assertEqual(holder.stdout.readline().strip(), 'held')
+        self.holder = holder.pid
+
+    def accept(self):
+        return subprocess.run(['bash', str(ROOT / 'scripts/forge-parallel.sh'), 'accept', str(self.plan), 'a',
+                               '--reason', 'r', '--approved'], capture_output=True, text=True, timeout=60,
+                              env=dict(os.environ, FORGE_DATASET='off'))
+
+    def test_a_live_run_holding_the_lock_is_named_with_the_live_accept(self):
+        (self.plan / 'schedule.holder').write_text(json.dumps({'pid': self.holder, 'command': 'run', 'at': time.time()}))
+        (self.plan / 'scheduler.live').write_text(json.dumps({'pid': self.holder}))
+        result = self.accept()
+        self.assertEqual(result.returncode, 3, result.stderr)
+        self.assertIn('locked by forge-parallel.sh run (pid %d' % self.holder, result.stderr)
+        self.assertIn('forge control accept %s <task> --reason TEXT --approved' % self.plan, result.stderr)
+        self.assertNotIn('Errno', result.stderr)
+
+    def test_another_command_holding_the_lock_is_waited_for(self):
+        (self.plan / 'schedule.holder').write_text(json.dumps({'pid': self.holder, 'command': 'integrate'}))
+        result = self.accept()
+        self.assertEqual(result.returncode, 3, result.stderr)
+        self.assertIn('locked by forge-parallel.sh integrate (pid %d)' % self.holder, result.stderr)
+        self.assertIn('Wait for it to finish', result.stderr)
+        self.assertNotIn('forge control', result.stderr)
+
+    def test_without_a_holder_record_it_still_says_the_plan_is_locked(self):
+        result = self.accept()
+        self.assertEqual(result.returncode, 3, result.stderr)
+        self.assertIn('is locked by another forge command', result.stderr)
+        self.assertNotIn('Errno', result.stderr)
+
+
 class EndToEndTests(unittest.TestCase):
     git = fixtures.ForgeTests.git
     run_script = fixtures.ForgeTests.run_script
@@ -393,6 +548,34 @@ class EndToEndTests(unittest.TestCase):
                           if line.startswith('a\t')], ['opus:high:claude'])
         record = (p / 'tasks/a/escalations.tsv').read_text().splitlines()[-1].split('\t')
         self.assertEqual(record[2:], ['sol', 'opus:high:claude', 'retry'])
+
+
+    def test_control_accept_merges_a_failed_task_into_the_live_run(self):
+        p = self.plan('-')
+        self.scenario({'a.qa.1': {'verdict': 'FAIL', 'findings': '- [P1][CONFIRMED] a.txt:1 — a nit the user accepts'},
+                       'b.dwarf.1': {'sleep': 8}})
+        out = {}
+        runner = threading.Thread(target=lambda: out.update(r=self.run_script('forge-parallel.sh', 'run', p)))
+        runner.start()
+        deadline = time.monotonic() + 60
+        while time.monotonic() < deadline and not ((p / 'tasks/a/status').exists()
+                                                   and (p / 'tasks/a/status').read_text().strip() == 'FAIL'):
+            time.sleep(0.05)
+        while time.monotonic() < deadline and subprocess.run(['/usr/bin/pgrep', '-f', f'_task {p} a$'],
+                                                             stdout=subprocess.DEVNULL).returncode == 0:
+            time.sleep(0.05)
+        time.sleep(0.3)
+        result = subprocess.run([sys.executable, str(CONTROL), 'accept', str(p), 'a', '--reason', 'the nit can wait',
+                                 '--approved'], capture_output=True, text=True, env=self.env, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        runner.join(120)
+        self.assertEqual(out['r'].returncode, 0, out['r'].stdout)
+        self.assertTrue((p / 'tasks/a/merged').exists())
+        accepted = (p / 'tasks/a/accepted.by').read_text()
+        self.assertIn('reason=the nit can wait', accepted)
+        self.assertIn('actor=cli', accepted)
+        self.assertIn('a nit the user accepts', (p / 'tasks/a/known_issues.md').read_text())
+        self.assertIn('forge: control: accept a applied', out['r'].stdout)
 
 
 if __name__ == '__main__':

@@ -3406,6 +3406,8 @@ case "$CMD" in
   combine)   need_fn do_combine; do_combine "$@" ;;
   _task)     do_task "$@" ;;
   _merge)    merge_task "$@" ;;
+  # The live scheduler's accept (forge control accept, #138): it holds the plan lock already.
+  _accept)   need_fn do_accept; FORGE_ACCEPT_LIVE=1 do_accept "$@" ;;
   _prepare_retry) retry_for_scheduler "$@" ;;
   _qa_only)  qa_only_next "$@" ;;
   _waves)    compute_waves "$@" ;;

@@ -267,6 +267,8 @@ do_accept() {
     echo "attempt=$attempt"
     echo "reviewed_commit=$sha"
     [ "${gdec:-}" != fail ] || echo "gate=fail"
+    # Through forge control on a live run: who asked (ui or cli), as control.log has it (#138).
+    [ -z "${FORGE_ACCEPT_ACTOR:-}" ] || echo "actor=$FORGE_ACCEPT_ACTOR"
   } > "$tdir/accepted.by"
   echo PASS > "$tdir/status"
 
@@ -283,7 +285,8 @@ do_accept() {
   write_results "$PLAN"
   echo "$id accepted by a human and merged"
   echo "known issues recorded in $ki"
-  if [ "$(awk -F'\t' '$2!="MERGED" {n++} END {print n+0}' "$PLAN/results.tsv")" -gt 0 ]; then
+  # A live run starts the tasks that waited on it by itself.
+  if [ -z "${FORGE_ACCEPT_LIVE:-}" ] && [ "$(awk -F'\t' '$2!="MERGED" {n++} END {print n+0}' "$PLAN/results.tsv")" -gt 0 ]; then
     echo "tasks that were waiting on it are unchanged; continue with: forge-parallel.sh run $PLAN"
   fi
   return 0

@@ -950,7 +950,8 @@ resumes that same task. Only `retry <plan> <id> --decide retry=N` or `--decide t
 `accept`, does. To resume several at once, add `--no-dispatch` to each `retry`, which records the
 decision and starts nothing, then `run` the plan. Replacing it is a hand
 edit of `tasks.tsv` before the next `run`, as the summary says (`forge control add` queues a new
-row but does not replace the stopped one). A live scheduler takes the same flags as `forge control retry`. A run that ends with such a
+row but does not replace the stopped one). A live scheduler takes the same flags as `forge control retry`, and
+`forge control accept <plan> <id> --reason "…" --approved` for `accept`. A run that ends with such a
 task still in `tasks.tsv` and unmerged exits `5`. See
 [when reviews don't converge](../references/decompose.md#when-reviews-dont-converge).
 

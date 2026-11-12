@@ -463,7 +463,7 @@ def stop_harnesses(plan: object, names: object) -> None:
 
 
 # --- control requests ----------------------------------------------------------------------
-# `forge control retry|add` queue one JSON file each in control.requests/, under control.lock and
+# `forge control retry|add|accept` queue one JSON file each in control.requests/, under control.lock and
 # only while scheduler.live says a scheduler reads them. The scheduler applies or refuses each,
 # logs one outcome line with the same `request` id, and removes it. live_stop settles whatever
 # is left after it withdraws liveness, under the same lock, so no request outlives its run.
@@ -514,7 +514,7 @@ def read_request(plan: object, name: str) -> dict | None:
         request = json.loads(data.decode('utf-8'))
     except (OSError, ValueError, UnicodeDecodeError):
         return None
-    if len(data) > REQUEST_MAX or not isinstance(request, dict) or request.get('verb') not in ('retry', 'add'):
+    if len(data) > REQUEST_MAX or not isinstance(request, dict) or request.get('verb') not in ('retry', 'add', 'accept'):
         return None
     task, dwarf = request.get('task'), request.get('dwarf')
     if not isinstance(task, str) or not _task_id_ok(task):
@@ -528,6 +528,9 @@ def read_request(plan: object, name: str) -> dict | None:
     if reason is not None and (not isinstance(reason, str) or len(reason) > 2000):
         return None
     if not isinstance(request.get('approved', False), bool):
+        return None
+    actor = request.get('actor')
+    if actor is not None and actor not in ('ui', 'cli'):
         return None
     return request
 
@@ -1257,6 +1260,37 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
             _warn('waves.tsv was not refreshed for ' + name + '; the task still runs')
         return 'applied', None
 
+    def apply_accept(request: dict) -> tuple:
+        """A person's accept of a reviewed task (#138): what `forge-parallel.sh accept` does, run
+        here because this scheduler holds the plan lock it needs. Its dependents start once it merges."""
+        name, reason = request['task'], (request.get('reason') or '').strip()
+        if name not in tasks:
+            return 'refused', 'this run does not know task ' + name
+        if not reason or request.get('approved') is not True:
+            return 'refused', 'an accept needs --reason and --approved'
+        if name in active:
+            return 'refused', 'the task is running'
+        if name in pending:
+            return 'refused', 'the task is already waiting to run'
+        state = status(name)
+        if state not in ('FAIL', 'UNKNOWN', 'NEEDS_DECISION'):
+            return 'refused', ('a ' + state + ' task has no reviewer verdict to override: accept takes a FAIL, '
+                               'UNKNOWN or NEEDS_DECISION task')
+        env = dict(os.environ, FORGE_ACCEPT_ACTOR=request.get('actor') or 'cli')
+        result = subprocess.run(['/bin/bash', script, '_accept', str(plan), name, '--reason', reason, '--approved'],
+                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=env)
+        lines = [line for line in result.stdout.splitlines() if line.strip()]
+        if result.returncode:
+            said = [line[len('forge: '):] for line in lines if line.startswith('forge: ')]
+            return 'refused', (said[-1] if said else 'the accept failed (exit ' + str(result.returncode) + ')')
+        for line in lines:
+            print('forge: ' + line, file=sys.stderr, flush=True)
+        pairs_cache.pop(name, None)
+        refused.pop(name, None)
+        if brief_mode != 'off' and status(name) == 'MERGED':
+            brief_stale(name)
+        return 'applied', None
+
     def is_fix(name: str) -> bool:
         """A finding sweep's fix task."""
         return (plan / 'tasks' / name / 'sweep.json').is_file()
@@ -1299,6 +1333,8 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
                 outcome, reason = 'refused', 'run is stopping'
             elif request['verb'] == 'retry':
                 outcome, reason = apply_retry(request)
+            elif request['verb'] == 'accept':
+                outcome, reason = apply_accept(request)
             else:
                 outcome, reason = apply_add(request)
             with _control_lock(plan):
@@ -1654,6 +1690,31 @@ def schedule(script: str, plan: str, capacity: int, retry_failed: int = 0,
     return 0 if all(status(name) == 'MERGED' for name in tasks if not is_fix(name)) else 5
 
 
+HOLDER = 'schedule.holder'   # the forge command holding schedule.lock: written by each one that takes it
+
+
+def lock_refusal(plan: Path, command: str) -> str:
+    """What a command the plan lock refuses says (#138): who holds the lock, and what to do instead."""
+    holder = _json_object(plan / HOLDER) or {}
+    pid, held_by, since = holder.get('pid'), holder.get('command'), holder.get('at')
+    who = 'another forge command'
+    if isinstance(held_by, str) and held_by.isidentifier() and type(pid) is int:
+        who = 'forge-parallel.sh ' + held_by + ' (pid ' + str(pid) + ')'
+        if isinstance(since, (int, float)):
+            try:
+                who += ', since ' + time.strftime('%H:%M', time.localtime(since))
+            except (ValueError, OverflowError, OSError):
+                pass
+    text = 'forge: ' + command + ': the plan ' + str(plan) + ' is locked by ' + who + '.'
+    if held_by == 'run' or (plan / 'scheduler.live').exists():
+        live = ('forge control accept ' + str(plan) + ' <task> --reason TEXT --approved'
+                if command == 'accept' else 'forge control (retry, accept, add, set, drain, stop)')
+        text += ' A run is live: change it with ' + live + ', or wait for the run to end.'
+    else:
+        text += ' Wait for it to finish, then run ' + command + ' again.'
+    return text
+
+
 def main() -> None:
     try:
         if sys.argv[1] == 'backoff-check':
@@ -1669,8 +1730,14 @@ def main() -> None:
             # The shell inherits the lock for its entire operation, including
             # preflight, setup, scheduling, verification and cleanup.
             lock = open(Path(plan) / 'schedule.lock', 'a')
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                print(lock_refusal(Path(plan), command), file=sys.stderr)
+                sys.exit(3)
             os.set_inheritable(lock.fileno(), True)
+            # Who holds it, for the next command the lock refuses. exec keeps this pid.
+            _write_atomic(plan, json.dumps(dict(pid=os.getpid(), command=command, at=time.time())) + '\n', HOLDER)
             env = dict(os.environ, FORGE_PLAN_LOCK=plan)
             os.execve('/bin/bash', ['/bin/bash', script, command, plan, *args], env)
         parser = argparse.ArgumentParser(prog='forge-schedule.py')

@@ -998,7 +998,9 @@ The choices:
   ([below](#accepting-splitting-combining-and-the-whole-run-review)).
 
 A live scheduler takes the same decision as `forge control retry <plan> <id> --decide …` (or
-`--dwarf`), with `--reason` and `--approved`; that only queues the request. The answer is appended
+`--dwarf`), and an accept as `forge control accept <plan> <id>`, each with `--reason` and
+`--approved`; that only queues the request. An accepted task merges and its dependents start in
+the same run (#138). The answer is appended
 to `tasks/<id>/decisions.tsv` (epoch, attempt, choice, reason). The run summary lists these tasks
 under `waiting for your decision:`. A run that ends with such a task unmerged exits 5.
 

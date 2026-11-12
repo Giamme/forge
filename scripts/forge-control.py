@@ -17,6 +17,8 @@
                                                  a NEEDS_DECISION task (reviews that do not converge, or a stop with no
                                                  stronger model) is resumed only by a decision: --decide retry=N or
                                                  threshold=P0..P3, or --dwarf SPEC, each with --reason TEXT --approved
+  accept <plan> <task> --reason TEXT --approved  queue an accept of a FAIL, UNKNOWN or NEEDS_DECISION task into the
+                                                 live run: its findings become known issues, it merges, its dependents start
   add   <plan> <task>                            queue a row added to tasks.tsv (with its prompt.md) into the live run
   drain <plan>                                   start nothing new; running tasks finish and the scheduler waits
                                                  while tasks remain (with none left to start, the run ends as usual)
@@ -836,12 +838,16 @@ def check_row(plan, rows, task):
     return dwarf, qa
 
 
-def queue(args, plan, verb, task, dwarf, decision=None):
+def queue(args, plan, verb, task, dwarf, decision=None, accept_reason=None):
     """Write the request under the control lock, live only; log it with its id.
-    decision: a retry's (--decide choice or None, reason, approved) for a NEEDS_DECISION task."""
+    decision: a retry's (--decide choice or None, reason, approved) for a NEEDS_DECISION task.
+    accept_reason: an accept's reason; it is given with --approved (#138)."""
     with control_lock(plan):
         probe(plan, 'control.log')
         if not is_live(plan):
+            if verb == 'accept':
+                raise Refused(f'accept needs a live run (no live scheduler for this plan); with no run going, accept it '
+                              f'directly: forge-parallel.sh accept {plan} {task} --reason TEXT --approved')
             raise Refused(f'{verb} needs a live run (no live scheduler for this plan)')
         if verb == 'retry':
             refuse_task(plan, task, pin=True)
@@ -849,8 +855,12 @@ def queue(args, plan, verb, task, dwarf, decision=None):
         request = dict(verb=verb, task=task, dwarf=dwarf, at=time.time(), actor=args.actor)
         if decision:
             request.update(decide=decision[0], reason=decision[1], approved=True)
+        extra = {}
+        if accept_reason is not None:
+            request.update(reason=accept_reason, approved=True)
+            extra['reason'] = accept_reason
         write_atomic(plan, f'{REQUESTS}/{name}', json.dumps(request) + '\n')
-        audit(plan, args.actor, verb, task, None, dwarf or (decision[0] if decision else None), None, request=name)
+        audit(plan, args.actor, verb, task, None, dwarf or (decision[0] if decision else None), None, request=name, **extra)
     if args.json:
         json.dump(dict(queued=True, request=name), sys.stdout)
         sys.stdout.write('\n')
@@ -898,6 +908,29 @@ def cmd_retry(args):
     if dwarf:
         doctor(dwarf)
     return queue(args, plan, 'retry', args.task, dwarf, decision)
+
+
+ACCEPTABLE = ('FAIL', 'UNKNOWN', 'NEEDS_DECISION')   # what plain `accept` takes: a verdict to override
+
+
+def cmd_accept(args):
+    """Queue an accept into the live run (#138): the scheduler holds the plan lock that plain
+    `forge-parallel.sh accept` needs, so it applies the request itself at its next pass."""
+    plan, rows = load(args.plan)
+    require_task(rows, args.task)
+    refuse_task(plan, args.task)
+    reason = re.sub(r'\s+', ' ', args.reason or '').strip()
+    if not reason:
+        raise Invalid('accept needs --reason TEXT: why this work is acceptable despite the reviewer, recorded with the work')
+    if len(reason) > 2000:
+        raise Invalid('--reason is limited to 2000 characters')
+    if not args.approved:
+        raise Invalid('accept needs --approved: it overrides the reviewer\'s verdict, and is only given on the user\'s instruction')
+    status = task_status(plan, args.task, strict=True)
+    if status not in ACCEPTABLE:
+        raise Refused(f'task {args.task} is {status}: accept overrides a reviewer\'s verdict, so it takes a FAIL, '
+                      'UNKNOWN or NEEDS_DECISION task')
+    return queue(args, plan, 'accept', args.task, None, accept_reason=reason)
 
 
 def cmd_add(args):
@@ -972,7 +1005,7 @@ def cmd_show(args):
 def parser():
     top = argparse.ArgumentParser(prog='forge control', description="Show and change a plan's live controls.")
     sub = top.add_subparsers(dest='command', required=True,
-                             metavar='{show,set,pin,unpin,retry,add,drain,resume,stop}')
+                             metavar='{show,set,pin,unpin,retry,accept,add,drain,resume,stop}')
 
     def common(p, mutator=True):
         p.add_argument('plan', metavar='PLAN_DIR', help="the plan dir (the one with tasks.tsv)")
@@ -1010,6 +1043,13 @@ def parser():
     p.add_argument('--reason', metavar='TEXT', help='why (a decision needs it)')
     p.add_argument('--approved', action='store_true', help='the decision is the user\'s (a decision needs it)')
     p.set_defaults(func=cmd_retry)
+    p = sub.add_parser('accept', help="queue an accept of a FAIL or NEEDS_DECISION task into the live run: "
+                       "its findings become known issues and it merges (the user's decision only)")
+    common(p)
+    p.add_argument('task')
+    p.add_argument('--reason', metavar='TEXT', required=False, help='why the work is acceptable despite the reviewer (required)')
+    p.add_argument('--approved', action='store_true', help="the decision is the user's (required)")
+    p.set_defaults(func=cmd_accept)
     p = sub.add_parser('add', help='queue a row added to tasks.tsv into the live run')
     common(p)
     p.add_argument('task')

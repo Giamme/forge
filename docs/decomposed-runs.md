@@ -250,6 +250,7 @@ forge control stop <plan-dir>                     # finish what runs, start noth
 forge control stop <plan-dir> --now               # interrupt the running tasks too, like Ctrl-C
 forge control retry <plan-dir> docs --dwarf sol:high   # queue a retry of a stopped or failed task
 forge control add <plan-dir> docs-fix             # queue a row you appended to tasks.tsv (with its prompt.md)
+forge control accept <plan-dir> docs --reason "the P2 is a test-only nit" --approved   # queue an accept
 ```
 
 A stop skips verification and exits 130, unless every task had merged by then, and a drain
@@ -260,6 +261,13 @@ control show` lists the log). A retry is prepared exactly as `forge-parallel.sh 
 so a task the policy stopped needs `--dwarf`; it spends no automatic retry budget. An added row
 may depend only on tasks the run already knows. Neither outlives the run that was live when it
 was queued, and both are refused once the run is stopping.
+`accept` is `forge-parallel.sh accept` for a live run, which holds the plan lock that command
+needs. It takes a `FAIL`, `UNKNOWN` or `NEEDS_DECISION` task that is neither running nor queued,
+with `--reason` and `--approved`: the findings become known issues, the task merges, and the tasks
+waiting on it start in the same run. `control.log` records who asked (`--actor`) and why, and
+`tasks/<id>/accepted.by` the same. With no live run it is refused and names the plain `accept`.
+A forge command the plan lock refuses says which command holds it (pid and since when), and on a
+live run which `forge control` command to use instead.
 
 Each change is validated, written under `control.lock`, and says when it applies:
 
