@@ -66,6 +66,11 @@ test('a question says when its task starts, from the projection and the deps sti
     [{ deps: ['A', 'B'], start: now + 40 * 60 }, 'starts after A and B merge, about now'],
     [{ deps: ['A'], start: null, now }, null],
     [{ start: null }, null],
+    // started tasks: the projection is in the past, so it is not "starts about now"
+    [{ deps: [], start: now - 500, now, status: 'RUNNING' }, 'running now'],
+    [{ deps: ['A'], start: now - 500, now, status: 'FAIL' }, 'already started'],
+    [{ deps: [], start: now + 10, now, status: 'PENDING' }, 'starts about now'],
+    [{ deps: ['A'], start: now + 60, now, status: 'BLOCKED' }, 'starts after A merges, about 1 min'],
   ];
   for (const [spec, line] of cases) assert.equal(B.startLine(spec), line, JSON.stringify(spec));
 });

@@ -85,8 +85,13 @@
   }
 
   // "starts after A and B merge, about 40 min". No finite start → null. No clock → the wait is about now.
+  // A task that has started (any status but PENDING or BLOCKED) says so instead: its projected start is in
+  // the past, and an answer now is a late one.
   function startLine(spec) {
     spec = spec || {};
+    const status = typeof spec.status === 'string' ? spec.status : '';
+    if (status === 'RUNNING') return 'running now';
+    if (status && status !== 'PENDING' && status !== 'BLOCKED') return 'already started';
     const start = num(spec.start);
     if (start === null) return null;
     const clock = num(spec.now);
@@ -285,7 +290,7 @@
       link.append(top);
       const marks = flags(question);
       if (marks) link.append(marks);
-      const when = startLine({ deps: waitingDeps(task, run && run.tasks), start: projectionStart(spec.projections, task), now: spec.now });
+      const when = startLine({ deps: waitingDeps(task, run && run.tasks), start: projectionStart(spec.projections, task), now: spec.now, status: task.status });
       if (when) link.append(el('span', when, 'brief-when'));
       li.append(link);
       ul.append(li);
