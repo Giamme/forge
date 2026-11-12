@@ -99,6 +99,7 @@ class ReviewTests(unittest.TestCase):
 
     # --- what `review` produces ------------------------------------------------------------
     def test_review_runs_one_qa_call_and_writes_artifacts_and_a_complete_prompt(self):
+        self.env['FORGE_KEEP_SNAPSHOTS'] = '1'     # the snapshot is read after its review (#139)
         self.scenario({'a.qa.1': {'verdict': 'FAIL', 'findings': P3}})        # a's own review tolerates a P3
         p = self.merged_plan('--qa-threshold', 'P2', '--verify', 'test -f a.txt && test -f b.txt')
         self.assertTrue((p / 'tasks/a/known_issues.md').exists())
@@ -163,6 +164,7 @@ class ReviewTests(unittest.TestCase):
         self.assertLess(len(prompt), 100_000)                                  # the budget is ~80 KB, not 100 KB+
 
     def test_a_diff_too_large_to_inline_tells_the_reviewer_how_to_read_it(self):
+        self.env['FORGE_KEEP_SNAPSHOTS'] = '1'     # the snapshot is read after its review (#139)
         self.scenario({'a.dwarf.1': {'content': 'y' * 450_000}})
         p = self.plan_of([('a', '-', 'a.txt'), ('b', 'a', 'b.txt')])
         self.assertEqual(self.run_script('forge-parallel.sh', 'run', p).returncode, 0)
@@ -365,6 +367,7 @@ class ReviewTests(unittest.TestCase):
 
     # --- integrate --final-review ----------------------------------------------------------
     def test_integrate_with_a_passing_final_review_fast_forwards_what_will_land(self):
+        self.env['FORGE_KEEP_SNAPSHOTS'] = '1'     # the snapshot is read after its review (#139)
         p = self.merged_plan()
         self.user_commit()
         parent = self.git('rev-parse', 'HEAD')

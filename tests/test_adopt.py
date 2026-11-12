@@ -254,6 +254,7 @@ class AdoptTests(unittest.TestCase):
         self.assertIn(str(self.review_dir(p) / 'known_issues.md'), report.stdout)
 
     def test_a_diff_too_large_to_inline_is_named_and_is_there_to_read(self):
+        self.env['FORGE_KEEP_SNAPSHOTS'] = '1'     # the snapshot is read after its review (#139)
         p = self.merged_plan()
         (self.wt / 'big.txt').write_text('a line of the big file\n' * 30000)
         self.in_wt('add', 'big.txt'); self.in_wt('commit', '-qm', 'a big file')

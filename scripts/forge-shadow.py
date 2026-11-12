@@ -233,7 +233,7 @@ def run(args) -> int:
     signal.signal(signal.SIGTERM, _stop)
     plan = Path(args.plan)
     parent = os.getppid()
-    status, out, spec, why = 'skipped', None, None, None
+    status, out, spec, why, review = 'skipped', None, None, None, None
     try:
         if os.environ.get('FORGE_FRACTAL_RUN') or not sampled(plan, args.task, args.attempt, rate_of(plan)):
             return 0
@@ -275,6 +275,12 @@ def run(args) -> int:
         if out is not None:
             write(out / 'shadow.error', '%s: %s\n' % (type(error).__name__, error))
     finally:
+        # The verdict is read and the snapshot checked: nothing uses the snapshot again (#139).
+        if review is not None:
+            try:
+                bash('forge_drop_snapshot', str(review))
+            except Exception:           # a leftover snapshot never costs the shadow its status
+                pass
         if out is not None:
             write(out / 'shadow.status', status + '\n')
             dataset_event(out, args.task, dict(status=status, attempt=args.attempt, reviewed=args.reviewed,

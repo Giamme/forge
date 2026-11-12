@@ -26,7 +26,8 @@
 # qa.out, verdict (PASS | FAIL | UNKNOWN | INVALIDATED | ACCEPTED; absent when nothing was
 # judged), qa.gate and known_issues.md (with a threshold), qa.infra (infrastructure stop),
 # review.meta, context.md, notes.md, tasks.summary, combined.diff (when inlined),
-# source/review.fingerprint and review-<pid>/ (the disposable checkout the reviewer ran in).
+# source/review.fingerprint and review-<pid>/ (the disposable checkout the reviewer ran in, removed
+# when the review ends; FORGE_KEEP_SNAPSHOTS=1 keeps it).
 # `review` also keeps $PLAN/final-review (a link to the newest directory) and
 # $PLAN/final-review.verdict (a copy of its verdict).
 #
@@ -357,7 +358,18 @@ PY
 #   src is a repository or worktree that contains both revisions; it is also the checkout
 #   whose fingerprint must not change while the reviewer runs. Never uses `die`/`exit`:
 #   it is called from inside do_integrate.
+# The review snapshot goes once the review is over, on every return (#139). A signal that ends the
+# process first leaves it.
 final_review() {
+  local final_rc
+  FINAL_REVIEW_SNAPSHOT=""
+  final_review_body "$@"; final_rc=$?
+  forge_drop_snapshot "$FINAL_REVIEW_SNAPSHOT"
+  FINAL_REVIEW_SNAPSHOT=""
+  return "$final_rc"
+}
+
+final_review_body() {
   local plan="$1" base="$2" tip="$3" src="$4" out="$5" spec="$6" yolo="${7:-}"
   local review n rc verdict thr gate_line gate_forced source_fp review_fp vdir tflag="" inline=1 diff_n ft
   local plan_real prev="" prev_rel=none prev_tip="" since=none integration="" prev_note=""
@@ -393,6 +405,7 @@ final_review() {
   # of its own under the artifact dir.
   review="$out/review-$$"; n=0
   while [ -e "$review" ]; do n=$((n+1)); review="$out/review-$$-$n"; done
+  FINAL_REVIEW_SNAPSHOT="$review"
   forge_review_snapshot "$src" "$base" "$tip" "$review" > "$out/snapshot.log" 2>&1 ||
     { note "final review: cannot build the review snapshot (see $out/snapshot.log)"; return 3; }
   forge_review_deps "$src" "$review" "$out/review.deps"

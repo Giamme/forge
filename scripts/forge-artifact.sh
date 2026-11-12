@@ -59,6 +59,20 @@ forge_review_snapshot() ( # source, baseline tree, final tree, destination
 
 )
 
+# A review snapshot is a full export of the reviewed tree plus a git store, as large as the repository's
+# tree, and nothing reads it once its review is over: the fingerprint check that ends the review is its
+# last use (#139). review.base, review.deps, the prompt, the log and the verdict sit beside it and stay.
+# FORGE_KEEP_SNAPSHOTS=1 keeps it, for debugging. Only a directory named like a snapshot is removed, never
+# a link (rm -rf does not follow the dependency links forge_review_deps put inside it).
+forge_drop_snapshot() { # review snapshot dir; always returns 0
+  local dir="${1:-}"
+  [ -n "$dir" ] && [ "${FORGE_KEEP_SNAPSHOTS:-0}" != 1 ] || return 0
+  case "${dir##*/}" in review|review-*) ;; *) return 0 ;; esac
+  [ -d "$dir" ] && [ ! -L "$dir" ] || return 0
+  rm -rf -- "$dir" 2>/dev/null
+  return 0
+}
+
 # Where package managers install into a checkout: npm and bower, Python virtualenvs, Go, PHP and Ruby
 # vendor dirs, Bundler's config, CocoaPods, Mix (deps, _build), Dart, Elm and SwiftPM (#127). The same
 # names as forge-fail-first.py's DEP_DIRS. Only a directory the snapshot does not hold is linked, so a

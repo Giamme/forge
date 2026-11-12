@@ -5,8 +5,9 @@ forge_metric_begin() {
   FORGE_METRIC="$(python3 "$SKILL_DIR/scripts/forge-runtime.py" begin "$1" "$2")" || return 3
   # Dispatches started from here name this execution as their parent in the run dataset.
   export FORGE_DATASET_PARENT="${FORGE_METRIC##*/}"
-  # The hook, when the caller defines it, records status before finish and Fractal's _outcome.
-  trap 'metric_rc=$?; ! declare -F forge_metric_on_exit >/dev/null || forge_metric_on_exit "$metric_rc"; python3 "$SKILL_DIR/scripts/forge-runtime.py" finish "$FORGE_METRIC" "$FORGE_METRIC_ROOT" "$FORGE_METRIC_ROLE" pipeline "$metric_rc"; if [ -n "${FORGE_FRACTAL_RUN:-}" ]; then python3 "$SKILL_DIR/scripts/forge-fractal.py" _outcome "$FORGE_METRIC_ROOT" "$metric_rc"; fi; exit "$metric_rc"' EXIT
+  # The hook, when the caller defines it, records status before finish and Fractal's _outcome. A review
+  # snapshot the runner names in FORGE_REVIEW_SNAPSHOT is removed on every way out (#139).
+  trap 'metric_rc=$?; [ -z "${FORGE_REVIEW_SNAPSHOT:-}" ] || ! declare -F forge_drop_snapshot >/dev/null || forge_drop_snapshot "$FORGE_REVIEW_SNAPSHOT"; ! declare -F forge_metric_on_exit >/dev/null || forge_metric_on_exit "$metric_rc"; python3 "$SKILL_DIR/scripts/forge-runtime.py" finish "$FORGE_METRIC" "$FORGE_METRIC_ROOT" "$FORGE_METRIC_ROLE" pipeline "$metric_rc"; if [ -n "${FORGE_FRACTAL_RUN:-}" ]; then python3 "$SKILL_DIR/scripts/forge-fractal.py" _outcome "$FORGE_METRIC_ROOT" "$metric_rc"; fi; exit "$metric_rc"' EXIT
 }
 forge_metric_phase() {
   python3 "$SKILL_DIR/scripts/forge-runtime.py" phase "$FORGE_METRIC" "$1"

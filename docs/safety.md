@@ -22,6 +22,11 @@ What forge never does to your branch and working tree, what it refuses to run on
   after `results.tsv` is written and read back.
 - QA runs in a disposable repository. Mutations to the source or review snapshot invalidate
   acceptance. Disabled editing tools alone do not prevent writes through Bash.
+- A review snapshot is as large as the repository's tree, so forge removes it once its review
+  ends: task, final, shadow, solo and adopt reviews, whatever the outcome. `review.base`,
+  `review.deps`, the prompt, the log and the verdict stay beside it. `FORGE_KEEP_SNAPSHOTS=1`
+  keeps snapshots, for debugging. A review ended by a signal can leave its snapshot behind; the
+  task's next review removes it.
 
 ## Preconditions
 
