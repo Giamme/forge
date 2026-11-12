@@ -461,6 +461,27 @@ class SummaryTests(unittest.TestCase):
         self.assertEqual(
             [item['ref'] for item in sources if item['kind'] == 'finding'], ['0:First bug'])
 
+    def test_a_newer_attempt_keeps_its_ref_over_an_identical_unassigned_older_review(self):
+        # Attempts 1 and 2 share one logged second, so attempt 1's review cannot be
+        # assigned. Attempt 3 is logged later and its review repeats the same text. It is
+        # the live qa.last and the newest review, so the finding ref is 3, not 0.
+        first = '- [P1][CONFIRMED] a.txt:1 — First bug\nFORGE_VERDICT: FAIL\n'
+        self._fresh(TASKS)
+        task = self.plan / 'tasks' / 'a'
+        task.mkdir(parents=True)
+        (task / 'status').write_text('FAIL\n')
+        (task / 'attempts.tsv').write_text(
+            '1700000001\t1\tFAIL\t\tsol\n1700000001\t2\tFAIL\t\tsol\n1700000010\t3\tFAIL\t\tastra\n')
+        (task / 'qa.last').write_text(first)
+        self._archive(task, 'qa-1', first, 1700000000.2, 0.5)
+        self._archive(task, 'qa-3', first, 1700000009.5, 0.7)
+        body, sources = self.facts()
+        self.assertEqual(
+            [(row['findings'], row['worst']) for row in body['attempts']],
+            [(None, None), (None, None), (1, 'P1')])
+        self.assertEqual(
+            [item['ref'] for item in sources if item['kind'] == 'finding'], ['3:First bug'])
+
     def test_a_review_archived_before_its_row_keeps_the_open_attempt(self):
         # Summarise after attempt 2's review is archived and before record_attempt
         # appends its row. The counter already says 2. The new findings must not
