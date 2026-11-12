@@ -31,6 +31,7 @@ run goes on, with the same exit code.
   request until the scheduler applies or refuses it. Each infrastructure pause gets a line: what
   is paused, why, its tasks and the time left. Each is one `forge control` call; the change is
   confirmed first and logged in `control.log`.
+- **Brief questions and summaries:** forge-ui can answer a brief question and turn summaries on or off (for a run or one task), both through forge commands: `forge brief answer` and `forge control set summaries`.
 - **Open findings and issues:** the findings a run (or all of its repository's runs) left open,
   filed as GitHub issues or dismissed through `forge issues`.
 - **Delete a run:** a dry run, then `forge runs rm`: the dataset keeps the traces, an archive is
@@ -69,7 +70,9 @@ run goes on, with the same exit code.
   port in use, …) that several tasks' failed commands met gets one banner in the run header.
 - **Opening a node** shows its attempts, dwarves and reviews, and an inspector with the prompt
   that launched each one, the model, timings by phase, tokens, verdicts and the P0–P3 findings
-  of every review (the final review's included).
+  of every review (the final review's included). A task's inspector opens on its header, its attempt trail
+  with each attempt's reason, its Summary and its Questions (brief questions); Run details has a Retro section
+  when retro mode wrote one.
 - **Solo run:** one task: its attempts, specs, prompts and the final messages.
 - It refreshes every two seconds while something runs (five otherwise) while the tab is
   visible, so a run can be watched as it goes. A run can also be replayed from its record.

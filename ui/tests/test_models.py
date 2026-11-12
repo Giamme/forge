@@ -147,6 +147,11 @@ class ModelsTests(unittest.TestCase):
 
     def test_fixture_plan_reviews_and_solo(self):
         plan, solo = F.make_plan(self.base), F.make_solo(self.base)
+        # A side summary of the same task, with its own verdict and tokens. It is not an attempt.
+        F.execution(plan / 'side' / 'summary' / 'reader' / '1', 'side-' + F.uid(90), 50.0, 80.0,
+                    spec=('sol', 'low', 'codex'), tokens=(99999, 88888, 77777),
+                    last='- [P0][CONFIRMED] ui/reader.py:1 — side\n\nFORGE_VERDICT: PASS\n',
+                    diff='diff --git a/ui/reader.py b/ui/reader.py\n+side\n')
         sdir = plan / 'shadow/reader/1-0'
         F.write(sdir / 'shadow.json', dict(task='reader', attempt='1', primary='opus', spec='sol:xhigh'))
         F.write(sdir / 'shadow.status', 'error\n')  # only shadows that finished count
@@ -161,6 +166,9 @@ class ModelsTests(unittest.TestCase):
             escalations=[{'n': 1, 'from': 'luna', 'to': 'sol:xhigh'}]))
         self.assertEqual([(item['n'], item['alias'], item['outcome']) for item in reader_row['attempts']],
                          [(1, 'luna', 'fail'), (2, 'sol', 'pass')])
+        self.assertEqual([item['tokens'] for item in reader_row['attempts']],
+                         [{'input': 120000, 'cached': 90000, 'output': 8000},
+                          {'input': 150000, 'cached': 100000, 'output': 9000}])
         self.assertEqual((rows['graph']['attempts'], rows['server']['attempts']), ([], []))
         self.assertEqual(rows['solo']['kind'], 'solo')
         self.assertEqual([(item['alias'], item['source'], item['outcome']) for item in rows['solo']['attempts']],

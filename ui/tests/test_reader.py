@@ -45,6 +45,14 @@ class ReaderTests(unittest.TestCase):
         self.assertEqual(reader, {
             'id': 'reader', 'title': 'Read plan dirs', 'deps': [], 'difficulty': 'high',
             'files': ['forge_ui/reader.py', 'tests/test_reader.py'], 'dwarf': 'astra', 'qa': 'opus',
+            'header': {'title': 'Read plan dirs', 'goal': 'Use standard Python.', 'criteria': None, 'links': []},
+            'trail': [
+                {'attempt': 1, 'dwarf': None, 'verdict': None, 'findings': None, 'worst': None,
+                 'reason': 'first', 'executions': []},
+                {'attempt': 2, 'dwarf': None, 'verdict': None, 'findings': None, 'worst': None,
+                 'reason': 'unknown', 'executions': []},
+                {'attempt': 2, 'dwarf': None, 'verdict': None, 'findings': None, 'worst': None,
+                 'reason': 'unknown', 'executions': []}],
             'wave': 1, 'status': 'MERGED', 'branch': 'forge/custom/reader', 'attempt': 2,
             'attempts': [
                 {'at': 1760620000.0, 'attempt': 1, 'status': 'FAIL', 'infra': None},
@@ -69,6 +77,7 @@ class ReaderTests(unittest.TestCase):
             'merged_at': (FIXTURE / 'tasks/reader/merged').stat().st_mtime, 'findings': NO_FINDINGS,
             'gate': None, 'known_issues': False, 'needs_input': None, 'fail_first': None, 'pre_review': None, 'now': None, 'waiting': None, 'sweep': None, 'swept': [],
             'infra': None, 'lateral': [], 'ledger': [], 'decision': None, 'decisions': [], 'attempts_total': 3, 'attempt_cap': 8,
+            'summary': None, 'summaries_override': None, 'brief': None,
         })
         self.assertEqual((page['accepted'], page['accepted_attempt'], page['accepted_over']), (False, None, None))
         self.assertEqual(page['status'], 'RUNNING')
@@ -108,6 +117,7 @@ class ReaderTests(unittest.TestCase):
                              ('fractal', None)):
             self.assertEqual(data[field], value, field)
         self.assertEqual(data['request'], 'A read-only run viewer.\n')
+        self.assertIsNone(data['brief'])
         self.assertEqual(data['warnings'], [])
         self.assertEqual(data['truncated'], [])
         summary = summarize(FIXTURE, 'root')
@@ -411,7 +421,9 @@ class ReaderTests(unittest.TestCase):
                     self.assertEqual(data['tasks'][0][field], expected)
                 self.assertEqual(data['tasks'][0]['qa_tail'], '尾' * 4000)
                 self.assertEqual(data['verification']['log_tail'], '尾' * 4000)
-                self.assertEqual(set(data['truncated']), {'request', 'tasks/reader/prompt', 'tasks/reader/approach', 'tasks/reader/retry_findings'} if count > 20000 else set())
+                self.assertEqual(set(data['truncated']),
+                                 {'request', 'tasks/reader/prompt', 'tasks/reader/approach', 'tasks/reader/retry_findings',
+                                  'tasks/reader/goal'} if count > 20000 else {'tasks/reader/goal'})
         self.write(plan / 'tasks/reader/qa.last', 'FORGE_VERDICT: PASS\n' + 'z' * 5000 + '\nFORGE_VERDICT: FAIL\n')
         self.write(plan / 'verification.log', 'x' * 200000 + '尾' * 4000)
         data = detail(plan)
@@ -581,6 +593,12 @@ class ReaderTests(unittest.TestCase):
         self.assertEqual(data['tasks'], [{
             'id': 'solo', 'title': 'Ship the solo reader', 'deps': [], 'difficulty': None, 'files': [],
             'dwarf': 'sol:high', 'qa': 'opus', 'wave': 1, 'status': 'RUNNING', 'branch': None, 'attempt': 2,
+            'header': {'title': 'Ship the solo reader', 'goal': 'Implement the reader.', 'criteria': None, 'links': []},
+            'trail': [
+                {'attempt': 1, 'dwarf': 'luna:low', 'verdict': None, 'findings': None, 'worst': None,
+                 'reason': 'first', 'executions': []},
+                {'attempt': 2, 'dwarf': 'sol:high', 'verdict': None, 'findings': None, 'worst': None,
+                 'reason': 'unknown', 'executions': []}],
             'attempts': [
                 {'at': 1760620000.0, 'attempt': 1, 'status': 'FAIL', 'infra': None},
                 {'at': 1760621000.0, 'attempt': 2, 'status': 'RUNNING', 'infra': None}],
@@ -593,8 +611,10 @@ class ReaderTests(unittest.TestCase):
             'executions': [], 'merged_at': None, 'findings': NO_FINDINGS, 'gate': None, 'known_issues': False,
             'needs_input': None, 'fail_first': None, 'pre_review': None, 'now': None, 'waiting': None, 'sweep': None, 'swept': [],
             'infra': None, 'lateral': [], 'ledger': [], 'decision': None, 'decisions': [], 'attempts_total': 2, 'attempt_cap': None,
+            'summary': None, 'summaries_override': None, 'brief': None,
         }])
         self.assertEqual(data['kind'], 'solo')
+        self.assertIsNone(data['brief'])
         self.assertEqual(data['run_id'], 'solo-full')
         self.assertEqual(data['repo'], '/example/solo-repo')
         self.assertEqual(data['goal'], 'Ship the solo reader')
@@ -629,6 +649,7 @@ class ReaderTests(unittest.TestCase):
     def test_legacy_verdict_and_missing_status(self):
         data = detail(LEGACY)
         self.assertEqual(data['kind'], 'solo')
+        self.assertIsNone(data['brief'])
         self.assertEqual(data['run_id'], 'solo-legacy')
         self.assertEqual(data['repo'], '/example/legacy')
         self.assertIsNone(data['goal'])
@@ -644,6 +665,8 @@ class ReaderTests(unittest.TestCase):
         self.assertEqual(data['tasks'], [{
             'id': 'solo', 'title': 'Solo run', 'deps': [], 'difficulty': None, 'files': [],
             'dwarf': None, 'qa': None, 'wave': 1, 'status': 'NOCHANGES', 'branch': None, 'attempt': None,
+            'header': {'title': 'Solo run', 'goal': 'Old prompt.', 'criteria': None, 'links': []},
+            'trail': [],
             'attempts': [], 'escalations': [], 'verdict': None, 'accepted_by': None,
             'accepted': False, 'accepted_attempt': None, 'accepted_over': None, 'explored': False,
             'route': [], 'shadow': [],
@@ -651,6 +674,7 @@ class ReaderTests(unittest.TestCase):
             'qa_tail': None, 'dwarf_tail': None, 'executions': [], 'merged_at': None, 'findings': None,
             'gate': None, 'known_issues': False, 'needs_input': None, 'fail_first': None, 'pre_review': None, 'now': None, 'waiting': None, 'sweep': None, 'swept': [],
             'infra': None, 'lateral': [], 'ledger': [], 'decision': None, 'decisions': [], 'attempts_total': 0, 'attempt_cap': None,
+            'summary': None, 'summaries_override': None, 'brief': None,
         }])
         json.dumps(data, allow_nan=False)
         run = self.base / 'neither'
@@ -801,6 +825,42 @@ class ReaderTests(unittest.TestCase):
                 self.assertIsNone(data['attribution'], obj)
                 self.assertTrue(any(warning.startswith('attribution.json') for warning in data['warnings']), obj)
 
+    def test_retro_report_and_note_counts_are_read_from_the_run(self):
+        plan = self.copy_plan()
+        F.make_retro(plan)
+        data = detail(plan)
+        self.assertEqual(data['retro'], dict(text=F.RETRO_REPORT, notes=6, user=2, forge=2, unsure=1,
+                                             verified=3, claimed=3, blocking=3))
+        self.assertIn('retro/notes.jsonl: 2 malformed lines skipped', data['warnings'])
+        self.assertNotIn('retro', data['truncated'])
+
+    def test_retro_is_null_without_either_file_and_each_file_reads_alone(self):
+        plan = self.copy_plan()
+        self.assertIsNone(detail(plan)['retro'])
+        empty = dict(notes=0, user=0, forge=0, unsure=0, verified=0, claimed=0, blocking=0)
+        with self.subTest('report only'):
+            self.write(plan / 'retro.md', 'Only the report.\n')
+            self.assertEqual(detail(plan)['retro'], dict(text='Only the report.\n', **empty))
+        with self.subTest('notes only'):
+            (plan / 'retro.md').unlink()
+            self.write(plan / 'retro/notes.jsonl', '{"fixable_by": "forge", "check": "claimed"}\n')
+            self.assertEqual(detail(plan)['retro'], dict(text=None, **dict(empty, notes=1, forge=1, claimed=1)))
+
+    def test_retro_text_is_capped_like_the_request(self):
+        plan = self.copy_plan()
+        self.write(plan / 'retro.md', 'x' * 20001)
+        data = detail(plan)
+        self.assertEqual(data['retro']['text'], 'x' * 20000 + '…')
+        self.assertIn('retro', data['truncated'])
+
+    def test_a_solo_run_reads_the_same_retro_field(self):
+        run = self.base / 'solo'
+        shutil.copytree(SOLO, run)
+        self.assertIsNone(detail(run)['retro'])
+        F.make_retro(run)
+        self.assertEqual(detail(run)['retro'], dict(text=F.RETRO_REPORT, notes=6, user=2, forge=2, unsure=1,
+                                                    verified=3, claimed=3, blocking=3))
+
     def test_the_export_leaves_the_question_out_unless_texts_are_chosen(self):
         plan = self.copy_plan()
         self.write(plan / 'tasks/page/status', 'NEEDS_INPUT\n')
@@ -815,6 +875,203 @@ class ReaderTests(unittest.TestCase):
                 tasks = json.loads(snapshot)['api'][f'/api/runs/{key}']['tasks']
                 page = next(task for task in tasks if task['id'] == 'page')
                 self.assertEqual(page['needs_input'], expected)
+
+    def test_task_header_goal_criteria_and_links(self):
+        plan = F.make_plan(self.base)
+        repo = self.base / 'widgets'
+        self.write(repo / '.git' / 'config', '[remote "origin"]\n\turl = git@github.com:acme/widgets.git\n')
+        self.write(plan / 'repo', str(repo) + '\n')
+        self.write(plan / 'request.md', 'Track #133. Context: https://github.com/acme/widgets.\n')
+        self.write(plan / 'tasks/reader/approach.md',
+                   '# A heading, not the task title\n\n'
+                   'Show the goal\n'
+                   'of the reader task.\n\n'
+                   'A later paragraph is not the goal.\n'
+                   'Also https://github.com/acme/widgets/issues/133?utm=1\n')
+        self.write(plan / 'tasks/reader/prompt.md',
+                   '# Prompt title\n\n'
+                   'Fallback prose that is not the goal.\n\n'
+                   'See #133 and https://github.com/acme/widgets/pull/9.\n'
+                   'Ignore `https://github.com/acme/widgets/issues/8` in a span.\n\n'
+                   '## Acceptance criteria\n\n'
+                   'The header is present.\n\n'
+                   '### Nested\n\n'
+                   'Still criteria.\n\n'
+                   '```\n'
+                   '## Not a heading\n'
+                   '```\n\n'
+                   '## Notes\n\n'
+                   'After the section.\n')
+        data = detail(plan)
+        reader = next(task for task in data['tasks'] if task['id'] == 'reader')
+        self.assertEqual(reader['header']['title'], 'Read run dirs')
+        self.assertEqual(reader['header']['goal'], 'Show the goal of the reader task.')
+        self.assertEqual(reader['header']['criteria'],
+                         'The header is present.\n\n'
+                         '### Nested\n\n'
+                         'Still criteria.\n\n'
+                         '```\n'
+                         '## Not a heading\n'
+                         '```')
+        self.assertEqual(reader['header']['links'], [
+            {'kind': 'issue', 'number': 133, 'url': 'https://github.com/acme/widgets/issues/133', 'source': 'prompt.md'},
+            {'kind': 'pr', 'number': 9, 'url': 'https://github.com/acme/widgets/pull/9', 'source': 'prompt.md'},
+            {'kind': 'url', 'number': None, 'url': 'https://github.com/acme/widgets', 'source': 'request.md'},
+        ])
+        self.assertEqual(data['warnings'], [])
+
+        self.write(plan / 'tasks/page/approach.md', '# Build\n')
+        self.write(plan / 'tasks/page/prompt.md',
+                   '# Build the page\n\n'
+                   'Page goal prose.\n\n'
+                   '## Acceptance criteria:\n\n'
+                   'Ships.\n\n'
+                   '## Later\n\n'
+                   'No.\n')
+        page = next(task for task in detail(plan)['tasks'] if task['id'] == 'page')
+        self.assertEqual(page['header']['goal'], 'Page goal prose.')
+        self.assertEqual(page['header']['criteria'], 'Ships.')
+        self.assertEqual(page['header']['title'], 'Build the page')
+
+        self.write(plan / 'tasks/graph/approach.md', '# Draw\n')
+        self.write(plan / 'tasks/graph/prompt.md', '# Draw\n')
+        graph = next(task for task in detail(plan)['tasks'] if task['id'] == 'graph')
+        self.assertIsNone(graph['header']['goal'])
+        self.assertIsNone(graph['header']['criteria'])
+
+        self.write(plan / 'tasks/server/prompt.md', '## Acceptance criteria\n\n## Notes\n\nNope.\n')
+        server = next(task for task in detail(plan)['tasks'] if task['id'] == 'server')
+        self.assertIsNone(server['header']['criteria'])
+
+        self.write(plan / 'tasks/docs/approach.md',
+                   '# Goal\n\n'
+                   'Use **atomic writes** in `reader.py` and retry_sources.tsv. '
+                   'See [the issue](https://github.com/acme/widgets/issues/133). '
+                   'Keep `**literal**`. Prefer *stable* reads. Drop ~~old~~ names.\n')
+        docs_task = next(item for item in detail(plan)['tasks'] if item['id'] == 'docs')
+        self.assertEqual(docs_task['header']['goal'],
+                         'Use atomic writes in reader.py and retry_sources.tsv. '
+                         'See the issue. Keep **literal**. Prefer stable reads. Drop old names.')
+
+        self.write(plan / 'tasks/docs/approach.md', 'g' * 601)
+        docs = detail(plan)
+        task = next(item for item in docs['tasks'] if item['id'] == 'docs')
+        self.assertEqual(task['header']['goal'], 'g' * 600 + '…')
+        self.assertIn('tasks/docs/goal', docs['truncated'])
+
+        bare = self.base / 'bare'
+        bare.mkdir()
+        self.write(plan / 'repo', str(bare) + '\n')
+        self.write(plan / 'tasks/graph/prompt.md', 'See #5.\n')
+        graph = next(task for task in detail(plan)['tasks'] if task['id'] == 'graph')
+        self.assertEqual(graph['header']['links'], [
+            {'kind': 'issue', 'number': 5, 'url': None, 'source': 'prompt.md'},
+            {'kind': 'issue', 'number': 133, 'url': None, 'source': 'request.md'},
+            {'kind': 'url', 'number': None, 'url': 'https://github.com/acme/widgets', 'source': 'request.md'},
+        ])
+
+    def test_attempt_trail_names_why_each_attempt_happened(self):
+        plan = F.make_plan(self.base)
+        tdir = plan / 'tasks/reader'
+        fail = dict(P0=0, P1=1, P2=0, P3=0, unlabelled=0, plausible=1, confirmed=1, worst='P1')
+        passed = dict(P0=0, P1=0, P2=0, P3=0, unlabelled=0, plausible=1, confirmed=0, worst=None)
+
+        def task():
+            return next(item for item in detail(plan)['tasks'] if item['id'] == 'reader')
+
+        self.write(tdir / 'attempts.tsv', F.tsv([
+            (int(F.T0 + 612), 1, 'FAIL', '', 'luna'),
+            (int(F.T0 + 1222), 2, 'PASS', '', 'luna'),
+            (int(F.T0 + 1800), 3, 'FAIL', '', 'luna'),
+        ]))
+        self.write(tdir / 'retry_sources.tsv', F.tsv([
+            (1, 'review', int(F.T0 + 1)),
+            (2, 'review', int(F.T0 + 620)),
+            (3, 'answer', int(F.T0 + 1230)),
+        ]))
+        (tdir / 'escalations.tsv').unlink()
+        reader = task()
+        trail = reader['trail']
+        self.assertEqual([item['reason'] for item in trail], ['first', 'review', 'answer'])
+        self.assertNotIn('dwarf', reader['attempts'][0])
+        self.assertEqual(trail[0]['dwarf'], 'luna')
+        self.assertEqual(trail[0]['verdict'], 'FAIL')
+        self.assertEqual(trail[0]['worst'], 'P1')
+        self.assertEqual(trail[0]['findings'], fail)
+        self.assertEqual(trail[0]['executions'], [F.READER_TASK1, F.READER_DWARF1, F.READER_QA1])
+        qa = next(item for item in reader['executions'] if item['id'] == F.READER_QA1)
+        self.assertIsNot(trail[0]['findings'], qa['findings'])
+        self.assertEqual(trail[1]['verdict'], 'PASS')
+        self.assertIsNone(trail[1]['worst'])
+        self.assertEqual(trail[1]['findings'], passed)
+        self.assertEqual(trail[1]['executions'], [F.READER_TASK2, F.READER_DWARF2, F.READER_QA2])
+        self.assertEqual(trail[2]['executions'], [])
+        self.assertIsNone(trail[2]['verdict'])
+        self.assertIsNone(trail[2]['findings'])
+        self.assertIsNone(trail[2]['worst'])
+
+        with self.subTest('escalation'):
+            (tdir / 'retry_sources.tsv').unlink()
+            self.write(tdir / 'attempts.tsv', F.tsv([
+                (int(F.T0 + 612), 1, 'FAIL', '', 'luna'),
+                (int(F.T0 + 1222), 2, 'PASS', '', 'sol:xhigh'),
+            ]))
+            self.write(tdir / 'escalations.tsv', F.tsv([(int(F.T0 + 615), 1, 'luna', 'sol:xhigh')]))
+            self.assertEqual([item['reason'] for item in task()['trail']], ['first', 'escalation'])
+
+        with self.subTest('no record'):
+            (tdir / 'escalations.tsv').unlink()
+            self.write(tdir / 'attempts.tsv', F.tsv([
+                (int(F.T0 + 612), 1, 'FAIL', '', 'luna'),
+                (int(F.T0 + 1222), 2, 'PASS', '', 'luna'),
+            ]))
+            self.assertEqual([item['reason'] for item in task()['trail']], ['first', 'unknown'])
+
+        with self.subTest('queued retry'):
+            self.write(plan / 'control.log',
+                       'not json\n'
+                       + json.dumps({'at': F.T0 + 500, 'actor': 'cli', 'action': 'retry', 'task': 'reader',
+                                     'key': None, 'value': None, 'previous': None, 'request': 'q1'}) + '\n'
+                       + json.dumps({'at': F.T0 + 900, 'actor': 'scheduler', 'action': 'retry', 'task': 'reader',
+                                     'key': None, 'value': None, 'previous': None, 'request': 'q1',
+                                     'outcome': 'applied'}) + '\n')
+            data = detail(plan)
+            reader = next(item for item in data['tasks'] if item['id'] == 'reader')
+            self.assertEqual([item['reason'] for item in reader['trail']], ['first', 'manual'])
+            self.assertEqual(data['warnings'], [])
+
+        with self.subTest('scheduler outcome is not a queue'):
+            self.write(plan / 'control.log',
+                       json.dumps({'at': F.T0 + 900, 'actor': 'scheduler', 'action': 'retry', 'task': 'reader',
+                                   'key': None, 'value': None, 'previous': None, 'request': 'q1',
+                                   'outcome': 'applied'}) + '\n')
+            self.assertEqual(task()['trail'][1]['reason'], 'unknown')
+
+        with self.subTest('a queue between two rows of one attempt'):
+            self.write(tdir / 'attempts.tsv', F.tsv([
+                (int(F.T0 + 612), 1, 'FAIL', '', 'luna'),
+                (int(F.T0 + 1222), 2, 'PASS', '', 'luna'),
+                (int(F.T0 + 1400), 2, 'MERGED', '', 'luna'),
+            ]))
+            self.write(plan / 'control.log',
+                       json.dumps({'at': F.T0 + 1300, 'actor': 'ui', 'action': 'retry', 'task': 'reader',
+                                   'key': None, 'value': None, 'previous': None, 'request': 'q2'}) + '\n')
+            self.assertEqual([item['reason'] for item in task()['trail']], ['first', 'unknown', 'manual'])
+
+        with self.subTest('source wins over escalation'):
+            self.write(tdir / 'attempts.tsv', F.tsv([
+                (int(F.T0 + 612), 1, 'FAIL', '', 'luna'),
+                (int(F.T0 + 1222), 2, 'PASS', '', 'sol:xhigh'),
+            ]))
+            self.write(tdir / 'escalations.tsv', F.tsv([(int(F.T0 + 615), 1, 'luna', 'sol:xhigh')]))
+            self.write(tdir / 'retry_sources.tsv', F.tsv([
+                (2, 'review', int(F.T0 + 620)),
+                (2, 'sideways', int(F.T0 + 621)),
+            ]))
+            data = detail(plan)
+            reader = next(item for item in data['tasks'] if item['id'] == 'reader')
+            self.assertEqual(reader['trail'][1]['reason'], 'review')
+            self.assertTrue(any('unknown retry source' in warning for warning in data['warnings']))
 
 
 class StopRecordTests(unittest.TestCase):
@@ -974,9 +1231,15 @@ class StopRecordTests(unittest.TestCase):
 
     def test_a_retry_grant_counts_however_many_digits_it_has(self):
         F.write(self.plan / 'max_attempts', '6\n')
-        # a grant past Python's digit limit is no grant, and no reason to raise
+        # A grant this interpreter will not convert is no grant, and no reason to raise.
+        # One it will convert counts, however many digits that is.
+        huge = '9' * 5000
+        try:
+            huge_grant = int(huge)
+        except ValueError:
+            huge_grant = 0
         for choice, expected in (('retry=3', 9), ('retry=3 dwarf=opus', 9), ('dwarf=opus', 6), ('retry=1000000', 1000006), ('retry=0000003', 9),
-                                 ('retry=' + '9' * 5000, 6)):
+                                 ('retry=' + huge, 6 + huge_grant)):
             with self.subTest(choice=choice[:12]):
                 F.write(self.plan / 'tasks/page/decisions.tsv', F.tsv([(1760621000, 2, choice, 'extra attempts')]))
                 _, tasks = self.read()
@@ -1053,6 +1316,324 @@ class SummaryExtensionTests(unittest.TestCase):
         for name, at in (('prompt.md', 800), ('repo', 700), ('request.md', 750), ('goal.txt', 760)):
             os.utime(solo / name, (at, at))
         self.assertEqual(summarize(solo)['created'], 700.0)
+
+
+class TaskSummaryTests(unittest.TestCase):
+    """tasks/<id>/summary.json and summary.error, the stale rule, each task's override and the run's switch (#133 B).
+
+    run_fixture's plan: reader and page are merged (their merged markers at T0+1300 and T0+950), graph is running with no
+    attempts.tsv or qa.last, and docs failed. Every file the fixture writes is at MTIME (T0+5000) unless given a time.
+    """
+
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.plan = F.make_plan(Path(temp.name) / 'p')
+        self.fresh, self.old = 1760605010, 1760601000   # after every fixture file's mtime; before the attempts.tsv one
+
+    def summary(self, task, generated, **fields):
+        body = dict(text='Drew the graph.\n', sentence='Draws the graph.', model='sol:low', generated_at=generated,
+                    inputs_hash='0' * 64, sources=[{'kind': 'attempt', 'ref': '1'}])
+        body.update(fields)
+        F.write(self.plan / 'tasks' / task / 'summary.json', body)
+
+    def tasks(self):
+        return {task['id']: task for task in detail(self.plan)['tasks']}
+
+    def test_a_fresh_summary_with_an_error_reads_both(self):
+        self.summary('graph', self.fresh)
+        F.write(self.plan / 'tasks/graph/summary.error', 'the reply was not JSON\n')
+        self.assertEqual(self.tasks()['graph']['summary'], {
+            'text': 'Drew the graph.\n', 'sentence': 'Draws the graph.', 'model': 'sol:low', 'generated_at': 1760605010,
+            'sources': [{'kind': 'attempt', 'ref': '1'}], 'stale': False, 'error': 'the reply was not JSON\n'})
+
+    def test_a_summary_older_than_its_attempts_is_stale_and_its_sources_are_kept(self):
+        self.summary('page', self.old, sources=[{'kind': 'attempt', 'ref': '1'},
+                                                {'kind': 'finding', 'ref': '1:Empty state not localised'}])
+        self.assertEqual(self.tasks()['page']['summary'], {
+            'text': 'Drew the graph.\n', 'sentence': 'Draws the graph.', 'model': 'sol:low', 'generated_at': 1760601000,
+            'sources': [{'kind': 'attempt', 'ref': '1'}, {'kind': 'finding', 'ref': '1:Empty state not localised'}],
+            'stale': True, 'error': None})
+
+    def test_stale_compares_whole_seconds(self):
+        # The fixture's attempts.tsv is at 1760605000: a summary made in that second is not older than it.
+        self.summary('reader', 1760605000)
+        self.assertFalse(self.tasks()['reader']['summary']['stale'])
+        self.summary('reader', 1760604999)
+        self.assertTrue(self.tasks()['reader']['summary']['stale'])
+
+    def test_a_merge_after_the_summary_makes_it_stale(self):
+        for name in ('attempts.tsv', 'status', 'qa.last'):
+            os.utime(self.plan / 'tasks/page' / name, (1760601000, 1760601000))
+        F.set_merged_at(self.plan, 'page', 1760601300)
+        self.summary('page', 1760601200)
+        self.assertTrue(self.tasks()['page']['summary']['stale'])
+        self.summary('page', 1760601400)
+        self.assertFalse(self.tasks()['page']['summary']['stale'])
+
+    def test_no_summary_json_is_null_even_with_an_error_file(self):
+        F.write(self.plan / 'tasks/docs/summary.error', 'the model timed out\n')
+        task = self.tasks()['docs']
+        self.assertIsNone(task['summary'])
+        self.assertIsNone(task['summaries_override'])
+
+    def test_an_unreadable_or_incomplete_summary_is_null_and_warned(self):
+        F.write(self.plan / 'tasks/page/summary.json', '[1, 2]\n')
+        F.write(self.plan / 'tasks/graph/summary.json', {'text': 'no time', 'sentence': None})
+        data = detail(self.plan)
+        tasks = {task['id']: task for task in data['tasks']}
+        self.assertEqual((tasks['page']['summary'], tasks['graph']['summary']), (None, None))
+        self.assertEqual(data['warnings'], ['tasks/page/summary.json: not a JSON object',
+                                            'tasks/graph/summary.json: not a summary (needs text and generated_at)'])
+
+    def test_sources_keep_only_attempt_and_finding_refs_that_are_strings(self):
+        self.summary('graph', self.fresh, sources=[{'kind': 'attempt', 'ref': '1'}, {'kind': 'bogus', 'ref': 'x'},
+                                                   'junk', {'kind': 'finding', 'ref': 3},
+                                                   {'kind': 'finding', 'ref': '2:Late'}])
+        self.assertEqual(self.tasks()['graph']['summary']['sources'],
+                         [{'kind': 'attempt', 'ref': '1'}, {'kind': 'finding', 'ref': '2:Late'}])
+
+    def test_text_and_sentence_are_capped_like_the_other_texts(self):
+        self.summary('graph', self.fresh, text='x' * 20001, sentence='y' * 20000)
+        summary = self.tasks()['graph']['summary']
+        self.assertEqual((len(summary['text']), summary['text'][-1]), (20001, '…'))
+        self.assertEqual(summary['sentence'], 'y' * 20000)  # at the cap, not over it
+        self.assertIn('tasks/graph/summary.text', detail(self.plan)['truncated'])
+
+    def test_the_override_is_on_off_or_null(self):
+        F.write(self.plan / 'tasks/reader/summaries', 'off\n')
+        F.write(self.plan / 'tasks/page/summaries', 'on\n')
+        F.write(self.plan / 'tasks/graph/summaries', 'maybe\n')
+        tasks = self.tasks()   # graph's 'maybe' is not a mode; docs and server have no file
+        self.assertEqual([tasks[name]['summaries_override'] for name in ('reader', 'page', 'graph', 'docs', 'server')],
+                         ['off', 'on', None, None, None])
+
+    def test_the_run_switch_is_its_mode_and_model(self):
+        self.assertEqual(detail(self.plan)['summaries'], {'mode': 'off', 'model': None})
+        F.write(self.plan / 'summaries', 'on\n')
+        F.write(self.plan / 'summaries_model', 'sol:low\n')
+        self.assertEqual(detail(self.plan)['summaries'], {'mode': 'on', 'model': 'sol:low'})
+        F.write(self.plan / 'summaries', 'off\n')
+        self.assertEqual(detail(self.plan)['summaries'], {'mode': 'off', 'model': 'sol:low'})
+
+    def test_a_solo_run_has_no_summaries(self):
+        data = detail(SOLO)
+        self.assertIsNone(data['summaries'])
+        self.assertEqual((data['tasks'][0]['summary'], data['tasks'][0]['summaries_override']), (None, None))
+        json.dumps(data, allow_nan=False)
+
+
+class BriefTests(unittest.TestCase):
+    """RunDetail.brief counts, and each task's questions with state and answer, plus parked and late (#135).
+
+    Expected values are written out here, not derived from the reader. reader has one answered question,
+    one open question and one late answer; page has two open questions, one of them must_answer; graph has
+    only a parked question. open is 3 and flagged is 1: the parked must_answer question is not counted.
+    """
+
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.plan = F.make_plan(Path(temp.name) / 'p')
+        F.write(self.plan / 'brief', 'gated\n')
+        F.write(self.plan / 'tasks/reader/brief.json', {
+            'questions': [
+                {'id': 'q1', 'text': 'Which reader?', 'why': 'two modules', 'options': ['a', 1, 'b'],
+                 'default': 'a', 'scope': 'task', 'must_answer': True},
+                {'id': 'q2', 'text': 'x' * 20001, 'why': 'w' * 20001, 'options': ['yes'],
+                 'default': 'yes', 'must_answer': False, 'possibly_stale': True},
+                {'id': 'q3', 'text': 'Ship it?', 'why': 'timing', 'options': [],
+                 'default': '', 'must_answer': True},
+                {'text': 'nameless'},
+            ],
+            'model': 'sol', 'generated_at': 1760600000})
+        F.write(self.plan / 'tasks/reader/brief.answers.json', {
+            'q1': {'text': 'the ui reader', 'actor': 'ui', 't': 1760600100}})
+        F.write(self.plan / 'tasks/reader/brief.late.json', {
+            'q3': {'text': 'too late', 'actor': 'cli', 't': 1760600200},
+            'q1': {'text': 'ignored late', 'actor': 'ui', 't': 1760600300}})
+        F.write(self.plan / 'tasks/reader/brief.parked.json', {
+            'questions': [
+                {'id': 'q4', 'text': 'Whole plan?', 'why': 'scope', 'options': ['now', 'later'],
+                 'default': 'later', 'scope': 'plan', 'must_answer': True},
+            ],
+            'model': 'sol', 'generated_at': 1760600000})
+        F.write(self.plan / 'tasks/page/brief.json', {
+            'questions': [
+                {'id': 'q1', 'text': 'Layout?', 'why': 'css', 'options': ['grid'],
+                 'default': 'grid', 'must_answer': True},
+                {'id': 'q2', 'text': 'Color?', 'why': 'theme', 'must_answer': False},
+            ]})
+        F.write(self.plan / 'tasks/graph/brief.parked.json', {
+            'questions': [
+                {'id': 'q9', 'text': 'Across the wave?', 'why': 'overlap', 'options': ['hold'],
+                 'default': 'hold', 'scope': 'wave', 'must_answer': True},
+            ]})
+
+    def loaded(self):
+        data = detail(self.plan)
+        return data, {task['id']: task for task in data['tasks']}
+
+    def test_question_states_are_answered_open_or_late(self):
+        data, tasks = self.loaded()
+        self.assertEqual(tasks['reader']['brief']['questions'], [
+            {'id': 'q1', 'text': 'Which reader?', 'why': 'two modules', 'options': ['a', 'b'],
+             'default': 'a', 'must_answer': True, 'possibly_stale': False,
+             'state': 'answered', 'answer': 'the ui reader'},
+            {'id': 'q2', 'text': 'x' * 20000 + '…', 'why': 'w' * 20000 + '…', 'options': ['yes'],
+             'default': 'yes', 'must_answer': False, 'possibly_stale': True,
+             'state': 'open', 'answer': None},
+            {'id': 'q3', 'text': 'Ship it?', 'why': 'timing', 'options': [],
+             'default': '', 'must_answer': True, 'possibly_stale': False,
+             'state': 'late', 'answer': 'too late'},
+        ])
+        # q1 is in the late file too; the answer recorded before the start is the one the question shows.
+        self.assertEqual(tasks['reader']['brief']['late'], [
+            {'id': 'q3', 'text': 'too late', 'actor': 'cli', 't': 1760600200},
+            {'id': 'q1', 'text': 'ignored late', 'actor': 'ui', 't': 1760600300},
+        ])
+        self.assertEqual([item for item in data['truncated'] if item.startswith('tasks/reader/brief/')],
+                         ['tasks/reader/brief/q2.text', 'tasks/reader/brief/q2.why'])
+        self.assertIn('tasks/reader/brief.json: 1 question skipped', data['warnings'])
+        self.assertEqual(tasks['page']['brief']['questions'], [
+            {'id': 'q1', 'text': 'Layout?', 'why': 'css', 'options': ['grid'],
+             'default': 'grid', 'must_answer': True, 'possibly_stale': False,
+             'state': 'open', 'answer': None},
+            {'id': 'q2', 'text': 'Color?', 'why': 'theme', 'options': [],
+             'default': None, 'must_answer': False, 'possibly_stale': False,
+             'state': 'open', 'answer': None},
+        ])
+        self.assertEqual((tasks['page']['brief']['parked'], tasks['page']['brief']['late']), ([], []))
+        json.dumps(data, allow_nan=False)
+
+    def test_parked_questions_keep_their_scope(self):
+        _, tasks = self.loaded()
+        self.assertEqual(tasks['reader']['brief']['parked'], [
+            {'id': 'q4', 'text': 'Whole plan?', 'why': 'scope', 'options': ['now', 'later'],
+             'default': 'later', 'scope': 'plan', 'must_answer': True, 'possibly_stale': False},
+        ])
+        self.assertEqual(tasks['graph']['brief'], {
+            'questions': [],
+            'parked': [{'id': 'q9', 'text': 'Across the wave?', 'why': 'overlap', 'options': ['hold'],
+                        'default': 'hold', 'scope': 'wave', 'must_answer': True, 'possibly_stale': False}],
+            'late': [],
+        })
+        self.assertIsNone(tasks['docs']['brief'])
+        self.assertIsNone(tasks['server']['brief'])
+
+    def test_run_counts_open_questions_and_open_must_answer_ones(self):
+        data, _ = self.loaded()
+        self.assertEqual(data['brief'], {'level': 'gated', 'open': 3, 'flagged': 1})
+        for level in ('advisory', 'strict'):
+            F.write(self.plan / 'brief', level + '\n')
+            self.assertEqual(detail(self.plan)['brief'], {'level': level, 'open': 3, 'flagged': 1}, level)
+
+    def test_null_when_brief_is_off(self):
+        for level in ('off', 'nope', ''):
+            F.write(self.plan / 'brief', level + '\n')
+            data = detail(self.plan)
+            self.assertIsNone(data['brief'], repr(level))
+            self.assertTrue(all(task['brief'] is None for task in data['tasks']), repr(level))
+        (self.plan / 'brief').unlink()
+        data = detail(self.plan)
+        self.assertIsNone(data['brief'])
+        self.assertIsNone({task['id']: task for task in data['tasks']}['reader']['brief'])
+        solo = detail(SOLO)
+        self.assertIsNone(solo['brief'])
+        self.assertIsNone(solo['tasks'][0]['brief'])
+
+    def test_the_export_leaves_brief_prose_and_answers_out_unless_texts_are_chosen(self):
+        # why, options, default and answer are not in the export's global text keys. `text` is.
+        # Scope, state and the run counts are not prose and stay when texts are left out.
+        catalog = Catalog(plans=[self.plan], registry=False)
+        key = run_key(self.plan)
+        for texts in (False, True):
+            with self.subTest(texts=texts):
+                _, body = export.build(catalog, key, texts=texts)
+                html = body.decode('utf-8')
+                snapshot = json.loads(re.search(
+                    r'<script type="application/json" id="forge-snapshot">(.*?)</script>', html, re.DOTALL).group(1))
+                run = snapshot['api'][f'/api/runs/{key}']
+                tasks = {task['id']: task for task in run['tasks']}
+                question = tasks['reader']['brief']['questions'][0]
+                parked = tasks['reader']['brief']['parked'][0]
+                late = tasks['reader']['brief']['late'][0]
+                self.assertEqual(run['brief'], {'level': 'gated', 'open': 3, 'flagged': 1})
+                self.assertEqual(question['id'], 'q1')
+                self.assertEqual(question['state'], 'answered')
+                self.assertIs(question['must_answer'], True)
+                self.assertEqual(parked['id'], 'q4')
+                self.assertEqual(parked['scope'], 'plan')
+                self.assertIs(parked['must_answer'], True)
+                self.assertEqual((late['id'], late['actor'], late['t']), ('q3', 'cli', 1760600200))
+                if texts:
+                    self.assertEqual(question['text'], 'Which reader?')
+                    self.assertEqual(question['why'], 'two modules')
+                    self.assertEqual(question['options'], ['a', 'b'])
+                    self.assertEqual(question['default'], 'a')
+                    self.assertEqual(question['answer'], 'the ui reader')
+                    self.assertEqual(parked['text'], 'Whole plan?')
+                    self.assertEqual(parked['why'], 'scope')
+                    self.assertEqual(parked['options'], ['now', 'later'])
+                    self.assertEqual(parked['default'], 'later')
+                    self.assertEqual(late['text'], 'too late')
+                    self.assertIn('the ui reader', html)
+                else:
+                    for field in ('text', 'why', 'options', 'default', 'answer'):
+                        self.assertIsNone(question[field], field)
+                    for field in ('text', 'why', 'options', 'default'):
+                        self.assertIsNone(parked[field], field)
+                    self.assertIsNone(late['text'])
+                    self.assertNotIn('the ui reader', html)
+                    self.assertNotIn('two modules', html)
+                    self.assertNotIn('Whole plan?', html)
+
+
+class BriefWaitTests(unittest.TestCase):
+    """RunDetail task.waiting `brief`: a gated plan holds a task for your answer, from the same files the scheduler reads."""
+
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.plan = Path(temp.name) / 'plan'
+        F.write(self.plan / 'run_id', 'brief\n')
+        rows = [('a', '-'), ('b', '-'), ('c', 'a')]
+        F.write(self.plan / 'tasks.tsv', ''.join(f'{i}\t{d}\tlow\tf_{i}\tluna\topus\t{i}\n' for i, d in rows))
+        for ident, _ in rows:
+            F.write(self.plan / f'tasks/{ident}/status', 'PENDING\n')
+        F.write(self.plan / 'scheduler.live', {'pid': os.getpid()})
+        F.write(self.plan / 'brief', 'gated\n')
+        ask = lambda *ids: {'questions': [{'id': q, 'text': q, 'default': 'x', 'must_answer': True} for q in ids]}
+        F.write(self.plan / 'tasks/a/brief.json', ask('q1', 'q2'))
+        F.write(self.plan / 'tasks/b/brief.json', {'questions': [{'id': 'q1', 'text': 't', 'default': 'x', 'must_answer': False}]})
+
+    def waiting(self):
+        return {t['id']: t['waiting'] for t in detail(self.plan)['tasks']}
+
+    def test_the_unanswered_must_answer_questions_hold_a_task(self):
+        waiting = self.waiting()
+        self.assertEqual(waiting['a'], {'kind': 'brief', 'questions': ['q1', 'q2']})
+        self.assertEqual(waiting['b'], {'kind': 'next'})                       # a question it may skip holds nothing
+        self.assertEqual(waiting['c'], {'kind': 'deps', 'on': ['a'], 'stopped': []})
+
+    def test_an_answer_lifts_the_wait_for_that_question_only(self):
+        F.write(self.plan / 'tasks/a/brief.answers.json', {'q1': {'text': 'yes'}})
+        self.assertEqual(self.waiting()['a'], {'kind': 'brief', 'questions': ['q2']})
+        F.write(self.plan / 'tasks/a/brief.answers.json', {'q1': {'text': 'yes'}, 'q2': {'text': 'no'}})
+        self.assertEqual(self.waiting()['a'], {'kind': 'next'})
+
+    def test_only_a_gated_plan_waits(self):
+        for level in ('advisory', 'strict', 'off'):
+            F.write(self.plan / 'brief', level + '\n')
+            self.assertEqual(self.waiting()['a'], {'kind': 'next'}, level)
+
+    def test_a_task_with_no_brief_waits_while_the_writer_runs(self):
+        F.write(self.plan / 'brief.pid', f'{os.getpid()}\n')
+        self.assertEqual(self.waiting()['b'], {'kind': 'next'})           # it has a brief.json
+        (self.plan / 'tasks/b/brief.json').unlink()
+        self.assertEqual(self.waiting()['b'], {'kind': 'brief', 'questions': []})
+        F.write(self.plan / 'brief.pid', f'{2 ** 22 + 12345}\n')                # above any pid this machine hands out
+        self.assertEqual(self.waiting()['b'], {'kind': 'next'})
 
 
 class ControlChangeTests(unittest.TestCase):

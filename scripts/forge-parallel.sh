@@ -59,6 +59,19 @@
 #                           still what the review judged, and starts fresh whenever it cannot;
 #                           each attempt is logged in tasks/<id>/implementer_sessions.tsv.
 #                           `--no-implementer-session` turns it off (the default)
+#   --retro | --no-retro   agents record what got in their way (retro, #132); plan file `retro_mode`
+#                           (on or off; not `retro`, the notes directory). Without a flag the plan
+#                           keeps its earlier choice, else (first plan only) takes the user
+#                           `features` setting. The first plan with it on says what is recorded
+#   --brief LEVEL           advisory, gated, strict or off (#135): one cheap read-only dispatch per
+#                           task before it starts. Plan files `brief`, `brief_scope` (--brief-scope
+#                           task|wave|plan, default task) and `brief_model` (--brief-model SPEC). On
+#                           with no model is refused (exit 2); `off` writes `off` and drops the rest
+#   --summaries on|off      a generated summary per task (#133); plan files `summaries` and
+#                           `summaries_model` (--summaries-model SPEC); on with no model is refused.
+#                           A flag beats the user setting (forge config show), which is read once, at
+#                           the first plan; a re-plan without the flag keeps what the plan has, and an
+#                           explicit off (--no-retro, --brief off, --summaries off) is kept as `off`
 #   --fast ROLES            which of dwarf, qa, planner, review ask for the fast service tier
 #                           (comma list, or all, or none). Kept in the plan; a re-plan without
 #                           the flag keeps it, and none removes it. codex and claude only
@@ -305,6 +318,272 @@ $(forge_profile_py value "$1/profile.json" policy.retry_failed policy.infra_retr
 EOF
 }
 
+# --- retro, brief and summaries (#132, #135, #133): options frozen into the plan -------
+# `plan` writes six plan files (retro_mode, brief, brief_scope, brief_model, summaries,
+# summaries_model) that forge_side.settings(plan) reads at run time. The retro file is not
+# called `retro`: <plan>/retro/ is where the notes are kept. For each, a flag of this call
+# wins, then what the plan already has (a re-plan without the flag keeps it, as
+# --reviewer-session is kept), then the user `features` setting, read here once. The user
+# setting turns a feature on or off only before the plan is first planned (no waves.tsv):
+# after that the plan is frozen, here as in forge_side.settings, and a feature a re-plan does
+# not name stays as it was. (A flag that turns a feature on may still take its scope and
+# model from the user setting.) A feature that is on writes its files. One that is off
+# because a flag said so, or because the plan already said `off`, writes `off` into its
+# switch file (retro_mode, brief, summaries), so a later re-plan or a plan made from this
+# one cannot take it from the user setting again; its scope and model files go. One that is
+# merely off by default (no flag, no file, the user setting off) writes nothing, which is
+# what keeps a plan with every feature off exactly what it was before these options.
+#
+# forge_features_resolve sets FEAT_* and writes nothing; it returns 2 (FEAT_ERR says why) when
+# a feature is on with no model, or a model spec does not resolve. forge_features_store writes
+# the files and says what retro records the first time. An empty value means "no file".
+forge_features_user() { # prints key=value lines: the stored user settings, defaults when unreadable
+  PYTHONPATH="$SKILL_DIR/scripts${PYTHONPATH:+:$PYTHONPATH}" python3 - <<'PY' 2>/dev/null || true
+import forge_side
+f = forge_side.stored_features()
+for k in ('retro', 'brief', 'brief.scope', 'brief.model', 'summaries', 'summaries.model'):
+    print('%s=%s' % (k, f.get(k) or ''))
+PY
+}
+
+forge_feature_file() { # forge_feature_file <plan> <name> -> first line, trimmed; empty when absent
+  local line=""
+  if [ -f "$1/$2" ] && [ -r "$1/$2" ]; then IFS= read -r line < "$1/$2" || true; fi
+  line="${line#"${line%%[![:space:]]*}"}"
+  printf '%s' "${line%"${line##*[![:space:]]}"}"
+}
+
+forge_feature_spec_ok() { # forge_feature_spec_ok <flag name> <spec>: dispatch's own dry run, as a --qa spec resolves
+  local tmp err rc=0
+  tmp="$(mktemp -d)" || { FEAT_ERR="could not make a temporary directory"; return 2; }
+  mkdir -p "$tmp/repo" "$tmp/run"; echo spec-check > "$tmp/prompt"
+  bash "$SKILL_DIR/scripts/forge-dispatch.sh" side "$2" --repo "$tmp/repo" --run-dir "$tmp/run" \
+    --prompt-file "$tmp/prompt" --dry-run >/dev/null 2>"$tmp/err" || rc=$?
+  err="$(awk 'NF { line = $0 } END { print line }' "$tmp/err" 2>/dev/null)"
+  rm -rf "${tmp:?}"
+  [ "$rc" -eq 0 ] || { FEAT_ERR="$1: '$2' does not resolve to a model${err:+ ($err)}"; return 2; }
+}
+
+forge_features_resolve() { # forge_features_resolve <plan>
+  local plan="$1" key val
+  local u_retro=off u_brief=off u_scope=task u_bmodel="" u_summ=off u_smodel=""
+  while IFS== read -r key val; do
+    case "$key" in
+      retro) [ "$val" = on ] && u_retro=on ;;
+      brief) [ -n "$val" ] && u_brief="$val" ;;
+      brief.scope) [ -n "$val" ] && u_scope="$val" ;;
+      brief.model) u_bmodel="$val" ;;
+      summaries) [ -n "$val" ] && u_summ="$val" ;;
+      summaries.model) u_smodel="$val" ;;
+    esac
+  done <<FEATURES_EOF
+$(forge_features_user)
+FEATURES_EOF
+  # Planned before: the user setting no longer turns anything on or off (see above).
+  if [ -e "$plan/waves.tsv" ]; then u_retro=off; u_brief=off; u_summ=off; fi
+  local f_retro f_brief f_scope f_bmodel f_summ f_smodel
+  f_retro="$(forge_feature_file "$plan" retro_mode)"; f_brief="$(forge_feature_file "$plan" brief)"
+  f_scope="$(forge_feature_file "$plan" brief_scope)"; f_bmodel="$(forge_feature_file "$plan" brief_model)"
+  f_summ="$(forge_feature_file "$plan" summaries)"; f_smodel="$(forge_feature_file "$plan" summaries_model)"
+
+  # retro: `on`; `off` when a flag or the plan says so; else no file
+  local retro="${RETRO_FLAG:-${f_retro:-$u_retro}}"
+  FEAT_RETRO=""
+  if [ "$retro" = on ]; then FEAT_RETRO=on
+  elif [ -n "$RETRO_FLAG" ] || [ -n "$f_retro" ]; then FEAT_RETRO=off; fi
+
+  # brief: the level, its scope and its model
+  local level="${BRIEF_FLAG:-${f_brief:-$u_brief}}"
+  case "$level" in advisory|gated|strict|off) ;; *) level=off ;; esac
+  FEAT_BRIEF=""; FEAT_BRIEF_SCOPE=""; FEAT_BRIEF_MODEL=""
+  if [ "$level" = off ] && { [ -n "$BRIEF_FLAG" ] || [ -n "$f_brief" ]; }; then FEAT_BRIEF=off; fi
+  if [ "$level" != off ]; then
+    local scope="${BRIEF_SCOPE_FLAG:-${f_scope:-$u_scope}}" bmodel="${BRIEF_MODEL_FLAG:-${f_bmodel:-$u_bmodel}}"
+    case "$scope" in task|wave|plan) ;; *) scope=task ;; esac
+    if [ -z "$bmodel" ]; then
+      FEAT_ERR="brief is $level but has no model: pass --brief-model SPEC or run 'forge config set brief.model SPEC'"
+      return 2
+    fi
+    FEAT_BRIEF="$level"; FEAT_BRIEF_SCOPE="$scope"; FEAT_BRIEF_MODEL="$bmodel"
+  fi
+
+  # summaries: the mode and its model
+  local mode="${SUMM_FLAG:-${f_summ:-$u_summ}}"
+  case "$mode" in on|off) ;; *) mode=off ;; esac
+  FEAT_SUMM=""; FEAT_SUMM_MODEL=""
+  if [ "$mode" = off ] && { [ -n "$SUMM_FLAG" ] || [ -n "$f_summ" ]; }; then FEAT_SUMM=off; fi
+  if [ "$mode" = on ]; then
+    local smodel="${SUMM_MODEL_FLAG:-${f_smodel:-$u_smodel}}"
+    if [ -z "$smodel" ]; then
+      FEAT_ERR="summaries is on but has no model: pass --summaries-model SPEC or run 'forge config set summaries.model SPEC'"
+      return 2
+    fi
+    FEAT_SUMM=on; FEAT_SUMM_MODEL="$smodel"
+  fi
+
+  # Every model that will be dispatched resolves now, not at its first dispatch.
+  if [ -n "$FEAT_BRIEF_MODEL" ]; then forge_feature_spec_ok --brief-model "$FEAT_BRIEF_MODEL" || return 2; fi
+  if [ -n "$FEAT_SUMM_MODEL" ] && [ "$FEAT_SUMM_MODEL" != "$FEAT_BRIEF_MODEL" ]; then
+    forge_feature_spec_ok --summaries-model "$FEAT_SUMM_MODEL" || return 2
+  fi
+  return 0
+}
+
+# The six flags are read in a pass of their own, before the main loop: the shared flags
+# (--qa-threshold, ...) write into the plan dir as they are parsed, so a refusal that came
+# after them would leave their files behind. Here nothing has been written yet, and every bad
+# value or missing model ends the call with the plan dir untouched.
+forge_features_scan() { # forge_features_scan "$@": sets the *_FLAG variables of do_plan
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --retro)        RETRO_FLAG=on ;;
+      --no-retro)     RETRO_FLAG=off ;;
+      --brief)
+        case "${2:-}" in advisory|gated|strict|off) BRIEF_FLAG="$2"; shift ;;
+          *) die "--brief must be advisory, gated, strict or off" ;; esac ;;
+      --brief-scope)
+        case "${2:-}" in task|wave|plan) BRIEF_SCOPE_FLAG="$2"; shift ;;
+          *) die "--brief-scope must be task, wave or plan" ;; esac ;;
+      --brief-model)
+        [ -n "${2:-}" ] || die "--brief-model needs a model spec"
+        BRIEF_MODEL_FLAG="$2"; shift ;;
+      --summaries)
+        case "${2:-}" in on|off) SUMM_FLAG="$2"; shift ;;
+          *) die "--summaries must be on or off" ;; esac ;;
+      --summaries-model)
+        [ -n "${2:-}" ] || die "--summaries-model needs a model spec"
+        SUMM_MODEL_FLAG="$2"; shift ;;
+    esac
+    shift
+  done
+}
+
+forge_features_store() { # forge_features_store <plan>
+  local plan="$1" pair name var val
+  for pair in retro_mode:FEAT_RETRO brief:FEAT_BRIEF brief_scope:FEAT_BRIEF_SCOPE brief_model:FEAT_BRIEF_MODEL \
+              summaries:FEAT_SUMM summaries_model:FEAT_SUMM_MODEL; do
+    name="${pair%%:*}"; var="${pair#*:}"; val="${!var}"
+    if [ -z "$val" ]; then
+      rm -f "${plan:?}/${name:?}"
+    else
+      printf '%s\n' "$val" > "$plan/$name" || die "could not write $plan/$name" 3
+    fi
+  done
+  if [ "$FEAT_RETRO" = on ]; then forge_retro_notice "$plan"; fi
+  return 0
+}
+
+# Said once per user, to stderr, the first time a plan has retro on. The marker is in the state dir.
+forge_retro_notice() { # forge_retro_notice <plan>
+  local marker="${XDG_STATE_HOME:-$HOME/.local/state}/forge/retro.noticed"
+  [ ! -e "$marker" ] || return 0
+  note "retro is on. Each agent records what got in its way: a note with the command it ran and an excerpt of the error."
+  note "  Kept in $1/retro/, in tasks/<id>/retro.json and in the local dataset. Nothing leaves this machine"
+  note "  unless you approve it with 'forge retro issues'. This notice is shown once per user."
+  { mkdir -p "${marker%/*}" && : > "$marker"; } 2>/dev/null || true
+}
+
+# 0 when this plan records retro notes. settings() is the switch: the plan file, the user
+# setting before waves.tsv, and FORGE_RETRO=off. Auto's planner is dispatched before `plan`
+# writes retro_mode, so AUTO_RETRO_FLAG (on, off, or empty) carries the flag that call will
+# hand to plan. Off from the environment still wins. Prints nothing and writes nothing.
+forge_retro_on() { # forge_retro_on <plan>
+  local flag="${AUTO_RETRO_FLAG:-}"
+  PYTHONPATH="$SKILL_DIR/scripts${PYTHONPATH:+:$PYTHONPATH}" \
+    python3 - "$1" "$flag" >/dev/null <<'PY'
+import os, sys
+import forge_side
+plan, flag = sys.argv[1], sys.argv[2]
+if os.environ.get('FORGE_RETRO', '').strip().lower() == 'off':
+    sys.exit(1)
+if flag == 'on':
+    sys.exit(0)
+if flag == 'off':
+    sys.exit(1)
+sys.exit(0 if forge_side.settings(plan).get('retro') else 1)
+PY
+}
+
+# The retro instruction, printed so it can be the last block of a prompt. Nothing when retro
+# is off, which is what keeps that prompt byte-identical.
+forge_retro_prompt() { # forge_retro_prompt <plan> <role>
+  forge_retro_on "$1" || return 0
+  echo
+  python3 "$SKILL_DIR/scripts/forge-contract.py" retro --role "$2" \
+    || note "retro: could not write the $2 instruction"
+  return 0
+}
+
+# One dispatch's notes. A failure is one warning and never the caller's result: the status
+# and the exit code stay whatever the dispatch already decided. No task for a whole-run
+# dispatch (the planner, the final review). The inbox is the dwarf worktree's.
+forge_retro_record() { # forge_retro_record <plan> <role> <dir> [task] [attempt] [inbox]
+  forge_retro_on "$1" || return 0
+  local plan="$1" role="$2" dir="$3" task="${4:-}" attempt="${5:-}" inbox="${6:-}"
+  local cmd=(python3 "$SKILL_DIR/scripts/forge-retro.py" record "$plan" --role "$role" --dir "$dir")
+  [ -n "$task" ] && cmd+=(--task "$task")
+  [ -n "$attempt" ] && cmd+=(--attempt "$attempt")
+  [ -n "$inbox" ] && cmd+=(--inbox "$inbox")
+  if ! "${cmd[@]}" >/dev/null 2>&1; then
+    note "retro: could not record the $role notes${task:+ for $task}"
+  fi
+  return 0
+}
+
+# Rewrite retro.md. Quiet: integrate and review regenerate after their dispatches, and the
+# run's own summary line is forge_retro_summary_line. A failure is one warning.
+forge_retro_report() { # forge_retro_report <plan>
+  forge_retro_on "$1" || return 0
+  python3 "$SKILL_DIR/scripts/forge-retro.py" report "$1" >/dev/null 2>&1 \
+    || note "retro: could not write the report"
+  return 0
+}
+
+# Write retro.md and print the one summary line when the report has any pattern. Nothing
+# when it does not, or when retro is off (no call, no file).
+forge_retro_summary_line() { # forge_retro_summary_line <plan>
+  forge_retro_on "$1" || return 0
+  local json
+  json="$(python3 "$SKILL_DIR/scripts/forge-retro.py" report "$1" --json 2>/dev/null)" || {
+    note "retro: could not write the report"
+    return 0
+  }
+  printf '%s' "$json" | python3 -c '
+import json, sys
+doc = json.load(sys.stdin)
+plan = sys.argv[1]
+n = u = f = 0
+for group in doc.get("groups") or []:
+    k = len(group.get("patterns") or [])
+    n += k
+    if group.get("id") == "user":
+        u += k
+    elif group.get("id") == "forge":
+        f += k
+if n:
+    sys.stdout.write("retro: %d patterns (%d you can fix, %d for forge): %s/retro.md\n" % (n, u, f, plan))
+' "$1"
+  return 0
+}
+
+# One line per feature that is on, from the plan files (what the run will do).
+forge_features_table() { # forge_features_table <plan>
+  local plan="$1" level scope model
+  if [ "$(forge_feature_file "$plan" retro_mode)" = on ]; then
+    echo "retro: agents record what got in their way; report at retro.md (local only)"
+  fi
+  level="$(forge_feature_file "$plan" brief)"
+  case "$level" in
+    advisory|gated|strict)
+      scope="$(forge_feature_file "$plan" brief_scope)"; model="$(forge_feature_file "$plan" brief_model)"
+      echo "brief: $level, ${scope:-task} scope, ${model:-no model}; one cheap read-only dispatch per task before it starts" ;;
+  esac
+  if [ "$(forge_feature_file "$plan" summaries)" = on ]; then
+    echo "summaries: on, $(forge_feature_file "$plan" summaries_model); one cheap dispatch per task when its attempts or status change"
+  fi
+  return 0
+}
+
 do_plan() {
   local PLAN="${1:?plan needs a plan dir}"; shift
   local PF_NAME="" PF_NONE=0 PF_QT=0
@@ -313,7 +592,13 @@ do_plan() {
   PP_INFRA_FALLBACK=""
   local PLANNER="" NOMEM=0 jev_rc=0 DLEVEL="" SHADOW_QA="" SHADOW_RATE="" EXPLORE="" FAIL_FIRST="" REVIEWER_SESSION="" IMPLEMENTER_SESSION="" PRE_REVIEW="" PRE_REVIEW_PARALLEL=""
   local FAST_GIVEN=0 FAST_PARSED=""
-  local COLLAPSE=0 COLLAPSED_NOW=0
+  local RETRO_FLAG="" BRIEF_FLAG="" BRIEF_SCOPE_FLAG="" BRIEF_MODEL_FLAG="" SUMM_FLAG="" SUMM_MODEL_FLAG=""
+  local COLLAPSE=0 COLLAPSED_NOW=0 FEAT_ERR=""
+  # The retro, brief and summaries choices, settled before anything is written: a refusal
+  # (a bad value, no model, a spec that does not resolve) leaves the plan dir as it was.
+  forge_features_scan "$@"
+  [ -d "$PLAN" ] || die "plan dir '$PLAN' does not exist"
+  forge_features_resolve "$PLAN" || die "$FEAT_ERR" 2
   while [ $# -gt 0 ]; do
     case "$1" in
       --repo)         REPO="${2:?}"; shift 2 ;;
@@ -359,6 +644,8 @@ do_plan() {
         forge_fast_parse "$2" plan
         FAST_GIVEN=1
         shift 2 ;;
+      --retro|--no-retro) shift ;;                      # read by forge_features_scan
+      --brief|--brief-scope|--brief-model|--summaries|--summaries-model) shift 2 ;;
       *)
         # `case` is not a loop, so `continue` here belongs to the enclosing while.
         # The shared flags write into the plan dir (--qa-threshold), so it must exist first.
@@ -420,6 +707,8 @@ do_plan() {
   case "$IMPLEMENTER_SESSION" in on) printf '%s\n' on > "$PLAN/implementer_session" ;; off) rm -f "$PLAN/implementer_session" ;; esac
   # Which roles ask for the fast tier. Omitted on a re-plan, so an earlier choice stays.
   forge_fast_store "$PLAN"
+  # Retro, brief and summaries (#132, #133, #135), as forge_features_resolve settled them.
+  forge_features_store "$PLAN"
   # Exploration is decided here and only here, so the table and preflight see what will run.
   # On by default: choosing models from measured pass rates needs some randomized picks, and
   # history had almost none (9 tasks ever ran on more than one spec). The flag wins, then
@@ -817,6 +1106,7 @@ render_table() {
     fast_roles="$(awk 'NF { printf "%s%s", (n++ ? ", " : ""), $0 }' "$PLAN/fast")"
     echo "fast tier: $fast_roles — billed at a higher rate (codex service_tier=fast; claude fast mode needs extra usage enabled)"
   fi
+  forge_features_table "$PLAN"
   if [ -f "$PLAN/profile.json" ]; then
     local profile_line; profile_line="$(forge_profile_py line "$PLAN/profile.json" 2>/dev/null)"
     [ -z "$profile_line" ] || echo "$profile_line"
@@ -1141,6 +1431,27 @@ check_drift() { # check_drift <declared-comma-list> <tdir> <wt> <base>
   return 0
 }
 
+# The attempt trail (#133): one line per attempt that starts with carried findings, saying why it
+# happened, as `<attempt>\t<source>\t<epoch>`. The source is read the way forge-prompt.py reads it
+# (a missing or unknown one is a review). A line for the same attempt number is replaced rather than
+# repeated: an infrastructure stop refunds the attempt, so its restart runs the same number again.
+# An existing trail that cannot be read is left as it is (non-zero return): rewriting it from this
+# one line would drop the history.
+record_retry_source() { # record_retry_source <tdir> <attempt>
+  local tdir="$1" n="$2" src trail tmp
+  trail="$tdir/retry_sources.tsv"; tmp="$tdir/.retry_sources.tsv.tmp"
+  [ -s "$tdir/retry_findings.md" ] || return 0
+  src="$(cat "$tdir/retry_findings.source" 2>/dev/null)"
+  case "$src" in review|prereview|bounce|message|answer) ;; *) src=review ;; esac
+  if [ -e "$trail" ]; then
+    [ -f "$trail" ] && [ -r "$trail" ] || return 1
+    awk -F'\t' -v n="$n" '$1 != n' "$trail" > "$tmp" 2>/dev/null || { rm -f "$tmp"; return 1; }
+  else
+    : > "$tmp" || return 1
+  fi
+  printf '%s\t%s\t%s\n' "$n" "$src" "$(date +%s)" >> "$tmp" && mv "$tmp" "$trail" || { rm -f "$tmp"; return 1; }
+}
+
 do_task_body() (
   local PLAN="${1:?}" id="${2:?}"
   local T="$PLAN/tasks.tsv" REPO run_id base wt br tdir attempt resume=""
@@ -1224,7 +1535,11 @@ do_task_body() (
       echo; python3 "$SKILL_DIR/scripts/forge-contract.py" dwarf $([ ! -f "$PLAN/pre_review_tests" ] || echo --pre-review) \
         $([ -z "$(verify_source_for "$PLAN" "$REPO")" ] || echo --verify-after-merge)
       echo; /bin/bash "$MEMORY" note dwarf
+      # Last, after the memory note. Nothing is printed when retro is off.
+      forge_retro_prompt "$PLAN" dwarf
     } > "$tdir/dwarf.input"
+    # This attempt starts with the findings just written to dwarf.input (#133).
+    record_retry_source "$tdir" "$attempt" || note "$id: retry_sources.tsv not updated; the attempt trail stays as it was"
     guard_before_dwarf "$wt" "$tdir"
     # Whether this attempt continues the implementer's earlier session (plan
     # --implementer-session, #90): only a retry of judged work that is still exactly what was
@@ -1268,6 +1583,9 @@ do_task_body() (
       if [ -n "$is_fp" ] && [ "$(forge_fingerprint "$wt")" = "$is_fp" ]; then
         # It changed nothing, so the same input goes to a fresh session, which decides the attempt.
         is_mode=fresh
+        # The fresh dispatch deletes dwarf.last and dwarf.log as it starts. Record the
+        # continuation first; a failure to record does not change the attempt.
+        forge_retro_record "$PLAN" dwarf "$tdir" "$id" "$attempt" "$wt/.forge/retro-inbox.jsonl"
         "${dwarf_cmd[@]}" >"$tdir/dwarf.out" 2>&1
         rc=$?
       else
@@ -1287,6 +1605,9 @@ do_task_body() (
     fi
     if [ "${FORGE_OUTPUT:-summary}" = full ]; then cat "$tdir/dwarf.out"; fi
     if [ "$rc" -ne 0 ]; then
+      # The dispatch ended without a result memory would record. Keep its notes anyway;
+      # a failure to record them does not change the status this case is about to write.
+      forge_retro_record "$PLAN" dwarf "$tdir" "$id" "$attempt" "$wt/.forge/retro-inbox.jsonl"
       case "$rc" in
         7) echo TIMEOUT > "$tdir/status"; note "$id: dwarf hit the dispatch timeout — see $tdir/dwarf.out" ;;
         8) infra_stop "$tdir" "$id" dwarf "$attempt"; return 8 ;;
@@ -1298,6 +1619,7 @@ do_task_body() (
     /bin/bash "$MEMORY" record "$REPO" --last "$tdir/dwarf.last" --role dwarf \
         --run-id "$run_id" --task "$id" --model "$dw" --run-dir "$tdir" \
         --duration "$(dispatch_duration "$tdir" dwarf)" >/dev/null 2>&1
+    forge_retro_record "$PLAN" dwarf "$tdir" "$id" "$attempt" "$wt/.forge/retro-inbox.jsonl"
 
     guard_after_dwarf "$wt" "$tdir" "$id"
     # Before the snapshot, so a dwarf that only asked a question (and changed nothing) still reaches it.
@@ -1458,6 +1780,9 @@ do_task_body() (
     echo '```diff'; git -C "$wt" diff --binary --irreversible-delete "$base" "$reviewed" -- . ':(exclude).forge'; echo '```'
     echo; /bin/bash "$MEMORY" note qa
     echo "Place any learning notes before the final FORGE_VERDICT: PASS or FORGE_VERDICT: FAIL line."
+    # Last, so a shadow review, which copies this file byte for byte, carries the same
+    # instruction. Its notes are not recorded: only this task's own dispatch is.
+    forge_retro_prompt "$PLAN" qa
   } > "$tdir/qa.input"
   # Opt-in (plan --shadow-qa): a second, independent review of this same diff, to measure
   # how often two reviewers agree. It reviews its own snapshot from its own dir under
@@ -1501,6 +1826,9 @@ do_task_body() (
     fi
     rs_mode=fresh
     mv "$tdir/qa.out" "$tdir/qa.continue.out" 2>/dev/null || true
+    # The fresh dispatch deletes qa.last and qa.log as it starts. Record the continuation
+    # first; a failure to record does not change the round.
+    forge_retro_record "$PLAN" qa "$tdir" "$id" "$attempt"
     "${qa_cmd[@]}" >"$tdir/qa.out" 2>&1
     rc=$?
   fi
@@ -1518,6 +1846,7 @@ do_task_body() (
   fi
   if [ "${FORGE_OUTPUT:-summary}" = full ]; then cat "$tdir/qa.out"; fi
   if [ "$rc" -ne 0 ]; then
+    forge_retro_record "$PLAN" qa "$tdir" "$id" "$attempt"
     case "$rc" in
       7) echo TIMEOUT > "$tdir/status"; note "$id: qa hit the dispatch timeout — see $tdir/qa.out" ;;
       8) infra_stop "$tdir" "$id" qa "$attempt"; return 8 ;;
@@ -1528,6 +1857,9 @@ do_task_body() (
   rm -f "$tdir/resume"
 
   forge_metric_phase verification
+  # Before the invalidation return: a review that changed a tracked file still finished,
+  # and its notes are the point of that dispatch. Recording never changes the status.
+  forge_retro_record "$PLAN" qa "$tdir" "$id" "$attempt"
   if [ "$(forge_fingerprint "$wt")" != "$source_fp" ] || [ "$(forge_fingerprint "$review" --tracked)" != "$review_fp" ]; then
     # The committed work is untouched, so --retry-failed may review it again (reason `review`);
     # the merge-time invalidations below leave no reason and wait for a human.
@@ -1914,6 +2246,7 @@ do_retry() {
   if [ "$st" = "PASS" ]; then
     if merge_task "$PLAN" "$id"; then
       note "$id PASS -> merged"
+      forge_brief_stale "$PLAN" "$id"
     else
       note "$id PASS but conflicted on merge — branch preserved"
     fi
@@ -2279,6 +2612,99 @@ run_signal() {
 # Not a ( ) function: main runs it as `( do_run ... ) &`, one subshell that is both the
 # background job and the home of its signal handler. A function called with `&` would be a
 # second subshell level, and an async function does not run its EXIT trap.
+# --- brief mode in a run (#135) ------------------------------------------------------
+# The effective level: advisory, gated, strict or off. Settings are the switch (the plan file and
+# FORGE_BRIEF=off); anything that cannot be read is off, so a broken brief never holds a run.
+forge_brief_level() { # forge_brief_level <plan>
+  local level
+  level="$(PYTHONPATH="$SKILL_DIR/scripts${PYTHONPATH:+:$PYTHONPATH}" python3 - "$1" 2>/dev/null <<'PY'
+import sys
+import forge_side
+print(forge_side.settings(sys.argv[1])['brief']['level'])
+PY
+)" || level=off
+  case "$level" in advisory|gated|strict) echo "$level" ;; *) echo off ;; esac
+}
+
+# `forge-brief.py write` in a session of its own, output to brief.out, without waiting. brief.pid holds
+# the writer's supervisor, which removes it when the writer ends: the scheduler's gated wait reads it.
+forge_brief_start() { # forge_brief_start <plan>
+  local plan="$1"
+  rm -f "$plan/brief.pid"
+  python3 - "$plan" "$SKILL_DIR/scripts/forge-brief.py" <<'PY' || { note "brief: could not start the question writer"; return 0; }
+import os, subprocess, sys
+plan, script = sys.argv[1], sys.argv[2]
+pidfile = os.path.join(plan, 'brief.pid')
+ready, signal_ready = os.pipe()
+child = os.fork()
+if child:
+    os.close(signal_ready)
+    os.read(ready, 1)          # the child wrote brief.pid (or gave up): the file is there before this returns
+    sys.exit(0)
+code = 1
+try:
+    os.close(ready)
+    os.setsid()
+    out = os.open(os.path.join(plan, 'brief.out'), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+    null = os.open(os.devnull, os.O_RDONLY)
+    os.dup2(null, 0); os.dup2(out, 1); os.dup2(out, 2)
+    with open(pidfile, 'w') as handle:
+        handle.write('%d\n' % os.getpid())
+    os.write(signal_ready, b'1'); os.close(signal_ready)
+    code = subprocess.run([sys.executable, script, 'write', plan], stdin=subprocess.DEVNULL).returncode
+except BaseException:
+    pass
+finally:
+    try:
+        os.write(signal_ready, b'1')
+    except OSError:
+        pass
+    try:
+        os.unlink(pidfile)
+    except OSError:
+        pass
+    os._exit(code)
+PY
+}
+
+# Strict: the questions of the tasks that have not started and nobody answered, each with the command that
+# answers it. Exit 3 when there are any, so the caller refuses before the scheduler starts.
+forge_brief_strict() { # forge_brief_strict <plan>
+  local plan="$1" rc=0
+  python3 "$SKILL_DIR/scripts/forge-brief.py" write "$plan" >&2 || note "brief: the question writer did not finish; tasks without questions are not held"
+  PYTHONPATH="$SKILL_DIR/scripts${PYTHONPATH:+:$PYTHONPATH}" python3 - "$plan" <<'PY' || rc=$?
+import shlex, sys
+import forge_brief
+import forge_brief.answers as answers
+plan = sys.argv[1]
+try:
+    found = forge_brief.collect(plan)['questions']
+except Exception:
+    sys.exit(0)
+open_ = [q for q in found if q['state'] in ('open', 'possibly_stale') and not answers.past_start(plan, q['task'])]
+if not open_:
+    sys.exit(0)
+err = sys.stderr
+err.write('forge: strict brief: %d question(s) wait for your answer before any task starts:\n' % len(open_))
+for q in open_:
+    err.write('  %s %s: %s\n' % (q['task'], q['id'], q['text']))
+    err.write('      default: %s\n' % (q['default'] or '(none)'))
+    err.write('      forge brief answer %s %s %s "…"\n' % (shlex.quote(plan), q['task'], q['id']))
+err.write('forge: nothing was started. Answer them, then run again.\n')
+sys.exit(3)
+PY
+  return "$rc"
+}
+
+# After a merge, with brief on: flag the dependents' open questions when the merge touched files outside
+# the task's own. A failure is one line and changes nothing else.
+forge_brief_stale() { # forge_brief_stale <plan> <merged-task>
+  [ "$(forge_brief_level "$1")" = off ] && return 0
+  python3 "$SKILL_DIR/scripts/forge-brief.py" stale "$1" "$2" >/dev/null 2>&1 \
+    || note "brief: could not flag the dependents of $2 as possibly stale"
+  return 0
+}
+
 do_run() {
   local run_child="" run_stop=0 run_phase=pre run_rc=0 interrupted=0 vstopped=0
   FORGE_RUN_STOPPABLE=1
@@ -2402,8 +2828,16 @@ do_run() {
   # Also before any model is paid for: what this plan is likely to cost, and which tasks
   # history says may bounce. Advisory, budgeted and silent without history; it never stops a run.
   [ "$FORECAST" = 1 ] && forecast_report "$PLAN"
-  # Invalid verification lanes stop the run here, before any model is paid for.
+  # Invalid verification lanes stop the run here, before any model is paid for, so before the question writer below.
   verify_lanes_check "$PLAN" "$REPO" "$int_wt"
+  # Brief mode (#135), when the plan has it on. Strict asks first and refuses to start while a question of a
+  # task that has not started is unanswered; advisory and gated write the questions beside the scheduler.
+  local brief_level
+  brief_level="$(forge_brief_level "$PLAN")"
+  case "$brief_level" in
+    strict) forge_brief_strict "$PLAN" || exit $? ;;
+    advisory|gated) forge_brief_start "$PLAN" ;;
+  esac
   # Say now, before any model is paid for, which suites the verify command will not run.
   verify_coverage_report "$REPO" "$(verify_command_for "$PLAN" "$REPO")" "$PLAN/verification.coverage.txt"
   local sched_rc=0 paused=0 sched_args=()
@@ -2456,12 +2890,18 @@ do_run() {
     done
   fi
 
+  # After the scheduler (and verification) and before the summary. Retro off: no call,
+  # no retro.md. A failure here does not change the exit code decided below.
+  local retro_line=""
+  retro_line="$(forge_retro_summary_line "$PLAN")"
+
   echo
   echo "results (integration branch: $int_br)"
   echo "artifacts: $PLAN/tasks/<id>/{dwarf,qa}.{last,log}; results: $PLAN/results.tsv"
   printf '  %-14s %-9s %s\n' id status branch
   awk -F'\t' '{printf "  %-14s %-9s %s\n", $1, $2, $3}' "$PLAN/results.tsv"
   echo
+  if [ -n "$retro_line" ]; then printf '%s\n\n' "$retro_line"; fi
   run_report_extras "$PLAN"
   # Pre-review tests (#85): every check of the plan, and the reviews the red ones saved.
   local pre_review
@@ -2665,14 +3105,35 @@ forge_auto_unparse() { # forge_auto_unparse <plan-dir>
   rm -f "$1/tasks.tsv" "$1/tasks.declared.tsv"
 }
 
+# The planner's notes, once. A dispatch that ran before `plan` wrote run_id leaves
+# AUTO_PLANNER_RECORDED=0; recording then would store run_id null for good. The caller
+# records after `plan`, or on an exit that will never reach it. A later dispatch (the
+# send-back) already has the file and records itself.
+forge_auto_record_planner() { # forge_auto_record_planner <plan>
+  [ "${AUTO_PLANNER_RECORDED:-1}" = 0 ] || return 0
+  forge_retro_record "$1" planner "$1"
+  AUTO_PLANNER_RECORDED=1
+}
+
 # One planner dispatch: prompt in $PLAN/planner.prompt, reply in $PLAN/planner.last. Sets
 # AUTO_RC (0, 4 or 8) for the caller instead of exiting, so a send-back can reuse it.
 forge_auto_dispatch() { # forge_auto_dispatch <plan-dir> <repo> <spec> <fast-option-or-empty>
   local plan="$1" repo="$2" spec="$3" tier="$4" rc=0
   AUTO_RC=0
+  AUTO_PLANNER_RECORDED=0
   note "auto: dispatching the planner ($spec) for the whole plan"
+  # Last. The planner runs before `plan` stores retro_mode; AUTO_RETRO_FLAG says whether
+  # this call's flags will turn it on. Off appends nothing, so the file stays as written.
+  forge_retro_prompt "$plan" planner >> "$plan/planner.prompt"
   bash "$DISPATCH" planner "$spec" --repo "$repo" --run-dir "$plan" --prompt-file "$plan/planner.prompt" \
     --output summary ${tier:+$tier} >&2 || rc=$?
+  # No task: the planner is the whole plan. Its result is AUTO_RC, set below, not this.
+  # run_id is written by `plan`, which has not run yet on a new directory. Record now only
+  # when that file is already there (a send-back); otherwise the caller records after `plan`.
+  if [ -s "$plan/run_id" ]; then
+    forge_retro_record "$plan" planner "$plan"
+    AUTO_PLANNER_RECORDED=1
+  fi
   if [ "$rc" -eq 8 ]; then
     note "auto: the planner stopped on an infrastructure failure (see $plan/planner.infra). Nothing was dispatched after the planner; fix the cause and run auto again"
     AUTO_RC=8
@@ -2785,23 +3246,41 @@ AUTO_PROFILE
     forge_fast_store "$PLAN"
     fast_tier="$(forge_fast_tier "$PLAN" planner)"
 
+    # The flag `plan` is about to store. The planner is dispatched before that write, and
+    # FORGE_RETRO=off still wins inside forge_retro_on. Last flag wins, as plan's own scan.
+    AUTO_RETRO_FLAG=""
+    local retro_scan=""
+    for retro_scan in ${PLAN_ARGS[@]+"${PLAN_ARGS[@]}"}; do
+      case "$retro_scan" in
+        --retro) AUTO_RETRO_FLAG=on ;;
+        --no-retro) AUTO_RETRO_FLAG=off ;;
+      esac
+    done
     note "auto: checking the planner ($PLANNER) before any model call"
     bash "$DISPATCH" doctor --spec "$PLANNER" --role planner ${fast_tier:+$fast_tier} >&2 || exit $?
     python3 "$PLANNER_PY" prompt --plan "$PLAN" --goal-file "$REQUEST" ${DLEVEL:+--level "$DLEVEL"} >/dev/null || exit $?
     forge_auto_dispatch "$PLAN" "$REPO" "$PLANNER" "$fast_tier"
-    [ "$AUTO_RC" -eq 0 ] || exit "$AUTO_RC"
+    if [ "$AUTO_RC" -ne 0 ]; then
+      forge_auto_record_planner "$PLAN"
+      exit "$AUTO_RC"
+    fi
     python3 "$PLANNER_PY" parse --plan "$PLAN" --reply "$PLAN/planner.last" || rc=$?
     case "$rc" in
       0) ;;
-      4) note "auto: the planner's reply was refused (see $PLAN/planner.refused). Nothing was dispatched after the planner"
+      4) forge_auto_record_planner "$PLAN"
+         note "auto: the planner's reply was refused (see $PLAN/planner.refused). Nothing was dispatched after the planner"
          exit 4 ;;
-      *) exit "$rc" ;;
+      *) forge_auto_record_planner "$PLAN"
+         exit "$rc" ;;
     esac
     from_planner=1
   fi
 
   # 4. plan, and one send-back when the plan gates ask for it.
   bash "$SELF" plan "$PLAN" ${PLAN_ARGS[@]+"${PLAN_ARGS[@]}"}; rc=$?
+  # planner.last is still the first reply. plan has written run_id when it got that far,
+  # and the send-back below overwrites the reply, so this is the moment to record it.
+  forge_auto_record_planner "$PLAN"
   if [ "$rc" -eq 4 ] && [ "$from_planner" = 1 ] && [ -s "$PLAN/plan.sendback.md" ]; then
     note "auto: the plan gates sent items back; asking the planner once more"
     cp "$PLAN/planner.last" "$PLAN/planner.first.last" 2>/dev/null || true
@@ -2814,16 +3293,22 @@ AUTO_PROFILE
       cat "$PLAN/plan.sendback.md"
     } >> "$PLAN/planner.prompt"
     forge_auto_dispatch "$PLAN" "$REPO" "$PLANNER" "$fast_tier"
-    [ "$AUTO_RC" -eq 0 ] || exit "$AUTO_RC"
+    if [ "$AUTO_RC" -ne 0 ]; then
+      forge_auto_record_planner "$PLAN"
+      exit "$AUTO_RC"
+    fi
     rc=0
     python3 "$PLANNER_PY" parse --plan "$PLAN" --reply "$PLAN/planner.last" || rc=$?
     case "$rc" in
       0) ;;
-      4) note "auto: the planner's second reply was refused (see $PLAN/planner.refused). Nothing was dispatched after the planner"
+      4) forge_auto_record_planner "$PLAN"
+         note "auto: the planner's second reply was refused (see $PLAN/planner.refused). Nothing was dispatched after the planner"
          exit 4 ;;
-      *) exit "$rc" ;;
+      *) forge_auto_record_planner "$PLAN"
+         exit "$rc" ;;
     esac
     bash "$SELF" plan "$PLAN" ${PLAN_ARGS[@]+"${PLAN_ARGS[@]}"}; rc=$?
+    forge_auto_record_planner "$PLAN"
     if [ "$rc" -eq 4 ]; then
       note "auto: the plan gates sent items back a second time; stopping. See $PLAN/plan.sendback.md"
     fi

@@ -5,7 +5,8 @@ exist. Each run is one record with its repository and base commit, so the screen
 belongs to (the same base-commit rule forge-ui's repos.py uses for a run whose checkout is gone):
 
   runs       {run (dataset uid), run_id, mode, repo_path, base, first, last}
-  findings   one per review dispatch (qa, qa_shadow) that listed findings: {run, run_id, task, attempt, role,
+  findings   one per review dispatch (qa, qa_shadow) that listed findings. A side dispatch
+             (`side_*`, or the bare role `side`) is not a review and is left out: {run, run_id, task, attempt, role,
              scope, reviewer, verdict, ts, findings: [{head, severity (0-3 or null), status, line}]}, as the
              capture parsed them with forge-contract.py (no second parser)
   learnings  one per FORGE_LEARNING line a dispatch emitted: {run, run_id, task, role, model, ts, category, text}
@@ -18,7 +19,7 @@ from __future__ import annotations
 
 import json
 
-from . import connect, dataset_dir, enabled
+from . import connect, dataset_dir, enabled, is_side_role
 
 _HEAD_MAX = 400
 _TEXT_MAX = 2000
@@ -75,7 +76,8 @@ def load() -> dict:
             if d.get('effort') and spec and ':' not in str(spec):
                 spec = '%s:%s' % (spec, d['effort'])
             found = d.get('findings')
-            if role in ('qa', 'qa_shadow') and isinstance(found, list) and found:
+            # qa and qa_shadow only. side_* is not a review, so its findings are not history.
+            if role in ('qa', 'qa_shadow') and not is_side_role(role) and isinstance(found, list) and found:
                 items = []
                 for f in found:
                     if not isinstance(f, dict) or not isinstance(f.get('head'), str):

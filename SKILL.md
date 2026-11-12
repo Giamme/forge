@@ -125,6 +125,18 @@ For explanation requests, explain the workflow without spending model quota.
   fail-open, and never change a task's tier, select a model, or substitute for QA acceptance
   or repository verification (`--jev-act` is still accepted and changes nothing). Read
   [Decision models](references/decision-models.md) when selected.
+- **Retro, brief and summaries are opt-in:** offer them, never add them unprompted. Brief and
+  summaries need a model the user names (`--brief-model`, `--summaries-model` or `forge config
+  set`); forge never picks one. With brief on, relay the questions from `forge brief show <plan>`,
+  pass the user's answers with `forge brief answer`, and never answer for the user. A strict brief
+  run exits `3` before any task starts while questions are open. With retro on, record each
+  obstacle with `forge retro note <plan> --type T --fixable-by F --summary S` (`T`: `environment`,
+  `sandbox`, `tooling`, `prompt`, `forge-bug` or `other`; `F`: `user`, `forge` or `unsure`), and at
+  the end of the run relay the groups in `<plan>/retro.md`. `forge retro issues` posts only on the
+  user's approval of the exact text it prints (`--apply --approve <hash>`). Details:
+  [retro notes](references/decompose.md#retro-notes-opt-in),
+  [brief mode](references/decompose.md#brief-mode-opt-in),
+  [task summaries](references/decompose.md#task-summaries-opt-in).
 
 ## Common workflow
 

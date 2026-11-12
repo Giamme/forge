@@ -764,6 +764,41 @@ def make_live(base: Path, now: float, pid: int) -> Path:
     return plan
 
 
+# What retro mode leaves in a run dir: the Markdown report and one JSON note per line. The notes hold a cut-off
+# object, a bare list and a blank line, which a reader skips; n7's group is no group of the report.
+RETRO_REPORT = """# Retro
+
+## You can fix this on this machine
+
+- n1: the cache directory is shared between runs.
+
+## forge should fix this
+
+- n3: the final review skips the lockfile.
+
+## Not sure who should fix this
+
+- n4: the timeout may come from the network.
+"""
+RETRO_NOTES = (
+    '{"id": "n1", "fixable_by": "user", "check": "verified", "blocking": true}\n'
+    '{"id": "n2", "fixable_by": "user", "check": "claimed", "blocking": false}\n'
+    '{"id": "n3", "fixable_by": "forge", "check": "verified", "blocking": true}\n'
+    '{"id": "n4", "fixable_by": "unsure", "check": "verified", "blocking": false}\n'
+    '{"id": "n5", "fixable_by": "forge",\n'
+    '\n'
+    '[1, 2]\n'
+    '{"id": "n6", "fixable_by": "forge", "check": "claimed", "blocking": false}\n'
+    '{"id": "n7", "fixable_by": "team", "check": "claimed", "blocking": true}\n')
+
+
+def make_retro(run: Path) -> Path:
+    """retro.md and retro/notes.jsonl written into a run dir, plan or solo."""
+    write(run / 'retro.md', RETRO_REPORT, at=MTIME)
+    write(run / 'retro/notes.jsonl', RETRO_NOTES, at=MTIME)
+    return run
+
+
 if __name__ == '__main__':
     if len(sys.argv) != 2:
         sys.exit('usage: run_fixture.py DIR')

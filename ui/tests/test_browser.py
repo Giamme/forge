@@ -94,6 +94,11 @@ class Page(unittest.TestCase):
             context = self.browser.new_context(viewport={'width': 1440, 'height': 960})
             self.addCleanup(context.close)
         page = context.new_page()
+        # Cleanups run last-in first-out, so this runs before the context closes: a test's route
+        # handler still serving a live refresh would otherwise read a disposed response, and
+        # Playwright raises that error in the next test's first call. A page the test closed itself
+        # has no handlers left.
+        self.addCleanup(lambda: page.is_closed() or page.unroute_all(behavior='ignoreErrors'))
         self.errors = []
         page.on('pageerror', lambda e: self.errors.append(str(e)))
         page.add_init_script(f"""
@@ -621,6 +626,60 @@ class Page(unittest.TestCase):
         self.assertEqual(page.get_attribute('.layer-key[data-layer=beacons]', 'aria-pressed'), 'false')
         self.assertClean(page)
 
+    def test_a_task_opens_on_its_header_and_attempt_trail(self):
+        """The title, goal, links and text buttons, then the trail, are in view at 1440×900."""
+        prompt = self.plan / 'tasks/reader/prompt.md'
+        original = prompt.read_text(encoding='utf-8')
+        self.addCleanup(prompt.write_text, original, encoding='utf-8')
+        prompt.write_text('Read forge run dirs into plain dicts.\n\n'
+                          'See #133 and https://github.com/acme/widgets/pull/45.\n\n'
+                          '## Acceptance criteria\n\n'
+                          'The header stays in view.\n', encoding='utf-8')
+        context = self.browser.new_context(viewport={'width': 1440, 'height': 900})
+        self.addCleanup(context.close)
+        page = self.open(cdn=False, view='2d', context=context)
+        page.goto(self.url + f'#/runs/{self.key}/tasks/reader')
+        page.wait_for_selector('#inspector .attempt-trail .trail-summary')
+        placed = page.evaluate('''() => {
+          const insp = document.querySelector('#inspector');
+          const nodes = ['.task-header h2', '.task-goal', '.task-links',
+            'button[data-text=prompt]', 'button[data-text=approach]', 'button[data-text=criteria]',
+            '.attempt-trail'].map(sel => document.querySelector('#inspector ' + sel));
+          const ir = insp.getBoundingClientRect();
+          const inside = node => {
+            const r = node.getBoundingClientRect();
+            return r.height > 0 && r.top >= -1 && r.bottom <= window.innerHeight + 1
+              && r.top >= ir.top - 1 && r.bottom <= ir.bottom + 1;
+          };
+          const header = document.querySelector('#inspector .task-header');
+          const trail = document.querySelector('#inspector .attempt-trail');
+          const head = document.querySelector('#inspector .insp-head');
+          return { scroll: insp.scrollTop, missing: nodes.findIndex(n => !n),
+            visible: nodes.every(n => n && inside(n)),
+            order: !!(header.compareDocumentPosition(trail) & Node.DOCUMENT_POSITION_FOLLOWING)
+              && !!(trail.compareDocumentPosition(head) & Node.DOCUMENT_POSITION_FOLLOWING) };
+        }''')
+        self.assertEqual(placed, {'scroll': 0, 'missing': -1, 'visible': True, 'order': True}, placed)
+        self.assertEqual(page.text_content('#inspector .task-header h2'), 'Read run dirs')
+        self.assertEqual(page.text_content('#inspector .task-goal'), 'Standard library only.')
+        self.assertEqual(page.text_content('#inspector .task-link-text'), '#133')
+        self.assertEqual(page.locator('#inspector .task-link-text').evaluate('n => n.tagName'), 'SPAN')
+        chip = page.locator('#inspector .task-links a.chip')
+        self.assertEqual(chip.text_content(), 'PR #45')
+        self.assertEqual(chip.get_attribute('href'), 'https://github.com/acme/widgets/pull/45')
+        self.assertEqual(chip.get_attribute('rel'), 'noopener noreferrer')
+        self.assertEqual(chip.get_attribute('target'), '_blank')
+        trail = page.inner_text('#inspector .attempt-trail')
+        self.assertIn('#1 luna · FAIL · 1 finding (worst P1) · first attempt', trail)
+        self.assertIn('#2 sol:xhigh · PASS · 0 findings · escalated to a stronger model', trail)
+        self.assertIn('/executions/' + F.READER_QA1, page.get_attribute(f'#inspector .trail-nav a[href*="{F.READER_QA1}"]', 'href'))
+        self.assertIn('/executions/' + F.READER_DWARF2, page.get_attribute(f'#inspector .trail-nav a[href*="{F.READER_DWARF2}"]', 'href'))
+        page.click('#inspector button[data-text=criteria]')
+        page.wait_for_selector('#inspector .task-reveal')
+        self.assertEqual(page.text_content('#inspector .task-reveal'), 'The header stays in view.')
+        self.assertEqual(page.get_attribute('#inspector button[data-text=criteria]', 'aria-pressed'), 'true')
+        self.assertClean(page)
+
     def test_the_map_walks_its_runs_by_keyboard_and_enter_opens_one(self):
         page = self.open(cdn=True)
         page.goto(self.url + '#/')
@@ -692,6 +751,53 @@ class WorktreeLabel(unittest.TestCase):
         self.assertEqual(page.get_attribute('#set-run', 'data-run'), self.solo_key)
         self.assertEqual(page.text_content('#set-run .repo-wt'), 'fixture-c2 (fix/milestone-c2)')
         self.assertEqual(page.get_attribute('#set-run .repo-wt', 'title'), f'{self.worktree}\nbranch {self.branch}')
+        self.assertClean(page)
+
+
+@unittest.skipUnless(sync_playwright, 'install Python Playwright to run browser checks')
+class RetroSection(unittest.TestCase):
+    """A run with retro.md and retro/notes.jsonl shows a collapsed Retro section in its run details; one without, none."""
+    open, assertClean = Page.open, Page.assertClean
+
+    @classmethod
+    def setUpClass(cls):
+        cls.temp = tempfile.TemporaryDirectory(prefix='forge-ui-retro-')
+        base = Path(cls.temp.name)
+        cls.plan = F.make_retro(F.make_plan(base / 'p'))
+        cls.solo = F.make_solo(base / 's')
+        cls.key, cls.solo_key = reader.run_key(cls.plan), reader.run_key(cls.solo)
+        _serve(cls, reader.Catalog(plans=[cls.plan, cls.solo], registry=False))
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.shutdown(); cls.server.server_close(); cls.thread.join(timeout=2)
+        cls.temp.cleanup()
+
+    RETRO_SECTION = """() => {
+      const h = [...document.querySelectorAll('#inspector section.insp-section > h3')].find(n => n.textContent === 'Retro');
+      const s = h && h.parentElement;
+      if (!s) return null;
+      const d = s.querySelector('details');
+      return { line: s.querySelector('p.muted').textContent, summary: d.querySelector('summary').textContent,
+               open: d.open, report: d.querySelector('pre').textContent };
+    }"""
+
+    def test_the_retro_section_shows_the_counts_and_a_collapsed_report(self):
+        page = self.open(cdn=False, view='2d')
+        page.goto(self.url + '#/runs/' + self.key)
+        page.locator('button.details-btn', has_text='Run details').click()     # the inspector opens on the run's record
+        page.wait_for_selector('#inspector details[data-keep$="run-retro"]', state='attached')
+        self.assertEqual(page.evaluate(self.RETRO_SECTION), {
+            'line': '6 notes: 2 you can fix, 2 for forge, 1 not sure who · 3 verified, 3 claimed · 3 blocking',
+            'summary': 'Report', 'open': False, 'report': F.RETRO_REPORT})
+        self.assertTrue(page.is_visible('#inspector details[data-keep$="run-retro"] > summary'))
+        self.assertClean(page)
+
+    def test_a_solo_run_without_the_files_has_no_retro_section(self):
+        page = self.open(cdn=False, view='2d')
+        page.goto(self.url + '#/runs/' + self.solo_key)
+        page.wait_for_selector('#inspector details[data-keep$="run-request"]', state='attached')
+        self.assertIsNone(page.evaluate(self.RETRO_SECTION))
         self.assertClean(page)
 
 

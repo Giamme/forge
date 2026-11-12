@@ -10,10 +10,11 @@ from pathlib import Path
 import posixpath
 import re
 import stat
+import sys
 import time
 import urllib.parse
 
-from forge_ui import checks, diffs, executions, findings, fractal, repos, transcripts
+from forge_ui import checks, diffs, executions, findings, fractal, links, repos, transcripts
 from forge_ui.findings import verdict as _verdict
 
 
@@ -425,9 +426,13 @@ def summarize(path, source='plan') -> dict:
     return _summary(reader, source)[0]
 
 
-def _history(reader, name, escalation=False):
+def _attempt_log(reader, name):
+    """attempts.tsv rows, oldest first, including the dwarf column the public attempt omits.
+
+    The public attempt stays `{at, attempt, status, infra}`: callers compare that dict exactly.
+    """
     result = []
-    for label, row in reader.rows(name, 4 if escalation else 3):
+    for label, row in reader.rows(name, 3):
         try:
             at, attempt = float(row[0]), int(row[1])
             if not math.isfinite(at):
@@ -435,23 +440,45 @@ def _history(reader, name, escalation=False):
         except (ValueError, OverflowError):
             reader.warn(label, 'invalid epoch or attempt')
             continue
-        entry = dict(at=at, attempt=attempt)
-        if escalation:
-            # the 5th column says who decided (policy, a human's retry --dwarf, a pin); older rows have 4
-            source = row[4].strip() if len(row) > 4 else ''
-            entry.update({'from': row[2], 'to': row[3], 'source': source or 'policy'})
-        else:
-            entry.update(status=row[2], infra=_nullable(row[3]) if len(row) > 3 else None)
-        result.append(entry)
+        dwarf = row[4].strip() if len(row) > 4 else ''
+        result.append(dict(at=at, attempt=attempt, status=row[2],
+                           infra=_nullable(row[3]) if len(row) > 3 else None, dwarf=_nullable(dwarf)))
+    return result
+
+
+def _public_attempt(row):
+    return dict(at=row['at'], attempt=row['attempt'], status=row['status'], infra=row['infra'])
+
+
+def _attempt_view(reader, name, number_file):
+    rows = _attempt_log(reader, name)
+    attempt = reader.number(number_file, int) if number_file else None
+    if attempt is None:
+        attempt = max((item['attempt'] for item in rows), default=None)
+    return rows, attempt
+
+
+def _history(reader, name, escalation=False):
+    if not escalation:
+        return [_public_attempt(row) for row in _attempt_log(reader, name)]
+    result = []
+    for label, row in reader.rows(name, 4):
+        try:
+            at, attempt = float(row[0]), int(row[1])
+            if not math.isfinite(at):
+                raise ValueError()
+        except (ValueError, OverflowError):
+            reader.warn(label, 'invalid epoch or attempt')
+            continue
+        # the 5th column says who decided (policy, a human's retry --dwarf, a pin); older rows have 4
+        source = row[4].strip() if len(row) > 4 else ''
+        result.append(dict(at=at, attempt=attempt, **{'from': row[2], 'to': row[3], 'source': source or 'policy'}))
     return result
 
 
 def _attempt_state(reader, prefix):
-    attempts = _history(reader, prefix + '/attempts.tsv')
-    attempt = reader.number(prefix + '/attempt', int)
-    if attempt is None:
-        attempt = max((item['attempt'] for item in attempts), default=None)
-    return attempts, attempt
+    rows, attempt = _attempt_view(reader, prefix + '/attempts.tsv', prefix + '/attempt')
+    return [_public_attempt(row) for row in rows], attempt
 
 
 def _gate(reader, name):
@@ -808,12 +835,42 @@ def _attempt_cap(max_attempts, decisions):
     return max_attempts + sum(_grant(item['choice']) for item in decisions)
 
 
+def _brief_writer_alive(reader):
+    """brief.pid names a running process: the question writer `run` started has not finished."""
+    try:
+        pid = int((reader.text('brief.pid') or '').split()[0])
+        if pid > 0:
+            os.kill(pid, 0)
+            return True
+    except PermissionError:
+        return True
+    except (OSError, ValueError, IndexError):
+        pass
+    return False
+
+
+def _brief_wait(reader, ident):
+    """Why a gated plan holds this task, as forge-schedule.py tells it: the ids of its must_answer questions that
+    have no entry in brief.answers.json, or `[]` when it has no brief.json yet and the writer still runs.
+    None for any other level, or when nothing holds it."""
+    if reader.word('brief') != 'gated':
+        return None
+    brief = reader.object(f'tasks/{ident}/brief.json')
+    if brief is None:
+        return [] if not reader.exists(f'tasks/{ident}/brief.json') and _brief_writer_alive(reader) else None
+    answers = reader.object(f'tasks/{ident}/brief.answers.json') or {}
+    asked = [q['id'] for q in brief.get('questions') or [] if isinstance(q, dict) and q.get('must_answer') is True
+             and isinstance(q.get('id'), str) and q['id'] and q['id'] not in answers]
+    return asked or None
+
+
 def _waiting(reader, tasks, scheduler):
     """Task.waiting: why a task that is not running is not, as far as the run dir tells.
 
     escalation (the retry policy stopped it, whether or not a scheduler runs); and while one runs: infra (a pause
-    holds it), deps (on tasks not merged yet), drained, stopping, overlap (it shares files with a running task),
-    slot (the run is at its capacity) or next (nothing holds it: it starts at the scheduler's next turn)."""
+    holds it), deps (on tasks not merged yet), drained, stopping, brief (a gated plan waits for your answer),
+    overlap (it shares files with a running task), slot (the run is at its capacity) or next (nothing holds it:
+    it starts at the scheduler's next turn)."""
     status = {task['id']: task['status'] for task in tasks}
     running = [task for task in tasks if task['status'] == 'RUNNING']
     for task in tasks:
@@ -839,6 +896,8 @@ def _waiting(reader, tasks, scheduler):
             task['waiting'] = dict(kind='stopping', mode=scheduler['stopping'])
         elif scheduler['drained']:
             task['waiting'] = dict(kind='drained')
+        elif (asked := _brief_wait(reader, task['id'])) is not None:
+            task['waiting'] = dict(kind='brief', questions=asked)
         else:
             mine = [_scope(path) for path in task['files'] if path and path != '-']
             shared = [other['id'] for other in running if _overlap(mine, [_scope(p) for p in other['files'] if p and p != '-'])]
@@ -851,7 +910,517 @@ def _waiting(reader, tasks, scheduler):
                 task['waiting'] = dict(kind='next')
 
 
-def _task_detail(reader, task, run_id, waves, branches, max_attempts):
+# The first paragraph of a task's approach (else its prompt), after the markdown title.
+_GOAL_CAP = 600
+_ATX = re.compile(r'^[ ]{0,3}#{1,6}(?:[ \t]|$)')
+_CRITERIA = re.compile(r'^## Acceptance criteria[ \t]*:?[ \t]*$')
+_FENCE = re.compile(r'^( {0,3})(`{3,}|~{3,})(.*)$')
+# retry_sources.tsv sources. Anything else is warned and skipped; the last known row for an attempt wins.
+_RETRY_SOURCES = frozenset(('review', 'prereview', 'bounce', 'message', 'answer'))
+_DATASET = None
+
+
+def _open_fence(line):
+    match = _FENCE.match(line)
+    if match is None:
+        return None
+    mark, info = match.group(2), match.group(3)
+    if mark[0] == '`' and '`' in info:
+        return None
+    return mark[0], len(mark)
+
+
+def _close_fence(line, opened):
+    match = _FENCE.match(line)
+    if match is None:
+        return False
+    mark, info = match.group(2), match.group(3)
+    return mark[0] == opened[0] and len(mark) >= opened[1] and not info.strip()
+
+
+_IMAGE = re.compile(r'!\[([^\[\]]*)\]\([^)]*\)')
+_LINK = re.compile(r'\[([^\[\]]*)\]\([^)]*\)')
+# A marker inside a word (`2*3*4`) is not emphasis. Underscores are left as written.
+_STRONG = re.compile(r'(?<!\w)\*\*([^*]+)\*\*(?!\w)')
+_EM = re.compile(r'(?<!\w)\*(?!\*)(\S(?:[^*]*?\S)?)\*(?!\w)')
+_STRIKE = re.compile(r'(?<!\w)~~([^~]+)~~(?!\w)')
+
+
+def _hold_code(text):
+    """Replace inline code spans with placeholders. Return `(text, contents)`.
+
+    Contents keep their characters and lose the backticks. A span that starts and ends
+    with a space, and is not all spaces, loses one space on each side.
+    """
+    pieces, held = [], []
+    index, size = 0, len(text)
+    while index < size:
+        if text[index] != '`':
+            pieces.append(text[index])
+            index += 1
+            continue
+        end = index
+        while end < size and text[end] == '`':
+            end += 1
+        length, cursor, close = end - index, end, None
+        while cursor < size:
+            if text[cursor] != '`':
+                cursor += 1
+                continue
+            run = cursor
+            while run < size and text[run] == '`':
+                run += 1
+            if run - cursor == length:
+                close = run
+                break
+            cursor = run
+        if close is None:
+            pieces.append(text[index:end])
+            index = end
+            continue
+        interior = text[end:close - length]
+        if len(interior) >= 2 and interior[0] == ' ' and interior[-1] == ' ' and interior.strip(' '):
+            interior = interior[1:-1]
+        held.append(interior)
+        pieces.append(f'\ue000{len(held) - 1}\ue000')
+        index = close
+    return ''.join(pieces), held
+
+
+def _plain_inline(text):
+    """Drop inline markdown. Code-span contents stay literal, and underscores stay."""
+    held_text, held = _hold_code(text)
+    plain = _IMAGE.sub(r'\1', held_text)
+    plain = _LINK.sub(r'\1', plain)
+    plain = _STRONG.sub(r'\1', plain)
+    plain = _EM.sub(r'\1', plain)
+    plain = _STRIKE.sub(r'\1', plain)
+    for index, interior in enumerate(held):
+        plain = plain.replace(f'\ue000{index}\ue000', interior)
+    return plain
+
+
+def _goal_text(text):
+    """The first prose paragraph after an optional `# ` title, as plain text, or None."""
+    if not text:
+        return None
+    lines, index = text.splitlines(), 0
+    while index < len(lines) and not lines[index].strip():
+        index += 1
+    if index < len(lines) and lines[index].startswith('# '):
+        index += 1
+    while index < len(lines) and (not lines[index].strip() or _ATX.match(lines[index])):
+        index += 1
+    paragraph = []
+    while index < len(lines) and lines[index].strip() and not _ATX.match(lines[index]):
+        paragraph.append(lines[index].strip())
+        index += 1
+    if not paragraph:
+        return None
+    return re.sub(r'\s+', ' ', _plain_inline('\n'.join(paragraph))).strip() or None
+
+
+def _criteria_text(text):
+    """prompt.md's `## Acceptance criteria` section, up to the next `## ` heading, or None.
+
+    A fenced `## ` does not end the section, and a `### ` subsection stays inside it.
+    """
+    if not text:
+        return None
+    fence, started, body = None, False, []
+    for line in text.splitlines():
+        if fence is not None:
+            if started:
+                body.append(line)
+            if _close_fence(line, fence):
+                fence = None
+            continue
+        opened = _open_fence(line)
+        if opened is not None:
+            fence = opened
+            if started:
+                body.append(line)
+            continue
+        if not started:
+            started = _CRITERIA.match(line) is not None
+            continue
+        if line.startswith('## '):
+            break
+        body.append(line)
+    if not started:
+        return None
+    return '\n'.join(body).strip() or None
+
+
+def _forge_dataset():
+    """forge_dataset, loaded from scripts/, or None when it cannot be imported. Cached.
+
+    scripts/ is on the path only while that import runs.
+    """
+    global _DATASET
+    if _DATASET is False:
+        return None
+    if _DATASET is not None:
+        return _DATASET
+    scripts = str(Path(__file__).resolve().parents[2] / 'scripts')
+    inserted = scripts not in sys.path
+    if inserted:
+        sys.path.insert(0, scripts)
+    try:
+        import forge_dataset
+    except Exception:
+        _DATASET = False
+        return None
+    finally:
+        if inserted and scripts in sys.path:
+            sys.path.remove(scripts)
+    _DATASET = forge_dataset
+    return _DATASET
+
+
+def _github_origin(reader):
+    """The run repo's origin URL, from the plan's `repo` file then `.git/config`. No git, no network.
+
+    A missing config is not a warning: `#N` then has a null url.
+    """
+    repo = reader.line('repo')
+    module = _forge_dataset() if repo else None
+    if module is None:
+        return None
+    try:
+        return module.git_origin(repo)
+    except Exception:
+        return None
+
+
+def _header(reader, title, prompt, approach, request, field, origin):
+    """`{title, goal, criteria, links}` from the raw prompt, approach and request texts."""
+    goal = _goal_text(approach)
+    if goal is None:
+        goal = _goal_text(prompt)
+    found, seen = [], set()
+    for name, text in (('prompt.md', prompt), ('approach.md', approach), ('request.md', request)):
+        if not text:
+            continue
+        for item in links.extract(text, name, origin):
+            key = (item['kind'], item['number'], item['url'])
+            if key in seen:
+                continue
+            seen.add(key)
+            found.append(item)
+    return dict(title=title, goal=reader.cap(goal, field + '/goal', _GOAL_CAP),
+                criteria=reader.cap(_criteria_text(prompt), field + '/criteria'), links=found)
+
+
+def _retry_sources(reader, name):
+    """`{attempt: source}` from retry_sources.tsv. The last known source for an attempt wins."""
+    found = {}
+    for label, row in reader.rows(name, 3):
+        try:
+            attempt = int(row[0])
+        except ValueError:
+            reader.warn(label, 'invalid attempt')
+            continue
+        source = row[1].strip()
+        if source not in _RETRY_SOURCES:
+            reader.warn(label, 'unknown retry source')
+            continue
+        found[attempt] = source
+    return found
+
+
+def _queued_retries(reader):
+    """`{task: [epoch, ...]}` of control.log lines that queued a retry.
+
+    A scheduler settlement carries `outcome` and actor `scheduler`; it is not the queue.
+    A line that is not JSON is skipped, with no warning.
+    """
+    found = {}
+    for line in (reader.text('control.log') or '').splitlines():
+        if not line.strip():
+            continue
+        try:
+            obj = json.loads(line)
+        except (ValueError, RecursionError):
+            continue
+        if not isinstance(obj, dict) or obj.get('action') != 'retry':
+            continue
+        if obj.get('outcome') or obj.get('actor') == 'scheduler':
+            continue
+        task, at = obj.get('task'), obj.get('at')
+        if not isinstance(task, str) or not task:
+            continue
+        if isinstance(at, bool) or not isinstance(at, (int, float)) or not math.isfinite(at):
+            continue
+        found.setdefault(task, []).append(float(at))
+    return found
+
+
+def _manual_indexes(rows, times):
+    """Row indexes a queued retry explains.
+
+    attempts.tsv is written when the attempt ends, so the queue explains the next attempt:
+    the first row that is not attempt 1 and whose end is at or after the queue, plus later
+    rows of that same attempt number that also end then. An earlier row of the same number,
+    already finished before the queue, is not that retry.
+    """
+    found = set()
+    for moment in times:
+        chosen = None
+        for index, row in enumerate(rows):
+            if row['attempt'] == 1 or row['at'] < moment:
+                continue
+            if chosen is None:
+                chosen = row['attempt']
+            if row['attempt'] == chosen:
+                found.add(index)
+    return found
+
+
+def _attempt_reason(index, row, rows, sources, escalations, manual):
+    """Why this attempt ran: first, a recorded retry source, an escalation, a queued retry, or unknown."""
+    if row['attempt'] == 1:
+        return 'first'
+    source = sources.get(row['attempt'])
+    if source:
+        return source
+    # escalations.tsv names the attempt that finished, which is the previous one. The signal
+    # is a dwarf change while any escalation is recorded, not that column.
+    previous = rows[index - 1]['dwarf'] if index else None
+    if row['dwarf'] != previous and escalations:
+        return 'escalation'
+    if index in manual:
+        return 'manual'
+    return 'unknown'
+
+
+def _attempt_review(execs, attempt):
+    """The newest done, non-shadow qa execution of this attempt, or None."""
+    chosen = None
+    for item in execs:
+        if item.get('shadow') or item.get('role') != 'qa' or item.get('state') != 'done':
+            continue
+        if item.get('attempt') != attempt:
+            continue
+        chosen = item
+    return chosen
+
+
+def _trail(reader, rows, execs, sources_name, escalations, queue_times):
+    """One entry per attempts.tsv row: its review, why it ran, and its execution ids."""
+    sources = _retry_sources(reader, sources_name)
+    manual = _manual_indexes(rows, queue_times)
+    result = []
+    for index, row in enumerate(rows):
+        review = _attempt_review(execs, row['attempt'])
+        summary = None
+        verdict = None
+        if review is not None:
+            verdict = review.get('verdict')
+            found = review.get('findings')
+            summary = dict(found) if found else None
+        result.append(dict(
+            attempt=row['attempt'], dwarf=row['dwarf'], verdict=verdict, findings=summary,
+            worst=summary.get('worst') if summary else None, reason=_attempt_reason(
+                index, row, rows, sources, escalations, manual),
+            executions=[item['id'] for item in execs
+                        if item.get('attempt') == row['attempt'] and not item.get('shadow')]))
+    return result
+
+
+# --- generated task summaries (#133 B): tasks/<id>/summary.json, its error, and the switches -----------------------
+
+_SUMMARY_SOURCES = ('attempt', 'finding')
+# The facts a summary is made from, as the reader shows them: one changed after generated_at makes it stale.
+_SUMMARY_FACTS = ('attempts.tsv', 'status', 'merged', 'qa.last')
+
+
+def _mode_or_none(value):
+    return value if value in ('on', 'off') else None
+
+
+def _is_number(value):
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+
+
+def _summary_sources(reader, prefix, sources):
+    """The well-formed `{kind, ref}` entries of a summary's sources; any other entry is dropped."""
+    if not isinstance(sources, list):
+        return []
+    return [dict(kind=item['kind'], ref=reader.cap(item['ref'], prefix + '/summary.sources'))
+            for item in sources
+            if isinstance(item, dict) and item.get('kind') in _SUMMARY_SOURCES and isinstance(item.get('ref'), str)]
+
+
+def _task_summary(reader, prefix):
+    """The task's generated summary, or None when there is no summary.json (or it is not a summary: warned)."""
+    body = reader.object(prefix + '/summary.json')
+    error = reader.text(prefix + '/summary.error')
+    if body is None:
+        return None
+    text, generated = body.get('text'), body.get('generated_at')
+    if not isinstance(text, str) or not _is_number(generated):
+        reader.warn(prefix + '/summary.json', 'not a summary (needs text and generated_at)')
+        return None
+    facts = [reader.stat(f'{prefix}/{name}') for name in _SUMMARY_FACTS]
+    # generated_at is whole seconds: a fact written in the second the summary was made is not after it.
+    stale = any(info is not None and int(info.st_mtime) > generated for info in facts)
+    sentence, model = body.get('sentence'), body.get('model')
+    return dict(text=reader.cap(text, prefix + '/summary.text'),
+                sentence=reader.cap(sentence, prefix + '/summary.sentence') if isinstance(sentence, str) else None,
+                model=model if isinstance(model, str) else None, generated_at=generated,
+                sources=_summary_sources(reader, prefix, body.get('sources')), stale=stale,
+                error=reader.cap(error, prefix + '/summary.error') if error and error.strip() else None)
+
+
+def _run_summaries(reader):
+    """The run's summary switch from its plan files. `mode` is on only when `summaries` says so (absent is off);
+    `model` is the first line of `summaries_model`, or null."""
+    return dict(mode='on' if reader.word('summaries') == 'on' else 'off', model=reader.line('summaries_model'))
+
+
+# --- brief mode (#135): tasks/<id>/brief.json, parked questions, answers and late answers ---------
+
+_BRIEF_LEVELS = ('advisory', 'gated', 'strict')
+
+
+def _brief_level(reader):
+    """The plan's brief level, or None when brief is off (no `brief` file, `off`, or any other word)."""
+    level = reader.word('brief')
+    return level if level in _BRIEF_LEVELS else None
+
+
+def _cap_str(reader, value, field):
+    return reader.cap(value, field) if isinstance(value, str) else None
+
+
+def _cap_options(reader, value, field):
+    if not isinstance(value, list):
+        return []
+    return [reader.cap(item, field) for item in value if isinstance(item, str)]
+
+
+def _answer_map(data):
+    """`{qid: entry}` from an answers or late object. Anything else is no answers."""
+    if not isinstance(data, dict):
+        return {}
+    return {key: value if isinstance(value, dict) else {}
+            for key, value in data.items() if isinstance(key, str) and key}
+
+
+def _entry_text(entry):
+    text = entry.get('text') if isinstance(entry, dict) else None
+    return text if isinstance(text, str) else None
+
+
+def _brief_rows(reader, prefix, body, answers, late, parked):
+    """Questions from a brief.json or brief.parked.json object, in file order.
+
+    An entry that is not an object, or has no string id, is skipped, with one warning for the file.
+    Answers apply to task questions only: `answered` beats `late`, and anything else is `open`.
+    """
+    if not isinstance(body, dict):
+        return []
+    label = f'{prefix}/brief.parked.json' if parked else f'{prefix}/brief.json'
+    items = body.get('questions', [])
+    if not isinstance(items, list):
+        reader.warn(label, 'questions is not a list')
+        return []
+    file_stale = body.get('possibly_stale') is True
+    rows, skipped = [], 0
+    for question in items:
+        if not isinstance(question, dict) or not isinstance(question.get('id'), str) or not question['id']:
+            skipped += 1
+            continue
+        qid = question['id']
+        stem = f'{prefix}/brief.parked/{qid}' if parked else f'{prefix}/brief/{qid}'
+        if parked:
+            state, entry = None, None
+        elif qid in answers:
+            state, entry = 'answered', answers[qid]
+        elif qid in late:
+            state, entry = 'late', late[qid]
+        else:
+            state, entry = 'open', None
+        row = dict(id=qid, text=_cap_str(reader, question.get('text'), stem + '.text'),
+                   why=_cap_str(reader, question.get('why'), stem + '.why'),
+                   options=_cap_options(reader, question.get('options'), stem + '.options'),
+                   default=_cap_str(reader, question.get('default'), stem + '.default'),
+                   must_answer=question.get('must_answer') is True,
+                   possibly_stale=file_stale or question.get('possibly_stale') is True)
+        if parked:
+            scope = question.get('scope')
+            row['scope'] = scope if isinstance(scope, str) else None
+        else:
+            row['state'] = state
+            row['answer'] = _cap_str(reader, _entry_text(entry), stem + '.answer')
+        rows.append(row)
+    if skipped:
+        reader.warn(label, f'{skipped} question{"" if skipped == 1 else "s"} skipped')
+    return rows
+
+
+def _late_rows(reader, prefix, late):
+    """brief.late.json in file order: `{id, text, actor, t}`. `t` is kept only when it is a finite number."""
+    rows = []
+    for qid, entry in late.items():
+        actor = entry.get('actor') if isinstance(entry, dict) else None
+        stamp = entry.get('t') if isinstance(entry, dict) else None
+        rows.append(dict(id=qid, text=_cap_str(reader, _entry_text(entry), f'{prefix}/brief.late/{qid}.text'),
+                         actor=actor if isinstance(actor, str) else None,
+                         t=stamp if _is_number(stamp) else None))
+    return rows
+
+
+def _task_brief(reader, ident):
+    """The task's questions, parked questions and late answers, or None when it has none of those files."""
+    prefix = f'tasks/{ident}'
+    paths = {'brief': f'{prefix}/brief.json', 'parked': f'{prefix}/brief.parked.json',
+             'late': f'{prefix}/brief.late.json'}
+    present = {name: reader.exists(path) for name, path in paths.items()}
+    if not any(present.values()):
+        return None
+    brief = reader.object(paths['brief']) if present['brief'] else None
+    parked = reader.object(paths['parked']) if present['parked'] else None
+    late = _answer_map(reader.object(paths['late']) if present['late'] else None)
+    answers = _answer_map(reader.object(f'{prefix}/brief.answers.json'))
+    return dict(questions=_brief_rows(reader, prefix, brief, answers, late, False),
+                parked=_brief_rows(reader, prefix, parked, {}, {}, True),
+                late=_late_rows(reader, prefix, late))
+
+
+def _run_brief(level, tasks):
+    """RunDetail.brief: the level, and how many task questions are still open (flagged: open and must_answer).
+
+    Parked questions are not counted: they are wider than this task and do not hold it."""
+    open_n = flagged = 0
+    for task in tasks:
+        brief = task.get('brief')
+        if not brief:
+            continue
+        for question in brief['questions']:
+            if question['state'] != 'open':
+                continue
+            open_n += 1
+            flagged += question['must_answer']
+    return dict(level=level, open=open_n, flagged=flagged)
+
+
+def _attach_brief(reader, tasks):
+    """Set each task's `brief` and return the run's `{level, open, flagged}`, or None when brief is off.
+
+    Off means the questions are not shown either: a file left from an earlier level stays on disk."""
+    level = _brief_level(reader)
+    if level is None:
+        for task in tasks:
+            task['brief'] = None
+        return None
+    for task in tasks:
+        task['brief'] = _task_brief(reader, task['id'])
+    return _run_brief(level, tasks)
+
+
+def _task_detail(reader, task, run_id, waves, branches, max_attempts, origin, request, queues):
     """Fill in a plan task; returns every execution it read (its own and its shadows')."""
     ident = task['id']
     prefix = f'tasks/{ident}'
@@ -862,7 +1431,8 @@ def _task_detail(reader, task, run_id, waves, branches, max_attempts):
                 task['branch'] = f'forge/{run_id}/{ident}'
         except (OSError, ValueError):
             pass
-    task['attempts'], task['attempt'] = _attempt_state(reader, prefix)
+    logged, task['attempt'] = _attempt_view(reader, prefix + '/attempts.tsv', prefix + '/attempt')
+    task['attempts'] = [_public_attempt(row) for row in logged]
     task['attempts_total'] = sum(item['status'] != 'INFRA' for item in task['attempts'])
     task['escalations'] = _history(reader, prefix + '/escalations.tsv', True)
     qa = reader.text(prefix + '/qa.last')
@@ -872,8 +1442,10 @@ def _task_detail(reader, task, run_id, waves, branches, max_attempts):
     task['accepted_by'] = reader.text(prefix + '/accepted.by')
     task['accepted_attempt'], task['accepted_over'] = _accepted_fields(
         reader, prefix + '/accepted.by', task['accepted_by'])
+    texts = {}
     for field, filename in [('prompt', 'prompt.md'), ('approach', 'approach.md'), ('retry_findings', 'retry_findings.md')]:
-        task[field] = reader.cap(reader.text(prefix + '/' + filename), prefix + '/' + field)
+        texts[field] = reader.text(prefix + '/' + filename)
+        task[field] = reader.cap(texts[field], prefix + '/' + field)
     # the implementer's question for the user, when the task stopped NEEDS_INPUT
     task['needs_input'] = reader.cap(reader.text(prefix + '/needs_input.md'), prefix + '/needs_input')
     # the stop records: why an INFRA dispatch stopped, the lateral moves, the review ledger, and a NEEDS_DECISION's question
@@ -893,6 +1465,8 @@ def _task_detail(reader, task, run_id, waves, branches, max_attempts):
         item.get('explored') is True for item in task['route'])
     execs = _task_execs(reader, task)
     task['executions'] = execs
+    task['header'] = _header(reader, task['title'], texts['prompt'], texts['approach'], request, prefix, origin)
+    task['trail'] = _trail(reader, logged, execs, prefix + '/retry_sources.tsv', task['escalations'], queues)
     task['now'] = _now(reader, prefix, execs) if task['status'] == 'RUNNING' else None
     merged = reader.stat(prefix + '/merged') if task['status'] == 'MERGED' else None
     task['merged_at'] = float(merged.st_mtime) if merged is not None else None
@@ -905,6 +1479,8 @@ def _task_detail(reader, task, run_id, waves, branches, max_attempts):
     task['swept'] = []
     shadows = _shadows(reader, ident, execs)
     task['shadow'] = [entry for entry, _, _ in shadows]
+    task['summary'] = _task_summary(reader, prefix)
+    task['summaries_override'] = _mode_or_none(reader.word(prefix + '/summaries'))
     # What `forge control show` reads of the task. A change there (a write, or a delete: the dir's mtime) moves `updated`,
     # so the page redraws and the Controls panel asks again.
     reader.stat(prefix)
@@ -985,8 +1561,9 @@ def _sweep(reader, tasks):
 # Read only for their mtimes, so the run's `updated` stamp moves when a control changes.
 # control.requests is a directory: its mtime moves when a request is queued or settled.
 _RUN_CONTROLS = ('control.log', 'retry_budget', 'infra_budget', 'drain', 'stop', 'max_parallel', 'infra.paused', 'infra.last',
-                 'infra_backoff', 'escalate_effort', 'control.requests')
-_TASK_CONTROLS = ('qa_threshold', 'retry_budget', 'retries.used', 'escalation.pin', 'escalation.stop', 'escalation.next')
+                 'infra_backoff', 'escalate_effort', 'control.requests', 'summaries', 'summaries_model')
+_TASK_CONTROLS = ('qa_threshold', 'retry_budget', 'retries.used', 'escalation.pin', 'escalation.stop', 'escalation.next',
+                  'summaries')
 
 
 _FAIL_FIRST_RESULTS = ('proven', 'passes_without_change', 'inconclusive', 'error')
@@ -1482,23 +2059,29 @@ def _frozen_profile(reader):
 def _solo_detail(reader, source):
     result = _solo_summary(reader, source)
     status = next(iter(result['counts']))
-    result['request'] = reader.cap(reader.text('request.md'), 'request')
+    request = reader.text('request.md')
+    result['request'] = reader.cap(request, 'request')
+    result['retro'] = _retro(reader)
+    result['summaries'] = None  # generated summaries are for plan tasks only
+    result['brief'] = None  # brief mode is a plan's questions, not a solo run's
     result['settings'] = dict.fromkeys(_SOLO_SETTINGS)
     result['settings']['qa_threshold'], result['settings']['qa_threshold_source'] = _threshold(reader)
     result['settings']['profile'] = _frozen_profile(reader)
     result['verification'] = None
     result['attribution'] = _attribution(reader)
     result['waves'] = [['solo']]
-    attempts = _history(reader, 'attempts.tsv')
+    logged, attempt = _attempt_view(reader, 'attempts.tsv', None)
+    attempts = [_public_attempt(row) for row in logged]
     qa = reader.text('qa.last')
     execs = _solo_execs(reader, status, attempts)
+    prompt, approach = reader.text('prompt.md'), reader.text('approach.md')
     task = dict(id='solo', title=result['goal'] or 'Solo run', deps=[], difficulty=None, files=[],
                 dwarf=_role_spec(reader, 'dwarf'), qa=_role_spec(reader, 'qa'), wave=1, status=status,
-                branch=None, attempt=max((item['attempt'] for item in attempts), default=None),
+                branch=None, attempt=attempt,
                 attempts=attempts, escalations=[], verdict=_verdict(qa), accepted_by=None,
                 accepted=False, accepted_attempt=None, accepted_over=None,
                 explored=False, route=[], shadow=[],
-                prompt=reader.cap(reader.text('prompt.md'), 'tasks/solo/prompt'), approach=None,
+                prompt=reader.cap(prompt, 'tasks/solo/prompt'), approach=None,
                 retry_findings=None, needs_input=None, infra=None, lateral=[], ledger=[], decision=None, decisions=[],
                 attempts_total=sum(item['status'] != 'INFRA' for item in attempts), attempt_cap=None,
                 qa_tail=reader.cap(qa, 'tasks/solo/qa_tail', 4000, True),
@@ -1506,7 +2089,11 @@ def _solo_detail(reader, source):
                 executions=execs, merged_at=None, findings=executions.summary_of(qa),
                 gate=_gate(reader, 'qa.gate'), known_issues=_nonempty(reader, 'known_issues.md'),
                 fail_first=_fail_first(reader, 'failfirst.json'), pre_review=None,
-                now=_now(reader, '', execs) if status == 'RUNNING' else None, waiting=None, sweep=None, swept=[])
+                now=_now(reader, '', execs) if status == 'RUNNING' else None, waiting=None, sweep=None, swept=[],
+                summary=None, summaries_override=None, brief=None)
+    task['header'] = _header(reader, task['title'], prompt, approach, request, 'tasks/solo',
+                             _github_origin(reader))
+    task['trail'] = _trail(reader, logged, execs, 'retry_sources.tsv', [], _queued_retries(reader).get('solo', ()))
     result.update(timeline=_timeline(execs, [], []), integration=None, final_review=None, final_reviews=[], adoptions=[],
                   deferrals=[], findings_available=findings.available(), fractal=fractal.summary(reader),
                   scheduler=None, sweep=None)
@@ -1560,12 +2147,49 @@ def _attribution(reader):
                 gate_outcome=_text_or_none(outcome, 40))
 
 
+# --- retro: the report and the counts of its notes, written when retro mode is on ----------------
+
+_RETRO_GROUPS = (('user', 'fixable_by', 'user'), ('forge', 'fixable_by', 'forge'), ('unsure', 'fixable_by', 'unsure'),
+                 ('verified', 'check', 'verified'), ('claimed', 'check', 'claimed'))
+
+
+def _retro(reader):
+    """RunDetail.retro: retro.md's text and the counts of retro/notes.jsonl, or null when the run has neither file.
+
+    A note is a line that parses as a JSON object. Other non-blank lines are skipped, with one warning for the
+    file. `notes` counts every note; each other count is the notes whose field has that value."""
+    if not (reader.exists('retro.md') or reader.exists('retro/notes.jsonl')):
+        return None
+    name = 'retro/notes.jsonl'
+    counts = dict.fromkeys(('notes', 'user', 'forge', 'unsure', 'verified', 'claimed', 'blocking'), 0)
+    skipped = 0
+    for line in (reader.text(name) or '').split('\n'):
+        if not line.strip():
+            continue
+        try:
+            note = json.loads(line)
+        except (ValueError, RecursionError):
+            note = None
+        if not isinstance(note, dict):
+            skipped += 1
+            continue
+        counts['notes'] += 1
+        for key, field, value in _RETRO_GROUPS:
+            counts[key] += note.get(field) == value
+        counts['blocking'] += note.get('blocking') is True
+    if skipped:
+        reader.warn(name, f'{skipped} malformed line{"" if skipped == 1 else "s"} skipped')
+    return dict(text=reader.cap(reader.text('retro.md'), 'retro'), **counts)
+
+
 def detail(path, source='plan') -> dict:
     reader = _Read(path)
     if _kind(reader.path) == 'solo':
         return _solo_detail(reader, source)
     result, tasks = _summary(reader, source)
-    result['request'] = reader.cap(reader.text('request.md'), 'request')
+    request = reader.text('request.md')
+    result['request'] = reader.cap(request, 'request')
+    result['retro'] = _retro(reader)
     threshold = _threshold(reader)
     result['settings'] = dict(explore=reader.number('explore'), shadow_rate=reader.number('shadow_rate'),
                               shadow_qa=_list(reader.text('shadow_qa') or ''), timeout=reader.number('timeout', int),
@@ -1574,13 +2198,16 @@ def detail(path, source='plan') -> dict:
                               escalate_after=reader.number('escalate_after', int),
                               verify_retries=reader.number('verify_retries', int), final_qa=reader.line('final_qa'),
                               profile=_frozen_profile(reader))
+    result['summaries'] = _run_summaries(reader)
     waves, wave_map = _waves(reader)
     result['waves'] = [waves.get(n, []) for n in range(1, max(waves, default=0) + 1)]
     branches = {row[0]: _nullable(row[2]) for _, row in reader.rows('results.tsv', 3)}
     max_attempts = _max_attempts(reader)
+    origin, queues = _github_origin(reader), _queued_retries(reader)
     pool = []
     for task in tasks:
-        pool += _task_detail(reader, task, result['run_id'], wave_map, branches, max_attempts)
+        pool += _task_detail(reader, task, result['run_id'], wave_map, branches, max_attempts,
+                             origin, request, queues.get(task['id'], ()))
     for name in _RUN_CONTROLS:
         reader.stat(name)
     result['scheduler'] = _scheduler(reader)
@@ -1610,6 +2237,7 @@ def detail(path, source='plan') -> dict:
     result['deferrals'] = [line.strip() for line in (reader.text('deferrals.txt') or '').splitlines() if line.strip()]
     result['findings_available'] = findings.available()
     result['fractal'] = fractal.summary(reader)
+    result['brief'] = _attach_brief(reader, tasks)
     result.update(tasks=tasks, warnings=reader.warnings, truncated=reader.truncated, updated=reader.updated)
     return result
 

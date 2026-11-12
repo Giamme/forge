@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-"""forge config <command>: one view of every config source, and safe edits for the per-repo ones.
+"""forge config <command>: one view of every config source, and safe edits for the per-repo files and the user feature settings.
 
-  show  [--repo DIR] [--json]               registry, Jev, decide, profiles, the repo's .forge files, dataset and FORGE_* env
+  show  [--repo DIR] [--json]               registry, Jev, decide, features, profiles, the repo's .forge files, dataset and FORGE_* env
   set   <key> <value> [--repo DIR] [--json]   repo.verify | repo.setup | repo.verify-subset | decide.gate.<gate>[.provider|.model]
+                                              | retro | brief | brief.scope | brief.model | summaries | summaries.model
   unset <key> [--repo DIR] [--json]           repo.verify | repo.setup | repo.verify-subset
+                                              | retro | brief | brief.scope | brief.model | summaries | summaries.model
   profile list|show|create|edit|set|unset|rm|use [--repo DIR] [--json]
                                               profiles in decide.json; --repo writes the repo file, otherwise the user file
 
@@ -15,6 +17,13 @@ so the gate keeps the mode the other levels give it. Unset of those keys is refu
 to off. jev.enabled is gone; set a gate with decide.gate.<gate>. The registry is
 read-only here: the skill dir is often a live symlink to a checkout, so an edit would change
 runs already in progress; edit the checkout.
+
+`retro`, `brief`, `brief.scope`, `brief.model`, `summaries` and `summaries.model` are the user-level
+feature settings (decide.json `features`). `brief` is the level (off, advisory, gated or strict);
+`summaries` is the mode (off or on); `brief.scope` is task, wave or plan. A model is a spec, checked
+the way a profile routing spec is. Setting brief or summaries on with no model is stored; refusing
+to plan without one is a later step. A bad value exits 2 and writes nothing. Unset removes that
+field and keeps every other key. These keys ignore `--repo`: they always write the user file.
 
 Only the three per-repo files are ever read for content; cloudflare.env never is. Values of FORGE_*
 variables whose name contains TOKEN, KEY, SECRET or PASSWORD show as "<set>". A provider key never
@@ -54,6 +63,7 @@ from forge_decide import GATES, MODES, load_repo, load_user, save_repo, save_use
 from forge_decide import profiles
 from forge_decide.migrate import run as migrate_run
 from forge_decide.providers import spec_for_site
+from forge_side import (BRIEF_LEVELS, BRIEF_SCOPES, FEATURE_KEYS, ON_OFF, stored_features)
 
 REPO_FILES = ('verify', 'setup', 'verify-subset')
 KEYS = tuple('repo.' + n for n in REPO_FILES)
@@ -343,10 +353,17 @@ def _print_decide(decide):
             print('  shadowed: %s: repo %r, user %r' % (entry.get('key'), entry.get('repo'), entry.get('user')))
 
 
+def _print_features(features):
+    print('features:')
+    for key in FEATURE_KEYS:
+        value = features.get(key)
+        print('  %s: %s' % (key, '(none)' if value is None else value))
+
+
 def cmd_show(args):
     root = repo_root(args.repo, required=False)
     data = dict(registry=registry_block(), jev=jev_block(), decide=decide_block(root),
-                profiles=profiles_payload(show_profiles_repo(root)))
+                features=stored_features(), profiles=profiles_payload(show_profiles_repo(root)))
     if root:
         data['repo'] = repo_block(root)
     data['dataset'] = dataset_block()
@@ -363,6 +380,7 @@ def cmd_show(args):
     print('jev: %s (%s, %s)' % ('enabled' if jev['enabled'] else 'disabled', jev['path'],
                                'present' if jev['exists'] else 'absent'))
     _print_decide(data['decide'])
+    _print_features(data['features'])
     print(profiles_text(data['profiles'], heading=True))
     if root:
         print('repo: %s' % root)
@@ -379,9 +397,10 @@ def cmd_show(args):
 # ----------------------------------------------------------------------------------- set / unset
 
 def check_key(key):
-    if key not in KEYS:
-        raise Invalid('unknown key %r; valid keys: %s, decide.gate.<gate>, '
-                      'decide.gate.<gate>.provider, decide.gate.<gate>.model' % (key, ', '.join(KEYS)))
+    if key not in KEYS and key not in FEATURE_KEYS:
+        raise Invalid('unknown key %r; valid keys: %s, %s, decide.gate.<gate>, '
+                      'decide.gate.<gate>.provider, decide.gate.<gate>.model'
+                      % (key, ', '.join(KEYS), ', '.join(FEATURE_KEYS)))
 
 
 def decide_target(key):
@@ -471,6 +490,8 @@ def emit(args, key, previous, value):
 def cmd_set(args):
     if args.key == 'jev.enabled':
         raise Invalid('jev.enabled is gone; set a gate with decide.gate.<gate>')
+    if args.key in FEATURE_KEYS:
+        return set_feature(args)
     if args.key not in KEYS:
         return set_decide(args)
     root = repo_root(args.repo, required=True)
@@ -494,6 +515,8 @@ def cmd_set(args):
 def cmd_unset(args):
     if args.key == 'jev.enabled':
         raise Invalid('jev.enabled is gone; set a gate with decide.gate.<gate>')
+    if args.key in FEATURE_KEYS:
+        return unset_feature(args)
     if decide_target(args.key):
         raise Invalid('set the mode to off')
     check_key(args.key)
@@ -508,6 +531,130 @@ def cmd_unset(args):
             os.unlink(os.path.basename(target), dir_fd=dfd)
         finally:
             os.close(dfd)
+    emit(args, args.key, previous, None)
+    return 0
+
+
+# The user `features` object. `brief` is the level; `summaries` is the mode. A model is optional
+# here: planning refuses a feature that is on with no model, and this command only stores it.
+_FEATURE_FIELD = {
+    'retro': ('retro', None),
+    'brief': ('brief', 'level'),
+    'brief.scope': ('brief', 'scope'),
+    'brief.model': ('brief', 'model'),
+    'summaries': ('summaries', 'mode'),
+    'summaries.model': ('summaries', 'model'),
+}
+
+
+def _feature_value(key, value):
+    """The value to store, or Invalid. Checked before anything is written."""
+    if key in ('retro', 'summaries'):
+        if value not in ON_OFF:
+            raise Invalid('%s must be off or on' % key)
+        return value
+    if key == 'brief':
+        if value not in BRIEF_LEVELS:
+            raise Invalid('brief must be off, advisory, gated or strict')
+        return value
+    if key == 'brief.scope':
+        if value not in BRIEF_SCOPES:
+            raise Invalid('brief.scope must be task, wave or plan')
+        return value
+    reason = profiles.check_spec(value)
+    if reason:
+        raise Invalid(reason)
+    return value
+
+
+def _features_map(data):
+    features = data.get('features')
+    if not isinstance(features, dict):
+        features = {}
+        data['features'] = features
+    return features
+
+
+def _feature_child(features, section):
+    child = features.get(section)
+    if not isinstance(child, dict):
+        child = {}
+        features[section] = child
+    return child
+
+
+def _stored_feature(data, key):
+    features = data.get('features')
+    if not isinstance(features, dict):
+        return None
+    section, field = _FEATURE_FIELD[key]
+    if field is None:
+        value = features.get(section)
+        return value if isinstance(value, str) else None
+    child = features.get(section)
+    if not isinstance(child, dict):
+        return None
+    value = child.get(field)
+    return value if isinstance(value, str) else None
+
+
+def _put_feature(data, key, value):
+    features = _features_map(data)
+    section, field = _FEATURE_FIELD[key]
+    if field is None:
+        features[section] = value
+        return
+    _feature_child(features, section)[field] = value
+
+
+def _drop_feature(data, key):
+    """Remove one field. Empty brief/summaries/features objects go too; other keys stay."""
+    previous = _stored_feature(data, key)
+    features = data.get('features')
+    if not isinstance(features, dict):
+        return None
+    section, field = _FEATURE_FIELD[key]
+    if field is None:
+        features.pop(section, None)
+    else:
+        child = features.get(section)
+        if isinstance(child, dict):
+            child.pop(field, None)
+            if not child:
+                features.pop(section, None)
+    if not features:
+        data.pop('features', None)
+    return previous
+
+
+def set_feature(args):
+    """Write one feature key into the user decide.json. `--repo` is ignored."""
+    value = _feature_value(args.key, args.value)
+    result = migrate_run()
+    if result['status'] == 'migrated':
+        print('forge config: migrated jev.json into %s first' % user_path(), file=sys.stderr)
+    data, error = load_user()
+    if error:
+        raise Invalid(error)
+    previous = _stored_feature(data, args.key)
+    _put_feature(data, args.key, value)
+    data.setdefault('version', 1)
+    save_user(data)
+    emit(args, args.key, previous, value)
+    return 0
+
+
+def unset_feature(args):
+    """Remove one feature key from the user file. A missing file is left missing."""
+    if not user_path().exists():
+        emit(args, args.key, None, None)
+        return 0
+    data, error = load_user()
+    if error:
+        raise Invalid(error)
+    previous = _drop_feature(data, args.key)
+    if previous is not None:
+        save_user(data)
     emit(args, args.key, previous, None)
     return 0
 
@@ -1042,17 +1189,17 @@ def add_profile_parser(sub):
 def parser():
     p = argparse.ArgumentParser(prog='forge config', description=__doc__.split('\n\n')[0])
     sub = p.add_subparsers(dest='cmd', required=True)
-    s = sub.add_parser('show', help="every config source: registry, decide, profiles, the repo's .forge files, dataset, FORGE_* env")
+    s = sub.add_parser('show', help="every config source: registry, decide, features, profiles, the repo's .forge files, dataset, FORGE_* env")
     s.add_argument('--repo')
     s.add_argument('--json', action='store_true')
     s.set_defaults(fn=cmd_show)
-    s = sub.add_parser('set', help='set repo.verify, repo.setup, repo.verify-subset or decide.gate.<gate>')
+    s = sub.add_parser('set', help='set a repo file, a decide gate, or a user feature (retro, brief, summaries)')
     s.add_argument('key')
     s.add_argument('value')
     s.add_argument('--repo')
     s.add_argument('--json', action='store_true')
     s.set_defaults(fn=cmd_set)
-    s = sub.add_parser('unset', help='remove repo.verify, repo.setup or repo.verify-subset')
+    s = sub.add_parser('unset', help='remove a repo file or a user feature (retro, brief, summaries)')
     s.add_argument('key')
     s.add_argument('--repo')
     s.add_argument('--json', action='store_true')

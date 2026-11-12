@@ -26,7 +26,11 @@ File schema, the same at both levels (unknown keys are kept and ignored):
                      "shadow_rate": number in [0, 1],
                      "fast": ["dwarf"|"qa"|"planner"|"review", ...]},
          "gates": {...as above...}, "budget": {...as above...}}},
-     "privacy": "never-send"}
+     "privacy": "never-send",
+     "features": {"retro": "off"|"on",
+                  "brief": {"level": "off"|"advisory"|"gated"|"strict",
+                            "scope": "task"|"wave"|"plan", "model": "<spec>"},
+                  "summaries": {"mode": "off"|"on", "model": "<spec>"}}}
 
 A spec is alias[:effort[:harness]]. Every key of a profile is optional. Unknown keys inside
 `routing` or `policy` (and unknown tiers under `dwarf`/`qa`) are refused by
@@ -34,6 +38,12 @@ profiles.validate(), to catch typos; unknown top-level keys of a profile are kep
 ignored. `default_profile` names the profile a run uses when none is asked for (the user
 file's beats the repo file's). Two built-in profiles, `balanced` and `lite`
 (builtin_profiles.json, read-only), are found after both files; see profiles.py.
+
+`features` is the user file's opt-in for retro, brief mode and generated task summaries.
+`forge config` reads and writes it (keys `retro`, `brief`, `brief.scope`, `brief.model`,
+`summaries`, `summaries.model`). A copy in the repo file is ignored. Plan files, and
+`FORGE_RETRO=off`, `FORGE_BRIEF=off` and `FORGE_SUMMARIES=off`, override it when a run
+resolves the features. `model` is a spec, the same shape as a profile routing spec.
 
 A provider's key comes from `key_env` when that variable is set, else from `key_file`; it
 may name both, or neither (a local server may need no key).

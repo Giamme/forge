@@ -126,6 +126,21 @@ class ExportTests(unittest.TestCase):
         for path in (f'/executions/{F.READER_DWARF1}/checks', '/tasks/reader/checks', '/environment'):
             self.assertIn(f'/api/runs/{self.key}' + path, snap['api'])
 
+    def test_a_task_header_goal_and_criteria_are_private_text(self):
+        header = {'goal': 'Build forge UI', 'header': {
+            'title': 'Read', 'goal': 'secret goal', 'criteria': 'secret criteria',
+            'links': [{'kind': 'issue', 'number': 1, 'url': 'https://github.com/acme/widgets/issues/1',
+                       'source': 'prompt.md'}]}}
+        hidden = export._Snapshot(None, 'k', texts=False, paths=True).clean(header)
+        self.assertEqual(hidden['goal'], 'Build forge UI')
+        self.assertEqual(hidden['header']['goal'], None)
+        self.assertEqual(hidden['header']['criteria'], None)
+        self.assertEqual(hidden['header']['title'], 'Read')
+        self.assertEqual(hidden['header']['links'][0]['url'], 'https://github.com/acme/widgets/issues/1')
+        shown = export._Snapshot(None, 'k', texts=True, paths=True).clean(header)
+        self.assertEqual(shown['header']['goal'], 'secret goal')
+        self.assertEqual(shown['header']['criteria'], 'secret criteria')
+
     def test_a_persons_decision_reason_is_a_private_text(self):
         # The final review of run 1: `--reason` notes stayed in a no-texts snapshot.
         decision = {'decisions': [{'at': 1.0, 'attempt': 3, 'choice': 'retry=2', 'reason': 'private note'}],

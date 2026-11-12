@@ -83,6 +83,10 @@
     if (w.kind === 'slot') return { ...out, text: `no free slot: ${num(w.running) ?? '?'} of ${num(w.max_parallel) ?? '?'} running` };
     if (w.kind === 'drained') return { ...out, text: 'drained: nothing new starts until the run resumes' };
     if (w.kind === 'stopping') return { ...out, text: w.mode === 'now' ? 'the run is stopping now' : 'the run stops once its running tasks end' };
+    if (w.kind === 'brief') {
+      const asked = ids(w.questions);
+      return { ...out, text: asked.length ? `waits for your answer to ${asked.join(', ')}` : 'waits for its brief questions to be written' };
+    }
     if (w.kind === 'next') return { ...out, text: "starts at the scheduler's next turn" };
     if (w.kind === 'infra') {
       const cause = RM.causeLabel(w.class);
@@ -98,7 +102,7 @@
     return null;
   }
   // The Now column's order: running, then what starts soonest, then what waits on others, then what is held
-  const RANK = { running: 0, next: 1, slot: 2, overlap: 2, deps: 3, infra: 4, drained: 5, stopping: 5, escalation: 6 };
+  const RANK = { running: 0, next: 1, slot: 2, overlap: 2, brief: 2, deps: 3, infra: 4, drained: 5, stopping: 5, escalation: 6 };
   function nowRank(task) {
     if (task && task.now) return RANK.running;
     const w = task && task.waiting;
@@ -142,7 +146,7 @@
     if (!s || s.live !== true) return null;
     const tasks = list(run.tasks), count = kind => tasks.filter(t => t.waiting && t.waiting.kind === kind).length;
     const state = s.stopping ? (s.stopping === 'now' ? 'stopping now' : 'stopping once its running tasks end') : s.drained ? 'drained: nothing new starts' : 'dispatching';
-    const waiting = [['deps', 'on dependencies'], ['overlap', 'on shared files'], ['slot', 'for a free slot'], ['infra', 'paused'],
+    const waiting = [['deps', 'on dependencies'], ['overlap', 'on shared files'], ['slot', 'for a free slot'], ['brief', 'for your answer'], ['infra', 'paused'],
       ['next', 'next'], ['escalation', 'stopped by the retry policy']]
       .map(([kind, label]) => [count(kind), label]).filter(([n]) => n).map(([n, label]) => `${n} ${label}`);
     const rows = [['Scheduler', state], ['Running', String(tasks.filter(t => t.status === 'RUNNING').length) + (num(s.max_parallel) !== null ? ` of ${s.max_parallel} slots` : '')]];

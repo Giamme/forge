@@ -13,11 +13,13 @@
 #                                  (claude, openclaude, codex; custom prompt only)
 #   forge-dispatch.sh dwarf <spec> ... --continue-session <id>   continue that implementer session
 #                                  (claude, openclaude)
+#   forge-dispatch.sh side  <spec> --prompt-file <f> [--repo <dir>] [--run-dir <d>] [--yolo] [--dry-run]
+#                                  read-only; a brief or summary dispatch (default effort low)
 #   any role: [--no-ripwire] [--ripwire-query-file <requirements>]
 #   any role: [--timeout <seconds>]   0 disables the watchdog
 #   any role: [--service-tier fast]   codex and claude only; any other harness exits 3
 #                                  before it runs. doctor --spec takes the same option.
-#   forge-dispatch.sh doctor --spec <spec> [--role dwarf|qa|planner] [--service-tier fast]
+#   forge-dispatch.sh doctor --spec <spec> [--role dwarf|qa|planner|side] [--service-tier fast]
 #                                  A measured slowdown is `forge: note: …` on stderr, never in
 #                                  the resolved block. A plain dispatch does not print it.
 #   forge-dispatch.sh efforts --spec <spec>
@@ -206,14 +208,14 @@ EOT
   return $rc
 }
 
-[ $# -ge 1 ] || die "usage: forge-dispatch.sh <doctor|dwarf|qa|planner|efforts> [spec] [options]"
+[ $# -ge 1 ] || die "usage: forge-dispatch.sh <doctor|dwarf|qa|planner|side|efforts> [spec] [options]"
 if [ "$1" = efforts ]; then shift; efforts_cmd "$@"; exit $?; fi
 ROLE="$1"; shift
 if [ "$ROLE" = report ]; then python3 "$RUNTIME" report "${1:?report needs a run directory}"; exit $?; fi
 PREFLIGHT=0
 if [ "$ROLE" = doctor ]; then
   if [ $# = 0 ]; then doctor; exit $?; fi
-  [ "${1:-}" = --spec ] || die "doctor accepts --spec <spec> [--role dwarf|qa|planner] [--service-tier fast]"
+  [ "${1:-}" = --spec ] || die "doctor accepts --spec <spec> [--role dwarf|qa|planner|side] [--service-tier fast]"
   SPEC_CHECK="${2:?--spec needs a spec}"; shift 2
   ROLE=dwarf
   if [ "${1:-}" = --role ]; then ROLE="${2:?}"; shift 2; fi
@@ -223,12 +225,13 @@ if [ "$ROLE" = doctor ]; then
   echo 'Offline capability check' > "$CHECK_DIR/input"
   set -- "$SPEC_CHECK" --run-dir "$CHECK_DIR" --prompt-file "$CHECK_DIR/input" "$@"
 fi
-case "$ROLE" in dwarf|qa|planner) ;; *) die "unknown role '$ROLE' (expected dwarf, qa, planner or doctor)" ;; esac
+case "$ROLE" in dwarf|qa|planner|side) ;; *) die "unknown role '$ROLE' (expected dwarf, qa, planner, side or doctor)" ;; esac
 
-# qa and planner both read the repo and write nothing to it: a reviewer that can
-# edit the diff is no longer an independent check of it, and a planner that edits
-# has quietly become the dwarf. They share one permission profile.
-read_only_role() { case "$ROLE" in qa|planner) return 0 ;; *) return 1 ;; esac; }
+# qa, planner and side all read the repo and write nothing to it: a reviewer that
+# can edit the diff is no longer an independent check of it, a planner that edits
+# has quietly become the dwarf, and a side dispatch (a brief or a summary) must
+# not touch the work it is reading. They share one permission profile.
+read_only_role() { case "$ROLE" in qa|planner|side) return 0 ;; *) return 1 ;; esac; }
 [ $# -ge 1 ] || die "role '$ROLE' needs a spec, e.g. sol:xhigh:openclaude"
 SPEC="$1"; shift
 
@@ -330,9 +333,10 @@ else
     # implementer tends to rubber-stamp, which defeats the point of a second model;
     # xhigh reviews cost about twice as much for the same verdicts (#89). Planning is
     # the stage where thinking pays for itself most cheaply — a bad plan is executed
-    # at full cost by every dwarf downstream of it. forge-parallel.sh's approval
+    # at full cost by every dwarf downstream of it. A side dispatch (brief, summary)
+    # is a cheap read, so it defaults to low. forge-parallel.sh's approval
     # table names the QA default (render_table).
-    case "$ROLE" in dwarf) EFFORT="medium" ;; qa) EFFORT="high" ;; planner) EFFORT="xhigh" ;; esac
+    case "$ROLE" in dwarf) EFFORT="medium" ;; qa) EFFORT="high" ;; planner) EFFORT="xhigh" ;; side) EFFORT="low" ;; esac
     DEFAULTED=1
     [ -n "$LADDER" ] || EFFORT=""   # opencode: no ladder, let the provider choose
   else

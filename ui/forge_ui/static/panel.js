@@ -1,6 +1,8 @@
 /* forge-ui inspector: what a selected node is, which model owned it, what prompt launched it, how long it
    took and what its reviewer found. Defines window.ForgePanel.render(host, ctx). All API values enter the
    DOM as text. Large texts (prompts, reports) come from the lazy endpoints and are fetched once per node.
+   A task opens on its header (title, goal, links, and the prompt, approach and acceptance criteria) and
+   its attempt trail, then its summary (#133 B), then its brief questions (#135) when it has them, and the chips and the rest.
    The run's and a task's write controls are controls.js's (ForgeControls); this file only says where they stand. */
 window.ForgePanel = (() => {
   'use strict';
@@ -12,6 +14,7 @@ window.ForgePanel = (() => {
   const STATUSES = new Set(['merged', 'pass', 'running', 'pending', 'fail', 'error', 'infra', 'timeout', 'unknown', 'invalidated', 'blocked',
     'interrupted', 'nochanges', 'conflict', 'accepted', 'none', 'outdated', 'needs_input', 'needs_decision', 'waiting']);
   const cache = new Map();                                  // path → {data, error, at}
+  const shownText = new Map();                              // task id → which header text is open (prompt, approach, criteria)
   function el(tag, text, className) {
     const node = document.createElement(tag);
     if (text !== undefined) node.textContent = display(text);
@@ -336,6 +339,15 @@ window.ForgePanel = (() => {
     const line = window.ForgeSettings && window.ForgeSettings.profileRowText && window.ForgeSettings.profileRowText(profile);
     return line || undefined;
   }
+  // the Retro section (retro mode only): the report's counts on one line, then the report, collapsed like the other long texts.
+  // The report is plain text: forge-ui has no Markdown renderer, and run data never goes in as HTML.
+  function retroSection(host, run) {
+    const line = RM.retroSummary(run.retro);
+    if (!line) return;
+    const s = section(host, 'Retro');
+    muted(s, line);
+    if (run.retro.text != null) details(s, 'Report', run.retro.text, 'run-retro');
+  }
   // the run's record: what it was asked, how it was set up, and what verification printed (the header names and counts it)
   function runRecord(host, ctx) {
     const run = ctx.run, solo = run.kind === 'solo';
@@ -348,6 +360,7 @@ window.ForgePanel = (() => {
       ['Verification', chip((run.verification && run.verification.status) || run.verification_status)],
       ['Command', run.verification && run.verification.command, true]]);
     details(host, 'Request', display(run.request), 'run-request');
+    retroSection(host, run);
     if (!solo) details(host, 'Waves', list(run.waves).map((ids, i) => `${i + 1}: ${list(ids).join(', ')}`).join('\n') || '—', 'waves');
     if (run.verification && run.verification.log_tail != null) details(host, 'Verification output', run.verification.log_tail, 'verification-output');
   }
@@ -431,8 +444,260 @@ window.ForgePanel = (() => {
     s.append(ul);
   }
 
+  // Why an attempt ran, in the words the trail shows. Anything else reads as unrecorded.
+  const TRAIL_REASONS = {
+    first: 'first attempt', review: 'after review findings', prereview: 'after failing tests before review',
+    bounce: 'after unaddressed findings', message: 'after an unfinished message', answer: 'after your answer',
+    escalation: 'escalated to a stronger model', manual: 'manual retry', unknown: 'reason not recorded',
+  };
+  function reasonText(reason) {
+    return Object.prototype.hasOwnProperty.call(TRAIL_REASONS, reason) ? TRAIL_REASONS[reason] : TRAIL_REASONS.unknown;
+  }
+  function findingsText(item) {
+    const findings = item && item.findings;
+    const has = !!findings && typeof findings === 'object' && !Array.isArray(findings);
+    const count = has ? (num(findings.confirmed) === null ? 0 : num(findings.confirmed)) : null;
+    const worst = item && item.worst ? String(item.worst) : '';
+    if (count === null && !worst) return 'no findings';
+    const n = count === null ? 0 : count;
+    const noun = n === 1 ? 'finding' : 'findings';
+    return worst ? `${n} ${noun} (worst ${worst})` : `${n} ${noun}`;
+  }
+  // `#2 grok:xhigh · FAIL · 3 findings (worst P1) · after review findings`
+  function trailLine(item) {
+    const row = item || {};
+    const attempt = row.attempt == null || row.attempt === '' ? '—' : row.attempt;
+    const dwarf = row.dwarf ? String(row.dwarf) : '—';
+    const verdict = row.verdict ? String(row.verdict) : '—';
+    return `#${attempt} ${dwarf} · ${verdict} · ${findingsText(row)} · ${reasonText(row.reason)}`;
+  }
+  // A header link: `#123` or `PR #45` when it has a number, the url itself otherwise.
+  // Only an http(s) url is opened; anything else is shown as text.
+  function linkModel(link) {
+    if (!link || typeof link !== 'object') return { label: 'link', href: null };
+    const href = typeof link.url === 'string' && /^https?:\/\//i.test(link.url) ? link.url : null;
+    let label = 'link';
+    if (link.kind === 'pr' && link.number != null) label = `PR #${link.number}`;
+    else if (link.number != null) label = `#${link.number}`;
+    else if (href) label = href;
+    return { label, href };
+  }
+  function linkChip(item) {
+    const model = linkModel(item);
+    if (!model.href) return el('span', model.label, 'task-link-text');
+    const a = el('a', model.label, 'chip');
+    a.href = model.href; a.target = '_blank'; a.rel = 'noopener noreferrer';
+    return a;
+  }
+  const textMissing = v => v == null || v === '';
+  // Prompt and approach come from the lazy task detail once it has landed, and from the task until then.
+  // Acceptance criteria is header.criteria, already on the task. A missing text disables its button.
+  function knownTexts(task, detail) {
+    if (detail && detail.data) {
+      const t = detail.data.texts || {};
+      return { prompt: t.prompt ?? null, approach: t.approach ?? null, settled: true };
+    }
+    return { prompt: task.prompt ?? null, approach: task.approach ?? null, settled: false };
+  }
+  function headerActions(header, texts) {
+    const h = header || {}, t = texts || {};
+    return [
+      { key: 'prompt', label: 'Prompt', disabled: textMissing(t.prompt), text: t.prompt ?? null },
+      { key: 'approach', label: 'Approach', disabled: textMissing(t.approach), text: t.approach ?? null },
+      { key: 'criteria', label: 'Acceptance criteria', disabled: textMissing(h.criteria), text: h.criteria ?? null },
+    ];
+  }
+  function revealBody(key, detail, action) {
+    if (key === 'criteria') return action && action.text != null ? String(action.text) : '';
+    if (detail && detail.error) {
+      const err = detail.error;
+      return err.status === 404 ? 'This text is not available from this server.' : `Could not load it: ${err.message || 'error'}`;
+    }
+    if (!detail || !detail.data) return 'Loading…';
+    return action && action.text != null ? String(action.text) : '';
+  }
+  function taskHeader(host, ctx, task, detail) {
+    const header = task.header || {};
+    const texts = knownTexts(task, detail);
+    const actions = headerActions(header, texts);
+    let open = shownText.get(task.id) || null;
+    if (open && actions.some(a => a.key === open && a.disabled && texts.settled)) { shownText.delete(task.id); open = null; }
+    const box = el('div', undefined, 'task-header');
+    const top = el('div', undefined, 'task-header-top');
+    top.append(el('h2', header.title || task.title || 'Untitled task'));
+    if (header.goal) top.append(el('p', header.goal, 'task-goal'));
+    box.append(top);
+    const links = list(header.links);
+    if (links.length) {
+      const row = el('div', undefined, 'chips task-links');
+      for (const item of links) row.append(linkChip(item));
+      box.append(row);
+    }
+    const bank = el('div', undefined, 'seg task-texts');
+    bank.setAttribute('role', 'group'); bank.setAttribute('aria-label', 'Task text');
+    for (const action of actions) {
+      const button = el('button', action.label);
+      button.type = 'button'; button.dataset.text = action.key; button.disabled = action.disabled;
+      button.setAttribute('aria-pressed', open === action.key ? 'true' : 'false');
+      button.addEventListener('click', () => {
+        shownText.set(task.id, shownText.get(task.id) === action.key ? null : action.key);
+        ctx.rerender();
+      });
+      bank.append(button);
+    }
+    box.append(bank);
+    if (open) {
+      const action = actions.find(a => a.key === open);
+      const pre = el('pre', revealBody(open, detail, action), 'task-reveal');
+      pre.dataset.scroll = `task-${task.id}-header-text`;
+      box.append(pre);
+    }
+    host.append(box);
+  }
+  // The links to an attempt's executions, one per execution, labelled by role. The trail and a summary's sources share them.
+  function executionLinks(ctx, task, ids) {
+    const nav = el('span', undefined, 'trail-nav');
+    for (const id of list(ids)) {
+      const role = String(id).split('-')[0].toLowerCase();
+      const target = { kind: 'execution', task: task.id, id: task.id, exec: id, shadow: false };
+      nav.append(link(role, ctx.hash(target), () => ctx.onSelect(target)));
+    }
+    return nav;
+  }
+  // One line per attempt. Its executions open the same way the Attempts section opens them.
+  function attemptTrail(host, ctx, task) {
+    const items = list(task.trail);
+    if (!items.length) return;
+    const ol = el('ol', undefined, 'attempt-trail');
+    for (const item of items) {
+      const li = el('li', undefined, 'trail-line');
+      li.append(el('span', trailLine(item), 'trail-summary'));
+      const nav = executionLinks(ctx, task, item && item.executions);
+      if (nav.childElementCount) li.append(nav);
+      ol.append(li);
+    }
+    host.append(ol);
+  }
+
+  /* ---------- summaries (#133 B): a task's generated summary, and the switches that turn summaries on or off ---------- */
+  // A switch's question, answer and request body are controls.js's (prepare, savedText); the confirm strip and the POST
+  // are uikit's. An answer stays on the page for a few seconds, so a poll that draws the section again keeps it in view.
+  const ANSWER_MS = 9000;
+  const answers = new Map();                                // a section's hold key → {res, text, at}
+  const ago = (at, now) => window.ForgeControls ? window.ForgeControls.agoText(at, now) : time(at);
+  const findingsId = taskId => `task-${taskId}-findings`;
+  // A bank of push keys: the value in force is pressed, and pressing the pressed key does nothing.
+  function summaryBank(options, current, pick, label) {
+    const seg = el('div', undefined, 'seg sum-bank');
+    seg.setAttribute('role', 'group'); seg.setAttribute('aria-label', label);
+    for (const [value, text] of options) {
+      const b = el('button', text); b.type = 'button'; b.dataset.value = value;
+      b.setAttribute('aria-pressed', String(value === current));
+      b.addEventListener('click', () => { if (b.getAttribute('aria-pressed') !== 'true') pick(value); });
+      seg.append(b);
+    }
+    return seg;
+  }
+  // Asks, sends and answers one change to a summaries switch (`forge control set summaries`). `slot` takes the question
+  // and the answer. `held` is the section that holds a task's switch (null for the run's): it is kept as it is while the
+  // question is open or the answer pends, the way controls.js keeps its own sections.
+  function changeSummaries(slot, held, runKey, change, done) {
+    const C = window.ForgeControls, U = window.ForgeUI, node = held || slot;
+    const plan = C.prepare({ kind: 'set', key: 'summaries', input: change.input, task: change.task });
+    if (!plan.ok) { U.outcome(slot, { ok: false, status: 400, error: 'invalid', detail: plan.error }); return; }
+    if (node.dataset.busy) return;
+    node.dataset.editing = '1';
+    U.confirmInline(slot, plan.confirm).then(async yes => {
+      if (!yes) { if (!slot.querySelector('.ui-confirm')) delete node.dataset.editing; return; }   // a newer question took the strip
+      node.dataset.busy = '1';
+      if (held) held.setAttribute('aria-busy', 'true');
+      const res = await U.post(`/api/runs/${encodeURIComponent(runKey)}/controls`, plan.body);
+      delete node.dataset.busy; delete node.dataset.editing;
+      if (held) held.removeAttribute('aria-busy');
+      const text = C.savedText(res.data);
+      if (held) answers.set(held.dataset.hold, { res, text, at: Date.now() });
+      U.outcome(slot, res, text);
+      if (done) done(res);
+    });
+  }
+  // The summary's text as plain text, its model and when it was made, whether the task changed since, the error of a
+  // failed try, and where it came from.
+  function summaryText(s, ctx, task, sum) {
+    s.append(el('p', sum.text, 'sum-text'));
+    const by = el('p', undefined, 'muted sum-by');
+    by.title = time(sum.generated_at);
+    by.append(document.createTextNode('Generated by '), sum.model ? plate(sum.model) : el('span', 'an unrecorded model'),
+      document.createTextNode(`, ${ago(sum.generated_at, ctx.now)}`));
+    if (sum.stale) by.append(document.createTextNode(' '), chip('Out of date', 'outdated'));
+    s.append(by);
+    if (sum.error) s.append(el('p', `The last try failed: ${String(sum.error).trim()}`, 'warn sum-error'));
+    if (list(sum.sources).length) s.append(sourceList(ctx, task, sum.sources));
+  }
+  // Where a summary came from: an attempt's executions, as the trail links them; a finding, linked to the review findings
+  // section. A source the task no longer has is named, not linked.
+  function sourceList(ctx, task, sources) {
+    const ul = el('ul', undefined, 'sum-sources');
+    for (const src of sources) {
+      const li = el('li'), ref = String(src.ref || '');
+      if (src.kind === 'attempt') {
+        li.append(el('span', `attempt ${ref}`));
+        const item = list(task.trail).find(t => t && String(t.attempt) === ref);
+        const nav = executionLinks(ctx, task, item && item.executions);
+        if (nav.childElementCount) li.append(nav);
+      } else {
+        const cut = ref.indexOf(':'), attempt = cut > 0 ? ref.slice(0, cut) : null, title = cut > 0 ? ref.slice(cut + 1) : ref;
+        const a = el('a', title || 'finding'); a.href = '#' + findingsId(task.id);
+        a.addEventListener('click', e => {
+          e.preventDefault();
+          const node = document.getElementById(findingsId(task.id));
+          if (node) node.scrollIntoView({ block: 'nearest' });
+        });
+        li.append(el('span', 'finding: ', 'muted'), a);
+        if (attempt) li.append(el('span', `attempt ${attempt}`, 'muted'));
+      }
+      ul.append(li);
+    }
+    return ul;
+  }
+  // The task's own switch: inherit the run's, or on or off for this task (`forge control set summaries --task`).
+  function summaryOverride(s, ctx, task) {
+    const key = s.dataset.hold, run = ctx.run, own = task.summaries_override;
+    const current = own === 'on' || own === 'off' ? own : 'inherit';
+    const runOn = !!run.summaries && run.summaries.mode === 'on';
+    // A data-row inside the section's data-hold: controls.js's hold() puts the keyboard back on this key after a redraw.
+    const row = el('div', undefined, 'sum-switch'), msgs = el('div', undefined, 'sum-msgs');
+    row.dataset.row = 'summary-override';
+    const pick = value => changeSummaries(msgs, s, run.key, { input: value, task: task.id }, () => ctx.refresh && ctx.refresh());
+    const bank = summaryBank([['inherit', 'Inherit'], ['on', 'On'], ['off', 'Off']], current, pick, 'Summaries for this task');
+    row.append(el('p', 'Summaries for this task', 'sum-label'), bank,
+      el('p', current === 'inherit' ? `Follows the run: ${runOn ? 'on' : 'off'}.` : `${current === 'on' ? 'On' : 'Off'} for this task, whatever the run sets.`, 'muted sum-note'),
+      msgs);
+    const answer = answers.get(key);
+    if (answer && Date.now() - answer.at < ANSWER_MS && window.ForgeUI) window.ForgeUI.outcome(msgs, answer.res, answer.text, { silent: true });
+    return row;
+  }
+  // The task's summary, after its attempt trail: its text, what it came from, and the switch where this page can change
+  // the run. A solo run has none. A task with no summary shows only its switch; where the page cannot write, nothing.
+  function summarySection(host, ctx, task) {
+    const run = ctx.run, sum = task.summary || null, U = window.ForgeUI;
+    if (run.kind === 'solo') return;
+    const s = section(host, 'Summary');
+    s.classList.add('sum-section');
+    s.dataset.hold = `summary:${run.key}:${task.id}`;
+    if (sum) summaryText(s, ctx, task, sum); else muted(s, 'No summary yet.');
+    const row = summaryOverride(s, ctx, task);
+    s.append(row);
+    const writable = U && U.controlsEnabled && window.ForgeControls ? U.controlsEnabled() : Promise.resolve(false);
+    writable.then(on => { if (!on) { row.remove(); if (!sum) s.remove(); } });
+  }
+
   function taskView(host, ctx, task) {
     const run = ctx.run, now = ctx.now, solo = run.kind === 'solo';
+    const detail = lazy(ctx, `/api/runs/${encodeURIComponent(run.key)}/tasks/${encodeURIComponent(task.id)}`, run.updated);
+    taskHeader(host, ctx, task, detail);
+    attemptTrail(host, ctx, task);
+    summarySection(host, ctx, task);
+    if (window.ForgeBrief) window.ForgeBrief.taskSection(host, ctx, task);
     const head = el('div', undefined, 'insp-head');
     head.append(el('h2', solo ? (task.title || 'Solo run') : `${task.id} · ${task.title || 'Untitled task'}`), el('div', solo ? 'solo task' : `task · wave ${display(task.wave)}`, 'insp-kind'));
     const chips = el('div', undefined, 'chips');
@@ -521,11 +786,11 @@ window.ForgePanel = (() => {
 
     // reviews and their findings
     const rs = section(host, 'Review findings');
+    rs.id = findingsId(task.id);                             // a summary's finding links here
     gateLine(rs, task.gate);
     findingCounts(rs, task.findings);
     failFirst(rs, task.fail_first);
     preReview(rs, task.pre_review);
-    const detail = lazy(ctx, `/api/runs/${encodeURIComponent(run.key)}/tasks/${encodeURIComponent(task.id)}`, run.updated);
     if (!loading(rs, detail, 'the full findings')) {
       const reviews = list(detail.data.reviews);
       if (!reviews.length) muted(rs, 'No review has run yet.');
@@ -858,5 +1123,6 @@ window.ForgePanel = (() => {
     if (sel.kind === 'fractal') return fractalNodeView(host, ctx, sel);
     return runView(host, ctx);
   }
-  return { render, cache };
+  return { render, cache, trailLine, reasonText, linkModel, headerActions, summaryBank, changeSummaries };
 })();
+if (typeof module === 'object' && module.exports) module.exports = window.ForgePanel;

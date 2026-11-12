@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """The QA contract: one shared review prompt, a severity vocabulary and a deterministic gate.
 
-Three subcommands, stdlib only, no network:
+Subcommands, stdlib only, no network:
 
   qa --part head|tail [--kind task|final|solo|sweep] [--threshold P0|P1|P2|P3|none]
       Prints one piece of the QA prompt. The caller prints everything between and
@@ -10,6 +10,9 @@ Three subcommands, stdlib only, no network:
   dwarf [--pre-review]
       Prints the implementer rules block that callers append to the dwarf prompt;
       --pre-review adds that forge runs the affected tests before the review (#85).
+  retro --role dwarf|qa|planner|review
+      Prints the retro-note instruction. Most tasks have nothing to say. Only the
+      dwarf's text mentions writing .forge/retro-inbox.jsonl when a hard blocker hits.
   gate --verdict PASS|FAIL|UNKNOWN --qa-last FILE [--threshold Pn|none] [--known-issues OUT]
       Prints ONE tab-separated line
           decision <TAB> worst_confirmed <TAB> n_confirmed <TAB> n_unlabelled <TAB> n_below
@@ -60,7 +63,7 @@ recorded in shadow and decide nothing: the gate never reads them, and `split_fac
 suffix for readers that show the line. A missing or malformed suffix changes nothing.
 
 Phantom findings. A reviewer may echo the contract it was given. Three layers keep that
-from creating findings or blocking: (1) FORGE_VERDICT, FORGE_LEARNING and FORGE_TESTS text is removed
+from creating findings or blocking: (1) FORGE_VERDICT, FORGE_LEARNING, FORGE_TESTS and FORGE_RETRO text is removed
 before parsing (the verdict line itself says "CONFIRMED"); (2) any line that is a
 contiguous fragment of this module's own contract text (all parts, kinds and thresholds,
 whitespace-collapsed, at least 25 characters, list marker ignored) is removed, which
@@ -306,6 +309,38 @@ _DWARF_PRE_REVIEW = [
 ]
 
 
+# Retro notes (#132). Silence is the default: the task being hard is not a note. Only the
+# dwarf can be blocked before it has a final message, so only that text mentions the inbox.
+RETRO_ROLES = ('dwarf', 'qa', 'planner', 'review')
+_RETRO = [
+    'Most tasks have nothing to report. Write a retro note only for an obstacle that came',
+    'from forge, this machine, or the instructions. The task\'s own difficulty does not',
+    'belong here: a hard task is not a note.',
+    'When you do have one, put it on a line of its own in your final message, as JSON:',
+    '  FORGE_RETRO: {"type":"sandbox","fixable_by":"user","summary":"the sandbox blocked git push","evidence":{"command":"git push","exit":128,"error":"fatal: unable to access"},"blocking":true,"tried":"retried the push once"}',
+    'type is one of environment, sandbox, tooling, prompt, forge-bug, other.',
+    'fixable_by is one of user, forge, unsure.',
+    'summary is one line. evidence is the command, its exit code and the error text',
+    '(keep the error under 2 KB). blocking is true when you could not finish without it.',
+    'tried is what you did before giving up. Omit the line when there is nothing to say.',
+]
+_RETRO_INBOX = [
+    'If a hard blocker hits before you can finish, append that same JSON object as one',
+    'line to .forge/retro-inbox.jsonl in this worktree, at that moment. .forge is already',
+    'excluded from diffs and commits.',
+]
+
+
+def retro_text(role: str) -> str:
+    """The retro-note instruction for one role, newline-terminated."""
+    if role not in RETRO_ROLES:
+        raise ValueError('role must be one of ' + ', '.join(RETRO_ROLES))
+    lines = list(_RETRO)
+    if role == 'dwarf':
+        lines += [''] + _RETRO_INBOX
+    return '\n'.join(lines) + '\n'
+
+
 def dwarf_text(pre_review: bool = False, verify_after_merge: bool = False) -> str:
     """The implementer rules block, newline-terminated."""
     lines = []
@@ -319,7 +354,7 @@ def dwarf_text(pre_review: bool = False, verify_after_merge: bool = False) -> st
 
 # --- parsing ---------------------------------------------------------------------
 
-_PROTOCOL = re.compile(r'FORGE_(?:VERDICT|LEARNING|TESTS):.*$')
+_PROTOCOL = re.compile(r'FORGE_(?:VERDICT|LEARNING|TESTS|RETRO):.*$')
 _QUOTE = re.compile(r'^\s*(?:>[ \t]?)+')
 _MARKER = re.compile(r'^(?:[-*+•–]|\d{1,3}[.)]|#{1,6})\s+')
 _HEADING = re.compile(r'^ {0,3}#{1,6}[ \t]+\S')
@@ -347,6 +382,8 @@ def _contract_flat() -> str:
         for part in ('head', 'tail'):
             for threshold in SEVERITIES:    # None and `none` render one of these
                 parts.append(qa_text(part, kind, threshold))
+    for role in RETRO_ROLES:                # an echoed retro instruction is not a finding either
+        parts.append(retro_text(role))
     return _collapse(' '.join(parts))
 
 
@@ -567,6 +604,9 @@ def _parser() -> argparse.ArgumentParser:
     dwarf.add_argument('--pre-review', action='store_true', help='forge runs the affected tests before the review')
     dwarf.add_argument('--verify-after-merge', action='store_true',
                        help='the run verifies the repository after each merge, so the whole suite is left to it')
+    retro = sub.add_parser('retro', help='print the retro-note instruction for one role')
+    retro.add_argument('--role', required=True, choices=RETRO_ROLES,
+                       help='dwarf also hears about .forge/retro-inbox.jsonl')
     gate_parser = sub.add_parser(
         'gate', help='print: decision (accept|fail|keep), worst_confirmed, n_confirmed, n_unlabelled, n_below')
     gate_parser.add_argument('--verdict', required=True, choices=('PASS', 'FAIL', 'UNKNOWN'))
@@ -588,6 +628,9 @@ def main(argv=None) -> int:
         return 0
     if args.command == 'dwarf':
         _emit(dwarf_text(args.pre_review, args.verify_after_merge))
+        return 0
+    if args.command == 'retro':
+        _emit(retro_text(args.role))
         return 0
     try:
         with open(args.qa_last, 'rb') as handle:
