@@ -2828,6 +2828,8 @@ do_run() {
   # Also before any model is paid for: what this plan is likely to cost, and which tasks
   # history says may bounce. Advisory, budgeted and silent without history; it never stops a run.
   [ "$FORECAST" = 1 ] && forecast_report "$PLAN"
+  # Invalid verification lanes stop the run here, before any model is paid for, so before the question writer below.
+  verify_lanes_check "$PLAN" "$REPO" "$int_wt"
   # Brief mode (#135), when the plan has it on. Strict asks first and refuses to start while a question of a
   # task that has not started is unanswered; advisory and gated write the questions beside the scheduler.
   local brief_level
@@ -2836,8 +2838,6 @@ do_run() {
     strict) forge_brief_strict "$PLAN" || exit $? ;;
     advisory|gated) forge_brief_start "$PLAN" ;;
   esac
-  # Invalid verification lanes stop the run here, before any model is paid for.
-  verify_lanes_check "$PLAN" "$REPO" "$int_wt"
   # Say now, before any model is paid for, which suites the verify command will not run.
   verify_coverage_report "$REPO" "$(verify_command_for "$PLAN" "$REPO")" "$PLAN/verification.coverage.txt"
   local sched_rc=0 paused=0 sched_args=()
