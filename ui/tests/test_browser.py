@@ -96,8 +96,9 @@ class Page(unittest.TestCase):
         page = context.new_page()
         # Cleanups run last-in first-out, so this runs before the context closes: a test's route
         # handler still serving a live refresh would otherwise read a disposed response, and
-        # Playwright raises that error in the next test's first call.
-        self.addCleanup(page.unroute_all, behavior='ignoreErrors')
+        # Playwright raises that error in the next test's first call. A page the test closed itself
+        # has no handlers left.
+        self.addCleanup(lambda: page.is_closed() or page.unroute_all(behavior='ignoreErrors'))
         self.errors = []
         page.on('pageerror', lambda e: self.errors.append(str(e)))
         page.add_init_script(f"""
