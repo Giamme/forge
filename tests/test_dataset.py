@@ -2105,6 +2105,29 @@ class IndependenceTests(unittest.TestCase):
                                            'from forge_dataset.forecast import _cost',
                                            'from forge_dataset.forecast import registry_models'])
                 continue
+            if path.parent.name in ('forge_retro', 'forge_brief') and path.name == '__init__.py':
+                # A retro note or a brief question records one point event, as forge_side does.
+                imports = [line.strip() for line in text.splitlines()
+                           if 'forge_dataset' in line and 'import' in line]
+                self.assertEqual(imports, ['from forge_dataset.capture import point'], path)
+                continue
+            if path.parent.name == 'forge_brief' and path.name == 'answers.py':
+                # An answer records a point event. Whether a question is possibly stale reads the files this
+                # run's own attempts changed (its diff, else its attempt events): no verdict, no earlier run.
+                imports = sorted(line.strip() for line in text.splitlines()
+                                 if 'forge_dataset' in line and 'import' in line)
+                self.assertEqual(imports, ['from forge_dataset import dataset_dir, repo_id',
+                                           'from forge_dataset.capture import point',
+                                           'from forge_dataset.harvest import diff_summary'])
+                continue
+            if path.parent.name == 'forge_retro' and path.name == 'report.py':
+                # `forge retro report` counts earlier runs' retro notes for retro.md, the operator's report
+                # (and the issue drafts built from it). No prompt reads either.
+                imports = sorted(line.strip() for line in text.splitlines()
+                                 if 'forge_dataset' in line and 'import' in line)
+                self.assertEqual(imports, ['from forge_dataset import connect, dataset_dir, enabled',
+                                           'from forge_dataset.harvest import legacy_uid'])
+                continue
             if path.parent.name == 'forge_side' and path.name == '__init__.py':
                 # A side dispatch records one point event. It does not read the store, and the
                 # filename is shared with every other package, so it cannot join `allowed` by name.

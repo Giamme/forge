@@ -180,7 +180,10 @@ class SummaryTriggerTests(unittest.TestCase):
         self.addCleanup(lambda: proc.poll() is None and proc.kill())
         time.sleep(0.5)
         self.task('n', ['PASS'])
-        (self.plan / 'tasks.tsv').write_text('\n'.join(self.rows) + '\n')
+        # Atomically: the live scheduler reads tasks.tsv on its own clock, and a half-written file
+        # (write_text truncates first) would refuse the add below as "the row is not in tasks.tsv".
+        staged = self.plan / 'tasks.tsv.new'
+        staged.write_text('\n'.join(self.rows) + '\n'); os.replace(staged, self.plan / 'tasks.tsv')
         requests = self.plan / 'control.requests'; requests.mkdir(exist_ok=True)
         (requests / 'r1').write_text(json.dumps({'verb': 'add', 'task': 'n'}))
         out, err = proc.communicate(timeout=60)
