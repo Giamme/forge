@@ -4,6 +4,7 @@
      overwritten. Facts only, one per line. -->
 
 ## Verify
+- from ui/, `python3 -m unittest discover -s tests -p 'test_reader.py'` runs one forge-ui module (cd ui/tests fails on the forge_ui import) [ui/tests/test_reader.py]
 - cd ui/tests && PYTHONPATH=.. uv run --quiet --with playwright python3 -m unittest test_browser [ui/tests/test_browser.py]
 - node --test ui/tests/js/*.test.js [ui/tests/js/runmodel.test.js]
 - `bash tests/check.sh` takes about 12 minutes, so a 600s foreground call is moved to the background. Redirect its output to a file, and it still finishes there [tests/check.sh]
@@ -20,14 +21,13 @@
 - python3 -m unittest test_models from ui/tests fails with ModuleNotFoundError: forge_ui; run the forge-ui suite from ui/ so that directory is on sys.path [ui/tests/test_models.py]
 - forge-ui browser tests skip without Python Playwright, so a green ui suite does not exercise the DOM [ui/tests/test_browser.py]
 - several test modules in one `python3 -m unittest` process make test_decide_wire fail (order leak, also on d3f6028); tests/run_tests.py runs each class… [tests/test_decide_wire.py]
-- the test PATH has no `cut`; in forge-parallel.sh use bash parameter expansion, not external text tools [scripts/forge-parallel.sh]
-- data_home() leaves a relative FORGE_DATA_HOME unresolved, so a cd before opening the dataset reads a different directory [scripts/forge_dataset/__init__.py]
-- test_dispatch.ClockTests.test_a_run_dir_removed_while_the_harness_runs_does_not_hang_the_dispatch races shutil.rmtree against the harness rename of… [tests/test_dispatch.py]
-- registry_models() opens FORGE_REGISTRY relative to the process cwd and returns an empty map when that file is missing, so a caller that has… [scripts/forge_dataset/forecast.py]
-- python3 tests/run_tests.py forge matches every class, because the suite id is forge:module.Class and a pattern is a substring of that id [tests/run_tests.py]
-- `forge control add` queues a row already in `tasks.tsv` (7 columns, non-empty `prompt.md`) and needs a live scheduler; it does not drop or replace a… [scripts/forge-control.py]
-- `forge-parallel.sh retry` accepts `--decide retry=002` (up to three digits), but the `DECISION` regexes in `forge-control.py` and `forge-schedule.py`… [scripts/forge-control.py]
-- tests/test_control.py asserts the exact `show --json` run and task dicts, so new keys there fail it; add text-only output instead [tests/test_control.py]
-- infra.paused is removed when a scheduler exits (live_stop), so a summary printed after the run finds no scope pauses [scripts/forge-schedule.py]
-- the bundled `gemini` alias in registry.tsv lists different models per harness (Flash on antigravity, Pro on opencode), so never compare models by alias [registry.tsv]
+- ui/forge_ui/export.py SCRIPTS omits briefview.js, so exported runs do not render brief questions [ui/forge_ui/export.py]
+- ui/forge_ui/export.py SCRIPTS is a hardcoded subset of index.html and already omits uikit.js, controls.js and findingsview.js, so a new static script is… [ui/forge_ui/export.py]
+- test_reference_links_resolve checks link paths only, never #anchors [tests/test_skill.py]
+- a task is MERGED when `tasks/<id>/merged` exists even if `tasks/<id>/status` still says PASS; `task_status` checks the merged file first [scripts/forge-parallel.sh]
+- the scheduler captures a task's stdout and stderr into tasks/<id>/task.out and prints that file only when FORGE_OUTPUT=full [scripts/forge-schedule.py]
+- export.py blanks a text field only when its key is in _TEXT_KEYS, so a new text key leaks unless it is added there [ui/forge_ui/export.py]
+- `python3 tests/run_tests.py summaries forge` matches every forge class and overruns 10 minutes; run `test_summaries` and `SummarizeRouteTests` separately [tests/run_tests.py]
+- forge-parallel.sh `do_plan` shared flags (`forge_pp_flag`) write into the plan dir as they parse, so any refusal must be decided in a pre-scan before… [scripts/forge-parallel.sh]
+- `cd ui/tests && python3 -m unittest test_links test_reader` fails with ModuleNotFoundError: forge_ui; run `python3 -m unittest discover -s tests -p… [ui/tests/test_reader.py]
 

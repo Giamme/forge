@@ -682,3 +682,127 @@
 2026-11-04T00:13:53Z	run2-plan	run2-docs	qa	gpt-6.1-terra:high:codex	PASS	-	-	-	17
 2026-11-04T00:15:48Z	run2-plan	sweep-1	dwarf	grok:high	-	-	-	-	107
 2026-11-04T00:21:10Z	run2-plan	sweep-1	qa	sol:medium	PASS	-	-	-	316
+2026-11-11T16:16:57Z	i-plan	retro-ui	dwarf	haiku:xhigh	-	trap	the run detail s request section is drawn by panel js runrecord app js only mounts forgepanel render	The run detail's Request section is drawn by panel.js runRecord; app.js only mounts ForgePanel.render [ui/forge_ui/static/panel.js]	289	0
+2026-11-11T16:18:44Z	i-plan	retro-ui	qa	gpt-6.1-terra:high:codex	FAIL	-	-	-	28
+2026-11-11T16:25:41Z	i-plan	retro-ui	dwarf	haiku:xhigh	-	trap	the inspector is hidden at runs key until its run details button opens it so a browser check of its contents must click that button first	the inspector is hidden at #/runs/<key> until its Run details button opens it, so a browser check of its contents must click that button first [ui/tests/test_browser.py]	412	1
+2026-11-11T16:27:05Z	i-plan	retro-ui	qa	gpt-6.1-terra:high:codex	PASS	-	-	-	28
+2026-11-11T16:30:44Z	i-plan	retry-trail	dwarf	haiku:xhigh	-	trap	a retried dwarf in a fake cli test must write different content an identical attempt is stopped as no new changes and never reaches qa	a retried dwarf in a fake-CLI test must write different content; an identical attempt is stopped as "no new changes" and never reaches QA [tests/test_forge.py]	1115	0
+2026-11-11T16:31:53Z	i-plan	brief-prompts	dwarf	grok:xhigh	-	-	-	-	1185
+2026-11-11T16:34:51Z	i-plan	retry-trail	qa	gpt-6.1-terra:high:codex	FAIL	-	-	-	226
+2026-11-11T16:35:21Z	i-plan	brief-prompts	qa	sol:medium	PASS	-	-	-	194
+2026-11-11T16:38:06Z	i-plan	retry-trail	dwarf	haiku:xhigh	-	trap	awk exits 0 when given a directory so a read check f r is needed before replacing a file that must not be lost	awk exits 0 when given a directory, so a read check (`-f`/`-r`) is needed before replacing a file that must not be lost [scripts/forge-parallel.sh]	187	1
+2026-11-11T16:41:56Z	i-plan	retry-trail	qa	gpt-6.1-terra:high:codex	PASS	-	-	-	205
+2026-11-11T16:42:36Z	i-plan	side-dispatch	dwarf	grok:xhigh	-	-	-	-	1828
+2026-11-11T16:45:48Z	i-plan	retro-core	dwarf	grok:xhigh	-	-	-	-	2020
+2026-11-11T16:48:21Z	i-plan	side-dispatch	qa	sol:medium	PASS	-	-	-	336
+2026-11-11T16:51:42Z	i-plan	retro-core	qa	sol:medium	FAIL	-	-	-	305
+2026-11-11T16:55:26Z	i-plan	retro-core	dwarf	grok:xhigh	-	-	-	-	219
+2026-11-11T16:57:43Z	i-plan	retro-core	qa	sol:medium	PASS	-	-	-	45
+2026-11-11T17:05:36Z	i-plan	inspector-reader	dwarf	grok:xhigh	-	-	-	-	2305
+2026-11-11T17:10:47Z	i-plan	inspector-reader	qa	sol:medium	FAIL	-	-	-	97
+2026-11-11T17:21:10Z	i-plan	side-exclude	dwarf	grok:xhigh	-	-	-	-	1961
+2026-11-11T17:23:59Z	i-plan	side-core	dwarf	grok:xhigh	-	trap	subclassing tests test forge py forgetests re runs that class s tests borrow setup scenario and calls the way tests test dispatch py dispatchbase does and	subclassing tests/test_forge.py ForgeTests re-runs that class's tests; borrow setUp, scenario and calls the way tests/test_dispatch.py DispatchBase does, and… [tests/test_forge.py]	2130	1
+2026-11-11T17:25:51Z	i-plan	side-exclude	qa	sol:medium	PASS	-	-	-	275
+2026-11-11T17:28:03Z	i-plan	side-core	qa	sol:medium	FAIL	-	-	-	236
+2026-11-11T17:29:08Z	i-plan	inspector-reader	dwarf	grok:xhigh	-	-	-	-	1096
+2026-11-11T17:29:24Z	i-plan	retro-report	dwarf	grok:xhigh	-	-	-	-	1896
+2026-11-11T17:30:14Z	i-plan	inspector-reader	qa	sol:medium	FAIL	-	-	-	58
+2026-11-11T17:31:11Z	i-plan	retro-report	qa	sol:medium	FAIL	-	-	-	101
+2026-11-11T18:05:56Z	i-plan	retro-report	dwarf	grok:xhigh	-	-	-	-	2080
+2026-11-11T18:08:55Z	i-plan	retro-report	qa	sol:medium	FAIL	-	-	-	84
+2026-11-11T18:09:38Z	i-plan	side-core	dwarf	grok:xhigh	-	-	-	-	2490
+2026-11-11T18:12:17Z	i-plan	side-core	qa	sol:medium	FAIL	-	-	-	133
+2026-11-11T18:21:07Z	i-plan	inspector-reader	dwarf	grok:xhigh	-	-	-	-	3048
+2026-11-11T18:21:57Z	i-plan	inspector-reader	qa	sol:medium	FAIL	-	-	-	42
+2026-11-11T18:22:36Z	i-plan	side-core	dwarf	grok:xhigh	-	-	-	-	614
+2026-11-11T18:22:36Z	i-plan	inspector-reader	dwarf	sonnet:high	-	trap	python3 m unittest test models from ui tests fails with modulenotfounderror forge ui run the forge ui suite from ui so that directory is on sys path	`cd ui/tests && python3 -m unittest test_links test_reader` fails with ModuleNotFoundError: forge_ui; run `python3 -m unittest discover -s tests -p… [ui/tests/test_reader.py]	34	1
+2026-11-11T18:23:22Z	i-plan	inspector-reader	qa	sol:medium	PASS	-	-	-	35
+2026-11-11T18:24:21Z	i-plan	retro-report	dwarf	grok:xhigh	-	-	-	-	921
+2026-11-11T18:24:36Z	i-plan	side-core	qa	sol:medium	PASS	-	-	-	111
+2026-11-11T18:25:21Z	i-plan	retro-report	qa	sol:medium	FAIL	-	-	-	51
+2026-11-11T18:26:11Z	i-plan	retro-report	dwarf	sonnet:high	-	-	-	-	45
+2026-11-11T18:28:25Z	i-plan	retro-report	qa	sol:medium	FAIL	-	-	-	43
+2026-11-11T18:36:05Z	i-plan	retro-report	dwarf	sonnet:high	-	-	-	-	69
+2026-11-11T18:37:14Z	i-plan	retro-report	qa	sol:medium	FAIL	-	-	-	56
+2026-11-11T18:39:52Z	i-plan	plan-options	dwarf	sonnet:high	-	-	-	-	909
+2026-11-11T18:42:50Z	i-plan	plan-options	qa	sol:high	FAIL	-	-	-	169
+2026-11-11T18:46:21Z	i-plan	inspector-ui	dwarf	grok:xhigh	-	-	-	-	1371
+2026-11-11T18:49:36Z	i-plan	inspector-ui	qa	sol:medium	PASS	-	-	-	47
+2026-11-11T18:53:28Z	i-plan	summary-core	dwarf	grok:xhigh	-	-	-	-	1725
+2026-11-11T18:59:11Z	i-plan	summary-core	qa	sol:medium	FAIL	-	-	-	335
+2026-11-11T19:04:58Z	i-plan	plan-options	dwarf	sonnet:high	-	trap	plan retro is the retro notes directory so a plan option file can t be called retro the on off switch is plan retro mode	`<plan>/retro/` is the retro notes directory, so a plan option file can't be called `retro`; the on/off switch is `<plan>/retro_mode` [scripts/forge_side/__init__.py]	1324	1
+2026-11-11T19:12:45Z	i-plan	plan-options	qa	sol:high	FAIL	-	-	-	204
+2026-11-11T19:15:54Z	i-plan	plan-options	dwarf	sonnet:high	-	trap	forge parallel sh do plan shared flags forge pp flag write into the plan dir as they parse so any refusal must be decided in a pre scan before	forge-parallel.sh `do_plan` shared flags (`forge_pp_flag`) write into the plan dir as they parse, so any refusal must be decided in a pre-scan before… [scripts/forge-parallel.sh]	185	1
+2026-11-11T19:19:00Z	i-plan	plan-options	qa	sol:high	FAIL	-	-	-	177
+2026-11-11T19:26:12Z	i-plan	summary-core	dwarf	grok:xhigh	-	-	-	-	1616
+2026-11-11T19:28:18Z	i-plan	summary-core	qa	sol:medium	FAIL	-	-	-	117
+2026-11-11T19:41:14Z	i-plan	plan-options	dwarf	sonnet:high	-	-	-	-	157
+2026-11-11T19:43:30Z	i-plan	plan-options	qa	sol:high	FAIL	-	-	-	127
+2026-11-11T19:46:10Z	i-plan	summary-core	dwarf	grok:xhigh	-	trap	python3 tests run tests py forge matches every forge class because the class id is prefixed forge pass the module name instead	python3 tests/run_tests.py forge matches every forge class, because the class id is prefixed forge:; pass the module name instead [tests/run_tests.py]	1067	1
+2026-11-11T19:48:44Z	i-plan	summary-core	qa	sol:medium	FAIL	-	-	-	67
+2026-11-11T20:00:15Z	i-plan	summary-core	dwarf	sonnet:high	-	trap	python3 tests run tests py forge matches every forge class because the class id is prefixed forge pass the module name instead	`python3 tests/run_tests.py summaries forge` matches every forge class and overruns 10 minutes; run `test_summaries` and `SummarizeRouteTests` separately [tests/run_tests.py]	686	1
+2026-11-11T20:01:46Z	i-plan	summary-core	qa	sol:medium	FAIL	-	-	-	82
+2026-11-11T20:05:50Z	i-plan	brief-core	dwarf	sonnet:high	-	-	-	-	237
+2026-11-11T20:10:01Z	i-plan	brief-core	qa	sol:high	FAIL	-	-	-	244
+2026-11-11T20:15:13Z	i-plan	retro-report	dwarf	sonnet:high	-	-	-	-	51
+2026-11-11T20:15:30Z	i-plan	brief-core	dwarf	sonnet:high	-	-	-	-	324
+2026-11-11T20:16:08Z	i-plan	retro-report	qa	sol:medium	PASS	-	-	-	46
+2026-11-11T20:18:13Z	i-plan	brief-core	qa	sol:high	FAIL	-	-	-	154
+2026-11-11T21:03:12Z	i-plan	plan-options	dwarf	opus:high	-	-	-	-	2757
+2026-11-11T21:06:09Z	i-plan	brief-core	dwarf	sonnet:high	-	-	-	-	2872
+2026-11-11T21:08:20Z	i-plan	brief-core	qa	sol:high	FAIL	-	-	-	122
+2026-11-11T21:10:49Z	i-plan	summary-core	dwarf	sonnet:high	-	trap	attempts tsv stores date s and production qa archives carry no attempt number so reviews in a second shared by several attempts cannot be	attempts.tsv stores date +%s and production qa archives carry no attempt number, so reviews in a second shared by several attempts cannot be… [scripts/forge-summarize.py]	144	1
+2026-11-11T21:12:03Z	i-plan	summary-core	qa	sol:medium	PASS	-	-	-	65
+2026-11-11T21:18:15Z	i-plan	plan-options	qa	sol:high	PASS	-	-	-	893
+2026-11-11T21:25:21Z	i-plan	summary-control	dwarf	sonnet:high	-	-	-	-	419
+2026-11-11T21:29:01Z	i-plan	summary-control	qa	sol:high	FAIL	-	-	-	211
+2026-11-11T21:30:41Z	i-plan	retro-issues	dwarf	grok:xhigh	-	-	-	-	4465
+2026-11-11T21:33:17Z	i-plan	retro-issues	qa	sol:medium	FAIL	-	-	-	143
+2026-11-11T21:36:01Z	i-plan	summary-control	dwarf	sonnet:high	-	-	-	-	408
+2026-11-11T21:36:17Z	i-plan	brief-core	dwarf	sonnet:high	-	-	-	-	834
+2026-11-11T21:38:04Z	i-plan	brief-core	qa	sol:high	PASS	-	-	-	97
+2026-11-11T21:38:51Z	i-plan	summary-control	qa	sol:high	FAIL	-	-	-	161
+2026-11-11T21:40:26Z	i-plan	summary-control	dwarf	sonnet:high	-	-	-	-	88
+2026-11-11T21:42:13Z	i-plan	summary-control	qa	opus:medium	PASS	-	-	-	97
+2026-11-11T21:53:42Z	i-plan	summary-api	dwarf	haiku:xhigh	-	trap	export py blanks a text field only when its key is in text keys so a new text key leaks unless it is added there	export.py blanks a text field only when its key is in _TEXT_KEYS, so a new text key leaks unless it is added there [ui/forge_ui/export.py]	678	1
+2026-11-11T21:55:19Z	i-plan	summary-api	qa	opus:medium	PASS	verify	cd ui tests python3 m unittest test links test reader fails with modulenotfounderror forge ui run python3 m unittest discover s tests p	from ui/, `python3 -m unittest discover -s tests -p 'test_reader.py'` runs one forge-ui module (cd ui/tests fails on the forge_ui import) [ui/tests/test_reader.py]	89	1
+2026-11-11T21:57:35Z	i-plan	retro-wiring	dwarf	grok:xhigh	-	trap	the scheduler captures a task s stdout and stderr into tasks id task out and prints that file only when forge output full	the scheduler captures a task's stdout and stderr into tasks/<id>/task.out and prints that file only when FORGE_OUTPUT=full [scripts/forge-schedule.py]	2354	1
+2026-11-11T21:59:57Z	i-plan	retro-wiring	qa	sol:medium	FAIL	-	-	-	133
+2026-11-11T22:03:10Z	i-plan	retro-issues	dwarf	grok:xhigh	-	-	-	-	1779
+2026-11-11T22:05:15Z	i-plan	retro-issues	qa	sol:medium	FAIL	-	-	-	115
+2026-11-11T22:17:35Z	i-plan	brief-answer	dwarf	grok:xhigh	-	trap	a task is merged when tasks id merged exists even if tasks id status still says pass task status checks the merged file first	a task is MERGED when `tasks/<id>/merged` exists even if `tasks/<id>/status` still says PASS; `task_status` checks the merged file first [scripts/forge-parallel.sh]	1683	1
+2026-11-11T22:18:41Z	i-plan	brief-answer	qa	opus:medium	FAIL	finding	the tasks tsv files column declares directories as prefixes src routes covers src routes api py compare changed paths the way check drift does not	the tasks.tsv files column declares directories as prefixes (src/routes covers src/routes/api.py); compare changed paths the way check_drift does, not… [scripts/forge-parallel.sh]	54	1
+2026-11-11T22:25:12Z	i-plan	retro-wiring	dwarf	grok:xhigh	-	-	-	-	1508
+2026-11-11T22:28:03Z	i-plan	retro-wiring	qa	opus:medium	PASS	-	-	-	162
+2026-11-11T22:28:14Z	i-plan	brief-answer	dwarf	grok:xhigh	-	-	-	-	566
+2026-11-11T22:28:54Z	i-plan	brief-answer	qa	opus:medium	PASS	-	-	-	24
+2026-11-11T22:31:53Z	i-plan	retro-issues	dwarf	grok:xhigh	-	-	-	-	1592
+2026-11-11T22:33:17Z	i-plan	retro-issues	qa	opus:medium	FAIL	-	-	-	67
+2026-11-11T22:34:42Z	i-plan	retro-issues	dwarf	sonnet:high	-	-	-	-	78
+2026-11-11T22:35:37Z	i-plan	retro-issues	qa	opus:medium	PASS	-	-	-	46
+2026-11-11T22:37:32Z	i-plan	brief-schedule	dwarf	sonnet:high	-	-	-	-	511
+2026-11-11T22:40:23Z	i-plan	brief-schedule	qa	opus:medium	PASS	-	-	-	162
+2026-11-11T22:44:44Z	i-plan	summary-page	dwarf	haiku:xhigh	-	-	-	-	2959
+2026-11-11T22:50:18Z	i-plan	docs-cli	dwarf	haiku:xhigh	-	trap	test reference links resolve checks link paths only never anchors	test_reference_links_resolve checks link paths only, never #anchors [tests/test_skill.py]	588	1
+2026-11-11T22:52:44Z	i-plan	summary-page	qa	opus:medium	PASS	trap	test browser page test a failing task is notified once across tabs is flaky playwright response has been disposed rerun it alone before blaming a	test_browser.Page.test_a_failing_task_is_notified_once_across_tabs is flaky (Playwright "Response has been disposed"); rerun it alone before blaming a… [ui/tests/test_browser.py]	472	0
+2026-11-11T22:54:31Z	i-plan	docs-cli	qa	opus:medium	PASS	-	-	-	242
+2026-11-11T23:00:58Z	i-plan	brief-api	dwarf	grok:xhigh	-	-	-	-	1228
+2026-11-11T23:02:25Z	i-plan	brief-api	qa	opus:medium	FAIL	finding	export py blanks a text field only when its key is in text keys so a new text key leaks unless it is added there	a reader field holding new user-written text leaks into the default export unless its key is added to `_TEXT_KEYS` or `_TEXT_KEYS_UNDER` in export.py, a… [ui/forge_ui/export.py]	78	1
+2026-11-11T23:08:23Z	i-plan	brief-api	dwarf	grok:xhigh	-	-	-	-	351
+2026-11-11T23:09:27Z	i-plan	brief-api	qa	opus:medium	PASS	-	-	-	50
+2026-11-11T23:45:09Z	i-plan	brief-page	dwarf	grok:xhigh	-	trap	ui forge ui export py scripts is a hardcoded subset of index html and already omits uikit js controls js and findingsview js so a new static script is	ui/forge_ui/export.py SCRIPTS is a hardcoded subset of index.html and already omits uikit.js, controls.js and findingsview.js, so a new static script is… [ui/forge_ui/export.py]	2136	1
+2026-11-11T23:46:53Z	i-plan	brief-page	qa	opus:medium	PASS	-	-	-	96
+2026-11-11T23:55:52Z	i-plan	docs-ui	dwarf	haiku:xhigh	-	trap	ui forge ui export py scripts omits briefview js so exported runs do not render brief questions	ui/forge_ui/export.py SCRIPTS omits briefview.js, so exported runs do not render brief questions [ui/forge_ui/export.py]	532	1
+2026-11-11T23:56:57Z	i-plan	docs-ui	qa	opus:medium	PASS	-	-	-	57
+2026-11-11T23:58:17Z	i-plan	sweep-3	dwarf	haiku:xhigh	-	-	-	-	64
+2026-11-11T23:58:51Z	i-plan	sweep-3	qa	opus:medium	PASS	-	-	-	24
+2026-11-11T23:58:53Z	i-plan	sweep-5	dwarf	haiku:xhigh	-	-	-	-	100
+2026-11-11T23:59:34Z	i-plan	sweep-1	dwarf	haiku:xhigh	-	-	-	-	141
+2026-11-11T23:59:51Z	i-plan	sweep-5	qa	opus:medium	PASS	-	-	-	47
+2026-11-12T00:00:46Z	i-plan	sweep-2	dwarf	haiku:xhigh	-	-	-	-	213
+2026-11-12T00:00:59Z	i-plan	sweep-1	qa	opus:medium	FAIL	-	-	-	75
+2026-11-12T00:01:47Z	i-plan	sweep-2	qa	opus:medium	PASS	-	-	-	35
+2026-11-12T00:02:18Z	i-plan	sweep-4	dwarf	haiku:xhigh	-	-	-	-	305
+2026-11-12T00:04:10Z	i-plan	sweep-1	dwarf	haiku:xhigh	-	-	-	-	185
+2026-11-12T00:04:31Z	i-plan	sweep-4	qa	opus:medium	PASS	-	-	-	125
+2026-11-12T00:04:55Z	i-plan	sweep-1	qa	opus:medium	PASS	-	-	-	37
