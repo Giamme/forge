@@ -25,9 +25,22 @@ import urllib.parse
 from forge_ui import __version__, reader, server
 
 STATIC = server.STATIC_DIR
-# what the exported page runs, in index.html's order; the cloud, the leaderboard and notifications need a server
-SCRIPTS = ('theme.js', 'icons.js', 'datatable.js', 'shell.js', 'runmodel.js', 'cloudmodel.js', 'graph.js', 'gantt.js', 'verifyview.js', 'checksview.js', 'panel.js', 'diffview.js', 'convo.js', 'files.js', 'map3d.js',
-           'search.js', 'app.js')
+# what the exported page runs; every other script index.html loads is in LEFT_OUT, with the reason
+SCRIPTS = ('theme.js', 'icons.js', 'datatable.js', 'shell.js', 'runmodel.js', 'cloudmodel.js', 'graph.js', 'gantt.js', 'verifyview.js', 'checksview.js',
+           'briefview.js', 'panel.js', 'diffview.js', 'convo.js', 'files.js', 'map3d.js', 'search.js', 'app.js')
+LEFT_OUT = {
+    'uikit.js': 'write helpers and the guards that keep a poll from redrawing what a person holds; a snapshot neither writes nor polls',
+    'controls.js': 'changes a live run',
+    'rundelete.js': 'deletes a run',
+    'settings.js': 'the settings screen reads and writes the server',
+    'notify.js': 'notifications come from polling the run list',
+    'modelstats.js': 'the model leaderboard needs /api/models, which a snapshot does not carry',
+    'leaderboard.js': 'the model leaderboard needs /api/models, which a snapshot does not carry',
+    'cloudui.js': 'the run cloud needs every run, and a snapshot carries one',
+    'findingsview.js': 'the open-findings page dismisses findings or files them as issues',
+    'worktreesview.js': 'the Worktrees screen needs /api/worktrees',
+    'projectsview.js': 'the Projects screen needs every run of the repository',
+}
 MODULES = ('iso.js', 'cloud3d.js', 'findings3d.js', 'stagectl.js', 'scene3d.js')   # bundled in dependency order
 DIFF_CAP = 1 << 20                                          # one diff's JSON
 TRANSCRIPT_CAP = 2 << 20                                    # one execution's transcript

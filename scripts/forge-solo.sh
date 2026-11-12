@@ -361,6 +361,7 @@ if [ ! -s "$RUN/changes.diff" ]; then
 fi
 
 REVIEW="$RUN/review-$(date +%s)-$$"
+FORGE_REVIEW_SNAPSHOT="$REVIEW"          # forge_metric_begin's EXIT trap removes it, whatever the outcome (#139)
 forge_review_snapshot "$REPO" "$START" "$END" "$REVIEW" || die "cannot create review snapshot" 3
 forge_review_deps "$REPO" "$REVIEW" "$RUN/review.deps"
 SOURCE_FP="$(forge_fingerprint "$REPO")" || exit 3

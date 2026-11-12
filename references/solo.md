@@ -86,7 +86,8 @@ execution instructions. Review snapshots use self-contained object packs and one
 the repo's dependency directories (`node_modules`, `.venv`, `vendor`, Mix's `deps` and the others
 listed under [worktree setup](decompose.md#worktree-setup)) linked in, at the root and in workspace
 packages, when it has them; the prompt says what is there, and the reviewer reports `FORGE_TESTS` as in
-[worktree setup](decompose.md#worktree-setup).
+[worktree setup](decompose.md#worktree-setup). The snapshot is removed when the review ends
+(`FORGE_KEEP_SNAPSHOTS=1` keeps it).
 
 Optional [Ripwire context](ripwire.md) is enabled by default. Use `--no-ripwire`
 or `FORGE_RIPWIRE=off` to disable preparation and installation offers.

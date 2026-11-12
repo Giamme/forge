@@ -1689,6 +1689,11 @@ do_task_body() (
     reviewed="$(cat "$tdir/reviewed.commit")"
   fi
   review="$tdir/review-$attempt-$$"
+  # One review of a task at a time, so any snapshot already here is an interrupted review's: a signal
+  # ends this subshell without its EXIT trap (#139).
+  local stale
+  for stale in "$tdir"/review-*; do forge_drop_snapshot "$stale"; done
+  FORGE_REVIEW_SNAPSHOT="$review"          # forge_metric_begin's EXIT trap removes it, whatever the outcome
   forge_review_snapshot "$wt" "$base" "$reviewed" "$review" || { echo ERROR > "$tdir/status"; return 1; }
   forge_review_deps "$wt" "$review" "$tdir/review.deps"
   source_fp="$(forge_fingerprint "$wt")" || return 1
@@ -3353,7 +3358,8 @@ case "$CMD" in
     FORGE_DATASET_INVOCATION="inv-$(date +%s)-$$-$RANDOM"; export FORGE_DATASET_INVOCATION
     FORGE_DATASET_STARTED="$(date +%s)"
     FORGE_DATASET_ARGV=("$@")
-    trap 'forge_dataset_rc=$?; trap - EXIT; forge_dataset_invocation "$CMD" "$forge_dataset_rc" "$FORGE_DATASET_STARTED" ${FORGE_DATASET_ARGV[@]+"${FORGE_DATASET_ARGV[@]}"}; exit "$forge_dataset_rc"' EXIT ;;
+    # An adopt's or final review's snapshot goes too, whatever the exit path (#139).
+    trap 'forge_dataset_rc=$?; trap - EXIT; forge_drop_snapshot "${FORGE_REVIEW_SNAPSHOT:-}"; forge_drop_snapshot "${FINAL_REVIEW_SNAPSHOT:-}"; forge_dataset_invocation "$CMD" "$forge_dataset_rc" "$FORGE_DATASET_STARTED" ${FORGE_DATASET_ARGV[@]+"${FORGE_DATASET_ARGV[@]}"}; exit "$forge_dataset_rc"' EXIT ;;
 esac
 # Subcommands implemented in the optional libraries fail clearly if the library is absent.
 need_fn() { declare -F "$1" >/dev/null || die "'$CMD' is not available: $1 is missing" 3; }

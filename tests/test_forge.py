@@ -290,6 +290,7 @@ class ForgeTests(unittest.TestCase):
   self.env.pop('FORGE_TIMEOUT'); r=self.solo(); self.assertEqual(r.returncode,0,r.stdout)
 
  def test_export_ignore_does_not_hide_review_files(self):
+  self.env['FORGE_KEEP_SNAPSHOTS']='1'   # the snapshot is read after its review (#139)
   (self.repo/'.gitattributes').write_text('base.txt export-ignore\n')
   self.git('add','.gitattributes'); self.git('commit','-qm','attributes')
   r=self.solo(); self.assertEqual(r.returncode,0,r.stdout)
@@ -395,6 +396,7 @@ class ForgeTests(unittest.TestCase):
   self.run_script('forge-parallel.sh','run',p)
   self.assertEqual(before,(self.root/'calls').read_text())
  def test_snapshot_modes_symlinks_deletions_independent(self):
+  self.env['FORGE_KEEP_SNAPSHOTS']='1'   # the snapshot is read after its review (#139)
   (self.repo/'executable').write_text('#!/bin/sh\n'); (self.repo/'executable').chmod(0o755)
   (self.repo/'link').symlink_to('base.txt')
   self.git('add','.'); self.git('commit','-qm','modes')

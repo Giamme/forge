@@ -129,6 +129,7 @@ do_adopt() {
   tip="$(git -C "$int_wt" rev-parse HEAD)"
 
   local review="$out/review" thr verdict gate_line decision kept inline=1 vcmd
+  FORGE_REVIEW_SNAPSHOT="$review"          # the EXIT trap of forge-parallel.sh removes it on every exit (#139)
   forge_review_snapshot "$int_wt" "$base" "$tip" "$review" > "$out/snapshot.log" 2>&1 \
     || { adopt_rollback; die "adopt: cannot build the review snapshot (see $out/snapshot.log)" 3; }
   forge_review_deps "$int_wt" "$review" "$out/review.deps"

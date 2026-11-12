@@ -16,7 +16,10 @@ COULD_NOT_RUN = 'FORGE_TESTS: COULD NOT RUN — the browser suite needs a displa
 
 
 class ReviewDepsTests(unittest.TestCase):
-    setUp = fixtures.ForgeTests.setUp
+    def setUp(self):
+        fixtures.ForgeTests.setUp(self)
+        self.env['FORGE_KEEP_SNAPSHOTS'] = '1'     # these tests look inside the snapshot after its review (#139)
+
     git = fixtures.ForgeTests.git
     run_script = fixtures.ForgeTests.run_script
     scenario = fixtures.ForgeTests.scenario
