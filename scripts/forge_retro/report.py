@@ -118,22 +118,21 @@ def normalise(text: str) -> str:
 _COMMAND_LINE = re.compile(r'(?:^|\s)(?:-[a-z]*c|eval)\s*$')
 # Commands whose quoted argument is a command line for another shell.
 _REMOTE = re.compile(r'(?:^|\s)(?:ssh|mosh)\s')
-# A flag is a dash and a letter. A lone dash (`"/tmp/Review - One"`) is part of a name.
-_FLAG = re.compile(r'-{1,2}[a-z]')
 
 
 def _quoted_path(match) -> str:
     """Replace the quoted absolute path. Keep the arguments of a quoted command line.
 
-    A quoted string is one of two things, and the text alone does not always say which:
+    A quoted string is one of two things. The text before it decides which:
 
-    - a command line, when it follows `-c` / `eval`, when the command is `ssh` / `mosh`,
-      or when it holds a word that is a flag (`bash -c "/usr/bin/npm test tests/unit"`,
-      `ssh host "/usr/bin/npm test"`). The path is the first word only; every other word
-      is an argument and is kept, so `"/usr/bin/npm test"` and `"/usr/bin/npm install"`
-      stay two patterns, and so do `"/usr/bin/pytest tests/unit -q"` and
-      `"/usr/bin/pytest tests/integration -q"`.
-    - otherwise one path, spaces included: `cat "/tmp/Review One"` is `cat <path>`.
+    - a command line, when it follows `-c` / `eval` or when the command is `ssh` / `mosh`
+      (`bash -c "/usr/bin/npm test tests/unit"`, `ssh host "/usr/bin/npm test"`). The path is
+      the first word only; every other word is an argument and is kept, so `"/usr/bin/npm test"`
+      and `"/usr/bin/npm install"` stay two patterns, and so do `"/usr/bin/pytest tests/unit -q"`
+      and `"/usr/bin/pytest tests/integration -q"`.
+    - otherwise one path, spaces and dashes included: `cat "/tmp/Review One"` and
+      `cat "/tmp/Review -One"` are both `cat <path>`. A word that looks like a flag does not
+      make the quote a command line.
 
     A space inside a directory name of a quoted command line (`"/tmp/Review One/t.sh -q"`)
     cannot be told from an argument, so the rest of that name is kept and two worktrees
@@ -142,8 +141,7 @@ def _quoted_path(match) -> str:
     """
     parts = match.group(0)[1:-1].split(' ')
     before = match.string[:match.start()]
-    if not (_COMMAND_LINE.search(before) or _REMOTE.search(before)
-            or any(_FLAG.match(part) for part in parts[1:])):
+    if not (_COMMAND_LINE.search(before) or _REMOTE.search(before)):
         return '<path>'
     return ' '.join(['<path>'] + parts[1:])
 
