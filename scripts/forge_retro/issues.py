@@ -235,14 +235,53 @@ def _branches(plan: Path) -> list:
     return found
 
 
+def _git_config(repo: Path):
+    """The repository's shared config file. In a linked worktree `.git` is a file naming the
+    worktree's git dir, and the config lives in the common dir it points to."""
+    dotgit = repo / '.git'
+    if dotgit.is_dir():
+        return dotgit / 'config'
+    try:
+        line = dotgit.read_text(errors='replace').strip()
+    except OSError:
+        return None
+    if not line.startswith('gitdir:'):
+        return None
+    gitdir = Path(line.split(':', 1)[1].strip())
+    if not gitdir.is_absolute():
+        gitdir = repo / gitdir
+    try:
+        common = (gitdir / 'commondir').read_text(errors='replace').strip()
+    except OSError:
+        return gitdir / 'config'
+    common_dir = Path(common) if Path(common).is_absolute() else gitdir / common
+    return common_dir / 'config'
+
+
+def _origin(repo: Path):
+    """The origin URL, read from the git config without running git (a worktree's too)."""
+    config = _git_config(repo)
+    try:
+        lines = config.read_text(errors='replace').splitlines() if config else []
+    except OSError:
+        return None
+    section = None
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith('['):
+            section = stripped
+        elif section == '[remote "origin"]' and stripped.startswith('url') and '=' in stripped:
+            return stripped.split('=', 1)[1].strip()
+    return None
+
+
 def _literals(plan: Path) -> list:
     """(secret, placeholder) longest first, so a full origin URL goes before its owner."""
     found = []
     repo = _repo_path(plan)
     if repo:
         _add(found, Path(repo).name, '<repo>')
-        from forge_dataset import git_origin
-        origin = git_origin(repo) or ''
+        origin = _origin(Path(repo)) or ''
         _add(found, origin, '<repo>')
         owner, slug = _split_origin(origin)
         _add(found, owner, '<repo>')

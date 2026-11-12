@@ -397,6 +397,29 @@ class RetroIssuesTests(unittest.TestCase):
         self.assertIn('kept-arg', visible)
         self.assertIn('Host key verification failed; the host machine ran out of memory', visible)
 
+    def test_a_worktree_repo_still_redacts_its_origin(self):
+        # forge runs often plan on a linked worktree, whose `.git` is a file: the origin
+        # owner and slug come from the main checkout's config through `commondir`.
+        main = self.root / 'main-checkout'
+        gitdir = main / '.git' / 'worktrees' / 'wt'
+        gitdir.mkdir(parents=True)
+        (main / '.git' / 'config').write_text(
+            '[remote "origin"]\n\turl = git@github.com:ownerq/secretproj.git\n', encoding='utf-8')
+        (gitdir / 'commondir').write_text('../..\n', encoding='utf-8')
+        repo = self.root / 'wt'
+        repo.mkdir()
+        (repo / '.git').write_text('gitdir: %s\n' % gitdir, encoding='utf-8')
+        (self.plan / 'repo').write_text(str(repo) + '\n', encoding='utf-8')
+        notes = [note('alpha', 'forge', 'push to ownerq/secretproj was refused', 'python3 build.py', 'opus', 'claude')]
+        blob = ''.join(json.dumps(item, ensure_ascii=False, sort_keys=True) + '\n' for item in notes)
+        (self.plan / 'retro' / 'notes.jsonl').write_text(blob, encoding='utf-8')
+        _res, data = self.invoke_json()
+        draft = data['drafts'][0]
+        visible = draft['title'] + '\n' + draft['body'].split('<!--', 1)[0]
+        self.assertNotIn('ownerq', visible)
+        self.assertNotIn('secretproj', visible)
+        self.assertIn('<repo>', visible)
+
     def test_build_file_names_before_a_line_number_are_not_hosts(self):
         summary = 'Makefile:23: * missing separator; Dockerfile:5 failed; buildtwo:22 refused'
         notes = [note('alpha', 'forge', summary, 'make', 'opus', 'claude')]

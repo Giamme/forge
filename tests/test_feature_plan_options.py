@@ -355,7 +355,7 @@ class PlanOptionTests(unittest.TestCase):
         self.assertTrue(set(FILES) <= set(names))
 
     def test_split_carries_the_files(self):
-        self.scenario({'a.qa.1': FAIL})
+        self.scenario({'a.qa.*': FAIL})  # every review of a: brief mode's question dispatch comes first
         p = self.new_plan('ab')
         self.plan_cmd(p, '--retro', '--brief', 'gated', '--brief-scope', 'plan', *BRIEF, '--summaries', 'on', *SUMMARIES)
         before = self.present(p)
