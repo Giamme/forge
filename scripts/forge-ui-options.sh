@@ -41,6 +41,16 @@ forge_ui_register() {
   return 0
 }
 
+# forge_storage_check RUN_DIR REPO — at run start (#139): warn on stderr when this repository's forge
+# files (run dirs and worktrees) passed storage.warn-gb when they were last measured, and start the
+# background compaction of its idle runs (storage.compact auto), never RUN_DIR itself. Never blocks
+# or fails the run; callers skip it in a --dry-run. FORGE_STORAGE_COMPACT=off and
+# FORGE_STORAGE_WARN_GB=off turn either part off.
+forge_storage_check() {
+  python3 -I "$SKILL_DIR/scripts/forge-runs-compact.py" --start-check --repo "$2" --exclude "$1" </dev/null >/dev/null || true
+  return 0
+}
+
 # forge_repo_identity CHECKOUT DIR — write DIR/repo.identity, the repository CHECKOUT belongs to:
 # {"root", "worktree", "branch"}. root is the main working tree, the same for the main checkout
 # and every linked worktree; worktree is CHECKOUT's physical path when it differs from root, else

@@ -2068,7 +2068,9 @@ class IndependenceTests(unittest.TestCase):
         allowed = {'forge-runtime.py', 'forge-schedule.py', 'forge-dataset.py', 'forge-shadow.py', 'client.py',
                    'cli.py', 'invocation.py', 'pipeline.py', 'predict.py',
                    # forge control and forge runs rm: they write to the store, or only locate it
-                   'forge-control.py', 'forge-runs-rm.py'}
+                   'forge-control.py', 'forge-runs-rm.py',
+                   # forge du: only locates the data home, to size it
+                   'forge-du.py'}
         for path in (ROOT / 'scripts').rglob('*'):
             if path.suffix not in ('.py', '.sh') or 'forge_dataset' in path.parts:
                 continue
@@ -2144,7 +2146,8 @@ class IndependenceTests(unittest.TestCase):
                     self.assertRegex(line, r'from forge_dataset(\.capture)? import (capture|point|jev|fractal_step|'
                                            r'fractal_outcome|mint_run_uid)|from forge_dataset\.cli import main|'
                                            r'from forge_dataset import DatasetError, data_home, dataset_dir, enabled, '
-                                           r'harvest, importer, record, record_strict', str(path))
+                                           r'harvest, importer, record, record_strict|'
+                                           r'from forge_dataset import data_home$', str(path))
 
     def test_forge_config_locates_the_dataset_as_the_store_does(self):
         # forge config mirrors data_home() and enabled() rather than import the store; keep them in step.

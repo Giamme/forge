@@ -86,6 +86,19 @@ class SnapshotCleanupTests(unittest.TestCase):
         self.assertTrue((out / 'review.base').is_file())
         self.assertEqual(self.snapshots(out), [])
 
+    def test_the_next_final_review_removes_a_snapshot_an_interrupted_one_left(self):
+        self.scenario({})
+        p = self.plan_a()
+        self.assertEqual(self.run_script('forge-parallel.sh', 'run', p).returncode, 0)
+        left = p / 'final-review-1-4242' / 'review-4242'
+        (left / '.git').mkdir(parents=True); (left / 'a.txt').write_text('an old export\n')
+        not_a_snapshot = p / 'final-review-1-4242' / 'review-notes'
+        not_a_snapshot.mkdir()
+        r = self.run_script('forge-parallel.sh', 'review', p, '--qa', 'opus')
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertFalse(left.exists())
+        self.assertTrue(not_a_snapshot.is_dir())
+
     def test_a_solo_review_leaves_no_snapshot(self):
         self.scenario({})
         r = self.solo('--qa', 'opus')

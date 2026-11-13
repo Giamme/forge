@@ -286,6 +286,7 @@ its last 20,000 behind a leading `…`. Their `truncated` lists the field names 
 | `GET /api/projects/<id>/findings[?refresh=1]` | `200 ProjectFindings`: every review's findings with their status |
 | `GET /api/projects/<id>/memories[?refresh=1]` | `200 ProjectMemories`: what each checkout's memory gives models and every learning's state |
 | `GET /api/worktrees[?refresh=1]` | `200 Worktrees`: every worktree forge created, with its status and the commands to remove it; cached 60 s (see Worktrees) |
+| `GET /api/storage[?refresh=1]` | `200 Storage`: what forge takes on disk and the commands that take it back, measured in the background; cached 600 s (see Storage) |
 | `GET /api/config?run=<key>` | `200` the `forge config show --json` of that run's repository root (see Config) |
 | `POST /api/config` | set or unset one allowed key (`repo.verify`, `repo.setup`, `repo.verify-subset`, `decide.gate.<gate>`, `decide.gate.<gate>.provider`, `decide.gate.<gate>.model`); `jev.enabled` is gone; authenticated |
 | `GET /api/config/profiles?run=<key>` | `200` every profile of that run's repository, each with its level, shadowed levels, default flag and body (see Profiles) |
@@ -1714,6 +1715,29 @@ Row = {
 <branch>` when the branch is merged; `missing` gets `git -C <repo> worktree prune`; every other
 status gets none. Paths are quoted for the shell and no command has `--force`. `runs[].command` is
 `forge runs rm <run-dir> --worktrees --branches --dry-run`, null while the run is active.
+
+### `GET /api/storage`
+
+The Disk screen (`forge_ui/storage.py`). Read-only, so it answers in `--read-only` mode too, and it runs
+no forge command. It loads `scripts/forge_storage.py` read-only and calls its `report` for every
+registered run (the same as `forge du --all`, without writing its footprint file). The first ask starts
+one measurement in a background thread and answers `measuring`; the result is kept for 600 s per server,
+and `refresh=1` measures again (one measurement at a time). Any other parameter is a `400`.
+
+```
+Storage = {state: measuring | ready | error | unavailable, error, started, progress: {done, of} | null,
+           data: Report | null (the last measurement, kept while the next one runs)}
+Report = {repo: null, computed, complete, totals: {runs, worktrees, data_home, reclaimable, snapshots, logs, strays},
+          runs: [{path, run_id, repo, updated, total, snapshots, snapshot_count, logs, gz, compressible, strays,
+                  fractal, other, reclaimable, complete, commands: [{label, command}]}],
+          strays: [{path, bytes, kind: dependencies | git, run}], worktrees: [{repo, run_id, path, bytes, complete}],
+          data_home: {path, bytes, parts: {dataset, blobs, archive, exports, legacy, storage, other}} | null,
+          commands: [{label, command, bytes?}]}
+```
+
+Sizes are disk usage in bytes. `reclaimable` is the snapshots plus an estimate for gzipping the log copies.
+A run's commands are `forge runs compact <run-dir> --logs` (when something can go) and `forge runs rm
+<run-dir> --dry-run`; the report's are `forge runs compact --all --logs` and `forge du --all`.
 
 ### `GET /api/config?run=<key>` and `POST /api/config`
 

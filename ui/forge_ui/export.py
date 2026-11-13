@@ -39,6 +39,7 @@ LEFT_OUT = {
     'cloudui.js': 'the run cloud needs every run, and a snapshot carries one',
     'findingsview.js': 'the open-findings page dismisses findings or files them as issues',
     'worktreesview.js': 'the Worktrees screen needs /api/worktrees',
+    'storageview.js': 'the Disk screen needs /api/storage',
     'projectsview.js': 'the Projects screen needs every run of the repository',
 }
 MODULES = ('iso.js', 'cloud3d.js', 'findings3d.js', 'stagectl.js', 'scene3d.js')   # bundled in dependency order

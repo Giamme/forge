@@ -17,10 +17,12 @@ harness (`/forge`); this command installs forge and drives its optional tools.
 | `forge fractal …` | opt-in Fractal execution; see [the command group](fractal.md#forge-fractal-command-group) |
 | `forge runs [--repo DIR \| --all] [--limit N] [--json]` | this repo's recent runs, newest first: run id, kind, age, task states, verification and final review, goal, and the run dir. Read-only; the same summaries forge-ui shows |
 | `forge control show\|set\|pin\|unpin\|drain\|resume\|stop\|retry\|add PLAN_DIR …` | change a live plan: `set` takes `qa-threshold` (`P0`..`P3`, `none` or `default` for the plan, `inherit` per task), `timeout`, `escalate-after`, `escalate-effort` (`on`/`off`), `verify-retries`, `infra-backoff` (a backoff shape; `none` drops it), `infra-fallback` (`on`/`off`), `max-attempts` (a non-negative integer, `0` = no cap, and only with `--confirm`), `converge-window` (a non-negative integer), `pre-review-tests` (`on`/`off`), `pre-review-parallel` (1-64), `summaries` (`on`/`off`; on a finished run it also starts `forge summarize`), `retry-budget`, `infra-retries` or `max-parallel` (1-64) (the last three only while a scheduler runs; `--task ID` for `qa-threshold`, `retry-budget` and `summaries`, value `inherit` drops the override); `pin PLAN_DIR TASK SPEC` sets the model the task's next full retry uses once, `unpin` drops it. While a scheduler runs: `drain` starts nothing new until `resume` (a run with nothing left to start ends as usual); `stop [--now]` ends the run once the running tasks finish (`--now` interrupts them; `run` exits 130 without verifying, unless every task had merged by then: it then verifies and exits 0 as usual); `retry PLAN_DIR TASK [--dwarf SPEC]` queues a retry, and a `NEEDS_DECISION` task instead needs `--decide retry=N` or `--decide threshold=Pn`, or `--dwarf SPEC`, each with `--reason TEXT --approved`; `add PLAN_DIR TASK` (a row appended to `tasks.tsv`) queues a request the scheduler applies or refuses. `show` (`--json` for JSON) also says whether the run is drained or stopping, prints an `INFRA` task's cause, and, while a scheduler is live, lists each infrastructure pause with its reset and "needs you". The text table lists each task's attempts against its cap (`9/8`, or `9/-` when there is no cap). Every change and every request's outcome is logged in `control.log`. Exit 2 invalid input, 3 refused. See [live controls](decomposed-runs.md#changing-a-run-while-it-works) |
-| `forge config show [--repo DIR] [--json]` / `forge config set <key> <value> [--repo DIR] [--json]` / `forge config unset <key> [--repo DIR] [--json]` | one view of every config source (registry, the legacy Jev file, decide, the user `features`, the repo's `.forge/verify`, `setup` and `verify-subset`, dataset, `FORGE_*` variables with secrets hidden); `set` / `unset` edit `repo.verify`, `repo.setup`, `repo.verify-subset` (must contain `{files}` or `{changed}`; `--repo` required) and `decide.gate.<gate>`, `decide.gate.<gate>.provider`, `decide.gate.<gate>.model` (`off`, `shadow` or `on`; those write the user level and do not need `--repo`). They also set the user feature keys: `retro` (`off` or `on`), `brief` (`off`, `advisory`, `gated` or `strict`), `brief.scope` (`task`, `wave` or `plan`), `brief.model` (a spec), `summaries` (`off` or `on`) and `summaries.model` (a spec). Those write the user file and ignore `--repo`; `unset` removes one key. A bad value exits 2 and writes nothing. A model spec is checked for its form when it is set; whether it resolves is checked when `plan` uses it. Unset of a `decide.gate.*` key is refused: set the mode to `off`. `-` as a value reads stdin for the per-repo files. Exit 2 on invalid input |
+| `forge config show [--repo DIR] [--json]` / `forge config set <key> <value> [--repo DIR] [--json]` / `forge config unset <key> [--repo DIR] [--json]` | one view of every config source (registry, the legacy Jev file, decide, the user `features`, the repo's `.forge/verify`, `setup` and `verify-subset`, dataset, `FORGE_*` variables with secrets hidden); `set` / `unset` edit `repo.verify`, `repo.setup`, `repo.verify-subset` (must contain `{files}` or `{changed}`; `--repo` required) and `decide.gate.<gate>`, `decide.gate.<gate>.provider`, `decide.gate.<gate>.model` (`off`, `shadow` or `on`; those write the user level and do not need `--repo`). They also set the user feature keys: `retro` (`off` or `on`), `brief` (`off`, `advisory`, `gated` or `strict`), `brief.scope` (`task`, `wave` or `plan`), `brief.model` (a spec), `summaries` (`off` or `on`), `summaries.model` (a spec), `storage.compact` (`auto`, the default, or `off`) and `storage.warn-gb` (gigabytes, `20` by default, or `off`; see [forge du](#forge-du)). Those write the user file and ignore `--repo`; `unset` removes one key. A bad value exits 2 and writes nothing. A model spec is checked for its form when it is set; whether it resolves is checked when `plan` uses it. Unset of a `decide.gate.*` key is refused: set the mode to `off`. `-` as a value reads stdin for the per-repo files. Exit 2 on invalid input |
 | `forge config profile list\|show\|create\|edit\|set\|unset\|rm\|use` | named bundles of routing, policy, gates and budget in `decide.json`; see [below](#forge-config-profile) |
 | `forge watch [RUN_DIR \| --repo DIR \| --all] [--interval S] [--settle S] [--until-done] [--no-notify] [--exec CMD]` | follow runs live: a line for every task status change, and a desktop notification, `--exec CMD` and the repo's `.forge/on-finish` when a run finishes or fails, a task fails or a final review gives its verdict; see [below](#forge-watch). Read-only |
 | `forge runs rm RUN_DIR [--dry-run] [--yes] [--no-archive] [--worktrees] [--branches] [--json]` | delete a run directory but keep what it taught the dataset; see [below](#forge-runs-rm) |
+| `forge runs compact [RUN_DIR … \| --repo DIR \| --all] [--logs] [--older-than DAYS] [--dry-run] [--json]` | keep every run and take back what it holds for nothing: leftover review snapshots and, with `--logs`, gzipped log copies; see [below](#forge-runs-compact) |
+| `forge du [--repo DIR \| --all] [--top N] [--json]` | what forge takes on disk (run dirs, worktree folders, its data home) and the command that takes each part back; see [below](#forge-du). Read-only |
 | `forge runs rerun RUN_DIR --dwarf SPEC [--qa SPEC] [--to DIR] [--max-parallel N] [--dry-run] [--run --yes]` | set up the same plan again with another implementer, from the same starting commit; spends nothing unless `--run --yes`; never merges. See [below](#forge-runs-rerun-and-compare) |
 | `forge runs compare RUN_A RUN_B [--json] [--no-record]` | two runs of one plan, side by side, per task; records the pair in the dataset |
 | `forge memory show\|learnings\|prune\|spend REPO …` | a repository's project memory; `learnings REPO --json` lists every learning in its ledger with what forge does with it (`in_memory`, `waiting` for a second run, `stale`, `capped`, `muted`), from forge-memory.sh's own rebuild, without changing the repository. See [project memory](memory.md) |
@@ -93,6 +95,47 @@ was asked. Branches are reported
 reports; `--yes` skips the prompt for the run id (needed without a terminal); `--json` prints one
 object, on failure too. Exit 0 ok, 2 refused input, 3 busy or the run is active, 4 failed during
 deletion or the run directory was kept (the same command finishes the job).
+
+### `forge runs compact`
+
+Keeps every run on disk, viewable in forge-ui and in the dataset, and takes back what it holds for
+nothing. Per run, holding the run's own lock as `forge runs rm` does:
+
+1. **preserve**: a strict dataset import of the run, as `forge runs rm` starts with; if any event cannot
+   be stored, nothing in that run is touched;
+2. **snapshots**: every review snapshot is removed (a `review` or `review-*` directory with a `.git`, beside
+   a `review.base`). Nothing reads one once its review has ended, and since 0.18 forge removes each one
+   then; these are older runs' and interrupted reviews' leftovers;
+3. **logs** (`--logs`): each dwarf's and reviewer's log copy in its execution record
+   (`attempts/<role>-<id>/<role>.log`, 64 KB or more) becomes `<role>.log.gz`, with the same mode and
+   times; forge-ui reads either the same way. The logs in task dirs, which running agents write and
+   retries read, are never touched;
+4. **record**: the dataset event `run_compacted`.
+
+It never touches an active run, a worktree, or anything forge does not create: a dependency install
+or a `.git` found inside a run dir is reported with its size (`stray`) and left in place. Name run dirs,
+or take every registered run of a repository (`--repo DIR`) or of every repository (`--all`); there an
+active run, or one changed within the hour, is skipped. `--older-than DAYS` keeps to runs unchanged that
+long; `--dry-run` changes nothing and says what would go; `--json` prints one object. Exit 0 ok, 2
+refused input, 3 the one run named is active, 4 failed. On a real 2.3 GB plan dir it took back
+2.2 GB, and forge-ui showed every conversation and check as before.
+
+**At run start** (`run` and solo runs), forge starts the same compaction with `--logs` in the background
+for the repository's other runs (`storage.compact auto`, the default; `forge config set storage.compact
+off` or `FORGE_STORAGE_COMPACT=off` turns it off; `FORGE_KEEP_SNAPSHOTS=1` keeps snapshots), measures the
+repository's footprint, and warns on stderr when the last measurement passed `storage.warn-gb` (20 GB by
+default; `off` turns it off). A run never waits for it or fails over it. forge never deletes a run on its
+own: that stays `forge runs rm`.
+
+### `forge du`
+
+What forge takes on disk, for the repository at the current directory, `--repo DIR`, or every
+repository (`--all`): each registered run dir (total, review snapshots, logs, other files, anything
+forge does not create, and what `forge runs compact --logs` would take back), each run's worktree
+folder, and forge's data home (the dataset and its blobs, which are kept, archives, exports, legacy
+files). It ends with the commands that take each part back. Sizes are disk usage, as `du` counts it;
+every file is visited, so a large tree takes a while. It reads only, apart from keeping the totals for
+the `storage.warn-gb` check. forge-ui's **Disk** screen shows the same report.
 
 ### `forge runs rerun` and `forge runs compare`
 

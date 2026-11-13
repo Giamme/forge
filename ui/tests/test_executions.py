@@ -746,6 +746,22 @@ class LazyTests(FixtureCase):
         for name in (F.READER_TASK1, F.PARALLEL, F.VERIFICATION, 'qa-' + F.uid(999)):
             self.assertIsNone(execution_transcript(self.plan, name), name)
 
+    def test_a_gzipped_copy_reads_as_the_plain_one(self):
+        # `forge runs compact --logs` gzips a finished execution's copy (#139): same events, same times
+        import gzip
+        from forge_ui.reader import execution_checks
+        plain = execution_transcript(self.plan, F.READER_DWARF1)
+        checks = execution_checks(self.plan, F.READER_DWARF1)
+        log = self.plan / 'tasks/reader/attempts' / F.READER_DWARF1 / 'dwarf.log'
+        packed = log.with_name('dwarf.log.gz')
+        packed.write_bytes(gzip.compress(log.read_bytes()))
+        log.unlink()
+        packed_result = execution_transcript(self.plan, F.READER_DWARF1)
+        self.assertEqual(packed_result['events'], plain['events'])
+        self.assertEqual({k: packed_result[k] for k in ('format', 'source', 'tokens', 'session')},
+                         {k: plain[k] for k in ('format', 'source', 'tokens', 'session')})
+        self.assertEqual(execution_checks(self.plan, F.READER_DWARF1)['checks'], checks['checks'])
+
     def test_a_transcript_never_follows_a_log_out_of_the_run(self):
         log = self.plan / 'tasks/reader/attempts' / F.READER_DWARF1 / 'dwarf.log'
         outside = self.base / 'outside.log'

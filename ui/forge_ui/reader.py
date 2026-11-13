@@ -2395,7 +2395,10 @@ def execution_transcript(path, name, source='plan'):
 def _agent_log(reader, item, owner_dir):
     """The log of a dwarf or reviewer execution: its copy once it ended, the one being written while it runs."""
     role = item['role']
-    return _log_path(reader, posixpath.join(owner_dir, role + '.log') if item['state'] == 'running' else f'{item.rel}/{role}.log')
+    if item['state'] == 'running':
+        return _log_path(reader, posixpath.join(owner_dir, role + '.log'))
+    # `forge runs compact --logs` gzips the copy (#139); transcripts reads either the same way
+    return _log_path(reader, f'{item.rel}/{role}.log') or _log_path(reader, f'{item.rel}/{role}.log.gz')
 
 
 def _checks_of(reader, item, owner_dir):

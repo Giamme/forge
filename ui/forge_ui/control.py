@@ -903,6 +903,19 @@ def _project_memories(ctx):
     return (404, {'error': 'not found'}) if found is None else (200, found)
 
 
+def _storage(ctx):
+    # The Disk screen (#139): forge_storage's report, measured in the background and cached per server
+    # (storage.CACHE_S); ?refresh=1 measures again.
+    from forge_ui import storage
+    ctx.route = 'storage'
+    try:
+        params = _query_params(ctx.query, ('refresh',))
+        refresh = _bit(params, 'refresh')
+    except BadBody as exc:
+        return _invalid(str(exc))
+    return 200, storage.screen(ctx.server).answer(refresh=refresh)
+
+
 def _worktrees(ctx):
     # The Worktrees screen (#125): git and the run dirs, read here, plus the history `forge dataset worktrees`
     # keeps, read through the CLI. Cached per server (worktrees.CACHE_S); ?refresh=1 reads everything again.
@@ -935,6 +948,7 @@ ROUTES = [
     ('POST', re.compile(r'/api/config()'), _config_set),
     ('GET', re.compile(r'/api/models/reviewers()'), _reviewer_outcomes),
     ('GET', re.compile(r'/api/worktrees()'), _worktrees),
+    ('GET', re.compile(r'/api/storage()'), _storage),
     ('GET', re.compile(r'/api/projects()'), _projects),
     ('GET', re.compile(r'/api/projects/([0-9a-f]{8})'), _project),
     ('GET', re.compile(r'/api/projects/([0-9a-f]{8})/findings'), _project_findings),

@@ -2768,6 +2768,7 @@ do_run() {
     printf '%s\n' "$MAXP" > "$PLAN/max_parallel"
     # Plan registers too; this also picks up plans made before it did.
     forge_ui_register "$PLAN"
+    forge_storage_check "$PLAN" "$REPO"
   fi
   forge_fractal_parallel_run "$PLAN" "$REPO" "$DRY" ${fractal_pipeline_args[@]+"${fractal_pipeline_args[@]}"} || return $?
   forge_fast_fractal_note "$PLAN"

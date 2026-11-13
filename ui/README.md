@@ -285,6 +285,13 @@ keep one meaning everywhere (amber running, green merged or passed, red failed, 
   from the dataset for checkouts that are gone; when checkouts' files differ the tab says so and lets you
   pick one. Each tab reads its endpoint when it opens, never on the poll; *Read again* reads everything
   again. A run's header (its repository name) and each map district's heading link to the project.
+- **Disk (`#/disk`):** what forge takes on disk in every repository it has runs for: each registered run dir
+  (total, review snapshots, logs, anything forge does not create, what can go), each run's worktree folder,
+  and forge's data home, with the command that takes each part back (`forge runs compact`, `forge runs rm
+  --dry-run`), to copy. The same report as `forge du --all` (`scripts/forge_storage.py`). Measuring visits
+  every file, so it runs once in the background when the screen opens and again on *Measure again*; the
+  answer is kept for 10 minutes, and the page polls only while a measurement runs. A finished execution's
+  conversation reads the same from a log copy that `forge runs compact --logs` gzipped.
 - **Worktrees (`#/worktrees`, `#/worktrees/repo/<root>`, `#/worktrees/runs/<key>`):** every worktree forge
   created, in any repository forge-ui knows (the runs it lists and the repositories in the dataset),
   with its run, task, branch, whether that branch is merged, its last commit, when forge created and

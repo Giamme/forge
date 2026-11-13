@@ -35,6 +35,10 @@ A solo run also records, for forge-ui and for you:
   qa_threshold        only with --qa-threshold: P0-P3 or none; without it the default P2 applies
 ```
 
+Review snapshots (`review-*` directories, a full export of the reviewed tree) exist only while their
+review runs. A dwarf's or reviewer's log copy under `attempts/` may be `<role>.log.gz` once `forge runs
+compact --logs` has run: the same bytes, gzipped. See [forge runs compact](commands.md#forge-runs-compact).
+
 Plus, in the repo itself and surviving the run:
 
 ```

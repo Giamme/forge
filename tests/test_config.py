@@ -409,11 +409,11 @@ class ConfigTests(unittest.TestCase):
         return self.cfg / 'forge' / 'decide.json'
 
     def test_feature_keys_set_show_and_unset(self):
-        # Nothing stored yet: show lists the six keys at their defaults.
+        # Nothing stored yet: show lists the keys at their defaults.
         shown = json.loads(self.run_cfg('show', '--json').stdout)
         self.assertEqual(shown['features'], {
             'retro': 'off', 'brief': 'off', 'brief.scope': 'task', 'brief.model': None,
-            'summaries': 'off', 'summaries.model': None,
+            'summaries': 'off', 'summaries.model': None, 'storage.compact': 'auto', 'storage.warn-gb': '20',
         })
         text = self.run_cfg('show').stdout
         self.assertLess(text.index('gate drift:'), text.index('\nfeatures:\n'))
@@ -436,6 +436,8 @@ class ConfigTests(unittest.TestCase):
             ('brief.model', 'sol'),
             ('summaries', 'on'),
             ('summaries.model', 'sol:high'),
+            ('storage.compact', 'off'),
+            ('storage.warn-gb', '7.5'),
         ]
         previous = {}
         for key, value in cases:
@@ -456,11 +458,12 @@ class ConfigTests(unittest.TestCase):
             'retro': 'on',
             'brief': {'level': 'advisory', 'scope': 'wave', 'model': 'sol'},
             'summaries': {'mode': 'on', 'model': 'sol:high'},
+            'storage': {'compact': 'off', 'warn_gb': '7.5'},
         })
         shown = json.loads(self.run_cfg('show', '--json').stdout)['features']
         self.assertEqual(shown, {
             'retro': 'on', 'brief': 'advisory', 'brief.scope': 'wave', 'brief.model': 'sol',
-            'summaries': 'on', 'summaries.model': 'sol:high',
+            'summaries': 'on', 'summaries.model': 'sol:high', 'storage.compact': 'off', 'storage.warn-gb': '7.5',
         })
         text = self.run_cfg('show').stdout
         for line in ('  retro: on\n', '  brief: advisory\n', '  brief.scope: wave\n',
@@ -516,6 +519,9 @@ class ConfigTests(unittest.TestCase):
             (('set', 'summaries.model', 'sol high'), 'sol high'),
             (('set', 'summaries.model', 'bogus'), 'bogus'),
             (('set', 'brief.model', '-'), 'not alias'),
+            (('set', 'storage.compact', 'on'), 'storage.compact must be auto or off'),
+            (('set', 'storage.warn-gb', '0'), 'storage.warn-gb must be a number'),
+            (('set', 'storage.warn-gb', 'lots'), 'storage.warn-gb must be a number'),
         ]
         for args, needle in cases:
             out = self.run_cfg(*args)

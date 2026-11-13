@@ -34,11 +34,13 @@ from __future__ import annotations
 
 import bisect
 from datetime import datetime
+import gzip
 import json
 import os
 from pathlib import Path
 import re
 import stat
+import zlib
 
 TEXT_CAP = 20000            # characters kept of one message, reasoning or result
 OUTPUT_CAP = 8000           # of a command's or tool's output: the head and the tail
@@ -562,22 +564,45 @@ def session_file(session_id, home=None, environ=None):
 
 # ---------- one execution's transcript ----------
 
+GZ_CAP = 512 << 20          # bytes a gzipped log may expand to before it is refused
+
+
 def _read(path):
-    """The log's text (its end when it is over LOG_CAP), whether it was cut, and the byte offset it starts at."""
+    """The log's text (its end when it is over LOG_CAP), whether it was cut, and the byte offset it starts at.
+
+    A `.gz` log (an execution record's copy that `forge runs compact --logs` gzipped, #139) reads as the
+    plain log it was: the same text and the same offsets, so its clock still places every line."""
     base = 0
     try:
-        size = path.stat().st_size
-        with open(path, 'rb') as fh:
+        if path.name.endswith('.gz'):
+            with gzip.open(path, 'rb') as fh:
+                data = fh.read(GZ_CAP + 1)
+            if len(data) > GZ_CAP:
+                return None, False, 0
+            size = len(data)
             if size > LOG_CAP:
-                fh.seek(size - LOG_CAP)
-                data = fh.read()
+                data = data[size - LOG_CAP:]
                 skip = data.find(b'\n') + 1
                 data, base = data[skip:], size - LOG_CAP + skip
-            else:
-                data = fh.read()
-    except OSError:
+        else:
+            size = path.stat().st_size
+            with open(path, 'rb') as fh:
+                if size > LOG_CAP:
+                    fh.seek(size - LOG_CAP)
+                    data = fh.read()
+                    skip = data.find(b'\n') + 1
+                    data, base = data[skip:], size - LOG_CAP + skip
+                else:
+                    data = fh.read()
+    except (OSError, EOFError, zlib.error):
         return None, False, 0
     return data.decode('utf-8', 'replace'), size > LOG_CAP, base
+
+
+def clock_path(log):
+    """`<role>.clock` beside `<role>.log` or `<role>.log.gz`."""
+    name = log.name[:-3] if log.name.endswith('.gz') else log.name
+    return log.with_name(name.rsplit('.', 1)[0] + '.clock')
 
 
 CLOCK_CAP = 8 << 20         # bytes of a clock read
@@ -586,7 +611,7 @@ CLOCK_CAP = 8 << 20         # bytes of a clock read
 def clock_of(log):
     """The clock beside `log` (`<role>.clock` for `<role>.log`) as (sizes, times), sizes ascending; None without one."""
     try:
-        path = log.with_name(log.stem + '.clock')
+        path = clock_path(log)
         with open(path, 'rb') as fh:
             if not stat.S_ISREG(os.fstat(fh.fileno()).st_mode):
                 return None
@@ -644,7 +669,7 @@ def transcript(log, harness=None, running=False, home=None, environ=None):
     if st is None or not stat.S_ISREG(st.st_mode):
         out['warnings'].append(f'{log.name} is not readable')
         return out
-    key = (str(log), st.st_size, st.st_mtime_ns, harness, running, _signature(log.with_name(log.stem + '.clock')))
+    key = (str(log), st.st_size, st.st_mtime_ns, harness, running, _signature(clock_path(log)))
     if key in _CACHE:
         answer, sid, seen = _CACHE[key]
         if sid is None or _signature(session_file(sid, home, environ)) == seen:
