@@ -74,9 +74,17 @@ class ProposalCase(BriefCase):
                 found[str(relative)] = path.read_bytes()
         return found
 
+    # apply marks affected tasks and regenerates their questions. Those files, and the
+    # brief.history archive (its directory name is a timestamp), are asserted in
+    # test_brief_affected. The lists here are the plan files the diff itself writes.
+    _REGEN_NAMES = {'brief.affected', 'brief.json', 'brief.answers.json', 'brief.answers.prev.json',
+                    'brief.parked.json', 'brief.late.json'}
+
     def changed(self, before):
         after = self.snapshot()
-        return sorted(name for name in set(before) | set(after) if before.get(name) != after.get(name))
+        names = sorted(name for name in set(before) | set(after) if before.get(name) != after.get(name))
+        return [name for name in names if Path(name).name not in self._REGEN_NAMES
+                and 'brief.history' not in Path(name).parts]
 
     def propose(self, *changes, **kwargs):
         self.arm({'*.qa.*': says(canned(*changes, **kwargs))})
@@ -334,6 +342,10 @@ class ApplyRefusalTests(ProposalCase):
         self.assertIn('approved', caught.exception.reason)
         self.assertEqual(self.snapshot(), after)
         proposals.reject  # a rejected one cannot be applied either
+        # Apply regenerates a's questions, and --force archives the parked wave question with
+        # them. Put that question back so p2 can be proposed from the same q1.
+        archived = sorted((self.plan / 'tasks' / 'a' / 'brief.history').glob('*/brief.parked.json'))
+        (self.plan / 'tasks' / 'a' / 'brief.parked.json').write_bytes(archived[-1].read_bytes())
         self.propose(change('a', prompt='Again. TASK_a\n'))
         proposals.reject(self.plan, 'p2')
         before = self.snapshot()
