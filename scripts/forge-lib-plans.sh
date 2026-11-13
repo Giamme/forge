@@ -130,7 +130,70 @@ plans_make_integration() { # plans_make_integration <repo> <branch> <commit> <wt
 
 # Per-plan option files carried to a derived plan. The cost-bearing choices a user made
 # for this plan apply to the plan made from it; `planner` does not (nothing plans again).
-PLANS_OPTION_FILES="no_ripwire no_memory yolo_dwarf yolo_qa reviewer_session reviewer_session_rate reviewer_session_tasks implementer_session fast pre_review_tests pre_review_parallel qa_threshold timeout verify_retries verify_cmd verify_parallel setup_cmd final_qa shadow_qa shadow_rate explore escalate_after fractal-routing.json fractal-selection.json jev-selection.json profile.json routed.json retro_mode brief brief_scope brief_model summaries summaries_model"
+PLANS_OPTION_FILES="no_ripwire no_memory yolo_dwarf yolo_qa reviewer_session reviewer_session_rate reviewer_session_tasks implementer_session fast pre_review_tests pre_review_parallel qa_threshold timeout verify_retries verify_cmd verify_parallel setup_cmd final_qa shadow_qa shadow_rate explore escalate_after fractal-routing.json fractal-selection.json jev-selection.json profile.json routed.json retro_mode brief brief_scope brief_model summaries summaries_model groups.tsv groups.frozen group_max_tasks group_max_diff_kb"
+
+# --- groups across a split (#140) -----------------------------------------------------
+# groups.tsv names tasks, so a split has to say where each group goes. A group whose members all
+# move goes with them; one whose members all stay stays; one that would be cut in two is refused
+# when it reviews its members together (review=group) and cut otherwise (review=task: each plan
+# keeps the members it has). Both plans end with a groups.tsv that validates and a matching
+# groups.frozen, or with neither.
+# plans_groups_py <mode> <src plan> <dest plan> <moved ids, space separated>
+#   check    exit 1 and say why when a review=group group would be cut in two
+#   moved    <dest>/groups.tsv = the groups of <src>, cut to the moved ids; frozen
+#   staying  <dest>/groups.tsv = the groups of <src>, cut to the tasks of <src> not moved; frozen
+plans_groups_py() {
+  python3 - "$SKILL_DIR/scripts" "$@" <<'PY'
+import os
+import sys
+from pathlib import Path
+
+sys.path.insert(0, sys.argv[1])
+import forge_groups as fg
+
+mode, src, dest, moved = sys.argv[2], Path(sys.argv[3]), Path(sys.argv[4]), set(sys.argv[5].split())
+try:
+    groups = fg.load(src)
+    if mode == 'check':
+        for g in groups:
+            hit = [m for m in g.members if m in moved]
+            if g.review == 'group' and hit and len(hit) != len(g.members):
+                sys.stderr.write("task%s %s %s in review group %s with %s, which would stay behind: move the whole group "
+                                 "(--tasks %s) or none of it\n"
+                                 % ('s' if len(hit) > 1 else '', ', '.join(hit), 'are' if len(hit) > 1 else 'is', g.id,
+                                    ', '.join(m for m in g.members if m not in moved), ','.join(g.members)))
+                sys.exit(1)
+        sys.exit(0)
+    if mode == 'moved':
+        keep = moved
+    else:
+        keep = {m for m in fg._tasks(src)} - moved
+    cut = [g._replace(members=tuple(m for m in g.members if m in keep)) for g in groups]
+    cut = [g for g in cut if g.members]
+    if cut:
+        fg.write(dest, cut)
+        fg.freeze(dest)
+    else:
+        for name in ('groups.tsv', 'groups.frozen'):
+            try:
+                os.unlink(dest / name)
+            except FileNotFoundError:
+                pass
+except fg.GroupError as error:
+    sys.stderr.write('%s\n' % ' '.join(str(error).split()))
+    sys.exit(1)
+PY
+}
+
+# plans_groups_restore <plan> <backup dir>: the source's groups as they were before a split touched them.
+plans_groups_restore() {
+  [ -d "$2" ] || return 0
+  local f
+  for f in groups.tsv groups.frozen; do
+    if [ -e "$2/$f" ]; then cp -p "$2/$f" "$1/$f"; else rm -f "$1/$f"; fi
+  done
+  rm -rf "$2"
+}
 
 # --- accept ---------------------------------------------------------------------
 # A reviewer's FAIL is the QA gate; overriding it is the user's call and never forge's or
@@ -707,6 +770,12 @@ except Exception:
       [ "$dst" = MERGED ] || die "task '$id' depends on '$dep', which is not merged (status $dst) and is not being moved; move '$dep' too or finish it first" 3
     done
   done
+  # A review group is reviewed as one: it moves whole or stays whole (a review=task group is cut).
+  if [ -f "$PLAN/groups.tsv" ]; then
+    local groups_err
+    groups_err="$(plans_groups_py check "$PLAN" "$PLAN" "$PICKED" 2>&1)" \
+      || die "split: ${groups_err:-groups.tsv could not be read}" 3
+  fi
   local STAYS=""   # built in a loop: bash 3.2 cannot parse a `case` inside $( )
   for id in $(all_ids "$T"); do
     case "$SEL" in *" $id "*) ;; *) STAYS="$STAYS $id" ;; esac
@@ -798,6 +867,10 @@ except Exception:
   for f in $PLANS_OPTION_FILES; do
     [ ! -e "$PLAN/$f" ] || cp -p "$PLAN/$f" "$NEW/$f" || ok=0
   done
+  # The copy above brought groups.tsv whole; the new plan keeps the groups of the tasks it got.
+  # tasks.tsv is written already: the frozen fingerprint is of its rows.
+  [ ! -e "$PLAN/groups.tsv" ] || plans_groups_py moved "$PLAN" "$NEW" "$PICKED" >/dev/null 2>&1 || ok=0
+  [ -e "$PLAN/groups.tsv" ] || rm -f "$NEW/groups.frozen"
   # The plan's verification lanes travel with it, like its --verify.
   [ ! -d "$PLAN/verify.d" ] || cp -Rp "$PLAN/verify.d" "$NEW/verify.d" || ok=0
   for id in $(all_ids "$T"); do
@@ -814,11 +887,21 @@ except Exception:
   # the new plan is complete, and undoing it would leave the source without its rows.
   trap - INT TERM
   local srctmp="$PLAN/.tasks.tsv.split" marker="$PLAN/split-$(basename "$NEW").txt"
+  # The source's groups lose the moved tasks, and are frozen again, before its tasks.tsv does: the
+  # members that stay have the same rows in both. A failure puts them back.
+  local gbak="$PLAN/.groups.split.bak"
+  if [ -e "$PLAN/groups.tsv" ]; then
+    rm -rf "$gbak"; mkdir "$gbak" && cp -p "$PLAN/groups.tsv" "$gbak/groups.tsv" \
+      && { [ ! -e "$PLAN/groups.frozen" ] || cp -p "$PLAN/groups.frozen" "$gbak/groups.frozen"; } \
+      && plans_groups_py staying "$PLAN" "$PLAN" "$PICKED" >/dev/null 2>&1 \
+      || { plans_groups_restore "$PLAN" "$gbak"; plans_undo; trap - INT TERM; die "could not update the groups of '$PLAN'; nothing was moved" 3; }
+  fi
   if ! awk -F'\t' -v ids="$SEL" '/^#/ || !NF {print; next} index(ids, " " $1 " ") {next} {print}' "$T" > "$srctmp" \
      || ! mv "$srctmp" "$T"; then
-    rm -f "$srctmp"; plans_undo; trap - INT TERM
+    rm -f "$srctmp"; plans_groups_restore "$PLAN" "$gbak"; plans_undo; trap - INT TERM
     die "could not update '$T'; nothing was moved" 3
   fi
+  rm -rf "$gbak"
   {
     echo "moved to $NEW (run forge/$NEWRID) on $(date '+%Y-%m-%dT%H:%M:%S%z')"
     for id in $PICKED; do

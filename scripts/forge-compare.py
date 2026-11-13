@@ -40,7 +40,8 @@ sys.path.insert(0, str(SKILL / 'ui'))
 OPTION_FILES = ('no_ripwire', 'no_memory', 'yolo_dwarf', 'yolo_qa', 'reviewer_session', 'reviewer_session_rate', 'reviewer_session_tasks', 'implementer_session', 'fast',
                 'pre_review_tests', 'pre_review_parallel', 'qa_threshold', 'timeout', 'verify_retries', 'verify_cmd',
                 'verify_parallel', 'setup_cmd', 'final_qa', 'shadow_qa', 'shadow_rate', 'escalate_after', 'fail_first', 'profile.json',
-                'retro_mode', 'brief', 'brief_scope', 'brief_model', 'summaries', 'summaries_model')
+                'retro_mode', 'brief', 'brief_scope', 'brief_model', 'summaries', 'summaries_model',
+                'groups.tsv', 'groups.frozen', 'group_max_tasks', 'group_max_diff_kb')
 # The feature files are rewritten from the source's effective settings (copy_plan), not only copied.
 FEATURE_FILES = ('retro_mode', 'brief', 'brief_scope', 'brief_model', 'summaries', 'summaries_model')
 PLAN_FILES = ('repo.identity', 'goal.txt', 'request.md')
