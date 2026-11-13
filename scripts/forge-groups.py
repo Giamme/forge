@@ -61,7 +61,10 @@ def run(args, plan: Path) -> int:
     elif args.command == 'derive':
         fg.write(plan, fg.derive(plan, args.review, args.max_tasks))
     elif args.command == 'resolve':
-        fg.write(plan, fg.resolve_qa(plan, fg.load(plan)))
+        # No groups.tsv means nothing to write back. write() of an empty list
+        # would create a header-only file that was not there.
+        if (plan / 'groups.tsv').is_file():
+            fg.write(plan, fg.resolve_qa(plan, fg.load(plan)))
     elif args.command == 'freeze':
         fg.freeze(plan)
     elif args.command == 'check':

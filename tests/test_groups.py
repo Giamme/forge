@@ -321,6 +321,12 @@ class CliTests(unittest.TestCase):
         self.assertEqual(json.loads(out)[1], dict(id='w3', review='group', qa='qa-f', members=['e', 'f'],
                                                   title='-', goal='-'))
 
+    def test_resolve_without_groups_tsv_leaves_the_plan_alone(self):
+        plan = make_plan()
+        self.assertFalse((plan / 'groups.tsv').exists())
+        self.assertEqual(self.run_cli('resolve', str(plan)), (0, '', ''))
+        self.assertFalse((plan / 'groups.tsv').exists())
+
     def test_invalid_input_exits_2_with_one_line(self):
         plan = make_plan(groups=row('g1', 'group', '-', 'a,d', '-', '-'))
         for args in (['validate', str(plan)], ['validate', str(plan), '--max-tasks', 1],
