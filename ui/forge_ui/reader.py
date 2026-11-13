@@ -649,32 +649,39 @@ def _scheduler(reader):
 
 
 # Not NEEDS_INPUT or NEEDS_DECISION: those wait for the user, so a task that depends on one waits rather than stops.
-# IMPLEMENTED is not here either: the member's own work is in and it waits for the group's review
-# (status_class returns 'waiting'). A task that depends on one waits, it does not stop.
+# IMPLEMENTED is not here either: the member's own work is in and it waits for the group's review.
+# A task that depends on one waits, it does not stop.
 _STOPPED = ('FAIL', 'BLOCKED', 'INFRA', 'INTERRUPTED', 'TIMEOUT', 'ERROR', 'CONFLICT', 'NOCHANGES', 'INVALIDATED', 'UNKNOWN')
 
-# The same buckets the page uses (runmodel.js DONE / BAD / WAITING), plus IMPLEMENTED as waiting:
-# implemented, awaiting the group's review. It is not done, not active and not failed.
-_DONE_STATUS = frozenset(('MERGED', 'PASS', 'NOCHANGES'))
+# How status_class, and through it _waiting, reads a status.
+# done is MERGED only. PASS is saved and not merged yet, so a dependent still lists it.
+# NOCHANGES is failed: it is in _STOPPED and will not merge. The page paints PASS and NOCHANGES
+# as finished; this reader does not, because a dependent is not free of either.
+# IMPLEMENTED is waiting, with NEEDS_INPUT and NEEDS_DECISION: awaiting the group's review.
+# It is not done, not active and not failed.
+_DONE_STATUS = frozenset(('MERGED',))
 _ACTIVE_STATUS = frozenset(('RUNNING',))
-_FAILED_STATUS = frozenset(('FAIL', 'ERROR', 'CONFLICT', 'INFRA', 'TIMEOUT', 'INVALIDATED', 'INTERRUPTED', 'UNKNOWN', 'BLOCKED'))
 _WAITING_STATUS = frozenset(('NEEDS_INPUT', 'NEEDS_DECISION', 'IMPLEMENTED'))
 
 
 def status_class(status):
     """'done', 'active', 'waiting' or 'failed', or None for a status in none of those buckets.
 
-    PENDING is None (not started). IMPLEMENTED is 'waiting': awaiting group review.
+    `_waiting` uses this for a dependency: 'done' drops it from `on`, 'failed' puts it in
+    `stopped`, and 'waiting' leaves it in `on` only. PENDING is None (not started). PASS is
+    None too (saved, not merged). IMPLEMENTED is 'waiting': awaiting group review.
     """
     if status in _DONE_STATUS:
         return 'done'
     if status in _ACTIVE_STATUS:
         return 'active'
-    if status in _FAILED_STATUS:
-        return 'failed'
     if status in _WAITING_STATUS:
         return 'waiting'
+    if status in _STOPPED:
+        return 'failed'
     return None
+
+
 _DETAIL_CAP = 400              # characters of an infra stop's detail, a short text
 _ATTEMPT_CAP = 8               # a plan without a max_attempts file
 _LEDGER_KEEP = 50              # the newest ledger rows a task keeps
@@ -914,9 +921,10 @@ def _waiting(reader, tasks, scheduler):
             continue
         if task['status'] != 'PENDING':
             continue
-        on = [dep for dep in task['deps'] if status.get(dep) != 'MERGED']
+        on = [dep for dep in task['deps'] if status_class(status.get(dep)) != 'done']
         if on:
-            task['waiting'] = dict(kind='deps', on=on, stopped=[dep for dep in on if status.get(dep) in _STOPPED])
+            task['waiting'] = dict(kind='deps', on=on,
+                                   stopped=[dep for dep in on if status_class(status.get(dep)) == 'failed'])
         elif scheduler['stopping']:
             task['waiting'] = dict(kind='stopping', mode=scheduler['stopping'])
         elif scheduler['drained']:

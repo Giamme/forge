@@ -50,6 +50,9 @@ TRANSCRIPT_CAP = 2 << 20                                    # one execution's tr
 TOTAL_CAP = 25 << 20                                        # every response together
 CDN = 'https://cdn.jsdelivr.net/npm/three@0.160.0/'
 _EXEC = re.compile(r'(?:task|dwarf|qa|solo|verification|parallel)-[0-9a-f]{32}')
+# GET /api/runs/<key>/groups/<gid> is the group dict itself, so its goal and decision are not nested
+# under a `groups` key. clean() is told the parent is `groups` for that path.
+_GROUP_DETAIL = re.compile(r'/groups/[a-z0-9][a-z0-9-]{0,39}$')
 # texts that can hold code, prompts or private notes: nulled unless texts=True
 _TEXT_KEYS = frozenset(('prompt', 'last', 'request', 'log_tail', 'dwarf_tail', 'qa_tail', 'qa_last', 'qa_input',
                         'tasks_summary', 'known_issues', 'texts', 'text', 'planning_last', 'approach', 'retry_findings',
@@ -58,10 +61,14 @@ _TEXT_KEYS = frozenset(('prompt', 'last', 'request', 'log_tail', 'dwarf_tail', '
 # keys that are private text only under one parent: a person's --reason on each decision (`reason` elsewhere is
 # a short machine word, such as a sweep's dropped-finding reason, and stays); the --reason of each adoption too.
 # A task header's goal and criteria are paragraphs of the prompt; the run's own `goal` (its title) stays.
+# A group's goal (the planner's line in groups.tsv) and the first line of its decision.md are private too,
+# on the run's `groups` list and on GET …/groups/<gid>. A group's title stays. A task's `decision` is an
+# object under `tasks` (its `text` is already in _TEXT_KEYS); it is not this string.
 # A brief question's why, the choices in options, its default and the answer a person typed are private
 # only under `questions` and `parked` (`text` is already in _TEXT_KEYS). `scope`, `state` and `id` stay.
 _TEXT_KEYS_UNDER = {'decisions': frozenset(('reason',)), 'adoptions': frozenset(('reason',)),
                     'adoption': frozenset(('reason',)), 'header': frozenset(('goal', 'criteria')),
+                    'groups': frozenset(('goal', 'decision')),
                     'questions': frozenset(('why', 'options', 'default', 'answer')),
                     'parked': frozenset(('why', 'options', 'default', 'answer'))}
 
@@ -123,7 +130,9 @@ class _Snapshot:
         value = server.api_get(self.catalog, path)
         if value is server.NO_ROUTE or value is None:
             return None
-        value = self.clean(value)
+        # The group route returns the group at the root, so goal and decision blank the way they do
+        # under the run's `groups` list.
+        value = self.clean(value, 'groups' if _GROUP_DETAIL.search(path) else None)
         size = len(json.dumps(value, ensure_ascii=False).encode('utf-8'))
         if not required and ((cap and size > cap) or self.size + size > TOTAL_CAP):
             self.omitted.append({'path': path, 'bytes': size, 'why': 'larger than 1 MB' if cap and size > cap else 'over the 25 MB total'})

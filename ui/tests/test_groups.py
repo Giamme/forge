@@ -33,6 +33,7 @@ nope id	group	-	-	Bad	Skipped
 ship	group	opus	other	Second	ignored
 weird	nope	-	-	Weird	Kept
 live	group	opus	-	Live	In flight
+dash	-	-	-	-	-
 """
 QA = 'Reviewed the group.\n\nFORGE_VERDICT: PASS\n'
 SHIP_QA = 'qa-' + F.uid(70)
@@ -129,17 +130,21 @@ class GroupsTests(unittest.TestCase):
         reader, found = self.listed()
         by_id = {item['id']: item for item in found}
         self.assertEqual([item['id'] for item in found],
-                         ['alpha', 'ship', 'broke', 'ask', 'odd', 'weird', 'live'])
+                         ['alpha', 'ship', 'broke', 'ask', 'odd', 'weird', 'live', 'dash'])
         self.assertEqual(by_id['alpha'], dict(id='alpha', review='task', qa=None, members=['one', 'two'],
                                               title='Identity', goal='Just a goal'))
         self.assertEqual(by_id['odd']['goal'], 'goal\twith\ttabs')
         self.assertNotIn('status', by_id['odd'])
         self.assertEqual(by_id['weird']['review'], 'nope')
         self.assertNotIn('rounds', by_id['weird'])
+        # `-` is null in every cell, review included, and it is not a review mode.
+        self.assertEqual(by_id['dash'], dict(id='dash', review=None, qa=None, members=None,
+                                              title=None, goal=None))
+        self.assertNotIn('status', by_id['dash'])
         self.assertNotIn('nope', by_id)  # a gid with a space is not a group
         self.assertTrue(any('invalid group id' in item for item in reader.warnings))
         self.assertTrue(any('duplicate group id' in item for item in reader.warnings))
-        self.assertTrue(any('review must be task or group' in item for item in reader.warnings))
+        self.assertGreaterEqual(sum('review must be task or group' in item for item in reader.warnings), 2)
         self.assertTrue(any('expected 6 columns' in item for item in reader.warnings))
         # The second `ship` row does not replace the first.
         self.assertEqual(by_id['ship']['members'], ['reader', 'page'])
@@ -202,6 +207,10 @@ class GroupsTests(unittest.TestCase):
         self.assertTrue(any('missing task' in item for item in body['warnings']))
         self.assertTrue(any('attempt is not an integer' in item for item in body['warnings']))
         self.assertEqual(sum('round is not an integer' in item for item in body['warnings']), 1)
+        # Another group's rounds, and groups.tsv itself, are not this group's warnings.
+        self.assertFalse(any(item.startswith('groups.tsv') or 'groups/broke/' in item
+                             for item in body['warnings']))
+        self.assertTrue(all(item.startswith('groups/ship/') for item in body['warnings']))
         self.assertEqual(body['qa_last'], QA)
         self.assertEqual(body['known_issues'], 'K' * 20000 + '\n…\n' + 'K' * 8000)
         self.assertIn('known_issues', body['truncated'])
@@ -218,6 +227,10 @@ class GroupsTests(unittest.TestCase):
         self.assertIsNone(broke['attribution'])
         self.assertEqual(broke['implicated'], ['graph', 'server'])
         self.assertTrue(any('not a JSON object' in item for item in broke['warnings']))
+        self.assertTrue(any('groups/broke/rounds.tsv' in item and 'invalid round or epoch' in item
+                            for item in broke['warnings']))
+        self.assertFalse(any(item.startswith('groups.tsv') or 'groups/ship/' in item
+                             for item in broke['warnings']))
 
         alpha = groups.group(_Read(root), 'alpha')
         self.assertEqual(alpha['review'], 'task')
@@ -226,6 +239,7 @@ class GroupsTests(unittest.TestCase):
         self.assertIsNone(alpha['qa_last'])
         self.assertIsNone(alpha['execution'])
         self.assertEqual(alpha['candidate'], dict(base=None, commit=None))
+        self.assertEqual(alpha['warnings'], [])
 
         live = groups.group(_Read(root), 'live')
         self.assertEqual(live['execution']['state'], 'running')
@@ -282,27 +296,43 @@ class GroupsTests(unittest.TestCase):
         self.assertEqual(stripped, before)
 
     def test_implemented_is_waiting(self):
+        # status_class is what a dependent's wait uses. done is MERGED only, so PASS stays in `on`.
+        # NOCHANGES is failed: it is a stopped dependency. IMPLEMENTED is waiting, so it is in `on` and not stopped.
         self.assertEqual(status_class('IMPLEMENTED'), 'waiting')
         self.assertEqual(status_class('NEEDS_INPUT'), 'waiting')
         self.assertEqual(status_class('NEEDS_DECISION'), 'waiting')
         self.assertEqual(status_class('RUNNING'), 'active')
         self.assertEqual(status_class('MERGED'), 'done')
-        self.assertEqual(status_class('PASS'), 'done')
-        self.assertEqual(status_class('NOCHANGES'), 'done')
+        self.assertIsNone(status_class('PASS'))
+        self.assertEqual(status_class('NOCHANGES'), 'failed')
         self.assertEqual(status_class('FAIL'), 'failed')
         self.assertEqual(status_class('BLOCKED'), 'failed')
         self.assertIsNone(status_class('PENDING'))
         self.assertIsNone(status_class(None))
 
         root = self.base / 'wait'
-        F.write(root / 'tasks.tsv', 'owner\t-\tlow\t-\t-\t-\tOwner\nnext\towner\tlow\t-\t-\t-\tNext\n')
+        F.write(root / 'tasks.tsv',
+                'owner\t-\tlow\t-\t-\t-\tOwner\n'
+                'next\towner\tlow\t-\t-\t-\tNext\n'
+                'saved\t-\tlow\t-\t-\t-\tSaved\n'
+                'after\tsaved\tlow\t-\t-\t-\tAfter\n'
+                'stuck\t-\tlow\t-\t-\t-\tStuck\n'
+                'held\tstuck\tlow\t-\t-\t-\tHeld\n'
+                'dead\t-\tlow\t-\t-\t-\tDead\n'
+                'blocked\tdead\tlow\t-\t-\t-\tBlocked\n')
         F.write(root / 'tasks/owner/status', 'IMPLEMENTED\n')
+        F.write(root / 'tasks/saved/status', 'PASS\n')
+        F.write(root / 'tasks/stuck/status', 'NOCHANGES\n')
+        F.write(root / 'tasks/dead/status', 'FAIL\n')
         F.write(root / 'scheduler.live', {'pid': os.getpid()})
         tasks = {task['id']: task for task in detail(root)['tasks']}
         self.assertEqual(tasks['owner']['status'], 'IMPLEMENTED')
-        self.assertEqual(status_class(tasks['owner']['status']), 'waiting')
+        self.assertIsNone(tasks['owner']['now'])
         self.assertIsNone(tasks['owner']['waiting'])
         self.assertEqual(tasks['next']['waiting'], dict(kind='deps', on=['owner'], stopped=[]))
+        self.assertEqual(tasks['after']['waiting'], dict(kind='deps', on=['saved'], stopped=[]))
+        self.assertEqual(tasks['held']['waiting'], dict(kind='deps', on=['stuck'], stopped=['stuck']))
+        self.assertEqual(tasks['blocked']['waiting'], dict(kind='deps', on=['dead'], stopped=['dead']))
 
     def test_the_group_route(self):
         root = self.plan()
@@ -353,12 +383,35 @@ class GroupsTests(unittest.TestCase):
         key = run_key(root)
         _, body = export.build(catalog, key)
         api = _snapshot(body)['api']
-        self.assertEqual(api[f'/api/runs/{key}']['groups'][1]['id'], 'ship')
+        run = api[f'/api/runs/{key}']
+        listed = {item['id']: item for item in run['groups']}
+        self.assertEqual(listed['ship']['id'], 'ship')
+        self.assertEqual(listed['ship']['title'], 'Ship the reader')
+        self.assertIsNone(listed['ship']['goal'])
+        self.assertIsNone(listed['ship']['decision'])
+        self.assertIsNone(listed['alpha']['goal'])
+        self.assertIsNone(listed['ask']['decision'])
         stored = api[f'/api/runs/{key}/groups/ship']
         self.assertEqual(stored['execution']['id'], SHIP_QA)
+        self.assertEqual(stored['title'], 'Ship the reader')
+        self.assertIsNone(stored['goal'])
+        self.assertIsNone(stored['decision'])
         self.assertIsNone(stored['qa_last'])  # texts stay out unless asked
+        self.assertIsNone(stored['known_issues'])
+        ask = api[f'/api/runs/{key}/groups/ask']
+        self.assertIsNone(ask['goal'])
+        self.assertIsNone(ask['decision'])
+        text = body.decode('utf-8')
+        self.assertNotIn('Land it together', text)
+        self.assertNotIn('Just a goal', text)
+        self.assertNotIn('reasons: split', text)
         self.assertIn(f'/api/runs/{key}/executions/{SHIP_QA}', api)
         _, full = export.build(catalog, key, texts=True)
         full_api = _snapshot(full)['api']
-        self.assertEqual(full_api[f'/api/runs/{key}/groups/ship']['qa_last'], QA)
+        full_ship = full_api[f'/api/runs/{key}/groups/ship']
+        self.assertEqual(full_ship['qa_last'], QA)
+        self.assertEqual(full_ship['goal'], 'Land it together')
+        self.assertEqual(full_ship['decision'], 'Accepted')
+        self.assertEqual(full_api[f'/api/runs/{key}']['groups'][0]['goal'], 'Just a goal')
+        self.assertEqual(full_api[f'/api/runs/{key}/groups/ask']['decision'], 'reasons: split')
         self.assertIn(f'/api/runs/{key}/executions/{SHIP_QA}/transcript', full_api)

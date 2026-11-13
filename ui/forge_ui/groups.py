@@ -101,10 +101,12 @@ def groups(reader) -> list:
             reader.warn(label, 'duplicate group id')
             continue
         seen.add(gid)
-        review = row[1].strip()
+        # `-` is None in every cell, review included. Anything but task or group is still returned,
+        # without review state, and warned.
+        review = _blank(row[1])
         if review not in _REVIEWS:
             reader.warn(label, 'review must be task or group')
-        item = dict(id=gid, review=review or None, qa=_blank(row[2]), members=_id_list(row[3]),
+        item = dict(id=gid, review=review, qa=_blank(row[2]), members=_id_list(row[3]),
                     title=_blank(row[4]), goal=_blank('\t'.join(row[5:])))
         if review == 'group':
             item.update(_state(reader, gid))
@@ -237,21 +239,26 @@ def group(reader, gid) -> dict | None:
     A gid that cannot name a group dir (`GID`) is None without a read. The dict is the `groups()`
     row plus `attribution`, `members_by_round`, `qa_last`, `known_issues`, `candidate` and
     `execution`. `qa_last` and `known_issues` go through `reader.excerpt`, the bounded reader the
-    task and review inspectors use. `warnings` and `truncated` are that read's.
+    task and review inspectors use. `warnings` are this group's files under `groups/<gid>/`:
+    a bad `groups.tsv` row, and another group's files, belong to the list read, not this one.
+    `truncated` names the texts this read cut.
     """
     if not isinstance(gid, str) or not GID.fullmatch(gid):
         return None
+    noted = len(reader.warnings)
+    cut = len(reader.truncated)
     found = next((dict(item) for item in groups(reader) if item['id'] == gid), None)
     if found is None:
         return None
-    prefix = f'groups/{gid}'
-    found['attribution'] = _attribution(reader, prefix + '/attribution.json')
-    found['members_by_round'] = _members_by_round(reader, prefix + '/members.tsv')
-    found['qa_last'] = reader.excerpt(prefix + '/qa.last', _TEXT_HEAD, _TEXT_TAIL, 'qa_last')
-    found['known_issues'] = reader.excerpt(prefix + '/known_issues.md', _TEXT_HEAD, _TEXT_TAIL, 'known_issues')
-    found['candidate'] = dict(base=_blank(reader.line(prefix + '/candidate.base')),
-                              commit=_blank(reader.line(prefix + '/candidate.commit')))
+    prefix = f'groups/{gid}/'
+    found['attribution'] = _attribution(reader, prefix + 'attribution.json')
+    found['members_by_round'] = _members_by_round(reader, prefix + 'members.tsv')
+    found['qa_last'] = reader.excerpt(prefix + 'qa.last', _TEXT_HEAD, _TEXT_TAIL, 'qa_last')
+    found['known_issues'] = reader.excerpt(prefix + 'known_issues.md', _TEXT_HEAD, _TEXT_TAIL, 'known_issues')
+    found['candidate'] = dict(base=_blank(reader.line(prefix + 'candidate.base')),
+                              commit=_blank(reader.line(prefix + 'candidate.commit')))
     found['execution'] = _review_execution(reader, gid)
-    found['warnings'] = reader.warnings
-    found['truncated'] = reader.truncated
+    # groups() walked every row. Keep warnings for this group's files only: not groups.tsv, not another group.
+    found['warnings'] = [item for item in reader.warnings[noted:] if item.startswith(prefix)]
+    found['truncated'] = reader.truncated[cut:]
     return found

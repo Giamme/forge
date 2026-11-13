@@ -135,6 +135,10 @@ running one's log for its `now`; no read opens a `.cmd`.
 and the task is awaiting its group's review. It is not done, not active and not failed, and a
 task that depends on one waits on it (it is not a stopped dependency). `status_class` in
 `reader.py` returns `waiting` for it, as it does for `NEEDS_INPUT` and `NEEDS_DECISION`.
+`_waiting` uses that class for a dependency: `done` (`MERGED` only) drops it from `on`,
+`failed` (the stopped statuses, `NOCHANGES` included) puts it in `stopped`, and `waiting`
+leaves it in `on` only. `PASS` is neither: it is saved and not merged yet, so a dependent
+still lists it.
 
 Only the ids listed in `tasks.tsv` are tasks: `tasks/` may also hold forge's own dirs (e.g.
 `tasks/_integration/`), and a task dir holds many other files (`attempts/` is a directory of
@@ -797,8 +801,9 @@ Every RunSummary field, plus:
   not a scheduler runs); else, while `scheduler.live` is true, for a `PENDING` or `INFRA` task:
   `infra` (a pause in `scheduler.pauses` holds it: scope `all`, or its id in `tasks`; the pause's
   keys plus `kind`), then for a `PENDING` task `deps` (`on`: its deps not merged, `stopped`: those
-  in a stopped status such as `FAIL`; a dep at `NEEDS_INPUT` or `NEEDS_DECISION` is in `on` only, as the user
-  holds it and the retry policy did not stop it), `stopping` (`mode`), `drained`, `brief` (`questions`: a gated
+  in a stopped status such as `FAIL` or `NOCHANGES`; a dep at `NEEDS_INPUT`, `NEEDS_DECISION` or
+  `IMPLEMENTED` is in `on` only — the first two wait for the user, `IMPLEMENTED` waits for the group's
+  review, and none of them is a stopped dependency), `stopping` (`mode`), `drained`, `brief` (`questions`: a gated
   plan holds it for the ids of its `must_answer` questions with no entry in `brief.answers.json`, or `[]`
   while `brief.json` is not written yet and `brief.pid` names a running process; the same two files
   `forge-schedule.py` reads), `overlap` (`on`: running
@@ -885,7 +890,7 @@ empty cell.
   `implicated` (`null` for `-`, or when there is no round). `decision` is the first line of
   `decision.md`, or `null`. A row with a round or epoch that does not parse is warned and skipped.
 - A `review` other than `task` or `group` is warned and the row is still returned, without the
-  review-state fields. A bad id and a repeated id are warned and skipped; the first copy wins.
+  review-state fields. `review` of `-` is `null` and warned the same way. A bad id and a repeated id are warned and skipped; the first copy wins.
   Missing files are `null` or `[]` or `false`, not warnings. Nothing in a malformed file raises.
 
 The group endpoint returns that summary plus the review itself:
@@ -923,8 +928,11 @@ The group endpoint returns that summary plus the review itself:
   unfinished dispatch is `orphaned`. The execution and transcript endpoints open it with
   `owner` `{"kind": "group", "id": "<gid>"}`, and while it runs they read the group dir's
   `qa.delivered`, `qa.prompt` and `qa.input` the way a task's owner dir is read.
-- `warnings` and `truncated` are that read's. A `review=task` group has the same detail fields;
-  with no review dir they are `null` or `[]`.
+- `warnings` and `truncated` are that read's. A warning is kept when its file is under
+  `groups/<gid>/` (this group's rounds, members, attribution and review dispatch). A malformed
+  `groups.tsv` row, and another group's files, are warnings of the run read, not of this group.
+  `truncated` names the texts this read cut (`qa_last`, `known_issues`). A `review=task` group
+  has the same detail fields; with no review dir they are `null` or `[]`, and `warnings` is `[]`.
 
 ## Execution
 
@@ -1514,6 +1522,9 @@ difficulty paths deps model` each), `decomposition_history` (its newest 20, each
   planning_last approach retry_findings needs_input dwarf_input error last_line message excerpt tail lines call split detail`.
   Under each brief `questions` or `parked` entry it also nulls `why`, `options`, `default` and `answer`
   (`scope`, `state`, `id`, `must_answer` and `possibly_stale` stay; a late answer's `text` is in the list above).
+  Under each group, on RunDetail `groups` and on `GET …/groups/<gid>`, it nulls `goal` and `decision`
+  (the planner's line and the first line of `decision.md`). The run's own `goal` stays, and so does a
+  group's `title`. A task's `decision` object stays, with its `text` nulled by the list above.
   It stores no diff, no transcript, no checks and no environment problems (a command is a text). A finding keeps its `summary`, a failing test its `name`.
 - `paths=0` (the default) makes every string that is a whole absolute path (but `/api/…`, `url`s
   and `command`s) its last component, and replaces the run dir, the repo and the home dir inside other
@@ -1940,7 +1951,8 @@ red, infra and timeout orange, blocked, interrupted, invalidated, unknown and no
 purple. `NEEDS_DECISION` takes the same waiting colour as `NEEDS_INPUT` (`--lamp-wait`, the
 `st-needs_input` class in `style.css`): a task that waits for the user is neither done nor failed.
 `IMPLEMENTED` is the same kind of waiting status: the member's work is in and it is awaiting the
-group's review. `reader.status_class` returns `waiting` for it. The page paints it with
+group's review. `reader.status_class` returns `waiting` for it, and a task that depends on one
+lists it in `waiting.on` and not in `waiting.stopped`. The page paints it with
 `st-implemented`, the same waiting colour; until that class exists the stage falls back to `#888`.
 
 ## The graph (`forge_ui/static/graph.js`)
