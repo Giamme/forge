@@ -645,6 +645,36 @@ forge_groups_plan() {
   return 0
 }
 
+# Group flags are refused before do_plan's loop writes a shared flag's file.
+# A bad value, or --group-review without --groups waves, must not leave --qa-threshold
+# (or any earlier shared flag) written into the plan dir.
+forge_groups_flags_early() {
+  local review=0 src=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --groups)
+        [ -n "${2:-}" ] || die "--groups needs waves or a groups.tsv file"
+        if [ "$2" != waves ]; then
+          [ -f "$2" ] && [ -r "$2" ] || die "--groups '$2' is not a readable file (use waves, or a groups.tsv)"
+        fi
+        src="$2"; shift 2 ;;
+      --group-review) review=1; shift ;;
+      --group-max-tasks)
+        printf '%s' "${2:-}" | grep -Eq '^[0-9]{1,6}$' && [ "$((10#$2))" -ge 1 ] \
+          || die "--group-max-tasks needs a positive integer"
+        shift 2 ;;
+      --group-max-diff-kb)
+        printf '%s' "${2:-}" | grep -Eq '^[0-9]{1,9}$' && [ "$((10#$2))" -ge 1 ] \
+          || die "--group-max-diff-kb needs a positive integer"
+        shift 2 ;;
+      --repo|--planner|--decompose-level|--profile|--shadow-qa|--shadow-rate|--explore|--dwarf|--dwarf-high|--dwarf-medium|--dwarf-low|--qa|--qa-high|--qa-medium|--qa-low|--pre-review-parallel|--reviewer-session-rate|--fast|--brief|--brief-scope|--brief-model|--summaries|--summaries-model|--qa-threshold|--max-attempts|--converge-window|--gate|--decide-budget)
+        if [ $# -ge 2 ]; then shift 2; else shift; fi ;;
+      *) shift ;;
+    esac
+  done
+  [ "$review" = 0 ] || [ "$src" = waves ] || die "--group-review goes with --groups waves (it sets the review of the groups waves derives)"
+}
+
 # render_groups <plan>: the table's groups block and, when a group reviews its members together,
 # the reviews line. Nothing without a groups.tsv.
 render_groups() {
@@ -2893,7 +2923,7 @@ do_run() {
   local PLAN="${1:?run needs a plan dir}"; shift
   FORGE_RUN_STARTED="$(forge_now)"   # the summary's overridden verdicts are this run's
   local fractal_pipeline_args=("$@")
-  local MAXP=3 DRY=0 jev_rc=0 FORECAST=1
+  local MAXP=3 DRY=0 jev_rc=0 FORECAST=1 fractal_answer=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --no-forecast) FORECAST=0; shift ;;
