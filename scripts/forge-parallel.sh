@@ -625,21 +625,48 @@ forge_groups_max_tasks() {
   printf '%s' "${value:-6}"
 }
 
+# Put back the groups a refused derive replaced, or remove the ones it just wrote.
+# A Fractal refusal must not leave a review=group groups.tsv that makes every later plan exit 2.
+forge_groups_snap_restore() { # forge_groups_snap_restore <plan> <snap dir or empty>
+  local plan="$1" snap="${2:-}"
+  if [ -n "$snap" ] && [ -f "$snap/groups.tsv" ]; then cp "$snap/groups.tsv" "$plan/groups.tsv"
+  else rm -f "$plan/groups.tsv"; fi
+  if [ -n "$snap" ] && [ -f "$snap/groups.frozen" ]; then cp "$snap/groups.frozen" "$plan/groups.frozen"
+  else rm -f "$plan/groups.frozen"; fi
+  [ -z "$snap" ] || rm -rf "$snap"
+}
+
+forge_groups_snap_drop() { [ -z "${1:-}" ] || rm -rf "$1"; }
+
 # forge_groups_plan <plan> <--groups value> <--group-review 0|1> <--group-max-tasks value>
 forge_groups_plan() {
-  local plan="$1" src="$2" review="$3" max="$4" out rc=0
+  local plan="$1" src="$2" review="$3" max="$4" out="" snap=""
+  # derive and a --groups file replace groups.tsv before the Fractal check can refuse them.
+  if [ -f "$plan/groups.tsv" ] || [ -f "$plan/groups.frozen" ]; then
+    snap="$(mktemp -d)" || die "could not snapshot the plan's groups" 3
+    [ ! -f "$plan/groups.tsv" ] || cp "$plan/groups.tsv" "$snap/groups.tsv" \
+      || { forge_groups_snap_drop "$snap"; die "could not snapshot $plan/groups.tsv" 3; }
+    [ ! -f "$plan/groups.frozen" ] || cp "$plan/groups.frozen" "$snap/groups.frozen" \
+      || { forge_groups_snap_drop "$snap"; die "could not snapshot $plan/groups.frozen" 3; }
+  fi
   if [ "$src" = waves ]; then
     out="$(forge_groups_py derive "$plan" --review "$([ "$review" = 1 ] && echo group || echo task)" \
-      --max-tasks "$(forge_groups_max_tasks "$plan" "$max")" 2>&1)" || forge_groups_die "$out"
+      --max-tasks "$(forge_groups_max_tasks "$plan" "$max")" 2>&1)" || { forge_groups_snap_drop "$snap"; forge_groups_die "$out"; }
   elif [ -n "$src" ]; then
-    cp "$src" "$plan/groups.tsv" || die "could not copy '$src' to $plan/groups.tsv" 3
+    cp "$src" "$plan/groups.tsv" || { forge_groups_snap_drop "$snap"; die "could not copy '$src' to $plan/groups.tsv" 3; }
   fi
-  [ -f "$plan/groups.tsv" ] || [ -f "$plan/groups.frozen" ] || return 0
+  if [ ! -f "$plan/groups.tsv" ] && [ ! -f "$plan/groups.frozen" ]; then
+    forge_groups_snap_drop "$snap"
+    return 0
+  fi
   # validate, then resolve (writes the group qa back), then freeze
-  out="$(forge_groups_py validate "$plan" --max-tasks "$(forge_groups_max_tasks "$plan" "$max")" 2>&1)" || forge_groups_die "$out"
+  out="$(forge_groups_py validate "$plan" --max-tasks "$(forge_groups_max_tasks "$plan" "$max")" 2>&1)" \
+    || { forge_groups_snap_drop "$snap"; forge_groups_die "$out"; }
   if forge_groups_have_review "$plan" && forge_plan_is_fractal "$plan"; then
+    forge_groups_snap_restore "$plan" "$snap"
     die "group review does not support Fractal yet" 2
   fi
+  forge_groups_snap_drop "$snap"
   out="$(forge_groups_py resolve "$plan" 2>&1)" || forge_groups_die "$out"
   out="$(forge_groups_py freeze "$plan" 2>&1)" || forge_groups_die "$out"
   return 0
@@ -722,6 +749,9 @@ do_plan() {
   forge_features_scan "$@"
   [ -d "$PLAN" ] || die "plan dir '$PLAN' does not exist"
   forge_features_resolve "$PLAN" || die "$FEAT_ERR" 2
+  # Before the loop: --qa-threshold and --max-attempts write their files while parsing,
+  # so a group flag refused later on the same command would leave those files behind.
+  forge_groups_flags_early "$@"
   while [ $# -gt 0 ]; do
     case "$1" in
       --repo)         REPO="${2:?}"; shift 2 ;;
@@ -2476,8 +2506,9 @@ do_retry() {
   fi
   write_results "$PLAN"
   echo
-  printf '  %-14s %-9s %s\n' id status branch
-  awk -F'\t' '{printf "  %-14s %-9s %s\n", $1, $2, $3}' "$PLAN/results.tsv"
+  # 14 covers NEEDS_DECISION; 9 pushes the branch column out for IMPLEMENTED (11) too.
+  printf '  %-14s %-14s %s\n' id status branch
+  awk -F'\t' '{printf "  %-14s %-14s %s\n", $1, $2, $3}' "$PLAN/results.tsv"
   run_report_extras "$PLAN"
   report_decisions "$PLAN"
   [ "$(task_status "$PLAN" "$id")" = "MERGED" ] || return 5
@@ -2985,6 +3016,20 @@ do_run() {
     forge_ui_register "$PLAN"
     forge_storage_check "$PLAN" "$REPO"
   fi
+  # --fractal and an existing selection are refused above. The other way on is this
+  # prompt, which forge_fractal_parallel_run asks only once stdin is a terminal and
+  # nothing has chosen yet. Answering y must refuse before that call writes
+  # fractal-selection.json; answering n is the same as --no-fractal, so it is not asked twice.
+  if [ "$DRY" != 1 ] && [ -t 0 ] && [ -z "${FRACTAL_CHOICE:-}" ] && ! forge_plan_is_fractal "$PLAN" \
+      && forge_groups_have_review "$PLAN"; then
+    printf 'Use Fractal for this run? [y/N] ' >&2
+    IFS= read -r fractal_answer || fractal_answer=""
+    fractal_answer="$(printf '%s' "$fractal_answer" | tr -d '\r' | tr '[:upper:]' '[:lower:]')"
+    case "$fractal_answer" in
+      y) die "group review does not support Fractal yet" 2 ;;
+    esac
+    forge_fractal_flag off || exit $?
+  fi
   forge_fractal_parallel_run "$PLAN" "$REPO" "$DRY" ${fractal_pipeline_args[@]+"${fractal_pipeline_args[@]}"} || return $?
   forge_fast_fractal_note "$PLAN"
   # Durable, beside the repo — never TMPDIR. A temp worktree root has destroyed
@@ -3119,8 +3164,9 @@ do_run() {
   echo
   echo "results (integration branch: $int_br)"
   echo "artifacts: $PLAN/tasks/<id>/{dwarf,qa}.{last,log}; results: $PLAN/results.tsv"
-  printf '  %-14s %-9s %s\n' id status branch
-  awk -F'\t' '{printf "  %-14s %-9s %s\n", $1, $2, $3}' "$PLAN/results.tsv"
+  # 14 covers NEEDS_DECISION; 9 pushes the branch column out for IMPLEMENTED (11) too.
+  printf '  %-14s %-14s %s\n' id status branch
+  awk -F'\t' '{printf "  %-14s %-14s %s\n", $1, $2, $3}' "$PLAN/results.tsv"
   echo
   if [ -n "$retro_line" ]; then printf '%s\n\n' "$retro_line"; fi
   run_report_extras "$PLAN"
