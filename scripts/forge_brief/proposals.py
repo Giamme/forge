@@ -53,8 +53,19 @@ meanwhile keeps the marker. With a live run only additions apply, queued in depe
 through `forge control add`; the task joins no group.
 
 `brief_diff` events (`{pid, scope, group, state, tasks}`) record proposed, refused, approved and
-rejected. The dispatch is a read-only `side` dispatch of kind `brief-change`, on the plan's brief
+rejected. An approved event also carries `affected` and `flagged`, the task ids `apply` marked.
+The dispatch is a read-only `side` dispatch of kind `brief-change`, on the plan's brief
 model, under the same `allowed` checks as the brief writer.
+
+After a successful apply, every task the proposal changed or added, and every unstarted task
+that depends (directly or transitively) on a changed, added or removed task, is taken from the
+post-apply `tasks.tsv` plus the removed ids. Each gets `tasks/<id>/brief.affected`. An unstarted
+one is `{pid, reason, t}` with reason `changed`, `added` or `dependent`, and its questions are
+regenerated with `write --force`: an answer whose question text is still there is kept, and any
+other answer goes to `brief.answers.prev.json`. A task that has already started (running, merged,
+or anything else past PENDING) is not rewritten and not dispatched; its marker sets `flag_only`.
+`apply --no-regenerate` writes the markers and skips the dispatches. The next approved proposal
+that touches a task replaces that task's marker; earlier proposals stay where they are.
 """
 from __future__ import annotations
 
@@ -523,13 +534,20 @@ def _stored_hash(plan, pid) -> str:
     return _text(_read_bytes(_proposals(plan) / pid / 'hash')).strip()
 
 
-def _emit(plan, record: dict) -> None:
-    """One `brief_diff` dataset event. Fail-open, like every other capture."""
+def _emit(plan, record: dict, extra: dict | None = None) -> None:
+    """One `brief_diff` dataset event. Fail-open, like every other capture.
+
+    `extra` is how an approved apply adds `affected` and `flagged`. Other states omit them,
+    so a proposed or refused event stays the shape it had.
+    """
+    body = {
+        'pid': record['pid'], 'scope': record['scope'], 'group': record['group'],
+        'state': record['state'], 'tasks': touched(record)}
+    if extra:
+        body.update(extra)
     try:
         from forge_dataset.capture import point
-        point('brief_diff', str(plan), str(record['task']), {
-            'pid': record['pid'], 'scope': record['scope'], 'group': record['group'],
-            'state': record['state'], 'tasks': touched(record)})
+        point('brief_diff', str(plan), str(record['task']), body)
     except Exception:
         pass
 
@@ -615,6 +633,187 @@ def propose(plan, task, qid, actor='cli', timeout=900) -> dict:
     return record
 
 
+# --- who an approved proposal leaves affected ------------------------------------------
+
+def _touch_sets(record: dict) -> tuple:
+    """`(changed, added, removed)` task ids the proposal names.
+
+    A wave proposal only changes tasks. A plan proposal's edits and dep rewrites are changes,
+    its adds are added, and its removes are seeds for the dependency walk (the task itself is
+    gone, so it is not marked).
+    """
+    def clean(items):
+        return {item for item in items if isinstance(item, str) and item}
+
+    if record.get('scope') == 'plan':
+        changes = plan_changes_of(record)
+        changed = clean(item.get('task') for item in changes['edits'] if isinstance(item, dict)) | clean(
+            item.get('task') for item in changes['deps'] if isinstance(item, dict))
+        added = clean(item.get('id') for item in changes['add'] if isinstance(item, dict))
+        return changed, added, clean(changes['remove'])
+    changes = record.get('changes') if isinstance(record.get('changes'), list) else []
+    return clean(item.get('task') for item in changes if isinstance(item, dict)), set(), set()
+
+
+def _dependents(tasks: list, seeds: set) -> set:
+    """Task ids that depend, directly or transitively, on `seeds`, from the post-apply rows.
+
+    A removed id is a seed even though it is no longer a row: a task whose deps still name it
+    is reached from here. Walking does not stop at a started task, so an unstarted task behind
+    a merged one is still found.
+    """
+    children = {}
+    for item in tasks:
+        for dep in item['deps']:
+            children.setdefault(dep, []).append(item['id'])
+    seen, stack = set(), list(seeds)
+    while stack:
+        node = stack.pop()
+        if node in seen:
+            continue
+        seen.add(node)
+        stack.extend(children.get(node, ()))
+    return {task for task in seen if task not in seeds}
+
+
+def _classify(plan, record: dict) -> tuple:
+    """`(reasons, affected, flagged)` from the post-apply tasks.tsv and the removed ids.
+
+    `reasons` maps a still-present task to `changed`, `added` or `dependent` (a task the
+    proposal itself changed or added keeps that reason when it also sits downstream).
+    `affected` is the unstarted ids, `flagged` the ones that have already started, both in
+    tasks.tsv order.
+    """
+    changed, added, removed = _touch_sets(record)
+    tasks = forge_brief.read_tasks(plan)
+    downstream = _dependents(tasks, changed | added | removed)
+    reasons = {}
+    for item in tasks:
+        task = item['id']
+        if task in removed:
+            continue
+        if task in changed:
+            reasons[task] = 'changed'
+        elif task in added:
+            reasons[task] = 'added'
+        elif task in downstream:
+            reasons[task] = 'dependent'
+    affected, flagged = [], []
+    for item in tasks:
+        task = item['id']
+        if task not in reasons:
+            continue
+        if started(plan, task):
+            flagged.append(task)
+        else:
+            affected.append(task)
+    return reasons, affected, flagged
+
+
+def _write_marker(plan, task: str, pid: str, reason: str, flag_only: bool, stamp: str) -> None:
+    """Replace `tasks/<id>/brief.affected`. The next approved proposal overwrites it again."""
+    body = {'pid': pid, 'reason': reason, 't': stamp}
+    if flag_only:
+        body['flag_only'] = True
+    forge_brief.atomic_write(forge_brief.task_dir(plan, task) / 'brief.affected', forge_brief._dump(body))
+
+
+def _carry_answers(old_questions, old_answers, new_questions) -> tuple:
+    """`(kept, dropped)`: match answers to new questions by question text, first unused wins.
+
+    `kept` is `{new qid: answer}`. `dropped` is `{old qid: answer}` for every answer whose
+    question text is not in the new brief. An empty text never matches, so it is dropped
+    rather than glued to another blank question.
+    """
+    texts = {}
+    for question in old_questions:
+        qid, text = question.get('id'), question.get('text')
+        if isinstance(qid, str) and qid and isinstance(text, str):
+            texts.setdefault(qid, text)
+    pool = [{'qid': qid, 'text': texts.get(qid, ''), 'answer': answer, 'used': False}
+            for qid, answer in old_answers.items()]
+    kept = {}
+    for question in new_questions:
+        qid, text = question.get('id'), question.get('text')
+        if not isinstance(qid, str) or not qid or not isinstance(text, str) or not text:
+            continue
+        for item in pool:
+            if not item['used'] and item['text'] and item['text'] == text:
+                kept[qid] = item['answer']
+                item['used'] = True
+                break
+    dropped = {item['qid']: item['answer'] for item in pool if not item['used']}
+    return kept, dropped
+
+
+def _regenerate_one(plan, task: str) -> None:
+    """Rewrite one task's questions and put the answers that still fit back by their text.
+
+    `write --force` archives the old brief and its answers (question ids restart at q1).
+    Answers whose question text is in the new brief are written back under the new id; the
+    others go to `brief.answers.prev.json`, next to the archive, so nothing is thrown away.
+    A skipped write (the dispatch cap, or a brief that appeared under the lock) leaves the
+    answers where they were.
+    """
+    tdir = forge_brief.task_dir(plan, task)
+    old_brief = forge_brief._json(tdir / 'brief.json')
+    old_questions = forge_brief._questions(old_brief if isinstance(old_brief, dict) else None)
+    old_answers = forge_brief._entries(forge_brief._json(tdir / 'brief.answers.json'))
+    report = forge_brief.write(plan, task=task, force=True)
+    if not report or report[0].get('status') == 'skipped':
+        return
+    new_brief = forge_brief._json(tdir / 'brief.json')
+    new_questions = forge_brief._questions(new_brief if isinstance(new_brief, dict) else None)
+    kept, dropped = _carry_answers(old_questions, old_answers, new_questions)
+    if kept:
+        forge_brief.atomic_write(tdir / 'brief.answers.json', forge_brief._dump(kept))
+    if dropped:
+        forge_brief.atomic_write(tdir / 'brief.answers.prev.json', forge_brief._dump(dropped))
+
+
+def _regenerate(plan, tasks: list) -> None:
+    """One brief dispatch per unstarted affected task, in tasks.tsv order.
+
+    This runs after the apply has been stored. A failure here does not undo the apply:
+    `BriefOff` stops the rest (every later task would fail the same way); any other error
+    is left to the caller only when the writer itself raises, which it does not for a bad reply.
+    """
+    for task in tasks:
+        try:
+            _regenerate_one(plan, task)
+        except forge_brief.BriefOff:
+            return
+
+
+def _settle(plan, record: dict, result: dict, regenerate: bool) -> dict:
+    """Mark affected tasks, emit the approved event, then regenerate the unstarted ones.
+
+    Markers are written before the event and before any dispatch, so a writer failure still
+    leaves `brief.affected` and the event. Regeneration holds no plan lock: each `write` takes
+    only that task's brief lock. `regenerate` False writes the same markers and dispatches nothing.
+    """
+    reasons, affected, flagged = _classify(plan, record)
+    stamp = forge_brief._now()
+    for task in affected:
+        _write_marker(plan, task, record['pid'], reasons[task], False, stamp)
+    for task in flagged:
+        _write_marker(plan, task, record['pid'], reasons[task], True, stamp)
+    _emit(plan, record, {'affected': list(affected), 'flagged': list(flagged)})
+    notes = list(result.get('notes') or [])
+    if affected:
+        if regenerate:
+            _regenerate(plan, affected)
+            notes.append('regenerating questions for %d tasks: %s' % (len(affected), ', '.join(affected)))
+        else:
+            notes.append('marked affected, not regenerating: %s' % ', '.join(affected))
+    if flagged:
+        notes.append('flagged (already started): %s' % ', '.join(flagged))
+    result['notes'] = notes
+    result['affected'] = affected
+    result['flagged'] = flagged
+    return result
+
+
 # --- apply -----------------------------------------------------------------------------
 
 def _validate_new(plan, new_text: str, max_tasks: int, groups_text=None) -> None:
@@ -649,18 +848,21 @@ def _recompute_waves(plan) -> str | None:
     return None if done.returncode == 0 else 'waves.tsv was not refreshed: %s' % (done.stderr or done.stdout).strip()
 
 
-def apply(plan, pid, approve_hash, actor='cli') -> dict:
+def apply(plan, pid, approve_hash, actor='cli', regenerate=True) -> dict:
     """Write an approved proposal. Raises `Refused` (nothing changed) or `NoSuchProposal`.
 
-    Returns `{pid, state: "approved", files, tasks, warning}`; `files` are the plan files
-    written, relative to the plan; `warning` says if waves.tsv could not be refreshed.
+    Returns `{pid, state: "approved", files, tasks, warning, affected, flagged, notes}`.
+    `files` are the plan files written, relative to the plan; `warning` says if waves.tsv
+    could not be refreshed. `affected` and `flagged` are the task ids marked after the write
+    (see `_settle`). `regenerate` asks the brief writer for new questions of the unstarted
+    affected tasks; `False` (`apply --no-regenerate`) only writes their markers.
     """
     who = answers._actor(actor)
     plan = Path(plan)
     if not plan.is_dir() or not (plan / 'tasks.tsv').is_file():
         raise forge_brief.NotAPlan(str(plan))
     if _load(plan, pid).get('scope') == 'plan':   # the scope never changes, so reading it unlocked is safe
-        return _apply_plan(plan, pid, approve_hash, who)
+        return _apply_plan(plan, pid, approve_hash, who, regenerate)
     with _proposals_lock(plan), _control_lock(plan) as control:
         record = _load(plan, pid)
         if record.get('state') != 'proposed':
@@ -717,11 +919,11 @@ def apply(plan, pid, approve_hash, actor='cli') -> dict:
         record['applied'] = forge_brief._now()
         record['applied_by'] = who
         _store(plan, record)
-    _emit(plan, record)
     names = [str(path.relative_to(plan)) for path, _ in written] + (['groups.frozen'] if files_edits else [])
-    return {'pid': pid, 'state': 'approved', 'files': names,
-            'tasks': [change['task'] for change in changes], 'warning': warning,
-            'message': None, 'notes': [], 'live': False}
+    result = {'pid': pid, 'state': 'approved', 'files': names,
+              'tasks': [change['task'] for change in changes], 'warning': warning,
+              'message': None, 'notes': [], 'live': False}
+    return _settle(plan, record, result, regenerate)
 
 
 # --- plan scope: structural changes ----------------------------------------------------
@@ -1293,7 +1495,7 @@ def _apply_plan_live(plan, pid, built: dict, control, actor, rows) -> tuple:
     return names, notes
 
 
-def _apply_plan(plan, pid, approve_hash, who) -> dict:
+def _apply_plan(plan, pid, approve_hash, who, regenerate=True) -> dict:
     """`apply` for a plan-scope proposal. No live run: the plan files change and `plan` must run again.
     A live run: only added tasks, each through `forge control add`; anything else refuses, nothing changed."""
     with _proposals_lock(plan):
@@ -1337,9 +1539,9 @@ def _apply_plan(plan, pid, approve_hash, who) -> dict:
             message = 'queued %s into the live run through forge control add' % ', '.join(order)
             record.update(state='approved', applied=forge_brief._now(), applied_by=who, live=True, queued=order)
             _store(plan, record)
-    _emit(plan, record)
-    return {'pid': pid, 'state': 'approved', 'files': names, 'tasks': touched(record), 'warning': None,
-            'message': message, 'notes': notes, 'live': live}
+    result = {'pid': pid, 'state': 'approved', 'files': names, 'tasks': touched(record), 'warning': None,
+              'message': message, 'notes': notes, 'live': live}
+    return _settle(plan, record, result, regenerate)
 
 
 # --- reject and list -------------------------------------------------------------------

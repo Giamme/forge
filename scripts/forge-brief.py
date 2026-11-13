@@ -25,7 +25,7 @@
       Nothing else changes.
   proposals PLAN [--json]
       Every proposal with its state, scope, group, summary, diff and the exact apply command.
-  apply PLAN PID --approve HASH [--actor A]
+  apply PLAN PID --approve HASH [--actor A] [--no-regenerate]
       Write the proposal's diff, re-validate and re-freeze the groups. Refuses, changing
       nothing, when the hash differs, the proposal is not `proposed`, a target started or a
       target file changed since. A `files` change is refused while a run is live. A plan
@@ -33,6 +33,10 @@
       dir moves to tasks/.removed/) and says to run `plan` again: groups.frozen is not
       refreshed, so `run` refuses until then. With a live run only added tasks apply, each
       through `forge control add`; every other change refuses until the run ends.
+      After a successful apply, changed, added and dependent unstarted tasks are marked
+      `brief.affected` and their questions are regenerated (one dispatch each). Tasks that
+      have already started are marked and not touched. `--no-regenerate` writes the markers
+      and does not dispatch; `forge brief write --task` regenerates later.
   reject PLAN PID [--reason TEXT] [--actor A]
       Mark the proposal rejected; no plan file is touched.
 
@@ -99,6 +103,8 @@ def _parser() -> argparse.ArgumentParser:
     apply.add_argument('pid', help='the proposal id, such as p1')
     apply.add_argument('--approve', required=True, metavar='HASH', help="the proposal's hash, as `proposals` shows it")
     apply.add_argument('--actor', default='cli', help='who is approving (default cli; forge-ui passes ui)')
+    apply.add_argument('--no-regenerate', action='store_true',
+                       help='mark affected tasks but do not regenerate their questions')
     reject = sub.add_parser('reject', help='reject a proposal; no plan file is touched')
     reject.add_argument('plan', help='the plan directory')
     reject.add_argument('pid', help='the proposal id, such as p1')
@@ -160,7 +166,8 @@ def main(argv=None) -> int:
                 sys.stdout.write(proposals.render(items))
             return 0
         if args.command == 'apply':
-            result = proposals.apply(args.plan, args.pid, args.approve, actor=args.actor)
+            result = proposals.apply(args.plan, args.pid, args.approve, actor=args.actor,
+                                     regenerate=not args.no_regenerate)
             sys.stdout.write('%s applied: %s\n' % (result['pid'], ', '.join(result['files']) or 'nothing'))
             for note in result.get('notes') or []:
                 sys.stdout.write('%s\n' % note)

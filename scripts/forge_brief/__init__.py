@@ -21,7 +21,9 @@ shape, is retried once, and a second failure (or a failed dispatch) stores
 `{"questions": [], "error": "<reason>"}` as `brief.json`.
 
 `show` lists every question with its state: `open`, `answered` (`brief.answers.json`),
-`late` (`brief.late.json`) or `possibly_stale` (a flag in brief.json).
+`late` (`brief.late.json`) or `possibly_stale` (a flag in brief.json). A task with
+`brief.affected` is marked `affected by <pid>`, and `flagged (already started)` when
+that marker is `flag_only`. `--json` includes those rows as `affected`.
 
 `answer` and `stale` (answers.py) write those. An answer given before the task starts
 goes to `brief.answers.json`; one given after goes to `brief.late.json` and does not
@@ -626,18 +628,41 @@ def _questions(data) -> list:
     return [q for q in items if isinstance(q, dict)] if isinstance(items, list) else []
 
 
+def _affected_rows(plan, tasks, only=None) -> list:
+    """`brief.affected` markers in tasks.tsv order: `{task, pid, reason, t, flag_only}`.
+
+    A task with no brief.json is included when it has a marker (an added task that was
+    marked and not regenerated yet). A marker that is not the object `apply` writes is skipped.
+    """
+    rows = []
+    for item in tasks:
+        if only is not None and item['id'] != only:
+            continue
+        data = _json(task_dir(plan, item['id']) / 'brief.affected')
+        if not isinstance(data, dict):
+            continue
+        pid, reason = data.get('pid'), data.get('reason')
+        if not isinstance(pid, str) or not pid or not isinstance(reason, str) or not reason:
+            continue
+        rows.append({'task': item['id'], 'pid': pid, 'reason': reason, 't': data.get('t'),
+                     'flag_only': data.get('flag_only') is True})
+    return rows
+
+
 def collect(plan, task=None) -> dict:
     """Every question of the plan (or one task) with its state, flagged open ones first.
 
-    `{questions: [...], parked: [...], errors: [{task, error}]}`. A question carries
-    `task`, `id`, `text`, `why`, `options`, `default`, `scope`, `must_answer`, `state`
+    `{questions: [...], parked: [...], errors: [{task, error}], affected: [...]}`. A question
+    carries `task`, `id`, `text`, `why`, `options`, `default`, `scope`, `must_answer`, `state`
     and, once answered, `answer`. A parked question stores `group` when its file has that
-    key: the group id, or null for a plan question.
+    key: the group id, or null for a plan question. `affected` is the `brief.affected` markers
+    (`task`, `pid`, `reason`, `t`, `flag_only`), in tasks.tsv order.
     """
     plan, _ = _guard(plan)
     tasks = read_tasks(plan)
     if task is not None and task not in {item['id'] for item in tasks}:
         raise UnknownTask(task)
+    affected = _affected_rows(plan, tasks, task)
     questions, parked, errors = [], [], []
     for item in ordered(plan, tasks):
         if task is not None and item['id'] != task:
@@ -679,7 +704,7 @@ def collect(plan, task=None) -> dict:
             return 0 if row['must_answer'] else 1
         return 2
     questions.sort(key=rank)   # stable: wave order and question order inside a rank
-    return {'questions': questions, 'parked': parked, 'errors': errors}
+    return {'questions': questions, 'parked': parked, 'errors': errors, 'affected': affected}
 
 
 def _question_lines(row) -> list:
@@ -749,10 +774,22 @@ def _grouped_parked_lines(rows, plan) -> list:
     return lines
 
 
+def _affected_lines(rows) -> list:
+    """One line per marked task: `a  affected by p3`, plus `flagged (already started)`."""
+    lines = []
+    for row in rows:
+        line = '%s  affected by %s' % (row['task'], row['pid'])
+        if row.get('flag_only'):
+            line += '  flagged (already started)'
+        lines.append(line)
+    return lines
+
+
 def render(found: dict, plan=None) -> str:
     """Text for `forge brief show`. `plan` is where group titles are read.
 
     A plan whose parked questions have no `group` key renders as it did before groups.
+    Marked tasks are listed after the questions (`affected by <pid>`).
     """
     lines = []
     for row in found['questions']:
@@ -768,6 +805,11 @@ def render(found: dict, plan=None) -> str:
                 lines.extend(_question_lines(row))
     for err in found['errors']:
         lines.append('%s: the question writer failed: %s' % (err['task'], err['error']))
+    affected = _affected_lines(found.get('affected') or [])
+    if affected:
+        if lines:
+            lines.append('')
+        lines.extend(affected)
     if not lines:
         lines.append('no questions')
     return '\n'.join(lines) + '\n'
