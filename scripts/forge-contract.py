@@ -60,7 +60,9 @@ line (`[P2]`, `(P2)`, `**P2**`, `P2:`, `P2 -` or a standalone `P2`; uppercase on
 Facts (#119). A finding may end its first line (or, wrapped, its last) with
 `{reach=main|realistic|unusual origin=new|existing evidence=ran|traced|suspected}`. They are
 recorded in shadow and decide nothing: the gate never reads them, and `split_facts` cuts the
-suffix for readers that show the line. A missing or malformed suffix changes nothing.
+suffix for readers that show the line. A missing or malformed suffix changes nothing. A group
+review may put `{tasks=…}` on that same line; the facts are still read when that brace follows
+them, and still when the facts brace is what closes the line.
 
 Phantom findings. A reviewer may echo the contract it was given. Three layers keep that
 from creating findings or blocking: (1) FORGE_VERDICT, FORGE_LEARNING, FORGE_TESTS and FORGE_RETRO text is removed
@@ -219,13 +221,18 @@ FACTS = {'reach': ('main', 'realistic', 'unusual'), 'origin': ('new', 'existing'
 
 # Group review (#140) attributes each finding to a member. The facts brace above is a different
 # tag and may sit on the same bullet; `{tasks=…}` has to be its own brace or the two are confused.
+# The facts brace still closes the line (`split_facts` reads a group that ends it). `{tasks=…}`
+# sits immediately before that brace. A tasks brace written after the facts is still parsed, so a
+# reviewer who ends on `{tasks=…}` does not drop the shadow measurement, but the prompt names one order.
 _GROUP_ATTRIB = [
     'Attribute each finding to the task whose diff changed the file it names.',
     'When a finding is about a different task than the file suggests, or it spans',
     'several tasks, end its bullet with {tasks=a,b}, the ids of the tasks that must',
     'change. A finding with no file needs {tasks=…}.',
     'The {reach=… origin=… evidence=…} facts may sit on the same bullet. They are not',
-    'the tasks tag. Write {tasks=…} in its own braces.',
+    'the tasks tag. Write {tasks=…} in its own braces, immediately before the facts',
+    'brace, so the facts brace still ends the line:',
+    '  - [P1][CONFIRMED] path/file.py:123 — {tasks=a,b} {reach=realistic origin=new evidence=traced}',
 ]
 
 _SWEEP_FINDINGS = [
@@ -488,25 +495,41 @@ def _finding(number: int, lines: list):
 # when it names at least one of the three facts: a finding's own text may end in braces (`{}`, `{a=1}`).
 _FACTS_SUFFIX = re.compile(r'[ \t]*[`*_]*\{([^{}\n]*)\}[`*_.]*[ \t]*$')
 _FACT = re.compile(r'([A-Za-z]+)[ \t]*[=:][ \t]*([A-Za-z]+)')
+# Group review's `{tasks=…}` is its own brace. When a reviewer puts it after the facts, the facts
+# group no longer closes the line; if the closing brace is not facts, this tail is cut and the
+# facts suffix is tried on what remains.
+_TASKS_TAIL = re.compile(
+    r'[ \t]*[`*_]*\{[ \t]*tasks[ \t]*=[ \t]*[^{}\n]*\}[`*_.]*[ \t]*$', re.IGNORECASE)
 
 
 def split_facts(line: str):
     """(line without its facts suffix, {reach, origin, evidence}) or (line, None) when it has none.
 
     A fact whose value is not one of its words reads None, and keys other than the three are ignored:
-    a malformed suffix is still cut from the line, so it never reaches a location or a title."""
-    match = _FACTS_SUFFIX.search(line or '')
-    if not match:
-        return line, None
-    said = {key.lower(): value.lower() for key, value in _FACT.findall(match.group(1))}
-    if not any(key in said for key in FACTS):
-        return line, None
-    return line[:match.start()], {key: said[key] if said.get(key) in words else None
-                                  for key, words in FACTS.items()}
+    a malformed suffix is still cut from the line, so it never reaches a location or a title.
+    `{tasks=…}` after the facts is not a facts suffix: both braces are cut, and the facts are kept.
+    `{tasks=…}` before the facts stays on the returned line, as it does when it is the only brace."""
+    original = line or ''
+    bodies = [original]
+    tasks = _TASKS_TAIL.search(original)
+    if tasks:
+        bodies.append(original[:tasks.start()])
+    for body in bodies:
+        match = _FACTS_SUFFIX.search(body)
+        if not match:
+            continue
+        said = {key.lower(): value.lower() for key, value in _FACT.findall(match.group(1))}
+        if not any(key in said for key in FACTS):
+            continue
+        return body[:match.start()], {key: said[key] if said.get(key) in words else None
+                                      for key, words in FACTS.items()}
+    return original, None
 
 
 def facts(text: str):
-    """The facts of one finding block: its first line's suffix, else its last line's (a wrapped bullet)."""
+    """The facts of one finding block: its first line's suffix, else its last line's (a wrapped bullet).
+
+    A `{tasks=…}` brace after the facts does not hide them."""
     lines = [line for line in (text or '').split('\n') if line.strip()]
     for line in lines[:1] + lines[-1:]:
         found = split_facts(line)[1]

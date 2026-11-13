@@ -337,10 +337,31 @@ class FactsTests(unittest.TestCase):
             ('braces not at the end', head + ' {reach=main} then more', (head + ' {reach=main} then more', None)),
             ('markup, colons, commas and case', head + ' `{Reach: Unusual, ORIGIN=new; evidence=Traced}`.',
              (head, self.ALL)),
+            # Group review: {tasks=…} after the facts no longer lets the facts close the line.
+            # Both braces are cut. A tasks brace before the facts stays; it is not a facts suffix.
+            ('facts, then a tasks tag', head + ' {reach=main origin=new evidence=ran} {tasks=a}',
+             (head, dict(none, reach='main', origin='new', evidence='ran'))),
+            ('tasks tag, then the facts', head + ' {tasks=a,b} {reach=unusual origin=new evidence=traced}',
+             (head + ' {tasks=a,b}', self.ALL)),
+            ('a tasks tag alone is not facts', head + ' {tasks=a}', (head + ' {tasks=a}', None)),
+            ('an empty tasks tag after the facts', head + ' {reach=main origin=new evidence=ran} {tasks=}',
+             (head, dict(none, reach='main', origin='new', evidence='ran'))),
         ]
         for name, line, expected in cases:
             with self.subTest(name):
                 self.assertEqual(contract.split_facts(line), expected)
+
+    def test_facts_survive_a_tasks_tag_on_either_side(self):
+        # The group tail tells a reviewer to put {tasks=…} before the facts brace. A reply that
+        # instead ends on {tasks=…} must still yield the three facts: that is the shadow measurement.
+        wanted = dict(reach='main', origin='new', evidence='ran')
+        forward = '- [P1][CONFIRMED] a.py:1 — x {tasks=a} {reach=main origin=new evidence=ran}'
+        reverse = '- [P1][CONFIRMED] a.py:1 — x {reach=main origin=new evidence=ran} {tasks=a}'
+        wrapped = ('- [P1][CONFIRMED] a.py:1 — x\n'
+                   '  {reach=main origin=new evidence=ran} {tasks=a}\n')
+        self.assertEqual(contract.facts(forward), wanted)
+        self.assertEqual(contract.facts(reverse), wanted)
+        self.assertEqual(contract.facts(wrapped), wanted)
 
     def test_a_wrapped_finding_keeps_its_facts_on_its_last_line(self):
         # The example bullet's own suffix, alone on a line: the echo filter must not take it for the contract.
@@ -585,7 +606,10 @@ class PromptTextTests(unittest.TestCase):
         for phrase in ('whose diff changed the file it names',
                        'end its bullet with {tasks=a,b}',
                        'A finding with no file needs {tasks=',
-                       'Write {tasks=…} in its own braces'):
+                       'Write {tasks=…} in its own braces',
+                       'immediately before the facts',
+                       'so the facts brace still ends the line',
+                       '{tasks=a,b} {reach=realistic origin=new evidence=traced}'):
             self.assertIn(phrase, tail, phrase)
             self.assertNotIn(phrase, contract.qa_text('tail', 'task'), phrase)
             self.assertNotIn(phrase, contract.qa_text('tail', 'sweep'), phrase)

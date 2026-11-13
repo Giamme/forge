@@ -145,6 +145,48 @@ class AttributeTests(unittest.TestCase):
         self.assertEqual(result['implicated'], ['a', 'b', 'c'])
         named = {task for row in result['findings'] for task in row['tasks']}
         self.assertTrue(named.isdisjoint({'realistic', 'main', 'unusual', 'new', 'existing', 'traced', 'ran', 'suspected'}))
+        # Either order keeps the shadow measurement. The second bullet puts tasks first; the first
+        # and the wrapped one put the facts brace first, which is the order the tail now forbids.
+        parsed = contract.parse_findings(text)
+        self.assertEqual([contract.facts(finding.text) for finding in parsed], [
+            dict(reach='realistic', origin='new', evidence='traced'),
+            dict(reach='main', origin='existing', evidence='ran'),
+            dict(reach='unusual', origin='existing', evidence='suspected'),
+            dict(reach='realistic', origin='new', evidence='traced'),
+        ])
+
+    def test_an_empty_tasks_tag_names_nobody_and_is_ambiguous_when_it_blocks(self):
+        # A present tag with no id does not fall back to the file it names. Only the blocking
+        # ones are escalated; a tolerated empty tag stays in the list and implicates nobody.
+        text = reply(
+            '- [P1][CONFIRMED] src/a.py:3 — x {tasks=}',
+            '- [P1][CONFIRMED] src/b.py:1 — separators only {tasks= , }',
+            '- [P3][CONFIRMED] src/a.py:4 — tolerated empty {tasks=}',
+        )
+        result = attr.attribute(text, MEMBERS, 'P2')
+        self.assertEqual([row['tasks'] for row in result['findings']], [[], [], []])
+        self.assertEqual([row['ambiguous'] for row in result['findings']], [True, True, True])
+        self.assertEqual([row['file'] for row in result['findings']], ['src/a.py', 'src/b.py', 'src/a.py'])
+        self.assertEqual(result['implicated'], [])
+        self.assertEqual(result['ambiguous'], [1, 2])
+        self.assertTrue(result['blocking'])
+        self.assertFalse(result['findings'][2]['blocking'])
+
+    def test_a_dotted_word_before_the_path_line_is_not_the_file(self):
+        # The block's first path:line wins over a dotted word earlier in the prose. Those tokens
+        # match a bare path, and taking the earliest match would mark a real file unattributable.
+        text = reply(
+            '- [P1][CONFIRMED] Calls os.path.join badly in src/a.py:3',
+            '- [P1][CONFIRMED] json.loads of node.js fails at src/b.py:2',
+            '- [P1][CONFIRMED] see docs/c.md before src/a.py:9 — the path:line still wins',
+        )
+        result = attr.attribute(text, MEMBERS, 'P2')
+        self.assertEqual([(row['file'], row['line']) for row in result['findings']],
+                         [('src/a.py', 3), ('src/b.py', 2), ('src/a.py', 9)])
+        self.assertEqual([row['tasks'] for row in result['findings']], [['a'], ['b'], ['a']])
+        self.assertEqual([row['ambiguous'] for row in result['findings']], [False, False, False])
+        self.assertEqual(result['implicated'], ['a', 'b'])
+        self.assertEqual(result['ambiguous'], [])
 
     def test_blocking_is_the_gate_decision_and_the_parser_drops_what_it_always_drops(self):
         text = reply(

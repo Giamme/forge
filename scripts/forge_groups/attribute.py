@@ -18,13 +18,17 @@ The dict is `{"findings", "implicated", "ambiguous", "blocking"}`. Each finding 
 
 - `n` is 1-based in the parser's order. `severity` is `P0`–`P3` or null. `status` is the
   parser's CONFIRMED, PLAUSIBLE or UNSTATED.
-- `file` and `line` are the block's first `path:line`, or the first path when it gives no
-  line. `line` is null then.
+- `file` and `line` are the block's first `path:line`, or, when the block has no `path:line`,
+  the first path. `line` is null then. A dotted word earlier in the prose (`os.path.join`,
+  `json.loads`, `node.js`) is not that path when a `path:line` follows it.
 - `tasks` is `{tasks=…}` when the bullet has one: comma or space separated, trimmed,
   duplicates dropped, member ids in member order and any other id after them in the order
   written. Otherwise it is every member whose changed paths contain `file`, in member order.
+  A present tag with no id (`{tasks=}`, `{tasks= , }`) names nobody and does not fall back
+  to the file.
 - `ambiguous` is true when there is no `{tasks=…}` and either there is no file or no member
-  changed that file, and when `{tasks=…}` names an id that is not a member.
+  changed that file, when `{tasks=…}` names an id that is not a member, and when `{tasks=…}`
+  names no id.
 - `blocking` is the gate's per-finding decision at `threshold` (`none` is P3; unset is P2).
   PLAUSIBLE never blocks.
 
@@ -93,26 +97,18 @@ def _usable(path: str) -> bool:
 def _locate(text: str):
     """(file, line) of the first path:line, else the first path, else (None, None).
 
-    A path:line and a bare path that start at the same character resolve to the path:line,
-    so `src/a.py:10` keeps its line."""
-    best = None
+    A path:line anywhere in the block wins over a bare path, including one that starts
+    earlier. `Calls os.path.join badly in src/a.py:3` is `src/a.py` line 3, and `src/a.py:10`
+    keeps its line rather than the bare `src/a.py` at the same character."""
     for match in _PATH_LINE.finditer(text):
         path = _clean_file(match.group(1))
-        if not _usable(path):
-            continue
-        item = (match.start(), 0, path, int(match.group(2)))
-        if best is None or item < best:
-            best = item
+        if _usable(path):
+            return path, int(match.group(2))
     for match in _PATH.finditer(text):
         path = _clean_file(match.group(1))
-        if not _usable(path):
-            continue
-        item = (match.start(), 1, path, None)
-        if best is None or item < best:
-            best = item
-    if best is None:
-        return None, None
-    return best[2], best[3]
+        if _usable(path):
+            return path, None
+    return None, None
 
 
 def _split_ids(raw: str) -> list:
@@ -184,8 +180,11 @@ def attribute(qa_last_text, members, threshold=None) -> dict:
                 tasks = list(by_path.get(file, ()))
                 ambiguous = not tasks
         else:
-            # The bullet is told to end with the tag, so a second {tasks=…} overrides the first.
+            # The last {tasks=…} wins. A tag with no id names nobody: do not fall back to the
+            # file, or a blocking finding would skip the member it must escalate as unattributable.
             tasks, ambiguous = _in_member_order(_split_ids(tags[-1].group(1)), order)
+            if not tasks:
+                ambiguous = True
         blocking = contract.finding_blocks(finding, threshold)
         rows.append({
             'n': number,
