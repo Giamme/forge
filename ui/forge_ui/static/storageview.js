@@ -5,7 +5,7 @@
    --read-only too. Measuring visits every file, so it runs once in the background when the screen opens and
    again on "Measure again"; the page polls only while a measurement runs.
    The pure helpers are tested in ui/tests/js/storageview.test.js.
-   ctx = { runHref(path) -> href | null, tablePrefs?(id), saveTablePrefs?(id, prefs) }. */
+   ctx = { runHref(key) -> href (a run row's key is null when the run list does not show it), tablePrefs?(id), saveTablePrefs?(id, prefs) }. */
 (function (root, factory) {
   'use strict';
   const api = factory(root);
@@ -174,7 +174,7 @@
     const bytesCell = n => Number.isFinite(n) && n > 0 ? humanBytes(n) : '—';
     const columns = [
       { id: 'run', label: 'Run', value: r => r.run_id, cell: r => {
-        const href = ctx.runHref ? ctx.runHref(r.path) : null;
+        const href = r.key && ctx.runHref ? ctx.runHref(r.key) : null;
         const n = el(href ? 'a' : 'span', r.run_id, 'mono'); if (href) n.href = href; n.title = r.path; return n; } },
       { id: 'repo', label: 'Repository', value: r => repoName(r.repo), cell: r => { const n = el('span', repoName(r.repo)); if (r.repo) n.title = r.repo; return n; } },
       { id: 'total', label: 'Total', value: r => r.total, cell: r => humanBytes(r.total) },

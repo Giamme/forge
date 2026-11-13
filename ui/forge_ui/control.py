@@ -913,7 +913,7 @@ def _storage(ctx):
         refresh = _bit(params, 'refresh')
     except BadBody as exc:
         return _invalid(str(exc))
-    return 200, storage.screen(ctx.server).answer(refresh=refresh)
+    return 200, storage.with_keys(storage.screen(ctx.server).answer(refresh=refresh), ctx.server.catalog.keys())
 
 
 def _worktrees(ctx):

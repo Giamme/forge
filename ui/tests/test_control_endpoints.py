@@ -216,6 +216,29 @@ class StorageTests(EndpointCase):
             self.assertEqual(self.get('/api/storage?refresh=yes')[0], 400)
         self.assertEqual(self.calls(), [])                      # no forge command runs for it
 
+    def test_each_run_carries_the_key_the_run_list_opens_it_by(self):
+        # forge_storage names run dirs by their real path; the list may know a run by another spelling of it
+        from forge_ui import storage
+
+        class Rules:
+            @staticmethod
+            def scan(path):
+                return {}
+
+            @staticmethod
+            def report(repo, home=None, progress=None):
+                return dict(repo=None, computed=time.time(), complete=True,
+                            runs=[dict(path=self.rplan, run_id='r', reclaimable=0), dict(path='/no/such/run', run_id='x', reclaimable=0)],
+                            strays=[], worktrees=[], data_home=None, totals=dict(reclaimable=0, runs=9, worktrees=0, data_home=0))
+        with patch.object(storage, 'rules', return_value=Rules):
+            body = self.get('/api/storage')[1]
+            deadline = time.time() + 10
+            while body['state'] != 'ready' and time.time() < deadline:
+                time.sleep(0.02)
+                body = self.get('/api/storage')[1]
+        self.assertEqual([r['key'] for r in body['data']['runs']], [self.key, None])
+        self.assertNotIn('key', storage.screen(self.server).result['runs'][0])   # the cache keeps none
+
 
 class WorktreesTests(EndpointCase):
     def test_reads_the_history_through_the_cli_once_per_read_and_caches_the_rest(self):

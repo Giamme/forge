@@ -1734,7 +1734,7 @@ Storage = {state: measuring | ready | error | unavailable, error, started, progr
            data: Report | null (the last measurement, kept while the next one runs)}
 Report = {repo: null, computed, complete, totals: {runs, worktrees, data_home, reclaimable, snapshots, logs, strays},
           runs: [{path, run_id, repo, updated, total, snapshots, snapshot_count, logs, gz, compressible, strays,
-                  fractal, other, reclaimable, complete, commands: [{label, command}]}],
+                  fractal, other, reclaimable, complete, key: forge-ui run key | null (not in the run list), commands: [{label, command}]}],
           strays: [{path, bytes, kind: dependencies | git, run}], worktrees: [{repo, run_id, path, bytes, complete}],
           data_home: {path, bytes, parts: {dataset, blobs, archive, exports, legacy, storage, other}} | null,
           commands: [{label, command, bytes?}]}

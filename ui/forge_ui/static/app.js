@@ -580,7 +580,7 @@ window.ForgeApp = (() => {
     main.replaceChildren();
     const v = el('section', undefined, 'worktrees-view disk-view'); v.id = 'disk-view'; main.append(v);
     state.diskView = window.ForgeStorage.render(v, {
-      runHref: path => { const r = list(state.runs).find(x => x.path === path); return r ? '#/runs/' + encodeURIComponent(r.key) : null; },
+      runHref: key => '#/runs/' + encodeURIComponent(key),
       tablePrefs: id => state.tablePrefs[id], saveTablePrefs: (id, p) => { state.tablePrefs = { ...state.tablePrefs, [id]: p }; store.set('tables', state.tablePrefs); },
     });
   }

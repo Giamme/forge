@@ -3179,6 +3179,10 @@ class Catalog:
         runs = [_with_repo(summarize(path, source), identities[entry[0]]) for path, source, entry in listed]
         return sorted(runs, key=lambda item: item['updated'] if item['updated'] is not None else float('-inf'), reverse=True)
 
+    def keys(self):
+        """The keys of every run the list shows, without summarizing any of them."""
+        return {run_key(path) for path, _source in discover(**self.options)}
+
     def identity(self, key):
         """The identity of the run with this key, resolved in the same batch as the list; None for no such run."""
         listed, identities = batch(discover(**self.options))
