@@ -82,6 +82,20 @@ def with_commands(result):
     return result
 
 
+def with_keys(answer, keys):
+    """The answer with each run's forge-ui key, or None for a run dir the run list does not show (the Disk screen
+    links only the ones it can open). A copy: the cached result keeps no key, since the run list changes."""
+    data = answer.get('data')
+    if not data:
+        return answer
+    from forge_ui.reader import run_key
+    runs = []
+    for run in data['runs']:
+        key = run_key(run['path'])
+        runs.append(dict(run, key=key if key in keys else None))
+    return dict(answer, data=dict(data, runs=runs))
+
+
 class Screen:
     """The cached answer of /api/storage for one server; one measurement at a time, in a background thread."""
 
