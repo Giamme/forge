@@ -188,6 +188,28 @@ class AttributeTests(unittest.TestCase):
         self.assertEqual(result['implicated'], ['a', 'b'])
         self.assertEqual(result['ambiguous'], [])
 
+    def test_a_word_and_a_number_is_not_a_file(self):
+        # A host, a time or a key is not a path:line. The file the bullet names stays the
+        # location, with or without its own line, and that member is retried. Reading every
+        # word:number as a file would mark these blocking findings ambiguous and retry nobody.
+        members = [('a', ['src/a.py']), ('b', ['docs/c.md'])]
+        text = reply(
+            '- [P1][CONFIRMED] docs/c.md — documents localhost:8080 but the server binds :9000',
+            '- [P1][CONFIRMED] docs/c.md — the timeout 12:30 is wrong',
+            '- [P1][CONFIRMED] src/a.py — breaks for key a:1 in the dict',
+            '- [P1][CONFIRMED] key a:1 breaks src/a.py:4, and 12:30 does not',
+            '- [P1][CONFIRMED] localhost:8080 is documented in docs/c.md:2',
+        )
+        result = attr.attribute(text, members, 'P2')
+        self.assertEqual([(row['file'], row['line']) for row in result['findings']], [
+            ('docs/c.md', None), ('docs/c.md', None), ('src/a.py', None),
+            ('src/a.py', 4), ('docs/c.md', 2)])
+        self.assertEqual([row['tasks'] for row in result['findings']],
+                         [['b'], ['b'], ['a'], ['a'], ['b']])
+        self.assertEqual(result['ambiguous'], [])
+        self.assertEqual(result['implicated'], ['a', 'b'])
+        self.assertTrue(all(row['blocking'] and not row['ambiguous'] for row in result['findings']))
+
     def test_blocking_is_the_gate_decision_and_the_parser_drops_what_it_always_drops(self):
         text = reply(
             '- [P1][CONFIRMED] src/a.py:1 — blocks',

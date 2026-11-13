@@ -19,8 +19,9 @@ The dict is `{"findings", "implicated", "ambiguous", "blocking"}`. Each finding 
 - `n` is 1-based in the parser's order. `severity` is `P0`–`P3` or null. `status` is the
   parser's CONFIRMED, PLAUSIBLE or UNSTATED.
 - `file` and `line` are the block's first `path:line`, or, when the block has no `path:line`,
-  the first path. `line` is null then. A dotted word earlier in the prose (`os.path.join`,
-  `json.loads`, `node.js`) is not that path when a `path:line` follows it.
+  the first path. `line` is null then. A `path:line` is a path: a slash or an extension, so
+  `localhost:8080`, `12:30` and `a:1` are not one. A dotted word earlier in the prose
+  (`os.path.join`, `json.loads`, `node.js`) is not that path when a `path:line` follows it.
 - `tasks` is `{tasks=…}` when the bullet has one: comma or space separated, trimmed,
   duplicates dropped, member ids in member order and any other id after them in the order
   written. Otherwise it is every member whose changed paths contain `file`, in member order.
@@ -57,10 +58,13 @@ _TASKS_TAG = re.compile(r'\{[ \t]*tasks[ \t]*=[ \t]*([^{}]*)\}', re.IGNORECASE)
 _ID_SPLIT = re.compile(r'[\s,]+')
 # A segment ends on a word character, so a sentence's final dot stays outside the path.
 _SEG = r'[\w+-]+(?:\.[\w+-]+)*'
-_PATH_LINE = re.compile(r'(?<![\w./])((?:\./)?' + _SEG + r'(?:/' + _SEG + r')*):(\d+)')
-_PATH = re.compile(
-    r'(?<![\w./])((?:\./)?' + _SEG + r'(?:/' + _SEG + r')+'
-    r'|(?:\./)?' + _SEG + r'\.[A-Za-z][A-Za-z0-9]{0,7})(?![\w:/])')
+# Same shapes as a bare path: a slash, or an extension. Looser than that, and
+# `localhost:8080`, `12:30` and `a:1` beat the file the bullet names.
+_PATH_BODY = (
+    r'(?:\./)?' + _SEG + r'(?:/' + _SEG + r')+'
+    r'|(?:\./)?' + _SEG + r'\.[A-Za-z][A-Za-z0-9]{0,7}')
+_PATH_LINE = re.compile(r'(?<![\w./])(' + _PATH_BODY + r'):(\d+)')
+_PATH = re.compile(r'(?<![\w./])(' + _PATH_BODY + r')(?![\w:/])')
 _NOT_PATH = {'e.g', 'i.e'}
 
 _contract_mod = None
@@ -99,7 +103,9 @@ def _locate(text: str):
 
     A path:line anywhere in the block wins over a bare path, including one that starts
     earlier. `Calls os.path.join badly in src/a.py:3` is `src/a.py` line 3, and `src/a.py:10`
-    keeps its line rather than the bare `src/a.py` at the same character."""
+    keeps its line rather than the bare `src/a.py` at the same character. The path:line has
+    to be a path, with a slash or an extension: `localhost:8080`, `12:30` and `a:1` are not
+    one, so the file named beside them stays the location."""
     for match in _PATH_LINE.finditer(text):
         path = _clean_file(match.group(1))
         if _usable(path):
