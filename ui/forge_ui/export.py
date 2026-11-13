@@ -26,8 +26,10 @@ from forge_ui import __version__, reader, server
 
 STATIC = server.STATIC_DIR
 # what the exported page runs; every other script index.html loads is in LEFT_OUT, with the reason
+# groupsview.js is the group page. It is named here before that file exists; _page skips a
+# SCRIPTS entry whose file is absent, so the export still builds.
 SCRIPTS = ('theme.js', 'icons.js', 'datatable.js', 'shell.js', 'runmodel.js', 'cloudmodel.js', 'graph.js', 'gantt.js', 'verifyview.js', 'checksview.js',
-           'briefview.js', 'panel.js', 'diffview.js', 'convo.js', 'files.js', 'map3d.js', 'search.js', 'app.js')
+           'briefview.js', 'groupsview.js', 'panel.js', 'diffview.js', 'convo.js', 'files.js', 'map3d.js', 'search.js', 'app.js')
 LEFT_OUT = {
     'uikit.js': 'write helpers and the guards that keep a poll from redrawing what a person holds; a snapshot neither writes nor polls',
     'controls.js': 'changes a live run',
@@ -186,7 +188,20 @@ def build(catalog, key, texts=False, paths=False, now=None):
     tasks = [t for t in (detail.get('tasks') or []) if isinstance(t, dict) and t.get('id')]
     for task in tasks:
         snap.add(f"{base}/tasks/{_enc(task['id'])}")
-    names = sorted(set(_EXEC.findall(json.dumps(run))))
+    # A group's review dispatch is not named on the run, only on its own detail. Snapshot that detail,
+    # and fold the dispatch into the execution list so its transcript is stored with the others.
+    extra_execs = []
+    for item in run.get('groups') or []:
+        if not isinstance(item, dict):
+            continue
+        gid = item.get('id')
+        if not isinstance(gid, str) or not re.fullmatch(r'[a-z0-9][a-z0-9-]{0,39}', gid):
+            continue
+        body = snap.add(f'{base}/groups/{_enc(gid)}')
+        execution = body.get('execution') if isinstance(body, dict) else None
+        if isinstance(execution, dict) and isinstance(execution.get('id'), str):
+            extra_execs.append(execution['id'])
+    names = sorted(set(_EXEC.findall(json.dumps(run))) | {name for name in extra_execs if _EXEC.fullmatch(name)})
     for name in names:
         snap.add(f'{base}/executions/{name}')
     reviews = [r.get('name') for r in (run.get('final_reviews') or []) if isinstance(r, dict) and r.get('name')]
