@@ -49,8 +49,11 @@ with no live run writes `tasks.tsv`, `groups.tsv` and the task dirs (a removed t
 marker into `groups.frozen` (the fingerprint covers only groups.tsv and the members' rows, so an
 ungrouped change, or a plan with no groups, would not otherwise stop `run`): `run` then refuses until
 `plan` validates, routes and freezes again, which overwrites the marker or removes it. A wave apply
-meanwhile keeps the marker. With a live run only additions apply, queued in dependency order, each
-through `forge control add`; the task joins no group.
+meanwhile keeps the marker, and its result lists `groups.frozen` only when this step re-froze it.
+With a live run only additions apply, queued in dependency order, each through `forge control add`;
+the task joins no group. If a later add is refused, the tasks already queued stay and the proposal
+is stored `approved` so it cannot be applied again, but the apply still raises. That is not a
+successful apply: it does not mark `brief.affected` and it does not emit the approved event.
 
 `brief_diff` events (`{pid, scope, group, state, tasks}`) record proposed, refused, approved and
 rejected. An approved event also carries `affected` and `flagged`, the task ids `apply` marked.
@@ -62,8 +65,11 @@ that depends (directly or transitively) on a changed, added or removed task, is 
 post-apply `tasks.tsv` plus the removed ids. Each gets `tasks/<id>/brief.affected`. An unstarted
 one is `{pid, reason, t}` with reason `changed`, `added` or `dependent`, and its questions are
 regenerated with `write --force`: an answer whose question text is still there is kept, and any
-other answer goes to `brief.answers.prev.json`. A task that has already started (running, merged,
-or anything else past PENDING) is not rewritten and not dispatched; its marker sets `flag_only`.
+other answer goes to `brief.answers.prev.json` (removed when a later regeneration drops nothing,
+so an earlier drop does not stay behind). The note names only the tasks whose questions were
+rewritten: brief off and a dispatch-cap skip leave the old brief and are not claimed. A task
+that has already started (running, merged, or anything else past PENDING) is not rewritten
+and not dispatched; its marker sets `flag_only`.
 `apply --no-regenerate` writes the markers and skips the dispatches. The next approved proposal
 that touches a task replaces that task's marker; earlier proposals stay where they are.
 """
@@ -746,14 +752,15 @@ def _carry_answers(old_questions, old_answers, new_questions) -> tuple:
     return kept, dropped
 
 
-def _regenerate_one(plan, task: str) -> None:
+def _regenerate_one(plan, task: str) -> bool:
     """Rewrite one task's questions and put the answers that still fit back by their text.
 
     `write --force` archives the old brief and its answers (question ids restart at q1).
     Answers whose question text is in the new brief are written back under the new id; the
     others go to `brief.answers.prev.json`, next to the archive, so nothing is thrown away.
-    A skipped write (the dispatch cap, or a brief that appeared under the lock) leaves the
-    answers where they were.
+    A regeneration that drops nothing removes that file, so an earlier regeneration's drops
+    do not stay behind. A skipped write (the dispatch cap, or a brief that appeared under the
+    lock) leaves the answers where they were. Returns whether the brief was rewritten.
     """
     tdir = forge_brief.task_dir(plan, task)
     old_brief = forge_brief._json(tdir / 'brief.json')
@@ -761,28 +768,37 @@ def _regenerate_one(plan, task: str) -> None:
     old_answers = forge_brief._entries(forge_brief._json(tdir / 'brief.answers.json'))
     report = forge_brief.write(plan, task=task, force=True)
     if not report or report[0].get('status') == 'skipped':
-        return
+        return False
     new_brief = forge_brief._json(tdir / 'brief.json')
     new_questions = forge_brief._questions(new_brief if isinstance(new_brief, dict) else None)
     kept, dropped = _carry_answers(old_questions, old_answers, new_questions)
     if kept:
         forge_brief.atomic_write(tdir / 'brief.answers.json', forge_brief._dump(kept))
+    prev = tdir / 'brief.answers.prev.json'
     if dropped:
-        forge_brief.atomic_write(tdir / 'brief.answers.prev.json', forge_brief._dump(dropped))
+        forge_brief.atomic_write(prev, forge_brief._dump(dropped))
+    else:
+        prev.unlink(missing_ok=True)
+    return True
 
 
-def _regenerate(plan, tasks: list) -> None:
-    """One brief dispatch per unstarted affected task, in tasks.tsv order.
+def _regenerate(plan, tasks: list) -> list:
+    """The unstarted affected tasks whose questions were actually rewritten, in tasks.tsv order.
 
     This runs after the apply has been stored. A failure here does not undo the apply:
-    `BriefOff` stops the rest (every later task would fail the same way); any other error
-    is left to the caller only when the writer itself raises, which it does not for a bad reply.
+    `BriefOff` stops the rest (every later task would fail the same way); a skipped write
+    is not rewritten. The caller names only what this returns, so a note never claims a
+    dispatch that did not happen. Any other error is left to the caller only when the
+    writer itself raises, which it does not for a bad reply.
     """
+    done = []
     for task in tasks:
         try:
-            _regenerate_one(plan, task)
+            if _regenerate_one(plan, task):
+                done.append(task)
         except forge_brief.BriefOff:
-            return
+            return done
+    return done
 
 
 def _settle(plan, record: dict, result: dict, regenerate: bool) -> dict:
@@ -802,8 +818,9 @@ def _settle(plan, record: dict, result: dict, regenerate: bool) -> dict:
     notes = list(result.get('notes') or [])
     if affected:
         if regenerate:
-            _regenerate(plan, affected)
-            notes.append('regenerating questions for %d tasks: %s' % (len(affected), ', '.join(affected)))
+            done = _regenerate(plan, affected)
+            if done:
+                notes.append('regenerating questions for %d tasks: %s' % (len(done), ', '.join(done)))
         else:
             notes.append('marked affected, not regenerating: %s' % ', '.join(affected))
     if flagged:
@@ -898,11 +915,13 @@ def apply(plan, pid, approve_hash, actor='cli', regenerate=True) -> dict:
             written.append((plan / 'tasks.tsv', ''.join(new_lines)))
         before = {path: _read_bytes(path) for path, _ in written}
         before_frozen = _read_bytes(plan / 'groups.frozen')
+        refroze = False
         try:
             for path, value in written:
                 forge_brief.atomic_write(path, value)
             if files_edits and not plan_stale(plan):   # a plan change awaiting `plan` stays stale
                 forge_groups.freeze(plan)
+                refroze = True
         except BaseException:
             for path, old in before.items():
                 if old is None:
@@ -919,7 +938,7 @@ def apply(plan, pid, approve_hash, actor='cli', regenerate=True) -> dict:
         record['applied'] = forge_brief._now()
         record['applied_by'] = who
         _store(plan, record)
-    names = [str(path.relative_to(plan)) for path, _ in written] + (['groups.frozen'] if files_edits else [])
+    names = [str(path.relative_to(plan)) for path, _ in written] + (['groups.frozen'] if refroze else [])
     result = {'pid': pid, 'state': 'approved', 'files': names,
               'tasks': [change['task'] for change in changes], 'warning': warning,
               'message': None, 'notes': [], 'live': False}
@@ -1533,7 +1552,8 @@ def _apply_plan(plan, pid, approve_hash, who, regenerate=True) -> dict:
                     record.update(state='approved', applied=forge_brief._now(), applied_by=who, live=True,
                                   queued=queued, partial=failure.reason)
                     _store(plan, record)
-                    _emit(plan, record)
+                    # The apply still raises, so it is not the successful apply that marks
+                    # brief.affected and emits the approved event.
                 raise
             order = [entry['id'] for entry in _dependency_order(built['add'])]
             message = 'queued %s into the live run through forge control add' % ', '.join(order)

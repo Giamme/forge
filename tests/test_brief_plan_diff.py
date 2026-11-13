@@ -245,7 +245,8 @@ class ApplyOfflineTests(PlanCase):
         self.applied(add=[new('f', ['a'])])
         self.arm({'*.qa.*': says(json.dumps({'summary': 's', 'changes': [change('b', files='b2.txt')]}))})
         self.assertEqual(proposals.propose(self.plan, 'a', 'q1')['scope'], 'wave')
-        proposals.apply(self.plan, 'p2', self.digest('p2'))   # a files change: it used to re-freeze
+        result = proposals.apply(self.plan, 'p2', self.digest('p2'))   # a files change: it used to re-freeze
+        self.assertEqual(result['files'], ['tasks.tsv'])
         self.assertEqual(self.tsv()['b']['files'], 'b2.txt')
         self.assertTrue(proposals.plan_stale(self.plan))
         self.run_refuses()
@@ -472,6 +473,37 @@ class LiveRunTests(PlanCase):
             proposals.apply(self.plan, 'p1', self.digest())
         self.assertIn('explicit dwarf and qa', caught.exception.reason)
         self.assertEqual(self.changed(before), [])
+
+    def test_a_partly_queued_live_add_stores_approved_without_the_approved_event(self):
+        self.go_live()
+        count = self.root / 'doctor-count'
+        script = self.root / 'doctor.py'
+        script.write_text(
+            'import pathlib, sys\n'
+            'path = pathlib.Path(sys.argv[1])\n'
+            'seen = int(path.read_text()) if path.exists() else 0\n'
+            'path.write_text(str(seen + 1))\n'
+            'raise SystemExit(0 if seen < 2 else 1)\n')
+        os.environ['FORGE_CONTROL_DOCTOR'] = '%s %s %s' % (
+            shlex.quote(sys.executable), shlex.quote(str(script)), shlex.quote(str(count)))
+        self.plan_propose(add=[new('f', ['c']), new('g', ['f'])])
+        with self.assertRaises(proposals.Refused) as caught:
+            proposals.apply(self.plan, 'p1', self.digest())
+        self.assertIn('already queued: f', caught.exception.reason)
+        state = self.state()
+        self.assertEqual((state['state'], state['queued']), ('approved', ['f']))
+        self.assertIn('refused g', state['partial'])
+        self.assertEqual([item['task'] for item in self.requests()], ['f'])
+        self.assertIn('f', self.tsv())
+        self.assertNotIn('g', self.tsv())
+        self.assertTrue((self.plan / 'tasks' / 'f' / 'prompt.md').is_file())
+        self.assertFalse((self.plan / 'tasks' / 'g').exists())
+        with self.assertRaises(proposals.Refused) as again:
+            proposals.apply(self.plan, 'p1', self.digest())
+        self.assertIn('not proposed', again.exception.reason)
+        self.assertEqual([body['state'] for body in self.brief_diffs()], ['proposed'])
+        self.assertFalse(any('affected' in body for body in self.brief_diffs()))
+        self.assertFalse((self.plan / 'tasks' / 'f' / 'brief.affected').exists())
 
     def test_a_refusal_by_forge_control_add_rolls_that_task_back(self):
         self.go_live()

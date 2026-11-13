@@ -7,6 +7,7 @@ in brief.answers.prev.json. `--no-regenerate` writes the markers and does not di
 """
 import dataset_isolation  # noqa: F401  keeps forge's dataset and config out of the developer's home
 import json
+import os
 from pathlib import Path
 import re
 import sys
@@ -239,6 +240,54 @@ class WaveAffectedTests(WaveFixture):
         text = self.cli('show', self.plan).stdout
         self.assertIn('a  affected by p2', text)
         self.assertNotIn('affected by p1', text)
+
+    def test_brief_off_marks_the_tasks_and_does_not_claim_a_regeneration(self):
+        self.propose_a()
+        os.environ['FORGE_BRIEF'] = 'off'
+        self.env['FORGE_BRIEF'] = 'off'
+        result = proposals.apply(self.plan, 'p1', self.digest())
+        self.assertEqual(result['affected'], ['a', 'b'])
+        self.assertEqual(result['flagged'], ['m', 'r'])
+        self.assertNotIn('regenerating questions', '\n'.join(result['notes']))
+        self.assertIn('flagged (already started): m, r', result['notes'])
+        self.assertEqual(brief_runs(self.plan), [])
+        self.assertEqual((self.plan / 'tasks' / 'a' / 'brief.json').read_bytes(), self.bytes['a'])
+        self.assertEqual((self.plan / 'tasks' / 'b' / 'brief.json').read_bytes(), self.bytes['b'])
+        self.assertEqual(marker(self.plan, 'a')['reason'], 'changed')
+        self.assertTrue(marker(self.plan, 'm')['flag_only'])
+
+    def test_the_dispatch_cap_names_only_the_task_whose_questions_were_rewritten(self):
+        self.propose_a()
+        rows = [line for line in (self.plan / 'tasks.tsv').read_text().splitlines() if line and not line.startswith('#')]
+        # One slot under the cap (max(10, 3 x tasks)): a is rewritten, b is skipped.
+        for number in range(1, max(10, 3 * len(rows))):
+            (self.plan / 'side' / 'brief' / 'z' / str(number)).mkdir(parents=True)
+        self.arm_questions('Keep me?')
+        result = proposals.apply(self.plan, 'p1', self.digest())
+        self.assertNotEqual((self.plan / 'tasks' / 'a' / 'brief.json').read_bytes(), self.bytes['a'])
+        self.assertEqual((self.plan / 'tasks' / 'b' / 'brief.json').read_bytes(), self.bytes['b'])
+        self.assertIn(('a', '1'), brief_runs(self.plan))
+        self.assertNotIn(('b', '1'), brief_runs(self.plan))
+        self.assertEqual([note for note in result['notes'] if note.startswith('regenerating')],
+                         ['regenerating questions for 1 tasks: a'])
+
+    def test_a_regeneration_that_drops_nothing_removes_the_previous_dropped_answers(self):
+        self.propose_a()
+        # The new brief keeps the wave question, so a second proposal can be asked after the rewrite.
+        self.arm({'*.qa.*': says(reply(question('Keep me?'), question('Again?', 'wave')))})
+        proposals.apply(self.plan, 'p1', self.digest())
+        prev = self.plan / 'tasks' / 'a' / 'brief.answers.prev.json'
+        self.assertEqual(json.loads(prev.read_text()), {'q1': {'text': 'gone', 'actor': 'ada', 't': 1}})
+        self.answer('a', 'q2', 'sqlite again')
+        self.arm({'*.qa.*': says(canned(change('a', prompt='Newer prompt for a. TASK_a\n')))})
+        record = proposals.propose(self.plan, 'a', 'q2')
+        self.assertEqual(record['state'], 'proposed', record.get('reason'))
+        self.arm_questions('Keep me?')
+        proposals.apply(self.plan, 'p2', self.digest('p2'))
+        self.assertFalse(prev.exists())
+        self.assertEqual(json.loads((self.plan / 'tasks' / 'a' / 'brief.answers.json').read_text()),
+                         {'q1': {'text': 'kept', 'actor': 'ada', 't': 2}})
+        self.assertEqual([q['text'] for q in self.brief('a')['questions']], ['Keep me?'])
 
     def test_a_refused_apply_marks_nothing_and_dispatches_nothing(self):
         self.propose_a()
