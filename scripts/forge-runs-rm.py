@@ -62,6 +62,7 @@ from pathlib import Path
 SKILL = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(SKILL / 'scripts'))
 
+import forge_locations  # noqa: E402
 import forge_registry  # noqa: E402
 import forge_worktrees  # noqa: E402
 from forge_dataset import DatasetError, data_home, dataset_dir, enabled, harvest, importer, record, record_strict  # noqa: E402
@@ -599,6 +600,7 @@ def remove_worktrees(run):
             if kind == 'task' and entry['branch']:
                 removed['task'] = entry['branch'].split('/', 2)[-1]
             record([removed], repo=run.repo, where='event:worktree_removed')
+            forge_locations.gone('worktree', entry['path'], by='forge runs rm')
         else:
             entry['note'] = (err or 'git worktree remove exit %d' % code).splitlines()[0]
             problems.append('%s: %s' % (entry['path'], entry['note']))

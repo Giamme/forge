@@ -110,6 +110,11 @@ Sources are checked in this order:
    supplies absolute paths, one per line; blank lines and `#` comments are ignored.
    `--registry-dir` replaces this location; `--no-registry` disables it.
 
+Beside the registry, forge keeps a location list, `forge/locations.jsonl` in the same config home
+(`scripts/forge_locations.py`): every run dir and worktree forge created, each with its repository's git dir
+and main working tree, and when forge saw it go. The Worktrees and Disk screens use it as the index of where
+to look; what is there is still read from the disk and git each time. forge-ui only reads it.
+
 Plan directories (containing a `tasks.tsv` file) and solo run directories (a `prompt.md`
 and a `repo` file) appear through `--plan` and the registry; `--root` finds plan directories
 only. Stale or invalid paths are skipped. Duplicate real paths appear once,

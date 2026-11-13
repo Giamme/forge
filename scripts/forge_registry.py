@@ -112,6 +112,15 @@ def _registry_lock(wait_s: float):
         os.close(fd)
 
 
+def _locations():
+    """forge_locations, beside this file: `python3 -I` (how the runners call this) leaves this folder off sys.path."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    if here not in sys.path:
+        sys.path.insert(0, here)
+    import forge_locations
+    return forge_locations
+
+
 def register_run_dir(repo: Path, run_dir: Path) -> None:
     """Record an absolute run-dir path for this repo, deduplicated.
 
@@ -121,6 +130,12 @@ def register_run_dir(repo: Path, run_dir: Path) -> None:
     it (see the module docstring), and appended again if an unregister replaced the file
     it went to.
     """
+    try:
+        # Into forge's location list as well, with the repository's git dir and not only this checkout. Like
+        # the registry, it never raises: forge_locations swallows its own errors.
+        _locations().add_run(run_dir, str(repo))
+    except Exception:   # noqa: BLE001 -- an import that fails must not cost the registry line
+        pass
     try:
         # A relative HOME (registry_dir already ignores a relative XDG_CONFIG_HOME) would resolve
         # below the current directory -- for a runner, usually the user's repo. Forge does not
@@ -239,6 +254,10 @@ def unregister_run_dir(run_dir) -> list:
         for path in sorted(directory.glob('*.txt')):
             if _rewrite_without(path, wanted):
                 changed.append(path)
+    try:
+        _locations().gone('run', run_dir, by='forge runs rm')
+    except Exception:   # noqa: BLE001 -- the location list is housekeeping: it never fails a removal
+        pass
     return changed
 
 

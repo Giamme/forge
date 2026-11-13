@@ -153,7 +153,7 @@ bash <skill_dir>/scripts/forge-solo.sh "$FORGE_RUN" --repo "$REPO" --dwarf <spec
 | `FORGE_UI_BROWSER=off` | print the link, never open a browser |
 | `FORGE_UI_PORT` | preferred port, default `8765`; `--port` wins; a taken port falls back to a free one |
 | `FORGE_UI_IDLE_S` | idle seconds before the server exits, default `14400`; `0` never |
-| `FORGE_RUN_REGISTRY=off` | runs stop registering themselves (`--ui` and `forge ui open DIR` still register the run they open) |
+| `FORGE_RUN_REGISTRY=off` | runs stop registering themselves (`--ui` and `forge ui open DIR` still register the run they open), and stop writing forge's location list (`<config home>/forge/locations.jsonl`) |
 
 ## One shared server
 

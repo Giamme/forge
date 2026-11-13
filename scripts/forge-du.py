@@ -135,6 +135,8 @@ def main(argv=None) -> int:
     if args.repo is not None and not args.repo.is_dir():
         parser.error('--repo: no such directory: %s' % args.repo)
     repo = None if args.all else repo_of(args.repo if args.repo is not None else Path.cwd())
+    import forge_locations
+    forge_locations.ensure_imported()          # once: what the run registry and the disk already hold
     home = data_home()
     tty = not args.json and sys.stderr.isatty()
 

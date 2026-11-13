@@ -26,6 +26,9 @@ class Fixture(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, self.tmp, True)
+        # forge's location list lives in the config home: never the developer's
+        config = patch.dict(os.environ, {'XDG_CONFIG_HOME': str(self.tmp / 'config')})
+        config.start(); self.addCleanup(config.stop)
         self.base = Path(os.path.realpath(self.tmp)) / 'my repos'
         self.base.mkdir()
         self.repo = self.base / 'app'
@@ -236,6 +239,38 @@ class FoundOnDiskTests(Fixture):
         [cmd] = rows['orphan']['commands']
         self.assertEqual(cmd['command'], 'rm -rf -- %s' % worktrees.quote(self.root / 'orphan'))
         self.assertIn('look inside', cmd['label'])
+
+
+class LocationListTests(Fixture):
+    """forge's location list (scripts/forge_locations.py) is an index of where to look: with no run dir, no dataset and
+    the run's checkout deleted, the worktrees on disk are still found, and the ones it saw go keep their dates."""
+
+    def record(self, *lines):
+        path = self.tmp / 'config' / 'forge' / 'locations.jsonl'
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(''.join(json.dumps(line) + '\n' for line in lines))
+
+    def test_the_list_alone_finds_a_repository_whose_checkout_was_deleted(self):
+        shutil.rmtree(self.plan)
+        gone_checkout = str(self.base / 'old-checkout')
+        common = os.path.realpath(self.repo / '.git')
+        self.record(*[dict(v=1, at=10.0, op='add', kind='worktree', path=os.path.realpath(self.root / t), checkout=gone_checkout,
+                           git=common, root=str(self.repo), run_id='r1', task=t, branch='forge/r1/' + t, wt_kind='task')
+                      for t in ('done', 'bad')])
+        rows, _ = self.rows(None)
+        self.assertEqual((rows['done']['status'], rows['bad']['status']), ('finished', 'failed'))
+        self.assertEqual(rows['done']['created'], 10.0)
+
+    def test_a_worktree_it_saw_go_is_removed_with_both_dates(self):
+        path = os.path.realpath(self.root / 'old-task')
+        self.record(dict(v=1, at=20.0, op='add', kind='worktree', path=path, checkout=str(self.repo), root=str(self.repo),
+                         run_id='r1', task='old-task', branch='forge/r1/old-task', wt_kind='task'),
+                    dict(v=1, at=30.0, op='gone', kind='worktree', path=path),
+                    'not json at all')
+        rows, _ = self.rows(None)
+        row = rows['old-task']
+        self.assertEqual((row['status'], row['created'], row['removed'], row['derived']), ('removed', 20.0, 30.0, False))
+        self.assertEqual(row['task'], 'old-task')
 
 
 class ScreenTests(Fixture):
