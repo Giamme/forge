@@ -45,9 +45,12 @@ ones and `deps` new dependency lists for unstarted tasks (a split is a remove pl
 (`_plan_check`) refuses, with the reason, whatever would not be a plan `plan` could have written. The
 hash covers the diff, `tasks.tsv`, `groups.tsv` and every edited prompt or approach file. `apply`
 with no live run writes `tasks.tsv`, `groups.tsv` and the task dirs (a removed task's dir moves to
-`tasks/.removed/<id>-<pid>/`, never deleted; added rows get dwarf and qa `-`) and leaves
-`groups.frozen` alone: `run` then refuses until `plan` validates, routes and freezes again. With a
-live run only additions apply, each through `forge control add`; the task joins no group.
+`tasks/.removed/<id>-<pid>/`, never deleted; added rows get dwarf and qa `-`) and writes a stale
+marker into `groups.frozen` (the fingerprint covers only groups.tsv and the members' rows, so an
+ungrouped change, or a plan with no groups, would not otherwise stop `run`): `run` then refuses until
+`plan` validates, routes and freezes again, which overwrites the marker or removes it. A wave apply
+meanwhile keeps the marker. With a live run only additions apply, queued in dependency order, each
+through `forge control add`; the task joins no group.
 
 `brief_diff` events (`{pid, scope, group, state, tasks}`) record proposed, refused, approved and
 rejected. The dispatch is a read-only `side` dispatch of kind `brief-change`, on the plan's brief
@@ -696,7 +699,7 @@ def apply(plan, pid, approve_hash, actor='cli') -> dict:
         try:
             for path, value in written:
                 forge_brief.atomic_write(path, value)
-            if files_edits:
+            if files_edits and not plan_stale(plan):   # a plan change awaiting `plan` stays stale
                 forge_groups.freeze(plan)
         except BaseException:
             for path, old in before.items():
@@ -1141,6 +1144,14 @@ def plan_again_message(plan) -> str:
     return 'plan changed; run forge-parallel.sh plan %s …%s again before run' % (shlex.quote(str(plan)), _decompose_hint(plan))
 
 
+STALE = 'stale: plan changed by proposal'
+
+
+def plan_stale(plan) -> bool:
+    """True when a plan-scope apply left `groups.frozen` as a stale marker: `plan` has not run again."""
+    return forge_brief._text(Path(plan) / 'groups.frozen').startswith(STALE)
+
+
 def _routing_for(rows: list, difficulty: str):
     """`(dwarf, qa)` an added row can take in a live run: explicit specs copied from an existing row
     (the same difficulty first), since `forge control add` refuses `-` and UNASSIGNED."""
@@ -1195,6 +1206,12 @@ def _apply_plan_offline(plan, pid, built: dict) -> list:
         written.append((plan / 'tasks.tsv', built['tasks_new']))
         if built['groups_new'] != built['groups_old']:
             written.append((plan / 'groups.tsv', built['groups_new']))
+        # The frozen fingerprint covers groups.tsv and the rows of group members only, so a change to
+        # an ungrouped task, or a plan with no groups, would leave `run` free to go on with rows `plan`
+        # never routed. A stale marker never matches a fingerprint, and with no groups.tsv its mere
+        # presence is refused by `check_frozen`: either way `run` stops until `plan` freezes again
+        # (it overwrites the marker, or removes it when there are no groups).
+        written.append((plan / 'groups.frozen', '%s %s\n' % (STALE, pid)))
         undo = _write_edits(written)
     except BaseException:
         _undo_files(undo)
@@ -1216,18 +1233,35 @@ def _control_args(plan, task, actor):
     return argparse.Namespace(plan=str(plan), task=task, json=False, actor='ui' if actor == 'ui' else 'cli')
 
 
+def _dependency_order(adds: list) -> list:
+    """The added entries, each after the added entries it depends on (proposal order otherwise):
+    `forge control add` refuses a row whose dependency is not in tasks.tsv yet."""
+    ids = {entry['id'] for entry in adds}
+    ordered, placed, pending = [], set(), list(adds)
+    while pending:
+        ready = [entry for entry in pending
+                 if all(dep in placed or dep not in ids for dep in (entry.get('deps') or []))]
+        if not ready:   # a cycle among the adds: _plan_check refuses it, never reached
+            ready = pending[:1]
+        ordered.append(ready[0])
+        placed.add(ready[0]['id'])
+        pending.remove(ready[0])
+    return ordered
+
+
 def _apply_plan_live(plan, pid, built: dict, control, actor, rows) -> tuple:
     """Queue each added task through `forge control add`. Returns `(names, notes)`; raises `Refused`."""
     import shutil
+    adds = _dependency_order(built['add'])
     routes = {}
-    for entry in built['add']:
+    for entry in adds:
         route = _routing_for(rows, entry['difficulty'])
         if route is None:
             raise Refused('a live run needs explicit dwarf and qa specs for an added task, and no task of '
                           'this plan has them yet: apply after the run ends, then plan again')
         routes[entry['id']] = route
     queued, notes = [], []
-    for entry in built['add']:
+    for entry in adds:
         name, (dwarf, qa) = entry['id'], routes[entry['id']]
         tdir = plan / 'tasks' / name
         undo = []
@@ -1299,10 +1333,9 @@ def _apply_plan(plan, pid, approve_hash, who) -> dict:
                     _store(plan, record)
                     _emit(plan, record)
                 raise
-            message = 'queued %s into the live run through forge control add' % ', '.join(
-                entry['id'] for entry in built['add'])
-            record.update(state='approved', applied=forge_brief._now(), applied_by=who, live=True,
-                          queued=[entry['id'] for entry in built['add']])
+            order = [entry['id'] for entry in _dependency_order(built['add'])]
+            message = 'queued %s into the live run through forge control add' % ', '.join(order)
+            record.update(state='approved', applied=forge_brief._now(), applied_by=who, live=True, queued=order)
             _store(plan, record)
     _emit(plan, record)
     return {'pid': pid, 'state': 'approved', 'files': names, 'tasks': touched(record), 'warning': None,

@@ -163,7 +163,7 @@ class ApplyOfflineTests(PlanCase):
     def test_an_add_writes_the_row_the_dir_and_the_group_and_asks_for_plan_again(self):
         (self.plan / 'decompose_level').write_text('medium\n')
         before, result = self.applied(add=[new('f', ['c'], group='g2')])
-        self.assertEqual(self.changed(before), ['groups.tsv', 'tasks.tsv', 'tasks/f/approach.md', 'tasks/f/prompt.md'])
+        self.assertEqual(self.changed(before), ['groups.frozen', 'groups.tsv', 'tasks.tsv', 'tasks/f/approach.md', 'tasks/f/prompt.md'])
         row = self.tsv()['f']
         self.assertEqual((row['deps'], row['difficulty'], row['files'], row['dwarf'], row['qa'], row['title']),
                          (['c'], 'low', 'f.txt', '-', '-', 'Title of f'))
@@ -172,7 +172,7 @@ class ApplyOfflineTests(PlanCase):
         self.assertEqual(self.members('g2'), ('c', 'd', 'f'))
         self.assertEqual(result['message'], 'plan changed; run forge-parallel.sh plan %s … --decompose-level medium again before run'
                          % self.plan)
-        self.assertFalse((self.plan / 'groups.frozen').read_text() == '')
+        self.assertTrue(proposals.plan_stale(self.plan))
         self.assertIsNotNone(forge_groups.check_frozen(self.plan))   # not refreshed: `plan` does that
         self.run_refuses()
 
@@ -180,7 +180,7 @@ class ApplyOfflineTests(PlanCase):
         (self.plan / 'tasks' / 'c' / 'extra.txt').write_text('keep me\n')
         before, result = self.applied(remove=['c'], deps=[{'task': 'd', 'deps': []}])
         self.assertEqual(self.changed(before), sorted([
-            'groups.tsv', 'tasks.tsv', 'tasks/c/prompt.md', 'tasks/c/approach.md', 'tasks/c/extra.txt',
+            'groups.frozen', 'groups.tsv', 'tasks.tsv', 'tasks/c/prompt.md', 'tasks/c/approach.md', 'tasks/c/extra.txt',
             'tasks/.removed/c-p1/prompt.md', 'tasks/.removed/c-p1/approach.md', 'tasks/.removed/c-p1/extra.txt']))
         self.assertFalse((self.plan / 'tasks' / 'c').exists())
         self.assertEqual((self.plan / 'tasks' / '.removed' / 'c-p1' / 'extra.txt').read_text(), 'keep me\n')
@@ -196,7 +196,7 @@ class ApplyOfflineTests(PlanCase):
         before, _ = self.applied(remove=['d'], add=[new('d1', ['c'], group='g2'), new('d2', ['d1'], group='g2')],
                                  deps=[{'task': 'e', 'deps': ['d1', 'd2']}])
         self.assertEqual(self.changed(before), sorted([
-            'groups.tsv', 'tasks.tsv', 'tasks/d/prompt.md', 'tasks/d/approach.md', 'tasks/.removed/d-p1/prompt.md',
+            'groups.frozen', 'groups.tsv', 'tasks.tsv', 'tasks/d/prompt.md', 'tasks/d/approach.md', 'tasks/.removed/d-p1/prompt.md',
             'tasks/.removed/d-p1/approach.md', 'tasks/d1/prompt.md', 'tasks/d1/approach.md', 'tasks/d2/prompt.md',
             'tasks/d2/approach.md']))
         rows = self.tsv()
@@ -204,11 +204,51 @@ class ApplyOfflineTests(PlanCase):
         self.assertEqual(self.members('g2'), ('c', 'd1', 'd2'))
         self.run_refuses()
 
-    def test_a_null_approach_writes_an_empty_approach_file_and_waves_and_the_freeze_are_left_alone(self):
-        frozen, waves = (self.plan / 'groups.frozen').read_text(), (self.plan / 'waves.tsv').read_text()
+    def test_a_null_approach_writes_an_empty_approach_file_and_waves_are_left_alone(self):
+        waves = (self.plan / 'waves.tsv').read_text()
         self.applied(add=[new('f', ['c'], approach=None)])
         self.assertEqual((self.plan / 'tasks' / 'f' / 'approach.md').read_text(), '')
-        self.assertEqual(((self.plan / 'groups.frozen').read_text(), (self.plan / 'waves.tsv').read_text()), (frozen, waves))
+        self.assertEqual((self.plan / 'waves.tsv').read_text(), waves)
+
+    def ungrouped_change_stops_run(self, **parts):
+        # the frozen fingerprint covers groups.tsv and the group members' rows only
+        self.assertIsNone(forge_groups.check_frozen(self.plan))
+        self.applied(**parts)
+        self.assertTrue(proposals.plan_stale(self.plan))
+        self.assertIsNotNone(forge_groups.check_frozen(self.plan))
+        self.run_refuses()
+        forge_groups.freeze(self.plan)   # what `plan` does: the marker goes
+        self.assertIsNone(forge_groups.check_frozen(self.plan))
+
+    def test_an_ungrouped_add_makes_run_refuse_until_plan_runs_again(self):
+        self.ungrouped_change_stops_run(add=[new('f', ['a'])])
+
+    def test_an_ungrouped_remove_makes_run_refuse_until_plan_runs_again(self):
+        self.ungrouped_change_stops_run(remove=['e'])
+
+    def test_an_ungrouped_deps_change_makes_run_refuse_until_plan_runs_again(self):
+        self.ungrouped_change_stops_run(deps=[{'task': 'e', 'deps': ['c']}])
+
+    def test_a_plan_without_groups_is_stopped_too_and_plan_clears_the_marker(self):
+        for name in ('groups.tsv', 'groups.frozen'):
+            (self.plan / name).unlink()
+        self.assertIsNone(forge_groups.check_frozen(self.plan))
+        self.applied(add=[new('f', ['c'])])
+        self.assertTrue((self.plan / 'groups.frozen').is_file())
+        self.assertIsNotNone(forge_groups.check_frozen(self.plan))
+        self.assertNotEqual(self.run_script('forge-parallel.sh', 'run', self.plan, '--dry-run').returncode, 0)
+        forge_groups.freeze(self.plan)
+        self.assertFalse((self.plan / 'groups.frozen').exists())
+        self.assertIsNone(forge_groups.check_frozen(self.plan))
+
+    def test_a_wave_apply_afterwards_does_not_clear_the_marker(self):
+        self.applied(add=[new('f', ['a'])])
+        self.arm({'*.qa.*': says(json.dumps({'summary': 's', 'changes': [change('b', files='b2.txt')]}))})
+        self.assertEqual(proposals.propose(self.plan, 'a', 'q1')['scope'], 'wave')
+        proposals.apply(self.plan, 'p2', self.digest('p2'))   # a files change: it used to re-freeze
+        self.assertEqual(self.tsv()['b']['files'], 'b2.txt')
+        self.assertTrue(proposals.plan_stale(self.plan))
+        self.run_refuses()
 
     def test_a_write_that_fails_halfway_restores_the_plan_and_the_moved_dirs(self):
         self.plan_propose(remove=['c'], deps=[{'task': 'd', 'deps': []}], add=[new('f', ['d'], group='g2')])
@@ -380,6 +420,15 @@ class LiveRunTests(PlanCase):
         self.assertIsNone(forge_groups.check_frozen(self.plan))
         log = [json.loads(line) for line in (self.plan / 'control.log').read_text().splitlines() if line.strip()]
         self.assertEqual([entry['task'] for entry in log if entry.get('action') == 'add'], ['f', 'g'])
+
+    def test_added_tasks_that_depend_on_each_other_queue_in_dependency_order(self):
+        self.go_live()
+        self.plan_propose(add=[new('g', ['f']), new('f', ['c'])])   # g listed before the f it needs
+        result = proposals.apply(self.plan, 'p1', self.digest())
+        self.assertEqual([(item['verb'], item['task']) for item in self.requests()], [('add', 'f'), ('add', 'g')])
+        self.assertEqual(self.tsv()['g']['deps'], ['f'])
+        self.assertIn('queued f, g', result['message'])
+        self.assertEqual(self.state()['queued'], ['f', 'g'])
 
     def test_the_cli_prints_that_the_task_joins_no_group(self):
         self.go_live()
