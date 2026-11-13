@@ -17,16 +17,22 @@
       under it.
 
   propose PLAN TASK QID [--actor A]
-      Turn the answer to a parked wave question into a proposal: one read-only dispatch asks
-      the brief model what it changes in the question's group, and the diff is stored under
-      PLAN/proposals/<pid>/. A change outside the group, to a started member or to any field
-      but prompt, approach and files makes the whole proposal `refused`. Nothing else changes.
+      Turn the answer to a parked wave or plan question into a proposal: one read-only dispatch
+      asks the brief model what it changes, and the diff is stored under PLAN/proposals/<pid>/.
+      A wave proposal is confined to the unstarted members of the question's group (prompt,
+      approach, files). A plan proposal (brief scope plan) may also add, remove and split tasks
+      and change deps: anything that is not a valid plan makes the whole proposal `refused`.
+      Nothing else changes.
   proposals PLAN [--json]
       Every proposal with its state, scope, group, summary, diff and the exact apply command.
   apply PLAN PID --approve HASH [--actor A]
       Write the proposal's diff, re-validate and re-freeze the groups. Refuses, changing
       nothing, when the hash differs, the proposal is not `proposed`, a target started or a
-      target file changed since. A `files` change is refused while a run is live.
+      target file changed since. A `files` change is refused while a run is live. A plan
+      proposal with no live run edits tasks.tsv, groups.tsv and the task dirs (a removed task's
+      dir moves to tasks/.removed/) and says to run `plan` again: groups.frozen is not
+      refreshed, so `run` refuses until then. With a live run only added tasks apply, each
+      through `forge control add`; every other change refuses until the run ends.
   reject PLAN PID [--reason TEXT] [--actor A]
       Mark the proposal rejected; no plan file is touched.
 
@@ -156,6 +162,10 @@ def main(argv=None) -> int:
         if args.command == 'apply':
             result = proposals.apply(args.plan, args.pid, args.approve, actor=args.actor)
             sys.stdout.write('%s applied: %s\n' % (result['pid'], ', '.join(result['files']) or 'nothing'))
+            for note in result.get('notes') or []:
+                sys.stdout.write('%s\n' % note)
+            if result.get('message'):
+                sys.stdout.write('%s\n' % result['message'])
             if result['warning']:
                 sys.stderr.write('forge brief: %s\n' % result['warning'])
             return 0
