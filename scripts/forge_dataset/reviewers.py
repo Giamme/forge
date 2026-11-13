@@ -63,7 +63,9 @@ def report(runs: Runs, *, horizon_days: int = HORIZON_DAYS, repo: str = None) ->
             continue
         reviews = []
         for run, task, attempt in attempts_of.get(commit, ()):
-            reviews += [r for r in runs.dispatches.get((run, task, 'qa'), ()) if r['attempt'] == attempt]
+            # scope group is one review of several tasks, not this task's reviewer.
+            reviews += [r for r in runs.dispatches.get((run, task, 'qa'), ())
+                        if r['attempt'] == attempt and (r.get('d') or {}).get('scope') != 'group']
         passed = {}
         for r in sorted(reviews, key=lambda r: r['ts']):
             name = r['d'].get('alias') or r['d'].get('model')

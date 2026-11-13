@@ -27,7 +27,7 @@ import time
 from pathlib import Path
 from types import SimpleNamespace
 
-from . import (BUSY_TIMEOUT_S, DatasetError, config_runs_dir, data_home, dataset_dir, enabled,
+from . import (BUSY_TIMEOUT_S, DatasetError, config_runs_dir, connect, data_home, dataset_dir, enabled,
                location_refused, put_blob, put_file, record, record_strict, repo_id, sha256, watch_blob_failures)
 from . import harvest as h
 from . import capture
@@ -206,6 +206,7 @@ def legacy_task_events(tdir: Path, task_attempts: list[Path], prov_base: dict) -
         else:
             event['attempt'] = h.as_int(h.first_line(tdir / 'attempt'))
             data['attempt_source'] = 'attempt_file'
+        h.annotate_group_attempt(event, tdir)
         events.append(event)
     return events
 
@@ -274,6 +275,8 @@ def import_tree(top: Path, mapper: Mapper, args, counts: dict) -> list[tuple[lis
         for event in events:
             if isinstance(event.get('data'), dict) and event['data'].get('root'):
                 event['data']['root'] = str(mapper(event['data']['root']))
+            if role == 'task' and event.get('kind') == 'attempt':
+                h.annotate_group_attempt(event, root)
         # A live begin() recorded which code the execution started with; keep it.
         capture.stamp(events, (stored or {}).get('provenance'), check_change=False)
         batches.append((events, repo))
@@ -545,6 +548,57 @@ def _archive_mapper(work: Path, source: Path | None) -> tuple[Path, Mapper]:
     return root, mapper
 
 
+def link_stored_group_attempts(events: list) -> None:
+    """Fill the group link onto an attempt live capture stored before the group judged it.
+
+    The rid stays the attempt dir name, so the import does not add a second event. Only
+    `review_scope`, `group` and `round` are written, and a copied task-level review
+    (`gate`, `blobs.forge_note`) is removed. A row that already carries the same link
+    is left as it was.
+    """
+    pending = [event for event in events
+               if event.get('kind') == 'attempt' and isinstance(event.get('data'), dict)
+               and event['data'].get('review_scope') == 'group']
+    if not pending or not enabled():
+        return
+    db = connect()
+    try:
+        db.execute('BEGIN IMMEDIATE')
+        for event in pending:
+            row = db.execute('SELECT data FROM events WHERE rid = ?', (event['rid'],)).fetchone()
+            if not row:
+                continue
+            try:
+                data = json.loads(row[0])
+            except ValueError:
+                continue
+            if not isinstance(data, dict):
+                continue
+            blobs = data.get('blobs') if isinstance(data.get('blobs'), dict) else {}
+            same = (data.get('review_scope') == 'group' and data.get('group') == event['data'].get('group')
+                    and data.get('round') == event['data'].get('round') and not data.get('gate')
+                    and 'forge_note' not in blobs)
+            if same:
+                continue
+            data['review_scope'] = 'group'
+            data['group'] = event['data'].get('group')
+            data['round'] = event['data'].get('round')
+            data['gate'] = None
+            if isinstance(data.get('blobs'), dict):
+                data['blobs'].pop('forge_note', None)
+            db.execute('UPDATE events SET data = ? WHERE rid = ?',
+                       (json.dumps(data, sort_keys=True, default=str), event['rid']))
+        db.execute('COMMIT')
+    except BaseException:
+        try:
+            db.execute('ROLLBACK')
+        except sqlite3.Error:
+            pass
+        raise
+    finally:
+        db.close()
+
+
 def import_run(path, strict: bool = True, include_temp: bool = True) -> dict:
     """Import one run dir or `.tar.gz` and say exactly what happened: {events, new, failed, ...}.
 
@@ -561,6 +615,7 @@ def import_run(path, strict: bool = True, include_temp: bool = True) -> dict:
     writer = record_strict if strict else record
 
     def write(batches, blob_failures):
+        pending = []
         for events, repo in batches:
             if events:
                 counts['events'] += len(events)
@@ -574,8 +629,14 @@ def import_run(path, strict: bool = True, include_temp: bool = True) -> dict:
                 except DatasetError as error:
                     counts.setdefault('failed', []).append('store: %s' % error)
                     return
+                pending.extend(events)
         if strict and blob_failures and not counts.get('failed'):
             counts.setdefault('failed', []).extend(blob_failures)
+        if not counts.get('failed'):
+            try:
+                link_stored_group_attempts(pending)
+            except Exception as error:
+                counts.setdefault('failed', []).append('store: %s' % error)
 
     with watch_blob_failures() as blob_failures:
         if path.is_dir():

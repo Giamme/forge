@@ -239,7 +239,9 @@ class Runs:
             rows.sort(key=lambda e: (e['attempt'] or 0, e['d'].get('wall_started') or e['ts']))
         self.dispatches = defaultdict(list)
         for e in store.of('dispatch'):
-            if e['task']:
+            # A group review names no task. scope group stays out of per-task indexes even
+            # if a task was recorded, the way a side dispatch stays out of attempt statistics.
+            if e['task'] and e['d'].get('scope') != 'group':
                 self.dispatches[(e['run'], e['task'], e['d'].get('role'))].append(e)
         # Store order is import order. A reader that takes [-1] means the dispatch
         # the attempt ended on, so each list is chronological; a tie keeps store order.
@@ -586,15 +588,19 @@ def _ending_qa(rows) -> dict:
     return ending
 
 
-def not_an_attempt(role) -> bool:
-    """A shadow review or a side dispatch: in the run's tokens, not in its attempt statistics.
+def not_an_attempt(role, data=None) -> bool:
+    """A shadow review, a side dispatch, or a group review: tokens stay, attempt statistics do not.
 
     `qa_shadow` is the second reviewer. A harvested side call is `side_<kind>`
     (`is_side_role`); the dir on disk, and a side dispatch harvested outside
-    `side/<kind>/`, keeps the role `side`. None of these is the review of record.
-    Shadow agreement still reads `qa_shadow`. This does not drop a side dispatch's tokens.
+    `side/<kind>/`, keeps the role `side`. A group review is one QA dispatch for
+    several tasks (`scope` `group`); it is not any one task's review. `data` is the
+    dispatch's data, when the caller has it. None of these is the review of record.
+    Shadow agreement still reads `qa_shadow`. This does not drop the dispatch's tokens.
     """
-    return role == 'qa_shadow' or role == 'side' or is_side_role(role)
+    if role == 'qa_shadow' or role == 'side' or is_side_role(role):
+        return True
+    return isinstance(data, dict) and data.get('scope') == 'group'
 
 
 def _qa_rows(runs: Runs):
@@ -621,7 +627,8 @@ def _qa_rows(runs: Runs):
                 word, _, conf = text.strip().partition('\t')
                 effort[(run, task, e['attempt'])] = (word, _float(conf))
     for (run, task, role), rows in runs.dispatches.items():
-        # The review of record only. A shadow pair is selected below; a side dispatch is not a row.
+        # The review of record only. A shadow pair is selected below; a side dispatch, and a
+        # group review of several tasks, is not a row.
         if not_an_attempt(role) or role != 'qa':
             continue
         ending = _ending_qa(rows)
@@ -629,6 +636,8 @@ def _qa_rows(runs: Runs):
             if session_continued(e):
                 continue
             d = e['d']
+            if not_an_attempt(role, d):
+                continue
             if d.get('verdict') not in ('PASS', 'FAIL'):
                 continue
             prompt = store.text((d.get('blobs') or {}).get('prompt'))
