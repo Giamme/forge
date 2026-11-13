@@ -14,6 +14,7 @@ run leaves branches behind.
 - [Profiles](#profiles)
 - [Fractal within decomposed tasks](#fractal-within-decomposed-tasks)
 - [Waves and disjointness](#waves-and-disjointness)
+- [Groups and group review (opt-in)](#groups-and-group-review-opt-in)
 - [Task size and acceptance criteria](#task-size-and-acceptance-criteria)
 - [Plan gates: sent back, and the block under the table](#plan-gates-sent-back-and-the-block-under-the-table)
 - [The capsule](#the-capsule)
@@ -289,6 +290,286 @@ do not overlap an active task. Each passing task merges serially through the exi
 fingerprint checks. A slow unrelated task no longer holds up eligible dependents.
 
 Each task's baseline is pinned immediately before dispatch and stays fixed across retries.
+
+## Groups and group review (opt-in)
+
+Two opt-ins share `groups.tsv`. A planner may name groups, and those are identity only
+(`review=task`): they do not change dispatch or the estimate, and they are fine under Fractal.
+`plan --groups` with `--group-review` is the other opt-in: one QA review covers several tasks.
+Offer either; never add them unprompted. The user-facing tradeoff is in
+[group review](../docs/reviews.md#group-review-opt-in). The data layer is `scripts/forge_groups`
+and `scripts/forge-groups.py` (`validate`, `derive`, `resolve`, `freeze`, `check`, `of`, `show`).
+
+### `groups.tsv`
+
+Six tab-separated columns. `#` lines and blank lines are ignored.
+
+```
+# id	review	qa	members	title	goal
+```
+
+- `id` matches `[a-z0-9][a-z0-9-]{0,39}`, is unique, and is not also a task id.
+- `review` is `task` or `group`.
+- `qa` is a spec, or `-`.
+- `members` is a comma list of task ids, in order. A task is in at most one group.
+- `title` and `goal` are one line each, or `-` when absent. A planner's title and goal are
+  at most 200 characters.
+
+Where a row comes from:
+
+- A planner reply that includes `groups` writes `groups.tsv` with `review` always `task` and
+  `qa` always `-`. A planner group may have one member. The planner never sets `review=group`.
+- `plan --groups waves` makes one group per computed wave that has at least two tasks, named
+  `w1`, `w2`, and so on. A wave larger than the max splits in `tasks.tsv` order into `w3a`,
+  `w3b`, and so on. A leftover single task is dropped.
+- `--group-review` is only valid with `--groups waves`. Without it, `plan` exits 2:
+  `--group-review goes with --groups waves (it sets the review of the groups waves derives)`.
+  The derived groups then have `review=group`. High-difficulty tasks stay out and keep their
+  own review. A leftover single is dropped.
+- `plan --groups FILE` copies that file. An existing `groups.tsv` and no `--groups` is used
+  as it is.
+
+`plan` computes waves, then validates, resolves each review group's `qa`, and freezes.
+
+### Rules for `review=group`
+
+These apply only when `review` is `group`. A `review=task` group is not checked this way.
+
+- At least two members, and at most `--group-max-tasks` (default 6, plan file
+  `group_max_tasks`). The flag accepts a positive integer. Deriving waves requires at
+  least 2 (`max tasks must be at least 2`). Validating an existing file uses the same max,
+  so 1 rejects every review group.
+- No member depends on another member, directly or through a task outside the group.
+- Declared `files` do not overlap. A directory covers the paths under it, `.` covers
+  everything, and `-` declares nothing. Same rule as the scheduler.
+- No sweep member (an id `sweep-N`, or `tasks/<id>/sweep.json`).
+- `qa` of `-` becomes the QA spec of the highest-difficulty member (`high` over `medium`
+  over `low`; a tie takes the first listed), as `tasks.tsv` has it after `plan`.
+
+### The freeze, and what makes `run` refuse
+
+`groups.frozen` is the sha256 of the freeze text: one line per group, all six columns, then
+one line per member, `member<TAB>deps<TAB>files`. The dwarf column is not in it. No groups
+removes `groups.frozen`. A `groups.frozen` with no `groups.tsv` fails the check.
+
+`run` calls `forge-groups.py check` when `groups.tsv` or `groups.frozen` exists, a dry run
+included, before any dispatch. A mismatch, a missing file, or groups that cannot be read
+refuses with `groups.tsv or a member's deps/files changed since plan; run plan again`.
+
+Group review and Fractal do not combine. `--fractal`, or a plan that is already fractal,
+makes `plan` and `run` exit 2: `group review does not support Fractal yet`.
+
+### The member lifecycle and `IMPLEMENTED`
+
+A `review=group` member implements, writes `reviewed.commit` and `source.fingerprint`, and
+stops at `IMPLEMENTED`. There is no per-task QA snapshot, no shadow review, no fail-first
+check, and no QA-only resume (the `resume` marker is removed). `--pre-review-tests` still
+runs, on a snapshot that exists only for that check. Red is `FAIL`, unreviewed, not
+`IMPLEMENTED`.
+
+`record_attempt` writes no `attempts.tsv` row while the status is `IMPLEMENTED`, and
+`post_attempt` does nothing. The attempt cap counts `attempts.tsv` rows (an `INFRA` row
+does not count), so that stop spends nothing. The `attempt` counter may already have moved.
+
+`retry` and `accept` of an `IMPLEMENTED` task exit 3: `<id> is implemented and waits for
+group <gid>'s review`. The scheduler does not dispatch that member again. A dependent waits
+for `MERGED`, so it does not start.
+
+### When a group is reviewed
+
+The scheduler treats each `review=group` group as one unit, keyed `group:<gid>` in `active`.
+It is ready when every member is `IMPLEMENTED`, nothing is running it, it has not merged, and
+its status is empty or `WAITING`, or `FAIL` with `settled.round` equal to the current
+`round`, or this run has marked it to review again. It starts as soon as the last member is
+`IMPLEMENTED`. There is no wave barrier. It takes one slot, and it does not start while the
+run is stopping, draining, or paused for infrastructure. The command is
+`forge-parallel.sh _group`.
+
+### The candidate, and the size bound
+
+The candidate worktree is `<wt_root>/_group-<gid>`. It starts at the integration HEAD, then
+merges each member's `reviewed.commit` with `--no-ff`, in member order.
+
+- A member that is not `IMPLEMENTED`: the group is `WAITING`. Members stay as they are.
+- A member whose branch tip is not `reviewed.commit`, or whose worktree fingerprint is not
+  `source.fingerprint`: that member becomes `INVALIDATED` with `invalidated.reason`
+  `group-candidate`, and the group is `WAITING`.
+- A conflict between members: the group is `CONFLICT`, `conflict.files` lists the files, the
+  merge is aborted, the members stay `IMPLEMENTED`, and nothing is dispatched.
+- Any other merge failure, or no integration HEAD: `ERROR`.
+
+The fingerprint is the sha256 of the sorted `task=commit` lines plus a final
+`tree=<candidate tree>` line.
+
+`combined.diff` is `git diff --binary --irreversible-delete` of the candidate against that
+base, excluding `.forge`. Over `group_max_diff_kb` times 1024 bytes (default 256 when the
+plan file is absent), the group is `NEEDS_DECISION` with reason `oversized`. Nothing is
+dispatched, truncated, or sent to another reviewer. `decision.md` starts `reasons: oversized`
+and offers two edits, then `plan` again: smaller groups in `groups.tsv`, or this group's
+`review` set to `task`. `forge group retry` refuses an oversized group.
+`--group-max-diff-kb N` is a positive integer, written only when given, so a re-plan keeps it.
+The same is true of `--group-max-tasks`.
+
+This is not a [whole-run review](../docs/reviews.md#whole-run-review-opt-in). That one reads
+the combined result after the run and truncates. A group review that is over the bound never
+builds a prompt.
+
+### The prompt and `{tasks=…}`
+
+One fresh QA dispatch. The prompt is the contract head for kind `group` (the task preamble,
+plus that this review covers several tasks and must judge each against its own criteria and
+judge the combined change), the group's title and goal, `Members, in merge order`, then any
+findings from the previous round that named no task. Each member follows: title, `prompt.md`,
+the declared files and the reviewed commit. When the task has them, it also has the intended
+approach, that member's diff `--stat` against its base, pre-review text, guard notes and
+drift. Findings the previous round attributed to the task are quoted, and the implementer's
+reply is included when this attempt is not the one those findings judged. The tail is the task contract plus
+the `{tasks=…}` instructions below, then the whole combined diff in a fence. The diff is not
+truncated. An oversized group never gets here. The threshold is the plan's QA threshold.
+
+`{tasks=…}` is its own brace. It is not the facts brace
+`{reach=… origin=… evidence=…}`. The prompt says to write it immediately before the facts
+brace, so the facts brace still ends the line. The last `{tasks=…}` on a finding wins. Ids
+are separated by commas or spaces.
+
+Attribution (`scripts/forge_groups/attribute.py`, written to `attribution.json` with the
+round):
+
+- A tag names those ids. An empty tag (`{tasks=}` or `{tasks= , }`) names nobody and does
+  not fall back to the file.
+- With no tag, the tasks are the members whose changed paths contain the finding's file, in
+  member order. A leading `./` is stripped and nothing else is normalised: `src/./a.py` does
+  not match `src/a.py`.
+- Ambiguous when the tag names an id that is not a member, when the tag names nobody, when
+  there is no tag and no file, or when no member changed that file.
+- `blocking` is the gate's per-finding decision at the threshold (`none` is P3; unset is
+  P2). `PLAUSIBLE` never blocks.
+- `implicated` is the union, in member order, of the tasks on blocking findings that are not
+  ambiguous. The top-level `ambiguous` list is the `n` of findings that are both blocking
+  and ambiguous.
+
+The facts line is `implicated<TAB>ambiguous<TAB>findings<TAB>blocking`. The two lists are
+comma separated, or `-`. `findings` is the count. `blocking` is `1` or `0`.
+
+### Each outcome, and what happens next
+
+The round ends in `groups/<gid>/status`, and one `rounds.tsv` row: round, epoch, status,
+implicated tasks or `-`, QA spec. Status writes are atomic.
+
+- **`PASS`.** The scheduler runs `_merge_group`: one `--no-ff` merge of `candidate.commit`
+  onto integration (`forge: merge group <gid> (ids)`). Every member is judged `PASS` (one
+  `attempts.tsv` row), its status becomes `PASS`, `merged` is touched, and the group's
+  `merged` is touched. A conflict sets the group and every member to `CONFLICT`, keeps
+  `conflict.files`, and merges nothing. Integration moved (`accepted.integration` does not
+  match) or dirty: the group is `INVALIDATED` with `integration-moved` or
+  `integration-dirty`, and nothing merges. A member whose branch tip is not its reviewed
+  commit, or whose worktree fingerprint is not `source.fingerprint`: those members are
+  `INVALIDATED` with `group-candidate`, and the group is `INVALIDATED` with
+  `candidate-moved`. A member that is no longer `IMPLEMENTED`, or a recomputed fingerprint
+  that does not match, invalidates the group with `candidate-moved` and merges nothing;
+  members are not marked `INVALIDATED` unless they moved. A member dependency that is not
+  `MERGED` blocks the merge and leaves the status unchanged. `forge group retry` on `PASS`
+  refuses; the next `run` merges it.
+- **`FAIL`.** `_group_settle` writes each implicated member's `qa.last` (a header, the
+  blocks attributed to it, `Also involves:` when a finding names other members too, then
+  `FORGE_VERDICT: FAIL`), runs the QA gate, sets the status to `FAIL`, writes one judged
+  attempt row, runs `post_attempt`, and writes `settled.group` (`gid round`). A member that
+  is not implicated stays `IMPLEMENTED`: no `qa.last`, no attempt row, no gate. The group
+  writes `settled.round`. The scheduler requeues the `FAIL` members when `--retry-failed`
+  budget remains. Without it they stay `FAIL` and the others stay `IMPLEMENTED`. The next
+  round starts when the implicated members are `IMPLEMENTED` again. Settling the same round
+  twice does nothing. A `FAIL` that implicates no member settles nothing.
+- **`NEEDS_DECISION`, ambiguous.** A blocking finding names no member. Members stay
+  `IMPLEMENTED`. `decision.md` starts `reasons: ambiguous`. The user names the members with
+  `forge group retry PLAN GID --tasks a,b`. That runs `_group_settle --tasks`, which fails
+  only those members (an ambiguous finding says it was assigned by a decision), moves
+  `decision.md` to `decision.<round>.md`, and sets the group to `FAIL`. The next `run
+  --retry-failed` retries those tasks. A live scheduler picks them up on its sweep when
+  they have budget left. Do this only when the user says so.
+- **`NEEDS_DECISION`, oversized.** Refused by `forge group retry`. Split `groups.tsv` and
+  run `plan` again, or set that group's `review` to `task` and run `plan` again. The reason
+  word is the first token after `reasons:`. Only `oversized` and `ambiguous` are handled.
+  Any other reason is refused; read `decision.md`.
+- **`UNKNOWN`.** No verdict. Members stay `IMPLEMENTED`. The scheduler reviews the group
+  again within `--retry-failed`, counted in `groups/<gid>/retries.used`. No member attempt
+  is spent. With the budget spent, the group stays `UNKNOWN`.
+- **`INFRA`, `TIMEOUT`, `ERROR`, `INTERRUPTED`.** `INFRA` is dispatch exit 8: `infra.txt`
+  has `stage=qa` and the class, and no attempt is spent. `TIMEOUT` is exit 7. Any other
+  dispatch failure is `ERROR`. `forge group retry` on `UNKNOWN`, `INFRA`, `TIMEOUT`,
+  `INTERRUPTED` or `ERROR` sets the group status to `INTERRUPTED` and touches no member
+  file, so the next `run` reviews it again. `--tasks` is refused in those states. A review
+  that dies while `REVIEWING` is marked `ERROR`. A scheduler killed mid-review leaves
+  `REVIEWING`; the next `run` turns that into `INTERRUPTED` and reviews again, without
+  re-implementing the members.
+- **`INVALIDATED`.** A tracked change to the candidate or to the review snapshot during the
+  review. An untracked file in the snapshot is not a change. Also the merge-time reasons
+  above. The next `run` reviews it again, unless `invalidated.reason` is
+  `integration-moved` or `integration-dirty`. `forge group retry` says the same and does
+  not rearm it.
+- **`CONFLICT`.** `forge group retry` refuses. Two paths differ. A conflict while building
+  the candidate leaves the members `IMPLEMENTED`, and `retry` of an `IMPLEMENTED` task
+  exits 3, so the printed `forge-parallel.sh retry` line does not apply until a member is
+  no longer `IMPLEMENTED`. A conflict merging onto integration sets every member to
+  `CONFLICT`, and a `CONFLICT` task can be retried.
+- **`WAITING`.** A member is not `IMPLEMENTED`. **`REVIEWING`.** A review is running.
+  Neither is retried with `forge group retry`.
+
+### Attempt accounting
+
+Only a judged attempt writes an `attempts.tsv` row, and the cap counts those rows. An
+`IMPLEMENTED` member spends nothing. A member a `FAIL` does not implicate spends nothing.
+A re-review after `UNKNOWN`, `INFRA`, `TIMEOUT`, `INTERRUPTED` or `ERROR` spends no member
+attempt. On `PASS`, every member gets one judged `PASS` row, including members the findings
+did not name. A later `FAIL` of only some members records one `FAIL` row for each of those,
+at the attempt number they are on.
+
+### Resume
+
+`run` again does not re-implement a member left `IMPLEMENTED`. A `PASS` group is merged,
+with no new QA dispatch; a stale member branch is not merged. An unsettled `FAIL` is
+settled, then those members are requeued. `INTERRUPTED`, `INFRA` and `TIMEOUT` are reviewed
+again. `INVALIDATED` is reviewed again unless the reason is `integration-moved` or
+`integration-dirty`. `UNKNOWN` is reviewed again while the group's `--retry-failed` budget
+remains; otherwise the status line is printed. `NEEDS_DECISION`, `CONFLICT` and `ERROR` wait
+for a person. The summary says `forge: <id> is implemented, waiting for group <gid>
+(<status>)` for a member still `IMPLEMENTED`. An empty group status is printed as
+`not reviewed`. A dependent of an unmerged group stays `BLOCKED`.
+
+### Files in `groups/<gid>/`
+
+`status` (then `PASS`, `FAIL`, `NEEDS_DECISION`, `UNKNOWN`, `CONFLICT`, `INFRA`, `TIMEOUT`,
+`ERROR`, `INVALIDATED`, `WAITING`, or `REVIEWING`; `INTERRUPTED` is written by the scheduler
+or by `forge group retry`), `round`, `rounds.tsv`, `candidate.base`, `candidate.commit`,
+`members.tsv` (round, task, reviewed commit, attempt; one row per member of a round that
+built a candidate), `fingerprint`, `combined.diff`, `members.paths` (`task<TAB>path`),
+`attribution.json`, `qa.input`, `qa.last`, `qa.out`, `qa.gate`, `qa.round-<n>.last`,
+`known_issues.md`, `infra.txt`, `decision.md`, `conflict.files`, `review.base`, `merge.out`,
+`group.out` (the scheduler's log). Settle writes `settled.round`, `settle.tasks` (until the
+round is settled) and `decision.<round>.md`. Merge writes `merged` and, when it refuses,
+`invalidated.reason` (`integration-moved`, `integration-dirty`, `candidate-moved`).
+`retries.used` counts `UNKNOWN` re-reviews. The candidate worktree stays at
+`<wt_root>/_group-<gid>`.
+
+On the member: `reviewed.commit`, `source.fingerprint`, `settled.group`, and
+`invalidated.reason` of `group-candidate` when the member moved. Plan files: `groups.tsv`,
+`groups.frozen`, `group_max_tasks`, `group_max_diff_kb`.
+
+The dataset records `group_review` and `group_merge`. The QA dispatch has `scope` `group`
+and an empty task, and it is left out of the per-task reviewer statistics. A judged member
+attempt is linked with `review_scope=group`, `group` and `round`, and does not keep a copy
+of that review's `qa.last` or `qa.gate`. See
+[the dataset](dataset.md#raw-events-not-training-examples).
+
+`forge group show PLAN [--group GID] [--json]` reads this. `forge group retry` is the
+decision and the rearm above. Exit codes and flags are in
+[commands](../docs/commands.md#the-forge-command).
+
+### Out of scope
+
+- Shadow reviews of groups. A member skips shadow, and the group dispatch is one fresh QA.
+- Fractal. `group review does not support Fractal yet`.
+- A reviewer session across rounds. The group dispatch does not continue a session.
+- Fail-first on a member. Pre-review tests still run, as above.
 
 ## Task size and acceptance criteria
 
@@ -1058,7 +1339,8 @@ redispatch. PENDING, `INFRA` (paused by an infrastructure failure) and newly unb
 when eligible. A `NEEDS_DECISION` task is not among them: only a decision resumes it. Failed or interrupted tasks
 require an explicit `retry` (or `--retry-failed N`); `run` never silently pays for them again. Worktrees and pinned
 baselines are retained. A per-plan advisory lock excludes concurrent run/retry/integrate
-operations.
+operations. A `review=group` member left `IMPLEMENTED` is not implemented again; its group's
+review resumes as in [Groups and group review](#groups-and-group-review-opt-in).
 
 **Interrupts.** A SIGINT or SIGTERM to `run` (or to its scheduler), and `forge control stop
 --now`, first reap the tasks that already ended (a PASS still merges), then send TERM to each
@@ -1249,10 +1531,18 @@ removes what it created.
 ```
 <plan-dir>/tasks/<id>/approach.md               intended approach, if planned
 <plan-dir>/tasks/<id>/risk                      low|medium|high, recorded only (#122), if rated
+<plan-dir>/groups.tsv                           id, review, qa, members, title, goal; absent unless groups are on
+<plan-dir>/groups.frozen                        sha256 of the six columns, then each member's deps and files
+<plan-dir>/group_max_tasks, group_max_diff_kb   review-group bounds; defaults 6 and 256 when the file is absent
+<plan-dir>/groups/<gid>/                        one review=group group's review; see Groups and group review
+<plan-dir>/tasks/<id>/reviewed.commit           commit a review=group member stopped at (also a task review's)
+<plan-dir>/tasks/<id>/source.fingerprint        worktree fingerprint beside that commit
+<plan-dir>/tasks/<id>/settled.group             gid and round, once a group FAIL judged this member
 <plan-dir>/tasks/<id>/retry_sources.tsv         attempt, source, epoch: why each retried attempt ran (#133)
 <repo>/.forge/                                  project memory (survives the run)
 <repo>/../.forge-worktrees/<run-id>/<task-id>   task worktree
 <repo>/../.forge-worktrees/<run-id>/_integration integration worktree
+<repo>/../.forge-worktrees/<run-id>/_group-<gid> group-review candidate; kept for the merge
 forge/<run-id>/<task-id>                        task branch
 forge/<run-id>-integration                      integration branch
 ```
@@ -1347,6 +1637,11 @@ The user's own branch and working tree are untouched for the whole run.
 | task status `UNKNOWN` | QA never emitted a verdict line; read `tasks/<id>/qa.last`. `retry` re-runs QA only, on the unchanged work |
 | task status `INFRA`, `run` exits `8` | an infrastructure stop; the cause is in the summary and `tasks/<id>/infra.txt`. No attempt spent. Fix a "needs you" line before re-running; otherwise re-run, or wait with `--infra-retries M`. See [Infrastructure failures](#infrastructure-failures) |
 | task status `NEEDS_DECISION` | reviews are not converging, the retry policy has no stronger model, or the attempt cap is spent. Read `tasks/<id>/decision.md`. Only a decision resumes it |
+| task status `IMPLEMENTED` | a `review=group` member finished implementing and waits for its group's review. `retry` and `accept` exit 3. See [Groups and group review](#groups-and-group-review-opt-in) |
+| group status `NEEDS_DECISION` | the combined diff is over `group_max_diff_kb`, or a blocking finding names no member. Read `groups/<gid>/decision.md`. `forge group show` prints it; `forge group retry --tasks` only on the user's word, and only for an ambiguous decision |
+| a group left `INFRA`, `TIMEOUT` or `INTERRUPTED` | the review did not finish. The next `run` reviews it again. `forge group retry` rearms it to `INTERRUPTED`. No member attempt was spent |
+| a group left `UNKNOWN` | no verdict. The next `run` reviews it again while `--retry-failed` budget remains; otherwise it stays. `forge group retry` rearms it. No member attempt was spent |
+| a group left `ERROR` | the dispatch failed, or the review ended while still `REVIEWING`. The next `run` leaves it. `forge group retry` rearms it to `INTERRUPTED`. No member attempt was spent |
 | task status `INTERRUPTED`, `run` exits `130` | the run was signalled or stopped with `forge control stop --now`; verification was skipped. The summary prints `forge-parallel.sh retry <plan> <id>` for each one; a plain `run` does not dispatch them |
 | a run that sits idle with tasks `PENDING` | `forge control drain` is in effect (`forge control show` says `drained`; `forge control resume` continues), every scope a task needs is paused on infrastructure (`infra.paused`), or `max-parallel` is lower than you think |
 | a `FAIL` task merged anyway | the threshold (`P2` by default) tolerated its findings, or a person ran `accept`; see `known_issues.md` and `qa.gate` |

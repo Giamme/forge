@@ -80,6 +80,17 @@ running task it shares files with, no free slot, a drain or stop, an infrastruct
 its countdown, or the retry policy's stop with the split it proposes. The run's inspector says
 what the scheduler is doing and how many tasks wait on what.
 
+A run with `groups.tsv` shows a Groups block after the task table. Each row is the group's title
+and goal, "one review" or "per-task review", its reviewer and its members. A review group's
+title opens `#/runs/<key>/group/<gid>`, and that row also shows the status, the round and who
+the last review implicated. The group page shows a decision only while the group is
+`NEEDS_DECISION`: the first line of `decision.md`, and a `forge group retry` command to copy.
+The page does not run it. Below that are the findings, with ambiguous ones marked, the rounds,
+known issues, the review text and a link to its transcript. A task at `IMPLEMENTED` reads
+"awaiting group review" in the Status column and in its inspector. The lamp class stays
+`IMPLEMENTED`. The task table adds a Group column while the run has groups, and the inspector
+shows a `group <id>` chip. See [the forge-ui reference](../references/ui.md).
+
 A task's inspector opens on its header: its title and goal, its links (`#N` and GitHub issue and pull
 request URLs; `#N` links to the repo's GitHub origin when there is one), and the Prompt, Approach and
 Acceptance criteria buttons. Then comes its attempt trail, one line per attempt with the reason it ran

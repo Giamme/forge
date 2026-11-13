@@ -102,6 +102,34 @@ as prerequisites merge and capacity becomes available, while excluding overlappi
 paths. Merges are serialized. Each task pins the integration commit at dispatch; retries keep
 that baseline, and QA sees only baseline membership recorded for that task.
 
+## Groups in the approval table
+
+When the plan has `groups.tsv`, the table adds a `groups:` block after the waves. One line
+per group: id, `review=task` or `review=group`, the QA spec as `qa=<spec>` or `-`, the
+members, and the goal (or `(no goal)`).
+
+```
+groups:
+  g1  review=group  qa=opus:medium  a, b, c  — Every command can write JSON and TSV
+  g2  review=group  qa=sonnet       d, e     — (no goal)
+  w3  review=task   -               f, g     — (no goal)
+```
+
+A `review=task` group is a name only. It does not change the estimate. When any group has
+`review=group`, the estimate counts one review for the group instead of one per member, and
+prints both lines. Seven tasks and two review groups covering five members look like this:
+
+```
+tasks: 7   waves: 1   estimated dispatches: 11 (7 dwarf + 4 qa)
+reviews: 4 (2 groups replace 5 task reviews)
+```
+
+The reviews line is `reviews: N (G groups replace M task reviews)`. The word stays `groups`
+when there is one. The count is tasks, minus members of review groups, plus the number of
+those groups. What the run then does is in
+[Groups and group review](../references/decompose.md#groups-and-group-review-opt-in). The
+tradeoff is in [group review](reviews.md#group-review-opt-in).
+
 ## Fresh session per task, plus a capsule
 
 Every dispatch is a **clean slate** — forge never passes `--continue`, `--resume`, or

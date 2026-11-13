@@ -62,6 +62,18 @@ run goes on, with the same exit code.
   output, or why a task waits (dependencies, shared files, no free slot, a drain or stop, an
   infrastructure pause with its countdown, the retry policy's stop and its split). The run
   inspector says what the scheduler is doing.
+- **Groups:** when the run has `groups.tsv`, the run page shows a Groups block. Each row is the
+  title, the goal or "(no goal)", "one review" or "per-task review", the reviewer, and the
+  member chips. A `review=group` row also shows its status, round and implicated members, and
+  its title opens `#/runs/<key>/group/<gid>`. A `review=task` title is not a link. The task
+  table gains a Group column, and a task's inspector shows a `group <id>` chip. A task at
+  `IMPLEMENTED` is labelled "awaiting group review"; the lamp class stays `IMPLEMENTED`. The
+  group page has the header, a Decision section only while the status is `NEEDS_DECISION` (the
+  first line of `decision.md`, and a copyable `forge group retry <plan> <gid> --tasks <members>`;
+  the page does not run it), the findings from `attribution.json` with ambiguous rows marked,
+  the rounds with each member's commit and attempt, known issues, `qa.last`, and a link to the
+  review transcript. The group's QA dispatch lives in `groups/<gid>/attempts`. See
+  [Groups and group review](decompose.md#groups-and-group-review-opt-in).
 - **Checks:** each attempt's tests, type checks, lints and builds, read from its dwarf's and
   reviewer's logs, with exits, times and counts, a failed one's last lines, and which of the
   commands its `## Acceptance criteria` name never ran. codex and grok logs carry no times, so
@@ -85,7 +97,8 @@ limit's reset is known. A pause that needs the user says "needs you" with the fi
 sideways move is a "moved sideways" line under Models. A task at `NEEDS_DECISION` is waiting, not
 failed: its inspector gives the reasons, the attempts against the cap, the review ledger, and the
 text of `tasks/<id>/decision.md`. forge-ui shows those commands and does not run them, and it does
-not offer Retry now. A run whose unfinished tasks are all waiting is `WAITING`.
+not offer Retry now. A group at `NEEDS_DECISION` is the same: the group page shows
+`forge group retry` and does not run it. A run whose unfinished tasks are all waiting is `WAITING`.
 
 The 3D view loads three.js from cdn.jsdelivr.net when first used; offline, the page shows the
 same run in 2D. The full page description is in [ui/README.md](../ui/README.md).
