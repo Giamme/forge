@@ -155,13 +155,37 @@ mode, src, dest, moved = sys.argv[2], Path(sys.argv[3]), Path(sys.argv[4]), set(
 try:
     groups = fg.load(src)
     if mode == 'check':
+        def member_merged(member):
+            # task_status: the merged marker wins, otherwise the status file's word.
+            task = src / 'tasks' / member
+            if (task / 'merged').is_file():
+                return True
+            try:
+                text = (task / 'status').read_text()
+            except OSError:
+                return False
+            return text.strip() == 'MERGED'
+
         for g in groups:
             hit = [m for m in g.members if m in moved]
             if g.review == 'group' and hit and len(hit) != len(g.members):
-                sys.stderr.write("task%s %s %s in review group %s with %s, which would stay behind: move the whole group "
-                                 "(--tasks %s) or none of it\n"
-                                 % ('s' if len(hit) > 1 else '', ', '.join(hit), 'are' if len(hit) > 1 else 'is', g.id,
-                                    ', '.join(m for m in g.members if m not in moved), ','.join(g.members)))
+                left = [m for m in g.members if m not in moved]
+                merged_left = [m for m in left if member_merged(m)]
+                plural, who, verb = 's' if len(hit) > 1 else '', ', '.join(hit), 'are' if len(hit) > 1 else 'is'
+                if merged_left:
+                    # split refuses a MERGED task, so "--tasks <every member>" is not a command the user can run.
+                    parts = []
+                    open_left = [m for m in left if m not in merged_left]
+                    if open_left:
+                        parts.append('%s, which would stay behind' % ', '.join(open_left))
+                    parts.append('%s, which %s MERGED and cannot move' % (
+                        ', '.join(merged_left), 'are' if len(merged_left) > 1 else 'is'))
+                    sys.stderr.write("task%s %s %s in review group %s with %s, so the group can be neither moved whole nor cut\n"
+                                     % (plural, who, verb, g.id, ', and '.join(parts)))
+                else:
+                    sys.stderr.write("task%s %s %s in review group %s with %s, which would stay behind: move the whole group "
+                                     "(--tasks %s) or none of it\n"
+                                     % (plural, who, verb, g.id, ', '.join(left), ','.join(g.members)))
                 sys.exit(1)
         sys.exit(0)
     if mode == 'moved':
