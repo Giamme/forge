@@ -32,7 +32,9 @@
     "^chore\\(release\\)",
     "^Release v?\\d+\\.\\d+",
     "^v?\\d+(\\.\\d+)+\\S*$",
-    "\\[(skip|no) changelog\\]"
+    "\\[(skip|no) changelog\\]",
+    "^forge\\([^)]+\\) attempt \\d+: ",
+    "^forge: (merge|combine|integrate run) "
   ],
   "normalize": [],
   "baseline": "ffa3d0a647863cfe0f99293ff3a0cd67f783b3b2"
