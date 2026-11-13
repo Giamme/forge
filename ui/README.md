@@ -289,7 +289,9 @@ keep one meaning everywhere (amber running, green merged or passed, red failed, 
   (total, review snapshots, logs, anything forge does not create, what can go), each run's worktree folder,
   and forge's data home, with the command that takes each part back (`forge runs compact`, `forge runs rm
   --dry-run`), to copy. The same report as `forge du --all` (`scripts/forge_storage.py`). Measuring visits
-  every file, so it runs once in the background when the screen opens and again on *Measure again*; the
+  every file, so it runs once in the background when the screen opens and again on *Measure again*. A
+  chart shows where the space goes, by kind (review snapshots, logs, other run files, what is not
+  forge's, worktrees, the data home) and by repository, with each part's size and share on hover; the
   answer is kept for 10 minutes, and the page polls only while a measurement runs. A finished execution's
   conversation reads the same from a log copy that `forge runs compact --logs` gzipped.
 - **Worktrees (`#/worktrees`, `#/worktrees/repo/<root>`, `#/worktrees/runs/<key>`):** every worktree forge
@@ -298,10 +300,16 @@ keep one meaning everywhere (amber running, green merged or passed, red failed, 
   removed it, and its size. Each row has a status: *in use* (its run is active), *uncommitted
   changes*, *locked*, *needed by the run* (the `_integration` of a run not yet integrated), *failed
   task*, *finished*, *missing on disk*, *not forge's* (it fails the ownership rule `forge runs rm`
-  uses), *unknown to git* (a folder no repository lists) and *removed*. Rows with a safe next step
-  show the command to copy: `git -C <path> status`, `git -C <repo> worktree remove <path>` (plus
-  `git branch -d` for a merged branch), or `git worktree prune`; never `--force`, and the page runs
-  nothing, so it works with `--read-only`. *Whole runs* gives each finished run's
+  uses; a worktree whose folder and branch carry forge's names for the run, `<run id>/<name>` on
+  `forge/<run id>/<name>`, is the run's even when its task was split or dropped since), *unknown to git*
+  (a folder no repository lists) and *removed*. A repository is found through any of its worktrees on
+  disk, through symlinks too, so a checkout deleted by hand hides none of them; a worktree on disk is
+  never called removed, and a repository git cannot list (a timeout, git's `safe.directory` refusal)
+  is named at the top. The screen opens on the worktrees *on disk*; the status filter shows the rest.
+  Rows with a safe next step show the command to copy: `git -C <path> status`, `git -C <repo> worktree
+  remove <path>` (plus `git branch -d` for a merged branch), `git worktree prune`, or, for a folder left
+  where a worktree was and that git no longer knows, `rm -rf -- <path>`; never `--force`, and the page
+  runs nothing, so it works with `--read-only`. *Whole runs* gives each finished run's
   `forge runs rm <run-dir> --worktrees --branches --dry-run`, which also deletes the run directory
   after archiving it. Removed worktrees are complete from the release that records them (dataset
   events `worktree_created` and `worktree_removed`); older ones are derived from run dirs and the

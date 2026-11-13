@@ -1689,7 +1689,11 @@ it lists, and the repositories `forge dataset worktrees --json` names), `git sta
 worktree on disk, one `git show` per repository for the last commits and one `for-each-ref --merged
 HEAD` for merged branches; it lists the folders under each `.forge-worktrees` that no repository
 lists, and adds the dataset's history through `dataset worktrees --json`. Who owns a worktree is
-forge's rule (`scripts/forge_worktrees.py`, the one `forge runs rm` uses). The answer is cached
+forge's rule (`scripts/forge_worktrees.py`, the one `forge runs rm` uses), given the task ids of the run
+plus the worktree's own folder name when its branch is `forge/<run id>/<that name>`. Every worktree folder
+under the `.forge-worktrees` folders it knows is asked too (`git -C <worktree> worktree list`), so a
+repository is listed even when every checkout the dataset names is gone; a repository git cannot list is
+named in `notes`. The answer is cached
 for 60 s per server; `refresh=1` reads everything again, any other parameter is a `400`. Sizes are
 walked in a background thread and are `null` until measured (`sizes_pending` counts the rest).
 
@@ -1705,12 +1709,13 @@ Row = {
   attribute | null), status, merged (branch merged into the repository's HEAD; null unknown),
   head, commit: {sha, time, subject} | null, created, removed (unix times or null), derived
   (true: from a run dir or the dataset, no dates), locked (git's reason, '' for none, null when
-  not locked), size (bytes or null), note, commands: [{label, command}]
+  not locked), size (bytes or null), note, commands: [{label, command}], leftover (unknown rows only)
 }
 ```
 
 `status` is one of `in_use`, `dirty`, `locked`, `needed`, `failed`, `finished`, `missing`,
-`foreign`, `unknown`, `removed`. Commands: `dirty` gets `git -C <path> status`; `failed` gets
+`foreign`, `unknown`, `removed`. A row on disk is never `removed`. Commands: `unknown` with `leftover` (no `.git`,
+or a `.git` file whose gitdir is gone) gets `rm -rf -- <path>`; `dirty` gets `git -C <path> status`; `failed` gets
 `git -C <repo> worktree remove <path>`; `finished` gets the same plus `git -C <repo> branch -d
 <branch>` when the branch is merged; `missing` gets `git -C <repo> worktree prune`; every other
 status gets none. Paths are quoted for the shell and no command has `--force`. `runs[].command` is

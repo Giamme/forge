@@ -118,8 +118,9 @@ class StatusTests(Fixture):
                        attempts=[dict(repo_path=str(self.repo), run_id='r1', task=t) for t in ('done', 'bad')])
         rows, _ = self.rows(history)
         self.assertEqual((rows['done']['status'], rows['bad']['status']), ('finished', 'failed'))
-        # dirty had no attempt on record, so nothing says its branch is the run's
-        self.assertEqual(rows['dirty']['status'], 'foreign')
+        # dirty had no attempt on record, but its folder and branch carry forge's names for the run's task dirty
+        self.assertEqual((rows['dirty']['kind'], rows['dirty']['status']), ('task', 'dirty'))
+        self.assertEqual(rows['stranger']['status'], 'foreign')
 
 
 class CommandTests(Fixture):
@@ -133,7 +134,7 @@ class CommandTests(Fixture):
         self.assertIn('branch stays', rows['bad']['note'])
         self.assertEqual([c['command'] for c in rows['dirty']['commands']], [f'git -C {q(self.root / "dirty")} status'])
         self.assertEqual([c['command'] for c in rows['gone']['commands']], [f'git -C {repo} worktree prune'])
-        for name in ('locked', '_integration', 'stranger', 'mine', 'orphan'):
+        for name in ('locked', '_integration', 'stranger', 'mine'):
             self.assertEqual(rows[name]['commands'], [], name)
         self.assertIn("'", repo)                          # the space in the path is quoted
         everything = json.dumps(found)
@@ -183,6 +184,58 @@ class HistoryTests(Fixture):
         rows, found = self.rows(dict(enabled=False, since=None, events=[], attempts=[], integrated=[], repos=[]))
         self.assertEqual(rows['bad']['status'], 'failed')
         self.assertTrue(any('FORGE_DATASET=off' in n for n in found['notes']))
+
+
+class FoundOnDiskTests(Fixture):
+    """A worktree on disk is listed with its real state however forge-ui reaches its repository, and is never
+    called removed while its folder is there."""
+
+    def history_only(self, repo_path, extra_repos=()):
+        """No run dir any more: what the dataset says, with every path through `repo_path`."""
+        shutil.rmtree(self.plan)
+        return dict(enabled=True, since=1.0, integrated=[], attempts=[],
+                    repos=[dict(repo='k', path=str(p)) for p in (repo_path, *extra_repos)],
+                    events=[dict(name='worktree_created', ts=10.0, run='u', run_id='r1', task=t,
+                                 path=str(self.root / t), branch='forge/r1/' + t, kind='task', repo_path=str(repo_path), by=None)
+                            for t in ('done', 'bad')])
+
+    def test_a_repository_reached_through_a_symlink_is_listed(self):
+        link = self.tmp / 'link-to-app'
+        link.symlink_to(self.repo)
+        rows, found = self.rows(self.history_only(link))
+        self.assertEqual((rows['done']['status'], rows['bad']['status']), ('finished', 'failed'))
+        self.assertIn(str(self.repo), found['repos'])
+
+    def test_worktrees_whose_recorded_checkout_was_deleted_are_found_through_their_own_git(self):
+        gone = self.base / 'old-checkout'          # the checkout the run started in, deleted by hand since
+        rows, _ = self.rows(self.history_only(gone))
+        self.assertEqual((rows['done']['status'], rows['bad']['status']), ('finished', 'failed'))
+        self.assertEqual(rows['dirty']['status'], 'dirty')
+
+    def test_a_repository_git_cannot_list_is_named_and_its_worktrees_are_not_called_removed(self):
+        real_git = worktrees._git
+
+        def refusing(cwd, *args, **kwargs):
+            if args[:2] == ('worktree', 'list'):
+                return 128, ''
+            return real_git(cwd, *args, **kwargs)
+        with patch.object(worktrees, '_git', refusing):
+            rows, found = self.rows(self.history_only(self.repo))
+        self.assertNotEqual(rows['done']['status'], 'removed')
+        self.assertTrue(any('could not list' in n for n in found['notes']), found['notes'])
+
+    def test_a_task_split_after_its_worktree_was_made_is_still_the_runs(self):
+        self.add('split-me', 'forge/r1/split-me')       # not in tasks.tsv: replaced by its parts
+        self.add('named-x', 'forge/r1/other-name')      # forge's branch shape, another folder: not shown as forge's
+        rows, _ = self.rows()
+        self.assertEqual((rows['split-me']['kind'], rows['split-me']['status']), ('task', 'finished'))
+        self.assertEqual(rows['named-x']['status'], 'foreign')
+
+    def test_a_leftover_folder_git_no_longer_knows_offers_its_removal(self):
+        rows, _ = self.rows()
+        [cmd] = rows['orphan']['commands']
+        self.assertEqual(cmd['command'], 'rm -rf -- %s' % worktrees.quote(self.root / 'orphan'))
+        self.assertIn('look inside', cmd['label'])
 
 
 class ScreenTests(Fixture):

@@ -67,22 +67,53 @@ def rules():
         return _STATE['rules']
 
 
+_LAST_ERROR = threading.local()
+
+
 def _git(cwd, *args, timeout=_GIT_TIMEOUT):
-    """(returncode, stdout text) of `git -C cwd <args>`, or (None, '') when git could not run."""
+    """(returncode, stdout text) of `git -C cwd <args>`, or (None, '') when git could not run. The first line of
+    what git said on stderr is kept in _LAST_ERROR.text, for a note when a listing fails."""
+    _LAST_ERROR.text = ''
     try:
         done = subprocess.run(['git', '--no-optional-locks', '-C', cwd, *args], stdin=subprocess.DEVNULL,
-                              stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=timeout, check=False,
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout, check=False,
                               env=dict(os.environ, GIT_TERMINAL_PROMPT='0', LC_ALL='C'))
-    except (OSError, ValueError, subprocess.SubprocessError):
+    except subprocess.TimeoutExpired:
+        _LAST_ERROR.text = 'git took over %d s' % timeout
         return None, ''
+    except (OSError, ValueError, subprocess.SubprocessError) as exc:
+        _LAST_ERROR.text = str(exc)
+        return None, ''
+    if done.returncode:
+        _LAST_ERROR.text = done.stderr.decode('utf-8', 'replace').strip().split('\n')[0][:300]
     return done.returncode, done.stdout.decode('utf-8', 'surrogateescape')
 
 
 def _isdir(path):
+    """An absolute path to a directory, through symlinks: a repository is often reached through one."""
     try:
-        return os.path.isabs(path) and stat.S_ISDIR(os.lstat(path).st_mode)
+        return os.path.isabs(path) and os.path.isdir(path)
     except (OSError, ValueError):
         return False
+
+
+def _leftover(path):
+    """True when the folder is no git worktree any more: no `.git`, or a `.git` file whose gitdir is gone."""
+    dotgit = os.path.join(path, '.git')
+    try:
+        if not os.path.lexists(dotgit):
+            return True
+        if os.path.isdir(dotgit):
+            return False
+        with open(dotgit, 'r', encoding='utf-8', errors='replace') as stream:
+            line = stream.read(4096).strip()
+    except (OSError, ValueError):
+        return False
+    if not line.startswith('gitdir:'):
+        return False
+    target = line[len('gitdir:'):].strip()
+    target = target if os.path.isabs(target) else os.path.join(path, target)
+    return not os.path.exists(target)
 
 
 def _exists(path):
@@ -110,6 +141,9 @@ def commands(row):
         return [dict(label='see what is uncommitted', command='git -C %s status' % quote(path))]
     if st == 'missing' and repo:
         return [dict(label='forget the missing folder', command='git -C %s worktree prune' % quote(repo))]
+    if st == 'unknown' and row.get('leftover'):
+        return [dict(label='delete the leftover folder: git no longer knows it as a worktree (look inside first)',
+                     command='rm -rf -- %s' % quote(path))]
     if st in ('failed', 'finished') and repo:
         out = [dict(label='remove the worktree', command='git -C %s worktree remove %s' % (quote(repo), quote(path)))]
         if st == 'finished' and branch and row.get('merged'):
@@ -133,7 +167,9 @@ def _note(row):
     if st == 'foreign':
         return row.get('why') or "not forge's: it fails forge's ownership rule"
     if st == 'unknown':
-        return 'a folder git does not list as a worktree'
+        if row.get('leftover'):
+            return 'a folder left where a worktree was: git no longer knows it, and nothing of forge reads it'
+        return row.get('why') or 'a folder git does not list as a worktree'
     if st == 'removed':
         if row.get('derived'):
             return 'derived from the run dir or the dataset; removed at an unknown date'
@@ -168,17 +204,33 @@ def _runs(catalog):
 
 # ---- the computation ---------------------------------------------------------------------------
 
-def _repo_listing(R, repo):
-    """(main working tree, [worktree records]) of the repository holding `repo`, or (None, [])."""
+def _repo_listing(R, repo, failures=None):
+    """(main working tree, [worktree records]) of the repository holding `repo`, or (None, []). A failure is added
+    to `failures` as {repo: why}."""
     code, out = _git(repo, 'worktree', 'list', '--porcelain', '-z')
     z = True
     if code == 129:
         code, out = _git(repo, 'worktree', 'list', '--porcelain')
         z = False
     if code != 0:
+        if failures is not None:
+            failures[repo] = _LAST_ERROR.text or ('exit %s' % code if code is not None else 'git could not run')
         return None, []
     found = R.parse_porcelain(out, z=z)
     return (found[0]['path'], found) if found else (None, [])
+
+
+def _forge_folders(folders):
+    """The worktree folders on disk under each `.forge-worktrees` folder: `<folder>/<run id>/<name>` and
+    `<folder>/<name>` that hold a `.git` whose repository is still there (a leftover is no repository to ask)."""
+    out = []
+    for folder in sorted(folders):
+        for first in _children(folder):
+            if _exists(os.path.join(first, '.git')):
+                out += [] if _leftover(first) else [first]
+                continue
+            out += [second for second in _children(first) if _exists(os.path.join(second, '.git')) and not _leftover(second)]
+    return out
 
 
 def _layout(path):
@@ -223,11 +275,24 @@ def compute(catalog, history):
     for e in events:
         if e.get('repo_path'):
             candidates.append(e['repo_path'])
-    roots, listed, asked = {}, {}, set()
+    # Then every worktree folder on disk, asked through its own .git: a checkout the dataset names may have
+    # been deleted by hand, and git answers for the whole repository from any of its worktrees.
+    known_folders = set()
+    for repo in candidates:
+        if repo and os.path.isabs(repo):
+            known_folders.add(os.path.join(os.path.dirname(_real(repo)), '.forge-worktrees'))
+    for e in events:
+        where = _layout(e['path']) if os.path.isabs(e['path']) else None
+        if where:
+            known_folders.add(where[0])
+    for (wroot, _repo, _rid) in dataset_tasks:
+        known_folders.add(os.path.dirname(wroot))
+    candidates += _forge_folders(known_folders)
+    roots, listed, asked, failures = {}, {}, set(), {}
     for repo in candidates:
         if not repo or not _isdir(repo) or _real(repo) in asked:
             continue
-        root, found = _repo_listing(R, repo)
+        root, found = _repo_listing(R, repo, failures)
         for wt in found:
             asked.add(_real(wt['path']))
         asked.add(_real(repo))
@@ -275,6 +340,9 @@ def compute(catalog, history):
         else:
             wroot = os.path.join(folder, run_id)
             ids, run = tasks_of(wroot, root, run_id)
+            if wt['branch'] == 'refs/heads/forge/%s/%s' % (run_id, name):
+                # forge names a task's worktree and branch after it: a task split or dropped since is still the run's
+                ids = set(ids) | {name}
             kind = R.owner(wt['path'], wt['branch'], run_id, ids, wroot)
             if run is not None:
                 row.update(run=run['key'], run_path=run['path'])
@@ -336,6 +404,7 @@ def compute(catalog, history):
                 folders.add(where[0])
     for run in runs:
         folders.add(os.path.join(os.path.dirname(_real(run['repo'])), '.forge-worktrees'))
+    folders |= {_real(f) for f in known_folders if _isdir(f)}
     for folder in sorted(folders):
         for first in _children(folder):
             if _real(first) in listed:
@@ -365,6 +434,13 @@ def compute(catalog, history):
                 rows[real]['created'] = created['ts']
             continue
         e = created or removed
+        if os.path.isabs(e['path']) and _exists(e['path']):
+            # on disk, yet no repository listed it: never call it removed
+            _unknown(rows, e['path'], e.get('run_id'), by_root)
+            rows[real].update(repo=rows[real]['repo'] or e.get('repo_path'), task=rows[real]['task'] or e.get('task'),
+                              branch=e.get('branch'), created=created['ts'] if created else None,
+                              why='on disk, but git did not list it as a worktree of %s' % (e.get('repo_path') or 'its repository'))
+            continue
         root_key = R.wt_root(e['repo_path'], e['run_id']) if e.get('repo_path') and e.get('run_id') else None
         run = by_root.get(root_key) if root_key else None
         rows[real] = dict(path=e['path'], repo=e.get('repo_path'), git_dir=None, run=run['key'] if run else None,
@@ -399,7 +475,11 @@ def compute(catalog, history):
         if not run['live'] and _isdir(run['path']):
             group['command'] = 'forge runs rm %s --worktrees --branches --dry-run' % quote(run['path'])
         run_groups.append(group)
-    notes = []
+    # A path that is no repository any more (a checkout deleted and its folder reused) has nothing to list; a real
+    # failure (a timeout, git's safe.directory refusal) is named, since it hides that repository's worktrees.
+    notes = ['git could not list the worktrees of %s (%s): its worktrees are shown from what is on disk and the dataset'
+             % (repo, why) for repo, why in sorted(failures.items())
+             if _real(repo) not in roots and 'not a git repository' not in why]
     if hist is None:
         notes.append('the dataset could not be read: only what git and the run dirs say is listed')
     elif not hist.get('enabled'):
@@ -451,7 +531,7 @@ def _unknown(rows, path, run_id, by_root):
     rows[real] = dict(path=path, repo=run['root'] if run else None, git_dir=None, run=run['key'] if run else None,
                       run_id=run_id, run_path=run['path'] if run else None, task=name if kind == 'task' else None,
                       branch=None, kind=kind, status='unknown', merged=None, head=None, commit=None, created=None,
-                      removed=None, derived=False, locked=None, size=None, why=None)
+                      removed=None, derived=False, locked=None, size=None, why=None, leftover=_leftover(path))
 
 
 def _derived(rows, path, repo, run_id, name, run):
