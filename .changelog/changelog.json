@@ -1,6 +1,153 @@
 {
   "versions": [
     {
+      "version": "0.18",
+      "date": "2026-11-13",
+      "summary": "Around each task and on disk: retro notes, brief mode, task summaries and the task inspector; review snapshots removed after each review, forge runs compact, forge du and the Disk screen, and a list of everything forge puts on disk.",
+      "entries": [
+        {
+          "type": "added",
+          "text": "Retro notes, opt-in with `plan --retro` (or `forge config set retro on`): implementers and reviewers record what got in their way (a missing tool, a flaky test, a wrong instruction), each with its command and error and checked against the run's own logs. `forge retro report` groups them into `retro.md` (forge's own problems, the project's, the environment's) with counts across tasks and earlier runs. `forge retro issues` drafts redacted GitHub issues for forge's repository and posts only what a person approves by hash. Nothing leaves the machine otherwise (#132).",
+          "breaking": false,
+          "audience": "user",
+          "highlight": false,
+          "commits": [
+            "7288a05"
+          ]
+        },
+        {
+          "type": "added",
+          "text": "forge-ui: the task inspector opens with the task's goal, acceptance criteria and links read from its prompt, then an attempt trail: each attempt's model, verdict, worst finding and why it was retried (automatic, a person's retry, an escalation), each line linking to that attempt's executions (#133).",
+          "breaking": false,
+          "audience": "user",
+          "highlight": false,
+          "commits": [
+            "7288a05"
+          ]
+        },
+        {
+          "type": "added",
+          "text": "Task summaries, opt-in with `plan --summaries on --summaries-model SPEC`: a cheap read-only dispatch writes a few sentences per task, plus one sentence for the tasks table, rewritten only when the task's attempts, status or review change. `forge summarize` runs it by hand, and `forge control set summaries on|off` (or `--task ID on|off|inherit`) switches it during or after a run. forge-ui shows each summary in the inspector with its model, time and sources, marks one out of date, and has a master switch and a per-task override. forge never picks the model (#133).",
+          "breaking": false,
+          "audience": "user",
+          "highlight": false,
+          "commits": [
+            "7288a05"
+          ]
+        },
+        {
+          "type": "added",
+          "text": "Brief mode, opt-in with `plan --brief advisory|gated|strict --brief-model SPEC`: before each task starts, a cheap read-only dispatch writes the questions only you can answer, each with why it matters, options and the default forge will assume. Answers (`forge brief answer`, or the answer box in forge-ui's inspector) go into the task's prompt. `gated` holds a task with an unanswered must-answer question, and `strict` makes `run` exit 3 while any is open. After a merge, dependents' open questions are flagged as possibly stale, and an answer that comes after its task started is kept as late, with a `forge control add` suggestion. forge-ui lists the run's open questions, flagged first, then by how soon each task starts (#135).",
+          "breaking": false,
+          "audience": "user",
+          "highlight": false,
+          "commits": [
+            "7288a05"
+          ]
+        },
+        {
+          "type": "added",
+          "text": "`forge control accept <plan> <task> --reason \"…\" --approved` accepts a `FAIL`, `UNKNOWN` or `NEEDS_DECISION` task while its run is live. The scheduler applies it at its next pass, just as `forge-parallel.sh accept` would: the findings become known issues, the task merges, and the tasks waiting on it start in the same run instead of ending `BLOCKED`. `control.log` and `accepted.by` record who asked and why. With no live run it is refused, and points to the plain `accept` (#138).",
+          "breaking": false,
+          "audience": "user",
+          "highlight": false,
+          "commits": [
+            "e0f02f0"
+          ]
+        },
+        {
+          "type": "added",
+          "text": "`forge runs compact` takes back the space run dirs hold for nothing and keeps every run: after a strict dataset import it removes leftover review snapshots and, with `--logs`, gzips each dwarf's and reviewer's log copy (forge-ui reads them the same way). It holds the run's lock, skips active runs, and reports anything forge did not create (a dependency install inside a run dir) instead of deleting it. On a real 2.3 GB plan dir it took back 2.2 GB (#139).",
+          "breaking": false,
+          "audience": "user",
+          "highlight": false,
+          "commits": [
+            "dc501df"
+          ]
+        },
+        {
+          "type": "added",
+          "text": "`forge du` shows what forge takes on disk (each run dir's snapshots, logs and other files, each run's worktree folder, and the data home) and the command that takes each part back. forge-ui's new Disk screen shows the same report, with the commands to copy (#139).",
+          "breaking": false,
+          "audience": "user",
+          "highlight": false,
+          "commits": [
+            "dc501df"
+          ]
+        },
+        {
+          "type": "added",
+          "text": "At run start forge compacts the repository's idle runs in the background and warns when its forge files passed a size you set. `forge config set storage.compact auto|off` (default `auto`) and `storage.warn-gb N|off` (default 20) control it; a run never waits for it (#139).",
+          "breaking": false,
+          "audience": "user",
+          "highlight": false,
+          "commits": [
+            "dc501df"
+          ]
+        },
+        {
+          "type": "added",
+          "text": "The Disk screen in forge-ui now charts where the space goes: one bar by kind (review snapshots, logs, other run files, what is not forge's, worktrees, the data home) and one per repository, with sizes and shares on hover.",
+          "breaking": false,
+          "audience": "user",
+          "highlight": false,
+          "commits": [
+            "d732e31"
+          ]
+        },
+        {
+          "type": "added",
+          "text": "forge now keeps a list of everything it puts on disk, in `<config home>/forge/locations.jsonl`: every run dir and worktree, with its repository's git dir and main checkout, and when forge removed it. `forge du`, `forge runs compact` and forge-ui's Disk and Worktrees screens use it to know where to look, so a checkout deleted by hand, a symlinked path or a run dir that is gone no longer hides anything. It is written even with the dataset off (`FORGE_RUN_REGISTRY=off` turns it off), and filled once from the run registry and the worktrees already on disk.",
+          "breaking": false,
+          "audience": "user",
+          "highlight": false,
+          "commits": [
+            "81d6148"
+          ]
+        },
+        {
+          "type": "fixed",
+          "text": "Run directories no longer grow by a full copy of the repository for every review: forge removes each review snapshot (task, final, shadow, solo and adopt reviews) once the review ends, whatever its outcome, and a task's next review removes one an interrupted review left behind. `review.base`, `review.deps`, the prompt, the log and the verdict stay. `FORGE_KEEP_SNAPSHOTS=1` keeps them for debugging. Snapshots that existing runs already hold are untouched (#139).",
+          "breaking": false,
+          "audience": "user",
+          "highlight": false,
+          "commits": [
+            "5ea9ae8"
+          ]
+        },
+        {
+          "type": "fixed",
+          "text": "A forge command refused by a plan's lock (`accept`, `retry`, `integrate` and the others while another one runs) now says which command holds the lock, with its pid and start time, and on a live run which `forge control` command to use instead, rather than a bare `[Errno 35] Resource temporarily unavailable` (#138).",
+          "breaking": false,
+          "audience": "user",
+          "highlight": false,
+          "commits": [
+            "e0f02f0"
+          ]
+        },
+        {
+          "type": "fixed",
+          "text": "A final review stopped by a signal no longer leaves its review snapshot behind for good: the plan's next final review removes it, as a task's next review already did (#139).",
+          "breaking": false,
+          "audience": "user",
+          "highlight": false,
+          "commits": [
+            "dc501df"
+          ]
+        },
+        {
+          "type": "fixed",
+          "text": "forge-ui's Worktrees screen no longer greys out worktrees that are still on disk. It used to miss a repository reached through a symlink, or one whose recorded checkout was deleted by hand; their worktrees then showed as removed or not at all. Now it finds a repository through any of its worktrees and never calls a worktree on disk removed. It names a repository git cannot list, counts a split task's worktree as the run's, and offers to delete a folder left where a worktree was. The screen opens on the worktrees on disk.",
+          "breaking": false,
+          "audience": "user",
+          "highlight": false,
+          "commits": [
+            "d732e31"
+          ]
+        }
+      ]
+    },
+    {
       "version": "0.17",
       "date": "2026-11-11",
       "summary": "Measure reviews and routing: outcomes recorded at the end of every run, finding facts, paired reviews, task risk and a look inside each difficulty tier, all in shadow; plus adoption fixes.",

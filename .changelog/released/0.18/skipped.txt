@@ -1,0 +1,68 @@
+cba088f	forge(retro-ui) attempt 1: forge-ui shows a run's retro report in its details (#132)
+0391cc4	forge(retro-report) attempt 3: forge retro report writes retro.md with groups and counts (#132)
+0f445ca	forge(side-core) attempt 2: Feature settings and the side-dispatch wrapper forge_side
+10a7acd	forge(brief-schedule) attempt 1: Brief in a run: writer at start, gated waits, strict refusal, stale flags (#135)
+124662d	forge(summary-core) attempt 5: forge summarize: task summaries regenerated only on change (#133 B)
+176950e	fix(control): the lock refusal names the command to run again; runs_rm test reads it (#138)
+23cca5f	forge(docs-cli) attempt 1: Docs: retro, brief, summaries in SKILL.md and references
+2632fd0	forge(side-core) attempt 1: Feature settings and the side-dispatch wrapper forge_side
+28b795a	fix(run I): retro issues reads the origin itself (worktrees too); split test fails every review
+2c7aeb4	forge(side-core) attempt 3: Feature settings and the side-dispatch wrapper forge_side
+326ca6f	forge(sweep-1) attempt 2: Fix 1 review finding in scripts/forge-summarize.py
+391cba9	forge(retry-trail) attempt 2: Record why each attempt happened in retry_sources.tsv (#133)
+394d6ca	fix(ui): a started task's open question no longer says "starts about now" (#135)
+39b63f0	forge(side-exclude) attempt 1: Keep side dispatches out of attempt statistics and leaderboards
+3f1f672	forge(sweep-5) attempt 1: Fix 1 review finding in scripts/forge_retro/issues.py
+477937d	forge(retro-wiring) attempt 1: Retro in a run: instruction last, notes recorded, report at the end (#132)
+477dedb	forge(side-dispatch) attempt 1: A read-only side dispatch role, harvested apart from attempts
+48922b2	forge(plan-options) attempt 1: plan --retro, --brief, --summaries frozen into the plan
+4a0656b	forge(plan-options) attempt 2: plan --retro, --brief, --summaries frozen into the plan
+4ce8985	forge(retro-report) attempt 2: forge retro report writes retro.md with groups and counts (#132)
+562285d	forge(summary-control) attempt 3: forge control set summaries, and scheduler triggers on change (#133 B)
+5696ac4	forge(inspector-reader) attempt 4: Reader: task header (goal, criteria, links) and attempt trail (#133 A)
+601a068	forge(inspector-reader) attempt 1: Reader: task header (goal, criteria, links) and attempt trail (#133 A)
+64322b2	forge(brief-core) attempt 2: Brief: question writer, brief.json, parked questions, write and show (#135)
+64acb78	forge(sweep-3) attempt 1: Fix 1 review finding in references/dataset.md
+67c2e58	forge(retro-report) attempt 1: forge retro report writes retro.md with groups and counts (#132)
+6c0a45e	forge(summary-control) attempt 2: forge control set summaries, and scheduler triggers on change (#133 B)
+6e64c32	forge(retry-trail) attempt 1: Record why each attempt happened in retry_sources.tsv (#133)
+6fd9d5f	forge(retro-report) attempt 4: forge retro report writes retro.md with groups and counts (#132)
+73905b4	forge(summary-core) attempt 1: forge summarize: task summaries regenerated only on change (#133 B)
+7c3a906	forge(sweep-4) attempt 1: Fix 1 review finding in scripts/forge-parallel.sh
+7f47649	forge(retro-issues) attempt 3: forge retro issues: redacted drafts, posted only on approval (#132)
+88015df	forge(retro-core) attempt 2: Retro notes: FORGE_RETRO protocol, evidence check, storage, forge retro note (#132)
+8ac30dd	forge(retro-report) attempt 6: forge retro report writes retro.md with groups and counts (#132)
+8d693c1	forge(brief-core) attempt 3: Brief: question writer, brief.json, parked questions, write and show (#135)
+913d3fb	forge(retro-issues) attempt 1: forge retro issues: redacted drafts, posted only on approval (#132)
+91912de	forge(retro-issues) attempt 2: forge retro issues: redacted drafts, posted only on approval (#132)
+9ec3b26	forge(retro-wiring) attempt 2: Retro in a run: instruction last, notes recorded, report at the end (#132)
+a1de180	forge(plan-options) attempt 4: plan --retro, --brief, --summaries frozen into the plan
+a40a56b	forge(docs-ui) attempt 1: Docs: the forge-ui changes of this run
+a5d3fde	forge(summary-core) attempt 4: forge summarize: task summaries regenerated only on change (#133 B)
+a824b86	forge(retro-ui) attempt 2: forge-ui shows a run's retro report in its details (#132)
+a94a7bb	forge(plan-options) attempt 3: plan --retro, --brief, --summaries frozen into the plan
+aaf0d1c	forge(summary-page) attempt 1: forge-ui page: summaries, master switch, override, sentence column (#133 B)
+ab305d0	forge(summary-control) attempt 1: forge control set summaries, and scheduler triggers on change (#133 B)
+afed782	forge(brief-prompts) attempt 1: Brief answers and defaults in implementer and reviewer prompts (#135)
+b24a0e8	fix(ui): an exported run shows its brief questions (#137)
+b8858af	forge(sweep-2) attempt 1: Fix 1 review finding in scripts/forge_retro/report.py
+ba93e43	forge(brief-api) attempt 2: forge-ui API: brief questions, run counts, answer route (#135)
+bab8ba9	forge(retro-core) attempt 1: Retro notes: FORGE_RETRO protocol, evidence check, storage, forge retro note (#132)
+be53143	forge(retro-report) attempt 5: forge retro report writes retro.md with groups and counts (#132)
+c3f98bb	forge(inspector-reader) attempt 3: Reader: task header (goal, criteria, links) and attempt trail (#133 A)
+c463112	forge(brief-answer) attempt 2: Brief answers, late answers and possibly stale questions (#135)
+c62bb38	forge(summary-core) attempt 2: forge summarize: task summaries regenerated only on change (#133 B)
+cb873fc	forge(inspector-ui) attempt 1: Inspector: task header first, then the attempt trail (#133 A)
+d51ec0e	forge(summary-core) attempt 3: forge summarize: task summaries regenerated only on change (#133 B)
+d72a16e	forge(brief-api) attempt 1: forge-ui API: brief questions, run counts, answer route (#135)
+dfb3be3	fix(brief): the possibly-stale check reads only this run's attempt file lists (#135)
+e289d59	forge(brief-core) attempt 1: Brief: question writer, brief.json, parked questions, write and show (#135)
+e6e1f4d	forge(brief-core) attempt 4: Brief: question writer, brief.json, parked questions, write and show (#135)
+e87eb6b	forge(plan-options) attempt 5: plan --retro, --brief, --summaries frozen into the plan
+e8fc34a	forge(sweep-1) attempt 1: Fix 1 review finding in scripts/forge-summarize.py
+ec07238	forge(inspector-reader) attempt 2: Reader: task header (goal, criteria, links) and attempt trail (#133 A)
+eefd9fa	forge(retro-issues) attempt 4: forge retro issues: redacted drafts, posted only on approval (#132)
+f190adf	forge(summary-api) attempt 1: forge-ui API: task summaries and the summaries switch (#133 B)
+f6b8969	forge(brief-page) attempt 1: forge-ui page: brief questions, answer box, questions list (#135)
+fafffc4	forge(brief-answer) attempt 1: Brief answers, late answers and possibly stale questions (#135)
+ffd7ad3	fix(compact): a batch reports each run as it ends, not only at the end
