@@ -601,6 +601,9 @@ forge_features_table() { # forge_features_table <plan>
 # with no groups.tsv, no --groups and no groups.frozen, nothing here runs or writes.
 forge_groups_py() { python3 "$SKILL_DIR/scripts/forge-groups.py" "$@"; }
 
+# forge_groups_id_of <plan> <task>: the id of the task's group, empty when it is in none.
+forge_groups_id_of() { forge_groups_py of "$1" "$2" 2>/dev/null | awk -F'\t' 'NR == 1 { print $1 }'; }
+
 # forge_groups_die <message from forge-groups.py>: its one-line message, without the prefix, exit 2.
 forge_groups_die() { local msg="$1"; die "${msg#forge-groups: }" 2; }
 
@@ -1603,6 +1606,16 @@ do_task_body() (
   [ -s "$PLAN/timeout" ] && export FORGE_TIMEOUT="$(cat "$PLAN/timeout")"
   wt="$(cat "$PLAN/wt_root")/$id"
   br="forge/$run_id/$id"
+  # A member of a review=group group (#140) stops at IMPLEMENTED: its group is reviewed once, later.
+  # Looked up once. A task in no group, or in a review=task group, takes the path below unchanged,
+  # and a plan with no groups.tsv starts no process for it.
+  local grp_id="" grp_review="" grp_qa=""
+  if [ -f "$PLAN/groups.tsv" ]; then
+    IFS=$'\t' read -r grp_id grp_review grp_qa < <(forge_groups_py of "$PLAN" "$id" 2>/dev/null) || true
+    [ "$grp_review" = group ] || grp_id=""
+  fi
+  # No task review happened for a member, so a QA-only resume cannot apply to it.
+  [ -z "$grp_id" ] || rm -f "$tdir/resume"
   # Every attempt gets a distinct number and commit message. A QA-only resume (the
   # reviewer hit an infrastructure failure, or never reached a verdict) re-reviews work
   # that is already committed, so it neither runs the dwarf nor spends an attempt.
@@ -1820,6 +1833,34 @@ do_task_body() (
   else
     reviewed="$(cat "$tdir/reviewed.commit")"
   fi
+  if [ -n "$grp_id" ]; then
+    # The member's own pipeline ends here: no review snapshot, QA, shadow or fail-first. The tests of
+    # --pre-review-tests still run, on a snapshot that lives only for them: a red attempt is FAIL and
+    # goes back unreviewed, as for any task.
+    if [ -f "$PLAN/pre_review_tests" ]; then
+      review="$tdir/review-$attempt-$$"
+      local stale
+      for stale in "$tdir"/review-*; do forge_drop_snapshot "$stale"; done
+      FORGE_REVIEW_SNAPSHOT="$review"
+      forge_review_snapshot "$wt" "$base" "$reviewed" "$review" || { echo ERROR > "$tdir/status"; return 1; }
+      if ! forge_pre_review "$review" "$tdir" "$REPO" "$PLAN"; then
+        : > "$tdir/prereview.failed"
+        rm -f "$tdir/qa.last"
+        echo FAIL > "$tdir/status"
+        note "$id: the tests this attempt affects fail — sent back to the implementer without a review (see $tdir/prereview.md)"
+        return 0
+      fi
+      forge_drop_snapshot "$review"; FORGE_REVIEW_SNAPSHOT=""
+    else
+      rm -f "$tdir/prereview.json" "$tdir/prereview.txt" "$tdir/prereview.md"
+    fi
+    # The fingerprint a review would have recorded, then the status: a reader that sees IMPLEMENTED
+    # can trust reviewed.commit and source.fingerprint.
+    forge_fingerprint "$wt" > "$tdir/source.fingerprint.tmp" && mv "$tdir/source.fingerprint.tmp" "$tdir/source.fingerprint" || return 1
+    echo IMPLEMENTED > "$tdir/status"
+    note "$id: implemented — waits for group $grp_id's review"
+    return 0
+  fi
   review="$tdir/review-$attempt-$$"
   # One review of a task at a time, so any snapshot already here is an interrupted review's: a signal
   # ends this subshell without its EXIT trap (#139).
@@ -2030,17 +2071,10 @@ do_task_body() (
 # Entry point for both the scheduler's `_task` and `retry`: runs the pipeline, then logs
 # the attempt (including infrastructure stops, which spend nothing) for later audit.
 do_task() {
-  local rc crc=0 stop_before
+  local rc
   do_task_body "$@"; rc=$?
   record_attempt "$1" "$2"
-  # The retry policy's state (escalation.next or escalation.stop), decided now rather than
-  # at the next retry so a spent retry budget still reports it and the scheduler sees it.
-  stop_before="$(cat "$1/tasks/$2/escalation.stop" 2>/dev/null)"
-  python3 "$SKILL_DIR/scripts/forge-route.py" escalation --plan "$1" --task "$2" --check \
-    --qa-only-next "$(qa_only_next_flag "$1" "$2")" >/dev/null 2>&1 || crc=$?
-  # A FAIL that does not converge, or that the policy could not move to a stronger model, waits
-  # for a person (NEEDS_DECISION). attempts.tsv was written above and keeps FAIL.
-  decision_after_attempt "$1" "$2" "$stop_before" "$crc"
+  post_attempt "$1" "$2"
   return $rc
 }
 
@@ -2211,6 +2245,8 @@ do_retry() {
   # A decision is judged the same way, before any option writes: a NEEDS_DECISION task is resumed
   # only by --decide or --dwarf with --reason and --approved, and --decide is for no other task.
   if [ "$pre_ok" = 1 ] && [ -s "$PLAN/tasks.tsv" ] && all_ids "$PLAN/tasks.tsv" | grep -qx "$id"; then
+    # Before any option writes: an implemented group member has nothing to retry.
+    [ "$(task_status "$PLAN" "$id")" != IMPLEMENTED ] || plans_implemented_refuse "$PLAN" "$id"
     retry_decision_gate "$PLAN" "$id" "$(task_status "$PLAN" "$id")" "$pre_decide" "$pre_dwarf" "$pre_reason" "$pre_approved"
   fi
   while [ $# -gt 0 ]; do
@@ -2259,6 +2295,7 @@ do_retry() {
   [ -s "$PLAN/wt_root" ] || die "this plan has never been run — use 'run', not 'retry'"
   local st; st="$(task_status "$PLAN" "$id")"
   [ "$st" = "MERGED" ] && die "task '$id' already merged — nothing to retry"
+  [ "$st" != IMPLEMENTED ] || plans_implemented_refuse "$PLAN" "$id"
   # A decision's grant is exactly what it says, and the profile's default budget of further attempts
   # does not stretch it: a task waiting for a decision (resumed by --decide or --dwarf), or an
   # infrastructure stop resumed while a decision's count is kept. Only a --retry-failed typed on this
@@ -3097,10 +3134,19 @@ do_run() {
   fi
   # Tasks stopped for a decision (#69): why, and the choices. Not failures to retry either.
   report_decisions "$PLAN"
+  # Members implemented and waiting for their group's review (#140): not failures either.
+  local implemented; implemented="$(awk -F'\t' '$2=="IMPLEMENTED" {print $1}' "$PLAN/results.tsv")"
+  if [ -n "$implemented" ]; then
+    echo "implemented, waiting for their group's review:"
+    for id in $implemented; do
+      printf '  %s: group %s\n' "$id" "$(forge_groups_id_of "$PLAN" "$id")"
+    done
+    echo
+  fi
   # The retry hint is for tasks that actually failed; a run that only failed verification,
   # or only paused on infrastructure, has nothing to retry task by task. An interrupted task
   # has its own hint above, a task waiting for an answer or a decision its own block.
-  if [ "$(awk -F'\t' '$2!="MERGED" && $2!="INFRA" && $2!="PENDING" && $2!="BLOCKED" && $2!="INTERRUPTED" && $2!="NEEDS_INPUT" && $2!="NEEDS_DECISION" {n++} END {print n+0}' "$PLAN/results.tsv")" -gt 0 ]; then
+  if [ "$(awk -F'\t' '$2!="MERGED" && $2!="INFRA" && $2!="PENDING" && $2!="BLOCKED" && $2!="INTERRUPTED" && $2!="NEEDS_INPUT" && $2!="NEEDS_DECISION" && $2!="IMPLEMENTED" {n++} END {print n+0}' "$PLAN/results.tsv")" -gt 0 ]; then
     echo "retry a failed task with its reviewer's findings:"
     echo "  forge-parallel.sh retry $PLAN <task-id> [--dwarf <spec>]"
     echo "or let a run retry them itself:  forge-parallel.sh run $PLAN --retry-failed 1"

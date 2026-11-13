@@ -195,6 +195,13 @@ plans_groups_restore() {
   rm -rf "$2"
 }
 
+# An IMPLEMENTED task (#140) is a group member whose own pipeline is done; only its group's review
+# judges it, so neither retry nor accept can act on it. Exit 3.
+plans_implemented_refuse() { # plans_implemented_refuse <plan> <id>
+  local gid; gid="$(forge_groups_id_of "$1" "$2")"
+  die "$2 is implemented and waits for group ${gid:-?}'s review" 3
+}
+
 # --- accept ---------------------------------------------------------------------
 # A reviewer's FAIL is the QA gate; overriding it is the user's call and never forge's or
 # the orchestrator's, hence both --reason and --approved. Only work the reviewer actually
@@ -203,6 +210,7 @@ plans_groups_restore() {
 plans_why_not() { # plans_why_not <plan> <id> <status>: exit 3 with advice for a status accept cannot take
   local plan="$1" id="$2" st="$3"
   case "$st" in
+    IMPLEMENTED) plans_implemented_refuse "$plan" "$id" ;;
     MERGED) die "task '$id' is already merged — nothing to accept" 3 ;;
     PASS) die "task '$id' already passed review; 'forge-parallel.sh run $plan' merges it — nothing to accept" 3 ;;
     INVALIDATED) die "task '$id' is INVALIDATED: its work or the integration branch changed after the review, so the review no longer describes it. Use 'forge-parallel.sh retry $plan $id' for a fresh review" 3 ;;
