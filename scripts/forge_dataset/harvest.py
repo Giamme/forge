@@ -325,6 +325,11 @@ def locate(root: str | Path, role: str | None = None) -> dict:
         kind = p.parent.parent.name
         plan, ctx['task'], ctx['scope'], ctx['side'] = (
             p.parent.parent.parent.parent, p.parent.name, 'task', kind)
+    elif p.parent.name == 'groups' and (p.parent.parent / 'tasks.tsv').exists():
+        # <plan>/groups/<gid>: one QA dispatch for a review=group group. Not a task.
+        # Checked after shadow and side, and before a name prefix (final-review-*,
+        # integrate-*), so a group id with one of those names stays a group.
+        plan, ctx['task'], ctx['scope'], ctx['group'] = p.parent.parent, None, 'group', p.name
     elif p.parent.name == 'tasks' and (p.parent.parent / 'tasks.tsv').exists():
         plan, ctx['task'], ctx['scope'] = p.parent.parent, p.name, 'task'
     elif p.name.startswith('final-review-') and (p.parent / 'tasks.tsv').exists():
@@ -447,6 +452,140 @@ def side_kind(root: Path, role: str, prov: dict | None = None) -> str | None:
     return locate(root, role).get('side')
 
 
+def group_members(plan: Path, gid: str) -> list:
+    """Task ids of `gid` in groups.tsv, in file order. Empty when the group is absent."""
+    for line in (text(plan / 'groups.tsv') or '').splitlines():
+        if not line.strip() or line.startswith('#'):
+            continue
+        cells = line.split('\t')
+        if len(cells) < 4 or cells[0] != gid:
+            continue
+        raw = cells[3].strip()
+        if raw in ('', '-'):
+            return []
+        return [item.strip() for item in raw.split(',') if item.strip() and item.strip() != '-']
+    return []
+
+
+def member_rows(group_dir: Path) -> list:
+    """members.tsv rows: round, task, reviewed commit, attempt. One row per member per round."""
+    rows = []
+    for line in (text(group_dir / 'members.tsv') or '').splitlines():
+        if not line.strip() or line.startswith('#'):
+            continue
+        cells = line.split('\t')
+        if len(cells) < 4 or not cells[0].isdigit():
+            continue
+        rows.append(dict(round=int(cells[0]), task=cells[1], commit=cells[2], attempt=as_int(cells[3])))
+    return rows
+
+
+def _group_rounds(rows: list) -> list:
+    rounds = []
+    for row in rows:
+        if row['round'] not in rounds:
+            rounds.append(row['round'])
+    return rounds
+
+
+def group_qa_attempts(group_dir: Path) -> list:
+    """QA attempt dirs under a group root, oldest first."""
+    attempts = [path for path in (group_dir / 'attempts').glob('qa-*') if path.is_dir()]
+
+    def started(path: Path):
+        return ((read_json(path / 'metrics.json') or {}).get('wall_started') or 0, path.name)
+
+    return sorted(attempts, key=started)
+
+
+def assign_group_rounds(group_dir: Path) -> dict:
+    """qa attempt dir name -> round, for an import. The round file is not the source.
+
+    The file is incremented when the next round starts, so it may already name a round
+    this dispatch did not review. members.tsv names the rounds that built a candidate.
+    A reply copied to qa.round-<n>.last is that round's; remaining dispatches zip onto
+    the rounds that have such a file, or onto every members.tsv round when none does.
+    An oversized round writes members.tsv and no reply, so it takes no dispatch.
+    """
+    rounds = _group_rounds(member_rows(group_dir))
+    assignment = {}
+    used = set()
+    unmatched = []
+    for attempt in group_qa_attempts(group_dir):
+        last = text(attempt / 'qa.last')
+        matched = None
+        if last is not None:
+            for number in rounds:
+                if number in used:
+                    continue
+                copy = group_dir / ('qa.round-%d.last' % number)
+                if copy.is_file() and text(copy) == last:
+                    matched = number
+                    break
+        if matched is None:
+            unmatched.append(attempt)
+        else:
+            assignment[attempt.name] = matched
+            used.add(matched)
+    reviewed = [number for number in rounds if (group_dir / ('qa.round-%d.last' % number)).is_file()]
+    pool = [number for number in (reviewed or rounds) if number not in used]
+    for attempt, number in zip(unmatched, pool):
+        assignment[attempt.name] = number
+    return assignment
+
+
+def group_judgments(plan: Path) -> dict:
+    """(task id, attempt number) -> {group, round} for attempts a group QA dispatch judged.
+
+    A members.tsv row whose round has no QA dispatch did not judge. The latest judged
+    round for a pair wins.
+    """
+    judged = {}
+    groups = Path(plan) / 'groups'
+    if not groups.is_dir():
+        return judged
+    for group_dir in sorted(path for path in groups.iterdir() if path.is_dir()):
+        assigned = set(assign_group_rounds(group_dir).values())
+        if not assigned:
+            continue
+        for row in member_rows(group_dir):
+            if row['round'] not in assigned or row['attempt'] is None or not row['task']:
+                continue
+            judged[(row['task'], row['attempt'])] = dict(group=group_dir.name, round=row['round'])
+    return judged
+
+
+def annotate_group_attempt(event: dict, tdir: Path) -> None:
+    """Point a member attempt at the group review that judged it, and drop the copied task review.
+
+    Settle and merge write that member's qa.last and qa.gate onto the task dir. Those are
+    not a task-level review: the attempt keeps the link (`review_scope`, `group`, `round`)
+    and the per-task review fields stay empty. An attempt with its own qa dispatch is
+    left unchanged. An attempt no group judged gains no key, so a plan without a group
+    review imports the same events as before.
+    """
+    if event.get('kind') != 'attempt' or Path(tdir).parent.name != 'tasks':
+        return
+    data = event.get('data')
+    if not isinstance(data, dict):
+        return
+    if any(str(name).startswith('qa-') for name in (data.get('children') or [])):
+        return
+    plan = Path(tdir).parent.parent
+    if not (plan / 'tasks.tsv').is_file():
+        return
+    link = group_judgments(plan).get((Path(tdir).name, event.get('attempt')))
+    if not link:
+        return
+    data['review_scope'] = 'group'
+    data['group'] = link['group']
+    data['round'] = link['round']
+    data['gate'] = None
+    blobs = data.get('blobs')
+    if isinstance(blobs, dict):
+        blobs.pop('forge_note', None)
+
+
 def dispatch_event(attempt: Path, root: Path, role: str, harness: str, rc, prov: dict, src: str = 'live') -> dict:
     metrics = read_json(attempt / 'metrics.json') or {}
     resolved = kv(attempt / (role + '.resolved'))
@@ -462,10 +601,17 @@ def dispatch_event(attempt: Path, root: Path, role: str, harness: str, rc, prov:
     found, parsed = parse_review(message) if role == 'qa' else ([], True)
     shadow = prov.get('shadow')
     kind = side_kind(root, role, prov)
+    located = locate(root, role)
+    # A group root stays a group even when an older provenance named a task. The dispatch
+    # is one review of several tasks, so the event's task stays empty.
+    group_root = located.get('scope') == 'group' or prov.get('scope') == 'group'
+    scope = 'group' if group_root else prov.get('scope')
+    task_id = None if group_root else prov.get('task')
     # A shadow review keeps the qa files and contract but is never a task's review, so it
     # gets its own role: nothing that reads qa dispatches mistakes it for the one that decided.
     # A side dispatch keeps the side files and is recorded as side_<kind>, so attempt
-    # statistics can leave it out (forge_dataset.is_side_role).
+    # statistics can leave it out (forge_dataset.is_side_role). A group review keeps the
+    # role qa; scope group is what leaves it out of one task's statistics.
     if kind:
         recorded_role = 'side_' + kind
     elif shadow and role == 'qa':
@@ -493,14 +639,25 @@ def dispatch_event(attempt: Path, root: Path, role: str, harness: str, rc, prov:
         findings_parse=review_completeness(verdict, found, parsed) if role == 'qa' else None,
         tests=review_tests(message) if role == 'qa' else None,
         session_id=session_id, session_continue=session_continue,
-        root=str(root), scope=prov.get('scope'), trigger=prov.get('trigger'),
+        root=str(root), scope=scope, trigger=prov.get('trigger'),
         **({'shadow': shadow} if shadow else {}),
     )
+    if group_root and role == 'qa':
+        gid = located.get('group') or Path(root).name
+        plan = located.get('plan') or Path(root).resolve().parent.parent
+        # Live capture reads the round file, which holds the round in progress. An import
+        # reads members.tsv: the file advances when the next round starts.
+        data['group'] = gid
+        data['members'] = group_members(plan, gid)
+        if src == 'import':
+            data['round'] = assign_group_rounds(Path(root)).get(Path(attempt).name)
+        else:
+            data['round'] = as_int(first_line(Path(root) / 'round'))
     prompt = None if delivery == 'native_review' else put_file(attempt / (role + '.prompt'), 'prompt')
     last = put_file(attempt / (role + '.last'), 'message' if final_source == 'structured' else 'log')
     return dict(rid=attempt.name, kind='dispatch', ts=prov.get('wall_ended') or time.time(), src=src,
                 run=prov.get('run'), run_id=prov.get('run_id'), mode=prov.get('mode'),
-                task=prov.get('task'), attempt=prov.get('attempt_now'), parent=prov.get('parent'),
+                task=task_id, attempt=prov.get('attempt_now'), parent=prov.get('parent'),
                 inv=prov.get('inv'), data=dict(data, blobs=blobs(prompt=prompt, message=last)))
 
 

@@ -185,6 +185,31 @@ class ModelsTests(unittest.TestCase):
         self.assertEqual({row['repo_root'] for row in data['reviews']}, {'/example/fixture-repo', '/example/solo-repo'})
         json.dumps(data, allow_nan=False)
 
+    def test_a_group_review_is_not_a_task_review(self):
+        class Item(dict):
+            def __init__(self, rel='', dataset=None, **kwargs):
+                super().__init__(**kwargs)
+                self.rel = rel
+                self.dataset = dataset
+
+        def review(verdict, **extra):
+            return dict(role='qa', shadow=False, state='done', attempt=1, verdict=verdict, findings={},
+                        duration_s=1.0, tokens=None, model={'alias': 'opus', 'spec': 'opus'}, **extra)
+
+        primary = review('PASS')
+        by_scope = review('FAIL', scope='group')
+        by_dataset = Item(rel='tasks/t1/attempts/qa-1', dataset={'scope': 'group'}, **review('FAIL'))
+        by_path = Item(rel='groups/g1/attempts/qa-1', dataset={}, **review('FAIL'))
+        # A task whose id is groups lives under tasks/, so the directory name alone is not enough.
+        named = Item(rel='tasks/groups/attempts/qa-1', dataset={}, **review('PASS'))
+        self.assertTrue(models._primary_qa(primary))
+        self.assertTrue(models._primary_qa(named))
+        for item in (by_scope, by_dataset, by_path):
+            self.assertFalse(models._primary_qa(item), item.get('scope') or getattr(item, 'rel', None))
+        rows = models._reviews('run', 't1', [by_scope, by_dataset, by_path, named], [])
+        self.assertEqual([(row['task'], row['kind'], row['verdict']) for row in rows],
+                         [('t1', 'primary', 'PASS')])
+
     def test_cache_and_its_invalidation(self):
         plan, solo = F.make_plan(self.base), F.make_solo(self.base)
         calls = []
