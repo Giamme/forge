@@ -197,6 +197,17 @@ class CompactTests(StorageCase):
         self.assertEqual(done.returncode, 2, done.stderr)
         self.assertEqual(result['runs'][0]['status'], 'refused')
 
+    def test_a_batch_reports_each_run_as_it_ends_then_the_totals(self):
+        other = self.make_plan('other')
+        self.age(other)
+        done = self.compact('--repo', self.repo, '--logs')
+        self.assertEqual(done.returncode, 0, done.stderr)
+        lines = done.stdout.splitlines()
+        self.assertIn('2 run(s) to look at', lines[0])
+        firsts = [i for i, line in enumerate(lines) if line.startswith('[1/2] ') or line.startswith('[2/2] ')]
+        self.assertEqual(len(firsts), 2, done.stdout)
+        self.assertRegex(lines[-1], r'^forge runs compact: 1 run\(s\) compacted, .* taken back; 1 with nothing to take back$')
+
     def test_it_needs_a_target(self):
         done = self.compact()
         self.assertEqual(done.returncode, 2)
