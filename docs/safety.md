@@ -26,7 +26,10 @@ What forge never does to your branch and working tree, what it refuses to run on
   ends: task, final, shadow, solo and adopt reviews, whatever the outcome. `review.base`,
   `review.deps`, the prompt, the log and the verdict stay beside it. `FORGE_KEEP_SNAPSHOTS=1`
   keeps snapshots, for debugging. A review ended by a signal can leave its snapshot behind; the
-  task's next review removes it.
+  task's next review, or the plan's next final review, removes it, and so does `forge runs compact`.
+- `forge runs compact` and the background compaction at run start never touch an active run (they
+  hold its lock), a worktree, or a file forge does not create, and they import the run into the
+  dataset strictly before anything goes. Log copies are gzipped, never deleted.
 
 ## Preconditions
 

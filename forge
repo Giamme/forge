@@ -26,7 +26,8 @@ usage() {
     '  memory    a repository'"'"'s project memory: show, learnings --json (each learning and its state), prune' \
     '  pr        a draft pull-request description for a finished run (--create opens it with gh)' \
     '  ui        forge-ui, the run viewer: open [DIR], status, stop' \
-    '  runs      this repo'"'"'s recent runs in the terminal: state, verdicts and run dirs; rerun a plan with another model, compare' \
+    '  runs      this repo'"'"'s recent runs in the terminal: state, verdicts and run dirs; compact, rm, rerun with another model, compare' \
+    '  du        what forge takes on disk (run dirs, worktrees, data home) and the command that takes each part back' \
     '  retro     notes on what got in a run'"'"'s way, kept on this machine' \
     '  summarize a task'"'"'s generated summary, rewritten only when its inputs change' \
     '  brief     each task'"'"'s open questions, asked before it starts: write, show' \
@@ -124,6 +125,10 @@ case "${1:-}" in
   runs)
     shift
     exec python3 "$ROOT/scripts/forge-runs.py" "$@"
+    ;;
+  du)
+    shift
+    exec python3 "$ROOT/scripts/forge-du.py" "$@"
     ;;
   retro)
     shift

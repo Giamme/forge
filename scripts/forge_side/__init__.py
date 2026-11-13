@@ -45,7 +45,8 @@ ON_OFF = ('off', 'on')
 BRIEF_LEVELS = ('off', 'advisory', 'gated', 'strict')
 BRIEF_SCOPES = ('task', 'wave', 'plan')
 SUMMARY_MODES = ON_OFF
-FEATURE_KEYS = ('retro', 'brief', 'brief.scope', 'brief.model', 'summaries', 'summaries.model')
+FEATURE_KEYS = ('retro', 'brief', 'brief.scope', 'brief.model', 'summaries', 'summaries.model', 'storage.compact', 'storage.warn-gb')
+STORAGE_COMPACT = ('auto', 'off')
 # Appended in full when a text is cut, so a reader can see the cut happened.
 CAP_MARKER = '… (capped)'
 # How long `run` waits past the dispatch watchdog for the script to exit and reap.
@@ -118,6 +119,9 @@ def stored_features() -> dict:
         'brief.model': _model_of(brief.get('model')) or None,
         'summaries': _choice(summaries.get('mode'), SUMMARY_MODES) or 'off',
         'summaries.model': _model_of(summaries.get('model')) or None,
+        # forge_storage.settings reads the same fields; these are the stored words, defaults included
+        'storage.compact': _choice(_mapping(features.get('storage')).get('compact'), STORAGE_COMPACT) or 'auto',
+        'storage.warn-gb': _model_of(_mapping(features.get('storage')).get('warn_gb')) or '20',
     }
 
 

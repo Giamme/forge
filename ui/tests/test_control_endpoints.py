@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -182,6 +183,38 @@ class ReviewerOutcomesTests(EndpointCase):
         self.assertEqual(self.last_argv(), ['dataset', 'reviewers', '--json'])
         self.assertEqual(self.get('/api/models/reviewers?repo=/etc')[0], 400)
         self.assertEqual(len(self.calls()), 1)
+
+
+class StorageTests(EndpointCase):
+    def test_measures_once_in_the_background_and_answers_from_the_cache(self):
+        from forge_ui import storage
+        calls = []
+
+        class Rules:
+            @staticmethod
+            def scan(path):
+                return {}
+
+            @staticmethod
+            def report(repo, home=None, progress=None):
+                calls.append(repo)
+                return dict(repo=None, computed=time.time(), complete=True, runs=[dict(path='/r', run_id='r', reclaimable=5)],
+                            strays=[], worktrees=[], data_home=None, totals=dict(reclaimable=5, runs=9, worktrees=0, data_home=0))
+        with patch.object(storage, 'rules', return_value=Rules):
+            status, body = self.get('/api/storage')
+            self.assertEqual(status, 200)
+            self.assertIn(body['state'], ('measuring', 'ready'))
+            deadline = time.time() + 10
+            while body['state'] != 'ready' and time.time() < deadline:
+                time.sleep(0.02)
+                body = self.get('/api/storage')[1]
+            self.assertEqual(body['state'], 'ready')
+            self.assertEqual(body['data']['commands'][0]['command'], 'forge runs compact --all --logs')
+            self.assertEqual(body['data']['runs'][0]['commands'][0]['command'], 'forge runs compact /r --logs')
+            self.get('/api/storage')
+            self.assertEqual(calls, [None])                     # cached: one measurement
+            self.assertEqual(self.get('/api/storage?refresh=yes')[0], 400)
+        self.assertEqual(self.calls(), [])                      # no forge command runs for it
 
 
 class WorktreesTests(EndpointCase):

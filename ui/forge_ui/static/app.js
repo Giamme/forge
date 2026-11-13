@@ -80,6 +80,7 @@ window.ForgeApp = (() => {
     if (/^#\/settings\/?$/.test(hash)) return { key: null, sel: null, settings: true };
     const pj = hash.match(/^#\/projects(?:\/([0-9a-f]{8})(?:\/(runs|findings|memories))?)?\/?$/);
     if (pj) return { key: null, sel: null, projects: { id: pj[1] || null, tab: pj[2] || 'runs' } };
+    if (/^#\/disk\/?$/.test(hash)) return { key: null, sel: null, disk: true };
     const w = hash.match(/^#\/worktrees(?:\/(repo|runs)\/([^/]+))?\/?$/);
     if (w) return { key: null, sel: null, worktrees: { repo: w[1] === 'repo' ? decodeURIComponent(w[2]) : '', run: w[1] === 'runs' ? decodeURIComponent(w[2]) : '' } };
     const m = hash.match(/^#\/runs\/([^/]+)(\/.*)?$/);
@@ -566,6 +567,20 @@ window.ForgeApp = (() => {
     const v = el('section', undefined, 'worktrees-view'); v.id = 'worktrees-view'; main.append(v);
     state.worktreesView = window.ForgeWorktrees.render(v, {
       filter: state.worktrees, runHref: key => '#/runs/' + encodeURIComponent(key),
+      tablePrefs: id => state.tablePrefs[id], saveTablePrefs: (id, p) => { state.tablePrefs = { ...state.tablePrefs, [id]: p }; store.set('tables', state.tablePrefs); },
+    });
+  }
+
+  /* ---------- what forge takes on disk (#/disk) ---------- */
+  // It reads /api/storage itself, when opened and while a measurement runs: never on the page's poll.
+  function renderDisk() {
+    const main = $('main');
+    if (main.dataset.view === 'disk' && state.diskView) return;
+    setView(main, 'disk'); delete main.dataset.run;
+    main.replaceChildren();
+    const v = el('section', undefined, 'worktrees-view disk-view'); v.id = 'disk-view'; main.append(v);
+    state.diskView = window.ForgeStorage.render(v, {
+      runHref: path => { const r = list(state.runs).find(x => x.path === path); return r ? '#/runs/' + encodeURIComponent(r.key) : null; },
       tablePrefs: id => state.tablePrefs[id], saveTablePrefs: (id, p) => { state.tablePrefs = { ...state.tablePrefs, [id]: p }; store.set('tables', state.tablePrefs); },
     });
   }
@@ -1086,6 +1101,7 @@ window.ForgeApp = (() => {
     if (state.models) { renderModels(); return; }
     if (state.settings) { renderSettings(); return; }
     if (state.worktrees) { renderWorktrees(); return; }
+    if (state.disk) { renderDisk(); return; }
     if (state.projects) { renderProjects(); return; }
     if (state.key && state.findingsPage) { renderFindings(); return; }
     if (!state.key) { renderMap(); return; }
@@ -1144,7 +1160,7 @@ window.ForgeApp = (() => {
       if (state.cloud) renderCloud();
       else if (state.settings) state.settingsView?.poll();       // the picker follows the run list; the page stays
       else if (state.projects) state.projectsView?.poll();
-      else if (!state.key && !state.models && !state.worktrees) renderMap({ rebuildBar: $('map-filters') ? !$('map-filters').contains(document.activeElement) : true });
+      else if (!state.key && !state.models && !state.worktrees && !state.disk) renderMap({ rebuildBar: $('map-filters') ? !$('map-filters').contains(document.activeElement) : true });
     }, 'Could not refresh runs');
   }
   function loadRun(key) {
@@ -1181,6 +1197,7 @@ window.ForgeApp = (() => {
     state.models = !!parsed.models;
     state.settings = !!parsed.settings && !!window.ForgeSettings && !SNAP;
     state.worktrees = parsed.worktrees && window.ForgeWorktrees && !SNAP ? parsed.worktrees : null;
+    state.disk = !!parsed.disk && !!window.ForgeStorage && !SNAP;
     state.projects = parsed.projects && window.ForgeProjects && !SNAP ? parsed.projects : null;
     if (parsed.key) state.lastKey = parsed.key;
     state.findingsPage = !!parsed.findings && !!window.ForgeFindings;
@@ -1191,7 +1208,7 @@ window.ForgeApp = (() => {
     document.body.classList.toggle('cloud-mode', !!state.cloud);
     if (!state.key) document.body.classList.remove('no-tasks');
     for (const a of document.querySelectorAll('.topbar .top-link')) {
-      const here = a.getAttribute('href') === (state.cloud ? '#/cloud' : state.models ? '#/models' : state.settings ? '#/settings' : state.worktrees ? '#/worktrees' : state.projects ? '#/projects' : !state.key ? '#/' : null);
+      const here = a.getAttribute('href') === (state.cloud ? '#/cloud' : state.models ? '#/models' : state.settings ? '#/settings' : state.worktrees ? '#/worktrees' : state.disk ? '#/disk' : state.projects ? '#/projects' : !state.key ? '#/' : null);
       if (here) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
     }
     renderErrors();
@@ -1200,6 +1217,7 @@ window.ForgeApp = (() => {
     if (state.models) { renderModels(); loadModels(); return; }
     if (state.settings) { renderSettings(); return; }
     if (state.worktrees) { renderWorktrees(); return; }
+    if (state.disk) { renderDisk(); return; }
     if (state.projects) { renderProjects(); return; }
     if (state.key && state.findingsPage) { renderFindings(); return; }
     if (!state.key) { renderMap(); return; }
@@ -1249,7 +1267,8 @@ window.ForgeApp = (() => {
       { id: 'cmd:map', label: 'Open the map of all runs', sub: 'the front page', ids: ['map', 'home'], href: '#/' },
       { id: 'cmd:models', label: 'Open the model leaderboard', sub: 'pass rates, retries, time and tokens per model', ids: ['models', 'leaderboard'], href: '#/models' },
       ...(window.ForgeProjects ? [{ id: 'cmd:projects', label: 'Open the projects', sub: 'each repository\'s runs, findings and memories', ids: ['projects', 'repos', 'memory', 'findings'], href: '#/projects' }] : []),
-      ...(window.ForgeWorktrees ? [{ id: 'cmd:worktrees', label: 'Open the worktrees', sub: 'every worktree forge created, its state and the command that removes it', ids: ['worktrees', 'cleanup', 'disk'], href: '#/worktrees' }] : []),
+      ...(window.ForgeWorktrees ? [{ id: 'cmd:worktrees', label: 'Open the worktrees', sub: 'every worktree forge created, its state and the command that removes it', ids: ['worktrees', 'cleanup'], href: '#/worktrees' }] : []),
+      ...(window.ForgeStorage ? [{ id: 'cmd:disk', label: 'Open the disk report', sub: 'what forge takes on disk and the command that takes each part back', ids: ['disk', 'space', 'du', 'compact', 'cleanup'], href: '#/disk' }] : []),
       ...(window.ForgeSettings ? [{ id: 'cmd:settings', label: 'Open the settings', sub: 'model registry, Jev, and the .forge files of a repository', ids: ['settings', 'config', 'verify', 'jev'], href: '#/settings' }] : []),
       { id: 'cmd:notify', label: 'Notifications', sub: 'what finished or failed, and browser notifications', ids: ['alerts', 'bell'], action: () => window.ForgeNotify && window.ForgeNotify.open() },
       { id: 'cmd:dim', label: state.dim === '3d' ? 'Switch to 2D' : 'Switch to 3D', sub: state.dim === '3d' ? 'graphs and charts, no WebGL' : 'loads three.js from cdn.jsdelivr.net', ids: ['2d', '3d'],

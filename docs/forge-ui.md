@@ -141,6 +141,10 @@ indistinguishable from the same command typed in a terminal, except that `contro
   what `memory.md` gives each role and each learning's state, as `forge memory learnings` reports it.
   Runs and checkouts that are gone are read from the dataset, and those rows say so. Reachable from the
   header, a run's repository name and each map district.
+- **Disk (`#/disk`):** what forge takes on disk in every repository it has runs for (each run dir's
+  review snapshots, logs and anything forge does not create, each run's worktree folder, the data home),
+  what can go without losing a run, and the command that takes it back (`forge runs compact`), to copy.
+  The same report as `forge du --all`; measured in the background when the screen opens.
 - **Worktrees (`#/worktrees`):** every worktree forge created, in any repository it knows: its
   run, task, branch, last commit, size and status (in use, uncommitted changes, locked, needed by
   the run, failed task, finished, missing on disk, not forge's, unknown to git, removed), and the

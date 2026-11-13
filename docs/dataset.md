@@ -46,5 +46,10 @@ import also reads a plan's `escalations.tsv` (with who decided: `policy`, `retry
 `control.log`, so human interventions made with `forge control` are in the dataset as
 `control` events. See [forge runs rm](commands.md#forge-runs-rm).
 
+Keeping a run but taking back its space keeps the dataset too. `forge runs compact` starts with the same
+strict import, then removes the run's leftover review snapshots (which the importer never reads) and,
+with `--logs`, gzips its log copies (which the dataset does not store), and records `run_compacted`. A
+second import of a compacted run adds no event. See [forge runs compact](commands.md#forge-runs-compact).
+
 Capture is fail-open and never read by anything that builds a prompt. See
 [references/dataset.md](../references/dataset.md) for the event schema and its invariants.

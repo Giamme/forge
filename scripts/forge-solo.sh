@@ -277,6 +277,7 @@ fi
 [ "$DRY" = 1 ] || forge_repo_identity "$REPO" "$RUN"
 # Every real run, --ui or not: forge-ui's view of this repo's runs reads the registry.
 [ "$DRY" = 1 ] || forge_ui_register "$RUN"
+[ "$DRY" = 1 ] || forge_storage_check "$RUN" "$REPO"
 # Recorded before any dispatch: forge-ui opens this dir immediately, and a re-run
 # that dies early must not keep showing the previous invocation's verdict.
 if [ "$DRY" != 1 ]; then

@@ -4,8 +4,10 @@
   show  [--repo DIR] [--json]               registry, Jev, decide, features, profiles, the repo's .forge files, dataset and FORGE_* env
   set   <key> <value> [--repo DIR] [--json]   repo.verify | repo.setup | repo.verify-subset | decide.gate.<gate>[.provider|.model]
                                               | retro | brief | brief.scope | brief.model | summaries | summaries.model
+                                              | storage.compact | storage.warn-gb
   unset <key> [--repo DIR] [--json]           repo.verify | repo.setup | repo.verify-subset
                                               | retro | brief | brief.scope | brief.model | summaries | summaries.model
+                                              | storage.compact | storage.warn-gb
   profile list|show|create|edit|set|unset|rm|use [--repo DIR] [--json]
                                               profiles in decide.json; --repo writes the repo file, otherwise the user file
 
@@ -22,7 +24,10 @@ runs already in progress; edit the checkout.
 feature settings (decide.json `features`). `brief` is the level (off, advisory, gated or strict);
 `summaries` is the mode (off or on); `brief.scope` is task, wave or plan. A model is a spec, checked
 the way a profile routing spec is. Setting brief or summaries on with no model is stored; refusing
-to plan without one is a later step. A bad value exits 2 and writes nothing. Unset removes that
+to plan without one is a later step. `storage.compact` (auto, the default, or off) is whether forge
+compacts a repository's idle runs in the background when a run starts, and `storage.warn-gb` (a
+number of gigabytes, 20 by default, or off) when it warns at run start that the repository's forge
+files have grown past it (#139; forge_storage.py). A bad value exits 2 and writes nothing. Unset removes that
 field and keeps every other key. These keys ignore `--repo`: they always write the user file.
 
 Only the three per-repo files are ever read for content; cloudflare.env never is. Values of FORGE_*
@@ -63,7 +68,7 @@ from forge_decide import GATES, MODES, load_repo, load_user, save_repo, save_use
 from forge_decide import profiles
 from forge_decide.migrate import run as migrate_run
 from forge_decide.providers import spec_for_site
-from forge_side import (BRIEF_LEVELS, BRIEF_SCOPES, FEATURE_KEYS, ON_OFF, stored_features)
+from forge_side import (BRIEF_LEVELS, BRIEF_SCOPES, FEATURE_KEYS, ON_OFF, STORAGE_COMPACT, stored_features)
 
 REPO_FILES = ('verify', 'setup', 'verify-subset')
 KEYS = tuple('repo.' + n for n in REPO_FILES)
@@ -544,6 +549,8 @@ _FEATURE_FIELD = {
     'brief.model': ('brief', 'model'),
     'summaries': ('summaries', 'mode'),
     'summaries.model': ('summaries', 'model'),
+    'storage.compact': ('storage', 'compact'),
+    'storage.warn-gb': ('storage', 'warn_gb'),
 }
 
 
@@ -556,6 +563,19 @@ def _feature_value(key, value):
     if key == 'brief':
         if value not in BRIEF_LEVELS:
             raise Invalid('brief must be off, advisory, gated or strict')
+        return value
+    if key == 'storage.compact':
+        if value not in STORAGE_COMPACT:
+            raise Invalid('storage.compact must be auto or off')
+        return value
+    if key == 'storage.warn-gb':
+        if value != 'off':
+            try:
+                number = float(value)
+            except ValueError:
+                number = 0
+            if not (0 < number < float('inf')):
+                raise Invalid('storage.warn-gb must be a number of gigabytes over 0, or off')
         return value
     if key == 'brief.scope':
         if value not in BRIEF_SCOPES:

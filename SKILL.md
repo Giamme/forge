@@ -87,8 +87,8 @@ For explanation requests, explain the workflow without spending model quota.
   explicitly says so; never self-accept.
 - When you report a run, read `<plan>/control.log` and mention any human change made mid-run
   (a threshold, a budget, a model pin, a drain, stop or queued retry; `forge control show <plan>`
-  lists them). Never set a control, pin, `drain|stop|retry` or delete a run with `forge control` /
-  `forge runs rm` unless the user asks. Exit `130` / `INTERRUPTED`: the run was signalled or
+  lists them). Never set a control, pin, `drain|stop|retry`, delete a run or compact one with
+  `forge control` / `forge runs rm` / `forge runs compact` unless the user asks; `forge du` only reads. Exit `130` / `INTERRUPTED`: the run was signalled or
   stopped; relay the `retry` lines it printed.
 - A `waiting for your answer:` block is status `NEEDS_INPUT`: relay each question verbatim and
   pass it with `retry <plan> <id> --answer "<reply>"`. Never answer for the user; nothing else

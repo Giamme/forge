@@ -359,7 +359,8 @@ PY
 #   whose fingerprint must not change while the reviewer runs. Never uses `die`/`exit`:
 #   it is called from inside do_integrate.
 # The review snapshot goes once the review is over, on every return (#139). A signal that ends the
-# process first leaves it.
+# process first leaves it, and the next final review of the plan removes it: they hold the plan's
+# lock, so one runs at a time and any snapshot already there is an interrupted one's.
 final_review() {
   local final_rc
   FINAL_REVIEW_SNAPSHOT=""
@@ -403,6 +404,10 @@ final_review_body() {
 
   # `forge_review_snapshot` writes review.base beside the snapshot, so it gets a directory
   # of its own under the artifact dir.
+  local stale
+  for stale in "$out"/review-* "$plan"/final-review*/review-* "$plan"/integrate-*/final-review/review-*; do
+    [ -d "$stale/.git" ] && forge_drop_snapshot "$stale"
+  done
   review="$out/review-$$"; n=0
   while [ -e "$review" ]; do n=$((n+1)); review="$out/review-$$-$n"; done
   FINAL_REVIEW_SNAPSHOT="$review"

@@ -32,6 +32,10 @@ atexit.register(shutil.rmtree, CONFIG, True)
 for name in ('FORGE_ROUTE_EXPLORE', 'FORGE_ROUTE_EXPLORE_SEED', 'FORGE_SHADOW', 'FORGE_SHADOW_ATTEMPT',
              'FORGE_SHADOW_REVIEWED', 'FORGE_SHADOW_FROM', 'FORGE_SHADOW_GRACE_S'):
     os.environ.pop(name, None)
+# A run start measures the repository's forge files and compacts its idle runs in the background
+# (#139): a test's runs must not leave detached processes behind, nor warn about the developer's disk.
+os.environ['FORGE_STORAGE_COMPACT'] = 'off'
+os.environ['FORGE_STORAGE_WARN_GB'] = 'off'
 # Exploration is on by default in `plan`; a suite's plans must resolve the same way every
 # time, so tests start with it off and the tests about it turn it on.
 os.environ['FORGE_ROUTE_EXPLORE'] = '0'
